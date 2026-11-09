@@ -74,6 +74,10 @@ typedef enum {
     DSD_TRUNK_SCAN_MODULATION_GFSK = DSD_SCAN_MODULATION_GFSK,
 } dsd_trunk_scan_modulation;
 
+/* One parsed target row. Two rows of one id in two lists are one target only when every field but csv_row is the same
+ * (issue #697, dsd_trunk_scan_check_target_lists()): a field added here must be added to that comparison
+ * (scan_target_first_difference() in src/engine/trunk_scan.c) and to its flip test
+ * (test_lists_shared_row_first_difference()), or two rows differing in it would merge silently. */
 typedef struct {
     char id[64];
     /** The optional `label` column, sanitized (dsd_channel_label_sanitize()): names the channel while parked here. */
@@ -125,15 +129,29 @@ int dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_
                                     size_t err_sz);
 
 /**
- * @brief Whether target lists loaded one by one can run in one session (issue #697).
+ * @brief Whether target lists loaded one by one can run in one session (issue #697), and how they merge: the one rule
+ * the engine start and the app's pre-check share.
  *
- * No target id repeats across the lists (each list's own rules stay its parser's), and their union fits
- * dsd_trunk_scan_max_targets(). The error names the files from @p names[i] (list i's file) and both rows.
+ * Each list's own rules stay its parser's (no id or (type, frequency) twice in one file). A row whose id an earlier
+ * list already holds is that earlier target, now in both lists, when every parsed setting is the same: every field of
+ * dsd_trunk_scan_target but csv_row, a row option only where it is set, a companion path as the file it names (its
+ * identity, dsd_path_same_file(); when either cannot be read both canonicalised, and the strings when either cannot be
+ * that), direct keys compared in constant time. Any difference refuses the lists, naming both files and rows (from
+ * @p names[i], list i's file) and the first column that differs, by the column's name in the target CSV or the row
+ * option's switch; a key difference is said as "the key columns differ", never with key material. The distinct targets
+ * fit dsd_trunk_scan_max_targets().
  *
+ * @param row_targets NULL, or room for one entry per row of every list, list after list: row r of list l gets the
+ * index of its target in the session's targets, which are the rows that load a new target, in list order and then row
+ * order. A row is new exactly when its index is the number of targets before it.
+ * @param row_target_count The entries @p row_targets holds (ignored when it is NULL); fewer than the rows is a
+ * refusal.
+ * @param distinct NULL, or set to the number of distinct targets (0 on a refusal).
  * @return 0 when they can; -1 otherwise.
  */
 int dsd_trunk_scan_check_target_lists(const dsd_trunk_scan_target_list* lists, const char* const* names, size_t count,
-                                      char* err, size_t err_sz);
+                                      size_t* row_targets, size_t row_target_count, size_t* distinct, char* err,
+                                      size_t err_sz);
 
 /** Shared lexical splitter for target import/relocation. Modifies line in place. */
 int dsd_trunk_scan_split_csv_fields(char* line, char** fields, size_t max_fields, size_t* out_count);
@@ -358,14 +376,16 @@ int dsd_engine_trunk_scan_unavoid_target(const dsd_opts* opts, dsd_state* state,
  * `list_set` hook (dsd_trunk_scan_hook_list_set(), whose rules and results it implements).
  *
  * A list switched off keeps its targets, snapshots, avoids and edits; the rotation passes them over until it is on
- * again. Every candidate walk and count reads one predicate, in the rotation = list on and not avoided. Decoder
- * thread; takes the P25 SM tick guard (try-enter) itself.
+ * again. Every candidate walk and count reads one predicate, in the rotation = a list holding the target on and the
+ * target not avoided, so a target another list on holds stays (issue #697: one target id, one target, however many
+ * lists hold it). Decoder thread; takes the P25 SM tick guard (try-enter) itself.
  */
 int dsd_engine_trunk_scan_list_set(dsd_opts* opts, dsd_state* state, uint32_t session, int list, int enabled,
                                    uint32_t request);
 /**
- * @brief Whether the target on air owes a departure that is due now (issue #697): it is out of the rotation (its list
- * is off, or it is the avoided fallback) and another target can take the receiver, or could when it was last asked.
+ * @brief Whether the target on air owes a departure that is due now (issue #697): it is out of the rotation (every
+ * list that holds it is off, or it is the avoided fallback) and another target can take the receiver, or could when
+ * it was last asked.
  *
  * Joins the frame loop's yield (scan_visit_should_yield) beside visit expiry and receive rejection, so a continuously
  * keyed DMR carrier unwinds at a burst boundary and the next coordinator tick departs after protocol cleanup. Reads

@@ -25,6 +25,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/init.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include "command_dispatch.h"
@@ -2317,9 +2318,11 @@ test_ui_protocol_reset_and_mode_toggles(void) {
     DSD_SNPRINTF(state->nxdn_location_category, sizeof state->nxdn_location_category, "%s", "cat");
     state->nxdn_last_ran = 5;
     state->nxdn_ran = 6;
-    state->nxdn_rcn = 7;
-    state->nxdn_base_freq = 200;
-    state->nxdn_step = 25;
+    // A DFA site latched as this site, its channel access parameters, a row computed from them and one an import set.
+    dsd_nxdn_site_latch(state, (2U << 12) | 0x21U);
+    dsd_nxdn_ca_apply(state, (2U << 12) | 0x21U, 1U, 4U, 3U);
+    dsd_nxdn_dfa_learn(state, 10U, 750031250L);
+    dsd_state_set_trunk_chan_freq(state, 5U, 155500000L);
     state->nxdn_bw = 12;
 
     opts->m17encoder = 1;
@@ -2368,6 +2371,10 @@ test_ui_protocol_reset_and_mode_toggles(void) {
     rc |= expect_int_eq("NXDN base reset", state->nxdn_base_freq, 0);
     rc |= expect_int_eq("NXDN step reset", state->nxdn_step, 0);
     rc |= expect_int_eq("NXDN bandwidth reset", state->nxdn_bw, 0);
+    rc |= expect_int_eq("NXDN channel access parameters dropped", dsd_nxdn_ca_valid(state), 0);
+    rc |= expect_int_eq("NXDN site forgotten", state->nxdn_site.known, 0);
+    rc |= expect_true("NXDN DFA row dropped with its parameters", state->trunk_chan_map[10] == 0);
+    rc |= expect_true("imported channel map row kept", state->trunk_chan_map[5] == 155500000L);
     rc |= expect_int_eq("M17 TX toggled off", state->m17encoder_tx, 0);
     rc |= expect_int_eq("M17 EOT marked", state->m17encoder_eot, 1);
     rc |= expect_int_eq("ProVoice ESK enabled", state->esk_mask, 0xA0);
@@ -2853,7 +2860,8 @@ test_ui_import_and_dsp_output_commands_report_service_results(void) {
     applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("group import command drains", applied, 1);
     rc |= expect_true("failed group import preserves configured path", opts->group_in_file[0] == '\0');
-    rc |= expect_true("group import failure toast", strstr(state->ui_msg, "Failed: Group list reload") != NULL);
+    rc |= expect_true("group import failure toast",
+                      strcmp(state->ui_msg, "Failed: Group list import -> file not found; list unchanged") == 0);
 
     const char* missing_dec = "./missing-keys-dec.csv";
     dsd_app_command_submit(DSD_APP_CMD_IMPORT_KEYS_DEC, missing_dec, strlen(missing_dec) + 1U);

@@ -19,6 +19,16 @@
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
+    <!-- #829: with no OPEN_DOCUMENT picker, DocumentPicker lists the GET_CONTENT apps to offer, which package
+         visibility hides without this. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.GET_CONTENT" />
+            <category android:name="android.intent.category.OPENABLE" />
+            <data android:mimeType="*/*" />
+        </intent>
+    </queries>
+
     <!-- %%INSERT_PERMISSIONS -->
     <!-- %%INSERT_FEATURES -->
 

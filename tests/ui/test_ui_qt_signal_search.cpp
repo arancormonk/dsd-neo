@@ -668,10 +668,12 @@ testRecordingKey() {
                .isEmpty());
 }
 
-/* Issue #644: two lists under one name, each with an entry of one uid on one frequency, are two Listen choices, each
-   starting its own list: the matches stay apart by list as well as by id. */
+/* Issue #644: two lists under one name, each with a target on one frequency, are two Listen choices, each starting its
+   own list: the matches stay apart by list. Issue #697: a manual list given another's entry uid is saved with another
+   (the app's lists never share an id), so each match names its own list's entry; two imported lists whose files hold
+   one target id stay two matches, one per list, under that one id. */
 static void
-testKnownFrequencyListsApart() {
+testKnownFrequencyListsApart(const QString& dir) {
     dsd_qt::SavedSystemsModel systems;
     dsd_qt::ScanListsModel lists;
     const QVariantMap desk{
@@ -679,24 +681,62 @@ testKnownFrequencyListsApart() {
         {QStringLiteral("name"), QStringLiteral("Desk")},        {QStringLiteral("protocol"), QStringLiteral("dmr")},
         {QStringLiteral("freqMhz"), QStringLiteral("450.1250")}, {QStringLiteral("enabled"), true}};
     QStringList uids;
+    QStringList entryUids;
     for (int i = 0; i < 2; ++i) {
         assert(lists.add(
             {{QStringLiteral("name"), QStringLiteral("Gate")}, {QStringLiteral("entries"), QVariantList{desk}}}));
-        uids << lists.get(lists.count() - 1).value(QStringLiteral("uid")).toString();
+        const QVariantMap list = lists.get(lists.count() - 1);
+        uids << list.value(QStringLiteral("uid")).toString();
+        entryUids
+            << list.value(QStringLiteral("entries")).toList().value(0).toMap().value(QStringLiteral("uid")).toString();
     }
     assert(uids[0] != uids[1]);
+    assert(entryUids[0] == QStringLiteral("entry") && !entryUids[1].isEmpty() && entryUids[1] != entryUids[0]);
     dsd_qt::KnownFrequencyIndex index(&systems, &lists);
     const QVariantList matches = index.tunedMatches(450125000, 12500);
     assert(matches.size() == 2);
-    QStringList listUids;
+    QStringList pairs;
     for (const QVariant& match : matches) {
+        assert(match.toMap().value(QStringLiteral("selectable")).toBool());
+        pairs << match.toMap().value(QStringLiteral("listUid")).toString() + QLatin1Char('/')
+                     + match.toMap().value(QStringLiteral("targetId")).toString();
+    }
+    pairs.sort();
+    QStringList expected{uids[0] + QLatin1Char('/') + entryUids[0], uids[1] + QLatin1Char('/') + entryUids[1]};
+    expected.sort();
+    assert(pairs == expected);
+    // Every model reads the one saved store, so the manual lists go before the imported ones are indexed.
+    for (const QString& uid : uids) {
+        assert(lists.remove(lists.rowForUid(uid)));
+    }
+
+    dsd_qt::ScanListsModel csvLists;
+    QStringList csvUids;
+    for (const char* file : {"apart-a.csv", "apart-b.csv"}) {
+        const QString targets = QDir(dir).filePath(QString::fromLatin1(file));
+        writeFile(targets, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n"
+                           "entry,dmr-conventional,450125000,,,,,Desk\n");
+        assert(csvLists.add({{QStringLiteral("name"), QStringLiteral("Gate")},
+                             {QStringLiteral("targetSource"), QStringLiteral("csv")},
+                             {QStringLiteral("targetsCsvPath"), targets}}));
+        csvUids << csvLists.get(csvLists.count() - 1).value(QStringLiteral("uid")).toString();
+    }
+    assert(csvUids[0] != csvUids[1]);
+    dsd_qt::KnownFrequencyIndex csvIndex(&systems, &csvLists);
+    const QVariantList csvMatches = csvIndex.tunedMatches(450125000, 12500);
+    assert(csvMatches.size() == 2);
+    QStringList csvListUids;
+    for (const QVariant& match : csvMatches) {
         assert(match.toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral("entry"));
         assert(match.toMap().value(QStringLiteral("selectable")).toBool());
-        listUids << match.toMap().value(QStringLiteral("listUid")).toString();
+        csvListUids << match.toMap().value(QStringLiteral("listUid")).toString();
     }
-    listUids.sort();
-    uids.sort();
-    assert(listUids == uids);
+    csvListUids.sort();
+    csvUids.sort();
+    assert(csvListUids == csvUids);
+    for (const QString& uid : csvUids) {
+        assert(csvLists.remove(csvLists.rowForUid(uid)));
+    }
 }
 
 /* Issue #644: a target CSV row's id is what the engine loads, so a held start or an in-place go-to names a target the
@@ -732,6 +772,64 @@ testKnownFrequencyEngineIds(const QString& dir) {
     assert(session.at(0).toMap().value(QStringLiteral("name")).toString() == QStringLiteral("Spaced / Fire"));
     assert(session.at(1).toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral(" pump"));
     assert(session.at(1).toMap().value(QStringLiteral("name")).toString() == QStringLiteral("Spaced / pump"));
+}
+
+/* Issue #697: a target id a later list of the session also holds is one engine target, at its first list's place, so
+   a session's own targets hold it once, in the engine's order (every new row in list order, then row order): [ROK, A]
+   then [B, ROK] is ROK, A, B, each where the engine published its eligibility. One file run as two lists is its
+   targets once. */
+static void
+testKnownFrequencySessionTargetsShared(const QString& dir) {
+    dsd_qt::SavedSystemsModel systems;
+    dsd_qt::ScanListsModel lists;
+    const QString conv = QDir(dir).filePath(QStringLiteral("shared-conv.csv"));
+    writeFile(conv, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n"
+                    "ROK,dmr-conventional,460100000,,,,,Rock\n"
+                    "A,dmr-conventional,460200000,,,,,Alpha\n");
+    const QString low = QDir(dir).filePath(QStringLiteral("shared-low.csv"));
+    writeFile(low, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n"
+                   "B,dmr-conventional,460300000,,,,,Bravo\n"
+                   "ROK,dmr-conventional,460100000,,,,,Rock\n");
+    const dsd_qt::KnownFrequencyIndex index(&systems, &lists);
+    const QVariantMap first{{"uid", QStringLiteral("conv-uid")}, {"name", QStringLiteral("Conv")}, {"path", conv}};
+    const QVariantMap second{{"uid", QStringLiteral("low-uid")}, {"name", QStringLiteral("Low")}, {"path", low}};
+    const QVariantList session = index.sessionTargets({first, second});
+
+    struct Want {
+        const char* id;
+        qint64 hz;
+        int list;
+        const char* name;
+    };
+
+    const Want want[] = {
+        {"ROK", 460100000, 1, "Conv / Rock"},
+        {"A", 460200000, 1, "Conv / Alpha"},
+        {"B", 460300000, 2, "Low / Bravo"},
+    };
+    if (session.size() != 3) {
+        DSD_FPRINTF(stderr, "a shared target: %lld session targets, want 3\n", static_cast<long long>(session.size()));
+        assert(0);
+    }
+    for (int i = 0; i < 3; ++i) {
+        const QVariantMap target = session.at(i).toMap();
+        assert(target.value(QStringLiteral("targetId")).toString() == QLatin1String(want[i].id));
+        assert(target.value(QStringLiteral("frequencyHz")).toLongLong() == want[i].hz);
+        assert(target.value(QStringLiteral("listNumber")).toInt() == want[i].list);
+        assert(target.value(QStringLiteral("name")).toString() == QLatin1String(want[i].name));
+    }
+    // The other order: the low list's rows first, then the conv list's new one.
+    const QVariantList reversed = index.sessionTargets({second, first});
+    assert(reversed.size() == 3);
+    assert(reversed.at(0).toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral("B"));
+    assert(reversed.at(1).toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral("ROK"));
+    assert(reversed.at(1).toMap().value(QStringLiteral("listNumber")).toInt() == 1);
+    assert(reversed.at(2).toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral("A"));
+    assert(reversed.at(2).toMap().value(QStringLiteral("listNumber")).toInt() == 2);
+    // One file as two lists: every target is the first list's.
+    const QVariantList twice = index.sessionTargets(
+        {first, QVariantMap{{"uid", QStringLiteral("again")}, {"name", QStringLiteral("Again")}, {"path", conv}}});
+    assert(twice.size() == 2 && twice.at(1).toMap().value(QStringLiteral("listNumber")).toInt() == 1);
 }
 
 /* Issue #644: Qt reads a target CSV and a channel map as the engine's loaders do, so a session's own targets and the
@@ -1726,9 +1824,10 @@ main(int argc, char** argv) {
     testRangeSaveFailureClears(&index);
     testStoreFilesWorded(&index);
     testKnownFrequencyIdentity(temp.path());
-    testKnownFrequencyListsApart();
+    testKnownFrequencyListsApart(temp.path());
     testKnownFrequencyEngineIds(temp.path());
     testKnownFrequencyEngineGrammar(temp.path());
+    testKnownFrequencySessionTargetsShared(temp.path());
     testKnownFrequencyQuotedCells(temp.path());
     testKnownFrequencyRowCap(temp.path());
     testKnownFrequencyWatchesUnparsedFiles(temp.path());

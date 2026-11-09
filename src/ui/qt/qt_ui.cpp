@@ -51,6 +51,7 @@
 #include "screen_reader_state.h"
 #include "session_args.h"
 #include "settings_recovery.h"
+#include "sign_in_autofill.h"
 #include "signal_search_model.h"
 #include "site_groups.h"
 #include "spectrum_model.h"
@@ -283,20 +284,25 @@ prune_missing_csv_paths(ImportedFilesModel* importedFiles, SavedSystemsModel* sy
 }
 
 /* How the person reads and types: forms finish the keyboard's composing word before reading their fields (issue #718),
-   and views that order or keep what a screen reader is given ask whether one is on (issue #782). */
+   views that order or keep what a screen reader is given ask whether one is on (issue #782), and the RadioReference
+   sign-in forms are described to the platform's password manager support. */
 static void
-publish_input_context(QQmlContext* context, QObject* owner) {
+publish_input_context(QQmlContext* context, DecoderHost* host, RadioReferenceModel* radioReference, AppPrefs* prefs,
+                      QObject* owner) {
     context->setContextProperty(QStringLiteral("inputCommit"), new InputCommit(owner));
     context->setContextProperty(QStringLiteral("screenReader"), new ScreenReaderState(owner));
+    context->setContextProperty(QStringLiteral("signInAutofill"),
+                                new SignInAutofill(host, radioReference, prefs, owner));
 }
 
 /* What every screen may read that no model owns: the version, how the person reads and types, and the files this run
    could not read (issue #828), whose list is process-lifetime rather than the engine's, so a dismissal holds while the
    app runs. */
 static void
-publish_app_context(QQmlContext* context, QObject* owner) {
+publish_app_context(QQmlContext* context, DecoderHost* host, RadioReferenceModel* radioReference, AppPrefs* prefs,
+                    QObject* owner) {
     context->setContextProperty(QStringLiteral("appVersionText"), QString::fromUtf8(GIT_TAG));
-    publish_input_context(context, owner);
+    publish_input_context(context, host, radioReference, prefs, owner);
     context->setContextProperty(QStringLiteral("storeNotices"), StoreNotices::instance());
 }
 
@@ -398,7 +404,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("knownFrequencies"), knownFrequencies);
     context->setContextProperty(QStringLiteral("listenPins"), listenPins);
     context->setContextProperty(QStringLiteral("signalSearch"), signalSearch);
-    publish_app_context(context, &engine);
+    publish_app_context(context, host, radioReference, prefs, &engine);
 
     engine.load(QUrl(QStringLiteral("qrc:/dsdneo/qml/Main.qml")));
     if (engine.rootObjects().isEmpty()) {

@@ -66,7 +66,9 @@ enum {
 
 /** Nonsecret overrides copied into runtime/frontend scan scopes. A field is meaningful only when its
  * DSD_SCAN_OPT_* bit is set in `present`. Direct option text (DSD_SCAN_OPT_MUTE_P25) always mutes undecodable P25 audio,
- * as the CLI switch does, so it carries no value here. */
+ * as the CLI switch does, so it carries no value here. A field or switch added here must be added to the trunk scan's
+ * comparison of two rows of one target id (`k_scan_option_columns` in src/engine/trunk_scan.c, issue #697) and to its
+ * flip test, or two rows differing in it would merge into one target silently; `present` stays the first member. */
 typedef struct {
     uint32_t present;
     int force;

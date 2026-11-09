@@ -17,6 +17,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/iq_replay_checkpoint.h>
 #include <dsd-neo/core/keyring.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/source_alias.h>
@@ -780,6 +781,8 @@ chan_map_adopt(dsd_opts* opts, dsd_state* dst, dsd_state* src) {
     dst->scan_visit_roll_seen = 0;
     dst->scan_visit_rearm_pending = 0U;
     DSD_MEMSET(dst->dmr_lcn_trust, 0, sizeof dst->dmr_lcn_trust);
+    // So is the NXDN DFA record: the rows it named went with the old map, and a row the new file sets is the file's.
+    dsd_nxdn_dfa_disown_all(dst);
     dst->trunk_chan_map_seq++;
     return 0;
 }
@@ -797,7 +800,7 @@ svc_refuse_import_for_next_start(dsd_state* state, const char* what, char* why) 
     LOG_WARN("%s not imported: %s.\n", what, why);
     why[strcspn(why, ";")] = '\0';
     DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s not imported: %s", what, why);
-    state->ui_msg_expire = dsd_realtime_time() + 5;
+    dsd_state_toast_publish(state, dsd_realtime_time() + 5);
     return SVC_REFUSED_FOR_NEXT_START;
 }
 
@@ -941,6 +944,7 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
     // "learned on the control channel" byte would authorize an off-CC tune to a
     // frequency no longer in the map.
     DSD_MEMSET(state->dmr_lcn_trust, 0, sizeof state->dmr_lcn_trust);
+    dsd_nxdn_dfa_disown_all(state);
     state->trunk_chan_map_seq++;
     return 0;
 }
@@ -950,8 +954,12 @@ svc_clear_group_list(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return -1;
     }
+    // The path goes only with the rows: a failed clear keeps the list, and the file it is saved to.
+    if (dsd_tg_policy_clear(state) != 0) {
+        return -1;
+    }
     opts->group_in_file[0] = '\0';
-    return dsd_tg_policy_clear(state);
+    return 0;
 }
 
 int
@@ -996,12 +1004,35 @@ svc_clear_src_list(dsd_opts* opts, dsd_state* state) {
     return dsd_source_alias_clear(state);
 }
 
+/* Why the core refused a file, from what its read found. */
+static svc_group_list_status
+group_list_refusal(const dsd_tg_policy_load_report* rows) {
+    if (rows->not_found) {
+        return SVC_GROUP_LIST_NOT_FOUND;
+    }
+    if (rows->unreadable) {
+        return SVC_GROUP_LIST_UNREADABLE;
+    }
+    if (rows->failed == 0u && rows->accepted == 0u && rows->skipped > 0u) {
+        return SVC_GROUP_LIST_NO_USABLE_ROWS;
+    }
+    return SVC_GROUP_LIST_NO_MEMORY;
+}
+
 int
-svc_load_group_list(const dsd_opts* opts, const char* path, dsd_tg_policy_store** out) {
+svc_load_group_list(const dsd_opts* opts, const char* path, dsd_tg_policy_store** out, svc_group_list_result* result) {
+    svc_group_list_result local;
+    svc_group_list_result* r = result ? result : &local;
+    DSD_MEMSET(r, 0, sizeof *r);
     if (!opts || !path || !*path || !out || strlen(path) >= sizeof opts->group_in_file) {
+        r->status = SVC_GROUP_LIST_BAD_PATH;
         return -1;
     }
-    return dsd_tg_policy_load_group_file(path, out);
+    if (dsd_tg_policy_load_group_file(path, out, &r->rows) != 0) {
+        r->status = group_list_refusal(&r->rows);
+        return -1;
+    }
+    return 0;
 }
 
 void
@@ -1015,11 +1046,17 @@ svc_install_group_list(dsd_opts* opts, dsd_state* state, const char* path, dsd_t
 }
 
 int
-svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path) {
+svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path, svc_group_list_result* result) {
+    svc_group_list_result local;
+    svc_group_list_result* r = result ? result : &local;
     dsd_tg_policy_store* loaded = NULL;
-    if (!state || svc_load_group_list(opts, path, &loaded) != 0) {
+    // The load already refuses data rows none of which loaded; a file with no data rows at all is a list emptied on
+    // purpose, taken as startup takes it.
+    if (svc_load_group_list(state ? opts : NULL, path, &loaded, r) != 0) {
         return -1;
     }
+    r->cleared_temporary =
+        dsd_tg_policy_session_avoid_count(state, 0u, UINT32_MAX) > 0u || !dsd_tg_policy_call_skip_empty(state);
     svc_install_group_list(opts, state, path, loaded);
     dsd_tg_policy_release(loaded);
     return 0;
@@ -2767,9 +2804,7 @@ svc_scan_goto_entry(dsd_opts* opts, dsd_state* state, const dsd_scan_entry_match
     if (!opts || !state || !match || match->scanner == DSD_SCAN_ENTRY_NONE) {
         return DSD_SCAN_GOTO_REFUSED;
     }
-    char before[sizeof state->ui_msg];
-    DSD_SNPRINTF(before, sizeof before, "%s", state->ui_msg);
-    const time_t before_expire = state->ui_msg_expire;
+    const uint32_t seq_before = state->ui_msg_seq;
     long park_hz = 0;
     dsd_scan_goto_result result;
     p25_sm_tick_guard_enter();
@@ -2783,7 +2818,8 @@ svc_scan_goto_entry(dsd_opts* opts, dsd_state* state, const dsd_scan_entry_match
     p25_sm_tick_guard_leave();
     /* A failure inside the call is the outcome named below, not a late one to name again. */
     (void)dsd_engine_scan_entry_take_failure(state, NULL);
-    const int engine_toasted = state->ui_msg_expire != before_expire || strcmp(state->ui_msg, before) != 0;
+    /* Every toast counts (dsd_state_toast_publish()): the engine's failure set again with the same text is still its. */
+    const int engine_toasted = state->ui_msg_seq != seq_before;
     svc_scan_entry_toast_outcome(state, match, result, park_hz, engine_toasted);
     return (int)result;
 }

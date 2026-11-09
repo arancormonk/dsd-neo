@@ -36,6 +36,8 @@ void ui_statusf(const char* fmt, ...) DSD_ATTR_FORMAT(printf, 1, 2);
 int ui_status_peek(char* buf, size_t n, time_t now);
 /** @brief Clear status when expired at `now` (no-op if still active). */
 void ui_status_clear_if_expired(time_t now);
+/** @brief End the current status message by `until` if it would be held longer. */
+void ui_status_expire_by(time_t until);
 
 /** @brief One wrapped row of text, as a slice of the source string. */
 typedef struct {

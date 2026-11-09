@@ -83,6 +83,13 @@ ui_status_clear_if_expired(time_t now) {
     }
 }
 
+void
+ui_status_expire_by(time_t until) {
+    if (s_status_expire > until) {
+        s_status_expire = until;
+    }
+}
+
 // ---------------- Drawing helpers ----------------
 
 void

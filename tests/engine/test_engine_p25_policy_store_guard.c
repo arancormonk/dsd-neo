@@ -692,6 +692,70 @@ test_trunk_receive_release_due(void) {
     return rc;
 }
 
+/* Discussion #748: a followed NXDN voice channel that is another site's control channel keeps sync once the call's end
+   was missed. With every filter off, another channel's control traffic heard there since the call's last voice lets it
+   go once the hangtime has run; never within the hangtime, for a marker older than the call's last voice, for a call on
+   this site's own control channel (composite operation), or for P25 and DMR. */
+static int
+test_trunk_receive_release_due_nxdn_foreign_control(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    const long cc = 451012500L;
+    const long followed = 452512500L;
+    const double now_m = dsd_decode_now_mono_s();
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    opts.trunk_hangtime = 1.0f;
+    state.synctype = DSD_SYNC_NXDN_POS;
+    state.p25_cc_freq = state.trunk_cc_freq = cc;
+    state.trunk_vc_freq[0] = state.trunk_vc_freq[1] = followed;
+    state.last_vc_sync_time = dsd_decode_time() - 5;
+    state.last_vc_sync_time_m = now_m - 5.0;
+    g_phase = 22;
+    int rc = expect(!dsd_engine_trunk_receive_release_due(&opts, &state), "nothing foreign heard: the channel stays");
+    state.nxdn_site.foreign_control_m = now_m;
+    rc |= expect(dsd_engine_trunk_receive_release_due(&opts, &state),
+                 "another channel's control traffic past the hangtime lets the channel go");
+    state.lastsynctype = DSD_SYNC_NXDN_POS;
+    state.synctype = DSD_SYNC_NONE;
+    rc |= expect(dsd_engine_trunk_receive_release_due(&opts, &state), "between frames the last sync names NXDN");
+    state.synctype = DSD_SYNC_NXDN_POS;
+    state.last_vc_sync_time = dsd_decode_time();
+    state.last_vc_sync_time_m = now_m - 0.5;
+    rc |= expect(!dsd_engine_trunk_receive_release_due(&opts, &state), "the call's voice within the hangtime holds it");
+    state.last_vc_sync_time = dsd_decode_time() - 5;
+    state.last_vc_sync_time_m = now_m - 5.0;
+    state.nxdn_site.foreign_control_m = now_m - 6.0;
+    rc |= expect(!dsd_engine_trunk_receive_release_due(&opts, &state),
+                 "control traffic heard before the call's last voice says nothing of it");
+    state.nxdn_site.foreign_control_m = now_m;
+    state.trunk_vc_freq[0] = state.trunk_vc_freq[1] = cc + 2500L;
+    rc |= expect(!dsd_engine_trunk_receive_release_due(&opts, &state),
+                 "a call on this site's own control channel is not another channel's");
+    state.trunk_vc_freq[0] = state.trunk_vc_freq[1] = followed;
+    state.synctype = DSD_SYNC_P25P1_POS;
+    rc |= expect(!dsd_engine_trunk_receive_release_due(&opts, &state), "P25 is untouched");
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    rc |= expect(!dsd_engine_trunk_receive_release_due(&opts, &state), "DMR is untouched");
+    state.synctype = DSD_SYNC_NXDN_POS;
+    /* A followed data call stamps no voice: still heard within the hangtime, it holds the channel too. */
+    const dsd_call_observation data = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0,
+        .kind = DSD_CALL_KIND_DATA,
+        .ota_target_id = 7,
+    };
+    rc |= expect(dsd_call_state_observe(&state, &data, DSD_CALL_BOUNDARY_BEGIN) == 1, "NXDN data call observed");
+    rc |= expect(!dsd_engine_trunk_receive_release_due(&opts, &state), "the followed data call still heard holds it");
+    (void)dsd_call_state_end(&state, 0U, 0.0);
+    opts.trunk_is_tuned = 0;
+    rc |= expect(!dsd_engine_trunk_receive_release_due(&opts, &state), "nothing to let go on the control channel");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 /* Review focus: the radio list is reloaded or cleared while the watchdog's release drains the P25 Phase 2 audio queued
    for the call; the command waits for the guard, so the drain plays under the verdict it started with. */
 static int
@@ -739,6 +803,7 @@ main(void) {
         }
         rc |= test_receive_set_takes_the_guard();
         rc |= test_trunk_receive_release_due();
+        rc |= test_trunk_receive_release_due_nxdn_foreign_control();
         g_phase = 19;
         rc |= run_phase();
         rc |= test_radio_list_reload_during_playout();

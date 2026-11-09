@@ -636,7 +636,7 @@ dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_
     }
     LOG_WARN("WARNING: %s\n", msg);
     DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s", msg);
-    state->ui_msg_expire = dsd_realtime_time() + DSD_INPUT_LEVEL_TOAST_TTL_SEC;
+    dsd_state_toast_publish(state, dsd_realtime_time() + DSD_INPUT_LEVEL_TOAST_TTL_SEC);
     state->input_level_last_toast_time = decode_now;
     state->input_level_last_toast_status = next.status;
     state->input_level_last_toast_source = next.source;

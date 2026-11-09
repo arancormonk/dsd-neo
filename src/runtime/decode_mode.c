@@ -923,6 +923,6 @@ dsd_decode_mode_keep_saved_am(dsd_state* state) {
     state->config_autosave_enabled = 0;
     DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s",
                  "Decoding Analog: AM needs an I/Q radio input. Autosave is off this session to keep decode = am");
-    state->ui_msg_expire = dsd_realtime_time() + DSD_DECODE_MODE_KEEP_SAVED_AM_TOAST_S;
+    dsd_state_toast_publish(state, dsd_realtime_time() + DSD_DECODE_MODE_KEEP_SAVED_AM_TOAST_S);
     return 1;
 }

@@ -500,6 +500,16 @@ ui_help_open(const char* help) {
     g_help_calls++;
 }
 
+/* The configured group file (menu_labels.c, tested there): the group import prompt starts at what it answers. */
+static const char* g_configured_group_file = "";
+static const void* g_configured_group_ctx;
+
+const char*
+menu_configured_group_file(const void* ctx) {
+    g_configured_group_ctx = ctx;
+    return g_configured_group_file;
+}
+
 bool
 freq_entry_offered(const dsd_opts* opts) {
     g_freq_offered_opts = opts;
@@ -510,10 +520,10 @@ freq_entry_offered(const dsd_opts* opts) {
    directory of matching files it prompts, so forward to the prompt stub to keep
    the existing "opens the path prompt" assertions honest. */
 void
-ui_csv_import_picker_open(const char* kind, const char* prompt_title, size_t cap, ui_prompt_string_done_fn on_done,
-                          void* user_ctx) {
+ui_csv_import_picker_open(const char* kind, const char* prompt_title, const char* prefill, size_t cap,
+                          ui_prompt_string_done_fn on_done, void* user_ctx) {
     DSD_SNPRINTF(g_picker_kind, sizeof g_picker_kind, "%s", kind);
-    ui_prompt_open_string_async(prompt_title, NULL, cap, on_done, user_ctx);
+    ui_prompt_open_string_async(prompt_title, prefill, cap, on_done, user_ctx);
 }
 
 void
@@ -1548,6 +1558,23 @@ test_additional_prompt_and_toggle_actions(void) {
     reset_capture();
     act_import_group(&ctx);
     rc |= expect_str("group import prompt", g_prompt.title, "Group list CSV");
+    rc |= expect_str("group import prompt starts empty without a list", g_prompt.prefill, "");
+
+    /* Discussion #748: the prompt starts at the configured group file, the frame's (menu_configured_group_file()). */
+    g_configured_group_file = "C:\\lists\\groups.csv";
+    reset_capture();
+    act_import_group(&ctx);
+    rc |= expect_str("group import prompt starts at the list's file", g_prompt.prefill, "C:\\lists\\groups.csv");
+    rc |= expect_int("group import asks the frame's context", g_configured_group_ctx == &ctx, 1);
+    g_configured_group_file = "";
+
+    /* The reload row posts the command alone: the decoder resolves the file. */
+    reset_capture();
+    act_group_list_reload(&ctx);
+    rc |= expect_int("group reload command", g_cmd.id, DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD);
+    rc |= expect_int("group reload carries no path", (int)g_cmd.n, 0);
+    rc |= expect_int("group reload opens no prompt", g_prompt.calls, 0);
+    rc |= expect_str("group reload status", g_status, "Reloading group list...");
 
     reset_capture();
     act_keys_dec(&ctx);

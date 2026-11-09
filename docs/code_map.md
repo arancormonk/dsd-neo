@@ -498,12 +498,26 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
 `nfm-conventional` and `am-conventional`). Operator-facing behavior, the CSV columns, and the CLI/config options live in
 `docs/trunk-scan.md`; `include/dsd-neo/engine/trunk_scan.h` is the whole public surface:
 
-- Target list and loader: `dsd_trunk_scan_target` / `dsd_trunk_scan_target_list`,
-  `dsd_trunk_scan_load_targets_csv()`, `dsd_trunk_scan_target_list_reset()`, and `dsd_trunk_scan_max_targets()` — the
-  target count is bounded by a memory budget divided by the per-target snapshot size, so the cap tracks the struct
-  instead of being a constant that goes stale. `dsd_trunk_scan_check_target_lists()` holds lists loaded one by one to
-  the rules across them (issue #697): a target id is unique across lists (the error names both files and rows) and the
-  union fits the budget.
+- Target list and loader: `dsd_trunk_scan_target` / `dsd_trunk_scan_target_list`, `dsd_trunk_scan_load_targets_csv()`,
+  `dsd_trunk_scan_target_list_reset()`, and `dsd_trunk_scan_max_targets()` — the target count is bounded by a memory
+  budget divided by the per-target snapshot size, so the cap tracks the struct instead of being a constant that goes
+  stale. `dsd_trunk_scan_check_target_lists()` is the one merge rule across lists loaded one by one (issue #697), for
+  the engine start and the app pre-check alike: it walks the lists in order and finds each row's id among earlier lists'
+  rows through an id index sorted once (never a walk of every earlier list). A row whose id an earlier list holds is
+  that target, shared, when every parsed field of `dsd_trunk_scan_target` but `csv_row` is the same
+  (`scan_target_first_difference()`: companion paths compared as the file they name by its identity through
+  `dsd_path_same_file()`, so a link or, on Windows, another case or short name of one file is that file; through
+  `dsd_path_canonical()` when either identity cannot be read, and the strings when either cannot be canonicalised;
+  direct keys in constant time; a row option only where its `DSD_SCAN_OPT_*` bit is set, from the
+  `k_scan_option_columns` table, tone set and receive filters/names included, all order independent (sets of bits, the
+  tone list by the signals it detects through `dsd_tone_set_same_signals()`, so `D023I` is `D047N`, and service names by
+  `dsd_receive_names_equal()`, which compares tables as `dsd_receive_service_name()` reads them), an unknown bit still
+  telling rows apart). Any difference refuses the lists, naming both files and rows and the first differing column by
+  its target-CSV name or its switches (`the key columns differ` for direct keys, never their material). Within one file
+  the parser's rules stay (no id or `(type, frequency)` twice); different ids on one channel stay two targets. The
+  distinct targets fit the budget. Its optional `row_targets` out array, with the count of entries it holds (fewer than
+  the rows is a refusal, and that count bounds every write), gives each row its target index (a row is new exactly when
+  that index is the count of targets before it); the app pre-check reads only the distinct total.
 - Configured lists (issue #697): `<dsd-neo/core/trunk_scan_lists.h>` defines `dsd_trunk_scan_list_spec {path,
   start_off}` and `DSD_TRUNK_SCAN_MAX_LISTS` (8). `dsd_opts::trunk_scan_lists`/`trunk_scan_list_count`, its
   `next_start` copy and `dsdneoUserConfig` hold the same array by list number; `dsd_trunk_scan_lists_check()` and
@@ -518,17 +532,37 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   (apply, queue overlay, next-start defer), an empty key removing the base's later lists with their off states.
 - Lists in the coordinator (issue #697): init loads every configured list in order (`trunk_scan_load_lists()`: each
   through the one parser, every parser error prefixed with its file unless it names it, then
-  `dsd_trunk_scan_check_target_lists()`) into one target vector (list order, then row order) that never moves, so
-  snapshots, avoids and session edits survive any toggle and nothing is built at runtime. Each target carries its
-  `list`; `coord->lists[]` holds each list's name (file name without folder and extension,
-  `DSD_TRUNK_SCAN_LIST_NAME_SIZE` 32), `enabled`, `first` and `count`. One predicate, `trunk_scan_target_in_rotation()`
-  (list on and not avoided), feeds every candidate walk and count: `trunk_scan_alternate_is_candidate()` (the advance,
-  RETREAT, the visit cap's somewhere-else-to-go question `trunk_scan_visit_alternate_is_eligible()`, the rejection
-  alternates, the resume walk), `trunk_scan_enabled_count()` (the "n of m" readout's m, avoided targets included),
-  and `trunk_scan_usable_count()` (in the rotation and not width-skipped, cooling or not: avoid's and a toggle's
-  last-usable refusals, the toggle's naming the list it would switch off rather than switching it). The visit cap's
-  question, which the frame loop asks at every burst boundary of a held carrier, and the usable count walk list by list
-  (`trunk_scan_next_list_on()`): a list's targets sit together, so a list that is off is passed in one step. The
+  `dsd_trunk_scan_check_target_lists()`) into one target vector that never moves, so snapshots, avoids and session
+  edits survive any toggle and nothing is built at runtime. One runtime target per id: `trunk_scan_merge_lists()`
+  appends only the rows that are new (list order, then row order) and a shared row joins its earlier target, so a
+  target's avoid, edits, keys and snapshot are one whichever list it is reached from. Each target carries `list`, its
+  owner (the first list holding it, whose run holds it), and `lists`, the mask of every list holding it.
+  `coord->lists[]` holds each list's name (file name without folder and extension, `DSD_TRUNK_SCAN_LIST_NAME_SIZE`
+  32), `enabled`, its owned run `first`/`count` (contiguous, possibly empty for a list wholly shared), `members[]`/
+  `member_count` (every row of its file as a target index, row order, shared ones included: what the list holds and
+  counts), which lives in `coord->list_index`, freed with the coordinator. Walks must not assume a list's targets are
+  only its own run. `coord->membership_counts[mask - 1]` (distinct targets in exactly the lists of each mask) is counted
+  at the attach and published as `dsd_state::trunk_scan_membership_counts` with the lists, cleared at detach and
+  `initState()`, so a frontend can total any set of lists without summing per-list counts; each list's published
+  `targets` is its `member_count`. The start log names each list's count and what it shares with earlier lists (`Trunk
+  scan list 2 (low): 9 targets (3 also in list 1), on`), and a `--trunk-scan-hold` refused for its lists names every
+  list holding the target that is off. `coord->lists_on` is the lists switched on as one mask. One predicate,
+  `trunk_scan_target_in_rotation()` (`!avoided && (rt->lists & lists_on)`: any list holding it on, so a shared target
+  stays in while another of its lists is on), feeds every candidate walk and count:
+  `trunk_scan_alternate_is_candidate()` (the advance, RETREAT, the visit cap's somewhere-else-to-go question
+  `trunk_scan_visit_alternate_is_eligible()`, the rejection alternates, the resume walk, the start park), the entry
+  reason `LIST_OFF`, the departure (`trunk_scan_active_out_of_rotation()`), and `trunk_scan_usable_count()` (in the
+  rotation and not width-skipped, cooling or not, each target once: avoid's and a toggle's last-usable refusals).
+  Ordered walks (advance, RETREAT, start park, resume, the next cooldown) go over the union in target order with that
+  predicate, so a shared target is visited once a rotation at its owner's place, even while its owner is off; they run
+  at a dwell, a control or a start, not per frame. Existence walks never touch a target only lists that are off hold:
+  the visit cap's question, which the frame loop asks at every burst boundary of a held carrier, and the usable count
+  go over the `members[]` of the lists of a mask (`trunk_scan_next_list_in()`; `lists_on`, or a toggle's proposed
+  `lists_on & ~bit(l)`), each target looked at in the first of those lists that holds it (`trunk_scan_member_seen()`).
+  The "n of m" readout's m (`coord->rotation_count`, distinct targets with `lists & lists_on`, avoided ones included)
+  is counted at the attach and at each switch (`trunk_scan_lists_changed()`), and its n
+  (`trunk_scan_rotation_ordinal()`, the target on air's place among those in target order) only when the target on
+  air or `lists_on` moved since it was last counted; neither is a per-frame walk. The
   `count < 2`/`count != 1` guards stay structural (a list of one target). The advance's fallback onto the original
   ignores the predicate, as it ignored an avoid. A walk reads the DSP rate once (`trunk_scan_walk`), and a due retry
   with an alternate eligible asks again a cooldown later (`retry_recheck_m`), not each tick. The startup park takes the
@@ -539,16 +573,19 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
 - List toggle (issue #697): `dsd_engine_trunk_scan_list_set()` behind the runtime `list_set` hook slot. It refuses a
   paused scan (PAUSED), another session or a list number it does not have (STALE, `session` compared with
   `coord->session`, which frontends read as the published `trunk_scan_session`, the session a put back names too, kept
-  while paused), a no-op (UNCHANGED), a switch that would leave no usable target (REFUSED_LAST, every list off
-  included), then takes a try of the P25 SM tick guard (BUSY). `DSD_TRUNK_SCAN_LIST_ALL` switches every list on. A list
+  while paused; checked before the list is ever a bit), a no-op (UNCHANGED), a switch that would leave no usable
+  target (REFUSED_LAST, every list off included; counted over the proposed `lists_on & ~bit(l)`, so a target the list
+  shares with one that stays on counts and one only it holds does not), then takes a try of the P25 SM tick guard
+  (BUSY). Switching a list off owes the target on air a departure only when no other list holding it is on: a shared
+  target stays on air, its call going on. `DSD_TRUNK_SCAN_LIST_ALL` switches every list on. A list
   that comes on and gives the visit on air its first eligible alternate restarts its cap
   (`trunk_scan_restart_visit_for_new_alternate()`, shared with clearing the avoids). The switch publishes the scan
   timing before it leaves the guard, as the controls do: the timing reads the parked target's P25 machine, which the
   watchdog changes under that guard (`ENGINE_TRUNK_SCAN_LIST_RACE` runs a switch beside such writes, for tsan-debug).
   Toggles are session-only; the configured start states in `dsd_opts::trunk_scan_lists` never change.
-- Departure obligation (issue #697): while the target on air is out of the rotation (its list off and the
-  departure could not tune anywhere, or the avoided fallback), each tick services `trunk_scan_service_departure()` ahead
-  of the retune resolution, hold, dwell and activity: with an eligible alternate it runs the control advance
+- Departure obligation (issue #697): while the target on air is out of the rotation (every list holding it off and
+  the departure could not tune anywhere, or the avoided fallback), each tick services `trunk_scan_service_departure()`
+  ahead of the retune resolution, hold, dwell and activity: with an eligible alternate it runs the control advance
   (`trunk_scan_control_advance_locked()`: releasing only when `!tune_pending && visit_since_m >= 0`, so the call commits
   under its own target and the hold carries over), and an attempt that did not move waits for the soonest cooldown of
   what it tried (a switch that cannot be prepared cools its target down as a failed retune does, in every advance and
@@ -564,14 +601,17 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   total failure stays paused with the manual-session rollback; with none eligible it resumes in place and the obligation
   runs later.
 - List publication (issue #697): `trunk_scan_list_count`, `trunk_scan_lists[8]` (`dsd_trunk_scan_list_publication`:
-  name, enabled, targets), `trunk_scan_active_list` (1-based, 0 while paused), `trunk_scan_active_list_off` (beside
-  `trunk_scan_active_avoided`, each its own reason), `trunk_scan_rotation_ordinal`/`_count` (the position among the
-  lists on, 0 while the target's list is off) and `trunk_scan_lists_seq` (process-unique, moves at start and at each
-  toggle), all inside the UI snapshot range (`ui_snapshot.c` static assert), written at start, hops, commands and
-  pause, kept while paused, cleared at detach and by `initState()`. The identity ordinal `trunk_scan_active_ordinal`
-  stays the union position. Tests: `ENGINE_TRUNK_SCAN` (`test_lists_*`), `ENGINE_TRUNK_SCAN_PAUSE`
-  (`list_toggle_takes_the_guard`), `ENGINE_DMR_CC_RECOVERY` (`list_departure_yields_a_continuous_dmr_carrier`),
-  `RUNTIME_TRUNK_SCAN_HOOKS`.
+  name, enabled, targets), `trunk_scan_active_list` (1-based, 0 while paused: the list that names the target on air,
+  the lowest-numbered one holding it that is on, else the lowest-numbered one holding it,
+  `trunk_scan_representative_list()`), `trunk_scan_active_lists` (every list holding the target on air, on or off; 0
+  while paused), `trunk_scan_active_list_off` (every list holding it off; beside `trunk_scan_active_avoided`, each its
+  own reason), `trunk_scan_rotation_ordinal`/`_count` (the position among the distinct targets of the lists on, 0
+  while the target's lists are off) and `trunk_scan_lists_seq` (process-unique, moves at start and at each toggle),
+  all inside the UI snapshot range (`ui_snapshot.c` static assert), written at start, hops, commands and pause, kept
+  while paused (but the list on air and its lists), cleared at detach and by `initState()`. The identity ordinal
+  `trunk_scan_active_ordinal` stays the union position. Tests: `ENGINE_TRUNK_SCAN` (`test_lists_*`),
+  `ENGINE_TRUNK_SCAN_PAUSE` (`list_toggle_takes_the_guard`), `ENGINE_DMR_CC_RECOVERY`
+  (`list_departure_yields_a_continuous_dmr_carrier`), `RUNTIME_TRUNK_SCAN_HOOKS`.
 - Lifecycle: `dsd_engine_trunk_scan_init()`, `dsd_engine_trunk_scan_tick()`, `dsd_engine_trunk_scan_shutdown()`, all
   driven from `src/engine/engine.c`. The coordinator hangs off `dsd_state` as the `DSD_STATE_EXT_ENGINE_TRUNK_SCAN`
   state extension; init installs the runtime hook table below and shutdown clears it, so a build that never starts a
@@ -727,10 +767,11 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   bootstrap's gating records in `dsd_opts::trunk_scan_off_by_cli`; the config's lists are off; no lists). The id is a
   free value (`dsd_cli_option_takes_free_value()`), so every raw-argv pre-scan steps over it and an id spelled like an
   option ("--trunk-scan", "--print-config") is never read as one. Init takes the id once,
-  whatever comes of the start: after the targets are built, `trunk_scan_hold_target()` finds the target (ids are unique
-  across lists, so there is no several-rows choice) and refuses the start, naming the id, for an unknown id or a
-  target the rotation would not take (`trunk_scan_entry_reason()`, the typed frequency's rule: avoided, which a fresh
-  session never is, list off, width that does not fit, with the width brief); `trunk_scan_hold_refusal()` words it.
+  whatever comes of the start: after the targets are built, `trunk_scan_hold_target()` finds the target (a later list's
+  row with an id an earlier list loaded is that same target, so one id is one target and there is no several-rows
+  choice) and refuses the start, naming the id, for an unknown id or a target the rotation would not take
+  (`trunk_scan_entry_reason()`, the typed frequency's rule: avoided, which a fresh session never is, list off, width
+  that does not fit, with the width brief); `trunk_scan_hold_refusal()` words it.
   The start park then runs through `trunk_scan_park_noting()` and `trunk_scan_hold_started()` reads it as a go-to's
   (`trunk_scan_goto_outcome()`): on air, the entry hold at once; in flight, the intent waits on that park and its
   landing or failure goes as any go-to's; refused or deferred at once, the failure is kept
@@ -1212,6 +1253,15 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     `GetDiskFreeSpaceExW()`, which refuses a file's path; Win32 errors map to errno),
     never the volume's label, which Android's SELinux policy denies the app (QStorageInfo reads it). The recording
     store and the backup export and restore use it. Test: `PLATFORM_FILE_COMPAT`
+  - File identity: `dsd_path_same_file()` (issue #697) says whether two paths name one existing file, however each is
+    spelled: `stat()` device and inode on POSIX; on Windows `CreateFileW()` (attributes only, every share mode,
+    `FILE_FLAG_BACKUP_SEMANTICS`; the ANSI call for a path that is not UTF-8) and the volume serial number and 128-bit
+    file id of `GetFileInformationByHandleEx(FileIdInfo)`, exact on ReFS, or where that is not supported the volume
+    serial number and 64-bit index of `GetFileInformationByHandle()` (two files of different kinds fail with EIO and
+    never compare), so another case, a short (8.3) name or a hard link is the same file. A file it cannot read fails
+    with errno (ENOENT for a missing one). The trunk-scan list merge compares companion paths by it, and falls back to
+    the paths when it fails. Test: `PLATFORM_FILE_COMPAT` (POSIX: spellings, a hard link, a symbolic link, two files, a
+    missing file)
   - Large files: `dsd_stat_t` is `struct _stat64` on Windows (`_stat64`/`_fstat64`), so `st_size` holds sizes past
     2 GiB everywhere. `dsd_fseek64()`/`dsd_ftell64()` take and give 64-bit offsets (`_fseeki64`/`_ftelli64` on
     Windows, `fseeko`/`ftello` elsewhere); use them for any offset in a capture file. Test: `PLATFORM_FILE_LARGE`
@@ -2282,6 +2332,81 @@ suite runs under this compiler.
   compare. Only a first-learned row is appended to the group file, which is append-only and whose first row for an ID
   is the one a reload keeps: a renamed radio's new alias holds for the session, and after a restart the file's earlier
   name loads as an imported row and wins (documented limit). Tests: `CORE_TALKGROUP_POLICY`, `P25_MOTOROLA_ALIAS`.
+- Invariant (the group file stands for the list, discussion #748, `<dsd-neo/core/talkgroup_policy.h>`): dsd-neo writes
+  its group file back (a rewrite on every saved edit, an export, an appended alias row), so a list that is not what
+  the file holds must never be written over it.
+  - One read: every group load (startup `csvGroupImportPath()`, the scan-row `dsd_tg_policy_load()`, the live
+    `dsd_tg_policy_load_group_file()`, the dry-run validator) is one pass in `dsd_import.c` that counts each data row
+    into a `dsd_tg_policy_load_report` (`accepted`, `skipped` malformed and logged, `failed` not stored for want of
+    memory, `not_found`, `unreadable`). `dsd_tg_policy_load_report_incomplete()` is `failed`, `unreadable`, or data
+    rows none of which loaded (`accepted == 0 && skipped > 0`, such as an Excel CSV saved with `;`); a header-only or
+    zero-byte file is complete and loads as an empty list.
+  - Incomplete store: the live load refuses one (-1, store untouched). Startup and scan-row loads keep it for
+    decoding, marked (`dsd_tg_policy_incomplete()`; the mark rides clones, so snapshots and suspended copies carry it)
+    and logged once (`Group file '<path>' loaded incomplete: <why>`). Nothing writes it back:
+    `dsd_tg_policy_write_group_file()` returns 1 (rewrite and export alike), the alias append returns 1, and the
+    engine's `import_group_csv_if_needed()` does not read the file again. A complete load of the file replaces it.
+  - Engine start (`import_group_csv_if_needed()`): a configured `opts->group_in_file` (`-G` or the INI's `[trunking]
+    group_csv`) is loaded whatever the trunking state, as `-G` loads it, when the list is still empty and not marked
+    incomplete. A file that does not load fails a start with trunking or trunk scan on, as before; with trunking off
+    the start goes on with a warning (`Group list '<path>' not loaded: <why>; continuing without it.`, `<why>` from
+    `csvGroupImportPathReported()`: not found, could not be read, or out of memory; its open is quiet, so no
+    `Unable to open group file` error precedes it), and nothing is written over the file: a missing one has the zero-row baseline (see Baseline), and an unreadable or unusable one is
+    marked incomplete. Before, a config file's group list was never loaded with trunking off, and the first saved edit
+    rewrote the file from the empty table.
+  - Baseline (`{valid, rows_hash, path}` in the store, copied by clones; not by the UI snapshot copy, since frontend
+    snapshots never write): a 64-bit FNV-1a over the rows the importer accepted, in file order, each in the canonical
+    form the store keeps (`tg_policy_canonical_entry()`), without the source or line number, so line endings, blank
+    lines, unmodelled columns and malformed rows never enter it. Every load sets it from the rows just read (no extra
+    read). A startup load (`csvGroupImportPath()`) that finds its file missing sets the zero-row hash, so a file that
+    appears there later with rows (written outside dsd-neo, or by a `-Y` row's list naming the same file) refuses the
+    next rewrite instead of being overwritten unchecked, and in the row case the global list stands for the file and
+    takes the row's aliases; a file still missing, or appearing empty or header-only, is written as before. A rewrite
+    with no baseline at all is not refused, since an export moves the baseline to its own path.
+    A write sets it from the lines it wrote, read back through the importer's own row parser
+    (`dsd_tg_policy_rows_hash_line()`) under the header it wrote, so sanitised commas, header-dependent columns and
+    pattern canonicalisation hash as the next load reads them; an export moves it to the export path. A write from a
+    state with no list yet creates the empty store first (as a decoder write does; -1 with nothing written when it
+    cannot), so an export of a list never loaded also guards its file.
+  - Rewrite check (`tg_policy_baseline_check()`), only when the baseline names the destination: the file on disk is
+    hashed with a quiet importer pass (`dsd_tg_policy_rows_hash_file()`, no row warnings and no open error, so a
+    deleted file the rewrite recreates logs nothing) and compared. Equal:
+    replaced. Different: nothing written, return 2 (app-control's `Talkgroup change kept for this session only; group
+    list changed on disk, reload it`, and `Talkgroup export refused: group list changed on disk; reload it` for an
+    export over the list's own file). Missing: written, since nothing on disk is lost. Unreadable: -1. No baseline (a
+    new export path): written as before, and it becomes the baseline. The temporary file is staged before the lock.
+  - Append (`dsd_tg_policy_append_group_file_row(opts, state, entry, metadata)`, the state added for the fold): no
+    check, since an append destroys nothing. The line is folded into every list whose baseline names the file: the
+    effective store and, while a `-Y` row's or trunk-scan target's own list is in effect or suspended, the list held
+    aside (`dsd_scan_groups_held_store()`), which also takes the learned row unless it has a row for that ID, as a
+    reload would. Its baseline already counts the row, so a held list that cannot store it (out of memory) is marked
+    incomplete and refuses its next rewrite instead of passing the check and writing the row out of the file. The
+    file is `opts->group_in_file`, which names the effective list's file (a row's own `-G` path while its list is in
+    effect, `scan_option_apply_group()`), so the effective list owns it: an append that creates the file starts the
+    effective list's baseline, and a list held aside for another file is left alone. Only when the held list's
+    baseline already names the file (a row naming the global file) does it own it too. An append that recreates a
+    file deleted outside dsd-neo starts every folded list's baseline from the appended row, the file's only row, so
+    the next rewrite writes the list back as it would over a missing file; an emptied file is an outside edit and
+    keeps its refusal. An append is
+    refused (1) when a list that stands for the file was loaded incomplete; an incomplete list for another file does
+    not block it. An edit made outside dsd-neo before an append still differs at the next rewrite, because the hash
+    covers the whole row sequence.
+  - Managed-file lock (`<dsd-neo/core/managed_file.h>`, `src/core/file/managed_file.c`, one lazily created
+    process-wide mutex): taken by the decoder's check and replace (rewrite, export) and its append, by app-control's
+    `dsd_app_import_write()` and `dsd_app_import_replace_checked()` around the replace only (the terminal
+    RadioReference import and refresh), and by Qt's `ImportedFilesModel::replaceRowFile()` (see UI). It holds file
+    operations only and nothing under it waits for another thread. A guarded save of a 5,000-row list holds it about
+    2 ms (the check) and the tick guard about 4 ms longer than an unguarded save (dev-release). Test seam:
+    `dsd_managed_file_step_reached()` (`CHECKED`, `INSTALLED`) with `managed_file_test_support.h`.
+  - Limits: an outside save that lands between the check and the replace (milliseconds) is lost; an outside edit of
+    only unmodelled columns or malformed rows is not seen (a rewrite drops those anyway); each refused save reads the
+    file again, quietly, until the list is reloaded.
+  - Tests: `CORE_TALKGROUP_POLICY` (`test_group_load_report`, `test_group_startup_incomplete_not_written`,
+    `test_group_rows_hash_canonical`, `test_group_rewrite_guard`, `test_group_append_tracks_baseline`,
+    `test_group_check_is_quiet`, `test_group_startup_and_export_baseline`, `test_group_empty_export_guards_its_file`,
+    `test_group_append_recreating_deleted_file`), `CORE_SCAN_PROFILE` (`test_held_list_short_of_an_appended_row_is_not_saved`), `APP_COMMAND_QUEUE`,
+    `APP_CONTROL_IMPORT_FILES` and `UI_QT_IMPORTED_FILES` (the lock's interleavings), `P25_MOTOROLA_ALIAS`,
+    `ENGINE_RUN_SETUP`.
 - Invariant (alias rows are radios, `talkgroup_policy.c` `tg_policy_entry_is_learned_alias()`): a row with source
   `RUNTIME_ALIAS` or mode `D` (the durable mark a persisted alias keeps) never decides a talkgroup: group evaluation,
   allow-list membership and the followed calls' priority refresh skip it and fall through to a talkgroup row or the
@@ -2336,7 +2461,9 @@ suite runs under this compiler.
     NXDN only refuses (never releases) on a repeat. A new grant naming a blocked radio is refused everywhere; the
     per-frame gates then mute a radio learned mid-call. EDACS all-calls keep their `-W` reprieve except for a blocked
     radio. DMR's C_MOVE keeps following on a radio-only rejection, and its Hold allowance ignores the radio part.
-    App-control's row-edit release (`tg_listen_blocked_slots()`) stays talkgroup-only on purpose.
+    App-control's row-edit release (`tg_listen_blocked_slots()`) stays talkgroup-only on purpose (mode and allow-list
+    blocks), judging each call as its protocol admits it: an NXDN Type-C call by the source fallback with the call's
+    source (`nxdn_held_call_policy_source()`, 0 for a Type-D call), every other call by its target.
   - A call whose target is unknown but whose source is known (`dsd_tg_policy_radio_blocked()`): the `-Y` voice gate
     holds no blocked radio (M17 stays outside policy) and the Qt block label names it.
   - The P25 Phase 2 verdict key carries the radio list's store id (`dsd_p25p2_policy_key::radio_store`), read from the
@@ -3635,9 +3762,9 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
 - `dsd_trunk_scan_hook_p25_ctx()` / `dsd_trunk_scan_hook_dmr_ctx()` — the parked target's trunking state machine
   context, or NULL when trunk scan is not installed or is paused (`p25_trunk_sm.c`, `dmr_trunk_sm.c`, `nxdn_element.c`)
 - `dsd_trunk_scan_hook_tick()` — step the rotation; called from the engine decode loop
-  - One candidate filter, `trunk_scan_alternate_is_candidate()` (in the rotation, i.e. its list on and not avoided, not
-    cooling down from a failed retune, not an analog target `trunk_scan_target_width_skipped()` refuses at the published
-    DSP rate), serves the advance walk, the per-visit cap's somewhere-to-go test
+  - One candidate filter, `trunk_scan_alternate_is_candidate()` (in the rotation, i.e. a list holding it on and it not
+    avoided, not cooling down from a failed retune, not an analog target `trunk_scan_target_width_skipped()` refuses at
+    the published DSP rate), serves the advance walk, the per-visit cap's somewhere-to-go test
     (`trunk_scan_visit_alternate_is_eligible()`) and the tone-rejection alternate, so neither the cap nor a rejection
     releases the target on air toward a target the walk passes over. With no such alternate, a failed park is retried in
     place after its cooldown (`trunk_scan_retry_active_if_due()`), as a single or held target's is; the walk names the
@@ -4338,7 +4465,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     channel <MHz> MHz` for a trunked target); `Failed: tune to <name>`, `Deferred; retry: tune to <name>` (` (<MHz>
     MHz)` after the name for a trunked target: the frequency its tune tried, the go-to's `park_hz`), `Failed: <name>
     could not be set up`, each with `; scan stays paused` while paused; `Scan continues`; the reasons `; <name> is
-    avoided`, `; <name> is in a list that is off`, `; <name>'s width does not fit` (with `that row` or `that target`
+    avoided`, `; <name> is in no list that is on`, `; <name>'s width does not fit` (with `that row` or `that target`
     for a name that will not fit). Each fits `ui_msg`: optional parts drop whole, the count first, then a trunked
     target's frequency, and the name (`#65535 ` and 63 bytes at most) is never cut. A
     HOLDING whose own call left a text (`engine_toasted`) keeps that text. A failure the engine kept inside the call is
@@ -4425,9 +4552,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     a stopped `-Y` list, `-T` and an I/Q replay take it; Signal search refuses it with every receiver command. Put
     back and `SCAN_AVOID_CLEAR` are flag edits that wait for a DMR repeater loop (`dmrBS()`) to end, so neither ends
     its call (`command_scan_flag_edit_needs_frame_loop()`), unless this scan's target on air owes a departure the edit
-    can start or cancel (issue #697, `scan_departure_owed()`: its list is off or it is the avoided fallback); then a
-    trunk-scan put back of this session and a clear take the frame loop. `SCAN_AVOID` always takes it, since it steps
-    off the channel on air.
+    can start or cancel (issue #697, `scan_departure_owed()`: every list holding it is off or it is the avoided
+    fallback); then a trunk-scan put back of this session and a clear take the frame loop. `SCAN_AVOID` always takes it,
+    since it steps off the channel on air.
     `SCAN_AVOID_CLEAR` takes the `-Y` avoids whenever no trunk scan is configured (paused, stopped, `-T`: B1, D2/D3;
     the control-channel hunts skip avoided rows there) and a paused trunk scan's; hold and avoid still need a running
     rotation. Avoid on a row or target already avoided does nothing and says `Already avoided: ...` (B4: the trunk
@@ -4464,25 +4591,33 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     is not in `command_updates_scan_mode()`, not apply-guarded (`dsd_trunk_scan_hook_list_set()` takes its own try of
     the P25 SM tick guard and answers `BUSY` while a watchdog tick holds it), and refused under Signal search. It is
     judged by its payload for `dmrBS()`'s frame-loop question (`command_scan_list_set_deferred()`, beside `DSP_OP` and
-    `AIRSPY_SET`): switching off the list that holds the target on air moves the tuner (it leaves at once), and
-    so does any switch of this scan while its target on air owes a departure (`scan_departure_owed()`: its list is
-    off or it is the avoided fallback), since the switch starts or cancels it; only those return a held repeater
-    carrier to the frame loop at a burst boundary. Waiting would lose the race: the synced-frames loop ticks the
+    `AIRSPY_SET`): switching off the last list on that holds the target on air moves the tuner (it leaves at once;
+    `scan_list_set_leaves_on_air()`: the list, range-checked before it is a bit, is on, its bit is in
+    `trunk_scan_active_lists`, and no other bit of that mask is on), and so does any switch of this scan while its
+    target on air owes a departure (`scan_departure_owed()`: every list holding it is off or it is the avoided
+    fallback), since the switch starts or cancels it; only those return a held repeater carrier to the frame loop at a
+    burst boundary. Waiting would lose the race: the synced-frames loop ticks the
     coordinator before it drains, so a cooldown ending under the carrier would depart before a list switched back on
     could keep the target, and a list switched on that gives the departure its alternate would wait for the call. Any
     other switch, "all lists on" included, is a flag edit that waits for the carrier to end, like put back and clear,
-    so it never ends a DMR repeater call on a target that stays. The answer reads the asking decoder's own
-    `trunk_scan_session`, `trunk_scan_active_list`, `trunk_scan_active_list_off` and `trunk_scan_active_avoided`,
-    which the coordinator writes on the decoder thread at every hop, switch and pause (a paused scan names no list on
-    air and owes no departure), so it is O(1) and never a frontend's stale snapshot. A switch of the list on air
-    that the coordinator then refuses as the last one to scan (`REFUSED_LAST`) still takes the frame loop, since telling
-    that apart walks the targets; so does a payload of the wrong size, or any toggle with no state to judge by. A
-    payload of the right size that the drain refuses (session 0, a list the scan does not have) is judged by its fields
-    like any other, so it waits unless it names this scan while a departure is owed. A waiting toggle stays queued, so
-    it still gets its one result: when the drain after the carrier applies it, or `DROPPED` when it is evicted or
-    discarded first. `apply_cmd_scan_list_set()` checks what a raw submission can carry (`session != 0`, list 1..8 or
-    all, enabled 0/1; else an invalid payload), calls the hook, and composes the frontend-neutral toast from its code
-    alone (`Scan list 2 (hospital) off: 2 of 3 lists on, 14 targets`, `All scan lists on: 40 targets`,
+    so it never ends a DMR repeater call on a target that stays; so is switching off one of a shared target's lists
+    while another of them is on, which keeps it on air and its call going on (issue #697). Switches queued together are
+    judged in queue order: the walk over the queue carries the lists on as the switches of this scan before each leave
+    them (`scan_list_set_lists_after()`: a list on or off, every list on), so "list 1 off" then "list 2 off" leaves a
+    target those two lists hold at the second, while a list switched back on, or every list on, in between keeps it. The
+    answer reads the asking decoder's own `trunk_scan_session`, `trunk_scan_lists[].enabled`, `trunk_scan_active_lists`,
+    `trunk_scan_active_list_off` and `trunk_scan_active_avoided`, which the coordinator writes on the decoder thread at
+    every hop, switch and pause (a paused scan publishes no target on air, so no lists of it, and owes no departure), so
+    it is one pass over the queued commands, never a walk of the targets, and never a frontend's stale snapshot. A
+    switch of the list on air that the coordinator then refuses as the last one to scan (`REFUSED_LAST`) still takes the
+    frame loop, since telling that apart walks the targets; so does a payload of the wrong size, or any toggle with no
+    state to judge by. A payload of the right size that the drain refuses (session 0, a list the scan does not have) is
+    judged by its fields like any other, so it waits unless it names this scan while a departure is owed. A waiting
+    toggle stays queued, so it still gets its one result: when the drain after the carrier applies it, or `DROPPED` when
+    it is evicted or discarded first. `apply_cmd_scan_list_set()` checks what a raw submission can carry
+    (`session != 0`, list 1..8 or all, enabled 0/1; else an invalid payload), calls the hook, and composes the
+    frontend-neutral toast from its code alone (`Scan list 2 (hospital) off: 2 of 3 lists on, 14 targets`,
+    `All scan lists on: 40 targets`, the targets the distinct total of the lists on, `dsd_app_scan_lists_targets_on()`;
     `... is off already`, `Nothing else to scan: switch on another list first`, the pause, busy and stale wording the
     other scan controls use). A switch or a list already as asked completes; every refusal fails. Every toggle the queue
     took gets a retained result `{sequence, request, session, list, enabled, code, lists_seq}`
@@ -4532,6 +4667,45 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   - Source ID imports: `DSD_APP_CMD_IMPORT_SRC_LIST = 572` carries a path string;
     `DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR = 573` has no payload. Import validates one candidate, refuses zero usable
     rows, and adopts that same store and path on success; failure preserves both.
+  - Group list imports (discussion #748): `DSD_APP_CMD_IMPORT_GROUP_LIST = 561` (path), `_CLEAR = 565` and
+    `_RELOAD = 569` share `svc_import_group_list(opts, state, path, result)` / `svc_load_group_list()` and
+    `svc_clear_group_list()` (`services.h`). A load is refused, changing nothing (rows, path, baseline, generations,
+    temporary avoids, call skips), for a file not found, not readable, with a row it could not store, or with data
+    rows none of which loaded (`svc_group_list_status`); a file with no data rows at all (a header only, or no bytes)
+    is a list emptied on purpose and becomes the live list, saved to that file, as at startup. `svc_group_list_result`
+    carries the status, the core load report and whether temporary avoids or call skips went with the old list.
+    `group_list_load_feedback()` puts the outcome in the toast (`Applied: Group list imported -> 42 rows, 1 skipped`,
+    `-> empty list`, `Failed: Group list import -> no usable rows (3 skipped); list unchanged`, `reloaded`/`reload` for
+    a reload) and the path and the cleared temporaries in the log. Clear empties the path only after
+    `dsd_tg_policy_clear()` succeeds. CONFIG_APPLY loads its group file through `svc_load_group_list()` and the RR
+    apply through `svc_import_group_list()` (NULL result), so they refuse and take the same files.
+  - Reload commands (discussion #748): `DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD = 569` (payload none, or the path
+    expected in use) and `DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD = 574` (expected path, required) are listed wherever
+    their imports are (`command_writes_policy_store()`; the group reload also in `command_updates_scan_mode()`, the
+    scoped `group_update` and the action list). The group handler runs after `dsd_scan_groups_suspend()`, so
+    `opts->group_in_file` is the configured global file, never a row's: no payload reloads it (no file: `Failed: Group
+    list reload -> no group list file; import one first`); an expected path reloads only when it is that file, and
+    another path, or no file, is a no-op logged as `not reloaded: the session does not use it` (no toast, the command
+    completes). The channel map reload compares with `opts->chan_in_file` the same way and then applies as the import
+    (`channel_map_import_apply()`). The match is an exact string compare: frontends post the path they stored, but on
+    Windows the same file spelled with another case or separator is "not in use", which fails safe (no reload, and
+    the rewrite check refuses the next save until the list is reloaded). An overlong path is refused (`Invalid group
+    list path`). Frontends: the terminal row (UI, "Group list reload"), the terminal RadioReference refresh
+    (`rr_refresh_push_live()` posts the expected-path reload whenever the hook exists, never reading a snapshot), Qt
+    `CommandBridge::reloadGroupList(path)` (empty = the configured file) and `reloadChannelMap(path)`, and the API's
+    `reload_group_list` / `reload_channel_map` (`docs/api.md`). Tests: `APP_COMMAND_QUEUE`, `UI_RR_WIZARD`,
+    `API_COMMANDS`, `UI_QT_CONTROLLER`.
+  - Release after a list change (discussion #748 R3/R6): an import, reload or clear of the global group list ends a
+    followed call the new list blocks, as a row edit does. `apply_cmd_scoped()` reads, before the scan suspends,
+    whether the global list judges the calls (not while a row's or target's own list governs, whose policy did not
+    change) and which slots it blocks already (`ui_group_list_calls_before()`), and after the scopes resume, still
+    under the tick guard, releases the newly blocked ones (`ui_group_list_release_calls()` ->
+    `tg_listen_release_blocked_calls()`), so the return tune uses the row's own settings. A resume that fails reports
+    the command failed and releases nothing. A failed return tune also fails it, its toast appending `; return-to-CC
+    tune failed` to the command's own. CONFIG_APPLY does not release. `tg_listen_blocked_slots()` judges each call as
+    its protocol admits it (`tg_listen_evaluate_call()`; NXDN, see Core "radio policy"). Tests: `APP_COMMAND_QUEUE`
+    (`test_group_list_command_releases_blocked_calls`, `test_nxdn_source_fallback_call_released`,
+    `test_refused_save_survives_a_failed_return`).
   - Frontend runtime/control-pump glue and telemetry hook installation
   - Public frontend boundary headers under `<dsd-neo/app_control/...>`
   - RadioReference apply: `include/dsd-neo/app_control/rr_import_apply.h` carries the by-value apply payload
@@ -5122,12 +5296,21 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `include/dsd-neo/app_control/scan_list_view.h` and `src/app_control/scan_list_view.c` (issue #697) give the
   trunk-scan target lists every frontend and the API show and switch. `dsd_app_scan_list_view_get()` reads only the
   coordinator's published fields (`trunk_scan_lists[]`, `trunk_scan_list_count` clamped to 8, `trunk_scan_active_list`,
-  `trunk_scan_active_list_off`, `trunk_scan_lists_seq`, `trunk_scan_session`) and the scan state view, from a snapshot
-  pair or the decoder's structs, with no lock and no walk of the targets, and only while `--trunk-scan` is configured:
-  per list `{number, name, enabled, targets, has_active}`, `list_count`, `lists_on`, `targets_on` (the `n of m` m),
-  `active_list`, `running`/`paused` and `toggleable` (running, not paused, 2+ lists). A frontend acts when `lists_seq`
-  or `session` moves. Tests: `APP_CONTROL_SCAN_LIST_VIEW`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_VIEW[_CXX]`,
-  `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
+  `trunk_scan_active_lists`, `trunk_scan_active_list_off`, `trunk_scan_membership_counts`, `trunk_scan_lists_seq`,
+  `trunk_scan_session`) and the scan state view, from a snapshot pair or the decoder's structs, with no lock and no
+  walk of the targets, and only while `--trunk-scan` is configured: per list `{number, name, enabled, targets,
+  has_active}` (`targets` what its file holds, shared ones included; `has_active` its bit in `trunk_scan_active_lists`,
+  so every list holding the target on air is marked, on or off, and none while nothing is on air), `list_count`,
+  `lists_on`, `targets_on` (the `n of m` m, distinct), `active_list` (the representative list that names the target on
+  air), `running`/`paused`, `toggleable` (running, not paused, 2+ lists) and a copy of the membership counts. A
+  frontend acts when `lists_seq` or `session` moves. `dsd_app_scan_lists_targets_on(state, on_mask)` is the one total
+  of a set of lists (issue #697): the distinct targets the lists of `on_mask` hold together, the sum of
+  `trunk_scan_membership_counts` over every membership mask that meets it, so a target several lists hold counts once
+  and a pending switch's on-set totals exactly; `dsd_app_scan_list_view_targets_on(view, on_mask)` is the same sum over
+  the view's copy, for a frontend holding only a view (the terminal modal's title and Qt's `ScanListToggleModel`, over
+  the on-set their rows show). No frontend sums the lists' own counts (the switch toast reads the state helper, the
+  view's `targets_on` the view's). Tests: `APP_CONTROL_SCAN_LIST_VIEW`,
+  `HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_VIEW[_CXX]`, `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
   `include/dsd-neo/app_control/scan_list_rows.h` and `src/app_control/scan_list_rows.c` (issue #697) are the one rule
   for what a switcher row shows between a switch and the snapshot that shows it, shared by the terminal's Scan lists
   modal and Qt's `ScanListToggleModel`; each keeps its own wording, drawing and requests. A row
@@ -8887,8 +9070,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   assignments 72, 80 for the DFA; VCALL_IV 72, 30 on Type-D; the ARIB VCALL and alias and the standard alias 72).
   The Type-C location ID (`nxdn_location_id_handler()`, NXDN TS 1-A 6.5.2: Global 10-bit system and 12-bit site,
   Regional 14/8, Local 17/5, category 3 reserved) is printed whenever it decodes but written to
-  `nxdn_location_category`/`_sys_code`/`_site_code` and `nxdn_last_ran` (the site code's low six bits) only once the
-  transmission is confirmed, as the SACCH's own RAN is, and never for the reserved category or a system or site code
+  `nxdn_location_category`/`_sys_code`/`_site_code` and `nxdn_last_ran` (the site code's low six bits) only from this
+  site's SITE_INFO or SRV_INFO (see "this site" below) and only once the transmission is confirmed, as the SACCH's own
+  RAN is, and never for the reserved category or a system or site code
   Table 6.5-1 reserves (all zeros, all ones: `dsd_nxdn_location_valid()`), which is printed and leaves the
   stored location, its RAN and the received identity as they were. A Type-D (IDAS) site's identity has fields of
   its own, `nxdn_idas_system_id` (19 bits, TS 1-E §6.6.2) and `nxdn_idas_site_code` (1-250, §6.6.5), 0 for not received,
@@ -8897,12 +9081,94 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   `nxdn_confirm_scch_confirmed()`; neither writes a RAN or the Type-C fields. Which SRV_INFO layout applies, and
   whether it places the control channel here, comes from the frame's own LICH, which `nxdn_frame()` holds in
   `dsd_state::nxdn_frame_channel` while the frame's channels decode (`nxdn_frame_channel` in
-  `<dsd-neo/protocol/nxdn/nxdn.h>`: a CAC is the control channel, an RTCH2 profile Type-D, anything else traffic), never
-  from the retained "Type-D" category: only a control channel's SRV_INFO refreshes the control-channel sync and anchors
-  the CC to the tuner. An outbound SCCH INFO2 has the INFO4 format (§6.5.3.3), so its idle, halt, free repeater and site
+  `<dsd-neo/protocol/nxdn/nxdn.h>`: a CAC is the control channel, an RTCH_C profile a composite control channel, an
+  RTCH2 profile Type-D, anything else traffic), never from the retained "Type-D" category: only a control channel's
+  SRV_INFO, a composite one's included (TS 1-C §5.1.2), refreshes the control-channel sync and anchors the CC to the
+  tuner. An outbound SCCH INFO2 has the INFO4 format (§6.5.3.3), so its idle, halt, free repeater and site
   ID messages (IDs 2046, 2045, 2044, 2041) go through the INFO4 handling (`nxdn_scch_handle_repeater_status()`) and never
   become the call's target; its busy repeater message keeps the target handling of `nxdn_scch_handle_info2()`. The
   terminal's IDAS line and the Qt site view show the IDAS fields, the NXDN ones the Type-C location.
+- NXDN channel access parameters (`<dsd-neo/core/nxdn_channel_access.h>`, TS 1-A §6.5.36). `nxdn_rcn`,
+  `nxdn_base_freq` and `nxdn_step` are a site's, set only by a SITE_INFO's Channel Access Information
+  (`dsd_nxdn_ca_apply()`), in either notation: channel notation (RCN 0) clears the DFA base and step. They carry
+  their own provenance, apart from the site identity (`dsd_state::nxdn_ca`: the SITE_INFO's Location ID, a validity
+  flag and a generation that moves on every change), are dropped wherever the location is (`dsd_nxdn_ca_reset()`: the
+  untrunked no-carrier pass, the DMR/NXDN reset command, `initState()`) and travel with a trunk scan target's
+  snapshot. `dsd_nxdn_ca_invalidate()` stops trusting them and keeps the notation, which the message layouts still
+  follow. `nxdn_channel_to_frequency()` and its quiet form read the channel map first, then compute a DFA frequency
+  only while the parameters are valid, and keep what they compute in the map through `dsd_nxdn_dfa_learn()`, which
+  records each row with the generation it was computed under (`dsd_state::nxdn_dfa_learned`, at most
+  `DSD_NXDN_DFA_LEARNED_MAX` rows; past that a frequency is answered, not kept). A new generation drops exactly those
+  rows, and only while they still hold what was written: any other writer of a row (`dsd_state_set_trunk_chan_freq()`,
+  so an import or another protocol) takes it out of the record, and a channel map adopt or clear empties the record,
+  so an imported row is never dropped. `nxdn_channel_to_frequency_display()` resolves for display only and keeps
+  nothing. A DFA CCH_INFO prints its Curr/New/Add/Del status from the same four bits as the channel notation
+  (TS 1-A §6.4.3.3); the DFA layout's two low bits only say which channel fields are present.
+- NXDN "this site" (`dsd_state::nxdn_site`, `dsd_nxdn_site_record`, same header). A SITE_INFO or SRV_INFO ("for
+  current site") decoded while no traffic channel is followed (`dsd_opts_trunk_vc_followed()` false: untuned, or
+  trunking off, a tuned flag left by switching it off mid-follow included; whatever the frame's channel, a composite
+  control channel included) latches its Location ID (`dsd_nxdn_site_latch()`); an SRV_INFO naming a new site
+  invalidates the old site's parameters until the new site's SITE_INFO. Only this site's SITE_INFO/SRV_INFO write the
+  site identity and only its SITE_INFO the parameters (`nxdn_site_broadcast_is_this_site()`); while a call is followed,
+  another site's broadcast on the traffic channel is printed only, and a SITE_INFO on a frame read as Type-D always is.
+  CCH_INFO names "certain site" (TS 1-A §6.4.3.3) and never writes the identity. A DFA CCH_INFO moves the control
+  channel only when it names this site with Curr or New alone, under valid parameters, with a frequency, and the CC is
+  not pinned (`nxdn_cch_info_names_this_control_channel()`): Add and Del edit a hunt list and another site's switch
+  reaches this one by ADJ_SITE_INFO (TS 1-C §16.5). Channels of any other CCH_INFO, and every ADJ_SITE_INFO channel,
+  are resolved with the display resolver and never learned. Under plain `-T` the first adoption writes the hunt's row 0
+  (`dsd_state_trunk_lcn_freq_write()`), and from then on the control channel is pinned like an imported list
+  (`nxdn_cc_is_operator_pinned()`: any LCN row counts), as before; under trunk scan only a target with its own
+  `chan_csv` LCN rows is pinned, so a park a few kHz off is corrected by this site's Curr or New. The record is
+  cleared by `dsd_nxdn_ca_reset()` and travels with a trunk scan target. Known limits: the latch has no confirmation
+  gate of its own, only the message's CRC. While no call is followed, a noise FACCH1 that passes its CRC-12 and names
+  another valid site latches that site, which invalidates this site's parameters: nothing resolves by DFA until the
+  next SITE_INFO of the site heard (every superframe on a dedicated control channel; a CAC carries CRC-16 and is far
+  less exposed). A call followed before any latch (a grant decoded before the first SITE_INFO or SRV_INFO) writes no
+  site identity from the traffic channel's broadcasts until the return, since none of them can be told to be this
+  site's.
+- NXDN composite control channels (RTCH_C, TS 1-A §5.2.1, TS 1-C §16.3). Their outbound LICH values 0x61, 0x69, 0x6F,
+  0x71, 0x73, 0x75 and 0x77 are also Type-D RTCH2 values; `nxdn_frame.c` reads them as RTCH_C (SACCH, FACCH1, FACCH2,
+  UDCH, as an RTCH's; plus the idle 0x79) once the session decoded Type-C trunking (`dsd_nxdn_type_c()`: a CRC-good CAC,
+  a whole CCH_INFO, or a whole SITE_INFO on a frame not read as Type-D, messages Type-D does not send; one too short for
+  its layout, such as a non-superframe SACCH's 26 elements, says nothing), and as Type-D until then: a session that
+  starts on a composite control channel during a call reads its first frames as Type-D until one of those decodes.
+  Noting Type-C drops the IDAS System ID and Site Code (state and received identity) a composite SRV_INFO read as
+  Type-D left, and the "Type-D" category an SCCH misread on such a frame left (the VCALL and IV parsers read it as the
+  IDAS layout). The context is the carrier's: an operator move (`dsd_engine_carrier_boundary()`, never
+  a retune within a trunked system or a stream gap) forgets it with the foreign control stamp
+  (`dsd_nxdn_forget_carrier_system()`).
+- NXDN control traffic of another channel on a followed traffic channel (`dsd_nxdn_control_heard_is_foreign()`: trunking
+  on, a voice channel tuned, and the followed frequency not this site's control channel; compared by channel,
+  `dsd_nxdn_same_channel()`: closer than half the 6.25 kHz raster, since the control channel fields may hold the
+  tuner's value while the followed one is a grant's computed frequency). A CAC (decided in
+  `nxdn_handle_cac()`) or an RTCH_C frame (decided in `nxdn_frame()` before its channels decode) heard there sets
+  `dsd_state::nxdn_frame_foreign` while it decodes: its checks confirm nothing and stamp
+  `dsd_nxdn_site_record::foreign_control_m` instead (`nxdn_confirm_note_evidence()`, read with
+  `dsd_nxdn_foreign_control_last_m()`, decode clock); no RAN, received control channel, CC hunt note or Type-C note is
+  written; its site broadcasts are printed only, every other message prints its type only (no grant, call, release or
+  control-sync effect); its superframe SACCH segment never enters the SACCH assembly, which it empties, so no superframe
+  mixes the two channels' segments; and the frame skips the decoder's own carrier-sync stamp (`nxdn_mark_carrier_sync_active()`)
+  and plays no voice (the frame-sync accept still stamps `last_cc_sync_time` for any NXDN sync,
+  `frame_sync_note_cc_sync()`). A call on this site's control channel
+  itself (followed frequency equal to `p25_cc_freq` or `trunk_cc_freq`) is the site's own.
+- NXDN return from a voice channel that is another site's control channel (discussion #748). That control channel keeps
+  NXDN frame sync on the followed frequency, so once the call's DISC is missed the synced-frames loop never reaches
+  noCarrier(), whose hangtime return is the only other way back. `dsd_engine_trunk_receive_release_due()` (the synced
+  loop's release check, `live_scanner_receive_should_yield()` and `scan_visit_should_yield_from_frame()`) therefore has
+  an NXDN case that runs whether or not a receive filter is on (`nxdn_foreign_control_release_due()` in `engine.c`):
+  another channel's control frame heard there since the call's last voice (`dsd_nxdn_foreign_control_last_m()` later
+  than `last_vc_sync_time_m`, which the voice-channel tune also stamps, so a stamp left from an earlier follow never
+  counts), the hangtime run since that voice (`no_carrier_is_cc_return_due()`, whole seconds), and nothing of the call
+  heard within it (`receive_admitted_still_heard()`, a data call included). The loop then drops sync and noCarrier()
+  returns to the control channel as on a carrier loss. It applies only while the frame's (or the last) sync is NXDN and
+  the followed channel is not this site's control channel (`dsd_nxdn_control_heard_is_foreign()`), so a call on this
+  site's own composite control channel never takes it, and P25 and DMR are untouched. The marker is read first, so a
+  session that never heard foreign control traffic pays one load per frame. The other site's assignments heard
+  meanwhile, a VCALL_ASSGN_DUP past the hangtime included, are never followed (the bullet above). Tests:
+  `ENGINE_NXDN_FOREIGN_CONTROL_RETURN` (the real engine loop and NXDN frame decoder, the other site's dedicated and
+  composite control channel on the followed frequency, the composite one also with a RAN this site uses, the site, RAN,
+  received control channel and voice clock unchanged on it, and the carrier-loss return as a control),
+  `ENGINE_P25_POLICY_STORE_GUARD` (`test_trunk_receive_release_due_nxdn_foreign_control`).
 - NXDN trunking admission and preemption (`nxdn_element.c`; NXDN has no trunk state machine). Two records in
   `dsd_state`, both saved with a trunk scan target's snapshot (and so restored by a failed switch's rollback):
   - `nxdn_follow` (`dsd_nxdn_follow_route`): the route the receiver last followed a grant or busy repeater message to
@@ -9315,9 +9581,10 @@ the message passed its own check, with that message's values, an unchanged repea
   P_CLEAR the encryption lockout synthesizes to release the channel (`dmr_cspdu_release_channel()`, FID 0xFF, handled as
   a checked CSBK): it releases as a received one would, and `dmr_csbk_crc_checked()` refuses every note while it runs.
   NXDN's synthesized lockout DISC reaches no note point (its handler notes nothing), and P25 synthesizes no message.
-- NXDN: the RAN of a CRC-passed CAC (with the control channel, before its elements can retune), FACCH2/UDCH, and a SACCH
-  once the transmission is confirmed (`nxdn_deperm.c`), never the RAN a site code implies; the Type-C location at the
-  location handler's own gate (confirmed, category not reserved); the IDAS area bit and site ID under
+- NXDN: the RAN of a CRC-passed CAC (with the control channel, before its elements can retune; not a CAC decided
+  foreign on a followed channel), FACCH2/UDCH, and a SACCH once the transmission is confirmed (`nxdn_deperm.c`), never
+  the RAN a site code implies; the Type-C location at the location handler's own gate (this site's SITE_INFO or
+  SRV_INFO, confirmed, category not reserved); the IDAS area bit and site ID under
   `nxdn_confirm_scch_confirmed()`; a Type-D SRV_INFO's System ID and site code once confirmed.
 - dPMR: the colour code in `dpmr_publish_call()` after `dpmr_confirm_is_confirmed()`. M17: the CAN in
   `M17decodeLSF()` only with `publish_canonical` (the LSF's CRC passed), never while the encoder monitors what this
@@ -9329,12 +9596,15 @@ the message passed its own check, with that message's values, an unchanged repea
   downlink or uplink (a NUB's MAC block, a control uplink burst's SCH/HU), whose CRC passed once descrambled with the
   network's extended colour code (`tetra_note_proven_cell()` in `tetra.c`, before the MAC acts on it): every carrier of
   a cell, uplink included, scrambles with its MCC, MNC and colour code, so such a block proves all three on this
-  carrier, and an uplink carrier, which has no BSCH, names its cell this way only. A followed traffic carrier, whose
-  colour code the trunk tune dropped, names it again with its next checked block. A SYSINFO notes the location area,
-  and the control channel only when the tuner is on the main carrier it names; a checked direct mode burst
-  (`tetra_dmo_apply_sync()`) drops a TETRA record. A `--tetra-net` preset notes nothing by itself: it becomes received
-  identity only once a block descrambled with it passed its CRC on this carrier (one that never descrambles anything
-  stays configuration).
+  carrier, and an uplink carrier, which has no BSCH, names its cell this way only. Colour code 0 is the exception: it
+  scrambles with the predefined all-zero vector whatever the network (`tetra_compute_scramb_seed()`), so a block proves
+  no MCC or MNC there and only a BSCH names such a cell. A followed traffic carrier, whose colour code the trunk tune
+  dropped, names it again with its next checked block; another cell's BSCH or SYSINFO there notes nothing while the
+  trunking state machine guards the follow (Trunking, "Another cell on the followed carrier"). A SYSINFO notes the
+  location area, and the control channel only when the tuner is on the main carrier it names; a checked direct mode
+  burst (`tetra_dmo_apply_sync()`) drops a TETRA record. A `--tetra-net` preset notes nothing by itself: it becomes
+  received identity only once a block descrambled with it passed its CRC on this carrier (one that never descrambles
+  anything stays configuration).
 
 Tests: `P25_SEARCH_SITE_NOTES`, `P25_P1_SYNC_DISPATCH`, `P25_P2_ESS_CARRIER`, `DMR_SEARCH_SITE_NOTES`,
 `DMR_CONFIDENCE_GATE`, `DMR_DATA_SYNC`, `NXDN_SEARCH_SITE_NOTES`, `NXDN_ELEMENT_BOUNDS`, `DPMR_VOICE_BRIDGE`,
@@ -9765,8 +10035,9 @@ Private per-protocol modules worth knowing about:
   burst `-F` accepts as RAS (`DSD_CRC_RAS_UNVERIFIED`) and an MBC whose header CRC failed (`DSD_CRC_FAILED`), and the
   C_SYS_PARMS / P_SYS_PARMS short LC that `dmr_cach()` assembles behind Hamming(17,12,3) and CRC-8 (no RAS path); a
   C_BCAST vote/adjacent syscode names another site (`DMR_SEARCH_SITE_NOTES`). NXDN: the current-site location ID in
-  `nxdn_location_id_handler()` (SITE_INFO, SRV_INFO, CCH_INFO, all CRC-gated by their channel decoders) once
-  `nxdn_confirm_is_confirmed()`, so a single short SACCH CRC does not show a site; adjacent sites, the reserved
+  `nxdn_location_id_handler()`, from this site's SITE_INFO and SRV_INFO only (`NXDN_LOCATION_THIS_SITE`, CRC-gated by
+  their channel decoders; see "this site" under Protocols) once `nxdn_confirm_is_confirmed()`, so a single short SACCH
+  CRC does not show a site; a CCH_INFO or another site's broadcast notes nothing; adjacent sites, the reserved
   category, reserved system and site codes and the Type-D site identity (`nxdn_idas_*`) are not notes
   (`NXDN_SEARCH_SITE_NOTES`).
 - Signal search call notes (`dsd_signal_search_note_call()` in `<dsd-neo/runtime/signal_search_hooks.h>`): each
@@ -9825,27 +10096,30 @@ as before. Every downlink burst runs the TDMA clock to its own slot on the symbo
 normal burst at its training sequence (`tetra_tdma_advance_ndb()`), a synchronisation burst at its BSCH, which sets the
 clock when its CRC passes and otherwise only runs it (`tetra_sb_bsch()`), so block 2 of a burst whose BSCH failed is not
 decoded as the last burst's timeslot. Normal bursts cannot tell the signal's polarity (NTS2 is NTS1 inverted), so the
-carrier's polarity (`tetra_sync.polarity`) comes from a synchronisation burst's training, which the frame sync latches,
-and on the uplink from a control burst: its extended training sequence is no other training sequence inverted, so its
-synctype's sign is its polarity, its SCH/HU is decoded with it, and once that CRC passed the decoder makes it the
-carrier's (`tetra_uplink_process_cb()`); one that fails changes nothing, since a normal-polarity NTS2 burst can match
-the inverted extended training sequence. That SCH/HU also proves a trunked mode uplink, which no BSCH comes to say there:
-like a BSCH of a trunked system code on the downlink, it ends direct mode (`tetra_dmo_leave()`: the mode, the DM colour
-code, its protection and the direct mode call with its canonical call), so the normal bursts after it are NUBs again
-and not DNBs descrambled with a DM colour code. The frame-sync slicer cuts TETRA's symbols at fixed thresholds of the
-CQPSK symbol domain (0 and ±2, `frame_sync_slice_cqpsk_dibit()`; under the 18000/4 profile without the adaptive centre
-P25's CQPSK hunt slices about, `frame_sync_cqpsk_slice_center()`), where the RTL front end and a soft symbol capture
-give them; a float symbol file (`.raw`, `.sym`) holds them there too, so a TETRA session reads it as it is
-(`symbol_file_flt_scale()` in `dsd_symbol.c`), while the other modes' level-tracking slicers read one scaled by 10000
-into the PCM sample domain; scaled, both inner levels would slice as outer ones. The payload is sliced the same way:
-under a TETRA sync type `digitize()` cuts at the quadrant boundaries 0 and ±2 (`cqpsk_slice()`), never at the adaptive
-four-level slicer's `center`/`umid`/`lmid`, which put the inner/outer edge near ±60° instead of ±90°, and the decoder's
-soft costs come from `cqpsk_soft_symbol_to_viterbi_cost()`, taken against the fixed levels ±1 and ±3 (the four-level
-mapping of `soft_symbol_to_viterbi_cost()` at the regions -4, -2, 0, 2, 4). All three read the fixed levels on QPSK
-only (`rf_mod` 1, `dsd_tetra_quadrant_levels()`; the hunt tests `rf_mod` itself): under another modulation (`-fT -mc`,
-not a supported TETRA receiver) the hunt, `digitize()` and the soft costs read TETRA on the adaptive levels together.
-Tests: `FRAME_SYNC_INTERNAL_HELPERS`, `TETRA_BURST_VERDICT`, `DSP_SYMBOL_REPLAY`, `DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY`,
-`DIBIT_TETRA_QUADRANT_SLICER`.
+carrier's polarity (`tetra_sync.polarity`) comes from a synchronisation burst's training: the frame sync hands the
+burst's polarity over with its capture (`tetra_sync.sb_polarity`), the burst is read with it, and the decoder makes it
+the carrier's only once the BSCH, or a DSB's SCH/S, passed its CRC (`tetra_tmo_sb_commit_polarity()`,
+`tetra_dmo_dsb_commit_polarity()`), so a false or failed burst of the other polarity leaves the normal bursts after it
+classified as before; on the uplink it comes from a control burst: its extended training sequence is no other training
+sequence inverted, so its synctype's sign is its polarity, its SCH/HU is decoded with it, and once that CRC passed the
+decoder makes it the carrier's (`tetra_uplink_process_cb()`); one that fails changes nothing, since a normal-polarity
+NTS2 burst can match the inverted extended training sequence. That SCH/HU also proves a trunked mode uplink, which no
+BSCH comes to say there: like a BSCH of a trunked system code on the downlink, it ends direct mode (`tetra_dmo_leave()`:
+the mode, the DM colour code, its protection and the direct mode call with its canonical call), so the normal bursts
+after it are NUBs again and not DNBs descrambled with a DM colour code. The frame-sync slicer cuts TETRA's symbols at
+fixed thresholds of the CQPSK symbol domain (0 and ±2, `frame_sync_slice_cqpsk_dibit()`; under the 18000/4 profile
+without the adaptive centre P25's CQPSK hunt slices about, `frame_sync_cqpsk_slice_center()`), where the RTL front end
+and a soft symbol capture give them; a float symbol file (`.raw`, `.sym`) holds them there too, so a TETRA session reads
+it as it is (`symbol_file_flt_scale()` in `dsd_symbol.c`), while the other modes' level-tracking slicers read one scaled
+by 10000 into the PCM sample domain; scaled, both inner levels would slice as outer ones. The payload is sliced the same
+way: under a TETRA sync type `digitize()` cuts at the quadrant boundaries 0 and ±2 (`cqpsk_slice()`), never at the
+adaptive four-level slicer's `center`/`umid`/`lmid`, which put the inner/outer edge near ±60° instead of ±90°, and the
+decoder's soft costs come from `cqpsk_soft_symbol_to_viterbi_cost()`, taken against the fixed levels ±1 and ±3 (the
+four-level mapping of `soft_symbol_to_viterbi_cost()` at the regions -4, -2, 0, 2, 4). All three read the fixed levels
+on QPSK only (`rf_mod` 1, `dsd_tetra_quadrant_levels()`; the hunt tests `rf_mod` itself): under another modulation (`-fT
+-mc`, not a supported TETRA receiver) the hunt, `digitize()` and the soft costs read TETRA on the adaptive levels
+together. Tests: `FRAME_SYNC_INTERNAL_HELPERS`, `TETRA_BURST_VERDICT`, `DSP_SYMBOL_REPLAY`,
+`DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY`, `DIBIT_TETRA_QUADRANT_SLICER`.
 
 #### Signalling decoders
 
@@ -9896,13 +10170,16 @@ when that SYSINFO set it, so an allocation decoded before the new cell's SYSINFO
 is followed until it names its control channel; `tetra_forget_carrier()` keeps it, since another carrier of the same
 cell shares it. The cells of a network may share a colour code, so a SYSINFO naming another main carrier (the cell's,
 clause 21.4.4.1) or another location area than the cell's known one is another cell too, which forgets the same before
-the SYSINFO is taken (`tetra_bsch_sysinfo_cell()`, from `apply_sysinfo()` in `tetra_mac.c`). Another cell is also another carrier, whatever the engine saw (a radio retuned outside the decoder),
-so what the last carrier's speech left goes as at a carrier boundary: its timeslots' signalling encryption, the heard
-timeslot with the heard or anonymous canonical call (`tetra_calls_forget_trunked_carrier()`), the speech in progress,
-the followed call's proof on the carrier, and the encryption mode the last cell's signalling showed. A DSB that puts a
-trunked carrier in direct mode (`tetra_enter_dmo()` in `tetra.c`) forgets the same of the trunked carrier, its partial
-TM-SDUs too, and stops the TDMA clock; a BSCH of a trunked system code or an uplink SCH/HU that ends direct mode
-forgets the direct mode channel's (`tetra_dmo_leave()`). A BSCH naming another network (MCC or MNC) also forgets what that network's SwMI numbers: a downlink
+the SYSINFO is taken (`tetra_bsch_sysinfo_cell()`, from `apply_sysinfo()` in `tetra_mac.c`). While the trunking state
+machine guards a follow, neither BSCH nor SYSINFO of another cell is taken on from the followed carrier, and they forget
+nothing (Trunking, "Another cell on the followed carrier"). Another cell is also another carrier, whatever the engine
+saw (a radio retuned outside the decoder), so what the last carrier's speech left goes as at a carrier boundary: its
+timeslots' signalling encryption, the heard timeslot with the heard or anonymous canonical call
+(`tetra_calls_forget_trunked_carrier()`), the speech in progress, the followed call's proof on the carrier, and the
+encryption mode the last cell's signalling showed. A DSB that puts a trunked carrier in direct mode (`tetra_enter_dmo()`
+in `tetra.c`) forgets the same of the trunked carrier, its partial TM-SDUs too, and stops the TDMA clock; a BSCH of a
+trunked system code or an uplink SCH/HU that ends direct mode forgets the direct mode channel's (`tetra_dmo_leave()`). A
+BSCH naming another network (MCC or MNC) also forgets what that network's SwMI numbers: a downlink
 SSI is a party of the current network and the call identifiers are the SwMI's (EN 300 392-2 clause 14.2.3), so the
 call records end, with the state machine's follow of their identifiers, the heard call and the speech in progress
 (`tetra_calls_forget_calls()`), and so do the concatenated short data being reassembled
@@ -9967,7 +10244,8 @@ is current at once), and at another cell; a call's key applies only under the ep
 named TEA) is loaded, while the call's latest allocation names the key version parity it proved under
 (`tetra_calls_air_key_applies()`), and a reduced key only while the call is on its channel. No key, ECK, register or key stream bit is printed. Tests: `TETRA_AIR_SIGNALLING` (TETRA_crypto's
 own TB5 and TEA2 key streams, frozen; wrong keys and TEAs; two TEAs under one key; a DCK stand-in; PDU association and
-the second half slot; a fragmented TM-SDU; a reduced key; the key epoch; the repeat rules and a busy carrier),
+the second half slot; a fragmented TM-SDU; a reduced key; the key epoch; the repeat rules and a busy carrier; a
+decrypted cell-change allocation logged only, Trunking),
 `TETRA_CRYPTO` (TA61).
 
 #### Trunking
@@ -10031,8 +10309,9 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   resets of other hops); a deferred one waits `TETRA_SM_MOVE_HOLD_S` and counts as none, its entry reusable once the
   hold is over; a table of consumed and failed entries moves to nothing new (said once) and gives no entry up.
   `tetra_sm_init()`, a decode-mode change (the TETRA state goes), trunking turned on again (`sm_note_trunking()` in
-  the tick, the SYSINFO entry and the burst's end, before a request in flight is settled, and the trunk toggle and set
-  commands, `trunk_enable_on()` in `actions_trunk.c`, for a toggle none of them sees), another radio source or input
+  the tick, the grant and SYSINFO entries and the burst's end, before a request in flight is settled, and the trunk
+  toggle and set commands, `tetra_sm_on_trunking_on()` from `trunk_enable_on()` in `actions_trunk.c`, for a toggle none
+  of them sees; both through `sm_trunking_back_on()`), another radio source or input
   (`dsd_engine_carrier_boundary()` for `DSD_CARRIER_BOUNDARY_SOURCE` and `_INPUT_SWITCH`) and an applied
   RadioReference import (`rr_apply_reacquire()`) forget it (`tetra_sm_forget_moves()`); a tune elsewhere does not.
   ACQUIRING owns the return (`tetra_sm_owns_return()`), so the no-carrier pass ticks the machine instead of a generic
@@ -10046,9 +10325,9 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   per-burst cost.
 - Releases. `tetra_sm_on_release()` releases only the followed call: its call identifier must match (a release of
   the followed call, a "go to the MCCH" allocation to it, its channel allocated to a call the state machine does not
-  follow, or its turning undecryptable; see Calls). A traffic timeslot of the control
-  channel's carrier, or a release with no control channel to go to, stops following without a tune; anything else
-  returns through `dsd_trunk_tuning_hook_return_to_cc()` with `p25_cc_freq` cleared (`sm_request_cc_return()`), so no
+  follow, or its turning undecryptable; see Calls). A traffic timeslot of the home control channel's carrier (The
+  home, below), or a release with no control channel to go to, stops following without a tune; anything else returns
+  home through `dsd_trunk_tuning_hook_return_to_cc()` with `p25_cc_freq` cleared (`sm_request_cc_return()`), so no
   P25 alias or its symbol profile comes along; the alias comes back at once when the return is refused or deferred, and
   through the rollback when one in flight fails. A return the backend refuses or defers keeps the call, and the next
   tick tries again. With
@@ -10063,7 +10342,9 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   speech ends (the first gap of `TETRA_SM_SPEECH_GAP_S`, longer than a frame 18 gap), and after
   `TETRA_SM_GRANT_TIMEOUT_S` (4 s, DMR's default; no option) when no speech followed the tune, counted from the later
   of the tune and the last maintenance event before the first speech (`tetra_sm_note_maintenance()`, `t_maint_m`,
-  rolled back with `t_tune_m`): an ACCESS-ASSIGN PDU of a followed timeslot carrying the call's usage marker, or a
+  rolled back with `t_tune_m`): an ACCESS-ASSIGN PDU of a followed timeslot carrying the call's usage marker
+  (`tetra_sm_note_aach_maintenance()`; while the follow is guarded it counts as of the home cell's last CRC evidence,
+  "Another cell on the followed carrier" below), or a
   CRC-passed PDU there addressed to a party of the call, a MAC-D-BLCK to its event label included whether or not its
   TM-SDU can be read (`tetra_calls_on_label_pdu()`; the label is clear), never to all (the broadcast SSI or the all-ones event label; `address_maintains()`;
   on the record's own channel, carrier, frequency and timeslot, which an allocation that moved the call without the
@@ -10077,7 +10358,114 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   keeps the channel, its shared tuning state and its timers, and lets go of the call (`sm_hold_untrunked()`, no call
   record, as `tetra_sm_retire_call()` leaves it), so what the receiver decodes there is decoded as on any carrier with
   trunking off: the record ages, its signalling publishes it only as the heard call, and the follow gate's proof goes.
-  With trunking on again the hangtime or the grant timeout returns from the channel.
+  With trunking on again the follow returns home at once (The home, below).
+- The home. A follow that starts off the control channel (`sm_follow()` from any state but TUNED) takes the cell it
+  starts on as its home (`tetra_sm_t::home`, `sm_take_home()`): the control channel it left (`trunk_cc_freq`), and that
+  cell's MCC, MNC and colour code (`net_known` when a BSCH or `--tetra-net` gave them) and location area (`la_known`
+  when a SYSINFO with its D-MLE-SYSINFO gave it). A reallocation of the followed call, TUNED to TUNED, keeps it. The
+  home is part of the rollback (`sm_capture()`, `sm_restore()`) and goes wherever the follow ends (`sm_unfollow()`: a
+  return completed, a stop on the home control channel's carrier, a release by another owner, an external return, an
+  abandon, `tetra_sm_init()`; a decode-mode change drops it with the TETRA state). After an assigned channel an MS
+  returns to the MCCH it was using before the assignment (EN 300 392-2 clause 23.3.1.2.1.2), and nothing on the traffic
+  carrier names it (a D-RELEASE names no carrier), so every way back reads one function, `tetra_sm_return_cc_hz()`: the
+  home's control channel while the machine holds a follow (TUNED, or a grant or return of its own in flight) with a
+  home, else 0. `sm_release()` stops without a tune when the followed carrier is the home control channel's and
+  otherwise sets `trunk_cc_freq` to the home before the shared return, which takes no target; a return refused or
+  deferred puts the old value back at once, and one in flight that fails puts it back only when nobody wrote it since
+  (`sm_restore_receiver()`, `tetra_sm_receiver_snapshot::staged_trunk_cc_freq`). The manual Return to CC, skip and
+  lockout read the home through `current_cc_freq()` in `app_command_queue.c` and set `trunk_cc_freq` to it before the
+  hand-over (`hand_tetra_sm_home()`), so the machine rests ON_CC there. `dsd_app_cc_freq()`, which the call view and the
+  status readouts use on frontend snapshots, carries no TETRA state and never reads the home: it reads `trunk_cc_freq`,
+  else `p25_cc_freq`. While the machine guards the follow nothing on the carrier rewrites `trunk_cc_freq`, and with
+  trunking off it can show another cell's control channel until trunking is on again. Trunking turned on again while
+  TUNED with a home (`sm_trunking_back_on()`, from `sm_note_trunking()` in the tick, the grant and SYSINFO entries and
+  the burst's end, and from `tetra_sm_on_trunking_on()` in the trunk commands) ends the follow at once: the call was let
+  go when trunking went off (`sm_hold_untrunked()`), and what the carrier delivered since (another cell, direct mode,
+  another location area) cannot be trusted. `trunk_cc_freq` is the home's again at once, and until the return home
+  completes the machine is `return_required`: grants are refused, speech and maintenance restart no timer, and the tick
+  asks for the return at every pass, again after one refused, deferred or failed (a failed return's rollback keeps the
+  flag). A follow on the home control channel's own carrier stops there without a tune and forgets the carrier and the
+  cell (`tetra_forget_carrier()`, `tetra_bsch_forget_cell()`), so the home's SYNC and SYSINFO are taken on again.
+- Another cell on the followed carrier. TETRA cells reuse frequencies, so the traffic carrier of a followed call can
+  carry another cell's bursts too. The machine guards a follow (`tetra_sm_guarding()`) while trunking is on and
+  `tetra_sm_return_cc_hz()` names a home; then what another cell sends there is not taken on as the session's cell.
+  Unguarded (IDLE, ON_CC, ACQUIRING, trunking off while TUNED) every SYNC and SYSINFO is taken on as before (Signalling
+  decoders).
+  - SYNC. `tetra_bsch_parse()` returns `TETRA_BSCH_FOREIGN` for a CRC-passed BSCH whose MCC, MNC or colour code is not
+    the home's, when the home's network was known (`bsch_foreign()`), before anything of it is taken (the cell forget,
+    the identity and seed, the received identity, the publication, the clock); `-v 1` logs
+    `[TETRA BSCH] MCC=... MNC=... CC=0x..: another cell on the followed carrier; not taken on`. Once synchronised, an MS
+    takes on only SYNC of its own colour code (clause 23.6.2; ETSI ETR 300-1 clause 5.8.1.1.1: the BSCH is not
+    scrambled, so nothing else keeps an adjacent cell's out). `tetra_sb_bsch()` runs the clock to the burst's slot as
+    for a failed BSCH, counts the burst for its verdict only (no signalling evidence, no polarity, no home evidence) and
+    leaves block 2, which is that cell's, undecoded. The home's seed stays, so the other cell's CRC-protected blocks and
+    speech fail as they would for an MS, and its grants, allocations and releases do nothing.
+  - Direct mode. A DSB, read by the hard decision (`tetra_sb_try_dmo()`) or only the soft one (`tetra_sb_soft_dsb()`),
+    is consumed (`tetra_dmo_guarded()`): it does not enter direct mode, forget what the trunked carrier proved, set the
+    polarity or publish, since a trunked call's carrier is no direct mode channel; `-v 1` logs
+    `[TETRA DMO DSB] sys=... comm=...: direct mode on the followed carrier; not taken on`.
+  - SYSINFO. `sysinfo_applies()` in `tetra_mac.c` applies one only when its main carrier is a valid frequency equal to
+    the home's control channel and, when both are known, its location area is the home's: every carrier of a cell names
+    the cell's own main carrier (clause 21.4.4.1). Any other is another cell's, perhaps of the home's colour code, and
+    changes nothing: no cell forget, no `trunk_cc_freq`, carrier, band, offset, location area, hyperframe, security or
+    received identity, no `tetra_sm_on_cc_sync()` (so no control channel candidate), no location area for the call
+    records, no count in `frames_sysinfo`; `-v 1` logs it
+    `[TETRA SYSINFO] main carrier ... Hz LA ...: another cell on the followed carrier; not applied`.
+    `tetra_mac_parse_block()` returns 0 for its block, which still counts as carrier evidence (it passed its CRC under
+    the home's seed) but not as the home's. A home SYSINFO that names a location area while the home has none gives the
+    home one; it names the home's main carrier, as only the home cell's does.
+  - AACH. The AACH has no CRC (clause 8.3.1.1), and another cell's can correct into a valid word, the call's usage
+    marker included, under the home's scrambling. The machine keeps the decode time of the home cell's last CRC-passed
+    block on the carrier (`t_home_crc_m`, `tetra_sm_note_home_crc()`, while TUNED with no tune in flight and the burst
+    still on the carrier): a BSCH taken on, a trunked downlink MAC block the MAC called the cell's
+    (`tetra_nb_signalling()`), and speech whose CRC passed on a trunked downlink burst (`tetra_nb_speech_decoded()`). An
+    AACH that maintains the channel counts as of that time, not now (`tetra_sm_note_aach_maintenance()`), so the grant
+    timeout runs out at most `TETRA_SM_GRANT_TIMEOUT_S` (4 s) after the last home evidence; a live home carrier sends
+    its SYNC about once a second, so a call set up and silent keeps its channel. One carrying the call's marker counts
+    toward N.213 only within 4 s of that evidence (`tetra_sm_aach_corroborated()`); otherwise it breaks the run and
+    neither restarts T.212 nor clears the N.212 count, so it keeps no permission alive. Adverse AACH evidence acts as
+    before, the standard's own rule: N.208 ends the follow and returns home (`calls_leave_lost_channel()`), N.212 takes
+    back the receive permission, muting the call without ending the follow.
+- Channel allocations for another cell. A readable channel allocation with its cell change flag set moves an MS to
+  another cell (clause 23.5.4.1, an announced type 1 cell reselection), which this decoder does not follow.
+  `read_allocation()` reads it as `TETRA_ALLOC_OTHER_CELL`, guarding or not, and its PDU (a MAC-RESOURCE, or the MAC-END
+  that completes a TM-SDU, clear or decrypted) is decoded and printed only (`tetra_mac_sdu_other_cell()`): the
+  `[TETRA CHANNEL-ALLOCATION]` line ends `cell change: for another cell; logged only`, and nothing publishes its
+  address, takes a call PDU of it (`tetra_calls_on_event()` acts on nothing; `-v 2` says so), attaches its allocation,
+  event label or usage marker (`tetra_calls_on_allocation()` is not called), proves or maintains a call, or reaches the
+  state machine. Its MM PDUs are printed without writing the D-MM STATUS shown or the KSG a network uses
+  (`tetra_mm_dispatch_as()`, from `tetra_mle_dispatch_sdu()`). An allocation left unread (encrypted with no key: EN 300
+  392-7 clause 6.7.1.2 encrypts everything after the allocation-present flag) has no flag the decoder knows, and its PDU
+  is handled as any other.
+- Known limits of a guarded follow, decided rather than worked around:
+  - Same network and colour code. With equal MCC, MNC and colour code (or colour code 0 on both) another cell's bursts
+    descramble with the home's seed and nothing in a PDU or in speech says whose they are; an MS has the same blindness
+    (Annex S). Its SYNC is taken on (and stamps the home evidence), its PDUs and speech are handled as the home cell's
+    (they can keep the follow alive, take it to another channel of that cell and show in the call records), but its
+    SYSINFO is not applied and every return goes home. No per-PDU heuristic is added.
+  - Cell changes and umbrella channels. A follow does not go with an explicit cell change or Annex S umbrella operation:
+    the allocation is logged only and the return goes to the control channel left. A fragmented message's first fragment
+    is acted on as any, since its allocation comes with the MAC-END (clause 23.5.4.1) and is not known yet; the MAC-END
+    and the TM-SDU it completes are logged only. A cell-change PDU's SDS and status notices still reach the event
+    history, and a KSG a decryption repeat proved (`tetra_air_sig.c`) is still remembered; its MM writes nothing.
+  - A home control channel that moved. When the home cell moves its main carrier during the call, the return still goes
+    to the old one; there a SYSINFO naming the new one is a move to the main carrier as any (`tetra_sm_after_burst()`),
+    but an old carrier gone silent keeps the receiver there until the operator retunes: TETRA has no control channel
+    hunt (the engine's cold-start hunt runs P25, DMR and NXDN only), as for a control channel that goes silent at any
+    time.
+  - A home whose network was not known. A follow started before any BSCH and without `--tetra-net` (`home.net_known` 0)
+    has no identity to tell another cell's SYNC by, so for that call every SYNC is taken on. A colour code 0 cell under
+    a `--tetra-net` preset with a wrong MCC or MNC, followed before its first BSCH, takes the preset as the home's
+    identity, so its own BSCH counts as another cell's for that call (no identity update, no clock anchor from it
+    there); its blocks still decode, since colour code 0 scrambles without the network.
+  - The AACH. Within 4 s of the home evidence another cell's AACH words still count for maintenance and N.213, and
+    adverse ones can end a live call early (N.208; the follow then returns home) or mute it (N.212), as noise can.
+    Speech counts as home evidence on its CRC and the speech decoder's re-encode check (`TETRA_TCH_MAX_MISMATCH`,
+    `TETRA_HALF_MAX_MISMATCH`); `PROTOCOL_TETRA_FOREIGN_CELL` drives it with full-slot speech bursts from the test
+    transmit chain (`ttb_encode_tch_fs()`), and half-slot speech only through code review.
+  - Direct mode and another cell's BSCH. A guarded DSB is consumed, but `tetra_sb_bsch()` still leaves direct mode
+    (`tetra_dmo_leave()`) before it parses a BSCH that turns out another cell's. Direct mode on a guarded carrier exists
+    only when it was taken on with trunking off, and then trunking on again returns home at once.
 - Tunes in flight. A request the backend reports PENDING stages the new state with everything a failure puts back
   (`tetra_sm_rollback`: the shared tuning state, the followed grant, the timers, the state, and the followed call's
   proof on the carrier, which comes back only while no carrier reset came between: `tetra_confirm_carrier_epoch()`),
@@ -10163,7 +10551,8 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   `app_command_queue.c` that moves the receiver under trunking (Return to CC, a skip or lockout returning to the
   control channel, a control channel candidate or channel cycle) hands the machine over the same way once the calls
   are ended (`hand_tetra_sm_over()`), a tune or return of its own in flight included, so the request failing later
-  puts nothing back.
+  puts nothing back; Return to CC, a skip and a lockout go to the home and leave `trunk_cc_freq` on it
+  (`hand_tetra_sm_home()`, The home above).
 - Synctypes. `DSD_SYNC_IS_TRUNKABLE` includes TETRA, which offers the Qt "Follow this system" control on a TETRA
   carrier; direct mode shares the sync words, and there the state machine finds no control channel and follows
   nothing. `DSD_SYNC_IS_INVERTED` includes the negative TETRA syncs.
@@ -10174,7 +10563,12 @@ turned off while tuned against the engine's own return, and the no-carrier pass 
 at its own deadlines and settles its own return in flight), `ENGINE_GENERIC_TRUNK_RETURN_MATRIX` (the TETRA rows: the no-carrier pass leaves the
 real machine's follow to it, with and without a control channel),
 `ENGINE_TRUNK_RETUNE_REGRESSION` (no P25 timing for TETRA), `APP_COMMAND_QUEUE` (manual Return to CC and the other
-manual tunes, a return in flight included, decode-mode change, a refused switch off TETRA that keeps the follow), `TETRA_BURST_VERDICT` (whole bursts: the verdict, the synchronisation burst's BNCH, the MAC told of failed
+manual tunes, a return in flight included, decode-mode change, a refused switch off TETRA that keeps the follow; Return
+to CC, skip and lockout after another cell's control channel was written, or trunking turned off and on, go home),
+`PROTOCOL_TETRA_FOREIGN_CELL` (the home and every way back to it, rollbacks and the ends of a follow included, trunking
+on again, and another cell's SYNC, SYSINFO, direct mode, signalling, cell-change allocations and AACH words on the
+followed carrier, sent as whole encoded bursts through the burst entry),
+`TETRA_BURST_VERDICT` (whole bursts: the verdict, the synchronisation burst's BNCH, the MAC told of failed
 CRCs and given the colour code, a retune inside a burst, the settle at a burst's entry and the burst it drops whole;
 and, at compile time, the TETRA syncs in the two synctype
 macros), `TETRA_MAC_STATE`, `TETRA_CALLS` (grants through the call records against stand-in tuning hooks).
@@ -10327,7 +10721,8 @@ single "current call".
     uses an expired number again only by assigning it, which takes it from the old holder. The label lives as long as
     its record, which ends at its release, at an identifier taken, at eviction, or after `TETRA_CALL_IDLE_S` with no
     PDU or speech naming it, taking the label with it.
-  - Cell change. Another cell (a BSCH or SYSINFO, `tetra_calls_forget_cell()`) drops every label.
+  - Cell change. Another cell (a BSCH or SYSINFO, `tetra_calls_forget_cell()`) drops every label; one on the carrier
+    of a guarded follow is not taken on and drops none (Trunking).
   - Carrier boundary or retune. A label bound to the carrier the receiver was on applies there no more (the carrier
     epoch moved, and no reassignment there was heard while away); one bound to an allocated carrier number still names
     that channel of the cell, so the call followed onto it keeps it.
@@ -10378,7 +10773,9 @@ single "current call".
   so do the channel's ACCESS-ASSIGN PDUs (`tetra_calls_on_aach()`, from the NDB before its blocks): N.213 (3) of them
   in successive slots of the channel (frame 18 being none) in frames 1 to 17 with header other than 00 and the call's
   marker give it and prove the call on the carrier, which a call followed onto another carrier needs, since its
-  traffic slot carries speech and no signalling of it; N.212 (3) received without the marker or T.212 (18 TDMA frames)
+  traffic slot carries speech and no signalling of it (while the follow is guarded, only within 4 s of the home
+  cell's last CRC evidence on the carrier, `tetra_sm_aach_corroborated()`: Trunking, "Another cell on the followed
+  carrier"); N.212 (3) received without the marker or T.212 (18 TDMA frames)
   without one (at 72 slots) take it back; an AACH of frame 18 that could not be read breaks no run, another usage
   marker bound to the record starts the run over (the same one assigned again does not), and of the follow's timeslots
   only those the record still holds count while the record is on the followed carrier and frequency, its usage marker
@@ -10581,23 +10978,26 @@ decoded, so the decoder forgets the same whatever moved the receiver.
 | Timeslot speech context (`calls.slot_enc`, the heard timeslot) and the heard or anonymous canonical call | the carrier (the anonymous call: one timeslot of it) | addressed MAC-RESOURCEs; heard speech | the heard speech stopping, another cell, entering direct mode, a carrier boundary, another network; the anonymous call also speech of another timeslot or of a call record |
 | Carrier evidence (`confirm`: `carrier_blocks` for publication, `signalling_blocks`, downlink only, for grants) | the carrier | CRC-passed blocks (an uplink SCH/HU or MAC block counts for publication only) | a carrier boundary and a trunking retune (`tetra_confirm_reset()`); the followed call's proof also at another cell, entering direct mode and every change of follow |
 | The followed call's receive permission and AACH counts (`confirm.rx_perm`, `rx_run`, `rx_adverse`, `rx_chan_bad`, `rx_qual_start`) | the followed call on the carrier | its U-plane switching, N.213 qualifying ACCESS-ASSIGN PDUs | its U-plane switching off, N.212, T.212, with its proof (carrier boundary, follow change, retirement); a failed tune puts the permission back, the counts start over |
-| Follow (`sm`) | the session | a grant | release, hangtime, grant timeout, abandon at a carrier boundary, an external return, its channel allocated to a call it does not follow (it moves to one it does); a decode-mode change disowns its tune in flight; trunking off lets go of its call but keeps the channel and asks for no return |
+| Follow (`sm`) | the session | a grant | release, hangtime, grant timeout, abandon at a carrier boundary, an external return, its channel allocated to a call it does not follow (it moves to one it does); a decode-mode change disowns its tune in flight; trunking off lets go of its call but keeps the channel and asks for no return; trunking on again returns home at once |
+| Home (`sm.home`) and the home cell's last CRC evidence on the followed carrier (`sm.t_home_crc_m`) | the follow | a grant followed from any state but TUNED (a reallocation keeps it); a BSCH taken on, a MAC block of the cell, speech, on the followed carrier | wherever the follow ends; rolled back with it |
 | Speech in progress (`voice`) | one transmission | its first burst | speech of another kind, call identifier, timeslot, target or talker; a canonical call ended; a grant after D-TX CEASED; the heard speech stopping; a pause of `TETRA_CALL_SPEECH_END_S` in it, in every mode; another cell; a carrier boundary |
-| Polarity (`dsd_state::tetra_sync.polarity`) | the receiver chain | a synchronisation burst's training, a CRC-passed SCH/HU | the next of them |
+| Polarity (`dsd_state::tetra_sync.polarity`) | the receiver chain | a synchronisation burst whose BSCH or SCH/S passed its CRC (its training's polarity), a CRC-passed SCH/HU | the next of them |
 
 What each decoded event does:
 
 | Event | Leaves | Enters / sets |
 |---|---|---|
-| CRC-passed BSCH, same cell | direct mode | the TDMA clock |
-| CRC-passed BSCH, another cell | direct mode; the cell, the clock, the partial TM-SDUs, the records' channel allocations and event labels, the timeslot speech context, the speech in progress, the followed call's proof | the new cell's identity and clock |
+| CRC-passed BSCH, same cell | direct mode | the TDMA clock, the carrier's polarity (its training's) |
+| CRC-passed BSCH, another cell | direct mode; the cell, the clock, the partial TM-SDUs, the records' channel allocations and event labels, the timeslot speech context, the speech in progress, the followed call's proof | the new cell's identity and clock, the carrier's polarity (its training's) |
 | CRC-passed BSCH, another network | as another cell, and the call records with the follow of their identifiers, the SDS reassembly, the D-MM STATUS shown | the new network |
 | BSCH that fails | nothing | runs the clock to its slot |
 | CRC-passed SCH/HU (uplink) | direct mode | the carrier's polarity, its evidence for publication |
-| DSB (CRC-passed SCH/S, DMO system code) | the trunked carrier's TM-SDUs, timeslot speech context and followed call's proof (`tetra_enter_dmo()`), the TDMA clock | direct mode; with its SCH/H, the colour code, protection and call its message sets; without it, an encrypted SCH/S seals the traffic; a presence signal or a SYNC PDU type not read (managed direct mode, reserved types) only direct mode |
+| DSB (CRC-passed SCH/S, DMO system code) | the trunked carrier's TM-SDUs, timeslot speech context and followed call's proof (`tetra_enter_dmo()`), the TDMA clock | the carrier's polarity (its training's), direct mode; with its SCH/H, the colour code, protection and call its message sets; without it, an encrypted SCH/S seals the traffic; a presence signal or a SYNC PDU type not read (managed direct mode, reserved types) only direct mode |
 | DMAC-DATA (CRC-passed DNB block) | at DM-TX CEASED, DM-RELEASE, DM-DISCONNECT the transmission's colour code and protection | the call it names; its own security class is its message's only |
 | SYSINFO of another main carrier (a cell sharing the colour code) | as a BSCH of another cell | the new cell's SYSINFO |
 | SYSINFO of another location area | as a BSCH of another cell, and the call records | the new area |
+| On the carrier of a guarded follow (Trunking, "Another cell on the followed carrier"): a CRC-passed BSCH of another network or colour code, a DSB, a SYSINFO of another main carrier or location area | direct mode, before a BSCH is parsed (`tetra_dmo_leave()`); nothing else | nothing; a BSCH runs the clock to its slot |
+| A PDU whose channel allocation has its cell change flag set | nothing | nothing; decoded and printed only |
 | Carrier boundary (`tetra_forget_carrier()`) | the carrier evidence, the partial TM-SDUs, the clock, the speech in progress, the timeslot speech context, direct mode with its colour code, protection and call, and with the evidence's epoch the event labels assigned on the carrier | trunked mode, block 1 behind AACH half 1 |
 | Decode-mode change off TETRA (committed) | the whole TETRA state with its tune in flight disowned, the frame sync capture and the publication (`dsd_decode_mode_leave_tetra()`) | nothing |
 
@@ -10993,6 +11393,26 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     (`ui_menu_pop_emptied_frames()`, `menu_core.c`). Tests: `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_TREE_AUDIT`
     (+ `_NO_RADIO`: the submenu's rows, order and handlers, Trunking at 12), `UI_NCURSES_PRINTER_HELPERS`,
     `UI_MENU_NAVIGATION` (an emptied submenu).
+  - Group list reload (discussion #748): Trunking > Channels & groups > Reload group list (`lists.group_reload`,
+    right after `lists.group`, no hotkey since a reload clears temporary TG avoids and call skips) posts
+    `DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD` with no path (`act_group_list_reload()`); the decoder resolves the file
+    after the scan scope is set aside. `group_list_reload_offered()`, `lbl_group_list_reload()` and
+    `act_import_group()` read the configured group file through `menu_configured_group_file()` (`menu_labels.h`; the
+    frame's `dsd_scan_mode_configured_view()`, else `group_in_file`), never a `-Y` row's own list; the label shows its
+    file name (after the last `/` or `\`) in the `ui_text` model, cut to 24 cells and 48 bytes with its marker, since
+    the renderer measures and cuts labels in bytes (a non-ASCII name widens the overlay by its extra bytes, never cut
+    at 80 columns). The import prompt's prefill is held in `CsvPickerCtx` until the "Enter a path..." prompt opens.
+    `ui_menu_tick()` copies each new live decoder toast into the menu's status line
+    (`ui_menu_follow_decoder_toast()`), since an open overlay can cover the main screen's toast line. Every toast is
+    counted: each writer, `ui_set_toast()` included, ends with `dsd_state_toast_publish()` (`<dsd-neo/core/state.h>`),
+    which sets `ui_msg_expire` and increments `ui_msg_seq`, so the same text twice within its second is a new toast;
+    clearing a toast or amending the one just published does not count. A command that keeps a handler's own toast
+    over its generic outcome (`svc_scan_goto_entry()`, a config load's `cfg_adopt_loaded_autosave()`) compares the
+    count before and after the handler. The menu takes a toast as new when its count,
+    expiry or text differs from the last one it showed; sanitizes it through `ui_text_sanitize()`; and holds it no
+    longer than `ui_msg_expire` (`ui_status_expire_by()`). A toast live when the menu or a modal opens is marked seen
+    there, so it never replaces the open hint. Tests: `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_CSV_PICKER`,
+    `UI_MENU_NAVIGATION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`), `APP_COMMAND_QUEUE`.
   - Scan lists (issue #697): Trunking > Scan lists... (`trunk.scan_lists`, right after Avoids, hotkey
     `#` = `DSD_KEY_SCAN_LISTS`, `lbl_scan_lists()` `[2 of 3 on]`, offered by `scan_lists_offered()`, the scan list
     view's `toggleable`: a running trunk scan with 2+ lists) and the `#` key (`ui_menu_open_modal_async()` with
@@ -11015,19 +11435,22 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     it carries the last drain's lists, which can be older; a submit not sent keys on the view's), and a paused refusal
     goes on a resume the modal saw follow the pause (the frame an answer lands in can predate the pause): neither is
     true any more. A "try again" note has no timeout and survives Enter on another row. A waiting row ignores Enter;
-    rows wait independently. Rows and title are drawn through `ui_text_draw_fit()`, as the chooser's are. The modal
+    rows wait independently. Each row counts what its list's file holds and says `on air` when it holds the target on
+    air (a shared target marks every list holding it); the title's target count is
+    `dsd_app_scan_list_view_targets_on()` over the lists the rows show on, so a shared target counts once. Rows and
+    title are drawn through `ui_text_draw_fit()`, as the chooser's are. The modal
     closes on Esc/Left and in its tick when the pair's session changes or the scan goes, dropping its requests. The
     Trunk Scan row (`ui_render_trunk_scan_status()`) reads the "n of m" position from
-    `trunk_scan_rotation_ordinal/_count` (`(-/m)` while the list on air is off) and, with 2+ lists, shows `[list off]`
-    in the room `[avoided]` takes (11 cells then; `[avoided]` when both hold, so 80 columns keep room for the list's
-    name) and adds `List: <name>` after the target (cut at a whole field: the count, then the list, then the id); the
-    paused trunk row adds `Lists: n/m on`.
+    `trunk_scan_rotation_ordinal/_count` (`(-/m)` while every list holding the target on air is off) and, with 2+ lists,
+    shows `[list off]` in the room `[avoided]` takes (11 cells then; `[avoided]` when both hold, so 80 columns keep room
+    for the list's name) and adds `List: <name>` after the target (cut at a whole field: the count, then the list, then
+    the id); the paused trunk row adds `Lists: n/m on`.
     The rigctl rows moved to Input after the width rows (`input.rigctl`, `input.setmod`), and `trunk.sep2` went. Tests:
     `UI_SCAN_LIST_MODAL` (pending, answers, refusals and when their notes go, the paused footer, repeat Enter,
     out-of-order answers, All lists on, full queue, Esc, session change, results from before it opened, a snapshot
-    already past the answer), `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_NAVIGATION` (routing and the modal-only
-    overlay), `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`: the row, its key, the rigctl rows in Input),
-    `UI_NCURSES_PRINTER_HELPERS` (+ `_RADIO`).
+    already past the answer, shared targets counted once), `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_NAVIGATION`
+    (routing and the modal-only overlay), `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`: the row, its
+    key, the rigctl rows in Input), `UI_NCURSES_PRINTER_HELPERS` (+ `_RADIO`).
   - Frequency prompt (issue #670): `ui_open_freq_prompt(c, prefill)` (`menu_actions.h`, built without `USE_RADIO`
     too) is the one opener, for Input > `Frequency...` (`act_set_freq()`, empty field) and for the `=` key (issue #671):
     a string prompt titled `Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)` with capacity
@@ -11879,28 +12302,43 @@ Qt Quick frontend (`src/ui/qt`):
     Unfinished recordings, Export as zip by date preset (the selection first, then the picker; a dismissed picker
     releases it; the owner's name made file-safe by the store's folder rule), progress with Cancel, the result of its
     own selection only, deletes with confirmations, and the limit's removals and failed deletes since the screen opened,
-    and `deletesWaiting`. `CallRow.qml` draws `PlayGlyph.qml` before the time or ENC tag for a row whose `hasRecording`
-    is true (History, Monitor, Home), and its accessible name adds "has a recording". `HistoryDetailSheet.qml` follows
-    its row by uid (`recordingsForUid()` again on every model change) and shows `CallRecordingPlayer.qml` above Hold:
-    play/pause, position and seek with a status line ("Opening…", "Paused") whose line stays laid out, empty and
-    unread, when there is none, so the block is as tall stopped, opening, playing and paused and a sheet centred on
-    its content does not move at a tap (`test_height_steady_across_states`), the parts (the one shown kept on its
-    recording by path) with a Play all parts action
-    (the host keeps no queue: a part that stopped at its end, path kept and position at its length, plays the next; a
-    stop clears the path and ends it), Share (`recordingShareFailed()` worded there), Save to file and Delete. A part
-    the host reports "missing" leaves the block at once, until the store lists it as away (its storage went): from then
-    on the store's availability speaks for it, so it shows away and plays again once the storage is back, without
-    reopening the sheet; closing the sheet stops what it played; a pause the host made in the background (D10) reads as
-    Paused. A single recording's delete confirmation says `deleteMessage` ("Only the audio is deleted. History and
-    detections are unchanged.", a host may set its own), and the Call recordings screen's bulk deletes say the same of
-    their count: a recording may have no History row (never linked, or trimmed) and may belong to a Signal search
-    detection, so "the call stays in History" would not hold (issue #809 B3). `DetectionRecordingsSheet.qml` (Signal
-    search) embeds the same block on one recording at a time. The talkgroup editor's Record switch follows Listening
-    (D11: off and disabled while not tuned, on again when tuned) and is sent with the save only where it differs from
-    what the decoder will hold; `addTalkgroup()` takes it for a row added listening. History shows `saveFailing`. Tests:
-    `UI_QT_QML_CALL_LISTS` (`tst_call_recording_settings.qml`, `tst_call_recordings_screen.qml`,
-    `tst_call_recording_player.qml`, `tst_call_recording_rows.qml`, `tst_talkgroup_edit_sheet.qml`),
-    `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CONTROLLER`.
+    and `deletesWaiting`. Issue #829: the picker (`callRecordingsExportPicker`) is a `DocumentPicker` (save,
+    `application/zip`, `suggestedName` the zip's name); one that is `unavailable` releases the selection and says its
+    message as a problem, and the screen `cancel()`s it when it stops being visible (Back clears `callRecordingsOpen`
+    in `Main.qml`), so the hold goes too; an export already writing runs on. Export all is enabled only while
+    `exportSelection === 0`, like a row's Export as zip, and "An export is running" is said only while a transfer runs
+    (B5). A Done export whose picker saved to the Download folder reads "Exported N recordings to Download/DSD-neo as
+    <name>." with `decoderHost.savedDocumentName()` (the name substituted last, so a `%` in it stays as written),
+    falling back to "Exported N recordings." when it has no name, then the missing count. `say()` reads every problem
+    out once, and the Download-folder result too (the only place that says where the file went), through
+    `Navigation.announce()`; other results are not read out. `CallRow.qml` draws `PlayGlyph.qml` before the time or ENC
+    tag for a row whose `hasRecording` is true (History, Monitor, Home), and its accessible name adds "has a recording".
+    `HistoryDetailSheet.qml` follows its row by uid (`recordingsForUid()` again on every model change) and shows
+    `CallRecordingPlayer.qml` above Hold: play/pause, position and seek with a status line ("Opening…", "Paused") whose
+    line stays laid out, empty and unread, when there is none, so the block is as tall stopped, opening, playing and
+    paused and a sheet centred on its content does not move at a tap (`test_height_steady_across_states`), the parts
+    (the one shown kept on its recording by path) with a Play all parts action (the host keeps no queue: a part that
+    stopped at its end, path kept and position at its length, plays the next; a stop clears the path and ends it), Share
+    (`recordingShareFailed()` worded there), Save to file and Delete. Save to file's picker (`recordingSavePicker`) is a
+    `DocumentPicker` (save, `audio/x-wav`, the part's file name); one that is `unavailable` releases the selection and
+    says why, and the block `cancel()`s a picker still asking when it stops being visible (the sheet closed, the row
+    emptied) or another recording becomes the shown part (issue #829), which releases the hold. `saveFinished()` takes
+    the Download-folder name (`savedDocumentName()` when the picker's `savedToDownloads`) and ends the save before its
+    shown-part return, so a save that finished on another row's sheet leaves nothing behind; a Done one shown here reads
+    "Saved to Download/DSD-neo as <name>." (else "Saved."). Problems and that Download-folder result are read out once
+    each, as on the screen. A part the host reports "missing" leaves the block at once, until the store lists it as away
+    (its storage went): from then on the store's availability speaks for it, so it shows away and plays again once the
+    storage is back, without reopening the sheet; closing the sheet stops what it played; a pause the host made in the
+    background (D10) reads as Paused. A single recording's delete confirmation says `deleteMessage` ("Only the audio is
+    deleted. History and detections are unchanged.", a host may set its own), and the Call recordings screen's bulk
+    deletes say the same of their count: a recording may have no History row (never linked, or trimmed) and may belong
+    to a Signal search detection, so "the call stays in History" would not hold (issue #809 B3).
+    `DetectionRecordingsSheet.qml` (Signal search) embeds the same block on one recording at a time. The talkgroup
+    editor's Record switch follows Listening (D11: off and disabled while not tuned, on again when tuned) and is sent
+    with the save only where it differs from what the decoder will hold; `addTalkgroup()` takes it for a row added
+    listening. History shows `saveFailing`. Tests: `UI_QT_QML_CALL_LISTS` (`tst_call_recording_settings.qml`,
+    `tst_call_recordings_screen.qml`, `tst_call_recording_player.qml`, `tst_call_recording_rows.qml`,
+    `tst_talkgroup_edit_sheet.qml`), `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CONTROLLER`.
   - Android (`android/decoder_host_android_recordings.cpp`, JNI transport in `decoder_host_android.cpp`; D1, D6, D9,
     D10). Roots: `RecordingShare.roots()`, DSD-neo's own folder on the phone's storage (reachable over USB),
     `getExternalFilesDir(null)/Call recordings`, first (named even while away, at the path Android gives the app
@@ -11917,10 +12355,14 @@ Qt Quick frontend (`src/ui/qt`):
     `CancellationSignal` (`cancelRecordingTransfer()`), distinct from the teardown abort. A ZIP's entries are DEFLATED
     at level 0 (measured: BEST_SPEED saved 13% of 8 kHz voice and 23% of NFM at about sixty times the CPU), so it
     streams with data descriptors, ZIP64 as needed; a recording found gone is left out and reported. Progress is polled
-    on the refresh tick; the end comes back queued. A host going away aborts the document transfers, cancels its
-    transfer and waits for the worker at most 2 s; past that (a write blocked on a provider's pipe or on a file URL's
-    storage) it logs, leaves the pool to finish (never deleted) and cuts the job off from itself (`TransferLink`): a job
-    never calls into the host. A single save to a file URL takes the base copy
+    on the refresh tick; the end comes back queued. A Download-folder row (#829, `DownloadsSave.kt`; Android host,
+    "Download folder save") is settled at every exit of `transfer()`, under the transfer's own signal, so a Cancel
+    still reaches it until its publication begins; every exit that never reaches `transfer()` (a busy, unsupported or
+    malformed request in `DecoderHost::beginTransfer()`, every recording gone, a ZIP refused for a file reference, a
+    JNI call with no answer) hands it to `discardPendingDownload()`. A host going away aborts the document transfers,
+    cancels its transfer and waits for the worker at most 2 s; past that (a write blocked on a provider's pipe or on a
+    file URL's storage) it logs, leaves the pool to finish (never deleted) and cuts the job off from itself
+    (`TransferLink`): a job never calls into the host. A single save to a file URL takes the base copy
     (`DecoderHost::copyFileToLocalDocument()`) on the link's own abort flag, which teardown sets and no user cancel
     reaches (system pickers hand out `content://`). Share: `RecordingShare.canShare()` (a regular `.wav`, not a link,
     whose real path, by `toRealPath()` so every link on the way resolves, is inside a root, folder by folder) on the GUI
@@ -12262,7 +12704,9 @@ Qt Quick frontend (`src/ui/qt`):
     lists and saved systems, which would restart the session, are not offered. Its targets are the session's own, as it
     started them (`sessionTargets`, taken once by `captureSessionTargets()` when the start is accepted:
     `KnownFrequencyIndex::sessionTargets()` reads the target CSV each list's start wrote,
-    `ScanListStarter::sessionCsvPath()`, the one file in the list's folder, else the imported file it ran from; kept
+    `ScanListStarter::sessionCsvPath()`, the one file in the list's folder, else the imported file it ran from, in the
+    engine's target order: a row whose id an earlier list of the session gave is that list's target (issue #697) and is
+    left out, so the list holds one entry per engine target at the index the published answers use; kept
     with the accepted start, `AppPrefs::acceptedStartTargets` (device-local JSON), which a recreated Activity that
     adopts the session reads back instead of the files; a list saved or deleted since, which removes its file, changes
     nothing, the saved index being for Explore). A target on a list switched off, avoided, or whose width the input
@@ -12579,14 +13023,15 @@ Qt Quick frontend (`src/ui/qt`):
   the item its `preeditText` as a commit and resets the input method. Callers: `activate()` of `OutlineButton`,
   `GradientButton`, `IconButton`, `DashedActionButton` and `BottomNav` (commit and finish editing: focus leaves the
   text field so `editingFinished` drafts, such as the profile editor's fallback algorithm, update before the action
-  reads them) and of `DecodeChip`, `FilterPill`, `SegmentedControl` segments and `DisclosureRow` (commit only);
-  `ModalSheet.requestDismiss()`; `Navigation.back()` before its focus clear. A button gated on a field's committed
-  text puts that term in `inputValid` (visuals dim on it) rather than `enabled`: its default `enabled` is `inputValid
-  || Navigation.composing`, so it is live while a word is composing, and a tap commits first and calls `clicked()`
-  only if `inputValid` then holds; otherwise it is disabled as before (accessibility and keyboard included), and a
-  real guard (busy, permission) stays in `enabled`. Callers: the profile editor's "Use this key" and "Use override",
-  `KeySheet`'s apply, Scan list "Add frequency", RadioReference Find/Open, the wizard's Continue/Save, Tone filter
-  Apply and Explore's Start.
+  reads them; an `OutlineButton` with `finishesEditing: false` only commits the word, as the RadioReference
+  password's Show and "Check account" do) and of `DecodeChip`, `FilterPill`, `SegmentedControl` segments and
+  `DisclosureRow` (commit only); `ModalSheet.requestDismiss()`; `Navigation.back()` before its focus clear. A button
+  gated on a field's committed text puts that term in `inputValid` (visuals dim on it) rather than `enabled`: its
+  default `enabled` is `inputValid || Navigation.composing`, so it is live while a word is composing, and a tap commits
+  first and calls `clicked()` only if `inputValid` then holds; otherwise it is disabled as before (accessibility and
+  keyboard included), and a real guard (busy, permission) stays in `enabled`. Callers: the profile editor's "Use this
+  key" and "Use override", `KeySheet`'s apply, Scan list "Add frequency", RadioReference Find/Open, the wizard's
+  Continue/Save, Tone filter Apply and Explore's Start.
   Tests: `UI_QT_INPUT_COMMIT`, `UI_QT_QML_CALL_LISTS` (`tst_input_commit.qml`, `tst_modal_sheet_outside_tap.qml`,
   `tst_signal_search.qml`, `tst_settings_backup.qml`, `tst_csv_import_flow.qml`, `tst_talkgroup_edit_sheet.qml`,
   `tst_modal_input.qml`, `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`, `tst_tone_filter_sheet.qml`,
@@ -12595,13 +13040,76 @@ Qt Quick frontend (`src/ui/qt`):
 - QML plus C++ view-models (metrics, call history + per-view filters, saved systems, imported CSV files, app
   preferences, command bridge) that poll app-control on a timer; used by the Android app today and intended as the
   shared basis for a desktop GUI. `imported_files_model.{h,cpp}` is the library behind the CSV pickers: it copies
-  picked documents into durable app storage through `DecoderHost::importDocument()` and dry-run validates them via
+  picked documents into durable app storage through `DecoderHost::importDocument()` (an update by the row's stored
+  path, `importBundleReplacing()`, see `qml/CsvImportFlow.qml` below) and dry-run validates them via
   `<dsd-neo/core/csv_validate.h>` (`src/core/file/dsd_import.c`, `src/core/file/p25_bandplan_csv.c`, and
   `src/core/file/source_alias_csv.c`) for row-count feedback. Kinds are `chan`, `group`, `keysDec`, `keysHex`,
   `p25Bandplan`, and `src` (source radio ID names), with `src` appended after `p25Bandplan`.
   `radio_reference_model.{h,cpp}` plus `qml/RadioReferenceScreen.qml` are the RadioReference import: the model drives
   the runtime client, previews what an import would produce, and writes the generated CSVs into that same library with
-  provenance, while the add-system wizard stays the single writer of a saved system. `systemDetails.protocolToken`
+  provenance, while the add-system wizard stays the single writer of a saved system. The account check's verdict
+  (`accountState`: `AccountNone`, `AccountChecking`, `AccountVerified`, `AccountRejected`, `AccountExpired`,
+  `AccountFailed`; `accountMessage` holds the Failed text; `checkingAccount`; `hasPassword`) always describes the
+  current credentials. Every credential change (AppPrefs `rrUsernameChanged`/`rrAppKeyChanged`, `setPassword()`,
+  `clearPassword()`) goes through `onCredentialEdited()`, which bumps the credential revision, quietly retires an
+  account check still in flight (the `cancel()` steps, with the status cleared instead of "Cancelled."; other fetches
+  keep running) and resets the state to None. `checkAccount()` is a no-op while a check is in flight. Any other new
+  batch and `cancel()` retire a check in flight (state None); a finished verdict survives them both, so only an edit
+  clears it. Any other fetch refused for the current revision (`AuthError`, `SubscriptionError`) sets Rejected or
+  Expired too, so "Account verified." never stands next to a notice that the password was refused; other failures
+  leave the verdict alone. A refusal from an older revision (a fetch an edit left running) settles its batch with no
+  error, since it blames values that were never sent. The verdict is set before the reply settles `busy`. A verified
+  check calls the C++-only `setVerifiedSink()` callback synchronously with the request's own username and password
+  (copied out of its `dsd_rr_auth`, scrubbed after the call, dropped if the revision moved on); no signal or QML
+  property carries a credential. A QString that held a credential (the model's password and verified copies, a fill in
+  `deliverSignInFill()` and on its way from Android) is overwritten before it is dropped by `scrub_qstring()`
+  (`qstring_scrub.h`), best effort: a string still shared with another holder detaches, and only the fresh copy is
+  zeroed. Password managers: `sign_in_autofill.{h,cpp}` (`SignInAutofill`, the `signInAutofill` context object, built in
+  `qt_ui.cpp` over the host, the model and AppPrefs) describes the sign-in form to the platform's autofill support
+  through `DecoderHost`'s no-op `signInAutofillBegin`/`Field`/`Request`/`Commit`/`End` virtuals (in the plain `public:`
+  section, not slots: QML reaches every slot and signal of `decoderHost`; Android implements them, "Sign-in autofill"
+  under Android foundation integration contracts; the desktop does nothing). Field 1 is the username, field 2 the
+  password, whose structure value is always empty.
+  `begin()` hands out a token (positive, only growing) and retires the older one; every call and fill carries it, and
+  any other token is dropped. `track(token, field, input, visible)` follows a field's inner TextInput through a
+  `QPointer` (focus from `hasActiveFocus()`), and `note()` sets the username's structure value. A rect is the input's
+  geometry (not `boundingRect()`, which for a TextInput is its text) mapped to the scene, cut by each `clip`
+  ancestor's `clipRect()` and by the window, scaled by the window's device pixel ratio once and rounded outward; empty
+  means not visible. A 100 ms sampler runs while a token is live and a tracked field is shown, and sends a field only
+  when its rect, visibility or focus changed. A field gaining focus gets one `signInAutofillRequest` per focus entry,
+  once its rect has been still for 300 ms (movement restarts the wait; focus loss and `end` cancel it). Both timers run
+  only for a host whose `signInAutofillSupported()` is true (Android); the base host's is false, so on the desktop the
+  calls still come but nothing is sampled or awaited. The model's verified sink commits the checked credentials for the
+  live token once its form has shown a field (a card hidden since still commits), and only when the check was submitted
+  under that token: the relay records the live token as `checkingAccount` turns true, and a check submitted under an
+  earlier session or none is not committed. A fill comes in through
+  `DecoderHost::setSignInFillSink()`/`deliverSignInFill()`, a C++ callback whose strings are scrubbed after it returns:
+  for the live token the relay itself sets `AppPrefs::rrUsername` and calls `RadioReferenceModel::setPassword()` (an
+  empty value fills nothing), then emits the credential-free `filled(token, hasUsername, hasPassword)`, so a filled
+  password never reaches QML (`UI_QT_SIGN_IN_AUTOFILL`, its window at a 1.5 device pixel ratio). The sign-in form is
+  `qml/RadioReferenceAccountEditor.qml`, used whole by the import screen's
+  credentials card and by `qml/RadioReferenceAccountScreen.qml` (Settings → Account; the Settings row's subtitle names
+  the fields the build asks for): username, password with a `RevealButton` (`finishesEditing: false`, "Show
+  password"/"Hide password"), the key heading, field and link only without a baked key, the hint, "Check account"
+  and a result line that reads only `accountState`/`accountMessage` (with a fallback for an empty Failed message; the
+  import screen sets `showsFailures: false`, since its notice line reports a failure). The password field is a draft:
+  cleared and masked whenever `active` (the screen's visibility) changes, committed by `setPassword()` only when
+  non-empty, its placeholder "Entered for this session" while empty with `hasPassword`, and none otherwise (the
+  label is read once). A field's commit checks the account only while the credentials are ready and unchecked
+  (`accountState` None), so an untouched field never re-asks; "Check account" (`finishesEditing: false`) moves the
+  focus off the field under `checkCommitting` and checks once. Becoming active takes a token (`signInAutofill.begin()`),
+  tracks the two inner inputs with the form's visibility and notes the username; a visibility change is reported once
+  settled (a zero-interval child `Timer`), because the import card hides and shows again within one commit or fill
+  (`credentialsReady` turns true just before `checkAccount()` sets Checking) and that flicker must not reach the relay
+  or mask a revealed password; a card that has settled hidden with no field focused also clears its draft; becoming
+  inactive ends it. `filled` for the form's own token commits the field the fill left alone, clears the draft when the
+  password was filled, and checks once, under `fillApplying`; a filled username first finishes any composing word and
+  binds the field to `prefs.rrUsername` again, since a name equal to the stored one changes nothing there and would
+  leave a typed draft in the field to be committed over the fill. The import card stays up while `checkingAccount`.
+  The QML fixtures fake the relay (`SignInAutofillRecorder` in `tests/ui/qml_test_context.h`, whose `fill()` fires
+  `filled`), and `FakeRadioReference.qml` follows the account state (`settle()`); `tst_radioreference_screen.qml` and
+  `tst_settings_layout.qml` cover the forms.
+  `systemDetails.protocolToken`
   (`dsd_rr_protocol_token()`, "tetra") is how QML tells the protocol apart, and the talkgroup summary (count,
   encryption counts, sample) holds only the rows the group writer keeps (`dsd_rr_talkgroup_writable()`, then the first
   row of each ID), so the preview agrees with the file. The screen's TETRA note (`radioReferenceTetraNote`, repeated in
@@ -12858,6 +13366,31 @@ Qt Quick frontend (`src/ui/qt`):
   `UI_QT_BACKUP_ARCHIVE` (`test_startup_clears_missing_library_paths_twice`,
   `test_startup_keeps_paths_it_cannot_check`),
   `UI_QT_SCAN_LIST_ROUNDTRIP` (`checkFallbackPathsClear`), `UI_QT_QML_CALL_LISTS` (`tst_imports_remove.qml`).
+- Replacing a library file in place (discussion #748): `ImportedFilesModel::updateFile()` (Update from file) and
+  `refreshGeneratedFile()` (RadioReference refresh) validate the staged file first, then call `replaceRowFile()`,
+  which runs backup, install (`DecoderHost::importLocalFile()`, a `QSaveFile` copy of the staged file, so the lock is
+  held for a file-sized copy) and commit-or-rollback under one `ManagedFileLock` (Core, "the group file stands for
+  the list"), so the decoder's rewrite check and its replace never straddle a Qt install. A rollback
+  (`CsvReplacementBackup::restore()`) puts the old file back only when the file still has the SHA-256 of what this
+  update installed (taken under the lock right after the install): a newer file, an editor's save, stays, and the
+  update reports failure as before. `replaceBundle()` (trunk-target bundles) takes no lock: the decoder never writes
+  those files. `ImportsScreen.qml` then calls `reloadIfInUse()` for a `group` or `chan` row whenever a session runs,
+  after an update (not a new import, a cancel or an unusable file) and after a refresh: it posts
+  `CommandBridge::reloadGroupList(path)` / `reloadChannelMap(path)`, and the decoder reloads the file only if it is
+  the one it uses at that moment. The screen no longer takes `sessionSystem` (the saved system a session started
+  from, which a manual Apply does not change). Its notice reads `Updated · 42 talkgroups · sent to the running
+  session` (`Updated`, never `Imported`, for an update), or `Updated, but the decoder is not accepting commands`.
+  `emptyList()` (a `group` row with no rows and none skipped) and `usable()` treat a header-only talkgroup list as a
+  list, as the decoder does: the notice says `Updated · empty list`, the row `Empty list · <date>` in the normal
+  colour, and it is reloaded; a channel map or other kind with no rows stays `No usable rows`. Main.qml's saved-system
+  edit of the running system posts `importGroupList(path)` for a changed group file, unless
+  `ImportedFilesModel::groupListCounts(path)` (`{ok, accepted, skipped}`, the file read now as a talkgroup list,
+  since the decoder rewrites a list in place and the import's counts go stale) says it has data rows none of which
+  load, or the file cannot be read: then it posts `clearGroupList()`, since the refused import would leave the
+  previous system's list live, with this system's edits saved into that list's file. A path outside the library is
+  read the same way. Tests: `UI_QT_IMPORTED_FILES` (`test_update_waits_for_decoder_rewrite`,
+  `test_rollback_keeps_newer_files`, `test_group_list_counts_read_the_file_now`), `UI_QT_QML_CALL_LISTS`
+  (`tst_imports_live_reload.qml`, `tst_main_live_csv_apply.qml`), `UI_QT_CONTROLLER` (`test_reload_bridge`).
 - `talkgroup_list_model.{h,cpp}` polls the effective core policy's source-context/generation pair after call-history
   ingestion, merging listed rows with uncovered talkgroups heard this session (history rows of `historySession`).
   Every history change rescans the whole history (a merge can move a row to another session, so contributions are
@@ -13111,8 +13644,10 @@ Qt Quick frontend (`src/ui/qt`):
     (`<CacheLocation>/backup/<job>.dsdbak` or `.in`, `restore-staging-<job>/`), so a cancelled job removes only them
     (`discard_staging()` for its staging directory). Construction sweeps both (`sweep_stale_staging()`).
     `prepareExport()` snapshots on the UI thread, then builds and seals on the worker; `saveExport()` calls
-    `DecoderHost::copyFileToDocument()`; `inspectRestore()` copies the document with `copyDocumentToFile()` (capped at
-    64 MiB), opens, parses, checks free space (twice the archive plus 1 MiB) and stages, and the UI thread promotes.
+    `DecoderHost::copyFileToDocument()`, and a refused save (busy, nothing prepared) hands its reference to
+    `discardPendingDownload()` (#829), since nothing will write it; `inspectRestore()` copies the document with
+    `copyDocumentToFile()` (capped at 64 MiB), opens, parses, checks free space (twice the archive plus 1 MiB) and
+    stages, and the UI thread promotes.
     `commitRestore()` refuses while a job runs, a session is on screen or `engineBusy()`, commits, and asks `quitApp()`
     once; a refused commit leaves the stage as it was. `restorePending` follows the committed stage on disk, and
     `restoreCancellable` (pending, no complete journal) with it; `discardRestore()` reports `RestoreInProgress` once the
@@ -13129,7 +13664,14 @@ Qt Quick frontend (`src/ui/qt`):
     the flow's whole length, kept while the app closes) joins `autoStartBlocked`, a USB grant that lands while it is set
     starts nothing, and entering a restore drops pending starts (`dropPendingStarts()`). An unlock error about the file
     (not a backup, newer, too large, damaged, unreadable) swaps Unlock for "Choose another file", which reopens the
-    picker inside the same flow. A commit refused as `SessionActive` or `Busy` keeps the stage and the confirmation
+    picker inside the same flow as a new request, so only a new answer is taken, never the failed file again (#829 B2).
+    Both pickers are `DocumentPicker`s (`backupSavePicker`: save, `application/octet-stream`, `suggestedName` from
+    `suggestedFileName()` before each open; `backupOpenPicker`: open). A picker that is `unavailable` ends the flow
+    through `finish(message, true)`, the save after `discardExport()`, so the card shows the reason as a problem
+    (`AlertMessage`) and `setNotice()` announces it once (`announcements` counts them for tests); `finish()` closes
+    both pickers silently. A save that went to the Download folder (`savedToDownloads`) reads "Backup saved to
+    Download/DSD-neo as <name>." with `decoderHost.savedDocumentName()`, or "Backup saved." when that is empty, then
+    the "Not included" text. A commit refused as `SessionActive` or `Busy` keeps the stage and the confirmation
     (`ConfirmDialog.closeOnConfirm: false`, its `error` line) for a retry; only Cancel discards. The flow's last result
     (`notice`) is shown under the row of the action it reports on (`noticeAction`, "export" or "restore", set with
     the notice; issue #828: an export refusal under Restore read as Restore's): between Export backup and Restore
@@ -13223,10 +13765,95 @@ Qt Quick frontend (`src/ui/qt`):
     visible ("Qt QML editing convention"). Tests: `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`,
     `tst_history_session_identity.qml`, `UI_QT_QML_A11Y_CHURN` (`tst_a11y_scan_churn.qml`
     `test_b2_target_names_leave_the_closed_key_sheet_quiet`, `tst_a11y_closed_sheets.qml`).
+- Spectrum view items (`spectrum_view_item.{h,cpp}`, registered as `SpectrumTrace` and `Waterfall`). The trace is a
+  `QQuickItem` drawing scene-graph geometry: three `QSGGeometryNode` layers (grid, area, line) under one root, rebuilt
+  in place each sync. Line and grid are triangles from `spectrum_trace_geometry.{h,cpp}` (Qt-free): full-width segments,
+  round joins, square end caps, inner sides cut along each turn's bisector, and a one-device-pixel coverage ramp centred
+  on the pen edge, colored per vertex with premultiplied alpha. Every layer is 32-bit-indexed with no indices, so Qt
+  never merges it into a 16-bit batch (a wide trace passes 65534 vertices). On the software scene graph
+  (`QT_QUICK_BACKEND=software`, or Qt's own fallback with no RHI, as in every headless test) geometry nodes are not
+  drawn, so `updatePaintNode()` checks `graphicsApi()` and paints the whole chart with QPainter into one `QSGImageNode`
+  instead. The item clips to its rectangle and draws nothing at 1 px or less. It was a `QQuickPaintedItem`: its
+  antialiased stroke cost 100-150 ms a frame on a phone, inside the sync while the GUI thread waits. The waterfall is
+  still a painted item (one image blit, 2-3 ms). Both keep the model in a `QPointer` and forget it on `destroyed`. The
+  trace's column mapping (`freq_to_bin` of the view edges, `resample_columns`) is the one `TunerMarker.qml` and the axis
+  labels share; taps and hops are bounded inward instead (`first_bin_at_or_above`/`last_bin_at_or_below` in
+  `spectrum_math.h`), so a window edge between two bin centers never admits the bin outside it. Tests:
+  `UI_QT_SPECTRUM_TRACE_GEOMETRY` (coverage against the exact ramped outline), `UI_QT_SPECTRUM_MODEL` (the GPU tree
+  through a test hook, the software picture, a real window, one fold per frame, model destruction, fractional edges),
+  `UI_QT_SPECTRUM_MATH`.
 - Platform-free by rule: it may include Qt and the public `app_control`, `core`, `runtime` and `crypto` headers (the
   backup seals through `<dsd-neo/crypto/backup_seal.h>`), never engine/io/protocol internals, and never platform APIs
   (`QJniObject`, `jni.h`, `<android/*.h>`). Platform specifics live behind the `DecoderHost` interface, implemented per
   host (`android/decoder_host_android.cpp` today).
+- Document picker (issue #829): `DecoderHost::documentPickerSupported` (CONSTANT; base false) tells QML to ask the
+  host for documents instead of opening Qt's `FileDialog`; QML branches on it, never on `Qt.platform.os`.
+  `requestOpenDocument()` and `requestSaveDocument(suggestedName, mimeType)` return a new id, larger than every earlier
+  one (`nextDocumentRequestId()`, protected, so a platform host numbers its own requests the same way). Each id is
+  answered exactly once, after the request returned, by `documentPicked(id, reference, displayName, inDownloads)`,
+  `documentPickCancelled(id)` (backed out, or superseded by a newer request) or `documentPickUnavailable(id, reason)`
+  (`noPicker`, `noSavePicker`, `unreadable`, `noResult`, `failed`, `unsupported`). The base host answers every request
+  `unsupported`, queued. `cancelDocumentRequest(id)` drops a pending answer; `savedDocumentName(reference)` names a
+  finished Download-folder write without I/O (base: empty). These run on the Qt thread; `discardPendingDownload(
+  reference)` (base no-op) may run on any thread and never blocks. The reference is a plain string from end to end,
+  never a QML `url` or `QUrl::toString()`. QML tests: the `decoderHost` map and `ImportOnlyHost` both fake the picker
+  (`documentPickerSupported` true unless `testContext.setDocumentPickerSupported(false)`); a case reads
+  `testContext.lastDocumentRequest()` / `documentCalls()` and answers with `answerDocumentPicked`,
+  `answerDocumentCancelled`, `answerDocumentUnavailable` (on whichever host is installed) and `setSavedDocumentName`.
+  Test: `UI_QT_IMPORTED_FILES` (base defaults).
+- `qml/DocumentPicker.qml` is the one picker screens use (`mode` "open"/"save", `title`, `nameFilters`,
+  `defaultSuffix`, `mimeType`, `suggestedName`). `open()` asks the host when `documentPickerSupported`, cancelling its
+  own earlier request first, and otherwise opens a `FileDialog` it makes through an `Instantiator` (a QtObject root,
+  since `visible` here means "a request is waiting" and Item's is FINAL; a Loader would leave the dialog without a
+  window). Each `open()` ends in exactly one `accepted(reference, displayName)`, `rejected()` or `unavailable(reason,
+  message)`, the message from `messageFor(reason)`, unless `close()` ends it silently first. Owners that go away or are
+  reused call `cancel()` (emits `rejected` only while a request waits), so their own cancel path runs; flows that are
+  ending call `close()`. Only the live id is answered; a Download-folder pick for a request this picker gave up goes
+  to `discardPendingDownload`, never one another picker waits for. `savedToDownloads` says the last accepted save
+  went to the Download folder; it is set before `accepted`, so a save owner that no longer wants an accepted pick
+  (`BackupFlow.savePicked()`, `CallRecordingPlayer.savePicked()`, `CallRecordingsScreen.exportPicked()`) discards a
+  Download-folder row itself. On the desktop path an open clears the dialog's selection (`currentFiles = []`:
+  `selectedFiles` is read-only and `selectedFile = ""` is refused), so an accept with no new choice answers
+  `noResult`, never the previous file; a dialog that cannot open answers `failed`. Test: `UI_QT_QML_DOCUMENT_PICKER`.
+- `qml/CsvImportFlow.qml` imports a CSV and its companions for three owners: Imported files (`ImportsScreen`), the scan
+  list editor's target CSV (`ScanListScreen`) and the wizard's trunking-data fields (`WizardScreen`). Its primary and
+  companion pickers (`csvPrimaryPicker`, `csvCompanionPicker`) are `DocumentPicker`s with no filter; the primary pick's
+  `displayName` is the stored file's name, a companion's names its "Selected:" line until a library choice names the
+  library file (#829 B3). `pick(kind, row, context)` / `begin(…, context)` first cancel the import before (with that
+  import's context), then keep `context`; every `finished` result carries it as `result.context`. `complete()` closes
+  both pickers silently; an owner ends a pick by calling the flow's `cancel()`. Ownership (#829 B4): each owner cancels
+  its flow when it stops being visible (`onVisibleChanged`, so Imports' Back, which clears `importsOpen` in `Main.qml`
+  directly, and the wizard's Save, which clears `wizardOpen`, both count) and when it is reused
+  (`WizardScreen.openForAdd/openForFound/openForEdit`, `ScanListScreen.openFor`). Newer choice wins: the wizard keeps a
+  generation per CSV field (`csvGenerations`, bumped by `assignCsvPath()` and by `applyRadioReference()` for the files
+  it writes), the scan list editor one for its targets (`targetsGeneration`, bumped by `selectTargets()` and the target
+  source switch), the flow one per companion slot (`companionGenerations`, bumped by every write to the slot). A pick
+  carries the generation it was asked with (`importCsvFile()` passes `{target, keyFormat, generation}`; the scan list
+  `{generation}`) and the owner's `wanted(context)` answers whether it still holds (so a `pick()`/`begin()` against an
+  owner with `wanted` must carry that owner's context, or it is dropped); a pick that comes back after a newer choice
+  ends as cancelled with nothing imported and no notice, and a late companion pick leaves the slot alone (B6: a later
+  pick never carries an earlier reference). The wizard's `finished` handler fills `result.context.target` with its key
+  format, never `pickerTarget`, which the next sheet rewrites. An update names its row by the stored path
+  taken at pick time (`replacePath`); `ImportedFilesModel::importBundleReplacing()` resolves it at delivery and refuses
+  a row that went, or an empty path, with `error` "changed" ("That file changed while you were picking. Try again."), so
+  an update never becomes a new import; a new file goes through `importBundle()`. Choosing a decryption profile in the
+  wizard clears the key file and bumps its generation too. A primary picker that is `unavailable` ends the flow with
+  `{ok false, error "unavailable", detail: message}`; a companion one brings the sheet back with every choice kept and
+  the message in `csvCompanionNotice` (cleared by the next "Choose a file…", a library choice or the end of the import).
+  Owners show `result.detail` (Imports' notice, the scan list's validation line, the wizard's `csvNotice` with "Could
+  not read that file" as the fallback); each of those lines and the companion notice is an `AlertMessage` while it
+  reports a problem and is read out once per failure while `Navigation.allows` it (`announced`/`announcements` for
+  tests). Tests: `UI_QT_QML_CSV_IMPORT_FLOW`, `UI_QT_IMPORTED_FILES`, and the scan list, imports, wizard band plan,
+  modal input and settings layout QML suites.
+- The wizard's Replay file Browse (`WizardScreen.qml`, issue #829) opens `wizardSourcePicker`, a `DocumentPicker`
+  (open, no filter), and never touches `pickerTarget`. An accepted pick goes to `decoderHost.importContentUri(reference,
+  displayName)`; a path replaces `fileText`, and "" (the copy failed) keeps it and sets `sourceNotice` to "Could not
+  copy that file.", plus " The previous file is still selected." only when there was one (B8). An `unavailable` picker
+  sets `sourceNotice` to its message; backing out changes nothing. `wizardSourceNotice`, under the Replay file row, is
+  an `AlertMessage` read out once per failure while `Navigation.allows` it (`announced`/`announcements`, shared with
+  `csvNotice`); it clears on the next Browse, a successful copy, and the wizard opening or closing.
+  `endSessionPicks()` (on hide and in `openForAdd/openForFound/openForEdit`) cancels Browse with the CSV import. Test:
+  `tst_wizard_browse.qml` in `UI_QT_QML_CALL_LISTS`.
 - Backend code must never include Qt headers; `cmake/arch_rules.cmake` enforces both directions
   (`tools/check_arch_rules.sh`, run by the pre-push hook and the CI guardrails job).
 
@@ -13606,13 +14233,16 @@ metadata in Android CI; `ANDROID_R8` tests its failure cases. Device testing of
 optimized releases and mapping retention are described in `android/README.md`.
 
 Shared command IDs 592/593/594 are the talkgroup row set, remove and export (`apply_cmd_tg_row_set()`,
-`apply_cmd_tg_row_remove()`, `apply_cmd_tg_list_export()` in `app_command_queue.c`); each is refused as stale unless
-its `policy_context` and `policy_generation` match the list (`tg_edit_check_version()`). The row `fields` mask selects
+`apply_cmd_tg_row_remove()`, `apply_cmd_tg_list_export()` in `app_command_queue.c`); each is refused as stale unless its
+`policy_context` and `policy_generation` match the list (`tg_edit_check_version()`). The row `fields` mask selects
 listen/priority/preempt/name/tags/record (record applied after a mode change in the same edit). Set and remove refuse a
-learned alias row, rewrite the group file (outside a scan row) and end an active group call the edit newly blocks (by
-mode or allow list) as a lockout does, returning to the control channel (`tg_listen_release_blocked_calls()`); export
-is refused for a scan row's list, writes the list to the given path and makes it the session's group file. IDs 652/653
-are a typed, bounded direct key (`apply_cmd_key_direct()`: each key type's CLI parsing through
+learned alias row, rewrite the group file (outside a scan row; `tg_listen_persist()` keeps the edit for the session when
+the write returns 1 or 2, Core "the group file stands for the list") and end an active group call the edit newly blocks
+(by mode or allow list) as a lockout does, returning to the control channel (`tg_listen_release_blocked_calls()`; so do
+a group list import, reload and clear whose global list judges the calls, read before the scoped suspend and released
+after the resume, `ui_group_list_calls_before()`); export is refused for a scan row's list, an incomplete list, or a
+list whose own file changed on disk, writes the list to the given path and makes it the session's group file. IDs
+652/653 are a typed, bounded direct key (`apply_cmd_key_direct()`: each key type's CLI parsing through
 `dsd_scan_keys_apply_direct()`, keeping an active scan row's signalled key IDs, key loader and profile) and an int32
 force-key mode 0/1/2 (`apply_cmd_force_key()`; a change bumps the key epoch). Force-key and the export run against the
 saved scan baseline as configured scan-mode settings (`command_updates_scan_mode()`).
@@ -13882,13 +14512,209 @@ thread, which the rest of the interface never is.
   document is open closes it with `closeWithError()`, so a provider reading a pipe or socket sees the failure rather
   than a short document, and deletes it; only a whole save closes normally. The write side is
   `DocumentCopies.beginWrite()` and its `DocumentWrite` (`finish(length)` / `fail()`), which call recording exports use
-  too.
+  too. `fail()` leaves a Download-folder row to `DownloadsSave` (`deleteDocument()` cannot remove a MediaStore row), and
+  `copyFileToDocument()` settles one at every exit: published only when the whole save was written, so a row that could
+  not be published fails the save. A save the host never hands to Kotlin (aborted, no resolver) or whose JNI call
+  failed discards it.
 - `abortDocumentTransfers()` (only `~BackupModel`) cancels the `CancellationSignal` of every provider call in flight,
   raises `DocumentTransfer`'s sticky flag, which every chunk checks, and then the base host's. The delete is skipped
   after an abort, so a save stopped partway leaves a partial document, which never opens as a backup.
 - Tests: `UI_QT_ANDROID_HOST` (engine-busy decision, document dispatch), `ANDROID_DOCUMENT_TRANSFER_JVM`
-  (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` against provider stubs). Real providers, JNI and
-  `finishAndRemoveTask()` need a device or emulator.
+  (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` against provider stubs), `UI_QT_BACKUP_MODEL` (a refused
+  save discards its reference). Real providers, JNI and `finishAndRemoveTask()` need a device or emulator.
+
+Document picker (issue #829; the host API and `qml/DocumentPicker.qml` are under UI, Qt, "Document picker"):
+`DecoderHostAndroid::documentPickerSupported()` is true, so no screen opens Qt's `FileDialog` on Android and Qt's own
+request code (1305) is never used.
+
+- Requests (`decoder_host_android_documents.cpp`, Qt thread): each takes the base host's next id and becomes the live
+  one (`m_document_request`); a live one it replaces is cancelled in `DocumentPicker` too (so the two agree even when
+  the new request never reaches it) and answered `documentPickCancelled`, queued. The JNI shims in
+  `decoder_host_android.cpp` (`platformOpenDocument()`, `platformSaveDocument()`) hand `DocumentPicker.open()` /
+  `create()` Qt's context only when `QAndroidApplication::isActivityContext()`; false there, or a call that failed
+  (both Kotlin entries return true), answers `documentPickUnavailable(id, "failed")`, queued, unless the request was
+  replaced first. `cancelDocumentRequest()` forgets the live id and calls `DocumentPicker.cancel()`; other ids are
+  ignored.
+- Answers: `refresh()` drains `DocumentPicker.pollResult()` every tick (`refreshDocumentPicks()`), live request or
+  not, and `android/document_pick_record.h` (JNI-free) turns each JSON record (`{"id","kind":"picked","uri","name",
+  "downloads"}`, `{"id","kind":"cancelled"}`, `{"id","kind":"unavailable","reason"}`) into the signal, for the live id
+  only, once. A record for another id is dropped, and a dropped `downloads` row goes to `discardPendingDownload()`;
+  malformed records and unknown kinds are ignored. Nothing is answered inside a request call.
+- `DocumentPicker.kt`: a process-level object whose request state belongs to the main looper (launches are posted
+  there); its record queue is locked on itself, since a `@Synchronized @JvmStatic` member of an object locks the class.
+  A request is its id; while an activity it launched is out it also holds that launch's code, the next in
+  `0x5D0000..0x5DFFFF` (wrapping). `DsdNeoActivity.onActivityResult()` hands it every result first; it claims the whole
+  range and settles only the live launch's code, so the late `RESULT_CANCELED` Android sends for a launch that threw
+  `ActivityNotFoundException` (the code is retired at the throw), a result after process death (no request) and one
+  for a replaced request are dropped. Each request settles once; a newer one settles the one it replaces `cancelled`.
+  A request retired (cancelled or replaced) while its launch is out has that launch closed through
+  `PickerHost.stop(code)` (`Activity.finishActivity(code)`, on the main looper), as the desktop path closes its
+  `FileDialog`: left up, a save picked there would leave an empty document nothing writes. A launch that threw has no
+  code to close. The `CREATE_DOCUMENT` result that comes back after process death cannot be stopped (no request is
+  left to close it): its empty document stays (decided limit, `android/README.md` "Known limits").
+  - Open: `ACTION_OPEN_DOCUMENT` + `CATEGORY_OPENABLE`, `*/*`. With no app for it, GET_CONTENT: `all` = the
+    `GET_CONTENT` + OPENABLE handlers for `*/*`, `capable` = the union of the same query for `application/*`, `text/*`
+    and `audio/*`. None capable: `noPicker`; one: GET_CONTENT `*/*` straight to it; several: `Intent.createChooser()`
+    (no title: the platform's own) with `EXTRA_EXCLUDE_COMPONENTS` = `all - capable`. A bare `*/*` GET_CONTENT also
+    reaches the system photo picker, which with no DocumentsUI to forward to relaunches itself until Android removes
+    the app's task; its `image/*`/`video/*` filters match no family. The manifest's `<queries>` entry (GET_CONTENT +
+    OPENABLE, `*/*`) makes the handlers visible to the query.
+  - Save: `ACTION_CREATE_DOCUMENT` + OPENABLE, the type and `EXTRA_TITLE`. With no app for it, the row comes from
+    `DocumentPicker.downloads` (`DownloadsFallback.insert(name, mime, onDone)`, answered from any thread and moved to
+    the main looper) within 10 s: a row is `picked` with `downloads` and the requested name, none or the deadline
+    `noSavePicker`. A row that comes late, or for a request cancelled or replaced, goes to
+    `DownloadsFallback.discard()`. The default, `DownloadsFolder`, is `DownloadsSave` (below); before the host handed
+    it the resolver it makes no row.
+  - Result: `RESULT_OK` takes `data` or ClipData item 0; none is `noResult`, a scheme other than `content`
+    (any case) `unreadable`. A save's document settles `picked` at once with the requested title (no save owner shows
+    the name). An open's display name is a `DISPLAY_NAME` query on its own one-thread executor with a
+    `CancellationSignal`, through the application's resolver; a lookup task checks the signal before its provider
+    call, a retired one is removed from the queue, and at the 2 s main-looper deadline the signal is cancelled and the
+    decoded last path segment stands in. Any other result code is `cancelled`. The reference is `uri.toString()` as
+    it came; no persistable grant is taken.
+  - `proguard-rules.pro` keeps `open`, `create`, `cancel` and `pollResult`; the class constant sits in
+    `decoder_host_android.cpp`, which calls them.
+- Download folder save (`DownloadsSave.kt`): the owner of the app's pending MediaStore rows. The MediaStore and grant
+  calls (insert, the publication's `update()` and name read, every delete, the grant release) run on its own
+  one-thread executor, except one: a `settle()` that finds the executor shut down (`RejectedExecutionException`)
+  deletes the row it claimed itself, on the writer's thread. One lock guards only the in-memory rows (`pending`;
+  `writing`, those a write took) and the `published` names (the last 16, oldest evicted), and is never held across a
+  provider call.
+  - `insert()`: a `MediaStore.Downloads` row with `DISPLAY_NAME`, `MIME_TYPE`, `RELATIVE_PATH` `Download/DSD-neo` and
+    `IS_PENDING` 1, plus `DATE_EXPIRES` now + 7 days on API 29 only (Android 11+ sets a pending row's expiry itself;
+    Android 10 sets none but deletes expired rows in idle maintenance). MIME types: backup `application/octet-stream`,
+    zip `application/zip`, WAV `audio/x-wav`, so MediaProvider keeps the extension when it renames a clash.
+  - Claims: settling or discarding a row first takes it out of the sets, so one row is published or deleted, never both.
+    `take()` at the start of a write moves a row to `writing`; `discard()` claims only rows no write took, `settle()`
+    either. A discard that comes before the write's `take()` (a refused duplicate request while the accepted one is
+    still on its way) wins: it is remembered (the last 16 discards), `take()` answers false so the write never starts,
+    and `settle()` of that URI answers failure, so the write reports a failure, never a file the discard deletes. A
+    discard after `take()` does nothing; the write settles its row.
+  - `settle(resolver, uri, ok, signal)` (in a `finally` at every exit of `copyFileToDocument()` and
+    `RecordingExport.transfer()`): no-op unless it claims (true for a document that is no row of the app's, false for a
+    URI a discard took). The task publishes only if, when it starts, `ok` and neither `signal` nor
+    `DocumentTransfer.isAborted` is set and the writer still waits: `update(IS_PENDING=0` (+ `DATE_EXPIRES` null on API
+    29)`)` must change 1 row, then the `DISPLAY_NAME` read back (MediaStore renames a clash then) must be non-empty; any
+    failure deletes the row (`ContentResolver.delete()`). The writer waits in 100 ms slices and gives up at the teardown
+    abort, or on a cancel that comes before the publication began (that task then deletes); both are checked before the
+    first slice, so a settle that comes cancelled (an export cancelled before it began settles with a cancelled signal,
+    as no later Cancel can reach it) or after the abort never waits, even behind a held provider call. A cancel once
+    `update()` began is too late, and the save stands. `update()` and `delete()` take no signal, so teardown never joins
+    one; an interrupt of the writer counts as a cancel and stays raised. After the abort, a publication that already
+    began still completes on the worker although the save reported failure (the process is ending; the file is whole). A
+    row left pending by a crash or an abort is hidden and expires (decided limit, `android/README.md`).
+  - `discard()` never blocks: it claims, remembers and queues the delete; with no worker it deletes nothing (an
+    insert answers empty, a settle deletes its claimed row itself). `publishedName()` is a lock-only read.
+  - Host: `savedDocumentName()` and `discardPendingDownload()` call `publishedName()` / `discard()` (any thread); the
+    constructor calls `DownloadsSave.start()` with the held resolver, which keeps it for the picker's inserts and the
+    discards and, on the executor, releases every persisted URI grant the app holds in the modes it holds, past any
+    single failure (B7: Qt's old file dialog took one per pick; nothing in the app uses one). `proguard-rules.pro` keeps
+    `start`, `publishedName` and `discard`; the class constant sits in `decoder_host_android.cpp`.
+- Tests: `ANDROID_DOWNLOADS_SAVE_JVM` (insert values, settlement at every exit of both write entries, publication
+  failures, claims, a queued and a late cancel, the abort while `update()` is held, the `published` bound, grant
+  release), `ANDROID_DOCUMENT_PICKER_JVM` (`docs/testing.md`), `UI_QT_ANDROID_HOST` (`check_download_discards()`,
+  `check_document_pick_record()`, `check_document_requests()`, `check_document_reentrant_drain()`: a request made from
+  an answer's slot during the drain stays live and is answered by its record later in the same drain). The launches
+  themselves need an emulator: DocumentsUI on and off (the family queries must never return the two photo-picker
+  aliases), a chooser pick, re-entry and process death while a picker is up.
+
+#### Sign-in autofill (password managers)
+
+Qt 6.11.3 draws its own text fields and exposes nothing to Android's Autofill Framework, so the app describes the
+RadioReference sign-in form itself (the relay, `SignInAutofill` in `src/ui/qt`, is under UI, Qt):
+
+- `DecoderHostAndroid`'s `signInAutofillBegin`/`Field`/`Request`/`Commit`/`End` overrides (`decoder_host_android.cpp`,
+  JNI only) call `SignInAutofill.kt`'s `@JvmStatic` `begin(int)`, `field(int, int, int, int, int, int, boolean,
+  boolean, String)`, `request(int, int, int, int, int, int)`, `commit(int, String, String)` and `end(int)`, kept by
+  `proguard-rules.pro`. A rect goes as its window pixels (x, y, width, height); each string goes as a local ref deleted
+  right after the call, so the committed password's Java copy is let go of at once. Its `signInAutofillSupported()` is
+  true, which is what turns on the relay's sampler and settle wait.
+- `SignInAutofill.kt` posts each call to the main looper in order and hands `SignInAutofillState.kt` (plain Kotlin) the
+  event; the effects it returns (`Request`, `Exit`, `Value`, `Commit`, `Cancel`, `Visibility`, and `Held`, `Settle`,
+  `Enter`, `HideTextHandle` below) run there against the attached activity's `AutofillManager`, read at that moment:
+  with no host, no manager or `!isEnabled()` the state is told `disabled()` instead (the framework session flag, a held
+  request and the fill UI state drop, the snapshot stays). The state's rules: stale tokens (any but the live one; tokens
+  only grow) do nothing; a request goes out only for a shown field, with the service on, and starts the framework
+  session; a field stops being entered when it loses focus or is hidden while focused (card hidden, clipped away), and
+  is then exited; commit reports both values, commits and hides both fields, and end cancels, each in a started session
+  only; a request after a commit starts a new session under the same token. A commit's calls run in one posted
+  operation.
+- A request made while the Qt window's origin is unknown is held (`Held`: one value-free `HostDiagnostics` record per
+  hold) and goes out once the origin is known, from a global layout pass on the host, the Qt window's layout change or
+  Qt's next field report, while that field is still entered; blur, hiding, end, a newer token or the service going
+  away drop it.
+- Right before each `requestAutofill()` and each re-anchor's `notifyViewEntered()` (the state's `HideTextHandle` effect;
+  that enter starts a request when the response is unusable), `QtCursorHandle.kt` dismisses Qt's text cursor handle: a
+  `PopupWindow` of Qt's `CursorHandle` (read by name: `QtEditText.m_cursorHandle`, `CursorHandle.m_popup`, kept by
+  `qt-rules.pro` and checked by `tools/check_android_r8.py`). With the handle up, the structure has a second window, and
+  KeePassDX 4.5.8 takes the app from the last window's title, refuses, and never answers (the session times out after 5
+  s, and a later commit offers no save). The handle's popup style has no exit transition, so `dismiss()` removes its
+  root view at once (`PopupWindow.dismissImmediate()` → `removeViewImmediate()`), and the structure is built later, in
+  the main-thread message the request causes (`ActivityThread` `REQUEST_ASSIST_CONTEXT_EXTRAS` → `new
+  AssistStructure()`, which walks `WindowManagerGlobal.getRootViews()`). Qt shows the handle again only on a cursor or
+  anchor rect change or a tap. The selection handles and the Cut/Copy/Paste menu are left alone (an edit in progress).
+  Fail-soft: a missing class or field changes nothing and leaves one record for the process.
+- Fill UI following (refines "one request per focus entry"): an `AutofillCallback` registered on the activity's manager
+  at attach (unregistered at detach) reports `EVENT_INPUT_SHOWN`/`HIDDEN`/`UNAVAILABLE` per field. While the UI is shown
+  for the entered field, a change of that field's rect (rotation, keyboard, scroll) arms a 300 ms settle (`SETTLE_MS`,
+  the relay's wait), restarted by each further change; when it runs out with the field still entered, moved from where
+  the UI was anchored and the UI still shown, the field is exited and entered again (`notifyViewExited`, then
+  `notifyViewEntered(host, vid, newBounds)`). The UI showing for a field that moved after its request (it is placed at
+  the request's bounds) arms the same settle. AOSP: an enter for the current view returns before the bounds update
+  (`Session.updateLocked` `isSameViewEntered`), but after an exit the enter is not a manual request and the response
+  already covers the field (`shouldStartNewPartitionLocked` false), so no FillRequest goes out and `ViewState.update()`
+  → `onFillReady()` shows the dropdown at the new bounds; no IME inline request exists for the host, so
+  `requestShowInlineSuggestionsLocked()` fails over to the dropdown. With no fill UI shown a move does nothing. Limit: a
+  response the framework has marked expired would make that enter start a focused request, which can wait for the
+  keyboard's inline request. A move of the whole app window with nothing moving inside it (a freeform drag, a
+  split-screen divider) is followed too. The dropdown is a sub-window of the app's window:
+  `AutofillPopupWindow.update()` makes it `TYPE_APPLICATION_ABOVE_SUB_PANEL` (AutofillPopupWindow.java:118,
+  android16-release) shown with `showAsDropDown()` (234), whose
+  `createPopupLayoutParams(anchor.getApplicationWindowToken())` (PopupWindow.java:1419, token at 1624) attaches it to
+  the app's window, and `findDropDownPosition()` (1733) sets its x/y relative to the app root; sub-windows' "coordinate
+  space is relative to their attached window" (`WindowManager.LayoutParams.FIRST_SUB_WINDOW`,
+  WindowManager.java:2290-2296). On the emulator that holds only while the keyboard is clear of the window: moved 100 px
+  down with the keyboard overlapping it, the system re-clamped the dropdown's offset from (0,115) to (0,15) and left it
+  at its old screen height, 100 px above the field (emu/report-r2.md check 4). So while the UI is shown, an
+  `OnPreDrawListener` on the host (registered only then; removed on hide, blur, end and detach) reads the host's place
+  on screen (`SignInAutofillState.screen()`, positions only), and a change from where the UI was anchored arms the same
+  settle and re-anchor. A window move reaches the app as `resized` (a frame and, in freeform, a configuration change),
+  and a change of the keyboard's overlap as an insets change; `ViewRootImpl.handleResized()` ends in `requestLayout()`
+  (ViewRootImpl.java:2376, android16-release) and `notifyInsetsChanged()` too (2561), so a traversal follows, which
+  dispatches `OnPreDraw` (4417; `OnGlobalLayout` only when a layout ran, 4284). Limit: a bare `moved()` from the window
+  manager (`WindowState.handleWindowMovedIfNeeded()`, WindowState.java:2082 → `MSG_WINDOW_MOVED`,
+  ViewRootImpl.java:7001) updates the position without a traversal, so it is not seen until the next one; the dropdown
+  then follows as a sub-window unless re-clamped. The one fill UI that is not a dropdown is `FillUi`'s fullscreen mode
+  (leanback/TV devices, or a debug override): `AutofillPopupWindow.update()` (AutofillPopupWindow.java:107-122) makes it
+  a `TYPE_SYSTEM_DIALOG` that covers the screen and has no anchor to follow.
+- The host view is the activity content's first child (`android.R.id.content`, `MATCH_PARENT`, behind Qt's
+  `QtRootLayout`, which `super.onCreate()` set as the content view): childless, not focusable or clickable, no touches,
+  `IMPORTANT_FOR_ACCESSIBILITY_NO`, `IMPORTANT_FOR_AUTOFILL_YES`, no drawing. Never focused, so `requestAutofill()` adds
+  `FLAG_VIEW_NOT_FOCUSED` and the framework shows its dropdown instead of waiting for keyboard suggestions, which match
+  only the view the keyboard serves (Qt's `QtEditText`). `onProvideAutofillVirtualStructure()` gives the live form's
+  fields as children 1 (username) and 2 (password): `AUTOFILL_TYPE_TEXT`, the username/password hint, the structure
+  value (the password's always empty), host-pixel dimens, visibility, `android.widget.EditText`, the text or password
+  input type, `setDataIsSensitive(true)`, a hint, `setId(vid, package, null, "username"|"password")` and focus; no web
+  domain. `isVisibleToUserForAutofill()` reads the snapshot; `autofill()` makes one
+  `DsdNative.nativeSignInFilled(token, hasUser, user, hasPass, pass)` call under the token live then.
+- Origin: Qt's rects are its window's pixels; the largest visible view of class `org.qtproject.qt.android.QtWindow`
+  under Qt's root layout (looked up again once it leaves the window or hides, with an `OnLayoutChangeListener`) gives
+  the offset to host pixels, read again before each request and each structure. Unknown, a request is held (below).
+- `DsdNeoActivity` attaches the host right after the launch statements (`LaunchGuard.afterQt()`), re-reads the service
+  on resume, and detaches on destroy, cancelling a session still open (Qt's relay sends no end at exit); detach goes
+  through `ActivitySlot`.
+- A fill: `nativeSignInFilled` (`dsdneo_jni.cpp`) copies each string's UTF-16 units into a QString through a native
+  buffer cleared with `DSD_SECURE_ZERO`, and `DecoderHostAndroid::postSignInFill()`
+  (`decoder_host_android_sign_in.cpp`) queues them, under one mutex, to the newest live host (a `SignInFillLink` member
+  registers each host from construction to destruction), which calls `deliverSignInFill()` on the GUI thread. No
+  host, or one gone before the call runs: the strings are scrubbed and dropped.
+- Privacy: no value is logged on this path; an exception is recorded in `HostDiagnostics` by class name only, and an
+  effect's `toString()` leaves the text out.
+- Tests: `ANDROID_SIGN_IN_AUTOFILL_JVM` (`SignInAutofillStateTest.kt`: every rule above, the origin, the held request,
+  hidden-while-focused, fill UI following (field and window moves), the structure and the commit order);
+  `UI_QT_ANDROID_HOST` (a fill from another thread reaches the newest live host's sink once, on the GUI thread, and a
+  host gone first drops it); `tools/check_android_r8.py` (the upcalls and `nativeSignInFilled` in the release DEX). The
+  framework itself needs an emulator or device.
 
 #### Accessibility bridge (issue #782)
 
@@ -13945,9 +14771,10 @@ stays as it is, with no cleanup fallback. The app prevents it and records what s
 - The manifest's `launchMode="singleTask"` brings the one instance forward for all three outside launches: a USB
   attachment (to `onNewIntent`), the launcher icon and the decoding notification, where `singleTop` could create a
   second instance over a picker or permission prompt. The cost: each of the three closes a document picker or
-  permission prompt open in the app's task, which returns cancelled. The `FileDialog` flows end quietly on a reject,
-  and an interrupted location prompt is a cancel (the location paragraph under UI, Qt). Share sheets run in their own
-  task.
+  permission prompt open in the app's task, which returns cancelled. A closed document picker answers its request
+  `documentPickCancelled` (`DocumentPicker` gets `RESULT_CANCELED` for the live launch's code), and the flow ends
+  quietly as on a reject; an interrupted location prompt is a cancel (the location paragraph under UI, Qt). Share
+  sheets run in their own task.
 - `android:configChanges` lists every flag android-36 defines except `resourcesUnused` (19 flags; that one is meant
   for activities that use no resources, and this one has the splash, strings and the notice), so no configuration
   change recreates the activity. `assetsPaths` (a runtime overlay turned on) exists only from android-36, so
@@ -13997,7 +14824,14 @@ its source:
 - it is registered, and called when accessibility is enabled, synchronously inside `super.onCreate()`;
 - enabling the bridge mid-session is unsafe (QTBUG-144911; fixed upstream in 6.12.1, not in 6.11.3);
 - a second activity instance restarts the process (`QtActivityBase.onCreate()` → `restartApplication()`);
-- the bridge is one plain `android.view.View` that Qt adds as the last child of its root layout (the probe below).
+- the bridge is one plain `android.view.View` that Qt adds as the last child of its root layout (the probe below);
+- `super.onCreate()` sets Qt's root layout as the content view, and Qt's window view is the class
+  `org.qtproject.qt.android.QtWindow` under it ("Sign-in autofill" above; the app's own host is the content's first
+  child, an app class, not the bridge);
+- Qt's text cursor handle is a `PopupWindow` in `CursorHandle.m_popup`, held by the `QtEditText` child of the Qt
+  window in `m_cursorHandle`, with no exit transition (`QtCursorHandle.kt`). A rename fails
+  `tools/check_android_r8.py` on the release APK; a changed structure only leaves the "cannot be hidden" record. Check
+  with KeePassDX that a tap on the username field still gets its dropdown with the handle up.
 
 What trips: bumping `ANDROID_QT_VERSION` in `tools/ci-dependency-pins.env` fails `ANDROID_A11Y_BRIDGE_JVM`
 (`launch_policy()`) until `LaunchGuard.QT_RESTART` names the new version. Change that text only once the checks below
@@ -14049,7 +14883,10 @@ Each run gives its setup, then what must hold:
     -n io.github.arancormonk.dsdneo/.DsdNeoActivity
   ```
 
-  Same pid; `onNewIntent` takes the attachment; the picker is cancelled.
+  Same pid; `onNewIntent` takes the attachment; the picker is cancelled: `DocumentPicker` takes the
+  `RESULT_CANCELED`, the request is answered `documentPickCancelled` and the flow ends with no message. A result for a
+  code outside `DocumentPicker`'s range still reaches Qt (`super.onActivityResult()`), so a Qt bump re-reads
+  `QtActivityBase.onActivityResult()`.
 - **L-dup-launcher.** Cold-start through the USB intent (as in L-dup), start decoding, open Import CSV, press Home and
   tap the launcher icon; then repeat with the location prompt open (Nearby or "Use my location", permission not yet
   granted). Same pid; the import ends with no error; the cleared location prompt shows no "denied" text and the lookup
@@ -14450,6 +15287,15 @@ the window), and it has no name. A covered panel is nameless, and headings and t
 `Accessible.focusable` are focusable only while in the tree, so a node TalkBack may still ask about offers nothing to
 stop on (`tst_a11y_closed_sheets.qml` `test_a_covered_sheet_leaves_the_tree`).
 
+A notice that is read out when it is set (a picker failure, an import problem, a Download-folder save's location;
+issue #829) goes through `Navigation.announce(owner, line, text)`: it does nothing for an empty text or while
+`Navigation.allows(line)` is false (`line` null: no gate, as for the backup card's notices, which live on Settings),
+records `announced`/`announcements` on `owner` for tests, and calls `owner.Accessible.announce(text)` when the Qt in
+use has it. Each failure is read once, and a repeat is read again. Used by `BackupFlow`, `WizardScreen` (`csvNotice`,
+`sourceNotice`), `CallRecordingsScreen`, `CallRecordingPlayer`, `CsvImportFlow` (the companion sheet's notice),
+`ImportsScreen` (an import problem, `noticeLine`) and `ScanListScreen` (a target CSV import problem,
+`validationMessage`).
+
 Building a screen raises a hide for each accessible item created hidden: Qt makes an item accessible as its
 `Accessible` properties are set, before its gate is evaluated. The bridge answers each hide on a large new subtree with
 calls into the Qt thread made and waited on from Android's main thread, and TalkBack refetches nodes after them, so the
@@ -14584,7 +15430,8 @@ Several lists in one session (issue #697):
 - Start: `ScanListStarter::startLists()` takes at most `maxLists()` (`DSD_TRUNK_SCAN_MAX_LISTS`), runs each list's own
   checks (`prepare(list, false)`, a refusal naming the list) and the join rule against the first
   (`“Louder” can't scan with “Security”: different gain.`), writes every list's CSV, then checks them together with
-  `dsd_app_trunk_scan_validate_target_lists()` (ids unique across lists, the union cap, errors by display name). One
+  `dsd_app_trunk_scan_validate_target_lists()` (the engine's merge rule across lists, the distinct-target cap, errors
+  by display name). One
   recording session (the first list's) and one argv (`session_args_scan_build_lists()`: the first list's receiver and
   session options, one `--trunk-scan` per list in order) go to one `host->start()`; nothing starts unless all of it
   passes. A single list is `start()`, unchanged. Every list starts on: the app has no start-off state.
@@ -14607,14 +15454,21 @@ Several lists in one session (issue #697):
   out and the rest start. Both keys are device-local: an applied restore (`backup_apply.cpp`) and a load that repairs a
   list uid (`ScanListsModel::uidsRepaired()`) call `AppPrefs::forgetScanCompanions()`. That load also saves the
   repaired uids (issue #801), so the next load keeps them and a backup taken at once carries them; a failed save logs
-  one warning and the minted uids hold for that run (`UI_QT_CONTROLLER`, `UI_QT_BACKUP_ARCHIVE`). A start hold (issue #644) is
+  one warning and the minted uids hold for that run (`UI_QT_CONTROLLER`, `UI_QT_BACKUP_ARCHIVE`). Entry uids are the
+  targets' ids, and one id names one target in a session, so the app's lists never share one (only a person's own target
+  CSVs can): the load, `add()` and `update()` give an entry a new uid when it has none, repeats one of its list or names
+  one another list holds (at load the first list keeps it; a list being updated is no conflict with itself). A load that
+  gives one is saved the same way, with one warning on failure, but forgets no companions, since it names no list.
+  History rows logged under a uid two lists shared keep the name `historyChannelNames()` gives (no list is recorded
+  with them). A start hold (issue #644) is
   no part of the identity: `startWithMap()` takes it in `options.holdTarget` for that start, across a USB permission
   wait in `pendingStartHold` (set by every wait, read once by the grant), and never in `attemptedSource` or prefs.
   Pinned Listen shortcuts (issue #801) name lists by uid too, but portably, since a restore keeps every list's uid.
   `ListenPins` prunes them only on a saved removal, never at load, so pins survive a list file that fails to load.
 - In session: `Main.qml` `sessionLists` (the session's list, then its companions) and `sessionListName(n)` name list n
   (the decoder's name, `ScanListToggleModel::listName()`, for a place left empty), and `channelNamesOfLists()` merges
-  every list's channel names (ids are unique across a session's lists). `MetricsModel::refreshScanLists()` reads the
+  every list's channel names (a target id names one target, however many lists hold it).
+  `MetricsModel::refreshScanLists()` reads the
   scan list view over the held pair: `scanListCount`, `scanActiveList`, `scanActiveListOff`,
   `scanRotationOrdinal`/`scanRotationCount` (the "n/m" position) and `scanListModel`, a `ScanListToggleModel` (rows from
   the view, a switch sent with `dsd_app_command_scan_list_set()` and a request from `dsd_app_scan_list_request_next()`,
@@ -14623,16 +15477,18 @@ Several lists in one session (issue #697):
   (`ScanListsSheet.qml`: one `ToggleRow` per list with its targets and `On air`, `Switching off…` while pending, a
   refusal in the row's new `note` line in `Theme.alert` and announced; rows disabled while paused,
   `Resume the scan to change lists.`). The Monitor header reads `SCANNING · n/m · HOLD · <target> · <list>` with the
-  rotation's place (`-` while the list on air is off) and the title `<list> + N lists` (the count kept whole when the
-  name is elided).
+  rotation's place (`-` while every list holding the target on air is off) and the title `<list> + N lists` (the count
+  kept whole when the name is elided).
 
-Tests: `UI_QT_SESSION_ARGS` (join rule, argv), `UI_QT_CONTROLLER` (starter, refused start on an id clash, auto-start,
-uid repair), `UI_QT_SCAN_LIST_ROUNDTRIP` (`checkImportedListsNamedApart`: two imported bundles started together through
-the real coordinator), `UI_QT_METRICS_MODEL` (readings and the toggle model), `UI_QT_BACKUP_APPLY` (the companions
-forgotten, the `<uid>/<name>.csv` layout), `UI_QT_PERSISTENCE` (the companions' keys), and the QML suites
-`tst_scan_lists.qml`, `tst_home_scan_lists.qml`, `tst_monitor_scan_target.qml` (`UI_QT_QML_CALL_LISTS`) and
-`tst_main_session_tools.qml` (`UI_QT_QML_SESSION_TOOLS`: the bundle through accepted and initialized start, permission
-waits, retry, reattachment and removals).
+Tests: `UI_QT_SESSION_ARGS` (join rule, argv), `UI_QT_CONTROLLER` (starter, refused start on an id clash, two imported
+lists sharing a target through their copies' companion paths, a differing shared row refused, auto-start, uid repair),
+`UI_QT_SIGNAL_SEARCH` (`sessionTargets` in the engine's order with a shared id), `UI_QT_SCAN_LIST_ROUNDTRIP`
+(`checkImportedListsNamedApart`: two imported bundles started together through the real coordinator),
+`UI_QT_METRICS_MODEL` (readings and the toggle model), `UI_QT_BACKUP_APPLY` (the companions forgotten, the
+`<uid>/<name>.csv` layout), `UI_QT_PERSISTENCE` (the companions' keys), and the QML suites `tst_scan_lists.qml`,
+`tst_home_scan_lists.qml`, `tst_monitor_scan_target.qml` (`UI_QT_QML_CALL_LISTS`) and `tst_main_session_tools.qml`
+(`UI_QT_QML_SESSION_TOOLS`: the bundle through accepted and initialized start, permission waits, retry, reattachment and
+removals, a target two imported lists share).
 
 Frequency entries take the protocols `p25`, `dmr`, `nxdn48`, `nxdn`, and the analog `nfm` and `am` (issue #526), which
 map to `-fA`/`-fM` and on to `nfm-conventional`/`am-conventional`; saved analog systems map the same way (exactly `-fA`
@@ -14745,9 +15601,11 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   needs a REJECTED verdict: traffic still Checking is left to the P25/DMR trunk state machine's acquisition window, or
   on other trunked protocols (NXDN) gets a 4 s window from the tune, and admitted traffic or one no filter judges keeps
   the channel); an admitted call in progress (`dsd_call_state_admitted_call_active()`, data included) keeps it, as it
-  keeps a `-Y` channel with voice-only off. The single-slot DMR lane is re-proven when a burst names the other slot. A
-  voice LC header the single-slot output folds onto lane 0 applies that rule once the lane's call took it (its epoch or
-  revision moved during the dispatch, on the header's slot; `dmr_data_header_opened_lane_call()`), instead of the voice
+  keeps a `-Y` channel with voice-only off. Filters or not, it also lets a followed NXDN voice channel go that only
+  another site's control channel holds (discussion #748; Protocols, NXDN). The single-slot DMR lane is re-proven
+  when a burst names the other slot. A voice LC header the single-slot output folds onto lane 0 applies that rule once
+  the lane's call took it (its epoch or revision moved during the dispatch, on the header's slot;
+  `dmr_data_header_opened_lane_call()`), instead of the voice
   lane's restored proof, so the call it opens on the other slot is not ended by the previous call's proof; its `-J` line
   names the row's proven over-the-air slot (`watchdog_event_log_slot_number()`), the lane only while none is proven. A
   rejected Phase 2 call's queued audio never plays under a talkgroup hold. A P25 start while

@@ -84,5 +84,98 @@ Item {
             compare(commands.srcClearCalls(), 0)
             compare(mainRoot.sessionSystem.name, "Renamed live system")
         }
+
+        // Issue #748: the import refuses a talkgroup list whose rows all fail to load, so switching the running
+        // system to one posted an import that left the previous list live, and the previous file then took this
+        // system's edits. Such a list clears the session's list instead. A list with no rows at all imports: the
+        // decoder takes it as the empty list it is, saved to that file. What the file holds is read from the file
+        // now, not from its import: the decoder rewrites a list in place, and a file can be updated.
+        function test_group_list_switch_data() {
+            return [
+                {tag: "rows", imported: "id,mode,name\n1001,A,Dispatch\n", now: "", want: "importGroupList"},
+                {tag: "header only", imported: "id,mode,name\n", now: "", want: "importGroupList"},
+                {tag: "emptied since its import", imported: "id,mode,name\n1001,A,Dispatch\n",
+                 now: "id,mode,name\n", want: "importGroupList"},
+                {tag: "no usable rows", imported: "id;mode;name\n1001;A;Dispatch\n", now: "", want: "clearGroupList"},
+                {tag: "made unusable since its import", imported: "id,mode,name\n1001,A,Dispatch\n",
+                 now: "id;mode;name\n1001;A;Dispatch\n", want: "clearGroupList"},
+                {tag: "fixed since its import", imported: "id;mode;name\n1001;A;Dispatch\n",
+                 now: "id,mode,name\n1001,A,Dispatch\n", want: "importGroupList"},
+                // A library file that cannot be read is refused by the import too.
+                {tag: "unreadable since its import", imported: "id,mode,name\n1001,A,Dispatch\n", now: "",
+                 blocked: true, want: "clearGroupList"}
+            ]
+        }
+        function test_group_list_switch(data) {
+            var mainRoot = appLoader.item
+            var wizard = findChild(mainRoot, "wizardScreen")
+            var source = testContext.writeFixtureCsv("switch-" + data.tag.replace(/ /g, "-") + ".csv", data.imported)
+            var imported = importedFiles.importFile(source, "switch.csv", "group")
+            verify(imported.ok, "the talkgroup fixture did not import")
+            var path = imported.path
+            try {
+                if (data.now.length > 0)
+                    verify(testContext.rewriteFile(path, data.now), "could not rewrite the library file")
+                if (data.blocked)
+                    verify(testContext.blockPath(path, true), "could not block the library file")
+                wizard.openForAdd(false)
+                wizard.nameText = "Live talkgroups"
+                wizard.commit()
+                savedRow = savedSystems.count - 1
+                mainRoot.sessionRow = savedRow
+                mainRoot.sessionSystem = savedSystems.get(savedRow)
+                testContext.setHostRunning(true)
+                testContext.resetCommands()
+
+                wizard.openForEdit(savedRow)
+                wizard.assignCsvPath("group", path, false)
+                wizard.commit()
+                compare(commands.listCommands(), [data.want === "clearGroupList" ? data.want : data.want + " " + path])
+                compare(mainRoot.sessionSystem.groupCsvPath, path)
+
+                // Back to None clears, whatever the file held.
+                testContext.resetCommands()
+                wizard.openForEdit(savedRow)
+                wizard.assignCsvPath("group", "", false)
+                wizard.commit()
+                compare(commands.listCommands(), ["clearGroupList"])
+            } finally {
+                if (data.blocked)
+                    verify(testContext.blockPath(path, false), "could not unblock the library file")
+                importedFiles.remove(importedFiles.rowForPath(path))
+            }
+        }
+
+        // A path the library does not hold is read the same way: one the import would refuse (rows none of which
+        // load, or no file to read) clears the list too, so the previous system's file takes none of this system's
+        // edits; a usable one imports.
+        function test_group_list_switch_to_a_file_outside_the_library_data() {
+            return [
+                {tag: "rows", content: "id,mode,name\n1001,A,Dispatch\n", want: "importGroupList"},
+                {tag: "no usable rows", content: "id;mode;name\n1001;A;Dispatch\n", want: "clearGroupList"},
+                {tag: "missing", content: null, want: "clearGroupList"}
+            ]
+        }
+        function test_group_list_switch_to_a_file_outside_the_library(data) {
+            var mainRoot = appLoader.item
+            var wizard = findChild(mainRoot, "wizardScreen")
+            wizard.openForAdd(false)
+            wizard.nameText = "Outside talkgroups"
+            wizard.commit()
+            savedRow = savedSystems.count - 1
+            mainRoot.sessionRow = savedRow
+            mainRoot.sessionSystem = savedSystems.get(savedRow)
+            testContext.setHostRunning(true)
+            testContext.resetCommands()
+
+            var path = data.content === null ? "/data/imports/not in the library.csv"
+                                             : testContext.writeFixtureCsv("outside-" + data.tag.replace(/ /g, "-") + ".csv", data.content)
+            compare(importedFiles.rowForPath(path), -1)
+            wizard.openForEdit(savedRow)
+            wizard.assignCsvPath("group", path, false)
+            wizard.commit()
+            compare(commands.listCommands(), [data.want === "clearGroupList" ? data.want : data.want + " " + path])
+            compare(mainRoot.sessionSystem.groupCsvPath, path)
+        }
     }
 }

@@ -36,14 +36,47 @@ Item {
 
         function init() {
             verify(tc.wizard !== null, "WizardScreen.qml failed to load")
+            testContext.setDocumentPickerSupported(true)
+            testContext.resetHostPlayback()
+            wizardLoader.visible = true
             tc.wizard.openForAdd(false)
         }
 
         function cleanup() {
+            wizardLoader.visible = true
             if (tc.savedRow >= 0) {
                 savedSystems.remove(tc.savedRow)
                 tc.savedRow = -1
             }
+            while (importedFiles.count)
+                importedFiles.remove(0)
+        }
+
+        // Issue #829: the pick the wizard is waiting on, answered by the host.
+        function requestId() {
+            var request = testContext.lastDocumentRequest()
+            compare(request.kind, "open")
+            return request.id
+        }
+        function flow() {
+            var found = findChild(tc.wizard, "wizardCsvImport")
+            verify(found !== null)
+            return found
+        }
+        function mapFile(name) {
+            var path = testContext.writeFixtureCsv(name, "channel,frequency\n1,851012500\n")
+            verify(path.length > 0)
+            return "file://" + path
+        }
+        // "Import new file" on the picker sheet for @p target.
+        function importFor(target) {
+            tc.wizard.pickerTarget = target
+            var sheet = findChild(tc.wizard, "wizardCsvSheet")
+            sheet.visible = true
+            findChild(sheet, "wizardCsvImportNew").clicked()
+            verify(!sheet.visible)
+            verify(flow().active)
+            return requestId()
         }
 
         function test_cancel_import_cleanup_data() {
@@ -57,18 +90,137 @@ Item {
             var flow = findChild(tc.wizard, "wizardCsvImport");
             verify(flow !== null);
             if (data.tag === "primary") {
-                flow.pick("chan");
-                findChild(flow, "csvPrimaryPicker").reject();
+                importFor("chan");
+                testContext.answerDocumentCancelled(requestId());
             } else {
                 var source = testContext.writeFixtureCsv("cancel-consumer.csv",
                     "channel,frequency,mode,keys_dec_csv\n1,851012500,p25,missing.csv\n");
-                flow.begin(source, "Map.csv", "chan");
+                flow.begin(source, "Map.csv", "chan", -1, {target: "chan", keyFormat: "", generation: tc.wizard.csvGeneration("chan")});
                 findChild(flow, "csvCompanionSheet").requestDismiss();
             }
+            verify(!flow.active);
             compare(tc.wizard.chanCsvPath, "keep.csv");
             compare(tc.wizard.csvNotice, "");
             verify(!tc.wizard.csvNoticeIsProblem);
-            compare(tc.wizard.pickerTarget, "");
+            // Issue #829: the field travels with the pick; pickerTarget is the
+            // sheet's, and a finished import leaves it alone.
+            compare(tc.wizard.pickerTarget, "chan");
+        }
+
+        // B4: the field comes from the pick, so a later sheet for another
+        // field, or Browse (which sets pickerTarget to "source"), cannot
+        // redirect it.
+        function test_a_pick_fills_the_field_it_was_asked_for_data() {
+            return [{tag: "browse", later: "source"}, {tag: "other-sheet", later: "group"}];
+        }
+        function test_a_pick_fills_the_field_it_was_asked_for(data) {
+            var id = importFor("chan")
+            tc.wizard.pickerTarget = data.later
+            testContext.answerDocumentPicked(id, mapFile("b4-map.csv"), "B4 map.csv", false)
+            verify(!flow().active)
+            verify(tc.wizard.chanCsvPath.length > 0, "the map landed in its own field")
+            compare(importedFiles.get(importedFiles.rowForPath(tc.wizard.chanCsvPath)).name, "B4 map.csv")
+            compare(tc.wizard.groupCsvPath, "")
+            compare(tc.wizard.pickerTarget, data.later)
+        }
+
+        // The key format is the one chosen when the pick was asked for.
+        function test_a_key_pick_keeps_its_format() {
+            tc.wizard.pickerKeyHex = false
+            var id = importFor("keys")
+            tc.wizard.pickerKeyHex = true
+            var keys = testContext.writeFixtureCsv("wizard-keys.csv", "id,value\n1,12345\n")
+            testContext.answerDocumentPicked(id, "file://" + keys, "wizard-keys.csv", false)
+            verify(tc.wizard.keyCsvPath.length > 0)
+            verify(!tc.wizard.keyCsvHex, "a decimal pick stays decimal")
+            compare(importedFiles.get(importedFiles.rowForPath(tc.wizard.keyCsvPath)).type, "keysDec")
+        }
+
+        // B4: a pick still out when the wizard is reused or closed is ended
+        // with that session; its late answer imports and assigns nothing.
+        function test_a_pick_ends_with_its_session_data() {
+            return [{tag: "openForAdd"}, {tag: "openForFound"}, {tag: "openForEdit"}, {tag: "hidden"}];
+        }
+        function test_a_pick_ends_with_its_session(data) {
+            if (data.tag === "openForEdit") {
+                tc.wizard.nameText = "Session owner"
+                tc.wizard.commit()
+                tc.savedRow = savedSystems.count - 1
+                tc.wizard.openForAdd(false)
+            }
+            var id = importFor("chan")
+            if (data.tag === "openForAdd")
+                tc.wizard.openForAdd(false)
+            else if (data.tag === "openForFound")
+                tc.wizard.openForFound(null, "851.375")
+            else if (data.tag === "openForEdit")
+                tc.wizard.openForEdit(tc.savedRow)
+            else
+                wizardLoader.visible = false
+            verify(!flow().active, "the pick ended with its session")
+            verify(testContext.documentCalls().some(function (call) {
+                return call.name === "cancelDocumentRequest" && call.id === id
+            }), "the host request was cancelled")
+            testContext.answerDocumentPicked(id, mapFile("late-session-map.csv"), "late.csv", false)
+            compare(tc.wizard.chanCsvPath, "")
+            compare(importedFiles.count, 0, "nothing was imported")
+            compare(tc.wizard.csvNotice, "")
+        }
+
+        // A choice made for the field while the picker is out wins: the late
+        // pick is dropped without a notice and without an import.
+        function test_newer_choice_survives_a_late_pick_data() {
+            return [{tag: "library", target: "chan"}, {tag: "none", target: "chan"},
+                    {tag: "radioreference", target: "chan"}, {tag: "decryption-profile", target: "keys"}];
+        }
+        function test_newer_choice_survives_a_late_pick(data) {
+            var id = importFor(data.target)
+            if (data.tag === "library")
+                tc.wizard.assignCsvPath("chan", "/data/imports/library.csv", false)
+            else if (data.tag === "none")
+                tc.wizard.assignCsvPath("chan", "", false)
+            else if (data.tag === "radioreference")
+                tc.wizard.applyRadioReference({chanCsvPath: "/data/imports/rr.csv", groupCsvPath: "", decodeFlag: "", trunking: true})
+            else
+                // A decryption profile takes the place of the key file.
+                findChild(tc.wizard, "wizardDecryptionProfile").selected("profile-uid")
+            var path = function () { return data.target === "keys" ? tc.wizard.keyCsvPath : tc.wizard.chanCsvPath }
+            var chosen = path()
+            var notice = tc.wizard.csvNotice
+            var late = data.target === "keys" ? "file://" + testContext.writeFixtureCsv("late-keys.csv", "id,value\n1,12345\n") : mapFile("late-map.csv")
+            testContext.answerDocumentPicked(id, late, "late.csv", false)
+            verify(!flow().active)
+            compare(path(), chosen)
+            compare(tc.wizard.csvNotice, notice, "the newer choice's notice stays")
+            compare(importedFiles.count, 0, "the dropped pick imported nothing")
+        }
+        // Another field's choice is not newer for this one.
+        function test_another_fields_choice_keeps_the_pick() {
+            var id = importFor("chan")
+            tc.wizard.assignCsvPath("group", "/data/imports/groups.csv", false)
+            testContext.answerDocumentPicked(id, mapFile("kept-map.csv"), "kept.csv", false)
+            verify(tc.wizard.chanCsvPath.length > 0)
+            compare(tc.wizard.groupCsvPath, "/data/imports/groups.csv")
+        }
+
+        // A picker failure shows its reason, as an alert read out once; the
+        // same failure again is read out again.
+        function test_picker_failure_is_shown_and_read_out() {
+            var said = tc.wizard.announcements
+            testContext.answerDocumentUnavailable(importFor("chan"), "noPicker")
+            var message = "No compatible file picker on this device. Install a file manager app, then try again."
+            compare(tc.wizard.csvNotice, message)
+            verify(tc.wizard.csvNoticeIsProblem)
+            compare(tc.wizard.announcements, said + 1)
+            compare(tc.wizard.announced, message)
+            compare(findChild(tc.wizard, "wizardCsvNotice").Accessible.role, Accessible.AlertMessage)
+            testContext.answerDocumentUnavailable(importFor("chan"), "noPicker")
+            compare(tc.wizard.announcements, said + 2)
+            compare(tc.wizard.chanCsvPath, "")
+            // A file that cannot be read still says so in the wizard's words.
+            testContext.answerDocumentPicked(importFor("chan"), "file:///missing/map.csv", "map.csv", false)
+            compare(tc.wizard.csvNotice, "Could not read that file")
+            compare(tc.wizard.announcements, said + 3)
         }
 
         function test_01_a_new_system_has_no_band_plan() {

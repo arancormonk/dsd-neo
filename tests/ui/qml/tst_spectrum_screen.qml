@@ -847,6 +847,31 @@ Item {
             compare(testContext.manualTuneCalls(), 0, "Go to sent a tap's tune")
         }
 
+        // Both tunes take a uint, so the bound is checked on the value that is
+        // sent, after rounding: 0.25 and 4294967295.75 pass a check on the raw
+        // number and round to 0 and to 2^32 (0 again as a uint).
+        function test_14d_a_tune_rounds_before_it_checks_the_uint_range() {
+            var screen = screenLoader.item
+            verify(!screen.viewOnly && screen.goToAllowed, "the fixture cannot tune")
+            var taps = testContext.manualTuneCalls()
+            var typed = testContext.tuneHzCalls()
+            for (var bad of [0.25, 0.49, 4294967295.5, 4294967295.75, 4294967296, -1, NaN]) {
+                verify(!screen.tuneTo(bad), "tuneTo() sent " + bad)
+                verify(!screen.goTo(bad), "goTo() sent " + bad)
+            }
+            compare(testContext.manualTuneCalls(), taps, "an out-of-range tap tune was sent")
+            compare(testContext.tuneHzCalls(), typed, "an out-of-range Go to was sent")
+
+            verify(screen.tuneTo(0.5))
+            compare(testContext.lastManualTuneHz(), 1)
+            verify(screen.goTo(4294967295.25))
+            compare(testContext.lastTuneHz(), 4294967295)
+            verify(screen.tuneTo(4294967295))
+            compare(testContext.lastManualTuneHz(), 4294967295)
+            compare(testContext.manualTuneCalls(), taps + 2)
+            compare(testContext.tuneHzCalls(), typed + 1)
+        }
+
         // Go to opens on the tuned frequency to the Hz, so confirming it without
         // an edit stays where the radio is rather than moving to its 10 Hz
         // rounding (851015625 Hz read as 851.01563 MHz).

@@ -78,6 +78,19 @@
     public static java.lang.String pollResult();
 }
 
+-keep,allowoptimization class io.github.arancormonk.dsdneo.DocumentPicker {
+    public static boolean open(android.app.Activity, long);
+    public static boolean create(android.app.Activity, long, java.lang.String, java.lang.String);
+    public static void cancel(long);
+    public static java.lang.String pollResult();
+}
+
+-keep,allowoptimization class io.github.arancormonk.dsdneo.DownloadsSave {
+    public static void start(android.content.ContentResolver);
+    public static java.lang.String publishedName(java.lang.String);
+    public static void discard(java.lang.String);
+}
+
 -keep,allowoptimization class io.github.arancormonk.dsdneo.DiagnosticsShare {
     public static void share(android.content.Context, java.lang.String, java.lang.String);
 }
@@ -87,6 +100,16 @@
     public static java.lang.String[] exitLines();
     public static java.lang.String[] exitsMarker();
     public static java.lang.String attemptContext(java.lang.String);
+}
+
+# The RadioReference sign-in form for password managers: DecoderHostAndroid's
+# signInAutofill* overrides.
+-keep,allowoptimization class io.github.arancormonk.dsdneo.SignInAutofill {
+    public static void begin(int);
+    public static void field(int, int, int, int, int, int, boolean, boolean, java.lang.String);
+    public static void request(int, int, int, int, int, int);
+    public static void commit(int, java.lang.String, java.lang.String);
+    public static void end(int);
 }
 
 # The exported Java_io_github_arancormonk_dsdneo_DsdNative_* symbols use these

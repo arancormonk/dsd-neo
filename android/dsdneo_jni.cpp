@@ -52,6 +52,10 @@
 #include <dsd-neo/io/rtl_device.h>
 #endif
 
+#include <QChar>
+#include <QString>
+
+#include "decoder_host_android.h"
 #include "diagnostics_log.h"
 #include "dsdneo_jni.h"
 #include "run_status.h"
@@ -243,6 +247,39 @@ jstring_to_utf8(JNIEnv* env, jstring value, bool* ok) {
     }
     out.resize(used);
     return out;
+}
+
+/**
+ * @brief Copies a Java string into @p out, through a native UTF-16 buffer cleared before it is freed.
+ *
+ * For a credential: the code units go straight into the QString, with no UTF-8 copy on the way. A null string reads
+ * as empty.
+ *
+ * @return false, with @p out empty, when the string could not be read (a JNI exception, cleared here): the caller
+ *         must not take that for an empty value.
+ */
+bool
+jstring_to_qstring_scrubbed(JNIEnv* env, jstring value, QString* out) {
+    out->clear();
+    if (value == nullptr) {
+        return true;
+    }
+    const jsize length = env->GetStringLength(value);
+    if (clear_pending_exception(env) || length < 0) {
+        return false;
+    }
+    if (length == 0) {
+        return true;
+    }
+    std::vector<jchar> units(static_cast<size_t>(length));
+    env->GetStringRegion(value, 0, length, units.data());
+    const bool ok = !clear_pending_exception(env);
+    if (ok) {
+        static_assert(sizeof(jchar) == sizeof(QChar), "jchar and QChar are both one UTF-16 code unit");
+        *out = QString(reinterpret_cast<const QChar*>(units.data()), static_cast<qsizetype>(length));
+    }
+    DSD_SECURE_ZERO(units.data(), units.size() * sizeof(jchar));
+    return ok;
 }
 
 /**
@@ -801,6 +838,25 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeIsUsbFdInUse(JNIEnv* env, jcla
     /* No radio pipeline, so nothing can have taken the descriptor. */
     return JNI_FALSE;
 #endif
+}
+
+/**
+ * @brief A password manager filled the RadioReference sign-in form of session @p token (SignInAutofill.kt).
+ *
+ * The values are copied out of Java and queued to the Qt thread's relay (DecoderHostAndroid::postSignInFill()), which
+ * drops a fill for any other token; with no Qt host they are scrubbed and dropped. A field whose value could not be
+ * read counts as not filled, never as filled empty. Takes no engine lock.
+ */
+JNIEXPORT void JNICALL
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeSignInFilled(JNIEnv* env, jclass clazz, jint token, jboolean hasUser,
+                                                               jstring user, jboolean hasPass, jstring pass) {
+    (void)clazz;
+    QString username;
+    QString password;
+    const bool userRead = jstring_to_qstring_scrubbed(env, user, &username);
+    const bool passRead = jstring_to_qstring_scrubbed(env, pass, &password);
+    dsd_android::DecoderHostAndroid::postSignInFill(static_cast<int>(token), hasUser == JNI_TRUE && userRead, username,
+                                                    hasPass == JNI_TRUE && passRead, password);
 }
 
 JNIEXPORT jstring JNICALL

@@ -794,6 +794,91 @@ test_frame_channel_follows_the_lich(void) {
     return rc;
 }
 
+/* What one LICH routes to: the channel decoders it runs and the channel the FACCH1 or SACCH decoders saw. */
+typedef struct {
+    uint8_t lich;
+    int sacch;
+    int scch;
+    int facch;
+    int facch2;
+    int udch;
+    int facch3;
+    int udch2;
+    int voice;
+} lich_route;
+
+static int
+expect_route(const char* tag, const lich_route* want, int channel) {
+    char label[96];
+    int rc = 0;
+    reset_state();
+    g_state.nxdn_site.type_c = (uint8_t)(channel == NXDN_FRAME_CHANNEL_COMPOSITE);
+    DSD_SNPRINTF(label, sizeof(label), "%s 0x%02X accepted", tag, want->lich);
+    rc |= expect_int(label, route_frame(want->lich), 1);
+    DSD_SNPRINTF(label, sizeof(label), "%s 0x%02X sacch", tag, want->lich);
+    rc |= expect_int(label, g_sacch_calls, want->sacch);
+    DSD_SNPRINTF(label, sizeof(label), "%s 0x%02X scch", tag, want->lich);
+    rc |= expect_int(label, g_scch_calls, want->scch);
+    DSD_SNPRINTF(label, sizeof(label), "%s 0x%02X facch1", tag, want->lich);
+    rc |= expect_int(label, g_facch_calls, want->facch);
+    DSD_SNPRINTF(label, sizeof(label), "%s 0x%02X facch2/udch", tag, want->lich);
+    rc |= expect_int(label, (g_facch2_calls * 10) + g_udch_calls, (want->facch2 * 10) + want->udch);
+    DSD_SNPRINTF(label, sizeof(label), "%s 0x%02X facch3/udch2", tag, want->lich);
+    rc |= expect_int(label, (g_facch3_calls * 10) + g_udch2_calls, (want->facch3 * 10) + want->udch2);
+    DSD_SNPRINTF(label, sizeof(label), "%s 0x%02X voice", tag, want->lich);
+    rc |= expect_int(label, g_last_voice, want->voice);
+    if (want->facch != 0) {
+        DSD_SNPRINTF(label, sizeof(label), "%s 0x%02X facch1 channel", tag, want->lich);
+        rc |= expect_int(label, g_facch_frame_channel, channel);
+    }
+    if (want->sacch != 0) {
+        DSD_SNPRINTF(label, sizeof(label), "%s 0x%02X sacch channel", tag, want->lich);
+        rc |= expect_int(label, g_sacch_frame_channel, channel);
+    }
+    return rc;
+}
+
+/*
+ * The outbound LICH values a Type-C composite control channel (RTCH_C, TS 1-A Table 5.2-2) shares with a Type-D RTCH2.
+ * Until the session has decoded Type-C trunking they keep their Type-D reading (an SCCH, a FACCH3 or UDCH2); once it
+ * has (a CAC decoded, here the record that says so), they read as RTCH_C: a SACCH, a FACCH2 or UDCH, as an RTCH's
+ * are. RTCH_C's idle frame (0x79) has no Type-D reading. Values only Type-D has keep theirs either way.
+ */
+static int
+test_composite_control_channel_lich(void) {
+    /* Voice plays only once a check confirmed the frame: here a FACCH1's. */
+    static const lich_route k_type_d[] = {
+        {0x77U, 0, 1, 0, 0, 0, 0, 0, 0}, {0x75U, 0, 1, 1, 0, 0, 0, 0, 1}, {0x73U, 0, 1, 1, 0, 0, 0, 0, 2},
+        {0x71U, 0, 1, 2, 0, 0, 0, 0, 0}, {0x61U, 0, 1, 2, 0, 0, 0, 0, 0}, {0x6FU, 0, 1, 0, 0, 0, 0, 1, 0},
+        {0x69U, 0, 1, 0, 0, 0, 1, 0, 0},
+    };
+    static const lich_route k_composite[] = {
+        {0x77U, 1, 0, 0, 0, 0, 0, 0, 0}, {0x75U, 1, 0, 1, 0, 0, 0, 0, 1}, {0x73U, 1, 0, 1, 0, 0, 0, 0, 2},
+        {0x71U, 1, 0, 2, 0, 0, 0, 0, 0}, {0x61U, 1, 0, 2, 0, 0, 0, 0, 0}, {0x6FU, 0, 0, 0, 0, 1, 0, 0, 0},
+        {0x69U, 0, 0, 0, 1, 0, 0, 0, 0}, {0x79U, 1, 0, 0, 0, 0, 0, 0, 0},
+    };
+    int rc = 0;
+    for (size_t i = 0U; i < sizeof(k_type_d) / sizeof(k_type_d[0]); i++) {
+        rc |= expect_route("type-d", &k_type_d[i], NXDN_FRAME_CHANNEL_TYPE_D);
+    }
+    for (size_t i = 0U; i < sizeof(k_composite) / sizeof(k_composite[0]); i++) {
+        rc |= expect_route("rtch_c", &k_composite[i], NXDN_FRAME_CHANNEL_COMPOSITE);
+    }
+
+    /* RTCH_C's idle frame has no Type-D reading. */
+    reset_state();
+    rc |= expect_int("type-d 0x79 rejected", route_frame(0x79U), 0);
+
+    /* A Type-D-only value keeps its reading once Type-C decoded: 0x63 has no RTCH_C meaning. */
+    reset_state();
+    g_state.nxdn_site.type_c = 1U;
+    rc |= expect_int("type-c 0x63 accepted", route_frame(0x63U), 1);
+    rc |= expect_int("type-c 0x63 facch1 channel", g_facch_frame_channel, NXDN_FRAME_CHANNEL_TYPE_D);
+    rc |= expect_int("type-c 0x63 scch", g_scch_calls, 1);
+    rc |= expect_int("type-c 0x63 sacch", g_sacch_calls, 0);
+    return rc;
+}
+
 /* A Type-D V2+F1 frame (RTCH2, LICH 0x73: SCCH, then a FACCH1 and voice) whose SCCH retunes the receiver (a busy
    repeater message preempting the call there): the FACCH1 and voice after it were read on the carrier left, so neither
    decodes, as a frame the carrier boundary splits is dropped. An accepted tune (completed, or still pending) leaves the
@@ -843,6 +928,7 @@ main(void) {
     rc |= test_frame_split_by_a_carrier_boundary_is_dropped();
     rc |= test_frame_cut_by_an_input_interruption_is_dropped();
     rc |= test_frame_channel_follows_the_lich();
+    rc |= test_composite_control_channel_lich();
     rc |= test_frame_retuned_by_its_scch_stops();
     dsd_decode_clock_use_system();
 

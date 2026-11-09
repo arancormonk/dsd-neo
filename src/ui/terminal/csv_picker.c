@@ -106,6 +106,7 @@ typedef struct {
     const char* items[CSV_PICKER_MAX + 1]; /* +1 for the "Enter a path..." row */
     int count;                             /* files, not counting the escape row */
     char prompt_title[96];
+    char prefill[CSV_PICKER_PATH_MAX]; /* the path prompt's starting text; "" for none */
     size_t cap;
     ui_prompt_string_done_fn on_done;
     void* user_ctx;
@@ -174,7 +175,8 @@ csv_picker_prompt(CsvPickerCtx* ctx) {
     /* On an allocation failure inside the prompt this answers cancel
        synchronously and then disposes ctx; nothing may touch ctx after this
        call either way. */
-    ui_prompt_open_string_owned(ctx->prompt_title, NULL, ctx->cap, csv_picker_prompt_done, ctx, csv_picker_ctx_dispose);
+    ui_prompt_open_string_owned(ctx->prompt_title, ctx->prefill, ctx->cap, csv_picker_prompt_done, ctx,
+                                csv_picker_ctx_dispose);
 }
 
 /* The chooser disposes the context after this returns, unless the path row hands it to the prompt. */
@@ -210,8 +212,8 @@ csv_picker_chooser_done(void* user, int sel) {
    suppresses the same false positive on its identical async signatures. */
 // cppcheck-suppress-begin funcArgNamesDifferentUnnamed
 void
-ui_csv_import_picker_open(const char* kind, const char* prompt_title, size_t cap, ui_prompt_string_done_fn on_done,
-                          void* user_ctx) {
+ui_csv_import_picker_open(const char* kind, const char* prompt_title, const char* prefill, size_t cap,
+                          ui_prompt_string_done_fn on_done, void* user_ctx) {
     /* Copied before anything else runs: dsd_user_imports_dir() has no latch and
        rewrites its internal static buffer on every call, so the returned pointer
        is only good until the next one - and it is held here across a directory
@@ -232,10 +234,16 @@ ui_csv_import_picker_open(const char* kind, const char* prompt_title, size_t cap
     if (ctx == NULL) {
         /* Out of memory for the chooser context is not a reason to strand the
            user: fall back to the plain prompt. */
-        ui_prompt_open_string_async(prompt_title, NULL, cap, on_done, user_ctx);
+        ui_prompt_open_string_async(prompt_title, prefill, cap, on_done, user_ctx);
         return;
     }
     (void)DSD_SNPRINTF(ctx->prompt_title, sizeof ctx->prompt_title, "%s", (prompt_title != NULL) ? prompt_title : "");
+    /* Held here, not borrowed: the prompt may open frames later, from the chooser's "Enter a path..." row, when the
+       caller's text (a frame's snapshot) is gone. A path too long to hold whole starts the prompt empty. */
+    const int prefill_n = DSD_SNPRINTF(ctx->prefill, sizeof ctx->prefill, "%s", (prefill != NULL) ? prefill : "");
+    if (prefill_n < 0 || (size_t)prefill_n >= sizeof ctx->prefill) {
+        ctx->prefill[0] = '\0';
+    }
     ctx->cap = cap;
     ctx->on_done = on_done;
     ctx->user_ctx = user_ctx;

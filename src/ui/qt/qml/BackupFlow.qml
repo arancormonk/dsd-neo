@@ -2,7 +2,6 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
-import QtQuick.Dialogs
 import QtQuick.Window
 import "Util.js" as Util
 
@@ -35,6 +34,10 @@ Item {
     // The unlock sheet's last error was about the file, not the passphrase:
     // retrying cannot help, so the sheet offers another file instead.
     property bool fileProblem: false
+    // The last text read out and how many have been, so a test can tell each
+    // problem is read out once, and again when it happens again.
+    property string announced: ""
+    property int announcements: 0
 
     // Entering a restore: Main drops a start still waiting on USB access.
     signal restoreBegun
@@ -147,8 +150,7 @@ Item {
     }
 
     function announce(text) {
-        if (text.length && typeof Accessible.announce === "function")
-            Accessible.announce(text);
+        Navigation.announce(flow, null, text);
     }
 
     function focusField(field) {
@@ -317,14 +319,19 @@ Item {
         closeSheet(passphraseSheet);
         passphraseField.text = "";
         confirmField.text = "";
-        savePicker.selectedFile = backup.suggestedFileName();
+        savePicker.suggestedName = backup.suggestedFileName();
         savePicker.open();
     }
 
     function savePicked(ref) {
-        if (step !== "exportPicker")
+        if (step !== "exportPicker") {
+            // Not wanted any more: nothing will write a Download-folder row.
+            if (savePicker.savedToDownloads)
+                decoderHost.discardPendingDownload(ref);
             return;
+        }
         step = "saving";
+        reference = ref;
         savingSheet.open();
         backup.saveExport(ref);
     }
@@ -334,6 +341,15 @@ Item {
             return;
         backup.discardExport();
         finish("", false);
+    }
+
+    // The picker could not ask and nothing was saved: the encrypted backup
+    // goes, and the card says why.
+    function savePickUnavailable(message) {
+        if (step !== "exportPicker")
+            return;
+        backup.discardExport();
+        finish(message, true);
     }
 
     function exportFinished(result) {
@@ -346,11 +362,15 @@ Item {
         finish(savedText(result.notIncluded || notIncluded), false);
     }
 
-    // The backup leaves out what it cannot carry; name the first few.
+    // The backup leaves out what it cannot carry; name the first few. With no
+    // save picker on the phone the backup went to the Download folder, under
+    // the name Android gave it there.
     function savedText(items) {
+        var name = savePicker.savedToDownloads ? decoderHost.savedDocumentName(reference) : "";
+        var saved = name.length ? qsTr("Backup saved to Download/DSD-neo as %1.").arg(name) : qsTr("Backup saved.");
         if (!items || !items.length)
-            return qsTr("Backup saved.");
-        return qsTr("Backup saved.") + " " + Util.notIncludedText(items);
+            return saved;
+        return saved + " " + Util.notIncludedText(items);
     }
 
     // ---- restore ----
@@ -388,6 +408,14 @@ Item {
         if (step !== "restorePicker")
             return;
         finish("", false);
+    }
+
+    // The first pick or "Choose another file": either way the restore ends,
+    // since no file can come back.
+    function restorePickUnavailable(message) {
+        if (step !== "restorePicker")
+            return;
+        finish(message, true);
     }
 
     function submitUnlock() {
@@ -543,27 +571,38 @@ Item {
         }
     }
 
-    FileDialog {
+    // The suggested name is set before each open(), from the day the backup is
+    // made. Android knows no type for a .dsdbak, so the host saves it as
+    // application/octet-stream; the filter and suffix are the desktop dialog's.
+    DocumentPicker {
         id: savePicker
         objectName: "backupSavePicker"
-        fileMode: FileDialog.SaveFile
-        // Android takes the new document's MIME type from the first filter; an
-        // extension it does not know becomes application/octet-stream.
+        mode: "save"
+        mimeType: "application/octet-stream"
         nameFilters: [qsTr("DSD-neo backup") + " (*.dsdbak)"]
         defaultSuffix: "dsdbak"
-        onAccepted: flow.savePicked(selectedFile.toString())
+        onAccepted: function (reference) {
+            flow.savePicked(reference);
+        }
         onRejected: flow.savePickCancelled()
+        onUnavailable: function (reason, message) {
+            flow.savePickUnavailable(message);
+        }
     }
 
     // No filter: providers label files freely, and the model identifies a
     // backup by its content, never by its name.
-    FileDialog {
+    DocumentPicker {
         id: openPicker
         objectName: "backupOpenPicker"
-        fileMode: FileDialog.OpenFile
-        nameFilters: []
-        onAccepted: flow.restorePicked(selectedFile.toString())
+        mode: "open"
+        onAccepted: function (reference) {
+            flow.restorePicked(reference);
+        }
         onRejected: flow.restorePickCancelled()
+        onUnavailable: function (reason, message) {
+            flow.restorePickUnavailable(message);
+        }
     }
 
     ModalSheet {

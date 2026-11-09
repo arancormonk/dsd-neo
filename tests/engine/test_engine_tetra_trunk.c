@@ -49,6 +49,7 @@ enum {
 static int g_failures;
 static int g_tunes;
 static int g_returns;
+static long g_returned_hz;
 static int g_ted_sps;
 static uint64_t g_request;
 static dsd_trunk_tune_result g_tune_result;
@@ -80,6 +81,7 @@ static dsd_trunk_tune_result
 return_hook(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     g_returns++;
     g_request = request_id;
+    g_returned_hz = state->p25_cc_freq != 0 ? state->p25_cc_freq : state->trunk_cc_freq;
     if (dsd_trunk_tune_result_is_ok(g_return_result)) {
         opts->trunk_is_tuned = 0;
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
@@ -122,6 +124,7 @@ session_open(void) {
     dsd_trunk_tuning_requests_reset();
     g_tunes = 0;
     g_returns = 0;
+    g_returned_hz = 0;
     g_ted_sps = -1;
     g_request = 0U;
     g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
@@ -380,8 +383,8 @@ engine_return_hook(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
  * return moves no tuner then and still answers OK, so the machine asks it for nothing: it keeps the channel, at its tick
  * and at a release of the followed call alike, reports no return, and keeps the evidence of the carrier the receiver
  * never left; it lets go of the call, whose speech and signalling are decoded there as with trunking off. With trunking
- * on again its grant timeout runs as before and asks the engine's return, which tunes through the backend: an audio
- * input has none here, so the return is refused and the channel kept for the next tick. */
+ * on again the follow returns at once through the engine's return, which tunes through the backend: an audio input has
+ * none here, so the return is refused and the channel kept for the next tick. */
 static void
 test_trunking_off_leaves_the_receiver(void) {
     session s = session_open();
@@ -411,7 +414,7 @@ test_trunking_off_leaves_the_receiver(void) {
 
     s.opts->trunk_enable = 1;
     engine_tick(&s);
-    expect(g_returns == 1, "on again: the grant timeout asks the engine's return");
+    expect(g_returns == 1, "on again: the machine asks the engine's return");
     expect(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && s.opts->trunk_is_tuned == 1,
            "on again: the backend refused the tune, so the channel is kept");
     session_close(&s);
@@ -437,13 +440,15 @@ test_no_carrier_forgets_evidence(void) {
 /* With -t 1 a grant still waiting for its first speech is the state machine's to time out (TETRA_SM_GRANT_TIMEOUT_S):
  * a no-carrier pass before then, whose generic return reads last_vc_sync_time against the one-second hangtime, takes
  * no return of its own and leaves the follow; once the grant timeout passed, the pass ticks the machine, which returns
- * to the control channel itself, once. Without a control channel known the pass does not drop the follow either. */
+ * to the control channel itself, once. With the session's control channel cleared since the follow (another cell's
+ * BSCH on the traffic carrier does that) the pass does not drop the follow either, and the machine still returns to
+ * the control channel the follow started from (regression: main stopped following on the traffic carrier). */
 static void
 test_no_carrier_leaves_the_follow_to_the_machine(void) {
-    for (int with_cc = 1; with_cc >= 0; with_cc--) {
+    for (int cc_cleared = 0; cc_cleared <= 1; cc_cleared++) {
         session s = session_open();
         expect(follow_grant(&s) == 1 && tetra_sm_get_state(s.state) == TETRA_SM_TUNED, "owner: grant followed");
-        if (!with_cc) {
+        if (cc_cleared) {
             s.state->trunk_cc_freq = 0;
         }
         at_seconds(2002.0);
@@ -454,8 +459,11 @@ test_no_carrier_leaves_the_follow_to_the_machine(void) {
         expect(g_returns == 0 && s.opts->trunk_is_tuned == 1, "owner: the pass takes no return of its own");
         at_seconds(2000.0 + TETRA_SM_GRANT_TIMEOUT_S + 0.5);
         noCarrier(s.opts, s.state);
-        expect(g_returns == with_cc && s.opts->trunk_is_tuned == 0 && !tetra_sm_followed(s.state, NULL),
+        expect(g_returns == 1 && s.opts->trunk_is_tuned == 0 && !tetra_sm_followed(s.state, NULL),
                "owner: the machine ends the follow at its grant timeout");
+        expect(g_returned_hz == CC_HZ && s.state->trunk_cc_freq == CC_HZ
+                   && tetra_sm_get_state(s.state) == TETRA_SM_ON_CC,
+               "owner: back on the control channel the follow started from");
         session_close(&s);
     }
 }

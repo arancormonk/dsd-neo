@@ -1224,10 +1224,12 @@ init_state_trunk_scan_publication(dsd_state* state) {
     state->trunk_scan_list_count = 0U;
     state->trunk_scan_active_list = 0U;
     state->trunk_scan_active_list_off = 0U;
+    state->trunk_scan_active_lists = 0U;
     state->trunk_scan_rotation_ordinal = 0U;
     state->trunk_scan_rotation_count = 0U;
     state->trunk_scan_lists_seq = 0U;
     DSD_MEMSET(state->trunk_scan_lists, 0, sizeof(state->trunk_scan_lists));
+    DSD_MEMSET(state->trunk_scan_membership_counts, 0, sizeof(state->trunk_scan_membership_counts));
     state->scan_row_session = 0U;
     state->scan_row_index = -1;
     state->scan_row_scanner = (uint8_t)DSD_SCAN_ROW_SCANNER_NONE;
@@ -1409,6 +1411,10 @@ init_state_nxdn_and_dmr_defaults(dsd_state* state) {
     state->nxdn_base_freq = 0;
     state->nxdn_step = 0;
     state->nxdn_bw = 0;
+    // The channel map is emptied with the rest of the trunking state, so the DFA record starts empty with it.
+    DSD_MEMSET(&state->nxdn_ca, 0, sizeof(state->nxdn_ca));
+    DSD_MEMSET(&state->nxdn_dfa_learned, 0, sizeof(state->nxdn_dfa_learned));
+    DSD_MEMSET(&state->nxdn_site, 0, sizeof(state->nxdn_site));
 
     //multi-key array
     DSD_MEMSET(state->rkey_array, 0, sizeof(state->rkey_array));

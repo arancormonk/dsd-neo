@@ -160,6 +160,7 @@ Item {
             var view = {
                 session: 7,
                 seq: seq,
+                activeList: 2,
                 lists: [{name: "security", on: true, targets: 12}, {name: "hospital", on: true, targets: 1, onAir: true},
                         {name: "parks", on: true, targets: 3}]
             };
@@ -210,10 +211,34 @@ Item {
             verify(!hospital.checked && hospital.enabled);
             compare(hospital.note, "");
             compare(row(session, "scanListsStatus").text, "2 of 3 on · 15 targets");
-            testContext.setScanLists(threeLists(11, {lists: [{name: "security", targets: 12},
+            testContext.setScanLists(threeLists(11, {activeList: 3, lists: [{name: "security", targets: 12},
                 {name: "hospital", on: false, targets: 1}, {name: "parks", targets: 3, onAir: true}]}));
             tryCompare(hospital, "subtitle", "1 target");
             verify(!hospital.checked);
+        }
+
+        // Issue #697: lists that share targets. security's file holds 12 (s, which hospital holds too, m, which parks
+        // holds too, and 10 of its own), hospital's 1 (s, on air), parks' 3 (m and 2 of its own). Each row keeps its
+        // file's count, both lists holding s say On air, and the total counts each target once, a switch included.
+        function test_session_sheet_counts_a_shared_target_once() {
+            testContext.setHostRunning(true);
+            testContext.setScanLists(threeLists(10, {activeList: 1, memberships: {"1": 10, "3": 1, "5": 1, "4": 2},
+                lists: [{name: "security", targets: 12, onAir: true}, {name: "hospital", targets: 1, onAir: true},
+                        {name: "parks", targets: 3}]}));
+            session.open();
+            tryCompare(session, "visible", true);
+            compare(row(session, "scanListsStatus").text, "3 of 3 on · 14 targets");
+            compare(row(session, "scanListsRow_1").subtitle, "12 targets · On air");
+            compare(row(session, "scanListsRow_2").subtitle, "1 target · On air");
+            compare(row(session, "scanListsRow_3").subtitle, "3 targets");
+            // hospital off: s stays through security.
+            row(session, "scanListsRow_2").activate();
+            tryCompare(row(session, "scanListsRow_2"), "checked", false);
+            compare(row(session, "scanListsStatus").text, "2 of 3 on · 14 targets");
+            // parks off too: m stays through security, parks' own two go.
+            row(session, "scanListsRow_3").activate();
+            tryCompare(row(session, "scanListsRow_3"), "checked", false);
+            compare(row(session, "scanListsStatus").text, "1 of 3 on · 12 targets");
         }
 
         function test_session_sheet_refusal_reverts() {

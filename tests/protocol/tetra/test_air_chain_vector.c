@@ -97,8 +97,10 @@ check_scrambler_recurrence(uint16_t mcc, uint16_t mnc, uint8_t colour) {
 
     uint8_t history[PN_BITS + 32] = {0};
     uint8_t actual[PN_BITS] = {0};
+    /* Colour code 0 is predefined scrambling: e(1)..e(30) all zero (EN 300 392-2 table 21.76 note 1). */
     uint32_t extended =
-        ((uint32_t)(mcc & 0x3ffu) << 20) | ((uint32_t)(mnc & 0x3fffu) << 6) | (uint32_t)(colour & 0x3fu);
+        colour == 0 ? 0u
+                    : ((uint32_t)(mcc & 0x3ffu) << 20) | ((uint32_t)(mnc & 0x3fffu) << 6) | (uint32_t)(colour & 0x3fu);
 
     /* p(-31)=p(-30)=1; p(-29)=e(30), ..., p(0)=e(1).
      * In the packed extended colour code e(1) is bit 29 and e(30) bit 0. */
@@ -129,7 +131,8 @@ main(void) {
     uint16_t mother[MOTHER_BITS];
     uint8_t decoded[TYPE2_BITS];
 
-    if (!check_scrambler_recurrence(0, 0, 0) || !check_scrambler_recurrence(250, 13, 13)
+    if (!check_scrambler_recurrence(0, 0, 0) || !check_scrambler_recurrence(250, 13, 0)
+        || !check_scrambler_recurrence(1023, 16383, 0) || !check_scrambler_recurrence(250, 13, 13)
         || !check_scrambler_recurrence(460, 4242, 17) || !check_scrambler_recurrence(1023, 16383, 63)) {
         return fail("scrambler differs from direct ETSI recurrence");
     }

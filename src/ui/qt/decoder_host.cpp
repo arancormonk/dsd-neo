@@ -22,6 +22,7 @@
 #include <QUrl>
 
 #include "json_store.h"
+#include "qstring_scrub.h"
 
 #include <Qt>
 #include <QtGlobal>
@@ -341,18 +342,21 @@ DecoderHost::beginTransfer(const QVariantMap& selection, const QString& referenc
     const int id = selection.value(QStringLiteral("selection")).toInt();
     const QStringList paths = selection.value(QStringLiteral("paths")).toStringList();
     const QStringList names = selection.value(QStringLiteral("names")).toStringList();
-    if (recordingTransferActive()) {
-        announceTransferEnd(id, TransferBusy, 0);
+    const auto refuse = [this, id, &reference](int result) {
+        // Nothing will write the document: a Download-folder save the picker made for it goes (#829).
+        discardPendingDownload(reference);
+        announceTransferEnd(id, result, 0);
         return false;
+    };
+    if (recordingTransferActive()) {
+        return refuse(TransferBusy);
     }
     if (zip && !recordingExportSupported()) {
-        announceTransferEnd(id, TransferUnsupported, 0);
-        return false;
+        return refuse(TransferUnsupported);
     }
     // A save copies one recording; a zip names each entry, so the two lists go together.
     if (id <= 0 || reference.isEmpty() || paths.isEmpty() || (zip ? names.size() != paths.size() : paths.size() != 1)) {
-        announceTransferEnd(id, TransferFailed, 0);
-        return false;
+        return refuse(TransferFailed);
     }
     // No file is looked at here, on the GUI thread (an export may name tens of thousands): the transfer finds the ones
     // gone on its own thread, reports them at its end and publishes the total it really has.
@@ -361,6 +365,7 @@ DecoderHost::beginTransfer(const QVariantMap& selection, const QString& referenc
     m_transferTotalBytes = selection.value(QStringLiteral("bytes")).toLongLong();
     Q_EMIT recordingTransferChanged();
     if (!beginRecordingTransfer(paths, zip ? names : QStringList(), reference, zip)) {
+        discardPendingDownload(reference);
         finishRecordingTransfer(TransferFailed, {});
         return false;
     }
@@ -421,6 +426,38 @@ DecoderHost::announceTransferEnd(int selection, int result, int missing) {
         Qt::QueuedConnection);
 }
 
+qint64
+DecoderHost::requestOpenDocument() {
+    return refuseDocumentRequest();
+}
+
+qint64
+DecoderHost::requestSaveDocument(const QString& suggestedName, const QString& mimeType) {
+    (void)suggestedName;
+    (void)mimeType;
+    return refuseDocumentRequest();
+}
+
+qint64
+DecoderHost::refuseDocumentRequest() {
+    const qint64 id = nextDocumentRequestId();
+    m_refusedDocumentRequests.insert(id);
+    QMetaObject::invokeMethod(
+        this,
+        [this, id] {
+            if (m_refusedDocumentRequests.remove(id)) {
+                Q_EMIT documentPickUnavailable(id, QStringLiteral("unsupported"));
+            }
+        },
+        Qt::QueuedConnection);
+    return id;
+}
+
+void
+DecoderHost::cancelDocumentRequest(qint64 requestId) {
+    m_refusedDocumentRequests.remove(requestId);
+}
+
 bool
 DecoderHost::shareRecording(const QString& path, const QString& title) {
     if (path.isEmpty() || !shareSupported() || !m_recordingIndexed || !m_recordingIndexed(path)) {
@@ -442,6 +479,23 @@ void
 DecoderHost::setRecordingHold(std::function<int(const QString&)> hold, std::function<void(int)> release) {
     m_recordingHold = std::move(hold);
     m_recordingRelease = std::move(release);
+}
+
+void
+DecoderHost::setSignInFillSink(SignInFillSink sink) {
+    m_signInFill = std::move(sink);
+}
+
+void
+DecoderHost::deliverSignInFill(int token, bool hasUsername, QString& username, bool hasPassword,
+                               QString& password) const {
+    /* A copy: a sink that replaces or clears itself mid-call must not destroy the function running. */
+    const SignInFillSink sink = m_signInFill;
+    if (sink) {
+        sink(token, hasUsername, username, hasPassword, password);
+    }
+    scrub_qstring(username);
+    scrub_qstring(password);
 }
 
 int

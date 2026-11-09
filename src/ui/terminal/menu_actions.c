@@ -366,14 +366,14 @@ act_setmod_bw(void* v) {
 void
 act_import_chan(void* v) {
     UiCtx* c = (UiCtx*)v;
-    ui_csv_import_picker_open("chan", "Channel map CSV", 1024, cb_import_chan, c);
+    ui_csv_import_picker_open("chan", "Channel map CSV", NULL, 1024, cb_import_chan, c);
 }
 
 void
 act_import_p25_bandplan(void* v) {
     UiCtx* c = (UiCtx*)v;
     // No sidecar kind carries a band plan yet, so the picker falls straight to the path prompt.
-    ui_csv_import_picker_open("iden", "P25 band plan CSV", 1024, cb_import_p25_bandplan, c);
+    ui_csv_import_picker_open("iden", "P25 band plan CSV", NULL, 1024, cb_import_p25_bandplan, c);
 }
 
 void
@@ -401,16 +401,27 @@ act_export_p25_bandplan(void* v) {
     ui_prompt_open_string_async("Export P25 band plan to path", def, sizeof def, cb_export_p25_bandplan, c);
 }
 
+/* The path prompt starts at the configured group list file, the one Reload group list reads: importing it again, or a
+   file beside it, is then an edit of its path instead of a retype. */
 void
 act_import_group(void* v) {
     UiCtx* c = (UiCtx*)v;
-    ui_csv_import_picker_open("group", "Group list CSV", 1024, cb_import_group, c);
+    ui_csv_import_picker_open("group", "Group list CSV", menu_configured_group_file(c), 1024, cb_import_group, c);
+}
+
+/* Reload group list (discussion #748): the decoder resolves the file after the scan scope is set aside, so the
+   command carries no path. A successful reload clears temporary TG avoids and call skips, so the row has no hotkey. */
+void
+act_group_list_reload(void* v) {
+    UNUSED(v);
+    (void)dsd_app_command_action(DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD);
+    ui_statusf("Reloading group list...");
 }
 
 void
 act_import_src(void* v) {
     UiCtx* c = (UiCtx*)v;
-    ui_csv_import_picker_open("src", "Source ID list CSV", 1024, cb_import_src, c);
+    ui_csv_import_picker_open("src", "Source ID list CSV", NULL, 1024, cb_import_src, c);
 }
 
 void

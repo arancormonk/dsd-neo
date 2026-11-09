@@ -6,6 +6,12 @@ import QtQuick
 // alone, without validating the username or application key. Imports record the
 // savedRow argument but omit it from the result. Location request allocation,
 // nearby/zip lookups and place-browsing load methods are not modeled here.
+//
+// The account check follows RadioReferenceModel's state: a new password resets
+// it to None (0), checkAccount() makes it Checking (1, busy) unless it already
+// is, and settle() answers it (2 Verified, 3 Rejected, 4 Expired, 5 Failed).
+// accountChecks counts every submission, the ones the model would drop
+// included, so a case sees a doubled request.
 QtObject {
     signal locationRequestAllocated(double requestId)
     property bool available: true
@@ -28,16 +34,53 @@ QtObject {
     property var systemDetails: ({})
     property var talkgroupSummary: ({})
     property string sessionPassword: ""
+    readonly property bool hasPassword: sessionPassword.length > 0
+    property int accountState: 0
+    property string accountMessage: ""
+    readonly property bool checkingAccount: accountState === 1
     property int accountChecks: 0
+    property int passwordCommits: 0
     property int imports: 0
     property int savedRow: -2
 
     function setPassword(value) {
+        passwordCommits++;
+        if (value === sessionPassword)
+            return;
         sessionPassword = value;
         credentialsReady = value.length > 0;
+        accountState = 0;
+        accountMessage = "";
+        busy = false;
     }
     function checkAccount() {
         accountChecks++;
+        if (accountState === 1)
+            return;
+        errorText = "";
+        errorIsAuth = false;
+        errorIsSubscription = false;
+        accountMessage = "";
+        accountState = 1;
+        busy = true;
+    }
+    function settle(state, message) {
+        busy = false;
+        accountMessage = state === 5 && message !== undefined ? message : "";
+        errorIsAuth = state === 3;
+        errorIsSubscription = state === 4;
+        errorText = state >= 3 ? (state === 5 && message !== undefined ? message : "Account check failed") : "";
+        accountState = state;
+    }
+    function resetAccount() {
+        buildHasAppKey = true;
+        sessionPassword = "";
+        credentialsReady = false;
+        accountState = 0;
+        accountMessage = "";
+        accountChecks = 0;
+        passwordCommits = 0;
+        busy = false;
         errorText = "";
         errorIsAuth = false;
         errorIsSubscription = false;

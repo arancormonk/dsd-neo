@@ -67,6 +67,7 @@ typedef struct {
     int fragment_seen;        /* the block carried a fragment of its timeslot's TM-SDU */
     tetra_mac_fragment* frag; /* fragment context of the block's timeslot */
     int ks_offset;            /* key stream bit its encrypted PDUs start at (EN 300 392-7 clause 6.4.2.2) */
+    int other_cell;           /* the block carried another cell's SYSINFO (sysinfo_applies()) */
 } mac_block;
 
 /* 1 for the SSI family (SSI, USSI and their event label or usage marker forms), 2 for the SMI family, 0 for event
@@ -244,13 +245,17 @@ llc_deliver(const mac_block* b, const uint8_t* pdu, int nbits, tetra_mac_sdu* sd
 
 /* Hand a complete clear TM-SDU to the LLC. The channel allocation that came with it (in @p ctx) goes to the call a call
  * PDU in it names, and is followed only then; one no call PDU took attaches to the call of the addressed party, and a
- * header-only allocation likewise, without tuning (tetra_calls.h). */
+ * header-only allocation likewise, without tuning (tetra_calls.h). With another cell's allocation
+ * (tetra_mac_sdu_other_cell()) the TM-SDU is decoded and printed only: no call record takes its call PDUs, and the
+ * allocation and the event label or usage marker its address assigns go to no call. */
 static void
 deliver_tm_sdu(const mac_block* b, const uint8_t* sdu, int sdu_bits, tetra_mac_sdu* ctx) {
     if (sdu_bits > 0) {
         llc_deliver(b, sdu, sdu_bits, ctx);
     }
-    tetra_calls_on_allocation(b->opts, b->state, ctx);
+    if (!tetra_mac_sdu_other_cell(ctx)) {
+        tetra_calls_on_allocation(b->opts, b->state, ctx);
+    }
 }
 
 /* Augmented part of table 21.87 (up/downlink assigned 00). Returns 0 when the receiver discards the allocation and
@@ -277,16 +282,26 @@ read_augmented_allocation(tetra_bit_reader* r, tetra_chan_alloc* a) {
     return tetra_bits_ok(r) && a->up_down != 0u && further == 0u;
 }
 
+/* What read_allocation() made of a channel allocation element. */
+typedef enum {
+    TETRA_ALLOC_BAD = 0,        /* it runs past the PDU or is discarded, and the TM-SDU with it */
+    TETRA_ALLOC_CELL = 1,       /* a channel of this cell */
+    TETRA_ALLOC_OTHER_CELL = 2, /* cell change flag 1: a channel of another cell an MS is moved to (clause 23.5.4.1) */
+} tetra_alloc_result;
+
 /* Channel allocation element, table 21.87. Without extended carrier numbering the band and offset are those of the
- * cell's SYSINFO (clause 21.5.2). Returns 1 for a usable allocation; 0 when it runs past the PDU or is discarded. */
-static int
+ * cell's SYSINFO (clause 21.5.2). A usable allocation with its cell change flag set is for an MS being moved to another
+ * cell (clause 23.5.4.1, announced cell reselection type 1); this decoder follows no cell change, and its PDU is
+ * decoded and printed only (tetra_mac_sdu_other_cell()). */
+static tetra_alloc_result
 read_allocation(tetra_bit_reader* r, const tetra_state_t* ts, tetra_chan_alloc* a) {
     static const long k_bandwidth_offset_hz[4] = {0L, 12500L, 37500L, 62500L}; /* (bandwidth / 2) - 12,5 kHz */
     *a = (tetra_chan_alloc){0};
     a->type = (uint8_t)tetra_bits_read(r, 2);
     a->timeslots = (uint8_t)tetra_bits_read(r, 4);
     a->up_down = (uint8_t)tetra_bits_read(r, 2);
-    (void)tetra_bits_skip(r, 2); /* CLCH permission, cell change flag */
+    (void)tetra_bits_skip(r, 1); /* CLCH permission */
+    a->cell_change = (uint8_t)tetra_bits_read(r, 1);
     a->carrier = (uint16_t)tetra_bits_read(r, 12);
     uint32_t band = ts->freq_band;
     uint32_t offset = ts->freq_offset;
@@ -299,23 +314,25 @@ read_allocation(tetra_bit_reader* r, const tetra_state_t* ts, tetra_chan_alloc* 
         (void)tetra_bits_skip(r, 2); /* frame 18 monitoring pattern */
     }
     if (a->up_down == 0u && !read_augmented_allocation(r, a)) {
-        return 0;
+        return TETRA_ALLOC_BAD;
     }
     if (!tetra_bits_ok(r)) {
-        return 0;
+        return TETRA_ALLOC_BAD;
     }
     a->freq_hz = carrier_frequency_hz(a->carrier, band, offset);
     if (a->freq_hz > 0L && a->bandwidth < 4u) {
         a->freq_hz += k_bandwidth_offset_hz[a->bandwidth];
     }
-    return 1;
+    return a->cell_change ? TETRA_ALLOC_OTHER_CELL : TETRA_ALLOC_CELL;
 }
 
 static void
 print_allocation(const mac_block* b, const tetra_chan_alloc* a) {
-    DSD_FPRINTF(stderr, "[TETRA CHANNEL-ALLOCATION] CC=%d type=%u slots=0x%X dir=%u carrier=%u freq=%ld bw=%u mod=%u\n",
+    DSD_FPRINTF(stderr,
+                "[TETRA CHANNEL-ALLOCATION] CC=%d type=%u slots=0x%X dir=%u carrier=%u freq=%ld bw=%u mod=%u%s\n",
                 b->cc, (unsigned)a->type, (unsigned)a->timeslots, (unsigned)a->up_down, (unsigned)a->carrier,
-                a->freq_hz, (unsigned)a->bandwidth, (unsigned)a->modulation);
+                a->freq_hz, (unsigned)a->bandwidth, (unsigned)a->modulation,
+                a->cell_change ? "  cell change: for another cell; logged only" : "");
 }
 
 /* The fragment context of the block being decoded: its TDMA timeslot 1..4, or 0 while the clock is not running. */
@@ -631,7 +648,7 @@ resource_parse(mac_block* b, const uint8_t* bits, int nbits, tetra_mac_resource*
     if (used) {
         ctx.air_key = *used;
     }
-    if (h->alloc_present && !read_allocation(&r, b->ts, &ctx.alloc)) {
+    if (h->alloc_present && read_allocation(&r, b->ts, &ctx.alloc) == TETRA_ALLOC_BAD) {
         TETRA_LOG_PAYLOAD(b->ts, "[TETRA CHANNEL-ALLOCATION] CC=%d  invalid or reserved allocation; PDU discarded\n",
                           b->cc);
         DSD_SECURE_ZERO(&ctx.air_key, sizeof ctx.air_key);
@@ -657,8 +674,10 @@ resource_parse(mac_block* b, const uint8_t* bits, int nbits, tetra_mac_resource*
         print_allocation(b, &ctx.alloc);
     }
     /* A decrypted allocation is no unread ciphertext: the call it attaches to takes its encryption and key from it
-     * (call_attach()), before anything judges the call by them. */
-    publish_address(b, &h->addr, h->enc_mode, used ? 0u : h->alloc_present);
+     * (call_attach()), before anything judges the call by them. Another cell's PDU publishes nothing of its address. */
+    if (!tetra_mac_sdu_other_cell(&ctx)) {
+        publish_address(b, &h->addr, h->enc_mode, used ? 0u : h->alloc_present);
+    }
     deliver_tm_sdu(b, bits + r.pos, end - r.pos, &ctx);
     DSD_SECURE_ZERO(&ctx.air_key, sizeof ctx.air_key);
     return h->pdu_bits;
@@ -738,7 +757,11 @@ complete_fragment(mac_block* b, const tetra_chan_alloc* alloc, uint8_t enc_mode,
         ctx.alloc = *alloc;
         print_allocation(b, alloc);
     }
-    publish_address(b, &f->addr, enc_mode, alloc != NULL && !used);
+    /* Another cell's publishes nothing of its address here. Its first fragment's was published when that was decoded
+     * (publish_resource_header()), before this MAC-END's allocation was known. */
+    if (!tetra_mac_sdu_other_cell(&ctx)) {
+        publish_address(b, &f->addr, enc_mode, alloc != NULL && !used);
+    }
     if (used) {
         char note[40] = "";
         char addr[96];
@@ -760,7 +783,7 @@ static int
 allocation_bits(const uint8_t* pt, int nbits, int at, const void* ctx) {
     tetra_bit_reader r = tetra_bits_reader(pt, nbits, at);
     tetra_chan_alloc alloc;
-    return read_allocation(&r, (const tetra_state_t*)ctx, &alloc) ? r.pos - at : -1;
+    return read_allocation(&r, (const tetra_state_t*)ctx, &alloc) != TETRA_ALLOC_BAD ? r.pos - at : -1;
 }
 
 /* An encrypted TM-SDU at its MAC-END, all its pieces kept: when a key decrypts it and a repeat proved the plaintext, it
@@ -791,7 +814,7 @@ fragment_open(mac_block* b, uint32_t alloc_present) {
     tetra_chan_alloc alloc = {0};
     if (alloc_present != 0u) {
         tetra_bit_reader r = tetra_bits_reader(pt, total, end_start);
-        if (!read_allocation(&r, b->ts, &alloc)) {
+        if (read_allocation(&r, b->ts, &alloc) == TETRA_ALLOC_BAD) {
             TETRA_LOG_PAYLOAD(
                 b->ts, "[TETRA CHANNEL-ALLOCATION] CC=%d  invalid or reserved allocation; TM-SDU dropped\n", b->cc);
             DSD_SECURE_ZERO(pt, sizeof pt);
@@ -849,7 +872,7 @@ finish_fragment(mac_block* b, const uint8_t* bits, int pdu_bits, int body, uint3
     }
     tetra_bit_reader r = tetra_bits_reader(bits, pdu_bits, body);
     tetra_chan_alloc alloc = {0};
-    if (alloc_present != 0u && !read_allocation(&r, b->ts, &alloc)) {
+    if (alloc_present != 0u && read_allocation(&r, b->ts, &alloc) == TETRA_ALLOC_BAD) {
         TETRA_LOG_PAYLOAD(b->ts, "[TETRA CHANNEL-ALLOCATION] CC=%d  invalid or reserved allocation; TM-SDU dropped\n",
                           b->cc);
         discard_fragment(f);
@@ -1042,12 +1065,46 @@ tetra_mac_broadcast_decode(const uint8_t* bits, int nbits, tetra_mac_broadcast* 
     }
 }
 
+/* Whether a SYSINFO is the cell's to apply. While the trunking state machine guards a follow (tetra_sm_guarding()) it
+ * is only when it is the home cell's (tetra_sm_home): every carrier of a cell names the cell's own main carrier
+ * (EN 300 392-2 clause 21.4.4.1), so one naming another main carrier, none valid, or another location area than the
+ * home's when both are known is another cell's on the followed carrier, perhaps of the home's colour code. That one
+ * is logged and not applied. A home SYSINFO naming the location area of a home that had none gives the home one: it
+ * names the home's main carrier, as only the home cell's does. */
+static int
+sysinfo_applies(const mac_block* b, long dl_hz, const tetra_mac_sysinfo* si) {
+    if (!tetra_sm_guarding(b->opts, b->state)) {
+        return 1;
+    }
+    tetra_sm_home* const home = &b->ts->sm.home;
+    const int other_area = si->mle_present && home->la_known && si->la != home->la;
+    if (dl_hz <= 0L || dl_hz != home->cc_hz || other_area) {
+        char la[8] = "-";
+        if (si->mle_present) {
+            DSD_SNPRINTF(la, sizeof la, "%u", (unsigned)si->la);
+        }
+        TETRA_LOG_VERBOSE(
+            b->ts, 1, "[TETRA SYSINFO] main carrier %ld Hz LA %s: another cell on the followed carrier; not applied\n",
+            dl_hz, la);
+        return 0;
+    }
+    if (si->mle_present && !home->la_known) {
+        home->la = si->la;
+        home->la_known = 1;
+    }
+    return 1;
+}
+
 /* Cache SYSINFO, once a main carrier or location area other than the cell's has forgotten the last cell
- * (tetra_bsch_sysinfo_cell()). The control channel moves to the main carrier only when it is a valid frequency. */
-static void
+ * (tetra_bsch_sysinfo_cell()), unless it is another cell's on the carrier of a guarded follow (sysinfo_applies()). The
+ * control channel moves to the main carrier only when it is a valid frequency. 1 when the SYSINFO was applied. */
+static int
 apply_sysinfo(const mac_block* b, const tetra_mac_sysinfo* si) {
     tetra_state_t* const ts = b->ts;
     const long dl_hz = carrier_frequency_hz(si->main_carrier, si->band, si->offset);
+    if (!sysinfo_applies(b, dl_hz, si)) {
+        return 0;
+    }
     tetra_bsch_sysinfo_cell(b->opts, b->state, dl_hz, si->mle_present, si->la);
     /* The received identity: the location area, and this carrier as the control channel only when it is the main
        carrier the SYSINFO names (every carrier of the cell broadcasts the same SYSINFO), before anything here retunes. */
@@ -1088,9 +1145,11 @@ apply_sysinfo(const mac_block* b, const tetra_mac_sysinfo* si) {
         ts->sysinfo_known = 1;
         tetra_calls_note_location_area(b->opts, b->state, si->la);
     }
+    return 1;
 }
 
-static void
+/* 1 when the SYSINFO was applied (apply_sysinfo()). */
+static int
 report_sysinfo(const mac_block* b, const tetra_mac_sysinfo* si) {
     static const char* const k_option_name[4] = {"even-MF", "odd-MF", "access-code", "ext-svc"};
     char mle[64] = "";
@@ -1106,7 +1165,7 @@ report_sysinfo(const mac_block* b, const tetra_mac_sysinfo* si) {
                 (unsigned)si->rxlev_access_min, (unsigned)si->access_parameter, (unsigned)si->radio_dl_timeout,
                 si->cck_flag ? "cck_id" : "hyperframe", (unsigned)si->hyperframe_or_cck,
                 k_option_name[si->option_flag & 3u], (unsigned)si->option, mle);
-    apply_sysinfo(b, si);
+    return apply_sysinfo(b, si);
 }
 
 static void
@@ -1142,13 +1201,19 @@ parse_broadcast(mac_block* b, const uint8_t* bits, int nbits) {
         return bc.access_define.nbits;
     }
     if (bc.type == TETRA_MAC_BC_SYSINFO && b->first) {
+        int taken = 1;
         if (complete) {
-            report_sysinfo(b, &bc.sysinfo);
+            taken = report_sysinfo(b, &bc.sysinfo);
         } else {
             TETRA_LOG_PAYLOAD(b->ts, "[TETRA SYSINFO] CC=%d  too short (%d bits)\n", b->cc, nbits);
         }
-        /* Counted once it is taken: a SYSINFO of another cell first forgets the last cell's. */
-        b->ts->frames_sysinfo++;
+        /* Counted once it is taken: a SYSINFO of another cell first forgets the last cell's, and one of another cell
+           on the carrier of a guarded follow is not taken at all. */
+        if (taken) {
+            b->ts->frames_sysinfo++;
+        } else {
+            b->other_cell = 1;
+        }
         return nbits;
     }
     /* A SYSINFO behind another PDU is not a pi/4-DQPSK SYSINFO; SYSINFO-DA and the reserved type have no length
@@ -1329,23 +1394,23 @@ tetra_mac_forget_fragments(dsd_state* state) {
 
 void
 tetra_mac_parse_schd(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_state* state) {
-    tetra_mac_parse_block(bits, nbits, cc, 0, opts, state);
+    (void)tetra_mac_parse_block(bits, nbits, cc, 0, opts, state);
 }
 
-void
+int
 tetra_mac_parse_block(const uint8_t* bits, int nbits, int cc, int ks_offset, dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
     if (!ts || !bits || nbits < 2) {
-        return;
+        return 1;
     }
     log_raw_block(ts, bits, nbits);
     if (ts->uplink) {
         /* Uplink blocks hold MAC-DATA, MAC-U-BLCK and uplink MAC-FRAG/MAC-END PDUs (clause 21.4.2), whose layouts
          * differ from the downlink ones decoded here. */
         TETRA_LOG_PAYLOAD(ts, "[TETRA MAC] CC=%d  uplink block of %d bits not decoded\n", cc, nbits);
-        return;
+        return 1;
     }
-    mac_block b = {opts, state, ts, cc, nbits, 1, 0, &ts->mac_frag[fragment_timeslot(ts)], ks_offset};
+    mac_block b = {opts, state, ts, cc, nbits, 1, 0, &ts->mac_frag[fragment_timeslot(ts)], ks_offset, 0};
     catch_up_fragment(ts, b.frag, cc);
     int off = 0;
     while (nbits - off >= (b.first ? 2 : MAC_NULL_PDU_BITS)) {
@@ -1359,6 +1424,7 @@ tetra_mac_parse_block(const uint8_t* bits, int nbits, int cc, int ks_offset, dsd
         b.first = 0;
     }
     age_fragment(&b);
+    return !b.other_cell;
 }
 
 tetra_dl_usage

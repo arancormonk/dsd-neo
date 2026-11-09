@@ -56,6 +56,7 @@ target_sources(
         util/source_alias.c
         util/synctype.c
         file/dsd_file.c
+        file/managed_file.c
         file/wav_journal.c
         file/wav_recording.c
         file/wav_segment.c

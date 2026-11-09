@@ -54,7 +54,8 @@ class ScanListStarter : public QObject {
      * @brief Start one session that scans every list of @p lists (issue #697): the first list's receiver and session
      * options, one --trunk-scan per list in that order (list 1 is the first), one call recording session, the first
      * list's. Nothing starts unless every list passes its own checks, joins the first (joinConflict()), builds, and the
-     * lists together pass the engine's checks across them (no target id twice). One list is start().
+     * lists together pass the engine's checks across them (a target id in two lists has the same settings in both,
+     * and is one target). One list is start().
      * @p holdTargetId, when not empty, starts the scan held on that target of the first list (issue #644,
      * session_args_with_scan_hold()), for this start only: nothing here keeps it.
      * @return start()'s map; "error" names the list it is about.

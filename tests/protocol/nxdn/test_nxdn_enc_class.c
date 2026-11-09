@@ -86,6 +86,14 @@ nxdn_channel_to_frequency_quiet(dsd_state* state, uint16_t channel) {
     return 0;
 }
 
+long int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+nxdn_channel_to_frequency_display(const dsd_state* state, uint16_t channel) {
+    (void)state;
+    (void)channel;
+    return 0;
+}
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 nxdn_gps_report(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src) {

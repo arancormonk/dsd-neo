@@ -32,7 +32,10 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <atomic>
+#include <memory>
 #include <stdio.h>
+#include <thread>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
 #ifndef _WIN32
@@ -54,7 +57,11 @@
 #include <qflags.h>
 #include <stdint.h>
 extern "C" {
+#include <dsd-neo/core/managed_file.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/platform/timing.h>
+#include "managed_file_test_support.h"
 }
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/engine/trunk_scan.h>
@@ -361,6 +368,68 @@ test_update_rejects_invalid_pick(void) {
                           + QStringLiteral("/imports"));
     expect("invalid pick strands no staging copy",
            importsDir.entryList(QDir::Files | QDir::NoDotAndDotDot).size() == 1);
+}
+
+/*
+ * Issue #829: an update names its row by the stored path it had when the pick
+ * was asked for. A row removed while the picker was up shifts the later rows'
+ * indexes, so an index would replace the next file instead; the path either
+ * finds the row that was asked for or refuses with "changed".
+ */
+void
+test_replace_by_stored_path(void) {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+
+    TestHost host;
+    const QTemporaryDir sourceDir;
+    expect("replace-by-path source dir created", sourceDir.isValid());
+    dsd_qt::ImportedFilesModel model(&host);
+    QStringList stored;
+    QList<QByteArray> bytes;
+    for (int i = 0; i < 3; i++) {
+        const QByteArray body = QStringLiteral("TG,Mode,Name\n%1,A,Group %1\n").arg(101 + i).toUtf8();
+        const QString source = sourceDir.filePath(QStringLiteral("group-%1.csv").arg(i));
+        expect("replace-by-path source written", write_file(source, body));
+        const QVariantMap imported = model.importFile(QUrl::fromLocalFile(source).toString(),
+                                                      QStringLiteral("group-%1.csv").arg(i), QStringLiteral("group"));
+        expect("replace-by-path import ok", imported.value(QStringLiteral("ok")).toBool());
+        stored.append(imported.value(QStringLiteral("path")).toString());
+        bytes.append(body);
+    }
+    const QByteArray replacement = "TG,Mode,Name\n201,A,Replacement\n202,A,Second\n";
+    const QString pick = sourceDir.filePath(QStringLiteral("replacement.csv"));
+    expect("replace-by-path pick written", write_file(pick, replacement));
+    const QString reference = QUrl::fromLocalFile(pick).toString();
+
+    /* The second file's update was asked for; the first goes while the picker is up. */
+    expect("replace-by-path first row removed", model.remove(0));
+    QVariantMap result = model.importBundleReplacing(reference, QStringLiteral("replacement.csv"),
+                                                     QStringLiteral("group"), {}, stored.at(1));
+    expect("replace-by-path replaces the row asked for", result.value(QStringLiteral("ok")).toBool());
+    expect("replace-by-path keeps the stored path", result.value(QStringLiteral("path")).toString() == stored.at(1));
+    expect("replace-by-path wrote the pick", read_file(stored.at(1)) == replacement);
+    expect("replace-by-path leaves the next file alone", read_file(stored.at(2)) == bytes.at(2));
+    expect("replace-by-path adds no row", model.rowCount() == 2);
+
+    /* The row asked for goes while the picker is up: nothing is replaced. */
+    expect("replace-by-path asked-for row removed", model.remove(model.rowForPath(stored.at(1))));
+    result = model.importBundleReplacing(reference, QStringLiteral("replacement.csv"), QStringLiteral("group"), {},
+                                         stored.at(1));
+    expect("replace-by-path refuses a removed row", !result.value(QStringLiteral("ok")).toBool());
+    expect("replace-by-path says it changed", result.value(QStringLiteral("error")).toString() == "changed");
+    expect("replace-by-path explains",
+           result.value(QStringLiteral("detail")).toString() == "That file changed while you were picking. Try again.");
+    expect("replace-by-path refusal leaves the other file alone", read_file(stored.at(2)) == bytes.at(2));
+    expect("replace-by-path refusal adds no row", model.rowCount() == 1);
+
+    /* No path names no row: an update is never turned into a new import. */
+    result = model.importBundleReplacing(reference, QStringLiteral("replacement.csv"), QStringLiteral("group"), {},
+                                         QString());
+    expect("replace-by-path refuses an empty path", result.value(QStringLiteral("error")).toString() == "changed");
+    expect("replace-by-path empty path adds no row", model.rowCount() == 1);
+    while (model.rowCount() > 0) {
+        model.remove(0);
+    }
 }
 
 /*
@@ -800,6 +869,236 @@ test_export_registration_in_place() {
     expect("outside path refused without deleting it",
            !model.registerTalkgroupList(external) && QFile::exists(external));
     model.remove(model.rowForPath(path));
+}
+
+/* Issue #748: groupListCounts() reads the file as it is now, where a library row's counts are from its import, and
+ * reads a file outside the library the same way. */
+void
+test_group_list_counts_read_the_file_now() {
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    const QString path = model.newTalkgroupListPath();
+    const auto counts = [&model](const QString& file) {
+        const QVariantMap map = model.groupListCounts(file);
+        return QStringLiteral("%1 %2 %3")
+            .arg(map.value("ok").toBool() ? QStringLiteral("ok") : QStringLiteral("unread"))
+            .arg(map.value("accepted").toInt())
+            .arg(map.value("skipped").toInt());
+    };
+    expect("write the list", write_file(path, QByteArray("id,mode,name\n1001,A,Dispatch\n1002,A,Fire\n")));
+    expect("register the list", model.registerTalkgroupList(path));
+    expect("rows counted", counts(path) == QStringLiteral("ok 2 0"));
+    expect("emptied in place", write_file(path, QByteArray("id,mode,name\n")));
+    expect("an emptied list has none, whatever its import counted",
+           counts(path) == QStringLiteral("ok 0 0")
+               && model.get(model.rowForPath(path)).value("accepted").toInt() == 2);
+    expect("a ';' list", write_file(path, QByteArray("id;mode;name\n1001;A;Dispatch\n")));
+    expect("rows it cannot use are skipped", counts(path) == QStringLiteral("ok 0 1"));
+    const QTemporaryDir outside;
+    const QString external = outside.filePath("external.csv");
+    expect("write outside fixture", write_file(external, QByteArray("id,mode,name\n1001,A,Dispatch\n")));
+    expect("a file outside the library is read too", counts(external) == QStringLiteral("ok 1 0"));
+    expect("an outside ';' list", write_file(external, QByteArray("id;mode;name\n1001;A;Dispatch\n")));
+    expect("an outside list's unusable rows are skipped", counts(external) == QStringLiteral("ok 0 1"));
+    expect("file removed", QFile::remove(path));
+    expect("a missing file is not read", counts(path) == QStringLiteral("unread 0 0"));
+    expect("no path is not read", counts(QString()) == QStringLiteral("unread 0 0"));
+    model.remove(model.rowForPath(path));
+}
+
+/* The decoder's side of a session using a row's group file: its own list, loaded from that file. */
+struct DecoderList {
+    dsd_opts* opts = static_cast<dsd_opts*>(calloc(1, sizeof(dsd_opts)));
+    dsd_state* state = static_cast<dsd_state*>(calloc(1, sizeof(dsd_state)));
+
+    explicit DecoderList(const QString& path) {
+        if (opts != nullptr && state != nullptr) {
+            DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", path.toUtf8().constData());
+            loaded = dsd_tg_policy_reload_group_file(opts, state) == 0;
+        }
+    }
+
+    ~DecoderList() {
+        if (state != nullptr) {
+            dsd_state_ext_free_all(state);
+        }
+        free(state);
+        free(opts);
+    }
+
+    DecoderList(const DecoderList&) = delete;
+    DecoderList& operator=(const DecoderList&) = delete;
+
+    int
+    save() {
+        return dsd_tg_policy_write_group_file(opts, state);
+    }
+
+    int
+    appendAlias(uint32_t id) {
+        dsd_tg_policy_entry alias;
+        if (dsd_tg_policy_make_exact_entry(id, "D", "Learned", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &alias) != 0
+            || dsd_tg_policy_learn_exact(state, &alias) != DSD_TG_POLICY_LEARN_ADDED) {
+            return -100;
+        }
+        return dsd_tg_policy_append_group_file_row(opts, state, &alias, "");
+    }
+
+    bool loaded = false;
+};
+
+/* Wait, two seconds at most, until another thread is blocked on the managed-file lock or @p done is set. */
+void
+wait_for_lock_waiter(const std::atomic<bool>& done) {
+    for (int i = 0; i < 2000 && dsd_managed_file_test_waiters() < 1 && !done.load(); i++) {
+        dsd_sleep_ms(1);
+    }
+}
+
+struct CheckedRace {
+    std::atomic<bool> atChecked{false};
+    std::atomic<bool> qtDone{false};
+};
+
+// The races the managed-file hook drives (the hook takes no context pointer).
+std::unique_ptr<CheckedRace> g_checked_race;
+
+void
+race_at_checked(dsd_managed_file_step step) {
+    CheckedRace* race = g_checked_race.get();
+    if (race != nullptr && step == DSD_MANAGED_FILE_STEP_CHECKED && !race->atChecked.exchange(true)) {
+        wait_for_lock_waiter(race->qtDone);
+    }
+}
+
+/* Discussion #748 follow-up R4: an "Update from file" (and a RadioReference refresh) of the session's group file
+ * cannot land between the decoder's check of the file and its rewrite. The decoder saves on a worker and stops at
+ * its checked point; the update starts then, must wait for the save, and lands on top. The decoder's next save
+ * then refuses to write over the update until the list is reloaded. */
+void
+test_update_waits_for_decoder_rewrite(bool viaRefresh) {
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    QTemporaryDir fixtures;
+    const auto original = fixtures.filePath("original.csv");
+    const auto replacement = fixtures.filePath("replacement.csv");
+    const QByteArray update("id,mode,name\n123,A,Original\n456,A,Added\n");
+    expect("race fixture", write_file(original, "id,mode,name\n123,A,Original\n") && write_file(replacement, update));
+    const auto path = model.importFile(original, "race.csv", "group").value("path").toString();
+    const int row = model.rowForPath(path);
+    DecoderList decoder(path);
+    expect("race decoder load", row >= 0 && decoder.loaded);
+    if (row < 0 || !decoder.loaded) {
+        return;
+    }
+    expect("race decoder lockout", dsd_tg_policy_set_mode(decoder.state, 123, 123, "B") == 0);
+
+    g_checked_race = std::make_unique<CheckedRace>();
+    CheckedRace& race = *g_checked_race;
+    int saved = -100;
+    dsd_managed_file_test_set_hook(race_at_checked);
+    std::thread saver([&decoder, &saved] { saved = decoder.save(); });
+    for (int i = 0; i < 2000 && !race.atChecked.load(); i++) {
+        dsd_sleep_ms(1);
+    }
+    const QVariantMap result = viaRefresh
+                                   ? model.refreshGeneratedFile(row, replacement)
+                                   : model.updateFile(row, QUrl::fromLocalFile(replacement).toString(), "update.csv");
+    race.qtDone = true;
+    saver.join();
+    dsd_managed_file_test_set_hook(nullptr);
+    expect("race decoder reached its checked point", race.atChecked.load());
+    expect("race decoder saved", saved == 0);
+    expect(viaRefresh ? "race refresh applied" : "race update applied", result.value("ok").toBool());
+    expect(viaRefresh ? "race refresh is on disk" : "race update is on disk", read_file(path) == update);
+    expect("race next save refuses the unreloaded update", decoder.save() == 2);
+    expect("race update stays", read_file(path) == update);
+    model.remove(model.rowForPath(path));
+    g_checked_race.reset();
+}
+
+struct InstalledRace {
+    DecoderList* decoder = nullptr;
+    QString path;
+    QByteArray outsideEdit; // empty: a decoder append races the rollback instead
+    std::atomic<bool> started{false};
+    std::atomic<bool> appended{false};
+    int appendRc = -100;
+    std::thread appender;
+};
+
+std::unique_ptr<InstalledRace> g_installed_race;
+
+void
+race_at_installed(dsd_managed_file_step step) {
+    InstalledRace* race = g_installed_race.get();
+    if (race == nullptr || step != DSD_MANAGED_FILE_STEP_INSTALLED || race->started.exchange(true)) {
+        return;
+    }
+    if (!race->outsideEdit.isEmpty()) {
+        // An editor outside the app saves while the update is in flight.
+        (void)write_file(race->path, race->outsideEdit);
+        return;
+    }
+    race->appender = std::thread([race] {
+        race->appendRc = race->decoder->appendAlias(789);
+        race->appended = true;
+    });
+    wait_for_lock_waiter(race->appended);
+}
+
+/* The rollback of a failed update or RadioReference refresh restores its backup only over the bytes it installed (R4). A decoder alias append
+ * that arrives while the update is in flight waits for the rollback and lands on the restored file, so neither is
+ * lost and the decoder's next save goes through; a file an outside editor changed meanwhile is kept, and the update
+ * still reports failure. */
+void
+test_rollback_keeps_newer_files(bool outsideEdit, bool viaRefresh) {
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    QTemporaryDir fixtures;
+    const auto original = fixtures.filePath("original.csv");
+    const auto replacement = fixtures.filePath("replacement.csv");
+    const QByteArray before("id,mode,name\n123,A,Original\n");
+    expect("rollback fixture",
+           write_file(original, before) && write_file(replacement, "id,mode,name\n321,B,Replacement\n"));
+    const auto path = model.importFile(original, "rollback.csv", "group").value("path").toString();
+    const int row = model.rowForPath(path);
+    // On the heap: the race the hook reads at file scope points at it.
+    auto decoderOwner = std::make_unique<DecoderList>(path);
+    DecoderList& decoder = *decoderOwner;
+    expect("rollback decoder load", row >= 0 && decoder.loaded);
+    if (row < 0 || !decoder.loaded) {
+        return;
+    }
+    const auto store = dsd_qt::json_store_path("imported_files.json");
+    expect("rollback move metadata store", QFile::rename(store, store + ".held"));
+    expect("rollback block metadata write", QDir().mkdir(store));
+
+    g_installed_race = std::make_unique<InstalledRace>();
+    InstalledRace& race = *g_installed_race;
+    race.decoder = decoderOwner.get();
+    race.path = path;
+    race.outsideEdit = outsideEdit ? QByteArray("id,mode,name\n123,A,Edited outside\n") : QByteArray();
+    dsd_managed_file_test_set_hook(race_at_installed);
+    const QVariantMap result =
+        viaRefresh ? model.refreshGeneratedFile(row, replacement)
+                   : model.updateFile(row, QUrl::fromLocalFile(replacement).toString(), "replacement.csv");
+    if (race.appender.joinable()) {
+        race.appender.join();
+    }
+    dsd_managed_file_test_set_hook(nullptr);
+    expect("rollback unblock metadata write", QDir().rmdir(store) && QFile::rename(store + ".held", store));
+    expect("rollback reached the installed point", race.started.load());
+    expect("rollback update reports failure", !result.value("ok").toBool());
+    if (outsideEdit) {
+        expect("rollback keeps the outside edit", read_file(path) == race.outsideEdit);
+    } else {
+        expect("rollback alias appended", race.appendRc == 0);
+        expect("rollback restored, then the alias landed", read_file(path) == before + "789,D,Learned\n");
+        expect("rollback decoder save after both", decoder.save() == 0);
+    }
+    model.remove(model.rowForPath(path));
+    g_installed_race.reset();
 }
 
 void
@@ -1747,6 +2046,58 @@ test_example_targets() {
     model.remove(model.rowForPath(path));
 }
 
+/* Issue #829: a host without a picker answers every request "unsupported", but only after the request returned, so a
+   caller that stores the id first sees the answer; each request gets a larger id. */
+static void
+test_document_picker_defaults() {
+    TestHost host;
+    expect("desktop has no document picker", !host.documentPickerSupported());
+    QList<qint64> unavailableIds;
+    QStringList reasons;
+    int otherAnswers = 0;
+    QObject::connect(&host, &dsd_qt::DecoderHost::documentPickUnavailable, &host,
+                     [&unavailableIds, &reasons](qint64 id, const QString& reason) {
+                         unavailableIds.append(id);
+                         reasons.append(reason);
+                     });
+    QObject::connect(&host, &dsd_qt::DecoderHost::documentPicked, &host,
+                     [&otherAnswers](qint64, const QString&, const QString&, bool) { otherAnswers++; });
+    QObject::connect(&host, &dsd_qt::DecoderHost::documentPickCancelled, &host,
+                     [&otherAnswers](qint64) { otherAnswers++; });
+
+    const qint64 openId = host.requestOpenDocument();
+    expect("first request id is 1", openId == 1);
+    expect("no answer before the open request returns", unavailableIds.isEmpty());
+    const qint64 saveId =
+        host.requestSaveDocument(QStringLiteral("dsd-neo-backup.dsdbak"), QStringLiteral("application/octet-stream"));
+    expect("save request id is larger", saveId > openId);
+    expect("no answer before the save request returns", unavailableIds.isEmpty());
+    QCoreApplication::processEvents();
+    expect("each request answered once, in order, with its own id", unavailableIds == QList<qint64>({openId, saveId}));
+    expect("answered unsupported",
+           reasons == QStringList({QStringLiteral("unsupported"), QStringLiteral("unsupported")}));
+    expect("no pick or cancel answer", otherAnswers == 0);
+
+    host.cancelDocumentRequest(saveId);
+    host.discardPendingDownload(QStringLiteral("content://media/external/downloads/1"));
+    expect("no saved name on a host without Downloads",
+           host.savedDocumentName(QStringLiteral("content://media/external/downloads/1")).isEmpty());
+    const qint64 nextId = host.requestOpenDocument();
+    expect("ids keep rising after a cancel", nextId > saveId);
+    QCoreApplication::processEvents();
+    expect("the later request is answered too", unavailableIds.size() == 3 && unavailableIds.last() == nextId);
+
+    /* Cancelled before its answer ran: no answer follows, and the request after it still gets its own. */
+    const qint64 cancelledId = host.requestSaveDocument(QStringLiteral("a.zip"), QStringLiteral("application/zip"));
+    host.cancelDocumentRequest(cancelledId);
+    const qint64 keptId = host.requestOpenDocument();
+    QCoreApplication::processEvents();
+    expect("a request cancelled before its answer gets none",
+           unavailableIds.size() == 4 && !unavailableIds.contains(cancelledId) && unavailableIds.last() == keptId);
+    expect("the property publishes the capability",
+           host.property("documentPickerSupported").isValid() && !host.property("documentPickerSupported").toBool());
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -1777,6 +2128,12 @@ main(int argc, char** argv) {
         expect("initialization signal is available", host.metaObject()->indexOfSignal("sessionInitialized()") >= 0);
     }
     test_metadata_failure_keeps_file();
+    test_update_waits_for_decoder_rewrite(false);
+    test_update_waits_for_decoder_rewrite(true);
+    test_rollback_keeps_newer_files(false, false);
+    test_rollback_keeps_newer_files(false, true);
+    test_rollback_keeps_newer_files(true, false);
+    test_rollback_keeps_newer_files(true, true);
     test_remove_finishes_on_retry();
     test_channel_bundle();
     test_channel_bundle_quoted_options();
@@ -1796,9 +2153,12 @@ main(int argc, char** argv) {
     test_target_errors_and_opaque_columns();
     test_example_targets();
     test_export_registration_in_place();
+    test_document_picker_defaults();
+    test_group_list_counts_read_the_file_now();
     test_import_document();
     test_imported_files_model();
     test_update_rejects_invalid_pick();
+    test_replace_by_stored_path();
     test_replace_validates_before_touching_the_stored_file();
     test_generated_import_and_refresh();
     test_p25_bandplan_kind();

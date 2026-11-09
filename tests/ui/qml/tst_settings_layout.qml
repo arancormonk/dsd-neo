@@ -6,6 +6,7 @@ Item {
     width: 420
     height: 900
     Loader { id: appLoader; anchors.fill: parent }
+    FakeRadioReference { id: fakeAccount }
     TextEdit { id: clipboardProbe; visible: false }
 
     TestCase {
@@ -31,6 +32,11 @@ Item {
 
         function cleanup() {
             appLoader.source = "";
+            testContext.useRadioReferenceModel(null);
+            testContext.setRadioReference("accountState", 0);
+            testContext.setRadioReference("accountMessage", "");
+            testContext.setRadioReference("statusText", "");
+            testContext.setRadioReference("hasPassword", false);
             testContext.setRadioReference("buildHasAppKey", previousBuildHasAppKey);
             testContext.setRadioReference("available", false);
             testContext.setRadioReference("credentialsReady", false);
@@ -126,6 +132,61 @@ Item {
             compare(app.currentTab, 2);
         }
 
+        // Issue #829: Back off Imported files clears importsOpen in Main
+        // directly; a pick still out ends with the screen, and its late
+        // answer imports nothing.
+        function test_imports_back_ends_a_pick() {
+            app.importsOpen = true;
+            var imports = findChild(app, "importsScreen");
+            tryCompare(imports, "visible", true);
+            var flow = findChild(imports, "importsCsvImport");
+            var count = importedFiles.count;
+            imports.pendingRow = -1;
+            imports.pendingType = "group";
+            imports.importPickedFile();
+            var id = testContext.lastDocumentRequest().id;
+            verify(flow.active);
+            app.requestBack();
+            compare(app.importsOpen, false);
+            tryCompare(imports, "visible", false);
+            verify(!flow.active, "Back ended the pick");
+            var path = testContext.writeFixtureCsv("late-back-groups.csv", "id,mode,name\n1,A,Late\n");
+            testContext.answerDocumentPicked(id, "file://" + path, "late.csv", false);
+            compare(importedFiles.count, count, "nothing was imported");
+            compare(imports.notice, "");
+        }
+
+        // Issue #829: Save clears wizardOpen in Main directly; a CSV pick
+        // still out ends with the wizard, and its late answer fills nothing.
+        function test_wizard_save_ends_a_csv_pick() {
+            var wizard = findChild(app, "wizardScreen");
+            wizard.openForAdd(false);
+            app.wizardOpen = true;
+            tryCompare(wizard, "visible", true);
+            var flow = findChild(wizard, "wizardCsvImport");
+            var systems = savedSystems.count;
+            var count = importedFiles.count;
+            wizard.nameText = "Save route";
+            wizard.pickerTarget = "chan";
+            wizard.importCsvFile();
+            var id = testContext.lastDocumentRequest().id;
+            verify(flow.active);
+            try {
+                wizard.commit();
+                compare(savedSystems.count, systems + 1);
+                compare(app.wizardOpen, false);
+                tryCompare(wizard, "visible", false);
+                verify(!flow.active, "Save ended the pick");
+                var path = testContext.writeFixtureCsv("late-save-map.csv", "channel,frequency\n1,851012500\n");
+                testContext.answerDocumentPicked(id, "file://" + path, "late.csv", false);
+                compare(importedFiles.count, count, "nothing was imported");
+                compare(wizard.chanCsvPath, "");
+            } finally {
+                while (savedSystems.count > systems)
+                    savedSystems.remove(savedSystems.count - 1);
+            }
+        }
+
         function test_account_edits_persist() {
             var oldUsername = prefs.rrUsername;
             var oldKey = prefs.rrAppKey;
@@ -134,13 +195,17 @@ Item {
             var account = findChild(app, "radioReferenceAccountScreen");
             var username = findChild(account, "radioReferenceUsernameField");
             var key = findChild(account, "radioReferenceAppKeyField");
-            verify(findChild(account, "radioReferencePasswordField") === null);
+            var password = findChild(account, "radioReferencePasswordField");
+            verify(password !== null && password.visible, "Settings must ask for the password it signs in with");
             compare(username.label, "Username");
+            compare(password.label, "Password");
             compare(key.label, "Application key");
+            var checks = testContext.radioReferenceAccountChecks();
             username.text = "account-fixture";
             username.editingFinished();
             key.text = "fixture-key";
             key.editingFinished();
+            compare(testContext.radioReferenceAccountChecks(), checks, "a check was sent with no password to send");
             app.requestBack();
             compare(prefs.rrUsername, "account-fixture");
             compare(prefs.rrAppKey, "fixture-key");
@@ -149,6 +214,148 @@ Item {
             compare(key.text, "fixture-key");
             prefs.rrUsername = oldUsername;
             prefs.rrAppKey = oldKey;
+        }
+
+        function openAccount() {
+            findChild(settings, "settingsAccountRow").activate();
+            var account = findChild(app, "radioReferenceAccountScreen");
+            tryVerify(function () { return account.visible; });
+            return account;
+        }
+        // Typed in, as a keyboard does, so the field keeps its prefs binding.
+        function typeInto(field, value) {
+            field.input.forceActiveFocus();
+            field.input.remove(0, field.input.text.length);
+            field.input.insert(0, value);
+        }
+
+        // Regression (B1, B2): the row named an application key a keyed build
+        // never asks for, and the screen behind it was a sign-in form with no
+        // password. Both now follow the build.
+        function test_account_subtitle_and_fields_follow_the_build_data() {
+            return [{tag: "keyed", keyed: true, subtitle: "Username and password"},
+                    {tag: "keyless", keyed: false, subtitle: "Username, password and application key"}];
+        }
+        function test_account_subtitle_and_fields_follow_the_build(data) {
+            testContext.setRadioReference("buildHasAppKey", data.keyed);
+            var row = findChild(settings, "settingsAccountRow");
+            tryCompare(row, "subtitle", data.subtitle);
+            var account = openAccount();
+            verify(findChild(account, "radioReferenceUsernameField").visible);
+            verify(findChild(account, "radioReferencePasswordField").visible);
+            verify(findChild(account, "radioReferencePasswordReveal").visible);
+            compare(findChild(account, "radioReferenceAppKeyField").visible, !data.keyed);
+            compare(findChild(account, "radioReferenceAppKeyLink").visible, !data.keyed);
+            verify(findChild(account, "radioReferenceCheckAccountButton").visible);
+            compare(findChild(account, "radioReferencePasswordHint").text,
+                    "DSD-neo keeps your password only until the app closes and never saves it. A RadioReference premium subscription is required.");
+        }
+
+        // The Settings form's result line reads the account check alone: an
+        // import screen status ("Loading states…") never lands there, and
+        // every verdict is worded, a failure with no message included.
+        function test_account_result_line_reads_only_the_account_data() {
+            return [
+                {tag: "none", state: 0, text: ""},
+                {tag: "checking", state: 1, text: "Checking your RadioReference account…"},
+                {tag: "verified", state: 2, text: "Account verified."},
+                {tag: "rejected keyed", state: 3, keyed: true, text: "RadioReference did not accept that username or password."},
+                {tag: "rejected keyless", state: 3, keyed: false, text: "RadioReference did not accept that username, password or application key."},
+                {tag: "expired", state: 4, text: "This account's RadioReference premium subscription has expired."},
+                {tag: "failed", state: 5, message: "RadioReference could not be reached.", text: "RadioReference could not be reached."},
+                {tag: "failed, no message", state: 5, message: "", text: "The account could not be checked. Try again."}
+            ];
+        }
+        function test_account_result_line_reads_only_the_account(data) {
+            testContext.setRadioReference("buildHasAppKey", data.keyed !== false);
+            testContext.setRadioReference("statusText", "Loading states…");
+            testContext.setRadioReference("accountMessage", data.message !== undefined ? data.message : "");
+            testContext.setRadioReference("accountState", data.state);
+            var account = openAccount();
+            var result = findChild(account, "radioReferenceAccountResult");
+            verify(result !== null, "the Settings form has no result line");
+            compare(result.text, data.text);
+            compare(result.visible, data.text.length > 0);
+            verify(result.text.indexOf("Loading") < 0);
+        }
+
+        // One password-manager session per visible form: Settings begins on
+        // show and ends on Back, and the import screen then begins its own.
+        // A fill there lands in prefs, which both forms' username fields keep
+        // following after a Settings edit (the binding survives).
+        function test_sign_in_token_moves_with_the_visible_form() {
+            testContext.setRadioReference("buildHasAppKey", true);
+            signInAutofill.clear();
+            var account = openAccount();
+            var begins = signInAutofill.calls().filter(function (c) { return c.op === "begin"; });
+            compare(begins.length, 1, "Settings did not begin a session");
+            var settingsToken = begins[0].token;
+            compare(signInAutofill.liveToken(), settingsToken);
+            var username = findChild(account, "radioReferenceUsernameField");
+            var oldUsername = prefs.rrUsername;
+            var checks = testContext.radioReferenceAccountChecks();
+            typeInto(username, "settings-user");
+            username.input.focus = false;
+            compare(prefs.rrUsername, "settings-user");
+            compare(testContext.radioReferenceAccountChecks(), checks, "a check was sent with the credentials incomplete");
+            app.requestBack();
+            tryVerify(function () { return !account.visible; });
+            var ends = signInAutofill.calls().filter(function (c) { return c.op === "end"; });
+            compare(ends.length, 1);
+            compare(ends[0].token, settingsToken);
+            compare(signInAutofill.liveToken(), 0);
+
+            app.openRadioReference(false);
+            var rr = findChild(app, "radioReferenceScreen");
+            tryVerify(function () { return rr.visible; });
+            var importToken = signInAutofill.liveToken();
+            verify(importToken > settingsToken, "the import screen took no token of its own");
+            var importUsername = findChild(rr, "radioReferenceUsernameField");
+            compare(importUsername.text, "settings-user");
+            // The relay applies the fill to prefs, then says so.
+            prefs.rrUsername = "filled-user";
+            signInAutofill.fill(importToken, true, false);
+            compare(importUsername.text, "filled-user");
+            app.radioReferenceOpen = false;
+            tryVerify(function () { return !rr.visible; });
+            compare(signInAutofill.liveToken(), 0);
+            account = openAccount();
+            compare(username.text, "filled-user", "the Settings username stopped following prefs");
+            prefs.rrUsername = oldUsername;
+            compare(username.text, oldUsername);
+        }
+
+        // A password entered on Settings is the session's: the import screen
+        // opens past its credentials card, and Change shows an empty draft
+        // that says a password is held.
+        function test_settings_password_serves_the_import_screen() {
+            fakeAccount.resetAccount();
+            testContext.useRadioReferenceModel(fakeAccount);
+            var account = openAccount();
+            var password = findChild(account, "radioReferencePasswordField");
+            typeInto(password, "session-secret");
+            password.input.focus = false;
+            compare(fakeAccount.sessionPassword, "session-secret");
+            compare(fakeAccount.accountChecks, 1);
+            var result = findChild(account, "radioReferenceAccountResult");
+            compare(result.text, "Checking your RadioReference account…");
+            fakeAccount.settle(2);
+            compare(result.text, "Account verified.");
+            app.requestBack();
+            tryVerify(function () { return !account.visible; });
+            compare(password.text, "", "the Settings draft outlived its screen");
+
+            app.openRadioReference(false);
+            var rr = findChild(app, "radioReferenceScreen");
+            tryVerify(function () { return rr.visible; });
+            var card = findChild(rr, "radioReferenceCredentials");
+            verify(!card.visible, "the import screen asked again for credentials Settings already has");
+            findChild(rr, "radioReferenceChangeAccount").activate();
+            tryCompare(card, "visible", true);
+            var importPassword = findChild(rr, "radioReferencePasswordField");
+            compare(importPassword.text, "");
+            compare(importPassword.placeholderText, "Entered for this session");
+            app.radioReferenceOpen = false;
         }
 
         function test_version_copy() {

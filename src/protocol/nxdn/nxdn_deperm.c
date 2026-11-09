@@ -29,6 +29,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/key_presence.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
@@ -272,7 +273,7 @@ nxdn_handle_sacch_non_superframe(dsd_opts* opts, dsd_state* state, const uint8_t
     const int sacch_crc_ok = (crc == check);
     if (sacch_crc_ok) {
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
-        if (nxdn_confirm_is_confirmed(state)) {
+        if (nxdn_confirm_is_confirmed(state) && !state->nxdn_frame_foreign) {
             state->nxdn_last_ran = nxdn_ran_from_trellis(trellis_buf);
             state->nxdn_last_ran_stand_in = 0U;
             nxdn_note_received_ran(state, nxdn_ran_from_trellis(trellis_buf));
@@ -292,11 +293,31 @@ nxdn_handle_sacch_non_superframe(dsd_opts* opts, dsd_state* state, const uint8_t
     nxdn_reset_sacch_segments(state);
 }
 
+/*
+ * A superframe SACCH segment of another channel's control traffic (dsd_state::nxdn_frame_foreign): its check says that
+ * channel is heard, and nothing of it enters the superframe being assembled. The assembly is dropped too, both ways: the
+ * followed channel's segments before it and after it belong to no one superframe with it, and a superframe the next
+ * followed segment completed would otherwise mix the two channels' messages.
+ */
+static void
+nxdn_handle_sacch_superframe_foreign(dsd_state* state, int part_of_frame, uint8_t crc, uint8_t check) {
+    if (crc == check) {
+        nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
+    }
+    DSD_FPRINTF(stderr, "PF %d/4", part_of_frame + 1);
+    nxdn_reset_sacch_segments(state);
+    state->nxdn_part_of_frame = 0;
+}
+
 static void
 nxdn_handle_sacch_superframe(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data,
                              uint8_t crc, uint8_t check) {
     const uint8_t sf = (trellis_buf[0] << 1) | trellis_buf[1];
     const int part_of_frame = nxdn_sacch_part_of_frame(sf);
+    if (state->nxdn_frame_foreign) {
+        nxdn_handle_sacch_superframe_foreign(state, part_of_frame, crc, check);
+        return;
+    }
     const int valid_sequence =
         nxdn_sacch_segment_sequence_is_valid((uint8_t)(crc == check), state->nxdn_part_of_frame, part_of_frame);
 
@@ -521,9 +542,11 @@ nxdn_handle_facch2_udch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis
 
     if (crc == check) {
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
-        state->nxdn_last_ran = (unsigned int)ran;
-        state->nxdn_last_ran_stand_in = 0U;
-        nxdn_note_received_ran(state, ran);
+        if (!state->nxdn_frame_foreign) {
+            state->nxdn_last_ran = (unsigned int)ran;
+            state->nxdn_last_ran_stand_in = 0U;
+            nxdn_note_received_ran(state, ran);
+        }
         nxdn_print_last_ran(state);
         state->nxdn_part_of_frame = 3 - sf;
     } else {
@@ -642,15 +665,25 @@ nxdn_handle_cac(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, co
     }
 
     nxdn_print_last_ran(state);
+    /* A CAC heard while the receiver follows a call elsewhere than this site's control channel is another control
+       channel's on the followed frequency: decided before anything below confirms, names or follows from it. */
+    const uint8_t was_foreign = state->nxdn_frame_foreign;
+    if (dsd_nxdn_control_heard_is_foreign(opts, state)) {
+        state->nxdn_frame_foreign = 1U;
+    }
     if (crc == 0) {
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
+        state->data_header_format[0] = 2;
+    }
+    if (crc == 0 && !state->nxdn_frame_foreign) {
         /* Only an outbound control channel carries a CAC: this one names the control channel, before its elements
            (a grant among them) are decoded, and in the received identity before anything here can tune away from
            this carrier. */
         nxdn_note_received_ran(state, nxdn_ran_from_trellis(trellis_buf));
         dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_NXDN, dsd_opts_tuned_freq_hz(opts));
+        // Only a Type-C system has a control channel: from now on a composite one's frames read as Type-C.
+        dsd_nxdn_note_type_c(state);
         nxdn_cc_hunt_note_control(opts, state);
-        state->data_header_format[0] = 2;
         state->nxdn_last_ran = nxdn_ran_from_trellis(trellis_buf);
         state->nxdn_last_ran_stand_in = 0U;
     }
@@ -663,6 +696,7 @@ nxdn_handle_cac(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, co
     if (crc == 0) {
         NXDN_Elements_Content_decode(opts, state, cac_message_buffer, sizeof(cac_message_buffer));
     }
+    state->nxdn_frame_foreign = was_foreign;
     nxdn_print_cac_payload(opts, m_data);
     rotate_symbol_out_file(opts, state);
 }
@@ -1268,7 +1302,8 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     //CRC-verified content alone, so this is positive end evidence decoded over the air -- the
     //terminator reason lets the event layer keep an audible epoch whose call identity never
     //decoded, where EXPLICIT reads as a retune.
-    if (nxdn_message_type_resets_call(MessageType)) {
+    /* Another channel's release ends nothing here (dsd_state::nxdn_frame_foreign). */
+    if (nxdn_message_type_resets_call(MessageType) && !state->nxdn_frame_foreign) {
         if (dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
             dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
         }

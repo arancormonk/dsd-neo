@@ -6,9 +6,11 @@
 #include <ctype.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/id_pattern.h>
+#include <dsd-neo/core/managed_file.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -139,6 +141,17 @@ struct dsd_tg_policy_store {
     /* Created in place by a decoder write (ledger, alias, avoid), not loaded or edited: a frontend that saw no list
      * at all still addresses it. */
     uint8_t lazy;
+    /* Loaded without some of its file's rows (dsd_tg_policy_load_report_incomplete()): used, never written back. */
+    uint8_t incomplete;
+
+    /* The rows hash of the file this list was last read from or written to, kept in step by dsd-neo's own appends: a
+     * rewrite of that file first checks that the file still holds those rows. */
+    struct {
+        uint8_t valid;
+        uint64_t rows_hash;
+        char path[sizeof(((dsd_opts*)0)->group_in_file)];
+    } baseline;
+
     dsd_tg_policy_active_table active;
     uint64_t context_id;
     uint64_t snapshot_source_context_id;
@@ -884,18 +897,95 @@ dsd_tg_policy_make_exact_entry(uint32_t id, const char* mode, const char* name, 
     return 0;
 }
 
+/* The row a store keeps for @p entry: normalised, a pattern in canonical form. 1 when a store refuses the row. */
 static int
-tg_policy_store_append_kind(dsd_tg_policy_store* store, const dsd_tg_policy_entry* entry, int structural) {
-    if (!store || !tg_policy_entry_valid(entry)) {
+tg_policy_canonical_entry(const dsd_tg_policy_entry* entry, dsd_tg_policy_entry* out) {
+    if (!tg_policy_entry_valid(entry)) {
         return 1;
     }
-    dsd_tg_policy_entry normalized;
-    tg_policy_copy_entry_normalized(&normalized, entry);
-    if (normalized.kind == DSD_TG_POLICY_ROW_PATTERN) {
+    tg_policy_copy_entry_normalized(out, entry);
+    if (out->kind == DSD_TG_POLICY_ROW_PATTERN) {
         // Stored, keyed and exported in canonical form.
         dsd_id_pattern parsed;
-        (void)tg_policy_entry_valid_pattern(&normalized, &parsed);
-        DSD_SNPRINTF(normalized.pattern, sizeof(normalized.pattern), "%s", parsed.text);
+        (void)tg_policy_entry_valid_pattern(out, &parsed);
+        DSD_SNPRINTF(out->pattern, sizeof(out->pattern), "%s", parsed.text);
+    }
+    return 0;
+}
+
+static uint64_t
+tg_policy_hash_bytes(uint64_t hash, const void* data, size_t len) {
+    const unsigned char* p = (const unsigned char*)data;
+    for (size_t i = 0; i < len; i++) {
+        hash ^= p[i];
+        hash *= 0x100000001b3ULL;
+    }
+    return hash;
+}
+
+static uint64_t
+tg_policy_hash_u32(uint64_t hash, uint32_t v) {
+    const unsigned char bytes[4] = {(unsigned char)v, (unsigned char)(v >> 8), (unsigned char)(v >> 16),
+                                    (unsigned char)(v >> 24)};
+    return tg_policy_hash_bytes(hash, bytes, sizeof bytes);
+}
+
+/* A text field with its terminator, so adjacent fields cannot run together. */
+static uint64_t
+tg_policy_hash_text(uint64_t hash, const char* text, size_t cap) {
+    const char* end = memchr(text, '\0', cap);
+    return tg_policy_hash_bytes(hash, text, (end ? (size_t)(end - text) : cap) + 1U);
+}
+
+int
+dsd_tg_policy_rows_hash_fold(uint64_t* hash, const dsd_tg_policy_entry* entry) {
+    dsd_tg_policy_entry row;
+    if (!hash || !entry || tg_policy_canonical_entry(entry, &row) != 0) {
+        return 1;
+    }
+    const unsigned char flags[6] = {row.kind, row.preempt, row.audio, row.record, row.stream, 0x1EU};
+    uint64_t h = tg_policy_hash_u32(*hash, row.id_start);
+    h = tg_policy_hash_u32(h, row.id_end);
+    h = tg_policy_hash_u32(h, (uint32_t)row.priority);
+    h = tg_policy_hash_text(h, row.pattern, sizeof row.pattern);
+    h = tg_policy_hash_text(h, row.mode, sizeof row.mode);
+    h = tg_policy_hash_text(h, row.name, sizeof row.name);
+    h = tg_policy_hash_text(h, row.tags, sizeof row.tags);
+    *hash = tg_policy_hash_bytes(h, flags, sizeof flags);
+    return 0;
+}
+
+void
+dsd_tg_policy_store_set_baseline(dsd_tg_policy_store* store, const char* path, uint64_t rows_hash) {
+    if (!store || !path || strlen(path) >= sizeof store->baseline.path) {
+        return;
+    }
+    DSD_SNPRINTF(store->baseline.path, sizeof store->baseline.path, "%s", path);
+    store->baseline.rows_hash = rows_hash;
+    store->baseline.valid = 1;
+}
+
+int
+dsd_tg_policy_set_baseline(dsd_state* state, const char* path, uint64_t rows_hash) {
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
+    if (!ctx) {
+        return -1;
+    }
+    dsd_tg_policy_store_set_baseline(ctx, path, rows_hash);
+    return 0;
+}
+
+/* Whether the store has a baseline for @p path. */
+static int
+tg_policy_baseline_for(const dsd_tg_policy_context* ctx, const char* path) {
+    return ctx && ctx->baseline.valid && strcmp(ctx->baseline.path, path) == 0;
+}
+
+static int
+tg_policy_store_append_kind(dsd_tg_policy_store* store, const dsd_tg_policy_entry* entry, int structural) {
+    dsd_tg_policy_entry normalized;
+    if (!store || tg_policy_canonical_entry(entry, &normalized) != 0) {
+        return 1;
     }
     if (tg_policy_table_reserve(store, store->table.count + 1) != 0) {
         return -1;
@@ -1704,6 +1794,8 @@ tg_policy_context_clone(const dsd_tg_policy_context* src, dsd_tg_policy_context*
     clone->table.structural_generation = src->table.structural_generation;
     clone->table.pattern_count = src->table.pattern_count;
     clone->lazy = src->lazy;
+    clone->incomplete = src->incomplete;
+    clone->baseline = src->baseline;
     clone->active = src->active;
     clone->call_skips = src->call_skips;
     if (src->session_avoid_count) {
@@ -2395,8 +2487,10 @@ tg_policy_parse_header(const char* header_line) {
 typedef struct {
     int has_header;
     int missing_or_empty;
+    int missing;       /* No file at all (deleted, or never written): it holds none of the rows a baseline counts. */
     int needs_newline; /* The file's last line has no newline, so an append must end it first. */
     tg_policy_header_info header;
+    char header_line[512]; /* The first line as read, or the one an append to a missing or empty file writes. */
 } tg_policy_group_file_probe;
 
 static int
@@ -2415,13 +2509,15 @@ tg_policy_probe_group_file(const char* path, tg_policy_group_file_probe* out) {
     rf = dsd_fopen_existing_regular_file(path, "rb");
     if (!rf) {
         out->missing_or_empty = 1;
-        return errno == ENOENT ? 0 : -1;
+        out->missing = errno == ENOENT;
+        return out->missing ? 0 : -1;
     }
 
     int failed = 0;
     if (fgets(first_line, sizeof(first_line), rf) != NULL) {
         out->has_header = 1;
         out->header = tg_policy_parse_header(first_line);
+        DSD_SNPRINTF(out->header_line, sizeof out->header_line, "%s", first_line);
         if (fseek(rf, -1L, SEEK_END) != 0) {
             failed = 1;
         } else {
@@ -2442,19 +2538,15 @@ tg_policy_probe_group_file(const char* path, tg_policy_group_file_probe* out) {
 }
 
 static int
-tg_policy_write_group_file_header(FILE* wf, const tg_policy_group_file_probe* probe, const char* clean_meta) {
+tg_policy_write_group_file_header(FILE* wf, tg_policy_group_file_probe* probe, const char* clean_meta) {
     if (!wf || !probe) {
         return -1;
     }
     if (probe->missing_or_empty) {
-        if (clean_meta && clean_meta[0] != '\0') {
-            if (DSD_FPRINTF(wf, "id,mode,name,metadata\n") < 0) {
-                return -1;
-            }
-        } else {
-            if (DSD_FPRINTF(wf, "id,mode,name\n") < 0) {
-                return -1;
-            }
+        DSD_SNPRINTF(probe->header_line, sizeof probe->header_line, "%s",
+                     (clean_meta && clean_meta[0] != '\0') ? "id,mode,name,metadata\n" : "id,mode,name\n");
+        if (fputs(probe->header_line, wf) < 0) {
+            return -1;
         }
     } else if (probe->needs_newline) {
         // The importer accepts a last line without a newline; end it so the appended row stays a row of its own.
@@ -2475,26 +2567,57 @@ tg_policy_bool_on_off(uint8_t v) {
     return v ? "on" : "off";
 }
 
-static int
-tg_policy_write_group_row(FILE* wf, const dsd_tg_policy_entry* entry, const char* id_text, int use_policy,
-                          int use_extra, const char* clean_mode, const char* clean_name, const char* clean_extra) {
-    int written;
-    if (use_policy) {
-        written = DSD_FPRINTF(wf, "%s,%s,%s,%d,%s,%s,%s,%s,%s\n", id_text, clean_mode, clean_name, entry->priority,
-                              tg_policy_bool_true_false(entry->preempt), tg_policy_bool_on_off(entry->audio),
-                              tg_policy_bool_on_off(entry->record), tg_policy_bool_on_off(entry->stream), clean_extra);
-    } else if (use_extra) {
-        written = DSD_FPRINTF(wf, "%s,%s,%s,%s\n", id_text, clean_mode, clean_name, clean_extra);
-    } else {
-        written = DSD_FPRINTF(wf, "%s,%s,%s\n", id_text, clean_mode, clean_name);
+/* Where a written row goes, and the rows hashes it extends: the importer's reading of each line, under the header the
+ * file has (parsed once), so the hash of a written file is the hash its next load computes. An append extends the
+ * baseline of every list that stands for the file. */
+enum { TG_POLICY_SINK_HASHES = 3 };
+
+typedef struct {
+    FILE* wf;
+    dsd_tg_policy_group_header header;
+    uint64_t hashes[TG_POLICY_SINK_HASHES];
+    size_t hash_count;
+} tg_policy_row_sink;
+
+static void
+tg_policy_row_sink_fold(tg_policy_row_sink* sink, const char* line, size_t len) {
+    char scratch[640];
+    const size_t count = sink->hash_count < TG_POLICY_SINK_HASHES ? sink->hash_count : TG_POLICY_SINK_HASHES;
+    for (size_t i = 0; i < count && len < sizeof scratch; i++) {
+        // The importer's reading splits the line in place.
+        DSD_MEMCPY(scratch, line, len + 1U);
+        (void)dsd_tg_policy_rows_hash_line(&sink->hashes[i], &sink->header, scratch);
     }
-    return written < 0 ? -1 : 0;
 }
 
 static int
-tg_policy_write_group_file_entry(FILE* wf, const dsd_tg_policy_entry* entry, const tg_policy_group_file_probe* probe,
-                                 const char* clean_mode, const char* clean_name, const char* clean_meta) {
-    if (!wf || !entry || !probe || !clean_mode || !clean_name || !clean_meta) {
+tg_policy_write_group_row(tg_policy_row_sink* sink, const dsd_tg_policy_entry* entry, const char* id_text,
+                          int use_policy, int use_extra, const char* clean_mode, const char* clean_name,
+                          const char* clean_extra) {
+    char line[640];
+    int n;
+    if (use_policy) {
+        n = DSD_SNPRINTF(line, sizeof line, "%s,%s,%s,%d,%s,%s,%s,%s,%s\n", id_text, clean_mode, clean_name,
+                         entry->priority, tg_policy_bool_true_false(entry->preempt),
+                         tg_policy_bool_on_off(entry->audio), tg_policy_bool_on_off(entry->record),
+                         tg_policy_bool_on_off(entry->stream), clean_extra);
+    } else if (use_extra) {
+        n = DSD_SNPRINTF(line, sizeof line, "%s,%s,%s,%s\n", id_text, clean_mode, clean_name, clean_extra);
+    } else {
+        n = DSD_SNPRINTF(line, sizeof line, "%s,%s,%s\n", id_text, clean_mode, clean_name);
+    }
+    if (n < 0 || (size_t)n >= sizeof line || fputs(line, sink->wf) < 0) {
+        return -1;
+    }
+    tg_policy_row_sink_fold(sink, line, (size_t)n);
+    return 0;
+}
+
+static int
+tg_policy_write_group_file_entry(tg_policy_row_sink* sink, const dsd_tg_policy_entry* entry,
+                                 const tg_policy_group_file_probe* probe, const char* clean_mode,
+                                 const char* clean_name, const char* clean_meta) {
+    if (!sink || !entry || !probe || !clean_mode || !clean_name || !clean_meta) {
         return -1;
     }
     char id_text[24];
@@ -2504,19 +2627,21 @@ tg_policy_write_group_file_entry(FILE* wf, const dsd_tg_policy_entry* entry, con
     // empty tags field, where the importer does not read it.
     DSD_SNPRINTF(extra, sizeof(extra), "%s%s", (probe->header.tags_modelled && clean_meta[0] != '\0') ? "," : "",
                  clean_meta);
-    return tg_policy_write_group_row(wf, entry, id_text, probe->has_header && probe->header.policy, extra[0] != '\0',
+    return tg_policy_write_group_row(sink, entry, id_text, probe->has_header && probe->header.policy, extra[0] != '\0',
                                      clean_mode, clean_name, extra);
 }
 
 static int
-tg_policy_write_group_table(FILE* wf, const dsd_tg_policy_entry* entries, size_t count, int use_policy, int any_tags) {
+tg_policy_write_group_table(tg_policy_row_sink* sink, const dsd_tg_policy_entry* entries, size_t count, int use_policy,
+                            int any_tags) {
     const char* header = "id,mode,name\n";
     if (use_policy) {
         header = "id,mode,name,priority,preempt,audio,record,stream,tags\n";
     } else if (any_tags) {
         header = "id,mode,name,tags\n";
     }
-    int failed = DSD_FPRINTF(wf, "%s", header) < 0;
+    dsd_tg_policy_group_header_parse(header, &sink->header);
+    int failed = fputs(header, sink->wf) < 0;
     for (size_t i = 0; !failed && i < count; i++) {
         const dsd_tg_policy_entry* entry = &entries[i];
         char id_text[24];
@@ -2533,8 +2658,9 @@ tg_policy_write_group_table(FILE* wf, const dsd_tg_policy_entry* entries, size_t
         tg_policy_csv_sanitize_copy(clean_mode, sizeof(clean_mode), entry->mode);
         tg_policy_csv_sanitize_copy(clean_name, sizeof(clean_name), entry->name);
         tg_policy_csv_sanitize_copy(clean_tags, sizeof(clean_tags), entry->tags);
-        failed = tg_policy_write_group_row(wf, entry, id_text, use_policy, any_tags, clean_mode, clean_name, clean_tags)
-                 != 0;
+        failed =
+            tg_policy_write_group_row(sink, entry, id_text, use_policy, any_tags, clean_mode, clean_name, clean_tags)
+            != 0;
     }
     return failed ? -1 : 0;
 }
@@ -2546,20 +2672,65 @@ tg_policy_entry_requires_extended_csv(const dsd_tg_policy_entry* entry) {
            || entry->stream != media_default;
 }
 
+/* Whether @p path still holds the rows the store's baseline describes: 0 it does, or there is nothing to compare (no
+ * baseline for this path, or no file there any more, so nothing a write would destroy); 2 the rows differ; -1 the file
+ * could not be read. With the managed-file lock held. */
+static int
+tg_policy_baseline_check(const dsd_tg_policy_context* ctx, const char* path) {
+    if (!tg_policy_baseline_for(ctx, path)) {
+        return 0;
+    }
+    uint64_t on_disk = DSD_TG_POLICY_ROWS_HASH_INIT;
+    dsd_tg_policy_load_report report;
+    if (dsd_tg_policy_rows_hash_file(path, &on_disk, &report) != 0) {
+        return report.not_found ? 0 : -1;
+    }
+    return on_disk == ctx->baseline.rows_hash ? 0 : 2;
+}
+
+/* Put the staged @p tmp in place of @p path, unless the file changed since dsd-neo last read or wrote it, and make
+ * what was written the baseline. */
+static int
+tg_policy_replace_group_file(dsd_tg_policy_context* ctx, const char* path, const char* tmp, uint64_t written) {
+    dsd_managed_file_lock();
+    int rc = tg_policy_baseline_check(ctx, path);
+    if (rc == 0) {
+        dsd_managed_file_step_reached(DSD_MANAGED_FILE_STEP_CHECKED);
+        rc = dsd_replace_file_with_temp(tmp, path) == 0 ? 0 : -1;
+    }
+    if (rc == 0) {
+        dsd_tg_policy_store_set_baseline(ctx, path, written);
+    }
+    dsd_managed_file_unlock();
+    if (rc != 0) {
+        (void)dsd_remove_file(tmp);
+    }
+    return rc;
+}
+
 int
-dsd_tg_policy_write_group_file(const dsd_opts* opts, const dsd_state* state) {
+dsd_tg_policy_write_group_file(const dsd_opts* opts, dsd_state* state) {
     if (!opts || opts->group_in_file[0] == '\0') {
         return 0;
+    }
+    // A table missing rows of its file would write them out of it.
+    if (dsd_tg_policy_incomplete(state)) {
+        return 1;
     }
     const char* path = opts->group_in_file;
     tg_policy_group_file_probe probe;
     if (tg_policy_probe_group_file(path, &probe) != 0) {
         return -1;
     }
+    // The written file becomes this list's baseline, so a list never loaded (an empty export) gets its store first, as
+    // a decoder write creates it; without one the next save could not tell an outside edit of the file.
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
+    if (!ctx) {
+        return -1;
+    }
     int use_policy = probe.has_header && probe.header.policy;
     int any_tags = 0;
-    const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
-    size_t count = ctx ? ctx->table.count : 0;
+    size_t count = ctx->table.count;
     for (size_t i = 0; i < count; i++) {
         const dsd_tg_policy_entry* entry = &ctx->table.entries[i];
         if (tg_policy_entry_requires_extended_csv(entry)) {
@@ -2569,62 +2740,176 @@ dsd_tg_policy_write_group_file(const dsd_opts* opts, const dsd_state* state) {
             any_tags = 1;
         }
     }
+    // Staged before the managed-file lock, which then covers only the check and the replace.
     char tmp[sizeof(opts->group_in_file) + 32];
-    FILE* wf = dsd_fopen_private_temp_for_replace(path, tmp, sizeof(tmp), "w");
-    if (!wf) {
+    tg_policy_row_sink sink;
+    DSD_MEMSET(&sink, 0, sizeof sink);
+    sink.hashes[0] = DSD_TG_POLICY_ROWS_HASH_INIT;
+    sink.hash_count = 1;
+    sink.wf = dsd_fopen_private_temp_for_replace(path, tmp, sizeof(tmp), "w");
+    if (!sink.wf) {
         return -1;
     }
-    int failed = tg_policy_write_group_table(wf, ctx ? ctx->table.entries : NULL, count, use_policy, any_tags) != 0;
-    if (fclose(wf) != 0) {
+    int failed = tg_policy_write_group_table(&sink, ctx->table.entries, count, use_policy, any_tags) != 0;
+    if (fclose(sink.wf) != 0) {
         failed = 1;
     }
-    if (failed || dsd_replace_file_with_temp(tmp, path) != 0) {
+    if (failed) {
         (void)dsd_remove_file(tmp);
         return -1;
+    }
+    return tg_policy_replace_group_file(ctx, path, tmp, sink.hashes[0]);
+}
+
+/* The lists an append to @p path keeps in step: every store the decoder holds whose baseline names the file (the
+ * effective list, and the global or the row's list held aside while a -Y row's or trunk-scan target's own list is in
+ * place), plus the list that owns the file when the append creates it and that list has no baseline for it. The file is
+ * opts->group_in_file, which names the effective list's file (a row's -G path while the row's list is in effect), so
+ * the effective list owns it unless the list held aside already stands for it (a row naming the global file). */
+typedef struct {
+    dsd_tg_policy_context* stores[TG_POLICY_SINK_HASHES];
+    size_t count;
+    dsd_tg_policy_context* effective;
+    dsd_tg_policy_context* owner;
+} tg_policy_append_lists;
+
+static void
+tg_policy_append_lists_add(tg_policy_append_lists* lists, dsd_tg_policy_context* ctx) {
+    for (size_t i = 0; i < lists->count; i++) {
+        if (lists->stores[i] == ctx) {
+            return;
+        }
+    }
+    if (ctx && lists->count < TG_POLICY_SINK_HASHES) {
+        lists->stores[lists->count++] = ctx;
+    }
+}
+
+static void
+tg_policy_append_lists_collect(dsd_state* state, const char* path, int creates, tg_policy_append_lists* lists) {
+    dsd_tg_policy_store* held = NULL;
+    DSD_MEMSET(lists, 0, sizeof *lists);
+    lists->effective = tg_policy_ctx_get_mut(state, 0);
+    (void)dsd_scan_groups_held_store(state, &held);
+    lists->owner = tg_policy_baseline_for(held, path) ? held : lists->effective;
+    dsd_tg_policy_context* candidates[2] = {lists->effective, held};
+    for (size_t i = 0; i < 2; i++) {
+        if (tg_policy_baseline_for(candidates[i], path)) {
+            tg_policy_append_lists_add(lists, candidates[i]);
+        }
+    }
+    if (creates && lists->owner && !tg_policy_baseline_for(lists->owner, path)) {
+        tg_policy_append_lists_add(lists, lists->owner);
+    }
+}
+
+/* Whether a list that stands for the file was loaded incomplete: such a list is never written back to its file
+ * (dsd_tg_policy_incomplete()), not even a row at a time. A list for another file says nothing about this one. */
+static int
+tg_policy_append_lists_incomplete(const tg_policy_append_lists* lists) {
+    if (lists->owner && lists->owner->incomplete) {
+        return 1;
+    }
+    for (size_t i = 0; i < lists->count; i++) {
+        if (lists->stores[i]->incomplete) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* A list held aside that stands for the file takes the appended row too, as its next load of the file would (the file's
+ * first row for an ID wins, so a list with a row for the ID keeps it). Otherwise its next rewrite of the file would drop
+ * the row just appended. Its baseline already counts the row, so a list that cannot store it (out of memory) no longer
+ * holds every row of its file: it is marked incomplete, and refuses to be written back until it is reloaded. */
+static void
+tg_policy_store_mirror_learned(dsd_tg_policy_context* ctx, const dsd_tg_policy_entry* entry) {
+    if (tg_policy_find_bounds_idx_kind(ctx, entry->id_start, entry->id_start, 0) >= 0
+        || tg_policy_find_bounds_idx_kind(ctx, entry->id_start, entry->id_start, 1) >= 0) {
+        return;
+    }
+    if (tg_policy_store_append_kind(ctx, entry, 0) != 0) {
+        ctx->incomplete = 1;
+    }
+}
+
+/* Append @p entry's line to the open @p wf and fold it, as the next load of the file will read it, into each list in
+ * @p lists. */
+static int
+tg_policy_append_row(FILE* wf, const tg_policy_append_lists* lists, const char* path, tg_policy_group_file_probe* probe,
+                     const dsd_tg_policy_entry* entry, const char* clean_meta) {
+    char clean_mode[16];
+    char clean_name[128];
+    tg_policy_csv_sanitize_copy(clean_mode, sizeof(clean_mode), entry->mode);
+    tg_policy_csv_sanitize_copy(clean_name, sizeof(clean_name), entry->name);
+    if (tg_policy_write_group_file_header(wf, probe, clean_meta) != 0) {
+        return -1;
+    }
+    tg_policy_row_sink sink;
+    DSD_MEMSET(&sink, 0, sizeof sink);
+    sink.wf = wf;
+    dsd_tg_policy_group_header_parse(probe->header_line, &sink.header);
+    // stores[] and hashes[] are both TG_POLICY_SINK_HASHES long; tg_policy_append_lists_add() keeps count within it.
+    const size_t count = lists->count < TG_POLICY_SINK_HASHES ? lists->count : TG_POLICY_SINK_HASHES;
+    sink.hash_count = count;
+    for (size_t i = 0; i < count; i++) {
+        const dsd_tg_policy_context* ctx = lists->stores[i];
+        // A file the append creates holds the appended row alone, whatever a list's baseline counted of a deleted one.
+        sink.hashes[i] = (!probe->missing && tg_policy_baseline_for(ctx, path)) ? ctx->baseline.rows_hash
+                                                                                : DSD_TG_POLICY_ROWS_HASH_INIT;
+    }
+    if (tg_policy_write_group_file_entry(&sink, entry, probe, clean_mode, clean_name, clean_meta) != 0) {
+        return -1;
+    }
+    // The row is buffered until the close: a close failure (a full disk) means it never reached the file.
+    if (tg_policy_close_append(wf) != 0) {
+        return -2;
+    }
+    for (size_t i = 0; i < count; i++) {
+        dsd_tg_policy_store_set_baseline(lists->stores[i], path, sink.hashes[i]);
+        if (lists->stores[i] != lists->effective) {
+            tg_policy_store_mirror_learned(lists->stores[i], entry);
+        }
     }
     return 0;
 }
 
 int
-dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_entry* entry, const char* metadata) {
-    char clean_mode[16];
-    char clean_name[128];
+dsd_tg_policy_append_group_file_row(const dsd_opts* opts, dsd_state* state, const dsd_tg_policy_entry* entry,
+                                    const char* metadata) {
     char clean_meta[256];
     tg_policy_group_file_probe probe;
-    FILE* wf = NULL;
-    const char* path = NULL;
+    tg_policy_append_lists lists;
 
     if (!opts || !entry) {
         return 0;
     }
-    path = opts->group_in_file;
-    if (!path || path[0] == '\0') {
+    const char* path = opts->group_in_file;
+    if (path[0] == '\0') {
         return 0;
     }
     if (!tg_policy_entry_valid_exact(entry)) {
         return 1;
     }
-
-    tg_policy_csv_sanitize_copy(clean_mode, sizeof(clean_mode), entry->mode);
-    tg_policy_csv_sanitize_copy(clean_name, sizeof(clean_name), entry->name);
     tg_policy_csv_sanitize_copy(clean_meta, sizeof(clean_meta), metadata ? metadata : "");
 
-    if (tg_policy_probe_group_file(path, &probe) != 0) {
-        return -1;
+    // An append destroys nothing, so it does not check the file; the lock keeps it out of another writer's sequence.
+    dsd_managed_file_lock();
+    int rc = tg_policy_probe_group_file(path, &probe);
+    tg_policy_append_lists_collect(state, path, probe.missing_or_empty, &lists);
+    if (tg_policy_append_lists_incomplete(&lists)) {
+        dsd_managed_file_unlock();
+        return 1;
     }
-
-    wf = dsd_fopen_private(path, "a");
-    if (!wf) {
-        return -1;
+    FILE* wf = rc == 0 ? dsd_fopen_private(path, "a") : NULL;
+    if (wf) {
+        rc = tg_policy_append_row(wf, &lists, path, &probe, entry, clean_meta);
+        if (rc == -1) {
+            fclose(wf);
+        }
     }
-
-    if (tg_policy_write_group_file_header(wf, &probe, clean_meta) != 0
-        || tg_policy_write_group_file_entry(wf, entry, &probe, clean_mode, clean_name, clean_meta) != 0) {
-        fclose(wf);
-        return -1;
-    }
-    // The row is buffered until the close: a close failure (a full disk) means it never reached the file.
-    return tg_policy_close_append(wf) == 0 ? 0 : -1;
+    dsd_managed_file_unlock();
+    return (wf && rc == 0) ? 0 : -1;
 }
 
 static double
@@ -2977,16 +3262,57 @@ tg_policy_carry_active(dsd_tg_policy_context* dst, const dsd_tg_policy_context* 
 }
 
 int
-dsd_tg_policy_load_group_file(const char* path, dsd_tg_policy_store** out) {
-    dsd_tg_policy_store* loaded = NULL;
+dsd_tg_policy_load_report_incomplete(const dsd_tg_policy_load_report* report) {
+    if (!report) {
+        return 0;
+    }
+    return report->failed > 0u || report->unreadable || (report->accepted == 0u && report->skipped > 0u);
+}
 
+int
+dsd_tg_policy_incomplete(const dsd_state* state) {
+    const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
+    return ctx != NULL && ctx->incomplete;
+}
+
+void
+dsd_tg_policy_store_mark_incomplete(dsd_tg_policy_store* store) {
+    if (store) {
+        store->incomplete = 1;
+    }
+}
+
+int
+dsd_tg_policy_mark_incomplete(dsd_state* state) {
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
+    if (!ctx) {
+        return -1;
+    }
+    ctx->incomplete = 1;
+    return 0;
+}
+
+int
+dsd_tg_policy_load_group_file(const char* path, dsd_tg_policy_store** out, dsd_tg_policy_load_report* report) {
+    dsd_tg_policy_store* loaded = NULL;
+    dsd_tg_policy_load_report counts;
+
+    DSD_MEMSET(&counts, 0, sizeof counts);
+    if (report) {
+        *report = counts;
+    }
     if (!path || !out) {
         return -1;
     }
-    if (dsd_tg_policy_load(path, &loaded) != 0) {
+    const int rc = dsd_tg_policy_load_counted(path, &loaded, &counts);
+    if (report) {
+        *report = counts;
+    }
+    if (rc != 0) {
         return -1;
     }
-    if (tg_policy_reload_validate_candidate(loaded) != 0) {
+    // A reload replaces the whole list, so a partial read never replaces it.
+    if (loaded->incomplete || tg_policy_reload_validate_candidate(loaded) != 0) {
         dsd_tg_policy_release(loaded);
         return -1;
     }
@@ -3018,7 +3344,7 @@ int
 dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state) {
     dsd_tg_policy_store* loaded = NULL;
 
-    if (!opts || !state || dsd_tg_policy_load_group_file(opts->group_in_file, &loaded) != 0) {
+    if (!opts || !state || dsd_tg_policy_load_group_file(opts->group_in_file, &loaded, NULL) != 0) {
         return -1;
     }
     dsd_tg_policy_adopt_group_file(state, loaded);

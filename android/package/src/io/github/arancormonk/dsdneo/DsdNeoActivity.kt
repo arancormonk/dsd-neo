@@ -45,6 +45,10 @@ import org.qtproject.qt.android.bindings.QtActivity
  *
  * The foreground goes to [RecordingPlayback] too: leaving it pauses a call recording (#708).
  *
+ * [SignInAutofill] puts its host view into the content once `super.onCreate()` has set Qt's layout there, re-reads the
+ * autofill service on each resume, and cancels an open framework session and takes the host away on destroy: Qt's
+ * relay ends no session at exit.
+ *
  * The Activity also forwards its lifecycle and input to [ScreenSupport] for the screen
  * modes, each as a one-line delegation: creation and destruction; the start, stop, pause,
  * top-resumed, focus and multi-window callbacks; touch events (a tap that brightens a
@@ -71,6 +75,11 @@ import org.qtproject.qt.android.bindings.QtActivity
  * in the app's task, which comes back cancelled: the pickers' flows end quietly, and so does a location request
  * ([LocationSupport]). One recreation that gets through anyway is recorded by [LaunchGuard], first among the launch
  * statements, for the next process's `exit:` line.
+ *
+ * The document pickers are the app's own (#829): [DocumentPicker] launches them for a result, and [onActivityResult]
+ * hands it every result first. It claims its own request codes, including a result that comes after process death,
+ * when no request waits for it any more (dropped), and the late RESULT_CANCELED Android sends for a launch that found
+ * no app; everything else goes on to Qt's listeners.
  */
 class DsdNeoActivity : QtActivity() {
     private var backCallback: OnBackInvokedCallback? = null
@@ -88,6 +97,7 @@ class DsdNeoActivity : QtActivity() {
         super.onCreate(savedInstanceState)
         AccessibilityBridge.afterQt(this)
         LaunchGuard.afterQt()
+        SignInAutofill.attach(this)
         ScreenSupport.attach(this)
         if (Build.VERSION.SDK_INT >= 33) {
             val callback = OnBackInvokedCallback { ScreenSupport.userInteraction(this); AppSupport.requestBack() }
@@ -106,12 +116,13 @@ class DsdNeoActivity : QtActivity() {
         UsbSourceManager.reportAttachment(this, intent)
     }
 
-    // The notification permission can change while we are away.
+    // The notification permission and the autofill service can change while we are away.
     override fun onResume() {
         super.onResume()
         trace.phase(this, "resumed")
         AppSupport.refreshNotificationPermission()
         AccessibilityBridge.onResume(this)
+        SignInAutofill.onResume(this)
     }
 
     // The screen modes: every lifecycle and input callback that matters to them goes to ScreenSupport.
@@ -206,9 +217,17 @@ class DsdNeoActivity : QtActivity() {
         }
     }
 
+    // #829: the app's document picker owns its request codes; every other result goes on to Qt.
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (!DocumentPicker.onActivityResult(this, requestCode, resultCode, data)) {
+            super.onActivityResult(requestCode, resultCode, data)
+        }
+    }
+
     override fun onDestroy() {
         trace.phase(this, "destroying")
         AccessibilityBridge.onDestroy(this)
+        SignInAutofill.detach(this)
         ScreenSupport.detach(this)
         keyboardObserver?.let { window.decorView.viewTreeObserver.removeOnGlobalLayoutListener(it) }
         keyboardObserver = null

@@ -34,15 +34,35 @@ typedef struct {
 } tetra_sm_tune_snapshot;
 
 /* Where the receiver is as the decoder reads it: the tuned centre (opts->rtlsdr_center_freq, which an RTL tune the
- * backend reports in flight has already set to its target, dsd_engine_tune_rtl()) and the P25 control-channel alias
- * the shared return prefers (state->p25_cc_freq, which a TETRA return clears). Kept as they were before a request and
+ * backend reports in flight has already set to its target, dsd_engine_tune_rtl()), the P25 control-channel alias
+ * the shared return prefers (state->p25_cc_freq, which a TETRA return clears) and the control channel the return goes
+ * to (state->trunk_cc_freq, which a release sets to the home's, sm_release()). Kept as they were before a request and
  * as the request left them, so a failure puts back only what nobody changed since (sm_restore_receiver()). */
 typedef struct {
     long p25_cc_freq;
     long staged_p25_cc_freq;
+    long trunk_cc_freq;
+    long staged_trunk_cc_freq;
     uint32_t center_hz;
     uint32_t staged_center_hz;
 } tetra_sm_receiver_snapshot;
+
+/* The cell a followed call was granted on (tetra_trunk_sm.c): its control channel, which every return from the call
+ * goes back to (EN 300 392-2 clause 23.3.1.2.1.2: the MS returns to the MCCH it was using before the assignment), and
+ * the identity it had then. Taken when a follow starts off the control channel (not TUNED before; a reallocation of the
+ * followed call keeps it) and gone wherever the follow ends; valid only while the state machine holds a follow
+ * (tetra_sm_return_cc_hz()). What another cell decoded on the traffic carrier writes to the session's control channel
+ * and cell identity never reaches it. */
+typedef struct {
+    long cc_hz;   /* state->trunk_cc_freq when the follow started */
+    uint16_t mcc; /* the network and colour code of the cell (tetra_state_t::mcc, mnc, colour, net_known) */
+    uint16_t mnc;
+    uint16_t la; /* its location area, la_known when a D-MLE-SYSINFO named it (tetra_state_t::sysinfo_known) */
+    uint8_t colour;
+    uint8_t net_known;
+    uint8_t la_known;
+    uint8_t valid;
+} tetra_sm_home;
 
 /* Everything a tune puts back when it fails: the shared tuning state, the receiver, the state machine's own, and the
  * followed call's proof on the carrier (tetra_confirm_t::followed_call), which only the carrier it was read on keeps
@@ -51,9 +71,11 @@ typedef struct {
     tetra_sm_tune_snapshot tuning;
     tetra_sm_receiver_snapshot receiver;
     tetra_sm_grant followed;
+    tetra_sm_home home;
     double t_tune_m;
     double t_voice_m;
     double t_maint_m;
+    double t_home_crc_m;
     uint32_t confirm_epoch;
     uint8_t followed_proven;
     uint8_t followed_rx;
@@ -83,7 +105,8 @@ typedef struct {
     uint8_t silent_noted;  /* the "no SYSINFO on the main carrier" line was printed for this move */
     uint8_t full_noted;    /* the "no room" line was printed since the history was last forgotten */
     uint8_t stay_noted;    /* the "moved there once already" line was printed since the last move */
-    uint8_t trunk_off;     /* trunking was seen off since: turning it on again forgets the history */
+    uint8_t trunk_off;     /* trunking was seen off since: turning it on again forgets the history and, while TUNED,
+                              returns home (tetra_sm_t::return_required) */
 } tetra_sm_acquire;
 
 /* The trunking state machine (tetra_trunk_sm.c). Times are decode-clock monotonic seconds. */
@@ -91,15 +114,21 @@ typedef struct {
     tetra_sm_rollback pending_prev; /* what the tune in flight puts back if it fails */
     tetra_sm_acquire acq;           /* moves to the main carrier */
     tetra_sm_grant followed;        /* the call followed while TUNED */
+    tetra_sm_home home;             /* the cell the follow started on, while it holds one */
     double t_tune_m;  /* the followed tune completed, or the grant was taken on the same carrier; 0 in flight */
     double t_voice_m; /* last speech on a followed timeslot since then; 0 for none */
     double t_maint_m; /* last channel maintenance event before the first speech (tetra_sm_note_maintenance()); 0 none */
+    double t_home_crc_m; /* last block of the home cell whose CRC passed on the followed carrier: its SYNC, signalling
+                            or speech (tetra_sm_note_home_crc()); 0 none since the follow started */
     uint64_t pending_request_id; /* the correlated trunk-tuning request in flight; 0 for none */
     uint8_t state;               /* tetra_sm_state_e */
     uint8_t pending_kind;        /* what the request in flight does: 0 none, 1 grant, 2 return to the control channel,
                                     3 move to the main carrier */
     uint8_t followed_retired;    /* the followed call's identifier names another call now (tetra_sm_retire_call());
                                  read while TUNED, cleared by every new follow */
+    uint8_t return_required;     /* trunking came back on while TUNED: the follow is released and returns home at the
+                                    next tick, and nothing on the carrier keeps it until it did; a failed return's
+                                    rollback keeps it */
 } tetra_sm_t;
 
 /* Let go of the tune @p sm has in flight (tetra_trunk_sm.c): starting over, a hand-over to the engine, the TETRA state
@@ -155,13 +184,14 @@ typedef struct {
 
 /** A channel allocation element (EN 300 392-2 table 21.87) as the MAC read it from a clear PDU. */
 typedef struct {
-    long freq_hz;       /**< downlink frequency of the carrier, 0 when its band is unknown */
-    uint16_t carrier;   /**< carrier number */
-    uint8_t type;       /**< allocation type */
-    uint8_t timeslots;  /**< timeslot assigned: bit 3 is timeslot 1 ... bit 0 timeslot 4; 0 is "go to the MCCH" */
-    uint8_t up_down;    /**< up/downlink assigned; for an augmented allocation, the augmented value */
-    uint8_t bandwidth;  /**< augmented allocations only; 0 is 25 kHz */
-    uint8_t modulation; /**< augmented allocations only; 0 is pi/4-DQPSK */
+    long freq_hz;        /**< downlink frequency of the carrier, 0 when its band is unknown */
+    uint16_t carrier;    /**< carrier number */
+    uint8_t type;        /**< allocation type */
+    uint8_t timeslots;   /**< timeslot assigned: bit 3 is timeslot 1 ... bit 0 timeslot 4; 0 is "go to the MCCH" */
+    uint8_t up_down;     /**< up/downlink assigned; for an augmented allocation, the augmented value */
+    uint8_t bandwidth;   /**< augmented allocations only; 0 is 25 kHz */
+    uint8_t modulation;  /**< augmented allocations only; 0 is pi/4-DQPSK */
+    uint8_t cell_change; /**< cell change flag: a channel of another cell (EN 300 392-2 clause 23.5.4.1) */
 } tetra_chan_alloc;
 
 /* Phase of a CMCE call (EN 300 392-2 clause 14.5): set up (D-SETUP, D-ALERT, D-CALL PROCEEDING), through-connected

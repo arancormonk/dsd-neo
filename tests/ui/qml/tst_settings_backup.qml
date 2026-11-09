@@ -2,7 +2,6 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
-import QtQuick.Dialogs
 import QtTest
 import "../../../src/ui/qt/qml" as Ui
 
@@ -10,7 +9,8 @@ import "../../../src/ui/qt/qml" as Ui
 // Settings instances, and the restore result card on Home. `backup` is the
 // recording fake in qml_backup_recorder.h (qml_test_context.h installs it); a
 // case drives its results through testContext and reads back what the screens
-// asked for.
+// asked for. The pickers ask the host (issue #829), which a case answers
+// through testContext as Android's picker would.
 Item {
     width: 420
     height: 900
@@ -29,7 +29,8 @@ Item {
         property bool savedAutoStart: false
         property bool savedOnboarding: false
         readonly property string pass: "correct horse battery"
-        readonly property string pickedReference: "content://com.example.documents/document/primary%3ABackups%2Fphone.dsdbak"
+        // Mixed case and escapes, which a QUrl would rewrite (#829 B1): the model gets it as picked.
+        readonly property string pickedReference: "content://com.Example.Documents/document/primary%3ABackups%2Fmy%20phone.dsdbak"
         readonly property var fullSummary: ({
                 createdAt: 1760000000,
                 app: "1.4.0",
@@ -48,9 +49,14 @@ Item {
         function init() {
             testContext.useLifecycleHost(true);
             testContext.resetBackup();
+            testContext.resetHostPlayback();
             savedAutoStart = prefs.autoStartOnAttach;
             savedOnboarding = prefs.onboardingDone;
             prefs.onboardingDone = true;
+            loadMain();
+        }
+
+        function loadMain() {
             appLoader.source = uiDir + "/Main.qml";
             app = appLoader.item;
             verify(app !== null);
@@ -79,6 +85,7 @@ Item {
             app = null;
             flow = null;
             settings = null;
+            testContext.setDocumentPickerSupported(true);
             testContext.resetBackup();
             testContext.setScanTestUsb(false, false);
             testContext.setLifecyclePhase(0);
@@ -147,13 +154,24 @@ Item {
             tryCompare(picker, "visible", true);
             return picker;
         }
-        // The non-native dialog the offscreen run gets stays open after a bare
-        // accepted(), and closing it then reports rejected too: the flow has to
-        // ignore that once the pick has moved it on.
-        function pick(picker, reference) {
-            picker.selectedFile = reference;
-            picker.accepted();
-            picker.close();
+        // The host's last request, which must be the kind the picker asks for.
+        function request(kind) {
+            var last = testContext.lastDocumentRequest();
+            compare(last.kind, kind);
+            return last;
+        }
+        // The answers Android's picker gives the request a picker waits on.
+        function pick(picker, reference, displayName, inDownloads) {
+            verify(picker.visible);
+            testContext.answerDocumentPicked(request(picker.mode).id, reference, displayName || "phone.dsdbak", inDownloads === true);
+        }
+        function backOut(picker) {
+            verify(picker.visible);
+            testContext.answerDocumentCancelled(request(picker.mode).id);
+        }
+        function fail(picker, reason) {
+            verify(picker.visible);
+            testContext.answerDocumentUnavailable(request(picker.mode).id, reason);
         }
         function toUnlock() {
             flow.restoreFromReference(pickedReference);
@@ -580,11 +598,17 @@ Item {
             compare(part("backupConfirmField").text, "");
             var picker = part("backupSavePicker");
             verify(picker.visible);
-            compare(picker.fileMode, FileDialog.SaveFile);
-            compare(picker.selectedFile.toString(), "dsd-neo-backup-2026-10-14.dsdbak");
-            // One name filter: Android turns its unknown extension into application/octet-stream.
+            compare(picker.mode, "save");
+            compare(picker.suggestedName, "dsd-neo-backup-2026-10-14.dsdbak");
+            var asked = request("save");
+            compare(asked.name, "dsd-neo-backup-2026-10-14.dsdbak");
+            // Android knows no type for the extension: the host is asked for octet-stream outright.
+            compare(asked.mime, "application/octet-stream");
+            compare(picker.mimeType, "application/octet-stream");
+            // The desktop dialog's one name filter and suffix.
             compare(picker.nameFilters.length, 1);
             verify(picker.nameFilters[0].indexOf("(*.dsdbak)") > 0);
+            compare(picker.defaultSuffix, "dsdbak");
             compare(flow.step, "exportPicker");
             // No sheet is up while the picker is: flowActive alone holds auto-start.
             compare(Ui.Navigation.modals.length, 0);
@@ -613,10 +637,13 @@ Item {
             compare(flow.step, "");
             var line = notice();
             verify(line.visible);
-            compare(line.text.indexOf("Backup saved."), 0);
+            compare(line.text.indexOf("Backup saved. "), 0);
             verify(line.text.indexOf("Imported file old.csv") > 0);
+            // Saved where the picker said: no Download folder sentence.
+            verify(line.text.indexOf("Download") < 0, line.text);
             compare(line.textFormat, Text.PlainText);
             compare(line.color, Ui.Theme.textSecondary);
+            compare(line.Accessible.role, Accessible.StaticText);
             compare(notice(findChild(app, "sessionSettingsScreen")).text, line.text);
             verifyNoticeUnder("export");
         }
@@ -635,11 +662,97 @@ Item {
 
         function test_export_picker_cancel_discards() {
             var picker = toSavePicker();
-            picker.reject();
+            backOut(picker);
             compare(calls("discardExport").length, 1);
             compare(calls("saveExport").length, 0);
             compare(lastFlowActive(), false);
             compare(flow.step, "");
+            compare(notice().text, "");
+        }
+
+        // #829: a save the flow no longer waits for (its step moved on with
+        // the picker still out) that comes back as a Download-folder row is
+        // thrown away, since nothing will write it; one the user placed is no
+        // row of the app's and is left alone.
+        function test_export_unwanted_download_is_discarded_data() {
+            return [
+                {tag: "Download folder", reference: "content://media/external/downloads/43", inDownloads: true, discarded: ["content://media/external/downloads/43"]},
+                {tag: "placed by the user", reference: pickedReference, inDownloads: false, discarded: []}
+            ];
+        }
+
+        function test_export_unwanted_download_is_discarded(data) {
+            var picker = toSavePicker();
+            flow.step = "";
+            pick(picker, data.reference, "dsd-neo-backup-2026-11-08.dsdbak", data.inDownloads);
+            compare(calls("saveExport").length, 0, "the flow writes nothing");
+            var discarded = testContext.documentCalls().filter(function (call) {
+                return call.name === "discardPendingDownload";
+            }).map(function (call) {
+                return call.reference;
+            });
+            compare(discarded, data.discarded);
+        }
+
+        // #829: with no save picker the host saves to the Download folder and
+        // names the file there; a name it cannot give falls back to "Backup saved.".
+        function test_export_saved_to_downloads_data() {
+            return [
+                {tag: "named", reference: "content://media/external/downloads/41", name: "dsd-neo-backup-2026-10-14 (1).dsdbak", head: "Backup saved to Download/DSD-neo as dsd-neo-backup-2026-10-14 (1).dsdbak."},
+                {tag: "no name", reference: "content://media/external/downloads/42", name: "", head: "Backup saved."}
+            ];
+        }
+
+        function test_export_saved_to_downloads(data) {
+            if (data.name.length)
+                testContext.setSavedDocumentName(data.reference, data.name);
+            var picker = toSavePicker(["Imported file old.csv"]);
+            pick(picker, data.reference, "dsd-neo-backup-2026-10-14.dsdbak", true);
+            verify(picker.savedToDownloads);
+            compare(calls("saveExport")[0].args[0], data.reference);
+            var said = flow.announcements;
+            verify(testContext.emitBackup("exportFinished", {ok: true, error: "", summary: {}, notIncluded: ["Imported file old.csv"]}));
+            tryCompare(part("backupSavingSheet"), "visible", false);
+            compare(lastFlowActive(), false);
+            var text = notice().text;
+            // The sentence, then what the backup left out, as after a picked place.
+            compare(text.indexOf(data.head + " "), 0, text);
+            verify(text.indexOf("Imported file old.csv") > data.head.length, text);
+            compare(notice().color, Ui.Theme.textSecondary);
+            // Where the backup went is said only here, so it is read out, once.
+            compare(flow.announcements, said + 1);
+            compare(flow.announced, text);
+        }
+
+        // #829: no picker could ask where to save. The encrypted backup goes,
+        // the flow ends, and the card says why, once.
+        function test_export_picker_unavailable() {
+            var picker = toSavePicker();
+            var asked = request("save").id;
+            var said = flow.announcements;
+            fail(picker, "noSavePicker");
+            var message = "This device has no save picker, and DSD-neo could not save to the Download folder.";
+            compare(calls("discardExport").length, 1);
+            compare(calls("saveExport").length, 0);
+            compare(lastFlowActive(), false);
+            verify(!backup.flowActive);
+            verify(!uiController.autoStartBlocked);
+            compare(flow.step, "");
+            verify(!picker.visible);
+            verify(!part("backupSavingSheet").visible);
+            compare(notice().text, message);
+            compare(notice().color, Ui.Theme.alert);
+            compare(notice().Accessible.role, Accessible.AlertMessage);
+            compare(flow.announcements, said + 1);
+            compare(flow.announced, message);
+            // A late answer for the same request changes nothing.
+            testContext.answerDocumentPicked(asked, pickedReference, "phone.dsdbak", false);
+            compare(calls("saveExport").length, 0);
+            compare(flow.announcements, said + 1);
+            // Back up works again.
+            openExport();
+            compare(flow.step, "exportPassphrase");
+            verify(backup.flowActive);
             compare(notice().text, "");
         }
 
@@ -803,17 +916,17 @@ Item {
             findChild(settings, "settingsBackupRestoreRow").activate();
             var picker = part("backupOpenPicker");
             tryCompare(picker, "visible", true);
-            compare(picker.fileMode, FileDialog.OpenFile);
+            compare(picker.mode, "open");
+            request("open");
             compare(picker.nameFilters.length, 0);
             compare(flow.step, "restorePicker");
             compare(Ui.Navigation.modals.length, 0);
             verify(backup.flowActive);
             verify(uiController.autoStartBlocked);
-            // Any name: the model checks the content, never the name.
-            var path = testContext.writeFixtureCsv("holiday-photos.txt", "DSDNEOBK");
-            verify(path.length > 0);
-            var reference = "file://" + path;
-            pick(picker, reference);
+            // Any name: the model checks the content, never the name. The
+            // reference reaches the model as picked (#829 B1).
+            var reference = "content://com.Example.Documents/document/primary%3ADownload%2Fholiday%20photos.txt";
+            pick(picker, reference, "holiday photos.txt");
             var sheet = part("backupUnlockSheet");
             tryCompare(sheet, "visible", true);
             compare(sheet.accessibleName, "Unlock backup");
@@ -836,7 +949,7 @@ Item {
         function test_restore_picker_cancel_ends_the_flow() {
             findChild(settings, "settingsBackupRestoreRow").activate();
             tryCompare(part("backupOpenPicker"), "visible", true);
-            part("backupOpenPicker").reject();
+            backOut(part("backupOpenPicker"));
             compare(flow.step, "");
             compare(lastFlowActive(), false);
             var names = testContext.backupCalls().map(function (call) {
@@ -957,10 +1070,8 @@ Item {
             compare(lastFlowActive(), true);
             verify(uiController.autoStartBlocked);
             compare(calls("discardRestore").length, 0);
-            var path = testContext.writeFixtureCsv("other.dsdbak", "DSDNEOBK");
-            verify(path.length > 0);
-            var other = "file://" + path;
-            pick(picker, other);
+            var other = "content://com.Example.Documents/document/primary%3ADownload%2Fother%20copy.dsdbak";
+            pick(picker, other, "other copy.dsdbak");
             tryCompare(sheet, "visible", true);
             // The sheet comes back as it first opened: nothing moves into place after it shows.
             verify(part("backupUnlockField").visible && part("backupShowUnlockPassphrase").visible);
@@ -985,10 +1096,131 @@ Item {
             part("backupChooseFileButton").activate();
             var picker = part("backupOpenPicker");
             tryCompare(picker, "visible", true);
-            picker.reject();
+            backOut(picker);
             compare(flow.step, "");
             compare(lastFlowActive(), false);
             verify(!part("backupUnlockSheet").visible);
+        }
+
+        // #829 B2: "Choose another file" asks again and takes only the new
+        // answer. The failed file's answer, delivered again, is never the pick.
+        function test_choose_another_file_never_returns_the_failed_file() {
+            findChild(settings, "settingsBackupRestoreRow").activate();
+            var picker = part("backupOpenPicker");
+            tryCompare(picker, "visible", true);
+            var first = request("open").id;
+            var failed = "content://com.Example.Documents/document/primary%3ADownload%2Fbroken%20copy.dsdbak";
+            testContext.answerDocumentPicked(first, failed, "broken copy.dsdbak", false);
+            var sheet = part("backupUnlockSheet");
+            tryCompare(sheet, "visible", true);
+            part("backupUnlockField").text = pass;
+            part("backupUnlockButton").activate();
+            verify(testContext.emitBackup("inspectFinished", {ok: false, error: "Io", summary: {}}));
+            part("backupChooseFileButton").activate();
+            tryCompare(picker, "visible", true);
+            compare(flow.reference, "");
+            var second = request("open").id;
+            verify(second > first, "a request of its own");
+            testContext.answerDocumentPicked(first, failed, "broken copy.dsdbak", false);
+            compare(flow.step, "restorePicker");
+            verify(!sheet.visible);
+            verify(picker.visible);
+            var other = "content://com.Example.Documents/document/primary%3ADownload%2Fgood%20copy.dsdbak";
+            testContext.answerDocumentPicked(second, other, "good copy.dsdbak", false);
+            tryCompare(sheet, "visible", true);
+            compare(flow.reference, other);
+            part("backupUnlockField").text = pass;
+            part("backupUnlockButton").activate();
+            var inspect = calls("inspectRestore");
+            compare(inspect.length, 2);
+            compare(inspect[0].args[0], failed);
+            compare(inspect[1].args[0], other);
+        }
+
+        // B2 on the desktop dialog, which keeps its selection between opens:
+        // an accept with no new choice ends the restore rather than handing
+        // back the file that just failed.
+        function test_choose_another_file_on_the_desktop() {
+            appLoader.source = "";
+            testContext.setDocumentPickerSupported(false);
+            loadMain();
+            findChild(settings, "settingsBackupRestoreRow").activate();
+            var dialog = findChild(part("backupOpenPicker"), "documentPickerDialog");
+            verify(dialog !== null);
+            tryCompare(dialog, "visible", true);
+            var path = testContext.writeFixtureCsv("broken.dsdbak", "DSDNEOBK");
+            verify(path.length > 0);
+            dialog.selectedFile = "file://" + path;
+            var failed = dialog.selectedFile.toString();
+            // As tst_document_picker: accept() would take the platform dialog's
+            // own selection, which a test cannot set.
+            dialog.accepted();
+            dialog.close();
+            var sheet = part("backupUnlockSheet");
+            tryCompare(sheet, "visible", true);
+            part("backupUnlockField").text = pass;
+            part("backupUnlockButton").activate();
+            compare(calls("inspectRestore")[0].args[0], failed);
+            verify(testContext.emitBackup("inspectFinished", {ok: false, error: "Damaged", summary: {}}));
+            part("backupChooseFileButton").activate();
+            tryCompare(dialog, "visible", true);
+            dialog.accept();
+            compare(calls("inspectRestore").length, 1);
+            verify(!sheet.visible);
+            compare(flow.step, "");
+            compare(lastFlowActive(), false);
+            compare(notice().text, "No file came back from the picker. Try again.");
+            compare(testContext.documentCalls(), [], "the host is not asked");
+        }
+
+        // #829: no picker could ask for the file, at the first pick or at
+        // "Choose another file". The restore ends with the reason on the card,
+        // read out once each time, and Restore works again.
+        function test_restore_picker_unavailable_data() {
+            return [
+                {tag: "first pick", another: false, reason: "noPicker", text: "No compatible file picker on this device. Install a file manager app, then try again."},
+                {tag: "first pick, no result", another: false, reason: "noResult", text: "No file came back from the picker. Try again."},
+                {tag: "Choose another file", another: true, reason: "unreadable", text: "That app gave DSD-neo a file it can't open. Pick the file from another app."}
+            ];
+        }
+
+        function test_restore_picker_unavailable(data) {
+            if (data.another) {
+                unlock();
+                verify(testContext.emitBackup("inspectFinished", {ok: false, error: "NotBackup", summary: {}}));
+                part("backupChooseFileButton").activate();
+            } else {
+                findChild(settings, "settingsBackupRestoreRow").activate();
+            }
+            var picker = part("backupOpenPicker");
+            tryCompare(picker, "visible", true);
+            var said = flow.announcements;
+            fail(picker, data.reason);
+            compare(flow.step, "");
+            compare(lastFlowActive(), false);
+            verify(!backup.flowActive);
+            verify(!uiController.autoStartBlocked);
+            verify(!picker.visible);
+            verify(!part("backupUnlockSheet").visible);
+            compare(flow.reference, "");
+            compare(calls("discardRestore").length, 0);
+            compare(notice().text, data.text);
+            compare(notice().color, Ui.Theme.alert);
+            compare(notice().Accessible.role, Accessible.AlertMessage);
+            compare(flow.announcements, said + 1);
+            compare(flow.announced, data.text);
+            // Restore again: the card clears, and the same problem is read out again.
+            var restoreRow = findChild(settings, "settingsBackupRestoreRow");
+            verify(restoreRow.enabled);
+            restoreRow.activate();
+            tryCompare(picker, "visible", true);
+            compare(flow.step, "restorePicker");
+            verify(backup.flowActive);
+            compare(notice().text, "");
+            fail(picker, data.reason);
+            compare(notice().text, data.text);
+            compare(flow.announcements, said + 2);
+            compare(lastFlowActive(), false);
         }
 
         function test_confirm_message_data() {
@@ -1322,7 +1554,7 @@ Item {
             compare(app.pendingStart, null);
             compare(app.awaitingUsbAccess, false);
             // After the flow, a grant starts as before.
-            part("backupSavePicker").reject();
+            backOut(part("backupSavePicker"));
             compare(lastFlowActive(), false);
             testContext.setScanTestUsb(true, false);
             app.startSystem(usbRow);
@@ -1344,7 +1576,7 @@ Item {
             verify(uiController.autoStartBlocked);
             testContext.emitLocalDeviceAttached();
             compare(decoderHost.sessionState, 0);
-            part("backupOpenPicker").reject();
+            backOut(part("backupOpenPicker"));
             tryCompare(uiController, "autoStartBlocked", false);
             // Positive control: with the flow over, an attachment starts.
             testContext.emitLocalDeviceAttached();

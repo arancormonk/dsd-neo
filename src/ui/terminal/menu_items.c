@@ -566,8 +566,16 @@ static const NcMenuItem TRUNK_LISTS_ITEMS[] = {
      .on_select = act_import_chan},
     {.id = "lists.group",
      .label = "Import group list CSV...",
-     .help = "Load group labels and allow/block flags; a parse failure keeps the current list.",
+     .help = "Load group labels and allow/block flags; a file that fails to load keeps the current list.",
      .on_select = act_import_group},
+    {
+        .id = "lists.group_reload",
+        .label_fn = lbl_group_list_reload,
+        .help = "Read the group list file again, picking up edits made outside dsd-neo. A reload that works clears "
+                "temporary TG avoids and call skips; a file that fails to load keeps the current list.",
+        .is_enabled = group_list_reload_offered,
+        .on_select = act_group_list_reload,
+    },
     {.id = "lists.src",
      .label = "Import source ID list CSV...",
      .help =

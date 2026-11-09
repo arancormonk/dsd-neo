@@ -437,6 +437,9 @@ Item {
             accountCommit.target = null;
             // A failed review case must not leave its sheet over the next case's taps.
             findChild(tc.screen, "radioReferenceReviewSheet").visible = false;
+            tc.screen.visible = true;
+            findChild(tc.screen, "radioReferencePasswordField").text = "";
+            testContext.useLifecycleHost(false);
             testContext.useRadioReferenceModel(null);
             testContext.setPrefs("rrUsername", previousRrUsername);
             screenLoader.z = 0;
@@ -445,8 +448,7 @@ Item {
         }
 
         function test_login_keeps_account_editor_reachable() {
-            fakeAccount.credentialsReady = false;
-            fakeAccount.accountChecks = 0;
+            fakeAccount.resetAccount();
             testContext.setPrefs("rrUsername", "test-listener");
             testContext.useRadioReferenceModel(fakeAccount);
             screenLoader.z = 1;
@@ -454,8 +456,11 @@ Item {
             password.text = "session-secret";
             password.editingFinished();
             compare(fakeAccount.sessionPassword, "session-secret");
-            verify(fakeAccount.accountChecks > 0, "login must still check the account");
+            compare(fakeAccount.accountChecks, 1, "login must check the account once");
             var credentials = findChild(tc.screen, "radioReferenceCredentials");
+            // Up through the check, so a password manager sees the fields until the verdict.
+            verify(credentials.visible, "the form hid before the account check settled");
+            fakeAccount.settle(2);
             tryCompare(credentials, "visible", false);
             var change = findChild(tc.screen, "radioReferenceChangeAccount");
             verify(change !== null, "successful login must leave a Change account action");
@@ -466,10 +471,13 @@ Item {
             verify(findChild(tc.screen, "radioReferenceUsernameField").visible);
             password.text = "replacement-secret";
             password.editingFinished();
+            compare(fakeAccount.accountChecks, 2, "a new password checks the account again");
+            fakeAccount.settle(2);
             var checks = fakeAccount.accountChecks;
             findChild(tc.screen, "radioReferenceCheckAccountButton").clicked();
-            verify(fakeAccount.accountChecks > checks);
+            compare(fakeAccount.accountChecks, checks + 1, "Check account re-runs a finished check");
             compare(fakeAccount.sessionPassword, "replacement-secret");
+            fakeAccount.settle(2);
             var username = findChild(tc.screen, "radioReferenceUsernameField");
             accountCommit.target = username;
             accountCommit.clear();
@@ -479,12 +487,11 @@ Item {
             tryCompare(credentials, "visible", false);
             compare(accountCommit.count, 1, "Done must commit the field being edited");
             verify(!username.input.activeFocus, "Done must release editor focus");
-            fakeAccount.errorIsSubscription = true;
-            fakeAccount.errorText = "Expired";
+            compare(fakeAccount.accountChecks, checks + 1, "Done over checked, unchanged credentials asks nothing");
+            fakeAccount.settle(4);
             tryCompare(credentials, "visible", true);
             verify(findChild(tc.screen, "radioReferenceNotice").text.indexOf("expired") >= 0);
-            fakeAccount.errorIsSubscription = false;
-            fakeAccount.errorText = "";
+            fakeAccount.settle(0);
             password.text = "";
         }
 
@@ -625,8 +632,9 @@ Item {
         function test_credential_labels_and_hint() {
             compare(findChild(tc.screen, "radioReferenceUsernameField").label, "RadioReference username");
             compare(findChild(tc.screen, "radioReferenceAppKeyField").label, "RadioReference application key");
+            compare(findChild(tc.screen, "radioReferencePasswordField").label, "Password");
             compare(findChild(tc.screen, "radioReferencePasswordHint").text,
-                    "The password is kept only for this session and is never saved. A RadioReference premium subscription is required.");
+                    "DSD-neo keeps your password only until the app closes and never saves it. A RadioReference premium subscription is required.");
             var heading = findChild(tc.screen, "radioReferenceAppKeyHeading");
             verify(heading.visible);
             compare(heading.text, "Application key");
@@ -1149,6 +1157,403 @@ Item {
             testContext.setRadioReference("errorIsAuth", true)
             tryVerify(function () { return notice.visible && notice.text.indexOf("application key") < 0 },
                       2000, "the notice blamed a key this build ignores: " + notice.text)
+        }
+
+        // ---- The sign-in form (password managers, reveal, session password) ----
+
+        function useFakeAccount() {
+            fakeAccount.resetAccount();
+            testContext.setPrefs("rrUsername", "test-listener");
+            testContext.useRadioReferenceModel(fakeAccount);
+            screenLoader.z = 1;
+        }
+        // Typed in, as a keyboard does: the field's `text: prefs.rrUsername`
+        // binding stays, where assigning `text` would replace it.
+        function typeInto(field, value) {
+            field.input.forceActiveFocus();
+            field.input.remove(0, field.input.text.length);
+            field.input.insert(0, value);
+        }
+        function callsOf(op) {
+            return signInAutofill.calls().filter(function (call) { return call.op === op; });
+        }
+
+        // Regression (B7): one Check tap sent two account checks. The button
+        // finished the field's editing first, whose own commit checked, and
+        // then the tap checked again. A real activate(), not clicked().
+        function test_30_one_check_per_tap_data() {
+            return [{tag: "password", field: "radioReferencePasswordField"},
+                    {tag: "application key", field: "radioReferenceAppKeyField"}];
+        }
+        function test_30_one_check_per_tap(data) {
+            useFakeAccount();
+            if (data.tag === "application key") {
+                fakeAccount.setPassword("session-secret");
+                fakeAccount.buildHasAppKey = false;
+                tc.screen.accountEditorOpen = true;
+            }
+            var field = findChild(tc.screen, data.field);
+            var button = findChild(tc.screen, "radioReferenceCheckAccountButton");
+            tryVerify(function () { return field.visible && button.visible && button.enabled; });
+            typeInto(field, data.tag === "password" ? "session-secret" : "fixture-key");
+            verify(field.input.activeFocus);
+            button.activate();
+            compare(fakeAccount.accountChecks, 1, "one tap, one account check");
+            verify(!field.input.activeFocus, "the tap committed the field being typed in");
+            compare(fakeAccount.sessionPassword, "session-secret");
+            fakeAccount.buildHasAppKey = true;
+        }
+
+        // B7, once more: a field the user tapped out of checks when its edit
+        // made the credentials whole, and a field left untouched does not
+        // repeat a check already answered.
+        function test_30b_an_untouched_field_does_not_recheck() {
+            useFakeAccount();
+            var password = findChild(tc.screen, "radioReferencePasswordField");
+            var username = findChild(tc.screen, "radioReferenceUsernameField");
+            typeInto(password, "session-secret");
+            password.input.focus = false;
+            compare(fakeAccount.accountChecks, 1);
+            fakeAccount.settle(2);
+            username.input.forceActiveFocus();
+            username.input.focus = false;
+            compare(fakeAccount.accountChecks, 1, "focus leaving an unchanged field checked again");
+        }
+
+        // Issue B3: the password can be shown, like every other secret field
+        // in the app, without that tap finishing the field or checking.
+        function test_31_the_password_reveals_without_a_check() {
+            useFakeAccount();
+            var password = findChild(tc.screen, "radioReferencePasswordField");
+            var reveal = findChild(tc.screen, "radioReferencePasswordReveal");
+            verify(reveal !== null, "the password field has no Show button");
+            tryVerify(function () { return reveal.visible; });
+            compare(password.input.echoMode, TextInput.Password);
+            compare(reveal.Accessible.name, "Show password");
+            compare(reveal.text, "Show");
+            typeInto(password, "session-secret");
+            reveal.activate();
+            compare(password.input.echoMode, TextInput.Normal);
+            compare(reveal.Accessible.name, "Hide password");
+            compare(reveal.text, "Hide");
+            verify(password.input.activeFocus, "Show took the field out of editing");
+            compare(fakeAccount.accountChecks, 0, "Show checked the account");
+            compare(fakeAccount.passwordCommits, 0, "Show committed the password");
+            reveal.activate();
+            compare(password.input.echoMode, TextInput.Password);
+            reveal.activate();
+            compare(password.input.echoMode, TextInput.Normal);
+            // Masked again when the screen goes.
+            tc.screen.visible = false;
+            compare(password.input.echoMode, TextInput.Password, "a revealed password outlived the screen");
+            tc.screen.visible = true;
+            compare(password.input.echoMode, TextInput.Password);
+            compare(reveal.Accessible.name, "Show password");
+            // The key editors keep their own names.
+            var keyReveal = Qt.createComponent(uiDir + "/RevealButton.qml").createObject(root);
+            compare(keyReveal.Accessible.name, "Show key");
+            keyReveal.revealed = true;
+            compare(keyReveal.Accessible.name, "Hide key");
+            keyReveal.destroy();
+        }
+
+        // The field holds a draft; the session password is the model's. An
+        // empty draft keeps it, the draft goes with the screen, and an empty
+        // field says a password is held.
+        function test_32_the_session_password_outlives_its_draft() {
+            useFakeAccount();
+            var password = findChild(tc.screen, "radioReferencePasswordField");
+            typeInto(password, "session-secret");
+            password.input.focus = false;
+            compare(fakeAccount.sessionPassword, "session-secret");
+            fakeAccount.settle(2);
+            var commits = fakeAccount.passwordCommits;
+            password.text = "";
+            password.input.forceActiveFocus();
+            password.input.focus = false;
+            compare(fakeAccount.sessionPassword, "session-secret", "an empty draft cleared the session password");
+            compare(fakeAccount.passwordCommits, commits, "an empty draft was committed");
+            compare(fakeAccount.accountChecks, 1, "an empty draft checked the account");
+            password.text = "draft";
+            tc.screen.visible = false;
+            compare(password.text, "", "the draft outlived the screen");
+            tc.screen.visible = true;
+            compare(password.text, "");
+            compare(password.placeholderText, "Entered for this session");
+            compare(password.input.Accessible.description, "Password. Entered for this session");
+            // Check with an empty draft checks the session password.
+            findChild(tc.screen, "radioReferenceCheckAccountButton").activate();
+            compare(fakeAccount.accountChecks, 2);
+            compare(fakeAccount.sessionPassword, "session-secret");
+        }
+
+        // Regression (B4): the placeholder "password" under the label
+        // "Password" was read twice ("Password. password").
+        function test_33_the_password_field_reads_its_label_once() {
+            var password = findChild(tc.screen, "radioReferencePasswordField");
+            compare(password.placeholderText, "");
+            var description = password.input.Accessible.description;
+            compare(description, "Password");
+            verify(!/password.*password/i.test(description), "read twice: " + description);
+        }
+
+        // The card stays up through the account check, so the password
+        // manager sees the fields until the verdict, and hides once
+        // RadioReference accepts them.
+        function test_34_the_card_stays_up_through_the_check() {
+            useFakeAccount();
+            var credentials = findChild(tc.screen, "radioReferenceCredentials");
+            var password = findChild(tc.screen, "radioReferencePasswordField");
+            typeInto(password, "session-secret");
+            password.input.focus = false;
+            verify(fakeAccount.credentialsReady && fakeAccount.checkingAccount);
+            wait(50);
+            verify(credentials.visible, "the card hid while the account was being checked");
+            fakeAccount.settle(2);
+            tryCompare(credentials, "visible", false);
+            // The form's result line reports checking and verified; the notice
+            // line above reports a failure, once.
+            findChild(tc.screen, "radioReferenceChangeAccount").activate();
+            var result = findChild(tc.screen, "radioReferenceAccountResult");
+            tryCompare(result, "visible", true);
+            compare(result.text, "Account verified.");
+            fakeAccount.settle(3);
+            verify(!result.visible, "the rejection is said twice: " + result.text);
+            verify(findChild(tc.screen, "radioReferenceNotice").text.indexOf("did not accept") >= 0);
+            fakeAccount.settle(0);
+        }
+
+        // Check with a field empty says so where the button is.
+        function test_35_check_with_an_empty_field_says_so() {
+            useFakeAccount();
+            var result = findChild(tc.screen, "radioReferenceAccountResult");
+            findChild(tc.screen, "radioReferenceCheckAccountButton").activate();
+            compare(fakeAccount.accountChecks, 0);
+            tryCompare(result, "visible", true);
+            compare(result.text, "Fill in every field above first.");
+            var password = findChild(tc.screen, "radioReferencePasswordField");
+            typeInto(password, "session-secret");
+            password.input.focus = false;
+            compare(result.text, "Checking your RadioReference account…");
+            fakeAccount.settle(0);
+        }
+
+        // A visit is one password-manager session: begin on show, the two
+        // fields tracked (never the application key), the username noted, end
+        // on hide; a new visit is a new token.
+        function test_40_each_visit_takes_its_own_token() {
+            var username = findChild(tc.screen, "radioReferenceUsernameField");
+            var password = findChild(tc.screen, "radioReferencePasswordField");
+            tc.screen.visible = false;
+            tc.screen.visible = true;
+            var first = signInAutofill.liveToken();
+            verify(first > 0, "the shown form holds no token");
+            signInAutofill.clear();
+            tc.screen.visible = false;
+            compare(callsOf("end").length, 1);
+            compare(callsOf("end")[0].token, first);
+            compare(signInAutofill.liveToken(), 0);
+            signInAutofill.clear();
+            testContext.setPrefs("rrUsername", "test-listener");
+            tc.screen.visible = true;
+            var begins = callsOf("begin");
+            compare(begins.length, 1);
+            var token = begins[0].token;
+            verify(token > first, "a new visit reused the token");
+            var tracks = callsOf("track").filter(function (call) { return call.token === token; });
+            var fields = tracks.map(function (call) { return call.field; });
+            verify(fields.indexOf(1) >= 0 && fields.indexOf(2) >= 0, JSON.stringify(fields));
+            for (var call of tracks) {
+                verify(call.field === 1 || call.field === 2, "a field other than username and password was tracked");
+                verify(call.input === (call.field === 1 ? username.input : password.input), "field " + call.field + " tracked the wrong input");
+                verify(call.visible, "the shown card's fields were tracked hidden");
+            }
+            var notes = callsOf("note");
+            compare(notes.length, 1);
+            compare(notes[0].token, token);
+            compare(notes[0].field, 1);
+            compare(notes[0].text, "test-listener");
+            // The card hiding (filled credentials) keeps the session and marks the fields hidden.
+            signInAutofill.clear();
+            var checks = testContext.radioReferenceAccountChecks();
+            testContext.setRadioReference("credentialsReady", true);
+            tryCompare(findChild(tc.screen, "radioReferenceCredentials"), "visible", false);
+            tryVerify(function () { return callsOf("track").length >= 2; }, 2000, "the hidden card's fields were not reported");
+            compare(callsOf("end").length, 0, "the card hiding ended the session");
+            var hidden = callsOf("track");
+            compare(hidden.length, 2);
+            for (var call of hidden) {
+                compare(call.token, token);
+                verify(!call.visible, "a hidden card's field was tracked visible");
+            }
+            compare(testContext.radioReferenceAccountChecks(), checks, "the credentials turning ready checked by themselves");
+        }
+
+        // Within one commit or fill the card hides and shows again (the
+        // credentials turn ready a moment before the check starts). That
+        // flicker never reaches the password manager, which could end its
+        // session once every field is gone, and never masks a revealed
+        // password; the fields go only once RadioReference has answered.
+        function test_43_the_fields_stay_shown_until_the_verdict_data() {
+            return [{tag: "typed password"}, {tag: "fill"}];
+        }
+        function test_43_the_fields_stay_shown_until_the_verdict(data) {
+            useFakeAccount();
+            var credentials = findChild(tc.screen, "radioReferenceCredentials");
+            var password = findChild(tc.screen, "radioReferencePasswordField");
+            var reveal = findChild(tc.screen, "radioReferencePasswordReveal");
+            var token = signInAutofill.liveToken();
+            verify(token > 0);
+            signInAutofill.clear();
+            if (data.tag === "typed password") {
+                typeInto(password, "session-secret");
+                reveal.activate();
+                compare(password.input.echoMode, TextInput.Normal);
+                keyClick(Qt.Key_Return);
+                verify(!password.input.activeFocus, "Enter did not finish the field");
+            } else {
+                // What the relay does: the password first, then the signal.
+                fakeAccount.setPassword("filled-secret");
+                signInAutofill.fill(token, false, true);
+            }
+            compare(fakeAccount.accountChecks, 1);
+            wait(50);
+            var hidden = callsOf("track").filter(function (call) { return !call.visible; });
+            compare(hidden.length, 0, "the fields were reported hidden before the verdict: "
+                    + callsOf("track").map(function (call) { return call.field + ":" + call.visible; }).join(" "));
+            verify(credentials.visible);
+            if (data.tag === "typed password")
+                compare(password.input.echoMode, TextInput.Normal, "the commit masked a revealed password");
+            fakeAccount.settle(2);
+            tryCompare(credentials, "visible", false);
+            tryVerify(function () {
+                return callsOf("track").filter(function (call) { return !call.visible && call.token === token; }).length === 2;
+            }, 2000, "the fields were not reported hidden after the verdict");
+            compare(password.input.echoMode, TextInput.Password);
+        }
+
+        // After the verdict the hidden card drops its draft: Change shows an
+        // empty field that says a password is held, as Settings does.
+        function test_44_change_after_a_verdict_shows_the_session_placeholder() {
+            useFakeAccount();
+            var credentials = findChild(tc.screen, "radioReferenceCredentials");
+            var password = findChild(tc.screen, "radioReferencePasswordField");
+            typeInto(password, "session-secret");
+            password.input.focus = false;
+            fakeAccount.settle(2);
+            tryCompare(credentials, "visible", false);
+            tryCompare(password, "text", "");
+            findChild(tc.screen, "radioReferenceChangeAccount").activate();
+            tryCompare(credentials, "visible", true);
+            compare(password.text, "");
+            compare(password.placeholderText, "Entered for this session");
+            compare(fakeAccount.sessionPassword, "session-secret");
+        }
+
+        // A fill from the password manager: the relay applied the values
+        // (username through prefs, password in the model); the form commits
+        // the field the fill left alone and checks the pair once.
+        function test_41_a_fill_applies_and_checks_once_data() {
+            return [{tag: "both", username: true, password: true},
+                    {tag: "username only, password typed", username: true, password: false},
+                    {tag: "password only, username typed", username: false, password: true},
+                    // Regression: the stored username, picked while the field
+                    // held another, uncommitted draft. prefs did not change, so
+                    // the field kept the draft, which then overwrote the fill.
+                    {tag: "the stored username over a typed draft", username: true, password: false, stored: true},
+                    // ...and over a word still composing, which must not land after the fill.
+                    {tag: "the stored username over a composing word", username: true, password: false, stored: true, composing: true},
+                    // Regression: a password-only fill while the typed username
+                    // still has a word composing checks the whole username.
+                    {tag: "password only, username still composing", username: false, password: true, composing: true}];
+        }
+        function test_41_a_fill_applies_and_checks_once(data) {
+            useFakeAccount();
+            testContext.useLifecycleHost(true);
+            var oldUsername = prefs.rrUsername;
+            prefs.rrUsername = data.stored ? "filled-user" : "";
+            var username = findChild(tc.screen, "radioReferenceUsernameField");
+            var password = findChild(tc.screen, "radioReferencePasswordField");
+            var typedUser = data.composing && !data.username ? "typed-user-end" : "typed-user";
+            if (!data.username) {
+                typeInto(username, "typed-user");
+                if (data.composing)
+                    verify(testContext.composeText("-end"), "the username field took no composing word");
+            }
+            if (data.stored) {
+                // Typed but not committed: the username field keeps the focus.
+                password.text = "typed-secret";
+                typeInto(username, "x");
+                if (data.composing)
+                    verify(testContext.composeText("y"), "the username field took no composing word");
+            } else if (!data.password) {
+                password.text = "typed-secret";
+                password.input.forceActiveFocus();
+            }
+            var token = signInAutofill.liveToken();
+            verify(token > 0);
+            // What the relay does before it says so.
+            if (data.username)
+                prefs.rrUsername = "filled-user";
+            if (data.password)
+                fakeAccount.setPassword("filled-secret");
+            var commits = fakeAccount.passwordCommits;
+            signInAutofill.fill(token, data.username, data.password);
+            compare(fakeAccount.accountChecks, 1, "a fill checks the account once");
+            compare(prefs.rrUsername, data.username ? "filled-user" : typedUser);
+            compare(username.text, prefs.rrUsername);
+            compare(username.input.preeditText, "", "a composing word outlived the fill");
+            compare(fakeAccount.sessionPassword, data.password ? "filled-secret" : "typed-secret");
+            if (data.password) {
+                compare(password.text, "", "a filled password reached the field");
+                compare(password.placeholderText, "Entered for this session");
+                compare(fakeAccount.passwordCommits, commits, "the form committed a filled password again");
+            }
+            // Leaving the field afterwards asks nothing more.
+            password.input.forceActiveFocus();
+            password.input.focus = false;
+            username.input.forceActiveFocus();
+            username.input.focus = false;
+            compare(fakeAccount.accountChecks, 1, "the fill's fields checked again");
+            compare(prefs.rrUsername, data.username ? "filled-user" : typedUser, "leaving the field changed the username");
+            compare(username.text, prefs.rrUsername);
+            // The binding still follows prefs.
+            prefs.rrUsername = "later-user";
+            compare(username.text, "later-user", "the username field stopped following prefs");
+            prefs.rrUsername = oldUsername;
+        }
+
+        // A fill for a token this form no longer holds is not for it.
+        function test_42_a_stale_fill_is_ignored() {
+            useFakeAccount();
+            var password = findChild(tc.screen, "radioReferencePasswordField");
+            var stale = signInAutofill.liveToken();
+            tc.screen.visible = false;
+            tc.screen.visible = true;
+            verify(signInAutofill.liveToken() > stale);
+            password.text = "typed-secret";
+            fakeAccount.setPassword("filled-secret");
+            var commits = fakeAccount.passwordCommits;
+            signInAutofill.fill(stale, true, true);
+            signInAutofill.fill(0, true, true);
+            compare(fakeAccount.accountChecks, 0, "a stale fill checked the account");
+            compare(password.text, "typed-secret", "a stale fill cleared the draft");
+            compare(fakeAccount.passwordCommits, commits);
+            // Settings showing takes a token of its own (the relay retires the
+            // import form's), and its fill reaches that form alone.
+            var importToken = signInAutofill.liveToken();
+            settingsLoader.active = true;
+            var settingsToken = signInAutofill.liveToken();
+            verify(settingsToken > importToken, "the Settings form took no token of its own");
+            signInAutofill.fill(settingsToken, false, true);
+            compare(fakeAccount.accountChecks, 1, "the Settings form did not take its own fill, or both forms did");
+            compare(password.text, "typed-secret", "the import form took the Settings form's fill");
+            compare(findChild(settingsLoader.item, "radioReferencePasswordField").text, "");
+            settingsLoader.active = false;
+            password.text = "";
+            // The import form takes the token back as a fresh visit would.
+            tc.screen.visible = false;
+            tc.screen.visible = true;
         }
     }
 

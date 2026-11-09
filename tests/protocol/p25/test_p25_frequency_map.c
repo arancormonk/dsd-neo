@@ -7,6 +7,7 @@
  * P25 channel→frequency mapping tests (FDMA/TDMA + overrides).
  */
 
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
@@ -401,6 +402,8 @@ main(void) {
 
     // NXDN channel mapping uses the same module and should cover DFA/cache/no-map paths.
     {
+        enum { NXDN_TEST_SITE = (2 << 12) | 0x21 };
+
         static dsd_state ns;
         static dsd_opts opts;
         DSD_MEMSET(&ns, 0, sizeof(ns));
@@ -415,33 +418,30 @@ main(void) {
         rc |= expect_eq_long("nxdn no rcn verbose", nxdn_channel_to_frequency(&opts, &ns, 10U), 0);
         rc |= expect_eq_long("nxdn no rcn quiet", nxdn_channel_to_frequency_quiet(&ns, 10U), 0);
 
+        /* DFA notation without parameters a SITE_INFO set: nothing is resolved by arithmetic. */
         ns.nxdn_rcn = 1;
         ns.nxdn_base_freq = 1;
         ns.nxdn_step = 2;
+        rc |= expect_eq_long("nxdn dfa untrusted verbose", nxdn_channel_to_frequency(&opts, &ns, 10U), 0);
+        rc |= expect_eq_long("nxdn dfa untrusted quiet", nxdn_channel_to_frequency_quiet(&ns, 10U), 0);
+
+        dsd_nxdn_ca_apply(&ns, NXDN_TEST_SITE, 1U, 1U, 2U);
         rc |= expect_eq_long("nxdn dfa base1 step2 verbose", nxdn_channel_to_frequency(&opts, &ns, 10U), 100012500L);
 
         DSD_MEMSET(&ns, 0, sizeof(ns));
-        ns.nxdn_rcn = 1;
-        ns.nxdn_base_freq = 2;
-        ns.nxdn_step = 3;
+        dsd_nxdn_ca_apply(&ns, NXDN_TEST_SITE, 1U, 2U, 3U);
         rc |= expect_eq_long("nxdn dfa base2 step3 quiet", nxdn_channel_to_frequency_quiet(&ns, 10U), 330031250L);
 
         DSD_MEMSET(&ns, 0, sizeof(ns));
-        ns.nxdn_rcn = 1;
-        ns.nxdn_base_freq = 3;
-        ns.nxdn_step = 2;
+        dsd_nxdn_ca_apply(&ns, NXDN_TEST_SITE, 1U, 3U, 2U);
         rc |= expect_eq_long("nxdn dfa base3 quiet", nxdn_channel_to_frequency_quiet(&ns, 10U), 400012500L);
 
         DSD_MEMSET(&ns, 0, sizeof(ns));
-        ns.nxdn_rcn = 1;
-        ns.nxdn_base_freq = 4;
-        ns.nxdn_step = 3;
+        dsd_nxdn_ca_apply(&ns, NXDN_TEST_SITE, 1U, 4U, 3U);
         rc |= expect_eq_long("nxdn dfa base4 quiet", nxdn_channel_to_frequency_quiet(&ns, 10U), 750031250L);
 
         DSD_MEMSET(&ns, 0, sizeof(ns));
-        ns.nxdn_rcn = 1;
-        ns.nxdn_base_freq = 99;
-        ns.nxdn_step = 99;
+        dsd_nxdn_ca_apply(&ns, NXDN_TEST_SITE, 1U, 99U, 99U);
         rc |= expect_eq_long("nxdn dfa unknown verbose", nxdn_channel_to_frequency(&opts, &ns, 10U), 0);
         rc |= expect_eq_long("nxdn dfa unknown quiet", nxdn_channel_to_frequency_quiet(&ns, 10U), 0);
 
@@ -451,9 +451,7 @@ main(void) {
          * channel number. Under ASan the unguarded read aborts; without it, the adjacent
          * trunk_chan_map_used[] bytes would be returned as a bogus mapped frequency. */
         DSD_MEMSET(&ns, 0, sizeof(ns));
-        ns.nxdn_rcn = 1;
-        ns.nxdn_base_freq = 1;
-        ns.nxdn_step = 2;
+        dsd_nxdn_ca_apply(&ns, NXDN_TEST_SITE, 1U, 1U, 2U);
         rc |= expect_eq_long("nxdn out-of-range channel falls through to dfa verbose",
                              nxdn_channel_to_frequency(&opts, &ns, (uint16_t)DSD_TRUNK_CHAN_MAP_SIZE),
                              100000000L + (long int)DSD_TRUNK_CHAN_MAP_SIZE * 1250L);

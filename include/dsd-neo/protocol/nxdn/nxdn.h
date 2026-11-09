@@ -52,6 +52,9 @@ typedef enum {
     NXDN_FRAME_CHANNEL_CONTROL = 1, /**< A Type-C control channel (RCCH, its CAC). */
     NXDN_FRAME_CHANNEL_TRAFFIC = 2, /**< A Type-C or conventional traffic or data channel (RTCH, RDCH), or DCR. */
     NXDN_FRAME_CHANNEL_TYPE_D = 3,  /**< A Type-D (IDAS) traffic channel (RTCH2). */
+    /** A Type-C composite control channel (RTCH_C, TS 1-A §5.2.1): a control channel carrying a call, laid out as a
+     * traffic channel, its broadcasts on FACCH1/FACCH2 (TS 1-C §16.3.2.1). */
+    NXDN_FRAME_CHANNEL_COMPOSITE = 4,
 } nxdn_frame_channel;
 
 /**
@@ -72,6 +75,23 @@ int nxdn_held_call_on_followed_route(const dsd_opts* opts, const dsd_state* stat
  * tick guard needed): whether the held call outlives the end is decided by its next read.
  */
 void nxdn_held_call_note_call_end(const dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief Whether the receiver is on a Type-D (IDAS) channel: the frame being decoded is an RTCH2's
+ * (dsd_state::nxdn_frame_channel), or the route it followed (dsd_state::nxdn_follow) is a Type-D repeater's and the
+ * receiver is still tuned there.
+ */
+int nxdn_receiver_on_type_d(const dsd_opts* opts, const dsd_state* state);
+
+/**
+ * @brief The source a group call's admission is judged with, as NXDN's grant and held-call paths judge it
+ * (dsd_tg_policy_evaluate_group_source_fallback()): @p source for a Type-C call, whose target with no row is judged by
+ * its source's row; 0 for a Type-D (IDAS) call, judged by its target alone, which is one the held call
+ * (dsd_state::nxdn_call) names as Type-D (bound to @p transmission, dsd_call_snapshot_transmission()) or one heard while
+ * the receiver is on a Type-D channel (nxdn_receiver_on_type_d()). 0 also for a source that is no 32-bit ID.
+ */
+uint32_t nxdn_held_call_policy_source(const dsd_opts* opts, const dsd_state* state, uint64_t transmission,
+                                      uint64_t source);
 
 /* Cipher-classification hysteresis for the NXDN cipher field (values 0..3).
  * Backed by dsd_state.nxdn_cipher_class*; see src/protocol/nxdn/nxdn_enc_class.c. */
