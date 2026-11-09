@@ -6962,10 +6962,10 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   threshold neighbors, non-finite inputs, DC and mixed-exponent blocks.
 - CS16 input levels (`runtime/input_level.c`, `dsd_input_level_metrics_from_cs16()`): samples are read against the
   full scale the caller passes (finite, in [1, `DSD_INPUT_LEVEL_CS16_MAX_FULL_SCALE`] = 32768; the live SoapySDR
-  reader's `soapy_cs16_full_scale`, 32768 for a cs16 replay). A sample clips at or past 0.99 of it, a clip policy separate from the scale (fullScale alone does
-  not give the converter step): at 32768 +32752 (12-bit left aligned, step 16: SoapyAirspy, LMS7) and -32760 count,
-  at 2048 |s| >= 2028. The first clipping code is computed once per call, and the per-sample test is one unsigned
-  compare against the clear range.
+  reader's `soapy_cs16_full_scale`, 32768 for a cs16 replay). A sample clips at or past 0.99 of it, a clip policy
+  separate from the scale (fullScale alone does not give the converter step): at 32768 +32752 (12-bit left aligned,
+  step 16: SoapyAirspy, LMS7) and -32760 count, at 2048 |s| >= 2028. The first clipping code is computed once per
+  call, and the per-sample test is one unsigned compare against the clear range.
 - Automatic PPM (`radio/rtl_sdr_fm.cpp`, `radio/rtl_auto_ppm.cpp`): each live read synchronizes the applied PPM and
   frequency. While disabled, the controller only clears training and publishes its status; the reader skips the
   unused clock, signal estimates, configuration and request-lock snapshots. Enabled updates gather the full inputs.
@@ -7229,8 +7229,8 @@ Key public headers:
     The upper bound is the meter's `DSD_INPUT_LEVEL_CS16_MAX_FULL_SCALE` (`core/input_level.h`), which a
     `static_assert` in `soapy_profile.cpp` ties to `kSoapyCs16DefaultFullScale`. The capability log line shows
     `native=<format> [full-scale=N]`, the bracket only when the driver reported one. Tests: `IO_SOAPY_PROFILE` (the
-    helper's table), `IO_SOAPY_CS16_COPY` (`rtl_device_test_soapy_cs16_ingest()`: the submit path at each full scale, with and
-    without the rotation, and the meter it publishes, read by `rtl_stream_test_input_level_read()`),
+    helper's table), `IO_SOAPY_CS16_COPY` (`rtl_device_test_soapy_cs16_ingest()`: the submit path at each full scale,
+    with and without the rotation, and the meter it publishes, read by `rtl_stream_test_input_level_read()`),
     `IO_SOAPY_CS16_FULL_SCALE` (a real capture as 12-bit codes through the reader against the stand-in driver, whose
     `full_scale` field reports a native CS16 full scale, as CS16 at 2048 and as CF32: the ring bit for bit and the
     meter's level the same).
@@ -13023,8 +13023,9 @@ Qt Quick frontend (`src/ui/qt`):
     old setup does not own holds its place, the apply fails before any change ("A folder left by an earlier import is in
     the way of a restored channel map…"). A crash re-runs to the same end state, and an I/O failure rolls back byte for
     byte (pruned empty directories excepted). Outcomes are `Applied`, `Failed` (nothing changed), `Deferred` (engine
-    busy, storage short, or settings on their scratch copy, `settings_recovery_scratch()`; kept) and `Stuck` (neither
-    finishing nor undoing worked; kept); `backup-restore-result.json` records the applied, failed and stuck ones.
+    busy, storage short, or AppPrefs' settings on their scratch copy,
+    `settings_recovery_scratch(settings_recovery_prefs_file_name())`; kept) and `Stuck` (neither finishing nor undoing
+    worked; kept); `backup-restore-result.json` records the applied, failed and stuck ones.
     A commit marker that cannot be removed is Stuck without a rollback, on purpose: a rollback ends by removing that
     same marker, so it could not complete either; the next start repeats the idempotent roll forward and removes the
     marker then. A journal whose `prefs.json` does not match the hash its
