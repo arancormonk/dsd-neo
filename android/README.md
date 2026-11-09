@@ -525,6 +525,18 @@ Limits:
   makes one; only something with access to its private storage (root, or `adb` on a debuggable build) can, and
   clearing DSD-neo's storage removes it.
 
+## Password managers
+
+The RadioReference sign-in forms (the import screen and Settings → Account) are offered to the phone's autofill
+service, as a username and a password field; what that looks like and its limits are in [RadioReference
+import](../docs/radioreference-import.md) "Password managers (Android)". Qt draws its own text fields and describes
+none of them to Android, so `SignInAutofill.kt` puts a host view of its own behind Qt's layout and describes the two
+fields as its virtual children, with `SignInAutofillState.kt` deciding what the Autofill Framework is told;
+`QtCursorHandle.kt` takes Qt's text cursor handle off the screen before each request, since some services refuse a
+request whose structure has that second window. The C++ side is `DecoderHostAndroid`'s `signInAutofill*` overrides,
+and a fill comes back through `DsdNative.nativeSignInFilled`. No value is logged on the way; `docs/code_map.md`
+"Sign-in autofill" has the contract.
+
 ## Build
 
 Prerequisites:

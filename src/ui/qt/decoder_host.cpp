@@ -22,6 +22,7 @@
 #include <QUrl>
 
 #include "json_store.h"
+#include "qstring_scrub.h"
 
 #include <Qt>
 #include <QtGlobal>
@@ -442,6 +443,23 @@ void
 DecoderHost::setRecordingHold(std::function<int(const QString&)> hold, std::function<void(int)> release) {
     m_recordingHold = std::move(hold);
     m_recordingRelease = std::move(release);
+}
+
+void
+DecoderHost::setSignInFillSink(SignInFillSink sink) {
+    m_signInFill = std::move(sink);
+}
+
+void
+DecoderHost::deliverSignInFill(int token, bool hasUsername, QString& username, bool hasPassword,
+                               QString& password) const {
+    /* A copy: a sink that replaces or clears itself mid-call must not destroy the function running. */
+    const SignInFillSink sink = m_signInFill;
+    if (sink) {
+        sink(token, hasUsername, username, hasPassword, password);
+    }
+    scrub_qstring(username);
+    scrub_qstring(password);
 }
 
 int

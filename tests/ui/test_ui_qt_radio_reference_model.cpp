@@ -20,6 +20,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QEvent>
 #include <QEventLoop>
 #include <QFile>
 #include <QGuiApplication>
@@ -147,6 +148,9 @@ class TestHost : public dsd_qt::DecoderHost {
 struct Fake {
     int calls = 0;
     bool serveFault = false;
+    /* Anything but DSD_RR_OK fails the transfer itself with this status, the
+     * way a dropped connection does, before any payload is served. */
+    dsd_rr_status failWith = DSD_RR_OK;
     QByteArray lastRequest;
     /* Rewrites the served payload, so a case can make the database change under
      * a refresh. Empty `from` leaves every fixture byte-exact. */
@@ -267,6 +271,11 @@ fake_perform(void* ctx, const dsd_rr_request* req, dsd_rr_response* resp) {
     DSD_MEMSET(resp, 0, sizeof(*resp));
     fake->calls++;
     fake->lastRequest = QByteArray(req->body, static_cast<int>(req->body_len));
+    if (fake->failWith != DSD_RR_OK) {
+        resp->status = fake->failWith;
+        (void)DSD_SNPRINTF(resp->error, sizeof(resp->error), "%s", "connection refused");
+        return -1;
+    }
 
     const QString method = method_of(fake->lastRequest);
     QByteArray payload = read_fixture(fake->serveFault ? QStringLiteral("fault_auth.xml")
@@ -339,6 +348,52 @@ struct Harness {
         model.setTransportForTests(&transport);
     }
 };
+
+/**
+ * @brief Counts the completions the client's worker queues to the model.
+ *
+ * Every submitted request ends in exactly one queued call - a cancelled one
+ * included - so this is how a case waits for a reply the model has already
+ * stopped waiting for: busy() says nothing once a batch is retired, and the
+ * point of those cases is what such a late reply does when it lands.
+ */
+class ReplyCounter : public QObject {
+  public:
+    explicit ReplyCounter(QObject* model) : m_model(model) { m_model->installEventFilter(this); }
+
+    ~ReplyCounter() override { m_model->removeEventFilter(this); }
+
+    ReplyCounter(const ReplyCounter&) = delete;
+    ReplyCounter& operator=(const ReplyCounter&) = delete;
+
+    int replies = 0;
+
+    bool
+    eventFilter(QObject* watched, QEvent* event) override {
+        if (watched == m_model && event->type() == QEvent::MetaCall) {
+            replies++;
+        }
+        return false;
+    }
+
+  private:
+    QObject* m_model;
+};
+
+/** @brief Run the event loop until @p want replies have been delivered. */
+void
+await_replies(const ReplyCounter& counter, int want, int timeoutMs = 15000) {
+    QElapsedTimer timer;
+    timer.start();
+    while (counter.replies < want && timer.elapsed() < timeoutMs) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    }
+    /* The filter sees the call before it runs; this lets it run. */
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    if (counter.replies < want) {
+        expect("the late reply arrived before the deadline", false);
+    }
+}
 
 /** @brief Whether any warning in a plan contains @p needle. */
 bool
@@ -1408,6 +1463,448 @@ test_nearby() {
     expect("requester recreation preserves allocation", recreated.host.requested > h.host.requested);
 }
 
+/* ------------------------------------------------------------------------- */
+/* Account check                                                              */
+/* ------------------------------------------------------------------------- */
+
+/** @brief What a verified sink saw. */
+struct SinkLog {
+    int calls = 0;
+    int stateAtCall = -1;
+    QString username;
+    QString password;
+};
+
+void
+install_sink(Harness& h, SinkLog* log) {
+    dsd_qt::RadioReferenceModel* model = &h.model;
+    h.model.setVerifiedSink([log, model](const QString& username, const QString& password) {
+        log->calls++;
+        log->stateAtCall = model->accountState();
+        /* Deep copies: the model scrubs its own once this returns. */
+        log->username = QString(username.constData(), username.size());
+        log->password = QString(password.constData(), password.size());
+    });
+}
+
+/** @brief One way to change a credential while a check is in flight. */
+struct CredentialEdit {
+    const char* name;
+    void (*apply)(Harness& h);
+};
+
+/** @brief "<edit>: <what>", for an assertion repeated once per edit. */
+QByteArray
+edit_label(const CredentialEdit& edit, const char* what) {
+    return QByteArray(edit.name) + ": " + what;
+}
+
+/** @brief Every kind of credential edit, built per call: no static initializer that could throw. */
+QList<CredentialEdit>
+credential_edits() {
+    return {
+        {"username", [](Harness& h) { h.prefs.setRrUsername(QStringLiteral("someone_else")); }},
+        {"password", [](Harness& h) { h.model.setPassword(QStringLiteral("another_password")); }},
+        {"password cleared", [](Harness& h) { h.model.clearPassword(); }},
+        {"application key", [](Harness& h) { h.prefs.setRrAppKey(QStringLiteral("another_key")); }},
+    };
+}
+
+/* B6: a check answers for the credentials it was sent with. Once they change, its
+ * verdict describes nothing on screen, and "Account verified." over credentials
+ * nobody checked is exactly what a password manager would then offer to save. */
+void
+test_edit_retires_the_check_in_flight(void) {
+    for (const CredentialEdit& edit : credential_edits()) {
+        Harness h;
+        const ReplyCounter counter(&h.model);
+        int credentialSignals = 0;
+        QObject::connect(&h.model, &dsd_qt::RadioReferenceModel::credentialsChanged, &h.model,
+                         [&credentialSignals]() { credentialSignals++; });
+
+        h.model.checkAccount();
+        edit.apply(h);
+        expect(edit_label(edit, "the edit retires the check at once").constData(), !h.model.busy());
+        expect_int(edit_label(edit, "credentialsChanged fires once").constData(), credentialSignals, 1);
+        await_replies(counter, 1);
+        expect_str(edit_label(edit, "the late success is not shown").constData(), h.model.statusText(), QString());
+        expect_int(edit_label(edit, "and leaves no error").constData(), h.model.errorKind(),
+                   dsd_qt::RadioReferenceModel::NoError);
+        expect_int(edit_label(edit, "or any verdict").constData(), h.model.accountState(),
+                   dsd_qt::RadioReferenceModel::AccountNone);
+    }
+}
+
+/* B6: a refusal of the old credentials must not mark the new ones as refused -
+ * errorIsAuth is what reopens the sign-in card. */
+void
+test_edit_drops_a_late_auth_failure(void) {
+    for (const CredentialEdit& edit : credential_edits()) {
+        Harness h;
+        const ReplyCounter counter(&h.model);
+        h.fake.serveFault = true;
+
+        h.model.checkAccount();
+        edit.apply(h);
+        await_replies(counter, 1);
+        expect(edit_label(edit, "a late refusal never sets errorIsAuth").constData(), !h.model.errorIsAuth());
+        expect_int(edit_label(edit, "or any error").constData(), h.model.errorKind(),
+                   dsd_qt::RadioReferenceModel::NoError);
+    }
+}
+
+/* Plan 2.1: the same for any other fetch. An edit leaves a list fetch running, and
+ * one that leaves the credentials incomplete starts no check to retire it, so its
+ * refusal of the old credentials still lands - and must not blame the new ones. */
+void
+test_edit_drops_a_late_auth_failure_of_any_fetch(void) {
+    for (const CredentialEdit& edit : credential_edits()) {
+        Harness h;
+        const ReplyCounter counter(&h.model);
+        h.fake.serveFault = true;
+
+        h.model.loadCountries();
+        edit.apply(h);
+        await_replies(counter, 1);
+        expect(edit_label(edit, "a late list refusal never sets errorIsAuth").constData(), !h.model.errorIsAuth());
+        expect_int(edit_label(edit, "or any error").constData(), h.model.errorKind(),
+                   dsd_qt::RadioReferenceModel::NoError);
+        expect(edit_label(edit, "and the batch settles").constData(), !h.model.busy());
+        expect_int(edit_label(edit, "or gives a verdict").constData(), h.model.accountState(),
+                   dsd_qt::RadioReferenceModel::AccountNone);
+    }
+}
+
+/* A refusal by any fetch is a verdict on the current credentials: after "Account
+ * verified.", a search RadioReference refuses (the password changed on the
+ * website) must not leave the form saying verified next to a notice saying the
+ * password was not accepted. Other failures say nothing about the account. */
+void
+test_any_refusal_updates_the_verdict(void) {
+    using M = dsd_qt::RadioReferenceModel;
+    {
+        Harness h;
+        SinkLog log;
+        install_sink(h, &log);
+        h.model.checkAccount();
+        pump(h.model);
+        expect_int("the check verifies", h.model.accountState(), M::AccountVerified);
+        h.fake.serveFault = true;
+        h.model.loadCountries();
+        pump(h.model);
+        expect_int("a refused browse makes it Rejected", h.model.accountState(), M::AccountRejected);
+        expect("with errorIsAuth as before", h.model.errorIsAuth());
+        expect_int("and calls no sink", log.calls, 1);
+    }
+    {
+        Harness h;
+        h.model.checkAccount();
+        pump(h.model);
+        h.fake.failWith = DSD_RR_ERR_NETWORK;
+        h.model.loadCountries();
+        pump(h.model);
+        expect_int("a network failure keeps Verified", h.model.accountState(), M::AccountVerified);
+        h.fake.failWith = DSD_RR_ERR_HTTP;
+        h.model.loadCountries();
+        pump(h.model);
+        expect_int("and so does a server failure", h.model.accountState(), M::AccountVerified);
+    }
+    {
+        Harness h;
+        h.fake.serveFault = true;
+        h.model.loadCountries();
+        pump(h.model);
+        expect_int("a refused browse with no check yet is Rejected too", h.model.accountState(), M::AccountRejected);
+        h.fake.serveFault = false;
+        h.model.checkAccount();
+        pump(h.model);
+        expect_int("and a check then verifies", h.model.accountState(), M::AccountVerified);
+    }
+}
+
+/* B7: every field's editingFinished and the Check button all ask, so the same
+ * check is requested several times in a row. The second must not cancel the
+ * first and start the wait over. */
+void
+test_check_is_deduplicated_while_in_flight(void) {
+    Harness h;
+    const ReplyCounter counter(&h.model);
+
+    h.model.checkAccount();
+    h.model.checkAccount();
+    pump(h.model);
+    expect_int("a repeated check sends one request", h.fake.calls, 1);
+    expect_int("a repeated check gets one reply", counter.replies, 1);
+    expect_str("the one check verifies", h.model.statusText(), QStringLiteral("Account verified."));
+
+    /* Finished, so asking again is a real second check. */
+    h.model.checkAccount();
+    pump(h.model);
+    expect_int("a check after a finished one is sent", h.fake.calls, 2);
+    expect_str("and verifies again", h.model.statusText(), QStringLiteral("Account verified."));
+}
+
+void
+test_account_state_follows_the_check(void) {
+    using M = dsd_qt::RadioReferenceModel;
+    Harness h;
+    int stateSignals = 0;
+    QObject::connect(&h.model, &M::accountStateChanged, &h.model, [&stateSignals]() { stateSignals++; });
+
+    expect_int("no verdict before a check", h.model.accountState(), M::AccountNone);
+    expect("not checking before a check", !h.model.checkingAccount());
+
+    h.model.checkAccount();
+    expect_int("a started check is Checking", h.model.accountState(), M::AccountChecking);
+    expect("checkingAccount follows", h.model.checkingAccount());
+    pump(h.model);
+    expect_int("a success is Verified", h.model.accountState(), M::AccountVerified);
+    expect("checkingAccount clears", !h.model.checkingAccount());
+    expect_str("Verified carries no message", h.model.accountMessage(), QString());
+    expect_int("one signal per transition", stateSignals, 2);
+
+    /* A verdict is about the credentials it checked; other actions keep it. */
+    h.model.loadCountries();
+    pump(h.model);
+    expect_int("a browse keeps the verdict", h.model.accountState(), M::AccountVerified);
+
+    h.prefs.setRrUsername(QStringLiteral("someone_else"));
+    expect_int("an edit retires the verdict", h.model.accountState(), M::AccountNone);
+}
+
+void
+test_account_state_for_each_failure(void) {
+    using M = dsd_qt::RadioReferenceModel;
+    {
+        Harness h;
+        h.fake.serveFault = true;
+        h.model.checkAccount();
+        pump(h.model);
+        expect_int("an auth fault is Rejected", h.model.accountState(), M::AccountRejected);
+        expect_str("Rejected carries no message", h.model.accountMessage(), QString());
+        expect("errorIsAuth as before", h.model.errorIsAuth());
+    }
+    {
+        Harness h;
+        /* RadioReference answers a lapsed subscription with a past date, not a fault. */
+        h.fake.replaceFrom = QByteArrayLiteral("11-24-2026");
+        h.fake.replaceTo = QByteArrayLiteral("01-01-2000");
+        SinkLog log;
+        install_sink(h, &log);
+        h.model.checkAccount();
+        pump(h.model);
+        expect_int("a lapsed subscription is Expired", h.model.accountState(), M::AccountExpired);
+        expect_str("Expired carries no message", h.model.accountMessage(), QString());
+        expect("errorIsSubscription as before", h.model.errorIsSubscription());
+        expect_int("an Expired check reaches no sink", log.calls, 0);
+    }
+    {
+        Harness h;
+        h.fake.failWith = DSD_RR_ERR_NETWORK;
+        SinkLog log;
+        install_sink(h, &log);
+        h.model.checkAccount();
+        pump(h.model);
+        expect_int("a network failure is Failed", h.model.accountState(), M::AccountFailed);
+        expect_int("a failed check reaches no sink", log.calls, 0);
+        expect_int("errorKind as before", h.model.errorKind(), M::NetworkError);
+        expect("Failed says why", !h.model.accountMessage().isEmpty());
+        expect_str("in the error's own words", h.model.accountMessage(), h.model.errorText());
+    }
+    {
+        Harness h;
+        h.model.clearPassword();
+        h.model.checkAccount();
+        expect_int("a check that cannot start is Failed", h.model.accountState(), M::AccountFailed);
+        expect_str("with the reason", h.model.accountMessage(), h.model.errorText());
+        expect("and nothing in flight", !h.model.busy());
+    }
+}
+
+void
+test_account_state_when_the_check_is_retired(void) {
+    using M = dsd_qt::RadioReferenceModel;
+    {
+        Harness h;
+        const ReplyCounter counter(&h.model);
+        h.model.checkAccount();
+        h.model.cancel();
+        expect_int("a cancelled check has no verdict", h.model.accountState(), M::AccountNone);
+        expect_str("cancel still says so", h.model.statusText(), QStringLiteral("Cancelled."));
+        await_replies(counter, 1);
+        expect_int("and its late reply gives none", h.model.accountState(), M::AccountNone);
+    }
+    {
+        Harness h;
+        h.model.checkAccount();
+        h.model.loadCountries();
+        expect_int("another action retires the check", h.model.accountState(), M::AccountNone);
+        pump(h.model);
+        expect_int("its reply gives no verdict", h.model.accountState(), M::AccountNone);
+        expect_int("the other action completes", h.model.countries().size(), 236);
+    }
+    {
+        Harness h;
+        const ReplyCounter counter(&h.model);
+        h.model.checkAccount();
+        h.model.setPassword(QStringLiteral("another_password"));
+        expect_int("an edit retires the check", h.model.accountState(), M::AccountNone);
+        await_replies(counter, 1);
+        expect_int("its late reply gives no verdict", h.model.accountState(), M::AccountNone);
+    }
+}
+
+/* A finished verdict is about the credentials, and only an edit changes them:
+ * cancelling some other work, or leaving a system mid-load, must not blank the
+ * account line Settings shows. */
+void
+test_finished_verdict_survives_other_work(void) {
+    using M = dsd_qt::RadioReferenceModel;
+    {
+        Harness h;
+        h.model.checkAccount();
+        pump(h.model);
+        h.model.loadCountries();
+        h.model.cancel();
+        expect_int("Verified survives cancel()", h.model.accountState(), M::AccountVerified);
+        h.model.loadSystem(6673);
+        h.model.closeSystem();
+        expect_int("Verified survives closeSystem() mid-load", h.model.accountState(), M::AccountVerified);
+        h.model.cancel();
+        expect_int("and a cancel with nothing in flight", h.model.accountState(), M::AccountVerified);
+    }
+    {
+        Harness h;
+        h.fake.serveFault = true;
+        h.model.checkAccount();
+        pump(h.model);
+        h.fake.serveFault = false;
+        h.model.loadCountries();
+        pump(h.model);
+        expect_int("Rejected survives a later browse", h.model.accountState(), M::AccountRejected);
+        h.model.loadCountries();
+        h.model.cancel();
+        expect_int("and a cancel", h.model.accountState(), M::AccountRejected);
+    }
+    {
+        Harness h;
+        h.fake.failWith = DSD_RR_ERR_HTTP;
+        h.model.checkAccount();
+        pump(h.model);
+        const QString message = h.model.accountMessage();
+        h.fake.failWith = DSD_RR_OK;
+        h.model.loadSystem(6673);
+        h.model.closeSystem();
+        expect_int("Failed survives closeSystem() mid-load", h.model.accountState(), M::AccountFailed);
+        expect_str("with its message", h.model.accountMessage(), message);
+    }
+}
+
+/* The verdict lands before busy settles, so a handler reacting to busy going
+ * false never finds the check still Checking. */
+void
+test_verdict_is_set_before_busy_settles(void) {
+    using M = dsd_qt::RadioReferenceModel;
+    for (const bool fault : {false, true}) {
+        Harness h;
+        h.fake.serveFault = fault;
+        QList<int> statesAtIdle;
+        QObject::connect(&h.model, &M::busyChanged, &h.model, [&h, &statesAtIdle]() {
+            if (!h.model.busy()) {
+                statesAtIdle.append(h.model.accountState());
+            }
+        });
+        h.model.checkAccount();
+        pump(h.model);
+        expect_int(fault ? "a refusal settles busy once" : "a success settles busy once", statesAtIdle.size(), 1);
+        expect_int(fault ? "Rejected already when busy goes false" : "Verified already when busy goes false",
+                   statesAtIdle.value(0, -1), fault ? M::AccountRejected : M::AccountVerified);
+    }
+}
+
+/* A credential edit retires only the account check: a list fetch says nothing
+ * about the account and must still land. */
+void
+test_edit_leaves_other_fetches_alone(void) {
+    for (const CredentialEdit& edit : credential_edits()) {
+        Harness h;
+        h.model.loadCountries();
+        edit.apply(h);
+        expect(edit_label(edit, "a list fetch survives the edit").constData(), h.model.busy());
+        pump(h.model);
+        expect_int(edit_label(edit, "and lands").constData(), h.model.countries().size(), 236);
+        expect(edit_label(edit, "uncancelled").constData(), h.model.statusText() != QStringLiteral("Cancelled."));
+    }
+}
+
+void
+test_has_password(void) {
+    Harness h;
+    int credentialSignals = 0;
+    QObject::connect(&h.model, &dsd_qt::RadioReferenceModel::credentialsChanged, &h.model,
+                     [&credentialSignals]() { credentialSignals++; });
+
+    expect("a held password is reported", h.model.hasPassword());
+    h.model.setPassword(kPassword);
+    expect_int("setting the same password is no change", credentialSignals, 0);
+    h.model.clearPassword();
+    expect("a cleared one is not", !h.model.hasPassword());
+    expect_int("clearing signals once", credentialSignals, 1);
+    h.model.clearPassword();
+    expect_int("clearing nothing is no change", credentialSignals, 1);
+    h.model.setPassword(QStringLiteral("another_password"));
+    expect("a new one is", h.model.hasPassword());
+    expect_int("setting signals once", credentialSignals, 2);
+}
+
+void
+test_verified_sink_gets_the_checked_credentials(void) {
+    Harness h;
+    SinkLog log;
+    install_sink(h, &log);
+
+    h.model.checkAccount();
+    /* Behind AppPrefs' back, so nothing retires the check: the sink must still
+     * report what was sent, not what the settings hold when the reply lands. */
+    QSettings(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("dsd-neo"), QStringLiteral("dsd-neo-app"))
+        .setValue(QStringLiteral("rr/username"), QStringLiteral("changed_behind_the_check"));
+    expect_str("the settings really changed", h.prefs.rrUsername(), QStringLiteral("changed_behind_the_check"));
+    pump(h.model);
+    expect_int("the sink is called once", log.calls, 1);
+    expect_int("after the state is Verified", log.stateAtCall, dsd_qt::RadioReferenceModel::AccountVerified);
+    expect_str("with the username that was checked", log.username, kUsername);
+    expect_str("and the password that was checked", log.password, kPassword);
+
+    h.model.setVerifiedSink(nullptr);
+    h.model.checkAccount();
+    pump(h.model);
+    expect_int("a cleared sink is not called", log.calls, 1);
+    expect_str("and a check still verifies without one", h.model.statusText(), QStringLiteral("Account verified."));
+}
+
+void
+test_verified_sink_skips_failures_and_stale_checks(void) {
+    {
+        Harness h;
+        SinkLog log;
+        install_sink(h, &log);
+        h.fake.serveFault = true;
+        h.model.checkAccount();
+        pump(h.model);
+        expect_int("a refused check reaches no sink", log.calls, 0);
+    }
+    for (const CredentialEdit& edit : credential_edits()) {
+        Harness h;
+        SinkLog log;
+        install_sink(h, &log);
+        const ReplyCounter counter(&h.model);
+        h.model.checkAccount();
+        edit.apply(h);
+        await_replies(counter, 1);
+        expect_int(edit_label(edit, "a retired check reaches no sink").constData(), log.calls, 0);
+    }
+}
+
 void
 test_destroy_with_requests_in_flight(void) {
     /* The client is destroyed first in ~RadioReferenceModel, which joins the
@@ -1478,6 +1975,20 @@ main(int argc, char** argv) {
     test_site_without_a_marked_control_channel();
     test_error_and_cancel();
     test_results_and_loaded_system_stay_exclusive();
+    test_edit_retires_the_check_in_flight();
+    test_edit_drops_a_late_auth_failure();
+    test_edit_drops_a_late_auth_failure_of_any_fetch();
+    test_any_refusal_updates_the_verdict();
+    test_check_is_deduplicated_while_in_flight();
+    test_account_state_follows_the_check();
+    test_account_state_for_each_failure();
+    test_account_state_when_the_check_is_retired();
+    test_finished_verdict_survives_other_work();
+    test_verdict_is_set_before_busy_settles();
+    test_edit_leaves_other_fetches_alone();
+    test_has_password();
+    test_verified_sink_gets_the_checked_credentials();
+    test_verified_sink_skips_failures_and_stale_checks();
     test_destroy_with_requests_in_flight();
     test_destructor_marks_its_teardown_stage();
 

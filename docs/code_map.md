@@ -12803,14 +12803,15 @@ Qt Quick frontend (`src/ui/qt`):
   the item its `preeditText` as a commit and resets the input method. Callers: `activate()` of `OutlineButton`,
   `GradientButton`, `IconButton`, `DashedActionButton` and `BottomNav` (commit and finish editing: focus leaves the
   text field so `editingFinished` drafts, such as the profile editor's fallback algorithm, update before the action
-  reads them) and of `DecodeChip`, `FilterPill`, `SegmentedControl` segments and `DisclosureRow` (commit only);
-  `ModalSheet.requestDismiss()`; `Navigation.back()` before its focus clear. A button gated on a field's committed
-  text puts that term in `inputValid` (visuals dim on it) rather than `enabled`: its default `enabled` is `inputValid
-  || Navigation.composing`, so it is live while a word is composing, and a tap commits first and calls `clicked()`
-  only if `inputValid` then holds; otherwise it is disabled as before (accessibility and keyboard included), and a
-  real guard (busy, permission) stays in `enabled`. Callers: the profile editor's "Use this key" and "Use override",
-  `KeySheet`'s apply, Scan list "Add frequency", RadioReference Find/Open, the wizard's Continue/Save, Tone filter
-  Apply and Explore's Start.
+  reads them; an `OutlineButton` with `finishesEditing: false` only commits the word, as the RadioReference
+  password's Show and "Check account" do) and of `DecodeChip`, `FilterPill`, `SegmentedControl` segments and
+  `DisclosureRow` (commit only); `ModalSheet.requestDismiss()`; `Navigation.back()` before its focus clear. A button
+  gated on a field's committed text puts that term in `inputValid` (visuals dim on it) rather than `enabled`: its
+  default `enabled` is `inputValid || Navigation.composing`, so it is live while a word is composing, and a tap commits
+  first and calls `clicked()` only if `inputValid` then holds; otherwise it is disabled as before (accessibility and
+  keyboard included), and a real guard (busy, permission) stays in `enabled`. Callers: the profile editor's "Use this
+  key" and "Use override", `KeySheet`'s apply, Scan list "Add frequency", RadioReference Find/Open, the wizard's
+  Continue/Save, Tone filter Apply and Explore's Start.
   Tests: `UI_QT_INPUT_COMMIT`, `UI_QT_QML_CALL_LISTS` (`tst_input_commit.qml`, `tst_modal_sheet_outside_tap.qml`,
   `tst_signal_search.qml`, `tst_settings_backup.qml`, `tst_csv_import_flow.qml`, `tst_talkgroup_edit_sheet.qml`,
   `tst_modal_input.qml`, `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`, `tst_tone_filter_sheet.qml`,
@@ -12825,7 +12826,69 @@ Qt Quick frontend (`src/ui/qt`):
   `p25Bandplan`, and `src` (source radio ID names), with `src` appended after `p25Bandplan`.
   `radio_reference_model.{h,cpp}` plus `qml/RadioReferenceScreen.qml` are the RadioReference import: the model drives
   the runtime client, previews what an import would produce, and writes the generated CSVs into that same library with
-  provenance, while the add-system wizard stays the single writer of a saved system. `systemDetails.protocolToken`
+  provenance, while the add-system wizard stays the single writer of a saved system. The account check's verdict
+  (`accountState`: `AccountNone`, `AccountChecking`, `AccountVerified`, `AccountRejected`, `AccountExpired`,
+  `AccountFailed`; `accountMessage` holds the Failed text; `checkingAccount`; `hasPassword`) always describes the
+  current credentials. Every credential change (AppPrefs `rrUsernameChanged`/`rrAppKeyChanged`, `setPassword()`,
+  `clearPassword()`) goes through `onCredentialEdited()`, which bumps the credential revision, quietly retires an
+  account check still in flight (the `cancel()` steps, with the status cleared instead of "Cancelled."; other fetches
+  keep running) and resets the state to None. `checkAccount()` is a no-op while a check is in flight. Any other new
+  batch and `cancel()` retire a check in flight (state None); a finished verdict survives them both, so only an edit
+  clears it. Any other fetch refused for the current revision (`AuthError`, `SubscriptionError`) sets Rejected or
+  Expired too, so "Account verified." never stands next to a notice that the password was refused; other failures
+  leave the verdict alone. A refusal from an older revision (a fetch an edit left running) settles its batch with no
+  error, since it blames values that were never sent. The verdict is set before the reply settles `busy`. A verified
+  check calls the C++-only `setVerifiedSink()` callback synchronously with the request's own username and password
+  (copied out of its `dsd_rr_auth`, scrubbed after the call, dropped if the revision moved on); no signal or QML
+  property carries a credential. A QString that held a credential (the model's password and verified copies, a fill in
+  `deliverSignInFill()` and on its way from Android) is overwritten before it is dropped by `scrub_qstring()`
+  (`qstring_scrub.h`), best effort: a string still shared with another holder detaches, and only the fresh copy is
+  zeroed. Password managers: `sign_in_autofill.{h,cpp}` (`SignInAutofill`, the `signInAutofill` context object, built in
+  `qt_ui.cpp` over the host, the model and AppPrefs) describes the sign-in form to the platform's autofill support
+  through `DecoderHost`'s no-op `signInAutofillBegin`/`Field`/`Request`/`Commit`/`End` virtuals (in the plain `public:`
+  section, not slots: QML reaches every slot and signal of `decoderHost`; Android implements them, "Sign-in autofill"
+  under Android foundation integration contracts; the desktop does nothing). Field 1 is the username, field 2 the
+  password, whose structure value is always empty.
+  `begin()` hands out a token (positive, only growing) and retires the older one; every call and fill carries it, and
+  any other token is dropped. `track(token, field, input, visible)` follows a field's inner TextInput through a
+  `QPointer` (focus from `hasActiveFocus()`), and `note()` sets the username's structure value. A rect is the input's
+  geometry (not `boundingRect()`, which for a TextInput is its text) mapped to the scene, cut by each `clip`
+  ancestor's `clipRect()` and by the window, scaled by the window's device pixel ratio once and rounded outward; empty
+  means not visible. A 100 ms sampler runs while a token is live and a tracked field is shown, and sends a field only
+  when its rect, visibility or focus changed. A field gaining focus gets one `signInAutofillRequest` per focus entry,
+  once its rect has been still for 300 ms (movement restarts the wait; focus loss and `end` cancel it). Both timers run
+  only for a host whose `signInAutofillSupported()` is true (Android); the base host's is false, so on the desktop the
+  calls still come but nothing is sampled or awaited. The model's verified sink commits the checked credentials for the
+  live token once its form has shown a field (a card hidden since still commits), and only when the check was submitted
+  under that token: the relay records the live token as `checkingAccount` turns true, and a check submitted under an
+  earlier session or none is not committed. A fill comes in through
+  `DecoderHost::setSignInFillSink()`/`deliverSignInFill()`, a C++ callback whose strings are scrubbed after it returns:
+  for the live token the relay itself sets `AppPrefs::rrUsername` and calls `RadioReferenceModel::setPassword()` (an
+  empty value fills nothing), then emits the credential-free `filled(token, hasUsername, hasPassword)`, so a filled
+  password never reaches QML (`UI_QT_SIGN_IN_AUTOFILL`, its window at a 1.5 device pixel ratio). The sign-in form is
+  `qml/RadioReferenceAccountEditor.qml`, used whole by the import screen's
+  credentials card and by `qml/RadioReferenceAccountScreen.qml` (Settings → Account; the Settings row's subtitle names
+  the fields the build asks for): username, password with a `RevealButton` (`finishesEditing: false`, "Show
+  password"/"Hide password"), the key heading, field and link only without a baked key, the hint, "Check account"
+  and a result line that reads only `accountState`/`accountMessage` (with a fallback for an empty Failed message; the
+  import screen sets `showsFailures: false`, since its notice line reports a failure). The password field is a draft:
+  cleared and masked whenever `active` (the screen's visibility) changes, committed by `setPassword()` only when
+  non-empty, its placeholder "Entered for this session" while empty with `hasPassword`, and none otherwise (the
+  label is read once). A field's commit checks the account only while the credentials are ready and unchecked
+  (`accountState` None), so an untouched field never re-asks; "Check account" (`finishesEditing: false`) moves the
+  focus off the field under `checkCommitting` and checks once. Becoming active takes a token (`signInAutofill.begin()`),
+  tracks the two inner inputs with the form's visibility and notes the username; a visibility change is reported once
+  settled (a zero-interval child `Timer`), because the import card hides and shows again within one commit or fill
+  (`credentialsReady` turns true just before `checkAccount()` sets Checking) and that flicker must not reach the relay
+  or mask a revealed password; a card that has settled hidden with no field focused also clears its draft; becoming
+  inactive ends it. `filled` for the form's own token commits the field the fill left alone, clears the draft when the
+  password was filled, and checks once, under `fillApplying`; a filled username first finishes any composing word and
+  binds the field to `prefs.rrUsername` again, since a name equal to the stored one changes nothing there and would
+  leave a typed draft in the field to be committed over the fill. The import card stays up while `checkingAccount`.
+  The QML fixtures fake the relay (`SignInAutofillRecorder` in `tests/ui/qml_test_context.h`, whose `fill()` fires
+  `filled`), and `FakeRadioReference.qml` follows the account state (`settle()`); `tst_radioreference_screen.qml` and
+  `tst_settings_layout.qml` cover the forms.
+  `systemDetails.protocolToken`
   (`dsd_rr_protocol_token()`, "tetra") is how QML tells the protocol apart, and the talkgroup summary (count,
   encryption counts, sample) holds only the rows the group writer keeps (`dsd_rr_talkgroup_writable()`, then the first
   row of each ID), so the preview agrees with the file. The screen's TETRA note (`radioReferenceTetraNote`, repeated in
@@ -13967,6 +14030,104 @@ thread, which the rest of the interface never is.
   (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` against provider stubs). Real providers, JNI and
   `finishAndRemoveTask()` need a device or emulator.
 
+#### Sign-in autofill (password managers)
+
+Qt 6.11.3 draws its own text fields and exposes nothing to Android's Autofill Framework, so the app describes the
+RadioReference sign-in form itself (the relay, `SignInAutofill` in `src/ui/qt`, is under UI, Qt):
+
+- `DecoderHostAndroid`'s `signInAutofillBegin`/`Field`/`Request`/`Commit`/`End` overrides (`decoder_host_android.cpp`,
+  JNI only) call `SignInAutofill.kt`'s `@JvmStatic` `begin(int)`, `field(int, int, int, int, int, int, boolean,
+  boolean, String)`, `request(int, int, int, int, int, int)`, `commit(int, String, String)` and `end(int)`, kept by
+  `proguard-rules.pro`. A rect goes as its window pixels (x, y, width, height); each string goes as a local ref deleted
+  right after the call, so the committed password's Java copy is let go of at once. Its `signInAutofillSupported()` is
+  true, which is what turns on the relay's sampler and settle wait.
+- `SignInAutofill.kt` posts each call to the main looper in order and hands `SignInAutofillState.kt` (plain Kotlin) the
+  event; the effects it returns (`Request`, `Exit`, `Value`, `Commit`, `Cancel`, `Visibility`, and `Held`, `Settle`,
+  `Enter`, `HideTextHandle` below) run there against the attached activity's `AutofillManager`, read at that moment:
+  with no host, no manager or `!isEnabled()` the state is told `disabled()` instead (the framework session flag, a held
+  request and the fill UI state drop, the snapshot stays). The state's rules: stale tokens (any but the live one; tokens
+  only grow) do nothing; a request goes out only for a shown field, with the service on, and starts the framework
+  session; a field stops being entered when it loses focus or is hidden while focused (card hidden, clipped away), and
+  is then exited; commit reports both values, commits and hides both fields, and end cancels, each in a started session
+  only; a request after a commit starts a new session under the same token. A commit's calls run in one posted
+  operation.
+- A request made while the Qt window's origin is unknown is held (`Held`: one value-free `HostDiagnostics` record per
+  hold) and goes out once the origin is known, from a global layout pass on the host, the Qt window's layout change or
+  Qt's next field report, while that field is still entered; blur, hiding, end, a newer token or the service going
+  away drop it.
+- Right before each `requestAutofill()` and each re-anchor's `notifyViewEntered()` (the state's `HideTextHandle` effect;
+  that enter starts a request when the response is unusable), `QtCursorHandle.kt` dismisses Qt's text cursor handle: a
+  `PopupWindow` of Qt's `CursorHandle` (read by name: `QtEditText.m_cursorHandle`, `CursorHandle.m_popup`, kept by
+  `qt-rules.pro` and checked by `tools/check_android_r8.py`). With the handle up, the structure has a second window, and
+  KeePassDX 4.5.8 takes the app from the last window's title, refuses, and never answers (the session times out after 5
+  s, and a later commit offers no save). The handle's popup style has no exit transition, so `dismiss()` removes its
+  root view at once (`PopupWindow.dismissImmediate()` → `removeViewImmediate()`), and the structure is built later, in
+  the main-thread message the request causes (`ActivityThread` `REQUEST_ASSIST_CONTEXT_EXTRAS` → `new
+  AssistStructure()`, which walks `WindowManagerGlobal.getRootViews()`). Qt shows the handle again only on a cursor or
+  anchor rect change or a tap. The selection handles and the Cut/Copy/Paste menu are left alone (an edit in progress).
+  Fail-soft: a missing class or field changes nothing and leaves one record for the process.
+- Fill UI following (refines "one request per focus entry"): an `AutofillCallback` registered on the activity's manager
+  at attach (unregistered at detach) reports `EVENT_INPUT_SHOWN`/`HIDDEN`/`UNAVAILABLE` per field. While the UI is shown
+  for the entered field, a change of that field's rect (rotation, keyboard, scroll) arms a 300 ms settle (`SETTLE_MS`,
+  the relay's wait), restarted by each further change; when it runs out with the field still entered, moved from where
+  the UI was anchored and the UI still shown, the field is exited and entered again (`notifyViewExited`, then
+  `notifyViewEntered(host, vid, newBounds)`). The UI showing for a field that moved after its request (it is placed at
+  the request's bounds) arms the same settle. AOSP: an enter for the current view returns before the bounds update
+  (`Session.updateLocked` `isSameViewEntered`), but after an exit the enter is not a manual request and the response
+  already covers the field (`shouldStartNewPartitionLocked` false), so no FillRequest goes out and `ViewState.update()`
+  → `onFillReady()` shows the dropdown at the new bounds; no IME inline request exists for the host, so
+  `requestShowInlineSuggestionsLocked()` fails over to the dropdown. With no fill UI shown a move does nothing. Limit: a
+  response the framework has marked expired would make that enter start a focused request, which can wait for the
+  keyboard's inline request. A move of the whole app window with nothing moving inside it (a freeform drag, a
+  split-screen divider) is followed too. The dropdown is a sub-window of the app's window:
+  `AutofillPopupWindow.update()` makes it `TYPE_APPLICATION_ABOVE_SUB_PANEL` (AutofillPopupWindow.java:118,
+  android16-release) shown with `showAsDropDown()` (234), whose
+  `createPopupLayoutParams(anchor.getApplicationWindowToken())` (PopupWindow.java:1419, token at 1624) attaches it to
+  the app's window, and `findDropDownPosition()` (1733) sets its x/y relative to the app root; sub-windows' "coordinate
+  space is relative to their attached window" (`WindowManager.LayoutParams.FIRST_SUB_WINDOW`,
+  WindowManager.java:2290-2296). On the emulator that holds only while the keyboard is clear of the window: moved 100 px
+  down with the keyboard overlapping it, the system re-clamped the dropdown's offset from (0,115) to (0,15) and left it
+  at its old screen height, 100 px above the field (emu/report-r2.md check 4). So while the UI is shown, an
+  `OnPreDrawListener` on the host (registered only then; removed on hide, blur, end and detach) reads the host's place
+  on screen (`SignInAutofillState.screen()`, positions only), and a change from where the UI was anchored arms the same
+  settle and re-anchor. A window move reaches the app as `resized` (a frame and, in freeform, a configuration change),
+  and a change of the keyboard's overlap as an insets change; `ViewRootImpl.handleResized()` ends in `requestLayout()`
+  (ViewRootImpl.java:2376, android16-release) and `notifyInsetsChanged()` too (2561), so a traversal follows, which
+  dispatches `OnPreDraw` (4417; `OnGlobalLayout` only when a layout ran, 4284). Limit: a bare `moved()` from the window
+  manager (`WindowState.handleWindowMovedIfNeeded()`, WindowState.java:2082 → `MSG_WINDOW_MOVED`,
+  ViewRootImpl.java:7001) updates the position without a traversal, so it is not seen until the next one; the dropdown
+  then follows as a sub-window unless re-clamped. The one fill UI that is not a dropdown is `FillUi`'s fullscreen mode
+  (leanback/TV devices, or a debug override): `AutofillPopupWindow.update()` (AutofillPopupWindow.java:107-122) makes it
+  a `TYPE_SYSTEM_DIALOG` that covers the screen and has no anchor to follow.
+- The host view is the activity content's first child (`android.R.id.content`, `MATCH_PARENT`, behind Qt's
+  `QtRootLayout`, which `super.onCreate()` set as the content view): childless, not focusable or clickable, no touches,
+  `IMPORTANT_FOR_ACCESSIBILITY_NO`, `IMPORTANT_FOR_AUTOFILL_YES`, no drawing. Never focused, so `requestAutofill()` adds
+  `FLAG_VIEW_NOT_FOCUSED` and the framework shows its dropdown instead of waiting for keyboard suggestions, which match
+  only the view the keyboard serves (Qt's `QtEditText`). `onProvideAutofillVirtualStructure()` gives the live form's
+  fields as children 1 (username) and 2 (password): `AUTOFILL_TYPE_TEXT`, the username/password hint, the structure
+  value (the password's always empty), host-pixel dimens, visibility, `android.widget.EditText`, the text or password
+  input type, `setDataIsSensitive(true)`, a hint, `setId(vid, package, null, "username"|"password")` and focus; no web
+  domain. `isVisibleToUserForAutofill()` reads the snapshot; `autofill()` makes one
+  `DsdNative.nativeSignInFilled(token, hasUser, user, hasPass, pass)` call under the token live then.
+- Origin: Qt's rects are its window's pixels; the largest visible view of class `org.qtproject.qt.android.QtWindow`
+  under Qt's root layout (looked up again once it leaves the window or hides, with an `OnLayoutChangeListener`) gives
+  the offset to host pixels, read again before each request and each structure. Unknown, a request is held (below).
+- `DsdNeoActivity` attaches the host right after the launch statements (`LaunchGuard.afterQt()`), re-reads the service
+  on resume, and detaches on destroy, cancelling a session still open (Qt's relay sends no end at exit); detach goes
+  through `ActivitySlot`.
+- A fill: `nativeSignInFilled` (`dsdneo_jni.cpp`) copies each string's UTF-16 units into a QString through a native
+  buffer cleared with `DSD_SECURE_ZERO`, and `DecoderHostAndroid::postSignInFill()`
+  (`decoder_host_android_sign_in.cpp`) queues them, under one mutex, to the newest live host (a `SignInFillLink` member
+  registers each host from construction to destruction), which calls `deliverSignInFill()` on the GUI thread. No
+  host, or one gone before the call runs: the strings are scrubbed and dropped.
+- Privacy: no value is logged on this path; an exception is recorded in `HostDiagnostics` by class name only, and an
+  effect's `toString()` leaves the text out.
+- Tests: `ANDROID_SIGN_IN_AUTOFILL_JVM` (`SignInAutofillStateTest.kt`: every rule above, the origin, the held request,
+  hidden-while-focused, fill UI following (field and window moves), the structure and the commit order);
+  `UI_QT_ANDROID_HOST` (a fill from another thread reaches the newest live host's sink once, on the GUI thread, and a
+  host gone first drops it); `tools/check_android_r8.py` (the upcalls and `nativeSignInFilled` in the release DEX). The
+  framework itself needs an emulator or device.
+
 #### Accessibility bridge (issue #782)
 
 Qt 6.11.3 turns its Android accessibility bridge on whenever any accessibility service is enabled, and with the bridge
@@ -14074,7 +14235,14 @@ its source:
 - it is registered, and called when accessibility is enabled, synchronously inside `super.onCreate()`;
 - enabling the bridge mid-session is unsafe (QTBUG-144911; fixed upstream in 6.12.1, not in 6.11.3);
 - a second activity instance restarts the process (`QtActivityBase.onCreate()` → `restartApplication()`);
-- the bridge is one plain `android.view.View` that Qt adds as the last child of its root layout (the probe below).
+- the bridge is one plain `android.view.View` that Qt adds as the last child of its root layout (the probe below);
+- `super.onCreate()` sets Qt's root layout as the content view, and Qt's window view is the class
+  `org.qtproject.qt.android.QtWindow` under it ("Sign-in autofill" above; the app's own host is the content's first
+  child, an app class, not the bridge);
+- Qt's text cursor handle is a `PopupWindow` in `CursorHandle.m_popup`, held by the `QtEditText` child of the Qt
+  window in `m_cursorHandle`, with no exit transition (`QtCursorHandle.kt`). A rename fails
+  `tools/check_android_r8.py` on the release APK; a changed structure only leaves the "cannot be hidden" record. Check
+  with KeePassDX that a tap on the username field still gets its dropdown with the handle up.
 
 What trips: bumping `ANDROID_QT_VERSION` in `tools/ci-dependency-pins.env` fails `ANDROID_A11Y_BRIDGE_JVM`
 (`launch_policy()`) until `LaunchGuard.QT_RESTART` names the new version. Change that text only once the checks below

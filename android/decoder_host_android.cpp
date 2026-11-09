@@ -23,6 +23,7 @@
 #include <QJniObject>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRect>
 #include <QSaveFile>
 #include <QScreen>
 #include <QVariant>
@@ -50,6 +51,7 @@ constexpr const char* kDocumentsClass = "io/github/arancormonk/dsdneo/DocumentCo
 constexpr const char* kPlaybackClass = "io/github/arancormonk/dsdneo/RecordingPlayback";
 constexpr const char* kExportClass = "io/github/arancormonk/dsdneo/RecordingExport";
 constexpr const char* kRecordingShareClass = "io/github/arancormonk/dsdneo/RecordingShare";
+constexpr const char* kSignInClass = "io/github/arancormonk/dsdneo/SignInAutofill";
 
 /* The Qt-free phase enum and the Q_ENUM QML binds to have to stay in lockstep; the
  * mapping below hands one straight to the other. */
@@ -97,6 +99,21 @@ to_java_string_array(QJniEnvironment& env, const QStringList& values) {
         }
     }
     return array;
+}
+
+/**
+ * @brief A Java String with @p text's UTF-16 units, as a local ref the caller deletes; nullptr, with no exception left
+ * pending, when it could not be made.
+ *
+ * A local ref, not a QJniObject's global one, so a credential's Java copy is let go of as soon as the call returns.
+ */
+jstring
+new_java_string(QJniEnvironment& env, const QString& text) {
+    jstring value = env->NewString(reinterpret_cast<const jchar*>(text.utf16()), static_cast<jsize>(text.size()));
+    if (env.checkAndClearExceptions()) {
+        return nullptr;
+    }
+    return value;
 }
 
 /**
@@ -729,6 +746,64 @@ DecoderHostAndroid::requestSiteLocation(qint64 requestId) {
 void
 DecoderHostAndroid::cancelLocationRequest(qint64 requestId) {
     QJniObject::callStaticMethod<void>(kLocationClass, "cancelLocationRequest", "(J)V", static_cast<jlong>(requestId));
+}
+
+/* The sign-in form for password managers. Each must match SignInAutofill.kt's @JvmStatic entry point of that name. */
+void
+DecoderHostAndroid::signInAutofillBegin(int token) {
+    QJniEnvironment env;
+    QJniObject::callStaticMethod<void>(kSignInClass, "begin", "(I)V", static_cast<jint>(token));
+    env.checkAndClearExceptions();
+}
+
+void
+DecoderHostAndroid::signInAutofillField(int token, int field, const QRect& windowPixels, bool visible, bool focused,
+                                        const QString& structureValue) {
+    QJniEnvironment env;
+    jstring value = new_java_string(env, structureValue);
+    if (value == nullptr) {
+        return;
+    }
+    QJniObject::callStaticMethod<void>(kSignInClass, "field", "(IIIIIIZZLjava/lang/String;)V", static_cast<jint>(token),
+                                       static_cast<jint>(field), static_cast<jint>(windowPixels.x()),
+                                       static_cast<jint>(windowPixels.y()), static_cast<jint>(windowPixels.width()),
+                                       static_cast<jint>(windowPixels.height()), static_cast<jboolean>(visible),
+                                       static_cast<jboolean>(focused), value);
+    env.checkAndClearExceptions();
+    env->DeleteLocalRef(value);
+}
+
+void
+DecoderHostAndroid::signInAutofillRequest(int token, int field, const QRect& windowPixels) {
+    QJniEnvironment env;
+    QJniObject::callStaticMethod<void>(kSignInClass, "request", "(IIIIII)V", static_cast<jint>(token),
+                                       static_cast<jint>(field), static_cast<jint>(windowPixels.x()),
+                                       static_cast<jint>(windowPixels.y()), static_cast<jint>(windowPixels.width()),
+                                       static_cast<jint>(windowPixels.height()));
+    env.checkAndClearExceptions();
+}
+
+void
+DecoderHostAndroid::signInAutofillCommit(int token, const QString& username, const QString& password) {
+    QJniEnvironment env;
+    jstring user = new_java_string(env, username);
+    jstring pass = user != nullptr ? new_java_string(env, password) : nullptr;
+    if (pass != nullptr) {
+        QJniObject::callStaticMethod<void>(kSignInClass, "commit", "(ILjava/lang/String;Ljava/lang/String;)V",
+                                           static_cast<jint>(token), user, pass);
+        env.checkAndClearExceptions();
+        env->DeleteLocalRef(pass);
+    }
+    if (user != nullptr) {
+        env->DeleteLocalRef(user);
+    }
+}
+
+void
+DecoderHostAndroid::signInAutofillEnd(int token) {
+    QJniEnvironment env;
+    QJniObject::callStaticMethod<void>(kSignInClass, "end", "(I)V", static_cast<jint>(token));
+    env.checkAndClearExceptions();
 }
 
 void

@@ -91,11 +91,56 @@ with their own premium credentials, is squarely the sanctioned case.
   them in its own settings store (`Settings → Account → RadioReference`); the terminal UI keeps them in the
   config file under `[radioreference]` (`docs/config-system.md`). The key row is offered only where the
   user is the one who has to supply a key — see [The application key](#the-application-key).
-- The **password is held in memory only** and is asked for once per app session. It is never
-  written to disk, never logged, and never reaches a status line or an error message.
+- The **password is held in memory only**, for the app session. dsd-neo never writes it to disk, never
+  logs it, and it never reaches a status line or an error message. Clearing it is best effort: the
+  app scrubs the native copies it owns, but the copies Qt and the Android runtime make on the way
+  (QML and Java strings) cannot be wiped on demand and go when the runtime frees them.
 
-After the password is entered the app verifies the account once (`getUserData`) and reports an
-expired premium subscription as such, rather than letting it surface later as an opaque failure.
+### The two sign-in forms (Qt and Android)
+
+The import screen's credentials card and **Settings → Account → RadioReference** are the same sign-in
+form: username, password (with **Show**), the application key only in a build without a baked one,
+**Check account**, and a result line under it. The Settings row names the fields that build asks for:
+"Username and password", or "Username, password and application key".
+
+Both forms share one session password, which the app keeps and neither form shows:
+
+- The password field starts empty each time its screen opens and is cleared and masked again when the
+  screen closes. While it is empty and a password is held, it reads **Entered for this session**.
+- Leaving the field empty keeps the session password; typing a new one replaces it. **Check account**
+  with the field empty checks the session password.
+- **Show** reveals what you typed and keeps you in the field; it never submits a check.
+
+The account is checked (`getUserData`) when a field you finish makes the sign-in complete, or when you
+tap **Check account**. A field you leave unchanged does not check again, and one tap sends one check.
+An expired premium subscription is reported as such, rather than surfacing later as an opaque failure.
+The result line shows only the verdict for the current username and password (it resets when either
+changes, and a later search that RadioReference refuses changes it too); on the import screen a failure
+is reported in the notice line at the top instead, and the credentials card stays open until the check
+has an answer.
+
+### Password managers (Android)
+
+Both forms are offered to the device's autofill service (a password manager such as Bitwarden,
+KeePassDX, Google Password Manager or 1Password), as a username and a password field. The application
+key is never offered. This has been verified with KeePassDX. Bitwarden, Google Password Manager and
+1Password are expected to work, based on how their documentation says they read a form, but this has
+not been proven yet.
+
+- Tap the username or password field and the service offers its saved logins. Picking one fills both
+  fields and checks the account once.
+- After RadioReference accepts a sign-in the service may offer to save it, or to update a saved one. That
+  copy is the password manager's, kept under its own rules; dsd-neo still writes nothing.
+- The suggestions appear in the service's own dropdown, not as chips in the keyboard: the keyboard only
+  offers suggestions for the field it is typing into, and Qt's text input is not one Android can
+  describe to it.
+- Logins are matched to the app (`androidapp://io.github.arancormonk.dsdneo`), not to
+  radioreference.com, because the app cannot prove it speaks for that website. A login saved from the
+  website is not matched automatically; pick it through the service's own search or vault entry.
+- An open dropdown moves with its field when the screen rotates, the form scrolls or the app's window moves,
+  once the field stops moving.
+
+The desktop Qt app has the same forms without the password-manager link.
 
 ## Finding a system
 

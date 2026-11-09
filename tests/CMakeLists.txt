@@ -5227,6 +5227,57 @@ if(DSD_ENABLE_QT_UI)
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
     )
 
+    # The RadioReference sign-in relay to the platform's password manager
+    # support: a recording host, a real form window at a fractional device
+    # pixel ratio, and the real model's account checks over the captured
+    # getUserData reply.
+    add_executable(
+        dsd-neo_test_ui_qt_sign_in_autofill
+        ui/test_ui_qt_sign_in_autofill.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/sign_in_autofill.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/radio_reference_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_sign_in_autofill
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_sign_in_autofill
+        PRIVATE
+            Qt6::Core
+            Qt6::Gui
+            Qt6::Qml
+            Qt6::Quick
+            dsd-neo_core
+            dsd-neo_proto_dmr
+            dsd-neo_runtime
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_sign_in_autofill
+        PRIVATE
+            QT_NO_KEYWORDS
+            "DSD_NEO_TEST_RR_FIXTURE_DIR=\"${_DSD_NEO_RR_FIXTURE_DIR}\""
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_sign_in_autofill
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_SIGN_IN_AUTOFILL
+        COMMAND dsd-neo_test_ui_qt_sign_in_autofill
+    )
+    set_tests_properties(
+        UI_QT_SIGN_IN_AUTOFILL
+        PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+    )
+
     # Issue #718: the composing-text commit Save, Cancel, Back and sheet
     # dismissal run before reading a field. A real TextInput gets preedit text
     # the way an Android keyboard sends it mid-word; offscreen has no input
@@ -8984,6 +9035,7 @@ foreach(
     _qt_import_target
     dsd-neo_test_ui_qt_imported_files_model
     dsd-neo_test_ui_qt_radio_reference_model
+    dsd-neo_test_ui_qt_sign_in_autofill
     dsd-neo_test_ui_qt_backup_archive
     dsd-neo_test_ui_qt_backup_apply
     dsd-neo_test_ui_qt_backup_model
@@ -22182,6 +22234,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_documents.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_lifecycle.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_recordings.cpp
+        ${PROJECT_SOURCE_DIR}/android/decoder_host_android_sign_in.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         # #708: a queued share's hold in the real recording store.
@@ -22667,6 +22720,13 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
             a11y_bridge
     )
+    add_test(
+        NAME ANDROID_SIGN_IN_AUTOFILL_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            sign_in_autofill
+    )
     set_tests_properties(
         ANDROID_LOCATION_JVM
         ANDROID_DECODER_STATUS_JVM
@@ -22681,6 +22741,7 @@ if(Python3_Interpreter_FOUND)
         ANDROID_RECORDING_EXPORT_JVM
         ANDROID_RECORDING_SHARE_JVM
         ANDROID_A11Y_BRIDGE_JVM
+        ANDROID_SIGN_IN_AUTOFILL_JVM
         PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 90

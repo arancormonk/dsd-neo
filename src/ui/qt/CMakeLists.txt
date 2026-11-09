@@ -65,6 +65,7 @@ target_sources(
         spectrum_trace_geometry.cpp
         screen_reader_state.cpp # Issue #782
         session_args.cpp
+        sign_in_autofill.cpp
         talkgroup_filter_model.cpp
         talkgroup_list_model.cpp
         ui_controller.cpp

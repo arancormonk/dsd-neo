@@ -53,6 +53,15 @@
     void setId(long);
 }
 -keep class org.qtproject.qt.android.QtContentFileEngine { *; }
+# SignInAutofill hides Qt's text cursor handle before each autofill request
+# (QtCursorHandle.kt) by reading these two fields by name; it fails soft, so a
+# missing field only brings back the second window some services refuse.
+-keep,includedescriptorclasses class org.qtproject.qt.android.QtEditText {
+    org.qtproject.qt.android.CursorHandle m_cursorHandle;
+}
+-keep class org.qtproject.qt.android.CursorHandle {
+    android.widget.PopupWindow m_popup;
+}
 # The uncompressed-library path used by Play reads these unannotated fields
 # through JNI while discovering plugins inside APK splits. R8 otherwise renames
 # relativePath and removes size/isDir, so Qt cannot find its Android platform plugin.
