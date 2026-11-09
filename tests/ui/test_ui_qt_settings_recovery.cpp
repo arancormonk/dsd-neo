@@ -1003,6 +1003,64 @@ test_clean_start_forgets_cache_scratch() {
     reset();
 }
 
+#ifndef _WIN32
+/* Writes the files a link into @p outside must leave alone: one under each format folder's name, as a scratch copy
+   lies there. */
+void
+write_outside(const QString& outside) {
+    expect("scratch links: the outside files", write_file(outside + QStringLiteral("/ini/dsd-neo/keep.txt"), "keep")
+                                                   && write_file(outside + QStringLiteral("/native/keep.txt"), "keep")
+                                                   && write_file(outside + QStringLiteral("/keep.txt"), "keep"));
+}
+
+bool
+outside_untouched(const QString& outside) {
+    return read_file(outside + QStringLiteral("/ini/dsd-neo/keep.txt")) == "keep"
+           && read_file(outside + QStringLiteral("/native/keep.txt")) == "keep"
+           && read_file(outside + QStringLiteral("/keep.txt")) == "keep";
+}
+
+/* A link at the cache's scratch folder, or at a format folder in it, is never followed by the clean start that forgets
+   a scratch copy, nor by the start that seeds one: what it points at is untouched, and the link stays. With no copy
+   to be had, the settings run on defaults in memory. */
+void
+expect_scratch_link_left(const QString& what, const QString& link, const QString& outside) {
+    const QString prefsName = dsd_qt::settings_recovery_prefs_file_name();
+    write_outside(outside);
+    expect(what + ": the link", QFile::link(outside, link));
+    reset();
+    dsd_qt::recover_settings_files(); // no settings file: Missing, so each format's copy is forgotten
+    expect(what + ", missing: what the link points at is untouched", outside_untouched(outside));
+    expect(what + ", missing: still a link", QFileInfo(link).isSymLink());
+
+    reset();
+    expect(what + ", seeded: written", write_file(g_paths.prefs, kUnreadSection));
+    take_every_kept_name(what, g_paths.prefs);
+    expect(what + ", seeded: Scratch", recover_prefs() == SettingsRecovery::Scratch);
+    expect(what + ", seeded: in memory", dsd_qt::settings_recovery_in_memory(prefsName));
+    expect(what + ", seeded: what the link points at is untouched", outside_untouched(outside));
+    expect(what + ", seeded: still a link", QFileInfo(link).isSymLink());
+    QFile::remove(link);
+    QDir(outside).removeRecursively();
+    relaunch();
+    reset();
+}
+
+void
+test_scratch_links_never_followed() {
+    const QString scratch =
+        QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/settings-scratch");
+    const QString outside =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/outside-scratch");
+    QDir(scratch).removeRecursively();
+    expect("scratch links: the cache", QDir().mkpath(QFileInfo(scratch).absolutePath()));
+    expect_scratch_link_left("scratch folder linked", scratch, outside);
+    expect("scratch links: a real scratch folder", QDir().mkpath(scratch));
+    expect_scratch_link_left("format folder linked", scratch + QStringLiteral("/ini"), outside);
+    QDir(scratch).removeRecursively();
+}
+#endif
+
 /* A folder or a FIFO at the path is neither read nor written, and QSettings never opens it this run. */
 void
 test_not_a_file() {
@@ -1272,6 +1330,9 @@ main(int argc, char** argv) {
     test_missing();
     test_leftover_work_folders();
     test_clean_start_forgets_cache_scratch();
+#ifndef _WIN32
+    test_scratch_links_never_followed();
+#endif
     test_unread_section_kept();
     test_valid_prefix_read_error();
     test_fallback_ignored();

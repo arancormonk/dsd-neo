@@ -213,6 +213,9 @@ app_cache() {
 /* What a parse's work folder in the app cache is named, before its random part. */
 constexpr char kWorkPrefix[] = "settings-check-";
 
+/* The app cache's folder of scratch copies, one format folder ("ini", "native") in it per format on scratch. */
+constexpr char kScratchFolder[] = "settings-scratch";
+
 /* A private folder for a parse's files in the app cache (0700, a random name, removed with what is in it). Null when
    the cache cannot take one. */
 std::unique_ptr<QTemporaryDir>
@@ -337,6 +340,43 @@ remove_folder(const QString& dir, const QString& name, int depth) {
     (void)::close(parent);
 }
 
+/* Frees @p name in the folder open as @p parent for a format folder, never following a link: true when nothing is
+   there, or a folder was, all of it removable (removable_at()) and now removed. A file, a link or anything else of that
+   name is no folder of this code's and stays. */
+bool
+free_folder_name_at(int parent, const char* name, int depth) {
+    struct stat seen{};
+    if (::fstatat(parent, name, &seen, AT_SYMLINK_NOFOLLOW) != 0) {
+        return errno == ENOENT;
+    }
+    return S_ISDIR(seen.st_mode) && removable_at(parent, name, depth) && remove_at(parent, name);
+}
+
+/* Removes the scratch copy of format folder @p leaf in @p cache's scratch folder, never following a link at any level:
+   the scratch folder is opened only when it is a real folder (O_NOFOLLOW, the same inode), and the format folder is
+   removed through it as free_folder_name_at() says. True when the format folder's name is free afterwards: also with no
+   scratch folder at all; false when a link or anything but a real folder stands at either name, which stays. */
+bool
+clear_scratch_copy(const QString& cache, const QString& leaf) {
+    const int top = ::openat(AT_FDCWD, QFile::encodeName(cache).constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (top < 0) {
+        return errno == ENOENT;
+    }
+    bool freed = false;
+    struct stat seen{};
+    if (::fstatat(top, kScratchFolder, &seen, AT_SYMLINK_NOFOLLOW) != 0) {
+        freed = errno == ENOENT;
+    } else if (S_ISDIR(seen.st_mode)) {
+        const int scratch = open_folder_at(top, kScratchFolder, seen);
+        if (scratch >= 0) {
+            freed = free_folder_name_at(scratch, QFile::encodeName(leaf).constData(), 1);
+            (void)::close(scratch);
+        }
+    }
+    (void)::close(top);
+    return freed;
+}
+
 QStringList
 names_in(const QString& dir) {
     QStringList names;
@@ -391,6 +431,30 @@ remove_folder(const QString& dir, const QString& name, int depth) {
     if (info.isDir() && !info.isSymLink() && !info.isJunction() && removable_entry(info, depth)) {
         (void)remove_entry(info);
     }
+}
+
+/* Whether nothing is at @p info's name, a dangling link included. */
+bool
+absent(const QFileInfo& info) {
+    return !info.exists() && !info.isSymLink() && !info.isJunction();
+}
+
+/* clear_scratch_copy() as POSIX does it: a link or junction at either name stays and is never followed. */
+bool
+clear_scratch_copy(const QString& cache, const QString& leaf) {
+    const QFileInfo scratch(cache + QLatin1Char('/') + QLatin1String(kScratchFolder));
+    if (absent(scratch)) {
+        return true;
+    }
+    if (scratch.isSymLink() || scratch.isJunction() || !scratch.isDir()) {
+        return false;
+    }
+    const QFileInfo format(scratch.filePath() + QLatin1Char('/') + leaf);
+    if (absent(format)) {
+        return true;
+    }
+    return format.isDir() && !format.isSymLink() && !format.isJunction() && removable_entry(format, 1)
+           && remove_entry(format);
 }
 
 QStringList
@@ -817,25 +881,30 @@ make_private_folders(const QString& dir, const QString& file) {
     return true;
 }
 
-/* Points @p format at @p dir (a copy an earlier start left there removed first) and writes its scratch copy there,
-   starting as @p seed, the owner's alone with every folder made for it. False, with nothing left there, when the copy
-   could not be written. */
+QString
+scratch_leaf(QSettings::Format format) {
+    return format == QSettings::IniFormat ? QStringLiteral("ini") : QStringLiteral("native");
+}
+
+/* Points @p format at its folder in @p cache's scratch folder (a copy an earlier start left there removed first, never
+   through a link: clear_scratch_copy()) and writes its scratch copy there, starting as @p seed, the owner's alone with
+   every folder made for it. False, with nothing left there, when the copy could not be written, a link or anything but
+   a real folder at the scratch folder's or the format folder's name included. */
 bool
-seed_scratch(QSettings::Format format, const QString& organization, const QString& application, const QString& dir,
+seed_scratch(QSettings::Format format, const QString& organization, const QString& application, const QString& cache,
              const QByteArray& seed) {
-    QDir(dir).removeRecursively();
+    if (!clear_scratch_copy(cache, scratch_leaf(format))) {
+        return false;
+    }
+    const QString dir =
+        cache + QLatin1Char('/') + QLatin1String(kScratchFolder) + QLatin1Char('/') + scratch_leaf(format);
     QSettings::setPath(format, QSettings::UserScope, dir);
     const QString scratch = settings_file_path(format, organization, application);
     if (!scratch.isEmpty() && make_private_folders(dir, scratch) && write_private(scratch, seed)) {
         return true;
     }
-    QDir(dir).removeRecursively();
+    (void)clear_scratch_copy(cache, scratch_leaf(format));
     return false;
-}
-
-QString
-scratch_leaf(QSettings::Format format) {
-    return format == QSettings::IniFormat ? QStringLiteral("ini") : QStringLiteral("native");
 }
 
 /* A start that leaves @p format on its real file removes the scratch copy an earlier start left in the app cache for
@@ -844,7 +913,7 @@ void
 forget_cache_scratch(QSettings::Format format) {
     const QString cache = app_cache();
     if (!cache.isEmpty() && !g_scratchFormats.contains(format)) {
-        remove_folder(cache + QStringLiteral("/settings-scratch"), scratch_leaf(format), 1);
+        (void)clear_scratch_copy(cache, scratch_leaf(format));
     }
 }
 
@@ -859,8 +928,7 @@ use_scratch(QSettings::Format format, const QString& organization, const QString
     g_scratchFormats.append(format);
     const QString cache = app_cache();
     if ((!env.noScratchFolder || !env.noScratchFolder()) && !cache.isEmpty()
-        && seed_scratch(format, organization, application,
-                        cache + QStringLiteral("/settings-scratch/") + scratch_leaf(format), seed)) {
+        && seed_scratch(format, organization, application, cache, seed)) {
         return true;
     }
     QSettings::setPath(format, QSettings::UserScope, uncreatable_folder());

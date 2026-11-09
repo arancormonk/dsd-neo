@@ -12738,7 +12738,11 @@ Qt Quick frontend (`src/ui/qt`):
     nothing is written anywhere (`settings_recovery_in_memory(fileName)`). The original stays byte-identical and the
     next start tries again. A later start that leaves a format on its real file (clean, kept or missing) removes that
     format's copy in `<CacheLocation>/settings-scratch/` unless this start put the format on scratch
-    (`test_clean_start_forgets_cache_scratch`).
+    (`test_clean_start_forgets_cache_scratch`). That removal, and the one before a scratch copy is seeded, never
+    follows a link at any level (`clear_scratch_copy()`): `settings-scratch` is opened only as a real folder
+    (`O_NOFOLLOW`, the same inode), the format folder is removed through that descriptor only when it is a real folder
+    holding nothing but files and links (the links removed themselves), and a link or anything else at either name
+    stays; a seed then has no copy and the run holds defaults in memory (`test_scratch_links_never_followed`).
     `settings_recovery_scratch(fileName)` (per file, also true in memory) and `settings_recovery_scratch()` (any
     file) report it, safe from any thread, apart from QSettings' status, which reads `NoError` from the scratch copy.
     Every outcome of `recover_ini_settings()` replaces what an earlier check noted for the file. A pending
