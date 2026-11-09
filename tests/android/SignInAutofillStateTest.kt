@@ -30,7 +30,7 @@ private fun shownForm(token: Int = 1, username: String = "alice"): SignInAutofil
 /** Focus [vid] and have it requested: the framework session starts. */
 private fun started(state: SignInAutofillState, token: Int, vid: Int, rect: Rect) {
     nothing(state.field(token, vid, rect, true, true, if (vid == USERNAME) "alice" else ""), "focus alone sends nothing")
-    expect(state.request(token, vid, rect, enabled = true), Effect.Request(vid, rect), why = "a settled focus requests")
+    expect(state.request(token, vid, rect, enabled = true), Effect.HideTextHandle, Effect.Request(vid, rect), why = "a settled focus requests")
     check(state.sessionStarted) { "a request starts the framework session" }
 }
 
@@ -56,7 +56,7 @@ private fun aRequestWaitsForTheOriginAndAppliesIt() {
     // The Qt window sits 30 px right of and 120 px below the host (split screen, a caption bar).
     state.origin(Offset(30, 120))
     val local = Rect(PASS_RECT.left + 30, PASS_RECT.top + 120, PASS_RECT.width, PASS_RECT.height)
-    expect(state.retryHeld(enabled = true), Effect.Request(PASSWORD, local),
+    expect(state.retryHeld(enabled = true), Effect.HideTextHandle, Effect.Request(PASSWORD, local),
         why = "the held request goes out once the origin is known, in host pixels")
     check(state.sessionStarted && !state.hasHeldRequest)
     nothing(state.retryHeld(enabled = true), "and only once")
@@ -84,7 +84,7 @@ private fun focusLossExitsOnlyAStartedSession() {
     expect(state.field(1, USERNAME, USER_RECT, true, false, "alice"), Effect.Exit(USERNAME), why = "focus left the field")
     nothing(state.field(1, USERNAME, USER_RECT, true, false, "alice"), "no second exit without a focus change")
     nothing(state.field(1, PASSWORD, PASS_RECT, true, true, ""), "the next field's focus waits for its request")
-    expect(state.request(1, PASSWORD, PASS_RECT, enabled = true), Effect.Request(PASSWORD, PASS_RECT),
+    expect(state.request(1, PASSWORD, PASS_RECT, enabled = true), Effect.HideTextHandle, Effect.Request(PASSWORD, PASS_RECT),
         why = "every focus entry gets its own request")
     expect(state.field(1, PASSWORD, PASS_RECT, false, false, ""), Effect.Exit(PASSWORD), why = "focus lost as it hides")
 }
@@ -186,7 +186,7 @@ private fun resumedReadsTheServiceAgain() {
     check(!state.sessionStarted && state.token == 1 && state.structure().size == 2) { "as disabled: snapshot kept" }
     // A service turned on while the form is open works from the next focus.
     nothing(state.field(1, PASSWORD, PASS_RECT, true, true, ""), "focus")
-    expect(state.request(1, PASSWORD, PASS_RECT, enabled = true), Effect.Request(PASSWORD, PASS_RECT), why = "next focus")
+    expect(state.request(1, PASSWORD, PASS_RECT, enabled = true), Effect.HideTextHandle, Effect.Request(PASSWORD, PASS_RECT), why = "next focus")
 }
 
 private fun theStructureDescribesTheSnapshot() {
@@ -273,14 +273,14 @@ private fun aShownFillUiFollowsASettledMove() {
     val state = requestedPassword(shown = true)
     nothing(state.field(1, PASSWORD, PASS_RECT, true, true, ""), "no move, no settle")
     expect(state.field(1, PASSWORD, MOVED, true, true, ""), Effect.Settle(PASSWORD), why = "a move arms the settle")
-    expect(state.settled(), Effect.Exit(PASSWORD), Effect.Enter(PASSWORD, MOVED), why = "one re-anchor at the new place")
+    expect(state.settled(), Effect.Exit(PASSWORD), Effect.HideTextHandle, Effect.Enter(PASSWORD, MOVED), why = "one re-anchor at the new place")
     nothing(state.settled(), "the settle is used once")
     nothing(state.field(1, PASSWORD, MOVED, true, true, ""), "anchored there now")
     // The exit hides the UI and the enter shows it again, as the framework reports.
     nothing(state.fillUi(PASSWORD, shown = false), "hidden by the exit")
     nothing(state.fillUi(PASSWORD, shown = true), "shown by the enter")
     expect(state.field(1, PASSWORD, MOVED_AGAIN, true, true, ""), Effect.Settle(PASSWORD), why = "another move")
-    expect(state.settled(), Effect.Exit(PASSWORD), Effect.Enter(PASSWORD, MOVED_AGAIN), why = "re-anchored again")
+    expect(state.settled(), Effect.Exit(PASSWORD), Effect.HideTextHandle, Effect.Enter(PASSWORD, MOVED_AGAIN), why = "re-anchored again")
 }
 
 private fun noReAnchorWithoutAShownFillUi() {
@@ -324,6 +324,37 @@ private fun noReAnchorWithoutAShownFillUi() {
     nothing(state.fillUi(7, shown = true), "only fields 1 and 2 exist")
 }
 
+private fun aMoveBeforeTheFillUiShowedIsFollowedOnceShown() {
+    val state = requestedPassword(shown = false)
+    nothing(state.field(1, PASSWORD, MOVED, true, true, ""), "moved while the service was still answering")
+    expect(state.fillUi(PASSWORD, shown = true), Effect.Settle(PASSWORD),
+        why = "shown at the old place: it waits for the field to settle")
+    expect(state.settled(), Effect.Exit(PASSWORD), Effect.HideTextHandle, Effect.Enter(PASSWORD, MOVED),
+        why = "then follows it once")
+    nothing(state.fillUi(PASSWORD, shown = false), "hidden by the exit")
+    nothing(state.fillUi(PASSWORD, shown = true), "shown again where the field is: nothing more")
+    nothing(state.settled(), "nothing armed")
+
+    val still = requestedPassword(shown = false)
+    nothing(still.fillUi(PASSWORD, shown = true), "shown where the field still is: nothing to follow")
+    nothing(still.settled(), "nothing armed")
+}
+
+private fun everyRequestAndEnterHidesTheTextHandleFirst() {
+    val state = shownForm()
+    nothing(state.field(1, USERNAME, USER_RECT, true, true, "alice"), "focus")
+    val request = state.request(1, USERNAME, USER_RECT, enabled = true)
+    check(request.indexOf(Effect.HideTextHandle) == request.indexOfFirst { it is Effect.Request } - 1) {
+        "the handle is hidden right before the request: $request"
+    }
+    nothing(state.fillUi(USERNAME, shown = true), "shown")
+    expect(state.field(1, USERNAME, MOVED, true, true, "alice"), Effect.Settle(USERNAME), why = "moved")
+    val reanchor = state.settled()
+    check(reanchor.indexOf(Effect.HideTextHandle) == reanchor.indexOfFirst { it is Effect.Enter } - 1) {
+        "the handle is hidden right before the enter, which may start a request: $reanchor"
+    }
+}
+
 private fun aCommitEndsTheFillUiState() {
     val state = requestedPassword(shown = true)
     check(state.commit(1, "alice", "s3cret").contains(Effect.Commit))
@@ -350,5 +381,7 @@ fun main() {
     aShownFillUiFollowsASettledMove()
     noReAnchorWithoutAShownFillUi()
     aCommitEndsTheFillUiState()
+    aMoveBeforeTheFillUiShowedIsFollowedOnceShown()
+    everyRequestAndEnterHidesTheTextHandleFirst()
     println("PASS: sign-in autofill state follows tokens, focus, commit and the service")
 }

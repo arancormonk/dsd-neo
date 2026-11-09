@@ -21,8 +21,11 @@ package io.github.arancormonk.dsdneo
  *   the field is still entered; leaving the field, the service going away or the token ending drops it;
  * - a field that stops being entered (focus lost, or hidden while focused) is exited, in a started session only;
  * - while the framework reports its fill UI shown for the entered field ([fillUi]), a move of that field arms the
- *   settle wait ([Effect.Settle]); [settled] then re-anchors the UI once at the field's new place (an exit, then an
- *   enter with the new bounds), if the field is still entered, still moved and the UI still shown;
+ *   settle wait ([Effect.Settle]), and so does the UI showing for a field that moved since its request; [settled] then
+ *   re-anchors the UI once at the field's new place (an exit, then an enter with the new bounds), if the field is still
+ *   entered, still moved and the UI still shown;
+ * - every request and every re-anchor's enter, either of which can start a FillRequest, comes right after
+ *   [Effect.HideTextHandle];
  * - [commit] reports both values, commits, then hides both fields, in a started session only, and ends that session;
  *   a later request under the same token starts a new one;
  * - [end] cancels a started session and clears everything; a newer [begin] does the same for the older token;
@@ -68,6 +71,9 @@ class SignInAutofillState {
 
         /** Enter field [vid] again at [rect], host pixels: with the response the UI already has, no new request. */
         data class Enter(val vid: Int, val rect: Rect) : Effect()
+
+        /** Take Qt's text cursor handle off the screen, so a structure captured next holds the app's window only. */
+        data object HideTextHandle : Effect()
     }
 
     private data class Field(val windowRect: Rect, val visible: Boolean, val focused: Boolean, val value: String) {
@@ -189,10 +195,18 @@ class SignInAutofillState {
         if (token == 0 || !isField(vid)) {
             return NONE
         }
-        if (shown) {
-            shownFor = vid
-        } else if (shownFor == vid) {
-            shownFor = 0
+        if (!shown) {
+            if (shownFor == vid) {
+                shownFor = 0
+            }
+            return NONE
+        }
+        shownFor = vid
+        // Shown at the bounds of its request: a field that moved meanwhile is followed once it settles.
+        val field = fields[vid]
+        if (sessionStarted && field != null && field.entered && field.windowRect != anchors[vid]) {
+            settling = vid
+            return listOf(Effect.Settle(vid))
         }
         return NONE
     }
@@ -209,7 +223,7 @@ class SignInAutofillState {
             return NONE
         }
         anchors[vid] = field.windowRect
-        return listOf(Effect.Exit(vid), Effect.Enter(vid, field.windowRect.moved(offset)))
+        return listOf(Effect.Exit(vid), Effect.HideTextHandle, Effect.Enter(vid, field.windowRect.moved(offset)))
     }
 
     fun commit(token: Int, username: String, password: String): List<Effect> {
@@ -269,7 +283,7 @@ class SignInAutofillState {
         held = 0
         sessionStarted = true
         anchors[vid] = field.windowRect
-        return listOf(Effect.Request(vid, field.windowRect.moved(offset)))
+        return listOf(Effect.HideTextHandle, Effect.Request(vid, field.windowRect.moved(offset)))
     }
 
     /** What only a running framework session keeps: a held request, the fill UI state and the settle wait. */

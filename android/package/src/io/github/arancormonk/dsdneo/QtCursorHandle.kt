@@ -10,7 +10,8 @@ import android.view.ViewGroup
 import android.widget.PopupWindow
 
 /**
- * Qt's text cursor handle, taken off the screen right before [SignInAutofill] asks for an autofill request.
+ * Qt's text cursor handle, taken off the screen right before [SignInAutofill] asks for an autofill request or
+ * re-enters a field to move a shown dropdown (an enter that may start a request).
  *
  * Qt 6.11.3 draws the insertion handle under a tapped text field as a [PopupWindow] of its own (`CursorHandle`, held
  * by the `QtEditText` under the Qt window in `m_cursorHandle`, its popup in `m_popup`). The structure an autofill

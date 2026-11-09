@@ -13562,39 +13562,48 @@ RadioReference sign-in form itself (the relay, `SignInAutofill` in `src/ui/qt`, 
   right after the call, so the committed password's Java copy is let go of at once.
 - `SignInAutofill.kt` posts each call to the main looper in order and hands `SignInAutofillState.kt` (plain Kotlin) the
   event; the effects it returns (`Request`, `Exit`, `Value`, `Commit`, `Cancel`, `Visibility`, and `Held`, `Settle`,
-  `Enter` below) run there against the attached activity's `AutofillManager`, read at that moment: with no host, no
-  manager or `!isEnabled()` the state is told `disabled()` instead (the framework session flag, a held request and the
-  fill UI state drop, the snapshot stays). The state's rules: stale tokens (any but the live one; tokens only grow) do
-  nothing; a request goes out only for a shown field, with the service on, and starts the framework session; a field
-  stops being entered when it loses focus or is hidden while focused (card hidden, clipped away), and is then exited;
-  commit reports both values, commits and hides both fields, and end cancels, each in a started session only; a request
-  after a commit starts a new session under the same token. A commit's calls run in one posted operation.
+  `Enter`, `HideTextHandle` below) run there against the attached activity's `AutofillManager`, read at that moment:
+  with no host, no manager or `!isEnabled()` the state is told `disabled()` instead (the framework session flag, a held
+  request and the fill UI state drop, the snapshot stays). The state's rules: stale tokens (any but the live one; tokens
+  only grow) do nothing; a request goes out only for a shown field, with the service on, and starts the framework
+  session; a field stops being entered when it loses focus or is hidden while focused (card hidden, clipped away), and
+  is then exited; commit reports both values, commits and hides both fields, and end cancels, each in a started session
+  only; a request after a commit starts a new session under the same token. A commit's calls run in one posted
+  operation.
 - A request made while the Qt window's origin is unknown is held (`Held`: one value-free `HostDiagnostics` record per
   hold) and goes out once the origin is known, from a global layout pass on the host, the Qt window's layout change or
   Qt's next field report, while that field is still entered; blur, hiding, end, a newer token or the service going
   away drop it.
-- Right before each `requestAutofill()`, `QtCursorHandle.kt` dismisses Qt's text cursor handle: a `PopupWindow` of Qt's
-  `CursorHandle` (read by name: `QtEditText.m_cursorHandle`, `CursorHandle.m_popup`, kept by `qt-rules.pro` and checked
-  by `tools/check_android_r8.py`). With the handle up, the structure has a second window, and KeePassDX 4.5.8 takes the
-  app from the last window's title, refuses, and never answers (the session times out after 5 s, and a later commit
-  offers no save). The handle's popup style has no exit transition, so `dismiss()` removes its root view at once
-  (`PopupWindow.dismissImmediate()` → `removeViewImmediate()`), and the structure is built later, in the main-thread
-  message the request causes (`ActivityThread` `REQUEST_ASSIST_CONTEXT_EXTRAS` → `new AssistStructure()`, which walks
-  `WindowManagerGlobal.getRootViews()`). Qt shows the handle again only on a cursor or anchor rect change or a tap. The
-  selection handles and the Cut/Copy/Paste menu are left alone (an edit in progress). Fail-soft: a missing class or
-  field changes nothing and leaves one record for the process.
-- Fill UI following (refines "one request per focus entry"): an `AutofillCallback` registered on the activity's
-  manager at attach (unregistered at detach) reports `EVENT_INPUT_SHOWN`/`HIDDEN`/`UNAVAILABLE` per field. While the
-  UI is shown for the entered field, a change of that field's rect (rotation, keyboard, scroll) arms a 300 ms settle
-  (`SETTLE_MS`, the relay's wait), restarted by each further change; when it runs out with the field still entered,
-  moved from where the UI was anchored and the UI still shown, the field is exited and entered again
-  (`notifyViewExited`, then `notifyViewEntered(host, vid, newBounds)`). AOSP: an enter for the current view returns
-  before the bounds update (`Session.updateLocked` `isSameViewEntered`), but after an exit the enter is not a manual
-  request and the response already covers the field (`shouldStartNewPartitionLocked` false), so no FillRequest goes
-  out and `ViewState.update()` → `onFillReady()` shows the dropdown at the new bounds; no IME inline request exists for
-  the host, so `requestShowInlineSuggestionsLocked()` fails over to the dropdown. With no fill UI shown a move does
-  nothing. Limit: a response the framework has marked expired would make that enter start a focused request, which can
-  wait for the keyboard's inline request.
+- Right before each `requestAutofill()` and each re-anchor's `notifyViewEntered()` (the state's `HideTextHandle` effect;
+  that enter starts a request when the response is unusable), `QtCursorHandle.kt` dismisses Qt's text cursor handle: a
+  `PopupWindow` of Qt's `CursorHandle` (read by name: `QtEditText.m_cursorHandle`, `CursorHandle.m_popup`, kept by
+  `qt-rules.pro` and checked by `tools/check_android_r8.py`). With the handle up, the structure has a second window, and
+  KeePassDX 4.5.8 takes the app from the last window's title, refuses, and never answers (the session times out after 5
+  s, and a later commit offers no save). The handle's popup style has no exit transition, so `dismiss()` removes its
+  root view at once (`PopupWindow.dismissImmediate()` → `removeViewImmediate()`), and the structure is built later, in
+  the main-thread message the request causes (`ActivityThread` `REQUEST_ASSIST_CONTEXT_EXTRAS` → `new
+  AssistStructure()`, which walks `WindowManagerGlobal.getRootViews()`). Qt shows the handle again only on a cursor or
+  anchor rect change or a tap. The selection handles and the Cut/Copy/Paste menu are left alone (an edit in progress).
+  Fail-soft: a missing class or field changes nothing and leaves one record for the process.
+- Fill UI following (refines "one request per focus entry"): an `AutofillCallback` registered on the activity's manager
+  at attach (unregistered at detach) reports `EVENT_INPUT_SHOWN`/`HIDDEN`/`UNAVAILABLE` per field. While the UI is shown
+  for the entered field, a change of that field's rect (rotation, keyboard, scroll) arms a 300 ms settle (`SETTLE_MS`,
+  the relay's wait), restarted by each further change; when it runs out with the field still entered, moved from where
+  the UI was anchored and the UI still shown, the field is exited and entered again (`notifyViewExited`, then
+  `notifyViewEntered(host, vid, newBounds)`). The UI showing for a field that moved after its request (it is placed at
+  the request's bounds) arms the same settle. AOSP: an enter for the current view returns before the bounds update
+  (`Session.updateLocked` `isSameViewEntered`), but after an exit the enter is not a manual request and the response
+  already covers the field (`shouldStartNewPartitionLocked` false), so no FillRequest goes out and `ViewState.update()`
+  → `onFillReady()` shows the dropdown at the new bounds; no IME inline request exists for the host, so
+  `requestShowInlineSuggestionsLocked()` fails over to the dropdown. With no fill UI shown a move does nothing. Limit: a
+  response the framework has marked expired would make that enter start a focused request, which can wait for the
+  keyboard's inline request. A move of the whole app window with nothing moving inside it (a freeform drag, a
+  split-screen divider) needs nothing: `AutofillPopupWindow.update()` makes the dropdown
+  `TYPE_APPLICATION_ABOVE_SUB_PANEL` (AutofillPopupWindow.java:118, android16-release) shown with `showAsDropDown()`
+  (234), whose `createPopupLayoutParams(anchor.getApplicationWindowToken())` (PopupWindow.java:1419, token at 1624)
+  attaches it to the app's window, and `findDropDownPosition()` (1733) sets its x/y as the anchor's screen location
+  minus the app root's; sub-windows' "coordinate space is relative to their attached window"
+  (`WindowManager.LayoutParams.FIRST_SUB_WINDOW`, WindowManager.java:2290-2296), so the dropdown moves with the window.
 - The host view is the activity content's first child (`android.R.id.content`, `MATCH_PARENT`, behind Qt's
   `QtRootLayout`, which `super.onCreate()` set as the content view): childless, not focusable or clickable, no touches,
   `IMPORTANT_FOR_ACCESSIBILITY_NO`, `IMPORTANT_FOR_AUTOFILL_YES`, no drawing. Never focused, so `requestAutofill()` adds

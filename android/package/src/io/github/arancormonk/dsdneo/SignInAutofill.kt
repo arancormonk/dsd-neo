@@ -45,11 +45,14 @@ import io.github.arancormonk.dsdneo.SignInAutofillState.Effect
  * structure. A request made before it is known is held (one diagnostic record, no values) and goes out once a layout
  * pass or Qt's next field report finds it, while the field is still focused and shown.
  *
- * Right before each request, Qt's text cursor handle is taken off the screen ([QtCursorHandle]), so the structure the
- * service gets holds the activity's window only. An [AutofillManager.AutofillCallback] registered on the activity's
+ * Right before each request, and before each re-anchor's enter (which starts a request when the framework holds no
+ * usable response), Qt's text cursor handle is taken off the screen ([QtCursorHandle]), so the structure the service
+ * gets holds the activity's window only. An [AutofillManager.AutofillCallback] registered on the activity's
  * manager tells the state when the framework shows or hides its fill UI for a field; while it is shown, a move of the
- * focused field that has been still for [SETTLE_MS] re-anchors it once: the field is exited and entered again at its
- * new bounds, which shows the UI there from the response it already has, with no new request.
+ * focused field that has been still for [SETTLE_MS] re-anchors it once (as does a UI shown for a field that moved
+ * after its request): the field is exited and entered again at its new bounds, which shows the UI there from the
+ * response it already has, with no new request. A move of the whole app window needs nothing: the UI is a sub-window
+ * of it and moves with it (docs/code_map.md "Sign-in autofill").
  *
  * A fill goes back to Qt in one [DsdNative.nativeSignInFilled] call, under the token live when the framework filled.
  * Nothing on this path logs a value: a failure is recorded in [HostDiagnostics] by its exception's class name only.
@@ -205,10 +208,8 @@ object SignInAutofill {
 
     private fun apply(manager: AutofillManager, view: View, effect: Effect) {
         when (effect) {
-            is Effect.Request -> {
-                QtCursorHandle.hide(qtWindow, HostDiagnostics::submit)
-                manager.requestAutofill(view, effect.vid, onScreen(view, effect.rect))
-            }
+            is Effect.Request -> manager.requestAutofill(view, effect.vid, onScreen(view, effect.rect))
+            Effect.HideTextHandle -> QtCursorHandle.hide(qtWindow, HostDiagnostics::submit)
             is Effect.Enter -> manager.notifyViewEntered(view, effect.vid, onScreen(view, effect.rect))
             is Effect.Exit -> manager.notifyViewExited(view, effect.vid)
             is Effect.Held -> HostDiagnostics.submit("sign-in autofill: request held until the Qt window is laid out")
