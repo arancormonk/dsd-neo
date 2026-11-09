@@ -160,13 +160,13 @@ class ImportedFilesModel : public QAbstractListModel {
     Q_INVOKABLE int rowForPath(const QString& path) const;
 
     /**
-     * @brief The rows the library file at @p path holds now, read as its row's type: {ok, accepted, skipped}, with
-     *        ok false when @p path is no library row or its file cannot be read.
+     * @brief The rows the file at @p path holds now, read as a talkgroup list: {ok, accepted, skipped}, with ok false
+     *        when @p path is empty or its file cannot be read. Any path, in the library or not.
      *
-     * Read from the file, not the row's import counts: the decoder rewrites a talkgroup list in place as the user
-     * edits it, and a file can be updated, so what it held at its import says little about it now.
+     * Read from the file, not a library row's import counts: the decoder rewrites a talkgroup list in place as the
+     * user edits it, and a file can be updated, so what it held at its import says little about it now.
      */
-    Q_INVOKABLE QVariantMap rowCounts(const QString& path) const;
+    Q_INVOKABLE QVariantMap groupListCounts(const QString& path) const;
 
     /**
      * @brief Stored paths dropped by load() because the file was gone, then forgets them.

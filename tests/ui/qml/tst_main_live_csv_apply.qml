@@ -146,9 +146,17 @@ Item {
             }
         }
 
-        // A path the library does not hold cannot be read here; the import goes ahead and the decoder says why it
-        // refuses, if it does.
-        function test_group_list_switch_to_a_file_outside_the_library() {
+        // A path the library does not hold is read the same way: one the import would refuse (rows none of which
+        // load, or no file to read) clears the list too, so the previous system's file takes none of this system's
+        // edits; a usable one imports.
+        function test_group_list_switch_to_a_file_outside_the_library_data() {
+            return [
+                {tag: "rows", content: "id,mode,name\n1001,A,Dispatch\n", want: "importGroupList"},
+                {tag: "no usable rows", content: "id;mode;name\n1001;A;Dispatch\n", want: "clearGroupList"},
+                {tag: "missing", content: null, want: "clearGroupList"}
+            ]
+        }
+        function test_group_list_switch_to_a_file_outside_the_library(data) {
             var mainRoot = appLoader.item
             var wizard = findChild(mainRoot, "wizardScreen")
             wizard.openForAdd(false)
@@ -160,11 +168,14 @@ Item {
             testContext.setHostRunning(true)
             testContext.resetCommands()
 
-            var path = "/data/imports/not in the library.csv"
+            var path = data.content === null ? "/data/imports/not in the library.csv"
+                                             : testContext.writeFixtureCsv("outside-" + data.tag.replace(/ /g, "-") + ".csv", data.content)
+            compare(importedFiles.rowForPath(path), -1)
             wizard.openForEdit(savedRow)
             wizard.assignCsvPath("group", path, false)
             wizard.commit()
-            compare(commands.listCommands(), ["importGroupList " + path])
+            compare(commands.listCommands(), [data.want === "clearGroupList" ? data.want : data.want + " " + path])
+            compare(mainRoot.sessionSystem.groupCsvPath, path)
         }
     }
 }

@@ -2184,14 +2184,13 @@ Window {
                 // The import refuses a talkgroup list whose rows all fail to
                 // load (an Excel CSV saved with ';') or that cannot be read,
                 // which would leave the previous file's talkgroups live and that
-                // file taking this system's edits. Such a library file clears
-                // the list instead: the session decodes with no talkgroups and
-                // writes no file. A list with no rows at all imports as the empty
-                // list it is, and a path outside the library goes to the import,
-                // which says why it refuses, if it does.
+                // file taking this system's edits. Such a file, in the library
+                // or not, clears the list instead: the session decodes with no
+                // talkgroups and writes no file. A list with no rows at all
+                // imports as the empty list it is.
                 if (sys.groupCsvPath !== was.groupCsvPath) {
-                    var rows = sys.groupCsvPath.length > 0 ? importedFiles.rowCounts(sys.groupCsvPath) : ({});
-                    var unusable = rows.ok === true ? rows.accepted === 0 && rows.skipped > 0 : sys.groupCsvPath.length > 0 && importedFiles.rowForPath(sys.groupCsvPath) >= 0;
+                    var rows = sys.groupCsvPath.length > 0 ? importedFiles.groupListCounts(sys.groupCsvPath) : ({});
+                    var unusable = sys.groupCsvPath.length > 0 && (rows.ok !== true || (rows.accepted === 0 && rows.skipped > 0));
                     if (sys.groupCsvPath.length > 0 && !unusable)
                         commands.importGroupList(sys.groupCsvPath);
                     else if (sys.groupCsvPath.length > 0 || (was.groupCsvPath || "").length > 0)

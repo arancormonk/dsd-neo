@@ -12833,12 +12833,12 @@ Qt Quick frontend (`src/ui/qt`):
   list, as the decoder does: the notice says `Updated · empty list`, the row `Empty list · <date>` in the normal
   colour, and it is reloaded; a channel map or other kind with no rows stays `No usable rows`. Main.qml's saved-system
   edit of the running system posts `importGroupList(path)` for a changed group file, unless
-  `ImportedFilesModel::rowCounts(path)` (`{ok, accepted, skipped}`, read from the file now, since the decoder
-  rewrites a list in place and the import's counts go stale) says it has data rows none of which load, or the library
-  file cannot be read: then it posts `clearGroupList()`, since the refused import would leave the previous system's
-  list live, with this system's edits saved into that list's file. A path outside the library is imported, so the
-  decoder says why it refuses. Tests: `UI_QT_IMPORTED_FILES` (`test_update_waits_for_decoder_rewrite`,
-  `test_rollback_keeps_newer_files`, `test_row_counts_read_the_file_now`), `UI_QT_QML_CALL_LISTS`
+  `ImportedFilesModel::groupListCounts(path)` (`{ok, accepted, skipped}`, the file read now as a talkgroup list,
+  since the decoder rewrites a list in place and the import's counts go stale) says it has data rows none of which
+  load, or the file cannot be read: then it posts `clearGroupList()`, since the refused import would leave the
+  previous system's list live, with this system's edits saved into that list's file. A path outside the library is
+  read the same way. Tests: `UI_QT_IMPORTED_FILES` (`test_update_waits_for_decoder_rewrite`,
+  `test_rollback_keeps_newer_files`, `test_group_list_counts_read_the_file_now`), `UI_QT_QML_CALL_LISTS`
   (`tst_imports_live_reload.qml`, `tst_main_live_csv_apply.qml`), `UI_QT_CONTROLLER` (`test_reload_bridge`).
 - `talkgroup_list_model.{h,cpp}` polls the effective core policy's source-context/generation pair after call-history
   ingestion, merging listed rows with uncovered talkgroups heard this session (history rows of `historySession`).

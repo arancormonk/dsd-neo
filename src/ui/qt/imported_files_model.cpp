@@ -867,11 +867,10 @@ ImportedFilesModel::rowForPath(const QString& path) const {
 }
 
 QVariantMap
-ImportedFilesModel::rowCounts(const QString& path) const {
-    const int row = rowForPath(path);
+ImportedFilesModel::groupListCounts(const QString& path) const {
     int accepted = 0;
     int skipped = 0;
-    const bool ok = row >= 0 && validate(path, m_rows.at(row).type, &accepted, &skipped);
+    const bool ok = !path.isEmpty() && validate(path, QStringLiteral("group"), &accepted, &skipped);
     return {{"ok", ok}, {"accepted", ok ? accepted : 0}, {"skipped", ok ? skipped : 0}};
 }
 

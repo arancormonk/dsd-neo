@@ -745,14 +745,15 @@ test_export_registration_in_place() {
     model.remove(model.rowForPath(path));
 }
 
-/* Issue #748: rowCounts() reads the file as it is now, where the row's counts are from its import. */
+/* Issue #748: groupListCounts() reads the file as it is now, where a library row's counts are from its import, and
+ * reads a file outside the library the same way. */
 void
-test_row_counts_read_the_file_now() {
+test_group_list_counts_read_the_file_now() {
     TestHost host;
     dsd_qt::ImportedFilesModel model(&host);
     const QString path = model.newTalkgroupListPath();
     const auto counts = [&model](const QString& file) {
-        const QVariantMap map = model.rowCounts(file);
+        const QVariantMap map = model.groupListCounts(file);
         return QStringLiteral("%1 %2 %3")
             .arg(map.value("ok").toBool() ? QStringLiteral("ok") : QStringLiteral("unread"))
             .arg(map.value("accepted").toInt())
@@ -770,9 +771,12 @@ test_row_counts_read_the_file_now() {
     const QTemporaryDir outside;
     const QString external = outside.filePath("external.csv");
     expect("write outside fixture", write_file(external, QByteArray("id,mode,name\n1001,A,Dispatch\n")));
-    expect("a file outside the library is not read", counts(external) == QStringLiteral("unread 0 0"));
+    expect("a file outside the library is read too", counts(external) == QStringLiteral("ok 1 0"));
+    expect("an outside ';' list", write_file(external, QByteArray("id;mode;name\n1001;A;Dispatch\n")));
+    expect("an outside list's unusable rows are skipped", counts(external) == QStringLiteral("ok 0 1"));
     expect("file removed", QFile::remove(path));
     expect("a missing file is not read", counts(path) == QStringLiteral("unread 0 0"));
+    expect("no path is not read", counts(QString()) == QStringLiteral("unread 0 0"));
     model.remove(model.rowForPath(path));
 }
 
@@ -1960,7 +1964,7 @@ main(int argc, char** argv) {
     test_target_errors_and_opaque_columns();
     test_example_targets();
     test_export_registration_in_place();
-    test_row_counts_read_the_file_now();
+    test_group_list_counts_read_the_file_now();
     test_import_document();
     test_imported_files_model();
     test_update_rejects_invalid_pick();
