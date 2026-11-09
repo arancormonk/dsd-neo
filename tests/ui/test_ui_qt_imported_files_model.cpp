@@ -1922,6 +1922,127 @@ test_journal_recovery_keeps_named_revisions() {
     }
 }
 
+/* Whether the channel map @p map, a plain stored row, still loads, and the hex key list its first row names by -K
+   still exists and validates. */
+bool
+plainMapValidates(const QString& map, const QString& keys) {
+    dsd_csv_validation stats{};
+    return dsd_csv_validate_chan_file(map.toUtf8().constData(), &stats) == 0 && QFileInfo::exists(keys)
+           && dsd_csv_validate_key_file_hex(keys.toUtf8().constData(), &stats) == 0;
+}
+
+/* Another library row's CSV may need a file in a bundle's older revision (a library an older app version wrote, or a
+   restore): a plain map's option cell, and a target list's channel map, name bundle A's first key list. The cleanup
+   after A's replace, the startup cleanup and journal recovery all keep that revision while a row needs it, and still
+   remove what nothing needs; a stored CSV that cannot be parsed deletes nothing. */
+void
+test_cleanup_keeps_revisions_other_rows_reach() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    const QTemporaryDir source;
+    const QString bundled = source.filePath("bundled.csv");
+    const QString plain = source.filePath("plain.csv");
+    const QString targets = source.filePath("targets.csv");
+    expect(
+        "cross-row fixtures",
+        write_file(source.filePath("keys.csv"), "keyid,value\n02,ABCDE\n")
+            && write_file(bundled, "channel,frequency,mode,keys_hex_csv\n1,851012500,p25,keys.csv\n")
+            && write_file(plain, "channel,frequency,mode\n1,851012500,p25\n")
+            && write_file(source.filePath("key.csv"), "id,value\n01,ABCDEF0123\n")
+            && write_file(source.filePath("map.csv"), "channel,frequency,mode,keys_hex_csv\n1,851012500,p25,key.csv\n")
+            && write_file(targets, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+                                   "one,p25-trunk,851012500,map.csv,250,,\n"));
+    dsd_qt::ImportService service(host.importTransport());
+    QString a;
+    QString b;
+    QString t;
+    QString root;
+    QString keys;
+    QByteArray mapB;
+    const auto targetValidates = [&t] {
+        return dsd_app_trunk_scan_validate_bundle(t.toUtf8().constData(), nullptr, nullptr, nullptr, 0) == 0;
+    };
+    {
+        dsd_qt::ImportedFilesModel model(&host, &service);
+        a = importAndWait(model, bundled, "bundled.csv", "chan").value("path").toString();
+        b = importAndWait(model, plain, "plain.csv", "chan").value("path").toString();
+        t = importAndWait(model, targets, "targets.csv", "trunkTargets").value("path").toString();
+        waitForWorker(service);
+        root = model.get(model.rowForPath(a)).value("bundleRoot").toString();
+        keys = firstCompanion(a, 3);
+        const QString nested = firstCompanion(t, 3);
+        // B's option cell and T's channel map name A's key list where it is stored now.
+        mapB = "channel,frequency,mode,options\n1,851012500,p25,-K "
+               + QFileInfo(b).dir().relativeFilePath(keys).toUtf8() + "\n";
+        expect("other rows name A's key list",
+               !root.isEmpty() && keys.startsWith(root + '/') && write_file(b, mapB)
+                   && write_file(nested, "channel,frequency,mode,keys_hex_csv\n1,851012500,p25,"
+                                             + QFileInfo(nested).dir().relativeFilePath(keys).toUtf8() + "\n"));
+        expect("both rows validate", plainMapValidates(b, keys) && targetValidates());
+        // While the decoder runs a replace reclaims nothing, so the startup cleanup below meets A's older revision.
+        write_file(source.filePath("keys.csv"), "keyid,value\n02,12345\n");
+        host.running = true;
+        expect("A is replaced while the decoder runs",
+               importAndWait(model, bundled, "bundled.csv", "chan", a).value("ok").toBool());
+        host.running = false;
+        waitForWorker(service);
+        expect("A's map now reaches a new revision", !firstCompanion(a, 3).startsWith(QFileInfo(keys).absolutePath()));
+    }
+    const QString older = QFileInfo(keys).absolutePath();
+    const QString orphan = root + "/33333333-3333-3333-3333-333333333333";
+    expect("an orphan revision", QDir().mkpath(orphan) && write_file(orphan + "/0.csv", "x\n"));
+    {
+        dsd_qt::ImportedFilesModel model(&host, &service);
+        waitForWorker(service);
+        expect("the startup cleanup removes a revision nothing needs", !QFileInfo::exists(orphan));
+        expect("the startup cleanup keeps a revision other rows need", plainMapValidates(b, keys) && targetValidates());
+        const QString middle = QFileInfo(firstCompanion(a, 3)).absolutePath();
+        expect("A is replaced again", importAndWait(model, bundled, "bundled.csv", "chan", a).value("ok").toBool());
+        waitForWorker(service);
+        expect("the cleanup after a replace removes the revision A left", !QFileInfo::exists(middle));
+        expect("the cleanup after a replace keeps a revision other rows need",
+               plainMapValidates(b, keys) && targetValidates());
+    }
+
+    // Journal recovery: the older revision's entry outlived its commit, beside one nothing needs.
+    const QString unnamed = root + "/99999999-9999-9999-9999-999999999999";
+    expect("journaled revisions", QDir().mkpath(unnamed) && write_file(unnamed + "/0.csv", "x\n")
+                                      && dsd_qt::ImportService::journalAdd({older, unnamed}));
+    {
+        const dsd_qt::ImportedFilesModel model(&host, &service);
+        expect("recovery keeps a journaled revision other rows need", plainMapValidates(b, keys) && targetValidates());
+        expect("recovery removes a journaled revision nothing needs", !QFileInfo::exists(unnamed));
+        expect("recovery settles the journal", journal().isEmpty());
+        waitForWorker(service);
+    }
+
+    // A stored CSV that cannot be parsed (a repeated column) may need anything: neither recovery nor a cleanup deletes
+    // a thing.
+    expect("unparsed fixtures", QDir().mkpath(orphan) && write_file(orphan + "/0.csv", "x\n") && QDir().mkpath(unnamed)
+                                    && write_file(unnamed + "/0.csv", "x\n")
+                                    && dsd_qt::ImportService::journalAdd({unnamed})
+                                    && write_file(b, "channel,frequency,mode,options,options\n"));
+    {
+        const dsd_qt::ImportedFilesModel model(&host, &service);
+        expect("an unparsed row keeps the journal for the next start", journal() == QStringList{unnamed});
+        waitForWorker(service);
+        expect("an unparsed row deletes nothing",
+               QFileInfo::exists(orphan + "/0.csv") && QFileInfo::exists(unnamed + "/0.csv") && targetValidates());
+    }
+    expect("B parses again", write_file(b, mapB));
+    {
+        dsd_qt::ImportedFilesModel model(&host, &service);
+        waitForWorker(service);
+        expect("once every row parses, what nothing needs goes",
+               !QFileInfo::exists(orphan) && !QFileInfo::exists(unnamed) && journal().isEmpty());
+        expect("and what other rows need stays", plainMapValidates(b, keys) && targetValidates());
+        model.remove(model.rowForPath(t));
+        model.remove(model.rowForPath(b));
+        model.remove(model.rowForPath(a));
+        waitForWorker(service);
+    }
+}
+
 } // namespace
 
 /* Issue #526: the channel-map review carries an analog row's own channel width in Hz -- an nfm row's
@@ -2882,6 +3003,7 @@ main(int argc, char** argv) {
     test_startup_revision_cleanup();
     test_journal_recovery();
     test_journal_recovery_keeps_named_revisions();
+    test_cleanup_keeps_revisions_other_rows_reach();
     test_channel_bundle();
     test_channel_bundle_quoted_options();
     test_channel_review_bandwidth();

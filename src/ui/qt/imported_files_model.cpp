@@ -918,9 +918,11 @@ ImportedFilesModel::reclaimRevisions(const QList<BundleRevisions>& bundles) {
     if (bundles.isEmpty() || !m_imports || decoderBusy()) {
         return;
     }
+    // Every row, not only these bundles': another row's CSV may still need a file in one of their revisions.
+    const QList<LibraryFile> library = libraryFiles(m_rows);
     m_imports->submit(
-        [bundles](const ImportJob&) {
-            clean_bundle_revisions(bundles, &ImportService::journalEntries);
+        [bundles, library](const ImportJob&) {
+            clean_bundle_revisions(bundles, library, &ImportService::journalEntries);
             return QVariantMap();
         },
         [](qint64, const QVariantMap&, bool) {});
@@ -1267,6 +1269,16 @@ journaled_dir_referenced(const QString& dir, const QList<BundleRevisions>& bundl
 }
 } // namespace
 
+QList<LibraryFile>
+ImportedFilesModel::libraryFiles(const QList<Row>& rows) {
+    QList<LibraryFile> files;
+    files.reserve(rows.size());
+    for (const Row& row : rows) {
+        files.append(LibraryFile{row.path, row.type});
+    }
+    return files;
+}
+
 void
 ImportedFilesModel::recoverJournal(const QList<Row>& rows) {
     bool ok = false;
@@ -1276,12 +1288,14 @@ ImportedFilesModel::recoverJournal(const QList<Row>& rows) {
         ImportService::journalSetAside();
         return;
     }
-    // A saved system, scan list or profile may name a file in a journaled directory (a replace whose entry outlived
-    // its commit leaves an old revision only they reach). A store that cannot be read may name any of them: then
-    // nothing goes, and the journal keeps every entry for the next start.
-    bool named_ok = false;
-    const QStringList named = backup::typed_file_paths(&named_ok);
-    if (!named_ok) {
+    if (entries.isEmpty()) {
+        return;
+    }
+    // A saved system, scan list or profile, or another row's CSV, may need a file in a journaled directory (a replace
+    // whose entry outlived its commit leaves an old revision only they reach). A store or stored file that cannot be
+    // read may need any of them: then nothing goes, and the journal keeps every entry for the next start.
+    QStringList named;
+    if (!kept_library_files(libraryFiles(rows), &named)) {
         return;
     }
     QList<BundleRevisions> bundles;

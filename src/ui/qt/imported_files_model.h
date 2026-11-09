@@ -36,6 +36,7 @@
 
 namespace dsd_qt {
 struct BundleRevisions;
+struct LibraryFile;
 
 class DecoderHost;
 class ImportService;
@@ -270,7 +271,10 @@ class ImportedFilesModel : public QAbstractListModel {
      * once the file is in place, and left journaled when neither the move nor the rollback could be saved.
      */
     QVariantMap replaceRowFile(int row, const QVariantMap& staged, bool refresh, const QStringList& created = {});
-    /** Reclaim @p bundles' unreached revisions on the import worker; nothing while the decoder runs. */
+    /**
+     * Reclaim @p bundles' unreached revisions on the import worker, keeping any file another row's CSV reaches;
+     * nothing while the decoder runs.
+     */
     void reclaimRevisions(const QList<BundleRevisions>& bundles);
     void updateImporting(bool before);
 
@@ -330,12 +334,14 @@ class ImportedFilesModel : public QAbstractListModel {
     void load();
     /**
      * @brief Settle the commit journal a crash left (load() only, before the prune): remove each journaled directory
-     * that @p rows do not reference (a row's bundle root, or a revision its primary reaches), that holds no file a
-     * typed path field names (backup::typed_file_paths()), and that lies under imports/bundles/ with an owned name. A
-     * journal that cannot be read deletes nothing and is set aside; a store that cannot be read deletes nothing and
-     * keeps the journal.
+     * that @p rows do not reference (a row's bundle root, or a revision its primary reaches), that holds no file
+     * kept_library_files() keeps (a typed path field names it, or any row's stored CSV reaches it), and that lies
+     * under imports/bundles/ with an owned name. A journal that cannot be read deletes nothing and is set aside; a
+     * store or stored file that cannot be read deletes nothing and keeps the journal.
      */
     static void recoverJournal(const QList<Row>& rows);
+    /** The stored file and type of each of @p rows, for kept_library_files(). */
+    static QList<LibraryFile> libraryFiles(const QList<Row>& rows);
     bool save() const;
     bool saveRows(const QList<Row>& rows) const;
 

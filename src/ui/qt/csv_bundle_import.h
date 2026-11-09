@@ -114,10 +114,25 @@ bool bundle_reached_files(const QString& path, const QString& root, const QStrin
 bool bundle_reached_revisions(const QString& path, const QString& root, const QString& type, QSet<QString>* names);
 
 /**
- * Whether @p dir holds (at any depth) a file of @p named, the clean absolute paths backup::typed_file_paths() lists: a
- * directory holding one is kept by every cleanup, since a saved system or another store still names it.
+ * Whether @p dir holds (at any depth) a file of @p named, clean absolute paths (kept_library_files()): a directory
+ * holding one is kept by every cleanup, since a saved system, another store or another library row still needs it.
  */
 bool holds_named_file(const QString& dir, const QStringList& named);
+
+/** One library row's stored file and its type. */
+struct LibraryFile {
+    QString path;
+    QString type;
+};
+
+/**
+ * The files no cleanup may delete, as clean absolute paths: those a typed path field names (backup::typed_file_paths())
+ * and those the stored files of @p library reach (a channel map's key columns and option cells; a target list's channel
+ * maps and theirs), whichever row or bundle they lie in. Rows of other types reach nothing, nor does a stored file that
+ * is gone. False, with @p kept untouched, when a store or a stored file cannot be read or parsed: it may need anything,
+ * so a caller deletes nothing.
+ */
+bool kept_library_files(const QList<LibraryFile>& library, QStringList* kept);
 
 /** One registered bundle whose old revisions a cleanup may reclaim. */
 struct BundleRevisions {
@@ -132,8 +147,10 @@ struct BundleRevisions {
  * Only owned, registered roots; never through a link. Kept: every revision when a primary cannot be parsed, every
  * revision a commit in flight is filling (@p journal lists it; read after the directories are listed and before the
  * primary is parsed, so a commit that finished in between is seen in the primary), and every revision holding a file
- * a typed path field names. Nothing is removed when the journal or a store cannot be read.
+ * kept_library_files() keeps for @p library, the whole library. Nothing is removed when the journal, a store or a
+ * stored file of @p library cannot be read.
  */
-void clean_bundle_revisions(const QList<BundleRevisions>& bundles, const std::function<QStringList(bool* ok)>& journal);
+void clean_bundle_revisions(const QList<BundleRevisions>& bundles, const QList<LibraryFile>& library,
+                            const std::function<QStringList(bool* ok)>& journal);
 } // namespace dsd_qt
 #endif

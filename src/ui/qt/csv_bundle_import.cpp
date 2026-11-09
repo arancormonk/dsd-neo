@@ -843,6 +843,19 @@ collectReachableReferences(const QString& path, QList<TargetReference>& refs) {
     return true;
 }
 
+namespace {
+bool
+collectChannelReferences(const QString& path, QList<TargetReference>& refs) {
+    QList<TargetReference> found;
+    const dsd_app_scan_csv_callbacks callbacks{nullptr, collectTargetReference, &found, nullptr};
+    if (dsd_app_scan_csv_inspect(path.toUtf8().constData(), nullptr, 1, &callbacks, nullptr, 0) != 0) {
+        return false;
+    }
+    refs.append(found);
+    return true;
+}
+} // namespace
+
 bool
 bundle_reached_files(const QString& path, const QString& root, const QString& type, QSet<QString>* files) {
     QList<TargetReference> refs;
@@ -852,11 +865,8 @@ bundle_reached_files(const QString& path, const QString& root, const QString& ty
             || !collectReachableReferences(path, refs)) {
             return false;
         }
-    } else {
-        const dsd_app_scan_csv_callbacks callbacks{nullptr, collectTargetReference, &refs, nullptr};
-        if (dsd_app_scan_csv_inspect(path.toUtf8().constData(), nullptr, 1, &callbacks, nullptr, 0)) {
-            return false;
-        }
+    } else if (!collectChannelReferences(path, refs)) {
+        return false;
     }
     const QString prefix = QDir::cleanPath(root) + '/';
     for (const auto& ref : refs) {
@@ -889,6 +899,39 @@ holds_named_file(const QString& dir, const QStringList& named) {
 }
 
 namespace {
+/* Add the files @p file's stored CSV reaches to @p reached; false when it cannot be read or parsed. */
+bool
+addReachedFiles(const LibraryFile& file, QStringList* reached) {
+    const bool targets = file.type == QLatin1String("trunkTargets");
+    // Only channel maps and target lists name other files; a file that is gone names nothing (load() prunes its row).
+    if ((!targets && file.type != QLatin1String("chan")) || !QFileInfo::exists(file.path)) {
+        return true;
+    }
+    QList<TargetReference> refs;
+    if (!(targets ? collectReachableReferences(file.path, refs) : collectChannelReferences(file.path, refs))) {
+        return false;
+    }
+    for (const auto& ref : refs) {
+        reached->append(QDir::cleanPath(ref.resolved));
+    }
+    return true;
+}
+} // namespace
+
+bool
+kept_library_files(const QList<LibraryFile>& library, QStringList* kept) {
+    bool ok = false;
+    QStringList files = backup::typed_file_paths(&ok);
+    const auto add = [&files](const LibraryFile& file) { return addReachedFiles(file, &files); };
+    if (!ok || !std::all_of(library.cbegin(), library.cend(), add)) {
+        return false;
+    }
+    files.removeDuplicates();
+    *kept = std::move(files);
+    return true;
+}
+
+namespace {
 /* The revision directories of @p root: owned names, real directories, no link. */
 QStringList
 revisionDirectories(const QString& root) {
@@ -903,7 +946,7 @@ revisionDirectories(const QString& root) {
 }
 
 void
-cleanBundle(const BundleRevisions& bundle, const QStringList& named,
+cleanBundle(const BundleRevisions& bundle, const QStringList& kept,
             const std::function<QStringList(bool* ok)>& journal) {
     const QString root = QDir::cleanPath(bundle.root);
     if (!owned_bundle_root(root)) {
@@ -923,7 +966,7 @@ cleanBundle(const BundleRevisions& bundle, const QStringList& named,
     }
     for (const auto& name : revisions) {
         const QString dir = root + '/' + name;
-        if (!reached.contains(name) && !inFlight.contains(dir) && !holds_named_file(dir, named)) {
+        if (!reached.contains(name) && !inFlight.contains(dir) && !holds_named_file(dir, kept)) {
             QDir(dir).removeRecursively();
         }
     }
@@ -931,14 +974,14 @@ cleanBundle(const BundleRevisions& bundle, const QStringList& named,
 } // namespace
 
 void
-clean_bundle_revisions(const QList<BundleRevisions>& bundles, const std::function<QStringList(bool* ok)>& journal) {
-    bool ok = false;
-    const QStringList named = backup::typed_file_paths(&ok);
-    if (!ok) {
+clean_bundle_revisions(const QList<BundleRevisions>& bundles, const QList<LibraryFile>& library,
+                       const std::function<QStringList(bool* ok)>& journal) {
+    QStringList kept;
+    if (bundles.isEmpty() || !kept_library_files(library, &kept)) {
         return;
     }
     for (const auto& bundle : bundles) {
-        cleanBundle(bundle, named, journal);
+        cleanBundle(bundle, kept, journal);
     }
 }
 } // namespace dsd_qt

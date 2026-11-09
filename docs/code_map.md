@@ -12447,11 +12447,14 @@ Qt Quick frontend (`src/ui/qt`):
   and target lists, after a successful bundle replace and once after `load()`, never while the decoder runs. Only owned,
   registered roots, never through a link; a primary that cannot be parsed (a target list that no longer validates) keeps
   every revision, and so does the journal naming the revision or its root (listed, then the journal read, then the
-  primary parsed, so a commit finishing in between is seen) or any
-  typed path field (`backup::typed_file_paths()`, the stores on disk; a store that cannot be read keeps everything)
-  naming a file in it. `load()` first settles the commit journal (`recoverJournal()`, before the prune; skipped when
-  the index cannot be read): a journaled directory under `imports/bundles/` with an owned name that no row references
-  (its bundle root, or a revision its primary reaches) is removed; an unreadable journal deletes nothing and is set
+  primary parsed, so a commit finishing in between is seen) or any file `kept_library_files()` keeps in it: those a
+  typed path field names (`backup::typed_file_paths()`, the stores on disk) and those any library row's stored CSV
+  reaches (a channel map's key columns and option cells, a target list's channel maps and theirs), whichever bundle
+  they lie in; a store or stored CSV that cannot be read or parsed keeps everything. `load()` first settles the commit
+  journal (`recoverJournal()`, before the prune; skipped when the index cannot be read or the journal is empty): a
+  journaled directory under `imports/bundles/` with an owned name that no row references (its bundle root, or a
+  revision its primary reaches) and that holds no file `kept_library_files()` keeps is removed; a store or stored CSV
+  that cannot be read deletes nothing and keeps the journal; an unreadable journal deletes nothing and is set
   aside (`ImportService::journalSetAside()`, `import_journal.json.bad`) so later commits journal again. Picks import
   only through `beginImport()`: no synchronous import is left (the host's `importContentUri`/`importDocument` and
   Android's `AppSupport.importDocumentToFiles` are gone too). `importGeneratedFile`/`refreshGeneratedFile`
