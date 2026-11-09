@@ -12671,14 +12671,23 @@ Qt Quick frontend (`src/ui/qt`):
     `QTemporaryDir` in the app cache (`<CacheLocation>/settings-check-XXXXXX`), else in the system temp folder
     (`dsd-neo-settings-check-XXXXXX`, named for the app since other programs share it): Android
     lets an app write no system temp folder (`QDir::tempPath()` is `/tmp`, EACCES), and a default `QTemporaryDir` there
-    made every start after the first run on scratch. With neither, a file read whole is parsed in place by a read-only
-    explicit-file `QSettings`, which tells a clean file (left alone) but writes no clean file for one that is not, so an
-    unavailable folder never makes a healthy file "could not be checked". A crash between a work folder's making and
-    its removal leaves a copy of the settings (which can hold RadioReference credentials), so `recover_settings_files()`
-    first removes every leftover: only folders with those exact prefixes, only in those two folders, never a link
-    with such a name, and only a folder holding nothing but files and links (each link removed itself, never what it
-    points to) (`test_leftover_work_folders`). Documented limit: a second desktop instance starting at the same instant
-    could have its own check's folder emptied under it, and that one check could then misjudge its file.
+    made every start after the first run on scratch. On POSIX the file is opened once for the check, non-blocking on
+    its resolved path (`dsd_path_canonical()`, then `dsd_fopen_existing_regular_file()`, which refuses anything but a
+    regular file), and held: a FIFO swapped in after the stat is refused, never waited on. With no work folder, a file
+    read whole is parsed in place by a read-only explicit-file `QSettings` on that open file (`/proc/self/fd/N`, else
+    `/dev/fd/N`; by name only on Windows, which has no FIFO at a file path), which tells a clean file (left alone) but
+    writes no clean file for one that is not, so an unavailable folder never makes a healthy file "could not be
+    checked", and the name is never opened again (`test_no_system_temp_folder`'s FIFO swap). A crash leaves a copy of
+    the settings (which can hold RadioReference credentials) in a work folder or a temporary scratch folder
+    (`dsd-neo-settings-scratch-XXXXXX` in the system temp folder), so `recover_settings_files()` first removes every
+    leftover: only folders with those exact prefixes, only in the folders this code makes them in, and only a real
+    folder (a link or file with such a name stays). On POSIX each step works through directory descriptors: `fstatat`
+    without following, a folder only when this user owns it (`geteuid()`), opened `O_NOFOLLOW` and checked to be the
+    same inode, its entries removed with `unlinkat` (a link removed itself, never followed), at most as deep as this
+    code's own layout (none in a work folder, `<ini|native>/<organization>/` in a scratch folder), so a name swapped for
+    a link in a shared `/tmp` reaches nothing else (`test_leftover_work_folders`). Windows does the same through
+    `QFileInfo` (its temp folder is the user's own). Documented limit: a second desktop instance starting at the same
+    instant could have its own check's folder emptied under it, and that one check could then misjudge its file.
   - Read whole and parsed cleanly, or missing: nothing happens.
   - Read whole but not clean: its bytes are copied to the first free `<file>.unreadable-N` (N = 1..99,
     `dsd_fopen_private(..., "wbx")`, never replacing anything; synced), then the clean file replaces it through a
@@ -12700,7 +12709,9 @@ Qt Quick frontend (`src/ui/qt`):
     takes the seeded copy there is no scratch copy: the format points at a folder no process can create, root
     included (`/dev/null/…`; on Windows a name holding `|`), so its settings are defaults held in memory this run and
     nothing is written anywhere (`settings_recovery_in_memory(fileName)`). The original stays byte-identical and the
-    next start tries again.
+    next start tries again. A later start that leaves a format on its real file (clean, kept or missing) removes that
+    format's copy in `<CacheLocation>/settings-scratch/` unless this start put the format on scratch
+    (`test_clean_start_forgets_cache_scratch`).
     `settings_recovery_scratch(fileName)` (per file, also true in memory) and `settings_recovery_scratch()` (any
     file) report it, safe from any thread, apart from QSettings' status, which reads `NoError` from the scratch copy.
     Every outcome of `recover_ini_settings()` replaces what an earlier check noted for the file. A pending
