@@ -1213,8 +1213,9 @@ edit_group_list_at_start(dsd_opts* opts, dsd_state* state, void* context) {
     return 0;
 }
 
-/* "Group list ... not loaded" warnings seen by the log tap. */
+/* "Group list ... not loaded" warnings and group file open errors seen by the log tap. */
 static int g_group_not_loaded_warnings;
+static int g_group_open_errors;
 
 static void
 count_group_not_loaded(dsd_neo_log_level_t level, const char* text, void* ctx) {
@@ -1222,6 +1223,9 @@ count_group_not_loaded(dsd_neo_log_level_t level, const char* text, void* ctx) {
     (void)ctx;
     if (text && strstr(text, "WARNING: Group list '") && strstr(text, "not loaded: the file was not found")) {
         g_group_not_loaded_warnings++;
+    }
+    if (text && strstr(text, "Unable to open group file")) {
+        g_group_open_errors++;
     }
 }
 
@@ -1240,7 +1244,8 @@ group_config_after(int kind, const char* unusable) {
    loaded at the start with trunking off, as -G loads it, and is the list's baseline: the first edit keeps the file's
    other rows (regression: with trunking off nothing loaded it, and that edit rewrote the file from the empty table).
    One that does not load does not stop a start with trunking off, which never read it before, and nothing is written
-   over it: a missing file is warned about and then created by the first edit; a file none of whose rows load (';'
+   over it: a missing file is warned about, with no open error for a start that carries on, and then created by the
+   first edit; a file none of whose rows load (';'
    separators) is incomplete, and the edit is not saved to it. */
 static int
 test_configured_group_list_loads_with_trunking_off(int kind) {
@@ -1269,6 +1274,7 @@ test_configured_group_list_loads_with_trunking_off(int kind) {
     opts->trunk_scan_enabled = 0;
     dsd_neo_log_set_tap(count_group_not_loaded, NULL);
     g_group_not_loaded_warnings = 0;
+    g_group_open_errors = 0;
     group_start_probe probe = {0, -1, -1};
     dsd_engine_lifecycle_hooks hooks = {.start = edit_group_list_at_start, .context = &probe};
     rc |= expect_true("conventional run completes", dsd_engine_run_with_lifecycle(opts, state, &hooks) == 0);
@@ -1276,6 +1282,7 @@ test_configured_group_list_loads_with_trunking_off(int kind) {
     rc |= expect_true("an unusable list is incomplete", probe.incomplete == (kind == GROUP_CONFIG_UNUSABLE));
     rc |= expect_true("a missing file is warned about once",
                       g_group_not_loaded_warnings == (kind == GROUP_CONFIG_MISSING ? 1 : 0));
+    rc |= expect_true("no open error for a start that carries on", g_group_open_errors == 0);
     rc |= expect_true("the edit is saved, except to an incomplete list",
                       probe.saved == (kind == GROUP_CONFIG_UNUSABLE ? 1 : 0));
     char text[128] = {0};

@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "test_env.h"
+#include "test_support.h"
 
 #include "../test_support/radio_policy_test.h"
 
@@ -4003,6 +4004,47 @@ test_group_startup_missing_file_baseline(void) {
     return rc;
 }
 
+/* csvGroupImportPathReported() says why a live import failed, from what failed: no file, a path that cannot be read
+ * as one (a directory), or success. Its quiet open logs no open error; the plain import still does. */
+static int
+test_group_import_reports_why(void) {
+    char path[64];
+    char dir[DSD_TEST_PATH_MAX];
+    int rc = load_report_file(path, sizeof path, "id,mode,name\n100,A,Dispatch\n");
+    rc |= expect_true("directory fixture", dsd_test_mkdtemp(dir, sizeof dir, "dsd-neo-test-tg-dir") != NULL);
+    dsd_neo_log_set_tap(count_group_row_warnings, NULL);
+
+    struct {
+        const char* path;
+        int quiet;
+        dsd_group_import_failure want;
+        int open_errors;
+    } k_cases[] = {
+        {path, 1, DSD_GROUP_IMPORT_OK, 0},
+        {"dsd-neo-test-tg-no-such-file.csv", 1, DSD_GROUP_IMPORT_NOT_FOUND, 0},
+        {"dsd-neo-test-tg-no-such-file.csv", 0, DSD_GROUP_IMPORT_NOT_FOUND, 1},
+        {dir, 1, DSD_GROUP_IMPORT_UNREADABLE, 0},
+    };
+
+    for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
+        dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+        if (!st) {
+            rc = 1;
+            continue;
+        }
+        dsd_group_import_failure why = DSD_GROUP_IMPORT_NO_MEMORY;
+        g_group_open_errors = 0;
+        const int imported = csvGroupImportPathReported(k_cases[i].path, st, k_cases[i].quiet, &why);
+        rc |= expect_true("import result", (imported == 0) == (k_cases[i].want == DSD_GROUP_IMPORT_OK));
+        rc |= expect_true("import failure reason", why == k_cases[i].want);
+        rc |= expect_true("open error logged only when not quiet", g_group_open_errors == k_cases[i].open_errors);
+        free_test_state(st);
+    }
+    (void)remove(path);
+    (void)dsd_test_rmdir(dir);
+    return rc;
+}
+
 /* Every way a list comes to stand for a file sets the baseline: a startup import (a header-only file too) and an
  * export, which moves it to the export path. A path the list never read or wrote has none and is written as before. */
 static int
@@ -4110,6 +4152,7 @@ main(void) {
     rc |= test_group_append_tracks_baseline();
     rc |= test_group_startup_and_export_baseline();
     rc |= test_group_startup_missing_file_baseline();
+    rc |= test_group_import_reports_why();
     rc |= test_group_check_is_quiet();
     return rc;
 }

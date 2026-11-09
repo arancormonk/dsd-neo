@@ -43,6 +43,22 @@ int csvSrcImportPath(const char* path, dsd_state* state);
 int csvGroupImport(const dsd_opts* opts, dsd_state* state);
 /** csvGroupImport() on an explicit path. */
 int csvGroupImportPath(const char* group_file_path, dsd_state* state);
+
+/** Why csvGroupImportPathReported() failed. */
+typedef enum {
+    DSD_GROUP_IMPORT_OK = 0,
+    DSD_GROUP_IMPORT_NOT_FOUND,  /* no file at the path */
+    DSD_GROUP_IMPORT_UNREADABLE, /* it could not be opened or read to the end */
+    DSD_GROUP_IMPORT_NO_MEMORY,  /* the list could not be stored or marked */
+} dsd_group_import_failure;
+
+/**
+ * csvGroupImportPath() that says why it failed in @p failure (may be NULL; DSD_GROUP_IMPORT_OK on success). With
+ * @p quiet_open nonzero a file that cannot be opened is not logged, for a caller that reports the failure itself; row
+ * warnings and an incomplete load are logged as always.
+ */
+int csvGroupImportPathReported(const char* group_file_path, dsd_state* state, int quiet_open,
+                               dsd_group_import_failure* failure);
 int csvChanImport(const dsd_opts* opts, dsd_state* state);
 struct dsd_scan_option_baseline;
 /** Warn, one line per entry, about each channel-map entry of @p rows whose service names only rejected traffic could

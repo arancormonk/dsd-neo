@@ -281,7 +281,8 @@ group_apply_tags_field(const group_policy_header* header, size_t field_count, ch
 /* What one pass over a group file found so far. stats (may be NULL) is the dry-run validator's tally. With neither a
  * state nor a store the pass only hashes the rows it would store (hash_only); a quiet pass logs no row diagnostics
  * (the file's rows were reported when it was loaded), nor a file it cannot open (a check before a rewrite finds a
- * deleted file missing, and its caller reports an unreadable one). */
+ * deleted file missing, and its caller reports an unreadable one). quiet_open alone keeps only the open quiet, for a
+ * caller that reports the failure itself (csvGroupImportPathReported()). */
 typedef struct {
     dsd_state* state;
     dsd_tg_policy_store* store;
@@ -291,6 +292,7 @@ typedef struct {
     uint64_t rows_hash; /* dsd_tg_policy_rows_hash_fold() over the rows stored so far */
     uint8_t hash_only;
     uint8_t quiet;
+    uint8_t quiet_open;
     char filename[CSV_IMPORT_PATH_MAX];
 } group_import_pass;
 
@@ -438,7 +440,7 @@ group_import_read(const char* group_file_path, group_import_pass* pass) {
     // Not every open failure sets errno (a path that does not expand), and only ENOENT means the file is missing.
     errno = 0;
     fp = csv_open_user_read_file_logged("group file", group_file_path, pass->filename, sizeof pass->filename,
-                                        pass->quiet);
+                                        pass->quiet || pass->quiet_open);
     if (fp == NULL) {
         pass->report.not_found = errno == ENOENT;
         pass->report.unreadable = !pass->report.not_found;
@@ -599,29 +601,58 @@ dsd_tg_policy_load(const char* path, dsd_tg_policy_store** out) {
     return rc;
 }
 
+/* Why a live group import failed: the state could not carry the list (no memory) before anything about the file. */
+static dsd_group_import_failure
+group_import_failure_of(int rc, int store_failed, const dsd_tg_policy_load_report* counts) {
+    if (rc == 0) {
+        return DSD_GROUP_IMPORT_OK;
+    }
+    if (store_failed) {
+        return DSD_GROUP_IMPORT_NO_MEMORY;
+    }
+    return counts->not_found ? DSD_GROUP_IMPORT_NOT_FOUND : DSD_GROUP_IMPORT_UNREADABLE;
+}
+
 /* Startup and bootstrap imports add the rows to the live list. Rows read before a read error stay loaded, so an
  * incomplete load marks the list rather than dropping it: it decodes with what loaded, and is not written back. */
 int
-csvGroupImportPath(const char* group_file_path, dsd_state* state) {
-    dsd_tg_policy_load_report counts;
-    uint64_t rows_hash = DSD_TG_POLICY_ROWS_HASH_INIT;
+csvGroupImportPathReported(const char* group_file_path, dsd_state* state, int quiet_open,
+                           dsd_group_import_failure* failure) {
+    if (failure) {
+        *failure = DSD_GROUP_IMPORT_UNREADABLE;
+    }
     if (!state) {
         return -1;
     }
-    int rc = group_import_path(group_file_path, state, NULL, NULL, &counts, &rows_hash);
+    group_import_pass pass;
+    group_import_pass_init(&pass, state, NULL, NULL);
+    pass.quiet_open = quiet_open ? 1u : 0u;
+    int rc = group_import_read(group_file_path, &pass);
+    const dsd_tg_policy_load_report counts = pass.report;
+    int store_failed = 0;
     if (dsd_tg_policy_load_report_incomplete(&counts)) {
         group_log_incomplete(group_file_path, &counts);
-        if (dsd_tg_policy_mark_incomplete(state) != 0) {
-            rc = -1;
-        }
+        store_failed = dsd_tg_policy_mark_incomplete(state) != 0;
     }
     // The file's rows as just read: the list's baseline for it (a header-only file too). A file not there yet holds no
     // rows: that is its baseline, so a file that appears later with rows written outside dsd-neo (or by a scan row's
     // list naming it) is not overwritten unchecked; one still missing, or empty, is written as before.
-    if ((rc == 0 || counts.not_found) && dsd_tg_policy_set_baseline(state, group_file_path, rows_hash) != 0) {
+    if (!store_failed && (rc == 0 || counts.not_found)
+        && dsd_tg_policy_set_baseline(state, group_file_path, pass.rows_hash) != 0) {
+        store_failed = 1;
+    }
+    if (store_failed) {
         rc = -1;
     }
+    if (failure) {
+        *failure = group_import_failure_of(rc, store_failed, &counts);
+    }
     return rc;
+}
+
+int
+csvGroupImportPath(const char* group_file_path, dsd_state* state) {
+    return csvGroupImportPathReported(group_file_path, state, 0, NULL);
 }
 
 int

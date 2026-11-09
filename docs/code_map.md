@@ -2230,8 +2230,9 @@ suite runs under this compiler.
   - Engine start (`import_group_csv_if_needed()`): a configured `opts->group_in_file` (`-G` or the INI's `[trunking]
     group_csv`) is loaded whatever the trunking state, as `-G` loads it, when the list is still empty and not marked
     incomplete. A file that does not load fails a start with trunking or trunk scan on, as before; with trunking off
-    the start goes on with a warning (`Group list '<path>' not loaded: <why>; continuing without it.`), and nothing is
-    written over the file: a missing one has the zero-row baseline (see Baseline), and an unreadable or unusable one is
+    the start goes on with a warning (`Group list '<path>' not loaded: <why>; continuing without it.`, `<why>` from
+    `csvGroupImportPathReported()`: not found, could not be read, or out of memory; its open is quiet, so no
+    `Unable to open group file` error precedes it), and nothing is written over the file: a missing one has the zero-row baseline (see Baseline), and an unreadable or unusable one is
     marked incomplete. Before, a config file's group list was never loaded with trunking off, and the first saved edit
     rewrote the file from the empty table.
   - Baseline (`{valid, rows_hash, path}` in the store, copied by clones; not by the UI snapshot copy, since frontend
