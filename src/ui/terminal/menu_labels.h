@@ -20,6 +20,10 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 
+/* The configured group list file in the frame's snapshot ("" when none): Reload group list's file and the group
+   import prompt's starting path. */
+const char* menu_configured_group_file(const void* ctx);
+
 // ---- Visibility/predicate functions ----
 bool io_rtl_active(const void* ctx);
 bool io_squelch_offered(const void* ctx);

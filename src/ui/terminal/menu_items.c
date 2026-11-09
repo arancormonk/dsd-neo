@@ -571,8 +571,8 @@ static const NcMenuItem TRUNK_LISTS_ITEMS[] = {
     {
         .id = "lists.group_reload",
         .label_fn = lbl_group_list_reload,
-        .help = "Read the group list file again, picking up edits made outside dsd-neo. A file that fails to load "
-                "keeps the current list. Clears temporary TG avoids and call skips.",
+        .help = "Read the group list file again, picking up edits made outside dsd-neo. A reload that works clears "
+                "temporary TG avoids and call skips; a file that fails to load keeps the current list.",
         .is_enabled = group_list_reload_offered,
         .on_select = act_group_list_reload,
     },

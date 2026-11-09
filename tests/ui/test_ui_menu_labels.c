@@ -1212,6 +1212,8 @@ test_group_list_reload_row(void) {
     rc |= expect_int("reload hidden without a group file", group_list_reload_offered(&ctx) ? 1 : 0, 0);
     DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", "/home/u/lists/groups.csv");
     rc |= expect_int("reload offered with a group file", group_list_reload_offered(&ctx) ? 1 : 0, 1);
+    rc |= expect_str("the configured file without a scan scope", menu_configured_group_file(&ctx),
+                     "/home/u/lists/groups.csv");
     rc |=
         expect_str("reload names the file", lbl_group_list_reload(&ctx, b, sizeof b), "Reload group list [groups.csv]");
     DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", "C:\\Users\\me\\Radio\\county.csv");
@@ -1238,6 +1240,7 @@ test_group_list_reload_row(void) {
     dsd_test_scan_labels_configured(&configured);
     rc |= expect_str("reload names the configured file under a row list", lbl_group_list_reload(&ctx, b, sizeof b),
                      "Reload group list [global.csv]");
+    rc |= expect_str("the configured file under a row list", menu_configured_group_file(&ctx), "/home/u/global.csv");
     configured.group_in_file[0] = '\0';
     dsd_test_scan_labels_configured(&configured);
     rc |= expect_int("reload hidden when only a row has a list", group_list_reload_offered(&ctx) ? 1 : 0, 0);

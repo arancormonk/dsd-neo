@@ -4267,6 +4267,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_navigation
         ui/test_ui_menu_navigation.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_core.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_navigation
@@ -4291,6 +4292,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_paging_viewport
         ui/test_ui_menu_paging_viewport.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_core.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_paging_viewport

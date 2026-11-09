@@ -65,9 +65,10 @@ menu_configured_scan_settings(const UiCtx* c) {
 
 /* The group list file the session is configured with, from the frame's snapshot: while a -Y row's or trunk-scan
    target's own list is on air, the global file it shadows, which is the one the reload command re-reads (resolved again
-   on the decoder thread). "" when none. */
-static const char*
-menu_configured_group_file(const UiCtx* c) {
+   on the decoder thread) and an import replaces. "" when none. */
+const char*
+menu_configured_group_file(const void* ctx) {
+    const UiCtx* c = (const UiCtx*)ctx;
     const dsd_scan_settings* configured = menu_configured_scan_settings(c);
     if (configured) {
         return configured->group_in_file;
@@ -232,7 +233,7 @@ rr_imports_available(const void* ctx) {
 /* Reload group list (discussion #748): only while a group list file is configured. */
 bool
 group_list_reload_offered(const void* ctx) {
-    return menu_configured_group_file((const UiCtx*)ctx)[0] != '\0';
+    return menu_configured_group_file(ctx)[0] != '\0';
 }
 
 /* The RadioReference rows sit inside the Channels & groups submenu, so each
@@ -736,7 +737,7 @@ lbl_fit_file_name(const char* name, char* out, size_t out_size) {
 const char*
 lbl_group_list_reload(const void* v, char* b, size_t n) {
     char name[LBL_FILE_NAME_BYTES + 1];
-    lbl_fit_file_name(lbl_path_leaf(menu_configured_group_file((const UiCtx*)v)), name, sizeof name);
+    lbl_fit_file_name(lbl_path_leaf(menu_configured_group_file(v)), name, sizeof name);
     DSD_SNPRINTF(b, n, "Reload group list [%s]", name);
     return b;
 }

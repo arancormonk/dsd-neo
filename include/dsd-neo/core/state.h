@@ -2801,6 +2801,9 @@ struct dsd_state {
        owned; rides the vertex_ks_count..ui_msg range. */
     dsd_received_identity rx_id;
 
+    /* Counts ui_msg's toasts set through app-control (ui_set_toast()), so a frontend tells a toast repeated word for word
+       within its second from one it has shown already (discussion #748). Rides the vertex_ks_count..ui_msg range. */
+    uint32_t ui_msg_seq;
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];
     /* 1 while an accepted trunking retune's drop of the access code waits for the decoder thread to apply it to rx_id

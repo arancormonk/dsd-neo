@@ -401,20 +401,12 @@ act_export_p25_bandplan(void* v) {
     ui_prompt_open_string_async("Export P25 band plan to path", def, sizeof def, cb_export_p25_bandplan, c);
 }
 
-/* The path prompt starts at the configured group list file, as Reload group list reads it: while a -Y row's or
-   trunk-scan target's own list is on air, the global file it shadows, which is the one an import replaces. Importing
-   the file in use again, or one beside it, is then an edit of its path instead of a retype. */
+/* The path prompt starts at the configured group list file, the one Reload group list reads: importing it again, or a
+   file beside it, is then an edit of its path instead of a retype. */
 void
 act_import_group(void* v) {
     UiCtx* c = (UiCtx*)v;
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(c ? c->state : NULL);
-    const char* current = NULL;
-    if (configured) {
-        current = configured->group_in_file;
-    } else if (c && c->opts) {
-        current = c->opts->group_in_file;
-    }
-    ui_csv_import_picker_open("group", "Group list CSV", current, 1024, cb_import_group, c);
+    ui_csv_import_picker_open("group", "Group list CSV", menu_configured_group_file(c), 1024, cb_import_group, c);
 }
 
 /* Reload group list (discussion #748): the decoder resolves the file after the scan scope is set aside, so the

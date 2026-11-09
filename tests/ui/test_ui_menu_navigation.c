@@ -20,6 +20,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -338,6 +339,21 @@ static time_t g_now = 1000;
 time_t
 dsd_realtime_time(void) {
     return g_now;
+}
+
+/* When the menu ends its status message by (ui_prims.c); 0 when not asked. */
+static time_t g_status_expire_by;
+
+void
+ui_status_expire_by(time_t until) { // NOLINT(misc-use-internal-linkage)
+    g_status_expire_by = until;
+}
+
+/* The text model's output preference (ui_text.c): ASCII here, so a toast's non-ASCII byte shows as '?'. */
+const char*
+dsd_unicode_or_ascii(const char* unicode_str, const char* ascii_str) {
+    (void)unicode_str;
+    return ascii_str;
 }
 
 /* The config service's look at the default file (issue #672): the menu asks it and does no I/O itself. */
@@ -738,32 +754,65 @@ test_overlays_shutdown_and_restart(const dsd_opts* opts, const dsd_state* state)
 }
 
 /* Discussion #748: a command a row posts answers in the decoder's toast, which an open menu can cover on the main
-   screen; each new toast goes to the menu's status line, once, and an expired one never does. */
+   screen; each new toast goes to the menu's status line once (new by its sequence, text or expiry), sanitized, held no
+   longer than the decoder holds it; an expired toast never does, nor one already live when the menu opens. */
+static void
+set_toast(dsd_state* state, const char* text, time_t ttl) {
+    DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", text);
+    state->ui_msg_expire = g_now + ttl;
+    state->ui_msg_seq++;
+}
+
 static void
 test_decoder_toast_in_status(const dsd_opts* opts, dsd_state* state) {
     g_fixture = 0;
     reset_capture();
     reset_modal_capture();
+
+    /* Live before the menu opens: the main screen's toast, not an answer; the open hint stays. */
+    g_default_missing_path = "/home/u/.config/dsd-neo/config.ini";
+    set_toast(state, "Applied: Talkgroup list exported", 1);
     g_status[0] = '\0';
-    DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s",
-                 "Failed: Group list reload -> file not found; list unchanged");
-    state->ui_msg_expire = g_now - 1;
     ui_menu_open_async(opts, state);
     ui_menu_tick(opts, state);
-    assert(g_status[0] == '\0'); /* expired before the menu saw it */
-    state->ui_msg_expire = g_now + 4;
+    assert(strcmp(g_status, "No default config; use Config menu to save to /home/u/.config/dsd-neo/config.ini") == 0);
+    g_default_missing_path = NULL;
+
+    /* Expired before the menu saw it. */
+    g_status[0] = '\0';
+    set_toast(state, "Failed: Group list reload -> file not found; list unchanged", -1);
+    ui_menu_tick(opts, state);
+    assert(g_status[0] == '\0');
+
+    /* A new toast: shown once, held until the decoder's expiry. */
+    set_toast(state, "Failed: Group list reload -> file not found; list unchanged", 4);
+    g_status_expire_by = 0;
     ui_menu_tick(opts, state);
     assert(strcmp(g_status, "Failed: Group list reload -> file not found; list unchanged") == 0);
+    assert(g_status_expire_by == g_now + 4);
     g_status[0] = '\0';
     ui_menu_tick(opts, state);
-    assert(g_status[0] == '\0'); /* the same toast is taken once */
+    assert(g_status[0] == '\0');
+
+    /* The same command again within its second: same text, same expiry, a new sequence. */
+    state->ui_msg_seq++;
+    ui_menu_tick(opts, state);
+    assert(strcmp(g_status, "Failed: Group list reload -> file not found; list unchanged") == 0);
+
+    /* A toast set without a sequence (a direct write) is still new by its text or its expiry. */
     DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", "Applied: Group list reloaded -> 4 rows");
     ui_menu_tick(opts, state);
     assert(strcmp(g_status, "Applied: Group list reloaded -> 4 rows") == 0);
     g_status[0] = '\0';
-    state->ui_msg_expire = g_now + 5; /* the same text set again is a new toast */
+    state->ui_msg_expire = g_now + 5;
     ui_menu_tick(opts, state);
     assert(strcmp(g_status, "Applied: Group list reloaded -> 4 rows") == 0);
+
+    /* Sanitized as the text model draws: a byte the terminal cannot draw shows as '?'. */
+    set_toast(state, "Failed: Group list reload -> Z\xC3\xBCrich.csv", 4);
+    ui_menu_tick(opts, state);
+    assert(strcmp(g_status, "Failed: Group list reload -> Z?rich.csv") == 0);
+
     assert(ui_menu_handle_key(27, opts, state) == 1);
     assert(ui_menu_is_open() == 0);
     state->ui_msg[0] = '\0';

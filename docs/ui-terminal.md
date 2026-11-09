@@ -206,7 +206,7 @@ Main Menu
 │   ├── Channels & groups
 │   │   ├── Import channel map CSV...
 │   │   ├── Import group list CSV...
-│   │   ├── Reload group list [groups.csv]           (while a group list file is loaded)
+│   │   ├── Reload group list [groups.csv]           (while a group list file is set)
 │   │   ├── Import source ID list CSV...
 │   │   ├── Import P25 band plan CSV...
 │   │   ├── Export learned P25 band plan...
@@ -501,13 +501,13 @@ Group policy reload:
   that fails to load (not found, not readable, or no usable rows, such as a CSV saved with `;` separators) keeps
   the current list, and the toast says why: `Failed: Group list import -> no usable rows (2 skipped); list
   unchanged`. A load that works says what it read: `Applied: Group list imported -> 42 rows, 1 skipped`.
-- **Reload group list [groups.csv]**, right after the import row, reads the loaded group list file again, so edits
-  made in another program (a text editor, a spreadsheet) take effect without typing the path. The brackets name the
-  file: the global group list, the one `-G` or the last import loaded, even while a `-Y` row or trunk-scan target with
-  its own list is on air (that list is left as it is). The row shows only while a group list file is loaded. Like an
-  import, a reload that works clears temporary TG avoids and call skips; one that fails changes nothing. The row
-  has no hotkey, so a stray key cannot clear them.
-- The **Import group list CSV...** path prompt starts at the loaded file's path, so importing it again or a file
+- **Reload group list [groups.csv]**, right after the import row, reads the group list file again, so edits made
+  in another program (a text editor, a spreadsheet) take effect without typing the path. The brackets name the file:
+  the global group list, the one `-G` or the last import set, even while a `-Y` row or trunk-scan target with its own
+  list is on air (that list is left as it is). The row shows while a group list file is set, even one that is now
+  missing (the reload then says `file not found`). Like an import, a reload that works clears temporary TG avoids and
+  call skips; one that fails changes nothing. The row has no hotkey, so a stray key cannot clear them.
+- The **Import group list CSV...** path prompt starts at the group list file's path, so importing it again or a file
   beside it is an edit of the path rather than a retype.
 - The outcome of an import or reload, as of any command a row posts, also shows on the menu's status line, where
   an open menu cannot cover it.

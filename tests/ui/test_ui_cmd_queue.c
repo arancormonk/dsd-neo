@@ -24265,6 +24265,13 @@ test_group_reload_rereads_the_file(void) {
     rc |= expect_str("reload with no file toast", state.ui_msg,
                      "Failed: Group list reload -> no group list file; import one first");
     rc |= expect_int("reload with no file loads nothing", (int)dsd_tg_policy_entry_count(&state), 0);
+    /* The same toast again within its second is still a new toast (discussion #748): its sequence moves, so a frontend
+       that has shown the first one shows this one too. */
+    const uint32_t first_seq = state.ui_msg_seq;
+    rc |= expect_int("reload again queued", dsd_app_command_action(DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("reload again drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("the repeated toast is a new one", state.ui_msg_seq == first_seq + 1U);
 
     post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, path);
     rc |= expect_int("reload seed import drained", dsd_app_drain_cmds(&opts, &state), 1);

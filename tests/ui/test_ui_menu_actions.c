@@ -500,6 +500,16 @@ ui_help_open(const char* help) {
     g_help_calls++;
 }
 
+/* The configured group file (menu_labels.c, tested there): the group import prompt starts at what it answers. */
+static const char* g_configured_group_file = "";
+static const void* g_configured_group_ctx;
+
+const char*
+menu_configured_group_file(const void* ctx) {
+    g_configured_group_ctx = ctx;
+    return g_configured_group_file;
+}
+
 bool
 freq_entry_offered(const dsd_opts* opts) {
     g_freq_offered_opts = opts;
@@ -1550,23 +1560,13 @@ test_additional_prompt_and_toggle_actions(void) {
     rc |= expect_str("group import prompt", g_prompt.title, "Group list CSV");
     rc |= expect_str("group import prompt starts empty without a list", g_prompt.prefill, "");
 
-    /* Discussion #748: the prompt starts at the configured group file; under a -Y row's own list, the configured one,
-       which is the list an import replaces. */
-    DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", "C:\\lists\\groups.csv");
+    /* Discussion #748: the prompt starts at the configured group file, the frame's (menu_configured_group_file()). */
+    g_configured_group_file = "C:\\lists\\groups.csv";
     reset_capture();
     act_import_group(&ctx);
     rc |= expect_str("group import prompt starts at the list's file", g_prompt.prefill, "C:\\lists\\groups.csv");
-    {
-        dsd_scan_settings configured;
-        DSD_MEMSET(&configured, 0, sizeof configured);
-        DSD_SNPRINTF(configured.group_in_file, sizeof configured.group_in_file, "%s", "/home/u/global.csv");
-        dsd_test_scan_labels_configured(&configured);
-        reset_capture();
-        act_import_group(&ctx); /* opts.group_in_file plays the row's own list */
-        rc |= expect_str("group import prompt starts at the configured file", g_prompt.prefill, "/home/u/global.csv");
-        dsd_test_scan_labels_configured(NULL);
-    }
-    opts.group_in_file[0] = '\0';
+    rc |= expect_int("group import asks the frame's context", g_configured_group_ctx == &ctx, 1);
+    g_configured_group_file = "";
 
     /* The reload row posts the command alone: the decoder resolves the file. */
     reset_capture();

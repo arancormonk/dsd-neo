@@ -494,6 +494,7 @@ ui_set_toast(dsd_state* state, int ttl_s, const char* fmt, ...) {
     (void)DSD_VSNPRINTF(state->ui_msg, sizeof state->ui_msg, fmt, ap);
     va_end(ap);
     state->ui_msg_expire = dsd_realtime_time() + ttl_s;
+    state->ui_msg_seq++;
 }
 
 /* A frequency in Hz as every tune toast names it: MHz to the Hz (issue #670). Returns @p out. */
