@@ -114,8 +114,9 @@ bool bundle_reached_files(const QString& path, const QString& root, const QStrin
 bool bundle_reached_revisions(const QString& path, const QString& root, const QString& type, QSet<QString>* names);
 
 /**
- * Whether @p dir holds (at any depth) a file of @p named, clean absolute paths (kept_library_files()): a directory
- * holding one is kept by every cleanup, since a saved system, another store or another library row still needs it.
+ * Whether @p dir holds (at any depth) a file of @p named, the paths kept_library_files() lists; @p dir is compared both
+ * as the file system resolves it and as spelled. A directory holding one is kept by every cleanup, since a saved
+ * system, another store or another library row still needs it.
  */
 bool holds_named_file(const QString& dir, const QStringList& named);
 
@@ -126,7 +127,8 @@ struct LibraryFile {
 };
 
 /**
- * The files no cleanup may delete, as clean absolute paths: those a typed path field names (backup::typed_file_paths())
+ * The files no cleanup may delete, canonical (through every link; a file that is gone by its clean absolute path): those
+ * a typed path field names (backup::typed_file_paths())
  * and those the stored files of @p library reach (a channel map's key columns and option cells; a target list's channel
  * maps and theirs), whichever row or bundle they lie in. Rows of other types reach nothing, nor does a stored file that
  * is gone. False, with @p kept untouched, when a store or a stored file cannot be read or parsed: it may need anything,

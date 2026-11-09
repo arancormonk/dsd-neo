@@ -891,11 +891,25 @@ bundle_reached_revisions(const QString& path, const QString& root, const QString
     return true;
 }
 
+namespace {
+/* @p path as the file system resolves it, through every link (/data/user/0 and /data/data are one folder); its clean
+   absolute spelling when it does not exist. */
+QString
+resolvedPath(const QString& path) {
+    const QFileInfo info(path);
+    const QString canonical = info.canonicalFilePath();
+    return canonical.isEmpty() ? QDir::cleanPath(info.absoluteFilePath()) : canonical;
+}
+} // namespace
+
 bool
 holds_named_file(const QString& dir, const QStringList& named) {
-    const QString prefix = QDir::cleanPath(dir) + '/';
-    return std::any_of(named.cbegin(), named.cend(),
-                       [&prefix](const QString& path) { return path.startsWith(prefix); });
+    // Either spelling of the folder: a file that is gone is kept by its spelling alone.
+    const QString resolved = resolvedPath(dir) + '/';
+    const QString clean = QDir::cleanPath(dir) + '/';
+    return std::any_of(named.cbegin(), named.cend(), [&resolved, &clean](const QString& path) {
+        return path.startsWith(resolved) || path.startsWith(clean);
+    });
 }
 
 namespace {
@@ -926,6 +940,8 @@ kept_library_files(const QList<LibraryFile>& library, QStringList* kept) {
     if (!ok || !std::all_of(library.cbegin(), library.cend(), add)) {
         return false;
     }
+    // Compared as the file system resolves them, so a reference through a link still keeps its file.
+    std::transform(files.begin(), files.end(), files.begin(), resolvedPath);
     files.removeDuplicates();
     *kept = std::move(files);
     return true;

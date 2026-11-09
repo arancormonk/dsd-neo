@@ -2043,6 +2043,79 @@ test_cleanup_keeps_revisions_other_rows_reach() {
     }
 }
 
+#ifndef _WIN32
+/* A reference spelled through a link to the library (as /data/data is to /data/user/0 on Android) still keeps its file:
+   a stored map's option cell and a saved system's key list name A's revisions through a symlinked alias of imports/.
+   The cleanup after a replace, the startup cleanup and journal recovery compare canonical paths. */
+void
+test_cleanup_matches_linked_spellings() {
+    const QString data = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QDir(data).removeRecursively();
+    TestHost host;
+    const QTemporaryDir source;
+    const QString bundled = source.filePath("bundled.csv");
+    const QString plain = source.filePath("plain.csv");
+    expect("linked fixtures",
+           write_file(source.filePath("keys.csv"), "keyid,value\n02,ABCDE\n")
+               && write_file(bundled, "channel,frequency,mode,keys_hex_csv\n1,851012500,p25,keys.csv\n")
+               && write_file(plain, "channel,frequency,mode\n1,851012500,p25\n"));
+    dsd_qt::ImportService service(host.importTransport());
+    const QString alias = data + "/linked-imports";
+    QString a;
+    QString b;
+    QString linkedKeys;
+    QString orphan;
+    QString named;
+    QString older;
+    {
+        dsd_qt::ImportedFilesModel model(&host, &service);
+        a = importAndWait(model, bundled, "bundled.csv", "chan").value("path").toString();
+        b = importAndWait(model, plain, "plain.csv", "chan").value("path").toString();
+        waitForWorker(service);
+        const QString root = model.get(model.rowForPath(a)).value("bundleRoot").toString();
+        const QString keys = firstCompanion(a, 3);
+        older = QFileInfo(keys).absolutePath();
+        orphan = root + "/33333333-3333-3333-3333-333333333333";
+        named = root + "/44444444-4444-4444-4444-444444444444";
+        const auto linked = [&alias](const QString& path) { return alias + path.mid(importsDirPath().size()); };
+        linkedKeys = linked(keys);
+        expect("a linked alias of the library", keys.startsWith(importsDirPath() + '/')
+                                                    && QFile::link(importsDirPath(), alias)
+                                                    && QFileInfo::exists(linkedKeys));
+        expect("B and a saved system name A's revisions through the alias",
+               write_file(b, "channel,frequency,mode,options\n1,851012500,p25,-K " + linkedKeys.toUtf8() + "\n")
+                   && QDir().mkpath(orphan) && write_file(orphan + "/0.csv", "x\n") && QDir().mkpath(named)
+                   && write_file(named + "/0.csv", "id,value\n1,1\n")
+                   && dsd_qt::json_store_save_array("saved_systems.json",
+                                                    QJsonArray{QJsonObject{{"keyCsvPath", linked(named + "/0.csv")}}}));
+        write_file(source.filePath("keys.csv"), "keyid,value\n02,12345\n");
+        expect("A is replaced", importAndWait(model, bundled, "bundled.csv", "chan", a).value("ok").toBool());
+        waitForWorker(service);
+        expect("the cleanup after a replace removes a revision nothing needs", !QFileInfo::exists(orphan));
+        expect("the cleanup after a replace keeps what a linked spelling names",
+               plainMapValidates(b, linkedKeys) && QFileInfo::exists(named + "/0.csv"));
+    }
+    {
+        const dsd_qt::ImportedFilesModel model(&host, &service);
+        waitForWorker(service);
+        expect("the startup cleanup keeps what a linked spelling names",
+               plainMapValidates(b, linkedKeys) && QFileInfo::exists(named + "/0.csv"));
+    }
+    expect("journaled revisions named through the alias", dsd_qt::ImportService::journalAdd({older, named}));
+    {
+        dsd_qt::ImportedFilesModel model(&host, &service);
+        expect("recovery keeps what a linked spelling names",
+               plainMapValidates(b, linkedKeys) && QFileInfo::exists(named + "/0.csv") && journal().isEmpty());
+        waitForWorker(service);
+        model.remove(model.rowForPath(b));
+        model.remove(model.rowForPath(a));
+        waitForWorker(service);
+    }
+    QFile::remove(dsd_qt::json_store_path("saved_systems.json"));
+    QFile::remove(alias);
+}
+#endif
+
 } // namespace
 
 /* Issue #526: the channel-map review carries an analog row's own channel width in Hz -- an nfm row's
@@ -3004,6 +3077,9 @@ main(int argc, char** argv) {
     test_journal_recovery();
     test_journal_recovery_keeps_named_revisions();
     test_cleanup_keeps_revisions_other_rows_reach();
+#ifndef _WIN32
+    test_cleanup_matches_linked_spellings();
+#endif
     test_channel_bundle();
     test_channel_bundle_quoted_options();
     test_channel_review_bandwidth();
