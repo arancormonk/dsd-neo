@@ -14,10 +14,13 @@
 #include <qcoreapplication_platform.h>
 #include "decoder_host_android.h"
 #include "diagnostics_log.h"
+#include "display_scale.h"
 #include "location_record.h"
+#include "presentation_scale.h"
 #include "run_status.h"
 
 #include <QCoreApplication>
+#include <QFuture>
 #include <QGuiApplication>
 #include <QJniEnvironment>
 #include <QJniObject>
@@ -27,6 +30,7 @@
 #include <QSaveFile>
 #include <QScreen>
 #include <QVariant>
+#include <QVariantList>
 #include <atomic>
 #include <cmath>
 #include <dsd-neo/platform/audio.h>
@@ -238,6 +242,152 @@ DecoderHostAndroid::DecoderHostAndroid(QObject* parent) : dsd_qt::DecoderHost(pa
     refreshPresentation();
 }
 
+namespace {
+
+// Qt's own registered native, the one its display listener calls (Qt 6.11.3 QtDisplayManager.java). Kept by
+// qt-rules.pro's native-method rule; tools/check_android_r8.py checks it in the release dex.
+constexpr const char* kQtDisplayManagerClass = "org/qtproject/qt/android/QtDisplayManager";
+
+qreal
+activity_density(const QJniObject& context) {
+    if (!context.isValid()) {
+        return 0;
+    }
+    return QJniObject::callStaticMethod<jfloat>(kSupportClass, "activityDensity", "(Landroid/content/Context;)F",
+                                                context.object());
+}
+
+bool
+static_method_available(const char* owner, const char* name, const char* signature) {
+    QJniEnvironment env;
+    jclass found = env.findClass(owner);
+    return found != nullptr && env.findStaticMethod(found, name, signature) != nullptr;
+}
+
+/** @brief A Java float[] returned by a static call into @p values; false when the call or the copy failed. */
+bool
+read_floats(const QJniObject& array, QVector<float>* values) {
+    if (!array.isValid()) {
+        return false;
+    }
+    QJniEnvironment env;
+    auto* const floats = static_cast<jfloatArray>(array.object());
+    const jsize size = env->GetArrayLength(floats);
+    values->resize(size);
+    if (size > 0) {
+        env->GetFloatArrayRegion(floats, 0, size, values->data());
+    }
+    return !env.checkAndClearExceptions();
+}
+
+/*
+ * On the Android main thread, where Qt's display listener writes the density too. Reads the Activity's density now,
+ * not the value the UI tick saw, so a push that runs after a newer change cannot install the older one; the density
+ * written is reported back with the outcome. Qt's native only stores the value, so the call itself cannot fail once
+ * the lookup succeeded.
+ */
+QVariant
+push_display_density() {
+    const qreal density = activity_density(android_context());
+    if (!std::isfinite(density) || density <= 0) {
+        return QVariantList{static_cast<int>(DensityPush::NoActivity), 0.0};
+    }
+    if (!static_method_available(kQtDisplayManagerClass, "handleScreenDensityChanged", "(D)V")) {
+        return QVariantList{static_cast<int>(DensityPush::Unavailable), 0.0};
+    }
+    QJniObject::callStaticMethod<void>(kQtDisplayManagerClass, "handleScreenDensityChanged", "(D)V",
+                                       static_cast<jdouble>(density));
+    return QVariantList{static_cast<int>(DensityPush::Pushed), density};
+}
+
+/** @brief PresentationScale's view of the app: JNI for the Activity, QPA for Qt's screens. */
+class AndroidPresentationPlatform final : public PresentationScale::Platform {
+  public:
+    AndroidPresentationPlatform(std::function<void()> push, QJniObject context)
+        : m_push(std::move(push)), m_context(std::move(context)) {}
+
+    qreal
+    activityDensity() override {
+        return activity_density(m_context);
+    }
+
+    qreal
+    qtDensity() override {
+        return platform_density(QGuiApplication::primaryScreen());
+    }
+
+    qreal
+    effectiveRatio() override {
+        const QScreen* screen = QGuiApplication::primaryScreen();
+        return screen != nullptr ? screen->devicePixelRatio() : 0;
+    }
+
+    void
+    resync() override {
+        resync_display_scale();
+    }
+
+    void
+    startDensityPush() override {
+        if (m_push) {
+            m_push();
+        }
+    }
+
+    FontKey
+    fontKey() override {
+        QVector<float> values;
+        if (!m_context.isValid()
+            || !read_floats(QJniObject::callStaticObjectMethod(kSupportClass, "fontKey",
+                                                               "(Landroid/content/Context;)[F", m_context.object()),
+                            &values)
+            || values.size() != 2) {
+            return {};
+        }
+        return FontKey{values[0], values[1]};
+    }
+
+    bool
+    fontTable(FontKey* key, QVector<qreal>* pixels) override {
+        QVector<float> values;
+        if (!m_context.isValid()
+            || !read_floats(QJniObject::callStaticObjectMethod(kSupportClass, "fontTable",
+                                                               "(Landroid/content/Context;)[F", m_context.object()),
+                            &values)
+            || values.size() != 2 + PresentationScale::kFontTableMaxSp + 1) {
+            return false; // empty while Android is updating its resources
+        }
+        *key = FontKey{values[0], values[1]};
+        pixels->clear();
+        for (int i = 2; i < values.size(); ++i) {
+            pixels->append(values[i]);
+        }
+        return true;
+    }
+
+    bool
+    keyboardTopPixels(int* pixels) override {
+        // A failed primitive call reads 0, a keyboard covering the whole window; never take that for a reading.
+        static const bool available = static_method_available(kSupportClass, "keyboardTopPixels", "()I");
+        if (!available) {
+            return false;
+        }
+        *pixels = QJniObject::callStaticMethod<jint>(kSupportClass, "keyboardTopPixels", "()I");
+        return true;
+    }
+
+    void
+    diagnostic(const QString& line) override {
+        dsd_qt::DiagnosticsLog::submitHostDiagnostic(line);
+    }
+
+  private:
+    std::function<void()> m_push;
+    QJniObject m_context;
+};
+
+} // namespace
+
 void
 DecoderHostAndroid::refreshPresentation() {
     refreshNotificationPermission();
@@ -245,21 +395,9 @@ DecoderHostAndroid::refreshPresentation() {
     if (!context.isValid()) {
         return;
     }
-    const QString configuration =
-        QJniObject::callStaticObjectMethod(kSupportClass, "fontConfiguration",
-                                           "(Landroid/content/Context;)Ljava/lang/String;", context.object())
-            .toString();
-    if (configuration != m_font_configuration) {
-        m_font_configuration = configuration;
-        m_font_sizes.clear();
-        const qreal ratio = QGuiApplication::primaryScreen() ? QGuiApplication::primaryScreen()->devicePixelRatio() : 1;
-        for (int sp = 0; sp <= 128; ++sp) {
-            m_font_sizes.append(QJniObject::callStaticMethod<jfloat>(kSupportClass, "fontPixels",
-                                                                     "(Landroid/content/Context;F)F", context.object(),
-                                                                     static_cast<jfloat>(sp))
-                                / ratio);
-        }
-        ++m_font_revision;
+    AndroidPresentationPlatform platform([this] { startDisplayDensityPush(); }, context);
+    const PresentationScale::Changes changes = m_scale.tick(platform);
+    if (changes.typography) {
         Q_EMIT typographyChanged();
     }
     const auto route = QJniObject::callStaticObjectMethod(
@@ -270,11 +408,7 @@ DecoderHostAndroid::refreshPresentation() {
         m_audio_route = route;
         Q_EMIT audioRouteChanged();
     }
-    const int keyboardPixels = QJniObject::callStaticMethod<jint>(kSupportClass, "keyboardTopPixels", "()I");
-    const qreal ratio = QGuiApplication::primaryScreen() ? QGuiApplication::primaryScreen()->devicePixelRatio() : 1;
-    const qreal top = keyboardPixels < 0 ? -1 : keyboardPixels / ratio;
-    if (top != m_keyboard_top) {
-        m_keyboard_top = top;
+    if (changes.keyboard) {
         Q_EMIT keyboardChanged();
     }
     const int requests = QJniObject::callStaticMethod<jint>(kSupportClass, "takeBackRequests", "()I");
@@ -283,23 +417,42 @@ DecoderHostAndroid::refreshPresentation() {
     }
 }
 
+void
+DecoderHostAndroid::startDisplayDensityPush() {
+    // The continuation runs on this host's thread, and not at all once the host is gone.
+    QNativeInterface::QAndroidApplication::runOnAndroidMainThread(&push_display_density)
+        .then(this, [this](const QVariant& result) {
+            const QVariantList fields = result.toList();
+            if (fields.size() != 2) {
+                return;
+            }
+            // Only the diagnostic is used here; no push starts from a finished one.
+            AndroidPresentationPlatform platform(nullptr, android_context());
+            m_scale.pushFinished(static_cast<DensityPush>(fields[0].toInt()), fields[1].toDouble(), platform);
+        });
+}
+
 qreal
 DecoderHostAndroid::fontPixelSize(qreal sp) const {
     if (!std::isfinite(sp) || sp <= 0) {
         return 0;
     }
-    const int low = static_cast<int>(std::floor(qMin(sp, qreal(127))));
-    if (sp <= 128 && m_font_sizes.size() == 129) {
-        return m_font_sizes[low] + (m_font_sizes[low + 1] - m_font_sizes[low]) * (sp - low);
+    qreal pixels = 0;
+    if (m_scale.fontPixelSize(sp, &pixels)) {
+        return pixels;
     }
     const auto context = android_context();
     if (!context.isValid()) {
         return sp;
     }
-    const qreal ratio = QGuiApplication::primaryScreen() ? QGuiApplication::primaryScreen()->devicePixelRatio() : 1;
-    return QJniObject::callStaticMethod<jfloat>(kSupportClass, "fontPixels", "(Landroid/content/Context;F)F",
-                                                context.object(), static_cast<jfloat>(sp))
-           / ratio;
+    const QScreen* screen = QGuiApplication::primaryScreen();
+    const qreal ratio = screen != nullptr ? screen->devicePixelRatio() : 1;
+    const qreal live =
+        QJniObject::callStaticMethod<jfloat>(kSupportClass, "fontPixels", "(Landroid/content/Context;F)F",
+                                             context.object(), static_cast<jfloat>(sp))
+        / ratio;
+    // A failed call reads 0: fall back to the unscaled size rather than a font with no size.
+    return std::isfinite(live) && live > 0 ? live : sp;
 }
 
 void

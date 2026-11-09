@@ -15026,6 +15026,45 @@ Tests: `ANDROID_A11Y_BRIDGE_JVM` (`run_jvm_tests.py --suite a11y_bridge`):
 - The environment-writer checks are under "QML garbage collector". `UI_QT_DIAGNOSTICS_LOG` holds the
   `accessibility:` record shapes and checks each survives redaction unchanged.
 
+#### Display size (density)
+
+The activity keeps a display-size (density) change in place (`configChanges` above), so Qt has to follow it, and Qt
+6.11.3 does not: its Java side stores the new density in the plugin (`QtDisplayManager.handleScreenDensityChanged`)
+and raises no event, so the scale factor (`QAndroidPlatformScreen::logicalDpi()` = 72 x density) moves while the
+window keeps its device pixel ratio and logical size, `QScreen` its logical geometry, and QML its safe-area margins.
+It reads the density only from a display listener that is unregistered in `onPause()` and not re-read in
+`onResume()`, so a change made from Settings while the app is in the background is not seen at all. On main the UI
+then drew into part of the screen, overflowed it, or kept text sized for the old density.
+
+`DecoderHostAndroid::refreshPresentation()` runs `PresentationScale::tick()` (`android/presentation_scale.{h,cpp}`)
+on every UI tick, through a `Platform` that is JNI and QPA in the app and a fake in tests:
+
+1. When Qt's stored density (`platform_density()`: the screen's logical DPI over its base DPI, which moves even
+   while Qt's scaling is off at density 1) differs from the one last synced, and on the first sample,
+   `resync_display_scale()` (`android/display_scale.{h,cpp}`, `Qt6::GuiPrivate`) re-announces it: each screen's DPI
+   first (its call turns Qt's scaling on and its handler recomputes the screen geometry and every window's device
+   pixel ratio), then each created window's unchanged native geometry (a resize only when the logical size changed)
+   and safe-area margins. Queued, never flushed inside the tick. The density counts as synced only if Qt's was the
+   same before and after the announcements (Qt's listener writes it on the Android main thread); otherwise nothing
+   counts as synced, even a return to the density synced before, and the next tick announces again.
+2. When the Activity's density (`AppSupport.activityDensity()`, 0 for a Service context) differs from Qt's, it
+   hands Qt the Activity's density through Qt's own registered native, on the Android main thread where Qt's
+   listener writes it; the density is read there, when the push runs, and reported back with the outcome through a
+   `QFuture` continuation bound to the host. One push in flight. A missing entry point (found by lookup first)
+   stops pushing for the process, with one host diagnostic. Three pushes of one density that Qt does not take stop
+   pushing it (one diagnostic) until another density is written. Either way step 1 still follows Qt's own changes.
+3. The sp-to-logical-pixel font table is rebuilt when the font key (`AppSupport.fontKey()`: font scale and density)
+   or the effective ratio (read after step 1) changes, and held while a push can still bring Qt to the Activity's
+   density. `AppSupport.fontTable()` reads the key and all 129 sizes in one call and returns nothing while Android
+   is part-way through updating its resources; a table with a failed read is not published, the old one stays, and
+   the next tick tries again. The keyboard inset is converted with the same ratio and kept when unreadable.
+
+Qt's own "cached device pixel ratio value was stale" warning still appears once per change when a frame is drawn
+before the tick. `UI_QT_DISPLAY_SCALE` reproduces the silent change on the offscreen platform (a new
+`logicalBaseDpi` is stored without an event) for a start with scaling off and on, child, popup, Quick and never-shown
+windows and two screens, and drives `PresentationScale` with a fake platform. `ANDROID_R8` checks the Qt upcall.
+`presentation_scale.cpp` and the app keep IEEE semantics under the global fast-math option.
+
 #### Qt upgrade checks
 
 A Qt bump re-audits the bridge gate and the launch policy before it merges. They rest on Qt 6.11.3 behaviour read in
@@ -15040,6 +15079,11 @@ its source:
 - `super.onCreate()` sets Qt's root layout as the content view, and Qt's window view is the class
   `org.qtproject.qt.android.QtWindow` under it ("Sign-in autofill" above; the app's own host is the content's first
   child, an app class, not the bridge);
+- Qt's Android plugin still stores a new display density without an event, and
+  `QtDisplayManager.handleScreenDensityChanged(D)V` is still its registered native ("Display size" above). If a new Qt
+  raises the events itself, `resync_display_scale()` becomes a no-op; if it renames the native, the release-APK R8
+  check fails and the app logs "Qt's density update is missing". Re-run the display-size emulator checks
+  (`wm density` both ways, from the foreground and from the background);
 - Qt's text cursor handle is a `PopupWindow` in `CursorHandle.m_popup`, held by the `QtEditText` child of the Qt
   window in `m_cursorHandle`, with no exit transition (`QtCursorHandle.kt`). A rename fails
   `tools/check_android_r8.py` on the release APK; a changed structure only leaves the "cannot be hidden" record. Check
