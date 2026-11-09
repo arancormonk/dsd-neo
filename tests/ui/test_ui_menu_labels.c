@@ -27,6 +27,8 @@
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/unicode.h>
+#include <locale.h>
 #include <sndfile.h>
 #include <stdio.h>
 #include <string.h>
@@ -50,6 +52,15 @@ static double g_env_double_value;
 static int g_env_double_has_value;
 static dsdneoUserDecodeMode g_infer_mode = DSDCFG_MODE_AUTO;
 static int g_history_mode = 1;
+
+/* The text model's output preference (ui_text.c): UTF-8 when a case asks for it, which ncurses also needs a UTF-8
+   locale for. */
+static int g_unicode_wanted;
+
+const char*
+dsd_unicode_or_ascii(const char* unicode_str, const char* ascii_str) {
+    return g_unicode_wanted ? unicode_str : ascii_str;
+}
 
 const dsdneoRuntimeConfig*
 dsd_neo_get_config(void) {
@@ -1175,6 +1186,101 @@ test_display_and_advanced_labels(void) {
 }
 
 static int
+use_utf8_locale(void) {
+    static const char* const names[] = {"C.UTF-8", "C.utf8", "en_US.UTF-8", "en_US.utf8"};
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+        if (setlocale(LC_CTYPE, names[i]) != NULL) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Reload group list (discussion #748): the configured group file's name, after its last '/' or '\\', cut to 24 cells
+   and 48 bytes with the text model's marker; shown only while a file is configured, and under a -Y row's own list the
+   configured file, which is the one the reload re-reads. */
+static int
+test_group_list_reload_row(void) {
+    int rc = 0;
+    char b[160];
+    static dsd_opts opts;
+    static dsd_state state;
+    UiCtx ctx;
+    reset_fixture(&opts, &state, &ctx);
+    g_unicode_wanted = 0;
+
+    rc |= expect_int("reload hidden without a group file", group_list_reload_offered(&ctx) ? 1 : 0, 0);
+    DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", "/home/u/lists/groups.csv");
+    rc |= expect_int("reload offered with a group file", group_list_reload_offered(&ctx) ? 1 : 0, 1);
+    rc |=
+        expect_str("reload names the file", lbl_group_list_reload(&ctx, b, sizeof b), "Reload group list [groups.csv]");
+    DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", "C:\\Users\\me\\Radio\\county.csv");
+    rc |= expect_str("reload names a Windows path's file", lbl_group_list_reload(&ctx, b, sizeof b),
+                     "Reload group list [county.csv]");
+    DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", "C:\\a/b\\mixed.csv");
+    rc |= expect_str("reload splits on either separator", lbl_group_list_reload(&ctx, b, sizeof b),
+                     "Reload group list [mixed.csv]");
+    DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", "groups.csv");
+    rc |= expect_str("reload names a bare file", lbl_group_list_reload(&ctx, b, sizeof b),
+                     "Reload group list [groups.csv]");
+    DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", "/imports/Washington OSCCR Kittitas group.csv");
+    rc |= expect_str("reload cuts a long name to 24 cells", lbl_group_list_reload(&ctx, b, sizeof b),
+                     "Reload group list [Washington OSCCR Kitt...]");
+    DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", "/home/u/Z\xC3\xBCrich.csv");
+    rc |= expect_str("reload shows what ASCII output cannot draw as ?", lbl_group_list_reload(&ctx, b, sizeof b),
+                     "Reload group list [Z?rich.csv]");
+
+    /* A -Y row's own list is on air: the configured file is the one reloaded, and none hides the row. */
+    dsd_scan_settings configured;
+    DSD_MEMSET(&configured, 0, sizeof configured);
+    DSD_SNPRINTF(configured.group_in_file, sizeof configured.group_in_file, "%s", "/home/u/global.csv");
+    DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", "/home/u/row.csv");
+    dsd_test_scan_labels_configured(&configured);
+    rc |= expect_str("reload names the configured file under a row list", lbl_group_list_reload(&ctx, b, sizeof b),
+                     "Reload group list [global.csv]");
+    configured.group_in_file[0] = '\0';
+    dsd_test_scan_labels_configured(&configured);
+    rc |= expect_int("reload hidden when only a row has a list", group_list_reload_offered(&ctx) ? 1 : 0, 0);
+    dsd_test_scan_labels_configured(NULL);
+
+    if (use_utf8_locale()) {
+        g_unicode_wanted = 1;
+        DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", "/home/u/Z\xC3\xBCrich.csv");
+        rc |= expect_str("reload keeps a drawable name", lbl_group_list_reload(&ctx, b, sizeof b),
+                         "Reload group list [Z\xC3\xBCrich.csv]");
+        DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s",
+                     "/imports/Washington OSCCR Kittitas group.csv");
+        rc |= expect_str("reload cuts with the ellipsis", lbl_group_list_reload(&ctx, b, sizeof b),
+                         "Reload group list [Washington OSCCR Kittit\xE2\x80\xA6]");
+        /* Thirteen two-cell characters (26 cells): eleven and the marker fit 24. */
+        DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s",
+                     "/x/\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1"
+                     "\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1");
+        rc |= expect_str("reload cuts wide characters by cells", lbl_group_list_reload(&ctx, b, sizeof b),
+                         "Reload group list [\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1"
+                         "\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1"
+                         "\xE2\x80\xA6]");
+        /* Twenty one-cell, three-byte characters fit 24 cells but not 48 bytes: fifteen and the marker do. */
+        char thai[128] = "/x/";
+        for (int i = 0; i < 20; i++) {
+            DSD_SNPRINTF(thai + strlen(thai), sizeof thai - strlen(thai), "%s", "\xE0\xB8\x81");
+        }
+        DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", thai);
+        char want[128] = "Reload group list [";
+        for (int i = 0; i < 15; i++) {
+            DSD_SNPRINTF(want + strlen(want), sizeof want - strlen(want), "%s", "\xE0\xB8\x81");
+        }
+        DSD_SNPRINTF(want + strlen(want), sizeof want - strlen(want), "%s", "\xE2\x80\xA6]");
+        rc |= expect_str("reload keeps a name within 48 bytes", lbl_group_list_reload(&ctx, b, sizeof b), want);
+        g_unicode_wanted = 0;
+        (void)setlocale(LC_CTYPE, "C");
+    } else {
+        DSD_FPRINTF(stderr, "no UTF-8 locale installed; skipping the UTF-8 reload label cases\n");
+    }
+    return rc;
+}
+
+static int
 test_radioreference_labels_and_predicates(void) {
     int rc = 0;
     char b[160];
@@ -1313,5 +1419,6 @@ main(void) {
     rc |= test_recording_labels();
     rc |= test_display_and_advanced_labels();
     rc |= test_radioreference_labels_and_predicates();
+    rc |= test_group_list_reload_row();
     return rc ? 1 : 0;
 }

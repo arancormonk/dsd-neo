@@ -19,6 +19,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -26,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -328,6 +330,14 @@ ui_statusf(const char* fmt, ...) {
     va_start(ap, fmt);
     (void)DSD_VSNPRINTF(g_status, sizeof g_status, fmt, ap);
     va_end(ap);
+}
+
+/* The real-time clock the decoder's toasts expire on. */
+static time_t g_now = 1000;
+
+time_t
+dsd_realtime_time(void) {
+    return g_now;
 }
 
 /* The config service's look at the default file (issue #672): the menu asks it and does no I/O itself. */
@@ -725,6 +735,39 @@ test_overlays_shutdown_and_restart(const dsd_opts* opts, const dsd_state* state)
     assert(ui_menu_is_open() == 1); /* a full menu now, not closed as an empty modal-only frame */
     assert(ui_menu_handle_key(27, opts, state) == 1);
     assert(ui_menu_is_open() == 0);
+}
+
+/* Discussion #748: a command a row posts answers in the decoder's toast, which an open menu can cover on the main
+   screen; each new toast goes to the menu's status line, once, and an expired one never does. */
+static void
+test_decoder_toast_in_status(const dsd_opts* opts, dsd_state* state) {
+    g_fixture = 0;
+    reset_capture();
+    reset_modal_capture();
+    g_status[0] = '\0';
+    DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s",
+                 "Failed: Group list reload -> file not found; list unchanged");
+    state->ui_msg_expire = g_now - 1;
+    ui_menu_open_async(opts, state);
+    ui_menu_tick(opts, state);
+    assert(g_status[0] == '\0'); /* expired before the menu saw it */
+    state->ui_msg_expire = g_now + 4;
+    ui_menu_tick(opts, state);
+    assert(strcmp(g_status, "Failed: Group list reload -> file not found; list unchanged") == 0);
+    g_status[0] = '\0';
+    ui_menu_tick(opts, state);
+    assert(g_status[0] == '\0'); /* the same toast is taken once */
+    DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", "Applied: Group list reloaded -> 4 rows");
+    ui_menu_tick(opts, state);
+    assert(strcmp(g_status, "Applied: Group list reloaded -> 4 rows") == 0);
+    g_status[0] = '\0';
+    state->ui_msg_expire = g_now + 5; /* the same text set again is a new toast */
+    ui_menu_tick(opts, state);
+    assert(strcmp(g_status, "Applied: Group list reloaded -> 4 rows") == 0);
+    assert(ui_menu_handle_key(27, opts, state) == 1);
+    assert(ui_menu_is_open() == 0);
+    state->ui_msg[0] = '\0';
+    state->ui_msg_expire = 0;
 }
 
 int
@@ -1166,6 +1209,8 @@ main(void) {
     assert(ui_menu_is_open() == 0);
     g_emptiable_rows_on = true;
     g_fixture = 0;
+
+    test_decoder_toast_in_status(opts, state);
 
     free(next_state);
     free(next_opts);

@@ -36,6 +36,7 @@ bool rr_feature_available(const void* ctx);
 bool rr_key_prompt_offered(const void* ctx);
 bool rr_imports_available(const void* ctx);
 bool rr_imports_available_and_feature(const void* ctx);
+bool group_list_reload_offered(const void* ctx);
 bool rr_key_prompt_offered_and_feature(const void* ctx);
 
 #ifdef USE_RADIO
@@ -91,6 +92,7 @@ const char* lbl_scan_voice_hold(const void* v, char* b, size_t n);
 const char* lbl_rev_mute(const void* v, char* b, size_t n);
 const char* lbl_pref_cc(const void* v, char* b, size_t n);
 const char* lbl_rigctl(const void* vctx, char* b, size_t n);
+const char* lbl_group_list_reload(const void* v, char* b, size_t n);
 const char* lbl_rr_account(const void* v, char* b, size_t n);
 const char* lbl_p25_vc_grace(const void* v, char* b, size_t n);
 const char* lbl_p25_min_follow(const void* v, char* b, size_t n);

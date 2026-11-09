@@ -20,13 +20,17 @@
 
 #include <curses.h>
 #include <dsd-neo/app_control/config_files.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/curses_compat.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/menu_defs.h>
 #include <dsd-neo/ui/ui_prims.h>
 #include <stddef.h>
+#include <string.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -536,6 +540,28 @@ ui_menu_handle_key(int ch, const dsd_opts* opts, const dsd_state* state) {
     return 0;
 }
 
+/*
+ * The decoder's toast (dsd_state::ui_msg) is the outcome of most commands a row posts -- an import or a reload says what
+ * it loaded or why it refused -- and the main screen shows it on a line an open menu can cover (on an 80x24 terminal
+ * the Channels & groups overlay does). Each new toast in the frame's snapshot goes to the menu's status line too, held
+ * as the menu's own messages are.
+ */
+static void
+ui_menu_follow_decoder_toast(const dsd_state* state) {
+    static char seen[sizeof(((dsd_state*)0)->ui_msg)];
+    static time_t seen_expire;
+    if (!state || state->ui_msg[0] == '\0' || state->ui_msg_expire <= dsd_realtime_time()) {
+        return;
+    }
+    if (state->ui_msg_expire == seen_expire && strncmp(state->ui_msg, seen, sizeof seen) == 0) {
+        return;
+    }
+    DSD_MEMCPY(seen, state->ui_msg, sizeof seen);
+    seen[sizeof seen - 1U] = '\0';
+    seen_expire = state->ui_msg_expire;
+    ui_statusf("%s", seen);
+}
+
 void
 ui_menu_tick(const dsd_opts* opts, const dsd_state* state) {
     const UiCtx* ctx = ui_menu_stable_ctx(opts, state);
@@ -553,6 +579,7 @@ ui_menu_tick(const dsd_opts* opts, const dsd_state* state) {
     if (!g_overlay_open || g_depth <= 0) {
         return;
     }
+    ui_menu_follow_decoder_toast(state);
     // Render Prompt overlay (highest priority) - delegate to menu_prompts.c
     if (ui_prompt_active()) {
         ui_prompt_render();

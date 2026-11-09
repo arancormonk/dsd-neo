@@ -14,11 +14,13 @@
 #include <curses.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -50,6 +52,11 @@ static const NcMenuItem ROOT_ITEMS[] = {
 void
 ui_statusf(const char* fmt, ...) {
     (void)fmt;
+}
+
+time_t
+dsd_realtime_time(void) {
+    return 0;
 }
 
 int

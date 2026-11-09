@@ -55,6 +55,7 @@
     X(act_hpf_toggle)                                                                                                  \
     X(act_import_chan)                                                                                                 \
     X(act_import_group)                                                                                                \
+    X(act_group_list_reload)                                                                                           \
     X(act_import_src)                                                                                                  \
     X(act_import_p25_bandplan)                                                                                         \
     X(act_ken_scr)                                                                                                     \
@@ -291,6 +292,7 @@
     X(lbl_replay_last)                                                                                                 \
     X(lbl_rev_mute)                                                                                                    \
     X(lbl_rigctl)                                                                                                      \
+    X(lbl_group_list_reload)                                                                                           \
     X(lbl_rr_account)                                                                                                  \
     X(lbl_rt_sched)                                                                                                    \
     X(lbl_scan)                                                                                                        \
@@ -365,6 +367,7 @@
     X(io_rtl_active)                                                                                                   \
     X(io_squelch_offered)                                                                                              \
     X(provoice_active)                                                                                                 \
+    X(group_list_reload_offered)                                                                                       \
     X(input_freq_offered)                                                                                              \
     X(rr_feature_available)                                                                                            \
     X(rr_imports_available_and_feature)                                                                                \

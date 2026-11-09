@@ -47,6 +47,7 @@
 #include "menu_env.h"
 #include "menu_internal.h"
 #include "ui_key_status.h"
+#include "ui_text.h"
 
 /* A setting's number to @p precision places, without a negative zero (issue #669): `-t -0` and an environment value of
    -0.0 are accepted settings, and printf would show them as "-0.0". */
@@ -60,6 +61,18 @@ lbl_num(char* buf, size_t size, double value, int precision) {
 static const dsd_scan_settings*
 menu_configured_scan_settings(const UiCtx* c) {
     return dsd_scan_mode_configured_view(c ? c->state : NULL);
+}
+
+/* The group list file the session is configured with, from the frame's snapshot: while a -Y row's or trunk-scan
+   target's own list is on air, the global file it shadows, which is the one the reload command re-reads (resolved again
+   on the decoder thread). "" when none. */
+static const char*
+menu_configured_group_file(const UiCtx* c) {
+    const dsd_scan_settings* configured = menu_configured_scan_settings(c);
+    if (configured) {
+        return configured->group_in_file;
+    }
+    return (c && c->opts) ? c->opts->group_in_file : "";
 }
 
 static const char*
@@ -214,6 +227,12 @@ rr_imports_available(const void* ctx) {
         return false;
     }
     return dir[0] != '\0';
+}
+
+/* Reload group list (discussion #748): only while a group list file is configured. */
+bool
+group_list_reload_offered(const void* ctx) {
+    return menu_configured_group_file((const UiCtx*)ctx)[0] != '\0';
 }
 
 /* The RadioReference rows sit inside the Channels & groups submenu, so each
@@ -676,6 +695,49 @@ lbl_rigctl(const void* vctx, char* b, size_t n) {
     } else {
         DSD_SNPRINTF(b, n, connected ? "Rigctl [On]" : "Rigctl... [Off]");
     }
+    return b;
+}
+
+/* A file name in a label: at most LBL_FILE_NAME_CELLS cells, and LBL_FILE_NAME_BYTES bytes, as the menu renderer
+   measures and cuts labels in bytes; a label holding one then fits an 80-column menu whole and is never cut inside a
+   code point. */
+enum { LBL_FILE_NAME_CELLS = 24, LBL_FILE_NAME_BYTES = 48 };
+
+/* A path's file name: what follows its last '/' or '\\' (a Windows path separates folders with either). */
+static const char*
+lbl_path_leaf(const char* path) {
+    const char* leaf = path;
+    for (const char* p = path; *p != '\0'; p++) {
+        if (*p == '/' || *p == '\\') {
+            leaf = p + 1;
+        }
+    }
+    return (*leaf != '\0') ? leaf : path;
+}
+
+/* @p name fitted to a label in the shared text model (ui_text.h), so ncurses and PDCurses draw the same cells: a code
+   point the terminal cannot draw as '?', and a name too long cut with the marker ("…", or "..." without UTF-8
+   output). The file name is the user's own text, so unlike the rest of a label it can be non-ASCII. */
+static void
+lbl_fit_file_name(const char* name, char* out, size_t out_size) {
+    const int unicode = ui_text_unicode_output();
+    char clean[1024];
+    const size_t len = ui_text_sanitize(unicode, name, strlen(name), clean, sizeof clean);
+    const char* marker = NULL;
+    size_t cut = ui_text_fit(unicode, clean, len, LBL_FILE_NAME_CELLS, &marker);
+    for (int budget = LBL_FILE_NAME_CELLS - 1;
+         budget > 0 && cut + (marker ? strlen(marker) : 0U) > (size_t)LBL_FILE_NAME_BYTES; budget--) {
+        cut = ui_text_fit(unicode, clean, len, budget, &marker);
+    }
+    DSD_SNPRINTF(out, out_size, "%.*s%s", (int)cut, clean, marker ? marker : "");
+}
+
+/* Reload group list [groups.csv]: the configured file's name, the one the reload re-reads. */
+const char*
+lbl_group_list_reload(const void* v, char* b, size_t n) {
+    char name[LBL_FILE_NAME_BYTES + 1];
+    lbl_fit_file_name(lbl_path_leaf(menu_configured_group_file((const UiCtx*)v)), name, sizeof name);
+    DSD_SNPRINTF(b, n, "Reload group list [%s]", name);
     return b;
 }
 

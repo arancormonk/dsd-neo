@@ -11006,6 +11006,18 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     (`ui_menu_pop_emptied_frames()`, `menu_core.c`). Tests: `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_TREE_AUDIT`
     (+ `_NO_RADIO`: the submenu's rows, order and handlers, Trunking at 12), `UI_NCURSES_PRINTER_HELPERS`,
     `UI_MENU_NAVIGATION` (an emptied submenu).
+  - Group list reload (discussion #748): Trunking > Channels & groups > Reload group list (`lists.group_reload`,
+    right after `lists.group`, no hotkey since a reload clears temporary TG avoids and call skips) posts
+    `DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD` with no path (`act_group_list_reload()`); the decoder resolves the file
+    after the scan scope is set aside. `group_list_reload_offered()` and `lbl_group_list_reload()` read the configured
+    group file from the frame's pair (`dsd_scan_mode_configured_view()`, else `group_in_file`), never a `-Y` row's own
+    list; the label shows its file name (after the last `/` or `\`) in the `ui_text` model, cut to 24 cells and 48
+    bytes with its marker, since the renderer measures and cuts labels in bytes (a non-ASCII name widens the overlay by
+    its extra bytes, never cut at 80 columns). `act_import_group()` prefills the import prompt with the same path, held
+    in `CsvPickerCtx` until the "Enter a path..." prompt opens. `ui_menu_tick()` copies each new decoder toast
+    (`ui_msg`, by text and expiry, live only) into the menu's status line (`ui_menu_follow_decoder_toast()`), since an
+    open overlay can cover the main screen's toast line. Tests: `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_CSV_PICKER`,
+    `UI_MENU_NAVIGATION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`).
   - Scan lists (issue #697): Trunking > Scan lists... (`trunk.scan_lists`, right after Avoids, hotkey
     `#` = `DSD_KEY_SCAN_LISTS`, `lbl_scan_lists()` `[2 of 3 on]`, offered by `scan_lists_offered()`, the scan list
     view's `toggleable`: a running trunk scan with 2+ lists) and the `#` key (`ui_menu_open_modal_async()` with
