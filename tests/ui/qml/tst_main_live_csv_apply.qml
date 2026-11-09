@@ -85,19 +85,22 @@ Item {
             compare(mainRoot.sessionSystem.name, "Renamed live system")
         }
 
-        // Issue #748: the import refuses a talkgroup list with no usable rows, so switching the running system to
-        // one posted an import that left the previous list live, and the previous file then took this system's
-        // edits. Such a list clears the session's list instead. Whether it has rows is read from the file now, not
-        // from its import: the decoder rewrites a list in place as the user edits it.
+        // Issue #748: the import refuses a talkgroup list whose rows all fail to load, so switching the running
+        // system to one posted an import that left the previous list live, and the previous file then took this
+        // system's edits. Such a list clears the session's list instead. A list with no rows at all imports: the
+        // decoder takes it as the empty list it is, saved to that file. What the file holds is read from the file
+        // now, not from its import: the decoder rewrites a list in place, and a file can be updated.
         function test_group_list_switch_data() {
             return [
                 {tag: "rows", imported: "id,mode,name\n1001,A,Dispatch\n", now: "", want: "importGroupList"},
-                {tag: "header only", imported: "id,mode,name\n", now: "", want: "clearGroupList"},
+                {tag: "header only", imported: "id,mode,name\n", now: "", want: "importGroupList"},
                 {tag: "emptied since its import", imported: "id,mode,name\n1001,A,Dispatch\n",
-                 now: "id,mode,name\n", want: "clearGroupList"},
-                {tag: "rows added since its import", imported: "id,mode,name\n",
-                 now: "id,mode,name\n1001,A,Dispatch\n", want: "importGroupList"},
-                {tag: "no usable rows", imported: "id;mode;name\n1001;A;Dispatch\n", now: "", want: "clearGroupList"}
+                 now: "id,mode,name\n", want: "importGroupList"},
+                {tag: "no usable rows", imported: "id;mode;name\n1001;A;Dispatch\n", now: "", want: "clearGroupList"},
+                {tag: "made unusable since its import", imported: "id,mode,name\n1001,A,Dispatch\n",
+                 now: "id;mode;name\n1001;A;Dispatch\n", want: "clearGroupList"},
+                {tag: "fixed since its import", imported: "id;mode;name\n1001;A;Dispatch\n",
+                 now: "id,mode,name\n1001,A,Dispatch\n", want: "importGroupList"}
             ]
         }
         function test_group_list_switch(data) {

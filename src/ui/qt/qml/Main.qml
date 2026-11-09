@@ -2181,16 +2181,18 @@ Window {
                     else if ((was.chanCsvPath || "").length > 0)
                         commands.clearChannelMap();
                 }
-                // The import refuses a talkgroup list with no usable rows (far
-                // more often a wrong file than an empty list), which would leave
-                // the previous file's talkgroups live and that file taking this
-                // system's edits. Such a list clears instead, so the session
-                // decodes with no talkgroups as a fresh start would; until that
-                // start, in-app edits stay in the session (Talkgroups says so).
-                // A file that cannot be read here still goes to the import,
-                // which says why it refuses.
+                // The import refuses a talkgroup list whose rows all fail to
+                // load (an Excel CSV saved with ';'), which would leave the
+                // previous file's talkgroups live and that file taking this
+                // system's edits. Such a list clears instead: the session decodes
+                // with no talkgroups and writes no file, as a fresh start would
+                // with that file. A list with no rows at all imports as the
+                // empty list it is, and a file that cannot be read here still
+                // goes to the import, which says why it refuses.
                 if (sys.groupCsvPath !== was.groupCsvPath) {
-                    if (sys.groupCsvPath.length > 0 && importedFiles.usableRows(sys.groupCsvPath) !== 0)
+                    var rows = sys.groupCsvPath.length > 0 ? importedFiles.rowCounts(sys.groupCsvPath) : ({});
+                    var unusable = rows.ok === true && rows.accepted === 0 && rows.skipped > 0;
+                    if (sys.groupCsvPath.length > 0 && !unusable)
                         commands.importGroupList(sys.groupCsvPath);
                     else if (sys.groupCsvPath.length > 0 || (was.groupCsvPath || "").length > 0)
                         commands.clearGroupList();

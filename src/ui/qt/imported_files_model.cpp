@@ -866,15 +866,13 @@ ImportedFilesModel::rowForPath(const QString& path) const {
     return -1;
 }
 
-int
-ImportedFilesModel::usableRows(const QString& path) const {
+QVariantMap
+ImportedFilesModel::rowCounts(const QString& path) const {
     const int row = rowForPath(path);
     int accepted = 0;
     int skipped = 0;
-    if (row < 0 || !validate(path, m_rows.at(row).type, &accepted, &skipped)) {
-        return -1;
-    }
-    return accepted;
+    const bool ok = row >= 0 && validate(path, m_rows.at(row).type, &accepted, &skipped);
+    return {{"ok", ok}, {"accepted", ok ? accepted : 0}, {"skipped", ok ? skipped : 0}};
 }
 
 ImportedFilesModel::Row
