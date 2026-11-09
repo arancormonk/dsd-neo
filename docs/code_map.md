@@ -12400,7 +12400,17 @@ Qt Quick frontend (`src/ui/qt`):
   `p25Bandplan`, and `src` (source radio ID names), with `src` appended after `p25Bandplan`.
   `radio_reference_model.{h,cpp}` plus `qml/RadioReferenceScreen.qml` are the RadioReference import: the model drives
   the runtime client, previews what an import would produce, and writes the generated CSVs into that same library with
-  provenance, while the add-system wizard stays the single writer of a saved system. `systemDetails.protocolToken`
+  provenance, while the add-system wizard stays the single writer of a saved system. The account check's verdict
+  (`accountState`: `AccountNone`, `AccountChecking`, `AccountVerified`, `AccountRejected`, `AccountExpired`,
+  `AccountFailed`; `accountMessage` holds the Failed text; `checkingAccount`; `hasPassword`) always describes the
+  current credentials. Every credential change (AppPrefs `rrUsernameChanged`/`rrAppKeyChanged`, `setPassword()`,
+  `clearPassword()`) goes through `onCredentialEdited()`, which bumps the credential revision, quietly retires an
+  account check still in flight (the `cancel()` steps, with the status cleared instead of "Cancelled."; other fetches
+  keep running) and resets the state to None. `checkAccount()` is a no-op while a check is in flight; any other new
+  batch retires a check in flight (state None), and `cancel()` resets the state to None. A verified check calls the
+  C++-only `setVerifiedSink()` callback synchronously with the request's own username and password (copied out of
+  its `dsd_rr_auth`, scrubbed after the call, dropped if the revision moved on); no signal or QML property carries a
+  credential. `systemDetails.protocolToken`
   (`dsd_rr_protocol_token()`, "tetra") is how QML tells the protocol apart, and the talkgroup summary (count,
   encryption counts, sample) holds only the rows the group writer keeps (`dsd_rr_talkgroup_writable()`, then the first
   row of each ID), so the preview agrees with the file. The screen's TETRA note (`radioReferenceTetraNote`, repeated in

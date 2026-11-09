@@ -126,6 +126,13 @@ field(const char* text) {
     return QString::fromUtf8(text);
 }
 
+/** @brief Copy a fixed-size C field into a QString, never reading past @p capacity. */
+QString
+bounded_field(const char* text, size_t capacity) {
+    const char* end = std::find(text, text + capacity, '\0');
+    return QString::fromUtf8(text, static_cast<qsizetype>(end - text));
+}
+
 /** @brief Free a completion result with the free function its shape needs. */
 void
 free_country_list(dsd_rr_country_list* p) {
@@ -166,6 +173,30 @@ error_kind_for(dsd_rr_status status) {
 /* ------------------------------------------------------------------------- */
 
 /**
+ * A verified account check's own credentials, for the verified sink.
+ *
+ * Both strings are built from the request's C buffers and never shared with
+ * anything outside this struct, so scrub() reaches their real storage - unless
+ * a sink copied one, which is then the sink's to scrub.
+ */
+struct RadioReferenceModel::VerifiedCredentials {
+    QString username;
+    QString password;
+
+    VerifiedCredentials() = default;
+    VerifiedCredentials(const VerifiedCredentials&) = delete;
+    VerifiedCredentials& operator=(const VerifiedCredentials&) = delete;
+
+    void
+    wipe() {
+        scrub(username);
+        scrub(password);
+    }
+
+    ~VerifiedCredentials() { wipe(); }
+};
+
+/**
  * One completion, already converted off the worker thread.
  *
  * Site, talkgroup and category payloads keep their C form because the generators
@@ -176,6 +207,7 @@ error_kind_for(dsd_rr_status status) {
 struct RadioReferenceModel::Reply {
     Fetch kind = FetchUserData;
     quint64 generation = 0;
+    quint64 credRevision = 0;
     int errorKind = NoError;
     QString errorText;
     QVariantList list;
@@ -183,6 +215,10 @@ struct RadioReferenceModel::Reply {
     std::shared_ptr<dsd_rr_site_list> sites;
     std::shared_ptr<dsd_rr_talkgroup_list> talkgroups;
     std::shared_ptr<dsd_rr_talkgroup_cat_list> categories;
+    /* A successful account check only. Shared, so every copy of the reply the
+     * queued call makes holds the one instance, scrubbed when the last goes -
+     * delivered or dropped. */
+    std::shared_ptr<VerifiedCredentials> credentials;
 };
 
 /** Per-request context handed to the C callback as its user pointer. */
@@ -191,6 +227,7 @@ struct RadioReferenceModel::Request {
     dsd_rr_client* client = nullptr;
     Fetch kind = FetchUserData;
     quint64 generation = 0;
+    quint64 credRevision = 0;
     dsd_rr_auth auth{};
 
     ~Request() { scrub_auth(&auth); }
@@ -444,6 +481,7 @@ RadioReferenceModel::onFetchDone(void* user, dsd_rr_status status, const dsd_rr_
     Reply reply;
     reply.kind = request->kind;
     reply.generation = request->generation;
+    reply.credRevision = request->credRevision;
     reply.errorKind = error_kind_for(status);
     if (status != DSD_RR_OK) {
         /* Server text only. dsd_rr_error::detail is sanitized by the client and
@@ -451,6 +489,15 @@ RadioReferenceModel::onFetchDone(void* user, dsd_rr_status status, const dsd_rr_
         reply.errorText = (err != nullptr) ? field(err->detail) : QString();
     } else if (result != nullptr) {
         convertResult(*request, result, &reply);
+    }
+    if (status == DSD_RR_OK && request->kind == FetchUserData) {
+        /* The credentials RadioReference just accepted, copied out before the
+         * request - and its auth - is scrubbed and freed below. Whatever the
+         * fields hold by the time this lands may already be different. */
+        const dsd_rr_auth& auth = request->auth;
+        reply.credentials = std::make_shared<VerifiedCredentials>();
+        reply.credentials->username = bounded_field(auth.username, sizeof(auth.username));
+        reply.credentials->password = bounded_field(auth.password, sizeof(auth.password));
     }
 
     QPointer<RadioReferenceModel> model = request->model;
@@ -491,8 +538,8 @@ RadioReferenceModel::RadioReferenceModel(AppPrefs* prefs, ImportedFilesModel* im
         connect(m_host, &DecoderHost::locationCancelled, this, &RadioReferenceModel::applyLocationCancelled);
     }
     if (m_prefs != nullptr) {
-        connect(m_prefs, &AppPrefs::rrUsernameChanged, this, &RadioReferenceModel::credentialsChanged);
-        connect(m_prefs, &AppPrefs::rrAppKeyChanged, this, &RadioReferenceModel::credentialsChanged);
+        connect(m_prefs, &AppPrefs::rrUsernameChanged, this, &RadioReferenceModel::onCredentialEdited);
+        connect(m_prefs, &AppPrefs::rrAppKeyChanged, this, &RadioReferenceModel::onCredentialEdited);
     }
 }
 
@@ -558,7 +605,7 @@ RadioReferenceModel::setPassword(const QString& password) {
     }
     scrub(m_password);
     m_password = password;
-    Q_EMIT credentialsChanged();
+    onCredentialEdited();
 }
 
 void
@@ -567,7 +614,36 @@ RadioReferenceModel::clearPassword() {
         return;
     }
     scrub(m_password);
+    onCredentialEdited();
+}
+
+void
+RadioReferenceModel::onCredentialEdited() {
+    m_credRevision++;
+    /* The check in flight is asking about credentials that are gone, so its
+     * verdict - "Account verified." above all - must never land. Retired
+     * quietly: nobody pressed cancel, so "Cancelled." would be a lie. Any other
+     * fetch says nothing about the account and is left to finish. */
+    if (m_accountState == AccountChecking) {
+        retireBatch(QString());
+    }
+    setAccountState(AccountNone);
     Q_EMIT credentialsChanged();
+}
+
+void
+RadioReferenceModel::setVerifiedSink(VerifiedSink sink) {
+    m_verifiedSink = std::move(sink);
+}
+
+void
+RadioReferenceModel::setAccountState(int state, const QString& message) {
+    if (m_accountState == state && m_accountMessage == message) {
+        return;
+    }
+    m_accountState = state;
+    m_accountMessage = message;
+    Q_EMIT accountStateChanged();
 }
 
 bool
@@ -649,6 +725,11 @@ RadioReferenceModel::startBatch(const QString& status) {
     if (wasBusy) {
         Q_EMIT busyChanged();
     }
+    /* A check in flight was just cancelled with the rest; checkAccount() itself
+     * never gets here while Checking, so this only ever retires someone else's. */
+    if (m_accountState == AccountChecking) {
+        setAccountState(AccountNone);
+    }
     /* Whatever the user just asked for retires a refresh still in flight;
      * refreshRow() records its own state after the loadSystem() that calls this,
      * so this can only ever see the previous one. Last, so the signal it emits
@@ -681,6 +762,7 @@ RadioReferenceModel::beginFetch(Fetch kind) {
     request->client = m_client;
     request->kind = kind;
     request->generation = m_generation;
+    request->credRevision = m_credRevision;
     if (!fillAuth(&request->auth)) {
         delete request;
         /* Names only what can actually be missing. A key in force - baked in
@@ -714,6 +796,11 @@ RadioReferenceModel::endFetch(quint64 id, Request* request) {
 
 void
 RadioReferenceModel::cancel() {
+    retireBatch(tr("Cancelled."));
+}
+
+void
+RadioReferenceModel::retireBatch(const QString& status) {
     for (const quint64 id : m_pendingIds) {
         (void)dsd_rr_cancel(m_client, id);
     }
@@ -723,10 +810,11 @@ RadioReferenceModel::cancel() {
     m_outstanding = 0;
     m_systemPending = 0;
     m_generation++;
-    setStatus(tr("Cancelled."));
+    setStatus(status);
     if (wasBusy) {
         Q_EMIT busyChanged();
     }
+    setAccountState(AccountNone);
     /* A cancel is an action like any other: the bumped generation drops every
      * reply, so finishSystemLoad() - and with it completeRefresh() - can never
      * run for this batch. Without this the library caller waits forever. */
@@ -757,12 +845,27 @@ RadioReferenceModel::closeSystem() {
 
 void
 RadioReferenceModel::checkAccount() {
+    if (m_accountState == AccountChecking) {
+        /* Already asking about exactly these credentials: any edit since would
+         * have reset the state. A second request would only cancel the first
+         * and restart the wait. */
+        return;
+    }
     startBatch(tr("Checking your RadioReference account…"));
     Request* request = beginFetch(FetchUserData);
     if (request == nullptr) {
+        setAccountState(AccountFailed, m_errorText);
         return;
     }
-    endFetch(dsd_rr_fetch_user_data(m_client, &request->auth, &onFetchDone, request), request);
+    const quint64 id = dsd_rr_fetch_user_data(m_client, &request->auth, &onFetchDone, request);
+    if (id != 0U) {
+        /* Before endFetch(), so the busyChanged() it emits already sees it. */
+        setAccountState(AccountChecking);
+    }
+    endFetch(id, request);
+    if (id == 0U) {
+        setAccountState(AccountFailed, m_errorText);
+    }
 }
 
 QString
@@ -1023,7 +1126,7 @@ RadioReferenceModel::applySystemReply(const Reply& reply) {
 bool
 RadioReferenceModel::applyListReply(const Reply& reply) {
     switch (reply.kind) {
-        case FetchUserData: setStatus(tr("Account verified.")); return true;
+        case FetchUserData: applyAccountVerified(reply); return true;
         case FetchCountries: m_countries = reply.list; break;
         case FetchStates: m_states = reply.list; break;
         case FetchCounties: m_counties = reply.list; break;
@@ -1041,6 +1144,37 @@ RadioReferenceModel::applyListReply(const Reply& reply) {
     }
     Q_EMIT listsChanged();
     return true;
+}
+
+void
+RadioReferenceModel::applyAccountVerified(const Reply& reply) {
+    if (reply.credRevision != m_credRevision) {
+        /* Defensive: an edit retires the check in flight, so its reply is
+         * already dropped by generation. Should one ever get here, the verdict
+         * is about credentials that no longer exist - publish none of it. */
+        setStatus(QString());
+        return;
+    }
+    setStatus(tr("Account verified."));
+    setAccountState(AccountVerified);
+    if (reply.credentials) {
+        /* A copy, so a sink that replaces or clears itself mid-call does not
+         * destroy the function it is running in. */
+        const VerifiedSink sink = m_verifiedSink;
+        if (sink) {
+            sink(reply.credentials->username, reply.credentials->password);
+        }
+        reply.credentials->wipe();
+    }
+}
+
+void
+RadioReferenceModel::applyAccountError(const Reply& reply) {
+    switch (reply.errorKind) {
+        case AuthError: setAccountState(AccountRejected); break;
+        case SubscriptionError: setAccountState(AccountExpired); break;
+        default: setAccountState(AccountFailed, reply.errorText); break;
+    }
 }
 
 void
@@ -1078,6 +1212,9 @@ RadioReferenceModel::applyReply(const Reply& reply) {
         }
         setError(reply.errorKind, reply.errorText);
         setStatus(QString());
+        if (reply.kind == FetchUserData) {
+            applyAccountError(reply);
+        }
         if (m_refreshRow >= 0) {
             /* finishSystemLoad() will never run for this batch, so the caller
              * would otherwise wait for an answer that never comes. */
