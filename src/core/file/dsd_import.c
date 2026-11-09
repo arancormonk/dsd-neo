@@ -280,7 +280,8 @@ group_apply_tags_field(const group_policy_header* header, size_t field_count, ch
 
 /* What one pass over a group file found so far. stats (may be NULL) is the dry-run validator's tally. With neither a
  * state nor a store the pass only hashes the rows it would store (hash_only); a quiet pass logs no row diagnostics
- * (the file's rows were reported when it was loaded). */
+ * (the file's rows were reported when it was loaded), nor a file it cannot open (a check before a rewrite finds a
+ * deleted file missing, and its caller reports an unreadable one). */
 typedef struct {
     dsd_state* state;
     dsd_tg_policy_store* store;
@@ -436,7 +437,8 @@ group_import_read(const char* group_file_path, group_import_pass* pass) {
 
     // Not every open failure sets errno (a path that does not expand), and only ENOENT means the file is missing.
     errno = 0;
-    fp = csv_open_user_read_file("group file", group_file_path, pass->filename, sizeof pass->filename);
+    fp = csv_open_user_read_file_logged("group file", group_file_path, pass->filename, sizeof pass->filename,
+                                        pass->quiet);
     if (fp == NULL) {
         pass->report.not_found = errno == ENOENT;
         pass->report.unreadable = !pass->report.not_found;

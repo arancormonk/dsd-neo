@@ -74,10 +74,15 @@ csv_read_line(FILE* fp, char* buffer, size_t size, int* overlong) {
     return 1;
 }
 
+/* @p quiet logs nothing on failure: a caller whose missing file is expected (a re-read that finds the file deleted)
+ * reports what it needs from errno itself. */
 static inline FILE*
-csv_open_user_read_file(const char* label, const char* requested, char* resolved, size_t resolved_size) {
+csv_open_user_read_file_logged(const char* label, const char* requested, char* resolved, size_t resolved_size,
+                               int quiet) {
     if (!label || !requested || requested[0] == '\0' || !resolved || resolved_size == 0) {
-        LOG_ERROR("CSV import path is missing.\n");
+        if (!quiet) {
+            LOG_ERROR("CSV import path is missing.\n");
+        }
         return NULL;
     }
 
@@ -85,11 +90,18 @@ csv_open_user_read_file(const char* label, const char* requested, char* resolved
     if (fp == NULL) {
         // Callers tell a missing file from an unreadable one by errno; the log must not change it.
         const int open_errno = errno;
-        LOG_ERROR("Unable to open %s '%s'\n", label, requested);
+        if (!quiet) {
+            LOG_ERROR("Unable to open %s '%s'\n", label, requested);
+        }
         errno = open_errno;
         return NULL;
     }
     return fp;
+}
+
+static inline FILE*
+csv_open_user_read_file(const char* label, const char* requested, char* resolved, size_t resolved_size) {
+    return csv_open_user_read_file_logged(label, requested, resolved, resolved_size, 0);
 }
 
 static inline void

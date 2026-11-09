@@ -3904,8 +3904,9 @@ test_group_append_tracks_baseline(void) {
     return rc;
 }
 
-/* Group-file row warnings seen by the log tap. */
+/* Group-file row warnings and open errors seen by the log tap. */
 static int g_group_row_warnings;
+static int g_group_open_errors;
 
 static void
 count_group_row_warnings(dsd_neo_log_level_t level, const char* text, void* ctx) {
@@ -3914,10 +3915,15 @@ count_group_row_warnings(dsd_neo_log_level_t level, const char* text, void* ctx)
     if (text && strstr(text, "Group file") && strstr(text, " row ")) {
         g_group_row_warnings++;
     }
+    if (text && strstr(text, "Unable to open group file")) {
+        g_group_open_errors++;
+    }
 }
 
 /* A load reports each malformed row once; the guard's re-reads of the same file (the check before a rewrite) and the
- * write's own reading of its lines stay quiet, so a refused save does not log the file's rows again. */
+ * write's own reading of its lines stay quiet, so a refused save does not log the file's rows again. A file deleted
+ * since the load is no error either: the check finds nothing to compare and the save writes the file again, so it
+ * logs no failure to open it. A load of a missing file still says it could not open it. */
 static int
 test_group_check_is_quiet(void) {
     char path[64];
@@ -3941,6 +3947,15 @@ test_group_check_is_quiet(void) {
     rc |= expect_true("lockout", dsd_tg_policy_set_mode(st, 100, 100, "B") == 0);
     rc |= expect_true("guarded save", dsd_tg_policy_write_group_file(opts, st) == 0);
     rc |= expect_true("check and save stay quiet", g_group_row_warnings == 0);
+    g_group_open_errors = 0;
+    rc |= expect_true("file deleted", remove(path) == 0);
+    rc |= expect_true("lockout after delete", dsd_tg_policy_set_mode(st, 200, 200, "B") == 0);
+    rc |= expect_true("save recreates the deleted file", dsd_tg_policy_write_group_file(opts, st) == 0);
+    rc |= expect_true("check of a deleted file logs no open error", g_group_open_errors == 0);
+    rc |= expect_true("file deleted again", remove(path) == 0);
+    rc |= expect_true("load of a missing file", dsd_tg_policy_reload_group_file(opts, st) != 0);
+    rc |= expect_true("load of a missing file logs the open error", g_group_open_errors == 1);
+    dsd_neo_log_set_tap(NULL, NULL);
     free_test_state(st);
     free(opts);
     (void)remove(path);
