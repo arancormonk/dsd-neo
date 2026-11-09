@@ -4,8 +4,10 @@
  */
 
 /*
- * dsd_fopen_existing_regular_file() must refuse a FIFO with no writer at once instead of blocking in open(2).
- * The call runs in a child process so a regression fails the test within seconds rather than hanging the suite.
+ * dsd_fopen_existing_regular_file() must refuse a FIFO with no writer, and dsd_fopen_private_append_regular() one with
+ * no reader, at once instead of blocking in open(2). Each call runs in a child process so a regression fails the test
+ * within seconds rather than hanging the suite. The appending open also refuses a FIFO something reads, a link and a
+ * folder, and creates a missing file owner-only.
  */
 
 #include <dsd-neo/platform/file_compat.h>
@@ -36,12 +38,12 @@ enum {
 
 /* Returns 0 when the child finished inside the budget; fills *code with its exit status. */
 static int
-run_open_in_child(const char* path, int* code) {
+run_open_in_child(const char* path, int append, int* code) {
     pid_t pid = fork();
     assert(pid >= 0);
     if (pid == 0) {
         errno = 0;
-        FILE* fp = dsd_fopen_existing_regular_file(path, "rb");
+        FILE* fp = append ? dsd_fopen_private_append_regular(path) : dsd_fopen_existing_regular_file(path, "rb");
         if (fp) {
             (void)fclose(fp);
             _exit(CHILD_OPENED);
@@ -78,14 +80,47 @@ main(void) {
     assert(dsd_test_path_join(reg, sizeof reg, dir, "plain.bin") == 0);
     assert(mkfifo(fifo, 0600) == 0);
 
-    int code = -1;
-    int rc = run_open_in_child(fifo, &code);
-    if (rc != 0) {
-        DSD_FPRINTF(stderr, "FAIL: opening a writerless FIFO blocked past %u ms\n", OPEN_BUDGET_MS);
-    } else if (code != CHILD_OK) {
-        DSD_FPRINTF(stderr, "FAIL: FIFO open returned a stream or wrong errno (child code %d)\n", code);
-        rc = -1;
+    int rc = 0;
+    for (int append = 0; append <= 1; ++append) {
+        int code = -1;
+        if (run_open_in_child(fifo, append, &code) != 0) {
+            DSD_FPRINTF(stderr, "FAIL: %s a FIFO nobody %s blocked past %u ms\n", append ? "appending to" : "opening",
+                        append ? "reads" : "writes", OPEN_BUDGET_MS);
+            rc = -1;
+        } else if (code != CHILD_OK) {
+            DSD_FPRINTF(stderr, "FAIL: %s FIFO open returned a stream or wrong errno (child code %d)\n",
+                        append ? "appending" : "reading", code);
+            rc = -1;
+        }
     }
+
+    /* A FIFO something reads opens for writing at once; the appending open still refuses it, untouched. */
+    const int reader = open(fifo, O_RDONLY | O_NONBLOCK);
+    assert(reader >= 0);
+    errno = 0;
+    assert(dsd_fopen_private_append_regular(fifo) == NULL && errno == EINVAL);
+    char none = 0;
+    assert(read(reader, &none, 1) == 0);
+    (void)close(reader);
+    struct stat st;
+    assert(lstat(fifo, &st) == 0 && S_ISFIFO(st.st_mode));
+
+    /* A missing file is created owner-only whatever the umask, and a link at the name is never followed. */
+    char made[1200], link_path[1200];
+    assert(dsd_test_path_join(made, sizeof made, dir, "made.bin") == 0);
+    assert(dsd_test_path_join(link_path, sizeof link_path, dir, "link.bin") == 0);
+    const mode_t umask_before = umask(022);
+    FILE* a = dsd_fopen_private_append_regular(made);
+    umask(umask_before);
+    assert(a != NULL && fputs("x", a) >= 0 && fclose(a) == 0);
+    assert(stat(made, &st) == 0 && (st.st_mode & 0777) == 0600 && st.st_size == 1);
+    a = dsd_fopen_private_append_regular(made);
+    assert(a != NULL && (fcntl(fileno(a), F_GETFL) & O_NONBLOCK) == 0);
+    (void)fclose(a);
+    assert(symlink("made.bin", link_path) == 0);
+    errno = 0;
+    assert(dsd_fopen_private_append_regular(link_path) == NULL && (errno == ELOOP || errno == EMLINK)); // EMLINK: BSD
+    assert(stat(made, &st) == 0 && st.st_size == 1);
 
     /* A regular file still opens, reads back, and is left in blocking mode. */
     FILE* w = dsd_fopen_private(reg, "wb");
@@ -103,8 +138,13 @@ main(void) {
     errno = 0;
     assert(dsd_fopen_existing_regular_file(dir, "rb") == NULL && errno == EINVAL);
 
+    errno = 0;
+    assert(dsd_fopen_private_append_regular(dir) == NULL && (errno == EISDIR || errno == EINVAL));
+
     (void)remove(fifo);
     (void)remove(reg);
+    (void)remove(made);
+    (void)remove(link_path);
     (void)dsd_test_rmdir(dir);
     return rc == 0 ? 0 : 1;
 }

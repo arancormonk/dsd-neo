@@ -34,8 +34,11 @@
 #include "signal_search_store_test_hooks.h"
 #include "test_support.h"
 #if !DSD_PLATFORM_WIN_NATIVE
+#include <signal.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -825,6 +828,61 @@ expect_temp_sweep(const char* root) {
 }
 
 #if !DSD_PLATFORM_WIN_NATIVE
+/* A FIFO that took a cleanly loaded journal's name: the append, and the retry that then rewrites the history, neither
+   wait on it nor replace it; the write stays owed and reported until it is gone. Run in a child, so a store that
+   waits on the FIFO fails the test within the budget instead of hanging it. */
+static void
+append_finds_fifo(const char* root) {
+    store_paths p;
+    store_dir(&p, root, "appendfifo");
+    write_v2_journal(p.v2, 3, 0);
+    assert(dsd_app_signal_search_store_open(p.journal) == 0);
+    assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_OK, NULL));
+    // The run's first write rewrites the journal; the next one appends to it.
+    publish(44);
+    dsd_app_signal_search_store_flush();
+    assert(!store_error() && count_v2_records(p.v2, (size_t)g_record - 12U) == 4);
+    assert(remove(p.v2) == 0 && mkfifo(p.v2, 0600) == 0);
+    publish(45);
+    dsd_app_signal_search_store_flush();
+    assert(store_error() && write_owed(DSD_APP_SEARCH_STORE_HISTORY));
+    // The failed append leaves the retry rewriting every record, which does not replace the FIFO either.
+    publish(46);
+    dsd_app_signal_search_store_flush();
+    assert(store_error() && write_owed(DSD_APP_SEARCH_STORE_HISTORY));
+    struct stat st;
+    assert(lstat(p.v2, &st) == 0 && S_ISFIFO(st.st_mode));
+    assert(remove(p.v2) == 0);
+    dsd_app_signal_search_store_flush();
+    assert(!store_error() && !write_owed(DSD_APP_SEARCH_STORE_HISTORY));
+    assert(count_v2_records(p.v2, (size_t)g_record - 12U) == 6);
+    dsd_app_signal_search_store_close();
+    static const char* const files[] = {"history.v2", NULL};
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+}
+
+static void
+expect_append_finds_fifo(const char* root) {
+    const pid_t pid = fork();
+    assert(pid >= 0);
+    if (pid == 0) {
+        append_finds_fifo(root);
+        _exit(0);
+    }
+    const uint64_t deadline = dsd_realtime_mono_ms() + 10000U;
+    int status = 0;
+    pid_t done = 0;
+    while ((done = waitpid(pid, &status, WNOHANG)) == 0 && dsd_realtime_mono_ms() < deadline) {
+        dsd_sleep_ms(5);
+    }
+    if (done == 0) {
+        (void)kill(pid, SIGKILL);
+        (void)waitpid(pid, &status, 0);
+        (void)DSD_FPRINTF(stderr, "FAIL: the store waited on a FIFO at the journal's name\n");
+    }
+    assert(done == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
 /* The seam's stand-in for a no-replace rename whose link worked and whose unlink failed (out_source_left): the old
    name still names the kept file. */
 static void
@@ -871,13 +929,14 @@ expect_retry_finds_fifo(const char* root) {
 
 /* POSIX only: a mode that refuses reading (as a user other than root), a symbolic link at the journal's name (refused,
    and kept as the link itself), a source left after the move, which counts as kept and is replaced, and a FIFO at a
-   kept file's name by the retry. */
+   kept file's name by the retry or at a clean journal's name by an append. */
 static void
 posix_cases(const char* root) {
     static const char* const files[] = {"history.v2",          "history.v2.unreadable-1",          "target",
                                         "history.avoids.json", "history.avoids.json.unreadable-1", NULL};
     store_paths p;
     dsd_signal_search_hit hits[8];
+    expect_append_finds_fifo(root); // first: the fork's child finds no other store thread
     if (geteuid() != 0) {
         store_dir(&p, root, "mode000");
         write_v2_journal(p.v2, 3, 0);

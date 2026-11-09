@@ -300,6 +300,42 @@ dsd_fopen_existing_regular_file(const char* path, const char* mode) {
     return fp;
 }
 
+FILE*
+dsd_fopen_private_append_regular(const char* path) {
+    if (!path || path[0] == '\0') {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    /* As dsd_fopen_existing_regular_file(): O_NONBLOCK keeps open(2) from waiting on a FIFO, which with no reader
+       fails at once (ENXIO, reported as EINVAL); it is cleared once the target is known regular. */
+    int flags = O_WRONLY | O_CREAT | O_APPEND | O_NONBLOCK;
+#ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+#endif
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+    int fd = open(path, flags, (mode_t)0600);
+    if (fd < 0) {
+        if (errno == ENXIO) {
+            errno = EINVAL;
+        }
+        return NULL;
+    }
+    if (dsd_existing_regular_fd_ready(fd) != 0) {
+        return NULL;
+    }
+
+    FILE* fp = fdopen(fd, "ab");
+    if (!fp) {
+        int saved_errno = errno ? errno : EINVAL;
+        close(fd);
+        errno = saved_errno;
+    }
+    return fp;
+}
+
 static void
 dsd_set_cloexec_best_effort(int fd) {
 #ifdef FD_CLOEXEC

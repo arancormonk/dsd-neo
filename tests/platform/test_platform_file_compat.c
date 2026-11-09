@@ -507,6 +507,54 @@ expect_existing_regular_file_guards(void) {
     return rc;
 }
 
+/* The appending open creates a missing file and appends to a regular one; a folder at the name is refused. */
+static int
+expect_append_regular(void) {
+    const char* name = "dsd_neo_append_regular_test.tmp";
+    const char* dir_name = "dsd_neo_append_regular_dir.tmp";
+    (void)remove(name);
+    (void)dsd_test_rmdir(dir_name);
+
+    int rc = 0;
+    errno = 0;
+    rc |= dsd_fopen_private_append_regular(NULL) == NULL && errno == EINVAL ? 0 : 1;
+    errno = 0;
+    rc |= dsd_fopen_private_append_regular("") == NULL && errno == EINVAL ? 0 : 1;
+    for (int i = 0; i < 2; ++i) {
+        FILE* fp = dsd_fopen_private_append_regular(name);
+        if (!fp) {
+            rc = 1;
+            continue;
+        }
+        rc |= fputs(i == 0 ? "one\n" : "two\n", fp) >= 0 ? 0 : 1;
+        rc |= fclose(fp) == 0 ? 0 : 1;
+    }
+    FILE* fp = dsd_fopen_existing_regular_file(name, "rb");
+    if (!fp) {
+        rc = 1;
+    } else {
+        char got[16] = {0};
+        rc |= fread(got, 1, sizeof got - 1, fp) == 8 && strcmp(got, "one\ntwo\n") == 0 ? 0 : 1;
+        rc |= fclose(fp) == 0 ? 0 : 1;
+    }
+
+    if (dsd_mkdir(dir_name, 0700) != 0) {
+        rc = 1;
+    } else {
+        errno = 0;
+        fp = dsd_fopen_private_append_regular(dir_name);
+        if (fp) {
+            fclose(fp);
+            rc = 1;
+        }
+        rc |= errno == EINVAL || errno == EISDIR ? 0 : 1;
+    }
+
+    (void)remove(name);
+    (void)dsd_test_rmdir(dir_name);
+    return rc;
+}
+
 static int
 expect_resolves_existing_file(void) {
     const char* name = "dsd_neo_resolve_existing_local_test.tmp";
@@ -1528,6 +1576,7 @@ main(void) {
     rc |= expect_private_open_modes_and_read_fallback();
     rc |= expect_private_open_reports_the_open();
     rc |= expect_existing_regular_file_guards();
+    rc |= expect_append_regular();
     rc |= expect_resolves_existing_file();
     rc |= expect_opens_existing_file();
     rc |= expect_rejects_unsafe_name("");

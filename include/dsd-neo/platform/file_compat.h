@@ -378,6 +378,20 @@ FILE* dsd_fopen_existing_local_file(const char* requested, char* out, size_t out
 FILE* dsd_fopen_existing_regular_file(const char* path, const char* mode);
 
 /**
+ * @brief Open @p path for binary appending, creating it owner-only when absent, never waiting on what is there.
+ *
+ * As dsd_fopen_private(path, "ab"), except that only a regular file is ever opened: the final name is opened without
+ * following a link (ELOOP on POSIX; a reparse point on Windows is refused with EINVAL), non-blocking, so a FIFO no
+ * process reads fails at once instead of holding the open, and anything opened that is not a regular file (a FIFO
+ * something reads, a device) is closed again, untouched, with EINVAL. A folder fails too (EISDIR or EINVAL). Writes
+ * through the stream block as usual.
+ *
+ * @param path  File path.
+ * @return Append stream for the regular file, or NULL with errno set.
+ */
+FILE* dsd_fopen_private_append_regular(const char* path);
+
+/**
  * @brief Callback invoked once per regular file found by dsd_dir_list().
  *
  * @param name  Directory entry name with no path prefix.

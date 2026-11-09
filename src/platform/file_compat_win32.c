@@ -555,6 +555,49 @@ dsd_fopen_existing_regular_file(const char* path, const char* mode) {
 }
 
 FILE*
+dsd_fopen_private_append_regular(const char* path) {
+    if (!path || path[0] == '\0') {
+        errno = EINVAL;
+        return NULL;
+    }
+    /* A name that is there must be a regular file, never a folder or a reparse point (a link is not followed); one
+       that is not is created. A device name the open still reaches is refused by the check after it. */
+    dsd_path_type type = DSD_PATH_TYPE_OTHER;
+    const int present = dsd_path_type_nofollow(path, &type);
+    if (present < 0) {
+        return NULL;
+    }
+    if (present == 1 && type != DSD_PATH_TYPE_FILE) {
+        errno = EINVAL;
+        return NULL;
+    }
+    int fd = dsd_private_open_path(path, _O_WRONLY | _O_CREAT | _O_APPEND | _O_BINARY | _O_NOINHERIT);
+    if (fd < 0) {
+        return NULL;
+    }
+    dsd_stat_t st;
+    if (_fstat64(fd, &st) != 0) {
+        int saved_errno = errno ? errno : EINVAL;
+        _close(fd);
+        errno = saved_errno;
+        return NULL;
+    }
+    if (!dsd_stat_is_regular(&st)) {
+        _close(fd);
+        errno = EINVAL;
+        return NULL;
+    }
+
+    FILE* fp = _fdopen(fd, "ab");
+    if (!fp) {
+        int saved_errno = errno ? errno : EINVAL;
+        _close(fd);
+        errno = saved_errno;
+    }
+    return fp;
+}
+
+FILE*
 dsd_fopen_private_temp_for_replace(const char* final_path, char* tmp_path, size_t tmp_path_size, const char* mode) {
     if (!final_path || final_path[0] == '\0' || !tmp_path || tmp_path_size == 0 || !mode || mode[0] == 'r') {
         errno = EINVAL;

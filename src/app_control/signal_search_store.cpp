@@ -541,9 +541,12 @@ sweep_temps(const std::vector<std::string>& targets) {
     }
 }
 
+/* Appends @p batch to the journal. Only a regular file is appended to, opened without waiting on it: a FIFO or anything
+   else that took the journal's name since it loaded fails the write, which stays owed and reported, and is never
+   replaced. */
 bool
 append_history(const std::string& path, const std::vector<Hit>& batch) {
-    FILE* f = dsd_fopen_private(path.c_str(), "ab");
+    FILE* f = dsd_fopen_private_append_regular(path.c_str());
     if (!f) {
         return false;
     }

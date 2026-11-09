@@ -1227,6 +1227,11 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     CRT's `_O_EXCL` follows dangling symlinks. The final name is claimed without following a link, and
     `out_opened` records creation even if attaching the CRT descriptor or stream fails. Tests:
     `PLATFORM_FILE_COMPAT`, `DMR_SYNTH_OUTPUT_PATHS` (existing and dangling symlinks for both generator outputs)
+  - Appending to a regular file (issue #828): `dsd_fopen_private_append_regular()` is `dsd_fopen_private(path, "ab")`
+    that never waits and opens only a regular file: POSIX opens `O_NONBLOCK | O_NOFOLLOW` (a FIFO nobody reads fails
+    at once, ENXIO reported as EINVAL; a link fails with ELOOP), refuses with EINVAL anything opened that is not
+    regular, and then clears `O_NONBLOCK`; Windows refuses a folder or reparse point at the name before the open and a
+    device after it. A missing file is created 0600. Tests: `PLATFORM_FILE_COMPAT`, `PLATFORM_FILE_COMPAT_FIFO`
   - Binary descriptors: `dsd_set_binary_mode()` disables Windows text translation on an existing descriptor (a
     validated no-op on POSIX). Engine setup uses it for `-o -` before emitting audio, so an inherited text-mode
     stdout cannot expand sample bytes containing LF into CRLF. Tests: `ENGINE_RUN_SETUP`, `PLATFORM_FILE_COMPAT`
@@ -1252,7 +1257,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     page) through the ANSI call only. A path never goes through both: read again in the ANSI code page, a UTF-8 path
     the wide call found nothing at can name another file, or on a double-byte code page (932, 936, 949, 950) be an
     invalid name or split at a different separator. Every Windows path helper follows it: `dsd_stat_path()`,
-    `dsd_fopen_private()` (every mode), `dsd_fopen_existing_regular_file()`, `dsd_fopen_existing_local_file()`,
+    `dsd_fopen_private()` (every mode), `dsd_fopen_existing_regular_file()`, `dsd_fopen_private_append_regular()`,
+    `dsd_fopen_existing_local_file()`,
     `dsd_rename_noreplace()` and `dsd_replace_file_with_temp()` (UTF-8 only when both names are), `dsd_dir_list()`
     (names come back in the folder's encoding), `dsd_path_exists_nofollow()`, `dsd_path_canonical()`,
     `dsd_remove_file()`, `dsd_path_free_bytes()`, `dsd_mkdir()`, `dsd_mkdtemp()`, `dsd_mkstemp()`, the runtime's
@@ -4189,7 +4195,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     leaves the state KEPT and its retry only writes. Every replacement (`replaceable()`)
     takes only nothing, a file or a link at the path, never followed, so a FIFO or folder
     put there before the retry is left and the write stays owed. Lazy: a run that writes
-    nothing moves nothing. A marked history is always compacted, never appended to. A missing version 2
+    nothing moves nothing. A marked history is always compacted, never appended to. An append opens through
+    `dsd_fopen_private_append_regular()` (non-blocking, no link followed, regular files only), so a FIFO or anything
+    else that took a cleanly loaded journal's name fails the write, owed and reported, and the compacting retry it
+    leaves does not replace it either (`expect_append_finds_fifo`). A missing version 2
     journal reads the version 1 rows only when none of `<v2>.unreadable-1..99` exists
     (`dsd_path_exists_nofollow()`, all 99 probed, a dangling link counts, an unknown
     blocks): a crash between the move and the replacement then leaves an empty history
