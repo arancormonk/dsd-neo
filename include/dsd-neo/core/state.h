@@ -2801,8 +2801,8 @@ struct dsd_state {
        owned; rides the vertex_ks_count..ui_msg range. */
     dsd_received_identity rx_id;
 
-    /* Counts ui_msg's toasts set through app-control (ui_set_toast()), so a frontend tells a toast repeated word for word
-       within its second from one it has shown already (discussion #748). Rides the vertex_ks_count..ui_msg range. */
+    /* Counts ui_msg's toasts (dsd_state_toast_publish()), so a frontend tells a toast repeated word for word within its
+       second from one it has shown already (discussion #748). Rides the vertex_ks_count..ui_msg range. */
     uint32_t ui_msg_seq;
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];
@@ -2854,6 +2854,15 @@ struct dsd_state {
 static inline int
 dsd_state_frame_read_lost(const dsd_state* state, uint32_t carrier_seq) {
     return state->carrier_seq != carrier_seq || state->input_interrupted != 0;
+}
+
+/* Publish the toast just written to state->ui_msg, shown until @p expire (epoch seconds of the real-time clock): every
+   writer of a toast ends here, so ui_msg_seq counts each one and a frontend tells the same text set again within its
+   second from one it has shown (discussion #748). Clearing the toast and amending the one just published do not. */
+static inline void
+dsd_state_toast_publish(dsd_state* state, time_t expire) {
+    state->ui_msg_expire = expire;
+    state->ui_msg_seq++;
 }
 
 /* Raise an input interruption for @p reason (dsd_input_interrupt_reason). A reason already standing that ranks higher

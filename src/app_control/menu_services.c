@@ -800,7 +800,7 @@ svc_refuse_import_for_next_start(dsd_state* state, const char* what, char* why) 
     LOG_WARN("%s not imported: %s.\n", what, why);
     why[strcspn(why, ";")] = '\0';
     DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s not imported: %s", what, why);
-    state->ui_msg_expire = dsd_realtime_time() + 5;
+    dsd_state_toast_publish(state, dsd_realtime_time() + 5);
     return SVC_REFUSED_FOR_NEXT_START;
 }
 

@@ -759,8 +759,7 @@ test_overlays_shutdown_and_restart(const dsd_opts* opts, const dsd_state* state)
 static void
 set_toast(dsd_state* state, const char* text, time_t ttl) {
     DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", text);
-    state->ui_msg_expire = g_now + ttl;
-    state->ui_msg_seq++;
+    dsd_state_toast_publish(state, g_now + ttl);
 }
 
 static void
@@ -798,6 +797,15 @@ test_decoder_toast_in_status(const dsd_opts* opts, dsd_state* state) {
     state->ui_msg_seq++;
     ui_menu_tick(opts, state);
     assert(strcmp(g_status, "Failed: Group list reload -> file not found; list unchanged") == 0);
+
+    /* Event history reset twice in one second, as its handler publishes it (actions_logging.c): shown both times. */
+    set_toast(state, "Applied: Event history reset", 3);
+    ui_menu_tick(opts, state);
+    assert(strcmp(g_status, "Applied: Event history reset") == 0);
+    g_status[0] = '\0';
+    set_toast(state, "Applied: Event history reset", 3);
+    ui_menu_tick(opts, state);
+    assert(strcmp(g_status, "Applied: Event history reset") == 0);
 
     /* A toast set without a sequence (a direct write) is still new by its text or its expiry. */
     DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", "Applied: Group list reloaded -> 4 rows");

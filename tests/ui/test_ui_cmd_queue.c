@@ -24305,6 +24305,31 @@ test_group_alias_learned_on_a_row_list_is_kept(int mode) {
 /* The group list reload re-reads the configured file through the import service, so its counts, refusals and the
    temporary avoids and call skips it clears are the import's; with no file it fails and changes nothing. The payload
    may be empty (the action form) or an empty string. */
+/* Discussion #748: a handler that writes its toast in place (Event history reset, actions_logging.c) publishes it
+   through dsd_state_toast_publish(), so the same toast twice within its second is two toasts by ui_msg_seq and the
+   terminal menu, which follows by sequence, shows the second too. */
+static int
+test_direct_toast_repeat_counts(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    int rc = 0;
+    rc |=
+        expect_int("history reset queued", dsd_app_command_action(DSD_APP_CMD_EH_RESET), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("history reset drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("history reset toast", state.ui_msg, "Applied: Event history reset");
+    const uint32_t first_seq = state.ui_msg_seq;
+    const time_t first_expire = state.ui_msg_expire;
+    rc |= expect_int("history reset again queued", dsd_app_command_action(DSD_APP_CMD_EH_RESET),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("history reset again drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("history reset again toast", state.ui_msg, "Applied: Event history reset");
+    rc |= expect_true("history reset again is a new toast", state.ui_msg_seq == first_seq + 1U);
+    rc |= expect_true("history reset keeps its duration", state.ui_msg_expire - first_expire <= 1);
+    freeState(&state);
+    return rc;
+}
+
 static int
 test_group_reload_rereads_the_file(void) {
     static dsd_opts opts;
@@ -29530,6 +29555,7 @@ main(void) {
     rc |= test_group_alias_learned_on_a_row_list_is_kept(ROW_ALIAS_GLOBAL_MISSING);
     rc |= test_group_alias_learned_on_a_row_list_is_kept(ROW_ALIAS_NO_GLOBAL_LIST);
     rc |= test_group_alias_learned_on_a_row_list_is_kept(ROW_ALIAS_SUSPENDED);
+    rc |= test_direct_toast_repeat_counts();
     rc |= test_group_reload_rereads_the_file();
     rc |= test_group_reload_expected_path();
     rc |= test_group_reload_under_a_row_list();

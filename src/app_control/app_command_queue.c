@@ -493,8 +493,7 @@ ui_set_toast(dsd_state* state, int ttl_s, const char* fmt, ...) {
     va_start(ap, fmt);
     (void)DSD_VSNPRINTF(state->ui_msg, sizeof state->ui_msg, fmt, ap);
     va_end(ap);
-    state->ui_msg_expire = dsd_realtime_time() + ttl_s;
-    state->ui_msg_seq++;
+    dsd_state_toast_publish(state, dsd_realtime_time() + ttl_s);
 }
 
 /* A frequency in Hz as every tune toast names it: MHz to the Hz (issue #670). Returns @p out. */
@@ -810,7 +809,7 @@ apply_cmd_key_hytera_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     ui_cmd_reset_key_mute_state(opts, state);
     DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Hytera key loaded (%s)",
                  (state->M == 1) ? "forced" : "not forced");
-    state->ui_msg_expire = dsd_realtime_time() + 5;
+    dsd_state_toast_publish(state, dsd_realtime_time() + 5);
     DSD_SECURE_ZERO(&p, sizeof p);
     return 1;
 }
@@ -5357,7 +5356,7 @@ ui_cmd_handle_p25_ga_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_a
     if (state) {
         DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "P25 Group Affiliation: %s",
                      opts->frontend_display.show_p25_group_affiliations ? "On" : "Off");
-        state->ui_msg_expire = dsd_realtime_time() + 3;
+        dsd_state_toast_publish(state, dsd_realtime_time() + 3);
     }
     return 1;
 }

@@ -35,7 +35,7 @@ static void
 trunk_action_toast(dsd_state* state, int seconds, const char* text) {
     if (state) {
         DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s", text);
-        state->ui_msg_expire = dsd_realtime_time() + seconds;
+        dsd_state_toast_publish(state, dsd_realtime_time() + seconds);
     }
 }
 
