@@ -1899,6 +1899,8 @@ test_journal_recovery_keeps_named_revisions() {
         expect("recovery keeps a journaled revision a saved system names a file in", QFileInfo::exists(keys));
         expect("recovery still removes a journaled revision nothing names", !QFileInfo::exists(unnamed));
         expect("the journal is settled", journal().isEmpty());
+        // Its startup cleanup lists the root's revisions: it must finish before the next fixture puts one back.
+        waitForWorker(service);
     }
 
     // An unreadable saved_systems.json may name anything: recovery deletes nothing and keeps the entries.
@@ -1909,6 +1911,7 @@ test_journal_recovery_keeps_named_revisions() {
         const dsd_qt::ImportedFilesModel model(&host, &service);
         expect("an unreadable store deletes nothing", QFileInfo::exists(unnamed + "/0.csv") && QFileInfo::exists(keys));
         expect("an unreadable store keeps the journal for the next start", journal() == QStringList{unnamed});
+        waitForWorker(service);
     }
     QFile::remove(dsd_qt::json_store_path("saved_systems.json"));
     {
