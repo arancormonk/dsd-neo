@@ -21,9 +21,14 @@ Item {
     // saving, restorePicker, unlock, checking, confirm, closing.
     property string step: ""
     readonly property bool active: step.length > 0
-    // The last result, shown under the Settings card's rows.
+    // The last result, shown on the Settings card under the row of the action
+    // it reports on: "export" or "restore" (issue #828: an export refusal
+    // under Restore read as Restore's).
     property string notice: ""
     property bool noticeProblem: false
+    property string noticeAction: ""
+    // The action the flow on screen belongs to, for the notice it ends with.
+    property string flowAction: ""
     // The picked document, passed to the model exactly as the picker gave it.
     property string reference: ""
     property var notIncluded: []
@@ -40,7 +45,7 @@ Item {
         // Issue #828: no passphrase is asked for a backup that can't be made.
         var check = backup.checkExport();
         if (!check.ok) {
-            setNotice(errorText(check.error, "prepare", check.unreadable), true);
+            setNotice(errorText(check.error, "prepare", check.unreadable), true, "export");
             return;
         }
         start("exportPassphrase");
@@ -75,11 +80,11 @@ Item {
             return;
         var result = backup.discardRestore();
         if (result.ok)
-            setNotice(qsTr("Restore cancelled."), false);
+            setNotice(qsTr("Restore cancelled."), false, "restore");
         else if (result.discarded)
-            setNotice(qsTr("Restore cancelled. Its leftover files are removed the next time DSD-neo opens."), false);
+            setNotice(qsTr("Restore cancelled. Its leftover files are removed the next time DSD-neo opens."), false, "restore");
         else
-            setNotice(discardRefusedText(result.error), true);
+            setNotice(discardRefusedText(result.error), true, "restore");
     }
 
     // Settings offers "Cancel restore" only while backup.restoreCancellable, but
@@ -95,7 +100,8 @@ Item {
     }
 
     function start(first) {
-        setNotice("", false);
+        setNotice("", false, "");
+        flowAction = first === "exportPassphrase" ? "export" : "restore";
         reference = "";
         notIncluded = [];
         step = first;
@@ -129,13 +135,14 @@ Item {
         notIncluded = [];
         fileProblem = false;
         confirmRestore.error = "";
-        setNotice(text, problem);
+        setNotice(text, problem, flowAction);
         backup.setFlowActive(false);
     }
 
-    function setNotice(text, problem) {
+    function setNotice(text, problem, action) {
         notice = text;
         noticeProblem = problem;
+        noticeAction = text.length > 0 ? action : "";
         announce(text);
     }
 

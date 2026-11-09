@@ -193,6 +193,32 @@ Item {
         function notice(screen) {
             return findChild(screen || settings, "settingsBackupNotice");
         }
+        // Issue #828: the notice sits under the row of the action it reports
+        // on, with the card's divider after it: an export's between Export
+        // backup and Restore from backup, a restore's under Restore.
+        function verifyNoticeUnder(action) {
+            var screen = settings;
+            waitForRendering(screen);
+            var line = notice();
+            verify(line.visible && line.text.length > 0, "a notice is shown");
+            var exportRow = findChild(screen, "settingsBackupExportRow");
+            var restoreRow = findChild(screen, "settingsBackupRestoreRow");
+            var top = line.mapToItem(screen, 0, 0).y;
+            var bottom = line.mapToItem(screen, 0, line.height).y;
+            var exportBottom = exportRow.mapToItem(screen, 0, exportRow.height).y;
+            var restoreTop = restoreRow.mapToItem(screen, 0, 0).y;
+            var restoreBottom = restoreRow.mapToItem(screen, 0, restoreRow.height).y;
+            if (action === "export") {
+                verify(top >= exportBottom - 0.5 && bottom <= restoreTop + 0.5,
+                       "an export's notice sits between Export and Restore: " + [exportBottom, top, bottom, restoreTop]);
+                verify(!exportRow.showDivider, "the divider goes below the notice");
+                verify(findChild(screen, "settingsBackupExportNoticeSlot").visible);
+            } else {
+                verify(top >= restoreBottom - 0.5, "a restore's notice sits under Restore: " + [restoreBottom, top]);
+                verify(exportRow.showDivider, "Export keeps its divider");
+                verify(!findChild(screen, "settingsBackupExportNoticeSlot").visible);
+            }
+        }
 
         // ---- the Settings card ----
 
@@ -592,6 +618,7 @@ Item {
             compare(line.textFormat, Text.PlainText);
             compare(line.color, Ui.Theme.textSecondary);
             compare(notice(findChild(app, "sessionSettingsScreen")).text, line.text);
+            verifyNoticeUnder("export");
         }
 
         function test_export_lists_at_most_a_few_missing_items() {
@@ -717,6 +744,7 @@ Item {
             compare(calls("prepareExport").length, 0);
             compare(notice().text, data.text);
             compare(notice().color, Ui.Theme.alert);
+            verifyNoticeUnder("export");
         }
 
         // A file that becomes unreadable after that check is still refused when
@@ -731,6 +759,7 @@ Item {
             compare(part("backupPassphraseField").text, "");
             compare(notice().text, "Scan lists can't be read, so no backup was made. Save a change to Scan lists, then back up again. That backup holds only what DSD-neo shows now.");
             compare(notice().color, Ui.Theme.alert);
+            verifyNoticeUnder("export");
         }
 
         function test_export_save_error_lands_in_the_card() {
@@ -740,6 +769,32 @@ Item {
             compare(lastFlowActive(), false);
             compare(notice().text, "Couldn't save the backup there. Try again, or choose another place.");
             compare(notice().color, Ui.Theme.alert);
+            verifyNoticeUnder("export");
+        }
+
+        // Issue #828: the refusal of an export read as Restore's while every
+        // notice sat under Restore. Each notice moves to its own action's row,
+        // and a later one of the other action moves it back.
+        function test_notice_follows_its_action() {
+            verify(testContext.setBackup("unreadableFiles", ["dsd-neo-app.ini"]));
+            findChild(settings, "settingsBackupExportRow").activate();
+            wait(0);
+            compare(flow.noticeAction, "export");
+            verifyNoticeUnder("export");
+            testContext.setBackupReply("commitRestore", {ok: false, quitting: false, error: "Io"});
+            verify(testContext.setBackup("unreadableFiles", []));
+            var confirm = toConfirm();
+            findChild(confirm, "confirmActionButton").activate();
+            tryCompare(confirm, "visible", false);
+            compare(notice().text, "Couldn't start the restore. Try again.");
+            compare(flow.noticeAction, "restore");
+            verifyNoticeUnder("restore");
+            // A new export clears the restore's notice as it starts.
+            findChild(settings, "settingsBackupExportRow").activate();
+            wait(0);
+            compare(notice().text, "");
+            compare(flow.noticeAction, "");
+            verify(findChild(settings, "settingsBackupExportRow").showDivider);
         }
 
         // ---- restore ----
@@ -1026,6 +1081,7 @@ Item {
             verify(!cancel.visible);
             compare(notice().text, "Restore cancelled.");
             compare(notice().color, Ui.Theme.textSecondary);
+            verifyNoticeUnder("restore");
             verify(restoreRow.enabled);
         }
 
@@ -1133,6 +1189,7 @@ Item {
             compare(lastFlowActive(), false);
             compare(notice().text, "Couldn't start the restore. Try again.");
             compare(notice().color, Ui.Theme.alert);
+            verifyNoticeUnder("restore");
         }
 
         function test_commit_refused_for_a_moment_data() {

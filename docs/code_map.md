@@ -12987,10 +12987,10 @@ Qt Quick frontend (`src/ui/qt`):
     QML as the result's `unreadable` (a QStringList). `backup_unreadable_files()` runs the same checks without the rest
     of the snapshot; the model's `checkExport()` answers with it in exportPrepared's map shape, so `BackupFlow.qml`
     refuses at Export backup before it asks for a passphrase; the export's own check stays for a file that turns
-    unreadable in between, and either refusal ends the flow with one message on the Settings card that names each file
-    through `Util.storeLabel()` and gives the next step (save a change to that list, or restart for the settings). Call
-    history's settings are not in a backup. Kept `<name>.unreadable-N` files are never carried, and a restore never
-    touches them.
+    unreadable in between, and either refusal ends the flow with one message on the Settings card, under Export backup,
+    that names each file through `Util.storeLabel()` and gives the next step (save a change to that list, or restart
+    for the settings). Call history's settings are not in a backup. Kept `<name>.unreadable-N` files are never
+    carried, and a restore never touches them.
     `backup_parse_archive()` is pure and treats the archive as untrusted: size caps (64 MiB sealed, 4096 files, 32 MiB
     a file, 4096 rows a store, 4 MiB manifest), a sha256 per file, archive paths under `imports/` with case- and
     NFC-folded duplicates refused, store shapes and identities, settings filtered to `AppPrefs::portableKeys()`; it
@@ -13071,7 +13071,11 @@ Qt Quick frontend (`src/ui/qt`):
     starts nothing, and entering a restore drops pending starts (`dropPendingStarts()`). An unlock error about the file
     (not a backup, newer, too large, damaged, unreadable) swaps Unlock for "Choose another file", which reopens the
     picker inside the same flow. A commit refused as `SessionActive` or `Busy` keeps the stage and the confirmation
-    (`ConfirmDialog.closeOnConfirm: false`, its `error` line) for a retry; only Cancel discards. Settings' Backup card
+    (`ConfirmDialog.closeOnConfirm: false`, its `error` line) for a retry; only Cancel discards. The flow's last result
+    (`notice`) is shown under the row of the action it reports on (`noticeAction`, "export" or "restore", set with
+    the notice; issue #828: an export refusal under Restore read as Restore's): between Export backup and Restore
+    from backup, with the divider after it, or under Restore. It is one navigation-gated `Text` reparented between
+    two slots (`tst_settings_backup.qml` `verifyNoticeUnder()`, `test_notice_follows_its_action`). Settings' Backup card
     gates the Restore row on `restoreAllowed` and `!restorePending`, and it and the Home card offer "Cancel
     restore"/"Discard restore" only while `restoreCancellable`, else `Util.restorePartWayText()`. The confirmation, the
     export result and the Home card list `notIncluded` through `Util.notIncludedText()`. `BackupResultCard.qml` on Home

@@ -1811,6 +1811,7 @@ Window {
             onOpenCallRecordings: mainRoot.callRecordingsOpen = true
             backupNotice: backupFlow.notice
             backupNoticeProblem: backupFlow.noticeProblem
+            backupNoticeAction: backupFlow.noticeAction
             onExportBackupRequested: backupFlow.beginExport()
             onRestoreBackupRequested: backupFlow.beginRestore()
             onCancelRestoreRequested: backupFlow.cancelPendingRestore()
@@ -2302,6 +2303,7 @@ Window {
             onOpenCallRecordings: mainRoot.callRecordingsOpen = true
             backupNotice: backupFlow.notice
             backupNoticeProblem: backupFlow.noticeProblem
+            backupNoticeAction: backupFlow.noticeAction
             onExportBackupRequested: backupFlow.beginExport()
             onRestoreBackupRequested: backupFlow.beginRestore()
             onCancelRestoreRequested: backupFlow.cancelPendingRestore()
