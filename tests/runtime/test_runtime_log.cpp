@@ -200,6 +200,25 @@ test_log_capture_keeps_this_threads_first_error(void) {
            && std::strstr(logged, "after the capture") != nullptr);
 }
 
+/* #832 gate r3: the captured reason is the message as formatted, in UTF-8, even when the terminal output falls back to
+   ASCII: a caller matches the paths it names. */
+static void
+test_log_capture_keeps_utf8_under_ascii_fallback(void) {
+    char reason[64] = "stale";
+    char logged[128];
+    set_env_flag("DSD_FORCE_ASCII", "1");
+    set_env_flag("DSD_FORCE_UTF8", nullptr);
+
+    capture_stderr capture = capture_stderr_begin();
+    dsd_neo_log_capture_error(reason, sizeof(reason));
+    dsd_neo_log_write(LOG_LEVEL_ERROR, "file '%s' row %d: bad\n", "/data/caf\xC3\xA9/document", 2);
+    dsd_neo_log_capture_error(nullptr, 0);
+    capture_stderr_end(&capture, logged, sizeof(logged));
+
+    assert(std::strcmp(reason, "file '/data/caf\xC3\xA9/document' row 2: bad\n") == 0);
+    assert(std::strcmp(logged, "file '/data/caf?/document' row 2: bad\n") == 0);
+}
+
 int
 main(void) {
     test_log_sink_resolves_from_environment_once();
@@ -211,6 +230,7 @@ main(void) {
     test_log_write_applies_ascii_fallback_when_unicode_disabled();
     test_log_write_ignores_null_format();
     test_log_capture_keeps_this_threads_first_error();
+    test_log_capture_keeps_utf8_under_ascii_fallback();
     set_env_flag("DSD_FORCE_ASCII", nullptr);
     set_env_flag("DSD_FORCE_UTF8", nullptr);
 

@@ -2854,7 +2854,8 @@ suite runs under this compiler.
   - Logging (`log.h`, `src/runtime/log.cpp`): `dsd_neo_log_write()` behind the `LOG_*` macros, the sink choice, one
     process-wide tap (the diagnostics log) and `dsd_neo_log_capture_error()`, which keeps a copy of the calling thread's
     first error message for a caller that runs a parser and wants its reason (#832: the import worker's `format`
-    detail); other threads are never captured. Test: `RUNTIME_LOG`.
+    detail), as formatted in UTF-8 even when the terminal output falls back to ASCII; other threads are never captured.
+    Test: `RUNTIME_LOG`.
   - Frontend-neutral Signal search records, rational range validation, the aggregate
     configuration check engine and frontends share (`dsd_signal_search_validate_config()`)
     and conservative DC/edge-safe capture planning (`signal_search.h/.c`). `signal_search_hooks.h/.c`

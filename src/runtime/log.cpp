@@ -159,8 +159,10 @@ dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
         out = safe;
     }
 
+    /* The message as formatted, not as the terminal shows it: a caller matches the paths it names, and an ASCII
+       fallback would have replaced their non-ASCII characters. */
     if (level == LOG_LEVEL_ERROR && g_error_capture && g_error_capture[0] == '\0') {
-        DSD_SNPRINTF(g_error_capture, g_error_capture_size, "%s", out);
+        DSD_SNPRINTF(g_error_capture, g_error_capture_size, "%s", buf);
     }
 
     const auto* tap = g_log_tap.load(std::memory_order_acquire);

@@ -49,6 +49,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
@@ -1798,6 +1799,31 @@ test_startup_revision_cleanup() {
     QFile::remove(dsd_qt::json_store_path("saved_systems.json"));
 }
 
+/* Gate r3: with the terminal output in ASCII (DSD_FORCE_ASCII) and app data under a non-ASCII folder, a parser's
+   reason still names the file by the name the user picked it by, never by its altered staging path. */
+void
+test_reason_under_ascii_logging() {
+    const QString name = QCoreApplication::applicationName();
+    QCoreApplication::setApplicationName(name + QString::fromUtf8("-caf\xC3\xA9"));
+    const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QDir(dataDir).removeRecursively();
+    expect("force ASCII logging", dsd_env_set(DSD_ENV_LAYER_HOST, "DSD_FORCE_ASCII", "1") == 0);
+    {
+        TestHost host;
+        dsd_qt::ImportedFilesModel model(&host);
+        QTemporaryDir source;
+        const QString badMode = source.filePath("bad-mode.csv");
+        expect("ASCII reason fixture", write_file(badMode, "channel,frequency,mode\n1,851012500,warp\n"));
+        const QString why = importAndWait(model, badMode, "bad-mode.csv", "chan").value("detail").toString();
+        expect("an ASCII log still maps the reason to the picked name",
+               why.startsWith("Channel map file 'bad-mode.csv' row 2: invalid mode")
+                   && !why.contains("import-staging"));
+    }
+    dsd_env_clear_layer(DSD_ENV_LAYER_HOST);
+    QDir(dataDir).removeRecursively();
+    QCoreApplication::setApplicationName(name);
+}
+
 /* A model built while the cached phase still reads Idle but the host's live answer says a decoder starts or runs (an
    Android UI recreated beside its running service): neither the revision cleanup nor journal recovery deletes
    anything, and the journal keeps its entries until a start that finds the decoder stopped. */
@@ -3126,6 +3152,7 @@ main(int argc, char** argv) {
     test_async_target_write_failure();
     test_startup_revision_cleanup();
     test_startup_cleanup_asks_the_live_engine();
+    test_reason_under_ascii_logging();
     test_journal_recovery();
     test_journal_recovery_keeps_named_revisions();
     test_cleanup_keeps_revisions_other_rows_reach();
