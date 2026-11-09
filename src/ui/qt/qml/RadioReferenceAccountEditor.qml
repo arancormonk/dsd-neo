@@ -193,11 +193,23 @@ Column {
      * filled (the username through prefs, which the field's binding shows; the
      * password in the model, never here). A field it left alone commits what it
      * shows, and the pair is then checked once.
+     *
+     * A filled username equal to the stored one changes nothing in prefs, so
+     * the binding alone would leave a different draft in the field, committed
+     * over the fill once the field loses focus. So the field is pointed at
+     * prefs again first, before the check's busy sheet can take the focus,
+     * with any word still composing finished so it cannot land afterwards.
      */
     function applyFill(hasUsername, hasPassword) {
         editor.fillApplying = true;
-        if (!hasUsername)
+        if (hasUsername) {
+            Navigation.commitComposing(false);
+            usernameField.text = Qt.binding(function () {
+                return prefs.rrUsername;
+            });
+        } else {
             editor.commitUsername();
+        }
         if (hasPassword)
             editor.resetDraft();
         else

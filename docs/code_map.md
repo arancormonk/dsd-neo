@@ -12449,9 +12449,11 @@ Qt Quick frontend (`src/ui/qt`):
   (`credentialsReady` turns true just before `checkAccount()` sets Checking) and that flicker must not reach the relay
   or mask a revealed password; a card that has settled hidden with no field focused also clears its draft; becoming
   inactive ends it. `filled` for the form's own token commits the field the fill left alone, clears the draft when the
-  password was filled, and checks once, under `fillApplying`. The import card stays up while `checkingAccount`. The QML
-  fixtures fake the relay (`SignInAutofillRecorder` in `tests/ui/qml_test_context.h`, whose `fill()` fires `filled`),
-  and `FakeRadioReference.qml` follows the account state (`settle()`); `tst_radioreference_screen.qml` and
+  password was filled, and checks once, under `fillApplying`; a filled username first finishes any composing word and
+  binds the field to `prefs.rrUsername` again, since a name equal to the stored one changes nothing there and would
+  leave a typed draft in the field to be committed over the fill. The import card stays up while `checkingAccount`.
+  The QML fixtures fake the relay (`SignInAutofillRecorder` in `tests/ui/qml_test_context.h`, whose `fill()` fires
+  `filled`), and `FakeRadioReference.qml` follows the account state (`settle()`); `tst_radioreference_screen.qml` and
   `tst_settings_layout.qml` cover the forms.
   `systemDetails.protocolToken`
   (`dsd_rr_protocol_token()`, "tetra") is how QML tells the protocol apart, and the talkgroup summary (count,
