@@ -800,6 +800,68 @@ test_analog_rows_refuse_key_material(void) {
     DSD_SECURE_ZERO(&keys, sizeof(keys));
 }
 
+/* A learned alias appended to the global group file while a row's own list for that file is in effect is copied into
+ * the global list held aside, whose baseline already counts the row. When that copy cannot be stored (out of memory)
+ * the global list is marked incomplete: back in effect it refuses to save, so its next save cannot pass the guard and
+ * write the appended row out of the file. */
+static void
+test_held_list_short_of_an_appended_row_is_not_saved(void) {
+    char path[1024];
+    int fd = dsd_test_mkstemp(path, sizeof(path), "dsd_scan_mirror");
+    assert(fd >= 0);
+    dsd_close(fd);
+    // Sixteen rows fill the global list's first table block, so storing one more has to allocate.
+    char csv[1024] = "id,mode,name\n";
+    for (int id = 100; id < 116; id++) {
+        const size_t used = strlen(csv);
+        DSD_SNPRINTF(csv + used, sizeof(csv) - used, "%d,A,TG%d\n", id, id);
+    }
+    write_file(path, csv);
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
+    assert(dsd_tg_policy_reload_group_file(opts, state) == 0);
+    assert(dsd_tg_policy_entry_count(state) == 16U);
+    dsd_scan_options parsed = {0};
+    parsed.values.present = DSD_SCAN_OPT_GROUP;
+    DSD_SNPRINTF(parsed.values.group_file, sizeof(parsed.values.group_file), "%s", path);
+    dsd_key_set keys = {0};
+    dsd_scan_row_profile* row = NULL;
+    assert(dsd_scan_profile_load(&parsed, 0, &row, &keys) == 0);
+    assert(dsd_scan_groups_begin(state) == 0);
+    dsd_scan_groups_enter(state, row);
+    assert(dsd_scan_groups_row_active(state));
+
+    dsd_tg_policy_entry alias;
+    assert(dsd_tg_policy_make_exact_entry(300, "D", "Learned", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &alias) == 0);
+    assert(dsd_tg_policy_learn_exact(state, &alias) == DSD_TG_POLICY_LEARN_ADDED);
+    dsd_tg_policy_test_alloc_fail_after(0);
+    const int appended = dsd_tg_policy_append_group_file_row(opts, state, &alias, "");
+    dsd_tg_policy_test_alloc_reset();
+    assert(appended == 0);
+    dsd_scan_groups_leave(state);
+
+    assert(dsd_tg_policy_incomplete(state));
+    assert(dsd_tg_policy_set_mode(state, 100, 100, "B") == 0);
+    assert(dsd_tg_policy_write_group_file(opts, state) == 1);
+    char text[1024] = {0};
+    FILE* fp = dsd_fopen_existing_regular_file(path, "r");
+    assert(fp);
+    const size_t n = fread(text, 1, sizeof(text) - 1U, fp);
+    (void)fclose(fp);
+    text[n] = '\0';
+    char want[1024];
+    DSD_SNPRINTF(want, sizeof(want), "%s300,D,Learned\n", csv);
+    assert(strcmp(text, want) == 0);
+    dsd_scan_profile_free(row);
+    dsd_key_set_free(&keys);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    (void)remove(path);
+}
+
 int
 main(void) {
     test_analog_rows_refuse_key_material();
@@ -818,5 +880,6 @@ main(void) {
     test_empty_group_avoid_scopes();
     test_csv_import();
     test_legacy_columns_do_not_mute();
+    test_held_list_short_of_an_appended_row_is_not_saved();
     return 0;
 }

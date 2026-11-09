@@ -4091,6 +4091,34 @@ test_group_startup_and_export_baseline(void) {
     return rc;
 }
 
+/* An export of a list that was never loaded (no store yet) still makes the written file the list's baseline: an edit to
+ * that file outside dsd-neo stops the next save instead of being overwritten by it. */
+static int
+test_group_empty_export_guards_its_file(void) {
+    char path[64];
+    int rc = load_report_file(path, sizeof path, NULL);
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    if (rc != 0 || !opts || !st) {
+        free(opts);
+        free(st);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", path);
+    rc |= expect_true("empty export written", dsd_tg_policy_write_group_file(opts, st) == 0);
+    rc |= expect_true("empty export holds no rows", !dsd_tg_policy_has_entries(st));
+    const char* edited = "id,mode,name\n100,A,Dispatch\n";
+    rc |= expect_true("empty export edited outside", write_group_bytes(path, edited) == 0);
+    rc |= expect_true("lockout after empty export", dsd_tg_policy_set_mode(st, 200, 200, "B") == 0);
+    rc |= expect_true("empty export guards its file", dsd_tg_policy_write_group_file(opts, st) == 2);
+    char text[128] = {0};
+    rc |= expect_true("outside rows kept", read_group_text(path, text, sizeof text) == 0 && strcmp(text, edited) == 0);
+    free_test_state(st);
+    free(opts);
+    (void)remove(path);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -4154,5 +4182,6 @@ main(void) {
     rc |= test_group_startup_missing_file_baseline();
     rc |= test_group_import_reports_why();
     rc |= test_group_check_is_quiet();
+    rc |= test_group_empty_export_guards_its_file();
     return rc;
 }

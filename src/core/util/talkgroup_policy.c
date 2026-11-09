@@ -2720,10 +2720,15 @@ dsd_tg_policy_write_group_file(const dsd_opts* opts, dsd_state* state) {
     if (tg_policy_probe_group_file(path, &probe) != 0) {
         return -1;
     }
+    // The written file becomes this list's baseline, so a list never loaded (an empty export) gets its store first, as
+    // a decoder write creates it; without one the next save could not tell an outside edit of the file.
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
+    if (!ctx) {
+        return -1;
+    }
     int use_policy = probe.has_header && probe.header.policy;
     int any_tags = 0;
-    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
-    size_t count = ctx ? ctx->table.count : 0;
+    size_t count = ctx->table.count;
     for (size_t i = 0; i < count; i++) {
         const dsd_tg_policy_entry* entry = &ctx->table.entries[i];
         if (tg_policy_entry_requires_extended_csv(entry)) {
@@ -2743,7 +2748,7 @@ dsd_tg_policy_write_group_file(const dsd_opts* opts, dsd_state* state) {
     if (!sink.wf) {
         return -1;
     }
-    int failed = tg_policy_write_group_table(&sink, ctx ? ctx->table.entries : NULL, count, use_policy, any_tags) != 0;
+    int failed = tg_policy_write_group_table(&sink, ctx->table.entries, count, use_policy, any_tags) != 0;
     if (fclose(sink.wf) != 0) {
         failed = 1;
     }
@@ -2813,14 +2818,17 @@ tg_policy_append_lists_incomplete(const tg_policy_append_lists* lists) {
 
 /* A list held aside that stands for the file takes the appended row too, as its next load of the file would (the file's
  * first row for an ID wins, so a list with a row for the ID keeps it). Otherwise its next rewrite of the file would drop
- * the row just appended. */
+ * the row just appended. Its baseline already counts the row, so a list that cannot store it (out of memory) no longer
+ * holds every row of its file: it is marked incomplete, and refuses to be written back until it is reloaded. */
 static void
 tg_policy_store_mirror_learned(dsd_tg_policy_context* ctx, const dsd_tg_policy_entry* entry) {
     if (tg_policy_find_bounds_idx_kind(ctx, entry->id_start, entry->id_start, 0) >= 0
         || tg_policy_find_bounds_idx_kind(ctx, entry->id_start, entry->id_start, 1) >= 0) {
         return;
     }
-    (void)tg_policy_store_append_kind(ctx, entry, 0);
+    if (tg_policy_store_append_kind(ctx, entry, 0) != 0) {
+        ctx->incomplete = 1;
+    }
 }
 
 /* Append @p entry's line to the open @p wf and fold it, as the next load of the file will read it, into each list in
