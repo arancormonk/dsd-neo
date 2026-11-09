@@ -13609,14 +13609,26 @@ RadioReference sign-in form itself (the relay, `SignInAutofill` in `src/ui/qt`, 
   `requestShowInlineSuggestionsLocked()` fails over to the dropdown. With no fill UI shown a move does nothing. Limit: a
   response the framework has marked expired would make that enter start a focused request, which can wait for the
   keyboard's inline request. A move of the whole app window with nothing moving inside it (a freeform drag, a
-  split-screen divider) needs nothing. The one fill UI that is not a dropdown is `FillUi`'s fullscreen mode (leanback/TV
-  devices, or a debug override): `AutofillPopupWindow.update()` (AutofillPopupWindow.java:107-122) makes it a
-  `TYPE_SYSTEM_DIALOG` that covers the screen and has no anchor to follow. Otherwise `AutofillPopupWindow.update()`
-  makes the dropdown `TYPE_APPLICATION_ABOVE_SUB_PANEL` (AutofillPopupWindow.java:118, android16-release) shown with
-  `showAsDropDown()` (234), whose `createPopupLayoutParams(anchor.getApplicationWindowToken())` (PopupWindow.java:1419,
-  token at 1624) attaches it to the app's window, and `findDropDownPosition()` (1733) sets its x/y as the anchor's
-  screen location minus the app root's; sub-windows' "coordinate space is relative to their attached window"
-  (`WindowManager.LayoutParams.FIRST_SUB_WINDOW`, WindowManager.java:2290-2296), so the dropdown moves with the window.
+  split-screen divider) is followed too. The dropdown is a sub-window of the app's window:
+  `AutofillPopupWindow.update()` makes it `TYPE_APPLICATION_ABOVE_SUB_PANEL` (AutofillPopupWindow.java:118,
+  android16-release) shown with `showAsDropDown()` (234), whose
+  `createPopupLayoutParams(anchor.getApplicationWindowToken())` (PopupWindow.java:1419, token at 1624) attaches it to
+  the app's window, and `findDropDownPosition()` (1733) sets its x/y relative to the app root; sub-windows' "coordinate
+  space is relative to their attached window" (`WindowManager.LayoutParams.FIRST_SUB_WINDOW`,
+  WindowManager.java:2290-2296). On the emulator that holds only while the keyboard is clear of the window: moved 100 px
+  down with the keyboard overlapping it, the system re-clamped the dropdown's offset from (0,115) to (0,15) and left it
+  at its old screen height, 100 px above the field (emu/report-r2.md check 4). So while the UI is shown, an
+  `OnPreDrawListener` on the host (registered only then; removed on hide, blur, end and detach) reads the host's place
+  on screen (`SignInAutofillState.screen()`, positions only), and a change from where the UI was anchored arms the same
+  settle and re-anchor. A window move reaches the app as `resized` (a frame and, in freeform, a configuration change),
+  and a change of the keyboard's overlap as an insets change; `ViewRootImpl.handleResized()` ends in `requestLayout()`
+  (ViewRootImpl.java:2376, android16-release) and `notifyInsetsChanged()` too (2561), so a traversal follows, which
+  dispatches `OnPreDraw` (4417; `OnGlobalLayout` only when a layout ran, 4284). Limit: a bare `moved()` from the window
+  manager (`WindowState.handleWindowMovedIfNeeded()`, WindowState.java:2082 → `MSG_WINDOW_MOVED`,
+  ViewRootImpl.java:7001) updates the position without a traversal, so it is not seen until the next one; the dropdown
+  then follows as a sub-window unless re-clamped. The one fill UI that is not a dropdown is `FillUi`'s fullscreen mode
+  (leanback/TV devices, or a debug override): `AutofillPopupWindow.update()` (AutofillPopupWindow.java:107-122) makes it
+  a `TYPE_SYSTEM_DIALOG` that covers the screen and has no anchor to follow.
 - The host view is the activity content's first child (`android.R.id.content`, `MATCH_PARENT`, behind Qt's
   `QtRootLayout`, which `super.onCreate()` set as the content view): childless, not focusable or clickable, no touches,
   `IMPORTANT_FOR_ACCESSIBILITY_NO`, `IMPORTANT_FOR_AUTOFILL_YES`, no drawing. Never focused, so `requestAutofill()` adds
@@ -13641,10 +13653,10 @@ RadioReference sign-in form itself (the relay, `SignInAutofill` in `src/ui/qt`, 
 - Privacy: no value is logged on this path; an exception is recorded in `HostDiagnostics` by class name only, and an
   effect's `toString()` leaves the text out.
 - Tests: `ANDROID_SIGN_IN_AUTOFILL_JVM` (`SignInAutofillStateTest.kt`: every rule above, the origin, the held request,
-  hidden-while-focused, fill UI following, the structure and the commit order); `UI_QT_ANDROID_HOST` (a fill from
-  another thread reaches the newest live host's sink once, on the GUI thread, and a host gone first drops it);
-  `tools/check_android_r8.py` (the upcalls and `nativeSignInFilled` in the release DEX). The framework itself needs an
-  emulator or device.
+  hidden-while-focused, fill UI following (field and window moves), the structure and the commit order);
+  `UI_QT_ANDROID_HOST` (a fill from another thread reaches the newest live host's sink once, on the GUI thread, and a
+  host gone first drops it); `tools/check_android_r8.py` (the upcalls and `nativeSignInFilled` in the release DEX). The
+  framework itself needs an emulator or device.
 
 #### Accessibility bridge (issue #782)
 

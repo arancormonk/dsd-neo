@@ -137,8 +137,8 @@ not been proven yet.
 - Logins are matched to the app (`androidapp://io.github.arancormonk.dsdneo`), not to
   radioreference.com, because the app cannot prove it speaks for that website. A login saved from the
   website is not matched automatically; pick it through the service's own search or vault entry.
-- An open dropdown moves with its field when the screen rotates or the form scrolls, once the field stops
-  moving.
+- An open dropdown moves with its field when the screen rotates, the form scrolls or the app's window moves,
+  once the field stops moving.
 
 The desktop Qt app has the same forms without the password-manager link.
 

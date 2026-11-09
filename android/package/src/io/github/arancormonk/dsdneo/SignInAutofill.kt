@@ -51,8 +51,9 @@ import io.github.arancormonk.dsdneo.SignInAutofillState.Effect
  * manager tells the state when the framework shows or hides its fill UI for a field; while it is shown, a move of the
  * focused field that has been still for [SETTLE_MS] re-anchors it once (as does a UI shown for a field that moved
  * after its request): the field is exited and entered again at its new bounds, which shows the UI there from the
- * response it already has, with no new request. A move of the whole app window needs nothing: the UI is a sub-window
- * of it and moves with it (docs/code_map.md "Sign-in autofill").
+ * response it already has, with no new request. While the UI is shown, a pre-draw listener on the host also reads its
+ * place on screen, and a window move (which can leave the UI behind when the keyboard overlaps the window) arms the
+ * same settled re-anchor; the listener is registered only while the state follows a shown UI.
  *
  * A fill goes back to Qt in one [DsdNative.nativeSignInFilled] call, under the token live when the framework filled.
  * Nothing on this path logs a value: a failure is recorded in [HostDiagnostics] by its exception's class name only.
@@ -80,6 +81,17 @@ object SignInAutofill {
         }
     }
 
+    /**
+     * While the fill UI is shown: every traversal of the host's window reads its place on screen. A window move reaches
+     * the app as a resize or an insets change, each of which requests a layout, so a traversal follows; see
+     * docs/code_map.md "Sign-in autofill". Never cancels the draw.
+     */
+    private val hostPreDraw = ViewTreeObserver.OnPreDrawListener {
+        guarded { refreshOrigin() }
+        true
+    }
+    private var preDrawWatched: View? = null
+
     private val settle = Runnable {
         guarded {
             refreshOrigin()
@@ -92,7 +104,7 @@ object SignInAutofill {
         override fun onAutofillEvent(view: View, virtualId: Int, event: Int) {
             guarded {
                 if (view === host) {
-                    state.fillUi(virtualId, event == EVENT_INPUT_SHOWN)
+                    execute { state.fillUi(virtualId, event == EVENT_INPUT_SHOWN) }
                 }
             }
         }
@@ -198,9 +210,25 @@ object SignInAutofill {
         if (view == null || manager == null) {
             state.disabled()
             event(false)
+            watchHostWhileShown()
             return
         }
         event(true).forEach { apply(manager, view, it) }
+        watchHostWhileShown()
+    }
+
+    /** The pre-draw watch on the host runs exactly while the state follows a shown fill UI. */
+    private fun watchHostWhileShown() {
+        val view = host?.takeIf { state.fillUiShown }
+        val watched = preDrawWatched
+        if (watched === view) {
+            return
+        }
+        if (watched != null && watched.viewTreeObserver.isAlive) {
+            watched.viewTreeObserver.removeOnPreDrawListener(hostPreDraw)
+        }
+        view?.viewTreeObserver?.addOnPreDrawListener(hostPreDraw)
+        preDrawWatched = view
     }
 
     private fun enabledManager(view: View): AutofillManager? =
@@ -245,13 +273,17 @@ object SignInAutofill {
     private fun refreshOrigin() {
         val view = host
         val window = view?.let(::qtWindowView)
+        val hostLocation = IntArray(2)
+        if (view != null && view.isLaidOut) {
+            view.getLocationOnScreen(hostLocation)
+            // The host's own place on screen, which a window move changes with nothing inside Qt's window moving.
+            execute { state.screen(SignInAutofillState.Offset(hostLocation[0], hostLocation[1])) }
+        }
         if (view == null || window == null || !view.isLaidOut || !window.isLaidOut) {
             state.origin(null)
             return
         }
-        val hostLocation = IntArray(2)
         val windowLocation = IntArray(2)
-        view.getLocationOnScreen(hostLocation)
         window.getLocationOnScreen(windowLocation)
         state.origin(SignInAutofillState.Offset(windowLocation[0] - hostLocation[0], windowLocation[1] - hostLocation[1]))
     }
@@ -291,6 +323,8 @@ object SignInAutofill {
     private fun removeHost() {
         forgetQtWindow()
         main.removeCallbacks(settle)
+        preDrawWatched?.let { if (it.viewTreeObserver.isAlive) it.viewTreeObserver.removeOnPreDrawListener(hostPreDraw) }
+        preDrawWatched = null
         callbackManager?.unregisterCallback(fillUiEvents)
         callbackManager = null
         host?.let { view ->

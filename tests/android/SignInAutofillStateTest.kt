@@ -340,6 +340,68 @@ private fun aMoveBeforeTheFillUiShowedIsFollowedOnceShown() {
     nothing(still.settled(), "nothing armed")
 }
 
+private val SCREEN = Offset(284, 660)
+private val SCREEN_MOVED = Offset(384, 760)
+
+/** A form whose password field was requested with the host at [SCREEN] on screen, its fill UI shown if [shown]. */
+private fun requestedOnScreen(shown: Boolean): SignInAutofillState {
+    val state = shownForm()
+    nothing(state.screen(SCREEN), "the host's place on screen, before any session")
+    started(state, 1, PASSWORD, PASS_RECT)
+    if (shown) {
+        nothing(state.fillUi(PASSWORD, shown = true), "the framework showed its UI")
+    }
+    return state
+}
+
+private fun aWindowMoveUnderAShownFillUiIsFollowed() {
+    val state = requestedOnScreen(shown = true)
+    nothing(state.screen(SCREEN), "not moved")
+    expect(state.screen(SCREEN_MOVED), Effect.Settle(PASSWORD),
+        why = "the window moved with the field inside it unchanged: armed")
+    nothing(state.screen(SCREEN_MOVED), "redrawn in place: the settle is not restarted")
+    expect(state.settled(), Effect.Exit(PASSWORD), Effect.HideTextHandle, Effect.Enter(PASSWORD, PASS_RECT),
+        why = "one re-anchor once it settled; the host-pixel rect is unchanged, its screen place is new")
+    nothing(state.settled(), "once")
+    nothing(state.fillUi(PASSWORD, shown = false), "hidden by the exit")
+    nothing(state.fillUi(PASSWORD, shown = true), "shown again at the new place: nothing more")
+    nothing(state.screen(SCREEN_MOVED), "still there")
+    expect(state.screen(SCREEN), Effect.Settle(PASSWORD), why = "moved back")
+    nothing(state.screen(SCREEN_MOVED), "and back again before it settled")
+    nothing(state.settled(), "where it was anchored: nothing to do")
+}
+
+private fun aWindowMoveIsNotFollowedWithoutAShownFillUi() {
+    var state = requestedOnScreen(shown = false)
+    nothing(state.screen(SCREEN_MOVED), "no fill UI shown: a window move is not followed")
+    nothing(state.settled(), "nothing armed")
+
+    state = requestedOnScreen(shown = true)
+    nothing(state.fillUi(PASSWORD, shown = false), "the UI went")
+    nothing(state.screen(SCREEN_MOVED), "a hidden UI is not followed")
+
+    state = requestedOnScreen(shown = true)
+    expect(state.screen(SCREEN_MOVED), Effect.Settle(PASSWORD), why = "armed")
+    expect(state.field(1, PASSWORD, PASS_RECT, true, false, ""), Effect.Exit(PASSWORD), why = "blur")
+    nothing(state.settled(), "no re-anchor after a blur")
+
+    state = requestedOnScreen(shown = true)
+    expect(state.screen(SCREEN_MOVED), Effect.Settle(PASSWORD), why = "armed")
+    expect(state.end(1), Effect.Cancel, why = "the form left")
+    nothing(state.settled(), "no re-anchor for an ended form")
+    check(!state.fillUiShown) { "no fill UI is followed once the form ended" }
+}
+
+private fun aFillUiShownAfterAWindowMoveIsFollowed() {
+    val state = requestedOnScreen(shown = false)
+    check(!state.fillUiShown)
+    nothing(state.screen(SCREEN_MOVED), "moved while the service was still answering")
+    expect(state.fillUi(PASSWORD, shown = true), Effect.Settle(PASSWORD), why = "shown at the request's place")
+    check(state.fillUiShown) { "the executor watches the window while the UI is shown" }
+    expect(state.settled(), Effect.Exit(PASSWORD), Effect.HideTextHandle, Effect.Enter(PASSWORD, PASS_RECT),
+        why = "followed once")
+}
+
 private fun everyRequestAndEnterHidesTheTextHandleFirst() {
     val state = shownForm()
     nothing(state.field(1, USERNAME, USER_RECT, true, true, "alice"), "focus")
@@ -383,5 +445,8 @@ fun main() {
     aCommitEndsTheFillUiState()
     aMoveBeforeTheFillUiShowedIsFollowedOnceShown()
     everyRequestAndEnterHidesTheTextHandleFirst()
+    aWindowMoveUnderAShownFillUiIsFollowed()
+    aWindowMoveIsNotFollowedWithoutAShownFillUi()
+    aFillUiShownAfterAWindowMoveIsFollowed()
     println("PASS: sign-in autofill state follows tokens, focus, commit and the service")
 }

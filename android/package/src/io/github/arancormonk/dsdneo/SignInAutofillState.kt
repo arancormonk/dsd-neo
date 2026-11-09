@@ -21,9 +21,10 @@ package io.github.arancormonk.dsdneo
  *   the field is still entered; leaving the field, the service going away or the token ending drops it;
  * - a field that stops being entered (focus lost, or hidden while focused) is exited, in a started session only;
  * - while the framework reports its fill UI shown for the entered field ([fillUi]), a move of that field arms the
- *   settle wait ([Effect.Settle]), and so does the UI showing for a field that moved since its request; [settled] then
- *   re-anchors the UI once at the field's new place (an exit, then an enter with the new bounds), if the field is still
- *   entered, still moved and the UI still shown;
+ *   settle wait ([Effect.Settle]), as do a move of the host on screen ([screen]: a window move, which can leave the
+ *   UI behind while the keyboard overlaps the window) and the UI showing for a field that moved since its request;
+ *   [settled] then re-anchors the UI once at the field's new place (an exit, then an enter with the new bounds), if
+ *   the field is still entered, still away from where the UI was anchored and the UI still shown;
  * - every request and every re-anchor's enter, either of which can start a FillRequest, comes right after
  *   [Effect.HideTextHandle];
  * - [commit] reports both values, commits, then hides both fields, in a started session only, and ends that session;
@@ -80,6 +81,9 @@ class SignInAutofillState {
         val entered get() = focused && visible
     }
 
+    /** Where a field's fill UI was put: the field's rect in Qt window pixels, and the host's place on screen then. */
+    private data class Anchor(val rect: Rect, val screen: Offset?)
+
     companion object {
         const val USERNAME = 1
         const val PASSWORD = 2
@@ -98,6 +102,9 @@ class SignInAutofillState {
     /** Whether a request waits for the Qt window's origin. */
     val hasHeldRequest get() = held != 0
 
+    /** Whether the framework reports its fill UI shown for a field of the live form: the host's place is watched. */
+    val fillUiShown get() = token != 0 && shownFor != 0
+
     private var lastToken = 0
     private var origin: Offset? = null
     private val fields = sortedMapOf<Int, Field>()
@@ -111,8 +118,11 @@ class SignInAutofillState {
     /** The field whose settle wait is armed, 0 for none. */
     private var settling = 0
 
-    /** Where each field's request or last re-anchor put the fill UI, in Qt window pixels. */
-    private val anchors = HashMap<Int, Rect>()
+    /** Where each field's request or last re-anchor put the fill UI. */
+    private val anchors = HashMap<Int, Anchor>()
+
+    /** The host view's top left corner on screen, as last reported; null before the first report. */
+    private var screen: Offset? = null
 
     /** The Qt window's origin in host pixels, or null while it is not known. Kept across tokens. */
     fun origin(offset: Offset?) {
@@ -146,11 +156,30 @@ class SignInAutofillState {
             }
             return if (sessionStarted && before?.entered == true) listOf(Effect.Exit(vid)) else NONE
         }
-        if (sessionStarted && shownFor == vid && windowRect != anchors[vid]) {
+        if (sessionStarted && shownFor == vid && windowRect != anchors[vid]?.rect) {
             settling = vid
             return listOf(Effect.Settle(vid))
         }
         return NONE
+    }
+
+    /**
+     * The host view's top left corner is at [offset] on screen. Positions only. While the fill UI is shown, a change
+     * that leaves the host away from where the UI was anchored arms the settle; a repeat of the same place does not
+     * restart a settle already armed.
+     */
+    fun screen(offset: Offset): List<Effect> {
+        val changed = offset != screen
+        screen = offset
+        val vid = shownFor
+        val field = fields[vid]
+        if (token == 0 || !sessionStarted || vid == 0 || field == null || !field.entered ||
+            offset == anchors[vid]?.screen || (!changed && settling == vid)
+        ) {
+            return NONE
+        }
+        settling = vid
+        return listOf(Effect.Settle(vid))
     }
 
     fun request(token: Int, vid: Int, windowRect: Rect, enabled: Boolean): List<Effect> {
@@ -204,7 +233,7 @@ class SignInAutofillState {
         shownFor = vid
         // Shown at the bounds of its request: a field that moved meanwhile is followed once it settles.
         val field = fields[vid]
-        if (sessionStarted && field != null && field.entered && field.windowRect != anchors[vid]) {
+        if (sessionStarted && field != null && field.entered && !isAnchored(vid, field)) {
             settling = vid
             return listOf(Effect.Settle(vid))
         }
@@ -218,11 +247,11 @@ class SignInAutofillState {
         val field = fields[vid]
         val offset = origin
         if (vid == 0 || token == 0 || !sessionStarted || shownFor != vid || offset == null || field == null ||
-            !field.entered || field.windowRect == anchors[vid]
+            !field.entered || isAnchored(vid, field)
         ) {
             return NONE
         }
-        anchors[vid] = field.windowRect
+        anchors[vid] = Anchor(field.windowRect, screen)
         return listOf(Effect.Exit(vid), Effect.HideTextHandle, Effect.Enter(vid, field.windowRect.moved(offset)))
     }
 
@@ -276,13 +305,19 @@ class SignInAutofillState {
 
     private fun isField(vid: Int) = vid == USERNAME || vid == PASSWORD
 
+    /** Whether field [vid]'s UI sits where it was put: the field at its anchored rect, the host at its anchored place. */
+    private fun isAnchored(vid: Int, field: Field): Boolean {
+        val anchor = anchors[vid] ?: return false
+        return field.windowRect == anchor.rect && screen == anchor.screen
+    }
+
     /** Field [vid]'s request goes out, at its rect in host pixels, and starts the framework session. */
     private fun send(vid: Int): List<Effect> {
         val field = fields.getValue(vid)
         val offset = origin ?: return NONE
         held = 0
         sessionStarted = true
-        anchors[vid] = field.windowRect
+        anchors[vid] = Anchor(field.windowRect, screen)
         return listOf(Effect.HideTextHandle, Effect.Request(vid, field.windowRect.moved(offset)))
     }
 
