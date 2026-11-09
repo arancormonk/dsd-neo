@@ -141,10 +141,7 @@ main(void) {
     errno = 0;
     assert(dsd_fopen_private_append_regular(dir) == NULL && (errno == EISDIR || errno == EINVAL));
 
-    (void)remove(fifo);
-    (void)remove(reg);
-    (void)remove(made);
-    (void)remove(link_path);
-    (void)dsd_test_rmdir(dir);
+    static const char* const kLeft[] = {"pipe", "plain.bin", "made.bin", "link.bin", NULL};
+    assert(dsd_test_remove_temp_dir(dir, kLeft) == 0);
     return rc == 0 ? 0 : 1;
 }

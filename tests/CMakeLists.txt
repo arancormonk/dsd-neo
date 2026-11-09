@@ -16904,11 +16904,14 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_io_soapy_cs16_full_scale
         PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
     )
+    target_compile_definitions(
+        dsd-neo_test_io_soapy_cs16_full_scale
+        PRIVATE
+            "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
+    )
     add_test(
         NAME IO_SOAPY_CS16_FULL_SCALE
-        COMMAND
-            dsd-neo_test_io_soapy_cs16_full_scale
-            ${PROJECT_SOURCE_DIR}/tests/fixtures/iq/p25p1_c4fm_cc.iq
+        COMMAND dsd-neo_test_io_soapy_cs16_full_scale
     )
 
     # The narrow spectrum's frame buffers: the average carries across buffers, and a

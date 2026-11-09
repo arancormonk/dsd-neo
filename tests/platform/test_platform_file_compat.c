@@ -546,8 +546,9 @@ expect_append_regular(void) {
         if (fp) {
             fclose(fp);
             rc = 1;
+        } else {
+            rc |= errno == EINVAL || errno == EISDIR ? 0 : 1;
         }
-        rc |= errno == EINVAL || errno == EISDIR ? 0 : 1;
     }
 
     (void)remove(name);

@@ -3,7 +3,7 @@
  * A driver whose native CS16 is 12-bit with full scale 2048 (Pluto, bladeRF) hands the demod the same samples whether
  * the stream is that CS16 or the CF32 the driver converts by dividing by 2048. The device's own reader runs against a
  * stand-in driver (the stream seam): its setup, locked read loop, input-level meter and ring writer, the fs/4 rotation
- * included. The samples are a real off-air capture (the P25 control channel fixture, argv[1]) as 12-bit codes, as
+ * included. The samples are a real off-air capture (the P25 control channel fixture p25p1_c4fm_cc.iq) as 12-bit codes, as
  * recorded and overdriven 6 dB into the rails, delivered once as CS16 and once as CF32: the input ring must hold the
  * same floats bit for bit, and the input-level meter must read the same level. Everything the decoder does starts
  * from that ring, so the decode is the same too.
@@ -28,6 +28,10 @@
 #include <vector>
 #include "dsd-neo/core/safe_api.h"
 #include "rtl_stream_test_support.h"
+
+#ifndef DSD_NEO_TEST_IQ_FIXTURE_DIR
+#error "DSD_NEO_TEST_IQ_FIXTURE_DIR must name tests/fixtures/iq"
+#endif
 
 struct rtl_device;
 
@@ -209,11 +213,7 @@ compare_runs(const char* label, const std::vector<int16_t>& codes) {
 } // namespace
 
 int
-main(int argc, char** argv) {
-    if (argc < 2) {
-        DSD_FPRINTF(stderr, "usage: %s <cu8 capture>\n", argv[0]);
-        return 2;
-    }
+main(void) {
     {
         auto probe_ring = std::make_unique<input_ring_state>();
         const int initialized = input_ring_init(probe_ring.get(), 1024U);
@@ -232,7 +232,7 @@ main(int argc, char** argv) {
         input_ring_destroy(probe_ring.get());
     }
 
-    const std::vector<int16_t> codes = load_twelve_bit_codes(argv[1]);
+    const std::vector<int16_t> codes = load_twelve_bit_codes(DSD_NEO_TEST_IQ_FIXTURE_DIR "/p25p1_c4fm_cc.iq");
     /* The same capture overdriven by 6 dB into the ADC's rails, where the CS16 scale decides what clips. */
     std::vector<int16_t> overdriven(codes.size());
     for (size_t i = 0U; i < codes.size(); i++) {
