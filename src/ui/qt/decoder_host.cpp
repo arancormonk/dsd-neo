@@ -11,6 +11,7 @@
 #include "decoder_host.h"
 
 #include <QByteArray>
+#include <QChar>
 #include <QClipboard>
 #include <QDateTime>
 #include <QDir>
@@ -29,6 +30,16 @@
 namespace dsd_qt {
 
 namespace {
+
+/*
+ * Overwrite a credential's characters before dropping it, as RadioReferenceModel's scrub() does: best effort, since a
+ * string still shared with another holder detaches and only the fresh copy is zeroed.
+ */
+void
+scrub_credential(QString& text) {
+    text.fill(QChar(u'\0'));
+    text.clear();
+}
 
 QString
 imports_dir_path() {
@@ -442,6 +453,20 @@ void
 DecoderHost::setRecordingHold(std::function<int(const QString&)> hold, std::function<void(int)> release) {
     m_recordingHold = std::move(hold);
     m_recordingRelease = std::move(release);
+}
+
+void
+DecoderHost::setSignInFillSink(SignInFillSink sink) {
+    m_signInFill = std::move(sink);
+}
+
+void
+DecoderHost::deliverSignInFill(int token, bool hasUsername, QString& username, bool hasPassword, QString& password) {
+    if (m_signInFill) {
+        m_signInFill(token, hasUsername, username, hasPassword, password);
+    }
+    scrub_credential(username);
+    scrub_credential(password);
 }
 
 int

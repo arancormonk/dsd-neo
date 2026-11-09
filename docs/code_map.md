@@ -12411,7 +12411,25 @@ Qt Quick frontend (`src/ui/qt`):
   clears it. The verdict is set before the reply settles `busy`. A verified check calls the C++-only
   `setVerifiedSink()` callback synchronously with the request's own username and password (copied out of its
   `dsd_rr_auth`, scrubbed after the call, dropped if the revision moved on); no signal or QML property carries a
-  credential. `systemDetails.protocolToken`
+  credential. Password managers: `sign_in_autofill.{h,cpp}` (`SignInAutofill`, the `signInAutofill` context object,
+  built in `qt_ui.cpp` over the host, the model and AppPrefs) describes the sign-in form to the platform's autofill
+  support through `DecoderHost`'s no-op `signInAutofillBegin`/`Field`/`Request`/`Commit`/`End` virtuals (plain
+  members, not slots: QML reaches every slot and signal of `decoderHost`; Android implements them, the desktop does
+  nothing). Field 1 is the username, field 2 the password, whose structure value is always empty. `begin()` hands out
+  a token (positive, only growing) and retires the older one; every call and fill carries it, and any other token is
+  dropped. `track(token, field, input, visible)` follows a field's inner TextInput through a `QPointer` (focus from
+  `hasActiveFocus()`), and `note()` sets the username's structure value. A rect is the input's geometry (not
+  `boundingRect()`, which for a TextInput is its text) mapped to the scene, cut by each `clip` ancestor's `clipRect()`
+  and by the window, scaled by the window's device pixel ratio once and rounded outward; empty means not visible. A
+  100 ms sampler runs while a token is live and a tracked field is shown, and sends a field only when its rect,
+  visibility or focus changed. A field gaining focus gets one `signInAutofillRequest` per focus entry, once its rect
+  has been still for 300 ms (movement restarts the wait; focus loss and `end` cancel it). The model's verified sink
+  commits the checked credentials for the live token once its form has shown a field (a card hidden since still
+  commits). A fill comes in through `DecoderHost::setSignInFillSink()`/`deliverSignInFill()`, a C++ callback whose
+  strings are scrubbed after it returns: for the live token the relay itself sets `AppPrefs::rrUsername` and calls
+  `RadioReferenceModel::setPassword()` (an empty value fills nothing), then emits the credential-free `filled(token,
+  hasUsername, hasPassword)`, so a filled password never reaches QML (`UI_QT_SIGN_IN_AUTOFILL`, its window at a 1.5
+  device pixel ratio). `systemDetails.protocolToken`
   (`dsd_rr_protocol_token()`, "tetra") is how QML tells the protocol apart, and the talkgroup summary (count,
   encryption counts, sample) holds only the rows the group writer keeps (`dsd_rr_talkgroup_writable()`, then the first
   row of each ID), so the preview agrees with the file. The screen's TETRA note (`radioReferenceTetraNote`, repeated in

@@ -371,7 +371,8 @@ jobs:
             dsd-neo_test_ui_qt_signal_search \
             dsd-neo_test_ui_qt_metrics_model \
             dsd-neo_test_ui_qt_talkgroup_list_model \
-            dsd-neo_test_ui_qt_radio_reference_model
+            dsd-neo_test_ui_qt_radio_reference_model \
+            dsd-neo_test_ui_qt_sign_in_autofill
 
       # The QML test carries its own headless environment (offscreen platform,
       # software renderer) in the CTest registration, so there is nothing to set
