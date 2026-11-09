@@ -386,7 +386,7 @@ testRangesKeptAside(dsd_qt::KnownFrequencyIndex* index) {
     assert(dsd_qt::json_store_save_array(file, previous));
 }
 
-/* A range save that failed and then succeeded leaves no failure shown (issue #828, r2#13). */
+/* A range save that failed and then succeeded leaves no failure shown (issue #828). */
 void
 testRangeSaveFailureClears(dsd_qt::KnownFrequencyIndex* index) {
     const QString file = QStringLiteral("signal-search-ranges.json");
@@ -1594,7 +1594,7 @@ main(int argc, char** argv) {
     // A history row's permanent avoid and its removal change the store alone, here, whether or not a search runs: the
     // store sets the runtime's permanent list, which a running search takes at its next tick. Nothing is queued for
     // the decoder, so a model a tick behind the decoder at the Stop edge (command admission already closed) still
-    // saves the avoid and shows no error (A-B5). An avoid for this session only still goes to the decoder thread.
+    // saves the avoid and shows no error (issue #828). An avoid for this session only still goes to the decoder thread.
     uint32_t permanent[4];
     uint64_t permanentRevision = 0;
     running.revision = 6001;

@@ -473,7 +473,7 @@ static void
 history_kept_cases(const char* root) {
     static const char* const files[] = {"history.v2", "history.v2.unreadable-1", "history.v2.unreadable-2", NULL};
     store_paths p;
-    // A record that fails its checksum, with more after it: nothing after the damage is lost (decision D3).
+    // A record that fails its checksum, with more after it: nothing after the damage is lost (issue #828).
     store_dir(&p, root, "damaged");
     write_v2_journal(p.v2, 3, 2);
     expect_history_kept(&p, no_fault, 1, 1);
@@ -491,7 +491,7 @@ history_kept_cases(const char* root) {
     expect_history_kept(&p, no_fault, 2, 2);
     assert(file_is(taken, "older", 5));
     assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
-    // A read error at a record boundary is not the end of the file (B-4), nor one inside a record damage.
+    // A read error at a record boundary is not the end of the file (issue #828), nor one inside a record damage.
     store_dir(&p, root, "readerr");
     write_v2_journal(p.v2, 3, 0);
     const load_fault at_boundary = {0, g_record};
@@ -514,7 +514,7 @@ static void
 avoids_kept_cases(const char* root) {
     static const char invalid[] = "[100,200,x]\n";
     expect_avoids_kept(root, "badavoids", invalid, sizeof(invalid) - 1, no_fault);
-    // Text after a NUL is part of the file: the list is refused, not cut short (r1#12).
+    // Text after a NUL is part of the file: the list is refused, not cut short (issue #828).
     static const char nul[] = "[462700000]\0[462725000]\n";
     expect_avoids_kept(root, "nulavoids", nul, sizeof(nul) - 1, no_fault);
     static const char good[] = "[462700000,462725000]\n";
@@ -699,7 +699,7 @@ v1_unreadable_cases(const char* root) {
     assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
 }
 
-/* Each file keeps its own load state, and only its own save changes it (B-6/7/8). */
+/* Each file keeps its own load state, and only its own save changes it (issue #828). */
 static void
 expect_per_file_states(const char* root) {
     static const char invalid[] = "[1,x]";
@@ -1170,7 +1170,7 @@ main(void) {
 
     // Issue #828: the store alone writes the runtime's permanent avoid list, which a running search reads at its next
     // tick: the list as loaded, then at every add and remove; closing the store withdraws it. A file that repeats a
-    // frequency loads it once (A-B6), so a single removal lifts it everywhere.
+    // frequency loads it once (issue #828), so a single removal lifts it everywhere.
     store_paths shared;
     paths_init(&shared, root, "shared");
     assert(dsd_mkdir(shared.dir, 0700) == 0);

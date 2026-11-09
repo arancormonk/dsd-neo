@@ -744,8 +744,8 @@ test_unreadable_index_is_kept() {
 }
 
 #ifndef _WIN32
-/* E6: a stored copy in a folder that cannot be searched is not known to be gone. Its row stays and is not handed on
- * for its references to be cleared; only a confirmed absence prunes it. */
+/* Issue #828: a stored copy in a folder that cannot be searched is not known to be gone. Its row stays and is not
+ * handed on for its references to be cleared; only a confirmed absence prunes it. */
 void
 test_unsearchable_copy_is_not_pruned() {
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();

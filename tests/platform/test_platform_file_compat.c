@@ -1048,7 +1048,7 @@ expect_rename_noreplace(void) {
     return rc;
 }
 
-/* Spec B-14, r1#3: the app's own files live under the user's profile folder, which can be named in any script. Every
+/* Issue #828: the app's own files live under the user's profile folder, which can be named in any script. Every
    path helper reaches a UTF-8 name by its real characters under the default C locale: on Windows through the wide
    calls, where the narrow ones read the bytes in the ANSI code page and land on another name. */
 typedef struct {
@@ -1370,7 +1370,7 @@ expect_dir_list_patterns(void) {
 }
 #endif
 
-/* Spec 2a.5: the existence probe answers for the name itself, never a link's target: 1 for a file, a folder or a
+/* Issue #828: the existence probe answers for the name itself, never a link's target: 1 for a file, a folder or a
    dangling link, 0 only for a confirmed absence (ENOENT, ENOTDIR), -1 with errno when it cannot tell. */
 static int
 expect_path_exists_nofollow(void) {

@@ -291,7 +291,7 @@ class Parser {
             return fail(BackupError::Damaged, QStringLiteral("avoids: not a list the avoid store takes"));
         }
         /* A repeat is kept once, and only more than DSD_SEARCH_MAX_AVOIDS different frequencies is refused, as the
-           avoid store loads its file (issue #828 A-B6). */
+           avoid store loads its file (issue #828). */
         QSet<quint32> seen;
         for (const auto& value : list) {
             const qint64 frequency = value.isDouble() ? value.toInteger(-1) : -1;

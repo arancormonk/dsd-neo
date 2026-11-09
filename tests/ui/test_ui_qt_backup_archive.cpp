@@ -323,7 +323,7 @@ test_startup_clears_missing_library_paths_twice() {
 }
 
 #ifndef _WIN32
-/* Issue #828 (E6): a library file in a folder that cannot be searched is not known to be gone, so the startup cleanup
+/* Issue #828: a library file in a folder that cannot be searched is not known to be gone, so the startup cleanup
  * leaves every reference to it. Only a confirmed absence clears one. */
 void
 test_startup_keeps_paths_it_cannot_check() {
@@ -1563,7 +1563,7 @@ refuse_prefs_and_avoids(const QByteArray& archive) {
     expect("largest avoid frequency is kept",
            dsd_qt::backup::backup_parse_archive(assemble(forged), dsd_qt::json_store_root()).avoids
                == QList<quint32>({4294967295U}));
-    // Issue #828 A-B6: an edited backup's repeated avoid is kept once, in its first place, and counted once.
+    // Issue #828: an edited backup's repeated avoid is kept once, in its first place, and counted once.
     forged.manifest.insert("avoids", QJsonArray{162550000, 156800000, 162550000});
     const auto repeated = dsd_qt::backup::backup_parse_archive(assemble(forged), dsd_qt::json_store_root());
     expect("a repeated avoid is kept once", repeated.error == BackupError::None

@@ -2059,8 +2059,8 @@ test_empty_avoids(TestHost& host, const Backup& b, const Old& old) {
     dsd_app_signal_search_store_close();
 }
 
-/** A staged avoid list that repeats a frequency (an edited staging) is written, and loads, with it once (issue #828
- * A-B6), so a single removal lifts it. */
+/** A staged avoid list that repeats a frequency (an edited staging) is written, and loads, with it once (issue #828),
+ * so a single removal lifts it. */
 void
 test_repeated_avoids(TestHost& host, const Backup& b, const Old& old) {
     put_back(old.tree);

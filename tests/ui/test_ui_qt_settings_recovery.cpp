@@ -210,13 +210,13 @@ test_missing() {
                == SettingsRecovery::Missing);
 }
 
-/* r1#8: Qt finds the malformed line only when its write parses every section, then writes without it. */
+/* Issue #828: Qt finds the malformed line only when its write parses every section, then writes without it. */
 void
 test_unread_section_kept() {
     reset();
     expect("unread section: written", write_file(g_paths.prefs, kUnreadSection));
     expect("unread section: Kept", recover_prefs() == SettingsRecovery::Kept);
-    // r1#8: replacePortable() read the FormatError its own write found as a failed restore. First, so no QSettings
+    // replacePortable() used to read the FormatError its own write found as a failed restore. First, so no QSettings
     // has parsed the file before it.
     expect("unread section: replacePortable() works after the recovery",
            AppPrefs::replacePortable({{"decode/extraArgs", "-X"}}));
@@ -266,8 +266,8 @@ write_through_appprefs(const QString& what, const QByteArray& original) {
     expect(what + ": the scratch copy holds the writes", read_file(scratch).contains("-Y"));
 }
 
-/* r3#2: Qt's own load ignores a read error, and its write would replace the whole file with the prefix it read. The
-   file is renamed aside unread, and the prefix that parsed takes its place. */
+/* Issue #828: Qt's own load ignores a read error, and its write would replace the whole file with the prefix it read.
+   The file is renamed aside unread, and the prefix that parsed takes its place. */
 void
 test_valid_prefix_read_error() {
     reset();
@@ -317,7 +317,7 @@ test_valid_prefix_read_error() {
            prefs_file_now() == g_paths.prefs && AppPrefs::readPortable().value("decode/extraArgs") == "-Z");
 }
 
-/* r3#2: a malformed organization file is read as a fallback; the settings file itself is fine. */
+/* Issue #828: a malformed organization file is read as a fallback; the settings file itself is fine. */
 void
 test_fallback_ignored() {
     reset();
@@ -351,7 +351,7 @@ test_fallback_ignored() {
     expect("fallback: no scratch", !dsd_qt::settings_recovery_scratch());
 }
 
-/* r2#1: with no copy made, nothing may write the original; the next start tries again. */
+/* Issue #828: with no copy made, nothing may write the original; the next start tries again. */
 void
 test_preservation_failure() {
     reset();
@@ -1085,7 +1085,7 @@ test_not_a_file() {
 }
 
 #ifdef HISTORY_SETTINGS_ARE_INI
-/* r2#2: call history's own QSettings writes its counters at its first save. */
+/* Issue #828: call history's own QSettings writes its counters at its first save. */
 void
 test_call_history_settings() {
     reset();
@@ -1214,7 +1214,7 @@ test_backup_refused_on_scratch_settings() {
 #endif
 }
 
-/* r3#1: a restore that applied onto the scratch copy would lose its settings at the next start. */
+/* Issue #828: a restore that applied onto the scratch copy would lose its settings at the next start. */
 void
 test_restore_waits_for_settings() {
     const QByteArray old = "[decode]\nextraArgs=-OLD\n\n[zz]\nno equals here\n";

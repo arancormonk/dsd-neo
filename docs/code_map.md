@@ -4172,7 +4172,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     zero-padded, and a republished hit whose encoding is unchanged neither advances the
     history revision nor queues a write, so only new checked content does. Detection
     history (either file) is not part of a backup.
-    Unreadable files (issue #828, spec "keep-aside rule"): all three loads open through
+    Unreadable files (issue #828): all three loads open through
     `dsd_fopen_existing_regular_file()` (regular files only, no symlink followed, no FIFO
     wait) and read through `Reader`, which tells a read error (`ferror()`) from the end of
     the file. Each file has a `StoreFile` state under the mutex: `load`

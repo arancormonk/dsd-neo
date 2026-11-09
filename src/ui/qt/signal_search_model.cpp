@@ -486,7 +486,7 @@ SignalSearchModel::avoidFrequency(const QString& session, double frequency) {
 
 /* A history row's permanent avoid changes the store alone, on this thread: the store sets the runtime's permanent
    list, which a running search takes at its next tick and leaves a visit to the frequency at once, so no decoder action
-   is needed, and none can be lost or refused at the Stop edge (issue #828 A-B5). */
+   is needed, and none can be lost or refused at the Stop edge (issue #828). */
 bool
 SignalSearchModel::avoidPermanently(double frequency) {
     uint32_t hz = 0;

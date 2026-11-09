@@ -262,7 +262,7 @@ parse_avoid_frequency(const char*& p, uint32_t& frequency) {
 
 /* @p text is the file's @p n bytes followed by a NUL. A NUL inside them is not a list the store takes (issue #828: the
    text after it would be dropped), nor are more than DSD_SEARCH_MAX_AVOIDS different frequencies; a frequency the file
-   repeats is kept once (A-B6), so one removal lifts it. */
+   repeats is kept once (issue #828), so one removal lifts it. */
 bool
 parse_avoids(const char* text, size_t n, std::vector<uint32_t>& result) {
     if (std::memchr(text, '\0', n) != nullptr || text[n] != '\0') {
@@ -324,7 +324,7 @@ confirmed_absent(int err) {
 }
 
 /* Every load opens through here: a regular file only, without following a final symbolic link and without waiting on a
-   FIFO (B-10/11). */
+   FIFO (issue #828). */
 FILE*
 open_existing(const std::string& path, int which) {
 #ifdef DSD_NEO_TEST_HOOKS
@@ -346,7 +346,7 @@ open_failure() {
 }
 
 /* Reads one store file, telling a read error from its end: a short fread() is either, and only ferror() says which
-   (B-4). */
+   (issue #828). */
 class Reader {
   public:
     Reader(FILE* file, int which) : f_(file) {
@@ -494,7 +494,7 @@ replace_file(const std::string& target, bool marked, Write write) {
 }
 
 /* The temporary files of the store's own targets ("<target>.tmp.XXXXXX", dsd_fopen_private_temp_for_replace()) that a
-   crash between their creation and their rename left behind (B-15). */
+   crash between their creation and their rename left behind (issue #828). */
 struct TempSweep {
     std::vector<std::string> prefixes, found;
 };
@@ -640,7 +640,7 @@ struct Store {
 
     /* Reads every record of @p version from @p f: whole at a clean end; unreadable at a read error or at the first
        record that is incomplete, damaged or of any other version, keeping the records before it (a damaged or torn
-       journal is kept aside too, so nothing after the damage is lost: decision D3). */
+       journal is kept aside too, so nothing after the damage is lost; issue #828). */
     FileLoad
     read_journal(FILE* f, uint32_t version, int which) {
         const size_t size = version == 2 ? encode(Hit{}).size() : v1_size();
@@ -704,7 +704,7 @@ struct Store {
 
     /* The version 2 journal when it exists, even empty or damaged; otherwise the rows of the version 1 journal, which
        the first write after opening (a compaction) copies into a new version 2 journal. The version 1 journal is never
-       written, replaced, moved or removed: one that cannot be read whole is only reported (B-9). */
+       written, replaced, moved or removed: one that cannot be read whole is only reported (issue #828). */
     void
     load_history() {
         FILE* f = open_existing(path, history_file);
