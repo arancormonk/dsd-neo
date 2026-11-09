@@ -1195,6 +1195,59 @@ test_incomplete_group_list_is_not_read_again(int incomplete) {
     return rc;
 }
 
+/* What a start with trunking off made of a configured group file, and the first edit saved to it then. */
+typedef struct {
+    size_t rows;
+    int saved;
+} group_start_probe;
+
+static int
+edit_group_list_at_start(dsd_opts* opts, dsd_state* state, void* context) {
+    group_start_probe* probe = (group_start_probe*)context;
+    probe->rows = dsd_tg_policy_entry_count(state);
+    // A Listen edit: the session's list, saved to its file.
+    probe->saved = dsd_tg_policy_set_mode(state, 100, 100, "B") == 0 ? dsd_tg_policy_write_group_file(opts, state) : -9;
+    return 0;
+}
+
+/* A group file the config names (the INI's [trunking] group_csv sets opts->group_in_file, nothing reads it then) is
+   loaded at the start with trunking off, as -G loads it, and is the list's baseline: the first edit keeps the file's
+   other rows (regression: with trunking off nothing loaded it, and that edit rewrote the file from the empty table). */
+static int
+test_configured_group_list_loads_with_trunking_off(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof(path), "dsd-engine-group-config");
+    if (fd < 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    int rc = write_group_text(path, "id,mode,name\n100,A,ONE\n200,A,TWO\n");
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
+    opts->trunk_enable = 0;
+    opts->trunk_scan_enabled = 0;
+    group_start_probe probe = {0, -1};
+    dsd_engine_lifecycle_hooks hooks = {.start = edit_group_list_at_start, .context = &probe};
+    rc |= expect_true("conventional run completes", dsd_engine_run_with_lifecycle(opts, state, &hooks) == 0);
+    rc |= expect_true("configured group list loaded with trunking off", probe.rows == 2U);
+    rc |= expect_true("the edit is saved", probe.saved == 0);
+    char text[128] = {0};
+    FILE* fp = dsd_fopen_existing_regular_file(path, "r");
+    if (fp) {
+        (void)fread(text, 1U, sizeof text - 1U, fp);
+        (void)fclose(fp);
+    }
+    rc |= expect_true("the edit keeps the file's rows", strcmp(text, "id,mode,name\n100,B,ONE\n200,A,TWO\n") == 0);
+    (void)remove(path);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 #if DSD_PLATFORM_WIN_NATIVE
 /* The Windows CRT's narrow file calls read a path in the ANSI code page, so a UTF-8 folder name is not tried there. */
 #define PER_CALL_TEST_FOLDER "Call recordings"
@@ -2016,6 +2069,7 @@ main(void) {
     rc |= test_missing_source_labels_do_not_stop_decode();
     rc |= test_incomplete_group_list_is_not_read_again(1);
     rc |= test_incomplete_group_list_is_not_read_again(0);
+    rc |= test_configured_group_list_loads_with_trunking_off();
     rc |= test_per_call_wav_opens_in_the_cli_folder_at_start();
     rc |= test_run_journals_its_recordings_from_start_to_end();
     rc |= test_conflicting_scan_modes_fail_before_live_setup();

@@ -421,12 +421,13 @@ import_global_p25_bandplan_if_needed(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* A configured group file is loaded whatever the trunking state, as -G loads it: conventional decoding names and
+ * filters talkgroups by it too, and a list left empty would be saved over the file, from that empty table, at its
+ * first edit. A store already filled means -G read it. */
 static int
 import_group_csv_if_needed(dsd_opts* opts, dsd_state* state) {
-    const int trunk_enabled = (opts->trunk_enable == 1) || (opts->trunk_scan_enabled == 1);
     // A list marked incomplete was already read, and logged, from this file: reading it again would not complete it.
-    if (trunk_enabled && opts->group_in_file[0] != '\0' && !dsd_tg_policy_has_entries(state)
-        && !dsd_tg_policy_incomplete(state)) {
+    if (opts->group_in_file[0] != '\0' && !dsd_tg_policy_has_entries(state) && !dsd_tg_policy_incomplete(state)) {
         if (csvGroupImport(opts, state) != 0) {
             return -1;
         }
