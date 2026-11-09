@@ -503,6 +503,35 @@ test_replace_fails_after_rename() {
     expect("replace fails: the kept file is untouched", read_file(kept(g_paths.prefs, 1)) == original);
 }
 
+#ifndef _WIN32
+/* Renamed aside, then a FIFO took the path before the clean file could: the FIFO is never replaced (a rename over it
+   would delete it), the file stays kept, and the run writes a scratch copy, so nothing opens the FIFO either. */
+void
+test_fifo_before_replacement() {
+    reset();
+    const QByteArray original = "[decode]\nextraArgs=-Z\n\n[zz]\nlater=1\n";
+    expect("FIFO before the replacement: written", write_file(g_paths.prefs, original));
+    SettingsRecoveryEnv env;
+    env.readFailsAfter = [&original](const QString& path) {
+        return path == g_paths.prefs ? original.indexOf("[zz]") : qint64(-1);
+    };
+    env.writeFails = [](const char* step, const QString& path) {
+        if (std::strcmp(step, "replace") == 0 && path == g_paths.prefs) {
+            expect("FIFO before the replacement: made", mkfifo(QFile::encodeName(path).constData(), 0600) == 0);
+        }
+        return false;
+    };
+    expect("FIFO before the replacement: Scratch", recover_prefs(env) == SettingsRecovery::Scratch);
+    { AppPrefs prefs; } // would wait for a writer if it opened the FIFO
+    struct stat st;
+    expect("FIFO before the replacement: still a FIFO",
+           lstat(QFile::encodeName(g_paths.prefs).constData(), &st) == 0 && S_ISFIFO(st.st_mode));
+    expect("FIFO before the replacement: kept byte-identical", read_file(kept(g_paths.prefs, 1)) == original);
+    expect("FIFO before the replacement: on scratch",
+           dsd_qt::settings_recovery_scratch(dsd_qt::settings_recovery_prefs_file_name()));
+}
+#endif
+
 /* With no folder for a scratch copy, nothing is written anywhere: the run holds default settings in memory, the file
    stays as it was, and the notice says so (settings_recovery_in_memory()). */
 void
@@ -1126,6 +1155,9 @@ main(int argc, char** argv) {
     test_gone_before_kept();
     test_missing_forgets_scratch();
     test_replace_fails_after_rename();
+#ifndef _WIN32
+    test_fifo_before_replacement();
+#endif
     test_no_scratch_folder();
 #ifndef Q_OS_WIN
     test_no_system_temp_folder();

@@ -4186,8 +4186,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     clears the mark (state MISSING); a link there is moved itself, whatever it names
     (`dsd_path_type_nofollow()`); a real folder, FIFO, socket or device and an unknown
     existence are never moved or replaced; a failed replacement after the move
-    leaves the state KEPT and its retry only writes. Lazy: a run that writes nothing moves
-    nothing. A marked history is always compacted, never appended to. A missing version 2
+    leaves the state KEPT and its retry only writes. Every replacement (`replaceable()`)
+    takes only nothing, a file or a link at the path, never followed, so a FIFO or folder
+    put there before the retry is left and the write stays owed. Lazy: a run that writes
+    nothing moves nothing. A marked history is always compacted, never appended to. A missing version 2
     journal reads the version 1 rows only when none of `<v2>.unreadable-1..99` exists
     (`dsd_path_exists_nofollow()`, all 99 probed, a dangling link counts, an unknown
     blocks): a crash between the move and the replacement then leaves an empty history
@@ -12700,7 +12702,9 @@ Qt Quick frontend (`src/ui/qt`):
   - A regular file that could not be opened or read through cannot be copied, so it follows the stores' rename order:
     (1) the clean file of what its readable prefix parsed is written and synced as a temp, (2) the path, never
     followed (a link moves itself), is renamed with `dsd_rename_noreplace()` to the first free `<file>.unreadable-N`,
-    (3) the temp replaces it. A (3) that fails leaves the file kept, nothing at the path, and the run on scratch.
+    (3) the temp replaces it. A (3) that fails leaves the file kept, nothing at the path, and the run on scratch;
+    (3) replaces only nothing, a file or a link (`probe_target()`), so a folder or FIFO put there since the move is
+    left and the run goes on scratch (`test_fifo_before_replacement`).
   - A file confirmed gone after it was read (removed meanwhile; at the replacement for a copy, at the rename for a
     rename) is Missing, as if the check had found none: the copy or temp is removed, nothing is written in its place,
     no notice is posted, and nothing stays noted from an earlier check.

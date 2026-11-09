@@ -441,6 +441,16 @@ keep_aside(const std::string& path, std::string& kept) {
     return Aside::Refused;
 }
 
+/* Whether @p target may take a replacement, never following it: nothing there (moved aside, or gone), or a file or a
+   link (the link itself is replaced). A folder, FIFO, socket or device is never replaced, and neither is a path that
+   cannot be told: a rename over a FIFO would delete it. */
+bool
+replaceable(const std::string& target) {
+    dsd_path_type type = DSD_PATH_TYPE_OTHER;
+    const int present = dsd_path_type_nofollow(target.c_str(), &type);
+    return present == 0 || (present == 1 && (type == DSD_PATH_TYPE_FILE || type == DSD_PATH_TYPE_LINK));
+}
+
 /* How one file's write went, and what renaming it aside first found. */
 struct Replaced {
     bool ok = false;
@@ -450,7 +460,9 @@ struct Replaced {
 
 /* Replaces @p target with what @p write puts in a temporary file beside it, in the order that keeps a file the store
    could not read (@p marked): (1) write and sync the temporary file, (2) rename the marked target aside, (3) replace
-   the target. A failure at (1) or (2) moves nothing; one at (3) leaves the file kept. */
+   the target. A failure at (1) or (2) moves nothing; one at (3) leaves the file kept. (3) replaces only nothing, a
+   file or a link (replaceable()), so the retry after a kept file, which is no longer marked, never replaces what the
+   move would have refused. */
 template <typename Write>
 Replaced
 replace_file(const std::string& target, bool marked, Write write) {
@@ -472,7 +484,7 @@ replace_file(const std::string& target, bool marked, Write write) {
         ok = out.aside == Aside::Kept || out.aside == Aside::Gone;
     }
     if (ok) {
-        ok = dsd_replace_file_with_temp(temp, target.c_str()) == 0;
+        ok = replaceable(target) && dsd_replace_file_with_temp(temp, target.c_str()) == 0;
     }
     if (!ok) {
         (void)dsd_remove_file(temp);

@@ -832,8 +832,46 @@ link_back_after_aside(const char* path, const char* kept) {
     assert(link(kept, path) == 0);
 }
 
+/* The move succeeds and the replacement fails, then a FIFO takes the name before the retry: the retry, which only
+   writes, never replaces it (a rename over it would delete it), and the write stays owed until it is gone. */
+static void
+expect_retry_finds_fifo(const char* root) {
+    store_paths p;
+    store_dir(&p, root, "asidefifo");
+    write_v2_journal(p.v2, 3, 2);
+    static unsigned char before[16384];
+    const size_t n = read_file(p.v2, before, sizeof(before));
+    assert(dsd_app_signal_search_store_open(p.journal) == 0);
+    dsd_app_signal_search_store_test_after_aside(block_after_aside);
+    publish(43);
+    dsd_app_signal_search_store_flush();
+    dsd_app_signal_search_store_test_after_aside(NULL);
+    char kept[DSD_TEST_PATH_MAX], second[DSD_TEST_PATH_MAX];
+    kept_path(kept, sizeof(kept), p.v2, 1);
+    kept_path(second, sizeof(second), p.v2, 2);
+    assert(store_error() && write_owed(DSD_APP_SEARCH_STORE_HISTORY));
+    assert(dsd_test_rmdir(p.v2) == 0 && mkfifo(p.v2, 0600) == 0);
+    dsd_app_signal_search_store_flush();
+    assert(store_error() && write_owed(DSD_APP_SEARCH_STORE_HISTORY));
+    assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_KEPT, "history.v2.unreadable-1"));
+    {
+        struct stat st;
+        assert(lstat(p.v2, &st) == 0 && S_ISFIFO(st.st_mode));
+    }
+    assert(!exists(second) && file_is(kept, before, n));
+    assert(remove(p.v2) == 0);
+    dsd_app_signal_search_store_flush();
+    assert(!store_error() && !write_owed(DSD_APP_SEARCH_STORE_HISTORY));
+    assert(!exists(second) && file_is(kept, before, n));
+    assert(count_v2_records(p.v2, (size_t)g_record - 12U) == 2);
+    dsd_app_signal_search_store_close();
+    static const char* const files[] = {"history.v2", "history.v2.unreadable-1", NULL};
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+}
+
 /* POSIX only: a mode that refuses reading (as a user other than root), a symbolic link at the journal's name (refused,
-   and kept as the link itself), and a source left after the move, which counts as kept and is replaced. */
+   and kept as the link itself), a source left after the move, which counts as kept and is replaced, and a FIFO at a
+   kept file's name by the retry. */
 static void
 posix_cases(const char* root) {
     static const char* const files[] = {"history.v2",          "history.v2.unreadable-1",          "target",
@@ -918,6 +956,7 @@ posix_cases(const char* root) {
     assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
 
     expect_not_a_file(root, "fifo", 1);
+    expect_retry_finds_fifo(root);
 }
 #endif
 

@@ -664,7 +664,8 @@ rename_aside(const QString& path, const SettingsRecoveryEnv& env, QString* keptP
 /* A file that could not be read through cannot be copied, so it is renamed aside unread, in the order the stores keep a
    file (json_store): (1) write and sync the clean file's temp beside it, (2) rename the path aside, (3) put the temp in
    its place. Kept; Scratch when (1) or (2) fails, with nothing moved, or when (3) fails, with the file kept and nothing
-   at the path; Missing, with nothing kept or written, when the file was confirmed gone at (2). */
+   at the path; Missing, with nothing kept or written, when the file was confirmed gone at (2). (3) replaces only
+   nothing, a file or a link: a folder or FIFO put there since the move is left, as the move would have left it. */
 SettingsRecovery
 rename_aside_and_write(const QString& path, const QByteArray& rewritten, const SettingsRecoveryEnv& env,
                        QString* keptPath) {
@@ -682,7 +683,8 @@ rename_aside_and_write(const QString& path, const QByteArray& rewritten, const S
         (void)dsd_remove_file(temp);
         return aside == Step::Gone ? SettingsRecovery::Missing : SettingsRecovery::Scratch;
     }
-    if (step_fails(env, "replace", path) || dsd_replace_file_with_temp(temp, target.constData()) != 0) {
+    if (step_fails(env, "replace", path) || probe_target(target) == Step::Failed
+        || dsd_replace_file_with_temp(temp, target.constData()) != 0) {
         (void)dsd_remove_file(temp);
         return SettingsRecovery::Scratch;
     }
