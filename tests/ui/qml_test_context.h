@@ -2529,13 +2529,12 @@ class RadioReferenceRecorder : public QQmlPropertyMap {
         insert(QStringLiteral("busy"), false);
     }
 
-    /* The sign-in form's two model calls, counted and nothing more: the readings (hasPassword, credentialsReady,
-     * accountState) stay the case's to set, as every other reading here is. A case that needs the model to answer
+    /* The sign-in form's two model calls. The readings (hasPassword, credentialsReady, accountState) stay the case's
+     * to set, as every other reading here is, and only the checks are counted. A case that needs the model to answer
      * uses FakeRadioReference.qml. */
     Q_INVOKABLE void
     setPassword(const QString& password) {
-        passwordCommits++;
-        lastPasswordEmpty = password.isEmpty();
+        (void)password;
     }
 
     Q_INVOKABLE void
@@ -2544,8 +2543,6 @@ class RadioReferenceRecorder : public QQmlPropertyMap {
     }
 
     int nearbyCalls = 0;
-    int passwordCommits = 0;
-    bool lastPasswordEmpty = true;
     int accountChecks = 0;
   Q_SIGNALS:
     void locationRequestAllocated(qint64 requestId);
@@ -3649,12 +3646,6 @@ class Setup : public QObject {
     Q_INVOKABLE int
     radioReferenceAccountChecks() const {
         return m_radio_reference_recorder != nullptr ? m_radio_reference_recorder->accountChecks : 0;
-    }
-
-    /** @brief How many times QML committed a password to the recorder. */
-    Q_INVOKABLE int
-    radioReferencePasswordCommits() const {
-        return m_radio_reference_recorder != nullptr ? m_radio_reference_recorder->passwordCommits : 0;
     }
 
     /** Use an offline QML model for complete account/import navigation flows. */

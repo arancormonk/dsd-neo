@@ -1375,15 +1375,79 @@ Item {
             compare(notes[0].text, "test-listener");
             // The card hiding (filled credentials) keeps the session and marks the fields hidden.
             signInAutofill.clear();
+            var checks = testContext.radioReferenceAccountChecks();
             testContext.setRadioReference("credentialsReady", true);
             tryCompare(findChild(tc.screen, "radioReferenceCredentials"), "visible", false);
+            tryVerify(function () { return callsOf("track").length >= 2; }, 2000, "the hidden card's fields were not reported");
             compare(callsOf("end").length, 0, "the card hiding ended the session");
             var hidden = callsOf("track");
-            verify(hidden.length >= 2);
+            compare(hidden.length, 2);
             for (var call of hidden) {
                 compare(call.token, token);
                 verify(!call.visible, "a hidden card's field was tracked visible");
             }
+            compare(testContext.radioReferenceAccountChecks(), checks, "the credentials turning ready checked by themselves");
+        }
+
+        // Within one commit or fill the card hides and shows again (the
+        // credentials turn ready a moment before the check starts). That
+        // flicker never reaches the password manager, which could end its
+        // session once every field is gone, and never masks a revealed
+        // password; the fields go only once RadioReference has answered.
+        function test_43_the_fields_stay_shown_until_the_verdict_data() {
+            return [{tag: "typed password"}, {tag: "fill"}];
+        }
+        function test_43_the_fields_stay_shown_until_the_verdict(data) {
+            useFakeAccount();
+            var credentials = findChild(tc.screen, "radioReferenceCredentials");
+            var password = findChild(tc.screen, "radioReferencePasswordField");
+            var reveal = findChild(tc.screen, "radioReferencePasswordReveal");
+            var token = signInAutofill.liveToken();
+            verify(token > 0);
+            signInAutofill.clear();
+            if (data.tag === "typed password") {
+                typeInto(password, "session-secret");
+                reveal.activate();
+                compare(password.input.echoMode, TextInput.Normal);
+                keyClick(Qt.Key_Return);
+                verify(!password.input.activeFocus, "Enter did not finish the field");
+            } else {
+                // What the relay does: the password first, then the signal.
+                fakeAccount.setPassword("filled-secret");
+                signInAutofill.fill(token, false, true);
+            }
+            compare(fakeAccount.accountChecks, 1);
+            wait(50);
+            var hidden = callsOf("track").filter(function (call) { return !call.visible; });
+            compare(hidden.length, 0, "the fields were reported hidden before the verdict: "
+                    + callsOf("track").map(function (call) { return call.field + ":" + call.visible; }).join(" "));
+            verify(credentials.visible);
+            if (data.tag === "typed password")
+                compare(password.input.echoMode, TextInput.Normal, "the commit masked a revealed password");
+            fakeAccount.settle(2);
+            tryCompare(credentials, "visible", false);
+            tryVerify(function () {
+                return callsOf("track").filter(function (call) { return !call.visible && call.token === token; }).length === 2;
+            }, 2000, "the fields were not reported hidden after the verdict");
+            compare(password.input.echoMode, TextInput.Password);
+        }
+
+        // After the verdict the hidden card drops its draft: Change shows an
+        // empty field that says a password is held, as Settings does.
+        function test_44_change_after_a_verdict_shows_the_session_placeholder() {
+            useFakeAccount();
+            var credentials = findChild(tc.screen, "radioReferenceCredentials");
+            var password = findChild(tc.screen, "radioReferencePasswordField");
+            typeInto(password, "session-secret");
+            password.input.focus = false;
+            fakeAccount.settle(2);
+            tryCompare(credentials, "visible", false);
+            tryCompare(password, "text", "");
+            findChild(tc.screen, "radioReferenceChangeAccount").activate();
+            tryCompare(credentials, "visible", true);
+            compare(password.text, "");
+            compare(password.placeholderText, "Entered for this session");
+            compare(fakeAccount.sessionPassword, "session-secret");
         }
 
         // A fill from the password manager: the relay applied the values

@@ -145,10 +145,12 @@ Item {
             compare(username.label, "Username");
             compare(password.label, "Password");
             compare(key.label, "Application key");
+            var checks = testContext.radioReferenceAccountChecks();
             username.text = "account-fixture";
             username.editingFinished();
             key.text = "fixture-key";
             key.editingFinished();
+            compare(testContext.radioReferenceAccountChecks(), checks, "a check was sent with no password to send");
             app.requestBack();
             compare(prefs.rrUsername, "account-fixture");
             compare(prefs.rrAppKey, "fixture-key");
@@ -236,9 +238,11 @@ Item {
             compare(signInAutofill.liveToken(), settingsToken);
             var username = findChild(account, "radioReferenceUsernameField");
             var oldUsername = prefs.rrUsername;
+            var checks = testContext.radioReferenceAccountChecks();
             typeInto(username, "settings-user");
             username.input.focus = false;
             compare(prefs.rrUsername, "settings-user");
+            compare(testContext.radioReferenceAccountChecks(), checks, "a check was sent with the credentials incomplete");
             app.requestBack();
             tryVerify(function () { return !account.visible; });
             var ends = signInAutofill.calls().filter(function (c) { return c.op === "end"; });

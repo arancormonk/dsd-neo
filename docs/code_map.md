@@ -12379,14 +12379,14 @@ Qt Quick frontend (`src/ui/qt`):
   `GradientButton`, `IconButton`, `DashedActionButton` and `BottomNav` (commit and finish editing: focus leaves the
   text field so `editingFinished` drafts, such as the profile editor's fallback algorithm, update before the action
   reads them; an `OutlineButton` with `finishesEditing: false` only commits the word, as the RadioReference
-  password's Show and "Check account" do) and of `DecodeChip`, `FilterPill`, `SegmentedControl` segments and `DisclosureRow` (commit only);
-  `ModalSheet.requestDismiss()`; `Navigation.back()` before its focus clear. A button gated on a field's committed
-  text puts that term in `inputValid` (visuals dim on it) rather than `enabled`: its default `enabled` is `inputValid
-  || Navigation.composing`, so it is live while a word is composing, and a tap commits first and calls `clicked()`
-  only if `inputValid` then holds; otherwise it is disabled as before (accessibility and keyboard included), and a
-  real guard (busy, permission) stays in `enabled`. Callers: the profile editor's "Use this key" and "Use override",
-  `KeySheet`'s apply, Scan list "Add frequency", RadioReference Find/Open, the wizard's Continue/Save, Tone filter
-  Apply and Explore's Start.
+  password's Show and "Check account" do) and of `DecodeChip`, `FilterPill`, `SegmentedControl` segments and
+  `DisclosureRow` (commit only); `ModalSheet.requestDismiss()`; `Navigation.back()` before its focus clear. A button
+  gated on a field's committed text puts that term in `inputValid` (visuals dim on it) rather than `enabled`: its
+  default `enabled` is `inputValid || Navigation.composing`, so it is live while a word is composing, and a tap commits
+  first and calls `clicked()` only if `inputValid` then holds; otherwise it is disabled as before (accessibility and
+  keyboard included), and a real guard (busy, permission) stays in `enabled`. Callers: the profile editor's "Use this
+  key" and "Use override", `KeySheet`'s apply, Scan list "Add frequency", RadioReference Find/Open, the wizard's
+  Continue/Save, Tone filter Apply and Explore's Start.
   Tests: `UI_QT_INPUT_COMMIT`, `UI_QT_QML_CALL_LISTS` (`tst_input_commit.qml`, `tst_modal_sheet_outside_tap.qml`,
   `tst_signal_search.qml`, `tst_settings_backup.qml`, `tst_csv_import_flow.qml`, `tst_talkgroup_edit_sheet.qml`,
   `tst_modal_input.qml`, `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`, `tst_tone_filter_sheet.qml`,
@@ -12442,13 +12442,16 @@ Qt Quick frontend (`src/ui/qt`):
   non-empty, its placeholder "Entered for this session" while empty with `hasPassword`, and none otherwise (the
   label is read once). A field's commit checks the account only while the credentials are ready and unchecked
   (`accountState` None), so an untouched field never re-asks; "Check account" (`finishesEditing: false`) moves the
-  focus off the field under `checkCommitting` and checks once. Becoming active takes a token
-  (`signInAutofill.begin()`), tracks the two inner inputs with the form's visibility (re-sent when the import card
-  hides) and notes the username; becoming inactive ends it. `filled` for the form's own token commits the field the
-  fill left alone, clears the draft when the password was filled, and checks once, under `fillApplying`. The import
-  card stays up while `checkingAccount`. The QML fixtures fake the relay (`SignInAutofillRecorder` in
-  `tests/ui/qml_test_context.h`, whose `fill()` fires `filled`), and `FakeRadioReference.qml` follows the account
-  state (`settle()`); `tst_radioreference_screen.qml` and `tst_settings_layout.qml` cover the forms.
+  focus off the field under `checkCommitting` and checks once. Becoming active takes a token (`signInAutofill.begin()`),
+  tracks the two inner inputs with the form's visibility and notes the username; a visibility change is reported once
+  settled (a zero-interval child `Timer`), because the import card hides and shows again within one commit or fill
+  (`credentialsReady` turns true just before `checkAccount()` sets Checking) and that flicker must not reach the relay
+  or mask a revealed password; a card that has settled hidden with no field focused also clears its draft; becoming
+  inactive ends it. `filled` for the form's own token commits the field the fill left alone, clears the draft when the
+  password was filled, and checks once, under `fillApplying`. The import card stays up while `checkingAccount`. The QML
+  fixtures fake the relay (`SignInAutofillRecorder` in `tests/ui/qml_test_context.h`, whose `fill()` fires `filled`),
+  and `FakeRadioReference.qml` follows the account state (`settle()`); `tst_radioreference_screen.qml` and
+  `tst_settings_layout.qml` cover the forms.
   `systemDetails.protocolToken`
   (`dsd_rr_protocol_token()`, "tetra") is how QML tells the protocol apart, and the talkgroup summary (count,
   encryption counts, sample) holds only the rows the group writer keeps (`dsd_rr_talkgroup_writable()`, then the first

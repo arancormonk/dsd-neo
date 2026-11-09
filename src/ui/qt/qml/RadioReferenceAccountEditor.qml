@@ -30,6 +30,8 @@ Column {
     property bool revealed: false
     // The live signInAutofill token while active; 0 otherwise.
     property int autofillToken: 0
+    // The visibility last reported with the fields (see settleVisibility()).
+    property bool shownToRelay: false
     // Set while a fill or the Check tap commits the fields itself, so the
     // fields' own handlers do not check the account a second time.
     property bool fillApplying: false
@@ -76,6 +78,7 @@ Column {
     }
 
     function trackFields() {
+        editor.shownToRelay = editor.visible;
         if (editor.autofillToken <= 0)
             return;
         signInAutofill.track(editor.autofillToken, 1, usernameField.input, editor.visible);
@@ -110,10 +113,31 @@ Column {
             editor.startSession();
     }
     // The import screen's card hides while the screen stays up: the fields
-    // leave the password manager's view, the session stays.
-    onVisibleChanged: {
-        if (!editor.visible)
+    // leave the password manager's view, the session stays. Settled first:
+    // within one commit or fill the card can hide and show again (the
+    // credentials turn ready a moment before the check starts), and that
+    // flicker must neither reach the password manager, which may end its
+    // session when every field goes, nor mask a revealed password.
+    onVisibleChanged: visibilitySettle.restart()
+    // A child timer rather than Qt.callLater(): it goes with the editor, so a
+    // form torn down meanwhile is never called back.
+    Timer {
+        id: visibilitySettle
+        interval: 0
+        onTriggered: editor.settleVisibility()
+    }
+
+    function settleVisibility() {
+        if (editor.visible === editor.shownToRelay)
+            return;
+        // Hidden with no field in use: the credentials are committed (the
+        // card hides only once they are, or after Done commits them), so the
+        // draft goes and Change shows the session placeholder.
+        if (!editor.visible) {
             editor.revealed = false;
+            if (!usernameField.input.activeFocus && !passwordField.input.activeFocus)
+                passwordField.text = "";
+        }
         editor.trackFields();
     }
 
