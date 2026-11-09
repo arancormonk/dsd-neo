@@ -13609,11 +13609,13 @@ RadioReference sign-in form itself (the relay, `SignInAutofill` in `src/ui/qt`, 
   `requestShowInlineSuggestionsLocked()` fails over to the dropdown. With no fill UI shown a move does nothing. Limit: a
   response the framework has marked expired would make that enter start a focused request, which can wait for the
   keyboard's inline request. A move of the whole app window with nothing moving inside it (a freeform drag, a
-  split-screen divider) needs nothing: `AutofillPopupWindow.update()` makes the dropdown
-  `TYPE_APPLICATION_ABOVE_SUB_PANEL` (AutofillPopupWindow.java:118, android16-release) shown with `showAsDropDown()`
-  (234), whose `createPopupLayoutParams(anchor.getApplicationWindowToken())` (PopupWindow.java:1419, token at 1624)
-  attaches it to the app's window, and `findDropDownPosition()` (1733) sets its x/y as the anchor's screen location
-  minus the app root's; sub-windows' "coordinate space is relative to their attached window"
+  split-screen divider) needs nothing. The one fill UI that is not a dropdown is `FillUi`'s fullscreen mode (leanback/TV
+  devices, or a debug override): `AutofillPopupWindow.update()` (AutofillPopupWindow.java:107-122) makes it a
+  `TYPE_SYSTEM_DIALOG` that covers the screen and has no anchor to follow. Otherwise `AutofillPopupWindow.update()`
+  makes the dropdown `TYPE_APPLICATION_ABOVE_SUB_PANEL` (AutofillPopupWindow.java:118, android16-release) shown with
+  `showAsDropDown()` (234), whose `createPopupLayoutParams(anchor.getApplicationWindowToken())` (PopupWindow.java:1419,
+  token at 1624) attaches it to the app's window, and `findDropDownPosition()` (1733) sets its x/y as the anchor's
+  screen location minus the app root's; sub-windows' "coordinate space is relative to their attached window"
   (`WindowManager.LayoutParams.FIRST_SUB_WINDOW`, WindowManager.java:2290-2296), so the dropdown moves with the window.
 - The host view is the activity content's first child (`android.R.id.content`, `MATCH_PARENT`, behind Qt's
   `QtRootLayout`, which `super.onCreate()` set as the content view): childless, not focusable or clickable, no touches,

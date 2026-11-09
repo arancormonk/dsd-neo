@@ -121,8 +121,11 @@ has an answer.
 
 ### Password managers (Android)
 
-Both forms are offered to the device's autofill service (Bitwarden, KeePassDX, Google Password Manager
-and others), as a username and a password field. The application key is never offered.
+Both forms are offered to the device's autofill service (a password manager such as Bitwarden,
+KeePassDX, Google Password Manager or 1Password), as a username and a password field. The application
+key is never offered. This has been verified with KeePassDX. Bitwarden, Google Password Manager and
+1Password are expected to work, based on how their documentation says they read a form, but this has
+not been proven yet.
 
 - Tap the username or password field and the service offers its saved logins. Picking one fills both
   fields and checks the account once.
