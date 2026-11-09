@@ -12,7 +12,6 @@
  * decoder_host_android.cpp.
  */
 
-#include <QChar>
 #include <QMetaObject>
 #include <QString>
 #include <Qt>
@@ -23,17 +22,11 @@
 #include <vector>
 
 #include "decoder_host_android.h"
+#include "qstring_scrub.h"
 
 namespace dsd_android {
 
 namespace {
-
-/** @brief Overwrite a QString's characters, then drop it: best effort, as RadioReferenceModel's scrub(). */
-void
-scrub(QString& text) {
-    text.fill(QChar(u'\0'));
-    text.clear();
-}
 
 /** @brief One fill on its way to the GUI thread. Scrubbed when it goes, delivered or not. */
 struct SignInFill {
@@ -48,8 +41,8 @@ struct SignInFill {
     SignInFill& operator=(const SignInFill&) = delete;
 
     ~SignInFill() {
-        scrub(username);
-        scrub(password);
+        dsd_qt::scrub_qstring(username);
+        dsd_qt::scrub_qstring(password);
     }
 };
 

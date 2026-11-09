@@ -12415,12 +12415,15 @@ Qt Quick frontend (`src/ui/qt`):
   error, since it blames values that were never sent. The verdict is set before the reply settles `busy`. A verified
   check calls the C++-only `setVerifiedSink()` callback synchronously with the request's own username and password
   (copied out of its `dsd_rr_auth`, scrubbed after the call, dropped if the revision moved on); no signal or QML
-  property carries a credential. Password managers: `sign_in_autofill.{h,cpp}` (`SignInAutofill`, the `signInAutofill`
-  context object, built in `qt_ui.cpp` over the host, the model and AppPrefs) describes the sign-in form to the
-  platform's autofill support through `DecoderHost`'s no-op `signInAutofillBegin`/`Field`/`Request`/`Commit`/`End`
-  virtuals (in the plain `public:` section, not slots: QML reaches every slot and signal of `decoderHost`; Android
-  implements them, "Sign-in autofill" under Android foundation integration contracts; the desktop does nothing). Field 1
-  is the username, field 2 the password, whose structure value is always empty.
+  property carries a credential. A QString that held a credential (the model's password and verified copies, a fill in
+  `deliverSignInFill()` and on its way from Android) is overwritten before it is dropped by `scrub_qstring()`
+  (`qstring_scrub.h`), best effort: a string still shared with another holder detaches, and only the fresh copy is
+  zeroed. Password managers: `sign_in_autofill.{h,cpp}` (`SignInAutofill`, the `signInAutofill` context object, built in
+  `qt_ui.cpp` over the host, the model and AppPrefs) describes the sign-in form to the platform's autofill support
+  through `DecoderHost`'s no-op `signInAutofillBegin`/`Field`/`Request`/`Commit`/`End` virtuals (in the plain `public:`
+  section, not slots: QML reaches every slot and signal of `decoderHost`; Android implements them, "Sign-in autofill"
+  under Android foundation integration contracts; the desktop does nothing). Field 1 is the username, field 2 the
+  password, whose structure value is always empty.
   `begin()` hands out a token (positive, only growing) and retires the older one; every call and fill carries it, and
   any other token is dropped. `track(token, field, input, visible)` follows a field's inner TextInput through a
   `QPointer` (focus from `hasActiveFocus()`), and `note()` sets the username's structure value. A rect is the input's

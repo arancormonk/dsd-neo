@@ -36,6 +36,7 @@
 #include "decoder_host.h"
 #include "imported_files_model.h"
 #include "json_store.h"
+#include "qstring_scrub.h"
 #include "teardown_trace.h"
 
 namespace dsd_qt {
@@ -57,30 +58,10 @@ staging_dir_path() {
 }
 
 /**
- * @brief Overwrite a QString's storage before dropping it.
- *
- * QString::clear() only drops a reference; fill() writes over the characters
- * first. The runtime's own rr_secure_zero is static to the client, so this is
- * the Qt-side equivalent.
- *
- * Best effort by construction: fill() resizes, which detaches first, so a string
- * that is still implicitly shared - which a value handed over from QML is -
- * leaves the original buffer alone and zeroes the fresh copy instead. There is
- * no way to reach the shared buffer that does not also corrupt the other holder,
- * so anything that must actually be erased has to be a buffer this side owns
- * outright; see scrub_bytes() and fillAuth().
- */
-void
-scrub(QString& text) {
-    text.fill(QChar(u'\0'));
-    text.clear();
-}
-
-/**
  * @brief Overwrite a byte buffer this scope owns outright, then drop it.
  *
- * Unlike scrub(), this is not best effort: data() detaches if it has to, and the
- * write then lands in the buffer that is about to be freed.
+ * Unlike scrub_qstring(), this is not best effort: data() detaches if it has
+ * to, and the write then lands in the buffer that is about to be freed.
  */
 void
 scrub_bytes(QByteArray& bytes) {
@@ -182,7 +163,7 @@ is_refusal(int errorKind) {
  * A verified account check's own credentials, for the verified sink.
  *
  * Both strings are built from the request's C buffers and never shared with
- * anything outside this struct, so scrub() reaches their real storage - unless
+ * anything outside this struct, so scrub_qstring() reaches their real storage - unless
  * a sink copied one, which is then the sink's to scrub.
  */
 struct RadioReferenceModel::VerifiedCredentials {
@@ -195,8 +176,8 @@ struct RadioReferenceModel::VerifiedCredentials {
 
     void
     wipe() {
-        scrub(username);
-        scrub(password);
+        scrub_qstring(username);
+        scrub_qstring(password);
     }
 
     ~VerifiedCredentials() { wipe(); }
@@ -562,7 +543,7 @@ RadioReferenceModel::~RadioReferenceModel() {
     dsd_rr_site_list_free(&m_siteData);
     dsd_rr_talkgroup_list_free(&m_talkgroupData);
     dsd_rr_talkgroup_cat_list_free(&m_talkgroupCatData);
-    scrub(m_password);
+    scrub_qstring(m_password);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -609,7 +590,7 @@ RadioReferenceModel::setPassword(const QString& password) {
     if (m_password == password) {
         return;
     }
-    scrub(m_password);
+    scrub_qstring(m_password);
     m_password = password;
     onCredentialEdited();
 }
@@ -619,7 +600,7 @@ RadioReferenceModel::clearPassword() {
     if (m_password.isEmpty()) {
         return;
     }
-    scrub(m_password);
+    scrub_qstring(m_password);
     onCredentialEdited();
 }
 
