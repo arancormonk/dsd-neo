@@ -10626,10 +10626,15 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   detection menu (`tst_signal_search.qml`). `hitMap()` passes the hit's checked `site`,
   `slot` and `crypt`, its `access` code and its received `tone` through; the panel's
   two-line detail (`detailText()`) reads site, access, tone, `Slot N`, target, source,
-  then crypt, eliding within the two lines with the whole text as its accessible name and
-  description, and a history row shows site, access, tone and crypt under its verdict
+  then crypt, eliding within the two lines with the whole text as its accessible name, and a
+  history row shows site, access, tone and crypt under its verdict
   (`detailText()`'s order without the call, empty values left out; issue #802). The tone
-  is what the analog monitor heard, not checked signalling. Text that can hold over-the-air,
+  is what the analog monitor heard, not checked signalling. Each Now line is named once:
+  Android reads a node's name, then its description (`descriptionForInterface()`), so no
+  description repeats its name (the identification's name is its full phrase, the level's
+  description only the range), and each line, the status line above too, has its own
+  navigation gate, so a detection's menu leaves none of them in the tree (issue #828;
+  `tst_a11y_text_reach.qml` `test_3c_signal_search_now_panel`). Text that can hold over-the-air,
   imported or typed words (the Now detail, saved names, the phase and status lines, the
   message, history rows, `PlexCheckBox` labels) is `Text.PlainText`, so a `<b>` in a
   callsign or name is drawn and measured as written (issue #802 B4). `hitMap()` also

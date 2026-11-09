@@ -273,7 +273,7 @@ Item {
     }
     readonly property string phaseLine: [qsTr("Stopped"), (status.rangeName || "").length > 0 ? qsTr("Searching %1…").arg(status.rangeName) : qsTr("Searching…"), qsTr("Tuning…"), qsTr("Trying digital identification…"), qsTr("Listening"), qsTr("Held"), qsTr("Paused"), qsTr("Search error")][phase] || ""
     // The panel's one identification line is short enough for a phone; the
-    // full phrase is its accessible description.
+    // full phrase is its accessible name.
     readonly property bool unresolvedShown: receiving && phase !== 2 && !hit.confirmed && !(phase === 3 || status.identifying) && !!hit.unresolved
     readonly property string identificationLine: leaving ? qsTr("Stopping the search…") : !receiving ? phaseLine : phase === 2 ? qsTr("Tuning to detection…") : hit.confirmed ? hit.protocol + qsTr(" · confirmed") : phase === 3 || status.identifying ? qsTr("Trying digital identification…") : hit.unresolved ? qsTr("NFM · digital unresolved") : hit.am ? qsTr("AM monitoring") : qsTr("NFM monitoring")
     readonly property string identificationFull: !leaving && unresolvedShown ? qsTr("NFM monitoring · digital identification unresolved") : identificationLine
@@ -460,10 +460,14 @@ Item {
                 maximumLineCount: screen.sessionActive ? screen.statusLines : 1000
                 elide: Text.ElideRight
                 Accessible.role: Accessible.StaticText
+                // Gated as every node a screen reader reaches is: behind an
+                // open sheet it leaves the tree (issue #828).
+                readonly property bool navigationAllowed: Navigation.allows(statusText)
+                Accessible.ignored: !navigationAllowed || !visible
                 Accessible.name: statusSpeech.spoken
                 SpeechPacer {
                     id: statusSpeech
-                    shown: Navigation.allows(statusText) && statusText.visible
+                    shown: statusText.navigationAllowed && statusText.visible
                     step: screen.speechStep
                     read: function () {
                         return statusText.text;
@@ -546,6 +550,7 @@ Item {
                     width: parent.width - 2 * Theme.cardPadding
                     spacing: 6
                     Text {
+                        id: searchFrequencyText
                         objectName: "searchFrequency"
                         width: parent.width
                         height: Math.ceil(frequencyMetrics.lineSpacing)
@@ -561,7 +566,13 @@ Item {
                         minimumPixelSize: Theme.fontSize(14)
                         verticalAlignment: Text.AlignVCenter
                         Accessible.role: Accessible.StaticText
-                        Accessible.name: text
+                        // Each line of the panel is gated as every node a screen
+                        // reader reaches is: behind an open sheet (a detection's
+                        // menu) it leaves the tree and holds no name, rather than
+                        // being lifted over the covered panel (issue #828).
+                        readonly property bool navigationAllowed: Navigation.allows(searchFrequencyText)
+                        Accessible.ignored: !navigationAllowed || !visible
+                        Accessible.name: Accessible.ignored ? "" : text
                     }
                     Item {
                         id: strengthSlot
@@ -619,13 +630,16 @@ Item {
                             maximumLineCount: strengthSlot.lines
                             elide: Text.ElideRight
                             readonly property string spoken: strengthSpeech.spoken
+                            // Android reads a node's name, then its description: the
+                            // description adds only the range, never the levels again.
                             Accessible.name: spoken
-                            Accessible.description: spoken.length > 0 && (screen.hit.range || "").length > 0 ? spoken + " · " + screen.hit.range : spoken
-                            Accessible.ignored: text.length === 0
+                            Accessible.description: spoken.length > 0 ? screen.hit.range || "" : ""
+                            readonly property bool navigationAllowed: Navigation.allows(strengthText)
+                            Accessible.ignored: !navigationAllowed || !visible || text.length === 0
                             // The live level moves every tick (issue #782).
                             SpeechPacer {
                                 id: strengthSpeech
-                                shown: Navigation.allows(strengthText) && strengthText.visible && strengthText.text.length > 0
+                                shown: strengthText.navigationAllowed && strengthText.visible && strengthText.text.length > 0
                                 step: screen.speechStep
                                 read: function () {
                                     return strengthText.text.replace("\n", " · ");
@@ -634,6 +648,7 @@ Item {
                         }
                     }
                     Text {
+                        id: identificationText
                         objectName: "searchIdentification"
                         width: parent.width
                         height: Math.ceil(identificationMetrics.lineSpacing)
@@ -645,9 +660,11 @@ Item {
                         font.pixelSize: Theme.fontSize(16)
                         verticalAlignment: Text.AlignVCenter
                         elide: Text.ElideRight
-                        Accessible.name: text
-                        Accessible.description: screen.identificationFull
-                        Accessible.ignored: text.length === 0
+                        // The full phrase, once: a description repeating the
+                        // short form would read the line twice.
+                        readonly property bool navigationAllowed: Navigation.allows(identificationText)
+                        Accessible.ignored: !navigationAllowed || !visible || text.length === 0
+                        Accessible.name: Accessible.ignored ? "" : screen.identificationFull
                     }
                     Item {
                         width: parent.width
@@ -677,13 +694,14 @@ Item {
                             wrapMode: Text.Wrap
                             maximumLineCount: 2
                             elide: Text.ElideRight
+                            // Every value, even those the two lines leave off.
                             Accessible.name: detailSpeech.spoken
-                            Accessible.description: detailSpeech.spoken
-                            Accessible.ignored: text.length === 0
+                            readonly property bool navigationAllowed: Navigation.allows(searchDetailText)
+                            Accessible.ignored: !navigationAllowed || !visible || text.length === 0
                             // A monitored call's talkgroup and source change with each call (issue #782).
                             SpeechPacer {
                                 id: detailSpeech
-                                shown: Navigation.allows(searchDetailText) && searchDetailText.visible && searchDetailText.text.length > 0
+                                shown: searchDetailText.navigationAllowed && searchDetailText.visible && searchDetailText.text.length > 0
                                 step: screen.speechStep
                                 read: function () {
                                     return searchDetailText.fullText;
@@ -712,9 +730,9 @@ Item {
                             verticalAlignment: Text.AlignVCenter
                             elide: Text.ElideRight
                             readonly property string fullText: text.length > 0 ? qsTr("Saved frequency: %1").arg(screen.knownNames.join(", ")) : ""
-                            Accessible.name: fullText
-                            Accessible.description: fullText
-                            Accessible.ignored: text.length === 0
+                            readonly property bool navigationAllowed: Navigation.allows(savedNames)
+                            Accessible.ignored: !navigationAllowed || !visible || text.length === 0
+                            Accessible.name: Accessible.ignored ? "" : fullText
                         }
                         Text {
                             id: savedMore

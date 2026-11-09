@@ -504,10 +504,12 @@ Item {
             compare(snapshot.freqMHz, "463.552100");
         }
         function test_unresolved_is_not_analog_confirmation() {
-            // The panel's short form; the full phrase is the accessible description.
+            // The panel's short form; the full phrase is the accessible name,
+            // read once (issue #828: a description repeating it read it twice).
             var identification = findChild(loader.item, "searchIdentification");
             compare(identification.text, "NFM · digital unresolved");
-            compare(identification.Accessible.description, "NFM monitoring · digital identification unresolved");
+            compare(identification.Accessible.name, "NFM monitoring · digital identification unresolved");
+            compare(identification.Accessible.description, "");
             model.status = Object.assign({}, model.status, {phase: 3});
             compare(findChild(loader.item, "searchIdentification").text, "Trying digital identification…");
             model.status = Object.assign({}, model.status, {phase: 5, identifying: true});
@@ -516,10 +518,14 @@ Item {
         function test_live_strength_is_shown_beside_detection_power() {
             var strength = findChild(loader.item, "searchStrength");
             compare(strength.text, "-32.1 dBFS");
-            tryCompare(strength.Accessible, "description", "-32.1 dBFS · Local UHF");
+            // The levels are the name; the description adds only the range
+            // (issue #828: Android reads the name, then the description).
+            tryCompare(strength.Accessible, "name", "-32.1 dBFS");
+            compare(strength.Accessible.description, "Local UHF");
             model.status = Object.assign({}, model.status, {livePowerValid: true, livePower: -47.25});
             compare(strength.text, "Now -47.3 · detected -32.1 dBFS");
-            tryCompare(strength.Accessible, "description", "Now -47.3 · detected -32.1 dBFS · Local UHF");
+            tryCompare(strength.Accessible, "name", "Now -47.3 · detected -32.1 dBFS");
+            compare(strength.Accessible.description, "Local UHF");
             // Readings that round to zero carry no minus sign (issue #669).
             model.status = Object.assign({}, model.status, {livePowerValid: true, livePower: -0.04,
                 hit: Object.assign({}, model.status.hit, {power: -0.04})});
@@ -899,7 +905,7 @@ Item {
         // ones that fit followed by "· …", never a value cut short.
         function verifyWholeValues(detail, tag) {
             var shown = detail.text.replace(/\u00a0/g, " ");
-            var full = detail.Accessible.description;
+            var full = detail.Accessible.name;
             verify(!detail.truncated, "nothing is cut by elision in " + tag);
             verify(detail.lineCount <= 2, "two lines at most in " + tag);
             if (shown !== full) {
@@ -911,8 +917,7 @@ Item {
         }
         // The detail reads site, access code, the call with its slot, then
         // its encryption; what the two lines cannot hold is left off whole
-        // values at a time, and the whole text is the accessible
-        // description.
+        // values at a time, and the whole text is the accessible name.
         function test_detail_reads_site_call_then_encryption_data() {
             return [{tag: "default text", scale: 1.0}, {tag: "largest text", scale: 1.6}];
         }
@@ -926,33 +931,33 @@ Item {
             var hit = model.status.hit;
             model.status = Object.assign({}, model.status, {hit: Object.assign({}, hit, {confirmed: true, protocol: "P25 Phase 1", unresolved: false,
                 site: "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2", access: "NAC 293", targetText: "", target: 2401, sourceText: "", source: 1234567})});
-            tryCompare(detail.Accessible, "description", "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2 · NAC 293 · Target 2401 · Source 1234567");
-            compare(detail.Accessible.name, detail.Accessible.description);
+            tryCompare(detail.Accessible, "name", "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2 · NAC 293 · Target 2401 · Source 1234567");
+            compare(detail.Accessible.description, "", "read once (issue #828)");
             // Shown, it breaks only after a separator: every other space is non-breaking.
             var p25 = verifyWholeValues(detail, "P25");
             if (data.scale === 1.0)
-                compare(p25, detail.Accessible.description, "the P25 detail fits whole at default text");
+                compare(p25, detail.Accessible.name, "the P25 detail fits whole at default text");
             model.status = Object.assign({}, model.status, {hit: Object.assign({}, hit, {confirmed: true, protocol: "DMR", unresolved: false,
                 site: "TIII Small · Net 12 · Site 3 · SYS 1183", access: "CC 1", slot: 2, target: 100, source: 2001, crypt: "Encrypted"})});
-            tryCompare(detail.Accessible, "description", "TIII Small · Net 12 · Site 3 · SYS 1183 · CC 1 · Slot 2 · Target 100 · Source 2001 · Encrypted");
+            tryCompare(detail.Accessible, "name", "TIII Small · Net 12 · Site 3 · SYS 1183 · CC 1 · Slot 2 · Target 100 · Source 2001 · Encrypted");
             var dmr = verifyWholeValues(detail, "DMR");
             if (data.scale === 1.0)
-                compare(dmr, detail.Accessible.description, "the DMR detail fits whole at default text");
+                compare(dmr, detail.Accessible.name, "the DMR detail fits whole at default text");
             // The longest: the values that fit and "· …", whole for a screen reader.
             var longest = {confirmed: true, protocol: "DMR", unresolved: false, site: longestSite, access: "CC 15", slot: 1,
                 targetText: "Regional interoperability talkgroup band with a very long name", sourceText: "Unit 7 portable", crypt: "ALG 84 · KID 0001"};
             model.status = Object.assign({}, model.status, {hit: Object.assign({}, hit, longest)});
             waitForRendering(panel);
-            tryVerify(function () { return detail.Accessible.description.indexOf("KID 0001") >= 0; });
+            tryVerify(function () { return detail.Accessible.name.indexOf("KID 0001") >= 0; });
             var shown = verifyWholeValues(detail, "the longest detail");
             verify(shown.endsWith(" · …"), "the longest detail leaves values off");
             verify(detail.height <= detail.parent.height + 0.5, "inside its two lines");
-            verify(detail.Accessible.description.endsWith("Slot 1 · Regional interoperability talkgroup band with a very long name · Unit 7 portable · ALG 84 · KID 0001"));
-            verify(detail.Accessible.description.startsWith(longestSite + " · CC 15"));
+            verify(detail.Accessible.name.endsWith("Slot 1 · Regional interoperability talkgroup band with a very long name · Unit 7 portable · ALG 84 · KID 0001"));
+            verify(detail.Accessible.name.startsWith(longestSite + " · CC 15"));
             compare(panel.height, height, "the panel keeps its height");
             // A clear call on a one-slot protocol names no slot and no encryption.
             model.status = Object.assign({}, model.status, {hit: Object.assign({}, hit, {confirmed: true, protocol: "NXDN48", unresolved: false, site: "Site 12 · Sys 3", slot: 0, crypt: "", target: 5, source: 6})});
-            tryCompare(detail.Accessible, "description", "Site 12 · Sys 3 · Target 5 · Source 6");
+            tryCompare(detail.Accessible, "name", "Site 12 · Sys 3 · Target 5 · Source 6");
         }
         // A history row keeps the site and encryption it was checked with.
         function test_history_row_shows_site_and_encryption() {
@@ -1079,7 +1084,7 @@ Item {
             model.status = Object.assign({}, model.status, {hit: Object.assign({}, model.status.hit, {confirmed: true, protocol: "D-STAR", unresolved: false,
                 targetText: "<b>CQCQCQ", sourceText: "N0CALL", knownNames: ["<b>Warehouse</b>", "Dock"]})});
             var detail = findChild(screen, "searchDetail");
-            tryCompare(detail.Accessible, "description", "<b>CQCQCQ · N0CALL");
+            tryCompare(detail.Accessible, "name", "<b>CQCQCQ · N0CALL");
             verifyPlain(detail, "the Now detail");
             var saved = findChild(screen, "searchSaved");
             verifyPlain(saved, "the saved names");
@@ -1251,7 +1256,8 @@ Item {
             model.status = Object.assign({}, model.status, {livePowerValid: false});
             verify(!cue.visible, "a withdrawn level hides the cue");
             compare(strength.text, "-32.1 dBFS");
-            tryCompare(strength.Accessible, "description", "-32.1 dBFS · Local UHF");
+            tryCompare(strength.Accessible, "name", "-32.1 dBFS");
+            compare(strength.Accessible.description, "Local UHF");
             model.status = Object.assign({}, model.status, {liveSeq: 3});
             compare(cue.marks, marks + 1);
         }
