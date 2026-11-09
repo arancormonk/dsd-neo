@@ -271,6 +271,11 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      * the Android main thread and describes the form to the Autofill Framework there. JNI only, in
      * decoder_host_android.cpp. A call that fails is dropped, its Java exception cleared.
      */
+    bool
+    signInAutofillSupported() const override {
+        return true;
+    }
+
     void signInAutofillBegin(int token) override;
     void signInAutofillField(int token, int field, const QRect& windowPixels, bool visible, bool focused,
                              const QString& structureValue) override;

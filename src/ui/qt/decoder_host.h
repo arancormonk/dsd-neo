@@ -547,6 +547,15 @@ class DecoderHost : public QObject {
      * @{
      */
 
+    /**
+     * @brief Whether this host can offer the form to a password manager. Only then does SignInAutofill sample the
+     *        fields' rects and wait for a focused field to settle; the calls below still come, and do nothing here.
+     */
+    virtual bool
+    signInAutofillSupported() const {
+        return false;
+    }
+
     /** @brief A sign-in form was shown: session @p token starts, and any older one is over. */
     virtual void
     signInAutofillBegin(int token) {

@@ -12431,15 +12431,17 @@ Qt Quick frontend (`src/ui/qt`):
   ancestor's `clipRect()` and by the window, scaled by the window's device pixel ratio once and rounded outward; empty
   means not visible. A 100 ms sampler runs while a token is live and a tracked field is shown, and sends a field only
   when its rect, visibility or focus changed. A field gaining focus gets one `signInAutofillRequest` per focus entry,
-  once its rect has been still for 300 ms (movement restarts the wait; focus loss and `end` cancel it). The model's
-  verified sink commits the checked credentials for the live token once its form has shown a field (a card hidden
-  since still commits), and only when the check was submitted under that token: the relay records the live token as
-  `checkingAccount` turns true, and a check submitted under an earlier session or none is not committed. A fill comes
-  in through `DecoderHost::setSignInFillSink()`/`deliverSignInFill()`, a C++ callback whose strings are scrubbed after
-  it returns: for the live token the relay itself sets `AppPrefs::rrUsername` and calls
-  `RadioReferenceModel::setPassword()` (an empty value fills nothing), then emits the credential-free `filled(token,
-  hasUsername, hasPassword)`, so a filled password never reaches QML (`UI_QT_SIGN_IN_AUTOFILL`, its window at a 1.5
-  device pixel ratio). The sign-in form is `qml/RadioReferenceAccountEditor.qml`, used whole by the import screen's
+  once its rect has been still for 300 ms (movement restarts the wait; focus loss and `end` cancel it). Both timers run
+  only for a host whose `signInAutofillSupported()` is true (Android); the base host's is false, so on the desktop the
+  calls still come but nothing is sampled or awaited. The model's verified sink commits the checked credentials for the
+  live token once its form has shown a field (a card hidden since still commits), and only when the check was submitted
+  under that token: the relay records the live token as `checkingAccount` turns true, and a check submitted under an
+  earlier session or none is not committed. A fill comes in through
+  `DecoderHost::setSignInFillSink()`/`deliverSignInFill()`, a C++ callback whose strings are scrubbed after it returns:
+  for the live token the relay itself sets `AppPrefs::rrUsername` and calls `RadioReferenceModel::setPassword()` (an
+  empty value fills nothing), then emits the credential-free `filled(token, hasUsername, hasPassword)`, so a filled
+  password never reaches QML (`UI_QT_SIGN_IN_AUTOFILL`, its window at a 1.5 device pixel ratio). The sign-in form is
+  `qml/RadioReferenceAccountEditor.qml`, used whole by the import screen's
   credentials card and by `qml/RadioReferenceAccountScreen.qml` (Settings → Account; the Settings row's subtitle names
   the fields the build asks for): username, password with a `RevealButton` (`finishesEditing: false`, "Show
   password"/"Hide password"), the key heading, field and link only without a baked key, the hint, "Check account"
@@ -13567,7 +13569,8 @@ RadioReference sign-in form itself (the relay, `SignInAutofill` in `src/ui/qt`, 
   JNI only) call `SignInAutofill.kt`'s `@JvmStatic` `begin(int)`, `field(int, int, int, int, int, int, boolean,
   boolean, String)`, `request(int, int, int, int, int, int)`, `commit(int, String, String)` and `end(int)`, kept by
   `proguard-rules.pro`. A rect goes as its window pixels (x, y, width, height); each string goes as a local ref deleted
-  right after the call, so the committed password's Java copy is let go of at once.
+  right after the call, so the committed password's Java copy is let go of at once. Its `signInAutofillSupported()` is
+  true, which is what turns on the relay's sampler and settle wait.
 - `SignInAutofill.kt` posts each call to the main looper in order and hands `SignInAutofillState.kt` (plain Kotlin) the
   event; the effects it returns (`Request`, `Exit`, `Value`, `Commit`, `Cancel`, `Visibility`, and `Held`, `Settle`,
   `Enter`, `HideTextHandle` below) run there against the attached activity's `AutofillManager`, read at that moment:

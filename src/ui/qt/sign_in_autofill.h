@@ -52,7 +52,10 @@ class SignInAutofill : public QObject {
         FieldPassword = 2,
     };
 
-    /** @brief How often the tracked fields' rects are sampled while a form is shown. */
+    /**
+     * @brief How often the tracked fields' rects are sampled while a form is shown. Both timers run only for a host
+     *        that supports autofill (DecoderHost::signInAutofillSupported()).
+     */
     static constexpr int kSampleIntervalMs = 100;
     /** @brief How long a focused field's rect must stay still before a fill request. */
     static constexpr int kSettleMs = 300;
@@ -126,6 +129,7 @@ class SignInAutofill : public QObject {
     };
 
     bool isLive(int token) const;
+    bool hostSupported() const;
     Slot* slotFor(int field);
     void retire();
     void clearSlot(Slot& slot);

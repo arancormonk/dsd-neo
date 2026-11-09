@@ -126,8 +126,15 @@ class FakeHost : public dsd_qt::DecoderHost {
   public:
     QList<Op> ops;
     QElapsedTimer clock;
+    /* A host with password manager support, as Android's; false stands in for the desktop. */
+    bool supported = true;
 
     FakeHost() { clock.start(); }
+
+    bool
+    signInAutofillSupported() const override {
+        return supported;
+    }
 
     bool
     isRunning() const override {
@@ -815,6 +822,29 @@ test_no_sink(void) {
     expect("a destroyed relay leaves no sink behind", after.username.isEmpty() && after.password.isEmpty());
 }
 
+/* A host with no password manager support (the desktop) gets the same calls, which do nothing there, but the relay
+ * runs neither timer for it: no 10 Hz wakeups while a sign-in form is shown, and no request wait. */
+void
+test_unsupported_host_runs_no_timers(void) {
+    Form form;
+    if (!form.ok()) {
+        return;
+    }
+    FakeHost host;
+    host.supported = false;
+    dsd_qt::SignInAutofill relay(&host, nullptr, nullptr);
+    const int token = relay.begin();
+    relay.track(token, 1, form.username, true);
+    relay.track(token, 2, form.password, true);
+    expect_int("the fields are still described", host.fieldCount(1), 1);
+    expect("a shown form is not sampled", !sampler_active(relay));
+    form.username->forceActiveFocus();
+    expect("focus is still sent", host.last(OpField, 1).focused);
+    expect("focus starts no settle wait", !settle_active(relay));
+    expect("and still no sampler", !sampler_active(relay));
+    relay.end(token);
+}
+
 } // namespace
 
 int
@@ -838,6 +868,7 @@ main(int argc, char** argv) {
     test_commit();
     test_fill();
     test_no_sink();
+    test_unsupported_host_runs_no_timers();
 
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);

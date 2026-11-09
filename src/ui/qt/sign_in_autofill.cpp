@@ -139,6 +139,12 @@ SignInAutofill::isLive(int token) const {
     return token > 0 && token == m_token;
 }
 
+/* No platform support (the desktop): the fields are still sent, to no-ops, but nothing is sampled or awaited. */
+bool
+SignInAutofill::hostSupported() const {
+    return m_host && m_host->signInAutofillSupported();
+}
+
 SignInAutofill::Slot*
 SignInAutofill::slotFor(int field) {
     if (field == FieldUsername) {
@@ -216,6 +222,9 @@ SignInAutofill::refresh(int field, bool force) {
 /* Compares @p now with what was last sent for the field, so it runs before refresh() records it. */
 void
 SignInAutofill::updateSettle(int field, Slot& slot, const Snapshot& now) {
+    if (!hostSupported()) {
+        return;
+    }
     if (now.focused && !slot.focused) {
         /* A new focus entry: it gets its own request. */
         slot.requested = false;
@@ -237,7 +246,7 @@ SignInAutofill::updateSettle(int field, Slot& slot, const Snapshot& now) {
 void
 SignInAutofill::updateSampler() {
     const bool wanted =
-        m_token != 0
+        m_token != 0 && hostSupported()
         && ((!m_username.input.isNull() && m_username.shown) || (!m_password.input.isNull() && m_password.shown));
     if (!wanted) {
         m_sampler.stop();

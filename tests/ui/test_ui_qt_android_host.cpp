@@ -2424,6 +2424,7 @@ check_sign_in_fill_reaches_the_live_host() {
     QCoreApplication::processEvents();
 
     DecoderHostAndroid host;
+    check(host.signInAutofillSupported(), "Android offers the sign-in form, so the relay samples and settles for it");
     SignInFills fills;
     fills.sinkInto(host);
     check(post_fill_from_another_thread(7, true, QStringLiteral("alice"), true, QStringLiteral("s3cret")),
