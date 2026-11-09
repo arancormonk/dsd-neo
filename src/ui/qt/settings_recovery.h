@@ -13,10 +13,10 @@
  * registry and Apple plists are left alone). recover_settings_files() checks both before anything else opens them:
  *  - It reads the exact file, checking the read, and parses that copy apart from QSettings' fallback files, in a private
  *    work folder in the app cache. A copy of the settings is never written anywhere but the app cache, never a shared
- *    temp folder. With no cache, the file read whole is parsed through the open file it was read from (never the name
- *    again), which tells a clean file but cannot write a clean one. A work folder a crash left (a copy of the
- *    settings, which can hold credentials) is removed at the next start, as is the app cache's scratch copy once its
- *    format runs on the real file again.
+ *    temp folder, and every copy and folder made for one is the owner's alone whatever the umask. With no cache, the
+ *    file read whole is parsed through the open file it was read from (never the name again), which tells a clean file
+ *    but cannot write a clean one. A work folder a crash left (a copy of the settings, which can hold credentials) is
+ *    removed at the next start, as is the app cache's scratch copy once its format runs on the real file again.
  *  - A file read whole that parses cleanly is left alone, as is a missing one.
  *  - Otherwise, a file read whole is copied to "<file>.unreadable-N" (N = 1..99, the first free one; created, never
  *    replacing anything, and synced) while it stays in place, and a clean file holding what Qt could parse replaces it,
@@ -60,6 +60,9 @@ struct SettingsRecoveryEnv {
     /** @brief The path a check with no work folder parses instead of @p source, the open file's own (a test gives one
         Qt cannot read, which must leave the file not checked). */
     std::function<QString(const QString& source)> inPlaceSource;
+    /** @brief Called with a parse's work folder once the files parsed there are written, while they still exist (a
+        test reads their permissions). */
+    std::function<void(const QString& folder)> workFolderWritten;
 };
 
 /** @brief What checking one settings file found. */

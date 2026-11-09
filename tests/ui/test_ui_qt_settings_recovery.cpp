@@ -14,8 +14,8 @@
  * swapped in, a path Qt cannot read, two files of one size and modification time parsed one after the other); an
  * app cache that cannot take the scratch copy (defaults in memory, nothing written outside the cache); leftover work
  * folders and cache scratch copies; a later check forgetting an earlier scratch; the first call-history save after a
- * malformed file; replacePortable() after a recovery; and a pending
- * restore that waits while the settings run on the scratch copy, then applies after a later start recovers them.
+ * malformed file; replacePortable() after a recovery; every copy owner-only under umask 022; and a pending restore
+ * that waits while the settings run on the scratch copy, then applies after a later start recovers them.
  * Registered only when the Qt frontend is enabled (DSD_ENABLE_QT_UI). */
 
 #include <QByteArray>
@@ -55,6 +55,7 @@
 #include "settings_recovery.h"
 #ifndef _WIN32
 #include <sys/stat.h>
+#include <sys/types.h>
 #endif
 
 namespace {
@@ -532,6 +533,73 @@ test_fifo_before_replacement() {
     expect("FIFO before the replacement: kept byte-identical", read_file(kept(g_paths.prefs, 1)) == original);
     expect("FIFO before the replacement: on scratch",
            dsd_qt::settings_recovery_scratch(dsd_qt::settings_recovery_prefs_file_name()));
+}
+#endif
+
+#ifndef _WIN32
+/* The permission bits of @p path, never following a link at it; -1 when they cannot be read. */
+int
+mode_of(const QString& path) {
+    struct stat st;
+    return lstat(QFile::encodeName(path).constData(), &st) == 0 ? static_cast<int>(st.st_mode & 07777) : -1;
+}
+
+/* Every copy of a settings file, which can hold RadioReference keys, is the owner's alone whatever the umask: the
+   parse's work folder and the files parsed there, and the scratch copy and every folder of it made for it, also after
+   QSettings' own writes to the copy. */
+void
+test_settings_copies_owner_only() {
+    const mode_t umaskBefore = umask(022);
+    const QString scratch =
+        QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/settings-scratch");
+    QDir(scratch).removeRecursively();
+    reset();
+    expect("owner only: written", write_file(g_paths.prefs, kUnreadSection));
+    expect("owner only: the original is the owner's",
+           QFile::setPermissions(g_paths.prefs, QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+    take_every_kept_name("owner only", g_paths.prefs);
+    QMap<QString, int> work;
+    SettingsRecoveryEnv env;
+    env.workFolderWritten = [&work](const QString& folder) {
+        work.insert(folder, mode_of(folder));
+        for (const char* name : {"snapshot.ini", "rewritten.ini"}) {
+            const QString file = folder + QLatin1Char('/') + QLatin1String(name);
+            work.insert(file, mode_of(file));
+        }
+    };
+    expect("owner only: Scratch", recover_prefs(env) == SettingsRecovery::Scratch);
+    expect("owner only: on a scratch copy",
+           !dsd_qt::settings_recovery_in_memory(dsd_qt::settings_recovery_prefs_file_name()));
+    expect("owner only: the work folder was seen", work.size() == 3);
+    for (auto it = work.cbegin(); it != work.cend(); ++it) {
+        const bool folder = !it.key().endsWith(QLatin1String(".ini"));
+        expect(QStringLiteral("owner only: %1 is %2, not %3")
+                   .arg(QFileInfo(it.key()).fileName(), QString::number(folder ? 0700 : 0600, 8),
+                        QString::number(it.value(), 8)),
+               it.value() == (folder ? 0700 : 0600));
+    }
+    const QString copy = prefs_file_now();
+    expect("owner only: the copy is in the cache", copy.startsWith(scratch + QStringLiteral("/ini/")));
+    for (QString folder = QFileInfo(copy).absolutePath(); folder.startsWith(scratch);
+         folder = QFileInfo(folder).absolutePath()) {
+        expect(QStringLiteral("owner only: folder %1 is 700, not %2")
+                   .arg(folder.mid(scratch.size()), QString::number(mode_of(folder), 8)),
+               mode_of(folder) == 0700);
+    }
+    expect(QStringLiteral("owner only: the copy is 600, not %1").arg(QString::number(mode_of(copy), 8)),
+           mode_of(copy) == 0600);
+    {
+        AppPrefs prefs;
+        prefs.setAutoStartOnAttach(!prefs.autoStartOnAttach());
+        QCoreApplication::processEvents();
+    }
+    expect("owner only: QSettings wrote the copy", AppPrefs::readPortable().contains("decode/extraArgs"));
+    expect(
+        QStringLiteral("owner only: still 600 after QSettings' writes, not %1").arg(QString::number(mode_of(copy), 8)),
+        mode_of(copy) == 0600);
+    umask(umaskBefore);
+    relaunch();
+    reset();
 }
 #endif
 
@@ -1214,6 +1282,7 @@ main(int argc, char** argv) {
     test_replace_fails_after_rename();
 #ifndef _WIN32
     test_fifo_before_replacement();
+    test_settings_copies_owner_only();
 #endif
     test_no_scratch_folder();
 #ifndef Q_OS_WIN

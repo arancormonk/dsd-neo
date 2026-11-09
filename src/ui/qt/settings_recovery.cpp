@@ -26,6 +26,7 @@
 #include <utility>
 
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/log.h>
 #ifdef Q_OS_WIN
 #include <algorithm>
@@ -186,10 +187,18 @@ struct SettingsParse {
     QByteArray rewritten;    // the file written from what parsed: what Qt's next write would produce
 };
 
+/* Creates @p path holding @p bytes, the owner's alone (0600) whatever the umask: a copy of a settings file can hold
+   RadioReference keys. Never replaces anything there, a link included. */
 bool
-write_whole(const QString& path, const QByteArray& bytes) {
-    QFile file(path);
-    return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(bytes) == bytes.size();
+write_private(const QString& path, const QByteArray& bytes) {
+    const QByteArray native = platform_path(path);
+    FILE* f = dsd_fopen_private(native.constData(), "wbx");
+    if (f == nullptr) {
+        return false;
+    }
+    const size_t size = static_cast<size_t>(bytes.size());
+    const bool written = size == 0 || std::fwrite(bytes.constData(), 1, size, f) == size;
+    return std::fclose(f) == 0 && written;
 }
 
 /* The app's private cache folder: the only place a copy of a settings file is ever written (a parse's work folder, a
@@ -411,7 +420,7 @@ sweep_work_folders() {
    an explicit-file QSettings with every section parsed (QSettings parses a section only when something reads it), then
    written back from the keys it parsed. Nothing is known when no work folder can be had. */
 SettingsParse
-parse_settings(const QByteArray& bytes) {
+parse_settings(const QByteArray& bytes, const SettingsRecoveryEnv& env) {
     SettingsParse out;
     const std::unique_ptr<QTemporaryDir> work = make_work_folder();
     if (work == nullptr) {
@@ -419,7 +428,9 @@ parse_settings(const QByteArray& bytes) {
     }
     const QString snapshot = work->filePath(QStringLiteral("snapshot.ini"));
     const QString rewritten = work->filePath(QStringLiteral("rewritten.ini"));
-    if (!write_whole(snapshot, bytes)) {
+    // The clean file is made here first, so QSettings' write keeps its owner-only permissions (it keeps those of a
+    // file that exists, and makes a new one readable by all under the usual umask).
+    if (!write_private(snapshot, bytes) || !write_private(rewritten, QByteArray())) {
         return out;
     }
     const QSettings parsed(snapshot, QSettings::IniFormat);
@@ -435,15 +446,16 @@ parse_settings(const QByteArray& bytes) {
             return out;
         }
     }
-    QFile file(rewritten);
-    if (file.exists()) { // nothing parsed: QSettings wrote nothing, and the clean file is empty
-        if (!file.open(QIODevice::ReadOnly)) {
-            return out;
-        }
-        out.rewritten = file.readAll();
-        if (file.error() != QFileDevice::NoError) {
-            return out;
-        }
+    if (env.workFolderWritten) {
+        env.workFolderWritten(work->path());
+    }
+    QFile file(rewritten); // still empty when nothing parsed: QSettings then writes nothing
+    if (!file.open(QIODevice::ReadOnly)) {
+        return out;
+    }
+    out.rewritten = file.readAll();
+    if (file.error() != QFileDevice::NoError) {
+        return out;
     }
     out.checked = true;
     out.rewritable = true;
@@ -573,7 +585,7 @@ parse_in_place(const QString& path, const SettingsRead& read, const SettingsReco
 /* What @p read's bytes parse to: through a work folder, else, for a file read whole, in place. */
 SettingsParse
 check_settings(const QString& path, const SettingsRead& read, const SettingsRecoveryEnv& env) {
-    SettingsParse parsed = parse_settings(read.bytes);
+    SettingsParse parsed = parse_settings(read.bytes, env);
     if (!parsed.checked && read.status == FileRead::Ok) {
         parsed = parse_in_place(path, read, env);
     }
@@ -767,15 +779,54 @@ uncreatable_folder() {
 #endif
 }
 
+/* Makes @p folder, the owner's alone (0700) whatever the umask, unless @p found may be taken: then a real folder (not
+   a link) already there is used as it is. */
+bool
+make_private_folder(const QString& folder, bool found) {
+    const QByteArray native = platform_path(folder); // held, so errno is read before anything is freed
+    if (dsd_mkdir(native.constData(), 0700) == 0) {
+        return true;
+    }
+    dsd_path_type type = DSD_PATH_TYPE_OTHER;
+    return found && errno == EEXIST && dsd_path_type_nofollow(native.constData(), &type) == 1
+           && type == DSD_PATH_TYPE_DIR;
+}
+
+/* Makes the folders the scratch copy @p file in @p dir goes in, each the owner's alone: @p dir's own folder
+   (`<cache>/settings-scratch`) unless it is there already, then @p dir and every folder under it, each made by this
+   call, so none is a folder another user could have entered or a link to elsewhere. */
+bool
+make_private_folders(const QString& dir, const QString& file) {
+    const QString root = QFileInfo(dir).absolutePath();
+    if (!QDir().mkpath(QFileInfo(root).absolutePath()) || !make_private_folder(root, true)
+        || !make_private_folder(dir, false)) {
+        return false;
+    }
+    const QString below = QDir(dir).relativeFilePath(QFileInfo(file).absolutePath());
+    if (below.isEmpty() || below == QLatin1String(".")) {
+        return true;
+    }
+    QString folder = dir;
+    const QStringList names = below.split(QLatin1Char('/'));
+    for (const QString& name : names) {
+        folder += QLatin1Char('/') + name;
+        if (!make_private_folder(folder, false)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /* Points @p format at @p dir (a copy an earlier start left there removed first) and writes its scratch copy there,
-   starting as @p seed. False, with nothing left there, when the copy could not be written. */
+   starting as @p seed, the owner's alone with every folder made for it. False, with nothing left there, when the copy
+   could not be written. */
 bool
 seed_scratch(QSettings::Format format, const QString& organization, const QString& application, const QString& dir,
              const QByteArray& seed) {
     QDir(dir).removeRecursively();
     QSettings::setPath(format, QSettings::UserScope, dir);
     const QString scratch = settings_file_path(format, organization, application);
-    if (!scratch.isEmpty() && QDir().mkpath(QFileInfo(scratch).absolutePath()) && write_whole(scratch, seed)) {
+    if (!scratch.isEmpty() && make_private_folders(dir, scratch) && write_private(scratch, seed)) {
         return true;
     }
     QDir(dir).removeRecursively();

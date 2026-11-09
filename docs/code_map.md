@@ -12670,7 +12670,13 @@ Qt Quick frontend (`src/ui/qt`):
     Unreadable), then what was read is parsed apart from every fallback: an explicit-file `QSettings` on a copy in a
     private work folder, `allKeys()` forcing every section, and the parsed keys written back by a fresh `QSettings`
     (byte for byte what Qt's own next write would produce; empty when nothing parsed). The work folder is a
-    `QTemporaryDir` in the app cache (`<CacheLocation>/settings-check-XXXXXX`). A copy of the settings (which can hold
+    `QTemporaryDir` in the app cache (`<CacheLocation>/settings-check-XXXXXX`, 0700). Every copy is the owner's alone
+    whatever the umask (`write_private()`: `dsd_fopen_private(..., "wbx")`, 0600): the work folder's two files (the
+    clean file made empty first, since QSettings keeps the permissions of a file that exists and makes a new one
+    readable by all under the usual umask), and the scratch copy below, whose folders are made 0700
+    (`make_private_folders()`: `<CacheLocation>/settings-scratch` unless it is already there as a real folder, then
+    `<ini|native>` and every folder under it, each made by the start that seeds it; `test_settings_copies_owner_only`,
+    under umask 022, also after QSettings' own writes to the copy). A copy of the settings (which can hold
     RadioReference credentials) is written only in the app's private cache, never in a shared temp folder, where
     another process could remove a live copy or Qt re-create its folder with default permissions; Android lets an app
     write no system temp folder anyway (`QDir::tempPath()` is `/tmp`, EACCES), and a default `QTemporaryDir` there
