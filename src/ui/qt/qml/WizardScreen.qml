@@ -406,6 +406,17 @@ Item {
             else
                 wizard.replayNotice = Util.importMessage(result, "replay");
         }
+        // The startup migration moved a cached replay to its own copy while
+        // this draft was open. A draft still naming the cached file follows
+        // it, and the draft's clean or changed state stays as it was.
+        function onReplaysMigrated() {
+            var uid = wizard.editRow >= 0 ? savedSystems.get(wizard.editRow).uid : "";
+            var moved = replayFiles.migratedPath(uid, wizard.fileText);
+            if (wizard.fileText.length === 0 || moved === wizard.fileText)
+                return;
+            wizard.initialDraft = wizard.initialDraft.split(JSON.stringify(wizard.fileText)).join(JSON.stringify(moved));
+            wizard.fileText = moved;
+        }
     }
 
     // Display line for a picker row: the file's name, or "None".

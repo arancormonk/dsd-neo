@@ -12542,7 +12542,11 @@ Qt Quick frontend (`src/ui/qt`):
   row edited, removed or reseeded meanwhile keeps the user's value; a failed save releases them all). The cached
   original is never deleted. Until the job commits, and after a crash or a cancel at teardown, rows keep the cache path
   and the next start retries; a crash before the adopt leaves a pending copy nothing names, which that start reclaims
-  first. Test: `UI_QT_REPLAY_STORE`.
+  first. The store keeps the session's saved repoints `(uid, cached path → copy)`: `migratedPath(uid, path)` reads a
+  cached path the migration moved as its copy (that uid's first, else any uid's), `SavedSystemsModel::add()`/`update()`
+  save every `filePath` through it (so an edit draft opened while the copy ran keeps the copy adopted instead of
+  restoring the cache path and releasing it), and `replaysMigrated()` tells an open wizard draft to read its file
+  again (its clean/dirty state follows). Test: `UI_QT_REPLAY_STORE`.
   `radio_reference_model.{h,cpp}` plus `qml/RadioReferenceScreen.qml` are the RadioReference import: the model drives
   the runtime client, previews what an import would produce, and writes the generated CSVs into that same library with
   provenance, while the add-system wizard stays the single writer of a saved system. `systemDetails.protocolToken`

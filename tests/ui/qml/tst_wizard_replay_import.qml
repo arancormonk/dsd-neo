@@ -241,6 +241,36 @@ Item {
             compare(tc.wizard.fileText, "");
         }
 
+        // Gate r1: an Edit draft opened while the startup migration copied
+        // its cached replay follows the copy when the migration lands, so a
+        // save keeps it; an untouched draft stays untouched, and a draft
+        // naming another file keeps it.
+        function test_open_draft_follows_the_replay_migration() {
+            var cached = "/cache/legacy.wav";
+            var copy = "/data/replays/legacy.wav";
+            verify(savedSystems.add({name: "Cached replay", sourceType: "file", filePath: cached, decodeFlag: "-fa"}));
+            tc.savedRow = savedSystems.count - 1;
+            var uid = savedSystems.get(tc.savedRow).uid;
+            tc.wizard.openForEdit(tc.savedRow);
+            compare(tc.wizard.fileText, cached);
+            testContext.migrateReplay(uid, cached, copy);
+            compare(tc.wizard.fileText, copy, "the draft names the copy");
+            compare(tc.wizard.initialDraft, tc.wizard.draftFingerprint(), "the untouched draft stays untouched");
+
+            tc.wizard.openForEdit(tc.savedRow);
+            tc.wizard.nameText = "Renamed";
+            testContext.migrateReplay(uid, cached, copy);
+            compare(tc.wizard.fileText, copy);
+            verify(tc.wizard.initialDraft !== tc.wizard.draftFingerprint(), "a changed draft stays changed");
+            tc.wizard.nameText = "Cached replay";
+            compare(tc.wizard.initialDraft, tc.wizard.draftFingerprint(), "and reads clean once the change is undone");
+
+            tc.wizard.openForEdit(tc.savedRow);
+            tc.wizard.fileText = "/data/other.wav";
+            testContext.migrateReplay(uid, cached, copy);
+            compare(tc.wizard.fileText, "/data/other.wav", "a draft naming another file keeps it");
+        }
+
         // A second pick replaces the first copy; only its own answer counts.
         function test_a_second_pick_supersedes_the_first() {
             pickReplay("content://provider/document/first.wav");

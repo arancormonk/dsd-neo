@@ -901,6 +901,51 @@ test_migration_crash_before_adopt() {
           "the orphan was reclaimed and the new copy kept");
 }
 
+/* Gate r1: an Edit draft opened while the migration copies still names the cached file. Saving it afterwards (even a
+   name-only edit) keeps the copy: the row stays on it, the copy stays kept, and an evicted cache loses nothing. A new
+   system naming that cached file takes the copy too, and an open draft hears when to read its file again. */
+void
+test_draft_opened_during_migration_keeps_the_copy() {
+    reset_data();
+    const QString legacy = cache_file(QStringLiteral("legacy.wav"), QByteArray("legacy"));
+    const QString durable = ReplayStore::replaysRoot() + QStringLiteral("/legacy.wav");
+    Rig rig;
+    SavedSystemsModel systems;
+    systems.setReplayStore(rig.store.get());
+    CHECK(systems.add(replay_system(QStringLiteral("A"), legacy)), "a system keeps a cached replay");
+    const QString uid = systems.get(0).value(QStringLiteral("uid")).toString();
+    int migrated = 0;
+    QObject::connect(rig.store.get(), &ReplayStore::replaysMigrated, [&migrated] { ++migrated; });
+    rig.transport->setHoldLocal(true);
+    rig.store->migrateCachedReplays(&systems);
+    CHECK(wait_until([&rig]() { return rig.transport->holding() > 0; }), "the migration copies");
+    // The wizard opens for Edit now: its draft holds the cached path.
+    QVariantMap draft = systems.get(0);
+    CHECK(rig.store->migratedPath(uid, legacy) == legacy, "nothing is moved before the migration commits");
+    rig.transport->setHoldLocal(false);
+    CHECK(wait_until([&rig]() { return !rig.service->busy(); }), "the migration finishes");
+    CHECK(systems.get(0).value(QStringLiteral("filePath")).toString() == durable, "the row takes the copy");
+    CHECK(migrated == 1, "an open draft is told the migration moved files");
+    CHECK(rig.store->migratedPath(uid, legacy) == durable && rig.store->migratedPath(QString(), legacy) == durable,
+          "the cached path reads as its copy, for its system and for any");
+    CHECK(rig.store->migratedPath(uid, QStringLiteral("/elsewhere/x.wav")) == QStringLiteral("/elsewhere/x.wav"),
+          "any other path reads as itself");
+
+    draft.insert(QStringLiteral("name"), QStringLiteral("A renamed"));
+    CHECK(systems.update(0, draft), "the stale draft saves");
+    CHECK(systems.get(0).value(QStringLiteral("filePath")).toString() == durable,
+          "saving the stale draft keeps the row on the copy");
+    CHECK(manifest().value(durable) == QStringLiteral("kept"), "the copy stays kept");
+    CHECK(systems.add(replay_system(QStringLiteral("B"), legacy))
+              && systems.get(1).value(QStringLiteral("filePath")).toString() == durable,
+          "a new system naming the cached file takes the copy");
+
+    // Android evicts the cache; the next start keeps the only copy left.
+    CHECK(QFile::remove(legacy), "the cache is evicted");
+    rig.store->reclaim(systems, systems.storeLoaded());
+    CHECK(read_file(durable) == "legacy", "the copy survives the next reclaim");
+}
+
 void
 test_names() {
     const QString root = ReplayStore::replaysRoot();
@@ -932,6 +977,7 @@ main(int argc, char** argv) {
     test_migration_runs_off_the_qt_thread();
     test_migration_save_failure_releases_its_copy();
     test_migration_crash_before_adopt();
+    test_draft_opened_during_migration_keeps_the_copy();
     test_every_answer_has_a_name();
     test_reclaim_guards();
 #ifdef Q_OS_UNIX

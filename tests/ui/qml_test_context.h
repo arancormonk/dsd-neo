@@ -580,8 +580,31 @@ class ReplayFilesFake : public QObject {
         return true;
     }
 
+    /* As the store's: the copy this session's migration moved @p path to (that uid's first, else any), else @p path. */
+    Q_INVOKABLE QString
+    migratedPath(const QString& uid, const QString& path) const {
+        QString any;
+        for (const auto& move : m_migrated) {
+            if (move.value(1) == path && move.value(0) == uid) {
+                return move.value(2);
+            }
+            if (move.value(1) == path && any.isEmpty()) {
+                any = move.value(2);
+            }
+        }
+        return any.isEmpty() ? path : any;
+    }
+
+    /* The migration repointed the system @p uid from @p from to @p to, as the store's commit does. */
+    void
+    migrate(const QString& uid, const QString& from, const QString& to) {
+        m_migrated.append({uid, from, to});
+        Q_EMIT replaysMigrated();
+    }
+
     void
     reset() {
+        m_migrated.clear();
         m_current = 0;
         m_name.clear();
         m_bytes = 0;
@@ -599,6 +622,7 @@ class ReplayFilesFake : public QObject {
   Q_SIGNALS:
     void replayImportFinished(int id, const QVariantMap& result);
     void progressChanged();
+    void replaysMigrated();
 
   private:
     /* The running copy answers "cancelled", queued, and no copy runs from here on. */
@@ -620,6 +644,7 @@ class ReplayFilesFake : public QObject {
     QString m_name;
     qint64 m_bytes = 0;
     qint64 m_total = -1;
+    QList<QStringList> m_migrated; // {uid, from, to}
 };
 
 // The history model itself is already real in these fixtures; the controller
@@ -3964,6 +3989,12 @@ class Setup : public QObject {
     Q_INVOKABLE bool
     finishReplay(const QVariantMap& result) {
         return m_replay_files->finish(result);
+    }
+
+    /** @brief The startup migration moved system @p uid's cached replay @p from to its copy @p to. */
+    Q_INVOKABLE void
+    migrateReplay(const QString& uid, const QString& from, const QString& to) {
+        m_replay_files->migrate(uid, from, to);
     }
 
     /** @brief What the wizard asked of `replayFiles`: begins, cancels and the last reference. */

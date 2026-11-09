@@ -258,7 +258,7 @@ stage_migration(const ImportJob& job, const QStringList& sources, const ReplaySt
  * rows still naming its cached file at it, and release every adopted copy no row took. A crash before the adopt leaves
  * a pending copy nothing names, which the next start reclaims before it copies again.
  */
-void
+QList<SavedSystemsModel::FilePathMove>
 commit_migration(SavedSystemsModel* systems, const QList<CachedReplay>& found, const QVariantMap& staged) {
     QMap<QString, QString> published; // cached file → its copy
     for (const QVariant& value : staged.value(QStringLiteral("copies")).toList()) {
@@ -289,6 +289,13 @@ commit_migration(SavedSystemsModel* systems, const QList<CachedReplay>& found, c
             LOG_WARN("An unused replay copy could not be marked unused; it is kept.\n");
         }
     }
+    QList<SavedSystemsModel::FilePathMove> saved;
+    for (const auto& move : moves) {
+        if (applied.contains(move.to)) {
+            saved.append(move);
+        }
+    }
+    return saved;
 }
 
 } // namespace
@@ -460,14 +467,38 @@ ReplayStore::migrateCachedReplays(SavedSystemsModel* systems) {
     }
     const FreeSpace freeSpace = m_freeSpace;
     const QPointer<SavedSystemsModel> model(systems);
+    const QPointer<ReplayStore> self(this);
     (void)m_imports->submit(
         [sources, freeSpace](const ImportJob& job) { return stage_migration(job, sources, freeSpace); },
-        [model, found](qint64, const QVariantMap& staged, bool cancelled) {
+        [model, self, found](qint64, const QVariantMap& staged, bool cancelled) {
             // Cancelled (the app is closing) or gone: nothing is published, and the next start tries again.
             if (!cancelled && !model.isNull()) {
-                commit_migration(model.data(), found, staged);
+                const auto moves = commit_migration(model.data(), found, staged);
+                if (!self.isNull()) {
+                    self->recordMigration(moves);
+                }
             }
         });
+}
+
+void
+ReplayStore::recordMigration(const QList<SavedSystemsModel::FilePathMove>& moves) {
+    if (!moves.isEmpty()) {
+        m_migrated.append(moves);
+        Q_EMIT replaysMigrated();
+    }
+}
+
+QString
+ReplayStore::migratedPath(const QString& uid, const QString& path) const {
+    using Move = SavedSystemsModel::FilePathMove;
+    const auto moved = [&path](const Move& move) { return names({move.from}, path); };
+    auto found = std::find_if(m_migrated.cbegin(), m_migrated.cend(),
+                              [&uid, &moved](const Move& move) { return move.uid == uid && moved(move); });
+    if (found == m_migrated.cend()) {
+        found = std::find_if(m_migrated.cbegin(), m_migrated.cend(), moved);
+    }
+    return found != m_migrated.cend() ? found->to : path;
 }
 
 bool

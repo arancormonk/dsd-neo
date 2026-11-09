@@ -20,6 +20,7 @@
 #ifndef DSD_NEO_SRC_UI_QT_REPLAY_STORE_H_
 #define DSD_NEO_SRC_UI_QT_REPLAY_STORE_H_
 
+#include <QList>
 #include <QMap> // IWYU pragma: keep -- QVariantMap is a QMap; replayImportFinished() carries it.
 #include <QObject>
 #include <QPointer>
@@ -31,12 +32,12 @@
 #include <QtGlobal>
 #include <functional>
 #include <type_traits> // IWYU pragma: keep -- QPointer's conversion checks.
+#include "saved_systems_model.h"
 
 namespace dsd_qt {
 
 class DecoderHost;
 class ImportService;
-class SavedSystemsModel;
 
 class ReplayStore : public QObject {
     Q_OBJECT
@@ -133,6 +134,16 @@ class ReplayStore : public QObject {
      */
     void migrateCachedReplays(SavedSystemsModel* systems);
 
+    /**
+     * @brief The copy this session's migration pointed saved systems at instead of @p path, when @p path is a cached
+     * file it moved (moved for the system @p uid first, else for any system); otherwise @p path itself.
+     *
+     * A draft opened before the migration finished still names the cached file. SavedSystemsModel saves every file
+     * path through this, so saving such a draft keeps the copy (never restores the cache path and releases it), and
+     * a draft open when replaysMigrated() arrives reads its file through it.
+     */
+    Q_INVOKABLE QString migratedPath(const QString& uid, const QString& path) const;
+
     /** @brief Whether @p paths holds @p path, as written or as the same file (canonical paths). */
     static bool names(const QStringList& paths, const QString& path);
 
@@ -146,9 +157,13 @@ class ReplayStore : public QObject {
      */
     void replayImportFinished(int id, const QVariantMap& result);
     void progressChanged();
+    /** @brief The migration pointed saved systems at their copies: an open draft reads migratedPath() again. */
+    void replaysMigrated();
 
   private:
     void commitImport(qint64 id, const QVariantMap& staged, bool cancelled);
+    /** Remember the repoints the migration saved, and tell an open draft when there are any. */
+    void recordMigration(const QList<SavedSystemsModel::FilePathMove>& moves);
     /** Answer @p id with @p result later, from the event loop. */
     void answerQueued(qint64 id, const QVariantMap& result);
     void pollProgress();
@@ -164,6 +179,8 @@ class ReplayStore : public QObject {
     qint64 m_copyTotal = -1;
     /* Copies answered at their cancel whose commit has not run yet: it publishes nothing and answers nothing. */
     QSet<qint64> m_dropped;
+    /* Every repoint the migration saved this session (Qt thread only). */
+    QList<SavedSystemsModel::FilePathMove> m_migrated;
 };
 
 } // namespace dsd_qt

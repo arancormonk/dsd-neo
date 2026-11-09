@@ -80,7 +80,8 @@ class SavedSystemsModel : public QAbstractListModel {
 
     /**
      * @brief The replay copies' owner (#832): add() and update() adopt a copy a row gains before they save, update()
-     * and remove() release one no row names any more after they saved. Without one, file paths are only stored.
+     * and remove() release one no row names any more after they saved. Both save a cached file the migration moved
+     * this session as its copy (ReplayStore::migratedPath()). Without one, file paths are only stored.
      */
     void setReplayStore(ReplayStore* replays);
 
@@ -279,6 +280,8 @@ class SavedSystemsModel : public QAbstractListModel {
     bool saveRows(const QList<Row>& rows) const;
     /** Adopt @p path before a save names it; false when the replay store could not (nothing may be saved). */
     bool adoptReplay(const QString& path);
+    /** @p path, or the copy the replay migration moved it to this session (a draft opened before it finished). */
+    QString migratedReplay(const QString& uid, const QString& path) const;
     /** After a saved change: release @p path when no row names it any more. */
     void releaseReplayIfUnused(const QString& path);
 

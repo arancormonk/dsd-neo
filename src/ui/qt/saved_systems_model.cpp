@@ -367,6 +367,7 @@ SavedSystemsModel::add(const QVariantMap& system) {
     }
     Row row = rowFromMap(system, Row());
     row.uid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    row.filePath = migratedReplay(QString(), row.filePath);
     auto next = m_rows;
     next.append(row);
     if (!adoptReplay(row.filePath) || !saveRows(next)) {
@@ -423,6 +424,8 @@ SavedSystemsModel::update(int row, const QVariantMap& system) {
     // Missing encKeyValue means Keep; a present empty value explicitly clears it.
     auto next = m_rows;
     next[row] = rowFromMap(fields, m_rows.at(row));
+    // A draft opened before the replay migration finished still names the cached file: it saves as the copy.
+    next[row].filePath = migratedReplay(next.at(row).uid, next.at(row).filePath);
     const QString previousFile = m_rows.at(row).filePath;
     const QString file = next.at(row).filePath;
     if ((file != previousFile && !adoptReplay(file)) || !saveRows(next)) {
@@ -667,6 +670,11 @@ SavedSystemsModel::adoptReplay(const QString& path) {
     // Saved naming a copy the manifest still calls pending, a later start could delete what this system uses.
     LOG_WARN("A replay copy could not be marked as used; the system was not saved.\n");
     return false;
+}
+
+QString
+SavedSystemsModel::migratedReplay(const QString& uid, const QString& path) const {
+    return m_replays.isNull() || path.isEmpty() ? path : m_replays->migratedPath(uid, path);
 }
 
 void
