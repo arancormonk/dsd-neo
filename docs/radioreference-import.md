@@ -133,7 +133,8 @@ and others), as a username and a password field. The application key is never of
 - Logins are matched to the app (`androidapp://io.github.arancormonk.dsdneo`), not to
   radioreference.com, because the app cannot prove it speaks for that website. A login saved from the
   website is not matched automatically; pick it through the service's own search or vault entry.
-- A dropdown already open does not follow the field if the form scrolls.
+- An open dropdown moves with its field when the screen rotates or the form scrolls, once the field stops
+  moving.
 
 The desktop Qt app has the same forms without the password-manager link.
 

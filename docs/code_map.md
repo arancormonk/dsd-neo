@@ -12416,7 +12416,8 @@ Qt Quick frontend (`src/ui/qt`):
   built in `qt_ui.cpp` over the host, the model and AppPrefs) describes the sign-in form to the platform's autofill
   support through `DecoderHost`'s no-op `signInAutofillBegin`/`Field`/`Request`/`Commit`/`End` virtuals (in the plain
   `public:` section, not slots: QML reaches every slot and signal of `decoderHost`; Android implements them, "Sign-in
-  autofill" under Android foundation integration contracts; the desktop does nothing). Field 1 is the username, field 2 the password, whose structure value is always empty.
+  autofill" under Android foundation integration contracts; the desktop does nothing). Field 1 is the username,
+  field 2 the password, whose structure value is always empty.
   `begin()` hands out a token (positive, only growing) and retires the older one; every call and fill carries it, and
   any other token is dropped. `track(token, field, input, visible)` follows a field's inner TextInput through a
   `QPointer` (focus from `hasActiveFocus()`), and `note()` sets the username's structure value. A rect is the input's
@@ -13560,13 +13561,40 @@ RadioReference sign-in form itself (the relay, `SignInAutofill` in `src/ui/qt`, 
   `proguard-rules.pro`. A rect goes as its window pixels (x, y, width, height); each string goes as a local ref deleted
   right after the call, so the committed password's Java copy is let go of at once.
 - `SignInAutofill.kt` posts each call to the main looper in order and hands `SignInAutofillState.kt` (plain Kotlin) the
-  event; the effects it returns (`Request`, `Exit`, `Value`, `Commit`, `Cancel`, `Visibility`) run there against the
-  attached activity's `AutofillManager`, read at that moment: with no host, no manager or `!isEnabled()` the state is
-  told `disabled()` instead (the framework session flag drops, the snapshot stays). The state's rules: stale tokens
-  (any but the live one; tokens only grow) do nothing; a request goes out only for a shown field, with the service on
-  and the Qt window's origin known, and starts the framework session; focus loss exits, commit reports both values,
-  commits and hides both fields, and end cancels, each in a started session only; a request after a commit starts a
-  new session under the same token. A commit's calls run in one posted operation.
+  event; the effects it returns (`Request`, `Exit`, `Value`, `Commit`, `Cancel`, `Visibility`, and `Held`, `Settle`,
+  `Enter` below) run there against the attached activity's `AutofillManager`, read at that moment: with no host, no
+  manager or `!isEnabled()` the state is told `disabled()` instead (the framework session flag, a held request and the
+  fill UI state drop, the snapshot stays). The state's rules: stale tokens (any but the live one; tokens only grow) do
+  nothing; a request goes out only for a shown field, with the service on, and starts the framework session; a field
+  stops being entered when it loses focus or is hidden while focused (card hidden, clipped away), and is then exited;
+  commit reports both values, commits and hides both fields, and end cancels, each in a started session only; a request
+  after a commit starts a new session under the same token. A commit's calls run in one posted operation.
+- A request made while the Qt window's origin is unknown is held (`Held`: one value-free `HostDiagnostics` record per
+  hold) and goes out once the origin is known, from a global layout pass on the host, the Qt window's layout change or
+  Qt's next field report, while that field is still entered; blur, hiding, end, a newer token or the service going
+  away drop it.
+- Right before each `requestAutofill()`, `QtCursorHandle.kt` dismisses Qt's text cursor handle: a `PopupWindow` of Qt's
+  `CursorHandle` (read by name: `QtEditText.m_cursorHandle`, `CursorHandle.m_popup`, kept by `qt-rules.pro` and checked
+  by `tools/check_android_r8.py`). With the handle up, the structure has a second window, and KeePassDX 4.5.8 takes the
+  app from the last window's title, refuses, and never answers (the session times out after 5 s, and a later commit
+  offers no save). The handle's popup style has no exit transition, so `dismiss()` removes its root view at once
+  (`PopupWindow.dismissImmediate()` → `removeViewImmediate()`), and the structure is built later, in the main-thread
+  message the request causes (`ActivityThread` `REQUEST_ASSIST_CONTEXT_EXTRAS` → `new AssistStructure()`, which walks
+  `WindowManagerGlobal.getRootViews()`). Qt shows the handle again only on a cursor or anchor rect change or a tap. The
+  selection handles and the Cut/Copy/Paste menu are left alone (an edit in progress). Fail-soft: a missing class or
+  field changes nothing and leaves one record for the process.
+- Fill UI following (refines "one request per focus entry"): an `AutofillCallback` registered on the activity's
+  manager at attach (unregistered at detach) reports `EVENT_INPUT_SHOWN`/`HIDDEN`/`UNAVAILABLE` per field. While the
+  UI is shown for the entered field, a change of that field's rect (rotation, keyboard, scroll) arms a 300 ms settle
+  (`SETTLE_MS`, the relay's wait), restarted by each further change; when it runs out with the field still entered,
+  moved from where the UI was anchored and the UI still shown, the field is exited and entered again
+  (`notifyViewExited`, then `notifyViewEntered(host, vid, newBounds)`). AOSP: an enter for the current view returns
+  before the bounds update (`Session.updateLocked` `isSameViewEntered`), but after an exit the enter is not a manual
+  request and the response already covers the field (`shouldStartNewPartitionLocked` false), so no FillRequest goes
+  out and `ViewState.update()` → `onFillReady()` shows the dropdown at the new bounds; no IME inline request exists for
+  the host, so `requestShowInlineSuggestionsLocked()` fails over to the dropdown. With no fill UI shown a move does
+  nothing. Limit: a response the framework has marked expired would make that enter start a focused request, which can
+  wait for the keyboard's inline request.
 - The host view is the activity content's first child (`android.R.id.content`, `MATCH_PARENT`, behind Qt's
   `QtRootLayout`, which `super.onCreate()` set as the content view): childless, not focusable or clickable, no touches,
   `IMPORTANT_FOR_ACCESSIBILITY_NO`, `IMPORTANT_FOR_AUTOFILL_YES`, no drawing. Never focused, so `requestAutofill()` adds
@@ -13579,8 +13607,7 @@ RadioReference sign-in form itself (the relay, `SignInAutofill` in `src/ui/qt`, 
   `DsdNative.nativeSignInFilled(token, hasUser, user, hasPass, pass)` call under the token live then.
 - Origin: Qt's rects are its window's pixels; the largest visible view of class `org.qtproject.qt.android.QtWindow`
   under Qt's root layout (looked up again once it leaves the window or hides, with an `OnLayoutChangeListener`) gives
-  the offset to host pixels, read again before each request and each structure. Unknown, a request is skipped; Qt's
-  next focus entry asks again.
+  the offset to host pixels, read again before each request and each structure. Unknown, a request is held (below).
 - `DsdNeoActivity` attaches the host right after the launch statements (`LaunchGuard.afterQt()`), re-reads the service
   on resume, and detaches on destroy, cancelling a session still open (Qt's relay sends no end at exit); detach goes
   through `ActivitySlot`.
@@ -13591,10 +13618,11 @@ RadioReference sign-in form itself (the relay, `SignInAutofill` in `src/ui/qt`, 
   host, or one gone before the call runs: the strings are scrubbed and dropped.
 - Privacy: no value is logged on this path; an exception is recorded in `HostDiagnostics` by class name only, and an
   effect's `toString()` leaves the text out.
-- Tests: `ANDROID_SIGN_IN_AUTOFILL_JVM` (`SignInAutofillStateTest.kt`: every rule above, the origin, the structure
-  and the commit order); `UI_QT_ANDROID_HOST` (a fill from another thread reaches the newest live host's sink once, on
-  the GUI thread, and a host gone first drops it); `tools/check_android_r8.py` (the upcalls and `nativeSignInFilled`
-  in the release DEX). The framework itself needs an emulator or device.
+- Tests: `ANDROID_SIGN_IN_AUTOFILL_JVM` (`SignInAutofillStateTest.kt`: every rule above, the origin, the held request,
+  hidden-while-focused, fill UI following, the structure and the commit order); `UI_QT_ANDROID_HOST` (a fill from
+  another thread reaches the newest live host's sink once, on the GUI thread, and a host gone first drops it);
+  `tools/check_android_r8.py` (the upcalls and `nativeSignInFilled` in the release DEX). The framework itself needs an
+  emulator or device.
 
 #### Accessibility bridge (issue #782)
 
@@ -13706,7 +13734,11 @@ its source:
 - the bridge is one plain `android.view.View` that Qt adds as the last child of its root layout (the probe below);
 - `super.onCreate()` sets Qt's root layout as the content view, and Qt's window view is the class
   `org.qtproject.qt.android.QtWindow` under it ("Sign-in autofill" above; the app's own host is the content's first
-  child, an app class, not the bridge).
+  child, an app class, not the bridge);
+- Qt's text cursor handle is a `PopupWindow` in `CursorHandle.m_popup`, held by the `QtEditText` child of the Qt
+  window in `m_cursorHandle`, with no exit transition (`QtCursorHandle.kt`). A rename fails
+  `tools/check_android_r8.py` on the release APK; a changed structure only leaves the "cannot be hidden" record. Check
+  with KeePassDX that a tap on the username field still gets its dropdown with the handle up.
 
 What trips: bumping `ANDROID_QT_VERSION` in `tools/ci-dependency-pins.env` fails `ANDROID_A11Y_BRIDGE_JVM`
 (`launch_policy()`) until `LaunchGuard.QT_RESTART` names the new version. Change that text only once the checks below

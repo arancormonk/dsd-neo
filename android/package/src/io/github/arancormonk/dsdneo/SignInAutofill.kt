@@ -16,6 +16,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewStructure
+import android.view.ViewTreeObserver
 import android.view.autofill.AutofillManager
 import android.view.autofill.AutofillValue
 import io.github.arancormonk.dsdneo.SignInAutofillState.Companion.PASSWORD
@@ -41,7 +42,14 @@ import io.github.arancormonk.dsdneo.SignInAutofillState.Effect
  * (Qt's). Qt sends rects in its window's pixels; the origin of the Qt window view (the largest visible
  * `org.qtproject.qt.android.QtWindow` under Qt's root layout, found again when it leaves the window) relative to the
  * host turns them into host pixels, and is read again on that view's layout changes, before each request and for each
- * structure. Without it a request is skipped; Qt's next focus entry asks again.
+ * structure. A request made before it is known is held (one diagnostic record, no values) and goes out once a layout
+ * pass or Qt's next field report finds it, while the field is still focused and shown.
+ *
+ * Right before each request, Qt's text cursor handle is taken off the screen ([QtCursorHandle]), so the structure the
+ * service gets holds the activity's window only. An [AutofillManager.AutofillCallback] registered on the activity's
+ * manager tells the state when the framework shows or hides its fill UI for a field; while it is shown, a move of the
+ * focused field that has been still for [SETTLE_MS] re-anchors it once: the field is exited and entered again at its
+ * new bounds, which shows the UI there from the response it already has, with no new request.
  *
  * A fill goes back to Qt in one [DsdNative.nativeSignInFilled] call, under the token live when the framework filled.
  * Nothing on this path logs a value: a failure is recorded in [HostDiagnostics] by its exception's class name only.
@@ -50,12 +58,43 @@ import io.github.arancormonk.dsdneo.SignInAutofillState.Effect
 object SignInAutofill {
     private const val QT_WINDOW_CLASS = "org.qtproject.qt.android.QtWindow"
 
+    /** How long a moved field must stay still before a shown fill UI follows it; the same wait as Qt's first request. */
+    const val SETTLE_MS = 300L
+
     private val main = Handler(Looper.getMainLooper())
     private val slot = ActivitySlot<Activity>()
     private val state = SignInAutofillState()
     private var host: Host? = null
     private var qtWindow: View? = null
-    private val qtWindowLayout = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> guarded { refreshOrigin() } }
+    private val qtWindowLayout = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> guarded { originChanged() } }
+
+    /** Any layout pass in the window may be the one that lays the Qt window out: a held request retries then. */
+    private val hostLayout = ViewTreeObserver.OnGlobalLayoutListener {
+        guarded {
+            if (state.hasHeldRequest) {
+                originChanged()
+            }
+        }
+    }
+
+    private val settle = Runnable {
+        guarded {
+            refreshOrigin()
+            execute { state.settled() }
+        }
+    }
+
+    /** The framework's fill UI for the host's fields, shown or hidden. Delivered on the main thread. */
+    private val fillUiEvents = object : AutofillManager.AutofillCallback() {
+        override fun onAutofillEvent(view: View, virtualId: Int, event: Int) {
+            guarded {
+                if (view === host) {
+                    state.fillUi(virtualId, event == EVENT_INPUT_SHOWN)
+                }
+            }
+        }
+    }
+    private var callbackManager: AutofillManager? = null
 
     /** A sign-in form was shown: session [token] starts, and any older one is over. */
     @JvmStatic
@@ -68,7 +107,12 @@ object SignInAutofill {
     fun field(token: Int, vid: Int, left: Int, top: Int, width: Int, height: Int, visible: Boolean, focused: Boolean,
               value: String?) {
         val rect = SignInAutofillState.Rect(left, top, width, height)
-        post { execute { state.field(token, vid, rect, visible, focused, value.orEmpty()) } }
+        post {
+            execute { state.field(token, vid, rect, visible, focused, value.orEmpty()) }
+            if (state.hasHeldRequest) {
+                originChanged()
+            }
+        }
     }
 
     /** Field [vid] has focus and has been still: ask the password manager to fill it. */
@@ -102,8 +146,12 @@ object SignInAutofill {
                 val view = Host(activity)
                 content.addView(view, 0, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT))
+                view.viewTreeObserver.addOnGlobalLayoutListener(hostLayout)
                 host = view
                 slot.attach(activity)
+                val manager = activity.getSystemService(AutofillManager::class.java)
+                manager?.registerCallback(fillUiEvents)
+                callbackManager = manager
             }
         }
     }
@@ -157,8 +205,17 @@ object SignInAutofill {
 
     private fun apply(manager: AutofillManager, view: View, effect: Effect) {
         when (effect) {
-            is Effect.Request -> manager.requestAutofill(view, effect.vid, onScreen(view, effect.rect))
+            is Effect.Request -> {
+                QtCursorHandle.hide(qtWindow, HostDiagnostics::submit)
+                manager.requestAutofill(view, effect.vid, onScreen(view, effect.rect))
+            }
+            is Effect.Enter -> manager.notifyViewEntered(view, effect.vid, onScreen(view, effect.rect))
             is Effect.Exit -> manager.notifyViewExited(view, effect.vid)
+            is Effect.Held -> HostDiagnostics.submit("sign-in autofill: request held until the Qt window is laid out")
+            is Effect.Settle -> {
+                main.removeCallbacks(settle)
+                main.postDelayed(settle, SETTLE_MS)
+            }
             is Effect.Value -> manager.notifyValueChanged(view, effect.vid, AutofillValue.forText(effect.text))
             is Effect.Visibility -> manager.notifyViewVisibilityChanged(view, effect.vid, effect.visible)
             Effect.Commit -> manager.commit()
@@ -173,6 +230,14 @@ object SignInAutofill {
         val left = rect.left + location[0]
         val top = rect.top + location[1]
         return Rect(left, top, left + rect.width, top + rect.height)
+    }
+
+    /** The origin may have changed: read it again, and send a request held for want of it. */
+    private fun originChanged() {
+        refreshOrigin()
+        if (state.hasHeldRequest) {
+            execute { enabled -> state.retryHeld(enabled) }
+        }
     }
 
     /** The Qt window's origin relative to the host, or none while either is not laid out. */
@@ -224,7 +289,15 @@ object SignInAutofill {
 
     private fun removeHost() {
         forgetQtWindow()
-        host?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        main.removeCallbacks(settle)
+        callbackManager?.unregisterCallback(fillUiEvents)
+        callbackManager = null
+        host?.let { view ->
+            if (view.viewTreeObserver.isAlive) {
+                view.viewTreeObserver.removeOnGlobalLayoutListener(hostLayout)
+            }
+            (view.parent as? ViewGroup)?.removeView(view)
+        }
         host = null
         state.origin(null)
     }

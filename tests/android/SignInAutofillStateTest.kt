@@ -47,14 +47,19 @@ private fun aRequestWaitsForTheOriginAndAppliesIt() {
     val state = SignInAutofillState()
     nothing(state.begin(4), "begin")
     nothing(state.field(4, PASSWORD, PASS_RECT, true, true, ""), "focus")
-    nothing(state.request(4, PASSWORD, PASS_RECT, enabled = true), "no request from a guessed origin")
-    check(!state.sessionStarted) { "a skipped request starts no session" }
+    expect(state.request(4, PASSWORD, PASS_RECT, enabled = true), Effect.Held(PASSWORD),
+        why = "no request from a guessed origin: it is held")
+    check(!state.sessionStarted && state.hasHeldRequest) { "a held request starts no session" }
     check(state.structure().isEmpty()) { "no structure without an origin" }
+    nothing(state.retryHeld(enabled = true), "still no origin")
+    check(state.hasHeldRequest)
     // The Qt window sits 30 px right of and 120 px below the host (split screen, a caption bar).
     state.origin(Offset(30, 120))
     val local = Rect(PASS_RECT.left + 30, PASS_RECT.top + 120, PASS_RECT.width, PASS_RECT.height)
-    expect(state.request(4, PASSWORD, PASS_RECT, enabled = true), Effect.Request(PASSWORD, local),
-        why = "the next request goes out, in host pixels")
+    expect(state.retryHeld(enabled = true), Effect.Request(PASSWORD, local),
+        why = "the held request goes out once the origin is known, in host pixels")
+    check(state.sessionStarted && !state.hasHeldRequest)
+    nothing(state.retryHeld(enabled = true), "and only once")
     check(state.structure().single().rect == local) { "the structure uses host pixels too" }
     state.origin(Offset(0, 0))
     check(state.structure().single().rect == PASS_RECT) { "a new origin re-applies to the stored window rect" }
@@ -205,6 +210,126 @@ private fun aValueNeverPrintsItsText() {
     check(!text.contains("s3cret")) { "an effect's text must not reach a log line: $text" }
 }
 
+private fun aHeldRequestIsDroppedWhenItNoLongerApplies() {
+    fun held(): SignInAutofillState {
+        val state = SignInAutofillState()
+        state.begin(1)
+        state.field(1, USERNAME, USER_RECT, true, true, "alice")
+        expect(state.request(1, USERNAME, USER_RECT, enabled = true), Effect.Held(USERNAME), why = "held")
+        return state
+    }
+    var state = held()
+    nothing(state.field(1, USERNAME, USER_RECT, true, false, "alice"), "blur before the origin: no exit, no session")
+    state.origin(ORIGIN)
+    nothing(state.retryHeld(enabled = true), "a blurred field's held request is dropped")
+
+    state = held()
+    nothing(state.field(1, USERNAME, Rect(0, 0, 0, 0), false, true, "alice"), "hidden before the origin")
+    state.origin(ORIGIN)
+    nothing(state.retryHeld(enabled = true), "a hidden field's held request is dropped")
+
+    state = held()
+    state.origin(ORIGIN)
+    nothing(state.retryHeld(enabled = false), "the service went away")
+    check(!state.hasHeldRequest) { "and the held request with it" }
+    nothing(state.retryHeld(enabled = true), "it does not come back")
+
+    state = held()
+    nothing(state.end(1), "no session to cancel")
+    state.origin(ORIGIN)
+    check(!state.hasHeldRequest)
+    nothing(state.retryHeld(enabled = true), "an ended form's request is dropped")
+
+    state = held()
+    nothing(state.begin(2), "a newer form")
+    state.origin(ORIGIN)
+    nothing(state.retryHeld(enabled = true), "an older form's request is dropped")
+}
+
+private fun aFieldHiddenWhileFocusedIsExited() {
+    val state = shownForm()
+    started(state, 1, PASSWORD, PASS_RECT)
+    expect(state.field(1, PASSWORD, Rect(0, 0, 0, 0), false, true, ""), Effect.Exit(PASSWORD),
+        why = "the focused field was hidden (card hidden, clipped away)")
+    nothing(state.field(1, PASSWORD, Rect(0, 0, 0, 0), false, true, ""), "no second exit while it stays hidden")
+    nothing(state.field(1, PASSWORD, Rect(0, 0, 0, 0), false, false, ""), "nor when it then loses focus")
+    nothing(state.field(1, PASSWORD, PASS_RECT, true, true, ""), "shown again: Qt's next focus entry requests")
+}
+
+private val MOVED = Rect(PASS_RECT.left, PASS_RECT.top - 200, PASS_RECT.width, PASS_RECT.height)
+private val MOVED_AGAIN = Rect(PASS_RECT.left + 50, PASS_RECT.top - 150, PASS_RECT.width - 100, PASS_RECT.height)
+
+/** A form whose password field was requested at [PASS_RECT], with the fill UI shown for it if [shown]. */
+private fun requestedPassword(shown: Boolean): SignInAutofillState {
+    val state = shownForm()
+    started(state, 1, PASSWORD, PASS_RECT)
+    if (shown) {
+        nothing(state.fillUi(PASSWORD, shown = true), "the framework showed its UI")
+    }
+    return state
+}
+
+private fun aShownFillUiFollowsASettledMove() {
+    val state = requestedPassword(shown = true)
+    nothing(state.field(1, PASSWORD, PASS_RECT, true, true, ""), "no move, no settle")
+    expect(state.field(1, PASSWORD, MOVED, true, true, ""), Effect.Settle(PASSWORD), why = "a move arms the settle")
+    expect(state.settled(), Effect.Exit(PASSWORD), Effect.Enter(PASSWORD, MOVED), why = "one re-anchor at the new place")
+    nothing(state.settled(), "the settle is used once")
+    nothing(state.field(1, PASSWORD, MOVED, true, true, ""), "anchored there now")
+    // The exit hides the UI and the enter shows it again, as the framework reports.
+    nothing(state.fillUi(PASSWORD, shown = false), "hidden by the exit")
+    nothing(state.fillUi(PASSWORD, shown = true), "shown by the enter")
+    expect(state.field(1, PASSWORD, MOVED_AGAIN, true, true, ""), Effect.Settle(PASSWORD), why = "another move")
+    expect(state.settled(), Effect.Exit(PASSWORD), Effect.Enter(PASSWORD, MOVED_AGAIN), why = "re-anchored again")
+}
+
+private fun noReAnchorWithoutAShownFillUi() {
+    var state = requestedPassword(shown = false)
+    nothing(state.field(1, PASSWORD, MOVED, true, true, ""), "no fill UI shown: a move is not followed")
+    nothing(state.settled(), "nothing armed")
+
+    state = requestedPassword(shown = true)
+    nothing(state.fillUi(PASSWORD, shown = false), "the UI went (a pick, a dismissal)")
+    nothing(state.field(1, PASSWORD, MOVED, true, true, ""), "a hidden UI is not followed")
+
+    state = requestedPassword(shown = true)
+    expect(state.field(1, PASSWORD, MOVED, true, true, ""), Effect.Settle(PASSWORD), why = "armed")
+    nothing(state.fillUi(PASSWORD, shown = false), "hidden before the settle ran out")
+    nothing(state.settled(), "no re-anchor for a hidden UI")
+
+    state = requestedPassword(shown = true)
+    expect(state.field(1, PASSWORD, MOVED, true, true, ""), Effect.Settle(PASSWORD), why = "armed")
+    expect(state.field(1, PASSWORD, MOVED, true, false, ""), Effect.Exit(PASSWORD), why = "blur")
+    nothing(state.settled(), "no re-anchor after a blur")
+
+    state = requestedPassword(shown = true)
+    expect(state.field(1, PASSWORD, MOVED, true, true, ""), Effect.Settle(PASSWORD), why = "armed")
+    nothing(state.field(1, PASSWORD, PASS_RECT, true, true, ""), "moved back before the settle ran out")
+    nothing(state.settled(), "back where it was anchored: nothing to do")
+
+    state = requestedPassword(shown = true)
+    expect(state.field(1, PASSWORD, MOVED, true, true, ""), Effect.Settle(PASSWORD), why = "armed")
+    nothing(state.disabled(), "the service went away")
+    nothing(state.settled(), "no re-anchor without the service")
+
+    state = requestedPassword(shown = true)
+    expect(state.field(1, PASSWORD, MOVED, true, true, ""), Effect.Settle(PASSWORD), why = "armed")
+    expect(state.end(1), Effect.Cancel, why = "the form left")
+    nothing(state.settled(), "no re-anchor for an ended form")
+    nothing(state.fillUi(PASSWORD, shown = true), "no live form: fill UI events are ignored")
+
+    state = requestedPassword(shown = true)
+    nothing(state.fillUi(USERNAME, shown = true), "the UI moved to the other field")
+    nothing(state.field(1, PASSWORD, MOVED, true, true, ""), "the password's move is not followed")
+    nothing(state.fillUi(7, shown = true), "only fields 1 and 2 exist")
+}
+
+private fun aCommitEndsTheFillUiState() {
+    val state = requestedPassword(shown = true)
+    check(state.commit(1, "alice", "s3cret").contains(Effect.Commit))
+    nothing(state.field(1, PASSWORD, MOVED, true, true, ""), "after a commit a move is not followed")
+}
+
 fun main() {
     aRequestStartsTheSessionOnlyWhenEnabled()
     aRequestWaitsForTheOriginAndAppliesIt()
@@ -220,5 +345,10 @@ fun main() {
     resumedReadsTheServiceAgain()
     theStructureDescribesTheSnapshot()
     aValueNeverPrintsItsText()
+    aHeldRequestIsDroppedWhenItNoLongerApplies()
+    aFieldHiddenWhileFocusedIsExited()
+    aShownFillUiFollowsASettledMove()
+    noReAnchorWithoutAShownFillUi()
+    aCommitEndsTheFillUiState()
     println("PASS: sign-in autofill state follows tokens, focus, commit and the service")
 }
