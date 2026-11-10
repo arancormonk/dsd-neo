@@ -150,6 +150,7 @@ qt_add_resources(
         qml/ScanListScreen.qml
         qml/ScanListCard.qml
         qml/ScanEntryRow.qml
+        qml/ImportKindPicker.qml
         qml/ImportsScreen.qml
         qml/LevelMeter.qml
         qml/LogoMark.qml

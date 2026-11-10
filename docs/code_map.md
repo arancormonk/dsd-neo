@@ -14089,7 +14089,13 @@ Qt Quick frontend (`src/ui/qt`):
   copy by calling the flow's `cancel()`. Ownership (#829 B4, #832): each owner cancels its flow when it stops being
   visible (`onVisibleChanged`, so Imports' Back, which clears `importsOpen` in `Main.qml` directly, and the wizard's
   Save, which clears `wizardOpen`, both count) and when it is reused (`WizardScreen.openForAdd/openForFound/
-  openForEdit`, `ScanListScreen.openFor`), and bumps its generation then, so an answer from before is dropped. Newer
+  openForEdit`, `ScanListScreen.openFor`), and bumps its generation then, so an answer from before is dropped. A
+  document already chosen (#831) enters through `ImportsScreen.importIncoming(ref, name, type)` (a new import; the
+  screen must be showing) or `ScanListScreen.importTargetsFrom(ref, name)` (after `openFor(-1)`), each false while its
+  flow is `active`, because `begin()` refuses only while copying and would cancel an import waiting on its companion
+  sheet. Imports' kind question is `qml/ImportKindPicker.qml` (`kind`, `keyHex`, read-only `type`), shared with the
+  intake sheet; its `FilterPill`s set `wrapLabel`, so a long kind wraps between words inside a narrow sheet or large
+  text and the pill grows taller (B8), each pill's width bounded by the picker's. Newer
   choice wins: the wizard keeps a generation per CSV field (`csvGenerations`, bumped by `assignCsvPath()` and by
   `applyRadioReference()` for the files it writes), the scan list editor one for its targets (`targetsGeneration`,
   bumped by `selectTargets()` and the target source switch), the flow one per companion slot (`companionGenerations`,

@@ -515,6 +515,24 @@ Item {
                 verify(decryptionProfiles.removeProfile(profileUid).ok);
             }
         }
+        // #831: an apply still waiting for the decoder is reported, through
+        // the Monitor screen too, after its sheet closed.
+        function test_apply_reported_while_pending() {
+            sheet.visible = false;
+            monitorLoader.active = true;
+            tryCompare(monitorLoader, "status", Loader.Ready);
+            var monitor = monitorLoader.item;
+            var monitorSheet = findChild(monitor, "keySheet");
+            var apply = findChild(monitorSheet, "decryptionApplyFlow");
+            verify(apply !== null);
+            verify(!monitorSheet.visible);
+            verify(!monitorSheet.applyActive && !monitor.keyApplyActive);
+            apply.requestId = "pending-test";
+            verify(monitorSheet.applyActive);
+            verify(monitor.keyApplyActive);
+            apply.requestId = "";
+            verify(!monitor.keyApplyActive);
+        }
         // A scan list, Explore or a wizard test passes no system UID.
         function test_use_for_system_hidden_without_a_system() {
             var profileUid = directProfile("Any keys");

@@ -10,6 +10,10 @@ Rectangle {
     property string text: ""
     property bool active: false
     property bool caret: true
+    // Opt-in (#831 B8): the label wraps between words inside the width the
+    // pill is given, and the pill grows taller, where a one-line pill would be
+    // cut off by a narrow sheet or large text. The consumer bounds the width.
+    property bool wrapLabel: false
     signal clicked
 
     property string accessibleName: text
@@ -37,9 +41,13 @@ Rectangle {
     FocusFrame {}
     Accessible.selected: active
 
-    implicitWidth: pillContent.implicitWidth + 30
-    implicitHeight: Math.max(Theme.minimumTouchSize, label.implicitHeight + 24)
-    radius: height / 2
+    readonly property real caretSpace: caret ? caretMark.implicitWidth + pillContent.spacing : 0
+    // A wrapping pill's natural width is its one-line label's, not the row's,
+    // which follows the wrapped label's width.
+    implicitWidth: (wrapLabel ? label.implicitWidth + caretSpace : pillContent.implicitWidth) + 30
+    implicitHeight: Math.max(Theme.minimumTouchSize, (wrapLabel ? label.height : label.implicitHeight) + 24)
+    // Wrapped over several lines, the ends keep a one-line pill's curve.
+    radius: wrapLabel && label.lineCount > 1 ? Math.max(Theme.minimumTouchSize, label.height / label.lineCount + 24) / 2 : height / 2
     color: active ? Theme.chipSelectedFill : Theme.panel
     border.width: 1
     border.color: active ? Theme.cyan : Theme.controlBorder
@@ -53,6 +61,9 @@ Rectangle {
             id: label
             objectName: "filterPillLabel"
             anchors.verticalCenter: parent.verticalCenter
+            width: control.wrapLabel ? Math.max(0, Math.min(implicitWidth, control.width - 30 - control.caretSpace)) : implicitWidth
+            wrapMode: control.wrapLabel ? Text.WordWrap : Text.NoWrap
+            horizontalAlignment: control.wrapLabel ? Text.AlignHCenter : Text.AlignLeft
             text: control.text
             // A pill can name a saved system or an imported category.
             textFormat: Text.PlainText
@@ -63,6 +74,7 @@ Rectangle {
         }
 
         Caret {
+            id: caretMark
             visible: control.caret
             anchors.verticalCenter: parent.verticalCenter
             color: label.color

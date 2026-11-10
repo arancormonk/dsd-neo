@@ -34,10 +34,14 @@ Item {
     signal openRadioReference
 
     // CSV import routing: a row index means "update that row in place";
-    // -1 means a new import of pendingType.
+    // -1 means a new import of the kind the Import file sheet holds.
     property int pendingRow: -1
-    property string pendingType: "chan"
-    property bool pendingKeyHex: false
+    property alias pendingType: kindPicker.kind
+    property alias pendingKeyHex: kindPicker.keyHex
+    // #831: work that outlives this screen's sheets, which Main waits for
+    // before it hands over a file another app opened.
+    readonly property bool importActive: csvImport.active
+    readonly property bool mapApplyActive: mapApply.pending
     // #832: which visit an import belongs to; every close takes the next.
     property int generation: 0
     // Row the action sheet is open on.
@@ -171,8 +175,18 @@ Item {
         };
     }
     function importPickedFile() {
-        var type = pendingRow >= 0 ? importedFiles.get(pendingRow).type : pendingType === "keys" ? (pendingKeyHex ? "keysHex" : "keysDec") : pendingType;
+        var type = pendingRow >= 0 ? importedFiles.get(pendingRow).type : kindPicker.type;
         csvImport.pick(type, importContext());
+    }
+    // #831: a new import of a file another app opened, its kind already
+    // chosen. The screen must be showing: hiding it cancels the import. False
+    // while another import runs, which begin() would otherwise replace.
+    function importIncoming(ref, name, type) {
+        if (csvImport.active)
+            return false;
+        screen.notice = "";
+        pendingRow = -1;
+        return csvImport.begin(ref, name, type, importContext());
     }
 
     CsvImportFlow {
@@ -202,6 +216,7 @@ Item {
     }
     DecryptionApplyFlow {
         id: mapApply
+        objectName: "importsMapApply"
         onCompleted: function (success) {
             screen.notice = message;
             screen.noticeIsProblem = !success;
@@ -426,6 +441,8 @@ Item {
     // What kind of file is being imported; the parser and the flag differ per kind.
     ModalSheet {
         id: typeSheet
+        // #831 B3: a screen reader names each sheet, never "Dialog".
+        accessibleName: qsTr("Import file")
 
         MicroLabel {
             text: qsTr("Import file")
@@ -441,34 +458,10 @@ Item {
             wrapMode: Text.Wrap
         }
 
-        Flow {
-            objectName: "importKindPicker"
+        ImportKindPicker {
+            id: kindPicker
             width: parent.width
-            spacing: 8
-
-            Repeater {
-                model: [qsTr("Channel map"), qsTr("Talkgroups"), qsTr("Keys"), qsTr("P25 band plan"), qsTr("Radio IDs"), qsTr("DMR key mappings"), qsTr("Vertex keystreams"), qsTr("Target CSV")]
-                delegate: FilterPill {
-                    required property int index
-                    required property string modelData
-                    readonly property string kind: ["chan", "group", "keys", "p25Bandplan", "src", "dmrTgKeys", "vertexKeys", "trunkTargets"][index]
-                    objectName: "importKind_" + kind
-                    text: modelData
-                    caret: false
-                    active: screen.pendingType === kind
-                    onClicked: screen.pendingType = kind
-                }
-            }
-        }
-
-        SegmentedControl {
-            width: parent.width
-            visible: screen.pendingType === "keys"
-            model: [qsTr("Decimal keys"), qsTr("Hex keys")]
-            currentIndex: screen.pendingKeyHex ? 1 : 0
-            onSelected: function (index) {
-                screen.pendingKeyHex = index === 1;
-            }
+            kind: "chan"
         }
 
         GradientButton {
@@ -488,8 +481,10 @@ Item {
 
         // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
         objectName: "importsActionSheet"
+        accessibleName: actionTitle.text
 
         ReadableText {
+            id: actionTitle
             width: parent.width
             text: screen.actionRow >= 0 ? importedFiles.get(screen.actionRow).name : ""
             font.family: Theme.sans
@@ -623,6 +618,7 @@ Item {
     ModalSheet {
         id: removeSheet
         objectName: "importsRemoveSheet"
+        accessibleName: removeTitle.text
 
         readonly property var profilesUsingFile: visible && screen.actionRow >= 0 && typeof decryptionProfiles !== "undefined" ? decryptionProfiles.profilesReferencingPath(importedFiles.get(screen.actionRow).path) : []
         readonly property var listsUsingFile: visible && screen.actionRow >= 0 ? scanLists.listsTargetingPath(importedFiles.get(screen.actionRow).path) : []
@@ -630,6 +626,7 @@ Item {
         readonly property var usedBy: visible && screen.actionRow >= 0 ? savedSystems.systemsReferencingPath(importedFiles.get(screen.actionRow).path) : []
 
         ReadableText {
+            id: removeTitle
             width: parent.width
             text: screen.actionRow >= 0 ? qsTr("Remove %1?").arg(importedFiles.get(screen.actionRow).name) : ""
             font.family: Theme.sans

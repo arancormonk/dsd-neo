@@ -35,6 +35,8 @@ ModalSheet {
     /** The saved system now names a decryption profile for its future starts. */
     signal systemProfileSaved(string uid)
     readonly property bool sessionRunning: decoderHost.running
+    // An apply still waiting for the decoder's answer; it outlives the sheet.
+    readonly property bool applyActive: applyFlow.pending
     readonly property var materialProfile: {
         if (typeof decryptionProfiles === "undefined")
             return ({});

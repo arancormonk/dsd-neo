@@ -49,6 +49,9 @@ Item {
     // list, Explore or a wizard test. The key sheet may write its profile.
     property string sessionSystemUid: ""
     signal systemProfileSaved(string uid)
+    // A key sheet apply still waiting for the decoder, which outlives the
+    // sheet; Main reaches the sheet only through this screen.
+    readonly property bool keyApplyActive: keySheet.applyActive
     // After an Activity restart the reattached session has no saved-system map,
     // but the persisted session label still names what is playing — the header
     // should agree with the history rows it sits above. A map without a name (a
