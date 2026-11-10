@@ -851,8 +851,8 @@ Item {
                         }
                     }
 
-                    TapHandler {
-                        onTapped: screen.advancedOpen = !screen.advancedOpen
+                    GatedTapHandler {
+                        onAllowedTap: screen.advancedOpen = !screen.advancedOpen
                     }
                 }
 

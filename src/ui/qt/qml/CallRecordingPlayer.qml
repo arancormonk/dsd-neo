@@ -516,15 +516,17 @@ Column {
                         border.color: Theme.panel
                     }
 
-                    TapHandler {
+                    GatedTapHandler {
                         enabled: seekBar.seekable
-                        onTapped: function (eventPoint) {
+                        onAllowedTap: function (eventPoint) {
                             seekBar.seekTo(seekBar.msAt(eventPoint.position.x));
                         }
                     }
+                    // Not a tap: a drag that began on a sheet over the bar takes the
+                    // grab from the sheet's barrier, so it stands down under one.
                     DragHandler {
                         id: drag
-                        enabled: seekBar.seekable
+                        enabled: Navigation.allows(seekBar) && seekBar.seekable
                         target: null
                         xAxis.enabled: true
                         yAxis.enabled: false

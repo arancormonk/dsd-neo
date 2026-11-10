@@ -126,8 +126,8 @@ Rectangle {
         elide: Text.ElideRight
     }
 
-    TapHandler {
+    GatedTapHandler {
         enabled: Navigation.allows(control) && control.enabled
-        onTapped: input.forceActiveFocus()
+        onAllowedTap: input.forceActiveFocus()
     }
 }

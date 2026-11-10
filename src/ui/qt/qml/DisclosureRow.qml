@@ -129,8 +129,8 @@ Item {
         color: Theme.divider
     }
 
-    TapHandler {
+    GatedTapHandler {
         enabled: row.tapEnabled
-        onTapped: row.activate()
+        onAllowedTap: row.activate()
     }
 }

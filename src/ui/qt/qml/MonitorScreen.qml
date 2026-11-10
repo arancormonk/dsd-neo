@@ -513,7 +513,7 @@ Item {
         Item {
             id: header
             objectName: "monitorHeader"
-            enabled: !screen.ownSheetOpen
+            enabled: !keySheet.visible
 
             width: parent.width
             // Stacked only in tier 0 on a phone; otherwise the actions share the
@@ -709,9 +709,9 @@ Item {
                         color: Theme.textSecondary
                     }
 
-                    TapHandler {
+                    GatedTapHandler {
                         id: spectrumTap
-                        onTapped: screen.openSpectrum()
+                        onAllowedTap: screen.openSpectrum()
                     }
                 }
 
@@ -798,10 +798,10 @@ Item {
                         }
                     }
 
-                    TapHandler {
+                    GatedTapHandler {
                         id: liveTap
                         enabled: livePill.acts
-                        onTapped: livePill.activate()
+                        onAllowedTap: livePill.activate()
                     }
                 }
             }
@@ -1097,7 +1097,7 @@ Item {
         parent: screen.stripInList ? stripSlot : stripHost
         width: parent ? parent.width : 0
         spacing: Theme.gap
-        enabled: !screen.ownSheetOpen
+        enabled: !keySheet.visible
 
         // The concurrent TDMA call on the non-hero slot: identity plus its own
         // call controls, so a second conversation is never invisible or untouchable.
@@ -1461,7 +1461,7 @@ Item {
         // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
         objectName: "recentCallsList"
 
-        enabled: !screen.ownSheetOpen
+        enabled: !keySheet.visible
         anchors.top: stripHost.bottom
         anchors.topMargin: screen.scrollAll ? 0 : Theme.gap
         anchors.left: parent.left
@@ -1731,8 +1731,8 @@ Item {
                     font.pixelSize: Theme.fontSize(12)
                     color: Theme.textPrimary
                 }
-                TapHandler {
-                    onTapped: siteSheet.visible = true
+                GatedTapHandler {
+                    onAllowedTap: siteSheet.visible = true
                 }
             }
 
@@ -1769,8 +1769,8 @@ Item {
                     font.pixelSize: Theme.fontSize(12)
                     color: Theme.textPrimary
                 }
-                TapHandler {
-                    onTapped: decryptionRow.activate()
+                GatedTapHandler {
+                    onAllowedTap: decryptionRow.activate()
                 }
             }
 
@@ -2531,15 +2531,6 @@ Item {
         }
     }
 
-    // One of this screen's own sheets is open (a combo list in one counts).
-    // The parts below stand down for it, not the screen, which would disable
-    // the sheet too: a press on a sheet's button also reaches their tap
-    // handlers, and one that closes the sheet on release lets the same
-    // release reach the control underneath ("Stop listening" among them).
-    readonly property bool ownSheetOpen: Navigation.modals.some(function (modal) {
-        return Navigation.contains(screen, modal);
-    })
-
     HistoryDetailSheet {
         id: historyDetail
         objectName: "monitorHistoryDetail"
@@ -2654,7 +2645,7 @@ Item {
         parent: screen.scrollAll ? actionsSlot : actionsHost
         width: parent ? parent.width : 0
         spacing: 10
-        enabled: !screen.ownSheetOpen
+        enabled: !keySheet.visible
         // A deterministic grid: four equal columns when the longest word of any
         // label fits a quarter cell (less the 12 px OutlineButton keeps either
         // side), else two. Labels break only at a space, into one line or two
@@ -2792,7 +2783,7 @@ Item {
             id: lostLine
             objectName: "monitorReceiverLostLine"
             visible: lostLineHost.shown
-            enabled: !screen.ownSheetOpen
+            enabled: !keySheet.visible
             readonly property bool navigationAllowed: Navigation.allows(lostLine)
             function activate() {
                 if (visible && enabled && Navigation.allows(lostLine))
@@ -2865,9 +2856,9 @@ Item {
                 color: Theme.textSubdued
             }
 
-            TapHandler {
+            GatedTapHandler {
                 id: lostLineTap
-                onTapped: lostLine.activate()
+                onAllowedTap: lostLine.activate()
             }
         }
     }
@@ -2884,7 +2875,7 @@ Item {
         // 3 is DecoderHost.Stopping. The host publishes it the moment Stop is
         // tapped (#718), so the tap reads as taken while the engine winds down.
         text: decoderHost.sessionState === 3 ? qsTr("Stopping…") : screen.system && screen.system.sourceType === "file" ? qsTr("Stop replay") : qsTr("Stop listening")
-        enabled: !decoderHost.transitioning && !screen.ownSheetOpen
+        enabled: !decoderHost.transitioning && !keySheet.visible
         onClicked: decoderHost.stop()
     }
     // #647 D1a: the session's receiver. Healthy: its name and status. Lost:

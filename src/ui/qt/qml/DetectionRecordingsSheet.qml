@@ -312,9 +312,9 @@ ModalSheet {
                 Keys.onReturnPressed: activate()
                 Keys.onEnterPressed: activate()
                 FocusFrame {}
-                TapHandler {
+                GatedTapHandler {
                     id: tap
-                    onTapped: row.activate()
+                    onAllowedTap: row.activate()
                 }
                 PlayGlyph {
                     id: selectedMark

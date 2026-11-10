@@ -190,8 +190,8 @@ Rectangle {
                     }
                 }
 
-                TapHandler {
-                    onTapped: choose()
+                GatedTapHandler {
+                    onAllowedTap: choose()
                 }
             }
         }

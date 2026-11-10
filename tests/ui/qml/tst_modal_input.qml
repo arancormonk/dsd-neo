@@ -26,7 +26,9 @@ Item {
             verify(value !== null, name + " exists");
             return value;
         }
+        property bool savedNotificationExplained: false
         function init() {
+            savedNotificationExplained = prefs.notificationExplained;
             testContext.useLifecycleHost(true, true, true);
             while (savedSystems.count)
                 savedSystems.remove(0);
@@ -60,6 +62,7 @@ Item {
             app.spectrumOpen = false;
             app.height = 900;
             item("notificationExplanation").visible = false;
+            prefs.notificationExplained = savedNotificationExplained;
             testContext.setMetric("uiMessage", "");
             testContext.useLifecycleHost(false);
             while (savedSystems.count)
@@ -152,16 +155,13 @@ Item {
             compare(decoderHost.sessionState, 2);
         }
         // A short window: the note's "Not now" lies over "Stop listening". A
-        // mouse click on it closes the note and keeps listening; the release
-        // that closed it must not reach the monitor's passive tap.
+        // mouse click on it closes the note and keeps listening: Stop's press
+        // began under the note, so the same release does not stop the session.
         function test_notification_not_now_over_stop_keeps_listening() {
-            var explained = prefs.notificationExplained;
             app.height = 280;
             var explanation = item("notificationExplanation");
             explanation.visible = true;
             waitForRendering(explanation);
-            var monitor = item("monitorScreen");
-            var stoodDown = !monitor.enabled;
             var stop = item("stopListeningButton");
             var later = item("notificationNotNow");
             var target = stop.mapToItem(null, stop.width / 2, stop.height / 2);
@@ -175,14 +175,13 @@ Item {
             wait(60);
             compare(decoderHost.stopCalls(), stops, "the click that closed the note did not stop the session");
             compare(decoderHost.sessionState, 2);
-            verify(stoodDown, "the monitor took no taps under the note");
-            tryCompare(monitor, "enabled", true);
-            prefs.notificationExplained = explained;
+            mouseClick(stop, stop.width / 2, stop.height / 2);
+            compare(decoderHost.stopCalls(), stops + 1, "a click on Stop itself still stops");
         }
         // The monitor's own sheets: in a short window the Squelch sheet's
         // Close scrolls over "Stop listening". The monitor stays enabled for
-        // its sheet, so its parts stand down instead, and the release that
-        // closed the sheet does not reach Stop.
+        // its sheet, and Stop's press began under the sheet, so the release
+        // that closed the sheet does not reach Stop.
         function test_monitor_sheet_close_over_stop_keeps_listening() {
             app.height = 300;
             var sheet = item("squelchSheet");
@@ -200,7 +199,6 @@ Item {
             waitForRendering(sheet);
             var onClose = close.mapFromItem(null, target.x, target.y);
             verify(close.contains(onClose), "Close lies over Stop listening");
-            var stoodDown = !stop.enabled;
             var stops = decoderHost.stopCalls();
             mousePress(close, onClose.x, onClose.y);
             mouseRelease(close, onClose.x, onClose.y);
@@ -208,8 +206,7 @@ Item {
             wait(60);
             compare(decoderHost.stopCalls(), stops, "the click that closed the sheet did not stop the session");
             compare(decoderHost.sessionState, 2);
-            verify(stoodDown, "Stop took no taps under the sheet");
-            tryCompare(stop, "enabled", true);
+            verify(stop.enabled);
         }
         function test_keyboard_keeps_wizard_action_visible() {
             testContext.useLifecycleHost(true, true, false);

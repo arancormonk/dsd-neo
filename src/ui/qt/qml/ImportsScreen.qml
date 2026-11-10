@@ -368,8 +368,8 @@ Item {
                 }
             }
 
-            TapHandler {
-                onTapped: {
+            GatedTapHandler {
+                onAllowedTap: {
                     screen.actionRow = fileRow.index;
                     actionSheet.visible = true;
                 }

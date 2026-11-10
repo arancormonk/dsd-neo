@@ -50,9 +50,9 @@ Item {
             }
         }
     }
-    TapHandler {
+    GatedTapHandler {
         id: tap
         gesturePolicy: TapHandler.ReleaseWithinBounds
-        onTapped: control.activate()
+        onAllowedTap: control.activate()
     }
 }

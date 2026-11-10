@@ -115,7 +115,7 @@ Rectangle {
         }
     }
 
-    TapHandler {
-        onTapped: control.activate()
+    GatedTapHandler {
+        onAllowedTap: control.activate()
     }
 }

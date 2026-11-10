@@ -91,7 +91,7 @@ Item {
         color: control.selected ? Theme.textPrimary : Theme.buttonSecondaryText
     }
 
-    TapHandler {
-        onTapped: control.activate()
+    GatedTapHandler {
+        onAllowedTap: control.activate()
     }
 }

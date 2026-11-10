@@ -1631,8 +1631,8 @@ Item {
                             }
                         }
 
-                        TapHandler {
-                            onTapped: advHeader.toggle()
+                        GatedTapHandler {
+                            onAllowedTap: advHeader.toggle()
                         }
                     }
 
@@ -2039,8 +2039,8 @@ Item {
                             }
                         }
 
-                        TapHandler {
-                            onTapped: csvChoice.choose()
+                        GatedTapHandler {
+                            onAllowedTap: csvChoice.choose()
                         }
                     }
                 }

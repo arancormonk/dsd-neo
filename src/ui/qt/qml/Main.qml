@@ -2006,15 +2006,6 @@ Window {
         }
     }
 
-    // A sheet open over the monitor that is not one of the monitor's own: the
-    // site chooser, the session and Listen menus, Radio, Scan lists, failure
-    // details, the notification note, an incoming file, Backup, and the sheets
-    // of the layers above. The monitor's own sheets (Key, Squelch, Sites...)
-    // are left out, as standing it down would disable them too.
-    readonly property bool sheetOverMonitor: Navigation.modals.some(function (modal) {
-        return !Navigation.contains(monitor, modal);
-    })
-
     // ---- Live monitor (owns the screen while a session is active) ----
     MonitorScreen {
         id: monitor
@@ -2041,15 +2032,13 @@ Window {
         opacity: mainRoot.monitorMode ? 1.0 : 0.0
         visible: opacity > 0.0
         // Stand down beneath overlays so the monitor cannot acquire passive tap
-        // grabs. A press on a sheet's or layer's button also reaches the
-        // monitor's tap handlers underneath; Navigation.allows() refuses them
-        // while the overlay is up, but a button that closes it on release
-        // lets the same release reach "Stop listening". Every sheet counts
-        // (sheetOverMonitor): session-menu rows keep passive grabs so the sheet
-        // can scroll when a drag starts on a destination or Cancel.
+        // grabs. Otherwise closing an overlay can deliver the same release to
+        // "Stop listening" underneath. Session-menu rows keep passive grabs so
+        // the sheet can scroll when a drag starts on a destination or Cancel.
         enabled: opacity > 0.9 && !mainRoot.signalSearchOpen && !mainRoot.wizardOpen && !mainRoot.spectrumOpen
             && !mainRoot.radioReferenceOpen && !mainRoot.talkgroupsOpen && !talkgroupsScreen.visible
-            && !mainRoot.sheetOverMonitor && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.callRecordingsOpen
+            && !siteChooser.visible && !sessionMenu.visible && !listenMenu.visible && !sessionRadio.visible
+            && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.callRecordingsOpen
             && !mainRoot.radioReferenceAccountOpen && !mainRoot.scanListOpen
             && !(mainRoot.importsOpen && mainRoot.sessionDestination === "settings")
             && mainRoot.sessionDestination.length === 0

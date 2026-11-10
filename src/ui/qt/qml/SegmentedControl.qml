@@ -111,8 +111,8 @@ Rectangle {
                     color: parent.active ? Theme.cyan : Theme.textSecondary
                 }
 
-                TapHandler {
-                    onTapped: choose()
+                GatedTapHandler {
+                    onAllowedTap: choose()
                 }
             }
         }

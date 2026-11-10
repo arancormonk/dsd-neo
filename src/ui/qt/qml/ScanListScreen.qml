@@ -931,9 +931,9 @@ Rectangle {
                             }
                         }
                     }
-                    TapHandler {
+                    GatedTapHandler {
                         objectName: "scanAdvancedTap"
-                        onTapped: advHeader.toggle()
+                        onAllowedTap: advHeader.toggle()
                     }
                 }
 

@@ -94,8 +94,8 @@ Item {
     onFeaturedChanged: glyph.requestPaint()
     onShowPauseChanged: glyph.requestPaint()
 
-    TapHandler {
+    GatedTapHandler {
         enabled: control.enabled
-        onTapped: control.activate()
+        onAllowedTap: control.activate()
     }
 }

@@ -83,6 +83,8 @@ Item {
                 importedFiles.remove(0);
             while (savedSystems.count)
                 savedSystems.remove(0);
+            while (scanLists.count)
+                scanLists.remove(0);
             testContext.resetBackup();
             testContext.resetHostPlayback();
             testContext.setDelayedStop(false);
@@ -475,13 +477,12 @@ Item {
             verify(stoodDown, "the monitor took no taps under the editor");
             tryCompare(monitor, "enabled", true);
             verify(warnings.visible, "the scan warning is back on the monitor");
-            scanLists.remove(scanLists.count - 1);
         }
 
         // A short window during a session: the sheet scrolls, and its Cancel
         // can sit over "Stop listening". A mouse click there drops the file
-        // and keeps listening; the release that closed the sheet must not
-        // reach the monitor's passive tap.
+        // and keeps listening: Stop's press began under the sheet, so the
+        // release that closed the sheet does not stop the session.
         function test_cancel_over_stop_keeps_listening() {
             app.height = 400;
             testContext.setLifecyclePhase(2);
@@ -501,7 +502,6 @@ Item {
             waitForRendering(sheet);
             var onCancel = cancel.mapFromItem(null, target.x, target.y);
             verify(cancel.contains(onCancel), "Cancel lies over Stop listening");
-            var stoodDown = !monitor.enabled;
             var stops = decoderHost.stopCalls();
             mousePress(cancel, onCancel.x, onCancel.y);
             mouseRelease(cancel, onCancel.x, onCancel.y);
@@ -511,8 +511,78 @@ Item {
             wait(60);
             compare(decoderHost.stopCalls(), stops, "the click that cancelled did not stop the session");
             compare(decoderHost.sessionState, 2);
-            verify(stoodDown, "the monitor took no taps under the sheet");
-            tryCompare(monitor, "enabled", true);
+            verify(monitor.enabled);
+        }
+
+        // The intake lets the Spectrum stay beneath its sheet. A click on the
+        // sheet's Cancel over the waterfall drops the file without retuning:
+        // the waterfall's press began under the sheet. A drag on the sheet's
+        // scrim over it does not pan (a pan retunes on release).
+        function test_cancel_over_the_spectrum_does_not_retune() {
+            testContext.setLifecyclePhase(2);
+            tryCompare(app, "monitorMode", true);
+            app.exploring = true;
+            findChild(app, "monitorScreen").openSpectrum();
+            var spectrum = null;
+            tryVerify(function () {
+                spectrum = findChild(app, "spectrumScreen");
+                return spectrum !== null && spectrum.visible && !spectrum.viewOnly;
+            }, 5000, "the Spectrum opened for exploring");
+            var area = findChild(spectrum, "spectrumTapArea");
+            verify(area !== null);
+            waitForRendering(spectrum);
+            offer(groupsFile());
+            testContext.resetCommands();
+            var cancel = part("incomingDocumentCancel");
+            var onArea = cancel.mapToItem(area, cancel.width / 2, cancel.height / 2);
+            verify(area.contains(onArea), "Cancel lies over the waterfall");
+            mousePress(cancel, cancel.width / 2, cancel.height / 2);
+            mouseRelease(cancel, cancel.width / 2, cancel.height / 2);
+            tryCompare(sheet, "visible", false);
+            wait(60);
+            compare(testContext.manualTuneCalls(), 0, "the click that cancelled did not retune");
+            verify(app.spectrumOpen);
+
+            offer(groupsFile());
+            testContext.resetCommands();
+            // The scrim above the panel, over the waterfall.
+            var start = area.mapToItem(sheet, area.width / 4, 12);
+            verify(!sheet.hitsPanel(start.x, start.y), "the drag starts on the scrim");
+            mousePress(sheet, start.x, start.y);
+            for (var i = 1; i <= 8; ++i)
+                mouseMove(sheet, start.x + i * 20, start.y);
+            mouseRelease(sheet, start.x + 160, start.y);
+            wait(60);
+            compare(testContext.manualTuneCalls(), 0, "a drag on the sheet did not pan the Spectrum");
+            verify(sheet.visible, "a drag is not a tap outside the panel");
+            flow.drop();
+        }
+
+        // Imports at rest stays beneath the sheet too: Cancel over its
+        // "Import file" drops the file without opening the import sheet.
+        function test_cancel_over_imports_does_not_import() {
+            app.height = 400;
+            app.importsOpen = true;
+            var imports = findChild(app, "importsScreen");
+            tryCompare(imports, "enabled", true);
+            var importButton = findChild(imports, "importFileButton");
+            verify(importButton !== null && importButton.visible);
+            offer(groupsFile());
+            var cancel = part("incomingDocumentCancel");
+            var scroll = findChild(sheet, "modalSheetScroll");
+            var target = importButton.mapToItem(null, importButton.width / 2, importButton.height / 2);
+            var at = cancel.mapToItem(null, cancel.width / 2, cancel.height / 2);
+            scroll.contentY = Math.max(0, Math.min(scroll.contentHeight - scroll.height, scroll.contentY + at.y - target.y));
+            waitForRendering(sheet);
+            var onCancel = cancel.mapFromItem(null, target.x, target.y);
+            verify(cancel.contains(onCancel), "Cancel lies over Import file");
+            mousePress(cancel, onCancel.x, onCancel.y);
+            mouseRelease(cancel, onCancel.x, onCancel.y);
+            tryCompare(sheet, "visible", false);
+            wait(60);
+            verify(!decoderHost.incomingDocumentPending, "Cancel dropped the file");
+            compare(Ui.Navigation.modals.length, 0, "Import file did not open its sheet");
+            verify(app.importsOpen);
         }
 
         // ---- waiting until the screen is free (spec §4.4) ----

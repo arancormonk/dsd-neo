@@ -40,8 +40,8 @@ Item {
     Keys.onReturnPressed: activate()
     Keys.onEnterPressed: activate()
     FocusFrame {}
-    TapHandler {
-        onTapped: row.activate()
+    GatedTapHandler {
+        onAllowedTap: row.activate()
     }
 
     property string name: ""

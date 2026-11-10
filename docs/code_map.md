@@ -14107,22 +14107,18 @@ Qt Quick frontend (`src/ui/qt`):
   panel (z 21, `scanWarningsPanel`) hides while it is open rather than cover Save. QML tests:
   `tst_incoming_document.qml` (`testContext.setSessionStateKnown()`, `holdRecordingTransfers()` for a save that
   outlives its sheet).
-- Overlays over the live monitor (#831): a press on a button in a sheet or layer also reaches every enabled tap handler
-  beneath it (Qt delivers a press to pointer handlers under the point before an item accepts it). `Navigation.allows()`
-  refuses those while the overlay is the top modal or layer, but a button that closes the overlay on release lets the
-  same release reach the control underneath once it is allowed again, "Stop listening" among them. So whatever covers
-  the monitor turns `enabled` off below it: Main's `MonitorScreen.enabled` has a term for each covering layer (wizard,
+- Overlays over the live monitor (#831): a tap on a sheet's Cancel, a menu row or any control that closes its cover on
+  release never acts on the control beneath, Stop listening included; that is the press-time rule of `GatedTapHandler`
+  (see the QML rules below). `MonitorScreen.enabled` keeps a term for each full-screen layer that can cover it (wizard,
   RadioReference, Signal search, Spectrum, Talkgroups, the scan-list editor, Diagnostics, Licenses, Call recordings, the
-  RR account, Imports and the session's History and Settings) and `sheetOverMonitor`, true while any `Navigation.modals`
-  entry lies outside the monitor (every Main-level sheet: the site chooser, the session and Listen menus, Radio, Scan
-  lists, failure details, the notification note, the incoming file, Backup, and the sheets of the layers above). The
-  monitor's own sheets (Key, Squelch, Passband, Tone filter, receive policy, scan avoids, history detail, the other-slot
-  menu, receiver, Site, Network) cannot disable the monitor, which would disable them too; its parts (header, strip,
-  recent list, live actions, lost line, Stop) take `enabled: !screen.ownSheetOpen` instead, true while a modal inside
-  the screen is open. A layer that only shows a MouseArea (the scan-warnings panel, a sheet's scrim) accepts the press
-  itself and needs no term. QML tests: `tst_modal_input.qml` (mouse clicks on the notification note's "Not now" and the
-  Squelch sheet's Close over Stop), `tst_incoming_document.qml` (the incoming sheet's Cancel and the scan-list editor's
-  Save over Stop), `tst_main_overlay_layering.qml`.
+  RR account, Imports and the session's History and Settings): a layer has no barrier, so a press on a part of it that
+  takes none reaches the monitor's items (its list flicks) as well as its tap handlers. Its terms for Main-level sheets
+  (site chooser, session and Listen menus, Radio) are older than the rule, which now covers every sheet; a sheet's
+  barrier takes the press from items beneath, and the monitor has no drag or pinch handler that could take it back. QML
+  tests: `tst_incoming_document.qml` (mouse clicks on the incoming sheet's Cancel over Stop listening, the Spectrum's
+  waterfall and Imports' "Import file", a drag on its scrim over the waterfall, and the scan-list editor's Save over
+  Stop), `tst_modal_input.qml` (the notification note's "Not now" and the Squelch sheet's Close over Stop),
+  `tst_main_overlay_layering.qml`.
 - `qml/DocumentPicker.qml` is the one picker screens use (`mode` "open"/"save", `title`, `nameFilters`,
   `defaultSuffix`, `mimeType`, `suggestedName`). `open()` asks the host when `documentPickerSupported`, cancelling its
   own earlier request first, and otherwise opens a `FileDialog` it makes through an `Instantiator` (a QtObject root,
@@ -15632,6 +15628,22 @@ while hidden, from a node Android still holds or a key while they keep the focus
 `activeFocus` in the binding nothing re-ran it once the sheet took the focus, so the covered control stayed a Tab stop
 under the sheet (issue #646 put the hold on every control that lacked it). Tests: `tst_keypad_enter.qml`
 (`failOnWarning(/activeFocusOnTab/)`, `test_a_covered_control_is_no_tab_stop_once_focus_leaves`).
+
+A pointer tap acts only if its press began, and it ends, while its control could take input (#831). Qt hands a press to
+the pointer handlers under the point before an item accepts it, so a press on a sheet's or a screen's control also
+reaches every enabled tap handler beneath; `Navigation.allows()` refuses those while the cover is up, but a control that
+closes the cover on that release has taken it away by the time the handler beneath reports its tap. Every tap in
+`src/ui/qt/qml` therefore goes through `qml/GatedTapHandler.qml`, a `TapHandler` that reads `Navigation.allows(gate)`
+(its parent unless `gate` is set) when the press begins and again at the tap, and emits `allowedTap(eventPoint, button)`
+and `allowedLongPress()`; a new control uses it and handles those, never a bare `TapHandler`'s `tapped` or
+`longPressed`. Keyboard and accessibility presses do not come through it and keep the control's own guarded activation.
+A drag or pinch is not a tap: a drag that begins on a sheet, its scrim included, takes the grab from the sheet's
+barrier, so a `DragHandler` or `PinchHandler` binds `enabled: Navigation.allows(item) && …` (the Spectrum's pan and
+pinch, `BandRail`, the recording seek bar). A `MouseArea` takes the press itself and sits above what it covers (a
+sheet's barrier, the scan-warnings panel, which lies outside every navigation surface), so it needs neither; Qt Quick
+Controls (`PlexComboBox`, `PlexCheckBox`, `PlexToggle`, `PlexInput`) take the press too and sit in sheets or in layers
+that stand down when covered. Tests: `tst_gated_tap_handler.qml` (a sheet closed on release or while the press is held,
+a sheet opened while it is held, a long press, keyboard and accessibility presses), and the overlay cases above.
 
 A choice of one among several that says which one is current (a `SegmentedControl` segment, a `BottomNav` tab) is
 `Accessible.RadioButton` with `checkable: true` and `checked` while it is the current one (issue #646). Qt 6.11.3's
