@@ -59,6 +59,17 @@ ComboBox {
             return control.textAt(index);
         }
         highlighted: control.highlightedIndex === index
+        // A choice of one among several, each row a radio button checked
+        // while it is the current one (#831). An ItemDelegate is a ListItem,
+        // which carries no press action: Qt's Android bridge made each row a
+        // TextView neither focusable nor clickable, so TalkBack could not
+        // settle on a row, and its double tap picked the one at the screen's
+        // centre. The press clicks the row as a tap does.
+        Accessible.role: Accessible.RadioButton
+        Accessible.checkable: true
+        Accessible.checked: control.currentIndex === index
+        Accessible.focusable: true
+        Accessible.onPressAction: option.click()
         implicitHeight: Math.max(48, optionLabel.implicitHeight + 24)
         contentItem: Text {
             id: optionLabel

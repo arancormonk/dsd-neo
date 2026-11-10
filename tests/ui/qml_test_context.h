@@ -3760,7 +3760,8 @@ class Setup : public QObject {
      * its node tree (childIdListForAccessibleObject). `role` is the QAccessible::Role value; `name`, `description`
      * and `value` are the interface's texts; `invisible`, `checked` and `focusable` are its state flags.
      * `currentValue` is the value interface's reading (a progress bar's, which the Android bridge reads after the
-     * name), or undefined when it has none.
+     * name), or undefined when it has none. `actions` are its action names: the Android bridge makes a node
+     * clickable only with a press or toggle action, and a static text or heading never (#831).
      */
     Q_INVOKABLE QVariantMap
     accessibleNode(QObject* item) const {
@@ -3779,7 +3780,32 @@ class Setup : public QObject {
                 {QStringLiteral("checked"), static_cast<bool>(iface->state().checked)},
                 {QStringLiteral("focusable"), static_cast<bool>(iface->state().focusable)},
                 {QStringLiteral("childCount"), iface->childCount()},
-                {QStringLiteral("currentValue"), value != nullptr ? value->currentValue() : QVariant()}};
+                {QStringLiteral("currentValue"), value != nullptr ? value->currentValue() : QVariant()},
+                {QStringLiteral("actions"),
+                 iface->actionInterface() != nullptr ? iface->actionInterface()->actionNames() : QStringList()}};
+    }
+
+    /**
+     * @brief #831: a screen reader's double tap on @p item, as the Android bridge performs it (clickAction_helper):
+     * the press action, else the toggle action. False when the item offers neither, as the bridge reports.
+     */
+    Q_INVOKABLE bool
+    accessibleClick(QObject* item) const {
+        QAccessibleInterface* iface = item != nullptr ? QAccessible::queryAccessibleInterface(item) : nullptr;
+        QAccessibleActionInterface* actions = iface != nullptr && iface->isValid() ? iface->actionInterface() : nullptr;
+        if (actions == nullptr) {
+            return false;
+        }
+        const QStringList names = actions->actionNames();
+        if (names.contains(QAccessibleActionInterface::pressAction())) {
+            actions->doAction(QAccessibleActionInterface::pressAction());
+            return true;
+        }
+        if (names.contains(QAccessibleActionInterface::toggleAction())) {
+            actions->doAction(QAccessibleActionInterface::toggleAction());
+            return true;
+        }
+        return false;
     }
 
     /**
