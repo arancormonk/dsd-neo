@@ -161,7 +161,9 @@ While a search runs, the screen is laid out for what is on the air now:
   unless the frequency is a permanent avoid or the search failed), and **Avoid
   permanently**, or **Remove permanent avoid** when it already is.
   A matched system whose site is avoided is listed but cannot start: remove the
-  avoid in its site list first.
+  avoid in its site list first. **Export detections…** at the end of the section
+  saves the whole detection history as a CSV file (see [Exporting detections and
+  avoids](#exporting-detections-and-avoids)).
 - A row whose detection kept call recordings says how many under its details
   (**3 recordings**), and its actions start with **Recordings (3)**. That opens
   the detection's recordings without playing any: the player under the
@@ -446,6 +448,34 @@ do not reach this one. A detection republished with nothing new is not written
 again. Detection history is not part of a backup. History and permanent avoids
 are saved separately, and a failed one stays reported and is retried by later
 saves until it is written.
+
+### Exporting detections and avoids
+
+**Export detections…** (the last button of Recent detections, after **Show more**,
+shown while there are detections) and **Export avoids…** (after the Permanent
+avoids list, shown while the permanent list has entries, or while a running
+search's session list does) each save a CSV file for a
+spreadsheet or a script. Each opens the save picker with a suggested name
+(`Signal search detections 2026-11-08.csv`, `Signal search avoids 2026-11-08.csv`),
+and one export runs at a time. The result is shown under the button: **Exported 214
+detections.**, **Exported 37 avoids.**, **Exported 214 detections to Download/DSD-neo
+as** the file's name when the device has no save picker (see `android/README.md`
+"Choosing files"), or **The export couldn't be written. Try another location.** Two
+messages mean no picker opened: **No detections to export.** / **No avoids to
+export.** (the list emptied just before the press), and **The avoid lists were
+changing. Try again.** A picker that cannot open shows its own message. Closing the
+picker without choosing a place saves nothing and says nothing. Closing the app
+while an export is being written can leave a partial file at the place you picked.
+
+The detections file holds every detection kept in the history (the newest 1,000),
+not only the rows shown, newest first. The avoids file holds the permanent avoids,
+then the session avoids of the search on screen; a frequency in both lists is
+written once, as `permanent`. The files are a copy at the moment you press the
+button. They leave out the receiver settings (the rtl_tcp address, PPM, bias tee,
+gain and Airspy settings), since those can identify a device or a network. The
+columns are listed in [CSV formats](csv-formats.md#files-dsd-neo-writes-not-read-back),
+with how to open the files in a spreadsheet. Exports are not part of a backup and
+are not read back by DSD-neo.
 
 Files that can't be read. When the version 2 journal or the permanent avoid
 list (`signal-search-history.v1.avoids.json`) can't be read whole (it can't be

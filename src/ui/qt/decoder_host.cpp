@@ -20,6 +20,7 @@
 #include <QSaveFile>
 
 #include "document_import_transport.h"
+#include "document_save_transport.h"
 #include "json_store.h"
 #include "qstring_scrub.h"
 
@@ -35,6 +36,33 @@ namespace {
 std::function<bool(qint64)>
 until_aborted(const std::atomic<bool>* aborted) {
     return [aborted](qint64) { return aborted == nullptr || !aborted->load(); };
+}
+
+/** @brief Keep a weak reference to @p transport, dropping the expired ones; abort it when @p aborted is already set. */
+template <typename Transport>
+void
+keep_handed_out(std::vector<std::weak_ptr<Transport>>& handedOut, const std::shared_ptr<Transport>& transport,
+                const std::atomic<bool>& aborted) {
+    handedOut.erase(std::remove_if(handedOut.begin(), handedOut.end(),
+                                   [](const std::weak_ptr<Transport>& kept) { return kept.expired(); }),
+                    handedOut.end());
+    handedOut.push_back(transport);
+    /* abortDocumentTransfers() raises the flag before it takes the lock, so a transport kept after its sweep sees the
+     * flag here. */
+    if (aborted.load()) {
+        transport->abort();
+    }
+}
+
+/** @brief Abort every transport in @p handedOut still alive. */
+template <typename Transport>
+void
+abort_handed_out(const std::vector<std::weak_ptr<Transport>>& handedOut) {
+    for (const std::weak_ptr<Transport>& kept : handedOut) {
+        if (const std::shared_ptr<Transport> transport = kept.lock()) {
+            transport->abort();
+        }
+    }
 }
 
 } // namespace
@@ -88,25 +116,15 @@ DecoderHost::copyFileToDocument(const QString& sourcePath, const QString& refere
 bool
 DecoderHost::copyFileToLocalDocument(const QString& sourcePath, const QString& reference,
                                      const std::atomic<bool>* aborted) {
-    const QString path = local_document_path(reference);
-    QFile source(sourcePath);
-    if (path.isEmpty() || !QFileInfo(sourcePath).isFile() || !source.open(QIODevice::ReadOnly)) {
-        return false;
-    }
-    QSaveFile out(path);
-    return open_private(out) && copy_stream_capped(source, out, -1, until_aborted(aborted)) == DocumentCopied
-           && out.commit();
+    return copy_file_to_local_document(sourcePath, reference, aborted);
 }
 
 void
 DecoderHost::abortDocumentTransfers() {
     m_documentTransfersAborted.store(true);
-    const std::lock_guard<std::mutex> lock(m_importTransportsLock);
-    for (const std::weak_ptr<DocumentImportTransport>& handedOut : m_importTransports) {
-        if (const std::shared_ptr<DocumentImportTransport> transport = handedOut.lock()) {
-            transport->abort();
-        }
-    }
+    const std::lock_guard<std::mutex> lock(m_transportsLock);
+    abort_handed_out(m_importTransports);
+    abort_handed_out(m_saveTransports);
 }
 
 std::shared_ptr<DocumentImportTransport>
@@ -116,17 +134,20 @@ DecoderHost::importTransport() const {
 
 std::shared_ptr<DocumentImportTransport>
 DecoderHost::keepImportTransport(std::shared_ptr<DocumentImportTransport> transport) const {
-    const std::lock_guard<std::mutex> lock(m_importTransportsLock);
-    m_importTransports.erase(
-        std::remove_if(m_importTransports.begin(), m_importTransports.end(),
-                       [](const std::weak_ptr<DocumentImportTransport>& handedOut) { return handedOut.expired(); }),
-        m_importTransports.end());
-    m_importTransports.push_back(transport);
-    /* abortDocumentTransfers() raises the flag before it takes the lock, so a transport kept after its sweep sees the
-     * flag here. */
-    if (m_documentTransfersAborted.load()) {
-        transport->abort();
-    }
+    const std::lock_guard<std::mutex> lock(m_transportsLock);
+    keep_handed_out(m_importTransports, transport, m_documentTransfersAborted);
+    return transport;
+}
+
+std::shared_ptr<DocumentSaveTransport>
+DecoderHost::saveTransport() const {
+    return keepSaveTransport(std::make_shared<DocumentSaveTransport>());
+}
+
+std::shared_ptr<DocumentSaveTransport>
+DecoderHost::keepSaveTransport(std::shared_ptr<DocumentSaveTransport> transport) const {
+    const std::lock_guard<std::mutex> lock(m_transportsLock);
+    keep_handed_out(m_saveTransports, transport, m_documentTransfersAborted);
     return transport;
 }
 

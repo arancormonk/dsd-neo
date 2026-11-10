@@ -38,6 +38,7 @@
 #include "decoder_host.h"
 #include "diagnostics_log.h"
 #include "document_import_transport.h"
+#include "document_save_transport.h"
 #include "recording_journal.h"
 #include "recording_store.h"
 
@@ -66,6 +67,7 @@ struct PlatformCopies {
     bool writesDest = true; // As the Kotlin side's rename does on a copy.
     bool saves = true;
     bool holdsResolver = true;
+    int aborts = 0; // DocumentCopies.abort(): the process-wide platform abort
 };
 } // namespace
 
@@ -494,8 +496,8 @@ DecoderHostAndroid::platformForgetImport(qint64 request) {
 }
 
 void
-DecoderHostAndroid::abortDocumentTransfers() {
-    DecoderHost::abortDocumentTransfers();
+DecoderHostAndroid::platformAbortDocumentCopies() {
+    ++platform().aborts;
 }
 
 QStringList
@@ -1193,6 +1195,70 @@ check_import_dispatch() {
           "after the host's abort no import reaches the platform");
     check(host.importTransport()->copy(48, content, dest, 77) == DecoderHost::DocumentFailed && imports().copies == 0,
           "and a transport handed out after it starts aborted");
+}
+
+/*
+ * The export saves' transport (#826): a content URI goes to the platform's save in exactly the order the backup's save
+ * takes, a Download-folder row is discarded whenever the platform never wrote it, and any other reference takes the
+ * base transport's local copy. Its abort raises the platform's process-wide abort too.
+ */
+static void
+check_save_transport_dispatch() {
+    using dsd_android::DecoderHostAndroid;
+    const QTemporaryDir dir;
+    check(dir.isValid(), "a scratch directory exists");
+    const QString source = dir.filePath(QStringLiteral("detections.csv"));
+    const QString content = QStringLiteral("content://com.example.documents/document/primary%3Adetections.csv");
+    write_file(source, "a,b\r\n");
+    (void)take_discarded();
+    std::shared_ptr<dsd_qt::DocumentSaveTransport> transport;
+    {
+        DecoderHostAndroid host;
+        transport = host.saveTransport();
+    }
+    check(transport != nullptr && !transport->aborted(), "the Android host hands out a save transport");
+
+    platform() = PlatformCopies();
+    check(transport->save(source, content) && platform().calls == 1 && platform().sourcePath == source
+              && platform().reference == content && take_discarded().isEmpty(),
+          "a content URI saves through the platform, which settles its row, after the host is gone");
+    platform().saves = false;
+    check(!transport->save(source, content) && platform().calls == 2 && take_discarded() == QStringList{content},
+          "a failed platform save discards its row");
+    platform() = PlatformCopies();
+    platform().holdsResolver = false;
+    check(!transport->save(source, content) && platform().calls == 0 && take_discarded() == QStringList{content},
+          "a save without a held ContentResolver discards its row and never reaches the platform");
+
+    platform() = PlatformCopies();
+    const QString file = dir.filePath(QStringLiteral("saved.csv"));
+    check(transport->save(source, QUrl::fromLocalFile(file).toString()) && read_file(file) == "a,b\r\n"
+              && platform().calls == 0 && take_discarded().isEmpty(),
+          "a file URL takes the base transport's local copy");
+    transport->discardPendingDownload(content);
+    check(take_discarded() == QStringList{content} && platform().aborts == 0,
+          "a discard goes to DownloadsSave, and raises no abort");
+
+    transport->abort();
+    check(transport->aborted() && platform().aborts == 1, "the transport's abort raises the platform's abort");
+    check(!transport->save(source, content) && platform().calls == 0 && take_discarded() == QStringList{content},
+          "an aborted save discards its row and never reaches the platform");
+    QFile::remove(file);
+    check(!transport->save(source, QUrl::fromLocalFile(file).toString()) && !QFileInfo::exists(file),
+          "an aborted transport's local save writes nothing");
+
+    /* The host's teardown abort reaches every transport it handed out, and one handed out after it starts aborted. */
+    DecoderHostAndroid host;
+    const std::shared_ptr<dsd_qt::DocumentSaveTransport> earlier = host.saveTransport();
+    platform() = PlatformCopies();
+    host.abortDocumentTransfers();
+    /* Two platform aborts: the host's own, then the one the handed-out transport raises. */
+    check(earlier->aborted() && platform().aborts == 2, "the host's abort aborts the transports it handed out");
+    const std::shared_ptr<dsd_qt::DocumentSaveTransport> later = host.saveTransport();
+    check(later->aborted(), "a transport handed out after the abort starts aborted");
+    check(!later->save(source, content) && platform().calls == 0 && take_discarded() == QStringList{content},
+          "and never reaches the platform");
+    platform() = PlatformCopies();
 }
 
 /* #708: the host knows its session state only after its first poll of the service; the call recording store holds
@@ -3028,6 +3094,7 @@ main(int argc, char** argv) {
     check_document_reentrant_drain();
     check_document_dispatch();
     check_import_dispatch();
+    check_save_transport_dispatch();
     check_stop_publishes_stopping();
     check_session_state_known_after_first_poll();
     check_receiver_health();

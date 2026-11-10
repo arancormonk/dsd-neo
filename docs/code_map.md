@@ -11288,6 +11288,59 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   Airspy's `gainDb` is -1, its gains being in its map. The start path has no tenth-dB or manual-0 gain; the tuner runs
   its nearest step. `WizardScreen.openForFound()` copies them into the draft only for a detection; the Spectrum's save
   passes none and keeps the app defaults its session ran on (`tst_wizard_search_save.qml`, `UI_QT_SIGNAL_SEARCH`).
+  Export (#826): `SignalSearchModel::prepareExport(kind)` builds the whole file on the GUI thread when the button is
+  pressed, from the store's snapshots, and keeps it as the one pending export (a new prepare drops the one before it):
+  `"detections"` is every stored detection, newest first; `"avoids"` is the permanent list in saved order, then the
+  shown session's list, read as one consistent pair (revision, permanent get, session get, revision, again until the
+  two revisions are equal, at most `kAvoidReadTries` = 32 times), a frequency in both written once, as `permanent`. It
+  returns `{token, count}`: a token above 0 with the row count, `{0, 0}` for no rows, `{0, -1}` for an unknown kind or
+  avoid lists that kept changing. `saveExport(token, reference)` hands the pending file to the model's
+  `DocumentExportWriter` and forgets it; a token that is not the pending one, or a save while one runs, is refused and
+  the reference's Download-folder row let go of (through the save transport). `discardExport(token)` drops only that
+  token's file, and `exportFinished(token, ok)` reports an accepted save on the GUI thread. The model owns the writer,
+  made in its constructor from `host->saveTransport()` (a base transport without a host) under
+  `<CacheLocation>/signal-search-export`, and destroys it inside its own teardown stage; the model lives as long as the
+  QML engine, so a writer's abort (process-wide on Android) only ever happens at teardown. The files are built by
+  `signal_search_export.{h,cpp}` (pure builders the tests feed records to): the detections file's columns are
+  `started_utc,ended_utc,ended,frequency_hz,frequency_mhz,listen_mode,identification,protocol,access,tone,site,slot,`
+  `target,source,encryption,power_dbfs,noise_dbfs,range,bandwidth_hz,saved_names` (UTC times with milliseconds, empty
+  for a 0 time; `identification` `confirmed`, `unresolved` or `rf-only`; a party's received text, else its non-zero
+  number; levels to 0.1 dB, empty when not finite), and leave out the input spec, PPM, bias tee, gain, Airspy
+  settings and ids. `saved_names` is hitMap()'s `knownLabel`: both call `knownMatches()` at the detection's match
+  width (bandwidth, or the step when narrower), the export once per frequency and width. `csv_text.{h,cpp}` writes
+  each record: UTF-8 with a byte order mark, CRLF after every record, `.` decimals, RFC 4180 quoting, and a leading
+  `'` on a text column that starts like a formula. Test: `UI_QT_SIGNAL_SEARCH` (exact rows, locale, avoid reads
+  retried, tokens, a 1,000-row export over a heavy index).
+  The screen's side (#826): **Export detections…**, a full-width `OutlineButton` ending Recent detections after Show
+  more (inside `recentDetections`, shown while the history has rows), and **Export avoids…** after the Permanent avoids
+  list (shown while either list the screen shows has an entry, `avoidsExportShown`) both call `beginExport(kind)`,
+  which takes the rows through `prepareExport()` at the press. A count of 0 says "No detections to export." / "No
+  avoids to export." and any other 0 token "The avoid lists were changing. Try again.", with no picker; otherwise one
+  screen-level `DocumentPicker` (`searchExportPicker`: save, `text/csv`, "CSV files (*.csv)", suffix `csv`) asks
+  under "Signal search detections yyyy-MM-dd.csv" / "Signal search avoids yyyy-MM-dd.csv" (the local date from
+  `savedSystems.realtimeNowMs()`; always a lowercase `.csv`, since Android's save picker appends the type's extension
+  to `x.CSV`). Both buttons are disabled while an export is pending (`exportToken`, from the press until the pick backs
+  out or the file is written). An accepted pick goes to `saveExport(token, reference)`; a refusal (false) has already
+  let the Download-folder row go in C++, so the screen releases that token (only while it still holds it) and shows the
+  failure at once. A cancelled pick calls `discardExport(token)` and says nothing; an unavailable one discards and shows
+  the picker's message; hiding the screen calls `picker.cancel()`, and a write already running finishes. An
+  `exportFinished(token, ok)` for a token the screen no longer holds is ignored, so a late result never clears a newer
+  export; otherwise the line says "Exported N detections." / "Exported N avoids." (`Util.countText`, the singular for
+  1), "… to Download/DSD-neo as <name>." for a Download-folder save (`savedToDownloads`,
+  `decoderHost.savedDocumentName()`, the name last) or "The export couldn't be written. Try another location." Each
+  entry point has its own result line (`ExportMessage`: plain text, `Accessible.AlertMessage`, gated as `searchMessage`
+  is, the alert colour for a failure) directly under its button and apart from `searchMessage`, so neither hides the
+  other; its visibility depends on its message only, so an avoid result stays when the lists empty. The detections
+  line lives in `recentDetections` and reads the screen's state, so the Loader swap at a session's start or stop keeps
+  it. Each message is `{text, error, heard}`, and a new export clears both. `announceExport()`, as
+  `StoreNoticeCard.announceNew()`, reads an unheard message through `Navigation.announce()` only while the screen is
+  visible, its line is shown and `Navigation.allows()` it, then marks it heard; a zero-interval Timer runs it when a
+  message is set and when the screen's visibility, its navigation gate (`exportLinesReachable`) or a detections
+  Loader's item changes. So a result that lands while the screen is hidden or under a menu or sheet is read once when
+  its line can be reached, and a rebuilt line never reads a heard message again. Showing the screen clears a heard
+  message and keeps an unheard one (`tst_signal_search.qml` `test_export_*`, `test_refused_save_fails_at_once`,
+  `test_stale_export_result_is_ignored`, `test_hiding_the_screen_cancels_the_picker`, `test_result_*`,
+  `test_loader_swap_keeps_the_export_and_its_line`).
 
 - Path: `src/ui`
 - Targets: `dsd-neo_ui_terminal` (option `DSD_ENABLE_TERMINAL_UI`, default ON), `dsd-neo_ui_qt`
@@ -12859,7 +12912,21 @@ Qt Quick frontend (`src/ui/qt`):
   first. A row gone meanwhile, or a model reset while hidden (a Talkgroups table with new bounds), lands at the start,
   as a reset does while shown. Filters stay set; a filter changed while hidden (History's is shared by both screens, and
   a pending search is flushed on hide, after the log noted its place) drops the place through `KeepPlace.forget()`, so
-  the new result shows from the start. Tests: `UI_QT_QML_A11Y_CHURN` (`test_e_calls_leave_hidden_lists_quiet`,
+  the new result shows from the start. The Signal search screen (issue #826 B1) is hidden, never destroyed, while a
+  search runs on, so its Recent detections rows and both avoid lists take their models through a `Binding` (`when:
+  listsLive`, `restoreMode: Binding.RestoreNone`) instead of `KeepPlace`: hidden, each keeps its last model rather than
+  an empty one. Its lists are Repeaters in a `Column` inside one Flickable, so emptying them would shorten the page and
+  `setContentHeight()` would clamp `contentY` at once, losing the reader's place. Only the rows freeze: each list's
+  delegates keep their last model, so no row is built or destroyed while hidden, and they follow the store again on
+  show, where the shrink `resetView()` made on hide (Show more back to five) lands. The section headings ("Avoided this
+  session", "Permanent avoids"), the empty hint, **Show more** and both export Columns still bind the live lists, as
+  before #826, so their `visible` can flip while hidden and change the Column's height; that brings no accessibility
+  churn, since nothing under a hidden parent is effectively visible. `listsLive` is set first thing in
+  `onVisibleChanged`, before `resetView()`: a `when` bound to `visible` itself could be told after the handler and
+  rebuild the rows while hidden. A detections Loader item made while hidden starts with no rows and fills on show
+  (`tst_signal_search.qml` `test_hidden_screen_builds_no_rows`, `test_hidden_screen_keeps_the_readers_place`,
+  `test_hidden_screen_shrinks_on_return`).
+  Tests: `UI_QT_QML_A11Y_CHURN` (`test_e_calls_leave_hidden_lists_quiet`,
   `tst_a11y_talkgroups.qml` `test_hidden_screen_keeps_the_readers_place`), `UI_QT_QML_CALL_LISTS`
   (`tst_call_log_follow.qml` `test_00`, `test_08` to `test_12`; `tst_call_recording_rows.qml`
   `test_home_recent_calls_*`), `UI_QT_TALKGROUP_LIST_MODEL`.
@@ -13152,6 +13219,37 @@ Qt Quick frontend (`src/ui/qt`):
   per-chunk predicate checks the request's cancel and the transport's abort; a write or commit that hits `ENOSPC`
   (`ResourceError` or errno) is `DocumentLocalFailed` with `noSpace`. `abortDocumentTransfers()` aborts every transport
   handed out (the host keeps weak references), and one handed out after it starts aborted.
+  `document_save_transport.{h,cpp}` is the export saves' transport (#826): `DecoderHost::saveTransport()` hands out a
+  new `DocumentSaveTransport` each call (a platform host through `keepSaveTransport()`), which never calls the host, so
+  the export writer may keep it and finish a save past the host. `save(sourcePath, reference)` blocks and answers
+  whether the document now holds the source's bytes; `discardPendingDownload(reference)` lets go of a picked
+  Download-folder row nothing will be saved to (base: no-op); `abort()` fails the running save at its next chunk and
+  every later one. The base transport's save is `copy_file_to_local_document()`, the same local copy (file URL or
+  absolute path, owner-only through `QSaveFile`, no cap) `DecoderHost::copyFileToDocument()` makes on the host's own
+  flag. `abortDocumentTransfers()` aborts every save transport handed out too, and one handed out after it starts
+  aborted. `abort()` calls the protected `abortPlatform()`, which a platform transport uses to stop its own copies. The
+  base save asks the protected `proceedCopy(copied)` before each chunk (base: true until `abort()`); the abort test
+  overrides it to hold a copy partway until the abort lands. Test: `UI_QT_SIGNAL_SEARCH` (local saves, abort before and
+  during a save (held after its first chunk), the hand-out, a transport past its host).
+  `document_export_writer.{h,cpp}` is the export writer (#826): `DocumentExportWriter(transport, cacheRoot, owner,
+  reply)` lives on its owner's thread. `submit(token, bytes, reference)` runs one job at a time on a one-thread
+  `QThreadPool`: it writes the bytes to `<token>.csv` in the writer's own owner-only folder `<cacheRoot>/<uuid>/`
+  (`QSaveFile` + `open_private()`), hands that file to `transport->save()`, and removes it whatever happened; a job that
+  cannot stage (no folder or lock, an open, write or commit failure) calls `discardPendingDownload(reference)` instead
+  and fails. `submit()` answers false, discarding the reference's Download-folder row at once, while a job runs
+  (`busy()`), once the transport is aborted, or always when `cacheRoot` is empty or relative (that writer makes no
+  folder or lock and sweeps nothing). `reply(token, ok)` is queued to the owner's thread through a shared link (mutex,
+  owner and writer pointers) the destructor clears, so a job that ends after the writer never reaches it. Each writer
+  holds `<cacheRoot>/<uuid>.lock` (`QLockFile`, `setStaleLockTime(0)`: age never makes it stale) for its life; the
+  constructor sweeps every other writer's folder (and orphan lock) whose lock it can take with `tryLock(0)` (no lock, or
+  a holder whose process is gone), so a live writer in this or another process keeps its folder. Only names a writer
+  gives count: a brace-less lowercase UUID (`QUuid::fromString()` round-tripping `WithoutBraces`), with or without
+  `.lock`; a lock file named `.lock` alone (whose stem is the cache root itself) and every other entry are never locked
+  or removed. The destructor aborts the transport only when a job is still running, waits up to `kStopWaitMs` (2000),
+  and then removes its folder and lock; a job blocked past that keeps its worker and lock (never deleted, as
+  `ImportService`'s) and its folder until the process ends, for a later sweep. Test: `UI_QT_SIGNAL_SEARCH` (save, failed
+  save, staging failures, refusals, sweep against in-process, child-process, dead and day-old locks, a bare `.lock` and
+  other names left alone, an empty or relative root, cooperative and blocked teardown).
   `import_service.{h,cpp}` is the import worker (#832) the library and the replay imports share; `ui_load()` makes the
   one service (not published to QML) from `host->importTransport()` right after `ImportService::sweepStaging()`, which
   runs once after the restore applies and removes `<AppData>/import-staging/` wholly (a link is removed, never
@@ -14000,10 +14098,11 @@ Qt Quick frontend (`src/ui/qt`):
   ending call `close()`. Only the live id is answered; a Download-folder pick for a request this picker gave up goes
   to `discardPendingDownload`, never one another picker waits for. `savedToDownloads` says the last accepted save
   went to the Download folder; it is set before `accepted`, so a save owner that no longer wants an accepted pick
-  (`BackupFlow.savePicked()`, `CallRecordingPlayer.savePicked()`, `CallRecordingsScreen.exportPicked()`) discards a
-  Download-folder row itself. On the desktop path an open clears the dialog's selection (`currentFiles = []`:
-  `selectedFiles` is read-only and `selectedFile = ""` is refused), so an accept with no new choice answers
-  `noResult`, never the previous file; a dialog that cannot open answers `failed`. Test: `UI_QT_QML_DOCUMENT_PICKER`.
+  (`BackupFlow.savePicked()`, `CallRecordingPlayer.savePicked()`, `CallRecordingsScreen.exportPicked()`,
+  `SignalSearchScreen.exportPicked()`) discards a Download-folder row itself. On the desktop path an open clears the
+  dialog's selection (`currentFiles = []`: `selectedFiles` is read-only and `selectedFile = ""` is refused), so an
+  accept with no new choice answers `noResult`, never the previous file; a dialog that cannot open answers `failed`.
+  Test: `UI_QT_QML_DOCUMENT_PICKER`.
 - `qml/CsvImportFlow.qml` imports a CSV and its companions for three owners: Imported files (`ImportsScreen`), the scan
   list editor's target CSV (`ScanListScreen`) and the wizard's trunking-data fields (`WizardScreen`). Its primary and
   companion pickers (`csvPrimaryPicker`, `csvCompanionPicker`) are `DocumentPicker`s with no filter; a picked document
@@ -14705,7 +14804,10 @@ thread, which the rest of the interface never is.
   document is open closes it with `closeWithError()`, so a provider reading a pipe or socket sees the failure rather
   than a short document, and deletes it; only a whole save closes normally. The write side is
   `DocumentCopies.beginWrite()` and its `DocumentWrite` (`finish(length)` / `fail()`), which call recording exports use
-  too.
+  too. `fail()` leaves a Download-folder row to `DownloadsSave` (`deleteDocument()` cannot remove a MediaStore row), and
+  `copyFileToDocument()` settles one at every exit: published only when the whole save was written, so a row that could
+  not be published fails the save. A save the host never hands to Kotlin (aborted, no resolver) or whose JNI call
+  failed discards it.
 - Import copies (#832): `DocumentCopies.copyImportDocument()` is the same capped temp-file copy for one import request
   id, from the import worker. One `query(DISPLAY_NAME, SIZE)` under the copy's own signal publishes the name
   (`importName()`) and declared size (`importProgress()`, `[copied, declared]`: `copied` is -1 once the copy ended,
@@ -14722,18 +14824,24 @@ thread, which the rest of the interface never is.
   `DocumentCopied` counts only with its file in place (a failed JNI call reads as 0), codes 1-4 pass through and any
   other answer is `DocumentFailed`. Any other reference takes the base transport's local copy. `cancel()` and
   `forget()` reach both sides; `progress()` reads the side the request's latest copy took.
-  too. `fail()` leaves a Download-folder row to `DownloadsSave` (`deleteDocument()` cannot remove a MediaStore row), and
-  `copyFileToDocument()` settles one at every exit: published only when the whole save was written, so a row that could
-  not be published fails the save. A save the host never hands to Kotlin (aborted, no resolver) or whose JNI call
-  failed discards it.
-- `abortDocumentTransfers()` (only `~BackupModel`) cancels the `CancellationSignal` of every provider call in flight,
-  raises `DocumentTransfer`'s sticky flag, which every chunk checks, and then the base host's. The delete is skipped
-  after an abort, so a save stopped partway leaves a partial document, which never opens as a backup.
-- Tests: `UI_QT_ANDROID_HOST` (engine-busy decision, document and import dispatch), `UI_QT_IMPORT_TRANSPORT` (the
-  base transport's cap, cancel, abort and progress, and the host's hand-out), `ANDROID_DOCUMENT_TRANSFER_JVM`
-  (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` and its import copies against provider stubs),
-  `UI_QT_BACKUP_MODEL` (a refused save discards its reference). Real providers, JNI and `finishAndRemoveTask()`
-  need a device or emulator.
+- The export saves' transport (#826) is `DecoderHostAndroid::SaveTransport` (`decoder_host_android_documents.cpp`,
+  handed out by `saveTransport()`). A `content://` save takes `saveContentDocument()`, the dispatch
+  `copyFileToDocument()` shares: aborted or without a held `ContentResolver` it discards the Download-folder row and
+  fails; otherwise `platformCopyFileToDocument()`, and a failure discards the row. Any other reference takes the base
+  transport's local copy. `discardPendingDownload()` is `DownloadsSave.discard()`.
+- `abortDocumentTransfers()` (teardown only: `~BackupModel`, and `closeRecordingWork()` while a recording transfer
+  runs) calls `platformAbortDocumentCopies()` (`DocumentCopies.abort()`), which cancels the `CancellationSignal` of
+  every provider call in flight and raises `DocumentTransfer`'s sticky flag, which every chunk checks, and then the base
+  host's abort. A save transport's `abort()` raises the same process-wide platform abort, since a platform copy keeps
+  its own cancellation; the export writer aborts its transport only at its teardown. The delete is skipped after an
+  abort, so a save stopped partway leaves a partial document, which never opens as a backup. An export cut there can
+  leave a short CSV at a location picked through a provider (a Download-folder row is deleted, since `DownloadsSave`
+  removes a row it never published).
+- Tests: `UI_QT_ANDROID_HOST` (engine-busy decision, document, import and save-transport dispatch),
+  `UI_QT_IMPORT_TRANSPORT` (the base transport's cap, cancel, abort and progress, and the host's hand-out),
+  `ANDROID_DOCUMENT_TRANSFER_JVM` (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` and its import copies
+  against provider stubs), `UI_QT_BACKUP_MODEL` (a refused save discards its reference). Real providers, JNI and
+  `finishAndRemoveTask()` need a device or emulator.
 
 Document picker (issue #829; the host API and `qml/DocumentPicker.qml` are under UI, Qt, "Document picker"):
 `DecoderHostAndroid::documentPickerSupported()` is true, so no screen opens Qt's `FileDialog` on Android and Qt's own
@@ -15445,9 +15553,10 @@ item view refills its delegates even while invisible, so:
 - A hidden sheet or screen does not keep a live list model bound. It hands the view its model only while visible:
   `model: sheet.visible ? (metrics.decryptionSlots || []) : []` (KeySheet's slots), `FieldGrid`'s `live: sheet.visible`
   (SiteSheet), `screen.live` (the Talkgroups chips), or `qml/KeepPlace.qml` for a scrolled list that must reopen at
-  the reader's place (History, Home's recent calls, the Talkgroups grid; see "Hidden lists" under UI, Qt). Opening
-  fills it from the readings as they are then. A sheet whose content follows the snapshot can instead refresh only
-  while visible (`NetworkSheet`).
+  the reader's place (History, Home's recent calls, the Talkgroups grid; see "Hidden lists" under UI, Qt), or a
+  `Binding` that keeps the last model while hidden for Repeaters in a scrolled `Column` (the Signal search screen's
+  detections and avoids, same section). Opening fills it from the readings as they are then. A sheet whose content
+  follows the snapshot can instead refresh only while visible (`NetworkSheet`).
 - No changing text in a `ComboBox` model. A new model resets `currentIndex` to 0 and rebuilds every popup delegate,
   open or closed; keep the model a fixed list and put the changing text beside the combo (KeySheet's scope pair and
   its `keySheetTargetName` line).
@@ -15549,8 +15658,8 @@ issue #829) goes through `Navigation.announce(owner, line, text)`: it does nothi
 records `announced`/`announcements` on `owner` for tests, and calls `owner.Accessible.announce(text)` when the Qt in
 use has it. Each failure is read once, and a repeat is read again. Used by `BackupFlow`, `WizardScreen` (`csvNotice`,
 `replayNotice`), `CallRecordingsScreen`, `CallRecordingPlayer`, `CsvImportFlow` (the companion sheet's notice),
-`ImportsScreen` (an import problem, `noticeLine`) and `ScanListScreen` (a target CSV import problem,
-`validationMessage`).
+`ImportsScreen` (an import problem, `noticeLine`), `ScanListScreen` (a target CSV import problem,
+`validationMessage`) and `SignalSearchScreen` (an export's result, once its line can be reached: `announceExport()`).
 
 Building a screen raises a hide for each accessible item created hidden: Qt makes an item accessible as its
 `Accessible` properties are set, before its gate is evaluated. The bridge answers each hide on a large new subtree with
