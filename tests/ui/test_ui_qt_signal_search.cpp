@@ -34,6 +34,7 @@
 #include <QThread>
 #include <QTimer>
 #include <QUrl>
+#include <QUuid>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
@@ -1705,72 +1706,133 @@ kill_lock_holder(QProcess& child) {
     assert(child.waitForFinished(5000));
 }
 
+/* A folder name as a writer gives it: a brace-less lowercase UUID. */
+static QString
+writer_name() {
+    return QUuid::createUuid().toString(QUuid::WithoutBraces);
+}
+
 /* Each writer sweeps the folders no live writer holds: those whose lock it can take (none, or one whose process is
    gone). Age never makes a lock stale. */
 static void
 test_export_writer_sweep(const QString& root) {
     const QString cacheRoot = root + QStringLiteral("/export sweep");
-    QDir(root).mkpath(QStringLiteral("export sweep/free"));
-    write_bytes(cacheRoot + QStringLiteral("/free/1.csv"), "left");
+    const QString idle = writer_name(), live = writer_name(), child = writer_name(), dead = writer_name();
+    const QString lock = QStringLiteral(".lock");
+    QDir(root).mkpath(QStringLiteral("export sweep/") + idle);
+    write_bytes(cacheRoot + QLatin1Char('/') + idle + QStringLiteral("/1.csv"), "left");
 
     // Held in this process, and last written a day ago.
-    QDir(cacheRoot).mkdir(QStringLiteral("live"));
-    auto live = std::make_unique<QLockFile>(cacheRoot + QStringLiteral("/live.lock"));
-    live->setStaleLockTime(0);
-    assert(live->tryLock(0));
+    QDir(cacheRoot).mkdir(live);
+    auto liveLock = std::make_unique<QLockFile>(cacheRoot + QLatin1Char('/') + live + lock);
+    liveLock->setStaleLockTime(0);
+    assert(liveLock->tryLock(0));
     {
-        QFile stamp(cacheRoot + QStringLiteral("/live.lock"));
+        QFile stamp(cacheRoot + QLatin1Char('/') + live + lock);
         assert(stamp.open(QIODevice::ReadOnly));
         assert(stamp.setFileTime(QDateTime::currentDateTimeUtc().addDays(-1), QFileDevice::FileModificationTime));
     }
 
     // Held by another process; and one whose holder is gone.
-    QDir(cacheRoot).mkdir(QStringLiteral("child"));
-    QProcess child;
-    start_lock_holder(child, cacheRoot + QStringLiteral("/child.lock"));
-    QDir(cacheRoot).mkdir(QStringLiteral("dead"));
-    write_bytes(cacheRoot + QStringLiteral("/dead/2.csv"), "left");
-    QProcess dead;
-    start_lock_holder(dead, cacheRoot + QStringLiteral("/dead.lock"));
-    kill_lock_holder(dead);
-    assert(QFileInfo::exists(cacheRoot + QStringLiteral("/dead.lock")));
+    QDir(cacheRoot).mkdir(child);
+    QProcess childHolder;
+    start_lock_holder(childHolder, cacheRoot + QLatin1Char('/') + child + lock);
+    QDir(cacheRoot).mkdir(dead);
+    write_bytes(cacheRoot + QLatin1Char('/') + dead + QStringLiteral("/2.csv"), "left");
+    QProcess deadHolder;
+    start_lock_holder(deadHolder, cacheRoot + QLatin1Char('/') + dead + lock);
+    kill_lock_holder(deadHolder);
+    assert(QFileInfo::exists(cacheRoot + QLatin1Char('/') + dead + lock));
 
     auto transport = std::make_shared<GateTransport>();
     QObject owner;
     ExportReplies log;
     {
         dsd_qt::DocumentExportWriter first(transport, cacheRoot, &owner, log.reply());
-        const QString own =
-            QFileInfo(staging_folder(cacheRoot, {QStringLiteral("child"), QStringLiteral("live")})).fileName();
-        const QStringList expected =
-            sorted({QStringLiteral("child"), QStringLiteral("child.lock"), QStringLiteral("live"),
-                    QStringLiteral("live.lock"), own, own + QStringLiteral(".lock")});
+        const QString own = QFileInfo(staging_folder(cacheRoot, {child, live})).fileName();
+        const QStringList expected = sorted({child, child + lock, live, live + lock, own, own + lock});
         assert(entries(cacheRoot) == expected);
         // Another writer in this process keeps the first one's folder.
         {
             const dsd_qt::DocumentExportWriter second(transport, cacheRoot, &owner, log.reply());
             assert(QFileInfo::exists(cacheRoot + QLatin1Char('/') + own)
-                   && QFileInfo::exists(cacheRoot + QLatin1Char('/') + own + QStringLiteral(".lock")));
+                   && QFileInfo::exists(cacheRoot + QLatin1Char('/') + own + lock));
         }
         assert(entries(cacheRoot) == expected);
     }
 
     // Once the other process is gone its folder goes too; the lock held here keeps its own.
-    kill_lock_holder(child);
+    kill_lock_holder(childHolder);
     {
         const dsd_qt::DocumentExportWriter third(transport, cacheRoot, &owner, log.reply());
-        const QString own = QFileInfo(staging_folder(cacheRoot, {QStringLiteral("live")})).fileName();
-        assert(entries(cacheRoot)
-               == sorted({QStringLiteral("live"), QStringLiteral("live.lock"), own, own + QStringLiteral(".lock")}));
+        const QString own = QFileInfo(staging_folder(cacheRoot, {live})).fileName();
+        assert(entries(cacheRoot) == sorted({live, live + lock, own, own + lock}));
     }
-    live.reset();
-    assert(entries(cacheRoot) == QStringList{QStringLiteral("live")});
+    liveLock.reset();
+    assert(entries(cacheRoot) == QStringList{live});
     {
         // Free now: the next writer sweeps it.
         const dsd_qt::DocumentExportWriter fourth(transport, cacheRoot, &owner, log.reply());
-        assert(!QFileInfo::exists(cacheRoot + QStringLiteral("/live")));
+        assert(!QFileInfo::exists(cacheRoot + QLatin1Char('/') + live));
     }
     assert(entries(cacheRoot).isEmpty());
+    assert(log.replies.isEmpty());
+}
+
+/* The sweep takes only what a writer names: a lock file with no name (whose stem would be the cache root itself),
+   folders and locks that are not brace-less lowercase UUIDs, and loose files all stay, free as their locks are. */
+static void
+test_export_writer_sweep_leaves_other_entries(const QString& root) {
+    const QString cacheRoot = root + QStringLiteral("/export sweep others");
+    const QString id = writer_name();
+    const QStringList folders{QStringLiteral("keep"), QLatin1Char('{') + id + QLatin1Char('}'), id.toUpper()};
+    for (const QString& folder : folders) {
+        QDir(root).mkpath(QStringLiteral("export sweep others/") + folder);
+        write_bytes(cacheRoot + QLatin1Char('/') + folder + QStringLiteral("/1.csv"), "left");
+    }
+    // Lock files whose holders are gone, so a sweep that tried them would take them.
+    for (const QString& stem : {QString(), QStringLiteral("keep")}) {
+        QProcess holder;
+        start_lock_holder(holder, cacheRoot + QLatin1Char('/') + stem + QStringLiteral(".lock"));
+        kill_lock_holder(holder);
+    }
+    write_bytes(cacheRoot + QStringLiteral("/notes.txt"), "left");
+    const QStringList before = entries(cacheRoot);
+    assert(before.size() == 6);
+
+    auto transport = std::make_shared<GateTransport>();
+    QObject owner;
+    ExportReplies log;
+    {
+        const dsd_qt::DocumentExportWriter writer(transport, cacheRoot, &owner, log.reply());
+        const QString own = QFileInfo(staging_folder(cacheRoot, folders)).fileName();
+        assert(entries(cacheRoot) == sorted(before + QStringList{own, own + QStringLiteral(".lock")}));
+    }
+    assert(entries(cacheRoot) == before);
+    for (const QString& folder : folders) {
+        assert(entries(cacheRoot + QLatin1Char('/') + folder) == QStringList{QStringLiteral("1.csv")});
+    }
+}
+
+/* A cache root that is empty or relative stages nothing: no folder or lock is made anywhere, and each submit() is
+   refused at once with the reference's Download-folder row let go of. */
+static void
+test_export_writer_refuses_unrooted_cache(const QString& root) {
+    const QString relative = QStringLiteral("dsd-neo-export-relative-root");
+    assert(!QFileInfo::exists(relative));
+    auto transport = std::make_shared<GateTransport>();
+    QObject owner;
+    ExportReplies log;
+    const QStringList rootEntries = entries(root);
+    for (const QString& cacheRoot : {QString(), relative}) {
+        dsd_qt::DocumentExportWriter writer(transport, cacheRoot, &owner, log.reply());
+        assert(!writer.submit(1, QByteArray("a\r\n"), QStringLiteral("r1")));
+        assert(!writer.busy());
+        assert(transport->discards().last() == QStringLiteral("r1"));
+    }
+    assert(transport->discards().size() == 2 && transport->saves().isEmpty());
+    assert(!QFileInfo::exists(relative) && entries(root) == rootEntries);
+    spin(20);
     assert(log.replies.isEmpty());
 }
 
@@ -2264,6 +2326,8 @@ main(int argc, char** argv) {
     test_export_writer_saves(temp.path());
     test_export_writer_staging_failures(temp.path());
     test_export_writer_sweep(temp.path());
+    test_export_writer_sweep_leaves_other_entries(temp.path());
+    test_export_writer_refuses_unrooted_cache(temp.path());
     test_export_writer_teardown_stops(temp.path());
     test_export_writer_teardown_blocked(temp.path());
     const QString journal = temp.filePath(QStringLiteral("history"));

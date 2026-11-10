@@ -63,7 +63,15 @@ remove_entry(const QString& path) {
     }
 }
 
-/* Every staging folder under @p root a lock file or a folder names, but @p own. */
+/* Whether @p name is one a writer gives its folder: a UUID, brace-less and lowercase, as createUuid() writes it. */
+bool
+is_staging_name(const QString& name) {
+    const QUuid id = QUuid::fromString(name);
+    return !id.isNull() && id.toString(QUuid::WithoutBraces) == name;
+}
+
+/* Every staging folder under @p root a lock file or a folder names, but @p own. Only writers' names count: nothing
+   else under the root is ever locked or removed. */
 QSet<QString>
 staged_names(const QString& root, const QString& own) {
     QSet<QString> names;
@@ -72,10 +80,13 @@ staged_names(const QString& root, const QString& own) {
         dir.entryInfoList(QDir::Dirs | QDir::Files | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
     for (const QFileInfo& entry : found) {
         QString name = entry.fileName();
-        if (entry.isDir()) {
-            names.insert(name);
-        } else if (name.endsWith(lock_suffix())) {
+        if (!entry.isDir()) {
+            if (!name.endsWith(lock_suffix())) {
+                continue;
+            }
             name.chop(lock_suffix().size());
+        }
+        if (is_staging_name(name)) {
             names.insert(name);
         }
     }
@@ -168,15 +179,20 @@ DocumentExportWriter::DocumentExportWriter(std::shared_ptr<DocumentSaveTransport
                                            QObject* owner, Reply reply)
     : m_transport(std::move(transport)), m_root(QDir::cleanPath(cacheRoot)), m_pool(std::make_unique<QThreadPool>()),
       m_link(std::make_shared<Link>()), m_reply(std::move(reply)) {
+    m_link->owner = owner;
+    m_link->writer = this;
+    // One worker: one job at a time.
+    m_pool->setMaxThreadCount(1);
+    if (m_root.isEmpty() || QDir::isRelativePath(m_root)) {
+        // No folder, lock or sweep: such a root would resolve against wherever the app happens to run.
+        qWarning("export writer: the cache root is not an absolute path; exports cannot be staged");
+        return;
+    }
     const QString name = QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_folder = m_root + QLatin1Char('/') + name;
     m_lock = std::make_unique<QLockFile>(m_folder + lock_suffix());
     // Age never makes this lock stale: a writer may live as long as the app.
     m_lock->setStaleLockTime(0);
-    m_link->owner = owner;
-    m_link->writer = this;
-    // One worker: one job at a time.
-    m_pool->setMaxThreadCount(1);
     if (holdLock()) {
         make_private_dir(m_folder);
     }
@@ -202,7 +218,7 @@ DocumentExportWriter::~DocumentExportWriter() {
         abandoned_writers().append(Abandoned{m_pool.release(), m_lock.release()});
         return;
     }
-    if (m_lock->isLocked()) {
+    if (m_lock != nullptr && m_lock->isLocked()) {
         remove_entry(m_folder);
         m_lock->unlock(); // removes the lock file
     }
@@ -213,7 +229,7 @@ DocumentExportWriter::submit(int token, const QByteArray& bytes, const QString& 
     if (m_transport == nullptr) {
         return false;
     }
-    if (m_busy || m_transport->aborted()) {
+    if (m_busy || m_transport->aborted() || m_lock == nullptr) {
         m_transport->discardPendingDownload(reference);
         return false;
     }

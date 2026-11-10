@@ -9,9 +9,10 @@
  *
  * One job at a time runs on a worker thread of the writer's own: it writes the bytes to `<token>.csv` in the writer's
  * staging folder, hands that file to the save transport, and removes it whatever happened. Each writer stages in a
- * folder of its own, `<cacheRoot>/<random>/`, and holds the lock file `<cacheRoot>/<random>.lock` for its whole life,
- * so no two writers (in this process or another) share a path. A writer removes, when made, every other folder under
- * the cache root whose lock it can take: one no live writer holds.
+ * folder of its own, `<cacheRoot>/<uuid>/`, and holds the lock file `<cacheRoot>/<uuid>.lock` for its whole life,
+ * so no two writers (in this process or another) share a path. A writer removes, when made, every other writer's folder
+ * under the cache root whose lock it can take: one no live writer holds. Only entries named as a writer names them (a
+ * brace-less lowercase UUID, with or without `.lock`) are ever locked or removed; anything else there is left alone.
  *
  * Owner-thread only: make, use and destroy a writer on the thread its owner lives on; the reply runs there too.
  */
@@ -44,6 +45,8 @@ class DocumentExportWriter {
      * @param transport Saves the staged file into the picked document; the jobs keep it, so it may outlive the host
      *        that handed it out.
      * @param cacheRoot The folder every writer stages under (the model passes `<CacheLocation>/signal-search-export`).
+     *        An empty or relative path stages nothing: the writer makes no folder or lock, sweeps nothing, and refuses
+     *        every submit().
      * @param owner Where @p reply is delivered: queued to its thread. It must outlive the writer.
      * @param reply Told each accepted job's outcome.
      */
@@ -67,8 +70,8 @@ class DocumentExportWriter {
      * cannot stage the file (no folder, no lock, an open, write or commit failure) lets go of the reference's
      * Download-folder row through the transport and replies false.
      *
-     * @return false, with the reference's Download-folder row let go of at once and no reply, while a job runs or once
-     *         the transport was aborted (the app is closing).
+     * @return false, with the reference's Download-folder row let go of at once and no reply, while a job runs, once
+     *         the transport was aborted (the app is closing), or always for an empty or relative cache root.
      */
     bool submit(int token, const QByteArray& bytes, const QString& reference);
 
