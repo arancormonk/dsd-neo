@@ -3457,9 +3457,11 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             dsd_key_apply_mute_policy(opts, state);                                                                    \
             break;                                                                                                     \
         case 'v': {                                                                                                    \
-            /* Filtering bitmap: 1 voice band-pass, 2 LPF 960 Hz, 4 HPF 960 Hz, 8 digital HPF -- hex or dec */         \
-            unsigned long bm = 0;                                                                                      \
-            if (!cli_parse_ulong_option("-v", optarg, 0, &bm, out_exit_rc)) {                                          \
+            /* Filtering bitmap: 1 voice band-pass, 2 LPF 960 Hz, 4 HPF 960 Hz, 8 digital HPF -- hex or dec, 0..0xF */         \
+            uint32_t bm = 0;                                                                                           \
+            if (dsd_parse_uint_dec_or_hex_strict(optarg, 0xF, &bm) != 0) {                                             \
+                LOG_ERROR("Invalid -v value \"%s\" (expected decimal or 0x hex, 0..0xF)\n", optarg);                   \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             opts->use_pbf = (bm & 0x1) ? 1 : 0;                                                                        \

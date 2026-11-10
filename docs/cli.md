@@ -9,7 +9,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Outputs: `-o pulse | null | udp[:host[:port]] | m17udp[:host[:port]] | -`
 - Record/Logs/Debug: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `--wav-journal calls.jsonl`, `--record-unknown-only`, `--analog-record-max-gap-ms 2000`, `--analog-record-preroll-ms 200`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `--p25-sm-log p25-sm.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`, `--dmr-debug-burst`, `--dmr-debug-unsynced`
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
-- Levels/Audio: `-g 0|1..50`, `-n 0|1..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0x9`
+- Levels/Audio: `-g 0|1..50`, `-n 0|1..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0x1`
 - Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fA | -fM` (Auto, `-fa`, is the default)
 - Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); `--squelch auto[+N]` (open N dB over each analog channel's learned noise floor, radio inputs); `--squelch noise[+N]` (open an FM channel at N dB of quieting, as a radio's squelch does; on audio input from a reference it learns); see [Analog reception](#analog-reception--fa--fm), [Tone filter](#tone-filter-ctcssdcs-receive-policy), [Auto squelch](#auto-squelch---squelch-auto) and [Noise squelch](#noise-squelch---squelch-noise)
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
@@ -2046,9 +2046,10 @@ setting, shown apart from what is received, and it is off by default: then the o
     type never decodes but whose voice frames do at the other polarity (a call). Either takes the other polarity for
     the session, with a notice, as `-xr` or the menu toggle would; `-xr` only sets where it starts.
 - Disable DMR/dPMR/NXDN/M17 input filtering: `-l`
-- Analog filter bitmap (advanced): `-v <hex>`, default `0x9`. `0x1` the analog monitor's voice band-pass: 300-3400 Hz,
+- Filter bitmap, analog and digital (advanced): `-v <n>`, default `0x1`. Decimal or `0x` hex, `0`-`0xF` (a leading zero is
+  still decimal); a sign, `0b`, extra text or a bit above `0x8` is refused. `0x1` the analog monitor's voice band-pass: 300-3400 Hz,
   which takes every CTCSS tone at least 40 dB down on FM, and a DCS signal about 32 dB (a 200 Hz high-pass on AM); `0x2` a 960 Hz
-  low-pass and `0x4` a 960 Hz high-pass on the analog monitor; `0x8` the digital voice high-pass: a 2nd-order
+  low-pass and `0x4` a 960 Hz high-pass on the analog monitor; `0x8` the digital voice high-pass (off by default): a 2nd-order
   Butterworth at 300 Hz (-3 dB at 300 Hz, about -19 dB at 100 Hz, within 0.05 dB of unity from 1 kHz up), run on each
   slot's decoded frames before the gain, so every output that takes digital voice gets it, in both output formats;
   each slot keeps its own filter state, which starts over at a new call or protocol. `-v 0` plays the demodulator's

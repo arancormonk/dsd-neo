@@ -457,11 +457,11 @@ init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
     opts->slot1_on = 1;
     opts->slot2_on = 1;
 
-    //filter options (-v 0x9): the analog voice band-pass and the digital high-pass on
+    //filter options (-v 0x1): the analog voice band-pass on, the digital high-pass off
     opts->use_lpf = 0;
     opts->use_hpf = 0;
     opts->use_pbf = 1;
-    opts->use_hpf_d = 1;
+    opts->use_hpf_d = 0;
 
     //dsp structured file
     opts->dsp_out_file[0] = 0;

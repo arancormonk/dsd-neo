@@ -157,7 +157,7 @@ Main Menu
 │   │   ├── Low-pass filter (960 Hz) [Off]       V
 │   │   ├── High-pass filter (960 Hz) [Off]      B
 │   │   ├── Voice band-pass [On]                 N
-│   │   ├── Digital high-pass filter [On]        H
+│   │   ├── Digital high-pass filter [Off]       H
 │   │   └── Cosine filter [On]
 │   ├── Per-protocol inversion
 │   │   ├── Invert X2-TDMA [Off]

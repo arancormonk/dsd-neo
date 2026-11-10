@@ -6,8 +6,8 @@
 #
 #   - each run leaves at least one per-call WAV, and the three runs leave byte-identical WAVs (their names carry a
 #     random nonce, so the files are compared as a sorted list of content hashes);
-#   - float output carries as many samples as integer output, and turning the digital high-pass off (-v 0x1) changes
-#     what float output plays;
+#   - float output carries as many samples as integer output; the default plays what -v 0x1 plays (the digital
+#     high-pass is off by default), and turning it on (-v 0x9) changes what float output plays;
 #   - with PLAYBACK_MATCH, a mono preset's single call: the integer stdout is the per-call WAV's sample data.
 #
 # As iq_decode_check.cmake does, every run must exit 0, print the expected payload regex and report no sanitizer error,
@@ -83,7 +83,9 @@ endfunction()
 _chain_run(short -o - -7 ./calls -P)
 _chain_run(float -y -o - -7 ./calls -P)
 _chain_run(null -o null -7 ./calls -P)
+_chain_run(float_default -y -o -)
 _chain_run(float_nohpf -y -v 0x1 -o -)
+_chain_run(float_hpf -y -v 0x9 -o -)
 
 _chain_wav_hashes(short _short_wavs)
 _chain_wav_hashes(float _float_wavs)
@@ -110,10 +112,16 @@ if(_short_bytes EQUAL 0 OR NOT _float_bytes EQUAL _float_want)
         "float output wrote ${_float_bytes} bytes for integer output's ${_short_bytes}: not the same samples"
     )
 endif()
-file(SHA256 "${WORK_DIR}/float.raw" _float_hash)
+file(SHA256 "${WORK_DIR}/float_default.raw" _float_default_hash)
 file(SHA256 "${WORK_DIR}/float_nohpf.raw" _float_nohpf_hash)
-if("${_float_hash}" STREQUAL "${_float_nohpf_hash}")
-    _chain_fail("the digital high-pass (-v 0x8) has no effect on float output")
+file(SHA256 "${WORK_DIR}/float_hpf.raw" _float_hpf_hash)
+if(NOT "${_float_default_hash}" STREQUAL "${_float_nohpf_hash}")
+    _chain_fail(
+        "the default does not play what -v 0x1 plays: the digital high-pass is not off by default"
+    )
+endif()
+if("${_float_hpf_hash}" STREQUAL "${_float_nohpf_hash}")
+    _chain_fail("the digital high-pass (-v 0x9) has no effect on float output")
 endif()
 
 if(PLAYBACK_MATCH)

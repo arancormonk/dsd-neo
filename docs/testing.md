@@ -1995,7 +1995,7 @@ compare synthesis against mbelib's own output.
 `DECODE_IQ_VOICE_CHAIN_*` (CTest labels `iq-decode` and `voice-chain`) replay a voice fixture with `-P` through
 `tests/iq_voice_chain_check.cmake` under integer output to stdout, float output (`-y`) to stdout and `-o null`, and
 require byte-identical per-call WAVs from all three (compared as sorted content hashes, since their names carry a
-nonce), as many float samples as integer ones, a float output that `-v 0x1` (high-pass off) changes, and, for a mono
+nonce), as many float samples as integer ones, a default float output equal to `-v 0x1`'s (the digital high-pass is off by default) and a `-v 0x9` float output that differs, and, for a mono
 preset's single call (`PLAYBACK_MATCH`), the integer stdout equal to the WAV's samples. The runner removes its work
 folder, failing or not.
 
@@ -2168,7 +2168,7 @@ a missed bound), the named `ANALOG AUDIO FAIL:` line, an `ANALOG METRIC:` line (
 When a later change adds a bound or a new kind of check to the host, add a negative control beside it.
 
 A few things about these numbers. Since issue #518 the default monitor chain is the voice band-pass (300-3400 Hz,
-`-v 0x9`; its FM high-pass takes every CTCSS tone 40 dB down and a DCS signal about 32 dB) and the analog AGC (`-n 0`), which takes a
+`-v 0x1`; its FM high-pass takes every CTCSS tone 40 dB down and a DCS signal about 32 dB) and the analog AGC (`-n 0`), which takes a
 steady tone's peaks to -10 dBFS and real speech to about the level digital voice decodes to: the DMR voice path played
 the `dmr_voice` capture at -24.9 dBFS RMS (that capture later proved to be a control channel received at inverted
 polarity, decoded as voice, issue #729; the figure stays as the speech-level target the window encodes), `nfm_ctcss_real` and `am_airband_real` at -23.9 dBFS each, where the old chain played them at -44.6
@@ -3993,7 +3993,7 @@ request:
   and the bit order, which the synthetic fixtures cannot check).
 - [ ] Tone filtering: allowed traffic opens within the detection window, rejected and untoned traffic stays silent,
   and nothing leaks at the start of a rejected transmission (#527).
-- [ ] Level and AGC (#518), with the defaults (`-n 0`, `-v 0x9`): NFM, AM and digital voice at matching loudness in a
+- [ ] Level and AGC (#518), with the defaults (`-n 0`, `-v 0x1`): NFM, AM and digital voice at matching loudness in a
   mixed scan; no pumping in pauses (hiss does not swell between words); a squelch tail or key-up noise does not leave
   the next transmission quiet; AM static does not duck the speech after it for seconds; a 151.4 Hz CTCSS tone is
   inaudible; and the `-8` source monitor under digital decoding plays without clipping.
