@@ -4,7 +4,8 @@
 /*
  * The document picker's requests and answers (#829), less their JNI transport (platform*Document*() there), on the Qt
  * thread. The Download-folder rows its saves write into (DownloadsSave.kt) are named and discarded through
- * platformSavedDocumentName() and platformDiscardPendingDownload() there, from any thread.
+ * platformSavedDocumentName() and platformDiscardPendingDownload() there, from any thread. The documents other apps
+ * open with this one (#831) reach the host's slot here too, through platformTakeIncomingDocument().
  */
 
 #include <QLatin1String>
@@ -50,6 +51,7 @@ DecoderHostAndroid::cancelDocumentRequest(qint64 requestId) {
     }
     m_document_request = 0;
     platformCancelDocument(requestId);
+    publishDocumentRequest(true);
 }
 
 QString
@@ -66,6 +68,7 @@ void
 DecoderHostAndroid::beginDocumentRequest(qint64 id) {
     const qint64 replaced = m_document_request;
     m_document_request = id;
+    publishDocumentRequest(replaced != 0);
     if (replaced != 0) {
         /* The platform drops it too, so its record (and a Download-folder row it holds) is never left waiting when the
          * new request does not reach the platform. A request that does would replace it there anyway. */
@@ -83,6 +86,7 @@ DecoderHostAndroid::refuseDocumentRequestLater(qint64 id, const QString& reason)
             if (m_document_request == id) {
                 m_document_request = 0;
                 Q_EMIT documentPickUnavailable(id, reason);
+                publishDocumentRequest(true);
             }
         },
         Qt::QueuedConnection);
@@ -93,8 +97,22 @@ DecoderHostAndroid::refreshDocumentPicks() {
     /* Drained even with no request live: a record for a request since given up may be a Download-folder row, which
      * deliver_document_pick_record() discards. */
     for (QString record = platformPollDocumentPick(); !record.isEmpty(); record = platformPollDocumentPick()) {
+        const bool wasPending = m_document_request != 0;
         deliver_document_pick_record(*this, m_document_request, record);
+        publishDocumentRequest(wasPending);
     }
+}
+
+void
+DecoderHostAndroid::publishDocumentRequest(bool wasPending) {
+    if (wasPending != (m_document_request != 0)) {
+        Q_EMIT documentRequestChanged();
+    }
+}
+
+void
+DecoderHostAndroid::refreshIncomingDocuments() {
+    offerIncomingDocument(platformTakeIncomingDocument());
 }
 
 } // namespace dsd_android

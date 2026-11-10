@@ -56,6 +56,7 @@ constexpr const char* kPlaybackClass = "io/github/arancormonk/dsdneo/RecordingPl
 constexpr const char* kExportClass = "io/github/arancormonk/dsdneo/RecordingExport";
 constexpr const char* kRecordingShareClass = "io/github/arancormonk/dsdneo/RecordingShare";
 constexpr const char* kPickerClass = "io/github/arancormonk/dsdneo/DocumentPicker";
+constexpr const char* kIncomingClass = "io/github/arancormonk/dsdneo/IncomingDocuments";
 constexpr const char* kDownloadsClass = "io/github/arancormonk/dsdneo/DownloadsSave";
 constexpr const char* kSignInClass = "io/github/arancormonk/dsdneo/SignInAutofill";
 
@@ -1070,6 +1071,13 @@ DecoderHostAndroid::platformPollDocumentPick() {
     // Must match DocumentPicker.kt: @JvmStatic fun pollResult(): String.
     const QJniObject record = QJniObject::callStaticObjectMethod(kPickerClass, "pollResult", "()Ljava/lang/String;");
     return record.isValid() ? record.toString() : QString();
+}
+
+QString
+DecoderHostAndroid::platformTakeIncomingDocument() {
+    // Must match IncomingDocuments.kt: @JvmStatic fun take(): String.
+    const QJniObject uri = QJniObject::callStaticObjectMethod(kIncomingClass, "take", "()Ljava/lang/String;");
+    return uri.isValid() ? uri.toString() : QString();
 }
 
 /* #829: DownloadsSave runs every MediaStore and grant call on its own thread; these only hand work over or read memory,

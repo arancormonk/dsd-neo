@@ -320,6 +320,25 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
             documentCall(QStringLiteral("discardPendingDownload"), {{QStringLiteral("reference"), reference}}));
     }
 
+    /* Issue #831: a picker request in flight, as a case sets it (testContext.setDocumentRequestPending()); the requests
+     * above leave it alone. A case offers an incoming document through testContext.emitIncomingDocument(). */
+    bool requestPending = false;
+
+    bool
+    documentRequestPending() const override {
+        return requestPending;
+    }
+
+    void
+    setDocumentRequestPending(bool pending) {
+        if (requestPending != pending) {
+            requestPending = pending;
+            Q_EMIT documentRequestChanged();
+        }
+    }
+
+    using dsd_qt::DecoderHost::offerIncomingDocument;
+
     /** @brief What lastDocumentRequest() reports: {id, kind ("open" or "save"), name, mime}. */
     static QVariantMap
     documentRequest(qint64 id, const QString& kind, const QString& name, const QString& mime) {
@@ -2633,6 +2652,38 @@ class ReadingMap : public QQmlPropertyMap {
         noteCall(QStringLiteral("discardPendingDownload"), {{QStringLiteral("reference"), reference}});
     }
 
+    /* Issue #831: the incoming document slot and the picker-in-flight reading, as DecoderHost publishes them; a case
+     * drives both through testContext (emitIncomingDocument(), setDocumentRequestPending()). */
+    Q_INVOKABLE QString
+    takeIncomingDocument() {
+        if (m_incomingDocument.isEmpty()) {
+            return QString();
+        }
+        QString reference;
+        reference.swap(m_incomingDocument);
+        insert(QStringLiteral("incomingDocumentPending"), false);
+        Q_EMIT incomingDocumentChanged();
+        return reference;
+    }
+
+    void
+    offerIncomingDocument(const QString& reference) {
+        if (reference.isEmpty()) {
+            return;
+        }
+        m_incomingDocument = reference;
+        insert(QStringLiteral("incomingDocumentPending"), true);
+        Q_EMIT incomingDocumentChanged();
+    }
+
+    void
+    setDocumentRequestPending(bool pending) {
+        if (value(QStringLiteral("documentRequestPending")).toBool() != pending) {
+            insert(QStringLiteral("documentRequestPending"), pending);
+            Q_EMIT documentRequestChanged();
+        }
+    }
+
     void
     publishPlayback(const QString& path, int state, qint64 positionMs, qint64 durationMs, const QString& error) {
         insert(QStringLiteral("playbackPath"), path);
@@ -2676,9 +2727,12 @@ class ReadingMap : public QQmlPropertyMap {
     void documentPicked(qint64 requestId, const QString& reference, const QString& displayName, bool inDownloads);
     void documentPickCancelled(qint64 requestId);
     void documentPickUnavailable(qint64 requestId, const QString& reason);
+    void documentRequestChanged();
+    void incomingDocumentChanged();
 
   private:
     qint64 m_documentRequestId = 0;
+    QString m_incomingDocument;
 
     void
     noteCall(const QString& name, QVariantMap args) {
@@ -4639,6 +4693,29 @@ class Setup : public QObject {
         }
     }
 
+    /**
+     * @brief Offer @p reference on the installed host as a document another app opened with this one (#831), as the
+     * Android host's poll does: it replaces one not taken, and incomingDocumentChanged() follows.
+     */
+    Q_INVOKABLE void
+    emitIncomingDocument(const QString& reference) {
+        if (hostReadingsInstalled()) {
+            m_host_readings->offerIncomingDocument(reference);
+        } else {
+            m_lifecycle_host->offerIncomingDocument(reference);
+        }
+    }
+
+    /** @brief Whether the installed host has a picker request in flight (documentRequestPending, #831). */
+    Q_INVOKABLE void
+    setDocumentRequestPending(bool pending) {
+        if (hostReadingsInstalled()) {
+            m_host_readings->setDocumentRequestPending(pending);
+        } else {
+            m_lifecycle_host->setDocumentRequestPending(pending);
+        }
+    }
+
     /** @brief The Download folder name every host reports for @p reference through savedDocumentName(). */
     Q_INVOKABLE void
     setSavedDocumentName(const QString& reference, const QString& name) {
@@ -5604,6 +5681,9 @@ class Setup : public QObject {
         /* Issue #829: unlike the base host's, true, so the screens take the app's picker, which a case answers
          * through testContext; setDocumentPickerSupported(false) puts Qt's FileDialog back. */
         host[QStringLiteral("documentPickerSupported")] = true;
+        /* Issue #831: no picker request in flight and no incoming document; a case drives both through testContext. */
+        host[QStringLiteral("documentRequestPending")] = false;
+        host[QStringLiteral("incomingDocumentPending")] = false;
         host[QStringLiteral("localDeviceFailureKind")] = 0;
         host[QStringLiteral("localDeviceRequestPending")] = false;
         host[QStringLiteral("localDeviceRequestedSource")] = QString();

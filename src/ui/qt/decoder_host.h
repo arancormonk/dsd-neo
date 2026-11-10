@@ -57,6 +57,8 @@ class DecoderHost : public QObject {
     Q_PROPERTY(bool locationSupported READ locationSupported CONSTANT)
     Q_PROPERTY(bool shareSupported READ shareSupported CONSTANT)
     Q_PROPERTY(bool documentPickerSupported READ documentPickerSupported CONSTANT)
+    Q_PROPERTY(bool documentRequestPending READ documentRequestPending NOTIFY documentRequestChanged)
+    Q_PROPERTY(bool incomingDocumentPending READ incomingDocumentPending NOTIFY incomingDocumentChanged)
     Q_PROPERTY(int localDeviceFailureKind READ localDeviceFailureKind NOTIFY localDeviceChanged)
     Q_PROPERTY(bool localDeviceRequestPending READ localDeviceRequestPending NOTIFY localDeviceChanged)
     Q_PROPERTY(QString localDeviceRequestedSource READ localDeviceRequestedSource NOTIFY localDeviceChanged)
@@ -465,6 +467,25 @@ class DecoderHost : public QObject {
     discardPendingDownload(const QString& reference) {
         (void)reference;
     }
+
+    /** @brief Whether a request of this host waits for its answer (documentRequestChanged()); the base host: false. */
+    virtual bool
+    documentRequestPending() const {
+        return false;
+    }
+
+    /*
+     * A document another app opened with this one, or shared to it (issue #831): the platform offers its reference, a
+     * plain string as documentPicked()'s, and the UI takes it when it is free to. One waits at a time; a newer one
+     * replaces one not yet taken. The base host never offers one. Call these on the Qt thread.
+     */
+    bool
+    incomingDocumentPending() const {
+        return !m_incomingDocument.isEmpty();
+    }
+
+    /** @brief The reference waiting, once, which leaves none waiting; empty, with no signal, when none waits. */
+    Q_INVOKABLE QString takeIncomingDocument();
 
     virtual QString
     audioRoute() const {
@@ -885,8 +906,15 @@ class DecoderHost : public QObject {
      * "noResult", "failed" or "unsupported" (the host has no picker).
      */
     void documentPickUnavailable(qint64 requestId, const QString& reason);
+    /** @brief documentRequestPending() changed; it comes after the answer that ended a request. */
+    void documentRequestChanged();
+    /** @brief A document was offered, replacing any not taken, or the one waiting was taken. */
+    void incomingDocumentChanged();
 
   protected:
+    /** @brief Leave @p reference for takeIncomingDocument(), in place of any not taken; empty is no document. */
+    void offerIncomingDocument(const QString& reference);
+
     /** @brief Start playing @p path, a file that exists, published Preparing. The base host has no player. */
     virtual void beginPlayback(const QString& path);
 
@@ -978,6 +1006,8 @@ class DecoderHost : public QObject {
     qint64 m_documentRequestId = 0;
     /* The base host's requests whose queued "unsupported" answer has not run yet and was not cancelled. */
     QSet<qint64> m_refusedDocumentRequests;
+    /* The incoming document waiting for takeIncomingDocument(); empty with none. */
+    QString m_incomingDocument;
     std::function<bool(const QString&)> m_recordingIndexed;
     std::function<int(const QString&)> m_recordingHold;
     std::function<void(int)> m_recordingRelease;

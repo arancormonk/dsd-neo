@@ -14054,6 +14054,16 @@ Qt Quick frontend (`src/ui/qt`):
   `testContext.lastDocumentRequest()` / `documentCalls()` and answers with `answerDocumentPicked`,
   `answerDocumentCancelled`, `answerDocumentUnavailable` (on whichever host is installed) and `setSavedDocumentName`.
   Test: `UI_QT_IMPORTED_FILES` (base defaults).
+  `documentRequestPending` (NOTIFY `documentRequestChanged`; base false) is true while a request of this host waits for
+  its answer, so QML can hold other work until the picker is back (#831).
+- Documents from other apps (issue #831): one incoming document waits in the host's slot until the UI takes it.
+  `incomingDocumentPending` (NOTIFY `incomingDocumentChanged`) says one waits; `takeIncomingDocument()` returns its
+  reference once and empties the slot (empty, with no signal, when none waits); a platform host calls the protected
+  `offerIncomingDocument(reference)`, which replaces a document not yet taken and emits (an empty reference offers
+  nothing). The base host never offers one. The reference is a plain string end to end, like a picked one. QML tests:
+  the `decoderHost` map and `ImportOnlyHost` both carry the slot and `documentRequestPending`; a case drives them with
+  `testContext.emitIncomingDocument(ref)` and `setDocumentRequestPending(bool)` on whichever host is installed. Tests:
+  `UI_QT_IMPORTED_FILES` (the base slot), `tst_context_fixture.qml` (both fakes).
 - `qml/DocumentPicker.qml` is the one picker screens use (`mode` "open"/"save", `title`, `nameFilters`,
   `defaultSuffix`, `mimeType`, `suggestedName`). `open()` asks the host when `documentPickerSupported`, cancelling its
   own earlier request first, and otherwise opens a `FileDialog` it makes through an `Instantiator` (a QtObject root,
@@ -14825,7 +14835,8 @@ request code (1305) is never used.
   `create()` Qt's context only when `QAndroidApplication::isActivityContext()`; false there, or a call that failed
   (both Kotlin entries return true), answers `documentPickUnavailable(id, "failed")`, queued, unless the request was
   replaced first. `cancelDocumentRequest()` forgets the live id and calls `DocumentPicker.cancel()`; other ids are
-  ignored.
+  ignored. `documentRequestPending()` is `m_document_request != 0`; `documentRequestChanged` is emitted when that
+  flips, after the answer that ended the request, so a slot that asks again inside the answer leaves nothing to tell.
 - Answers: `refresh()` drains `DocumentPicker.pollResult()` every tick (`refreshDocumentPicks()`), live request or
   not, and `android/document_pick_record.h` (JNI-free) turns each JSON record (`{"id","kind":"picked","uri","name",
   "downloads"}`, `{"id","kind":"cancelled"}`, `{"id","kind":"unavailable","reason"}`) into the signal, for the live id
@@ -15104,8 +15115,12 @@ stays as it is, with no cleanup fallback. The app prevents it and records what s
   `IncomingDocuments` (the Android shell) reads the intent, with the stream through `IntentCompat.getParcelableExtra()`
   (the typed getter only on API 34+) inside a `RuntimeException` catch, and leaves an accepted URI's text in one
   `IncomingMailbox`: a newer document replaces one not yet taken, `take()` returns it once (`""` when none waits), and
-  nothing is persisted. The activity callbacks only read the intent and make the two lookups; no provider query, open
-  or copy runs there.
+  nothing is persisted. The Qt host polls it: `refresh()` ends with `refreshIncomingDocuments()`
+  (`decoder_host_android_documents.cpp`, JNI-free, after `refreshDocumentPicks()`), which takes through
+  `platformTakeIncomingDocument()` (`IncomingDocuments.take()`, `decoder_host_android.cpp`, kept in
+  `proguard-rules.pro`) and only then offers the reference to the host's slot, since a slot of the signal may run
+  `refresh()` again (`UI_QT_ANDROID_HOST`). The activity callbacks only read the intent and make the two lookups; no
+  provider query, open or copy runs there.
 - `android:configChanges` lists every flag android-36 defines except `resourcesUnused` (19 flags; that one is meant
   for activities that use no resources, and this one has the splash, strings and the notice), so no configuration
   change recreates the activity. `assetsPaths` (a runtime overlay turned on) exists only from android-36, so

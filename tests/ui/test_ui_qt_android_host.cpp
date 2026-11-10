@@ -173,6 +173,13 @@ picker() {
     return value;
 }
 
+/* IncomingDocuments' mailbox (#831), as take() hands it out: the URI waiting, once. */
+static QString&
+incoming_mailbox() {
+    static QString value;
+    return value;
+}
+
 namespace {
 /* DownloadsSave (#829): the rows the host discards, from any thread, and the names of the rows it published. */
 struct PlatformDownloads {
@@ -629,6 +636,13 @@ DecoderHostAndroid::platformPollDocumentPick() {
 }
 
 QString
+DecoderHostAndroid::platformTakeIncomingDocument() {
+    QString uri;
+    uri.swap(incoming_mailbox());
+    return uri;
+}
+
+QString
 DecoderHostAndroid::platformSavedDocumentName(const QString& reference) {
     PlatformDownloads& d = downloads();
     const std::lock_guard<std::mutex> lock(d.mutex);
@@ -975,6 +989,106 @@ check_document_reentrant_drain() {
           "the new request stays live and its record later in the same drain answers it");
     QCoreApplication::processEvents();
     check(host.answers.size() == 2, "nothing else is answered afterwards");
+}
+
+/*
+ * #831: a document another app opened with this one waits in IncomingDocuments until refresh() takes it into the
+ * host's slot, before the signal, so a slot that runs refresh() again finds none and it arrives once.
+ */
+static void
+check_incoming_document_poll() {
+    incoming_mailbox().clear();
+    PickerHost host;
+    int changes = 0;
+    QStringList taken;
+    bool reentered = false;
+    bool mailboxEmptyAtSignal = false;
+    QObject::connect(&host, &dsd_qt::DecoderHost::incomingDocumentChanged, &host, [&] {
+        if (++changes == 1) {
+            mailboxEmptyAtSignal = incoming_mailbox().isEmpty();
+        }
+        if (!reentered) {
+            reentered = true;
+            host.refresh();
+            taken.append(host.takeIncomingDocument());
+        }
+    });
+    host.refresh();
+    check(changes == 0 && !host.incomingDocumentPending(), "an empty mailbox offers nothing and tells nothing");
+
+    incoming_mailbox() = picked_uri();
+    host.refresh();
+    check(mailboxEmptyAtSignal, "the document is taken from the mailbox before the signal");
+    check(taken == QStringList{picked_uri()}, "the slot takes the document as it was sent");
+    check(changes == 2, "one offer and one take: the re-entered refresh() delivers nothing again");
+    check(!host.incomingDocumentPending() && !host.property("incomingDocumentPending").toBool(), "none waits");
+    host.refresh();
+    check(changes == 2 && host.takeIncomingDocument().isEmpty(), "a later refresh() has nothing to offer");
+
+    /* Two deliveries between polls reach the mailbox as the newer one; two polls before a take keep the newer. */
+    reentered = true;
+    incoming_mailbox() = row_uri();
+    host.refresh();
+    incoming_mailbox() = picked_uri();
+    host.refresh();
+    check(changes == 4 && host.property("incomingDocumentPending").toBool(), "each offer is told");
+    check(host.takeIncomingDocument() == picked_uri() && changes == 5, "the newer document replaces one not taken");
+}
+
+/* #831: documentRequestPending follows the live request, told after the answer that ends it. */
+static void
+check_document_request_pending() {
+    picker() = PlatformPicker();
+    PickerHost host;
+    QStringList seen;
+    QObject::connect(&host, &dsd_qt::DecoderHost::documentRequestChanged, &host, [&] {
+        seen.append(host.property("documentRequestPending").toBool() ? QStringLiteral("pending")
+                                                                     : QStringLiteral("idle"));
+    });
+    QObject::connect(&host, &dsd_qt::DecoderHost::documentPicked, &host,
+                     [&](qint64, const QString&, const QString&, bool) { seen.append(QStringLiteral("answer")); });
+    QObject::connect(&host, &dsd_qt::DecoderHost::documentPickUnavailable, &host,
+                     [&](qint64, const QString&) { seen.append(QStringLiteral("answer")); });
+    check(!host.documentRequestPending(), "no request is pending at first");
+
+    const qint64 open = host.requestOpenDocument();
+    check(seen == QStringList{QStringLiteral("pending")}, "a request starts pending");
+    const qint64 save = host.requestSaveDocument(QStringLiteral("a.zip"), QStringLiteral("application/zip"));
+    QCoreApplication::processEvents();
+    check(seen.size() == 1 && host.documentRequestPending(), "a replacing request stays pending");
+    picker().records = QStringList{picked_record(open, picked_uri(), false), picked_record(save, picked_uri(), false)};
+    host.refresh();
+    check(seen == QStringList({QStringLiteral("pending"), QStringLiteral("answer"), QStringLiteral("idle")}),
+          "an answer ends it, the change told after the answer; the replaced request's record changes nothing");
+
+    seen.clear();
+    const qint64 cancelled = host.requestOpenDocument();
+    host.cancelDocumentRequest(cancelled + 1);
+    check(seen == QStringList{QStringLiteral("pending")}, "another id's cancel changes nothing");
+    host.cancelDocumentRequest(cancelled);
+    check(seen == QStringList({QStringLiteral("pending"), QStringLiteral("idle")}) && !host.documentRequestPending(),
+          "a cancel ends it");
+
+    seen.clear();
+    picker().takes = false;
+    host.requestOpenDocument();
+    picker().takes = true;
+    QCoreApplication::processEvents();
+    check(seen == QStringList({QStringLiteral("pending"), QStringLiteral("answer"), QStringLiteral("idle")}),
+          "a request the platform could not take ends with its queued answer");
+
+    /* A slot that asks again from inside an answer tells its own request, and nothing follows the answer. */
+    seen.clear();
+    const qint64 first = host.requestOpenDocument();
+    QObject::connect(&host, &dsd_qt::DecoderHost::documentPickCancelled, &host, [&host, first](qint64 id) {
+        if (id == first) {
+            host.requestOpenDocument();
+        }
+    });
+    picker().records = QStringList{QStringLiteral(R"({"id":%1,"kind":"cancelled"})").arg(first)};
+    host.refresh();
+    check(seen == QStringList({QStringLiteral("pending"), QStringLiteral("pending")}) && host.documentRequestPending(),
+          "a request made inside the answer is pending, and the answer's end tells nothing after it");
 }
 
 static QByteArray
@@ -3077,6 +3191,8 @@ main(int argc, char** argv) {
     check_document_pick_record();
     check_document_requests();
     check_document_reentrant_drain();
+    check_incoming_document_poll();
+    check_document_request_pending();
     check_import_dispatch();
     check_probe_dispatch();
     check_probe_record();

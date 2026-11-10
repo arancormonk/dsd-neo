@@ -94,6 +94,11 @@
     public static java.lang.String pollResult();
 }
 
+# Documents other apps open with DSD-neo or share to it (#831): the host's poll.
+-keep,allowoptimization class io.github.arancormonk.dsdneo.IncomingDocuments {
+    public static java.lang.String take();
+}
+
 -keep,allowoptimization class io.github.arancormonk.dsdneo.DownloadsSave {
     public static void start(android.content.ContentResolver);
     public static java.lang.String publishedName(java.lang.String);

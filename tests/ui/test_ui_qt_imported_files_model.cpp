@@ -3697,6 +3697,47 @@ test_document_picker_defaults() {
            host.property("documentPickerSupported").isValid() && !host.property("documentPickerSupported").toBool());
 }
 
+namespace {
+/* A host that offers documents as a platform's poll does (#831). */
+class OfferingHost : public TestHost {
+  public:
+    using dsd_qt::DecoderHost::offerIncomingDocument;
+};
+} // namespace
+
+/* Issue #831: one incoming document waits at a time, a newer one replacing one not taken, and is taken once. The base
+   host never offers one, and has no picker request pending. */
+static void
+test_incoming_document_slot() {
+    OfferingHost host;
+    int changes = 0;
+    QObject::connect(&host, &dsd_qt::DecoderHost::incomingDocumentChanged, &host, [&changes] { changes++; });
+    expect("nothing waits at first",
+           !host.incomingDocumentPending() && !host.property("incomingDocumentPending").toBool());
+    expect("no picker request pending on the base host",
+           !host.documentRequestPending() && host.property("documentRequestPending").isValid());
+    expect("an empty take is empty", host.takeIncomingDocument().isEmpty());
+    expect("an empty take tells nothing", changes == 0);
+    host.offerIncomingDocument(QString());
+    expect("an empty reference is no document", changes == 0 && !host.incomingDocumentPending());
+
+    // A mixed-case authority and escapes, which must come back as they were (never through QUrl).
+    const QString first = QStringLiteral("content://com.Example.Provider/document/primary%3ADownload%2Fa%20b.csv");
+    const QString second = QStringLiteral("content://com.Other.Files/tree/x/document/b.dsdbak");
+    host.offerIncomingDocument(first);
+    expect("an offer waits and is told", host.incomingDocumentPending() && changes == 1);
+    host.offerIncomingDocument(second);
+    expect("a newer offer is told", changes == 2 && host.property("incomingDocumentPending").toBool());
+    expect("the newer document replaces the one not taken", host.takeIncomingDocument() == second);
+    expect("a take empties the slot and is told", !host.incomingDocumentPending() && changes == 3);
+    expect("it is taken once", host.takeIncomingDocument().isEmpty() && changes == 3);
+    host.offerIncomingDocument(first);
+    expect("a later offer comes back as it was sent", host.takeIncomingDocument() == first && changes == 5);
+    (void)host.requestOpenDocument();
+    expect("a refused request is not pending", !host.documentRequestPending());
+    QCoreApplication::processEvents();
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -3776,6 +3817,7 @@ main(int argc, char** argv) {
     test_example_targets();
     test_export_registration_in_place();
     test_document_picker_defaults();
+    test_incoming_document_slot();
     test_group_list_counts_read_the_file_now();
     test_imported_files_model();
     test_update_rejects_invalid_pick();

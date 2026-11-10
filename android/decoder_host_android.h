@@ -115,6 +115,13 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     qint64 requestOpenDocument() override;
     qint64 requestSaveDocument(const QString& suggestedName, const QString& mimeType) override;
     void cancelDocumentRequest(qint64 requestId) override;
+
+    /** @brief Whether a request is live: made, and not yet answered, cancelled or replaced by none. */
+    bool
+    documentRequestPending() const override {
+        return m_document_request != 0;
+    }
+
     /** @brief DownloadsSave's name for a Download-folder row it published, from memory only. */
     QString savedDocumentName(const QString& reference) const override;
     /** @brief DownloadsSave deletes the row on its own thread, if it is still pending and no write took it. */
@@ -525,6 +532,18 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     static void platformCancelDocument(qint64 id);
     /** @brief DocumentPicker.pollResult(): the oldest record not yet read, or empty. */
     static QString platformPollDocumentPick();
+    /**
+     * @brief Emit documentRequestChanged() when whether a request is live differs from @p wasPending. An answer calls
+     * it after its signal, so a slot that asks again from inside the answer leaves nothing changed to tell.
+     */
+    void publishDocumentRequest(bool wasPending);
+    /**
+     * @brief Offer the document IncomingDocuments holds (#831), taken first: a slot of the signal may run refresh()
+     * again, and then finds none.
+     */
+    void refreshIncomingDocuments();
+    /** @brief IncomingDocuments.take(): the URI waiting, once; empty when none waits or the call failed. */
+    static QString platformTakeIncomingDocument();
     /*
      * DownloadsSave over JNI (#829), from any thread; none waits on a provider. start() hands it the held
      * ContentResolver and releases the app's leftover persisted grants on its own thread.

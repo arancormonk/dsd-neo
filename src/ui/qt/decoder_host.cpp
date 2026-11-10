@@ -335,6 +335,26 @@ DecoderHost::cancelDocumentRequest(qint64 requestId) {
     m_refusedDocumentRequests.remove(requestId);
 }
 
+QString
+DecoderHost::takeIncomingDocument() {
+    if (m_incomingDocument.isEmpty()) {
+        return QString();
+    }
+    QString reference;
+    reference.swap(m_incomingDocument);
+    Q_EMIT incomingDocumentChanged();
+    return reference;
+}
+
+void
+DecoderHost::offerIncomingDocument(const QString& reference) {
+    if (reference.isEmpty()) {
+        return;
+    }
+    m_incomingDocument = reference;
+    Q_EMIT incomingDocumentChanged();
+}
+
 bool
 DecoderHost::shareRecording(const QString& path, const QString& title) {
     if (path.isEmpty() || !shareSupported() || !m_recordingIndexed || !m_recordingIndexed(path)) {

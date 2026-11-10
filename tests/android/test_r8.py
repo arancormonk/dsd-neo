@@ -160,6 +160,8 @@ class R8ArtifactTests(unittest.TestCase):
         self.assertNotIn("copyDocumentToFile", {name for _, name, _ in upcalls})
         self.assertIn((r8.APP_PACKAGE + "DocumentCopies", "probeImportDocument",
                        "(Landroid/content/ContentResolver;JLjava/lang/String;J)Ljava/lang/String;"), upcalls)
+        # The host's poll for a document another app opened with DSD-neo (#831).
+        self.assertIn((r8.APP_PACKAGE + "IncomingDocuments", "take", "()Ljava/lang/String;"), upcalls)
         self.assertIn(NATIVE, downcalls)
         self.assertIn((r8.APP_PACKAGE + "DsdNative", "nativeHostDiagnostic"), downcalls)
         self.assertIn((r8.APP_PACKAGE + "DsdNative", "nativeQuitUi"), downcalls)
@@ -193,6 +195,7 @@ class R8ArtifactTests(unittest.TestCase):
         classes = re.findall(r"-keep\S*\s+class\s+" + re.escape(r8.APP_PACKAGE.replace("/", ".")) + r"(\w+)\s*\{",
                              rules)
         self.assertIn("AppSupport", classes)
+        self.assertIn("IncomingDocuments", classes)
         for class_name in classes:
             called = {(name, signature) for owner, name, signature in upcalls
                       if owner == r8.APP_PACKAGE + class_name}
