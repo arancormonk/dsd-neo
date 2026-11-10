@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
+import "Util.js" as Util
 
 // One CSV import, from the pick to its answer (#832). Every file is picked
 // through DocumentPicker (issue #829), and the copy and the checks run on the
@@ -63,23 +64,11 @@ Item {
     readonly property string displayName: fileName
     signal finished(var result, var context)
 
-    // A file's name as a person reads it, from a picked reference, which is
-    // URL-encoded ("content://…/primary%3ADownload%2Fmap.csv"). Never for a
-    // name the host gave: that one is decoded already.
-    function readableName(name) {
-        var decoded = name;
-        try {
-            decoded = decodeURIComponent(name);
-        } catch (e) {
-            // Not an encoded name: shown as it came.
-        }
-        return decoded.substring(decoded.lastIndexOf('/') + 1);
-    }
     // A chosen companion's name as a person reads it. Only a picked file's
     // reference (a content: or file: URI) is URL-encoded; a library file's
     // stored path carries its real name, shown as it is ("keys%20old.csv").
     function companionName(reference) {
-        return /^(content|file):/i.test(reference) ? readableName(reference) : reference.substring(reference.lastIndexOf('/') + 1);
+        return /^(content|file):/i.test(reference) ? Util.referenceName(reference) : reference.substring(reference.lastIndexOf('/') + 1);
     }
 
     // One completion per pick()/begin(). A companion rejection only abandons
@@ -228,7 +217,7 @@ Item {
             return;
         flow.reference = reference;
         // No name from the host: the reference's last segment, decoded once.
-        flow.fileName = displayName || readableName(reference);
+        flow.fileName = displayName || Util.referenceName(reference);
         attempt();
     }
     function primaryUnavailable(message) {

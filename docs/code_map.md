@@ -13151,7 +13151,7 @@ Qt Quick frontend (`src/ui/qt`):
   control characters, NUL included, become `_` first, since a C-string rename would cut the name at a NUL; at most
   247 UTF-8 bytes so a " (999)" suffix always fits; the provider's name, else the picker's hint, each taken as given
   and never percent-decoded, since the host decodes the name it hands back, #830: a QML caller holding only a
-  reference decodes its last segment once, as `CsvImportFlow.readableName()` and `WizardScreen.referenceName()` do)
+  reference decodes its last segment once, through `Util.referenceName()`)
   and to find a free name (`unique_import_destination`, which also skips reserved paths).
   `document_import_transport.{h,cpp}` is the import copies' transport (#832): `DecoderHost::importTransport()` hands
   out a new `DocumentImportTransport` each call, which never calls the host, so the import worker may keep it past the
@@ -14136,7 +14136,7 @@ Qt Quick frontend (`src/ui/qt`):
   stored file from the provider's own name for it, the picker's `displayName` only as the hint; a companion's
   `displayName` names its "Selected:" line until a library choice names the library file (#829 B3). The busy sheet
   names the file by the host's `displayName` as given, since the host decodes it (#830: `map%20v2.csv` stays
-  that); only a pick with no name falls back to the reference's last segment, decoded once (`readableName()`). A
+  that); only a pick with no name falls back to the reference's last segment, decoded once (`Util.referenceName()`). A
   companion's browser stacks above the open sheet as the top modal (the sheet stays up, covered): Back at its
   locations ends only that pick, with every choice and generation kept, and the next Back is the sheet's own. `pick(kind,
   context)` / `begin(…, context)` first cancel the import before (with that import's context), then keep `context`,
@@ -14167,18 +14167,19 @@ Qt Quick frontend (`src/ui/qt`):
   (`announced`/`announcements` for tests). Tests: `UI_QT_QML_CSV_IMPORT_FLOW`, `UI_QT_IMPORTED_FILES`, and the scan
   list, imports, wizard band plan, modal input and settings layout QML suites.
 - The wizard's Replay file Browse (`WizardScreen.qml`, issue #829) opens `wizardReplayPicker`, a `DocumentPicker`
-  (open, no filter), and never touches `pickerTarget`. An accepted pick goes to `beginReplay(reference,
-  displayName)`, which hands it to `replayFiles.beginReplayImport()` (#832): on the desktop a local file is used where
-  it is; a provider's document, and on a host with DSD-neo's file browser any local file too (#830; the picker's
-  `browseKind` is "replay", title "Choose a replay file"), is copied with progress and **Cancel copy**, and the answer replaces `fileText`; a failed copy
-  keeps it and sets `replayNotice` to `Util.importMessage(result, "replay")` (B8). An `unavailable` picker sets
-  `replayNotice` to its message; backing out changes nothing. `wizardReplayNotice`, under the Replay file row, is an
-  `AlertMessage` read out once per failure while `Navigation.allows` it (`announced`/`announcements`, shared with
-  `csvNotice`); it clears on the next Browse, a successful copy, and the wizard opening or closing. `stopImports()`
-  (on hide and in `openForAdd/openForFound/openForEdit`) cancels Browse, the replay copy and the CSV import. Browse is
-  at least as wide as its word (`max(96, implicitWidth)`), so large text never splits it, and the Replay file field
-  takes the rest of the row. Tests: `tst_wizard_browse.qml` and `tst_wizard_replay_import.qml` in
-  `UI_QT_QML_CALL_LISTS`.
+  (open, no filter), and never touches `pickerTarget`. An accepted pick goes to
+  `replayFilePicked(reference, displayName)`, named by the host's name as given, else by
+  `Util.referenceName(reference)`, and `beginReplay()` hands it to `replayFiles.beginReplayImport()` (#832): on the
+  desktop a local file is used where it is; a provider's document, and on a host with DSD-neo's file browser any local
+  file too (#830; the picker's `browseKind` is "replay", title "Choose a replay file"), is copied with progress and
+  **Cancel copy**, and the answer replaces `fileText`; a failed copy keeps it and sets `replayNotice` to
+  `Util.importMessage(result, "replay")` (B8). An `unavailable` picker sets `replayNotice` to its message; backing out
+  changes nothing. `wizardReplayNotice`, under the Replay file row, is an `AlertMessage` read out once per failure
+  while `Navigation.allows` it (`announced`/`announcements`, shared with `csvNotice`); it clears on the next Browse, a
+  successful copy, and the wizard opening or closing. `stopImports()` (on hide and in
+  `openForAdd/openForFound/openForEdit`) cancels Browse, the replay copy and the CSV import. Browse is at least as
+  wide as its word (`max(96, implicitWidth)`), so large text never splits it, and the Replay file field takes the rest
+  of the row. Tests: `tst_wizard_browse.qml` and `tst_wizard_replay_import.qml` in `UI_QT_QML_CALL_LISTS`.
 - Backend code must never include Qt headers; `cmake/arch_rules.cmake` enforces both directions
   (`tools/check_arch_rules.sh`, run by the pre-push hook and the CI guardrails job).
 
