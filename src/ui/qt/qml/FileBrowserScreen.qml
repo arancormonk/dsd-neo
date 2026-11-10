@@ -44,7 +44,7 @@ Item {
     readonly property string path: d.path
     readonly property var entries: d.entries
     readonly property string notice: d.notice
-    readonly property bool reading: d.readingShown && (d.rootsId !== 0 || d.listingId !== 0)
+    readonly property bool reading: d.readingShown && (d.view === "roots" ? d.rootsId !== 0 : d.listingId !== 0)
     readonly property var access: decoderHost.fileAccess || ({})
     readonly property string crumbLine: crumbs().map(function (crumb) {
         return crumb.title;
@@ -73,7 +73,8 @@ Item {
     readonly property string adbAccessLine: "adb shell appops set --uid io.github.arancormonk.dsdneo MANAGE_EXTERNAL_STORAGE allow"
 
     readonly property bool inboxFolderEmpty: d.view === "folder" && d.root !== null && d.root.kind === "inbox" && d.path === d.root.path && d.folderStatus === "ok" && d.entries.length === 0 && (d.hiddenByFilter === 0 || d.showAll)
-    readonly property string inboxCopyText: d.root ? d.root.path + "\n" + "adb push FILE " + d.root.path + "/" : ""
+    // An empty inbox's help: its path, and the adb line that copies a file there.
+    readonly property var inboxLines: d.root ? [d.root.path, "adb push FILE " + d.root.path + "/"] : []
     readonly property string stateText: folderStateText()
     readonly property bool stateIsProblem: ["", "ok"].indexOf(d.folderStatus) < 0
 
@@ -322,7 +323,11 @@ Item {
     // ---- answers ----
 
     function rootsAnswered(result) {
-        var behind = d.checkingBehind;
+        // An answer that lands after a folder was opened from the rows it was
+        // replacing is only a check of that folder's location: it must not
+        // stop the folder's reading line, report a problem with places the
+        // user has left, or take the focus the folder's listing will give.
+        var behind = d.checkingBehind || d.view === "folder";
         d.rootsId = 0;
         d.checkingBehind = false;
         if (!behind)
@@ -332,7 +337,7 @@ Item {
         if (result.status !== "ok") {
             if (!behind) {
                 d.rootsStatus = result.status;
-                Navigation.announce(screen, rootsProblemLine, problemText(result.status));
+                Navigation.announce(screen, locations.problemLine, problemText(result.status));
             }
             return;
         }
@@ -384,7 +389,7 @@ Item {
         }
         d.folderStatus = status;
         if (screen.stateIsProblem)
-            Navigation.announce(screen, stateLine, screen.stateText);
+            Navigation.announce(screen, folder.stateLine, screen.stateText);
         Qt.callLater(focusFirstRow);
     }
     function pageAnswered(result) {
@@ -398,13 +403,15 @@ Item {
             d.more = result.more === true;
             return;
         }
-        // The folder was read too long ago to page on: read it again.
+        // The folder was read too long ago to page on (two idle minutes): it
+        // is read again from the top, on purpose, rather than paged on from
+        // a listing that may no longer match the folder.
         if (status === "expired") {
             requestListing();
             return;
         }
         d.pageProblem = problemText(status);
-        Navigation.announce(screen, pageProblemLine, d.pageProblem);
+        Navigation.announce(screen, folder.pageProblemLine, d.pageProblem);
     }
     function handoffAnswered(result) {
         d.handoffId = 0;
@@ -423,11 +430,14 @@ Item {
         d.accessId = 0;
         if (outcome === "settingsOpened") {
             d.accessAwaitingReturn = true;
-        } else if (outcome === "noRoute" || outcome === "failed") {
-            if (screen.adbOffered)
+        } else if (outcome === "noRoute" || outcome === "failed" || outcome === "denied") {
+            // Android 11 and later: the computer route. Android 10: App info,
+            // the one place left to allow it once the dialog is refused or
+            // cannot show.
+            if (screen.adbOffered && outcome !== "denied")
                 d.accessHelp = true;
-            else
-                d.accessBlocked = outcome === "failed";
+            else if (!screen.settingsRoute)
+                d.accessBlocked = true;
         } else if (outcome === "blocked") {
             d.accessBlocked = true;
         } else if (outcome === "granted" && d.view === "roots") {
@@ -568,21 +578,7 @@ Item {
         if (!d.focusFirst || !shown || !isTopModal)
             return;
         d.focusFirst = false;
-        var first = null;
-        if (d.view === "roots") {
-            for (var i = 0; i < rootRepeater.count && !first; ++i) {
-                var row = rootRepeater.itemAt(i);
-                if (row && row.focusTarget)
-                    first = row.focusTarget;
-            }
-            if (!first && accessButton.visible)
-                first = accessButton;
-            if (!first && otherAppRow.visible)
-                first = otherAppRow;
-        } else if (d.entries.length) {
-            entryList.forceLayout();
-            first = entryList.itemAtIndex(0);
-        }
+        var first = d.view === "roots" ? locations.firstRow() : folder.firstRow();
         (first || screen).forceActiveFocus();
     }
     function revealFocus() {
@@ -590,9 +586,8 @@ Item {
         var focus = window ? window.activeFocusItem : null;
         if (!focus || !Navigation.contains(screen, focus))
             return;
-        Theme.revealFocus(rootsScroll, rootsColumn, focus);
-        Theme.revealFocus(stateScroll, stateColumn, focus);
-        Theme.revealFocus(entryList, entryList.contentItem, focus);
+        locations.revealFocus(focus);
+        folder.revealFocus(focus);
     }
     Connections {
         target: screen.Window.window
@@ -655,6 +650,7 @@ Item {
             lines.push(qsTr("This import is dropped."));
         if (backup.restorePending === true)
             lines.push(qsTr("Your backup is restored when DSD-neo opens again."));
+        lines.push(qsTr("Then open DSD-neo again."));
         return lines.join("\n");
     }
     function refuseClose() {
@@ -678,7 +674,9 @@ Item {
         screen.closeConfirmed();
     }
 
-    QtObject {
+    // The browse's state, which the views (FileBrowserLocations,
+    // FileBrowserFolder) read; only this screen writes it.
+    readonly property QtObject internals: QtObject {
         id: d
         property int token: 0
         property double session: 0
@@ -755,66 +753,6 @@ Item {
     }
 
     // ---- view ----
-
-    // A selectable command with its Copy button, for a step done from a computer.
-    component CommandBlock: Column {
-        id: block
-        property string command: ""
-        property string copyText: command
-        property string copyName: "fileBrowserCopy"
-        // True for a while after a copy the clipboard took.
-        property bool copied: false
-        signal copyRequested(string text)
-        width: parent ? parent.width : 0
-        spacing: 8
-        Rectangle {
-            width: parent.width
-            height: commandText.implicitHeight + 20
-            radius: Theme.radiusButton
-            color: Theme.bg
-            border.width: 1
-            border.color: Theme.controlBorder
-            TextEdit {
-                id: commandText
-                objectName: block.objectName + "Text"
-                x: 10
-                y: 10
-                width: parent.width - 20
-                text: block.command
-                readOnly: true
-                selectByMouse: true
-                textFormat: TextEdit.PlainText
-                // Breaks between words first, so a long command splits where
-                // it is still readable.
-                wrapMode: TextEdit.Wrap
-                color: Theme.textPrimary
-                selectionColor: Qt.alpha(Theme.cyan, 0.35)
-                selectedTextColor: Theme.textPrimary
-                font.family: Theme.mono
-                font.pixelSize: Theme.fontSize(12)
-                readonly property bool navigationAllowed: Navigation.allows(commandText)
-                activeFocusOnTab: false
-                Accessible.role: Accessible.StaticText
-                Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: Accessible.ignored ? "" : text
-            }
-        }
-        OutlineButton {
-            objectName: block.copyName
-            text: block.copied ? qsTr("Copied") : qsTr("Copy")
-            onClicked: block.copyRequested(block.copyText)
-        }
-    }
-    // A line under a row: a hint, or what went wrong.
-    component Line: ReadableText {
-        property bool problem: false
-        width: parent ? parent.width : 0
-        font.family: Theme.sans
-        font.pixelSize: Theme.fontSize(problem ? 13 : 12)
-        color: problem ? Theme.alert : Theme.textSubdued
-        wrapMode: Text.Wrap
-        Accessible.role: problem ? Accessible.AlertMessage : Accessible.StaticText
-    }
 
     Rectangle {
         anchors.fill: parent
@@ -896,7 +834,12 @@ Item {
                         id: crumb
                         objectName: "fileBrowserCrumb" + crumbStep.index
                         readonly property real room: crumbFlow.width - (crumbStep.index > 0 ? 20 : 0)
-                        width: Math.min(room, crumbLabel.implicitWidth + (crumbStep.current ? 0 : 16))
+                        // The first crumb lines up with the column's other
+                        // lines; every crumb pads its sides alike, so the gaps
+                        // around each separator match.
+                        readonly property real leading: crumbStep.index > 0 ? 8 : 0
+                        readonly property real trailing: 8
+                        width: Math.min(room, crumbLabel.implicitWidth + leading + trailing)
                         height: Math.max(Theme.minimumTouchSize, crumbLabel.height + 12)
                         readonly property bool navigationAllowed: Navigation.allows(crumb)
                         activeFocusOnTab: (navigationAllowed && !crumbStep.current) || activeFocus
@@ -919,12 +862,12 @@ Item {
                         }
                         Text {
                             id: crumbLabel
-                            anchors.centerIn: parent
-                            width: Math.min(implicitWidth, crumb.room - (crumbStep.current ? 0 : 16))
+                            x: crumb.leading
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: Math.min(implicitWidth, crumb.room - crumb.leading - crumb.trailing)
                             text: crumbStep.modelData.title
                             textFormat: Text.PlainText
                             wrapMode: Text.WrapAnywhere
-                            horizontalAlignment: Text.AlignHCenter
                             font.family: Theme.sans
                             font.pixelSize: Theme.fontSize(14)
                             font.weight: crumbStep.current ? Font.DemiBold : Font.Normal
@@ -940,7 +883,7 @@ Item {
             }
         }
 
-        Line {
+        FileBrowserLine {
             id: noticeLine
             objectName: "fileBrowserNotice"
             x: (parent.width - width) / 2
@@ -949,7 +892,7 @@ Item {
             visible: d.notice.length > 0
             text: d.notice
         }
-        Line {
+        FileBrowserLine {
             objectName: "fileBrowserReading"
             x: (parent.width - width) / 2
             width: screen.contentWidth
@@ -958,518 +901,26 @@ Item {
         }
     }
 
-    // ---- the locations ----
+    // ---- the views ----
 
-    PlexFlickable {
-        id: rootsScroll
-        objectName: "fileBrowserRootsScroll"
-        accessibleName: screen.request ? screen.request.title : ""
+    FileBrowserLocations {
+        id: locations
+        browser: screen
         anchors.top: top.bottom
-        anchors.topMargin: Theme.gap - rootsColumn.y
+        anchors.topMargin: Theme.gap - contentInset
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        visible: d.view === "roots"
-        clip: true
-        contentWidth: width
-        contentHeight: rootsColumn.y + rootsColumn.height + Theme.screenPadding
-        boundsBehavior: Flickable.StopAtBounds
-
-        Column {
-            id: rootsColumn
-            // Below the top edge by the focus frame's reach, so the first
-            // row's frame is not cut off.
-            x: (rootsScroll.width - width) / 2
-            y: 4
-            width: screen.contentWidth
-            spacing: Theme.gap
-
-            Line {
-                id: rootsProblemLine
-                objectName: "fileBrowserRootsProblem"
-                problem: true
-                visible: d.rootsStatus.length > 0
-                text: visible ? screen.problemText(d.rootsStatus) : ""
-            }
-            OutlineButton {
-                objectName: "fileBrowserRootsRetry"
-                visible: d.rootsStatus.length > 0
-                text: qsTr("Try again")
-                onClicked: screen.showRoots()
-            }
-
-            UiPanel {
-                objectName: "fileBrowserRootsPanel"
-                width: parent.width
-                height: rootsList.height
-                visible: screen.rootRows.length > 0 || screen.accessRowShown
-
-                Column {
-                    id: rootsList
-                    width: parent.width
-
-                    Repeater {
-                        id: rootRepeater
-                        model: StableRows {
-                            id: rootRowsModel
-                            entries: screen.rootRows
-                            keyOf: function (root) {
-                                return root.key;
-                            }
-                            lineOf: function (root) {
-                                return [root.state, screen.rootTitle(root), screen.rootSubtitle(root)].join("\n");
-                            }
-                        }
-                        Item {
-                            id: rootItem
-                            required property int index
-                            required property string key
-                            required property string line
-                            readonly property bool live: index >= 0 && index < rootRowsModel.live && index < screen.rootRows.length
-                            readonly property var root: live ? screen.rootRows[index] : null
-                            readonly property string rootState: root ? root.state : ""
-                            readonly property bool ready: rootState === "ready"
-                            readonly property bool last: index === screen.rootRows.length - 1 && !screen.accessRowShown
-                            readonly property Item focusTarget: ready ? openRow : rootState === "needsRestart" ? closeButton : null
-                            width: parent.width
-                            height: ready ? openRow.height : rootStateColumn.height + 2 * Theme.cardPadding
-                            visible: index < rootRowsModel.shown
-
-                            DisclosureRow {
-                                id: openRow
-                                objectName: "fileBrowserRoot:" + rootItem.key
-                                visible: rootItem.ready
-                                title: rootItem.root ? screen.rootTitle(rootItem.root) : ""
-                                subtitle: rootItem.root ? screen.rootSubtitle(rootItem.root) : ""
-                                showDivider: !rootItem.last
-                                onTapped: screen.openRoot(rootItem.root)
-                            }
-                            // A location that cannot open yet says why, and
-                            // a drive that needs a restart offers it.
-                            Column {
-                                id: rootStateColumn
-                                objectName: "fileBrowserRootState:" + rootItem.key
-                                visible: !rootItem.ready && rootItem.live
-                                x: Theme.cardPadding
-                                y: Theme.cardPadding
-                                width: parent.width - 2 * Theme.cardPadding
-                                spacing: 4
-
-                                ReadableText {
-                                    width: parent.width
-                                    text: rootItem.root ? screen.rootTitle(rootItem.root) : ""
-                                    font.family: Theme.sans
-                                    font.pixelSize: Theme.fontSize(15)
-                                    font.weight: Font.DemiBold
-                                    color: Theme.textPrimary
-                                    wrapMode: Text.Wrap
-                                }
-                                Line {
-                                    text: rootItem.root ? screen.rootSubtitle(rootItem.root) : ""
-                                }
-                                Item {
-                                    width: 1
-                                    height: 6
-                                    visible: closeButton.visible
-                                }
-                                OutlineButton {
-                                    id: closeButton
-                                    objectName: "fileBrowserClose:" + rootItem.key
-                                    visible: rootItem.rootState === "needsRestart"
-                                    enabled: !restartCloser.active
-                                    text: qsTr("Close DSD-neo")
-                                    onClicked: screen.askClose(rootItem.key)
-                                }
-                                Line {
-                                    visible: closeButton.visible
-                                    text: qsTr("Then open DSD-neo again.")
-                                }
-                                Line {
-                                    objectName: "fileBrowserCloseProblem:" + rootItem.key
-                                    problem: true
-                                    visible: closeButton.visible && d.closeKey === rootItem.key && d.closeProblem.length > 0
-                                    text: visible ? d.closeProblem : ""
-                                }
-                            }
-                            Rectangle {
-                                anchors.bottom: parent.bottom
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.leftMargin: Theme.cardPadding
-                                height: 1
-                                visible: !rootItem.ready && !rootItem.last
-                                color: Theme.divider
-                            }
-                        }
-                    }
-
-                    // Device storage and drives, before access is given.
-                    Column {
-                        id: accessBlock
-                        objectName: "fileBrowserAccess"
-                        visible: screen.accessRowShown
-                        x: Theme.cardPadding
-                        width: parent.width - 2 * Theme.cardPadding
-                        topPadding: Theme.cardPadding
-                        bottomPadding: Theme.cardPadding
-                        spacing: 4
-
-                        ReadableText {
-                            objectName: "fileBrowserAccessTitle"
-                            width: parent.width
-                            text: screen.settingsRoute ? qsTr("Download and USB drives") : qsTr("Device storage")
-                            font.family: Theme.sans
-                            font.pixelSize: Theme.fontSize(15)
-                            font.weight: Font.DemiBold
-                            color: Theme.textPrimary
-                            wrapMode: Text.Wrap
-                        }
-                        Line {
-                            objectName: "fileBrowserAccessSubtitle"
-                            text: screen.settingsRoute ? qsTr("Needs All files access") : qsTr("Needs access to device storage")
-                        }
-                        Item {
-                            width: 1
-                            height: 6
-                        }
-                        OutlineButton {
-                            id: accessButton
-                            objectName: "fileBrowserAllowAccess"
-                            text: qsTr("Allow access")
-                            onClicked: screen.askAccess()
-                        }
-                        Line {
-                            objectName: "fileBrowserAccessRevoke"
-                            visible: screen.settingsRoute
-                            text: qsTr("Turning All files access off later closes DSD-neo (Android does that).")
-                        }
-                        Line {
-                            objectName: "fileBrowserAccessBlocked"
-                            problem: true
-                            visible: d.accessBlocked
-                            text: qsTr("Allow Files and media for DSD-neo in App info, then come back.")
-                        }
-                        Column {
-                            objectName: "fileBrowserAccessHelp"
-                            visible: d.accessHelp && screen.adbOffered
-                            width: parent.width
-                            topPadding: 8
-                            spacing: 8
-
-                            // Android 11 and 12 offer the switch under App info
-                            // too, where Settings may have sent the user.
-                            Line {
-                                objectName: "fileBrowserAppInfoStep"
-                                visible: screen.access.apiLevel >= 30 && screen.access.apiLevel <= 32
-                                text: qsTr("In App info, open Permissions › Files and media, then allow management of all files.")
-                            }
-                            Line {
-                                text: qsTr("If Settings had no switch for DSD-neo, allow it from a computer:")
-                            }
-                            CommandBlock {
-                                objectName: "fileBrowserAdbCommand"
-                                copyName: "fileBrowserCopyAdb"
-                                copied: d.copied.length > 0 && d.copied === copyText
-                                onCopyRequested: function (text) {
-                                    screen.copy(text);
-                                }
-                                command: screen.adbAccessLine
-                            }
-                        }
-                    }
-                }
-            }
-
-            UiPanel {
-                width: parent.width
-                height: otherAppRow.height
-                visible: screen.request !== null && screen.request.allowOtherApp === true
-
-                DisclosureRow {
-                    id: otherAppRow
-                    objectName: "fileBrowserOtherApp"
-                    visible: parent.visible
-                    title: qsTr("Choose with another app")
-                    subtitle: ""
-                    onTapped: FileBrowser.otherApp(d.token)
-                }
-            }
-        }
     }
-
-    // ---- a folder ----
-
-    // What the folder holds, or why it shows nothing.
-    PlexFlickable {
-        id: stateScroll
-        objectName: "fileBrowserStateScroll"
+    FileBrowserFolder {
+        id: folder
+        browser: screen
         anchors.top: top.bottom
         anchors.topMargin: Theme.gap
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: showAllPanel.top
         anchors.bottomMargin: Theme.gap
-        visible: d.view === "folder" && d.entries.length === 0
-        clip: true
-        contentWidth: width
-        contentHeight: stateColumn.height
-        boundsBehavior: Flickable.StopAtBounds
-
-        Column {
-            id: stateColumn
-            x: (stateScroll.width - width) / 2
-            width: screen.contentWidth
-            spacing: Theme.gap
-
-            ReadableText {
-                id: stateLine
-                objectName: "fileBrowserState"
-                width: parent.width
-                visible: text.length > 0
-                text: screen.stateText
-                font.family: Theme.sans
-                font.pixelSize: Theme.fontSize(14)
-                color: screen.stateIsProblem ? Theme.alert : Theme.textSubdued
-                wrapMode: Text.Wrap
-                Accessible.role: screen.stateIsProblem ? Accessible.AlertMessage : Accessible.StaticText
-            }
-            OutlineButton {
-                objectName: "fileBrowserRetry"
-                visible: ["timedOut", "busy", "failed", "unsupported"].indexOf(d.folderStatus) >= 0
-                text: qsTr("Try again")
-                onClicked: screen.requestListing()
-            }
-            // An empty inbox says how files get there.
-            Column {
-                objectName: "fileBrowserInboxHelp"
-                width: parent.width
-                visible: screen.inboxFolderEmpty
-                spacing: Theme.gap
-
-                ReadableText {
-                    width: parent.width
-                    text: qsTr("Files copied into this folder show up here. Depending on the device, you can copy them from a computer over USB or with adb:")
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(14)
-                    color: Theme.textSubdued
-                    wrapMode: Text.Wrap
-                }
-                CommandBlock {
-                    objectName: "fileBrowserInboxCommand"
-                    copyName: "fileBrowserCopyInbox"
-                    copied: d.copied.length > 0 && d.copied === copyText
-                    onCopyRequested: function (text) {
-                        screen.copy(text);
-                    }
-                    command: screen.inboxCopyText
-                }
-                Line {
-                    text: qsTr("Uninstalling DSD-neo or clearing its storage empties this folder.")
-                }
-            }
-        }
-    }
-
-    ListView {
-        id: entryList
-        objectName: "fileBrowserList"
-        anchors.top: top.bottom
-        anchors.topMargin: Theme.gap
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.bottom: showAllPanel.top
-        anchors.bottomMargin: Theme.gap
-        // The column is the view's: a vertical ListView writes each row's x.
-        width: screen.contentWidth
-        visible: d.view === "folder" && d.entries.length > 0
-        clip: true
-        boundsBehavior: Flickable.StopAtBounds
-        keyNavigationEnabled: false
-        model: StableRows {
-            id: entryRows
-            entries: d.view === "folder" ? d.entries : []
-            keyOf: function (entry) {
-                return entry.path.length ? entry.path : entry.reference;
-            }
-            lineOf: function (entry) {
-                return screen.entryName(entry);
-            }
-        }
-
-        delegate: Item {
-            id: entryRow
-            required property int index
-            required property string key
-            required property string line
-            readonly property bool live: index >= 0 && index < entryRows.live && index < d.entries.length
-            readonly property var entry: live ? d.entries[index] : null
-            readonly property bool folder: entry !== null && entry.dir === true
-            objectName: "fileBrowserEntry:" + key
-            width: ListView.view.width
-            height: Math.max(Theme.minimumTouchSize, labels.height + 24)
-            opacity: index < entryRows.shown ? 1 : 0
-            readonly property bool navigationAllowed: Navigation.allows(entryRow)
-            activeFocusOnTab: (navigationAllowed && visible && live) || activeFocus
-            Accessible.role: Accessible.Button
-            Accessible.name: navigationAllowed && live ? line : ""
-            Accessible.focusable: navigationAllowed && visible && live
-            Accessible.ignored: !navigationAllowed || !visible || !live
-            Accessible.onPressAction: activate()
-            function activate() {
-                if (live && Navigation.allows(entryRow))
-                    screen.choose(entry);
-            }
-            Keys.onSpacePressed: activate()
-            Keys.onReturnPressed: activate()
-            Keys.onEnterPressed: activate()
-            // Inside the row: the list clips at its edges.
-            FocusFrame {
-                anchors.margins: 0
-            }
-
-            Rectangle {
-                anchors.fill: parent
-                radius: Theme.radiusButton
-                color: entryTap.pressed && entryRow.live ? Theme.chipSelectedFill : "transparent"
-            }
-
-            // Drawn marks, in the caret's stroke: a folder, or a page.
-            Item {
-                id: glyph
-                x: 8
-                anchors.verticalCenter: parent.verticalCenter
-                width: 20
-                height: 20
-                Rectangle {
-                    visible: entryRow.folder
-                    x: 1
-                    y: 2
-                    width: 8
-                    height: 5
-                    radius: 1.5
-                    color: "transparent"
-                    border.width: 1.6
-                    border.color: Theme.textSecondary
-                }
-                Rectangle {
-                    visible: entryRow.folder
-                    x: 1
-                    y: 5
-                    width: 18
-                    height: 13
-                    radius: 2
-                    color: Theme.bg
-                    border.width: 1.6
-                    border.color: Theme.textSecondary
-                }
-                Rectangle {
-                    visible: !entryRow.folder
-                    x: 3
-                    y: 1
-                    width: 14
-                    height: 18
-                    radius: 2
-                    color: "transparent"
-                    border.width: 1.6
-                    border.color: Theme.textSecondary
-                }
-                Repeater {
-                    model: entryRow.folder ? 0 : 3
-                    Rectangle {
-                        required property int index
-                        x: 6
-                        y: 6 + index * 3.5
-                        width: index === 2 ? 5 : 8
-                        height: 1.5
-                        radius: 0.75
-                        color: Theme.textSecondary
-                    }
-                }
-            }
-
-            Column {
-                id: labels
-                anchors.left: glyph.right
-                anchors.leftMargin: 14
-                anchors.right: entryCaret.visible ? entryCaret.left : parent.right
-                anchors.rightMargin: entryCaret.visible ? 12 : 8
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 3
-
-                Text {
-                    objectName: "fileBrowserEntryName"
-                    width: parent.width
-                    text: entryRow.entry ? entryRow.entry.name : ""
-                    // A file's name as it is on the drive, never markup.
-                    textFormat: Text.PlainText
-                    wrapMode: Text.WrapAtWordBoundaryOrAnywhere
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(15)
-                    font.weight: Font.DemiBold
-                    color: Theme.textPrimary
-                    Accessible.ignored: true
-                }
-                Text {
-                    width: parent.width
-                    visible: text.length > 0
-                    text: entryRow.entry ? screen.entrySubtitle(entryRow.entry) : ""
-                    textFormat: Text.PlainText
-                    wrapMode: Text.Wrap
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(12)
-                    color: Theme.textSubdued
-                    Accessible.ignored: true
-                }
-            }
-            Caret {
-                id: entryCaret
-                visible: entryRow.folder
-                anchors.right: parent.right
-                anchors.rightMargin: 8
-                anchors.verticalCenter: parent.verticalCenter
-                rotation: -90
-                color: Theme.textSubdued
-            }
-            Rectangle {
-                anchors.bottom: parent.bottom
-                anchors.left: labels.left
-                anchors.right: parent.right
-                height: 1
-                visible: entryRow.index < d.entries.length - 1 || d.more
-                color: Theme.divider
-            }
-            TapHandler {
-                id: entryTap
-                gesturePolicy: TapHandler.ReleaseWithinBounds
-                onTapped: entryRow.activate()
-            }
-        }
-
-        footer: Column {
-            width: ListView.view ? ListView.view.width : 0
-            topPadding: d.more || d.pageProblem.length ? Theme.gap : 0
-            spacing: 8
-
-            OutlineButton {
-                objectName: "fileBrowserShowMore"
-                width: parent.width
-                visible: d.more
-                enabled: d.pageId === 0
-                text: qsTr("Show more")
-                onClicked: screen.showMore()
-            }
-            Line {
-                objectName: "fileBrowserPageReading"
-                visible: d.readingShown && d.pageId !== 0
-                text: qsTr("Reading folder…")
-            }
-            Line {
-                id: pageProblemLine
-                objectName: "fileBrowserPageProblem"
-                problem: true
-                visible: d.pageProblem.length > 0
-                text: d.pageProblem
-            }
-        }
     }
 
     // Hidden files and files of other kinds, on request.

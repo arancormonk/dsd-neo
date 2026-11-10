@@ -70,6 +70,8 @@ Item {
             testContext.setFileAccess(access());
             testContext.resetHostPlayback();
             testContext.setCloseRefused(false);
+            if (restartCloser.active)
+                testContext.finishClose("stopFailed");
             testContext.setHostReading("sessionActive", false);
             testContext.setBackup("restorePending", false);
             root.width = 420;
@@ -415,6 +417,42 @@ Item {
             compare(callsNamed("requestFileRoots").length, roots + 1, "and lists them again");
         }
 
+        // The places are being read again (a slow drive) when the user opens
+        // a folder from the rows still showing: that late answer only checks
+        // the folder's place.
+        function test_late_roots_answer_after_a_folder_opened() {
+            openAtRoots();
+            screen.showRoots();
+            var late = last("requestFileRoots");
+            var before = screen.announcements;
+            openRoot("storage");
+            testContext.answerFileRoots(late.id, {status: "timedOut"});
+            compare(screen.announcements, before, "no problem is reported for places the user left");
+            compare(screen.view, "folder");
+            verify(!item("fileBrowserRootsProblem").visible, "and none waits for the return");
+            var line = item("fileBrowserReading");
+            tryVerify(function () {
+                return line.visible;
+            }, 1000, "the folder's own reading line still shows");
+            answerListing([entry(storagePath, "a.csv", false, 1, 0)]);
+            tryVerify(function () {
+                return window().activeFocusItem === entryRow(storagePath + "/a.csv");
+            }, 1000, "and its listing still gives its first row the focus");
+
+            // An ok answer then: the folder stays, on the newer generation.
+            back();
+            var again = last("requestFileRoots");
+            openRoot("storage");
+            testContext.answerFileRoots(again.id, {status: "ok", generation: 9, roots: standardRoots()});
+            compare(screen.view, "folder", "its place is still there");
+            answerListing([entry(storagePath, "b.csv", false, 1, 0)]);
+            tryVerify(function () {
+                return window().activeFocusItem === entryRow(storagePath + "/b.csv");
+            }, 1000);
+            entryRow(storagePath + "/b.csv").activate();
+            compare(last("requestFileHandoff").generation, 9, "later requests carry the newer generation");
+        }
+
         function folderDown(names) {
             var at = storagePath;
             for (var name of names) {
@@ -583,7 +621,7 @@ Item {
             verify(!help.visible);
             testContext.answerFileAccess(last("requestFileAccess").id, "noRoute");
             verify(help.visible, "no Settings screen: the computer route");
-            compare(item("fileBrowserAdbCommandText").text, adbAccessLine);
+            compare(item("fileBrowserAdbCommandText0").text, adbAccessLine);
             verify(!item("fileBrowserAppInfoStep").visible, "Android 13 and later have no App info step");
             item("fileBrowserCopyAdb").clicked();
             compare(testContext.copiedTexts(), [adbAccessLine], "Copy copies the exact line");
@@ -624,6 +662,16 @@ Item {
             item("fileBrowserAllowAccess").clicked();
             testContext.answerFileAccess(last("requestFileAccess").id, "noRoute");
             verify(!item("fileBrowserAccessHelp").visible, "no computer route on Android 10");
+            verify(item("fileBrowserAccessBlocked").visible, "App info is the way left");
+
+            // A plain refusal of the dialog says the same.
+            Ui.FileBrowser.dismiss(Ui.FileBrowser.request.token);
+            open();
+            answerRoots([rootRecord("inbox"), rootRecord("storage", {state: "needsAccess"})]);
+            verify(!item("fileBrowserAccessBlocked").visible);
+            item("fileBrowserAllowAccess").clicked();
+            testContext.answerFileAccess(last("requestFileAccess").id, "denied");
+            verify(item("fileBrowserAccessBlocked").visible, "a refused dialog points to App info");
 
             // A build without All files access has no access row on Android 11 and later.
             Ui.FileBrowser.dismiss(Ui.FileBrowser.request.token);
@@ -642,7 +690,8 @@ Item {
             verify(help.visible);
             verify(!item("fileBrowserState").visible, "the help stands for the empty line");
             var text = inboxPath + "\nadb push FILE " + inboxPath + "/";
-            compare(item("fileBrowserInboxCommandText").text, text);
+            compare(item("fileBrowserInboxCommandText0").text, inboxPath, "the path in a block of its own");
+            compare(item("fileBrowserInboxCommandText1").text, "adb push FILE " + inboxPath + "/", "and the adb line in another");
             item("fileBrowserCopyInbox").clicked();
             compare(testContext.copiedTexts(), [text], "Copy copies the path and the adb line");
             verify(findChild(help, "fileBrowserInboxCommand") !== null);
@@ -657,10 +706,10 @@ Item {
 
         function test_restart_row_data() {
             return [
-                {tag: "nothing ends", active: false, kind: "backup", pending: false, message: ""},
-                {tag: "listening", active: true, kind: "backup", pending: false, message: "Listening stops."},
-                {tag: "everything", active: true, kind: "csv", pending: true, message: "Listening stops.\nThis import is dropped.\nYour backup is restored when DSD-neo opens again."},
-                {tag: "import", active: false, kind: "csv", pending: false, message: "This import is dropped."}
+                {tag: "nothing ends", active: false, kind: "backup", pending: false, message: "Then open DSD-neo again."},
+                {tag: "listening", active: true, kind: "backup", pending: false, message: "Listening stops.\nThen open DSD-neo again."},
+                {tag: "everything", active: true, kind: "csv", pending: true, message: "Listening stops.\nThis import is dropped.\nYour backup is restored when DSD-neo opens again.\nThen open DSD-neo again."},
+                {tag: "import", active: false, kind: "csv", pending: false, message: "This import is dropped.\nThen open DSD-neo again."}
             ];
         }
         function test_restart_row(data) {
@@ -690,8 +739,15 @@ Item {
             item("confirmActionButton", dialog).clicked();
             compare(closed.count, 1, "confirmed");
             verify(Ui.FileBrowser.request !== null, "the browser stays while the app closes");
+            var closing = item("fileBrowserClosing:" + key);
+            verify(!closing.visible, "nothing is closing yet: Main begins the close");
+            verify(restartCloser.begin(), "the close begins");
+            verify(closing.visible, "and says so while it runs");
+            compare(closing.text, "Closing DSD-neo…");
+            verify(!close.enabled, "one close at a time");
 
             testContext.finishClose("quitFailed");
+            verify(!closing.visible);
             compare(item("fileBrowserCloseProblem:" + key).text, "DSD-neo could not close itself. Close it from Android's recent apps, then open it again.");
             verify(Ui.FileBrowser.request !== null, "a failed close keeps the browser and its request");
             verify(screen.visible);
@@ -809,10 +865,14 @@ Item {
             compare(app.pendingStart, null, "a confirmed close drops the waiting start");
             compare(testContext.closeBegins(), begins + 1, "and begins the close");
             verify(restartCloser.active);
-            verify(uiController.autoStartBlocked, "automatic starts wait while it closes");
-            testContext.finishClose("quitFailed");
+            // With nothing else holding them, only the close holds the starts.
             Ui.FileBrowser.dismiss(Ui.FileBrowser.request.token);
             app.importsOpen = false;
+            tryCompare(imports, "visible", false);
+            compare(Ui.Navigation.modals.length, 0);
+            verify(uiController.autoStartBlocked, "automatic starts wait while the app closes");
+            testContext.finishClose("quitFailed");
+            verify(!uiController.autoStartBlocked, "a failed close lets them start again");
             prefs.onboardingDone = oldOnboarding;
         }
     }

@@ -107,6 +107,10 @@ qt_add_resources(
         qml/DocumentPicker.qml
         qml/FileBrowser.qml
         qml/FileBrowserScreen.qml
+        qml/FileBrowserLocations.qml
+        qml/FileBrowserFolder.qml
+        qml/FileBrowserLine.qml
+        qml/FileBrowserCommand.qml
         qml/HistoryDetailSheet.qml
         qml/CallRecordingPlayer.qml
         qml/DetectionRecordingsSheet.qml

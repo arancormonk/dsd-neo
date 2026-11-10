@@ -233,7 +233,9 @@ private fun symlinkedRootListsItsOwnFolders() {
     touch(real.resolve("sub"), "x.csv")
     val root = symlink(scratch.resolve("link${++serial}"), real) ?: return
     val harness = Harness()
-    harness.list(root).listed(listOf("sub"), "a root given through a link")
+    val top = harness.list(root).listed(listOf("sub"), "a root given through a link")
+    // The browser builds its crumbs and Back from these paths, so they start with the root as it was given.
+    check(top.entries[0].path == root.resolve("sub").toString()) { "folders keep the root's spelling: ${top.entries[0].path}" }
     val sub = harness.list(root, root.resolve("sub")).listed(listOf("x.csv"), "a folder under a root given through a link")
     val entry = sub.entries[0]
     check(entry.path == root.resolve("sub/x.csv").toString()) { "entries keep the root's spelling: ${entry.path}" }

@@ -14070,7 +14070,11 @@ Qt Quick frontend (`src/ui/qt`):
   returns, and one closed, cancelled or reopened then keeps no request. "Choose with another app"
   (`otherAppRequested`) asks the host's picker whatever the toggle says; a `noPicker` answer to it reopens the browser
   without the action. Test: `UI_QT_QML_DOCUMENT_PICKER`.
-- `qml/FileBrowserScreen.qml` (issue #830) serves the live `FileBrowser.request`. It is one Main-level screen (`z` 30,
+- `qml/FileBrowserScreen.qml` (issue #830) serves the live `FileBrowser.request`; it owns every request and the browse
+  state (`internals`), which its views read: `FileBrowserLocations.qml` (the places, access and restart rows, Choose
+  with another app) and `FileBrowserFolder.qml` (a folder's rows, Show more, and its state, Try again and the inbox
+  help), with `FileBrowserLine.qml` (a hint or problem line) and `FileBrowserCommand.qml` (text to type on a
+  computer, one block per line, one Copy). It is one Main-level screen (`z` 30,
   above `BackupFlow`, over `safeArea`), opaque (`Theme.bg`) with a `PointerBarrier`, and owners stay visible under it
   so their imports survive. While a request is live it is a modal (`Navigation.addModal`, `navigationSurface` the
   screen), so its controls are live over an owner's sheet, which leaves the accessibility tree; it raises the same
@@ -14081,18 +14085,22 @@ Qt Quick frontend (`src/ui/qt`):
   screen waits for one id of each kind (roots, listing, page, hand-off, access) and drops any other answer; leaving a
   folder cancels its listing, page and hand-off. Every return to the locations calls `refreshFileAccess()` and
   `requestFileRoots()` again (the refresh); a roots answer's `generation` goes with every listing and hand-off, and a
-  `stale` listing lists the locations again. Locations: inbox, Saved, storage, then removable volumes (title the
+  `stale` listing lists the locations again. A locations answer that lands after a folder was opened from the rows it
+  was replacing only re-checks that folder's place (as a check behind it): it reports no problem and leaves the
+  folder's reading line and focus alone. Locations: inbox, Saved, storage, then removable volumes (title the
   platform's description, else "Removable storage"), `StableRows` keyed by root key; `removed` and `needsAccess`
   roots have no row. The access row shows while `fileAccess` is not granted and the route is `permission`, or
   `settings` in a build that declares it; `settingsOpened` followed by a return (a `fileAccess` change or the app
   becoming active) without the grant, `noRoute` and `failed` show the adb line with Copy on Android 11 and later
-  (plus the App info step on 11 and 12), `blocked` (and an Android 10 `failed`) the App info line. A `fileAccess`
-  change re-lists the locations, or, under an open folder, checks them behind it: a folder whose location is no
+  (plus the App info step on 11 and 12), `blocked` (and on Android 10 `noRoute`, `denied` and `failed`) the App info
+  line. A `fileAccess` change re-lists the locations, or, under an open folder, checks them behind it: a folder whose
+  location is no
   longer `ready` goes back to the locations, saying "The drive was removed." for a removable one (also on a `gone`
   listing there). A `needsRestart` drive offers Close DSD-neo: `restartCloser.refused()` shows the refusal line,
   else a `ConfirmDialog` lists what ends (`decoderHost.sessionActive`, a `csv` request, `backup.restorePending`), and
-  its confirm emits `closeConfirmed()`, which Main answers with `dropPendingStarts()` and `restartCloser.begin()`; a
-  `finished` other than "closing" shows the failure line and keeps the browser. Folder rows (`StableRows` keyed by
+  its confirm emits `closeConfirmed()`, which Main answers with `dropPendingStarts()` and `restartCloser.begin()`;
+  "Closing DSD-neo…" shows while `restartCloser.active`, and a `finished` other than "closing" shows the failure line
+  and keeps the browser. Folder rows (`StableRows` keyed by
   path, Saved rows by reference) are named "Lists, folder" / "dmr.csv, file, 4.2 MB, Nov 9" (`Util.sizeText`;
   "MMM d", with ", yyyy" when the year is not that of `savedSystems.realtimeNowMs()`; a `modifiedMs` of 0 shows no
   date). Show all files (`showAll`) and Show more (`requestMorePage(session, snapshot, entries.length)`, appended)
