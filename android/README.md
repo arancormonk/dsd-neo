@@ -282,7 +282,8 @@ The places it lists:
     car head units the adb line may be the only way. The grant shows up when DSD-neo is back in front.
   - On Android 10, in every build, **Allow access** asks with Android's storage dialog, and device storage is then
     read-only. After a plain "Don't allow" the browser says **Access was not allowed. Allow access asks again.** After
-    "Don't allow" with "Don't ask again", App info opens: allow Files and media (Storage) there and come back. USB drives stay with Android's picker on Android 10.
+    "Don't allow" with "Don't ask again", App info opens: allow Files and media (Storage) there and come back. USB
+    drives stay with Android's picker on Android 10.
   - The Play bundle has no All files access (Google Play allows it only for apps that need it at their core), so a
     Play install lists the inbox and Saved by DSD-neo, plus device storage on Android 10. Anything else comes through
     Choose with another app or a copy into the inbox.
@@ -292,16 +293,17 @@ DSD-neo again.
 
 **The restart.** Android lets an app read some USB drives only when the app started while it already had All files
 access. Those are the drives Android mounts outside shared storage, seen for USB drives on stock Android; a drive
-mounted as shared storage, such as an SD card, opens right away. Such a drive's row says **DSD-neo can open this drive after it restarts.** with a
-**Close DSD-neo** button; then open DSD-neo again. The close waits while an import, a replay copy or a backup is still
-copying (**Wait for the copy to finish, then close DSD-neo.**). Otherwise it asks first and names what ends: listening
-stops, an open CSV import or the restore being chosen is dropped, a system being added or edited with changes not yet
-saved is dropped, and a restore already confirmed applies when DSD-neo opens again. Listening is stopped and allowed
-to finish before the app closes; if it does not stop within ten seconds, Android does not close the app, or the app is
-still running five seconds after it was told to close (some launchers keep it), DSD-neo stays open and says **DSD-neo
-could not close itself. Close it from Android's recent apps, then open it again.** A drive pulled out while the
-browser shows it goes back to the list of places with **The drive was removed.**, which clears once the drive is listed
-again. A file tapped just as the device's drives change (a drive plugged in) is checked once more, quietly.
+mounted as shared storage, such as an SD card, opens right away. Such a drive's row says **DSD-neo can open this drive
+after it restarts.** with a **Close DSD-neo** button; then open DSD-neo again. The close waits while an import, a replay
+copy or a backup is still copying (**Wait for the copy to finish, then close DSD-neo.**). Otherwise it asks first and
+names what ends: listening stops, an open CSV import or the restore being chosen is dropped, a system being added or
+edited with changes not yet saved is dropped, and a restore already confirmed applies when DSD-neo opens again.
+Listening is stopped and allowed to finish before the app closes; if it does not stop within ten seconds, Android does
+not close the app, or the app is still running five seconds after it was told to close (some launchers keep it), DSD-neo
+stays open and says **DSD-neo could not close itself. Close it from Android's recent apps, then open it again.** A drive
+pulled out while the browser shows it goes back to the list of places with **The drive was removed.**, which clears once
+the drive is listed again. A file tapped just as the device's drives change (a drive plugged in) is checked once more,
+quietly.
 
 Limits:
 
