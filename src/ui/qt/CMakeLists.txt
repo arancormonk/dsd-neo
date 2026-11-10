@@ -57,6 +57,7 @@ target_sources(
         recording_status.cpp
         recording_store.cpp
         replay_store.cpp
+        restart_closer.cpp # Issue #830
         site_groups.cpp # WP-D4
         saved_systems_model.cpp
         scan_avoid_list_model.cpp

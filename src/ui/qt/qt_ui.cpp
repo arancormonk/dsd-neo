@@ -47,6 +47,7 @@
 #include "recording_status.h"
 #include "recording_store.h"
 #include "replay_store.h"
+#include "restart_closer.h"
 #include "saved_systems_model.h"
 #include "scan_list_starter.h"
 #include "scan_lists_model.h"
@@ -350,6 +351,13 @@ load_replays(DecoderHost* host, ImportService* imports, SavedSystemsModel* syste
     return replays;
 }
 
+// Issue #830: the close before a restart, refused while the import worker or a backup job would be cut short.
+static RestartCloser*
+make_restart_closer(DecoderHost* host, const ImportService* imports, const BackupModel* backupModel, QObject* owner) {
+    return new RestartCloser(
+        host, [imports] { return imports->busy(); }, [backupModel] { return backupModel->busy(); }, owner);
+}
+
 bool
 ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     const backup::ApplyResult restoreOutcome = recover_settings_and_apply_restore(host);
@@ -362,6 +370,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* diagnostics = make_diagnostics(engine);
     auto* prefs = new AppPrefs(&engine);
     auto* backupModel = new BackupModel(host, restoreOutcome, &engine);
+    auto* restartCloser = make_restart_closer(host, imports, backupModel, &engine);
     auto* sessionArgs = new SessionArgsBuilder(prefs, &engine);
     auto* systems = new SavedSystemsModel(&engine);
     auto* replays = load_replays(host, imports, systems, restoreOutcome.outcome, &engine);
@@ -419,6 +428,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("uiController"), controller);
     context->setContextProperty(QStringLiteral("prefs"), prefs);
     context->setContextProperty(QStringLiteral("backup"), backupModel);
+    context->setContextProperty(QStringLiteral("restartCloser"), restartCloser);
     context->setContextProperty(QStringLiteral("decryptionProfiles"), decryptionProfiles);
     context->setContextProperty(QStringLiteral("sessionArgs"), sessionArgs);
     context->setContextProperty(QStringLiteral("savedSystems"), systems);

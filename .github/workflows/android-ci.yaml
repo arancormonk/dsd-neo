@@ -354,6 +354,7 @@ jobs:
             dsd-neo_test_ui_qt_imported_files_model \
             dsd-neo_test_ui_qt_import_names \
             dsd-neo_test_ui_qt_import_transport \
+            dsd-neo_test_ui_qt_restart_closer \
             dsd-neo_test_ui_qt_import_service \
             dsd-neo_test_ui_qt_replay_store \
             dsd-neo_test_ui_qt_input_commit \

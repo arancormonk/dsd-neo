@@ -14030,6 +14030,16 @@ Qt Quick frontend (`src/ui/qt`):
   reads `fileCalls()` / `lastFileCall(name)` and answers with `answerFileRoots`, `answerFolderListing`,
   `answerFileHandoff` and `answerFileAccess` (on whichever host is installed); `resetHostPlayback()` clears the calls.
   Test: `UI_QT_IMPORTED_FILES` (`test_file_browser_defaults`).
+- `restart_closer.{h,cpp}` (issue #830): `RestartCloser`, context property `restartCloser`, closes the app so a USB
+  drive Android lets only a process started with All files access read opens after the restart. `refused()` is true
+  while the import worker (`ImportService::busy()`: imports and replay copies) or a backup job
+  (`BackupModel::busy()`) runs, and `begin()` then does nothing and answers false (also while `active`). Otherwise it
+  stops a live session through `DecoderHost::stop()`, once, and polls every `kPollMs` (100) until `sessionActive()`
+  and `engineBusy()` both read false, then calls `quitApp()`; the quit never runs inside `begin()`. A session that
+  has not settled `kStopWaitMs` (10000, on `dsd_realtime_mono_ms()`) after `begin()` ends it as
+  `finished("stopFailed")` and a `quitApp()` false as `finished("quitFailed")`, both clearing `active` and leaving
+  the app open; a quit taken gives `finished("closing")` and keeps `active`, which joins Main's `autoStartBlocked`,
+  so nothing starts while the process ends. Test: `UI_QT_RESTART_CLOSER` (fake host and clock).
 - `qml/DocumentPicker.qml` is the one picker screens use (`mode` "open"/"save", `title`, `nameFilters`,
   `defaultSuffix`, `mimeType`, `suggestedName`). `open()` asks the host when `documentPickerSupported`, cancelling its
   own earlier request first, and otherwise opens a `FileDialog` it makes through an `Instantiator` (a QtObject root,
