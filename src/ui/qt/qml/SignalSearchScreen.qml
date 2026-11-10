@@ -138,7 +138,10 @@ Item {
     }
     onSessionSourceChanged: followSessionSource()
     onOwnedSessionChanged: followSessionSource()
-    Component.onCompleted: followSessionSource()
+    Component.onCompleted: {
+        listsLive = visible;
+        followSessionSource();
+    }
     function requestClose() {
         if (sessionActive) {
             backRequested();
@@ -260,7 +263,13 @@ Item {
     }
     readonly property string sessionKey: String(status.session || "")
     onSessionKeyChanged: resetView()
+    // Issue #826 B1: whether the history and avoid lists follow their models:
+    // the screen's visibility, set first thing as it changes, so the rows
+    // freeze before resetView() runs on hide (a binding on `visible` could be
+    // told after it and rebuild them while hidden).
+    property bool listsLive: false
     onVisibleChanged: {
+        listsLive = visible;
         if (!visible) {
             // Issue #826: a picker still out ends with the screen, as a
             // cancel; a file already being written finishes.
@@ -1162,8 +1171,10 @@ Item {
                 onItemChanged: announceExportLater.restart()
             }
             ReadableText { heading: true; visible: screen.sessionAvoidsLive && searchModel && (searchModel.sessionAvoids || []).length > 0; text: qsTr("Avoided this session"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
+            // Issue #826 B1: the hidden screen keeps both avoid lists as they
+            // were (see the history rows' Binding).
             Repeater {
-                model: screen.sessionAvoidsLive && searchModel ? (searchModel.sessionAvoids || []) : []
+                id: sessionAvoidRows
                 OutlineButton {
                     required property var modelData
                     objectName: "searchSessionAvoid"
@@ -1172,9 +1183,16 @@ Item {
                     onClicked: searchModel.removeSessionAvoid(Number(modelData))
                 }
             }
+            Binding {
+                target: sessionAvoidRows
+                property: "model"
+                value: screen.sessionAvoidsLive && searchModel ? (searchModel.sessionAvoids || []) : []
+                when: screen.listsLive
+                restoreMode: Binding.RestoreNone
+            }
             ReadableText { heading: true; visible: searchModel && searchModel.avoids.length > 0; text: qsTr("Permanent avoids"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
             Repeater {
-                model: searchModel ? searchModel.avoids : []
+                id: permanentAvoidRows
                 OutlineButton {
                     required property var modelData
                     objectName: "searchPermanentAvoid"
@@ -1182,6 +1200,13 @@ Item {
                     text: qsTr("Remove avoid · %1 MHz").arg((Number(modelData) / 1e6).toFixed(6))
                     onClicked: searchModel.removeAvoid(Number(modelData))
                 }
+            }
+            Binding {
+                target: permanentAvoidRows
+                property: "model"
+                value: searchModel ? searchModel.avoids : []
+                when: screen.listsLive
+                restoreMode: Binding.RestoreNone
             }
             // Issue #826: both lists the screen shows, in one file. The result
             // line stays when the lists empty meanwhile.
@@ -1223,8 +1248,22 @@ Item {
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(14)
             }
+            // Issue #826 B1: the screen is hidden, never destroyed, while a
+            // search runs on: a hidden screen builds and destroys no rows (each
+            // one an accessibility event on Android). The rows keep their last
+            // model while hidden rather than an empty one, so the page keeps its
+            // height and the reader's place; they follow the history again on
+            // show, and a shrink resetView() made on hide lands then. A Loader
+            // item made while hidden starts with no rows and fills on show.
+            Binding {
+                target: historyRows
+                property: "model"
+                value: searchModel ? searchModel.history.slice(0, screen.historyLimit) : []
+                when: screen.listsLive
+                restoreMode: Binding.RestoreNone
+            }
             Repeater {
-                model: searchModel ? searchModel.history.slice(0, screen.historyLimit) : []
+                id: historyRows
                 Column {
                     required property var modelData
                     objectName: "searchHistoryRow"

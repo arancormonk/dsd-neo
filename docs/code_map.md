@@ -12912,7 +12912,17 @@ Qt Quick frontend (`src/ui/qt`):
   first. A row gone meanwhile, or a model reset while hidden (a Talkgroups table with new bounds), lands at the start,
   as a reset does while shown. Filters stay set; a filter changed while hidden (History's is shared by both screens, and
   a pending search is flushed on hide, after the log noted its place) drops the place through `KeepPlace.forget()`, so
-  the new result shows from the start. Tests: `UI_QT_QML_A11Y_CHURN` (`test_e_calls_leave_hidden_lists_quiet`,
+  the new result shows from the start. The Signal search screen (issue #826 B1) is hidden, never destroyed, while a
+  search runs on, so its Recent detections rows and both avoid lists take their models through a `Binding` (`when:
+  listsLive`, `restoreMode: Binding.RestoreNone`) instead of `KeepPlace`: hidden, each keeps its last model rather than
+  an empty one. Its lists are Repeaters in a `Column` inside one Flickable, so emptying them would shorten the page and
+  `setContentHeight()` would clamp `contentY` at once, losing the reader's place; frozen, the page keeps its geometry,
+  builds and destroys no rows, and follows the store again on show, where the shrink `resetView()` made on hide (Show
+  more back to five) lands. `listsLive` is set first thing in `onVisibleChanged`, before `resetView()`: a `when` bound
+  to `visible` itself could be told after the handler and rebuild the rows while hidden. A detections Loader item made
+  while hidden starts with no rows and fills on show (`tst_signal_search.qml` `test_hidden_screen_builds_no_rows`,
+  `test_hidden_screen_keeps_the_readers_place`, `test_hidden_screen_shrinks_on_return`).
+  Tests: `UI_QT_QML_A11Y_CHURN` (`test_e_calls_leave_hidden_lists_quiet`,
   `tst_a11y_talkgroups.qml` `test_hidden_screen_keeps_the_readers_place`), `UI_QT_QML_CALL_LISTS`
   (`tst_call_log_follow.qml` `test_00`, `test_08` to `test_12`; `tst_call_recording_rows.qml`
   `test_home_recent_calls_*`), `UI_QT_TALKGROUP_LIST_MODEL`.
@@ -15531,9 +15541,10 @@ item view refills its delegates even while invisible, so:
 - A hidden sheet or screen does not keep a live list model bound. It hands the view its model only while visible:
   `model: sheet.visible ? (metrics.decryptionSlots || []) : []` (KeySheet's slots), `FieldGrid`'s `live: sheet.visible`
   (SiteSheet), `screen.live` (the Talkgroups chips), or `qml/KeepPlace.qml` for a scrolled list that must reopen at
-  the reader's place (History, Home's recent calls, the Talkgroups grid; see "Hidden lists" under UI, Qt). Opening
-  fills it from the readings as they are then. A sheet whose content follows the snapshot can instead refresh only
-  while visible (`NetworkSheet`).
+  the reader's place (History, Home's recent calls, the Talkgroups grid; see "Hidden lists" under UI, Qt), or a
+  `Binding` that keeps the last model while hidden for Repeaters in a scrolled `Column` (the Signal search screen's
+  detections and avoids, same section). Opening fills it from the readings as they are then. A sheet whose content
+  follows the snapshot can instead refresh only while visible (`NetworkSheet`).
 - No changing text in a `ComboBox` model. A new model resets `currentIndex` to 0 and rebuilds every popup delegate,
   open or closed; keep the model a fixed list and put the changing text beside the combo (KeySheet's scope pair and
   its `keySheetTargetName` line).

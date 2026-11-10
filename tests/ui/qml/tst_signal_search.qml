@@ -2555,6 +2555,121 @@ Item {
             wait(20);
             compare(screen.announcements, before + 1);
         }
+
+        // ---- Issue #826 B1: a hidden screen keeps its lists as they were ----
+        // Every Repeater under @p item.
+        function repeatersIn(item) {
+            var found = [];
+            if (!item)
+                return found;
+            if (typeof item.itemAdded === "function")
+                found.push(item);
+            for (var child of item.children)
+                found = found.concat(repeatersIn(child));
+            return found;
+        }
+        function shownTexts(name) {
+            return JSON.stringify(findChildren(loader.item, name).filter(function (b) { return b.visible; }).map(function (b) { return b.text; }));
+        }
+        // Hidden, the screen builds and destroys no rows as the history and both avoid lists change (each one an
+        // accessibility event on Android); shown again, it lists them as they are.
+        function test_hidden_screen_builds_no_rows_data() {
+            return [{tag: "searching", active: true}, {tag: "idle", active: false}];
+        }
+        function test_hidden_screen_builds_no_rows(data) {
+            var screen = loader.item;
+            screen.sessionActive = data.active;
+            model.history = [historyHit()];
+            model.sessionAvoids = [463550000];
+            model.avoids = [154430000];
+            wait(0);
+            var changes = [];
+            var note = function (index, item) { changes.push(item ? item.objectName || String(index) : String(index)); };
+            var repeaters = repeatersIn(screen);
+            verify(repeaters.length >= 3, "the history and avoid lists are Repeaters");
+            for (var r of repeaters) {
+                r.itemAdded.connect(note);
+                r.itemRemoved.connect(note);
+            }
+            screen.visible = false;
+            var rows = [];
+            for (var i = 0; i < 8; ++i)
+                rows.push(historyHit({id: String(50 + i), frequency: 462000000 + i * 12500, freqMHz: (462 + i * 0.0125).toFixed(6)}));
+            model.history = rows;
+            model.sessionAvoids = [463550000, 463575000];
+            model.avoids = [154430000, 155000000, 156000000];
+            model.avoids = [155000000, 156000000];
+            wait(20);
+            // A Repeater inside a row destroyed meanwhile is gone with it.
+            for (r of repeaters.filter(function (each) { return typeof each.itemAdded === "function"; })) {
+                r.itemAdded.disconnect(note);
+                r.itemRemoved.disconnect(note);
+            }
+            compare(JSON.stringify(changes), "[]", "rows built or destroyed while hidden");
+            screen.visible = true;
+            wait(0);
+            var shown = findChildren(screen, "searchHistoryRow").filter(function (row) { return row.visible; });
+            compare(shown.length, 5);
+            compare(findChild(shown[0], "searchHistoryReading").text.replace(/ /g, " "), "462.000000 MHz · -40.0 dBFS");
+            compare(shownTexts("searchPermanentAvoid"), JSON.stringify(["Remove avoid · 155.000000 MHz", "Remove avoid · 156.000000 MHz"]));
+            compare(shownTexts("searchSessionAvoid"), data.active ? JSON.stringify(["Stop avoiding · 463.550000 MHz", "Stop avoiding · 463.575000 MHz"]) : "[]");
+        }
+        // Frozen, not emptied: a reader near the end of a long page keeps their place across a hide and a show.
+        function test_hidden_screen_keeps_the_readers_place_data() {
+            return [{tag: "searching", active: true}, {tag: "idle", active: false}];
+        }
+        function test_hidden_screen_keeps_the_readers_place(data) {
+            var screen = loader.item;
+            screen.sessionActive = data.active;
+            var rows = [], avoids = [], session = [];
+            for (var i = 0; i < 5; ++i)
+                rows.push(historyHit({id: String(60 + i)}));
+            for (i = 0; i < 40; ++i)
+                avoids.push(150000000 + i * 25000);
+            for (i = 0; i < 10; ++i)
+                session.push(460000000 + i * 12500);
+            model.history = rows;
+            model.avoids = avoids;
+            model.sessionAvoids = session;
+            var scroll = findChild(screen, "searchScroll");
+            waitForRendering(screen);
+            scroll.contentY = Math.max(0, scroll.contentHeight - scroll.height - 40);
+            waitForRendering(screen);
+            var place = scroll.contentY;
+            verify(place > 0, "the page scrolls");
+            screen.visible = false;
+            wait(20);
+            compare(scroll.contentY, place, "hidden");
+            screen.visible = true;
+            waitForRendering(screen);
+            wait(20);
+            compare(scroll.contentY, place, "reopened at the reader's place");
+            scroll.contentY = 0;
+        }
+        // Show more, then hidden: the shrink back to five lands on the return, not while hidden.
+        function test_hidden_screen_shrinks_on_return() {
+            var screen = loader.item;
+            var rows = [];
+            for (var i = 0; i < 40; ++i)
+                rows.push(historyHit({id: String(100 + i)}));
+            model.history = rows;
+            wait(0);
+            findChild(screen, "searchShowMore").clicked();
+            wait(0);
+            var history = repeatersIn(screen).filter(function (r) { return r.count === 30; });
+            compare(history.length, 1, "the history rows");
+            var changes = 0;
+            var note = function () { changes++; };
+            history[0].itemRemoved.connect(note);
+            screen.visible = false;
+            wait(20);
+            history[0].itemRemoved.disconnect(note);
+            compare(changes, 0, "no row destroyed while hidden");
+            compare(history[0].count, 30);
+            screen.visible = true;
+            wait(0);
+            compare(findChildren(screen, "searchHistoryRow").filter(function (row) { return row.visible; }).length, 5);
+        }
         function test_capture_menu() {
             model.history = [historyHit({matches: [{systemUid: "uid-a"}, {systemUid: "uid-b"}]})];
             wait(0);
