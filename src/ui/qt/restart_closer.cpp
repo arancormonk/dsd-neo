@@ -40,6 +40,7 @@ RestartCloser::begin() {
         return false;
     }
     m_active = true;
+    m_quitting = false;
     Q_EMIT activeChanged();
     m_deadlineMs = m_nowMs() + kStopWaitMs;
     if (m_host->sessionActive()) {
@@ -52,24 +53,34 @@ RestartCloser::begin() {
 
 void
 RestartCloser::poll() {
+    if (m_quitting) {
+        // Still here: the platform kept the process. Say so, so the starts are released and the user is told.
+        if (m_nowMs() >= m_deadlineMs) {
+            fail(QStringLiteral("quitFailed"));
+        }
+        return;
+    }
     if (m_host->sessionActive() || m_host->engineBusy()) {
         if (m_nowMs() >= m_deadlineMs) {
             fail(QStringLiteral("stopFailed"));
         }
         return;
     }
-    m_poll.stop();
     if (!m_host->quitApp()) {
         fail(QStringLiteral("quitFailed"));
         return;
     }
-    // The process is ending: the closer stays active so nothing starts in the time that takes.
+    // The process is ending: the closer stays active so nothing starts in the time that takes, and keeps polling
+    // in case it never does.
+    m_quitting = true;
+    m_deadlineMs = m_nowMs() + kQuitWaitMs;
     Q_EMIT finished(QStringLiteral("closing"));
 }
 
 void
 RestartCloser::fail(const QString& outcome) {
     m_poll.stop();
+    m_quitting = false;
     m_active = false;
     Q_EMIT activeChanged();
     Q_EMIT finished(outcome);

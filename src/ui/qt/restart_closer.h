@@ -32,12 +32,13 @@ class DecoderHost;
  *
  * begin() stops a live session and then polls every kPollMs until both sessionActive() and engineBusy() read false,
  * then asks the host to quit. A session still active kStopWaitMs after begin() ends the close as "stopFailed", and a
- * host that cannot quit ends it as "quitFailed"; either leaves the app open and the closer idle. While it is active,
- * Main holds every automatic start. Qt thread only.
+ * host that cannot quit ends it as "quitFailed"; either leaves the app open and the closer idle. A quit the host took
+ * but that leaves the process running kQuitWaitMs later (a launcher or multi-window mode that keeps it) ends as
+ * "quitFailed" too, after "closing". While it is active, Main holds every automatic start. Qt thread only.
  */
 class RestartCloser : public QObject {
     Q_OBJECT
-    /** True from begin() until a failure ends the close; a close that reached the quit stays active. */
+    /** True from begin() until a failure ends the close; a close that reached the quit stays active while it ends. */
     Q_PROPERTY(bool active READ active NOTIFY activeChanged)
 
   public:
@@ -45,12 +46,14 @@ class RestartCloser : public QObject {
     static constexpr int kPollMs = 100;
     /** How long a stopping session may take before the close gives up. */
     static constexpr uint64_t kStopWaitMs = 10000;
+    /** How long a process the host was told to quit may still run before the close counts as failed. */
+    static constexpr uint64_t kQuitWaitMs = 5000;
 
     /**
      * @param host the decoder host, which outlives this object.
      * @param importsBusy true while an import or a replay copy runs.
      * @param backupBusy true while a backup export or restore job runs.
-     * @param nowMs the real-time clock the stop wait is measured on.
+     * @param nowMs the real-time clock the stop and quit waits are measured on.
      */
     RestartCloser(DecoderHost* host, std::function<bool()> importsBusy, std::function<bool()> backupBusy,
                   QObject* parent = nullptr, std::function<uint64_t()> nowMs = &dsd_realtime_mono_ms);
@@ -68,7 +71,10 @@ class RestartCloser : public QObject {
 
   Q_SIGNALS:
     void activeChanged();
-    /** @brief How the close ended: "closing" (the app is going), "stopFailed" or "quitFailed" (it stays open). */
+    /**
+     * @brief How the close ended: "closing" (the app is going), "stopFailed" or "quitFailed" (it stays open). A
+     * "closing" is followed by "quitFailed" when the process is still running kQuitWaitMs later.
+     */
     void finished(const QString& outcome);
 
   private:
@@ -82,6 +88,8 @@ class RestartCloser : public QObject {
     QTimer m_poll;
     uint64_t m_deadlineMs = 0;
     bool m_active = false;
+    // The host took the quit; the closer now waits for the process to end.
+    bool m_quitting = false;
 };
 
 } // namespace dsd_qt

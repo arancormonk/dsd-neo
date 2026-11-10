@@ -4,7 +4,8 @@
  */
 
 /* Unit tests: closing DSD-neo so it can restart (#830): refused while a copy runs, the session stopped and awaited
- * before the quit, and a stop that never settles or a quit the platform refuses leaving the app open. */
+ * before the quit, and a stop that never settles, a quit the platform refuses or a process that outlives its quit
+ * leaving the app open. */
 
 #include <QCoreApplication>
 #include <QEventLoop>
@@ -192,6 +193,34 @@ test_quit_refused() {
     CHECK(!rig.closer.active(), "and leaves the app open");
 }
 
+/* A quit the host took, but the process goes on (an OEM launcher or multi-window mode keeps it): the close ends as
+ * failed once the quit wait is over, so the starts it held are free and the screen can say what to do. */
+void
+test_process_that_outlives_its_quit() {
+    Rig rig;
+    CHECK(rig.closer.begin(), "an idle app begins closing");
+    run_polls();
+    CHECK(rig.host.quitCalls == 1, "the quit is asked once");
+    CHECK(rig.outcomes == QStringList{QStringLiteral("closing")}, "and the app says it is closing");
+    rig.now += RestartCloser::kQuitWaitMs - 1;
+    run_polls();
+    CHECK(rig.closer.active(), "just short of the quit wait, the close still holds the starts");
+    CHECK(rig.outcomes.size() == 1, "and has not failed");
+    rig.now += 1;
+    run_polls();
+    CHECK(rig.outcomes == (QStringList{QStringLiteral("closing"), QStringLiteral("quitFailed")}),
+          "a process still running after the quit wait fails the close");
+    CHECK(!rig.closer.active(), "which releases the starts");
+    CHECK(rig.host.quitCalls == 1, "the quit is not asked again");
+    rig.now += RestartCloser::kQuitWaitMs;
+    run_polls();
+    CHECK(rig.outcomes.size() == 2, "a failed close says nothing more");
+    CHECK(rig.closer.begin(), "and a new close can begin");
+    run_polls();
+    CHECK(rig.host.quitCalls == 2 && rig.outcomes.size() == 3, "which quits again and says closing");
+    CHECK(rig.closer.active(), "and holds the starts again for its own quit wait");
+}
+
 } // namespace
 
 int
@@ -202,5 +231,6 @@ main(int argc, char** argv) {
     test_session_stopped_and_awaited();
     test_stop_that_never_settles();
     test_quit_refused();
+    test_process_that_outlives_its_quit();
     return failures ? 1 : 0;
 }
