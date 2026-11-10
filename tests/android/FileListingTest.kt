@@ -4,6 +4,7 @@ package io.github.arancormonk.dsdneo
 import java.io.File
 import java.io.IOException
 import java.net.StandardProtocolFamily
+import java.net.URI
 import java.net.UnixDomainSocketAddress
 import java.nio.channels.ServerSocketChannel
 import java.nio.file.AccessDeniedException
@@ -12,6 +13,7 @@ import java.nio.file.DirectoryStream
 import java.nio.file.Files
 import java.nio.file.NoSuchFileException
 import java.nio.file.Path
+import java.nio.file.Paths
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.FileTime
 import java.nio.file.attribute.PosixFilePermissions
@@ -274,8 +276,10 @@ private fun unreadableIsNotEmpty() {
     val root = folder()
     val locked = Files.createDirectory(root.resolve("locked"))
     touch(locked, "a.csv")
+    var lockedDown = false
     try {
         Files.setPosixFilePermissions(locked, PosixFilePermissions.fromString("---------"))
+        lockedDown = true
         val stillReadable = try {
             Files.newDirectoryStream(locked).use { true }
         } catch (_: IOException) {
@@ -289,7 +293,7 @@ private fun unreadableIsNotEmpty() {
     } catch (e: UnsupportedOperationException) {
         println("SKIP: no POSIX permissions here (${e.message})")
     } finally {
-        Files.setPosixFilePermissions(locked, PosixFilePermissions.fromString("rwx------"))
+        if (lockedDown) Files.setPosixFilePermissions(locked, PosixFilePermissions.fromString("rwx------"))
     }
 
     val denied = GatedFs().apply { openFailure = AccessDeniedException(root.toString()) }
@@ -427,14 +431,24 @@ private fun snapshotExpiry() {
     val current = harness.list(root).fields["snapshot"] as Long
     check(old != current) { "each listing has its own snapshot" }
     harness.more(old, 500).expect("expired", "a page of a superseded snapshot")
-    harness.more(current, 500).expect("expired", "the page request for the old snapshot released the current one")
+    harness.more(current, 500).expect("ok", "a stray page of the old snapshot leaves the current one alone")
 
     val other = harness.list(root, session = 2).fields["snapshot"] as Long
     harness.more(other, 500, session = 3).expect("expired", "a page of another session's snapshot")
     val closing = harness.list(root, session = 2).fields["snapshot"] as Long
+    check(harness.listing.holdsSnapshot(2)) { "a listed session holds its snapshot" }
     harness.listing.closeSession(2)
+    check(!harness.listing.holdsSnapshot(2)) { "closing a session releases its snapshot" }
     harness.more(closing, 500, session = 2).expect("cancelled", "a page for a closed session")
-    harness.more(closing, 500, session = 4).expect("expired", "a closed session's snapshot is released")
+    harness.more(closing, 500, session = 4).expect("expired", "a page of a closed session's snapshot from another")
+
+    // Closed sessions are remembered up to a bound: the oldest is forgotten first.
+    val bounded = Harness()
+    val sessions = 1000L..(1000L + FileListing.CLOSED_SESSIONS_KEPT)
+    for (session in sessions) bounded.listing.closeSession(session)
+    bounded.checkFile(root, root, session = sessions.last).handoff("cancelled", "the latest closed session")
+    bounded.checkFile(root, root, session = sessions.first + 1).handoff("cancelled", "the oldest remembered session")
+    bounded.checkFile(root, root, session = sessions.first).handoff("notFile", "a session past the bound")
 }
 
 private fun entryShape() {
@@ -478,6 +492,34 @@ private fun handoffReference() {
     harness.checkFile(root, dir.resolve("deleted.csv")).handoff("gone", "a file that is not there")
     harness.listing.closeSession(9)
     harness.checkFile(root, dir.resolve("a b#1%.csv"), session = 9).handoff("cancelled", "a hand-off for a closed session")
+}
+
+/**
+ * A name that is not valid UTF-8 (ext4 takes any bytes, through adb push for one) lists with U+FFFD in its shown name,
+ * but its reference keeps the bytes, so the hand-off and the copy open the file that is there.
+ */
+private fun invalidUtf8NameKeepsItsBytes() {
+    val root = folder()
+    val made = try {
+        File.separatorChar == '/' &&
+            ProcessBuilder("sh", "-c", "touch \"$(printf 'bad\\377.csv')\"").directory(root.toFile()).start()
+                .waitFor() == 0
+    } catch (_: IOException) {
+        false
+    }
+    val listed = if (made) Harness().list(root).entries else emptyList()
+    if (listed.size != 1) {
+        println("SKIP: this filesystem keeps no name that is not valid UTF-8")
+        return
+    }
+    val entry = listed[0]
+    check(entry.reference == "file://$root/bad%FF.csv") { "the reference keeps the name's bytes: ${entry.reference}" }
+    val file = Paths.get(URI(entry.reference))
+    check(Files.isRegularFile(file)) { "the reference opens the file that is there" }
+    val handoff = Harness().checkFile(root, file)
+    check(handoff.fields["ok"] == true && handoff.fields["reference"] == entry.reference) {
+        "the hand-off of that reference answers the same reference: ${handoff.fields}"
+    }
 }
 
 private fun cancelWhileBlocked() {
@@ -634,11 +676,13 @@ fun main() {
     snapshotExpiry()
     entryShape()
     handoffReference()
+    invalidUtf8NameKeepsItsBytes()
     cancelWhileBlocked()
     saturationAndWatchdog()
     submitAndSavedListings()
     supersedeDropsTheOlderListing()
     closeSessionCancelsWhatIsLive()
-    scratch.toFile().deleteRecursively()
+    // Through Path, not File: a name that is not valid UTF-8 keeps its bytes only there.
+    Files.walk(scratch).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
     println("PASS: folder listings stay inside their roots, page, filter, time out and answer each request once")
 }

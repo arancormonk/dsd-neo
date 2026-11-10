@@ -209,10 +209,11 @@ through a link (as `/sdcard` is) that still owns its folders. Links, FIFOs and U
 with mode 000, a refused open and a failed iteration read `unreadable`, never empty; a deleted root reads `gone`. Then
 dot names and the CSV, backup and replay filters (the symbol-capture rule on the whole path, case-sensitive) before the
 page, folders first in case-insensitive natural order, pages of 500, `tooMany` at 50,001 entries, snapshots expiring
-when idle, superseded or closed, the entry shape (a modified time of 0 kept), the hand-off's `file:` reference
-(encoded once, the name never), cancel during a blocked read, and saturation: three blocked reads make the fourth
-request `busy` at once, end `timedOut` at the watchdog, and give their places back only when they return. It skips the
-link, FIFO, socket and mode-000 cases where the host cannot make them.
+when idle, superseded or closed (a stray page of an old snapshot leaves the current one alone), the bounded set of
+closed sessions, the entry shape (a modified time of 0 kept), the hand-off's `file:` reference (encoded once, the
+name never; a name that is not valid UTF-8 keeps its bytes), cancel during a blocked read, and saturation: three
+blocked reads make the fourth request `busy` at once, end `timedOut` at the watchdog, and give their places back only
+when they return. It skips the link, FIFO, socket, mode-000 and non-UTF-8 cases where the host cannot make them.
 `ANDROID_USB_RECEIVER_JVM` (the `usb_receiver` suite) runs `UsbReceiverKind.kt`, the USB id table `UsbSourceManager`
 classifies every device with, with no stubs: an Airspy beside a hub and other unrelated devices reads `airspy`, two
 RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known receiver empty. Which local receiver a

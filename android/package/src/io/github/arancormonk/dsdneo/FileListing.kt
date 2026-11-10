@@ -15,6 +15,7 @@ import java.nio.file.NotDirectoryException
 import java.nio.file.Path
 import java.nio.file.attribute.BasicFileAttributes
 import java.util.ArrayDeque
+import java.util.IdentityHashMap
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -113,8 +114,10 @@ internal class FileListing(
     private val records = ArrayDeque<BrowserRecord>()
     private val snapshots = HashMap<Long, Snapshot>() // By session.
 
-    // The host never reuses a session id; a request naming a closed one is answered `cancelled`.
-    private val closedSessions = HashSet<Long>()
+    // The host never reuses a session id; a request naming a closed one is answered `cancelled`. The host refuses
+    // those itself, so this only guards against its mistakes: the [CLOSED_SESSIONS_KEPT] most recent are enough, and
+    // the set stays small however many times the browser opens.
+    private val closedSessions = LinkedHashSet<Long>()
     private var liveWorkers = 0
     private var nextSnapshot = 0L
 
@@ -160,14 +163,18 @@ internal class FileListing(
         }
     }
 
-    /** The page of the session's [snapshot] that starts at [offset], from memory; `expired` once it is released. */
+    /**
+     * The page of the session's [snapshot] that starts at [offset], from memory; `expired` once it is released. A page
+     * naming another snapshot (a stray old "Show more") is `expired` and leaves the current one alone.
+     */
     @Synchronized
     fun listMore(id: Long, session: Long, snapshot: Long, offset: Int) {
         if (!admit(id, session, LISTING)) return
         supersedeFolderRequests(session)
         val current = snapshots[session]
         val fields = when {
-            current == null || current.id != snapshot || expired(current) -> {
+            current == null || current.id != snapshot -> failureFields(LISTING, EXPIRED)
+            expired(current) -> {
                 releaseSnapshot(session)
                 failureFields(LISTING, EXPIRED)
             }
@@ -203,9 +210,14 @@ internal class FileListing(
     @Synchronized
     fun closeSession(session: Long) {
         closedSessions.add(session)
+        if (closedSessions.size > CLOSED_SESSIONS_KEPT) closedSessions.remove(closedSessions.first())
         requests.values.filter { it.session == session }.forEach { finish(it, failure(it.kind, CANCELLED)) }
         releaseSnapshot(session)
     }
+
+    /** Whether [session] still holds a snapshot; for the tests. */
+    @Synchronized
+    internal fun holdsSnapshot(session: Long): Boolean = session in snapshots
 
     /** The oldest answer not yet taken, or null. */
     @Synchronized
@@ -259,15 +271,19 @@ internal class FileListing(
     }
 
     private fun runWorker(request: Request, work: (cancelled: () -> Boolean) -> Outcome) {
-        val outcome = try {
-            work(request.cancelled::get)
+        var outcome = failure(request.kind, FAILED)
+        try {
+            outcome = work(request.cancelled::get)
         } catch (_: Exception) {
-            failure(request.kind, FAILED)
+            // Answered `failed`.
         } finally {
-            // Before the answer, so a caller who has the answer can already start another request.
-            synchronized(this) { liveWorkers-- }
+            // In one step: a caller who has the answer can already start another request, and once a place is free
+            // again the result of the request that held it has been answered or dropped.
+            synchronized(this) {
+                liveWorkers--
+                finish(request, outcome)
+            }
         }
-        finish(request, outcome)
     }
 
     /** Answer [request] with [outcome] unless something answered it first; a listing becomes its session's snapshot. */
@@ -339,7 +355,7 @@ internal class FileListing(
         } catch (e: IOException) {
             return failure(LISTING, readFailure(e))
         }
-        val entries: List<ListEntry>?
+        val entries: Map<ListEntry, Path>?
         try {
             entries = fs.open(real).use { stream -> collect(stream, shown, cancelled) }
         } catch (_: DirectoryIteratorException) {
@@ -348,17 +364,24 @@ internal class FileListing(
             return failure(LISTING, readFailure(e))
         }
         if (entries == null) return failure(LISTING, TOO_MANY)
-        val listed = shape(entries, kind, showAll)
+        val listed = shape(entries.keys.toList(), kind, showAll)
         // References only for the files that are shown: Path.toUri() looks at the file once more.
-        val referenced = listed.entries.map { entry ->
-            if (entry.dir) entry else entry.copy(reference = shown.resolve(entry.name).toUri().toASCIIString())
+        val referenced = ArrayList<ListEntry>(listed.entries.size)
+        for (entry in listed.entries) {
+            if (cancelled()) return failure(LISTING, CANCELLED) // Answered already; this result is dropped.
+            val reference = if (entry.dir) "" else entries.getValue(entry).toUri().toASCIIString()
+            referenced.add(entry.copy(reference = reference))
         }
         return Listed(referenced, listed.hiddenByFilter)
     }
 
-    /** The folders and regular files of [stream], named under [shown]; null past [entryCap]. */
-    private fun collect(stream: DirectoryStream<Path>, shown: Path, cancelled: () -> Boolean): List<ListEntry>? {
-        val entries = ArrayList<ListEntry>()
+    /**
+     * The folders and regular files of [stream], each with its path under [shown]; null past [entryCap]. The path keeps
+     * the name's bytes from the stream, so a name that is not valid UTF-8 still has a reference that opens it (its
+     * [ListEntry.name] shows U+FFFD in their place). Keyed by identity: two such names can read the same.
+     */
+    private fun collect(stream: DirectoryStream<Path>, shown: Path, cancelled: () -> Boolean): Map<ListEntry, Path>? {
+        val entries = IdentityHashMap<ListEntry, Path>()
         for (path in stream) {
             if (cancelled()) break // Answered already; this result is dropped.
             val attributes = try {
@@ -368,9 +391,10 @@ internal class FileListing(
             }
             if (!attributes.isDirectory && !attributes.isRegularFile) continue
             if (entries.size == entryCap) return null
-            val name = path.fileName.toString()
-            entries.add(ListEntry(name, shown.resolve(name).toString(), "", attributes.isDirectory, attributes.size(),
-                attributes.lastModifiedTime().toMillis()))
+            val located = shown.resolve(path.fileName)
+            val entry = ListEntry(path.fileName.toString(), located.toString(), "", attributes.isDirectory,
+                attributes.size(), attributes.lastModifiedTime().toMillis())
+            entries[entry] = located
         }
         return entries
     }
@@ -411,6 +435,9 @@ internal class FileListing(
         const val TIMED_OUT = "timedOut"
         const val CANCELLED = "cancelled"
         const val FAILED = "failed"
+
+        /** How many closed session ids are remembered, most recent first. */
+        const val CLOSED_SESSIONS_KEPT = 64
 
         private val SYMBOL_CAPTURE_EXTENSIONS = listOf(".bin", ".raw", ".sym")
 
