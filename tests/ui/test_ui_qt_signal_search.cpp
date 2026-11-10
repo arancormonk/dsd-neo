@@ -39,7 +39,6 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
-#include <atomic>
 #include <cassert>
 #include <clocale>
 #include <cmath>
@@ -1367,39 +1366,80 @@ test_save_transport_local(const QString& root) {
     assert(read_bytes(plain) == bytes);
 }
 
+namespace {
+
+/* The base save transport, holding its copy after the first chunk until abort() was called. */
+class HoldingSaveTransport final : public dsd_qt::DocumentSaveTransport {
+  public:
+    /* Waits until a chunk was copied or the save ended; whether a chunk was. */
+    bool
+    waitForChunk() {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_cv.wait(lock, [this]() { return m_chunk || m_ended; });
+        return m_chunk;
+    }
+
+    /* The saving thread's note that save() returned. */
+    void
+    markEnded() {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_ended = true;
+        m_cv.notify_all();
+    }
+
+  protected:
+    bool
+    proceedCopy(qint64 copied) override {
+        if (copied > 0) {
+            std::unique_lock<std::mutex> lock(m_mutex);
+            m_chunk = true;
+            m_cv.notify_all();
+            m_cv.wait(lock, [this]() { return aborted(); });
+        }
+        return dsd_qt::DocumentSaveTransport::proceedCopy(copied);
+    }
+
+    /* abort() marks the transport aborted first, so a copy waiting above sees it once woken here. */
+    void
+    abortPlatform() override {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_cv.notify_all();
+    }
+
+  private:
+    std::mutex m_mutex;
+    std::condition_variable m_cv;
+    bool m_chunk = false;
+    bool m_ended = false;
+};
+
+} // namespace
+
 /*
- * An abort from another thread before or during a large save: the save fails and the document keeps what it held. A
- * save that finished before the abort landed proves nothing, so the case tries again (with a fresh transport) a few
- * times. Which check stops it (the one before the copy or the one between chunks) is not observed: on Linux QSaveFile
- * writes an unnamed O_TMPFILE, so no temporary file shows that the copy has started.
+ * An abort from another thread while a save is partway through its copy: the transport holds the copy after its first
+ * chunk until abort() lands, so the abort always meets the check between chunks. The save fails and the document keeps
+ * what it held.
  */
 static void
 test_save_transport_abort_mid_save(const QString& root) {
     QDir(root).mkpath(QStringLiteral("save abort"));
     const QString dir = root + QStringLiteral("/save abort");
     const QString source = dir + QStringLiteral("/large.csv");
-    write_bytes(source, QByteArray(32 << 20, 'x'));
+    write_bytes(source, QByteArray(4 << 20, 'x'));
     const QString dest = dir + QStringLiteral("/dest.csv");
     const QByteArray before("kept\r\n");
-    bool stopped = false;
-    for (int attempt = 0; attempt < 5 && !stopped; ++attempt) {
-        write_bytes(dest, before);
-        dsd_qt::DocumentSaveTransport transport;
-        std::atomic<bool> started{false};
-        bool saved = true;
-        std::thread worker([&transport, &started, &saved, &source, &dest]() {
-            started.store(true);
-            saved = transport.save(source, dest);
-        });
-        while (!started.load()) {
-            QThread::yieldCurrentThread();
-        }
-        QThread::msleep(1);
-        transport.abort();
-        worker.join();
-        stopped = !saved;
-    }
-    assert(stopped);
+    write_bytes(dest, before);
+    HoldingSaveTransport transport;
+    bool saved = true;
+    std::thread worker([&transport, &saved, &source, &dest]() {
+        saved = transport.save(source, dest);
+        transport.markEnded();
+    });
+    const bool held = transport.waitForChunk();
+    transport.abort();
+    worker.join();
+    assert(held);
+    assert(!saved);
     assert(read_bytes(dest) == before);
     assert(QDir(dir).entryList(QDir::Files | QDir::Hidden | QDir::System)
            == QStringList({QStringLiteral("dest.csv"), QStringLiteral("large.csv")}));
@@ -1790,7 +1830,8 @@ test_export_writer_sweep(const QString& root) {
 static void
 test_export_writer_sweep_leaves_other_entries(const QString& root) {
     const QString cacheRoot = root + QStringLiteral("/export sweep others");
-    const QString id = writer_name();
+    // A fixed UUID with hex letters, so its upper-case form differs from the writer's lower-case one.
+    const QString id = QStringLiteral("3f2a9c1e-7b4d-4e8a-9c6f-a1b2c3d4e5f6");
     const QStringList folders{QStringLiteral("keep"), QLatin1Char('{') + id + QLatin1Char('}'), id.toUpper()};
     for (const QString& folder : folders) {
         QDir(root).mkpath(QStringLiteral("export sweep others/") + folder);

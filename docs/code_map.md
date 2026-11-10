@@ -13227,8 +13227,10 @@ Qt Quick frontend (`src/ui/qt`):
   every later one. The base transport's save is `copy_file_to_local_document()`, the same local copy (file URL or
   absolute path, owner-only through `QSaveFile`, no cap) `DecoderHost::copyFileToDocument()` makes on the host's own
   flag. `abortDocumentTransfers()` aborts every save transport handed out too, and one handed out after it starts
-  aborted. `abort()` calls the protected `abortPlatform()`, which a platform transport uses to stop its own copies.
-  Test: `UI_QT_SIGNAL_SEARCH` (local saves, abort before and during a save, the hand-out, a transport past its host).
+  aborted. `abort()` calls the protected `abortPlatform()`, which a platform transport uses to stop its own copies. The
+  base save asks the protected `proceedCopy(copied)` before each chunk (base: true until `abort()`); the abort test
+  overrides it to hold a copy partway until the abort lands. Test: `UI_QT_SIGNAL_SEARCH` (local saves, abort before and
+  during a save (held after its first chunk), the hand-out, a transport past its host).
   `document_export_writer.{h,cpp}` is the export writer (#826): `DocumentExportWriter(transport, cacheRoot, owner,
   reply)` lives on its owner's thread. `submit(token, bytes, reference)` runs one job at a time on a one-thread
   `QThreadPool`: it writes the bytes to `<token>.csv` in the writer's own owner-only folder `<cacheRoot>/<uuid>/`

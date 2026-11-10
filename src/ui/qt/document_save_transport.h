@@ -16,6 +16,7 @@
 #define DSD_NEO_SRC_UI_QT_DOCUMENT_SAVE_TRANSPORT_H_
 
 #include <QString>
+#include <QtGlobal>
 #include <atomic>
 
 namespace dsd_qt {
@@ -58,6 +59,15 @@ class DocumentSaveTransport {
   protected:
     /** @brief Called by abort() once this transport is marked aborted; a platform stops its own copies. Base: none. */
     virtual void abortPlatform();
+
+    /**
+     * @brief Asked by the base save() before each chunk of its copy, with the bytes copied so far; false stops the
+     *        copy, and the save fails with the document as it was.
+     *
+     * Base: true until abort(). Runs on the saving thread. A transport that overrides save() for its own documents
+     * reaches it only through the base save(). Tests override it to hold a copy partway.
+     */
+    virtual bool proceedCopy(qint64 copied);
 
   private:
     std::atomic<bool> m_aborted{false};
