@@ -44,3 +44,41 @@ function textMatchLimit() {
     // Date.now()
     return 0;
 }
+
+// Issue #831: QML text for the tap-handler rules, which read .qml as text.
+var tapHandlerFixtures = `
+Item {
+    // ruleid: dsd-neo.qml-bare-tap-handler
+    TapHandler {
+        onTapped: act()
+    }
+    // ruleid: dsd-neo.qml-bare-tap-handler
+    QtQuick.TapHandler{ onAllowedTap: act() }
+    // ok: dsd-neo.qml-bare-tap-handler
+    GatedTapHandler {
+        enabled: control.enabled
+        onAllowedTap: function (eventPoint) {
+            if (eventPoint.position.x > 0) {
+                act();
+            }
+        }
+        // ruleid: dsd-neo.qml-gated-tap-ungated-signal
+        onLongPressed: manage()
+    }
+    GatedTapHandler {
+        // ruleid: dsd-neo.qml-gated-tap-ungated-signal
+        onTapped: act()
+    }
+    GatedTapHandler {
+        // ok: dsd-neo.qml-gated-tap-ungated-signal
+        onAllowedTap: act()
+        // ok: dsd-neo.qml-gated-tap-ungated-signal
+        onAllowedLongPress: manage()
+    }
+    DisclosureRow {
+        // A row's own tapped signal is not a handler's.
+        // ok: dsd-neo.qml-gated-tap-ungated-signal
+        onTapped: open()
+    }
+}
+`;

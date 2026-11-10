@@ -54,6 +54,32 @@ Item {
         }
     }
 
+    // A form sheet with a choice list above a button, as a scan entry's
+    // Protocol sits above its Remove.
+    property int saves: 0
+    Ui.ModalSheet {
+        id: formSheet
+        objectName: "formSheet"
+        closesOnOutsideTap: false
+        Ui.PlexComboBox {
+            id: choice
+            objectName: "choice"
+            width: parent.width
+            model: ["One", "Two"]
+        }
+        Item {
+            width: parent.width
+            height: 160
+        }
+        Ui.OutlineButton {
+            id: saveButton
+            objectName: "saveButton"
+            width: parent.width
+            text: "Save"
+            onClicked: root.saves++
+        }
+    }
+
     TestCase {
         name: "GatedTapHandler"
         when: windowShown
@@ -63,12 +89,16 @@ Item {
             root.longPresses = 0;
             root.clicks = 0;
             sheet.visible = false;
+            formSheet.visible = false;
+            root.saves = 0;
             underButton.x = 20;
             underButton.y = 20;
             underButton.width = 200;
         }
         function cleanup() {
+            choice.popup.close();
             sheet.visible = false;
+            formSheet.visible = false;
         }
         // Open the sheet and put the real control exactly under its Close.
         function openOverButton() {
@@ -133,6 +163,42 @@ Item {
             wait(400);
             mouseRelease(root, 300, 500);
             compare(root.longPresses, 1, "a long press with nothing over it acts");
+        }
+
+        // An open choice list takes the tap that closes it: the button beneath
+        // the tap does not act, by mouse or by touch, and a tap in the list
+        // still chooses.
+        function test_closing_a_choice_list_does_not_act_beneath_data() {
+            return [{tag: "mouse", touch: false}, {tag: "touch", touch: true}];
+        }
+        function test_closing_a_choice_list_does_not_act_beneath(data) {
+            formSheet.open();
+            waitForRendering(formSheet);
+            choice.popup.open();
+            tryCompare(choice.popup, "opened", true);
+            var list = choice.popup.contentItem;
+            var p = saveButton.mapToItem(list, saveButton.width / 2, saveButton.height / 2);
+            verify(!list.contains(p), "Save lies outside the list");
+            if (data.touch) {
+                var touch = touchEvent(saveButton);
+                touch.press(0, saveButton, saveButton.width / 2, saveButton.height / 2).commit();
+                touch.release(0, saveButton, saveButton.width / 2, saveButton.height / 2).commit();
+            } else {
+                mouseClick(saveButton, saveButton.width / 2, saveButton.height / 2);
+            }
+            tryCompare(choice.popup, "visible", false);
+            wait(30);
+            compare(root.saves, 0, "the tap that closed the list did not save");
+            mouseClick(saveButton, saveButton.width / 2, saveButton.height / 2);
+            compare(root.saves, 1, "with the list closed, Save saves");
+            choice.popup.open();
+            tryCompare(choice.popup, "opened", true);
+            var second = choice.popup.contentItem.itemAtIndex(1);
+            verify(second !== null);
+            mouseClick(second, second.width / 2, second.height / 2);
+            tryCompare(choice.popup, "visible", false);
+            compare(choice.currentIndex, 1, "a tap in the list chooses");
+            compare(root.saves, 1);
         }
 
         // A press refused under a sheet leaves no state behind for the keyboard

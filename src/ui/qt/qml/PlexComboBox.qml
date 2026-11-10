@@ -73,6 +73,15 @@ ComboBox {
             color: option.highlighted ? Theme.chipSelectedFill : Theme.panel
         }
     }
+    // The list takes the press that dismisses it (#831). A ComboBox list
+    // closes on a press outside it and lets the press through, so the same
+    // tap acted on the control beneath (an entry's Remove, a sheet's Apply):
+    // closed on the press, the list had left Navigation before that control's
+    // press was judged. Modal but undimmed, it closes on the release instead,
+    // and nothing beneath sees either.
+    popup.modal: true
+    popup.dim: false
+    popup.closePolicy: Popup.CloseOnEscape | Popup.CloseOnReleaseOutside
     Item {
         id: popupLayer
         visible: false

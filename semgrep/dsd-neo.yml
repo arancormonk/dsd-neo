@@ -837,6 +837,45 @@ rules:
       - pattern-regex: '\bDate\s*\(\s*\)'
       - pattern-regex: '\bnew\s+Date\b(?!\s*\()'
 
+  # Issue #831: every tap in the Qt frontend goes through GatedTapHandler, which
+  # refuses a tap whose press began under a sheet or screen that has since
+  # closed. Text matches over .qml (no QML parser); dsd-neo.js holds the
+  # fixtures, as for the clock rule above.
+  - id: dsd-neo.qml-bare-tap-handler
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      Use GatedTapHandler, not a bare TapHandler, and handle onAllowedTap / onAllowedLongPress. A press on a sheet's
+      control also reaches the tap handlers beneath it, and a bare one acts once that sheet closes on the release
+      (docs/code_map.md, QML rules).
+    paths:
+      include:
+        - /src/**/*.qml
+      exclude:
+        - /src/third_party/**
+        - /src/ui/qt/qml/GatedTapHandler.qml
+    pattern-regex: '(?<![A-Za-z0-9_])TapHandler\s*\{'
+
+  - id: dsd-neo.qml-gated-tap-ungated-signal
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      onTapped and onLongPressed on a GatedTapHandler bypass its press-time gate. Handle onAllowedTap and
+      onAllowedLongPress instead.
+    paths:
+      include:
+        - /src/**/*.qml
+      exclude:
+        - /src/third_party/**
+    options:
+      generic_ellipsis_max_span: 1000
+    patterns:
+      - pattern-inside: |
+          GatedTapHandler {
+            ...
+          }
+      - pattern-regex: '\bon(?:Tapped|LongPressed)\s*:'
+
   - id: dsd-neo.github-actions.no-untrusted-context-in-run
     languages: [yaml]
     severity: ERROR

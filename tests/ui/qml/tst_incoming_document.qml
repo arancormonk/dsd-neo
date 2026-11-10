@@ -555,6 +555,15 @@ Item {
             wait(60);
             compare(testContext.manualTuneCalls(), 0, "a drag on the sheet did not pan the Spectrum");
             verify(sheet.visible, "a drag is not a tap outside the panel");
+            // The same by touch, as Android sends it.
+            var touch = touchEvent(sheet);
+            touch.press(0, sheet, start.x, start.y).commit();
+            for (var j = 1; j <= 8; ++j)
+                touch.move(0, sheet, start.x + j * 20, start.y).commit();
+            touch.release(0, sheet, start.x + 160, start.y).commit();
+            wait(60);
+            compare(testContext.manualTuneCalls(), 0, "a touch drag on the sheet did not pan the Spectrum");
+            verify(sheet.visible);
             flow.drop();
         }
 

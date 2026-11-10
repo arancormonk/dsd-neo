@@ -3,9 +3,10 @@
 import QtQuick
 
 // The app's TapHandler: it acts only on a tap whose press began while its item
-// could take input (Navigation.allows()). Qt hands a press to the pointer
-// handlers under the point before an item accepts it, so a press on a sheet's
-// or a screen's control also reaches the handlers of whatever lies beneath.
+// could take input (Navigation.allows()). With a mouse, a press on a control
+// built on a TapHandler (which, unlike a MouseArea or a Qt Quick Control, does
+// not take the press as an item) also reaches the tap handlers beneath it, a
+// sheet's barrier notwithstanding; a touch press does not (measured, Qt 6.12).
 // allows() refuses those while the cover is up, but a control that closes the
 // cover on that release (Cancel, a menu row) has taken it away by the time the
 // handler beneath reports its tap (#831). Read at the press, the answer is the

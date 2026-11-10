@@ -107,6 +107,7 @@ Item {
             callHistory.clearAll();
         }
         function cleanup() {
+            item("recordingDeleteConfirm").visible = false;
             findChild(item("historyRecording"), "recordingSavePicker").cancel();
             sheet().visible = false;
             testContext.resetHostPlayback();
@@ -228,6 +229,42 @@ Item {
             testContext.publishPlayback(pathA, 3, 2000, 10000, "");
             bar.nudge(-5000);
             compare(lastHostCall().ms, 0, "and at the start");
+        }
+
+        // Issue #831: a drag across the bar under the delete confirmation does
+        // not seek. The bar's drag stands down under a sheet (enabled reads
+        // Navigation.allows()); today the detail sheet's own layout also keeps
+        // the drag from it, so this guards the behaviour, not that term alone.
+        function test_seek_drag_under_a_sheet_data() {
+            return [{tag: "mouse", touch: false}, {tag: "touch", touch: true}];
+        }
+        function test_seek_drag_under_a_sheet(data) {
+            openWith([rec("t-1", pathA, 10000)]);
+            var bar = item("recordingSeekBar");
+            tap("recordingPlayButton");
+            testContext.publishPlayback(pathA, 2, 1000, 10000, "");
+            verify(bar.enabled);
+            var cover = item("recordingDeleteConfirm");
+            cover.visible = true;
+            waitForRendering(cover);
+            var start = bar.mapToItem(cover, bar.width * 0.2, bar.height / 2);
+            var seeks = hostCallsNamed("seekPlayback").length;
+            if (data.touch) {
+                var touch = touchEvent(cover);
+                touch.press(0, cover, start.x, start.y).commit();
+                for (var i = 1; i <= 8; ++i)
+                    touch.move(0, cover, start.x + i * bar.width * 0.075, start.y).commit();
+                touch.release(0, cover, start.x + bar.width * 0.6, start.y).commit();
+            } else {
+                mousePress(cover, start.x, start.y);
+                for (var j = 1; j <= 8; ++j)
+                    mouseMove(cover, start.x + j * bar.width * 0.075, start.y);
+                mouseRelease(cover, start.x + bar.width * 0.6, start.y);
+            }
+            wait(30);
+            compare(hostCallsNamed("seekPlayback").length, seeks, "a drag under the sheet did not seek");
+            verify(cover.visible, "a drag does not dismiss the confirmation");
+            cover.visible = false;
         }
 
         // Keyboard focus on the bar frames the bar, not the time above it (the touch area overhangs the time).
