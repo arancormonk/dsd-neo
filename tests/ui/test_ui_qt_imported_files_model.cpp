@@ -262,6 +262,8 @@ class ReferenceLog {
 class TestHost : public dsd_qt::DecoderHost {
   public:
     bool running = false;
+    /* Whether the host has DSD-neo's file browser (#830), which confines the companions a CSV finds by path. */
+    bool browser = false;
     // The live answer, apart from the cached phase: Android's reads Idle until its first refresh().
     bool engine = false;
     std::shared_ptr<TestDocuments> shared = std::make_shared<TestDocuments>();
@@ -280,6 +282,11 @@ class TestHost : public dsd_qt::DecoderHost {
     bool
     engineBusy() const override {
         return engine;
+    }
+
+    bool
+    fileBrowserSupported() const override {
+        return browser;
     }
 
     QString
@@ -3325,6 +3332,119 @@ test_target_detached_copy() {
     model.remove(row);
 }
 
+/* The labels (the paths as the CSV writes them) of the companions @p result still asks for. */
+static QStringList
+requiredLabels(const QVariantMap& result) {
+    QStringList labels;
+    const QVariantMap names = result.value("requiredLabels").toMap();
+    for (const QString& key : result.value("required").toStringList()) {
+        labels.append(names.value(key).toString());
+    }
+    labels.sort();
+    return labels;
+}
+
+/* Issue #830: where the host browses the whole device, a CSV finds companions by path only inside its own folder
+   tree, by a relative name, as a regular file whose real path stays there; the rest stay required on the sheet. An
+   explicit choice is taken wherever it is, and a host without the browser finds every file it names, as before. */
+static void
+test_confined_companion_lookup() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    const QTemporaryDir tmp;
+    const QString folder = tmp.filePath("browse/lists");
+    const QString elsewhere = tmp.filePath("elsewhere");
+    expect("confinement folders", QDir().mkpath(folder + "/sub") && QDir().mkpath(elsewhere));
+    const QByteArray keys = "id,value\n1,12345\n";
+    const QString outsideAbsolute = elsewhere + "/abs.csv";
+    const QString insideAbsolute = folder + "/inside.csv";
+    bool fixtures = write_file(folder + "/groups.csv", keys) && write_file(folder + "/sub/keys.csv", keys)
+                    && write_file(tmp.filePath("browse/outside.csv"), keys) && write_file(outsideAbsolute, keys)
+                    && write_file(insideAbsolute, keys) && write_file(elsewhere + "/target.csv", keys)
+                    && write_file(folder + "/sub/real.csv", keys);
+    QString csv = "channel,frequency,mode,keys_dec_csv\n1,851012500,p25,groups.csv\n2,851025000,p25,sub/keys.csv\n"
+                  "3,851037500,p25,../outside.csv\n4,851050000,p25,"
+                  + outsideAbsolute + "\n5,851062500,p25," + insideAbsolute + "\n";
+    QStringList confinedOut = {QStringLiteral("../outside.csv"), outsideAbsolute, insideAbsolute};
+#ifndef _WIN32
+    fixtures = fixtures && QFile::link(elsewhere + "/target.csv", folder + "/link.csv")
+               && QFile::link(folder + "/sub/real.csv", folder + "/inlink.csv");
+    csv += "6,851075000,p25,link.csv\n7,851087500,p25,inlink.csv\n";
+    confinedOut.append(QStringLiteral("link.csv"));
+#endif
+    confinedOut.sort();
+    const QString primary = folder + "/chan.csv";
+    expect("confinement fixtures", fixtures && write_file(primary, csv.toUtf8()));
+
+    TestHost host;
+    host.browser = true;
+    dsd_qt::ImportedFilesModel model(&host);
+    QVariantMap result = importAndWait(model, QUrl::fromLocalFile(primary).toString(), "chan.csv", "chan");
+    expect("confined: the companions out of the CSV's tree stay required",
+           result.value("error") == "companions" && requiredLabels(result) == confinedOut);
+    // An explicit choice outside the tree is the user's: taken as it is.
+    QVariantMap chosen;
+    for (const QString& key : result.value("required").toStringList()) {
+        chosen.insert(key, outsideAbsolute);
+    }
+    result = importAndWait(model, QUrl::fromLocalFile(primary).toString(), "chan.csv", "chan", QString(), chosen);
+    expect("confined: explicit choices outside are used", result.value("ok").toBool());
+    const int stored = model.rowForPath(result.value("path").toString());
+
+    // A target list's nested channel map: its companions stay in the target list's tree too.
+    expect("nested fixtures",
+           write_file(tmp.filePath("browse/x.csv"), "id,value\n01,ABCDEF0123\n")
+               && write_file(folder + "/hk.csv", "id,value\n01,ABCDEF0123\n")
+               && write_file(folder + "/nested.csv",
+                             "channel,frequency,mode,keys_hex_csv\n1,851012500,p25,../x.csv\n2,851025000,p25,hk.csv\n")
+               && write_file(folder + "/targets.csv", "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+                                                      "one,p25-trunk,851012500,nested.csv,250,,\n"));
+    result =
+        importAndWait(model, QUrl::fromLocalFile(folder + "/targets.csv").toString(), "targets.csv", "trunkTargets");
+    const QStringList nested = requiredLabels(result);
+    expect("confined: a nested map's escape stays required, its neighbour is found",
+           result.value("error") == "companions" && nested.size() == 1 && nested.value(0).endsWith("→ ../x.csv"));
+    expect("contained target fixtures",
+           write_file(folder + "/map2.csv", "channel,frequency,mode,keys_hex_csv\n1,851012500,p25,hk.csv\n")
+               && write_file(folder + "/targets2.csv", "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+                                                       "one,p25-trunk,851012500,map2.csv,250,,\n"));
+    result =
+        importAndWait(model, QUrl::fromLocalFile(folder + "/targets2.csv").toString(), "targets2.csv", "trunkTargets");
+    expect("confined: a target list inside its tree imports", result.value("ok").toBool());
+    const QString storedTargets = result.value("path").toString();
+    const QString detachedTargets = tmp.filePath("detached-targets.csv");
+    expect("detached target copy", QFile::copy(storedTargets, detachedTargets));
+    host.documents.insert("content://detached-targets", detachedTargets);
+    result = importAndWait(model, "content://detached-targets", "targets2.csv", "trunkTargets", storedTargets);
+    expect("confined: a stored target revision's own companions are found", result.value("ok").toBool());
+
+    // A stored revision's update from a document with no folder: only names inside the bundle's root are found.
+    const QString document = tmp.filePath("update.csv");
+    expect("update fixture", write_file(document, "channel,frequency,mode,keys_dec_csv\n1,851012500,p25,"
+                                                      + outsideAbsolute.toUtf8() + "\n"));
+    host.documents.insert("content://update", document);
+    result = importAndWait(model, "content://update", "chan.csv", "chan", rowPath(model, stored));
+    expect("confined: a stored revision's update naming a file outside its root asks for it",
+           result.value("error") == "companions" && requiredLabels(result) == QStringList{outsideAbsolute});
+    const QString detached = tmp.filePath("detached.csv");
+    expect("detached copy", QFile::copy(rowPath(model, stored), detached));
+    host.documents.insert("content://detached", detached);
+    result = importAndWait(model, "content://detached", "chan.csv", "chan", rowPath(model, stored));
+    expect("confined: a stored revision's own companions are found", result.value("ok").toBool());
+
+    // Without the browser (the desktop) every file the CSV names is found, as before.
+    host.browser = false;
+    result = importAndWait(model, QUrl::fromLocalFile(primary).toString(), "chan.csv", "chan");
+    expect("unconfined: every companion is found", result.value("ok").toBool());
+    result =
+        importAndWait(model, QUrl::fromLocalFile(folder + "/targets.csv").toString(), "targets.csv", "trunkTargets");
+    expect("unconfined: a nested map's companions are found", result.value("ok").toBool());
+    result = importAndWait(model, "content://update", "chan.csv", "chan", rowPath(model, stored));
+    expect("unconfined: a stored revision's update finds a file outside its root", result.value("ok").toBool());
+    while (model.rowCount() > 0) {
+        model.remove(0);
+    }
+}
+
 static void
 test_target_errors_and_opaque_columns() {
     TestHost host;
@@ -3869,6 +3989,7 @@ main(int argc, char** argv) {
     test_target_channel_primary_collision();
     test_target_key_primary_collision();
     test_target_detached_copy();
+    test_confined_companion_lookup();
     test_target_errors_and_opaque_columns();
     test_example_targets();
     test_export_registration_in_place();

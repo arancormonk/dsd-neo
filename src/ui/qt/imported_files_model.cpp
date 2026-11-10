@@ -12,7 +12,6 @@
 
 #include <QByteArray>
 #include <QChar>
-#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileDevice> // IWYU pragma: keep
@@ -230,7 +229,8 @@ stage_bundle(const ImportJob& job, const QVariantMap& request) {
     const QString type = request.value(QStringLiteral("type")).toString();
     const BundleTarget target{QDir(job.stagingDir).filePath(QStringLiteral("lib")),
                               request.value(QStringLiteral("primaryRelative")).toString(),
-                              request.value(QStringLiteral("existingRootRelative")).toString(), kMaxBundleImportBytes};
+                              request.value(QStringLiteral("existingRootRelative")).toString(), kMaxBundleImportBytes,
+                              request.value(QStringLiteral("confineCompanions")).toBool()};
     const ImportFetch fetch = make_fetch(job);
     const QString reference = request.value(QStringLiteral("reference")).toString();
     const QString fileName = request.value(QStringLiteral("fileName")).toString();
@@ -611,11 +611,14 @@ ImportedFilesModel::bundleRequest(const QString& reference, const QString& fileN
             libraryEntries.insert(path, QVariantMap{{"type", row.type}, {"name", row.name}});
         }
     }
+    // Read here, on the Qt thread, so the worker's stage never asks the host (issue #830: where DSD-neo browses the
+    // whole device, a CSV finds companions by path only in its own folder tree).
     QVariantMap request{{QStringLiteral("reference"), reference},
                         {QStringLiteral("fileName"), fileName},
                         {QStringLiteral("type"), type},
                         {QStringLiteral("companions"), companions},
-                        {QStringLiteral("libraryEntries"), libraryEntries}};
+                        {QStringLiteral("libraryEntries"), libraryEntries},
+                        {QStringLiteral("confineCompanions"), m_host && m_host->fileBrowserSupported()}};
     const int row = target.path.isEmpty() ? -1 : rowForPath(target.path);
     if (row >= 0) {
         // Where the replaced row's files lie in the library, so the stage builds the new ones at the same places.

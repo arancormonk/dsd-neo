@@ -13094,7 +13094,16 @@ Qt Quick frontend (`src/ui/qt`):
   an exclusive `mkdir`, moves the companions in one by one (`dsd_rename_noreplace`), then publishes the primary (no
   replace, in the new root) and saves the row, or replaces the row's file index-first as above; a failure removes the
   directory, and the journal entry goes once the primary is in place. Unanswered companions answer `companions` with
-  `required`, `requiredLabels` and `requiredDetails` (library choices added on the Qt thread).
+  `required`, `requiredLabels` and `requiredDetails` (library choices added on the Qt thread). A companion the CSV
+  names is found by path beside a local primary (a target list's nested channel maps too) or, for an update, in the
+  replaced row's bundle root. Where the host has DSD-neo's file browser (`DecoderHost::fileBrowserSupported()`, read
+  on the Qt thread by `bundleRequest()` into the request's `confineCompanions`, then `BundleTarget::
+  confineLocalCompanions`), that lookup is confined (issue #830): only a relative name, a regular file, whose canonical
+  path lies in the top-level primary's canonical folder or below it, or in the canonical bundle root for the stored
+  revision's own documents (`companion_within()`, whole path components, links followed). An absolute name, `../` out
+  of the tree or a link out stays `required`, in `resolveSources()` and `TrunkBundleStager::selectedSource()` alike;
+  explicit choices (`companions`) and library files are taken as they are. On the desktop the lookup follows any path
+  the CSV names.
   Bundle revisions the row's primary no longer reaches (`bundle_reached_revisions()`, from `bundle_reached_files()`,
   which the backup export uses too) are reclaimed on the import worker (`clean_bundle_revisions()`), for channel maps
   and target lists, after a successful bundle replace and once after `load()`, never while the decoder runs
@@ -13182,8 +13191,11 @@ Qt Quick frontend (`src/ui/qt`):
   for the library's commits (the replay store records its entry first, then moves the same way). Test:
   `UI_QT_IMPORT_SERVICE`.
   `replay_store.{h,cpp}` (`replayFiles`) owns the replay captures picked in the wizard (#832).
-  `beginReplayImport(reference, fileName)` answers `replayImportFinished(id, result)` once, queued: a local reference
-  (file URL or absolute path) with its plain path, never copied; anything else is copied by the import service into its
+  `beginReplayImport(reference, fileName)` answers `replayImportFinished(id, result)` once, queued: on the desktop a
+  local reference (file URL or absolute path) with its plain path, never copied; where the host has DSD-neo's file
+  browser (`fileBrowserSupported()`, issue #830) a local reference is copied like a document, since a USB drive can go
+  away and the inbox can be cleared (saved systems keep the paths they already name); anything else is copied by the
+  import service into its
   staging folder, at most the free space of `<AppData>/replays/` (`dsd_path_free_bytes`) less `kReserveBytes` (512 MiB;
   no cap when free space cannot be read; with less than the reserve free the answer is `too_large` before the document
   is opened), then recorded pending under the free name it will take (`unique_import_destination`) and only then moved
@@ -13861,7 +13873,10 @@ Qt Quick frontend (`src/ui/qt`):
     (not a backup, newer, too large, damaged, unreadable) swaps Unlock for "Choose another file", which reopens the
     picker inside the same flow as a new request, so only a new answer is taken, never the failed file again (#829 B2).
     Both pickers are `DocumentPicker`s (`backupSavePicker`: save, `application/octet-stream`, `suggestedName` from
-    `suggestedFileName()` before each open; `backupOpenPicker`: open). A picker that is `unavailable` ends the flow
+    `suggestedFileName()` before each open; `backupOpenPicker`: open, `browseKind` "backup", title "Choose a backup",
+    so DSD-neo's file browser can serve it, #830: the step stays `restorePicker` and `flowActive` holds while it
+    browses, Back at its locations is the picker's `rejected()` and ends the flow, an accepted pick opens the unlock
+    sheet, which keeps the focus, and "Choose another file" browses again). A picker that is `unavailable` ends the flow
     through `finish(message, true)`, the save after `discardExport()`, so the card shows the reason as a problem
     (`AlertMessage`) and `setNotice()` announces it once (`announcements` counts them for tests); `finish()` closes
     both pickers silently. A save that went to the Download folder (`savedToDownloads`) reads "Backup saved to
@@ -14113,10 +14128,15 @@ Qt Quick frontend (`src/ui/qt`):
   `UI_QT_QML_FILE_BROWSER` (screen and singleton, and Main's wiring).
 - `qml/CsvImportFlow.qml` imports a CSV and its companions for three owners: Imported files (`ImportsScreen`), the scan
   list editor's target CSV (`ScanListScreen`) and the wizard's trunking-data fields (`WizardScreen`). Its primary and
-  companion pickers (`csvPrimaryPicker`, `csvCompanionPicker`) are `DocumentPicker`s with no filter; a picked document
+  companion pickers (`csvPrimaryPicker`, `csvCompanionPicker`) are `DocumentPicker`s with no filter (`browseKind`
+  "csv", title "Choose a CSV file": DSD-neo's file browser lists CSV and text files, #830); a picked document
   is then copied on the import worker (`beginImport()`, #832, under UI, Qt, "imported_files_model"), which names the
   stored file from the provider's own name for it, the picker's `displayName` only as the hint; a companion's
-  `displayName` names its "Selected:" line until a library choice names the library file (#829 B3). `pick(kind,
+  `displayName` names its "Selected:" line until a library choice names the library file (#829 B3). The busy sheet
+  names the file by the host's `displayName` as given, since the host decodes it (#830: `map%20v2.csv` stays
+  that); only a pick with no name falls back to the reference's last segment, decoded once (`readableName()`). A
+  companion's browser stacks above the open sheet as the top modal (the sheet stays up, covered): Back at its
+  locations ends only that pick, with every choice and generation kept, and the next Back is the sheet's own. `pick(kind,
   context)` / `begin(…, context)` first cancel the import before (with that import's context), then keep `context`,
   and `finished(result, context)` hands it back. `complete()` closes both pickers silently; an owner ends a pick or a
   copy by calling the flow's `cancel()`. Ownership (#829 B4, #832): each owner cancels its flow when it stops being
@@ -14146,8 +14166,9 @@ Qt Quick frontend (`src/ui/qt`):
   list, imports, wizard band plan, modal input and settings layout QML suites.
 - The wizard's Replay file Browse (`WizardScreen.qml`, issue #829) opens `wizardReplayPicker`, a `DocumentPicker`
   (open, no filter), and never touches `pickerTarget`. An accepted pick goes to `beginReplay(reference,
-  displayName)`, which hands it to `replayFiles.beginReplayImport()` (#832): a local file is used where it is, a
-  provider's document is copied with progress and **Cancel copy**, and the answer replaces `fileText`; a failed copy
+  displayName)`, which hands it to `replayFiles.beginReplayImport()` (#832): on the desktop a local file is used where
+  it is; a provider's document, and on a host with DSD-neo's file browser any local file too (#830; the picker's
+  `browseKind` is "replay", title "Choose a replay file"), is copied with progress and **Cancel copy**, and the answer replaces `fileText`; a failed copy
   keeps it and sets `replayNotice` to `Util.importMessage(result, "replay")` (B8). An `unavailable` picker sets
   `replayNotice` to its message; backing out changes nothing. `wizardReplayNotice`, under the Replay file row, is an
   `AlertMessage` read out once per failure while `Navigation.allows` it (`announced`/`announcements`, shared with

@@ -146,6 +146,7 @@ struct ImportCopyGate {
     bool holdCancelled = false; // guarded by lock
     std::set<qint64> cancelled; // guarded by lock
     int waiting = 0;            // guarded by lock: the copies held right now
+    QStringList references;     // guarded by lock: every reference a copy was asked for, oldest first
 
     void
     hold(bool on, bool evenCancelled) {
@@ -173,6 +174,7 @@ class HeldImportTransport : public dsd_qt::DocumentImportTransport {
     copy(qint64 request, const QString& reference, const QString& destPath, qint64 maxBytes) override {
         {
             std::unique_lock<std::mutex> guard(m_gate->lock);
+            m_gate->references.append(reference);
             ++m_gate->waiting;
             m_gate->changed.wait(guard, [&] { return m_gate->opens(request); });
             --m_gate->waiting;
@@ -696,8 +698,8 @@ class InitializingHost : public ImportOnlyHost {
 /**
  * @brief The `replayFiles` the wizard copies a picked replay through (#832), scripted by the case.
  *
- * The production ReplayStore copies only content URIs (a local file is answered with its own path), which this
- * desktop suite cannot make. So a case drives the copy's progress and its answer itself, through
+ * The production ReplayStore copies content URIs, and local files too where the host has DSD-neo's file browser
+ * (elsewhere a local file is answered with its own path); this desktop suite makes neither copy. So a case drives the copy's progress and its answer itself, through
  * testContext.replayProgress() and finishReplay(); the surface QML reads is the store's.
  */
 class ReplayFilesFake : public QObject {
@@ -710,8 +712,9 @@ class ReplayFilesFake : public QObject {
   public:
     using QObject::QObject;
 
-    /* As the store's: a copy still running is cancelled first. A local file (a file:// URL or an absolute path) is
-     * never copied: it is answered later with its own path, and no copy runs meanwhile. */
+    /* As the store's: a copy still running is cancelled first. Where the host has no file browser (the desktop), a
+     * local file (a file:// URL or an absolute path) is never copied: it is answered later with its own path, and no
+     * copy runs meanwhile. With one (#830, copiesLocalFiles), a local file copies like a provider's document. */
     Q_INVOKABLE int
     beginReplayImport(const QString& reference, const QString& fileName) {
         if (m_current != 0) {
@@ -719,7 +722,7 @@ class ReplayFilesFake : public QObject {
         }
         ++begins;
         lastReference = reference;
-        const QString local = dsd_qt::local_document_path(reference);
+        const QString local = copiesLocalFiles ? QString() : dsd_qt::local_document_path(reference);
         if (!local.isEmpty()) {
             const int id = ++m_next;
             const QVariantMap answer{{QStringLiteral("ok"), true},
@@ -825,6 +828,8 @@ class ReplayFilesFake : public QObject {
         Q_EMIT progressChanged();
     }
 
+    /* The host has DSD-neo's file browser (testContext.setFileBrowserSupported()), so local picks copy too. */
+    bool copiesLocalFiles = false;
     int begins = 0;
     int cancels = 0;
     QString lastReference;
@@ -4559,6 +4564,13 @@ class Setup : public QObject {
         return m_import_host->importGate->waiting;
     }
 
+    /** @brief Every reference the import copies were asked for, oldest first (#830: a pick reaches them as given). */
+    Q_INVOKABLE QStringList
+    importReferences() const {
+        const std::lock_guard<std::mutex> guard(m_import_host->importGate->lock);
+        return m_import_host->importGate->references;
+    }
+
     /** @brief The running replay copy has made @p bytes of @p total (-1: size unknown). */
     Q_INVOKABLE void
     replayProgress(double bytes, double total) {
@@ -4929,6 +4941,7 @@ class Setup : public QObject {
         m_initializing_host->browserSupported = supported;
         m_host[QStringLiteral("fileBrowserSupported")] = supported;
         m_host_readings->insert(QStringLiteral("fileBrowserSupported"), supported);
+        m_replay_files->copiesLocalFiles = supported;
         if (hostReadingsInstalled()) {
             m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
         }

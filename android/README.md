@@ -333,24 +333,37 @@ provider that ignores the cancel delays later imports until its copy returns.
 The wizard's audio/capture **File** source copies a replay the same way into
 `files/replays/`, as long as the free space less 512 MiB holds it, with
 "Copying <name>…", how much is copied of how much, and **Cancel copy** under the
-row. `replay_copies.json` lists each copy as pending until a saved system names it,
-and a pending copy no system names is deleted at the next start; a copy a system
-once named is kept, also after a restore clears that system's file. Copies older
-versions made in `files/imports/` are never touched.
+row. A file picked in DSD-neo's own file browser (see
+[Choosing files without a file picker](#choosing-files-without-a-file-picker)) is
+copied the same way, even though DSD-neo could read it where it is: a USB drive can
+be pulled out and the inbox cleared, and a saved system must still play. Systems
+saved before keep the file they name. `replay_copies.json` lists each copy as
+pending until a saved system names it, and a pending copy no system names is
+deleted at the next start; a copy a system once named is kept, also after a restore
+clears that system's file. Copies older versions made in `files/imports/` are never
+touched.
 
 Embedded `single_key_dec`/`single_key_hex` values in a channel map travel with that copied file and therefore work on
 Android. The companion selection flow copies referenced files into a private bundle
 and rewrites the stored paths. A target CSV additionally includes its channel maps,
 band plans, scoped policy/mapping files, and dependencies inside channel maps.
+A CSV picked with Android's picker has no folder DSD-neo can look in, so the sheet asks
+for each file it names. A CSV picked in DSD-neo's file browser does: the files it names
+are found beside it, but only by a relative name and only inside the CSV's folder or a
+folder below it. An absolute path, a `../` that leaves the folder, or a link that points
+out of it is asked for on the sheet instead, so a CSV cannot pull in any file the app can
+read. A file you choose on the sheet is used wherever it is. While the browser is open
+over the sheet, Back at its list of places returns to the sheet with your choices kept.
 
 Picks go through the app's document picker (issue #829), and the picked document is then copied by the import worker
 as above. A pick belongs to the screen that asked for it: leaving Imported files, the scan list editor or the wizard, or
 reopening the editor or the wizard for another item, cancels it, and so does a copy still running. A file or "None"
 chosen for the same field while the picker is out wins over the pick that comes back later, and "Update" replaces the
 file it was started on, or says "That file changed while you were picking. Try again." when that file was removed
-meanwhile. When no picker can open, the import ends with the reason; on the companion sheet the reason shows above the
-companions and the files already chosen stay. On the wizard's **File** source the reason shows under the Replay file
-row, where a failed replay copy says why too, and the earlier file stays.
+meanwhile. A device with no picker gets DSD-neo's file browser instead; when the picker fails otherwise, the import
+ends with the reason; on the companion sheet the reason shows above the companions and the files already chosen stay.
+On the wizard's **File** source the reason shows under the Replay file row, where a failed replay copy says why too,
+and the earlier file stays.
 
 The library itself (one JSON-persisted
 row per stored file, with dry-run validation counts from
@@ -362,8 +375,10 @@ ID lists use `id,name[,tags]` and supply labels; a list whose header is `id,name
 recording calls by radio (see [Source ID List CSV](../docs/csv-formats.md#source-id-list-csv---src-csv-file--trunking-src_csv)).
 They can be applied or cleared in a running session. A group
 list and a source ID list cannot be distinguished by content: validation uses the kind selected by the user.
-No storage permissions are involved: the picker grants access to the one document picked, and DSD-neo copies it
-right away.
+With Android's picker no storage permissions are involved: the picker grants access to the one document picked, and
+DSD-neo copies it right away. DSD-neo's file browser reads the inbox without one and other storage with the access
+described in [Choosing files without a file picker](#choosing-files-without-a-file-picker); it copies the file the
+same way.
 
 ## Call recordings
 
@@ -574,11 +589,15 @@ file, and a restore never touches kept files.
 ### Restoring
 
 **Restore from backup** replaces this phone's setup with the backup's, so stop listening first (the row reads **Stop
-listening to restore** until then). Pick the file in the file picker (DSD-neo checks the file's contents, not its name)
-and enter its passphrase. A wrong passphrase reads the same as a file damaged on the way (**Wrong passphrase, or the
-file is damaged.**). When the file itself is the problem (not a DSD-neo backup, made by a newer DSD-neo, too large,
-damaged, or unreadable), **Choose another file** opens the picker again and takes only the file picked there. When no
-picker can open, either time, the restore stops, the Settings card says why, and **Restore from backup** starts over.
+listening to restore** until then). Pick the file in the file picker, or in DSD-neo's file browser (see
+[Choosing files without a file picker](#choosing-files-without-a-file-picker); it lists `.dsdbak` files, and Show all
+files the rest, since DSD-neo checks the file's contents, not its name), and enter its passphrase. Back from the
+browser's list of places ends the restore, as backing out of the picker does. A wrong passphrase reads the same as a
+file damaged on the way (**Wrong passphrase, or the file is damaged.**). When the file itself is the problem (not a
+DSD-neo backup, made by a newer DSD-neo, too large, damaged, or unreadable), **Choose another file** opens the picker
+(or the browser) again and takes only the file picked there. When the device has no picker, the browser opens
+instead; when the picker fails otherwise, either time, the restore stops, the Settings card says why, and **Restore
+from backup** starts over.
 DSD-neo checks the whole backup before it changes anything. An imported file this phone cannot read (a channel map whose
 companion files it refuses, say) is left out of the restore rather than refusing the whole backup; whatever named it
 loses that reference. Then it asks **Replace your setup?** with the backup's date, app version and counts, how many

@@ -452,27 +452,59 @@ channelReferenceKey(const QString& path, const QString& type) {
     return QString::fromUtf8(QJsonDocument(QJsonArray{path, type}).toJson(QJsonDocument::Compact));
 }
 
+/* Whether @p candidate, the file a CSV names as @p written, stays in the tree of @p anchorDir (canonical): @p written
+   is relative, @p candidate is a regular file, and its canonical path lies in @p anchorDir or below it, compared on
+   whole path components. Links are followed, so one inside that leads out does not stay. */
+static bool
+companion_within(const QString& written, const QString& candidate, const QString& anchorDir) {
+    if (written.isEmpty() || QDir::isAbsolutePath(written) || anchorDir.isEmpty()) {
+        return false;
+    }
+    const QFileInfo info(candidate);
+    const QString canonical = info.canonicalFilePath();
+    if (!info.isFile() || canonical.isEmpty()) {
+        return false;
+    }
+    const QString prefix = anchorDir.endsWith(QLatin1Char('/')) ? anchorDir : anchorDir + QLatin1Char('/');
+    return canonical.startsWith(prefix);
+}
+
+/* @p candidate as the source of the companion a CSV names as @p written, or empty when it is no file or, with
+   @p confine, does not stay in the tree of @p anchorDir. */
+static QString
+foundCompanion(const QString& written, const QString& candidate, bool confine, const QString& anchorDir) {
+    if (!QFileInfo(candidate).isFile() || (confine && !companion_within(written, candidate, anchorDir))) {
+        return {};
+    }
+    return QUrl::fromLocalFile(candidate).toString();
+}
+
+/* The real path of @p dir, the folder companions found by path must stay in when @p confine; empty when not confined
+   or when @p dir is empty or gone, and then no companion stays in it. */
+static QString
+companionAnchor(bool confine, const QString& dir) {
+    return confine && !dir.isEmpty() ? QFileInfo(dir).canonicalFilePath() : QString();
+}
+
 static QMap<QString, QString>
 resolveSources(const QString& reference, const QStringList& references, const QVariantMap& companions,
-               const QString& existingRoot, CsvBundleImport& result) {
+               const QString& existingRoot, bool confine, CsvBundleImport& result) {
     QMap<QString, QString> sources;
     const QUrl original(reference);
     const QString local = original.isLocalFile() ? original.toLocalFile() : reference;
+    const bool localPrimary = QFileInfo(local).isFile();
+    const QString primaryAnchor = companionAnchor(confine && localPrimary, QFileInfo(local).absolutePath());
+    const QString rootAnchor = companionAnchor(confine, existingRoot);
     for (const auto& key : references) {
         const QString path = result.requiredDetails.value(key).toMap().value("reference").toString();
         // Retain the original channel import API's explicit path-keyed choices.
         QString source = companions.value(key, companions.value(path)).toString();
-        if (source.isEmpty() && QFileInfo(local).isFile()) {
+        if (source.isEmpty() && localPrimary) {
             const QString candidate = QFileInfo(path).isAbsolute() ? path : QFileInfo(local).dir().filePath(path);
-            if (QFileInfo(candidate).isFile()) {
-                source = QUrl::fromLocalFile(candidate).toString();
-            }
+            source = foundCompanion(path, candidate, confine, primaryAnchor);
         }
         if (source.isEmpty() && !existingRoot.isEmpty()) {
-            const QString candidate = QDir(existingRoot).filePath(path);
-            if (QFileInfo(candidate).isFile()) {
-                source = QUrl::fromLocalFile(candidate).toString();
-            }
+            source = foundCompanion(path, QDir(existingRoot).filePath(path), confine, rootAnchor);
         }
         if (source.isEmpty()) {
             result.required.append(key);
@@ -591,7 +623,8 @@ stage_csv_bundle(const ImportFetch& fetch, const BundleTarget& target, const QSt
     }
     const QString existingRoot =
         target.existingRootRelative.isEmpty() ? QString() : inLibrary(target.existingRootRelative);
-    const auto sources = resolveSources(reference, references, companions, existingRoot, result);
+    const auto sources =
+        resolveSources(reference, references, companions, existingRoot, target.confineLocalCompanions, result);
     if (!channelSourcesReady(sources, libraryEntries, result) || !layoutBundle(target, result.name, result)) {
         return result;
     }
@@ -639,7 +672,7 @@ class TrunkBundleStager {
     TrunkBundleStager(const ImportFetch& f, const BundleTarget& t, CsvBundleImport& out, const QVariantMap& selections,
                       const QString& oldRoot, const QString& fileName, const QVariantMap& entries)
         : fetch(f), target(t), result(out), companions(selections), libraryEntries(entries), existingRoot(oldRoot),
-          name(fileName), budget(t.budget) {}
+          name(fileName), rootAnchor(companionAnchor(t.confineLocalCompanions, oldRoot)), budget(t.budget) {}
 
     QString
     stageDocument(const TargetDocument& input) {
@@ -659,6 +692,10 @@ class TrunkBundleStager {
         const QUrl url(input.source);
         const QString original = url.isLocalFile() ? url.toLocalFile() : input.source;
         const bool local = QFileInfo(original).isFile();
+        if (input.primary && local) {
+            // Every document of the bundle, nested channel maps too, finds its companions in the primary's tree.
+            primaryAnchor = companionAnchor(target.confineLocalCompanions, QFileInfo(original).absolutePath());
+        }
         const QByteArray base = local ? original.toUtf8() : QByteArray("<document>");
         QList<TargetReference> refs;
         char error[512] = {};
@@ -724,16 +761,21 @@ class TrunkBundleStager {
     QString
     selectedSource(const TargetReference& ref, const QString& key, bool local) {
         QString selected = companions.value(key).toString();
-        if (selected.isEmpty() && local && QFileInfo(ref.resolved).isFile()) {
-            selected = QUrl::fromLocalFile(ref.resolved).toString();
+        const bool confine = target.confineLocalCompanions;
+        if (selected.isEmpty() && local) {
+            // In the primary's tree, or, for the documents a stored revision holds, in the replaced bundle's root.
+            selected = foundCompanion(ref.path, ref.resolved, confine, primaryAnchor);
+            if (selected.isEmpty() && confine) {
+                selected = foundCompanion(ref.path, ref.resolved, confine, rootAnchor);
+            }
         }
         // Detached copies of the stored primary may reuse revision companions,
         // but arbitrary names must not bind to the bundle's own targets.csv.
         static const QRegularExpression revisionFile(QStringLiteral("^[0-9a-f-]{36}/[0-9]+\\.csv$"));
         if (selected.isEmpty() && !existingRoot.isEmpty() && revisionFile.match(ref.path).hasMatch()) {
             const QString candidate = QDir::cleanPath(QDir(existingRoot).filePath(ref.path));
-            if (candidate.startsWith(existingRoot + '/') && QFileInfo(candidate).isFile()) {
-                selected = QUrl::fromLocalFile(candidate).toString();
+            if (candidate.startsWith(existingRoot + '/')) {
+                selected = foundCompanion(ref.path, candidate, confine, rootAnchor);
             }
         }
         if (rejectCompanionType(result, key, selected, libraryEntries)) {
@@ -802,6 +844,9 @@ class TrunkBundleStager {
     const QVariantMap& companions;
     const QVariantMap& libraryEntries;
     QString existingRoot, name;
+    /* When companions found by path must stay in a tree: the local primary's real folder and the replaced bundle's
+       real root; each empty when there is none or nothing is confined. */
+    QString primaryAnchor, rootAnchor;
     CopyBudget budget;
     QMap<QString, QString> stored;
     int nextFile = 0;

@@ -591,11 +591,15 @@ Item {
     }
 
     // No filter: providers label files freely, and the model identifies a
-    // backup by its content, never by its name.
+    // backup by its content, never by its name. DSD-neo's file browser, where
+    // it serves the pick, lists .dsdbak files first, the rest behind Show all
+    // files (issue #830); the flow stays active while it browses.
     DocumentPicker {
         id: openPicker
         objectName: "backupOpenPicker"
         mode: "open"
+        browseKind: "backup"
+        title: qsTr("Choose a backup")
         onAccepted: function (reference) {
             flow.restorePicked(reference);
         }

@@ -360,12 +360,15 @@ ReplayStore::manifestPath() {
 int
 ReplayStore::beginReplayImport(const QString& reference, const QString& fileName) {
     cancelReplayImport();
-    const QString local = local_document_path(reference);
+    // Issue #830: where the host has DSD-neo's file browser, a local pick can be on a drive that goes away or in the
+    // inbox the user clears, so it is copied like a document; elsewhere (the desktop) it is used where it is.
+    const bool copiesLocal = m_host != nullptr && m_host->fileBrowserSupported();
+    const QString local = copiesLocal ? QString() : local_document_path(reference);
     if (!local.isEmpty() || m_imports.isNull()) {
         const qint64 id = ImportService::newRequestId();
         QVariantMap result = failure(QStringLiteral("read"));
         if (!local.isEmpty()) {
-            // A file the engine can open as it is: no copy, and nothing for the store to own (I5).
+            // A file the engine can open as it is: no copy, and nothing for the store to own.
             result = {{QStringLiteral("ok"), true},
                       {QStringLiteral("path"), QDir::cleanPath(local)},
                       {QStringLiteral("name"), QFileInfo(local).fileName()}};

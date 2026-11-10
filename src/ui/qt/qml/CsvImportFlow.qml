@@ -304,10 +304,14 @@ Item {
         }
     }
     // No MIME filter: Android providers index CSV under several MIME types.
+    // DSD-neo's file browser, where it serves the pick, lists CSV and text
+    // files (issue #830).
     DocumentPicker {
         id: primaryPicker
         objectName: "csvPrimaryPicker"
         mode: "open"
+        browseKind: "csv"
+        title: qsTr("Choose a CSV file")
         onAccepted: function (reference, displayName) {
             flow.primaryPicked(reference, displayName);
         }
@@ -320,10 +324,14 @@ Item {
             flow.primaryUnavailable(message);
         }
     }
+    // The companion's: a browser serving it stacks above the sheet, which
+    // stays up with every choice under it.
     DocumentPicker {
         id: picker
         objectName: "csvCompanionPicker"
         mode: "open"
+        browseKind: "csv"
+        title: qsTr("Choose a CSV file")
         onAccepted: function (reference, displayName) {
             flow.companionPicked(reference, displayName);
         }

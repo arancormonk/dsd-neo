@@ -39,6 +39,15 @@ Item {
             flow.requestCancel();
         }
     }
+    // #830: DSD-neo's file browser, as Main places it: above the owner and
+    // its sheets (a sheet stacks at 100 and up within its parent, here this
+    // root). It shows only while a case browses.
+    Ui.FileBrowserScreen {
+        id: browser
+        objectName: "fileBrowserScreen"
+        z: 1000
+        anchors.fill: parent
+    }
     // A flow made after a case switches the host's picker off, so it takes
     // Qt's FileDialog (the desktop path).
     Component {
@@ -75,6 +84,10 @@ Item {
                 "channel,frequency,mode,keys_dec_csv\n1,851012500,p25,unavailable/wanted.csv\n");
         }
         function cleanup() {
+            if (Ui.FileBrowser.request)
+                Ui.FileBrowser.dismiss(Ui.FileBrowser.request.token);
+            testContext.setFileBrowserSupported(false);
+            testContext.setPrefs("chooseFilesInApp", false);
             lateCancel.enabled = false;
             lateCancel.asked = 0;
             testContext.holdImports(false);
@@ -120,6 +133,25 @@ Item {
             tryVerify(function () { return flow.requiredFiles.length > 0; }, 5000, "the companion choices show");
             verify(!flow.copying);
             compare(completion.count, 0);
+        }
+        // #830: the browser serves this suite's pickers (Settings' Choose
+        // files in DSD-neo on), and every accepted pick names a file whose
+        // reference and name differ by the escapes only the reference has.
+        readonly property string browsedReference: "file:///storage/emulated/0/Download/a%20b%231%25.csv"
+        readonly property string browsedName: "a b#1%.csv"
+        function browseFirst() {
+            testContext.setFileBrowserSupported(true);
+            testContext.setPrefs("chooseFilesInApp", true);
+        }
+        function browseRequest() {
+            var request = Ui.FileBrowser.request;
+            verify(request !== null, "the browser is asked");
+            compare(request.kind, "csv");
+            compare(request.title, "Choose a CSV file");
+            return request;
+        }
+        function backInBrowser() {
+            verify(Ui.Navigation.back(flow.Window.window), "Back is taken");
         }
         function standaloneMap() {
             return testContext.writeFixtureCsv("standalone-map.csv", "channel,frequency\n1,851012500\n");
@@ -760,6 +792,104 @@ Item {
             compare(flow.companionNotice, "The file picker could not open. Try again.");
             flow.cancel();
             compare(flow.companionNotice, "", "the end of the import clears the line");
+        }
+
+        // #830: with the browser chosen in Settings, the primary pick browses
+        // for a CSV, and the browsed file's reference reaches the import as
+        // it came, shown by the name the browser gave.
+        function test_primary_browse_imports() {
+            browseFirst();
+            testContext.holdImports(true);
+            flow.pick("chan");
+            var request = browseRequest();
+            compare(Ui.Navigation.topModal, browser, "the browser is the top modal");
+            compare(testContext.documentCalls().length, 0, "Android's picker is not asked");
+            Ui.FileBrowser.finish(request.token, browsedReference, browsedName);
+            compare(Ui.FileBrowser.request, null);
+            verify(!browser.visible);
+            verify(flow.copying, "the browsed file copies");
+            compare(flow.reference, browsedReference);
+            compare(item("csvCopyingText").text, "Copying a b#1%.csv…");
+            compare(item("csvCompanionSheet").Accessible.name, "Copying a b#1%.csv");
+            testContext.holdImports(false);
+            tryCompare(completion, "count", 1);
+            compare(testContext.importReferences().slice(-1)[0], browsedReference, "the copy is asked for the reference as it came");
+            compare(completion.signalArguments[0][0].error, "read", "a file this desktop does not have");
+        }
+        // #830: "Choose a file…" on the companion sheet browses over the
+        // sheet. Back at the browser's locations ends only that pick (the
+        // sheet is back with its choices and their generations), the next
+        // Back is the sheet's own discard check, and an accepted pick fills
+        // the slot with the reference as it came.
+        function test_companion_browse_over_sheet() {
+            browseFirst();
+            var hex = addKeys("hex.csv", "keysHex");
+            var path = testContext.writeFixtureCsv("flow-browse.csv", companionRolesData()[0].csv);
+            flow.begin(path, "Roles.csv", "chan");
+            tryVerify(function () { return flow.requiredFiles.length === 2; }, 5000, "both companions are asked for");
+            var sheet = item("csvCompanionSheet");
+            var decimalIndex = flow.requiredDetails[flow.requiredFiles[0]].type === "keysDec" ? 0 : 1;
+            var hexIndex = 1 - decimalIndex;
+            var decimalKey = flow.requiredFiles[decimalIndex];
+            var hexKey = flow.requiredFiles[hexIndex];
+            item("csvLibraryChoice_" + hexIndex + "_0").clicked();
+            var generations = JSON.stringify(flow.companionGenerations);
+
+            item("csvChooseFile_" + decimalIndex).clicked();
+            browseRequest();
+            compare(Ui.Navigation.topModal, browser, "the browser is above the sheet");
+            verify(browser.visible);
+            verify(sheet.visible, "the sheet stays under it");
+            verify(!sheet.isTopModal);
+            compare(browser.view, "roots");
+            backInBrowser();
+            compare(Ui.FileBrowser.request, null, "Back at the locations ends the pick");
+            compare(Ui.Navigation.topModal, sheet, "the sheet is back on top");
+            verify(sheet.visible);
+            verify(flow.active);
+            compare(completion.count, 0, "the import goes on");
+            compare(flow.choosing, "");
+            compare(flow.companions[hexKey], hex, "the choice made before is kept");
+            verify(!flow.companions[decimalKey]);
+            compare(JSON.stringify(flow.companionGenerations), generations, "and so are the generations");
+            backInBrowser();
+            var asked = question(sheet);
+            verify(asked.visible, "the next Back is the sheet's discard check");
+            compare(completion.count, 0);
+            visualChild(asked, "discardDialogKeep").activate();
+            verify(sheet.visible);
+
+            item("csvChooseFile_" + decimalIndex).clicked();
+            var request = browseRequest();
+            Ui.FileBrowser.finish(request.token, browsedReference, browsedName);
+            compare(Ui.Navigation.topModal, sheet);
+            compare(flow.companions[decimalKey], browsedReference, "the slot takes the reference as it came");
+            compare(item("csvCompanionSelected_" + decimalIndex).text, "Selected: a b#1%.csv");
+            compare(flow.companions[hexKey], hex);
+            item("csvCompleteBundle").clicked();
+            tryCompare(completion, "count", 1);
+            verify(testContext.importReferences().indexOf(browsedReference) >= 0, "the companion copy is asked for it as it came");
+            compare(completion.signalArguments[0][0].error, "read");
+        }
+        // #830: an import that ends while its pick browses takes the browser
+        // with it, from the primary pick and from a companion's.
+        function test_complete_closes_browser() {
+            browseFirst();
+            flow.pick("chan");
+            browseRequest();
+            flow.cancel();
+            compare(completion.count, 1);
+            compare(Ui.FileBrowser.request, null, "the primary pick's browser closes");
+            verify(!browser.visible);
+            completion.clear();
+            openSheet();
+            item("csvChooseFile_0").clicked();
+            browseRequest();
+            flow.cancel();
+            compare(completion.count, 1);
+            compare(Ui.FileBrowser.request, null, "a companion pick's browser closes");
+            verify(!item("csvCompanionSheet").visible);
+            compare(Ui.Navigation.modals.length, 0);
         }
 
         // B6, desktop path: a dialog that answers without a new choice never

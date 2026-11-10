@@ -272,9 +272,11 @@ Item {
         Navigation.announce(wizard, line, text);
     }
 
-    // Browse for the replay file. A local file is used where it is; a
-    // provider's document is copied into the app's own storage (replayFiles),
-    // and until a copy lands the previous file stays.
+    // Browse for the replay file. A provider's document is copied into the
+    // app's own storage (replayFiles), and so is a local file where the host
+    // has DSD-neo's file browser (a drive can go away); on the desktop a
+    // local file is used where it is. Until a copy lands the previous file
+    // stays.
     function browseReplayFile() {
         replayNotice = "";
         sourcePicker.open();
@@ -798,11 +800,14 @@ Item {
     }
 
     // The replay file's Browse (issue #829): the host's own picker where it
-    // has one. Backing out changes nothing.
+    // has one, or DSD-neo's file browser (issue #830). Backing out changes
+    // nothing.
     DocumentPicker {
         id: sourcePicker
         objectName: "wizardReplayPicker"
         mode: "open"
+        browseKind: "replay"
+        title: qsTr("Choose a replay file")
         onAccepted: function (reference, displayName) {
             wizard.replayFilePicked(reference, displayName);
         }
