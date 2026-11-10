@@ -5149,7 +5149,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_restart_closer
-        PRIVATE Qt6::Gui dsd-neo_runtime dsd-neo_platform
+        PRIVATE Qt6::Gui dsd-neo_crypto dsd-neo_runtime dsd-neo_platform
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_restart_closer
