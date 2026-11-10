@@ -238,7 +238,9 @@ private fun symlinkedRootListsItsOwnFolders() {
     val sub = harness.list(root, root.resolve("sub")).listed(listOf("x.csv"), "a folder under a root given through a link")
     val entry = sub.entries[0]
     check(entry.path == root.resolve("sub/x.csv").toString()) { "entries keep the root's spelling: ${entry.path}" }
-    check(entry.reference == "file://$root/sub/x.csv") { "references keep the root's spelling: ${entry.reference}" }
+    check(entry.reference == root.resolve("sub/x.csv").toUri().toASCIIString()) {
+        "references keep the root's spelling: ${entry.reference}"
+    }
     val handoff = harness.checkFile(root, root.resolve("sub/x.csv"))
     check(handoff.fields["ok"] == true) { "a file under a root given through a link hands off: ${handoff.fields}" }
     harness.list(real, root.resolve("sub")).listed(listOf("x.csv"), "a folder given through a link to the root")
@@ -359,7 +361,8 @@ private fun filterBeforePage() {
 private fun filters() {
     val root = folder()
     Files.createDirectory(root.resolve("sub.dat"))
-    touch(root, "A.CSV", "b.Txt", "c.dat", "x.DSDBAK", "y.dsdbak.old", "c.WAV", "capture.bin", "a.binary", "CAPTURE.BIN",
+    // No two names differ only in case: macOS and Windows hosts fold case, so they would be one file there.
+    touch(root, "A.CSV", "b.Txt", "c.dat", "x.DSDBAK", "y.dsdbak.old", "c.WAV", "capture.bin", "a.binary", "OTHER.BIN",
         "s.sym", "r.raw2")
     val harness = Harness()
     val csv = harness.list(root, kind = "csv").listed(listOf("sub.dat", "A.CSV", "b.Txt"), "CSV imports")
@@ -477,12 +480,12 @@ private fun handoffReference() {
     touch(root.parent, "x${serial}.csv")
     val harness = Harness()
     val ok = harness.checkFile(root, dir.resolve("a b#1%.csv"))
-    check(ok.kind == "handoff" && ok.fields == mapOf("ok" to true, "reference" to "file://$dir/a%20b%231%25.csv",
+    check(ok.kind == "handoff" && ok.fields == mapOf("ok" to true, "reference" to "${dir.toUri().toASCIIString()}a%20b%231%25.csv",
         "name" to "a b#1%.csv", "reason" to "")) { "a regular file hands off encoded once: ${ok.fields}" }
     val listed = harness.list(root, dir).entries.first { it.name == "a b#1%.csv" }
     check(listed.reference == ok.fields["reference"]) { "the listing gives the same reference: ${listed.reference}" }
     val encoded = harness.checkFile(root, dir.resolve("map%20v2.csv"))
-    check(encoded.fields["reference"] == "file://$dir/map%2520v2.csv" && encoded.fields["name"] == "map%20v2.csv") {
+    check(encoded.fields["reference"] == "${dir.toUri().toASCIIString()}map%2520v2.csv" && encoded.fields["name"] == "map%20v2.csv") {
         "a name that looks encoded is encoded again and never decoded: ${encoded.fields}"
     }
     symlink(dir.resolve("link.csv"), dir.resolve("a b#1%.csv"))?.let {

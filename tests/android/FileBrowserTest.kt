@@ -993,6 +993,12 @@ private fun recordJson() {
 }
 
 fun main() {
+    // Android's paths (/storage/emulated/0, /mnt/media_rw/...) are absolute only where paths are POSIX paths.
+    if (File.separatorChar != '/') {
+        Files.delete(scratch)
+        println("SKIP: this host's paths are not POSIX paths, as Android's are")
+        return
+    }
     rootsByApiAndGrant()
     rootStatePrecedence()
     rootsGenerationMoves()
