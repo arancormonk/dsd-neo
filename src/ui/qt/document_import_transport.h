@@ -20,6 +20,7 @@
 #include <QtGlobal>
 #include <atomic>
 #include <functional>
+#include <memory>
 #include <mutex>
 
 class QIODevice;
@@ -50,9 +51,10 @@ class DocumentImportTransport {
      * @brief Copy the document @p reference names to @p destPath for import @p request, at most @p maxBytes of it.
      *
      * Blocks until the copy ends; callers run it on the import worker. The base transport takes a file:// URL or a
-     * plain absolute path (anything else is DocumentFailed) and writes through QSaveFile in the destination's
-     * directory, which must exist. A request's copies run one after another: a second copy while one runs is
-     * DocumentFailed. Callers name a fresh @p destPath; only DocumentCopied leaves a file there.
+     * plain absolute path to a regular file (anything else is DocumentFailed: a FIFO, socket, device or directory,
+     * also through a symbolic link) and writes through QSaveFile in the destination's directory, which must exist.
+     * A request's copies run one after another: a second copy while one runs is DocumentFailed. Callers name a fresh
+     * @p destPath; only DocumentCopied leaves a file there.
      *
      * @return A DecoderHost::DocumentCopy value: DocumentCancelled once cancel(@p request) was called (before or
      *         during the copy), DocumentFailed after abort(), DocumentLocalFailed when this device could not write the
@@ -89,6 +91,15 @@ class DocumentImportTransport {
      */
     void abort();
     bool aborted() const;
+
+  protected:
+    /**
+     * @brief Open @p path, a regular file, for reading; nullptr when it cannot be opened.
+     *
+     * The only source a copy opens. The base transport opens a QFile; a test overrides it to hand the copy a device
+     * it paces.
+     */
+    virtual std::unique_ptr<QIODevice> openSource(const QString& path);
 
   private:
     struct Request {

@@ -13147,8 +13147,11 @@ Qt Quick frontend (`src/ui/qt`):
   host. `copy(request, reference, destPath, maxBytes)` blocks and returns a `DocumentCopy` code; `cancel(request)`
   stops that request's running copy at its next chunk and answers `DocumentCancelled` for every later copy until
   `forget(request)`, which callers make only after the request's last `copy()` returned; `progress(request)` gives the
-  latest copy's name, bytes, total and whether it ran out of space. The base transport copies a local file (file URL
-  or absolute path; any other reference is `DocumentFailed`) through `QSaveFile` and `copy_stream_capped()`, whose
+  latest copy's name, bytes, total and whether it ran out of space. The base transport copies a local regular file
+  (file URL or absolute path; any other reference is `DocumentFailed`, and so is a FIFO, socket, device or folder,
+  also through a symbolic link, checked before the open: a FIFO with no writer held the import worker forever,
+  #830 B1) through `QSaveFile` and `copy_stream_capped()`. The protected `openSource(path)` is the only source open
+  (a `QFile`; `UI_QT_IMPORT_TRANSPORT`'s `stop_mid_copy` overrides it with a paced device), and the copy's
   per-chunk predicate checks the request's cancel and the transport's abort; a write or commit that hits `ENOSPC`
   (`ResourceError` or errno) is `DocumentLocalFailed` with `noSpace`. `abortDocumentTransfers()` aborts every transport
   handed out (the host keeps weak references), and one handed out after it starts aborted.

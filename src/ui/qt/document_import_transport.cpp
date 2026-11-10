@@ -14,6 +14,7 @@
 #include <QUrl>
 #include <Qt>
 #include <cerrno>
+#include <memory>
 
 #include "decoder_host.h"
 
@@ -128,18 +129,19 @@ DocumentImportTransport::finish(qint64 request, int copied) {
 }
 
 /*
- * The source may be any readable file but a directory: a stream (a FIFO) copies under the cap like a provider's, with
- * no size to show. QSaveFile writes beside the destination and renames on commit, and an uncommitted one discards its
- * copy, so no failure, cap and cancel included, leaves a file there; every failure on that side is this device's, not
- * the document's.
+ * The source must be a regular file, after symbolic links (QFileInfo follows them). Anything else is no document: a
+ * FIFO with no writer would hold open() until one came, and with it the import worker and every import queued behind
+ * it (#830 B1); a socket or a device has nothing to import either. QSaveFile writes beside the destination and renames
+ * on commit, and an uncommitted one discards its copy, so no failure, cap and cancel included, leaves a file there;
+ * every failure on that side is this device's, not the document's.
  */
 int
 DocumentImportTransport::copyLocal(qint64 request, const QString& path, const QString& destPath, qint64 maxBytes) {
     const QFileInfo info(path);
-    if (!info.exists() || info.isDir()) {
+    if (!info.isFile()) {
         return DecoderHost::DocumentFailed;
     }
-    const qint64 total = info.isFile() ? info.size() : -1;
+    const qint64 total = info.size();
     update(request, [&info, total](ImportCopyProgress& progress) {
         progress.displayName = info.fileName();
         progress.total = total;
@@ -147,8 +149,8 @@ DocumentImportTransport::copyLocal(qint64 request, const QString& path, const QS
     if (total > maxBytes) {
         return DecoderHost::DocumentTooLarge;
     }
-    QFile source(path);
-    if (!source.open(QIODevice::ReadOnly)) {
+    const std::unique_ptr<QIODevice> source = openSource(path);
+    if (!source) {
         return DecoderHost::DocumentFailed;
     }
     QSaveFile out(destPath);
@@ -157,7 +159,7 @@ DocumentImportTransport::copyLocal(qint64 request, const QString& path, const QS
         return localFailure(request, out);
     }
     const int copied =
-        copy_stream_capped(source, out, maxBytes, [this, request](qint64 bytes) { return proceed(request, bytes); });
+        copy_stream_capped(*source, out, maxBytes, [this, request](qint64 bytes) { return proceed(request, bytes); });
     if (copied == DecoderHost::DocumentLocalFailed) {
         return localFailure(request, out);
     }
@@ -169,6 +171,15 @@ DocumentImportTransport::copyLocal(qint64 request, const QString& path, const QS
     }
     errno = 0;
     return out.commit() ? static_cast<int>(DecoderHost::DocumentCopied) : localFailure(request, out);
+}
+
+std::unique_ptr<QIODevice>
+DocumentImportTransport::openSource(const QString& path) {
+    auto source = std::make_unique<QFile>(path);
+    if (!source->open(QIODevice::ReadOnly)) {
+        return nullptr;
+    }
+    return source;
 }
 
 int
