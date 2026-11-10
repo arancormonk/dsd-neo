@@ -859,6 +859,65 @@ class ReplayFilesFake : public QObject {
 
 // The history model itself is already real in these fixtures; the controller
 // stub only acknowledges the documented same-thread flush before a start.
+/**
+ * @brief The `restartCloser` (#830) Main and the file browser call, scripted by the case.
+ *
+ * begin() is refused as the production closer's is (refused() or already active) and otherwise only counts and turns
+ * active; finish() ends it as the closer would: "closing" keeps it active, any other outcome clears it.
+ */
+class RestartCloserFake : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(bool active READ active NOTIFY activeChanged)
+  public:
+    using QObject::QObject;
+
+    bool
+    active() const {
+        return m_active;
+    }
+
+    Q_INVOKABLE bool
+    refused() const {
+        return closeRefused;
+    }
+
+    Q_INVOKABLE bool
+    begin() {
+        if (closeRefused || m_active) {
+            return false;
+        }
+        ++begins;
+        setActive(true);
+        return true;
+    }
+
+    void
+    finish(const QString& outcome) {
+        if (outcome != QStringLiteral("closing")) {
+            setActive(false);
+        }
+        Q_EMIT finished(outcome);
+    }
+
+    bool closeRefused = false;
+    int begins = 0;
+
+  Q_SIGNALS:
+    void activeChanged();
+    void finished(const QString& outcome);
+
+  private:
+    void
+    setActive(bool on) {
+        if (m_active != on) {
+            m_active = on;
+            Q_EMIT activeChanged();
+        }
+    }
+
+    bool m_active = false;
+};
+
 class TestUiController : public QObject {
     Q_OBJECT
     // WP-S2: exercise Main.qml signal routing and overlay binding.
@@ -2655,8 +2714,11 @@ class ReadingMap : public QQmlPropertyMap {
         return QStringLiteral("License notices fixture");
     }
 
+    /* Issue #830: what each copy asked to put on the clipboard, oldest first (resetHostPlayback() forgets them); the
+     * readings have no clipboard, so every copy answers false. */
     Q_INVOKABLE bool
-    copyText(const QString&) const {
+    copyText(const QString& text) const {
+        copiedTexts.append(text);
         return false;
     }
 
@@ -2834,6 +2896,7 @@ class ReadingMap : public QQmlPropertyMap {
     }
 
     QVariantList calls;
+    mutable QStringList copiedTexts;
     QVariantMap lastDocumentRequest;
     QMap<QString, QString> savedDocumentNames;
     bool shareAccepted = true;
@@ -4214,6 +4277,7 @@ class Setup : public QObject {
     Q_INVOKABLE void
     resetHostPlayback() {
         m_host_readings->calls.clear();
+        m_host_readings->copiedTexts.clear();
         m_host_readings->lastDocumentRequest.clear();
         m_host_readings->savedDocumentNames.clear();
         for (ImportOnlyHost* host : {m_import_host, m_initializing_host}) {
@@ -4950,6 +5014,30 @@ class Setup : public QObject {
         } else {
             Q_EMIT m_lifecycle_host->fileAccessRequestDone(id, outcome);
         }
+    }
+
+    /** @brief What the readings host's copyText() was asked to copy since the last resetHostPlayback(), oldest first. */
+    Q_INVOKABLE QStringList
+    copiedTexts() const {
+        return m_host_readings->copiedTexts;
+    }
+
+    /** @brief Issue #830: whether `restartCloser.refused()` says a copy would be cut short. */
+    Q_INVOKABLE void
+    setCloseRefused(bool refused) {
+        m_restart_closer->closeRefused = refused;
+    }
+
+    /** @brief How many closes `restartCloser.begin()` has begun on this engine. */
+    Q_INVOKABLE int
+    closeBegins() const {
+        return m_restart_closer->begins;
+    }
+
+    /** @brief End the close `restartCloser` is running with @p outcome ("closing", "stopFailed" or "quitFailed"). */
+    Q_INVOKABLE void
+    finishClose(const QString& outcome) {
+        m_restart_closer->finish(outcome);
     }
 
     /** @brief Publish a live/idle host so cases can exercise session-only actions. */
@@ -6110,6 +6198,9 @@ class Setup : public QObject {
         m_backup = new BackupRecorder(engine);
         m_backup->setHost(m_lifecycle_host);
         ctx->setContextProperty(QStringLiteral("backup"), m_backup);
+        // Issue #830: the close before a restart, scripted (setCloseRefused(), finishClose()).
+        m_restart_closer = new RestartCloserFake(engine);
+        ctx->setContextProperty(QStringLiteral("restartCloser"), m_restart_closer);
         // Issue #718: the production composing-text commit, on its fallback path here.
         ctx->setContextProperty(QStringLiteral("inputCommit"), new dsd_qt::InputCommit(engine));
         // Issue #828: the production list, which outlives every engine here as it does in the app.
@@ -6141,6 +6232,7 @@ class Setup : public QObject {
     QVariantMap m_radio_reference;
     RadioReferenceRecorder* m_radio_reference_recorder = nullptr;
     BackupRecorder* m_backup = nullptr;
+    RestartCloserFake* m_restart_closer = nullptr;
     QQmlEngine* m_engine = nullptr;
     dsd_qt::SpectrumModel* m_spectrum = nullptr;
     /* Issue #672: the Monitor's avoid list, the production model, filled by setScanAvoids(). */

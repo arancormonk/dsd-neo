@@ -106,6 +106,7 @@ qt_add_resources(
         qml/CsvImportFlow.qml
         qml/DocumentPicker.qml
         qml/FileBrowser.qml
+        qml/FileBrowserScreen.qml
         qml/HistoryDetailSheet.qml
         qml/CallRecordingPlayer.qml
         qml/DetectionRecordingsSheet.qml
