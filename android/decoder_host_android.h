@@ -15,6 +15,7 @@
 #define DSD_NEO_ANDROID_DECODER_HOST_ANDROID_H_
 
 #include <QByteArray>
+#include <QHash>
 #include <QRect>
 #include <QSet>
 #include <QString>
@@ -22,6 +23,7 @@
 #include <QThreadPool>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <functional>
 #include <memory>
 #include <stdint.h>
 
@@ -119,6 +121,37 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     QString savedDocumentName(const QString& reference) const override;
     /** @brief DownloadsSave deletes the row on its own thread, if it is still pending and no write took it. */
     void discardPendingDownload(const QString& reference) override;
+
+    /*
+     * The app's own file browser (#830; decoder_host_android_files.cpp, less its JNI transport): each request the base
+     * host begins live goes to FileBrowser.kt with the host's id, which reads on its own worker threads and launches on
+     * the Android main thread, so no call here waits on a drive or a provider. refresh() polls its records and settles
+     * the live request a record names, of the kind it asked, once; a record for a retired request is dropped. A
+     * request FileBrowser could not take (not started, no activity context, a JNI call that failed) is answered
+     * "failed", queued. fileAccess() is the last reading of FileBrowser.accessState(), read again when
+     * takeAccessRefresh() says it may have changed (refresh()) or at once (refreshFileAccess()).
+     */
+    bool
+    fileBrowserSupported() const override {
+        return true;
+    }
+
+    QVariantMap
+    fileAccess() const override {
+        return m_file_access;
+    }
+
+    void refreshFileAccess() override;
+    /** @brief Retire the session's requests, each cancelled in FileBrowser, then close the session there too. */
+    void closeFileBrowserSession(qint64 sessionId) override;
+    qint64 requestFileRoots(qint64 sessionId) override;
+    qint64 requestFolderListing(qint64 sessionId, const QString& rootKey, qint64 generation, const QString& path,
+                                const QVariantMap& filter) override;
+    qint64 requestMorePage(qint64 sessionId, qint64 snapshot, int offset) override;
+    qint64 requestFileHandoff(qint64 sessionId, const QString& rootKey, qint64 generation,
+                              const QString& reference) override;
+    /** @brief The live access request when there is one; otherwise a new one, handed to FileBrowser. */
+    qint64 requestFileAccess(qint64 sessionId) override;
 
     bool isRunning() const override;
     QString statusText() const override;
@@ -313,6 +346,12 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     static void postSignInFill(int token, bool hasUsername, QString& username, bool hasPassword, QString& password);
 
   protected:
+    /**
+     * @brief A cancel, a session close or a newer listing retired @p requestId: FileBrowser cancels it too, once, if it
+     * took it. The only platform cancel: cancelFileRequest() is the base host's, which calls this.
+     */
+    void fileRequestRetired(qint64 requestId) override;
+
     /** @brief Hand @p path to RecordingPlayback; a play the platform refuses fails as "failed". */
     void beginPlayback(const QString& path) override;
 
@@ -546,6 +585,39 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     /** @brief DownloadsSave.publishedName(); empty when the call failed. */
     static QString platformSavedDocumentName(const QString& reference);
     static void platformDiscardPendingDownload(const QString& reference);
+    /**
+     * @brief Hand request @p id, live, to FileBrowser through @p handOver, which is false when FileBrowser could not
+     * take it; that is answered "failed", queued. An id that is not live (a closed session's) is never handed over.
+     */
+    qint64 startFileRequest(qint64 id, FileRequestKind kind, const std::function<bool(qint64)>& handOver);
+    /** @brief Read FileBrowser.accessState(); a reading that differs is published with fileAccessChanged(). */
+    void readFileAccess();
+    /** @brief Read the access state if FileBrowser asks, then deliver every record waiting, oldest first. */
+    void refreshFileBrowser();
+    /** @brief Settle the request FileBrowser record @p text answers; a malformed or stray record is ignored. */
+    void deliverFileRecord(const QString& text);
+    /*
+     * FileBrowser over JNI, from the Qt thread (decoder_host_android.cpp). None waits: reads run on FileBrowser's
+     * workers and launches are posted to the Android main thread. Each request call is false when FileBrowser could not
+     * take it, so nothing will answer it; requestAccess() is asked only when Qt's context is an activity.
+     */
+    /** @brief FileBrowser.start(), from the constructor: its volume callback and the process's groups. */
+    static void platformStartFileBrowser();
+    /** @brief FileBrowser.accessState() (StorageManager and package-manager reads, no filesystem); empty on failure. */
+    static QString platformFileAccessState();
+    /** @brief FileBrowser.takeAccessRefresh(): true once after a resume, a volume change or a permission answer. */
+    static bool platformTakeFileAccessRefresh();
+    static bool platformListRoots(qint64 id, qint64 session);
+    static bool platformListFolder(qint64 id, qint64 session, const QString& rootKey, qint64 generation,
+                                   const QString& path, const QString& kind, bool showAll);
+    static bool platformListMore(qint64 id, qint64 session, qint64 snapshot, int offset);
+    static bool platformCheckHandoff(qint64 id, qint64 session, const QString& rootKey, qint64 generation,
+                                     const QString& reference);
+    static bool platformRequestFileAccess(qint64 id);
+    static void platformCancelFileRequest(qint64 id);
+    static void platformCloseFileSession(qint64 session);
+    /** @brief FileBrowser.pollRecord(): the oldest record not yet read, or empty. */
+    static QString platformPollFileBrowser();
     void refreshPresentation();
     /** @brief Hands Qt the Activity's display density on the Android main thread; PresentationScale's push. */
     void startDisplayDensityPush();
@@ -617,6 +689,10 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     QSet<int> m_share_holds;
     // #829: the document request a DocumentPicker record may answer (0: none).
     qint64 m_document_request = 0;
+    // #830: the last FileBrowser.accessState() read (the base host's reading before one), and the live requests
+    // FileBrowser took, with the kind a record for each must be.
+    QVariantMap m_file_access = DecoderHost::fileAccess();
+    QHash<qint64, FileRequestKind> m_file_requests;
     // The transfer jobs' way back to this host; cleared before it goes.
     std::shared_ptr<TransferLink> m_transfer_link = newTransferLink(this);
     // One transfer at a time, off the GUI thread. After the link it reaches the host through, so it goes first.

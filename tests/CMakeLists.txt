@@ -22475,6 +22475,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_android_host
         ui/test_ui_qt_android_host.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_documents.cpp
+        ${PROJECT_SOURCE_DIR}/android/decoder_host_android_files.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_imports.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_lifecycle.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_recordings.cpp
