@@ -146,6 +146,34 @@ def document_copy_codes_match():
     return None
 
 
+def backup_probe_constants_match():
+    """DocumentCopies' probe reads on to count only after the backup magic and reads one backup header, so its copies of
+    DSD_BACKUP_MAGIC (src/crypto/backup_seal.c) and DSD_BACKUP_HEADER_BYTES (backup_seal.h) must be the same."""
+    seal = REPO / "src/crypto/backup_seal.c"
+    header = REPO / "include/dsd-neo/crypto/backup_seal.h"
+    kotlin = REPO / APP_SOURCES / "DocumentCopies.kt"
+    try:
+        seal_text = seal.read_text(encoding="utf-8")
+        header_text = header.read_text(encoding="utf-8")
+        kotlin_text = kotlin.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the backup probe constants: {error}"
+    pairs = (
+        ("the backup magic", re.search(r'#define\s+DSD_BACKUP_MAGIC\s+"([^"]*)"', seal_text), seal,
+         re.search(r'const val BACKUP_MAGIC_TEXT = "([^"]*)"', kotlin_text)),
+        ("the header size", re.search(r"#define\s+DSD_BACKUP_HEADER_BYTES\s+(\d+)U?\b", header_text), header,
+         re.search(r"const val PROBE_HEADER_BYTES = (\d+)\b", kotlin_text)),
+    )
+    for what, native, native_path, jvm in pairs:
+        if not native or not jvm:
+            return (f"{what} must be found in {native_path.relative_to(REPO)} and {kotlin.relative_to(REPO)} "
+                    "(BACKUP_MAGIC_TEXT, PROBE_HEADER_BYTES)")
+        if native.group(1) != jvm.group(1):
+            return (f"{what} in {kotlin.relative_to(REPO)} ({jvm.group(1)!r}) must match "
+                    f"{native_path.relative_to(REPO)} ({native.group(1)!r})")
+    return None
+
+
 def kotlin_codes(path, names):
     """The `const val NAME = <int>` values of `names` in the Kotlin source at `path`."""
     text = path.read_text(encoding="utf-8")
@@ -880,9 +908,10 @@ SUITES = {
     ),
     # The backup's document transfers. The bounded stream copy and its teardown abort are plain Kotlin and build with no
     # stubs, so an android.* import there fails the compile. The Android glue around it (size lookup, opens, trim, sync,
-    # delete and cancellation) builds apart, against a resolver stub that plays the document providers.
+    # delete and cancellation, and the import probes, #831) builds apart, against a resolver stub that plays the
+    # document providers. The probe's copies of the backup magic and header size are checked against backup_seal.
     "document_transfer": Suite(
-        checks=(document_copy_codes_match,),
+        checks=(document_copy_codes_match, backup_probe_constants_match),
         builds=(
             Build(sources=("DocumentTransfer.kt",), tests=("DocumentTransferTest.kt",)),
             Build(

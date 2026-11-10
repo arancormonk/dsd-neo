@@ -221,9 +221,11 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      * destination is cleared first (DocumentLocalFailed when it cannot be), and without a held ContentResolver the copy
      * is DocumentLocalFailed. The platform's codes pass through, DocumentCancelled included.
      * A copy reported without its file (a failed JNI call reads as 0) is DocumentLocalFailed; any other answer is
-     * DocumentFailed. Any other reference takes the base transport's local copy. cancel() and forget() reach both
-     * sides; progress() reads the side the latest copy took. abortDocumentTransfers() stops the platform's copies
-     * (DocumentCopies.abort()) and aborts the transport.
+     * DocumentFailed. Any other reference takes the base transport's local copy. A content:// probe (#831) goes to
+     * DocumentCopies.probeImportDocument() under the same request id, and its record (document_probe_record.h) gives
+     * the result; a record that does not read, or no held ContentResolver, is DocumentFailed. cancel() and forget()
+     * reach both sides; progress() reads the side the latest copy took. abortDocumentTransfers() stops the platform's
+     * copies (DocumentCopies.abort()) and aborts the transport.
      */
     std::shared_ptr<dsd_qt::DocumentImportTransport> importTransport() const override;
 
@@ -427,6 +429,11 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     static QString platformImportName(qint64 request);
     static bool platformImportNoSpace(qint64 request);
     static void platformForgetImport(qint64 request);
+    /**
+     * @brief DocumentCopies.probeImportDocument() (#831): its record (document_probe_record.h); empty without a held
+     * ContentResolver or when the call failed.
+     */
+    static QString platformProbeImportDocument(qint64 request, const QString& reference, qint64 maxCount);
     void requestServiceStop();
     /* Call recordings (#708) over JNI: RecordingShare, RecordingPlayback and RecordingExport. */
     /** @brief RecordingShare.roots(); empty when the call failed. */

@@ -5018,7 +5018,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_session_args
-        PRIVATE Qt6::Gui dsd-neo_runtime
+        PRIVATE Qt6::Gui dsd-neo_crypto dsd-neo_runtime
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_session_args
@@ -5049,7 +5049,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_scan_list_targets
-        PRIVATE Qt6::Gui dsd-neo_runtime
+        PRIVATE Qt6::Gui dsd-neo_crypto dsd-neo_runtime
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_scan_list_targets
@@ -5110,7 +5110,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_import_transport
-        PRIVATE Qt6::Gui dsd-neo_runtime dsd-neo_platform
+        PRIVATE Qt6::Gui dsd-neo_crypto dsd-neo_runtime dsd-neo_platform
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_import_transport
@@ -5141,7 +5141,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_import_service
-        PRIVATE Qt6::Gui dsd-neo_runtime dsd-neo_platform
+        PRIVATE Qt6::Gui dsd-neo_crypto dsd-neo_runtime dsd-neo_platform
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_import_service
@@ -5188,6 +5188,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_archive_incoming.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_typed_paths.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -5369,6 +5370,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_archive_incoming.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_typed_paths.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -5426,6 +5428,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_archive_incoming.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_typed_paths.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -5636,6 +5639,7 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/diagnostics_log.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_archive_incoming.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_typed_paths.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/input_commit.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp

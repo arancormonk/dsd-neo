@@ -158,6 +158,8 @@ class R8ArtifactTests(unittest.TestCase):
                        "(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;)Z"), upcalls)
         # The backup's restore reads through the import copies (#831): the old backup read has no caller and no keep.
         self.assertNotIn("copyDocumentToFile", {name for _, name, _ in upcalls})
+        self.assertIn((r8.APP_PACKAGE + "DocumentCopies", "probeImportDocument",
+                       "(Landroid/content/ContentResolver;JLjava/lang/String;J)Ljava/lang/String;"), upcalls)
         self.assertIn(NATIVE, downcalls)
         self.assertIn((r8.APP_PACKAGE + "DsdNative", "nativeHostDiagnostic"), downcalls)
         self.assertIn((r8.APP_PACKAGE + "DsdNative", "nativeQuitUi"), downcalls)
@@ -165,7 +167,7 @@ class R8ArtifactTests(unittest.TestCase):
         self.assertIn((r8.APP_PACKAGE + "AppSupport", "activityDensity", "(Landroid/content/Context;)F"), upcalls)
 
     def test_import_copy_entry_points_are_kept(self):
-        # DecoderHostAndroid calls these by literal name and descriptor from the import worker (#832).
+        # DecoderHostAndroid calls these by literal name and descriptor from the import worker (#832, #831).
         kept = kept_static_methods("DocumentCopies")
         for entry in (
             ("copyImportDocument", "(Landroid/content/ContentResolver;JLjava/lang/String;Ljava/lang/String;J)I"),
@@ -174,6 +176,8 @@ class R8ArtifactTests(unittest.TestCase):
             ("importName", "(J)Ljava/lang/String;"),
             ("importNoSpace", "(J)Z"),
             ("forgetImport", "(J)V"),
+            # The probe of a document opened from another app (#831), on the same request ids.
+            ("probeImportDocument", "(Landroid/content/ContentResolver;JLjava/lang/String;J)Ljava/lang/String;"),
         ):
             with self.subTest(entry=entry):
                 self.assertIn(entry, kept)

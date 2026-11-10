@@ -29,6 +29,7 @@ target_sources(
         backup_apply_fs.cpp
         backup_archive.cpp
         backup_archive_build.cpp
+        backup_archive_incoming.cpp
         backup_archive_parse.cpp
         backup_archive_rules.cpp
         backup_typed_paths.cpp

@@ -13063,7 +13063,14 @@ Qt Quick frontend (`src/ui/qt`):
   replacePath)` returns an id and `importFinished(id, result)` answers it exactly once, queued, refusals included
   (`cancelImport(id)` on an import whose commit has not run answers `cancelled` at once, queued, without waiting for the
   copy to stop, and marks the id so its later commit publishes nothing and answers nothing; `importing` says whether one
-  is unanswered). The stage, on the worker, copies the document into its staging folder (at most
+  is unanswered). A document opened from another app (#831) is told apart first: `inspectDocument(reference)` returns
+  an id and `documentInspected(id, {kind, name})` answers it exactly once, queued; the probe runs on the import worker
+  (`ImportService::probeDocument()`, capped at `backup::kMaxSealedBytes`) and `kind` is
+  `backup::classify_incoming()`'s name (`backup`, `newerBackup`, `damagedBackup`, `tooLargeBackup`, `other`),
+  `unreadable` for any probe that failed, or `cancelled`. Probes are kept apart from imports (`m_probes`), so
+  `importing` and `cancelImport()` never see them; `cancelInspect(id)` answers `cancelled` at once and drops the late
+  result, and the destructor cancels the probes in flight on a service that outlives the model. Tests:
+  `UI_QT_IMPORTED_FILES`. The stage, on the worker, copies the document into its staging folder (at most
   `backup::kMaxFileBytes`, 32 MiB), names it from the
   transport's display name, else the picker's hint (`sanitized_import_name`), and validates it there; a refusal's
   `detail` is the parser's reason, which the C parsers give only to the log, so `validate()` keeps the worker thread's
@@ -13160,6 +13167,13 @@ Qt Quick frontend (`src/ui/qt`):
   backup's save: no request id, so only `abort()` stops it; the base transport writes a file URL or absolute path
   whole, private, through `QSaveFile` (`copy_file_to_local_document()`, which `DecoderHost::copyFileToLocalDocument()`
   shares), and `discardWrite(reference)` drops a save destination that will never be written (a no-op in the base).
+  `probe(request, reference, out, maxCount)` (#831) reads a document's start into an `ImportProbe` (`header`, at most
+  `kProbeHeaderBytes`, 64, `DSD_BACKUP_HEADER_BYTES`; `displayName`; `total`): only a header that starts with the backup
+  magic (`dsd_backup_has_magic()`) is read on, discarding, to count its length, which stops at `maxCount + 1`; any other
+  document is never read past its header (`total` -1). The declared size is never used. It shares the copies' request
+  records (cancel, forget, one transfer at a time, progress), writes nothing, and answers `DocumentCopied`,
+  `DocumentCancelled` or `DocumentFailed`. The base transport opens a local file unbuffered, so a stream's header read
+  waits for no more than the header.
   `abortDocumentTransfers()` aborts every transport handed out (the host keeps weak references), and one handed out
   after it starts aborted.
   `import_service.{h,cpp}` is the import worker (#832) the library and the replay imports share; `ui_load()` makes the
@@ -13185,6 +13199,10 @@ Qt Quick frontend (`src/ui/qt`):
   `DocumentCopy` value, `DocumentCancelled` for a cancelled request. Only `DocumentCopied` hands the file over; for any
   other value the caller removes `destPath`, since a cancel that lands after the copy ended leaves it. With no commit
   to come (teardown), the stage removes a copy that ended after the cancel.
+  `probeDocument(reference, maxCount, commit)` (#831, a document opened from another app) is a third kind, also
+  folderless: the stage runs `transport->probe()` and returns what it read, the name included, before the worker has
+  the transport forget the request, and the commit gets the probe's `DocumentCopy` value with the `ImportProbe`
+  (`DocumentCancelled` for a cancelled request).
   The commit journal `<AppData>/import_journal.json` (`journalAdd`/`journalRemove`/`journalEntries`, Qt thread)
   lists the clean absolute directories a commit creates until the index naming them is saved (a journal left empty is
   removed; a missing one is empty). A journal that cannot be read, or holds anything but absolute paths, gives
@@ -13811,7 +13829,9 @@ Qt Quick frontend (`src/ui/qt`):
     (`incoming_kind_name()`: `backup`, `newerBackup`, `damagedBackup`, `tooLargeBackup`, `other`): NOT_BACKUP, then a
     length above `kMaxSealedBytes` (before the version, as Restore refuses such a file first), then VERSION, then
     TOO_LARGE, then FORMAT/PARAMS; a negative (unknown) `total` keeps
-    the verdicts that need no length and is otherwise `damagedBackup`. Tests: `UI_QT_BACKUP_ARCHIVE`, and
+    the verdicts that need no length and is otherwise `damagedBackup`. The classifier lives in
+    `backup_archive_incoming.cpp`, so the import library (`ImportedFilesModel`'s probes) links it without the
+    snapshot and its stores. Tests: `UI_QT_BACKUP_ARCHIVE`, and
     `UI_QT_BACKUP_MODEL` for the restore's errors.
   - Staging and apply (`backup_apply.h`, `backup_stage.cpp`, `backup_apply.cpp`, module-private
     `backup_apply_fs.{h,cpp}`): `stage_restore()` takes the data root its caller read (the model passes the UI thread's
@@ -14759,15 +14779,28 @@ Configuration backup (issue #580; the Qt side is under UI, Qt, "Configuration ba
   to it through `DocumentTransfer.LocalOutput`, the rename) is `DocumentLocalFailed` (`LOCAL_FAILED`), not the
   document's `DocumentFailed`; one with `ENOSPC` also sets `importNoSpace()`. `abort()` cancels and refuses import
   copies too, as `DocumentFailed`.
+- Import probes (#831): `DocumentCopies.probeImportDocument(resolver, request, uri, maxCount)` runs as an import copy
+  of its request (`runImport()`: the same table, cancel, forget and abort) and answers a record `code;total;header;name`
+  (`android/document_probe_record.h`): code COPIED, FAILED or CANCELLED; header the first 64 bytes as lowercase hex
+  (`DocumentTransfer.readUpTo()`, short reads included); total counted only after the backup magic
+  (`DocumentTransfer.countCapped()`, stopping at `maxCount + 1`), else -1; and the `DISPLAY_NAME` (one query, no size),
+  last and verbatim. It opens with `openAssetFileDescriptor(uri, "r", signal)` and closes every stream. Its magic is a
+  copy of `DSD_BACKUP_MAGIC` used only to decide whether to count; the `document_transfer` suite's
+  `backup_probe_constants_match` check pins it, and the header size, to `backup_seal`, and the C++ side still
+  classifies the header itself.
 - The C++ side of the import copies is `DecoderHostAndroid::ImportTransport` (`decoder_host_android_imports.cpp`,
   handed out by `importTransport()`), whose JNI calls (`platformCopyImportDocument()` and the five request-table
   calls) sit in `decoder_host_android.cpp`. For a `content://` reference the destination is cleared first (a stale
   destination that stays is `DocumentLocalFailed`), no held `ContentResolver` is `DocumentLocalFailed`,
   `DocumentCopied` counts only with its file in place (a failed JNI call reads as 0, so that is `DocumentLocalFailed`
   too), codes 1-4 pass through and any other answer is `DocumentFailed`. Any other reference takes the base
-  transport's local copy. `cancel()` and `forget()` reach both sides; `progress()` reads the side the request's latest
-  copy took. `writeFromFile()` (#831, the backup's save) sends a `content://` save to `platformCopyFileToDocument()`,
-  and one that never reached Kotlin (aborted, no resolver) or whose JNI call failed discards its Download-folder row
+  transport's local copy. A `content://` `probe()` (#831) calls `platformProbeImportDocument()` and reads its record
+  (`parse_document_probe_record()`: plain decimals, hex of at most 64 bytes, a length no shorter than the header);
+  the name is taken whatever the code, the header and length only for `DocumentCopied`; a record that does not read, a
+  code other than copied/cancelled, no held `ContentResolver` or an abort is `DocumentFailed`. `cancel()` and
+  `forget()` reach both sides; `progress()` reads the side the request's latest copy took. `writeFromFile()` (#831,
+  the backup's save) sends a `content://` save to `platformCopyFileToDocument()`, and one that never reached Kotlin
+  (aborted, no resolver) or whose JNI call failed discards its Download-folder row
   (`platformDiscardPendingDownload()`), so a save that ends after the host is gone settles its row too;
   `discardWrite()` discards one never started.
 - `abortDocumentTransfers()` (only at teardown: `~BackupModel`, and `closeRecordingWork()` while a recording transfer

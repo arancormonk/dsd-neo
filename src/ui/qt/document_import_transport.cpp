@@ -14,6 +14,10 @@
 #include <QUrl>
 #include <Qt>
 #include <cerrno>
+#include <cstdint>
+#include <stddef.h>
+
+#include <dsd-neo/crypto/backup_seal.h>
 
 #include "decoder_host.h"
 
@@ -36,6 +40,69 @@ out_of_space(const QSaveFile& out) {
 std::function<bool(qint64)>
 until_aborted(const std::atomic<bool>* aborted) {
     return [aborted](qint64) { return aborted == nullptr || !aborted->load(); };
+}
+
+static_assert(kProbeHeaderBytes == DSD_BACKUP_HEADER_BYTES, "a probe reads a backup's whole header");
+
+/* Read @p source into @p header until it holds kProbeHeaderBytes or the source ends, however short each read is. */
+int
+read_probe_header(QIODevice& source, QByteArray& header, const std::function<bool(qint64)>& proceed) {
+    char buffer[kProbeHeaderBytes];
+    while (header.size() < kProbeHeaderBytes) {
+        if (!proceed(header.size())) {
+            return DecoderHost::DocumentFailed;
+        }
+        const qint64 n = source.read(buffer, kProbeHeaderBytes - header.size());
+        if (n < 0) {
+            return DecoderHost::DocumentFailed;
+        }
+        if (n == 0) {
+            break;
+        }
+        header.append(buffer, n);
+    }
+    return DecoderHost::DocumentCopied;
+}
+
+/*
+ * Read the rest of @p source, discarding it, and set @p total to its whole length from the @p counted bytes already
+ * read, stopping once it reaches @p maxCount + 1. As in copy_stream_capped(), the count is what was read, and the loop
+ * ends on the read result.
+ */
+int
+count_rest(QIODevice& source, qint64 counted, qint64 maxCount, const std::function<bool(qint64)>& proceed,
+           qint64* total) {
+    QByteArray chunk(1 << 16, Qt::Uninitialized);
+    while (counted <= maxCount) {
+        if (!proceed(counted)) {
+            return DecoderHost::DocumentFailed;
+        }
+        const qint64 room = maxCount - counted;
+        const qint64 n = source.read(chunk.data(), room >= chunk.size() ? chunk.size() : room + 1);
+        if (n < 0) {
+            return DecoderHost::DocumentFailed;
+        }
+        if (n == 0) {
+            break;
+        }
+        counted += n;
+    }
+    *total = counted;
+    return DecoderHost::DocumentCopied;
+}
+
+/* The probe of an open @p source: its header, then its length only when the header starts with the backup magic. */
+int
+probe_stream(QIODevice& source, ImportProbe* out, qint64 maxCount, const std::function<bool(qint64)>& proceed) {
+    const int read = read_probe_header(source, out->header, proceed);
+    const bool backup = read == DecoderHost::DocumentCopied
+                        && dsd_backup_has_magic(reinterpret_cast<const uint8_t*>(out->header.constData()),
+                                                static_cast<size_t>(out->header.size()))
+                               != 0;
+    if (!backup) {
+        return read;
+    }
+    return count_rest(source, out->header.size(), maxCount, proceed, &out->total);
 }
 
 } // namespace
@@ -188,6 +255,42 @@ DocumentImportTransport::copyLocal(qint64 request, const QString& path, const QS
     }
     errno = 0;
     return out.commit() ? static_cast<int>(DecoderHost::DocumentCopied) : localFailure(request, out);
+}
+
+int
+DocumentImportTransport::probe(qint64 request, const QString& reference, ImportProbe* out, qint64 maxCount) {
+    if (out == nullptr) {
+        return DecoderHost::DocumentFailed;
+    }
+    *out = ImportProbe();
+    int refusal = DecoderHost::DocumentFailed;
+    if (!begin(request, refusal)) {
+        return refusal;
+    }
+    const QString path = local_document_path(reference);
+    const int probed = path.isEmpty() || maxCount < 0 ? static_cast<int>(DecoderHost::DocumentFailed)
+                                                      : probeLocal(request, path, out, maxCount);
+    return finish(request, probed);
+}
+
+/*
+ * A stream (a FIFO) probes as a file does: the length is what was read, never a reported size. Unbuffered, so the
+ * header read asks for the header alone: a buffered QFile fills its buffer first, and on a stream that read waits for
+ * bytes a probe that stops after the header never needs.
+ */
+int
+DocumentImportTransport::probeLocal(qint64 request, const QString& path, ImportProbe* out, qint64 maxCount) {
+    const QFileInfo info(path);
+    if (!info.exists() || info.isDir()) {
+        return DecoderHost::DocumentFailed;
+    }
+    out->displayName = info.fileName();
+    update(request, [&info](ImportCopyProgress& progress) { progress.displayName = info.fileName(); });
+    QFile source(path);
+    if (!source.open(QIODevice::ReadOnly | QIODevice::Unbuffered)) {
+        return DecoderHost::DocumentFailed;
+    }
+    return probe_stream(source, out, maxCount, [this, request](qint64 bytes) { return proceed(request, bytes); });
 }
 
 int

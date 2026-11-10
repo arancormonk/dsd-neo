@@ -31,6 +31,7 @@
 #include <utility>
 #include "../../android/decoder_host_android.h"
 #include "../../android/document_pick_record.h"
+#include "../../android/document_probe_record.h"
 #include "../../android/local_device_state.h"
 #include "../../android/location_record.h"
 #include "../../android/run_status.h"
@@ -87,6 +88,12 @@ struct PlatformImports {
     qint64 total = -1;
     QString name;
     bool noSpace = false;
+    /* #831: the probes, and the record each answers. */
+    int probes = 0;
+    qint64 probeRequest = -1;
+    QString probeReference;
+    qint64 probeMaxCount = -1;
+    QString probeRecord = QStringLiteral("0;-1;4142;probed.csv");
 };
 } // namespace
 
@@ -469,6 +476,16 @@ DecoderHostAndroid::platformImportNoSpace(qint64) {
 void
 DecoderHostAndroid::platformForgetImport(qint64 request) {
     imports().forgotten.append(request);
+}
+
+QString
+DecoderHostAndroid::platformProbeImportDocument(qint64 request, const QString& reference, qint64 maxCount) {
+    PlatformImports& i = imports();
+    ++i.probes;
+    i.probeRequest = request;
+    i.probeReference = reference;
+    i.probeMaxCount = maxCount;
+    return i.probeRecord;
 }
 
 void
@@ -1097,6 +1114,133 @@ check_import_dispatch() {
           "nor a save, whose row is discarded");
     check(host.importTransport()->copy(48, content, dest, 77) == DecoderHost::DocumentFailed && imports().copies == 0,
           "and a transport handed out after it starts aborted");
+}
+
+/*
+ * #831: a content URI's probe goes to the platform with its request id and cap, and its record gives the result: the
+ * name always, the header and length only for a whole probe; a record that does not read, or an unknown code, is a
+ * failure. Any other reference takes the base transport's probe.
+ */
+static void
+check_probe_dispatch() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    const QTemporaryDir dir;
+    check(dir.isValid(), "a scratch directory exists");
+    const QString source = dir.filePath(QStringLiteral("talkgroups.csv"));
+    const QString content = QStringLiteral("content://com.example.documents/document/primary%3Atalkgroups.csv");
+    write_file(source, "1,a\n");
+    DecoderHostAndroid host;
+    const std::shared_ptr<dsd_qt::DocumentImportTransport> transport = host.importTransport();
+    platform() = PlatformCopies();
+    imports() = PlatformImports();
+
+    dsd_qt::ImportProbe probe;
+    imports().probeRecord = QStringLiteral("0;1000;4453444e454f424b00;Backup;1.dsdbak");
+    check(transport->probe(51, content, &probe, 999) == DecoderHost::DocumentCopied,
+          "a content URI is probed by the platform");
+    check(imports().probes == 1 && imports().probeRequest == 51 && imports().probeReference == content
+              && imports().probeMaxCount == 999,
+          "the platform's probe gets the request id, the reference and the cap");
+    check(probe.header == QByteArray("DSDNEOBK\0", 9) && probe.total == 1000
+              && probe.displayName == QStringLiteral("Backup;1.dsdbak"),
+          "the record gives the header, the length and the name, verbatim");
+
+    struct Answer {
+        const char* record;
+        int result;
+        const char* name;
+        const char* why;
+    };
+
+    static const Answer kAnswers[] = {
+        {"2;-1;;broken.csv", DecoderHost::DocumentFailed, "broken.csv", "a failure names the document"},
+        {"4;-1;;", DecoderHost::DocumentCancelled, "", "a cancelled probe passes through"},
+        {"1;-1;;", DecoderHost::DocumentFailed, "", "a code a probe never answers is a failure"},
+        {"", DecoderHost::DocumentFailed, "", "an empty record (a failed JNI call) is a failure"},
+        {"0;-1;zz;x", DecoderHost::DocumentFailed, "", "a record that does not read is a failure"},
+    };
+    for (const Answer& answer : kAnswers) {
+        imports() = PlatformImports();
+        imports().probeRecord = QString::fromUtf8(answer.record);
+        probe = dsd_qt::ImportProbe();
+        probe.total = 7;
+        check(transport->probe(52, content, &probe, 999) == answer.result && probe.header.isEmpty() && probe.total == -1
+                  && probe.displayName == QString::fromUtf8(answer.name),
+              answer.why);
+    }
+
+    imports() = PlatformImports();
+    check(transport->probe(53, QUrl::fromLocalFile(source).toString(), &probe, 999) == DecoderHost::DocumentCopied
+              && probe.header == "1,a\n" && probe.displayName == QStringLiteral("talkgroups.csv")
+              && imports().probes == 0,
+          "a file URL takes the base transport's probe");
+    check(transport->probe(54, content, nullptr, 999) == DecoderHost::DocumentFailed
+              && transport->probe(54, content, &probe, -1) == DecoderHost::DocumentFailed && imports().probes == 0,
+          "no result or a negative cap never reaches the platform");
+    platform().holdsResolver = false;
+    check(transport->probe(54, content, &probe, 999) == DecoderHost::DocumentFailed && imports().probes == 0,
+          "a probe without a held ContentResolver fails");
+    platform() = PlatformCopies();
+
+    /* A probe's request is the import copies' request: its cancel and forget reach the platform's table. */
+    transport->cancel(55);
+    transport->forget(55);
+    check(imports().cancelled == QList<qint64>{55} && imports().forgotten == QList<qint64>{55},
+          "a probe's cancel and forget reach the platform");
+
+    host.abortDocumentTransfers();
+    check(transport->probe(56, content, &probe, 999) == DecoderHost::DocumentFailed && imports().probes == 0,
+          "after the host's abort no probe reaches the platform");
+}
+
+/* #831: the probe record's reader takes only a whole record, the name last and verbatim. */
+static void
+check_probe_record() {
+    using dsd_android::DocumentProbeRecord;
+    using dsd_android::parse_document_probe_record;
+    DocumentProbeRecord record;
+    check(parse_document_probe_record(QStringLiteral("0;-1;;"), &record) && record.code == 0 && record.total == -1
+              && record.header.isEmpty() && record.name.isEmpty(),
+          "an empty header and name read");
+    check(parse_document_probe_record(QStringLiteral("0;67108865;4453444E454f42;a;b;c"), &record)
+              && record.total == 67108865 && record.header == QByteArray("DSDNEOB")
+              && record.name == QStringLiteral("a;b;c"),
+          "hex of either case, a large length and a name holding ';' read");
+    check(parse_document_probe_record(QStringLiteral("4;-1;;n\u00e9e \U0001F4C1.csv"), &record)
+              && record.name == QStringLiteral("n\u00e9e \U0001F4C1.csv"),
+          "a name outside ASCII reads verbatim");
+    const QString hex64 = QString(128, QLatin1Char('a'));
+    check(parse_document_probe_record(QStringLiteral("0;64;") + hex64 + QStringLiteral(";x"), &record)
+              && record.header.size() == dsd_qt::kProbeHeaderBytes,
+          "a whole header reads");
+
+    record = DocumentProbeRecord();
+    record.code = 9;
+    const QString kRefused[] = {
+        QString(),
+        QStringLiteral("0;-1;"),
+        QStringLiteral("0;-1"),
+        QStringLiteral(";-1;;"),
+        QStringLiteral("-1;-1;;"),
+        QStringLiteral("+0;-1;;"),
+        QStringLiteral(" 0;-1;;"),
+        QStringLiteral("0;-2;;"),
+        QStringLiteral("0; 5;;"),
+        QStringLiteral("0;5x;;"),
+        QStringLiteral("0;1234567890123456789;;"),
+        QStringLiteral("99999999999;-1;;"),
+        QStringLiteral("0;-1;abc;"),
+        QStringLiteral("0;-1;zz;"),
+        QStringLiteral("0;-1;44 53;"),
+        QStringLiteral("0;3;44534e45;"),
+        QStringLiteral("0;99;") + hex64 + QStringLiteral("aa;"),
+    };
+    for (const QString& refused : kRefused) {
+        check(!parse_document_probe_record(refused, &record), qPrintable(QStringLiteral("refused: ") + refused));
+    }
+    check(record.code == 9, "a refused record leaves the result untouched");
+    check(!parse_document_probe_record(QStringLiteral("0;-1;;"), nullptr), "no result refuses");
 }
 
 /* #708: the host knows its session state only after its first poll of the service; the call recording store holds
@@ -2934,6 +3078,8 @@ main(int argc, char** argv) {
     check_document_requests();
     check_document_reentrant_drain();
     check_import_dispatch();
+    check_probe_dispatch();
+    check_probe_record();
     check_stop_publishes_stopping();
     check_session_state_known_after_first_poll();
     check_receiver_health();

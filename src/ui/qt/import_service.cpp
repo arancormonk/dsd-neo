@@ -241,6 +241,31 @@ ImportService::readDocument(const QString& reference, const QString& destPath, q
 }
 
 qint64
+ImportService::probeDocument(const QString& reference, qint64 maxCount, ProbeCommit commit) {
+    Stage stage = [reference, maxCount](const ImportJob& job) {
+        ImportProbe probe;
+        const int probed = job.transport->probe(job.id, reference, &probe, maxCount);
+        // Taken here, before the worker has the transport forget the request.
+        return QVariantMap{{QStringLiteral("probed"), probed},
+                           {QStringLiteral("header"), probe.header},
+                           {QStringLiteral("total"), probe.total},
+                           {QStringLiteral("name"), probe.displayName}};
+    };
+    Commit probed = [commit = std::move(commit)](qint64 id, const QVariantMap& staged, bool cancelled) {
+        ImportProbe probe;
+        probe.header = staged.value(QStringLiteral("header")).toByteArray();
+        probe.total = staged.value(QStringLiteral("total"), qint64{-1}).toLongLong();
+        probe.displayName = staged.value(QStringLiteral("name")).toString();
+        commit(id,
+               cancelled
+                   ? static_cast<int>(DecoderHost::DocumentCancelled)
+                   : staged.value(QStringLiteral("probed"), static_cast<int>(DecoderHost::DocumentFailed)).toInt(),
+               probe);
+    };
+    return enqueue(std::move(stage), std::move(probed), false);
+}
+
+qint64
 ImportService::enqueue(Stage stage, Commit commit, bool staged) {
     const qint64 id = newRequestId();
     auto request = std::make_shared<Request>();

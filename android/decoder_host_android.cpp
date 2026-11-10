@@ -749,6 +749,21 @@ DecoderHostAndroid::platformForgetImport(qint64 request) {
     QJniObject::callStaticMethod<void>(kDocumentsClass, "forgetImport", "(J)V", static_cast<jlong>(request));
 }
 
+QString
+DecoderHostAndroid::platformProbeImportDocument(qint64 request, const QString& reference, qint64 maxCount) {
+    const jobject resolver = g_content_resolver.load();
+    if (resolver == nullptr) {
+        return QString();
+    }
+    const QJniObject uri = QJniObject::fromString(reference);
+    // Must match DocumentCopies.kt: @JvmStatic fun probeImportDocument(ContentResolver, Long, String, Long): String.
+    const QJniObject record = QJniObject::callStaticObjectMethod(
+        kDocumentsClass, "probeImportDocument",
+        "(Landroid/content/ContentResolver;JLjava/lang/String;J)Ljava/lang/String;", resolver,
+        static_cast<jlong>(request), uri.object(), static_cast<jlong>(maxCount));
+    return record.isValid() ? record.toString() : QString();
+}
+
 /*
  * Call recordings (#708; the dispatch is decoder_host_android_recordings.cpp). Roots, playback and share are asked on
  * the Qt main thread and only post or read there; the transfer runs on the host's transfer worker, which QJniObject

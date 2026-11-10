@@ -62,6 +62,8 @@ private class FakeResolver : ContentResolver() {
         var holdsQuery = false
         var holdsOpen = false
         var deleteFails = false
+        var shortReads = false
+        var readFails = false
     }
 
     val documents = ConcurrentHashMap<String, Document>()
@@ -117,26 +119,34 @@ private class FakeResolver : ContentResolver() {
         cancellationSignal?.throwIfCanceled()
         val document = document(uri)
         if (document.holdsOpen) hold(cancellationSignal)
-        val descriptor = ParcelFileDescriptor(document.file, mode)
-        val pause = document.pause ?: return AssetFileDescriptor(descriptor, 0, AssetFileDescriptor.UNKNOWN_LENGTH)
+        val descriptor = ParcelFileDescriptor(document.file, mode).also { descriptors[uri.toString()] = it }
+        if (document.pause == null && !document.shortReads && !document.readFails) {
+            return AssetFileDescriptor(descriptor, 0, AssetFileDescriptor.UNKNOWN_LENGTH)
+        }
         return object : AssetFileDescriptor(descriptor, 0, AssetFileDescriptor.UNKNOWN_LENGTH) {
-            override fun createInputStream(): FileInputStream = PausingInput(descriptor, pause)
+            override fun createInputStream(): FileInputStream = QuirkyInput(descriptor, document)
         }
     }
 
-    /** The document's stream, which waits on [pause] before its second read, as a slow download does. */
-    private class PausingInput(owner: ParcelFileDescriptor, private val pause: Pause) :
+    /**
+     * The document's stream with its provider's quirks: it waits on [Document.pause] before its second read, as a slow
+     * download does; gives at most 3 bytes a read ([Document.shortReads]), as a pipe may; or fails every read
+     * ([Document.readFails]).
+     */
+    private class QuirkyInput(owner: ParcelFileDescriptor, private val document: Document) :
         ParcelFileDescriptor.AutoCloseInputStream(owner) {
         private var reads = 0
 
         override fun read(b: ByteArray): Int = read(b, 0, b.size)
 
         override fun read(b: ByteArray, off: Int, len: Int): Int {
-            if (++reads == 2) {
+            if (document.readFails) throw IOException("the provider's stream broke")
+            val pause = document.pause
+            if (++reads == 2 && pause != null) {
                 pause.reached.release()
                 if (!pause.proceed.tryAcquire(5, TimeUnit.SECONDS)) throw IOException("a paused read was never let go")
             }
-            return super.read(b, off, len)
+            return super.read(b, off, if (document.shortReads) minOf(len, 3) else len)
         }
     }
 
@@ -564,6 +574,160 @@ private fun aFullDiskIsALocalFailureThatSaysSo() {
     checkNoTransferInFlight("imports onto a full disk")
 }
 
+/** A probe's record, read back: its result code, counted length, header and name. */
+private class ProbeRecord(val code: Int, val total: Long, val header: ByteArray, val name: String)
+
+/** Read [record] as android/document_probe_record.h does: four fields, the name last and verbatim. */
+private fun parseRecord(record: String): ProbeRecord {
+    val fields = record.split(";", limit = 4)
+    check(fields.size == 4) { "a probe record has four fields: $record" }
+    val hex = fields[2]
+    check(hex.length % 2 == 0 && hex.all { it in "0123456789abcdef" }) { "the header is lowercase hex: $hex" }
+    val header = ByteArray(hex.length / 2) { hex.substring(2 * it, 2 * it + 2).toInt(16).toByte() }
+    return ProbeRecord(fields[0].toInt(), fields[1].toLong(), header, fields[3])
+}
+
+private fun probe(resolver: FakeResolver, request: Long, uri: String, cap: Long) =
+    parseRecord(DocumentCopies.probeImportDocument(resolver, request, uri, cap))
+
+/** The backup magic, then [size] - 8 more bytes. */
+private fun backupLike(size: Int) = "DSDNEOBK".toByteArray(Charsets.US_ASCII) + bytes(size - 8, seed = 7)
+
+private const val HEADER = 64
+
+private fun checkClosed(resolver: FakeResolver, uri: String, what: String) {
+    check(resolver.descriptors.getValue(uri).closed) { "$what closes the document" }
+}
+
+private fun aProbeCountsOnlyABackupAndOnlyItsBytes() {
+    val resolver = FakeResolver()
+    // A CSV whose second read would wait five seconds and fail: a probe that read past the header would show it.
+    val pause = Pause()
+    val csvBytes = bytes(3 * DocumentTransfer.CHUNK_BYTES)
+    val csv = resolver.add(csvBytes) { declaredSize = 7; displayName = "Talkgroups.csv"; this.pause = pause }
+    val request = newRequest()
+    val read = probe(resolver, request, csv, 1L shl 20)
+    check(read.code == DocumentTransfer.COPIED && read.total == -1L) { "a document with no backup magic has no length" }
+    check(read.header.contentEquals(csvBytes.copyOf(HEADER))) { "a document with no backup magic gives its header" }
+    check(read.name == "Talkgroups.csv" && DocumentCopies.importName(request) == "Talkgroups.csv") {
+        "the probe names the document"
+    }
+    check(pause.reached.availablePermits() == 0) { "a document with no backup magic is not read past its header" }
+    check(resolver.calls == listOf("query $csv", "open r $csv")) {
+        "one lookup, then one read-only open: ${resolver.calls}"
+    }
+    check(resolver.projections == listOf(listOf(OpenableColumns.DISPLAY_NAME))) {
+        "the lookup asks for the name alone, never the size: ${resolver.projections}"
+    }
+    checkClosed(resolver, csv, "a probe")
+    checkNotRunning(request, "a finished probe")
+    DocumentCopies.forgetImport(request)
+
+    for ((what, configure) in listOf<Pair<String, FakeResolver.Document.() -> Unit>>(
+        "a declared size that lies" to { declaredSize = 10 },
+        "no declared size" to {},
+        "reads of 3 bytes" to { shortReads = true },
+    )) {
+        val content = backupLike(2 * DocumentTransfer.CHUNK_BYTES + 5)
+        val uri = resolver.add(content, configure)
+        val counted = probe(resolver, newRequest(), uri, 1L shl 20)
+        check(counted.code == DocumentTransfer.COPIED && counted.total == content.size.toLong()) {
+            "with $what a backup is counted on its bytes: ${counted.total}"
+        }
+        check(counted.header.contentEquals(content.copyOf(HEADER))) { "with $what the header is whole" }
+        check(counted.name.isEmpty()) { "with no name the record's name is empty" }
+        checkClosed(resolver, uri, "a probe that counts")
+    }
+
+    val backup = resolver.add(backupLike(1000)) { displayName = "a;b.dsdbak" }
+    for ((cap, total) in listOf(1000L to 1000L, 999L to 1000L, 100L to 101L)) {
+        val capped = probe(resolver, newRequest(), backup, cap)
+        check(capped.code == DocumentTransfer.COPIED && capped.total == total) {
+            "under a cap of $cap, a backup of 1000 bytes counts $total: ${capped.total}"
+        }
+        check(capped.name == "a;b.dsdbak") { "the name ends the record verbatim" }
+    }
+    val cut = probe(resolver, newRequest(), resolver.add(backupLike(20)), 1000)
+    check(cut.code == DocumentTransfer.COPIED && cut.header.contentEquals(backupLike(20)) && cut.total == 20L) {
+        "a backup cut inside its header gives its whole length"
+    }
+    val empty = probe(resolver, newRequest(), resolver.add(ByteArray(0)), 1000)
+    check(empty.code == DocumentTransfer.COPIED && empty.header.isEmpty() && empty.total == -1L) { "an empty document" }
+    check(resolver.calls.none { it.startsWith("open w") || it.startsWith("delete") }) { "a probe writes nothing" }
+    checkNoTransferInFlight("probes")
+}
+
+private fun aProbeThatCannotReadFails() {
+    val resolver = FakeResolver()
+    val missing = probe(resolver, newRequest(), "content://com.example.documents/document/gone", 1000)
+    check(missing.code == DocumentTransfer.FAILED && missing.total == -1L && missing.header.isEmpty()) {
+        "a document the provider cannot open fails"
+    }
+    val broken = resolver.add(backupLike(100)) { readFails = true; displayName = "broken.dsdbak" }
+    val failed = probe(resolver, newRequest(), broken, 1000)
+    check(failed.code == DocumentTransfer.FAILED && failed.header.isEmpty() && failed.name == "broken.dsdbak") {
+        "a read that fails fails the probe, which still names the document"
+    }
+    checkClosed(resolver, broken, "a probe whose read fails")
+    for ((what, configure) in listOf<Pair<String, FakeResolver.Document.() -> Unit>>(
+        "a failed lookup" to { sizeLookupFails = true },
+        "a lookup that answers null" to { queryAnswersNull = true },
+    )) {
+        val uri = resolver.add(backupLike(100), configure)
+        val read = probe(resolver, newRequest(), uri, 1000)
+        check(read.code == DocumentTransfer.COPIED && read.total == 100L && read.name.isEmpty()) { "$what still reads" }
+    }
+    val before = resolver.calls.size
+    check(probe(resolver, newRequest(), broken, -1).code == DocumentTransfer.FAILED) { "a negative cap fails" }
+    check(resolver.calls.size == before) { "a probe refused for its cap asks the provider nothing" }
+    checkNoTransferInFlight("failed probes")
+}
+
+private fun aCancelStopsAProbeWhereverItWaits() {
+    val resolver = FakeResolver()
+    val uri = resolver.add(backupLike(100))
+    val early = newRequest()
+    DocumentCopies.cancelImport(early)
+    check(probe(resolver, early, uri, 1000).code == DocumentTransfer.CANCELLED) { "a probe cancelled first ends so" }
+    check(resolver.calls.isEmpty()) { "and asks the provider nothing" }
+    DocumentCopies.forgetImport(early)
+
+    val held = resolver.add(backupLike(100)) { holdsOpen = true }
+    val inOpen = newRequest()
+    val opening = ProbeThread(resolver, inOpen, held)
+    check(resolver.holding.tryAcquire(5, TimeUnit.SECONDS)) { "the probe's open is held" }
+    DocumentCopies.cancelImport(inOpen)
+    check(opening.finish().code == DocumentTransfer.CANCELLED) { "a cancel during the open cancels the probe" }
+
+    val pause = Pause()
+    val counting = resolver.add(backupLike(3 * DocumentTransfer.CHUNK_BYTES)) { this.pause = pause }
+    val inCount = newRequest()
+    val reading = ProbeThread(resolver, inCount, counting)
+    check(pause.reached.tryAcquire(5, TimeUnit.SECONDS)) { "the probe reads its header and counts on" }
+    check(progressOf(inCount).first() == HEADER.toLong()) { "progress counts the bytes read: ${progressOf(inCount)}" }
+    DocumentCopies.cancelImport(inCount)
+    pause.proceed.release()
+    check(reading.finish().code == DocumentTransfer.CANCELLED) { "a cancel while it counts cancels the probe" }
+    checkClosed(resolver, counting, "a cancelled probe")
+    check(!resolver.heldTooLong) { "every held provider call was cancelled" }
+    listOf(inOpen, inCount).forEach(DocumentCopies::forgetImport)
+    checkNoTransferInFlight("cancelled probes")
+}
+
+/** One probe on its own thread, as the import worker runs it. */
+private class ProbeThread(resolver: FakeResolver, request: Long, uri: String) {
+    @Volatile
+    private var record: String? = null
+    private val thread = Thread { record = DocumentCopies.probeImportDocument(resolver, request, uri, 1L shl 20) }
+        .apply { start() }
+
+    fun finish(): ProbeRecord {
+        thread.join(5_000)
+        check(!thread.isAlive) { "a probe returns" }
+        return parseRecord(record ?: "")
+    }
+}
+
 /** Last: the abort is sticky for the rest of the process. */
 private fun anAbortCancelsHeldProviderCallsAndRefusesNewOnes() {
     val resolver = FakeResolver()
@@ -571,7 +735,9 @@ private fun anAbortCancelsHeldProviderCallsAndRefusesNewOnes() {
     val heldRead = resolver.add(bytes(10)) { holdsOpen = true }
     val heldSave = resolver.add(bytes(10)) { holdsOpen = true }
     val heldImport = resolver.add(bytes(10)) { holdsOpen = true }
+    val heldProbe = resolver.add(bytes(10)) { holdsOpen = true }
     val importRequest = newRequest()
+    val probeRequest = newRequest()
     val queryRequest = newRequest()
     val readRequest = newRequest()
     val settling = resolver.add(bytes(10))
@@ -593,11 +759,12 @@ private fun anAbortCancelsHeldProviderCallsAndRefusesNewOnes() {
         Thread { results["save"] = DocumentCopies.copyFileToDocument(resolver, sourceFile(bytes(10)).path, heldSave) },
         Thread { results["settle"] = DocumentCopies.copyFileToDocument(resolver, sourceFile(bytes(10)).path, settling) },
         Thread { results["import"] = copyImport(resolver, importRequest, heldImport, File(directory, "i.csv"), 100) },
+        Thread { results["probe"] = DocumentCopies.probeImportDocument(resolver, probeRequest, heldProbe, 100) },
     )
     threads.forEach(Thread::start)
-    check(resolver.holding.tryAcquire(4, 5, TimeUnit.SECONDS)) { "four provider calls are held" }
+    check(resolver.holding.tryAcquire(5, 5, TimeUnit.SECONDS)) { "five provider calls are held" }
     check(settlingNow.tryAcquire(5, TimeUnit.SECONDS)) { "a save is settling" }
-    check(DocumentCopies.transfersInFlight() == 5) { "every transfer in flight holds a signal" }
+    check(DocumentCopies.transfersInFlight() == 6) { "every transfer in flight holds a signal" }
 
     DocumentCopies.abort()
     threads.forEach { it.join(5_000) }
@@ -615,6 +782,7 @@ private fun anAbortCancelsHeldProviderCallsAndRefusesNewOnes() {
     }
     check(results["settle"] == false) { "a save that fails after the abort fails" }
     check(results["import"] == DocumentTransfer.FAILED) { "an aborted import fails: it was not cancelled" }
+    check(parseRecord(results["probe"] as String).code == DocumentTransfer.FAILED) { "an aborted probe fails" }
     check(resolver.deleted.isEmpty()) { "after an abort nothing is deleted" }
     check(directory.list()!!.isEmpty()) { "aborted copies leave nothing" }
     checkNoTransferInFlight("aborted transfers")
@@ -625,6 +793,9 @@ private fun anAbortCancelsHeldProviderCallsAndRefusesNewOnes() {
     }
     check(copyImport(resolver, newRequest(), settling, File(directory, "late.csv"), 100) == DocumentTransfer.FAILED) {
         "an import started after the abort fails"
+    }
+    check(probe(resolver, newRequest(), settling, 100).code == DocumentTransfer.FAILED) {
+        "a probe started after the abort fails"
     }
     check(resolver.calls.size == before) { "a transfer started after the abort asks the provider nothing" }
     checkNoTransferInFlight("refused transfers")
@@ -648,9 +819,15 @@ fun main() {
         aCancelMidCopyStopsAtTheNextChunk()
         cancellingOneImportLeavesAnotherRunning()
         aFullDiskIsALocalFailureThatSaysSo()
+        aProbeCountsOnlyABackupAndOnlyItsBytes()
+        aProbeThatCannotReadFails()
+        aCancelStopsAProbeWhereverItWaits()
         anAbortCancelsHeldProviderCallsAndRefusesNewOnes()
     } finally {
         scratch.deleteRecursively()
     }
-    println("PASS: document copies size, open, trim, sync, report failures, delete and cancel as specified; imports by request")
+    println(
+        "PASS: document copies size, open, trim, sync, report failures, delete and cancel as specified; " +
+            "imports and probes by request",
+    )
 }

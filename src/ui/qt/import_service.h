@@ -13,7 +13,8 @@
  * left unnamed.
  *
  * A document read (#831, the backup's restore) is a request of another kind: the worker copies a document into a file
- * its caller names, with no staging folder, and the commit hands back the copy's result.
+ * its caller names, with no staging folder, and the commit hands back the copy's result. A document probe (#831, a
+ * document opened from another app) is a third: the worker reads the start of a document and writes nothing.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_IMPORT_SERVICE_H_
@@ -43,10 +44,10 @@ struct ImportJob {
     qint64 id = 0;
     /**
      * The request's own folder, empty and readable by the owner only; removed once the commit returns. Empty for a
-     * request of a kind that stages nothing here (a document read).
+     * request of a kind that stages nothing here (a document read or probe).
      */
     QString stagingDir;
-    /** The service's transport: copy(id, …) for each document the request reads. */
+    /** The service's transport: copy(id, …) (or probe(id, …)) for each document the request reads. */
     std::shared_ptr<DocumentImportTransport> transport;
     /** Whether the request was cancelled; a stage may stop early, as its commit is told it was cancelled. */
     std::function<bool()> cancelled;
@@ -65,6 +66,8 @@ class ImportService : public QObject {
     using Commit = std::function<void(qint64 id, const QVariantMap& staged, bool cancelled)>;
     /** A document read's commit, on the Qt thread: the copy's DecoderHost::DocumentCopy value. */
     using ReadCommit = std::function<void(qint64 id, int copied)>;
+    /** A document probe's commit, on the Qt thread: the probe's DecoderHost::DocumentCopy value and what it read. */
+    using ProbeCommit = std::function<void(qint64 id, int probed, const ImportProbe& probe)>;
 
     /** How long the destructor waits for the request in progress before it leaves it behind. */
     static constexpr int kStopWaitMs = 2000;
@@ -133,6 +136,19 @@ class ImportService : public QObject {
      * @return The request id, as submit()'s.
      */
     qint64 readDocument(const QString& reference, const QString& destPath, qint64 maxBytes, ReadCommit commit);
+
+    /**
+     * @brief Queue a document probe: the worker reads the start of the document @p reference names through the
+     * transport (DocumentImportTransport::probe(), counting its length up to @p maxCount + 1 only for a backup), then
+     * @p commit runs on the Qt thread with the probe's result and what it read.
+     *
+     * The request takes its turn among submit()'s, with the same ids, cancel(), progress() and teardown, and stages
+     * nothing. What the probe read, the document's name included, is taken on the worker before the transport forgets
+     * the request. @p commit gets DocumentCancelled for a cancelled request, whatever the probe read.
+     *
+     * @return The request id, as submit()'s.
+     */
+    qint64 probeDocument(const QString& reference, qint64 maxCount, ProbeCommit commit);
 
     /**
      * @brief Run a request at once on the calling thread: @p stage in a staging folder of its own, then @p commit

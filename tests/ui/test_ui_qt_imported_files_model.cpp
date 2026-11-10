@@ -18,6 +18,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QObject>
@@ -55,6 +56,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/crypto/backup_seal.h>
 #include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -72,6 +74,7 @@ extern "C" {
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include "backup_archive.h"
 #include "csv_bundle_import.h"
 #include "decoder_host.h"
 #include "document_import_transport.h"
@@ -111,6 +114,8 @@ struct TestDocuments {
     bool stuckRunning = false;
     bool stuckReleased = false;
     std::condition_variable stuckChanged;
+    /* Every request a cancel reached, in order. */
+    QList<qint64> cancels;
 };
 
 /* A content provider's documents for the import copies: a reference the test names maps to a local file. */
@@ -153,6 +158,32 @@ class TestTransport : public dsd_qt::DocumentImportTransport {
             return dsd_qt::DecoderHost::DocumentFailed;
         }
         return DocumentImportTransport::copy(request, mapped, destPath, maxBytes);
+    }
+
+    /* #831: a probe reads the mapped document through the base transport, and can be stuck as a copy can. */
+    int
+    probe(qint64 request, const QString& reference, dsd_qt::ImportProbe* out, qint64 maxCount) override {
+        QString mapped;
+        bool stuck = false;
+        {
+            const std::lock_guard<std::mutex> guard(m_documents->lock);
+            m_documents->references.append(reference);
+            mapped = m_documents->files.value(reference, reference);
+            stuck = !m_documents->stuck.isEmpty() && reference == m_documents->stuck;
+        }
+        if (stuck) {
+            waitUntilReleased();
+        }
+        return DocumentImportTransport::probe(request, mapped, out, maxCount);
+    }
+
+    void
+    cancel(qint64 request) override {
+        {
+            const std::lock_guard<std::mutex> guard(m_documents->lock);
+            m_documents->cancels.append(request);
+        }
+        DocumentImportTransport::cancel(request);
     }
 
   private:
@@ -1948,6 +1979,172 @@ test_cancel_does_not_wait_for_the_copy() {
     model.remove(0);
 }
 
+/* Every answer documentInspected() gave probe @p id so far. */
+QList<QVariantMap>
+inspections(const QSignalSpy& spy, int id) {
+    QList<QVariantMap> found;
+    for (const auto& arguments : spy) {
+        if (arguments.at(0).toInt() == id) {
+            found.append(arguments.at(1).toMap());
+        }
+    }
+    return found;
+}
+
+/* inspectDocument(@p reference)'s one answer, waited for. */
+QVariantMap
+inspectAndWait(dsd_qt::ImportedFilesModel& model, const QString& reference) {
+    QSignalSpy spy(&model, &dsd_qt::ImportedFilesModel::documentInspected);
+    const int id = model.inspectDocument(reference);
+    expect("a probe has an id", id > 0);
+    expect("a probe is answered later, never inside the call", spy.isEmpty());
+    for (int waits = 0; waits < 200 && inspections(spy, id).isEmpty(); waits++) {
+        spy.wait(50);
+    }
+    QCoreApplication::processEvents();
+    const QList<QVariantMap> found = inspections(spy, id);
+    expect("a probe is answered exactly once", found.size() == 1);
+    return found.value(0);
+}
+
+/* A sealed backup of @p payload, with the cheapest parameters a backup may carry. */
+QByteArray
+sealedBackup(const QByteArray& payload) {
+    dsd_backup_kdf_params kdf{};
+    kdf.log2_n = 14;
+    kdf.r = 8;
+    kdf.p = 1;
+    QByteArray sealed(static_cast<qsizetype>(dsd_backup_sealed_size(static_cast<size_t>(payload.size()))), '\0');
+    size_t length = 0;
+    const QByteArray pass("correct horse battery");
+    const int status =
+        dsd_backup_seal(reinterpret_cast<const uint8_t*>(pass.constData()), static_cast<size_t>(pass.size()), &kdf,
+                        reinterpret_cast<const uint8_t*>(payload.constData()), static_cast<size_t>(payload.size()),
+                        reinterpret_cast<uint8_t*>(sealed.data()), static_cast<size_t>(sealed.size()), &length);
+    expect("a backup is sealed", status == DSD_BACKUP_OK && length == static_cast<size_t>(sealed.size()));
+    return sealed;
+}
+
+/*
+ * #831: a document opened from another app is told apart before anything is asked: a backup, a newer, damaged or
+ * too large one, any other document, or one that cannot be read; with the provider's name. Probes are not imports.
+ */
+void
+test_inspect_document() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    dsd_qt::ImportService service(host.importTransport());
+    dsd_qt::ImportedFilesModel model(&host, &service);
+    QSignalSpy importing(&model, &dsd_qt::ImportedFilesModel::importingChanged);
+    QSignalSpy imported(&model, &dsd_qt::ImportedFilesModel::importFinished);
+    QTemporaryDir dir;
+    const QByteArray sealed = sealedBackup("DNBA payload");
+    const auto document = [&dir, &host](const QString& name, const QByteArray& bytes) {
+        const QString path = dir.filePath(name);
+        expect("a probe fixture is written", write_file(path, bytes));
+        const QString reference = QStringLiteral("content://provider/document/") + name;
+        host.documents.insert(reference, path);
+        return reference;
+    };
+
+    struct Case {
+        QString name;
+        QByteArray bytes;
+        const char* kind;
+    };
+
+    QByteArray newer = sealed;
+    newer[9] = 2; // the header's version, big-endian at 8
+    const QList<Case> cases = {
+        {QStringLiteral("app.dsdbak"), sealed, "backup"},
+        {QStringLiteral("newer.dsdbak"), newer, "newerBackup"},
+        {QStringLiteral("cut.dsdbak"), sealed.left(sealed.size() - 1), "damagedBackup"},
+        {QStringLiteral("talkgroups.csv"), "TG,Mode,Name\n101,D,Dispatch\n", "other"},
+        {QStringLiteral("empty.csv"), QByteArray(), "other"},
+    };
+    for (const Case& c : cases) {
+        const QVariantMap answer = inspectAndWait(model, document(c.name, c.bytes));
+        expect(c.kind, answer.value("kind").toString() == QLatin1String(c.kind) && answer.value("name") == c.name);
+    }
+
+    /* One byte over the cap a restore reads: the probe counts to the cap + 1 and calls it too large. */
+    const QString bigPath = dir.filePath(QStringLiteral("big.dsdbak"));
+    {
+        QFile big(bigPath);
+        expect("a large backup fixture", big.open(QIODevice::WriteOnly) && big.write(sealed.left(64)) == 64
+                                             && big.resize(dsd_qt::backup::kMaxSealedBytes + 1));
+    }
+    host.documents.insert(QStringLiteral("content://provider/document/big"), bigPath);
+    expect("a backup over the cap is too large",
+           inspectAndWait(model, QStringLiteral("content://provider/document/big")).value("kind") == "tooLargeBackup");
+    QFile::remove(bigPath);
+
+    const QVariantMap missing = inspectAndWait(model, QStringLiteral("content://provider/document/gone"));
+    expect("a document that cannot be read is unreadable", missing.value("kind") == "unreadable");
+
+    expect("a probe is never an import", importing.isEmpty() && !model.importing() && imported.isEmpty());
+    waitForWorker(service);
+    expect("probes leave nothing behind", stagingEmpty() && storedFileCount() == 0 && model.count() == 0);
+
+    /* With no import worker every probe is unreadable, answered later as any other. */
+    dsd_qt::ImportedFilesModel orphan(&host, static_cast<dsd_qt::ImportService*>(nullptr));
+    expect("a probe without a worker is unreadable",
+           inspectAndWait(orphan, QStringLiteral("content://provider/document/app.dsdbak")).value("kind")
+               == "unreadable");
+}
+
+/*
+ * #831: Cancel is answered at once, exactly once, without waiting for a read a provider holds; the read's late result
+ * is dropped. A cancel never reaches an import, nor an import's cancel a probe. A model destroyed with a probe in
+ * flight tells the read to stop and answers nothing.
+ */
+void
+test_cancel_inspect() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    dsd_qt::ImportService service(host.importTransport());
+    auto model = std::make_unique<dsd_qt::ImportedFilesModel>(&host, &service);
+    QTemporaryDir dir;
+    const QString path = dir.filePath(QStringLiteral("app.dsdbak"));
+    expect("a stuck probe fixture", write_file(path, sealedBackup("DNBA payload")));
+    const QString reference = QStringLiteral("content://stuck/document/app.dsdbak");
+    host.documents.insert(reference, path);
+    StuckCopy stuck(host.shared);
+    stuck.set(reference);
+
+    QSignalSpy inspected(model.get(), &dsd_qt::ImportedFilesModel::documentInspected);
+    QSignalSpy imported(model.get(), &dsd_qt::ImportedFilesModel::importFinished);
+    const int id = model->inspectDocument(reference);
+    expect("the probe is stuck", stuck.waitRunning());
+    model->cancelImport(id);
+    QCoreApplication::processEvents();
+    expect("an import's cancel never reaches a probe", inspected.isEmpty() && imported.isEmpty());
+    model->cancelInspect(id);
+    expect("a cancel is answered later, never inside the call", inspected.isEmpty());
+    for (int waits = 0; waits < 100 && inspections(inspected, id).isEmpty(); waits++) {
+        inspected.wait(50);
+    }
+    expect("a stuck probe's cancel is answered at once",
+           inspections(inspected, id).size() == 1 && inspections(inspected, id).value(0).value("kind") == "cancelled"
+               && stuck.running());
+    expect("and reaches the read", host.shared->cancels.contains(id));
+    model->cancelInspect(id);
+    stuck.release();
+    waitForWorker(service);
+    expect("the probe is answered exactly once", inspections(inspected, id).size() == 1);
+
+    /* Destroyed mid-probe: the read is told to stop, and its result reaches no one. */
+    stuck.set(reference);
+    QSignalSpy late(model.get(), &dsd_qt::ImportedFilesModel::documentInspected);
+    const int orphaned = model->inspectDocument(reference);
+    expect("the second probe is stuck", stuck.waitRunning());
+    model.reset();
+    expect("a model destroyed mid-probe cancels its read", host.shared->cancels.contains(orphaned));
+    stuck.release();
+    waitForWorker(service);
+    expect("and answers nothing", late.isEmpty());
+}
+
 /* A companion the map names only after the first answer: the import asks for it, and a retry with it succeeds. */
 void
 test_async_companion_retry() {
@@ -3541,6 +3738,8 @@ main(int argc, char** argv) {
     test_replace_failures();
     test_replace_double_failure();
     test_cancel_does_not_wait_for_the_copy();
+    test_inspect_document();
+    test_cancel_inspect();
     test_register_unsaved_export();
     test_entries_changed_on_replace();
     test_stored_names_kept();

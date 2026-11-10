@@ -135,9 +135,10 @@ using dsd_qt::CallHistoryFilterModel;
 using dsd_qt::CallHistoryModel;
 
 /**
- * @brief The switch that holds import copies (#832): while held, every copy waits before it starts until the switch
- * opens or its request is cancelled, so a case can see an import in flight and cancel it there. Held even through a
- * cancel, a cancelled copy waits too, so a case can see the flow while it waits for that answer.
+ * @brief The switch that holds import copies (#832) and document probes (#831): while held, every copy or probe waits
+ * before it starts until the switch opens or its request is cancelled, so a case can see an import in flight and
+ * cancel it there. Held even through a cancel, a cancelled copy waits too, so a case can see the flow while it waits
+ * for that answer.
  */
 struct ImportCopyGate {
     std::mutex lock;
@@ -164,20 +165,22 @@ struct ImportCopyGate {
     }
 };
 
-/** @brief The base transport behind an ImportCopyGate: the copy itself is the production local-file copy. */
+/** @brief The base transport behind an ImportCopyGate: the copy and probe themselves are the production local ones. */
 class HeldImportTransport : public dsd_qt::DocumentImportTransport {
   public:
     explicit HeldImportTransport(std::shared_ptr<ImportCopyGate> gate) : m_gate(std::move(gate)) {}
 
     int
     copy(qint64 request, const QString& reference, const QString& destPath, qint64 maxBytes) override {
-        {
-            std::unique_lock<std::mutex> guard(m_gate->lock);
-            ++m_gate->waiting;
-            m_gate->changed.wait(guard, [&] { return m_gate->opens(request); });
-            --m_gate->waiting;
-        }
+        wait(request);
         return DocumentImportTransport::copy(request, reference, destPath, maxBytes);
+    }
+
+    /* #831: a document probe waits at the same gate, so a case can see an incoming document while it is read. */
+    int
+    probe(qint64 request, const QString& reference, dsd_qt::ImportProbe* out, qint64 maxCount) override {
+        wait(request);
+        return DocumentImportTransport::probe(request, reference, out, maxCount);
     }
 
     void
@@ -191,6 +194,15 @@ class HeldImportTransport : public dsd_qt::DocumentImportTransport {
     }
 
   private:
+    /* Wait at the gate until it lets @p request go on. */
+    void
+    wait(qint64 request) {
+        std::unique_lock<std::mutex> guard(m_gate->lock);
+        ++m_gate->waiting;
+        m_gate->changed.wait(guard, [&] { return m_gate->opens(request); });
+        --m_gate->waiting;
+    }
+
     std::shared_ptr<ImportCopyGate> m_gate;
 };
 
@@ -4261,8 +4273,8 @@ class Setup : public QObject {
     }
 
     /**
-     * @brief Hold every import copy before it starts (#832), or let the held ones go on. A cancel lets its copy go on
-     * (to answer "cancelled") unless @p evenCancelled.
+     * @brief Hold every import copy and document probe before it starts (#832, #831), or let the held ones go on. A
+     * cancel lets its copy go on (to answer "cancelled") unless @p evenCancelled.
      */
     Q_INVOKABLE void
     holdImports(bool held, bool evenCancelled = false) {

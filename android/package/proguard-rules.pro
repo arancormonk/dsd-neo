@@ -51,6 +51,8 @@
     public static java.lang.String importName(long);
     public static boolean importNoSpace(long);
     public static void forgetImport(long);
+    # Documents opened from other apps (#831): the probe, from the import worker.
+    public static java.lang.String probeImportDocument(android.content.ContentResolver, long, java.lang.String, long);
 }
 
 # Call recordings (#708): playback, export/save and share.

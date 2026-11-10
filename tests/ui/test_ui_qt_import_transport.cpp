@@ -3,7 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/* Unit tests: the import copies' base transport (#832), its save (#831), and the host's hand-out and abort of it. */
+/* Unit tests: the import copies' base transport (#832), its probe and save (#831), and the host's hand-out and abort of
+ * it. */
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -38,6 +39,8 @@
 using dsd_qt::DecoderHost;
 using dsd_qt::DocumentImportTransport;
 using dsd_qt::ImportCopyProgress;
+using dsd_qt::ImportProbe;
+using dsd_qt::kProbeHeaderBytes;
 
 namespace {
 
@@ -158,6 +161,106 @@ test_cancel_before_and_forget() {
     CHECK(transport.progress(9).bytes == -1, "a forgotten request has no record");
     CHECK(transport.copy(9, source, dest, 64) == DecoderHost::DocumentCopied,
           "a forgotten id starts again without its cancel");
+}
+
+/* A document that starts like a backup: the 8-byte magic, then @p size - 8 more bytes. */
+QByteArray
+backup_like(int size) {
+    QByteArray bytes("DSDNEOBK");
+    bytes.append(QByteArray(size - bytes.size(), 'b'));
+    return bytes;
+}
+
+/*
+ * The base transport's probe (#831): a document's first kProbeHeaderBytes and name; its length, counted on the bytes
+ * and capped at maxCount + 1, only after the backup magic; read-only.
+ */
+void
+test_probe_local() {
+    QTemporaryDir dir;
+    CHECK(dir.isValid(), "a scratch directory exists");
+    DocumentImportTransport transport;
+    ImportProbe probe;
+
+    const QString csv = dir.filePath(QStringLiteral("groups.csv"));
+    const QByteArray csvBytes = QByteArray("TG,Mode,Name\n") + QByteArray(500, 'c');
+    write_file(csv, csvBytes);
+    CHECK(transport.probe(1, csv, &probe, 1000) == DecoderHost::DocumentCopied, "a CSV probes");
+    CHECK(probe.header == csvBytes.left(kProbeHeaderBytes) && probe.total == -1
+              && probe.displayName == QStringLiteral("groups.csv"),
+          "a document with no backup magic gives its header and name, and no length");
+    CHECK(transport.progress(1).displayName == QStringLiteral("groups.csv"), "progress names the probed document");
+
+    const QString shortFile = dir.filePath(QStringLiteral("short.txt"));
+    write_file(shortFile, "1,a\n");
+    CHECK(transport.probe(2, QUrl::fromLocalFile(shortFile).toString(), &probe, 1000) == DecoderHost::DocumentCopied
+              && probe.header == "1,a\n" && probe.total == -1,
+          "a file shorter than a header (a file URL) gives what it holds");
+    const QString empty = dir.filePath(QStringLiteral("empty"));
+    write_file(empty, QByteArray());
+    CHECK(transport.probe(3, empty, &probe, 1000) == DecoderHost::DocumentCopied && probe.header.isEmpty()
+              && probe.total == -1,
+          "an empty file probes empty");
+
+    const QString backup = dir.filePath(QStringLiteral("app.dsdbak"));
+    write_file(backup, backup_like(1000));
+    CHECK(transport.probe(4, backup, &probe, 5000) == DecoderHost::DocumentCopied
+              && probe.header == backup_like(1000).left(kProbeHeaderBytes) && probe.total == 1000
+              && probe.displayName == QStringLiteral("app.dsdbak"),
+          "a document with the backup magic is counted to its end");
+    CHECK(transport.probe(5, backup, &probe, 1000) == DecoderHost::DocumentCopied && probe.total == 1000,
+          "a document exactly at the cap counts whole");
+    CHECK(transport.probe(6, backup, &probe, 999) == DecoderHost::DocumentCopied && probe.total == 1000,
+          "one byte over the cap counts to cap + 1");
+    CHECK(transport.probe(7, backup, &probe, 100) == DecoderHost::DocumentCopied && probe.total == 101,
+          "a document far over the cap stops counting at cap + 1");
+    const QString cut = dir.filePath(QStringLiteral("cut.dsdbak"));
+    write_file(cut, backup_like(20));
+    CHECK(transport.probe(8, cut, &probe, 1000) == DecoderHost::DocumentCopied && probe.header == backup_like(20)
+              && probe.total == 20,
+          "a backup cut inside its header gives its whole length");
+
+    CHECK(only_entries(dir.path(), {QStringLiteral("app.dsdbak"), QStringLiteral("cut.dsdbak"), QStringLiteral("empty"),
+                                    QStringLiteral("groups.csv"), QStringLiteral("short.txt")}),
+          "a probe writes nothing");
+    CHECK(read_file(backup) == backup_like(1000), "and changes nothing it reads");
+}
+
+void
+test_probe_refusals() {
+    QTemporaryDir dir;
+    CHECK(dir.isValid(), "a scratch directory exists");
+    const QString source = dir.filePath(QStringLiteral("chan.csv"));
+    write_file(source, "1,2\n");
+    DocumentImportTransport transport;
+    ImportProbe probe;
+    probe.total = 42;
+
+    CHECK(transport.probe(1, QStringLiteral("content://com.example.documents/document/chan.csv"), &probe, 64)
+              == DecoderHost::DocumentFailed,
+          "the base transport cannot probe a content URI");
+    CHECK(probe.total == -1 && probe.header.isEmpty(), "a probe starts from an empty result");
+    CHECK(transport.probe(2, QStringLiteral("chan.csv"), &probe, 64) == DecoderHost::DocumentFailed,
+          "a relative path is no document");
+    CHECK(transport.probe(3, dir.filePath(QStringLiteral("missing.csv")), &probe, 64) == DecoderHost::DocumentFailed,
+          "a missing document fails");
+    CHECK(transport.probe(4, dir.path(), &probe, 64) == DecoderHost::DocumentFailed, "a directory is no document");
+    CHECK(transport.probe(5, source, &probe, -1) == DecoderHost::DocumentFailed
+              && transport.probe(6, source, nullptr, 64) == DecoderHost::DocumentFailed,
+          "a negative cap or no result fails");
+
+    transport.cancel(7);
+    CHECK(transport.probe(7, source, &probe, 64) == DecoderHost::DocumentCancelled && probe.header.isEmpty(),
+          "a request cancelled before its probe never reads");
+    CHECK(transport.copy(7, source, dir.filePath(QStringLiteral("x.csv")), 64) == DecoderHost::DocumentCancelled,
+          "and copies nothing later either");
+    transport.forget(7);
+    CHECK(transport.probe(7, source, &probe, 64) == DecoderHost::DocumentCopied && probe.header == "1,2\n",
+          "a forgotten id probes again");
+
+    transport.abort();
+    CHECK(transport.probe(8, source, &probe, 64) == DecoderHost::DocumentFailed && probe.header.isEmpty(),
+          "an aborted transport probes nothing");
 }
 
 /* The base transport's save (#831): a local file written whole into a file URL or a plain path, private, or nothing. */
@@ -332,6 +435,81 @@ stop_mid_copy(Stop stop) {
     }
     CHECK(only_entries(dst.path(), {}), "a stopped copy leaves nothing in the destination directory");
 }
+
+/* Write @p bytes into the FIFO a probe reads; false on failure. */
+bool
+feed_fifo(QFile& feed, const QByteArray& bytes) {
+    return feed.write(bytes) == bytes.size() && feed.flush();
+}
+
+/*
+ * A probe reads no further than a document's header unless it starts with the backup magic: from a FIFO whose writer
+ * stays open (no end in sight), a probe without the magic returns after the header, while one with it reads on.
+ */
+void
+test_probe_stops_without_magic() {
+    QTemporaryDir src;
+    CHECK(src.isValid(), "a scratch directory exists");
+    const QString fifo = src.filePath(QStringLiteral("feed.csv"));
+    CHECK(mkfifo(QFile::encodeName(fifo).constData(), 0600) == 0, "a FIFO is made");
+    std::signal(SIGPIPE, SIG_IGN);
+    DocumentImportTransport transport;
+    ImportProbe probe;
+    int result = -1;
+    std::thread worker([&transport, &fifo, &probe, &result]() { result = transport.probe(1, fifo, &probe, 1 << 20); });
+
+    QFile feed;
+    const int writer = open_fifo_writer(fifo);
+    CHECK(writer >= 0 && feed.open(writer, QIODevice::WriteOnly, QFileDevice::AutoCloseHandle),
+          "the FIFO opens for writing once the probe opens it");
+    /* The header in small writes, as a provider's short reads give it, and a few bytes past it; the stream never
+     * ends, since the writer stays open. The last write is the one that completes the header, so each lands before the
+     * probe can stop reading. */
+    const QByteArray csv = QByteArray("TG,Mode,Name\n") + QByteArray(57, 'c');
+    for (int at = 0; at < csv.size(); at += 10) {
+        CHECK(feed_fifo(feed, csv.mid(at, 10)), "a piece is fed");
+    }
+    worker.join(); // Hangs here if the probe read on to an end that never comes.
+    CHECK(result == DecoderHost::DocumentCopied && probe.header == csv.left(kProbeHeaderBytes) && probe.total == -1,
+          "a probe without the magic stops after the header, however it arrives");
+    feed.close();
+}
+
+/* A probe stopped from another thread while it counts a backup: it reads the header, then waits in the count. */
+void
+stop_mid_probe(Stop stop) {
+    QTemporaryDir src;
+    CHECK(src.isValid(), "a scratch directory exists");
+    const QString fifo = src.filePath(QStringLiteral("feed.dsdbak"));
+    CHECK(mkfifo(QFile::encodeName(fifo).constData(), 0600) == 0, "a FIFO is made");
+    std::signal(SIGPIPE, SIG_IGN);
+    DocumentImportTransport transport;
+    ImportProbe probe;
+    int result = -1;
+    std::thread worker([&transport, &fifo, &probe, &result]() { result = transport.probe(5, fifo, &probe, 1 << 20); });
+
+    QFile feed;
+    const int writer = open_fifo_writer(fifo);
+    CHECK(writer >= 0 && feed.open(writer, QIODevice::WriteOnly, QFileDevice::AutoCloseHandle),
+          "the FIFO opens for writing once the probe opens it");
+    CHECK(feed_fifo(feed, backup_like(kProbeHeaderBytes)), "a backup's header is fed");
+    CHECK(await_bytes(transport, 5, kProbeHeaderBytes), "the probe reads the header and goes on to count");
+    if (stop == Stop::Cancel) {
+        transport.cancel(5);
+    } else {
+        transport.abort();
+    }
+    /* As in stop_mid_copy(): a byte wakes a read still blocked; a write after the probe closed meets EPIPE. */
+    (void)feed.write("y", 1);
+    (void)feed.flush();
+    feed.close();
+    worker.join();
+    if (stop == Stop::Cancel) {
+        CHECK(result == DecoderHost::DocumentCancelled, "a probe cancelled while it counts is cancelled");
+    } else {
+        CHECK(result == DecoderHost::DocumentFailed, "a probe aborted while it counts fails");
+    }
+}
 #endif
 
 /*
@@ -365,10 +543,15 @@ main(int argc, char** argv) {
     test_refusals();
     test_cancel_before_and_forget();
     test_write_from_file();
+    test_probe_local();
+    test_probe_refusals();
     test_host_abort();
 #ifndef _WIN32
     stop_mid_copy(Stop::Cancel);
     stop_mid_copy(Stop::Abort);
+    test_probe_stops_without_magic();
+    stop_mid_probe(Stop::Cancel);
+    stop_mid_probe(Stop::Abort);
 #endif
     test_full_disk();
     return failures ? 1 : 0;
