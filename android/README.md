@@ -239,8 +239,9 @@ than a document reads **That app gave DSD-neo a file it can't open. Pick the fil
 writes a picked file while the app is open and keeps no lasting permission to it. A pick that comes back after Android
 closed DSD-neo in the background is ignored: open the screen again and pick the file.
 
-With no save picker, a save (Back up, Export as zip, Save to file) goes straight to the phone's **Download/DSD-neo**
-folder, which Files and other file managers show. The file appears there only once it is completely written; a save
+With no save picker, a save (Back up, Export as zip, Save to file, Export detections or avoids) goes straight to the
+phone's **Download/DSD-neo** folder, which Files and other file managers show. The file appears there only once it is
+completely written; a save
 that fails or is cancelled leaves nothing behind. When a file of that name is already there, Android adds a number, as
 in `dsd-neo-backup-2026-11-08 (1).dsdbak`. When even the Download folder cannot
 be written, the save says **This device has no save picker, and DSD-neo could not save to the Download folder.** Files
@@ -2126,7 +2127,9 @@ digital probe is three seconds, followed by explicitly unresolved NFM monitoring
 Hold, Skip, session/permanent avoids, detection history and Save as system are
 available. Search owns the radio exclusively and follows the existing background
 listening preference. See [Signal search](../docs/signal-search.md) for controls,
-limits, persistence and measured performance.
+limits, persistence and measured performance. **Export detections…** and **Export avoids…** save the detection
+history and the avoid lists as CSV files through the save picker (or to Download/DSD-neo when the device has none);
+they are not part of a backup.
 
 Android Back dismisses input, then the top dialog, then the pushed screen or
 wizard step. Root Back follows the background-listening preference. Monitor's

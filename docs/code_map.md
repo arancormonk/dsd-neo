@@ -14793,7 +14793,10 @@ thread, which the rest of the interface never is.
   document is open closes it with `closeWithError()`, so a provider reading a pipe or socket sees the failure rather
   than a short document, and deletes it; only a whole save closes normally. The write side is
   `DocumentCopies.beginWrite()` and its `DocumentWrite` (`finish(length)` / `fail()`), which call recording exports use
-  too.
+  too. `fail()` leaves a Download-folder row to `DownloadsSave` (`deleteDocument()` cannot remove a MediaStore row), and
+  `copyFileToDocument()` settles one at every exit: published only when the whole save was written, so a row that could
+  not be published fails the save. A save the host never hands to Kotlin (aborted, no resolver) or whose JNI call
+  failed discards it.
 - Import copies (#832): `DocumentCopies.copyImportDocument()` is the same capped temp-file copy for one import request
   id, from the import worker. One `query(DISPLAY_NAME, SIZE)` under the copy's own signal publishes the name
   (`importName()`) and declared size (`importProgress()`, `[copied, declared]`: `copied` is -1 once the copy ended,
@@ -14810,10 +14813,6 @@ thread, which the rest of the interface never is.
   `DocumentCopied` counts only with its file in place (a failed JNI call reads as 0), codes 1-4 pass through and any
   other answer is `DocumentFailed`. Any other reference takes the base transport's local copy. `cancel()` and
   `forget()` reach both sides; `progress()` reads the side the request's latest copy took.
-  too. `fail()` leaves a Download-folder row to `DownloadsSave` (`deleteDocument()` cannot remove a MediaStore row), and
-  `copyFileToDocument()` settles one at every exit: published only when the whole save was written, so a row that could
-  not be published fails the save. A save the host never hands to Kotlin (aborted, no resolver) or whose JNI call
-  failed discards it.
 - The export saves' transport (#826) is `DecoderHostAndroid::SaveTransport` (`decoder_host_android_documents.cpp`,
   handed out by `saveTransport()`). A `content://` save takes `saveContentDocument()`, the dispatch
   `copyFileToDocument()` shares: aborted or without a held `ContentResolver` it discards the Download-folder row and
