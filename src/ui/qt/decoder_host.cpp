@@ -29,16 +29,6 @@
 
 namespace dsd_qt {
 
-namespace {
-
-/** @brief A copy_stream_capped() predicate that stops once @p aborted is raised (never with no flag). */
-std::function<bool(qint64)>
-until_aborted(const std::atomic<bool>* aborted) {
-    return [aborted](qint64) { return aborted == nullptr || !aborted->load(); };
-}
-
-} // namespace
-
 DecoderHost::DecoderHost(QObject* parent) : QObject(parent) {
     /* sessionState(), and the three properties derived from it, default to a view of
      * isRunning() — whose change signal is runningChanged. A host that leaves that
@@ -88,14 +78,7 @@ DecoderHost::copyFileToDocument(const QString& sourcePath, const QString& refere
 bool
 DecoderHost::copyFileToLocalDocument(const QString& sourcePath, const QString& reference,
                                      const std::atomic<bool>* aborted) {
-    const QString path = local_document_path(reference);
-    QFile source(sourcePath);
-    if (path.isEmpty() || !QFileInfo(sourcePath).isFile() || !source.open(QIODevice::ReadOnly)) {
-        return false;
-    }
-    QSaveFile out(path);
-    return open_private(out) && copy_stream_capped(source, out, -1, until_aborted(aborted)) == DocumentCopied
-           && out.commit();
+    return copy_file_to_local_document(sourcePath, reference, aborted);
 }
 
 void

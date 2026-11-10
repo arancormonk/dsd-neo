@@ -26,6 +26,7 @@
 
 #include <dsd-neo/platform/file_compat.h>
 
+#include "decoder_host.h"
 #include "import_names.h"
 #include "json_store.h"
 #include "teardown_trace.h"
@@ -145,7 +146,9 @@ ImportService::~ImportService() {
     // No commit runs from here on, so every staging folder goes; a request still waiting skips its stage.
     for (auto it = m_pending.cbegin(); it != m_pending.cend(); ++it) {
         it->request->cancel(*m_shared->transport, it.key());
-        removeOnWorker(it->stagingDir);
+        if (!it->stagingDir.isEmpty()) {
+            removeOnWorker(it->stagingDir);
+        }
     }
     if (!m_pool->waitForDone(kStopWaitMs)) {
         // A copy blocked in a provider's read or a full disk's write ignores the cancel. Deleting the pool would wait
@@ -223,9 +226,33 @@ ImportService::runNow(const Stage& stage, const Commit& commit) {
 
 qint64
 ImportService::submit(Stage stage, Commit commit) {
+    return enqueue(std::move(stage), std::move(commit), true);
+}
+
+qint64
+ImportService::readDocument(const QString& reference, const QString& destPath, qint64 maxBytes, ReadCommit commit) {
+    Stage stage = [reference, destPath, maxBytes](const ImportJob& job) {
+        const int copied = job.transport->copy(job.id, reference, destPath, maxBytes);
+        // A cancel that came while the copy ran (teardown's included) means no one takes the copy, maybe ever.
+        if (copied == DecoderHost::DocumentCopied && job.cancelled()) {
+            QFile::remove(destPath);
+        }
+        return QVariantMap{{QStringLiteral("copied"), copied}};
+    };
+    Commit read = [commit = std::move(commit)](qint64 id, const QVariantMap& staged, bool cancelled) {
+        commit(id, cancelled
+                       ? static_cast<int>(DecoderHost::DocumentCancelled)
+                       : staged.value(QStringLiteral("copied"), static_cast<int>(DecoderHost::DocumentFailed)).toInt());
+    };
+    return enqueue(std::move(stage), std::move(read), false);
+}
+
+qint64
+ImportService::enqueue(Stage stage, Commit commit, bool staged) {
     const qint64 id = newRequestId();
     auto request = std::make_shared<Request>();
-    const QString dir = stagingRoot() + QLatin1Char('/') + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const QString dir =
+        staged ? stagingRoot() + QLatin1Char('/') + QUuid::createUuid().toString(QUuid::WithoutBraces) : QString();
     m_pending.insert(id, Pending{request, std::move(commit), dir});
     {
         const std::lock_guard<std::mutex> lock(m_shared->lock);
@@ -283,7 +310,7 @@ ImportService::runJob(const std::shared_ptr<Shared>& shared, const Work& work) {
     // No QObject is touched here; the result goes back through the link, queued.
     QVariantMap staged;
     if (!work.request->cancelled()) {
-        if (make_private_dir(work.stagingDir)) {
+        if (work.stagingDir.isEmpty() || make_private_dir(work.stagingDir)) {
             const std::shared_ptr<Request> request = work.request;
             const ImportJob job{work.id, work.stagingDir, shared->transport,
                                 [request]() { return request->cancelled(); }};
@@ -314,7 +341,9 @@ ImportService::finish(qint64 id, const QVariantMap& staged) {
     m_pending.erase(it);
     pending.commit(id, staged, pending.request->cancelled());
     // The staged files may be large; deleting them is the worker's job, not the Qt thread's.
-    removeOnWorker(pending.stagingDir);
+    if (!pending.stagingDir.isEmpty()) {
+        removeOnWorker(pending.stagingDir);
+    }
     updateBusy();
 }
 

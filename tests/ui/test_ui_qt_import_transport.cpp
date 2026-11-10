@@ -3,7 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/* Unit tests: the import copies' base transport (#832) and the host's hand-out and abort of it. */
+/* Unit tests: the import copies' base transport (#832), its save (#831), and the host's hand-out and abort of it. */
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -158,6 +158,36 @@ test_cancel_before_and_forget() {
     CHECK(transport.progress(9).bytes == -1, "a forgotten request has no record");
     CHECK(transport.copy(9, source, dest, 64) == DecoderHost::DocumentCopied,
           "a forgotten id starts again without its cancel");
+}
+
+/* The base transport's save (#831): a local file written whole into a file URL or a plain path, private, or nothing. */
+void
+test_write_from_file() {
+    QTemporaryDir dir;
+    CHECK(dir.isValid(), "a scratch directory exists");
+    const QString source = dir.filePath(QStringLiteral("export.dsdbak"));
+    write_file(source, "sealed");
+    DocumentImportTransport transport;
+
+    const QString saved = dir.filePath(QStringLiteral("saved.dsdbak"));
+    CHECK(transport.writeFromFile(source, QUrl::fromLocalFile(saved).toString()) && read_file(saved) == "sealed",
+          "a file URL is written whole");
+    CHECK((QFile::permissions(saved) & (QFileDevice::ReadGroup | QFileDevice::ReadOther)) == 0,
+          "the saved document is the owner's alone");
+    const QString plain = dir.filePath(QStringLiteral("plain.dsdbak"));
+    CHECK(transport.writeFromFile(source, plain) && read_file(plain) == "sealed", "a plain path is written whole");
+    const QString none = dir.filePath(QStringLiteral("none.dsdbak"));
+    CHECK(!transport.writeFromFile(dir.filePath(QStringLiteral("absent")), none) && !QFileInfo::exists(none),
+          "a missing source writes nothing");
+    CHECK(!transport.writeFromFile(source, QStringLiteral("content://x/y")), "an opaque document is refused");
+    transport.discardWrite(QStringLiteral("content://x/y")); // nothing to drop: the base transport has no rows
+
+    transport.abort();
+    const QString late = dir.filePath(QStringLiteral("late.dsdbak"));
+    CHECK(!transport.writeFromFile(source, late) && !QFileInfo::exists(late), "an aborted transport writes nothing");
+    CHECK(only_entries(dir.path(), {QStringLiteral("export.dsdbak"), QStringLiteral("plain.dsdbak"),
+                                    QStringLiteral("saved.dsdbak")}),
+          "no failed save leaves a file behind");
 }
 
 /* The base host, made concrete: the hand-out and abort under test are all its own. */
@@ -334,6 +364,7 @@ main(int argc, char** argv) {
     test_local_copy_and_cap();
     test_refusals();
     test_cancel_before_and_forget();
+    test_write_from_file();
     test_host_abort();
 #ifndef _WIN32
     stop_mid_copy(Stop::Cancel);

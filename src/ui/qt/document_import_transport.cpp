@@ -83,6 +83,24 @@ copy_stream_capped(QIODevice& source, QSaveFile& out, qint64 maxBytes, const std
     }
 }
 
+std::function<bool(qint64)>
+until_aborted(const std::atomic<bool>* aborted) {
+    return [aborted](qint64) { return aborted == nullptr || !aborted->load(); };
+}
+
+bool
+copy_file_to_local_document(const QString& sourcePath, const QString& reference, const std::atomic<bool>* aborted) {
+    const QString path = local_document_path(reference);
+    QFile source(sourcePath);
+    if (path.isEmpty() || !QFileInfo(sourcePath).isFile() || !source.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+    QSaveFile out(path);
+    return open_private(out)
+           && copy_stream_capped(source, out, -1, until_aborted(aborted)) == DecoderHost::DocumentCopied
+           && out.commit();
+}
+
 int
 DocumentImportTransport::copy(qint64 request, const QString& reference, const QString& destPath, qint64 maxBytes) {
     int refusal = DecoderHost::DocumentFailed;
@@ -214,6 +232,16 @@ void
 DocumentImportTransport::forget(qint64 request) {
     const std::lock_guard<std::mutex> lock(m_lock);
     m_requests.remove(request);
+}
+
+bool
+DocumentImportTransport::writeFromFile(const QString& path, const QString& reference) {
+    return copy_file_to_local_document(path, reference, &m_aborted);
+}
+
+void
+DocumentImportTransport::discardWrite(const QString& reference) {
+    (void)reference;
 }
 
 void

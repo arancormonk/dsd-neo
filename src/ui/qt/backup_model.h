@@ -7,19 +7,26 @@
  * @file
  * @brief The backup screens' model (issue #580): export, restore inspection and commit, and the startup outcome.
  *
- * QML reaches it as the context property `backup`. Every step that reads a document, derives a key or writes more
- * than a marker runs on one low-priority worker thread, one job at a time:
+ * QML reaches it as the context property `backup`. Every step that derives a key or writes more than a marker runs on
+ * one low-priority worker thread, one job at a time; a restore reads its document on the import worker first:
  *
  *  - Export: prepareExport() reads the configuration on the UI thread, then the worker builds and seals the backup
  *    into `<CacheLocation>/backup/<job>.dsdbak` (exportPrepared). The save picker opens only after that, and
- *    saveExport() copies the file into the chosen document and removes it (exportFinished). discardExport() drops it.
- *  - Restore: inspectRestore() copies the picked document into the job's own cache file, opens, validates and stages
- *    it into `restore-staging-<job>/`; back on the UI thread the stage becomes `restore-pending/` (inspectFinished).
+ *    saveExport() writes the file into the chosen document through the document transport and removes it
+ *    (exportFinished). discardExport() drops it.
+ *  - Restore: inspectRestore() has the import worker copy the picked document into the job's own cache file
+ *    (`<job>.in`, ImportService::readDocument()), then the worker opens, validates and stages it into
+ *    `restore-staging-<job>/`; back on the UI thread the stage becomes `restore-pending/` (inspectFinished).
  *    commitRestore() marks it confirmed and asks the host to quit, so it applies at the next start.
  *
  * cancel() drops the running job: its result is never reported and its side effects stay inside its own cache file or
- * staging directory, which the model removes. Saving an export into a document is not cancellable. The model never
- * trusts a document's name: a restore identifies its files by the sealed header alone.
+ * staging directory, which the model removes; a restore's document read is cancelled on the import worker, so the next
+ * job never waits for it. Saving an export into a document is not cancellable. The model never trusts a document's
+ * name: a restore identifies its files by the sealed header alone.
+ *
+ * The worker's jobs hold only state shared with the model (the queues, the transport, their own cancel flags), never
+ * the model or the host. The destructor waits ImportService::kStopWaitMs for a job, then leaves it behind: a job that
+ * ends without the model removes its own files and reports nothing.
  *
  * Result maps carry `ok` (bool) and `error`, empty on success, else a backup_error_name() ("NotBackup",
  * "NewerVersion", "WrongPassphrase", "TooLarge", "Damaged", "NoSpace", "SessionActive", "Io", "SourceChanged": a file
@@ -41,24 +48,23 @@
 #include <QObject>
 #include <QPointer>
 #include <QString>
-#include <QThreadPool>
 #include <QVariant>
 #include <QVariantMap>
 #include <QtGlobal>
 #include <atomic> // IWYU pragma: keep -- std::atomic<bool> is the cancel flag; <memory> need not declare it.
-#include <deque>
 #include <dsd-neo/crypto/backup_seal.h>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <type_traits>    // IWYU pragma: keep
 #include "backup_apply.h" // IWYU pragma: keep -- the constructor takes the startup ApplyResult.
 
-class QRunnable;
+class QThreadPool;
 
 namespace dsd_qt {
 
 class DecoderHost;
+class DocumentImportTransport;
+class ImportService;
 
 class BackupModel : public QObject {
     Q_OBJECT
@@ -99,11 +105,21 @@ class BackupModel : public QObject {
 
   public:
     /**
-     * @param host    Session state, quit, engine check and document copies. It must outlive the model, because the
-     *                worker calls its document copies.
-     * @param startup What apply_pending_restore() returned at this start.
+     * @param host      Session state, quit and engine check; the destructor stops its document transfers. It must
+     *                  outlive the model. The worker never calls it.
+     * @param imports   The import worker a restore reads its document on. Held weakly: once it is gone (the app is
+     *                  closing) an inspection is refused (Io).
+     * @param transport Writes a saved export into its document, on the worker, which keeps it, so a save that ends
+     *                  after the host and the model needs neither. Without one a save is refused (Io).
+     * @param startup   What apply_pending_restore() returned at this start.
      */
-    BackupModel(DecoderHost* host, const backup::ApplyResult& startup, QObject* parent = nullptr);
+    BackupModel(DecoderHost* host, ImportService* imports, std::shared_ptr<DocumentImportTransport> transport,
+                const backup::ApplyResult& startup, QObject* parent = nullptr);
+    /**
+     * Drops the jobs that never started (their files go, and a save's destination is discarded), cancels the rest,
+     * stops the host's document transfers and waits up to ImportService::kStopWaitMs for the worker. A job blocked past
+     * that (a provider that ignores the abort) is left to finish on a worker that is never deleted, without the model.
+     */
     ~BackupModel() override;
 
     bool
@@ -216,7 +232,17 @@ class BackupModel : public QObject {
      */
     void setFreeBytes(std::function<qint64(const QString&)> freeBytes);
 
-    /** Block until no job is left on the worker; its results stay queued for the event loop. False on timeout. */
+    /**
+     * Called on the worker as each inspection starts, before it reads the job's copy of the document. Empty in
+     * production; tests hold an inspection there. The function must be safe to call from the worker thread.
+     */
+    void setInspectionHold(std::function<void()> hold);
+
+    /**
+     * Block until no job is left on the worker; its results stay queued for the event loop. False on timeout. A
+     * restore's document read runs on the import worker, and its inspection is queued here only once that read's
+     * commit has run on the UI thread.
+     */
     bool waitForJobs(int timeoutMs = -1);
 
   Q_SIGNALS:
@@ -248,11 +274,20 @@ class BackupModel : public QObject {
   private:
     enum class JobKind { None, Prepare, Save, Inspect };
 
+    struct Shared;
+    struct Work;
+
     struct Job {
         QString id;
         JobKind kind = JobKind::None;
         /** The job's own file: the sealed export (Prepare, Save) or the staging directory (Inspect). */
         QString path;
+        /** Inspect: the job's copy of the document, `<CacheLocation>/backup/<job>.in`. */
+        QString copyPath;
+        /** Inspect: json_store_root() as the UI thread read it, for the worker's own cleanup. */
+        QString dataRoot;
+        /** Inspect: the import worker's read of the document while it runs, else 0. */
+        qint64 read = 0;
         std::shared_ptr<std::atomic<bool>> cancel;
     };
 
@@ -265,6 +300,8 @@ class BackupModel : public QObject {
     Job beginJob(JobKind kind, const QString& id, const QString& path);
     /** Mark the current prepare or inspect job dropped, without announcing it; false when there is none. */
     bool dropJob();
+    /** Cancel @p job's document read on the import worker, while it runs. */
+    void cancelRead(const Job& job);
     /** Clear the current job and announce idle. */
     void endJob();
     /** busyChanged and restoreAllowed, once the job's outcome is in place. */
@@ -281,18 +318,27 @@ class BackupModel : public QObject {
     void syncRestorePending();
     void setStartupOutcome(const QVariantMap& outcome);
 
-    /** Queue @p work for the worker thread. */
-    void post(std::function<void()> work);
-    /** Worker side: queue @p handler for the UI thread and ask the event loop to run it. */
-    void reply(std::function<void()> handler);
+    /**
+     * Queue @p run for the worker thread; the destructor runs @p drop instead when it never started. Neither may hold
+     * the model or the host.
+     */
+    void post(std::function<void(Shared&)> run, std::function<void(Shared&)> drop);
     /** Worker side: run the oldest queued work. */
-    void runNext();
+    static void runNext(const std::shared_ptr<Shared>& shared);
+    /**
+     * Worker side: queue @p deliver for the UI thread and ask the event loop to run it, or, once the model is gone,
+     * run @p orphaned (optional) there instead: the job's files are its own to remove.
+     */
+    static void reply(Shared& shared, std::function<void(BackupModel&)> deliver, const std::function<void()>& orphaned);
 
+    /** The import worker's read of @p job's document ended (UI thread); @p inspect is the inspection to queue. */
+    void onDocumentRead(const Job& job, int copied, const std::function<void(Shared&)>& inspect);
     void onExportBuilt(const Job& job, const QVariantMap& result);
     void onExportSaved(const Job& job, const QVariantMap& result);
     void onInspected(const Job& job, const QVariantMap& result);
 
     DecoderHost* m_host;
+    QPointer<ImportService> m_imports;
     Job m_job;
     /** Cancelled jobs whose results have not come back yet. */
     QList<Job> m_dropped;
@@ -306,17 +352,13 @@ class BackupModel : public QObject {
     QVariantMap m_lastResult;
     dsd_backup_kdf_params m_kdf{};
     std::function<qint64(const QString&)> m_freeBytes;
+    std::function<void()> m_inspectionHold;
     /*
-     * The only state both threads touch. Work and replies cross through these queues under one std::mutex, so the
-     * handoff does not depend on how Qt's own queues synchronize. m_self and m_runner are set before the worker
-     * thread first starts and never change.
+     * The only state both threads touch: work and replies cross through its queues under one std::mutex, so the
+     * handoff does not depend on how Qt's own queues synchronize. It outlives the model while a job left behind runs.
      */
-    std::mutex m_handoff;
-    std::deque<std::function<void()>> m_work;
-    std::deque<std::function<void()>> m_replies;
-    QPointer<BackupModel> m_self;
-    std::unique_ptr<QRunnable> m_runner;
-    QThreadPool m_pool; // last: destroyed first
+    std::shared_ptr<Shared> m_shared;
+    std::unique_ptr<QThreadPool> m_pool;
 };
 
 } // namespace dsd_qt

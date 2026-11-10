@@ -482,6 +482,111 @@ test_teardown_idle() {
     CHECK(!dir.isEmpty() && !QFileInfo::exists(dir), "its staging folder is gone once teardown returns");
 }
 
+/* Wait, without running the event loop, until @p done holds; false after about five seconds. */
+bool
+wait_without_events(const std::function<bool()>& done) {
+    for (int i = 0; i < 2500 && !done(); ++i) {
+        QThread::msleep(2);
+    }
+    return done();
+}
+
+/* The commits of document reads: each id with its copy result. */
+struct Reads {
+    QMap<qint64, int> copied;
+    int commits = 0;
+
+    ImportService::ReadCommit
+    commit() {
+        return [this](qint64 id, int code) {
+            copied.insert(id, code);
+            ++commits;
+        };
+    }
+};
+
+/*
+ * A document read (#831): the transport copies into the caller's file, with no staging folder, the commit hands back
+ * the copy's result, and the file is then the caller's. A cancel that comes after the copy ended, before the commit,
+ * commits DocumentCancelled and leaves the copy for the caller to remove.
+ */
+void
+test_read_document() {
+    const QTemporaryDir dir;
+    CHECK(dir.isValid(), "a scratch directory exists");
+    QDir(ImportService::stagingRoot()).removeRecursively();
+    auto transport = std::make_shared<FakeTransport>(FakeTransport::Mode::Copy);
+    ImportService service(transport);
+    Reads reads;
+    const QString dest = dir.filePath(QStringLiteral("job.in"));
+    const qint64 id = service.readDocument(QStringLiteral("/backup.dsdbak"), dest, 64, reads.commit());
+    CHECK(id > 0 && service.busy(), "a read is a request");
+    CHECK(wait_until([&reads]() { return reads.commits == 1; }), "the read commits");
+    CHECK(reads.copied.value(id, -1) == DecoderHost::DocumentCopied, "with the copy's result");
+    CHECK(read_file(dest) == "copied", "the copy is in the caller's file");
+    CHECK(transport->forgets() == QList<qint64>{id}, "the transport forgets the read once it ended");
+    settle();
+    CHECK(read_file(dest) == "copied" && !service.busy(), "the service never removes a copy it handed over");
+    CHECK(!QFileInfo::exists(ImportService::stagingRoot()), "a read stages nothing in the service's folder");
+
+    const QString late = dir.filePath(QStringLiteral("late.in"));
+    const qint64 lateId = service.readDocument(QStringLiteral("/backup.dsdbak"), late, 64, reads.commit());
+    CHECK(wait_without_events([&transport, lateId]() { return transport->forgets().contains(lateId); }),
+          "a second read's copy ends");
+    service.cancel(lateId);
+    CHECK(wait_until([&reads]() { return reads.commits == 2; }), "the second read commits");
+    CHECK(reads.copied.value(lateId, -1) == DecoderHost::DocumentCancelled,
+          "a cancel after the copy ended commits DocumentCancelled");
+    CHECK(read_file(late) == "copied", "and leaves the copy to the caller");
+}
+
+/* A read cancelled before its copy started never copies; one cancelled during its copy stops it; neither leaves one. */
+void
+test_read_cancel() {
+    const QTemporaryDir dir;
+    CHECK(dir.isValid(), "a scratch directory exists");
+    auto transport = std::make_shared<FakeTransport>(FakeTransport::Mode::WaitForCancel);
+    ImportService service(transport);
+    Reads reads;
+    const QString a = dir.filePath(QStringLiteral("a.in"));
+    const QString b = dir.filePath(QStringLiteral("b.in"));
+    const qint64 running = service.readDocument(QStringLiteral("/a.dsdbak"), a, 64, reads.commit());
+    const qint64 queued = service.readDocument(QStringLiteral("/b.dsdbak"), b, 64, reads.commit());
+    CHECK(wait_until([&transport, running]() { return transport->entered(running); }), "the first read's copy starts");
+    service.cancel(queued);
+    service.cancel(running);
+    CHECK(wait_until([&reads]() { return reads.commits == 2; }), "both cancelled reads commit");
+    settle();
+    CHECK(reads.commits == 2 && reads.copied.value(running, -1) == DecoderHost::DocumentCancelled
+              && reads.copied.value(queued, -1) == DecoderHost::DocumentCancelled,
+          "each cancelled read commits DocumentCancelled once");
+    CHECK(!transport->entered(queued), "a read cancelled before it started never copies");
+    CHECK(!QFileInfo::exists(a) && !QFileInfo::exists(b), "a cancelled read leaves no copy");
+}
+
+/*
+ * Teardown with a read whose copy ignores its cancel: the service waits a bounded time, never commits, and the read it
+ * left behind removes the copy it finishes, since no one will take it.
+ */
+void
+test_read_teardown_blocked() {
+    const QTemporaryDir dir;
+    CHECK(dir.isValid(), "a scratch directory exists");
+    auto transport = std::make_shared<FakeTransport>(FakeTransport::Mode::Block);
+    auto service = std::make_unique<ImportService>(transport);
+    Reads reads;
+    const QString dest = dir.filePath(QStringLiteral("job.in"));
+    const qint64 id = service->readDocument(QStringLiteral("/backup.dsdbak"), dest, 64, reads.commit());
+    CHECK(wait_until([&transport, id]() { return transport->entered(id); }), "the read's copy starts and blocks");
+    service.reset();
+    CHECK(transport->cancels() == QList<qint64>{id}, "teardown cancels the read");
+    transport->release();
+    CHECK(wait_until([&transport, id]() { return transport->forgets().contains(id); }), "the left-behind read ends");
+    CHECK(!QFileInfo::exists(dest), "and removes the copy it finished after the cancel");
+    settle();
+    CHECK(reads.commits == 0, "no read commits after teardown");
+}
+
 QStringList
 entries(bool* ok) {
     return ImportService::journalEntries(ok);
@@ -569,9 +674,13 @@ main(int argc, char** argv) {
     test_busy();
     test_staging_failure();
     test_teardown_idle();
+    test_read_document();
+    test_read_cancel();
     CHECK(abandonedWarnings == 0, "a teardown that finished in time warns of nothing");
     test_teardown_blocked();
     CHECK(abandonedWarnings == 1, "a teardown that left a copy behind says so");
+    test_read_teardown_blocked();
+    CHECK(abandonedWarnings == 2, "so does one that left a read behind");
     test_journal();
     QDir(dataDir).removeRecursively();
     return failures != 0 ? 1 : 0;

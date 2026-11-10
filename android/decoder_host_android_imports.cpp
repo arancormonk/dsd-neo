@@ -3,8 +3,9 @@
 
 /*
  * The import copies' transport (#832), less its JNI calls (platform*Import*() in decoder_host_android.cpp), so the
- * desktop host test compiles this dispatch as it ships. Its copies run on the import worker thread; it never holds the
- * host, only calls the host's static JNI functions.
+ * desktop host test compiles this dispatch as it ships. Its copies run on the import worker thread, and the backup's
+ * save (writeFromFile(), #831) on BackupModel's worker; it never holds the host, only calls the host's static JNI
+ * functions.
  */
 
 #include <QFile>
@@ -25,6 +26,8 @@ class DecoderHostAndroid::ImportTransport final : public dsd_qt::DocumentImportT
     void cancel(qint64 request) override;
     dsd_qt::ImportCopyProgress progress(qint64 request) const override;
     void forget(qint64 request) override;
+    bool writeFromFile(const QString& path, const QString& reference) override;
+    void discardWrite(const QString& reference) override;
 
   private:
     int copyContent(qint64 request, const QString& reference, const QString& destPath, qint64 maxBytes) const;
@@ -103,6 +106,28 @@ DecoderHostAndroid::ImportTransport::forget(qint64 request) {
     }
     dsd_qt::DocumentImportTransport::forget(request);
     platformForgetImport(request);
+}
+
+/*
+ * The host's copyFileToDocument() without the host. A save that never reached DocumentCopies leaves a Download-folder
+ * row (#829) to discard; one that did settled it there, so the discard after a failed call is a no-op unless the JNI
+ * call itself failed.
+ */
+bool
+DecoderHostAndroid::ImportTransport::writeFromFile(const QString& path, const QString& reference) {
+    if (!isContentUri(reference)) {
+        return dsd_qt::DocumentImportTransport::writeFromFile(path, reference);
+    }
+    if (aborted() || !platformHoldsResolver() || !platformCopyFileToDocument(path, reference)) {
+        platformDiscardPendingDownload(reference);
+        return false;
+    }
+    return true;
+}
+
+void
+DecoderHostAndroid::ImportTransport::discardWrite(const QString& reference) {
+    platformDiscardPendingDownload(reference);
 }
 
 bool

@@ -8,8 +8,11 @@
  * @brief The import worker (#832): picked documents copy and check off the Qt thread, then commit on it.
  *
  * Each request stages on one worker thread, in a private folder of its own under stagingRoot(), and commits on the Qt
- * thread. The library and the replay store share one service. The commit journal records the directories a commit
+ * thread. The library, the replay store and the backup's restore share one service. The commit journal records the directories a commit
  * creates until the index that names them is saved, so the next start can remove the ones a crash left unnamed.
+ *
+ * A document read (#831, the backup's restore) is a request of another kind: the worker copies a document into a file
+ * its caller names, with no staging folder, and the commit hands back the copy's result.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_IMPORT_SERVICE_H_
@@ -37,7 +40,10 @@ namespace dsd_qt {
 struct ImportJob {
     /** The request: the id submit() returned and the transport's request id. */
     qint64 id = 0;
-    /** The request's own folder, empty and readable by the owner only; removed once the commit returns. */
+    /**
+     * The request's own folder, empty and readable by the owner only; removed once the commit returns. Empty for a
+     * request of a kind that stages nothing here (a document read).
+     */
     QString stagingDir;
     /** The service's transport: copy(id, …) for each document the request reads. */
     std::shared_ptr<DocumentImportTransport> transport;
@@ -56,6 +62,8 @@ class ImportService : public QObject {
     using Stage = std::function<QVariantMap(const ImportJob&)>;
     /** Runs on the Qt thread, once per request; @p cancelled when the request was cancelled before it ran. */
     using Commit = std::function<void(qint64 id, const QVariantMap& staged, bool cancelled)>;
+    /** A document read's commit, on the Qt thread: the copy's DecoderHost::DocumentCopy value. */
+    using ReadCommit = std::function<void(qint64 id, int copied)>;
 
     /** How long the destructor waits for the request in progress before it leaves it behind. */
     static constexpr int kStopWaitMs = 2000;
@@ -108,6 +116,21 @@ class ImportService : public QObject {
      * @return The request id: positive and unique in this process.
      */
     qint64 submit(Stage stage, Commit commit);
+
+    /**
+     * @brief Queue a document read: the worker copies the document @p reference names into @p destPath, at most
+     * @p maxBytes of it, through the transport, then @p commit runs on the Qt thread with the copy's result.
+     *
+     * The request takes its turn among submit()'s, with the same ids, cancel(), progress() and teardown, but stages
+     * nothing in stagingRoot(): @p destPath is the caller's (a fresh name in a directory that exists), and the service
+     * never removes a copy it hands over. @p commit gets DocumentCopied for a whole copy, which is then the caller's,
+     * and DocumentCancelled for a cancelled request. For any value but DocumentCopied the caller removes @p destPath:
+     * a cancel that lands just after the copy ended leaves the copy there. With no commit to come (teardown), the
+     * worker removes a copy that ends after the cancel.
+     *
+     * @return The request id, as submit()'s.
+     */
+    qint64 readDocument(const QString& reference, const QString& destPath, qint64 maxBytes, ReadCommit commit);
 
     /**
      * @brief Run a request at once on the calling thread: @p stage in a staging folder of its own, then @p commit
@@ -175,6 +198,8 @@ class ImportService : public QObject {
         QString stagingDir;
     };
 
+    /** Queue @p stage and @p commit, with a staging folder of its own when @p staged. */
+    qint64 enqueue(Stage stage, Commit commit, bool staged);
     static void runNext(const std::shared_ptr<Shared>& shared);
     static void runJob(const std::shared_ptr<Shared>& shared, const Work& work);
     void finish(qint64 id, const QVariantMap& staged);

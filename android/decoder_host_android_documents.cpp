@@ -3,8 +3,8 @@
 
 /*
  * The backup's document copies (#580), less their JNI transport (platformHoldsResolver() and platformCopy*() in
- * decoder_host_android.cpp), so the desktop host test compiles this dispatch as it ships. They run on BackupModel's
- * worker thread.
+ * decoder_host_android.cpp), so the desktop host test compiles this dispatch as it ships. They run on a worker
+ * thread, never the Qt thread.
  *
  * The document picker's requests and answers (#829), less their JNI transport (platform*Document*() there), on the Qt
  * thread. The Download-folder rows its saves write into (DownloadsSave.kt) are named and discarded through

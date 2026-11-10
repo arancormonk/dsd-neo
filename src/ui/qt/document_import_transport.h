@@ -5,7 +5,8 @@
 
 /**
  * @file
- * @brief The import copies' transport (#832): a picked document copied into a local file, cancellable by request id.
+ * @brief The document copies' transport (#832): a picked document copied into a local file, cancellable by request id,
+ * and a local file written into a picked document (the backup's save, #831).
  *
  * DecoderHost hands one out (importTransport()); the import worker keeps it, so a copy still running at teardown never
  * reaches back into a host that is gone. Thread-agnostic: any thread may call any member, and no member touches a
@@ -83,7 +84,27 @@ class DocumentImportTransport {
     virtual void forget(qint64 request);
 
     /**
-     * @brief Stop every copy in progress and fail every later one (DocumentFailed), for the rest of this transport.
+     * @brief Write the local file @p path into the document @p reference names (a save), whole or not at all.
+     *
+     * Blocks until the write ends; the backup's worker runs it. A write has no request id, so no cancel reaches it;
+     * abort() does. The base transport takes a file:// URL or a plain absolute path and writes it private through
+     * QSaveFile, so a failure leaves no partial document. A transport whose saves can go to a Download-folder row the
+     * picker made (#829) settles that row at every exit, so a write that ends after the host is gone needs no host.
+     *
+     * @return Whether the whole file was written.
+     */
+    virtual bool writeFromFile(const QString& path, const QString& reference);
+
+    /**
+     * @brief Drop @p reference, a save destination writeFromFile() will never write (a Download-folder row, #829).
+     *
+     * Never blocks, from any thread. The base transport writes no Download-folder rows, so it has nothing to drop.
+     */
+    virtual void discardWrite(const QString& reference);
+
+    /**
+     * @brief Stop every copy and write in progress and fail every later one (DocumentFailed, or false), for the rest
+     * of this transport.
      *
      * DecoderHost::abortDocumentTransfers() calls it on every transport it handed out, at teardown.
      */
@@ -135,6 +156,17 @@ bool open_private(QSaveFile& out);
  */
 int copy_stream_capped(QIODevice& source, QSaveFile& out, qint64 maxBytes,
                        const std::function<bool(qint64)>& proceed = std::function<bool(qint64)>());
+
+/** @brief A copy_stream_capped() predicate that stops once @p aborted is raised (never with no flag). */
+std::function<bool(qint64)> until_aborted(const std::atomic<bool>* aborted);
+
+/**
+ * @brief Copy the local file @p sourcePath into the document @p reference names (a file:// URL or a plain absolute
+ * path), written private through QSaveFile and stopped before any chunk once @p aborted is set.
+ *
+ * @return Whether the whole file was written; any failure leaves no document.
+ */
+bool copy_file_to_local_document(const QString& sourcePath, const QString& reference, const std::atomic<bool>* aborted);
 
 } // namespace dsd_qt
 

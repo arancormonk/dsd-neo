@@ -650,7 +650,8 @@ DecoderHostAndroid::quitApp() {
 }
 
 /*
- * The JNI transport of the document copies (decoder_host_android_documents.cpp), on BackupModel's worker thread.
+ * The JNI transport of the document copies (decoder_host_android_documents.cpp, and the import transport's
+ * writeFromFile(), the backup's save on BackupModel's worker thread), on a worker thread.
  * QJniObject attaches that thread to the VM and loads the app classes through Qt's class loader, and its call frames
  * release their local references; the calls use the held ContentResolver. Neither waits on another thread.
  */

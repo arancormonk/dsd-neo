@@ -538,7 +538,12 @@ sweep_stale_staging() {
 
 bool
 discard_staging(const QString& stagingDir) {
-    const DataRoot root;
+    return discard_staging(DataRoot().path(), stagingDir);
+}
+
+bool
+discard_staging(const QString& dataRoot, const QString& stagingDir) {
+    const DataRoot root(dataRoot);
     if (!staging_dir_ok(root, stagingDir)) {
         return false;
     }

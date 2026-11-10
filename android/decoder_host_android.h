@@ -215,10 +215,11 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     bool engineBusy() const override;
 
     /*
-     * Document copies (#580). These run on BackupModel's worker thread, never the Qt main thread: the JNI calls
-     * attach that thread, use the application's ContentResolver, and never wait on the Qt or Android main thread,
-     * which BackupModel's destructor may be blocking in waitForDone(). A content:// reference goes to the platform's
-     * ContentResolver; a file:// URL or plain path takes the base host's copy.
+     * Document copies (#580). These run on a worker thread, never the Qt main thread: the JNI calls attach that
+     * thread, use the application's ContentResolver, and never wait on the Qt or Android main thread, which a
+     * destructor may be blocking in a bounded wait. A content:// reference goes to the platform's ContentResolver; a
+     * file:// URL or plain path takes the base host's copy. The backup reads on the import worker and saves through
+     * the import transport (#831), whose writeFromFile() takes the same platform save.
      *
      * For a content:// reference, copyDocumentToFile() replaces @p destPath: whatever is there is removed before the
      * copy starts (DocumentLocalFailed when it cannot be), so a failure leaves nothing at @p destPath and

@@ -1186,11 +1186,38 @@ check_import_dispatch() {
     check(transport->copy(46, source, dir.filePath(QStringLiteral("local.csv")), 77) == DecoderHost::DocumentCopied,
           "and the base transport's");
 
+    /* The backup's save (#831), the host's copyFileToDocument() without the host: it settles a Download-folder row
+     * at every exit, since a save that ends after the host is gone has no host to do it. */
+    (void)take_discarded();
+    platform() = PlatformCopies();
+    check(transport->writeFromFile(source, content) && platform().calls == 1 && platform().sourcePath == source
+              && platform().reference == content && take_discarded().isEmpty(),
+          "a content URI saves through the platform, which settles its row");
+    platform().saves = false;
+    check(!transport->writeFromFile(source, content) && take_discarded() == QStringList{content},
+          "a failed platform save discards its row");
+    platform() = PlatformCopies();
+    platform().holdsResolver = false;
+    check(!transport->writeFromFile(source, content) && platform().calls == 0
+              && take_discarded() == QStringList{content},
+          "a save without a held ContentResolver discards its row without asking the platform");
+    platform() = PlatformCopies();
+    const QString saved = dir.filePath(QStringLiteral("saved.csv"));
+    check(transport->writeFromFile(source, QUrl::fromLocalFile(saved).toString()) && read_file(saved) == "1,a\n"
+              && platform().calls == 0 && take_discarded().isEmpty(),
+          "a file URL takes the base transport's save");
+    transport->discardWrite(content);
+    check(take_discarded() == QStringList{content}, "a save never started discards its row");
+
     host.abortDocumentTransfers();
     QFile::remove(dest);
     imports() = PlatformImports();
     check(transport->copy(47, content, dest, 77) == DecoderHost::DocumentFailed && imports().copies == 0,
           "after the host's abort no import reaches the platform");
+    platform() = PlatformCopies();
+    check(!transport->writeFromFile(source, content) && platform().calls == 0
+              && take_discarded() == QStringList{content},
+          "nor a save, whose row is discarded");
     check(host.importTransport()->copy(48, content, dest, 77) == DecoderHost::DocumentFailed && imports().copies == 0,
           "and a transport handed out after it starts aborted");
 }

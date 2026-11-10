@@ -4,14 +4,18 @@
  */
 
 /* The backup screens' model (issue #580). A job copies everything it needs when it starts on the UI thread: the
- * snapshot, the paths, the host, its own copy of the passphrase. On the worker it touches only its own cache file and
- * staging directory, through calls that hold no shared mutable state: the archive and staging functions, the host's
- * document copies, and ImportedFilesModel::validate() inside stage_restore() (each CSV validator parses into its own
- * heap state). The data root is read once, on the UI thread, and handed to the parse and the staging.
+ * snapshot, the paths, its own copy of the passphrase. On the worker it touches only its own cache file and staging
+ * directory, through calls that hold no shared mutable state: the archive and staging functions, the document
+ * transport, and ImportedFilesModel::validate() inside stage_restore() (each CSV validator parses into its own heap
+ * state). The data root is read once, on the UI thread, and handed to the parse, the staging and the job's cleanup.
  *
- * Work goes to the worker and replies come back through two queues behind one std::mutex, and a capture-free queued
- * call tells the UI thread to drain the replies. A reply for a job that is no longer the current one is dropped there,
- * and that job's files are removed. */
+ * Work goes to the worker and replies come back through two queues in the shared state, behind one std::mutex, and a
+ * capture-free queued call tells the UI thread to drain the replies. A reply for a job that is no longer the current
+ * one is dropped there, and that job's files are removed. The shared state, not the model, is what a job holds, so a
+ * job the destructor leaves behind (#831) finds the model gone, removes its own files and reports nothing.
+ *
+ * A restore's document read runs on the import worker (ImportService::readDocument()), cancellable by request id, so
+ * a cancelled read never holds this worker; its commit queues the inspection here. */
 
 #include "backup_model.h"
 
@@ -23,11 +27,12 @@
 #include <QFileInfo>
 #include <QIODevice>
 #include <QLatin1String>
-#include <QRunnable>
+#include <QList>
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <QStringList>
 #include <QThread>
+#include <QThreadPool>
 #include <QUuid>
 #include <QVariant>
 #include <Qt>
@@ -42,6 +47,8 @@
 #include <stddef.h>
 #include <utility>
 #include "decoder_host.h"
+#include "document_import_transport.h"
+#include "import_service.h"
 #include "json_store.h"
 #include "platform_path.h"
 #include "realtime_clock.h"
@@ -99,6 +106,14 @@ wipe(QByteArray& bytes) {
         DSD_SECURE_ZERO(bytes.data(), static_cast<size_t>(bytes.size()));
     }
     bytes.clear();
+}
+
+/* Workers a teardown stopped waiting for, as ImportService's. Deleting one would wait for its job, so each stays,
+   unreachable from any model, until its job ends and the process exits. */
+QList<QThreadPool*>&
+abandoned_workers() {
+    static auto* workers = new QList<QThreadPool*>();
+    return *workers;
 }
 
 QString
@@ -235,17 +250,31 @@ run_export(const ExportWork& work) {
 
 /** Everything an inspection job needs, copied on the UI thread. */
 struct InspectWork {
-    DecoderHost* host = nullptr;
-    QString reference;
-    QString copyPath;   // the job's own copy of the document
+    QString copyPath;   // the job's own copy of the document, which the import worker wrote
     QString stagingDir; // the job's own staging directory
     QString root;       // json_store_root()
     std::shared_ptr<Passphrase> passphrase;
     std::shared_ptr<std::atomic<bool>> cancel;
     std::function<qint64(const QString&)> freeBytes;
+    std::function<void()> hold; // setInspectionHold()
 };
 
-/** One inspection on the worker: fetch, open, validate, check space, stage. */
+/**
+ * What the import worker's read of the document means for the restore: only a document that could not be read is the
+ * file's fault (Io); writing the job's copy of it is this phone's.
+ */
+QString
+read_error(int copied) {
+    if (copied == DecoderHost::DocumentTooLarge) {
+        return error_name(BackupError::TooLarge);
+    }
+    if (copied == DecoderHost::DocumentLocalFailed) {
+        return error_name(BackupError::StagingFailed);
+    }
+    return error_name(BackupError::Io);
+}
+
+/** One inspection on the worker: read the job's copy of the document, open, validate, check space, stage. */
 class Inspection {
   public:
     explicit Inspection(InspectWork work) : m_work(std::move(work)) {}
@@ -279,32 +308,21 @@ class Inspection {
         return m_work.cancel->load();
     }
 
-    /** Copy the document into the job's file, read and remove it, and open it. */
+    /** Read and remove the job's copy of the document, and open it. */
     QString
     fetch() {
+        if (m_work.hold) {
+            m_work.hold();
+        }
+        QByteArray sealed;
+        const bool read = !cancelled() && read_sealed(m_work.copyPath, &sealed);
+        QFile::remove(m_work.copyPath);
         if (cancelled()) {
             return QString();
         }
-        const int copied = m_work.host->copyDocumentToFile(m_work.reference, m_work.copyPath, backup::kMaxSealedBytes);
-        QByteArray sealed;
-        const bool read = copied == DecoderHost::DocumentCopied && read_sealed(m_work.copyPath, &sealed);
-        QFile::remove(m_work.copyPath);
-        // Only a document that could not be read is the file's fault (Io); writing the job's copy of it, or reading
-        // that copy back, is this phone's.
-        if (copied == DecoderHost::DocumentTooLarge) {
-            return error_name(BackupError::TooLarge);
-        }
-        if (copied == DecoderHost::DocumentLocalFailed) {
-            return error_name(BackupError::StagingFailed);
-        }
-        if (copied != DecoderHost::DocumentCopied) {
-            return error_name(BackupError::Io);
-        }
+        // The import worker wrote this copy; reading it back is this phone's failure, not the file's.
         if (!read) {
             return error_name(BackupError::StagingFailed);
-        }
-        if (cancelled()) {
-            return QString();
         }
         // Every passphrase is tried, whatever its length: a backup is sealed under whatever minimum its export
         // enforced, which may not be today's.
@@ -360,14 +378,32 @@ class Inspection {
 
 } // namespace
 
-BackupModel::BackupModel(DecoderHost* host, const backup::ApplyResult& startup, QObject* parent)
-    : QObject(parent), m_host(host), m_self(this), m_runner(QRunnable::create([this]() { runNext(); })) {
+/* A job on its way to the worker, and what the destructor does instead when it never started. */
+struct BackupModel::Work {
+    std::function<void(Shared&)> run;
+    std::function<void(Shared&)> drop;
+};
+
+/* The work queue the worker runs, and the link it reaches the model through: both outlive the model. */
+struct BackupModel::Shared {
+    std::shared_ptr<DocumentImportTransport> transport;
+    std::mutex lock;
+    BackupModel* model = nullptr;                          // guarded by lock; cleared by the destructor
+    std::deque<Work> work;                                 // guarded by lock
+    std::deque<std::function<void(BackupModel&)>> replies; // guarded by lock
+};
+
+BackupModel::BackupModel(DecoderHost* host, ImportService* imports, std::shared_ptr<DocumentImportTransport> transport,
+                         const backup::ApplyResult& startup, QObject* parent)
+    : QObject(parent), m_host(host), m_imports(imports), m_shared(std::make_shared<Shared>()),
+      m_pool(std::make_unique<QThreadPool>()) {
+    m_shared->transport = std::move(transport);
+    m_shared->model = this;
     dsd_backup_kdf_params_default(&m_kdf);
-    // One worker: jobs never overlap, so a cancelled job finishes before the next one starts. The one runner is
-    // started once per queued job and runs them in order.
-    m_runner->setAutoDelete(false);
-    m_pool.setMaxThreadCount(1);
-    m_pool.setThreadPriority(QThread::LowPriority);
+    // One worker: jobs never overlap, so a cancelled job finishes before the next one starts. It is started once per
+    // queued job and runs them in order.
+    m_pool->setMaxThreadCount(1);
+    m_pool->setThreadPriority(QThread::LowPriority);
     // Nothing runs yet, so whatever a job left behind (a kill, a crash) is stale.
     sweep_cache(cache_dir());
     backup::sweep_stale_staging();
@@ -383,21 +419,37 @@ BackupModel::BackupModel(DecoderHost* host, const backup::ApplyResult& startup, 
 
 BackupModel::~BackupModel() {
     const TeardownStage stage("~BackupModel");
-    // Every job still on the worker is the current one or a dropped one. A document copy cannot be cancelled, and a
-    // slow document provider must not hold the UI thread while the app closes, so the host stops its copies first.
+    std::deque<Work> unstarted;
+    {
+        // No reply reaches the model from here on: a job that ends now removes its own files.
+        const std::lock_guard<std::mutex> lock(m_shared->lock);
+        m_shared->model = nullptr;
+        unstarted.swap(m_shared->work);
+    }
+    for (const Work& work : unstarted) {
+        work.drop(*m_shared);
+    }
+    // Every job still running is the current one or a dropped one. A save cannot be cancelled, and a slow document
+    // provider must not hold the UI thread while the app closes, so the host stops its transfers first.
     if (m_host != nullptr && (m_job.kind != JobKind::None || !m_dropped.isEmpty())) {
         m_host->abortDocumentTransfers();
     }
     if (m_job.kind != JobKind::None && m_job.kind != JobKind::Save) {
         m_job.cancel->store(true);
+        cancelRead(m_job);
         m_dropped.append(m_job);
     }
-    m_pool.waitForDone();
+    if (!m_pool->waitForDone(ImportService::kStopWaitMs)) {
+        // A write blocked in a provider ignores the abort. Deleting the pool would wait for it, so the pool stays; the
+        // job holds the shared state, and the cleared link keeps it from this model.
+        qWarning("backup: a job did not stop within %d ms; it is left behind as the app closes",
+                 ImportService::kStopWaitMs);
+        abandoned_workers().append(m_pool.release());
+    }
     {
         // Replies still queued never run now; the lock orders their destruction after the worker's last write.
-        const std::lock_guard<std::mutex> lock(m_handoff);
-        m_replies.clear();
-        m_work.clear();
+        const std::lock_guard<std::mutex> lock(m_shared->lock);
+        m_shared->replies.clear();
     }
     // The queued results of dropped jobs will never arrive; their files go now.
     for (const Job& job : m_dropped) {
@@ -439,10 +491,14 @@ BackupModel::prepareExport(const QString& passphrase) {
     const Job job = beginJob(JobKind::Prepare, id, dir + QLatin1Char('/') + id + QStringLiteral(".dsdbak"));
     const ExportWork work{backup::backup_take_snapshot(), m_kdf, std::make_shared<Passphrase>(passphrase), job.cancel,
                           job.path};
-    post([this, job, work]() {
-        const QVariantMap result = run_export(work);
-        reply([this, job, result]() { onExportBuilt(job, result); });
-    });
+    post(
+        [job, work](Shared& shared) {
+            const QVariantMap result = run_export(work);
+            reply(
+                shared, [job, result](BackupModel& model) { model.onExportBuilt(job, result); },
+                [job]() { removeJobFiles(job); });
+        },
+        [job](Shared&) { removeJobFiles(job); });
 }
 
 QVariantMap
@@ -461,8 +517,8 @@ BackupModel::saveExport(const QString& reference) {
     QString refusal;
     if (busy()) {
         refusal = QLatin1String(kBusy);
-    } else if (m_export.path.isEmpty() || m_host == nullptr) {
-        refusal = error_name(BackupError::Io); // nothing prepared
+    } else if (m_export.path.isEmpty() || m_shared->transport == nullptr) {
+        refusal = error_name(BackupError::Io); // nothing prepared, or nothing to write it with
     }
     if (!refusal.isEmpty()) {
         if (m_host != nullptr) {
@@ -473,14 +529,19 @@ BackupModel::saveExport(const QString& reference) {
     }
     const Job job = beginJob(JobKind::Save, new_job_id(), m_export.path);
     const QVariantMap summary = m_export.summary;
-    const DecoderHost* host = m_host;
-    post([this, job, summary, host, reference]() {
-        // Not cancellable: the copy runs to its end, and the cache file goes either way.
-        const bool saved = host->copyFileToDocument(job.path, reference);
-        QFile::remove(job.path);
-        const QVariantMap result = export_map(saved ? QString() : error_name(BackupError::Io), summary);
-        reply([this, job, result]() { onExportSaved(job, result); });
-    });
+    post(
+        [job, summary, reference](Shared& shared) {
+            // Not cancellable: the write runs to its end, and the cache file goes either way.
+            const bool saved = shared.transport->writeFromFile(job.path, reference);
+            QFile::remove(job.path);
+            const QVariantMap result = export_map(saved ? QString() : error_name(BackupError::Io), summary);
+            reply(shared, [job, result](BackupModel& model) { model.onExportSaved(job, result); }, {});
+        },
+        [job, reference](Shared& shared) {
+            // Never started: nothing will write the document, so a Download-folder save made for it goes (#829).
+            QFile::remove(job.path);
+            shared.transport->discardWrite(reference);
+        });
 }
 
 void
@@ -507,7 +568,9 @@ BackupModel::inspectRestore(const QString& reference, const QString& passphrase)
         refusal = error_name(BackupError::SessionActive);
     } else if (backup::pending_committed()) {
         refusal = QLatin1String(kRestorePending);
-    } else if (m_host == nullptr || dir.isEmpty() || stagingDir.isEmpty() || !QDir().mkpath(dir)) {
+    } else if (m_imports.isNull()) {
+        refusal = error_name(BackupError::Io); // the import worker is gone: the app is closing
+    } else if (dir.isEmpty() || stagingDir.isEmpty() || !QDir().mkpath(dir)) {
         refusal = error_name(BackupError::StagingFailed); // no cache or staging place on this phone
     }
     if (!refusal.isEmpty()) {
@@ -515,21 +578,35 @@ BackupModel::inspectRestore(const QString& reference, const QString& passphrase)
         return;
     }
     clearLastResult();
-    const Job job = beginJob(JobKind::Inspect, id, stagingDir);
+    beginJob(JobKind::Inspect, id, stagingDir);
+    m_job.copyPath = dir + QLatin1Char('/') + id + QStringLiteral(".in");
+    m_job.dataRoot = json_store_root();
     InspectWork work;
-    work.host = m_host;
-    work.reference = reference;
-    work.copyPath = dir + QLatin1Char('/') + id + QStringLiteral(".in");
+    work.copyPath = m_job.copyPath;
     work.stagingDir = stagingDir;
-    work.root = json_store_root();
+    work.root = m_job.dataRoot;
     work.passphrase = std::make_shared<Passphrase>(passphrase);
-    work.cancel = job.cancel;
+    work.cancel = m_job.cancel;
     work.freeBytes = m_freeBytes;
-    post([this, job, work]() {
+    work.hold = m_inspectionHold;
+    const Job job = m_job;
+    std::function<void(Shared&)> inspect = [job, work](Shared& shared) {
         Inspection inspection(work);
         const QVariantMap result = inspection.run();
-        reply([this, job, result]() { onInspected(job, result); });
-    });
+        reply(
+            shared, [job, result](BackupModel& model) { model.onInspected(job, result); },
+            [job]() { removeJobFiles(job); });
+    };
+    // The job owns its copy from here: the read's commit, or the job's own cleanup, removes it.
+    const QPointer<BackupModel> self(this);
+    m_job.read = m_imports->readDocument(reference, job.copyPath, backup::kMaxSealedBytes,
+                                         [self, job, inspect](qint64, int copied) {
+                                             if (self.isNull()) {
+                                                 QFile::remove(job.copyPath); // the model went first
+                                                 return;
+                                             }
+                                             self->onDocumentRead(job, copied, inspect);
+                                         });
 }
 
 QVariantMap
@@ -613,66 +690,80 @@ BackupModel::setFreeBytes(std::function<qint64(const QString&)> freeBytes) {
     m_freeBytes = std::move(freeBytes);
 }
 
+void
+BackupModel::setInspectionHold(std::function<void()> hold) {
+    m_inspectionHold = std::move(hold);
+}
+
 bool
 BackupModel::waitForJobs(int timeoutMs) {
-    return m_pool.waitForDone(timeoutMs);
+    return m_pool->waitForDone(timeoutMs);
 }
 
 void
-BackupModel::post(std::function<void()> work) {
+BackupModel::post(std::function<void(Shared&)> run, std::function<void(Shared&)> drop) {
     {
-        const std::lock_guard<std::mutex> lock(m_handoff);
-        m_work.push_back(std::move(work));
+        const std::lock_guard<std::mutex> lock(m_shared->lock);
+        m_shared->work.push_back(Work{std::move(run), std::move(drop)});
     }
-    m_pool.start(m_runner.get());
+    m_pool->start([shared = m_shared]() { runNext(shared); });
 }
 
 void
-BackupModel::runNext() {
-    std::function<void()> work;
+BackupModel::runNext(const std::shared_ptr<Shared>& shared) {
+    // One start() per queued job, so each run takes one; the destructor empties the queue of jobs never started.
+    Work work;
     {
-        const std::lock_guard<std::mutex> lock(m_handoff);
-        if (m_work.empty()) {
+        const std::lock_guard<std::mutex> lock(shared->lock);
+        if (shared->work.empty()) {
             return;
         }
-        work = std::move(m_work.front());
-        m_work.pop_front();
+        work = std::move(shared->work.front());
+        shared->work.pop_front();
     }
-    work();
+    work.run(*shared);
 }
 
 void
-BackupModel::reply(std::function<void()> handler) {
+BackupModel::reply(Shared& shared, std::function<void(BackupModel&)> deliver, const std::function<void()>& orphaned) {
     {
-        const std::lock_guard<std::mutex> lock(m_handoff);
-        m_replies.push_back(std::move(handler));
+        // The destructor clears the link under this lock, so a model seen here is not destroyed before the call is
+        // queued, and Qt drops a queued call whose model is gone by the time the event loop gets to it.
+        const std::lock_guard<std::mutex> lock(shared.lock);
+        if (BackupModel* model = shared.model) {
+            shared.replies.push_back(std::move(deliver));
+            QMetaObject::invokeMethod(model, "deliverReplies", Qt::QueuedConnection);
+            return;
+        }
     }
-    // The destructor's waitForDone() keeps the model alive while the worker runs; the guard and Qt drop the queued
-    // call if the model is gone by the time the event loop gets to it.
-    if (BackupModel* model = m_self.data()) {
-        QMetaObject::invokeMethod(model, "deliverReplies", Qt::QueuedConnection);
+    if (orphaned) {
+        orphaned();
     }
 }
 
 void
 BackupModel::deliverReplies() {
     for (;;) {
-        std::function<void()> next;
+        std::function<void(BackupModel&)> next;
         {
-            const std::lock_guard<std::mutex> lock(m_handoff);
-            if (m_replies.empty()) {
+            const std::lock_guard<std::mutex> lock(m_shared->lock);
+            if (m_shared->replies.empty()) {
                 return;
             }
-            next = std::move(m_replies.front());
-            m_replies.pop_front();
+            next = std::move(m_shared->replies.front());
+            m_shared->replies.pop_front();
         }
-        next();
+        next(*this);
     }
 }
 
 BackupModel::Job
 BackupModel::beginJob(JobKind kind, const QString& id, const QString& path) {
-    m_job = Job{id, kind, path, std::make_shared<std::atomic<bool>>(false)};
+    m_job = Job();
+    m_job.id = id;
+    m_job.kind = kind;
+    m_job.path = path;
+    m_job.cancel = std::make_shared<std::atomic<bool>>(false);
     Q_EMIT busyChanged();
     updateRestoreAllowed();
     return m_job;
@@ -684,9 +775,17 @@ BackupModel::dropJob() {
         return false;
     }
     m_job.cancel->store(true);
+    cancelRead(m_job);
     m_dropped.append(m_job);
     m_job = Job();
     return true;
+}
+
+void
+BackupModel::cancelRead(const Job& job) {
+    if (job.read != 0 && !m_imports.isNull()) {
+        m_imports->cancel(job.read);
+    }
 }
 
 void
@@ -721,7 +820,8 @@ BackupModel::removeJobFiles(const Job& job) {
     if (job.kind == JobKind::Prepare) {
         QFile::remove(job.path);
     } else if (job.kind == JobKind::Inspect) {
-        backup::discard_staging(job.path);
+        QFile::remove(job.copyPath);
+        backup::discard_staging(job.dataRoot, job.path);
     }
 }
 
@@ -799,6 +899,20 @@ BackupModel::setStartupOutcome(const QVariantMap& outcome) {
  * The handlers below settle every piece of state a job changes before announcing idle, and report last. Whoever
  * reacts to busy turning false (a picker opening, the Settings card) already sees the outcome.
  */
+
+void
+BackupModel::onDocumentRead(const Job& job, int copied, const std::function<void(Shared&)>& inspect) {
+    if (takeDropped(job)) {
+        return; // cancelled: its copy is removed
+    }
+    m_job.read = 0; // a cancel from here on reaches the inspection through its flag
+    if (copied != DecoderHost::DocumentCopied) {
+        QFile::remove(job.copyPath); // a cancel that came just after the copy ended leaves it
+        onInspected(job, result_map(read_error(copied)));
+        return;
+    }
+    post(inspect, [job](Shared&) { removeJobFiles(job); });
+}
 
 void
 BackupModel::onExportBuilt(const Job& job, const QVariantMap& result) {

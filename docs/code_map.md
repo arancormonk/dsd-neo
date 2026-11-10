@@ -13156,8 +13156,12 @@ Qt Quick frontend (`src/ui/qt`):
   latest copy's name, bytes, total and whether it ran out of space. The base transport copies a local file (file URL
   or absolute path; any other reference is `DocumentFailed`) through `QSaveFile` and `copy_stream_capped()`, whose
   per-chunk predicate checks the request's cancel and the transport's abort; a write or commit that hits `ENOSPC`
-  (`ResourceError` or errno) is `DocumentLocalFailed` with `noSpace`. `abortDocumentTransfers()` aborts every transport
-  handed out (the host keeps weak references), and one handed out after it starts aborted.
+  (`ResourceError` or errno) is `DocumentLocalFailed` with `noSpace`. `writeFromFile(path, reference)` (#831) is the
+  backup's save: no request id, so only `abort()` stops it; the base transport writes a file URL or absolute path
+  whole, private, through `QSaveFile` (`copy_file_to_local_document()`, which `DecoderHost::copyFileToLocalDocument()`
+  shares), and `discardWrite(reference)` drops a save destination that will never be written (a no-op in the base).
+  `abortDocumentTransfers()` aborts every transport handed out (the host keeps weak references), and one handed out
+  after it starts aborted.
   `import_service.{h,cpp}` is the import worker (#832) the library and the replay imports share; `ui_load()` makes the
   one service (not published to QML) from `host->importTransport()` right after `ImportService::sweepStaging()`, which
   runs once after the restore applies and removes `<AppData>/import-staging/` wholly (a link is removed, never
@@ -13174,6 +13178,13 @@ Qt Quick frontend (`src/ui/qt`):
   destructor cancels every request, queues their folders' removal and waits `kStopWaitMs` (2 s). If a copy ignores
   the cancel, the pool is left to finish it without the service (never deleted, as `closeRecordingWork()`), and no
   commit runs. The service is created before the models that use it, so as the engine's child it is destroyed first.
+  `readDocument(reference, destPath, maxBytes, commit)` (#831, the backup's restore) is a request of another kind on
+  the same worker, ids, `cancel()`, `progress()` and teardown: the stage copies the document straight into the
+  caller's `destPath` through the transport, with no staging folder (`enqueue(..., staged = false)`, the shape a second
+  folderless kind takes), so the service never removes a copy it hands over, and the commit gets the copy's
+  `DocumentCopy` value, `DocumentCancelled` for a cancelled request. Only `DocumentCopied` hands the file over; for any
+  other value the caller removes `destPath`, since a cancel that lands after the copy ended leaves it. With no commit
+  to come (teardown), the stage removes a copy that ended after the cancel.
   The commit journal `<AppData>/import_journal.json` (`journalAdd`/`journalRemove`/`journalEntries`, Qt thread)
   lists the clean absolute directories a commit creates until the index naming them is saved (a journal left empty is
   removed; a missing one is empty). A journal that cannot be read, or holds anything but absolute paths, gives
@@ -13724,9 +13735,9 @@ Qt Quick frontend (`src/ui/qt`):
   `dsd_realtime_mono_ms()`) once `app.exec()` returns; a `TeardownStage` declared first in a scope logs `teardown:
   <name> started` when made and `teardown: <name> took <n> ms` when the scope ends, so a hang names the stage that
   started and never took, and nothing unless hooks were installed when it was made, so the desktop and tests that
-  install none are unaffected. `~BackupModel`, `~CallHistoryModel`, `~SignalSearchModel` and `~RadioReferenceModel`,
-  whose bodies wait with no timeout (a worker pool, a synchronous save, a store flush, the RadioReference client), each
-  declare one first. `main()` times the QML engine's and the host's destruction the same way, then flushes with
+  install none are unaffected. `~BackupModel` (its worker, at most `ImportService::kStopWaitMs`), `~CallHistoryModel`,
+  `~SignalSearchModel` and `~RadioReferenceModel`, whose bodies wait (the last three with no timeout: a synchronous
+  save, a store flush, the RadioReference client), each declare one first. `main()` times the QML engine's and the host's destruction the same way, then flushes with
   `DiagnosticsLog::kShutdownFlushMs` (500 ms) as its bound and writes that flush's own time to
   `diagnostics/teardown-flush.marker` (`teardownFlushMarkerWrite()`, unsynced); the next UI start reports it once and
   removes it (`teardownFlushMarkerTake()`: `teardown: the previous process's final diagnostics flush took N ms`, with `,
@@ -13845,15 +13856,27 @@ Qt Quick frontend (`src/ui/qt`):
     restore (`QSaveFile` writes through a link, so the models' own saves replace it only when it could not be read, by
     renaming the link aside: `json_store` above).
     `ApplyEnv` injects the engine check, free space and a fault per named step.
-  - `backup_model.{h,cpp}`: `BackupModel`, context property `backup`. One low-priority worker thread (a `QThreadPool` of
-    one) runs each job; work and replies cross through two queues under one `std::mutex`, and a job's files are its own
-    (`<CacheLocation>/backup/<job>.dsdbak` or `.in`, `restore-staging-<job>/`), so a cancelled job removes only them
-    (`discard_staging()` for its staging directory). Construction sweeps both (`sweep_stale_staging()`).
-    `prepareExport()` snapshots on the UI thread, then builds and seals on the worker; `saveExport()` calls
-    `DecoderHost::copyFileToDocument()`, and a refused save (busy, nothing prepared) hands its reference to
-    `discardPendingDownload()` (#829), since nothing will write it; `inspectRestore()` copies the document with
-    `copyDocumentToFile()` (capped at 64 MiB), opens, parses, checks free space (twice the archive plus 1 MiB) and
-    stages, and the UI thread promotes.
+  - `backup_model.{h,cpp}`: `BackupModel`, context property `backup`, made in `ui_load()` with the host, the import
+    worker (`ImportService`, held by `QPointer`) and a transport of its own (`host->importTransport()`). One
+    low-priority worker thread (a `QThreadPool` of one) runs each job; work and replies cross through two queues in a
+    `Shared` state under one `std::mutex`, and a job's files are its own (`<CacheLocation>/backup/<job>.dsdbak` or
+    `.in`, `restore-staging-<job>/`), so a cancelled job removes only them (`discard_staging()` for its staging
+    directory, under the data root the UI thread read). Construction sweeps both (`sweep_stale_staging()`).
+    `prepareExport()` snapshots on the UI thread, then builds and seals on the worker; `saveExport()` writes through
+    the transport's `writeFromFile()` (not cancellable, as before), and a refused save (busy, nothing prepared, no
+    transport) hands its reference to the host's `discardPendingDownload()` (#829), since nothing will write it.
+    `inspectRestore()` (#831 B4) submits `ImportService::readDocument()` into the job's `<job>.in` (capped at 64 MiB;
+    refused as `Io` once the service is gone), and the read's commit queues the inspection, which reads and removes
+    that file, opens, parses, checks free space (twice the archive plus 1 MiB) and stages; the UI thread promotes.
+    `cancel()` (and `discardRestore()`) cancels the read by its request id, so Cancel answers at once and the next job
+    never waits behind a provider read that only a cancel stops; a read's commit for a dropped job removes the copy.
+    Jobs capture the `Shared` state (queues, transport, their cancel flags), never the model or the host, and each
+    queued job carries a `drop()`. The destructor clears the model link, runs `drop()` for jobs never started (their
+    files go; a save's destination goes to `discardWrite()`), calls `abortDocumentTransfers()` while a job may run, cancels
+    the read, waits `ImportService::kStopWaitMs`, then abandons the pool as `ImportService` does (warning `backup: a job
+    did not stop within ...`). A job that ends without the model removes its own files and reports nothing; a read
+    whose model is gone removes its copy at its commit. `setInspectionHold()` is a test seam (an inspection waits
+    there before it reads its copy).
     `commitRestore()` refuses while a job runs, a session is on screen or `engineBusy()`, commits, and asks `quitApp()`
     once; a refused commit leaves the stage as it was. `restorePending` follows the committed stage on disk, and
     `restoreCancellable` (pending, no complete journal) with it; `discardRestore()` reports `RestoreInProgress` once the
@@ -13863,8 +13886,7 @@ Qt Quick frontend (`src/ui/qt`):
     could not write (`DecoderHost::DocumentLocalFailed`) or read back, an argument or OpenSSL failure once the header
     has parsed (`backup_error_from_open_status()`), a staging or promotion that failed.
     `startupOutcome` is this start's `ApplyResult`, else the result file until acknowledged, and carries the restored
-    backup's `notIncluded` lines. The destructor calls `abortDocumentTransfers()` while a job may be on the worker, then
-    waits for it. Production seals with `dsd_backup_kdf_params_default()`.
+    backup's `notIncluded` lines. Production seals with `dsd_backup_kdf_params_default()`.
   - QML: one `BackupFlow.qml` in `Main.qml` (z 22, above the scan layers) serves both Settings instances through
     `exportBackupRequested()`, `restoreBackupRequested()` and `cancelRestoreRequested()`. `backup.flowActive` (set for
     the flow's whole length, kept while the app closes) joins `autoStartBlocked`, a USB grant that lands while it is set
@@ -13923,7 +13945,9 @@ Qt Quick frontend (`src/ui/qt`):
     force key, a scan list's port, key IDs, talkgroup overrides and a profile's force.
   - Tests: `UI_QT_BACKUP_ARCHIVE`, `UI_QT_BACKUP_APPLY` (every step crashed in a clean apply and in a rollback; two
     restores in a row), `UI_QT_BACKUP_MODEL` (with `test_recorder_parity()` against the QML fixture's
-    `tests/ui/qml_backup_recorder.h`), `UI_QT_QML_CALL_LISTS` (`tst_settings_backup.qml`,
+    `tests/ui/qml_backup_recorder.h`; #831 B4: a held read cancelled, the job file kept past the read's commit with
+    cache and data on separate roots, no import worker, a stuck read and save left behind in bounded time, an unstarted
+    save dropped at teardown; `GatedTransport` holds the reads and saves), `UI_QT_IMPORT_SERVICE` (document reads), `UI_QT_QML_CALL_LISTS` (`tst_settings_backup.qml`,
     `tst_util_decryption_protocol.qml`), `UI_QT_DECRYPTION_PROFILES`, `UI_QT_PERSISTENCE` (`test_prefs_key_table()`),
     `UI_QT_ANDROID_HOST`, `ANDROID_DOCUMENT_TRANSFER_JVM`, `BACKUP_SEAL`; a replay system without its recording in
     `UI_QT_SESSION_ARGS` and `tst_session_initialized.qml`.
@@ -14709,7 +14733,8 @@ thread, which the rest of the interface never is.
   (`finishAndRemoveTask()`) to the Android main thread without waiting, and `DsdNeoActivity.onDestroy` stops the
   engine and the service and ends the process as for any finish. The base host answers false, and the model then
   leaves the confirmed restore waiting for the next start.
-- Document copies run on `BackupModel`'s worker thread, never the Qt main thread (`decoder_host_android_documents.cpp`).
+- Document copies run on a worker thread, never the Qt main thread (`decoder_host_android_documents.cpp`); the backup
+  reads on the import worker and saves through the import transport's `writeFromFile()` (#831), below.
   A `content://` reference goes over JNI to `DocumentCopies.kt` through the application `ContentResolver` the
   constructor holds; a file URL or plain path takes the base host's copy. The read side refuses a provider-declared size
   over the cap before opening, counts the cap while copying (`DocumentTransfer.kt`), writes a temp file beside the
@@ -14738,7 +14763,11 @@ thread, which the rest of the interface never is.
   the backup's copy is: the destination is cleared first, no held `ContentResolver` is `DocumentLocalFailed`,
   `DocumentCopied` counts only with its file in place (a failed JNI call reads as 0), codes 1-4 pass through and any
   other answer is `DocumentFailed`. Any other reference takes the base transport's local copy. `cancel()` and
-  `forget()` reach both sides; `progress()` reads the side the request's latest copy took.
+  `forget()` reach both sides; `progress()` reads the side the request's latest copy took. `writeFromFile()` (#831,
+  the backup's save on `BackupModel`'s worker) is the host's `copyFileToDocument()` without the host: a `content://`
+  save goes to `platformCopyFileToDocument()`, and one that never reached Kotlin (aborted, no resolver) or whose JNI
+  call failed discards its Download-folder row (`platformDiscardPendingDownload()`), so a save that ends after the host
+  is gone settles its row too; `discardWrite()` discards one never started.
   too. `fail()` leaves a Download-folder row to `DownloadsSave` (`deleteDocument()` cannot remove a MediaStore row), and
   `copyFileToDocument()` settles one at every exit: published only when the whole save was written, so a row that could
   not be published fails the save. A save the host never hands to Kotlin (aborted, no resolver) or whose JNI call
@@ -14746,8 +14775,8 @@ thread, which the rest of the interface never is.
 - `abortDocumentTransfers()` (only `~BackupModel`) cancels the `CancellationSignal` of every provider call in flight,
   raises `DocumentTransfer`'s sticky flag, which every chunk checks, and then the base host's. The delete is skipped
   after an abort, so a save stopped partway leaves a partial document, which never opens as a backup.
-- Tests: `UI_QT_ANDROID_HOST` (engine-busy decision, document and import dispatch), `UI_QT_IMPORT_TRANSPORT` (the
-  base transport's cap, cancel, abort and progress, and the host's hand-out), `ANDROID_DOCUMENT_TRANSFER_JVM`
+- Tests: `UI_QT_ANDROID_HOST` (engine-busy decision, document and import dispatch, the import transport's save),
+  `UI_QT_IMPORT_TRANSPORT` (the base transport's cap, cancel, abort, progress and save, and the host's hand-out), `ANDROID_DOCUMENT_TRANSFER_JVM`
   (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` and its import copies against provider stubs),
   `UI_QT_BACKUP_MODEL` (a refused save discards its reference). Real providers, JNI and `finishAndRemoveTask()`
   need a device or emulator.
