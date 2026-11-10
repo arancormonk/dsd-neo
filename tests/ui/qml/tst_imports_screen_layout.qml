@@ -328,6 +328,55 @@ Item {
             }
         }
 
+        // The text item under @p item that shows @p text.
+        function textItem(item, text) {
+            if (item.text === text)
+                return item;
+            for (var i = 0; i < item.children.length; ++i) {
+                var found = textItem(item.children[i], text);
+                if (found !== null)
+                    return found;
+            }
+            return null;
+        }
+
+        // #830: at the largest text on a narrow phone the title stays inside
+        // the header, which grows to hold it, and the back chevron stays
+        // level with its first line.
+        function test_title_fits_at_large_font_data() {
+            return [{tag: "320", width: 320}, {tag: "360", width: 360}];
+        }
+        function test_title_fits_at_large_font(data) {
+            root.width = data.width;
+            Ui.Theme.fontScale = 1.6;
+            try {
+                var title = textItem(tc.screen, "Imported files");
+                verify(title !== null, "the title is missing");
+                var header = title.parent;
+                tc.waitForRendering(header);
+                var titleRight = title.mapToItem(tc.screen, title.width, 0).x;
+                var headerRight = header.mapToItem(tc.screen, header.width, 0).x;
+                verify(titleRight <= headerRight, "the title runs " + (titleRight - headerRight) + " px past the header");
+                verify(title.contentWidth <= title.width, "the title's text is wider than the title");
+                verify(header.height >= title.height, "the header is " + header.height + " px for a " + title.height + " px title");
+                var back = null;
+                for (var i = 0; i < header.children.length; ++i) {
+                    if (header.children[i].icon === "back")
+                        back = header.children[i];
+                }
+                verify(back !== null, "the back chevron is missing");
+                var lineCentre = title.y + title.height / title.lineCount / 2;
+                verify(Math.abs(back.y + back.height / 2 - lineCentre) < 1, "the back chevron is not level with the title's first line");
+                var count = textItem(tc.screen, "2 files");
+                verify(count !== null, "the file count is missing");
+                verify(count.mapToItem(tc.screen, 0, 0).y >= title.mapToItem(tc.screen, 0, title.height).y,
+                       "the file count overlaps the title");
+            } finally {
+                Ui.Theme.fontScale = 1;
+                root.width = 420;
+            }
+        }
+
         // #830: an imported file's row is a button a screen reader can press,
         // and so is Return: each opens the row's actions, and neither does
         // while a sheet covers the screen.

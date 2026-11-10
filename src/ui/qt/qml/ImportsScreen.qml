@@ -212,7 +212,9 @@ Item {
         color: Theme.bg
     }
 
-    // Header: back chevron, title, count.
+    // Header: back chevron, title, count. At large text on a narrow phone the
+    // title wraps inside the header, which grows to hold it, and the chevron
+    // stays level with its first line (#830).
     Item {
         id: header
 
@@ -220,27 +222,31 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.margins: Theme.screenPadding
-        height: 46
+        height: Math.max(46, title.height)
+        readonly property real firstLineCentre: title.lineCount > 1 ? title.height / title.lineCount / 2 : height / 2
 
         IconButton {
             id: back
             icon: "back"
             anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
+            y: header.firstLineCentre - height / 2
             onClicked: screen.closed()
         }
 
         ReadableText {
+            id: title
+            objectName: "importsTitle"
             heading: true
-            anchors.left: back.right
-            anchors.leftMargin: 14
-            anchors.verticalCenter: parent.verticalCenter
+            x: back.width + 14
+            y: lineCount > 1 ? 0 : (header.height - height) / 2
+            width: parent.width - x
             text: qsTr("Imported files")
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(22)
             font.weight: Font.Bold
             font.letterSpacing: -0.22
             color: Theme.textPrimary
+            wrapMode: Text.Wrap
         }
     }
 
