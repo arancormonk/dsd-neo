@@ -464,7 +464,8 @@ as** the file's name when the device has no save picker (see `android/README.md`
 messages mean no picker opened: **No detections to export.** / **No avoids to
 export.** (the list emptied just before the press), and **The avoid lists were
 changing. Try again.** A picker that cannot open shows its own message. Closing the
-picker without choosing a place saves nothing and says nothing.
+picker without choosing a place saves nothing and says nothing. Closing the app
+while an export is being written can leave a partial file at the place you picked.
 
 The detections file holds every detection kept in the history (the newest 1,000),
 not only the rows shown, newest first. The avoids file holds the permanent avoids,

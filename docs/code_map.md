@@ -12916,12 +12916,16 @@ Qt Quick frontend (`src/ui/qt`):
   search runs on, so its Recent detections rows and both avoid lists take their models through a `Binding` (`when:
   listsLive`, `restoreMode: Binding.RestoreNone`) instead of `KeepPlace`: hidden, each keeps its last model rather than
   an empty one. Its lists are Repeaters in a `Column` inside one Flickable, so emptying them would shorten the page and
-  `setContentHeight()` would clamp `contentY` at once, losing the reader's place; frozen, the page keeps its geometry,
-  builds and destroys no rows, and follows the store again on show, where the shrink `resetView()` made on hide (Show
-  more back to five) lands. `listsLive` is set first thing in `onVisibleChanged`, before `resetView()`: a `when` bound
-  to `visible` itself could be told after the handler and rebuild the rows while hidden. A detections Loader item made
-  while hidden starts with no rows and fills on show (`tst_signal_search.qml` `test_hidden_screen_builds_no_rows`,
-  `test_hidden_screen_keeps_the_readers_place`, `test_hidden_screen_shrinks_on_return`).
+  `setContentHeight()` would clamp `contentY` at once, losing the reader's place. Only the rows freeze: each list's
+  delegates keep their last model, so no row is built or destroyed while hidden, and they follow the store again on
+  show, where the shrink `resetView()` made on hide (Show more back to five) lands. The section headings ("Avoided this
+  session", "Permanent avoids"), the empty hint, **Show more** and both export Columns still bind the live lists, as
+  before #826, so their `visible` can flip while hidden and change the Column's height; that brings no accessibility
+  churn, since nothing under a hidden parent is effectively visible. `listsLive` is set first thing in
+  `onVisibleChanged`, before `resetView()`: a `when` bound to `visible` itself could be told after the handler and
+  rebuild the rows while hidden. A detections Loader item made while hidden starts with no rows and fills on show
+  (`tst_signal_search.qml` `test_hidden_screen_builds_no_rows`, `test_hidden_screen_keeps_the_readers_place`,
+  `test_hidden_screen_shrinks_on_return`).
   Tests: `UI_QT_QML_A11Y_CHURN` (`test_e_calls_leave_hidden_lists_quiet`,
   `tst_a11y_talkgroups.qml` `test_hidden_screen_keeps_the_readers_place`), `UI_QT_QML_CALL_LISTS`
   (`tst_call_log_follow.qml` `test_00`, `test_08` to `test_12`; `tst_call_recording_rows.qml`
@@ -14093,9 +14097,10 @@ Qt Quick frontend (`src/ui/qt`):
   to `discardPendingDownload`, never one another picker waits for. `savedToDownloads` says the last accepted save
   went to the Download folder; it is set before `accepted`, so a save owner that no longer wants an accepted pick
   (`BackupFlow.savePicked()`, `CallRecordingPlayer.savePicked()`, `CallRecordingsScreen.exportPicked()`,
-  `SignalSearchScreen.exportPicked()`) discards a Download-folder row itself. On the desktop path an open clears the dialog's selection (`currentFiles = []`:
-  `selectedFiles` is read-only and `selectedFile = ""` is refused), so an accept with no new choice answers
-  `noResult`, never the previous file; a dialog that cannot open answers `failed`. Test: `UI_QT_QML_DOCUMENT_PICKER`.
+  `SignalSearchScreen.exportPicked()`) discards a Download-folder row itself. On the desktop path an open clears the
+  dialog's selection (`currentFiles = []`: `selectedFiles` is read-only and `selectedFile = ""` is refused), so an
+  accept with no new choice answers `noResult`, never the previous file; a dialog that cannot open answers `failed`.
+  Test: `UI_QT_QML_DOCUMENT_PICKER`.
 - `qml/CsvImportFlow.qml` imports a CSV and its companions for three owners: Imported files (`ImportsScreen`), the scan
   list editor's target CSV (`ScanListScreen`) and the wizard's trunking-data fields (`WizardScreen`). Its primary and
   companion pickers (`csvPrimaryPicker`, `csvCompanionPicker`) are `DocumentPicker`s with no filter; a picked document
@@ -14827,7 +14832,9 @@ thread, which the rest of the interface never is.
   every provider call in flight and raises `DocumentTransfer`'s sticky flag, which every chunk checks, and then the base
   host's abort. A save transport's `abort()` raises the same process-wide platform abort, since a platform copy keeps
   its own cancellation; the export writer aborts its transport only at its teardown. The delete is skipped after an
-  abort, so a save stopped partway leaves a partial document, which never opens as a backup.
+  abort, so a save stopped partway leaves a partial document, which never opens as a backup. An export cut there can
+  leave a short CSV at a location picked through a provider (a Download-folder row is deleted, since `DownloadsSave`
+  removes a row it never published).
 - Tests: `UI_QT_ANDROID_HOST` (engine-busy decision, document, import and save-transport dispatch),
   `UI_QT_IMPORT_TRANSPORT` (the base transport's cap, cancel, abort and progress, and the host's hand-out),
   `ANDROID_DOCUMENT_TRANSFER_JVM` (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` and its import copies
