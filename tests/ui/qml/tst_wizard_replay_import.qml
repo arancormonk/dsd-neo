@@ -75,9 +75,11 @@ Item {
             return found;
         }
         // A provider's document, as Browse hands it on (tst_wizard_browse
-        // drives Browse and the picker themselves).
-        function pickReplay(reference) {
-            tc.wizard.beginReplay(reference, reference.substring(reference.lastIndexOf('/') + 1));
+        // drives Browse and the picker themselves): with the host's name for
+        // it, decoded already, or with none, when the wizard names it from
+        // the reference.
+        function pickReplay(reference, displayName) {
+            tc.wizard.replayFilePicked(reference, displayName || "");
         }
 
         // A local file (the desktop's pick) is used where it is: the store
