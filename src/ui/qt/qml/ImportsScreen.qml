@@ -317,8 +317,8 @@ Item {
             // #830: the card is the button that opens its file's actions, for a
             // screen reader's double tap and for Return, keypad Enter and Space
             // as for a tap, each through activate(). Its name and description
-            // carry the file's name and summary, which read nothing on their
-            // own, so nothing is said twice.
+            // carry the file's name, kind and summary, which read nothing on
+            // their own, so nothing is said twice.
             // The gate read first: see OutlineButton.
             readonly property bool inTree: Navigation.allows(fileRow) && visible
             // Held while focused: see OutlineButton.
@@ -327,7 +327,8 @@ Item {
             // No name while out of the tree, as ReadableText: a refresh that
             // lands while the screen is covered renames nothing.
             Accessible.name: inTree ? fileRow.name : ""
-            Accessible.description: inTree ? summaryLine.text : ""
+            // The kind badge's words first.
+            Accessible.description: inTree ? badge.label + " · " + summaryLine.text : ""
             Accessible.focusable: inTree
             Accessible.ignored: !inTree
             Accessible.onPressAction: activate()
@@ -362,6 +363,7 @@ Item {
 
                     Text {
                         id: fileName
+                        objectName: "importsFileName"
                         anchors.left: parent.left
                         anchors.right: badge.left
                         anchors.rightMargin: 10
@@ -369,6 +371,8 @@ Item {
                         text: fileRow.name
                         // An imported file's own name: drawn as written.
                         textFormat: Text.PlainText
+                        // Read as the card's name.
+                        Accessible.ignored: true
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(15)
                         font.weight: Font.DemiBold
@@ -378,6 +382,8 @@ Item {
 
                     CsvTypeBadge {
                         id: badge
+                        objectName: "importsKindBadge"
+                        readAlone: false
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
                         type: fileRow.type
@@ -386,7 +392,10 @@ Item {
 
                 Text {
                     id: summaryLine
+                    objectName: "importsFileSummary"
                     width: parent.width
+                    // Read in the card's description.
+                    Accessible.ignored: true
                     text: screen.summaryFor(fileRow.type, fileRow.accepted, fileRow.skipped, Number(fileRow.importedAt))
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(12)

@@ -15666,8 +15666,9 @@ while hidden, from a node Android still holds or a key while they keep the focus
 under the sheet (issue #646 put the hold on every control that lacked it). Tests: `tst_keypad_enter.qml`
 (`failOnWarning(/activeFocusOnTab/)`, `test_a_covered_control_is_no_tab_stop_once_focus_leaves`).
 An imported file's card on Imported files (`ImportsScreen.qml`, issue #830) is such a control: an `Accessible.Button`
-named by the file and described by its summary line (both drawn as plain `Text`, so nothing is read twice; the kind
-badge reads where it sits), whose tap, accessibility press, Return, keypad Enter and Space open its actions through
+named by the file and described by its kind and summary line ("TALKGROUPS · 1 talkgroup · Nov 9"; the name and
+summary are plain `Text`s marked `Accessible.ignored: true`, and the kind badge is a `CsvTypeBadge` with `readAlone:
+false`, so nothing takes a stop of its own or is read twice), whose tap, accessibility press, Return, keypad Enter and Space open its actions through
 one guarded `activate()`. Its focus ring sits on the card's own edge, because the list clips. Test:
 `tst_imports_screen_layout.qml` `test_row_press_action`.
 

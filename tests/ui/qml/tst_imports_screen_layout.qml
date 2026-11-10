@@ -386,9 +386,19 @@ Item {
             var card = tc.list.itemAtIndex(1);
             verify(card !== null, "the second row has no delegate");
             compare(card.Accessible.role, Accessible.Button);
-            // Named by its file, described by its summary line.
+            // Named by its file, described by its kind and summary line.
             compare(card.Accessible.name, importedFiles.get(1).name);
-            compare(card.Accessible.description, "1 talkgroup · " + Qt.formatDate(new Date(Number(importedFiles.get(1).importedAt) * 1000), "MMM d"));
+            compare(card.Accessible.description, "TALKGROUPS · 1 talkgroup · " + Qt.formatDate(new Date(Number(importedFiles.get(1).importedAt) * 1000), "MMM d"));
+            // The badge, the name and the summary take no stop of their own:
+            // the card reads them.
+            var badge = findChild(card, "importsKindBadge");
+            verify(badge !== null, "the kind badge is missing");
+            var badgeText = findChild(badge, "csvTypeBadgeText");
+            compare(badgeText.text, "TALKGROUPS");
+            verify(badgeText.Accessible.ignored, "the badge is read by the card, not on its own");
+            compare(badgeText.Accessible.name, "");
+            verify(findChild(card, "importsFileName").Accessible.ignored, "the name is read as the card's name");
+            verify(findChild(card, "importsFileSummary").Accessible.ignored, "the summary is read in its description");
 
             card.Accessible.pressAction();
             verify(actions.visible, "the press opened no actions");
