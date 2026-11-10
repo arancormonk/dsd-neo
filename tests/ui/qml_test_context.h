@@ -357,13 +357,14 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     }
 
     /* Issue #831: a recording save or export that runs on after its sheet closed. While held, a transfer begun through
-     * saveRecording()/exportRecordings() stays active until endHeldTransfer(); otherwise the base host's runs. A held
-     * host also takes an export, which the base host has no zip for. */
+     * saveRecording()/exportRecordings() stays active until endHeldTransfer(); otherwise the base host's runs. */
     bool holdTransfers = false;
 
+    /* The host offers exports, as Android's does, for its whole life: the property is CONSTANT, so the answer never
+     * follows holdTransfers. An export that is not held goes to the base host, which has no zip and fails it. */
     bool
     recordingExportSupported() const override {
-        return holdTransfers;
+        return true;
     }
 
     void

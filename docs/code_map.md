@@ -13177,10 +13177,11 @@ Qt Quick frontend (`src/ui/qt`):
   waits for no more than the header.
   `abortDocumentTransfers()` aborts every transport handed out (the host keeps weak references), and one handed out
   after it starts aborted.
-  `import_service.{h,cpp}` is the import worker (#832) the library and the replay imports share; `ui_load()` makes the
-  one service (not published to QML) from `host->importTransport()` right after `ImportService::sweepStaging()`, which
-  runs once after the restore applies and removes `<AppData>/import-staging/` wholly (a link is removed, never
-  followed). `submit(stage, commit)` returns a process-unique positive id that is also the transport's request id.
+  `import_service.{h,cpp}` is the import worker (#832) the library and the replay imports share, with the document
+  probes and the backup's restore reads (#831); `ui_load()` makes the one service (not published to QML) from
+  `host->importTransport()` right after `ImportService::sweepStaging()`, which runs once after the restore applies and
+  removes `<AppData>/import-staging/` wholly (a link is removed, never followed). `submit(stage, commit)` returns a
+  process-unique positive id that is also the transport's request id.
   `stage` runs on a one-thread `QThreadPool`, requests in order, with its own owner-only folder
   `import-staging/<uuid>/` (made by the worker; when it cannot be made the stage is skipped and the commit gets
   `{ok: false, error: "local"}`). It touches no QObject. When a stage ends, the worker calls `transport->forget(id)`
@@ -13889,8 +13890,10 @@ Qt Quick frontend (`src/ui/qt`):
     `inspectRestore()` (#831 B4) submits `ImportService::readDocument()` into the job's `<job>.in` (capped at 64 MiB;
     refused as `Io` once the service is gone), and the read's commit queues the inspection, which reads and removes that
     file, opens, parses, checks free space (twice the archive plus 1 MiB) and stages; the UI thread promotes. `cancel()`
-    (and `discardRestore()`) cancels the read by its request id, so Cancel answers at once and the next job never waits
-    behind a provider read that only a cancel stops; a read's commit for a dropped job removes the copy. Jobs capture
+    (and `discardRestore()`) cancels the read by its request id, so Cancel answers at once and the next backup job never
+    waits behind a provider read that only a cancel stops. The read shares the one import worker, so a provider that
+    ignores the cancel still holds every later library import, replay import, document probe and restore read until it
+    answers. A read's commit for a dropped job removes the copy. Jobs capture
     the `Shared` state (queues, transport, their cancel flags), never the model or the host, and each queued job carries
     a `drop()`. The destructor clears the model link, runs `drop()` for jobs never started (their files go; a save's
     destination goes to `discardWrite()`), calls `abortDocumentTransfers()` while a job may run, cancels the read, waits

@@ -252,11 +252,14 @@ them and Android limits how many an app may hold.
 ## Opening files from other apps
 
 **Open with** or **Share** on a file in another app (a file manager, a chat or mail app) hands it to DSD-neo (#831).
-DSD-neo shows it once nothing on screen could lose work: no sheet is open, no editor, wizard, RadioReference screen or
-Signal search is open, and no import, backup task, recording export, decryption apply, file picker, USB permission
-prompt or listen restart is still running. Screens that only show things (Imported files, Diagnostics, Licenses, Call
-recordings, Spectrum, Talkgroups, and History or Settings during a session) may stay open; they close when the file
-goes where it belongs. A file sent while another is being handled waits for it; a newer one replaces one still waiting.
+DSD-neo shows it once nothing on screen could lose work: the first-run screen is done, no sheet is open, no editor,
+wizard, Explore setup, RadioReference screen or Signal search is open, and no import, backup task, recording export,
+decryption apply, file picker, USB permission prompt or listen restart is still running. Just after DSD-neo starts, it
+also waits until it knows whether a session is running. So after a new install the file waits until **Get started**
+is tapped. Screens that only show things (Imported files, Diagnostics, Licenses, Call recordings, Spectrum,
+Talkgroups, and History or Settings during a session) may stay open. When the file goes on, they close, except
+Imported files, which an import opens or keeps open (over the session's Settings during a session). A file sent while
+another is being handled waits for it; a newer one replaces one still waiting.
 
 DSD-neo first reads the start of the file (**Checking the file…**) and decides by what it holds, not by its name:
 
@@ -292,8 +295,8 @@ Limits:
   read that file**. No such app is known.
 - The other app shares only the file itself: a channel map's companion files are asked for on the companion sheet, as
   for a picked file.
-- The check runs on the import worker, one job at a time, so a slow app delays the next import or check until it
-  answers.
+- The check and a restore's read of the backup run on the import worker with library and replay imports, one job at a
+  time. An app that is slow, or that ignores Cancel, delays the next import, check or restore read until it answers.
 - API 29 itself is not tested on a device (its emulator image cannot run the arm64 app); API 30 takes the same paths.
 
 ## Imported files (trunking CSVs)
