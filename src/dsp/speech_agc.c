@@ -114,6 +114,11 @@ agc_ceiling(float ceiling_dbfs) {
 }
 
 static int
+agc_start_gain_ok(float db) {
+    return isfinite(db) && fabsf(db) <= DSD_SPEECH_AGC_START_GAIN_MAX_DB;
+}
+
+static int
 agc_ready(const dsd_speech_agc* agc) {
     return agc != NULL && agc->frame_len > 0;
 }
@@ -171,8 +176,8 @@ agc_clear_signal(dsd_speech_agc* agc) {
 int
 dsd_speech_agc_init(dsd_speech_agc* agc, int rate_hz, float start_gain_db, float target_dbfs, float ceiling_dbfs) {
     const float ceiling = agc_ceiling(ceiling_dbfs);
-    if (!agc || rate_hz < DSD_SPEECH_AGC_MIN_RATE_HZ || rate_hz > DSD_SPEECH_AGC_MAX_RATE_HZ || !isfinite(start_gain_db)
-        || !isfinite(target_dbfs) || !(ceiling > 0.0f)) {
+    if (!agc || rate_hz < DSD_SPEECH_AGC_MIN_RATE_HZ || rate_hz > DSD_SPEECH_AGC_MAX_RATE_HZ
+        || !agc_start_gain_ok(start_gain_db) || !isfinite(target_dbfs) || !(ceiling > 0.0f)) {
         return -1;
     }
     const int frame_len = (int)lroundf(AGC_FRAME_S * (float)rate_hz);
@@ -225,7 +230,7 @@ dsd_speech_agc_reset(dsd_speech_agc* agc) {
 
 void
 dsd_speech_agc_set_start_gain_db(dsd_speech_agc* agc, float start_gain_db) {
-    if (agc_ready(agc) && isfinite(start_gain_db)) {
+    if (agc_ready(agc) && agc_start_gain_ok(start_gain_db)) {
         agc->next_start_gain_db = start_gain_db;
     }
 }
@@ -255,6 +260,8 @@ dsd_speech_agc_set_fixed(dsd_speech_agc* agc, float gain) {
     agc->g_step = 0.0f;
     agc->ramp_left = 0;
     agc->gain_dirty = 0;
+    /* The switch is the new opening checkpoint: a close never restores a gain from before it. */
+    agc_cp_restart(agc);
 }
 
 /* Normalised autocorrelation of the decimated frame over every lag, each lag summed in sample order. @p r gets one
@@ -442,16 +449,18 @@ agc_stale_probe(dsd_speech_agc* agc, float lag_ms) {
         d->stale_lag_min_ms = lag_ms;
         d->stale_lag_max_ms = lag_ms;
         d->stale_moves = 0;
-    } else if (fabsf(lag_ms - d->stale_lag_last_ms) > AGC_LAG_REL * lag_ms) {
+    } else if (fabsf(lag_ms - d->stale_lag_last_ms) > AGC_LAG_REL * lag_ms && d->stale_moves < AGC_COUNT_MAX) {
         d->stale_moves++;
     }
     d->stale_lag_last_ms = lag_ms;
-    d->stale_frames++;
+    if (d->stale_frames < AGC_COUNT_MAX) {
+        d->stale_frames++; /* a steady sound at the floor's level can probe for months */
+    }
     d->stale_lag_min_ms = lag_ms < d->stale_lag_min_ms ? lag_ms : d->stale_lag_min_ms;
     d->stale_lag_max_ms = lag_ms > d->stale_lag_max_ms ? lag_ms : d->stale_lag_max_ms;
     const float tol = AGC_LAG_REL * 0.5f * (d->stale_lag_max_ms + d->stale_lag_min_ms);
     if (d->stale_frames >= AGC_STALE_FRAMES && d->stale_lag_max_ms - d->stale_lag_min_ms > tol
-        && d->stale_moves * 3 >= (d->stale_frames - 1) * 2) {
+        && (int64_t)d->stale_moves * 3 >= ((int64_t)d->stale_frames - 1) * 2) {
         agc_floor_restart(agc);
         d->stale_frames = 0;
         return 1;

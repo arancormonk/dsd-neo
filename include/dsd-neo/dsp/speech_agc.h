@@ -50,6 +50,9 @@ extern "C" {
 /** The controller never moves the gain more than this far below or above the start gain, dB. */
 #define DSD_SPEECH_AGC_MAX_CUT_DB        12.0f
 #define DSD_SPEECH_AGC_MAX_BOOST_DB      15.0f
+/** The start gain init and dsd_speech_agc_set_start_gain_db() take, +- dB: beyond it the gain times a large input
+    would no longer stay finite. */
+#define DSD_SPEECH_AGC_START_GAIN_MAX_DB 60.0f
 
 /** Analysis frames a speech run needs before it commits: a first commit comes 120 ms into speech at the earliest. */
 #define DSD_SPEECH_AGC_RUN_FRAMES        6
@@ -83,8 +86,8 @@ typedef struct {
     int since_commit;                                   /**< frames since the last commit (a clock; saturates) */
     uint32_t rejections;                                /**< runs turned away as steady tones */
     uint32_t restarts;                                  /**< noise floor restarts */
-    int stale_frames;                                   /**< frames in the current stale-floor run */
-    int stale_moves;                                    /**< frames in it whose pitch moved */
+    int stale_frames;                                   /**< frames in the current stale-floor run (saturates) */
+    int stale_moves;                                    /**< frames in it whose pitch moved (saturates) */
     float stale_lag_min_ms;
     float stale_lag_max_ms;
     float stale_lag_last_ms;
@@ -145,21 +148,23 @@ typedef struct {
 /**
  * @brief Configure for @p rate_hz and reset.
  *
- * @param start_gain_db The gain a new reception starts at, dB (G0: 0 for digital voice; analog per band). The
- *                      controller stays within -12/+15 dB of it, and tone frames never get more.
+ * @param start_gain_db The gain a new reception starts at, dB (G0: 0 for digital voice; analog per band), within
+ *                      +-DSD_SPEECH_AGC_START_GAIN_MAX_DB. The controller stays within -12/+15 dB of it, and tone
+ *                      frames never get more.
  * @param target_dbfs   The active speech level to aim at (DSD_SPEECH_AGC_TARGET_DBFS).
  * @param ceiling_dbfs  The per-sample limiter ceiling (DSD_SPEECH_AGC_CEILING_DBFS), at most 0.
  *
  * @return 0 on success, -1 when @p agc is NULL, the rate is outside DSD_SPEECH_AGC_MIN_RATE_HZ ..
- *         DSD_SPEECH_AGC_MAX_RATE_HZ, a level is not finite, or the ceiling is above 0 dBFS or under one int16 unit
- *         (@p agc untouched).
+ *         DSD_SPEECH_AGC_MAX_RATE_HZ, the start gain is out of range, the target is not finite, or the ceiling is not
+ *         finite, above 0 dBFS or under one int16 unit (@p agc untouched).
  */
 int dsd_speech_agc_init(dsd_speech_agc* agc, int rate_hz, float start_gain_db, float target_dbfs, float ceiling_dbfs);
 
 /** A new reception: back to the start gain with nothing learned, an opening checkpoint, clear signal state. */
 void dsd_speech_agc_reset(dsd_speech_agc* agc);
 
-/** The start gain for the next reset (and every one after it); the current reception keeps its own. */
+/** The start gain for the next reset (and every one after it); the current reception keeps its own. A gain out of
+    init's range is ignored. */
 void dsd_speech_agc_set_start_gain_db(dsd_speech_agc* agc, float start_gain_db);
 
 /**
@@ -167,7 +172,8 @@ void dsd_speech_agc_set_start_gain_db(dsd_speech_agc* agc, float start_gain_db);
  *
  * A positive finite @p gain is a fixed linear gain: nothing is learned and tone frames are not capped, but the limiter
  * still runs; gains above 1e6 count as 1e6. Anything else means automatic; leaving fixed mode keeps what was learned
- * and starts from the fixed gain, clamped into the controller's range, with the attenuator at 0.
+ * and starts from the fixed gain, clamped into the controller's range, with the attenuator at 0. The switch is a new
+ * opening checkpoint, so a gate close never restores a gain from before it.
  */
 void dsd_speech_agc_set_fixed(dsd_speech_agc* agc, float gain);
 

@@ -413,7 +413,10 @@ test_init_and_sizes(void) {
     assert(dsd_speech_agc_init(agc, 48000, 0.0f, -24.0f, 0.5f) == -1);
     assert(dsd_speech_agc_init(agc, 48000, 0.0f, -24.0f, NAN) == -1);
     assert(dsd_speech_agc_init(agc, 48000, 0.0f, -24.0f, -91.0f) == -1); /* under one int16 unit */
-    assert(agc->frame_len == 0);                                         /* refused inits leave the state alone */
+    assert(init_agc(agc, 48000, DSD_SPEECH_AGC_START_GAIN_MAX_DB + 0.5f) == -1);
+    assert(init_agc(agc, 48000, -DSD_SPEECH_AGC_START_GAIN_MAX_DB - 0.5f) == -1);
+    assert(init_agc(agc, 48000, INFINITY) == -1);
+    assert(agc->frame_len == 0); /* refused inits leave the state alone */
     /* An uninitialised (zeroed) instance leaves samples alone. */
     float x[4] = {1000.0f, -2000.0f, 3000.0f, 4000.0f};
     dsd_speech_agc_process(agc, x, 4, 1, 1, 0);
@@ -1071,6 +1074,7 @@ test_noise_after_speech_and_snr(void) {
             clean_err = err;
             /* Pause hold: across every pause of at least 0.5 s the gain moves by at most 0.5 dB. */
             double worst = 0.0;
+            int pauses = 0;
             size_t j = 0;
             while (j < n) {
                 if (clean[j] != 0.0f) {
@@ -1084,11 +1088,12 @@ test_noise_after_speech_and_snr(void) {
                 if (j > 0 && e < n && e - j >= secs(rate, 0.5)) {
                     const double d = fabs(20.0 * log10((double)g[e] / (double)g[j - 1]));
                     worst = d > worst ? d : worst;
+                    pauses++;
                 }
                 j = e;
             }
-            SAY("pause hold: the gain moves at most %.3f dB across pauses >= 0.5 s\n", worst);
-            assert(worst <= 0.5);
+            SAY("pause hold: the gain moves at most %.3f dB across %d pauses >= 0.5 s\n", worst, pauses);
+            assert(pauses >= 3 && worst <= 0.5);
         }
         SAY("speech in noise, SNR %4.0f dB: established %+.2f dB\n", snrs[i] > 999.0 ? INFINITY : snrs[i], err);
         assert(fabs(err) <= 3.0 && fabs(err - clean_err) <= 2.0);
@@ -1310,9 +1315,35 @@ runs_random(dsd_speech_agc* agc, float* x, const uint8_t* learn, size_t n, uint6
     }
 }
 
+/* Like run_traced() with per-call flags, but @p fl_after from sample @p at on (split inside its frame). */
+static void
+run_traced_switch(dsd_speech_agc* agc, float* buf, size_t n, size_t at, flags_t fl_before, flags_t fl_after,
+                  trace_t* t) {
+    const size_t F = (size_t)agc->frame_len;
+    for (size_t p = 0; p < n; p += F) {
+        const size_t m = p + F <= n ? F : n - p;
+        const dsd_speech_agc_learned before = agc->learned;
+        const size_t cut = at <= p ? 0 : (at >= p + m ? m : at - p);
+        if (cut > 0) {
+            dsd_speech_agc_process(agc, buf + p, cut, fl_before.learn, fl_before.decodable, fl_before.tone);
+        }
+        if (cut < m) {
+            dsd_speech_agc_process(agc, buf + p + cut, m - cut, fl_after.learn, fl_after.decodable, fl_after.tone);
+        }
+        if (m == F && t != NULL && t->count < t->cap) {
+            frame_rec* r = &t->f[t->count++];
+            r->committed = agc->learned.commits - before.commits;
+        }
+    }
+}
+
 /* A rollback after a contaminated tail is complete: a reception whose oldest checkpoint holds an unfinished run of
    1-5 frames, then 12 frames of loud non-speech, then a close, continues bit for bit like a control instance that
-   never heard the tail (the same history, then closed silence and the same close), with a fresh run of six. */
+   never heard the tail and never closed. The control hears the same history, then closed silence where the tail and
+   the gap were, through process() alone: 12 whole closed frames clear its run, pitch history, partial frame and ramp
+   by themselves, so it runs none of the gate code under test. Just after the close the learned state is also exactly
+   the oldest checkpoint's, with the since-commit clock advanced by the frames since and the run dropped, even when
+   every live field was overwritten first. The next reception commits on a fresh run of six. */
 static void
 test_rollback_matches_control(void) {
     const int rate = 48000;
@@ -1331,10 +1362,12 @@ test_rollback_matches_control(void) {
             const size_t n = s2 + n_s2;
             float* x = alloc_f(n);
             uint8_t* learn = alloc_u8(n);
-            assert(dsd_test_synth_noise(x, n_pre, rate, 140, DSD_TEST_NOISE_VOICE_BAND, -45.0) == 0);
-            float* v = alloc_f(n_v + F);
+            /* 20 frames of voice that commit (so the since-commit clock runs), then noise, then the pending run. */
             voiced_params vp;
             voiced_defaults(&vp, 120.0, 0.015, 141);
+            synth_voiced(x, 20 * F, rate, &vp, -30.0);
+            assert(dsd_test_synth_noise(x + 20 * F, n_pre - 20 * F, rate, 140, DSD_TEST_NOISE_VOICE_BAND, -45.0) == 0);
+            float* v = alloc_f(n_v + F);
             synth_voiced(v, n_v + F, rate, &vp, -30.0);
             DSD_MEMCPY(x + n_pre, v + F, n_v * sizeof(float)); /* past the onset frame: every frame is speech */
             free(v);
@@ -1350,10 +1383,22 @@ test_rollback_matches_control(void) {
             DSD_MEMCPY(ya, x, n * sizeof(float));
             runs_random(a, ya, learn, c0, 144 + (uint64_t)k);
             const int oldest = (a->cp_head - a->cp_count + DSD_SPEECH_AGC_CHECKPOINTS) % DSD_SPEECH_AGC_CHECKPOINTS;
-            assert(a->checkpoints[oldest].learned.run_len == k);
-            assert(a->checkpoints[oldest].frames == (uint64_t)((n_pre + n_v) / F));
+            const dsd_speech_agc_checkpoint snap = a->checkpoints[oldest];
+            assert(snap.learned.run_len == k);
+            assert(snap.frames == (uint64_t)((n_pre + n_v) / F));
+            assert(snap.learned.commits > 0 && snap.learned.since_commit < 100);
+            dsd_speech_agc_learned expected = snap.learned;
+            expected.since_commit += (int)(a->frames - snap.frames);
+            expected.since_commit = expected.since_commit > (1 << 20) ? (1 << 20) : expected.since_commit;
+            expected.run_len = 0;
+            assert(!same_bits(&a->learned, &expected, sizeof expected)); /* the tail taught A something */
+            /* As if the tail had moved every learned field: whatever the restore leaves alone keeps this pattern. */
+            DSD_MEMSET(&a->learned, 0x5A, sizeof a->learned);
+            /* The close, then one closed sample. */
+            dsd_speech_agc_process_runs(a, ya + c0, 1, learn + c0);
+            assert(same_bits(&a->learned, &expected, sizeof expected));
 
-            /* C: the same history, then closed silence in place of the tail, then the close, the gap and the open. */
+            /* C: the uncontaminated timeline, through process() alone. */
             dsd_speech_agc* c = new_agc(rate, g0);
             float* yc = alloc_f(n);
             DSD_MEMCPY(yc, x, (n_pre + n_v) * sizeof(float));
@@ -1361,13 +1406,12 @@ test_rollback_matches_control(void) {
             run_traced(c, yc, n_pre + n_v, NULL, k_learn, NULL);
             const flags_t closed = {0, 1, 0};
             run_traced(c, yc + n_pre + n_v, n_tail, NULL, closed, NULL);
-            assert(!same_bits(&a->learned, &c->learned, sizeof a->learned)); /* the tail taught A something */
-            dsd_speech_agc_gate_closed(c);
+            assert(same_bits(&c->learned, &expected, sizeof expected));
 
-            runs_random(a, ya + c0, learn + c0, n - c0, 145 + (uint64_t)k);
+            runs_random(a, ya + c0 + 1, learn + c0 + 1, n - c0 - 1, 145 + (uint64_t)k);
             trace_t t;
             trace_init(&t, (n - c0) / F);
-            run_traced(c, yc + c0, n - c0, learn + c0, k_learn, &t);
+            run_traced_switch(c, yc + c0, n - c0, gap, closed, k_learn, &t);
             assert(same_bits(ya + c0, yc + c0, (n - c0) * sizeof(float)));
             assert(same_bits(&a->learned, &c->learned, sizeof a->learned));
             const long first = first_commit(&t, 0);
@@ -1427,6 +1471,97 @@ test_rollback_keeps_the_commit_clock(void) {
     free(agc);
     free(learn);
     free(x);
+}
+
+/* Fixed to auto during a reception: the switch is the new opening checkpoint, so a close 3 frames later keeps the
+   gain the switch set (the fixed gain clamped into range) instead of the auto gain from before it. */
+static void
+test_fixed_to_auto_then_close(void) {
+    const int rate = 8000;
+    const size_t F = (size_t)frame_len(rate);
+    dsd_speech_agc* agc = new_agc(rate, 0.0f);
+    learn_talker(agc, rate, 4.0, 220, -24.0, 140.0); /* auto settles near 0 dB */
+    const float g_auto = agc->learned.gain_db;
+    dsd_speech_agc_set_fixed(agc, 4.0f); /* +12.04 dB */
+    learn_talker(agc, rate, 1.0, 221, -24.0, 140.0);
+    dsd_speech_agc_set_fixed(agc, 0.0f);
+    const float g_switch = agc->learned.gain_db;
+    assert(fabsf(g_switch - 12.0412f) < 1e-3f && fabsf(g_auto - g_switch) > 6.0f);
+    const size_t n = 4 * F;
+    float* x = alloc_f(n);
+    uint8_t* learn = alloc_u8(n);
+    speech_into(x, n, rate, 222, -24.0, 140.0, 0.0);
+    DSD_MEMSET(learn, 1, 3 * F);
+    dsd_speech_agc_process_runs(agc, x, n, learn); /* 3 frames, then the close */
+    SAY("fixed -> auto: auto %+.2f dB, switch %+.2f dB, after a close 3 frames later %+.2f dB\n", (double)g_auto,
+        (double)g_switch, (double)agc->learned.gain_db);
+    assert(agc->learned.commits > 0);
+    assert(same_bits(&agc->learned.gain_db, &g_switch, sizeof(float)) && agc->learned.atten_db == 0.0f);
+    free(learn);
+    free(x);
+    free(agc);
+}
+
+/* The start gain is bounded (init refuses, the setter ignores, anything past +-60 dB), and at the bounds the output
+   stays finite and under the ceiling for the largest input the AGC takes. */
+static void
+test_start_gain_range(void) {
+    dsd_speech_agc* agc = new_agc(8000, 0.0f);
+    dsd_speech_agc_set_start_gain_db(agc, DSD_SPEECH_AGC_START_GAIN_MAX_DB + 1.0f);
+    dsd_speech_agc_set_start_gain_db(agc, NAN);
+    dsd_speech_agc_reset(agc);
+    assert(fabsf(agc->start_gain_db) < 1e-6f);
+    static const float bounds[] = {DSD_SPEECH_AGC_START_GAIN_MAX_DB, -DSD_SPEECH_AGC_START_GAIN_MAX_DB};
+    for (size_t b = 0; b < 2; b++) {
+        dsd_speech_agc_set_start_gain_db(agc, bounds[b]);
+        dsd_speech_agc_reset(agc);
+        assert(fabsf(agc->start_gain_db - bounds[b]) < 1e-6f);
+        const size_t n = secs(8000, 2.0);
+        float* x = alloc_f(n);
+        speech_into(x, n, 8000, 230, -8.0, 150.0, 0.0);
+        for (size_t i = 0; i < n; i += 997) {
+            x[i] = (i & 1U) ? 9.9e14f : -9.9e14f; /* just under the input guard */
+        }
+        static const int tones[] = {0, 1};
+        for (size_t k = 0; k < 2; k++) {
+            dsd_speech_agc_process(agc, x, n / 2, 1, 1, tones[k]);
+            dsd_speech_agc_process(agc, x + n / 2, n - n / 2, 1, 1, tones[k]);
+        }
+        for (size_t i = 0; i < n; i++) {
+            assert(isfinite(x[i]) && fabsf(x[i]) <= CEILING_INT16);
+        }
+        assert(isfinite(dsd_speech_agc_gain_db(agc)));
+        free(x);
+    }
+    free(agc);
+}
+
+/* The stale-floor counters saturate: a steady tone at the floor's level probes on every frame, for as long as it
+   lasts, and the counters stop at 2^30 instead of overflowing (the state is set just short of the cap). */
+static void
+test_stale_counters_saturate(void) {
+    const int rate = 8000;
+    const size_t F = (size_t)frame_len(rate);
+    dsd_speech_agc* agc = new_agc(rate, 0.0f);
+    const size_t n = 12 * F;
+    float* x = alloc_f(n);
+    assert(dsd_test_synth_tone(x, n, rate, 1000.0, -30.0) == 0);
+    dsd_speech_agc_learned* d = &agc->learned;
+    d->noise_floor_db = -31.0f; /* the tone 1 dB over the floor: no cue 1, a stale-floor probe */
+    d->floor_frames = 200;
+    d->stale_frames = (1 << 30) - 3;
+    d->stale_moves = 1 << 30;
+    d->stale_lag_min_ms = 3.0f; /* the tone's first peak is 3 ms: no span, so no restart */
+    d->stale_lag_max_ms = 3.0f;
+    d->stale_lag_last_ms = 2.9f; /* the first frame counts as a move */
+    const uint32_t restarts = d->restarts;
+    dsd_speech_agc_process(agc, x, n, 1, 1, 0);
+    SAY("stale counters after 12 probing frames: %d frames, %d moves, %u restarts\n", d->stale_frames, d->stale_moves,
+        d->restarts - restarts);
+    assert(d->stale_frames == 1 << 30 && d->stale_moves == 1 << 30);
+    assert(d->restarts == restarts && d->commits == 0);
+    free(x);
+    free(agc);
 }
 
 /* Per-sample flags for the partition test: learn, decodable, tone. */
@@ -1606,6 +1741,7 @@ test_cross_rate(void) {
         float* d = alloc_f(nf);
         int over1 = 0;
         int agree = 0;
+        int rejections = 0;
         float dmax = 0.0f;
         for (size_t i = 0; i < nf; i++) {
             d[i] = fabsf(t[ri].f[i].applied_db - t[0].f[i].applied_db);
@@ -1613,7 +1749,11 @@ test_cross_rate(void) {
             over1 += d[i] > 1.0f;
             agree += (t[ri].f[i].committed > 0) == (t[0].f[i].committed > 0);
             assert(t[ri].f[i].rejected == t[0].f[i].rejected);
+            rejections += t[ri].f[i].rejected;
         }
+        /* The steady vowel and the two tones each end in a rejection, so the frame-for-frame check has something to
+           compare. */
+        assert(rejections >= 3);
         const float p95 = percentile(d, nf, 0.95);
         double worst_level = 0.0;
         for (size_t i = 0; i < sizeof k_xrate / sizeof k_xrate[0]; i++) {
@@ -1621,9 +1761,9 @@ test_cross_rate(void) {
             worst_level = dl > worst_level ? dl : worst_level;
         }
         SAY("%5d Hz vs 48 kHz: gain p95 %.3f max %.3f dB, %d of %zu frames over 1 dB; commits agree on %.2f%%; first "
-            "commit frame %ld vs %ld; speech levels within %.3f dB\n",
+            "commit frame %ld vs %ld; speech levels within %.3f dB; %d rejections in the same frames\n",
             rates[ri], (double)p95, (double)dmax, over1, nf, 100.0 * agree / (double)nf, first_commit(&t[ri], 0),
-            first_commit(&t[0], 0), worst_level);
+            first_commit(&t[0], 0), worst_level, rejections);
         assert(p95 <= 0.25f && dmax <= 2.0f && over1 * 50 <= (int)nf);
         assert(agree * 100 >= 99 * (int)nf);
         assert(first_commit(&t[ri], 0) == first_commit(&t[0], 0));
@@ -1886,6 +2026,9 @@ main(int argc, char** argv) {
     test_reset_is_fresh();
     test_non_finite();
     test_fixed_mode_and_start_gain();
+    test_fixed_to_auto_then_close();
+    test_start_gain_range();
+    test_stale_counters_saturate();
     test_peak_limiter();
     DSD_FPRINTF(stdout, "DSP_SPEECH_AGC: OK\n");
     return 0;
