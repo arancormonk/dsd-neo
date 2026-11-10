@@ -324,6 +324,143 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         return args;
     }
 
+    /* Issue #830: the file browser as the decoderHost map plays it (see ReadingMap). Each call records itself in
+     * fileCalls; a request returns a new id from the picker's sequence and is never answered here: a case answers it
+     * through testContext (answerFileRoots() and the like). */
+    bool browserSupported = false;
+    QVariantMap access = fileAccessReading();
+    QVariantList fileCalls;
+
+    bool
+    fileBrowserSupported() const override {
+        return browserSupported;
+    }
+
+    QVariantMap
+    fileAccess() const override {
+        return access;
+    }
+
+    void
+    refreshFileAccess() override {
+        fileCalls.append(fileCall(QStringLiteral("refreshFileAccess"), {}));
+    }
+
+    qint64
+    openFileBrowserSession() override {
+        const qint64 id = nextDocumentRequestId();
+        fileCalls.append(fileCall(QStringLiteral("openFileBrowserSession"),
+                                  {{QStringLiteral("id"), id}, {QStringLiteral("session"), id}}));
+        return id;
+    }
+
+    void
+    closeFileBrowserSession(qint64 sessionId) override {
+        fileCalls.append(fileCall(QStringLiteral("closeFileBrowserSession"), {{QStringLiteral("session"), sessionId}}));
+    }
+
+    qint64
+    requestFileRoots(qint64 sessionId) override {
+        return recordFileRequest(QStringLiteral("requestFileRoots"), {{QStringLiteral("session"), sessionId}});
+    }
+
+    qint64
+    requestFolderListing(qint64 sessionId, const QString& rootKey, qint64 generation, const QString& path,
+                         const QVariantMap& filter) override {
+        return recordFileRequest(QStringLiteral("requestFolderListing"),
+                                 folderListingArgs(sessionId, rootKey, generation, path, filter));
+    }
+
+    qint64
+    requestMorePage(qint64 sessionId, qint64 snapshot, int offset) override {
+        return recordFileRequest(QStringLiteral("requestMorePage"), morePageArgs(sessionId, snapshot, offset));
+    }
+
+    qint64
+    requestFileHandoff(qint64 sessionId, const QString& rootKey, qint64 generation, const QString& reference) override {
+        return recordFileRequest(QStringLiteral("requestFileHandoff"),
+                                 fileHandoffArgs(sessionId, rootKey, generation, reference));
+    }
+
+    qint64
+    requestFileAccess(qint64 sessionId) override {
+        return recordFileRequest(QStringLiteral("requestFileAccess"), {{QStringLiteral("session"), sessionId}});
+    }
+
+    void
+    cancelFileRequest(qint64 requestId) override {
+        fileCalls.append(fileCall(QStringLiteral("cancelFileRequest"), {{QStringLiteral("id"), requestId}}));
+    }
+
+    /** @brief The fileAccess reading the fakes start with: All files access declared, not granted (API 36). */
+    static QVariantMap
+    fileAccessReading() {
+        return {{QStringLiteral("declared"), true},
+                {QStringLiteral("granted"), false},
+                {QStringLiteral("route"), QStringLiteral("settings")},
+                {QStringLiteral("apiLevel"), 36},
+                {QStringLiteral("rootsGeneration"), 1}};
+    }
+
+    /**
+     * @brief A recorded file browser call: {name, id, session, rootKey, generation, path, filter, snapshot, offset,
+     * reference}, each key there, the ones the call has no value for empty or 0.
+     */
+    static QVariantMap
+    fileCall(const QString& name, const QVariantMap& args) {
+        QVariantMap call{{QStringLiteral("name"), name},
+                         {QStringLiteral("id"), qint64(0)},
+                         {QStringLiteral("session"), qint64(0)},
+                         {QStringLiteral("rootKey"), QString()},
+                         {QStringLiteral("generation"), qint64(0)},
+                         {QStringLiteral("path"), QString()},
+                         {QStringLiteral("filter"), QVariantMap()},
+                         {QStringLiteral("snapshot"), qint64(0)},
+                         {QStringLiteral("offset"), 0},
+                         {QStringLiteral("reference"), QString()}};
+        for (auto it = args.cbegin(); it != args.cend(); ++it) {
+            call.insert(it.key(), it.value());
+        }
+        return call;
+    }
+
+    static QVariantMap
+    folderListingArgs(qint64 sessionId, const QString& rootKey, qint64 generation, const QString& path,
+                      const QVariantMap& filter) {
+        return {{QStringLiteral("session"), sessionId},
+                {QStringLiteral("rootKey"), rootKey},
+                {QStringLiteral("generation"), generation},
+                {QStringLiteral("path"), path},
+                {QStringLiteral("filter"), filter}};
+    }
+
+    static QVariantMap
+    morePageArgs(qint64 sessionId, qint64 snapshot, int offset) {
+        return {{QStringLiteral("session"), sessionId},
+                {QStringLiteral("snapshot"), snapshot},
+                {QStringLiteral("offset"), offset}};
+    }
+
+    static QVariantMap
+    fileHandoffArgs(qint64 sessionId, const QString& rootKey, qint64 generation, const QString& reference) {
+        return {{QStringLiteral("session"), sessionId},
+                {QStringLiteral("rootKey"), rootKey},
+                {QStringLiteral("generation"), generation},
+                {QStringLiteral("reference"), reference}};
+    }
+
+    /** @brief The file browser calls a host records, by name. */
+    static const QStringList&
+    fileCallNames() {
+        static const QStringList names = {
+            QStringLiteral("refreshFileAccess"),       QStringLiteral("openFileBrowserSession"),
+            QStringLiteral("closeFileBrowserSession"), QStringLiteral("requestFileRoots"),
+            QStringLiteral("requestFolderListing"),    QStringLiteral("requestMorePage"),
+            QStringLiteral("requestFileHandoff"),      QStringLiteral("requestFileAccess"),
+            QStringLiteral("cancelFileRequest")};
+        return names;
+    }
+
     qreal keyboardBoundary = -1;
 
     qreal
@@ -535,6 +672,15 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     int m_background_calls = 0;
     int m_dismiss_calls = 0;
     bool m_notification_permission_needed = false;
+
+    /* Record file request @p name with @p args under a new id, and return the id; nothing answers it. */
+    qint64
+    recordFileRequest(const QString& name, QVariantMap args) {
+        const qint64 id = nextDocumentRequestId();
+        args.insert(QStringLiteral("id"), id);
+        fileCalls.append(fileCall(name, args));
+        return id;
+    }
 };
 
 // Matches Android's contract: Running can be observed before initialization.
@@ -2621,6 +2767,61 @@ class ReadingMap : public QQmlPropertyMap {
         noteCall(QStringLiteral("discardPendingDownload"), {{QStringLiteral("reference"), reference}});
     }
 
+    /* Issue #830: the file browser. Each call is kept in `calls` as ImportOnlyHost::fileCall() shapes it; a request
+     * returns a new id from the picker's sequence and a case answers it through testContext. The
+     * `fileBrowserSupported` and `fileAccess` readings are in the map. */
+    Q_INVOKABLE void
+    refreshFileAccess() {
+        noteFileCall(QStringLiteral("refreshFileAccess"), {});
+    }
+
+    Q_INVOKABLE qint64
+    openFileBrowserSession() {
+        const qint64 id = ++m_documentRequestId;
+        noteFileCall(QStringLiteral("openFileBrowserSession"),
+                     {{QStringLiteral("id"), id}, {QStringLiteral("session"), id}});
+        return id;
+    }
+
+    Q_INVOKABLE void
+    closeFileBrowserSession(qint64 sessionId) {
+        noteFileCall(QStringLiteral("closeFileBrowserSession"), {{QStringLiteral("session"), sessionId}});
+    }
+
+    Q_INVOKABLE qint64
+    requestFileRoots(qint64 sessionId) {
+        return noteFileRequest(QStringLiteral("requestFileRoots"), {{QStringLiteral("session"), sessionId}});
+    }
+
+    Q_INVOKABLE qint64
+    requestFolderListing(qint64 sessionId, const QString& rootKey, qint64 generation, const QString& path,
+                         const QVariantMap& filter) {
+        return noteFileRequest(QStringLiteral("requestFolderListing"),
+                               ImportOnlyHost::folderListingArgs(sessionId, rootKey, generation, path, filter));
+    }
+
+    Q_INVOKABLE qint64
+    requestMorePage(qint64 sessionId, qint64 snapshot, int offset) {
+        return noteFileRequest(QStringLiteral("requestMorePage"),
+                               ImportOnlyHost::morePageArgs(sessionId, snapshot, offset));
+    }
+
+    Q_INVOKABLE qint64
+    requestFileHandoff(qint64 sessionId, const QString& rootKey, qint64 generation, const QString& reference) {
+        return noteFileRequest(QStringLiteral("requestFileHandoff"),
+                               ImportOnlyHost::fileHandoffArgs(sessionId, rootKey, generation, reference));
+    }
+
+    Q_INVOKABLE qint64
+    requestFileAccess(qint64 sessionId) {
+        return noteFileRequest(QStringLiteral("requestFileAccess"), {{QStringLiteral("session"), sessionId}});
+    }
+
+    Q_INVOKABLE void
+    cancelFileRequest(qint64 requestId) {
+        noteFileCall(QStringLiteral("cancelFileRequest"), {{QStringLiteral("id"), requestId}});
+    }
+
     void
     publishPlayback(const QString& path, int state, qint64 positionMs, qint64 durationMs, const QString& error) {
         insert(QStringLiteral("playbackPath"), path);
@@ -2664,9 +2865,26 @@ class ReadingMap : public QQmlPropertyMap {
     void documentPicked(qint64 requestId, const QString& reference, const QString& displayName, bool inDownloads);
     void documentPickCancelled(qint64 requestId);
     void documentPickUnavailable(qint64 requestId, const QString& reason);
+    void fileAccessChanged();
+    void fileRootsListed(qint64 requestId, const QVariantMap& result);
+    void folderListed(qint64 requestId, const QVariantMap& result);
+    void fileHandoffChecked(qint64 requestId, const QVariantMap& result);
+    void fileAccessRequestDone(qint64 requestId, const QString& outcome);
 
   private:
     qint64 m_documentRequestId = 0;
+
+    void
+    noteFileCall(const QString& name, const QVariantMap& args) {
+        noteCall(name, ImportOnlyHost::fileCall(name, args));
+    }
+
+    qint64
+    noteFileRequest(const QString& name, QVariantMap args) {
+        args.insert(QStringLiteral("id"), ++m_documentRequestId);
+        noteFileCall(name, args);
+        return m_documentRequestId;
+    }
 
     void
     noteCall(const QString& name, QVariantMap args) {
@@ -3991,7 +4209,7 @@ class Setup : public QObject {
     /**
      * @brief Forget them, and put the player and the transfer back at rest (nothing open, nothing running). The
      * document picker's records go too, on every host: no lastDocumentRequest() from before the reset and no name set
-     * through setSavedDocumentName().
+     * through setSavedDocumentName(); and so do the file browser's calls (fileCalls()).
      */
     Q_INVOKABLE void
     resetHostPlayback() {
@@ -4002,6 +4220,7 @@ class Setup : public QObject {
             host->lastDocumentRequest.clear();
             host->documentCalls.clear();
             host->savedDocumentNames.clear();
+            host->fileCalls.clear();
         }
         m_host_readings->shareAccepted = true;
         m_host_readings->seekApplied = true;
@@ -4633,6 +4852,104 @@ class Setup : public QObject {
         m_import_host->savedDocumentNames.insert(reference, name);
         m_initializing_host->savedDocumentNames.insert(reference, name);
         m_host_readings->savedDocumentNames.insert(reference, name);
+    }
+
+    /**
+     * @brief Claim or deny the file browser (#830) on every host a case can use; false until a case says.
+     *
+     * Production reads it as a CONSTANT, so set it before loading the screen under test.
+     */
+    Q_INVOKABLE void
+    setFileBrowserSupported(bool supported) {
+        m_import_host->browserSupported = supported;
+        m_initializing_host->browserSupported = supported;
+        m_host[QStringLiteral("fileBrowserSupported")] = supported;
+        m_host_readings->insert(QStringLiteral("fileBrowserSupported"), supported);
+        if (hostReadingsInstalled()) {
+            m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
+        }
+    }
+
+    /** @brief Publish @p access as every host's fileAccess, and emit fileAccessChanged() on the installed one. */
+    Q_INVOKABLE void
+    setFileAccess(const QVariantMap& access) {
+        m_import_host->access = access;
+        m_initializing_host->access = access;
+        m_host[QStringLiteral("fileAccess")] = access;
+        m_host_readings->insert(QStringLiteral("fileAccess"), access);
+        if (hostReadingsInstalled()) {
+            Q_EMIT m_host_readings->fileAccessChanged();
+        } else {
+            Q_EMIT m_lifecycle_host->fileAccessChanged();
+        }
+    }
+
+    /** @brief The installed host's file browser calls, oldest first, as ImportOnlyHost::fileCall() shapes them. */
+    Q_INVOKABLE QVariantList
+    fileCalls() const {
+        if (!hostReadingsInstalled()) {
+            return m_lifecycle_host->fileCalls;
+        }
+        QVariantList browser;
+        for (const QVariant& call : m_host_readings->calls) {
+            if (ImportOnlyHost::fileCallNames().contains(call.toMap().value(QStringLiteral("name")).toString())) {
+                browser.append(call);
+            }
+        }
+        return browser;
+    }
+
+    /** @brief The installed host's last file browser call named @p name; {} before one. */
+    Q_INVOKABLE QVariantMap
+    lastFileCall(const QString& name) const {
+        const QVariantList calls = fileCalls();
+        for (auto it = calls.crbegin(); it != calls.crend(); ++it) {
+            const QVariantMap call = it->toMap();
+            if (call.value(QStringLiteral("name")).toString() == name) {
+                return call;
+            }
+        }
+        return {};
+    }
+
+    /** @brief Answer roots request @p id on the installed host with @p result ({status, generation, roots}). */
+    Q_INVOKABLE void
+    answerFileRoots(qint64 id, const QVariantMap& result) {
+        if (hostReadingsInstalled()) {
+            Q_EMIT m_host_readings->fileRootsListed(id, result);
+        } else {
+            Q_EMIT m_lifecycle_host->fileRootsListed(id, result);
+        }
+    }
+
+    /** @brief Answer listing or page request @p id on the installed host with @p result. */
+    Q_INVOKABLE void
+    answerFolderListing(qint64 id, const QVariantMap& result) {
+        if (hostReadingsInstalled()) {
+            Q_EMIT m_host_readings->folderListed(id, result);
+        } else {
+            Q_EMIT m_lifecycle_host->folderListed(id, result);
+        }
+    }
+
+    /** @brief Answer hand-off request @p id on the installed host with @p result ({ok, reference, name, reason}). */
+    Q_INVOKABLE void
+    answerFileHandoff(qint64 id, const QVariantMap& result) {
+        if (hostReadingsInstalled()) {
+            Q_EMIT m_host_readings->fileHandoffChecked(id, result);
+        } else {
+            Q_EMIT m_lifecycle_host->fileHandoffChecked(id, result);
+        }
+    }
+
+    /** @brief Answer access request @p id on the installed host with @p outcome. */
+    Q_INVOKABLE void
+    answerFileAccess(qint64 id, const QString& outcome) {
+        if (hostReadingsInstalled()) {
+            Q_EMIT m_host_readings->fileAccessRequestDone(id, outcome);
+        } else {
+            Q_EMIT m_lifecycle_host->fileAccessRequestDone(id, outcome);
+        }
     }
 
     /** @brief Publish a live/idle host so cases can exercise session-only actions. */
@@ -5592,6 +5909,10 @@ class Setup : public QObject {
         /* Issue #829: unlike the base host's, true, so the screens take the app's picker, which a case answers
          * through testContext; setDocumentPickerSupported(false) puts Qt's FileDialog back. */
         host[QStringLiteral("documentPickerSupported")] = true;
+        /* Issue #830: no file browser, as the base host; setFileBrowserSupported(true) gives the screens one. Its
+         * access reading is an API 36 sideload's before the grant (ImportOnlyHost::fileAccessReading()). */
+        host[QStringLiteral("fileBrowserSupported")] = false;
+        host[QStringLiteral("fileAccess")] = ImportOnlyHost::fileAccessReading();
         host[QStringLiteral("localDeviceFailureKind")] = 0;
         host[QStringLiteral("localDeviceRequestPending")] = false;
         host[QStringLiteral("localDeviceRequestedSource")] = QString();

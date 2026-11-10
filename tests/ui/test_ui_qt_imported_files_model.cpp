@@ -18,6 +18,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QObject>
@@ -3500,6 +3501,157 @@ test_document_picker_defaults() {
            host.property("documentPickerSupported").isValid() && !host.property("documentPickerSupported").toBool());
 }
 
+namespace {
+
+/* Every file browser answer a host gave, in order, as {signal, id, result}; an access outcome is {outcome}. */
+struct FileAnswers {
+    QVariantList answers;
+
+    explicit FileAnswers(dsd_qt::DecoderHost& host) {
+        QObject::connect(&host, &dsd_qt::DecoderHost::fileRootsListed, &host,
+                         [this](qint64 id, const QVariantMap& result) { note("roots", id, result); });
+        QObject::connect(&host, &dsd_qt::DecoderHost::folderListed, &host,
+                         [this](qint64 id, const QVariantMap& result) { note("folder", id, result); });
+        QObject::connect(&host, &dsd_qt::DecoderHost::fileHandoffChecked, &host,
+                         [this](qint64 id, const QVariantMap& result) { note("handoff", id, result); });
+        QObject::connect(
+            &host, &dsd_qt::DecoderHost::fileAccessRequestDone, &host,
+            [this](qint64 id, const QString& outcome) { note("access", id, {{QStringLiteral("outcome"), outcome}}); });
+    }
+
+    void
+    note(const char* signal, qint64 id, const QVariantMap& result) {
+        answers.append(QVariantMap{{QStringLiteral("signal"), QString::fromLatin1(signal)},
+                                   {QStringLiteral("id"), id},
+                                   {QStringLiteral("result"), result}});
+    }
+
+    /* How many answers request @p id got. */
+    int
+    count(qint64 id) const {
+        int n = 0;
+        for (const QVariant& answer : answers) {
+            n += answer.toMap().value(QStringLiteral("id")).toLongLong() == id ? 1 : 0;
+        }
+        return n;
+    }
+
+    /* Whether request @p id got exactly one answer, on @p signal, with @p result. */
+    bool
+    once(qint64 id, const char* signal, const QVariantMap& result) const {
+        if (count(id) != 1) {
+            return false;
+        }
+        for (const QVariant& answer : answers) {
+            const QVariantMap entry = answer.toMap();
+            if (entry.value(QStringLiteral("id")).toLongLong() == id) {
+                return entry.value(QStringLiteral("signal")).toString() == QLatin1String(signal)
+                       && entry.value(QStringLiteral("result")).toMap() == result;
+            }
+        }
+        return false;
+    }
+};
+
+QVariantMap
+status_map(const char* status) {
+    return {{QStringLiteral("status"), QString::fromLatin1(status)}};
+}
+
+} // namespace
+
+/* Issue #830: a host without a file browser opens sessions and answers every request "unsupported", queued and once;
+   cancel, session close and a superseding listing turn a pending answer into "cancelled". */
+static void
+test_file_browser_defaults() {
+    TestHost host;
+    expect("the base host has no file browser", !host.fileBrowserSupported());
+    expect("the property publishes the browser capability",
+           host.property("fileBrowserSupported").isValid() && !host.property("fileBrowserSupported").toBool());
+    const QVariantMap access{{QStringLiteral("declared"), false},
+                             {QStringLiteral("granted"), false},
+                             {QStringLiteral("route"), QStringLiteral("none")},
+                             {QStringLiteral("apiLevel"), 0},
+                             {QStringLiteral("rootsGeneration"), 0}};
+    expect("the base host declares no file access", host.fileAccess() == access);
+    expect("the property publishes the file access", host.property("fileAccess").toMap() == access);
+    host.refreshFileAccess();
+    expect("a refresh changes nothing on the base host", host.fileAccess() == access);
+    FileAnswers answers(host);
+    int accessChanges = 0;
+    QObject::connect(&host, &dsd_qt::DecoderHost::fileAccessChanged, &host, [&accessChanges] { accessChanges++; });
+
+    const qint64 s = host.openFileBrowserSession();
+    expect("a session id is positive", s > 0);
+    const qint64 r = host.requestFileRoots(s);
+    const qint64 l = host.requestFolderListing(
+        s, QStringLiteral("inbox"), 1, QStringLiteral("/x"),
+        {{QStringLiteral("kind"), QStringLiteral("csv")}, {QStringLiteral("showAll"), false}});
+    const qint64 p = host.requestMorePage(s, 7, 500);
+    const qint64 h = host.requestFileHandoff(s, QStringLiteral("inbox"), 1, QStringLiteral("file:///x/a.csv"));
+    const qint64 a = host.requestFileAccess(s);
+    expect("each file request id is larger than the last", r > s && l > r && p > l && h > p && a > h);
+    expect("no file answer before the requests return", answers.answers.isEmpty());
+    expect("a second access request joins the live one", host.requestFileAccess(s) == a);
+    QCoreApplication::processEvents();
+    const QVariantMap unsupportedRoots{{QStringLiteral("status"), QStringLiteral("unsupported")},
+                                       {QStringLiteral("generation"), 0},
+                                       {QStringLiteral("roots"), QVariantList()}};
+    expect("roots answered unsupported once", answers.once(r, "roots", unsupportedRoots));
+    expect("the listing the page superseded is cancelled once", answers.once(l, "folder", status_map("cancelled")));
+    expect("the page answered unsupported once", answers.once(p, "folder", status_map("unsupported")));
+    expect("the hand-off answered unsupported once",
+           answers.once(h, "handoff",
+                        {{QStringLiteral("ok"), false}, {QStringLiteral("reason"), QStringLiteral("unsupported")}}));
+    expect("the access request answered unsupported once",
+           answers.once(a, "access", {{QStringLiteral("outcome"), QStringLiteral("unsupported")}}));
+    expect("five answers in all", answers.answers.size() == 5);
+    QCoreApplication::processEvents();
+    expect("nothing answers twice", answers.answers.size() == 5);
+    expect("the access request ends once answered: the next one is new", host.requestFileAccess(s) > a);
+    QCoreApplication::processEvents();
+
+    /* Cancelled before its answer ran: one "cancelled", never the "unsupported" it had queued. */
+    answers.answers.clear();
+    const qint64 x = host.requestFileRoots(s);
+    host.cancelFileRequest(x);
+    host.cancelFileRequest(x);
+    const qint64 accessX = host.requestFileAccess(s);
+    host.cancelFileRequest(accessX);
+    expect("an access request cancelled is not joined", host.requestFileAccess(s) > accessX);
+    QCoreApplication::processEvents();
+    expect("a cancelled request is answered cancelled once", answers.once(x, "roots", status_map("cancelled")));
+    expect("a cancelled access request is answered cancelled once",
+           answers.once(accessX, "access", {{QStringLiteral("outcome"), QStringLiteral("cancelled")}}));
+    host.cancelFileRequest(x);
+    host.cancelFileRequest(999999);
+    QCoreApplication::processEvents();
+    expect("cancelling an answered or unknown id answers nothing", answers.count(x) == 1 && answers.count(999999) == 0);
+
+    /* Closing the session cancels its live requests, and a request naming it afterwards is cancelled. */
+    answers.answers.clear();
+    const qint64 other = host.openFileBrowserSession();
+    const qint64 kept = host.requestFileRoots(other);
+    const qint64 first = host.requestFileRoots(s);
+    const qint64 second = host.requestFileHandoff(s, QStringLiteral("saved"), 2, QStringLiteral("content://x/1"));
+    host.closeFileBrowserSession(s);
+    const qint64 late = host.requestFolderListing(s, QStringLiteral("inbox"), 1, QStringLiteral("/x"), {});
+    const qint64 unknown = host.requestFileRoots(other + 1000);
+    QCoreApplication::processEvents();
+    expect(
+        "closing a session cancels each live request once",
+        answers.once(first, "roots", status_map("cancelled"))
+            && answers.once(second, "handoff",
+                            {{QStringLiteral("ok"), false}, {QStringLiteral("reason"), QStringLiteral("cancelled")}}));
+    expect("a request for a closed session is cancelled", answers.once(late, "folder", status_map("cancelled")));
+    expect("a request for an unknown session is cancelled", answers.once(unknown, "roots", status_map("cancelled")));
+    expect("another session's request keeps its own answer", answers.once(kept, "roots", unsupportedRoots));
+    host.closeFileBrowserSession(other);
+    QCoreApplication::processEvents();
+    expect("closing a session with nothing live answers nothing", answers.answers.size() == 5);
+    expect("file access never changed on the base host", accessChanges == 0);
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -3577,6 +3729,7 @@ main(int argc, char** argv) {
     test_example_targets();
     test_export_registration_in_place();
     test_document_picker_defaults();
+    test_file_browser_defaults();
     test_group_list_counts_read_the_file_now();
     test_imported_files_model();
     test_update_rejects_invalid_pick();

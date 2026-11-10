@@ -13993,6 +13993,34 @@ Qt Quick frontend (`src/ui/qt`):
   `testContext.lastDocumentRequest()` / `documentCalls()` and answers with `answerDocumentPicked`,
   `answerDocumentCancelled`, `answerDocumentUnavailable` (on whichever host is installed) and `setSavedDocumentName`.
   Test: `UI_QT_IMPORTED_FILES` (base defaults).
+- File browser (issue #830): `DecoderHost::fileBrowserSupported` (CONSTANT; base false, Android true) offers the app's
+  own browser; it is also the C++ capability for same-tree companion confinement and copying local replay picks.
+  `fileAccess` (NOTIFY `fileAccessChanged`) is `{declared, granted, route ("settings" | "permission" | "none"),
+  apiLevel, rootsGeneration}`, base `{false, false, "none", 0, 0}`; `refreshFileAccess()` reads it again (base
+  no-op). The browser opens a session (`openFileBrowserSession()`, an id from the picker's sequence) and names it in
+  every request: `requestFileRoots`, `requestFolderListing(rootKey, generation, path, filter {kind, showAll})`,
+  `requestMorePage(snapshot, offset)`, `requestFileHandoff(rootKey, generation, reference)` and `requestFileAccess`.
+  Each returns a new id answered exactly once, never inside the call, on `fileRootsListed(id, {status, generation,
+  roots})`, `folderListed(id, {status, snapshot, offset, entries, more, hiddenByFilter})` (listings and pages),
+  `fileHandoffChecked(id, {ok, reference, name, reason})` or `fileAccessRequestDone(id, outcome)`; statuses are in the
+  header and the spec's list (`failed`: the platform could not take the request). `cancelFileRequest(id)`,
+  `closeFileBrowserSession(id)` (every request of the session) and a superseding request (one listing or page per
+  session) retire the id first and answer `cancelled`, queued, even over an answer already queued for it; a platform
+  answer for a retired id is dropped. One access request is live app-wide: a second `requestFileAccess` returns it
+  until its answer is delivered. A request naming a closed or unknown session is answered `cancelled`. Qt thread only.
+  The base host opens sessions and answers every request `unsupported` (roots `{status, generation: 0, roots: []}`,
+  hand-off `{ok: false, reason}`), queued. A platform host overrides the requests and uses the protected helpers:
+  `beginFileRequest(session, kind)` (the id, live; supersedes a listing or page; already answered `cancelled` and not
+  live for a session not open), `fileRequestLive(id)`, `settleFileRequest(id, result)` (retire and emit now; false
+  when not live: the drop of a late record) and `settleFileRequestLater(id, result)` (retire, emit queued);
+  `liveFileAccessRequest()` is the access request a new one joins, and the virtual `fileRequestRetired(id)` (base
+  no-op) tells it a live request was cancelled, closed or superseded so the platform can stop its work. QML tests:
+  the `decoderHost` map (`fileBrowserSupported` false, `fileAccess` an API 36 sideload before the grant) and
+  `ImportOnlyHost` both record every file call as `{name, id, session, rootKey, generation, path, filter, snapshot,
+  offset, reference}` and answer nothing; a case sets `testContext.setFileBrowserSupported()` / `setFileAccess()`,
+  reads `fileCalls()` / `lastFileCall(name)` and answers with `answerFileRoots`, `answerFolderListing`,
+  `answerFileHandoff` and `answerFileAccess` (on whichever host is installed); `resetHostPlayback()` clears the calls.
+  Test: `UI_QT_IMPORTED_FILES` (`test_file_browser_defaults`).
 - `qml/DocumentPicker.qml` is the one picker screens use (`mode` "open"/"save", `title`, `nameFilters`,
   `defaultSuffix`, `mimeType`, `suggestedName`). `open()` asks the host when `documentPickerSupported`, cancelling its
   own earlier request first, and otherwise opens a `FileDialog` it makes through an `Instantiator` (a QtObject root,

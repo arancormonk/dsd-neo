@@ -7,6 +7,7 @@
 #include <QList>
 #include <QMap>
 #include <QVariant>
+#include <QVariantList>
 #include <utility>
 #include "decoder_host.h"
 
@@ -378,6 +379,217 @@ DecoderHost::refuseDocumentRequest() {
 void
 DecoderHost::cancelDocumentRequest(qint64 requestId) {
     m_refusedDocumentRequests.remove(requestId);
+}
+
+namespace {
+
+/* A file request's answer without a result: {status}, a hand-off's {ok: false, reason}, an access {outcome}. */
+QVariantMap
+file_failure(bool handoff, bool access, const QString& code) {
+    if (handoff) {
+        return {{QStringLiteral("ok"), false}, {QStringLiteral("reason"), code}};
+    }
+    if (access) {
+        return {{QStringLiteral("outcome"), code}};
+    }
+    return {{QStringLiteral("status"), code}};
+}
+
+} // namespace
+
+QVariantMap
+DecoderHost::fileAccess() const {
+    return {{QStringLiteral("declared"), false},
+            {QStringLiteral("granted"), false},
+            {QStringLiteral("route"), QStringLiteral("none")},
+            {QStringLiteral("apiLevel"), 0},
+            {QStringLiteral("rootsGeneration"), qint64(0)}};
+}
+
+qint64
+DecoderHost::openFileBrowserSession() {
+    const qint64 id = nextDocumentRequestId();
+    m_fileSessions.insert(id);
+    return id;
+}
+
+void
+DecoderHost::closeFileBrowserSession(qint64 sessionId) {
+    m_fileSessions.remove(sessionId);
+    QList<qint64> ids;
+    for (auto it = m_fileRequests.cbegin(); it != m_fileRequests.cend(); ++it) {
+        if (it->session == sessionId) {
+            ids.append(it.key());
+        }
+    }
+    std::sort(ids.begin(), ids.end());
+    for (const qint64 id : ids) {
+        cancelFileAnswer(id);
+    }
+}
+
+qint64
+DecoderHost::requestFileRoots(qint64 sessionId) {
+    return refuseFileRequest(sessionId, FileRequestKind::Roots);
+}
+
+qint64
+DecoderHost::requestFolderListing(qint64 sessionId, const QString& rootKey, qint64 generation, const QString& path,
+                                  const QVariantMap& filter) {
+    (void)rootKey;
+    (void)generation;
+    (void)path;
+    (void)filter;
+    return refuseFileRequest(sessionId, FileRequestKind::Listing);
+}
+
+qint64
+DecoderHost::requestMorePage(qint64 sessionId, qint64 snapshot, int offset) {
+    (void)snapshot;
+    (void)offset;
+    return refuseFileRequest(sessionId, FileRequestKind::Page);
+}
+
+qint64
+DecoderHost::requestFileHandoff(qint64 sessionId, const QString& rootKey, qint64 generation, const QString& reference) {
+    (void)rootKey;
+    (void)generation;
+    (void)reference;
+    return refuseFileRequest(sessionId, FileRequestKind::Handoff);
+}
+
+qint64
+DecoderHost::requestFileAccess(qint64 sessionId) {
+    if (m_fileAccessRequest != 0) {
+        return m_fileAccessRequest;
+    }
+    return refuseFileRequest(sessionId, FileRequestKind::Access);
+}
+
+void
+DecoderHost::cancelFileRequest(qint64 requestId) {
+    cancelFileAnswer(requestId);
+}
+
+qint64
+DecoderHost::refuseFileRequest(qint64 sessionId, FileRequestKind kind) {
+    const qint64 id = beginFileRequest(sessionId, kind);
+    QVariantMap unsupported =
+        file_failure(kind == FileRequestKind::Handoff, kind == FileRequestKind::Access, QStringLiteral("unsupported"));
+    if (kind == FileRequestKind::Roots) {
+        unsupported.insert(QStringLiteral("generation"), qint64(0));
+        unsupported.insert(QStringLiteral("roots"), QVariantList());
+    }
+    settleFileRequestLater(id, unsupported);
+    return id;
+}
+
+qint64
+DecoderHost::beginFileRequest(qint64 sessionId, FileRequestKind kind) {
+    const qint64 id = nextDocumentRequestId();
+    const bool open = m_fileSessions.contains(sessionId);
+    if (open && (kind == FileRequestKind::Listing || kind == FileRequestKind::Page)) {
+        supersedeFolderRequests(sessionId);
+    }
+    FileRequestState state;
+    state.kind = kind;
+    state.session = sessionId;
+    m_fileRequests.insert(id, state);
+    if (!open) {
+        settleFileRequestLater(id, file_failure(kind == FileRequestKind::Handoff, kind == FileRequestKind::Access,
+                                                QStringLiteral("cancelled")));
+    } else if (kind == FileRequestKind::Access) {
+        m_fileAccessRequest = id;
+    }
+    return id;
+}
+
+bool
+DecoderHost::fileRequestLive(qint64 id) const {
+    const auto found = m_fileRequests.constFind(id);
+    return found != m_fileRequests.constEnd() && !found->answered;
+}
+
+bool
+DecoderHost::settleFileRequest(qint64 id, const QVariantMap& result) {
+    if (!fileRequestLive(id)) {
+        return false;
+    }
+    const FileRequestKind kind = m_fileRequests.take(id).kind;
+    if (m_fileAccessRequest == id) {
+        m_fileAccessRequest = 0;
+    }
+    emitFileAnswer(id, kind, result);
+    return true;
+}
+
+void
+DecoderHost::settleFileRequestLater(qint64 id, const QVariantMap& result) {
+    if (!fileRequestLive(id)) {
+        return;
+    }
+    FileRequestState& state = m_fileRequests[id];
+    state.answered = true;
+    state.answer = result;
+    QMetaObject::invokeMethod(this, [this, id] { deliverFileAnswer(id); }, Qt::QueuedConnection);
+}
+
+void
+DecoderHost::cancelFileAnswer(qint64 id) {
+    const auto found = m_fileRequests.find(id);
+    if (found == m_fileRequests.end()) {
+        return;
+    }
+    if (m_fileAccessRequest == id) {
+        m_fileAccessRequest = 0;
+    }
+    const QVariantMap cancelled = file_failure(found->kind == FileRequestKind::Handoff,
+                                               found->kind == FileRequestKind::Access, QStringLiteral("cancelled"));
+    if (found->answered) {
+        found->answer = cancelled; // Its delivery is queued already: it delivers this instead.
+        return;
+    }
+    settleFileRequestLater(id, cancelled);
+    fileRequestRetired(id);
+}
+
+void
+DecoderHost::supersedeFolderRequests(qint64 sessionId) {
+    QList<qint64> ids;
+    for (auto it = m_fileRequests.cbegin(); it != m_fileRequests.cend(); ++it) {
+        if (it->session == sessionId && (it->kind == FileRequestKind::Listing || it->kind == FileRequestKind::Page)) {
+            ids.append(it.key());
+        }
+    }
+    for (const qint64 id : ids) {
+        cancelFileAnswer(id);
+    }
+}
+
+void
+DecoderHost::deliverFileAnswer(qint64 id) {
+    const auto found = m_fileRequests.constFind(id);
+    if (found == m_fileRequests.constEnd() || !found->answered) {
+        return;
+    }
+    const FileRequestState state = m_fileRequests.take(id);
+    if (m_fileAccessRequest == id) {
+        m_fileAccessRequest = 0;
+    }
+    emitFileAnswer(id, state.kind, state.answer);
+}
+
+void
+DecoderHost::emitFileAnswer(qint64 id, FileRequestKind kind, const QVariantMap& result) {
+    switch (kind) {
+        case FileRequestKind::Roots: Q_EMIT fileRootsListed(id, result); break;
+        case FileRequestKind::Listing:
+        case FileRequestKind::Page: Q_EMIT folderListed(id, result); break;
+        case FileRequestKind::Handoff: Q_EMIT fileHandoffChecked(id, result); break;
+        case FileRequestKind::Access:
+            Q_EMIT fileAccessRequestDone(id, result.value(QStringLiteral("outcome")).toString());
+            break;
+    }
 }
 
 bool
