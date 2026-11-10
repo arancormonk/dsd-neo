@@ -5,7 +5,8 @@
  * The document picker's requests and answers (#829), less their JNI transport (platform*Document*() there), on the Qt
  * thread. The Download-folder rows its saves write into (DownloadsSave.kt) are named and discarded through
  * platformSavedDocumentName() and platformDiscardPendingDownload() there, from any thread. The documents other apps
- * open with this one (#831) reach the host's slot here too, through platformTakeIncomingDocument().
+ * open with this one (#831) reach the host's slot here too, through platformTakeIncomingDocument(): each refresh()
+ * offers one, and a take asks for one newer first.
  */
 
 #include <QLatin1String>
@@ -116,6 +117,11 @@ DecoderHostAndroid::publishDocumentRequest(bool wasPending) {
 void
 DecoderHostAndroid::refreshIncomingDocuments() {
     offerIncomingDocument(platformTakeIncomingDocument());
+}
+
+QString
+DecoderHostAndroid::newerIncomingDocument() {
+    return platformTakeIncomingDocument();
 }
 
 } // namespace dsd_android

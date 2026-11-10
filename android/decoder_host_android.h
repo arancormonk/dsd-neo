@@ -329,6 +329,9 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      */
     bool shareRecordingFile(const QString& path, const QString& title) override;
 
+    /** @brief IncomingDocuments.take() (#831): a document that reached it since refresh() last polled. */
+    QString newerIncomingDocument() override;
+
   private:
     /**
      * @brief Makes its host one postSignInFill() can reach, from construction until it goes

@@ -14063,10 +14063,13 @@ Qt Quick frontend (`src/ui/qt`):
   `incomingDocumentPending` (NOTIFY `incomingDocumentChanged`) says one waits; `takeIncomingDocument()` returns its
   reference once and empties the slot (empty, with no signal, when none waits); a platform host calls the protected
   `offerIncomingDocument(reference)`, which replaces a document not yet taken and emits (an empty reference offers
-  nothing). The base host never offers one. The reference is a plain string end to end, like a picked one. QML tests:
-  the `decoderHost` map and `ImportOnlyHost` both carry the slot and `documentRequestPending`; a case drives them with
-  `testContext.emitIncomingDocument(ref)` and `setDocumentRequestPending(bool)` on whichever host is installed. Tests:
-  `UI_QT_IMPORTED_FILES` (the base slot), `tst_context_fixture.qml` (both fakes).
+  nothing). A take first asks the protected virtual `newerIncomingDocument()` for one the platform received since its
+  last offer and, without a signal, puts it in the slot in place of the older one, so a take between two polls returns
+  the newer document and it is never offered after it; the take's one signal follows. The base host never offers one,
+  and its `newerIncomingDocument()` returns none. The reference is a plain string end to end, like a picked one. QML
+  tests: the `decoderHost` map and `ImportOnlyHost` both carry the slot and `documentRequestPending`; a case drives them
+  with `testContext.emitIncomingDocument(ref)` and `setDocumentRequestPending(bool)` on whichever host is installed.
+  Tests: `UI_QT_IMPORTED_FILES` (the base slot), `tst_context_fixture.qml` (both fakes).
 - `qml/IncomingDocumentFlow.qml` (#831) shows one incoming document: Main's only instance (`incomingDocument`, z 22 like
   `BackupFlow` and declared before it, so the backup flow stays the top item) is non-visual apart from its `ModalSheet`
   (`incomingDocumentSheet`, accessible name "Incoming file"; the line under the name heading reads "From another app").
@@ -15169,8 +15172,9 @@ stays as it is, with no cleanup fallback. The app prevents it and records what s
   (`decoder_host_android_documents.cpp`, JNI-free, after `refreshDocumentPicks()`), which takes through
   `platformTakeIncomingDocument()` (`IncomingDocuments.take()`, `decoder_host_android.cpp`, kept in
   `proguard-rules.pro`) and only then offers the reference to the host's slot, since a slot of the signal may run
-  `refresh()` again (`UI_QT_ANDROID_HOST`). The activity callbacks only read the intent and make the two lookups; no
-  provider query, open or copy runs there.
+  `refresh()` again. Its `newerIncomingDocument()` override takes through the same call, so a take after a newer
+  delivery and before the next poll returns that one (`UI_QT_ANDROID_HOST`). The activity callbacks only read the intent
+  and make the two lookups; no provider query, open or copy runs there.
 - `android:configChanges` lists every flag android-36 defines except `resourcesUnused` (19 flags; that one is meant
   for activities that use no resources, and this one has the splash, strings and the notice), so no configuration
   change recreates the activity. `assetsPaths` (a runtime overlay turned on) exists only from android-36, so

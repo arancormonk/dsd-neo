@@ -485,7 +485,10 @@ class DecoderHost : public QObject {
         return !m_incomingDocument.isEmpty();
     }
 
-    /** @brief The reference waiting, once, which leaves none waiting; empty, with no signal, when none waits. */
+    /**
+     * @brief The newest reference waiting, once, which leaves none waiting; empty, with no signal, when none waits.
+     * One the platform received since its last offer (newerIncomingDocument()) replaces the slot's first.
+     */
     Q_INVOKABLE QString takeIncomingDocument();
 
     virtual QString
@@ -915,6 +918,16 @@ class DecoderHost : public QObject {
   protected:
     /** @brief Leave @p reference for takeIncomingDocument(), in place of any not taken; empty is no document. */
     void offerIncomingDocument(const QString& reference);
+
+    /**
+     * @brief A document the platform received since its last offer, taken from it; empty with none. The base host:
+     * none. takeIncomingDocument() asks first, so a take between two polls returns the newer document, not the one
+     * the slot held, and the newer one is never offered after it. It must not emit or call back into the host.
+     */
+    virtual QString
+    newerIncomingDocument() {
+        return QString();
+    }
 
     /** @brief Start playing @p path, a file that exists, published Preparing. The base host has no player. */
     virtual void beginPlayback(const QString& path);

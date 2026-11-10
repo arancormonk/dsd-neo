@@ -1035,6 +1035,41 @@ check_incoming_document_poll() {
     check(host.takeIncomingDocument() == picked_uri() && changes == 5, "the newer document replaces one not taken");
 }
 
+/*
+ * #831: a take between two polls returns the document that reached IncomingDocuments since the last one, not the
+ * older one the slot held, and that newer one is not offered again after it.
+ */
+static void
+check_incoming_document_take_prefers_newer() {
+    incoming_mailbox().clear();
+    PickerHost host;
+    int changes = 0;
+    QStringList taken;
+    QObject::connect(&host, &dsd_qt::DecoderHost::incomingDocumentChanged, &host, [&] {
+        ++changes;
+        if (host.incomingDocumentPending()) {
+            return;
+        }
+        /* A slot that takes again, or polls, from inside the take's signal finds nothing. */
+        taken.append(host.takeIncomingDocument());
+        host.refresh();
+    });
+    incoming_mailbox() = row_uri();
+    host.refresh();
+    check(changes == 1 && host.incomingDocumentPending(), "the older document waits in the slot");
+    incoming_mailbox() = picked_uri();
+    check(host.takeIncomingDocument() == picked_uri(), "the take returns the newer document");
+    check(incoming_mailbox().isEmpty(), "the take empties the mailbox");
+    check(changes == 2 && taken == QStringList{QString()}, "one signal for the take; a take inside it finds none");
+    check(!host.incomingDocumentPending(), "the older document is gone");
+    host.refresh();
+    check(changes == 2 && host.takeIncomingDocument().isEmpty(), "the newer document is not offered again");
+
+    /* With the slot empty, a take still returns one the mailbox holds. */
+    incoming_mailbox() = row_uri();
+    check(host.takeIncomingDocument() == row_uri() && incoming_mailbox().isEmpty(), "a take reaches the mailbox");
+}
+
 /* #831: documentRequestPending follows the live request, told after the answer that ends it. */
 static void
 check_document_request_pending() {
@@ -3195,6 +3230,7 @@ main(int argc, char** argv) {
     check_document_requests();
     check_document_reentrant_drain();
     check_incoming_document_poll();
+    check_incoming_document_take_prefers_newer();
     check_document_request_pending();
     check_import_dispatch();
     check_probe_dispatch();

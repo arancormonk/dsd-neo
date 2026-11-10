@@ -337,6 +337,11 @@ DecoderHost::cancelDocumentRequest(qint64 requestId) {
 
 QString
 DecoderHost::takeIncomingDocument() {
+    /* Into the slot without a signal: the take's own signal tells both, and no slot can take it mid-take. */
+    QString newer = newerIncomingDocument();
+    if (!newer.isEmpty()) {
+        m_incomingDocument.swap(newer);
+    }
     if (m_incomingDocument.isEmpty()) {
         return QString();
     }
