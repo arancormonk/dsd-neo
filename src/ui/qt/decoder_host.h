@@ -49,6 +49,7 @@ class DecoderHost : public QObject {
     Q_PROPERTY(SessionState sessionState READ sessionState NOTIFY sessionStateChanged)
     Q_PROPERTY(bool sessionActive READ sessionActive NOTIFY sessionStateChanged)
     Q_PROPERTY(bool transitioning READ transitioning NOTIFY sessionStateChanged)
+    Q_PROPERTY(bool sessionStateKnown READ sessionStateKnown NOTIFY sessionStateKnownChanged)
     Q_PROPERTY(QString failureText READ failureText NOTIFY sessionStateChanged)
     Q_PROPERTY(bool localDeviceBrokered READ localDeviceBrokered CONSTANT)
     Q_PROPERTY(bool localDeviceReady READ localDeviceReady NOTIFY localDeviceChanged)

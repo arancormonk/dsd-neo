@@ -47,6 +47,12 @@ is sent to the decoder as it is; one the decoder refuses keeps the session's lis
 a session this app instance started, which under Qt 6.11.3 is every session: a recreated Activity restarts the app and
 ends the session (`android/README.md` "Known limits").
 
+A CSV can also be opened from another app with **Open with** or **Share** → DSD-neo: the app asks what the file
+contains (the same kinds as **Import file**, and decimal or hex for keys) and imports it into the library, or, for
+**Target CSV**, starts a new scan list with it. Only files the other app labels `text/csv`,
+`text/comma-separated-values` or `application/octet-stream` (and `text/plain` for Open with) list DSD-neo; see
+`android/README.md` "Opening files from other apps" for this and the other limits.
+
 Applying a channel map **replaces** the live one rather than merging into it, so anything the decoder learned on the
 air is discarded along with the previous file's entries; a grant for a channel the new file omits stays unresolved
 until the site announces it again.

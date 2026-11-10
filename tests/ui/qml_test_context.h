@@ -339,6 +339,42 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 
     using dsd_qt::DecoderHost::offerIncomingDocument;
 
+    /* Issue #831: whether the session state is known yet, as Android's host reports it after its first poll; a case
+     * sets it through testContext.setSessionStateKnown(). */
+    bool stateKnown = true;
+
+    bool
+    sessionStateKnown() const override {
+        return stateKnown;
+    }
+
+    void
+    setSessionStateKnown(bool known) {
+        if (stateKnown != known) {
+            stateKnown = known;
+            Q_EMIT sessionStateKnownChanged();
+        }
+    }
+
+    /* Issue #831: a recording save or export that runs on after its sheet closed. While held, a transfer begun through
+     * saveRecording()/exportRecordings() stays active until endHeldTransfer(); otherwise the base host's runs. */
+    bool holdTransfers = false;
+
+    void
+    endHeldTransfer() {
+        if (recordingTransferActive()) {
+            finishRecordingTransfer(TransferDone, {});
+        }
+    }
+
+  protected:
+    bool
+    beginRecordingTransfer(const QStringList& paths, const QStringList& names, const QString& reference,
+                           bool zip) override {
+        return holdTransfers || dsd_qt::DecoderHost::beginRecordingTransfer(paths, names, reference, zip);
+    }
+
+  public:
     /** @brief What lastDocumentRequest() reports: {id, kind ("open" or "save"), name, mime}. */
     static QVariantMap
     documentRequest(qint64 id, const QString& kind, const QString& name, const QString& mime) {
@@ -2685,6 +2721,14 @@ class ReadingMap : public QQmlPropertyMap {
     }
 
     void
+    setSessionStateKnown(bool known) {
+        if (value(QStringLiteral("sessionStateKnown")).toBool() != known) {
+            insert(QStringLiteral("sessionStateKnown"), known);
+            Q_EMIT sessionStateKnownChanged();
+        }
+    }
+
+    void
     publishPlayback(const QString& path, int state, qint64 positionMs, qint64 durationMs, const QString& error) {
         insert(QStringLiteral("playbackPath"), path);
         insert(QStringLiteral("playbackState"), state);
@@ -2715,6 +2759,7 @@ class ReadingMap : public QQmlPropertyMap {
     void qualityChanged();
     void runningChanged();
     void sessionStateChanged();
+    void sessionStateKnownChanged();
     void sessionInitialized();
     void localDeviceChanged();
     void typographyChanged();
@@ -4057,8 +4102,8 @@ class Setup : public QObject {
     /**
      * @brief Forget them, and put the player and the transfer back at rest (nothing open, nothing running). The
      * document picker's records go too, on every host: no lastDocumentRequest() from before the reset and no name set
-     * through setSavedDocumentName(). So do an incoming document not taken and a picker request set in flight (#831),
-     * so neither reaches a later case.
+     * through setSavedDocumentName(). So do an incoming document not taken, a picker request set in flight, a session
+     * state set unknown and a held recording transfer (#831), so none reaches a later case.
      */
     Q_INVOKABLE void
     resetHostPlayback() {
@@ -4067,12 +4112,16 @@ class Setup : public QObject {
         m_host_readings->savedDocumentNames.clear();
         (void)m_host_readings->takeIncomingDocument();
         m_host_readings->setDocumentRequestPending(false);
+        m_host_readings->setSessionStateKnown(true);
         for (ImportOnlyHost* host : {m_import_host, m_initializing_host}) {
             host->lastDocumentRequest.clear();
             host->documentCalls.clear();
             host->savedDocumentNames.clear();
             (void)host->takeIncomingDocument();
             host->setDocumentRequestPending(false);
+            host->setSessionStateKnown(true);
+            host->holdTransfers = false;
+            host->endHeldTransfer();
         }
         m_host_readings->shareAccepted = true;
         m_host_readings->seekApplied = true;
@@ -4718,6 +4767,28 @@ class Setup : public QObject {
             m_host_readings->setDocumentRequestPending(pending);
         } else {
             m_lifecycle_host->setDocumentRequestPending(pending);
+        }
+    }
+
+    /**
+     * @brief Hold the lifecycle host's next recording save or export open (#831), or (@p held false) end the one held,
+     * as done, and run them again as the base host does.
+     */
+    Q_INVOKABLE void
+    holdRecordingTransfers(bool held) {
+        m_lifecycle_host->holdTransfers = held;
+        if (!held) {
+            m_lifecycle_host->endHeldTransfer();
+        }
+    }
+
+    /** @brief Whether the installed host knows its session state yet (sessionStateKnown, #831). */
+    Q_INVOKABLE void
+    setSessionStateKnown(bool known) {
+        if (hostReadingsInstalled()) {
+            m_host_readings->setSessionStateKnown(known);
+        } else {
+            m_lifecycle_host->setSessionStateKnown(known);
         }
     }
 
@@ -5694,6 +5765,8 @@ class Setup : public QObject {
         host[QStringLiteral("localDeviceRequestedSource")] = QString();
         host[QStringLiteral("receiverHealth")] = dsd_qt::DecoderHost::healthyReceiver();
         host[QStringLiteral("sessionState")] = 0;
+        /* As every desktop host: the state above is the decoder's own; a case clears it through testContext. */
+        host[QStringLiteral("sessionStateKnown")] = true;
         host[QStringLiteral("keyboardTop")] = -1;
         /* Issue #708: no player and no zip, as the base host; a case scripts the playback and transfer states. */
         host[QStringLiteral("playbackSupported")] = false;

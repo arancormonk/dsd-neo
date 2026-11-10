@@ -228,6 +228,16 @@ Window {
     property bool awaitingUsbAccess: false
     // WP-D4: a restart waits for confirmed Idle and resolves stable identity then.
     property var pendingRestart: null
+    // #831: a restart from the moment it is asked for until its start has
+    // landed (the session runs, or the start failed or never began). The
+    // request itself is cleared before its start, which ignores
+    // autoStartBlocked, so a document from another app waits on both.
+    property bool restartStarting: false
+    readonly property bool restartInFlight: pendingRestart !== null || restartStarting
+    function settleRestartStart() {
+        if (restartStarting && decoderHost.sessionState !== 1)
+            restartStarting = false;
+    }
     function cancelPendingRestart() {
         pendingRestart = null;
         leavingSearch = false;
@@ -417,7 +427,12 @@ Window {
         if (!pendingRestart || decoderHost.sessionState !== 0)
             return;
         var request = pendingRestart;
+        restartStarting = true;
         pendingRestart = null;
+        startPendingRestart(request);
+        settleRestartStart();
+    }
+    function startPendingRestart(request) {
         if (request.leaveSearch) {
             // The search has stopped: its screen gives way to what replaces it.
             leavingSearch = false;
@@ -619,7 +634,7 @@ Window {
         property: "autoStartBlocked"
         // A backup flow counts for its whole length: its system pickers show no sheet.
         // So does a permission prompt of the host's own, until it is answered or expires (#647).
-        value: mainRoot.sessionDestination.length > 0 || mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.signalSearchOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.callRecordingsOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || (!!decoderHost && decoderHost.localDeviceRequestPending === true) || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0 || backup.flowActive
+        value: mainRoot.sessionDestination.length > 0 || mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.signalSearchOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.callRecordingsOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || (!!decoderHost && decoderHost.localDeviceRequestPending === true) || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0 || backup.flowActive || incomingDocument.busy
     }
     Connections {
         target: uiController
@@ -638,6 +653,73 @@ Window {
                 mainRoot.startSavedByUid(uid);
             else
                 mainRoot.startScanByUid(uid, companions || [], "");
+        }
+    }
+
+    // ---- A file another app opened with DSD-neo, or shared to it (#831) ----
+    // Unlike an attachment it waits, in the host's slot, until nothing on
+    // screen has state it could lose: no sheet, no flow with a form or a
+    // choice under way, no copy, transfer, apply, picker, USB prompt or
+    // restart in flight, and the session state known (before the host's first
+    // poll a running session reads as Idle, and the Imports screen would hide
+    // under it). Layers that only show things (Imports at rest, Diagnostics,
+    // Licenses, Call recordings, Spectrum, Talkgroups, the session's History
+    // and Settings) may stay beneath; routing closes them.
+    readonly property bool intakeFree: !!decoderHost && decoderHost.sessionStateKnown === true && Navigation.modals.length === 0 && !incomingDocument.busy
+        && !wizardOpen && (prefs.onboardingDone || monitorMode) && !scanListOpen && !exploreSetupOpen && !signalSearchOpen && !radioReferenceOpen && !radioReferenceAccountOpen
+        && !backup.flowActive && !backup.busy && !importedFiles.importing && !importsScreen.importActive && !radioReference.busy && !replayFiles.copying
+        && decoderHost.recordingTransferActive !== true && !importsScreen.mapApplyActive && !monitor.keyApplyActive && decoderHost.documentRequestPending !== true
+        && !awaitingUsbAccess && decoderHost.localDeviceRequestPending !== true && !restartInFlight
+    // Never at once: an owner that lets go and takes hold again in one turn
+    // (a stop and its restart) is not raced.
+    onIntakeFreeChanged: {
+        if (intakeFree)
+            Qt.callLater(mainRoot.maybeTakeIncoming);
+    }
+    Connections {
+        target: decoderHost
+        ignoreUnknownSignals: true
+        function onIncomingDocumentChanged() {
+            Qt.callLater(mainRoot.maybeTakeIncoming);
+        }
+    }
+    function maybeTakeIncoming() {
+        if (mainRoot.intakeFree && decoderHost.incomingDocumentPending)
+            incomingDocument.begin();
+    }
+    // The layers allowed under the intake: none may cover where it goes. Done
+    // before the destination is called, since closing Imports after would
+    // cancel the import just begun. @p keepImports keeps Imports and, during
+    // a session, the session's Settings it opens over.
+    function closeIntakeLayers(keepImports) {
+        diagnosticsOpen = false;
+        licensesOpen = false;
+        callRecordingsOpen = false;
+        spectrumOpen = false;
+        talkgroupsOpen = false;
+        // Imports kept over the session's Settings is closed first when they
+        // are not open yet, so its layer comes back above theirs.
+        if (!keepImports || (monitorMode && sessionDestination !== "settings"))
+            importsOpen = false;
+        sessionDestination = keepImports && monitorMode ? "settings" : "";
+    }
+    function routeIncoming(target, ref, name, type) {
+        closeIntakeLayers(target === "import");
+        if (target === "restore") {
+            // Its end notice shows on the Settings Backup card.
+            if (!monitorMode)
+                currentTab = 2;
+            incomingDocument.handOffDone(backupFlow.restoreFromReference(ref));
+        } else if (target === "targets") {
+            scanListEditor.openFor(-1);
+            scanListOpen = true;
+            incomingDocument.handOffDone(scanListEditor.importTargetsFrom(ref, name));
+        } else {
+            importsOpen = true;
+            // Once the screen shows: it refuses an import while hidden.
+            Qt.callLater(function () {
+                incomingDocument.handOffDone(importsScreen.importIncoming(ref, name, type));
+            });
         }
     }
 
@@ -674,6 +756,8 @@ Window {
         updateSystemBars();
         adoptReattachedSession();
         publishChannelNames();
+        // A document offered before Main was there (no signal comes for it).
+        Qt.callLater(mainRoot.maybeTakeIncoming);
     }
     onActiveChanged: {
         if (active)
@@ -920,6 +1004,7 @@ Window {
             }
             if (decoderHost.sessionState === 0 && mainRoot.pendingRestart)
                 Qt.callLater(mainRoot.finishPendingRestart);
+            mainRoot.settleRestartStart();
 
             if (decoderHost.sessionState === 2) {
                 mainRoot.sessionReachedRunning = true;
@@ -2602,6 +2687,22 @@ Window {
             prefs.onboardingDone = true;
             wizard.openForAdd(true);
             mainRoot.wizardOpen = true;
+        }
+    }
+
+    // ---- A file from another app (#831) ----
+    // At the backup flow's z, over every layer the intake lets stay beneath
+    // it, and declared first so the backup flow stays the top item: the two
+    // never show a sheet at once, since the intake hands off before Restore's
+    // sheets open.
+    IncomingDocumentFlow {
+        id: incomingDocument
+        z: 22
+        anchors.fill: safeArea
+        restoreFlow: backupFlow
+        replaying: !!mainRoot.sessionSystem && mainRoot.sessionSystem.sourceType === "file"
+        onHandOffRequested: function (target, reference, name, type) {
+            mainRoot.routeIncoming(target, reference, name, type);
         }
     }
 

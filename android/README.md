@@ -249,6 +249,51 @@ saved there stay after DSD-neo is uninstalled; a backup there stays encrypted wi
 At start DSD-neo gives back any lasting file permissions an earlier version kept from picks, since it no longer uses
 them and Android limits how many an app may hold.
 
+## Opening files from other apps
+
+**Open with** or **Share** on a file in another app (a file manager, a chat or mail app) hands it to DSD-neo (#831).
+DSD-neo shows it once nothing on screen could lose work: no sheet is open, no editor, wizard, RadioReference screen or
+Signal search is open, and no import, backup task, recording export, decryption apply, file picker, USB permission
+prompt or listen restart is still running. Screens that only show things (Imported files, Diagnostics, Licenses, Call
+recordings, Spectrum, Talkgroups, and History or Settings during a session) may stay open; they close when the file
+goes where it belongs. A file sent while another is being handled waits for it; a newer one replaces one still waiting.
+
+DSD-neo first reads the start of the file (**Checking the file…**) and decides by what it holds, not by its name:
+
+- **A DSD-neo backup** offers **Restore…**, which goes on as Settings → Backup → **Restore from backup** does after its
+  picker: the passphrase, then **Replace your setup?**. While a session runs, the sheet says **Stop listening before
+  restoring.** and offers **Stop listening** (**Stop replay** for a replay), and **Restore…** becomes available once
+  the session has stopped. DSD-neo never stops a session by itself. A backup made by a newer DSD-neo, a damaged one, a
+  file too large to be one, or a restore already waiting is named, with **Close**.
+- **Anything else** asks **What does this file contain?** with the kinds of Imported files → **Import file**, and for
+  **Keys** whether they are decimal or hex. **Import** copies it into Imported files as a picked file would; during a
+  session Imported files opens over the session's Settings. **Target CSV** instead starts a new scan list with those
+  targets in the scan list editor, to name and save (Imported files' own Target CSV only keeps the file).
+- A file DSD-neo cannot read says **Couldn't read that file. Open it again from the other app.**
+
+**Cancel**, Back or a tap outside the sheet drops the file; send it again to start over. If the screen the file was
+going to cannot take it at that moment (a session started meanwhile, say), the sheet stays with **Couldn't open that
+now. Try again.**
+
+Limits:
+
+- **File types.** Open with lists DSD-neo for files the other app labels `text/csv`, `text/comma-separated-values`,
+  `text/plain` or `application/octet-stream`; Share for the same types except `text/plain`, which would list DSD-neo for
+  every shared link or piece of text. Apps that offer a file to any app list it too. A file the other app labels with
+  another type (an upper-case or parameterised type, `application/vnd.ms-excel`, `text/x-csv`, or a download that kept
+  the server's own type) does not list DSD-neo: open it from a file manager that labels files by their extension, or
+  pick it in Imported files or **Restore from backup**.
+- **What DSD-neo takes.** One `content:` document the other app gave DSD-neo permission to read, and never one of
+  DSD-neo's own files. Anything else (a `file:` path, several files, shared text with no file, a document no read
+  permission was recorded for) is ignored, with one line in Diagnostics and nothing on screen.
+- An app that lets a file be read only once fails the second read (the check, then the import or restore) as **Couldn't
+  read that file**. No such app is known.
+- The other app shares only the file itself: a channel map's companion files are asked for on the companion sheet, as
+  for a picked file.
+- The check runs on the import worker, one job at a time, so a slow app delays the next import or check until it
+  answers.
+- API 29 itself is not tested on a device (its emulator image cannot run the arm64 app); API 30 takes the same paths.
+
 ## Imported files (trunking CSVs)
 
 The C core only opens real filesystem paths (`src/runtime/path_policy.c` requires
@@ -290,7 +335,8 @@ chosen for the same field while the picker is out wins over the pick that comes 
 file it was started on, or says "That file changed while you were picking. Try again." when that file was removed
 meanwhile. When no picker can open, the import ends with the reason; on the companion sheet the reason shows above the
 companions and the files already chosen stay. On the wizard's **File** source the reason shows under the Replay file
-row, where a failed replay copy says why too, and the earlier file stays.
+row, where a failed replay copy says why too, and the earlier file stays. A scan list's target CSV can also come from
+another app: open the file with Open with or Share and choose **Target CSV**, which starts a new scan list with it.
 
 The library itself (one JSON-persisted
 row per stored file, with dry-run validation counts from
@@ -303,7 +349,7 @@ recording calls by radio (see [Source ID List CSV](../docs/csv-formats.md#source
 They can be applied or cleared in a running session. A group
 list and a source ID list cannot be distinguished by content: validation uses the kind selected by the user.
 No storage permissions are involved: the picker grants access to the one document picked, and DSD-neo copies it
-right away.
+right away. A CSV can also be opened from another app with Open with or Share (see "Opening files from other apps").
 
 ## Call recordings
 
@@ -514,8 +560,9 @@ file, and a restore never touches kept files.
 ### Restoring
 
 **Restore from backup** replaces this phone's setup with the backup's, so stop listening first (the row reads **Stop
-listening to restore** until then). Pick the file in the file picker (DSD-neo checks the file's contents, not its name)
-and enter its passphrase. A wrong passphrase reads the same as a file damaged on the way (**Wrong passphrase, or the
+listening to restore** until then). Pick the file in the file picker (DSD-neo checks the file's contents, not its name),
+or open the file from another app with Open with or Share (see "Opening files from other apps"), and enter its
+passphrase. A wrong passphrase reads the same as a file damaged on the way (**Wrong passphrase, or the
 file is damaged.**). When the file itself is the problem (not a DSD-neo backup, made by a newer DSD-neo, too large,
 damaged, or unreadable), **Choose another file** opens the picker again and takes only the file picked there. When no
 picker can open, either time, the restore stops, the Settings card says why, and **Restore from backup** starts over.

@@ -14064,6 +14064,40 @@ Qt Quick frontend (`src/ui/qt`):
   the `decoderHost` map and `ImportOnlyHost` both carry the slot and `documentRequestPending`; a case drives them with
   `testContext.emitIncomingDocument(ref)` and `setDocumentRequestPending(bool)` on whichever host is installed. Tests:
   `UI_QT_IMPORTED_FILES` (the base slot), `tst_context_fixture.qml` (both fakes).
+- `qml/IncomingDocumentFlow.qml` (#831) shows one incoming document: Main's only instance (`incomingDocument`, z 22
+  like `BackupFlow` and declared before it, so the backup flow stays the top item) is non-visual apart from its
+  `ModalSheet` (`incomingDocumentSheet`, accessible name "File from another app").
+  `phase` runs "" → `probing` → `presenting` → `handingOff` → ""; `busy` is set before `takeIncomingDocument()` and
+  holds until the destination accepted the document or it was dropped, and joins `autoStartBlocked`. The probe is
+  `importedFiles.inspectDocument()`, answered by `documentInspected(id, {kind, name})`; every dismissal
+  (`dismissHandler`: Cancel/Close, Back, an outside tap) drops the document and `cancelInspect()`s a probe still
+  reading. The name heading is a `ReadableText` (PlainText) with "This file" when the provider gave none. A backup
+  follows `backup.restorePending`/`restoreCancellable`, `decoderHost.sessionActive` and `backup.busy` live
+  (`backupState`): a session on shows "Stop listening" ("Stop replay" when `replaying`, "Stopping…" disabled while
+  `sessionState` is Stopping) calling `decoderHost.stop()` itself (D3: the Monitor's Stop is under the sheet), and
+  Restore enables once `backup.restoreAllowed && !backup.restorePending`. Problem lines reuse `BackupFlow.errorText()`
+  (through `restoreFlow`) and `Util.restorePartWayText()`, are `Accessible.AlertMessage`, and are read out once each
+  time one appears (`onProblemTextChanged` → `Navigation.announce`). "Other" asks with `ImportKindPicker` (Import
+  stays disabled until a kind is chosen). `handOff(target, type)` copies the reference and name, closes the sheet and
+  emits `handOffRequested(target, reference, name, type)`; Main answers `handOffDone(accepted)`, and a refusal opens
+  the sheet again with "Couldn't open that now. Try again."
+- Main's free test, `mainRoot.intakeFree` (#831): a document waits while any owner holds the screen: an open modal,
+  the intake's own `busy`, the wizard, onboarding, the scan-list editor, Explore setup, Signal search, either
+  RadioReference screen, `backup.flowActive`/`busy`, `importedFiles.importing`, `importsScreen.importActive` and
+  `mapApplyActive`, `monitor.keyApplyActive`, `radioReference.busy`, `replayFiles.copying`,
+  `decoderHost.recordingTransferActive`, `documentRequestPending`, `awaitingUsbAccess`, `localDeviceRequestPending`,
+  `restartInFlight` (from `pendingRestart` through its start until the session runs or the start failed:
+  `restartStarting`, set by `finishPendingRestart()`, settled by `settleRestartStart()`), and until
+  `decoderHost.sessionStateKnown` (a `Q_PROPERTY` of `DecoderHost::sessionStateKnown()`; before Android's first poll a
+  running session reads as Idle, and an import routed then would be cancelled when Imports hides under the monitor).
+  `incomingDocumentChanged` and `onIntakeFreeChanged` only `Qt.callLater(maybeTakeIncoming)`, which reads both again.
+  Idle layers (Imports at rest, Diagnostics, Licenses, Call recordings, Spectrum, Talkgroups, the session's History and
+  Settings) may stay beneath; `routeIncoming()` closes them first (`closeIntakeLayers()`), then: Restore → `currentTab
+  = 2` when idle and `backupFlow.restoreFromReference(ref)`; Import → `importsOpen` (over the session's Settings while
+  monitoring, Imports re-added above them) and, a turn later, `importsScreen.importIncoming(ref, name, type)`; Target
+  CSV → `scanListEditor.openFor(-1)`, `scanListOpen`, `importTargetsFrom(ref, name)`. QML tests:
+  `tst_incoming_document.qml` (`testContext.setSessionStateKnown()`, `holdRecordingTransfers()` for a save that
+  outlives its sheet).
 - `qml/DocumentPicker.qml` is the one picker screens use (`mode` "open"/"save", `title`, `nameFilters`,
   `defaultSuffix`, `mimeType`, `suggestedName`). `open()` asks the host when `documentPickerSupported`, cancelling its
   own earlier request first, and otherwise opens a `FileDialog` it makes through an `Instantiator` (a QtObject root,
