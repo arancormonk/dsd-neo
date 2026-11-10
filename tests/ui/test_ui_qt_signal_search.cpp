@@ -9,7 +9,9 @@
 #include <QByteArray>
 #include <QChar>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
@@ -19,9 +21,12 @@
 #include <QJsonValue>
 #include <QLatin1String>
 #include <QList>
+#include <QLockFile>
 #include <QMap>
 #include <QMetaType>
 #include <QObject>
+#include <QPair>
+#include <QProcess>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
@@ -36,6 +41,7 @@
 #include <atomic>
 #include <cassert>
 #include <cmath>
+#include <condition_variable>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/core/opts.h>
@@ -48,7 +54,11 @@
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/signal_search_avoids.h>
+#include <functional>
 #include <memory>
+#include <mutex>
+#include <qflags.h>
+#include <qsystemdetection.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -58,6 +68,7 @@
 #include "../test_support/qt_test_paths.h"
 #include "csv_text.h"
 #include "decoder_host.h"
+#include "document_export_writer.h"
 #include "document_save_transport.h"
 #include "json_store.h"
 #include "known_frequency_index.h"
@@ -1420,8 +1431,405 @@ test_save_transport_host(const QString& root) {
     assert(outliving->save(source, dir + QStringLiteral("/still.csv")));
 }
 
+namespace {
+
+/* A save transport whose saves wait at a gate (#826), for the export writer's cases. Saves record what they were
+   handed; an abort opens the gate unless the transport ignores aborts, as a stuck provider would. */
+class GateTransport : public dsd_qt::DocumentSaveTransport {
+  public:
+    struct Save {
+        QString source;
+        QString reference;
+        QByteArray bytes;
+        QThread* thread = nullptr;
+    };
+
+    explicit GateTransport(bool open = true, bool honorAbort = true) : m_open(open), m_honorAbort(honorAbort) {}
+
+    bool
+    save(const QString& sourcePath, const QString& reference) override {
+        const Save save{sourcePath, reference, read_bytes(sourcePath), QThread::currentThread()};
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_saves.append(save);
+        m_cv.wait(lock, [this]() { return m_open || (m_honorAbort && aborted()); });
+        m_returned++;
+        return m_result && !aborted();
+    }
+
+    void
+    discardPendingDownload(const QString& reference) override {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_discards.append(reference);
+    }
+
+    void
+    openGate() {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_open = true;
+        m_cv.notify_all();
+    }
+
+    void
+    setResult(bool result) {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_result = result;
+    }
+
+    QList<Save>
+    saves() const {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        return m_saves;
+    }
+
+    QStringList
+    discards() const {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        return m_discards;
+    }
+
+    int
+    returned() const {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        return m_returned;
+    }
+
+  protected:
+    void
+    abortPlatform() override {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_cv.notify_all();
+    }
+
+  private:
+    mutable std::mutex m_mutex;
+    std::condition_variable m_cv;
+    bool m_open;
+    bool m_honorAbort;
+    bool m_result = true;
+    int m_returned = 0;
+    QList<Save> m_saves;
+    QStringList m_discards;
+};
+
+/* The replies an export writer delivered, and the thread each ran on. */
+struct ExportReplies {
+    QList<QPair<int, bool>> replies;
+    QList<QThread*> threads;
+
+    dsd_qt::DocumentExportWriter::Reply
+    reply() {
+        return [this](int token, bool ok) {
+            replies.append(qMakePair(token, ok));
+            threads.append(QThread::currentThread());
+        };
+    }
+};
+
+} // namespace
+
+/* Runs the event loop until @p done holds or about 5 s pass; whether it held. */
+static bool
+spin_until(const std::function<bool()>& done) {
+    for (int i = 0; i < 500 && !done(); ++i) {
+        spin(10);
+    }
+    return done();
+}
+
+/* What @p dir holds, hidden entries too, by name. */
+static QStringList
+entries(const QString& dir) {
+    return QDir(dir).entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot, QDir::Name);
+}
+
+/* @p names, sorted as entries() lists them. */
+static QStringList
+sorted(QStringList names) {
+    names.sort();
+    return names;
+}
+
+/* The one staging folder under @p cacheRoot whose name is not in @p others. */
+static QString
+staging_folder(const QString& cacheRoot, const QStringList& others = QStringList()) {
+    QStringList found;
+    for (const QString& name : QDir(cacheRoot).entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        if (!others.contains(name)) {
+            found.append(name);
+        }
+    }
+    assert(found.size() == 1);
+    return cacheRoot + QLatin1Char('/') + found.first();
+}
+
+/* #826: a job stages the bytes, hands the staged file to the transport off the owner's thread, removes it, and replies
+   on the owner's thread; one job at a time. */
+static void
+test_export_writer_saves(const QString& root) {
+    const QString cacheRoot = root + QStringLiteral("/export saves/signal-search-export");
+    auto transport = std::make_shared<GateTransport>();
+    QObject owner;
+    ExportReplies log;
+    const QByteArray bytes = QByteArray("\xEF\xBB\xBF", 3) + QByteArray("frequency_hz\r\n482005000\r\n");
+    {
+        dsd_qt::DocumentExportWriter writer(transport, cacheRoot, &owner, log.reply());
+        const QString folder = staging_folder(cacheRoot);
+        const QString name = QFileInfo(folder).fileName();
+        assert(entries(cacheRoot) == sorted({name, name + QStringLiteral(".lock")}));
+        assert(!writer.busy());
+        assert(writer.submit(7, bytes, QStringLiteral("content://picked/7")));
+        assert(writer.busy());
+        // A second job while one runs is refused, and its picked document lets go of its Download-folder row.
+        assert(!writer.submit(8, bytes, QStringLiteral("content://picked/8")));
+        assert(transport->discards() == QStringList{QStringLiteral("content://picked/8")});
+        assert(spin_until([&log]() { return !log.replies.isEmpty(); }));
+        assert(log.replies == (QList<QPair<int, bool>>{qMakePair(7, true)}));
+        assert(log.threads.first() == owner.thread());
+        assert(!writer.busy());
+        const QList<GateTransport::Save> saves = transport->saves();
+        assert(saves.size() == 1 && saves[0].source == folder + QStringLiteral("/7.csv"));
+        assert(saves[0].reference == QStringLiteral("content://picked/7") && saves[0].bytes == bytes);
+        assert(saves[0].thread != owner.thread());
+        assert(entries(folder).isEmpty());
+
+        // A failed save replies false and still removes the staged file; the transport let go of the row itself.
+        transport->setResult(false);
+        assert(writer.submit(9, bytes, QStringLiteral("content://picked/9")));
+        assert(spin_until([&log]() { return log.replies.size() == 2; }));
+        assert(log.replies.last() == qMakePair(9, false) && log.threads.last() == owner.thread());
+        assert(transport->saves().size() == 2 && transport->saves().last().source == folder + QStringLiteral("/9.csv"));
+        assert(transport->discards().size() == 1);
+        assert(entries(folder).isEmpty() && !writer.busy());
+    }
+    // An idle writer takes its folder and lock with it, aborts nothing, and nothing replies after it.
+    assert(entries(cacheRoot).isEmpty());
+    assert(!transport->aborted());
+    spin(20);
+    assert(log.replies.size() == 2);
+}
+
+/* A job that cannot stage its file lets go of the picked document's Download-folder row and replies false. */
+static void
+test_export_writer_staging_failures(const QString& root) {
+    auto transport = std::make_shared<GateTransport>();
+    QObject owner;
+    ExportReplies log;
+    const QByteArray bytes("a,b\r\n");
+
+    // A cache root that cannot be made: under a file.
+    QDir(root).mkpath(QStringLiteral("export failures"));
+    const QString blocker = root + QStringLiteral("/export failures/file");
+    write_bytes(blocker, "x");
+    {
+        dsd_qt::DocumentExportWriter writer(transport, blocker + QStringLiteral("/cache"), &owner, log.reply());
+        assert(writer.submit(1, bytes, QStringLiteral("r1")));
+        assert(spin_until([&log]() { return log.replies.size() == 1; }));
+        assert(log.replies.last() == qMakePair(1, false) && !writer.busy());
+        assert(transport->discards() == QStringList{QStringLiteral("r1")} && transport->saves().isEmpty());
+        // Idle again: the next job is taken (and fails the same way).
+        assert(writer.submit(2, bytes, QStringLiteral("r2")));
+        assert(spin_until([&log]() { return log.replies.size() == 2; }));
+        assert(transport->discards().last() == QStringLiteral("r2"));
+    }
+
+    const QString cacheRoot = root + QStringLiteral("/export failures/cache");
+    dsd_qt::DocumentExportWriter writer(transport, cacheRoot, &owner, log.reply());
+    const QString folder = staging_folder(cacheRoot);
+    // A commit failure: the job's path is a folder, so the written copy cannot replace it.
+    assert(QDir(folder).mkdir(QStringLiteral("3.csv")));
+    assert(writer.submit(3, bytes, QStringLiteral("r3")));
+    assert(spin_until([&log]() { return log.replies.size() == 3; }));
+    assert(log.replies.last() == qMakePair(3, false) && !writer.busy());
+    assert(transport->discards().last() == QStringLiteral("r3") && transport->saves().isEmpty());
+    assert(entries(folder) == QStringList{QStringLiteral("3.csv")});
+    assert(QDir(folder).rmdir(QStringLiteral("3.csv")));
+
+#ifdef Q_OS_UNIX
+    // An open failure: a folder nothing can be written into (unless the tests run as a user permissions do not bind).
+    QFile::setPermissions(folder, QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+    QFile probe(folder + QStringLiteral("/probe"));
+    if (!probe.open(QIODevice::WriteOnly)) {
+        assert(writer.submit(4, bytes, QStringLiteral("r4")));
+        assert(spin_until([&log]() { return log.replies.size() == 4; }));
+        assert(log.replies.last() == qMakePair(4, false) && !writer.busy());
+        assert(transport->discards().last() == QStringLiteral("r4") && transport->saves().isEmpty());
+    } else {
+        probe.remove();
+    }
+    QFile::setPermissions(folder, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+#endif
+    assert(entries(folder).isEmpty());
+
+    // A transport aborted at teardown: a new job is refused at once and its row let go of.
+    transport->abort();
+    const qsizetype before = log.replies.size();
+    assert(!writer.submit(5, bytes, QStringLiteral("r5")));
+    assert(!writer.busy() && transport->discards().last() == QStringLiteral("r5"));
+    spin(20);
+    assert(log.replies.size() == before);
+}
+
+/* The child mode of this binary: hold the lock file argv[2] until stdin closes or the process is killed. */
+static int
+hold_export_lock(int argc, char** argv) {
+    QCoreApplication app(argc, argv);
+    QLockFile lock(QString::fromLocal8Bit(argv[2]));
+    lock.setStaleLockTime(0);
+    if (!lock.tryLock(0)) {
+        return 1;
+    }
+    fputs("locked\n", stdout);
+    fflush(stdout);
+    char buffer[64];
+    while (fread(buffer, 1, sizeof(buffer), stdin) > 0) {}
+    return 0;
+}
+
+/* Starts this binary holding @p lockPath; it answers once it holds it. */
+static void
+start_lock_holder(QProcess& child, const QString& lockPath) {
+    child.start(QCoreApplication::applicationFilePath(), {QStringLiteral("--hold-export-lock"), lockPath});
+    assert(child.waitForStarted(5000));
+    assert(child.waitForReadyRead(5000) && child.readAllStandardOutput().startsWith("locked"));
+}
+
+static void
+kill_lock_holder(QProcess& child) {
+    child.kill();
+    assert(child.waitForFinished(5000));
+}
+
+/* Each writer sweeps the folders no live writer holds: those whose lock it can take (none, or one whose process is
+   gone). Age never makes a lock stale. */
+static void
+test_export_writer_sweep(const QString& root) {
+    const QString cacheRoot = root + QStringLiteral("/export sweep");
+    QDir(root).mkpath(QStringLiteral("export sweep/free"));
+    write_bytes(cacheRoot + QStringLiteral("/free/1.csv"), "left");
+
+    // Held in this process, and last written a day ago.
+    QDir(cacheRoot).mkdir(QStringLiteral("live"));
+    auto live = std::make_unique<QLockFile>(cacheRoot + QStringLiteral("/live.lock"));
+    live->setStaleLockTime(0);
+    assert(live->tryLock(0));
+    {
+        QFile stamp(cacheRoot + QStringLiteral("/live.lock"));
+        assert(stamp.open(QIODevice::ReadOnly));
+        assert(stamp.setFileTime(QDateTime::currentDateTimeUtc().addDays(-1), QFileDevice::FileModificationTime));
+    }
+
+    // Held by another process; and one whose holder is gone.
+    QDir(cacheRoot).mkdir(QStringLiteral("child"));
+    QProcess child;
+    start_lock_holder(child, cacheRoot + QStringLiteral("/child.lock"));
+    QDir(cacheRoot).mkdir(QStringLiteral("dead"));
+    write_bytes(cacheRoot + QStringLiteral("/dead/2.csv"), "left");
+    QProcess dead;
+    start_lock_holder(dead, cacheRoot + QStringLiteral("/dead.lock"));
+    kill_lock_holder(dead);
+    assert(QFileInfo::exists(cacheRoot + QStringLiteral("/dead.lock")));
+
+    auto transport = std::make_shared<GateTransport>();
+    QObject owner;
+    ExportReplies log;
+    {
+        dsd_qt::DocumentExportWriter first(transport, cacheRoot, &owner, log.reply());
+        const QString own =
+            QFileInfo(staging_folder(cacheRoot, {QStringLiteral("child"), QStringLiteral("live")})).fileName();
+        const QStringList expected =
+            sorted({QStringLiteral("child"), QStringLiteral("child.lock"), QStringLiteral("live"),
+                    QStringLiteral("live.lock"), own, own + QStringLiteral(".lock")});
+        assert(entries(cacheRoot) == expected);
+        // Another writer in this process keeps the first one's folder.
+        {
+            const dsd_qt::DocumentExportWriter second(transport, cacheRoot, &owner, log.reply());
+            assert(QFileInfo::exists(cacheRoot + QLatin1Char('/') + own)
+                   && QFileInfo::exists(cacheRoot + QLatin1Char('/') + own + QStringLiteral(".lock")));
+        }
+        assert(entries(cacheRoot) == expected);
+    }
+
+    // Once the other process is gone its folder goes too; the lock held here keeps its own.
+    kill_lock_holder(child);
+    {
+        const dsd_qt::DocumentExportWriter third(transport, cacheRoot, &owner, log.reply());
+        const QString own = QFileInfo(staging_folder(cacheRoot, {QStringLiteral("live")})).fileName();
+        assert(entries(cacheRoot)
+               == sorted({QStringLiteral("live"), QStringLiteral("live.lock"), own, own + QStringLiteral(".lock")}));
+    }
+    live.reset();
+    assert(entries(cacheRoot) == QStringList{QStringLiteral("live")});
+    {
+        // Free now: the next writer sweeps it.
+        const dsd_qt::DocumentExportWriter fourth(transport, cacheRoot, &owner, log.reply());
+        assert(!QFileInfo::exists(cacheRoot + QStringLiteral("/live")));
+    }
+    assert(entries(cacheRoot).isEmpty());
+    assert(log.replies.isEmpty());
+}
+
+/* Teardown with a save in progress that heeds the abort: it stops at once, nothing replies, and the writer's folder
+   and lock go. */
+static void
+test_export_writer_teardown_stops(const QString& root) {
+    const QString cacheRoot = root + QStringLiteral("/export teardown");
+    auto transport = std::make_shared<GateTransport>(false, true);
+    QObject owner;
+    ExportReplies log;
+    auto writer = std::make_unique<dsd_qt::DocumentExportWriter>(transport, cacheRoot, &owner, log.reply());
+    assert(writer->submit(1, QByteArray("a\r\n"), QStringLiteral("r1")));
+    assert(spin_until([&transport]() { return !transport->saves().isEmpty(); }));
+    QElapsedTimer timer;
+    timer.start();
+    writer.reset();
+    assert(timer.elapsed() < dsd_qt::DocumentExportWriter::kStopWaitMs);
+    assert(transport->aborted() && transport->returned() == 1);
+    assert(entries(cacheRoot).isEmpty());
+    spin(50);
+    assert(log.replies.isEmpty());
+}
+
+/* Teardown with a save that ignores the abort: the writer waits about kStopWaitMs, leaves the job behind with its
+   folder and lock, and the job's late end never replies. */
+static void
+test_export_writer_teardown_blocked(const QString& root) {
+    const QString cacheRoot = root + QStringLiteral("/export blocked");
+    auto transport = std::make_shared<GateTransport>(false, false);
+    QObject owner;
+    ExportReplies log;
+    auto writer = std::make_unique<dsd_qt::DocumentExportWriter>(transport, cacheRoot, &owner, log.reply());
+    const QString folder = staging_folder(cacheRoot);
+    assert(writer->submit(1, QByteArray("a\r\n"), QStringLiteral("r1")));
+    assert(spin_until([&transport]() { return !transport->saves().isEmpty(); }));
+    QElapsedTimer timer;
+    timer.start();
+    writer.reset();
+    const qint64 took = timer.elapsed();
+    // The upper bound only proves the wait is bounded: a loaded or sanitized runner can be slow to wake.
+    assert(took >= dsd_qt::DocumentExportWriter::kStopWaitMs - 100
+           && took < qint64{dsd_qt::DocumentExportWriter::kStopWaitMs} * 4);
+    assert(transport->aborted() && transport->returned() == 0);
+    assert(QFileInfo::exists(folder + QStringLiteral("/1.csv")) && QFileInfo::exists(folder + QStringLiteral(".lock")));
+
+    transport->openGate();
+    assert(spin_until([&transport]() { return transport->returned() == 1; }));
+    assert(spin_until([&folder]() { return !QFileInfo::exists(folder + QStringLiteral("/1.csv")); }));
+    spin(50);
+    assert(log.replies.isEmpty());
+    // The left-behind job keeps its lock until the process ends, so a new writer keeps its folder.
+    {
+        const dsd_qt::DocumentExportWriter next(std::make_shared<GateTransport>(), cacheRoot, &owner, log.reply());
+        assert(QFileInfo::exists(folder) && QFileInfo::exists(folder + QStringLiteral(".lock")));
+    }
+    const QString name = QFileInfo(folder).fileName();
+    assert(entries(cacheRoot) == sorted({name, name + QStringLiteral(".lock")}));
+}
+
 int
 main(int argc, char** argv) {
+    if (argc == 3 && strcmp(argv[1], "--hold-export-lock") == 0) {
+        return hold_export_lock(argc, argv);
+    }
     QCoreApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("dsd-search-tests"));
     dsd_test_qt_isolate_paths();
@@ -1431,6 +1839,11 @@ main(int argc, char** argv) {
     test_save_transport_local(temp.path());
     test_save_transport_abort_mid_save(temp.path());
     test_save_transport_host(temp.path());
+    test_export_writer_saves(temp.path());
+    test_export_writer_staging_failures(temp.path());
+    test_export_writer_sweep(temp.path());
+    test_export_writer_teardown_stops(temp.path());
+    test_export_writer_teardown_blocked(temp.path());
     const QString journal = temp.filePath(QStringLiteral("history"));
     // The store writes version 2 records beside the version 1 journal it is opened with.
     const QString written = journal + QStringLiteral(".v2");

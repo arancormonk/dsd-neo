@@ -13162,6 +13162,21 @@ Qt Quick frontend (`src/ui/qt`):
   flag. `abortDocumentTransfers()` aborts every save transport handed out too, and one handed out after it starts
   aborted. `abort()` calls the protected `abortPlatform()`, which a platform transport uses to stop its own copies.
   Test: `UI_QT_SIGNAL_SEARCH` (local saves, abort before and during a save, the hand-out, a transport past its host).
+  `document_export_writer.{h,cpp}` is the export writer (#826): `DocumentExportWriter(transport, cacheRoot, owner,
+  reply)` lives on its owner's thread. `submit(token, bytes, reference)` runs one job at a time on a one-thread
+  `QThreadPool`: it writes the bytes to `<token>.csv` in the writer's own owner-only folder `<cacheRoot>/<uuid>/`
+  (`QSaveFile` + `open_private()`), hands that file to `transport->save()`, and removes it whatever happened; a job that
+  cannot stage (no folder or lock, an open, write or commit failure) calls `discardPendingDownload(reference)` instead
+  and fails. `submit()` answers false, discarding the reference's Download-folder row at once, while a job runs
+  (`busy()`) or once the transport is aborted. `reply(token, ok)` is queued to the owner's thread through a shared link
+  (mutex, owner and writer pointers) the destructor clears, so a job that ends after the writer never reaches it. Each
+  writer holds `<cacheRoot>/<uuid>.lock` (`QLockFile`, `setStaleLockTime(0)`: age never makes it stale) for its life;
+  the constructor sweeps every other folder (and orphan lock) whose lock it can take with `tryLock(0)` (no lock, or a
+  holder whose process is gone), so a live writer in this or another process keeps its folder. The destructor aborts
+  the transport only when a job is still running, waits up to `kStopWaitMs` (2000), and then removes its folder and
+  lock; a job blocked past that keeps its worker and lock (never deleted, as `ImportService`'s) and its folder until
+  the process ends, for a later sweep. Test: `UI_QT_SIGNAL_SEARCH` (save, failed save, staging failures, refusals,
+  sweep against in-process, child-process, dead and day-old locks, cooperative and blocked teardown).
   `import_service.{h,cpp}` is the import worker (#832) the library and the replay imports share; `ui_load()` makes the
   one service (not published to QML) from `host->importTransport()` right after `ImportService::sweepStaging()`, which
   runs once after the restore applies and removes `<AppData>/import-staging/` wholly (a link is removed, never
