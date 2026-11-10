@@ -16,6 +16,12 @@
 #include <cerrno>
 #include <memory>
 
+#ifndef _WIN32
+#include <cstdio>
+
+#include <dsd-neo/platform/file_compat.h>
+#endif
+
 #include "decoder_host.h"
 
 namespace dsd_qt {
@@ -32,6 +38,25 @@ bool
 out_of_space(const QSaveFile& out) {
     return out.error() == QFileDevice::ResourceError || errno == ENOSPC;
 }
+
+#ifndef _WIN32
+/** @brief A QFile reading a stdio stream it owns: closed with the device. */
+class StreamSource : public QFile {
+  public:
+    explicit StreamSource(FILE* stream) : m_stream(stream) {}
+
+    StreamSource(const StreamSource&) = delete;
+    StreamSource& operator=(const StreamSource&) = delete;
+
+    ~StreamSource() override {
+        close();
+        (void)std::fclose(m_stream);
+    }
+
+  private:
+    FILE* m_stream;
+};
+#endif
 
 } // namespace
 
@@ -173,13 +198,35 @@ DocumentImportTransport::copyLocal(qint64 request, const QString& path, const QS
     return out.commit() ? static_cast<int>(DecoderHost::DocumentCopied) : localFailure(request, out);
 }
 
+/*
+ * copyLocal() checked the type a moment ago, but the name may lead to a FIFO by now. On POSIX the open never waits on
+ * one: the path is resolved first (a link to a regular file still opens it), then the resolved name is opened
+ * non-blocking without following it and refused unless the descriptor is a regular file
+ * (dsd_fopen_existing_regular_file()). Windows has no FIFO at a file path, so a plain QFile opens it there.
+ */
 std::unique_ptr<QIODevice>
 DocumentImportTransport::openSource(const QString& path) {
+#ifdef _WIN32
     auto source = std::make_unique<QFile>(path);
     if (!source->open(QIODevice::ReadOnly)) {
         return nullptr;
     }
     return source;
+#else
+    char resolved[4096];
+    if (dsd_path_canonical(QFile::encodeName(path).constData(), resolved, sizeof(resolved)) != 0) {
+        return nullptr;
+    }
+    FILE* stream = dsd_fopen_existing_regular_file(resolved, "rb");
+    if (stream == nullptr) {
+        return nullptr;
+    }
+    auto source = std::make_unique<StreamSource>(stream);
+    if (!source->open(stream, QIODevice::ReadOnly, QFileDevice::DontCloseHandle)) {
+        return nullptr;
+    }
+    return source;
+#endif
 }
 
 int

@@ -96,8 +96,9 @@ class DocumentImportTransport {
     /**
      * @brief Open @p path, a regular file, for reading; nullptr when it cannot be opened.
      *
-     * The only source a copy opens. The base transport opens a QFile; a test overrides it to hand the copy a device
-     * it paces.
+     * The only source a copy opens. The base transport never waits on what it opens: on POSIX a name that leads to
+     * anything but a regular file by now (a FIFO swapped in after the check) is refused at once. A test overrides it
+     * to hand the copy a device it paces.
      */
     virtual std::unique_ptr<QIODevice> openSource(const QString& path);
 

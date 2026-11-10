@@ -398,6 +398,59 @@ test_fifo_without_writer_is_refused() {
     expect_fifo_refused(fifo, fifo, "a FIFO is refused as no document");
 }
 
+/* The base transport's source open, reachable by a case. */
+class OpenProbe : public DocumentImportTransport {
+  public:
+    std::unique_ptr<QIODevice>
+    open(const QString& path) {
+        return openSource(path);
+    }
+};
+
+/*
+ * #830 B1, the open itself: a name that leads to a FIFO by the time the source opens (after copyLocal() checked it)
+ * is refused at once, never waited on, also through a link; a regular file, and a link to one, still open and read.
+ */
+void
+test_open_source_never_waits() {
+    QTemporaryDir src;
+    CHECK(src.isValid(), "a scratch directory exists");
+    const QString fifo = src.filePath(QStringLiteral("feed.csv"));
+    const QString fifoLink = src.filePath(QStringLiteral("feed-link.csv"));
+    const QString file = src.filePath(QStringLiteral("chan.csv"));
+    const QString fileLink = src.filePath(QStringLiteral("chan-link.csv"));
+    CHECK(mkfifo(QFile::encodeName(fifo).constData(), 0600) == 0, "a FIFO is made");
+    CHECK(QFile::link(fifo, fifoLink), "a link to the FIFO is made");
+    write_file(file, "1,2\n");
+    CHECK(QFile::link(file, fileLink), "a link to the file is made");
+    OpenProbe probe;
+
+    for (const QString& path : {fifo, fifoLink}) {
+        std::atomic<bool> returned{false};
+        bool opened = true;
+        std::thread worker([&] {
+            opened = probe.open(path) != nullptr;
+            returned.store(true);
+        });
+        for (int i = 0; i < 2000 && !returned.load(); ++i) {
+            QThread::msleep(1);
+        }
+        const bool inTime = returned.load();
+        if (!inTime) {
+            const int writer = ::open(QFile::encodeName(fifo).constData(), O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+            if (writer >= 0) {
+                ::close(writer);
+            }
+        }
+        worker.join();
+        CHECK(inTime && !opened, "the source open refuses a FIFO without waiting for a writer");
+    }
+    for (const QString& path : {file, fileLink}) {
+        const std::unique_ptr<QIODevice> source = probe.open(path);
+        CHECK(source != nullptr && source->readAll() == "1,2\n", "a regular file, or a link to one, opens and reads");
+    }
+}
+
 /* The same through a symbolic link: the link's name looks like a CSV file, the file it leads to is a FIFO. */
 void
 test_symlink_to_fifo_is_refused() {
@@ -447,6 +500,7 @@ main(int argc, char** argv) {
 #ifndef _WIN32
     test_fifo_without_writer_is_refused();
     test_symlink_to_fifo_is_refused();
+    test_open_source_never_waits();
 #endif
     test_full_disk();
     return failures ? 1 : 0;

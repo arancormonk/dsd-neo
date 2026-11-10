@@ -381,21 +381,17 @@ DecoderHost::cancelDocumentRequest(qint64 requestId) {
     m_refusedDocumentRequests.remove(requestId);
 }
 
-namespace {
-
-/* A file request's answer without a result: {status}, a hand-off's {ok: false, reason}, an access {outcome}. */
 QVariantMap
-file_failure(bool handoff, bool access, const QString& code) {
-    if (handoff) {
-        return {{QStringLiteral("ok"), false}, {QStringLiteral("reason"), code}};
-    }
-    if (access) {
-        return {{QStringLiteral("outcome"), code}};
+DecoderHost::fileFailure(FileRequestKind kind, const QString& code) {
+    switch (kind) {
+        case FileRequestKind::Handoff: return {{QStringLiteral("ok"), false}, {QStringLiteral("reason"), code}};
+        case FileRequestKind::Access: return {{QStringLiteral("outcome"), code}};
+        case FileRequestKind::Roots:
+        case FileRequestKind::Listing:
+        case FileRequestKind::Page: break;
     }
     return {{QStringLiteral("status"), code}};
 }
-
-} // namespace
 
 QVariantMap
 DecoderHost::fileAccess() const {
@@ -460,9 +456,6 @@ DecoderHost::requestFileHandoff(qint64 sessionId, const QString& rootKey, qint64
 
 qint64
 DecoderHost::requestFileAccess(qint64 sessionId) {
-    if (m_fileAccessRequest != 0) {
-        return m_fileAccessRequest;
-    }
     return refuseFileRequest(sessionId, FileRequestKind::Access);
 }
 
@@ -473,9 +466,12 @@ DecoderHost::cancelFileRequest(qint64 requestId) {
 
 qint64
 DecoderHost::refuseFileRequest(qint64 sessionId, FileRequestKind kind) {
+    const qint64 joined = kind == FileRequestKind::Access ? m_fileAccessRequest : 0;
     const qint64 id = beginFileRequest(sessionId, kind);
-    QVariantMap unsupported =
-        file_failure(kind == FileRequestKind::Handoff, kind == FileRequestKind::Access, QStringLiteral("unsupported"));
+    if (id == joined) {
+        return id; // The pending access request, answered already.
+    }
+    QVariantMap unsupported = fileFailure(kind, QStringLiteral("unsupported"));
     if (kind == FileRequestKind::Roots) {
         unsupported.insert(QStringLiteral("generation"), qint64(0));
         unsupported.insert(QStringLiteral("roots"), QVariantList());
@@ -486,8 +482,11 @@ DecoderHost::refuseFileRequest(qint64 sessionId, FileRequestKind kind) {
 
 qint64
 DecoderHost::beginFileRequest(qint64 sessionId, FileRequestKind kind) {
-    const qint64 id = nextDocumentRequestId();
     const bool open = m_fileSessions.contains(sessionId);
+    if (open && kind == FileRequestKind::Access && m_fileAccessRequest != 0) {
+        return m_fileAccessRequest; // One access request app-wide: a second one joins it.
+    }
+    const qint64 id = nextDocumentRequestId();
     if (open && (kind == FileRequestKind::Listing || kind == FileRequestKind::Page)) {
         supersedeFolderRequests(sessionId);
     }
@@ -496,8 +495,7 @@ DecoderHost::beginFileRequest(qint64 sessionId, FileRequestKind kind) {
     state.session = sessionId;
     m_fileRequests.insert(id, state);
     if (!open) {
-        settleFileRequestLater(id, file_failure(kind == FileRequestKind::Handoff, kind == FileRequestKind::Access,
-                                                QStringLiteral("cancelled")));
+        settleFileRequestLater(id, fileFailure(kind, QStringLiteral("cancelled")));
     } else if (kind == FileRequestKind::Access) {
         m_fileAccessRequest = id;
     }
@@ -543,8 +541,7 @@ DecoderHost::cancelFileAnswer(qint64 id) {
     if (m_fileAccessRequest == id) {
         m_fileAccessRequest = 0;
     }
-    const QVariantMap cancelled = file_failure(found->kind == FileRequestKind::Handoff,
-                                               found->kind == FileRequestKind::Access, QStringLiteral("cancelled"));
+    const QVariantMap cancelled = fileFailure(found->kind, QStringLiteral("cancelled"));
     if (found->answered) {
         found->answer = cancelled; // Its delivery is queued already: it delivers this instead.
         return;

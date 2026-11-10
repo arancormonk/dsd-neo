@@ -486,9 +486,9 @@ class DecoderHost : public QObject {
      * pages), fileHandoffChecked() or fileAccessRequestDone(). cancelFileRequest(), closeFileBrowserSession() and a
      * superseding request retire a request at once and answer it "cancelled", queued, also when another answer was
      * already queued for it; a platform answer that comes for a retired id is dropped. A session has one listing or
-     * page at a time (a new one supersedes it), the app one access request (a second call returns the one pending),
-     * and a request naming a session that is closed or unknown is answered "cancelled". The base host has no browser:
-     * sessions open, and every request is answered "unsupported", queued.
+     * page at a time (a new one supersedes it), the app one access request (a second call in an open session returns
+     * the one pending), and a request naming a session that is closed or unknown is answered "cancelled". The base
+     * host has no browser: sessions open, and every request is answered "unsupported", queued.
      */
     /** @brief Whether this host has the file browser; also the capability for same-tree companions and local replay
      * copies. The base host has none. */
@@ -976,9 +976,12 @@ class DecoderHost : public QObject {
     /**
      * @brief Begin a file request of @p kind in session @p sessionId and return its new id, live.
      *
-     * A listing or page retires the session's pending one first ("cancelled"); an access request becomes the one
-     * liveFileAccessRequest() names. A session that is closed or unknown: the request is answered "cancelled" at
-     * once, queued, and is not live, so the caller starts nothing on the platform.
+     * A listing or page retires the session's pending one first ("cancelled"). Access is one request app-wide: while
+     * one is pending (liveFileAccessRequest()), an access request in an open session returns that id and begins
+     * nothing, so a caller starts the platform only for an id other than the one liveFileAccessRequest() named
+     * before the call; otherwise the new request becomes the one it names. A closed or unknown session comes first:
+     * the request gets a new id answered "cancelled" at once, queued, and not live, so the caller starts nothing on
+     * the platform, and a pending access request is left as it is.
      */
     qint64 beginFileRequest(qint64 sessionId, FileRequestKind kind);
 
@@ -1092,7 +1095,10 @@ class DecoderHost : public QObject {
         QVariantMap answer;
     };
 
-    /* A new request of @p kind answered "unsupported", queued (or "cancelled" for a session not open). */
+    /* A request answered without a result: {status}, a hand-off's {ok: false, reason}, an access {outcome}. */
+    static QVariantMap fileFailure(FileRequestKind kind, const QString& code);
+    /* A new request of @p kind answered "unsupported", queued ("cancelled" for a session not open); an access request
+       in an open session joins the pending one. */
     qint64 refuseFileRequest(qint64 sessionId, FileRequestKind kind);
     /* Retire request @p id, live or answered but not delivered, with a "cancelled" answer. */
     void cancelFileAnswer(qint64 id);

@@ -3628,6 +3628,23 @@ test_file_browser_defaults() {
     QCoreApplication::processEvents();
     expect("cancelling an answered or unknown id answers nothing", answers.count(x) == 1 && answers.count(999999) == 0);
 
+    /* An access request from a closed or unknown session never joins the pending one: it gets its own id, cancelled,
+       and the pending request keeps its answer. */
+    answers.answers.clear();
+    const qint64 pending = host.requestFileAccess(s);
+    const qint64 gone = host.openFileBrowserSession();
+    host.closeFileBrowserSession(gone);
+    const qint64 fromClosed = host.requestFileAccess(gone);
+    const qint64 fromUnknown = host.requestFileAccess(-1);
+    expect("an access request from a closed or unknown session is its own",
+           fromClosed > pending && fromUnknown > fromClosed && host.requestFileAccess(s) == pending);
+    QCoreApplication::processEvents();
+    expect("the pending access request keeps its own answer",
+           answers.once(pending, "access", {{QStringLiteral("outcome"), QStringLiteral("unsupported")}}));
+    expect("an access request from a closed or unknown session is cancelled",
+           answers.once(fromClosed, "access", {{QStringLiteral("outcome"), QStringLiteral("cancelled")}})
+               && answers.once(fromUnknown, "access", {{QStringLiteral("outcome"), QStringLiteral("cancelled")}}));
+
     /* Closing the session cancels its live requests, and a request naming it afterwards is cancelled. */
     answers.answers.clear();
     const qint64 other = host.openFileBrowserSession();
@@ -3650,6 +3667,124 @@ test_file_browser_defaults() {
     QCoreApplication::processEvents();
     expect("closing a session with nothing live answers nothing", answers.answers.size() == 5);
     expect("file access never changed on the base host", accessChanges == 0);
+}
+
+namespace {
+
+/* A host whose file requests stay live until settled, as a platform host's do until its record comes: the protected
+   helpers under test, and the retirements it is told of. */
+class LiveFileHost : public TestHost {
+  public:
+    using DecoderHost::FileRequestKind;
+    QList<qint64> retired;
+
+    qint64
+    begin(qint64 sessionId, FileRequestKind kind) {
+        return beginFileRequest(sessionId, kind);
+    }
+
+    bool
+    live(qint64 id) const {
+        return fileRequestLive(id);
+    }
+
+    bool
+    settle(qint64 id, const QVariantMap& result) {
+        return settleFileRequest(id, result);
+    }
+
+    void
+    settleLater(qint64 id, const QVariantMap& result) {
+        settleFileRequestLater(id, result);
+    }
+
+    qint64
+    liveAccess() const {
+        return liveFileAccessRequest();
+    }
+
+  protected:
+    void
+    fileRequestRetired(qint64 requestId) override {
+        retired.append(requestId);
+    }
+};
+
+} // namespace
+
+/* Issue #830: the helpers a platform host answers through. A cancel, a session close and a superseding listing retire
+   a live request once (fileRequestRetired()) and make a late record a drop (settleFileRequest() false); one access
+   request is live app-wide, and only an open session joins it. */
+static void
+test_file_browser_live_requests() {
+    using Kind = LiveFileHost::FileRequestKind;
+    LiveFileHost host;
+    FileAnswers answers(host);
+    const QVariantMap ok = status_map("ok");
+    const qint64 s = host.openFileBrowserSession();
+
+    const qint64 r = host.begin(s, Kind::Roots);
+    expect("a begun request is live", host.live(r));
+    host.cancelFileRequest(r);
+    expect("a live cancel is retired once", host.retired == QList<qint64>({r}) && !host.live(r));
+    expect("a record after the cancel is dropped", !host.settle(r, ok));
+    host.cancelFileRequest(r);
+    expect("a second cancel retires nothing more", host.retired.size() == 1);
+
+    const qint64 l = host.begin(s, Kind::Listing);
+    const qint64 p = host.begin(s, Kind::Page);
+    expect("a page retires the session's live listing", host.retired == QList<qint64>({r, l}) && host.live(p));
+    expect("a record for the superseded listing is dropped", !host.settle(l, ok));
+    expect("the live page is answered now", host.settle(p, ok) && answers.once(p, "folder", ok));
+    expect("a page answers only once", !host.settle(p, ok));
+
+    const qint64 h = host.begin(s, Kind::Handoff);
+    const qint64 a = host.begin(s, Kind::Access);
+    expect("the access request is the one live", host.liveAccess() == a);
+    expect("a second access begin joins it", host.begin(s, Kind::Access) == a && host.live(a));
+    const qint64 gone = host.openFileBrowserSession();
+    host.closeFileBrowserSession(gone);
+    const qint64 fromClosed = host.begin(gone, Kind::Access);
+    const qint64 fromUnknown = host.begin(-1, Kind::Access);
+    expect("an access begin from a closed or unknown session is its own and not live",
+           fromClosed > gone && fromUnknown > fromClosed && !host.live(fromClosed) && !host.live(fromUnknown));
+    expect("and leaves the live access request alone", host.liveAccess() == a && host.live(a));
+    expect("a request for a session not open is never retired on the platform", host.retired.size() == 2);
+
+    host.closeFileBrowserSession(s);
+    expect("closing the session retires each live request once",
+           host.retired == QList<qint64>({r, l, h, a}) && !host.live(h) && !host.live(a));
+    expect("records after the close are dropped",
+           !host.settle(h, ok) && !host.settle(a, {{QStringLiteral("outcome"), QStringLiteral("granted")}}));
+    expect("no access request is live after the close", host.liveAccess() == 0);
+
+    /* A queued answer is not live: a cancel turns it into "cancelled" without a platform retirement. */
+    const qint64 s3 = host.openFileBrowserSession();
+    const qint64 q = host.begin(s3, Kind::Roots);
+    host.settleLater(q, ok);
+    expect("a request with a queued answer is not live", !host.live(q) && !host.settle(q, ok));
+    host.cancelFileRequest(q);
+    expect("cancelling a queued answer retires nothing on the platform", host.retired.size() == 4);
+    const qint64 a2 = host.begin(s3, Kind::Access);
+    expect("a new access request after the close", a2 > q && host.liveAccess() == a2);
+    expect("an access record settles it now",
+           host.settle(a2, {{QStringLiteral("outcome"), QStringLiteral("granted")}})
+               && answers.once(a2, "access", {{QStringLiteral("outcome"), QStringLiteral("granted")}})
+               && host.liveAccess() == 0);
+
+    QCoreApplication::processEvents();
+    const QVariantMap cancelled = status_map("cancelled");
+    expect("each retired request is answered cancelled once",
+           answers.once(r, "roots", cancelled) && answers.once(l, "folder", cancelled)
+               && answers.once(h, "handoff",
+                               {{QStringLiteral("ok"), false}, {QStringLiteral("reason"), QStringLiteral("cancelled")}})
+               && answers.once(a, "access", {{QStringLiteral("outcome"), QStringLiteral("cancelled")}}));
+    expect("requests for a session not open are answered cancelled",
+           answers.once(fromClosed, "access", {{QStringLiteral("outcome"), QStringLiteral("cancelled")}})
+               && answers.once(fromUnknown, "access", {{QStringLiteral("outcome"), QStringLiteral("cancelled")}}));
+    expect("a queued answer cancelled before it ran is cancelled once", answers.once(q, "roots", cancelled));
+    expect("the settled page is not answered again", answers.count(p) == 1);
+    expect("nine answers in all", answers.answers.size() == 9);
 }
 
 int
@@ -3730,6 +3865,7 @@ main(int argc, char** argv) {
     test_export_registration_in_place();
     test_document_picker_defaults();
     test_file_browser_defaults();
+    test_file_browser_live_requests();
     test_group_list_counts_read_the_file_now();
     test_imported_files_model();
     test_update_rejects_invalid_pick();

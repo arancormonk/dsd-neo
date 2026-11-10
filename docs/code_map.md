@@ -13151,7 +13151,10 @@ Qt Quick frontend (`src/ui/qt`):
   (file URL or absolute path; any other reference is `DocumentFailed`, and so is a FIFO, socket, device or folder,
   also through a symbolic link, checked before the open: a FIFO with no writer held the import worker forever,
   #830 B1) through `QSaveFile` and `copy_stream_capped()`. The protected `openSource(path)` is the only source open
-  (a `QFile`; `UI_QT_IMPORT_TRANSPORT`'s `stop_mid_copy` overrides it with a paced device), and the copy's
+  and never waits: on POSIX it resolves the path (`dsd_path_canonical()`) and opens it with
+  `dsd_fopen_existing_regular_file()` (non-blocking, the resolved name not followed, refused unless the descriptor is
+  a regular file), so a FIFO swapped in after the check is refused too; Windows, with no FIFO at a file path, opens a
+  plain `QFile`. `UI_QT_IMPORT_TRANSPORT`'s `stop_mid_copy` overrides it with a paced device. The copy's
   per-chunk predicate checks the request's cancel and the transport's abort; a write or commit that hits `ENOSPC`
   (`ResourceError` or errno) is `DocumentLocalFailed` with `noSpace`. `abortDocumentTransfers()` aborts every transport
   handed out (the host keeps weak references), and one handed out after it starts aborted.
@@ -14006,12 +14009,14 @@ Qt Quick frontend (`src/ui/qt`):
   header and the spec's list (`failed`: the platform could not take the request). `cancelFileRequest(id)`,
   `closeFileBrowserSession(id)` (every request of the session) and a superseding request (one listing or page per
   session) retire the id first and answer `cancelled`, queued, even over an answer already queued for it; a platform
-  answer for a retired id is dropped. One access request is live app-wide: a second `requestFileAccess` returns it
-  until its answer is delivered. A request naming a closed or unknown session is answered `cancelled`. Qt thread only.
+  answer for a retired id is dropped. One access request is live app-wide: a second `requestFileAccess` from an open
+  session returns it until its answer is delivered. A request naming a closed or unknown session gets its own id,
+  answered `cancelled` (an access request from one never joins the pending one). Qt thread only.
   The base host opens sessions and answers every request `unsupported` (roots `{status, generation: 0, roots: []}`,
   hand-off `{ok: false, reason}`), queued. A platform host overrides the requests and uses the protected helpers:
   `beginFileRequest(session, kind)` (the id, live; supersedes a listing or page; already answered `cancelled` and not
-  live for a session not open), `fileRequestLive(id)`, `settleFileRequest(id, result)` (retire and emit now; false
+  live for a session not open; an access begin in an open session while one is pending returns that id and begins
+  nothing, so the one-access rule holds in every host), `fileRequestLive(id)`, `settleFileRequest(id, result)` (retire and emit now; false
   when not live: the drop of a late record) and `settleFileRequestLater(id, result)` (retire, emit queued);
   `liveFileAccessRequest()` is the access request a new one joins, and the virtual `fileRequestRetired(id)` (base
   no-op) tells it a live request was cancelled, closed or superseded so the platform can stop its work. QML tests:
