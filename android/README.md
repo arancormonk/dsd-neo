@@ -324,10 +324,10 @@ Limits:
 **Open with** or **Share** on a file in another app (a file manager, a chat or mail app) hands it to DSD-neo (#831).
 DSD-neo shows it once nothing on screen could lose work: the first-run screen is done, no sheet is open, no editor,
 wizard, Explore setup, RadioReference screen or Signal search is open, and no import, backup task, recording export,
-decryption apply, file picker, USB permission prompt or listen restart is still running. Just after DSD-neo starts, it
-also waits until it knows whether a session is running. So after a new install the file waits until **Get started**
-is tapped. Screens that only show things (Imported files, Diagnostics, Licenses, Call recordings, Spectrum,
-Talkgroups, and History or Settings during a session) may stay open. When the file goes on, they close, except
+decryption apply, file picker, USB permission prompt, listen restart or close for a restart is still running. Just after
+DSD-neo starts, it also waits until it knows whether a session is running. So after a new install the file waits until
+**Get started** is tapped. Screens that only show things (Imported files, Diagnostics, Licenses, Call recordings,
+Spectrum, Talkgroups, and History or Settings during a session) may stay open. When the file goes on, they close, except
 Imported files, which an import opens or keeps open (over the session's Settings during a session). A file sent while
 another is being handled waits for it; a newer one replaces one still waiting.
 

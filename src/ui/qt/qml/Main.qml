@@ -660,8 +660,8 @@ Window {
     // ---- A file another app opened with DSD-neo, or shared to it (#831) ----
     // Unlike an attachment it waits, in the host's slot, until nothing on
     // screen has state it could lose: no sheet, no flow with a form or a
-    // choice under way, no copy, transfer, apply, picker, USB prompt or
-    // restart in flight, and the session state known (before the host's first
+    // choice under way, no copy, transfer, apply, picker, USB prompt, listen
+    // restart or close for a restart (#830) in flight, and the session state known (before the host's first
     // poll a running session reads as Idle, and the Imports screen would hide
     // under it). Layers that only show things (Imports at rest, Diagnostics,
     // Licenses, Call recordings, Spectrum, Talkgroups, the session's History
@@ -671,6 +671,7 @@ Window {
         && !backup.flowActive && !backup.busy && !importedFiles.importing && !importsScreen.importActive && !radioReference.busy && !replayFiles.copying
         && decoderHost.recordingTransferActive !== true && !importsScreen.mapApplyActive && !monitor.keyApplyActive && decoderHost.documentRequestPending !== true
         && !awaitingUsbAccess && decoderHost.localDeviceRequestPending !== true && !restartInFlight
+        && !restartCloser.active
     // Never at once: an owner that lets go and takes hold again in one turn
     // (a stop and its restart) is not raced.
     onIntakeFreeChanged: {

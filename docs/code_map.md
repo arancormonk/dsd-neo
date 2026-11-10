@@ -14216,25 +14216,25 @@ Qt Quick frontend (`src/ui/qt`):
   kind is chosen). `handOff(target, type)` copies the reference and name, closes the sheet and emits
   `handOffRequested(target, reference, name, type)`; Main answers `handOffDone(accepted)`, and a refusal opens the sheet
   again with "Couldn't open that now. Try again."
-- Main's free test, `mainRoot.intakeFree` (#831): a document waits while any owner holds the screen: an open modal,
-  the intake's own `busy`, the wizard, onboarding, the scan-list editor, Explore setup, Signal search, either
-  RadioReference screen, `backup.flowActive`/`busy`, `importedFiles.importing`, `importsScreen.importActive` and
-  `mapApplyActive`, `monitor.keyApplyActive`, `radioReference.busy`, `replayFiles.copying`,
-  `decoderHost.recordingTransferActive`, `documentRequestPending`, `awaitingUsbAccess`, `localDeviceRequestPending`,
-  `restartInFlight` (from `pendingRestart` through its start until the session runs or the start failed:
-  `restartStarting`, set by `finishPendingRestart()`, settled by `settleRestartStart()`), and until
-  `decoderHost.sessionStateKnown` (a `Q_PROPERTY` of `DecoderHost::sessionStateKnown()`; before Android's first poll a
-  running session reads as Idle, and an import routed then would be cancelled when Imports hides under the monitor).
-  `incomingDocumentChanged` and `onIntakeFreeChanged` only `Qt.callLater(maybeTakeIncoming)`, which reads both again.
-  Idle layers (Imports at rest, Diagnostics, Licenses, Call recordings, Spectrum, Talkgroups, the session's History and
-  Settings) may stay beneath; `routeIncoming()` closes them first (`closeIntakeLayers()`), then: Restore → `currentTab
-  = 2` when idle and `backupFlow.restoreFromReference(ref)`; Import → `importsOpen` (over the session's Settings while
-  monitoring, Imports re-added above them) and, a turn later, `importsScreen.importIncoming(ref, name, type)`; Target
-  CSV → `scanListEditor.openFor(-1)`, `scanListOpen`, `importTargetsFrom(ref, name)`. During a session that editor
-  (z 20) opens over the monitor, so `scanListOpen` is one of the monitor's `enabled` terms, and the scan-warnings
-  panel (z 21, `scanWarningsPanel`) hides while it is open rather than cover Save. QML tests:
-  `tst_incoming_document.qml` (`testContext.setSessionStateKnown()`, `holdRecordingTransfers()` for a save that
-  outlives its sheet).
+- Main's free test, `mainRoot.intakeFree` (#831): a document waits while any owner holds the screen: an open modal, the
+  intake's own `busy`, the wizard, onboarding, the scan-list editor, Explore setup, Signal search, either RadioReference
+  screen, `backup.flowActive`/`busy`, `importedFiles.importing`, `importsScreen.importActive` and `mapApplyActive`,
+  `monitor.keyApplyActive`, `radioReference.busy`, `replayFiles.copying`, `decoderHost.recordingTransferActive`,
+  `documentRequestPending`, `awaitingUsbAccess`, `localDeviceRequestPending`, `restartCloser.active` (a close for a
+  restart, #830: a probe then would make it give up as refused), `restartInFlight` (from `pendingRestart` through its
+  start until the session runs or the start failed: `restartStarting`, set by `finishPendingRestart()`, settled by
+  `settleRestartStart()`), and until `decoderHost.sessionStateKnown` (a `Q_PROPERTY` of
+  `DecoderHost::sessionStateKnown()`; before Android's first poll a running session reads as Idle, and an import routed
+  then would be cancelled when Imports hides under the monitor). `incomingDocumentChanged` and `onIntakeFreeChanged`
+  only `Qt.callLater(maybeTakeIncoming)`, which reads both again. Idle layers (Imports at rest, Diagnostics, Licenses,
+  Call recordings, Spectrum, Talkgroups, the session's History and Settings) may stay beneath; `routeIncoming()` closes
+  them first (`closeIntakeLayers()`), then: Restore → `currentTab = 2` when idle and
+  `backupFlow.restoreFromReference(ref)`; Import → `importsOpen` (over the session's Settings while monitoring, Imports
+  re-added above them) and, a turn later, `importsScreen.importIncoming(ref, name, type)`; Target CSV →
+  `scanListEditor.openFor(-1)`, `scanListOpen`, `importTargetsFrom(ref, name)`. During a session that editor (z 20)
+  opens over the monitor, so `scanListOpen` is one of the monitor's `enabled` terms, and the scan-warnings panel (z 21,
+  `scanWarningsPanel`) hides while it is open rather than cover Save. QML tests: `tst_incoming_document.qml`
+  (`testContext.setSessionStateKnown()`, `holdRecordingTransfers()` for a save that outlives its sheet).
 - Overlays over the live monitor (#831): a mouse click on a sheet's Cancel, a menu row or any control that closes its
   cover on release never acts on the control beneath, Stop listening included; that is the press-time rule of
   `GatedTapHandler` (see the QML rules below, which give the measured delivery). `MonitorScreen.enabled` keeps a term

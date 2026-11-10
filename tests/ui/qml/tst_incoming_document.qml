@@ -767,6 +767,22 @@ Item {
             }
         }
 
+        // A close for a restart (#830) holds the file until it fails: its
+        // probe would make the closer give up the close as refused.
+        function test_close_for_restart_makes_it_wait() {
+            verify(restartCloser.begin(), "the close begins");
+            try {
+                testContext.emitIncomingDocument(groupsFile());
+                verifyWaits("closing");
+                testContext.finishClose("closing");
+                verifyWaits("told to close");
+            } finally {
+                testContext.finishClose("quitFailed");
+            }
+            verify(!restartCloser.active);
+            tryCompare(flow, "phase", "presenting", 5000);
+        }
+
         // A document that comes while one is being handled waits for it to
         // be handed off and its import to end, then opens.
         function test_second_document_waits_for_the_first() {
