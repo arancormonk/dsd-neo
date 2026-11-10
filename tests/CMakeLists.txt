@@ -2154,6 +2154,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         dsd-neo_test_ysf_dch_decode
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src
             ${PROJECT_SOURCE_DIR}/src/protocol/ysf
     )
     target_link_libraries(
@@ -2188,6 +2189,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         dsd-neo_test_ysf_mbe_capture
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src
             ${PROJECT_SOURCE_DIR}/src/protocol/ysf
     )
     target_link_libraries(
@@ -7619,7 +7621,7 @@ add_test(NAME CORE_AUDIO2_HELPERS COMMAND dsd-neo_test_core_audio2_helpers)
 add_executable(dsd-neo_test_core_voice_chain core/test_core_voice_chain.c)
 target_include_directories(
     dsd-neo_test_core_voice_chain
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
 )
 target_link_libraries(
     dsd-neo_test_core_voice_chain
@@ -7970,6 +7972,7 @@ target_include_directories(
     dsd-neo_test_core_mbe_file_io
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src
         ${PROJECT_SOURCE_DIR}/tests/test_support
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
@@ -11855,7 +11858,10 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_m17_state_dispatch
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/m17
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src
+        ${PROJECT_SOURCE_DIR}/src/protocol/m17
 )
 target_link_libraries(
     dsd-neo_test_m17_state_dispatch
@@ -15019,6 +15025,7 @@ foreach(_dsd_tetra_voice_test IN ITEMS voice_pipeline voice_codec)
         "${_dsd_tetra_target}"
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src
             ${PROJECT_SOURCE_DIR}/src/protocol/tetra
     )
     # initState() and the audio output reach the codecs and sinks ${LIBS} carries; dsd-neo_core goes ahead of them so

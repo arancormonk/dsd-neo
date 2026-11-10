@@ -1992,6 +1992,26 @@ playback chains the frames it withholds (encrypted, no key). Its other cases set
 unity gain with the high-pass off (`pass_through_voice_chain()`), which leaves the chain a pass-through, so they still
 compare synthesis against mbelib's own output.
 
+What each producer tells the chain about a frame (`dsd_voice_frame_info`) is read through a test observer
+(`dsd_voice_chain_set_observer_for_test()`, `src/core/audio/voice_chain_internal.h`). `CORE_VOICE_CHAIN` checks
+`dsd_voice_media_of_mbe()` flag by flag (a tone flag before any concealment flag), `dsd_voice_frame_may_learn()`, and
+that a frame and the gain come out the same with any info as with none. `CORE_MBE_TRANSFORM_CONTEXT` decodes real
+frames through the vocoder: DMR speech, tone, AMBE silence, erasure, a C0 past correction that repeats and then mutes
+(the vocoder's own status string names each), and a frame that fails to decode, on both slots; an RC4 frame with no
+key is not decodable whatever the encrypted-audio mute, a clear one is under reverse mute, and a refused slot is not
+admitted; P25 Phase 1 speech, tail erasure and decode failure, an encrypted call not decodable though the user's
+override plays it, and YSF full rate on the P25 decoder decodable; P25 Phase 2 decodable by the crypto rule alone
+(a talkgroup-muted slot stays decodable); NXDN by its cipher class; X2-TDMA, D-STAR and ProVoice decodable on their
+own slots. `CORE_MBE_FILE_IO` plays `.amb` (speech, tone, silence, a recorded C0 count that repeats), `.dmb` and `.imb`
+records and SDRTrunk JSON (clear and encrypted with no key, speech, silence and a repeat). `YSF_DCH_DECODE` checks
+V/D2's frames from stubbed mbelib results. `M17_STATE_DISPATCH` checks received Codec2 voice is decodable, admitted
+speech and the stream encoder's own decoded monitor passes no info. `TETRA_VOICE_PIPELINE` checks the 240-to-160
+recut (an output frame is concealment or undecodable when either codec frame it draws on was) and the transmission
+count passed as the talkspurt: kept when a talker is named, a call renamed, or the speech resumes after a short stream
+gap (`tetra_forget_carrier()`, twice in a row too, a rename during the gap included); advanced for another talker, the
+trail and the next grant after D-TX CEASED (granted during a gap too), direct mode speech, another direct-mode source
+after a gap, and a speech-end pause, with or without a gap.
+
 `DECODE_IQ_VOICE_CHAIN_*` (CTest labels `iq-decode` and `voice-chain`) replay a voice fixture with `-P` through
 `tests/iq_voice_chain_check.cmake` under integer output to stdout, float output (`-y`) to stdout and `-o null`, and
 require byte-identical per-call WAVs from all three (compared as sorted content hashes, since their names carry a

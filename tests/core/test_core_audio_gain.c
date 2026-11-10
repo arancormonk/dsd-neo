@@ -381,6 +381,19 @@ test_manual_analog_gain_helper(void) {
     return rc;
 }
 
+/* What a decoder does with its left (right) frame: the slot's voice chain, then short staging. */
+static void
+chain_and_stage_left(const dsd_opts* opts, dsd_state* state) {
+    dsd_voice_chain_run(opts, state, 0, state->audio_out_temp_buf, NULL);
+    dsd_voice_stage_short_left(opts, state);
+}
+
+static void
+chain_and_stage_right(const dsd_opts* opts, dsd_state* state) {
+    dsd_voice_chain_run(opts, state, 1, state->audio_out_temp_bufR, NULL);
+    dsd_voice_stage_short_right(opts, state);
+}
+
 static int
 test_process_audio_native_left_clamps_and_tracks_output(void) {
     static dsd_opts opts = {0};
@@ -406,7 +419,7 @@ test_process_audio_native_left_clamps_and_tracks_output(void) {
     // Samples an earlier frame counted and no mixer played (issue #654): the count is this frame's alone.
     state.audio_out_idx = 480;
 
-    processAudio(&opts, &state);
+    chain_and_stage_left(&opts, &state);
 
     int rc = 0;
     rc |= expect_int_eq("left clamp positive output", out[0], 32767);
@@ -443,7 +456,7 @@ test_process_audio_native_right_clamps_and_tracks_output(void) {
     state.audio_out_buf_pR = state.audio_out_bufR;
     state.audio_out_float_buf_pR = state.audio_out_float_bufR;
 
-    processAudioR(&opts, &state);
+    chain_and_stage_right(&opts, &state);
 
     int rc = 0;
     rc |= expect_int_eq("right clamp positive output", out[0], 32767);
@@ -481,7 +494,7 @@ test_process_audio_auto_gain_ramps_from_peak_history(void) {
     state.audio_out_buf_p = state.audio_out_buf;
     state.audio_out_float_buf_p = state.audio_out_float_buf;
 
-    processAudio(&opts, &state);
+    chain_and_stage_left(&opts, &state);
 
     int rc = 0;
     rc |= expect_int_eq("auto gain first sample", out[0], 1000);
@@ -519,7 +532,7 @@ test_process_audio_right_auto_gain_tracks_peak_history(void) {
     state.audio_out_buf_pR = state.audio_out_bufR;
     state.audio_out_float_buf_pR = state.audio_out_float_bufR;
 
-    processAudioR(&opts, &state);
+    chain_and_stage_right(&opts, &state);
 
     int rc = 0;
     rc |= expect_int_eq("right auto gain first sample", out[0], 1500);
@@ -601,7 +614,7 @@ test_process_audio_upsampled_right_clamps_and_tracks_output(void) {
     state.audio_out_temp_bufR[1] = -50000.0f;
     state.audio_out_temp_bufR[2] = -321.0f;
 
-    processAudioR(&opts, &state);
+    chain_and_stage_right(&opts, &state);
 
     int rc = 0;
     rc |= expect_int_eq("right upsample clamp positive first", out[0], 32767);

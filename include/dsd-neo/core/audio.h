@@ -18,6 +18,7 @@
 #include <dsd-neo/core/key_material.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/platform/sndfile_fwd.h>
 
 #include <stddef.h>
@@ -35,17 +36,6 @@ extern "C" {
  *         SPS hunt as proof its profile is the right one (#407).
  */
 int processdPMRvoice(dsd_opts* opts, dsd_state* state);
-/**
- * @brief Run the voice chain on the left frame (`audio_out_temp_buf`, slot 1's state) and stage it for the short
- * mixers: dsd_voice_chain_run() then dsd_voice_stage_short_left() (<dsd-neo/core/voice_chain.h>).
- *
- * In-tree decoders call those two themselves (the chain on every frame, the staging only where the short output takes
- * it); this stays for out-of-tree callers.
- */
-void processAudio(const dsd_opts* opts, dsd_state* state);
-/** @brief processAudio() for the right frame (`audio_out_temp_bufR`) on slot 2's state. */
-void processAudioR(const dsd_opts* opts, dsd_state* state);
-
 /** @brief Open audio input stream based on opts. Returns 0 on success. */
 int openAudioInput(dsd_opts* opts);
 /**
@@ -106,7 +96,7 @@ void writeSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state);
 
 /*
  * The voice mixers serve both output formats (issue #652): they stage 16-bit samples after the one gain stage
- * (processAudio()/processAudioR()), and float output (-y) only changes how the raw fd (-o -) and UDP write them (as
+ * (dsd_voice_chain_run()), and float output (-y) only changes how the raw fd (-o -) and UDP write them (as
  * f32, s16 / 32768). The local audio device takes 16-bit samples in either format.
  */
 /** @brief Play synthesized voice (short mono output slot 1). */
@@ -162,8 +152,11 @@ void dsd_play_synthesized_voice(dsd_opts* opts, dsd_state* state);
  * (dsd_state::input_interrupted): the decoder read the frame across a Signal search's cut. Decoder thread only.
  *
  * @param count Samples in @p pcm.
+ * @param info What the decoder knows about every frame of @p pcm, for the chain (dsd_voice_chain_run()); NULL for
+ *             frames nothing may learn from.
  */
-void dsd_audio_play_decoded_pcm16(const dsd_opts* opts, dsd_state* state, const short* pcm, size_t count);
+void dsd_audio_play_decoded_pcm16(const dsd_opts* opts, dsd_state* state, const short* pcm, size_t count,
+                                  const dsd_voice_frame_info* info);
 
 /**
  * @brief dsd_audio_play_decoded_pcm16() for a decoder under talkgroup policy that settled the record policy as well
@@ -173,7 +166,7 @@ void dsd_audio_play_decoded_pcm16(const dsd_opts* opts, dsd_state* state, const 
  * neither the per-call nor the static WAV takes them: a call whose talkgroup allows audio but not recording.
  */
 void dsd_audio_play_decoded_pcm16_record(const dsd_opts* opts, dsd_state* state, const short* pcm, size_t count,
-                                         int record);
+                                         int record, const dsd_voice_frame_info* info);
 
 /** @brief Apply the manual analog gain (`-n`, 0..100% as 0x..5x) to a short buffer: the M17 encoder's fixed input gain.
  *  The analog monitor's gain stage is dsd_analog_audio_process_f() (<dsd-neo/dsp/analog_audio.h>). */

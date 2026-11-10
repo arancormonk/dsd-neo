@@ -28,6 +28,7 @@
 #include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/crypto/tetra_tea.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
@@ -41,6 +42,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "core/audio/voice_chain_internal.h"
 #include "test_support.h"
 #include "tetra_calls.h"
 #include "tetra_confirm.h"
@@ -1373,6 +1375,310 @@ test_speech_reclassifies_the_call(void) {
     fixture_close(&f);
 }
 
+/* ---------------------------------------------------------------------------------------------------------------
+ * What the speech output tells the voice chain about each 160-sample frame it plays (dsd_voice_frame_info).
+ * ------------------------------------------------------------------------------------------------------------- */
+
+#define CHAIN_SEEN_MAX 32
+
+/* One chain run: the codec decodes its first and last samples came from, and its info. */
+typedef struct {
+    tetra_test_codec_sample first;
+    tetra_test_codec_sample last;
+    dsd_voice_frame_info info;
+} chain_seen;
+
+static chain_seen g_chain_seen[CHAIN_SEEN_MAX];
+static int g_chain_count;
+static int g_chain_bad_runs; /* on slot 1, or with no info */
+
+static void
+chain_observe(void* ctx, int slot, const float* frame, const dsd_voice_frame_info* info) {
+    (void)ctx;
+    if (slot != 0 || !info || g_chain_count >= CHAIN_SEEN_MAX) {
+        g_chain_bad_runs++;
+        return;
+    }
+    chain_seen* seen = &g_chain_seen[g_chain_count++];
+    seen->first = tetra_test_codec_read((int16_t)frame[0]);
+    seen->last = tetra_test_codec_read((int16_t)frame[DSD_VOICE_FRAME_SAMPLES - 1]);
+    seen->info = *info;
+}
+
+static void
+chain_watch(void) {
+    DSD_MEMSET(g_chain_seen, 0, sizeof(g_chain_seen));
+    g_chain_count = 0;
+    g_chain_bad_runs = 0;
+    dsd_voice_chain_set_observer_for_test(chain_observe, NULL);
+}
+
+static void
+chain_unwatch(void) {
+    dsd_voice_chain_set_observer_for_test(NULL, NULL);
+}
+
+/* Chain run @p i took samples from decode @p first to decode @p last and was told @p media and @p decodable, admitted. */
+static void
+expect_chain(int i, uint32_t first, uint32_t last, uint8_t media, uint8_t decodable, const char* what) {
+    char label[160];
+    const chain_seen* seen = &g_chain_seen[i];
+    const int ok = i < g_chain_count && g_chain_bad_runs == 0 && seen->first.frame == first && seen->last.frame == last
+                   && seen->info.media == media && seen->info.decodable == decodable && seen->info.admitted == 1U;
+    DSD_SNPRINTF(label, sizeof(label), "%s: run %d of %d (decodes %u..%u, media %u, decodable %u)", what, i,
+                 g_chain_count, seen->first.frame, seen->last.frame, (unsigned)seen->info.media,
+                 (unsigned)seen->info.decodable);
+    expect(ok, label);
+}
+
+/* Each 240-sample codec frame is played as 160-sample output frames, one of them made of two codec frames every
+   other codec frame: that output frame is concealment when either codec frame was a bad one, the good codec frame's
+   samples before or after it included. The first half slot's stolen frame is not played (no speech started yet), so
+   decode 1 leaves 80 samples carried over a burst boundary. */
+static void
+test_frame_info_across_the_recut(void) {
+    fixture f;
+    expect(fixture_open(&f) == 0, "recut: fixture");
+    uint8_t half[TETRA_SPEECH_HALF_BITS];
+    uint8_t full[TETRA_SPEECH_FULL_BITS];
+    burst_bits(half, TETRA_SPEECH_HALF_BITS, 2U);
+    burst_bits(full, TETRA_SPEECH_FULL_BITS, 6U);
+    chain_watch();
+    tetra_voice_half_slot(f.opts, f.state, half, 1); /* decode 1, good: 80 samples carried */
+    tetra_voice_full_slot(f.opts, f.state, full, 0); /* decodes 2, 3, concealed: 80 of 3 carried */
+    tetra_voice_full_slot(f.opts, f.state, full, 1); /* decodes 4, 5, good */
+    chain_unwatch();
+    expect(g_chain_count == 7, "recut: seven output frames");
+    const uint8_t speech = DSD_VOICE_MEDIA_SPEECH;
+    const uint8_t concealed = DSD_VOICE_MEDIA_CONCEALED;
+    expect_chain(0, 1, 1, speech, 1, "recut: decode 1");
+    expect_chain(1, 1, 2, concealed, 1, "recut: decode 1's carried samples then bad decode 2");
+    expect_chain(2, 2, 2, concealed, 1, "recut: bad decode 2");
+    expect_chain(3, 3, 3, concealed, 1, "recut: bad decode 3");
+    expect_chain(4, 3, 4, concealed, 1, "recut: bad decode 3's carried samples then good decode 4");
+    expect_chain(5, 4, 4, speech, 1, "recut: good decode 4");
+    expect_chain(6, 5, 5, speech, 1, "recut: good decode 5");
+    fixture_close(&f);
+}
+
+/* Decodability is the speech's encryption class, carried across the recut as the bad flag is: speech the loaded key
+   decrypts is decodable; with no key it is not, though it plays with the encrypted-audio mute off; an output frame
+   made of both is not. */
+static void
+test_frame_info_decodability_across_the_recut(void) {
+    fixture f;
+    expect(fixture_open(&f) == 0, "recut crypto: fixture");
+    uint8_t half[TETRA_SPEECH_HALF_BITS];
+    uint8_t full[TETRA_SPEECH_FULL_BITS];
+    burst_bits(half, TETRA_SPEECH_HALF_BITS, 2U);
+    burst_bits(full, TETRA_SPEECH_FULL_BITS, 6U);
+    f.opts->dmr_mute_encL = 0;
+    air_encrypted_call(&f, 1);
+    chain_watch();
+    tetra_voice_half_slot(f.opts, f.state, half, 1); /* decode 1, decrypted: 80 samples carried */
+    f.state->tetra_air_keys[0].loaded = 0;
+    tetra_voice_full_slot(f.opts, f.state, full, 1); /* decodes 2, 3, no key: 80 of 3 carried */
+    f.state->tetra_air_keys[0].loaded = 1;
+    tetra_voice_full_slot(f.opts, f.state, full, 1); /* decodes 4, 5, decrypted */
+    chain_unwatch();
+    expect(g_chain_count == 7, "recut crypto: seven output frames");
+    const uint8_t speech = DSD_VOICE_MEDIA_SPEECH;
+    expect_chain(0, 1, 1, speech, 1, "recut crypto: decrypted decode 1");
+    expect_chain(1, 1, 2, speech, 0, "recut crypto: decode 1's carried samples then undecryptable decode 2");
+    expect_chain(2, 2, 2, speech, 0, "recut crypto: undecryptable decode 2");
+    expect_chain(3, 3, 3, speech, 0, "recut crypto: undecryptable decode 3");
+    expect_chain(4, 3, 4, speech, 0, "recut crypto: decode 3's carried samples then decrypted decode 4");
+    expect_chain(5, 4, 4, speech, 1, "recut crypto: decrypted decode 4");
+    expect_chain(6, 5, 5, speech, 1, "recut crypto: decrypted decode 5");
+    fixture_close(&f);
+}
+
+/* The transmission count the speech output passes as each frame's talkspurt: every output frame since the last
+   check told the chain @p seq, and the speech's count is @p seq. */
+static void
+expect_talkspurt(fixture* f, uint32_t seq, const char* what) {
+    char label[160];
+    int ok = g_chain_count > 0 && g_chain_bad_runs == 0 && voice_of(f)->agc_tx_seq == seq;
+    for (int i = 0; i < g_chain_count && i < CHAIN_SEEN_MAX; i++) {
+        ok &= g_chain_seen[i].info.talkspurt == seq;
+    }
+    DSD_SNPRINTF(label, sizeof(label), "%s: talkspurt %u over %d frames, want %u", what,
+                 g_chain_count > 0 ? (unsigned)g_chain_seen[g_chain_count - 1].info.talkspurt : 0U, g_chain_count,
+                 (unsigned)seq);
+    expect(ok, label);
+    g_chain_count = 0;
+}
+
+/* The talkspurt follows TETRA's own transmission rules (voice_bind(), tetra_voice_call_renamed(),
+   tetra_voice_transmission_started()): a late-entry talker named, a call renamed and a short stream gap go on with the
+   same count; the next transmission after D-TX CEASED (the same talker granted again), another kind of speech, another
+   talker and a speech-end pause count the next one. Across a carrier gap the same rules apply to the transmission the
+   gap cut. */
+static void
+test_transmission_count_lifecycle(void) {
+    uint8_t full[TETRA_SPEECH_FULL_BITS];
+    burst_bits(full, TETRA_SPEECH_FULL_BITS, 6U);
+    fixture f;
+    expect(fixture_open(&f) == 0, "tx count: fixture");
+    dsd_decode_clock_use_test(1000000000000ULL);
+    chain_watch();
+
+    /* Identity specialisation: the talker not known, then named: the same transmission. */
+    follow_call(&f, 12, 800, 0x0F);
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_talkspurt(&f, 1, "tx count: the first transmission");
+    grant_transmission(&f, TETRA_CALL_EV_TX_GRANTED, 12, 0x4444U);
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_talkspurt(&f, 1, "tx count: its talker named");
+
+    /* Another talker (D-TX INTERRUPT): the next transmission. */
+    grant_transmission(&f, TETRA_CALL_EV_TX_INTERRUPT, 12, 0x5555U);
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_talkspurt(&f, 2, "tx count: another talker");
+
+    /* D-TX CEASED: its trail is not the transmission it ended; the same talker granted again starts the next one. */
+    tetra_call_event ceased = {.call_id = 12, .kind = TETRA_CALL_EV_TX_CEASED};
+    tetra_calls_on_event(f.opts, f.state, &ceased, NULL);
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_talkspurt(&f, 3, "tx count: the trail after D-TX CEASED");
+    grant_transmission(&f, TETRA_CALL_EV_TX_GRANTED, 12, 0x5555U);
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_talkspurt(&f, 4, "tx count: the same talker granted again");
+
+    /* Another kind of speech: direct mode. */
+    tetra_state_t* ts = tetra_st(f.state);
+    ts->sm.state = (uint8_t)TETRA_SM_IDLE;
+    f.opts->trunk_enable = 0;
+    ts->dmo = 1;
+    ts->dmo_crypt = TETRA_DMO_CRYPT_CLEAR;
+    ts->calls.dmo.active = 1;
+    ts->calls.dmo.dst = 1234;
+    ts->calls.dmo.src = 0x10;
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_talkspurt(&f, 5, "tx count: direct mode speech");
+
+    /* A speech-end pause. */
+    dsd_decode_clock_test_set_ns(1000000000000ULL + (uint64_t)((TETRA_CALL_SPEECH_END_S + 0.5) * 1e9));
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_talkspurt(&f, 6, "tx count: after a speech-end pause");
+    chain_unwatch();
+    dsd_decode_clock_use_system();
+    fixture_close(&f);
+
+    /* A rename: the same call under its new identifier. */
+    expect(fixture_open(&f) == 0, "tx count rename: fixture");
+    f.opts->audio_in_type = AUDIO_IN_RTL;
+    f.opts->rtlsdr_center_freq = 400243750U;
+    ts = tetra_st(f.state);
+    ts->tn = 2;
+    hear_call(&f, 10, 500, 2.0);
+    chain_watch();
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_talkspurt(&f, 1, "tx count rename: call 10");
+    tetra_call_event info = {
+        .call_id = 10, .kind = TETRA_CALL_EV_INFO, .has = TETRA_CALL_HAS_NEW_ID, .new_call_id = 14};
+    tetra_calls_on_event(f.opts, f.state, &info, NULL);
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_talkspurt(&f, 1, "tx count rename: renamed 14");
+    chain_unwatch();
+    fixture_close(&f);
+}
+
+/* A stream gap on the same carrier, as the engine's does (carrier_boundary_stream_gap()): the canonical calls end as on
+   a sync loss, then the carrier's decoding is forgotten. */
+static void
+gap_fixture_resume(fixture* f) {
+    (void)dsd_call_state_end_ex(f->state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS);
+    tetra_forget_carrier(f->state);
+    tetra_state_t* ts = tetra_st(f->state);
+    ts->tdma_valid = 1; /* the clock the next burst's BSCH sets */
+    ts->tn = 1;
+}
+
+/* Speech heard again after the carrier's samples stopped and started (a stream gap: tetra_forget_carrier()) starts
+   over, its decoder reset as before, but goes on counting as the transmission the gap cut while the same rules say it
+   is that one: a rename during the gap applies to it; a pause of TETRA_CALL_SPEECH_END_S, another talker, or the next
+   transmission granted during the gap does not go on. */
+static void
+test_transmission_count_across_a_stream_gap(void) {
+    uint8_t full[TETRA_SPEECH_FULL_BITS];
+    burst_bits(full, TETRA_SPEECH_FULL_BITS, 6U);
+    fixture f;
+
+    /* Speech no record names, not trunking: a short gap. */
+    expect(fixture_open(&f) == 0, "stream gap: fixture");
+    dsd_decode_clock_use_test(1000000000000ULL);
+    chain_watch();
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_talkspurt(&f, 1, "stream gap: before the gap");
+    gap_fixture_resume(&f);
+    expect(voice_of(&f)->bound == 0 && voice_of(&f)->carry_len == 0, "stream gap: the speech is forgotten");
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect(g_chain_count == 3 && g_chain_seen[0].first.frame == 1, "stream gap: the speech starts from a new decoder");
+    expect_talkspurt(&f, 1, "stream gap: the same transmission after a short gap");
+    gap_fixture_resume(&f);
+    gap_fixture_resume(&f); /* a second gap before any speech keeps what the first one kept */
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_talkspurt(&f, 1, "stream gap: after two gaps");
+
+    /* A gap as long as a speech-end pause. */
+    gap_fixture_resume(&f);
+    dsd_decode_clock_test_set_ns(1000000000000ULL + (uint64_t)((TETRA_CALL_SPEECH_END_S + 0.5) * 1e9));
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_talkspurt(&f, 2, "stream gap: a gap as long as a speech-end pause");
+    chain_unwatch();
+    dsd_decode_clock_use_system();
+    fixture_close(&f);
+
+    /* Direct mode: the same source after the gap, then another source after the next one. */
+    expect(fixture_open(&f) == 0, "stream gap dmo: fixture");
+    tetra_state_t* ts = tetra_st(f.state);
+    chain_watch();
+    for (int round = 0; round < 3; round++) {
+        ts->dmo = 1;
+        ts->dmo_crypt = TETRA_DMO_CRYPT_CLEAR;
+        ts->calls.dmo.active = 1;
+        ts->calls.dmo.dst = 1234;
+        ts->calls.dmo.src = round < 2 ? 0x10 : 0x11;
+        tetra_voice_full_slot(f.opts, f.state, full, 1);
+        expect_talkspurt(&f, round < 2 ? 1U : 2U,
+                         round == 0
+                             ? "stream gap dmo: before"
+                             : (round == 1 ? "stream gap dmo: the same source" : "stream gap dmo: another source"));
+        gap_fixture_resume(&f);
+    }
+    chain_unwatch();
+    fixture_close(&f);
+
+    /* Trunking: a rename during the gap applies to the transmission it cut; the next transmission granted during a
+       gap (after D-TX CEASED) does not go on with it. */
+    expect(fixture_open(&f) == 0, "stream gap trunked: fixture");
+    chain_watch();
+    follow_call(&f, 12, 800, 0x0F);
+    grant_transmission(&f, TETRA_CALL_EV_TX_GRANTED, 12, 0x4444U);
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_talkspurt(&f, 1, "stream gap trunked: call 12");
+    gap_fixture_resume(&f);
+    tetra_call_event info = {
+        .call_id = 12, .kind = TETRA_CALL_EV_INFO, .has = TETRA_CALL_HAS_NEW_ID, .new_call_id = 15};
+    tetra_calls_on_event(f.opts, f.state, &info, NULL);
+    follow_call(&f, 15, 800, 0x0F);
+    grant_transmission(&f, TETRA_CALL_EV_TX_GRANTED, 15, 0x4444U);
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_talkspurt(&f, 1, "stream gap trunked: renamed 15 during the gap");
+    tetra_call_event ceased = {.call_id = 15, .kind = TETRA_CALL_EV_TX_CEASED};
+    tetra_calls_on_event(f.opts, f.state, &ceased, NULL);
+    tetra_voice_full_slot(f.opts, f.state, full, 1); /* the trail */
+    expect_talkspurt(&f, 2, "stream gap trunked: the trail after D-TX CEASED");
+    gap_fixture_resume(&f);
+    tetra_confirm_note_followed_call(f.state);
+    grant_transmission(&f, TETRA_CALL_EV_TX_GRANTED, 15, 0x4444U);
+    tetra_voice_full_slot(f.opts, f.state, full, 1);
+    expect_talkspurt(&f, 3, "stream gap trunked: the next transmission granted during the gap");
+    chain_unwatch();
+    fixture_close(&f);
+}
+
 int
 main(void) {
     test_clean_stream_plays_every_frame();
@@ -1397,6 +1703,10 @@ main(void) {
     test_speech_gap_resets_speech();
     test_followed_speech_gap_resets_speech();
     test_frame_18_is_no_speech();
+    test_frame_info_across_the_recut();
+    test_frame_info_decodability_across_the_recut();
+    test_transmission_count_lifecycle();
+    test_transmission_count_across_a_stream_gap();
     if (g_fail) {
         DSD_FPRINTF(stderr, "%d check(s) failed\n", g_fail);
         return 1;

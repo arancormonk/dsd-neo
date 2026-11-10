@@ -21,6 +21,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/pcm_stream.h>
@@ -43,6 +44,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+#include "core/audio/voice_chain_internal.h"
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -3527,6 +3529,100 @@ run_voice_format_case(uint8_t dt, int floating, int channels, int out_type, floa
     return err;
 }
 
+/* What M17's Codec2 voice tells the voice chain: received voice, which reaches playback only confirmed, decrypted and
+   CAN-allowed, is decodable, admitted speech; the encoder's own transmission, decoded back for its monitor, tells it
+   nothing (no info), so it never passes for received speech. */
+static int g_m17_info_frames;
+static int g_m17_info_null;
+static int g_m17_info_received;
+
+static void
+m17_info_observe(void* ctx, int slot, const float* frame, const dsd_voice_frame_info* info) {
+    (void)ctx;
+    (void)frame;
+    g_m17_info_frames++;
+    if (!info) {
+        g_m17_info_null++;
+    } else if (slot == 0 && info->media == DSD_VOICE_MEDIA_SPEECH && info->decodable == 1U && info->admitted == 1U
+               && info->talkspurt == 0U) {
+        g_m17_info_received++;
+    }
+}
+
+static void
+m17_info_reset(void) {
+    g_m17_info_frames = 0;
+    g_m17_info_null = 0;
+    g_m17_info_received = 0;
+}
+
+static int
+test_stream_voice_tells_the_chain_received_speech(void) {
+    int err = 0;
+    m17_info_reset();
+    dsd_voice_chain_set_observer_for_test(m17_info_observe, NULL);
+    err |= run_voice_format_case(2U, 0, 1, 8, 1.0f, NULL, NULL);
+    err |= run_voice_format_case(3U, 0, 1, 8, 1.0f, NULL, NULL);
+    dsd_voice_chain_set_observer_for_test(NULL, NULL);
+    err |= expect_int("m17 received voice: two frames per payload, each received speech",
+                      g_m17_info_frames == 4 && g_m17_info_received == 4, 1);
+    return err;
+}
+
+/* The stream encoder (-fZ) with its decoded monitor: the voice it decodes back from its own transmission runs the
+   chain with no info. */
+static int
+test_stream_encoder_monitor_tells_the_chain_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int16_t samples[160U * 24U];
+    /* Room for every frame the monitor stages: the encoder's frames and the trailing ones it flushes. */
+    static short history[100U + (160U * 256U)];
+    char path[DSD_TEST_PATH_MAX] = {0};
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    for (size_t i = 0; i < sizeof(samples) / sizeof(samples[0]); i++) {
+        samples[i] = (int16_t)(8000.0 * sin(2.0 * 3.14159265358979 * 440.0 * (double)i / 8000.0));
+    }
+    FILE* file =
+        open_m17_stdin_input(path, sizeof(path), samples, sizeof(samples) / sizeof(samples[0]), &opts.audio_in_stdin);
+    if (file == NULL) {
+        DSD_FPRINTF(stderr, "failed to create M17 stdin fixture\n");
+        return 1;
+    }
+    reset_audio_fakes();
+    install_fake_udp_audio();
+    prepare_voice_output(&opts, &state);
+    state.audio_out_buf = history;
+    state.audio_out_buf_p = history + 100;
+    opts.audio_in_type = AUDIO_IN_STDIN;
+    opts.input_volume_multiplier = 1;
+    opts.monitor_input_audio = 0;
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    opts.slot1_on = 1;
+    state.m17_can_en = -1;
+    state.m17_rate = 8000;
+    state.m17encoder_tx = 1;
+    exitflag = 0;
+    m17_info_reset();
+    dsd_voice_chain_set_observer_for_test(m17_info_observe, NULL);
+    (void)encodeM17STR(&opts, &state);
+    dsd_voice_chain_set_observer_for_test(NULL, NULL);
+    int err = expect_int("m17 encoder monitor: decoded voice ran the chain", g_m17_info_frames > 0, 1);
+    err |= expect_int("m17 encoder monitor: within the staging room",
+                      state.audio_out_buf_p <= history + (sizeof(history) / sizeof(history[0])), 1);
+    err |= expect_int("m17 encoder monitor: with no info", g_m17_info_null, g_m17_info_frames);
+    dsd_pcm_stream_close(opts.audio_in_stdin);
+    opts.audio_in_stdin = NULL;
+    exitflag = 0;
+    (void)fclose(file);
+    (void)remove(path);
+    reset_audio_fakes();
+    dsd_state_ext_free_all(&state);
+    return err;
+}
+
 static int
 test_stream_voice_audio_follows_output_format(void) {
     static const uint8_t dts[] = {2U, 3U};
@@ -4290,6 +4386,8 @@ main(void) {
     err |= test_stream_voice_audio_stamps_what_it_plays();
     err |= test_stream_voice_audio_stamps_nothing_no_output_takes();
     err |= test_stream_voice_audio_follows_output_format();
+    err |= test_stream_voice_tells_the_chain_received_speech();
+    err |= test_stream_encoder_monitor_tells_the_chain_nothing();
 #endif
     err |= test_bert_payload_locks_from_default_state_and_continues();
     err |= test_bert_payload_resyncs_after_error_threshold();

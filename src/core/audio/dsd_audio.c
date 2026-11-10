@@ -47,12 +47,14 @@
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <errno.h>
 #include <math.h>
+#include <mbelib-neo/mbelib.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "dsd_audio_internal.h"
+#include "voice_chain_internal.h"
 
 static int
 dsd_audio_path_is_wav_container(const char* path) {
@@ -717,10 +719,42 @@ dsd_voice_hpf_follow_reception(dsd_state* state, int slot) {
     }
 }
 
+dsd_voice_media
+dsd_voice_media_of_mbe(int ret, unsigned int flags) {
+    if (ret < 0) {
+        return DSD_VOICE_MEDIA_NONE;
+    }
+    if ((flags & MBE_PROCESS_FLAG_TONE) != 0U) {
+        return DSD_VOICE_MEDIA_TONE;
+    }
+    const unsigned int concealed = MBE_PROCESS_FLAG_ERASURE | MBE_PROCESS_FLAG_REPEAT | MBE_PROCESS_FLAG_MUTE
+                                   | MBE_PROCESS_FLAG_SILENCE | MBE_PROCESS_FLAG_C0_UNCORRECTABLE;
+    return (flags & concealed) != 0U ? DSD_VOICE_MEDIA_CONCEALED : DSD_VOICE_MEDIA_SPEECH;
+}
+
+int
+dsd_voice_frame_may_learn(const dsd_voice_frame_info* info) {
+    return info != NULL && info->media == (uint8_t)DSD_VOICE_MEDIA_SPEECH && info->decodable != 0U
+           && info->admitted != 0U;
+}
+
+/* The test seam (voice_chain_internal.h): unset in a decoder. */
+static dsd_voice_chain_observer_fn g_voice_chain_observer = NULL;
+static void* g_voice_chain_observer_ctx = NULL;
+
 void
-dsd_voice_chain_run(const dsd_opts* opts, dsd_state* state, int slot, float* frame) {
+dsd_voice_chain_set_observer_for_test(dsd_voice_chain_observer_fn fn, void* ctx) {
+    g_voice_chain_observer = fn;
+    g_voice_chain_observer_ctx = ctx;
+}
+
+void
+dsd_voice_chain_run(const dsd_opts* opts, dsd_state* state, int slot, float* frame, const dsd_voice_frame_info* info) {
     if (!opts || !state || !frame || slot < 0 || slot > 1) {
         return;
+    }
+    if (g_voice_chain_observer != NULL) {
+        g_voice_chain_observer(g_voice_chain_observer_ctx, slot, frame, info);
     }
     dsd_voice_hpf_follow_reception(state, slot);
     if (opts->use_hpf_d == 1) {
@@ -785,12 +819,6 @@ dsd_voice_stage_short_left(const dsd_opts* opts, dsd_state* state) {
     dsd_audio_emit_native_left(state);
 }
 
-void
-processAudio(const dsd_opts* opts, dsd_state* state) {
-    dsd_voice_chain_run(opts, state, 0, state->audio_out_temp_buf);
-    dsd_voice_stage_short_left(opts, state);
-}
-
 static void
 dsd_audio_emit_upsampled_right(const dsd_opts* opts, dsd_state* state) {
     int n;
@@ -838,12 +866,6 @@ dsd_voice_stage_short_right(const dsd_opts* opts, dsd_state* state) {
         return;
     }
     dsd_audio_emit_native_right(state);
-}
-
-void
-processAudioR(const dsd_opts* opts, dsd_state* state) {
-    dsd_voice_chain_run(opts, state, 1, state->audio_out_temp_bufR);
-    dsd_voice_stage_short_right(opts, state);
 }
 
 // Writes the mono (left) frame in audio_out_temp_buf, clamped to 16 bits in place, as one mono block of @p file.

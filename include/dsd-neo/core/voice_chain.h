@@ -8,8 +8,9 @@
  * @brief The digital voice chain (issue #653): one high-pass and one gain per slot, run once on each decoded 8 kHz
  * voice frame before anything consumes it.
  *
- * A decoder that synthesizes a voice frame (the vocoder, YSF V/D2, MBE file, SDRTrunk JSON playback and M17 Codec2) runs
- * dsd_voice_chain_run() on it in place, whatever the output format, output type or mute say. Every consumer then takes
+ * A decoder that synthesizes a voice frame (the vocoder, YSF V/D2, MBE file, SDRTrunk JSON playback, M17 Codec2 and
+ * TETRA speech) runs dsd_voice_chain_run() on it in place, with what it knows about the frame (dsd_voice_frame_info),
+ * whatever the output format, output type or mute say. Every consumer then takes
  * the same samples: the per-call WAV and the shared short staging (dsd_voice_stage_short_left/right()). Mixers route
  * those samples in both output formats; stdout and UDP convert the resulting s16 blocks to f32 under -y. Every
  * consumer starts from one level and one frequency response. The chain is verdict-neutral: crypto, talkgroup and
@@ -23,6 +24,7 @@
 #include <dsd-neo/core/state_fwd.h>
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,6 +36,38 @@ extern "C" {
 #define DSD_VOICE_HPF_RATE_HZ   8000.0
 /** Samples per voice frame. */
 #define DSD_VOICE_FRAME_SAMPLES 160
+
+/** What a synthesized voice frame carries, as its decoder knows it. */
+typedef enum {
+    DSD_VOICE_MEDIA_NONE = 0,  /**< no decoded media: a decode failure's or a P25 tail erasure's silence */
+    DSD_VOICE_MEDIA_CONCEALED, /**< synthesized in place of speech: a repeat, a mute's comfort noise, an erasure,
+                                    AMBE silence, an uncorrectable D-STAR C0, a TETRA bad frame */
+    DSD_VOICE_MEDIA_SPEECH,    /**< a decoded speech frame */
+    DSD_VOICE_MEDIA_TONE,      /**< a tone frame (DTMF, call progress and other AMBE tones), repeated or erased too */
+} dsd_voice_media;
+
+/**
+ * @brief What the decoder knows about one frame it hands the chain. None of it is an output setting: the sinks, the
+ * mutes, `-P`, the slot switches and the talkgroup policy only route the chained frame.
+ */
+typedef struct {
+    uint8_t media;     /**< dsd_voice_media */
+    uint8_t decodable; /**< the media is clear or decrypted, judged from its encryption class, never a user mute rule */
+    uint8_t admitted;  /**< the receive policy admits the traffic (dsd_receive_current_allows()) */
+    uint32_t talkspurt; /**< the producer's own transmission count, for a producer that tells transmissions apart
+                             itself (TETRA); 0 for none */
+} dsd_voice_frame_info;
+
+/**
+ * @brief The media of a frame mbelib-neo synthesized: NONE when @p ret is negative (the frame failed to decode), TONE
+ * when @p flags has MBE_PROCESS_FLAG_TONE, CONCEALED when it has ERASURE, REPEAT, MUTE, SILENCE or C0_UNCORRECTABLE,
+ * else SPEECH.
+ */
+dsd_voice_media dsd_voice_media_of_mbe(int ret, unsigned int flags);
+
+/** @brief 1 when @p info is a decodable, admitted speech frame (the frames a level estimate may learn from); 0 for
+ * NULL. */
+int dsd_voice_frame_may_learn(const dsd_voice_frame_info* info);
 
 /**
  * @brief Run the chain on one frame of slot @p slot (0 or 1) in place: the high-pass when `opts->use_hpf_d` is 1, then
@@ -47,8 +81,11 @@ extern "C" {
  * off.
  *
  * @param frame DSD_VOICE_FRAME_SAMPLES int16-scale samples.
+ * @param info What the decoder knows about the frame; NULL for a frame nothing may learn from. The gain does not read
+ *             it yet.
  */
-void dsd_voice_chain_run(const dsd_opts* opts, dsd_state* state, int slot, float* frame);
+void dsd_voice_chain_run(const dsd_opts* opts, dsd_state* state, int slot, float* frame,
+                         const dsd_voice_frame_info* info);
 
 /**
  * @brief Stage the chained left frame (`audio_out_temp_buf`) for the short mixers: `s_l`, the output ring and, above 8

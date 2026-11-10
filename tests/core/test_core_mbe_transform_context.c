@@ -21,6 +21,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
@@ -38,6 +39,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "audio/voice_chain_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "mbe_result_context.h"
@@ -567,7 +569,7 @@ init_mbe_state(dsd_state* state, mbe_parms* cur, mbe_parms* prev, mbe_parms* pre
     state->cur_mp2 = cur2;
     state->prev_mp2 = prev2;
     state->prev_mp_enhanced2 = prev_enhanced2;
-    /* The gain stage (processAudio()/processAudioR()) runs in both output formats (issue #652): give it its output
+    /* The gain stage (dsd_voice_chain_run()) runs in both output formats (issue #652): give it its output
        buffers, and unity gain so a staged frame is the decoded frame (with opts->audio_gain/R 1, a fixed gain). */
     static short out_l[100 + (160 * 256)];
     static short out_r[100 + (160 * 256)];
@@ -2671,7 +2673,7 @@ test_process_mbe_frame_p25p2_mono_path_records_slot2_wav(void) {
 }
 
 // dsd_state::mbe_short_silenced says whether the current frame's short samples are in s_l/s_r (issue #651): 0 after
-// processAudio(R) staged them, 1 when the vocoder staged silence or skipped short staging.
+// short staging took them, 1 when the vocoder staged silence or skipped short staging.
 static int
 test_process_mbe_frame_p25p2_short_staging_provenance(void) {
     int rc = 0;
@@ -6664,6 +6666,327 @@ test_voice_chain_per_call_wav_is_format_independent(void) {
     return rc;
 }
 
+/* ---------------------------------------------------------------------------------------------------------------
+ * What the vocoder tells the voice chain about each frame (dsd_voice_frame_info): the media its real decode made,
+ * whether the frame's encryption class lets it be heard as speech (never a user mute rule), and receive admission.
+ * ------------------------------------------------------------------------------------------------------------- */
+
+#define FRAME_INFO_SEEN_MAX 4
+
+typedef struct {
+    int slot;
+    int has_info;
+    dsd_voice_frame_info info;
+} frame_info_seen;
+
+static frame_info_seen g_frame_info_seen[FRAME_INFO_SEEN_MAX];
+static int g_frame_info_count;
+
+static void
+frame_info_observe(void* ctx, int slot, const float* frame, const dsd_voice_frame_info* info) {
+    (void)ctx;
+    (void)frame;
+    if (g_frame_info_count < FRAME_INFO_SEEN_MAX) {
+        frame_info_seen* seen = &g_frame_info_seen[g_frame_info_count];
+        seen->slot = slot;
+        seen->has_info = info != NULL;
+        if (info) {
+            seen->info = *info;
+        }
+    }
+    g_frame_info_count++;
+}
+
+/* The one chain run of the last frame was on @p slot and told exactly this. */
+static int
+expect_frame_info(const char* tag, int slot, int media, int decodable, int admitted) {
+    const frame_info_seen* seen = &g_frame_info_seen[0];
+    if (g_frame_info_count != 1 || !seen->has_info || seen->slot != slot || seen->info.media != media
+        || seen->info.decodable != decodable || seen->info.admitted != admitted || seen->info.talkspurt != 0U) {
+        DSD_FPRINTF(stderr,
+                    "%s: %d chain runs, slot %d info %d media %u decodable %u admitted %u talkspurt %u; want slot %d "
+                    "media %d decodable %d admitted %d\n",
+                    tag, g_frame_info_count, seen->slot, seen->has_info, (unsigned)seen->info.media,
+                    (unsigned)seen->info.decodable, (unsigned)seen->info.admitted, (unsigned)seen->info.talkspurt, slot,
+                    media, decodable, admitted);
+        return 1;
+    }
+    return 0;
+}
+
+static dsd_opts g_fi_opts;
+static dsd_state g_fi_state;
+static mbe_parms g_fi_cur, g_fi_prev, g_fi_prev_enhanced, g_fi_cur2, g_fi_prev2, g_fi_prev_enhanced2;
+
+/* A fresh session decoding @p synctype voice on @p slot, its frames played through a unity chain. */
+static void
+frame_info_session(int synctype, int slot) {
+    dsd_state_ext_free_all(&g_fi_state);
+    DSD_MEMSET(&g_fi_opts, 0, sizeof(g_fi_opts));
+    pass_through_voice_chain(&g_fi_opts);
+    g_fi_opts.dmr_stereo = 1;
+    g_fi_opts.slot1_on = 1;
+    g_fi_opts.slot2_on = 1;
+    init_mbe_state(&g_fi_state, &g_fi_cur, &g_fi_prev, &g_fi_prev_enhanced, &g_fi_cur2, &g_fi_prev2,
+                   &g_fi_prev_enhanced2);
+    g_fi_state.synctype = synctype;
+    g_fi_state.lastsynctype = synctype;
+    g_fi_state.currentslot = slot;
+}
+
+static void
+frame_info_ambe(dsd_voice_protocol protocol, char ambe_fr[4][24]) {
+    g_frame_info_count = 0;
+    processMbeFrame(&g_fi_opts, &g_fi_state, protocol, NULL, ambe_fr, NULL);
+}
+
+static void
+frame_info_imbe(dsd_voice_protocol protocol, char imbe_fr[8][23]) {
+    g_frame_info_count = 0;
+    processMbeFrame(&g_fi_opts, &g_fi_state, protocol, imbe_fr, NULL, NULL);
+}
+
+/* AMBE 3600x2450 parameters: a voiced frame of pitch index @p b0 (0..119), AMBE silence (124), an erasure (120), and
+   a tone frame (tone ID 18), each sent with no bit errors. */
+static void
+ambe2450_frame_with_b0(int b0, char ambe_fr[4][24]) {
+    char ambe_d[49] = {0};
+    set_ambe2450_b0(ambe_d, b0);
+    ambe_d[8] = 1; /* some gain, so the voiced frame is not the quietest one */
+    ambe_d[10] = 1;
+    DSD_MEMSET(ambe_fr, 0, 4 * 24 * sizeof(char));
+    (void)mbe_encodeAmbe3600x2450Frame(ambe_d, ambe_fr);
+}
+
+static void
+ambe2450_tone_frame(char ambe_fr[4][24]) {
+    char ambe_d[49] = {0};
+    for (int i = 0; i < 6; i++) {
+        ambe_d[i] = 1; /* the tone identifier (TIA-102.BABA-1 7) */
+    }
+    for (int i = 0; i < 8; i++) {
+        ambe_d[12 + i] = (char)((18 >> (7 - i)) & 1); /* tone ID 18 in U1[0..7] */
+    }
+    DSD_MEMSET(ambe_fr, 0, 4 * 24 * sizeof(char));
+    (void)mbe_encodeAmbe3600x2450Frame(ambe_d, ambe_fr);
+}
+
+/* @p marker is in the vocoder's own record of the frame's synthesis (mbe_formatProcessResult()). */
+static int
+expect_err_str_marker(const char* tag, const char* err_str, char marker, int want) {
+    return expect_eq_int(tag, strchr(err_str, marker) != NULL, want);
+}
+
+/* DMR, both slots: each media class from a real decode, the slot that ran the chain, and a frame that fails to decode
+   (an input bit that is neither 0 nor 1) tells NONE. */
+static int
+test_frame_info_dmr_media_from_the_decode(void) {
+    int rc = 0;
+    char ambe_fr[4][24];
+    dsd_voice_chain_set_observer_for_test(frame_info_observe, NULL);
+    for (int slot = 0; slot <= 1; slot++) {
+        const char* err_str = slot ? g_fi_state.err_strR : g_fi_state.err_str;
+        char tag[96];
+        frame_info_session(DSD_SYNC_DMR_BS_VOICE_POS, slot);
+        ambe2450_frame_with_b0(40, ambe_fr);
+        frame_info_ambe(DSD_VOICE_PROTOCOL_DMR, ambe_fr);
+        DSD_SNPRINTF(tag, sizeof tag, "frame info dmr slot %d speech", slot);
+        rc |= expect_frame_info(tag, slot, DSD_VOICE_MEDIA_SPEECH, 1, 1);
+
+        ambe2450_tone_frame(ambe_fr);
+        frame_info_ambe(DSD_VOICE_PROTOCOL_DMR, ambe_fr);
+        DSD_SNPRINTF(tag, sizeof tag, "frame info dmr slot %d tone", slot);
+        rc |= expect_err_str_marker(tag, err_str, 'T', 1);
+        rc |= expect_frame_info(tag, slot, DSD_VOICE_MEDIA_TONE, 1, 1);
+
+        ambe2450_frame_with_b0(124, ambe_fr);
+        frame_info_ambe(DSD_VOICE_PROTOCOL_DMR, ambe_fr);
+        DSD_SNPRINTF(tag, sizeof tag, "frame info dmr slot %d silence", slot);
+        rc |= expect_frame_info(tag, slot, DSD_VOICE_MEDIA_CONCEALED, 1, 1);
+
+        ambe2450_frame_with_b0(120, ambe_fr);
+        frame_info_ambe(DSD_VOICE_PROTOCOL_DMR, ambe_fr);
+        DSD_SNPRINTF(tag, sizeof tag, "frame info dmr slot %d erasure", slot);
+        rc |= expect_err_str_marker(tag, err_str, 'E', 1);
+        rc |= expect_frame_info(tag, slot, DSD_VOICE_MEDIA_CONCEALED, 1, 1);
+
+        /* Four errors in C0 are past its Golay code: the frame repeats the last one, and a run of them mutes. */
+        frame_info_session(DSD_SYNC_DMR_BS_VOICE_POS, slot);
+        ambe2450_frame_with_b0(40, ambe_fr);
+        frame_info_ambe(DSD_VOICE_PROTOCOL_DMR, ambe_fr);
+        for (size_t bit = 0; bit < 4U; bit++) {
+            ambe_fr[0][bit * 5U] ^= 1;
+        }
+        frame_info_ambe(DSD_VOICE_PROTOCOL_DMR, ambe_fr);
+        DSD_SNPRINTF(tag, sizeof tag, "frame info dmr slot %d repeat", slot);
+        rc |= expect_err_str_marker(tag, err_str, 'R', 1);
+        rc |= expect_frame_info(tag, slot, DSD_VOICE_MEDIA_CONCEALED, 1, 1);
+        int muted = 0;
+        for (int frame = 0; frame < 8 && !muted; frame++) {
+            frame_info_ambe(DSD_VOICE_PROTOCOL_DMR, ambe_fr);
+            muted = strchr(err_str, 'M') != NULL;
+        }
+        DSD_SNPRINTF(tag, sizeof tag, "frame info dmr slot %d mute", slot);
+        rc |= expect_eq_int(tag, muted, 1);
+        rc |= expect_frame_info(tag, slot, DSD_VOICE_MEDIA_CONCEALED, 1, 1);
+
+        ambe2450_frame_with_b0(40, ambe_fr);
+        ambe_fr[0][0] = 2;
+        frame_info_ambe(DSD_VOICE_PROTOCOL_DMR, ambe_fr);
+        DSD_SNPRINTF(tag, sizeof tag, "frame info dmr slot %d decode failure", slot);
+        rc |= expect_frame_info(tag, slot, DSD_VOICE_MEDIA_NONE, 1, 1);
+    }
+    dsd_voice_chain_set_observer_for_test(NULL, NULL);
+    dsd_state_ext_free_all(&g_fi_state);
+    return rc;
+}
+
+/* DMR decodability is the frame's encryption class: an RC4 frame with no key is not decodable whether or not the user
+   unmutes encrypted audio, and a clear one is, whether or not reverse mute (-q) silences it. Receive admission is the
+   receive policy's, per slot. */
+static int
+test_frame_info_dmr_decodable_and_admitted(void) {
+    int rc = 0;
+    char ambe_fr[4][24];
+    dsd_voice_chain_set_observer_for_test(frame_info_observe, NULL);
+    ambe2450_frame_with_b0(40, ambe_fr);
+    for (int mute_enc = 0; mute_enc <= 1; mute_enc++) {
+        frame_info_session(DSD_SYNC_DMR_BS_VOICE_POS, 0);
+        g_fi_opts.dmr_mute_encL = mute_enc;
+        g_fi_state.dmr_so = 0x40;
+        g_fi_state.payload_algid = 0x21;
+        frame_info_ambe(DSD_VOICE_PROTOCOL_DMR, ambe_fr);
+        rc |= expect_frame_info(mute_enc ? "frame info dmr undecryptable, muted"
+                                         : "frame info dmr undecryptable, unmuted",
+                                0, DSD_VOICE_MEDIA_SPEECH, 0, 1);
+    }
+    frame_info_session(DSD_SYNC_DMR_BS_VOICE_POS, 0);
+    g_fi_opts.reverse_mute = 1;
+    frame_info_ambe(DSD_VOICE_PROTOCOL_DMR, ambe_fr);
+    rc |= expect_frame_info("frame info dmr clear under reverse mute", 0, DSD_VOICE_MEDIA_SPEECH, 1, 1);
+    rc |= expect_eq_int("frame info dmr clear under reverse mute is muted", g_fi_state.mbe_slot_muted[0], 1);
+
+    /* The receive policy refuses over-the-air slot 1: lane 0's frames are not admitted, lane 1's are. */
+    for (int slot = 0; slot <= 1; slot++) {
+        frame_info_session(DSD_SYNC_DMR_BS_VOICE_POS, slot);
+        g_fi_opts.receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
+        g_fi_opts.receive.filters[DSD_RECEIVE_SLOT].block.bits[0] = UINT64_C(1) << 1;
+        frame_info_ambe(DSD_VOICE_PROTOCOL_DMR, ambe_fr);
+        rc |= expect_frame_info(slot ? "frame info dmr slot 2 admitted" : "frame info dmr slot 1 refused", slot,
+                                DSD_VOICE_MEDIA_SPEECH, 1, slot);
+    }
+    dsd_voice_chain_set_observer_for_test(NULL, NULL);
+    dsd_state_ext_free_all(&g_fi_state);
+    return rc;
+}
+
+/* P25 Phase 1: a decoded frame is speech, a teardown tail erasure and a frame that fails to decode are no media.
+   Decodability is the crypto-only rule: an encrypted call with no key is not decodable even where the user's override
+   lets it play, and YSF full rate borrowing the decoder is never judged by P25's crypto state. */
+static int
+test_frame_info_p25p1(void) {
+    int rc = 0;
+    char imbe_fr[8][23];
+    dsd_voice_chain_set_observer_for_test(frame_info_observe, NULL);
+
+    frame_info_session(DSD_SYNC_P25P1_POS, 0);
+    g_fi_state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    load_imbe7200_rows(k_p25p1_corrected_speech_rows, imbe_fr);
+    frame_info_imbe(DSD_VOICE_PROTOCOL_P25P1, imbe_fr);
+    rc |= expect_frame_info("frame info p25p1 speech", 0, DSD_VOICE_MEDIA_SPEECH, 1, 1);
+
+    load_imbe7200_rows(k_p25p1_tail_erasure_rows, imbe_fr);
+    frame_info_imbe(DSD_VOICE_PROTOCOL_P25P1, imbe_fr);
+    rc |= expect_eq_int("frame info p25p1 tail erasure suppressed", (int)g_fi_state.p25_p1_suppressed_tail_frames, 1);
+    rc |= expect_frame_info("frame info p25p1 tail erasure", 0, DSD_VOICE_MEDIA_NONE, 1, 1);
+
+    load_imbe7200_rows(k_p25p1_corrected_speech_rows, imbe_fr);
+    imbe_fr[0][0] = 2;
+    frame_info_imbe(DSD_VOICE_PROTOCOL_P25P1, imbe_fr);
+    rc |= expect_frame_info("frame info p25p1 decode failure", 0, DSD_VOICE_MEDIA_NONE, 1, 1);
+
+    load_imbe7200_rows(k_p25p1_corrected_speech_rows, imbe_fr);
+    frame_info_session(DSD_SYNC_P25P1_POS, 0);
+    g_fi_state.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
+    g_fi_opts.trunk_tune_enc_calls = 1;
+    g_fi_opts.unmute_encrypted_p25 = 1;
+    frame_info_imbe(DSD_VOICE_PROTOCOL_P25P1, imbe_fr);
+    rc |= expect_frame_info("frame info p25p1 encrypted, unmuted", 0, DSD_VOICE_MEDIA_SPEECH, 0, 1);
+    rc |= expect_eq_int("frame info p25p1 encrypted, unmuted, plays", g_fi_state.mbe_slot_muted[0], 0);
+
+    frame_info_imbe(DSD_VOICE_PROTOCOL_YSF, imbe_fr);
+    rc |= expect_frame_info("frame info ysf full rate on the p25 decoder", 0, DSD_VOICE_MEDIA_SPEECH, 1, 1);
+    dsd_voice_chain_set_observer_for_test(NULL, NULL);
+    dsd_state_ext_free_all(&g_fi_state);
+    return rc;
+}
+
+/* P25 Phase 2 decodability is the slot's crypto rule alone: a talkgroup verdict that mutes the slot
+   (p25_p2_audio_allowed) leaves a clear frame decodable, an encrypted one with no key is not. */
+static int
+test_frame_info_p25p2_is_crypto_only(void) {
+    int rc = 0;
+    char ambe_fr[4][24];
+    dsd_voice_chain_set_observer_for_test(frame_info_observe, NULL);
+    ambe2450_frame_with_b0(40, ambe_fr);
+    for (int encrypted = 0; encrypted <= 1; encrypted++) {
+        frame_info_session(DSD_SYNC_P25P2_POS, 1);
+        g_fi_state.p25_crypto_state[1] = encrypted ? DSD_P25_CRYPTO_ENCRYPTED_PENDING : DSD_P25_CRYPTO_CLEAR;
+        g_fi_state.p25_p2_audio_allowed[1] = 0;
+        frame_info_ambe(DSD_VOICE_PROTOCOL_P25P2, ambe_fr);
+        rc |= expect_frame_info(encrypted ? "frame info p25p2 encrypted" : "frame info p25p2 clear, talkgroup muted", 1,
+                                DSD_VOICE_MEDIA_SPEECH, !encrypted, 1);
+        rc |= expect_eq_int("frame info p25p2 slot muted", g_fi_state.mbe_slot_muted[1], 1);
+    }
+    dsd_voice_chain_set_observer_for_test(NULL, NULL);
+    dsd_state_ext_free_all(&g_fi_state);
+    return rc;
+}
+
+/* NXDN by its cipher class; X2-TDMA frames are decodable and run the chain of the timeslot they were received on;
+   D-STAR's and ProVoice's frames are decodable. */
+static int
+test_frame_info_fdma_owners(void) {
+    int rc = 0;
+    char ambe_fr[4][24];
+    dsd_voice_chain_set_observer_for_test(frame_info_observe, NULL);
+    ambe2450_frame_with_b0(40, ambe_fr);
+    for (int cipher = 0; cipher <= 1; cipher++) {
+        frame_info_session(DSD_SYNC_NXDN_POS, 0);
+        g_fi_state.nxdn_cipher_type = cipher;
+        frame_info_ambe(DSD_VOICE_PROTOCOL_NXDN, ambe_fr);
+        rc |= expect_frame_info(cipher ? "frame info nxdn scrambled, no key" : "frame info nxdn clear", 0,
+                                DSD_VOICE_MEDIA_SPEECH, !cipher, 1);
+    }
+    for (int slot = 0; slot <= 1; slot++) {
+        frame_info_session(DSD_SYNC_X2TDMA_VOICE_POS, slot);
+        frame_info_ambe(DSD_VOICE_PROTOCOL_X2TDMA, ambe_fr);
+        rc |= expect_frame_info(slot ? "frame info x2 timeslot 2" : "frame info x2 timeslot 1", slot,
+                                DSD_VOICE_MEDIA_SPEECH, 1, 1);
+    }
+
+    char dstar_d[49] = {0};
+    char dstar_fr[4][24] = {{0}};
+    dstar_d[2] = 1; /* a voiced pitch */
+    dstar_d[9] = 1;
+    (void)mbe_encodeAmbe3600x2400Frame(dstar_d, dstar_fr);
+    frame_info_session(DSD_SYNC_DSTAR_VOICE_POS, 0);
+    frame_info_ambe(DSD_VOICE_PROTOCOL_DSTAR, dstar_fr);
+    rc |= expect_frame_info("frame info dstar speech", 0, DSD_VOICE_MEDIA_SPEECH, 1, 1);
+
+    char imbe7100_fr[7][24] = {{0}};
+    imbe7100_fr[0][3] = 1;
+    imbe7100_fr[2][11] = 1;
+    imbe7100_fr[6][19] = 1;
+    frame_info_session(DSD_SYNC_PROVOICE_POS, 0);
+    g_frame_info_count = 0;
+    processMbeFrame(&g_fi_opts, &g_fi_state, DSD_VOICE_PROTOCOL_PROVOICE, NULL, NULL, imbe7100_fr);
+    rc |= expect_frame_info("frame info provoice speech", 0, DSD_VOICE_MEDIA_SPEECH, 1, 1);
+    dsd_voice_chain_set_observer_for_test(NULL, NULL);
+    dsd_state_ext_free_all(&g_fi_state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -6740,6 +7063,11 @@ main(void) {
     rc |= test_x2_sequence_records_and_switches_each_timeslot();
     rc |= test_mono_mixer_plays_only_the_frame_the_vocoder_staged();
     rc |= test_voice_chain_per_call_wav_is_format_independent();
+    rc |= test_frame_info_dmr_media_from_the_decode();
+    rc |= test_frame_info_dmr_decodable_and_admitted();
+    rc |= test_frame_info_p25p1();
+    rc |= test_frame_info_p25p2_is_crypto_only();
+    rc |= test_frame_info_fdma_owners();
 
     if (rc == 0) {
         printf("CORE_MBE_TRANSFORM_CONTEXT: OK\n");

@@ -911,7 +911,7 @@ test_keystream_muted_frame_stages_silence(void) {
             for (int i = 0; i < 160; i++) {
                 prior_audio[i] = 5000.0f;
             }
-            dsd_voice_chain_run(&opts, &state, slot, prior_audio);
+            dsd_voice_chain_run(&opts, &state, slot, prior_audio, NULL);
             // Stale non-silent samples on the slot, then a frame past the end of the keystream.
             short* staged = (slot == 0) ? state.s_l : state.s_r;
             for (int i = 0; i < 160; i++) {

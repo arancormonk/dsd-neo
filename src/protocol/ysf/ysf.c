@@ -526,12 +526,14 @@ ysf_capture_bypassed_frame(dsd_opts* opts, dsd_state* state, const char ambe_d[4
     }
 }
 
-// A frame that bypassed the vocoder (V/D2) runs the gain stage here, in either output format (issue #652); one that
-// went through it was already gained there.
+// A frame that bypassed the vocoder (V/D2) runs the gain stage here, in either output format (issue #652), as @p media
+// (YSF voice is never encrypted); one that went through it was already gained there.
 static void
-ysf_emit_audio_from_temp(dsd_opts* opts, dsd_state* state, bool bypassed_vocoder) {
+ysf_emit_audio_from_temp(dsd_opts* opts, dsd_state* state, bool bypassed_vocoder, dsd_voice_media media) {
     if (bypassed_vocoder) {
-        dsd_voice_chain_run(opts, state, 0, state->audio_out_temp_buf);
+        const dsd_voice_frame_info info = {(uint8_t)media, 1U,
+                                           (uint8_t)(dsd_receive_current_allows(opts, state, 0) != 0), 0U};
+        dsd_voice_chain_run(opts, state, 0, state->audio_out_temp_buf, &info);
         dsd_voice_stage_short_left(opts, state);
         ysf_write_bypassed_call_wav(opts, state);
     }
@@ -818,7 +820,7 @@ ysf_handle_vd_type2(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info)
         }
 
         ysf_capture_bypassed_frame(opts, state, ambe_d);
-        ysf_emit_audio_from_temp(opts, state, true);
+        ysf_emit_audio_from_temp(opts, state, true, dsd_voice_media_of_mbe(ret, result.flags));
     }
     if (ysf_carrier_left(state, info)) {
         return;
@@ -876,7 +878,7 @@ ysf_decode_full_rate_voice_slot(dsd_opts* opts, dsd_state* state, const ysf_fich
     processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_YSF, imbe_fr, NULL, NULL);
     state->synctype = synctype;
 
-    ysf_emit_audio_from_temp(opts, state, false);
+    ysf_emit_audio_from_temp(opts, state, false, DSD_VOICE_MEDIA_NONE);
     return true;
 }
 

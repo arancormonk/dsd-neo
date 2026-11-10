@@ -2610,7 +2610,8 @@ suite runs under this compiler.
   replayed and compared), `CORE_AUDIO2_HELPERS`, `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_P25P2_PLAYOUT`.
 - API note (decoded PCM voice, `dsd_audio_play_decoded_pcm16()` in `<dsd-neo/core/audio.h>`, `dsd_audio2.c`, issue
   #658): a decoder that synthesizes its own 8 kHz mono int16 voice (M17's Codec2) settles its own gates before calling.
-  Each whole 160-sample frame is copied to `audio_out_temp_buf`, runs `dsd_voice_chain_run()` on slot 0 once, then
+  Each whole 160-sample frame is copied to `audio_out_temp_buf`, runs `dsd_voice_chain_run()` on slot 0 once with the
+  caller's `dsd_voice_frame_info` (one info for every frame of the call; TETRA calls once per output frame), then
   `dsd_voice_stage_short_left()`. The per-call WAV takes the same chained frame (`writeSynthesizedVoice()`). MS or SS
   routes it according to `pulse_digi_out_channels`, with a settled verdict that skips talkgroup policy, FDMA crypto
   rules and the static WAV's record policy; the slot 1 switch, output mute and audible-audio stamp still apply.
@@ -2796,13 +2797,25 @@ suite runs under this compiler.
   (`mbe_post_audio_and_recording()`, on the buffer and slot `processMbeFrameInternal()` names for the decode: the right
   buffer for the slot path's slot 2, the left one otherwise, with X2-TDMA's timeslot as the slot), MBE file playback
   (`play_mbe_output_frame()`), SDRTrunk JSON playback (`sdrtrunk_chain_frame()`, as each frame is synthesized and
-  before its decrypt-or-mute decision), YSF V/D2 (`ysf_emit_audio_from_temp()`), and M17 Codec2
-  (`dsd_audio_play_decoded_pcm16()`, after M17's CAN and decryptability gates). Consumers take the chained frame
+  before its decrypt-or-mute decision), YSF V/D2 (`ysf_emit_audio_from_temp()`), M17 Codec2
+  (`dsd_audio_play_decoded_pcm16()`, after M17's CAN and decryptability gates) and TETRA speech (`voice_play()`, per
+  160-sample output frame). Each producer tells the chain what it knows about the frame (`dsd_voice_frame_info`):
+  `media` (none, concealment, speech or tone: `dsd_voice_media_of_mbe()` of the synthesis result for mbelib-neo's
+  decoders, so a decode failure or a P25 tail erasure is none; a TETRA bad frame is concealment), `decodable` (the
+  frame's encryption class only, never a user mute rule, talkgroup or receive policy: DMR's slot class, P25 Phase 1 and
+  2 `p25_crypto_audio_permitted(NULL, ...)`, NXDN/dPMR's cipher class, SDRTrunk JSON's own encryption flag and
+  keystream, TETRA's speech class; YSF, D-STAR, ProVoice, X2-TDMA (`mbe_x2_slot_decodable()`) and files 1),
+  `admitted` (`dsd_receive_current_allows()` on the slot the verdict judges; files, JSON and M17 1) and `talkspurt`
+  (TETRA's transmission count, 0 elsewhere). `dsd_voice_frame_may_learn()` is the one rule over it: decodable,
+  admitted speech. The vocoder keeps its synthesis's media in `mbe_frame_ctx_t` and builds the info just before the
+  chain, which does not move. M17's encoder monitor (its own transmission decoded back) and a caller with nothing to
+  say pass NULL. The gain does not read the info yet. Tests: `CORE_VOICE_CHAIN` (the helpers),
+  `CORE_MBE_TRANSFORM_CONTEXT` (real decodes per owner), `CORE_MBE_FILE_IO` (files, JSON), `YSF_DCH_DECODE`,
+  `M17_STATE_DISPATCH`, `TETRA_VOICE_PIPELINE`. Consumers take the chained frame
   as it is: the per-call WAV writers and the shared short staging (`dsd_voice_stage_short_left/right()`: `s_l`/`s_r`,
   the output ring and the 48 kHz upsample). No mixer filters or gains. The same staged samples feed every mixer in
   both formats, and float serialization happens only at the sink. The per-call and static WAVs therefore agree
-  across output formats. `processAudio()`/`processAudioR()` remain as chain plus
-  short staging for out-of-tree callers. Each slot keeps its own filter state (`dsd_state::voice_hpf[2]`), cleared
+  across output formats. Each slot keeps its own filter state (`dsd_state::voice_hpf[2]`), cleared
   when the slot's frames move to a new call (one nonzero epoch to another) or protocol family (the dispatched synctype,
   `frame_dispatch_synctype`, so a borrowed decoder does not count), while the high-pass is off, at each MBE playback
   file, at the carrier boundary and in the no-carrier pass's guarded playout drain, in `dsd_mbe_purge_slot_audio()` and
@@ -10556,7 +10569,8 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
 - The carrier. The receiver's carrier changes when a tune completes, not when it is asked for: then
   `tetra_forget_carrier()` (`tetra.c`) drops the carrier's CRC evidence, the partial TM-SDUs
   (`tetra_mac_forget_fragments()`), the TDMA clock (`tetra_tdma_stop()`), which counts symbols a retune may have
-  dropped, the speech in progress (`tetra_voice_reset()`), and the direct mode call on the channel with its DM colour
+  dropped, the speech in progress (`tetra_voice_forget_carrier()`, which keeps the transmission it belonged to), and the
+  direct mode call on the channel with its DM colour
   code, seed and protection (`tetra_dmo_forget_carrier()`, `tetra_calls_forget_carrier()`), so the next carrier's normal
   bursts are not descrambled with them and its calls and speech are not classified by them, and direct mode itself: the
   next carrier is trunked until its own DSB says otherwise, since no DNB decodes before that DSB gives its colour code
@@ -10885,13 +10899,24 @@ single "current call".
   concealed with another call's, timeslot's or talker's codec state; the call identifier and the timeslot tell two
   transmissions apart at the second's first burst, which publishes nothing when its CRC fails. The kind tells direct
   mode from trunked mode; downlink or uplink is the session's (`--tetra-uplink`). A D-INFO or D-CALL RESTORE renaming the call keeps
-  its speech (`tetra_voice_call_renamed()`).
+  its speech (`tetra_voice_call_renamed()`). Each start of a new transmission by these rules advances the speech's
+  transmission count (`tetra_voice_t::agc_tx_seq`, never 0 once one started), which the speech output passes as every
+  frame's talkspurt (`dsd_voice_frame_info`). A carrier boundary (`tetra_forget_carrier()`, a stream gap included)
+  forgets the speech in progress but keeps a copy of the transmission it belonged to (`tetra_voice_forget_carrier()`:
+  its kind, call identifier, timeslot, target, party, call-end count and last good burst); the next speech is judged
+  against that copy by the same rules, so speech of the same transmission after a short gap starts a new decoder but
+  keeps the count. A rename and a grant after D-TX CEASED apply to the copy as to a bound transmission; any other reset
+  (`tetra_voice_reset()`: a BSCH of another cell, the end of the heard speech) drops it.
 - Speech decoding. mbelib-neo's TETRA decoder (`mbe_tetraDecodeFrame()`, mbe-neo 2.6+) turns each 137-bit speech frame
   into 240 samples at 8 kHz; a CRC-failed or stolen frame goes to it as a bad frame, which it conceals. `tetra_voice.c`
   makes one decoder (`tetra_voice_t::codec`) at the first frame that plays, resets it (`mbe_tetraDecoderReset()`) when
   the speech in progress starts over and frees it with the TETRA state. A decoder that cannot be made or a decode that
   fails drops that frame with one logged error per session; decoding carries on. Tests swap in a stand-in decoder
-  through `tetra_voice_set_codec_for_test()` (`tetra_voice_state.h`).
+  through `tetra_voice_set_codec_for_test()` (`tetra_voice_state.h`). The output takes 160-sample frames, so every
+  other codec frame's last 80 samples wait for the next (`tetra_voice_t::carry`); each output frame tells the chain it
+  is concealment when any codec frame it takes samples from was a bad frame (`carry_bad`), and decodable only when every
+  one of them was clear or decrypted speech, judged from its encryption class, not the mute settings
+  (`tetra_voice_crypto_class()`, `carry_undecodable`). Tests: `TETRA_VOICE_PIPELINE`.
 - Canonical calls. Slot 0, the TETRA synctype as protocol. The followed call publishes from its CRC-passed signalling
   once the carrier is proven and its tune settled, until its transmission ceased: a group call's called group as
   target and its talker as source; an individual call's talker (the calling party while none is named) as source and
@@ -11042,7 +11067,7 @@ What each decoded event does:
 | SYSINFO of another location area | as a BSCH of another cell, and the call records | the new area |
 | On the carrier of a guarded follow (Trunking, "Another cell on the followed carrier"): a CRC-passed BSCH of another network or colour code, a DSB, a SYSINFO of another main carrier or location area | direct mode, before a BSCH is parsed (`tetra_dmo_leave()`); nothing else | nothing; a BSCH runs the clock to its slot |
 | A PDU whose channel allocation has its cell change flag set | nothing | nothing; decoded and printed only |
-| Carrier boundary (`tetra_forget_carrier()`) | the carrier evidence, the partial TM-SDUs, the clock, the speech in progress, the timeslot speech context, direct mode with its colour code, protection and call, and with the evidence's epoch the event labels assigned on the carrier | trunked mode, block 1 behind AACH half 1 |
+| Carrier boundary (`tetra_forget_carrier()`) | the carrier evidence, the partial TM-SDUs, the clock, the speech in progress (not its transmission), the timeslot speech context, direct mode with its colour code, protection and call, and with the evidence's epoch the event labels assigned on the carrier | trunked mode, block 1 behind AACH half 1 |
 | Decode-mode change off TETRA (committed) | the whole TETRA state with its tune in flight disowned, the frame sync capture and the publication (`dsd_decode_mode_leave_tetra()`) | nothing |
 
 A DSB whose SCH/S fails is not told from noise on its training sequence and changes nothing; sealing at every such

@@ -6,6 +6,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -172,34 +173,55 @@ voice_codec_failed(tetra_voice_t* v, const char* what) {
 
 /* The burst's verdict for every output, settled once per burst. */
 typedef struct {
-    int audible; /* the encryption class and the talkgroup policy let it play */
-    int record;  /* the record policy lets the recordings take it */
+    int audible;   /* the encryption class and the talkgroup policy let it play */
+    int record;    /* the record policy lets the recordings take it */
+    int decodable; /* its speech is clear or decrypted: the encryption class alone, not the mute settings */
+    int admitted;  /* the receive policy admits it */
 } voice_route;
 
 /* The burst plays as tetra_voice_audible() judged it; the record policy then judges the canonical call the speech
    belongs to, published before it is asked, which gives a private call its two parties. */
 static voice_route
-voice_route_for(const dsd_opts* opts, const dsd_state* state, const tetra_speech* sp) {
-    voice_route route = {sp->audible != 0u, 0};
+voice_route_for(const dsd_opts* opts, const dsd_state* state, const tetra_speech* sp, int keystream_applied) {
+    voice_route route = {sp->audible != 0u, 0, 0, 0};
     if (route.audible) {
         int allow = 0;
         route.record = dsd_audio_record_policy_gate_slot(opts, state, 0, &allow) == 0 && allow;
     }
+    route.decodable = tetra_voice_crypto_class(sp, keystream_applied) != DSD_VOICE_CRYPTO_UNDECRYPTABLE;
+    route.admitted = dsd_receive_current_allows(opts, state, 0) != 0;
     return route;
 }
 
-/* Play @p pcm after the samples carried from the last frame; whole output frames go out, the rest waits. */
+/* Play @p pcm, codec frame @p bad or not, after the samples carried from the last frame; whole output frames go out,
+   the rest waits. An output frame is speech the chain may learn from only when every codec frame it takes samples from
+   was: a good frame of decodable speech. */
 static void
-voice_play(const dsd_opts* opts, dsd_state* state, tetra_voice_t* v, const short* pcm, int record) {
+voice_play(const dsd_opts* opts, dsd_state* state, tetra_voice_t* v, const short* pcm, int bad,
+           const voice_route* route) {
     short buf[DSD_VOICE_FRAME_SAMPLES + TETRA_VOICE_FRAME_SAMPLES];
-    size_t count = v->carry_len;
+    const size_t carried = v->carry_len;
+    size_t count = carried;
     DSD_MEMCPY(buf, v->carry, count * sizeof(short));
     DSD_MEMCPY(buf + count, pcm, (size_t)TETRA_VOICE_FRAME_SAMPLES * sizeof(short));
     count += TETRA_VOICE_FRAME_SAMPLES;
     const size_t whole = count - (count % DSD_VOICE_FRAME_SAMPLES);
-    dsd_audio_play_decoded_pcm16_record(opts, state, buf, whole, record);
+    for (size_t at = 0; at < whole; at += DSD_VOICE_FRAME_SAMPLES) {
+        const int from_carry = at < carried;
+        const int concealed = bad || (from_carry && v->carry_bad);
+        const int decodable = route->decodable && !(from_carry && v->carry_undecodable);
+        const dsd_voice_frame_info info = {
+            (uint8_t)(concealed ? DSD_VOICE_MEDIA_CONCEALED : DSD_VOICE_MEDIA_SPEECH),
+            (uint8_t)decodable,
+            (uint8_t)route->admitted,
+            v->agc_tx_seq,
+        };
+        dsd_audio_play_decoded_pcm16_record(opts, state, buf + at, DSD_VOICE_FRAME_SAMPLES, route->record, &info);
+    }
     v->carry_len = (uint16_t)(count - whole);
     DSD_MEMCPY(v->carry, buf + whole, (size_t)v->carry_len * sizeof(short));
+    v->carry_bad = (uint8_t)(bad != 0);
+    v->carry_undecodable = (uint8_t)!route->decodable;
 }
 
 /* Integrity bookkeeping for one frame: 1 when it goes to the codec. A good frame starts or continues the speech; a
@@ -243,7 +265,7 @@ voice_frame_play(const dsd_opts* opts, dsd_state* state, tetra_voice_t* v, const
     if (bad) {
         v->concealed++;
     }
-    voice_play(opts, state, v, pcm, route->record);
+    voice_play(opts, state, v, pcm, bad, route);
 }
 
 /* Forget the speech in progress: the decoder's state, its integrity and its unplayed samples. */
@@ -270,42 +292,99 @@ voice_speech_reset(tetra_voice_t* v) {
    next one, whose D-TX CEASED, D-TX GRANTED or DMAC-SYNC may have gone unheard, conceals nothing with the last one's
    decoder. The call identifier and the timeslot tell two transmissions apart at the first burst of the
    second, before anything of it was published: a burst whose CRC failed publishes nothing. The kind tells direct mode
-   from trunked mode, and whether trunked mode is the downlink or the uplink is the session's (--tetra-uplink). */
+   from trunked mode, and whether trunked mode is the downlink or the uplink is the session's (--tetra-uplink).
+   voice_owns() is 1 when @p sp is speech of @p o's transmission, whose last burst with a good frame came at
+   @p last_good_m. */
+static int
+voice_owns(const tetra_voice_owner* o, double last_good_m, const tetra_state_t* ts, const tetra_speech* sp,
+           double now_m) {
+    const uint16_t call_id = sp->kind == TETRA_SPEECH_CALL ? sp->call_id : 0U;
+    const int other_party = o->source != 0u && sp->source != 0u && o->source != sp->source;
+    const int paused = last_good_m > 0.0 && now_m - last_good_m >= TETRA_CALL_SPEECH_END_S;
+    return o->kind == sp->kind && o->call_id == call_id && o->tn == sp->tn && o->target == sp->target
+           && o->ends == ts->calls.ends && !other_party && !paused;
+}
+
+/* The speech in progress is the next transmission's: agc_tx_seq moves on, skipping 0 (no transmission). */
+static void
+voice_next_transmission(tetra_voice_t* v) {
+    v->agc_tx_seq++;
+    if (v->agc_tx_seq == 0U) {
+        v->agc_tx_seq = 1U;
+    }
+}
+
+/* Bind the speech in progress to @p sp's transmission (voice_owns()); speech of another starts over. */
 static void
 voice_bind(tetra_state_t* ts, const tetra_speech* sp, double now_m) {
     tetra_voice_t* const v = &ts->voice;
-    const uint16_t call_id = sp->kind == TETRA_SPEECH_CALL ? sp->call_id : 0U;
-    const int other_party = v->owner_source != 0u && sp->source != 0u && v->owner_source != sp->source;
-    const int paused = v->last_good_m > 0.0 && now_m - v->last_good_m >= TETRA_CALL_SPEECH_END_S;
-    if (v->bound && v->owner_kind == sp->kind && v->owner_call_id == call_id && v->owner_tn == sp->tn
-        && v->owner_target == sp->target && v->owner_ends == ts->calls.ends && !other_party && !paused) {
+    if (v->bound && voice_owns(&v->owner, v->last_good_m, ts, sp, now_m)) {
         if (sp->source != 0u) {
-            v->owner_source = sp->source;
+            v->owner.source = sp->source;
         }
         return;
     }
+    /* Speech after a carrier gap starts over from a reset, as any other; it is still the transmission the gap cut
+       when the same rules say so. */
+    const int resumed = !v->bound && v->gap_kept && voice_owns(&v->gap_owner, v->gap_last_good_m, ts, sp, now_m);
     voice_speech_reset(v);
+    v->gap_kept = 0;
+    if (!resumed) {
+        voice_next_transmission(v);
+    }
     v->bound = 1;
-    v->owner_kind = sp->kind;
-    v->owner_call_id = call_id;
-    v->owner_tn = sp->tn;
-    v->owner_target = sp->target;
-    v->owner_source = sp->source;
-    v->owner_ends = ts->calls.ends;
+    v->owner.kind = sp->kind;
+    v->owner.call_id = sp->kind == TETRA_SPEECH_CALL ? sp->call_id : 0U;
+    v->owner.tn = sp->tn;
+    v->owner.target = sp->target;
+    v->owner.source = sp->source;
+    v->owner.ends = ts->calls.ends;
+}
+
+/* 1 when @p o is call @p call_id's. */
+static int
+voice_owner_is_call(const tetra_voice_owner* o, uint16_t call_id) {
+    return o->kind == TETRA_SPEECH_CALL && o->call_id == call_id;
 }
 
 void
 tetra_voice_call_renamed(tetra_voice_t* voice, uint16_t old_id, uint16_t new_id) {
-    if (voice && voice->bound && voice->owner_kind == TETRA_SPEECH_CALL && voice->owner_call_id == old_id) {
-        voice->owner_call_id = new_id;
+    if (!voice) {
+        return;
+    }
+    if (voice->bound && voice_owner_is_call(&voice->owner, old_id)) {
+        voice->owner.call_id = new_id;
+    }
+    if (voice->gap_kept && voice_owner_is_call(&voice->gap_owner, old_id)) {
+        voice->gap_owner.call_id = new_id;
     }
 }
 
 void
 tetra_voice_transmission_started(tetra_voice_t* voice, uint16_t call_id) {
-    if (voice && voice->bound && voice->owner_kind == TETRA_SPEECH_CALL && voice->owner_call_id == call_id) {
+    if (!voice) {
+        return;
+    }
+    if (voice->bound && voice_owner_is_call(&voice->owner, call_id)) {
         voice_speech_reset(voice);
     }
+    if (voice->gap_kept && voice_owner_is_call(&voice->gap_owner, call_id)) {
+        voice->gap_kept = 0;
+    }
+}
+
+void
+tetra_voice_forget_carrier(tetra_voice_t* voice) {
+    if (!voice) {
+        return;
+    }
+    /* A second gap before any speech keeps the copy the first one made. */
+    if (voice->bound) {
+        voice->gap_owner = voice->owner;
+        voice->gap_last_good_m = voice->last_good_m;
+        voice->gap_kept = 1;
+    }
+    voice_speech_reset(voice);
 }
 
 /* The frames of one burst of @p sp's call: @p bad[i] for frame i of @p frames. Whether the burst plays is judged first
@@ -336,14 +415,14 @@ voice_burst(dsd_opts* opts, dsd_state* state, tetra_speech* sp, const uint8_t* f
     if (good) {
         ts->voice.last_good_m = now_m;
     }
-    voice_route route = {0, 0};
+    voice_route route = {0, 0, 0, 0};
     int routed = 0;
     for (int i = 0; i < nframes; i++) {
         if (!voice_frame_admitted(&ts->voice, bad[i])) {
             continue;
         }
         if (!routed) {
-            route = voice_route_for(opts, state, sp);
+            route = voice_route_for(opts, state, sp, keystream_applied);
             routed = 1;
         }
         voice_frame_play(opts, state, &ts->voice, frames + ((size_t)i * TETRA_VOICE_FRAME_BITS), bad[i], &route);
@@ -412,4 +491,6 @@ tetra_voice_reset(dsd_state* state) {
         return;
     }
     voice_speech_reset(&ts->voice);
+    /* Not a carrier gap: what follows is another transmission. */
+    ts->voice.gap_kept = 0;
 }

@@ -20,6 +20,8 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rdio_export.h>
@@ -38,6 +40,7 @@
 #else
 #include <unistd.h>
 #endif
+#include "core/audio/voice_chain_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -492,7 +495,7 @@ write_sdrtrunk_json_input(FILE** out, const char* json) {
     return 0;
 }
 
-/* The output buffers the gain stage (processAudio()) writes, for a zeroed state: JSON playback runs it for every frame
+/* The output buffers the gain stage (dsd_voice_chain_run()) and short staging write, for a zeroed state: JSON playback runs it for every frame
    in either output format (issue #652). Each run starts them over. */
 static void
 prepare_gain_stage(dsd_state* state) {
@@ -4033,6 +4036,262 @@ test_sdrtrunk_dmr_capture_and_late_entry(void) {
     return rc;
 }
 
+/* ---------------------------------------------------------------------------------------------------------------
+ * What MBE file playback and SDRTrunk JSON playback tell the voice chain about each frame (dsd_voice_frame_info).
+ * ------------------------------------------------------------------------------------------------------------- */
+
+#define FILE_INFO_SEEN_MAX 8
+
+static dsd_voice_frame_info g_file_info_seen[FILE_INFO_SEEN_MAX];
+static int g_file_info_count;
+static int g_file_info_bad_calls; /* runs on slot 1, or without an info */
+
+static void
+file_info_observe(void* ctx, int slot, const float* frame, const dsd_voice_frame_info* info) {
+    (void)ctx;
+    (void)frame;
+    if (slot != 0 || !info) {
+        g_file_info_bad_calls++;
+        return;
+    }
+    if (g_file_info_count < FILE_INFO_SEEN_MAX) {
+        g_file_info_seen[g_file_info_count] = *info;
+    }
+    g_file_info_count++;
+}
+
+static void
+file_info_reset(void) {
+    DSD_MEMSET(g_file_info_seen, 0, sizeof g_file_info_seen);
+    g_file_info_count = 0;
+    g_file_info_bad_calls = 0;
+}
+
+/* Frame @p i of the run told the chain exactly this. */
+static int
+expect_file_info(const char* tag, int i, int media, int decodable) {
+    const dsd_voice_frame_info* seen = &g_file_info_seen[i];
+    if (i >= g_file_info_count || g_file_info_bad_calls != 0 || seen->media != media || seen->decodable != decodable
+        || seen->admitted != 1U || seen->talkspurt != 0U) {
+        DSD_FPRINTF(stderr,
+                    "%s: frame %d of %d (%d bad runs): media %u decodable %u admitted %u talkspurt %u; want media %d "
+                    "decodable %d admitted 1\n",
+                    tag, i, g_file_info_count, g_file_info_bad_calls, (unsigned)seen->media, (unsigned)seen->decodable,
+                    (unsigned)seen->admitted, (unsigned)seen->talkspurt, media, decodable);
+        return 1;
+    }
+    return 0;
+}
+
+/* AMBE 3600x2450 parameters: a voiced frame (pitch index 40), AMBE silence (b0 124) and a tone frame (tone ID 18). */
+static void
+file_info_ambe_d(int kind, char ambe_d[49]) {
+    DSD_MEMSET(ambe_d, 0, 49);
+    int b0 = kind == 1 ? 124 : 40;
+    if (kind == 2) {
+        for (int i = 0; i < 6; i++) {
+            ambe_d[i] = 1; /* the tone identifier (TIA-102.BABA-1 7) */
+        }
+        for (int i = 0; i < 8; i++) {
+            ambe_d[12 + i] = (char)((18 >> (7 - i)) & 1); /* tone ID 18 in U1[0..7] */
+        }
+        return;
+    }
+    ambe_d[0] = (char)((b0 >> 6) & 1);
+    ambe_d[1] = (char)((b0 >> 5) & 1);
+    ambe_d[2] = (char)((b0 >> 4) & 1);
+    ambe_d[3] = (char)((b0 >> 3) & 1);
+    ambe_d[37] = (char)((b0 >> 2) & 1);
+    ambe_d[38] = (char)((b0 >> 1) & 1);
+    ambe_d[39] = (char)((b0 >> 0) & 1);
+    ambe_d[8] = 1;
+    ambe_d[10] = 1;
+}
+
+/* One .amb/.dmb record of @p ambe_d behind error byte @p err (readAmbe2450Data()'s layout). */
+static int
+write_ambe_record(FILE* f, const char ambe_d[49], unsigned char err) {
+    unsigned char record[8] = {err, 0, 0, 0, 0, 0, 0, (unsigned char)(ambe_d[48] & 1)};
+    for (int i = 0; i < 48; i++) {
+        record[1 + (i / 8)] |= (unsigned char)((ambe_d[i] & 1) << (7 - (i % 8)));
+    }
+    return fwrite(record, 1, sizeof record, f) == sizeof record ? 0 : 1;
+}
+
+/* Play @p path with -r, the chain observed. */
+static void
+file_info_play(const char* path) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur, prev, prev_enhanced;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.audio_gain = 1.0f;
+    mbe_initMbeParms(&cur, &prev, &prev_enhanced);
+    state.cur_mp = &cur;
+    state.prev_mp = &prev;
+    state.prev_mp_enhanced = &prev_enhanced;
+    state.optind = 1;
+    char path_arg[DSD_TEST_PATH_MAX];
+    DSD_SNPRINTF(path_arg, sizeof path_arg, "%s", path);
+    char* argv[] = {"dsd-neo", path_arg};
+    file_info_reset();
+    dsd_voice_chain_set_observer_for_test(file_info_observe, NULL);
+    playMbeFiles(&opts, &state, 2, argv);
+    dsd_voice_chain_set_observer_for_test(NULL, NULL);
+    dsd_state_ext_free_all(&state);
+}
+
+/* -r playback: every frame is decodable and admitted, its media what its decode made. An .amb file of a voiced frame,
+   a tone, AMBE silence and a voiced frame whose recorded C0 count (4) is past correction, so it repeats; a .dmb
+   (D-STAR) frame and an .imb (IMBE) frame decode as speech. */
+static int
+test_play_mbe_files_tell_the_chain_each_frame(void) {
+    int rc = 0;
+    char path[DSD_TEST_PATH_MAX];
+    char ambe_d[49];
+
+    static const struct {
+        int kind;
+        unsigned char err;
+        int media;
+    } amb[] = {
+        {0, 0U, DSD_VOICE_MEDIA_SPEECH},
+        {2, 0U, DSD_VOICE_MEDIA_TONE},
+        {1, 0U, DSD_VOICE_MEDIA_CONCEALED},
+        {0, (unsigned char)(DSD_MBE_AMB_ERR_FLAG | (4U << DSD_MBE_AMB_ERR_C0_SHIFT) | 4U), DSD_VOICE_MEDIA_CONCEALED},
+    };
+
+    const size_t n_amb = sizeof amb / sizeof amb[0];
+    for (int type = 0; type < 3; type++) {
+        static const char* const cookies[] = {".amb", ".dmb", ".imb"};
+        int fd = dsd_test_mkstemp(path, sizeof path, "voice_info_play");
+        FILE* f = fd >= 0 ? dsd_test_fdopen(fd, "wb") : NULL;
+        if (!f) {
+            DSD_FPRINTF(stderr, "voice info playback file: %s\n", strerror(errno));
+            if (fd >= 0) {
+                dsd_close(fd);
+                (void)remove(path);
+            }
+            return 1;
+        }
+        int wrc = fwrite(cookies[type], 1, 4, f) == 4 ? 0 : 1;
+        if (type == 0) {
+            for (size_t i = 0; i < n_amb; i++) {
+                file_info_ambe_d(amb[i].kind, ambe_d);
+                wrc |= write_ambe_record(f, ambe_d, amb[i].err);
+            }
+        } else if (type == 1) {
+            DSD_MEMSET(ambe_d, 0, sizeof ambe_d);
+            ambe_d[2] = 1; /* a voiced AMBE 2400 pitch */
+            ambe_d[9] = 1;
+            wrc |= write_ambe_record(f, ambe_d, 0U);
+        } else {
+            unsigned char record[12] = {0x00, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xA0, 0xB0};
+            wrc |= fwrite(record, 1, sizeof record, f) == sizeof record ? 0 : 1;
+        }
+        wrc |= fclose(f) != 0;
+        rc |= expect_int("voice info playback file written", wrc, 0);
+        file_info_play(path);
+        (void)remove(path);
+        if (type == 0) {
+            rc |= expect_int("voice info amb frames", g_file_info_count, (int)n_amb);
+            for (size_t i = 0; i < n_amb; i++) {
+                char tag[64];
+                DSD_SNPRINTF(tag, sizeof tag, "voice info amb frame %zu", i);
+                rc |= expect_file_info(tag, (int)i, amb[i].media, 1);
+            }
+        } else {
+            rc |= expect_int(type == 1 ? "voice info dmb frames" : "voice info imb frames", g_file_info_count, 1);
+            rc |= expect_file_info(type == 1 ? "voice info dmb frame" : "voice info imb frame", 0,
+                                   DSD_VOICE_MEDIA_SPEECH, 1);
+        }
+    }
+    return rc;
+}
+
+/* SDRTrunk JSON frame @p ambe_fr as the export's hex: its 36 dibits in transmit order, two per hex digit. */
+static void
+sdrtrunk_hex_of(const char ambe_fr[4][24], char hex[19]) {
+    static const char digits[] = "0123456789ABCDEF";
+    unsigned nibble = 0U;
+    for (size_t i = 0; i < DSD_AMBE_2450_DIBITS; i++) {
+        const dsd_ambe_2450_dibit_map_entry* map = &dsd_ambe_2450_dibit_map[i];
+        const unsigned dibit = ((unsigned)(ambe_fr[map->high_row][map->high_col] & 1) << 1U)
+                               | (unsigned)(ambe_fr[map->low_row][map->low_col] & 1);
+        nibble = (nibble << 2U) | dibit;
+        if (i % 2U == 1U) {
+            hex[i / 2U] = digits[nibble & 0xFU];
+            nibble = 0U;
+        }
+    }
+    hex[18] = '\0';
+}
+
+/* SDRTrunk JSON playback: a clear export's frames are decodable, an encrypted one's with no key are not (they still run
+   the chain, withheld after it); each frame's media is what its decode made: speech, AMBE silence, and a frame whose
+   four C0 errors make it repeat. */
+static int
+test_sdrtrunk_json_tells_the_chain_each_frame(void) {
+    int rc = 0;
+    char ambe_d[49];
+    char ambe_fr[4][24];
+    char speech_hex[19];
+    char silence_hex[19];
+    char repeat_hex[19];
+    file_info_ambe_d(0, ambe_d);
+    DSD_MEMSET(ambe_fr, 0, sizeof ambe_fr);
+    (void)mbe_encodeAmbe3600x2450Frame(ambe_d, ambe_fr);
+    sdrtrunk_hex_of((const char (*)[24])ambe_fr, speech_hex);
+    for (size_t bit = 0; bit < 4U; bit++) {
+        ambe_fr[0][bit * 5U] ^= 1;
+    }
+    sdrtrunk_hex_of((const char (*)[24])ambe_fr, repeat_hex);
+    file_info_ambe_d(1, ambe_d);
+    DSD_MEMSET(ambe_fr, 0, sizeof ambe_fr);
+    (void)mbe_encodeAmbe3600x2450Frame(ambe_d, ambe_fr);
+    sdrtrunk_hex_of((const char (*)[24])ambe_fr, silence_hex);
+
+    for (int encrypted = 0; encrypted <= 1; encrypted++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        static Event_History_I history[2];
+        static mbe_parms cur, prev, prev_enhanced;
+        char json[512];
+        DSD_SNPRINTF(json, sizeof json,
+                     "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"%s\",%s"
+                     "\"frames\":[{\"hex\":\"%s\"},{\"hex\":\"%s\"},{\"hex\":\"%s\"}]}",
+                     encrypted ? "true" : "false",
+                     encrypted ? "\"encryption_algorithm\":\"36\",\"encryption_key_id\":\"9\"," : "", speech_hex,
+                     silence_hex, repeat_hex);
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        DSD_MEMSET(history, 0, sizeof history);
+        opts.playfiles = 1;
+        opts.audio_gain = 1.0f;
+        state.event_history_s = history;
+        mbe_initMbeParms(&cur, &prev, &prev_enhanced);
+        state.cur_mp = &cur;
+        state.prev_mp = &prev;
+        state.prev_mp_enhanced = &prev_enhanced;
+        file_info_reset();
+        dsd_voice_chain_set_observer_for_test(file_info_observe, NULL);
+        rc |= run_sdrtrunk_json(json, &opts, &state);
+        dsd_voice_chain_set_observer_for_test(NULL, NULL);
+        rc |= expect_int(encrypted ? "voice info json encrypted frames" : "voice info json clear frames",
+                         g_file_info_count, 3);
+        rc |= expect_file_info(encrypted ? "voice info json encrypted speech" : "voice info json clear speech", 0,
+                               DSD_VOICE_MEDIA_SPEECH, !encrypted);
+        rc |= expect_file_info(encrypted ? "voice info json encrypted silence" : "voice info json clear silence", 1,
+                               DSD_VOICE_MEDIA_CONCEALED, !encrypted);
+        rc |= expect_file_info(encrypted ? "voice info json encrypted repeat" : "voice info json clear repeat", 2,
+                               DSD_VOICE_MEDIA_CONCEALED, !encrypted);
+        rc |= expect_true("voice info json repeat is the decode's", strchr(state.err_str, 'R') != NULL);
+        dsd_state_ext_free_all(&state);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -4070,6 +4329,8 @@ main(void) {
     rc |= test_sdrtrunk_nxdn_published_voice_vectors();
     rc |= test_sdrtrunk_nxdn_missing_context_and_sacch_alignment();
     rc |= test_sdrtrunk_dmr_capture_and_late_entry();
+    rc |= test_sdrtrunk_json_tells_the_chain_each_frame();
+    rc |= test_play_mbe_files_tell_the_chain_each_frame();
     rc |= test_mbe_out_write_creates_slot_files_and_closes();
     rc |= test_mbe_out_folder_with_separator_is_not_doubled();
     rc |= test_mbe_out_refuses_unconfirmed_and_carrier_crossing_frames();

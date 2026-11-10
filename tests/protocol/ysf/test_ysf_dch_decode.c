@@ -18,6 +18,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -30,6 +31,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "core/audio/voice_chain_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #ifdef DSD_YSF_TEST_REAL_VOCODER
 /* The real-vocoder build (YSF_MBE_CAPTURE) runs only its capture cases; the stubbed-vocoder cases stay compiled. */
@@ -72,6 +74,8 @@ static int g_mbe_inbound_errs2[5];
 /* The AMBE frame each stubbed mbelib call decoded, and the call that fails (-1: none), for the V/D2 capture. */
 static char g_mbe_ambe[5][49];
 static int g_mbe_fail_at = -1;
+/* Synthesis flags each stubbed call reports. */
+static unsigned g_mbe_flags[5];
 
 static void
 begin_test_ysf_call(dsd_state* state) {
@@ -181,6 +185,7 @@ __wrap_mbe_processAmbe2450Dataf(float* aout_buf, mbe_process_result* result, con
     }
     result->total_errors = 4 + g_mbe_call_count;
     result->protected_errors = result->total_errors;
+    result->flags |= g_mbe_flags[g_mbe_call_count];
     for (size_t i = 0; i < 160U; i++) {
         aout_buf[i] = (float)(g_mbe_call_count + 1);
     }
@@ -1220,7 +1225,7 @@ test_process_ysf_fich_verdict_is_sticky_per_transmission(void) {
     dsd_state_ext_free_all(&state);
 }
 
-/* The output buffers the gain stage (processAudio()) writes, for a zeroed state: V/D2 frames run it in either output
+/* The output buffers the gain stage (dsd_voice_chain_run()) and short staging write, for a zeroed state: V/D2 frames run it in either output
    format (issue #652). */
 static void
 prepare_gain_stage(dsd_state* state) {
@@ -1285,6 +1290,77 @@ test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors(void) {
     assert(state.s_l[0] == once);
     assert(state.s_l[159] == once);
     assert(fabsf(state.audio_out_temp_buf[0] - (3.0F * 5.0F * DSD_MBE_PCM16_PER_FLOAT)) <= 1e-6F);
+}
+
+/* What V/D2 tells the voice chain about each frame it decodes itself, the vocoder bypassed: the media mbelib's result
+   says (speech, a tone, a repeat, a mute, and a frame whose synthesis failed), decodable (YSF voice is never
+   encrypted) and admitted. */
+static dsd_voice_frame_info g_ysf_info_seen[5];
+static int g_ysf_info_count;
+static int g_ysf_info_bad_calls;
+
+static void
+ysf_info_observe(void* ctx, int slot, const float* frame, const dsd_voice_frame_info* info) {
+    (void)ctx;
+    (void)frame;
+    if (slot != 0 || !info || g_ysf_info_count >= 5) {
+        g_ysf_info_bad_calls++;
+        return;
+    }
+    g_ysf_info_seen[g_ysf_info_count++] = *info;
+}
+
+static void
+test_process_ysf_vd_type2_tells_the_chain_each_frame(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    uint8_t dch2[100];
+
+    InitAllFecFunction();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
+    g_dibit_stream_len = 0;
+    g_dibit_stream_pos = 0;
+    g_mbe_call_count = 0;
+    opts.audio_gain = 1.0F;
+    prepare_gain_stage(&state);
+    g_mbe_flags[0] = MBE_PROCESS_FLAG_C0_VALID;
+    g_mbe_flags[1] = MBE_PROCESS_FLAG_TONE;
+    g_mbe_flags[2] = MBE_PROCESS_FLAG_REPEAT;
+    g_mbe_flags[3] = MBE_PROCESS_FLAG_REPEAT | MBE_PROCESS_FLAG_MUTE;
+    g_mbe_fail_at = 4;
+
+    make_fich_bits_for_vd_type2(fich_bits);
+    encode_fich_input(fich_bits, 0, 0, fich_input);
+    encode_dch_payload_to_input("VD2SRC4444", 10U, dch2, 96U, 5U, 0);
+    append_dibits_to_stream(fich_input, 100U);
+    for (size_t block = 0; block < 5U; block++) {
+        append_dibits_to_stream(&dch2[block * 20U], 20U);
+        append_type2_vech_dibits(0U);
+    }
+
+    g_ysf_info_count = 0;
+    g_ysf_info_bad_calls = 0;
+    dsd_voice_chain_set_observer_for_test(ysf_info_observe, NULL);
+    processYSF(&opts, &state);
+    dsd_voice_chain_set_observer_for_test(NULL, NULL);
+    DSD_MEMSET(g_mbe_flags, 0, sizeof(g_mbe_flags));
+    g_mbe_fail_at = -1;
+
+    assert(g_mbe_call_count == 5);
+    assert(g_ysf_info_count == 5 && g_ysf_info_bad_calls == 0);
+    static const uint8_t want_media[5] = {DSD_VOICE_MEDIA_SPEECH, DSD_VOICE_MEDIA_TONE, DSD_VOICE_MEDIA_CONCEALED,
+                                          DSD_VOICE_MEDIA_CONCEALED, DSD_VOICE_MEDIA_NONE};
+    for (int i = 0; i < 5; i++) {
+        assert(g_ysf_info_seen[i].media == want_media[i]);
+        assert(g_ysf_info_seen[i].decodable == 1U);
+        assert(g_ysf_info_seen[i].admitted == 1U);
+        assert(g_ysf_info_seen[i].talkspurt == 0U);
+    }
+    dsd_state_ext_free_all(&state);
 }
 
 static void
@@ -1894,6 +1970,7 @@ main(void) {
     test_process_ysf_bad_fich_fallback_reopens_ysf_epoch();
     test_process_ysf_fich_verdict_is_sticky_per_transmission();
     test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors();
+    test_process_ysf_vd_type2_tells_the_chain_each_frame();
     test_process_ysf_terminator_enriches_identity_before_call_end();
     test_process_ysf_ehr_voice_leaves_call_wav_to_vocoder();
     test_process_ysf_vd_type2_writes_call_wav_under_record_policy();

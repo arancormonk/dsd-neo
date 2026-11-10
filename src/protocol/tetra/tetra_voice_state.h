@@ -7,9 +7,11 @@
  * @brief The speech path's part of the TETRA decoder state (tetra_state_t::voice).
  *
  * Lives and dies with the TETRA state: tetra_voice_release() runs when the state is dropped, and the engine's
- * carrier-boundary reset (tetra_voice_reset()) forgets the speech in progress, as do a BSCH of another cell and the end
- * of the heard speech. The speech in progress belongs to one transmission: speech of another call, timeslot or talker,
- * after a TETRA call ended, or after a pause in it of TETRA_CALL_SPEECH_END_S, starts over from a reset.
+ * carrier-boundary reset (tetra_forget_carrier(), tetra_voice_forget_carrier()) forgets the speech in progress, as do a
+ * BSCH of another cell and the end of the heard speech (tetra_voice_reset()). The speech in progress belongs to one
+ * transmission: speech of another call, timeslot or talker, after a TETRA call ended, or after a pause in it of
+ * TETRA_CALL_SPEECH_END_S, starts over from a reset, and counts as the next transmission (agc_tx_seq). Speech after a
+ * carrier gap starts over too, but goes on counting as the transmission it was when the same rules say so.
  * Decoder-thread private.
  */
 #ifndef DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_VOICE_STATE_H_
@@ -37,6 +39,18 @@ typedef struct tetra_voice_codec {
 /** Test seam: decode speech with @p codec from the next decoder made; NULL restores mbelib-neo's. */
 void tetra_voice_set_codec_for_test(const tetra_voice_codec* codec);
 
+/* What tells one transmission's speech from another's: the kind, call identifier (TETRA_SPEECH_CALL), timeslot, target
+   and transmitting party of its speech (tetra_speech; the party once known), and the count of ended TETRA calls
+   (tetra_calls_t::ends) when it started. */
+typedef struct tetra_voice_owner {
+    uint32_t target;
+    uint32_t source;
+    uint32_t ends;
+    uint16_t call_id;
+    uint8_t kind;
+    uint8_t tn;
+} tetra_voice_owner;
+
 typedef struct tetra_voice {
     /* The speech decoder, made at the first speech frame that would play and reset with the speech in progress; the
        codec that made it, which releases it. */
@@ -48,9 +62,13 @@ typedef struct tetra_voice {
     uint32_t concealed;
     uint32_t codec_errors;
 
-    /* Decoded PCM not played yet: the output takes whole DSD_VOICE_FRAME_SAMPLES frames, a speech frame is 240. */
+    /* Decoded PCM not played yet: the output takes whole DSD_VOICE_FRAME_SAMPLES frames, a speech frame is 240. The
+       codec frame the carried samples came from was a bad (concealed) frame, or its speech could not be decrypted:
+       read only while carry_len is not 0, by the output frame that plays them. */
     uint16_t carry_len;
     short carry[DSD_VOICE_FRAME_SAMPLES];
+    uint8_t carry_bad;
+    uint8_t carry_undecodable;
 
     uint8_t last_decode_failed; /* the last frame to decode failed, or no decoder could be made for it */
     /* Speech integrity: 1 once a CRC-passed burst started the speech; the bad frames since the last good one. */
@@ -60,16 +78,19 @@ typedef struct tetra_voice {
        TETRA_CALL_SPEECH_END_S or more after it is another transmission's. */
     double last_good_m;
 
-    /* The transmission the speech in progress belongs to (bound): the kind, call identifier (TETRA_SPEECH_CALL),
-       timeslot, target and transmitting party of its speech (tetra_speech; the party once known), and the count of
-       ended TETRA calls (tetra_calls_t::ends) when it started. */
-    uint32_t owner_target;
-    uint32_t owner_source;
-    uint32_t owner_ends;
-    uint16_t owner_call_id;
-    uint8_t owner_kind;
-    uint8_t owner_tn;
+    /* The transmission the speech in progress belongs to (bound). */
+    tetra_voice_owner owner;
     uint8_t bound;
+
+    /* The transmission a carrier gap forgot the speech in progress of (gap_kept), with its last_good_m: the next speech
+       is compared with it as with a bound one. A rename and a grant after D-TX CEASED apply to it as to a bound one. */
+    tetra_voice_owner gap_owner;
+    double gap_last_good_m;
+    uint8_t gap_kept;
+
+    /* Counts the transmissions the speech belonged to, never 0 once one started; the speech output passes it as each
+       frame's talkspurt (dsd_voice_frame_info), so a level estimate can start over with each transmission. */
+    uint32_t agc_tx_seq;
 } tetra_voice_t;
 
 /** Free the speech decoder and clear @p voice; the TETRA state's cleanup calls it. */
@@ -81,6 +102,11 @@ void tetra_voice_call_renamed(tetra_voice_t* voice, uint16_t old_id, uint16_t ne
 /** Call @p call_id starts its next transmission (a grant after D-TX CEASED): speech in progress of it, whose talker
  * may no longer be known, is not the next transmission's and starts over. */
 void tetra_voice_transmission_started(tetra_voice_t* voice, uint16_t call_id);
+
+/** The receiver lost the carrier's samples (tetra_forget_carrier()): the speech in progress starts over, but the
+ * transmission it belonged to is kept, so speech after the gap that voice_bind()'s rules call the same transmission
+ * does not count as another. */
+void tetra_voice_forget_carrier(tetra_voice_t* voice);
 
 #ifdef __cplusplus
 }

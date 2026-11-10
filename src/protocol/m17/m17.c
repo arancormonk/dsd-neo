@@ -68,6 +68,7 @@
 
 #ifdef USE_CODEC2
 #include <codec2/codec2.h>
+#include <dsd-neo/core/voice_chain.h>
 #endif
 
 static void decodeM17PKT(const dsd_opts* opts, dsd_state* state, const uint8_t* input, int len);
@@ -677,13 +678,16 @@ m17_can_matches_state(const dsd_state* state) {
    shared high-pass and gain, then the mixers apply the slot 1 switch, mute, channel count and sample format. The WAVs
    consume the same chained samples.
    M17 is outside talkgroup policy, so it settles its own gates here: an encrypted stream plays only once decrypted, and
-   only a CAN the filter allows plays. @p nsam is the decoder's real output: 160 samples per 3200 frame, 320 at 1600. */
+   only a CAN the filter allows plays. @p nsam is the decoder's real output: 160 samples per 3200 frame, 320 at 1600.
+   What plays is then decoded, decrypted, admitted speech of a confirmed stream; the encoder's own transmission, decoded
+   back for its monitor, is not received speech and tells the chain nothing. */
 static void
 m17_play_codec2_voice(const dsd_opts* opts, dsd_state* state, const short* samples, size_t nsam) {
     if ((state->m17_enc != 0 && state->m17_payload_decrypted == 0U) || !m17_can_matches_state(state)) {
         return;
     }
-    dsd_audio_play_decoded_pcm16(opts, state, samples, nsam);
+    static const dsd_voice_frame_info k_received = {(uint8_t)DSD_VOICE_MEDIA_SPEECH, 1U, 1U, 0U};
+    dsd_audio_play_decoded_pcm16(opts, state, samples, nsam, s_m17_monitoring_local_tx ? NULL : &k_received);
 }
 #endif
 

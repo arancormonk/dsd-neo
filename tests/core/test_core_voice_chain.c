@@ -18,10 +18,12 @@
 #include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
+#include <mbelib-neo/mbelib.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "core/audio/voice_chain_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -234,24 +236,24 @@ test_high_pass_restarts_at_reception_boundaries(void) {
     state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
 
     fill_dc(frame, 1000.0f);
-    dsd_voice_chain_run(opts, state, 1, frame);
+    dsd_voice_chain_run(opts, state, 1, frame, NULL);
     rc |= expect_true("frames before any call leave state", !hpf_state_clear(state, 1));
 
     rc |= expect_true("first call observed", observe_call(state, DSD_SYNC_DMR_BS_VOICE_POS, 1U, 100U) > 0);
     fill_dc(frame, 1000.0f);
     const double s1_before = state->voice_hpf[1].s1;
-    dsd_voice_chain_run(opts, state, 1, frame);
+    dsd_voice_chain_run(opts, state, 1, frame, NULL);
     rc |= expect_true("a call known partway keeps the state",
                       fabs(state->voice_hpf[1].s1 - s1_before) > 1e-9 && !hpf_state_clear(state, 1));
     // Settle, then a frame of zeros shows whether the state started over: clear state turns zeros into zeros.
     fill_dc(frame, 1000.0f);
-    dsd_voice_chain_run(opts, state, 1, frame);
+    dsd_voice_chain_run(opts, state, 1, frame, NULL);
 
     rc |= expect_true("first call ended", dsd_call_state_end(state, 1U, 0.0) > 0);
     rc |= expect_true("second call observed", observe_call(state, DSD_SYNC_DMR_BS_VOICE_POS, 1U, 200U) > 0);
     fill_dc(frame, 0.0f);
     frame[0] = 0.0f;
-    dsd_voice_chain_run(opts, state, 1, frame);
+    dsd_voice_chain_run(opts, state, 1, frame, NULL);
     int silent = 1;
     for (int n = 0; n < DSD_VOICE_FRAME_SAMPLES; n++) {
         silent &= fabsf(frame[n]) < 1e-6f;
@@ -263,12 +265,12 @@ test_high_pass_restarts_at_reception_boundaries(void) {
     dsd_voice_hpf_reset(state, 1);
     rc |= expect_true("second call ended", dsd_call_state_end(state, 1U, 0.0) > 0);
     fill_dc(frame, 1000.0f);
-    dsd_voice_chain_run(opts, state, 1, frame);
+    dsd_voice_chain_run(opts, state, 1, frame, NULL);
     fill_dc(frame, 1000.0f);
-    dsd_voice_chain_run(opts, state, 1, frame);
+    dsd_voice_chain_run(opts, state, 1, frame, NULL);
     rc |= expect_true("third call observed", observe_call(state, DSD_SYNC_DMR_BS_VOICE_POS, 1U, 300U) > 0);
     fill_dc(frame, 0.0f);
-    dsd_voice_chain_run(opts, state, 1, frame);
+    dsd_voice_chain_run(opts, state, 1, frame, NULL);
     int carried = 0;
     for (int n = 0; n < DSD_VOICE_FRAME_SAMPLES; n++) {
         carried |= fabsf(frame[n]) > 1e-3f;
@@ -284,11 +286,11 @@ test_high_pass_restarts_at_reception_boundaries(void) {
     }
     other->synctype = DSD_SYNC_NXDN_POS;
     fill_dc(frame, 1000.0f);
-    dsd_voice_chain_run(opts, other, 0, frame);
+    dsd_voice_chain_run(opts, other, 0, frame, NULL);
     rc |= expect_true("nxdn frames leave state", !hpf_state_clear(other, 0));
     other->synctype = DSD_SYNC_DSTAR_VOICE_POS;
     fill_dc(frame, 0.0f);
-    dsd_voice_chain_run(opts, other, 0, frame);
+    dsd_voice_chain_run(opts, other, 0, frame, NULL);
     silent = 1;
     for (int n = 0; n < DSD_VOICE_FRAME_SAMPLES; n++) {
         silent &= fabsf(frame[n]) < 1e-6f;
@@ -300,18 +302,18 @@ test_high_pass_restarts_at_reception_boundaries(void) {
     other->frame_dispatch_synctype = DSD_SYNC_YSF_POS;
     other->synctype = DSD_SYNC_YSF_POS;
     fill_dc(frame, 1000.0f);
-    dsd_voice_chain_run(opts, other, 0, frame);
+    dsd_voice_chain_run(opts, other, 0, frame, NULL);
     other->synctype = DSD_SYNC_P25P1_POS;
     const double ysf_s1 = other->voice_hpf[0].s1;
     fill_dc(frame, 1000.0f);
-    dsd_voice_chain_run(opts, other, 0, frame);
+    dsd_voice_chain_run(opts, other, 0, frame, NULL);
     rc |= expect_true("a borrowed decoder keeps the dispatched family",
                       fabs(other->voice_hpf[0].s1 - ysf_s1) > 1e-9 && !hpf_state_clear(other, 0));
 
     // The high-pass off leaves the frame and clears the state, so turning it back on starts clean.
     opts->use_hpf_d = 0;
     fill_dc(frame, 1234.0f);
-    dsd_voice_chain_run(opts, other, 0, frame);
+    dsd_voice_chain_run(opts, other, 0, frame, NULL);
     rc |= expect_near("high-pass off passes the frame", frame[5], 1234.0, 1e-3);
     rc |= expect_true("high-pass off clears the state", hpf_state_clear(other, 0));
 
@@ -338,35 +340,35 @@ test_chain_gain_laws(void) {
     opts->audio_gain = 3.0f;
     state->aout_gain = 9.0f; // a stale level the fixed gain does not read
     fill_dc(frame, 1000.0f);
-    dsd_voice_chain_run(opts, state, 0, frame);
+    dsd_voice_chain_run(opts, state, 0, frame, NULL);
     rc |= expect_near("fixed gain multiplies by the setting", frame[17], 3000.0, 1e-3);
     rc |= expect_near("fixed gain is what the level reads", state->aout_gain, 3.0, 1e-6);
 
     opts->audio_gainR = 50.0f;
     fill_dc(frame, 1000.0f);
-    dsd_voice_chain_run(opts, state, 1, frame);
+    dsd_voice_chain_run(opts, state, 1, frame, NULL);
     rc |= expect_near("fixed gain saturates at full scale", frame[3], 32767.0, 1e-3);
 
     opts->audio_gain = -1.0f;
     fill_dc(frame, 1000.0f);
-    dsd_voice_chain_run(opts, state, 0, frame);
+    dsd_voice_chain_run(opts, state, 0, frame, NULL);
     rc |= expect_near("negative gain is unity", frame[3], 1000.0, 1e-3);
 
     // Auto: a loud frame is cut at once to the 30000 peak target.
     opts->audio_gain = 0.0f;
     state->aout_gain = 25.0f;
     fill_dc(frame, 2000.0f);
-    dsd_voice_chain_run(opts, state, 0, frame);
+    dsd_voice_chain_run(opts, state, 0, frame, NULL);
     rc |= expect_near("auto gain attacks at once", state->aout_gain, 15.0, 1e-4);
     rc |= expect_near("auto gain output at the target", frame[159], 30000.0, 1e-2);
 
     // A peak above 30000 takes the gain below unity, which the next frames keep and release by 5% each.
     fill_dc(frame, 32000.0f);
-    dsd_voice_chain_run(opts, state, 0, frame);
+    dsd_voice_chain_run(opts, state, 0, frame, NULL);
     rc |= expect_true("auto gain may go below unity", state->aout_gain < 1.0f);
     const float below = state->aout_gain;
     fill_dc(frame, 100.0f);
-    dsd_voice_chain_run(opts, state, 0, frame);
+    dsd_voice_chain_run(opts, state, 0, frame, NULL);
     rc |= expect_near("a legitimate gain below unity is kept", state->aout_gain, below, 1e-6);
 
     // A level no gain law leaves (a zeroed state) starts over at unity instead of freezing at 0.
@@ -378,12 +380,139 @@ test_chain_gain_laws(void) {
     }
     zeroed->aout_gain = 0.0f;
     fill_dc(frame, 1000.0f);
-    dsd_voice_chain_run(opts, zeroed, 0, frame);
+    dsd_voice_chain_run(opts, zeroed, 0, frame, NULL);
     rc |= expect_true("zeroed auto gain recovers", zeroed->aout_gain > 1.0f && frame[0] >= 999.0f);
     free_state(zeroed);
 
     free_state(state);
     free(opts);
+    return rc;
+}
+
+/* What an mbelib-neo result says the frame is: a failed decode is no media; a tone flag makes a tone frame, before any
+   concealment flag set with it (mbelib flags a tone frame it repeats or erases as both); repeats, mutes, erasures, AMBE
+   silence and an uncorrectable D-STAR C0 are concealment; the context flags alone leave speech. */
+static int
+test_media_of_mbe(void) {
+    static const struct {
+        int ret;
+        unsigned int flags;
+        dsd_voice_media want;
+    } cases[] = {
+        {-1, 0U, DSD_VOICE_MEDIA_NONE},
+        {-2, MBE_PROCESS_FLAG_TONE, DSD_VOICE_MEDIA_NONE},
+        {0, 0U, DSD_VOICE_MEDIA_SPEECH},
+        {3,
+         MBE_PROCESS_FLAG_SOFT_INPUT | MBE_PROCESS_FLAG_C0_VALID | MBE_PROCESS_FLAG_C4_VALID
+             | MBE_PROCESS_FLAG_PROVOICE,
+         DSD_VOICE_MEDIA_SPEECH},
+        {0, MBE_PROCESS_FLAG_TONE, DSD_VOICE_MEDIA_TONE},
+        {7, MBE_PROCESS_FLAG_TONE | MBE_PROCESS_FLAG_ERASURE | MBE_PROCESS_FLAG_REPEAT, DSD_VOICE_MEDIA_TONE},
+        {0, MBE_PROCESS_FLAG_ERASURE, DSD_VOICE_MEDIA_CONCEALED},
+        {4, MBE_PROCESS_FLAG_REPEAT, DSD_VOICE_MEDIA_CONCEALED},
+        {9, MBE_PROCESS_FLAG_MUTE, DSD_VOICE_MEDIA_CONCEALED},
+        {0, MBE_PROCESS_FLAG_SILENCE, DSD_VOICE_MEDIA_CONCEALED},
+        {4, MBE_PROCESS_FLAG_C0_UNCORRECTABLE | MBE_PROCESS_FLAG_SOFT_INPUT, DSD_VOICE_MEDIA_CONCEALED},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char tag[64];
+        DSD_SNPRINTF(tag, sizeof(tag), "media of mbe case %zu", i);
+        rc |= expect_true(tag, dsd_voice_media_of_mbe(cases[i].ret, cases[i].flags) == cases[i].want);
+    }
+    return rc;
+}
+
+/* Only a decodable, admitted speech frame may teach a level estimate; the talkspurt does not matter, and no info
+   (NULL) never does. */
+static int
+test_frame_may_learn(void) {
+    int rc = 0;
+    const dsd_voice_frame_info speech = {(uint8_t)DSD_VOICE_MEDIA_SPEECH, 1U, 1U, 0U};
+    rc |= expect_true("speech may learn", dsd_voice_frame_may_learn(&speech) == 1);
+    dsd_voice_frame_info info = speech;
+    info.talkspurt = 42U;
+    rc |= expect_true("any talkspurt may learn", dsd_voice_frame_may_learn(&info) == 1);
+    rc |= expect_true("no info may not learn", dsd_voice_frame_may_learn(NULL) == 0);
+    const uint8_t others[] = {DSD_VOICE_MEDIA_NONE, DSD_VOICE_MEDIA_CONCEALED, DSD_VOICE_MEDIA_TONE};
+    for (size_t i = 0; i < sizeof(others); i++) {
+        info = speech;
+        info.media = others[i];
+        rc |= expect_true("only speech may learn", dsd_voice_frame_may_learn(&info) == 0);
+    }
+    info = speech;
+    info.decodable = 0U;
+    rc |= expect_true("undecodable speech may not learn", dsd_voice_frame_may_learn(&info) == 0);
+    info = speech;
+    info.admitted = 0U;
+    rc |= expect_true("refused speech may not learn", dsd_voice_frame_may_learn(&info) == 0);
+    return rc;
+}
+
+static int g_observed_slot;
+static const dsd_voice_frame_info* g_observed_info;
+static float g_observed_sample;
+static int g_observed_runs;
+
+static void
+observe_chain(void* ctx, int slot, const float* frame, const dsd_voice_frame_info* info) {
+    (void)ctx;
+    g_observed_runs++;
+    g_observed_slot = slot;
+    g_observed_info = info;
+    g_observed_sample = frame[5];
+}
+
+/* The chain takes each frame's info and, in this release, changes nothing for it: a frame comes out the same with any
+   info as with none, under the auto gain and the high-pass, and the gain moves the same. */
+static int
+test_chain_takes_the_info_without_acting_on_it(void) {
+    int rc = 0;
+    dsd_opts* opts = new_opts();
+    dsd_state* with = new_state();
+    dsd_state* without = new_state();
+    if (!opts || !with || !without) {
+        free(opts);
+        free_state(with);
+        free_state(without);
+        return 1;
+    }
+    opts->audio_gain = 0.0f;
+    opts->audio_gainR = 0.0f;
+    const dsd_voice_frame_info infos[] = {
+        {(uint8_t)DSD_VOICE_MEDIA_SPEECH, 1U, 1U, 1U},
+        {(uint8_t)DSD_VOICE_MEDIA_CONCEALED, 1U, 1U, 1U},
+        {(uint8_t)DSD_VOICE_MEDIA_TONE, 0U, 1U, 2U},
+        {(uint8_t)DSD_VOICE_MEDIA_NONE, 1U, 0U, 0U},
+    };
+    float a[DSD_VOICE_FRAME_SAMPLES];
+    float b[DSD_VOICE_FRAME_SAMPLES];
+    for (int slot = 0; slot <= 1; slot++) {
+        for (int k = 0; k < 12; k++) {
+            for (int n = 0; n < DSD_VOICE_FRAME_SAMPLES; n++) {
+                a[n] = (float)(1500.0 * sin(2.0 * k_pi * 700.0 * (double)(n + (k * DSD_VOICE_FRAME_SAMPLES)) / 8000.0));
+                b[n] = a[n];
+            }
+            g_observed_runs = 0;
+            dsd_voice_chain_set_observer_for_test(observe_chain, NULL);
+            const dsd_voice_frame_info* info = &infos[(size_t)k % (sizeof(infos) / sizeof(infos[0]))];
+            dsd_voice_chain_run(opts, with, slot, a, info);
+            rc |= expect_true("the observer sees the frame before the chain",
+                              g_observed_runs == 1 && g_observed_slot == slot && g_observed_info == info
+                                  && fabsf(g_observed_sample - b[5]) <= 1e-6f);
+            dsd_voice_chain_run(opts, without, slot, b, NULL);
+            rc |= expect_true("the observer sees no info as NULL", g_observed_runs == 2 && g_observed_info == NULL);
+            dsd_voice_chain_set_observer_for_test(NULL, NULL);
+            rc |=
+                expect_true("the frame comes out the same with any info", frames_match(a, b, DSD_VOICE_FRAME_SAMPLES));
+        }
+    }
+    rc |= expect_near("the gain moves the same with any info", with->aout_gain, without->aout_gain, 1e-6);
+    rc |= expect_near("slot 2's gain moves the same with any info", with->aout_gainR, without->aout_gainR, 1e-6);
+    free(opts);
+    free_state(with);
+    free_state(without);
     return rc;
 }
 
@@ -512,6 +641,9 @@ main(void) {
     rc |= test_high_pass_state_is_per_slot();
     rc |= test_high_pass_restarts_at_reception_boundaries();
     rc |= test_chain_gain_laws();
+    rc |= test_media_of_mbe();
+    rc |= test_frame_may_learn();
+    rc |= test_chain_takes_the_info_without_acting_on_it();
     rc |= test_beeper_tone_is_the_same_in_both_formats();
     rc |= test_beeper_on_udp_uses_the_digital_port();
     if (rc == 0) {
