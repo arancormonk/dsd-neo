@@ -17,7 +17,6 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QIODevice>
-#include <QSaveFile>
 
 #include "document_import_transport.h"
 #include "json_store.h"
@@ -42,33 +41,6 @@ DecoderHost::DecoderHost(QObject* parent) : QObject(parent) {
 }
 
 DecoderHost::~DecoderHost() = default;
-
-int
-DecoderHost::copyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) const {
-    const QString path = local_document_path(reference);
-    if (path.isEmpty() || destPath.isEmpty() || maxBytes < 0 || !QFileInfo(path).isFile()) {
-        return DocumentFailed;
-    }
-    QFile source(path);
-    if (!source.open(QIODevice::ReadOnly)) {
-        return DocumentFailed;
-    }
-    if (source.size() > maxBytes) {
-        return DocumentTooLarge;
-    }
-    // QSaveFile writes beside the destination and renames on commit, so no
-    // failure, cap included, can leave a partial file there. Every failure on
-    // that side is this device's, not the document's.
-    QSaveFile out(destPath);
-    if (!open_private(out)) {
-        return DocumentLocalFailed;
-    }
-    const int copied = copy_stream_capped(source, out, maxBytes, until_aborted(&m_documentTransfersAborted));
-    if (copied != DocumentCopied) {
-        return copied;
-    }
-    return out.commit() ? DocumentCopied : DocumentLocalFailed;
-}
 
 bool
 DecoderHost::copyFileToDocument(const QString& sourcePath, const QString& reference) const {

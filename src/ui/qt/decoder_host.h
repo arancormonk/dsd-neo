@@ -103,10 +103,10 @@ class DecoderHost : public QObject {
     Q_ENUM(LocalDeviceFailureKind)
 
     /**
-     * @brief copyDocumentToFile() results. DocumentFailed: the document could not be read (or the copy was aborted);
-     * DocumentLocalFailed: it could, but this device could not write the copy (its destination could not be cleared,
-     * opened, written or committed). DocumentCancelled: the import request the copy belongs to was cancelled; only
-     * import copies answer it, never the backup's.
+     * @brief Document copy results (DocumentImportTransport::copy()). DocumentFailed: the document could not be read
+     * (or the copy was aborted); DocumentLocalFailed: it could, but this device could not write the copy (its
+     * destination could not be cleared, opened, written or committed). DocumentCancelled: the request the copy belongs
+     * to was cancelled.
      */
     enum DocumentCopy {
         DocumentCopied = 0,
@@ -172,23 +172,13 @@ class DecoderHost : public QObject {
     }
 
     /**
-     * @brief Copy a picked document to @p destPath (written private, through QSaveFile).
-     *
-     * The base host takes a file:// URL or a plain absolute path. A source larger than @p maxBytes gives
-     * DocumentTooLarge, and a destination that cannot be written DocumentLocalFailed; any failure leaves no file at
-     * @p destPath. The destination's directory must exist.
-     *
-     * @return A DocumentCopy value.
-     */
-    virtual int copyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) const;
-
-    /**
-     * @brief Copy @p sourcePath into the document @p reference chose.
+     * @brief Copy @p sourcePath into the document @p reference chose: the base host's recording save.
      *
      * The base host takes a file:// URL or a plain absolute path and writes it private, through QSaveFile, so a
-     * failure leaves no partial document.
+     * failure leaves no partial document. Picked documents are read, and the backup saved, through the document
+     * transport (importTransport()).
      */
-    virtual bool copyFileToDocument(const QString& sourcePath, const QString& reference) const;
+    bool copyFileToDocument(const QString& sourcePath, const QString& reference) const;
 
     /**
      * @brief Stop every document copy in progress and refuse new ones, for the rest of the process.

@@ -8,8 +8,9 @@
  * @brief The import worker (#832): picked documents copy and check off the Qt thread, then commit on it.
  *
  * Each request stages on one worker thread, in a private folder of its own under stagingRoot(), and commits on the Qt
- * thread. The library, the replay store and the backup's restore share one service. The commit journal records the directories a commit
- * creates until the index that names them is saved, so the next start can remove the ones a crash left unnamed.
+ * thread. The library, the replay store and the backup's restore share one service. The commit journal records the
+ * directories a commit creates until the index that names them is saved, so the next start can remove the ones a crash
+ * left unnamed.
  *
  * A document read (#831, the backup's restore) is a request of another kind: the worker copies a document into a file
  * its caller names, with no staging folder, and the commit hands back the copy's result.
@@ -126,7 +127,8 @@ class ImportService : public QObject {
      * never removes a copy it hands over. @p commit gets DocumentCopied for a whole copy, which is then the caller's,
      * and DocumentCancelled for a cancelled request. For any value but DocumentCopied the caller removes @p destPath:
      * a cancel that lands just after the copy ended leaves the copy there. With no commit to come (teardown), the
-     * worker removes a copy that ends after the cancel.
+     * worker removes a copy that ends after the cancel; a copy that ended before it, whose commit teardown then
+     * dropped, stays at @p destPath for the caller to remove.
      *
      * @return The request id, as submit()'s.
      */

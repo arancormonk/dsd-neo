@@ -1962,9 +1962,10 @@ teardown: decoder host took 1 ms
 teardown: main() returning at uptime 1236.010 s; flushing, at most 500 ms
 ```
 
-The models whose destructors can wait (`~BackupModel`, at most 2 s for a backup
-save before it leaves it behind, `~CallHistoryModel`, `~SignalSearchModel`,
-`~RadioReferenceModel`) each mark their stage inside the QML engine's. A stage that started and never took is the one that held the teardown;
+The models whose destructors can wait (`~BackupModel`, `~CallHistoryModel`,
+`~SignalSearchModel`, `~RadioReferenceModel`) each mark their stage inside the QML
+engine's; `~BackupModel` waits at most 2 s for a backup save, then leaves it behind.
+A stage that started and never took is the one that held the teardown;
 when the last record is a stage's `took`, the hold is in an object no marker covers
 (other models, the app's settings, the QML objects). A watchdog incident during the
 wait names the activity `in Qt teardown`. Uptimes on the Kotlin and native sides

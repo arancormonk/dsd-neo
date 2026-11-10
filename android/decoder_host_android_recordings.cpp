@@ -21,6 +21,7 @@
 #include <memory>
 #include <mutex>
 #include <utility>
+#include "abandoned_workers.h"
 #include "decoder_host.h"
 #include "decoder_host_android.h"
 
@@ -32,13 +33,6 @@ std::atomic<qint64> g_next_transfer_id{0};
 
 /* How long a host going away waits for its transfer to stop. */
 constexpr int kTransferStopWaitMs = 2000;
-
-/* Workers a host left running a blocked job: reachable for the rest of the process, never deleted (that would wait). */
-QList<QThreadPool*>&
-abandoned_transfer_workers() {
-    static auto* workers = new QList<QThreadPool*>();
-    return *workers;
-}
 
 } // namespace
 
@@ -284,7 +278,7 @@ DecoderHostAndroid::closeRecordingWork() {
         // keeps the job away from this host: the job never calls into it.
         hostDiagnostic(QStringLiteral("A call recording export did not stop within %1 ms; the app closes without it")
                            .arg(kTransferStopWaitMs));
-        abandoned_transfer_workers().append(m_transfer_worker.release());
+        dsd_qt::abandon_worker(m_transfer_worker.release());
     }
     {
         const std::lock_guard<std::mutex> lock(m_transfer_link->mutex);

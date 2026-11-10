@@ -54,16 +54,11 @@ service_state() {
 }
 
 namespace {
-/* The platform's document transport: it records each call, and answers as the test arranged. */
+/* The platform's backup save: it records each call, and answers as the test arranged. */
 struct PlatformCopies {
     int calls = 0;
     QString reference;
-    QString destPath;
     QString sourcePath;
-    qint64 maxBytes = -1;
-    bool destExisted = false;
-    int answer = dsd_qt::DecoderHost::DocumentCopied;
-    bool writesDest = true; // As the Kotlin side's rename does on a copy.
     bool saves = true;
     bool holdsResolver = true;
 };
@@ -420,23 +415,6 @@ DecoderHostAndroid::quitApp() {
 bool
 DecoderHostAndroid::platformHoldsResolver() {
     return platform().holdsResolver;
-}
-
-int
-DecoderHostAndroid::platformCopyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) {
-    PlatformCopies& copies = platform();
-    ++copies.calls;
-    copies.reference = reference;
-    copies.destPath = destPath;
-    copies.maxBytes = maxBytes;
-    copies.destExisted = QFileInfo::exists(destPath);
-    if (copies.writesDest) {
-        QFile out(destPath);
-        if (out.open(QIODevice::WriteOnly)) {
-            out.write("copied");
-        }
-    }
-    return copies.answer;
 }
 
 bool
@@ -994,100 +972,6 @@ write_file(const QString& path, const QByteArray& bytes) {
     check(file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size(), "a fixture file is written");
 }
 
-/* The backup's document copies (#580): which transport a reference takes, and what the platform's answer means. */
-static void
-check_document_dispatch() {
-    using dsd_android::DecoderHostAndroid;
-    using dsd_qt::DecoderHost;
-    const QTemporaryDir dir;
-    check(dir.isValid(), "a scratch directory exists");
-    const QString source = dir.filePath(QStringLiteral("source.bin"));
-    const QString dest = dir.filePath(QStringLiteral("dest.in"));
-    const QString content = QStringLiteral("content://com.example.documents/document/primary%3Abackup.dsdbak");
-    write_file(source, "backup");
-    DecoderHostAndroid host;
-
-    platform() = PlatformCopies();
-    check(host.copyDocumentToFile(QUrl::fromLocalFile(source).toString(), dest, 1024) == DecoderHost::DocumentCopied
-              && read_file(dest) == "backup",
-          "a file URL takes the base host's copy");
-    const QString saved = dir.filePath(QStringLiteral("saved.bin"));
-    check(host.copyFileToDocument(source, saved) && read_file(saved) == "backup", "a plain path takes the base save");
-    check(platform().calls == 0, "local references never reach the platform");
-
-    QFile::remove(dest);
-    platform() = PlatformCopies();
-    check(host.copyDocumentToFile(content, dest, 77) == DecoderHost::DocumentCopied, "a content URI copies");
-    check(platform().calls == 1 && platform().reference == content && platform().destPath == dest
-              && platform().maxBytes == 77,
-          "a content URI goes to the platform with its arguments");
-
-    /* A file already at the destination must not pass for this copy. */
-    write_file(dest, "stale");
-    platform() = PlatformCopies();
-    platform().writesDest = false;
-    check(host.copyDocumentToFile(content, dest, 77) == DecoderHost::DocumentLocalFailed,
-          "a copy reported without its file (a failed JNI call reads as 0) is the app's failure, not the document's");
-    check(!platform().destExisted, "a stale destination is removed before the platform copies");
-    check(!QFileInfo::exists(dest), "a failed copy leaves nothing at the destination");
-
-    struct Answer {
-        int platform;
-        bool writes;
-        int result;
-        const char* why;
-    };
-
-    static const Answer kAnswers[] = {
-        {DecoderHost::DocumentTooLarge, false, DecoderHost::DocumentTooLarge, "too large passes through"},
-        {DecoderHost::DocumentFailed, false, DecoderHost::DocumentFailed, "a failure passes through"},
-        {DecoderHost::DocumentLocalFailed, false, DecoderHost::DocumentLocalFailed,
-         "this device's failure passes through"},
-        {7, true, DecoderHost::DocumentFailed, "an unknown answer is a failure"},
-    };
-    for (const Answer& answer : kAnswers) {
-        QFile::remove(dest);
-        platform() = PlatformCopies();
-        platform().answer = answer.platform;
-        platform().writesDest = answer.writes;
-        check(host.copyDocumentToFile(content, dest, 77) == answer.result, answer.why);
-    }
-
-    QDir(dir.path()).mkpath(QStringLiteral("busy/inner"));
-    platform() = PlatformCopies();
-    check(host.copyDocumentToFile(content, dir.filePath(QStringLiteral("busy")), 77) == DecoderHost::DocumentLocalFailed
-              && platform().calls == 0,
-          "a destination that cannot be cleared is this device's failure, before the platform is asked");
-    check(host.copyDocumentToFile(content, QString(), 77) == DecoderHost::DocumentFailed
-              && host.copyDocumentToFile(content, dest, -1) == DecoderHost::DocumentFailed && platform().calls == 0,
-          "an empty destination or a negative cap never reaches the platform");
-
-    /* Without the application's ContentResolver no platform transfer can run: the app's failure, never the document's,
-     * and the platform is not asked. */
-    platform() = PlatformCopies();
-    platform().holdsResolver = false;
-    check(host.copyDocumentToFile(content, dest, 77) == DecoderHost::DocumentLocalFailed && platform().calls == 0,
-          "a copy without a held ContentResolver is the app's failure");
-    check(!host.copyFileToDocument(source, content) && platform().calls == 0,
-          "a save without a held ContentResolver fails without asking the platform");
-
-    platform() = PlatformCopies();
-    check(host.copyFileToDocument(source, content) && platform().calls == 1 && platform().sourcePath == source
-              && platform().reference == content,
-          "a content URI saves through the platform");
-    platform().saves = false;
-    check(!host.copyFileToDocument(source, content), "a failed platform save fails");
-
-    host.abortDocumentTransfers();
-    platform() = PlatformCopies();
-    check(host.copyDocumentToFile(content, dest, 77) == DecoderHost::DocumentFailed
-              && !host.copyFileToDocument(source, content) && platform().calls == 0,
-          "after an abort no transfer reaches the platform");
-    check(host.copyDocumentToFile(QUrl::fromLocalFile(source).toString(), dir.filePath(QStringLiteral("late.in")), 1024)
-              == DecoderHost::DocumentFailed,
-          "after an abort the base host's copies fail too");
-}
-
 /*
  * The import copies' transport (#832): a content URI goes to the platform's import copy with its request id, and its
  * answer is read as the backup's is; any other reference takes the base transport's local copy.
@@ -1113,7 +997,7 @@ check_import_dispatch() {
     check(imports().copies == 1 && imports().request == 41 && imports().reference == content
               && imports().destPath == dest && imports().maxBytes == 77,
           "the platform's import copy gets the request id and the copy's arguments");
-    check(platform().calls == 0, "an import never takes the backup's platform copy");
+    check(platform().calls == 0, "an import never takes the backup's platform save");
 
     imports() = PlatformImports();
     imports().bytes = 512;
@@ -1186,21 +1070,13 @@ check_import_dispatch() {
     check(transport->copy(46, source, dir.filePath(QStringLiteral("local.csv")), 77) == DecoderHost::DocumentCopied,
           "and the base transport's");
 
-    /* The backup's save (#831), the host's copyFileToDocument() without the host: it settles a Download-folder row
-     * at every exit, since a save that ends after the host is gone has no host to do it. */
+    /* The backup's save (#831): a content URI goes to the platform (check_download_discards() checks its rows), any
+     * other reference takes the base transport's save. */
     (void)take_discarded();
     platform() = PlatformCopies();
     check(transport->writeFromFile(source, content) && platform().calls == 1 && platform().sourcePath == source
-              && platform().reference == content && take_discarded().isEmpty(),
-          "a content URI saves through the platform, which settles its row");
-    platform().saves = false;
-    check(!transport->writeFromFile(source, content) && take_discarded() == QStringList{content},
-          "a failed platform save discards its row");
-    platform() = PlatformCopies();
-    platform().holdsResolver = false;
-    check(!transport->writeFromFile(source, content) && platform().calls == 0
-              && take_discarded() == QStringList{content},
-          "a save without a held ContentResolver discards its row without asking the platform");
+              && platform().reference == content,
+          "a content URI saves through the platform");
     platform() = PlatformCopies();
     const QString saved = dir.filePath(QStringLiteral("saved.csv"));
     check(transport->writeFromFile(source, QUrl::fromLocalFile(saved).toString()) && read_file(saved) == "1,a\n"
@@ -1684,14 +1560,17 @@ check_download_discards() {
     host.discardPendingDownload(row);
     check(take_discarded() == QStringList{row}, "a discard goes to DownloadsSave");
 
-    // The backup's save: the platform settles a row it was asked to write; a call that failed may not have.
+    /* The backup's save (#831), through the document transport, which settles a row without the host: the platform
+     * settles a row it was asked to write; a call that failed may not have. */
+    const std::shared_ptr<dsd_qt::DocumentImportTransport> backupSaves = host.importTransport();
     platform() = PlatformCopies();
-    check(host.copyFileToDocument(a, row) && take_discarded().isEmpty(), "a written save leaves its row to settle");
+    check(backupSaves->writeFromFile(a, row) && take_discarded().isEmpty(), "a written save leaves its row to settle");
     platform().saves = false;
-    check(!host.copyFileToDocument(a, row) && take_discarded() == QStringList{row}, "a failed save discards its row");
+    check(!backupSaves->writeFromFile(a, row) && take_discarded() == QStringList{row},
+          "a failed save discards its row");
     platform() = PlatformCopies();
     platform().holdsResolver = false;
-    check(!host.copyFileToDocument(a, row) && platform().calls == 0 && take_discarded() == QStringList{row},
+    check(!backupSaves->writeFromFile(a, row) && platform().calls == 0 && take_discarded() == QStringList{row},
           "a save without a resolver discards its row");
     platform() = PlatformCopies();
 
@@ -1734,7 +1613,7 @@ check_download_discards() {
     check(!host.exportRecordings(exported, row) && ended(DecoderHost::TransferFailed)
               && take_discarded() == QStringList{row},
           "a transfer after the teardown abort discards its row");
-    check(!host.copyFileToDocument(a, row) && take_discarded() == QStringList{row},
+    check(!backupSaves->writeFromFile(a, row) && take_discarded() == QStringList{row},
           "a backup save after the teardown abort discards its row");
 }
 
@@ -3053,7 +2932,6 @@ main(int argc, char** argv) {
     check_document_pick_record();
     check_document_requests();
     check_document_reentrant_drain();
-    check_document_dispatch();
     check_import_dispatch();
     check_stop_publishes_stopping();
     check_session_state_known_after_first_poll();

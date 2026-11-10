@@ -14,9 +14,10 @@
  * as waiting (and one whose apply is part-way through cannot be discarded), and that the QML tests' stand-in carries
  * the model's exact surface. #831 B4: the restore's read runs on the import worker, so its cancel frees the next
  * restore, its copy waits in the job's cache file for the inspection, and with no import worker it is refused; the
- * teardown leaves a stuck read and save behind in bounded time, and drops a save that never started. The log lines the libraries print are captured and checked, so a clean run prints only
- * "OK"; this test's own FAIL and note lines are printed as they happen. Registered only when the Qt frontend is
- * enabled (DSD_ENABLE_QT_UI). */
+ * teardown aborts a held save, leaves a stuck read and save behind in bounded time, and drops a save that never
+ * started. The log lines the libraries print are captured and checked, so a clean run prints only "OK"; this test's
+ * own FAIL and note lines are printed as they happen. Registered only when the Qt frontend is enabled
+ * (DSD_ENABLE_QT_UI). */
 
 #include <QByteArray>
 #include <QByteArrayView>
@@ -113,6 +114,9 @@ constexpr char kRootMarker[] = "dsd-neo-backup-model-";
 constexpr char kResultFile[] = "backup-restore-result.json";
 
 int g_failures = 0;
+/** "backup: a job did not stop within ..." warnings: the teardowns that left a job behind. */
+std::atomic<int> g_leftBehind{0};
+QtMessageHandler g_previousHandler = nullptr;
 /** Set once a wait times out: later waits only check, so a broken model fails in seconds, not hours. */
 bool g_stalled = false;
 /**
@@ -129,6 +133,20 @@ say(const QByteArray& line) {
         (void)dsd_write(g_realStderr, text.constData(), static_cast<size_t>(text.size()));
     } else {
         DSD_FPRINTF(stderr, "%s\n", line.constData());
+    }
+}
+
+/** Counts the teardown's left-behind warning, which the tests check, and passes every other message on. */
+void
+count_left_behind(QtMsgType type, const QMessageLogContext& context, const QString& message) {
+    if (type == QtWarningMsg && message.startsWith(QLatin1String("backup: a job did not stop within "))) {
+        ++g_leftBehind;
+        return;
+    }
+    if (g_previousHandler != nullptr) {
+        g_previousHandler(type, context, message);
+    } else {
+        DSD_FPRINTF(stderr, "%s\n", qUtf8Printable(message));
     }
 }
 
@@ -180,6 +198,9 @@ class GatedTransport : public dsd_qt::DocumentImportTransport {
         if (forced >= 0) {
             return forced;
         }
+        if (stubborn()) {
+            return copyIgnoringStops(request, reference, destPath, maxBytes);
+        }
         return DocumentImportTransport::copy(request, reference, destPath, maxBytes);
     }
 
@@ -195,17 +216,25 @@ class GatedTransport : public dsd_qt::DocumentImportTransport {
 
     bool
     writeFromFile(const QString& path, const QString& reference) override {
+        bool aborted = false;
         {
             std::unique_lock<std::mutex> lock(m_mutex);
             const int generation = m_aborts;
             ++m_writes;
             m_changed.notify_all();
             m_changed.wait(lock, [&]() { return !m_holdWrites || (m_stubborn ? m_released : m_aborts != generation); });
-            if (!m_stubborn && m_aborts != generation) {
-                return false;
-            }
+            aborted = !m_stubborn && m_aborts != generation;
         }
-        return DocumentImportTransport::writeFromFile(path, reference);
+        const bool written = !aborted && DocumentImportTransport::writeFromFile(path, reference);
+        endWrite();
+        return written;
+    }
+
+    /** The copies a stubborn provider finished after their cancel: each destination, and whether it was there then. */
+    QList<QPair<QString, bool>>
+    lateCopies() {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        return m_lateCopies;
     }
 
     /** Keeps each save destination the model gives up before writing it (#829). */
@@ -264,6 +293,7 @@ class GatedTransport : public dsd_qt::DocumentImportTransport {
             const std::lock_guard<std::mutex> lock(m_mutex);
             m_holdWrites = on;
             m_writes = 0;
+            m_writesEnded = 0;
         }
         m_changed.notify_all();
     }
@@ -296,6 +326,15 @@ class GatedTransport : public dsd_qt::DocumentImportTransport {
                                   [this, count]() { return m_arrived >= count; });
     }
 
+    /** The saves ended since holdWrites(); waits up to a deadline for @p count of them. */
+    int
+    writesEnded(int count) {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_changed.wait_for(lock, std::chrono::seconds(g_stalled ? 0 : 20),
+                           [this, count]() { return m_writesEnded >= count; });
+        return m_writesEnded;
+    }
+
     /** The saves started since holdWrites(); waits up to a deadline for @p count of them when @p count > 0. */
     int
     writes(int count = 0) {
@@ -308,6 +347,37 @@ class GatedTransport : public dsd_qt::DocumentImportTransport {
     }
 
   private:
+    bool
+    stubborn() {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        return m_stubborn;
+    }
+
+    /*
+     * The copy a provider that ignored the cancel finishes anyway: the production local copy, under a request of its
+     * own that nobody cancelled, so the destination really is written.
+     */
+    int
+    copyIgnoringStops(qint64 request, const QString& reference, const QString& destPath, qint64 maxBytes) {
+        const qint64 own = -request;
+        const int copied = DocumentImportTransport::copy(own, reference, destPath, maxBytes);
+        DocumentImportTransport::forget(own);
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_cancelled.count(request) != 0) {
+            m_lateCopies.append({destPath, QFileInfo::exists(destPath)});
+        }
+        return copied;
+    }
+
+    void
+    endWrite() {
+        {
+            const std::lock_guard<std::mutex> lock(m_mutex);
+            ++m_writesEnded;
+        }
+        m_changed.notify_all();
+    }
+
     std::mutex m_mutex;
     std::condition_variable m_changed;
     bool m_open = true;
@@ -317,8 +387,10 @@ class GatedTransport : public dsd_qt::DocumentImportTransport {
     bool m_released = false;
     int m_arrived = 0;
     int m_writes = 0;
+    int m_writesEnded = 0;
     int m_aborts = 0;
     std::set<qint64> m_cancelled;
+    QList<QPair<QString, bool>> m_lateCopies;
     QStringList m_discarded;
 };
 
@@ -401,28 +473,11 @@ class FakeHost : public dsd_qt::DecoderHost {
                                   [this, before]() { return m_aborts != before; });
     }
 
-    /** Keeps each reference the model hands back as never to be written (#829). */
-    void
-    discardPendingDownload(const QString& reference) override {
-        const std::lock_guard<std::mutex> lock(m_mutex);
-        m_discarded.append(reference);
-    }
-
-    /** The references discarded since the last call, which forgets them. */
-    QStringList
-    takeDiscarded() {
-        const std::lock_guard<std::mutex> lock(m_mutex);
-        QStringList taken;
-        taken.swap(m_discarded);
-        return taken;
-    }
-
   private:
     SessionState m_state = Idle;
     mutable std::mutex m_mutex;
     mutable std::condition_variable m_changed;
     int m_aborts = 0;
-    QStringList m_discarded;
 };
 
 /** A host with the base quitApp(), which cannot close the app. */
@@ -557,8 +612,7 @@ expected_log_line(const QByteArray& line) {
         ++g_appliedLines;
         return true;
     }
-    if (line == "Backup restore could not be staged: no staging directory"
-        || line.startsWith("backup: a job did not stop within ")) {
+    if (line == "Backup restore could not be staged: no staging directory") {
         return true;
     }
     return loaded.match(QString::fromUtf8(line)).hasMatch();
@@ -903,13 +957,13 @@ test_export(FakeHost& host, const QString& document) {
     expect("the cache file is gone", cache_entries().isEmpty());
     expect("the card shows the save",
            model.lastResult().value("action") == "saveExport" && model.lastResult().value("ok").toBool());
-    expect("a save that ran left its document to the host's write", host.takeDiscarded().isEmpty());
+    expect("a save that ran left its document to the transport's write", g_transport->takeDiscarded().isEmpty());
     model.saveExport(QUrl::fromLocalFile(document).toString());
     expect("nothing is left to save", pump_until([&]() { return results.finished.size() == 2; })
                                           && !results.finished.value(1).value("ok").toBool()
                                           && results.finished.value(1).value("error") == "Io");
     expect("a save refused with nothing prepared hands its document back (#829)",
-           host.takeDiscarded() == QStringList{QUrl::fromLocalFile(document).toString()});
+           g_transport->takeDiscarded() == QStringList{QUrl::fromLocalFile(document).toString()});
 }
 
 /* ---- restore ---- */
@@ -1262,10 +1316,10 @@ test_busy_refusals(FakeHost& host, const QString& document) {
     expect("the inspection holds at the copy", g_transport->waitArrived(1));
     expect("busy: no restore allowed", model.busy() && !model.restoreAllowed());
     model.prepareExport(kPass);
-    (void)host.takeDiscarded();
+    (void)g_transport->takeDiscarded();
     model.saveExport(QStringLiteral("/nonexistent"));
     expect("a save refused while busy hands its document back (#829)",
-           host.takeDiscarded() == QStringList{QStringLiteral("/nonexistent")});
+           g_transport->takeDiscarded() == QStringList{QStringLiteral("/nonexistent")});
     model.inspectRestore(document, kPass);
     const QVariantMap commit = model.commitRestore();
     expect("commit refused while busy", !commit.value("ok").toBool() && commit.value("error") == "Busy");
@@ -1447,9 +1501,10 @@ test_cancel_during_read(FakeHost& host, const QString& document) {
 }
 
 /*
- * #831 B4: the import worker writes the restore's copy straight into the job's own cache file, outside the service's
- * staging folder, so it is still there for the inspection once the read's commit has returned and the service has
- * cleaned up after it. The cache and the data root are separate folders here, as they may be separate volumes.
+ * #831 B4: the restore's copy is in the job's own cache file, with the document's bytes, once the read's commit has
+ * returned, and stays there until the inspection reads it (the inspection is held on purpose). The cache and the data
+ * root are separate folders here; both are on the test's one temporary volume, so this cannot tell a copy staged and
+ * moved across from one written in place: what it guards is the job file outliving the commit.
  */
 void
 test_job_file_outlives_the_read(FakeHost& host, const QString& document) {
@@ -1476,10 +1531,6 @@ test_job_file_outlives_the_read(FakeHost& host, const QString& document) {
         expect("the job's copy waits in the cache",
                copies.size() == 1 && copies.value(0).endsWith(".in")
                    && read_file(cache_dir() + "/" + copies.value(0)) == read_file(document));
-        expect("the import worker staged nothing of it",
-               QDir(dsd_qt::ImportService::stagingRoot())
-                   .entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)
-                   .isEmpty());
         released.open();
         expect("the inspection reads it", pump_until([&]() { return results.inspected.size() == 1; })
                                               && results.inspected.value(0).value("ok").toBool());
@@ -1703,13 +1754,15 @@ test_teardown_stops_a_held_copy(FakeHost& host, const QString& document) {
  * #831 B4: a stuck read and a stuck save (a provider that ignores cancel and abort) cannot hold the app's close. The
  * read runs on the import worker, which the model never waits for; the save holds the model's own worker, which the
  * model waits for only ImportService::kStopWaitMs, then leaves behind. Both end later without the model (the sanitizer
- * builds check that they touch nothing of it): the read's copy and the save's source are removed. Before the fix the
- * teardown waited for the save with no bound; the safety thread releases it after 15 s, so that shows as a failed
- * bound, not a hang.
+ * builds check that they touch nothing of it): the read writes its copy anyway, which is removed, and the save writes
+ * its document, then removes its own export file. Before the fix the teardown waited for the save with no bound; the
+ * safety thread releases it after 15 s, so that shows as a failed bound, not a hang.
  */
 void
 test_teardown_leaves_stuck_transfers(FakeHost& host, const QString& document, const QString& scratch) {
     g_transport->setStubborn(true);
+    const QString saved = scratch + "/stuck.dsdbak";
+    const int warnings = g_leftBehind.load();
     QString exported;
     Latch ended;
     std::thread safety;
@@ -1727,9 +1780,9 @@ test_teardown_leaves_stuck_transfers(FakeHost& host, const QString& document, co
         expect("stuck: an export prepares beside the stuck read", pump_until([&]() {
                                                                       return results.prepared.size() == 1;
                                                                   }) && results.prepared.value(0).value("ok").toBool());
-        exported = cache_entries().filter(QStringLiteral(".dsdbak")).value(0);
+        exported = cache_dir() + "/" + cache_entries().filter(QStringLiteral(".dsdbak")).value(0);
         g_transport->holdWrites(true);
-        model.saveExport(QUrl::fromLocalFile(scratch + "/stuck.dsdbak").toString());
+        model.saveExport(QUrl::fromLocalFile(saved).toString());
         expect("stuck: the save holds", g_transport->writes(1) == 1);
         safety = std::thread([&]() {
             if (!ended.wait(15)) {
@@ -1745,15 +1798,57 @@ test_teardown_leaves_stuck_transfers(FakeHost& host, const QString& document, co
     expect(QStringLiteral("stuck: teardown waits about kStopWaitMs for the save, then returns (%1 ms)").arg(elapsed),
            elapsed >= dsd_qt::ImportService::kStopWaitMs - 100
                && elapsed < qint64{dsd_qt::ImportService::kStopWaitMs} * 4);
+    expect("stuck: the teardown says it left a job behind", g_leftBehind.load() == warnings + 1);
     expect("stuck: the read is still running", g_imports->busy());
+    expect("stuck: the save still owns its export file", QFileInfo::exists(exported));
     g_transport->release();
-    expect("stuck: the read ends, and its copy goes", pump_until([]() { return !g_imports->busy(); }));
-    expect("stuck: the save ends, and its source goes",
-           !exported.isEmpty() && pump_until([&]() { return !QFileInfo::exists(cache_dir() + "/" + exported); }));
+    expect("stuck: the left-behind save ends", g_transport->writesEnded(1) == 1);
+    expect("stuck: and writes its document", read_file(saved).startsWith("DSDNEOBK"));
+    expect("stuck: and removes its export file", pump_until([&]() { return !QFileInfo::exists(exported); }));
+    expect("stuck: the left-behind read ends", pump_until([]() { return !g_imports->busy(); }));
+    const QList<QPair<QString, bool>> late = g_transport->lateCopies();
+    expect("stuck: the read wrote its copy after the cancel",
+           late.size() == 1 && late.value(0).second && late.value(0).first.endsWith(".in"));
+    expect("stuck: and its copy is removed", !late.isEmpty() && !QFileInfo::exists(late.value(0).first));
     expect("stuck: nothing is left",
            cache_entries().isEmpty() && staging_dirs().isEmpty() && !dsd_qt::backup::pending_exists());
+    QFile::remove(saved);
     g_transport->holdWrites(false);
     g_transport->setStubborn(false);
+}
+
+/*
+ * #831 B4: the teardown's abort stops a save a provider holds (one that honours the abort), so the model returns at
+ * once, not after ImportService::kStopWaitMs, and leaves nothing behind: no document, no export file, no worker.
+ */
+void
+test_teardown_aborts_a_held_save(FakeHost& host, const QString& scratch) {
+    const QString saved = scratch + "/aborted.dsdbak";
+    const int warnings = g_leftBehind.load();
+    const int aborts = host.aborts();
+    QString exported;
+    QElapsedTimer timer;
+    {
+        BackupModel model(&host, g_imports, g_transport, {});
+        model.setKdfParams(fast_kdf());
+        Results results(model);
+        model.prepareExport(kPass);
+        expect("held save: the export prepares", pump_until([&]() { return results.prepared.size() == 1; })
+                                                     && results.prepared.value(0).value("ok").toBool());
+        exported = cache_dir() + "/" + cache_entries().filter(QStringLiteral(".dsdbak")).value(0);
+        g_transport->holdWrites(true);
+        model.saveExport(QUrl::fromLocalFile(saved).toString());
+        expect("held save: the save holds", g_transport->writes(1) == 1);
+        timer.start();
+    }
+    const qint64 elapsed = timer.elapsed();
+    expect("held save: the teardown aborts it", host.aborts() == aborts + 1 && g_transport->writesEnded(1) == 1);
+    expect(QStringLiteral("held save: teardown returns well within kStopWaitMs (%1 ms)").arg(elapsed),
+           elapsed < dsd_qt::ImportService::kStopWaitMs / 2);
+    expect("held save: no job is left behind", g_leftBehind.load() == warnings);
+    expect("held save: no document is written, and its export file goes",
+           !QFileInfo::exists(saved) && !QFileInfo::exists(exported));
+    g_transport->holdWrites(false);
 }
 
 /*
@@ -1853,16 +1948,16 @@ test_base_host_abort(const QString& scratch) {
     const QString document = scratch + "/out1/backup.dsdbak";
     abort_mid_stream("copy into a document", toDocument, source, document,
                      [&]() { return toDocument.copyFileToDocument(source, document); });
-    StayingHost fromDocument;
-    const QString copy = scratch + "/out2/copy.in";
-    abort_mid_stream("copy from a document", fromDocument, source, copy, [&]() {
-        return fromDocument.copyDocumentToFile(source, copy, 4LL << 30) == dsd_qt::DecoderHost::DocumentCopied;
-    });
+    // The backup's save goes through the host's document transport (#831), which the host's abort reaches too.
+    StayingHost saver;
+    const std::shared_ptr<dsd_qt::DocumentImportTransport> saves = saver.importTransport();
+    const QString saved = scratch + "/out2/backup.dsdbak";
+    abort_mid_stream("a save through the transport", saver, source, saved,
+                     [&]() { return saves->writeFromFile(source, saved); });
     expect("write a small source", write_file(scratch + "/small.bin", "small"));
     expect("an aborted host copies nothing afterwards",
            !toDocument.copyFileToDocument(scratch + "/small.bin", scratch + "/out1/later")
-               && fromDocument.copyDocumentToFile(scratch + "/small.bin", scratch + "/out2/later", 1024)
-                      == dsd_qt::DecoderHost::DocumentFailed
+               && !saves->writeFromFile(scratch + "/small.bin", scratch + "/out2/later")
                && !QFileInfo::exists(scratch + "/out1/later") && !QFileInfo::exists(scratch + "/out2/later"));
     StayingHost fresh;
     expect("another host still copies", fresh.copyFileToDocument(scratch + "/small.bin", scratch + "/out1/fresh")
@@ -2143,6 +2238,7 @@ main(int argc, char** argv) {
     remove_tree(dataDir);
     QDir().mkpath(dataDir);
 
+    g_previousHandler = qInstallMessageHandler(count_left_behind);
     g_transport = std::make_shared<GatedTransport>();
     {
         auto imports = std::make_unique<dsd_qt::ImportService>(g_transport);
@@ -2180,6 +2276,7 @@ main(int argc, char** argv) {
         quietly([&]() { test_idle_after_outcome(host, full, scratch.path()); });
         quietly([&]() { test_teardown_stops_a_held_copy(host, full); });
         quietly([&]() { test_teardown_leaves_stuck_transfers(host, full, scratch.path()); });
+        quietly([&]() { test_teardown_aborts_a_held_save(host, scratch.path()); });
         quietly([&]() { test_teardown_drops_an_unstarted_save(host, full, scratch.path()); });
         quietly([&]() { test_destructor_marks_its_teardown_stage(host); });
         quietly([&]() { test_base_host_abort(scratch.path()); });

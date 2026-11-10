@@ -23,11 +23,12 @@ import java.io.IOException
 import java.io.OutputStream
 
 /**
- * The backup's document copies (#580) and the imports' (#832): the Android half that DecoderHostAndroid calls over JNI.
+ * The document copies of the imports (#832) and of the backup's restore (#831), and the backup's save (#580): the
+ * Android half that DecoderHostAndroid calls over JNI.
  *
- * The copies run on the Qt backup or import worker thread, never on a main thread. The Qt side calls them straight
- * from that thread and must not wait on either main thread, which teardown may be blocking. They use the application's
- * ContentResolver, because the Activity may be finishing.
+ * The copies run on the Qt import worker thread and the save on the backup's worker, never on a main thread. The Qt
+ * side calls them straight from that thread and must not wait on either main thread, which teardown may be blocking.
+ * They use the application's ContentResolver, because the Activity may be finishing.
  *
  * Each transfer registers a CancellationSignal and passes it to every provider call it makes. [abort], at teardown,
  * cancels those calls (a size lookup, or an open a cloud provider holds while it downloads), stops the byte copy at
@@ -104,8 +105,6 @@ object DocumentCopies {
     /** How many transfers hold a signal; the tests check that none leaks. */
     internal fun transfersInFlight(): Int = synchronized(inFlight) { inFlight.size }
 
-    private fun begin(): CancellationSignal? = CancellationSignal().takeIf(::register)
-
     /** Count [signal] in flight, so [abort] cancels it; false once aborted. */
     private fun register(signal: CancellationSignal): Boolean = synchronized(inFlight) {
         !DocumentTransfer.isAborted && inFlight.add(signal)
@@ -116,39 +115,21 @@ object DocumentCopies {
     }
 
     /**
-     * Copy the document [uriText] names to [destPath], at most [maxBytes] of it: a DocumentTransfer result.
-     *
-     * The copy lands in a private temp file beside [destPath] and is renamed over it only once complete, so no
-     * failure, the cap included, leaves a partial file there. A size the provider declares above the cap is refused
-     * before the open, which spares a cloud provider downloading a document that cannot fit. The cap still counts the
-     * bytes actually read. A cancelled provider call (OperationCanceledException) is a failure like any other. A
-     * failure on this device's side (the temp file, a write to it, the rename) is LOCAL_FAILED, not FAILED.
-     */
-    @JvmStatic
-    fun copyDocumentToFile(resolver: ContentResolver, uriText: String, destPath: String, maxBytes: Long): Int {
-        if (!copyable(destPath, maxBytes)) {
-            return DocumentTransfer.FAILED
-        }
-        val signal = begin() ?: return DocumentTransfer.FAILED
-        return try {
-            copyToFile(resolver, uriText, destPath, maxBytes, signal, null)
-        } finally {
-            end(signal)
-        }
-    }
-
-    /**
      * Copy the document [uriText] names to [destPath] for import [request], at most [maxBytes] of it: a
      * DocumentTransfer result.
      *
-     * The copy is [copyDocumentToFile]'s, under a signal of its own. One lookup asks the provider for the document's
-     * name and size, and both are published ([importName], [importProgress]) before the open; a lookup that fails or
-     * answers nothing does not stop the copy. While the copy runs, [importProgress] counts its bytes. A copy onto a
-     * full disk is LOCAL_FAILED, and [importNoSpace] then says so.
+     * The copy lands in a private temp file beside [destPath] and is renamed over it only once complete, so no
+     * failure, the cap included, leaves a partial file there. One lookup asks the provider for the document's name and
+     * size, and both are published ([importName], [importProgress]) before the open; a lookup that fails or answers
+     * nothing does not stop the copy. A declared size above the cap is refused before the open, which spares a cloud
+     * provider downloading a document that cannot fit; the cap still counts the bytes actually read. While the copy
+     * runs, [importProgress] counts its bytes. A cancelled provider call (OperationCanceledException) is a failure like
+     * any other. A failure on this device's side (the temp file, a write to it, the rename) is LOCAL_FAILED, not
+     * FAILED; a copy onto a full disk is LOCAL_FAILED, and [importNoSpace] then says so.
      *
      * [cancelImport] of [request] stops this copy, in the provider call it waits in or at its next chunk, and refuses
-     * every later copy for [request] until [forgetImport]: those answer CANCELLED. An [abort] answers FAILED, as for
-     * the backup. Only COPIED leaves a file at [destPath].
+     * every later copy for [request] until [forgetImport]: those answer CANCELLED. An [abort] answers FAILED. Only
+     * COPIED leaves a file at [destPath].
      */
     @JvmStatic
     fun copyImportDocument(
@@ -178,7 +159,7 @@ object DocumentCopies {
             }
         }
         val result = try {
-            copyToFile(resolver, uriText, destPath, maxBytes, copy.signal, copy)
+            copyToFile(resolver, uriText, destPath, maxBytes, copy)
         } finally {
             synchronized(inFlight) {
                 inFlight.remove(copy.signal)
@@ -228,26 +209,24 @@ object DocumentCopies {
         destPath.isNotEmpty() && maxBytes >= 0 && File(destPath).parentFile != null
 
     /**
-     * The copy [copyDocumentToFile] describes, under [signal]. An [import] copy also asks the provider for the
-     * document's name, reports what it finds and copies, stops on its own cancel (once more before the rename), and
-     * records a full disk.
+     * The copy [copyImportDocument] describes, under [import]'s signal: it reports what it finds and copies, stops on
+     * its own cancel (once more before the rename), and records a full disk.
      */
     private fun copyToFile(
         resolver: ContentResolver,
         uriText: String,
         destPath: String,
         maxBytes: Long,
-        signal: CancellationSignal,
-        import: ImportCopy?,
+        import: ImportCopy,
     ): Int {
         val directory = File(destPath).parentFile ?: return DocumentTransfer.FAILED
-        val steps = import ?: DocumentTransfer.NoSteps
+        val signal = import.signal
         var staging: File? = null
         return try {
             val uri = Uri.parse(uriText)
-            val (name, declared) = lookUp(resolver, uri, signal, if (import == null) SIZE else NAME_AND_SIZE)
-            import?.name = name
-            import?.declared = declared ?: -1L
+            val (name, declared) = lookUp(resolver, uri, signal, NAME_AND_SIZE)
+            import.name = name
+            import.declared = declared ?: -1L
             if (declared != null && declared > maxBytes) {
                 return DocumentTransfer.TOO_LARGE
             }
@@ -258,18 +237,18 @@ object DocumentCopies {
             val copied = document.use { opened ->
                 opened.createInputStream().use { input ->
                     DocumentTransfer.LocalOutput(localStream(temp)).use { output ->
-                        DocumentTransfer.copyCapped(input, output, maxBytes, steps)
+                        DocumentTransfer.copyCapped(input, output, maxBytes, import)
                     }
                 }
             }
             if (copied < 0) {
                 return DocumentTransfer.TOO_LARGE
             }
-            steps.check()
+            import.check()
             if (temp.renameTo(File(destPath))) DocumentTransfer.COPIED else DocumentTransfer.LOCAL_FAILED
         } catch (e: DocumentTransfer.LocalFailure) {
             Log.w(TAG, "could not write the copy of a document", e)
-            import?.noSpace = outOfSpace(e)
+            import.noSpace = outOfSpace(e)
             DocumentTransfer.LOCAL_FAILED
         } catch (e: OperationCanceledException) {
             Log.i(TAG, "a document copy was cancelled")
@@ -415,7 +394,6 @@ object DocumentCopies {
         }
     }
 
-    private val SIZE = arrayOf(OpenableColumns.SIZE)
     private val NAME_AND_SIZE = arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE)
 
     /**

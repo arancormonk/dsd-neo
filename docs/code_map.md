@@ -13737,14 +13737,14 @@ Qt Quick frontend (`src/ui/qt`):
   started and never took, and nothing unless hooks were installed when it was made, so the desktop and tests that
   install none are unaffected. `~BackupModel` (its worker, at most `ImportService::kStopWaitMs`), `~CallHistoryModel`,
   `~SignalSearchModel` and `~RadioReferenceModel`, whose bodies wait (the last three with no timeout: a synchronous
-  save, a store flush, the RadioReference client), each declare one first. `main()` times the QML engine's and the host's destruction the same way, then flushes with
-  `DiagnosticsLog::kShutdownFlushMs` (500 ms) as its bound and writes that flush's own time to
-  `diagnostics/teardown-flush.marker` (`teardownFlushMarkerWrite()`, unsynced); the next UI start reports it once and
-  removes it (`teardownFlushMarkerTake()`: `teardown: the previous process's final diagnostics flush took N ms`, with `,
-  and timed out` or `, and failed to write` (`TeardownFlush`); a malformed marker is dropped). Tests:
-  `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_BACKUP_MODEL`, `UI_QT_RADIO_REFERENCE`, `UI_QT_SIGNAL_SEARCH` (each destructor
-  marks its stage only while hooks are installed, through `tests/ui/teardown_trace_capture.h`), `UI_QT_DIAGNOSTICS_LOG`
-  (`teardownFlushMarkerRoundTrip()`).
+  save, a store flush, the RadioReference client), each declare one first. `main()` times the QML engine's and the
+  host's destruction the same way, then flushes with `DiagnosticsLog::kShutdownFlushMs` (500 ms) as its bound and writes
+  that flush's own time to `diagnostics/teardown-flush.marker` (`teardownFlushMarkerWrite()`, unsynced); the next UI
+  start reports it once and removes it (`teardownFlushMarkerTake()`: `teardown: the previous process's final diagnostics
+  flush took N ms`, with `, and timed out` or `, and failed to write` (`TeardownFlush`); a malformed marker is dropped).
+  Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_BACKUP_MODEL`, `UI_QT_RADIO_REFERENCE`, `UI_QT_SIGNAL_SEARCH` (each
+  destructor marks its stage only while hooks are installed, through `tests/ui/teardown_trace_capture.h`),
+  `UI_QT_DIAGNOSTICS_LOG` (`teardownFlushMarkerRoundTrip()`).
 - Configuration backup (issue #580; user rules in `android/README.md` "Backup and restore"). The sealed envelope is
   crypto's `backup_seal`; everything inside it is Qt code.
   - Archive (`backup_archive.{h,cpp}` public surface, `backup_archive_build.cpp` export, `backup_archive_parse.cpp`
@@ -13862,21 +13862,22 @@ Qt Quick frontend (`src/ui/qt`):
     `Shared` state under one `std::mutex`, and a job's files are its own (`<CacheLocation>/backup/<job>.dsdbak` or
     `.in`, `restore-staging-<job>/`), so a cancelled job removes only them (`discard_staging()` for its staging
     directory, under the data root the UI thread read). Construction sweeps both (`sweep_stale_staging()`).
-    `prepareExport()` snapshots on the UI thread, then builds and seals on the worker; `saveExport()` writes through
-    the transport's `writeFromFile()` (not cancellable, as before), and a refused save (busy, nothing prepared, no
-    transport) hands its reference to the host's `discardPendingDownload()` (#829), since nothing will write it.
+    `prepareExport()` snapshots on the UI thread, then builds and seals on the worker; `saveExport()` writes through the
+    transport's `writeFromFile()` (not cancellable, as before), and a refused save (busy, nothing prepared, no
+    transport) hands its reference to the transport's `discardWrite()` (#829), since nothing will write it.
     `inspectRestore()` (#831 B4) submits `ImportService::readDocument()` into the job's `<job>.in` (capped at 64 MiB;
-    refused as `Io` once the service is gone), and the read's commit queues the inspection, which reads and removes
-    that file, opens, parses, checks free space (twice the archive plus 1 MiB) and stages; the UI thread promotes.
-    `cancel()` (and `discardRestore()`) cancels the read by its request id, so Cancel answers at once and the next job
-    never waits behind a provider read that only a cancel stops; a read's commit for a dropped job removes the copy.
-    Jobs capture the `Shared` state (queues, transport, their cancel flags), never the model or the host, and each
-    queued job carries a `drop()`. The destructor clears the model link, runs `drop()` for jobs never started (their
-    files go; a save's destination goes to `discardWrite()`), calls `abortDocumentTransfers()` while a job may run, cancels
-    the read, waits `ImportService::kStopWaitMs`, then abandons the pool as `ImportService` does (warning `backup: a job
-    did not stop within ...`). A job that ends without the model removes its own files and reports nothing; a read
-    whose model is gone removes its copy at its commit. `setInspectionHold()` is a test seam (an inspection waits
-    there before it reads its copy).
+    refused as `Io` once the service is gone), and the read's commit queues the inspection, which reads and removes that
+    file, opens, parses, checks free space (twice the archive plus 1 MiB) and stages; the UI thread promotes. `cancel()`
+    (and `discardRestore()`) cancels the read by its request id, so Cancel answers at once and the next job never waits
+    behind a provider read that only a cancel stops; a read's commit for a dropped job removes the copy. Jobs capture
+    the `Shared` state (queues, transport, their cancel flags), never the model or the host, and each queued job carries
+    a `drop()`. The destructor clears the model link, runs `drop()` for jobs never started (their files go; a save's
+    destination goes to `discardWrite()`), calls `abortDocumentTransfers()` while a job may run, cancels the read, waits
+    `ImportService::kStopWaitMs`, then abandons the pool as `ImportService` does (`abandon_worker()` in
+    `abandoned_workers.h`, which the Android recording transfers share; warning `backup: a job did not stop within
+    ...`). A running save keeps its export file, which it removes when it ends. A job that ends without the model
+    removes its own files and reports nothing; a read whose model is gone removes its copy at its commit.
+    `setInspectionHold()` is a test seam (an inspection waits there before it reads its copy).
     `commitRestore()` refuses while a job runs, a session is on screen or `engineBusy()`, commits, and asks `quitApp()`
     once; a refused commit leaves the stage as it was. `restorePending` follows the committed stage on disk, and
     `restoreCancellable` (pending, no complete journal) with it; `discardRestore()` reports `RestoreInProgress` once the
@@ -13946,8 +13947,9 @@ Qt Quick frontend (`src/ui/qt`):
   - Tests: `UI_QT_BACKUP_ARCHIVE`, `UI_QT_BACKUP_APPLY` (every step crashed in a clean apply and in a rollback; two
     restores in a row), `UI_QT_BACKUP_MODEL` (with `test_recorder_parity()` against the QML fixture's
     `tests/ui/qml_backup_recorder.h`; #831 B4: a held read cancelled, the job file kept past the read's commit with
-    cache and data on separate roots, no import worker, a stuck read and save left behind in bounded time, an unstarted
-    save dropped at teardown; `GatedTransport` holds the reads and saves), `UI_QT_IMPORT_SERVICE` (document reads), `UI_QT_QML_CALL_LISTS` (`tst_settings_backup.qml`,
+    cache and data on separate roots, no import worker, a held save aborted at teardown, a stuck read and save left
+    behind in bounded time and their late files removed, an unstarted save dropped at teardown; `GatedTransport` holds
+    the reads and saves), `UI_QT_IMPORT_SERVICE` (document reads), `UI_QT_QML_CALL_LISTS` (`tst_settings_backup.qml`,
     `tst_util_decryption_protocol.qml`), `UI_QT_DECRYPTION_PROFILES`, `UI_QT_PERSISTENCE` (`test_prefs_key_table()`),
     `UI_QT_ANDROID_HOST`, `ANDROID_DOCUMENT_TRANSFER_JVM`, `BACKUP_SEAL`; a replay system without its recording in
     `UI_QT_SESSION_ARGS` and `tst_session_initialized.qml`.
@@ -14718,9 +14720,9 @@ Tests: `ANDROID_WATCHDOG_JVM` (`LooperWatchdogTest.kt`, `ActivityTraceTest.kt`, 
 `ANDROID_SCREEN_POLICY_JVM` (`ScreenTraceTest.kt`), `UI_QT_DIAGNOSTICS_LOG` (the golden records pass `redact()`
 unchanged; an unbroken `dispatchKeyEvent` frame is dropped).
 
-Configuration backup (issue #580; the Qt side is under UI, Qt, "Configuration backup") adds five `DecoderHost`
-methods. `quitApp()` and `engineBusy()` are called on the Qt main thread; the document copies are called from a worker
-thread, which the rest of the interface never is.
+Configuration backup (issue #580; the Qt side is under UI, Qt, "Configuration backup") uses `DecoderHost`'s
+`quitApp()`, `engineBusy()` and `abortDocumentTransfers()`, called on the Qt main thread, and the document transport
+`importTransport()` hands out, whose reads and saves run on worker threads (#831).
 
 - Startup apply: `ui_load()` runs `apply_pending_restore()` right after the settings recovery
   (`recover_settings_files()`), before any model reads a store (the native
@@ -14733,53 +14735,49 @@ thread, which the rest of the interface never is.
   (`finishAndRemoveTask()`) to the Android main thread without waiting, and `DsdNeoActivity.onDestroy` stops the
   engine and the service and ends the process as for any finish. The base host answers false, and the model then
   leaves the confirmed restore waiting for the next start.
-- Document copies run on a worker thread, never the Qt main thread (`decoder_host_android_documents.cpp`); the backup
-  reads on the import worker and saves through the import transport's `writeFromFile()` (#831), below.
-  A `content://` reference goes over JNI to `DocumentCopies.kt` through the application `ContentResolver` the
-  constructor holds; a file URL or plain path takes the base host's copy. The read side refuses a provider-declared size
-  over the cap before opening, counts the cap while copying (`DocumentTransfer.kt`), writes a temp file beside the
-  destination and renames it; a stale destination is removed first, and `DocumentCopied` counts only when the file is
-  there. A failure on this device's side (no held `ContentResolver`, a stale destination that stays, the temp file, a
-  write to it through `DocumentTransfer.LocalOutput`, the rename, a copy reported without its file because the JNI call
-  failed) is `DocumentLocalFailed` (`LOCAL_FAILED`), not the document's `DocumentFailed`; the codes cross JNI as plain
-  ints, and the `document_transfer` suite checks that both sides name the same values. A save opens the document `wt`,
-  else `w`; a file (not a provider's pipe) is cut back to the copy's length and synced. A save that fails once the
-  document is open closes it with `closeWithError()`, so a provider reading a pipe or socket sees the failure rather
-  than a short document, and deletes it; only a whole save closes normally. The write side is
-  `DocumentCopies.beginWrite()` and its `DocumentWrite` (`finish(length)` / `fail()`), which call recording exports use
-  too.
-- Import copies (#832): `DocumentCopies.copyImportDocument()` is the same capped temp-file copy for one import request
-  id, from the import worker. One `query(DISPLAY_NAME, SIZE)` under the copy's own signal publishes the name
-  (`importName()`) and declared size (`importProgress()`, `[copied, declared]`: `copied` is -1 once the copy ended,
-  `declared` stays until the next copy or `forgetImport()`, so a refused copy still says how large it is; `[-1, -1]`
-  with no copy) before the open; a failed or null lookup still opens. `cancelImport(id)` cancels by exact id (never
-  `RecordingExport`'s "every id up to"): the running copy stops in its provider call or at its next chunk, and every
-  later copy for that id (a CSV's companions) answers `DocumentCancelled` (`CANCELLED`) until `forgetImport(id)`. A
-  local write failure with `ENOSPC` is `DocumentLocalFailed` and sets `importNoSpace()`. Only import copies answer
-  `DocumentCancelled`; `abort()` cancels and refuses them too, as `DocumentFailed`.
+- Document copies run on a worker thread, never the Qt main thread. Every read of a picked document, the backup's
+  restore included (#831), is an import copy on the import worker (below); the backup's save runs on `BackupModel`'s
+  worker through the import transport's `writeFromFile()`. A `content://` reference goes over JNI to
+  `DocumentCopies.kt` through the application `ContentResolver` the constructor holds; a file URL or plain path takes
+  the base transport's copy. The codes cross JNI as plain ints, and the `document_transfer` suite checks that both
+  sides name the same values. A save opens the document `wt`, else `w`; a file (not a provider's pipe) is cut back to
+  the copy's length and synced. A save that fails once the document is open closes it with `closeWithError()`, so a
+  provider reading a pipe or socket sees the failure rather than a short document, and deletes it; only a whole save
+  closes normally. The write side is `DocumentCopies.beginWrite()` and its `DocumentWrite` (`finish(length)` /
+  `fail()`), which call recording exports use too. `fail()` leaves a Download-folder row to `DownloadsSave`
+  (`deleteDocument()` cannot remove a MediaStore row), and `copyFileToDocument()` settles one at every exit: published
+  only when the whole save was written, so a row that could not be published fails the save.
+- Import copies (#832): `DocumentCopies.copyImportDocument()` copies one document for one import request id, from the
+  import worker. It refuses a provider-declared size over the cap before opening, counts the cap while copying
+  (`DocumentTransfer.kt`), writes a temp file beside the destination and renames it. One `query(DISPLAY_NAME, SIZE)`
+  under the copy's own signal publishes the name (`importName()`) and declared size (`importProgress()`,
+  `[copied, declared]`: `copied` is -1 once the copy ended, `declared` stays until the next copy or `forgetImport()`,
+  so a refused copy still says how large it is; `[-1, -1]` with no copy) before the open; a failed or null lookup
+  still opens. `cancelImport(id)` cancels by exact id (never `RecordingExport`'s "every id up to"): the running copy
+  stops in its provider call or at its next chunk, and every later copy for that id (a CSV's companions) answers
+  `DocumentCancelled` (`CANCELLED`) until `forgetImport(id)`. A failure on this device's side (the temp file, a write
+  to it through `DocumentTransfer.LocalOutput`, the rename) is `DocumentLocalFailed` (`LOCAL_FAILED`), not the
+  document's `DocumentFailed`; one with `ENOSPC` also sets `importNoSpace()`. `abort()` cancels and refuses import
+  copies too, as `DocumentFailed`.
 - The C++ side of the import copies is `DecoderHostAndroid::ImportTransport` (`decoder_host_android_imports.cpp`,
   handed out by `importTransport()`), whose JNI calls (`platformCopyImportDocument()` and the five request-table
-  calls) sit beside `platformCopyDocumentToFile()` in `decoder_host_android.cpp`. A `content://` reference is read as
-  the backup's copy is: the destination is cleared first, no held `ContentResolver` is `DocumentLocalFailed`,
-  `DocumentCopied` counts only with its file in place (a failed JNI call reads as 0), codes 1-4 pass through and any
-  other answer is `DocumentFailed`. Any other reference takes the base transport's local copy. `cancel()` and
-  `forget()` reach both sides; `progress()` reads the side the request's latest copy took. `writeFromFile()` (#831,
-  the backup's save on `BackupModel`'s worker) is the host's `copyFileToDocument()` without the host: a `content://`
-  save goes to `platformCopyFileToDocument()`, and one that never reached Kotlin (aborted, no resolver) or whose JNI
-  call failed discards its Download-folder row (`platformDiscardPendingDownload()`), so a save that ends after the host
-  is gone settles its row too; `discardWrite()` discards one never started.
-  too. `fail()` leaves a Download-folder row to `DownloadsSave` (`deleteDocument()` cannot remove a MediaStore row), and
-  `copyFileToDocument()` settles one at every exit: published only when the whole save was written, so a row that could
-  not be published fails the save. A save the host never hands to Kotlin (aborted, no resolver) or whose JNI call
-  failed discards it.
+  calls) sit in `decoder_host_android.cpp`. For a `content://` reference the destination is cleared first (a stale
+  destination that stays is `DocumentLocalFailed`), no held `ContentResolver` is `DocumentLocalFailed`,
+  `DocumentCopied` counts only with its file in place (a failed JNI call reads as 0, so that is `DocumentLocalFailed`
+  too), codes 1-4 pass through and any other answer is `DocumentFailed`. Any other reference takes the base
+  transport's local copy. `cancel()` and `forget()` reach both sides; `progress()` reads the side the request's latest
+  copy took. `writeFromFile()` (#831, the backup's save) sends a `content://` save to `platformCopyFileToDocument()`,
+  and one that never reached Kotlin (aborted, no resolver) or whose JNI call failed discards its Download-folder row
+  (`platformDiscardPendingDownload()`), so a save that ends after the host is gone settles its row too;
+  `discardWrite()` discards one never started.
 - `abortDocumentTransfers()` (only `~BackupModel`) cancels the `CancellationSignal` of every provider call in flight,
   raises `DocumentTransfer`'s sticky flag, which every chunk checks, and then the base host's. The delete is skipped
   after an abort, so a save stopped partway leaves a partial document, which never opens as a backup.
-- Tests: `UI_QT_ANDROID_HOST` (engine-busy decision, document and import dispatch, the import transport's save),
-  `UI_QT_IMPORT_TRANSPORT` (the base transport's cap, cancel, abort, progress and save, and the host's hand-out), `ANDROID_DOCUMENT_TRANSFER_JVM`
-  (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` and its import copies against provider stubs),
-  `UI_QT_BACKUP_MODEL` (a refused save discards its reference). Real providers, JNI and `finishAndRemoveTask()`
-  need a device or emulator.
+- Tests: `UI_QT_ANDROID_HOST` (engine-busy decision, import dispatch, the import transport's save and its rows),
+  `UI_QT_IMPORT_TRANSPORT` (the base transport's cap, cancel, abort, progress and save, and the host's hand-out),
+  `ANDROID_DOCUMENT_TRANSFER_JVM` (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt`'s import copies and saves
+  against provider stubs), `UI_QT_BACKUP_MODEL` (a refused save discards its reference). Real providers, JNI and
+  `finishAndRemoveTask()` need a device or emulator.
 
 Document picker (issue #829; the host API and `qml/DocumentPicker.qml` are under UI, Qt, "Document picker"):
 `DecoderHostAndroid::documentPickerSupported()` is true, so no screen opens Qt's `FileDialog` on Android and Qt's own

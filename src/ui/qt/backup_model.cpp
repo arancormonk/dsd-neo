@@ -46,6 +46,7 @@
 #include <qflags.h>
 #include <stddef.h>
 #include <utility>
+#include "abandoned_workers.h"
 #include "decoder_host.h"
 #include "document_import_transport.h"
 #include "import_service.h"
@@ -106,14 +107,6 @@ wipe(QByteArray& bytes) {
         DSD_SECURE_ZERO(bytes.data(), static_cast<size_t>(bytes.size()));
     }
     bytes.clear();
-}
-
-/* Workers a teardown stopped waiting for, as ImportService's. Deleting one would wait for its job, so each stays,
-   unreachable from any model, until its job ends and the process exits. */
-QList<QThreadPool*>&
-abandoned_workers() {
-    static auto* workers = new QList<QThreadPool*>();
-    return *workers;
 }
 
 QString
@@ -444,7 +437,7 @@ BackupModel::~BackupModel() {
         // job holds the shared state, and the cleared link keeps it from this model.
         qWarning("backup: a job did not stop within %d ms; it is left behind as the app closes",
                  ImportService::kStopWaitMs);
-        abandoned_workers().append(m_pool.release());
+        abandon_worker(m_pool.release());
     }
     {
         // Replies still queued never run now; the lock orders their destruction after the worker's last write.
@@ -455,7 +448,9 @@ BackupModel::~BackupModel() {
     for (const Job& job : m_dropped) {
         removeJobFiles(job);
     }
-    if (!m_export.path.isEmpty()) {
+    // A save still running owns its export file and removes it when it ends (the next start's sweep, if it never
+    // does).
+    if (!m_export.path.isEmpty() && m_job.kind != JobKind::Save) {
         QFile::remove(m_export.path);
     }
 }
@@ -521,8 +516,8 @@ BackupModel::saveExport(const QString& reference) {
         refusal = error_name(BackupError::Io); // nothing prepared, or nothing to write it with
     }
     if (!refusal.isEmpty()) {
-        if (m_host != nullptr) {
-            m_host->discardPendingDownload(reference); // nothing will write it: a Download-folder save goes (#829)
+        if (m_shared->transport != nullptr) {
+            m_shared->transport->discardWrite(reference); // nothing will write it: a Download-folder save goes (#829)
         }
         refuse(&BackupModel::exportFinished, QStringLiteral("saveExport"), refusal);
         return;

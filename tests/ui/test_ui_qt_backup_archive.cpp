@@ -63,6 +63,7 @@
 #include "decode_mode_flag.h"
 #include "decoder_host.h"
 #include "decryption_profiles_model.h"
+#include "document_import_transport.h"
 #include "imported_files_model.h"
 #include "json_store.h"
 #include "qt_ui.h"
@@ -2221,25 +2222,26 @@ test_host_document_copies() {
     TestHost host;
     expect("base host cannot quit", !host.quitApp());
     expect("base host has no out-of-process engine", !host.engineBusy());
+    // A picked document is read through the base document transport's local copy (#831), one request at a time.
+    dsd_qt::DocumentImportTransport reads;
     QTemporaryDir dir;
     const QByteArray payload(1000, 'b');
     const QString source = dir.filePath("source.dsdbak");
     expect("write copy source", write_file(source, payload));
 
     const QString fromUrl = dir.filePath("from-url.bin");
-    expect("file:// reference copies",
-           host.copyDocumentToFile(QUrl::fromLocalFile(source).toString(), fromUrl, payload.size())
-                   == dsd_qt::DecoderHost::DocumentCopied
-               && read_file(fromUrl) == payload);
+    expect("file:// reference copies", reads.copy(1, QUrl::fromLocalFile(source).toString(), fromUrl, payload.size())
+                                               == dsd_qt::DecoderHost::DocumentCopied
+                                           && read_file(fromUrl) == payload);
     expect("copy is private", !(QFile::permissions(fromUrl)
                                 & (QFileDevice::ReadGroup | QFileDevice::ReadOther | QFileDevice::WriteOther)));
     const QString fromPath = dir.filePath("from-path.bin");
     expect("plain path copies",
-           host.copyDocumentToFile(source, fromPath, payload.size() + 5) == dsd_qt::DecoderHost::DocumentCopied
+           reads.copy(1, source, fromPath, payload.size() + 5) == dsd_qt::DecoderHost::DocumentCopied
                && read_file(fromPath) == payload);
     const QString capped = dir.filePath("capped.bin");
     expect("one byte over the cap is too large",
-           host.copyDocumentToFile(source, capped, payload.size() - 1) == dsd_qt::DecoderHost::DocumentTooLarge);
+           reads.copy(1, source, capped, payload.size() - 1) == dsd_qt::DecoderHost::DocumentTooLarge);
     expect("too large leaves no destination", !QFileInfo::exists(capped));
 #ifdef Q_OS_LINUX
     // procfs reports no size, so only the cap counted while copying can refuse it.
@@ -2247,22 +2249,21 @@ test_host_document_copies() {
     expect("procfs source reports no size", QFileInfo(proc).isFile() && QFileInfo(proc).size() == 0);
     const QString streamed = dir.filePath("streamed.bin");
     expect("the cap is counted while copying",
-           host.copyDocumentToFile(proc, streamed, 16) == dsd_qt::DecoderHost::DocumentTooLarge);
+           reads.copy(1, proc, streamed, 16) == dsd_qt::DecoderHost::DocumentTooLarge);
     expect("a cap met while copying leaves no destination", !QFileInfo::exists(streamed));
     expect("an unsized source within the cap copies",
-           host.copyDocumentToFile(proc, streamed, 1 << 20) == dsd_qt::DecoderHost::DocumentCopied
+           reads.copy(1, proc, streamed, 1 << 20) == dsd_qt::DecoderHost::DocumentCopied
                && QFileInfo(streamed).size() > 16);
 #endif
     const QString failed = dir.filePath("failed.bin");
     expect("missing source fails",
-           host.copyDocumentToFile(dir.filePath("absent"), failed, 10) == dsd_qt::DecoderHost::DocumentFailed);
-    expect("opaque reference fails",
-           host.copyDocumentToFile("content://x/y", failed, 10) == dsd_qt::DecoderHost::DocumentFailed);
+           reads.copy(1, dir.filePath("absent"), failed, 10) == dsd_qt::DecoderHost::DocumentFailed);
+    expect("opaque reference fails", reads.copy(1, "content://x/y", failed, 10) == dsd_qt::DecoderHost::DocumentFailed);
     expect("failure leaves no destination", !QFileInfo::exists(failed));
     // A destination this device cannot write is its own failure, not the document's.
     const QString nowhere = dir.filePath("no-such-dir/copy.bin");
     expect("a destination that cannot be opened is a local failure",
-           host.copyDocumentToFile(source, nowhere, payload.size()) == dsd_qt::DecoderHost::DocumentLocalFailed
+           reads.copy(1, source, nowhere, payload.size()) == dsd_qt::DecoderHost::DocumentLocalFailed
                && !QFileInfo::exists(nowhere));
     const QString locked = dir.filePath("locked");
     expect("a locked directory",
@@ -2272,8 +2273,7 @@ test_host_document_copies() {
         DSD_FPRINTF(stderr, "note: directory permissions are not enforced here; locked-destination case skipped\n");
     } else {
         expect("a destination in a directory it cannot write to is a local failure",
-               host.copyDocumentToFile(source, locked + "/copy.bin", payload.size())
-                       == dsd_qt::DecoderHost::DocumentLocalFailed
+               reads.copy(1, source, locked + "/copy.bin", payload.size()) == dsd_qt::DecoderHost::DocumentLocalFailed
                    && !QFileInfo::exists(locked + "/copy.bin"));
     }
     QFile::setPermissions(locked, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);

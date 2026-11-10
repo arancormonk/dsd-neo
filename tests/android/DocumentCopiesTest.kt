@@ -185,82 +185,6 @@ private fun checkNoTransferInFlight(what: String) {
     check(DocumentCopies.transfersInFlight() == 0) { "$what leaves no transfer registered" }
 }
 
-private fun aDocumentCopiesWhole() {
-    val resolver = FakeResolver()
-    val content = bytes(3 * DocumentTransfer.CHUNK_BYTES + 11)
-    val uri = resolver.add(content) { declaredSize = content.size.toLong() }
-    val directory = freshDirectory()
-    val dest = File(directory, "copy.in")
-    check(DocumentCopies.copyDocumentToFile(resolver, uri, dest.path, 1L shl 20) == DocumentTransfer.COPIED) {
-        "a document within the cap copies"
-    }
-    check(dest.readBytes().contentEquals(content)) { "the copy holds the document's bytes" }
-    check(directory.list()!!.toList() == listOf("copy.in")) { "no temp file is left beside the copy" }
-    check(resolver.calls == listOf("query $uri", "open r $uri")) { "the size is asked before the open: ${resolver.calls}" }
-    checkNoTransferInFlight("a copy")
-}
-
-private fun aDeclaredSizeOverTheCapIsRefusedBeforeOpening() {
-    val resolver = FakeResolver()
-    val uri = resolver.add(bytes(10)) { declaredSize = 2_000 }
-    val directory = freshDirectory()
-    val dest = File(directory, "copy.in")
-    check(DocumentCopies.copyDocumentToFile(resolver, uri, dest.path, 1_000) == DocumentTransfer.TOO_LARGE) {
-        "a declared size over the cap is too large"
-    }
-    check(resolver.calls == listOf("query $uri")) { "a document declared too large is never opened" }
-    check(directory.list()!!.isEmpty()) { "a refused copy leaves nothing" }
-    checkNoTransferInFlight("a refused copy")
-}
-
-private fun anUnknownOrFailedSizeFallsBackToTheCountedCap() {
-    val resolver = FakeResolver()
-    val cap = DocumentTransfer.CHUNK_BYTES + 1
-    val over = resolver.add(bytes(cap + 1))
-    val directory = freshDirectory()
-    check(DocumentCopies.copyDocumentToFile(resolver, over, File(directory, "a.in").path, cap.toLong()) ==
-        DocumentTransfer.TOO_LARGE) { "with no declared size, one byte over the cap is still too large" }
-    check(directory.list()!!.isEmpty()) { "a copy over the cap leaves nothing" }
-    val fits = resolver.add(bytes(cap)) { sizeLookupFails = true }
-    val dest = File(directory, "b.in")
-    check(DocumentCopies.copyDocumentToFile(resolver, fits, dest.path, cap.toLong()) == DocumentTransfer.COPIED) {
-        "a failed size lookup falls back to the counted cap"
-    }
-    check(dest.readBytes().contentEquals(bytes(cap))) { "the copy exactly at the cap is whole" }
-    // A lie in the other direction: the provider says small, the bytes say large.
-    val liar = resolver.add(bytes(cap + 1)) { declaredSize = 10 }
-    check(DocumentCopies.copyDocumentToFile(resolver, liar, File(directory, "c.in").path, cap.toLong()) ==
-        DocumentTransfer.TOO_LARGE) { "the cap counts the bytes read, not the declared size" }
-    checkNoTransferInFlight("capped copies")
-}
-
-private fun aCopyThatCannotProceedFailsAndLeavesNothing() {
-    val resolver = FakeResolver()
-    val directory = freshDirectory()
-    val missing = "content://com.example.documents/document/gone"
-    check(DocumentCopies.copyDocumentToFile(resolver, missing, File(directory, "a.in").path, 100) ==
-        DocumentTransfer.FAILED) { "a document the provider cannot open fails" }
-    val uri = resolver.add(bytes(10))
-    check(DocumentCopies.copyDocumentToFile(resolver, uri, File(scratch, "nowhere/a.in").path, 100) ==
-        DocumentTransfer.LOCAL_FAILED) { "a destination directory that does not exist is this device's failure" }
-    // The document reads whole, but the copy cannot take the destination's place: a directory holding a file.
-    val occupied = File(directory, "occupied.in").apply { mkdirs() }
-    File(occupied, "keep").writeBytes(bytes(1))
-    check(DocumentCopies.copyDocumentToFile(resolver, uri, occupied.path, 100) == DocumentTransfer.LOCAL_FAILED) {
-        "a copy that cannot be renamed into place is this device's failure"
-    }
-    check(directory.list()!!.toList() == listOf("occupied.in")) { "a failed rename leaves no temp file" }
-    occupied.deleteRecursively()
-    val before = resolver.calls.size
-    check(DocumentCopies.copyDocumentToFile(resolver, uri, "", 100) == DocumentTransfer.FAILED) { "an empty path fails" }
-    check(DocumentCopies.copyDocumentToFile(resolver, uri, File(directory, "b.in").path, -1) ==
-        DocumentTransfer.FAILED) { "a negative cap fails" }
-    check(resolver.calls.size == before) { "a copy refused for its arguments asks the provider nothing" }
-    check(directory.list()!!.isEmpty()) { "failed copies leave nothing" }
-    checkNoTransferInFlight("failed copies")
-}
-
-/** Saves [source] over a document of [old] bytes whose provider [configure] describes; returns it and the result. */
 private fun save(old: Int, source: ByteArray, configure: FakeResolver.Document.() -> Unit): Triple<FakeResolver, String, Boolean> {
     val resolver = FakeResolver()
     val uri = resolver.add(bytes(old, seed = 99), configure)
@@ -446,6 +370,31 @@ private fun anImportOverItsCapIsTooLargeAndLeavesNothing() {
     checkNoTransferInFlight("imports over the cap")
 }
 
+private fun anImportThatCannotProceedFailsAndLeavesNothing() {
+    val resolver = FakeResolver()
+    val directory = freshDirectory()
+    val request = newRequest()
+    val missing = "content://com.example.documents/document/gone"
+    check(copyImport(resolver, request, missing, File(directory, "a.in"), 100) == DocumentTransfer.FAILED) {
+        "a document the provider cannot open fails"
+    }
+    val uri = resolver.add(bytes(10))
+    check(copyImport(resolver, request, uri, File(scratch, "nowhere/a.in"), 100) == DocumentTransfer.LOCAL_FAILED) {
+        "a destination directory that does not exist is this device's failure"
+    }
+    // The document reads whole, but the copy cannot take the destination's place: a directory holding a file.
+    val occupied = File(directory, "occupied.in").apply { mkdirs() }
+    File(occupied, "keep").writeBytes(bytes(1))
+    check(copyImport(resolver, request, uri, occupied, 100) == DocumentTransfer.LOCAL_FAILED) {
+        "a copy that cannot be renamed into place is this device's failure"
+    }
+    check(directory.list()!!.toList() == listOf("occupied.in")) { "a failed rename leaves no temp file" }
+    occupied.deleteRecursively()
+    check(directory.list()!!.isEmpty()) { "failed imports leave nothing" }
+    DocumentCopies.forgetImport(request)
+    checkNoTransferInFlight("failed imports")
+}
+
 private fun aFailedOrEmptyLookupStillCopies() {
     val resolver = FakeResolver()
     val directory = freshDirectory()
@@ -605,9 +554,6 @@ private fun aFullDiskIsALocalFailureThatSaysSo() {
             "another write failure is this device's failure"
         }
         check(!DocumentCopies.importNoSpace(request)) { "another write failure is not a full disk, nor is an earlier one" }
-        DocumentCopies.localOutput = refusingFile { IOException("write failed", ErrnoException("write", OsConstants.ENOSPC)) }
-        check(DocumentCopies.copyDocumentToFile(resolver, uri, File(directory, "c.in").path, 1_000) ==
-            DocumentTransfer.LOCAL_FAILED) { "a backup copy onto a full disk is this device's failure, as before" }
         check(directory.list()!!.isEmpty()) { "failed local writes leave nothing" }
         DocumentCopies.forgetImport(request)
         check(!DocumentCopies.importNoSpace(request)) { "a forgotten request reports no full disk" }
@@ -625,6 +571,8 @@ private fun anAbortCancelsHeldProviderCallsAndRefusesNewOnes() {
     val heldSave = resolver.add(bytes(10)) { holdsOpen = true }
     val heldImport = resolver.add(bytes(10)) { holdsOpen = true }
     val importRequest = newRequest()
+    val queryRequest = newRequest()
+    val readRequest = newRequest()
     val settling = resolver.add(bytes(10))
     val directory = freshDirectory()
     val settlingNow = Semaphore(0)
@@ -639,8 +587,8 @@ private fun anAbortCancelsHeldProviderCallsAndRefusesNewOnes() {
     }
     val results = ConcurrentHashMap<String, Any>()
     val threads = listOf(
-        Thread { results["query"] = DocumentCopies.copyDocumentToFile(resolver, heldQuery, File(directory, "q.in").path, 100) },
-        Thread { results["read"] = DocumentCopies.copyDocumentToFile(resolver, heldRead, File(directory, "r.in").path, 100) },
+        Thread { results["query"] = copyImport(resolver, queryRequest, heldQuery, File(directory, "q.in"), 100) },
+        Thread { results["read"] = copyImport(resolver, readRequest, heldRead, File(directory, "r.in"), 100) },
         Thread { results["save"] = DocumentCopies.copyFileToDocument(resolver, sourceFile(bytes(10)).path, heldSave) },
         Thread { results["settle"] = DocumentCopies.copyFileToDocument(resolver, sourceFile(bytes(10)).path, settling) },
         Thread { results["import"] = copyImport(resolver, importRequest, heldImport, File(directory, "i.csv"), 100) },
@@ -671,8 +619,6 @@ private fun anAbortCancelsHeldProviderCallsAndRefusesNewOnes() {
     checkNoTransferInFlight("aborted transfers")
 
     val before = resolver.calls.size
-    check(DocumentCopies.copyDocumentToFile(resolver, settling, File(directory, "late.in").path, 100) ==
-        DocumentTransfer.FAILED) { "a copy started after the abort fails" }
     check(!DocumentCopies.copyFileToDocument(resolver, sourceFile(bytes(10)).path, settling)) {
         "a save started after the abort fails"
     }
@@ -685,10 +631,6 @@ private fun anAbortCancelsHeldProviderCallsAndRefusesNewOnes() {
 
 fun main() {
     try {
-        aDocumentCopiesWhole()
-        aDeclaredSizeOverTheCapIsRefusedBeforeOpening()
-        anUnknownOrFailedSizeFallsBackToTheCountedCap()
-        aCopyThatCannotProceedFailsAndLeavesNothing()
         aSaveReplacesTheDocumentAndSyncsIt()
         aProviderThatRefusesWtIsWrittenWithWAndTrimmed()
         aProviderThatIgnoresTheTIsTrimmedToo()
@@ -698,6 +640,7 @@ fun main() {
         aSaveThatNeverOpensLeavesTheDocumentAlone()
         anImportCopiesWholeAndKeepsItsName()
         anImportOverItsCapIsTooLargeAndLeavesNothing()
+        anImportThatCannotProceedFailsAndLeavesNothing()
         aFailedOrEmptyLookupStillCopies()
         aCancelledImportNeverStartsUntilItIsForgotten()
         aCancelStopsTheProviderCallAnImportWaitsIn()

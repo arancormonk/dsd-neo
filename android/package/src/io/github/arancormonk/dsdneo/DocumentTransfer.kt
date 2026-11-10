@@ -18,7 +18,7 @@ import java.io.OutputStream
  * abort that teardown raises, then the copy's own [Steps].
  */
 object DocumentTransfer {
-    /** DocumentCopies.copyDocumentToFile() and copyImportDocument() results. Must match DecoderHost::DocumentCopy. */
+    /** DocumentCopies.copyImportDocument() results. Must match DecoderHost::DocumentCopy. */
     const val COPIED = 0
     const val TOO_LARGE = 1
     const val FAILED = 2
@@ -64,7 +64,7 @@ object DocumentTransfer {
         fun copied(count: Int)
     }
 
-    /** The steps of a copy with no stop of its own and nobody counting: the backup's. */
+    /** The steps of a copy with no stop of its own and nobody counting: a save's. */
     object NoSteps : Steps {
         override fun check() {}
 

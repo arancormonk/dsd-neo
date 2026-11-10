@@ -42,7 +42,6 @@
 }
 
 -keep,allowoptimization class io.github.arancormonk.dsdneo.DocumentCopies {
-    public static int copyDocumentToFile(android.content.ContentResolver, java.lang.String, java.lang.String, long);
     public static boolean copyFileToDocument(android.content.ContentResolver, java.lang.String, java.lang.String);
     public static void abort();
     # Imports (#832), from the import worker.

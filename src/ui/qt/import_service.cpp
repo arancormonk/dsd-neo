@@ -26,6 +26,7 @@
 
 #include <dsd-neo/platform/file_compat.h>
 
+#include "abandoned_workers.h"
 #include "decoder_host.h"
 #include "import_names.h"
 #include "json_store.h"
@@ -41,14 +42,6 @@ journal_name() {
 }
 
 std::atomic<qint64> g_next_request{0};
-
-/* Workers a teardown stopped waiting for. Deleting one would wait for its job, so each stays, unreachable from any
-   service, until its job ends and the process exits. */
-QList<QThreadPool*>&
-abandoned_workers() {
-    static auto* workers = new QList<QThreadPool*>();
-    return *workers;
-}
 
 /* Make @p dir, which must not exist yet, readable by the owner only. */
 bool
@@ -155,7 +148,7 @@ ImportService::~ImportService() {
         // for it, so the pool stays; the job holds the transport and the queue, and the cleared link keeps it from
         // this service.
         qWarning("import service: a copy did not stop within %d ms; it is left behind as the app closes", kStopWaitMs);
-        abandoned_workers().append(m_pool.release());
+        abandon_worker(m_pool.release());
     }
 }
 

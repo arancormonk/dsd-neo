@@ -154,8 +154,10 @@ class R8ArtifactTests(unittest.TestCase):
         self.assertIn(START, upcalls)
         self.assertIn((r8.APP_PACKAGE + "DecoderService", "lifecycleStatus", "()Ljava/lang/String;"), upcalls)
         self.assertIn((r8.APP_PACKAGE + "DecoderService", "retireAttempts", "(J)Z"), upcalls)
-        self.assertIn((r8.APP_PACKAGE + "DocumentCopies", "copyDocumentToFile",
-                       "(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;J)I"), upcalls)
+        self.assertIn((r8.APP_PACKAGE + "DocumentCopies", "copyFileToDocument",
+                       "(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;)Z"), upcalls)
+        # The backup's restore reads through the import copies (#831): the old backup read has no caller and no keep.
+        self.assertNotIn("copyDocumentToFile", {name for _, name, _ in upcalls})
         self.assertIn(NATIVE, downcalls)
         self.assertIn((r8.APP_PACKAGE + "DsdNative", "nativeHostDiagnostic"), downcalls)
         self.assertIn((r8.APP_PACKAGE + "DsdNative", "nativeQuitUi"), downcalls)
@@ -175,8 +177,9 @@ class R8ArtifactTests(unittest.TestCase):
         ):
             with self.subTest(entry=entry):
                 self.assertIn(entry, kept)
-        self.assertIn(("copyDocumentToFile", "(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;J)I"),
-                      kept)
+        self.assertIn(
+            ("copyFileToDocument", "(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;)Z"), kept)
+        self.assertNotIn("copyDocumentToFile", {name for name, _ in kept})
 
     def test_static_keeps_match_the_native_upcalls(self):
         # A keep with no caller left keeps dead code alive (AppSupport.importDocumentToFiles after #832), and a caller

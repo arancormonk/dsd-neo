@@ -157,9 +157,6 @@ bool open_private(QSaveFile& out);
 int copy_stream_capped(QIODevice& source, QSaveFile& out, qint64 maxBytes,
                        const std::function<bool(qint64)>& proceed = std::function<bool(qint64)>());
 
-/** @brief A copy_stream_capped() predicate that stops once @p aborted is raised (never with no flag). */
-std::function<bool(qint64)> until_aborted(const std::atomic<bool>* aborted);
-
 /**
  * @brief Copy the local file @p sourcePath into the document @p reference names (a file:// URL or a plain absolute
  * path), written private through QSaveFile and stopped before any chunk once @p aborted is set.

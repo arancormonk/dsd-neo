@@ -650,29 +650,13 @@ DecoderHostAndroid::quitApp() {
 }
 
 /*
- * The JNI transport of the document copies (decoder_host_android_documents.cpp, and the import transport's
- * writeFromFile(), the backup's save on BackupModel's worker thread), on a worker thread.
- * QJniObject attaches that thread to the VM and loads the app classes through Qt's class loader, and its call frames
- * release their local references; the calls use the held ContentResolver. Neither waits on another thread.
+ * The JNI transport of the backup's save (the import transport's writeFromFile(), #831), on BackupModel's worker
+ * thread. QJniObject attaches that thread to the VM and loads the app classes through Qt's class loader, and its call
+ * frames release their local references; the save uses the held ContentResolver and waits on no other thread.
  */
 bool
 DecoderHostAndroid::platformHoldsResolver() {
     return g_content_resolver.load() != nullptr;
-}
-
-int
-DecoderHostAndroid::platformCopyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) {
-    const jobject resolver = g_content_resolver.load();
-    if (resolver == nullptr) {
-        return DocumentLocalFailed; // the app never held its ContentResolver: nothing to do with the document
-    }
-    const QJniObject uri = QJniObject::fromString(reference);
-    const QJniObject dest = QJniObject::fromString(destPath);
-    // Must match DocumentCopies.kt: @JvmStatic fun copyDocumentToFile(ContentResolver, String, String, Long): Int.
-    return QJniObject::callStaticMethod<jint>(
-        kDocumentsClass, "copyDocumentToFile",
-        "(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;J)I", resolver, uri.object(),
-        dest.object(), static_cast<jlong>(maxBytes));
 }
 
 bool

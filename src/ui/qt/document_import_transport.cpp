@@ -32,6 +32,12 @@ out_of_space(const QSaveFile& out) {
     return out.error() == QFileDevice::ResourceError || errno == ENOSPC;
 }
 
+/** A copy_stream_capped() predicate that stops once @p aborted is raised (never with no flag). */
+std::function<bool(qint64)>
+until_aborted(const std::atomic<bool>* aborted) {
+    return [aborted](qint64) { return aborted == nullptr || !aborted->load(); };
+}
+
 } // namespace
 
 QString
@@ -81,11 +87,6 @@ copy_stream_capped(QIODevice& source, QSaveFile& out, qint64 maxBytes, const std
             return DecoderHost::DocumentLocalFailed;
         }
     }
-}
-
-std::function<bool(qint64)>
-until_aborted(const std::atomic<bool>* aborted) {
-    return [aborted](qint64) { return aborted == nullptr || !aborted->load(); };
 }
 
 bool
