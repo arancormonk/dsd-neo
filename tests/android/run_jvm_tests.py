@@ -695,6 +695,34 @@ def document_picker_wiring():
     )
 
 
+def file_browser_wiring():
+    """#830: DsdNeoActivity never compiles here, so its forwarding is read from the source. Every resume tells
+    FileBrowser (All files access and the volumes may have changed while the app was away), and every permission result
+    goes to FileBrowser first: it claims the codes of its Android 10 storage requests, a late one included, and only one
+    it does not claim goes on."""
+    where = APP_SOURCES / "DsdNeoActivity.kt"
+    try:
+        activity = (REPO / where).read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the activity: {error}"
+
+    def statements(signature):
+        body = method_body(activity, signature)
+        return [line.strip() for line in (body or "").splitlines() if line.strip() and not line.strip().startswith("//")]
+
+    if "FileBrowser.onResume()" not in statements("override fun onResume("):
+        return f"{where}: onResume must call FileBrowser.onResume()"
+    expected = [
+        "if (FileBrowser.onRequestPermissionsResult(this, requestCode, permissions, grantResults)) {",
+        "return",
+        "}",
+    ]
+    found = statements("override fun onRequestPermissionsResult(")[: len(expected)]
+    if found != expected:
+        return f"{where}: onRequestPermissionsResult must start with {expected}; found {found}"
+    return None
+
+
 def launch_record_plumbing(facts):
     """What is wrong with how ProcessFacts.kt carries LaunchGuard's record, or None: the summary is set on API 30+ and
     read back into each exit record. Nothing else exercises this path."""
@@ -1089,10 +1117,41 @@ SUITES = {
             android_native_writes_no_environment,
         ),
     ),
-    # The in-app file browser's listing core (#830): folder reads behind a filesystem seam, containment, filters, order,
-    # pages, snapshots, the worker cap and watchdog. Plain Kotlin with no Android imports, so no stubs; real fixtures
-    # (links, FIFOs, sockets, mode 000) run where the host has them.
-    "file_browser": Suite(builds=(Build(sources=("FileListing.kt",), tests=("FileListingTest.kt",)),)),
+    # The in-app file browser (#830). Its listing core first: folder reads behind a filesystem seam, containment,
+    # filters, order, pages, snapshots, the worker cap and watchdog, in plain Kotlin with no Android imports, so no stubs;
+    # real fixtures (links, FIFOs, sockets, mode 000) run where the host has them. Then FileBrowser on it: roots and their
+    # states, Saved by DSD-neo through MediaStore, the All files access chain and the Android 10 permission, against a
+    # fake platform and stubs of the activity, storage volumes, resolver and Settings. The activity's forwarding is read
+    # from the source.
+    "file_browser": Suite(
+        checks=(file_browser_wiring,),
+        builds=(
+            Build(sources=("FileListing.kt",), tests=("FileListingTest.kt",)),
+            Build(
+                sources=("FileListing.kt", "FileBrowser.kt"),
+                tests=("FileBrowserTest.kt",),
+                stubs=(
+                    "AssetFileDescriptor.kt",
+                    "ContentResolver.kt",
+                    "ContentUris.kt",
+                    "ContentValues.kt",
+                    "Cursor.kt",
+                    "FileBrowserStorage.kt",
+                    "JSONObject.kt",
+                    "Manifest.kt",
+                    "MediaStore.kt",
+                    "Os.kt",
+                    "ParcelFileDescriptor.kt",
+                    "PickerActivity.kt",
+                    "PickerContext.kt",
+                    "PickerPackageManager.kt",
+                    "Settings.kt",
+                    "ShareEnvironment.kt",
+                    "Uri.kt",
+                ),
+            ),
+        ),
+    ),
     # The RadioReference sign-in form as the Autofill Framework sees it: tokens, the field snapshot, the framework
     # session and the effects SignInAutofill carries out. Plain Kotlin with no Android imports, so no stubs;
     # SignInAutofill runs it on the main looper against AutofillManager.

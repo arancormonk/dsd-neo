@@ -143,16 +143,18 @@ internal class FileListing(
 
     /**
      * List the rows [produce] returns (Saved by DSD-neo), filtered and sorted as a folder is. A null from it is
-     * `unreadable`; more than [entryCap] rows is `tooMany`.
+     * `unreadable`; more than [entryCap] rows is `tooMany`. [generationOk] false is `stale`, and [produce] never runs.
      */
     fun listEntries(
         id: Long,
         session: Long,
         kind: String,
         showAll: Boolean,
+        generationOk: Boolean = true,
         produce: (cancelled: () -> Boolean) -> List<ListEntry>?,
     ) {
         if (!beginFolderRequest(id, session)) return
+        if (!generationOk) return answer(id, LISTING, failureFields(LISTING, STALE))
         start(id, session, LISTING) { cancelled ->
             val entries = produce(cancelled)
             when {

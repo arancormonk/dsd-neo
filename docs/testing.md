@@ -214,6 +214,17 @@ closed sessions, the entry shape (a modified time of 0 kept), the hand-off's `fi
 name never; a name that is not valid UTF-8 keeps its bytes), cancel during a blocked read, and saturation: three
 blocked reads make the fourth request `busy` at once, end `timedOut` at the watchdog, and give their places back only
 when they return. It skips the link, FIFO, socket, mode-000 and non-UTF-8 cases where the host cannot make them.
+A second build runs `FileBrowser.kt` on it against a fake `BrowserPlatform` (volumes, grant, declared permission, API
+level, `/proc/self/status` text, a MediaStore resolver that applies the selection to its rows) and stubs of the
+activity, storage volumes, Settings and JSON: the roots by API level and grant, the root state precedence (an invisible
+`/mnt/media_rw` USB volume that does not exist yet is `needsRestart` after a grant without gid 1077, `unavailable` with
+it, `removed` once unmounted; a visible one `ready`), the roots generation (moved by a volume, a state or a grant, read
+with no filesystem call), Saved by DSD-neo (projection, the folder and owner selection, seconds to ms, the `_id`
+re-query for a hand-off, and a cancel, a session close and a newer listing each cancelling the query's
+`CancellationSignal`), the All files access chain (each step's `ActivityNotFoundException`, the API 30-32 App info
+step), the API 29 permission (`granted`, `denied`, `blocked` with App info, `cancelled`) with its rolling request
+codes, a late answer to a cancelled launch claimed but dropped, the refresh flags and each record's JSON keys. The
+`file_browser_wiring` source check pins `DsdNeoActivity`'s forwarding of resumes and permission results.
 `ANDROID_USB_RECEIVER_JVM` (the `usb_receiver` suite) runs `UsbReceiverKind.kt`, the USB id table `UsbSourceManager`
 classifies every device with, with no stubs: an Airspy beside a hub and other unrelated devices reads `airspy`, two
 RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known receiver empty. Which local receiver a

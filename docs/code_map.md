@@ -14865,6 +14865,60 @@ request code (1305) is never used.
   an answer's slot during the drain stays live and is answered by its record later in the same drain). The launches
   themselves need an emulator: DocumentsUI on and off (the family queries must never return the two photo-picker
   aliases), a chooser pick, re-entry and process death while a picker is up.
+- In-app file browser, Android side (issue #830; the host API is under DecoderHost "File browser"):
+  - `FileListing.kt` (no `android.*` import): folder reads behind `BrowserFs` (open, NOFOLLOW attributes, real path).
+    Each listing, hand-off check and `submit()`ted job runs on its own daemon thread, at most 3 alive; a fourth request
+    is `busy` at once (nothing queues) and a thread stuck in a dead drive keeps its place until it returns. A 15 s
+    watchdog answers `timedOut` and abandons the thread. Each request is answered once into a deque `poll()` drains;
+    cancel, session close, a newer listing in the session and the watchdog answer first, and the worker's result is
+    then dropped by id. Containment compares real paths of both root and folder by whole components. Pipeline: read →
+    directories and regular files only → `tooMany` past 50,000 → dot names and the kind's filter unless Show all →
+    folders first, case-insensitive natural order → the session's one snapshot → pages of 500 served from memory
+    (`listMore`, inline; a page naming another snapshot is `expired`; idle 120 s releases it). Exceptions:
+    `NoSuchFileException`/`NotDirectoryException` → `gone`, any other refusal → `unreadable`.
+  - `FileBrowser.kt`: `object FileBrowser` holds a `BrowserCore` over `BrowserPlatform` (`AndroidBrowserPlatform`:
+    StorageManager volumes, `getExternalFilesDir`, the requested permissions, `isExternalStorageManager`, the READ
+    grant, `/proc/self/status`, the volume callback, the resolver). `start(context)` (once) registers a
+    `StorageVolumeCallback` (API 30+; no `MEDIA_*` broadcast covers USB) and reads gid 1077 once from `Groups:`: a
+    process gets it only by starting with All files access. Upcalls (`@JvmStatic`, kept by `proguard-rules.pro`):
+    `start`, `accessState`, `takeAccessRefresh`, `listRoots`, `listFolder`, `listMore`, `checkHandoff`, `requestAccess`,
+    `cancel`, `closeSession`, `pollRecord`; a call before `start()` answers false (or the not-started state).
+  - Access: `declared` = the manifest requests `MANAGE_EXTERNAL_STORAGE` (API 30+) or `READ_EXTERNAL_STORAGE` (API 29);
+    `granted` = `isExternalStorageManager()` or the READ grant; `route` `settings` / `permission` / `none`.
+    `accessState()` is `{declared, granted, route, apiLevel, rootsGeneration}`; the generation moves when the grant,
+    the volume set or a volume's directory or state does, and is read with no filesystem call. `takeAccessRefresh()` is
+    true once after `onResume()`, a volume callback or a permission result (two `AtomicBoolean`s, drained together).
+  - Roots (read on a worker, through `submit`): `inbox` (`<getExternalFilesDir(null)>/Inbox`, made; null →
+    `unavailable`), `saved`, and when declared `storage` (the primary volume) and, API 30+, `removable:<uuid or index>`
+    per non-primary removable volume (title: its description, else ""; detail: its `MEDIA_*` state). State precedence:
+    no directory or not mounted → `removed`; not granted → `needsAccess`; the root opens → `ready`; under
+    `/mnt/media_rw/` without gid 1077 → `needsRestart` (an invisible USB root does not even exist before the restart);
+    else `unavailable`. The roots' paths are kept with their generation; a listing or hand-off naming another
+    generation, or a root the last roots did not list, is `stale`.
+  - Saved by DSD-neo: `MediaStore.Downloads.EXTERNAL_CONTENT_URI`, projection `_id, _display_name, _size,
+    date_modified`, selection `relative_path = ? AND owner_package_name = ?` with `Download/DSD-neo/` (the trailing
+    slash matters) and the package: a manager or an Android 10 legacy reader sees other apps' rows too. Entries have
+    no path and the row's `content://media/external/downloads/<id>` reference; `DATE_MODIFIED` seconds × 1000. A
+    hand-off re-queries by `_id = ?` with the same predicate (no row → `gone`). Each query has a `CancellationSignal`
+    that `cancel(id)`, `closeSession()` and a newer listing or page in the session cancel, after `FileListing`
+    answered the request, so the cancelled query's exception ends a worker whose answer is already dropped. A
+    malformed reference or path answers false (the host's `failed`).
+  - Access requests on the main looper, each answered once into the same poll: API 30+ (declared) launches
+    `ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION` + `package:`, then `ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION`,
+    then on API 30-32 `ACTION_APPLICATION_DETAILS_SETTINGS` + `package:` (App info › Permissions › Files and media
+    offers "Allow management of all files" there only with the sideload manifest's READ up to API 32), with plain
+    `startActivity`: `settingsOpened`, `noRoute` when each threw `ActivityNotFoundException`, `failed` on another
+    exception. API 29 calls `requestPermissions(READ)` with the next code in `0x5E00..0x5E0F` (wrapping; free of 4711,
+    4303 and the picker's `0x5D0000..0x5DFFFF`) and stays live: `granted`, `denied` (rationale still shown),
+    `blocked` (App info opened), `cancelled` (empty arrays, `cancel(id)` or a newer request). Not declared →
+    `noRoute`. `DsdNeoActivity.onRequestPermissionsResult()` asks `FileBrowser` first; it claims the whole range and
+    settles only the live launch's code, so a late answer to a cancelled launch is dropped.
+  - Records (JSON, one per `pollRecord()`): `{"id","kind":"roots","status","generation","roots"}`,
+    `{"id","kind":"listing","status","snapshot","offset","entries","more","hiddenByFilter"}` (non-ok: `status`
+    only), `{"id","kind":"handoff","ok","reference","name","reason"}`, `{"id","kind":"access","outcome"}`. Root
+    `{key, kind, title, path, state, detail}`; entry `{name, path, reference, dir, size, modifiedMs}`.
+  - Tests: `ANDROID_FILE_BROWSER_JVM` (`docs/testing.md`), with the `file_browser_wiring` source check of the
+    activity's forwarding.
 
 #### Sign-in autofill (password managers)
 
