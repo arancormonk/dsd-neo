@@ -91,8 +91,9 @@ ui_handle_again_delta(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
 }
 
 /* GAIN_SET and AGAIN_SET carry a double, checked here before it narrows to the float setting (this file keeps IEEE
-   semantics, src/app_control/CMakeLists.txt): a value outside the range is refused and the setting kept, never clamped
-   or turned into auto. Every sender checks it first and says why; this is the decoder's own guard. */
+   semantics, src/app_control/CMakeLists.txt): a value the gain's rule refuses leaves the setting as it was, never
+   clamped; an analog value under 1 is auto. Every sender checks it first and says why; this is the decoder's own
+   guard. */
 static int
 ui_handle_gain_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     double g = 0.0;
@@ -106,7 +107,7 @@ static int
 ui_handle_again_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     double g = 0.0;
-    if (read_double_payload(c, &g) && dsd_analog_gain_setting_valid(g)) {
+    if (read_double_payload(c, &g) && dsd_analog_gain_setting(g, &g)) {
         opts->audio_gainA = (float)g;
     }
     return 1;

@@ -239,8 +239,9 @@ submit_double(const api_command_desc* d, const dsd_json_node* params, uint64_t* 
     return dsd_app_command_set_double(d->cmd_id, v);
 }
 
-/* gain_set and again_set: a JSON number, whole or fractional, that is 0 (auto) or inside the gain's range; anything
-   else is refused here rather than clamped (<dsd-neo/core/gain_setting.h>; this file keeps IEEE semantics). */
+/* gain_set and again_set: a JSON number, whole or fractional, under the gain's rule (<dsd-neo/core/gain_setting.h>;
+   this file keeps IEEE semantics). A value it refuses is invalid_params, never clamped; an analog value under 1 is sent
+   as 0, auto. */
 static int
 submit_gain(const api_command_desc* d, const dsd_json_node* params, uint64_t* request_id) {
     (void)request_id;
@@ -249,7 +250,7 @@ submit_gain(const api_command_desc* d, const dsd_json_node* params, uint64_t* re
         return API_INVALID_PARAMS;
     }
     const int valid =
-        (d->cmd_id == DSD_APP_CMD_AGAIN_SET) ? dsd_analog_gain_setting_valid(v) : dsd_digital_gain_setting_valid(v);
+        (d->cmd_id == DSD_APP_CMD_AGAIN_SET) ? dsd_analog_gain_setting(v, &v) : dsd_digital_gain_setting_valid(v);
     return valid ? dsd_app_command_set_double(d->cmd_id, v) : API_INVALID_PARAMS;
 }
 

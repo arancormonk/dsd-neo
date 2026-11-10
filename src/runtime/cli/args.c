@@ -765,12 +765,12 @@ cli_apply_digital_gain(const char* in, dsd_opts* opts, dsd_state* state, int* ou
     return 1;
 }
 
-/* -n: 0 is auto (the analog AGC), otherwise a fixed gain in DSD_ANALOG_GAIN_MIN..MAX, 50 the reference level. Refused
-   outside that, as -g is. */
+/* -n: anything under 1 (0 included) is auto, the analog AGC; 1..100 is a fixed gain, 50 the reference level. NaN,
+   infinities and values above 100 are refused, never clamped. */
 static int
 cli_apply_analog_gain(const char* in, dsd_opts* opts, int* out_exit_rc) {
     double g = 0.0;
-    if (!cli_parse_double_strict(in, &g) || !dsd_analog_gain_setting_valid(g)) {
+    if (!cli_parse_double_strict(in, &g) || !dsd_analog_gain_setting(g, &g)) {
         LOG_ERROR("Invalid -n value \"%s\" (expected 0 for auto, %g..%g, or m)\n", in ? in : "", DSD_ANALOG_GAIN_MIN,
                   DSD_ANALOG_GAIN_MAX);
         cli_set_exit_rc(out_exit_rc, 1);

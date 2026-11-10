@@ -311,8 +311,8 @@ expect_digital_gain(const char* tag, const dsd_opts* opts, const dsd_state* stat
 }
 
 /* B5/B6 (issue #518 voice level): GAIN_SET carries a double, kept with its fraction, and refuses anything but 0 (auto)
-   or 0.001..50 (the setting kept); GAIN_DELTA steps whole units on the float setting, from 1 when auto, back to auto
-   below 0.001, clamped at 50. */
+   or 0.001..50 (the setting kept); GAIN_DELTA steps whole units on the float setting, counting from 0 when auto (so +1
+   lands on 1, as before), back to auto below 0.001, clamped at 50. */
 static int
 test_digital_gain_actions(void) {
     int rc = 0;
@@ -368,10 +368,15 @@ test_digital_gain_actions(void) {
     dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
     rc |= expect_digital_gain("gain step from a fraction below the minimum is auto", &opts, &state, 0.0);
 
-    /* From auto a step starts at 1, the reference. */
+    /* From auto a step counts from 0: +1 lands on 1, the reference, and +3 on 3. */
     cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, 1);
     dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_digital_gain("gain step up from auto starts at 1", &opts, &state, 2.0);
+    rc |= expect_digital_gain("gain step up from auto lands on 1", &opts, &state, 1.0);
+    cmd = cmd_double(DSD_APP_CMD_GAIN_SET, 0.0);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, 3);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_digital_gain("gain step of 3 from auto lands on 3", &opts, &state, 3.0);
     cmd = cmd_double(DSD_APP_CMD_GAIN_SET, 0.0);
     dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
     cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, -1);
@@ -403,8 +408,9 @@ test_digital_gain_actions(void) {
     return rc;
 }
 
-/* Analog gain is 0 (auto) or 1..100 everywhere (-n, the menu prompt, the * and / keys, the API). AGAIN_SET carries a
-   double, refused outside that; AGAIN_DELTA steps from 50 when auto, back to auto below 1, clamped at 100. */
+/* Analog gain is 1..100, with anything under 1 auto, everywhere (-n, the menu prompt, the * and / keys, the API).
+   AGAIN_SET carries a double; NaN, infinities and values above 100 are refused (the setting kept). AGAIN_DELTA steps
+   from 50 when auto, back to auto below 1, clamped at 100. */
 static int
 test_analog_gain_actions(void) {
     int rc = 0;
@@ -414,13 +420,18 @@ test_analog_gain_actions(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
-    const double accepted[] = {1.0, 1.5, 37.5, 100.0, 0.0, 80.0};
+    const struct {
+        double value;
+        double want;
+    } accepted[] = {{1.0, 1.0}, {1.5, 1.5},   {37.5, 37.5}, {100.0, 100.0}, {0.0, 0.0},
+                    {0.5, 0.0}, {0.999, 0.0}, {1e-50, 0.0}, {-9.0, 0.0},    {80.0, 80.0}};
+
     for (size_t i = 0; i < sizeof accepted / sizeof accepted[0]; i++) {
-        cmd = cmd_double(DSD_APP_CMD_AGAIN_SET, accepted[i]);
+        cmd = cmd_double(DSD_APP_CMD_AGAIN_SET, accepted[i].value);
         rc |= expect_int("analog gain set dispatch", dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd), 1);
-        rc |= expect_gain("analog gain set keeps the value", opts.audio_gainA, accepted[i]);
+        rc |= expect_gain("analog gain set (under 1 is auto)", opts.audio_gainA, accepted[i].want);
     }
-    const double refused[] = {NAN, INFINITY, -INFINITY, 1e39, 1e-50, 0.5, 0.999, -9.0, 100.5, 150.0};
+    const double refused[] = {NAN, INFINITY, -INFINITY, 1e39, 100.5, 150.0};
     for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
         cmd = cmd_double(DSD_APP_CMD_AGAIN_SET, refused[i]);
         dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);

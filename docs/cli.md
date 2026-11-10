@@ -583,16 +583,16 @@ Notes
   reference level (`1`; `0.5` is 6 dB quieter), saturating at full scale. Any other value (negative, above `50`,
   between `0` and `0.001`, NaN or infinity) is refused with an error; it is never clamped or played as auto. The
   menu's Digital gain... prompt takes the same values, fractions included, and the `+` / `-` keys step by 1: from auto
-  they start at `1`, stepping below `0.001` goes back to auto, and they stop at `50`. Since issue #653 `-g N` under
+  `+` goes to `1`, stepping below `0.001` goes back to auto, and they stop at `50`. Since issue #653 `-g N` under
   `-y` is this fixed multiplier too, where it used to scale a float auto gain that kept adapting.
-- `-n <num>` Analog output gain. `0` (the default) is auto: an AGC brings analog voice to the level digital voice
-  plays at, FM and AM alike, never above -10 dBFS peak and at most 18 dB above the reference gain.
+- `-n <num>` Analog output gain. `0` (the default; anything under `1` too) is auto: an AGC brings analog voice to the
+  level digital voice plays at, FM and AM alike, never above -10 dBFS peak and at most 18 dB above the reference gain.
   `1`–`100` is a fixed gain, `50` the reference: there a 1 kHz tone at 3 kHz deviation, or AM at 50% modulation, plays at
   -12 dBFS peak (-15 dBFS RMS) at the default RTL `vol` of 2, live and in I/Q replay alike; `100` is 6 dB louder. The
   menu's Analog gain... prompt and the `*` / `/` keys work over the same range; from auto they step from `50`, and
-  stepping below `1` goes back to auto. Any other value (negative, above `100`, between `0` and `1`, NaN or infinity)
-  is refused with an error, where it used to be clamped or turned into auto. Since issue #518 a fixed `-n` plays RTL
-  monitor audio about 9 dB louder than before, and up to 18 dB more where the old default filter (see `-v`) cut it.
+  stepping below `1` goes back to auto. A value above `100`, NaN or infinity is refused with an error, at the prompt
+  too (a value above `100` used to be clamped to `100`). Since issue #518 a fixed `-n` plays RTL monitor audio about
+  9 dB louder than before, and up to 18 dB more where the old default filter (see `-v`) cut it.
 - `-nm` Enable the DMR single-slot mono decoder without changing the active decode preset.
 - `-z <0|1|2>` TDMA slot preference (0 = slot 1, 1 = slot 2, 2 = auto). When both slots carry audible voice, the
   preferred slot plays alone, in both ears (with one-channel output, alone); auto plays both. It applies to DMR and P25

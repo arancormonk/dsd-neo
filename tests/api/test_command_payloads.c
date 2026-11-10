@@ -248,7 +248,8 @@ repeat_char(char c, size_t n) {
  *============================================================================*/
 
 /* B5/B6/B15 (issue #518 voice level): gain_set and again_set take a JSON number, whole or fractional, sent as a double
-   with its fraction; anything but 0 (auto) or the gain's range is invalid_params, never clamped or turned into auto. */
+   with its fraction. gain_set refuses anything but 0 (auto) or 0.001..50; again_set sends anything under 1 as 0 (auto)
+   and refuses values above 100. Nothing is clamped. */
 static void
 expect_gain_sent(const char* request, int cmd_id, double want) {
     if (!ok(request) || g_last_id != cmd_id || g_last_n != sizeof(double)) {
@@ -289,13 +290,14 @@ test_gain_values(void) {
     const struct {
         const char* value;
         double want;
-    } ana_ok[] = {{"0", 0.0}, {"1", 1.0}, {"1.5", 1.5}, {"37.5", 37.5}, {"100", 100.0}};
+    } ana_ok[] = {{"0", 0.0}, {"0.5", 0.0}, {"0.999", 0.0}, {"1e-50", 0.0}, {"-9", 0.0},
+                  {"1", 1.0}, {"1.5", 1.5}, {"37.5", 37.5}, {"100", 100.0}};
 
     for (size_t i = 0; i < sizeof ana_ok / sizeof ana_ok[0]; i++) {
         DSD_SNPRINTF(request, sizeof request, "{\"cmd\":\"again_set\",\"params\":{\"value\":%s}}", ana_ok[i].value);
         expect_gain_sent(request, DSD_APP_CMD_AGAIN_SET, ana_ok[i].want);
     }
-    const char* const ana_bad[] = {"0.5", "0.999", "1e-50", "-9", "100.5", "150", "1e39", "false"};
+    const char* const ana_bad[] = {"100.5", "150", "1e39", "false", "\"1\""};
     for (size_t i = 0; i < sizeof ana_bad / sizeof ana_bad[0]; i++) {
         DSD_SNPRINTF(request, sizeof request, "{\"cmd\":\"again_set\",\"params\":{\"value\":%s}}", ana_bad[i]);
         refused(request);

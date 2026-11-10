@@ -628,9 +628,9 @@ test_filter_bitmap_parser(void) {
     return test_rc;
 }
 
-/* Issue #518: the analog monitor defaults to the AGC (-n 0) and the voice band-pass (-v 0x1). -n takes 0 (auto) or a
-   fixed gain 1..100, fractions kept; anything else (a positive value under 1, negative, above 100, NaN, infinite) is
-   refused, as -g's out-of-range values are, where it used to be turned into auto or clamped. */
+/* Issue #518: the analog monitor defaults to the AGC (-n 0) and the voice band-pass (-v 0x1). -n takes 1..100 as a
+   fixed gain, fractions kept, and anything under 1 (0, a fraction, a negative value, 1e-50) as auto. NaN, infinities
+   and values above 100 are refused (above 100 used to clamp to 100; NaN used to read as auto). */
 static int
 test_analog_monitor_defaults_and_gain(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -650,10 +650,10 @@ test_analog_monitor_defaults_and_gain(void) {
     const struct {
         const char* value;
         float want; /* the setting, or -1 when the value must be refused */
-    } cases[] = {{"0", 0.0f},      {"1", 1.0f},      {"1.5", 1.5f},    {"37.5", 37.5f},  {"50", 50.0f},
-                 {"100", 100.0f},  {"0.5", -1.0f},   {"0.999", -1.0f}, {"1e-50", -1.0f}, {"-4", -1.0f},
-                 {"100.5", -1.0f}, {"150", -1.0f},   {"1e39", -1.0f},  {"nan", -1.0f},   {"inf", -1.0f},
-                 {"-inf", -1.0f},  {"12junk", -1.0f}};
+    } cases[] = {{"0", 0.0f},     {"0.5", 0.0f},    {"0.999", 0.0f}, {"1e-50", 0.0f},  {"-4", 0.0f},
+                 {"-0.5", 0.0f},  {"1", 1.0f},      {"1.5", 1.5f},   {"37.5", 37.5f},  {"50", 50.0f},
+                 {"100", 100.0f}, {"100.5", -1.0f}, {"150", -1.0f},  {"1e39", -1.0f},  {"nan", -1.0f},
+                 {"-nan", -1.0f}, {"inf", -1.0f},   {"-inf", -1.0f}, {"12junk", -1.0f}};
 
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         float got = -2.0f;

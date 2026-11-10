@@ -29,8 +29,8 @@ enum dsd_app_command_id {
     DSD_APP_CMD_SLOT2_TOGGLE = 11,
     DSD_APP_CMD_SLOT_PREF_CYCLE = 12,
 
-    // Digital gain step, in whole units on the -g multiplier: from auto it steps from 1, below 0.001 is auto, the top
-    // is 50 (<dsd-neo/core/gain_setting.h>).
+    // Digital gain step, in whole units on the -g multiplier: from auto it counts from 0 (+1 lands on 1), below 0.001
+    // is auto, the top is 50 (<dsd-neo/core/gain_setting.h>).
     DSD_APP_CMD_GAIN_DELTA = 20,  // payload: int32_t delta (+1/-1)
     DSD_APP_CMD_AGAIN_DELTA = 21, // payload: int32_t delta (+1/-1) for analog gain; from auto it steps from 50, below 1
                                   // is auto, the top is 100
@@ -78,10 +78,10 @@ enum dsd_app_command_id {
     DSD_APP_CMD_INVERT_TOGGLE = 101,
     DSD_APP_CMD_MOD_TOGGLE = 102,
     DSD_APP_CMD_DMR_RESET = 103,
-    // The gain settings: a value outside the range (NaN, infinite, negative, above the top, or positive under the
-    // minimum) is refused and the setting kept (<dsd-neo/core/gain_setting.h>).
+    // The gain settings (<dsd-neo/core/gain_setting.h>): a value the gain's rule refuses (NaN, infinite, above the top;
+    // for the digital gain also negative or positive under the minimum) is ignored and the setting kept.
     DSD_APP_CMD_GAIN_SET = 104,          // payload: double (0 = auto, 0.001..50)
-    DSD_APP_CMD_AGAIN_SET = 105,         // payload: double (0 = auto, 1..100)
+    DSD_APP_CMD_AGAIN_SET = 105,         // payload: double (under 1 = auto, 1..100)
     DSD_APP_CMD_INPUT_WARN_DB_SET = 106, // payload: double
     DSD_APP_CMD_INPUT_MONITOR_TOGGLE = 107,
     DSD_APP_CMD_COSINE_FILTER_TOGGLE = 108,

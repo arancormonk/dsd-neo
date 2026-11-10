@@ -997,8 +997,9 @@ test_network_and_io_callbacks_pack_payloads(void) {
 }
 
 /* B6 (issue #518 voice level): the gain prompts send the value as typed, a double with its fraction (the digital one
-   used to send (int32_t)g, so 0.5 applied auto). B5: a value outside 0 (auto) or the range is refused with the range
-   and sends nothing, never clamped or turned into auto. The prompt itself refuses nan/inf text before this. */
+   used to send (int32_t)g, so 0.5 applied auto). B5: a value the gain's rule refuses is reported with the range and
+   sends nothing, never clamped (the digital gain refuses 0 < g < 0.001; the analog gain takes anything under 1 as
+   auto). The prompt itself refuses nan/inf text before this. */
 static int
 expect_gain_sent(const char* tag, int want_id, double want) {
     int rc = expect_int(tag, g_cmd.calls, 1);
@@ -1044,16 +1045,24 @@ test_gain_prompt_callbacks(UiCtx* ctx) {
     cb_gain_dig(ctx, 0, 0.0);
     rc |= expect_int("digital gain prompt cancelled sends nothing", g_cmd.calls, 0);
 
-    const double ana_ok[] = {1.0, 1.5, 37.5, 100.0, 0.0};
+    /* The analog gain keeps -n's rule: anything under 1 is auto, sent as 0. */
+    const struct {
+        double value;
+        double want;
+    } ana_ok[] = {{1.0, 1.0}, {1.5, 1.5}, {37.5, 37.5}, {100.0, 100.0}, {0.0, 0.0}, {0.5, 0.0}, {-3.0, 0.0}};
+
     for (size_t i = 0; i < sizeof ana_ok / sizeof ana_ok[0]; i++) {
         reset_capture();
-        cb_gain_ana(ctx, 1, ana_ok[i]);
-        rc |= expect_gain_sent("analog gain sent as typed", DSD_APP_CMD_AGAIN_SET, ana_ok[i]);
+        cb_gain_ana(ctx, 1, ana_ok[i].value);
+        rc |= expect_gain_sent("analog gain sent (under 1 is auto)", DSD_APP_CMD_AGAIN_SET, ana_ok[i].want);
     }
+    reset_capture();
+    cb_gain_ana(ctx, 1, 0.5);
+    rc |= expect_str("analog gain under 1 status", g_status, "Applying analog gain: auto");
     reset_capture();
     cb_gain_ana(ctx, 1, 37.5);
     rc |= expect_str("analog gain status keeps the fraction", g_status, "Applying analog gain: 37.5");
-    const double ana_bad[] = {0.5, 1e-50, -3.0, 100.5, 150.0, NAN, INFINITY};
+    const double ana_bad[] = {100.5, 150.0, 1e39, NAN, INFINITY, -INFINITY};
     for (size_t i = 0; i < sizeof ana_bad / sizeof ana_bad[0]; i++) {
         reset_capture();
         cb_gain_ana(ctx, 1, ana_bad[i]);

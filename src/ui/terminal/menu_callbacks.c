@@ -953,8 +953,8 @@ cb_switch_to_symbol(void* v, const char* path) {
 
 // ---- Gain callbacks ----
 
-/* The gain prompts: 0 is auto, otherwise a value inside the gain's range, sent as typed (fractions kept). Anything else
-   is refused with the range, never clamped or turned into auto (<dsd-neo/core/gain_setting.h>). */
+/* The gain prompts send the value as typed, fractions kept, under the gain's rule (<dsd-neo/core/gain_setting.h>): a
+   value it refuses is reported with the range and sends nothing, never clamped; an analog value under 1 is auto. */
 void
 cb_gain_dig(void* u, int ok, double g) {
     const UiCtx* c = mutable_ui_ctx_from_callback(u);
@@ -979,7 +979,7 @@ cb_gain_ana(void* u, int ok, double g) {
     if (!c || !ok) {
         return;
     }
-    if (!dsd_analog_gain_setting_valid(g)) {
+    if (!dsd_analog_gain_setting(g, &g)) {
         ui_statusf("Analog gain must be 0 (auto) or %g..%g", DSD_ANALOG_GAIN_MIN, DSD_ANALOG_GAIN_MAX);
         return;
     }

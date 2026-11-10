@@ -5,18 +5,25 @@
 
 /**
  * @file
- * @brief The digital (`-g`) and analog (`-n`) output gain settings: their ranges and the one validity rule every
- * surface applies (the CLI, the app-control handlers, the terminal menu and the JSON API).
+ * @brief The digital (`-g`) and analog (`-n`) output gain settings: their ranges and the rules every surface applies
+ * (the CLI, the app-control handlers, the terminal menu and the JSON API).
  *
- * A setting is 0, meaning auto, or a fixed gain inside the range. Anything else is refused, never clamped or turned into
- * auto: NaN, infinities, negative values, values above the maximum, and positive values below the minimum (a value such
- * as 1e-50 would otherwise round to the float 0 in dsd_opts and select auto). The check runs in double, before the
- * value narrows to the float setting. It relies on IEEE comparisons, so a caller must be compiled without fast-math
- * (see the -fno-fast-math source lists in the CMakeLists of runtime, app_control, api and ui/terminal).
+ * A digital setting is 0, meaning auto, or a fixed multiplier inside its range. Anything else is refused, never
+ * clamped or turned into auto: NaN, infinities, negative values, values above the maximum, and positive values below
+ * the minimum (a value such as 1e-50 would otherwise round to the float 0 in dsd_opts and select auto).
+ *
+ * An analog setting keeps `-n`'s documented rule: anything under 1 (0, a fraction, a negative value) is auto, and
+ * 1..100 is a fixed gain. NaN, infinities and values above 100 are refused.
+ *
+ * The checks run in double, before the value narrows to the float setting. They rely on IEEE comparisons, so a caller
+ * must be compiled without fast-math (see the -fno-fast-math source lists in the CMakeLists of runtime, app_control,
+ * api and ui/terminal).
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_GAIN_SETTING_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_GAIN_SETTING_H
+
+#include <float.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -25,31 +32,37 @@ extern "C" {
 /** Digital gain (`-g`, dsd_opts::audio_gain): a multiplier on the vocoder's reference level (1), about -60..+34 dB. */
 #define DSD_DIGITAL_GAIN_MIN            0.001
 #define DSD_DIGITAL_GAIN_MAX            50.0
-/** Where a digital gain step from auto starts: the reference level. */
-#define DSD_DIGITAL_GAIN_STEP_FROM_AUTO 1.0
+/** Where a digital gain step from auto counts from: 0, so the first step up lands on 1, the reference level. */
+#define DSD_DIGITAL_GAIN_STEP_FROM_AUTO 0.0
 
-/** Analog gain (`-n`, dsd_opts::audio_gainA): 50 is the reference level. */
+/** Analog gain (`-n`, dsd_opts::audio_gainA): 50 is the reference level; anything under the minimum is auto. */
 #define DSD_ANALOG_GAIN_MIN             1.0
 #define DSD_ANALOG_GAIN_MAX             100.0
 /** Where an analog gain step from auto starts: the reference level. */
 #define DSD_ANALOG_GAIN_STEP_FROM_AUTO  50.0
 
-/* 0 (auto), or inside lo..hi. Written so NaN fails: every comparison with it is false. */
-static inline int
-dsd_gain_setting_in_range(double value, double lo, double hi) {
-    return value == 0.0 || (value >= lo && value <= hi);
-}
-
-/** Whether @p value is a valid digital gain setting: 0 (auto) or DSD_DIGITAL_GAIN_MIN..DSD_DIGITAL_GAIN_MAX. */
+/**
+ * @brief Whether @p value is a valid digital gain setting: 0 (auto) or DSD_DIGITAL_GAIN_MIN..DSD_DIGITAL_GAIN_MAX.
+ * Written so NaN fails: every comparison with it is false.
+ */
 static inline int
 dsd_digital_gain_setting_valid(double value) {
-    return dsd_gain_setting_in_range(value, DSD_DIGITAL_GAIN_MIN, DSD_DIGITAL_GAIN_MAX);
+    return (value == 0.0 || (value >= DSD_DIGITAL_GAIN_MIN && value <= DSD_DIGITAL_GAIN_MAX)) ? 1 : 0;
 }
 
-/** Whether @p value is a valid analog gain setting: 0 (auto) or DSD_ANALOG_GAIN_MIN..DSD_ANALOG_GAIN_MAX. */
+/**
+ * @brief The analog gain setting @p value selects, in @p out: 0 (auto) for anything under DSD_ANALOG_GAIN_MIN, the
+ * value itself up to DSD_ANALOG_GAIN_MAX. Returns 1, or 0 with @p out untouched for NaN, infinities and values above
+ * the maximum.
+ */
 static inline int
-dsd_analog_gain_setting_valid(double value) {
-    return dsd_gain_setting_in_range(value, DSD_ANALOG_GAIN_MIN, DSD_ANALOG_GAIN_MAX);
+dsd_analog_gain_setting(double value, double* out) {
+    /* The positive form, so NaN (every comparison false) falls through to the refusal. */
+    if (value >= -DBL_MAX && value <= DSD_ANALOG_GAIN_MAX) {
+        *out = (value < DSD_ANALOG_GAIN_MIN) ? 0.0 : value;
+        return 1;
+    }
+    return 0;
 }
 
 /**
