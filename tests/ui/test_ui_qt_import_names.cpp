@@ -45,8 +45,12 @@ touch(const QDir& dir, const QString& name) {
 void
 test_names() {
     CHECK(sanitized_import_name(QStringLiteral("a.csv"), QStringLiteral("b.csv")) == QStringLiteral("a.csv"));
+    // #830: a hint is a name the host already decoded, so it is taken as given: an escape in it is part of the name.
+    CHECK(sanitized_import_name(QString(), QStringLiteral("100%25 capture.wav"))
+          == QStringLiteral("100%25 capture.wav"));
+    CHECK(sanitized_import_name(QString(), QStringLiteral("a b#1%.csv")) == QStringLiteral("a b#1%.csv"));
     CHECK(sanitized_import_name(QString(), QStringLiteral("raw%3A%2Fstorage%2Femulated%2F0%2Fcapture.wav"))
-          == QStringLiteral("capture.wav"));
+          == QStringLiteral("raw%3A%2Fstorage%2Femulated%2F0%2Fcapture.wav"));
     CHECK(sanitized_import_name(QStringLiteral("  "), QStringLiteral("x.csv")) == QStringLiteral("x.csv"));
     CHECK(sanitized_import_name(QStringLiteral("a/b/c.csv"), QString()) == QStringLiteral("c.csv"));
     CHECK(sanitized_import_name(QString(), QString()) == QStringLiteral("import.bin"));
@@ -59,13 +63,17 @@ test_names() {
 }
 
 /* Gate r3: an embedded NUL (or another C0 control character) never reaches the stored name, from a provider's name
-   or a decoded hint: a C-string rename would cut the name there while the index recorded all of it. */
+   or a hint: a C-string rename would cut the name there while the index recorded all of it. A hint is never decoded
+   (#830), so an escape that spells one is plain text in the name. */
 void
 test_control_characters() {
     const QString nul = QStringLiteral("mylist") + QChar(0) + QStringLiteral(".csv");
     CHECK(sanitized_import_name(nul, QString()) == QStringLiteral("mylist_.csv"));
-    CHECK(sanitized_import_name(QString(), QStringLiteral("mylist%00.csv")) == QStringLiteral("mylist_.csv"));
-    CHECK(sanitized_import_name(QString(), QStringLiteral("a%01b%1Fc.csv")) == QStringLiteral("a_b_c.csv"));
+    CHECK(sanitized_import_name(QString(), nul) == QStringLiteral("mylist_.csv"));
+    const QString controls =
+        QStringLiteral("a") + QChar(1) + QStringLiteral("b") + QChar(0x1F) + QStringLiteral("c.csv");
+    CHECK(sanitized_import_name(QString(), controls) == QStringLiteral("a_b_c.csv"));
+    CHECK(sanitized_import_name(QString(), QStringLiteral("mylist%00.csv")) == QStringLiteral("mylist%00.csv"));
     CHECK(!sanitized_import_name(QStringLiteral("x\x07y.csv"), QString()).contains(QChar(7)));
     CHECK(sanitized_import_name(QStringLiteral("x\x07y.csv"), QString()) == QStringLiteral("x_y.csv"));
 }

@@ -402,38 +402,38 @@ test_local_reference_answers_its_path() {
 
 /* #830: where the host has DSD-neo's file browser, a local pick (a USB drive's file, say) copies like a provider's
    document: progress while it runs, within the free space less the reserve, cancellable, and recorded pending; the
-   copy outlives its source. */
+   copy outlives its source. The pick's name is the host's, already decoded: an escape in it is part of the name. */
 void
 test_local_pick_copied_on_browser_host() {
     reset_data();
     Rig rig;
     rig.host.browser = true;
-    const QString local = sources_dir() + QStringLiteral("/local capture.wav");
+    const QString name = QStringLiteral("100%25 capture.wav");
+    const QString local = sources_dir() + QLatin1Char('/') + name;
     write_file(local, QByteArray("local bytes"));
     const QString reference = QUrl::fromLocalFile(local).toString();
     rig.transport->setHoldLocal(true);
-    const int id = rig.store->beginReplayImport(reference, QStringLiteral("local capture.wav"));
-    CHECK(rig.store->copying() && rig.store->copyName() == QStringLiteral("local capture.wav"),
-          "the local pick shows as a copy while it runs");
+    const int id = rig.store->beginReplayImport(reference, name);
+    CHECK(rig.store->copying() && rig.store->copyName() == name, "the local pick shows as a copy, by its name");
     CHECK(wait_until([&rig]() { return rig.transport->holding() == 1; }), "the copy goes through the transport");
     rig.transport->setHoldLocal(false);
     CHECK(wait_until([&rig, id]() { return rig.answers.contains(id); }), "the copy is answered");
     const QVariantMap result = rig.answers.value(id);
     const QString path = result.value(QStringLiteral("path")).toString();
     CHECK(result.value(QStringLiteral("ok")).toBool(), "the copy is ok");
-    CHECK(path == ReplayStore::replaysRoot() + QStringLiteral("/local capture.wav"),
-          "answered with the copy in replays/");
+    CHECK(path == ReplayStore::replaysRoot() + QLatin1Char('/') + name, "answered with the copy in replays/");
     CHECK(rig.transport->copies() == QStringList{reference}, "the transport is asked for the reference as it came");
     CHECK(manifest().value(path) == QStringLiteral("pending"), "the copy is recorded pending");
     CHECK(QFile::remove(local) && read_file(path) == "local bytes", "the copy outlives its source");
     write_file(local, QByteArray("local bytes"));
     rig.store->setFreeSpace([](const QString&) { return ReplayStore::kReserveBytes / 2; });
-    CHECK(rig.import(reference, QStringLiteral("local capture.wav")).value(QStringLiteral("error")).toString()
-              == QStringLiteral("too_large"),
-          "a local pick must leave the reserve free too");
+    const QVariantMap refused = rig.import(reference, name);
+    CHECK(refused.value(QStringLiteral("error")).toString() == QStringLiteral("too_large")
+              && refused.value(QStringLiteral("name")).toString() == name,
+          "a local pick must leave the reserve free too, and the refusal names it");
     rig.store->setFreeSpace([](const QString&) { return qint64{-1}; });
     rig.transport->setHoldLocal(true);
-    const int held = rig.store->beginReplayImport(reference, QStringLiteral("local capture.wav"));
+    const int held = rig.store->beginReplayImport(reference, name);
     CHECK(wait_until([&rig]() { return rig.transport->holding() == 2; }), "the next local copy runs");
     rig.store->cancelReplayImport();
     CHECK(wait_until([&rig, held]() { return rig.answers.contains(held); }), "a cancelled local copy is answered");
@@ -441,7 +441,7 @@ test_local_pick_copied_on_browser_host() {
           "cancelled");
     rig.transport->setHoldLocal(false);
     CHECK(wait_until(staging_empty), "the cancelled copy's staging goes");
-    CHECK(replay_files() == QStringList{QStringLiteral("local capture.wav")}, "only the finished copy is kept");
+    CHECK(replay_files() == QStringList{name}, "only the finished copy is kept");
 }
 
 /* #830: a saved system naming a local file (picked before local picks were copied, or on the desktop) keeps its row

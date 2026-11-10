@@ -815,6 +815,7 @@ Item {
             tryCompare(completion, "count", 1);
             compare(testContext.importReferences().slice(-1)[0], browsedReference, "the copy is asked for the reference as it came");
             compare(completion.signalArguments[0][0].error, "read", "a file this desktop does not have");
+            compare(completion.signalArguments[0][0].name, browsedName, "named as the browser gave it, never decoded again");
         }
         // #830: "Choose a file…" on the companion sheet browses over the
         // sheet. Back at the browser's locations ends only that pick (the

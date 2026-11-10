@@ -133,6 +133,15 @@ Item {
             compare(testContext.replayCalls().begins, 1, "and nothing is picked");
         }
 
+        // #830: the store is handed the host's name as given; only a pick
+        // that came with no name is named from its reference, decoded once.
+        function test_replay_pick_names_once() {
+            tc.wizard.replayFilePicked("content://provider/document/100%25%20capture.wav", "100%25 capture.wav");
+            compare(item("wizardReplayProgressText").text, "Copying 100%25 capture.wav…");
+            tc.wizard.replayFilePicked("content://provider/document/cap%20one.wav", "");
+            compare(item("wizardReplayProgressText").text, "Copying cap one.wav…");
+        }
+
         // The copy belongs to the File source: picking another source cancels
         // it, so Continue does not wait on a copy nothing shows.
         function test_leaving_the_file_source_cancels_the_copy() {

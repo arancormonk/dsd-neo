@@ -281,8 +281,19 @@ Item {
         replayNotice = "";
         sourcePicker.open();
     }
+    // The host's name is decoded already and goes on as given; a pick
+    // with none is named from its reference, decoded once (issue #830).
     function replayFilePicked(reference, displayName) {
-        beginReplay(reference, displayName.length > 0 ? displayName : reference.substring(reference.lastIndexOf('/') + 1));
+        beginReplay(reference, displayName.length > 0 ? displayName : referenceName(reference));
+    }
+    function referenceName(reference) {
+        var decoded = reference;
+        try {
+            decoded = decodeURIComponent(reference);
+        } catch (error) {
+            // A malformed escape: the reference as it came.
+        }
+        return decoded.substring(decoded.lastIndexOf('/') + 1);
     }
     function showReplayProblem(text) {
         replayNotice = text;

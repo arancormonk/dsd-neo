@@ -13149,8 +13149,10 @@ Qt Quick frontend (`src/ui/qt`):
   `registerTalkgroupList()` saves the index before it adds the row and answers false, adding nothing, when it cannot.
   `import_names.{h,cpp}` is the one rule both platforms use to name a stored import (`sanitized_import_name`: C0
   control characters, NUL included, become `_` first, since a C-string rename would cut the name at a NUL; at most
-  247 UTF-8 bytes so a " (999)" suffix always fits) and to find a free name (`unique_import_destination`, which also
-  skips reserved paths).
+  247 UTF-8 bytes so a " (999)" suffix always fits; the provider's name, else the picker's hint, each taken as given
+  and never percent-decoded, since the host decodes the name it hands back, #830: a QML caller holding only a
+  reference decodes its last segment once, as `CsvImportFlow.readableName()` and `WizardScreen.referenceName()` do)
+  and to find a free name (`unique_import_destination`, which also skips reserved paths).
   `document_import_transport.{h,cpp}` is the import copies' transport (#832): `DecoderHost::importTransport()` hands
   out a new `DocumentImportTransport` each call, which never calls the host, so the import worker may keep it past the
   host. `copy(request, reference, destPath, maxBytes)` blocks and returns a `DocumentCopy` code; `cancel(request)`

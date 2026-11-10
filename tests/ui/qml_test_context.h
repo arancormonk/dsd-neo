@@ -4277,7 +4277,8 @@ class Setup : public QObject {
     /**
      * @brief Forget them, and put the player and the transfer back at rest (nothing open, nothing running). The
      * document picker's records go too, on every host: no lastDocumentRequest() from before the reset and no name set
-     * through setSavedDocumentName(); and so do the file browser's calls (fileCalls()).
+     * through setSavedDocumentName(); and so do the file browser's calls (fileCalls()) and the references the import
+     * copies were asked for (importReferences()).
      */
     Q_INVOKABLE void
     resetHostPlayback() {
@@ -4290,6 +4291,8 @@ class Setup : public QObject {
             host->documentCalls.clear();
             host->savedDocumentNames.clear();
             host->fileCalls.clear();
+            const std::lock_guard<std::mutex> guard(host->importGate->lock);
+            host->importGate->references.clear();
         }
         m_host_readings->shareAccepted = true;
         m_host_readings->seekApplied = true;
