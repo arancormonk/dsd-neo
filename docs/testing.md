@@ -201,6 +201,18 @@ began (saved), an interrupt after it began (saved, interrupt kept), the teardown
 (returns without it; the publication still completes), the 16-name bound and the release of persisted grants. The
 abort case runs last but one: it is sticky for the process. Last, with the worker shut down, an insert answers empty
 and a settle deletes the row it claimed.
+`ANDROID_FILE_BROWSER_JVM` (the `file_browser` suite, issue #830) runs `FileListing.kt`, the in-app file browser's
+folder reads, with no stubs, against temporary folders and a `GatedFs` that fails an open, fails an iteration part way,
+makes up a folder of 50,000 files and holds reads until the test lets them go. Containment is checked on real paths:
+the root itself, a sibling whose name starts with the root's, `..`, a link to a folder outside, and a root given
+through a link (as `/sdcard` is) that still owns its folders. Links, FIFOs and Unix sockets are never listed; a folder
+with mode 000, a refused open and a failed iteration read `unreadable`, never empty; a deleted root reads `gone`. Then
+dot names and the CSV, backup and replay filters (the symbol-capture rule on the whole path, case-sensitive) before the
+page, folders first in case-insensitive natural order, pages of 500, `tooMany` at 50,001 entries, snapshots expiring
+when idle, superseded or closed, the entry shape (a modified time of 0 kept), the hand-off's `file:` reference
+(encoded once, the name never), cancel during a blocked read, and saturation: three blocked reads make the fourth
+request `busy` at once, end `timedOut` at the watchdog, and give their places back only when they return. It skips the
+link, FIFO, socket and mode-000 cases where the host cannot make them.
 `ANDROID_USB_RECEIVER_JVM` (the `usb_receiver` suite) runs `UsbReceiverKind.kt`, the USB id table `UsbSourceManager`
 classifies every device with, with no stubs: an Airspy beside a hub and other unrelated devices reads `airspy`, two
 RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known receiver empty. Which local receiver a

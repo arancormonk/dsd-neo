@@ -1089,6 +1089,10 @@ SUITES = {
             android_native_writes_no_environment,
         ),
     ),
+    # The in-app file browser's listing core (#830): folder reads behind a filesystem seam, containment, filters, order,
+    # pages, snapshots, the worker cap and watchdog. Plain Kotlin with no Android imports, so no stubs; real fixtures
+    # (links, FIFOs, sockets, mode 000) run where the host has them.
+    "file_browser": Suite(builds=(Build(sources=("FileListing.kt",), tests=("FileListingTest.kt",)),)),
     # The RadioReference sign-in form as the Autofill Framework sees it: tokens, the field snapshot, the framework
     # session and the effects SignInAutofill carries out. Plain Kotlin with no Android imports, so no stubs;
     # SignInAutofill runs it on the main looper against AutofillManager.

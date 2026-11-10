@@ -23046,6 +23046,13 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
             sign_in_autofill
     )
+    add_test(
+        NAME ANDROID_FILE_BROWSER_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            file_browser
+    )
     set_tests_properties(
         ANDROID_LOCATION_JVM
         ANDROID_DECODER_STATUS_JVM
@@ -23063,6 +23070,7 @@ if(Python3_Interpreter_FOUND)
         ANDROID_RECORDING_SHARE_JVM
         ANDROID_A11Y_BRIDGE_JVM
         ANDROID_SIGN_IN_AUTOFILL_JVM
+        ANDROID_FILE_BROWSER_JVM
         PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 90
