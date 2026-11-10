@@ -14064,23 +14064,24 @@ Qt Quick frontend (`src/ui/qt`):
   the `decoderHost` map and `ImportOnlyHost` both carry the slot and `documentRequestPending`; a case drives them with
   `testContext.emitIncomingDocument(ref)` and `setDocumentRequestPending(bool)` on whichever host is installed. Tests:
   `UI_QT_IMPORTED_FILES` (the base slot), `tst_context_fixture.qml` (both fakes).
-- `qml/IncomingDocumentFlow.qml` (#831) shows one incoming document: Main's only instance (`incomingDocument`, z 22
-  like `BackupFlow` and declared before it, so the backup flow stays the top item) is non-visual apart from its
-  `ModalSheet` (`incomingDocumentSheet`, accessible name "File from another app").
+- `qml/IncomingDocumentFlow.qml` (#831) shows one incoming document: Main's only instance (`incomingDocument`, z 22 like
+  `BackupFlow` and declared before it, so the backup flow stays the top item) is non-visual apart from its `ModalSheet`
+  (`incomingDocumentSheet`, accessible name "Incoming file"; the line under the name heading reads "From another app").
   `phase` runs "" → `probing` → `presenting` → `handingOff` → ""; `busy` is set before `takeIncomingDocument()` and
   holds until the destination accepted the document or it was dropped, and joins `autoStartBlocked`. The probe is
-  `importedFiles.inspectDocument()`, answered by `documentInspected(id, {kind, name})`; every dismissal
-  (`dismissHandler`: Cancel/Close, Back, an outside tap) drops the document and `cancelInspect()`s a probe still
-  reading. The name heading is a `ReadableText` (PlainText) with "This file" when the provider gave none. A backup
-  follows `backup.restorePending`/`restoreCancellable`, `decoderHost.sessionActive` and `backup.busy` live
-  (`backupState`): a session on shows "Stop listening" ("Stop replay" when `replaying`, "Stopping…" disabled while
-  `sessionState` is Stopping) calling `decoderHost.stop()` itself (D3: the Monitor's Stop is under the sheet), and
-  Restore enables once `backup.restoreAllowed && !backup.restorePending`. Problem lines reuse `BackupFlow.errorText()`
-  (through `restoreFlow`) and `Util.restorePartWayText()`, are `Accessible.AlertMessage`, and are read out once each
-  time one appears (`onProblemTextChanged` → `Navigation.announce`). "Other" asks with `ImportKindPicker` (Import
-  stays disabled until a kind is chosen). `handOff(target, type)` copies the reference and name, closes the sheet and
-  emits `handOffRequested(target, reference, name, type)`; Main answers `handOffDone(accepted)`, and a refusal opens
-  the sheet again with "Couldn't open that now. Try again."
+  `importedFiles.inspectDocument()`, answered by `documentInspected(id, {kind, name})`; every way out but a hand-off
+  drops the document and `cancelInspect()`s a probe still reading: Cancel/Close call `drop()`, and Back, Escape and an
+  outside tap reach it through the sheet's `dismissHandler`. The name heading is a `ReadableText` (PlainText) with "This
+  file" when the provider gave none. A backup follows `backup.restorePending`/`restoreCancellable`,
+  `decoderHost.sessionActive` and `backup.busy` live (`backupState`): a session on shows "Stop listening" ("Stop replay"
+  when `replaying`, "Stopping…" disabled while `sessionState` is Stopping) calling `decoderHost.stop()` itself (D3: the
+  Monitor's Stop is under the sheet), and Restore enables once `backup.restoreAllowed && !backup.restorePending`.
+  Problem lines reuse `BackupFlow.errorText()` (through `restoreFlow`; without one a backup's problem line stays empty)
+  and `Util.restorePartWayText()`, are `Accessible.AlertMessage`, and are read out once each time one appears
+  (`onProblemTextChanged` → `Navigation.announce`). "Other" asks with `ImportKindPicker` (Import stays disabled until a
+  kind is chosen). `handOff(target, type)` copies the reference and name, closes the sheet and emits
+  `handOffRequested(target, reference, name, type)`; Main answers `handOffDone(accepted)`, and a refusal opens the sheet
+  again with "Couldn't open that now. Try again."
 - Main's free test, `mainRoot.intakeFree` (#831): a document waits while any owner holds the screen: an open modal,
   the intake's own `busy`, the wizard, onboarding, the scan-list editor, Explore setup, Signal search, either
   RadioReference screen, `backup.flowActive`/`busy`, `importedFiles.importing`, `importsScreen.importActive` and

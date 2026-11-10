@@ -263,8 +263,10 @@ DSD-neo first reads the start of the file (**Checking the file…**) and decides
 - **A DSD-neo backup** offers **Restore…**, which goes on as Settings → Backup → **Restore from backup** does after its
   picker: the passphrase, then **Replace your setup?**. While a session runs, the sheet says **Stop listening before
   restoring.** and offers **Stop listening** (**Stop replay** for a replay), and **Restore…** becomes available once
-  the session has stopped. DSD-neo never stops a session by itself. A backup made by a newer DSD-neo, a damaged one, a
-  file too large to be one, or a restore already waiting is named, with **Close**.
+  the session has stopped. DSD-neo never stops a session by itself. While another backup task runs, the sheet says
+  **Another backup task is still running. Try again in a moment.** and **Restore…** comes back once it ends. A backup
+  made by a newer DSD-neo, a damaged one, a file too large to be one, or a restore already waiting is named, with
+  **Close**.
 - **Anything else** asks **What does this file contain?** with the kinds of Imported files → **Import file**, and for
   **Keys** whether they are decimal or hex. **Import** copies it into Imported files as a picked file would; during a
   session Imported files opens over the session's Settings. **Target CSV** instead starts a new scan list with those

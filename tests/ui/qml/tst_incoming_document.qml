@@ -18,6 +18,13 @@ Item {
         id: appLoader
         anchors.fill: parent
     }
+    // A flow with no BackupFlow to take its words from.
+    Component {
+        id: bareFlow
+        Ui.IncomingDocumentFlow {
+            anchors.fill: parent
+        }
+    }
 
     TestCase {
         name: "IncomingDocument"
@@ -407,11 +414,13 @@ Item {
             testContext.setLifecyclePhase(2);
             tryCompare(app, "monitorMode", true);
             app.talkgroupsOpen = true;
+            app.spectrumOpen = true;
             app.sessionDestination = "history";
             offer(groupsFile());
             chooseKind("group");
             part("incomingDocumentImport").clicked();
             verify(!app.talkgroupsOpen);
+            verify(!app.spectrumOpen);
             compare(app.sessionDestination, "settings");
             verify(findChild(app, "importsScreen").visible);
             tryCompare(findChild(app, "importsScreen"), "notice", "Imported · 2 talkgroups", 5000);
@@ -458,7 +467,8 @@ Item {
                 {tag: "library import"},
                 {tag: "Imports picker"},
                 {tag: "replay copy"},
-                {tag: "recording save"}
+                {tag: "recording save"},
+                {tag: "recording export"}
             ];
         }
         function test_work_after_its_sheet_closed_makes_it_wait(data) {
@@ -475,12 +485,19 @@ Item {
                 imports.importPickedFile();
                 verify(imports.importActive);
                 compare(Ui.Navigation.modals.length, 0, "no sheet shows while the picker is up");
+                // The host's own reading stays false here (a case sets it), so the import alone holds the file.
+                verify(!decoderHost.documentRequestPending);
+                verify(!importedFiles.importing);
             } else if (data.tag === "replay copy") {
                 replayFiles.beginReplayImport("content://com.Example.Files/document/a.wav", "a.wav");
                 verify(replayFiles.copying);
-            } else {
+            } else if (data.tag === "recording save") {
                 testContext.holdRecordingTransfers(true);
                 verify(decoderHost.saveRecording({selection: 1, paths: [path], names: []}, "file://" + path + ".copy"));
+                verify(decoderHost.recordingTransferActive);
+            } else {
+                testContext.holdRecordingTransfers(true);
+                verify(decoderHost.exportRecordings({selection: 2, paths: [path], names: ["a.csv"], bytes: 10}, "file://" + path + ".zip"));
                 verify(decoderHost.recordingTransferActive);
             }
             testContext.emitIncomingDocument(path);
@@ -515,6 +532,38 @@ Item {
             testContext.setLifecyclePhase(2);
             verify(!app.restartInFlight);
             tryCompare(flow, "phase", "presenting", 5000);
+        }
+
+        // A restart whose start fails, or never begins, stops holding the
+        // file as soon as that is known.
+        function test_restart_that_does_not_run_lets_go_data() {
+            return [
+                {tag: "start failed", accept: true, uid: true},
+                {tag: "start refused by the host", accept: false, uid: true},
+                {tag: "system removed", accept: true, uid: false}
+            ];
+        }
+        function test_restart_that_does_not_run_lets_go(data) {
+            savedSystems.add({name: "Bench", sourceType: "udp", port: 7355, freqMhz: "851.5"});
+            var uid = data.uid ? savedSystems.get(savedSystems.count - 1).uid : "gone";
+            testContext.setScanTestAcceptStart(data.accept);
+            try {
+                app.pendingRestart = {uid: uid};
+                testContext.emitIncomingDocument(groupsFile());
+                verifyWaits("requested");
+                app.finishPendingRestart();
+                if (data.tag === "start failed") {
+                    compare(decoderHost.sessionState, 1);
+                    verifyWaits("starting");
+                    testContext.setLifecyclePhase(4);
+                } else {
+                    compare(decoderHost.sessionState, 0, "nothing started");
+                }
+                verify(!app.restartInFlight);
+                tryCompare(flow, "phase", "presenting", 5000);
+            } finally {
+                testContext.setScanTestAcceptStart(true);
+            }
         }
 
         // A document that comes while one is being handled waits for it to
@@ -663,10 +712,24 @@ Item {
             tryCompare(csvImport, "active", false, 5000);
         }
 
+        // Without its BackupFlow a backup's problem has no words, but nothing throws.
+        function test_backup_problem_without_its_backup_flow() {
+            var bare = createTemporaryObject(bareFlow, appLoader.parent);
+            verify(bare !== null);
+            compare(bare.restoreFlow, null);
+            bare.phase = "probing";
+            bare.probeId = 4242;
+            bare.inspected(4242, {kind: "damagedBackup", name: "broken.dsdbak"});
+            compare(bare.phase, "presenting");
+            compare(bare.problemText, "");
+            bare.reset();
+        }
+
         function test_accessible_names() {
             offer(write("damaged.dsdbak", backupText(1, 5, zeros(8))));
-            compare(sheet.accessibleName, "File from another app");
-            compare(sheet.Accessible.name, "File from another app");
+            // The name heading and "From another app" follow it, so the sheet's name says neither again.
+            compare(sheet.accessibleName, "Incoming file");
+            compare(sheet.Accessible.name, "Incoming file");
             var problem = part("incomingDocumentProblem");
             compare(problem.Accessible.role, Accessible.AlertMessage);
             compare(problem.Accessible.name, "The backup is damaged.");

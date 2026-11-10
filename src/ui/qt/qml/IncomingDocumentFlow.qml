@@ -32,7 +32,8 @@ Item {
     property bool refused: false
     // The session on screen replays a file: its Stop says so, as the Monitor's does.
     property bool replaying: false
-    // Main's BackupFlow, whose words a backup that can't be restored is told in.
+    // Main's BackupFlow, whose words a backup that can't be restored is told
+    // in. Without one, a backup's problem is shown without words, never thrown.
     property Item restoreFlow: null
     // The last problem read out and how many have been, for tests.
     property string announced: ""
@@ -52,6 +53,8 @@ Item {
     onProblemTextChanged: announceProblem()
 
     function stateProblem() {
+        if (!restoreFlow && kind !== "unreadable")
+            return "";
         switch (backupState) {
         case "session":
             return restoreFlow.errorText("SessionActive", "inspect");
@@ -172,7 +175,8 @@ Item {
     ModalSheet {
         id: sheet
         objectName: "incomingDocumentSheet"
-        accessibleName: qsTr("File from another app")
+        // Not "File from another app": the line under the name says that.
+        accessibleName: qsTr("Incoming file")
         dismissHandler: function () {
             flow.drop();
         }
