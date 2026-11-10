@@ -14055,9 +14055,11 @@ Qt Quick frontend (`src/ui/qt`):
   a picker opens the browser with `allowOtherApp` false instead of `unavailable`. The picker's token
   (`d.browseToken`) is part of `visible`; `close()`, `cancel()`, a reopen and destruction dismiss it, and the picker
   acts only on its own token, clearing it before it emits, so an owner superseded by another picker's browse no longer
-  waits when it hears `rejected`; a picker whose browse is superseded before `FileBrowser.open()` returns (the owner it
-  superseded opened again while told) hears `rejected` once, after `open()` returns. "Choose with another app" (`otherAppRequested`) asks the host's picker whatever the
-  toggle says; a `noPicker` answer to it reopens the browser without the action. Test: `UI_QT_QML_DOCUMENT_PICKER`.
+  waits when it hears `rejected`. While `FileBrowser.open()` tells the owner it superseded, that owner may act on the
+  new picker: a picker whose browse is superseded then (the owner opened again) hears `rejected` once, after `open()`
+  returns, and one closed, cancelled or reopened then keeps no request. "Choose with another app"
+  (`otherAppRequested`) asks the host's picker whatever the toggle says; a `noPicker` answer to it reopens the browser
+  without the action. Test: `UI_QT_QML_DOCUMENT_PICKER`.
 - `qml/CsvImportFlow.qml` imports a CSV and its companions for three owners: Imported files (`ImportsScreen`), the scan
   list editor's target CSV (`ScanListScreen`) and the wizard's trunking-data fields (`WizardScreen`). Its primary and
   companion pickers (`csvPrimaryPicker`, `csvCompanionPicker`) are `DocumentPicker`s with no filter; a picked document

@@ -563,6 +563,61 @@ Item {
             first.close();
         }
 
+        // The owner a browse supersedes may close the new picker while it is
+        // told (a flow that ends every picker): that picker keeps no request.
+        function test_closed_while_superseding() {
+            var first = makeBrowsingPicker();
+            var second = makeBrowsingPicker({browseKind: "backup", title: "Choose a backup"});
+            first.open();
+            var closeSecond = function () { second.close(); };
+            first.rejected.connect(closeSecond);
+            second.open();
+            first.rejected.disconnect(closeSecond);
+            compare(spiesOf(first).rejected.count, 1);
+            compare(Ui.FileBrowser.request, null, "no browse request is left for it");
+            verify(!second.visible);
+            wait(0);
+            compare(answers(second), 0, "close() ends it silently");
+
+            // Reopened by the owner while told: the reopened request is the one
+            // that waits, and it answers once.
+            var reopenSecond = function () { second.open(); };
+            first.open();
+            first.rejected.connect(reopenSecond);
+            second.open();
+            first.rejected.disconnect(reopenSecond);
+            verify(second.visible);
+            var token = browseToken();
+            compare(Ui.FileBrowser.request.kind, "backup");
+            wait(0);
+            compare(answers(second), 0);
+            Ui.FileBrowser.finish(token, "file:///x/a.dsdbak", "a.dsdbak");
+            compare(spiesOf(second).accepted.count, 1);
+            compare(answers(second), 1);
+        }
+
+        // cancel() between the supersede and its deferred rejected() answers
+        // once; the deferred one then says nothing.
+        function test_cancel_while_superseded() {
+            var first = makeBrowsingPicker();
+            var second = makeBrowsingPicker({browseKind: "backup", title: "Choose a backup"});
+            first.open();
+            var reopen = function () { first.open(); };
+            first.rejected.connect(reopen);
+            second.open();
+            first.rejected.disconnect(reopen);
+            verify(second.visible, "the rejection is still to come");
+            second.cancel();
+            compare(spiesOf(second).rejected.count, 1);
+            verify(!second.visible);
+            wait(0);
+            wait(10);
+            compare(spiesOf(second).rejected.count, 1, "once");
+            compare(answers(second), 1);
+            verify(first.visible, "the first picker's request is untouched");
+            first.close();
+        }
+
         function test_other_app_loop() {
             var picker = makeBrowsingPicker();
             picker.open();

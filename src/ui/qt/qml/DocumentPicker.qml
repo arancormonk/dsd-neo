@@ -100,6 +100,10 @@ QtObject {
         // owner it superseded opened again while being told): rejected() is
         // still to come, after open() returns.
         property bool browseSuperseded: false
+        // Bumped whenever this picker gives a request up (close, cancel, a
+        // reopen), so openBrowser() can tell that the owner it superseded did
+        // that to this picker while being told.
+        property int endings: 0
 
         function canBrowse() {
             return decoderHost.fileBrowserSupported === true && picker.browseKind.length > 0 && picker.mode === "open";
@@ -109,7 +113,14 @@ QtObject {
         function openBrowser(allowOtherApp) {
             abandonRequest();
             dismissBrowse();
+            var before = endings;
             var token = FileBrowser.open(picker.browseKind, picker.title, allowOtherApp);
+            if (endings !== before) {
+                // Closed, cancelled or reopened while FileBrowser.open() ran:
+                // this request is already given up.
+                FileBrowser.dismiss(token);
+                return;
+            }
             if (FileBrowser.request && FileBrowser.request.token === token) {
                 browseToken = token;
             } else {
@@ -124,6 +135,7 @@ QtObject {
             picker.rejected();
         }
         function dismissBrowse() {
+            endings += 1;
             browseSuperseded = false;
             if (!browseToken)
                 return;
@@ -152,6 +164,7 @@ QtObject {
             liveRequestId = picker.mode === "save" ? decoderHost.requestSaveDocument(picker.suggestedName, picker.mimeType) : decoderHost.requestOpenDocument();
         }
         function abandonRequest() {
+            endings += 1;
             if (!liveRequestId)
                 return;
             decoderHost.cancelDocumentRequest(liveRequestId);

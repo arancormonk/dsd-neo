@@ -14,8 +14,6 @@ import QtQuick
 // a token that is not the live one is ignored: a late or repeated ending never
 // reaches a newer request.
 QtObject {
-    id: browser
-
     // null, or {token, kind ("csv", "backup" or "replay"), title, allowOtherApp}.
     readonly property var request: d.request
 
