@@ -142,6 +142,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     }
 
     void refreshFileAccess() override;
+    qint64 openFileBrowserSession() override;
     /** @brief Retire the session's requests, each cancelled in FileBrowser, then close the session there too. */
     void closeFileBrowserSession(qint64 sessionId) override;
     qint64 requestFileRoots(qint64 sessionId) override;
@@ -590,6 +591,13 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      * take it; that is answered "failed", queued. An id that is not live (a closed session's) is never handed over.
      */
     qint64 startFileRequest(qint64 id, FileRequestKind kind, const std::function<bool(qint64)>& handOver);
+    /**
+     * @brief From the constructor: FileBrowser.start(), discard the records a host before this one left (its ids are
+     * this host's too), and the first access reading.
+     */
+    void startFileBrowser();
+    /** @brief From the destructor: cancel each live request in FileBrowser and close each open session there. */
+    void endFileBrowser();
     /** @brief Read FileBrowser.accessState(); a reading that differs is published with fileAccessChanged(). */
     void readFileAccess();
     /** @brief Read the access state if FileBrowser asks, then deliver every record waiting, oldest first. */
@@ -693,6 +701,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     // FileBrowser took, with the kind a record for each must be.
     QVariantMap m_file_access = DecoderHost::fileAccess();
     QHash<qint64, FileRequestKind> m_file_requests;
+    // The sessions open in FileBrowser, closed there when this host goes.
+    QSet<qint64> m_file_sessions;
     // The transfer jobs' way back to this host; cleared before it goes.
     std::shared_ptr<TransferLink> m_transfer_link = newTransferLink(this);
     // One transfer at a time, off the GUI thread. After the link it reaches the host through, so it goes first.

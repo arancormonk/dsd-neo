@@ -3558,6 +3558,14 @@ status_map(const char* status) {
     return {{QStringLiteral("status"), QString::fromLatin1(status)}};
 }
 
+/* Every roots answer has the roots' shape, a failure's too: no generation and no roots. */
+QVariantMap
+roots_map(const char* status) {
+    return {{QStringLiteral("status"), QString::fromLatin1(status)},
+            {QStringLiteral("generation"), qint64(0)},
+            {QStringLiteral("roots"), QVariantList()}};
+}
+
 } // namespace
 
 /* Issue #830: a host without a file browser opens sessions and answers every request "unsupported", queued and once;
@@ -3620,7 +3628,7 @@ test_file_browser_defaults() {
     host.cancelFileRequest(accessX);
     expect("an access request cancelled is not joined", host.requestFileAccess(s) > accessX);
     QCoreApplication::processEvents();
-    expect("a cancelled request is answered cancelled once", answers.once(x, "roots", status_map("cancelled")));
+    expect("a cancelled request is answered cancelled once", answers.once(x, "roots", roots_map("cancelled")));
     expect("a cancelled access request is answered cancelled once",
            answers.once(accessX, "access", {{QStringLiteral("outcome"), QStringLiteral("cancelled")}}));
     host.cancelFileRequest(x);
@@ -3657,11 +3665,11 @@ test_file_browser_defaults() {
     QCoreApplication::processEvents();
     expect(
         "closing a session cancels each live request once",
-        answers.once(first, "roots", status_map("cancelled"))
+        answers.once(first, "roots", roots_map("cancelled"))
             && answers.once(second, "handoff",
                             {{QStringLiteral("ok"), false}, {QStringLiteral("reason"), QStringLiteral("cancelled")}}));
     expect("a request for a closed session is cancelled", answers.once(late, "folder", status_map("cancelled")));
-    expect("a request for an unknown session is cancelled", answers.once(unknown, "roots", status_map("cancelled")));
+    expect("a request for an unknown session is cancelled", answers.once(unknown, "roots", roots_map("cancelled")));
     expect("another session's request keeps its own answer", answers.once(kept, "roots", unsupportedRoots));
     host.closeFileBrowserSession(other);
     QCoreApplication::processEvents();
@@ -3775,14 +3783,15 @@ test_file_browser_live_requests() {
     QCoreApplication::processEvents();
     const QVariantMap cancelled = status_map("cancelled");
     expect("each retired request is answered cancelled once",
-           answers.once(r, "roots", cancelled) && answers.once(l, "folder", cancelled)
+           answers.once(r, "roots", roots_map("cancelled")) && answers.once(l, "folder", cancelled)
                && answers.once(h, "handoff",
                                {{QStringLiteral("ok"), false}, {QStringLiteral("reason"), QStringLiteral("cancelled")}})
                && answers.once(a, "access", {{QStringLiteral("outcome"), QStringLiteral("cancelled")}}));
     expect("requests for a session not open are answered cancelled",
            answers.once(fromClosed, "access", {{QStringLiteral("outcome"), QStringLiteral("cancelled")}})
                && answers.once(fromUnknown, "access", {{QStringLiteral("outcome"), QStringLiteral("cancelled")}}));
-    expect("a queued answer cancelled before it ran is cancelled once", answers.once(q, "roots", cancelled));
+    expect("a queued answer cancelled before it ran is cancelled once",
+           answers.once(q, "roots", roots_map("cancelled")));
     expect("the settled page is not answered again", answers.count(p) == 1);
     expect("nine answers in all", answers.answers.size() == 9);
 }

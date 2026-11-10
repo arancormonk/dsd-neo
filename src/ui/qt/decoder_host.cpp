@@ -387,6 +387,9 @@ DecoderHost::fileFailure(FileRequestKind kind, const QString& code) {
         case FileRequestKind::Handoff: return {{QStringLiteral("ok"), false}, {QStringLiteral("reason"), code}};
         case FileRequestKind::Access: return {{QStringLiteral("outcome"), code}};
         case FileRequestKind::Roots:
+            return {{QStringLiteral("status"), code},
+                    {QStringLiteral("generation"), qint64(0)},
+                    {QStringLiteral("roots"), QVariantList()}};
         case FileRequestKind::Listing:
         case FileRequestKind::Page: break;
     }
@@ -471,12 +474,7 @@ DecoderHost::refuseFileRequest(qint64 sessionId, FileRequestKind kind) {
     if (id == joined) {
         return id; // The pending access request, answered already.
     }
-    QVariantMap unsupported = fileFailure(kind, QStringLiteral("unsupported"));
-    if (kind == FileRequestKind::Roots) {
-        unsupported.insert(QStringLiteral("generation"), qint64(0));
-        unsupported.insert(QStringLiteral("roots"), QVariantList());
-    }
-    settleFileRequestLater(id, unsupported);
+    settleFileRequestLater(id, fileFailure(kind, QStringLiteral("unsupported")));
     return id;
 }
 

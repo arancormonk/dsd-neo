@@ -239,8 +239,7 @@ DecoderHostAndroid::DecoderHostAndroid(QObject* parent) : dsd_qt::DecoderHost(pa
     dsd_qt::DiagnosticsLog::installTap();
     hold_content_resolver();
     platformStartDownloads();
-    platformStartFileBrowser();
-    readFileAccess();
+    startFileBrowser();
     startRecordingShareClean();
     refreshPresentation();
 }

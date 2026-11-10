@@ -997,6 +997,12 @@ class DecoderHost : public QObject {
     /** @brief As settleFileRequest(), but the signal is queued; a cancel before it runs makes it "cancelled". */
     void settleFileRequestLater(qint64 id, const QVariantMap& result);
 
+    /**
+     * @brief The answer of a request of @p kind that ends without a result, with status @p code: roots {status,
+     * generation: 0, roots: []}, a listing or page {status}, a hand-off {ok: false, reason}, an access {outcome}.
+     */
+    static QVariantMap fileFailure(FileRequestKind kind, const QString& code);
+
     /** @brief The access request a new requestFileAccess() returns instead of beginning one; 0 when none. */
     qint64
     liveFileAccessRequest() const {
@@ -1095,8 +1101,6 @@ class DecoderHost : public QObject {
         QVariantMap answer;
     };
 
-    /* A request answered without a result: {status}, a hand-off's {ok: false, reason}, an access {outcome}. */
-    static QVariantMap fileFailure(FileRequestKind kind, const QString& code);
     /* A new request of @p kind answered "unsupported", queued ("cancelled" for a session not open); an access request
        in an open session joins the pending one. */
     qint64 refuseFileRequest(qint64 sessionId, FileRequestKind kind);

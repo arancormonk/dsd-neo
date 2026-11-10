@@ -14,8 +14,10 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLatin1String>
+#include <QList>
 #include <QMap>
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QVariant>
 #include <QVariantList>
@@ -39,8 +41,16 @@ struct FileField {
     Type type;
 };
 
-/* Copies @p field from @p from into @p to, typed: a JSON number as qint64. False when it is missing or of another
- * type. */
+/* Whether @p value is a whole JSON number (one that fits a qint64), read into @p out. toInteger() answers its default
+ * for any other value, so two different defaults agree only for a whole number. */
+bool
+whole_number(const QJsonValue& value, qint64& out) {
+    out = value.toInteger(-1);
+    return value.isDouble() && out == value.toInteger(0);
+}
+
+/* Copies @p field from @p from into @p to, typed: a JSON number must be whole, and is a qint64. False when it is
+ * missing or of another type. */
 bool
 copy_field(const QJsonObject& from, const FileField& field, QVariantMap& to) {
     const QString key = QLatin1String(field.key);
@@ -52,12 +62,14 @@ copy_field(const QJsonObject& from, const FileField& field, QVariantMap& to) {
             }
             to.insert(key, value.toString());
             return true;
-        case FileField::Integer:
-            if (!value.isDouble()) {
+        case FileField::Integer: {
+            qint64 number = 0;
+            if (!whole_number(value, number)) {
                 return false;
             }
-            to.insert(key, value.toInteger());
+            to.insert(key, number);
             return true;
+        }
         case FileField::Bool:
             if (!value.isBool()) {
                 return false;
@@ -146,10 +158,8 @@ read_listing(const QJsonObject& record, QVariantMap& answer) {
 bool
 read_file_record(const QString& text, qint64& id, QString& kind, QVariantMap& answer) {
     const QJsonObject record = QJsonDocument::fromJson(text.toUtf8()).object();
-    const QJsonValue idValue = record.value(QStringLiteral("id"));
-    id = idValue.toInteger();
     kind = record.value(QStringLiteral("kind")).toString();
-    if (!idValue.isDouble() || id <= 0) {
+    if (!whole_number(record.value(QStringLiteral("id")), id) || id <= 0) {
         return false;
     }
     if (kind == QLatin1String("roots")) {
@@ -177,11 +187,11 @@ read_file_access(const QString& text, QVariantMap& access) {
     const QJsonValue granted = state.value(QStringLiteral("granted"));
     const QString route = state.value(QStringLiteral("route")).toString();
     const QJsonValue apiLevel = state.value(QStringLiteral("apiLevel"));
-    const QJsonValue generation = state.value(QStringLiteral("rootsGeneration"));
+    qint64 generation = 0;
     const bool routeKnown =
         route == QLatin1String("settings") || route == QLatin1String("permission") || route == QLatin1String("none");
     if (!declared.isBool() || !granted.isBool() || !routeKnown || !apiLevel.isDouble() || apiLevel.toInt(-1) < 0
-        || !generation.isDouble() || generation.toInteger(-1) < 0) {
+        || !whole_number(state.value(QStringLiteral("rootsGeneration")), generation) || generation < 0) {
         return false;
     }
     // The same types as the base host's reading, so an unchanged reading compares equal.
@@ -189,7 +199,7 @@ read_file_access(const QString& text, QVariantMap& access) {
               {QStringLiteral("granted"), granted.toBool()},
               {QStringLiteral("route"), route},
               {QStringLiteral("apiLevel"), apiLevel.toInt()},
-              {QStringLiteral("rootsGeneration"), generation.toInteger()}};
+              {QStringLiteral("rootsGeneration"), generation}};
     return true;
 }
 
@@ -201,7 +211,44 @@ DecoderHostAndroid::refreshFileAccess() {
 }
 
 void
+DecoderHostAndroid::startFileBrowser() {
+    platformStartFileBrowser();
+    /* FileBrowser is the process's, while ids are this host's and start again in a new one: what a host before this
+     * one left waiting is never this host's answer. */
+    QString stale;
+    do {
+        stale = platformPollFileBrowser();
+    } while (!stale.isEmpty());
+    readFileAccess();
+}
+
+void
+DecoderHostAndroid::endFileBrowser() {
+    // Its work stops, and the records its cancels write wait for the next host's start to discard them.
+    QList<qint64> requests = m_file_requests.keys();
+    std::sort(requests.begin(), requests.end());
+    m_file_requests.clear();
+    for (const qint64 id : requests) {
+        platformCancelFileRequest(id);
+    }
+    QList<qint64> sessions = m_file_sessions.values();
+    std::sort(sessions.begin(), sessions.end());
+    m_file_sessions.clear();
+    for (const qint64 session : sessions) {
+        platformCloseFileSession(session);
+    }
+}
+
+qint64
+DecoderHostAndroid::openFileBrowserSession() {
+    const qint64 session = DecoderHost::openFileBrowserSession();
+    m_file_sessions.insert(session);
+    return session;
+}
+
+void
 DecoderHostAndroid::closeFileBrowserSession(qint64 sessionId) {
+    m_file_sessions.remove(sessionId);
     // The base host retires each live request first, which cancels it in FileBrowser (fileRequestRetired()).
     DecoderHost::closeFileBrowserSession(sessionId);
     platformCloseFileSession(sessionId);
@@ -265,21 +312,7 @@ DecoderHostAndroid::startFileRequest(qint64 id, FileRequestKind kind, const std:
         m_file_requests.insert(id, kind);
         return id;
     }
-    QVariantMap failed;
-    switch (kind) {
-        case FileRequestKind::Roots:
-            failed = {{QStringLiteral("status"), QStringLiteral("failed")},
-                      {QStringLiteral("generation"), qint64(0)},
-                      {QStringLiteral("roots"), QVariantList()}};
-            break;
-        case FileRequestKind::Listing:
-        case FileRequestKind::Page: failed = {{QStringLiteral("status"), QStringLiteral("failed")}}; break;
-        case FileRequestKind::Handoff:
-            failed = {{QStringLiteral("ok"), false}, {QStringLiteral("reason"), QStringLiteral("failed")}};
-            break;
-        case FileRequestKind::Access: failed = {{QStringLiteral("outcome"), QStringLiteral("failed")}}; break;
-    }
-    settleFileRequestLater(id, failed);
+    settleFileRequestLater(id, fileFailure(kind, QStringLiteral("failed")));
     return id;
 }
 
@@ -295,7 +328,6 @@ DecoderHostAndroid::readFileAccess() {
 
 void
 DecoderHostAndroid::refreshFileBrowser() {
-    // The reading first, so a "granted" answer below finds fileAccess() up to date.
     if (platformTakeFileAccessRefresh()) {
         readFileAccess();
     }
@@ -326,6 +358,11 @@ DecoderHostAndroid::deliverFileRecord(const QString& text) {
     }
     if (kind != expected) {
         return;
+    }
+    if (*found == FileRequestKind::Access && platformTakeFileAccessRefresh()) {
+        /* FileBrowser raises the flag before it writes an access answer, and both may have come after the take at the
+         * top of the drain: read again, so a "granted" answer never finds fileAccess() stale. */
+        readFileAccess();
     }
     // Forgotten before the signal, whose slot may make, cancel or close requests.
     m_file_requests.erase(found);
