@@ -13203,8 +13203,13 @@ Qt Quick frontend (`src/ui/qt`):
   is opened), then recorded pending under the free name it will take (`unique_import_destination`) and only then moved
   into `replays/` (`dsd_rename_noreplace`, `ImportService::kPublishAttempts` names); a move that fails drops the entry
   again, so a crash between the two leaves a pending entry the next reclaim settles (the copy deleted, or the entry
-  dropped when nothing moved), never an unlisted copy. The migration publishes the same way. An entry the list still
-  holds for the free name is stale and is replaced. Every
+  dropped when nothing moved), never an unlisted copy. A copy opens as its source did: the engine classes a file by the
+  last '.' of its whole path (`dsd_audio_path_input_kind()`, `.rrc` for 48 kHz), folders included, so when the stored
+  path would class differently from the source (a local pick's file; a provider's document by its own name; the
+  migration's cached file), as for `caps.bin/plain` or a name whose trailing dot sanitizing trims (`x.bin.`), the stored
+  name gets the source's class as its extension (`.bin`, `.raw`, `.sym`, `.rrc`, or `.pcm` for other PCM;
+  `stored_replay_name()`), and the answer's `name` stays the pick's. The migration publishes the same way. An entry
+  the list still holds for the free name is stale and is replaced. Every
   answer carries `name`. Errors: `too_large` (`neededBytes` = size + reserve or -1, `freeBytes`, `reserveBytes`),
   `local` (`noSpace`),
   `read`, `cancelled`. One copy runs at a time (a new one cancels it; `cancelReplayImport()`, which answers `cancelled`

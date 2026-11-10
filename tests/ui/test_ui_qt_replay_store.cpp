@@ -23,6 +23,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QObject>
@@ -46,6 +47,7 @@
 #include <qsystemdetection.h>
 #include <utility>
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/file_compat.h>
 
 #include "../test_support/qt_test_paths.h"
@@ -442,6 +444,67 @@ test_local_pick_copied_on_browser_host() {
     rig.transport->setHoldLocal(false);
     CHECK(wait_until(staging_empty), "the cancelled copy's staging goes");
     CHECK(replay_files() == QStringList{name}, "only the finished copy is kept");
+}
+
+/*
+ * #830: a local pick's copy opens as the picked file does. The engine classes a file by the last '.' of its WHOLE path,
+ * so a capture in a `caps.bin/` folder (the browser's replay filter lists it) is a dibit capture although its own name
+ * has no dot; its copy, stored by that name alone, gets the class as its extension. So do float symbol streams in
+ * `.raw`/`.sym` folders and 48 kHz PCM in a `.rrc` one. The other way round, a PCM file whose name ends in a dot
+ * (`x.bin.`) would turn into a capture once the dot is trimmed, so it keeps a PCM extension. The answer still shows
+ * the pick's own name.
+ */
+void
+test_local_pick_keeps_its_input_kind() {
+    reset_data();
+    Rig rig;
+    rig.host.browser = true;
+
+    struct Case {
+        const char* folder;
+        const char* name;
+        const char* stored;
+        const char* shown;
+    };
+
+    const Case cases[] = {
+        {"caps.bin", "plain", "plain.bin", "plain"},  {"floats.raw", "plain", "plain.raw", "plain"},
+        {"syms.sym", "plain", "plain.sym", "plain"},  {"m17.rrc", "plain", "plain.rrc", "plain"},
+        {"captures", "x.bin.", "x.bin.pcm", "x.bin"}, {"captures", "plain", "plain", "plain"},
+        {"captures", "y.bin", "y.bin", "y.bin"},      {"caps.bin", "z.wav", "z.wav", "z.wav"},
+    };
+    for (const Case& c : cases) {
+        const QString local =
+            sources_dir() + QLatin1Char('/') + QLatin1String(c.folder) + QLatin1Char('/') + QLatin1String(c.name);
+        write_file(local, QByteArray("capture"));
+        if (!QFileInfo(local).isFile()) {
+            std::fprintf(stderr, "SKIP: this filesystem keeps no file named %s\n", qPrintable(local));
+            continue;
+        }
+        const QVariantMap result = rig.import(QUrl::fromLocalFile(local).toString(), QLatin1String(c.name));
+        const QString path = result.value(QStringLiteral("path")).toString();
+        CHECK(result.value(QStringLiteral("ok")).toBool(), qPrintable(QStringLiteral("copied: ") + local));
+        CHECK(QFileInfo(path).fileName() == QLatin1String(c.stored),
+              qPrintable(QStringLiteral("%1 is stored as %2, not %3").arg(local, QLatin1String(c.stored), path)));
+        CHECK(dsd_opts_audio_in_dev_is_symbol_capture(local.toUtf8().constData())
+                  == dsd_opts_audio_in_dev_is_symbol_capture(path.toUtf8().constData()),
+              qPrintable(QStringLiteral("the copy of %1 is a capture exactly when it is").arg(local)));
+        CHECK(result.value(QStringLiteral("name")).toString() == QLatin1String(c.shown),
+              "the answer shows the pick's own name");
+        CHECK(!result.contains(QStringLiteral("storeName")), "the stored name stays inside the store");
+        QFile::remove(path);
+    }
+    // A provider's document has no folders: its own name decides, and a trailing dot cannot make it a capture.
+    write_file(sources_dir() + QStringLiteral("/q.raw."), QByteArray("pcm"));
+    if (QFileInfo(sources_dir() + QStringLiteral("/q.raw.")).isFile()) {
+        const QVariantMap provided = rig.import(QStringLiteral("content://test/q.raw."), QStringLiteral("q.raw."));
+        CHECK(QFileInfo(provided.value(QStringLiteral("path")).toString()).fileName() == QStringLiteral("q.raw.pcm"),
+              "a provider's PCM document named with a trailing dot stays PCM");
+    }
+    write_file(sources_dir() + QStringLiteral("/r.sym"), QByteArray("symbols"));
+    const QVariantMap symbols = rig.import(QStringLiteral("content://test/r.sym"), QStringLiteral("r.sym"));
+    CHECK(QFileInfo(symbols.value(QStringLiteral("path")).toString()).fileName() == QStringLiteral("r.sym"),
+          "a provider's capture keeps its name");
 }
 
 /* #830: a saved system naming a local file (picked before local picks were copied, or on the desktop) keeps its row
@@ -1150,6 +1213,7 @@ main(int argc, char** argv) {
     test_names();
     test_local_reference_answers_its_path();
     test_local_pick_copied_on_browser_host();
+    test_local_pick_keeps_its_input_kind();
     test_saved_local_path_left_alone();
     test_copy_is_recorded_pending();
     test_repicked_copy_is_reclaimed();
