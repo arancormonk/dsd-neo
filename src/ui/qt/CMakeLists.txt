@@ -43,6 +43,7 @@ target_sources(
         decryption_profiles_model.cpp
         diagnostics_log.cpp
         document_import_transport.cpp
+        document_save_transport.cpp
         imported_files_model.cpp
         import_names.cpp
         import_service.cpp

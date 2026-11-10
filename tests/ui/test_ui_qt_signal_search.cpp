@@ -27,11 +27,13 @@
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
+#include <QUrl>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QVector>
 #include <QtGlobal>
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <dsd-neo/app_control/frontend_runtime.h>
@@ -50,11 +52,13 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <thread>
 #include <utility>
 #include <vector>
 #include "../test_support/qt_test_paths.h"
 #include "csv_text.h"
 #include "decoder_host.h"
+#include "document_save_transport.h"
 #include "json_store.h"
 #include "known_frequency_index.h"
 #include "saved_systems_model.h"
@@ -1276,6 +1280,146 @@ test_csv_text() {
     assert(record({}, {}) == QByteArray("\r\n"));
 }
 
+/* The bytes at @p path; empty when it cannot be read. */
+static QByteArray
+read_bytes(const QString& path) {
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+}
+
+static void
+write_bytes(const QString& path, const QByteArray& bytes) {
+    QFile file(path);
+    assert(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    assert(file.write(bytes) == bytes.size());
+}
+
+/* Whether @p path is readable and writable by its owner and by nobody else (always true off POSIX). */
+static bool
+owner_only(const QString& path) {
+#ifdef Q_OS_UNIX
+    const QFileDevice::Permissions others = QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ExeGroup
+                                            | QFileDevice::ReadOther | QFileDevice::WriteOther | QFileDevice::ExeOther;
+    const QFileDevice::Permissions perms = QFile::permissions(path);
+    return (perms & others) == 0 && perms.testFlag(QFileDevice::ReadOwner) && perms.testFlag(QFileDevice::WriteOwner);
+#else
+    (void)path;
+    return true;
+#endif
+}
+
+/* #826: the base save transport writes a local document, owner-only, and an abort stops it for good. */
+static void
+test_save_transport_local(const QString& root) {
+    QDir(root).mkpath(QStringLiteral("save transport/My exports"));
+    const QString dir = root + QStringLiteral("/save transport/My exports");
+    const QString source = dir + QStringLiteral("/source.csv");
+    const QByteArray bytes = QByteArray("\xEF\xBB\xBF", 3) + QByteArray("frequency_hz\r\n482005000\r\n");
+    write_bytes(source, bytes);
+
+    dsd_qt::DocumentSaveTransport transport;
+    assert(!transport.aborted());
+    const QString plain = dir + QStringLiteral("/plain.csv");
+    assert(transport.save(source, plain));
+    assert(read_bytes(plain) == bytes && owner_only(plain));
+
+    // A file URL, as the desktop picker hands it, decoded or percent-encoded, to a name with spaces and non-ASCII.
+    const QString named = dir + QString::fromUtf8("/S\xC3\xB8k \xC2\xB7.csv");
+    assert(transport.save(source, QUrl::fromLocalFile(named).toString()));
+    assert(read_bytes(named) == bytes && owner_only(named));
+    QFile::remove(named);
+    assert(transport.save(source, QString::fromUtf8(QUrl::fromLocalFile(named).toEncoded())));
+    assert(read_bytes(named) == bytes);
+
+    // Only local documents: a content URI or a relative path is refused, and a missing source writes nothing.
+    assert(!transport.save(source, QStringLiteral("content://com.example.documents/document/1")));
+    assert(!transport.save(source, QStringLiteral("relative.csv")));
+    const QString fromMissing = dir + QStringLiteral("/from-missing.csv");
+    assert(!transport.save(dir + QStringLiteral("/missing.csv"), fromMissing));
+    assert(!QFileInfo::exists(fromMissing));
+    transport.discardPendingDownload(plain); // the base transport holds no Download-folder rows
+    assert(read_bytes(plain) == bytes);
+
+    transport.abort();
+    assert(transport.aborted());
+    const QString late = dir + QStringLiteral("/late.csv");
+    assert(!transport.save(source, late));
+    assert(!QFileInfo::exists(late));
+    assert(!transport.save(source, plain));
+    assert(read_bytes(plain) == bytes);
+}
+
+/*
+ * An abort from another thread while a large save runs: the save fails and the document keeps what it held. A save
+ * that finished before the abort landed proves nothing, so the case tries again (with a fresh transport) a few times.
+ */
+static void
+test_save_transport_abort_mid_save(const QString& root) {
+    QDir(root).mkpath(QStringLiteral("save abort"));
+    const QString dir = root + QStringLiteral("/save abort");
+    const QString source = dir + QStringLiteral("/large.csv");
+    write_bytes(source, QByteArray(32 << 20, 'x'));
+    const QString dest = dir + QStringLiteral("/dest.csv");
+    const QByteArray before("kept\r\n");
+    bool stopped = false;
+    for (int attempt = 0; attempt < 5 && !stopped; ++attempt) {
+        write_bytes(dest, before);
+        dsd_qt::DocumentSaveTransport transport;
+        std::atomic<bool> started{false};
+        bool saved = true;
+        std::thread worker([&transport, &started, &saved, &source, &dest]() {
+            started.store(true);
+            saved = transport.save(source, dest);
+        });
+        while (!started.load()) {
+            QThread::yieldCurrentThread();
+        }
+        QThread::msleep(1);
+        transport.abort();
+        worker.join();
+        stopped = !saved;
+    }
+    assert(stopped);
+    assert(read_bytes(dest) == before);
+    assert(QDir(dir).entryList(QDir::Files | QDir::Hidden | QDir::System)
+           == QStringList({QStringLiteral("dest.csv"), QStringLiteral("large.csv")}));
+}
+
+/* The host's hand-out: every transport aborted by abortDocumentTransfers(), one handed out after it starts aborted, and
+   a transport kept past its host still saves. */
+static void
+test_save_transport_host(const QString& root) {
+    QDir(root).mkpath(QStringLiteral("save host"));
+    const QString dir = root + QStringLiteral("/save host");
+    const QString source = dir + QStringLiteral("/source.csv");
+    write_bytes(source, "a,b\r\n");
+
+    std::shared_ptr<dsd_qt::DocumentSaveTransport> outliving;
+    {
+        SessionHost shortLived;
+        outliving = shortLived.saveTransport();
+    }
+    assert(outliving != nullptr && !outliving->aborted());
+    assert(outliving->save(source, dir + QStringLiteral("/kept.csv")));
+    assert(read_bytes(dir + QStringLiteral("/kept.csv")) == "a,b\r\n");
+
+    SessionHost host;
+    const std::shared_ptr<dsd_qt::DocumentSaveTransport> kept = host.saveTransport();
+    std::shared_ptr<dsd_qt::DocumentSaveTransport> dropped = host.saveTransport();
+    assert(kept != nullptr && dropped != nullptr && kept != dropped && !kept->aborted());
+    dropped.reset();
+    host.abortDocumentTransfers();
+    assert(kept->aborted());
+    assert(!kept->save(source, dir + QStringLiteral("/after.csv")));
+    const std::shared_ptr<dsd_qt::DocumentSaveTransport> after = host.saveTransport();
+    assert(after != nullptr && after->aborted());
+    assert(!after->save(source, dir + QStringLiteral("/after.csv")));
+    assert(!QFileInfo::exists(dir + QStringLiteral("/after.csv")));
+    // The host's own copy is unchanged by the transports: sticky after the abort as before.
+    assert(!host.copyFileToDocument(source, dir + QStringLiteral("/after.csv")));
+    assert(outliving->save(source, dir + QStringLiteral("/still.csv")));
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -1284,6 +1428,9 @@ main(int argc, char** argv) {
     test_csv_text();
     QTemporaryDir temp;
     assert(temp.isValid());
+    test_save_transport_local(temp.path());
+    test_save_transport_abort_mid_save(temp.path());
+    test_save_transport_host(temp.path());
     const QString journal = temp.filePath(QStringLiteral("history"));
     // The store writes version 2 records beside the version 1 journal it is opened with.
     const QString written = journal + QStringLiteral(".v2");

@@ -37,6 +37,7 @@ class QRect;
 namespace dsd_qt {
 
 class DocumentImportTransport;
+class DocumentSaveTransport;
 
 class DecoderHost : public QObject {
     Q_OBJECT
@@ -193,13 +194,16 @@ class DecoderHost : public QObject {
     /**
      * @brief Stop every document copy in progress and refuse new ones, for the rest of the process.
      *
-     * Only teardown calls it (BackupModel's destructor), so that a copy a slow document provider holds cannot keep
-     * the UI thread waiting while the app closes. Sticky: no document copy succeeds afterwards. A copy it stops fails
+     * Only teardown calls it (BackupModel's destructor, and the Android host's closeRecordingWork() while a recording
+     * transfer runs), so that a copy a slow document provider holds cannot keep the UI thread waiting while the app
+     * closes. The export writer (#826) aborts its own save transport at teardown instead, which on Android raises the
+     * same process-wide platform abort. Sticky: no document copy succeeds afterwards. A copy it stops fails
      * (DocumentFailed, or false). The base host's copies then leave no destination file. A host's save into a document
      * provider may leave the document partly written (Android skips the delete after an abort, because the delete is
      * one more provider call that could hold teardown); such a document never opens as a backup, since the envelope's
-     * length and tag are checked. The base host raises a flag its copies check before every chunk; a host that runs
-     * transfers of its own stops them too and calls this base.
+     * length and tag are checked. The base host raises a flag its copies check before every chunk and aborts every
+     * import and save transport it handed out; a host that runs transfers of its own stops them too and calls this
+     * base.
      */
     virtual void abortDocumentTransfers();
 
@@ -212,6 +216,16 @@ class DecoderHost : public QObject {
      * own returns it through keepImportTransport().
      */
     virtual std::shared_ptr<DocumentImportTransport> importTransport() const;
+
+    /**
+     * @brief A new transport for the export saves (#826), which may outlive this host.
+     *
+     * The base host's saves write local documents (file:// URLs and absolute paths), as copyFileToDocument() does. The
+     * transport never calls back into the host, so the export writer may keep it, and finish a save, after the host is
+     * gone. abortDocumentTransfers() aborts every transport handed out, and one handed out after it starts aborted. A
+     * host with a transport of its own returns it through keepSaveTransport().
+     */
+    virtual std::shared_ptr<DocumentSaveTransport> saveTransport() const;
 
     virtual bool
     usesPlatformFontScaling() const {
@@ -943,8 +957,8 @@ class DecoderHost : public QObject {
     void deliverSignInFill(int token, bool hasUsername, QString& username, bool hasPassword, QString& password) const;
 
     /**
-     * @brief The base host's copyFileToDocument(), stopped before any chunk once @p aborted is set; it touches no host
-     * state, so a platform's worker job may run it on its own flag.
+     * @brief The base host's copyFileToDocument() (copy_file_to_local_document()), stopped before any chunk once
+     * @p aborted is set; it touches no host state, so a platform's worker job may run it on its own flag.
      */
     static bool copyFileToLocalDocument(const QString& sourcePath, const QString& reference,
                                         const std::atomic<bool>* aborted);
@@ -952,6 +966,8 @@ class DecoderHost : public QObject {
     /** @brief Hand out @p transport: abortDocumentTransfers() aborts it, and it starts aborted after one. */
     std::shared_ptr<DocumentImportTransport>
     keepImportTransport(std::shared_ptr<DocumentImportTransport> transport) const;
+    /** @brief Hand out @p transport: abortDocumentTransfers() aborts it, and it starts aborted after one. */
+    std::shared_ptr<DocumentSaveTransport> keepSaveTransport(std::shared_ptr<DocumentSaveTransport> transport) const;
 
     /** @brief A new document request id, one more than the last; the base requests take theirs here too. */
     qint64
@@ -973,9 +989,10 @@ class DecoderHost : public QObject {
     qint64 refuseDocumentRequest();
 
     std::atomic<bool> m_documentTransfersAborted{false};
-    /* The import transports handed out, for abortDocumentTransfers(); handed out from a const host. */
-    mutable std::mutex m_importTransportsLock;
+    /* The import and save transports handed out, for abortDocumentTransfers(); handed out from a const host. */
+    mutable std::mutex m_transportsLock;
     mutable std::vector<std::weak_ptr<DocumentImportTransport>> m_importTransports; // guarded by the lock
+    mutable std::vector<std::weak_ptr<DocumentSaveTransport>> m_saveTransports;     // guarded by the lock
     QString m_playbackPath;
     int m_playbackState = PlaybackStopped;
     qint64 m_playbackPositionMs = 0;

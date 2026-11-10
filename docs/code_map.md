@@ -13152,6 +13152,16 @@ Qt Quick frontend (`src/ui/qt`):
   per-chunk predicate checks the request's cancel and the transport's abort; a write or commit that hits `ENOSPC`
   (`ResourceError` or errno) is `DocumentLocalFailed` with `noSpace`. `abortDocumentTransfers()` aborts every transport
   handed out (the host keeps weak references), and one handed out after it starts aborted.
+  `document_save_transport.{h,cpp}` is the export saves' transport (#826): `DecoderHost::saveTransport()` hands out a
+  new `DocumentSaveTransport` each call (a platform host through `keepSaveTransport()`), which never calls the host, so
+  the export writer may keep it and finish a save past the host. `save(sourcePath, reference)` blocks and answers
+  whether the document now holds the source's bytes; `discardPendingDownload(reference)` lets go of a picked
+  Download-folder row nothing will be saved to (base: no-op); `abort()` fails the running save at its next chunk and
+  every later one. The base transport's save is `copy_file_to_local_document()`, the same local copy (file URL or
+  absolute path, owner-only through `QSaveFile`, no cap) `DecoderHost::copyFileToDocument()` makes on the host's own
+  flag. `abortDocumentTransfers()` aborts every save transport handed out too, and one handed out after it starts
+  aborted. `abort()` calls the protected `abortPlatform()`, which a platform transport uses to stop its own copies.
+  Test: `UI_QT_SIGNAL_SEARCH` (local saves, abort before and during a save, the hand-out, a transport past its host).
   `import_service.{h,cpp}` is the import worker (#832) the library and the replay imports share; `ui_load()` makes the
   one service (not published to QML) from `host->importTransport()` right after `ImportService::sweepStaging()`, which
   runs once after the restore applies and removes `<AppData>/import-staging/` wholly (a link is removed, never
@@ -14726,14 +14736,22 @@ thread, which the rest of the interface never is.
   `copyFileToDocument()` settles one at every exit: published only when the whole save was written, so a row that could
   not be published fails the save. A save the host never hands to Kotlin (aborted, no resolver) or whose JNI call
   failed discards it.
-- `abortDocumentTransfers()` (only `~BackupModel`) cancels the `CancellationSignal` of every provider call in flight,
-  raises `DocumentTransfer`'s sticky flag, which every chunk checks, and then the base host's. The delete is skipped
-  after an abort, so a save stopped partway leaves a partial document, which never opens as a backup.
-- Tests: `UI_QT_ANDROID_HOST` (engine-busy decision, document and import dispatch), `UI_QT_IMPORT_TRANSPORT` (the
-  base transport's cap, cancel, abort and progress, and the host's hand-out), `ANDROID_DOCUMENT_TRANSFER_JVM`
-  (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` and its import copies against provider stubs),
-  `UI_QT_BACKUP_MODEL` (a refused save discards its reference). Real providers, JNI and `finishAndRemoveTask()`
-  need a device or emulator.
+- The export saves' transport (#826) is `DecoderHostAndroid::SaveTransport` (`decoder_host_android_documents.cpp`,
+  handed out by `saveTransport()`). A `content://` save takes `saveContentDocument()`, the dispatch
+  `copyFileToDocument()` shares: aborted or without a held `ContentResolver` it discards the Download-folder row and
+  fails; otherwise `platformCopyFileToDocument()`, and a failure discards the row. Any other reference takes the base
+  transport's local copy. `discardPendingDownload()` is `DownloadsSave.discard()`.
+- `abortDocumentTransfers()` (teardown only: `~BackupModel`, and `closeRecordingWork()` while a recording transfer
+  runs) calls `platformAbortDocumentCopies()` (`DocumentCopies.abort()`), which cancels the `CancellationSignal` of
+  every provider call in flight and raises `DocumentTransfer`'s sticky flag, which every chunk checks, and then the base
+  host's abort. A save transport's `abort()` raises the same process-wide platform abort, since a platform copy keeps
+  its own cancellation; the export writer aborts its transport only at its teardown. The delete is skipped after an
+  abort, so a save stopped partway leaves a partial document, which never opens as a backup.
+- Tests: `UI_QT_ANDROID_HOST` (engine-busy decision, document, import and save-transport dispatch),
+  `UI_QT_IMPORT_TRANSPORT` (the base transport's cap, cancel, abort and progress, and the host's hand-out),
+  `ANDROID_DOCUMENT_TRANSFER_JVM` (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` and its import copies
+  against provider stubs), `UI_QT_BACKUP_MODEL` (a refused save discards its reference). Real providers, JNI and
+  `finishAndRemoveTask()` need a device or emulator.
 
 Document picker (issue #829; the host API and `qml/DocumentPicker.qml` are under UI, Qt, "Document picker"):
 `DecoderHostAndroid::documentPickerSupported()` is true, so no screen opens Qt's `FileDialog` on Android and Qt's own
