@@ -13063,14 +13063,7 @@ Qt Quick frontend (`src/ui/qt`):
   replacePath)` returns an id and `importFinished(id, result)` answers it exactly once, queued, refusals included
   (`cancelImport(id)` on an import whose commit has not run answers `cancelled` at once, queued, without waiting for the
   copy to stop, and marks the id so its later commit publishes nothing and answers nothing; `importing` says whether one
-  is unanswered). A document opened from another app (#831) is told apart first: `inspectDocument(reference)` returns
-  an id and `documentInspected(id, {kind, name})` answers it exactly once, queued; the probe runs on the import worker
-  (`ImportService::probeDocument()`, capped at `backup::kMaxSealedBytes`) and `kind` is
-  `backup::classify_incoming()`'s name (`backup`, `newerBackup`, `damagedBackup`, `tooLargeBackup`, `other`),
-  `unreadable` for any probe that failed, or `cancelled`. Probes are kept apart from imports (`m_probes`), so
-  `importing` and `cancelImport()` never see them; `cancelInspect(id)` answers `cancelled` at once and drops the late
-  result, and the destructor cancels the probes in flight on a service that outlives the model. Tests:
-  `UI_QT_IMPORTED_FILES`. The stage, on the worker, copies the document into its staging folder (at most
+  is unanswered). The stage, on the worker, copies the document into its staging folder (at most
   `backup::kMaxFileBytes`, 32 MiB), names it from the
   transport's display name, else the picker's hint (`sanitized_import_name`), and validates it there; a refusal's
   `detail` is the parser's reason, which the C parsers give only to the log, so `validate()` keeps the worker thread's
@@ -13151,6 +13144,14 @@ Qt Quick frontend (`src/ui/qt`):
   a failure shows under the row and keeps the earlier file, and closing or reopening the wizard cancels the copy and
   drops its answer.
   `registerTalkgroupList()` saves the index before it adds the row and answers false, adding nothing, when it cannot.
+  Document probes (#831): a document opened from another app is told apart before anything is asked.
+  `inspectDocument(reference)` returns an id and `documentInspected(id, {kind, name})` answers it exactly once, queued;
+  the probe runs on the import worker (`ImportService::probeDocument()`, capped at `backup::kMaxSealedBytes`) and
+  `kind` is `backup::classify_incoming()`'s name (`backup`, `newerBackup`, `damagedBackup`, `tooLargeBackup`,
+  `other`), `unreadable` for any probe that failed, or `cancelled`. Probes are kept apart from imports (`m_probes`), so
+  `importing` and `cancelImport()` never see them; `cancelInspect(id)` answers `cancelled` at once and drops the late
+  result, and the destructor cancels the probes in flight on a service that outlives the model. Tests:
+  `UI_QT_IMPORTED_FILES`.
   `import_names.{h,cpp}` is the one rule both platforms use to name a stored import (`sanitized_import_name`: C0
   control characters, NUL included, become `_` first, since a C-string rename would cut the name at a NUL; at most
   247 UTF-8 bytes so a " (999)" suffix always fits) and to find a free name (`unique_import_destination`, which also
