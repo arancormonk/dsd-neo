@@ -139,7 +139,7 @@ private class FakePlatform(override var apiLevel: Int = 36) : BrowserPlatform {
     fun lastQuery(): Query = synchronized(queries) { queries.last() }
 }
 
-/** NioFs, except that it counts its opens and refuses the folders under [denied], as a process without gid 1077. */
+/** NioFs, except that it counts its opens and refuses the paths under [denied], as a process without gid 1077. */
 private class GateFs(private val denied: String = "/mnt/media_rw/") : BrowserFs {
     private val nio = NioFs()
     val opens = AtomicInteger()
@@ -151,12 +151,15 @@ private class GateFs(private val denied: String = "/mnt/media_rw/") : BrowserFs 
     }
 
     override fun attributes(path: Path): BasicFileAttributes = nio.attributes(path)
-    override fun realPath(path: Path): Path = nio.realPath(path)
+    override fun realPath(path: Path): Path {
+        if (path.toString().startsWith(denied)) throw AccessDeniedException(path.toString())
+        return nio.realPath(path)
+    }
 }
 
 /** A fresh browser over [platform]; every test starts from one, so no state leaks between them. */
-private fun install(platform: FakePlatform, fs: BrowserFs = GateFs()): FakePlatform {
-    FileBrowser.install(BrowserCore(platform, FileListing(fs = fs, watchdogMs = WAIT_MS, nowMs = { 0L }), fs))
+private fun install(platform: FakePlatform, fs: BrowserFs = GateFs(), watchdogMs: Long = WAIT_MS): FakePlatform {
+    FileBrowser.install(BrowserCore(platform, FileListing(fs = fs, watchdogMs = watchdogMs, nowMs = { 0L })))
     Handler.drain()
     while (FileBrowser.pollRecord().isNotEmpty()) Unit
     return platform
@@ -388,14 +391,49 @@ private fun rootStatePrecedence() {
     }
     check(roots().second.single { it["kind"] == "storage" }["state"] == "ready") { "granted storage is ready" }
 
-    // Started with gid 1077 and still unreadable: something else is wrong, and a restart would not help.
+    // Started with gid 1077: ready, from the volume and the process alone. The roots never look at the drive, so a
+    // drive that still cannot be read says so when it is listed.
+    val fs = GateFs()
     install(FakePlatform(36).apply {
         declaredPermissions += MANAGE
         allFiles = true
         groups = "Name:\tdsd\nGroups:\t1077 3003\n"
         volumeList += usb()
-    })
-    check(removable()["state"] == "unavailable") { "granted, gid 1077, unreadable is unavailable" }
+    }, fs)
+    val (generation, withGid) = roots()
+    check(withGid.single { it["kind"] == "removable" }["state"] == "ready") { "granted with gid 1077 is ready" }
+    check(fs.opens.get() == 0) { "the roots made ${fs.opens.get()} filesystem calls" }
+    check(FileBrowser.listFolder(1, 1, "removable:6187-25A8", generation, "", "csv", false))
+    check(awaitRecord() == mapOf("id" to 1L, "kind" to "listing", "status" to "unreadable")) {
+        "a ready root the process cannot read lists unreadable"
+    }
+
+    // States without a readable directory: a drive Android is checking or cannot mount is there but unavailable, with
+    // or without access; every other one is removed.
+    val states = install(FakePlatform(36).apply { declaredPermissions += MANAGE; allFiles = true })
+    for ((state, expected) in listOf(
+        Environment.MEDIA_UNMOUNTED to "removed",
+        Environment.MEDIA_REMOVED to "removed",
+        Environment.MEDIA_BAD_REMOVAL to "removed",
+        Environment.MEDIA_EJECTING to "removed",
+        Environment.MEDIA_CHECKING to "unavailable",
+        Environment.MEDIA_UNMOUNTABLE to "unavailable",
+        Environment.MEDIA_NOFS to "unavailable",
+    )) {
+        for (granted in listOf(true, false)) {
+            states.allFiles = granted
+            synchronized(states.volumeList) {
+                states.volumeList.clear()
+                states.volumeList += usb(dir = null, state = state)
+            }
+            val root = removable()
+            check(root["state"] == expected && root["detail"] == state) { "$state (granted $granted): $root" }
+        }
+    }
+    synchronized(states.volumeList) { states.volumeList[0] = usb(state = Environment.MEDIA_MOUNTED_READ_ONLY) }
+    check(removable()["state"] == "needsAccess") { "mounted read-only, not granted" }
+    states.allFiles = true
+    check(removable()["state"] == "needsRestart") { "mounted read-only, granted, no gid 1077" }
 
     // Precedence: removed before needsAccess before anything readable.
     val notGranted = install(FakePlatform(36).apply {
@@ -429,6 +467,7 @@ private fun rootsGenerationMoves() {
     }
     val (listedAt, _) = roots()
     check(listedAt == first) { "the roots carry the generation they were read at" }
+    check(fs.opens.get() == 0) { "the roots never look at a drive" }
 
     synchronized(platform.volumeList) { platform.volumeList += usb() }
     val added = accessState()["rootsGeneration"] as Long
@@ -521,9 +560,21 @@ private fun savedQuery() {
 /** Forwards everything to [base]; a test overrides the one call it changes. */
 private open class BrowserPlatformDelegate(private val base: FakePlatform) : BrowserPlatform by base
 
+private fun savedQueryTimeout() {
+    // The watchdog's timedOut cancels the query's signal too, so a provider stuck in the query frees its place.
+    val platform = install(FakePlatform(36).apply { holdQueries = true }, watchdogMs = 200)
+    val (generation, _) = roots()
+    check(FileBrowser.listFolder(1, 1, "saved", generation, "", "csv", false))
+    val query = awaitQuery(platform, 1)
+    check(awaitRecord() == mapOf("id" to 1L, "kind" to "listing", "status" to "timedOut")) { "Saved query timed out" }
+    awaitWorkerGone(1)
+    check(query.signal.isCanceled) { "the watchdog cancels the query's CancellationSignal" }
+    check(FileBrowser.pollRecord().isEmpty()) { "answered once" }
+}
+
 private fun install(platform: BrowserPlatformDelegate) {
     val fs = GateFs()
-    FileBrowser.install(BrowserCore(platform, FileListing(fs = fs, watchdogMs = WAIT_MS, nowMs = { 0L }), fs))
+    FileBrowser.install(BrowserCore(platform, FileListing(fs = fs, watchdogMs = WAIT_MS, nowMs = { 0L })))
     while (FileBrowser.pollRecord().isNotEmpty()) Unit
 }
 
@@ -568,6 +619,24 @@ private fun savedHandoff() {
     check(awaitRecord()["reason"] == "gone") { "a deleted row is gone" }
     check(FileBrowser.checkHandoff(4, 1, "saved", generation + 1, "$DOWNLOADS/42"))
     check(awaitRecord()["reason"] == "stale") { "a moved generation is stale" }
+
+    // Stale is decided at once, without a worker: with all three places held it is still stale, never busy.
+    platform.rows += row(42, "dmr.csv", PKG)
+    platform.holdQueries = true
+    val before = platform.queries.size
+    for (n in 1..3) check(FileBrowser.listFolder(20L + n, 20L + n, "saved", generation, "", "csv", false))
+    awaitQuery(platform, before + 3)
+    check(FileBrowser.checkHandoff(24, 1, "saved", generation + 1, "$DOWNLOADS/42"))
+    check(FileBrowser.checkHandoff(25, 1, "inbox", generation + 1, "file:///x.csv"))
+    check(awaitRecord() == mapOf("id" to 24L, "kind" to "handoff", "ok" to false, "reference" to "", "name" to "",
+        "reason" to "stale")) { "a stale Saved hand-off with every place held" }
+    check(awaitRecord()["reason"] == "stale") { "a stale folder hand-off with every place held" }
+    check(FileBrowser.checkHandoff(26, 1, "saved", generation, "$DOWNLOADS/42"))
+    check(awaitRecord()["reason"] == "busy") { "a current hand-off needs a place" }
+    for (n in 1..3) FileBrowser.cancel(20L + n)
+    repeat(3) { check(awaitRecord()["status"] == "cancelled") }
+    for (n in 1..3) awaitWorkerGone(20L + n)
+    platform.holdQueries = false
     val queries = platform.queries.size
     for (bad in listOf("$DOWNLOADS/", "$DOWNLOADS/4x", "content://media/external/images/42", "file:///x.csv", "%")) {
         check(!FileBrowser.checkHandoff(5, 1, "saved", generation, bad)) { "a Saved reference $bad is refused" }
@@ -736,6 +805,26 @@ private fun permission29() {
     check(accessOutcome(5) == "noRoute" && undeclared.permissionRequests.isEmpty()) { "API 29 without READ" }
 }
 
+private fun reentrantPermissionAnswer() {
+    // Android 10 answers a request made while another is pending at once, with empty arrays, from inside
+    // requestPermissions(): the new request is cancelled, once, and nothing stays live.
+    install(FakePlatform(29).apply { declaredPermissions += READ })
+    val pending = activity()
+    check(FileBrowser.requestAccess(pending, 1))
+    Handler.drain()
+    val busy = activity().apply {
+        answerAtOnce = { code -> check(FileBrowser.onRequestPermissionsResult(this, code, arrayOf(), intArrayOf())) }
+    }
+    check(FileBrowser.requestAccess(busy, 2))
+    val records = accessRecords()
+    check(records == listOf(mapOf("id" to 1L, "kind" to "access", "outcome" to "cancelled"),
+        mapOf("id" to 2L, "kind" to "access", "outcome" to "cancelled"))) { "re-entrant answer: $records" }
+    val code = busy.permissionRequests.single().second
+    check(FileBrowser.onRequestPermissionsResult(busy, code, arrayOf(READ), intArrayOf(PackageManager.PERMISSION_GRANTED)))
+    FileBrowser.cancel(2)
+    check(accessRecords().isEmpty()) { "nothing stays live after the re-entrant answer" }
+}
+
 private fun lateCallbackOfCancelledLaunch() {
     install(FakePlatform(29).apply { declaredPermissions += READ })
     val first = activity()
@@ -840,6 +929,30 @@ private fun refreshFlags() {
     Build.VERSION.SDK_INT = 30
 }
 
+private fun androidPlatformOn29() {
+    // On Android 10 the one volume comes from StorageManager's primary volume (its state and description) and the path
+    // Environment keeps; the READ grant is the access.
+    Build.VERSION.SDK_INT = 29
+    val storage = StorageManager()
+    storage.volumes += StorageVolume(null, Environment.MEDIA_MOUNTED, false, true, null, "Internal shared storage")
+    val context = BrowserContext(storage, folder("files").toFile())
+    context.packageManager.requested = arrayOf(READ)
+    context.grantedPermissions += READ
+    FileBrowser.install(null)
+    FileBrowser.start(context)
+    check(storage.callbacks.isEmpty()) { "no volume callback before API 30" }
+    val state = accessState()
+    check(state["declared"] == true && state["granted"] == true && state["route"] == "permission" &&
+        state["apiLevel"] == 29L) { "API 29 access state $state" }
+    val storageRoot = roots().second.single { it["kind"] == "storage" }
+    check(storageRoot == mapOf("key" to "storage", "kind" to "storage", "title" to "Internal shared storage",
+        "path" to "/storage/emulated/0", "state" to "ready", "detail" to "mounted")) { "API 29 storage $storageRoot" }
+    storage.volumes[0] = StorageVolume(null, Environment.MEDIA_UNMOUNTED, false, true, null, "Internal shared storage")
+    check(roots().second.single { it["kind"] == "storage" }["state"] == "removed") { "API 29 shared storage away" }
+    FileBrowser.install(null)
+    Build.VERSION.SDK_INT = 30
+}
+
 @Suppress("UNCHECKED_CAST")
 private fun recordJson() {
     install(FakePlatform(36).apply {
@@ -883,13 +996,16 @@ fun main() {
     rootsGenerationMoves()
     gidAtStart()
     savedQuery()
+    savedQueryTimeout()
     savedHandoff()
     folderRequests()
     accessChain()
     appInfoRouteOn30to32()
     permission29()
+    reentrantPermissionAnswer()
     lateCallbackOfCancelledLaunch()
     refreshFlags()
+    androidPlatformOn29()
     recordJson()
     FileBrowser.install(null)
     Files.walk(scratch).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }

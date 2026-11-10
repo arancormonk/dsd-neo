@@ -89,7 +89,8 @@ internal class FileListing(
     private val maxWorkers: Int = 3,
     private val watchdogMs: Long = 15_000,
     private val pageSize: Int = 500,
-    private val entryCap: Int = 50_000,
+    /** The most directories and regular files a listing takes; one more is `tooMany`. */
+    val entryCap: Int = 50_000,
     private val snapshotIdleMs: Long = 120_000,
     private val nowMs: () -> Long,
 ) {
@@ -120,6 +121,13 @@ internal class FileListing(
     private val closedSessions = LinkedHashSet<Long>()
     private var liveWorkers = 0
     private var nextSnapshot = 0L
+
+    /**
+     * Told the id of each request its watchdog answered `timedOut`, outside the lock, so the owner of a call that does
+     * not poll the cancel flag (a provider query's CancellationSignal) can end it and free its place sooner.
+     */
+    @Volatile
+    var onTimedOut: (id: Long) -> Unit = {}
 
     /** Watchdogs and snapshot expiry, on one daemon thread. */
     private val timer = ScheduledThreadPoolExecutor(1) { task ->
@@ -196,6 +204,12 @@ internal class FileListing(
         start(id, session, HANDOFF) { checkHandoff(root, file) }
     }
 
+    /** Answer hand-off [id] `stale` now, with no worker: the roots moved on since its root was listed. */
+    fun staleHandoff(id: Long, session: Long) {
+        if (!admit(id, session, HANDOFF)) return
+        answer(id, HANDOFF, failureFields(HANDOFF, STALE))
+    }
+
     /** Run [work] (the roots, a Saved hand-off) as a request of [kind]; it answers that record's fields. */
     fun submit(id: Long, session: Long, kind: String, work: (cancelled: () -> Boolean) -> Map<String, Any?>) {
         if (!admit(id, session, kind)) return
@@ -259,7 +273,7 @@ internal class FileListing(
             if (liveWorkers >= maxWorkers) return answer(id, kind, failureFields(kind, BUSY))
             liveWorkers++
             requests[id] = request
-            val timeout = Runnable { finish(request, failure(kind, TIMED_OUT)) }
+            val timeout = Runnable { if (finish(request, failure(kind, TIMED_OUT))) onTimedOut(id) }
             request.watchdog = timer.schedule(timeout, watchdogMs, TimeUnit.MILLISECONDS)
         }
         val worker = Thread({ runWorker(request, work) }, "dsd-file-browser-$id").apply { isDaemon = true }
@@ -288,10 +302,13 @@ internal class FileListing(
         }
     }
 
-    /** Answer [request] with [outcome] unless something answered it first; a listing becomes its session's snapshot. */
+    /**
+     * Answer [request] with [outcome] unless something answered it first (false then); a listing becomes its session's
+     * snapshot.
+     */
     @Synchronized
-    private fun finish(request: Request, outcome: Outcome) {
-        if (requests[request.id] !== request) return
+    private fun finish(request: Request, outcome: Outcome): Boolean {
+        if (requests[request.id] !== request) return false
         requests.remove(request.id)
         request.cancelled.set(true)
         request.watchdog?.cancel(false)
@@ -300,6 +317,7 @@ internal class FileListing(
             is Listed -> page(keepSnapshot(request.session, outcome), 0)
         }
         answer(request.id, request.kind, fields)
+        return true
     }
 
     @Synchronized

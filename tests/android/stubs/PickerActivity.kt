@@ -29,9 +29,13 @@ open class Activity : Context() {
 
     val permissionRequests = mutableListOf<Pair<List<String>, Int>>()
     var rationale = false
+    // Android 10 answers a request made while another is pending at once, from inside requestPermissions(), with empty
+    // arrays; a test that sets this plays that.
+    var answerAtOnce: ((Int) -> Unit)? = null
 
     fun requestPermissions(permissions: Array<String>, requestCode: Int) {
         permissionRequests += permissions.toList() to requestCode
+        answerAtOnce?.invoke(requestCode)
     }
 
     fun shouldShowRequestPermissionRationale(permission: String) = rationale

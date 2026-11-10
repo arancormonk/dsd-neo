@@ -216,15 +216,19 @@ blocked reads make the fourth request `busy` at once, end `timedOut` at the watc
 when they return. It skips the link, FIFO, socket, mode-000 and non-UTF-8 cases where the host cannot make them.
 A second build runs `FileBrowser.kt` on it against a fake `BrowserPlatform` (volumes, grant, declared permission, API
 level, `/proc/self/status` text, a MediaStore resolver that applies the selection to its rows) and stubs of the
-activity, storage volumes, Settings and JSON: the roots by API level and grant, the root state precedence (an invisible
-`/mnt/media_rw` USB volume that does not exist yet is `needsRestart` after a grant without gid 1077, `unavailable` with
-it, `removed` once unmounted; a visible one `ready`), the roots generation (moved by a volume, a state or a grant, read
-with no filesystem call), Saved by DSD-neo (projection, the folder and owner selection, seconds to ms, the `_id`
-re-query for a hand-off, and a cancel, a session close and a newer listing each cancelling the query's
-`CancellationSignal`), the All files access chain (each step's `ActivityNotFoundException`, the API 30-32 App info
-step), the API 29 permission (`granted`, `denied`, `blocked` with App info, `cancelled`) with its rolling request
-codes, a late answer to a cancelled launch claimed but dropped, the refresh flags and each record's JSON keys. The
-`file_browser_wiring` source check pins `DsdNeoActivity`'s forwarding of resumes and permission results.
+activity, storage volumes, Settings and JSON: the roots by API level and grant, the root state precedence from volume
+state, grant and gid 1077 alone, with no filesystem call (an invisible `/mnt/media_rw` USB volume is `needsRestart`
+after a grant without gid 1077 and `ready` with it, its listing then `unreadable` while the process cannot read it;
+`removed` once unmounted, removed, bad-removed or ejecting; `unavailable` while checking, unmountable or without a
+filesystem; a visible one `ready`), the roots generation (moved by a volume, a state or a grant, read with no filesystem
+call), Saved by DSD-neo (projection, the folder and owner selection, seconds to ms, the `_id` re-query for a hand-off, a
+stale hand-off answered with every worker place held, and a cancel, a session close, a newer listing and the watchdog
+each cancelling the query's `CancellationSignal`), the All files access chain (each step's `ActivityNotFoundException`,
+the API 30-32 App info step), the API 29 permission (`granted`, `denied`, `blocked` with App info, `cancelled`, and
+Android 10's re-entrant empty answer cancelling the new request once) with its rolling request codes, a late answer to a
+cancelled launch claimed but dropped, the refresh flags, the Android platform on API 36 and 29 through `start()`, and
+each record's JSON keys. The `file_browser_wiring` source check pins `DsdNeoActivity`'s forwarding of resumes and
+permission results.
 `ANDROID_USB_RECEIVER_JVM` (the `usb_receiver` suite) runs `UsbReceiverKind.kt`, the USB id table `UsbSourceManager`
 classifies every device with, with no stubs: an Airspy beside a hub and other unrelated devices reads `airspy`, two
 RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known receiver empty. Which local receiver a

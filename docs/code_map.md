@@ -14877,7 +14877,9 @@ request code (1305) is never used.
     (`listMore`, inline; a page naming another snapshot is `expired`; idle 120 s releases it). Exceptions:
     `NoSuchFileException`/`NotDirectoryException` → `gone`, any other refusal → `unreadable`.
   - `FileBrowser.kt`: `object FileBrowser` holds a `BrowserCore` over `BrowserPlatform` (`AndroidBrowserPlatform`:
-    StorageManager volumes, `getExternalFilesDir`, the requested permissions, `isExternalStorageManager`, the READ
+    StorageManager volumes (API 29: the primary volume's state and description with the path string `Environment`
+    keeps, never `getExternalStorageState()`, which canonicalizes on disk), `getExternalFilesDir`, the requested
+    permissions, `isExternalStorageManager`, the READ
     grant, `/proc/self/status`, the volume callback, the resolver). `start(context)` (once) registers a
     `StorageVolumeCallback` (API 30+; no `MEDIA_*` broadcast covers USB) and reads gid 1077 once from `Groups:`: a
     process gets it only by starting with All files access. Upcalls (`@JvmStatic`, kept by `proguard-rules.pro`):
@@ -14890,29 +14892,35 @@ request code (1305) is never used.
     true once after `onResume()`, a volume callback or a permission result (two `AtomicBoolean`s, drained together).
   - Roots (read on a worker, through `submit`): `inbox` (`<getExternalFilesDir(null)>/Inbox`, made; null →
     `unavailable`), `saved`, and when declared `storage` (the primary volume) and, API 30+, `removable:<uuid or index>`
-    per non-primary removable volume (title: its description, else ""; detail: its `MEDIA_*` state). State precedence:
-    no directory or not mounted → `removed`; not granted → `needsAccess`; the root opens → `ready`; under
-    `/mnt/media_rw/` without gid 1077 → `needsRestart` (an invisible USB root does not even exist before the restart);
-    else `unavailable`. The roots' paths are kept with their generation; a listing or hand-off naming another
-    generation, or a root the last roots did not list, is `stale`.
+    per non-primary removable volume (title: its description, else ""; detail: its `MEDIA_*` state). A root's state
+    comes from the volume state, the grant and gid 1077 only; the roots never look at a drive, so one dead drive cannot
+    time out the whole answer, and a `ready` root that cannot be read says so when it is listed (`unreadable`,
+    `gone`). Precedence: `checking`, `unmountable` or `nofs` → `unavailable` (a drive inserted that Android cannot
+    read is not removed); any other state that is not mounted (or mounted read-only), or no directory → `removed`; not
+    granted → `needsAccess`; under `/mnt/media_rw/` without gid 1077 → `needsRestart` (an invisible USB root does not
+    even exist before the restart); else `ready`. The roots' paths are kept with their generation; a listing or
+    hand-off naming another generation, or a root the last roots did not list, is `stale` (a hand-off answered at
+    once, without a worker).
   - Saved by DSD-neo: `MediaStore.Downloads.EXTERNAL_CONTENT_URI`, projection `_id, _display_name, _size,
     date_modified`, selection `relative_path = ? AND owner_package_name = ?` with `Download/DSD-neo/` (the trailing
     slash matters) and the package: a manager or an Android 10 legacy reader sees other apps' rows too. Entries have
     no path and the row's `content://media/external/downloads/<id>` reference; `DATE_MODIFIED` seconds × 1000. A
-    hand-off re-queries by `_id = ?` with the same predicate (no row → `gone`). Each query has a `CancellationSignal`
-    that `cancel(id)`, `closeSession()` and a newer listing or page in the session cancel, after `FileListing`
-    answered the request, so the cancelled query's exception ends a worker whose answer is already dropped. A
-    malformed reference or path answers false (the host's `failed`).
+    hand-off re-queries by `_id = ?` with the same predicate (no row → `gone`). A listing reads at most
+    `FileListing.entryCap` + 1 rows. Each query has a `CancellationSignal` that `cancel(id)`, `closeSession()`, a
+    newer listing or page in the session and the watchdog (`FileListing.onTimedOut`) cancel, after `FileListing`
+    answered the request, so the cancelled query's exception ends a worker whose answer is already dropped and a stuck
+    provider frees its place. A malformed reference or path answers false (the host's `failed`).
   - Access requests on the main looper, each answered once into the same poll: API 30+ (declared) launches
-    `ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION` + `package:`, then `ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION`,
-    then on API 30-32 `ACTION_APPLICATION_DETAILS_SETTINGS` + `package:` (App info › Permissions › Files and media
-    offers "Allow management of all files" there only with the sideload manifest's READ up to API 32), with plain
+    `ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION` + `package:`, then `ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION`, then
+    on API 30-32 `ACTION_APPLICATION_DETAILS_SETTINGS` + `package:` (App info › Permissions › Files and media offers
+    "Allow management of all files" there only with the sideload manifest's READ up to API 32), with plain
     `startActivity`: `settingsOpened`, `noRoute` when each threw `ActivityNotFoundException`, `failed` on another
     exception. API 29 calls `requestPermissions(READ)` with the next code in `0x5E00..0x5E0F` (wrapping; free of 4711,
-    4303 and the picker's `0x5D0000..0x5DFFFF`) and stays live: `granted`, `denied` (rationale still shown),
-    `blocked` (App info opened), `cancelled` (empty arrays, `cancel(id)` or a newer request). Not declared →
-    `noRoute`. `DsdNeoActivity.onRequestPermissionsResult()` asks `FileBrowser` first; it claims the whole range and
-    settles only the live launch's code, so a late answer to a cancelled launch is dropped.
+    4303 and the picker's `0x5D0000..0x5DFFFF`), set live before the call (Android 10 answers a request made while
+    another is pending from inside `requestPermissions()`, with empty arrays) and stays live: `granted`, `denied`
+    (rationale still shown), `blocked` (App info opened), `cancelled` (empty arrays, `cancel(id)` or a newer request).
+    Not declared → `noRoute`. `DsdNeoActivity.onRequestPermissionsResult()` asks `FileBrowser` first; it claims the
+    whole range and settles only the live launch's code, so a late answer to a cancelled launch is dropped.
   - Records (JSON, one per `pollRecord()`): `{"id","kind":"roots","status","generation","roots"}`,
     `{"id","kind":"listing","status","snapshot","offset","entries","more","hiddenByFilter"}` (non-ok: `status`
     only), `{"id","kind":"handoff","ok","reference","name","reason"}`, `{"id","kind":"access","outcome"}`. Root

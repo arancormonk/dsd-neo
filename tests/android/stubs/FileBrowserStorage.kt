@@ -22,6 +22,7 @@ class StorageManager {
     val callbacks = mutableListOf<StorageVolumeCallback>()
 
     val storageVolumes: List<StorageVolume> get() = volumes.toList()
+    val primaryStorageVolume: StorageVolume get() = volumes.first { it.isPrimary }
 
     fun registerStorageVolumeCallback(executor: Executor, callback: StorageVolumeCallback) {
         callbacks += callback

@@ -113,10 +113,13 @@ internal class AndroidBrowserPlatform(private val context: Context) : BrowserPla
 
     override fun volumes(): List<BrowserVolume> {
         if (Build.VERSION.SDK_INT < 30) {
-            // StorageVolume.getDirectory() is API 30; shared storage is the one volume the browser offers on 29.
+            // StorageVolume.getDirectory() is API 30; shared storage is the one volume the browser offers on 29. Its
+            // state comes from StorageManager, not Environment.getExternalStorageState(), which canonicalizes the path
+            // on disk; the path is only the string Environment keeps.
+            val primary = storage?.primaryStorageVolume ?: return emptyList()
             @Suppress("DEPRECATION")
             val path = Environment.getExternalStorageDirectory().path
-            return listOf(BrowserVolume(path, Environment.getExternalStorageState(), true, false, null, null))
+            return listOf(BrowserVolume(path, primary.state, true, false, null, primary.getDescription(context)))
         }
         return storage?.storageVolumes.orEmpty().map {
             val description = it.getDescription(context)
@@ -161,11 +164,7 @@ internal class AndroidBrowserPlatform(private val context: Context) : BrowserPla
  * The in-app file browser's Android side (#830): the roots and their states, Saved by DSD-neo through MediaStore,
  * storage access, and the records the host polls. [FileListing] does the folder reads. See [FileBrowser].
  */
-internal class BrowserCore(
-    private val platform: BrowserPlatform,
-    private val listing: FileListing,
-    private val fs: BrowserFs = NioFs(),
-) {
+internal class BrowserCore(private val platform: BrowserPlatform, private val listing: FileListing) {
     /** A Saved query's signal, cancelled with its request: a provider call never sees the request's flag. */
     private class Query(val session: Long, val kind: String, val signal: CancellationSignal)
 
@@ -195,6 +194,8 @@ internal class BrowserCore(
 
     init {
         platform.watchVolumes { volumesChanged.set(true) }
+        // A Saved query blocked in its provider never polls the cancel flag; its signal ends it at the watchdog.
+        listing.onTimedOut = { id -> cancelQueries { requestId, _ -> requestId == id } }
     }
 
     fun onResume() = refreshDue.set(true)
@@ -254,18 +255,21 @@ internal class BrowserCore(
         val rootPath = rootPath(rootKey, generation)
         if (rootKey == SAVED) {
             val row = savedRow(reference) ?: return false
-            listing.submit(id, session, FileListing.HANDOFF) { cancelled ->
-                if (rootPath == null) {
-                    FileListing.failureFields(FileListing.HANDOFF, FileListing.STALE)
-                } else {
+            if (rootPath == null) {
+                listing.staleHandoff(id, session)
+            } else {
+                listing.submit(id, session, FileListing.HANDOFF) { cancelled ->
                     checkSaved(id, session, row, cancelled)
                 }
             }
             return true
         }
         val file = fileOf(reference) ?: return false
-        val root = rootPath?.takeIf { it.isNotEmpty() }?.let { pathOf(it) ?: return false }
-        listing.checkFile(id, session, root ?: file, file, generationOk = root != null)
+        if (rootPath.isNullOrEmpty()) {
+            listing.staleHandoff(id, session)
+        } else {
+            listing.checkFile(id, session, pathOf(rootPath) ?: return false, file, generationOk = true)
+        }
         return true
     }
 
@@ -405,27 +409,23 @@ internal class BrowserCore(
     }
 
     /**
-     * Unmounted (no directory) is `removed`; without access, `needsAccess`; readable, `ready`. An invisible USB volume
-     * is readable only by a process that started with All files access, and until then its root does not even exist,
-     * like a removed drive: granted but started without gid 1077, it is `needsRestart`. Anything else, `unavailable`.
+     * From the volume's state, the grant and the process's groups alone, never a look at the drive: a dead drive must
+     * not hold up the roots, and a listing that cannot read a `ready` root says so itself (`unreadable`, `gone`).
+     * A drive inserted but still being checked, or one Android cannot mount, is `unavailable`; any other state with no
+     * directory is `removed`; without access, `needsAccess`. An invisible USB volume is readable only by a process that
+     * started with All files access (until then its root does not even exist), so granted, it is `ready` with gid 1077
+     * and `needsRestart` without; every other volume is `ready` once granted.
      */
     private fun rootState(volume: BrowserVolume, granted: Boolean): String {
         val dir = volume.directory
         val mounted = volume.state == Environment.MEDIA_MOUNTED || volume.state == Environment.MEDIA_MOUNTED_READ_ONLY
         return when {
+            volume.state in UNREADABLE_MEDIA -> UNAVAILABLE
             dir == null || !mounted -> REMOVED
             !granted -> NEEDS_ACCESS
-            readable(dir) -> READY
             dir.startsWith(INVISIBLE_VOLUMES) && !gidAtStart -> NEEDS_RESTART
-            else -> UNAVAILABLE
+            else -> READY
         }
-    }
-
-    private fun readable(dir: String) = try {
-        fs.open(Paths.get(dir)).close()
-        true
-    } catch (_: Exception) {
-        false
     }
 
     /** On a worker: the app's own rows in Download/DSD-neo; null when MediaStore did not answer. */
@@ -441,7 +441,7 @@ internal class BrowserCore(
                 val modifiedColumn = rows.getColumnIndex(MediaStore.MediaColumns.DATE_MODIFIED)
                 val entries = ArrayList<ListEntry>()
                 // One row past the listing's cap is enough to answer tooMany.
-                while (entries.size <= SAVED_ROW_LIMIT && !cancelled() && rows.moveToNext()) {
+                while (entries.size <= listing.entryCap && !cancelled() && rows.moveToNext()) {
                     val name = if (rows.isNull(nameColumn)) continue else rows.getString(nameColumn) ?: continue
                     val size = if (rows.isNull(sizeColumn)) 0L else rows.getLong(sizeColumn)
                     // DATE_MODIFIED is in seconds.
@@ -588,6 +588,10 @@ internal class BrowserCore(
         private const val FAILED = "failed"
         private const val NO_ROUTE = "noRoute"
 
+        /** A drive inserted but still being checked, or one Android cannot mount: there, but not readable. */
+        private val UNREADABLE_MEDIA =
+            setOf(Environment.MEDIA_CHECKING, Environment.MEDIA_UNMOUNTABLE, Environment.MEDIA_NOFS)
+
         /** Where Android mounts a volume that apps do not see through /storage, such as a USB drive. */
         private const val INVISIBLE_VOLUMES = "/mnt/media_rw/"
 
@@ -595,7 +599,6 @@ internal class BrowserCore(
         private const val SAVED_FOLDER = "Download/DSD-neo/"
         private const val SAVED_SELECTION = "relative_path = ? AND owner_package_name = ?"
         private const val HANDOFF_SELECTION = "_id = ? AND relative_path = ? AND owner_package_name = ?"
-        private const val SAVED_ROW_LIMIT = 50_000
 
         private val DOWNLOADS_URI: Uri = MediaStore.Downloads.EXTERNAL_CONTENT_URI
         private val SAVED_PROJECTION = arrayOf(
@@ -673,11 +676,13 @@ internal fun hasStorageGid(status: String?): Boolean {
  * - Roots: the inbox (`<external files>/Inbox`, made here; no permission), Saved by DSD-neo (the app's own MediaStore
  *   rows in Download/DSD-neo, selected by folder and owner, since a manager or an Android 10 legacy reader sees other
  *   apps' rows too), and, when the manifest requests broad access, shared storage and each removable volume (API 30+).
- *   A root's state: unmounted `removed`, without access `needsAccess`, readable `ready`, an invisible USB volume in a
- *   process started without gid 1077 `needsRestart`, else `unavailable`. Their generation moves with the grant, the
- *   volume set and each volume's state, and is read with no filesystem call; a request naming an older one is `stale`.
+ *   A root's state comes from the volume's state, the grant and gid 1077, never from a look at the drive: checking,
+ *   unmountable or no filesystem `unavailable`, otherwise not mounted `removed`, without access `needsAccess`, an
+ *   invisible USB volume in a process started without gid 1077 `needsRestart`, else `ready`. Their generation moves
+ *   with the grant, the volume set and each volume's state, and is read with no filesystem call; a request naming an
+ *   older one is `stale`.
  * - Folder reads, pages and hand-off checks go through [FileListing]'s worker threads. A Saved query has a
- *   CancellationSignal that a cancel, a session close or a newer listing in the session cancels.
+ *   CancellationSignal that a cancel, a session close, a newer listing in the session or the watchdog cancels.
  * - Access, on the main looper: API 30+ opens the app's All files access page, else the all-apps list, else (API
  *   30-32) App info, as plain launches answered at once (`settingsOpened`, `noRoute` or `failed`); the grant shows on
  *   resume. API 29 asks for READ_EXTERNAL_STORAGE with a code from `0x5E00..0x5E0F`, one per launch, and stays live
