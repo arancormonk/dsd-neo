@@ -137,7 +137,8 @@ read_listing(const QJsonObject& record, QVariantMap& answer) {
                        {{"snapshot", FileField::Integer},
                         {"offset", FileField::Integer},
                         {"more", FileField::Bool},
-                        {"hiddenByFilter", FileField::Integer}},
+                        {"hiddenByFilter", FileField::Integer},
+                        {"hiddenByName", FileField::Integer}},
                        answer)
            && copy_objects(record, "entries",
                            {{"name", FileField::String},
@@ -149,17 +150,23 @@ read_listing(const QJsonObject& record, QVariantMap& answer) {
                            answer);
 }
 
+/* The request @p record answers: a whole number above 0, read into @p id. False when it has none. */
+bool
+read_record_id(const QJsonObject& record, qint64& id) {
+    return whole_number(record.value(QStringLiteral("id")), id) && id > 0;
+}
+
 /*
- * Reads @p text, one FileBrowser record: {"id","kind":"roots","status","generation","roots"},
- * {"id","kind":"listing","status",…} (a listing or a page), {"id","kind":"handoff","ok","reference","name","reason"}
- * or {"id","kind":"access","outcome"}. On success @p id and @p kind name it and @p answer is its members less those
- * two, typed. False for a record that is malformed, of an unknown kind, or with a member missing or of another type.
+ * Reads the answer in @p record, one FileBrowser record that must be of kind @p expected:
+ * {"id","kind":"roots","status","generation","roots"}, {"id","kind":"listing","status",…} (a listing or a page),
+ * {"id","kind":"handoff","ok","reference","name","reason"} or {"id","kind":"access","outcome"}. On success @p answer is
+ * its members less id and kind, typed. False for a record of another kind, or with a member missing or of another
+ * type.
  */
 bool
-read_file_record(const QString& text, qint64& id, QString& kind, QVariantMap& answer) {
-    const QJsonObject record = QJsonDocument::fromJson(text.toUtf8()).object();
-    kind = record.value(QStringLiteral("kind")).toString();
-    if (!whole_number(record.value(QStringLiteral("id")), id) || id <= 0) {
+read_file_answer(const QJsonObject& record, QLatin1String expected, QVariantMap& answer) {
+    const QString kind = record.value(QStringLiteral("kind")).toString();
+    if (kind != expected) {
         return false;
     }
     if (kind == QLatin1String("roots")) {
@@ -338,28 +345,30 @@ DecoderHostAndroid::refreshFileBrowser() {
 
 void
 DecoderHostAndroid::deliverFileRecord(const QString& text) {
+    const QJsonObject record = QJsonDocument::fromJson(text.toUtf8()).object();
     qint64 id = 0;
-    QString kind;
-    QVariantMap answer;
-    if (!read_file_record(text, id, kind, answer)) {
-        return;
+    if (!read_record_id(record, id)) {
+        return; // No request to answer.
     }
     const auto found = m_file_requests.constFind(id);
     if (found == m_file_requests.constEnd()) {
         return; // Retired, failed or answered already: its answer was given.
     }
+    const FileRequestKind requestKind = *found;
     QLatin1String expected("listing"); // A listing's or a page's
-    switch (*found) {
+    switch (requestKind) {
         case FileRequestKind::Roots: expected = QLatin1String("roots"); break;
         case FileRequestKind::Handoff: expected = QLatin1String("handoff"); break;
         case FileRequestKind::Access: expected = QLatin1String("access"); break;
         case FileRequestKind::Listing:
         case FileRequestKind::Page: break;
     }
-    if (kind != expected) {
-        return;
-    }
-    if (*found == FileRequestKind::Access && platformTakeFileAccessRefresh()) {
+    QVariantMap answer;
+    if (!read_file_answer(record, expected, answer)) {
+        /* A record for this live request that is malformed or of another kind: FileBrowser cannot answer it any
+         * more, so it is answered "failed" now rather than left waiting forever. */
+        answer = fileFailure(requestKind, QStringLiteral("failed"));
+    } else if (requestKind == FileRequestKind::Access && platformTakeFileAccessRefresh()) {
         /* FileBrowser raises the flag before it writes an access answer, and both may have come after the take at the
          * top of the drain: read again, so a "granted" answer never finds fileAccess() stale. */
         readFileAccess();

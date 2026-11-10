@@ -14022,7 +14022,8 @@ Qt Quick frontend (`src/ui/qt`):
   every request: `requestFileRoots`, `requestFolderListing(rootKey, generation, path, filter {kind, showAll})`,
   `requestMorePage(snapshot, offset)`, `requestFileHandoff(rootKey, generation, reference)` and `requestFileAccess`.
   Each returns a new id answered exactly once, never inside the call, on `fileRootsListed(id, {status, generation,
-  roots})`, `folderListed(id, {status, snapshot, offset, entries, more, hiddenByFilter})` (listings and pages),
+  roots})`, `folderListed(id, {status, snapshot, offset, entries, more, hiddenByFilter, hiddenByName})` (listings
+  and pages; `hiddenByName` counts the items left out because their names are not valid UTF-8),
   `fileHandoffChecked(id, {ok, reference, name, reason})` or `fileAccessRequestDone(id, outcome)`; statuses are in the
   header and the spec's list (`failed`: the platform could not take the request). `cancelFileRequest(id)`,
   `closeFileBrowserSession(id)` (every request of the session) and a superseding request (one listing or page per
@@ -14970,7 +14971,10 @@ request code (1305) is never used.
     then dropped by id. Containment compares real paths of both root and folder by whole components. Pipeline: read →
     directories and regular files only → `tooMany` past 50,000 → dot names and the kind's filter unless Show all →
     folders first, case-insensitive natural order → the session's one snapshot → pages of 500 served from memory
-    (`listMore`, inline; a page naming another snapshot is `expired`; idle 120 s releases it). Exceptions:
+    (`listMore`, inline; a page naming another snapshot is `expired`; idle 120 s releases it). An entry whose name is
+    not valid UTF-8 (its `Path` is not the path its own text names) is never listed: its text names another file or
+    none once the host decodes a reference's escapes as UTF-8 or lists a folder by its path text. It counts in
+    `hiddenByName`, past the same dot-name and filter rules, and a hand-off of such a path is `notFile`. Exceptions:
     `NoSuchFileException`/`NotDirectoryException` → `gone`, any other refusal → `unreadable`.
   - `FileBrowser.kt`: `object FileBrowser` holds a `BrowserCore` over `BrowserPlatform` (`AndroidBrowserPlatform`:
     StorageManager volumes (API 29: the primary volume's state and description with the path string `Environment`
@@ -15018,8 +15022,8 @@ request code (1305) is never used.
     Not declared → `noRoute`. `DsdNeoActivity.onRequestPermissionsResult()` asks `FileBrowser` first; it claims the
     whole range and settles only the live launch's code, so a late answer to a cancelled launch is dropped.
   - Records (JSON, one per `pollRecord()`): `{"id","kind":"roots","status","generation","roots"}`,
-    `{"id","kind":"listing","status","snapshot","offset","entries","more","hiddenByFilter"}` (non-ok: `status`
-    only), `{"id","kind":"handoff","ok","reference","name","reason"}`, `{"id","kind":"access","outcome"}`. Root
+    `{"id","kind":"listing","status","snapshot","offset","entries","more","hiddenByFilter","hiddenByName"}` (non-ok:
+    `status` only), `{"id","kind":"handoff","ok","reference","name","reason"}`, `{"id","kind":"access","outcome"}`. Root
     `{key, kind, title, path, state, detail}`; entry `{name, path, reference, dir, size, modifiedMs}`.
   - Host dispatch (`decoder_host_android_files.cpp`, JNI-free, Qt thread; the shims `platformListRoots()` and the other
     `platform*()` file calls sit in `decoder_host_android.cpp` with `kFileBrowserClass`): each request override begins
@@ -15034,11 +15038,12 @@ request code (1305) is never used.
     `takeAccessRefresh()` is true it reads `accessState()`, then it drains `pollRecord()` oldest first. FileBrowser
     raises that flag before it writes an access answer, and both can land after the first take, so an `access` record
     takes the flag again (and reads) before it settles: a `granted` answer never finds `fileAccess()` stale. A record
-    settles its id once, with its members less `id` and `kind` as the map (whole numbers only, as `qint64`), only if
-    that id is a live request it took and the record's kind is that request's (`listing` for a listing or a page); a
-    malformed record (as strict as `document_pick_record.h`: id > 0, every member typed, statuses and outcomes
-    non-empty), an unknown kind or another request's kind is ignored, and a record for an id retired or answered is
-    dropped. The access reading (`m_file_access`, the base reading until the constructor's first read after
+    settles its id once, with its members less `id` and `kind` as the map (whole numbers only, as `qint64`), when that
+    id is a live request it took and the record's kind is that request's (`listing` for a listing or a page). A record
+    for a live id that is malformed (as strict as `document_pick_record.h`: every member typed, statuses and outcomes
+    non-empty), of an unknown kind or of another request's kind settles it `fileFailure(kind, "failed")` at once, so
+    every request is answered; a record with no readable id (not a whole number above 0) is ignored, and a record for
+    an id retired or answered is dropped. The access reading (`m_file_access`, the base reading until the constructor's first read after
     `FileBrowser.start()`) is replaced, with one `fileAccessChanged()`, only by a well-formed reading that differs;
     `refreshFileAccess()` reads at once. `FileBrowser` is the process's while request ids are each host's (they start
     again in a new host): the destructor cancels each live request there and closes each open session

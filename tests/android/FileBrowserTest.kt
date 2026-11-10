@@ -514,7 +514,9 @@ private fun savedQuery() {
     check(query.projection == listOf("_id", "_display_name", "_size", "date_modified")) { "projection ${query.projection}" }
     check(query.selection == "relative_path = ? AND owner_package_name = ?") { "selection ${query.selection}" }
     check(query.args == listOf("Download/DSD-neo/", PKG)) { "selection args ${query.args}" }
-    check(record["status"] == "ok" && record["hiddenByFilter"] == 1L) { "Saved listing $record" }
+    check(record["status"] == "ok" && record["hiddenByFilter"] == 1L && record["hiddenByName"] == 0L) {
+        "Saved listing $record"
+    }
     val entries = record["entries"] as List<Map<String, Any?>>
     check(entries == listOf(mapOf("name" to "dmr.csv", "path" to "", "reference" to "$DOWNLOADS/42", "dir" to false,
         "size" to 2048L, "modifiedMs" to 1_700_000_000_000L))) { "Saved entries $entries (the other owner's row never)" }
@@ -972,7 +974,7 @@ private fun recordJson() {
     check(FileBrowser.listFolder(2, 1, "inbox", generation, "", "csv", false))
     val listing = awaitRecord()
     check(listing.keys.toList() == listOf("id", "kind", "status", "snapshot", "offset", "entries", "more",
-        "hiddenByFilter")) { "listing keys ${listing.keys}" }
+        "hiddenByFilter", "hiddenByName")) { "listing keys ${listing.keys}" }
     val entry = (listing["entries"] as List<Map<String, Any?>>).single()
     check(entry.keys.toList() == listOf("name", "path", "reference", "dir", "size", "modifiedMs")) { "entry ${entry.keys}" }
     check(entry["name"] == "say \"hi\" \\ there.csv" && entry["size"] == 3L && entry["dir"] == false) { "entry $entry" }

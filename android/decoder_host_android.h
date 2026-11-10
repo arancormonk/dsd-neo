@@ -602,7 +602,10 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     void readFileAccess();
     /** @brief Read the access state if FileBrowser asks, then deliver every record waiting, oldest first. */
     void refreshFileBrowser();
-    /** @brief Settle the request FileBrowser record @p text answers; a malformed or stray record is ignored. */
+    /**
+     * @brief Settle the request FileBrowser record @p text answers. A record for a live request that is malformed or of
+     * another kind settles it "failed"; one with no readable id, or for a request already answered, is ignored.
+     */
     void deliverFileRecord(const QString& text);
     /*
      * FileBrowser over JNI, from the Qt thread (decoder_host_android.cpp). None waits: reads run on FileBrowser's

@@ -4,7 +4,6 @@ package io.github.arancormonk.dsdneo
 import java.io.File
 import java.io.IOException
 import java.net.StandardProtocolFamily
-import java.net.URI
 import java.net.UnixDomainSocketAddress
 import java.nio.channels.ServerSocketChannel
 import java.nio.file.AccessDeniedException
@@ -13,7 +12,6 @@ import java.nio.file.DirectoryStream
 import java.nio.file.Files
 import java.nio.file.NoSuchFileException
 import java.nio.file.Path
-import java.nio.file.Paths
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.FileTime
 import java.nio.file.attribute.PosixFilePermissions
@@ -193,10 +191,11 @@ private fun rootItselfLists() {
     val root = folder()
     touch(root, "a.csv")
     val record = Harness().list(root).listed(listOf("a.csv"), "the root itself")
-    check(record.fields.keys == setOf("status", "snapshot", "offset", "entries", "more", "hiddenByFilter")) {
+    check(record.fields.keys == setOf("status", "snapshot", "offset", "entries", "more", "hiddenByFilter", "hiddenByName")) {
         "a listing carries the record's fields: ${record.fields.keys}"
     }
-    check(record.fields["offset"] == 0 && record.fields["more"] == false && record.fields["hiddenByFilter"] == 0) {
+    check(record.fields["offset"] == 0 && record.fields["more"] == false && record.fields["hiddenByFilter"] == 0 &&
+        record.fields["hiddenByName"] == 0) {
         "one short page from offset 0: ${record.fields}"
     }
 }
@@ -497,31 +496,38 @@ private fun handoffReference() {
 }
 
 /**
- * A name that is not valid UTF-8 (ext4 takes any bytes, through adb push for one) lists with U+FFFD in its shown name,
- * but its reference keeps the bytes, so the hand-off and the copy open the file that is there.
+ * Names that are not valid UTF-8 (ext4 takes any bytes, through adb push for one) read with U+FFFD in place of the bad
+ * bytes, so their text names another file or none on the host's side: they are never listed, only counted, and two
+ * of them that read the same never make two rows with one path. A hand-off of one is refused.
  */
-private fun invalidUtf8NameKeepsItsBytes() {
+private fun invalidUtf8NamesAreCountedNotListed() {
     val root = folder()
+    touch(root, "good.csv")
     val made = try {
         File.separatorChar == '/' &&
-            ProcessBuilder("sh", "-c", "touch \"$(printf 'bad\\377.csv')\"").directory(root.toFile()).start()
-                .waitFor() == 0
+            ProcessBuilder("sh", "-c", "touch \"$(printf 'bad\\377.csv')\" \"$(printf 'bad\\376.csv')\" " +
+                "\"$(printf '.dot\\377.csv')\" \"$(printf 'bad\\377.wav')\" && mkdir \"$(printf 'dir\\377')\"")
+                .directory(root.toFile()).start().waitFor() == 0
     } catch (_: IOException) {
         false
     }
-    val listed = if (made) Harness().list(root).entries else emptyList()
-    if (listed.size != 1) {
+    val onDisk = if (made) Files.list(root).use { it.count() } else 0L
+    if (onDisk != 6L) {
         println("SKIP: this filesystem keeps no name that is not valid UTF-8")
         return
     }
-    val entry = listed[0]
-    check(entry.reference == "file://$root/bad%FF.csv") { "the reference keeps the name's bytes: ${entry.reference}" }
-    val file = Paths.get(URI(entry.reference))
-    check(Files.isRegularFile(file)) { "the reference opens the file that is there" }
-    val handoff = Harness().checkFile(root, file)
-    check(handoff.fields["ok"] == true && handoff.fields["reference"] == entry.reference) {
-        "the hand-off of that reference answers the same reference: ${handoff.fields}"
+    val harness = Harness()
+    val csv = harness.list(root).listed(listOf("good.csv"), "only the name that reads as text")
+    check(csv.fields["hiddenByName"] == 3 && csv.fields["hiddenByFilter"] == 0) {
+        "the folder and the two CSV names count; the dot name and the .wav would not have shown: ${csv.fields}"
     }
+    val all = harness.list(root, showAll = true).listed(listOf("good.csv"), "Show all lists them no more")
+    check(all.fields["hiddenByName"] == 5) { "with Show all, every one of them counts: ${all.fields}" }
+    val bad = Files.list(root).use { paths -> paths.filter { it.fileName.toString() == "bad\uFFFD.csv" }.toList() }
+    check(bad.size == 2) { "two names read the same: ${bad.map { it.fileName }}" }
+    for (file in bad) harness.checkFile(root, file).handoff("notFile", "a name that is not valid UTF-8")
+    val good = harness.checkFile(root, root.resolve("good.csv"))
+    check(good.fields["ok"] == true) { "the name beside them still hands off: ${good.fields}" }
 }
 
 private fun cancelWhileBlocked() {
@@ -678,7 +684,7 @@ fun main() {
     snapshotExpiry()
     entryShape()
     handoffReference()
-    invalidUtf8NameKeepsItsBytes()
+    invalidUtf8NamesAreCountedNotListed()
     cancelWhileBlocked()
     saturationAndWatchdog()
     submitAndSavedListings()

@@ -3214,7 +3214,7 @@ listing_record(qint64 id) {
     return file_record(id, "listing",
                        QStringLiteral(R"("status":"ok","snapshot":12,"offset":0,"entries":[)")
                            + QLatin1String(kFolderJson) + QLatin1Char(',') + entry_json()
-                           + QStringLiteral(R"(],"more":true,"hiddenByFilter":3)"));
+                           + QStringLiteral(R"(],"more":true,"hiddenByFilter":3,"hiddenByName":2)"));
 }
 
 QString
@@ -3272,7 +3272,8 @@ expected_listing() {
             {QStringLiteral("offset"), qint64(0)},
             {QStringLiteral("entries"), QVariantList{folder, file}},
             {QStringLiteral("more"), true},
-            {QStringLiteral("hiddenByFilter"), qint64(3)}};
+            {QStringLiteral("hiddenByFilter"), qint64(3)},
+            {QStringLiteral("hiddenByName"), qint64(2)}};
 }
 
 QVariantMap
@@ -3283,41 +3284,62 @@ expected_handoff() {
             {QStringLiteral("reason"), QString()}};
 }
 
-/* Records the host must ignore for live requests @p handoff, @p listing, @p roots and @p access. */
+/* Records naming no request: no id, or one that is not a whole number above 0. They are ignored. */
 QStringList
-malformed_file_records(qint64 handoff, qint64 listing, qint64 roots, qint64 access) {
-    const QString root = QLatin1String(kRootJson);
+unidentified_file_records(qint64 handoff) {
     return {
         QStringLiteral("{"),
         QStringLiteral("[]"),
         QStringLiteral("null"),
-        file_record(handoff, "picked", QStringLiteral(R"("uri":"content://x/y","name":"x","downloads":false)")),
-        file_record(handoff, "access", QStringLiteral(R"("outcome":"granted")")),
-        file_record(listing, "roots", QStringLiteral(R"("status":"ok","generation":4,"roots":[])")),
-        file_record(roots, "listing", QStringLiteral(R"("status":"busy")")),
-        file_record(access, "handoff", QStringLiteral(R"("ok":false,"reference":"","name":"","reason":"busy")")),
         handoff_record(handoff).replace(QStringLiteral(R"("id":)") + QString::number(handoff),
                                         QStringLiteral(R"("id":")") + QString::number(handoff) + QLatin1Char('"')),
         handoff_record(handoff).replace(QStringLiteral(R"("id":)") + QString::number(handoff),
                                         QStringLiteral(R"("id":)") + QString::number(handoff) + QStringLiteral(".5")),
-        handoff_record(handoff).replace(QStringLiteral(R"("ok":true)"), QStringLiteral(R"("ok":"true")")),
-        handoff_record(handoff).replace(QStringLiteral(R"(,"name":"a b#1%.csv")"), QString()),
-        file_record(listing, "listing", QStringLiteral(R"("snapshot":12)")),
-        file_record(listing, "listing", QStringLiteral(R"("status":"")")),
-        file_record(listing, "listing",
-                    QStringLiteral(R"("status":"ok","snapshot":12,"offset":0,"more":false,)"
-                                   R"("hiddenByFilter":0)")),
-        listing_record(listing).replace(QStringLiteral(R"("more":true)"), QStringLiteral(R"("more":"no")")),
-        listing_record(listing).replace(QStringLiteral(R"("dir":true,)"), QString()),
-        listing_record(listing).replace(QStringLiteral(R"("size":4200000)"), QStringLiteral(R"("size":4200000.5)")),
-        listing_record(listing).replace(QStringLiteral(R"("offset":0)"), QStringLiteral(R"("offset":0.5)")),
-        listing_record(listing).replace(QStringLiteral(R"("snapshot":12)"), QStringLiteral(R"("snapshot":12.5)")),
-        roots_record(roots).replace(QStringLiteral(R"("generation":4)"), QStringLiteral(R"("generation":4.5)")),
-        file_record(roots, "roots", QStringLiteral(R"("status":"ok","roots":[)") + root + QLatin1Char(']')),
-        roots_record(roots).replace(QStringLiteral(R"("title":"USB drive")"), QStringLiteral(R"("title":7)")),
-        file_record(roots, "roots", QStringLiteral(R"("status":"ok","generation":4,"roots":{})")),
-        file_record(access, "access", QStringLiteral(R"("outcome":"")")),
-        file_record(access, "access", QStringLiteral(R"("outcome":1)")),
+        handoff_record(handoff).replace(QStringLiteral(R"("id":)") + QString::number(handoff),
+                                        QStringLiteral(R"("id":0)")),
+        handoff_record(handoff).replace(QStringLiteral(R"("id":)") + QString::number(handoff),
+                                        QStringLiteral(R"("id":-)") + QString::number(handoff)),
+    };
+}
+
+/*
+ * Records for live requests @p handoff, @p listing, @p roots and @p access that are malformed or of another kind,
+ * each with the line its request is answered with: "failed", as FileBrowser can no longer answer it.
+ */
+QList<QPair<QString, QString>>
+malformed_file_records(qint64 handoff, qint64 listing, qint64 roots, qint64 access) {
+    const QString root = QLatin1String(kRootJson);
+    const QString h = answer_line("handoff", handoff, "failed");
+    const QString l = answer_line("folder", listing, "failed");
+    const QString r = answer_line("roots", roots, "failed");
+    const QString a = answer_line("access", access, "failed");
+    return {
+        {file_record(handoff, "picked", QStringLiteral(R"("uri":"content://x/y","name":"x","downloads":false)")), h},
+        {file_record(handoff, "access", QStringLiteral(R"("outcome":"granted")")), h},
+        {file_record(listing, "roots", QStringLiteral(R"("status":"ok","generation":4,"roots":[])")), l},
+        {file_record(roots, "listing", QStringLiteral(R"("status":"busy")")), r},
+        {file_record(access, "handoff", QStringLiteral(R"("ok":false,"reference":"","name":"","reason":"busy")")), a},
+        {handoff_record(handoff).replace(QStringLiteral(R"("ok":true)"), QStringLiteral(R"("ok":"true")")), h},
+        {handoff_record(handoff).replace(QStringLiteral(R"(,"name":"a b#1%.csv")"), QString()), h},
+        {file_record(listing, "listing", QStringLiteral(R"("snapshot":12)")), l},
+        {file_record(listing, "listing", QStringLiteral(R"("status":"")")), l},
+        {file_record(listing, "listing",
+                     QStringLiteral(R"("status":"ok","snapshot":12,"offset":0,"more":false,)"
+                                    R"("hiddenByFilter":0,"hiddenByName":0)")),
+         l},
+        {listing_record(listing).replace(QStringLiteral(R"(,"hiddenByName":2)"), QString()), l},
+        {listing_record(listing).replace(QStringLiteral(R"("more":true)"), QStringLiteral(R"("more":"no")")), l},
+        {listing_record(listing).replace(QStringLiteral(R"("dir":true,)"), QString()), l},
+        {listing_record(listing).replace(QStringLiteral(R"("size":4200000)"), QStringLiteral(R"("size":4200000.5)")),
+         l},
+        {listing_record(listing).replace(QStringLiteral(R"("offset":0)"), QStringLiteral(R"("offset":0.5)")), l},
+        {listing_record(listing).replace(QStringLiteral(R"("snapshot":12)"), QStringLiteral(R"("snapshot":12.5)")), l},
+        {roots_record(roots).replace(QStringLiteral(R"("generation":4)"), QStringLiteral(R"("generation":4.5)")), r},
+        {file_record(roots, "roots", QStringLiteral(R"("status":"ok","roots":[)") + root + QLatin1Char(']')), r},
+        {roots_record(roots).replace(QStringLiteral(R"("title":"USB drive")"), QStringLiteral(R"("title":7)")), r},
+        {file_record(roots, "roots", QStringLiteral(R"("status":"ok","generation":4,"roots":{})")), r},
+        {file_record(access, "access", QStringLiteral(R"("outcome":"")")), a},
+        {file_record(access, "access", QStringLiteral(R"("outcome":1)")), a},
     };
 }
 } // namespace
@@ -3384,23 +3406,43 @@ check_file_browser_requests() {
     QCoreApplication::processEvents();
     check(host.answers.size() == 5, "a request is answered once; later records for it are dropped");
 
-    // Ignored records leave the requests live, and their own records still answer them.
+    // A record naming no request is ignored: the request stays live and its own record still answers it.
     host.answers.clear();
     const qint64 handoff2 = host.requestFileHandoff(s, QStringLiteral("inbox"), 4, listed_reference());
-    const qint64 listing2 = host.requestFolderListing(t, QStringLiteral("inbox"), 4, QString(), csv_filter(true));
-    const qint64 roots2 = host.requestFileRoots(t);
-    const qint64 access2 = host.requestFileAccess(s);
-    fileBrowser().records = malformed_file_records(handoff2, listing2, roots2, access2);
+    fileBrowser().records = unidentified_file_records(handoff2);
     host.refresh();
     QCoreApplication::processEvents();
-    check(host.answers.isEmpty(), "malformed records, unknown kinds and a kind not the request's are ignored");
-    fileBrowser().records = QStringList{status_record(listing2, "tooMany"), roots_record(roots2),
-                                        access_record(access2, "noRoute"), handoff_record(handoff2)};
+    check(host.answers.isEmpty(), "a record with no readable id is ignored");
+    fileBrowser().records = QStringList{handoff_record(handoff2)};
     host.refresh();
-    check(host.lines()
-              == QStringList{answer_line("folder", listing2, "tooMany"), answer_line("roots", roots2, "ok"),
-                             answer_line("access", access2, "noRoute"), answer_line("handoff", handoff2, "ok")},
-          "the ignored records' requests stay live and their own records answer them");
+    check(host.lines() == QStringList{answer_line("handoff", handoff2, "ok")},
+          "its request stays live and its own record answers it");
+
+    /* A record for a live request that is malformed or of another kind settles that request "failed", at once and
+     * once, so it is never left waiting; each such record, alone, against requests of their own. */
+    const int malformed = malformed_file_records(0, 0, 0, 0).size();
+    for (int i = 0; i < malformed; ++i) {
+        host.answers.clear();
+        const qint64 handoff3 = host.requestFileHandoff(s, QStringLiteral("inbox"), 4, listed_reference());
+        const qint64 listing3 = host.requestFolderListing(t, QStringLiteral("inbox"), 4, QString(), csv_filter(true));
+        const qint64 roots3 = host.requestFileRoots(t);
+        const qint64 access3 = host.requestFileAccess(s);
+        const QPair<QString, QString> bad = malformed_file_records(handoff3, listing3, roots3, access3).at(i);
+        fileBrowser().records = QStringList{bad.first};
+        host.refresh();
+        check(host.lines() == QStringList{bad.second},
+              qPrintable(QStringLiteral("a malformed record for a live request answers it failed: ") + bad.first));
+        fileBrowser().records = QStringList{handoff_record(handoff3), listing_record(listing3), roots_record(roots3),
+                                            access_record(access3, "granted")};
+        host.refresh();
+        QCoreApplication::processEvents();
+        check(host.answers.size() == 4, "the failed request takes no later record; the others answer once");
+        host.cancelFileRequest(handoff3);
+        host.cancelFileRequest(listing3);
+        host.cancelFileRequest(roots3);
+        host.cancelFileRequest(access3);
+        QCoreApplication::processEvents();
+    }
 
     // FileBrowser could not take it (not started, a malformed reference, a JNI call that failed): "failed", queued.
     host.answers.clear();
@@ -3504,9 +3546,9 @@ check_file_browser_retirement() {
     host.refresh();
     check(host.lines()
               == QStringList{answer_line("folder", older, "cancelled"), answer_line("folder", newer, "cancelled"),
-                             answer_line("folder", page, "ok")},
-          "each superseded listing is answered cancelled once, and only the live page's record answers");
-    check(host.answers.size() == 3, "the other session's listing ignores a malformed ok record");
+                             answer_line("folder", page, "ok"), answer_line("folder", elsewhere, "failed")},
+          "each superseded listing is answered cancelled once, only the live page's record answers it, and the other "
+          "session's listing, sent a malformed ok record, is answered failed");
 
     // Closing a session retires each of its requests, the access request too, then closes it on the platform.
     host.answers.clear();

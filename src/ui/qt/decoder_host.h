@@ -518,7 +518,8 @@ class DecoderHost : public QObject {
 
     /**
      * @brief List @p path in root @p rootKey as of roots @p generation, filtered by @p filter ({kind: "csv", "backup"
-     * or "replay", showAll}): folderListed(id, {status, snapshot, offset, entries, more, hiddenByFilter}).
+     * or "replay", showAll}): folderListed(id, {status, snapshot, offset, entries, more, hiddenByFilter,
+     * hiddenByName}), hiddenByName counting the items left out because their names are not valid UTF-8.
      */
     Q_INVOKABLE virtual qint64 requestFolderListing(qint64 sessionId, const QString& rootKey, qint64 generation,
                                                     const QString& path, const QVariantMap& filter);
@@ -962,7 +963,10 @@ class DecoderHost : public QObject {
     void fileAccessChanged();
     /** @brief Roots request @p requestId ended: {status, generation, roots}. */
     void fileRootsListed(qint64 requestId, const QVariantMap& result);
-    /** @brief Listing or page request @p requestId ended: {status, snapshot, offset, entries, more, hiddenByFilter}. */
+    /**
+     * @brief Listing or page request @p requestId ended: {status, snapshot, offset, entries, more, hiddenByFilter,
+     * hiddenByName}.
+     */
     void folderListed(qint64 requestId, const QVariantMap& result);
     /** @brief Hand-off request @p requestId ended: {ok, reference, name, reason}. */
     void fileHandoffChecked(qint64 requestId, const QVariantMap& result);

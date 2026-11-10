@@ -99,7 +99,13 @@ internal class FileListing(
         var watchdog: ScheduledFuture<*>? = null
     }
 
-    private class Snapshot(val id: Long, val entries: List<ListEntry>, val hiddenByFilter: Int, var usedMs: Long) {
+    private class Snapshot(
+        val id: Long,
+        val entries: List<ListEntry>,
+        val hiddenByFilter: Int,
+        val hiddenByName: Int,
+        var usedMs: Long,
+    ) {
         var sweep: ScheduledFuture<*>? = null
     }
 
@@ -108,7 +114,11 @@ internal class FileListing(
 
     private class Answer(val fields: Map<String, Any?>) : Outcome
 
-    private class Listed(val entries: List<ListEntry>, val hiddenByFilter: Int) : Outcome
+    /** [hiddenByName]: the items left out because their names are not text the host can carry (see [collect]). */
+    private class Listed(val entries: List<ListEntry>, val hiddenByFilter: Int, val hiddenByName: Int = 0) : Outcome
+
+    /** A folder as read: its listable entries with their paths, and those whose names cannot be listed. */
+    private class Read(val entries: Map<ListEntry, Path>, val unnamed: List<ListEntry>)
 
     // Everything below is guarded by this object's monitor.
     private val requests = HashMap<Long, Request>()
@@ -323,7 +333,7 @@ internal class FileListing(
     @Synchronized
     private fun keepSnapshot(session: Long, listed: Listed): Snapshot {
         releaseSnapshot(session)
-        val snapshot = Snapshot(++nextSnapshot, listed.entries, listed.hiddenByFilter, nowMs())
+        val snapshot = Snapshot(++nextSnapshot, listed.entries, listed.hiddenByFilter, listed.hiddenByName, nowMs())
         snapshots[session] = snapshot
         scheduleSweep(session, snapshot, snapshotIdleMs + 1)
         return snapshot
@@ -361,6 +371,7 @@ internal class FileListing(
             "entries" to snapshot.entries.subList(offset, end).toList(),
             "more" to (end < snapshot.entries.size),
             "hiddenByFilter" to snapshot.hiddenByFilter,
+            "hiddenByName" to snapshot.hiddenByName,
         )
     }
 
@@ -375,16 +386,19 @@ internal class FileListing(
         } catch (e: IOException) {
             return failure(LISTING, readFailure(e))
         }
-        val entries: Map<ListEntry, Path>?
+        val read: Read?
         try {
-            entries = fs.open(real).use { stream -> collect(stream, shown, cancelled) }
+            read = fs.open(real).use { stream -> collect(stream, shown, cancelled) }
         } catch (_: DirectoryIteratorException) {
             return failure(LISTING, UNREADABLE)
         } catch (e: IOException) {
             return failure(LISTING, readFailure(e))
         }
-        if (entries == null) return failure(LISTING, TOO_MANY)
+        if (read == null) return failure(LISTING, TOO_MANY)
+        val entries = read.entries
         val listed = shape(entries.keys.toList(), kind, showAll)
+        // Counted as they would have been listed: past the dot-name rule and the filter.
+        val hiddenByName = shape(read.unnamed, kind, showAll).entries.size
         // References only for the files that are shown: Path.toUri() looks at the file once more.
         val referenced = ArrayList<ListEntry>(listed.entries.size)
         for (entry in listed.entries) {
@@ -392,16 +406,18 @@ internal class FileListing(
             val reference = if (entry.dir) "" else entries.getValue(entry).toUri().toASCIIString()
             referenced.add(entry.copy(reference = reference))
         }
-        return Listed(referenced, listed.hiddenByFilter)
+        return Listed(referenced, listed.hiddenByFilter, hiddenByName)
     }
 
     /**
-     * The folders and regular files of [stream], each with its path under [shown]; null past [entryCap]. The path keeps
-     * the name's bytes from the stream, so a name that is not valid UTF-8 still has a reference that opens it (its
-     * [ListEntry.name] shows U+FFFD in their place). Keyed by identity: two such names can read the same.
+     * The folders and regular files of [stream], each with its path under [shown]; null past [entryCap]. A name that is
+     * not valid UTF-8 (ext4 takes any bytes, through adb push for one) reads with U+FFFD in place of its bad bytes, and
+     * that text names another file or none: the host decodes a reference's escapes as UTF-8, and a folder is listed by
+     * its path as text. Such an entry goes to [Read.unnamed] instead, never listed and never two rows with one path.
      */
-    private fun collect(stream: DirectoryStream<Path>, shown: Path, cancelled: () -> Boolean): Map<ListEntry, Path>? {
+    private fun collect(stream: DirectoryStream<Path>, shown: Path, cancelled: () -> Boolean): Read? {
         val entries = IdentityHashMap<ListEntry, Path>()
+        val unnamed = ArrayList<ListEntry>()
         for (path in stream) {
             if (cancelled()) break // Answered already; this result is dropped.
             val attributes = try {
@@ -410,13 +426,13 @@ internal class FileListing(
                 continue // Deleted since the folder was read.
             }
             if (!attributes.isDirectory && !attributes.isRegularFile) continue
-            if (entries.size == entryCap) return null
+            if (entries.size + unnamed.size == entryCap) return null
             val located = shown.resolve(path.fileName)
             val entry = ListEntry(path.fileName.toString(), located.toString(), "", attributes.isDirectory,
                 attributes.size(), attributes.lastModifiedTime().toMillis())
-            entries[entry] = located
+            if (readsAsText(path.fileName)) entries[entry] = located else unnamed.add(entry)
         }
-        return entries
+        return Read(entries, unnamed)
     }
 
     private fun checkHandoff(root: Path, file: Path): Outcome = try {
@@ -425,11 +441,12 @@ internal class FileListing(
         } else {
             val rootReal = fs.realPath(root)
             val real = fs.realPath(file)
-            if (!inside(rootReal, real)) {
-                failure(HANDOFF, OUTSIDE)
-            } else {
-                val shown = root.resolve(rootReal.relativize(real))
-                Answer(mapOf("ok" to true, "reference" to shown.toUri().toASCIIString(),
+            val shown = if (inside(rootReal, real)) root.resolve(rootReal.relativize(real)) else null
+            when {
+                shown == null -> failure(HANDOFF, OUTSIDE)
+                // Never listed (see collect); a reference made up for one would open nothing on the host's side.
+                !readsAsText(shown) -> failure(HANDOFF, NOT_FILE)
+                else -> Answer(mapOf("ok" to true, "reference" to shown.toUri().toASCIIString(),
                     "name" to shown.fileName.toString(), "reason" to ""))
             }
         }
@@ -475,6 +492,9 @@ internal class FileListing(
         /** A missing folder (or a file where a folder was asked for) is gone; any other refusal is unreadable. */
         private fun readFailure(e: IOException) =
             if (e is NoSuchFileException || e is NotDirectoryException) GONE else UNREADABLE
+
+        /** Whether [path] is the path its own text names: false when a name in it is not valid UTF-8. */
+        private fun readsAsText(path: Path): Boolean = path.fileSystem.getPath(path.toString()) == path
 
         /** Whether [real] is [rootReal] or below it, by whole path components. */
         private fun inside(rootReal: Path, real: Path): Boolean =
