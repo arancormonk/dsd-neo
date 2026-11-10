@@ -51,8 +51,9 @@ can only document the intended control and related workflow/config evidence.
 
 ## Documentation and Project Scope
 
-- `README.md` documents basic usage, build, installation, CLI examples, release
-  artifacts, project layout, and public headers.
+- `README.md` documents basic usage, build, installation, CLI examples and release
+  artifacts, and links `docs/build-installation.md` (requirements, build options)
+  and `docs/code_map.md` (project layout and public headers).
 - `docs/issue-reporting.md` documents defect reporting through GitHub Issues.
 - GitHub Issues, pull requests, and Discussions are public mechanisms for
   proposed changes and usage obstacles.
