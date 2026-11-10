@@ -235,13 +235,13 @@ DocumentExportWriter::submit(int token, const QByteArray& bytes, const QString& 
     }
     ExportJob job{token, bytes, holdLock() ? m_folder : QString(), reference, m_transport};
     m_busy = true;
-    m_pool->start([link = m_link, job = std::move(job)]() {
+    m_pool->start([link = m_link, job = std::move(job)] {
         const bool ok = run_job(job);
         const int done = job.token;
         const std::lock_guard<std::mutex> lock(link->mutex);
         QObject* owner = link->owner;
         if (owner != nullptr) {
-            QMetaObject::invokeMethod(owner, [link, done, ok]() { deliver(link, done, ok); }, Qt::QueuedConnection);
+            QMetaObject::invokeMethod(owner, [link, done, ok] { deliver(link, done, ok); }, Qt::QueuedConnection);
         }
     });
     return true;

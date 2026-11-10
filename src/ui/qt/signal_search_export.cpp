@@ -93,7 +93,7 @@ level(float dbfs) {
 /* A call party: its received text, else its number, else nothing. */
 QString
 party(const char (&received)[64], uint32_t number) {
-    const QString name = text(received);
+    QString name = text(received);
     if (!name.isEmpty()) {
         return name;
     }
@@ -110,26 +110,28 @@ identification(const dsd_signal_search_hit& h) {
 
 QStringList
 detectionFields(const dsd_signal_search_hit& h, const QString& savedNames) {
-    return {utc(h.started_ms),
-            utc(h.ended_ms),
-            h.ended != 0 ? QStringLiteral("1") : QStringLiteral("0"),
-            QString::number(h.frequency_hz),
-            QString::number(h.frequency_hz / 1e6, 'f', 6),
-            h.am != 0 ? QStringLiteral("am") : QStringLiteral("nfm"),
-            identification(h),
-            text(h.protocol),
-            text(h.access),
-            text(h.tone),
-            text(h.site),
-            h.slot != 0 ? QString::number(h.slot) : QString(),
-            party(h.target_text, h.target),
-            party(h.source_text, h.source),
-            text(h.crypt),
-            level(h.power_dbfs),
-            level(h.noise_dbfs),
-            text(h.range_name),
-            QString::number(h.bandwidth_hz),
-            savedNames};
+    return {
+        utc(h.started_ms),
+        utc(h.ended_ms),
+        h.ended != 0 ? QStringLiteral("1") : QStringLiteral("0"),
+        QString::number(h.frequency_hz),
+        QString::number(h.frequency_hz / 1e6, 'f', 6),
+        h.am != 0 ? QStringLiteral("am") : QStringLiteral("nfm"),
+        identification(h),
+        text(h.protocol),
+        text(h.access),
+        text(h.tone),
+        text(h.site),
+        h.slot != 0 ? QString::number(h.slot) : QString(),
+        party(h.target_text, h.target),
+        party(h.source_text, h.source),
+        text(h.crypt),
+        level(h.power_dbfs),
+        level(h.noise_dbfs),
+        text(h.range_name),
+        QString::number(h.bandwidth_hz),
+        savedNames,
+    };
 }
 
 std::vector<uint32_t>
@@ -168,8 +170,11 @@ detections(const dsd_signal_search_hit* hits, size_t count, const SavedNames& na
 
 AvoidSource
 storeAvoids() {
-    return {dsd_app_signal_search_avoids_revision, dsd_app_signal_search_avoids_get,
-            dsd_app_signal_search_session_avoids_get};
+    return {
+        dsd_app_signal_search_avoids_revision,
+        dsd_app_signal_search_avoids_get,
+        dsd_app_signal_search_session_avoids_get,
+    };
 }
 
 bool
