@@ -11311,6 +11311,36 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   each record: UTF-8 with a byte order mark, CRLF after every record, `.` decimals, RFC 4180 quoting, and a leading
   `'` on a text column that starts like a formula. Test: `UI_QT_SIGNAL_SEARCH` (exact rows, locale, avoid reads
   retried, tokens, a 1,000-row export over a heavy index).
+  The screen's side (#826): **Export detections…**, a full-width `OutlineButton` ending Recent detections after Show
+  more (inside `recentDetections`, shown while the history has rows), and **Export avoids…** after the Permanent avoids
+  list (shown while either list the screen shows has an entry, `avoidsExportShown`) both call `beginExport(kind)`,
+  which takes the rows through `prepareExport()` at the press. A count of 0 says "No detections to export." / "No
+  avoids to export." and any other 0 token "The avoid lists were changing. Try again.", with no picker; otherwise one
+  screen-level `DocumentPicker` (`searchExportPicker`: save, `text/csv`, "CSV files (*.csv)", suffix `csv`) asks
+  under "Signal search detections yyyy-MM-dd.csv" / "Signal search avoids yyyy-MM-dd.csv" (the local date from
+  `savedSystems.realtimeNowMs()`; always a lowercase `.csv`, since Android's save picker appends the type's extension
+  to `x.CSV`). Both buttons are disabled while an export is pending (`exportToken`, from the press until the pick backs
+  out or the file is written). An accepted pick goes to `saveExport(token, reference)`; a refusal (false) has already
+  let the Download-folder row go in C++, so the screen releases that token (only while it still holds it) and shows the
+  failure at once. A cancelled pick calls `discardExport(token)` and says nothing; an unavailable one discards and shows
+  the picker's message; hiding the screen calls `picker.cancel()`, and a write already running finishes. An
+  `exportFinished(token, ok)` for a token the screen no longer holds is ignored, so a late result never clears a newer
+  export; otherwise the line says "Exported N detections." / "Exported N avoids." (`Util.countText`, the singular for
+  1), "… to Download/DSD-neo as <name>." for a Download-folder save (`savedToDownloads`,
+  `decoderHost.savedDocumentName()`, the name last) or "The export couldn't be written. Try another location." Each
+  entry point has its own result line (`ExportMessage`: plain text, `Accessible.AlertMessage`, gated as `searchMessage`
+  is, the alert colour for a failure) directly under its button and apart from `searchMessage`, so neither hides the
+  other; its visibility depends on its message only, so an avoid result stays when the lists empty. The detections
+  line lives in `recentDetections` and reads the screen's state, so the Loader swap at a session's start or stop keeps
+  it. Each message is `{text, error, heard}`, and a new export clears both. `announceExport()`, as
+  `StoreNoticeCard.announceNew()`, reads an unheard message through `Navigation.announce()` only while the screen is
+  visible, its line is shown and `Navigation.allows()` it, then marks it heard; a zero-interval Timer runs it when a
+  message is set and when the screen's visibility, its navigation gate (`exportLinesReachable`) or a detections
+  Loader's item changes. So a result that lands while the screen is hidden or under a menu or sheet is read once when
+  its line can be reached, and a rebuilt line never reads a heard message again. Showing the screen clears a heard
+  message and keeps an unheard one (`tst_signal_search.qml` `test_export_*`, `test_refused_save_fails_at_once`,
+  `test_stale_export_result_is_ignored`, `test_hiding_the_screen_cancels_the_picker`, `test_result_*`,
+  `test_loader_swap_keeps_the_export_and_its_line`).
 
 - Path: `src/ui`
 - Targets: `dsd-neo_ui_terminal` (option `DSD_ENABLE_TERMINAL_UI`, default ON), `dsd-neo_ui_qt`
@@ -14048,8 +14078,8 @@ Qt Quick frontend (`src/ui/qt`):
   ending call `close()`. Only the live id is answered; a Download-folder pick for a request this picker gave up goes
   to `discardPendingDownload`, never one another picker waits for. `savedToDownloads` says the last accepted save
   went to the Download folder; it is set before `accepted`, so a save owner that no longer wants an accepted pick
-  (`BackupFlow.savePicked()`, `CallRecordingPlayer.savePicked()`, `CallRecordingsScreen.exportPicked()`) discards a
-  Download-folder row itself. On the desktop path an open clears the dialog's selection (`currentFiles = []`:
+  (`BackupFlow.savePicked()`, `CallRecordingPlayer.savePicked()`, `CallRecordingsScreen.exportPicked()`,
+  `SignalSearchScreen.exportPicked()`) discards a Download-folder row itself. On the desktop path an open clears the dialog's selection (`currentFiles = []`:
   `selectedFiles` is read-only and `selectedFile = ""` is refused), so an accept with no new choice answers
   `noResult`, never the previous file; a dialog that cannot open answers `failed`. Test: `UI_QT_QML_DOCUMENT_PICKER`.
 - `qml/CsvImportFlow.qml` imports a CSV and its companions for three owners: Imported files (`ImportsScreen`), the scan
@@ -15605,8 +15635,8 @@ issue #829) goes through `Navigation.announce(owner, line, text)`: it does nothi
 records `announced`/`announcements` on `owner` for tests, and calls `owner.Accessible.announce(text)` when the Qt in
 use has it. Each failure is read once, and a repeat is read again. Used by `BackupFlow`, `WizardScreen` (`csvNotice`,
 `replayNotice`), `CallRecordingsScreen`, `CallRecordingPlayer`, `CsvImportFlow` (the companion sheet's notice),
-`ImportsScreen` (an import problem, `noticeLine`) and `ScanListScreen` (a target CSV import problem,
-`validationMessage`).
+`ImportsScreen` (an import problem, `noticeLine`), `ScanListScreen` (a target CSV import problem,
+`validationMessage`) and `SignalSearchScreen` (an export's result, once its line can be reached: `announceExport()`).
 
 Building a screen raises a hide for each accessible item created hidden: Qt makes an item accessible as its
 `Accessible` properties are set, before its gate is evaluated. The bridge answers each hide on a large new subtree with

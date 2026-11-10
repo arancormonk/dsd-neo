@@ -261,8 +261,216 @@ Item {
     readonly property string sessionKey: String(status.session || "")
     onSessionKeyChanged: resetView()
     onVisibleChanged: {
-        if (!visible)
+        if (!visible) {
+            // Issue #826: a picker still out ends with the screen, as a
+            // cancel; a file already being written finishes.
+            exportPicker.cancel();
             resetView();
+            return;
+        }
+        forgetHeardExportMessages();
+        announceExportLater.restart();
+    }
+    // ---- Issue #826: exporting detections and avoids as CSV ----
+    // One export at a time, from either button: pending from the press until
+    // the picker backs out or the file is written. The model holds the rows it
+    // took at the press under `exportToken`.
+    property string exportKind: ""
+    property int exportToken: 0
+    property int exportCount: 0
+    property string exportReference: ""
+    readonly property bool exportPending: exportToken > 0
+    // What the last export said, under the button that started it:
+    // {text, error, heard}. `heard` once read out; a heard message is gone on
+    // the next visit, an unheard one waits to be read.
+    property var detectionsExportMessage: ({ text: "", error: false, heard: false })
+    property var avoidsExportMessage: ({ text: "", error: false, heard: false })
+    // Navigation.announce()'s record of what was read out.
+    property string announced: ""
+    property int announcements: 0
+    readonly property bool avoidsExportShown: !!searchModel && ((searchModel.avoids || []).length > 0 || (sessionAvoidsLive && (searchModel.sessionAvoids || []).length > 0))
+    function beginExport(kind) {
+        if (!searchModel || exportPending)
+            return;
+        clearExportMessages();
+        // The model takes the rows now; a list that changes later does not change the file.
+        var prepared = searchModel.prepareExport(kind) || {};
+        var token = Number(prepared.token) || 0;
+        if (token <= 0) {
+            if ((Number(prepared.count) || 0) === 0)
+                setExportMessage(kind, kind === "detections" ? qsTr("No detections to export.") : qsTr("No avoids to export."), false);
+            else
+                setExportMessage(kind, qsTr("The avoid lists were changing. Try again."), true);
+            return;
+        }
+        exportKind = kind;
+        exportToken = token;
+        exportCount = Number(prepared.count) || 0;
+        exportReference = "";
+        var stamp = Qt.formatDate(new Date(systems.realtimeNowMs()), "yyyy-MM-dd");
+        // Always a lowercase .csv: Android's save picker adds the type's own
+        // extension to a name whose extension differs in case.
+        exportPicker.suggestedName = (kind === "detections" ? qsTr("Signal search detections %1") : qsTr("Signal search avoids %1")).arg(stamp) + ".csv";
+        exportPicker.open();
+    }
+    function exportPicked(reference) {
+        if (!exportPending) {
+            // Not wanted any more: nothing will write a Download-folder row.
+            if (exportPicker.savedToDownloads)
+                decoderHost.discardPendingDownload(reference);
+            return;
+        }
+        var kind = exportKind, token = exportToken;
+        exportReference = reference;
+        if (searchModel.saveExport(token, reference))
+            return;
+        // Refused (a stale token, a write still running): the model has let
+        // the Download-folder row go, and no result will follow.
+        releaseExport(token);
+        setExportMessage(kind, qsTr("The export couldn't be written. Try another location."), true);
+    }
+    function exportPickCancelled() {
+        if (!exportPending)
+            return;
+        var token = exportToken;
+        searchModel.discardExport(token);
+        releaseExport(token);
+    }
+    function exportPickUnavailable(message) {
+        if (!exportPending)
+            return;
+        var kind = exportKind;
+        exportPickCancelled();
+        setExportMessage(kind, message, true);
+    }
+    // Let go of export @p token, only while it is still the one held.
+    function releaseExport(token) {
+        if (token !== exportToken)
+            return;
+        exportKind = "";
+        exportToken = 0;
+        exportCount = 0;
+        exportReference = "";
+    }
+    // SignalSearchModel::exportFinished(): a result for an export this screen
+    // no longer holds changes nothing.
+    function exportFinished(token, ok) {
+        if (token <= 0 || token !== exportToken)
+            return;
+        var kind = exportKind, count = exportCount;
+        // The Download folder's name for a save no picker took ("" otherwise).
+        var saved = ok && exportPicker.savedToDownloads ? decoderHost.savedDocumentName(exportReference) : "";
+        releaseExport(token);
+        setExportMessage(kind, ok ? exportedText(kind, count, saved) : qsTr("The export couldn't be written. Try another location."), !ok);
+    }
+    // The name goes in last, so a % in it is never read as a place marker.
+    function exportedText(kind, count, saved) {
+        if (kind === "detections") {
+            if (saved.length > 0)
+                return count === 1 ? qsTr("Exported 1 detection to Download/DSD-neo as %1.").arg(saved)
+                    : qsTr("Exported %1 detections to Download/DSD-neo as %2.").arg(Util.countText(count)).arg(saved);
+            return count === 1 ? qsTr("Exported 1 detection.") : qsTr("Exported %1 detections.").arg(Util.countText(count));
+        }
+        if (saved.length > 0)
+            return count === 1 ? qsTr("Exported 1 avoid to Download/DSD-neo as %1.").arg(saved)
+                : qsTr("Exported %1 avoids to Download/DSD-neo as %2.").arg(Util.countText(count)).arg(saved);
+        return count === 1 ? qsTr("Exported 1 avoid.") : qsTr("Exported %1 avoids.").arg(Util.countText(count));
+    }
+    function setExportMessage(kind, text, error) {
+        var message = { text: text, error: error === true, heard: false };
+        if (kind === "detections")
+            detectionsExportMessage = message;
+        else
+            avoidsExportMessage = message;
+        announceExportLater.restart();
+    }
+    function clearExportMessages() {
+        setExportMessage("detections", "", false);
+        setExportMessage("avoids", "", false);
+    }
+    function forgetHeardExportMessages() {
+        if (detectionsExportMessage.heard)
+            setExportMessage("detections", "", false);
+        if (avoidsExportMessage.heard)
+            setExportMessage("avoids", "", false);
+    }
+    // The line showing @p kind's message: the detections one lives in
+    // whichever Recent detections Loader is active.
+    function exportLine(kind) {
+        if (kind === "avoids")
+            return avoidsExportLine;
+        var loader = sessionDetections.item ? sessionDetections : idleDetections;
+        return loader.item ? loader.item.exportLine : null;
+    }
+    // Each message is read out once, as StoreNoticeCard.announceNew() reads
+    // its notices: only while its line is on the visible screen with nothing
+    // over it. One that arrives while the screen is hidden or under a sheet
+    // is read when the line can be reached; a rebuilt line (a Loader swap)
+    // never reads a heard one again.
+    function announceExport() {
+        for (var kind of ["detections", "avoids"]) {
+            var message = kind === "detections" ? detectionsExportMessage : avoidsExportMessage;
+            var line = exportLine(kind);
+            if (message.heard || !message.text.length || !visible || !line || !Navigation.allows(line) || !line.visible)
+                continue;
+            if (Navigation.announce(screen, line, message.text)) {
+                if (kind === "detections")
+                    detectionsExportMessage = Object.assign({}, message, { heard: true });
+                else
+                    avoidsExportMessage = Object.assign({}, message, { heard: true });
+            }
+        }
+    }
+    readonly property bool exportLinesReachable: Navigation.allows(screen)
+    onExportLinesReachableChanged: announceExportLater.restart()
+    // Once every binding has the new message; a Timer, which dies with the
+    // screen, rather than Qt.callLater.
+    Timer {
+        id: announceExportLater
+        interval: 0
+        onTriggered: screen.announceExport()
+    }
+    Connections {
+        target: screen.searchModel
+        ignoreUnknownSignals: true
+        function onExportFinished(token, ok) {
+            screen.exportFinished(token, ok);
+        }
+    }
+    DocumentPicker {
+        id: exportPicker
+        objectName: "searchExportPicker"
+        mode: "save"
+        mimeType: "text/csv"
+        nameFilters: [qsTr("CSV files") + " (*.csv)"]
+        defaultSuffix: "csv"
+        onAccepted: function (reference, displayName) {
+            screen.exportPicked(reference);
+        }
+        onRejected: screen.exportPickCancelled()
+        onUnavailable: function (reason, message) {
+            screen.exportPickUnavailable(message);
+        }
+    }
+    // The line under an export button: the result, plain text (it can name a
+    // saved file), read out by announceExport().
+    component ExportMessage: Text {
+        id: exportMessage
+        property var message: ({})
+        width: parent ? parent.width : 0
+        visible: text.length > 0
+        text: message.text || ""
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        color: message.error ? Theme.alert : Theme.textSecondary
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(14)
+        // Gated as every node a screen reader reaches is: behind an open
+        // sheet it leaves the tree, and holds no name.
+        readonly property bool navigationAllowed: Navigation.allows(exportMessage)
+        Accessible.role: Accessible.AlertMessage
+        Accessible.ignored: !navigationAllowed || !visible
+        Accessible.name: Accessible.ignored ? "" : text
     }
     onLiveSeqChanged: {
         // Read from status itself: `receiving` and liveShown may not have
@@ -873,10 +1081,13 @@ Item {
                 }
             }
             Loader {
+                id: sessionDetections
                 width: parent.width
                 active: screen.sessionActive
                 visible: active
                 sourceComponent: recentDetections
+                // A new detections line: an export message not yet read is read from it.
+                onItemChanged: announceExportLater.restart()
             }
             ReadableText { heading: true; visible: !screen.sessionActive; text: qsTr("Search ranges"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
             UiPanel {
@@ -943,10 +1154,12 @@ Item {
                 OutlineButton { visible: screen.editable; width: parent.width; text: qsTr("Add range"); onClicked: editor.openFor(-1, searchModel.defaultRange()) }
             }
             Loader {
+                id: idleDetections
                 width: parent.width
                 active: !screen.sessionActive
                 visible: active
                 sourceComponent: recentDetections
+                onItemChanged: announceExportLater.restart()
             }
             ReadableText { heading: true; visible: screen.sessionAvoidsLive && searchModel && (searchModel.sessionAvoids || []).length > 0; text: qsTr("Avoided this session"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
             Repeater {
@@ -970,6 +1183,26 @@ Item {
                     onClicked: searchModel.removeAvoid(Number(modelData))
                 }
             }
+            // Issue #826: both lists the screen shows, in one file. The result
+            // line stays when the lists empty meanwhile.
+            Column {
+                width: parent.width
+                spacing: 8
+                visible: screen.avoidsExportShown || screen.avoidsExportMessage.text.length > 0
+                OutlineButton {
+                    objectName: "searchExportAvoids"
+                    width: parent.width
+                    visible: screen.avoidsExportShown
+                    enabled: !screen.exportPending
+                    text: qsTr("Export avoids…")
+                    onClicked: screen.beginExport("avoids")
+                }
+                ExportMessage {
+                    id: avoidsExportLine
+                    objectName: "searchExportAvoidsMessage"
+                    message: screen.avoidsExportMessage
+                }
+            }
         }
     }
     // Recent detections: after Now while a search runs, after the ranges while
@@ -978,6 +1211,8 @@ Item {
         id: recentDetections
         Column {
             spacing: Theme.gap
+            // The export result line, for the screen's announceExport().
+            readonly property Item exportLine: detectionsExportLine
             ReadableText { heading: true; text: qsTr("Recent detections"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
             ReadableText {
                 width: parent.width
@@ -1051,6 +1286,27 @@ Item {
                 }
             }
             OutlineButton { objectName: "searchShowMore"; text: qsTr("Show more"); visible: !!searchModel && searchModel.history.length > screen.historyLimit; onClicked: screen.historyLimit += 25 }
+            // Issue #826: every stored detection, not only the rows shown. The
+            // export's state is the screen's, so a Loader swap keeps it.
+            Column {
+                readonly property bool buttonShown: !!searchModel && searchModel.history.length > 0
+                width: parent.width
+                spacing: 8
+                visible: buttonShown || detectionsExportLine.text.length > 0
+                OutlineButton {
+                    objectName: "searchExportDetections"
+                    width: parent.width
+                    visible: parent.buttonShown
+                    enabled: !screen.exportPending
+                    text: qsTr("Export detections…")
+                    onClicked: screen.beginExport("detections")
+                }
+                ExportMessage {
+                    id: detectionsExportLine
+                    objectName: "searchExportDetectionsMessage"
+                    message: screen.detectionsExportMessage
+                }
+            }
         }
     }
     Row {

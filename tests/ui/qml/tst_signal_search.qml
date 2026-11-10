@@ -36,6 +36,18 @@ Item {
         function arm() { arms++; return armError; }
         function saveRange(row, range) { ranges = [range]; return ""; }
         function defaultRange() { return Object.assign({}, ranges[0]); }
+        // Issue #826: what prepareExport() answers per kind, whether saveExport() takes the pick, and the export
+        // calls the screen made, oldest first.
+        property var prepared: ({})
+        property bool saveAccepted: true
+        property var exportCalls: []
+        signal exportFinished(int token, bool ok)
+        function prepareExport(kind) {
+            exportCalls = exportCalls.concat([["prepare", kind]]);
+            return Object.assign({}, prepared[kind] || {token: 0, count: -1});
+        }
+        function saveExport(token, reference) { exportCalls = exportCalls.concat([["save", token, reference]]); return saveAccepted; }
+        function discardExport(token) { exportCalls = exportCalls.concat([["discard", token]]); }
     }
     Loader {
         id: loader
@@ -60,6 +72,8 @@ Item {
         id: systemsStub
         property var byUid: ({"uid-a": {uid: "uid-a", name: "Warehouse"}, "uid-b": {uid: "uid-b", name: "Dock", avoidSite: true}})
         function getByUid(uid) { return byUid[uid] || {}; }
+        // A fixed clock: local noon on 2026-11-09, so an export's suggested name is known.
+        function realtimeNowMs() { return new Date(2026, 10, 9, 12, 0, 0).getTime(); }
     }
     TestCase {
         name: "SignalSearch"
@@ -78,6 +92,15 @@ Item {
             Ui.Navigation.speechStepFloorMs = 1000;
         }
         function cleanup() {
+            // Issue #826: no export, result line or hidden screen outlives its case, even one that failed part way.
+            loader.item.visible = true;
+            var exportPicker = findChild(loader.item, "searchExportPicker");
+            if (exportPicker && exportPicker.visible)
+                exportPicker.cancel();
+            if (loader.item.exportToken > 0)
+                model.exportFinished(loader.item.exportToken, false);
+            if (typeof loader.item.clearExportMessages === "function")
+                loader.item.clearExportMessages();
             Ui.Theme.resetFontScale();
             root.width = 411;
             root.height = 891;
@@ -110,6 +133,9 @@ Item {
                     noise: -63.2, range: "Local UHF", width: 12500, unresolved: true, ended: false,
                     knownLabel: "Warehouse · 463.5500 MHz", confirmed: false, am: false}};
             model.armError = "";
+            model.prepared = {detections: {token: 7, count: 2}, avoids: {token: 8, count: 1}};
+            model.saveAccepted = true;
+            model.exportCalls = [];
             root.hostFailure = "";
             saved.clear();
             back.clear();
@@ -2206,6 +2232,328 @@ Item {
             sheet.visible = false;
             scroll.contentY = 0;
             model.history = [];
+        }
+        // ---- Issue #826: exporting detections and avoids as CSV ----
+        function exportButton(kind) {
+            return findChild(loader.item, kind === "detections" ? "searchExportDetections" : "searchExportAvoids");
+        }
+        function exportLine(kind) {
+            return findChild(loader.item, kind === "detections" ? "searchExportDetectionsMessage" : "searchExportAvoidsMessage");
+        }
+        function exportPicker() {
+            return findChild(loader.item, "searchExportPicker");
+        }
+        function exportCalls(name) {
+            return JSON.stringify(model.exportCalls.filter(function (call) { return call[0] === name; }));
+        }
+        // Rows for both buttons: two detections and one permanent avoid.
+        function fillForExport() {
+            model.history = [historyHit(), historyHit({id: "41", frequency: 462600000, freqMHz: "462.600000"})];
+            model.avoids = [154430000];
+            wait(0);
+        }
+        // Press @p kind's button over its rows: the id of the save request it opens.
+        function beginExport(kind) {
+            fillForExport();
+            var button = exportButton(kind);
+            verify(button && button.visible && button.enabled, kind + " can be exported");
+            button.clicked();
+            var request = testContext.lastDocumentRequest();
+            compare(request.kind, "save");
+            compare(request.mime, "text/csv");
+            verify(exportPicker().visible, "the picker waits");
+            return request.id;
+        }
+        function noRequest() {
+            return JSON.stringify(testContext.lastDocumentRequest()) === "{}";
+        }
+        // Export detections… ends Recent detections, after Show more, while the history has rows: searching or idle.
+        function test_export_detections_button_follows_history() {
+            var screen = loader.item;
+            model.history = [];
+            wait(0);
+            verify(!exportButton("detections").visible, "no history, nothing to export");
+            fillForExport();
+            var button = exportButton("detections");
+            verify(button.visible && button.enabled);
+            compare(button.text, "Export detections…");
+            compare(button.width, findChild(screen, "searchHistoryRow").width, "full width");
+            var rows = [];
+            for (var i = 0; i < 40; ++i)
+                rows.push(historyHit({id: String(100 + i)}));
+            model.history = rows;
+            waitForRendering(screen);
+            var more = findChild(screen, "searchShowMore");
+            verify(more.visible);
+            verify(button.mapToItem(null, 0, 0).y > more.mapToItem(null, 0, 0).y, "after Show more");
+            more.clicked();
+            verify(exportButton("detections").visible, "still there after Show more");
+            screen.sessionActive = false;
+            wait(0);
+            verify(exportButton("detections").visible, "idle, under the ranges");
+        }
+        // Export avoids… follows the Permanent avoids list while either list the screen shows has an entry.
+        function test_export_avoids_button_follows_the_shown_lists() {
+            var screen = loader.item;
+            wait(0);
+            verify(!exportButton("avoids").visible, "no avoids, nothing to export");
+            model.avoids = [154430000];
+            verify(exportButton("avoids").visible, "permanent avoids alone");
+            compare(exportButton("avoids").text, "Export avoids…");
+            waitForRendering(screen);
+            var avoid = findChild(screen, "searchPermanentAvoid");
+            verify(exportButton("avoids").mapToItem(null, 0, 0).y > avoid.mapToItem(null, 0, 0).y, "after the list");
+            model.avoids = [];
+            verify(!exportButton("avoids").visible);
+            model.sessionAvoids = [463550000];
+            verify(exportButton("avoids").visible, "a live session-only list");
+            model.status = Object.assign({}, model.status, {phase: 7, hit: {}});
+            verify(!exportButton("avoids").visible, "a failed search shows no session list");
+            model.status = Object.assign({}, model.status, {phase: 4});
+            verify(exportButton("avoids").visible);
+            screen.sessionActive = false;
+            verify(!exportButton("avoids").visible, "the session list ended with the search");
+        }
+        // One CSV save picker for both, named for the day; one export at a time.
+        function test_export_opens_a_csv_save_picker_data() {
+            return [{tag: "detections", kind: "detections", name: "Signal search detections 2026-11-09.csv"},
+                    {tag: "avoids", kind: "avoids", name: "Signal search avoids 2026-11-09.csv"}];
+        }
+        function test_export_opens_a_csv_save_picker(data) {
+            var id = beginExport(data.kind);
+            compare(testContext.lastDocumentRequest().name, data.name);
+            compare(exportCalls("prepare"), JSON.stringify([["prepare", data.kind]]));
+            var picker = exportPicker();
+            compare(picker.mode, "save");
+            compare(picker.mimeType, "text/csv");
+            compare(JSON.stringify(picker.nameFilters), JSON.stringify(["CSV files (*.csv)"]));
+            compare(picker.defaultSuffix, "csv");
+            verify(!exportButton("detections").enabled && !exportButton("avoids").enabled, "both wait while the picker asks");
+            testContext.answerDocumentCancelled(id);
+            verify(exportButton("detections").enabled && exportButton("avoids").enabled);
+        }
+        // No rows to take: nothing to pick, and the line says so.
+        function test_export_with_nothing_to_export_data() {
+            return [{tag: "detections", kind: "detections", text: "No detections to export."},
+                    {tag: "avoids", kind: "avoids", text: "No avoids to export."}];
+        }
+        function test_export_with_nothing_to_export(data) {
+            model.prepared = {detections: {token: 0, count: 0}, avoids: {token: 0, count: 0}};
+            fillForExport();
+            exportButton(data.kind).clicked();
+            verify(noRequest(), "no picker");
+            verify(!exportPicker().visible);
+            var line = exportLine(data.kind);
+            compare(line.text, data.text);
+            verify(line.visible);
+            verify(exportButton(data.kind).enabled, "nothing pending");
+        }
+        function test_export_while_the_avoid_lists_change() {
+            model.prepared = {avoids: {token: 0, count: -1}};
+            fillForExport();
+            exportButton("avoids").clicked();
+            verify(noRequest(), "no picker");
+            compare(exportLine("avoids").text, "The avoid lists were changing. Try again.");
+            verify(exportButton("avoids").enabled);
+        }
+        // Backing out of the picker drops the export and says nothing.
+        function test_export_picker_cancel_discards_quietly() {
+            var id = beginExport("detections");
+            testContext.answerDocumentCancelled(id);
+            compare(exportCalls("discard"), JSON.stringify([["discard", 7]]));
+            compare(exportCalls("save"), "[]");
+            verify(!exportLine("detections").visible, "nothing to say");
+            compare(loader.item.exportToken, 0);
+            verify(exportButton("detections").enabled);
+        }
+        function test_export_picker_unavailable() {
+            var id = beginExport("avoids");
+            testContext.answerDocumentUnavailable(id, "noSavePicker");
+            compare(exportCalls("discard"), JSON.stringify([["discard", 8]]));
+            compare(exportLine("avoids").text, "This device has no save picker, and DSD-neo could not save to the Download folder.");
+            verify(exportLine("avoids").visible);
+            verify(exportButton("avoids").enabled);
+        }
+        // An accepted pick is saved; the line under the button says how it went, read out once.
+        function test_export_saves_the_pick_then_says_how_it_went_data() {
+            return [{tag: "detections", kind: "detections", token: 7, ok: true, text: "Exported 2 detections."},
+                    {tag: "one avoid", kind: "avoids", token: 8, ok: true, text: "Exported 1 avoid."},
+                    {tag: "detections to Download", kind: "detections", token: 7, ok: true, saved: "Signal search detections 2026-11-09 (1).csv",
+                     text: "Exported 2 detections to Download/DSD-neo as Signal search detections 2026-11-09 (1).csv."},
+                    {tag: "one avoid to Download", kind: "avoids", token: 8, ok: true, saved: "Signal search avoids 2026-11-09.csv",
+                     text: "Exported 1 avoid to Download/DSD-neo as Signal search avoids 2026-11-09.csv."},
+                    {tag: "failure", kind: "avoids", token: 8, ok: false, text: "The export couldn't be written. Try another location."}];
+        }
+        function test_export_saves_the_pick_then_says_how_it_went(data) {
+            var screen = loader.item;
+            var id = beginExport(data.kind);
+            var reference = "content://docs/" + data.kind;
+            if (data.saved)
+                testContext.setSavedDocumentName(reference, data.saved);
+            testContext.answerDocumentPicked(id, reference, "export.csv", !!data.saved);
+            compare(exportCalls("save"), JSON.stringify([["save", data.token, reference]]));
+            verify(!exportButton("detections").enabled && !exportButton("avoids").enabled, "both wait while the file is written");
+            verify(!exportLine(data.kind).visible, "nothing to say yet");
+            var before = screen.announcements;
+            model.exportFinished(data.token, data.ok);
+            var line = exportLine(data.kind);
+            compare(line.text, data.text);
+            verify(line.visible);
+            verify(Qt.colorEqual(line.color, data.ok ? Ui.Theme.textSecondary : Ui.Theme.alert), "error tone for a failure only");
+            compare(line.Accessible.role, Accessible.AlertMessage);
+            compare(line.Accessible.name, data.text);
+            tryCompare(screen, "announcements", before + 1);
+            compare(screen.announced, data.text);
+            verify(!exportLine(data.kind === "detections" ? "avoids" : "detections").visible, "the other line says nothing");
+            verify(exportButton("detections").enabled && exportButton("avoids").enabled, "free for the next export");
+            compare(exportCalls("discard"), "[]");
+            wait(20);
+            compare(screen.announcements, before + 1, "read once");
+        }
+        // A save the model refuses fails at once: nothing waits for a result, and the next export can start.
+        function test_refused_save_fails_at_once() {
+            model.saveAccepted = false;
+            var id = beginExport("detections");
+            testContext.answerDocumentPicked(id, "content://docs/a", "a.csv", true);
+            compare(exportCalls("save"), JSON.stringify([["save", 7, "content://docs/a"]]));
+            compare(exportLine("detections").text, "The export couldn't be written. Try another location.");
+            compare(loader.item.exportToken, 0, "the export is let go");
+            verify(!testContext.documentCalls().some(function (call) { return call.name === "discardPendingDownload"; }),
+                   "the model let the Download row go itself");
+            verify(exportButton("detections").enabled);
+            model.saveAccepted = true;
+            model.prepared = {detections: {token: 9, count: 2}};
+            exportButton("detections").clicked();
+            verify(exportPicker().visible, "a second export starts");
+            verify(!exportLine("detections").visible, "a new export clears the line");
+            testContext.answerDocumentPicked(testContext.lastDocumentRequest().id, "content://docs/b", "b.csv", false);
+            model.exportFinished(9, true);
+            compare(exportLine("detections").text, "Exported 2 detections.");
+        }
+        // A result for an export the screen no longer holds changes nothing.
+        function test_stale_export_result_is_ignored() {
+            var id = beginExport("detections");
+            testContext.answerDocumentCancelled(id);
+            model.prepared = {detections: {token: 9, count: 2}};
+            exportButton("detections").clicked();
+            testContext.answerDocumentPicked(testContext.lastDocumentRequest().id, "content://docs/b", "b.csv", false);
+            model.exportFinished(7, false);
+            model.exportFinished(0, false);
+            verify(!exportLine("detections").visible, "an old token says nothing");
+            compare(loader.item.exportToken, 9, "and leaves the newer export pending");
+            verify(!exportButton("detections").enabled);
+            model.exportFinished(9, true);
+            compare(exportLine("detections").text, "Exported 2 detections.");
+            model.exportFinished(9, false);
+            compare(exportLine("detections").text, "Exported 2 detections.", "a repeat changes nothing");
+        }
+        // The line is its own: a search failure neither hides it nor is hidden, and an emptied list keeps it.
+        function test_export_line_beside_a_search_failure() {
+            root.hostFailure = "Device detached: RTL-SDR";
+            var id = beginExport("avoids");
+            testContext.answerDocumentPicked(id, "content://docs/a", "a.csv", false);
+            model.exportFinished(8, true);
+            var message = findChild(loader.item, "searchMessage");
+            compare(message.text, "Device detached: RTL-SDR");
+            verify(message.visible);
+            verify(exportLine("avoids").visible);
+            compare(exportLine("avoids").text, "Exported 1 avoid.");
+            model.avoids = [];
+            verify(!exportButton("avoids").visible);
+            verify(exportLine("avoids").visible, "the result outlives its list");
+            root.hostFailure = "";
+            verify(exportLine("avoids").visible);
+        }
+        // Leaving the screen ends the picker as a cancel; nothing is said.
+        function test_hiding_the_screen_cancels_the_picker() {
+            var screen = loader.item;
+            var id = beginExport("detections");
+            screen.visible = false;
+            verify(!exportPicker().visible);
+            compare(exportCalls("discard"), JSON.stringify([["discard", 7]]));
+            verify(testContext.documentCalls().some(function (call) { return call.name === "cancelDocumentRequest" && call.id === id; }),
+                   JSON.stringify(testContext.documentCalls()));
+            screen.visible = true;
+            verify(exportButton("detections").enabled);
+            verify(!exportLine("detections").visible, "a cancel says nothing");
+        }
+        // A result that lands while the screen is hidden is kept and read once on return; heard, the next visit
+        // starts without it.
+        function test_result_while_hidden_is_read_once_on_return() {
+            var screen = loader.item;
+            var id = beginExport("detections");
+            testContext.answerDocumentPicked(id, "content://docs/a", "a.csv", false);
+            screen.visible = false;
+            var before = screen.announcements;
+            model.exportFinished(7, true);
+            wait(20);
+            compare(screen.announcements, before, "nothing is read to a hidden screen");
+            screen.visible = true;
+            compare(exportLine("detections").text, "Exported 2 detections.", "kept for the return");
+            tryCompare(screen, "announcements", before + 1);
+            wait(20);
+            compare(screen.announcements, before + 1, "once");
+            screen.visible = false;
+            screen.visible = true;
+            verify(!exportLine("detections").visible, "heard, it is gone on the next visit");
+            wait(20);
+            compare(screen.announcements, before + 1);
+        }
+        // Under the detection menu the line is out of reach: read once the menu closes.
+        function test_result_under_a_sheet_is_read_once_it_closes() {
+            var screen = loader.item;
+            var id = beginExport("detections");
+            testContext.answerDocumentPicked(id, "content://docs/a", "a.csv", false);
+            findChild(screen, "searchHistoryActions").activate();
+            var menu = findChild(screen, "searchDetectionMenu");
+            verify(menu.visible);
+            var before = screen.announcements;
+            model.exportFinished(7, true);
+            wait(20);
+            compare(screen.announcements, before, "nothing is read under the menu");
+            var line = exportLine("detections");
+            verify(line.visible, "drawn under the menu");
+            verify(line.Accessible.ignored, "out of the tree behind the menu");
+            menu.cancel();
+            tryCompare(screen, "announcements", before + 1);
+            compare(screen.announced, "Exported 2 detections.");
+            verify(!line.Accessible.ignored);
+            wait(20);
+            compare(screen.announcements, before + 1, "once");
+        }
+        // The search stopping moves Recent detections under the ranges (a new Loader item): the export goes on, and
+        // its line follows without being read twice.
+        function test_loader_swap_keeps_the_export_and_its_line() {
+            var screen = loader.item;
+            var id = beginExport("detections");
+            testContext.answerDocumentPicked(id, "content://docs/a", "a.csv", false);
+            screen.sessionActive = false;
+            wait(0);
+            verify(exportButton("detections").visible && !exportButton("detections").enabled, "still writing");
+            var before = screen.announcements;
+            model.exportFinished(7, true);
+            compare(exportLine("detections").text, "Exported 2 detections.");
+            tryCompare(screen, "announcements", before + 1);
+            screen.sessionActive = true;
+            wait(20);
+            verify(exportLine("detections").visible);
+            compare(exportLine("detections").text, "Exported 2 detections.", "the rebuilt line says it still");
+            compare(screen.announcements, before + 1, "and is not read again");
+        }
+        // A result that lands as the Loader swaps is read once, from the new line.
+        function test_result_during_a_loader_swap_is_read_once() {
+            var screen = loader.item;
+            var id = beginExport("detections");
+            testContext.answerDocumentPicked(id, "content://docs/a", "a.csv", false);
+            var before = screen.announcements;
+            model.exportFinished(7, true);
+            screen.sessionActive = false;
+            tryCompare(screen, "announcements", before + 1);
+            compare(screen.announced, "Exported 2 detections.");
+            verify(exportLine("detections").visible);
+            screen.sessionActive = true;
+            wait(20);
+            compare(screen.announcements, before + 1);
         }
         function test_capture_menu() {
             model.history = [historyHit({matches: [{systemUid: "uid-a"}, {systemUid: "uid-b"}]})];
