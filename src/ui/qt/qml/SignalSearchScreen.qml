@@ -312,11 +312,12 @@ Item {
                 setExportMessage(kind, qsTr("The avoid lists were changing. Try again."), true);
             return;
         }
+        // Before the export is held: a failure here leaves nothing pending.
+        var stamp = Qt.formatDate(new Date(systems.realtimeNowMs()), "yyyy-MM-dd");
         exportKind = kind;
         exportToken = token;
         exportCount = Number(prepared.count) || 0;
         exportReference = "";
-        var stamp = Qt.formatDate(new Date(systems.realtimeNowMs()), "yyyy-MM-dd");
         // Always a lowercase .csv: Android's save picker adds the type's own
         // extension to a name whose extension differs in case.
         exportPicker.suggestedName = (kind === "detections" ? qsTr("Signal search detections %1") : qsTr("Signal search avoids %1")).arg(stamp) + ".csv";

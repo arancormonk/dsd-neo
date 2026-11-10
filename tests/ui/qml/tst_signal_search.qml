@@ -2356,6 +2356,24 @@ Item {
             compare(exportLine("avoids").text, "The avoid lists were changing. Try again.");
             verify(exportButton("avoids").enabled);
         }
+        // The day for the suggested name is read before the export is held: a press that fails there leaves
+        // neither button waiting.
+        function test_export_that_cannot_name_the_file_holds_nothing() {
+            var screen = loader.item;
+            fillForExport();
+            screen.systems = null;
+            var threw = false;
+            try {
+                screen.beginExport("detections");
+            } catch (e) {
+                threw = true;
+            }
+            screen.systems = systemsStub;
+            verify(threw, "no clock to name the file by");
+            verify(noRequest(), "no picker");
+            compare(screen.exportToken, 0);
+            verify(exportButton("detections").enabled && exportButton("avoids").enabled, "nothing pending");
+        }
         // Backing out of the picker drops the export and says nothing.
         function test_export_picker_cancel_discards_quietly() {
             var id = beginExport("detections");
