@@ -84,6 +84,7 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         dsp/test_dsp_simd_widen.cpp
         dsp/test_dsp_snr_estimator.cpp
         dsp/test_dsp_simd_stats.cpp
+        dsp/test_dsp_speech_agc.c
         dsp/test_dsp_squelch_floor.c
         dsp/test_dsp_tetra_chain.cpp
         dsp/test_dsp_nfm_noise_squelch.c
@@ -126,6 +127,7 @@ elseif(MSVC)
         dsp/test_dsp_simd_widen.cpp
         dsp/test_dsp_snr_estimator.cpp
         dsp/test_dsp_simd_stats.cpp
+        dsp/test_dsp_speech_agc.c
         dsp/test_dsp_squelch_floor.c
         dsp/test_dsp_tetra_chain.cpp
         dsp/test_dsp_nfm_noise_squelch.c
@@ -1409,6 +1411,12 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_dsp_analog_voice
   HEADERS_PUBLIC_DSP_ANALOG_VOICE
   dsd-neo/dsp/analog_voice.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_speech_agc
+  HEADERS_PUBLIC_DSP_SPEECH_AGC
+  dsd-neo/dsp/speech_agc.h
   C
 )
 dsd_neo_add_public_header_smoke_test(
@@ -7114,6 +7122,24 @@ target_link_libraries(
     PRIVATE dsd-neo_dsp ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(NAME DSP_ANALOG_VOICE COMMAND dsd-neo_test_dsp_analog_voice)
+
+# The speech level AGC and the peak limiter: synthetic speech, vowels, tones and noise, read with the P.56 meter.
+add_executable(dsd-neo_test_dsp_speech_agc dsp/test_dsp_speech_agc.c)
+target_link_libraries(
+    dsd-neo_test_dsp_speech_agc
+    PRIVATE dsd-neo_dsp dsd-neo_test_speech_level ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME DSP_SPEECH_AGC COMMAND dsd-neo_test_dsp_speech_agc)
+# The floor's recovery after 60-120 s of open-squelch hiss, on its own so the cases above stay quick.
+add_test(NAME DSP_SPEECH_AGC_LONG COMMAND dsd-neo_test_dsp_speech_agc --long)
+set_tests_properties(DSP_SPEECH_AGC_LONG PROPERTIES LABELS "long")
+
+# Opt-in micro-benchmark of the speech AGC (ns per sample at 8, 22.05 and 48 kHz); not a test.
+add_executable(dsd-neo_bench_speech_agc EXCLUDE_FROM_ALL dsp/bench_speech_agc.c)
+target_link_libraries(
+    dsd-neo_bench_speech_agc
+    PRIVATE dsd-neo_dsp dsd-neo_test_speech_level ${DSD_NEO_TEST_MATH_LIB}
+)
 
 # The analog monitor's audio chain (issue #518): source gains, fixed gain and AGC,
 # band choice, legacy filter flags, resets and the state-extension slot; and the -6

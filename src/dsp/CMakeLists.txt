@@ -42,6 +42,7 @@ target_sources(
         analog_tone_policy.c
         analog_voice.c
         analog_audio.c
+        speech_agc.c
         squelch_floor.c
         noise_squelch_bank.c
         nfm_noise_squelch.c
@@ -198,13 +199,16 @@ endif()
 # same promise for its band-pass and window sums, on the band-pass bank it
 # shares with the PCM noise squelch, which promises it for its learner too. The
 # replay's I/Q resampler promises the same bits however a capture is cut into
-# blocks, which a vectoriser's alignment peeling could otherwise break.
+# blocks, which a vectoriser's alignment peeling could otherwise break. The
+# speech AGC makes the same promise for its frame sums and its autocorrelation,
+# and drops non-finite samples before they reach them.
 set(_dsd_neo_dsp_ieee_c_sources
     rate_converter.c
     iq_resampler.c
     analog_sink.c
     analog_voice.c
     analog_audio.c
+    speech_agc.c
     squelch_floor.c
     noise_squelch_bank.c
     nfm_noise_squelch.c

@@ -6360,6 +6360,25 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`test_stream_voice_chain_covers_the_whole_frame`, `test_stream_voice_chain_onepoles_run_at_8k`,
   `test_encoder_rtl_input_reaches_pcm_scale`), `EDACS_GRANT_TUNE_MATRIX` (`rtl-unclipped`), the `DECODE_IQ_ANALOG_*`
   level, parity and fixed-gain cases.
+- The speech level AGC is `src/dsp/speech_agc.c` (`<dsd-neo/dsp/speech_agc.h>`), one module for digital and analog
+  voice that aims every talker at one active speech level (P.56 -24 dBFS). It is not wired into a chain yet. Pure and
+  caller-owned: the state is sized at compile time for 8-192 kHz (init refuses other rates) and nothing is allocated.
+  It analyses 20 ms frames: a frame is speech when it stands 9 dB over a tracked noise floor (which restarts when the
+  noise drops 10 dB under it or the floor goes stale under voiced audio) and its autocorrelation, on the frame
+  decimated to about 8 kHz, has a strict interior pitch peak of at least 0.5 between 2.5 and 15 ms. Six speech frames
+  in a row commit; a run whose last 12 frames hold one level and pitch is a steady tone and lifts the floor instead.
+  Committed frames feed a power-domain level estimate, and each committing frame steps the gain toward the target
+  (1 dB for the first 20 steps, then +0.12 / -0.20 dB), within -12/+15 dB of the start gain. A separate attenuator
+  eases long non-speech (open-squelch hiss) down to -24 dB without touching the estimate. The gain ramps over the
+  next frame (no added latency), then a peak limiter holds every sample at -1 dBFS. Flags: `learn` and `decodable`
+  per call, `tone` caps a decoder's tone frames at the start gain; `dsd_speech_agc_process_runs()` takes a learn flag
+  per sample and turns its edges into `dsd_speech_agc_gate_closed()` (a complete rollback to the oldest of 13
+  per-frame checkpoints, dropping any pending run) and `dsd_speech_agc_gate_opened()`. The output is bit-identical
+  for any partition. `dsd_peak_limiter` is the same limiter on its own, for mixers. The source and its test keep IEEE
+  semantics under fast-math. Tests: `DSP_SPEECH_AGC` (synthetic talkers, the gain law, startup, vowels, tones, hum,
+  pitch edges, noise, attenuator, tone cap, decodability, rollback against a control, partitions, cross-rate, ceiling,
+  reset, non-finite, fixed mode, the limiter), `DSP_SPEECH_AGC_LONG` (the floor after 60-120 s of hiss); the
+  `dsd-neo_bench_speech_agc` micro-benchmark.
 - The auto squelch's core (issue #518 follow-up) is `src/dsp/squelch_floor.c` (`<dsd-neo/dsp/squelch_floor.h>`), pure
   and on the channel-filtered I/Q at the channel rate (before any post-decimation). A plan
   (`dsd_squelch_floor_plan_design()`) turns the channel taps and the half-band stage ahead of them into the
