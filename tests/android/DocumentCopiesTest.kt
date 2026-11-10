@@ -185,6 +185,7 @@ private fun checkNoTransferInFlight(what: String) {
     check(DocumentCopies.transfersInFlight() == 0) { "$what leaves no transfer registered" }
 }
 
+/** Saves [source] over a document of [old] bytes whose provider [configure] describes; returns it and the result. */
 private fun save(old: Int, source: ByteArray, configure: FakeResolver.Document.() -> Unit): Triple<FakeResolver, String, Boolean> {
     val resolver = FakeResolver()
     val uri = resolver.add(bytes(old, seed = 99), configure)

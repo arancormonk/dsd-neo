@@ -14770,8 +14770,9 @@ Configuration backup (issue #580; the Qt side is under UI, Qt, "Configuration ba
   and one that never reached Kotlin (aborted, no resolver) or whose JNI call failed discards its Download-folder row
   (`platformDiscardPendingDownload()`), so a save that ends after the host is gone settles its row too;
   `discardWrite()` discards one never started.
-- `abortDocumentTransfers()` (only `~BackupModel`) cancels the `CancellationSignal` of every provider call in flight,
-  raises `DocumentTransfer`'s sticky flag, which every chunk checks, and then the base host's. The delete is skipped
+- `abortDocumentTransfers()` (only at teardown: `~BackupModel`, and `closeRecordingWork()` while a recording transfer
+  runs) cancels the `CancellationSignal` of every provider call in flight, raises `DocumentTransfer`'s sticky flag,
+  which every chunk checks, and then the base host's. The delete is skipped
   after an abort, so a save stopped partway leaves a partial document, which never opens as a backup.
 - Tests: `UI_QT_ANDROID_HOST` (engine-busy decision, import dispatch, the import transport's save and its rows),
   `UI_QT_IMPORT_TRANSPORT` (the base transport's cap, cancel, abort, progress and save, and the host's hand-out),

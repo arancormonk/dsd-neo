@@ -109,9 +109,9 @@ DecoderHostAndroid::ImportTransport::forget(qint64 request) {
 }
 
 /*
- * The host's copyFileToDocument() without the host. A save that never reached DocumentCopies leaves a Download-folder
- * row (#829) to discard; one that did settled it there, so the discard after a failed call is a no-op unless the JNI
- * call itself failed.
+ * The backup's save (#831), which needs no host. A save that never reached DocumentCopies leaves a Download-folder row
+ * (#829) to discard; one that did settled it there, so the discard after a failed call is a no-op unless the JNI call
+ * itself failed.
  */
 bool
 DecoderHostAndroid::ImportTransport::writeFromFile(const QString& path, const QString& reference) {

@@ -217,9 +217,9 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     /**
      * @brief The import copies' transport (#832; decoder_host_android_imports.cpp), on the import worker thread.
      *
-     * A content:// reference goes over JNI to DocumentCopies' import copies, on the held ContentResolver, as the
-     * backup's copies do: the destination is cleared first (DocumentLocalFailed when it cannot be), and without a held
-     * ContentResolver the copy is DocumentLocalFailed. The platform's codes pass through, DocumentCancelled included.
+     * A content:// reference goes over JNI to DocumentCopies' import copies, on the held ContentResolver: the
+     * destination is cleared first (DocumentLocalFailed when it cannot be), and without a held ContentResolver the copy
+     * is DocumentLocalFailed. The platform's codes pass through, DocumentCancelled included.
      * A copy reported without its file (a failed JNI call reads as 0) is DocumentLocalFailed; any other answer is
      * DocumentFailed. Any other reference takes the base transport's local copy. cancel() and forget() reach both
      * sides; progress() reads the side the latest copy took. abortDocumentTransfers() stops the platform's copies

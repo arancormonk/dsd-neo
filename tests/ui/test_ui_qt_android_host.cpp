@@ -973,8 +973,9 @@ write_file(const QString& path, const QByteArray& bytes) {
 }
 
 /*
- * The import copies' transport (#832): a content URI goes to the platform's import copy with its request id, and its
- * answer is read as the backup's is; any other reference takes the base transport's local copy.
+ * The import copies' transport (#832): a content URI goes to the platform's import copy with its request id, a copy
+ * counts only with its file in place and an unknown answer is a failure; any other reference takes the base
+ * transport's local copy.
  */
 static void
 check_import_dispatch() {

@@ -82,8 +82,9 @@ object DocumentTransfer {
      * Stop every copy at its next chunk, and fail every later one, for the rest of the process.
      *
      * Only teardown raises it, through DocumentCopies.abort() (DecoderHostAndroid::abortDocumentTransfers(), from
-     * BackupModel's destructor), which also cancels the provider calls in flight. A read or write on a descriptor the
-     * provider holds blocked is not interrupted: the copy stops once that call returns.
+     * BackupModel's destructor and the host's closeRecordingWork()), which also cancels the provider calls in flight. A
+     * read or write on a descriptor the provider holds blocked is not interrupted: the copy stops once that call
+     * returns.
      */
     fun abort() {
         aborted = true
