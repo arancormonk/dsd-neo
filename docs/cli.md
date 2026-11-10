@@ -361,10 +361,13 @@ Windows console runs:
   carrier, a retune and a trunk-scan switch each end the open capture, and the next frame starts another. Two-slot
   protocols write one file per slot (`_S1`, `_S2`); X2-TDMA writes both slots into one. Each frame is saved by its
   own verdict, not the previous frame's, the one that decides its audio and its per-call WAV: encryption judged by
-  the protocol that owns the call (DMR, P25 Phase 1 and Phase 2, NXDN, dPMR), the encrypted-audio mute and reverse
-  mute (`-q`), plus talkgroup policy; X2-TDMA, D-STAR, ProVoice and YSF (all three voice modes) classify no
+  the protocol that owns the call (DMR, P25 Phase 1 and Phase 2, NXDN, dPMR, X2-TDMA), the encrypted-audio mute and
+  reverse mute (`-q`), plus talkgroup policy; D-STAR, ProVoice and YSF (all three voice modes) classify no
   encryption, so policy alone decides theirs; and for SDRTrunk JSON playback, slot 1's policy once playback's own
-  decode and crypto checks pass. YSF frames are captured once a FICH has verified the transmission on the carrier.
+  decode and crypto checks pass. X2-TDMA says whether a superframe is encrypted only after its first three voice
+  frames: those frames follow the slot's previous superframe, and in a call's first superframe they are muted and
+  not saved, whatever the mute options. YSF frames are captured once a FICH has verified the transmission on the
+  carrier.
 - `-J <file>` Append event log output. Every line starts with a `YYYY-MM-DD HH:MM:SS` stamp, so the file
   filters, sorts and splits by time with ordinary line tools. An event's detail lines (`Text:` for a decoded
   text message, `Talker Alias:`, `GPS:`, `DSD-neo:` for a decoder notice) follow its line and repeat that
@@ -506,7 +509,7 @@ does.
 - `-Q <file>` Write structured DSP or M17 stream data to `./DSP/<file>`
 - `-q` Reverse mute: mute clear audio, play encrypted audio, whether or not a loaded key decrypts it. It applies to
   the protocols whose encryption the decoder classifies: DMR, P25 (encrypted P25 without a key plays only while
-  encrypted calls are followed), NXDN and dPMR, in both output formats. YSF, D-STAR, X2-TDMA and ProVoice are not
+  encrypted calls are followed), NXDN, dPMR and X2-TDMA, in both output formats. YSF, D-STAR and ProVoice are not
   affected. SDRTrunk JSON playback ignores it. WAV recordings and MBE capture (`-d`) follow the same verdict.
   Keystream exhaustion keeps a frame muted even under reverse mute.
 

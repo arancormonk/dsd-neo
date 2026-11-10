@@ -2001,9 +2001,10 @@ frames through the vocoder: DMR speech, tone, AMBE silence, erasure, a C0 past c
 key is not decodable whatever the encrypted-audio mute, a clear one is under reverse mute, and a refused slot is not
 admitted; P25 Phase 1 speech, tail erasure and decode failure, an encrypted call not decodable though the user's
 override plays it, and YSF full rate on the P25 decoder decodable; P25 Phase 2 decodable by the crypto rule alone
-(a talkgroup-muted slot stays decodable); NXDN by its cipher class; X2-TDMA, D-STAR and ProVoice decodable on their
-own slots. `CORE_MBE_FILE_IO` plays `.amb` (speech, tone, silence, a recorded C0 count that repeats), `.dmb` and `.imb`
-records and SDRTrunk JSON (clear and encrypted with no key, speech, silence and a repeat). `YSF_DCH_DECODE` checks
+(a talkgroup-muted slot stays decodable); NXDN by its cipher class; X2-TDMA by its own timeslot's encryption (not
+while unknown); D-STAR and ProVoice decodable. `CORE_MBE_FILE_IO` plays `.amb` (speech, tone, silence, a recorded C0
+count that repeats), `.dmb` and `.imb` records and SDRTrunk JSON (clear and encrypted with no key, speech, silence
+and a repeat). `YSF_DCH_DECODE` checks
 V/D2's frames from stubbed mbelib results. `M17_STATE_DISPATCH` checks received Codec2 voice is decodable, admitted
 speech and the stream encoder's own decoded monitor passes no info. `TETRA_VOICE_PIPELINE` checks the 240-to-160
 recut (an output frame is concealment or undecodable when either codec frame it draws on was) and the transmission
@@ -2011,6 +2012,12 @@ count passed as the talkspurt: kept when a talker is named, a call renamed, or t
 gap (`tetra_forget_carrier()`, twice in a row too, a rename during the gap included); advanced for another talker, the
 trail and the next grant after D-TX CEASED (granted during a gap too), direct mode speech, another direct-mode source
 after a gap, and a speech-end pause, with or without a gap.
+
+`X2TDMA_VOICE_CRYPTO` builds whole X2-TDMA voice superframes (EEEI or AIEI in the second burst) and feeds them to
+`processX2TDMAvoice()` through a stubbed dibit reader, with the real vocoder and mixers behind it. For each frame it
+checks the speaker, the static or per-call WAV, MBE capture and the frame's decodability: clear to encrypted and back
+on either slot, a call encrypted from its start, both slots in turn, reverse mute and the encrypted-audio override.
+The first three frames of a call are muted; later superframes' first three follow the slot's previous superframe.
 
 `DECODE_IQ_VOICE_CHAIN_*` (CTest labels `iq-decode` and `voice-chain`) replay a voice fixture with `-P` through
 `tests/iq_voice_chain_check.cmake` under integer output to stdout, float output (`-y`) to stdout and `-o null`, and

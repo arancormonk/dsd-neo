@@ -332,9 +332,10 @@ dsd_voice_crypto_class dsd_nxdn_voice_crypto_class(const dsd_state* state);
  * One verdict for every output (issue #655): P25 Phase 1 and Phase 2 by the P25 rule
  * (p25_crypto_audio_output_permitted(), Phase 2 also needs its decode gate); NXDN and dPMR by
  * dsd_nxdn_voice_crypto_class() and dsd_voice_crypto_class_audible() on slot 0; DMR by the vocoder's verdict on the
- * slot's last frame (dsd_state::mbe_slot_muted), since it depends on the keystream that frame got. Protocols with no
- * encryption classified here (YSF, D-STAR, X2-TDMA, ProVoice), no protocol, and SDRTrunk JSON playback, which checks
- * crypto itself, always play. The FDMA mixers call it for the frame they play; the vocoder stores it per slot.
+ * slot's last frame (dsd_state::mbe_slot_muted), since it depends on the keystream that frame got, and X2-TDMA by the
+ * same verdict, since its encryption is known per superframe (dsd_state::x2tdma_slot_crypto). Protocols with no
+ * encryption classified here (YSF, D-STAR, ProVoice), no protocol, and SDRTrunk JSON playback, which checks crypto
+ * itself, always play. The FDMA mixers call it for the frame they play; the vocoder stores it per slot.
  */
 int dsd_voice_crypto_audible(const dsd_opts* opts, const dsd_state* state, int slot);
 

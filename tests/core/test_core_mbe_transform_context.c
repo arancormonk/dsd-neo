@@ -556,6 +556,14 @@ test_transformed_frame_keeps_c0_repeat_rule(void) {
     return rc;
 }
 
+/* processX2TDMAvoice() tells the vocoder each timeslot's encryption before a burst's frames decode; until it does, an
+   X2-TDMA frame is muted. These cases feed X2 frames straight to the vocoder, as frames of a superframe judged clear. */
+static void
+x2_slots_judged_clear(dsd_state* state) {
+    state->x2tdma_slot_crypto[0] = DSD_X2TDMA_CRYPTO_CLEAR;
+    state->x2tdma_slot_crypto[1] = DSD_X2TDMA_CRYPTO_CLEAR;
+}
+
 static void
 init_mbe_state(dsd_state* state, mbe_parms* cur, mbe_parms* prev, mbe_parms* prev_enhanced, mbe_parms* cur2,
                mbe_parms* prev2, mbe_parms* prev_enhanced2) {
@@ -581,6 +589,7 @@ init_mbe_state(dsd_state* state, mbe_parms* cur, mbe_parms* prev, mbe_parms* pre
     state->aout_max_buf_pR = state->aout_max_bufR;
     state->aout_gain = 1.0f;
     state->aout_gainR = 1.0f;
+    x2_slots_judged_clear(state);
 }
 
 static int
@@ -6209,6 +6218,7 @@ x2_sequence_check(int floating_point, int channels, int per_call, int slot1_on, 
 
     state->synctype = DSD_SYNC_X2TDMA_VOICE_POS;
     state->lastsynctype = DSD_SYNC_X2TDMA_VOICE_POS;
+    x2_slots_judged_clear(state);
     dsd_udp_audio_hooks hooks = {0};
     hooks.blast = mono_mix_count_blast;
     dsd_udp_audio_hooks_set(hooks);
@@ -6512,6 +6522,7 @@ run_chain_case(const chain_protocol_case* p, const chain_output_case* c, short* 
     state->lastsynctype = p->protocol;
     state->currentslot = p->slot;
     state->p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    x2_slots_judged_clear(state);
     state->aout_gain = 15.0f;
     state->aout_gainR = 15.0f;
     opts->pulse_digi_out_channels = 1;
@@ -6995,6 +7006,35 @@ test_frame_info_fdma_owners(void) {
         frame_info_ambe(DSD_VOICE_PROTOCOL_X2TDMA, ambe_fr);
         rc |= expect_frame_info(slot ? "frame info x2 timeslot 2" : "frame info x2 timeslot 1", slot,
                                 DSD_VOICE_MEDIA_SPEECH, 1, 1);
+        rc |= expect_eq_int("frame info x2 clear verdict", g_fi_state.mbe_slot_muted[slot], 0);
+        /* The timeslot's own encryption, as processX2TDMAvoice() set it: encrypted is undecryptable whatever the
+           encrypted-audio mute; unknown (a call's opening frames) is neither decodable nor heard. The other timeslot's
+           value is not read. */
+        for (int mute_enc = 0; mute_enc <= 1; mute_enc++) {
+            static const uint8_t kinds[2] = {DSD_X2TDMA_CRYPTO_ENCRYPTED, DSD_X2TDMA_CRYPTO_UNKNOWN};
+            for (int k = 0; k < 2; k++) {
+                frame_info_session(DSD_SYNC_X2TDMA_VOICE_POS, slot);
+                g_fi_opts.dmr_mute_encL = mute_enc;
+                g_fi_opts.dmr_mute_encR = mute_enc;
+                g_fi_state.x2tdma_slot_crypto[slot] = kinds[k];
+                /* A previous frame's samples, which a muted frame must not leave for the mixers. */
+                for (size_t i = 0; i < sizeof(g_fi_state.s_l) / sizeof(g_fi_state.s_l[0]); i++) {
+                    g_fi_state.s_l[i] = 1234;
+                }
+                frame_info_ambe(DSD_VOICE_PROTOCOL_X2TDMA, ambe_fr);
+                rc |= expect_frame_info(k ? "frame info x2 unknown" : "frame info x2 encrypted", slot,
+                                        DSD_VOICE_MEDIA_SPEECH, 0, 1);
+                const int muted = k ? 1 : mute_enc;
+                rc |= expect_eq_int(k ? "frame info x2 unknown verdict" : "frame info x2 encrypted verdict",
+                                    g_fi_state.mbe_slot_muted[slot], muted);
+                int staged_nonzero = 0;
+                for (size_t i = 0; i < sizeof(g_fi_state.s_l) / sizeof(g_fi_state.s_l[0]); i++) {
+                    staged_nonzero |= g_fi_state.s_l[i] != 0;
+                }
+                rc |= expect_eq_int("frame info x2 staged for the mono mixer", g_fi_state.audio_out_idx != 0, !muted);
+                rc |= expect_eq_int("frame info x2 staged samples", staged_nonzero, !muted);
+            }
+        }
     }
 
     char dstar_d[49] = {0};

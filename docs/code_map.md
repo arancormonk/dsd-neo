@@ -2530,8 +2530,10 @@ suite runs under this compiler.
   `p25_crypto_audio_output_permitted()` in `<dsd-neo/protocol/p25/p25_crypto.h>`, shared with the record gate.
   Per-call WAV writers use `dsd_audio_record_gate_mono()` (the vocoder's verdict on the slot's frame and policy), or
   `dsd_audio_record_policy_gate_slot()` (policy alone, on the slot the protocol publishes) where the decode path
-  settles crypto itself: X2-TDMA, D-STAR, YSF V/D2, EDACS analog and SDRTrunk JSON
-  playback (YSF EHR and full-rate frames go through the vocoder's full record gate). Every MBE capture save point (`mbe_capture_frame()` in `src/core/vocoder/dsd_mbe.c`, YSF V/D2 in `ysf.c`, JSON
+  settles crypto itself: D-STAR, YSF V/D2, EDACS analog and SDRTrunk JSON
+  playback (YSF EHR and full-rate frames go through the vocoder's full record gate). X2-TDMA's per-call WAV takes the
+  frame's verdict on its timeslot and that policy. Every MBE capture save point (`mbe_capture_frame()` in
+  `src/core/vocoder/dsd_mbe.c`, YSF V/D2 in `ysf.c`, JSON
   playback in `dsd_file.c`) applies the same policy gate; the vocoder's save points also apply the frame's verdict
   (below), which for P25 is the P25 speaker rule. The static WAV writes only recordable slots: the mono paths ask about the slot being played (X2-TDMA may
   play slot 1), and the stereo mixes write silent any channel whose routed source slot, as the output policy
@@ -2539,7 +2541,8 @@ suite runs under this compiler.
   WAV block; YSF writes only its V/D2 frames, which decode straight through mbelib. X2-TDMA stages either timeslot
   in the mono (left) buffer: the vocoder writes only its per-call WAV, into the frame's own timeslot's file from that
   buffer (`dsd_write_mono_voice_to_slot_wav()`), and leaves the static WAV to the mono mixer's stereo block (issue
-  #654). The mono mixers (SS and MS) read the switch of the timeslot they play (`dsd_mono_source_slot_on()`:
+  #654). A frame its timeslot's verdict mutes stages nothing there (silence in `s_l`). The mono mixers (SS and MS)
+  read the switch of the timeslot they play (`dsd_mono_source_slot_on()`:
   `slot2_on` for an X2 slot-2 frame, `slot1_on` otherwise) as their last gate, after the talkgroup gate, so a hold
   never plays a switched-off timeslot. Every mono mixer call carries a frame the vocoder just synthesized: X2 mixes
   nothing for a data or idle timeslot, and P25 Phase 1 mixes nothing for a frame `process_IMBE()` did not dispatch (a
@@ -2577,8 +2580,15 @@ suite runs under this compiler.
   settles its decryptability in the frame classification; no mixer applies a forced-privacy unmute override.
   P25 Phase 1 and Phase 2 use `p25_crypto_audio_output_permitted()`; Phase 2 also needs its decode gate. NXDN and
   dPMR use `nxdn_cipher_type` and the key the vocoder applies
-  (`dsd_nxdn_voice_crypto_class()`; the dPMR bridge sets the cipher per half). YSF, D-STAR, X2-TDMA and ProVoice
-  classify no encryption. The user's class rule (`dsd_voice_crypto_class_audible()`) applies reverse mute (`-q`)
+  (`dsd_nxdn_voice_crypto_class()`; the dPMR bridge sets the cipher per half). X2-TDMA is judged per timeslot and
+  superframe: `processX2TDMAvoice()` sets `dsd_state::x2tdma_slot_crypto[slot]` before each burst's frames from the
+  superframe's EEEI/AIEI (encrypted is undecryptable: X2 has no decryption), with the call epoch it was read in. The
+  indicators arrive in the second burst, after the first burst's three frames: those take the previous superframe's
+  value of the same call epoch, and are unknown in a call's first superframe (a new epoch). An unknown frame is muted,
+  not recorded, not captured and not decodable whatever the user's options, so a clear <-> encrypted change inside a
+  call applies from the second burst (at most three frames, 60 ms, once per change). The mixers read X2's verdict from
+  `mbe_slot_muted`, as DMR's (test: `X2TDMA_VOICE_CRYPTO`). YSF, D-STAR and ProVoice classify no encryption. The
+  user's class rule (`dsd_voice_crypto_class_audible()`) applies reverse mute (`-q`)
   to the encrypted transmission, whether a key decrypts it or not, and mutes clear frames; otherwise an
   undecryptable frame plays only while the slot's encrypted-audio mute (`dmr_mute_encL/R`, slot 0's for NXDN and
   dPMR) is off. Protocols that classify no encryption and SDRTrunk JSON playback, which checks crypto itself, do
@@ -2804,7 +2814,7 @@ suite runs under this compiler.
   decoders, so a decode failure or a P25 tail erasure is none; a TETRA bad frame is concealment), `decodable` (the
   frame's encryption class only, never a user mute rule, talkgroup or receive policy: DMR's slot class, P25 Phase 1 and
   2 `p25_crypto_audio_permitted(NULL, ...)`, NXDN/dPMR's cipher class, SDRTrunk JSON's own encryption flag and
-  keystream, TETRA's speech class; YSF, D-STAR, ProVoice, X2-TDMA (`mbe_x2_slot_decodable()`) and files 1),
+  keystream, TETRA's speech class, X2-TDMA's timeslot class, 0 while unknown; YSF, D-STAR, ProVoice and files 1),
   `admitted` (`dsd_receive_current_allows()` on the slot the verdict judges; files, JSON and M17 1) and `talkspurt`
   (TETRA's transmission count, 0 elsewhere). `dsd_voice_frame_may_learn()` is the one rule over it: decodable,
   admitted speech. The vocoder keeps its synthesis's media in `mbe_frame_ctx_t` and builds the info just before the

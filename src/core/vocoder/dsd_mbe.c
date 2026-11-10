@@ -2078,30 +2078,32 @@ mbe_dmr_slot_crypto_class(const dsd_state* state, int slot, const mbe_frame_ctx_
     return decryptable ? DSD_VOICE_CRYPTO_DECRYPTABLE : DSD_VOICE_CRYPTO_UNDECRYPTABLE;
 }
 
-// Whether X2-TDMA slot @p slot's frames are decodable. X2 signals encryption per superframe, and the vocoder reads no
-// verdict of it yet, so every X2 frame counts as clear.
-static int
-mbe_x2_slot_decodable(const dsd_state* state, int slot) {
-    (void)state;
-    (void)slot;
-    return 1;
-}
-
 // The frame's receive admission and its owner's encryption class, judged once per frame on the slot it was received
 // on: the voice chain's frame info and the frame's verdict both take them. The chain writes nothing they read, so
 // judging them before it gives the verdict the values it would find after it.
 typedef struct {
     int admitted;               // dsd_receive_current_allows()
-    dsd_voice_crypto_class cls; // DMR's slot class, NXDN's and dPMR's cipher class; CLEAR for the other owners
+    dsd_voice_crypto_class cls; // DMR's slot class, NXDN's and dPMR's cipher class, X2-TDMA's; CLEAR for the others
+    int crypto_unknown;         // the owner has not said yet (an X2-TDMA call's opening frames): muted, not decodable
 } mbe_frame_judgement;
+
+// X2-TDMA's encryption on the slot, as processX2TDMAvoice() set it for the burst being decoded. X2 has no
+// decryption: an encrypted frame is undecryptable.
+static void
+mbe_x2_slot_judge(const dsd_state* state, int slot, mbe_frame_judgement* j) {
+    const uint8_t crypto = state->x2tdma_slot_crypto[slot];
+    j->crypto_unknown = crypto != DSD_X2TDMA_CRYPTO_CLEAR && crypto != DSD_X2TDMA_CRYPTO_ENCRYPTED;
+    j->cls = crypto == DSD_X2TDMA_CRYPTO_ENCRYPTED ? DSD_VOICE_CRYPTO_UNDECRYPTABLE : DSD_VOICE_CRYPTO_CLEAR;
+}
 
 static mbe_frame_judgement
 mbe_frame_judge(const dsd_opts* opts, const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx) {
-    mbe_frame_judgement j = {dsd_receive_current_allows(opts, state, slot) != 0, DSD_VOICE_CRYPTO_CLEAR};
+    mbe_frame_judgement j = {dsd_receive_current_allows(opts, state, slot) != 0, DSD_VOICE_CRYPTO_CLEAR, 0};
     switch (frame_ctx->protocol) {
         case DSD_VOICE_PROTOCOL_DMR: j.cls = mbe_dmr_slot_crypto_class(state, slot, frame_ctx); break;
         case DSD_VOICE_PROTOCOL_NXDN:
         case DSD_VOICE_PROTOCOL_DPMR: j.cls = dsd_nxdn_voice_crypto_class(state); break;
+        case DSD_VOICE_PROTOCOL_X2TDMA: mbe_x2_slot_judge(state, slot, &j); break;
         default: break;
     }
     return j;
@@ -2112,16 +2114,16 @@ mbe_frame_judge(const dsd_opts* opts, const dsd_state* state, int slot, const mb
 // nothing.
 static int
 mbe_frame_decodable(const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx, const mbe_frame_judgement* j) {
-    if (frame_ctx->crypto_muted) {
+    if (frame_ctx->crypto_muted || j->crypto_unknown) {
         return 0;
     }
     switch (frame_ctx->protocol) {
         case DSD_VOICE_PROTOCOL_DMR:
         case DSD_VOICE_PROTOCOL_NXDN:
-        case DSD_VOICE_PROTOCOL_DPMR: return j->cls != DSD_VOICE_CRYPTO_UNDECRYPTABLE;
+        case DSD_VOICE_PROTOCOL_DPMR:
+        case DSD_VOICE_PROTOCOL_X2TDMA: return j->cls != DSD_VOICE_CRYPTO_UNDECRYPTABLE;
         case DSD_VOICE_PROTOCOL_P25P1: return p25_crypto_audio_permitted(NULL, state, 0);
         case DSD_VOICE_PROTOCOL_P25P2: return p25_crypto_audio_permitted(NULL, state, slot);
-        case DSD_VOICE_PROTOCOL_X2TDMA: return mbe_x2_slot_decodable(state, slot);
         default: return 1;
     }
 }
@@ -2136,15 +2138,17 @@ mbe_frame_info(const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ct
 }
 
 // The explicit frame owner decides the verdict as well as the transforms, even when YSF or dPMR borrows another
-// protocol's decoder outside processFrame(). An exhausted keystream cannot be overridden by a key, -q or a user mute.
+// protocol's decoder outside processFrame(). An exhausted keystream cannot be overridden by a key, -q or a user mute,
+// nor can an X2-TDMA frame whose encryption is not known yet.
 static int
 mbe_frame_slot_muted(const dsd_opts* opts, const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx,
                      const mbe_frame_judgement* j) {
-    if (frame_ctx->crypto_muted || !j->admitted) {
+    if (frame_ctx->crypto_muted || !j->admitted || j->crypto_unknown) {
         return 1;
     }
     switch (frame_ctx->protocol) {
-        case DSD_VOICE_PROTOCOL_DMR: return !dsd_voice_crypto_class_audible(opts, slot, j->cls);
+        case DSD_VOICE_PROTOCOL_DMR:
+        case DSD_VOICE_PROTOCOL_X2TDMA: return !dsd_voice_crypto_class_audible(opts, slot, j->cls);
         case DSD_VOICE_PROTOCOL_P25P1: return !p25_crypto_audio_output_permitted(opts, state, 0);
         case DSD_VOICE_PROTOCOL_P25P2:
             return state->p25_p2_audio_allowed[slot] == 0 || !p25_crypto_audio_output_permitted(opts, state, slot);
@@ -2289,11 +2293,15 @@ mbe_post_uses_mono_left_staging(const dsd_state* state) {
 
 static void
 mbe_post_mono_left_audio(const dsd_opts* opts, dsd_state* state) {
-    int frame_errors = state->errs2;
-    if (DSD_SYNC_IS_X2TDMA(state->synctype) && state->currentslot == 1) {
-        frame_errors = state->errs2R;
+    const int x2 = DSD_SYNC_IS_X2TDMA(state->synctype);
+    const int slot = (x2 && state->currentslot == 1) ? 1 : 0;
+    state->debug_audio_errors += slot == 1 ? state->errs2R : state->errs2;
+    // An X2-TDMA frame its slot's verdict mutes (encrypted, or not known yet) stages no samples for the mono
+    // mixer and silence for the stereo one.
+    if (x2 && state->mbe_slot_muted[slot] != 0) {
+        DSD_MEMSET(state->s_l, 0, sizeof(state->s_l));
+        return;
     }
-    state->debug_audio_errors += frame_errors;
     dsd_voice_stage_short_left(opts, state);
 }
 
@@ -2338,8 +2346,8 @@ mbe_post_allow_stereo_slot_wav(const dsd_opts* opts, const dsd_state* state, int
     return (dsd_audio_record_gate_mono(opts, state, &allow_wav) == 0 && allow_wav) ? 1 : 0;
 }
 
-// X2-TDMA and D-STAR classify no encryption, so their WAV (mbe_post_wav_outputs()) answers to the talkgroup policy
-// alone.
+// D-STAR classifies no encryption, so its WAV (mbe_post_wav_outputs()) answers to the talkgroup policy alone; X2-TDMA's
+// also to the frame's verdict on its timeslot.
 // The mono post path's per-call WAV: slot 2's for DMR mono playing slot 2, and for a P25 Phase 2 slot-2 frame whatever
 // opts->dmr_stereo says (issue #651).
 static void
@@ -2360,7 +2368,7 @@ mbe_post_wav_outputs(dsd_opts* opts, dsd_state* state) {
         // (issue #654).
         const int slot = state->currentslot == 1 ? 1 : 0;
         if (opts->dmr_stereo_wav == 1 && (slot == 1 ? opts->wav_out_fR : opts->wav_out_f) != NULL
-            && mbe_record_policy_allows(opts, state, slot)) {
+            && state->mbe_slot_muted[slot] == 0 && mbe_record_policy_allows(opts, state, slot)) {
             dsd_write_mono_voice_to_slot_wav(opts, state, slot);
         }
         return;
@@ -2442,7 +2450,7 @@ mbe_capture_frame(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame
         case MBE_CAPTURE_PROVOICE:
         case MBE_CAPTURE_DSTAR: mbe_capture_fdma_frame(opts, state, frame_ctx); break;
         case MBE_CAPTURE_X2:
-            if (dsd_mbe_out_enabled(opts, 0)
+            if (dsd_mbe_out_enabled(opts, 0) && mbe_capture_slot_verdict_allows(state, state->currentslot)
                 && mbe_record_policy_allows(opts, state, state->currentslot == 1 ? 1 : 0)) {
                 mbe_save_x2_frame(opts, state, frame_ctx->ambe_d);
             }
