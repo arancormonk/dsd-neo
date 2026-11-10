@@ -723,6 +723,174 @@ def document_picker_wiring():
     )
 
 
+def activity_statements(text, signature):
+    """The statements of an activity method, one per line, without comments; None when the method is missing."""
+    body = method_body(text, signature)
+    if body is None:
+        return None
+    return [line.strip() for line in body.splitlines() if line.strip() and not line.strip().startswith("//")]
+
+
+# The four filters DsdNeoActivity declares, each as its (element, android: attribute, value) set (#831). Open with is
+# content only and lists text/plain (D1); Share has no scheme, since a filter that lists one does not match an intent with
+# no data, which a SEND is, and leaves text/plain out so DSD-neo is not offered for every shared link or text (D1).
+DOCUMENT_TYPES = {
+    ("data", "mimeType", "text/csv"),
+    ("data", "mimeType", "text/comma-separated-values"),
+    ("data", "mimeType", "application/octet-stream"),
+}
+ACTIVITY_FILTERS = {
+    "launcher": {
+        ("action", "name", "android.intent.action.MAIN"),
+        ("category", "name", "android.intent.category.LAUNCHER"),
+    },
+    "USB attachment": {("action", "name", "android.hardware.usb.action.USB_DEVICE_ATTACHED")},
+    "Open with": {
+        ("action", "name", "android.intent.action.VIEW"),
+        ("category", "name", "android.intent.category.DEFAULT"),
+        ("data", "scheme", "content"),
+        ("data", "mimeType", "text/plain"),
+        *DOCUMENT_TYPES,
+    },
+    "Share": {
+        ("action", "name", "android.intent.action.SEND"),
+        ("category", "name", "android.intent.category.DEFAULT"),
+        *DOCUMENT_TYPES,
+    },
+}
+FILTER_ELEMENT = re.compile(r"<(action|category|data)\b([^>]*)>")
+
+
+def activity_filters(manifest):
+    """Each intent filter of the one DsdNeoActivity element, as its (element, android: attribute, value) set; None when
+    there is not exactly one such element."""
+    bodies = [
+        body
+        for attributes, body in re.findall(r"<activity\b([^>]*)>(.*?)</activity>", manifest, re.S)
+        if dict(ANDROID_ATTRIBUTE.findall(attributes)).get("name") == f"{PACKAGE}.DsdNeoActivity"
+    ]
+    if len(bodies) != 1:
+        return None
+    return [
+        {
+            (element.group(1), attribute, value)
+            for element in FILTER_ELEMENT.finditer(block)
+            for attribute, value in ANDROID_ATTRIBUTE.findall(element.group(2))
+        }
+        for block in re.findall(r"<intent-filter\b[^>]*>(.*?)</intent-filter>", bodies[0], re.S)
+    ]
+
+
+def broadened_filter(elements):
+    """What in one filter would offer DSD-neo for more than one document of the listed types, or None."""
+    values = {value for _, _, value in elements}
+    if "*/*" in values or "android.intent.action.SEND_MULTIPLE" in values:
+        return "*/* or SEND_MULTIPLE"
+    sharing = ("action", "name", "android.intent.action.SEND") in elements
+    if sharing and any(attribute == "scheme" or value == "text/plain" for _, attribute, value in elements):
+        return "a scheme or text/plain on Share"
+    return None
+
+
+def incoming_document_filters():
+    """#831: DsdNeoActivity is exported, and its filters are what other apps can send it. Exactly four: the launcher,
+    the USB attachment, Open with and Share, each with exactly its elements, so no */*, no SEND_MULTIPLE, no scheme on
+    Share and no text/plain there. What the filters cannot check (EXTRA_STREAM, a missing action) is the intake gate's."""
+    try:
+        manifest = XML_COMMENT.sub(" ", (REPO / "android/package/AndroidManifest.xml").read_text(encoding="utf-8"))
+    except OSError as error:
+        return f"cannot read the manifest: {error}"
+    filters = activity_filters(manifest)
+    if filters is None:
+        return "AndroidManifest.xml: expected one DsdNeoActivity element"
+    for elements in filters:
+        problem = broadened_filter(elements)
+        if problem:
+            return f"AndroidManifest.xml: DsdNeoActivity must not list {problem}: {sorted(elements)}"
+    expected = list(ACTIVITY_FILTERS.values())
+    missing = [name for name, elements in ACTIVITY_FILTERS.items() if elements not in filters]
+    extra = [sorted(elements) for elements in filters if elements not in expected]
+    if missing or extra or len(filters) != len(expected):
+        return (
+            f"AndroidManifest.xml: DsdNeoActivity's intent filters must be exactly {list(ACTIVITY_FILTERS)}; "
+            f"missing {missing}, unexpected {extra}"
+        )
+    return None
+
+
+def incoming_document_reports():
+    """#831 B1: DsdNeoActivity never compiles here, so its reports are read from the source. onCreate reports the launch
+    intent, to the USB broker and to the document intake, only when it is a fresh delivery (a relaunch from Recents
+    re-delivers the first one), and after the USB attachments are set up; onNewIntent reports every delivery. The
+    intake's refusal record names the action's kind and the reason only."""
+    where = APP_SOURCES / "DsdNeoActivity.kt"
+    try:
+        activity = (REPO / where).read_text(encoding="utf-8")
+        intake = (REPO / APP_SOURCES / "IncomingDocumentIntake.kt").read_text(encoding="utf-8")
+        documents = (REPO / APP_SOURCES / "IncomingDocuments.kt").read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the activity or the intake: {error}"
+    create = activity_statements(activity, "override fun onCreate(") or []
+    reports = ("UsbSourceManager.reportAttachment(", "IncomingDocuments.")
+    guarded = [
+        "UsbSourceManager.initializeAttachments(this)",
+        "val fresh = LaunchDelivery.fresh(savedInstanceState != null, intent.flags)",
+        "if (fresh) {",
+        "UsbSourceManager.reportAttachment(this, intent)",
+        "IncomingDocuments.report(this, intent, HostDiagnostics::submit)",
+        "}",
+    ]
+    if create[-len(guarded) :] != guarded:
+        return f"{where}: onCreate must end with {guarded}; found {create[-len(guarded):]}"
+    if sum(any(report in line for report in reports) for line in create) != 2:
+        return f"{where}: onCreate reports the launch intent only behind its fresh check"
+    expected = [
+        "IntentExtras.sanitize(intent, HostDiagnostics::submit)",
+        "super.onNewIntent(intent)",
+        "UsbSourceManager.reportAttachment(this, intent)",
+        "IncomingDocuments.report(this, intent, HostDiagnostics::submit)",
+    ]
+    found = activity_statements(activity, "override fun onNewIntent(intent: Intent)")
+    if found != expected:
+        return f"{where}: onNewIntent must be exactly {expected}; found {found}"
+    line = 'val line: String get() = "incoming document refused: action=$action reason=$reason"'
+    if intake.count(line) != 1:
+        return f"IncomingDocumentIntake.kt: the refusal record must be exactly {line}"
+    refusals = re.findall(r"IntakeResult\.Refuse\(([^,()]+), ([A-Z_]+)\)", intake)
+    reasons = dict(re.findall(r'const val ([A-Z_]+) = "(\w+)"', intake))
+    allowed = {"action", "noUri", "manyUris", "scheme", "ownProvider", "noGrant"}
+    if not refusals or any(kind not in ('"other"', "action") or reasons.get(reason) not in allowed for kind, reason in refusals):
+        return f"IncomingDocumentIntake.kt: every refusal names a fixed kind and one of {sorted(allowed)}; found {refusals}"
+    if not re.search(r'val action = when \(request\.action\) \{\s*VIEW -> "VIEW"\s*SEND -> "SEND"', intake):
+        return "IncomingDocumentIntake.kt: a refusal's action is VIEW, SEND or other, never the intent's own text"
+    if re.findall(r"\blog\(([^)]*)\)", documents) != ["result.line"]:
+        return "IncomingDocuments.kt: the only record is the refusal's line, which names no URI or file"
+    return None
+
+
+def intent_extras_order():
+    """#831 B6: Qt 6.11.3 reads the extras inside super.onCreate() and super.onNewIntent(), so the guard runs before
+    each, on the intent Qt then reads, and records only the exception's class."""
+    where = APP_SOURCES / "DsdNeoActivity.kt"
+    try:
+        activity = (REPO / where).read_text(encoding="utf-8")
+        extras = (REPO / APP_SOURCES / "IntentExtras.kt").read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the activity or IntentExtras: {error}"
+    guard = "IntentExtras.sanitize(intent, HostDiagnostics::submit)"
+    create = activity_statements(activity, "override fun onCreate(") or []
+    if create.count(guard) != 1 or "super.onCreate(savedInstanceState)" not in create:
+        return f"{where}: onCreate must call {guard} once"
+    if create.index(guard) > create.index("super.onCreate(savedInstanceState)"):
+        return f"{where}: in onCreate, {guard} must come before super.onCreate(savedInstanceState)"
+    found = (activity_statements(activity, "override fun onNewIntent(intent: Intent)") or [])[:2]
+    if found != [guard, "super.onNewIntent(intent)"]:
+        return f"{where}: onNewIntent must start with {guard}, then super.onNewIntent(intent); found {found}"
+    if extras.count('log("launch extras dropped: " + e.javaClass.simpleName)') != 1:
+        return "IntentExtras.kt: the record names the exception's class only"
+    return None
+
+
 def launch_record_plumbing(facts):
     """What is wrong with how ProcessFacts.kt carries LaunchGuard's record, or None: the summary is set on API 30+ and
     read back into each exit record. Nothing else exercises this path."""
@@ -880,6 +1048,15 @@ DOWNLOADS_SAVE_STUBS = (
     "Uri.kt",
 )
 
+# The delivered intent, its extras and the lookups the incoming-document intake makes (#831).
+INCOMING_INTENT_STUBS = (
+    "IncomingIntent.kt",
+    "IncomingIntentCompat.kt",
+    "IncomingOs.kt",
+    "IncomingPackageManager.kt",
+    "IncomingUri.kt",
+)
+
 # Each build compiles its own file set on its own, so one build's stubs never stand in for platform classes another
 # build's sources must not touch.
 SUITES = {
@@ -950,6 +1127,27 @@ SUITES = {
                 ),
             ),
         ),
+    ),
+    # Documents other apps open with or share to DSD-neo (#831): the intake gate and the launch delivery rule in plain
+    # Kotlin with no stubs, then IncomingDocuments, which reads the delivered intent, makes the two lookups and keeps the
+    # mailbox, against stubs of the intent, its extras, the package manager, the grant check and IntentCompat. The
+    # manifest's two filters and the activity's guarded reports are read from the sources.
+    "incoming_document": Suite(
+        checks=(incoming_document_filters, incoming_document_reports),
+        builds=(
+            Build(sources=("IncomingDocumentIntake.kt", "LaunchDelivery.kt"), tests=("IncomingDocumentIntakeTest.kt",)),
+            Build(
+                sources=("IncomingDocuments.kt", "IncomingDocumentIntake.kt"),
+                tests=("IncomingDocumentsTest.kt",),
+                stubs=INCOMING_INTENT_STUBS,
+            ),
+        ),
+    ),
+    # The guard that drops unreadable launch extras before Qt reads them (#831 B6), against the same intent stubs, whose
+    # extras unparcel as API 29-32's do. The activity's call order is read from the source.
+    "intent_extras": Suite(
+        checks=(intent_extras_order,),
+        builds=(Build(sources=("IntentExtras.kt",), tests=("IntentExtrasTest.kt",), stubs=INCOMING_INTENT_STUBS),),
     ),
     # The Download folder save (#829): pending rows, their publication or delete at every exit of the backup's save and
     # the recording transfers, the discards, and the release of leftover persisted grants, against a MediaStore stub.

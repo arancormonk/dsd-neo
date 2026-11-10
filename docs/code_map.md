@@ -15059,13 +15059,44 @@ instance's `QtActivityBase.onCreate()` sees Qt started and calls `restartApplica
 `Runtime.exit(0)`) inside `super.onCreate()`, before any of the app's teardown; the session dies with the process. That
 stays as it is, with no cleanup fallback. The app prevents it and records what still gets through:
 
-- The manifest's `launchMode="singleTask"` brings the one instance forward for all three outside launches: a USB
-  attachment (to `onNewIntent`), the launcher icon and the decoding notification, where `singleTop` could create a
-  second instance over a picker or permission prompt. The cost: each of the three closes a document picker or
-  permission prompt open in the app's task, which returns cancelled. A closed document picker answers its request
-  `documentPickCancelled` (`DocumentPicker` gets `RESULT_CANCELED` for the live launch's code), and the flow ends
-  quietly as on a reject; an interrupted location prompt is a cancel (the location paragraph under UI, Qt). Share
-  sheets run in their own task.
+- The manifest's `launchMode="singleTask"` brings the one instance forward (to `onNewIntent`) for all four outside
+  launches: a USB attachment, a document another app opens with or shares to DSD-neo (#831, below), the launcher icon
+  and the decoding notification, where `singleTop` could create a second instance over a picker or permission prompt.
+  The cost: each of the four closes a document picker or permission prompt open in the app's task, which returns
+  cancelled. A closed document picker answers its request `documentPickCancelled` (`DocumentPicker` gets
+  `RESULT_CANCELED` for the live launch's code), and the flow ends quietly as on a reject; an interrupted location
+  prompt is a cancel (the location paragraph under UI, Qt). Share sheets run in their own task.
+- Extras guard (#831 B6). Qt's `QtActivityBase.addReferrer()` reads `getExtras().getString(...)`, unguarded, inside
+  `super.onCreate()` and `super.onNewIntent()`; on API 29-32 the first read unparcels every value, so an unknown
+  Parcelable another app puts in the extras would crash the app there. `IntentExtras.sanitize(intent, log)` runs
+  before each of the two `super` calls (on `getIntent()` in `onCreate`): `extras?.size()` unparcels a copy, and a
+  `RuntimeException` replaces the intent's extras with none (`replaceExtras(null)`) and records `launch extras dropped:
+  <exception class>`. The first failure is final: a bundle that failed keeps a partial map and never throws again, so
+  it is not probed again or trusted. The rule itself is `sanitize(probe, clear, log)`.
+- Replay guard (#831 B1). A relaunch from Recents re-delivers the intent the task started with: after process death
+  with the saved state, for an emptied task with `FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY`. `LaunchDelivery.fresh(saved,
+  flags)` (plain Kotlin) is true only with neither, and `onCreate` reports its launch intent to
+  `UsbSourceManager.reportAttachment()` and `IncomingDocuments.report()` only when fresh, after
+  `initializeAttachments()`; a cold launch is fresh, so the attachment that starts the app still reports. Before this,
+  the USB report was unconditional, and a Recents relaunch attached the dongle again. `onNewIntent` is always a new
+  delivery and reports both.
+- Intake gate (#831). The Open with filter is VIEW + `DEFAULT` + scheme `content` + `text/csv`,
+  `text/comma-separated-values`, `text/plain`, `application/octet-stream`; the Share filter is SEND + `DEFAULT` + the
+  same types without `text/plain` and with no scheme (a filter that lists a scheme does not match an intent with no
+  data, which a SEND is). No `*/*`, no SEND_MULTIPLE. Filters never see `EXTRA_STREAM`, and an intent with no action
+  passes the action test, so `IncomingDocumentIntake` (plain Kotlin) decides every delivery, in order: the action is
+  VIEW or SEND (MAIN and USB_DEVICE_ATTACHED are other launches and log nothing; any other action is refused); one URI,
+  VIEW's data or SEND's `EXTRA_STREAM` alone (a SEND's data, `EXTRA_TEXT` and ClipData are never read; a list is
+  `manyUris`); scheme `content`, in any case; not the app's own provider (an authority under `<package>.`, or one
+  `resolveContentProvider()` gives this package; a `<user>@` prefix is dropped first, as the resolver drops it); a read
+  grant recorded for the app (`checkUriPermission(uri, myPid, myUid, FLAG_GRANT_READ_URI_PERMISSION)`), which may come
+  from an earlier delivery and is not sender authentication. A refusal is one record, `incoming document refused:
+  action=<VIEW|SEND|other> reason=<action|noUri|manyUris|scheme|ownProvider|noGrant>`, never a URI, authority or name.
+  `IncomingDocuments` (the Android shell) reads the intent, with the stream through `IntentCompat.getParcelableExtra()`
+  (the typed getter only on API 34+) inside a `RuntimeException` catch, and leaves an accepted URI's text in one
+  `IncomingMailbox`: a newer document replaces one not yet taken, `take()` returns it once (`""` when none waits), and
+  nothing is persisted. The activity callbacks only read the intent and make the two lookups; no provider query, open
+  or copy runs there.
 - `android:configChanges` lists every flag android-36 defines except `resourcesUnused` (19 flags; that one is meant
   for activities that use no resources, and this one has the splash, strings and the notice), so no configuration
   change recreates the activity. `assetsPaths` (a runtime overlay turned on) exists only from android-36, so
@@ -15104,6 +15135,19 @@ Tests: `ANDROID_A11Y_BRIDGE_JVM` (`run_jvm_tests.py --suite a11y_bridge`):
   is added: the emulator runs below cover it.
 - The environment-writer checks are under "QML garbage collector". `UI_QT_DIAGNOSTICS_LOG` holds the
   `accessibility:` record shapes and checks each survives redaction unchanged.
+
+Tests for the #831 intake: `ANDROID_INCOMING_DOCUMENT_JVM` (`--suite incoming_document`) runs the gate and
+`LaunchDelivery` with no stubs (`IncomingDocumentIntakeTest.kt`: VIEW and SEND accepted; MAIN and USB not documents;
+EDIT, SEND_MULTIPLE and no action refused; SEND with data only, a stream list, VIEW without data; `file:`, `FILE:`,
+`http(s):`; the three own providers by name, user-prefixed, and one the resolver gives the app; no grant on a URI
+never received; the record's shape; the fresh table), then `IncomingDocuments` and the mailbox against stubs of the
+intent, its extras, the package manager, the grant check and `IntentCompat` (`IncomingDocumentsTest.kt`: API 30/33/34
+reads, lists, a string stream, `EXTRA_TEXT`, a bad parcel, both `resolveContentProvider()` overloads, an escaped
+authority). Its checks pin the four filters' exact elements (`incoming_document_filters()`) and the guarded reports and
+record (`incoming_document_reports()`). `ANDROID_INTENT_EXTRAS_JVM` (`--suite intent_extras`) runs `IntentExtras`
+against the same stubs, whose extras unparcel as API 29-32's do (`IntentExtrasTest.kt`), and
+`intent_extras_order()` pins the guard before both `super` calls. The real Parcel path and the Recents relaunch are
+device checks.
 
 #### Display size (density)
 

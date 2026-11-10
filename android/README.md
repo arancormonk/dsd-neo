@@ -1317,6 +1317,9 @@ identity changes only on confirmed session initialization, never when the
 service queues a start.
 
 Activity cold-start/new intents and receiver broadcasts share one dedupe tracker.
+A relaunch from Recents hands the Activity its first launch intent again; it is not
+a new attachment, so the Activity reports its launch intent only on a fresh start
+(no saved state, no launched-from-history flag) and never attaches the dongle again.
 It validates deviceName and VID/PID against the current USB device list, retains
 one pending attachment (newest wins), and forgets suppression on detach. Polling
 consumes that pending identity, including on the first host refresh. App-specific
@@ -1330,7 +1333,8 @@ runs on the JVM in `ANDROID_USB_BROKER_JVM`; verify the rest on a device:
 - Cold launch from the USB intent followed by the receiver's duplicate report
   starts exactly once; a duplicate new intent, which `singleTask` hands to the
   running Activity's `onNewIntent`, does not restart it. Detach and reattach permits
-  one new start.
+  one new start. A relaunch from Recents, after `am kill` or after the app was closed
+  while its task stayed in Recents, reports no attachment.
 - Mismatched deviceName or VID/PID, unknown devices, and a device removed before
   polling produce no start. With two devices, only the newest pending attachment
   is delivered; detaching it cancels the pending delivery.
@@ -1750,9 +1754,9 @@ module behind it, so androiddeployqt has nothing extra to package.
   appears on the next start's `exit:` line (see "How the previous run ended");
   Android 10 keeps no such record, so there it leaves nothing to report.
 - **One instance closes pickers and permission prompts.** Because of `singleTask`, a
-  USB attachment, a tap on the launcher icon and a tap on the decoding notification
-  all bring the running app forward, and each closes a file picker or a permission
-  prompt open over it. The flow that opened it ends as if cancelled, quietly: a CSV
+  USB attachment, a file another app opens with or shares to DSD-neo, a tap on the
+  launcher icon and a tap on the decoding notification all bring the running app
+  forward, and each closes a file picker or a permission prompt open over it. The flow that opened it ends as if cancelled, quietly: a CSV
   import, backup, replay recording or call recording picker ends with no error, and an interrupted location
   prompt returns the site chooser to its idle text, with nothing reported as
   denied; Android asks again on the next tap. Share sheets open in their own task
