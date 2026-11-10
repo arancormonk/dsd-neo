@@ -15660,9 +15660,13 @@ tabs, page tabs marked selected, were heard by name alone; checkable and checked
 radio button"). `BottomNav` keeps `selected` set for platforms that read it. The rows of an open `PlexComboBox` list are
 such choices too (#831): a Controls `ItemDelegate` is a `ListItem`, which carries no press action, so the bridge made
 each row a TextView neither focusable nor clickable, and a TalkBack double tap picked the row at the screen's centre.
-Each row is `Accessible.RadioButton`, checked while current, focusable, and its press action clicks the row as a tap
-does. Names carry no role or position words. Tests: `tst_bottom_nav_a11y.qml`, `tst_a11y_combo_list.qml` (each row's
-press action, as the bridge performs a double tap).
+Each row's node is a child item filling it (`plexComboRow`, the delegate itself `Accessible.ignored`: a Controls button
+writes its own unchecked, uncheckable state over any `Accessible.checkable` and `checked` set on it),
+`Accessible.RadioButton`, checkable and checked while current. Only while the list shows is it focusable and does its
+press action choose the row as a tap does (`choose()` checks the row's `visible` and `enabled` and the list's): the rows
+stay built once the list closes, and Android can keep its copy of a node. Names carry no role or position words. Tests:
+`tst_bottom_nav_a11y.qml`, `tst_a11y_combo_list.qml` (each row's role, state and press action for a string and a
+text-role list, a touch on a row finding that row, the bridge's double tap, and a closed list's row refusing it).
 
 The Listen tabs (`qml/ListenTabs.qml`, issue #646) are Material primary tabs in the app's tokens: `model` of
 `{id, label}`, the caller's `currentId`, and `selected(id)` only for a change of tab. Each tab (`listenTab_<id>`) is

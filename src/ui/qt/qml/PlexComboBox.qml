@@ -64,12 +64,15 @@ ComboBox {
         // which carries no press action: Qt's Android bridge made each row a
         // TextView neither focusable nor clickable, so TalkBack could not
         // settle on a row, and its double tap picked the one at the screen's
-        // centre. The press clicks the row as a tap does.
-        Accessible.role: Accessible.RadioButton
-        Accessible.checkable: true
-        Accessible.checked: control.currentIndex === index
-        Accessible.focusable: true
-        Accessible.onPressAction: option.click()
+        // centre. The row's node is a child of its own (rowNode), as the
+        // button writes its own unchecked, uncheckable state over any
+        // Accessible.checkable and checked set on it.
+        Accessible.ignored: true
+        /** The row's choice, as a tap makes it, while its list shows. */
+        function choose() {
+            if (option.visible && option.enabled && control.popup.visible)
+                option.click();
+        }
         implicitHeight: Math.max(48, optionLabel.implicitHeight + 24)
         contentItem: Text {
             id: optionLabel
@@ -82,6 +85,20 @@ ComboBox {
         }
         background: Rectangle {
             color: option.highlighted ? Theme.chipSelectedFill : Theme.panel
+        }
+        // Rows stay built once the list closes, and Android can keep its copy
+        // of a node, so a row is a stop, and its press chooses, only while
+        // the list shows.
+        Item {
+            id: rowNode
+            objectName: "plexComboRow"
+            anchors.fill: parent
+            Accessible.role: Accessible.RadioButton
+            Accessible.name: option.text
+            Accessible.checkable: true
+            Accessible.checked: control.currentIndex === option.index
+            Accessible.focusable: option.visible
+            Accessible.onPressAction: option.choose()
         }
     }
     // The list takes the press that dismisses it (#831). A ComboBox list

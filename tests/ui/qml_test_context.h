@@ -3758,7 +3758,7 @@ class Setup : public QObject {
      * `exists` is whether the item has an accessible interface. `inTree` is whether it can be reached from the top:
      * every ancestor's interface lists the one below it among its children, which is how the Android bridge builds
      * its node tree (childIdListForAccessibleObject). `role` is the QAccessible::Role value; `name`, `description`
-     * and `value` are the interface's texts; `invisible`, `checked` and `focusable` are its state flags.
+     * and `value` are the interface's texts; `invisible`, `checkable`, `checked` and `focusable` are its state flags.
      * `currentValue` is the value interface's reading (a progress bar's, which the Android bridge reads after the
      * name), or undefined when it has none. `actions` are its action names: the Android bridge makes a node
      * clickable only with a press or toggle action, and a static text or heading never (#831).
@@ -3777,6 +3777,7 @@ class Setup : public QObject {
                 {QStringLiteral("description"), iface->text(QAccessible::Description)},
                 {QStringLiteral("value"), iface->text(QAccessible::Value)},
                 {QStringLiteral("invisible"), static_cast<bool>(iface->state().invisible)},
+                {QStringLiteral("checkable"), static_cast<bool>(iface->state().checkable)},
                 {QStringLiteral("checked"), static_cast<bool>(iface->state().checked)},
                 {QStringLiteral("focusable"), static_cast<bool>(iface->state().focusable)},
                 {QStringLiteral("childCount"), iface->childCount()},
