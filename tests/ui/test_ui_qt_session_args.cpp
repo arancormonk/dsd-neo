@@ -98,6 +98,50 @@ test_tg_lockout_preference(void) {
     expect("extra args override default", args.indexOf("--tg-lockout-session") > args.indexOf("--tg-lockout-persist"));
 }
 
+/* Issue #518 voice level: Qt has no gain or filter control of its own, so the Extra decoder arguments are the way to set
+ * -g, -n and -v. They reach the decoder unchanged, fractions and hex as typed (the decoder validates them), after the
+ * options the app adds, from a saved system's own extras, the app-wide extras and a scan list's; with none the app sends
+ * none of the three. */
+qsizetype
+index_of_sequence(const QStringList& args, const QStringList& seq) {
+    for (qsizetype i = 0; i + seq.size() <= args.size(); i++) {
+        if (args.mid(i, seq.size()) == seq) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void
+test_extra_gain_and_filter_args(void) {
+    auto sys = usb_system();
+    SessionArgPrefs prefs;
+    SessionArgsError error = SessionArgsError::None;
+    auto args = session_args_build(sys, prefs, &error);
+    expect("no extras sends no -g, -n or -v",
+           error == SessionArgsError::None && !args.contains("-g") && !args.contains("-n") && !args.contains("-v"));
+
+    sys["extraArgs"] = QStringLiteral("-g 0.5 -n 37.5 -v 0x9");
+    prefs.extraArgs = QStringLiteral("-g 0.0011  -n 0 -v 1");
+    args = session_args_build(sys, prefs, &error);
+    const QStringList own = {"-g", "0.5", "-n", "37.5", "-v", "0x9"};
+    const QStringList app = {"-g", "0.0011", "-n", "0", "-v", "1"};
+    const qsizetype own_at = index_of_sequence(args, own);
+    const qsizetype app_at = index_of_sequence(args, app);
+    expect("a system's -g/-n/-v pass through as typed", error == SessionArgsError::None && own_at >= 0);
+    expect("the app-wide -g/-n/-v pass through after the system's", own_at >= 0 && app_at > own_at);
+    expect("the extras come after the options the app adds", own_at > args.indexOf("-t"));
+    expect("the gain options appear only as typed",
+           args.count("-g") == 2 && args.count("-n") == 2 && args.count("-v") == 2);
+
+    QString scanError;
+    prefs.extraArgs = QStringLiteral("-g 2.5 -n 50 -v 0x1");
+    args = dsd_qt::session_args_scan_build(sys, "851.375", "scan.csv", prefs, &scanError);
+    expect("a scan list's -g/-n/-v pass through as typed",
+           scanError.isEmpty() && index_of_sequence(args, {"-g", "2.5", "-n", "50", "-v", "0x1"}) >= 0
+               && args.count("-g") == 1);
+}
+
 /* Relaxed CRC is an app preference: every session the app starts gets -F (a saved system, an Explore or search map, a
  * scan list) unless the options the user typed name the CRC policy themselves (-F or --strict-crc, the system's own or
  * the app-wide Extra options), which win. */
@@ -2099,6 +2143,7 @@ main(int argc, char** argv) {
     test_freq_validation();
     test_hangtime();
     test_tg_lockout_preference();
+    test_extra_gain_and_filter_args();
     test_relaxed_crc_preference();
     test_relaxed_crc_app_preference();
     test_recording_sessions();

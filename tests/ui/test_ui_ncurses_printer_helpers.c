@@ -1848,7 +1848,7 @@ test_output_rows_fixed_width(void) {
     opts.udp_sockfdA = DSD_INVALID_SOCKET;
     reset_printw_capture();
     ui_render_udp_output(&opts, &state);
-    assert_capture_contains("| UDP Digital Output: 127.0.0.1:23456; 8 kHz 2 Ch; G: 100% G:   0% (+/-) Auto\n");
+    assert_capture_contains("| UDP Digital Output: 127.0.0.1:23456; 8 kHz 2 Ch; G: 100% G:   0% (+|-) Auto\n");
     assert(strstr(g_printw_capture, "UDP Analog Output") == NULL);
     opts.udp_sockfdA = (dsd_socket_t)0;
     reset_printw_capture();

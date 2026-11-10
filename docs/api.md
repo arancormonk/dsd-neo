@@ -485,8 +485,8 @@ avoids and call skips, as an import does.
 | `invert_toggle` | – |
 | `mod_toggle` | – |
 | `dmr_reset` | – |
-| `gain_set` | `{value:int 0..50}` |
-| `again_set` | `{value:int 0=auto,1..100}` |
+| `gain_set` | `{value:0=auto,0.001..50}` |
+| `again_set` | `{value:0=auto,1..100}` |
 | `input_warn_db_set` | `{value:dB}` |
 | `input_monitor_toggle` | – |
 | `cosine_filter_toggle` | – |
@@ -686,6 +686,16 @@ avoids and call skips, as an import does.
   `tg_selection_set`. A captured pair stays valid while only learned
   over-the-air aliases and session avoids change the list; a reload, a clear,
   another list or any edit of a talkgroup row makes it stale (`-2`).
+* **`gain_set`, `again_set`**: the digital output gain (`-g`) and the analog
+  output gain (`-n`), see [docs/cli.md](cli.md#levels--audio). `value` is a
+  number, whole or fractional (`0.5`, `37.5`): `0` is auto, `0.001..50` a fixed
+  digital gain (`1` is the reference level), `1..100` a fixed analog gain (`50`
+  is the reference level). Any other value, such as `0.0004`, `51` or `-1`, is
+  refused with `invalid_params` and the gain stays as it was; nothing is clamped
+  or turned into auto. `gain_delta` and `again_delta` step the gain by `value`
+  whole units: from auto the digital gain starts at `1` and the analog gain at
+  `50`, a step below the lowest fixed value goes back to auto, and a step above
+  the top stops there.
 * **`record_unknown_only_set`**: `1` records only talkgroups the group list
   does not know (`--record-unknown-only`, see [docs/cli.md](cli.md)), `0` every
   call the list lets record. Like the WAV commands it waits while the decoder

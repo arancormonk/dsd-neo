@@ -90,6 +90,21 @@ target_link_libraries(
         dsd-neo_warnings
 )
 
+# The audio actions refuse a NaN, infinite or out-of-range GAIN_SET/AGAIN_SET
+# value before it narrows to the float setting (<dsd-neo/core/gain_setting.h>);
+# that check must survive the release presets' fast-math. It runs per command.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(
+        actions/actions_audio.c
+        PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
+    )
+elseif(MSVC)
+    set_source_files_properties(
+        actions/actions_audio.c
+        PROPERTIES COMPILE_OPTIONS "/fp:precise"
+    )
+endif()
+
 install(
     TARGETS dsd-neo_app_control
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}

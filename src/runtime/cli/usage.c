@@ -116,7 +116,7 @@ dsd_cli_usage_section_io(void) {
     printf("  -d <dir>      Create mbe data files, use this directory (TDMA version is experimental)\n");
     printf("  -r <files>    Read/Play saved mbe data from file(s)\n");
     printf("  -g <float>    Audio Digital Output Gain  (Default: 0 = Auto;        )\n");
-    printf("                                           (Manual:  1 = 2%%; 50 = 100%%)\n");
+    printf("                                           (Manual:  0.001-50; 1 = reference level)\n");
     printf("  -n <float>    Audio Analog  Output Gain  (Default: 0 = Auto;        )\n");
     printf("                                           (Manual:  1-100; 50 = reference level)\n");
     printf("  -nm           Enable the DMR single-slot mono decoder\n");

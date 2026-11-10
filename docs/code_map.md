@@ -2812,6 +2812,16 @@ suite runs under this compiler.
   mode and clamps `-g` for both formats.
   `beeper()` builds its tone once on the int16 scale and plays the same samples in both formats. Tests:
   `CORE_VOICE_CHAIN`, `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_AUDIO_GAIN`, `DECODE_IQ_VOICE_CHAIN_*`.
+- API note (gain settings, `<dsd-neo/core/gain_setting.h>`, issue #518 voice level): a digital gain (`-g`,
+  `audio_gain`/`audio_gainR`) is 0 (auto) or 0.001..50, an analog one (`-n`, `audio_gainA`) 0 or 1..100.
+  `dsd_digital_gain_setting_valid()` and `dsd_analog_gain_setting_valid()` are the one rule. They check the value in
+  double before it narrows to the float setting and refuse NaN, infinities, values out of range and positive values
+  under the minimum (1e-50 would round to 0, auto); nothing is clamped or turned into auto. Every surface applies them
+  and is built with IEEE semantics: the CLI (`args.c`), the `GAIN_SET`/`AGAIN_SET` handlers (double payloads,
+  `actions_audio.c`), the menu prompts (`menu_callbacks.c`) and the API (`api_commands.c`). `dsd_gain_setting_step()`
+  is the `GAIN_DELTA`/`AGAIN_DELTA` rule: whole steps on the float setting, from 1 (digital) or 50 (analog) when auto,
+  back to auto below the minimum, stopping at the top. Tests: `RUNTIME_CLI_PARSE`, `APP_CONTROL_ACTIONS`,
+  `API_COMMAND_PAYLOADS`, `UI_MENU_CALLBACKS`, `UI_MENU_LABELS`.
 - API note (analog receive options, `<dsd-neo/core/opts.h>`): `analog_demod` (`dsd_analog_demod`) is set by the
   decode presets (and restored with the scan-settings snapshot when a typed row is left); no width, CLI or menu code
   writes it directly. The analog preset selects FM, the AM preset (`DSDCFG_MODE_AM`, `-fM`, issue #524) selects AM,

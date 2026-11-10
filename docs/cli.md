@@ -9,7 +9,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Outputs: `-o pulse | null | udp[:host[:port]] | m17udp[:host[:port]] | -`
 - Record/Logs/Debug: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `--wav-journal calls.jsonl`, `--record-unknown-only`, `--analog-record-max-gap-ms 2000`, `--analog-record-preroll-ms 200`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `--p25-sm-log p25-sm.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`, `--dmr-debug-burst`, `--dmr-debug-unsynced`
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
-- Levels/Audio: `-g 0|1..50`, `-n 0|1..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0x1`
+- Levels/Audio: `-g 0|0.001..50`, `-n 0|1..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0x1`
 - Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fA | -fM` (Auto, `-fa`, is the default)
 - Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); `--squelch auto[+N]` (open N dB over each analog channel's learned noise floor, radio inputs); `--squelch noise[+N]` (open an FM channel at N dB of quieting, as a radio's squelch does; on audio input from a reference it learns); see [Analog reception](#analog-reception--fa--fm), [Tone filter](#tone-filter-ctcssdcs-receive-policy), [Auto squelch](#auto-squelch---squelch-auto) and [Noise squelch](#noise-squelch---squelch-noise)
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
@@ -579,16 +579,20 @@ Notes
 
 - `-g <num>` Digital output gain, the same in integer and `-y` float output and in the WAVs. `0` = auto: a peak
   normalizer to about -0.8 dBFS over the last 0.5 s, at most x50, cutting at once on a louder peak and rising by at
-  most 5% per 20 ms, its level carried from call to call. `1`–`50` is a fixed multiplier on the vocoder's reference
-  level (`1` ≈ 2% of the range, `50` = 100%), saturating at full scale. Since issue #653 `-g N` under `-y` is this
-  fixed multiplier too, where it used to scale a float auto gain that kept adapting.
-- `-n <num>` Analog output gain. `0` (the default; anything under `1` too) is auto: an AGC brings analog voice to the
-  level digital voice plays at, FM and AM alike, never above -10 dBFS peak and at most 18 dB above the reference gain.
+  most 5% per 20 ms, its level carried from call to call. `0.001`–`50` is a fixed multiplier on the vocoder's
+  reference level (`1`; `0.5` is 6 dB quieter), saturating at full scale. Any other value (negative, above `50`,
+  between `0` and `0.001`, NaN or infinity) is refused with an error; it is never clamped or played as auto. The
+  menu's Digital gain... prompt takes the same values, fractions included, and the `+` / `-` keys step by 1: from auto
+  they start at `1`, stepping below `0.001` goes back to auto, and they stop at `50`. Since issue #653 `-g N` under
+  `-y` is this fixed multiplier too, where it used to scale a float auto gain that kept adapting.
+- `-n <num>` Analog output gain. `0` (the default) is auto: an AGC brings analog voice to the level digital voice
+  plays at, FM and AM alike, never above -10 dBFS peak and at most 18 dB above the reference gain.
   `1`–`100` is a fixed gain, `50` the reference: there a 1 kHz tone at 3 kHz deviation, or AM at 50% modulation, plays at
   -12 dBFS peak (-15 dBFS RMS) at the default RTL `vol` of 2, live and in I/Q replay alike; `100` is 6 dB louder. The
   menu's Analog gain... prompt and the `*` / `/` keys work over the same range; from auto they step from `50`, and
-  stepping below `1` goes back to auto. Since issue #518 a fixed `-n` plays RTL monitor audio about 9 dB louder than
-  before, and up to 18 dB more where the old default filter (see `-v`) cut it.
+  stepping below `1` goes back to auto. Any other value (negative, above `100`, between `0` and `1`, NaN or infinity)
+  is refused with an error, where it used to be clamped or turned into auto. Since issue #518 a fixed `-n` plays RTL
+  monitor audio about 9 dB louder than before, and up to 18 dB more where the old default filter (see `-v`) cut it.
 - `-nm` Enable the DMR single-slot mono decoder without changing the active decode preset.
 - `-z <0|1|2>` TDMA slot preference (0 = slot 1, 1 = slot 2, 2 = auto). When both slots carry audible voice, the
   preferred slot plays alone, in both ears (with one-channel output, alone); auto plays both. It applies to DMR and P25

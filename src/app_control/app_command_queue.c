@@ -4907,8 +4907,6 @@ static const int k_ui_cmd_i32_ids[] = {
     DSD_APP_CMD_AGAIN_DELTA,
     DSD_APP_CMD_SPEC_SIZE_DELTA,
     DSD_APP_CMD_PPM_DELTA,
-    DSD_APP_CMD_GAIN_SET,
-    DSD_APP_CMD_AGAIN_SET,
     DSD_APP_CMD_RTL_SET_DEV,
     DSD_APP_CMD_RTL_SET_GAIN,
     DSD_APP_CMD_RTL_SET_PPM,
@@ -4992,6 +4990,8 @@ dsd_app_command_set_u64(int cmd_id, uint64_t value) {
 int
 dsd_app_command_set_double(int cmd_id, double value) {
     switch (cmd_id) {
+        case DSD_APP_CMD_GAIN_SET:
+        case DSD_APP_CMD_AGAIN_SET:
         case DSD_APP_CMD_INPUT_WARN_DB_SET:
         case DSD_APP_CMD_RTL_SET_SQL_DB:
         case DSD_APP_CMD_HANGTIME_SET: return dsd_app_command_submit(cmd_id, &value, sizeof value);
@@ -5198,6 +5198,8 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_KEY_BASIC_SET, sizeof(uint32_t)},
     {DSD_APP_CMD_KEY_SCRAMBLER_SET, sizeof(uint32_t)},
     {DSD_APP_CMD_KEY_RC4DES_SET, sizeof(uint64_t)},
+    {DSD_APP_CMD_GAIN_SET, sizeof(double)},
+    {DSD_APP_CMD_AGAIN_SET, sizeof(double)},
     {DSD_APP_CMD_INPUT_WARN_DB_SET, sizeof(double)},
     {DSD_APP_CMD_RTL_SET_SQL_DB, sizeof(double)},
     {DSD_APP_CMD_RTL_SET_SQL_SETTING, sizeof(dsd_app_squelch_setting_payload)},

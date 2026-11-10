@@ -29,6 +29,7 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <locale.h>
+#include <math.h>
 #include <sndfile.h>
 #include <stdio.h>
 #include <string.h>
@@ -761,6 +762,22 @@ test_input_and_audio_labels(void) {
     opts.audio_gain = 12.0f;
     rc |= expect_str("digital gain set", lbl_gain_dig(&ctx, b, sizeof(b)), "Digital gain... [12]");
     rc |= expect_str("analog gain", lbl_gain_ana(&ctx, b, sizeof(b)), "Analog gain... [50]");
+    /* B5/B6 (issue #518 voice level): the label shows the setting as set, fractions kept (it used to print (int)g, so
+       -g 0.5 read [0]); NaN, which no surface accepts any more, reads auto instead of an undefined (int) cast. */
+    opts.audio_gain = 0.5f;
+    rc |= expect_str("digital gain fraction", lbl_gain_dig(&ctx, b, sizeof(b)), "Digital gain... [0.5]");
+    opts.audio_gain = 0.001f;
+    rc |= expect_str("digital gain minimum", lbl_gain_dig(&ctx, b, sizeof(b)), "Digital gain... [0.001]");
+    opts.audio_gain = 0.0011f;
+    rc |= expect_str("digital gain near the minimum", lbl_gain_dig(&ctx, b, sizeof(b)), "Digital gain... [0.0011]");
+    opts.audio_gain = 50.0f;
+    rc |= expect_str("digital gain maximum", lbl_gain_dig(&ctx, b, sizeof(b)), "Digital gain... [50]");
+    opts.audio_gain = NAN;
+    rc |= expect_str("digital gain NaN reads auto", lbl_gain_dig(&ctx, b, sizeof(b)), "Digital gain... [auto]");
+    opts.audio_gain = 12.0f;
+    opts.audio_gainA = 37.5f;
+    rc |= expect_str("analog gain fraction", lbl_gain_ana(&ctx, b, sizeof(b)), "Analog gain... [37.5]");
+    opts.audio_gainA = 50.0f;
     /* 0 is auto, the analog AGC (the default since issue #518). */
     opts.audio_gainA = 0.0f;
     rc |= expect_str("analog gain auto", lbl_gain_ana(&ctx, b, sizeof(b)), "Analog gain... [auto]");

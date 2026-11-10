@@ -1185,8 +1185,8 @@ test_ui_command_queue_applies_fifo(void) {
     dsd_opts* opts = runtime.opts;
     dsd_state* state = runtime.state;
 
-    int32_t first = 5;
-    int32_t second = 11;
+    double first = 5.0;
+    double second = 11.0;
     dsd_app_command_submit(DSD_APP_CMD_GAIN_SET, &first, sizeof first);
     dsd_app_command_submit(DSD_APP_CMD_GAIN_SET, &second, sizeof second);
 
@@ -1194,9 +1194,9 @@ test_ui_command_queue_applies_fifo(void) {
 
     int rc = 0;
     rc |= expect_int_eq("coalesced gain drain count", applied, 1);
-    rc |= expect_int_eq("coalesced gain final digital gain", (int)opts->audio_gain, second);
-    rc |= expect_int_eq("coalesced gain final left state gain", (int)state->aout_gain, second);
-    rc |= expect_int_eq("coalesced gain final right state gain", (int)state->aout_gainR, second);
+    rc |= expect_int_eq("coalesced gain final digital gain", (int)opts->audio_gain, 11);
+    rc |= expect_int_eq("coalesced gain final left state gain", (int)state->aout_gain, 11);
+    rc |= expect_int_eq("coalesced gain final right state gain", (int)state->aout_gainR, 11);
 
     free_test_runtime(&runtime);
     return rc;
@@ -1212,7 +1212,7 @@ test_ui_command_queue_overflow_drops_oldest(void) {
     dsd_state* state = runtime.state;
 
     dsd_exitflag_store(0);
-    int32_t first = 5;
+    double first = 5.0;
     dsd_app_command_submit(DSD_APP_CMD_GAIN_SET, &first, sizeof first);
     for (int i = 0; i < 127; i++) {
         dsd_app_command_submit(DSD_APP_CMD_TOGGLE_MUTE, NULL, 0);

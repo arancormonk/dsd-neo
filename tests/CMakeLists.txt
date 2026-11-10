@@ -64,9 +64,9 @@ endif()
 # ns / 1e9 exactly where fast-math would multiply by an inexact 1e-9, and the
 # audio2 test because its mono-mixer stub divides by a slot count, which Clang
 # turns into an approximate reciprocal under fast-math. Production sources that
-# src/runtime builds with IEEE semantics keep them when a test compiles them
-# directly: a source property set there does not reach targets in this
-# directory.
+# src/runtime, src/app_control and src/ui/terminal build with IEEE semantics
+# keep them when a test compiles them directly: a source property set there does
+# not reach targets in this directory.
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     set_source_files_properties(
         core/test_core_audio2_helpers.c
@@ -95,6 +95,7 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         io/test_io_rtl_replay_eof_and_cf32.cpp
         io/test_io_signal_measure.cpp
         protocol/m17/test_m17_state_dispatch.c
+        runtime/test_runtime_cli_parse.c
         runtime/test_runtime_decode_clock.c
         runtime/test_runtime_freq_parse.c
         runtime/test_runtime_number_text.c
@@ -103,10 +104,16 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         test_support/speech_synth.c
         test_support/test_p56.c
         test_support/test_speech_synth.c
+        ui/test_ui_cmd_actions.c
+        ui/test_ui_menu_callbacks.c
+        ui/test_ui_menu_labels.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_audio.c
         ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
         ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/input_level.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_callbacks.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
         ${PROJECT_SOURCE_DIR}/android/presentation_scale.cpp
         PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
     )
@@ -138,6 +145,7 @@ elseif(MSVC)
         io/test_io_rtl_replay_eof_and_cf32.cpp
         io/test_io_signal_measure.cpp
         protocol/m17/test_m17_state_dispatch.c
+        runtime/test_runtime_cli_parse.c
         runtime/test_runtime_decode_clock.c
         runtime/test_runtime_freq_parse.c
         runtime/test_runtime_number_text.c
@@ -146,10 +154,16 @@ elseif(MSVC)
         test_support/speech_synth.c
         test_support/test_p56.c
         test_support/test_speech_synth.c
+        ui/test_ui_cmd_actions.c
+        ui/test_ui_menu_callbacks.c
+        ui/test_ui_menu_labels.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_audio.c
         ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
         ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/input_level.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_callbacks.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
         ${PROJECT_SOURCE_DIR}/android/presentation_scale.cpp
         PROPERTIES COMPILE_OPTIONS "/fp:precise"
     )

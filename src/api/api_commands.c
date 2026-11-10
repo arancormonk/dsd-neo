@@ -22,6 +22,7 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/core/gain_setting.h>
 #include <dsd-neo/core/id_pattern.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
@@ -236,6 +237,20 @@ submit_double(const api_command_desc* d, const dsd_json_node* params, uint64_t* 
         return API_INVALID_PARAMS;
     }
     return dsd_app_command_set_double(d->cmd_id, v);
+}
+
+/* gain_set and again_set: a JSON number, whole or fractional, that is 0 (auto) or inside the gain's range; anything
+   else is refused here rather than clamped (<dsd-neo/core/gain_setting.h>; this file keeps IEEE semantics). */
+static int
+submit_gain(const api_command_desc* d, const dsd_json_node* params, uint64_t* request_id) {
+    (void)request_id;
+    double v = 0.0;
+    if (dsd_json_as_double(dsd_json_obj_get(params, "value"), &v) != 0) {
+        return API_INVALID_PARAMS;
+    }
+    const int valid =
+        (d->cmd_id == DSD_APP_CMD_AGAIN_SET) ? dsd_analog_gain_setting_valid(v) : dsd_digital_gain_setting_valid(v);
+    return valid ? dsd_app_command_set_double(d->cmd_id, v) : API_INVALID_PARAMS;
 }
 
 static int
@@ -1003,8 +1018,8 @@ static const api_command_desc k_commands[] = {
     API_ACTION("invert_toggle", DSD_APP_CMD_INVERT_TOGGLE),
     API_ACTION("mod_toggle", DSD_APP_CMD_MOD_TOGGLE),
     API_ACTION("dmr_reset", DSD_APP_CMD_DMR_RESET),
-    API_I32("gain_set", DSD_APP_CMD_GAIN_SET, "{value:int 0..50}"),
-    API_I32("again_set", DSD_APP_CMD_AGAIN_SET, "{value:int 0=auto,1..100}"),
+    API_KIND("gain_set", DSD_APP_CMD_GAIN_SET, submit_gain, "{value:0=auto,0.001..50}"),
+    API_KIND("again_set", DSD_APP_CMD_AGAIN_SET, submit_gain, "{value:0=auto,1..100}"),
     API_KIND("input_warn_db_set", DSD_APP_CMD_INPUT_WARN_DB_SET, submit_double, "{value:dB}"),
     API_ACTION("input_monitor_toggle", DSD_APP_CMD_INPUT_MONITOR_TOGGLE),
     API_ACTION("cosine_filter_toggle", DSD_APP_CMD_COSINE_FILTER_TOGGLE),

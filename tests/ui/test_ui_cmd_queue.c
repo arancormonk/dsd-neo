@@ -1077,9 +1077,14 @@ test_command_api(void) {
 
     rc |= expect_int("typed action posts", dsd_app_command_action(DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |=
-        expect_int("typed gain posts", dsd_app_command_set_i32(DSD_APP_CMD_GAIN_SET, 5), DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("typed gain coalesces to latest", dsd_app_command_set_i32(DSD_APP_CMD_GAIN_SET, 9),
+    /* The gain settings carry a double (issue #518 voice level): the int32 setter refuses them. */
+    rc |= expect_int("typed gain rejects i32", dsd_app_command_set_i32(DSD_APP_CMD_GAIN_SET, 5),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    rc |= expect_int("typed analog gain rejects i32", dsd_app_command_set_i32(DSD_APP_CMD_AGAIN_SET, 5),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    rc |= expect_int("typed gain posts", dsd_app_command_set_double(DSD_APP_CMD_GAIN_SET, 5.0),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("typed gain coalesces to latest", dsd_app_command_set_double(DSD_APP_CMD_GAIN_SET, 0.5),
                      DSD_APP_COMMAND_SUBMIT_COALESCED);
     rc |= expect_int("typed u8 posts", dsd_app_command_set_u8(DSD_APP_CMD_CALL_ALERT_EVENTS_SET, 3U),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
@@ -1109,7 +1114,7 @@ test_command_api(void) {
 
     rc |= expect_int("typed commands applied with coalescing", dsd_app_drain_cmds(&opts, &state), 15);
     rc |= expect_int("typed action toggled channels", opts.frontend_display.show_channels, 1);
-    rc |= expect_int("typed gain applied latest", (int)opts.audio_gain, 9);
+    rc |= expect_true("typed gain applied latest with its fraction", fabsf(opts.audio_gain - 0.5f) < 1e-7f);
     rc |= expect_str("typed udp input bind copied", opts.udp_in_bindaddr, "127.0.0.1");
     rc |= expect_int("typed udp input port copied", opts.udp_in_portno, udp_port);
     rc |= expect_u64("typed tg hold set", state.tg_hold, 2468ULL);
@@ -1198,15 +1203,23 @@ test_setter_coalescing_preserves_fifo_boundaries(void) {
     static dsd_state state;
     init_test_context(&opts, &state);
 
-    rc |= expect_int("fifo first gain queued", dsd_app_command_set_i32(DSD_APP_CMD_GAIN_SET, 5),
+    rc |= expect_int("fifo first gain queued", dsd_app_command_set_double(DSD_APP_CMD_GAIN_SET, 5.0),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("fifo gain delta queued", dsd_app_command_set_i32(DSD_APP_CMD_GAIN_DELTA, +1),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("fifo second gain queued", dsd_app_command_set_i32(DSD_APP_CMD_GAIN_SET, 11),
+    rc |= expect_int("fifo second gain queued", dsd_app_command_set_double(DSD_APP_CMD_GAIN_SET, 11.0),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
 
     rc |= expect_int("fifo-separated setters drain independently", dsd_app_drain_cmds(&opts, &state), 3);
     rc |= expect_int("fifo-separated setters preserve final gain", (int)opts.audio_gain, 11);
+
+    /* A gain setting in the old int32 form is shorter than its double payload: dropped at drain, the setting kept. */
+    const int32_t short_gain = 3;
+    rc |= expect_int("short gain payload queued",
+                     dsd_app_command_submit(DSD_APP_CMD_GAIN_SET, &short_gain, sizeof short_gain),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("short gain payload drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("short gain payload keeps the setting", (int)opts.audio_gain, 11);
     freeState(&state);
     return rc;
 }
@@ -9077,7 +9090,7 @@ test_coalesced_setter_erases_old_tail(void) {
     static dsd_state state;
     init_test_context(&opts, &state);
     unsigned char padded[72];
-    const int32_t gain = 5;
+    const double gain = 5.0;
     DSD_MEMSET(padded, 0x5a, sizeof padded);
     DSD_MEMCPY(padded, &gain, sizeof gain);
     int rc = 0;
@@ -9085,7 +9098,7 @@ test_coalesced_setter_erases_old_tail(void) {
     // to prove a shorter overwrite erases bytes rather than only reducing n.
     rc |= expect_int("padded setter queued", dsd_app_command_submit(DSD_APP_CMD_GAIN_SET, padded, sizeof padded),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("short setter coalesced", dsd_app_command_set_i32(DSD_APP_CMD_GAIN_SET, 9),
+    rc |= expect_int("short setter coalesced", dsd_app_command_set_double(DSD_APP_CMD_GAIN_SET, 9.0),
                      DSD_APP_COMMAND_SUBMIT_COALESCED);
     rc |= expect_true("coalescing erased old payload tail", dsd_app_command_test_tail_padding_cleared());
     rc |= expect_int("coalesced setter drains once", dsd_app_drain_cmds(&opts, &state), 1);

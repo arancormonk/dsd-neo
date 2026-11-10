@@ -782,7 +782,7 @@ ui_render_udp_output(const dsd_opts* opts, const dsd_state* state) {
         ui_io_row_begin(&row);
         ui_row_field(&row, "| UDP Digital Output: %s:%d;", opts->udp_hostname, opts->udp_portno);
         ui_row_field(&row, " %d kHz %d Ch;", opts->pulse_digi_rate_out / 1000, opts->pulse_digi_out_channels);
-        ui_row_digital_gain_fields(&row, opts, state, "+/-");
+        ui_row_digital_gain_fields(&row, opts, state, "+|-");
         ui_row_end(&row);
         /* Analog output on the UDP port + 2, when its socket is open: unset is DSD_INVALID_SOCKET (-1 on POSIX), and 0
            is a valid descriptor. */
