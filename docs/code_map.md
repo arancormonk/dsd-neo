@@ -14099,7 +14099,10 @@ Qt Quick frontend (`src/ui/qt`):
   Settings) may stay beneath; `routeIncoming()` closes them first (`closeIntakeLayers()`), then: Restore → `currentTab
   = 2` when idle and `backupFlow.restoreFromReference(ref)`; Import → `importsOpen` (over the session's Settings while
   monitoring, Imports re-added above them) and, a turn later, `importsScreen.importIncoming(ref, name, type)`; Target
-  CSV → `scanListEditor.openFor(-1)`, `scanListOpen`, `importTargetsFrom(ref, name)`. QML tests:
+  CSV → `scanListEditor.openFor(-1)`, `scanListOpen`, `importTargetsFrom(ref, name)`. During a session that editor
+  (z 20) opens over the monitor, so `scanListOpen` is one of the monitor's `enabled` terms (its taps are passive: a
+  click on the editor's Save, over "Stop listening", would otherwise also stop the session), and the scan-warnings
+  panel (z 21, `scanWarningsPanel`) hides while it is open rather than cover Save. QML tests:
   `tst_incoming_document.qml` (`testContext.setSessionStateKnown()`, `holdRecordingTransfers()` for a save that
   outlives its sheet).
 - `qml/DocumentPicker.qml` is the one picker screens use (`mode` "open"/"save", `title`, `nameFilters`,

@@ -1967,9 +1967,12 @@ Window {
         }
     }
 
+    // Not over the scan-list editor a Target CSV opened during a session
+    // (#831): it would cover Save. The warning comes back when it closes.
     UiPanel {
+        objectName: "scanWarningsPanel"
         z: 21
-        visible: mainRoot.monitorMode && mainRoot.scanWarnings.length > 0
+        visible: mainRoot.monitorMode && mainRoot.scanWarnings.length > 0 && !mainRoot.scanListOpen
         anchors.left: safeArea.left
         anchors.right: safeArea.right
         anchors.bottom: safeArea.bottom
@@ -2036,7 +2039,7 @@ Window {
             && !mainRoot.radioReferenceOpen && !mainRoot.talkgroupsOpen && !talkgroupsScreen.visible
             && !siteChooser.visible && !sessionMenu.visible && !listenMenu.visible && !sessionRadio.visible
             && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.callRecordingsOpen
-            && !mainRoot.radioReferenceAccountOpen
+            && !mainRoot.radioReferenceAccountOpen && !mainRoot.scanListOpen
             && !(mainRoot.importsOpen && mainRoot.sessionDestination === "settings")
             && mainRoot.sessionDestination.length === 0
 

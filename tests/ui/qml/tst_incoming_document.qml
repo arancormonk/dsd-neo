@@ -77,13 +77,14 @@ Item {
             app = null;
             flow = null;
             sheet = null;
+            // Idle first: a Target CSV row will not go while a session runs.
+            testContext.setLifecyclePhase(0);
             while (importedFiles.count)
                 importedFiles.remove(0);
             while (savedSystems.count)
                 savedSystems.remove(0);
             testContext.resetBackup();
             testContext.resetHostPlayback();
-            testContext.setLifecyclePhase(0);
             testContext.setDelayedStop(false);
             testContext.setRadioReference("busy", false);
             testContext.setLocalDeviceRecord("usb", false, "");
@@ -424,6 +425,57 @@ Item {
             compare(app.sessionDestination, "settings");
             verify(findChild(app, "importsScreen").visible);
             tryCompare(findChild(app, "importsScreen"), "notice", "Imported · 2 talkgroups", 5000);
+        }
+
+        // Target CSV during a session: the editor opens over the monitor, and
+        // a mouse click on its Save, over "Stop listening", saves the list and
+        // keeps listening. The monitor's taps are passive, so only standing it
+        // down keeps the release that closed the editor from reaching Stop. A
+        // scan warning on the monitor waits under the editor, not over Save.
+        function test_target_csv_over_a_session_keeps_listening() {
+            testContext.setLifecyclePhase(2);
+            tryCompare(app, "monitorMode", true);
+            var monitor = findChild(app, "monitorScreen");
+            tryCompare(monitor, "enabled", true);
+            app.scanWarnings = "Source aliases were replaced";
+            var warnings = findChild(app, "scanWarningsPanel");
+            verify(warnings !== null && warnings.visible);
+            var lists = scanLists.count;
+            offer(targetsFile());
+            chooseKind("trunkTargets");
+            part("incomingDocumentImport").clicked();
+            verify(app.scanListOpen);
+            var editor = findChild(app, "scanListScreen");
+            tryCompare(findChild(editor, "targetCsvImport"), "active", false, 5000);
+            // Read here, checked once Save has closed the editor: the file it
+            // imported is still held while the editor is open.
+            var stoodDown = !monitor.enabled;
+            verify(!warnings.visible, "the scan warning waits under the editor");
+            editor.draft.name = "Shared targets";
+            var stop = findChild(monitor, "stopListeningButton");
+            var save = findChild(editor, "scanSave");
+            var scroll = findChild(editor, "scanListScroll");
+            verify(stop !== null && stop.visible);
+            verify(save !== null && scroll !== null);
+            // Scroll Save onto Stop listening's centre.
+            var target = stop.mapToItem(null, stop.width / 2, stop.height / 2);
+            var at = save.mapToItem(null, save.width / 2, save.height / 2);
+            scroll.contentY += at.y - target.y;
+            waitForRendering(editor);
+            var onSave = save.mapFromItem(null, target.x, target.y);
+            verify(save.contains(onSave), "Save lies over Stop listening");
+            var stops = decoderHost.stopCalls();
+            mousePress(save, onSave.x, onSave.y);
+            mouseRelease(save, onSave.x, onSave.y);
+            tryCompare(app, "scanListOpen", false);
+            compare(scanLists.count, lists + 1, "the list was saved");
+            wait(60);
+            compare(decoderHost.stopCalls(), stops, "the click that saved did not stop the session");
+            compare(decoderHost.sessionState, 2);
+            verify(stoodDown, "the monitor took no taps under the editor");
+            tryCompare(monitor, "enabled", true);
+            verify(warnings.visible, "the scan warning is back on the monitor");
+            scanLists.remove(scanLists.count - 1);
         }
 
         // ---- waiting until the screen is free (spec §4.4) ----
