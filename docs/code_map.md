@@ -15621,6 +15621,13 @@ changes itself under the binding reading it. Deferred work in a component that c
 runs from a `Timer` it owns, not `Qt.callLater`, whose queued call outlives the object (`FollowLatest.qml`). The QML
 tests pin these with `failOnWarning`.
 
+A screen header's title wraps at large text rather than running past the edge or under what shares its line (issue
+#830): it takes the room between the back chevron and the header's right edge, or the wizard's step progress with a
+12 px gap, the header's height comes from the title's `height` (at least 46 px), and the chevron and the progress
+stay level with the title's first line (`FileBrowserScreen`, `ImportsScreen`, `WizardScreen`). A screen's question
+line (the wizard's step questions) spans its form and wraps. Tests: `tst_imports_screen_layout.qml`
+`test_title_fits_at_large_font`, `tst_wizard_layout.qml` (320 and 360 px at text 1.6).
+
 Short control labels keep whole words (issue #646). `Text.Wrap` breaks a word wider than its line anywhere, so at large
 text a segment split "Automatic" or "simulcast" over two lines. `qml/WholeWordLabel.qml` (the `SegmentedControl`
 segments' label) wraps between words only. When its widest word does not fit at `Theme.fontSize(basePixelSize)` it is

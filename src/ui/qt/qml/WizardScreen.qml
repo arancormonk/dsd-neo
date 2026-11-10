@@ -855,7 +855,10 @@ Item {
         }
     }
 
-    // Header: back chevron, title, segmented progress.
+    // Header: back chevron, title, segmented progress. The title stops short
+    // of the progress and wraps at large text on a narrow phone; the header
+    // grows to hold it, and the chevron and the progress stay level with its
+    // first line (#830).
     Item {
         id: header
 
@@ -863,34 +866,40 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.margins: Theme.screenPadding
-        height: 46
+        height: Math.max(46, title.height)
+        readonly property real firstLineCentre: title.lineCount > 1 ? title.height / title.lineCount / 2 : height / 2
 
         IconButton {
             id: back
             icon: "back"
             anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
+            y: header.firstLineCentre - height / 2
             onClicked: {
                 wizard.requestBack();
             }
         }
 
         ReadableText {
+            id: title
+            objectName: "wizardTitle"
             heading: true
-            anchors.left: back.right
-            anchors.leftMargin: 14
-            anchors.verticalCenter: parent.verticalCenter
+            x: back.width + 14
+            y: lineCount > 1 ? 0 : (header.height - height) / 2
+            width: progress.x - 12 - x
             text: wizard.editRow >= 0 ? qsTr("Edit system") : qsTr("Add system")
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(22)
             font.weight: Font.Bold
             font.letterSpacing: -0.22
             color: Theme.textPrimary
+            wrapMode: Text.Wrap
         }
 
         Row {
+            id: progress
+            objectName: "wizardProgress"
             anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
+            y: header.firstLineCentre - height / 2
             spacing: 6
 
             Repeater {
@@ -943,11 +952,13 @@ Item {
                 spacing: Theme.gap
 
                 ReadableText {
+                    width: parent.width
                     text: qsTr("Where does the signal come from?")
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(15)
                     font.weight: Font.DemiBold
                     color: Theme.textPrimary
+                    wrapMode: Text.Wrap
                 }
 
                 Flow {
@@ -1293,11 +1304,13 @@ Item {
                 }
 
                 ReadableText {
+                    width: parent.width
                     text: qsTr("What should we decode?")
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(15)
                     font.weight: Font.DemiBold
                     color: Theme.textPrimary
+                    wrapMode: Text.Wrap
                 }
 
                 Flow {
@@ -1865,11 +1878,13 @@ Item {
                 spacing: Theme.gap
 
                 ReadableText {
+                    width: parent.width
                     text: qsTr("What should we call it?")
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(15)
                     font.weight: Font.DemiBold
                     color: Theme.textPrimary
+                    wrapMode: Text.Wrap
                 }
 
                 PlexTextField {
