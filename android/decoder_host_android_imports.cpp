@@ -155,21 +155,13 @@ DecoderHostAndroid::ImportTransport::forget(qint64 request) {
     platformForgetImport(request);
 }
 
-/*
- * The backup's save (#831), which needs no host. A save that never reached DocumentCopies leaves a Download-folder row
- * (#829) to discard; one that did settled it there, so the discard after a failed call is a no-op unless the JNI call
- * itself failed.
- */
+/* The backup's save (#831), which needs no host: a content URI saves as the export saves' transport does. */
 bool
 DecoderHostAndroid::ImportTransport::writeFromFile(const QString& path, const QString& reference) {
     if (!isContentUri(reference)) {
         return dsd_qt::DocumentImportTransport::writeFromFile(path, reference);
     }
-    if (aborted() || !platformHoldsResolver() || !platformCopyFileToDocument(path, reference)) {
-        platformDiscardPendingDownload(reference);
-        return false;
-    }
-    return true;
+    return saveContentDocument(path, reference, aborted());
 }
 
 void

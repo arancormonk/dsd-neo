@@ -17,6 +17,7 @@
 #ifndef DSD_NEO_SRC_UI_QT_DECODER_HOST_H_
 #define DSD_NEO_SRC_UI_QT_DECODER_HOST_H_
 
+#include <QHash>
 #include <QMap>
 #include <QObject>
 #include <QSet>
@@ -37,6 +38,7 @@ class QRect;
 namespace dsd_qt {
 
 class DocumentImportTransport;
+class DocumentSaveTransport;
 
 class DecoderHost : public QObject {
     Q_OBJECT
@@ -60,6 +62,8 @@ class DecoderHost : public QObject {
     Q_PROPERTY(bool documentPickerSupported READ documentPickerSupported CONSTANT)
     Q_PROPERTY(bool documentRequestPending READ documentRequestPending NOTIFY documentRequestChanged)
     Q_PROPERTY(bool incomingDocumentPending READ incomingDocumentPending NOTIFY incomingDocumentChanged)
+    Q_PROPERTY(bool fileBrowserSupported READ fileBrowserSupported CONSTANT)
+    Q_PROPERTY(QVariantMap fileAccess READ fileAccess NOTIFY fileAccessChanged)
     Q_PROPERTY(int localDeviceFailureKind READ localDeviceFailureKind NOTIFY localDeviceChanged)
     Q_PROPERTY(bool localDeviceRequestPending READ localDeviceRequestPending NOTIFY localDeviceChanged)
     Q_PROPERTY(QString localDeviceRequestedSource READ localDeviceRequestedSource NOTIFY localDeviceChanged)
@@ -186,13 +190,16 @@ class DecoderHost : public QObject {
     /**
      * @brief Stop every document copy in progress and refuse new ones, for the rest of the process.
      *
-     * Only teardown calls it (BackupModel's destructor, and the Android host's closeRecordingWork()), so that a copy a
-     * slow document provider holds cannot keep the UI thread waiting while the app closes. Sticky: no document copy
-     * succeeds afterwards. A copy it stops fails (DocumentFailed, or false). The base host's copies then leave no
-     * destination file. A host's save into a document provider may leave the document partly written (Android skips the
-     * delete after an abort, because the delete is one more provider call that could hold teardown); such a document
-     * never opens as a backup, since the envelope's length and tag are checked. The base host raises a flag its copies
-     * check before every chunk; a host that runs transfers of its own stops them too and calls this base.
+     * Only teardown calls it (BackupModel's destructor, and the Android host's closeRecordingWork() while a recording
+     * transfer runs), so that a copy a slow document provider holds cannot keep the UI thread waiting while the app
+     * closes. The export writer (#826) aborts its own save transport at teardown instead, which on Android raises the
+     * same process-wide platform abort. Sticky: no document copy succeeds afterwards. A copy it stops fails
+     * (DocumentFailed, or false). The base host's copies then leave no destination file. A host's save into a document
+     * provider may leave the document partly written (Android skips the delete after an abort, because the delete is
+     * one more provider call that could hold teardown); such a document never opens as a backup, since the envelope's
+     * length and tag are checked. The base host raises a flag its copies check before every chunk and aborts every
+     * import and save transport it handed out; a host that runs transfers of its own stops them too and calls this
+     * base.
      */
     virtual void abortDocumentTransfers();
 
@@ -205,6 +212,16 @@ class DecoderHost : public QObject {
      * own returns it through keepImportTransport().
      */
     virtual std::shared_ptr<DocumentImportTransport> importTransport() const;
+
+    /**
+     * @brief A new transport for the export saves (#826), which may outlive this host.
+     *
+     * The base host's saves write local documents (file:// URLs and absolute paths), as copyFileToDocument() does. The
+     * transport never calls back into the host, so the export writer may keep it, and finish a save, after the host is
+     * gone. abortDocumentTransfers() aborts every transport handed out, and one handed out after it starts aborted. A
+     * host with a transport of its own returns it through keepSaveTransport().
+     */
+    virtual std::shared_ptr<DocumentSaveTransport> saveTransport() const;
 
     virtual bool
     usesPlatformFontScaling() const {
@@ -490,6 +507,67 @@ class DecoderHost : public QObject {
      * One the platform received since its last offer (newerIncomingDocument()) replaces the slot's first.
      */
     Q_INVOKABLE QString takeIncomingDocument();
+
+    /*
+     * The app's own file browser (issue #830). Call every member on the Qt thread. The browser opens a session first
+     * and names it in each request; a request returns a new id (from the picker's sequence) and is answered later,
+     * never inside the call, exactly once, on its kind's signal: fileRootsListed(), folderListed() (listings and
+     * pages), fileHandoffChecked() or fileAccessRequestDone(). cancelFileRequest(), closeFileBrowserSession() and a
+     * superseding request retire a request at once and answer it "cancelled", queued, also when another answer was
+     * already queued for it; a platform answer that comes for a retired id is dropped. A session has one listing or
+     * page at a time (a new one supersedes it), the app one access request (a second call in an open session returns
+     * the one pending), and a request naming a session that is closed or unknown is answered "cancelled". The base
+     * host has no browser: sessions open, and every request is answered "unsupported", queued.
+     */
+    /** @brief Whether this host has the file browser; also the capability for same-tree companions and local replay
+     * copies. The base host has none. */
+    virtual bool
+    fileBrowserSupported() const {
+        return false;
+    }
+
+    /**
+     * @brief What storage the browser may read: {declared, granted, route ("settings", "permission" or "none"),
+     * apiLevel, rootsGeneration}. fileAccessChanged() follows a change. The base host: {false, false, "none", 0, 0}.
+     */
+    virtual QVariantMap fileAccess() const;
+
+    /** @brief Read fileAccess() again now (the browser opens, Refresh); the base host has nothing to read. */
+    Q_INVOKABLE virtual void
+    refreshFileAccess() {}
+
+    /** @brief Open a browser session: the token every request names; larger than every id returned before. */
+    Q_INVOKABLE virtual qint64 openFileBrowserSession();
+
+    /** @brief Close session @p sessionId: each of its pending requests is answered "cancelled", later ones too. */
+    Q_INVOKABLE virtual void closeFileBrowserSession(qint64 sessionId);
+
+    /** @brief List the roots: fileRootsListed(id, {status, generation, roots}). */
+    Q_INVOKABLE virtual qint64 requestFileRoots(qint64 sessionId);
+
+    /**
+     * @brief List @p path in root @p rootKey as of roots @p generation, filtered by @p filter ({kind: "csv", "backup"
+     * or "replay", showAll}): folderListed(id, {status, snapshot, offset, entries, more, hiddenByFilter,
+     * hiddenByName}), hiddenByName counting the items left out because their names are not valid UTF-8.
+     */
+    Q_INVOKABLE virtual qint64 requestFolderListing(qint64 sessionId, const QString& rootKey, qint64 generation,
+                                                    const QString& path, const QVariantMap& filter);
+
+    /** @brief The page of listing @p snapshot from @p offset: folderListed(), as a listing is answered. */
+    Q_INVOKABLE virtual qint64 requestMorePage(qint64 sessionId, qint64 snapshot, int offset);
+
+    /**
+     * @brief Check that @p reference, a file listed in root @p rootKey as of @p generation, may be opened:
+     * fileHandoffChecked(id, {ok, reference, name, reason}).
+     */
+    Q_INVOKABLE virtual qint64 requestFileHandoff(qint64 sessionId, const QString& rootKey, qint64 generation,
+                                                  const QString& reference);
+
+    /** @brief Ask the platform for storage access: fileAccessRequestDone(id, outcome). */
+    Q_INVOKABLE virtual qint64 requestFileAccess(qint64 sessionId);
+
+    /** @brief Retire request @p requestId: answered "cancelled", queued. Answered and unknown ids are ignored. */
+    Q_INVOKABLE virtual void cancelFileRequest(qint64 requestId);
 
     virtual QString
     audioRoute() const {
@@ -914,6 +992,19 @@ class DecoderHost : public QObject {
     void documentRequestChanged();
     /** @brief A document was offered, replacing any not taken, or the one waiting was taken. */
     void incomingDocumentChanged();
+    /** @brief fileAccess() changed. */
+    void fileAccessChanged();
+    /** @brief Roots request @p requestId ended: {status, generation, roots}. */
+    void fileRootsListed(qint64 requestId, const QVariantMap& result);
+    /**
+     * @brief Listing or page request @p requestId ended: {status, snapshot, offset, entries, more, hiddenByFilter,
+     * hiddenByName}.
+     */
+    void folderListed(qint64 requestId, const QVariantMap& result);
+    /** @brief Hand-off request @p requestId ended: {ok, reference, name, reason}. */
+    void fileHandoffChecked(qint64 requestId, const QVariantMap& result);
+    /** @brief Access request @p requestId ended with @p outcome. */
+    void fileAccessRequestDone(qint64 requestId, const QString& outcome);
 
   protected:
     /** @brief Leave @p reference for takeIncomingDocument(), in place of any not taken; empty is no document. */
@@ -927,6 +1018,54 @@ class DecoderHost : public QObject {
     virtual QString
     newerIncomingDocument() {
         return QString();
+    }
+
+    /** @brief What a file browser request asks; decides the signal that answers it. */
+    enum class FileRequestKind { Roots, Listing, Page, Handoff, Access };
+
+    /**
+     * @brief Begin a file request of @p kind in session @p sessionId and return its new id, live.
+     *
+     * A listing or page retires the session's pending one first ("cancelled"). Access is one request app-wide: while
+     * one is pending (liveFileAccessRequest()), an access request in an open session returns that id and begins
+     * nothing, so a caller starts the platform only for an id other than the one liveFileAccessRequest() named
+     * before the call; otherwise the new request becomes the one it names. A closed or unknown session comes first:
+     * the request gets a new id answered "cancelled" at once, queued, and not live, so the caller starts nothing on
+     * the platform, and a pending access request is left as it is.
+     */
+    qint64 beginFileRequest(qint64 sessionId, FileRequestKind kind);
+
+    /** @brief Whether request @p id may still be answered by the platform (begun, neither answered nor retired). */
+    bool fileRequestLive(qint64 id) const;
+
+    /**
+     * @brief Answer live request @p id with @p result now: retire it, then emit its kind's signal (an access request's
+     * outcome is @p result's "outcome"). False, with nothing emitted, when the id is not live.
+     */
+    bool settleFileRequest(qint64 id, const QVariantMap& result);
+
+    /** @brief As settleFileRequest(), but the signal is queued; a cancel before it runs makes it "cancelled". */
+    void settleFileRequestLater(qint64 id, const QVariantMap& result);
+
+    /**
+     * @brief The answer of a request of @p kind that ends without a result, with status @p code: roots {status,
+     * generation: 0, roots: []}, a listing or page {status}, a hand-off {ok: false, reason}, an access {outcome}.
+     */
+    static QVariantMap fileFailure(FileRequestKind kind, const QString& code);
+
+    /** @brief The access request a new requestFileAccess() returns instead of beginning one; 0 when none. */
+    qint64
+    liveFileAccessRequest() const {
+        return m_fileAccessRequest;
+    }
+
+    /**
+     * @brief Live request @p requestId was retired by a cancel, a session close or a superseding request: the
+     * platform may stop its work. Called after its "cancelled" answer is queued. The base host has no platform work.
+     */
+    virtual void
+    fileRequestRetired(qint64 requestId) {
+        (void)requestId;
     }
 
     /** @brief Start playing @p path, a file that exists, published Preparing. The base host has no player. */
@@ -975,8 +1114,8 @@ class DecoderHost : public QObject {
     void deliverSignInFill(int token, bool hasUsername, QString& username, bool hasPassword, QString& password) const;
 
     /**
-     * @brief The base host's copyFileToDocument(), stopped before any chunk once @p aborted is set; it touches no host
-     * state, so a platform's worker job may run it on its own flag.
+     * @brief The base host's copyFileToDocument() (copy_file_to_local_document()), stopped before any chunk once
+     * @p aborted is set; it touches no host state, so a platform's worker job may run it on its own flag.
      */
     static bool copyFileToLocalDocument(const QString& sourcePath, const QString& reference,
                                         const std::atomic<bool>* aborted);
@@ -984,6 +1123,8 @@ class DecoderHost : public QObject {
     /** @brief Hand out @p transport: abortDocumentTransfers() aborts it, and it starts aborted after one. */
     std::shared_ptr<DocumentImportTransport>
     keepImportTransport(std::shared_ptr<DocumentImportTransport> transport) const;
+    /** @brief Hand out @p transport: abortDocumentTransfers() aborts it, and it starts aborted after one. */
+    std::shared_ptr<DocumentSaveTransport> keepSaveTransport(std::shared_ptr<DocumentSaveTransport> transport) const;
 
     /** @brief A new document request id, one more than the last; the base requests take theirs here too. */
     qint64
@@ -1004,10 +1145,30 @@ class DecoderHost : public QObject {
     /* A new request id, answered documentPickUnavailable(id, "unsupported"), queued. */
     qint64 refuseDocumentRequest();
 
+    /* A file request: live until answered is set; then answer waits for its queued delivery. */
+    struct FileRequestState {
+        FileRequestKind kind = FileRequestKind::Roots;
+        qint64 session = 0;
+        bool answered = false;
+        QVariantMap answer;
+    };
+
+    /* A new request of @p kind answered "unsupported", queued ("cancelled" for a session not open); an access request
+       in an open session joins the pending one. */
+    qint64 refuseFileRequest(qint64 sessionId, FileRequestKind kind);
+    /* Retire request @p id, live or answered but not delivered, with a "cancelled" answer. */
+    void cancelFileAnswer(qint64 id);
+    /* Cancel session @p sessionId's pending listing or page. */
+    void supersedeFolderRequests(qint64 sessionId);
+    /* Deliver request @p id's queued answer, unless it was delivered already. */
+    void deliverFileAnswer(qint64 id);
+    void emitFileAnswer(qint64 id, FileRequestKind kind, const QVariantMap& result);
+
     std::atomic<bool> m_documentTransfersAborted{false};
-    /* The import transports handed out, for abortDocumentTransfers(); handed out from a const host. */
-    mutable std::mutex m_importTransportsLock;
+    /* The import and save transports handed out, for abortDocumentTransfers(); handed out from a const host. */
+    mutable std::mutex m_transportsLock;
     mutable std::vector<std::weak_ptr<DocumentImportTransport>> m_importTransports; // guarded by the lock
+    mutable std::vector<std::weak_ptr<DocumentSaveTransport>> m_saveTransports;     // guarded by the lock
     QString m_playbackPath;
     int m_playbackState = PlaybackStopped;
     qint64 m_playbackPositionMs = 0;
@@ -1022,6 +1183,10 @@ class DecoderHost : public QObject {
     QSet<qint64> m_refusedDocumentRequests;
     /* The incoming document waiting for takeIncomingDocument(); empty with none. */
     QString m_incomingDocument;
+    /* The file requests not yet delivered; the open sessions; the access request a new one joins (0: none). */
+    QHash<qint64, FileRequestState> m_fileRequests;
+    QSet<qint64> m_fileSessions;
+    qint64 m_fileAccessRequest = 0;
     std::function<bool(const QString&)> m_recordingIndexed;
     std::function<int(const QString&)> m_recordingHold;
     std::function<void(int)> m_recordingRelease;

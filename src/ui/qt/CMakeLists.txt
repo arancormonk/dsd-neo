@@ -44,6 +44,7 @@ target_sources(
         decryption_profiles_model.cpp
         diagnostics_log.cpp
         document_import_transport.cpp
+        document_save_transport.cpp
         imported_files_model.cpp
         import_names.cpp
         import_service.cpp
@@ -58,6 +59,7 @@ target_sources(
         recording_status.cpp
         recording_store.cpp
         replay_store.cpp
+        restart_closer.cpp # Issue #830
         site_groups.cpp # WP-D4
         saved_systems_model.cpp
         scan_avoid_list_model.cpp
@@ -66,6 +68,9 @@ target_sources(
         scan_list_starter.cpp
         scan_list_toggle_model.cpp
         spectrum_model.cpp
+        csv_text.cpp
+        document_export_writer.cpp
+        signal_search_export.cpp
         signal_search_model.cpp
         known_frequency_index.cpp
         listen_pins.cpp # Issue #801
@@ -105,6 +110,12 @@ qt_add_resources(
         qml/StoreNoticeCard.qml
         qml/CsvImportFlow.qml
         qml/DocumentPicker.qml
+        qml/FileBrowser.qml
+        qml/FileBrowserScreen.qml
+        qml/FileBrowserLocations.qml
+        qml/FileBrowserFolder.qml
+        qml/FileBrowserLine.qml
+        qml/FileBrowserCommand.qml
         qml/HistoryDetailSheet.qml
         qml/CallRecordingPlayer.qml
         qml/DetectionRecordingsSheet.qml

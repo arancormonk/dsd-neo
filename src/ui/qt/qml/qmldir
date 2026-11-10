@@ -2,6 +2,7 @@
 # Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 singleton Theme 1.0 Theme.qml
 singleton Navigation 1.0 Navigation.qml
+singleton FileBrowser 1.0 FileBrowser.qml
 
 PlexFlickable 1.0 PlexFlickable.qml
 DeviceStatus 1.0 DeviceStatus.qml

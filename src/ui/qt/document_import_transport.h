@@ -23,6 +23,7 @@
 #include <QtGlobal>
 #include <atomic>
 #include <functional>
+#include <memory>
 #include <mutex>
 
 class QIODevice;
@@ -70,9 +71,10 @@ class DocumentImportTransport {
      * @brief Copy the document @p reference names to @p destPath for import @p request, at most @p maxBytes of it.
      *
      * Blocks until the copy ends; callers run it on the import worker. The base transport takes a file:// URL or a
-     * plain absolute path (anything else is DocumentFailed) and writes through QSaveFile in the destination's
-     * directory, which must exist. A request's copies run one after another: a second copy while one runs is
-     * DocumentFailed. Callers name a fresh @p destPath; only DocumentCopied leaves a file there.
+     * plain absolute path to a regular file (anything else is DocumentFailed: a FIFO, socket, device or directory,
+     * also through a symbolic link) and writes through QSaveFile in the destination's directory, which must exist.
+     * A request's copies run one after another: a second copy while one runs is DocumentFailed. Callers name a fresh
+     * @p destPath; only DocumentCopied leaves a file there.
      *
      * @return A DecoderHost::DocumentCopy value: DocumentCancelled once cancel(@p request) was called (before or
      *         during the copy), DocumentFailed after abort(), DocumentLocalFailed when this device could not write the
@@ -89,7 +91,7 @@ class DocumentImportTransport {
      * provider's declared size, which is only a hint. It shares the copies' request records: cancel(@p request) stops
      * it at its next read and refuses it until forget(@p request), a second read of a request that is reading is
      * DocumentFailed, and progress() names the document and counts the bytes read. The base transport takes a file://
-     * URL or a plain absolute path, as copy() does.
+     * URL or a plain absolute path, as copy() does, and probes only a regular file, as copy() copies only one.
      *
      * @return A DecoderHost::DocumentCopy value: DocumentCopied with @p out filled, DocumentCancelled once
      *         cancel(@p request) was called before or during the read, else DocumentFailed (an abort included). @p out
@@ -146,6 +148,16 @@ class DocumentImportTransport {
      */
     void abort();
     bool aborted() const;
+
+  protected:
+    /**
+     * @brief Open @p path, a regular file, for reading; nullptr when it cannot be opened.
+     *
+     * The only source a copy or a probe opens. The base transport never waits on what it opens: on POSIX a name that leads to
+     * anything but a regular file by now (a FIFO swapped in after the check) is refused at once. A test overrides it
+     * to hand the copy a device it paces.
+     */
+    virtual std::unique_ptr<QIODevice> openSource(const QString& path);
 
   private:
     struct Request {

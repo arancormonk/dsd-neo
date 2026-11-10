@@ -2,11 +2,12 @@
 package android.database
 import java.io.Closeable
 
-// The cursor calls a single-column size or name lookup makes.
+// The cursor calls a single-column size or name lookup makes, and the walk over a query's rows.
 interface Cursor : Closeable {
     fun getColumnIndex(columnName: String): Int
     fun moveToFirst(): Boolean
     fun isNull(columnIndex: Int): Boolean
     fun getLong(columnIndex: Int): Long
     fun getString(columnIndex: Int): String? = error("no text column")
+    fun moveToNext(): Boolean = error("no rows")
 }

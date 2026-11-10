@@ -2,13 +2,24 @@
 package android.content
 import android.content.pm.PackageManager
 import android.net.Uri
+import java.io.File
 
-// The context, intents and results the document picker uses, with the platform's names. A test's context carries the
-// resolver and package manager it arranged; an intent keeps what was set on it for the test to read.
+// The context, intents and results the document picker and the file browser use, with the platform's names. A test's
+// context carries the resolver, package manager, services and permissions it arranged; an intent keeps what was set on
+// it for the test to read.
 open class Context {
     open val applicationContext: Context get() = this
     open val contentResolver: ContentResolver = ContentResolver()
     open val packageManager: PackageManager = PackageManager()
+    open val packageName: String = "io.github.arancormonk.dsdneo"
+    val grantedPermissions = mutableSetOf<String>()
+
+    open fun getExternalFilesDir(type: String?): File? = null
+
+    open fun <T> getSystemService(serviceClass: Class<T>): T? = null
+
+    fun checkSelfPermission(permission: String): Int =
+        if (permission in grantedPermissions) PackageManager.PERMISSION_GRANTED else PackageManager.PERMISSION_DENIED
 }
 
 class ActivityNotFoundException(message: String? = null) : RuntimeException(message)
@@ -25,6 +36,10 @@ class ClipData(vararg uris: Uri?) {
 }
 
 class Intent(val action: String? = null) {
+    constructor(action: String?, uri: Uri?) : this(action) {
+        data = uri
+    }
+
     val categories = mutableSetOf<String>()
     val extras = mutableMapOf<String, Any?>()
     var data: Uri? = null

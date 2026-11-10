@@ -13,6 +13,7 @@
 #include <QJsonValue>
 #include <QLatin1String>
 #include <QList>
+#include <QStandardPaths>
 #include <QStringList>
 #include <QtGlobal>
 #include <algorithm>
@@ -25,12 +26,17 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <iterator>
+#include <limits>
+#include <map>
 #include <stddef.h>
 #include <utility>
 #include <vector>
 #include "decoder_host.h"
+#include "document_export_writer.h"
+#include "document_save_transport.h"
 #include "json_store.h"
 #include "known_frequency_index.h"
+#include "signal_search_export.h"
 #include "signal_search_model.h"
 #include "store_notices.h"
 #include "teardown_trace.h"
@@ -237,6 +243,13 @@ SignalSearchModel::SignalSearchModel(DecoderHost* host, KnownFrequencyIndex* ind
             refresh();
         });
     }
+    /* The model lives as long as the QML engine, so its writer never goes before the app's teardown: a writer destroyed
+       with a save running aborts its transport, which on Android stops every document copy in the process. */
+    m_saveTransport = m_host ? m_host->saveTransport() : std::make_shared<DocumentSaveTransport>();
+    m_exportWriter = std::make_unique<DocumentExportWriter>(
+        m_saveTransport,
+        QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/signal-search-export"), this,
+        [this](int token, bool ok) { Q_EMIT exportFinished(token, ok); });
     if (m_host) {
         connect(m_host, &DecoderHost::sessionStateChanged, this, &SignalSearchModel::followSession);
         /* Admission is open by then. The host can report it ahead of the phase it arrives with, while Starting. */
@@ -297,6 +310,8 @@ SignalSearchModel::disarm() {
    journal worker stays alive until process shutdown; a replacement model reattaches. */
 SignalSearchModel::~SignalSearchModel() {
     const TeardownStage stage("~SignalSearchModel");
+    /* Here, inside the timed stage: a save still running is aborted and waited for (DocumentExportWriter). */
+    m_exportWriter.reset();
     dsd_app_signal_search_store_flush();
 }
 
@@ -537,13 +552,30 @@ recordingKey(const dsd_signal_search_hit& h) {
     return QStringLiteral("%1:%2").arg(h.session_id).arg(h.hit_id);
 }
 
-QVariantMap
-SignalSearchModel::hitMap(const dsd_signal_search_hit& h) const {
+/* The width a detection's saved names match at: its bandwidth, or its range's step when that is narrower. */
+static double
+matchWidth(const dsd_signal_search_hit& h) {
     double width = h.bandwidth_hz;
     if (h.step_num && h.step_den) {
         width = std::min(width, (double)h.step_num / h.step_den);
     }
-    auto matches = m_index ? m_index->lookup(h.frequency_hz, width) : QVariantList();
+    return width;
+}
+
+QVariantList
+SignalSearchModel::knownMatches(uint32_t frequency, double width) const {
+    return m_index ? m_index->lookup(frequency, width) : QVariantList();
+}
+
+/* A detection's saved names as the screen labels them (`knownLabel`) and the export writes them. */
+static QString
+knownLabel(const QStringList& names) {
+    return names.join(QStringLiteral(" / "));
+}
+
+QVariantMap
+SignalSearchModel::hitMap(const dsd_signal_search_hit& h) const {
+    auto matches = knownMatches(h.frequency_hz, matchWidth(h));
     const QStringList labels = KnownFrequencyIndex::matchNames(matches);
     return {{QStringLiteral("session"), QString::number(h.session_id)},
             {QStringLiteral("id"), QString::number(h.hit_id)},
@@ -577,7 +609,7 @@ SignalSearchModel::hitMap(const dsd_signal_search_hit& h) const {
             {QStringLiteral("gainAuto"), h.gain_auto != 0},
             {QStringLiteral("matches"), matches},
             {QStringLiteral("knownNames"), labels},
-            {QStringLiteral("knownLabel"), labels.join(QStringLiteral(" / "))}};
+            {QStringLiteral("knownLabel"), knownLabel(labels)}};
 }
 
 /* A range bound for the status line: kHz precision at least (118.000), and every digit the bound carries. */
@@ -828,5 +860,79 @@ SignalSearchModel::systemForHit(const QVariantMap& hit, const QVariantMap& sourc
     }
     result[QStringLiteral("searchUnresolved")] = hit.value(QStringLiteral("unresolved"));
     return result;
+}
+
+/* Every stored detection, newest first, with its saved names as hitMap() gives them, looked up once per frequency and
+   width within the export. */
+QByteArray
+SignalSearchModel::detectionsExport(int* count) const {
+    std::vector<dsd_signal_search_hit> hits(DSD_SEARCH_HISTORY_LIMIT);
+    const size_t n = dsd_app_signal_search_history_snapshot(hits.data(), hits.size(), nullptr);
+    *count = (int)n;
+    if (n == 0U) {
+        return {};
+    }
+    std::map<std::pair<uint32_t, double>, QString> names;
+    return signal_search_export::detections(hits.data(), n, [this, &names](const dsd_signal_search_hit& h) {
+        const auto key = std::make_pair(h.frequency_hz, matchWidth(h));
+        auto found = names.find(key);
+        if (found == names.end()) {
+            const QStringList labels = KnownFrequencyIndex::matchNames(knownMatches(key.first, key.second));
+            found = names.emplace(key, knownLabel(labels)).first;
+        }
+        return found->second;
+    });
+}
+
+/* Both avoid lists as one consistent pair; *count is -1 when they kept changing while read. */
+QByteArray
+SignalSearchModel::avoidsExport(int* count) const {
+    std::vector<uint32_t> permanent, session;
+    if (!signal_search_export::readAvoids(signal_search_export::storeAvoids(), &permanent, &session)) {
+        *count = -1;
+        return {};
+    }
+    QByteArray file = signal_search_export::avoids(permanent, session, count);
+    return *count > 0 ? file : QByteArray();
+}
+
+QVariantMap
+SignalSearchModel::prepareExport(const QString& kind) {
+    discardExport(m_exportToken);
+    int count = -1;
+    QByteArray file;
+    if (kind == QLatin1String("detections")) {
+        file = detectionsExport(&count);
+    } else if (kind == QLatin1String("avoids")) {
+        file = avoidsExport(&count);
+    }
+    if (count <= 0) {
+        return {{QStringLiteral("token"), 0}, {QStringLiteral("count"), count}};
+    }
+    // Tokens are unique for the writer, which names the staged file after them, and never 0.
+    m_lastExportToken = m_lastExportToken == std::numeric_limits<int>::max() ? 1 : m_lastExportToken + 1;
+    m_exportToken = m_lastExportToken;
+    m_exportBytes = file;
+    return {{QStringLiteral("token"), m_exportToken}, {QStringLiteral("count"), count}};
+}
+
+bool
+SignalSearchModel::saveExport(int token, const QString& reference) {
+    if (token == 0 || token != m_exportToken) {
+        m_saveTransport->discardPendingDownload(reference);
+        return false;
+    }
+    const QByteArray file = m_exportBytes;
+    discardExport(token);
+    // A running save refuses it, and the writer lets go of the reference's Download-folder row.
+    return m_exportWriter->submit(token, file, reference);
+}
+
+void
+SignalSearchModel::discardExport(int token) {
+    if (token != 0 && token == m_exportToken) {
+        m_exportToken = 0;
+        m_exportBytes.clear();
+    }
 }
 } // namespace dsd_qt

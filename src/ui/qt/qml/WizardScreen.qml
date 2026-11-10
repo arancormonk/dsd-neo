@@ -37,13 +37,17 @@ Item {
         // editingFinished, and an emptied gain index never does).
         return JSON.stringify([sourceType, airspySettings, wizardAirspy.pendingText(), hostText, portText, fileText, freqText, decodeFlag, trunking, gainText, ppmText, hangtimeText, bwText, biasTee, extraText, nameText, chanCsvPath, groupCsvPath, keyCsvPath, keyCsvHex, encKeyType, encForceKey, p25BandplanCsvPath, srcCsvPath, decryptionProfileUid]);
     }
+    // Whether leaving now would lose something typed or picked.
+    function hasUnsavedDraft() {
+        return initialDraft !== draftFingerprint() || encKeyValue.length > 0;
+    }
     function requestBack() {
         Navigation.clearInput(wizard.Window.window);
         if (step > 0) {
             step--;
             return;
         }
-        if (initialDraft !== draftFingerprint() || encKeyValue.length > 0)
+        if (hasUnsavedDraft())
             discardDialog.ask(function () {
                 wizard.closed();
             });
@@ -272,15 +276,19 @@ Item {
         Navigation.announce(wizard, line, text);
     }
 
-    // Browse for the replay file. A local file is used where it is; a
-    // provider's document is copied into the app's own storage (replayFiles),
-    // and until a copy lands the previous file stays.
+    // Browse for the replay file. A provider's document is copied into the
+    // app's own storage (replayFiles), and so is a local file where the host
+    // has DSD-neo's file browser (a drive can go away); on the desktop a
+    // local file is used where it is. Until a copy lands the previous file
+    // stays.
     function browseReplayFile() {
         replayNotice = "";
         sourcePicker.open();
     }
+    // The host's name is decoded already and goes on as given; a pick
+    // with none is named from its reference, decoded once (issue #830).
     function replayFilePicked(reference, displayName) {
-        beginReplay(reference, displayName.length > 0 ? displayName : reference.substring(reference.lastIndexOf('/') + 1));
+        beginReplay(reference, displayName.length > 0 ? displayName : Util.referenceName(reference));
     }
     function showReplayProblem(text) {
         replayNotice = text;
@@ -798,11 +806,14 @@ Item {
     }
 
     // The replay file's Browse (issue #829): the host's own picker where it
-    // has one. Backing out changes nothing.
+    // has one, or DSD-neo's file browser (issue #830). Backing out changes
+    // nothing.
     DocumentPicker {
         id: sourcePicker
         objectName: "wizardReplayPicker"
         mode: "open"
+        browseKind: "replay"
+        title: qsTr("Choose a replay file")
         onAccepted: function (reference, displayName) {
             wizard.replayFilePicked(reference, displayName);
         }
@@ -848,7 +859,10 @@ Item {
         }
     }
 
-    // Header: back chevron, title, segmented progress.
+    // Header: back chevron, title, segmented progress. The title stops short
+    // of the progress and wraps at large text on a narrow phone; the header
+    // grows to hold it, and the chevron and the progress stay level with its
+    // first line (#830).
     Item {
         id: header
 
@@ -856,34 +870,40 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.margins: Theme.screenPadding
-        height: 46
+        height: Math.max(46, title.height)
+        readonly property real firstLineCentre: title.lineCount > 1 ? title.height / title.lineCount / 2 : height / 2
 
         IconButton {
             id: back
             icon: "back"
             anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
+            y: header.firstLineCentre - height / 2
             onClicked: {
                 wizard.requestBack();
             }
         }
 
         ReadableText {
+            id: title
+            objectName: "wizardTitle"
             heading: true
-            anchors.left: back.right
-            anchors.leftMargin: 14
-            anchors.verticalCenter: parent.verticalCenter
+            x: back.width + 14
+            y: lineCount > 1 ? 0 : (header.height - height) / 2
+            width: progress.x - 12 - x
             text: wizard.editRow >= 0 ? qsTr("Edit system") : qsTr("Add system")
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(22)
             font.weight: Font.Bold
             font.letterSpacing: -0.22
             color: Theme.textPrimary
+            wrapMode: Text.Wrap
         }
 
         Row {
+            id: progress
+            objectName: "wizardProgress"
             anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
+            y: header.firstLineCentre - height / 2
             spacing: 6
 
             Repeater {
@@ -936,11 +956,13 @@ Item {
                 spacing: Theme.gap
 
                 ReadableText {
+                    width: parent.width
                     text: qsTr("Where does the signal come from?")
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(15)
                     font.weight: Font.DemiBold
                     color: Theme.textPrimary
+                    wrapMode: Text.Wrap
                 }
 
                 Flow {
@@ -1077,7 +1099,9 @@ Item {
                         OutlineButton {
                             id: browse
                             objectName: "wizardReplayBrowse"
-                            width: 96
+                            // At least as wide as its whole word: a fixed
+                            // width split it over two lines at large text.
+                            width: Math.max(96, implicitWidth)
                             text: qsTr("Browse")
                             enabled: !wizard.replayCopying
                             onClicked: wizard.browseReplayFile()
@@ -1284,11 +1308,13 @@ Item {
                 }
 
                 ReadableText {
+                    width: parent.width
                     text: qsTr("What should we decode?")
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(15)
                     font.weight: Font.DemiBold
                     color: Theme.textPrimary
+                    wrapMode: Text.Wrap
                 }
 
                 Flow {
@@ -1856,11 +1882,13 @@ Item {
                 spacing: Theme.gap
 
                 ReadableText {
+                    width: parent.width
                     text: qsTr("What should we call it?")
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(15)
                     font.weight: Font.DemiBold
                     color: Theme.textPrimary
+                    wrapMode: Text.Wrap
                 }
 
                 PlexTextField {

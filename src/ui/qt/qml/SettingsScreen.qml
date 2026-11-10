@@ -955,7 +955,21 @@ Item {
                         objectName: "settingsImportsRow"
                         title: qsTr("Imported files")
                         subtitle: qsTr("Channel maps, talkgroups, keys, band plans, radio IDs")
+                        showDivider: decoderHost.fileBrowserSupported === true
                         onTapped: screen.openImports()
+                    }
+
+                    // Issue #830: only where the host has DSD-neo's file browser.
+                    ToggleRow {
+                        id: chooseFilesRow
+                        objectName: "settingsChooseFilesInApp"
+                        visible: decoderHost.fileBrowserSupported === true
+                        title: qsTr("Choose files in DSD-neo")
+                        subtitle: qsTr("Restore, CSV imports and replay files open DSD-neo's file browser instead of Android's picker")
+                        checked: prefs.chooseFilesInApp === true
+                        onToggled: function (state) {
+                            prefs.chooseFilesInApp = state;
+                        }
                     }
                 }
             }
@@ -1085,7 +1099,7 @@ Item {
                             // the passphrase sheet it leaves the tree, and holds no name.
                             readonly property bool navigationAllowed: Navigation.allows(backupNotice)
                             Accessible.ignored: !navigationAllowed || !visible
-                            Accessible.name: Accessible.ignored ? "" : text
+                            Accessible.name: !navigationAllowed || !visible ? "" : text
                         }
                     }
 

@@ -19,18 +19,22 @@
 #include <QThread>
 #include <QUrl>
 #include <QtGlobal>
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <memory>
+#include <mutex>
 #include <qflags.h>
 #include <qtenvironmentvariables.h>
 #include <thread>
+#include <utility>
 
 #include "decoder_host.h"
 #include "document_import_transport.h"
 
 #ifndef _WIN32
-#include <cerrno>
-#include <csignal>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -348,7 +352,6 @@ test_host_abort() {
           "a transport still copies after its host is gone");
 }
 
-#ifndef _WIN32
 /* Wait until request @p id's running copy has reached @p bytes; false after about five seconds. */
 bool
 await_bytes(const DocumentImportTransport& transport, qint64 id, qint64 bytes) {
@@ -361,59 +364,119 @@ await_bytes(const DocumentImportTransport& transport, qint64 id, qint64 bytes) {
     return false;
 }
 
-/* Open @p fifo for writing once a reader has it open (blocking writes from then on); -1 after about five seconds
-   without one, so a copy that never opens its source fails the case rather than hanging it. */
-int
-open_fifo_writer(const QString& fifo) {
-    const QByteArray path = QFile::encodeName(fifo);
-    for (int i = 0; i < 5000; ++i) {
-        const int fd = ::open(path.constData(), O_WRONLY | O_NONBLOCK | O_CLOEXEC);
-        if (fd >= 0) {
-            const int flags = fcntl(fd, F_GETFL);
-            if (flags >= 0 && fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) == 0) {
-                return fd;
-            }
-            ::close(fd);
-            return -1;
-        }
-        if (errno != ENXIO) {
-            return -1;
-        }
-        QThread::msleep(1);
+/* What a GatedSource serves past its bytes: one more byte, once the test lets it go. */
+struct SourceGate {
+    std::mutex lock;
+    std::condition_variable changed;
+    bool released = false;
+    bool waited = false; // a read went on past the source's bytes
+};
+
+/*
+ * A source that serves its bytes (one full chunk, 64 KiB, unless a case gives others), in reads of at most a given size
+ * when a case gives one, then waits in its read until the gate opens and serves one byte more: the copy or probe
+ * reading it stops at a known point. The wait is bounded, so a case that never opens the gate fails rather than hangs.
+ */
+class GatedSource : public QIODevice {
+  public:
+    explicit GatedSource(std::shared_ptr<SourceGate> gate, QByteArray bytes = QByteArray(1 << 16, 'x'),
+                         qint64 piece = 1 << 16)
+        : m_gate(std::move(gate)), m_bytes(std::move(bytes)), m_piece(piece) {}
+
+    bool
+    isSequential() const override {
+        return true;
     }
-    return -1;
-}
+
+  protected:
+    qint64
+    readData(char* data, qint64 maxSize) override {
+        const qint64 size = m_bytes.size();
+        if (m_served < size) {
+            const qint64 n = qMin(qMin(maxSize, m_piece), size - m_served);
+            std::copy(m_bytes.constData() + m_served, m_bytes.constData() + m_served + n, data);
+            m_served += n;
+            return n;
+        }
+        if (m_served > size || maxSize < 1) {
+            return 0;
+        }
+        std::unique_lock<std::mutex> guard(m_gate->lock);
+        m_gate->waited = true;
+        if (!m_gate->changed.wait_for(guard, std::chrono::seconds(10), [this] { return m_gate->released; })) {
+            return -1;
+        }
+        data[0] = 'y';
+        ++m_served;
+        return 1;
+    }
+
+    qint64
+    writeData(const char* data, qint64 maxSize) override {
+        (void)data;
+        (void)maxSize;
+        return -1;
+    }
+
+  private:
+    std::shared_ptr<SourceGate> m_gate;
+    QByteArray m_bytes;
+    qint64 m_piece;
+    qint64 m_served = 0;
+};
+
+/*
+ * The base transport, copying or probing from a GatedSource (given its bytes and read size) in place of the file it
+ * was named: the rest is production code.
+ */
+class GatedTransport : public DocumentImportTransport {
+  public:
+    explicit GatedTransport(std::shared_ptr<SourceGate> gate, QByteArray bytes = QByteArray(1 << 16, 'x'),
+                            qint64 piece = 1 << 16)
+        : m_gate(std::move(gate)), m_bytes(std::move(bytes)), m_piece(piece) {}
+
+  protected:
+    std::unique_ptr<QIODevice>
+    openSource(const QString& path) override {
+        (void)path;
+        auto source = std::make_unique<GatedSource>(m_gate, m_bytes, m_piece);
+        if (!source->open(QIODevice::ReadOnly | QIODevice::Unbuffered)) {
+            return nullptr;
+        }
+        return source;
+    }
+
+  private:
+    std::shared_ptr<SourceGate> m_gate;
+    QByteArray m_bytes;
+    qint64 m_piece;
+};
 
 enum class Stop { Cancel, Abort };
 
 /*
- * A copy stopped from another thread while it runs: the source is a FIFO the test feeds, so the copy waits in its read
- * at a known point. One full chunk (64 KiB) is read, then the copy is stopped and one more byte released.
+ * A copy stopped from another thread while it runs: the source serves one full chunk (64 KiB) and then waits in its
+ * read, so the copy is at a known point; the copy is stopped there and one more byte released. The file named is a
+ * regular one of 65537 bytes, the size the source serves.
  */
 void
 stop_mid_copy(Stop stop) {
     QTemporaryDir src;
     QTemporaryDir dst;
     CHECK(src.isValid() && dst.isValid(), "scratch directories exist");
-    const QString fifo = src.filePath(QStringLiteral("feed.csv"));
-    CHECK(mkfifo(QFile::encodeName(fifo).constData(), 0600) == 0, "a FIFO is made");
+    const QString source = src.filePath(QStringLiteral("feed.csv"));
+    write_file(source, QByteArray((1 << 16) + 1, 'x'));
     const QString dest = dst.filePath(QStringLiteral("dest.csv"));
-    /* A write after the copy closed its end must fail with EPIPE, not kill the test. */
-    std::signal(SIGPIPE, SIG_IGN);
-    DocumentImportTransport transport;
+    const auto gate = std::make_shared<SourceGate>();
+    GatedTransport transport(gate);
     int result = -1;
-    std::thread worker([&transport, &fifo, &dest, &result]() { result = transport.copy(4, fifo, dest, 1 << 20); });
+    std::thread worker([&transport, &source, &dest, &result]() { result = transport.copy(4, source, dest, 1 << 20); });
 
-    QFile feed;
-    const int writer = open_fifo_writer(fifo);
-    CHECK(writer >= 0 && feed.open(writer, QIODevice::WriteOnly, QFileDevice::AutoCloseHandle),
-          "the FIFO opens for writing once the copy opens it");
-    const QByteArray chunk(1 << 16, 'x');
-    CHECK(feed.write(chunk) == chunk.size() && feed.flush(), "one chunk is fed");
-    CHECK(await_bytes(transport, 4, chunk.size()), "the copy reports the chunk it copied");
+    CHECK(await_bytes(transport, 4, 1 << 16), "the copy reports the chunk it copied");
     const ImportCopyProgress running = transport.progress(4);
-    CHECK(running.displayName == QStringLiteral("feed.csv") && running.total == -1, "a stream has a name but no size");
-    CHECK(transport.copy(4, fifo, dst.filePath(QStringLiteral("second.csv")), 64) == DecoderHost::DocumentFailed,
+    CHECK(running.displayName == QStringLiteral("feed.csv") && running.total == 65537,
+          "a running copy shows the file's name and size");
+    CHECK(transport.copy(4, source, dst.filePath(QStringLiteral("second.csv")), 64) == DecoderHost::DocumentFailed,
           "a second copy of a request that is copying is refused");
 
     if (stop == Stop::Cancel) {
@@ -421,12 +484,11 @@ stop_mid_copy(Stop stop) {
     } else {
         transport.abort();
     }
-    /* The copy is either still blocked in its read, which one more byte wakes, or it has already seen the stop and
-       closed the FIFO, in which case this write meets EPIPE. Both are the expected end, so the result is not checked;
-       what the case asserts is the copy's outcome below. */
-    (void)feed.write("y", 1);
-    (void)feed.flush();
-    feed.close();
+    {
+        const std::lock_guard<std::mutex> guard(gate->lock);
+        gate->released = true;
+    }
+    gate->changed.notify_all();
     worker.join();
     if (stop == Stop::Cancel) {
         CHECK(result == DecoderHost::DocumentCancelled, "a copy cancelled while it runs is cancelled");
@@ -436,43 +498,26 @@ stop_mid_copy(Stop stop) {
     CHECK(only_entries(dst.path(), {}), "a stopped copy leaves nothing in the destination directory");
 }
 
-/* Write @p bytes into the FIFO a probe reads; false on failure. */
-bool
-feed_fifo(QFile& feed, const QByteArray& bytes) {
-    return feed.write(bytes) == bytes.size() && feed.flush();
-}
-
 /*
- * A probe reads no further than a document's header unless it starts with the backup magic: from a FIFO whose writer
- * stays open (no end in sight), a probe without the magic returns after the header, while one with it reads on.
+ * A probe reads no further than a document's header unless it starts with the backup magic: from a source with more
+ * to give, a probe without the magic returns after the header, however short the reads that give it, and never waits
+ * at the source's end. stop_mid_probe() shows a probe with the magic reads on.
  */
 void
 test_probe_stops_without_magic() {
     QTemporaryDir src;
     CHECK(src.isValid(), "a scratch directory exists");
-    const QString fifo = src.filePath(QStringLiteral("feed.csv"));
-    CHECK(mkfifo(QFile::encodeName(fifo).constData(), 0600) == 0, "a FIFO is made");
-    std::signal(SIGPIPE, SIG_IGN);
-    DocumentImportTransport transport;
-    ImportProbe probe;
-    int result = -1;
-    std::thread worker([&transport, &fifo, &probe, &result]() { result = transport.probe(1, fifo, &probe, 1 << 20); });
-
-    QFile feed;
-    const int writer = open_fifo_writer(fifo);
-    CHECK(writer >= 0 && feed.open(writer, QIODevice::WriteOnly, QFileDevice::AutoCloseHandle),
-          "the FIFO opens for writing once the probe opens it");
-    /* The header in small writes, as a provider's short reads give it, and a few bytes past it; the stream never
-     * ends, since the writer stays open. The last write is the one that completes the header, so each lands before the
-     * probe can stop reading. */
+    const QString source = src.filePath(QStringLiteral("feed.csv"));
     const QByteArray csv = QByteArray("TG,Mode,Name\n") + QByteArray(57, 'c');
-    for (int at = 0; at < csv.size(); at += 10) {
-        CHECK(feed_fifo(feed, csv.mid(at, 10)), "a piece is fed");
-    }
-    worker.join(); // Hangs here if the probe read on to an end that never comes.
-    CHECK(result == DecoderHost::DocumentCopied && probe.header == csv.left(kProbeHeaderBytes) && probe.total == -1,
+    write_file(source, csv);
+    const auto gate = std::make_shared<SourceGate>();
+    /* The header in reads of 10 bytes, as a provider's short reads give it, and a few bytes past it. */
+    GatedTransport transport(gate, csv, 10);
+    ImportProbe probe;
+    CHECK(transport.probe(1, source, &probe, 1 << 20) == DecoderHost::DocumentCopied
+              && probe.header == csv.left(kProbeHeaderBytes) && probe.total == -1,
           "a probe without the magic stops after the header, however it arrives");
-    feed.close();
+    CHECK(!gate->waited, "and never reads on to the source's end");
 }
 
 /* A probe stopped from another thread while it counts a backup: it reads the header, then waits in the count. */
@@ -480,34 +525,178 @@ void
 stop_mid_probe(Stop stop) {
     QTemporaryDir src;
     CHECK(src.isValid(), "a scratch directory exists");
-    const QString fifo = src.filePath(QStringLiteral("feed.dsdbak"));
-    CHECK(mkfifo(QFile::encodeName(fifo).constData(), 0600) == 0, "a FIFO is made");
-    std::signal(SIGPIPE, SIG_IGN);
-    DocumentImportTransport transport;
+    const QString source = src.filePath(QStringLiteral("feed.dsdbak"));
+    write_file(source, backup_like(kProbeHeaderBytes));
+    const auto gate = std::make_shared<SourceGate>();
+    GatedTransport transport(gate, backup_like(kProbeHeaderBytes));
     ImportProbe probe;
     int result = -1;
-    std::thread worker([&transport, &fifo, &probe, &result]() { result = transport.probe(5, fifo, &probe, 1 << 20); });
+    std::thread worker(
+        [&transport, &source, &probe, &result]() { result = transport.probe(5, source, &probe, 1 << 20); });
 
-    QFile feed;
-    const int writer = open_fifo_writer(fifo);
-    CHECK(writer >= 0 && feed.open(writer, QIODevice::WriteOnly, QFileDevice::AutoCloseHandle),
-          "the FIFO opens for writing once the probe opens it");
-    CHECK(feed_fifo(feed, backup_like(kProbeHeaderBytes)), "a backup's header is fed");
     CHECK(await_bytes(transport, 5, kProbeHeaderBytes), "the probe reads the header and goes on to count");
     if (stop == Stop::Cancel) {
         transport.cancel(5);
     } else {
         transport.abort();
     }
-    /* As in stop_mid_copy(): a byte wakes a read still blocked; a write after the probe closed meets EPIPE. */
-    (void)feed.write("y", 1);
-    (void)feed.flush();
-    feed.close();
+    {
+        const std::lock_guard<std::mutex> guard(gate->lock);
+        gate->released = true;
+    }
+    gate->changed.notify_all();
     worker.join();
     if (stop == Stop::Cancel) {
         CHECK(result == DecoderHost::DocumentCancelled, "a probe cancelled while it counts is cancelled");
     } else {
         CHECK(result == DecoderHost::DocumentFailed, "a probe aborted while it counts fails");
+    }
+}
+
+#ifndef _WIN32
+
+/*
+ * Copy @p source (a FIFO, or a name that leads to one) with nothing writing to it. The copy must refuse it without
+ * waiting for a writer: one that blocks is let go after 2 s by a writer that opens and closes at once, and fails the
+ * case.
+ */
+void
+expect_fifo_refused(const QString& source, const QString& fifo, const char* why) {
+    QTemporaryDir dst;
+    CHECK(dst.isValid(), "a scratch directory exists");
+    DocumentImportTransport transport;
+    std::atomic<bool> returned{false};
+    int result = -1;
+    std::thread worker([&] {
+        result = transport.copy(9, source, dst.filePath(QStringLiteral("dest.csv")), 1 << 20);
+        returned.store(true);
+    });
+    for (int i = 0; i < 2000 && !returned.load(); ++i) {
+        QThread::msleep(1);
+    }
+    if (!returned.load()) {
+        const int writer = ::open(QFile::encodeName(fifo).constData(), O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+        if (writer >= 0) {
+            ::close(writer);
+        }
+        worker.join();
+        CHECK(false, "a FIFO with no writer is refused without blocking");
+    } else {
+        worker.join();
+        CHECK(result == DecoderHost::DocumentFailed, why);
+    }
+    CHECK(only_entries(dst.path(), {}), "a refused FIFO leaves nothing in the destination directory");
+}
+
+/* #830 B1: a FIFO is no document. Opening one with no writer waited for a writer forever, holding the import worker
+   and every import queued behind it. */
+void
+test_fifo_without_writer_is_refused() {
+    QTemporaryDir src;
+    CHECK(src.isValid(), "a scratch directory exists");
+    const QString fifo = src.filePath(QStringLiteral("feed.csv"));
+    CHECK(mkfifo(QFile::encodeName(fifo).constData(), 0600) == 0, "a FIFO is made");
+    expect_fifo_refused(fifo, fifo, "a FIFO is refused as no document");
+}
+
+/* The base transport's source open, reachable by a case. */
+class OpenProbe : public DocumentImportTransport {
+  public:
+    std::unique_ptr<QIODevice>
+    open(const QString& path) {
+        return openSource(path);
+    }
+};
+
+/*
+ * #830 B1, the open itself: a name that leads to a FIFO by the time the source opens (after copyLocal() checked it)
+ * is refused at once, never waited on, also through a link; a regular file, and a link to one, still open and read.
+ */
+void
+test_open_source_never_waits() {
+    QTemporaryDir src;
+    CHECK(src.isValid(), "a scratch directory exists");
+    const QString fifo = src.filePath(QStringLiteral("feed.csv"));
+    const QString fifoLink = src.filePath(QStringLiteral("feed-link.csv"));
+    const QString file = src.filePath(QStringLiteral("chan.csv"));
+    const QString fileLink = src.filePath(QStringLiteral("chan-link.csv"));
+    CHECK(mkfifo(QFile::encodeName(fifo).constData(), 0600) == 0, "a FIFO is made");
+    CHECK(QFile::link(fifo, fifoLink), "a link to the FIFO is made");
+    write_file(file, "1,2\n");
+    CHECK(QFile::link(file, fileLink), "a link to the file is made");
+    OpenProbe probe;
+
+    for (const QString& path : {fifo, fifoLink}) {
+        std::atomic<bool> returned{false};
+        bool opened = true;
+        std::thread worker([&] {
+            opened = probe.open(path) != nullptr;
+            returned.store(true);
+        });
+        for (int i = 0; i < 2000 && !returned.load(); ++i) {
+            QThread::msleep(1);
+        }
+        const bool inTime = returned.load();
+        if (!inTime) {
+            const int writer = ::open(QFile::encodeName(fifo).constData(), O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+            if (writer >= 0) {
+                ::close(writer);
+            }
+        }
+        worker.join();
+        CHECK(inTime && !opened, "the source open refuses a FIFO without waiting for a writer");
+    }
+    for (const QString& path : {file, fileLink}) {
+        const std::unique_ptr<QIODevice> source = probe.open(path);
+        CHECK(source != nullptr && source->readAll() == "1,2\n", "a regular file, or a link to one, opens and reads");
+    }
+}
+
+/* The same through a symbolic link: the link's name looks like a CSV file, the file it leads to is a FIFO. */
+void
+test_symlink_to_fifo_is_refused() {
+    QTemporaryDir src;
+    CHECK(src.isValid(), "a scratch directory exists");
+    const QString fifo = src.filePath(QStringLiteral("feed.csv"));
+    const QString link = src.filePath(QStringLiteral("link.csv"));
+    CHECK(mkfifo(QFile::encodeName(fifo).constData(), 0600) == 0, "a FIFO is made");
+    CHECK(QFile::link(fifo, link), "a link to the FIFO is made");
+    expect_fifo_refused(link, fifo, "a link to a FIFO is refused as no document");
+}
+
+/*
+ * #830 B1 holds for a probe (#831) too: a FIFO, or a link to one, is no document, and is refused without waiting for
+ * a writer. One that blocks is let go after 2 s by a writer that opens and closes at once, and fails the case.
+ */
+void
+test_probe_refuses_fifo() {
+    QTemporaryDir src;
+    CHECK(src.isValid(), "a scratch directory exists");
+    const QString fifo = src.filePath(QStringLiteral("feed.dsdbak"));
+    const QString link = src.filePath(QStringLiteral("link.dsdbak"));
+    CHECK(mkfifo(QFile::encodeName(fifo).constData(), 0600) == 0, "a FIFO is made");
+    CHECK(QFile::link(fifo, link), "a link to the FIFO is made");
+    for (const QString& path : {fifo, link}) {
+        DocumentImportTransport transport;
+        ImportProbe probe;
+        std::atomic<bool> returned{false};
+        int result = -1;
+        std::thread worker([&] {
+            result = transport.probe(9, path, &probe, 1 << 20);
+            returned.store(true);
+        });
+        for (int i = 0; i < 2000 && !returned.load(); ++i) {
+            QThread::msleep(1);
+        }
+        const bool inTime = returned.load();
+        if (!inTime) {
+            const int writer = ::open(QFile::encodeName(fifo).constData(), O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+            if (writer >= 0) {
+                ::close(writer);
+            }
+        }
+        worker.join();
+        CHECK(inTime && result == DecoderHost::DocumentFailed, "a probe refuses a FIFO without waiting for a writer");
     }
 }
 #endif
@@ -546,12 +735,16 @@ main(int argc, char** argv) {
     test_probe_local();
     test_probe_refusals();
     test_host_abort();
-#ifndef _WIN32
     stop_mid_copy(Stop::Cancel);
     stop_mid_copy(Stop::Abort);
     test_probe_stops_without_magic();
     stop_mid_probe(Stop::Cancel);
     stop_mid_probe(Stop::Abort);
+#ifndef _WIN32
+    test_fifo_without_writer_is_refused();
+    test_symlink_to_fifo_is_refused();
+    test_open_source_never_waits();
+    test_probe_refuses_fifo();
 #endif
     test_full_disk();
     return failures ? 1 : 0;

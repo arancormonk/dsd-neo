@@ -5,6 +5,9 @@ labels, and key lists. These parsers are intentionally minimal and **not** full 
 
 If you want known-good starting points, see `examples/` in the repository.
 
+DSD-neo also writes a few CSV files of its own; those follow standard CSV rules and are described last, in
+[Files dsd-neo writes (not read back)](#files-dsd-neo-writes-not-read-back).
+
 Group, source, key, and P25 band-plan CSVs consume each physical line in full. Lines over 998 content bytes
 (excluding LF/CRLF) or containing NUL are skipped once, without interpreting their tails as extra rows.
 The mapping importers (DMR TG-to-key and Vertex keystream) reject such data rows and retain the previous mapping.
@@ -1263,8 +1266,16 @@ with the target's key/force scope on exit. An explicit clear differs from inheri
 Qt and Android channel-map imports copy referenced `keys_hex_csv`, `keys_dec_csv` and
 `-k`/`-K`/`-G`/`--dmr-tg-key-csv` option files into a private bundle and rewrite their
 paths. Target CSV imports also copy channel maps (including their nested companions)
-and P25 band plans. On the desktop a relative reference is read beside the picked
-file; an Android document has no folder to look in, so the sheet below asks for it.
+and P25 band plans. On the desktop a reference is read beside the picked file (or
+wherever its path points); an Android document has no folder to look in, so the
+sheet below asks for it. A CSV picked in DSD-neo's own file browser on Android
+(#830) is a file in a folder, so its companions are found beside it too, under one
+rule: only by a relative name, as a regular file whose real path stays in the CSV's
+folder or a folder below it (for a nested channel map, the target list's folder).
+An absolute path, a `../` that leaves that folder, or a link that points out of it
+is not followed, and the sheet asks for that file instead; a file chosen on the
+sheet is used wherever it is. Updating a stored bundle finds the bundle's own
+companions by the same rule, inside the bundle's private folder.
 Every copy is made in the background, outside the library, and checked there before
 anything in the library changes.
 
@@ -1333,3 +1344,76 @@ does not ask to discard changes.
 The file library also accepts **DMR key mappings** and **Vertex keystreams** as
 separate kinds. Vertex files are used by standalone vendor profiles, not by the
 standard scoped key set. See [decryption profiles](decryption-profiles.md).
+
+## Files dsd-neo writes (not read back)
+
+The Signal search screen in the Qt and Android app saves two CSV files with **Export detections…** and **Export
+avoids…** (see [Signal search](signal-search.md#exporting-detections-and-avoids)). They are for spreadsheets and
+scripts. DSD-neo does not import them, and the rules in the sections above do not apply to them.
+
+Both files:
+
+- are UTF-8 and start with a byte order mark (BOM). Excel needs it to read non-English text correctly;
+- have one header line, then one record per line, with a comma between fields and a CRLF line ending after every
+  record, including the last;
+- write numbers with a period as the decimal point, whatever the device language is;
+- put a field in double quotes when it holds a comma, a double quote or a line break, and double any quote inside it.
+  Spaces and line breaks inside a field are kept as they are;
+- leave a field empty when it has no value.
+
+### Detections file
+
+Header: `started_utc,ended_utc,ended,frequency_hz,frequency_mhz,listen_mode,identification,protocol,access,tone,site,slot,target,source,encryption,power_dbfs,noise_dbfs,range,bandwidth_hz,saved_names`
+
+One row per detection in the history, newest first.
+
+| Column | Value |
+| --- | --- |
+| `started_utc`, `ended_utc` | UTC time with milliseconds, such as `2026-11-07T14:03:22.418Z`. `ended_utc` is empty when no end was recorded (for example the app stopped abruptly). |
+| `ended` | `1` when the detection has ended, `0` while it was still going. |
+| `frequency_hz`, `frequency_mhz` | The frequency in hertz, and in megahertz with six decimals. |
+| `listen_mode` | `am` or `nfm`: how the range listens, for digital detections too. |
+| `identification` | `confirmed` (checked digital signalling), `unresolved` (a digital range that was not confirmed), or `rf-only` (an analog range, detected by power only). |
+| `protocol`, `access`, `tone`, `site`, `encryption` | The detection's last values, as the screen shows them. Empty when it never had one. |
+| `slot` | `1` or `2`, empty when there is none. |
+| `target`, `source` | The call's talkgroup and source, as text when DSD-neo received a name, else the number. |
+| `power_dbfs`, `noise_dbfs` | Levels in dBFS with one decimal. Empty when not measured. |
+| `range` | The name of the search range that found it. |
+| `bandwidth_hz` | The range's bandwidth in hertz. |
+| `saved_names` | The saved systems whose frequencies match, joined with ` / `, worked out when you export. |
+
+### Avoids file
+
+Header: `frequency_hz,frequency_mhz,list`
+
+`list` is `permanent` or `session`. Permanent avoids come first, in their saved order, then the session avoids of the
+search on screen.
+
+### Opening them in a spreadsheet
+
+- Excel: on a computer that uses a decimal comma (much of Europe), a double-click can open the file in one column or
+  misread the numbers. Use **Data > From Text/CSV**, set File Origin to 65001: Unicode (UTF-8) and Delimiter to Comma,
+  then choose **Transform Data** and change the number columns' type with **Using Locale…** set to English (United
+  States), so `451.250000` stays a number.
+- LibreOffice Calc: open the file, and in the Text Import dialog set the separator to Comma and the **Language** to
+  English (USA).
+- Python: open the file with `encoding="utf-8-sig"`, so the BOM does not become part of the first column name.
+  pandas' `read_csv` already handles it.
+
+Times are written as `2026-11-07T14:03:22.418Z` text, which spreadsheets may keep as text rather than a date.
+
+### Spreadsheet formulas
+
+A spreadsheet runs a cell that starts with `=`, `+`, `-` or `@` as a formula, and the text columns hold what a radio
+sent, so a hostile transmission could try that. To lessen the risk, DSD-neo puts a leading `'` in front of a text value
+that starts with `=`, `+`, `-`, `@`, a tab, a line break, or the full-width forms of the four symbols. Numeric columns
+are never changed: a plain number such as `-47.2` is read as a number, not a formula, and the other non-text columns
+hold only fixed words or digits.
+
+This is a mitigation, not a guarantee:
+
+- The `'` can show in the cell in some spreadsheets (it does in LibreOffice and probably in current Excel).
+- A value that starts with a space before a formula character is not changed.
+- Saving the file again from a spreadsheet, and opening that copy, can turn such a cell back into a formula.
+
+Treat an export from a busy band as untrusted data, as you would any file you did not write.

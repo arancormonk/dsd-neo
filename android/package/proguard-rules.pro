@@ -105,6 +105,21 @@
     public static void discard(java.lang.String);
 }
 
+# The in-app file browser (#830): DecoderHostAndroid's file requests and their records.
+-keep,allowoptimization class io.github.arancormonk.dsdneo.FileBrowser {
+    public static void start(android.content.Context);
+    public static java.lang.String accessState();
+    public static boolean takeAccessRefresh();
+    public static boolean listRoots(long, long);
+    public static boolean listFolder(long, long, java.lang.String, long, java.lang.String, java.lang.String, boolean);
+    public static boolean listMore(long, long, long, int);
+    public static boolean checkHandoff(long, long, java.lang.String, long, java.lang.String);
+    public static boolean requestAccess(android.app.Activity, long);
+    public static void cancel(long);
+    public static void closeSession(long);
+    public static java.lang.String pollRecord();
+}
+
 -keep,allowoptimization class io.github.arancormonk.dsdneo.DiagnosticsShare {
     public static void share(android.content.Context, java.lang.String, java.lang.String);
 }

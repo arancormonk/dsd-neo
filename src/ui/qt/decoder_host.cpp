@@ -7,6 +7,7 @@
 #include <QList>
 #include <QMap>
 #include <QVariant>
+#include <QVariantList>
 #include <utility>
 #include "decoder_host.h"
 
@@ -19,6 +20,7 @@
 #include <QIODevice>
 
 #include "document_import_transport.h"
+#include "document_save_transport.h"
 #include "json_store.h"
 #include "qstring_scrub.h"
 
@@ -27,6 +29,37 @@
 #include <algorithm>
 
 namespace dsd_qt {
+
+namespace {
+
+/** @brief Keep a weak reference to @p transport, dropping the expired ones; abort it when @p aborted is already set. */
+template <typename Transport>
+void
+keep_handed_out(std::vector<std::weak_ptr<Transport>>& handedOut, const std::shared_ptr<Transport>& transport,
+                const std::atomic<bool>& aborted) {
+    handedOut.erase(std::remove_if(handedOut.begin(), handedOut.end(),
+                                   [](const std::weak_ptr<Transport>& kept) { return kept.expired(); }),
+                    handedOut.end());
+    handedOut.push_back(transport);
+    /* abortDocumentTransfers() raises the flag before it takes the lock, so a transport kept after its sweep sees the
+     * flag here. */
+    if (aborted.load()) {
+        transport->abort();
+    }
+}
+
+/** @brief Abort every transport in @p handedOut still alive. */
+template <typename Transport>
+void
+abort_handed_out(const std::vector<std::weak_ptr<Transport>>& handedOut) {
+    for (const std::weak_ptr<Transport>& kept : handedOut) {
+        if (const std::shared_ptr<Transport> transport = kept.lock()) {
+            transport->abort();
+        }
+    }
+}
+
+} // namespace
 
 DecoderHost::DecoderHost(QObject* parent) : QObject(parent) {
     /* sessionState(), and the three properties derived from it, default to a view of
@@ -56,12 +89,9 @@ DecoderHost::copyFileToLocalDocument(const QString& sourcePath, const QString& r
 void
 DecoderHost::abortDocumentTransfers() {
     m_documentTransfersAborted.store(true);
-    const std::lock_guard<std::mutex> lock(m_importTransportsLock);
-    for (const std::weak_ptr<DocumentImportTransport>& handedOut : m_importTransports) {
-        if (const std::shared_ptr<DocumentImportTransport> transport = handedOut.lock()) {
-            transport->abort();
-        }
-    }
+    const std::lock_guard<std::mutex> lock(m_transportsLock);
+    abort_handed_out(m_importTransports);
+    abort_handed_out(m_saveTransports);
 }
 
 std::shared_ptr<DocumentImportTransport>
@@ -71,17 +101,20 @@ DecoderHost::importTransport() const {
 
 std::shared_ptr<DocumentImportTransport>
 DecoderHost::keepImportTransport(std::shared_ptr<DocumentImportTransport> transport) const {
-    const std::lock_guard<std::mutex> lock(m_importTransportsLock);
-    m_importTransports.erase(
-        std::remove_if(m_importTransports.begin(), m_importTransports.end(),
-                       [](const std::weak_ptr<DocumentImportTransport>& handedOut) { return handedOut.expired(); }),
-        m_importTransports.end());
-    m_importTransports.push_back(transport);
-    /* abortDocumentTransfers() raises the flag before it takes the lock, so a transport kept after its sweep sees the
-     * flag here. */
-    if (m_documentTransfersAborted.load()) {
-        transport->abort();
-    }
+    const std::lock_guard<std::mutex> lock(m_transportsLock);
+    keep_handed_out(m_importTransports, transport, m_documentTransfersAborted);
+    return transport;
+}
+
+std::shared_ptr<DocumentSaveTransport>
+DecoderHost::saveTransport() const {
+    return keepSaveTransport(std::make_shared<DocumentSaveTransport>());
+}
+
+std::shared_ptr<DocumentSaveTransport>
+DecoderHost::keepSaveTransport(std::shared_ptr<DocumentSaveTransport> transport) const {
+    const std::lock_guard<std::mutex> lock(m_transportsLock);
+    keep_handed_out(m_saveTransports, transport, m_documentTransfersAborted);
     return transport;
 }
 
@@ -358,6 +391,212 @@ DecoderHost::offerIncomingDocument(const QString& reference) {
     }
     m_incomingDocument = reference;
     Q_EMIT incomingDocumentChanged();
+}
+
+QVariantMap
+DecoderHost::fileFailure(FileRequestKind kind, const QString& code) {
+    switch (kind) {
+        case FileRequestKind::Handoff: return {{QStringLiteral("ok"), false}, {QStringLiteral("reason"), code}};
+        case FileRequestKind::Access: return {{QStringLiteral("outcome"), code}};
+        case FileRequestKind::Roots:
+            return {{QStringLiteral("status"), code},
+                    {QStringLiteral("generation"), qint64(0)},
+                    {QStringLiteral("roots"), QVariantList()}};
+        case FileRequestKind::Listing:
+        case FileRequestKind::Page: break;
+    }
+    return {{QStringLiteral("status"), code}};
+}
+
+QVariantMap
+DecoderHost::fileAccess() const {
+    return {{QStringLiteral("declared"), false},
+            {QStringLiteral("granted"), false},
+            {QStringLiteral("route"), QStringLiteral("none")},
+            {QStringLiteral("apiLevel"), 0},
+            {QStringLiteral("rootsGeneration"), qint64(0)}};
+}
+
+qint64
+DecoderHost::openFileBrowserSession() {
+    const qint64 id = nextDocumentRequestId();
+    m_fileSessions.insert(id);
+    return id;
+}
+
+void
+DecoderHost::closeFileBrowserSession(qint64 sessionId) {
+    m_fileSessions.remove(sessionId);
+    QList<qint64> ids;
+    for (auto it = m_fileRequests.cbegin(); it != m_fileRequests.cend(); ++it) {
+        if (it->session == sessionId) {
+            ids.append(it.key());
+        }
+    }
+    std::sort(ids.begin(), ids.end());
+    for (const qint64 id : ids) {
+        cancelFileAnswer(id);
+    }
+}
+
+qint64
+DecoderHost::requestFileRoots(qint64 sessionId) {
+    return refuseFileRequest(sessionId, FileRequestKind::Roots);
+}
+
+qint64
+DecoderHost::requestFolderListing(qint64 sessionId, const QString& rootKey, qint64 generation, const QString& path,
+                                  const QVariantMap& filter) {
+    (void)rootKey;
+    (void)generation;
+    (void)path;
+    (void)filter;
+    return refuseFileRequest(sessionId, FileRequestKind::Listing);
+}
+
+qint64
+DecoderHost::requestMorePage(qint64 sessionId, qint64 snapshot, int offset) {
+    (void)snapshot;
+    (void)offset;
+    return refuseFileRequest(sessionId, FileRequestKind::Page);
+}
+
+qint64
+DecoderHost::requestFileHandoff(qint64 sessionId, const QString& rootKey, qint64 generation, const QString& reference) {
+    (void)rootKey;
+    (void)generation;
+    (void)reference;
+    return refuseFileRequest(sessionId, FileRequestKind::Handoff);
+}
+
+qint64
+DecoderHost::requestFileAccess(qint64 sessionId) {
+    return refuseFileRequest(sessionId, FileRequestKind::Access);
+}
+
+void
+DecoderHost::cancelFileRequest(qint64 requestId) {
+    cancelFileAnswer(requestId);
+}
+
+qint64
+DecoderHost::refuseFileRequest(qint64 sessionId, FileRequestKind kind) {
+    const qint64 joined = kind == FileRequestKind::Access ? m_fileAccessRequest : 0;
+    const qint64 id = beginFileRequest(sessionId, kind);
+    if (id == joined) {
+        return id; // The pending access request, answered already.
+    }
+    settleFileRequestLater(id, fileFailure(kind, QStringLiteral("unsupported")));
+    return id;
+}
+
+qint64
+DecoderHost::beginFileRequest(qint64 sessionId, FileRequestKind kind) {
+    const bool open = m_fileSessions.contains(sessionId);
+    if (open && kind == FileRequestKind::Access && m_fileAccessRequest != 0) {
+        return m_fileAccessRequest; // One access request app-wide: a second one joins it.
+    }
+    const qint64 id = nextDocumentRequestId();
+    if (open && (kind == FileRequestKind::Listing || kind == FileRequestKind::Page)) {
+        supersedeFolderRequests(sessionId);
+    }
+    FileRequestState state;
+    state.kind = kind;
+    state.session = sessionId;
+    m_fileRequests.insert(id, state);
+    if (!open) {
+        settleFileRequestLater(id, fileFailure(kind, QStringLiteral("cancelled")));
+    } else if (kind == FileRequestKind::Access) {
+        m_fileAccessRequest = id;
+    }
+    return id;
+}
+
+bool
+DecoderHost::fileRequestLive(qint64 id) const {
+    const auto found = m_fileRequests.constFind(id);
+    return found != m_fileRequests.constEnd() && !found->answered;
+}
+
+bool
+DecoderHost::settleFileRequest(qint64 id, const QVariantMap& result) {
+    if (!fileRequestLive(id)) {
+        return false;
+    }
+    const FileRequestKind kind = m_fileRequests.take(id).kind;
+    if (m_fileAccessRequest == id) {
+        m_fileAccessRequest = 0;
+    }
+    emitFileAnswer(id, kind, result);
+    return true;
+}
+
+void
+DecoderHost::settleFileRequestLater(qint64 id, const QVariantMap& result) {
+    if (!fileRequestLive(id)) {
+        return;
+    }
+    FileRequestState& state = m_fileRequests[id];
+    state.answered = true;
+    state.answer = result;
+    QMetaObject::invokeMethod(this, [this, id] { deliverFileAnswer(id); }, Qt::QueuedConnection);
+}
+
+void
+DecoderHost::cancelFileAnswer(qint64 id) {
+    const auto found = m_fileRequests.find(id);
+    if (found == m_fileRequests.end()) {
+        return;
+    }
+    if (m_fileAccessRequest == id) {
+        m_fileAccessRequest = 0;
+    }
+    const QVariantMap cancelled = fileFailure(found->kind, QStringLiteral("cancelled"));
+    if (found->answered) {
+        found->answer = cancelled; // Its delivery is queued already: it delivers this instead.
+        return;
+    }
+    settleFileRequestLater(id, cancelled);
+    fileRequestRetired(id);
+}
+
+void
+DecoderHost::supersedeFolderRequests(qint64 sessionId) {
+    QList<qint64> ids;
+    for (auto it = m_fileRequests.cbegin(); it != m_fileRequests.cend(); ++it) {
+        if (it->session == sessionId && (it->kind == FileRequestKind::Listing || it->kind == FileRequestKind::Page)) {
+            ids.append(it.key());
+        }
+    }
+    for (const qint64 id : ids) {
+        cancelFileAnswer(id);
+    }
+}
+
+void
+DecoderHost::deliverFileAnswer(qint64 id) {
+    const auto found = m_fileRequests.constFind(id);
+    if (found == m_fileRequests.constEnd() || !found->answered) {
+        return;
+    }
+    const FileRequestState state = m_fileRequests.take(id);
+    if (m_fileAccessRequest == id) {
+        m_fileAccessRequest = 0;
+    }
+    emitFileAnswer(id, state.kind, state.answer);
+}
+
+void
+DecoderHost::emitFileAnswer(qint64 id, FileRequestKind kind, const QVariantMap& result) {
+    switch (kind) {
+        case FileRequestKind::Roots: Q_EMIT fileRootsListed(id, result); break;
+        case FileRequestKind::Listing:
+        case FileRequestKind::Page: Q_EMIT folderListed(id, result); break;
+        case FileRequestKind::Handoff: Q_EMIT fileHandoffChecked(id, result); break;
+        case FileRequestKind::Access:
+            Q_EMIT fileAccessRequestDone(id, result.value(QStringLiteral("outcome")).toString());
+            break;
+    }
 }
 
 bool

@@ -116,6 +116,9 @@ enum Key {
     // Issue #646: the Listen tab last chosen. Device-local: how this device's screen was arranged, like
     // kMonitorDetailsExpanded.
     kListenSection,
+    // Issue #830: DSD-neo's file browser before Android's picker. Device-local: whether this device's picker works is
+    // the device's, not something a backup should carry to another one.
+    kChooseFilesInApp,
     kKeyCount
 };
 
@@ -167,6 +170,7 @@ constexpr AppPrefs::KeySpec kKeyTable[] = {
     {"listen/acceptedStartTargets", false},
     {"listen/pinned", true},
     {"listen/section", false},
+    {"ui/chooseFilesInApp", false},
 };
 static_assert(sizeof(kKeyTable) / sizeof(kKeyTable[0]) == kKeyCount, "key table and Key enum must stay in step");
 
@@ -866,6 +870,20 @@ AppPrefs::setMonitorDetailsExpanded(bool on) {
     }
     m_settings.setValue(key_name(kMonitorDetailsExpanded), on);
     Q_EMIT monitorDetailsExpandedChanged();
+}
+
+bool
+AppPrefs::chooseFilesInApp() const {
+    return m_settings.value(key_name(kChooseFilesInApp), false).toBool();
+}
+
+void
+AppPrefs::setChooseFilesInApp(bool on) {
+    if (on == chooseFilesInApp()) {
+        return;
+    }
+    m_settings.setValue(key_name(kChooseFilesInApp), on);
+    Q_EMIT chooseFilesInAppChanged();
 }
 
 QString

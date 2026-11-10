@@ -58,6 +58,7 @@ constexpr const char* kRecordingShareClass = "io/github/arancormonk/dsdneo/Recor
 constexpr const char* kPickerClass = "io/github/arancormonk/dsdneo/DocumentPicker";
 constexpr const char* kIncomingClass = "io/github/arancormonk/dsdneo/IncomingDocuments";
 constexpr const char* kDownloadsClass = "io/github/arancormonk/dsdneo/DownloadsSave";
+constexpr const char* kFileBrowserClass = "io/github/arancormonk/dsdneo/FileBrowser";
 constexpr const char* kSignInClass = "io/github/arancormonk/dsdneo/SignInAutofill";
 
 /* The Qt-free phase enum and the Q_ENUM QML binds to have to stay in lockstep; the
@@ -239,6 +240,7 @@ DecoderHostAndroid::DecoderHostAndroid(QObject* parent) : dsd_qt::DecoderHost(pa
     dsd_qt::DiagnosticsLog::installTap();
     hold_content_resolver();
     platformStartDownloads();
+    startFileBrowser();
     startRecordingShareClean();
     refreshPresentation();
 }
@@ -923,11 +925,10 @@ DecoderHostAndroid::platformTakeRecordingShareFailure() {
 }
 
 void
-DecoderHostAndroid::abortDocumentTransfers() {
+DecoderHostAndroid::platformAbortDocumentCopies() {
     /* Must match DocumentCopies.kt: @JvmStatic fun abort(). Cancels the provider calls in flight, stops the copies at
      * their next chunk and refuses new ones. */
     QJniObject::callStaticMethod<void>(kDocumentsClass, "abort", "()V");
-    dsd_qt::DecoderHost::abortDocumentTransfers();
 }
 
 // WP-D3: Kotlin owns permissions, timeout and cancellation; polling emits on the Qt thread.
@@ -1105,6 +1106,117 @@ DecoderHostAndroid::platformDiscardPendingDownload(const QString& reference) {
     // Must match DownloadsSave.kt: @JvmStatic fun discard(uriText: String).
     QJniObject::callStaticMethod<void>(kDownloadsClass, "discard", "(Ljava/lang/String;)V",
                                        QJniObject::fromString(reference).object());
+}
+
+/* #830: FileBrowser runs every read on its own worker threads and every launch on the Android main thread, so these
+ * return at once; accessState() makes StorageManager and package-manager reads only, never a filesystem call. */
+void
+DecoderHostAndroid::platformStartFileBrowser() {
+    const QJniObject context = android_context();
+    if (context.isValid()) {
+        // Must match FileBrowser.kt: @JvmStatic fun start(context: Context).
+        QJniObject::callStaticMethod<void>(kFileBrowserClass, "start", "(Landroid/content/Context;)V",
+                                           context.object());
+    }
+}
+
+QString
+DecoderHostAndroid::platformFileAccessState() {
+    // Must match FileBrowser.kt: @JvmStatic fun accessState(): String.
+    const QJniObject state =
+        QJniObject::callStaticObjectMethod(kFileBrowserClass, "accessState", "()Ljava/lang/String;");
+    return state.isValid() ? state.toString() : QString();
+}
+
+bool
+DecoderHostAndroid::platformTakeFileAccessRefresh() {
+    // Must match FileBrowser.kt: @JvmStatic fun takeAccessRefresh(): Boolean.
+    return QJniObject::callStaticMethod<jboolean>(kFileBrowserClass, "takeAccessRefresh", "()Z") == JNI_TRUE;
+}
+
+bool
+DecoderHostAndroid::platformListRoots(qint64 id, qint64 session) {
+    // Must match FileBrowser.kt: @JvmStatic fun listRoots(id: Long, session: Long): Boolean.
+    return QJniObject::callStaticMethod<jboolean>(kFileBrowserClass, "listRoots", "(JJ)Z", static_cast<jlong>(id),
+                                                  static_cast<jlong>(session))
+           == JNI_TRUE;
+}
+
+bool
+DecoderHostAndroid::platformListFolder(qint64 id, qint64 session, const QString& rootKey, qint64 generation,
+                                       const QString& path, const QString& kind, bool showAll) {
+    const QJniObject key = QJniObject::fromString(rootKey);
+    const QJniObject folder = QJniObject::fromString(path);
+    const QJniObject filter = QJniObject::fromString(kind);
+    // Must match FileBrowser.kt: @JvmStatic fun listFolder(id: Long, session: Long, rootKey: String, generation: Long,
+    // path: String, kind: String, showAll: Boolean): Boolean. The descriptor stays one literal, which
+    // tools/check_android_r8.py reads whole.
+    // clang-format off
+    return QJniObject::callStaticMethod<jboolean>(kFileBrowserClass, "listFolder",
+        "(JJLjava/lang/String;JLjava/lang/String;Ljava/lang/String;Z)Z",
+        static_cast<jlong>(id), static_cast<jlong>(session), key.object(), static_cast<jlong>(generation),
+        folder.object(), filter.object(), showAll ? JNI_TRUE : JNI_FALSE) == JNI_TRUE;
+    // clang-format on
+}
+
+bool
+DecoderHostAndroid::platformListMore(qint64 id, qint64 session, qint64 snapshot, int offset) {
+    // Must match FileBrowser.kt: @JvmStatic fun listMore(id: Long, session: Long, snapshot: Long, offset: Int):
+    // Boolean.
+    return QJniObject::callStaticMethod<jboolean>(kFileBrowserClass, "listMore", "(JJJI)Z", static_cast<jlong>(id),
+                                                  static_cast<jlong>(session), static_cast<jlong>(snapshot),
+                                                  static_cast<jint>(offset))
+           == JNI_TRUE;
+}
+
+bool
+DecoderHostAndroid::platformCheckHandoff(qint64 id, qint64 session, const QString& rootKey, qint64 generation,
+                                         const QString& reference) {
+    const QJniObject key = QJniObject::fromString(rootKey);
+    const QJniObject file = QJniObject::fromString(reference);
+    // Must match FileBrowser.kt: @JvmStatic fun checkHandoff(id: Long, session: Long, rootKey: String,
+    // generation: Long, reference: String): Boolean.
+    // clang-format off
+    return QJniObject::callStaticMethod<jboolean>(kFileBrowserClass, "checkHandoff",
+        "(JJLjava/lang/String;JLjava/lang/String;)Z",
+        static_cast<jlong>(id), static_cast<jlong>(session), key.object(), static_cast<jlong>(generation),
+        file.object()) == JNI_TRUE;
+    // clang-format on
+}
+
+bool
+DecoderHostAndroid::platformRequestFileAccess(qint64 id) {
+    if (!QNativeInterface::QAndroidApplication::isActivityContext()) {
+        return false;
+    }
+    const QJniObject activity = android_context();
+    if (!activity.isValid()) {
+        return false;
+    }
+    // Must match FileBrowser.kt: @JvmStatic fun requestAccess(activity: Activity, id: Long): Boolean.
+    return QJniObject::callStaticMethod<jboolean>(kFileBrowserClass, "requestAccess", "(Landroid/app/Activity;J)Z",
+                                                  activity.object(), static_cast<jlong>(id))
+           == JNI_TRUE;
+}
+
+void
+DecoderHostAndroid::platformCancelFileRequest(qint64 id) {
+    // Must match FileBrowser.kt: @JvmStatic fun cancel(id: Long).
+    QJniObject::callStaticMethod<void>(kFileBrowserClass, "cancel", "(J)V", static_cast<jlong>(id));
+}
+
+void
+DecoderHostAndroid::platformCloseFileSession(qint64 session) {
+    // Must match FileBrowser.kt: @JvmStatic fun closeSession(session: Long).
+    QJniObject::callStaticMethod<void>(kFileBrowserClass, "closeSession", "(J)V", static_cast<jlong>(session));
+}
+
+QString
+DecoderHostAndroid::platformPollFileBrowser() {
+    // Must match FileBrowser.kt: @JvmStatic fun pollRecord(): String.
+    const QJniObject record =
+        QJniObject::callStaticObjectMethod(kFileBrowserClass, "pollRecord", "()Ljava/lang/String;");
+    return record.isValid() ? record.toString() : QString();
 }
 
 void

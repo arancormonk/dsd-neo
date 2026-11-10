@@ -1172,7 +1172,7 @@ Item {
                         Accessible.role: Accessible.Button
                         // No name while out of the tree, as ReadableText: a frequency
                         // changed in Explore's setup, Home hidden, renames nothing.
-                        Accessible.name: Accessible.ignored ? "" : exploreCard.configured ? qsTr("Explore the band, start on %1 from %2 MHz").arg(exploreCard.sourceLabel).arg(prefs.exploreFreqMhz) : qsTr("Explore the band, set up a radio to tune around and find what is on the air")
+                        Accessible.name: !navigationAllowed || !visible ? "" : exploreCard.configured ? qsTr("Explore the band, start on %1 from %2 MHz").arg(exploreCard.sourceLabel).arg(prefs.exploreFreqMhz) : qsTr("Explore the band, set up a radio to tune around and find what is on the air")
                         Accessible.focusable: navigationAllowed && visible
                         Accessible.ignored: !navigationAllowed || !visible
                         Accessible.onPressAction: activate()

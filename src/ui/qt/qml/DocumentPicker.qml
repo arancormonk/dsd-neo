@@ -10,6 +10,14 @@ import QtQuick.Dialogs
 // request ends in exactly one of accepted(), rejected() or unavailable(), except
 // after close(), which ends it silently.
 //
+// Issue #830: an open picker that names what it opens (browseKind) can be
+// served by DSD-neo's own file browser instead (FileBrowser, one request
+// app-wide): first, where the host has the browser and the user chose it in
+// Settings, and whenever Android answers that it has no picker. The browser's
+// "Choose with another app" goes back to the host's picker, and backing out of
+// that picker returns to the browser. The browser's answers count as this
+// picker's own: still exactly one per open().
+//
 // The root is a QtObject, not an Item: Item's own `visible` is FINAL, and here
 // `visible` means "a request is waiting". The FileDialog is made by an
 // Instantiator rather than a Loader so that its QObject parents lead through
@@ -26,7 +34,10 @@ QtObject {
     // Host save only: the new document's type.
     property string mimeType: ""
     property string suggestedName: ""
-    readonly property bool visible: d.liveRequestId !== 0 || d.dialogPending
+    // Open only: what DSD-neo's file browser lists for this picker, "csv",
+    // "backup" or "replay"; empty never browses.
+    property string browseKind: ""
+    readonly property bool visible: d.liveRequestId !== 0 || d.dialogPending || d.browseToken !== 0 || d.browseSuperseded
     // The last accepted save went to the Download folder, as no save picker was
     // there to ask. Never true on the desktop path.
     readonly property bool savedToDownloads: d.downloads
@@ -36,14 +47,15 @@ QtObject {
     signal unavailable(string reason, string message)
 
     function open() {
-        if (decoderHost.documentPickerSupported)
-            d.openHost();
+        if (d.canBrowse() && prefs.chooseFilesInApp === true)
+            d.openBrowser(true);
         else
-            d.openDialog();
+            d.openPlatform();
     }
     // Ends a waiting request without a signal, for a flow that is ending anyway.
     function close() {
         d.abandonRequest();
+        d.dismissBrowse();
         d.closeDialog();
     }
     // Ends a waiting request as if the user had backed out, so the owner's own
@@ -83,12 +95,80 @@ QtObject {
         // them is thrown away. Only this picker's own, so a pick another picker
         // is waiting for is never touched; bounded like the host's own records.
         property var abandoned: []
+        // This picker's live FileBrowser request, 0 when none.
+        property int browseToken: 0
+        // The host request "Choose with another app" made: Back out of that
+        // picker returns to the browser rather than ending the pick.
+        property real otherAppRequestId: 0
+        // The request was superseded before FileBrowser.open() returned (the
+        // owner it superseded opened again while being told): rejected() is
+        // still to come, after open() returns.
+        property bool browseSuperseded: false
+        // Bumped whenever this picker gives a request up (close, cancel, a
+        // reopen), so openBrowser() can tell that the owner it superseded did
+        // that to this picker while being told.
+        property int endings: 0
+
+        function canBrowse() {
+            return decoderHost.fileBrowserSupported === true && picker.browseKind.length > 0 && picker.mode === "open";
+        }
+        // @p allowOtherApp offers the host's picker from the browser; false
+        // once the host has said it has none.
+        function openBrowser(allowOtherApp) {
+            abandonRequest();
+            dismissBrowse();
+            var before = endings;
+            var token = FileBrowser.open(picker.browseKind, picker.title, allowOtherApp);
+            if (endings !== before) {
+                // Closed, cancelled or reopened while FileBrowser.open() ran:
+                // this request is already given up.
+                FileBrowser.dismiss(token);
+                return;
+            }
+            if (FileBrowser.request && FileBrowser.request.token === token) {
+                browseToken = token;
+            } else {
+                browseSuperseded = true;
+                Qt.callLater(reportBrowseSuperseded);
+            }
+        }
+        function reportBrowseSuperseded() {
+            if (!browseSuperseded)
+                return;
+            browseSuperseded = false;
+            picker.rejected();
+        }
+        function dismissBrowse() {
+            endings += 1;
+            browseSuperseded = false;
+            if (!browseToken)
+                return;
+            var token = browseToken;
+            browseToken = 0;
+            FileBrowser.dismiss(token);
+        }
+        // True when @p token is this picker's browse request, which it then
+        // stops being, before the owner hears the answer.
+        function settleBrowse(token) {
+            if (!browseToken || token !== browseToken)
+                return false;
+            browseToken = 0;
+            return true;
+        }
+        function openPlatform() {
+            if (decoderHost.documentPickerSupported)
+                openHost();
+            else
+                openDialog();
+        }
 
         function openHost() {
             abandonRequest();
+            dismissBrowse();
             liveRequestId = picker.mode === "save" ? decoderHost.requestSaveDocument(picker.suggestedName, picker.mimeType) : decoderHost.requestOpenDocument();
         }
         function abandonRequest() {
+            endings += 1;
             if (!liveRequestId)
                 return;
             decoderHost.cancelDocumentRequest(liveRequestId);
@@ -113,6 +193,7 @@ QtObject {
 
         function openDialog() {
             var dialog = desktop.object;
+            dismissBrowse();
             closeDialog();
             if (dialog) {
                 // A dialog keeps its selection between opens: clear it, so a
@@ -183,12 +264,44 @@ QtObject {
                 picker.accepted(reference, displayName);
             }
             function onDocumentPickCancelled(requestId) {
-                if (d.settle(requestId))
+                if (!d.settle(requestId))
+                    return;
+                if (requestId === d.otherAppRequestId && d.canBrowse())
+                    d.openBrowser(true);
+                else
                     picker.rejected();
             }
             function onDocumentPickUnavailable(requestId, reason) {
-                if (d.settle(requestId))
+                if (!d.settle(requestId))
+                    return;
+                // No picker on this device: DSD-neo's browser answers instead,
+                // without the way back to a picker that is not there.
+                if (reason === "noPicker" && d.canBrowse())
+                    d.openBrowser(false);
+                else
                     picker.unavailable(reason, picker.messageFor(reason));
+            }
+        }
+
+        readonly property Connections browserAnswers: Connections {
+            target: FileBrowser
+            function onPicked(token, reference, name) {
+                if (!d.settleBrowse(token))
+                    return;
+                d.downloads = false;
+                picker.accepted(reference, name);
+            }
+            function onRejected(token) {
+                if (d.settleBrowse(token))
+                    picker.rejected();
+            }
+            // "Choose with another app": the host's picker, whatever the
+            // Settings toggle says, which is what the user just asked for.
+            function onOtherAppRequested(token) {
+                if (!d.settleBrowse(token))
+                    return;
+                d.openPlatform();
+                d.otherAppRequestId = d.liveRequestId;
             }
         }
 
@@ -211,5 +324,7 @@ QtObject {
     Component.onDestruction: {
         if (d.liveRequestId)
             decoderHost.cancelDocumentRequest(d.liveRequestId);
+        if (d.browseToken)
+            FileBrowser.dismiss(d.browseToken);
     }
 }

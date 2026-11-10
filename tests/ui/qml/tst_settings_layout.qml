@@ -32,6 +32,8 @@ Item {
 
         function cleanup() {
             appLoader.source = "";
+            prefs.chooseFilesInApp = false;
+            testContext.setFileBrowserSupported(false);
             testContext.useRadioReferenceModel(null);
             testContext.setRadioReference("accountState", 0);
             testContext.setRadioReference("accountMessage", "");
@@ -357,6 +359,38 @@ Item {
             compare(importPassword.text, "");
             compare(importPassword.placeholderText, "Entered for this session");
             app.radioReferenceOpen = false;
+        }
+
+        // Issue #830: the browser toggle, only where the host has the browser.
+        function test_choose_files_row() {
+            var row = findChild(settings, "settingsChooseFilesInApp");
+            verify(row !== null);
+            verify(!row.visible, "no file browser on this host");
+            verify(!testContext.accessibleNode(row).inTree, "and nothing of it for a screen reader");
+            compare(findChild(settings, "settingsImportsRow").showDivider, false, "Imported files ends the card");
+
+            appLoader.source = "";
+            testContext.setFileBrowserSupported(true);
+            appLoader.source = uiDir + "/Main.qml";
+            app = appLoader.item;
+            app.currentTab = 2;
+            settings = findChild(app, "idleSettingsScreen");
+            tryVerify(function () { return settings.visible && settings.opacity > 0.9; });
+            row = findChild(settings, "settingsChooseFilesInApp");
+            verify(row.visible);
+            verify(testContext.accessibleNode(row).inTree);
+            compare(row.title, "Choose files in DSD-neo");
+            compare(row.subtitle, "Restore, CSV imports and replay files open DSD-neo's file browser instead of Android's picker");
+            var imports = findChild(settings, "settingsImportsRow");
+            compare(imports.showDivider, true, "a divider between Imported files and the toggle");
+            verify(row.mapToItem(settings, 0, 0).y > imports.mapToItem(settings, 0, 0).y, "under Imported files");
+            compare(row.checked, false, "off by default");
+            row.activate();
+            compare(prefs.chooseFilesInApp, true);
+            compare(row.checked, true);
+            row.activate();
+            compare(prefs.chooseFilesInApp, false);
+            compare(row.checked, false);
         }
 
         function test_version_copy() {

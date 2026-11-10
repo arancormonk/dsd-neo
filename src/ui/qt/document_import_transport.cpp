@@ -15,9 +15,16 @@
 #include <Qt>
 #include <cerrno>
 #include <cstdint>
+#include <memory>
 #include <stddef.h>
 
 #include <dsd-neo/crypto/backup_seal.h>
+
+#ifndef _WIN32
+#include <cstdio>
+
+#include <dsd-neo/platform/file_compat.h>
+#endif
 
 #include "decoder_host.h"
 
@@ -104,6 +111,25 @@ probe_stream(QIODevice& source, ImportProbe* out, qint64 maxCount, const std::fu
     }
     return count_rest(source, out->header.size(), maxCount, proceed, &out->total);
 }
+
+#ifndef _WIN32
+/** @brief A QFile reading a stdio stream it owns: closed with the device. */
+class StreamSource : public QFile {
+  public:
+    explicit StreamSource(FILE* stream) : m_stream(stream) {}
+
+    StreamSource(const StreamSource&) = delete;
+    StreamSource& operator=(const StreamSource&) = delete;
+
+    ~StreamSource() override {
+        close();
+        (void)std::fclose(m_stream);
+    }
+
+  private:
+    FILE* m_stream;
+};
+#endif
 
 } // namespace
 
@@ -214,18 +240,19 @@ DocumentImportTransport::finish(qint64 request, int copied) {
 }
 
 /*
- * The source may be any readable file but a directory: a stream (a FIFO) copies under the cap like a provider's, with
- * no size to show. QSaveFile writes beside the destination and renames on commit, and an uncommitted one discards its
- * copy, so no failure, cap and cancel included, leaves a file there; every failure on that side is this device's, not
- * the document's.
+ * The source must be a regular file, after symbolic links (QFileInfo follows them). Anything else is no document: a
+ * FIFO with no writer would hold open() until one came, and with it the import worker and every import queued behind
+ * it (#830 B1); a socket or a device has nothing to import either. QSaveFile writes beside the destination and renames
+ * on commit, and an uncommitted one discards its copy, so no failure, cap and cancel included, leaves a file there;
+ * every failure on that side is this device's, not the document's.
  */
 int
 DocumentImportTransport::copyLocal(qint64 request, const QString& path, const QString& destPath, qint64 maxBytes) {
     const QFileInfo info(path);
-    if (!info.exists() || info.isDir()) {
+    if (!info.isFile()) {
         return DecoderHost::DocumentFailed;
     }
-    const qint64 total = info.isFile() ? info.size() : -1;
+    const qint64 total = info.size();
     update(request, [&info, total](ImportCopyProgress& progress) {
         progress.displayName = info.fileName();
         progress.total = total;
@@ -233,8 +260,8 @@ DocumentImportTransport::copyLocal(qint64 request, const QString& path, const QS
     if (total > maxBytes) {
         return DecoderHost::DocumentTooLarge;
     }
-    QFile source(path);
-    if (!source.open(QIODevice::ReadOnly)) {
+    const std::unique_ptr<QIODevice> source = openSource(path);
+    if (!source) {
         return DecoderHost::DocumentFailed;
     }
     QSaveFile out(destPath);
@@ -243,7 +270,7 @@ DocumentImportTransport::copyLocal(qint64 request, const QString& path, const QS
         return localFailure(request, out);
     }
     const int copied =
-        copy_stream_capped(source, out, maxBytes, [this, request](qint64 bytes) { return proceed(request, bytes); });
+        copy_stream_capped(*source, out, maxBytes, [this, request](qint64 bytes) { return proceed(request, bytes); });
     if (copied == DecoderHost::DocumentLocalFailed) {
         return localFailure(request, out);
     }
@@ -255,6 +282,37 @@ DocumentImportTransport::copyLocal(qint64 request, const QString& path, const QS
     }
     errno = 0;
     return out.commit() ? static_cast<int>(DecoderHost::DocumentCopied) : localFailure(request, out);
+}
+
+/*
+ * copyLocal() checked the type a moment ago, but the name may lead to a FIFO by now. On POSIX the open never waits on
+ * one: the path is resolved first (a link to a regular file still opens it), then the resolved name is opened
+ * non-blocking without following it and refused unless the descriptor is a regular file
+ * (dsd_fopen_existing_regular_file()). Windows has no FIFO at a file path, so a plain QFile opens it there.
+ */
+std::unique_ptr<QIODevice>
+DocumentImportTransport::openSource(const QString& path) {
+#ifdef _WIN32
+    auto source = std::make_unique<QFile>(path);
+    if (!source->open(QIODevice::ReadOnly)) {
+        return nullptr;
+    }
+    return source;
+#else
+    char resolved[4096];
+    if (dsd_path_canonical(QFile::encodeName(path).constData(), resolved, sizeof(resolved)) != 0) {
+        return nullptr;
+    }
+    FILE* stream = dsd_fopen_existing_regular_file(resolved, "rb");
+    if (stream == nullptr) {
+        return nullptr;
+    }
+    auto source = std::make_unique<StreamSource>(stream);
+    if (!source->open(stream, QIODevice::ReadOnly, QFileDevice::DontCloseHandle)) {
+        return nullptr;
+    }
+    return source;
+#endif
 }
 
 int
@@ -274,23 +332,23 @@ DocumentImportTransport::probe(qint64 request, const QString& reference, ImportP
 }
 
 /*
- * A stream (a FIFO) probes as a file does: the length is what was read, never a reported size. Unbuffered, so the
- * header read asks for the header alone: a buffered QFile fills its buffer first, and on a stream that read waits for
- * bytes a probe that stops after the header never needs.
+ * Only a regular file probes, as only a regular file copies (copyLocal(), #830 B1): a FIFO, a socket or a device is
+ * refused before it is opened, and openSource() refuses one that a name leads to by then, never waiting on it. The
+ * length is what was read, never the reported size.
  */
 int
 DocumentImportTransport::probeLocal(qint64 request, const QString& path, ImportProbe* out, qint64 maxCount) {
     const QFileInfo info(path);
-    if (!info.exists() || info.isDir()) {
+    if (!info.isFile()) {
         return DecoderHost::DocumentFailed;
     }
     out->displayName = info.fileName();
     update(request, [&info](ImportCopyProgress& progress) { progress.displayName = info.fileName(); });
-    QFile source(path);
-    if (!source.open(QIODevice::ReadOnly | QIODevice::Unbuffered)) {
+    const std::unique_ptr<QIODevice> source = openSource(path);
+    if (!source) {
         return DecoderHost::DocumentFailed;
     }
-    return probe_stream(source, out, maxCount, [this, request](qint64 bytes) { return proceed(request, bytes); });
+    return probe_stream(*source, out, maxCount, [this, request](qint64 bytes) { return proceed(request, bytes); });
 }
 
 int

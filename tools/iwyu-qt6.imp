@@ -67,6 +67,10 @@
   { include: ["@[\"<](.*/)?qlatin1stringview\\.h[\">]", private, "<QLatin1String>", public] },
   { include: ["@[\"<](.*/)?qchar\\.h[\">]", private, "<QChar>", public] },
   { include: ["@[\"<](.*/)?qbytearray\\.h[\">]", private, "<QByteArray>", public] },
+  # qstrlen, qstrnlen and the other C-string helpers are QByteArray's related
+  # non-members: Qt documents them under <QByteArray>, whose header includes
+  # this one.
+  { include: ["@[\"<](.*/)?qbytearrayalgorithms\\.h[\">]", private, "<QByteArray>", public] },
   { include: ["@[\"<](.*/)?qbytearrayview\\.h[\">]", private, "<QByteArrayView>", public] },
   { include: ["@[\"<](.*/)?qstringlist\\.h[\">]", private, "<QStringList>", public] },
 

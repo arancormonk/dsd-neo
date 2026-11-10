@@ -5,6 +5,7 @@
 
 #ifndef DSD_NEO_QT_SIGNAL_SEARCH_MODEL_H
 #define DSD_NEO_QT_SIGNAL_SEARCH_MODEL_H
+#include <QByteArray>
 // QVariantList's template instantiations need QList in some consumers.
 #include <QList> // IWYU pragma: keep
 #include <QMap>
@@ -15,10 +16,13 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <dsd-neo/runtime/signal_search.h>
+#include <memory>
 #include <stdint.h>
 
 namespace dsd_qt {
 class DecoderHost;
+class DocumentExportWriter;
+class DocumentSaveTransport;
 class KnownFrequencyIndex;
 
 class SignalSearchModel : public QObject {
@@ -105,6 +109,29 @@ class SignalSearchModel : public QObject {
     Q_INVOKABLE void removeAvoid(double frequency);
     Q_INVOKABLE bool removeSessionAvoid(double frequency);
     Q_INVOKABLE QVariantMap systemForHit(const QVariantMap& hit, const QVariantMap& source) const;
+
+    /**
+     * @brief Take the rows to export now (#826) and keep the file built from them as the one pending export.
+     *
+     * @p kind is "detections" (every stored detection, newest first) or "avoids" (the permanent avoids, then the shown
+     * session's). Any call first drops the export pending before it. The file is built here, from the store's
+     * snapshots, so a list that changes afterwards does not change it.
+     *
+     * @return {token, count}: the pending export's token (above 0) and its row count; {0, 0} when there are no rows,
+     *         {0, -1} for an unknown kind or avoid lists that kept changing while read. A 0 token keeps nothing.
+     */
+    Q_INVOKABLE QVariantMap prepareExport(const QString& kind);
+    /**
+     * @brief Save the pending export @p token, in the background, into the document a picker chose (@p reference).
+     *
+     * Either way the export is no longer pending. exportFinished() tells the outcome of an accepted save.
+     *
+     * @return false, with the reference's Download-folder row let go of, when @p token is not the pending export or a
+     *         save is still running.
+     */
+    Q_INVOKABLE bool saveExport(int token, const QString& reference);
+    /** Drop the pending export @p token (its picker was cancelled); another token is left alone. */
+    Q_INVOKABLE void discardExport(int token);
     void refresh();
   Q_SIGNALS:
     void rangesChanged();
@@ -112,6 +139,8 @@ class SignalSearchModel : public QObject {
     void historyChanged();
     void avoidsChanged();
     void storeChanged();
+    /** An accepted saveExport()'s outcome, on this model's thread. */
+    void exportFinished(int token, bool ok);
 
   private:
     DecoderHost* m_host;
@@ -137,6 +166,17 @@ class SignalSearchModel : public QObject {
     bool refreshStoreFiles();
     bool unavoid(uint32_t frequency);
     QVariantMap hitMap(const dsd_signal_search_hit& h) const;
+    /** The saved frequencies a detection at @p frequency matches at @p width (matchWidth()): hitMap()'s `matches`. */
+    QVariantList knownMatches(uint32_t frequency, double width) const;
+    QByteArray detectionsExport(int* count) const;
+    QByteArray avoidsExport(int* count) const;
+
+    /* The export's save: the host's transport, kept for a refused save's Download row, and the writer that stages and
+       saves an accepted one. Both live as long as the model, which lives as long as the QML engine. */
+    std::shared_ptr<DocumentSaveTransport> m_saveTransport;
+    std::unique_ptr<DocumentExportWriter> m_exportWriter;
+    QByteArray m_exportBytes;
+    int m_exportToken = 0, m_lastExportToken = 0;
 };
 } // namespace dsd_qt
 #endif

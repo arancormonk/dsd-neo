@@ -135,13 +135,14 @@ class DsdNeoActivity : QtActivity() {
         IncomingDocuments.report(this, intent, HostDiagnostics::submit)
     }
 
-    // The notification permission and the autofill service can change while we are away.
+    // The notification permission, the autofill service and storage access (#830) can change while we are away.
     override fun onResume() {
         super.onResume()
         trace.phase(this, "resumed")
         AppSupport.refreshNotificationPermission()
         AccessibilityBridge.onResume(this)
         SignInAutofill.onResume(this)
+        FileBrowser.onResume()
     }
 
     // The screen modes: every lifecycle and input callback that matters to them goes to ScreenSupport.
@@ -225,8 +226,12 @@ class DsdNeoActivity : QtActivity() {
     override fun onBackPressed() { ScreenSupport.userInteraction(this); AppSupport.requestBack() }
 
 
-    // WP-D3: location permission and Activity lifetime.
+    // WP-D3: location permission and Activity lifetime. The file browser's Android 10 storage requests (#830) come first:
+    // it claims its own codes, a late answer to a cancelled request included.
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        if (FileBrowser.onRequestPermissionsResult(this, requestCode, permissions, grantResults)) {
+            return
+        }
         if (AppSupport.ownsPermissionRequest(requestCode)) {
             AppSupport.refreshNotificationPermission()
             return

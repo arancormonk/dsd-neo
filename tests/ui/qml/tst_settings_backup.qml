@@ -86,6 +86,10 @@ Item {
             flow = null;
             settings = null;
             testContext.setDocumentPickerSupported(true);
+            if (Ui.FileBrowser.request)
+                Ui.FileBrowser.dismiss(Ui.FileBrowser.request.token);
+            testContext.setFileBrowserSupported(false);
+            testContext.setPrefs("chooseFilesInApp", false);
             testContext.resetBackup();
             testContext.setScanTestUsb(false, false);
             testContext.setLifecyclePhase(0);
@@ -1212,6 +1216,138 @@ Item {
             compare(lastFlowActive(), false);
             compare(notice().text, "No file came back from the picker. Try again.");
             compare(testContext.documentCalls(), [], "the host is not asked");
+        }
+
+        // ---- restore through DSD-neo's file browser (#830) ----
+
+        // A browsed file's reference keeps the escapes its name has none of.
+        readonly property string browsedReference: "file:///storage/emulated/0/Download/a%20b%231%25.csv"
+        readonly property string browsedName: "a b#1%.csv"
+        // Settings' Choose files in DSD-neo on, on a host with the browser;
+        // the host's reading is fixed, so Main loads again with it.
+        function browseFirst() {
+            appLoader.source = "";
+            testContext.setFileBrowserSupported(true);
+            testContext.setPrefs("chooseFilesInApp", true);
+            loadMain();
+        }
+        function browser() {
+            var screen = findChild(app, "fileBrowserScreen");
+            verify(screen !== null);
+            return screen;
+        }
+        function browseRequest() {
+            var request = Ui.FileBrowser.request;
+            verify(request !== null, "the browser is asked");
+            compare(request.kind, "backup");
+            compare(request.title, "Choose a backup");
+            return request;
+        }
+        function lastFileCall(name) {
+            var call = testContext.lastFileCall(name);
+            compare(call.name, name);
+            return call;
+        }
+        // Picks @p reference in the browser as a user does: the locations,
+        // Device storage, the file's row, and the host's check of it.
+        function pickInBrowser(reference, name) {
+            var screen = browser();
+            testContext.answerFileRoots(lastFileCall("requestFileRoots").id, {status: "ok", generation: 3, roots: [
+                {key: "storage", kind: "storage", title: "", path: "/storage/emulated/0", state: "ready", detail: "mounted"}
+            ]});
+            waitForRendering(screen);
+            findChild(screen, "fileBrowserRoot:storage").activate();
+            var folder = "/storage/emulated/0";
+            testContext.answerFolderListing(lastFileCall("requestFolderListing").id, {status: "ok", snapshot: 1, offset: 0, more: false, hiddenByFilter: 0, entries: [
+                {name: name, path: folder + "/" + name, reference: reference, dir: false, size: 10, modifiedMs: 0}
+            ]});
+            waitForRendering(screen);
+            var list = findChild(screen, "fileBrowserList");
+            list.forceLayout();
+            findChild(list, "fileBrowserEntry:" + folder + "/" + name).activate();
+            testContext.answerFileHandoff(lastFileCall("requestFileHandoff").id, {ok: true, reference: reference, name: name, reason: ""});
+        }
+
+        function test_restore_browses_with_flow_held() {
+            browseFirst();
+            findChild(settings, "settingsBackupRestoreRow").activate();
+            browseRequest();
+            var screen = browser();
+            verify(screen.visible);
+            compare(Ui.Navigation.topModal, screen, "the browser is the top modal");
+            compare(testContext.documentCalls(), [], "Android's picker is not asked");
+            compare(flow.step, "restorePicker");
+            verify(part("backupOpenPicker").visible, "the pick is still out");
+            verify(backup.flowActive, "the restore holds its flow while it browses");
+            verify(uiController.autoStartBlocked);
+            compare(screen.view, "roots");
+            decoderHost.backRequested();
+            compare(Ui.FileBrowser.request, null, "Back at the locations ends the pick");
+            verify(!screen.visible);
+            compare(flow.step, "", "the restore ends as a picker backed out of");
+            compare(lastFlowActive(), false);
+            verify(!backup.flowActive);
+            compare(notice().text, "");
+            compare(calls("inspectRestore").length, 0);
+        }
+
+        function test_restore_browse_accept_focuses_unlock() {
+            browseFirst();
+            findChild(settings, "settingsBackupRestoreRow").activate();
+            browseRequest();
+            pickInBrowser(browsedReference, browsedName);
+            compare(Ui.FileBrowser.request, null);
+            var sheet = part("backupUnlockSheet");
+            verify(sheet.visible, "the pick opens the unlock sheet");
+            compare(Ui.Navigation.topModal, sheet);
+            compare(flow.step, "unlock");
+            compare(flow.reference, browsedReference);
+            // The browser hands the focus back after the pick, on the next turn too: the sheet keeps it.
+            wait(0);
+            wait(0);
+            var field = part("backupUnlockField");
+            verify(field.input.activeFocus, "the unlock field holds the focus");
+            verify(!browser().visible);
+            field.text = pass;
+            part("backupUnlockButton").activate();
+            var inspect = calls("inspectRestore");
+            compare(inspect.length, 1);
+            compare(inspect[0].args[0], browsedReference, "the reference reaches the model as it came");
+        }
+
+        function test_choose_another_file_browses_again() {
+            browseFirst();
+            findChild(settings, "settingsBackupRestoreRow").activate();
+            var first = browseRequest();
+            Ui.FileBrowser.finish(first.token, browsedReference, browsedName);
+            var sheet = part("backupUnlockSheet");
+            tryCompare(sheet, "visible", true);
+            part("backupUnlockField").text = pass;
+            part("backupUnlockButton").activate();
+            verify(testContext.emitBackup("inspectFinished", {ok: false, error: "NotBackup", summary: {}}));
+            part("backupChooseFileButton").activate();
+            tryCompare(sheet, "visible", false);
+            var second = browseRequest();
+            verify(second.token !== first.token, "a request of its own");
+            compare(Ui.Navigation.topModal, browser());
+            compare(flow.step, "restorePicker");
+            verify(backup.flowActive, "still one flow");
+            verify(uiController.autoStartBlocked);
+            compare(testContext.documentCalls(), [], "Android's picker is not asked");
+            // The first pick's answer again is not this request's.
+            Ui.FileBrowser.finish(first.token, browsedReference, browsedName);
+            verify(!sheet.visible);
+            compare(flow.step, "restorePicker");
+            var other = "file:///storage/emulated/0/Download/other%20copy.dsdbak";
+            Ui.FileBrowser.finish(second.token, other, "other copy.dsdbak");
+            tryCompare(sheet, "visible", true);
+            compare(flow.reference, other);
+            part("backupUnlockField").text = pass;
+            part("backupUnlockButton").activate();
+            var inspect = calls("inspectRestore");
+            compare(inspect.length, 2);
+            compare(inspect[0].args[0], browsedReference);
+            compare(inspect[1].args[0], other);
         }
 
         // #829: no picker could ask for the file, at the first pick or at
