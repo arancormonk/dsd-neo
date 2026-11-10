@@ -13030,23 +13030,25 @@ Qt Quick frontend (`src/ui/qt`):
 - Composing (preedit) text (issue #718): an Android keyboard holds the word being typed as preedit, which
   `TextInput.text` leaves out, so forms would save a name without its last word, judge an edit unchanged or reject a
   field as empty. `input_commit.{h,cpp}` (`InputCommit`, the `inputCommit` context object, wrapped by
-  `Navigation.commitComposing()`/`Navigation.composing`) commits it at action boundaries rather than from a
-  window-wide press filter, which would fire before Qt routes a tap inside the composing text to the keyboard and
-  break cursor taps, selection handles and drags. It calls `QInputMethod::commit()` (Android finishes composing and
-  delivers the word); when the focus item still reports `inputMethodComposing` (offscreen/test platforms) it sends
-  the item its `preeditText` as a commit and resets the input method. Callers: `activate()` of `OutlineButton`,
-  `GradientButton`, `IconButton`, `DashedActionButton` and `BottomNav` (commit and finish editing: focus leaves the
-  text field so `editingFinished` drafts, such as the profile editor's fallback algorithm, update before the action
-  reads them; an `OutlineButton` with `finishesEditing: false` only commits the word, as the RadioReference
-  password's Show and "Check account" do) and of `DecodeChip`, `FilterPill`, `SegmentedControl` segments and
-  `DisclosureRow` (commit only); `ModalSheet.requestDismiss()`; `Navigation.back()` before its focus clear. A button
-  gated on a field's committed text puts that term in `inputValid` (visuals dim on it) rather than `enabled`: its
-  default `enabled` is `inputValid || Navigation.composing`, so it is live while a word is composing, and a tap commits
-  first and calls `clicked()` only if `inputValid` then holds; otherwise it is disabled as before (accessibility and
-  keyboard included), and a real guard (busy, permission) stays in `enabled`. Callers: the profile editor's "Use this
-  key" and "Use override", `KeySheet`'s apply, Scan list "Add frequency", RadioReference Find/Open, the wizard's
-  Continue/Save, Tone filter Apply and Explore's Start.
-  Tests: `UI_QT_INPUT_COMMIT`, `UI_QT_QML_CALL_LISTS` (`tst_input_commit.qml`, `tst_modal_sheet_outside_tap.qml`,
+  `Navigation.commitComposing()`/`Navigation.composing`) commits it at action boundaries rather than from a window-wide
+  press filter, which would fire before Qt routes a tap inside the composing text to the keyboard and break cursor taps,
+  selection handles and drags. It calls `QInputMethod::commit()` (Android finishes composing and delivers the word);
+  when the focus item still reports `inputMethodComposing` (offscreen/test platforms) it sends the item its
+  `preeditText` as a commit and resets the input method. Callers: `activate()` of `OutlineButton`, `GradientButton`,
+  `IconButton`, `DashedActionButton` and `BottomNav` (commit and finish editing: focus leaves the text field so
+  `editingFinished` drafts, such as the profile editor's fallback algorithm, update before the action reads them; an
+  `OutlineButton` with `finishesEditing: false` only commits the word, as the RadioReference password's Show and "Check
+  account" do) and of `DecodeChip`, `FilterPill`, `SegmentedControl` segments and `DisclosureRow` (commit only);
+  `ModalSheet.requestDismiss()`; `Navigation.back()` before its focus clear; `Navigation.clearInput()` before it takes
+  the focus away (#831), so a sheet or layer that opens or closes by itself, as the incoming-file sheet does when a file
+  arrives while a field holds a composing word, never leaves a field that saves on `editingFinished` to save it without
+  that word (`tst_incoming_document.qml`). A button gated on a field's committed text puts that term in `inputValid`
+  (visuals dim on it) rather than `enabled`: its default `enabled` is `inputValid || Navigation.composing`, so it is
+  live while a word is composing, and a tap commits first and calls `clicked()` only if `inputValid` then holds;
+  otherwise it is disabled as before (accessibility and keyboard included), and a real guard (busy, permission) stays in
+  `enabled`. Callers: the profile editor's "Use this key" and "Use override", `KeySheet`'s apply, Scan list "Add
+  frequency", RadioReference Find/Open, the wizard's Continue/Save, Tone filter Apply and Explore's Start. Tests:
+  `UI_QT_INPUT_COMMIT`, `UI_QT_QML_CALL_LISTS` (`tst_input_commit.qml`, `tst_modal_sheet_outside_tap.qml`,
   `tst_signal_search.qml`, `tst_settings_backup.qml`, `tst_csv_import_flow.qml`, `tst_talkgroup_edit_sheet.qml`,
   `tst_modal_input.qml`, `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`, `tst_tone_filter_sheet.qml`,
   `tst_scan_row_edits.qml`, `tst_spectrum_screen.qml`, `tst_scan_list_screen.qml`, `tst_radioreference_screen.qml`,

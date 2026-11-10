@@ -594,6 +594,39 @@ Item {
             verify(app.importsOpen);
         }
 
+        // A file that arrives while a field holds a composing word: the word
+        // is committed before the sheet takes the focus, so the field saves
+        // all of it ("-C channels.csv", not "-C ").
+        function test_a_composing_word_is_kept_when_the_sheet_opens() {
+            var saved = prefs.extraArgs;
+            try {
+                app.currentTab = 2;
+                findChild(app, "idleSettingsScreen").advancedOpen = true;
+                var field = null;
+                tryVerify(function () {
+                    field = findChild(app, "settingsExtraArgs");
+                    return field !== null && field.visible;
+                }, 5000, "the extra arguments field shows");
+                field.input.forceActiveFocus();
+                tryVerify(function () {
+                    return field.input.activeFocus;
+                });
+                field.text = "-C ";
+                field.input.cursorPosition = 3;
+                verify(testContext.composeText("channels.csv"), "the field holds the word as composing text");
+                verify(Ui.Navigation.composing);
+                offer(targetsFile());
+                compare(prefs.extraArgs, "-C channels.csv", "the field saved the whole of what was typed");
+                verify(!Ui.Navigation.composing);
+                flow.drop();
+            } finally {
+                // The field gets the focus back when the sheet goes, and would
+                // save its text again when the focus leaves it later.
+                Ui.Navigation.clearInput(app);
+                prefs.extraArgs = saved;
+            }
+        }
+
         // ---- waiting until the screen is free (spec §4.4) ----
 
         function test_owners_make_it_wait_data() {

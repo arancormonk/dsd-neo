@@ -914,6 +914,7 @@ Item {
 
                         PlexTextField {
                             id: settingsExtraArgs
+                            objectName: "settingsExtraArgs"
                             x: Theme.cardPadding
                             y: 10
                             width: parent.width - 2 * Theme.cardPadding
