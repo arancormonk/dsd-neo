@@ -924,7 +924,11 @@ the build-tree `dsd-neo-app.apk` with the signed copy in passing. That overwrite
 is also *Play-shaped*: the bundle invocation packages the in-passing APK with
 uncompressed libraries and `extractNativeLibs=false` (see
 [Native libraries](#native-libraries-sideload-apk-vs-play-bundle)), roughly
-doubling it. A plain rebuild of the apk target will not undo this — the aab
+doubling it. It also lacks All files access: the bundle invocation leaves out
+the sideload manifest overlay (see
+[Permissions](#permissions-sideload-apk-vs-play-bundle)), so its file browser
+cannot reach Download, device storage or USB drives on Android 11 and later.
+A plain rebuild of the apk target will not undo this — the aab
 build changes no inputs the apk target's depfile tracks, so it is a no-op.
 Delete the build-tree APK first to force androiddeployqt to re-run:
 
@@ -960,6 +964,24 @@ an AAB cannot be installed, so beside the APK it only misleads, and under Play
 App Signing the uploaded bundle carries the upload key while Google re-signs what
 users install — it corresponds to no shipped binary. Download it by hand when
 updating a Play track.
+
+### Permissions: sideload APK vs Play bundle
+
+`android/package/AndroidManifest.xml` declares every permission itself; it has no
+`%%INSERT_PERMISSIONS` marker, so androiddeployqt adds none (Qt Core's rules would
+add `WRITE_EXTERNAL_STORAGE`). Every build reads device storage on Android 10 in
+the file browser (`READ_EXTERNAL_STORAGE` up to API 29 and
+`requestLegacyExternalStorage`). All files access (`MANAGE_EXTERNAL_STORAGE`) is
+in the overlay `android/package/sideload/AndroidManifest.xml`, which also raises
+READ to API 32 so Android 11 and 12 offer "Allow management of all files" under
+App info. The vendored `build.gradle` merges the overlay into every invocation
+that builds no bundle — the apk target, debug builds included — and leaves it out
+of the aab target. Google Play allows All files access only for apps whose core
+purpose needs it, so the bundle never asks for it; a Play install browses its
+own inbox and the files it saved, plus device storage on Android 10. CI asserts
+both sides: the published APK declares All files access and READ up to API 32,
+the AAB's base manifest declares neither All files access nor
+`WRITE_EXTERNAL_STORAGE`, and neither artifact declares `WRITE_EXTERNAL_STORAGE`.
 
 ### Native libraries: sideload APK vs Play bundle
 

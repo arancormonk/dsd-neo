@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- #830: merged over the main manifest by every build but an app bundle (build.gradle), so
+     only the side-loaded APK asks for All files access; Google Play allows it only for apps
+     whose core purpose needs it. With it the in-app file browser reads Download, device
+     storage, SD cards and USB drives on Android 11 and later. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+
+    <!-- [T0-C1] Android 11 and 12 offer "Allow management of all files" under App info ›
+         Permissions › Files and media only to an app that asks for READ there; some head
+         units have no All files access screen in Settings. Granting it also grants READ. -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32"
+        tools:replace="android:maxSdkVersion" />
+    <!-- [/T0-C1] -->
+</manifest>

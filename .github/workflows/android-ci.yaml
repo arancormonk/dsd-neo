@@ -837,6 +837,42 @@ jobs:
           fi
           echo "All packaged libraries are compressed; the platform extracts them at install"
 
+      # #830: every permission is declared in android/package/AndroidManifest.xml
+      # (no Qt insertion), and the sideload APK alone merges the overlay that asks
+      # for All files access (build.gradle's bundleBuild); its READ line reaches
+      # API 32, where the overlay replaces the main manifest's API 29 cap.
+      # WRITE_EXTERNAL_STORAGE would ride along with the Android 10 READ grant.
+      - name: Verify the APK's permissions
+        shell: bash
+        env:
+          APK_PATH: ${{ steps.names.outputs.APK_PATH }}
+        run: |
+          set -euo pipefail
+          aapt2="${ANDROID_SDK_ROOT:?ANDROID_SDK_ROOT is not set}/build-tools/$ANDROID_BUILD_TOOLS_VERSION/aapt2"
+          perms=$("$aapt2" dump permissions "$APK_PATH")
+          bad=0
+          for name in MANAGE_EXTERNAL_STORAGE INTERNET ACCESS_NETWORK_STATE; do
+            if ! printf '%s\n' "$perms" | grep -qxF "uses-permission: name='android.permission.$name'"; then
+              echo "ERROR: the APK does not declare $name" >&2
+              bad=1
+            fi
+          done
+          read_line="uses-permission: name='android.permission.READ_EXTERNAL_STORAGE' maxSdkVersion='32'"
+          if ! printf '%s\n' "$perms" | grep -qxF "$read_line"; then
+            echo "ERROR: the APK does not declare READ_EXTERNAL_STORAGE up to API 32" >&2
+            bad=1
+          fi
+          if printf '%s\n' "$perms" | grep -qF 'WRITE_EXTERNAL_STORAGE'; then
+            echo "ERROR: the APK declares WRITE_EXTERNAL_STORAGE" >&2
+            bad=1
+          fi
+          if [ "$bad" -ne 0 ]; then
+            echo "The APK's permissions:" >&2
+            printf '%s\n' "$perms" >&2
+            exit 1
+          fi
+          echo "APK permissions OK: All files access, READ up to API 32, no WRITE."
+
       - name: Verify the APK carries the required license files
         shell: bash
         env:
@@ -1129,9 +1165,31 @@ jobs:
             echo "ERROR: the AAB base manifest does not set extractNativeLibs=false; Play updates would ship near-full downloads" >&2
             exit 1
           fi
+          # #830: the bundle leaves out the sideload overlay, so it never asks for
+          # All files access (Play allows it only for apps whose core purpose needs
+          # it), and nothing declares WRITE_EXTERNAL_STORAGE. ACCESS_NETWORK_STATE
+          # shows the main manifest's explicit permissions arrived.
+          base_manifest=$(mktemp)
+          unzip -p "$AAB_PATH" base/manifest/AndroidManifest.xml > "$base_manifest"
+          perm_bad=0
+          for name in MANAGE_EXTERNAL_STORAGE WRITE_EXTERNAL_STORAGE; do
+            if grep -aqF "$name" "$base_manifest"; then
+              echo "ERROR: the AAB base manifest declares $name" >&2
+              perm_bad=1
+            fi
+          done
+          if ! grep -aqF 'ACCESS_NETWORK_STATE' "$base_manifest"; then
+            echo "ERROR: the AAB base manifest does not declare ACCESS_NETWORK_STATE" >&2
+            perm_bad=1
+          fi
+          if [ "$perm_bad" -ne 0 ]; then
+            echo "Permissions named in the AAB base manifest:" >&2
+            grep -aoE 'android\.permission\.[A-Z_]+' "$base_manifest" | sort -u >&2 || true
+            exit 1
+          fi
           python3 tools/check_android_r8.py "$AAB_PATH" \
             --dexdump "$ANDROID_SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS_VERSION/dexdump"
-          echo "AAB OK: signed, arm64-v8a only, extractNativeLibs=false, R8 metadata and JNI verified."
+          echo "AAB OK: signed, arm64-v8a only, extractNativeLibs=false, no All files access or WRITE, R8 metadata and JNI verified."
 
       - name: Upload AAB
         id: aab_upload

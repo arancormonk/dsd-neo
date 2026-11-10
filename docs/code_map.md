@@ -14953,8 +14953,16 @@ request code (1305) is never used.
     cannot answer a new host's request with the same id. Left open (one host per process today, as for
     `DocumentPicker`): an access cancel `FileBrowser` answers later on the Android main thread can still reach a host
     made in between. `proguard-rules.pro` keeps the eleven upcalls.
+  - Manifests: `android/package/AndroidManifest.xml` declares every permission itself (no `%%INSERT_PERMISSIONS`, so
+    Qt Core's rules add no `WRITE_EXTERNAL_STORAGE`, which an Android 10 READ grant would carry):
+    `READ_EXTERNAL_STORAGE` up to API 29 with `requestLegacyExternalStorage`, in every build. The overlay
+    `android/package/sideload/AndroidManifest.xml` adds `MANAGE_EXTERNAL_STORAGE` and raises READ to API 32
+    (`tools:replace`); `build.gradle` merges it into the debug and release build types unless the invocation builds a
+    bundle (`bundleBuild`, the same switch as the native library packaging), so the Play bundle never declares All
+    files access and the APK of an `aab` build lacks it too. android-ci checks both artifacts.
   - Tests: `ANDROID_FILE_BROWSER_JVM` (`docs/testing.md`), with the `file_browser_wiring` source check of the
-    activity's forwarding; `UI_QT_ANDROID_HOST` (`check_file_browser_requests()`, `check_file_browser_retirement()`,
+    activity's forwarding and `storage_permissions_policy` of the manifests and the overlay switch;
+    `UI_QT_ANDROID_HOST` (`check_file_browser_requests()`, `check_file_browser_retirement()`,
     `check_file_access_requests()`, `check_file_access_state()`, `check_file_browser_host_end()`,
     `check_file_reference_round_trip()`: a listed
     `file:` reference names the exact file through `local_document_path()`, decoded once).
@@ -15216,7 +15224,12 @@ its source:
 - Qt's text cursor handle is a `PopupWindow` in `CursorHandle.m_popup`, held by the `QtEditText` child of the Qt
   window in `m_cursorHandle`, with no exit transition (`QtCursorHandle.kt`). A rename fails
   `tools/check_android_r8.py` on the release APK; a changed structure only leaves the "cannot be hidden" record. Check
-  with KeePassDX that a tap on the username field still gets its dropdown with the handle up.
+  with KeePassDX that a tap on the username field still gets its dropdown with the handle up;
+- androiddeployqt inserts no permissions: the manifest has no `%%INSERT_PERMISSIONS` (#830, "In-app file browser,
+  Android side"), so a permission a new Qt module or plugin needs is not added. Compare the `<permission>` lines of
+  the kit's `lib/*-android-dependencies.xml` with the manifest (6.11.3: Core `INTERNET`, declared, and
+  `WRITE_EXTERNAL_STORAGE`, left out on purpose; Network `ACCESS_NETWORK_STATE`, declared) and declare any new one the
+  app needs.
 
 What trips: bumping `ANDROID_QT_VERSION` in `tools/ci-dependency-pins.env` fails `ANDROID_A11Y_BRIDGE_JVM`
 (`launch_policy()`) until `LaunchGuard.QT_RESTART` names the new version. Change that text only once the checks below

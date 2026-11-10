@@ -723,6 +723,101 @@ def file_browser_wiring():
     return None
 
 
+USES_PERMISSION_TAG = re.compile(r"<uses-permission\b([^>]*)>")
+PREFIXED_ATTRIBUTE = re.compile(r'\b(android|tools):(\w+)\s*=\s*"([^"]*)"')
+STORAGE_PERMISSION = "android.permission.{}_EXTERNAL_STORAGE"
+
+
+def declared_permissions(manifest):
+    """Each <uses-permission> outside comments, by name: its prefixed attributes ("android:maxSdkVersion", ...)."""
+    declared = {}
+    for tag in USES_PERMISSION_TAG.finditer(manifest):
+        attributes = {f"{prefix}:{name}": value for prefix, name, value in PREFIXED_ATTRIBUTE.findall(tag.group(1))}
+        declared[attributes.get("android:name")] = attributes
+    return declared
+
+
+def storage_permissions_policy():
+    """#830: every permission is declared in the app's own manifests, so Qt inserts none (Qt6Core's rules would add
+    WRITE_EXTERNAL_STORAGE, which the Android 10 legacy view would grant with READ). Every build reads device storage on
+    Android 10 only; All files access comes from the sideload overlay, which build.gradle merges into every build but a
+    bundle, so the Play bundle never asks for it. CI checks the packaged artifacts the same way."""
+    checks = (
+        ("android/package/AndroidManifest.xml", main_manifest_permissions),
+        ("android/package/sideload/AndroidManifest.xml", sideload_manifest_permissions),
+        ("android/package/build.gradle", sideload_overlay_wiring),
+    )
+    for where, check in checks:
+        try:
+            text = (REPO / where).read_text(encoding="utf-8")
+        except OSError as error:
+            return f"cannot read {where}: {error}"
+        problem = check(text)
+        if problem:
+            return f"{where}: {problem}"
+    return None
+
+
+def main_manifest_permissions(text):
+    """What is wrong with the main manifest's permissions, or None."""
+    if "%%INSERT_PERMISSIONS" in text:
+        return "drop the %%INSERT_PERMISSIONS marker; the manifest declares every permission itself"
+    manifest = XML_COMMENT.sub(" ", text)
+    permissions = declared_permissions(manifest)
+    for name in ("android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE"):
+        if name not in permissions:
+            return f"declare {name} (Qt no longer inserts it)"
+    read = permissions.get(STORAGE_PERMISSION.format("READ"), {})
+    if read.get("android:maxSdkVersion") != "29":
+        return f"declare {STORAGE_PERMISSION.format('READ')} with maxSdkVersion=\"29\"; found {read}"
+    for name in ("MANAGE", "WRITE"):
+        if STORAGE_PERMISSION.format(name) in manifest:
+            return f"must not name {STORAGE_PERMISSION.format(name)}"
+    applications = re.findall(r"<application\b([^>]*)>", manifest)
+    if len(applications) != 1 or 'android:requestLegacyExternalStorage="true"' not in applications[0]:
+        return '<application> must set android:requestLegacyExternalStorage="true"'
+    return None
+
+
+def sideload_manifest_permissions(text):
+    """What is wrong with the sideload overlay's permissions, or None: All files access and nothing else."""
+    overlay = declared_permissions(XML_COMMENT.sub(" ", text))
+    wanted = {STORAGE_PERMISSION.format("MANAGE")}
+    # [T0-C1] Android 11-12 offer "Allow management of all files" in App info only to an app that asks for READ there.
+    wanted.add(STORAGE_PERMISSION.format("READ"))
+    read = overlay.get(STORAGE_PERMISSION.format("READ"), {})
+    if read.get("android:maxSdkVersion") != "32" or read.get("tools:replace") != "android:maxSdkVersion":
+        return (
+            f"declare {STORAGE_PERMISSION.format('READ')} with maxSdkVersion=\"32\" and "
+            f'tools:replace="android:maxSdkVersion"; found {read}'
+        )
+    # [/T0-C1]
+    if set(overlay) != wanted:
+        return f"must declare exactly {sorted(wanted)}; found {sorted(overlay)}"
+    return None
+
+
+def sideload_overlay_wiring(gradle):
+    """What is wrong with how build.gradle picks the sideload overlay, or None: one file-scope bundleBuild decides both
+    the native library packaging and whether the two build types merge the overlay."""
+    if len(re.findall(r"\bdef bundleBuild\b", gradle)) != 1 or not re.search(r"^def bundleBuild = ", gradle, re.M):
+        return "define bundleBuild once, at file scope"
+    if gradle.find("def bundleBuild") > gradle.find("\nandroid {"):
+        return "define bundleBuild above android {"
+    if not re.search(r"useLegacyPackaging = bundleBuild \?", gradle):
+        return "useLegacyPackaging must follow bundleBuild"
+    branch = re.search(r"if \(!bundleBuild\) \{([^{}]*)\}", gradle)
+    overlays = re.findall(
+        r"^\s*(\w+)\.manifest\.srcFile 'sideload/AndroidManifest\.xml'$", branch.group(1) if branch else "", re.M
+    )
+    if sorted(overlays) != ["debug", "release"] or gradle.count("sideload/AndroidManifest.xml") != 2:
+        return (
+            "under if (!bundleBuild), debug and release must each set manifest.srcFile 'sideload/AndroidManifest.xml', "
+            f"and nothing else may name it; found {overlays}"
+        )
+    return None
+
+
 def launch_record_plumbing(facts):
     """What is wrong with how ProcessFacts.kt carries LaunchGuard's record, or None: the summary is set on API 30+ and
     read back into each exit record. Nothing else exercises this path."""
@@ -1124,7 +1219,7 @@ SUITES = {
     # fake platform and stubs of the activity, storage volumes, resolver and Settings. The activity's forwarding is read
     # from the source.
     "file_browser": Suite(
-        checks=(file_browser_wiring,),
+        checks=(file_browser_wiring, storage_permissions_policy),
         builds=(
             Build(sources=("FileListing.kt",), tests=("FileListingTest.kt",)),
             Build(

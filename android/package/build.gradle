@@ -11,7 +11,9 @@
 // bundle requests uncompressed .so files in delivered APKs (extractNativeLibs=false)
 // so Play can delta-patch updates, while the sideload APK compresses them (legacy
 // packaging, install-time extraction) so the GitHub release download stays around
-// half the size. android-ci asserts both sides; see the packaging notes in android/README.md.
+// half the size. The sideload APK also merges the sideload manifest overlay (All files
+// access, #830), which the bundle leaves out. android-ci asserts both sides; see the
+// packaging notes in android/README.md.
 // Release builds also enable R8 with the app and Qt JNI contracts preserved.
 
 buildscript {
@@ -37,6 +39,15 @@ dependencies {
     implementation fileTree(dir: 'libs', include: ['*.jar', '*.aar'])
     //noinspection GradleDependency
     implementation 'androidx.core:core:1.17.0'
+}
+
+// DSD-NEO: which artifact this invocation builds. androiddeployqt hardcodes the
+// Gradle invocation: "assembleRelease" for the apk target and "assembleRelease
+// bundle" for the aab target, so the requested task names are the only
+// per-artifact signal this file sees. An aab build's incidental APK is therefore
+// Play-shaped too.
+def bundleBuild = gradle.startParameter.taskNames.any {
+    it.tokenize(':').last().startsWith('bundle')
 }
 
 android {
@@ -71,6 +82,14 @@ android {
             assets.srcDirs = ['assets']
             jniLibs.srcDirs = ['libs']
        }
+        // DSD-NEO: every build but a bundle merges the sideload overlay, which asks
+        // for All files access (#830); Google Play allows that only for apps whose
+        // core purpose needs it, so the bundle never declares it. Both build types,
+        // so a debug APK browses like the release one.
+        if (!bundleBuild) {
+            debug.manifest.srcFile 'sideload/AndroidManifest.xml'
+            release.manifest.srcFile 'sideload/AndroidManifest.xml'
+        }
     }
 
     tasks.withType(JavaCompile) {
@@ -105,10 +124,7 @@ android {
 
     packagingOptions {
         jniLibs {
-            // DSD-NEO: split packaging by artifact. androiddeployqt hardcodes the
-            // Gradle invocation: "assembleRelease" for the apk target and
-            // "assembleRelease bundle" for the aab target, so the requested task
-            // names are the only per-artifact signal this file sees.
+            // DSD-NEO: split packaging by artifact (bundleBuild, above).
             //
             // Bundle builds honor legacyPackaging.toBoolean() as upstream does
             // — false by default, so the AAB keeps
@@ -116,9 +132,6 @@ android {
             // build (the sideload/dev APK) forces legacy packaging: compressed
             // .so entries and install-time extraction, which roughly halves the
             // GitHub release download.
-            def bundleBuild = gradle.startParameter.taskNames.any {
-                it.tokenize(':').last().startsWith('bundle')
-            }
             useLegacyPackaging = bundleBuild ? legacyPackaging.toBoolean() : true
         }
     }

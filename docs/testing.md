@@ -231,7 +231,10 @@ the API 30-32 App info step), the API 29 permission (`granted`, `denied`, `block
 Android 10's re-entrant empty answer cancelling the new request once) with its rolling request codes, a late answer to a
 cancelled launch claimed but dropped, the refresh flags, the Android platform on API 36 and 29 through `start()`, and
 each record's JSON keys. The `file_browser_wiring` source check pins `DsdNeoActivity`'s forwarding of resumes and
-permission results.
+permission results; `storage_permissions_policy` pins the manifests (every permission declared, no Qt insertion, READ
+up to API 29 with the legacy flag, never MANAGE or WRITE), the sideload overlay (MANAGE, READ up to API 32 with
+`tools:replace`, nothing else) and `build.gradle` merging it only when the invocation builds no bundle. android-ci
+checks the packaged APK (`aapt2 dump permissions`) and AAB (its proto manifest) the same way.
 `ANDROID_USB_RECEIVER_JVM` (the `usb_receiver` suite) runs `UsbReceiverKind.kt`, the USB id table `UsbSourceManager`
 classifies every device with, with no stubs: an Airspy beside a hub and other unrelated devices reads `airspy`, two
 RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known receiver empty. Which local receiver a
