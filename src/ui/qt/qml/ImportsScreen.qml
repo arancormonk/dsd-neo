@@ -179,10 +179,10 @@ Item {
         csvImport.pick(type, importContext());
     }
     // #831: a new import of a file another app opened, its kind already
-    // chosen. The screen must be showing: hiding it cancels the import. False
-    // while another import runs, which begin() would otherwise replace.
+    // chosen. False while the screen is hidden, since hiding it cancels the
+    // import, and while another import runs, which begin() would replace.
     function importIncoming(ref, name, type) {
-        if (csvImport.active)
+        if (!screen.visible || csvImport.active)
             return false;
         screen.notice = "";
         pendingRow = -1;
@@ -441,8 +441,9 @@ Item {
     // What kind of file is being imported; the parser and the flag differ per kind.
     ModalSheet {
         id: typeSheet
-        // #831 B3: a screen reader names each sheet, never "Dialog".
-        accessibleName: qsTr("Import file")
+        // #831 B3: a screen reader names each sheet, never "Dialog". Not
+        // "Import file", which the sheet's first line says right after.
+        accessibleName: qsTr("File contents")
 
         MicroLabel {
             text: qsTr("Import file")

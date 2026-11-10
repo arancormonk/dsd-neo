@@ -14090,12 +14090,14 @@ Qt Quick frontend (`src/ui/qt`):
   visible (`onVisibleChanged`, so Imports' Back, which clears `importsOpen` in `Main.qml` directly, and the wizard's
   Save, which clears `wizardOpen`, both count) and when it is reused (`WizardScreen.openForAdd/openForFound/
   openForEdit`, `ScanListScreen.openFor`), and bumps its generation then, so an answer from before is dropped. A
-  document already chosen (#831) enters through `ImportsScreen.importIncoming(ref, name, type)` (a new import; the
-  screen must be showing) or `ScanListScreen.importTargetsFrom(ref, name)` (after `openFor(-1)`), each false while its
-  flow is `active`, because `begin()` refuses only while copying and would cancel an import waiting on its companion
-  sheet. Imports' kind question is `qml/ImportKindPicker.qml` (`kind`, `keyHex`, read-only `type`), shared with the
-  intake sheet; its `FilterPill`s set `wrapLabel`, so a long kind wraps between words inside a narrow sheet or large
-  text and the pill grows taller (B8), each pill's width bounded by the picker's. Newer
+  document already chosen (#831) enters through `ImportsScreen.importIncoming(ref, name, type)` (a new import; false
+  while the screen is hidden, which would cancel it) or `ScanListScreen.importTargetsFrom(ref, name)` (after
+  `openFor(-1)`), each false while its flow is `active`, because `begin()` refuses only while copying and would cancel
+  an import waiting on its companion sheet. Imports' kind question is `qml/ImportKindPicker.qml` (`kind`, `keyHex`,
+  read-only `type`), shared with the intake sheet; its `FilterPill`s set `wrapLabel`, which draws the label as a
+  `WholeWordLabel` inside the pill's width (bounded by the picker's), so a long kind wraps between words at a narrow
+  sheet or large text and the pill grows taller (B8). The pill's natural width is its label on one line at the full
+  text size, never at a size a fit shrank it to, so it grows back when there is room. Newer
   choice wins: the wizard keeps a generation per CSV field (`csvGenerations`, bumped by `assignCsvPath()` and by
   `applyRadioReference()` for the files it writes), the scan list editor one for its targets (`targetsGeneration`,
   bumped by `selectTargets()` and the target source switch), the flow one per companion slot (`companionGenerations`,

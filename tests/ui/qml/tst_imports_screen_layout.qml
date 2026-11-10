@@ -21,6 +21,21 @@ Item {
     width: 420
     height: 900
 
+    // A wrapping pill on its own, for words longer than any kind's.
+    Item {
+        id: pillBox
+        y: 860
+        width: 200
+        height: 40
+        Ui.FilterPill {
+            id: longPill
+            width: Math.min(implicitWidth, pillBox.width)
+            wrapLabel: true
+            caret: false
+            visible: false
+        }
+    }
+
     Loader {
         id: screenLoader
 
@@ -508,7 +523,11 @@ Item {
             var typeSheet = sheetOf(findChild(kindTc.screen, "importKindPicker"));
             tryCompare(typeSheet, "visible", true);
             compare(typeSheet.Accessible.role, Accessible.Dialog);
-            compare(typeSheet.Accessible.name, "Import file");
+            compare(typeSheet.Accessible.name, "File contents");
+            // Not its first line again, which is read right after the name.
+            var first = typeSheet.content[0];
+            compare(first.text, "Import file");
+            verify(typeSheet.Accessible.name !== first.text);
             typeSheet.visible = false;
 
             var groups = testContext.writeFixtureCsv("named-sheet.csv", "id,mode,name\n1001,A,Dispatch\n");
@@ -532,6 +551,60 @@ Item {
             }
         }
     }
+    // #831 B8, issue #646: a wrapping pill keeps whole words. A word wider
+    // than the pill is drawn smaller, down to its normal-text size, then
+    // elided; with room again it is drawn full size on one line.
+    TestCase {
+        name: "FilterPillWrap"
+        when: windowShown
+
+        function labelOf(pill) {
+            var label = findChild(pill, "filterPillLabel");
+            verify(label !== null);
+            return label;
+        }
+        function test_a_long_word_never_leaves_the_pill_data() {
+            return [
+                {tag: "shrinks", box: 200, scale: 2, text: "Ultrakeystreams list", elided: false},
+                {tag: "elides", box: 120, scale: 1, text: "Supercalifragilistic keys", elided: true}
+            ];
+        }
+        function test_a_long_word_never_leaves_the_pill(data) {
+            var box = pillBox.width;
+            try {
+                pillBox.width = data.box;
+                Ui.Theme.fontScale = data.scale;
+                longPill.text = data.text;
+                longPill.visible = true;
+                waitForRendering(longPill);
+                var label = labelOf(longPill);
+                var full = Math.round(Ui.Theme.fontSize(13));
+                verify(longPill.width <= pillBox.width + 0.5);
+                verify(label.contentWidth <= label.width + 0.5, "the label is wider than its line: " + label.contentWidth + " > " + label.width);
+                var inPill = label.mapToItem(longPill, 0, 0);
+                verify(inPill.x >= 0 && inPill.x + label.width <= longPill.width + 0.5);
+                verify(inPill.y >= 0 && inPill.y + label.height <= longPill.height + 0.5);
+                verify(label.lineCount <= data.text.split(" ").length, label.lineCount + " lines");
+                compare(label.elided, data.elided);
+                compare(label.truncated, data.elided);
+                if (!data.elided)
+                    verify(label.fitPixelSize < full && label.fitPixelSize >= 13, "drawn smaller: " + label.fitPixelSize);
+                compare(longPill.Accessible.name, data.text, "the pill still reads the whole label");
+
+                pillBox.width = 800;
+                waitForRendering(longPill);
+                compare(label.fitPixelSize, full, "full size again once there is room");
+                verify(!label.truncated);
+                compare(label.lineCount, 1);
+                compare(longPill.width, longPill.implicitWidth);
+            } finally {
+                longPill.visible = false;
+                pillBox.width = box;
+                Ui.Theme.resetFontScale();
+            }
+        }
+    }
+
     // #832: an import answers later, from the import worker.
     TestCase {
         id: importTc
@@ -617,6 +690,18 @@ Item {
             compare(importedFiles.get(0).type, "group");
             compare(importTc.screen.notice, "Imported · 3 talkgroups");
             verify(!importTc.screen.noticeIsProblem);
+        }
+
+        // #831: the screen cancels its import when hidden, so a file handed to
+        // it hidden is refused rather than imported with no one to see it.
+        function test_import_incoming_refused_while_hidden() {
+            importTc.screen.visible = false;
+            verify(!importTc.screen.importIncoming(groups("incoming-hidden.csv", 1), "incoming-hidden.csv", "group"));
+            verify(!importTc.flow.active);
+            verify(!importTc.screen.importActive);
+            importTc.screen.visible = true;
+            wait(50);
+            compare(importedFiles.count, 0, "nothing was imported");
         }
 
         // #831: begin() would replace an import still copying or waiting on
