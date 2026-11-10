@@ -8672,12 +8672,17 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
   it is not compiled. `TETRA_CRYPTO` pins both directions to upstream's vectors.
 - `backup_seal.c` / `<dsd-neo/crypto/backup_seal.h>` seal and open passphrase-protected backups (scrypt + AES-256-GCM,
   issue #580). The 64-byte header is the GCM AAD. Seal and open both accept only log2(N) 14..17, r 8 and p 1..4, so an
-  untrusted file cannot demand more scrypt memory than that. `dsd_backup_open()` wipes its output on any failure:
-  plaintext leaves only after the tag verifies. New backups use `dsd_backup_kdf_params_default()` (log2(N) 16, r 8, p 2,
-  about 64 MiB). `dsd_backup_derive_key()` is a known-answer helper without that policy; never pass it untrusted
-  parameters. The Qt archive inside the envelope is under UI, Qt, "Configuration backup". Tests: `BACKUP_SEAL`,
-  `FUZZ_CRYPTO_BACKUP_HEADER` (`dsd_backup_parse_header()`, the only parser that runs before authentication),
-  `HEADERS_PUBLIC_CRYPTO_BACKUP_SEAL` and `HEADERS_PUBLIC_CRYPTO_BACKUP_SEAL_CXX`.
+  untrusted file cannot demand more scrypt memory than that. `dsd_backup_check_header()` judges a header from its first
+  64 bytes and a separate total length, with a fixed precedence: no magic → `ERR_NOT_BACKUP`, then short header, version
+  0 → `ERR_FORMAT`, version above 1 → `ERR_VERSION`, reserved bytes → `ERR_FORMAT`, KDF → `ERR_PARAMS`, payload over the
+  cap → `ERR_TOO_LARGE`, length mismatch → `ERR_FORMAT`; `dsd_backup_has_magic()` is its first step alone.
+  `dsd_backup_parse_header()` and `dsd_backup_open()` run the same checks over the whole buffer and still report a
+  missing magic as `ERR_FORMAT`. `dsd_backup_open()` wipes its output on any failure: plaintext leaves only after the
+  tag verifies. New backups use `dsd_backup_kdf_params_default()` (log2(N) 16, r 8, p 2, about 64 MiB).
+  `dsd_backup_derive_key()` is a known-answer helper without that policy; never pass it untrusted parameters. The Qt
+  archive inside the envelope is under UI, Qt, "Configuration backup". Tests: `BACKUP_SEAL`, `FUZZ_CRYPTO_BACKUP_HEADER`
+  (`dsd_backup_parse_header()`, the only parser that runs before authentication), `HEADERS_PUBLIC_CRYPTO_BACKUP_SEAL`
+  and `HEADERS_PUBLIC_CRYPTO_BACKUP_SEAL_CXX`.
 - Build files: `src/crypto/CMakeLists.txt`
 
 ## Protocols
@@ -13785,6 +13790,16 @@ Qt Quick frontend (`src/ui/qt`):
     RadioReference generator), so a new producer token must join it. Passphrases are NFC UTF-8 of at least 8 code
     points (`backup_passphrase_ok()`); the byte and normalized copies the backup code makes are wiped, the strings
     QML hands it cannot be.
+  - Envelope verdicts (`backup_archive.{h,cpp}`): `backup_open()` judges the header with `dsd_backup_check_header()`, so
+    its status tells a file without the magic (`ERR_NOT_BACKUP`) from a damaged backup (`ERR_FORMAT`), and
+    `backup_error_from_seal_status()` maps NOT_BACKUP → `NotBackup`, VERSION (above 1) → `NewerVersion`, FORMAT (magic,
+    then a short header, version 0, reserved bytes or a wrong length) and PARAMS → `Damaged`, TOO_LARGE → `TooLarge`
+    (#831 B7: a truncated backup used to say "not a backup" and version 0 "newer"). `classify_incoming(header, total)`
+    judges a document from its first 64 bytes and its length, with no passphrase, as `IncomingKind`
+    (`incoming_kind_name()`: `backup`, `newerBackup`, `damagedBackup`, `tooLargeBackup`, `other`): NOT_BACKUP, then
+    VERSION, then TOO_LARGE or a length above `kMaxSealedBytes`, then FORMAT/PARAMS; a negative (unknown) `total` keeps
+    the verdicts that need no length and is otherwise `damagedBackup`. Tests: `UI_QT_BACKUP_ARCHIVE`, and
+    `UI_QT_BACKUP_MODEL` for the restore's errors.
   - Staging and apply (`backup_apply.h`, `backup_stage.cpp`, `backup_apply.cpp`, module-private
     `backup_apply_fs.{h,cpp}`): `stage_restore()` takes the data root its caller read (the model passes the UI thread's
     reading to its worker) and writes `restore-staging-<job>/` (files, stores, settings, avoids and a manifest, each

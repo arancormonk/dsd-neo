@@ -91,9 +91,10 @@ enum class BackupError {
 QString backup_error_name(BackupError error);
 
 /**
- * The BackupError for a ::dsd_backup_status: FORMAT → NotBackup, VERSION → NewerVersion, AUTH → WrongPassphrase,
- * TOO_LARGE → TooLarge, PARAMS → Damaged (a header this build cannot open is not something the user can fix by
- * retyping), ARGS and INTERNAL → Io.
+ * The BackupError for a ::dsd_backup_status: NOT_BACKUP → NotBackup, VERSION → NewerVersion, AUTH → WrongPassphrase,
+ * TOO_LARGE → TooLarge, FORMAT and PARAMS → Damaged (a file that starts like a backup but is cut short, malformed or
+ * sealed with parameters this build cannot open is not something the user can fix by retyping), ARGS and INTERNAL →
+ * Io.
  */
 BackupError backup_error_from_seal_status(int status);
 
@@ -103,6 +104,30 @@ BackupError backup_error_from_seal_status(int status);
  * failing, not the file: StagingFailed. (An empty passphrase, the other ARGS, is the caller's to tell apart.)
  */
 BackupError backup_error_from_open_status(int status);
+
+/** What a document handed to the app is, judged from its first bytes and its length, before any passphrase. */
+enum class IncomingKind {
+    Backup,         /**< A sealed backup this build can try to open. */
+    NewerBackup,    /**< A sealed backup of a newer format version. */
+    DamagedBackup,  /**< Starts like a backup but is cut short, malformed or sealed with unusable parameters. */
+    TooLargeBackup, /**< Starts like a backup but is larger than a restore reads (kMaxSealedBytes). */
+    NotBackup,      /**< Anything else: no backup magic. */
+};
+
+/**
+ * Classify a document from @p header, its first bytes (only the first DSD_BACKUP_HEADER_BYTES are read), and @p total,
+ * its whole length in bytes, through dsd_backup_check_header(): NOT_BACKUP → NotBackup, VERSION → NewerBackup,
+ * TOO_LARGE or @p total above kMaxSealedBytes → TooLargeBackup, FORMAT and PARAMS → DamagedBackup, OK → Backup, in
+ * that order: a newer backup is NewerBackup whatever its size, and any other oversized one TooLargeBackup.
+ *
+ * A negative @p total means the length is unknown. The checks that need no length still decide (NotBackup,
+ * NewerBackup, TooLargeBackup from the header's payload length), and a header that passes them is DamagedBackup: an
+ * unknown length is never taken for a whole backup. Pure and worker-safe.
+ */
+IncomingKind classify_incoming(const QByteArray& header, qint64 total);
+
+/** The name a result map carries for @p kind: "backup", "newerBackup", "damagedBackup", "tooLargeBackup", "other". */
+QString incoming_kind_name(IncomingKind kind);
 
 /** What a typed path field holds. */
 enum class PathKind {
@@ -281,7 +306,9 @@ QByteArray backup_seal(const QByteArray& archive, const QString& passphrase, con
 
 /**
  * Open @p sealed with @p passphrase. Returns the archive, or empty on failure (any partial output wiped); @p status
- * (optional) receives the ::dsd_backup_status. The passphrase bytes are wiped before returning.
+ * (optional) receives the ::dsd_backup_status, with the header judged by dsd_backup_check_header(): ERR_NOT_BACKUP
+ * when the magic is missing, ERR_FORMAT for a backup cut short or malformed. The passphrase bytes are wiped before
+ * returning.
  */
 QByteArray backup_open(const QByteArray& sealed, const QString& passphrase, int* status);
 

@@ -66,13 +66,44 @@ BackupError
 backup_error_from_seal_status(int status) {
     switch (status) {
         case DSD_BACKUP_OK: return BackupError::None;
-        case DSD_BACKUP_ERR_FORMAT: return BackupError::NotBackup;
+        case DSD_BACKUP_ERR_NOT_BACKUP: return BackupError::NotBackup;
         case DSD_BACKUP_ERR_VERSION: return BackupError::NewerVersion;
         case DSD_BACKUP_ERR_AUTH: return BackupError::WrongPassphrase;
         case DSD_BACKUP_ERR_TOO_LARGE: return BackupError::TooLarge;
+        case DSD_BACKUP_ERR_FORMAT:
         case DSD_BACKUP_ERR_PARAMS: return BackupError::Damaged;
         default: return BackupError::Io;
     }
+}
+
+IncomingKind
+classify_incoming(const QByteArray& header, qint64 total) {
+    // An unknown length never matches header + payload + tag, so a header that passes everything else ends in FORMAT.
+    const uint64_t length = total < 0 ? UINT64_MAX : static_cast<uint64_t>(total);
+    const int status = dsd_backup_check_header(reinterpret_cast<const uint8_t*>(header.constData()),
+                                               static_cast<size_t>(header.size()), length, nullptr, nullptr);
+    if (status == DSD_BACKUP_ERR_NOT_BACKUP) {
+        return IncomingKind::NotBackup;
+    }
+    if (status == DSD_BACKUP_ERR_VERSION) {
+        return IncomingKind::NewerBackup;
+    }
+    if (status == DSD_BACKUP_ERR_TOO_LARGE || total > kMaxSealedBytes) {
+        return IncomingKind::TooLargeBackup;
+    }
+    return status == DSD_BACKUP_OK ? IncomingKind::Backup : IncomingKind::DamagedBackup;
+}
+
+QString
+incoming_kind_name(IncomingKind kind) {
+    switch (kind) {
+        case IncomingKind::Backup: return QStringLiteral("backup");
+        case IncomingKind::NewerBackup: return QStringLiteral("newerBackup");
+        case IncomingKind::DamagedBackup: return QStringLiteral("damagedBackup");
+        case IncomingKind::TooLargeBackup: return QStringLiteral("tooLargeBackup");
+        case IncomingKind::NotBackup: return QStringLiteral("other");
+    }
+    return QStringLiteral("other");
 }
 
 QVariantMap
@@ -193,8 +224,10 @@ backup_seal(const QByteArray& archive, const QString& passphrase, const dsd_back
 QByteArray
 backup_open(const QByteArray& sealed, const QString& passphrase, int* status) {
     size_t payload = 0;
-    int rc = dsd_backup_parse_header(reinterpret_cast<const uint8_t*>(sealed.constData()),
-                                     static_cast<size_t>(sealed.size()), nullptr, &payload);
+    // The check that tells a file without the magic (NOT_BACKUP) from a damaged backup (FORMAT).
+    int rc = dsd_backup_check_header(reinterpret_cast<const uint8_t*>(sealed.constData()),
+                                     static_cast<size_t>(sealed.size()), static_cast<uint64_t>(sealed.size()), nullptr,
+                                     &payload);
     QByteArray archive;
     if (rc == DSD_BACKUP_OK) {
         QByteArray pass = backup_passphrase_bytes(passphrase);

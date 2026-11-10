@@ -155,42 +155,43 @@ dsd_backup_gcm_decrypt(const uint8_t* key, const uint8_t* header, const uint8_t*
     return status;
 }
 
-/* Full header and length validation; no key work. Fills both outputs on success. */
+/* The checks that need only the 64 header bytes, in dsd_backup_check_header()'s order. Fills both outputs on success. */
 static int
-dsd_backup_parse(const uint8_t* sealed, size_t sealed_len, dsd_backup_kdf_params* kdf, size_t* payload_len) {
-    if (sealed == NULL && sealed_len != 0U) {
-        return DSD_BACKUP_ERR_ARGS;
-    }
-    if (sealed_len < DSD_BACKUP_HEADER_BYTES || memcmp(sealed, DSD_BACKUP_MAGIC, DSD_BACKUP_MAGIC_BYTES) != 0) {
+dsd_backup_check_fields(const uint8_t* header, dsd_backup_kdf_params* kdf, uint64_t* payload_len) {
+    /* Version 0 was never written: a header that says so is damaged, not from a newer app. */
+    const uint64_t version = dsd_backup_get_be(header + DSD_BACKUP_OFF_VERSION, 2U);
+    if (version == 0U) {
         return DSD_BACKUP_ERR_FORMAT;
     }
-    if (dsd_backup_get_be(sealed + DSD_BACKUP_OFF_VERSION, 2U) != DSD_BACKUP_VERSION) {
+    if (version != DSD_BACKUP_VERSION) {
         return DSD_BACKUP_ERR_VERSION;
     }
-    if (dsd_backup_get_be(sealed + DSD_BACKUP_OFF_RESERVED, DSD_BACKUP_RESERVED_BYTES) != 0U) {
+    if (dsd_backup_get_be(header + DSD_BACKUP_OFF_RESERVED, DSD_BACKUP_RESERVED_BYTES) != 0U) {
         return DSD_BACKUP_ERR_FORMAT;
     }
 
     dsd_backup_kdf_params parsed;
-    parsed.log2_n = sealed[DSD_BACKUP_OFF_LOG2_N];
-    parsed.r = (uint32_t)dsd_backup_get_be(sealed + DSD_BACKUP_OFF_R, 4U);
-    parsed.p = (uint32_t)dsd_backup_get_be(sealed + DSD_BACKUP_OFF_P, 4U);
-    if (sealed[DSD_BACKUP_OFF_KDF] != DSD_BACKUP_KDF_SCRYPT || !dsd_backup_kdf_params_accepted(&parsed)) {
+    parsed.log2_n = header[DSD_BACKUP_OFF_LOG2_N];
+    parsed.r = (uint32_t)dsd_backup_get_be(header + DSD_BACKUP_OFF_R, 4U);
+    parsed.p = (uint32_t)dsd_backup_get_be(header + DSD_BACKUP_OFF_P, 4U);
+    if (header[DSD_BACKUP_OFF_KDF] != DSD_BACKUP_KDF_SCRYPT || !dsd_backup_kdf_params_accepted(&parsed)) {
         return DSD_BACKUP_ERR_PARAMS;
     }
 
-    /* Bounded first, so the sum below cannot wrap. */
-    const uint64_t len = dsd_backup_get_be(sealed + DSD_BACKUP_OFF_LENGTH, 8U);
+    const uint64_t len = dsd_backup_get_be(header + DSD_BACKUP_OFF_LENGTH, 8U);
     if (len > DSD_BACKUP_MAX_PAYLOAD_BYTES) {
         return DSD_BACKUP_ERR_TOO_LARGE;
     }
-    if ((uint64_t)sealed_len != DSD_BACKUP_HEADER_BYTES + len + DSD_BACKUP_TAG_BYTES) {
-        return DSD_BACKUP_ERR_FORMAT;
-    }
-
     *kdf = parsed;
-    *payload_len = (size_t)len;
+    *payload_len = len;
     return DSD_BACKUP_OK;
+}
+
+/* dsd_backup_check_header() over a whole sealed buffer, with a missing magic reported as FORMAT as it always was. */
+static int
+dsd_backup_parse(const uint8_t* sealed, size_t sealed_len, dsd_backup_kdf_params* kdf, size_t* payload_len) {
+    const int status = dsd_backup_check_header(sealed, sealed_len, (uint64_t)sealed_len, kdf, payload_len);
+    return status == DSD_BACKUP_ERR_NOT_BACKUP ? DSD_BACKUP_ERR_FORMAT : status;
 }
 
 static int
@@ -265,21 +266,48 @@ dsd_backup_sealed_size(size_t payload_len) {
 }
 
 int
-dsd_backup_parse_header(const uint8_t* sealed, size_t sealed_len, dsd_backup_kdf_params* kdf_out,
+dsd_backup_has_magic(const uint8_t* bytes, size_t len) {
+    return bytes != NULL && len >= DSD_BACKUP_MAGIC_BYTES
+           && memcmp(bytes, DSD_BACKUP_MAGIC, DSD_BACKUP_MAGIC_BYTES) == 0;
+}
+
+int
+dsd_backup_check_header(const uint8_t* header, size_t header_len, uint64_t total_len, dsd_backup_kdf_params* kdf_out,
                         size_t* payload_len_out) {
+    if (header == NULL && header_len != 0U) {
+        return DSD_BACKUP_ERR_ARGS;
+    }
+    if (!dsd_backup_has_magic(header, header_len)) {
+        return DSD_BACKUP_ERR_NOT_BACKUP;
+    }
+    if (header_len < DSD_BACKUP_HEADER_BYTES) {
+        return DSD_BACKUP_ERR_FORMAT;
+    }
+
     dsd_backup_kdf_params kdf;
-    size_t payload_len = 0U;
-    const int status = dsd_backup_parse(sealed, sealed_len, &kdf, &payload_len);
+    uint64_t len = 0U;
+    const int status = dsd_backup_check_fields(header, &kdf, &len);
     if (status != DSD_BACKUP_OK) {
         return status;
     }
+    /* len is bounded by the field checks, so the sum cannot wrap. */
+    if (total_len != DSD_BACKUP_HEADER_BYTES + len + DSD_BACKUP_TAG_BYTES) {
+        return DSD_BACKUP_ERR_FORMAT;
+    }
+
     if (kdf_out != NULL) {
         *kdf_out = kdf;
     }
     if (payload_len_out != NULL) {
-        *payload_len_out = payload_len;
+        *payload_len_out = (size_t)len;
     }
     return DSD_BACKUP_OK;
+}
+
+int
+dsd_backup_parse_header(const uint8_t* sealed, size_t sealed_len, dsd_backup_kdf_params* kdf_out,
+                        size_t* payload_len_out) {
+    return dsd_backup_parse(sealed, sealed_len, kdf_out, payload_len_out);
 }
 
 int

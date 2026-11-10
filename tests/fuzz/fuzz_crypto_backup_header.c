@@ -4,9 +4,9 @@
  */
 
 /*
- * Restored backups are untrusted, and dsd_backup_parse_header() is the only parser that runs on them before
- * authentication. It does no key derivation, so every input stays cheap; dsd_backup_open() is deliberately not
- * called here, since it would run scrypt on every accepted header.
+ * Restored backups are untrusted, and dsd_backup_check_header() (with dsd_backup_parse_header(), its whole-buffer
+ * form) is the only parser that runs on them before authentication. It does no key derivation, so every input stays
+ * cheap; dsd_backup_open() is deliberately not called here, since it would run scrypt on every accepted header.
  */
 
 #include <dsd-neo/crypto/backup_seal.h>
@@ -36,6 +36,16 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         }
     } else if (rc != DSD_BACKUP_ERR_FORMAT && rc != DSD_BACKUP_ERR_VERSION && rc != DSD_BACKUP_ERR_PARAMS
                && rc != DSD_BACKUP_ERR_TOO_LARGE) {
+        abort();
+    }
+
+    /* The header-only check reads no further than the header and agrees with the whole-buffer parse, which only
+       reports a missing magic as FORMAT. */
+    const size_t header_len = size < DSD_BACKUP_HEADER_BYTES ? size : DSD_BACKUP_HEADER_BYTES;
+    const int checked = dsd_backup_check_header(data, header_len, (uint64_t)size, NULL, NULL);
+    const int magic = dsd_backup_has_magic(data, size);
+    if ((checked == DSD_BACKUP_ERR_NOT_BACKUP) == (magic != 0)
+        || (checked == DSD_BACKUP_ERR_NOT_BACKUP ? DSD_BACKUP_ERR_FORMAT : checked) != rc) {
         abort();
     }
     return 0;

@@ -966,12 +966,18 @@ test_errors(FakeHost& host, const QString& document, const QString& scratch) {
         {"oversized document", large, kPass, "TooLarge"},
         {"missing document", scratch + "/missing.dsdbak", kPass, "Io"},
         {"newer format", bad, kPass, "NewerVersion"},
+        {"format version 0", bad, kPass, "Damaged"},
+        {"cut one byte short", bad, kPass, "Damaged"},
         {"unusable key parameters", bad, kPass, "Damaged"},
         {"tampered ciphertext", bad, kPass, "WrongPassphrase"},
     };
     for (const Case& c : cases) {
         if (QString(c.name) == "newer format") {
             expect("write a newer format", write_file(bad, with_header_byte(sealed, 9, 2)));
+        } else if (QString(c.name) == "format version 0") {
+            expect("write format version 0", write_file(bad, with_header_byte(sealed, 9, 0)));
+        } else if (QString(c.name) == "cut one byte short") {
+            expect("write a cut backup", write_file(bad, sealed.left(sealed.size() - 1)));
         } else if (QString(c.name) == "unusable key parameters") {
             expect("write bad key parameters", write_file(bad, with_header_byte(sealed, 11, 30)));
         } else if (QString(c.name) == "tampered ciphertext") {

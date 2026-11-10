@@ -284,6 +284,9 @@ expected_flip_status(size_t off, unsigned bit) {
     if (off < 8U) {
         return DSD_BACKUP_ERR_FORMAT; /* magic */
     }
+    if (off == 9U && bit == 0U) {
+        return DSD_BACKUP_ERR_FORMAT; /* version 0 was never written: damaged, not newer */
+    }
     if (off < 10U) {
         return DSD_BACKUP_ERR_VERSION;
     }
@@ -379,6 +382,130 @@ test_truncation_and_trailing(void) {
     rc |= expect_int("parse trailing byte", dsd_backup_parse_header(longer, sizeof(longer), NULL, NULL),
                      DSD_BACKUP_ERR_FORMAT);
     rc |= expect_open("open trailing byte", longer, sizeof(longer), DSD_BACKUP_ERR_FORMAT);
+    return rc;
+}
+
+static void
+put_be(uint8_t* p, uint64_t v, size_t bytes) {
+    for (size_t i = 0; i < bytes; i++) {
+        p[i] = (uint8_t)(v >> (8U * (bytes - 1U - i)));
+    }
+}
+
+/*
+ * dsd_backup_check_header() on the first `header_len` bytes of `header`, copied into a buffer of exactly that size so
+ * a sanitizer build catches any read past it. The outputs are filled on success only.
+ */
+static int
+expect_check(const char* name, const uint8_t* header, size_t header_len, uint64_t total_len, int want) {
+    uint8_t* exact = (uint8_t*)malloc(header_len == 0U ? 1U : header_len);
+    if (exact == NULL) {
+        return expect_true(name, 0);
+    }
+    if (header_len > 0U) {
+        DSD_MEMCPY(exact, header, header_len);
+    }
+    dsd_backup_kdf_params kdf;
+    DSD_MEMSET(&kdf, 0xA5, sizeof(kdf));
+    size_t payload_len = 999U;
+    int rc = expect_int(name, dsd_backup_check_header(exact, header_len, total_len, &kdf, &payload_len), want);
+    if (want == DSD_BACKUP_OK) {
+        rc |= expect_true(name, kdf.log2_n == 14U && kdf.r == 8U && kdf.p == 1U);
+        rc |= expect_size(name, payload_len, TEST_GOLDEN_PAYLOAD_N);
+    } else {
+        rc |= expect_true(name, kdf.log2_n == 0xA5U && payload_len == 999U);
+    }
+    free(exact);
+    return rc;
+}
+
+/* The golden header with the 64-bit big-endian field at `off` (`bytes` wide) set to `value`. */
+static void
+golden_with(uint8_t* header, size_t off, size_t bytes, uint64_t value) {
+    DSD_MEMCPY(header, k_golden_sealed, DSD_BACKUP_HEADER_BYTES);
+    put_be(header + off, value, bytes);
+}
+
+static int
+test_has_magic(void) {
+    int rc = 0;
+    static const char csv[] = "talkgroup,mode,name\n1,D,Dispatch\n";
+    static const char near[] = "DSDNEOBX";
+    rc |= expect_int("magic of a backup", dsd_backup_has_magic(k_golden_sealed, sizeof(k_golden_sealed)), 1);
+    rc |= expect_int("magic alone", dsd_backup_has_magic(k_golden_sealed, 8U), 1);
+    rc |= expect_int("seven magic bytes", dsd_backup_has_magic(k_golden_sealed, 7U), 0);
+    rc |= expect_int("magic NULL", dsd_backup_has_magic(NULL, 8U), 0);
+    rc |= expect_int("magic NULL empty", dsd_backup_has_magic(NULL, 0U), 0);
+    rc |= expect_int("magic last byte differs", dsd_backup_has_magic((const uint8_t*)near, sizeof(near) - 1U), 0);
+    rc |= expect_int("magic of a CSV", dsd_backup_has_magic((const uint8_t*)csv, sizeof(csv) - 1U), 0);
+    return rc;
+}
+
+/* Every row of dsd_backup_check_header()'s precedence, alone and ahead of the checks after it. */
+static int
+test_check_header_precedence(void) {
+    int rc = 0;
+    const uint64_t total = TEST_GOLDEN_SEALED_N;
+    const uint64_t over_cap = (uint64_t)DSD_BACKUP_MAX_PAYLOAD_BYTES + 1U;
+    uint8_t h[DSD_BACKUP_HEADER_BYTES];
+
+    rc |= expect_check("exact", k_golden_sealed, DSD_BACKUP_HEADER_BYTES, total, DSD_BACKUP_OK);
+    rc |= expect_check("whole sealed buffer", k_golden_sealed, sizeof(k_golden_sealed), total, DSD_BACKUP_OK);
+    rc |= expect_check("truncated by one byte", k_golden_sealed, DSD_BACKUP_HEADER_BYTES, total - 1U,
+                       DSD_BACKUP_ERR_FORMAT);
+    rc |= expect_check("extended by one byte", k_golden_sealed, DSD_BACKUP_HEADER_BYTES, total + 1U,
+                       DSD_BACKUP_ERR_FORMAT);
+    rc |= expect_check("unknown length", k_golden_sealed, DSD_BACKUP_HEADER_BYTES, UINT64_MAX, DSD_BACKUP_ERR_FORMAT);
+
+    rc |= expect_check("empty", k_golden_sealed, 0U, 0U, DSD_BACKUP_ERR_NOT_BACKUP);
+    rc |= expect_check("seven magic bytes", k_golden_sealed, 7U, total, DSD_BACKUP_ERR_NOT_BACKUP);
+    rc |= expect_check("magic only", k_golden_sealed, 8U, total, DSD_BACKUP_ERR_FORMAT);
+    rc |= expect_check("short header with magic", k_golden_sealed, DSD_BACKUP_HEADER_BYTES - 1U, total,
+                       DSD_BACKUP_ERR_FORMAT);
+    rc |= expect_int("NULL header with a length", dsd_backup_check_header(NULL, 8U, total, NULL, NULL),
+                     DSD_BACKUP_ERR_ARGS);
+    rc |= expect_int("NULL empty header", dsd_backup_check_header(NULL, 0U, 0U, NULL, NULL), DSD_BACKUP_ERR_NOT_BACKUP);
+
+    /* Magic absent wins over every later fault. */
+    golden_with(h, 8U, 2U, 2U);
+    put_be(h + 56U, 1U, 8U);
+    h[7] = (uint8_t)'X';
+    rc |= expect_check("magic absent", h, sizeof(h), total, DSD_BACKUP_ERR_NOT_BACKUP);
+
+    golden_with(h, 8U, 2U, 0U);
+    rc |= expect_check("version 0", h, sizeof(h), total, DSD_BACKUP_ERR_FORMAT);
+    h[10] = 9U;
+    rc |= expect_check("version 0 before params", h, sizeof(h), total, DSD_BACKUP_ERR_FORMAT);
+    rc |= expect_check("version 0, unknown length", h, sizeof(h), UINT64_MAX, DSD_BACKUP_ERR_FORMAT);
+
+    golden_with(h, 8U, 2U, 2U);
+    rc |= expect_check("version 2", h, sizeof(h), total, DSD_BACKUP_ERR_VERSION);
+    rc |= expect_check("version 2, unknown length", h, sizeof(h), UINT64_MAX, DSD_BACKUP_ERR_VERSION);
+    put_be(h + 56U, 1U, 8U);
+    h[10] = 9U;
+    put_be(h + 48U, over_cap, 8U);
+    rc |= expect_check("version 2 before reserved, params and size", h, sizeof(h), total, DSD_BACKUP_ERR_VERSION);
+
+    golden_with(h, 56U, 8U, 1U);
+    rc |= expect_check("reserved set", h, sizeof(h), total, DSD_BACKUP_ERR_FORMAT);
+    h[10] = 9U;
+    rc |= expect_check("reserved before params", h, sizeof(h), total, DSD_BACKUP_ERR_FORMAT);
+
+    golden_with(h, 12U, 4U, 9U);
+    rc |= expect_check("bad params", h, sizeof(h), total, DSD_BACKUP_ERR_PARAMS);
+    put_be(h + 48U, over_cap, 8U);
+    rc |= expect_check("params before size", h, sizeof(h), total, DSD_BACKUP_ERR_PARAMS);
+
+    golden_with(h, 48U, 8U, over_cap);
+    rc |= expect_check("payload over cap", h, sizeof(h), total, DSD_BACKUP_ERR_TOO_LARGE);
+    rc |= expect_check("payload over cap, unknown length", h, sizeof(h), UINT64_MAX, DSD_BACKUP_ERR_TOO_LARGE);
+    golden_with(h, 48U, 8U, DSD_BACKUP_MAX_PAYLOAD_BYTES);
+    size_t payload_len = 0U;
+    rc |= expect_int(
+        "payload at cap",
+        dsd_backup_check_header(h, sizeof(h), dsd_backup_sealed_size(DSD_BACKUP_MAX_PAYLOAD_BYTES), NULL, &payload_len),
+        DSD_BACKUP_OK);
+    rc |= expect_size("payload at cap length", payload_len, DSD_BACKUP_MAX_PAYLOAD_BYTES);
     return rc;
 }
 
@@ -630,6 +757,8 @@ main(void) {
     rc |= test_header_bit_flips_parse();
     rc |= test_tamper_open();
     rc |= test_truncation_and_trailing();
+    rc |= test_has_magic();
+    rc |= test_check_header_precedence();
     rc |= test_param_boundaries();
     rc |= test_small_buffers_and_args();
     rc |= test_oversize();
