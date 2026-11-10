@@ -13879,7 +13879,8 @@ Qt Quick frontend (`src/ui/qt`):
     so a change to them changes the card. Text from a backup (app version, `notIncluded`) renders as `Text.PlainText`.
   - Supporting changes: `AppPrefs` names every key once in a table (`keyTable()`) that marks it portable or device-local
     (device-local: first-run state (`ui/onboardingDone`, `ui/notificationExplained`), the last location fix
-    (`location/*`), how this device's screens were left (`monitor/detailsExpanded`, `listen/section`) and the session
+    (`location/*`), how this device's screens were left (`monitor/detailsExpanded`, `listen/section`), whether this
+    device opens DSD-neo's file browser first (`ui/chooseFilesInApp`, issue #830) and the session
     this device's service runs (`listen/acceptedStart*`, `listen/lastStartedCompanions`); `UI_QT_PERSISTENCE` pins the
     set), with `readPortable()`/`replacePortable()`; a new key must be classed there. `DecryptionProfilesModel` compiles at load
     any row without a compiled form, which every restored row is, and persists once; a row that cannot compile is kept,
@@ -14042,7 +14043,21 @@ Qt Quick frontend (`src/ui/qt`):
   (`BackupFlow.savePicked()`, `CallRecordingPlayer.savePicked()`, `CallRecordingsScreen.exportPicked()`) discards a
   Download-folder row itself. On the desktop path an open clears the dialog's selection (`currentFiles = []`:
   `selectedFiles` is read-only and `selectedFile = ""` is refused), so an accept with no new choice answers
-  `noResult`, never the previous file; a dialog that cannot open answers `failed`. Test: `UI_QT_QML_DOCUMENT_PICKER`.
+  `noResult`, never the previous file; a dialog that cannot open answers `failed`. Issue #830: an open picker with a
+  `browseKind` ("csv", "backup" or "replay"; empty never browses) can be served by DSD-neo's file browser through the
+  `FileBrowser` singleton (`qml/FileBrowser.qml`, one browse request app-wide: `request` is null or `{token, kind,
+  title, allowOtherApp}`; `open(kind, title, allowOtherApp)` returns a token > 0, and a live request is superseded by
+  replacing `request` first, then `rejected(oldToken)`; `finish()`, `reject()` and `otherApp()` answer `picked`,
+  `rejected` and `otherAppRequested`, `dismiss()` none; each clears `request` before its signal and ignores a token
+  that is not live). `open()` browses first when `decoderHost.fileBrowserSupported`, the picker has a `browseKind`, is
+  in open mode and `prefs.chooseFilesInApp` (`ui/chooseFilesInApp`, device-local, off by default; the Settings ›
+  Libraries toggle under Imported files, shown only where the host has the browser); a host `noPicker` answer to such
+  a picker opens the browser with `allowOtherApp` false instead of `unavailable`. The picker's token
+  (`d.browseToken`) is part of `visible`; `close()`, `cancel()`, a reopen and destruction dismiss it, and the picker
+  acts only on its own token, clearing it before it emits, so an owner superseded by another picker's browse no longer
+  waits when it hears `rejected`; a picker whose browse is superseded before `FileBrowser.open()` returns (the owner it
+  superseded opened again while told) hears `rejected` once, after `open()` returns. "Choose with another app" (`otherAppRequested`) asks the host's picker whatever the
+  toggle says; a `noPicker` answer to it reopens the browser without the action. Test: `UI_QT_QML_DOCUMENT_PICKER`.
 - `qml/CsvImportFlow.qml` imports a CSV and its companions for three owners: Imported files (`ImportsScreen`), the scan
   list editor's target CSV (`ScanListScreen`) and the wizard's trunking-data fields (`WizardScreen`). Its primary and
   companion pickers (`csvPrimaryPicker`, `csvCompanionPicker`) are `DocumentPicker`s with no filter; a picked document

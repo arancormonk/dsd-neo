@@ -5531,6 +5531,8 @@ class Setup : public QObject {
         prefs[QStringLiteral("monitorDetailsExpanded")] = false;
         /* Issue #646: Listen opens on Systems, as on a fresh install. */
         prefs[QStringLiteral("listenSection")] = QStringLiteral("systems");
+        /* Issue #830: Android's picker first, as on a fresh install. */
+        prefs[QStringLiteral("chooseFilesInApp")] = false;
         /* RadioReference account: empty on purpose, so the screen's first state
          * is the credentials gate a fresh install shows. This map answers reads
          * only -- it is a plain QVariantMap, not the production AppPrefs, so QML

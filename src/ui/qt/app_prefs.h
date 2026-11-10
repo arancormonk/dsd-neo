@@ -108,6 +108,9 @@ class AppPrefs : public QObject {
     /* Issue #646: the Listen tab last chosen ("systems", "scanLists" or "explore"), so Listen opens on it. How this
      * phone's screen was arranged, like the one above: device-local. */
     Q_PROPERTY(QString listenSection READ listenSection WRITE setListenSection NOTIFY listenSectionChanged)
+    /* Issue #830: open the file browser DSD-neo has (Android) before Android's picker when Restore, a CSV import or a
+     * replay file asks for a file. Whether this device's picker works is the device's, so device-local. */
+    Q_PROPERTY(bool chooseFilesInApp READ chooseFilesInApp WRITE setChooseFilesInApp NOTIFY chooseFilesInAppChanged)
     /* Call recording (issue #708). Every session the app starts records per call while recordCalls is on; Settings
      * also applies both switches to a running session. The limit is the recording store's, in decimal MB. */
     Q_PROPERTY(bool recordCalls READ recordCalls WRITE setRecordCalls NOTIFY recordCallsChanged)
@@ -306,6 +309,10 @@ class AppPrefs : public QObject {
     /** @brief Store @p section if it is one of the three ids; any other text is refused and writes nothing. */
     void setListenSection(const QString& section);
 
+    /** @brief Pickers that DSD-neo's file browser serves open it first; off by default. Device-local. */
+    bool chooseFilesInApp() const;
+    void setChooseFilesInApp(bool on);
+
     /** @brief Record each call of every session the app starts (-P); off by default. */
     bool recordCalls() const;
     void setRecordCalls(bool on);
@@ -371,6 +378,7 @@ class AppPrefs : public QObject {
     void searchChanged();
     void monitorDetailsExpandedChanged();
     void listenSectionChanged();
+    void chooseFilesInAppChanged();
     void recordCallsChanged();
     void recordUnknownOnlyChanged();
     void recordingLimitMbChanged();

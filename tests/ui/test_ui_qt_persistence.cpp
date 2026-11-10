@@ -783,6 +783,7 @@ test_app_prefs(void) {
         expect("default appearance follows the system", prefs.appearance() == AppPrefs::FollowSystem);
         expect("onboarding starts not-done", !prefs.onboardingDone());
         expect("the monitor's Signal & site readings start closed", !prefs.monitorDetailsExpanded());
+        expect("files are chosen with Android's picker first", !prefs.chooseFilesInApp());
         expect("background listening defaults on", prefs.backgroundListening());
         expect("skip-encrypted defaults on", prefs.skipEncrypted());
         expect("quick lockouts default to saving", prefs.persistTgLockouts());
@@ -1889,6 +1890,8 @@ test_prefs_key_table(void) {
         {"pinned", QVariantList{QVariantMap{{QStringLiteral("kind"), QStringLiteral("search")}}}, "listen/pinned"},
         // Issue #646: the Listen tab last chosen.
         {"listenSection", QStringLiteral("explore"), "listen/section"},
+        // Issue #830: whether DSD-neo's file browser opens before Android's picker.
+        {"chooseFilesInApp", true, "ui/chooseFilesInApp"},
     };
     QStringList covered;
     int writable = 0;
@@ -1978,6 +1981,7 @@ test_prefs_key_table(void) {
         QStringLiteral("location/lastLat"),
         QStringLiteral("location/lastLon"),
         QStringLiteral("monitor/detailsExpanded"),
+        QStringLiteral("ui/chooseFilesInApp"),
         QStringLiteral("ui/notificationExplained"),
         QStringLiteral("ui/onboardingDone"),
     };

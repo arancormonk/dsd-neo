@@ -104,6 +104,7 @@ qt_add_resources(
         qml/StoreNoticeCard.qml
         qml/CsvImportFlow.qml
         qml/DocumentPicker.qml
+        qml/FileBrowser.qml
         qml/HistoryDetailSheet.qml
         qml/CallRecordingPlayer.qml
         qml/DetectionRecordingsSheet.qml

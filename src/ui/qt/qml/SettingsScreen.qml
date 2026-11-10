@@ -954,7 +954,21 @@ Item {
                         objectName: "settingsImportsRow"
                         title: qsTr("Imported files")
                         subtitle: qsTr("Channel maps, talkgroups, keys, band plans, radio IDs")
+                        showDivider: decoderHost.fileBrowserSupported === true
                         onTapped: screen.openImports()
+                    }
+
+                    // Issue #830: only where the host has DSD-neo's file browser.
+                    ToggleRow {
+                        id: chooseFilesRow
+                        objectName: "settingsChooseFilesInApp"
+                        visible: decoderHost.fileBrowserSupported === true
+                        title: qsTr("Choose files in DSD-neo")
+                        subtitle: qsTr("Restore, CSV imports and replay files open DSD-neo's file browser instead of Android's picker")
+                        checked: prefs.chooseFilesInApp === true
+                        onToggled: function (state) {
+                            prefs.chooseFilesInApp = state;
+                        }
                     }
                 }
             }

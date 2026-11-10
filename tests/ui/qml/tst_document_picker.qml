@@ -37,10 +37,15 @@ Item {
             spyRecords = [];
             testContext.useLifecycleHost(false);
             testContext.setDocumentPickerSupported(true);
+            testContext.setFileBrowserSupported(false);
+            testContext.setPrefs("chooseFilesInApp", false);
             testContext.resetHostPlayback();
+            compare(Ui.FileBrowser.request, null, "no browse request is left from an earlier case");
         }
         function cleanup() {
             testContext.setDocumentPickerSupported(true);
+            testContext.setFileBrowserSupported(false);
+            testContext.setPrefs("chooseFilesInApp", false);
             testContext.useLifecycleHost(false);
             testContext.resetHostPlayback();
         }
@@ -77,6 +82,21 @@ Item {
         }
         function cancelledIds() {
             return callsNamed("cancelDocumentRequest").map(function (call) { return call.id; });
+        }
+        // A picker the file browser can serve (issue #830): it names what it
+        // opens, on a host with the browser, and the toggle says browse first.
+        function makeBrowsingPicker(properties, browseFirst) {
+            testContext.setFileBrowserSupported(true);
+            testContext.setPrefs("chooseFilesInApp", browseFirst !== false);
+            var settings = {browseKind: "csv", title: "Choose a CSV file"};
+            for (var key in (properties || {}))
+                settings[key] = properties[key];
+            return makePicker(settings);
+        }
+        // The live browse request, which must be there.
+        function browseToken() {
+            verify(Ui.FileBrowser.request !== null, "a browse request is live");
+            return Ui.FileBrowser.request.token;
         }
         function dialogOf(picker) {
             var dialog = findChild(picker, "documentPickerDialog");
@@ -304,6 +324,303 @@ Item {
             testContext.answerDocumentUnavailable(next, "noSavePicker");
             compare(spiesOf(picker).unavailable.signalArguments[0][1], picker.messageFor("noSavePicker"));
             compare(callNames(), ["requestSaveDocument", "requestSaveDocument"]);
+        }
+
+        // ---- in-app file browser (issue #830) ----
+
+        function test_browser_first_when_toggled() {
+            var picker = makeBrowsingPicker();
+            picker.open();
+            compare(callNames(), [], "Android's picker is not asked");
+            var request = Ui.FileBrowser.request;
+            verify(request !== null);
+            verify(request.token > 0);
+            compare(request.kind, "csv");
+            compare(request.title, "Choose a CSV file");
+            compare(request.allowOtherApp, true, "another app's picker is offered");
+            verify(picker.visible, "a browse request is waiting");
+            compare(answers(picker), 0);
+        }
+
+        function test_toggle_off_uses_host() {
+            var picker = makeBrowsingPicker({}, false);
+            picker.open();
+            compare(callNames(), ["requestOpenDocument"]);
+            compare(Ui.FileBrowser.request, null);
+            verify(picker.visible);
+        }
+
+        // Each part of the rule alone keeps Android's picker: no browser on the
+        // host, no kind named, a save.
+        function test_browser_needs_every_condition_data() {
+            return [
+                {tag: "unsupported", supported: false, kind: "csv", mode: "open", call: "requestOpenDocument"},
+                {tag: "no-kind", supported: true, kind: "", mode: "open", call: "requestOpenDocument"},
+                {tag: "save", supported: true, kind: "backup", mode: "save", call: "requestSaveDocument"}
+            ];
+        }
+        function test_browser_needs_every_condition(data) {
+            var picker = makeBrowsingPicker({browseKind: data.kind, mode: data.mode, suggestedName: "a.dsdbak", mimeType: "application/octet-stream"});
+            testContext.setFileBrowserSupported(data.supported);
+            picker.open();
+            compare(callNames(), [data.call]);
+            compare(Ui.FileBrowser.request, null);
+        }
+
+        function test_no_picker_opens_browser() {
+            var picker = makeBrowsingPicker({}, false);
+            picker.open();
+            var id = testContext.lastDocumentRequest().id;
+            testContext.answerDocumentUnavailable(id, "noPicker");
+            compare(spiesOf(picker).unavailable.count, 0, "the browser answers instead");
+            var request = Ui.FileBrowser.request;
+            verify(request !== null);
+            compare(request.kind, "csv");
+            compare(request.title, "Choose a CSV file");
+            compare(request.allowOtherApp, false, "there is no other app to offer");
+            verify(picker.visible);
+            compare(answers(picker), 0);
+            Ui.FileBrowser.finish(request.token, "file:///x/a.csv", "a.csv");
+            compare(spiesOf(picker).accepted.count, 1);
+            compare(answers(picker), 1, "one answer for the open");
+        }
+
+        function test_no_picker_without_browse_kind() {
+            var picker = makeBrowsingPicker({browseKind: ""}, false);
+            picker.open();
+            testContext.answerDocumentUnavailable(testContext.lastDocumentRequest().id, "noPicker");
+            compare(Ui.FileBrowser.request, null);
+            compare(spiesOf(picker).unavailable.count, 1);
+            compare(spiesOf(picker).unavailable.signalArguments[0][0], "noPicker");
+            compare(spiesOf(picker).unavailable.signalArguments[0][1], picker.messageFor("noPicker"));
+            verify(!picker.visible);
+        }
+
+        function test_no_picker_in_save_mode() {
+            var picker = makeBrowsingPicker({mode: "save", browseKind: "backup", suggestedName: "a.dsdbak", mimeType: "application/octet-stream"});
+            picker.open();
+            compare(callNames(), ["requestSaveDocument"], "a save never browses");
+            testContext.answerDocumentUnavailable(testContext.lastDocumentRequest().id, "noPicker");
+            compare(Ui.FileBrowser.request, null);
+            compare(spiesOf(picker).unavailable.count, 1);
+            compare(spiesOf(picker).unavailable.signalArguments[0][0], "noPicker");
+            compare(spiesOf(picker).unavailable.signalArguments[0][1], picker.messageFor("noPicker"));
+        }
+
+        // Only noPicker turns to the browser; any other reason is the owner's.
+        function test_other_unavailable_reasons_stay() {
+            var picker = makeBrowsingPicker({}, false);
+            picker.open();
+            testContext.answerDocumentUnavailable(testContext.lastDocumentRequest().id, "failed");
+            compare(Ui.FileBrowser.request, null);
+            compare(spiesOf(picker).unavailable.count, 1);
+            compare(spiesOf(picker).unavailable.signalArguments[0][0], "failed");
+        }
+
+        function test_browser_pick_accepts_once() {
+            var picker = makeBrowsingPicker();
+            picker.open();
+            var token = browseToken();
+            Ui.FileBrowser.finish(token, "file:///x/a%20b.csv", "a b.csv");
+            compare(Ui.FileBrowser.request, null);
+            compare(spiesOf(picker).accepted.count, 1);
+            compare(spiesOf(picker).accepted.signalArguments[0][0], "file:///x/a%20b.csv", "the reference as the browser gave it");
+            compare(spiesOf(picker).accepted.signalArguments[0][1], "a b.csv", "the name as the browser gave it");
+            verify(!picker.visible);
+            verify(!picker.savedToDownloads);
+            Ui.FileBrowser.finish(token, "file:///x/a%20b.csv", "a b.csv");
+            Ui.FileBrowser.reject(token);
+            compare(answers(picker), 1, "an answered request is answered once");
+        }
+
+        function test_close_is_silent() {
+            var picker = makeBrowsingPicker();
+            picker.open();
+            var token = browseToken();
+            picker.close();
+            compare(Ui.FileBrowser.request, null, "the browser closes with the picker's request");
+            verify(!picker.visible);
+            Ui.FileBrowser.finish(token, "file:///x/a.csv", "a.csv");
+            Ui.FileBrowser.reject(token);
+            compare(answers(picker), 0);
+            compare(callNames(), [], "nothing went to Android's picker");
+        }
+
+        function test_cancel_rejects_once() {
+            var picker = makeBrowsingPicker();
+            picker.open();
+            var token = browseToken();
+            picker.cancel();
+            compare(Ui.FileBrowser.request, null);
+            compare(spiesOf(picker).rejected.count, 1);
+            verify(!picker.visible);
+            picker.cancel();
+            Ui.FileBrowser.reject(token);
+            compare(spiesOf(picker).rejected.count, 1, "once");
+            compare(answers(picker), 1);
+        }
+
+        function test_browser_back_rejects() {
+            var picker = makeBrowsingPicker();
+            picker.open();
+            Ui.FileBrowser.reject(browseToken());
+            compare(spiesOf(picker).rejected.count, 1);
+            compare(answers(picker), 1);
+            verify(!picker.visible);
+        }
+
+        function test_destruction_dismisses() {
+            var picker = makeBrowsingPicker();
+            // Not temporary: this case destroys it.
+            var owned = pickerComponent.createObject(root, {browseKind: "replay", title: "Choose a replay file"});
+            var spy = createTemporaryObject(spyComponent, testCase, {target: Ui.FileBrowser, signalName: "rejected"});
+            var picked = createTemporaryObject(spyComponent, testCase, {target: Ui.FileBrowser, signalName: "picked"});
+            owned.open();
+            compare(Ui.FileBrowser.request.kind, "replay");
+            owned.destroy();
+            tryCompare(Ui.FileBrowser, "request", null, 2000, "the request goes with its picker");
+            compare(spy.count, 0, "silently");
+            compare(picked.count, 0);
+            compare(answers(picker), 0, "a bystander hears nothing");
+        }
+
+        function test_same_picker_reopen() {
+            var picker = makeBrowsingPicker();
+            var spy = createTemporaryObject(spyComponent, testCase, {target: Ui.FileBrowser, signalName: "rejected"});
+            picker.open();
+            var first = browseToken();
+            picker.open();
+            var second = browseToken();
+            verify(second !== first, "a new request");
+            compare(spy.count, 0, "reopening is silent");
+            compare(answers(picker), 0);
+            verify(picker.visible);
+            Ui.FileBrowser.finish(first, "file:///x/old.csv", "old.csv");
+            compare(answers(picker), 0, "the first request is gone");
+            Ui.FileBrowser.finish(second, "file:///x/new.csv", "new.csv");
+            compare(spiesOf(picker).accepted.count, 1);
+            compare(spiesOf(picker).accepted.signalArguments[0][1], "new.csv");
+        }
+
+        function test_cross_picker_supersede() {
+            var first = makeBrowsingPicker();
+            var second = makeBrowsingPicker({browseKind: "backup", title: "Choose a backup"});
+            first.open();
+            var firstToken = browseToken();
+            var visibleWhenTold = [];
+            var browserWhenTold = [];
+            var record = function () {
+                visibleWhenTold.push(first.visible);
+                browserWhenTold.push(Ui.FileBrowser.request ? Ui.FileBrowser.request.kind : "");
+            };
+            first.rejected.connect(record);
+            second.open();
+            first.rejected.disconnect(record);
+            compare(spiesOf(first).rejected.count, 1, "the first owner is told once");
+            compare(visibleWhenTold, [false], "and no longer waits when it is told");
+            compare(browserWhenTold, ["backup"], "the new request already shows");
+            compare(answers(second), 0);
+            verify(second.visible);
+            Ui.FileBrowser.finish(firstToken, "file:///x/a.csv", "a.csv");
+            compare(answers(first), 1, "its request is gone");
+            Ui.FileBrowser.finish(browseToken(), "file:///x/a.dsdbak", "a.dsdbak");
+            compare(spiesOf(second).accepted.count, 1);
+            compare(answers(first), 1);
+        }
+
+        // The owner a browse supersedes may open its picker again while it is
+        // told; the request that superseded it is then gone too, and its owner
+        // hears rejected() once, after open() returns, rather than wait forever.
+        function test_supersede_reopened_while_told() {
+            var first = makeBrowsingPicker();
+            var second = makeBrowsingPicker({browseKind: "backup", title: "Choose a backup"});
+            first.open();
+            var reopen = function () { first.open(); };
+            first.rejected.connect(reopen);
+            second.open();
+            first.rejected.disconnect(reopen);
+            compare(spiesOf(first).rejected.count, 1);
+            verify(first.visible, "the first picker browses again");
+            compare(Ui.FileBrowser.request.kind, "csv");
+            compare(spiesOf(second).rejected.count, 0, "not before open() returns");
+            verify(second.visible);
+            tryCompare(spiesOf(second).rejected, "count", 1);
+            verify(!second.visible);
+            compare(answers(second), 1);
+            Ui.FileBrowser.finish(browseToken(), "file:///x/a.csv", "a.csv");
+            compare(spiesOf(first).accepted.count, 1);
+            compare(answers(second), 1);
+
+            // close() before the answer lands ends it silently, as ever.
+            first.open();
+            first.rejected.connect(reopen);
+            second.open();
+            first.rejected.disconnect(reopen);
+            second.close();
+            verify(!second.visible);
+            wait(0);
+            compare(answers(second), 1, "nothing after close()");
+            first.close();
+        }
+
+        function test_other_app_loop() {
+            var picker = makeBrowsingPicker();
+            picker.open();
+            Ui.FileBrowser.otherApp(browseToken());
+            compare(Ui.FileBrowser.request, null);
+            compare(callNames(), ["requestOpenDocument"], "Android's picker, though the toggle says browse first");
+            verify(picker.visible);
+            compare(answers(picker), 0);
+            testContext.answerDocumentPicked(testContext.lastDocumentRequest().id, mixedCaseReference, "a b.csv", false);
+            compare(spiesOf(picker).accepted.count, 1);
+            compare(spiesOf(picker).accepted.signalArguments[0][0], mixedCaseReference);
+            compare(answers(picker), 1);
+
+            // Another app was asked for, and there is none: back to the
+            // browser, without the way out that just failed.
+            picker.open();
+            Ui.FileBrowser.otherApp(browseToken());
+            testContext.answerDocumentUnavailable(testContext.lastDocumentRequest().id, "noPicker");
+            compare(spiesOf(picker).unavailable.count, 0);
+            var request = Ui.FileBrowser.request;
+            verify(request !== null);
+            compare(request.allowOtherApp, false);
+            compare(request.kind, "csv");
+            Ui.FileBrowser.reject(request.token);
+            compare(spiesOf(picker).rejected.count, 1);
+            compare(answers(picker), 2, "one answer per open");
+        }
+
+        function test_host_request_unaffected_by_browser() {
+            var host = makeBrowsingPicker({browseKind: ""});
+            var browsing = makeBrowsingPicker();
+            host.open();
+            var id = testContext.lastDocumentRequest().id;
+            browsing.open();
+            verify(host.visible, "the host request still waits");
+            verify(browsing.visible);
+            compare(cancelledIds(), [], "nothing cancelled it");
+            Ui.FileBrowser.reject(browseToken());
+            compare(answers(host), 0);
+            verify(host.visible);
+            testContext.answerDocumentPicked(id, mixedCaseReference, "a b.csv", false);
+            compare(spiesOf(host).accepted.count, 1);
+            compare(answers(browsing), 1);
+        }
+
+        // A browsing picker that turns to Android's picker drops its browse
+        // request first: one request per picker.
+        function test_reopen_on_host_dismisses_browse() {
+            var picker = makeBrowsingPicker();
+            picker.open();
+            var token = browseToken();
+            testContext.setPrefs("chooseFilesInApp", false);
+            picker.open();
+            compare(Ui.FileBrowser.request, null);
+            compare(callNames(), ["requestOpenDocument"]);
+            Ui.FileBrowser.finish(token, "file:///x/a.csv", "a.csv");
+            compare(answers(picker), 0);
+            verify(picker.visible);
         }
 
         // ---- desktop path ----
