@@ -44,9 +44,11 @@ Optional compiled dependencies are:
   it (Windows gets it from the librtlsdr overlay's vcpkg dependency); configure
   reports `libusb for RTL-SDR stall recovery: ON` or `OFF`. Android builds never
   use it.
+- libairspy for native Airspy R2 and Mini input (`DSD_ENABLE_AIRSPY`, found
+  through pkg-config; see `docs/airspy.md`)
 - SoapySDR 0.8.1 or newer for non-RTL SDR devices; the CMake package must
   export an imported target (`SoapySDR` or `SoapySDR::SoapySDR`)
-- Codec2 for additional vocoder paths. On Windows and Android it comes from the
+- Codec2 for M17 voice. On Windows and Android it comes from the
   vcpkg manifest, and those presets set `DSD_REQUIRE_CODEC2=ON` (with
   `DSD_REQUIRE_CURL=ON`) so a missing dependency fails configure instead of
   silently dropping M17 voice or rdio uploads.

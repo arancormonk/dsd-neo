@@ -47,6 +47,63 @@ Run the smallest useful set before opening a PR, then broaden it when the change
 - Dependency input changes: `tools/osv_scan.sh`.
 - Repository security guardrails: `tools/check_secret_redaction.sh`, `tools/check_workflow_git_pins.sh`, and `tools/check_workflow_download_pins.sh`.
 
+## Tool Reference
+
+- Format: `tools/format.sh` (requires `clang-format`; see `.clang-format`).
+- Static analysis:
+  - `tools/clang_tidy.sh` (promotes broad bugprone/performance/portability findings; targeted TUs supported).
+  - `tools/cppcheck.sh` (use `--strict` for broader checks).
+  - `tools/iwyu.sh` (include hygiene via include-what-you-use; excludes `src/third_party`).
+  - `tools/gcc_fanalyzer.sh` (GCC `-fanalyzer` path-sensitive diagnostics; C translation units only, excludes
+    `src/third_party`).
+  - `tools/scan_build.sh` (Clang Static Analyzer via `scan-build`, heavier full-build pass; excludes `src/third_party`;
+    supports repeatable `--cmake-arg` passthrough).
+  - `tools/semgrep.sh` (additional SAST and project guardrail rules; use `--strict` to fail on findings; excludes
+    `src/third_party`).
+  - `tools/shell_lint.sh` (ShellCheck plus `shfmt -d` for shell scripts and hooks).
+  - `tools/workflow_lint.sh` (actionlint for GitHub Actions workflows).
+  - `tools/zizmor.sh` (GitHub Actions security analysis with SARIF support).
+  - `tools/osv_scan.sh` (OSV dependency and vendored C/C++ vulnerability scanning).
+  - `tools/cmake_format_check.sh` (CMake formatting with gersemi; use `--fix` to rewrite).
+  - `tools/gitleaks.sh` (secret scanning with SARIF output for GitHub code scanning).
+  - `tools/lizard.sh` (function complexity and length; `--strict` fails at CCN 15 or 100 lines).
+- Security guardrails:
+  - `tools/check_arch_rules.sh` (module include boundaries and forbidden constructs from `cmake/arch_rules.cmake`; see
+    `docs/code_map.md`).
+  - `tools/check_secret_redaction.sh` (blocks formatted key/keystream output outside the redaction formatter helpers).
+  - `tools/check_workflow_git_pins.sh` (blocks floating public GitHub source checkouts in workflows and CI helper
+    scripts).
+  - `tools/check_workflow_download_pins.sh` (blocks mutable release helper downloads and digestless AppImage container
+    refs).
+  - `tools/check_release_hardening.sh` (verifies Linux ELF PIE/RELRO/BIND_NOW, macOS Mach-O PIE/@rpath, and hardening
+    compile flags).
+  - `tools/check_release_hardening.ps1` (verifies Windows PE ASLR, NX, and high-entropy VA hardening).
+  - `tools/check_vcpkg_overlay_pins.sh` (vcpkg overlay source pins match `tools/ci-dependency-pins.env` and the USB
+    library overlays carry the current patch series; `--fix` rewrites them).
+  - `tools/check_install_runtime_destinations.sh` (install rules with library destinations also name a RUNTIME
+    destination, for Windows DLLs).
+- Packaging checks: `tools/check_patched_usb_libs.sh` (libairspy and librtlsdr binaries carry DSD-neo's patches),
+  `tools/check_macos_portable_deps.sh` (the macOS portable bundle's library dependencies) and
+  `tools/check_android_elf_alignment.sh` (Android ELF payloads are arm64 with 16 KB page alignment).
+- Licensing: `python3 tools/legal_inventory.py` (run by `tools/quality_preflight.sh`; see `legal/status.md`).
+- Fuzzing: `tools/fuzz_smoke.sh` configures/builds the `fuzz-asan-debug` preset and runs bounded libFuzzer smoke passes.
+- Git hooks: `tools/install-git-hooks.sh` enables auto-format on commit and a CI-aligned pre-push analysis pass
+  (architecture rules, security guardrails including workflow source/download pins and vcpkg overlay pins,
+  install-destination checks,
+  clang-format, CMake format, clang-tidy, cppcheck, IWYU, GCC fanalyzer, Lizard, Semgrep, zizmor, OSV scan, and
+  shell/workflow lint) on changed paths. The checks run in concurrent lanes sized to the machine's core count and every
+  failure is reported at the end; `DSD_HOOK_JOBS=N` sets the worker budget shared out across the whole run (each check
+  that runs keeps at least one worker, so a budget below the number of concurrent checks does not shrink it further)
+  and `DSD_HOOK_SERIAL=1` runs the checks one at a time with streaming output, stopping at the first failure.
+- Optional full scan-build pre-push/preflight pass: set `DSD_HOOK_RUN_SCAN_BUILD=1`. It rebuilds from scratch, since the
+  analyzer only sees translation units the build recompiles; `DSD_HOOK_SCAN_BUILD_REUSE=1` takes the faster
+  incremental answer, which covers only what changed since the last run.
+- Manual preflight runner: `tools/preflight_ci.sh` runs the same CI-aligned checks as `pre-push` without pushing.
+- Full quality preflight: `tools/quality_preflight.sh` enables missing-tool failures, includes scan-build, and runs the
+  full local guardrail set, overlapping gitleaks with the pre-push checks and the whole-tree lint with the fuzz build;
+  every failure is reported at the end.
+- Supply-chain update policy: `docs/supply-chain-guardrails.md`.
+
 ## Project-Specific Guardrails
 
 A gate that passes must have earned it. `tools/lib/check_runner.sh` runs the checks in concurrent lanes and captures each
