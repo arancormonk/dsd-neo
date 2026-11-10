@@ -15649,6 +15649,11 @@ while hidden, from a node Android still holds or a key while they keep the focus
 `activeFocus` in the binding nothing re-ran it once the sheet took the focus, so the covered control stayed a Tab stop
 under the sheet (issue #646 put the hold on every control that lacked it). Tests: `tst_keypad_enter.qml`
 (`failOnWarning(/activeFocusOnTab/)`, `test_a_covered_control_is_no_tab_stop_once_focus_leaves`).
+An imported file's card on Imported files (`ImportsScreen.qml`, issue #830) is such a control: an `Accessible.Button`
+named by the file and described by its summary line (both drawn as plain `Text`, so nothing is read twice; the kind
+badge reads where it sits), whose tap, accessibility press, Return, keypad Enter and Space open its actions through
+one guarded `activate()`. Its focus ring sits on the card's own edge, because the list clips. Test:
+`tst_imports_screen_layout.qml` `test_row_press_action`.
 
 A choice of one among several that says which one is current (a `SegmentedControl` segment, a `BottomNav` tab) is
 `Accessible.RadioButton` with `checkable: true` and `checked` while it is the current one (issue #646). Qt 6.11.3's

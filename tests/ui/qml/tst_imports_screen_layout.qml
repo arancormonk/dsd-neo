@@ -3,6 +3,7 @@
 
 import QtQuick
 import QtTest
+import "../../../src/ui/qt/qml" as Ui
 
 // A ListView positions its own delegates: for a vertical list it writes the
 // item's x on every layout pass, which silently overwrites an `x` the delegate
@@ -325,6 +326,50 @@ Item {
             } finally {
                 screenLoader.visible = true;
             }
+        }
+
+        // #830: an imported file's row is a button a screen reader can press,
+        // and so is Return: each opens the row's actions, and neither does
+        // while a sheet covers the screen.
+        function test_row_press_action() {
+            var actions = findChild(tc.screen, "importsActionSheet");
+            verify(actions !== null, "the action sheet is missing");
+            var card = tc.list.itemAtIndex(1);
+            verify(card !== null, "the second row has no delegate");
+            compare(card.Accessible.role, Accessible.Button);
+            // Named by its file, described by its summary line.
+            compare(card.Accessible.name, importedFiles.get(1).name);
+            compare(card.Accessible.description, "1 talkgroup · " + Qt.formatDate(new Date(Number(importedFiles.get(1).importedAt) * 1000), "MMM d"));
+
+            card.Accessible.pressAction();
+            verify(actions.visible, "the press opened no actions");
+            compare(tc.screen.actionRow, 1);
+            actions.visible = false;
+            tc.screen.actionRow = -1;
+
+            card.forceActiveFocus();
+            keyClick(Qt.Key_Return);
+            verify(actions.visible, "Return opened no actions");
+            compare(tc.screen.actionRow, 1);
+            actions.visible = false;
+            tc.screen.actionRow = -1;
+
+            // Under a sheet the row is covered: neither way reaches it.
+            card.forceActiveFocus();
+            tc.importButton.clicked();
+            var kinds = findChild(tc.screen, "importKindPicker");
+            tryVerify(function () { return kinds.visible; });
+            verify(!Ui.Navigation.allows(card), "the row is still allowed under the sheet");
+            card.Accessible.pressAction();
+            // A key still reaching the row, as from focus it kept.
+            card.forceActiveFocus();
+            keyClick(Qt.Key_Return);
+            verify(!actions.visible, "a covered row opened its actions");
+            compare(tc.screen.actionRow, -1);
+            var sheet = kinds;
+            while (sheet && typeof sheet.requestDismiss !== "function")
+                sheet = sheet.parent;
+            sheet.visible = false;
         }
 
         function test_the_cards_sit_centred_between_the_screen_edges() {

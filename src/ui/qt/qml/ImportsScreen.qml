@@ -308,6 +308,39 @@ Item {
             width: ListView.view.width
             height: rowColumn.height + 2 * Theme.cardPadding
 
+            // #830: the card is the button that opens its file's actions, for a
+            // screen reader's double tap and for Return, keypad Enter and Space
+            // as for a tap, each through activate(). Its name and description
+            // carry the file's name and summary, which read nothing on their
+            // own, so nothing is said twice.
+            // The gate read first: see OutlineButton.
+            readonly property bool inTree: Navigation.allows(fileRow) && visible
+            // Held while focused: see OutlineButton.
+            activeFocusOnTab: inTree || activeFocus
+            Accessible.role: Accessible.Button
+            // No name while out of the tree, as ReadableText: a refresh that
+            // lands while the screen is covered renames nothing.
+            Accessible.name: inTree ? fileRow.name : ""
+            Accessible.description: inTree ? summaryLine.text : ""
+            Accessible.focusable: inTree
+            Accessible.ignored: !inTree
+            Accessible.onPressAction: activate()
+            function activate() {
+                if (!visible || !Navigation.allows(fileRow))
+                    return;
+                screen.actionRow = fileRow.index;
+                actionSheet.visible = true;
+            }
+            Keys.onReturnPressed: activate()
+            Keys.onEnterPressed: activate()
+            Keys.onSpacePressed: activate()
+            // On the card's own edge: the list clips, and a ring drawn outside
+            // the card lost its top and sides there.
+            FocusFrame {
+                anchors.margins: 0
+                radius: Theme.radiusPanel
+            }
+
             Column {
                 id: rowColumn
 
@@ -321,13 +354,15 @@ Item {
                     width: parent.width
                     height: Math.max(fileName.implicitHeight, badge.implicitHeight)
 
-                    ReadableText {
+                    Text {
                         id: fileName
                         anchors.left: parent.left
                         anchors.right: badge.left
                         anchors.rightMargin: 10
                         anchors.verticalCenter: parent.verticalCenter
                         text: fileRow.name
+                        // An imported file's own name: drawn as written.
+                        textFormat: Text.PlainText
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(15)
                         font.weight: Font.DemiBold
@@ -343,7 +378,8 @@ Item {
                     }
                 }
 
-                ReadableText {
+                Text {
+                    id: summaryLine
                     width: parent.width
                     text: screen.summaryFor(fileRow.type, fileRow.accepted, fileRow.skipped, Number(fileRow.importedAt))
                     font.family: Theme.sans
@@ -354,10 +390,7 @@ Item {
             }
 
             TapHandler {
-                onTapped: {
-                    screen.actionRow = fileRow.index;
-                    actionSheet.visible = true;
-                }
+                onTapped: fileRow.activate()
             }
         }
 
