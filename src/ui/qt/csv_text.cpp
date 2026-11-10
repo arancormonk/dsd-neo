@@ -6,6 +6,7 @@
 #include "csv_text.h"
 
 #include <QChar>
+#include <QtGlobal>
 
 namespace dsd_qt {
 namespace csv_text {

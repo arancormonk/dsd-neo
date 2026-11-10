@@ -12,7 +12,6 @@
 
 #include <QByteArray>
 #include <QChar>
-#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileDevice> // IWYU pragma: keep

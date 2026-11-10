@@ -5,14 +5,17 @@
 
 #include "signal_search_export.h"
 
+#include <QByteArray>
 #include <QDateTime>
 #include <QLatin1String>
+#include <QList>
 #include <QStringList>
 #include <QTimeZone>
-#include <QVector>
+#include <Qt>
 #include <QtGlobal>
 #include <cmath>
 #include <dsd-neo/app_control/signal_search.h>
+#include <dsd-neo/runtime/signal_search.h>
 #include <unordered_set>
 #include "csv_text.h"
 
@@ -66,11 +69,18 @@ detectionTextColumns() {
     return text;
 }
 
+/* The text in the first `capacity` bytes of `value`, up to its first NUL. It is not a template, so
+ * include-what-you-use credits qstrnlen to <QByteArray> instead of asking for Qt's private header. */
+QString
+boundedText(const char* value, size_t capacity) {
+    return QString::fromUtf8(value, (qsizetype)qstrnlen(value, capacity));
+}
+
 /* A fixed-size text field of the record, up to its first NUL and never past its end. */
 template <size_t N>
 QString
 text(const char (&value)[N]) {
-    return QString::fromUtf8(value, (qsizetype)qstrnlen(value, N));
+    return boundedText(value, N);
 }
 
 /* A stamp in milliseconds since the Unix epoch as ISO 8601 UTC with milliseconds; empty for 0 (none recorded). */

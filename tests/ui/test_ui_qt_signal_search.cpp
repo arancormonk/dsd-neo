@@ -24,7 +24,6 @@
 #include <QLocale>
 #include <QLockFile>
 #include <QMap>
-#include <QMetaObject>
 #include <QMetaType>
 #include <QObject>
 #include <QPair>
@@ -38,7 +37,6 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
-#include <QVector>
 #include <QtGlobal>
 #include <atomic>
 #include <cassert>

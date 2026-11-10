@@ -7,9 +7,9 @@
 #define DSD_NEO_QT_CSV_TEXT_H
 
 #include <QByteArray>
+#include <QList>
 #include <QString>
 #include <QStringList>
-#include <QVector>
 
 namespace dsd_qt {
 namespace csv_text {
