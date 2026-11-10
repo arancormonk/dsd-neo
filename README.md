@@ -44,8 +44,8 @@ Getting started with a download:
   `./dsd-neo-linux-*.AppImage -h`. It needs glibc 2.31 or newer (Ubuntu 20.04 or later). An RTL-SDR dongle needs the
   usual USB permissions (udev rules).
 - **macOS DMG:** copy the `dsd-neo-macos` folder out of the DMG, then run `./dsd-neo.sh -h` in Terminal from inside it.
-  If macOS refuses to run it, run `xattr -dr com.apple.quarantine dsd-neo-macos` once, or allow it under System
-  Settings → Privacy & Security. The build plays audio through PulseAudio:
+  If macOS refuses to run it, run `xattr -dr com.apple.quarantine .` once from inside that folder, or allow it under
+  System Settings → Privacy & Security. The build plays audio through PulseAudio:
   `brew install pulseaudio && brew services start pulseaudio`.
 - **Windows ZIP:** unzip it and run `bin\dsd-neo.exe -h` from a terminal in the unzipped folder. An RTL-SDR dongle
   needs the WinUSB driver, which you install once with [Zadig](https://zadig.akeo.ie/). An Airspy normally needs
@@ -153,8 +153,10 @@ By default (`-fa`, Auto) DSD-neo finds most digital modes by itself. TETRA (`-fT
 examples.
 
 To keep your settings between runs, use a config file: with `--config` (or `DSD_NEO_CONFIG` set), DSD-neo loads it at
-start and saves your settings to it when you quit. The file is `~/.config/dsd-neo/config.ini` on Linux and macOS and
-`%APPDATA%\dsd-neo\config.ini` on Windows. See [docs/config-system.md](docs/config-system.md).
+start and saves your settings to it when you quit. Unless you give a path (`--config PATH` or `DSD_NEO_CONFIG=PATH`),
+the file is `$XDG_CONFIG_HOME/dsd-neo/config.ini` on Linux and macOS (`~/.config/dsd-neo/config.ini` when
+`XDG_CONFIG_HOME` is not set) and `%APPDATA%\dsd-neo\config.ini` on Windows. See
+[docs/config-system.md](docs/config-system.md).
 
 ## Documentation
 
@@ -202,8 +204,8 @@ On Linux, the helper script installs everything needed, builds DSD-neo and insta
 tools/install_linux.sh --yes
 ```
 
-Elsewhere, or to build by hand, install [mbelib-neo](https://github.com/arancormonk/mbelib-neo) 2.6 or newer first
-(it provides the voice codecs; the Windows and Android builds get it through vcpkg), then:
+To build by hand on Linux or macOS, install [mbelib-neo](https://github.com/arancormonk/mbelib-neo) 2.6 or newer
+first (it provides the voice codecs), then:
 
 ```sh
 cmake --preset dev-release                 # add -DCMAKE_PREFIX_PATH="$HOME/.local" if mbelib-neo is there
@@ -220,8 +222,9 @@ cmake --build --preset dev-debug -j
 ctest --preset dev-debug --output-on-failure
 ```
 
-[docs/build-installation.md](docs/build-installation.md) lists the libraries to install on each system, the build
-options, uninstalling, offline packaging builds, and the Windows and Android builds.
+Windows builds use the `win-msvc-*` presets with vcpkg, which also supplies mbelib-neo, and Android has its own
+presets. [docs/build-installation.md](docs/build-installation.md) covers both, along with the libraries to install on
+each system, the build options, uninstalling and offline packaging builds.
 
 ## Getting Help and Contributing
 

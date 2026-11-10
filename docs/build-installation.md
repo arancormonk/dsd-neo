@@ -59,8 +59,11 @@ Then point DSD-neo's configure step at that prefix with `-DCMAKE_PREFIX_PATH="$H
 
 ## Build Recipes
 
-Run these from the repository root. Presets build out of source under `build/<preset>/`, and the program lands in
-`build/<preset>/apps/dsd-cli/dsd-neo`. You can run it from there without installing.
+These recipes are for Linux and macOS. Run them from the repository root. Presets build out of source under
+`build/<preset>/`, and the program lands in `build/<preset>/apps/dsd-cli/dsd-neo`. You can run it from there without
+installing. On Windows, set `VCPKG_ROOT` and use the `win-msvc-*` presets instead (for example
+`cmake --preset win-msvc-release`); vcpkg supplies the libraries and mbelib-neo. Android: see
+[Android Cross Builds](#android-cross-builds).
 
 Release build (recommended):
 
@@ -180,10 +183,11 @@ Optional libraries (detected automatically):
 
 ## Radio Backend Combinations
 
-CI treats backend availability as a build contract, not a best-effort option. Release and packaging jobs configure
-with `-DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_REQUIRE_AIRSPY=ON`, and the static-analysis jobs
-(CodeQL, scan-build, warnings-as-errors) require RTL-SDR and SoapySDR, so a missing backend fails configure. The Linux
-backend matrix (`docs/testing.md`, "Continuous Integration") builds every combination. To reproduce one locally:
+CI treats backend availability as a build contract, not a best-effort option. The desktop release and packaging jobs
+configure with `-DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_REQUIRE_AIRSPY=ON`, and the static-analysis
+jobs (CodeQL, scan-build, warnings-as-errors) require RTL-SDR and SoapySDR, so a missing backend fails configure. The
+Android presets turn SoapySDR off. The Linux backend matrix (`docs/testing.md`, "Continuous Integration") builds five
+variants: every backend, each backend alone, and none. To reproduce one locally:
 
 These commands share `build/dev-debug`, and a `DSD_REQUIRE_*` value from an earlier run stays in the cache. Pass
 `-DDSD_REQUIRE_<BACKEND>=OFF` for each backend you turn off, or add `--fresh`.
