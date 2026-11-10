@@ -43,6 +43,7 @@ target_sources(
         decryption_profiles_model.cpp
         diagnostics_log.cpp
         document_import_transport.cpp
+        document_save_transport.cpp
         imported_files_model.cpp
         import_names.cpp
         import_service.cpp
@@ -66,6 +67,9 @@ target_sources(
         scan_list_starter.cpp
         scan_list_toggle_model.cpp
         spectrum_model.cpp
+        csv_text.cpp
+        document_export_writer.cpp
+        signal_search_export.cpp
         signal_search_model.cpp
         known_frequency_index.cpp
         listen_pins.cpp # Issue #801

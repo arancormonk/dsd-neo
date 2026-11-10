@@ -277,6 +277,17 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     std::shared_ptr<dsd_qt::DocumentImportTransport> importTransport() const override;
 
     /**
+     * @brief The export saves' transport (#826; decoder_host_android_documents.cpp), on the export writer's thread.
+     *
+     * A content:// reference saves as copyFileToDocument() does, in the same order: aborted or without a held
+     * ContentResolver the Download-folder row (#829) is discarded and the save fails; otherwise DocumentCopies'
+     * copyFileToDocument() runs over JNI, and a failure discards the row. Any other reference takes the base
+     * transport's local copy. discardPendingDownload() is DownloadsSave's discard. Its abort() also raises the
+     * platform's process-wide abort (DocumentCopies.abort()), so it is for teardown only.
+     */
+    std::shared_ptr<dsd_qt::DocumentSaveTransport> saveTransport() const override;
+
+    /**
      * @brief Shared storage's "Call recordings" folder, then internal storage's (#708 D1; RecordingShare.roots()).
      *
      * Shared storage's root is named even while it is away, at the path Android gives the app there. The base host's
@@ -469,6 +480,16 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     static int platformCopyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes);
     /** @brief DocumentCopies.copyFileToDocument() over JNI; false when the call failed. */
     static bool platformCopyFileToDocument(const QString& sourcePath, const QString& reference);
+    /**
+     * @brief A save to the content URI @p reference, for copyFileToDocument() and the save transport: refused when
+     * @p aborted or without a held ContentResolver, and its Download-folder row discarded whenever the platform did not
+     * write it.
+     */
+    static bool saveContentDocument(const QString& sourcePath, const QString& reference, bool aborted);
+    /** @brief DocumentCopies.abort() over JNI: cancel every provider call in flight and refuse new ones, process-wide. */
+    static void platformAbortDocumentCopies();
+    /* The export saves' transport (#826), a nested class so it can reach the JNI calls without holding the host. */
+    class SaveTransport;
     /*
      * DocumentCopies' import copies over JNI (#832), from the import worker. The transport that calls them is a nested
      * class so it can, without holding the host.

@@ -9,7 +9,9 @@
 #include <QByteArray>
 #include <QChar>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
@@ -19,20 +21,28 @@
 #include <QJsonValue>
 #include <QLatin1String>
 #include <QList>
+#include <QLocale>
+#include <QLockFile>
 #include <QMap>
 #include <QMetaType>
 #include <QObject>
+#include <QPair>
+#include <QProcess>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
+#include <QUrl>
+#include <QUuid>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
 #include <cassert>
+#include <clocale>
 #include <cmath>
+#include <condition_variable>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/core/opts.h>
@@ -45,19 +55,29 @@
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/signal_search_avoids.h>
+#include <functional>
+#include <limits>
 #include <memory>
+#include <mutex>
+#include <qflags.h>
+#include <qsystemdetection.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <thread>
 #include <utility>
 #include <vector>
 #include "../test_support/qt_test_paths.h"
+#include "csv_text.h"
 #include "decoder_host.h"
+#include "document_export_writer.h"
+#include "document_save_transport.h"
 #include "json_store.h"
 #include "known_frequency_index.h"
 #include "saved_systems_model.h"
 #include "scan_lists_model.h"
 #include "session_args.h"
+#include "signal_search_export.h"
 #include "signal_search_model.h"
 #include "store_notices.h"
 #include "teardown_trace_capture.h"
@@ -136,7 +156,8 @@ spin(int ms) {
     loop.exec();
 }
 
-/* #782: the Android app's teardown times this destructor, which flushes the search store. */
+/* #782: the Android app's teardown times this destructor, which flushes the search store. Its export writer (#826)
+   goes inside that stage, timed on its own too, so a save it waits for counts as the model's. */
 void
 testDestructorMarksItsTeardownStage(dsd_qt::KnownFrequencyIndex* index) {
     SessionHost android(true);
@@ -148,7 +169,9 @@ testDestructorMarksItsTeardownStage(dsd_qt::KnownFrequencyIndex* index) {
         { dsd_qt::SignalSearchModel search(&android, index); }
         assert(TeardownCapture::lines()
                == QStringList({QStringLiteral("teardown: ~SignalSearchModel started"),
-                               QStringLiteral("teardown: ~SignalSearchModel took 7 ms")}));
+                               QStringLiteral("teardown: ~DocumentExportWriter started"),
+                               QStringLiteral("teardown: ~DocumentExportWriter took 7 ms"),
+                               QStringLiteral("teardown: ~SignalSearchModel took 21 ms")}));
     }
 }
 
@@ -1237,13 +1260,1123 @@ testKnownFrequencyIdentity(const QString& dir) {
     assert(index.tunedMatches(482005000, 6000).isEmpty());
 }
 
+static void
+test_csv_text() {
+    using dsd_qt::csv_text::bom;
+    using dsd_qt::csv_text::field;
+    using dsd_qt::csv_text::record;
+    const auto S = [](const char* s) { return QString::fromUtf8(s); };
+    assert(bom() == QByteArray("\xEF\xBB\xBF", 3));
+    assert(field(S("plain"), true) == S("plain"));
+    assert(field(QString(), true).isEmpty());
+    assert(field(S("a,b"), true) == S("\"a,b\""));
+    assert(field(S("a\"b"), true) == S("\"a\"\"b\""));
+    assert(field(S("a\rb"), false) == S("\"a\rb\""));
+    assert(field(S("a\nb"), false) == S("\"a\nb\""));
+    assert(field(S("a\r\nb"), true) == S("\"a\r\nb\""));
+    assert(field(S(" a b "), true) == S(" a b "));
+    assert(field(S("=1+2"), true) == S("'=1+2"));
+    assert(field(S("=1,2"), true) == S("\"'=1,2\""));
+    assert(field(S("\n x"), true) == S("\"'\n x\""));
+    const QChar triggers[] = {QLatin1Char('='), QLatin1Char('+'), QLatin1Char('-'), QLatin1Char('@'), QLatin1Char('\t'),
+                              QChar(0xFF1D),    QChar(0xFF0B),    QChar(0xFF0D),    QChar(0xFF20)};
+    for (const QChar c : triggers) {
+        const QString v = QString(c) + QStringLiteral("x");
+        assert(field(v, true) == QLatin1Char('\'') + v);
+        assert(field(v, false) == v);
+    }
+    assert(field(QString(QLatin1Char('\r')) + QStringLiteral("x"), true) == S("\"'\rx\""));
+    assert(field(S("-47.2"), false) == S("-47.2"));
+    assert(field(S("a=b+c-d@e"), true) == S("a=b+c-d@e"));
+    const QString dot = QString(QChar(0x00B7)) + QStringLiteral("\u00e9\u4e2d");
+    assert(field(dot, true).toUtf8() == dot.toUtf8());
+    assert(record({dot}, {true}) == dot.toUtf8() + "\r\n");
+    assert(record({S("a"), S("b,c"), S("=x")}, {true, true, true}) == QByteArray("a,\"b,c\",'=x\r\n"));
+    assert(record({S("a"), S("-1")}, {true, false}) == QByteArray("a,-1\r\n"));
+    assert(record({S("a")}, {true, false}).isEmpty());
+    assert(record({}, {}) == QByteArray("\r\n"));
+}
+
+/* The bytes at @p path; empty when it cannot be read. */
+static QByteArray
+read_bytes(const QString& path) {
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+}
+
+static void
+write_bytes(const QString& path, const QByteArray& bytes) {
+    QFile file(path);
+    assert(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    assert(file.write(bytes) == bytes.size());
+}
+
+/* Whether @p path is readable and writable by its owner and by nobody else (always true off POSIX). */
+static bool
+owner_only(const QString& path) {
+#ifdef Q_OS_UNIX
+    const QFileDevice::Permissions others = QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ExeGroup
+                                            | QFileDevice::ReadOther | QFileDevice::WriteOther | QFileDevice::ExeOther;
+    const QFileDevice::Permissions perms = QFile::permissions(path);
+    return (perms & others) == 0 && perms.testFlag(QFileDevice::ReadOwner) && perms.testFlag(QFileDevice::WriteOwner);
+#else
+    (void)path;
+    return true;
+#endif
+}
+
+/* #826: the base save transport writes a local document, owner-only, and an abort stops it for good. */
+static void
+test_save_transport_local(const QString& root) {
+    QDir(root).mkpath(QStringLiteral("save transport/My exports"));
+    const QString dir = root + QStringLiteral("/save transport/My exports");
+    const QString source = dir + QStringLiteral("/source.csv");
+    const QByteArray bytes = QByteArray("\xEF\xBB\xBF", 3) + QByteArray("frequency_hz\r\n482005000\r\n");
+    write_bytes(source, bytes);
+
+    dsd_qt::DocumentSaveTransport transport;
+    assert(!transport.aborted());
+    const QString plain = dir + QStringLiteral("/plain.csv");
+    assert(transport.save(source, plain));
+    assert(read_bytes(plain) == bytes && owner_only(plain));
+
+    // A file URL, as the desktop picker hands it, decoded or percent-encoded, to a name with spaces and non-ASCII.
+    const QString named = dir + QString::fromUtf8("/S\xC3\xB8k \xC2\xB7.csv");
+    assert(transport.save(source, QUrl::fromLocalFile(named).toString()));
+    assert(read_bytes(named) == bytes && owner_only(named));
+    QFile::remove(named);
+    assert(transport.save(source, QString::fromUtf8(QUrl::fromLocalFile(named).toEncoded())));
+    assert(read_bytes(named) == bytes);
+
+    // Only local documents: a content URI or a relative path is refused, and a missing source writes nothing.
+    assert(!transport.save(source, QStringLiteral("content://com.example.documents/document/1")));
+    assert(!transport.save(source, QStringLiteral("relative.csv")));
+    const QString fromMissing = dir + QStringLiteral("/from-missing.csv");
+    assert(!transport.save(dir + QStringLiteral("/missing.csv"), fromMissing));
+    assert(!QFileInfo::exists(fromMissing));
+    transport.discardPendingDownload(plain); // the base transport holds no Download-folder rows
+    assert(read_bytes(plain) == bytes);
+
+    transport.abort();
+    assert(transport.aborted());
+    const QString late = dir + QStringLiteral("/late.csv");
+    assert(!transport.save(source, late));
+    assert(!QFileInfo::exists(late));
+    assert(!transport.save(source, plain));
+    assert(read_bytes(plain) == bytes);
+}
+
+namespace {
+
+/* The base save transport, holding its copy after the first chunk until abort() was called. */
+class HoldingSaveTransport final : public dsd_qt::DocumentSaveTransport {
+  public:
+    /* Waits until a chunk was copied or the save ended; whether a chunk was. */
+    bool
+    waitForChunk() {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_cv.wait(lock, [this]() { return m_chunk || m_ended; });
+        return m_chunk;
+    }
+
+    /* The saving thread's note that save() returned. */
+    void
+    markEnded() {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_ended = true;
+        m_cv.notify_all();
+    }
+
+  protected:
+    bool
+    proceedCopy(qint64 copied) override {
+        if (copied > 0) {
+            std::unique_lock<std::mutex> lock(m_mutex);
+            m_chunk = true;
+            m_cv.notify_all();
+            m_cv.wait(lock, [this]() { return aborted(); });
+        }
+        return dsd_qt::DocumentSaveTransport::proceedCopy(copied);
+    }
+
+    /* abort() marks the transport aborted first, so a copy waiting above sees it once woken here. */
+    void
+    abortPlatform() override {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_cv.notify_all();
+    }
+
+  private:
+    std::mutex m_mutex;
+    std::condition_variable m_cv;
+    bool m_chunk = false;
+    bool m_ended = false;
+};
+
+} // namespace
+
+/*
+ * An abort from another thread while a save is partway through its copy: the transport holds the copy after its first
+ * chunk until abort() lands, so the abort always meets the check between chunks. The save fails and the document keeps
+ * what it held.
+ */
+static void
+test_save_transport_abort_mid_save(const QString& root) {
+    QDir(root).mkpath(QStringLiteral("save abort"));
+    const QString dir = root + QStringLiteral("/save abort");
+    const QString source = dir + QStringLiteral("/large.csv");
+    write_bytes(source, QByteArray(4 << 20, 'x'));
+    const QString dest = dir + QStringLiteral("/dest.csv");
+    const QByteArray before("kept\r\n");
+    write_bytes(dest, before);
+    HoldingSaveTransport transport;
+    bool saved = true;
+    std::thread worker([&transport, &saved, &source, &dest]() {
+        saved = transport.save(source, dest);
+        transport.markEnded();
+    });
+    const bool held = transport.waitForChunk();
+    transport.abort();
+    worker.join();
+    assert(held);
+    assert(!saved);
+    assert(read_bytes(dest) == before);
+    assert(QDir(dir).entryList(QDir::Files | QDir::Hidden | QDir::System)
+           == QStringList({QStringLiteral("dest.csv"), QStringLiteral("large.csv")}));
+}
+
+/* The host's hand-out: every transport aborted by abortDocumentTransfers(), one handed out after it starts aborted, and
+   a transport kept past its host still saves. */
+static void
+test_save_transport_host(const QString& root) {
+    QDir(root).mkpath(QStringLiteral("save host"));
+    const QString dir = root + QStringLiteral("/save host");
+    const QString source = dir + QStringLiteral("/source.csv");
+    write_bytes(source, "a,b\r\n");
+
+    std::shared_ptr<dsd_qt::DocumentSaveTransport> outliving;
+    {
+        SessionHost shortLived;
+        outliving = shortLived.saveTransport();
+    }
+    assert(outliving != nullptr && !outliving->aborted());
+    assert(outliving->save(source, dir + QStringLiteral("/kept.csv")));
+    assert(read_bytes(dir + QStringLiteral("/kept.csv")) == "a,b\r\n");
+
+    SessionHost host;
+    const std::shared_ptr<dsd_qt::DocumentSaveTransport> kept = host.saveTransport();
+    std::shared_ptr<dsd_qt::DocumentSaveTransport> dropped = host.saveTransport();
+    assert(kept != nullptr && dropped != nullptr && kept != dropped && !kept->aborted());
+    dropped.reset();
+    host.abortDocumentTransfers();
+    assert(kept->aborted());
+    assert(!kept->save(source, dir + QStringLiteral("/after.csv")));
+    const std::shared_ptr<dsd_qt::DocumentSaveTransport> after = host.saveTransport();
+    assert(after != nullptr && after->aborted());
+    assert(!after->save(source, dir + QStringLiteral("/after.csv")));
+    assert(!QFileInfo::exists(dir + QStringLiteral("/after.csv")));
+    // The host's own copy is unchanged by the transports: sticky after the abort as before.
+    assert(!host.copyFileToDocument(source, dir + QStringLiteral("/after.csv")));
+    assert(outliving->save(source, dir + QStringLiteral("/still.csv")));
+}
+
+namespace {
+
+/* A save transport whose saves wait at a gate (#826), for the export writer's cases. Saves record what they were
+   handed; an abort opens the gate unless the transport ignores aborts, as a stuck provider would. */
+class GateTransport : public dsd_qt::DocumentSaveTransport {
+  public:
+    struct Save {
+        QString source;
+        QString reference;
+        QByteArray bytes;
+        QThread* thread = nullptr;
+    };
+
+    explicit GateTransport(bool open = true, bool honorAbort = true) : m_open(open), m_honorAbort(honorAbort) {}
+
+    bool
+    save(const QString& sourcePath, const QString& reference) override {
+        const Save save{sourcePath, reference, read_bytes(sourcePath), QThread::currentThread()};
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_saves.append(save);
+        m_cv.wait(lock, [this]() { return m_open || (m_honorAbort && aborted()); });
+        m_returned++;
+        return m_result && !aborted();
+    }
+
+    void
+    discardPendingDownload(const QString& reference) override {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_discards.append(reference);
+    }
+
+    void
+    openGate() {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_open = true;
+        m_cv.notify_all();
+    }
+
+    void
+    setResult(bool result) {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_result = result;
+    }
+
+    QList<Save>
+    saves() const {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        return m_saves;
+    }
+
+    QStringList
+    discards() const {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        return m_discards;
+    }
+
+    int
+    returned() const {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        return m_returned;
+    }
+
+  protected:
+    void
+    abortPlatform() override {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_cv.notify_all();
+    }
+
+  private:
+    mutable std::mutex m_mutex;
+    std::condition_variable m_cv;
+    bool m_open;
+    bool m_honorAbort;
+    bool m_result = true;
+    int m_returned = 0;
+    QList<Save> m_saves;
+    QStringList m_discards;
+};
+
+/* The replies an export writer delivered, and the thread each ran on. */
+struct ExportReplies {
+    QList<QPair<int, bool>> replies;
+    QList<QThread*> threads;
+
+    dsd_qt::DocumentExportWriter::Reply
+    reply() {
+        return [this](int token, bool ok) {
+            replies.append(qMakePair(token, ok));
+            threads.append(QThread::currentThread());
+        };
+    }
+};
+
+} // namespace
+
+/* Runs the event loop until @p done holds or about 5 s pass; whether it held. */
+static bool
+spin_until(const std::function<bool()>& done) {
+    for (int i = 0; i < 500 && !done(); ++i) {
+        spin(10);
+    }
+    return done();
+}
+
+/* What @p dir holds, hidden entries too, by name. */
+static QStringList
+entries(const QString& dir) {
+    return QDir(dir).entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot, QDir::Name);
+}
+
+/* @p names, sorted as entries() lists them. */
+static QStringList
+sorted(QStringList names) {
+    names.sort();
+    return names;
+}
+
+/* The one staging folder under @p cacheRoot whose name is not in @p others. */
+static QString
+staging_folder(const QString& cacheRoot, const QStringList& others = QStringList()) {
+    QStringList found;
+    for (const QString& name : QDir(cacheRoot).entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        if (!others.contains(name)) {
+            found.append(name);
+        }
+    }
+    assert(found.size() == 1);
+    return cacheRoot + QLatin1Char('/') + found.first();
+}
+
+/* #826: a job stages the bytes, hands the staged file to the transport off the owner's thread, removes it, and replies
+   on the owner's thread; one job at a time. */
+static void
+test_export_writer_saves(const QString& root) {
+    const QString cacheRoot = root + QStringLiteral("/export saves/signal-search-export");
+    auto transport = std::make_shared<GateTransport>();
+    QObject owner;
+    ExportReplies log;
+    const QByteArray bytes = QByteArray("\xEF\xBB\xBF", 3) + QByteArray("frequency_hz\r\n482005000\r\n");
+    {
+        dsd_qt::DocumentExportWriter writer(transport, cacheRoot, &owner, log.reply());
+        const QString folder = staging_folder(cacheRoot);
+        const QString name = QFileInfo(folder).fileName();
+        assert(entries(cacheRoot) == sorted({name, name + QStringLiteral(".lock")}));
+        assert(!writer.busy());
+        assert(writer.submit(7, bytes, QStringLiteral("content://picked/7")));
+        assert(writer.busy());
+        // A second job while one runs is refused, and its picked document lets go of its Download-folder row.
+        assert(!writer.submit(8, bytes, QStringLiteral("content://picked/8")));
+        assert(transport->discards() == QStringList{QStringLiteral("content://picked/8")});
+        assert(spin_until([&log]() { return !log.replies.isEmpty(); }));
+        assert(log.replies == (QList<QPair<int, bool>>{qMakePair(7, true)}));
+        assert(log.threads.first() == owner.thread());
+        assert(!writer.busy());
+        const QList<GateTransport::Save> saves = transport->saves();
+        assert(saves.size() == 1 && saves[0].source == folder + QStringLiteral("/7.csv"));
+        assert(saves[0].reference == QStringLiteral("content://picked/7") && saves[0].bytes == bytes);
+        assert(saves[0].thread != owner.thread());
+        assert(entries(folder).isEmpty());
+
+        // A failed save replies false and still removes the staged file; the transport let go of the row itself.
+        transport->setResult(false);
+        assert(writer.submit(9, bytes, QStringLiteral("content://picked/9")));
+        assert(spin_until([&log]() { return log.replies.size() == 2; }));
+        assert(log.replies.last() == qMakePair(9, false) && log.threads.last() == owner.thread());
+        assert(transport->saves().size() == 2 && transport->saves().last().source == folder + QStringLiteral("/9.csv"));
+        assert(transport->discards().size() == 1);
+        assert(entries(folder).isEmpty() && !writer.busy());
+    }
+    // An idle writer takes its folder and lock with it, aborts nothing, and nothing replies after it.
+    assert(entries(cacheRoot).isEmpty());
+    assert(!transport->aborted());
+    spin(20);
+    assert(log.replies.size() == 2);
+}
+
+/* A job that cannot stage its file lets go of the picked document's Download-folder row and replies false. */
+static void
+test_export_writer_staging_failures(const QString& root) {
+    auto transport = std::make_shared<GateTransport>();
+    QObject owner;
+    ExportReplies log;
+    const QByteArray bytes("a,b\r\n");
+
+    // A cache root that cannot be made: under a file.
+    QDir(root).mkpath(QStringLiteral("export failures"));
+    const QString blocker = root + QStringLiteral("/export failures/file");
+    write_bytes(blocker, "x");
+    {
+        dsd_qt::DocumentExportWriter writer(transport, blocker + QStringLiteral("/cache"), &owner, log.reply());
+        assert(writer.submit(1, bytes, QStringLiteral("r1")));
+        assert(spin_until([&log]() { return log.replies.size() == 1; }));
+        assert(log.replies.last() == qMakePair(1, false) && !writer.busy());
+        assert(transport->discards() == QStringList{QStringLiteral("r1")} && transport->saves().isEmpty());
+        // Idle again: the next job is taken (and fails the same way).
+        assert(writer.submit(2, bytes, QStringLiteral("r2")));
+        assert(spin_until([&log]() { return log.replies.size() == 2; }));
+        assert(transport->discards().last() == QStringLiteral("r2"));
+    }
+
+    const QString cacheRoot = root + QStringLiteral("/export failures/cache");
+    dsd_qt::DocumentExportWriter writer(transport, cacheRoot, &owner, log.reply());
+    const QString folder = staging_folder(cacheRoot);
+    // An open failure on a folder: the job's path is one, so QSaveFile cannot open it (a commit failure takes the same
+    // branch, and no test can bring one about portably).
+    assert(QDir(folder).mkdir(QStringLiteral("3.csv")));
+    assert(writer.submit(3, bytes, QStringLiteral("r3")));
+    assert(spin_until([&log]() { return log.replies.size() == 3; }));
+    assert(log.replies.last() == qMakePair(3, false) && !writer.busy());
+    assert(transport->discards().last() == QStringLiteral("r3") && transport->saves().isEmpty());
+    assert(entries(folder) == QStringList{QStringLiteral("3.csv")});
+    assert(QDir(folder).rmdir(QStringLiteral("3.csv")));
+
+#ifdef Q_OS_UNIX
+    // An open failure: a folder nothing can be written into (unless the tests run as a user permissions do not bind).
+    QFile::setPermissions(folder, QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+    QFile probe(folder + QStringLiteral("/probe"));
+    if (!probe.open(QIODevice::WriteOnly)) {
+        assert(writer.submit(4, bytes, QStringLiteral("r4")));
+        assert(spin_until([&log]() { return log.replies.size() == 4; }));
+        assert(log.replies.last() == qMakePair(4, false) && !writer.busy());
+        assert(transport->discards().last() == QStringLiteral("r4") && transport->saves().isEmpty());
+    } else {
+        probe.remove();
+    }
+    QFile::setPermissions(folder, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+#endif
+    assert(entries(folder).isEmpty());
+
+    // A transport aborted at teardown: a new job is refused at once and its row let go of.
+    transport->abort();
+    const qsizetype before = log.replies.size();
+    assert(!writer.submit(5, bytes, QStringLiteral("r5")));
+    assert(!writer.busy() && transport->discards().last() == QStringLiteral("r5"));
+    spin(20);
+    assert(log.replies.size() == before);
+}
+
+/* The child mode of this binary: hold the lock file argv[2] until stdin closes or the process is killed. */
+static int
+hold_export_lock(int argc, char** argv) {
+    QCoreApplication app(argc, argv);
+    QLockFile lock(QString::fromLocal8Bit(argv[2]));
+    lock.setStaleLockTime(0);
+    if (!lock.tryLock(0)) {
+        return 1;
+    }
+    fputs("locked\n", stdout);
+    fflush(stdout);
+    char buffer[64];
+    while (fread(buffer, 1, sizeof(buffer), stdin) > 0) {}
+    return 0;
+}
+
+/* Starts this binary holding @p lockPath; it answers once it holds it. */
+static void
+start_lock_holder(QProcess& child, const QString& lockPath) {
+    child.start(QCoreApplication::applicationFilePath(), {QStringLiteral("--hold-export-lock"), lockPath});
+    assert(child.waitForStarted(5000));
+    assert(child.waitForReadyRead(5000) && child.readAllStandardOutput().startsWith("locked"));
+}
+
+static void
+kill_lock_holder(QProcess& child) {
+    child.kill();
+    assert(child.waitForFinished(5000));
+}
+
+/* A folder name as a writer gives it: a brace-less lowercase UUID. */
+static QString
+writer_name() {
+    return QUuid::createUuid().toString(QUuid::WithoutBraces);
+}
+
+/* Each writer sweeps the folders no live writer holds: those whose lock it can take (none, or one whose process is
+   gone). Age never makes a lock stale. */
+static void
+test_export_writer_sweep(const QString& root) {
+    const QString cacheRoot = root + QStringLiteral("/export sweep");
+    const QString idle = writer_name(), live = writer_name(), child = writer_name(), dead = writer_name();
+    const QString lock = QStringLiteral(".lock");
+    QDir(root).mkpath(QStringLiteral("export sweep/") + idle);
+    write_bytes(cacheRoot + QLatin1Char('/') + idle + QStringLiteral("/1.csv"), "left");
+
+    // Held in this process, and last written a day ago (where a held lock file's time can be set).
+    QDir(cacheRoot).mkdir(live);
+    auto liveLock = std::make_unique<QLockFile>(cacheRoot + QLatin1Char('/') + live + lock);
+    liveLock->setStaleLockTime(0);
+    assert(liveLock->tryLock(0));
+#ifdef Q_OS_UNIX
+    // Windows keeps a held lock file open, so its time cannot be set there.
+    {
+        QFile stamp(cacheRoot + QLatin1Char('/') + live + lock);
+        assert(stamp.open(QIODevice::ReadOnly));
+        assert(stamp.setFileTime(QDateTime::currentDateTimeUtc().addDays(-1), QFileDevice::FileModificationTime));
+    }
+#endif
+
+    // Held by another process; and one whose holder is gone.
+    QDir(cacheRoot).mkdir(child);
+    QProcess childHolder;
+    start_lock_holder(childHolder, cacheRoot + QLatin1Char('/') + child + lock);
+    QDir(cacheRoot).mkdir(dead);
+    write_bytes(cacheRoot + QLatin1Char('/') + dead + QStringLiteral("/2.csv"), "left");
+    QProcess deadHolder;
+    start_lock_holder(deadHolder, cacheRoot + QLatin1Char('/') + dead + lock);
+    kill_lock_holder(deadHolder);
+    assert(QFileInfo::exists(cacheRoot + QLatin1Char('/') + dead + lock));
+
+    auto transport = std::make_shared<GateTransport>();
+    QObject owner;
+    ExportReplies log;
+    {
+        dsd_qt::DocumentExportWriter first(transport, cacheRoot, &owner, log.reply());
+        const QString own = QFileInfo(staging_folder(cacheRoot, {child, live})).fileName();
+        const QStringList expected = sorted({child, child + lock, live, live + lock, own, own + lock});
+        assert(entries(cacheRoot) == expected);
+        // Another writer in this process keeps the first one's folder.
+        {
+            const dsd_qt::DocumentExportWriter second(transport, cacheRoot, &owner, log.reply());
+            assert(QFileInfo::exists(cacheRoot + QLatin1Char('/') + own)
+                   && QFileInfo::exists(cacheRoot + QLatin1Char('/') + own + lock));
+        }
+        assert(entries(cacheRoot) == expected);
+    }
+
+    // Once the other process is gone its folder goes too; the lock held here keeps its own.
+    kill_lock_holder(childHolder);
+    {
+        const dsd_qt::DocumentExportWriter third(transport, cacheRoot, &owner, log.reply());
+        const QString own = QFileInfo(staging_folder(cacheRoot, {live})).fileName();
+        assert(entries(cacheRoot) == sorted({live, live + lock, own, own + lock}));
+    }
+    liveLock.reset();
+    assert(entries(cacheRoot) == QStringList{live});
+    {
+        // Free now: the next writer sweeps it.
+        const dsd_qt::DocumentExportWriter fourth(transport, cacheRoot, &owner, log.reply());
+        assert(!QFileInfo::exists(cacheRoot + QLatin1Char('/') + live));
+    }
+    assert(entries(cacheRoot).isEmpty());
+    assert(log.replies.isEmpty());
+}
+
+/* The sweep takes only what a writer names: a lock file with no name (whose stem would be the cache root itself),
+   folders and locks that are not brace-less lowercase UUIDs, and loose files all stay, free as their locks are. */
+static void
+test_export_writer_sweep_leaves_other_entries(const QString& root) {
+    const QString cacheRoot = root + QStringLiteral("/export sweep others");
+    // A fixed UUID with hex letters, so its upper-case form differs from the writer's lower-case one.
+    const QString id = QStringLiteral("3f2a9c1e-7b4d-4e8a-9c6f-a1b2c3d4e5f6");
+    const QStringList folders{QStringLiteral("keep"), QLatin1Char('{') + id + QLatin1Char('}'), id.toUpper()};
+    for (const QString& folder : folders) {
+        QDir(root).mkpath(QStringLiteral("export sweep others/") + folder);
+        write_bytes(cacheRoot + QLatin1Char('/') + folder + QStringLiteral("/1.csv"), "left");
+    }
+    // Lock files whose holders are gone, so a sweep that tried them would take them.
+    for (const QString& stem : {QString(), QStringLiteral("keep")}) {
+        QProcess holder;
+        start_lock_holder(holder, cacheRoot + QLatin1Char('/') + stem + QStringLiteral(".lock"));
+        kill_lock_holder(holder);
+    }
+    write_bytes(cacheRoot + QStringLiteral("/notes.txt"), "left");
+    const QStringList before = entries(cacheRoot);
+    assert(before.size() == 6);
+
+    auto transport = std::make_shared<GateTransport>();
+    QObject owner;
+    ExportReplies log;
+    {
+        const dsd_qt::DocumentExportWriter writer(transport, cacheRoot, &owner, log.reply());
+        const QString own = QFileInfo(staging_folder(cacheRoot, folders)).fileName();
+        assert(entries(cacheRoot) == sorted(before + QStringList{own, own + QStringLiteral(".lock")}));
+    }
+    assert(entries(cacheRoot) == before);
+    for (const QString& folder : folders) {
+        assert(entries(cacheRoot + QLatin1Char('/') + folder) == QStringList{QStringLiteral("1.csv")});
+    }
+}
+
+/* A cache root that is empty or relative stages nothing: no folder or lock is made anywhere, and each submit() is
+   refused at once with the reference's Download-folder row let go of. */
+static void
+test_export_writer_refuses_unrooted_cache(const QString& root) {
+    const QString relative = QStringLiteral("dsd-neo-export-relative-root");
+    assert(!QFileInfo::exists(relative));
+    auto transport = std::make_shared<GateTransport>();
+    QObject owner;
+    ExportReplies log;
+    const QStringList rootEntries = entries(root);
+    for (const QString& cacheRoot : {QString(), relative}) {
+        dsd_qt::DocumentExportWriter writer(transport, cacheRoot, &owner, log.reply());
+        assert(!writer.submit(1, QByteArray("a\r\n"), QStringLiteral("r1")));
+        assert(!writer.busy());
+        assert(transport->discards().last() == QStringLiteral("r1"));
+    }
+    assert(transport->discards().size() == 2 && transport->saves().isEmpty());
+    assert(!QFileInfo::exists(relative) && entries(root) == rootEntries);
+    spin(20);
+    assert(log.replies.isEmpty());
+}
+
+/* Teardown with a save in progress that heeds the abort: it stops at once, nothing replies, and the writer's folder
+   and lock go. */
+static void
+test_export_writer_teardown_stops(const QString& root) {
+    const QString cacheRoot = root + QStringLiteral("/export teardown");
+    auto transport = std::make_shared<GateTransport>(false, true);
+    QObject owner;
+    ExportReplies log;
+    auto writer = std::make_unique<dsd_qt::DocumentExportWriter>(transport, cacheRoot, &owner, log.reply());
+    assert(writer->submit(1, QByteArray("a\r\n"), QStringLiteral("r1")));
+    assert(spin_until([&transport]() { return !transport->saves().isEmpty(); }));
+    QElapsedTimer timer;
+    timer.start();
+    writer.reset();
+    assert(timer.elapsed() < dsd_qt::DocumentExportWriter::kStopWaitMs);
+    assert(transport->aborted() && transport->returned() == 1);
+    assert(entries(cacheRoot).isEmpty());
+    spin(50);
+    assert(log.replies.isEmpty());
+}
+
+/* Teardown with a save that ignores the abort: the writer waits about kStopWaitMs, leaves the job behind with its
+   folder and lock, and the job's late end never replies. */
+static void
+test_export_writer_teardown_blocked(const QString& root) {
+    const QString cacheRoot = root + QStringLiteral("/export blocked");
+    auto transport = std::make_shared<GateTransport>(false, false);
+    QObject owner;
+    ExportReplies log;
+    auto writer = std::make_unique<dsd_qt::DocumentExportWriter>(transport, cacheRoot, &owner, log.reply());
+    const QString folder = staging_folder(cacheRoot);
+    assert(writer->submit(1, QByteArray("a\r\n"), QStringLiteral("r1")));
+    assert(spin_until([&transport]() { return !transport->saves().isEmpty(); }));
+    QElapsedTimer timer;
+    timer.start();
+    writer.reset();
+    const qint64 took = timer.elapsed();
+    // The upper bound only proves the wait is bounded: a loaded or sanitized runner can be slow to wake.
+    assert(took >= dsd_qt::DocumentExportWriter::kStopWaitMs - 100
+           && took < qint64{dsd_qt::DocumentExportWriter::kStopWaitMs} * 4);
+    assert(transport->aborted() && transport->returned() == 0);
+    assert(QFileInfo::exists(folder + QStringLiteral("/1.csv")) && QFileInfo::exists(folder + QStringLiteral(".lock")));
+
+    transport->openGate();
+    assert(spin_until([&transport]() { return transport->returned() == 1; }));
+    assert(spin_until([&folder]() { return !QFileInfo::exists(folder + QStringLiteral("/1.csv")); }));
+    spin(50);
+    assert(log.replies.isEmpty());
+    // The left-behind job keeps its lock until the process ends, so a new writer keeps its folder.
+    {
+        const dsd_qt::DocumentExportWriter next(std::make_shared<GateTransport>(), cacheRoot, &owner, log.reply());
+        assert(QFileInfo::exists(folder) && QFileInfo::exists(folder + QStringLiteral(".lock")));
+    }
+    const QString name = QFileInfo(folder).fileName();
+    assert(entries(cacheRoot) == sorted({name, name + QStringLiteral(".lock")}));
+}
+
+/* #826: a detection with every exported field set, and receiver settings the file must leave out. */
+static dsd_signal_search_hit
+export_full_hit() {
+    dsd_signal_search_hit h{};
+    h.session_id = 31;
+    h.hit_id = 4;
+    h.started_ms = 1794060202418ULL; // 2026-11-07T14:03:22.418Z
+    h.ended_ms = 1794060210000ULL;   // a whole second
+    h.ended = 1;
+    h.frequency_hz = 463552100;
+    h.bandwidth_hz = 12500;
+    h.step_num = 12500;
+    h.step_den = 1;
+    h.power_dbfs = -32.123f;
+    h.noise_dbfs = -67.456f;
+    h.confirmed = 1;
+    DSD_SNPRINTF(h.protocol, sizeof(h.protocol), "%s", "DMR");
+    DSD_SNPRINTF(h.access, sizeof(h.access), "%s", "CC 1");
+    DSD_SNPRINTF(h.tone, sizeof(h.tone), "%s", "CTCSS 127.3 Hz");
+    DSD_SNPRINTF(h.site, sizeof(h.site), "%s", "Net 12, Site 3 \xC2\xB7 SYS 1183");
+    h.slot = 2;
+    h.target = 1234;
+    h.source = 99;
+    DSD_SNPRINTF(h.source_text, sizeof(h.source_text), "%s", "=HYPERLINK(1)");
+    DSD_SNPRINTF(h.crypt, sizeof(h.crypt), "%s", "ALG 21 \xC2\xB7 KID 0001");
+    DSD_SNPRINTF(h.range_name, sizeof(h.range_name), "%s", "-Air \"band\"");
+    DSD_SNPRINTF(h.input_spec, sizeof(h.input_spec), "%s", "rtltcp:10.9.8.7:1234:463.55M");
+    h.ppm = 57;
+    h.bias_tee = 1;
+    h.gain_tenth_db = 123;
+    DSD_SNPRINTF(h.airspy.serial, sizeof(h.airspy.serial), "%s", "A1B2C3D4E5F60718");
+    return h;
+}
+
+static const char kDetectionHeader[] =
+    "started_utc,ended_utc,ended,frequency_hz,frequency_mhz,listen_mode,identification,protocol,access,tone,site,slot,"
+    "target,source,encryption,power_dbfs,noise_dbfs,range,bandwidth_hz,saved_names\r\n";
+
+/* The detections file @p hits make, with "Desk / Tower, East" saved at 463.5521 MHz and nothing elsewhere. */
+static QByteArray
+export_detections(const std::vector<dsd_signal_search_hit>& hits, QList<uint32_t>* asked = nullptr) {
+    return dsd_qt::signal_search_export::detections(hits.data(), hits.size(), [asked](const dsd_signal_search_hit& h) {
+        if (asked) {
+            asked->append(h.frequency_hz);
+        }
+        return h.frequency_hz == 463552100U ? QStringLiteral("Desk / Tower, East") : QString();
+    });
+}
+
+/* #826: the detections file's header and each column's format, exclusions and formula guard. */
+static void
+test_export_detection_rows() {
+    std::vector<dsd_signal_search_hit> hits(3);
+    hits[0] = export_full_hit();
+    // Empty and zero fields: no start, no end, no slot, no parties, levels that are not finite; an analog range.
+    hits[1].frequency_hz = 118000000;
+    hits[1].bandwidth_hz = 6000;
+    hits[1].am = 1;
+    hits[1].power_dbfs = std::numeric_limits<float>::quiet_NaN();
+    hits[1].noise_dbfs = std::numeric_limits<float>::infinity();
+    // Ended with no end time (a row loaded after an abrupt exit), a start on a whole second, a digital range not
+    // confirmed, a target's received text over its number.
+    hits[2].started_ms = 1794060210000ULL;
+    hits[2].ended = 1;
+    hits[2].frequency_hz = 155340000;
+    hits[2].bandwidth_hz = 12500;
+    hits[2].unresolved = 1;
+    hits[2].slot = 1;
+    hits[2].target = 7;
+    DSD_SNPRINTF(hits[2].target_text, sizeof(hits[2].target_text), "%s", "TG 5");
+    QList<uint32_t> asked;
+    const QByteArray file = export_detections(hits, &asked);
+    assert(asked == (QList<uint32_t>{463552100U, 118000000U, 155340000U}));
+    const QByteArray expected =
+        QByteArray("\xEF\xBB\xBF", 3) + kDetectionHeader
+        + "2026-11-07T14:03:22.418Z,2026-11-07T14:03:30.000Z,1,463552100,463.552100,nfm,confirmed,DMR,CC 1,CTCSS 127.3 "
+          "Hz,\"Net 12, Site 3 \xC2\xB7 SYS 1183\",2,1234,'=HYPERLINK(1),ALG 21 \xC2\xB7 KID "
+          "0001,-32.1,-67.5,\"'-Air \"\"band\"\"\",12500,\"Desk / Tower, East\"\r\n"
+        + ",,0,118000000,118.000000,am,rf-only,,,,,,,,,,,,6000,\r\n"
+        + "2026-11-07T14:03:30.000Z,,1,155340000,155.340000,nfm,unresolved,,,,,1,TG 5,,,0.0,0.0,,12500,\r\n";
+    assert(file == expected);
+    // The receiver settings and ids stay out.
+    for (const char* left : {"rtltcp", "10.9.8.7", "A1B2C3D4E5F60718", "57", "12.3", "31"}) {
+        assert(!file.contains(left));
+    }
+    // Nothing but the header for no rows.
+    assert(export_detections({}) == QByteArray("\xEF\xBB\xBF", 3) + kDetectionHeader);
+
+    // The decimal point stays '.' whatever the locale.
+    const QLocale before;
+    const QByteArray numeric = QByteArray(setlocale(LC_NUMERIC, nullptr));
+    QLocale::setDefault(QLocale(QLocale::German, QLocale::Germany));
+    const bool cLocale = setlocale(LC_NUMERIC, "de_DE.UTF-8") != nullptr;
+    printf("export locale check: QLocale German%s\n", cLocale ? ", LC_NUMERIC de_DE.UTF-8" : " (no de_DE.UTF-8)");
+    assert(export_detections(hits) == expected);
+    QLocale::setDefault(before);
+    setlocale(LC_NUMERIC, numeric.constData());
+}
+
+/* #826: the avoids file lists the permanent avoids in saved order, then the session's; a frequency in both is written
+   once, as permanent. */
+static void
+test_export_avoid_rows() {
+    const QByteArray head = QByteArray("\xEF\xBB\xBF", 3) + "frequency_hz,frequency_mhz,list\r\n";
+    int rows = -1;
+    assert(dsd_qt::signal_search_export::avoids({451000000U, 162550000U}, {}, &rows)
+           == head + "451000000,451.000000,permanent\r\n162550000,162.550000,permanent\r\n");
+    assert(rows == 2);
+    assert(dsd_qt::signal_search_export::avoids({}, {463575000U}, &rows) == head + "463575000,463.575000,session\r\n");
+    assert(rows == 1);
+    assert(dsd_qt::signal_search_export::avoids({463600000U}, {463575000U, 463600000U}, &rows)
+           == head + "463600000,463.600000,permanent\r\n463575000,463.575000,session\r\n");
+    assert(rows == 2);
+    assert(dsd_qt::signal_search_export::avoids({}, {}, &rows) == head && rows == 0);
+}
+
+/* #826: the avoid lists are read as one consistent pair: again while the revision moved between the reads, up to 32
+   times, then not at all. */
+static void
+test_export_avoid_reads() {
+    uint64_t revision = 40;
+    int calls = 0, permanentReads = 0, moving = 3;
+    dsd_qt::signal_search_export::AvoidSource source;
+    source.revision = [&]() {
+        ++calls;
+        // The second read of each try moves while `moving` tries remain.
+        if (calls % 2 == 0 && moving > 0) {
+            --moving;
+            return ++revision;
+        }
+        return revision;
+    };
+    source.permanent = [&](uint32_t* out, size_t cap) {
+        ++permanentReads;
+        assert(cap >= 2);
+        out[0] = 451000000U + (uint32_t)permanentReads;
+        out[1] = 162550000U;
+        return (size_t)2;
+    };
+    source.session = [](uint32_t* out, size_t cap) {
+        assert(cap >= 1);
+        out[0] = 463575000U;
+        return (size_t)1;
+    };
+    std::vector<uint32_t> permanent, session;
+    assert(dsd_qt::signal_search_export::readAvoids(source, &permanent, &session));
+    assert(permanentReads == 4 && calls == 8);
+    assert(permanent == (std::vector<uint32_t>{451000004U, 162550000U})
+           && session == std::vector<uint32_t>{463575000U});
+
+    // Lists that never stop changing: 32 tries, then nothing.
+    permanentReads = 0;
+    moving = 1000;
+    assert(!dsd_qt::signal_search_export::readAvoids(source, &permanent, &session));
+    assert(permanentReads == dsd_qt::signal_search_export::kAvoidReadTries && permanentReads == 32);
+    assert(permanent.empty() && session.empty());
+}
+
+namespace {
+/** A host whose export saves go to @p transport. */
+class ExportHost : public SessionHost {
+  public:
+    explicit ExportHost(std::shared_ptr<dsd_qt::DocumentSaveTransport> transport) : m_transport(std::move(transport)) {}
+
+    std::shared_ptr<dsd_qt::DocumentSaveTransport>
+    saveTransport() const override {
+        return keepSaveTransport(m_transport);
+    }
+
+  private:
+    std::shared_ptr<dsd_qt::DocumentSaveTransport> m_transport;
+};
+
+/** The exportFinished() signals a model sends while this lives. */
+struct ExportFinished {
+    QList<QPair<int, bool>> replies;
+    QMetaObject::Connection connection;
+
+    explicit ExportFinished(const dsd_qt::SignalSearchModel& model)
+        : connection(QObject::connect(&model, &dsd_qt::SignalSearchModel::exportFinished,
+                                      [this](int token, bool ok) { replies.append(qMakePair(token, ok)); })) {}
+
+    ~ExportFinished() { QObject::disconnect(connection); }
+
+    ExportFinished(const ExportFinished&) = delete;
+    ExportFinished& operator=(const ExportFinished&) = delete;
+};
+} // namespace
+
+/* An empty store of its own under @p root, for the export cases. A model opens the app's store when made, so this
+   follows the model. */
+static void
+open_export_store(const QString& root, const char* name) {
+    dsd_app_signal_search_store_close();
+    const QString dir = root + QStringLiteral("/export stores/") + QLatin1String(name);
+    assert(QDir().mkpath(dir));
+    assert(dsd_app_signal_search_store_open((dir + QStringLiteral("/history")).toUtf8().constData()) == 0);
+    std::vector<dsd_signal_search_hit> hits(1);
+    assert(dsd_app_signal_search_history_get(hits.data(), hits.size()) == 0);
+}
+
+static int
+export_token(const QVariantMap& prepared) {
+    return prepared.value(QStringLiteral("token")).toInt();
+}
+
+static int
+export_count(const QVariantMap& prepared) {
+    return prepared.value(QStringLiteral("count")).toInt();
+}
+
+/* Prepare @p kind and save it through @p transport; the bytes saved, after asserting @p count rows. */
+static QByteArray
+exported(dsd_qt::SignalSearchModel& model, const GateTransport& transport, const QString& kind, int count) {
+    const ExportFinished finished(model);
+    const QVariantMap prepared = model.prepareExport(kind);
+    assert(export_count(prepared) == count && export_token(prepared) > 0);
+    const int saves = transport.saves().size();
+    assert(model.saveExport(export_token(prepared), QStringLiteral("content://picked/avoids")));
+    assert(spin_until([&finished]() { return !finished.replies.isEmpty(); }));
+    assert(finished.replies == (QList<QPair<int, bool>>{qMakePair(export_token(prepared), true)}));
+    assert(transport.saves().size() == saves + 1);
+    return transport.saves().last().bytes;
+}
+
+/* #826: the avoids the model exports: the shown lists, read at the press. */
+static void
+test_export_model_avoids(const QString& root) {
+    auto transport = std::make_shared<GateTransport>();
+    ExportHost host(transport);
+    dsd_qt::SignalSearchModel model(&host, nullptr);
+    open_export_store(root, "avoids");
+    const QByteArray head = QByteArray("\xEF\xBB\xBF", 3) + "frequency_hz,frequency_mhz,list\r\n";
+    const QVariantMap none{{QStringLiteral("token"), 0}, {QStringLiteral("count"), 0}};
+    assert(model.prepareExport(QStringLiteral("avoids")) == none);
+
+    // Permanent only, in saved order.
+    assert(dsd_app_signal_search_permanent_avoid(451000000) == DSD_APP_SEARCH_AVOID_ADDED);
+    assert(dsd_app_signal_search_permanent_avoid(162550000) == DSD_APP_SEARCH_AVOID_ADDED);
+    assert(exported(model, *transport, QStringLiteral("avoids"), 2)
+           == head + "451000000,451.000000,permanent\r\n162550000,162.550000,permanent\r\n");
+    assert(dsd_app_signal_search_avoid_remove(451000000) == 0 && dsd_app_signal_search_avoid_remove(162550000) == 0);
+
+    // Session only, while the session runs.
+    dsd_signal_search_status running{};
+    running.session_id = 61;
+    running.revision = 8100;
+    running.phase = DSD_SEARCH_LISTENING;
+    running.owned = 1;
+    dsd_app_signal_search_publish(&running, nullptr, nullptr);
+    const uint32_t sessionList[] = {463575000, 463600000};
+    dsd_signal_search_avoids_session_set(61, sessionList, 2);
+    assert(exported(model, *transport, QStringLiteral("avoids"), 2)
+           == head + "463575000,463.575000,session\r\n463600000,463.600000,session\r\n");
+
+    // Both; a frequency just made permanent, still in the session list until the engine's next tick, is written once.
+    assert(dsd_app_signal_search_permanent_avoid(463600000) == DSD_APP_SEARCH_AVOID_ADDED);
+    assert(exported(model, *transport, QStringLiteral("avoids"), 2)
+           == head + "463600000,463.600000,permanent\r\n463575000,463.575000,session\r\n");
+    assert(dsd_app_signal_search_avoid_remove(463600000) == 0);
+
+    // A stopped search shows no session list, so nothing is left to export.
+    dsd_signal_search_status stopped = running;
+    stopped.revision = 8101;
+    stopped.phase = DSD_SEARCH_STOPPED;
+    stopped.owned = 0;
+    dsd_app_signal_search_publish(&stopped, nullptr, nullptr);
+    assert(model.prepareExport(QStringLiteral("avoids")) == none);
+    dsd_signal_search_avoids_session_set(0, nullptr, 0);
+    assert(transport->discards().isEmpty());
+}
+
+/* #826: one pending export at a time, kept as it was prepared; a token that is not the pending one is refused, and its
+   picked document lets go of its Download-folder row. */
+static void
+test_export_model_tokens(const QString& root) {
+    auto transport = std::make_shared<GateTransport>(false);
+    ExportHost host(transport);
+    dsd_qt::SignalSearchModel model(&host, nullptr);
+    open_export_store(root, "tokens");
+    const ExportFinished finished(model);
+    const QVariantMap unknown{{QStringLiteral("token"), 0}, {QStringLiteral("count"), -1}};
+    assert(model.prepareExport(QStringLiteral("everything")) == unknown);
+    assert(model.prepareExport(QString()) == unknown);
+    assert(dsd_app_signal_search_permanent_avoid(451000000) == DSD_APP_SEARCH_AVOID_ADDED);
+
+    // A second prepare replaces the first: the first token is refused.
+    const int first = export_token(model.prepareExport(QStringLiteral("avoids")));
+    const int second = export_token(model.prepareExport(QStringLiteral("avoids")));
+    assert(first > 0 && second > 0 && second != first);
+    assert(!model.saveExport(first, QStringLiteral("content://stale/1")));
+    assert(transport->discards() == QStringList{QStringLiteral("content://stale/1")});
+
+    // The list changed after the press: the file is the one prepared.
+    assert(dsd_app_signal_search_permanent_avoid(162550000) == DSD_APP_SEARCH_AVOID_ADDED);
+    assert(model.saveExport(second, QStringLiteral("content://picked/2")));
+    // Saved once: the token is no longer pending.
+    assert(!model.saveExport(second, QStringLiteral("content://again/2")));
+    // A save while one runs is refused, and the export is no longer pending.
+    const QVariantMap third = model.prepareExport(QStringLiteral("avoids"));
+    assert(export_count(third) == 2);
+    assert(!model.saveExport(export_token(third), QStringLiteral("content://busy/3")));
+    assert(!model.saveExport(export_token(third), QStringLiteral("content://busy/3b")));
+    assert(transport->discards()
+           == (QStringList{QStringLiteral("content://stale/1"), QStringLiteral("content://again/2"),
+                           QStringLiteral("content://busy/3"), QStringLiteral("content://busy/3b")}));
+    transport->openGate();
+    assert(spin_until([&finished]() { return !finished.replies.isEmpty(); }));
+    assert(finished.replies == (QList<QPair<int, bool>>{qMakePair(second, true)}));
+    assert(transport->saves().size() == 1 && transport->saves()[0].reference == QStringLiteral("content://picked/2"));
+    assert(transport->saves()[0].bytes
+           == QByteArray("\xEF\xBB\xBF", 3) + "frequency_hz,frequency_mhz,list\r\n451000000,451.000000,permanent\r\n");
+
+    // Discard drops only its own token.
+    const int fourth = export_token(model.prepareExport(QStringLiteral("avoids")));
+    model.discardExport(fourth + 1);
+    model.discardExport(0);
+    assert(model.saveExport(fourth, QStringLiteral("content://picked/4")));
+    assert(spin_until([&finished]() { return finished.replies.size() == 2; }));
+    assert(finished.replies.last() == qMakePair(fourth, true));
+    const int fifth = export_token(model.prepareExport(QStringLiteral("avoids")));
+    model.discardExport(fifth);
+    assert(!model.saveExport(fifth, QStringLiteral("content://gone/5")));
+    assert(transport->discards().last() == QStringLiteral("content://gone/5"));
+
+    // A prepare with no rows keeps nothing, and drops the export pending before it.
+    const int sixth = export_token(model.prepareExport(QStringLiteral("avoids")));
+    assert(model.prepareExport(QStringLiteral("detections"))
+           == (QVariantMap{{QStringLiteral("token"), 0}, {QStringLiteral("count"), 0}}));
+    assert(!model.saveExport(sixth, QStringLiteral("content://gone/6")));
+    assert(!model.saveExport(0, QStringLiteral("content://none")));
+    assert(transport->discards().last() == QStringLiteral("content://none"));
+    spin(20);
+    assert(finished.replies.size() == 2 && transport->saves().size() == 2);
+    assert(dsd_app_signal_search_avoid_remove(451000000) == 0 && dsd_app_signal_search_avoid_remove(162550000) == 0);
+}
+
+/* #826: a history of 1,000 detections spread over a few frequencies, each saved under many tied names, exports
+   newest first with hitMap()'s saved names per row, through the base host's transport into a local file. */
+static void
+test_export_model_detections(const QString& root) {
+    static const uint32_t kFrequencies[] = {463552100U, 463575000U, 451000000U, 162550000U, 155340000U};
+    const QString channels = root + QStringLiteral("/export-heavy-channels.csv");
+    QByteArray map = "chan,freq,name\n";
+    int chan = 0;
+    for (const uint32_t frequency : kFrequencies) {
+        for (int i = 0; i < 100; ++i, ++chan) {
+            map += QByteArray::number(chan) + ',' + QByteArray::number(frequency) + ",Ch" + QByteArray::number(chan)
+                   + '\n';
+        }
+    }
+    writeFile(channels, map.constData());
+    dsd_qt::SavedSystemsModel systems;
+    dsd_qt::ScanListsModel lists;
+    addMapSystem(&systems, QStringLiteral("Heavy"), channels);
+    dsd_qt::KnownFrequencyIndex index(&systems, &lists);
+
+    SessionHost host;
+    dsd_qt::SignalSearchModel model(&host, &index);
+    const ExportFinished finished(model);
+    open_export_store(root, "detections");
+    for (uint64_t id = 1; id <= 1000; ++id) {
+        dsd_signal_search_status s{};
+        s.session_id = 71;
+        s.revision = 9000 + id;
+        s.phase = DSD_SEARCH_LISTENING;
+        dsd_signal_search_hit& h = s.hit;
+        h.session_id = 71;
+        h.hit_id = id;
+        h.started_ms = 1794060202418ULL + id * 1000U;
+        h.frequency_hz = kFrequencies[id % 5];
+        h.bandwidth_hz = id % 2 ? 12500 : 6000;
+        h.step_num = 12500;
+        h.step_den = 1;
+        h.confirmed = id % 3 == 0;
+        h.unresolved = id % 3 == 1;
+        DSD_SNPRINTF(h.input_spec, sizeof(h.input_spec), "%s", "rtltcp:10.9.8.7:1234");
+        dsd_app_signal_search_publish(&s, &h, nullptr);
+    }
+    model.refresh();
+    assert(model.history().size() == 1000);
+    assert(model.history().front().toMap().value(QStringLiteral("knownLabel")).toString().count(QStringLiteral(" / "))
+           >= 99);
+
+    QElapsedTimer timer;
+    timer.start();
+    const QVariantMap prepared = model.prepareExport(QStringLiteral("detections"));
+    printf("export of 1000 detections over a heavy index took %lld ms\n", (long long)timer.elapsed());
+    assert(export_count(prepared) == 1000 && export_token(prepared) > 0);
+
+    // The file the snapshot makes with the screen's saved names, row by row.
+    std::vector<dsd_signal_search_hit> hits(DSD_SEARCH_HISTORY_LIMIT);
+    hits.resize(dsd_app_signal_search_history_snapshot(hits.data(), hits.size(), nullptr));
+    assert(hits.size() == 1000 && hits.front().hit_id == 1000 && hits.back().hit_id == 1);
+    const QVariantList history = model.history();
+    const QByteArray expected = dsd_qt::signal_search_export::detections(
+        hits.data(), hits.size(), [&hits, &history](const dsd_signal_search_hit& h) {
+            return history.at((qsizetype)(&h - hits.data())).toMap().value(QStringLiteral("knownLabel")).toString();
+        });
+
+    const QString folder = root + QStringLiteral("/export saved");
+    assert(QDir().mkpath(folder));
+    const QString target = folder + QStringLiteral("/Signal search detections.csv");
+    assert(model.saveExport(export_token(prepared), target));
+    assert(spin_until([&finished]() { return !finished.replies.isEmpty(); }));
+    assert(finished.replies == (QList<QPair<int, bool>>{qMakePair(export_token(prepared), true)}));
+    const QByteArray saved = read_bytes(target);
+    assert(saved == expected);
+    const QList<QByteArray> lines = saved.split('\n');
+    assert(lines.size() == 1002 && lines.last().isEmpty());
+    assert(lines.at(1).startsWith("2026-11-07T14:20:02.418Z,"));    // hit 1000
+    assert(lines.at(1000).startsWith("2026-11-07T14:03:23.418Z,")); // hit 1
+    assert(lines.at(1).contains("Heavy / Ch") && !saved.contains("rtltcp") && !saved.contains("10.9.8.7"));
+    dsd_app_signal_search_store_close();
+}
+
 int
 main(int argc, char** argv) {
+    if (argc == 3 && strcmp(argv[1], "--hold-export-lock") == 0) {
+        return hold_export_lock(argc, argv);
+    }
     QCoreApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("dsd-search-tests"));
     dsd_test_qt_isolate_paths();
+    test_csv_text();
     QTemporaryDir temp;
     assert(temp.isValid());
+    test_save_transport_local(temp.path());
+    test_save_transport_abort_mid_save(temp.path());
+    test_save_transport_host(temp.path());
+    test_export_writer_saves(temp.path());
+    test_export_writer_staging_failures(temp.path());
+    test_export_writer_sweep(temp.path());
+    test_export_writer_sweep_leaves_other_entries(temp.path());
+    test_export_writer_refuses_unrooted_cache(temp.path());
+    test_export_writer_teardown_stops(temp.path());
+    test_export_writer_teardown_blocked(temp.path());
     const QString journal = temp.filePath(QStringLiteral("history"));
     // The store writes version 2 records beside the version 1 journal it is opened with.
     const QString written = journal + QStringLiteral(".v2");
@@ -1836,6 +2969,12 @@ main(int argc, char** argv) {
     testKnownFrequencyNonAsciiPaths(temp.path());
     testRecordingKey();
     testOverloadMapped();
+    test_export_detection_rows();
+    test_export_avoid_rows();
+    test_export_avoid_reads();
+    test_export_model_avoids(temp.path());
+    test_export_model_tokens(temp.path());
+    test_export_model_detections(temp.path());
     return 0;
 }
 

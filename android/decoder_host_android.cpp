@@ -924,11 +924,10 @@ DecoderHostAndroid::platformTakeRecordingShareFailure() {
 }
 
 void
-DecoderHostAndroid::abortDocumentTransfers() {
+DecoderHostAndroid::platformAbortDocumentCopies() {
     /* Must match DocumentCopies.kt: @JvmStatic fun abort(). Cancels the provider calls in flight, stops the copies at
      * their next chunk and refuses new ones. */
     QJniObject::callStaticMethod<void>(kDocumentsClass, "abort", "()V");
-    dsd_qt::DecoderHost::abortDocumentTransfers();
 }
 
 // WP-D3: Kotlin owns permissions, timeout and cancellation; polling emits on the Qt thread.

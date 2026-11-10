@@ -2,9 +2,10 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 /*
- * The backup's document copies (#580), less their JNI transport (platformHoldsResolver() and platformCopy*() in
- * decoder_host_android.cpp), so the desktop host test compiles this dispatch as it ships. They run on BackupModel's
- * worker thread.
+ * The backup's document copies (#580) and the export saves' transport (#826), less their JNI transport
+ * (platformHoldsResolver(), platformCopy*() and platformAbortDocumentCopies() in decoder_host_android.cpp), so the
+ * desktop host test compiles this dispatch as it ships. They run on BackupModel's worker thread and the export
+ * writer's.
  *
  * The document picker's requests and answers (#829), less their JNI transport (platform*Document*() there), on the Qt
  * thread. The Download-folder rows its saves write into (DownloadsSave.kt) are named and discarded through
@@ -19,9 +20,11 @@
 #include <QUrl>
 #include <Qt>
 #include <QtGlobal>
+#include <memory>
 #include "decoder_host.h"
 #include "decoder_host_android.h"
 #include "document_pick_record.h"
+#include "document_save_transport.h"
 
 namespace dsd_android {
 
@@ -64,13 +67,55 @@ DecoderHostAndroid::copyFileToDocument(const QString& sourcePath, const QString&
     if (!isContentUri(reference)) {
         return dsd_qt::DecoderHost::copyFileToDocument(sourcePath, reference);
     }
+    return saveContentDocument(sourcePath, reference, documentTransfersAborted());
+}
+
+bool
+DecoderHostAndroid::saveContentDocument(const QString& sourcePath, const QString& reference, bool aborted) {
     /* A save that never reached DocumentCopies leaves a Download-folder row (#829) to discard. One that did settled it
      * there, so the discard after a failed call is a no-op unless the JNI call itself failed. */
-    if (documentTransfersAborted() || !platformHoldsResolver() || !platformCopyFileToDocument(sourcePath, reference)) {
+    if (aborted || !platformHoldsResolver() || !platformCopyFileToDocument(sourcePath, reference)) {
         platformDiscardPendingDownload(reference);
         return false;
     }
     return true;
+}
+
+void
+DecoderHostAndroid::abortDocumentTransfers() {
+    /* Cancels the provider calls in flight, stops the copies at their next chunk and refuses new ones. */
+    platformAbortDocumentCopies();
+    dsd_qt::DecoderHost::abortDocumentTransfers();
+}
+
+/* The export saves' transport (#826). It runs on the export writer's thread and never holds the host, only calls the
+ * host's static functions, so a save may finish after the host is gone. */
+class DecoderHostAndroid::SaveTransport final : public dsd_qt::DocumentSaveTransport {
+  public:
+    bool
+    save(const QString& sourcePath, const QString& reference) override {
+        if (!isContentUri(reference)) {
+            return dsd_qt::DocumentSaveTransport::save(sourcePath, reference);
+        }
+        return saveContentDocument(sourcePath, reference, aborted());
+    }
+
+    void
+    discardPendingDownload(const QString& reference) override {
+        platformDiscardPendingDownload(reference);
+    }
+
+  protected:
+    /* DocumentCopies' copy keeps its own cancellation, which only the process-wide abort reaches. */
+    void
+    abortPlatform() override {
+        platformAbortDocumentCopies();
+    }
+};
+
+std::shared_ptr<dsd_qt::DocumentSaveTransport>
+DecoderHostAndroid::saveTransport() const {
+    return keepSaveTransport(std::make_shared<SaveTransport>());
 }
 
 qint64
