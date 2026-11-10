@@ -70,14 +70,11 @@ Item {
             var title = textItem(tc.wizard, "Add system");
             verify(title !== null, "the title is missing");
             var header = title.parent;
+            var progress = findChild(tc.wizard, "wizardProgress");
             var back = null;
-            var progress = null;
             for (var i = 0; i < header.children.length; ++i) {
-                var child = header.children[i];
-                if (child.icon === "back")
-                    back = child;
-                else if (child !== title && child.children.length >= 3)
-                    progress = child;
+                if (header.children[i].icon === "back")
+                    back = header.children[i];
             }
             verify(back !== null && progress !== null, "the back chevron or the progress is missing");
             waitForRendering(header);

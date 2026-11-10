@@ -407,18 +407,49 @@ Item {
             card.forceActiveFocus();
             tc.importButton.clicked();
             var kinds = findChild(tc.screen, "importKindPicker");
-            tryVerify(function () { return kinds.visible; });
-            verify(!Ui.Navigation.allows(card), "the row is still allowed under the sheet");
-            card.Accessible.pressAction();
-            // A key still reaching the row, as from focus it kept.
-            card.forceActiveFocus();
-            keyClick(Qt.Key_Return);
-            verify(!actions.visible, "a covered row opened its actions");
-            compare(tc.screen.actionRow, -1);
             var sheet = kinds;
             while (sheet && typeof sheet.requestDismiss !== "function")
                 sheet = sheet.parent;
-            sheet.visible = false;
+            verify(sheet !== null, "the Import kind sheet is missing");
+            try {
+                tryVerify(function () { return kinds.visible; });
+                verify(!Ui.Navigation.allows(card), "the row is still allowed under the sheet");
+                card.Accessible.pressAction();
+                // A key still reaching the row, as from focus it kept.
+                card.forceActiveFocus();
+                keyClick(Qt.Key_Return);
+                verify(!actions.visible, "a covered row opened its actions");
+                compare(tc.screen.actionRow, -1);
+            } finally {
+                // Left open it would cover every later case.
+                sheet.visible = false;
+                actions.visible = false;
+                tc.screen.actionRow = -1;
+            }
+        }
+
+        // #830: Tab reaches the file cards in order: from the screen's last
+        // control above the list (the back chevron) to the first card, then
+        // to the next one.
+        function test_tab_reaches_the_cards_in_order() {
+            var first = tc.list.itemAtIndex(0);
+            var second = tc.list.itemAtIndex(1);
+            verify(first !== null && second !== null, "the rows have no delegates");
+            var back = null;
+            for (var i = 0; i < tc.screen.children.length && back === null; ++i) {
+                var kids = tc.screen.children[i].children;
+                for (var k = 0; k < kids.length; ++k) {
+                    if (kids[k].icon === "back")
+                        back = kids[k];
+                }
+            }
+            verify(back !== null, "the back chevron is missing");
+            back.forceActiveFocus();
+            verify(back.activeFocus);
+            keyClick(Qt.Key_Tab);
+            verify(first.activeFocus, "Tab from the back chevron did not reach the first card");
+            keyClick(Qt.Key_Tab);
+            verify(second.activeFocus, "Tab from the first card did not reach the next one");
         }
 
         function test_the_cards_sit_centred_between_the_screen_edges() {

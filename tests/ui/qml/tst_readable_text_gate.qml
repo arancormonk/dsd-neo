@@ -70,6 +70,8 @@ Item {
             Ui.Navigation.modals = [];
             rows.clear();
             diagnostics.active = false;
+            // The log is shared with every later file in the directory run.
+            diagnosticsLog.paused = false;
         }
         function delegates(view) {
             var made = [];
@@ -137,7 +139,6 @@ Item {
                 verify(!made[r].Accessible.ignored, "line " + r + " is out of the tree while paused");
                 compare(made[r].Accessible.name, made[r].text, "line " + r + " has no name");
             }
-            diagnosticsLog.paused = false;
         }
     }
 }
