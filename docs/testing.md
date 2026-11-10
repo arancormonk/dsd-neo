@@ -141,9 +141,12 @@ CLI's output to check that neither a loaded nor a refused key is ever printed.
 a backup restore waits on (every service state but IDLE, or the engine atomic, is busy; asking never refreshes the
 host), and the backup's document dispatch: a `content://` reference goes to the platform transport (stubbed), a file URL
 or plain path to the base host's copy, a stale destination is removed before the platform copies, and a copy reported
-without its file fails. It links the real recording store (`DSD_NEO_TEST_HOOKS` on, for its pass hooks), so a share
-queued behind an export is shown held in the store until its copy is made. The `ANDROID_*_JVM` tests run production Android Kotlin on the plain JVM, without an Android
-build or emulator, one suite of `tests/android/run_jvm_tests.py` each (`--suite <name>`, repeatable; all suites by
+without its file fails. The file browser's dispatch (#830) runs against a `FileBrowser` stub with a record queue: each
+request reaches it with its arguments, records settle their live request once in order, and a retired request is
+cancelled there once and its record dropped. It links the real recording store (`DSD_NEO_TEST_HOOKS` on, for its pass
+hooks), so a share queued behind an export is shown held in the store until its copy is made. The `ANDROID_*_JVM`
+tests run production Android Kotlin on the plain JVM, without an Android build or emulator, one suite of
+`tests/android/run_jvm_tests.py` each (`--suite <name>`, repeatable; all suites by
 default): `ANDROID_LOCATION_JVM` runs the location broker and geocoder queue with deterministic platform stubs,
 `ANDROID_DECODER_STATUS_JVM` runs `DecoderStatus.kt`, the notification status record's reader, with no stubs, and
 `ANDROID_SCREEN_POLICY_JVM` (the `screen` suite) runs the screen modes' policy and pure adapters (`ScreenPolicy.kt`,
@@ -201,6 +204,40 @@ began (saved), an interrupt after it began (saved, interrupt kept), the teardown
 (returns without it; the publication still completes), the 16-name bound and the release of persisted grants. The
 abort case runs last but one: it is sticky for the process. Last, with the worker shut down, an insert answers empty
 and a settle deletes the row it claimed.
+`ANDROID_FILE_BROWSER_JVM` (the `file_browser` suite, issue #830) runs `FileListing.kt`, the in-app file browser's
+folder reads, with no stubs, against temporary folders and a `GatedFs` that fails an open, fails an iteration part way,
+makes up a folder of 50,000 files and holds reads until the test lets them go. Containment is checked on real paths:
+the root itself, a sibling whose name starts with the root's, `..`, a link to a folder outside, and a root given
+through a link (as `/sdcard` is) that still owns its folders. Links, FIFOs and Unix sockets are never listed; a folder
+with mode 000, a refused open and a failed iteration read `unreadable`, never empty; a deleted root reads `gone`. Then
+dot names and the CSV, backup and replay filters (the symbol-capture rule on the whole path, case-sensitive) before the
+page, folders first in case-insensitive natural order, pages of 500, `tooMany` at 50,001 entries, snapshots expiring
+when idle, superseded or closed (a stray page of an old snapshot leaves the current one alone), the bounded set of
+closed sessions, the entry shape (a modified time of 0 kept), the hand-off's `file:` reference (encoded once, the
+name never; a name that is not valid UTF-8 keeps its bytes), cancel during a blocked read, and saturation: three
+blocked reads make the fourth request `busy` at once, end `timedOut` at the watchdog, and give their places back only
+when they return. It skips the link, FIFO, socket, mode-000 and non-UTF-8 cases where the host cannot make them.
+A second build runs `FileBrowser.kt` on it against a fake `BrowserPlatform` (volumes, grant, declared permission, API
+level, `/proc/self/status` text, a MediaStore resolver that applies the selection to its rows) and stubs of the
+activity, storage volumes, Settings and JSON: the roots by API level and grant, the root state precedence from volume
+state, grant and gid 1077 alone, with no filesystem call (an invisible `/mnt/media_rw` USB volume is `needsRestart`
+after a grant without gid 1077 and `ready` with it, its listing then `unreadable` while the process cannot read it;
+`removed` once unmounted, removed, bad-removed or ejecting; `unavailable` while checking, unmountable or without a
+filesystem; a visible one `ready`), the roots generation (moved by a volume, a state or a grant, read with no filesystem
+call), Saved by DSD-neo (projection, the folder and owner selection, seconds to ms, the `_id` re-query for a hand-off, a
+stale hand-off answered with every worker place held, and a cancel, a session close, a newer listing and the watchdog
+each cancelling the query's `CancellationSignal`), the All files access chain (each step's `ActivityNotFoundException`,
+the API 30-32 App info step), the API 29 permission (`granted`, `denied`, `blocked` with App info, `cancelled`, and
+Android 10's re-entrant empty answer cancelling the new request once) with its rolling request codes, a late answer to a
+cancelled launch claimed but dropped, the refresh flags, the Android platform on API 36 and 29 through `start()`, and
+each record's JSON keys. The `file_browser_wiring` source check pins `DsdNeoActivity`'s forwarding of resumes and
+permission results; `storage_permissions_policy` pins the manifests (every permission declared, no Qt insertion, READ
+up to API 29 with the legacy flag, never MANAGE or WRITE), the sideload overlay (MANAGE, READ up to API 32 with
+`tools:replace`, nothing else) and `build.gradle` merging it only when the invocation builds no bundle. android-ci
+checks the packaged artifacts: the APK's `aapt2 dump permissions` must list `MANAGE_EXTERNAL_STORAGE`, `INTERNET`,
+`ACCESS_NETWORK_STATE` and READ up to API 32, and no `WRITE_EXTERNAL_STORAGE`; the AAB's proto base manifest must name
+neither `MANAGE_EXTERNAL_STORAGE` nor `WRITE_EXTERNAL_STORAGE` and must name `ACCESS_NETWORK_STATE`. The legacy flag and
+the bundle's READ cap of API 29 are checked only in the source.
 `ANDROID_USB_RECEIVER_JVM` (the `usb_receiver` suite) runs `UsbReceiverKind.kt`, the USB id table `UsbSourceManager`
 classifies every device with, with no stubs: an Airspy beside a hub and other unrelated devices reads `airspy`, two
 RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known receiver empty. Which local receiver a
@@ -3433,6 +3470,67 @@ Linux host. This is a manual check, not part of CTest or CI.
 An emulator under heavy host load can stall the passed-through dongle's stream by itself, which exercises the stall
 recovery (`RTL-SDR: the receiver sent no samples for <ms> ms; resetting the USB device`); read such stalls as rig
 conditions until the same build stalls on a phone.
+
+### Android file browser on the emulator
+
+DSD-neo's file browser (#830) runs against scripted hosts in CTest (`UI_QT_QML_FILE_BROWSER`, `UI_QT_ANDROID_HOST`,
+`UI_QT_RESTART_CLOSER`, `ANDROID_FILE_BROWSER_JVM`). What only Android decides (which volumes it reports, when a drive
+becomes readable, what a grant changes) is checked by hand on an emulator. This is a manual check, not part of CTest or
+CI.
+
+1. Use an AVD from the API 36 `google_apis` x86_64 image and the sideload APK (the arm64 APK runs there through the
+   image's NDK translation). To make every pick open the browser, turn Android's picker off with
+   `adb shell pm disable-user --user 0 com.google.android.documentsui` (back with `pm enable`), or turn on Settings ›
+   Libraries › Choose files in DSD-neo.
+2. The inbox needs no grant: `adb push FILE /storage/emulated/0/Android/data/io.github.arancormonk.dsdneo/files/Inbox/`.
+   Device storage needs All files access:
+   `adb shell appops set --uid io.github.arancormonk.dsdneo MANAGE_EXTERNAL_STORAGE allow`. The grant applies to the
+   running app at once; taking it back (`default` or `deny`) closes the app, as Android does on a phone.
+3. A USB drive. Android mounts a USB drive outside shared storage (an invisible volume at `/mnt/media_rw/<UUID>`,
+   with no `/storage/<UUID>`), and an app can read it only if it started with All files access. The emulator has no
+   USB drive of its own, so attach a disk image to a USB controller and declare it in the image's fstab. This changes
+   the system image, so use an AVD made for it.
+   - Make a small FAT32 image with a file on it (`sfdisk` and mtools):
+
+     ```sh
+     truncate -s 64M usb.img
+     echo 'start=2048, type=c' | sfdisk -q usb.img
+     mformat -i usb.img@@1M -F -v USBSTICK ::
+     mcopy -i usb.img@@1M list.csv ::/list.csv
+     ```
+
+   - Boot with a writable system and the image on an xHCI controller. Give the image as a `-blockdev`: the
+     `-drive if=none,...` form makes this emulator's QEMU exit.
+
+     ```sh
+     emulator -avd <avd> -writable-system -qemu \
+       -device qemu-xhci,id=xhci \
+       -blockdev driver=raw,node-name=stick,file.driver=file,file.filename=$PWD/usb.img \
+       -device usb-storage,bus=xhci.0,drive=stick
+     ```
+
+   - Once per AVD, let vold manage USB disks: `adb root`, `adb remount` (reboot and repeat both if it asks), then
+     `adb shell 'echo "/devices/*/usb* auto auto defaults voldmanaged=usb:auto" >> /vendor/etc/fstab.ranchu'` and
+     `adb reboot`. Boot with the same `-qemu` arguments every time.
+   - `adb shell sm list-volumes all` now lists a `public:<major>,<minor>` volume, mounted, with the image's UUID,
+     and its row shows in the browser under the volume's description. With the grant given while DSD-neo runs, the
+     row says DSD-neo can open the drive after it restarts; after Close DSD-neo and a new start, the new process has
+     group 1077 (`external_storage`) on its `Groups:` line in `adb shell cat /proc/<pid>/status`, and the drive lists.
+     `adb shell sm unmount <volume>` with the drive open goes back to the places with "The drive was removed.";
+     `sm mount <volume>` brings it back. Android tells the app through its storage volume callback; no `MEDIA_*`
+     broadcast is sent for either.
+
+   Never stand in for a USB drive with `adb shell sm set-virtual-disk true`. That disk is an adoptable SD card
+   mounted as shared storage at `/storage/<id>`: it opens right after the grant, with no restart, so it shows none of
+   a USB drive's behavior.
+4. Android 10. The arm64 APK does not run on the x86_64 API 29 image, which has no translation, so the app's
+   Android 10 branches are covered by `ANDROID_FILE_BROWSER_JVM`, and the platform behavior they rely on is checked
+   with a probe: a small Java app with the same storage entries in its manifest (`READ_EXTERNAL_STORAGE` and
+   `requestLegacyExternalStorage`), built for the image with the SDK's `aapt2`, `javac`, `d8`, `zipalign` and
+   `apksigner`, that lists and reads the same paths. On API 29, `adb install` exempts an app from the storage
+   restriction, so legacy storage is on before any grant; before `pm grant <package>
+   android.permission.READ_EXTERNAL_STORAGE`, device storage folders exist but cannot be listed, and after it they list
+   and read in the same process, read-only.
 
 ## Continuous Integration
 

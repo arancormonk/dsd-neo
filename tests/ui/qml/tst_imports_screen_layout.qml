@@ -3,6 +3,7 @@
 
 import QtQuick
 import QtTest
+import "../../../src/ui/qt/qml" as Ui
 
 // A ListView positions its own delegates: for a vertical list it writes the
 // item's x on every layout pass, which silently overwrites an `x` the delegate
@@ -325,6 +326,140 @@ Item {
             } finally {
                 screenLoader.visible = true;
             }
+        }
+
+        // The text item under @p item that shows @p text.
+        function textItem(item, text) {
+            if (item.text === text)
+                return item;
+            for (var i = 0; i < item.children.length; ++i) {
+                var found = textItem(item.children[i], text);
+                if (found !== null)
+                    return found;
+            }
+            return null;
+        }
+
+        // #830: at the largest text on a narrow phone the title stays inside
+        // the header, which grows to hold it, and the back chevron stays
+        // level with its first line.
+        function test_title_fits_at_large_font_data() {
+            return [{tag: "320", width: 320}, {tag: "360", width: 360}];
+        }
+        function test_title_fits_at_large_font(data) {
+            root.width = data.width;
+            Ui.Theme.fontScale = 1.6;
+            try {
+                var title = textItem(tc.screen, "Imported files");
+                verify(title !== null, "the title is missing");
+                var header = title.parent;
+                tc.waitForRendering(header);
+                var titleRight = title.mapToItem(tc.screen, title.width, 0).x;
+                var headerRight = header.mapToItem(tc.screen, header.width, 0).x;
+                verify(titleRight <= headerRight, "the title runs " + (titleRight - headerRight) + " px past the header");
+                verify(title.contentWidth <= title.width, "the title's text is wider than the title");
+                verify(header.height >= title.height, "the header is " + header.height + " px for a " + title.height + " px title");
+                var back = null;
+                for (var i = 0; i < header.children.length; ++i) {
+                    if (header.children[i].icon === "back")
+                        back = header.children[i];
+                }
+                verify(back !== null, "the back chevron is missing");
+                var lineCentre = title.y + title.height / title.lineCount / 2;
+                verify(Math.abs(back.y + back.height / 2 - lineCentre) < 1, "the back chevron is not level with the title's first line");
+                var count = textItem(tc.screen, "2 files");
+                verify(count !== null, "the file count is missing");
+                verify(count.mapToItem(tc.screen, 0, 0).y >= title.mapToItem(tc.screen, 0, title.height).y,
+                       "the file count overlaps the title");
+            } finally {
+                Ui.Theme.fontScale = 1;
+                root.width = 420;
+            }
+        }
+
+        // #830: an imported file's row is a button a screen reader can press,
+        // and so is Return: each opens the row's actions, and neither does
+        // while a sheet covers the screen.
+        function test_row_press_action() {
+            var actions = findChild(tc.screen, "importsActionSheet");
+            verify(actions !== null, "the action sheet is missing");
+            var card = tc.list.itemAtIndex(1);
+            verify(card !== null, "the second row has no delegate");
+            compare(card.Accessible.role, Accessible.Button);
+            // Named by its file, described by its kind and summary line.
+            compare(card.Accessible.name, importedFiles.get(1).name);
+            compare(card.Accessible.description, "TALKGROUPS · 1 talkgroup · " + Qt.formatDate(new Date(Number(importedFiles.get(1).importedAt) * 1000), "MMM d"));
+            // The badge, the name and the summary take no stop of their own:
+            // the card reads them.
+            var badge = findChild(card, "importsKindBadge");
+            verify(badge !== null, "the kind badge is missing");
+            var badgeText = findChild(badge, "csvTypeBadgeText");
+            compare(badgeText.text, "TALKGROUPS");
+            verify(badgeText.Accessible.ignored, "the badge is read by the card, not on its own");
+            compare(badgeText.Accessible.name, "");
+            verify(findChild(card, "importsFileName").Accessible.ignored, "the name is read as the card's name");
+            verify(findChild(card, "importsFileSummary").Accessible.ignored, "the summary is read in its description");
+
+            card.Accessible.pressAction();
+            verify(actions.visible, "the press opened no actions");
+            compare(tc.screen.actionRow, 1);
+            actions.visible = false;
+            tc.screen.actionRow = -1;
+
+            card.forceActiveFocus();
+            keyClick(Qt.Key_Return);
+            verify(actions.visible, "Return opened no actions");
+            compare(tc.screen.actionRow, 1);
+            actions.visible = false;
+            tc.screen.actionRow = -1;
+
+            // Under a sheet the row is covered: neither way reaches it.
+            card.forceActiveFocus();
+            tc.importButton.clicked();
+            var kinds = findChild(tc.screen, "importKindPicker");
+            var sheet = kinds;
+            while (sheet && typeof sheet.requestDismiss !== "function")
+                sheet = sheet.parent;
+            verify(sheet !== null, "the Import kind sheet is missing");
+            try {
+                tryVerify(function () { return kinds.visible; });
+                verify(!Ui.Navigation.allows(card), "the row is still allowed under the sheet");
+                card.Accessible.pressAction();
+                // A key still reaching the row, as from focus it kept.
+                card.forceActiveFocus();
+                keyClick(Qt.Key_Return);
+                verify(!actions.visible, "a covered row opened its actions");
+                compare(tc.screen.actionRow, -1);
+            } finally {
+                // Left open it would cover every later case.
+                sheet.visible = false;
+                actions.visible = false;
+                tc.screen.actionRow = -1;
+            }
+        }
+
+        // #830: Tab reaches the file cards in order: from the screen's last
+        // control above the list (the back chevron) to the first card, then
+        // to the next one.
+        function test_tab_reaches_the_cards_in_order() {
+            var first = tc.list.itemAtIndex(0);
+            var second = tc.list.itemAtIndex(1);
+            verify(first !== null && second !== null, "the rows have no delegates");
+            var back = null;
+            for (var i = 0; i < tc.screen.children.length && back === null; ++i) {
+                var kids = tc.screen.children[i].children;
+                for (var k = 0; k < kids.length; ++k) {
+                    if (kids[k].icon === "back")
+                        back = kids[k];
+                }
+            }
+            verify(back !== null, "the back chevron is missing");
+            back.forceActiveFocus();
+            verify(back.activeFocus);
+            keyClick(Qt.Key_Tab);
+            verify(first.activeFocus, "Tab from the back chevron did not reach the first card");
+            keyClick(Qt.Key_Tab);
+            verify(second.activeFocus, "Tab from the first card did not reach the next one");
         }
 
         function test_the_cards_sit_centred_between_the_screen_edges() {

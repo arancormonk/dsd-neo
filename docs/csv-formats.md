@@ -1260,8 +1260,16 @@ with the target's key/force scope on exit. An explicit clear differs from inheri
 Qt and Android channel-map imports copy referenced `keys_hex_csv`, `keys_dec_csv` and
 `-k`/`-K`/`-G`/`--dmr-tg-key-csv` option files into a private bundle and rewrite their
 paths. Target CSV imports also copy channel maps (including their nested companions)
-and P25 band plans. On the desktop a relative reference is read beside the picked
-file; an Android document has no folder to look in, so the sheet below asks for it.
+and P25 band plans. On the desktop a reference is read beside the picked file (or
+wherever its path points); an Android document has no folder to look in, so the
+sheet below asks for it. A CSV picked in DSD-neo's own file browser on Android
+(#830) is a file in a folder, so its companions are found beside it too, under one
+rule: only by a relative name, as a regular file whose real path stays in the CSV's
+folder or a folder below it (for a nested channel map, the target list's folder).
+An absolute path, a `../` that leaves that folder, or a link that points out of it
+is not followed, and the sheet asks for that file instead; a file chosen on the
+sheet is used wherever it is. Updating a stored bundle finds the bundle's own
+companions by the same rule, inside the bundle's private folder.
 Every copy is made in the background, outside the library, and checked there before
 anything in the library changes.
 

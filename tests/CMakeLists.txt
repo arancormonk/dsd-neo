@@ -5131,6 +5131,39 @@ if(DSD_ENABLE_QT_UI)
         COMMAND dsd-neo_test_ui_qt_import_transport
     )
 
+    # Closing the app so a drive opens after a restart (#830): refused while a copy runs, the session stopped and
+    # awaited before the quit, a stop that never settles and a refused quit.
+    add_executable(
+        dsd-neo_test_ui_qt_restart_closer
+        ui/test_ui_qt_restart_closer.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/restart_closer.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_restart_closer
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_restart_closer
+        PRIVATE Qt6::Gui dsd-neo_runtime dsd-neo_platform
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_restart_closer
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_restart_closer
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_RESTART_CLOSER
+        COMMAND dsd-neo_test_ui_qt_restart_closer
+    )
+
     # The import worker (#832): staging folders and their sweep, one commit per request in order, cancel, teardown
     # with a copy that will not stop, and the commit journal.
     add_executable(
@@ -5793,6 +5826,7 @@ if(DSD_ENABLE_QT_UI)
                 main_receiver_notice
                 monitor_receiver
                 document_picker
+                file_browser
         )
             string(TOUPPER "${_case}" _case_upper)
             add_test(
@@ -22485,6 +22519,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_android_host
         ui/test_ui_qt_android_host.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_documents.cpp
+        ${PROJECT_SOURCE_DIR}/android/decoder_host_android_files.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_imports.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_lifecycle.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_recordings.cpp
@@ -23059,6 +23094,13 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
             sign_in_autofill
     )
+    add_test(
+        NAME ANDROID_FILE_BROWSER_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            file_browser
+    )
     set_tests_properties(
         ANDROID_LOCATION_JVM
         ANDROID_DECODER_STATUS_JVM
@@ -23076,6 +23118,7 @@ if(Python3_Interpreter_FOUND)
         ANDROID_RECORDING_SHARE_JVM
         ANDROID_A11Y_BRIDGE_JVM
         ANDROID_SIGN_IN_AUTOFILL_JVM
+        ANDROID_FILE_BROWSER_JVM
         PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 90

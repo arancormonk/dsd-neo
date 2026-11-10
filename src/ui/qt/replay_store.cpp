@@ -211,12 +211,55 @@ volume_free_bytes(const QString& folder) {
 }
 
 /*
+ * The engine's class of the file at @p path, as openAudioInDevice() dispatches it (dsd_audio_path_input_kind(), and
+ * .rrc for its 48 kHz rate): the first four characters after the last '.' of the WHOLE path, a folder's included, when
+ * they are ".bin" (dibits), ".raw" or ".sym" (float symbols) or ".rrc"; "" for any other PCM.
+ */
+QString
+path_input_class(const QString& path) {
+    const qsizetype dot = path.lastIndexOf(QLatin1Char('.'));
+    if (dot < 0) {
+        return {};
+    }
+    QString extension = path.mid(dot, 4);
+    for (const char* known : {".bin", ".raw", ".sym", ".rrc"}) {
+        if (extension == QLatin1String(known)) {
+            return extension;
+        }
+    }
+    return {};
+}
+
+/*
+ * The name a replay copy of a source of class @p sourceClass (path_input_class()) is stored under in replaysRoot(),
+ * from its sanitized @p name, so the copy opens as its source did. The class can differ: a capture classed by a
+ * folder (`caps.bin/plain`) is stored as a plain `plain`, and sanitizing can make or undo one (`x.bin.` loses its
+ * trailing dot). The source's class, or ".pcm" for other PCM, is then added as the name's extension.
+ */
+QString
+stored_replay_name(const QString& name, const QString& sourceClass) {
+    if (path_input_class(QDir(ReplayStore::replaysRoot()).filePath(name)) == sourceClass) {
+        return name;
+    }
+    return sanitized_import_name(name + (sourceClass.isEmpty() ? QStringLiteral(".pcm") : sourceClass), {});
+}
+
+/* The name a provider's document has as a file, for its class: its own name, else the pick's, after any slash. */
+QString
+provider_file_name(const QString& providerName, const QString& hint) {
+    QString name = providerName.trimmed().isEmpty() ? hint : providerName;
+    name.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    return name.mid(name.lastIndexOf(QLatin1Char('/')) + 1);
+}
+
+/*
  * A replay's stage, on the import worker: copy the document into the request's staging folder, at most what leaves
  * kReserveBytes free on the volume replaysRoot() is on (no cap when that cannot be read). On success the map carries
- * "staged", the copy's path, for the commit to publish.
+ * "staged", the copy's path, and "storeName", the name it is published under (stored_replay_name(): the class of
+ * @p localSource, a local pick's file, or else of the provider's name), for the commit to publish.
  */
 QVariantMap
-stage_replay(const ImportJob& job, const QString& reference, const QString& hint,
+stage_replay(const ImportJob& job, const QString& reference, const QString& hint, const QString& localSource,
              const ReplayStore::FreeSpace& freeSpace) {
     const QString root = ReplayStore::replaysRoot();
     if (!QDir().mkpath(root)) {
@@ -241,9 +284,15 @@ stage_replay(const ImportJob& job, const QString& reference, const QString& hint
     const ImportCopyProgress copy = job.transport->progress(job.id);
     QVariantMap result;
     switch (code) {
-        case DecoderHost::DocumentCopied:
-            result = {{QStringLiteral("ok"), true}, {QStringLiteral("staged"), staged}};
+        case DecoderHost::DocumentCopied: {
+            // A local pick (#830) keeps its file's class; a provider's document, its name's.
+            const QString source = localSource.isEmpty() ? provider_file_name(copy.displayName, hint) : localSource;
+            result = {{QStringLiteral("ok"), true},
+                      {QStringLiteral("staged"), staged},
+                      {QStringLiteral("storeName"),
+                       stored_replay_name(sanitized_import_name(copy.displayName, hint), path_input_class(source))}};
             break;
+        }
         case DecoderHost::DocumentTooLarge:
             result = failure(QStringLiteral("too_large"));
             result.insert(QStringLiteral("neededBytes"),
@@ -303,8 +352,9 @@ commit_migration(SavedSystemsModel* systems, const QList<CachedReplay>& found, c
         const QVariantMap copy = value.toMap();
         const QString source = copy.value(QStringLiteral("source")).toString();
         QString path;
-        if (publish_copy(copy.value(QStringLiteral("staged")).toString(),
-                         sanitized_import_name(QFileInfo(source).fileName(), {}), moveCopy, &path)) {
+        const QString name =
+            stored_replay_name(sanitized_import_name(QFileInfo(source).fileName(), {}), path_input_class(source));
+        if (publish_copy(copy.value(QStringLiteral("staged")).toString(), name, moveCopy, &path)) {
             published.insert(source, path);
         }
     }
@@ -360,12 +410,16 @@ ReplayStore::manifestPath() {
 int
 ReplayStore::beginReplayImport(const QString& reference, const QString& fileName) {
     cancelReplayImport();
-    const QString local = local_document_path(reference);
+    // Issue #830: where the host has DSD-neo's file browser, a local pick can be on a drive that goes away or in the
+    // inbox the user clears, so it is copied like a document; elsewhere (the desktop) it is used where it is.
+    const bool copiesLocal = m_host != nullptr && m_host->fileBrowserSupported();
+    const QString localSource = local_document_path(reference);
+    const QString local = copiesLocal ? QString() : localSource;
     if (!local.isEmpty() || m_imports.isNull()) {
         const qint64 id = ImportService::newRequestId();
         QVariantMap result = failure(QStringLiteral("read"));
         if (!local.isEmpty()) {
-            // A file the engine can open as it is: no copy, and nothing for the store to own (I5).
+            // A file the engine can open as it is: no copy, and nothing for the store to own.
             result = {{QStringLiteral("ok"), true},
                       {QStringLiteral("path"), QDir::cleanPath(local)},
                       {QStringLiteral("name"), QFileInfo(local).fileName()}};
@@ -379,20 +433,21 @@ ReplayStore::beginReplayImport(const QString& reference, const QString& fileName
     const FreeSpace freeSpace = m_freeSpace;
     const QString name = sanitized_import_name(QString(), fileName);
     QPointer<ReplayStore> self(this);
-    const qint64 id =
-        m_imports->submit([reference, fileName, freeSpace](
-                              const ImportJob& job) { return stage_replay(job, reference, fileName, freeSpace); },
-                          [self, name](qint64 request, const QVariantMap& staged, bool cancelled) {
-                              if (self.isNull()) {
-                                  return;
-                              }
-                              // Every answer names its document; a request whose stage never ran (no staging folder) has the pick's.
-                              QVariantMap named = staged;
-                              if (named.value(QStringLiteral("name")).toString().isEmpty()) {
-                                  named.insert(QStringLiteral("name"), name);
-                              }
-                              self->commitImport(request, named, cancelled);
-                          });
+    const qint64 id = m_imports->submit(
+        [reference, fileName, localSource, freeSpace](const ImportJob& job) {
+            return stage_replay(job, reference, fileName, localSource, freeSpace);
+        },
+        [self, name](qint64 request, const QVariantMap& staged, bool cancelled) {
+            if (self.isNull()) {
+                return;
+            }
+            // Every answer names its document; a request whose stage never ran (no staging folder) has the pick's.
+            QVariantMap named = staged;
+            if (named.value(QStringLiteral("name")).toString().isEmpty()) {
+                named.insert(QStringLiteral("name"), name);
+            }
+            self->commitImport(request, named, cancelled);
+        });
     m_current = id;
     m_copyName = name;
     m_copyBytes = 0;
@@ -578,12 +633,15 @@ ReplayStore::commitImport(qint64 id, const QVariantMap& staged, bool cancelled) 
     } else if (staged.value(QStringLiteral("ok")).toBool()) {
         // Recorded pending before QML sees it: a copy is never left unlisted, so a later start can reclaim it.
         QString path;
-        result = publish_copy(staged.value(QStringLiteral("staged")).toString(), name, m_move, &path)
+        const QString storeName = staged.value(QStringLiteral("storeName")).toString();
+        result = publish_copy(staged.value(QStringLiteral("staged")).toString(), storeName.isEmpty() ? name : storeName,
+                              m_move, &path)
                      ? QVariantMap{{QStringLiteral("ok"), true}, {QStringLiteral("path"), path}}
                      : failure(QStringLiteral("local"));
         result.insert(QStringLiteral("name"), name);
     }
     result.remove(QStringLiteral("staged"));
+    result.remove(QStringLiteral("storeName"));
     endCopy(id);
     Q_EMIT replayImportFinished(static_cast<int>(id), result);
 }

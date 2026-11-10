@@ -18,6 +18,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QObject>
@@ -261,6 +262,8 @@ class ReferenceLog {
 class TestHost : public dsd_qt::DecoderHost {
   public:
     bool running = false;
+    /* Whether the host has DSD-neo's file browser (#830), which confines the companions a CSV finds by path. */
+    bool browser = false;
     // The live answer, apart from the cached phase: Android's reads Idle until its first refresh().
     bool engine = false;
     std::shared_ptr<TestDocuments> shared = std::make_shared<TestDocuments>();
@@ -279,6 +282,11 @@ class TestHost : public dsd_qt::DecoderHost {
     bool
     engineBusy() const override {
         return engine;
+    }
+
+    bool
+    fileBrowserSupported() const override {
+        return browser;
     }
 
     QString
@@ -3324,6 +3332,119 @@ test_target_detached_copy() {
     model.remove(row);
 }
 
+/* The labels (the paths as the CSV writes them) of the companions @p result still asks for. */
+static QStringList
+requiredLabels(const QVariantMap& result) {
+    QStringList labels;
+    const QVariantMap names = result.value("requiredLabels").toMap();
+    for (const QString& key : result.value("required").toStringList()) {
+        labels.append(names.value(key).toString());
+    }
+    labels.sort();
+    return labels;
+}
+
+/* Issue #830: where the host browses the whole device, a CSV finds companions by path only inside its own folder
+   tree, by a relative name, as a regular file whose real path stays there; the rest stay required on the sheet. An
+   explicit choice is taken wherever it is, and a host without the browser finds every file it names, as before. */
+static void
+test_confined_companion_lookup() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    const QTemporaryDir tmp;
+    const QString folder = tmp.filePath("browse/lists");
+    const QString elsewhere = tmp.filePath("elsewhere");
+    expect("confinement folders", QDir().mkpath(folder + "/sub") && QDir().mkpath(elsewhere));
+    const QByteArray keys = "id,value\n1,12345\n";
+    const QString outsideAbsolute = elsewhere + "/abs.csv";
+    const QString insideAbsolute = folder + "/inside.csv";
+    bool fixtures = write_file(folder + "/groups.csv", keys) && write_file(folder + "/sub/keys.csv", keys)
+                    && write_file(tmp.filePath("browse/outside.csv"), keys) && write_file(outsideAbsolute, keys)
+                    && write_file(insideAbsolute, keys) && write_file(elsewhere + "/target.csv", keys)
+                    && write_file(folder + "/sub/real.csv", keys);
+    QString csv = "channel,frequency,mode,keys_dec_csv\n1,851012500,p25,groups.csv\n2,851025000,p25,sub/keys.csv\n"
+                  "3,851037500,p25,../outside.csv\n4,851050000,p25,"
+                  + outsideAbsolute + "\n5,851062500,p25," + insideAbsolute + "\n";
+    QStringList confinedOut = {QStringLiteral("../outside.csv"), outsideAbsolute, insideAbsolute};
+#ifndef _WIN32
+    fixtures = fixtures && QFile::link(elsewhere + "/target.csv", folder + "/link.csv")
+               && QFile::link(folder + "/sub/real.csv", folder + "/inlink.csv");
+    csv += "6,851075000,p25,link.csv\n7,851087500,p25,inlink.csv\n";
+    confinedOut.append(QStringLiteral("link.csv"));
+#endif
+    confinedOut.sort();
+    const QString primary = folder + "/chan.csv";
+    expect("confinement fixtures", fixtures && write_file(primary, csv.toUtf8()));
+
+    TestHost host;
+    host.browser = true;
+    dsd_qt::ImportedFilesModel model(&host);
+    QVariantMap result = importAndWait(model, QUrl::fromLocalFile(primary).toString(), "chan.csv", "chan");
+    expect("confined: the companions out of the CSV's tree stay required",
+           result.value("error") == "companions" && requiredLabels(result) == confinedOut);
+    // An explicit choice outside the tree is the user's: taken as it is.
+    QVariantMap chosen;
+    for (const QString& key : result.value("required").toStringList()) {
+        chosen.insert(key, outsideAbsolute);
+    }
+    result = importAndWait(model, QUrl::fromLocalFile(primary).toString(), "chan.csv", "chan", QString(), chosen);
+    expect("confined: explicit choices outside are used", result.value("ok").toBool());
+    const int stored = model.rowForPath(result.value("path").toString());
+
+    // A target list's nested channel map: its companions stay in the target list's tree too.
+    expect("nested fixtures",
+           write_file(tmp.filePath("browse/x.csv"), "id,value\n01,ABCDEF0123\n")
+               && write_file(folder + "/hk.csv", "id,value\n01,ABCDEF0123\n")
+               && write_file(folder + "/nested.csv",
+                             "channel,frequency,mode,keys_hex_csv\n1,851012500,p25,../x.csv\n2,851025000,p25,hk.csv\n")
+               && write_file(folder + "/targets.csv", "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+                                                      "one,p25-trunk,851012500,nested.csv,250,,\n"));
+    result =
+        importAndWait(model, QUrl::fromLocalFile(folder + "/targets.csv").toString(), "targets.csv", "trunkTargets");
+    const QStringList nested = requiredLabels(result);
+    expect("confined: a nested map's escape stays required, its neighbour is found",
+           result.value("error") == "companions" && nested.size() == 1 && nested.value(0).endsWith("→ ../x.csv"));
+    expect("contained target fixtures",
+           write_file(folder + "/map2.csv", "channel,frequency,mode,keys_hex_csv\n1,851012500,p25,hk.csv\n")
+               && write_file(folder + "/targets2.csv", "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+                                                       "one,p25-trunk,851012500,map2.csv,250,,\n"));
+    result =
+        importAndWait(model, QUrl::fromLocalFile(folder + "/targets2.csv").toString(), "targets2.csv", "trunkTargets");
+    expect("confined: a target list inside its tree imports", result.value("ok").toBool());
+    const QString storedTargets = result.value("path").toString();
+    const QString detachedTargets = tmp.filePath("detached-targets.csv");
+    expect("detached target copy", QFile::copy(storedTargets, detachedTargets));
+    host.documents.insert("content://detached-targets", detachedTargets);
+    result = importAndWait(model, "content://detached-targets", "targets2.csv", "trunkTargets", storedTargets);
+    expect("confined: a stored target revision's own companions are found", result.value("ok").toBool());
+
+    // A stored revision's update from a document with no folder: only names inside the bundle's root are found.
+    const QString document = tmp.filePath("update.csv");
+    expect("update fixture", write_file(document, "channel,frequency,mode,keys_dec_csv\n1,851012500,p25,"
+                                                      + outsideAbsolute.toUtf8() + "\n"));
+    host.documents.insert("content://update", document);
+    result = importAndWait(model, "content://update", "chan.csv", "chan", rowPath(model, stored));
+    expect("confined: a stored revision's update naming a file outside its root asks for it",
+           result.value("error") == "companions" && requiredLabels(result) == QStringList{outsideAbsolute});
+    const QString detached = tmp.filePath("detached.csv");
+    expect("detached copy", QFile::copy(rowPath(model, stored), detached));
+    host.documents.insert("content://detached", detached);
+    result = importAndWait(model, "content://detached", "chan.csv", "chan", rowPath(model, stored));
+    expect("confined: a stored revision's own companions are found", result.value("ok").toBool());
+
+    // Without the browser (the desktop) every file the CSV names is found, as before.
+    host.browser = false;
+    result = importAndWait(model, QUrl::fromLocalFile(primary).toString(), "chan.csv", "chan");
+    expect("unconfined: every companion is found", result.value("ok").toBool());
+    result =
+        importAndWait(model, QUrl::fromLocalFile(folder + "/targets.csv").toString(), "targets.csv", "trunkTargets");
+    expect("unconfined: a nested map's companions are found", result.value("ok").toBool());
+    result = importAndWait(model, "content://update", "chan.csv", "chan", rowPath(model, stored));
+    expect("unconfined: a stored revision's update finds a file outside its root", result.value("ok").toBool());
+    while (model.rowCount() > 0) {
+        model.remove(0);
+    }
+}
+
 static void
 test_target_errors_and_opaque_columns() {
     TestHost host;
@@ -3500,6 +3621,301 @@ test_document_picker_defaults() {
            host.property("documentPickerSupported").isValid() && !host.property("documentPickerSupported").toBool());
 }
 
+namespace {
+
+/* Every file browser answer a host gave, in order, as {signal, id, result}; an access outcome is {outcome}. */
+struct FileAnswers {
+    QVariantList answers;
+
+    explicit FileAnswers(dsd_qt::DecoderHost& host) {
+        QObject::connect(&host, &dsd_qt::DecoderHost::fileRootsListed, &host,
+                         [this](qint64 id, const QVariantMap& result) { note("roots", id, result); });
+        QObject::connect(&host, &dsd_qt::DecoderHost::folderListed, &host,
+                         [this](qint64 id, const QVariantMap& result) { note("folder", id, result); });
+        QObject::connect(&host, &dsd_qt::DecoderHost::fileHandoffChecked, &host,
+                         [this](qint64 id, const QVariantMap& result) { note("handoff", id, result); });
+        QObject::connect(
+            &host, &dsd_qt::DecoderHost::fileAccessRequestDone, &host,
+            [this](qint64 id, const QString& outcome) { note("access", id, {{QStringLiteral("outcome"), outcome}}); });
+    }
+
+    void
+    note(const char* signal, qint64 id, const QVariantMap& result) {
+        answers.append(QVariantMap{{QStringLiteral("signal"), QString::fromLatin1(signal)},
+                                   {QStringLiteral("id"), id},
+                                   {QStringLiteral("result"), result}});
+    }
+
+    /* How many answers request @p id got. */
+    int
+    count(qint64 id) const {
+        int n = 0;
+        for (const QVariant& answer : answers) {
+            n += answer.toMap().value(QStringLiteral("id")).toLongLong() == id ? 1 : 0;
+        }
+        return n;
+    }
+
+    /* Whether request @p id got exactly one answer, on @p signal, with @p result. */
+    bool
+    once(qint64 id, const char* signal, const QVariantMap& result) const {
+        if (count(id) != 1) {
+            return false;
+        }
+        for (const QVariant& answer : answers) {
+            const QVariantMap entry = answer.toMap();
+            if (entry.value(QStringLiteral("id")).toLongLong() == id) {
+                return entry.value(QStringLiteral("signal")).toString() == QLatin1String(signal)
+                       && entry.value(QStringLiteral("result")).toMap() == result;
+            }
+        }
+        return false;
+    }
+};
+
+QVariantMap
+status_map(const char* status) {
+    return {{QStringLiteral("status"), QString::fromLatin1(status)}};
+}
+
+/* Every roots answer has the roots' shape, a failure's too: no generation and no roots. */
+QVariantMap
+roots_map(const char* status) {
+    return {{QStringLiteral("status"), QString::fromLatin1(status)},
+            {QStringLiteral("generation"), qint64(0)},
+            {QStringLiteral("roots"), QVariantList()}};
+}
+
+} // namespace
+
+/* Issue #830: a host without a file browser opens sessions and answers every request "unsupported", queued and once;
+   cancel, session close and a superseding listing turn a pending answer into "cancelled". */
+static void
+test_file_browser_defaults() {
+    TestHost host;
+    expect("the base host has no file browser", !host.fileBrowserSupported());
+    expect("the property publishes the browser capability",
+           host.property("fileBrowserSupported").isValid() && !host.property("fileBrowserSupported").toBool());
+    const QVariantMap access{{QStringLiteral("declared"), false},
+                             {QStringLiteral("granted"), false},
+                             {QStringLiteral("route"), QStringLiteral("none")},
+                             {QStringLiteral("apiLevel"), 0},
+                             {QStringLiteral("rootsGeneration"), 0}};
+    expect("the base host declares no file access", host.fileAccess() == access);
+    expect("the property publishes the file access", host.property("fileAccess").toMap() == access);
+    host.refreshFileAccess();
+    expect("a refresh changes nothing on the base host", host.fileAccess() == access);
+    FileAnswers answers(host);
+    int accessChanges = 0;
+    QObject::connect(&host, &dsd_qt::DecoderHost::fileAccessChanged, &host, [&accessChanges] { accessChanges++; });
+
+    const qint64 s = host.openFileBrowserSession();
+    expect("a session id is positive", s > 0);
+    const qint64 r = host.requestFileRoots(s);
+    const qint64 l = host.requestFolderListing(
+        s, QStringLiteral("inbox"), 1, QStringLiteral("/x"),
+        {{QStringLiteral("kind"), QStringLiteral("csv")}, {QStringLiteral("showAll"), false}});
+    const qint64 p = host.requestMorePage(s, 7, 500);
+    const qint64 h = host.requestFileHandoff(s, QStringLiteral("inbox"), 1, QStringLiteral("file:///x/a.csv"));
+    const qint64 a = host.requestFileAccess(s);
+    expect("each file request id is larger than the last", r > s && l > r && p > l && h > p && a > h);
+    expect("no file answer before the requests return", answers.answers.isEmpty());
+    expect("a second access request joins the live one", host.requestFileAccess(s) == a);
+    QCoreApplication::processEvents();
+    const QVariantMap unsupportedRoots{{QStringLiteral("status"), QStringLiteral("unsupported")},
+                                       {QStringLiteral("generation"), 0},
+                                       {QStringLiteral("roots"), QVariantList()}};
+    expect("roots answered unsupported once", answers.once(r, "roots", unsupportedRoots));
+    expect("the listing the page superseded is cancelled once", answers.once(l, "folder", status_map("cancelled")));
+    expect("the page answered unsupported once", answers.once(p, "folder", status_map("unsupported")));
+    expect("the hand-off answered unsupported once",
+           answers.once(h, "handoff",
+                        {{QStringLiteral("ok"), false}, {QStringLiteral("reason"), QStringLiteral("unsupported")}}));
+    expect("the access request answered unsupported once",
+           answers.once(a, "access", {{QStringLiteral("outcome"), QStringLiteral("unsupported")}}));
+    expect("five answers in all", answers.answers.size() == 5);
+    QCoreApplication::processEvents();
+    expect("nothing answers twice", answers.answers.size() == 5);
+    expect("the access request ends once answered: the next one is new", host.requestFileAccess(s) > a);
+    QCoreApplication::processEvents();
+
+    /* Cancelled before its answer ran: one "cancelled", never the "unsupported" it had queued. */
+    answers.answers.clear();
+    const qint64 x = host.requestFileRoots(s);
+    host.cancelFileRequest(x);
+    host.cancelFileRequest(x);
+    const qint64 accessX = host.requestFileAccess(s);
+    host.cancelFileRequest(accessX);
+    expect("an access request cancelled is not joined", host.requestFileAccess(s) > accessX);
+    QCoreApplication::processEvents();
+    expect("a cancelled request is answered cancelled once", answers.once(x, "roots", roots_map("cancelled")));
+    expect("a cancelled access request is answered cancelled once",
+           answers.once(accessX, "access", {{QStringLiteral("outcome"), QStringLiteral("cancelled")}}));
+    host.cancelFileRequest(x);
+    host.cancelFileRequest(999999);
+    QCoreApplication::processEvents();
+    expect("cancelling an answered or unknown id answers nothing", answers.count(x) == 1 && answers.count(999999) == 0);
+
+    /* An access request from a closed or unknown session never joins the pending one: it gets its own id, cancelled,
+       and the pending request keeps its answer. */
+    answers.answers.clear();
+    const qint64 pending = host.requestFileAccess(s);
+    const qint64 gone = host.openFileBrowserSession();
+    host.closeFileBrowserSession(gone);
+    const qint64 fromClosed = host.requestFileAccess(gone);
+    const qint64 fromUnknown = host.requestFileAccess(-1);
+    expect("an access request from a closed or unknown session is its own",
+           fromClosed > pending && fromUnknown > fromClosed && host.requestFileAccess(s) == pending);
+    QCoreApplication::processEvents();
+    expect("the pending access request keeps its own answer",
+           answers.once(pending, "access", {{QStringLiteral("outcome"), QStringLiteral("unsupported")}}));
+    expect("an access request from a closed or unknown session is cancelled",
+           answers.once(fromClosed, "access", {{QStringLiteral("outcome"), QStringLiteral("cancelled")}})
+               && answers.once(fromUnknown, "access", {{QStringLiteral("outcome"), QStringLiteral("cancelled")}}));
+
+    /* Closing the session cancels its live requests, and a request naming it afterwards is cancelled. */
+    answers.answers.clear();
+    const qint64 other = host.openFileBrowserSession();
+    const qint64 kept = host.requestFileRoots(other);
+    const qint64 first = host.requestFileRoots(s);
+    const qint64 second = host.requestFileHandoff(s, QStringLiteral("saved"), 2, QStringLiteral("content://x/1"));
+    host.closeFileBrowserSession(s);
+    const qint64 late = host.requestFolderListing(s, QStringLiteral("inbox"), 1, QStringLiteral("/x"), {});
+    const qint64 unknown = host.requestFileRoots(other + 1000);
+    QCoreApplication::processEvents();
+    expect(
+        "closing a session cancels each live request once",
+        answers.once(first, "roots", roots_map("cancelled"))
+            && answers.once(second, "handoff",
+                            {{QStringLiteral("ok"), false}, {QStringLiteral("reason"), QStringLiteral("cancelled")}}));
+    expect("a request for a closed session is cancelled", answers.once(late, "folder", status_map("cancelled")));
+    expect("a request for an unknown session is cancelled", answers.once(unknown, "roots", roots_map("cancelled")));
+    expect("another session's request keeps its own answer", answers.once(kept, "roots", unsupportedRoots));
+    host.closeFileBrowserSession(other);
+    QCoreApplication::processEvents();
+    expect("closing a session with nothing live answers nothing", answers.answers.size() == 5);
+    expect("file access never changed on the base host", accessChanges == 0);
+}
+
+namespace {
+
+/* A host whose file requests stay live until settled, as a platform host's do until its record comes: the protected
+   helpers under test, and the retirements it is told of. */
+class LiveFileHost : public TestHost {
+  public:
+    using DecoderHost::FileRequestKind;
+    QList<qint64> retired;
+
+    qint64
+    begin(qint64 sessionId, FileRequestKind kind) {
+        return beginFileRequest(sessionId, kind);
+    }
+
+    bool
+    live(qint64 id) const {
+        return fileRequestLive(id);
+    }
+
+    bool
+    settle(qint64 id, const QVariantMap& result) {
+        return settleFileRequest(id, result);
+    }
+
+    void
+    settleLater(qint64 id, const QVariantMap& result) {
+        settleFileRequestLater(id, result);
+    }
+
+    qint64
+    liveAccess() const {
+        return liveFileAccessRequest();
+    }
+
+  protected:
+    void
+    fileRequestRetired(qint64 requestId) override {
+        retired.append(requestId);
+    }
+};
+
+} // namespace
+
+/* Issue #830: the helpers a platform host answers through. A cancel, a session close and a superseding listing retire
+   a live request once (fileRequestRetired()) and make a late record a drop (settleFileRequest() false); one access
+   request is live app-wide, and only an open session joins it. */
+static void
+test_file_browser_live_requests() {
+    using Kind = LiveFileHost::FileRequestKind;
+    LiveFileHost host;
+    FileAnswers answers(host);
+    const QVariantMap ok = status_map("ok");
+    const qint64 s = host.openFileBrowserSession();
+
+    const qint64 r = host.begin(s, Kind::Roots);
+    expect("a begun request is live", host.live(r));
+    host.cancelFileRequest(r);
+    expect("a live cancel is retired once", host.retired == QList<qint64>({r}) && !host.live(r));
+    expect("a record after the cancel is dropped", !host.settle(r, ok));
+    host.cancelFileRequest(r);
+    expect("a second cancel retires nothing more", host.retired.size() == 1);
+
+    const qint64 l = host.begin(s, Kind::Listing);
+    const qint64 p = host.begin(s, Kind::Page);
+    expect("a page retires the session's live listing", host.retired == QList<qint64>({r, l}) && host.live(p));
+    expect("a record for the superseded listing is dropped", !host.settle(l, ok));
+    expect("the live page is answered now", host.settle(p, ok) && answers.once(p, "folder", ok));
+    expect("a page answers only once", !host.settle(p, ok));
+
+    const qint64 h = host.begin(s, Kind::Handoff);
+    const qint64 a = host.begin(s, Kind::Access);
+    expect("the access request is the one live", host.liveAccess() == a);
+    expect("a second access begin joins it", host.begin(s, Kind::Access) == a && host.live(a));
+    const qint64 gone = host.openFileBrowserSession();
+    host.closeFileBrowserSession(gone);
+    const qint64 fromClosed = host.begin(gone, Kind::Access);
+    const qint64 fromUnknown = host.begin(-1, Kind::Access);
+    expect("an access begin from a closed or unknown session is its own and not live",
+           fromClosed > gone && fromUnknown > fromClosed && !host.live(fromClosed) && !host.live(fromUnknown));
+    expect("and leaves the live access request alone", host.liveAccess() == a && host.live(a));
+    expect("a request for a session not open is never retired on the platform", host.retired.size() == 2);
+
+    host.closeFileBrowserSession(s);
+    expect("closing the session retires each live request once",
+           host.retired == QList<qint64>({r, l, h, a}) && !host.live(h) && !host.live(a));
+    expect("records after the close are dropped",
+           !host.settle(h, ok) && !host.settle(a, {{QStringLiteral("outcome"), QStringLiteral("granted")}}));
+    expect("no access request is live after the close", host.liveAccess() == 0);
+
+    /* A queued answer is not live: a cancel turns it into "cancelled" without a platform retirement. */
+    const qint64 s3 = host.openFileBrowserSession();
+    const qint64 q = host.begin(s3, Kind::Roots);
+    host.settleLater(q, ok);
+    expect("a request with a queued answer is not live", !host.live(q) && !host.settle(q, ok));
+    host.cancelFileRequest(q);
+    expect("cancelling a queued answer retires nothing on the platform", host.retired.size() == 4);
+    const qint64 a2 = host.begin(s3, Kind::Access);
+    expect("a new access request after the close", a2 > q && host.liveAccess() == a2);
+    expect("an access record settles it now",
+           host.settle(a2, {{QStringLiteral("outcome"), QStringLiteral("granted")}})
+               && answers.once(a2, "access", {{QStringLiteral("outcome"), QStringLiteral("granted")}})
+               && host.liveAccess() == 0);
+
+    QCoreApplication::processEvents();
+    const QVariantMap cancelled = status_map("cancelled");
+    expect("each retired request is answered cancelled once",
+           answers.once(r, "roots", roots_map("cancelled")) && answers.once(l, "folder", cancelled)
+               && answers.once(h, "handoff",
+                               {{QStringLiteral("ok"), false}, {QStringLiteral("reason"), QStringLiteral("cancelled")}})
+               && answers.once(a, "access", {{QStringLiteral("outcome"), QStringLiteral("cancelled")}}));
+    expect("requests for a session not open are answered cancelled",
+           answers.once(fromClosed, "access", {{QStringLiteral("outcome"), QStringLiteral("cancelled")}})
+               && answers.once(fromUnknown, "access", {{QStringLiteral("outcome"), QStringLiteral("cancelled")}}));
+    expect("a queued answer cancelled before it ran is cancelled once",
+           answers.once(q, "roots", roots_map("cancelled")));
+    expect("the settled page is not answered again", answers.count(p) == 1);
+    expect("nine answers in all", answers.answers.size() == 9);
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -3573,10 +3989,13 @@ main(int argc, char** argv) {
     test_target_channel_primary_collision();
     test_target_key_primary_collision();
     test_target_detached_copy();
+    test_confined_companion_lookup();
     test_target_errors_and_opaque_columns();
     test_example_targets();
     test_export_registration_in_place();
     test_document_picker_defaults();
+    test_file_browser_defaults();
+    test_file_browser_live_requests();
     test_group_list_counts_read_the_file_now();
     test_imported_files_model();
     test_update_rejects_invalid_pick();

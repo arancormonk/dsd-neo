@@ -3,6 +3,7 @@
 
 import QtQuick
 import QtTest
+import "../../../src/ui/qt/qml" as Ui
 
 // #832: the wizard's imports run on the import worker and answer later.
 //
@@ -56,6 +57,10 @@ Item {
             testContext.resetReplayFiles();
         }
         function cleanup() {
+            if (Ui.FileBrowser.request)
+                Ui.FileBrowser.dismiss(Ui.FileBrowser.request.token);
+            testContext.setFileBrowserSupported(false);
+            testContext.setPrefs("chooseFilesInApp", false);
             tc.wizard.visible = true;
             tc.wizard.openForAdd(false);
             testContext.resetReplayFiles();
@@ -70,9 +75,11 @@ Item {
             return found;
         }
         // A provider's document, as Browse hands it on (tst_wizard_browse
-        // drives Browse and the picker themselves).
-        function pickReplay(reference) {
-            tc.wizard.beginReplay(reference, reference.substring(reference.lastIndexOf('/') + 1));
+        // drives Browse and the picker themselves): with the host's name for
+        // it, decoded already, or with none, when the wizard names it from
+        // the reference.
+        function pickReplay(reference, displayName) {
+            tc.wizard.replayFilePicked(reference, displayName || "");
         }
 
         // A local file (the desktop's pick) is used where it is: the store
@@ -95,6 +102,78 @@ Item {
             compare(watch.count, 0, "the copy row never showed");
             verify(!tc.wizard.replayPending);
             watch.destroy();
+        }
+
+        // #830: with DSD-neo's file browser chosen in Settings, Browse asks
+        // it for a replay file. The browsed file's reference reaches the
+        // store as it came and is copied (a local pick is copied where the
+        // host has the browser), shown by the name the browser gave; a wizard
+        // that closes takes the browser with it.
+        function test_replay_browse() {
+            testContext.setFileBrowserSupported(true);
+            testContext.setPrefs("chooseFilesInApp", true);
+            var reference = "file:///storage/emulated/0/Download/a%20b%231%25.csv";
+            var hostCalls = testContext.documentCalls().length;
+            item("wizardReplayBrowse").clicked();
+            var request = Ui.FileBrowser.request;
+            verify(request !== null, "the browser is asked");
+            compare(request.kind, "replay");
+            compare(request.title, "Choose a replay file");
+            compare(testContext.documentCalls().length, hostCalls, "Android's picker is not asked");
+            Ui.FileBrowser.finish(request.token, reference, "a b#1%.csv");
+            compare(testContext.replayCalls().begins, 1);
+            compare(testContext.replayCalls().reference, reference, "the reference reaches the store as it came");
+            verify(tc.wizard.replayCopying, "the local pick copies");
+            compare(item("wizardReplayProgressText").text, "Copying a b#1%.csv…");
+            verify(testContext.finishReplay({ok: true, path: "/data/replays/a b#1%.csv"}));
+            compare(tc.wizard.fileText, "/data/replays/a b#1%.csv");
+
+            item("wizardReplayBrowse").clicked();
+            verify(Ui.FileBrowser.request !== null);
+            tc.wizard.visible = false;
+            compare(Ui.FileBrowser.request, null, "a hidden wizard ends its browse");
+            compare(testContext.replayCalls().begins, 1, "and nothing is picked");
+        }
+
+        // #830: the store is handed the host's name as given; only a pick
+        // that came with no name is named from its reference, decoded once.
+        function test_replay_pick_names_once() {
+            tc.wizard.replayFilePicked("content://provider/document/100%25%20capture.wav", "100%25 capture.wav");
+            compare(item("wizardReplayProgressText").text, "Copying 100%25 capture.wav…");
+            tc.wizard.replayFilePicked("content://provider/document/cap%20one.wav", "");
+            compare(item("wizardReplayProgressText").text, "Copying cap one.wav…");
+        }
+
+        // #830: at the largest text, Browse keeps its word on one line (a
+        // fixed width split it "Brows" / "e"), and the file field beside it
+        // takes what is left of the row.
+        function test_browse_label_whole_words_data() {
+            return [{tag: "360", width: 360}, {tag: "420", width: 420}];
+        }
+        function test_browse_label_whole_words(data) {
+            root.width = data.width;
+            Ui.Theme.fontScale = 1.6;
+            try {
+                var browse = item("wizardReplayBrowse");
+                var label = null;
+                for (var i = 0; i < browse.children.length; ++i) {
+                    if (browse.children[i].text === "Browse")
+                        label = browse.children[i];
+                }
+                verify(label !== null, "the Browse label is missing");
+                waitForRendering(browse);
+                compare(label.lineCount, 1, "Browse is split over lines");
+                verify(!label.truncated, "Browse is cut short");
+                verify(label.contentWidth <= label.width, "Browse is wider than its label");
+                var field = browse.parent.children[0];
+                var fieldRight = field.mapToItem(tc.wizard, field.width, 0).x;
+                var browseLeft = browse.mapToItem(tc.wizard, 0, 0).x;
+                verify(fieldRight <= browseLeft, "the file field runs under Browse");
+                verify(browse.mapToItem(tc.wizard, browse.width, 0).x <= tc.wizard.width, "Browse runs off the screen");
+            } finally {
+                Ui.Theme.fontScale = 1;
+                root.width = 420;
+            }
         }
 
         // The copy belongs to the File source: picking another source cancels

@@ -55,7 +55,10 @@ receiver_source_name(int source) {
 
 } // namespace
 
-DecoderHostAndroid::~DecoderHostAndroid() { closeRecordingWork(); }
+DecoderHostAndroid::~DecoderHostAndroid() {
+    endFileBrowser();
+    closeRecordingWork();
+}
 
 bool
 DecoderHostAndroid::isRunning() const {
@@ -575,5 +578,6 @@ DecoderHostAndroid::refresh() {
     refreshRecordingTransfer();
     refreshRecordingShares();
     refreshDocumentPicks();
+    refreshFileBrowser();
 }
 } // namespace dsd_android

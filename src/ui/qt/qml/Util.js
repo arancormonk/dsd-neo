@@ -797,6 +797,20 @@ function sizeText(bytes) {
     return unit(b / 1e9, "GB")
 }
 
+// A file's name as a person reads it, from a picked reference, which is
+// URL-encoded ("content://…/primary%3ADownload%2Fmap.csv"): its last segment,
+// decoded once (issue #830). Never for a name the host gave, which is decoded
+// already. A malformed escape leaves the reference as it came.
+function referenceName(reference) {
+    var decoded = reference
+    try {
+        decoded = decodeURIComponent(reference)
+    } catch (e) {
+        // Not an encoded reference: named as it came.
+    }
+    return decoded.substring(decoded.lastIndexOf('/') + 1)
+}
+
 // #832: what a failed import says, the same on the wizard, Imported files
 // and Scan lists. `result` is an importedFiles.importFinished() or a
 // replayFiles.replayImportFinished() answer; `context` is "replay" for a

@@ -13161,7 +13161,16 @@ Qt Quick frontend (`src/ui/qt`):
   an exclusive `mkdir`, moves the companions in one by one (`dsd_rename_noreplace`), then publishes the primary (no
   replace, in the new root) and saves the row, or replaces the row's file index-first as above; a failure removes the
   directory, and the journal entry goes once the primary is in place. Unanswered companions answer `companions` with
-  `required`, `requiredLabels` and `requiredDetails` (library choices added on the Qt thread).
+  `required`, `requiredLabels` and `requiredDetails` (library choices added on the Qt thread). A companion the CSV
+  names is found by path beside a local primary (a target list's nested channel maps too) or, for an update, in the
+  replaced row's bundle root. Where the host has DSD-neo's file browser (`DecoderHost::fileBrowserSupported()`, read
+  on the Qt thread by `bundleRequest()` into the request's `confineCompanions`, then `BundleTarget::
+  confineLocalCompanions`), that lookup is confined (issue #830): only a relative name, a regular file, whose canonical
+  path lies in the top-level primary's canonical folder or below it, or in the canonical bundle root for the stored
+  revision's own documents (`companion_within()`, whole path components, links followed). An absolute name, `../` out
+  of the tree or a link out stays `required`, in `resolveSources()` and `TrunkBundleStager::selectedSource()` alike;
+  explicit choices (`companions`) and library files are taken as they are. On the desktop the lookup follows any path
+  the CSV names.
   Bundle revisions the row's primary no longer reaches (`bundle_reached_revisions()`, from `bundle_reached_files()`,
   which the backup export uses too) are reclaimed on the import worker (`clean_bundle_revisions()`), for channel maps
   and target lists, after a successful bundle replace and once after `load()`, never while the decoder runs
@@ -13207,15 +13216,23 @@ Qt Quick frontend (`src/ui/qt`):
   `registerTalkgroupList()` saves the index before it adds the row and answers false, adding nothing, when it cannot.
   `import_names.{h,cpp}` is the one rule both platforms use to name a stored import (`sanitized_import_name`: C0
   control characters, NUL included, become `_` first, since a C-string rename would cut the name at a NUL; at most
-  247 UTF-8 bytes so a " (999)" suffix always fits) and to find a free name (`unique_import_destination`, which also
-  skips reserved paths).
+  247 UTF-8 bytes so a " (999)" suffix always fits; the provider's name, else the picker's hint, each taken as given
+  and never percent-decoded, since the host decodes the name it hands back, #830: a QML caller holding only a
+  reference decodes its last segment once, through `Util.referenceName()`)
+  and to find a free name (`unique_import_destination`, which also skips reserved paths).
   `document_import_transport.{h,cpp}` is the import copies' transport (#832): `DecoderHost::importTransport()` hands
   out a new `DocumentImportTransport` each call, which never calls the host, so the import worker may keep it past the
   host. `copy(request, reference, destPath, maxBytes)` blocks and returns a `DocumentCopy` code; `cancel(request)`
   stops that request's running copy at its next chunk and answers `DocumentCancelled` for every later copy until
   `forget(request)`, which callers make only after the request's last `copy()` returned; `progress(request)` gives the
-  latest copy's name, bytes, total and whether it ran out of space. The base transport copies a local file (file URL
-  or absolute path; any other reference is `DocumentFailed`) through `QSaveFile` and `copy_stream_capped()`, whose
+  latest copy's name, bytes, total and whether it ran out of space. The base transport copies a local regular file
+  (file URL or absolute path; any other reference is `DocumentFailed`, and so is a FIFO, socket, device or folder,
+  also through a symbolic link, checked before the open: a FIFO with no writer held the import worker forever,
+  #830 B1) through `QSaveFile` and `copy_stream_capped()`. The protected `openSource(path)` is the only source open
+  and never waits: on POSIX it resolves the path (`dsd_path_canonical()`) and opens it with
+  `dsd_fopen_existing_regular_file()` (non-blocking, the resolved name not followed, refused unless the descriptor is
+  a regular file), so a FIFO swapped in after the check is refused too; Windows, with no FIFO at a file path, opens a
+  plain `QFile`. `UI_QT_IMPORT_TRANSPORT`'s `stop_mid_copy` overrides it with a paced device. The copy's
   per-chunk predicate checks the request's cancel and the transport's abort; a write or commit that hits `ENOSPC`
   (`ResourceError` or errno) is `DocumentLocalFailed` with `noSpace`. `abortDocumentTransfers()` aborts every transport
   handed out (the host keeps weak references), and one handed out after it starts aborted.
@@ -13274,15 +13291,23 @@ Qt Quick frontend (`src/ui/qt`):
   for the library's commits (the replay store records its entry first, then moves the same way). Test:
   `UI_QT_IMPORT_SERVICE`.
   `replay_store.{h,cpp}` (`replayFiles`) owns the replay captures picked in the wizard (#832).
-  `beginReplayImport(reference, fileName)` answers `replayImportFinished(id, result)` once, queued: a local reference
-  (file URL or absolute path) with its plain path, never copied; anything else is copied by the import service into its
+  `beginReplayImport(reference, fileName)` answers `replayImportFinished(id, result)` once, queued: on the desktop a
+  local reference (file URL or absolute path) with its plain path, never copied; where the host has DSD-neo's file
+  browser (`fileBrowserSupported()`, issue #830) a local reference is copied like a document, since a USB drive can go
+  away and the inbox can be cleared (saved systems keep the paths they already name); anything else is copied by the
+  import service into its
   staging folder, at most the free space of `<AppData>/replays/` (`dsd_path_free_bytes`) less `kReserveBytes` (512 MiB;
   no cap when free space cannot be read; with less than the reserve free the answer is `too_large` before the document
   is opened), then recorded pending under the free name it will take (`unique_import_destination`) and only then moved
   into `replays/` (`dsd_rename_noreplace`, `ImportService::kPublishAttempts` names); a move that fails drops the entry
   again, so a crash between the two leaves a pending entry the next reclaim settles (the copy deleted, or the entry
-  dropped when nothing moved), never an unlisted copy. The migration publishes the same way. An entry the list still
-  holds for the free name is stale and is replaced. Every
+  dropped when nothing moved), never an unlisted copy. A copy opens as its source did: the engine classes a file by the
+  last '.' of its whole path (`dsd_audio_path_input_kind()`, `.rrc` for 48 kHz), folders included, so when the stored
+  path would class differently from the source (a local pick's file; a provider's document by its own name; the
+  migration's cached file), as for `caps.bin/plain` or a name whose trailing dot sanitizing trims (`x.bin.`), the stored
+  name gets the source's class as its extension (`.bin`, `.raw`, `.sym`, `.rrc`, or `.pcm` for other PCM;
+  `stored_replay_name()`), and the answer's `name` stays the pick's. The migration publishes the same way. An entry
+  the list still holds for the free name is stale and is replaced. Every
   answer carries `name`. Errors: `too_large` (`neededBytes` = size + reserve or -1, `freeBytes`, `reserveBytes`),
   `local` (`noSpace`),
   `read`, `cancelled`. One copy runs at a time (a new one cancels it; `cancelReplayImport()`, which answers `cancelled`
@@ -13953,7 +13978,10 @@ Qt Quick frontend (`src/ui/qt`):
     (not a backup, newer, too large, damaged, unreadable) swaps Unlock for "Choose another file", which reopens the
     picker inside the same flow as a new request, so only a new answer is taken, never the failed file again (#829 B2).
     Both pickers are `DocumentPicker`s (`backupSavePicker`: save, `application/octet-stream`, `suggestedName` from
-    `suggestedFileName()` before each open; `backupOpenPicker`: open). A picker that is `unavailable` ends the flow
+    `suggestedFileName()` before each open; `backupOpenPicker`: open, `browseKind` "backup", title "Choose a backup",
+    so DSD-neo's file browser can serve it, #830: the step stays `restorePicker` and `flowActive` holds while it
+    browses, Back at its locations is the picker's `rejected()` and ends the flow, an accepted pick opens the unlock
+    sheet, which keeps the focus, and "Choose another file" browses again). A picker that is `unavailable` ends the flow
     through `finish(message, true)`, the save after `discardExport()`, so the card shows the reason as a problem
     (`AlertMessage`) and `setNotice()` announces it once (`announcements` counts them for tests); `finish()` closes
     both pickers silently. A save that went to the Download folder (`savedToDownloads`) reads "Backup saved to
@@ -13971,7 +13999,8 @@ Qt Quick frontend (`src/ui/qt`):
     so a change to them changes the card. Text from a backup (app version, `notIncluded`) renders as `Text.PlainText`.
   - Supporting changes: `AppPrefs` names every key once in a table (`keyTable()`) that marks it portable or device-local
     (device-local: first-run state (`ui/onboardingDone`, `ui/notificationExplained`), the last location fix
-    (`location/*`), how this device's screens were left (`monitor/detailsExpanded`, `listen/section`) and the session
+    (`location/*`), how this device's screens were left (`monitor/detailsExpanded`, `listen/section`), whether this
+    device opens DSD-neo's file browser first (`ui/chooseFilesInApp`, issue #830) and the session
     this device's service runs (`listen/acceptedStart*`, `listen/lastStartedCompanions`); `UI_QT_PERSISTENCE` pins the
     set), with `readPortable()`/`replacePortable()`; a new key must be classed there. `DecryptionProfilesModel` compiles at load
     any row without a compiled form, which every restored row is, and persists once; a row that cannot compile is kept,
@@ -14088,6 +14117,54 @@ Qt Quick frontend (`src/ui/qt`):
   `testContext.lastDocumentRequest()` / `documentCalls()` and answers with `answerDocumentPicked`,
   `answerDocumentCancelled`, `answerDocumentUnavailable` (on whichever host is installed) and `setSavedDocumentName`.
   Test: `UI_QT_IMPORTED_FILES` (base defaults).
+- File browser (issue #830): `DecoderHost::fileBrowserSupported` (CONSTANT; base false, Android true) offers the app's
+  own browser; it is also the C++ capability for same-tree companion confinement and copying local replay picks.
+  `fileAccess` (NOTIFY `fileAccessChanged`) is `{declared, granted, route ("settings" | "permission" | "none"),
+  apiLevel, rootsGeneration}`, base `{false, false, "none", 0, 0}`; `refreshFileAccess()` reads it again (base
+  no-op). The browser opens a session (`openFileBrowserSession()`, an id from the picker's sequence) and names it in
+  every request: `requestFileRoots`, `requestFolderListing(rootKey, generation, path, filter {kind, showAll})`,
+  `requestMorePage(snapshot, offset)`, `requestFileHandoff(rootKey, generation, reference)` and `requestFileAccess`.
+  Each returns a new id answered exactly once, never inside the call, on `fileRootsListed(id, {status, generation,
+  roots})`, `folderListed(id, {status, snapshot, offset, entries, more, hiddenByFilter, hiddenByName})` (listings
+  and pages; `hiddenByName` counts the items left out because their names are not valid UTF-8),
+  `fileHandoffChecked(id, {ok, reference, name, reason})` or `fileAccessRequestDone(id, outcome)`; statuses are in the
+  header and the spec's list (`failed`: the platform could not take the request). `cancelFileRequest(id)`,
+  `closeFileBrowserSession(id)` (every request of the session) and a superseding request (one listing or page per
+  session) retire the id first and answer `cancelled`, queued, even over an answer already queued for it; a platform
+  answer for a retired id is dropped. One access request is live app-wide: a second `requestFileAccess` from an open
+  session returns it until its answer is delivered. A request naming a closed or unknown session gets its own id,
+  answered `cancelled` (an access request from one never joins the pending one). Qt thread only.
+  The base host opens sessions and answers every request `unsupported`, queued. Every answer without a result comes
+  from the protected `fileFailure(kind, code)`: roots `{status, generation: 0, roots: []}` (cancelled ones too), a
+  listing or page `{status}`, a hand-off `{ok: false, reason}`, an access `{outcome}`. A platform host overrides the
+  requests and uses the protected helpers:
+  `beginFileRequest(session, kind)` (the id, live; supersedes a listing or page; already answered `cancelled` and not
+  live for a session not open; an access begin in an open session while one is pending returns that id and begins
+  nothing, so the one-access rule holds in every host), `fileRequestLive(id)`, `settleFileRequest(id, result)`
+  (retire and emit now; false when not live: the drop of a late record) and `settleFileRequestLater(id, result)`
+  (retire, emit queued);
+  `liveFileAccessRequest()` is the access request a new one joins, and the virtual `fileRequestRetired(id)` (base
+  no-op) tells it a live request was cancelled, closed or superseded so the platform can stop its work. QML tests:
+  the `decoderHost` map (`fileBrowserSupported` false, `fileAccess` an API 36 sideload before the grant) and
+  `ImportOnlyHost` both record every file call as `{name, id, session, rootKey, generation, path, filter, snapshot,
+  offset, reference}` and answer nothing; a case sets `testContext.setFileBrowserSupported()` / `setFileAccess()`,
+  reads `fileCalls()` / `lastFileCall(name)` and answers with `answerFileRoots`, `answerFolderListing`,
+  `answerFileHandoff` and `answerFileAccess` (on whichever host is installed); `resetHostPlayback()` clears the calls.
+  Test: `UI_QT_IMPORTED_FILES` (`test_file_browser_defaults`).
+- `restart_closer.{h,cpp}` (issue #830): `RestartCloser`, context property `restartCloser`, closes the app so a USB
+  drive Android lets only a process started with All files access read opens after the restart. `refused()` is true
+  while the import worker (`ImportService::busy()`: imports and replay copies) or a backup job
+  (`BackupModel::busy()`) runs, and `begin()` then does nothing and answers false (also while `active`). Otherwise it
+  stops a live session through `DecoderHost::stop()`, once, and polls every `kPollMs` (100) until `sessionActive()`
+  and `engineBusy()` both read false, then calls `quitApp()`; the quit never runs inside `begin()`. A session that
+  has not settled `kStopWaitMs` (10000, on `dsd_realtime_mono_ms()`) after `begin()` ends it as
+  `finished("stopFailed")` and a `quitApp()` false as `finished("quitFailed")`, both clearing `active` and leaving
+  the app open; a quit taken gives `finished("closing")` and keeps `active`, which joins Main's `autoStartBlocked`,
+  so nothing starts while the process ends. It keeps polling then: a process still running `kQuitWaitMs` (5000)
+  after the quit (a launcher or multi-window mode that keeps it) ends as `finished("quitFailed")` after the
+  "closing", which clears `active`. Just before the quit it asks `refused()` again: an import, a replay copy or a backup
+  job that began while the session stopped ends the close as `finished("refused")`, with no quit. Test:
+  `UI_QT_RESTART_CLOSER` (fake host and clock).
 - `qml/DocumentPicker.qml` is the one picker screens use (`mode` "open"/"save", `title`, `nameFilters`,
   `defaultSuffix`, `mimeType`, `suggestedName`). `open()` asks the host when `documentPickerSupported`, cancelling its
   own earlier request first, and otherwise opens a `FileDialog` it makes through an `Instantiator` (a QtObject root,
@@ -14102,50 +14179,134 @@ Qt Quick frontend (`src/ui/qt`):
   `SignalSearchScreen.exportPicked()`) discards a Download-folder row itself. On the desktop path an open clears the
   dialog's selection (`currentFiles = []`: `selectedFiles` is read-only and `selectedFile = ""` is refused), so an
   accept with no new choice answers `noResult`, never the previous file; a dialog that cannot open answers `failed`.
-  Test: `UI_QT_QML_DOCUMENT_PICKER`.
-- `qml/CsvImportFlow.qml` imports a CSV and its companions for three owners: Imported files (`ImportsScreen`), the scan
-  list editor's target CSV (`ScanListScreen`) and the wizard's trunking-data fields (`WizardScreen`). Its primary and
-  companion pickers (`csvPrimaryPicker`, `csvCompanionPicker`) are `DocumentPicker`s with no filter; a picked document
-  is then copied on the import worker (`beginImport()`, #832, under UI, Qt, "imported_files_model"), which names the
-  stored file from the provider's own name for it, the picker's `displayName` only as the hint; a companion's
-  `displayName` names its "Selected:" line until a library choice names the library file (#829 B3). `pick(kind,
-  context)` / `begin(…, context)` first cancel the import before (with that import's context), then keep `context`,
-  and `finished(result, context)` hands it back. `complete()` closes both pickers silently; an owner ends a pick or a
-  copy by calling the flow's `cancel()`. Ownership (#829 B4, #832): each owner cancels its flow when it stops being
-  visible (`onVisibleChanged`, so Imports' Back, which clears `importsOpen` in `Main.qml` directly, and the wizard's
-  Save, which clears `wizardOpen`, both count) and when it is reused (`WizardScreen.openForAdd/openForFound/
-  openForEdit`, `ScanListScreen.openFor`), and bumps its generation then, so an answer from before is dropped. Newer
-  choice wins: the wizard keeps a generation per CSV field (`csvGenerations`, bumped by `assignCsvPath()` and by
-  `applyRadioReference()` for the files it writes), the scan list editor one for its targets (`targetsGeneration`,
-  bumped by `selectTargets()` and the target source switch), the flow one per companion slot (`companionGenerations`,
-  bumped by every write to the slot). A pick carries what it was asked with (`WizardScreen.csvContext()`: `{target,
-  keyFormat, generation, fieldGeneration}`; `ScanListScreen.importContext()`: `{generation, targets}`;
-  `ImportsScreen.importContext()`: `{replacing, replacePath, generation}`) and the owner's `wanted(context)` answers
-  whether it still holds; a pick that comes back after a newer choice ends as cancelled with nothing copied or imported
-  and no notice, and a late companion pick leaves the slot alone (B6: a later pick never carries an earlier
-  reference). The wizard fills `context.target` with `context.keyFormat`, never `pickerTarget`, which the next sheet
-  rewrites. An update names its row by the stored path taken at pick time (`replacePath`): `beginImport()` refuses a
-  row that went with `error` "changed" ("That file changed while you were picking. Try again."), and the flow refuses
-  an update whose row gave no path (`replacing` with an empty `replacePath`) the same way before it copies anything,
-  so an update never becomes a new import. Choosing a decryption profile in the wizard clears the key file and bumps
-  its generation too. A primary picker that is `unavailable` ends the flow with `{ok false, error "unavailable",
-  detail: message}`; a companion one brings the sheet back with every choice kept and the message in
-  `csvCompanionNotice` (cleared by the next "Choose a file…", a library choice or the end of the import). Owners show
-  `Util.importMessage(result, "csv")`, which gives `detail` for "changed" and "unavailable" (Imports' notice, the scan
-  list's validation line, the wizard's `csvNotice`); each of those lines and the companion notice is an
-  `AlertMessage` while it reports a problem and is read out once per failure while `Navigation.allows` it
+  Issue #830: an open picker with a `browseKind` ("csv", "backup" or "replay"; empty never browses) can be served by
+  DSD-neo's file browser through the `FileBrowser` singleton (`qml/FileBrowser.qml`, one browse request app-wide:
+  `request` is null or `{token, kind, title, allowOtherApp}`; `open(kind, title, allowOtherApp)` returns a token > 0,
+  and a live request is superseded by replacing `request` first, then `rejected(oldToken)`; `finish()`, `reject()` and
+  `otherApp()` answer `picked`, `rejected` and `otherAppRequested`, `dismiss()` none; each clears `request` before its
+  signal and ignores a token that is not live). `open()` browses first when `decoderHost.fileBrowserSupported`, the
+  picker has a `browseKind`, is in open mode and `prefs.chooseFilesInApp` (`ui/chooseFilesInApp`, device-local, off by
+  default; the Settings › Libraries toggle under Imported files, shown only where the host has the browser); a host
+  `noPicker` answer to such a picker opens the browser with `allowOtherApp` false instead of `unavailable`. The picker's
+  token (`d.browseToken`) is part of `visible`; `close()`, `cancel()`, a reopen and destruction dismiss it, and the
+  picker acts only on its own token, clearing it before it emits, so an owner superseded by another picker's browse no
+  longer waits when it hears `rejected`. While `FileBrowser.open()` tells the owner it superseded, that owner may act on
+  the new picker: a picker whose browse is superseded then (the owner opened again) hears `rejected` once, after
+  `open()` returns, and one closed, cancelled or reopened then keeps no request. "Choose with another app"
+  (`otherAppRequested`) asks the host's picker whatever the toggle says, and keeps that request's id
+  (`d.otherAppRequestId`): a cancel of it (Back out of Android's picker) reopens the browser with the action, so the
+  pick goes on; a `noPicker` answer to it reopens the browser without the action, and a pick from it is accepted. Test:
+  `UI_QT_QML_DOCUMENT_PICKER`.
+- `qml/FileBrowserScreen.qml` (issue #830) serves the live `FileBrowser.request`; it owns every request and the browse
+  state (`internals`), which its views read: `FileBrowserLocations.qml` (the places, access and restart rows, Choose
+  with another app) and `FileBrowserFolder.qml` (a folder's rows, Show more, and its state, Try again and the inbox
+  help), with `FileBrowserLine.qml` (a hint or problem line) and `FileBrowserCommand.qml` (text to type on a computer,
+  one block per line, one Copy). It is one Main-level screen (`z` 30, above `BackupFlow`, over `safeArea`), opaque
+  (`Theme.bg`) with a `PointerBarrier`, and owners stay visible under it so their imports survive. While a request is
+  live it is a modal (`Navigation.addModal`, `navigationSurface` the screen), so its controls are live over an owner's
+  sheet, which leaves the accessibility tree; it raises the same tree refresh as `ModalSheet`. `requestDismiss()` (Back,
+  Escape, its back button) goes one level up: a folder to its parent, a location to the locations, and at the locations
+  `FileBrowser.reject()`. Each request token gets its own host session (`openFileBrowserSession()`); a newer request,
+  any ending of the request (finish, reject, otherApp, dismiss) and the screen's destruction close it
+  (`closeFileBrowserSession()`), and every request names it. The screen waits for one id of each kind (roots, listing,
+  page, hand-off, access) and drops any other answer; leaving a folder cancels its listing, page and hand-off. Every
+  return to the locations calls `refreshFileAccess()` and `requestFileRoots()` again (the refresh); a roots answer's
+  `generation` goes with every listing and hand-off, and a `stale` listing lists the locations again. A tapped file is
+  `d.opening` from the tap to its answer: "Opening <name>…" shows after the same 250 ms as the reading line, and taps on
+  files are ignored meanwhile (each would restart the check and hold another reader). A `stale` hand-off (the drives
+  changed between the listing and the tap) re-reads the locations behind the folder and asks the hand-off once more on
+  the new generation, silently; a second `stale` goes to the locations with the hand-off failure line, and a failed
+  re-read ends the hand-off with that problem's line. While the browser shows, a modal that takes `Navigation.topModal`
+  and is drawn under it (`drawnAbove()`: the higher `z`, else the later child, where the parent chains meet) is put back
+  under it (`keepOnTop()`, a `Qt.callLater` from `topModalChanged`, since the stack cannot be rewritten inside its own
+  change), and the browser takes the focus back; one drawn above it (a Main-level `ModalSheet`, `z` 100 and up) keeps
+  the top until it closes. A locations answer that lands after a folder was opened from the rows it was replacing only
+  re-checks that folder's place (as a check behind it): it reports no problem and leaves the folder's reading line and
+  focus alone. Locations: inbox, Saved, storage, then removable volumes (title the platform's description, else
+  "Removable storage"), `StableRows` keyed by root key; `removed` and `needsAccess` roots have no row. The access row
+  shows while `fileAccess` is not granted and the route is `permission`, or `settings` in a build that declares it;
+  `settingsOpened` followed by a return (a `fileAccess` change or the app becoming active; an activation while the
+  access request is out counts too, so a Settings screen that closes before its answer is read is not missed) without
+  the grant, `noRoute` and `failed` show the adb line with Copy on Android 11 and later (plus the App info step on 11
+  and 12), `blocked` (and on Android 10 `noRoute` and `failed`) the App info line. On Android 10 a plain `denied` (the
+  dialog can still show) says "Access was not allowed. Allow access asks again." instead. A `fileAccess` change re-lists
+  the locations, or, under an open folder, checks them behind it: a folder whose location is no longer `ready` goes back
+  to the locations, saying "The drive was removed." for a removable one (also on a `gone` listing there). That notice
+  (`d.removedKey`) clears when a locations answer lists the drive again after one that did not (a `gone` listing can
+  come before Android reports the drive gone, so a list that still has it then is not a return). A `needsRestart` drive
+  offers Close DSD-neo: `restartCloser.refused()` shows the refusal line, else a `ConfirmDialog` lists what ends
+  (`decoderHost.sessionActive`; a `csv` request's import or a `backup` request's restore; the system editor's unsaved
+  draft, which Main reports through `unsavedDraft()` as "add" or "edit" from `WizardScreen.hasUnsavedDraft()` and
+  `editRow`; `backup.restorePending`), and its confirm emits `closeConfirmed()`, which Main answers with
+  `dropPendingStarts()` and `restartCloser.begin()`; "Closing DSD-neo…" shows while `restartCloser.active`, and a
+  `finished` other than "closing" shows the failure line (the refusal line for "refused") and keeps the browser. While
+  `restartCloser.active` nothing new can be picked: a file tap does nothing (files show dimmed, and a folder says
+  "DSD-neo is closing, so files can't be picked now.") and Choose with another app is disabled, since a pick would start
+  a copy the close cuts short. The path is one line of crumbs that scrolls sideways (a `Flickable` of a `Row`), shows
+  its end and scrolls a focused crumb into view; a crumb is at most the line's width, its name cut in the middle on
+  screen and read whole. On a screen under 480 px tall (`compactHeader`) a folder's crumbs take the title's place beside
+  Back, so the folder keeps room for its rows. Folder rows (`StableRows` keyed by path, Saved rows by reference; a
+  listing's `hiddenByName` items, whose names are not valid UTF-8, have no row, and a line says how many) are named
+  "Lists, folder" / "dmr.csv, file, 4.2 MB, Nov 9" (`Util.sizeText`; "MMM d", with ", yyyy" when the year is not that of
+  `savedSystems.realtimeNowMs()`; a `modifiedMs` of 0 shows no date). Show all files (`showAll`) and Show more
+  (`requestMorePage(session, snapshot, entries.length)`, appended) sit below. "Reading folder…" shows 250 ms after a
+  request; problems are `AlertMessage`s read out once through `Navigation.announce()` (`announcements` counts them).
+  Focus: the opener is kept, the first row of each answer takes the focus, and on the end the opener gets it back when
+  it is presented and allowed, else the top surface, unless a modal that opened since (the unlock sheet after a restore
+  pick) holds the top. QML tests: every engine has a scripted `restartCloser` (`testContext.setCloseRefused()`,
+  `closeBegins()`, `finishClose(outcome)`), and `testContext.copiedTexts()` keeps what the readings host's `copyText()`
+  was asked to copy. Test: `UI_QT_QML_FILE_BROWSER` (screen and singleton, and Main's wiring).
+- `qml/CsvImportFlow.qml` imports a CSV and its companions for three owners: Imported files (`ImportsScreen`), the
+  scan list editor's target CSV (`ScanListScreen`) and the wizard's trunking-data fields (`WizardScreen`). Its primary
+  and companion pickers (`csvPrimaryPicker`, `csvCompanionPicker`) are `DocumentPicker`s with no filter (`browseKind`
+  "csv", title "Choose a CSV file": DSD-neo's file browser lists CSV and text files, #830); a picked document is then
+  copied on the import worker (`beginImport()`, #832, under UI, Qt, "imported_files_model"), which names the stored file
+  from the provider's own name for it, the picker's `displayName` only as the hint; a companion's `displayName` names
+  its "Selected:" line until a library choice names the library file (#829 B3). The busy sheet names the file by the
+  host's `displayName` as given, since the host decodes it (#830: `map%20v2.csv` stays that); only a pick with no name
+  falls back to the reference's last segment, decoded once (`Util.referenceName()`). A companion's browser stacks above
+  the open sheet as the top modal (the sheet stays up, covered): Back at its locations ends only that pick, with every
+  choice and generation kept, and the next Back is the sheet's own. `pick(kind, context)` / `begin(…, context)` first
+  cancel the import before (with that import's context), then keep `context`, and `finished(result, context)` hands it
+  back. `complete()` closes both pickers silently; an owner ends a pick or a copy by calling the flow's `cancel()`.
+  Ownership (#829 B4, #832): each owner cancels its flow when it stops being visible (`onVisibleChanged`, so Imports'
+  Back, which clears `importsOpen` in `Main.qml` directly, and the wizard's Save, which clears `wizardOpen`, both count)
+  and when it is reused (`WizardScreen.openForAdd/openForFound/ openForEdit`, `ScanListScreen.openFor`), and bumps its
+  generation then, so an answer from before is dropped. Newer choice wins: the wizard keeps a generation per CSV field
+  (`csvGenerations`, bumped by `assignCsvPath()` and by `applyRadioReference()` for the files it writes), the scan list
+  editor one for its targets (`targetsGeneration`, bumped by `selectTargets()` and the target source switch), the flow
+  one per companion slot (`companionGenerations`, bumped by every write to the slot). A pick carries what it was asked
+  with (`WizardScreen.csvContext()`: `{target, keyFormat, generation, fieldGeneration}`;
+  `ScanListScreen.importContext()`: `{generation, targets}`; `ImportsScreen.importContext()`: `{replacing, replacePath,
+  generation}`) and the owner's `wanted(context)` answers whether it still holds; a pick that comes back after a newer
+  choice ends as cancelled with nothing copied or imported and no notice, and a late companion pick leaves the slot
+  alone (B6: a later pick never carries an earlier reference). The wizard fills `context.target` with
+  `context.keyFormat`, never `pickerTarget`, which the next sheet rewrites. An update names its row by the stored path
+  taken at pick time (`replacePath`): `beginImport()` refuses a row that went with `error` "changed" ("That file changed
+  while you were picking. Try again."), and the flow refuses an update whose row gave no path (`replacing` with an empty
+  `replacePath`) the same way before it copies anything, so an update never becomes a new import. Choosing a decryption
+  profile in the wizard clears the key file and bumps its generation too. A primary picker that is `unavailable` ends
+  the flow with `{ok false, error "unavailable", detail: message}`; a companion one brings the sheet back with every
+  choice kept and the message in `csvCompanionNotice` (cleared by the next "Choose a file…", a library choice or the end
+  of the import). Owners show `Util.importMessage(result, "csv")`, which gives `detail` for "changed" and "unavailable"
+  (Imports' notice, the scan list's validation line, the wizard's `csvNotice`); each of those lines and the companion
+  notice is an `AlertMessage` while it reports a problem and is read out once per failure while `Navigation.allows` it
   (`announced`/`announcements` for tests). Tests: `UI_QT_QML_CSV_IMPORT_FLOW`, `UI_QT_IMPORTED_FILES`, and the scan
   list, imports, wizard band plan, modal input and settings layout QML suites.
 - The wizard's Replay file Browse (`WizardScreen.qml`, issue #829) opens `wizardReplayPicker`, a `DocumentPicker`
-  (open, no filter), and never touches `pickerTarget`. An accepted pick goes to `beginReplay(reference,
-  displayName)`, which hands it to `replayFiles.beginReplayImport()` (#832): a local file is used where it is, a
-  provider's document is copied with progress and **Cancel copy**, and the answer replaces `fileText`; a failed copy
-  keeps it and sets `replayNotice` to `Util.importMessage(result, "replay")` (B8). An `unavailable` picker sets
-  `replayNotice` to its message; backing out changes nothing. `wizardReplayNotice`, under the Replay file row, is an
-  `AlertMessage` read out once per failure while `Navigation.allows` it (`announced`/`announcements`, shared with
-  `csvNotice`); it clears on the next Browse, a successful copy, and the wizard opening or closing. `stopImports()`
-  (on hide and in `openForAdd/openForFound/openForEdit`) cancels Browse, the replay copy and the CSV import. Tests:
-  `tst_wizard_browse.qml` and `tst_wizard_replay_import.qml` in `UI_QT_QML_CALL_LISTS`.
+  (open, no filter), and never touches `pickerTarget`. An accepted pick goes to
+  `replayFilePicked(reference, displayName)`, named by the host's name as given, else by
+  `Util.referenceName(reference)`, and `beginReplay()` hands it to `replayFiles.beginReplayImport()` (#832): on the
+  desktop a local file is used where it is; a provider's document, and on a host with DSD-neo's file browser any local
+  file too (#830; the picker's `browseKind` is "replay", title "Choose a replay file"), is copied with progress and
+  **Cancel copy**, and the answer replaces `fileText`; a failed copy keeps it and sets `replayNotice` to
+  `Util.importMessage(result, "replay")` (B8). An `unavailable` picker sets `replayNotice` to its message; backing out
+  changes nothing. `wizardReplayNotice`, under the Replay file row, is an `AlertMessage` read out once per failure
+  while `Navigation.allows` it (`announced`/`announcements`, shared with `csvNotice`); it clears on the next Browse, a
+  successful copy, and the wizard opening or closing. `stopImports()` (on hide and in
+  `openForAdd/openForFound/openForEdit`) cancels Browse, the replay copy and the CSV import. Browse is at least as
+  wide as its word (`max(96, implicitWidth)`), so large text never splits it, and the Replay file field takes the rest
+  of the row. Tests: `tst_wizard_browse.qml` and `tst_wizard_replay_import.qml` in `UI_QT_QML_CALL_LISTS`.
 - Backend code must never include Qt headers; `cmake/arch_rules.cmake` enforces both directions
   (`tools/check_arch_rules.sh`, run by the pre-push hook and the CI guardrails job).
 
@@ -14937,6 +15098,110 @@ request code (1305) is never used.
   an answer's slot during the drain stays live and is answered by its record later in the same drain). The launches
   themselves need an emulator: DocumentsUI on and off (the family queries must never return the two photo-picker
   aliases), a chooser pick, re-entry and process death while a picker is up.
+- In-app file browser, Android side (issue #830; the host API is under DecoderHost "File browser"):
+  - `FileListing.kt` (no `android.*` import): folder reads behind `BrowserFs` (open, NOFOLLOW attributes, real path).
+    Each listing, hand-off check and `submit()`ted job runs on its own daemon thread, at most 3 alive; a fourth request
+    is `busy` at once (nothing queues) and a thread stuck in a dead drive keeps its place until it returns. A 15 s
+    watchdog answers `timedOut` and abandons the thread. Each request is answered once into a deque `poll()` drains;
+    cancel, session close, a newer listing in the session and the watchdog answer first, and the worker's result is
+    then dropped by id. Containment compares real paths of both root and folder by whole components. Pipeline: read →
+    directories and regular files only → `tooMany` past 50,000 → dot names and the kind's filter unless Show all →
+    folders first, case-insensitive natural order → the session's one snapshot → pages of 500 served from memory
+    (`listMore`, inline; a page naming another snapshot is `expired`; idle 120 s releases it). An entry whose name is
+    not valid UTF-8 (its `Path` is not the path its own text names) is never listed: its text names another file or
+    none once the host decodes a reference's escapes as UTF-8 or lists a folder by its path text. It counts in
+    `hiddenByName`, past the same dot-name and filter rules, and a hand-off of such a path is `notFile`. Exceptions:
+    `NoSuchFileException`/`NotDirectoryException` → `gone`, any other refusal → `unreadable`.
+  - `FileBrowser.kt`: `object FileBrowser` holds a `BrowserCore` over `BrowserPlatform` (`AndroidBrowserPlatform`:
+    StorageManager volumes (API 29: the primary volume's state and description with the path string `Environment`
+    keeps, never `getExternalStorageState()`, which canonicalizes on disk), `getExternalFilesDir`, the requested
+    permissions, `isExternalStorageManager`, the READ
+    grant, `/proc/self/status`, the volume callback, the resolver). `start(context)` (once) registers a
+    `StorageVolumeCallback` (API 30+; no `MEDIA_*` broadcast covers USB) and reads gid 1077 once from `Groups:`: a
+    process gets it only by starting with All files access. Upcalls (`@JvmStatic`, kept by `proguard-rules.pro`):
+    `start`, `accessState`, `takeAccessRefresh`, `listRoots`, `listFolder`, `listMore`, `checkHandoff`, `requestAccess`,
+    `cancel`, `closeSession`, `pollRecord`; a call before `start()` answers false (or the not-started state).
+  - Access: `declared` = the manifest requests `MANAGE_EXTERNAL_STORAGE` (API 30+) or `READ_EXTERNAL_STORAGE` (API 29);
+    `granted` = `isExternalStorageManager()` or the READ grant; `route` `settings` / `permission` / `none`.
+    `accessState()` is `{declared, granted, route, apiLevel, rootsGeneration}`; the generation moves when the grant,
+    the volume set or a volume's directory or state does, and is read with no filesystem call. `takeAccessRefresh()` is
+    true once after `onResume()`, a volume callback or a permission result (two `AtomicBoolean`s, drained together).
+  - Roots (read on a worker, through `submit`): `inbox` (`<getExternalFilesDir(null)>/Inbox`, made; null →
+    `unavailable`), `saved`, and when declared `storage` (the primary volume) and, API 30+, `removable:<uuid or index>`
+    per non-primary removable volume (title: its description, else ""; detail: its `MEDIA_*` state). A root's state
+    comes from the volume state, the grant and gid 1077 only; the roots never look at a drive, so one dead drive cannot
+    time out the whole answer, and a `ready` root that cannot be read says so when it is listed (`unreadable`,
+    `gone`). Precedence: `checking`, `unmountable` or `nofs` → `unavailable` (a drive inserted that Android cannot
+    read is not removed); any other state that is not mounted (or mounted read-only), or no directory → `removed`; not
+    granted → `needsAccess`; under `/mnt/media_rw/` without gid 1077 → `needsRestart` (an invisible USB root does not
+    even exist before the restart); else `ready`. The roots' paths are kept with their generation; a listing or
+    hand-off naming another generation, or a root the last roots did not list, is `stale` (a hand-off answered at
+    once, without a worker).
+  - Saved by DSD-neo: `MediaStore.Downloads.EXTERNAL_CONTENT_URI`, projection `_id, _display_name, _size,
+    date_modified`, selection `relative_path = ? AND owner_package_name = ?` with `Download/DSD-neo/` (the trailing
+    slash matters) and the package: a manager or an Android 10 legacy reader sees other apps' rows too. Entries have
+    no path and the row's `content://media/external/downloads/<id>` reference; `DATE_MODIFIED` seconds × 1000. A
+    hand-off re-queries by `_id = ?` with the same predicate (no row → `gone`). A listing reads at most
+    `FileListing.entryCap` + 1 rows. Each query has a `CancellationSignal` that `cancel(id)`, `closeSession()`, a
+    newer listing or page in the session and the watchdog (`FileListing.onTimedOut`) cancel, after `FileListing`
+    answered the request, so the cancelled query's exception ends a worker whose answer is already dropped and a stuck
+    provider frees its place. A malformed reference or path answers false (the host's `failed`).
+  - Access requests on the main looper, each answered once into the same poll: API 30+ (declared) launches
+    `ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION` + `package:`, then `ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION`, then
+    on API 30-32 `ACTION_APPLICATION_DETAILS_SETTINGS` + `package:` (App info › Permissions › Files and media offers
+    "Allow management of all files" there only with the sideload manifest's READ up to API 32), with plain
+    `startActivity`: `settingsOpened`, `noRoute` when each threw `ActivityNotFoundException`, `failed` on another
+    exception. API 29 calls `requestPermissions(READ)` with the next code in `0x5E00..0x5E0F` (wrapping; free of 4711,
+    4303 and the picker's `0x5D0000..0x5DFFFF`), set live before the call (Android 10 answers a request made while
+    another is pending from inside `requestPermissions()`, with empty arrays) and stays live: `granted`, `denied`
+    (rationale still shown), `blocked` (App info opened), `cancelled` (empty arrays, `cancel(id)` or a newer request).
+    Not declared → `noRoute`. `DsdNeoActivity.onRequestPermissionsResult()` asks `FileBrowser` first; it claims the
+    whole range and settles only the live launch's code, so a late answer to a cancelled launch is dropped.
+  - Records (JSON, one per `pollRecord()`): `{"id","kind":"roots","status","generation","roots"}`,
+    `{"id","kind":"listing","status","snapshot","offset","entries","more","hiddenByFilter","hiddenByName"}` (non-ok:
+    `status` only), `{"id","kind":"handoff","ok","reference","name","reason"}`, `{"id","kind":"access","outcome"}`. Root
+    `{key, kind, title, path, state, detail}`; entry `{name, path, reference, dir, size, modifiedMs}`.
+  - Host dispatch (`decoder_host_android_files.cpp`, JNI-free, Qt thread; the shims `platformListRoots()` and the other
+    `platform*()` file calls sit in `decoder_host_android.cpp` with `kFileBrowserClass`): each request override begins
+    the base host's request and hands it to `FileBrowser` only while it is live (a closed session's never reaches it),
+    with the host's id; `fileBrowserSupported()` is true. A call `FileBrowser` could not take (false: not started, a
+    malformed path or reference, a JNI error; for access also no activity context, checked with `isActivityContext()`
+    before `requestAccess()`) is answered `fileFailure(kind, "failed")`, queued. `requestFileAccess()` hands over only
+    an id other than the `liveFileAccessRequest()` it read first, so a joined request is never asked twice. The live
+    requests it took are kept with their kind (`m_file_requests`); the override of `fileRequestRetired()` (cancel,
+    session close, supersede) drops one and calls `FileBrowser.cancel(id)`, the only platform cancel, and
+    `closeFileBrowserSession()` then calls `closeSession()`. `refresh()` ends with `refreshFileBrowser()`: when
+    `takeAccessRefresh()` is true it reads `accessState()`, then it drains `pollRecord()` oldest first. FileBrowser
+    raises that flag before it writes an access answer, and both can land after the first take, so an `access` record
+    takes the flag again (and reads) before it settles: a `granted` answer never finds `fileAccess()` stale. That read
+    emits `fileAccessChanged()`, whose slots may cancel or make requests, this one included, so the record holds no
+    iterator into `m_file_requests` across it: it removes its id afterwards and settles only if it was still there. A
+    record settles its id once, with its members less `id` and `kind` as the map (whole numbers only, as `qint64`), when
+    that id is a live request it took and the record's kind is that request's (`listing` for a listing or a page). A
+    record for a live id that is malformed (as strict as `document_pick_record.h`: every member typed, statuses and
+    outcomes non-empty), of an unknown kind or of another request's kind settles it `fileFailure(kind, "failed")` at
+    once, so every request is answered; a record with no readable id (not a whole number above 0) is ignored, and a
+    record for an id retired or answered is dropped. The access reading (`m_file_access`, the base reading until the
+    constructor's first read after `FileBrowser.start()`) is replaced, with one `fileAccessChanged()`, only by a
+    well-formed reading that differs; `refreshFileAccess()` reads at once. `FileBrowser` is the process's while request
+    ids are each host's (they start again in a new host): the destructor cancels each live request there and closes each
+    open session (`m_file_sessions`), and the constructor discards the records waiting after `start()`, so an old host's
+    record cannot answer a new host's request with the same id. Left open (one host per process today, as for
+    `DocumentPicker`): an access cancel `FileBrowser` answers later on the Android main thread can still reach a host
+    made in between. `proguard-rules.pro` keeps the eleven upcalls.
+  - Manifests: `android/package/AndroidManifest.xml` declares every permission itself (no `%%INSERT_PERMISSIONS`, so
+    Qt Core's rules add no `WRITE_EXTERNAL_STORAGE`, which an Android 10 READ grant would carry):
+    `READ_EXTERNAL_STORAGE` up to API 29 with `requestLegacyExternalStorage`, in every build. The overlay
+    `android/package/sideload/AndroidManifest.xml` adds `MANAGE_EXTERNAL_STORAGE` and raises READ to API 32
+    (`tools:replace`); `build.gradle` merges it into the debug and release build types unless the invocation builds a
+    bundle (`bundleBuild`, the same switch as the native library packaging), so the Play bundle never declares All
+    files access and the APK of an `aab` build lacks it too. android-ci checks both artifacts.
+  - Tests: `ANDROID_FILE_BROWSER_JVM` (`docs/testing.md`), with the `file_browser_wiring` source check of the
+    activity's forwarding and `storage_permissions_policy` of the manifests and the overlay switch;
+    `UI_QT_ANDROID_HOST` (`check_file_browser_requests()`, `check_file_browser_retirement()`,
+    `check_file_access_requests()`, `check_file_access_state()`, `check_file_browser_host_end()`,
+    `check_file_reference_round_trip()`: a listed
+    `file:` reference names the exact file through `local_document_path()`, decoded once).
 
 #### Sign-in autofill (password managers)
 
@@ -15195,7 +15460,12 @@ its source:
 - Qt's text cursor handle is a `PopupWindow` in `CursorHandle.m_popup`, held by the `QtEditText` child of the Qt
   window in `m_cursorHandle`, with no exit transition (`QtCursorHandle.kt`). A rename fails
   `tools/check_android_r8.py` on the release APK; a changed structure only leaves the "cannot be hidden" record. Check
-  with KeePassDX that a tap on the username field still gets its dropdown with the handle up.
+  with KeePassDX that a tap on the username field still gets its dropdown with the handle up;
+- androiddeployqt inserts no permissions: the manifest has no `%%INSERT_PERMISSIONS` (#830, "In-app file browser,
+  Android side"), so a permission a new Qt module or plugin needs is not added. Compare the `<permission>` lines of
+  the kit's `lib/*-android-dependencies.xml` with the manifest (6.11.3: Core `INTERNET`, declared, and
+  `WRITE_EXTERNAL_STORAGE`, left out on purpose; Network `ACCESS_NETWORK_STATE`, declared) and declare any new one the
+  app needs.
 
 What trips: bumping `ANDROID_QT_VERSION` in `tools/ci-dependency-pins.env` fails `ANDROID_A11Y_BRIDGE_JVM`
 (`launch_policy()`) until `LaunchGuard.QT_RESTART` names the new version. Change that text only once the checks below
@@ -15494,6 +15764,13 @@ changes itself under the binding reading it. Deferred work in a component that c
 runs from a `Timer` it owns, not `Qt.callLater`, whose queued call outlives the object (`FollowLatest.qml`). The QML
 tests pin these with `failOnWarning`.
 
+A screen header's title wraps at large text rather than running past the edge or under what shares its line (issue
+#830): it takes the room between the back chevron and the header's right edge, or the wizard's step progress with a
+12 px gap, the header's height comes from the title's `height` (at least 46 px), and the chevron and the progress
+stay level with the title's first line (`FileBrowserScreen`, `ImportsScreen`, `WizardScreen`). A screen's question
+line (the wizard's step questions) spans its form and wraps. Tests: `tst_imports_screen_layout.qml`
+`test_title_fits_at_large_font`, `tst_wizard_layout.qml` (320 and 360 px at text 1.6).
+
 Short control labels keep whole words (issue #646). `Text.Wrap` breaks a word wider than its line anywhere, so at large
 text a segment split "Automatic" or "simulcast" over two lines. `qml/WholeWordLabel.qml` (the `SegmentedControl`
 segments' label) wraps between words only. When its widest word does not fit at `Theme.fontSize(basePixelSize)` it is
@@ -15523,7 +15800,13 @@ while hidden, from a node Android still holds or a key while they keep the focus
 (OutlineButton, PinButton): Qt refuses to drop the stop of the item holding the focus and warns, and without
 `activeFocus` in the binding nothing re-ran it once the sheet took the focus, so the covered control stayed a Tab stop
 under the sheet (issue #646 put the hold on every control that lacked it). Tests: `tst_keypad_enter.qml`
-(`failOnWarning(/activeFocusOnTab/)`, `test_a_covered_control_is_no_tab_stop_once_focus_leaves`).
+(`failOnWarning(/activeFocusOnTab/)`, `test_a_covered_control_is_no_tab_stop_once_focus_leaves`). An imported file's
+card on Imported files (`ImportsScreen.qml`, issue #830) is such a control: an `Accessible.Button` named by the file and
+described by its kind and summary line ("TALKGROUPS · 1 talkgroup · Nov 9"; the name and summary are plain `Text`s
+marked `Accessible.ignored: true`, and the kind badge is a `CsvTypeBadge` with `readAlone: false`, so nothing takes a
+stop of its own or is read twice), whose tap, accessibility press, Return, keypad Enter and Space open its actions
+through one guarded `activate()`. Its focus ring sits on the card's own edge, because the list clips. Test:
+`tst_imports_screen_layout.qml` `test_row_press_action`.
 
 A choice of one among several that says which one is current (a `SegmentedControl` segment, a `BottomNav` tab) is
 `Accessible.RadioButton` with `checkable: true` and `checked` while it is the current one (issue #646). Qt 6.11.3's
@@ -15651,6 +15934,15 @@ counts none). Its opacity is 0, so it is reported invisible (an item with no siz
 the window), and it has no name. A covered panel is nameless, and headings and the controls that set
 `Accessible.focusable` are focusable only while in the tree, so a node TalkBack may still ask about offers nothing to
 stop on (`tst_a11y_closed_sheets.qml` `test_a_covered_sheet_leaves_the_tree`).
+
+A gated item's name comes from its gate itself (`Accessible.name: !navigationAllowed || !visible ? "" : text`), never
+from `Accessible.ignored` read back (issue #830). A `ListView` sets that flag on every delegate it lays out
+(`QQuickItemViewFxItem::setVisible`, Qt 6.11.3) without a change signal, so a row made under a sheet came back into
+the tree with the empty name it had then, and kept it once the sheet closed: its gate then set the flag to what it
+already was, which changes nothing. Diagnostics lines that arrived while the log streamed were nameless on Pause.
+`ReadableText` and every other gated name follow the rule (Diagnostics' rows keep no name while the log streams,
+from their own gate); the speech pacers' `shown: !….Accessible.ignored` read it only on items no view lays out.
+Test: `tst_readable_text_gate.qml`.
 
 A notice that is read out when it is set (a picker failure, an import problem, a Download-folder save's location;
 issue #829) goes through `Navigation.announce(owner, line, text)`: it does nothing for an empty text or while

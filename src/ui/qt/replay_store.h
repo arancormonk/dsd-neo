@@ -79,10 +79,12 @@ class ReplayStore : public QObject {
     /**
      * @brief Make @p reference a file the engine can replay; answered by replayImportFinished(id, …), queued, once.
      *
-     * A local reference (a file:// URL or an absolute path) is answered with its path and never copied. Anything
-     * else (a content URI) is copied into replaysRoot() under a free form of its provider's name (else @p fileName),
-     * at most the free space less kReserveBytes, and recorded pending. A copy still running is cancelled first: one
-     * copy runs at a time.
+     * Where the host has no file browser (the desktop), a local reference (a file:// URL or an absolute path) is
+     * answered with its path and never copied. Anything else (a content URI, and a local reference where
+     * DecoderHost::fileBrowserSupported(), since a drive can go away and the inbox be cleared, issue #830) is copied
+     * into replaysRoot() under a free form of its provider's name (else @p fileName), at most the free space less
+     * kReserveBytes, and recorded pending. Saved systems keep the paths they name. A copy still running is cancelled
+     * first: one copy runs at a time.
      *
      * The result holds ok, path and name, else error: "too_large" (neededBytes: the size plus kReserveBytes, -1 when
      * the size is unknown; freeBytes; reserveBytes, kReserveBytes, so a message can name the size and the reserve),

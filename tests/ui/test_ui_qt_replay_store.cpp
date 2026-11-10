@@ -4,7 +4,8 @@
  */
 
 /* Unit tests: the replay store (#832). A replay picked in the wizard copies on the import worker into replays/ (a
- * local file is answered with its path), within the free space less the reserve, with progress and cancel; the copy
+ * local file is answered with its path on the desktop, and copied too where the host has DSD-neo's file browser),
+ * within the free space less the reserve, with progress and cancel; the copy
  * is recorded pending, saved systems adopt and release it, and a later start deletes only pending copies no saved
  * system names, and nothing when a store cannot be read, the decoder runs or a restore is unfinished. The startup
  * migration of replays kept in the OS cache copies on the worker and repoints only rows still naming the cached file. */
@@ -22,6 +23,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QObject>
@@ -45,6 +47,7 @@
 #include <qsystemdetection.h>
 #include <utility>
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/file_compat.h>
 
 #include "../test_support/qt_test_paths.h"
@@ -166,10 +169,16 @@ sources_dir() {
     return dsd_qt::json_store_root() + QStringLiteral("/test-sources");
 }
 
-/* A host whose decoder is busy on request. */
+/* A host whose decoder is busy on request, with DSD-neo's file browser (#830) when a case says. */
 class TestHost : public DecoderHost {
   public:
     bool busy = false;
+    bool browser = false;
+
+    bool
+    fileBrowserSupported() const override {
+        return browser;
+    }
 
     bool
     isRunning() const override {
@@ -376,7 +385,8 @@ replay_system(const QString& name, const QString& path) {
             {QStringLiteral("filePath"), path}};
 }
 
-/* I5: a local file is answered with its plain path, queued, and never copied or recorded. */
+/* Without DSD-neo's file browser (the desktop), a local file is answered with its plain path, queued, and never
+   copied or recorded. */
 void
 test_local_reference_answers_its_path() {
     reset_data();
@@ -390,6 +400,132 @@ test_local_reference_answers_its_path() {
     CHECK(result.value(QStringLiteral("path")).toString() == local, "an absolute path is answered as it is");
     CHECK(rig.transport->copies().isEmpty() && replay_files().isEmpty(), "a local file is never copied");
     CHECK(manifest().isEmpty(), "a local file is never recorded");
+}
+
+/* #830: where the host has DSD-neo's file browser, a local pick (a USB drive's file, say) copies like a provider's
+   document: progress while it runs, within the free space less the reserve, cancellable, and recorded pending; the
+   copy outlives its source. The pick's name is the host's, already decoded: an escape in it is part of the name. */
+void
+test_local_pick_copied_on_browser_host() {
+    reset_data();
+    Rig rig;
+    rig.host.browser = true;
+    const QString name = QStringLiteral("100%25 capture.wav");
+    const QString local = sources_dir() + QLatin1Char('/') + name;
+    write_file(local, QByteArray("local bytes"));
+    const QString reference = QUrl::fromLocalFile(local).toString();
+    rig.transport->setHoldLocal(true);
+    const int id = rig.store->beginReplayImport(reference, name);
+    CHECK(rig.store->copying() && rig.store->copyName() == name, "the local pick shows as a copy, by its name");
+    CHECK(wait_until([&rig]() { return rig.transport->holding() == 1; }), "the copy goes through the transport");
+    rig.transport->setHoldLocal(false);
+    CHECK(wait_until([&rig, id]() { return rig.answers.contains(id); }), "the copy is answered");
+    const QVariantMap result = rig.answers.value(id);
+    const QString path = result.value(QStringLiteral("path")).toString();
+    CHECK(result.value(QStringLiteral("ok")).toBool(), "the copy is ok");
+    CHECK(path == ReplayStore::replaysRoot() + QLatin1Char('/') + name, "answered with the copy in replays/");
+    CHECK(rig.transport->copies() == QStringList{reference}, "the transport is asked for the reference as it came");
+    CHECK(manifest().value(path) == QStringLiteral("pending"), "the copy is recorded pending");
+    CHECK(QFile::remove(local) && read_file(path) == "local bytes", "the copy outlives its source");
+    write_file(local, QByteArray("local bytes"));
+    rig.store->setFreeSpace([](const QString&) { return ReplayStore::kReserveBytes / 2; });
+    const QVariantMap refused = rig.import(reference, name);
+    CHECK(refused.value(QStringLiteral("error")).toString() == QStringLiteral("too_large")
+              && refused.value(QStringLiteral("name")).toString() == name,
+          "a local pick must leave the reserve free too, and the refusal names it");
+    rig.store->setFreeSpace([](const QString&) { return qint64{-1}; });
+    rig.transport->setHoldLocal(true);
+    const int held = rig.store->beginReplayImport(reference, name);
+    CHECK(wait_until([&rig]() { return rig.transport->holding() == 2; }), "the next local copy runs");
+    rig.store->cancelReplayImport();
+    CHECK(wait_until([&rig, held]() { return rig.answers.contains(held); }), "a cancelled local copy is answered");
+    CHECK(rig.answers.value(held).value(QStringLiteral("error")).toString() == QStringLiteral("cancelled"),
+          "cancelled");
+    rig.transport->setHoldLocal(false);
+    CHECK(wait_until(staging_empty), "the cancelled copy's staging goes");
+    CHECK(replay_files() == QStringList{name}, "only the finished copy is kept");
+}
+
+/*
+ * #830: a local pick's copy opens as the picked file does. The engine classes a file by the last '.' of its WHOLE path,
+ * so a capture in a `caps.bin/` folder (the browser's replay filter lists it) is a dibit capture although its own name
+ * has no dot; its copy, stored by that name alone, gets the class as its extension. So do float symbol streams in
+ * `.raw`/`.sym` folders and 48 kHz PCM in a `.rrc` one. The other way round, a PCM file whose name ends in a dot
+ * (`x.bin.`) would turn into a capture once the dot is trimmed, so it keeps a PCM extension. The answer still shows
+ * the pick's own name.
+ */
+void
+test_local_pick_keeps_its_input_kind() {
+    reset_data();
+    Rig rig;
+    rig.host.browser = true;
+
+    struct Case {
+        const char* folder;
+        const char* name;
+        const char* stored;
+        const char* shown;
+    };
+
+    const Case cases[] = {
+        {"caps.bin", "plain", "plain.bin", "plain"},  {"floats.raw", "plain", "plain.raw", "plain"},
+        {"syms.sym", "plain", "plain.sym", "plain"},  {"m17.rrc", "plain", "plain.rrc", "plain"},
+        {"captures", "x.bin.", "x.bin.pcm", "x.bin"}, {"captures", "plain", "plain", "plain"},
+        {"captures", "y.bin", "y.bin", "y.bin"},      {"caps.bin", "z.wav", "z.wav", "z.wav"},
+    };
+    for (const Case& c : cases) {
+        const QString local =
+            sources_dir() + QLatin1Char('/') + QLatin1String(c.folder) + QLatin1Char('/') + QLatin1String(c.name);
+        write_file(local, QByteArray("capture"));
+        if (!QFileInfo(local).isFile()) {
+            std::fprintf(stderr, "SKIP: this filesystem keeps no file named %s\n", qPrintable(local));
+            continue;
+        }
+        const QVariantMap result = rig.import(QUrl::fromLocalFile(local).toString(), QLatin1String(c.name));
+        const QString path = result.value(QStringLiteral("path")).toString();
+        CHECK(result.value(QStringLiteral("ok")).toBool(), qPrintable(QStringLiteral("copied: ") + local));
+        CHECK(QFileInfo(path).fileName() == QLatin1String(c.stored),
+              qPrintable(QStringLiteral("%1 is stored as %2, not %3").arg(local, QLatin1String(c.stored), path)));
+        CHECK(dsd_opts_audio_in_dev_is_symbol_capture(local.toUtf8().constData())
+                  == dsd_opts_audio_in_dev_is_symbol_capture(path.toUtf8().constData()),
+              qPrintable(QStringLiteral("the copy of %1 is a capture exactly when it is").arg(local)));
+        CHECK(result.value(QStringLiteral("name")).toString() == QLatin1String(c.shown),
+              "the answer shows the pick's own name");
+        CHECK(!result.contains(QStringLiteral("storeName")), "the stored name stays inside the store");
+        QFile::remove(path);
+    }
+    // A provider's document has no folders: its own name decides, and a trailing dot cannot make it a capture.
+    write_file(sources_dir() + QStringLiteral("/q.raw."), QByteArray("pcm"));
+    if (QFileInfo(sources_dir() + QStringLiteral("/q.raw.")).isFile()) {
+        const QVariantMap provided = rig.import(QStringLiteral("content://test/q.raw."), QStringLiteral("q.raw."));
+        CHECK(QFileInfo(provided.value(QStringLiteral("path")).toString()).fileName() == QStringLiteral("q.raw.pcm"),
+              "a provider's PCM document named with a trailing dot stays PCM");
+    }
+    write_file(sources_dir() + QStringLiteral("/r.sym"), QByteArray("symbols"));
+    const QVariantMap symbols = rig.import(QStringLiteral("content://test/r.sym"), QStringLiteral("r.sym"));
+    CHECK(QFileInfo(symbols.value(QStringLiteral("path")).toString()).fileName() == QStringLiteral("r.sym"),
+          "a provider's capture keeps its name");
+}
+
+/* #830: a saved system naming a local file (picked before local picks were copied, or on the desktop) keeps its row
+   and its file: the store never made it, so a reclaim leaves both. */
+void
+test_saved_local_path_left_alone() {
+    reset_data();
+    const QString old = sources_dir() + QStringLiteral("/old.wav");
+    write_file(old, QByteArray("old"));
+    {
+        SavedSystemsModel saved;
+        CHECK(saved.add(replay_system(QStringLiteral("Old"), old)), "a system names the local file");
+    }
+    Rig rig;
+    rig.host.browser = true;
+    SavedSystemsModel systems;
+    systems.setReplayStore(rig.store.get());
+    rig.store->reclaim(systems, systems.storeLoaded());
+    CHECK(systems.count() == 1 && systems.filePaths() == QStringList{old}, "the row keeps its path");
+    CHECK(read_file(old) == "old", "the file stays");
+    CHECK(manifest().isEmpty(), "nothing is recorded for it");
 }
 
 /* A provider's document copies on the worker into replays/, under its provider's name, and is recorded pending. */
@@ -1076,6 +1212,9 @@ main(int argc, char** argv) {
     dsd_test_qt_isolate_paths();
     test_names();
     test_local_reference_answers_its_path();
+    test_local_pick_copied_on_browser_host();
+    test_local_pick_keeps_its_input_kind();
+    test_saved_local_path_left_alone();
     test_copy_is_recorded_pending();
     test_repicked_copy_is_reclaimed();
     test_failed_save_after_adopt_keeps_the_copy();

@@ -618,8 +618,9 @@ Window {
         target: uiController
         property: "autoStartBlocked"
         // A backup flow counts for its whole length: its system pickers show no sheet.
-        // So does a permission prompt of the host's own, until it is answered or expires (#647).
-        value: mainRoot.sessionDestination.length > 0 || mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.signalSearchOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.callRecordingsOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || (!!decoderHost && decoderHost.localDeviceRequestPending === true) || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0 || backup.flowActive
+        // So does a permission prompt of the host's own, until it is answered or expires (#647),
+        // and a close for a restart once it has begun, until the app is gone (#830).
+        value: mainRoot.sessionDestination.length > 0 || mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.signalSearchOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.callRecordingsOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || (!!decoderHost && decoderHost.localDeviceRequestPending === true) || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0 || backup.flowActive || restartCloser.active
     }
     Connections {
         target: uiController
@@ -2614,5 +2615,28 @@ Window {
         z: 22
         anchors.fill: safeArea
         onRestoreBegun: mainRoot.dropPendingStarts()
+    }
+
+    // ---- DSD-neo's file browser (issue #830) ----
+    // Above every owner and the backup flow's sheets: a pick from an open
+    // companion or restore sheet browses over it, and its owner stays visible
+    // underneath, so the import or restore it belongs to carries on. Closing for
+    // a restart drops the starts waiting here first, as a restore does.
+    FileBrowserScreen {
+        id: fileBrowserScreen
+        objectName: "fileBrowserScreen"
+        z: 30
+        anchors.fill: safeArea
+        // A system being added or edited (a replay file or a CSV import
+        // browses from it) is lost with the close.
+        unsavedDraft: function () {
+            if (!mainRoot.wizardOpen || !wizard.hasUnsavedDraft())
+                return "";
+            return wizard.editRow >= 0 ? "edit" : "add";
+        }
+        onCloseConfirmed: {
+            mainRoot.dropPendingStarts();
+            restartCloser.begin();
+        }
     }
 }

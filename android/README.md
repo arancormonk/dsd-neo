@@ -249,6 +249,76 @@ saved there stay after DSD-neo is uninstalled; a backup there stays encrypted wi
 At start DSD-neo gives back any lasting file permissions an earlier version kept from picks, since it no longer uses
 them and Android limits how many an app may hold.
 
+### Choosing files without a file picker
+
+Some devices, car head units most of all, have no file picker that can open DSD-neo's files. When Restore, a CSV
+import or a replay file finds none, DSD-neo opens its own file browser instead (#830). **Settings › Libraries ›
+Choose files in DSD-neo** opens it first even where Android has a picker; **Choose with another app** in the browser
+then hands the pick to Android's picker, and backing out of that picker returns to the browser, at its list of places.
+The browser lists only the files the pick can use (CSV and `.txt` for imports, `.dsdbak` for Restore, `.wav` and symbol
+captures for replay); **Show all files** lists the rest, hidden files included. Back goes up one folder, and from the
+list of places it ends the pick. The folder's path is one line above it that scrolls sideways; on a short screen (a
+car's) it sits beside Back in place of the title. A file that takes a moment to check (a slow USB drive) shows
+**Opening `name`…**, and further taps on files wait for it.
+
+The places it lists:
+
+- **DSD-neo inbox** is the app's own folder, so reading it needs no permission on any build. Its row shows the exact
+  path, `/storage/emulated/<user>/Android/data/io.github.arancormonk.dsdneo/files/Inbox`. `<user>` is 0 on a phone
+  and often 10 or more on a car head unit; use the number the app shows. Copy files there from a computer over USB,
+  where the device offers file transfer, or with adb:
+  `adb push FILE /storage/emulated/<user>/Android/data/io.github.arancormonk.dsdneo/files/Inbox/`. An empty inbox
+  shows the same path and line with a Copy button. On a head unit with several users, `adb push` to `/sdcard/...`
+  reaches user 0, not the user DSD-neo runs as, and on some it cannot reach the inbox at all. Uninstalling DSD-neo or
+  clearing its storage empties the inbox.
+- **Saved by DSD-neo** lists the files this install saved to Download/DSD-neo (backups, exports, saves made without
+  a save picker). Files an earlier install saved there are not listed after a reinstall or a Clear storage.
+- **Device storage**, and a row per SD card or USB drive (named as Android describes it, else "Removable storage"),
+  need storage access:
+  - In the sideload APK on Android 11 and later, **Allow access** opens Android's All files access screen for
+    DSD-neo. When Settings has no such screen or no switch for DSD-neo (car settings often have none), the browser
+    shows how else to allow it. On Android 11 and 12: App info › Permissions › Files and media › "Allow management of
+    all files". From a computer, on any version:
+    `adb shell appops set --uid io.github.arancormonk.dsdneo MANAGE_EXTERNAL_STORAGE allow`. On Android 13 and later
+    car head units the adb line may be the only way. The grant shows up when DSD-neo is back in front.
+  - On Android 10, in every build, **Allow access** asks with Android's storage dialog, and device storage is then
+    read-only. After a plain "Don't allow" the browser says **Access was not allowed. Allow access asks again.** After
+    "Don't allow" with "Don't ask again", App info opens: allow Files and media (Storage) there and come back. USB
+    drives stay with Android's picker on Android 10.
+  - The Play bundle has no All files access (Google Play allows it only for apps that need it at their core), so a
+    Play install lists the inbox and Saved by DSD-neo, plus device storage on Android 10. Anything else comes through
+    Choose with another app or a copy into the inbox.
+
+Turning All files access off later closes DSD-neo; Android does that to every app whose access is taken away. Open
+DSD-neo again.
+
+**The restart.** Android lets an app read some USB drives only when the app started while it already had All files
+access. Those are the drives Android mounts outside shared storage, seen for USB drives on stock Android; a drive
+mounted as shared storage, such as an SD card, opens right away. Such a drive's row says **DSD-neo can open this drive
+after it restarts.** with a **Close DSD-neo** button; then open DSD-neo again. The close waits while an import, a replay
+copy or a backup is still copying (**Wait for the copy to finish, then close DSD-neo.**). Otherwise it asks first and
+names what ends: listening stops, an open CSV import or the restore being chosen is dropped, a system being added or
+edited with changes not yet saved is dropped, and a restore already confirmed applies when DSD-neo opens again. While it
+closes, files can't be picked (**DSD-neo is closing, so files can't be picked now.**), and a copy that began anyway
+stops the close with the same wait line. Listening is stopped and allowed to finish before the app closes; if it does
+not stop within ten seconds, Android does not close the app, or the app is still running five seconds after it was told
+to close (some launchers keep it), DSD-neo stays open and says **DSD-neo could not close itself. Close it from Android's
+recent apps, then open it again.** A drive pulled out while the browser shows it goes back to the list of places with
+**The drive was removed.**, which clears once the drive is listed again. A file tapped just as the device's drives
+change (a drive plugged in) is checked once more, quietly.
+
+Limits:
+
+- Files that exist only in the cloud need another app (Choose with another app).
+- A file or folder whose name is not valid UTF-8 (possible on an ext4 drive) is not listed; the folder says how many it
+  left out. Rename it on a computer to pick it.
+- A folder with more than 50,000 items says **This folder has too many items to show.** Long folders show 500 items
+  at a time, with Show more below.
+- The inbox is emptied by uninstalling DSD-neo or clearing its storage, and Saved by DSD-neo shows this install's
+  saves only.
+- A file replaced by a link between the moment it is picked and the moment it is copied, inside a folder of the app's
+  own, is not checked again.
+
 ## Imported files (trunking CSVs)
 
 The C core only opens real filesystem paths (`src/runtime/path_policy.c` requires
@@ -273,24 +343,37 @@ provider that ignores the cancel delays later imports until its copy returns.
 The wizard's audio/capture **File** source copies a replay the same way into
 `files/replays/`, as long as the free space less 512 MiB holds it, with
 "Copying <name>…", how much is copied of how much, and **Cancel copy** under the
-row. `replay_copies.json` lists each copy as pending until a saved system names it,
-and a pending copy no system names is deleted at the next start; a copy a system
-once named is kept, also after a restore clears that system's file. Copies older
-versions made in `files/imports/` are never touched.
+row. A file picked in DSD-neo's own file browser (see
+[Choosing files without a file picker](#choosing-files-without-a-file-picker)) is
+copied the same way, even though DSD-neo could read it where it is: a USB drive can
+be pulled out and the inbox cleared, and a saved system must still play. Systems
+saved before keep the file they name. `replay_copies.json` lists each copy as
+pending until a saved system names it, and a pending copy no system names is
+deleted at the next start; a copy a system once named is kept, also after a restore
+clears that system's file. Copies older versions made in `files/imports/` are never
+touched.
 
 Embedded `single_key_dec`/`single_key_hex` values in a channel map travel with that copied file and therefore work on
 Android. The companion selection flow copies referenced files into a private bundle
 and rewrites the stored paths. A target CSV additionally includes its channel maps,
 band plans, scoped policy/mapping files, and dependencies inside channel maps.
+A CSV picked with Android's picker has no folder DSD-neo can look in, so the sheet asks
+for each file it names. A CSV picked in DSD-neo's file browser does: the files it names
+are found beside it, but only by a relative name and only inside the CSV's folder or a
+folder below it. An absolute path, a `../` that leaves the folder, or a link that points
+out of it is asked for on the sheet instead, so a CSV cannot pull in any file the app can
+read. A file you choose on the sheet is used wherever it is. While the browser is open
+over the sheet, Back at its list of places returns to the sheet with your choices kept.
 
 Picks go through the app's document picker (issue #829), and the picked document is then copied by the import worker
 as above. A pick belongs to the screen that asked for it: leaving Imported files, the scan list editor or the wizard, or
 reopening the editor or the wizard for another item, cancels it, and so does a copy still running. A file or "None"
 chosen for the same field while the picker is out wins over the pick that comes back later, and "Update" replaces the
 file it was started on, or says "That file changed while you were picking. Try again." when that file was removed
-meanwhile. When no picker can open, the import ends with the reason; on the companion sheet the reason shows above the
-companions and the files already chosen stay. On the wizard's **File** source the reason shows under the Replay file
-row, where a failed replay copy says why too, and the earlier file stays.
+meanwhile. A device with no picker gets DSD-neo's file browser instead; when the picker fails otherwise, the import
+ends with the reason; on the companion sheet the reason shows above the companions and the files already chosen stay.
+On the wizard's **File** source the reason shows under the Replay file row, where a failed replay copy says why too,
+and the earlier file stays.
 
 The library itself (one JSON-persisted
 row per stored file, with dry-run validation counts from
@@ -302,8 +385,10 @@ ID lists use `id,name[,tags]` and supply labels; a list whose header is `id,name
 recording calls by radio (see [Source ID List CSV](../docs/csv-formats.md#source-id-list-csv---src-csv-file--trunking-src_csv)).
 They can be applied or cleared in a running session. A group
 list and a source ID list cannot be distinguished by content: validation uses the kind selected by the user.
-No storage permissions are involved: the picker grants access to the one document picked, and DSD-neo copies it
-right away.
+With Android's picker no storage permissions are involved: the picker grants access to the one document picked, and
+DSD-neo copies it right away. DSD-neo's file browser reads the inbox without one and other storage with the access
+described in [Choosing files without a file picker](#choosing-files-without-a-file-picker); it copies the file the
+same way.
 
 ## Call recordings
 
@@ -514,11 +599,15 @@ file, and a restore never touches kept files.
 ### Restoring
 
 **Restore from backup** replaces this phone's setup with the backup's, so stop listening first (the row reads **Stop
-listening to restore** until then). Pick the file in the file picker (DSD-neo checks the file's contents, not its name)
-and enter its passphrase. A wrong passphrase reads the same as a file damaged on the way (**Wrong passphrase, or the
-file is damaged.**). When the file itself is the problem (not a DSD-neo backup, made by a newer DSD-neo, too large,
-damaged, or unreadable), **Choose another file** opens the picker again and takes only the file picked there. When no
-picker can open, either time, the restore stops, the Settings card says why, and **Restore from backup** starts over.
+listening to restore** until then). Pick the file in the file picker, or in DSD-neo's file browser (see
+[Choosing files without a file picker](#choosing-files-without-a-file-picker); it lists `.dsdbak` files, and Show all
+files the rest, since DSD-neo checks the file's contents, not its name), and enter its passphrase. Back from the
+browser's list of places ends the restore, as backing out of the picker does. A wrong passphrase reads the same as a
+file damaged on the way (**Wrong passphrase, or the file is damaged.**). When the file itself is the problem (not a
+DSD-neo backup, made by a newer DSD-neo, too large, damaged, or unreadable), **Choose another file** opens the picker
+(or the browser) again and takes only the file picked there. When the device has no picker, the browser opens
+instead; when the picker fails otherwise, either time, the restore stops, the Settings card says why, and **Restore
+from backup** starts over.
 DSD-neo checks the whole backup before it changes anything. An imported file this phone cannot read (a channel map whose
 companion files it refuses, say) is left out of the restore rather than refusing the whole backup; whatever named it
 loses that reference. Then it asks **Replace your setup?** with the backup's date, app version and counts, how many
@@ -924,7 +1013,11 @@ the build-tree `dsd-neo-app.apk` with the signed copy in passing. That overwrite
 is also *Play-shaped*: the bundle invocation packages the in-passing APK with
 uncompressed libraries and `extractNativeLibs=false` (see
 [Native libraries](#native-libraries-sideload-apk-vs-play-bundle)), roughly
-doubling it. A plain rebuild of the apk target will not undo this — the aab
+doubling it. It also lacks All files access: the bundle invocation leaves out
+the sideload manifest overlay (see
+[Permissions](#permissions-sideload-apk-vs-play-bundle)), so its file browser
+cannot reach Download, device storage or USB drives on Android 11 and later.
+A plain rebuild of the apk target will not undo this — the aab
 build changes no inputs the apk target's depfile tracks, so it is a no-op.
 Delete the build-tree APK first to force androiddeployqt to re-run:
 
@@ -960,6 +1053,24 @@ an AAB cannot be installed, so beside the APK it only misleads, and under Play
 App Signing the uploaded bundle carries the upload key while Google re-signs what
 users install — it corresponds to no shipped binary. Download it by hand when
 updating a Play track.
+
+### Permissions: sideload APK vs Play bundle
+
+`android/package/AndroidManifest.xml` declares every permission itself; it has no
+`%%INSERT_PERMISSIONS` marker, so androiddeployqt adds none (Qt Core's rules would
+add `WRITE_EXTERNAL_STORAGE`). Every build reads device storage on Android 10 in
+the file browser (`READ_EXTERNAL_STORAGE` up to API 29 and
+`requestLegacyExternalStorage`). All files access (`MANAGE_EXTERNAL_STORAGE`) is
+in the overlay `android/package/sideload/AndroidManifest.xml`, which also raises
+READ to API 32 so Android 11 and 12 offer "Allow management of all files" under
+App info. The vendored `build.gradle` merges the overlay into every invocation
+that builds no bundle — the apk target, debug builds included — and leaves it out
+of the aab target. Google Play allows All files access only for apps whose core
+purpose needs it, so the bundle never asks for it; a Play install browses its
+own inbox and the files it saved, plus device storage on Android 10. CI asserts
+both sides: the published APK declares All files access and READ up to API 32,
+the AAB's base manifest declares neither All files access nor
+`WRITE_EXTERNAL_STORAGE`, and neither artifact declares `WRITE_EXTERNAL_STORAGE`.
 
 ### Native libraries: sideload APK vs Play bundle
 

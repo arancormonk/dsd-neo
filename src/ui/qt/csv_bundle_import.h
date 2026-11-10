@@ -50,6 +50,14 @@ struct BundleTarget {
     QString existingRootRelative;
     /** The bytes the bundle may copy in all; each copy is capped at min(32 MiB, what is left). */
     qint64 budget = kMaxBundleImportBytes;
+    /**
+     * Companions found by path stay in the primary's folder tree (issue #830, where DSD-neo browses the whole device):
+     * a companion the CSV names is taken only by a relative name, as a regular file whose real path lies in the local
+     * primary's real folder or below it, or, for a stored revision, in the replaced bundle's root. An absolute name, a
+     * `../` or a link out of it stays required. Companions chosen explicitly are taken as they are. False: any file the
+     * CSV names is found, as on the desktop.
+     */
+    bool confineLocalCompanions = false;
 };
 
 struct CsvBundleImport {

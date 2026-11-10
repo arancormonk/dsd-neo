@@ -19,6 +19,7 @@
 #include <QThread>
 #include <QUrl>
 #include <QVariant>
+#include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
 #include <atomic>
@@ -198,6 +199,30 @@ take_discarded() {
     return taken;
 }
 
+namespace {
+/* FileBrowser (#830): each call the host made, as one line, in order; whether it takes requests (and whether Qt's
+ * context is an activity, which requestAccess() needs); the records pollRecord() hands out, oldest first; and the
+ * access state with the flag takeAccessRefresh() drains. */
+struct PlatformFileBrowser {
+    QStringList calls;
+    QStringList records;
+    bool takes = true;
+    bool activity = true;
+    QString accessState;
+    bool accessRefresh = false;
+    int accessReads = 0;
+    // When set, handing out the next record first installs this access state and raises the flag, as FileBrowser
+    // does when a grant lands on the Android main thread between the host's take and its poll.
+    QString grantWithNextRecord;
+};
+} // namespace
+
+static PlatformFileBrowser&
+fileBrowser() {
+    static PlatformFileBrowser value;
+    return value;
+}
+
 /* What the platform's transfer last saw, and the answer it gives, under its lock. */
 template <class F>
 static auto
@@ -280,8 +305,12 @@ usb_record() {
 // Only platform transport is replaced. The real Android host's refresh, stop,
 // phase publication and failureText getter are compiled by this desktop target.
 namespace dsd_android {
-// As the real constructor (decoder_host_android.cpp) does, less its platform calls: the share copies' clean.
-DecoderHostAndroid::DecoderHostAndroid(QObject* parent) : DecoderHost(parent) { startRecordingShareClean(); }
+// As the real constructor (decoder_host_android.cpp) does, less its platform calls: the file browser's start (over the
+// FileBrowser stub) and the share copies' clean.
+DecoderHostAndroid::DecoderHostAndroid(QObject* parent) : DecoderHost(parent) {
+    startFileBrowser();
+    startRecordingShareClean();
+}
 
 QJsonObject
 DecoderHostAndroid::readLifecycleStatus() const {
@@ -647,6 +676,85 @@ DecoderHostAndroid::platformDiscardPendingDownload(const QString& reference) {
     PlatformDownloads& d = downloads();
     const std::lock_guard<std::mutex> lock(d.mutex);
     d.discarded.append(reference);
+}
+
+/* FileBrowser's calls, joined rather than arg()ed: a path's or reference's own %XX escapes are not placeholders. */
+void
+DecoderHostAndroid::platformStartFileBrowser() {
+    fileBrowser().calls.append(QStringLiteral("start"));
+}
+
+QString
+DecoderHostAndroid::platformFileAccessState() {
+    ++fileBrowser().accessReads;
+    return fileBrowser().accessState;
+}
+
+bool
+DecoderHostAndroid::platformTakeFileAccessRefresh() {
+    return std::exchange(fileBrowser().accessRefresh, false);
+}
+
+bool
+DecoderHostAndroid::platformListRoots(qint64 id, qint64 session) {
+    fileBrowser().calls.append(QStringLiteral("roots %1 %2").arg(id).arg(session));
+    return fileBrowser().takes;
+}
+
+bool
+DecoderHostAndroid::platformListFolder(qint64 id, qint64 session, const QString& rootKey, qint64 generation,
+                                       const QString& path, const QString& kind, bool showAll) {
+    fileBrowser().calls.append(QStringLiteral("folder %1 %2 ").arg(id).arg(session) + rootKey + QLatin1Char(' ')
+                               + QString::number(generation) + QLatin1Char(' ') + path + QLatin1Char(' ') + kind
+                               + (showAll ? QStringLiteral(" all") : QStringLiteral(" filtered")));
+    return fileBrowser().takes;
+}
+
+bool
+DecoderHostAndroid::platformListMore(qint64 id, qint64 session, qint64 snapshot, int offset) {
+    fileBrowser().calls.append(QStringLiteral("more %1 %2 %3 %4").arg(id).arg(session).arg(snapshot).arg(offset));
+    return fileBrowser().takes;
+}
+
+bool
+DecoderHostAndroid::platformCheckHandoff(qint64 id, qint64 session, const QString& rootKey, qint64 generation,
+                                         const QString& reference) {
+    fileBrowser().calls.append(QStringLiteral("handoff %1 %2 ").arg(id).arg(session) + rootKey + QLatin1Char(' ')
+                               + QString::number(generation) + QLatin1Char(' ') + reference);
+    return fileBrowser().takes;
+}
+
+bool
+DecoderHostAndroid::platformRequestFileAccess(qint64 id) {
+    // As the shim: without an activity context FileBrowser is never asked.
+    if (!fileBrowser().activity) {
+        return false;
+    }
+    fileBrowser().calls.append(QStringLiteral("access %1").arg(id));
+    return fileBrowser().takes;
+}
+
+void
+DecoderHostAndroid::platformCancelFileRequest(qint64 id) {
+    fileBrowser().calls.append(QStringLiteral("cancel %1").arg(id));
+}
+
+void
+DecoderHostAndroid::platformCloseFileSession(qint64 session) {
+    fileBrowser().calls.append(QStringLiteral("close %1").arg(session));
+}
+
+QString
+DecoderHostAndroid::platformPollFileBrowser() {
+    PlatformFileBrowser& browser = fileBrowser();
+    if (browser.records.isEmpty()) {
+        return QString();
+    }
+    if (!browser.grantWithNextRecord.isEmpty()) {
+        browser.accessState = std::exchange(browser.grantWithNextRecord, QString());
+        browser.accessRefresh = true;
+    }
+    return browser.records.takeFirst();
 }
 
 /* The sign-in form's calls out are JNI only (decoder_host_android.cpp); the way a fill comes back in is real. */
@@ -3083,6 +3191,718 @@ check_sign_in_fill_reaches_the_live_host() {
     host.setSignInFillSink(nullptr);
 }
 
+namespace {
+/* The Android host, keeping each file browser answer (#830) with its signal, id and map; it counts access changes. */
+class FileHost : public dsd_android::DecoderHostAndroid {
+  public:
+    struct Answer {
+        QString signal;
+        qint64 id;
+        QVariantMap result;
+    };
+
+    FileHost() {
+        QObject::connect(this, &DecoderHost::fileRootsListed, this, [this](qint64 id, const QVariantMap& result) {
+            answers.append({QStringLiteral("roots"), id, result});
+        });
+        QObject::connect(this, &DecoderHost::folderListed, this, [this](qint64 id, const QVariantMap& result) {
+            answers.append({QStringLiteral("folder"), id, result});
+        });
+        QObject::connect(this, &DecoderHost::fileHandoffChecked, this, [this](qint64 id, const QVariantMap& result) {
+            answers.append({QStringLiteral("handoff"), id, result});
+        });
+        QObject::connect(this, &DecoderHost::fileAccessRequestDone, this, [this](qint64 id, const QString& outcome) {
+            answers.append({QStringLiteral("access"), id, {{QStringLiteral("outcome"), outcome}}});
+        });
+        QObject::connect(this, &DecoderHost::fileAccessChanged, this, [this] { ++accessChanges; });
+    }
+
+    /* Each answer as "<signal> <id> <status>", the status being a hand-off's reason ("ok" when it is) or an outcome. */
+    QStringList
+    lines() const {
+        QStringList out;
+        for (const Answer& answer : answers) {
+            QString word = answer.result.value(QStringLiteral("status")).toString();
+            if (answer.signal == QLatin1String("handoff")) {
+                word = answer.result.value(QStringLiteral("ok")).toBool()
+                           ? QStringLiteral("ok")
+                           : answer.result.value(QStringLiteral("reason")).toString();
+            } else if (answer.signal == QLatin1String("access")) {
+                word = answer.result.value(QStringLiteral("outcome")).toString();
+            }
+            out.append(answer.signal + QLatin1Char(' ') + QString::number(answer.id) + QLatin1Char(' ') + word);
+        }
+        return out;
+    }
+
+    QList<Answer> answers;
+    int accessChanges = 0;
+};
+
+QString
+answer_line(const char* signal, qint64 id, const char* status) {
+    return QLatin1String(signal) + QLatin1Char(' ') + QString::number(id) + QLatin1Char(' ') + QLatin1String(status);
+}
+
+// A name with a space, '#' and '%', as FileListing lists it: the reference encodes each once (#830).
+QString
+listed_reference() {
+    return QStringLiteral("file:///storage/emulated/0/Download/a%20b%231%25.csv");
+}
+
+/* One FileBrowser.pollRecord() record, as org.json writes it: @p fields are the members after id and kind. */
+QString
+file_record(qint64 id, const char* kind, const QString& fields) {
+    return QStringLiteral(R"({"id":)") + QString::number(id) + QStringLiteral(R"(,"kind":")") + QLatin1String(kind)
+           + QLatin1Char('"') + (fields.isEmpty() ? QString() : QLatin1Char(',') + fields) + QLatin1Char('}');
+}
+
+const char* const kRootJson = R"({"key":"removable:6187-25A8","kind":"removable","title":"USB drive",)"
+                              R"("path":"/mnt/media_rw/6187-25A8","state":"needsRestart","detail":"mounted"})";
+const char* const kFolderJson = R"({"name":"Lists","path":"/storage/emulated/0/Download/Lists","reference":"",)"
+                                R"("dir":true,"size":0,"modifiedMs":0})";
+
+QString
+roots_record(qint64 id) {
+    return file_record(id, "roots",
+                       QStringLiteral(R"("status":"ok","generation":4,"roots":[)") + QLatin1String(kRootJson)
+                           + QLatin1Char(']'));
+}
+
+QString
+entry_json() {
+    return QStringLiteral(R"({"name":"a b#1%.csv","path":"/storage/emulated/0/Download/a b#1%.csv","reference":")")
+           + listed_reference() + QStringLiteral(R"(","dir":false,"size":4200000,"modifiedMs":1762646400000})");
+}
+
+QString
+listing_record(qint64 id) {
+    return file_record(id, "listing",
+                       QStringLiteral(R"("status":"ok","snapshot":12,"offset":0,"entries":[)")
+                           + QLatin1String(kFolderJson) + QLatin1Char(',') + entry_json()
+                           + QStringLiteral(R"(],"more":true,"hiddenByFilter":3,"hiddenByName":2)"));
+}
+
+QString
+status_record(qint64 id, const char* status) {
+    return file_record(id, "listing", QStringLiteral(R"("status":")") + QLatin1String(status) + QLatin1Char('"'));
+}
+
+QString
+handoff_record(qint64 id) {
+    return file_record(id, "handoff",
+                       QStringLiteral(R"("ok":true,"reference":")") + listed_reference()
+                           + QStringLiteral(R"(","name":"a b#1%.csv","reason":"")"));
+}
+
+QString
+access_record(qint64 id, const char* outcome) {
+    return file_record(id, "access", QStringLiteral(R"("outcome":")") + QLatin1String(outcome) + QLatin1Char('"'));
+}
+
+QVariantMap
+csv_filter(bool showAll) {
+    return {{QStringLiteral("kind"), QStringLiteral("csv")}, {QStringLiteral("showAll"), showAll}};
+}
+
+/* The maps the records above answer with: the record's fields, typed, less id and kind. */
+QVariantMap
+expected_roots() {
+    const QVariantMap root{{QStringLiteral("key"), QStringLiteral("removable:6187-25A8")},
+                           {QStringLiteral("kind"), QStringLiteral("removable")},
+                           {QStringLiteral("title"), QStringLiteral("USB drive")},
+                           {QStringLiteral("path"), QStringLiteral("/mnt/media_rw/6187-25A8")},
+                           {QStringLiteral("state"), QStringLiteral("needsRestart")},
+                           {QStringLiteral("detail"), QStringLiteral("mounted")}};
+    return {{QStringLiteral("status"), QStringLiteral("ok")},
+            {QStringLiteral("generation"), qint64(4)},
+            {QStringLiteral("roots"), QVariantList{root}}};
+}
+
+QVariantMap
+expected_listing() {
+    const QVariantMap folder{{QStringLiteral("name"), QStringLiteral("Lists")},
+                             {QStringLiteral("path"), QStringLiteral("/storage/emulated/0/Download/Lists")},
+                             {QStringLiteral("reference"), QString()},
+                             {QStringLiteral("dir"), true},
+                             {QStringLiteral("size"), qint64(0)},
+                             {QStringLiteral("modifiedMs"), qint64(0)}};
+    const QVariantMap file{{QStringLiteral("name"), QStringLiteral("a b#1%.csv")},
+                           {QStringLiteral("path"), QStringLiteral("/storage/emulated/0/Download/a b#1%.csv")},
+                           {QStringLiteral("reference"), listed_reference()},
+                           {QStringLiteral("dir"), false},
+                           {QStringLiteral("size"), qint64(4200000)},
+                           {QStringLiteral("modifiedMs"), qint64(1762646400000)}};
+    return {{QStringLiteral("status"), QStringLiteral("ok")},
+            {QStringLiteral("snapshot"), qint64(12)},
+            {QStringLiteral("offset"), qint64(0)},
+            {QStringLiteral("entries"), QVariantList{folder, file}},
+            {QStringLiteral("more"), true},
+            {QStringLiteral("hiddenByFilter"), qint64(3)},
+            {QStringLiteral("hiddenByName"), qint64(2)}};
+}
+
+QVariantMap
+expected_handoff() {
+    return {{QStringLiteral("ok"), true},
+            {QStringLiteral("reference"), listed_reference()},
+            {QStringLiteral("name"), QStringLiteral("a b#1%.csv")},
+            {QStringLiteral("reason"), QString()}};
+}
+
+/* Records naming no request: no id, or one that is not a whole number above 0. They are ignored. */
+QStringList
+unidentified_file_records(qint64 handoff) {
+    return {
+        QStringLiteral("{"),
+        QStringLiteral("[]"),
+        QStringLiteral("null"),
+        handoff_record(handoff).replace(QStringLiteral(R"("id":)") + QString::number(handoff),
+                                        QStringLiteral(R"("id":")") + QString::number(handoff) + QLatin1Char('"')),
+        handoff_record(handoff).replace(QStringLiteral(R"("id":)") + QString::number(handoff),
+                                        QStringLiteral(R"("id":)") + QString::number(handoff) + QStringLiteral(".5")),
+        handoff_record(handoff).replace(QStringLiteral(R"("id":)") + QString::number(handoff),
+                                        QStringLiteral(R"("id":0)")),
+        handoff_record(handoff).replace(QStringLiteral(R"("id":)") + QString::number(handoff),
+                                        QStringLiteral(R"("id":-)") + QString::number(handoff)),
+    };
+}
+
+/*
+ * Records for live requests @p handoff, @p listing, @p roots and @p access that are malformed or of another kind,
+ * each with the line its request is answered with: "failed", as FileBrowser can no longer answer it.
+ */
+QList<QPair<QString, QString>>
+malformed_file_records(qint64 handoff, qint64 listing, qint64 roots, qint64 access) {
+    const QString root = QLatin1String(kRootJson);
+    const QString h = answer_line("handoff", handoff, "failed");
+    const QString l = answer_line("folder", listing, "failed");
+    const QString r = answer_line("roots", roots, "failed");
+    const QString a = answer_line("access", access, "failed");
+    return {
+        {file_record(handoff, "picked", QStringLiteral(R"("uri":"content://x/y","name":"x","downloads":false)")), h},
+        {file_record(handoff, "access", QStringLiteral(R"("outcome":"granted")")), h},
+        {file_record(listing, "roots", QStringLiteral(R"("status":"ok","generation":4,"roots":[])")), l},
+        {file_record(roots, "listing", QStringLiteral(R"("status":"busy")")), r},
+        {file_record(access, "handoff", QStringLiteral(R"("ok":false,"reference":"","name":"","reason":"busy")")), a},
+        {handoff_record(handoff).replace(QStringLiteral(R"("ok":true)"), QStringLiteral(R"("ok":"true")")), h},
+        {handoff_record(handoff).replace(QStringLiteral(R"(,"name":"a b#1%.csv")"), QString()), h},
+        {file_record(listing, "listing", QStringLiteral(R"("snapshot":12)")), l},
+        {file_record(listing, "listing", QStringLiteral(R"("status":"")")), l},
+        {file_record(listing, "listing",
+                     QStringLiteral(R"("status":"ok","snapshot":12,"offset":0,"more":false,)"
+                                    R"("hiddenByFilter":0,"hiddenByName":0)")),
+         l},
+        {listing_record(listing).replace(QStringLiteral(R"(,"hiddenByName":2)"), QString()), l},
+        {listing_record(listing).replace(QStringLiteral(R"("more":true)"), QStringLiteral(R"("more":"no")")), l},
+        {listing_record(listing).replace(QStringLiteral(R"("dir":true,)"), QString()), l},
+        {listing_record(listing).replace(QStringLiteral(R"("size":4200000)"), QStringLiteral(R"("size":4200000.5)")),
+         l},
+        {listing_record(listing).replace(QStringLiteral(R"("offset":0)"), QStringLiteral(R"("offset":0.5)")), l},
+        {listing_record(listing).replace(QStringLiteral(R"("snapshot":12)"), QStringLiteral(R"("snapshot":12.5)")), l},
+        {roots_record(roots).replace(QStringLiteral(R"("generation":4)"), QStringLiteral(R"("generation":4.5)")), r},
+        {file_record(roots, "roots", QStringLiteral(R"("status":"ok","roots":[)") + root + QLatin1Char(']')), r},
+        {roots_record(roots).replace(QStringLiteral(R"("title":"USB drive")"), QStringLiteral(R"("title":7)")), r},
+        {file_record(roots, "roots", QStringLiteral(R"("status":"ok","generation":4,"roots":{})")), r},
+        {file_record(access, "access", QStringLiteral(R"("outcome":"")")), a},
+        {file_record(access, "access", QStringLiteral(R"("outcome":1)")), a},
+    };
+}
+} // namespace
+
+/*
+ * #830: each request reaches FileBrowser with its arguments and the host's id, and nothing answers inside the call.
+ * refresh() drains FileBrowser's records in order; a record answers its live request once, with the record's fields as
+ * the map. A request the platform could not take is answered "failed", queued.
+ */
+static void
+check_file_browser_requests() {
+    fileBrowser() = PlatformFileBrowser();
+    FileHost host;
+    check(host.fileBrowserSupported() && host.property("fileBrowserSupported").toBool(),
+          "QML finds the Android host's file browser");
+    check(fileBrowser().calls == QStringList{QStringLiteral("start")}, "the host starts FileBrowser once, when made");
+    fileBrowser().calls.clear();
+    const qint64 s = host.openFileBrowserSession();
+    const qint64 t = host.openFileBrowserSession();
+    const qint64 roots = host.requestFileRoots(s);
+    const qint64 listing =
+        host.requestFolderListing(s, QStringLiteral("removable:6187-25A8"), 4,
+                                  QStringLiteral("/mnt/media_rw/6187-25A8/Lists"), csv_filter(false));
+    const qint64 handoff = host.requestFileHandoff(t, QStringLiteral("storage"), 4, listed_reference());
+    const qint64 page = host.requestMorePage(t, 12, 500);
+    const qint64 access = host.requestFileAccess(s);
+    check(t > s && roots > t && listing > roots && handoff > listing && page > handoff && access > page,
+          "each request takes a new id");
+    check(fileBrowser().calls
+              == QStringList{QStringLiteral("roots %1 %2").arg(roots).arg(s),
+                             QStringLiteral("folder %1 %2 removable:6187-25A8 4 /mnt/media_rw/6187-25A8/Lists csv "
+                                            "filtered")
+                                 .arg(listing)
+                                 .arg(s),
+                             QStringLiteral("handoff %1 %2 storage 4 ").arg(handoff).arg(t) + listed_reference(),
+                             QStringLiteral("more %1 %2 12 500").arg(page).arg(t),
+                             QStringLiteral("access %1").arg(access)},
+          "each request reaches FileBrowser with its arguments and the host's id");
+    check(host.answers.isEmpty(), "nothing is answered inside a request");
+    QCoreApplication::processEvents();
+    check(host.answers.isEmpty(), "nothing answers a request the platform took but its record");
+
+    // Written in another order than asked: the records' order is the answers' order.
+    fileBrowser().records = QStringList{access_record(access, "settingsOpened"), handoff_record(handoff),
+                                        status_record(page, "expired"), roots_record(roots), listing_record(listing)};
+    host.refresh();
+    check(fileBrowser().records.isEmpty(), "refresh() reads every record waiting");
+    check(host.lines()
+              == QStringList{answer_line("access", access, "settingsOpened"), answer_line("handoff", handoff, "ok"),
+                             answer_line("folder", page, "expired"), answer_line("roots", roots, "ok"),
+                             answer_line("folder", listing, "ok")},
+          "the records answer their requests in the order FileBrowser wrote them");
+    if (host.answers.size() == 5) {
+        check(host.answers.at(1).result == expected_handoff(),
+              "a hand-off answer is the record's fields: the reference as listed, the name never decoded");
+        check(host.answers.at(2).result == QVariantMap{{QStringLiteral("status"), QStringLiteral("expired")}},
+              "a page that is not ok carries its status only");
+        check(host.answers.at(3).result == expected_roots(), "a roots answer is the record's fields, typed");
+        check(host.answers.at(4).result == expected_listing(), "a listing answer is the record's fields, typed");
+    }
+    fileBrowser().records = QStringList{access_record(access, "granted"), handoff_record(handoff), listing_record(page),
+                                        roots_record(roots), status_record(listing, "gone")};
+    host.refresh();
+    QCoreApplication::processEvents();
+    check(host.answers.size() == 5, "a request is answered once; later records for it are dropped");
+
+    // A record naming no request is ignored: the request stays live and its own record still answers it.
+    host.answers.clear();
+    const qint64 handoff2 = host.requestFileHandoff(s, QStringLiteral("inbox"), 4, listed_reference());
+    fileBrowser().records = unidentified_file_records(handoff2);
+    host.refresh();
+    QCoreApplication::processEvents();
+    check(host.answers.isEmpty(), "a record with no readable id is ignored");
+    fileBrowser().records = QStringList{handoff_record(handoff2)};
+    host.refresh();
+    check(host.lines() == QStringList{answer_line("handoff", handoff2, "ok")},
+          "its request stays live and its own record answers it");
+
+    /* A record for a live request that is malformed or of another kind settles that request "failed", at once and
+     * once, so it is never left waiting; each such record, alone, against requests of their own. */
+    const int malformed = malformed_file_records(0, 0, 0, 0).size();
+    for (int i = 0; i < malformed; ++i) {
+        host.answers.clear();
+        const qint64 handoff3 = host.requestFileHandoff(s, QStringLiteral("inbox"), 4, listed_reference());
+        const qint64 listing3 = host.requestFolderListing(t, QStringLiteral("inbox"), 4, QString(), csv_filter(true));
+        const qint64 roots3 = host.requestFileRoots(t);
+        const qint64 access3 = host.requestFileAccess(s);
+        const QPair<QString, QString> bad = malformed_file_records(handoff3, listing3, roots3, access3).at(i);
+        fileBrowser().records = QStringList{bad.first};
+        host.refresh();
+        check(host.lines() == QStringList{bad.second},
+              qPrintable(QStringLiteral("a malformed record for a live request answers it failed: ") + bad.first));
+        fileBrowser().records = QStringList{handoff_record(handoff3), listing_record(listing3), roots_record(roots3),
+                                            access_record(access3, "granted")};
+        host.refresh();
+        QCoreApplication::processEvents();
+        check(host.answers.size() == 4, "the failed request takes no later record; the others answer once");
+        host.cancelFileRequest(handoff3);
+        host.cancelFileRequest(listing3);
+        host.cancelFileRequest(roots3);
+        host.cancelFileRequest(access3);
+        QCoreApplication::processEvents();
+    }
+
+    // FileBrowser could not take it (not started, a malformed reference, a JNI call that failed): "failed", queued.
+    host.answers.clear();
+    fileBrowser().calls.clear();
+    fileBrowser().takes = false;
+    const qint64 failedRoots = host.requestFileRoots(s);
+    const qint64 failedListing = host.requestFolderListing(s, QStringLiteral("inbox"), 4, QString(), csv_filter(false));
+    const qint64 failedHandoff = host.requestFileHandoff(t, QStringLiteral("inbox"), 4, listed_reference());
+    const qint64 failedPage = host.requestMorePage(t, 12, 500);
+    const qint64 failedAccess = host.requestFileAccess(t);
+    fileBrowser().takes = true;
+    check(host.answers.isEmpty(), "a refusal is not answered inside the request");
+    QCoreApplication::processEvents();
+    check(
+        host.lines()
+            == QStringList{answer_line("roots", failedRoots, "failed"), answer_line("folder", failedListing, "failed"),
+                           answer_line("handoff", failedHandoff, "failed"), answer_line("folder", failedPage, "failed"),
+                           answer_line("access", failedAccess, "failed")},
+        "a request FileBrowser could not take is answered failed, queued");
+    check(!host.answers.isEmpty()
+              && host.answers.first().result
+                     == QVariantMap{{QStringLiteral("status"), QStringLiteral("failed")},
+                                    {QStringLiteral("generation"), qint64(0)},
+                                    {QStringLiteral("roots"), QVariantList()}},
+          "a failed roots request has no roots");
+    check(host.answers.size() == 5
+              && host.answers.at(3).result == QVariantMap{{QStringLiteral("status"), QStringLiteral("failed")}},
+          "a failed page carries its status only");
+    fileBrowser().records =
+        QStringList{roots_record(failedRoots), listing_record(failedListing), handoff_record(failedHandoff),
+                    listing_record(failedPage), access_record(failedAccess, "granted")};
+    host.refresh();
+    check(host.answers.size() == 5, "a failed request takes no record");
+    check(fileBrowser().calls.filter(QStringLiteral("cancel")).isEmpty(),
+          "a request the platform never took is never cancelled there");
+
+    // A flow that asks again from inside an answer (Refresh, a retry) does so during the drain.
+    FileHost again;
+    const qint64 session = again.openFileBrowserSession();
+    const qint64 first = again.requestFileRoots(session);
+    qint64 second = 0;
+    QObject::connect(&again, &dsd_qt::DecoderHost::fileRootsListed, &again,
+                     [&again, &second, first, session](qint64 id, const QVariantMap&) {
+                         if (id == first && second == 0) {
+                             second = again.requestFileRoots(session);
+                         }
+                     });
+    // Ids go up by one, so the record for the request the slot will make can wait in the same drain.
+    fileBrowser().records = QStringList{roots_record(first), roots_record(first + 1)};
+    again.refresh();
+    check(second == first + 1
+              && again.lines() == QStringList{answer_line("roots", first, "ok"), answer_line("roots", second, "ok")},
+          "a request made from an answer during the drain is answered by its record later in the same drain");
+}
+
+/*
+ * #830: a cancel, a session close and a superseding listing retire a request at once: it is answered "cancelled",
+ * queued, FileBrowser is told once, and a record that still comes for it is dropped. A request naming a closed session
+ * never reaches FileBrowser.
+ */
+static void
+check_file_browser_retirement() {
+    fileBrowser() = PlatformFileBrowser();
+    FileHost host;
+    const qint64 s = host.openFileBrowserSession();
+    const qint64 cancelled = host.requestFolderListing(s, QStringLiteral("inbox"), 4, QString(), csv_filter(false));
+    fileBrowser().calls.clear();
+    host.cancelFileRequest(cancelled);
+    host.cancelFileRequest(cancelled);
+    check(fileBrowser().calls == QStringList{QStringLiteral("cancel %1").arg(cancelled)},
+          "a cancel reaches FileBrowser at once, once");
+    check(host.answers.isEmpty(), "a cancel is not answered inside the call");
+    QCoreApplication::processEvents();
+    check(host.lines() == QStringList{answer_line("folder", cancelled, "cancelled")},
+          "a cancelled request is answered cancelled, queued");
+    fileBrowser().records = QStringList{listing_record(cancelled)};
+    host.refresh();
+    QCoreApplication::processEvents();
+    check(host.answers.size() == 1, "a cancelled request's record is dropped");
+
+    // One listing or page per session: a newer one supersedes it, on the platform first.
+    host.answers.clear();
+    fileBrowser().calls.clear();
+    const qint64 older = host.requestFolderListing(s, QStringLiteral("inbox"), 4, QString(), csv_filter(false));
+    const qint64 newer =
+        host.requestFolderListing(s, QStringLiteral("inbox"), 4, QStringLiteral("/x"), csv_filter(true));
+    const qint64 page = host.requestMorePage(s, 12, 500);
+    const qint64 other = host.openFileBrowserSession();
+    const qint64 elsewhere = host.requestFolderListing(other, QStringLiteral("inbox"), 4, QString(), csv_filter(false));
+    check(fileBrowser().calls
+              == QStringList{QStringLiteral("folder %1 %2 inbox 4  csv filtered").arg(older).arg(s),
+                             QStringLiteral("cancel %1").arg(older),
+                             QStringLiteral("folder %1 %2 inbox 4 /x csv all").arg(newer).arg(s),
+                             QStringLiteral("cancel %1").arg(newer),
+                             QStringLiteral("more %1 %2 12 500").arg(page).arg(s),
+                             QStringLiteral("folder %1 %2 inbox 4  csv filtered").arg(elsewhere).arg(other)},
+          "a newer listing or page cancels the session's older one on the platform, and another session's stays");
+    QCoreApplication::processEvents();
+    fileBrowser().records =
+        QStringList{listing_record(older), listing_record(newer), listing_record(page), status_record(elsewhere, "ok")};
+    host.refresh();
+    check(host.lines()
+              == QStringList{answer_line("folder", older, "cancelled"), answer_line("folder", newer, "cancelled"),
+                             answer_line("folder", page, "ok"), answer_line("folder", elsewhere, "failed")},
+          "each superseded listing is answered cancelled once, only the live page's record answers it, and the other "
+          "session's listing, sent a malformed ok record, is answered failed");
+
+    // Closing a session retires each of its requests, the access request too, then closes it on the platform.
+    host.answers.clear();
+    const qint64 closing = host.openFileBrowserSession();
+    const qint64 roots = host.requestFileRoots(closing);
+    const qint64 handoff = host.requestFileHandoff(closing, QStringLiteral("inbox"), 4, listed_reference());
+    const qint64 access = host.requestFileAccess(closing);
+    const qint64 listing = host.requestFolderListing(closing, QStringLiteral("inbox"), 4, QString(), csv_filter(false));
+    fileBrowser().calls.clear();
+    host.closeFileBrowserSession(closing);
+    check(fileBrowser().calls
+              == QStringList{QStringLiteral("cancel %1").arg(roots), QStringLiteral("cancel %1").arg(handoff),
+                             QStringLiteral("cancel %1").arg(access), QStringLiteral("cancel %1").arg(listing),
+                             QStringLiteral("close %1").arg(closing)},
+          "closing a session cancels each of its requests on the platform once, then closes it there");
+    check(host.answers.isEmpty(), "a close is not answered inside the call");
+    QCoreApplication::processEvents();
+    check(host.lines()
+              == QStringList{answer_line("roots", roots, "cancelled"), answer_line("handoff", handoff, "cancelled"),
+                             answer_line("access", access, "cancelled"), answer_line("folder", listing, "cancelled")},
+          "each live request of the closed session is answered cancelled once");
+    fileBrowser().records = QStringList{roots_record(roots), handoff_record(handoff), access_record(access, "granted"),
+                                        listing_record(listing)};
+    host.refresh();
+    QCoreApplication::processEvents();
+    check(host.answers.size() == 4, "the closed session's records are dropped");
+
+    fileBrowser().calls.clear();
+    const qint64 late = host.requestFileRoots(closing);
+    const qint64 lateAccess = host.requestFileAccess(closing);
+    check(fileBrowser().calls.isEmpty(), "a request naming a closed session never reaches FileBrowser");
+    QCoreApplication::processEvents();
+    check(host.lines().mid(4)
+              == QStringList{answer_line("roots", late, "cancelled"), answer_line("access", lateAccess, "cancelled")},
+          "and is answered cancelled");
+}
+
+/*
+ * #830: one storage access request app-wide. A second call returns the live one; FileBrowser's outcome settles it; a
+ * cancel answers "cancelled"; without an activity context it is "failed".
+ */
+static void
+check_file_access_requests() {
+    fileBrowser() = PlatformFileBrowser();
+    FileHost host;
+    fileBrowser().calls.clear();
+    const qint64 s = host.openFileBrowserSession();
+    const qint64 access = host.requestFileAccess(s);
+    check(host.requestFileAccess(s) == access
+              && fileBrowser().calls == QStringList{QStringLiteral("access %1").arg(access)},
+          "a second access request returns the live one and asks the platform once");
+    fileBrowser().records = QStringList{access_record(access, "settingsOpened")};
+    host.refresh();
+    check(host.lines() == QStringList{answer_line("access", access, "settingsOpened")},
+          "FileBrowser's settingsOpened answers it");
+
+    const qint64 next = host.requestFileAccess(s);
+    check(next != access && fileBrowser().calls.last() == QStringLiteral("access %1").arg(next),
+          "once answered, the next access request is a new one");
+    host.cancelFileRequest(next);
+    check(fileBrowser().calls.last() == QStringLiteral("cancel %1").arg(next), "its cancel reaches FileBrowser");
+    QCoreApplication::processEvents();
+    check(host.lines().last() == answer_line("access", next, "cancelled"), "a cancelled access request is cancelled");
+    fileBrowser().records = QStringList{access_record(next, "granted")};
+    host.refresh();
+    check(host.answers.size() == 2, "a cancelled launch's late answer is dropped");
+
+    fileBrowser().activity = false;
+    fileBrowser().calls.clear();
+    const qint64 noActivity = host.requestFileAccess(s);
+    fileBrowser().activity = true;
+    check(fileBrowser().calls.isEmpty(), "without an activity context FileBrowser is not asked");
+    QCoreApplication::processEvents();
+    check(host.lines().last() == answer_line("access", noActivity, "failed"),
+          "an access request with no activity context is failed");
+
+    /* FileBrowser raises the refresh flag and then writes the answer, both on the Android main thread: a grant can land
+     * after the drain's first take and before its poll. The answer still finds fileAccess() granted. */
+    fileBrowser().accessState =
+        QStringLiteral(R"({"declared":true,"granted":false,"route":"permission","apiLevel":29,"rootsGeneration":0})");
+    host.refreshFileAccess();
+    const qint64 grant = host.requestFileAccess(s);
+    bool grantedAtAnswer = false;
+    QObject::connect(&host, &dsd_qt::DecoderHost::fileAccessRequestDone, &host,
+                     [&host, &grantedAtAnswer, grant](qint64 id, const QString&) {
+                         if (id == grant) {
+                             grantedAtAnswer = host.fileAccess().value(QStringLiteral("granted")).toBool();
+                         }
+                     });
+    fileBrowser().records = QStringList{access_record(grant, "granted")};
+    fileBrowser().grantWithNextRecord =
+        QStringLiteral(R"({"declared":true,"granted":true,"route":"permission","apiLevel":29,"rootsGeneration":1})");
+    host.refresh();
+    check(host.lines().last() == answer_line("access", grant, "granted") && grantedAtAnswer,
+          "a granted answer finds fileAccess() granted although the grant came after the drain began");
+}
+
+/*
+ * #830: the access answer's re-read of fileAccess() emits fileAccessChanged() before the answer settles, and the browser
+ * answers that at once by cancelling its roots request and asking again. The answer must not hold a place in the live
+ * requests across that: here the slot grows them past a rehash, so a place held from before points nowhere. The answer
+ * still settles once, and the cancelled request is answered once, cancelled.
+ */
+static void
+check_access_answer_survives_request_changes() {
+    fileBrowser() = PlatformFileBrowser();
+    FileHost host;
+    fileBrowser().accessState =
+        QStringLiteral(R"({"declared":true,"granted":false,"route":"permission","apiLevel":29,"rootsGeneration":0})");
+    host.refreshFileAccess();
+    const qint64 s = host.openFileBrowserSession();
+    const qint64 roots = host.requestFileRoots(s);
+    const qint64 access = host.requestFileAccess(s);
+    QList<qint64> asked;
+    QObject::connect(&host, &dsd_qt::DecoderHost::fileAccessChanged, &host, [&host, &asked, roots, s] {
+        if (!asked.isEmpty()) {
+            return;
+        }
+        host.cancelFileRequest(roots);
+        for (int i = 0; i < 200; ++i) {
+            asked.append(host.requestFileRoots(s));
+        }
+    });
+    fileBrowser().records = QStringList{access_record(access, "granted")};
+    fileBrowser().grantWithNextRecord =
+        QStringLiteral(R"({"declared":true,"granted":true,"route":"permission","apiLevel":29,"rootsGeneration":1})");
+    host.refresh();
+    check(asked.size() == 200, "the grant's re-read ran the browser's slot before the answer settled");
+    check(host.lines() == QStringList{answer_line("access", access, "granted")}, "the access answer settles once");
+    QCoreApplication::processEvents();
+    check(host.lines().size() == 2 && host.lines().last() == answer_line("roots", roots, "cancelled"),
+          "the roots request the slot cancelled is answered cancelled, once");
+    QStringList records;
+    for (const qint64 id : asked) {
+        records.append(roots_record(id));
+    }
+    fileBrowser().records = records;
+    host.refresh();
+    check(host.answers.size() == 202, "each request the slot made is still live and answered by its record");
+    // An access answer whose request the slot itself retires is not settled a second time.
+    host.answers.clear();
+    fileBrowser().accessState =
+        QStringLiteral(R"({"declared":true,"granted":false,"route":"permission","apiLevel":29,"rootsGeneration":2})");
+    host.refreshFileAccess();
+    const qint64 retired = host.requestFileAccess(s);
+    QObject::connect(&host, &dsd_qt::DecoderHost::fileAccessChanged, &host,
+                     [&host, retired] { host.cancelFileRequest(retired); });
+    fileBrowser().records = QStringList{access_record(retired, "granted")};
+    fileBrowser().grantWithNextRecord =
+        QStringLiteral(R"({"declared":true,"granted":true,"route":"permission","apiLevel":29,"rootsGeneration":3})");
+    host.refresh();
+    QCoreApplication::processEvents();
+    check(host.lines() == QStringList{answer_line("access", retired, "cancelled")},
+          "an access request the slot cancelled is answered cancelled only");
+}
+
+static QVariantMap
+access_reading(bool declared, bool granted, const char* route, int apiLevel, qint64 generation) {
+    return {{QStringLiteral("declared"), declared},
+            {QStringLiteral("granted"), granted},
+            {QStringLiteral("route"), QLatin1String(route)},
+            {QStringLiteral("apiLevel"), apiLevel},
+            {QStringLiteral("rootsGeneration"), generation}};
+}
+
+/*
+ * #830: refresh() reads FileBrowser.accessState() only when takeAccessRefresh() says it may have changed (a resume, a
+ * volume change, a permission answer); refreshFileAccess() reads it at once. fileAccessChanged() follows a change only,
+ * and a malformed state keeps the last reading.
+ */
+static void
+check_file_access_state() {
+    fileBrowser() = PlatformFileBrowser();
+    const QVariantMap none = access_reading(false, false, "none", 0, 0);
+    {
+        const FileHost unread;
+        check(fileBrowser().accessReads == 1 && unread.fileAccess() == none
+                  && unread.property("fileAccess").toMap() == none,
+              "the constructor reads the access state; a malformed first reading leaves the base reading");
+    }
+    fileBrowser().accessState =
+        QStringLiteral(R"({"declared":true,"granted":false,"route":"settings","apiLevel":36,"rootsGeneration":1})");
+    FileHost host;
+    const QVariantMap before = access_reading(true, false, "settings", 36, 1);
+    check(fileBrowser().accessReads == 2 && host.fileAccess() == before
+              && host.property("fileAccess").toMap() == before,
+          "a new host has FileBrowser's reading from the start");
+    host.refresh();
+    check(fileBrowser().accessReads == 2 && host.accessChanges == 0,
+          "refresh() reads the access state only when FileBrowser says it may have changed");
+    fileBrowser().accessRefresh = true;
+    host.refresh();
+    check(!fileBrowser().accessRefresh && fileBrowser().accessReads == 3, "refresh() takes the flag and reads once");
+    check(host.accessChanges == 0, "an unchanged reading emits nothing");
+    fileBrowser().accessState =
+        QStringLiteral(R"({"declared":true,"granted":false,"route":"settings","apiLevel":36,"rootsGeneration":2})");
+    fileBrowser().accessRefresh = true;
+    host.refresh();
+    check(fileBrowser().accessReads == 4 && host.accessChanges == 1
+              && host.fileAccess() == access_reading(true, false, "settings", 36, 2),
+          "a new reading is published with one fileAccessChanged()");
+
+    fileBrowser().accessState =
+        QStringLiteral(R"({"declared":true,"granted":true,"route":"settings","apiLevel":36,"rootsGeneration":2})");
+    host.refreshFileAccess();
+    const QVariantMap granted = access_reading(true, true, "settings", 36, 2);
+    check(fileBrowser().accessReads == 5 && host.accessChanges == 2 && host.fileAccess() == granted,
+          "refreshFileAccess() reads at once");
+    host.refreshFileAccess();
+    check(host.accessChanges == 2, "and emits nothing when it is unchanged");
+
+    for (const char* junk :
+         {"", "{", "[]", R"({"declared":"true","granted":true,"route":"settings","apiLevel":36,"rootsGeneration":2})",
+          R"({"declared":true,"route":"settings","apiLevel":36,"rootsGeneration":2})",
+          R"({"declared":true,"granted":true,"route":"everything","apiLevel":36,"rootsGeneration":2})",
+          R"({"declared":true,"granted":true,"route":"settings","apiLevel":"36","rootsGeneration":2})",
+          R"({"declared":true,"granted":true,"route":"settings","apiLevel":-1,"rootsGeneration":2})",
+          R"({"declared":true,"granted":true,"route":"settings","apiLevel":36})",
+          R"({"declared":true,"granted":true,"route":"settings","apiLevel":36,"rootsGeneration":2.5})"}) {
+        fileBrowser().accessState = QLatin1String(junk);
+        host.refreshFileAccess();
+    }
+    check(host.accessChanges == 2 && host.fileAccess() == granted, "a malformed access state keeps the last reading");
+
+    fileBrowser().accessState =
+        QStringLiteral(R"({"declared":true,"granted":false,"route":"permission","apiLevel":29,"rootsGeneration":0})");
+    host.refreshFileAccess();
+    check(host.accessChanges == 3 && host.fileAccess() == access_reading(true, false, "permission", 29, 0),
+          "an Android 10 reading is read as it is");
+}
+
+/*
+ * #830: FileBrowser is the process's, while request ids are each host's and start again in a new one. A host that goes
+ * cancels its live requests in FileBrowser and closes its open sessions there; the next host discards what is left
+ * waiting, so an old host's record never answers the new host's request with the same id.
+ */
+static void
+check_file_browser_host_end() {
+    fileBrowser() = PlatformFileBrowser();
+    qint64 oldRoots = 0;
+    qint64 oldAccess = 0;
+    qint64 oldListing = 0;
+    {
+        FileHost old;
+        const qint64 s = old.openFileBrowserSession();
+        old.closeFileBrowserSession(old.openFileBrowserSession());
+        oldRoots = old.requestFileRoots(s);
+        oldAccess = old.requestFileAccess(s);
+        oldListing = old.requestFolderListing(s, QStringLiteral("inbox"), 4, QString(), csv_filter(false));
+        fileBrowser().calls.clear();
+        fileBrowser().records = QStringList{roots_record(oldRoots)}; // answered, never polled
+    }
+    check(fileBrowser().calls
+              == QStringList{QStringLiteral("cancel %1").arg(oldRoots), QStringLiteral("cancel %1").arg(oldAccess),
+                             QStringLiteral("cancel %1").arg(oldListing), QStringLiteral("close %1").arg(oldRoots - 2)},
+          "a host that goes cancels each live request in FileBrowser and closes its open sessions there");
+    // What FileBrowser writes for those cancels.
+    fileBrowser().records << status_record(oldListing, "cancelled") << access_record(oldAccess, "cancelled");
+
+    FileHost fresh;
+    check(fileBrowser().records.isEmpty(), "a new host discards the records a host before it left");
+    const qint64 s = fresh.openFileBrowserSession();
+    fresh.closeFileBrowserSession(fresh.openFileBrowserSession());
+    const qint64 roots = fresh.requestFileRoots(s);
+    const qint64 access = fresh.requestFileAccess(s);
+    check(roots == oldRoots && access == oldAccess, "the new host's ids repeat the old host's");
+    fresh.refresh();
+    QCoreApplication::processEvents();
+    check(fresh.answers.isEmpty(), "no record of the old host answers the new host's requests");
+    fileBrowser().records = QStringList{roots_record(roots), access_record(access, "noRoute")};
+    fresh.refresh();
+    check(fresh.lines() == QStringList{answer_line("roots", roots, "ok"), answer_line("access", access, "noRoute")},
+          "the new host's own records answer them");
+}
+
+/*
+ * #830: a picked file's reference is FileListing's percent-encoded file URI, and the import, restore and replay paths
+ * turn it back into the exact path, decoded once (a name that itself holds "%20" keeps it).
+ */
+static void
+check_file_reference_round_trip() {
+    check(dsd_qt::local_document_path(listed_reference()) == QStringLiteral("/storage/emulated/0/Download/a b#1%.csv"),
+          "a listed reference names the exact file");
+    check(dsd_qt::local_document_path(QStringLiteral("file:///storage/emulated/0/Download/map%2520v2.csv"))
+              == QStringLiteral("/storage/emulated/0/Download/map%20v2.csv"),
+          "a name that looks percent-encoded is decoded once only");
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -3119,6 +3939,13 @@ main(int argc, char** argv) {
     check_recording_share();
     check_queued_share_holds_its_recording();
     check_sign_in_fill_reaches_the_live_host();
+    check_file_browser_requests();
+    check_file_browser_retirement();
+    check_file_access_requests();
+    check_file_access_state();
+    check_file_browser_host_end();
+    check_file_reference_round_trip();
+    check_access_answer_survives_request_changes();
     DecoderHostAndroid host;
     /* Settings shows the Screen rows only where the host applies them (#574). */
     check(host.screenPolicySupported(), "the Android host applies the screen policy");

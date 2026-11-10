@@ -9,7 +9,6 @@
 #include <QChar>
 #include <QFileInfo>
 #include <QLatin1String>
-#include <QUrl>
 #include <QtGlobal>
 
 namespace dsd_qt {
@@ -63,9 +62,9 @@ replace_control_characters(QString name) {
 QString
 sanitized_import_name(const QString& providerName, const QString& hint) {
     // First: an embedded NUL would cut the name where a C-string call (the publishing rename) reads it, so the stored
-    // file and the name recorded for it would differ.
-    QString name = replace_control_characters(
-        providerName.trimmed().isEmpty() ? QUrl::fromPercentEncoding(hint.toUtf8()) : providerName);
+    // file and the name recorded for it would differ. The hint is a name, taken as given: an escape in it is part of
+    // the name (issue #830), and a caller holding only a reference decodes its last segment itself.
+    QString name = replace_control_characters(providerName.trimmed().isEmpty() ? hint : providerName);
     name.replace(QLatin1Char('\\'), QLatin1Char('/'));
     const qsizetype slash = name.lastIndexOf(QLatin1Char('/'));
     if (slash >= 0) {

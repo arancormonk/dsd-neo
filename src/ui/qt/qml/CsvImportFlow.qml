@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
+import "Util.js" as Util
 
 // One CSV import, from the pick to its answer (#832). Every file is picked
 // through DocumentPicker (issue #829), and the copy and the checks run on the
@@ -57,26 +58,17 @@ Item {
     property bool cancelling: false
     readonly property bool copying: request > 0
     readonly property bool choosingCompanions: requiredFiles.length > 0
-    // The picked name as a person reads it.
-    readonly property string displayName: readableName(fileName)
+    // The picked name as a person reads it. The host decodes the name it
+    // gives, so it shows as it came: an escape left in it ("map%20v2.csv")
+    // is part of the file's real name (issue #830).
+    readonly property string displayName: fileName
     signal finished(var result, var context)
 
-    // A file's name as a person reads it, from a name or a reference: a
-    // provider's arrives URL-encoded ("primary%3ADownload%2Fmap.csv").
-    function readableName(name) {
-        var decoded = name;
-        try {
-            decoded = decodeURIComponent(name);
-        } catch (e) {
-            // Not an encoded name: shown as it came.
-        }
-        return decoded.substring(decoded.lastIndexOf('/') + 1);
-    }
     // A chosen companion's name as a person reads it. Only a picked file's
     // reference (a content: or file: URI) is URL-encoded; a library file's
     // stored path carries its real name, shown as it is ("keys%20old.csv").
     function companionName(reference) {
-        return /^(content|file):/i.test(reference) ? readableName(reference) : reference.substring(reference.lastIndexOf('/') + 1);
+        return /^(content|file):/i.test(reference) ? Util.referenceName(reference) : reference.substring(reference.lastIndexOf('/') + 1);
     }
 
     // One completion per pick()/begin(). A companion rejection only abandons
@@ -224,7 +216,8 @@ Item {
         if (!active || copying)
             return;
         flow.reference = reference;
-        flow.fileName = displayName || reference.substring(reference.lastIndexOf('/') + 1);
+        // No name from the host: the reference's last segment, decoded once.
+        flow.fileName = displayName || Util.referenceName(reference);
         attempt();
     }
     function primaryUnavailable(message) {
@@ -300,10 +293,14 @@ Item {
         }
     }
     // No MIME filter: Android providers index CSV under several MIME types.
+    // DSD-neo's file browser, where it serves the pick, lists CSV and text
+    // files (issue #830).
     DocumentPicker {
         id: primaryPicker
         objectName: "csvPrimaryPicker"
         mode: "open"
+        browseKind: "csv"
+        title: qsTr("Choose a CSV file")
         onAccepted: function (reference, displayName) {
             flow.primaryPicked(reference, displayName);
         }
@@ -316,10 +313,14 @@ Item {
             flow.primaryUnavailable(message);
         }
     }
+    // The companion's: a browser serving it stacks above the sheet, which
+    // stays up with every choice under it.
     DocumentPicker {
         id: picker
         objectName: "csvCompanionPicker"
         mode: "open"
+        browseKind: "csv"
+        title: qsTr("Choose a CSV file")
         onAccepted: function (reference, displayName) {
             flow.companionPicked(reference, displayName);
         }

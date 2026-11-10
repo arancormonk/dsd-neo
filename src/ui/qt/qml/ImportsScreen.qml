@@ -212,7 +212,9 @@ Item {
         color: Theme.bg
     }
 
-    // Header: back chevron, title, count.
+    // Header: back chevron, title, count. At large text on a narrow phone the
+    // title wraps inside the header, which grows to hold it, and the chevron
+    // stays level with its first line (#830).
     Item {
         id: header
 
@@ -220,27 +222,31 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.margins: Theme.screenPadding
-        height: 46
+        height: Math.max(46, title.height)
+        readonly property real firstLineCentre: title.lineCount > 1 ? title.height / title.lineCount / 2 : height / 2
 
         IconButton {
             id: back
             icon: "back"
             anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
+            y: header.firstLineCentre - height / 2
             onClicked: screen.closed()
         }
 
         ReadableText {
+            id: title
+            objectName: "importsTitle"
             heading: true
-            anchors.left: back.right
-            anchors.leftMargin: 14
-            anchors.verticalCenter: parent.verticalCenter
+            x: back.width + 14
+            y: lineCount > 1 ? 0 : (header.height - height) / 2
+            width: parent.width - x
             text: qsTr("Imported files")
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(22)
             font.weight: Font.Bold
             font.letterSpacing: -0.22
             color: Theme.textPrimary
+            wrapMode: Text.Wrap
         }
     }
 
@@ -308,6 +314,40 @@ Item {
             width: ListView.view.width
             height: rowColumn.height + 2 * Theme.cardPadding
 
+            // #830: the card is the button that opens its file's actions, for a
+            // screen reader's double tap and for Return, keypad Enter and Space
+            // as for a tap, each through activate(). Its name and description
+            // carry the file's name, kind and summary, which read nothing on
+            // their own, so nothing is said twice.
+            // The gate read first: see OutlineButton.
+            readonly property bool inTree: Navigation.allows(fileRow) && visible
+            // Held while focused: see OutlineButton.
+            activeFocusOnTab: inTree || activeFocus
+            Accessible.role: Accessible.Button
+            // No name while out of the tree, as ReadableText: a refresh that
+            // lands while the screen is covered renames nothing.
+            Accessible.name: inTree ? fileRow.name : ""
+            // The kind badge's words first.
+            Accessible.description: inTree ? badge.label + " · " + summaryLine.text : ""
+            Accessible.focusable: inTree
+            Accessible.ignored: !inTree
+            Accessible.onPressAction: activate()
+            function activate() {
+                if (!visible || !Navigation.allows(fileRow))
+                    return;
+                screen.actionRow = fileRow.index;
+                actionSheet.visible = true;
+            }
+            Keys.onReturnPressed: activate()
+            Keys.onEnterPressed: activate()
+            Keys.onSpacePressed: activate()
+            // On the card's own edge: the list clips, and a ring drawn outside
+            // the card lost its top and sides there.
+            FocusFrame {
+                anchors.margins: 0
+                radius: Theme.radiusPanel
+            }
+
             Column {
                 id: rowColumn
 
@@ -321,13 +361,18 @@ Item {
                     width: parent.width
                     height: Math.max(fileName.implicitHeight, badge.implicitHeight)
 
-                    ReadableText {
+                    Text {
                         id: fileName
+                        objectName: "importsFileName"
                         anchors.left: parent.left
                         anchors.right: badge.left
                         anchors.rightMargin: 10
                         anchors.verticalCenter: parent.verticalCenter
                         text: fileRow.name
+                        // An imported file's own name: drawn as written.
+                        textFormat: Text.PlainText
+                        // Read as the card's name.
+                        Accessible.ignored: true
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(15)
                         font.weight: Font.DemiBold
@@ -337,14 +382,20 @@ Item {
 
                     CsvTypeBadge {
                         id: badge
+                        objectName: "importsKindBadge"
+                        readAlone: false
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
                         type: fileRow.type
                     }
                 }
 
-                ReadableText {
+                Text {
+                    id: summaryLine
+                    objectName: "importsFileSummary"
                     width: parent.width
+                    // Read in the card's description.
+                    Accessible.ignored: true
                     text: screen.summaryFor(fileRow.type, fileRow.accepted, fileRow.skipped, Number(fileRow.importedAt))
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(12)
@@ -354,10 +405,7 @@ Item {
             }
 
             TapHandler {
-                onTapped: {
-                    screen.actionRow = fileRow.index;
-                    actionSheet.visible = true;
-                }
+                onTapped: fileRow.activate()
             }
         }
 

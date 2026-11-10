@@ -9,10 +9,20 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Qt Network's network-information plugin, which the APK packages. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- #830: Android 10 reads device storage in the file browser through the legacy view
+         (requestLegacyExternalStorage below, inert from Android 11 on), read-only: nothing here
+         asks for write access, which the same grant would otherwise carry. Android 11 and later
+         reach shared storage only with All files access, which only the side-loaded APK asks for
+         (sideload/AndroidManifest.xml). -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
 
     <!-- required="false" on purpose: rtl_tcp, UDP and file inputs all work without
          USB host support, so a phone that lacks OTG should still be able to install. -->
@@ -29,7 +39,8 @@
         </intent>
     </queries>
 
-    <!-- %%INSERT_PERMISSIONS -->
+    <!-- Every permission is declared above rather than inserted by androiddeployqt: Qt
+         Core's rules would add WRITE_EXTERNAL_STORAGE. -->
     <!-- %%INSERT_FEATURES -->
 
     <supports-screens
@@ -51,7 +62,8 @@
         android:theme="@style/Theme.DsdNeo"
         android:enableOnBackInvokedCallback="true"
         android:allowBackup="false"
-        android:fullBackupOnly="false">
+        android:fullBackupOnly="false"
+        android:requestLegacyExternalStorage="true">
 
         <!-- QtActivity plus one override: it raises the Qt quit that Qt's own teardown
              waits for but does not send. See DsdNeoActivity. -->

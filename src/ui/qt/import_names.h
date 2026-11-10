@@ -21,7 +21,8 @@ namespace dsd_qt {
  * @brief The file name an import is stored under.
  *
  * Takes @p providerName (the provider's display name or the source file name) when it is not
- * blank, else the percent-decoded @p hint (a picker URL's last segment). Replaces every C0
+ * blank, else @p hint (the picker's name for the document) as given: a hint is never decoded, so
+ * a file named `100%25 capture.wav` keeps that name (issue #830). Replaces every C0
  * control character (U+0000 included) with '_' first, then keeps the last `/`-component, trims it, maps empty, "." and ".." to "import.bin", strips trailing dots and
  * spaces (Windows), and cuts the base at a code-point boundary so the UTF-8 name is at most 247
  * bytes: 8 bytes stay free for a later " (999)". The extension is kept.
