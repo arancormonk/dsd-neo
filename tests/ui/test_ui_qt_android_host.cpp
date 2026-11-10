@@ -3178,7 +3178,7 @@ answer_line(const char* signal, qint64 id, const char* status) {
     return QLatin1String(signal) + QLatin1Char(' ') + QString::number(id) + QLatin1Char(' ') + QLatin1String(status);
 }
 
-// The browser's example: a name with a space, '#' and '%', listed as FileListing writes it (#830 Review Focus 1).
+// A name with a space, '#' and '%', as FileListing lists it: the reference encodes each once (#830).
 QString
 listed_reference() {
     return QStringLiteral("file:///storage/emulated/0/Download/a%20b%231%25.csv");
@@ -3724,8 +3724,8 @@ check_file_browser_host_end() {
 }
 
 /*
- * #830 Review Focus 1: a picked file's reference is FileListing's percent-encoded file URI, and the import, restore and
- * replay paths turn it back into the exact path, once.
+ * #830: a picked file's reference is FileListing's percent-encoded file URI, and the import, restore and replay paths
+ * turn it back into the exact path, decoded once (a name that itself holds "%20" keeps it).
  */
 static void
 check_file_reference_round_trip() {

@@ -783,7 +783,7 @@ def sideload_manifest_permissions(text):
     """What is wrong with the sideload overlay's permissions, or None: All files access and nothing else."""
     overlay = declared_permissions(XML_COMMENT.sub(" ", text))
     wanted = {STORAGE_PERMISSION.format("MANAGE")}
-    # [T0-C1] Android 11-12 offer "Allow management of all files" in App info only to an app that asks for READ there.
+    # Android 11-12 offer "Allow management of all files" in App info only to an app that asks for READ there.
     wanted.add(STORAGE_PERMISSION.format("READ"))
     read = overlay.get(STORAGE_PERMISSION.format("READ"), {})
     if read.get("android:maxSdkVersion") != "32" or read.get("tools:replace") != "android:maxSdkVersion":
@@ -791,7 +791,6 @@ def sideload_manifest_permissions(text):
             f"declare {STORAGE_PERMISSION.format('READ')} with maxSdkVersion=\"32\" and "
             f'tools:replace="android:maxSdkVersion"; found {read}'
         )
-    # [/T0-C1]
     if set(overlay) != wanted:
         return f"must declare exactly {sorted(wanted)}; found {sorted(overlay)}"
     return None

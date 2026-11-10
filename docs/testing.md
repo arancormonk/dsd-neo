@@ -234,7 +234,10 @@ each record's JSON keys. The `file_browser_wiring` source check pins `DsdNeoActi
 permission results; `storage_permissions_policy` pins the manifests (every permission declared, no Qt insertion, READ
 up to API 29 with the legacy flag, never MANAGE or WRITE), the sideload overlay (MANAGE, READ up to API 32 with
 `tools:replace`, nothing else) and `build.gradle` merging it only when the invocation builds no bundle. android-ci
-checks the packaged APK (`aapt2 dump permissions`) and AAB (its proto manifest) the same way.
+checks the packaged artifacts: the APK's `aapt2 dump permissions` must list `MANAGE_EXTERNAL_STORAGE`, `INTERNET`,
+`ACCESS_NETWORK_STATE` and READ up to API 32, and no `WRITE_EXTERNAL_STORAGE`; the AAB's proto base manifest must name
+neither `MANAGE_EXTERNAL_STORAGE` nor `WRITE_EXTERNAL_STORAGE` and must name `ACCESS_NETWORK_STATE`. The legacy flag and
+the bundle's READ cap of API 29 are checked only in the source.
 `ANDROID_USB_RECEIVER_JVM` (the `usb_receiver` suite) runs `UsbReceiverKind.kt`, the USB id table `UsbSourceManager`
 classifies every device with, with no stubs: an Airspy beside a hub and other unrelated devices reads `airspy`, two
 RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known receiver empty. Which local receiver a

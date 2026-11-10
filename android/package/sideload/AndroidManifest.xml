@@ -11,12 +11,11 @@
         android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
 
-    <!-- [T0-C1] Android 11 and 12 offer "Allow management of all files" under App info ›
+    <!-- Android 11 and 12 offer "Allow management of all files" under App info ›
          Permissions › Files and media only to an app that asks for READ there; some head
          units have no All files access screen in Settings. Granting it also grants READ. -->
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32"
         tools:replace="android:maxSdkVersion" />
-    <!-- [/T0-C1] -->
 </manifest>
