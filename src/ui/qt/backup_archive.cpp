@@ -85,10 +85,14 @@ classify_incoming(const QByteArray& header, qint64 total) {
     if (status == DSD_BACKUP_ERR_NOT_BACKUP) {
         return IncomingKind::NotBackup;
     }
+    // Before the version, as Restore refuses any file over the cap before it reads the header.
+    if (total > kMaxSealedBytes) {
+        return IncomingKind::TooLargeBackup;
+    }
     if (status == DSD_BACKUP_ERR_VERSION) {
         return IncomingKind::NewerBackup;
     }
-    if (status == DSD_BACKUP_ERR_TOO_LARGE || total > kMaxSealedBytes) {
+    if (status == DSD_BACKUP_ERR_TOO_LARGE) {
         return IncomingKind::TooLargeBackup;
     }
     return status == DSD_BACKUP_OK ? IncomingKind::Backup : IncomingKind::DamagedBackup;

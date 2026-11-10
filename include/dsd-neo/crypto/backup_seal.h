@@ -51,7 +51,9 @@ extern "C" {
 typedef enum {
     DSD_BACKUP_OK = 0,
     DSD_BACKUP_ERR_ARGS = -1,      /**< NULL pointer with a length, empty passphrase or output buffer too small. */
-    DSD_BACKUP_ERR_FORMAT = -2,    /**< Damaged: magic, then short, version 0, reserved bytes set or wrong length. */
+    DSD_BACKUP_ERR_FORMAT = -2,    /**< Damaged: magic, then short, version 0, reserved bytes set or wrong length.
+                                        dsd_backup_parse_header() and dsd_backup_open() also return it for a file with
+                                        no magic; only dsd_backup_check_header() returns ERR_NOT_BACKUP. */
     DSD_BACKUP_ERR_VERSION = -3,   /**< Sealed backup of a newer format version (above 1). */
     DSD_BACKUP_ERR_PARAMS = -4,    /**< Unknown KDF or KDF parameters outside the accepted range. */
     DSD_BACKUP_ERR_AUTH = -5,      /**< Wrong passphrase or tampered data; nothing was released. */

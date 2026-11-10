@@ -2191,7 +2191,9 @@ test_incoming_classification() {
     const QByteArray newer = with_header_field(header, 8, 2, 2);
     expect("version 2", classify_incoming(newer, size) == IncomingKind::NewerBackup);
     expect("version 2 of unknown length", classify_incoming(newer, -1) == IncomingKind::NewerBackup);
-    expect("version 2 over the cap", classify_incoming(newer, kMaxSealedBytes + 1) == IncomingKind::NewerBackup);
+    expect("version 2 over the cap, as Restore refuses it",
+           classify_incoming(newer, kMaxSealedBytes + 1) == IncomingKind::TooLargeBackup);
+    expect("version 2 at the cap", classify_incoming(newer, kMaxSealedBytes) == IncomingKind::NewerBackup);
 
     const QByteArray huge = with_header_field(header, 48, 8, quint64{DSD_BACKUP_MAX_PAYLOAD_BYTES} + 1U);
     expect("a payload over the cap", classify_incoming(huge, size) == IncomingKind::TooLargeBackup);

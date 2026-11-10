@@ -39,8 +39,8 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         abort();
     }
 
-    /* The header-only check reads no further than the header and agrees with the whole-buffer parse, which only
-       reports a missing magic as FORMAT. */
+    /* The header-only check, given the first 64 bytes and the input's length, agrees with the whole-buffer parse
+       (which reports a missing magic as FORMAT) and with dsd_backup_has_magic(). */
     const size_t header_len = size < DSD_BACKUP_HEADER_BYTES ? size : DSD_BACKUP_HEADER_BYTES;
     const int checked = dsd_backup_check_header(data, header_len, (uint64_t)size, NULL, NULL);
     const int magic = dsd_backup_has_magic(data, size);

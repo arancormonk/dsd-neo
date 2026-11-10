@@ -8681,7 +8681,8 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
   tag verifies. New backups use `dsd_backup_kdf_params_default()` (log2(N) 16, r 8, p 2, about 64 MiB).
   `dsd_backup_derive_key()` is a known-answer helper without that policy; never pass it untrusted parameters. The Qt
   archive inside the envelope is under UI, Qt, "Configuration backup". Tests: `BACKUP_SEAL`, `FUZZ_CRYPTO_BACKUP_HEADER`
-  (`dsd_backup_parse_header()`, the only parser that runs before authentication), `HEADERS_PUBLIC_CRYPTO_BACKUP_SEAL`
+  (`dsd_backup_check_header()` and its whole-buffer form `dsd_backup_parse_header()`, the only parsers that run before
+  authentication), `HEADERS_PUBLIC_CRYPTO_BACKUP_SEAL`
   and `HEADERS_PUBLIC_CRYPTO_BACKUP_SEAL_CXX`.
 - Build files: `src/crypto/CMakeLists.txt`
 
@@ -13796,8 +13797,9 @@ Qt Quick frontend (`src/ui/qt`):
     then a short header, version 0, reserved bytes or a wrong length) and PARAMS → `Damaged`, TOO_LARGE → `TooLarge`
     (#831 B7: a truncated backup used to say "not a backup" and version 0 "newer"). `classify_incoming(header, total)`
     judges a document from its first 64 bytes and its length, with no passphrase, as `IncomingKind`
-    (`incoming_kind_name()`: `backup`, `newerBackup`, `damagedBackup`, `tooLargeBackup`, `other`): NOT_BACKUP, then
-    VERSION, then TOO_LARGE or a length above `kMaxSealedBytes`, then FORMAT/PARAMS; a negative (unknown) `total` keeps
+    (`incoming_kind_name()`: `backup`, `newerBackup`, `damagedBackup`, `tooLargeBackup`, `other`): NOT_BACKUP, then a
+    length above `kMaxSealedBytes` (before the version, as Restore refuses such a file first), then VERSION, then
+    TOO_LARGE, then FORMAT/PARAMS; a negative (unknown) `total` keeps
     the verdicts that need no length and is otherwise `damagedBackup`. Tests: `UI_QT_BACKUP_ARCHIVE`, and
     `UI_QT_BACKUP_MODEL` for the restore's errors.
   - Staging and apply (`backup_apply.h`, `backup_stage.cpp`, `backup_apply.cpp`, module-private

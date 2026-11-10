@@ -116,9 +116,10 @@ enum class IncomingKind {
 
 /**
  * Classify a document from @p header, its first bytes (only the first DSD_BACKUP_HEADER_BYTES are read), and @p total,
- * its whole length in bytes, through dsd_backup_check_header(): NOT_BACKUP → NotBackup, VERSION → NewerBackup,
- * TOO_LARGE or @p total above kMaxSealedBytes → TooLargeBackup, FORMAT and PARAMS → DamagedBackup, OK → Backup, in
- * that order: a newer backup is NewerBackup whatever its size, and any other oversized one TooLargeBackup.
+ * its whole length in bytes, through dsd_backup_check_header(), in this order: NOT_BACKUP → NotBackup; @p total above
+ * kMaxSealedBytes → TooLargeBackup, whatever the header says next (Restore refuses such a file as TooLarge before it
+ * reads the header, so a newer backup that large is TooLargeBackup too); VERSION → NewerBackup; TOO_LARGE (the
+ * header's payload length) → TooLargeBackup; FORMAT and PARAMS → DamagedBackup; OK → Backup.
  *
  * A negative @p total means the length is unknown. The checks that need no length still decide (NotBackup,
  * NewerBackup, TooLargeBackup from the header's payload length), and a header that passes them is DamagedBackup: an

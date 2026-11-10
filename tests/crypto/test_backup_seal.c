@@ -102,12 +102,12 @@ pass_len(void) {
     return sizeof(k_pass) - 1U;
 }
 
+/* Write `v` big-endian into the `bytes` bytes at `p`. */
 static void
-put_be32(uint8_t* p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
+put_be(uint8_t* p, uint64_t v, size_t bytes) {
+    for (size_t i = 0; i < bytes; i++) {
+        p[i] = (uint8_t)(v >> (8U * (bytes - 1U - i)));
+    }
 }
 
 static int
@@ -385,13 +385,6 @@ test_truncation_and_trailing(void) {
     return rc;
 }
 
-static void
-put_be(uint8_t* p, uint64_t v, size_t bytes) {
-    for (size_t i = 0; i < bytes; i++) {
-        p[i] = (uint8_t)(v >> (8U * (bytes - 1U - i)));
-    }
-}
-
 /*
  * dsd_backup_check_header() on the first `header_len` bytes of `header`, copied into a buffer of exactly that size so
  * a sanitizer build catches any read past it. The outputs are filled on success only.
@@ -545,8 +538,8 @@ reject_params(const char* name, uint8_t log2_n, uint32_t r, uint32_t p) {
 
     DSD_MEMCPY(sealed, k_golden_sealed, sizeof(sealed));
     sealed[11] = log2_n;
-    put_be32(sealed + 12, r);
-    put_be32(sealed + 16, p);
+    put_be(sealed + 12, r, 4U);
+    put_be(sealed + 16, p, 4U);
     rc |= expect_int(name, dsd_backup_parse_header(sealed, sizeof(sealed), NULL, NULL), DSD_BACKUP_ERR_PARAMS);
     rc |= expect_open(name, sealed, sizeof(sealed), DSD_BACKUP_ERR_PARAMS);
     return rc;
