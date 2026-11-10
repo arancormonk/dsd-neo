@@ -231,10 +231,12 @@ Item {
             compare(lastHostCall().ms, 0, "and at the start");
         }
 
-        // Issue #831: a drag across the bar under the delete confirmation does
-        // not seek. The bar's drag stands down under a sheet (enabled reads
-        // Navigation.allows()); today the detail sheet's own layout also keeps
-        // the drag from it, so this guards the behaviour, not that term alone.
+        // Issue #831: a drag that begins on the delete confirmation takes the
+        // grab for the bar's DragHandler beneath it, so the handler stands
+        // down under a sheet (its enabled reads Navigation.allows()). Without
+        // that the bar drags under the dialog: the thumb, the time and the
+        // bar's accessible value follow the finger, though seekTo()'s own
+        // gate still refuses the seek on release.
         function test_seek_drag_under_a_sheet_data() {
             return [{tag: "mouse", touch: false}, {tag: "touch", touch: true}];
         }
@@ -249,6 +251,12 @@ Item {
             waitForRendering(cover);
             var start = bar.mapToItem(cover, bar.width * 0.2, bar.height / 2);
             var seeks = hostCallsNamed("seekPlayback").length;
+            var dragged = false;
+            var noteDrag = function () {
+                if (bar.dragging)
+                    dragged = true;
+            };
+            bar.draggingChanged.connect(noteDrag);
             if (data.touch) {
                 var touch = touchEvent(cover);
                 touch.press(0, cover, start.x, start.y).commit();
@@ -262,6 +270,8 @@ Item {
                 mouseRelease(cover, start.x + bar.width * 0.6, start.y);
             }
             wait(30);
+            bar.draggingChanged.disconnect(noteDrag);
+            verify(!dragged, "the bar did not drag under the sheet");
             compare(hostCallsNamed("seekPlayback").length, seeks, "a drag under the sheet did not seek");
             verify(cover.visible, "a drag does not dismiss the confirmation");
             cover.visible = false;

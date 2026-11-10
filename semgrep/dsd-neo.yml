@@ -860,8 +860,9 @@ rules:
     languages: [generic]
     severity: ERROR
     message: >-
-      onTapped and onLongPressed on a GatedTapHandler bypass its press-time gate. Handle onAllowedTap and
-      onAllowedLongPress instead.
+      onTapped, onSingleTapped, onDoubleTapped and onLongPressed on a GatedTapHandler bypass its press-time gate.
+      Handle onAllowedTap and onAllowedLongPress instead. Known limit: a handler reached another way
+      (Connections { function onTapped() }, handler.tapped.connect(...)) is not caught.
     paths:
       include:
         - /src/**/*.qml
@@ -874,7 +875,7 @@ rules:
           GatedTapHandler {
             ...
           }
-      - pattern-regex: '\bon(?:Tapped|LongPressed)\s*:'
+      - pattern-regex: '\bon(?:Single|Double)?(?:Tapped|LongPressed)\s*:'
 
   - id: dsd-neo.github-actions.no-untrusted-context-in-run
     languages: [yaml]

@@ -68,6 +68,10 @@ Item {
     GatedTapHandler {
         // ruleid: dsd-neo.qml-gated-tap-ungated-signal
         onTapped: act()
+        // ruleid: dsd-neo.qml-gated-tap-ungated-signal
+        onSingleTapped: act()
+        // ruleid: dsd-neo.qml-gated-tap-ungated-signal
+        onDoubleTapped: act()
     }
     GatedTapHandler {
         // ok: dsd-neo.qml-gated-tap-ungated-signal

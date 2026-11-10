@@ -15638,18 +15638,20 @@ by the time the handler beneath reports its tap. Every tap in `src/ui/qt/qml` th
 `qml/GatedTapHandler.qml`, a `TapHandler` that reads `Navigation.allows(gate)` (its parent unless `gate` is set) when
 the press begins and again at the tap, and emits `allowedTap(eventPoint, button)` and `allowedLongPress()`; a new
 control uses it and handles those, never a bare `TapHandler` or a `GatedTapHandler`'s `onTapped`/`onLongPressed`
-(Semgrep `dsd-neo.qml-bare-tap-handler` and `dsd-neo.qml-gated-tap-ungated-signal`). Keyboard and accessibility presses
-do not come through it and keep the control's own guarded activation. A drag or pinch is not a tap: a drag, mouse or
-touch, that begins anywhere on a cover, its scrim included, can take the grab for a `DragHandler` beneath, so a
-`DragHandler` or `PinchHandler` binds `enabled: Navigation.allows(item) && …` (the Spectrum's pan and pinch, `BandRail`,
-the recording seek bar). A `MouseArea` takes the press itself and sits above what it covers (a sheet's barrier, the
-scan-warnings panel, which lies outside every navigation surface), so it needs neither, and Qt Quick Controls
-(`PlexCheckBox`, `PlexToggle`, `PlexInput`) take the press too and sit in sheets or in layers that stand down when
-covered. A `PlexComboBox` list is the one cover that closed on the press itself, before any handler beneath judged it,
-and let that press through to the control under the finger; it is modal (undimmed) and closes on the release outside it,
-so the press that dismisses it reaches nothing beneath. Tests: `tst_gated_tap_handler.qml` (a sheet closed on release or
-while the press is held, a sheet opened while it is held, a long press, keyboard and accessibility presses, a choice
-list closed by a mouse or touch tap on a button beneath it), and the overlay cases above.
+(Semgrep `dsd-neo.qml-bare-tap-handler` and `dsd-neo.qml-gated-tap-ungated-signal`, which also rejects
+`onSingleTapped`/`onDoubleTapped`; it cannot see a handler reached another way, `Connections { function onTapped() }` or
+`.tapped.connect(...)`). Keyboard and accessibility presses do not come through it and keep the control's own guarded
+activation. A drag or pinch is not a tap: a drag, mouse or touch, that begins anywhere on a cover, its scrim included,
+can take the grab for a `DragHandler` beneath, so a `DragHandler` or `PinchHandler` binds
+`enabled: Navigation.allows(item) && …` (the Spectrum's pan and pinch, `BandRail`, the recording seek bar). A
+`MouseArea` takes the press itself and sits above what it covers (a sheet's barrier, the scan-warnings panel, which lies
+outside every navigation surface), so it needs neither, and Qt Quick Controls (`PlexCheckBox`, `PlexToggle`,
+`PlexInput`) take the press too and sit in sheets or in layers that stand down when covered. A `PlexComboBox` list is
+the one cover that closed on the press itself, before any handler beneath judged it, and let that press through to the
+control under the finger; it is modal (undimmed) and closes on the release outside it, so the press that dismisses it
+reaches nothing beneath. Tests: `tst_gated_tap_handler.qml` (a sheet closed on release or while the press is held, a
+sheet opened while it is held, a long press, keyboard and accessibility presses, a choice list closed by a mouse or
+touch tap on a button beneath it), and the overlay cases above.
 
 A choice of one among several that says which one is current (a `SegmentedControl` segment, a `BottomNav` tab) is
 `Accessible.RadioButton` with `checkable: true` and `checked` while it is the current one (issue #646). Qt 6.11.3's
