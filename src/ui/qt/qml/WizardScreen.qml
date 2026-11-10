@@ -1093,7 +1093,9 @@ Item {
                         OutlineButton {
                             id: browse
                             objectName: "wizardReplayBrowse"
-                            width: 96
+                            // At least as wide as its whole word: a fixed
+                            // width split it over two lines at large text.
+                            width: Math.max(96, implicitWidth)
                             text: qsTr("Browse")
                             enabled: !wizard.replayCopying
                             onClicked: wizard.browseReplayFile()

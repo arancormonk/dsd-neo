@@ -142,6 +142,38 @@ Item {
             compare(item("wizardReplayProgressText").text, "Copying cap one.wav…");
         }
 
+        // #830: at the largest text, Browse keeps its word on one line (a
+        // fixed width split it "Brows" / "e"), and the file field beside it
+        // takes what is left of the row.
+        function test_browse_label_whole_words_data() {
+            return [{tag: "360", width: 360}, {tag: "420", width: 420}];
+        }
+        function test_browse_label_whole_words(data) {
+            root.width = data.width;
+            Ui.Theme.fontScale = 1.6;
+            try {
+                var browse = item("wizardReplayBrowse");
+                var label = null;
+                for (var i = 0; i < browse.children.length; ++i) {
+                    if (browse.children[i].text === "Browse")
+                        label = browse.children[i];
+                }
+                verify(label !== null, "the Browse label is missing");
+                waitForRendering(browse);
+                compare(label.lineCount, 1, "Browse is split over lines");
+                verify(!label.truncated, "Browse is cut short");
+                verify(label.contentWidth <= label.width, "Browse is wider than its label");
+                var field = browse.parent.children[0];
+                var fieldRight = field.mapToItem(tc.wizard, field.width, 0).x;
+                var browseLeft = browse.mapToItem(tc.wizard, 0, 0).x;
+                verify(fieldRight <= browseLeft, "the file field runs under Browse");
+                verify(browse.mapToItem(tc.wizard, browse.width, 0).x <= tc.wizard.width, "Browse runs off the screen");
+            } finally {
+                Ui.Theme.fontScale = 1;
+                root.width = 420;
+            }
+        }
+
         // The copy belongs to the File source: picking another source cancels
         // it, so Continue does not wait on a copy nothing shows.
         function test_leaving_the_file_source_cancels_the_copy() {

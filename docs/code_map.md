@@ -14175,8 +14175,10 @@ Qt Quick frontend (`src/ui/qt`):
   `replayNotice` to its message; backing out changes nothing. `wizardReplayNotice`, under the Replay file row, is an
   `AlertMessage` read out once per failure while `Navigation.allows` it (`announced`/`announcements`, shared with
   `csvNotice`); it clears on the next Browse, a successful copy, and the wizard opening or closing. `stopImports()`
-  (on hide and in `openForAdd/openForFound/openForEdit`) cancels Browse, the replay copy and the CSV import. Tests:
-  `tst_wizard_browse.qml` and `tst_wizard_replay_import.qml` in `UI_QT_QML_CALL_LISTS`.
+  (on hide and in `openForAdd/openForFound/openForEdit`) cancels Browse, the replay copy and the CSV import. Browse is
+  at least as wide as its word (`max(96, implicitWidth)`), so large text never splits it, and the Replay file field
+  takes the rest of the row. Tests: `tst_wizard_browse.qml` and `tst_wizard_replay_import.qml` in
+  `UI_QT_QML_CALL_LISTS`.
 - Backend code must never include Qt headers; `cmake/arch_rules.cmake` enforces both directions
   (`tools/check_arch_rules.sh`, run by the pre-push hook and the CI guardrails job).
 
