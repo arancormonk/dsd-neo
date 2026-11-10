@@ -27,20 +27,24 @@ DecoderHostAndroid::isContentUri(const QString& reference) {
 qint64
 DecoderHostAndroid::requestOpenDocument() {
     const qint64 id = nextDocumentRequestId();
+    const bool wasPending = m_document_request != 0;
     beginDocumentRequest(id);
     if (!platformOpenDocument(id)) {
         refuseDocumentRequestLater(id, QStringLiteral("failed"));
     }
+    publishDocumentRequest(wasPending);
     return id;
 }
 
 qint64
 DecoderHostAndroid::requestSaveDocument(const QString& suggestedName, const QString& mimeType) {
     const qint64 id = nextDocumentRequestId();
+    const bool wasPending = m_document_request != 0;
     beginDocumentRequest(id);
     if (!platformSaveDocument(id, suggestedName, mimeType)) {
         refuseDocumentRequestLater(id, QStringLiteral("failed"));
     }
+    publishDocumentRequest(wasPending);
     return id;
 }
 
@@ -68,7 +72,6 @@ void
 DecoderHostAndroid::beginDocumentRequest(qint64 id) {
     const qint64 replaced = m_document_request;
     m_document_request = id;
-    publishDocumentRequest(replaced != 0);
     if (replaced != 0) {
         /* The platform drops it too, so its record (and a Download-folder row it holds) is never left waiting when the
          * new request does not reach the platform. A request that does would replace it there anyway. */

@@ -1041,7 +1041,9 @@ check_document_request_pending() {
     picker() = PlatformPicker();
     PickerHost host;
     QStringList seen;
+    qsizetype openedAtNotify = -1;
     QObject::connect(&host, &dsd_qt::DecoderHost::documentRequestChanged, &host, [&] {
+        openedAtNotify = picker().opened.size();
         seen.append(host.property("documentRequestPending").toBool() ? QStringLiteral("pending")
                                                                      : QStringLiteral("idle"));
     });
@@ -1053,6 +1055,7 @@ check_document_request_pending() {
 
     const qint64 open = host.requestOpenDocument();
     check(seen == QStringList{QStringLiteral("pending")}, "a request starts pending");
+    check(openedAtNotify == 1, "the start is told once the platform call returned, not inside it");
     const qint64 save = host.requestSaveDocument(QStringLiteral("a.zip"), QStringLiteral("application/zip"));
     QCoreApplication::processEvents();
     check(seen.size() == 1 && host.documentRequestPending(), "a replacing request stays pending");

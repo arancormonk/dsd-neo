@@ -14836,7 +14836,8 @@ request code (1305) is never used.
   (both Kotlin entries return true), answers `documentPickUnavailable(id, "failed")`, queued, unless the request was
   replaced first. `cancelDocumentRequest()` forgets the live id and calls `DocumentPicker.cancel()`; other ids are
   ignored. `documentRequestPending()` is `m_document_request != 0`; `documentRequestChanged` is emitted when that
-  flips, after the answer that ended the request, so a slot that asks again inside the answer leaves nothing to tell.
+  flips: for a start once the platform call returned, for an end after the answer that ended the request (so a slot
+  that asks again inside the answer leaves nothing to tell).
 - Answers: `refresh()` drains `DocumentPicker.pollResult()` every tick (`refreshDocumentPicks()`), live request or
   not, and `android/document_pick_record.h` (JNI-free) turns each JSON record (`{"id","kind":"picked","uri","name",
   "downloads"}`, `{"id","kind":"cancelled"}`, `{"id","kind":"unavailable","reason"}`) into the signal, for the live id

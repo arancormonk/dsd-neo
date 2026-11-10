@@ -116,7 +116,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     qint64 requestSaveDocument(const QString& suggestedName, const QString& mimeType) override;
     void cancelDocumentRequest(qint64 requestId) override;
 
-    /** @brief Whether a request is live: made, and not yet answered, cancelled or replaced by none. */
+    /** @brief Whether a request waits for its answer: one was made and not yet answered or cancelled. */
     bool
     documentRequestPending() const override {
         return m_document_request != 0;
@@ -516,7 +516,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     void refreshLocation();
     /**
      * @brief Make @p id the live document request (#829). One it replaces is cancelled on the platform and answered
-     * documentPickCancelled(), queued; a record of its own that still comes is dropped.
+     * documentPickCancelled(), queued; a record of its own that still comes is dropped. The caller publishes the
+     * change (publishDocumentRequest()) once its platform call returned.
      */
     void beginDocumentRequest(qint64 id);
     /** @brief Answer @p id documentPickUnavailable(@p reason), queued, unless it is no longer the live request then. */

@@ -4057,17 +4057,22 @@ class Setup : public QObject {
     /**
      * @brief Forget them, and put the player and the transfer back at rest (nothing open, nothing running). The
      * document picker's records go too, on every host: no lastDocumentRequest() from before the reset and no name set
-     * through setSavedDocumentName().
+     * through setSavedDocumentName(). So do an incoming document not taken and a picker request set in flight (#831),
+     * so neither reaches a later case.
      */
     Q_INVOKABLE void
     resetHostPlayback() {
         m_host_readings->calls.clear();
         m_host_readings->lastDocumentRequest.clear();
         m_host_readings->savedDocumentNames.clear();
+        (void)m_host_readings->takeIncomingDocument();
+        m_host_readings->setDocumentRequestPending(false);
         for (ImportOnlyHost* host : {m_import_host, m_initializing_host}) {
             host->lastDocumentRequest.clear();
             host->documentCalls.clear();
             host->savedDocumentNames.clear();
+            (void)host->takeIncomingDocument();
+            host->setDocumentRequestPending(false);
         }
         m_host_readings->shareAccepted = true;
         m_host_readings->seekApplied = true;

@@ -62,6 +62,23 @@ TestCase {
         testContext.useLifecycleHost(false);
     }
 
+    // Issue #831: the reset drops an incoming document not taken and a picker request in flight, on every host.
+    function test_reset_clears_incoming_document_and_request() {
+        for (var lifecycle = 0; lifecycle < 2; ++lifecycle) {
+            testContext.useLifecycleHost(lifecycle === 1);
+            testContext.emitIncomingDocument("content://com.Other.Files/document/left.csv");
+            testContext.setDocumentRequestPending(true);
+        }
+        testContext.resetHostPlayback();
+        for (lifecycle = 0; lifecycle < 2; ++lifecycle) {
+            testContext.useLifecycleHost(lifecycle === 1);
+            compare(decoderHost.incomingDocumentPending, false);
+            compare(decoderHost.documentRequestPending, false);
+            compare(decoderHost.takeIncomingDocument(), "", "nothing reaches a later case");
+        }
+        testContext.useLifecycleHost(false);
+    }
+
     SignalSpy {
         id: revisionSpy
         target: recordings
