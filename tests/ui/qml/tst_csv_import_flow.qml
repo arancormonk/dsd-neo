@@ -414,11 +414,32 @@ Item {
             wait(50);
             compare(completion.count, 1, "one finished per flow");
         }
-        // A picked name arrives URL-encoded: the sheet reads it decoded.
-        function test_busy_sheet_names_an_encoded_pick() {
+        // The host decodes the name it gives (Android's picker and DSD-neo's
+        // browser both do): an escape left in it is part of the file's real
+        // name, so the sheet shows the name as it came.
+        function test_busy_sheet_shows_the_given_name() {
             testContext.holdImports(true);
-            flow.begin(standaloneMap(), "primary%3ADownload%2FCounty%20map.csv", "chan");
-            compare(item("csvCopyingText").text, "Copying County map.csv…");
+            flow.begin(standaloneMap(), "County%20map.csv", "chan");
+            compare(item("csvCopyingText").text, "Copying County%20map.csv…");
+            compare(item("csvCompanionSheet").Accessible.name, "Copying County%20map.csv");
+        }
+        // #830: a file literally named map%20v2.csv reads as that, never
+        // as "map v2.csv". Only a pick with no name falls back to the
+        // reference, whose last segment is decoded once.
+        function test_display_name_decoded_once() {
+            testContext.holdImports(true);
+            flow.pick("chan");
+            answer("content://p/doc/1", "map%20v2.csv");
+            var sheet = item("csvCompanionSheet");
+            compare(flow.displayName, "map%20v2.csv");
+            compare(item("csvCopyingText").text, "Copying map%20v2.csv…");
+            compare(sheet.Accessible.name, "Copying map%20v2.csv");
+            flow.cancel();
+            tryCompare(completion, "count", 1);
+            flow.pick("chan");
+            answer("content://p/doc/map%20v2.csv", "");
+            compare(flow.displayName, "map v2.csv");
+            compare(sheet.Accessible.name, "Copying map v2.csv");
         }
         // Cancel, Back and Escape ask the import to stop. The flow finishes at
         // once with "cancelled", even when the copy ignores its cancel (a

@@ -57,12 +57,15 @@ Item {
     property bool cancelling: false
     readonly property bool copying: request > 0
     readonly property bool choosingCompanions: requiredFiles.length > 0
-    // The picked name as a person reads it.
-    readonly property string displayName: readableName(fileName)
+    // The picked name as a person reads it. The host decodes the name it
+    // gives, so it shows as it came: an escape left in it ("map%20v2.csv")
+    // is part of the file's real name (issue #830).
+    readonly property string displayName: fileName
     signal finished(var result, var context)
 
-    // A file's name as a person reads it, from a name or a reference: a
-    // provider's arrives URL-encoded ("primary%3ADownload%2Fmap.csv").
+    // A file's name as a person reads it, from a picked reference, which is
+    // URL-encoded ("content://…/primary%3ADownload%2Fmap.csv"). Never for a
+    // name the host gave: that one is decoded already.
     function readableName(name) {
         var decoded = name;
         try {
@@ -224,7 +227,8 @@ Item {
         if (!active || copying)
             return;
         flow.reference = reference;
-        flow.fileName = displayName || reference.substring(reference.lastIndexOf('/') + 1);
+        // No name from the host: the reference's last segment, decoded once.
+        flow.fileName = displayName || readableName(reference);
         attempt();
     }
     function primaryUnavailable(message) {
