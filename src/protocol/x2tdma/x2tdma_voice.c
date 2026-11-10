@@ -463,24 +463,25 @@ x2tdma_decode_signaling(int j, x2tdma_voice_ctx* ctx, dsd_state* state) {
 
 /* The encryption burst @p j's voice frames are judged by (dsd_state::x2tdma_slot_crypto), set before they decode. The
    indicators arrive in the second burst (x2tdma_decode_signal_j1()), so the first burst's frames keep what the previous
-   superframe of the same call said, and are unknown in a call's first superframe: a clear <-> encrypted change inside a
-   call applies from the second burst. */
+   superframe of the same transmission said, and are unknown in its first superframe: a clear <-> encrypted change
+   inside a call applies from the second burst. The transmission, not the call epoch: a fade the call state heals is
+   the same transmission. */
 static void
 x2tdma_note_slot_crypto(const x2tdma_voice_ctx* ctx, dsd_state* state, int j) {
     const int slot = state->currentslot == 1 ? 1 : 0;
     dsd_call_snapshot call;
-    uint64_t epoch = 0U;
+    uint64_t transmission = 0U;
     if (dsd_call_state_get(state, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
         && DSD_SYNC_IS_X2TDMA(call.protocol)) {
-        epoch = call.epoch;
+        transmission = dsd_call_snapshot_transmission(&call);
     }
     if (j > 0) {
         state->x2tdma_slot_crypto[slot] =
             (ctx->eeei != 0 || ctx->aiei != 0) ? DSD_X2TDMA_CRYPTO_ENCRYPTED : DSD_X2TDMA_CRYPTO_CLEAR;
-    } else if (epoch == 0U || state->x2tdma_slot_crypto_epoch[slot] != epoch) {
+    } else if (transmission == 0U || state->x2tdma_slot_crypto_transmission[slot] != transmission) {
         state->x2tdma_slot_crypto[slot] = DSD_X2TDMA_CRYPTO_UNKNOWN;
     }
-    state->x2tdma_slot_crypto_epoch[slot] = epoch;
+    state->x2tdma_slot_crypto_transmission[slot] = transmission;
 }
 
 static void

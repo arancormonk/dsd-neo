@@ -2084,7 +2084,7 @@ mbe_dmr_slot_crypto_class(const dsd_state* state, int slot, const mbe_frame_ctx_
 typedef struct {
     int admitted;               // dsd_receive_current_allows()
     dsd_voice_crypto_class cls; // DMR's slot class, NXDN's and dPMR's cipher class, X2-TDMA's; CLEAR for the others
-    int crypto_unknown;         // the owner has not said yet (an X2-TDMA call's opening frames): muted, not decodable
+    int crypto_unknown;         // the owner has not said yet (an X2-TDMA call's opening frames): not decodable
 } mbe_frame_judgement;
 
 // X2-TDMA's encryption on the slot, as processX2TDMAvoice() set it for the burst being decoded. X2 has no
@@ -2094,6 +2094,17 @@ mbe_x2_slot_judge(const dsd_state* state, int slot, mbe_frame_judgement* j) {
     const uint8_t crypto = state->x2tdma_slot_crypto[slot];
     j->crypto_unknown = crypto != DSD_X2TDMA_CRYPTO_CLEAR && crypto != DSD_X2TDMA_CRYPTO_ENCRYPTED;
     j->cls = crypto == DSD_X2TDMA_CRYPTO_ENCRYPTED ? DSD_VOICE_CRYPTO_UNDECRYPTABLE : DSD_VOICE_CRYPTO_CLEAR;
+}
+
+// Whether an X2-TDMA frame plays under the user's options. One whose encryption is not known yet plays only where it
+// would play either way, clear or encrypted: with the encrypted-audio mute off and reverse mute off.
+static int
+mbe_x2_frame_audible(const dsd_opts* opts, int slot, const mbe_frame_judgement* j) {
+    if (j->crypto_unknown) {
+        return dsd_voice_crypto_class_audible(opts, slot, DSD_VOICE_CRYPTO_CLEAR)
+               && dsd_voice_crypto_class_audible(opts, slot, DSD_VOICE_CRYPTO_UNDECRYPTABLE);
+    }
+    return dsd_voice_crypto_class_audible(opts, slot, j->cls);
 }
 
 static mbe_frame_judgement
@@ -2138,17 +2149,16 @@ mbe_frame_info(const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ct
 }
 
 // The explicit frame owner decides the verdict as well as the transforms, even when YSF or dPMR borrows another
-// protocol's decoder outside processFrame(). An exhausted keystream cannot be overridden by a key, -q or a user mute,
-// nor can an X2-TDMA frame whose encryption is not known yet.
+// protocol's decoder outside processFrame(). An exhausted keystream cannot be overridden by a key, -q or a user mute.
 static int
 mbe_frame_slot_muted(const dsd_opts* opts, const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx,
                      const mbe_frame_judgement* j) {
-    if (frame_ctx->crypto_muted || !j->admitted || j->crypto_unknown) {
+    if (frame_ctx->crypto_muted || !j->admitted) {
         return 1;
     }
     switch (frame_ctx->protocol) {
-        case DSD_VOICE_PROTOCOL_DMR:
-        case DSD_VOICE_PROTOCOL_X2TDMA: return !dsd_voice_crypto_class_audible(opts, slot, j->cls);
+        case DSD_VOICE_PROTOCOL_DMR: return !dsd_voice_crypto_class_audible(opts, slot, j->cls);
+        case DSD_VOICE_PROTOCOL_X2TDMA: return !mbe_x2_frame_audible(opts, slot, j);
         case DSD_VOICE_PROTOCOL_P25P1: return !p25_crypto_audio_output_permitted(opts, state, 0);
         case DSD_VOICE_PROTOCOL_P25P2:
             return state->p25_p2_audio_allowed[slot] == 0 || !p25_crypto_audio_output_permitted(opts, state, slot);

@@ -871,7 +871,8 @@ typedef enum {
 enum { DSD_DMR_MONO_RX_NONE = 0, DSD_DMR_MONO_RX_PENDING = 1, DSD_DMR_MONO_RX_TS1 = 2, DSD_DMR_MONO_RX_TS2 = 3 };
 
 /* dsd_state::x2tdma_slot_crypto: what the timeslot's X2-TDMA voice frames are known to be. X2-TDMA has no decryption,
-   so an encrypted frame is undecryptable; an UNKNOWN one is muted whatever the user's encrypted-audio options. */
+   so an encrypted frame is undecryptable; an UNKNOWN one is never decodable, and plays only where clear and encrypted
+   audio both would. */
 enum { DSD_X2TDMA_CRYPTO_UNKNOWN = 0, DSD_X2TDMA_CRYPTO_CLEAR = 1, DSD_X2TDMA_CRYPTO_ENCRYPTED = 2 };
 
 /** Where received-tone detection stands (issue #522).
@@ -2310,12 +2311,12 @@ struct dsd_state {
     uint32_t x2tdma_superframe_carrier_seq;
     uint32_t x2tdma_superframe_end_symbol;
     /* Per timeslot: the encryption the timeslot's X2-TDMA voice frames are judged by (DSD_X2TDMA_CRYPTO_*), set by
-       processX2TDMAvoice() before each burst's frames, and the call epoch it was read in. A superframe signals its
-       encryption in its second burst, after the first burst's three frames: those take the previous superframe's
-       value of the same call, and are UNKNOWN in a call's first superframe. The vocoder mutes, records, captures and
-       learns from the frames by it (mbe_frame_judge()). */
+       processX2TDMAvoice() before each burst's frames, and the call's transmission (dsd_call_snapshot_transmission())
+       it was read in. A superframe signals its encryption in its second burst, after the first burst's three frames:
+       those take the previous superframe's value of the same transmission, and are UNKNOWN in its first superframe.
+       The vocoder mutes, records, captures and learns from the frames by it (mbe_frame_judge()). */
     uint8_t x2tdma_slot_crypto[2];
-    uint64_t x2tdma_slot_crypto_epoch[2];
+    uint64_t x2tdma_slot_crypto_transmission[2];
     int input_fallback_pending;
 
     //dmr trunking stuff

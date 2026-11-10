@@ -365,8 +365,9 @@ Windows console runs:
   reverse mute (`-q`), plus talkgroup policy; D-STAR, ProVoice and YSF (all three voice modes) classify no
   encryption, so policy alone decides theirs; and for SDRTrunk JSON playback, slot 1's policy once playback's own
   decode and crypto checks pass. X2-TDMA says whether a superframe is encrypted only after its first three voice
-  frames: those frames follow the slot's previous superframe, and in a call's first superframe they are muted and
-  not saved, whatever the mute options. YSF frames are captured once a FICH has verified the transmission on the
+  frames: those frames follow the slot's previous superframe. At the start of a transmission nothing is known yet,
+  so they are saved only where both clear and encrypted audio would be: with encrypted audio unmuted and without
+  `-q`. YSF frames are captured once a FICH has verified the transmission on the
   carrier.
 - `-J <file>` Append event log output. Every line starts with a `YYYY-MM-DD HH:MM:SS` stamp, so the file
   filters, sorts and splits by time with ordinary line tools. An event's detail lines (`Text:` for a decoded

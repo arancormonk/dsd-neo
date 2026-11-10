@@ -2280,26 +2280,35 @@ target_include_directories(
 add_test(NAME X2TDMA_VOICE_HELPERS COMMAND dsd-neo_test_x2tdma_voice_helpers)
 
 # X2-TDMA voice superframes signalling encryption, through the real vocoder and mixers: encrypted voice reaches no
-# output, and a superframe's opening frames take the previous superframe's verdict.
-add_executable(
-    dsd-neo_test_x2tdma_voice_crypto
-    protocol/x2tdma/test_x2tdma_voice_crypto.c
-)
-target_include_directories(
-    dsd-neo_test_x2tdma_voice_crypto
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
-)
-target_link_libraries(
-    dsd-neo_test_x2tdma_voice_crypto
-    PRIVATE
-        dsd-neo_proto_x2tdma
-        dsd-neo_core
-        dsd-neo_proto_nxdn
-        dsd-neo_proto_dmr
-        dsd-neo_test_support
-        ${LIBS}
-)
-add_test(NAME X2TDMA_VOICE_CRYPTO COMMAND dsd-neo_test_x2tdma_voice_crypto)
+# output, and a superframe's opening frames take the previous superframe's verdict. The decoder reads its dibits
+# through GNU ld --wrap seams, like the YSF vocoder tests.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_x2tdma_voice_crypto
+        protocol/x2tdma/test_x2tdma_voice_crypto.c
+    )
+    target_include_directories(
+        dsd-neo_test_x2tdma_voice_crypto
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
+    )
+    target_link_libraries(
+        dsd-neo_test_x2tdma_voice_crypto
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_x2tdma
+            dsd-neo_core
+            dsd-neo_proto_nxdn
+            dsd-neo_proto_dmr
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    target_link_options(
+        dsd-neo_test_x2tdma_voice_crypto
+        PRIVATE -Wl,--wrap=get_dibit_and_analog_signal -Wl,--wrap=skipDibit
+    )
+    add_test(NAME X2TDMA_VOICE_CRYPTO COMMAND dsd-neo_test_x2tdma_voice_crypto)
+endif()
 
 add_executable(
     dsd-neo_test_nxdn_trunk_diag

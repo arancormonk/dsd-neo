@@ -2014,10 +2014,14 @@ trail and the next grant after D-TX CEASED (granted during a gap too), direct mo
 after a gap, and a speech-end pause, with or without a gap.
 
 `X2TDMA_VOICE_CRYPTO` builds whole X2-TDMA voice superframes (EEEI or AIEI in the second burst) and feeds them to
-`processX2TDMAvoice()` through a stubbed dibit reader, with the real vocoder and mixers behind it. For each frame it
-checks the speaker, the static or per-call WAV, MBE capture and the frame's decodability: clear to encrypted and back
-on either slot, a call encrypted from its start, both slots in turn, reverse mute and the encrypted-audio override.
-The first three frames of a call are muted; later superframes' first three follow the slot's previous superframe.
+`processX2TDMAvoice()` through GNU ld `--wrap` seams on the dibit reader (`get_dibit_and_analog_signal`, `skipDibit`;
+Linux GCC/Clang only, like `YSF_MBE_CAPTURE`), with the real vocoder and mixers behind it. For each frame it checks
+the speaker, the static or per-call WAV, MBE capture and the frame's decodability: clear to encrypted and back on
+either slot, a call encrypted from its start, both slots in turn, reverse mute and the encrypted-audio override (each
+with the other option both ways), and a fade the call state heals against a new transmission. A transmission's first
+three frames are never decodable and play only with encrypted audio unmuted and reverse mute off; later superframes'
+first three follow the slot's previous superframe. Ending a call starts the next per-call WAV segment, so the
+per-call configurations stop at the first call end and the static-WAV ones check what follows.
 
 `DECODE_IQ_VOICE_CHAIN_*` (CTest labels `iq-decode` and `voice-chain`) replay a voice fixture with `-P` through
 `tests/iq_voice_chain_check.cmake` under integer output to stdout, float output (`-y`) to stdout and `-o null`, and

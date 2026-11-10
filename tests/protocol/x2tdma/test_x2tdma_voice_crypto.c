@@ -8,12 +8,15 @@
  * run through processX2TDMAvoice(), the real vocoder and the real mixers. An encrypted superframe's voice must reach
  * neither the speaker, the static WAV, the per-call WAV nor MBE capture, and must not count as decodable for the
  * voice chain. A superframe signals its encryption only in its second burst, after the first burst's three frames:
- * those frames take the previous superframe's verdict of the same call, and are muted in a call's first superframe.
+ * those frames take the previous superframe's verdict of the same transmission. In its first superframe they are
+ * unknown: never decodable, and heard only where clear and encrypted audio both would be.
+ *
+ * The decoder reads its dibits through GNU ld --wrap seams (get_dibit_and_analog_signal, skipDibit), like the YSF
+ * vocoder tests, so the real core library links unchanged.
  */
 
 #include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
@@ -53,8 +56,11 @@ static int g_stream_pos;
 static int g_readback[144];
 static int g_stream_overrun;
 
+int __wrap_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal);
+void __wrap_skipDibit(dsd_opts* opts, dsd_state* state, int count);
+
 int
-get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
+__wrap_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
     (void)opts;
     (void)state;
     if (out_analog_signal != NULL) {
@@ -68,9 +74,9 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
 }
 
 void
-skipDibit(dsd_opts* opts, dsd_state* state, int count) {
+__wrap_skipDibit(dsd_opts* opts, dsd_state* state, int count) {
     for (int i = 0; i < count; i++) {
-        (void)get_dibit_and_analog_signal(opts, state, NULL);
+        (void)__wrap_get_dibit_and_analog_signal(opts, state, NULL);
     }
 }
 
@@ -392,28 +398,105 @@ expect_frame(const char* tag, const rig_config* cfg, int slot, int f, int audibl
 }
 
 /* One superframe of a sequence: its timeslot and what its second burst signals. */
+/* What happens to the slot's call before a superframe. */
+typedef enum {
+    STEP_CONTINUE = 0, /* the call goes on */
+    STEP_NEW_CALL,     /* the call ends; this superframe starts the next transmission */
+    STEP_FADE_HEAL,    /* the sync is lost and found again at once: the call state heals the same transmission */
+    STEP_NAMED_CALL,   /* a talkgroup names the call first, so a fade can heal it (X2-TDMA voice names none) */
+} step_event;
+
+/* One superframe of a sequence: its timeslot, what its second burst signals, and what happens before it. */
 typedef struct {
     int slot;
     sf_signal sig;
-    int end_call_before; /* the slot's call ends first, so this superframe opens a new one */
+    step_event event;
 } superframe_step;
+
+/* The user's options for a sequence: reverse mute (-q) and the encrypted-audio mute of both timeslots. */
+typedef struct {
+    int reverse_mute;
+    int mute_encrypted;
+} user_options;
 
 /* 1 when an encrypted (@p encrypted 1) or clear (0) frame plays under the user's options. */
 static int
-plays(int encrypted, int reverse_mute, int mute_encrypted) {
-    if (reverse_mute) {
+plays(int encrypted, const user_options* user) {
+    if (user->reverse_mute) {
         return encrypted;
     }
-    return !encrypted || !mute_encrypted;
+    return !encrypted || !user->mute_encrypted;
+}
+
+/* The opening frames' verdict: the previous superframe's of the transmission, or unknown (@p known 0), which plays only
+   where clear and encrypted audio both would. */
+typedef struct {
+    int known;
+    int encrypted;
+} opening_verdict;
+
+static void
+apply_step_event(const superframe_step* step) {
+    dsd_state* state = g_rig.state;
+    const uint8_t slot = (uint8_t)step->slot;
+    if (step->event == STEP_NEW_CALL) {
+        (void)dsd_call_state_end(state, slot, 0.0);
+    } else if (step->event == STEP_FADE_HEAL) {
+        (void)dsd_call_state_end_ex(state, slot, 0.0, DSD_CALL_END_SYNC_LOSS);
+    } else if (step->event == STEP_NAMED_CALL) {
+        const dsd_call_observation named = {
+            .protocol = DSD_SYNC_X2TDMA_VOICE_POS,
+            .slot = slot,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = 123U,
+            .policy_target_id = 123U,
+        };
+        (void)dsd_call_state_observe(state, &named, DSD_CALL_BOUNDARY_CONTINUE);
+    }
+}
+
+/* The slot's transmission and call epoch, for checking what a step did to the call. */
+static void
+slot_call_ids(int slot, uint64_t* transmission, uint64_t* epoch) {
+    dsd_call_snapshot call;
+    *transmission = 0U;
+    *epoch = 0U;
+    if (dsd_call_state_get(g_rig.state, (uint8_t)slot, &call) > 0) {
+        *transmission = dsd_call_snapshot_transmission(&call);
+        *epoch = call.epoch;
+    }
+}
+
+/* A fade heal must reopen the same transmission in a new epoch, and a new call must start another transmission:
+   otherwise the case does not test what it says. */
+static int
+expect_step_event(const char* tag, const superframe_step* step, uint64_t transmission_before, uint64_t epoch_before) {
+    uint64_t transmission = 0U;
+    uint64_t epoch = 0U;
+    slot_call_ids(step->slot, &transmission, &epoch);
+    int ok = 1;
+    if (step->event == STEP_FADE_HEAL) {
+        ok = transmission == transmission_before && epoch != epoch_before;
+    } else if (step->event == STEP_NEW_CALL) {
+        ok = transmission != transmission_before;
+    }
+    if (!ok) {
+        DSD_FPRINTF(stderr, "%s: transmission %llu epoch %llu, before %llu %llu\n", tag,
+                    (unsigned long long)transmission, (unsigned long long)epoch,
+                    (unsigned long long)transmission_before, (unsigned long long)epoch_before);
+        return 1;
+    }
+    return 0;
 }
 
 static int
-run_superframe(const char* tag, const rig_config* cfg, const superframe_step* step, int opening_known,
-               int opening_encrypted, int reverse_mute, int mute_encrypted) {
+run_superframe(const char* tag, const rig_config* cfg, const superframe_step* step, opening_verdict opening,
+               const user_options* user) {
     dsd_state* state = g_rig.state;
-    if (step->end_call_before) {
-        (void)dsd_call_state_end(state, (uint8_t)step->slot, 0.0);
-    }
+    uint64_t transmission_before = 0U;
+    uint64_t epoch_before = 0U;
+    slot_call_ids(step->slot, &transmission_before, &epoch_before);
+    apply_step_event(step);
     build_superframe(step->slot, step->sig);
     g_seen_count = 0;
     g_stream_overrun = 0;
@@ -421,7 +504,7 @@ run_superframe(const char* tag, const rig_config* cfg, const superframe_step* st
     processX2TDMAvoice(g_rig.opts, state);
     g_seen[SF_FRAMES].before = sample_outputs();
 
-    int rc = 0;
+    int rc = expect_step_event(tag, step, transmission_before, epoch_before);
     if (g_seen_count != SF_FRAMES || g_stream_overrun || g_stream_pos != g_stream_len) {
         DSD_FPRINTF(stderr, "%s (%s): %d chain runs, stream %d of %d read%s\n", tag, cfg->name, g_seen_count,
                     g_stream_pos, g_stream_len, g_stream_overrun ? ", overrun" : "");
@@ -431,12 +514,15 @@ run_superframe(const char* tag, const rig_config* cfg, const superframe_step* st
     for (int f = 0; f < SF_FRAMES; f++) {
         int audible;
         int decodable;
-        if (f < OPENING) {
-            audible = opening_known && plays(opening_encrypted, reverse_mute, mute_encrypted);
-            decodable = opening_known && !opening_encrypted;
-        } else {
-            audible = plays(encrypted, reverse_mute, mute_encrypted);
+        if (f >= OPENING) {
+            audible = plays(encrypted, user);
             decodable = !encrypted;
+        } else if (opening.known) {
+            audible = plays(opening.encrypted, user);
+            decodable = !opening.encrypted;
+        } else {
+            audible = plays(0, user) && plays(1, user);
+            decodable = 0;
         }
         rc |= expect_frame(tag, cfg, step->slot, f, audible, decodable);
     }
@@ -444,38 +530,41 @@ run_superframe(const char* tag, const rig_config* cfg, const superframe_step* st
 }
 
 /* Runs @p steps on a fresh decoder under every output configuration. Each timeslot's opening frames take that
-   timeslot's previous superframe of the same call, and are unknown in a call's first superframe. */
+   timeslot's previous superframe of the same transmission, and are unknown in a transmission's first superframe. */
 static int
-run_sequence(const char* tag, const superframe_step* steps, int count, int reverse_mute, int mute_encrypted) {
+run_sequence(const char* tag, const superframe_step* steps, int count, user_options user) {
     int rc = 0;
     for (size_t c = 0; c < sizeof(k_configs) / sizeof(k_configs[0]); c++) {
-        if (open_rig(&k_configs[c], reverse_mute, mute_encrypted) != 0) {
+        if (open_rig(&k_configs[c], user.reverse_mute, user.mute_encrypted) != 0) {
             DSD_FPRINTF(stderr, "%s: cannot open the outputs\n", tag);
             return 1;
         }
-        int known[2] = {0, 0};
-        int previous_encrypted[2] = {0, 0};
+        opening_verdict next[2] = {{0, 0}, {0, 0}};
         for (int i = 0; i < count; i++) {
             const int slot = steps[i].slot;
-            /* Ending the call starts the next per-call WAV in the recording folder: from there the per-call WAV is not
-               the rig's file. The static WAV configurations check the new call. */
-            if (steps[i].end_call_before && !k_configs[c].static_wav) {
+            /* Ending the call, even for a fade, starts the next per-call WAV in the recording folder: from there the
+               per-call WAV is not the rig's file. The static WAV configurations check what follows. */
+            if ((steps[i].event == STEP_NEW_CALL || steps[i].event == STEP_FADE_HEAL) && !k_configs[c].static_wav) {
                 break;
             }
-            if (steps[i].end_call_before) {
-                known[slot] = 0;
+            if (steps[i].event == STEP_NEW_CALL) {
+                next[slot].known = 0;
             }
             char step_tag[160];
             DSD_SNPRINTF(step_tag, sizeof(step_tag), "%s, superframe %d", tag, i + 1);
-            rc |= run_superframe(step_tag, &k_configs[c], &steps[i], known[slot], previous_encrypted[slot],
-                                 reverse_mute, mute_encrypted);
-            known[slot] = 1;
-            previous_encrypted[slot] = steps[i].sig != SF_CLEAR;
+            rc |= run_superframe(step_tag, &k_configs[c], &steps[i], next[slot], &user);
+            next[slot].known = 1;
+            next[slot].encrypted = steps[i].sig != SF_CLEAR;
         }
         close_rig();
     }
     return rc;
 }
+
+static const user_options k_default_user = {0, 1};
+static const user_options k_reverse_mute = {1, 1};
+static const user_options k_encrypted_unmuted = {0, 0};
+static const user_options k_reverse_mute_encrypted_unmuted = {1, 0};
 
 /* A clear call turns encrypted and back, on each timeslot: the change applies from the second burst, so the first
    burst of the first encrypted superframe still plays as clear and that of the first clear one after it stays muted.
@@ -485,11 +574,11 @@ test_crypto_change_mid_call(void) {
     int rc = 0;
     for (int slot = 0; slot <= 1; slot++) {
         const superframe_step steps[] = {
-            {slot, SF_CLEAR, 0}, {slot, SF_CLEAR, 0}, {slot, SF_EEEI, 0},
-            {slot, SF_AIEI, 0},  {slot, SF_CLEAR, 0}, {slot, SF_CLEAR, 1},
+            {slot, SF_CLEAR, STEP_CONTINUE}, {slot, SF_CLEAR, STEP_CONTINUE}, {slot, SF_EEEI, STEP_CONTINUE},
+            {slot, SF_AIEI, STEP_CONTINUE},  {slot, SF_CLEAR, STEP_CONTINUE}, {slot, SF_CLEAR, STEP_NEW_CALL},
         };
         rc |= run_sequence(slot ? "slot 2 clear, encrypted, clear" : "slot 1 clear, encrypted, clear", steps,
-                           (int)(sizeof(steps) / sizeof(steps[0])), 0, 1);
+                           (int)(sizeof(steps) / sizeof(steps[0])), k_default_user);
     }
     return rc;
 }
@@ -499,9 +588,13 @@ static int
 test_encrypted_call_from_the_start(void) {
     int rc = 0;
     for (int slot = 0; slot <= 1; slot++) {
-        const superframe_step steps[] = {{slot, SF_EEEI, 0}, {slot, SF_EEEI, 0}, {slot, SF_AIEI, 0}};
+        const superframe_step steps[] = {
+            {slot, SF_EEEI, STEP_CONTINUE},
+            {slot, SF_EEEI, STEP_CONTINUE},
+            {slot, SF_AIEI, STEP_CONTINUE},
+        };
         rc |= run_sequence(slot ? "slot 2 encrypted call" : "slot 1 encrypted call", steps,
-                           (int)(sizeof(steps) / sizeof(steps[0])), 0, 1);
+                           (int)(sizeof(steps) / sizeof(steps[0])), k_default_user);
     }
     return rc;
 }
@@ -511,34 +604,61 @@ test_encrypted_call_from_the_start(void) {
 static int
 test_timeslots_judged_apart(void) {
     const superframe_step steps[] = {
-        {0, SF_EEEI, 0}, {1, SF_CLEAR, 0}, {0, SF_EEEI, 0}, {1, SF_CLEAR, 0}, {0, SF_CLEAR, 0}, {1, SF_AIEI, 0},
+        {0, SF_EEEI, STEP_CONTINUE},  {1, SF_CLEAR, STEP_CONTINUE}, {0, SF_EEEI, STEP_CONTINUE},
+        {1, SF_CLEAR, STEP_CONTINUE}, {0, SF_CLEAR, STEP_CONTINUE}, {1, SF_AIEI, STEP_CONTINUE},
     };
-    return run_sequence("both timeslots", steps, (int)(sizeof(steps) / sizeof(steps[0])), 0, 1);
+    return run_sequence("both timeslots", steps, (int)(sizeof(steps) / sizeof(steps[0])), k_default_user);
 }
 
-/* Reverse mute (-q) plays the encrypted superframes and mutes the clear ones; unknown opening frames stay muted. */
+/* Reverse mute (-q) plays the encrypted superframes and mutes the clear ones. Unknown opening frames may be clear, so
+   they stay muted, whatever the encrypted-audio mute. */
 static int
 test_reverse_mute(void) {
     int rc = 0;
     for (int slot = 0; slot <= 1; slot++) {
         const superframe_step steps[] = {
-            {slot, SF_CLEAR, 0}, {slot, SF_EEEI, 0}, {slot, SF_EEEI, 0}, {slot, SF_CLEAR, 0}, {slot, SF_EEEI, 1},
+            {slot, SF_CLEAR, STEP_CONTINUE}, {slot, SF_EEEI, STEP_CONTINUE}, {slot, SF_EEEI, STEP_CONTINUE},
+            {slot, SF_CLEAR, STEP_CONTINUE}, {slot, SF_EEEI, STEP_NEW_CALL},
         };
-        rc |= run_sequence(slot ? "slot 2 reverse mute" : "slot 1 reverse mute", steps,
-                           (int)(sizeof(steps) / sizeof(steps[0])), 1, 1);
+        const int n = (int)(sizeof(steps) / sizeof(steps[0]));
+        rc |= run_sequence(slot ? "slot 2 reverse mute" : "slot 1 reverse mute", steps, n, k_reverse_mute);
+        rc |= run_sequence(slot ? "slot 2 reverse mute, encrypted unmuted" : "slot 1 reverse mute, encrypted unmuted",
+                           steps, n, k_reverse_mute_encrypted_unmuted);
     }
     return rc;
 }
 
-/* With the encrypted-audio mute off, encrypted voice plays and records, still not decodable; unknown opening frames
-   stay muted. */
+/* With the encrypted-audio mute off, encrypted voice plays, records and is captured, still not decodable, and so do a
+   transmission's unknown opening frames: they would play whether clear or encrypted. A new call opens unknown again. */
 static int
 test_encrypted_audio_override(void) {
     int rc = 0;
     for (int slot = 0; slot <= 1; slot++) {
-        const superframe_step steps[] = {{slot, SF_EEEI, 0}, {slot, SF_EEEI, 0}, {slot, SF_CLEAR, 0}};
+        const superframe_step steps[] = {
+            {slot, SF_EEEI, STEP_CONTINUE},
+            {slot, SF_EEEI, STEP_CONTINUE},
+            {slot, SF_CLEAR, STEP_CONTINUE},
+            {slot, SF_EEEI, STEP_NEW_CALL},
+        };
         rc |= run_sequence(slot ? "slot 2 encrypted audio unmuted" : "slot 1 encrypted audio unmuted", steps,
-                           (int)(sizeof(steps) / sizeof(steps[0])), 0, 0);
+                           (int)(sizeof(steps) / sizeof(steps[0])), k_encrypted_unmuted);
+    }
+    return rc;
+}
+
+/* A fade the call state heals is the same transmission: the opening frames after it keep the verdict from before it
+   (here clear, so they play and stay decodable, where unknown frames would be muted). The next transmission opens
+   unknown. X2-TDMA voice names no talkgroup, so the call is named first: an unnamed call never heals. */
+static int
+test_fade_heal_keeps_the_verdict(void) {
+    int rc = 0;
+    for (int slot = 0; slot <= 1; slot++) {
+        const superframe_step steps[] = {
+            {slot, SF_CLEAR, STEP_NAMED_CALL}, {slot, SF_EEEI, STEP_FADE_HEAL}, {slot, SF_CLEAR, STEP_CONTINUE},
+            {slot, SF_CLEAR, STEP_FADE_HEAL},  {slot, SF_CLEAR, STEP_NEW_CALL},
+        };
+        rc |= run_sequence(slot ? "slot 2 fade heal" : "slot 1 fade heal", steps,
+                           (int)(sizeof(steps) / sizeof(steps[0])), k_default_user);
     }
     return rc;
 }
@@ -552,6 +672,7 @@ main(void) {
     rc |= test_timeslots_judged_apart();
     rc |= test_reverse_mute();
     rc |= test_encrypted_audio_override();
+    rc |= test_fade_heal_keeps_the_verdict();
     if (rc == 0) {
         printf("X2TDMA_VOICE_CRYPTO: OK\n");
     }

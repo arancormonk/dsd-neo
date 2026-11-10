@@ -2582,12 +2582,14 @@ suite runs under this compiler.
   dPMR use `nxdn_cipher_type` and the key the vocoder applies
   (`dsd_nxdn_voice_crypto_class()`; the dPMR bridge sets the cipher per half). X2-TDMA is judged per timeslot and
   superframe: `processX2TDMAvoice()` sets `dsd_state::x2tdma_slot_crypto[slot]` before each burst's frames from the
-  superframe's EEEI/AIEI (encrypted is undecryptable: X2 has no decryption), with the call epoch it was read in. The
-  indicators arrive in the second burst, after the first burst's three frames: those take the previous superframe's
-  value of the same call epoch, and are unknown in a call's first superframe (a new epoch). An unknown frame is muted,
-  not recorded, not captured and not decodable whatever the user's options, so a clear <-> encrypted change inside a
-  call applies from the second burst (at most three frames, 60 ms, once per change). The mixers read X2's verdict from
-  `mbe_slot_muted`, as DMR's (test: `X2TDMA_VOICE_CRYPTO`). YSF, D-STAR and ProVoice classify no encryption. The
+  superframe's EEEI/AIEI (encrypted is undecryptable: X2 has no decryption), with the call's transmission
+  (`dsd_call_snapshot_transmission()`) it was read in. The indicators arrive in the second burst, after the first
+  burst's three frames: those take the previous superframe's value of the same transmission (a fade the call state
+  heals keeps it), and are unknown in a transmission's first superframe. An unknown frame is never decodable, and it
+  plays, records and is captured only where clear and encrypted frames both would (`mbe_x2_frame_audible()`: the
+  encrypted-audio mute off and reverse mute off). A clear <-> encrypted change inside a call applies from the second
+  burst (at most three frames, 60 ms, once per change). The mixers read X2's verdict from `mbe_slot_muted`, as DMR's
+  (test: `X2TDMA_VOICE_CRYPTO`). YSF, D-STAR and ProVoice classify no encryption. The
   user's class rule (`dsd_voice_crypto_class_audible()`) applies reverse mute (`-q`)
   to the encrypted transmission, whether a key decrypts it or not, and mutes clear frames; otherwise an
   undecryptable frame plays only while the slot's encrypted-audio mute (`dmr_mute_encL/R`, slot 0's for NXDN and

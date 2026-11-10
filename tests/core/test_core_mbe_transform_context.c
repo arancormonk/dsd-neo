@@ -7008,8 +7008,8 @@ test_frame_info_fdma_owners(void) {
                                 DSD_VOICE_MEDIA_SPEECH, 1, 1);
         rc |= expect_eq_int("frame info x2 clear verdict", g_fi_state.mbe_slot_muted[slot], 0);
         /* The timeslot's own encryption, as processX2TDMAvoice() set it: encrypted is undecryptable whatever the
-           encrypted-audio mute; unknown (a call's opening frames) is neither decodable nor heard. The other timeslot's
-           value is not read. */
+           encrypted-audio mute; unknown (a transmission's opening frames) is never decodable and is heard only with
+           that mute off. The other timeslot's value is not read. */
         for (int mute_enc = 0; mute_enc <= 1; mute_enc++) {
             static const uint8_t kinds[2] = {DSD_X2TDMA_CRYPTO_ENCRYPTED, DSD_X2TDMA_CRYPTO_UNKNOWN};
             for (int k = 0; k < 2; k++) {
@@ -7024,7 +7024,8 @@ test_frame_info_fdma_owners(void) {
                 frame_info_ambe(DSD_VOICE_PROTOCOL_X2TDMA, ambe_fr);
                 rc |= expect_frame_info(k ? "frame info x2 unknown" : "frame info x2 encrypted", slot,
                                         DSD_VOICE_MEDIA_SPEECH, 0, 1);
-                const int muted = k ? 1 : mute_enc;
+                /* Reverse mute is off: an unknown frame plays where encrypted audio would. */
+                const int muted = mute_enc;
                 rc |= expect_eq_int(k ? "frame info x2 unknown verdict" : "frame info x2 encrypted verdict",
                                     g_fi_state.mbe_slot_muted[slot], muted);
                 int staged_nonzero = 0;
