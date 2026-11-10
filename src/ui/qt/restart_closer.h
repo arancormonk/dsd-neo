@@ -34,7 +34,9 @@ class DecoderHost;
  * then asks the host to quit. A session still active kStopWaitMs after begin() ends the close as "stopFailed", and a
  * host that cannot quit ends it as "quitFailed"; either leaves the app open and the closer idle. A quit the host took
  * but that leaves the process running kQuitWaitMs later (a launcher or multi-window mode that keeps it) ends as
- * "quitFailed" too, after "closing". While it is active, Main holds every automatic start. Qt thread only.
+ * "quitFailed" too, after "closing". A copy or a backup job that began while the session stopped ends the close as
+ * "refused" just before the quit, which then never happens. While it is active, Main holds every automatic start. Qt
+ * thread only.
  */
 class RestartCloser : public QObject {
     Q_OBJECT
@@ -72,8 +74,8 @@ class RestartCloser : public QObject {
   Q_SIGNALS:
     void activeChanged();
     /**
-     * @brief How the close ended: "closing" (the app is going), "stopFailed" or "quitFailed" (it stays open). A
-     * "closing" is followed by "quitFailed" when the process is still running kQuitWaitMs later.
+     * @brief How the close ended: "closing" (the app is going), "stopFailed", "refused" or "quitFailed" (it stays
+     * open). A "closing" is followed by "quitFailed" when the process is still running kQuitWaitMs later.
      */
     void finished(const QString& outcome);
 

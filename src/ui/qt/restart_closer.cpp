@@ -66,6 +66,11 @@ RestartCloser::poll() {
         }
         return;
     }
+    // Asked again: a copy or a backup job may have begun while the session stopped, and the quit would cut it short.
+    if (refused()) {
+        fail(QStringLiteral("refused"));
+        return;
+    }
     if (!m_host->quitApp()) {
         fail(QStringLiteral("quitFailed"));
         return;

@@ -221,6 +221,29 @@ test_process_that_outlives_its_quit() {
     CHECK(rig.closer.active(), "and holds the starts again for its own quit wait");
 }
 
+/* A copy or a backup job that began while the session was stopping (the closer was waiting for it) would be cut short
+ * by the quit: the busy check is made again just before it, and the close ends as refused, with no quit. */
+void
+test_job_begun_while_stopping_refuses_the_quit() {
+    for (int which = 0; which < 2; ++which) {
+        Rig rig;
+        rig.host.active = true;
+        CHECK(rig.closer.begin(), "a listening app begins closing");
+        run_polls();
+        rig.importsBusy = which == 0;
+        rig.backupBusy = which == 1;
+        rig.host.active = false;
+        run_polls();
+        CHECK(rig.host.quitCalls == 0, "no quit over an import or a backup job begun meanwhile");
+        CHECK(rig.outcomes == QStringList{QStringLiteral("refused")}, "the close ends as refused");
+        CHECK(!rig.closer.active(), "and leaves the app open, its starts free");
+        rig.importsBusy = false;
+        rig.backupBusy = false;
+        run_polls();
+        CHECK(rig.host.quitCalls == 0 && rig.outcomes.size() == 1, "a refused close stays ended when the job ends");
+    }
+}
+
 } // namespace
 
 int
@@ -232,5 +255,6 @@ main(int argc, char** argv) {
     test_stop_that_never_settles();
     test_quit_refused();
     test_process_that_outlives_its_quit();
+    test_job_begun_while_stopping_refuses_the_quit();
     return failures ? 1 : 0;
 }

@@ -5050,7 +5050,10 @@ class Setup : public QObject {
         return m_restart_closer->begins;
     }
 
-    /** @brief End the close `restartCloser` is running with @p outcome ("closing", "stopFailed" or "quitFailed"). */
+    /**
+     * @brief End the close `restartCloser` is running with @p outcome ("closing", "stopFailed", "refused" or
+     * "quitFailed").
+     */
     Q_INVOKABLE void
     finishClose(const QString& outcome) {
         m_restart_closer->finish(outcome);

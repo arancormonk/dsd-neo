@@ -14059,7 +14059,9 @@ Qt Quick frontend (`src/ui/qt`):
   the app open; a quit taken gives `finished("closing")` and keeps `active`, which joins Main's `autoStartBlocked`,
   so nothing starts while the process ends. It keeps polling then: a process still running `kQuitWaitMs` (5000)
   after the quit (a launcher or multi-window mode that keeps it) ends as `finished("quitFailed")` after the
-  "closing", which clears `active`. Test: `UI_QT_RESTART_CLOSER` (fake host and clock).
+  "closing", which clears `active`. Just before the quit it asks `refused()` again: an import, a replay copy or a backup
+  job that began while the session stopped ends the close as `finished("refused")`, with no quit. Test:
+  `UI_QT_RESTART_CLOSER` (fake host and clock).
 - `qml/DocumentPicker.qml` is the one picker screens use (`mode` "open"/"save", `title`, `nameFilters`,
   `defaultSuffix`, `mimeType`, `suggestedName`). `open()` asks the host when `documentPickerSupported`, cancelling its
   own earlier request first, and otherwise opens a `FileDialog` it makes through an `Instantiator` (a QtObject root,
