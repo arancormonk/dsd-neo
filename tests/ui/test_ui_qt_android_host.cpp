@@ -1252,7 +1252,8 @@ check_save_transport_dispatch() {
     const std::shared_ptr<dsd_qt::DocumentSaveTransport> earlier = host.saveTransport();
     platform() = PlatformCopies();
     host.abortDocumentTransfers();
-    check(earlier->aborted() && platform().aborts >= 1, "the host's abort aborts the transports it handed out");
+    /* Two platform aborts: the host's own, then the one the handed-out transport raises. */
+    check(earlier->aborted() && platform().aborts == 2, "the host's abort aborts the transports it handed out");
     const std::shared_ptr<dsd_qt::DocumentSaveTransport> later = host.saveTransport();
     check(later->aborted(), "a transport handed out after the abort starts aborted");
     check(!later->save(source, content) && platform().calls == 0 && take_discarded() == QStringList{content},

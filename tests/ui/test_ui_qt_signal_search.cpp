@@ -1368,8 +1368,10 @@ test_save_transport_local(const QString& root) {
 }
 
 /*
- * An abort from another thread while a large save runs: the save fails and the document keeps what it held. A save
- * that finished before the abort landed proves nothing, so the case tries again (with a fresh transport) a few times.
+ * An abort from another thread before or during a large save: the save fails and the document keeps what it held. A
+ * save that finished before the abort landed proves nothing, so the case tries again (with a fresh transport) a few
+ * times. Which check stops it (the one before the copy or the one between chunks) is not observed: on Linux QSaveFile
+ * writes an unnamed O_TMPFILE, so no temporary file shows that the copy has started.
  */
 static void
 test_save_transport_abort_mid_save(const QString& root) {
@@ -1642,7 +1644,8 @@ test_export_writer_staging_failures(const QString& root) {
     const QString cacheRoot = root + QStringLiteral("/export failures/cache");
     dsd_qt::DocumentExportWriter writer(transport, cacheRoot, &owner, log.reply());
     const QString folder = staging_folder(cacheRoot);
-    // A commit failure: the job's path is a folder, so the written copy cannot replace it.
+    // An open failure on a folder: the job's path is one, so QSaveFile cannot open it (a commit failure takes the same
+    // branch, and no test can bring one about portably).
     assert(QDir(folder).mkdir(QStringLiteral("3.csv")));
     assert(writer.submit(3, bytes, QStringLiteral("r3")));
     assert(spin_until([&log]() { return log.replies.size() == 3; }));
@@ -1722,16 +1725,19 @@ test_export_writer_sweep(const QString& root) {
     QDir(root).mkpath(QStringLiteral("export sweep/") + idle);
     write_bytes(cacheRoot + QLatin1Char('/') + idle + QStringLiteral("/1.csv"), "left");
 
-    // Held in this process, and last written a day ago.
+    // Held in this process, and last written a day ago (where a held lock file's time can be set).
     QDir(cacheRoot).mkdir(live);
     auto liveLock = std::make_unique<QLockFile>(cacheRoot + QLatin1Char('/') + live + lock);
     liveLock->setStaleLockTime(0);
     assert(liveLock->tryLock(0));
+#ifdef Q_OS_UNIX
+    // Windows keeps a held lock file open, so its time cannot be set there.
     {
         QFile stamp(cacheRoot + QLatin1Char('/') + live + lock);
         assert(stamp.open(QIODevice::ReadOnly));
         assert(stamp.setFileTime(QDateTime::currentDateTimeUtc().addDays(-1), QFileDevice::FileModificationTime));
     }
+#endif
 
     // Held by another process; and one whose holder is gone.
     QDir(cacheRoot).mkdir(child);
