@@ -31,8 +31,8 @@ class IncomingMailbox {
 
 /**
  * Documents other apps open with DSD-neo or share to it (#831): the activity hands each fresh delivery to [report],
- * which reads the intent, runs [IncomingDocumentIntake] and leaves an accepted URI in the mailbox for the Qt host's poll
- * to [take]. A refusal is one diagnostics record with no URI or name in it.
+ * which reads the intent, runs [IncomingDocumentIntake] and leaves an accepted URI in the mailbox for the Qt host's
+ * poll to [take]. A refusal is one diagnostics record with no URI or name in it.
  *
  * The URI travels as the sender's text: nothing here opens, queries or copies the document. The two lookups are a
  * package manager call and the grant check, no provider call.
@@ -84,7 +84,12 @@ object IncomingDocuments {
         IncomingStream.None
     }
 
-    private fun incomingUri(uri: Uri) = IncomingUri(uri.toString(), uri.scheme, uri.authority)
+    // The gate checks the parts of the URI the app goes on to use: its text, parsed again. A Uri another app parcelled
+    // can carry an authority that is not the one its text names.
+    private fun incomingUri(uri: Uri): IncomingUri {
+        val parsed = Uri.parse(uri.toString())
+        return IncomingUri(parsed.toString(), parsed.scheme, parsed.authority)
+    }
 }
 
 /** The package that declares the provider for [authority], or null when there is none this app can see. */

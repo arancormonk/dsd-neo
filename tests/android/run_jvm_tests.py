@@ -834,7 +834,8 @@ def incoming_document_reports():
     reports = ("UsbSourceManager.reportAttachment(", "IncomingDocuments.")
     guarded = [
         "UsbSourceManager.initializeAttachments(this)",
-        "val fresh = LaunchDelivery.fresh(savedInstanceState != null, intent.flags)",
+        "val fromHistory = (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0",
+        "val fresh = LaunchDelivery.fresh(savedInstanceState != null, fromHistory)",
         "if (fresh) {",
         "UsbSourceManager.reportAttachment(this, intent)",
         "IncomingDocuments.report(this, intent, HostDiagnostics::submit)",

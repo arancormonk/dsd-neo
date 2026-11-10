@@ -42,7 +42,6 @@ class Intent(var action: String? = null) {
         const val EXTRA_STREAM = "android.intent.extra.STREAM"
         const val EXTRA_TEXT = "android.intent.extra.TEXT"
         const val FLAG_GRANT_READ_URI_PERMISSION = 0x00000001
-        const val FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY = 0x00100000
     }
 }
 

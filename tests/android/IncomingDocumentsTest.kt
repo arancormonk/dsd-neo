@@ -77,6 +77,13 @@ private fun theLookupsAreThePlatformsOwn() {
         check(rig.lines == listOf(refusal("VIEW", "ownProvider"), refusal("VIEW", "ownProvider"))) { "${rig.lines}" }
     }
     Build.VERSION.SDK_INT = 30
+    // A parcelled Uri whose authority part names another app's provider while its text names the app's own: the text
+    // is what is passed on and opened, so its own authority is the one checked.
+    val own = "content://io.github.arancormonk.dsdneo.qtprovider/files/a.csv"
+    val forged = Rig(own)
+    check(forged.report(send(Intent.EXTRA_STREAM to Uri.parcelled(own, "com.example.other"))).isEmpty())
+    check(forged.report(Intent(Intent.ACTION_VIEW).also { it.data = Uri.parcelled(own, "com.example.other") }).isEmpty())
+    check(forged.lines == listOf(refusal("SEND", "ownProvider"), refusal("VIEW", "ownProvider"))) { "${forged.lines}" }
     // A URI no grant was ever recorded for.
     val rig = Rig()
     check(rig.report(view(OTHER)).isEmpty())

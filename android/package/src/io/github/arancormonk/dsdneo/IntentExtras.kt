@@ -17,7 +17,8 @@ import android.os.Bundle
  * app there, before any of its own code runs. The activity therefore calls [sanitize] before each of those two `super`
  * calls: `size()` unparcels the whole bundle, and a bundle that throws is replaced with none at all. The first failure
  * is final: a bundle that failed keeps a partial map and does not throw again, so it is never probed again or trusted.
- * On API 33+ values unparcel one at a time; the probe stays for a malformed bundle.
+ * On API 33+ values unparcel one at a time, past this probe, which stays for a malformed bundle; so each reader of an
+ * extra guards its own read too ([IncomingDocuments], and `UsbSourceManager`'s device extra, #831 B9).
  *
  * A USB attachment's extras are framework Parcelables and read fine.
  */

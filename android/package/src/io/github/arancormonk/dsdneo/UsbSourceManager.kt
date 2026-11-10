@@ -1010,11 +1010,17 @@ object UsbSourceManager {
         DsdNative.nativeHostDiagnostic("usb: $text")
     }
 
+    // Any app can deliver a USB intent: the activity is exported, and so is the receiver below API 33. An extra it
+    // cannot unparcel throws here, on API 33+ past IntentExtras' probe, since values unparcel one at a time there; that
+    // is no device, never a crash of the running decoder (#831 B9).
     @Suppress("DEPRECATION")
-    private fun usbDeviceExtra(intent: Intent): UsbDevice? =
+    private fun usbDeviceExtra(intent: Intent): UsbDevice? = try {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
         } else {
             intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
         }
+    } catch (e: RuntimeException) {
+        null
+    }
 }

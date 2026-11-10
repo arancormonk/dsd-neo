@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package android.net
 
-// The text as written, with its scheme and its decoded authority read as android.net.Uri reads a hierarchical URI.
-class Uri private constructor(private val text: String) {
+// The text as written, with its scheme and its decoded authority read as android.net.Uri reads a hierarchical URI. A Uri
+// another app parcelled can carry parts that are not what its text parses to (unparcelled, so that one reports
+// [partAuthority]); parsing its text again gives the consistent one.
+class Uri private constructor(private val text: String, private val partAuthority: String? = null) {
     val scheme: String?
         get() {
             val colon = text.indexOf(':')
@@ -15,6 +17,7 @@ class Uri private constructor(private val text: String) {
 
     val authority: String?
         get() {
+            if (partAuthority != null) return partAuthority
             val rest = scheme?.let { text.substring(it.length + 1) } ?: text
             if (!rest.startsWith("//")) return null
             val end = rest.indexOfAny(charArrayOf('/', '?', '#'), 2).let { if (it < 0) rest.length else it }
@@ -28,6 +31,9 @@ class Uri private constructor(private val text: String) {
     companion object {
         @JvmStatic
         fun parse(uriString: String): Uri = Uri(uriString)
+
+        /** As a Uri read from another app's parcel: [text] as its string, [authority] as its authority part. */
+        fun parcelled(text: String, authority: String): Uri = Uri(text, authority)
 
         private fun decode(encoded: String): String {
             val bytes = java.io.ByteArrayOutputStream()

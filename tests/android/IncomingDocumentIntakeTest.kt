@@ -155,19 +155,13 @@ private fun theRefusalLineNamesNoDocument() {
 }
 
 private fun aDeliveryIsFreshOnlyWhenNew() {
-    check(LaunchDelivery.LAUNCHED_FROM_HISTORY == 0x00100000) { "Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY" }
     // A cold launch, by the launcher or by a dongle plugged in: the first attachment still reports.
-    check(LaunchDelivery.fresh(saved = false, flags = 0))
-    val newTask = 0x10000000
-    val grantRead = 0x00000001
-    check(LaunchDelivery.fresh(saved = false, flags = newTask or grantRead)) { "other flags leave it fresh" }
+    check(LaunchDelivery.fresh(saved = false, fromHistory = false))
     // Recreated after process death, from Recents: the saved state says the intent was delivered before.
-    check(!LaunchDelivery.fresh(saved = true, flags = 0))
-    check(!LaunchDelivery.fresh(saved = true, flags = newTask))
+    check(!LaunchDelivery.fresh(saved = true, fromHistory = false))
     // An emptied task relaunched from Recents carries the history flag.
-    check(!LaunchDelivery.fresh(saved = false, flags = LaunchDelivery.LAUNCHED_FROM_HISTORY))
-    check(!LaunchDelivery.fresh(saved = false, flags = LaunchDelivery.LAUNCHED_FROM_HISTORY or newTask or grantRead))
-    check(!LaunchDelivery.fresh(saved = true, flags = LaunchDelivery.LAUNCHED_FROM_HISTORY))
+    check(!LaunchDelivery.fresh(saved = false, fromHistory = true))
+    check(!LaunchDelivery.fresh(saved = true, fromHistory = true))
 }
 
 fun main() {

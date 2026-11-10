@@ -15072,10 +15072,17 @@ stays as it is, with no cleanup fallback. The app prevents it and records what s
   before each of the two `super` calls (on `getIntent()` in `onCreate`): `extras?.size()` unparcels a copy, and a
   `RuntimeException` replaces the intent's extras with none (`replaceExtras(null)`) and records `launch extras dropped:
   <exception class>`. The first failure is final: a bundle that failed keeps a partial map and never throws again, so
-  it is not probed again or trusted. The rule itself is `sanitize(probe, clear, log)`.
+  it is not probed again or trusted. The rule itself is `sanitize(probe, clear, log)`. On API 33+ values unparcel
+  one at a time, past that probe, so each reader of an extra guards its own read (`IncomingDocuments`, and B9 below).
+- USB extra read (#831 B9). Any app can send the exported activity (and, below API 33, the exported receiver) a USB
+  intent whose `EXTRA_DEVICE` no class loader knows; on API 33+ the typed getter then throws
+  `BadParcelableException`, which crashed the running decoder from `onCreate`, `onNewIntent` or the receiver.
+  `UsbSourceManager.usbDeviceExtra()` now reads it inside a `RuntimeException` catch, and an unreadable extra is no
+  device: an attach reports nothing, and a detach is one with no device extra, which (the existing rule) counts as the
+  connected receiver's. Test: `ANDROID_USB_BROKER_JVM` cases `unreadable_device_extra_30`/`_33`/`_36`.
 - Replay guard (#831 B1). A relaunch from Recents re-delivers the intent the task started with: after process death
   with the saved state, for an emptied task with `FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY`. `LaunchDelivery.fresh(saved,
-  flags)` (plain Kotlin) is true only with neither, and `onCreate` reports its launch intent to
+  fromHistory)` (plain Kotlin) is true only with neither, and `onCreate` reports its launch intent to
   `UsbSourceManager.reportAttachment()` and `IncomingDocuments.report()` only when fresh, after
   `initializeAttachments()`; a cold launch is fresh, so the attachment that starts the app still reports. Before this,
   the USB report was unconditional, and a Recents relaunch attached the dongle again. `onNewIntent` is always a new

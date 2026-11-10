@@ -1756,11 +1756,12 @@ module behind it, so androiddeployqt has nothing extra to package.
 - **One instance closes pickers and permission prompts.** Because of `singleTask`, a
   USB attachment, a file another app opens with or shares to DSD-neo, a tap on the
   launcher icon and a tap on the decoding notification all bring the running app
-  forward, and each closes a file picker or a permission prompt open over it. The flow that opened it ends as if cancelled, quietly: a CSV
-  import, backup, replay recording or call recording picker ends with no error, and an interrupted location
-  prompt returns the site chooser to its idle text, with nothing reported as
-  denied; Android asks again on the next tap. Share sheets open in their own task
-  and are not affected.
+  forward, and each closes a file picker or a permission prompt open over it. The
+  flow that opened it ends as if cancelled, quietly: a CSV import, backup, replay
+  recording or call recording picker ends with no error, and an interrupted location
+  prompt returns the site chooser to its idle text, with nothing reported as denied;
+  Android asks again on the next tap. Share sheets open in their own task and are
+  not affected.
 
 ## Diagnostics
 
