@@ -98,6 +98,10 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         runtime/test_runtime_freq_parse.c
         runtime/test_runtime_number_text.c
         runtime/test_runtime_squelch.c
+        test_support/p56.c
+        test_support/speech_synth.c
+        test_support/test_p56.c
+        test_support/test_speech_synth.c
         ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
         ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/input_level.c
@@ -136,6 +140,10 @@ elseif(MSVC)
         runtime/test_runtime_freq_parse.c
         runtime/test_runtime_number_text.c
         runtime/test_runtime_squelch.c
+        test_support/p56.c
+        test_support/speech_synth.c
+        test_support/test_p56.c
+        test_support/test_speech_synth.c
         ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
         ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/input_level.c
@@ -384,6 +392,40 @@ target_include_directories(
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${_PUBLIC_INCLUDES}
 )
 target_link_libraries(dsd-neo_test_p25_shims PUBLIC dsd-neo_proto_p25)
+
+# Voice level test material: the P.56 active speech level meter and the deterministic speech-like and non-speech
+# generators (test_support/p56.h, test_support/speech_synth.h), with tests of their own.
+add_library(
+    dsd-neo_test_speech_level
+    STATIC
+    test_support/p56.c
+    test_support/speech_synth.c
+)
+target_include_directories(
+    dsd-neo_test_speech_level
+    PUBLIC ${PROJECT_SOURCE_DIR}/tests/test_support
+)
+target_link_libraries(dsd-neo_test_speech_level PUBLIC ${DSD_NEO_TEST_MATH_LIB})
+
+add_executable(dsd-neo_test_test_support_p56 test_support/test_p56.c)
+target_link_libraries(
+    dsd-neo_test_test_support_p56
+    PRIVATE dsd-neo_test_speech_level
+)
+add_test(NAME TEST_SUPPORT_P56 COMMAND dsd-neo_test_test_support_p56)
+
+add_executable(
+    dsd-neo_test_test_support_speech_synth
+    test_support/test_speech_synth.c
+)
+target_link_libraries(
+    dsd-neo_test_test_support_speech_synth
+    PRIVATE dsd-neo_test_speech_level
+)
+add_test(
+    NAME TEST_SUPPORT_SPEECH_SYNTH
+    COMMAND dsd-neo_test_test_support_speech_synth
+)
 
 if(DSD_ENABLE_FUZZING)
     add_subdirectory(fuzz)
