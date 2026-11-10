@@ -646,6 +646,50 @@ Item {
             compare(answers(picker), 2, "one answer per open");
         }
 
+        // Back out of the picker "Choose with another app" opened: the user
+        // returns to the browser, not to the start of the import or restore.
+        function test_other_app_back_returns_to_the_browser() {
+            var picker = makeBrowsingPicker();
+            picker.open();
+            Ui.FileBrowser.otherApp(browseToken());
+            var id = testContext.lastDocumentRequest().id;
+            testContext.answerDocumentCancelled(id);
+            compare(spiesOf(picker).rejected.count, 0, "backing out ends nothing");
+            var request = Ui.FileBrowser.request;
+            verify(request !== null, "the browser shows again");
+            compare(request.kind, "csv");
+            compare(request.title, "Choose a CSV file");
+            compare(request.allowOtherApp, true, "with another app still on offer");
+            verify(picker.visible);
+            compare(answers(picker), 0);
+            testContext.answerDocumentCancelled(id);
+            compare(answers(picker), 0, "a late repeat of that cancel is dropped");
+
+            // Round again, and this time the other app picks.
+            Ui.FileBrowser.otherApp(browseToken());
+            testContext.answerDocumentPicked(testContext.lastDocumentRequest().id, mixedCaseReference, "a b.csv", false);
+            compare(spiesOf(picker).accepted.count, 1);
+            compare(Ui.FileBrowser.request, null);
+            compare(answers(picker), 1, "one answer for the open");
+
+            // Android's picker opened the usual way (the toggle off): Back
+            // there still ends the pick.
+            var plain = makeBrowsingPicker({}, false);
+            plain.open();
+            testContext.answerDocumentCancelled(testContext.lastDocumentRequest().id);
+            compare(spiesOf(plain).rejected.count, 1);
+            compare(Ui.FileBrowser.request, null, "no browser for a pick that never came from it");
+
+            // The browser backed out of after the return ends the pick once.
+            testContext.setPrefs("chooseFilesInApp", true);
+            picker.open();
+            Ui.FileBrowser.otherApp(browseToken());
+            testContext.answerDocumentCancelled(testContext.lastDocumentRequest().id);
+            Ui.FileBrowser.reject(browseToken());
+            compare(spiesOf(picker).rejected.count, 1);
+            compare(answers(picker), 2);
+        }
+
         function test_host_request_unaffected_by_browser() {
             var host = makeBrowsingPicker({browseKind: ""});
             var browsing = makeBrowsingPicker();

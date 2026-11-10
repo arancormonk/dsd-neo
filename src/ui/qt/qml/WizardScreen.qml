@@ -37,13 +37,17 @@ Item {
         // editingFinished, and an emptied gain index never does).
         return JSON.stringify([sourceType, airspySettings, wizardAirspy.pendingText(), hostText, portText, fileText, freqText, decodeFlag, trunking, gainText, ppmText, hangtimeText, bwText, biasTee, extraText, nameText, chanCsvPath, groupCsvPath, keyCsvPath, keyCsvHex, encKeyType, encForceKey, p25BandplanCsvPath, srcCsvPath, decryptionProfileUid]);
     }
+    // Whether leaving now would lose something typed or picked.
+    function hasUnsavedDraft() {
+        return initialDraft !== draftFingerprint() || encKeyValue.length > 0;
+    }
     function requestBack() {
         Navigation.clearInput(wizard.Window.window);
         if (step > 0) {
             step--;
             return;
         }
-        if (initialDraft !== draftFingerprint() || encKeyValue.length > 0)
+        if (hasUnsavedDraft())
             discardDialog.ask(function () {
                 wizard.closed();
             });

@@ -214,6 +214,11 @@ PlexFlickable {
                         text: qsTr("Turning All files access off later closes DSD-neo (Android does that).")
                     }
                     FileBrowserLine {
+                        objectName: "fileBrowserAccessDenied"
+                        visible: d.accessDenied
+                        text: qsTr("Access was not allowed. Allow access asks again.")
+                    }
+                    FileBrowserLine {
                         objectName: "fileBrowserAccessBlocked"
                         problem: true
                         visible: d.accessBlocked

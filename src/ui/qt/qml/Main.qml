@@ -2627,6 +2627,13 @@ Window {
         objectName: "fileBrowserScreen"
         z: 30
         anchors.fill: safeArea
+        // A system being added or edited (a replay file or a CSV import
+        // browses from it) is lost with the close.
+        unsavedDraft: function () {
+            if (!mainRoot.wizardOpen || !wizard.hasUnsavedDraft())
+                return "";
+            return wizard.editRow >= 0 ? "edit" : "add";
+        }
         onCloseConfirmed: {
             mainRoot.dropPendingStarts();
             restartCloser.begin();

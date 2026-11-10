@@ -25,6 +25,11 @@ Item {
 
     /** The user confirmed closing DSD-neo so a drive opens after the restart; Main runs the close. */
     signal closeConfirmed
+    // What closing DSD-neo would drop besides the pick: "add" or "edit" while
+    // the system editor holds changes not yet saved, else "". Main says.
+    property var unsavedDraft: function () {
+        return "";
+    }
 
     readonly property var request: FileBrowser.request
     readonly property bool shown: request !== null
@@ -45,6 +50,9 @@ Item {
     readonly property var entries: d.entries
     readonly property string notice: d.notice
     readonly property bool reading: d.readingShown && (d.view === "roots" ? d.rootsId !== 0 : d.listingId !== 0)
+    // A file tapped and being checked, from the tap until its answer (a
+    // retry included); further taps on files wait for it.
+    readonly property bool opening: d.opening !== null
     readonly property var access: decoderHost.fileAccess || ({})
     readonly property string crumbLine: crumbs().map(function (crumb) {
         return crumb.title;
@@ -72,7 +80,7 @@ Item {
     readonly property bool adbOffered: settingsRoute && access.declared === true && access.apiLevel >= 30
     readonly property string adbAccessLine: "adb shell appops set --uid io.github.arancormonk.dsdneo MANAGE_EXTERNAL_STORAGE allow"
 
-    readonly property bool inboxFolderEmpty: d.view === "folder" && d.root !== null && d.root.kind === "inbox" && d.path === d.root.path && d.folderStatus === "ok" && d.entries.length === 0 && (d.hiddenByFilter === 0 || d.showAll)
+    readonly property bool inboxFolderEmpty: d.view === "folder" && d.root !== null && d.root.kind === "inbox" && d.path === d.root.path && d.folderStatus === "ok" && d.entries.length === 0 && (d.hiddenByFilter === 0 || d.showAll) && d.hiddenByName === 0
     // An empty inbox's help: its path, and the adb line that copies a file there.
     readonly property var inboxLines: d.root ? [d.root.path, "adb push FILE " + d.root.path + "/"] : []
     readonly property string stateText: folderStateText()
@@ -146,6 +154,8 @@ Item {
         d.listingId = 0;
         d.pageId = 0;
         d.handoffId = 0;
+        d.opening = null;
+        d.handoffRetried = false;
         d.accessId = 0;
         d.view = "roots";
         d.roots = [];
@@ -156,10 +166,13 @@ Item {
         d.folderStatus = "";
         d.pageProblem = "";
         d.notice = "";
+        d.removedKey = "";
+        d.removedSeenGone = false;
         d.showAll = false;
         d.accessAwaitingReturn = false;
         d.accessHelp = false;
         d.accessBlocked = false;
+        d.accessDenied = false;
         d.closeKey = "";
         d.closeProblem = "";
         d.copied = "";
@@ -231,6 +244,7 @@ Item {
         d.listingId = 0;
         d.pageId = 0;
         d.handoffId = 0;
+        d.opening = null;
     }
     // The locations, asked for again on every return to them: that is the
     // browser's refresh, so a drive plugged in or a grant given shows up.
@@ -243,8 +257,19 @@ Item {
         d.folderStatus = "";
         d.pageProblem = "";
         d.notice = "";
+        d.removedKey = "";
         d.focusFirst = true;
         requestRoots(false);
+    }
+    // Back at the locations because drive @p key went away, which they say
+    // until a list of them has that drive again. @p seenGone: the locations
+    // just read already lack it (a folder read can fail before Android
+    // reports the drive gone, and that drive is not back).
+    function showDriveRemoved(key, seenGone) {
+        showRoots();
+        d.removedKey = key;
+        d.removedSeenGone = seenGone;
+        setNotice(qsTr("The drive was removed."));
     }
     // @p behind: a check of the locations under an open folder, after the
     // device's drives changed, which shows nothing while it runs.
@@ -282,6 +307,7 @@ Item {
         d.more = false;
         d.snapshot = 0;
         d.hiddenByFilter = 0;
+        d.hiddenByName = 0;
         d.listingId = decoderHost.requestFolderListing(d.session, d.root.key, d.generation, d.path, {
             kind: request.kind,
             showAll: d.showAll
@@ -300,13 +326,22 @@ Item {
             openFolder(d.root, entry.path);
             return;
         }
-        if (d.handoffId !== 0)
-            decoderHost.cancelFileRequest(d.handoffId);
+        // A tap again (a slow drive) would only start the check over and
+        // tie up another reader: the first one is still going.
+        if (d.opening !== null)
+            return;
         d.notice = "";
-        d.handoffId = decoderHost.requestFileHandoff(d.session, d.root.key, d.generation, entry.reference);
+        d.opening = entry;
+        d.handoffRetried = false;
+        requestHandoff();
+        startReading();
+    }
+    function requestHandoff() {
+        d.handoffId = decoderHost.requestFileHandoff(d.session, d.root.key, d.generation, d.opening.reference);
     }
     function askAccess() {
         d.accessBlocked = false;
+        d.accessDenied = false;
         d.accessId = decoderHost.requestFileAccess(d.session);
     }
     function copy(text) {
@@ -338,6 +373,8 @@ Item {
             if (!behind) {
                 d.rootsStatus = result.status;
                 Navigation.announce(screen, locations.problemLine, problemText(result.status));
+            } else if (handoffWaiting()) {
+                endOpening(problemText(result.status));
             }
             return;
         }
@@ -346,9 +383,27 @@ Item {
         d.rootsStatus = "";
         if (behind) {
             folderRootChecked();
+            if (handoffWaiting())
+                requestHandoff();
             return;
         }
+        removedDriveBack();
         Qt.callLater(focusFirstRow);
+    }
+    // The removed drive is listed again (put back, or mounted again): its
+    // notice no longer holds.
+    function removedDriveBack() {
+        if (d.removedKey.length === 0)
+            return;
+        var listed = d.roots.some(function (root) {
+            return root.key === d.removedKey && root.state !== "removed";
+        });
+        if (!listed) {
+            d.removedSeenGone = true;
+        } else if (d.removedSeenGone) {
+            d.removedKey = "";
+            d.notice = "";
+        }
     }
     // The drives changed under an open folder: it stays open while its
     // location is still there, else the locations show and say why.
@@ -361,10 +416,10 @@ Item {
                 return;
             }
         }
-        var removable = d.root.kind === "removable";
-        showRoots();
-        if (removable)
-            setNotice(qsTr("The drive was removed."));
+        if (d.root.kind === "removable")
+            showDriveRemoved(d.root.key, true);
+        else
+            showRoots();
     }
     function listingAnswered(result) {
         d.listingId = 0;
@@ -377,8 +432,7 @@ Item {
             return;
         }
         if (status === "gone" && d.root.kind === "removable") {
-            showRoots();
-            setNotice(qsTr("The drive was removed."));
+            showDriveRemoved(d.root.key, false);
             return;
         }
         if (status === "ok") {
@@ -386,6 +440,7 @@ Item {
             d.snapshot = result.snapshot || 0;
             d.more = result.more === true;
             d.hiddenByFilter = result.hiddenByFilter || 0;
+            d.hiddenByName = result.hiddenByName || 0;
         }
         d.folderStatus = status;
         if (screen.stateIsProblem)
@@ -394,7 +449,9 @@ Item {
     }
     function pageAnswered(result) {
         d.pageId = 0;
-        readingDelay.stop();
+        // A file tapped meanwhile still gets its line.
+        if (d.opening === null)
+            readingDelay.stop();
         var status = result.status;
         if (status === "cancelled")
             return;
@@ -416,25 +473,50 @@ Item {
     function handoffAnswered(result) {
         d.handoffId = 0;
         if (result.ok === true) {
+            d.opening = null;
             FileBrowser.finish(d.token, result.reference, result.name);
             return;
         }
         var reason = result.reason || "";
-        if (reason === "cancelled")
+        if (reason === "cancelled") {
+            d.opening = null;
             return;
+        }
+        // The device's drives changed between the listing and the tap (a
+        // drive plugged in): the file is most likely fine. The locations are
+        // read again behind the open folder and the check asked once more
+        // (rootsAnswered); only a second stale answer says so.
+        if (reason === "stale" && !d.handoffRetried) {
+            d.handoffRetried = true;
+            requestRoots(true);
+            return;
+        }
         if (reason === "stale")
             showRoots();
-        setNotice(reason === "busy" || reason === "failed" || reason === "timedOut" ? problemText(reason) : qsTr("DSD-neo can't open that file. Pick another one."));
+        endOpening(reason === "busy" || reason === "failed" || reason === "timedOut" ? problemText(reason) : qsTr("DSD-neo can't open that file. Pick another one."));
+    }
+    // The tapped file waits for the locations to be read again before its
+    // second check.
+    function handoffWaiting() {
+        return d.opening !== null && d.handoffId === 0 && d.view === "folder";
+    }
+    function endOpening(problem) {
+        d.opening = null;
+        setNotice(problem);
     }
     function accessAnswered(outcome) {
         d.accessId = 0;
         if (outcome === "settingsOpened") {
             d.accessAwaitingReturn = true;
-        } else if (outcome === "noRoute" || outcome === "failed" || outcome === "denied") {
+        } else if (outcome === "denied") {
+            // Android 10, "Don't allow" once: the dialog can still show, so
+            // Allow access is the way to ask again, not App info.
+            if (!screen.settingsRoute)
+                d.accessDenied = true;
+        } else if (outcome === "noRoute" || outcome === "failed") {
             // Android 11 and later: the computer route. Android 10: App info,
-            // the one place left to allow it once the dialog is refused or
-            // cannot show.
-            if (screen.adbOffered && outcome !== "denied")
+            // the one place left to allow it once the dialog cannot show.
+            if (screen.adbOffered)
                 d.accessHelp = true;
             else if (!screen.settingsRoute)
                 d.accessBlocked = true;
@@ -502,6 +584,9 @@ Item {
             return count === 1 ? qsTr("No replay files here. Show all files lists the other item.") : qsTr("No replay files here. Show all files lists the other %1 items.").arg(count);
         return count === 1 ? qsTr("No CSV files here. Show all files lists the other item.") : qsTr("No CSV files here. Show all files lists the other %1 items.").arg(count);
     }
+    function hiddenByNameText(count) {
+        return count === 1 ? qsTr("1 item here isn't listed because DSD-neo can't read its name. Rename it on a computer to see it.") : qsTr("%1 items here aren't listed because DSD-neo can't read their names. Rename them on a computer to see them.").arg(count);
+    }
     function folderStateText() {
         if (d.view !== "folder")
             return "";
@@ -511,6 +596,9 @@ Item {
                 return "";
             if (d.hiddenByFilter > 0 && !d.showAll)
                 return filteredText(d.hiddenByFilter);
+            // The line about the names it cannot read says why it is empty.
+            if (d.hiddenByName > 0)
+                return "";
             if (d.root.kind === "saved")
                 return qsTr("Nothing saved here by this install of DSD-neo.");
             return qsTr("This folder is empty.");
@@ -597,6 +685,53 @@ Item {
         }
     }
 
+    // The browser stays the top modal while it shows. A sheet drawn under it
+    // (an owner's, one that opened on its own) must not take the top: every
+    // control here would then fail Navigation.allows() and Back would go to
+    // that hidden sheet, so the browser would look frozen. It waits under the
+    // browser and is on top once the pick ends. A sheet drawn above the
+    // browser (a Main-level ModalSheet, z 100 and up) is what the user sees,
+    // so it keeps the top until it closes.
+    function keepOnTop() {
+        var top = Navigation.topModal;
+        if (d.token === 0 || !top || top === screen || Navigation.contains(screen, top) || drawnAbove(top))
+            return;
+        Navigation.addModal(screen);
+        // The sheet gave itself the focus as it opened.
+        var window = screen.Window.window;
+        if (window && !Navigation.contains(screen, window.activeFocusItem))
+            screen.forceActiveFocus();
+    }
+    // Whether @p item is drawn above this screen: where their parent chains
+    // meet, the branch with the higher z, or at the same z the later child.
+    function drawnAbove(item) {
+        var mine = [];
+        for (var node = screen; node; node = node.parent)
+            mine.push(node);
+        var branch = item;
+        for (var above = item.parent; above; above = above.parent) {
+            var at = mine.indexOf(above);
+            if (at > 0) {
+                var ours = mine[at - 1];
+                if (branch.z !== ours.z)
+                    return branch.z > ours.z;
+                return above.children.indexOf(branch) > above.children.indexOf(ours);
+            }
+            if (at === 0)
+                return true;
+            branch = above;
+        }
+        return false;
+    }
+    Connections {
+        target: Navigation
+        // Later, not inside the change: the stack cannot be written again
+        // while its top is being told, and the sheet's opening finishes first.
+        function onTopModalChanged() {
+            Qt.callLater(screen.keepOnTop);
+        }
+    }
+
     Connections {
         target: decoderHost
         function onFileRootsListed(id, result) {
@@ -648,6 +783,13 @@ Item {
             lines.push(qsTr("Listening stops."));
         if (request && request.kind === "csv")
             lines.push(qsTr("This import is dropped."));
+        else if (request && request.kind === "backup")
+            lines.push(qsTr("This restore is dropped."));
+        var draft = unsavedDraft();
+        if (draft === "add")
+            lines.push(qsTr("The system you're adding is dropped."));
+        else if (draft === "edit")
+            lines.push(qsTr("Your changes to this system are dropped."));
         if (backup.restorePending === true)
             lines.push(qsTr("Your backup is restored when DSD-neo opens again."));
         lines.push(qsTr("Then open DSD-neo again."));
@@ -693,6 +835,8 @@ Item {
         property double snapshot: 0
         property bool more: false
         property int hiddenByFilter: 0
+        // Items left out because their names are not text DSD-neo can read.
+        property int hiddenByName: 0
         // The open folder's listing status; "" while it is read.
         property string folderStatus: ""
         property string pageProblem: ""
@@ -703,15 +847,24 @@ Item {
         property double pageId: 0
         property double handoffId: 0
         property double accessId: 0
+        // The file being checked (null for none), and whether its check was
+        // already asked again after a stale answer.
+        property var opening: null
+        property bool handoffRetried: false
         property bool checkingBehind: false
         property bool refreshingAccess: false
         property var seenAccess: ({})
         property bool readingShown: false
         property bool focusFirst: false
         property string notice: ""
+        // The removed drive the notice is about, "" for none, and whether a
+        // list of the locations has been read without it since.
+        property string removedKey: ""
+        property bool removedSeenGone: false
         property bool accessAwaitingReturn: false
         property bool accessHelp: false
         property bool accessBlocked: false
+        property bool accessDenied: false
         // The drive whose Close DSD-neo was pressed, and why it did not close.
         property string closeKey: ""
         property string closeProblem: ""
@@ -722,7 +875,7 @@ Item {
     Timer {
         id: readingDelay
         interval: 250
-        onTriggered: d.readingShown = d.rootsId !== 0 || d.listingId !== 0 || d.pageId !== 0
+        onTriggered: d.readingShown = d.rootsId !== 0 || d.listingId !== 0 || d.pageId !== 0 || d.opening !== null
     }
     Timer {
         id: copiedTimer
@@ -898,6 +1051,20 @@ Item {
             width: screen.contentWidth
             visible: screen.reading
             text: qsTr("Reading folder…")
+        }
+        FileBrowserLine {
+            objectName: "fileBrowserOpening"
+            x: (parent.width - width) / 2
+            width: screen.contentWidth
+            visible: d.readingShown && screen.opening
+            text: d.opening ? qsTr("Opening %1…").arg(d.opening.name) : ""
+        }
+        FileBrowserLine {
+            objectName: "fileBrowserHiddenByName"
+            x: (parent.width - width) / 2
+            width: screen.contentWidth
+            visible: d.view === "folder" && d.folderStatus === "ok" && d.hiddenByName > 0
+            text: visible ? hiddenByNameText(d.hiddenByName) : ""
         }
     }
 

@@ -344,6 +344,28 @@ Item {
             answerRoots([rootRecord("inbox")], 8);
             compare(screen.view, "roots", "the drive is gone");
             compare(item("fileBrowserNotice").text, "The drive was removed.");
+            answerRoots([rootRecord("inbox")], 8);
+            verify(item("fileBrowserNotice").visible, "a list of the places without the drive keeps the notice");
+
+            // Put back (mounted again): the next list of the places has it,
+            // and the notice no longer holds.
+            testContext.setFileAccess(access({granted: true, rootsGeneration: 3}));
+            answerRoots([rootRecord("inbox"), rootRecord("removable:1", {title: "SanDisk"})], 9);
+            verify(!item("fileBrowserNotice").visible, "the drive is back: the notice clears");
+            compare(screen.notice, "");
+
+            // A folder read can fail before Android reports the drive gone:
+            // a list that still has it then is not the drive coming back.
+            openRoot("removable:1");
+            answerStatus("gone");
+            answerRoots([rootRecord("inbox"), rootRecord("removable:1", {title: "SanDisk"})], 9);
+            compare(item("fileBrowserNotice").text, "The drive was removed.", "the drive was never seen gone");
+            testContext.setFileAccess(access({granted: true, rootsGeneration: 4}));
+            answerRoots([rootRecord("inbox")], 10);
+            verify(item("fileBrowserNotice").visible);
+            testContext.setFileAccess(access({granted: true, rootsGeneration: 5}));
+            answerRoots([rootRecord("inbox"), rootRecord("removable:1", {title: "SanDisk"})], 11);
+            verify(!item("fileBrowserNotice").visible, "gone, then back: the notice clears");
         }
 
         function test_show_all_and_more() {
@@ -605,6 +627,130 @@ Item {
             compare(last("closeFileBrowserSession").session, s, "an accepted pick closes its session");
         }
 
+        // A slow drive: the tap says it is opening the file, and taps on
+        // files wait for its answer; a problem answer ends it with its line.
+        function test_handoff_opening_line_data() {
+            return [
+                {tag: "timedOut", reason: "timedOut", text: "DSD-neo could not read this in time. Try again."},
+                {tag: "busy", reason: "busy", text: "The storage is not answering. Try again in a moment."}
+            ];
+        }
+        function test_handoff_opening_line(data) {
+            openAtRoots();
+            openRoot("storage");
+            answerListing([entry(storagePath, "dmr.csv", false, 10, 0), entry(storagePath, "b.csv", false, 10, 0)]);
+            waitForRendering(screen);
+            var line = item("fileBrowserOpening");
+            entryRow(storagePath + "/dmr.csv").activate();
+            var handoff = last("requestFileHandoff");
+            verify(screen.opening, "the file is being opened");
+            wait(300);
+            verify(line.visible, "a hand-off that takes a moment says so");
+            compare(line.text, "Opening dmr.csv…");
+            verify(!item("fileBrowserReading").visible, "not as a folder read");
+
+            var cancels = callsNamed("cancelFileRequest").length;
+            entryRow(storagePath + "/dmr.csv").activate();
+            entryRow(storagePath + "/b.csv").activate();
+            compare(callsNamed("requestFileHandoff").length, 1, "taps on files while it runs ask nothing");
+            compare(callsNamed("cancelFileRequest").length, cancels, "and cancel nothing");
+            compare(last("requestFileHandoff").id, handoff.id);
+
+            testContext.answerFileHandoff(handoff.id, {ok: false, reference: "", name: "", reason: data.reason});
+            verify(!line.visible, "the answer ends it");
+            verify(!screen.opening);
+            compare(item("fileBrowserNotice").text, data.text, "with its own line");
+            entryRow(storagePath + "/b.csv").activate();
+            compare(callsNamed("requestFileHandoff").length, 2, "a tap after it asks again");
+            compare(last("requestFileHandoff").reference, "file://" + storagePath + "/b.csv");
+
+            // Leaving the folder gives the check up, line and all.
+            back();
+            verify(!screen.opening);
+            verify(!line.visible);
+        }
+
+        // The device's drives changed between the listing and the tap (a
+        // drive plugged in): the places are read again and the file is
+        // checked once more, quietly; a second stale answer says so.
+        function test_handoff_stale_retries_once() {
+            var token = openAtRoots();
+            var picked = spy(Ui.FileBrowser, "picked");
+            openRoot("storage");
+            answerListing([entry(storagePath, "dmr.csv", false, 10, 0)]);
+            waitForRendering(screen);
+            entryRow(storagePath + "/dmr.csv").activate();
+            var roots = callsNamed("requestFileRoots").length;
+            testContext.answerFileHandoff(last("requestFileHandoff").id, {ok: false, reference: "", name: "", reason: "stale"});
+            compare(screen.view, "folder", "the folder stays");
+            compare(screen.notice, "", "nothing is said yet");
+            verify(screen.opening, "the file is still being opened");
+            compare(callsNamed("requestFileRoots").length, roots + 1, "the places are read again");
+            compare(callsNamed("requestFileHandoff").length, 1, "the check waits for them");
+            testContext.answerFileRoots(last("requestFileRoots").id, {status: "ok", generation: 9, roots: standardRoots()});
+            compare(screen.view, "folder");
+            compare(callsNamed("requestFileHandoff").length, 2, "then the file is checked again");
+            var again = last("requestFileHandoff");
+            compare(again.generation, 9, "on the new generation");
+            compare(again.reference, "file://" + storagePath + "/dmr.csv", "the same file");
+            testContext.answerFileHandoff(again.id, {ok: true, reference: again.reference, name: "dmr.csv", reason: ""});
+            compare(picked.count, 1, "and picked");
+            compare(picked.signalArguments[0][0], token);
+
+            // Stale twice: once is a retry, the second is said.
+            open();
+            answerRoots(standardRoots());
+            waitForRendering(screen);
+            openRoot("storage");
+            answerListing([entry(storagePath, "dmr.csv", false, 10, 0)]);
+            waitForRendering(screen);
+            entryRow(storagePath + "/dmr.csv").activate();
+            testContext.answerFileHandoff(last("requestFileHandoff").id, {ok: false, reference: "", name: "", reason: "stale"});
+            testContext.answerFileRoots(last("requestFileRoots").id, {status: "ok", generation: 10, roots: standardRoots()});
+            testContext.answerFileHandoff(last("requestFileHandoff").id, {ok: false, reference: "", name: "", reason: "stale"});
+            compare(screen.view, "roots", "the second stale answer goes back to the places");
+            compare(item("fileBrowserNotice").text, "DSD-neo can't open that file. Pick another one.");
+            verify(!screen.opening);
+
+            // The places cannot be read for the retry: that problem is said.
+            answerRoots(standardRoots(), 10);
+            openRoot("storage");
+            answerListing([entry(storagePath, "dmr.csv", false, 10, 0)]);
+            waitForRendering(screen);
+            entryRow(storagePath + "/dmr.csv").activate();
+            testContext.answerFileHandoff(last("requestFileHandoff").id, {ok: false, reference: "", name: "", reason: "stale"});
+            var handoffs = callsNamed("requestFileHandoff").length;
+            testContext.answerFileRoots(last("requestFileRoots").id, {status: "timedOut"});
+            compare(callsNamed("requestFileHandoff").length, handoffs, "no check without the places");
+            compare(item("fileBrowserNotice").text, "DSD-neo could not read this in time. Try again.");
+            verify(!screen.opening);
+            compare(screen.view, "folder");
+        }
+
+        // A name that is not valid UTF-8 is never listed; the folder says how
+        // many it left out.
+        function test_names_it_cannot_read() {
+            openAtRoots();
+            openRoot("storage");
+            answerListing([entry(storagePath, "a.csv", false, 1, 0)], {hiddenByName: 1});
+            var line = item("fileBrowserHiddenByName");
+            verify(line.visible);
+            compare(line.text, "1 item here isn't listed because DSD-neo can't read its name. Rename it on a computer to see it.");
+            item("fileBrowserShowAll").activate();
+            verify(!line.visible, "not while the folder is read");
+            answerListing([], {hiddenByName: 2});
+            compare(line.text, "2 items here aren't listed because DSD-neo can't read their names. Rename them on a computer to see them.");
+            verify(!item("fileBrowserState").visible, "the line says why the folder shows nothing");
+            back();
+            answerRoots(standardRoots());
+            openRoot("inbox");
+            answerListing([], {hiddenByName: 1});
+            verify(!item("fileBrowserInboxHelp").visible, "an inbox holding such a file is not empty");
+            verify(item("fileBrowserHiddenByName").visible);
+            back();
+            verify(!item("fileBrowserHiddenByName").visible, "only in the folder it is about");
+        }
+
         function test_access_rows() {
             openAtRoots([rootRecord("inbox"), rootRecord("saved"), rootRecord("storage", {state: "needsAccess"})]);
             verify(findChild(screen, "fileBrowserRoot:storage") === null || !findChild(screen, "fileBrowserRoot:storage").visible, "storage waits behind the access row");
@@ -664,14 +810,27 @@ Item {
             verify(!item("fileBrowserAccessHelp").visible, "no computer route on Android 10");
             verify(item("fileBrowserAccessBlocked").visible, "App info is the way left");
 
-            // A plain refusal of the dialog says the same.
+            item("fileBrowserAllowAccess").clicked();
+            testContext.answerFileAccess(last("requestFileAccess").id, "failed");
+            verify(item("fileBrowserAccessBlocked").visible, "a dialog that could not show points to App info too");
+
+            // "Don't allow" once: the dialog can show again, so Allow access
+            // is the way, not App info.
             Ui.FileBrowser.dismiss(Ui.FileBrowser.request.token);
             open();
             answerRoots([rootRecord("inbox"), rootRecord("storage", {state: "needsAccess"})]);
-            verify(!item("fileBrowserAccessBlocked").visible);
+            var denied = item("fileBrowserAccessDenied");
+            verify(!denied.visible);
             item("fileBrowserAllowAccess").clicked();
             testContext.answerFileAccess(last("requestFileAccess").id, "denied");
-            verify(item("fileBrowserAccessBlocked").visible, "a refused dialog points to App info");
+            verify(denied.visible, "a refused dialog says Allow access asks again");
+            compare(denied.text, "Access was not allowed. Allow access asks again.");
+            verify(!item("fileBrowserAccessBlocked").visible, "and does not send the user to App info");
+            item("fileBrowserAllowAccess").clicked();
+            verify(!denied.visible, "asking again clears it");
+            testContext.answerFileAccess(last("requestFileAccess").id, "blocked");
+            verify(item("fileBrowserAccessBlocked").visible, "refused for good: App info");
+            verify(!denied.visible);
 
             // A build without All files access has no access row on Android 11 and later.
             Ui.FileBrowser.dismiss(Ui.FileBrowser.request.token);
@@ -706,10 +865,14 @@ Item {
 
         function test_restart_row_data() {
             return [
-                {tag: "nothing ends", active: false, kind: "backup", pending: false, message: "Then open DSD-neo again."},
-                {tag: "listening", active: true, kind: "backup", pending: false, message: "Listening stops.\nThen open DSD-neo again."},
-                {tag: "everything", active: true, kind: "csv", pending: true, message: "Listening stops.\nThis import is dropped.\nYour backup is restored when DSD-neo opens again.\nThen open DSD-neo again."},
-                {tag: "import", active: false, kind: "csv", pending: false, message: "This import is dropped.\nThen open DSD-neo again."}
+                {tag: "nothing ends", active: false, kind: "replay", pending: false, message: "Then open DSD-neo again."},
+                {tag: "listening", active: true, kind: "replay", pending: false, message: "Listening stops.\nThen open DSD-neo again."},
+                {tag: "everything", active: true, kind: "csv", pending: true, draft: "add", message: "Listening stops.\nThis import is dropped.\nThe system you're adding is dropped.\nYour backup is restored when DSD-neo opens again.\nThen open DSD-neo again."},
+                {tag: "import", active: false, kind: "csv", pending: false, message: "This import is dropped.\nThen open DSD-neo again."},
+                {tag: "restore", active: false, kind: "backup", pending: false, message: "This restore is dropped.\nThen open DSD-neo again."},
+                {tag: "adding a system", active: false, kind: "replay", pending: false, draft: "add", message: "The system you're adding is dropped.\nThen open DSD-neo again."},
+                {tag: "editing a system", active: true, kind: "replay", pending: false, draft: "edit", message: "Listening stops.\nYour changes to this system are dropped.\nThen open DSD-neo again."},
+                {tag: "import into an edit", active: false, kind: "csv", pending: false, draft: "edit", message: "This import is dropped.\nYour changes to this system are dropped.\nThen open DSD-neo again."}
             ];
         }
         function test_restart_row(data) {
@@ -732,6 +895,9 @@ Item {
 
             testContext.setHostReading("sessionActive", data.active);
             testContext.setBackup("restorePending", data.pending);
+            screen.unsavedDraft = function () {
+                return data.draft || "";
+            };
             close.clicked();
             verify(dialog.visible, "the close asks first");
             compare(dialog.message, data.message, "and names what ends");
@@ -858,6 +1024,45 @@ Item {
 
             answerRoots([rootRecord("inbox"), rootRecord("removable:1", {state: "needsRestart"})]);
             waitForRendering(browser);
+
+            // A sheet drawn under the browser (an owner's) that opens while it
+            // shows waits under it: the browser keeps the top and the focus.
+            var closeRow = item("fileBrowserClose:removable:1", browser);
+            var ownerSheet = createTemporaryObject(sheetComponent, imports);
+            ownerSheet.open();
+            wait(0);
+            compare(Ui.Navigation.topModal, browser, "the browser stays the top modal over a sheet drawn under it");
+            verify(Ui.Navigation.modals.indexOf(ownerSheet) >= 0, "the sheet waits under it");
+            verify(Ui.Navigation.allows(closeRow), "the browser's controls still work");
+            verify(Ui.Navigation.contains(browser, browser.Window.window.activeFocusItem), "and keep the focus");
+            ownerSheet.visible = false;
+            compare(Ui.Navigation.topModal, browser);
+            // A Main-level sheet is drawn above the browser: it is what the
+            // user sees, so it takes the top until it closes.
+            var failureSheet = item("failureDetails", app);
+            verify(failureSheet.z > browser.z, "drawn above the browser");
+            failureSheet.open();
+            wait(0);
+            compare(Ui.Navigation.topModal, failureSheet, "a sheet drawn above keeps the top");
+            Ui.Navigation.back(browser.Window.window);
+            verify(!failureSheet.visible, "Back closes it");
+            compare(Ui.Navigation.topModal, browser, "and the browser has the top again");
+            verify(Ui.Navigation.allows(closeRow));
+
+            // What a close would drop: a draft the system editor holds.
+            var wizard = item("wizardScreen", app);
+            compare(browser.unsavedDraft(), "", "no draft while the editor is closed");
+            wizard.openForAdd(false);
+            app.wizardOpen = true;
+            compare(browser.unsavedDraft(), "", "a new system not changed yet loses nothing");
+            wizard.freqText = "852.0125";
+            compare(browser.unsavedDraft(), "add", "a new system with changes");
+            wizard.editRow = 0;
+            compare(browser.unsavedDraft(), "edit", "a saved system with changes");
+            wizard.editRow = -1;
+            app.wizardOpen = false;
+            compare(browser.unsavedDraft(), "");
+
             app.pendingStart = {sourceType: "usb"};
             var begins = testContext.closeBegins();
             item("fileBrowserClose:removable:1", browser).clicked();

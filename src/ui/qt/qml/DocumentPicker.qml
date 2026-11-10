@@ -14,8 +14,9 @@ import QtQuick.Dialogs
 // served by DSD-neo's own file browser instead (FileBrowser, one request
 // app-wide): first, where the host has the browser and the user chose it in
 // Settings, and whenever Android answers that it has no picker. The browser's
-// "Choose with another app" goes back to the host's picker. The browser's
-// answers count as this picker's own: still exactly one per open().
+// "Choose with another app" goes back to the host's picker, and backing out of
+// that picker returns to the browser. The browser's answers count as this
+// picker's own: still exactly one per open().
 //
 // The root is a QtObject, not an Item: Item's own `visible` is FINAL, and here
 // `visible` means "a request is waiting". The FileDialog is made by an
@@ -96,6 +97,9 @@ QtObject {
         property var abandoned: []
         // This picker's live FileBrowser request, 0 when none.
         property int browseToken: 0
+        // The host request "Choose with another app" made: Back out of that
+        // picker returns to the browser rather than ending the pick.
+        property real otherAppRequestId: 0
         // The request was superseded before FileBrowser.open() returned (the
         // owner it superseded opened again while being told): rejected() is
         // still to come, after open() returns.
@@ -260,7 +264,11 @@ QtObject {
                 picker.accepted(reference, displayName);
             }
             function onDocumentPickCancelled(requestId) {
-                if (d.settle(requestId))
+                if (!d.settle(requestId))
+                    return;
+                if (requestId === d.otherAppRequestId && d.canBrowse())
+                    d.openBrowser(true);
+                else
                     picker.rejected();
             }
             function onDocumentPickUnavailable(requestId, reason) {
@@ -290,8 +298,10 @@ QtObject {
             // "Choose with another app": the host's picker, whatever the
             // Settings toggle says, which is what the user just asked for.
             function onOtherAppRequested(token) {
-                if (d.settleBrowse(token))
-                    d.openPlatform();
+                if (!d.settleBrowse(token))
+                    return;
+                d.openPlatform();
+                d.otherAppRequestId = d.liveRequestId;
             }
         }
 

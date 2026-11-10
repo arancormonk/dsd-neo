@@ -14088,8 +14088,10 @@ Qt Quick frontend (`src/ui/qt`):
   waits when it hears `rejected`. While `FileBrowser.open()` tells the owner it superseded, that owner may act on the
   new picker: a picker whose browse is superseded then (the owner opened again) hears `rejected` once, after `open()`
   returns, and one closed, cancelled or reopened then keeps no request. "Choose with another app"
-  (`otherAppRequested`) asks the host's picker whatever the toggle says; a `noPicker` answer to it reopens the browser
-  without the action. Test: `UI_QT_QML_DOCUMENT_PICKER`.
+  (`otherAppRequested`) asks the host's picker whatever the toggle says, and keeps that request's id
+  (`d.otherAppRequestId`): a cancel of it (Back out of Android's picker) reopens the browser with the action, so the
+  pick goes on; a `noPicker` answer to it reopens the browser without the action, and a pick from it is accepted.
+  Test: `UI_QT_QML_DOCUMENT_PICKER`.
 - `qml/FileBrowserScreen.qml` (issue #830) serves the live `FileBrowser.request`; it owns every request and the browse
   state (`internals`), which its views read: `FileBrowserLocations.qml` (the places, access and restart rows, Choose
   with another app) and `FileBrowserFolder.qml` (a folder's rows, Show more, and its state, Try again and the inbox
@@ -14104,7 +14106,16 @@ Qt Quick frontend (`src/ui/qt`):
   (`closeFileBrowserSession()`), and every request names it. The screen waits for one id of each kind (roots, listing,
   page, hand-off, access) and drops any other answer; leaving a folder cancels its listing, page and hand-off. Every
   return to the locations calls `refreshFileAccess()` and `requestFileRoots()` again (the refresh); a roots answer's
-  `generation` goes with every listing and hand-off, and a `stale` listing lists the locations again. A locations
+  `generation` goes with every listing and hand-off, and a `stale` listing lists the locations again. A tapped file
+  is `d.opening` from the tap to its answer: "Opening <name>…" shows after the same 250 ms as the reading line, and
+  taps on files are ignored meanwhile (each would restart the check and hold another reader). A `stale` hand-off
+  (the drives changed between the listing and the tap) re-reads the locations behind the folder and asks the
+  hand-off once more on the new generation, silently; a second `stale` goes to the locations with the hand-off
+  failure line, and a failed re-read ends the hand-off with that problem's line. While the browser shows, a modal
+  that takes `Navigation.topModal` and is drawn under it (`drawnAbove()`: the higher `z`, else the later child,
+  where the parent chains meet) is put back under it (`keepOnTop()`, a `Qt.callLater` from `topModalChanged`, since
+  the stack cannot be rewritten inside its own change), and the browser takes the focus back; one drawn above it (a
+  Main-level `ModalSheet`, `z` 100 and up) keeps the top until it closes. A locations
   answer that lands after a folder was opened from the rows it was replacing only re-checks that folder's place (as a
   check behind it): it reports no problem and leaves the folder's reading line and focus alone. Locations: inbox,
   Saved, storage, then removable volumes (title the platform's description, else "Removable storage"), `StableRows`
@@ -14112,14 +14123,20 @@ Qt Quick frontend (`src/ui/qt`):
   granted and the route is `permission`, or `settings` in a build that declares it; `settingsOpened` followed by a
   return (a `fileAccess` change or the app becoming active) without the grant, `noRoute` and `failed` show the adb
   line with Copy on Android 11 and later (plus the App info step on 11 and 12), `blocked` (and on Android 10
-  `noRoute`, `denied` and `failed`) the App info line. A `fileAccess` change re-lists the locations, or, under an open
+  `noRoute` and `failed`) the App info line. On Android 10 a plain `denied` (the dialog can still show) says
+  "Access was not allowed. Allow access asks again." instead. A `fileAccess` change re-lists the locations, or, under an open
   folder, checks them behind it: a folder whose location is no longer `ready` goes back to the locations, saying
-  "The drive was removed." for a removable one (also on a `gone` listing there). A `needsRestart` drive offers Close
+  "The drive was removed." for a removable one (also on a `gone` listing there). That notice (`d.removedKey`) clears
+  when a locations answer lists the drive again after one that did not (a `gone` listing can come before Android
+  reports the drive gone, so a list that still has it then is not a return). A `needsRestart` drive offers Close
   DSD-neo: `restartCloser.refused()` shows the refusal line, else a `ConfirmDialog` lists what ends
-  (`decoderHost.sessionActive`, a `csv` request, `backup.restorePending`), and its confirm emits `closeConfirmed()`,
+  (`decoderHost.sessionActive`; a `csv` request's import or a `backup` request's restore; the system editor's
+  unsaved draft, which Main reports through `unsavedDraft()` as "add" or "edit" from `WizardScreen.hasUnsavedDraft()`
+  and `editRow`; `backup.restorePending`), and its confirm emits `closeConfirmed()`,
   which Main answers with `dropPendingStarts()` and `restartCloser.begin()`; "Closing DSD-neo…" shows while
   `restartCloser.active`, and a `finished` other than "closing" shows the failure line and keeps the browser. Folder
-  rows (`StableRows` keyed by path, Saved rows by reference) are named "Lists, folder" /
+  rows (`StableRows` keyed by path, Saved rows by reference; a listing's `hiddenByName` items, whose names are not
+  valid UTF-8, have no row, and a line says how many) are named "Lists, folder" /
   "dmr.csv, file, 4.2 MB, Nov 9" (`Util.sizeText`; "MMM d", with ", yyyy" when the year is not that of
   `savedSystems.realtimeNowMs()`; a `modifiedMs` of 0 shows no date). Show all files (`showAll`) and Show more
   (`requestMorePage(session, snapshot, entries.length)`, appended) sit below. "Reading folder…" shows 250 ms after a

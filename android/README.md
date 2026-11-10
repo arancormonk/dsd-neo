@@ -254,9 +254,11 @@ them and Android limits how many an app may hold.
 Some devices, car head units most of all, have no file picker that can open DSD-neo's files. When Restore, a CSV
 import or a replay file finds none, DSD-neo opens its own file browser instead (#830). **Settings › Libraries ›
 Choose files in DSD-neo** opens it first even where Android has a picker; **Choose with another app** in the browser
-then hands the pick to Android's picker. The browser lists only the files the pick can use (CSV and `.txt` for
-imports, `.dsdbak` for Restore, `.wav` and symbol captures for replay); **Show all files** lists the rest, hidden files
-included. Back goes up one folder, and from the list of places it ends the pick.
+then hands the pick to Android's picker, and backing out of that picker returns to the browser, at its list of places.
+The browser lists only the files the pick can use (CSV and `.txt` for imports, `.dsdbak` for Restore, `.wav` and symbol
+captures for replay); **Show all files** lists the rest, hidden files included. Back goes up one folder, and from the
+list of places it ends the pick. A file that takes a moment to check (a slow USB drive) shows **Opening `name`…**, and
+further taps on files wait for it.
 
 The places it lists:
 
@@ -279,8 +281,8 @@ The places it lists:
     `adb shell appops set --uid io.github.arancormonk.dsdneo MANAGE_EXTERNAL_STORAGE allow`. On Android 13 and later
     car head units the adb line may be the only way. The grant shows up when DSD-neo is back in front.
   - On Android 10, in every build, **Allow access** asks with Android's storage dialog, and device storage is then
-    read-only. After "Don't allow" with "Don't ask again", App info opens: allow Files and media (Storage) there and
-    come back. USB drives stay with Android's picker on Android 10.
+    read-only. After a plain "Don't allow" the browser says **Access was not allowed. Allow access asks again.** After
+    "Don't allow" with "Don't ask again", App info opens: allow Files and media (Storage) there and come back. USB drives stay with Android's picker on Android 10.
   - The Play bundle has no All files access (Google Play allows it only for apps that need it at their core), so a
     Play install lists the inbox and Saved by DSD-neo, plus device storage on Android 10. Anything else comes through
     Choose with another app or a copy into the inbox.
@@ -293,15 +295,19 @@ access. Those are the drives Android mounts outside shared storage, seen for USB
 mounted as shared storage, such as an SD card, opens right away. Such a drive's row says **DSD-neo can open this drive after it restarts.** with a
 **Close DSD-neo** button; then open DSD-neo again. The close waits while an import, a replay copy or a backup is still
 copying (**Wait for the copy to finish, then close DSD-neo.**). Otherwise it asks first and names what ends: listening
-stops, an open CSV import is dropped, and a restore already confirmed applies when DSD-neo opens again. Listening is
-stopped and allowed to finish before the app closes; if it does not stop within ten seconds, or Android does not
-close the app, DSD-neo stays open and says **DSD-neo could not close itself. Close it from Android's recent apps, then
-open it again.** A drive pulled out while the browser shows it goes back to the list of places with **The drive was
-removed.**
+stops, an open CSV import or the restore being chosen is dropped, a system being added or edited with changes not yet
+saved is dropped, and a restore already confirmed applies when DSD-neo opens again. Listening is stopped and allowed
+to finish before the app closes; if it does not stop within ten seconds, Android does not close the app, or the app is
+still running five seconds after it was told to close (some launchers keep it), DSD-neo stays open and says **DSD-neo
+could not close itself. Close it from Android's recent apps, then open it again.** A drive pulled out while the
+browser shows it goes back to the list of places with **The drive was removed.**, which clears once the drive is listed
+again. A file tapped just as the device's drives change (a drive plugged in) is checked once more, quietly.
 
 Limits:
 
 - Files that exist only in the cloud need another app (Choose with another app).
+- A file or folder whose name is not valid UTF-8 (possible on an ext4 drive) is not listed; the folder says how many it
+  left out. Rename it on a computer to pick it.
 - A folder with more than 50,000 items says **This folder has too many items to show.** Long folders show 500 items
   at a time, with Show more below.
 - The inbox is emptied by uninstalling DSD-neo or clearing its storage, and Saved by DSD-neo shows this install's
