@@ -495,8 +495,8 @@ write_sdrtrunk_json_input(FILE** out, const char* json) {
     return 0;
 }
 
-/* The output buffers the gain stage (dsd_voice_chain_run()) and short staging write, for a zeroed state: JSON playback runs it for every frame
-   in either output format (issue #652). Each run starts them over. */
+/* The output buffers the gain stage (dsd_voice_chain_run()) and short staging write, for a zeroed state: JSON playback
+   runs it for every frame in either output format (issue #652). Each run starts them over. */
 static void
 prepare_gain_stage(dsd_state* state) {
     static short out_buf[100 + (160 * 512)];

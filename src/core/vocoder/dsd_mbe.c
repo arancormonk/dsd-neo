@@ -2087,51 +2087,69 @@ mbe_x2_slot_decodable(const dsd_state* state, int slot) {
     return 1;
 }
 
+// The frame's receive admission and its owner's encryption class, judged once per frame on the slot it was received
+// on: the voice chain's frame info and the frame's verdict both take them. The chain writes nothing they read, so
+// judging them before it gives the verdict the values it would find after it.
+typedef struct {
+    int admitted;               // dsd_receive_current_allows()
+    dsd_voice_crypto_class cls; // DMR's slot class, NXDN's and dPMR's cipher class; CLEAR for the other owners
+} mbe_frame_judgement;
+
+static mbe_frame_judgement
+mbe_frame_judge(const dsd_opts* opts, const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx) {
+    mbe_frame_judgement j = {dsd_receive_current_allows(opts, state, slot) != 0, DSD_VOICE_CRYPTO_CLEAR};
+    switch (frame_ctx->protocol) {
+        case DSD_VOICE_PROTOCOL_DMR: j.cls = mbe_dmr_slot_crypto_class(state, slot, frame_ctx); break;
+        case DSD_VOICE_PROTOCOL_NXDN:
+        case DSD_VOICE_PROTOCOL_DPMR: j.cls = dsd_nxdn_voice_crypto_class(state); break;
+        default: break;
+    }
+    return j;
+}
+
 // The frame's media is clear or decrypted: the encryption class its owner judges it by, never a user mute rule or an
-// override (no opts reach the P25 predicate), never talkgroup or receive policy. An exhausted keystream decoded nothing.
+// override (no opts reach the P25 predicate), never talkgroup or receive policy. An exhausted keystream decoded
+// nothing.
 static int
-mbe_frame_decodable(const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx) {
+mbe_frame_decodable(const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx, const mbe_frame_judgement* j) {
     if (frame_ctx->crypto_muted) {
         return 0;
     }
     switch (frame_ctx->protocol) {
         case DSD_VOICE_PROTOCOL_DMR:
-            return mbe_dmr_slot_crypto_class(state, slot, frame_ctx) != DSD_VOICE_CRYPTO_UNDECRYPTABLE;
+        case DSD_VOICE_PROTOCOL_NXDN:
+        case DSD_VOICE_PROTOCOL_DPMR: return j->cls != DSD_VOICE_CRYPTO_UNDECRYPTABLE;
         case DSD_VOICE_PROTOCOL_P25P1: return p25_crypto_audio_permitted(NULL, state, 0);
         case DSD_VOICE_PROTOCOL_P25P2: return p25_crypto_audio_permitted(NULL, state, slot);
-        case DSD_VOICE_PROTOCOL_NXDN:
-        case DSD_VOICE_PROTOCOL_DPMR: return dsd_nxdn_voice_crypto_class(state) != DSD_VOICE_CRYPTO_UNDECRYPTABLE;
         case DSD_VOICE_PROTOCOL_X2TDMA: return mbe_x2_slot_decodable(state, slot);
         default: return 1;
     }
 }
 
-// What the voice chain is told about the frame: judged on the slot the verdict below judges (the slot it was received
-// on), whichever slot's chain runs on it.
+// What the voice chain is told about the frame, whichever slot's chain runs on it.
 static dsd_voice_frame_info
-mbe_frame_info(const dsd_opts* opts, const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx) {
+mbe_frame_info(const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx, const mbe_frame_judgement* j) {
     dsd_voice_frame_info info = {(uint8_t)frame_ctx->media, 0U, 0U, 0U};
-    info.decodable = (uint8_t)(mbe_frame_decodable(state, slot, frame_ctx) != 0);
-    info.admitted = (uint8_t)(dsd_receive_current_allows(opts, state, slot) != 0);
+    info.decodable = (uint8_t)(mbe_frame_decodable(state, slot, frame_ctx, j) != 0);
+    info.admitted = (uint8_t)(j->admitted != 0);
     return info;
 }
 
 // The explicit frame owner decides the verdict as well as the transforms, even when YSF or dPMR borrows another
 // protocol's decoder outside processFrame(). An exhausted keystream cannot be overridden by a key, -q or a user mute.
 static int
-mbe_frame_slot_muted(const dsd_opts* opts, const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx) {
-    if (frame_ctx->crypto_muted || !dsd_receive_current_allows(opts, state, slot)) {
+mbe_frame_slot_muted(const dsd_opts* opts, const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx,
+                     const mbe_frame_judgement* j) {
+    if (frame_ctx->crypto_muted || !j->admitted) {
         return 1;
     }
     switch (frame_ctx->protocol) {
-        case DSD_VOICE_PROTOCOL_DMR:
-            return !dsd_voice_crypto_class_audible(opts, slot, mbe_dmr_slot_crypto_class(state, slot, frame_ctx));
+        case DSD_VOICE_PROTOCOL_DMR: return !dsd_voice_crypto_class_audible(opts, slot, j->cls);
         case DSD_VOICE_PROTOCOL_P25P1: return !p25_crypto_audio_output_permitted(opts, state, 0);
         case DSD_VOICE_PROTOCOL_P25P2:
             return state->p25_p2_audio_allowed[slot] == 0 || !p25_crypto_audio_output_permitted(opts, state, slot);
         case DSD_VOICE_PROTOCOL_NXDN:
-        case DSD_VOICE_PROTOCOL_DPMR:
-            return !dsd_voice_crypto_class_audible(opts, 0, dsd_nxdn_voice_crypto_class(state));
+        case DSD_VOICE_PROTOCOL_DPMR: return !dsd_voice_crypto_class_audible(opts, 0, j->cls);
         default: return 0;
     }
 }
@@ -2440,19 +2458,20 @@ mbe_capture_frame(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame
 static void
 mbe_post_audio_and_recording(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
     const int slot = state->currentslot == 1 ? 1 : 0;
+    const mbe_frame_judgement judgement = mbe_frame_judge(opts, state, slot, frame_ctx);
     // The frame goes through its slot's voice chain once, before anything reads it (issue #653): the shared short
     // staging and the per-call WAV take the same filtered, gained samples, whatever the output format, the output
     // type or the mute. An exhausted keystream produced no decoded media: keep that silence out of the HPF so its
     // history cannot revive it. The gates below still decide who receives it.
     if (frame_ctx->synth && !frame_ctx->crypto_muted) {
-        const dsd_voice_frame_info info = mbe_frame_info(opts, state, slot, frame_ctx);
+        const dsd_voice_frame_info info = mbe_frame_info(state, slot, frame_ctx, &judgement);
         dsd_voice_chain_run(opts, state, frame_ctx->synth_slot, frame_ctx->synth, &info);
     }
     // Until a branch below stages this frame's short samples, the current slot's short frame is not this frame's.
     state->mbe_short_silenced[slot] = 1U;
     // The frame's one verdict (issue #655), after its keystream and before anything reads it: capture, short staging,
     // the per-call WAV, and the mixers that play it.
-    state->mbe_slot_muted[slot] = (uint8_t)mbe_frame_slot_muted(opts, state, slot, frame_ctx);
+    state->mbe_slot_muted[slot] = (uint8_t)mbe_frame_slot_muted(opts, state, slot, frame_ctx, &judgement);
     // A frame that stages no samples must not leave a previous frame for the mono mixer (issue #654).
     state->audio_out_idx = 0;
     if (mbe_post_uses_mono_left_staging(state)) {

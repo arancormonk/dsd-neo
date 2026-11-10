@@ -14,6 +14,8 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -1225,8 +1227,8 @@ test_process_ysf_fich_verdict_is_sticky_per_transmission(void) {
     dsd_state_ext_free_all(&state);
 }
 
-/* The output buffers the gain stage (dsd_voice_chain_run()) and short staging write, for a zeroed state: V/D2 frames run it in either output
-   format (issue #652). */
+/* The output buffers the gain stage (dsd_voice_chain_run()) and short staging write, for a zeroed state: V/D2 frames
+   run it in either output format (issue #652). */
 static void
 prepare_gain_stage(dsd_state* state) {
     static short out_buf[100 + (160 * 96)];
@@ -1310,8 +1312,11 @@ ysf_info_observe(void* ctx, int slot, const float* frame, const dsd_voice_frame_
     g_ysf_info_seen[g_ysf_info_count++] = *info;
 }
 
+/* @p refused: V/D2 decodes inside a receive context whose verdict refuses the traffic. YSF itself carries no identity
+   the receive policy names, so the policy admits YSF's own traffic; a context naming NXDN with every RAN blocked
+   stands in for a refusal, to show V/D2 passes on the receive verdict it is given. */
 static void
-test_process_ysf_vd_type2_tells_the_chain_each_frame(void) {
+run_vd_type2_frame_info(int refused) {
     static dsd_opts opts;
     static dsd_state state;
     uint8_t fich_bits[48];
@@ -1332,6 +1337,11 @@ test_process_ysf_vd_type2_tells_the_chain_each_frame(void) {
     g_mbe_flags[2] = MBE_PROCESS_FLAG_REPEAT;
     g_mbe_flags[3] = MBE_PROCESS_FLAG_REPEAT | MBE_PROCESS_FLAG_MUTE;
     g_mbe_fail_at = 4;
+    if (refused) {
+        opts.receive.filters[DSD_RECEIVE_RAN].enabled = 1;
+        DSD_MEMSET(&opts.receive.filters[DSD_RECEIVE_RAN].block, 0xFF, sizeof(opts.receive.filters[0].block));
+        (void)dsd_receive_context_begin(&state, DSD_SYNC_NXDN_POS);
+    }
 
     make_fich_bits_for_vd_type2(fich_bits);
     encode_fich_input(fich_bits, 0, 0, fich_input);
@@ -1357,10 +1367,16 @@ test_process_ysf_vd_type2_tells_the_chain_each_frame(void) {
     for (int i = 0; i < 5; i++) {
         assert(g_ysf_info_seen[i].media == want_media[i]);
         assert(g_ysf_info_seen[i].decodable == 1U);
-        assert(g_ysf_info_seen[i].admitted == 1U);
+        assert(g_ysf_info_seen[i].admitted == (refused ? 0U : 1U));
         assert(g_ysf_info_seen[i].talkspurt == 0U);
     }
     dsd_state_ext_free_all(&state);
+}
+
+static void
+test_process_ysf_vd_type2_tells_the_chain_each_frame(void) {
+    run_vd_type2_frame_info(0);
+    run_vd_type2_frame_info(1);
 }
 
 static void

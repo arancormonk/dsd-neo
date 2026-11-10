@@ -39,7 +39,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "audio/voice_chain_internal.h"
+#include "core/audio/voice_chain_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "mbe_result_context.h"
@@ -6859,6 +6859,8 @@ test_frame_info_dmr_decodable_and_admitted(void) {
         rc |= expect_frame_info(mute_enc ? "frame info dmr undecryptable, muted"
                                          : "frame info dmr undecryptable, unmuted",
                                 0, DSD_VOICE_MEDIA_SPEECH, 0, 1);
+        /* The verdict took the same class: muted only by the user's encrypted-audio mute. */
+        rc |= expect_eq_int("frame info dmr undecryptable verdict", g_fi_state.mbe_slot_muted[0], mute_enc);
     }
     frame_info_session(DSD_SYNC_DMR_BS_VOICE_POS, 0);
     g_fi_opts.reverse_mute = 1;
@@ -6874,6 +6876,9 @@ test_frame_info_dmr_decodable_and_admitted(void) {
         frame_info_ambe(DSD_VOICE_PROTOCOL_DMR, ambe_fr);
         rc |= expect_frame_info(slot ? "frame info dmr slot 2 admitted" : "frame info dmr slot 1 refused", slot,
                                 DSD_VOICE_MEDIA_SPEECH, 1, slot);
+        /* The verdict took the same admission. */
+        rc |= expect_eq_int(slot ? "frame info dmr slot 2 admitted verdict" : "frame info dmr slot 1 refused verdict",
+                            g_fi_state.mbe_slot_muted[slot], !slot);
     }
     dsd_voice_chain_set_observer_for_test(NULL, NULL);
     dsd_state_ext_free_all(&g_fi_state);
@@ -6958,6 +6963,33 @@ test_frame_info_fdma_owners(void) {
         rc |= expect_frame_info(cipher ? "frame info nxdn scrambled, no key" : "frame info nxdn clear", 0,
                                 DSD_VOICE_MEDIA_SPEECH, !cipher, 1);
     }
+    /* A RAN filter that blocks every RAN refuses the traffic: the frame is not admitted, and the verdict, which takes
+       the same admission, mutes it. */
+    frame_info_session(DSD_SYNC_NXDN_POS, 0);
+    g_fi_opts.receive.filters[DSD_RECEIVE_RAN].enabled = 1;
+    DSD_MEMSET(&g_fi_opts.receive.filters[DSD_RECEIVE_RAN].block, 0xFF,
+               sizeof(g_fi_opts.receive.filters[DSD_RECEIVE_RAN].block));
+    frame_info_ambe(DSD_VOICE_PROTOCOL_NXDN, ambe_fr);
+    rc |= expect_frame_info("frame info nxdn refused", 0, DSD_VOICE_MEDIA_SPEECH, 1, 0);
+    rc |= expect_eq_int("frame info nxdn refused verdict", g_fi_state.mbe_slot_muted[0], 1);
+
+    /* dPMR shares NXDN's cipher class: a scrambled half on NXDN's decoder is not decodable with no key (it plays with
+       the encrypted-audio mute off) and is with one; a clear half on the slot path is decodable. Descrambling the clear
+       test frame makes whatever it makes: its media is what the vocoder's own status says. */
+    for (int keyed = 0; keyed <= 1; keyed++) {
+        frame_info_session(DSD_SYNC_NXDN_POS, 0);
+        g_fi_state.nxdn_cipher_type = 0x01;
+        g_fi_state.R = keyed ? 0x12345ULL : 0ULL;
+        frame_info_ambe(DSD_VOICE_PROTOCOL_DPMR, ambe_fr);
+        const char* status = g_fi_state.err_str;
+        const int concealed = strchr(status, 'E') || strchr(status, 'R') || strchr(status, 'M');
+        rc |= expect_frame_info(keyed ? "frame info dpmr scrambled, keyed" : "frame info dpmr scrambled, no key", 0,
+                                concealed ? DSD_VOICE_MEDIA_CONCEALED : DSD_VOICE_MEDIA_SPEECH, keyed, 1);
+        rc |= expect_eq_int("frame info dpmr scrambled verdict", g_fi_state.mbe_slot_muted[0], 0);
+    }
+    frame_info_session(DSD_SYNC_DPMR_FS2_POS, 0);
+    frame_info_ambe(DSD_VOICE_PROTOCOL_DPMR, ambe_fr);
+    rc |= expect_frame_info("frame info dpmr clear", 0, DSD_VOICE_MEDIA_SPEECH, 1, 1);
     for (int slot = 0; slot <= 1; slot++) {
         frame_info_session(DSD_SYNC_X2TDMA_VOICE_POS, slot);
         frame_info_ambe(DSD_VOICE_PROTOCOL_X2TDMA, ambe_fr);

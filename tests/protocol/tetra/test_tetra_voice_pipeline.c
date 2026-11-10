@@ -1418,7 +1418,8 @@ chain_unwatch(void) {
     dsd_voice_chain_set_observer_for_test(NULL, NULL);
 }
 
-/* Chain run @p i took samples from decode @p first to decode @p last and was told @p media and @p decodable, admitted. */
+/* Chain run @p i took samples from decode @p first to decode @p last and was told @p media and @p decodable,
+   admitted. */
 static void
 expect_chain(int i, uint32_t first, uint32_t last, uint8_t media, uint8_t decodable, const char* what) {
     char label[160];

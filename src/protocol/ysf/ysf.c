@@ -878,6 +878,7 @@ ysf_decode_full_rate_voice_slot(dsd_opts* opts, dsd_state* state, const ysf_fich
     processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_YSF, imbe_fr, NULL, NULL);
     state->synctype = synctype;
 
+    // The media is unused here: the vocoder told the chain about this frame.
     ysf_emit_audio_from_temp(opts, state, false, DSD_VOICE_MEDIA_NONE);
     return true;
 }
