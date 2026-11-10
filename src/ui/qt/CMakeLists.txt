@@ -68,6 +68,7 @@ target_sources(
         spectrum_model.cpp
         csv_text.cpp
         document_export_writer.cpp
+        signal_search_export.cpp
         signal_search_model.cpp
         known_frequency_index.cpp
         listen_pins.cpp # Issue #801

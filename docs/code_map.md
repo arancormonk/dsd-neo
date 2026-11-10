@@ -11288,6 +11288,29 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   Airspy's `gainDb` is -1, its gains being in its map. The start path has no tenth-dB or manual-0 gain; the tuner runs
   its nearest step. `WizardScreen.openForFound()` copies them into the draft only for a detection; the Spectrum's save
   passes none and keeps the app defaults its session ran on (`tst_wizard_search_save.qml`, `UI_QT_SIGNAL_SEARCH`).
+  Export (#826): `SignalSearchModel::prepareExport(kind)` builds the whole file on the GUI thread when the button is
+  pressed, from the store's snapshots, and keeps it as the one pending export (a new prepare drops the one before it):
+  `"detections"` is every stored detection, newest first; `"avoids"` is the permanent list in saved order, then the
+  shown session's list, read as one consistent pair (revision, permanent get, session get, revision, again until the
+  two revisions are equal, at most `kAvoidReadTries` = 32 times), a frequency in both written once, as `permanent`. It
+  returns `{token, count}`: a token above 0 with the row count, `{0, 0}` for no rows, `{0, -1}` for an unknown kind or
+  avoid lists that kept changing. `saveExport(token, reference)` hands the pending file to the model's
+  `DocumentExportWriter` and forgets it; a token that is not the pending one, or a save while one runs, is refused and
+  the reference's Download-folder row let go of (through the save transport). `discardExport(token)` drops only that
+  token's file, and `exportFinished(token, ok)` reports an accepted save on the GUI thread. The model owns the writer,
+  made in its constructor from `host->saveTransport()` (a base transport without a host) under
+  `<CacheLocation>/signal-search-export`, and destroys it inside its own teardown stage; the model lives as long as the
+  QML engine, so a writer's abort (process-wide on Android) only ever happens at teardown. The files are built by
+  `signal_search_export.{h,cpp}` (pure builders the tests feed records to): the detections file's columns are
+  `started_utc,ended_utc,ended,frequency_hz,frequency_mhz,listen_mode,identification,protocol,access,tone,site,slot,`
+  `target,source,encryption,power_dbfs,noise_dbfs,range,bandwidth_hz,saved_names` (UTC times with milliseconds, empty
+  for a 0 time; `identification` `confirmed`, `unresolved` or `rf-only`; a party's received text, else its non-zero
+  number; levels to 0.1 dB, empty when not finite), and leave out the input spec, PPM, bias tee, gain, Airspy
+  settings and ids. `saved_names` is hitMap()'s `knownLabel`: both call `knownMatches()` at the detection's match
+  width (bandwidth, or the step when narrower), the export once per frequency and width. `csv_text.{h,cpp}` writes
+  each record: UTF-8 with a byte order mark, CRLF after every record, `.` decimals, RFC 4180 quoting, and a leading
+  `'` on a text column that starts like a formula. Test: `UI_QT_SIGNAL_SEARCH` (exact rows, locale, avoid reads
+  retried, tokens, a 1,000-row export over a heavy index).
 
 - Path: `src/ui`
 - Targets: `dsd-neo_ui_terminal` (option `DSD_ENABLE_TERMINAL_UI`, default ON), `dsd-neo_ui_qt`

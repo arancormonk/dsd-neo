@@ -21,8 +21,10 @@
 #include <QJsonValue>
 #include <QLatin1String>
 #include <QList>
+#include <QLocale>
 #include <QLockFile>
 #include <QMap>
+#include <QMetaObject>
 #include <QMetaType>
 #include <QObject>
 #include <QPair>
@@ -40,6 +42,7 @@
 #include <QtGlobal>
 #include <atomic>
 #include <cassert>
+#include <clocale>
 #include <cmath>
 #include <condition_variable>
 #include <dsd-neo/app_control/frontend_runtime.h>
@@ -55,6 +58,7 @@
 #include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/signal_search_avoids.h>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <qflags.h>
@@ -75,6 +79,7 @@
 #include "saved_systems_model.h"
 #include "scan_lists_model.h"
 #include "session_args.h"
+#include "signal_search_export.h"
 #include "signal_search_model.h"
 #include "store_notices.h"
 #include "teardown_trace_capture.h"
@@ -153,7 +158,8 @@ spin(int ms) {
     loop.exec();
 }
 
-/* #782: the Android app's teardown times this destructor, which flushes the search store. */
+/* #782: the Android app's teardown times this destructor, which flushes the search store. Its export writer (#826)
+   goes inside that stage, timed on its own too, so a save it waits for counts as the model's. */
 void
 testDestructorMarksItsTeardownStage(dsd_qt::KnownFrequencyIndex* index) {
     SessionHost android(true);
@@ -165,7 +171,9 @@ testDestructorMarksItsTeardownStage(dsd_qt::KnownFrequencyIndex* index) {
         { dsd_qt::SignalSearchModel search(&android, index); }
         assert(TeardownCapture::lines()
                == QStringList({QStringLiteral("teardown: ~SignalSearchModel started"),
-                               QStringLiteral("teardown: ~SignalSearchModel took 7 ms")}));
+                               QStringLiteral("teardown: ~DocumentExportWriter started"),
+                               QStringLiteral("teardown: ~DocumentExportWriter took 7 ms"),
+                               QStringLiteral("teardown: ~SignalSearchModel took 21 ms")}));
     }
 }
 
@@ -1825,6 +1833,422 @@ test_export_writer_teardown_blocked(const QString& root) {
     assert(entries(cacheRoot) == sorted({name, name + QStringLiteral(".lock")}));
 }
 
+/* #826: a detection with every exported field set, and receiver settings the file must leave out. */
+static dsd_signal_search_hit
+export_full_hit() {
+    dsd_signal_search_hit h{};
+    h.session_id = 31;
+    h.hit_id = 4;
+    h.started_ms = 1794060202418ULL; // 2026-11-07T14:03:22.418Z
+    h.ended_ms = 1794060210000ULL;   // a whole second
+    h.ended = 1;
+    h.frequency_hz = 463552100;
+    h.bandwidth_hz = 12500;
+    h.step_num = 12500;
+    h.step_den = 1;
+    h.power_dbfs = -32.123f;
+    h.noise_dbfs = -67.456f;
+    h.confirmed = 1;
+    DSD_SNPRINTF(h.protocol, sizeof(h.protocol), "%s", "DMR");
+    DSD_SNPRINTF(h.access, sizeof(h.access), "%s", "CC 1");
+    DSD_SNPRINTF(h.tone, sizeof(h.tone), "%s", "CTCSS 127.3 Hz");
+    DSD_SNPRINTF(h.site, sizeof(h.site), "%s", "Net 12, Site 3 \xC2\xB7 SYS 1183");
+    h.slot = 2;
+    h.target = 1234;
+    h.source = 99;
+    DSD_SNPRINTF(h.source_text, sizeof(h.source_text), "%s", "=HYPERLINK(1)");
+    DSD_SNPRINTF(h.crypt, sizeof(h.crypt), "%s", "ALG 21 \xC2\xB7 KID 0001");
+    DSD_SNPRINTF(h.range_name, sizeof(h.range_name), "%s", "-Air \"band\"");
+    DSD_SNPRINTF(h.input_spec, sizeof(h.input_spec), "%s", "rtltcp:10.9.8.7:1234:463.55M");
+    h.ppm = 57;
+    h.bias_tee = 1;
+    h.gain_tenth_db = 123;
+    DSD_SNPRINTF(h.airspy.serial, sizeof(h.airspy.serial), "%s", "A1B2C3D4E5F60718");
+    return h;
+}
+
+static const char kDetectionHeader[] =
+    "started_utc,ended_utc,ended,frequency_hz,frequency_mhz,listen_mode,identification,protocol,access,tone,site,slot,"
+    "target,source,encryption,power_dbfs,noise_dbfs,range,bandwidth_hz,saved_names\r\n";
+
+/* The detections file @p hits make, with "Desk / Tower, East" saved at 463.5521 MHz and nothing elsewhere. */
+static QByteArray
+export_detections(const std::vector<dsd_signal_search_hit>& hits, QList<uint32_t>* asked = nullptr) {
+    return dsd_qt::signal_search_export::detections(hits.data(), hits.size(), [asked](const dsd_signal_search_hit& h) {
+        if (asked) {
+            asked->append(h.frequency_hz);
+        }
+        return h.frequency_hz == 463552100U ? QStringLiteral("Desk / Tower, East") : QString();
+    });
+}
+
+/* #826: the detections file's header and each column's format, exclusions and formula guard. */
+static void
+test_export_detection_rows() {
+    std::vector<dsd_signal_search_hit> hits(3);
+    hits[0] = export_full_hit();
+    // Empty and zero fields: no start, no end, no slot, no parties, levels that are not finite; an analog range.
+    hits[1].frequency_hz = 118000000;
+    hits[1].bandwidth_hz = 6000;
+    hits[1].am = 1;
+    hits[1].power_dbfs = std::numeric_limits<float>::quiet_NaN();
+    hits[1].noise_dbfs = std::numeric_limits<float>::infinity();
+    // Ended with no end time (a row loaded after an abrupt exit), a start on a whole second, a digital range not
+    // confirmed, a target's received text over its number.
+    hits[2].started_ms = 1794060210000ULL;
+    hits[2].ended = 1;
+    hits[2].frequency_hz = 155340000;
+    hits[2].bandwidth_hz = 12500;
+    hits[2].unresolved = 1;
+    hits[2].slot = 1;
+    hits[2].target = 7;
+    DSD_SNPRINTF(hits[2].target_text, sizeof(hits[2].target_text), "%s", "TG 5");
+    QList<uint32_t> asked;
+    const QByteArray file = export_detections(hits, &asked);
+    assert(asked == (QList<uint32_t>{463552100U, 118000000U, 155340000U}));
+    const QByteArray expected =
+        QByteArray("\xEF\xBB\xBF", 3) + kDetectionHeader
+        + "2026-11-07T14:03:22.418Z,2026-11-07T14:03:30.000Z,1,463552100,463.552100,nfm,confirmed,DMR,CC 1,CTCSS 127.3 "
+          "Hz,\"Net 12, Site 3 \xC2\xB7 SYS 1183\",2,1234,'=HYPERLINK(1),ALG 21 \xC2\xB7 KID "
+          "0001,-32.1,-67.5,\"'-Air \"\"band\"\"\",12500,\"Desk / Tower, East\"\r\n"
+        + ",,0,118000000,118.000000,am,rf-only,,,,,,,,,,,,6000,\r\n"
+        + "2026-11-07T14:03:30.000Z,,1,155340000,155.340000,nfm,unresolved,,,,,1,TG 5,,,0.0,0.0,,12500,\r\n";
+    assert(file == expected);
+    // The receiver settings and ids stay out.
+    for (const char* left : {"rtltcp", "10.9.8.7", "A1B2C3D4E5F60718", "57", "12.3", "31"}) {
+        assert(!file.contains(left));
+    }
+    // Nothing but the header for no rows.
+    assert(export_detections({}) == QByteArray("\xEF\xBB\xBF", 3) + kDetectionHeader);
+
+    // The decimal point stays '.' whatever the locale.
+    const QLocale before;
+    const QByteArray numeric = QByteArray(setlocale(LC_NUMERIC, nullptr));
+    QLocale::setDefault(QLocale(QLocale::German, QLocale::Germany));
+    const bool cLocale = setlocale(LC_NUMERIC, "de_DE.UTF-8") != nullptr;
+    printf("export locale check: QLocale German%s\n", cLocale ? ", LC_NUMERIC de_DE.UTF-8" : " (no de_DE.UTF-8)");
+    assert(export_detections(hits) == expected);
+    QLocale::setDefault(before);
+    setlocale(LC_NUMERIC, numeric.constData());
+}
+
+/* #826: the avoids file lists the permanent avoids in saved order, then the session's; a frequency in both is written
+   once, as permanent. */
+static void
+test_export_avoid_rows() {
+    const QByteArray head = QByteArray("\xEF\xBB\xBF", 3) + "frequency_hz,frequency_mhz,list\r\n";
+    int rows = -1;
+    assert(dsd_qt::signal_search_export::avoids({451000000U, 162550000U}, {}, &rows)
+           == head + "451000000,451.000000,permanent\r\n162550000,162.550000,permanent\r\n");
+    assert(rows == 2);
+    assert(dsd_qt::signal_search_export::avoids({}, {463575000U}, &rows) == head + "463575000,463.575000,session\r\n");
+    assert(rows == 1);
+    assert(dsd_qt::signal_search_export::avoids({463600000U}, {463575000U, 463600000U}, &rows)
+           == head + "463600000,463.600000,permanent\r\n463575000,463.575000,session\r\n");
+    assert(rows == 2);
+    assert(dsd_qt::signal_search_export::avoids({}, {}, &rows) == head && rows == 0);
+}
+
+/* #826: the avoid lists are read as one consistent pair: again while the revision moved between the reads, up to 32
+   times, then not at all. */
+static void
+test_export_avoid_reads() {
+    uint64_t revision = 40;
+    int calls = 0, permanentReads = 0, moving = 3;
+    dsd_qt::signal_search_export::AvoidSource source;
+    source.revision = [&]() {
+        ++calls;
+        // The second read of each try moves while `moving` tries remain.
+        if (calls % 2 == 0 && moving > 0) {
+            --moving;
+            return ++revision;
+        }
+        return revision;
+    };
+    source.permanent = [&](uint32_t* out, size_t cap) {
+        ++permanentReads;
+        assert(cap >= 2);
+        out[0] = 451000000U + (uint32_t)permanentReads;
+        out[1] = 162550000U;
+        return (size_t)2;
+    };
+    source.session = [](uint32_t* out, size_t cap) {
+        assert(cap >= 1);
+        out[0] = 463575000U;
+        return (size_t)1;
+    };
+    std::vector<uint32_t> permanent, session;
+    assert(dsd_qt::signal_search_export::readAvoids(source, &permanent, &session));
+    assert(permanentReads == 4 && calls == 8);
+    assert(permanent == (std::vector<uint32_t>{451000004U, 162550000U})
+           && session == std::vector<uint32_t>{463575000U});
+
+    // Lists that never stop changing: 32 tries, then nothing.
+    permanentReads = 0;
+    moving = 1000;
+    assert(!dsd_qt::signal_search_export::readAvoids(source, &permanent, &session));
+    assert(permanentReads == dsd_qt::signal_search_export::kAvoidReadTries && permanentReads == 32);
+    assert(permanent.empty() && session.empty());
+}
+
+namespace {
+/** A host whose export saves go to @p transport. */
+class ExportHost : public SessionHost {
+  public:
+    explicit ExportHost(std::shared_ptr<dsd_qt::DocumentSaveTransport> transport) : m_transport(std::move(transport)) {}
+
+    std::shared_ptr<dsd_qt::DocumentSaveTransport>
+    saveTransport() const override {
+        return keepSaveTransport(m_transport);
+    }
+
+  private:
+    std::shared_ptr<dsd_qt::DocumentSaveTransport> m_transport;
+};
+
+/** The exportFinished() signals a model sends while this lives. */
+struct ExportFinished {
+    QList<QPair<int, bool>> replies;
+    QMetaObject::Connection connection;
+
+    explicit ExportFinished(const dsd_qt::SignalSearchModel& model)
+        : connection(QObject::connect(&model, &dsd_qt::SignalSearchModel::exportFinished,
+                                      [this](int token, bool ok) { replies.append(qMakePair(token, ok)); })) {}
+
+    ~ExportFinished() { QObject::disconnect(connection); }
+
+    ExportFinished(const ExportFinished&) = delete;
+    ExportFinished& operator=(const ExportFinished&) = delete;
+};
+} // namespace
+
+/* An empty store of its own under @p root, for the export cases. A model opens the app's store when made, so this
+   follows the model. */
+static void
+open_export_store(const QString& root, const char* name) {
+    dsd_app_signal_search_store_close();
+    const QString dir = root + QStringLiteral("/export stores/") + QLatin1String(name);
+    assert(QDir().mkpath(dir));
+    assert(dsd_app_signal_search_store_open((dir + QStringLiteral("/history")).toUtf8().constData()) == 0);
+    std::vector<dsd_signal_search_hit> hits(1);
+    assert(dsd_app_signal_search_history_get(hits.data(), hits.size()) == 0);
+}
+
+static int
+export_token(const QVariantMap& prepared) {
+    return prepared.value(QStringLiteral("token")).toInt();
+}
+
+static int
+export_count(const QVariantMap& prepared) {
+    return prepared.value(QStringLiteral("count")).toInt();
+}
+
+/* Prepare @p kind and save it through @p transport; the bytes saved, after asserting @p count rows. */
+static QByteArray
+exported(dsd_qt::SignalSearchModel& model, const GateTransport& transport, const QString& kind, int count) {
+    const ExportFinished finished(model);
+    const QVariantMap prepared = model.prepareExport(kind);
+    assert(export_count(prepared) == count && export_token(prepared) > 0);
+    const int saves = transport.saves().size();
+    assert(model.saveExport(export_token(prepared), QStringLiteral("content://picked/avoids")));
+    assert(spin_until([&finished]() { return !finished.replies.isEmpty(); }));
+    assert(finished.replies == (QList<QPair<int, bool>>{qMakePair(export_token(prepared), true)}));
+    assert(transport.saves().size() == saves + 1);
+    return transport.saves().last().bytes;
+}
+
+/* #826: the avoids the model exports: the shown lists, read at the press. */
+static void
+test_export_model_avoids(const QString& root) {
+    auto transport = std::make_shared<GateTransport>();
+    ExportHost host(transport);
+    dsd_qt::SignalSearchModel model(&host, nullptr);
+    open_export_store(root, "avoids");
+    const QByteArray head = QByteArray("\xEF\xBB\xBF", 3) + "frequency_hz,frequency_mhz,list\r\n";
+    const QVariantMap none{{QStringLiteral("token"), 0}, {QStringLiteral("count"), 0}};
+    assert(model.prepareExport(QStringLiteral("avoids")) == none);
+
+    // Permanent only, in saved order.
+    assert(dsd_app_signal_search_permanent_avoid(451000000) == DSD_APP_SEARCH_AVOID_ADDED);
+    assert(dsd_app_signal_search_permanent_avoid(162550000) == DSD_APP_SEARCH_AVOID_ADDED);
+    assert(exported(model, *transport, QStringLiteral("avoids"), 2)
+           == head + "451000000,451.000000,permanent\r\n162550000,162.550000,permanent\r\n");
+    assert(dsd_app_signal_search_avoid_remove(451000000) == 0 && dsd_app_signal_search_avoid_remove(162550000) == 0);
+
+    // Session only, while the session runs.
+    dsd_signal_search_status running{};
+    running.session_id = 61;
+    running.revision = 8100;
+    running.phase = DSD_SEARCH_LISTENING;
+    running.owned = 1;
+    dsd_app_signal_search_publish(&running, nullptr, nullptr);
+    const uint32_t sessionList[] = {463575000, 463600000};
+    dsd_signal_search_avoids_session_set(61, sessionList, 2);
+    assert(exported(model, *transport, QStringLiteral("avoids"), 2)
+           == head + "463575000,463.575000,session\r\n463600000,463.600000,session\r\n");
+
+    // Both; a frequency just made permanent, still in the session list until the engine's next tick, is written once.
+    assert(dsd_app_signal_search_permanent_avoid(463600000) == DSD_APP_SEARCH_AVOID_ADDED);
+    assert(exported(model, *transport, QStringLiteral("avoids"), 2)
+           == head + "463600000,463.600000,permanent\r\n463575000,463.575000,session\r\n");
+    assert(dsd_app_signal_search_avoid_remove(463600000) == 0);
+
+    // A stopped search shows no session list, so nothing is left to export.
+    dsd_signal_search_status stopped = running;
+    stopped.revision = 8101;
+    stopped.phase = DSD_SEARCH_STOPPED;
+    stopped.owned = 0;
+    dsd_app_signal_search_publish(&stopped, nullptr, nullptr);
+    assert(model.prepareExport(QStringLiteral("avoids")) == none);
+    dsd_signal_search_avoids_session_set(0, nullptr, 0);
+    assert(transport->discards().isEmpty());
+}
+
+/* #826: one pending export at a time, kept as it was prepared; a token that is not the pending one is refused, and its
+   picked document lets go of its Download-folder row. */
+static void
+test_export_model_tokens(const QString& root) {
+    auto transport = std::make_shared<GateTransport>(false);
+    ExportHost host(transport);
+    dsd_qt::SignalSearchModel model(&host, nullptr);
+    open_export_store(root, "tokens");
+    const ExportFinished finished(model);
+    const QVariantMap unknown{{QStringLiteral("token"), 0}, {QStringLiteral("count"), -1}};
+    assert(model.prepareExport(QStringLiteral("everything")) == unknown);
+    assert(model.prepareExport(QString()) == unknown);
+    assert(dsd_app_signal_search_permanent_avoid(451000000) == DSD_APP_SEARCH_AVOID_ADDED);
+
+    // A second prepare replaces the first: the first token is refused.
+    const int first = export_token(model.prepareExport(QStringLiteral("avoids")));
+    const int second = export_token(model.prepareExport(QStringLiteral("avoids")));
+    assert(first > 0 && second > 0 && second != first);
+    assert(!model.saveExport(first, QStringLiteral("content://stale/1")));
+    assert(transport->discards() == QStringList{QStringLiteral("content://stale/1")});
+
+    // The list changed after the press: the file is the one prepared.
+    assert(dsd_app_signal_search_permanent_avoid(162550000) == DSD_APP_SEARCH_AVOID_ADDED);
+    assert(model.saveExport(second, QStringLiteral("content://picked/2")));
+    // Saved once: the token is no longer pending.
+    assert(!model.saveExport(second, QStringLiteral("content://again/2")));
+    // A save while one runs is refused, and the export is no longer pending.
+    const QVariantMap third = model.prepareExport(QStringLiteral("avoids"));
+    assert(export_count(third) == 2);
+    assert(!model.saveExport(export_token(third), QStringLiteral("content://busy/3")));
+    assert(!model.saveExport(export_token(third), QStringLiteral("content://busy/3b")));
+    assert(transport->discards()
+           == (QStringList{QStringLiteral("content://stale/1"), QStringLiteral("content://again/2"),
+                           QStringLiteral("content://busy/3"), QStringLiteral("content://busy/3b")}));
+    transport->openGate();
+    assert(spin_until([&finished]() { return !finished.replies.isEmpty(); }));
+    assert(finished.replies == (QList<QPair<int, bool>>{qMakePair(second, true)}));
+    assert(transport->saves().size() == 1 && transport->saves()[0].reference == QStringLiteral("content://picked/2"));
+    assert(transport->saves()[0].bytes
+           == QByteArray("\xEF\xBB\xBF", 3) + "frequency_hz,frequency_mhz,list\r\n451000000,451.000000,permanent\r\n");
+
+    // Discard drops only its own token.
+    const int fourth = export_token(model.prepareExport(QStringLiteral("avoids")));
+    model.discardExport(fourth + 1);
+    model.discardExport(0);
+    assert(model.saveExport(fourth, QStringLiteral("content://picked/4")));
+    assert(spin_until([&finished]() { return finished.replies.size() == 2; }));
+    assert(finished.replies.last() == qMakePair(fourth, true));
+    const int fifth = export_token(model.prepareExport(QStringLiteral("avoids")));
+    model.discardExport(fifth);
+    assert(!model.saveExport(fifth, QStringLiteral("content://gone/5")));
+    assert(transport->discards().last() == QStringLiteral("content://gone/5"));
+
+    // A prepare with no rows keeps nothing, and drops the export pending before it.
+    const int sixth = export_token(model.prepareExport(QStringLiteral("avoids")));
+    assert(model.prepareExport(QStringLiteral("detections"))
+           == (QVariantMap{{QStringLiteral("token"), 0}, {QStringLiteral("count"), 0}}));
+    assert(!model.saveExport(sixth, QStringLiteral("content://gone/6")));
+    assert(!model.saveExport(0, QStringLiteral("content://none")));
+    assert(transport->discards().last() == QStringLiteral("content://none"));
+    spin(20);
+    assert(finished.replies.size() == 2 && transport->saves().size() == 2);
+    assert(dsd_app_signal_search_avoid_remove(451000000) == 0 && dsd_app_signal_search_avoid_remove(162550000) == 0);
+}
+
+/* #826: a history of 1,000 detections spread over a few frequencies, each saved under many tied names, exports
+   newest first with hitMap()'s saved names per row, through the base host's transport into a local file. */
+static void
+test_export_model_detections(const QString& root) {
+    static const uint32_t kFrequencies[] = {463552100U, 463575000U, 451000000U, 162550000U, 155340000U};
+    const QString channels = root + QStringLiteral("/export-heavy-channels.csv");
+    QByteArray map = "chan,freq,name\n";
+    int chan = 0;
+    for (const uint32_t frequency : kFrequencies) {
+        for (int i = 0; i < 100; ++i, ++chan) {
+            map += QByteArray::number(chan) + ',' + QByteArray::number(frequency) + ",Ch" + QByteArray::number(chan)
+                   + '\n';
+        }
+    }
+    writeFile(channels, map.constData());
+    dsd_qt::SavedSystemsModel systems;
+    dsd_qt::ScanListsModel lists;
+    addMapSystem(&systems, QStringLiteral("Heavy"), channels);
+    dsd_qt::KnownFrequencyIndex index(&systems, &lists);
+
+    SessionHost host;
+    dsd_qt::SignalSearchModel model(&host, &index);
+    const ExportFinished finished(model);
+    open_export_store(root, "detections");
+    for (uint64_t id = 1; id <= 1000; ++id) {
+        dsd_signal_search_status s{};
+        s.session_id = 71;
+        s.revision = 9000 + id;
+        s.phase = DSD_SEARCH_LISTENING;
+        dsd_signal_search_hit& h = s.hit;
+        h.session_id = 71;
+        h.hit_id = id;
+        h.started_ms = 1794060202418ULL + id * 1000U;
+        h.frequency_hz = kFrequencies[id % 5];
+        h.bandwidth_hz = id % 2 ? 12500 : 6000;
+        h.step_num = 12500;
+        h.step_den = 1;
+        h.confirmed = id % 3 == 0;
+        h.unresolved = id % 3 == 1;
+        DSD_SNPRINTF(h.input_spec, sizeof(h.input_spec), "%s", "rtltcp:10.9.8.7:1234");
+        dsd_app_signal_search_publish(&s, &h, nullptr);
+    }
+    model.refresh();
+    assert(model.history().size() == 1000);
+    assert(model.history().front().toMap().value(QStringLiteral("knownLabel")).toString().count(QStringLiteral(" / "))
+           >= 99);
+
+    QElapsedTimer timer;
+    timer.start();
+    const QVariantMap prepared = model.prepareExport(QStringLiteral("detections"));
+    printf("export of 1000 detections over a heavy index took %lld ms\n", (long long)timer.elapsed());
+    assert(export_count(prepared) == 1000 && export_token(prepared) > 0);
+
+    // The file the snapshot makes with the screen's saved names, row by row.
+    std::vector<dsd_signal_search_hit> hits(DSD_SEARCH_HISTORY_LIMIT);
+    hits.resize(dsd_app_signal_search_history_snapshot(hits.data(), hits.size(), nullptr));
+    assert(hits.size() == 1000 && hits.front().hit_id == 1000 && hits.back().hit_id == 1);
+    const QVariantList history = model.history();
+    const QByteArray expected = dsd_qt::signal_search_export::detections(
+        hits.data(), hits.size(), [&hits, &history](const dsd_signal_search_hit& h) {
+            return history.at((qsizetype)(&h - hits.data())).toMap().value(QStringLiteral("knownLabel")).toString();
+        });
+
+    const QString folder = root + QStringLiteral("/export saved");
+    assert(QDir().mkpath(folder));
+    const QString target = folder + QStringLiteral("/Signal search detections.csv");
+    assert(model.saveExport(export_token(prepared), target));
+    assert(spin_until([&finished]() { return !finished.replies.isEmpty(); }));
+    assert(finished.replies == (QList<QPair<int, bool>>{qMakePair(export_token(prepared), true)}));
+    const QByteArray saved = read_bytes(target);
+    assert(saved == expected);
+    const QList<QByteArray> lines = saved.split('\n');
+    assert(lines.size() == 1002 && lines.last().isEmpty());
+    assert(lines.at(1).startsWith("2026-11-07T14:20:02.418Z,"));    // hit 1000
+    assert(lines.at(1000).startsWith("2026-11-07T14:03:23.418Z,")); // hit 1
+    assert(lines.at(1).contains("Heavy / Ch") && !saved.contains("rtltcp") && !saved.contains("10.9.8.7"));
+    dsd_app_signal_search_store_close();
+}
+
 int
 main(int argc, char** argv) {
     if (argc == 3 && strcmp(argv[1], "--hold-export-lock") == 0) {
@@ -2436,6 +2860,12 @@ main(int argc, char** argv) {
     testKnownFrequencyNonAsciiPaths(temp.path());
     testRecordingKey();
     testOverloadMapped();
+    test_export_detection_rows();
+    test_export_avoid_rows();
+    test_export_avoid_reads();
+    test_export_model_avoids(temp.path());
+    test_export_model_tokens(temp.path());
+    test_export_model_detections(temp.path());
     return 0;
 }
 
