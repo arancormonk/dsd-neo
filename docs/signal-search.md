@@ -453,16 +453,18 @@ saves until it is written.
 
 **Export detections…** (the last button of Recent detections, after **Show more**,
 shown while there are detections) and **Export avoids…** (after the Permanent
-avoids list, shown while either avoid list has entries) each save a CSV file for a
+avoids list, shown while the permanent list has entries, or while a running
+search's session list does) each save a CSV file for a
 spreadsheet or a script. Each opens the save picker with a suggested name
 (`Signal search detections 2026-11-08.csv`, `Signal search avoids 2026-11-08.csv`),
 and one export runs at a time. The result is shown under the button: **Exported 214
 detections.**, **Exported 37 avoids.**, **Exported 214 detections to Download/DSD-neo
 as** the file's name when the device has no save picker (see `android/README.md`
-"Choosing files"), or **The export couldn't be written. Try another location.** If
-the avoid lists change while the export is being prepared it says **The avoid lists
-were changing. Try again.** Closing the picker without choosing a place saves
-nothing and says nothing.
+"Choosing files"), or **The export couldn't be written. Try another location.** Two
+messages mean no picker opened: **No detections to export.** / **No avoids to
+export.** (the list emptied just before the press), and **The avoid lists were
+changing. Try again.** A picker that cannot open shows its own message. Closing the
+picker without choosing a place saves nothing and says nothing.
 
 The detections file holds every detection kept in the history (the newest 1,000),
 not only the rows shown, newest first. The avoids file holds the permanent avoids,

@@ -4,6 +4,7 @@ DSD-neo uses small, purpose-built CSV importers for trunking helpers (channel ma
 labels, and key lists. These parsers are intentionally minimal and **not** full RFC 4180 CSV parsers.
 
 If you want known-good starting points, see `examples/` in the repository.
+
 DSD-neo also writes a few CSV files of its own; those follow standard CSV rules and are described last, in
 [Files dsd-neo writes (not read back)](#files-dsd-neo-writes-not-read-back).
 
@@ -1376,9 +1377,10 @@ search on screen.
 
 ### Opening them in a spreadsheet
 
-- Excel: on a computer that uses a decimal comma (much of Europe), a period-decimal number can be misread. Use
-  **Data > From Text/CSV**, set the delimiter to Comma, and in the locale setting choose English (United States), so
-  `451.250000` stays a number.
+- Excel: on a computer that uses a decimal comma (much of Europe), a double-click can open the file in one column or
+  misread the numbers. Use **Data > From Text/CSV**, set File Origin to 65001: Unicode (UTF-8) and Delimiter to Comma,
+  then choose **Transform Data** and change the number columns' type with **Using Locale…** set to English (United
+  States), so `451.250000` stays a number.
 - LibreOffice Calc: open the file, and in the Text Import dialog set the separator to Comma and the **Language** to
   English (USA).
 - Python: open the file with `encoding="utf-8-sig"`, so the BOM does not become part of the first column name.
@@ -1391,7 +1393,8 @@ Times are written as `2026-11-07T14:03:22.418Z` text, which spreadsheets may kee
 A spreadsheet runs a cell that starts with `=`, `+`, `-` or `@` as a formula, and the text columns hold what a radio
 sent, so a hostile transmission could try that. To lessen the risk, DSD-neo puts a leading `'` in front of a text value
 that starts with `=`, `+`, `-`, `@`, a tab, a line break, or the full-width forms of the four symbols. Numeric columns
-are never changed and cannot start with a formula character.
+are never changed: a plain number such as `-47.2` is read as a number, not a formula, and the other non-text columns
+hold only fixed words or digits.
 
 This is a mitigation, not a guarantee:
 

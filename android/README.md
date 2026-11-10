@@ -241,10 +241,9 @@ closed DSD-neo in the background is ignored: open the screen again and pick the 
 
 With no save picker, a save (Back up, Export as zip, Save to file, Export detections or avoids) goes straight to the
 phone's **Download/DSD-neo** folder, which Files and other file managers show. The file appears there only once it is
-completely written; a save
-that fails or is cancelled leaves nothing behind. When a file of that name is already there, Android adds a number, as
-in `dsd-neo-backup-2026-11-08 (1).dsdbak`. When even the Download folder cannot
-be written, the save says **This device has no save picker, and DSD-neo could not save to the Download folder.** Files
+completely written; a save that fails or is cancelled leaves nothing behind. When a file of that name is already
+there, Android adds a number, as in `dsd-neo-backup-2026-11-08 (1).dsdbak`. When even the Download folder cannot be
+written, the save says **This device has no save picker, and DSD-neo could not save to the Download folder.** Files
 saved there stay after DSD-neo is uninstalled; a backup there stays encrypted with its passphrase.
 
 At start DSD-neo gives back any lasting file permissions an earlier version kept from picks, since it no longer uses
