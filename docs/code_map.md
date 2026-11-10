@@ -15041,11 +15041,11 @@ request code (1305) is never used.
     `{"id","kind":"listing","status","snapshot","offset","entries","more","hiddenByFilter","hiddenByName"}` (non-ok:
     `status` only), `{"id","kind":"handoff","ok","reference","name","reason"}`, `{"id","kind":"access","outcome"}`. Root
     `{key, kind, title, path, state, detail}`; entry `{name, path, reference, dir, size, modifiedMs}`.
-  - Host dispatch (`decoder_host_android_files.cpp`, JNI-free, Qt thread; the shims `platformListRoots()` and the
-    other `platform*()` file calls sit in `decoder_host_android.cpp` with `kFileBrowserClass`): each request override
-    begins the base host's request and hands it to `FileBrowser` only while it is live (a closed session's never reaches
-    it), with the host's id; `fileBrowserSupported()` is true. A call `FileBrowser` could not take (false: not started,
-    a malformed path or reference, a JNI error; for access also no activity context, checked with `isActivityContext()`
+  - Host dispatch (`decoder_host_android_files.cpp`, JNI-free, Qt thread; the shims `platformListRoots()` and the other
+    `platform*()` file calls sit in `decoder_host_android.cpp` with `kFileBrowserClass`): each request override begins
+    the base host's request and hands it to `FileBrowser` only while it is live (a closed session's never reaches it),
+    with the host's id; `fileBrowserSupported()` is true. A call `FileBrowser` could not take (false: not started, a
+    malformed path or reference, a JNI error; for access also no activity context, checked with `isActivityContext()`
     before `requestAccess()`) is answered `fileFailure(kind, "failed")`, queued. `requestFileAccess()` hands over only
     an id other than the `liveFileAccessRequest()` it read first, so a joined request is never asked twice. The live
     requests it took are kept with their kind (`m_file_requests`); the override of `fileRequestRetired()` (cancel,
@@ -15053,18 +15053,20 @@ request code (1305) is never used.
     `closeFileBrowserSession()` then calls `closeSession()`. `refresh()` ends with `refreshFileBrowser()`: when
     `takeAccessRefresh()` is true it reads `accessState()`, then it drains `pollRecord()` oldest first. FileBrowser
     raises that flag before it writes an access answer, and both can land after the first take, so an `access` record
-    takes the flag again (and reads) before it settles: a `granted` answer never finds `fileAccess()` stale. A record
-    settles its id once, with its members less `id` and `kind` as the map (whole numbers only, as `qint64`), when that
-    id is a live request it took and the record's kind is that request's (`listing` for a listing or a page). A record
-    for a live id that is malformed (as strict as `document_pick_record.h`: every member typed, statuses and outcomes
-    non-empty), of an unknown kind or of another request's kind settles it `fileFailure(kind, "failed")` at once, so
-    every request is answered; a record with no readable id (not a whole number above 0) is ignored, and a record for an
-    id retired or answered is dropped. The access reading (`m_file_access`, the base reading until the constructor's
-    first read after `FileBrowser.start()`) is replaced, with one `fileAccessChanged()`, only by a well-formed reading
-    that differs; `refreshFileAccess()` reads at once. `FileBrowser` is the process's while request ids are each host's
-    (they start again in a new host): the destructor cancels each live request there and closes each open session
-    (`m_file_sessions`), and the constructor discards the records waiting after `start()`, so an old host's record
-    cannot answer a new host's request with the same id. Left open (one host per process today, as for
+    takes the flag again (and reads) before it settles: a `granted` answer never finds `fileAccess()` stale. That read
+    emits `fileAccessChanged()`, whose slots may cancel or make requests, this one included, so the record holds no
+    iterator into `m_file_requests` across it: it removes its id afterwards and settles only if it was still there. A
+    record settles its id once, with its members less `id` and `kind` as the map (whole numbers only, as `qint64`), when
+    that id is a live request it took and the record's kind is that request's (`listing` for a listing or a page). A
+    record for a live id that is malformed (as strict as `document_pick_record.h`: every member typed, statuses and
+    outcomes non-empty), of an unknown kind or of another request's kind settles it `fileFailure(kind, "failed")` at
+    once, so every request is answered; a record with no readable id (not a whole number above 0) is ignored, and a
+    record for an id retired or answered is dropped. The access reading (`m_file_access`, the base reading until the
+    constructor's first read after `FileBrowser.start()`) is replaced, with one `fileAccessChanged()`, only by a
+    well-formed reading that differs; `refreshFileAccess()` reads at once. `FileBrowser` is the process's while request
+    ids are each host's (they start again in a new host): the destructor cancels each live request there and closes each
+    open session (`m_file_sessions`), and the constructor discards the records waiting after `start()`, so an old host's
+    record cannot answer a new host's request with the same id. Left open (one host per process today, as for
     `DocumentPicker`): an access cancel `FileBrowser` answers later on the Android main thread can still reach a host
     made in between. `proguard-rules.pro` keeps the eleven upcalls.
   - Manifests: `android/package/AndroidManifest.xml` declares every permission itself (no `%%INSERT_PERMISSIONS`, so

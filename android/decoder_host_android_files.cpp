@@ -350,11 +350,11 @@ DecoderHostAndroid::deliverFileRecord(const QString& text) {
     if (!read_record_id(record, id)) {
         return; // No request to answer.
     }
-    const auto found = m_file_requests.constFind(id);
-    if (found == m_file_requests.constEnd()) {
+    // By value: nothing below holds a place in m_file_requests, which a slot of fileAccessChanged() may change.
+    if (!m_file_requests.contains(id)) {
         return; // Retired, failed or answered already: its answer was given.
     }
-    const FileRequestKind requestKind = *found;
+    const FileRequestKind requestKind = m_file_requests.value(id);
     QLatin1String expected("listing"); // A listing's or a page's
     switch (requestKind) {
         case FileRequestKind::Roots: expected = QLatin1String("roots"); break;
@@ -370,11 +370,15 @@ DecoderHostAndroid::deliverFileRecord(const QString& text) {
         answer = fileFailure(requestKind, QStringLiteral("failed"));
     } else if (requestKind == FileRequestKind::Access && platformTakeFileAccessRefresh()) {
         /* FileBrowser raises the flag before it writes an access answer, and both may have come after the take at the
-         * top of the drain: read again, so a "granted" answer never finds fileAccess() stale. */
+         * top of the drain: read again, so a "granted" answer never finds fileAccess() stale. Its
+         * fileAccessChanged() runs slots now, which may cancel or make requests, this one included. */
         readFileAccess();
     }
-    // Forgotten before the signal, whose slot may make, cancel or close requests.
-    m_file_requests.erase(found);
+    // Forgotten before the signal, whose slot may make, cancel or close requests. Gone already: a slot of the read
+    // above retired it, and its "cancelled" answer is on its way.
+    if (!m_file_requests.remove(id)) {
+        return;
+    }
     settleFileRequest(id, answer);
 }
 

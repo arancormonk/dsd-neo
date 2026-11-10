@@ -3646,6 +3646,65 @@ check_file_access_requests() {
           "a granted answer finds fileAccess() granted although the grant came after the drain began");
 }
 
+/*
+ * #830: the access answer's re-read of fileAccess() emits fileAccessChanged() before the answer settles, and the browser
+ * answers that at once by cancelling its roots request and asking again. The answer must not hold a place in the live
+ * requests across that: here the slot grows them past a rehash, so a place held from before points nowhere. The answer
+ * still settles once, and the cancelled request is answered once, cancelled.
+ */
+static void
+check_access_answer_survives_request_changes() {
+    fileBrowser() = PlatformFileBrowser();
+    FileHost host;
+    fileBrowser().accessState =
+        QStringLiteral(R"({"declared":true,"granted":false,"route":"permission","apiLevel":29,"rootsGeneration":0})");
+    host.refreshFileAccess();
+    const qint64 s = host.openFileBrowserSession();
+    const qint64 roots = host.requestFileRoots(s);
+    const qint64 access = host.requestFileAccess(s);
+    QList<qint64> asked;
+    QObject::connect(&host, &dsd_qt::DecoderHost::fileAccessChanged, &host, [&host, &asked, roots, s] {
+        if (!asked.isEmpty()) {
+            return;
+        }
+        host.cancelFileRequest(roots);
+        for (int i = 0; i < 200; ++i) {
+            asked.append(host.requestFileRoots(s));
+        }
+    });
+    fileBrowser().records = QStringList{access_record(access, "granted")};
+    fileBrowser().grantWithNextRecord =
+        QStringLiteral(R"({"declared":true,"granted":true,"route":"permission","apiLevel":29,"rootsGeneration":1})");
+    host.refresh();
+    check(asked.size() == 200, "the grant's re-read ran the browser's slot before the answer settled");
+    check(host.lines() == QStringList{answer_line("access", access, "granted")}, "the access answer settles once");
+    QCoreApplication::processEvents();
+    check(host.lines().size() == 2 && host.lines().last() == answer_line("roots", roots, "cancelled"),
+          "the roots request the slot cancelled is answered cancelled, once");
+    QStringList records;
+    for (const qint64 id : asked) {
+        records.append(roots_record(id));
+    }
+    fileBrowser().records = records;
+    host.refresh();
+    check(host.answers.size() == 202, "each request the slot made is still live and answered by its record");
+    // An access answer whose request the slot itself retires is not settled a second time.
+    host.answers.clear();
+    fileBrowser().accessState =
+        QStringLiteral(R"({"declared":true,"granted":false,"route":"permission","apiLevel":29,"rootsGeneration":2})");
+    host.refreshFileAccess();
+    const qint64 retired = host.requestFileAccess(s);
+    QObject::connect(&host, &dsd_qt::DecoderHost::fileAccessChanged, &host,
+                     [&host, retired] { host.cancelFileRequest(retired); });
+    fileBrowser().records = QStringList{access_record(retired, "granted")};
+    fileBrowser().grantWithNextRecord =
+        QStringLiteral(R"({"declared":true,"granted":true,"route":"permission","apiLevel":29,"rootsGeneration":3})");
+    host.refresh();
+    QCoreApplication::processEvents();
+    check(host.lines() == QStringList{answer_line("access", retired, "cancelled")},
+          "an access request the slot cancelled is answered cancelled only");
+}
+
 static QVariantMap
 access_reading(bool declared, bool granted, const char* route, int apiLevel, qint64 generation) {
     return {{QStringLiteral("declared"), declared},
@@ -3819,6 +3878,7 @@ main(int argc, char** argv) {
     check_file_access_state();
     check_file_browser_host_end();
     check_file_reference_round_trip();
+    check_access_answer_survives_request_changes();
     DecoderHostAndroid host;
     /* Settings shows the Screen rows only where the host applies them (#574). */
     check(host.screenPolicySupported(), "the Android host applies the screen policy");
