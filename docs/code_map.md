@@ -15790,6 +15790,15 @@ the window), and it has no name. A covered panel is nameless, and headings and t
 `Accessible.focusable` are focusable only while in the tree, so a node TalkBack may still ask about offers nothing to
 stop on (`tst_a11y_closed_sheets.qml` `test_a_covered_sheet_leaves_the_tree`).
 
+A gated item's name comes from its gate itself (`Accessible.name: !navigationAllowed || !visible ? "" : text`), never
+from `Accessible.ignored` read back (issue #830). A `ListView` sets that flag on every delegate it lays out
+(`QQuickItemViewFxItem::setVisible`, Qt 6.11.3) without a change signal, so a row made under a sheet came back into
+the tree with the empty name it had then, and kept it once the sheet closed: its gate then set the flag to what it
+already was, which changes nothing. Diagnostics lines that arrived while the log streamed were nameless on Pause.
+`ReadableText` and every other gated name follow the rule (Diagnostics' rows keep no name while the log streams,
+from their own gate); the speech pacers' `shown: !….Accessible.ignored` read it only on items no view lays out.
+Test: `tst_readable_text_gate.qml`.
+
 A notice that is read out when it is set (a picker failure, an import problem, a Download-folder save's location;
 issue #829) goes through `Navigation.announce(owner, line, text)`: it does nothing for an empty text or while
 `Navigation.allows(line)` is false (`line` null: no gate, as for the backup card's notices, which live on Settings),

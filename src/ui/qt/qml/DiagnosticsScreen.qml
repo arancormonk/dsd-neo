@@ -115,6 +115,7 @@ Item {
             width: list.width
             text: line
             Accessible.ignored: !navigationAllowed || !visible || !diagnosticsLog.paused
+            Accessible.name: !navigationAllowed || !visible || !diagnosticsLog.paused ? "" : text
             textFormat: Text.PlainText
             wrapMode: Text.WrapAnywhere
             color: Theme.textPrimary

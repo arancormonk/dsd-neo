@@ -1098,7 +1098,7 @@ Item {
                             // the passphrase sheet it leaves the tree, and holds no name.
                             readonly property bool navigationAllowed: Navigation.allows(backupNotice)
                             Accessible.ignored: !navigationAllowed || !visible
-                            Accessible.name: Accessible.ignored ? "" : text
+                            Accessible.name: !navigationAllowed || !visible ? "" : text
                         }
                     }
 

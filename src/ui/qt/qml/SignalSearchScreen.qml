@@ -572,7 +572,7 @@ Item {
                         // being lifted over the covered panel (issue #828).
                         readonly property bool navigationAllowed: Navigation.allows(searchFrequencyText)
                         Accessible.ignored: !navigationAllowed || !visible
-                        Accessible.name: Accessible.ignored ? "" : text
+                        Accessible.name: !navigationAllowed || !visible ? "" : text
                     }
                     Item {
                         id: strengthSlot
@@ -664,7 +664,7 @@ Item {
                         // short form would read the line twice.
                         readonly property bool navigationAllowed: Navigation.allows(identificationText)
                         Accessible.ignored: !navigationAllowed || !visible || text.length === 0
-                        Accessible.name: Accessible.ignored ? "" : screen.identificationFull
+                        Accessible.name: !navigationAllowed || !visible || text.length === 0 ? "" : screen.identificationFull
                     }
                     Item {
                         width: parent.width
@@ -732,7 +732,7 @@ Item {
                             readonly property string fullText: text.length > 0 ? qsTr("Saved frequency: %1").arg(screen.knownNames.join(", ")) : ""
                             readonly property bool navigationAllowed: Navigation.allows(savedNames)
                             Accessible.ignored: !navigationAllowed || !visible || text.length === 0
-                            Accessible.name: Accessible.ignored ? "" : fullText
+                            Accessible.name: !navigationAllowed || !visible || text.length === 0 ? "" : fullText
                         }
                         Text {
                             id: savedMore
@@ -1031,7 +1031,7 @@ Item {
                                 Accessible.role: Accessible.StaticText
                                 readonly property bool navigationAllowed: Navigation.allows(historyDetail)
                                 Accessible.ignored: !navigationAllowed || !visible
-                                Accessible.name: Accessible.ignored ? "" : fullText.replace(/\n/g, " · ")
+                                Accessible.name: !navigationAllowed || !visible ? "" : fullText.replace(/\n/g, " · ")
                                 color: Theme.textSecondary
                                 font.family: Theme.sans
                                 font.pixelSize: Theme.fontSize(13)

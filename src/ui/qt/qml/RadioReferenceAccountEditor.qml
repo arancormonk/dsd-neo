@@ -332,7 +332,7 @@ Column {
         Accessible.role: Accessible.Link
         readonly property bool navigationAllowed: Navigation.allows(appKeyRequest)
         Accessible.ignored: !navigationAllowed || !visible
-        Accessible.name: Accessible.ignored ? "" : appKeyRequestText.text.replace(/<[^>]*>/g, "")
+        Accessible.name: !navigationAllowed || !visible ? "" : appKeyRequestText.text.replace(/<[^>]*>/g, "")
         Accessible.onPressAction: {
             if (Navigation.allows(appKeyRequest) && linkUrl.length > 0)
                 Qt.openUrlExternally(linkUrl);

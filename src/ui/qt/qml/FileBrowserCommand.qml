@@ -52,7 +52,7 @@ Column {
                 activeFocusOnTab: false
                 Accessible.role: Accessible.StaticText
                 Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: Accessible.ignored ? "" : text
+                Accessible.name: !navigationAllowed || !visible ? "" : text
             }
         }
     }

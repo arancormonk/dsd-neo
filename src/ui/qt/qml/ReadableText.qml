@@ -26,5 +26,9 @@ Text {
     readonly property bool navigationAllowed: Navigation.allows(readable)
     // Gate first: see OutlineButton.
     Accessible.ignored: !navigationAllowed || !visible
-    Accessible.name: Accessible.ignored ? "" : text
+    // From the gate itself, never from Accessible.ignored read back: a list
+    // view sets that flag on each delegate it lays out, with no change signal,
+    // so a row made under a sheet came back into the tree with the empty name
+    // it had then and kept it (#830).
+    Accessible.name: navigationAllowed && visible ? text : ""
 }
