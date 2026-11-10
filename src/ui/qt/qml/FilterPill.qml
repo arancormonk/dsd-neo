@@ -10,6 +10,12 @@ Rectangle {
     property string text: ""
     property bool active: false
     property bool caret: true
+    // Opt-in (#831 B8): the label wraps between words inside the width the
+    // pill is given, and the pill grows taller, where a one-line pill would be
+    // cut off by a narrow sheet or large text. The consumer bounds the width.
+    // It is a WholeWordLabel (issue #646): a word wider than the pill is drawn
+    // smaller, down to its normal-text size, and only then elided.
+    property bool wrapLabel: false
     signal clicked
 
     property string accessibleName: text
@@ -37,9 +43,14 @@ Rectangle {
     FocusFrame {}
     Accessible.selected: active
 
-    implicitWidth: pillContent.implicitWidth + 30
-    implicitHeight: Math.max(Theme.minimumTouchSize, label.implicitHeight + 24)
-    radius: height / 2
+    readonly property real caretSpace: caret ? caretMark.implicitWidth + pillContent.spacing : 0
+    // A wrapping pill's natural width is its label on one line at the full
+    // text size: never the wrapped label's, and never a size a fit shrank it
+    // to, so it grows back once there is room.
+    implicitWidth: (wrapLabel ? wrapped.lineWidth + caretSpace : pillContent.implicitWidth) + 30
+    implicitHeight: Math.max(Theme.minimumTouchSize, (wrapLabel ? wrapped.height : label.implicitHeight) + 24)
+    // Wrapped over several lines, the ends keep a one-line pill's curve.
+    radius: wrapped.lineCount > 1 ? Math.max(Theme.minimumTouchSize, wrapped.height / wrapped.lineCount + 24) / 2 : height / 2
     color: active ? Theme.chipSelectedFill : Theme.panel
     border.width: 1
     border.color: active ? Theme.cyan : Theme.controlBorder
@@ -51,7 +62,8 @@ Rectangle {
 
         Text {
             id: label
-            objectName: "filterPillLabel"
+            objectName: control.wrapLabel ? "" : "filterPillLabel"
+            visible: !control.wrapLabel
             anchors.verticalCenter: parent.verticalCenter
             text: control.text
             // A pill can name a saved system or an imported category.
@@ -62,14 +74,48 @@ Rectangle {
             color: control.active ? Theme.cyan : Theme.buttonSecondaryText
         }
 
+        // Built only for a wrapping pill.
+        Loader {
+            id: wrapped
+            readonly property real lineWidth: item ? item.lineWidth : 0
+            readonly property int lineCount: item ? item.lineCount : 0
+            active: control.wrapLabel
+            visible: active
+            anchors.verticalCenter: parent.verticalCenter
+            sourceComponent: Component {
+                WholeWordLabel {
+                    objectName: "filterPillLabel"
+                    readonly property real lineWidth: Math.ceil(oneLine.advanceWidth) + 1
+                    width: Math.max(0, Math.min(lineWidth, control.width - 30 - control.caretSpace))
+                    horizontalAlignment: Text.AlignHCenter
+                    text: control.text
+                    textFormat: Text.PlainText
+                    basePixelSize: 13
+                    measureWeight: Font.DemiBold
+                    font.weight: Font.DemiBold
+                    color: label.color
+
+                    // At the whole size a Text draws the full text size at.
+                    TextMetrics {
+                        id: oneLine
+                        font.family: Theme.sans
+                        font.pixelSize: Math.round(Theme.fontSize(13))
+                        font.weight: Font.DemiBold
+                        text: control.text
+                    }
+                }
+            }
+        }
+
         Caret {
+            id: caretMark
             visible: control.caret
             anchors.verticalCenter: parent.verticalCenter
             color: label.color
         }
     }
 
-    TapHandler {
-        onTapped: control.activate()
+    GatedTapHandler {
+        onAllowedTap: control.activate()
     }
 }

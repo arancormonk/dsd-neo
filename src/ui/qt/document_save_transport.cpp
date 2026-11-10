@@ -19,7 +19,7 @@ namespace dsd_qt {
 
 namespace {
 
-/* copy_file_to_local_document() with @p proceed asked before every chunk. */
+/* copy_file_to_local_document() (document_import_transport.h) with @p proceed asked before every chunk. */
 bool
 copy_to_local_document(const QString& sourcePath, const QString& reference,
                        const std::function<bool(qint64)>& proceed) {
@@ -66,12 +66,6 @@ bool
 DocumentSaveTransport::proceedCopy(qint64 copied) {
     (void)copied;
     return !aborted();
-}
-
-bool
-copy_file_to_local_document(const QString& sourcePath, const QString& reference, const std::atomic<bool>* aborted) {
-    return copy_to_local_document(sourcePath, reference,
-                                  [aborted](qint64) { return aborted == nullptr || !aborted->load(); });
 }
 
 } // namespace dsd_qt

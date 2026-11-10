@@ -3,10 +3,12 @@
 
 /*
  * The import copies' transport (#832), less its JNI calls (platform*Import*() in decoder_host_android.cpp), so the
- * desktop host test compiles this dispatch as it ships. Its copies run on the import worker thread; it never holds the
- * host, only calls the host's static JNI functions.
+ * desktop host test compiles this dispatch as it ships. Its copies and probes (#831) run on the import worker thread,
+ * and the backup's save (writeFromFile(), #831) on BackupModel's worker; it never holds the host, only calls the host's
+ * static JNI functions.
  */
 
+#include <QByteArray>
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
@@ -16,18 +18,25 @@
 #include <mutex>
 #include "decoder_host_android.h"
 #include "document_import_transport.h"
+#include "document_probe_record.h"
 
 namespace dsd_android {
 
 class DecoderHostAndroid::ImportTransport final : public dsd_qt::DocumentImportTransport {
   public:
     int copy(qint64 request, const QString& reference, const QString& destPath, qint64 maxBytes) override;
+    int probe(qint64 request, const QString& reference, dsd_qt::ImportProbe* out, qint64 maxCount) override;
     void cancel(qint64 request) override;
     dsd_qt::ImportCopyProgress progress(qint64 request) const override;
     void forget(qint64 request) override;
+    bool writeFromFile(const QString& path, const QString& reference) override;
+    void discardWrite(const QString& reference) override;
 
   private:
     int copyContent(qint64 request, const QString& reference, const QString& destPath, qint64 maxBytes) const;
+    int probeContent(qint64 request, const QString& reference, dsd_qt::ImportProbe* out, qint64 maxCount) const;
+    /** Note whether @p request's latest transfer goes to the platform: whether @p reference is a content URI. */
+    bool takePlatform(qint64 request, const QString& reference);
     bool onPlatform(qint64 request) const;
 
     mutable std::mutex m_lock;
@@ -35,15 +44,18 @@ class DecoderHostAndroid::ImportTransport final : public dsd_qt::DocumentImportT
     QHash<qint64, bool> m_platform;
 };
 
+bool
+DecoderHostAndroid::ImportTransport::takePlatform(qint64 request, const QString& reference) {
+    const bool content = isContentUri(reference);
+    const std::lock_guard<std::mutex> lock(m_lock);
+    m_platform.insert(request, content);
+    return content;
+}
+
 int
 DecoderHostAndroid::ImportTransport::copy(qint64 request, const QString& reference, const QString& destPath,
                                           qint64 maxBytes) {
-    const bool content = isContentUri(reference);
-    {
-        const std::lock_guard<std::mutex> lock(m_lock);
-        m_platform.insert(request, content);
-    }
-    if (!content) {
+    if (!takePlatform(request, reference)) {
         return dsd_qt::DocumentImportTransport::copy(request, reference, destPath, maxBytes);
     }
     return copyContent(request, reference, destPath, maxBytes);
@@ -77,6 +89,44 @@ DecoderHostAndroid::ImportTransport::copyContent(qint64 request, const QString& 
     }
 }
 
+int
+DecoderHostAndroid::ImportTransport::probe(qint64 request, const QString& reference, dsd_qt::ImportProbe* out,
+                                           qint64 maxCount) {
+    if (!takePlatform(request, reference)) {
+        return dsd_qt::DocumentImportTransport::probe(request, reference, out, maxCount);
+    }
+    return probeContent(request, reference, out, maxCount);
+}
+
+/*
+ * The record names the document whatever the result; the header and length count only for a whole probe. An answer
+ * that is no record (a failed JNI call reads as an empty string) or a code this side does not know is a failure.
+ */
+int
+DecoderHostAndroid::ImportTransport::probeContent(qint64 request, const QString& reference, dsd_qt::ImportProbe* out,
+                                                  qint64 maxCount) const {
+    if (out == nullptr) {
+        return DocumentFailed;
+    }
+    *out = dsd_qt::ImportProbe();
+    if (aborted() || maxCount < 0 || !platformHoldsResolver()) {
+        return DocumentFailed;
+    }
+    DocumentProbeRecord record;
+    if (!parse_document_probe_record(platformProbeImportDocument(request, reference, maxCount), &record)) {
+        return DocumentFailed;
+    }
+    out->displayName = record.name;
+    switch (record.code) {
+        case DocumentCopied:
+            out->header = record.header;
+            out->total = record.total;
+            return DocumentCopied;
+        case DocumentCancelled: return DocumentCancelled;
+        default: return DocumentFailed;
+    }
+}
+
 void
 DecoderHostAndroid::ImportTransport::cancel(qint64 request) {
     dsd_qt::DocumentImportTransport::cancel(request);
@@ -103,6 +153,20 @@ DecoderHostAndroid::ImportTransport::forget(qint64 request) {
     }
     dsd_qt::DocumentImportTransport::forget(request);
     platformForgetImport(request);
+}
+
+/* The backup's save (#831), which needs no host: a content URI saves as the export saves' transport does. */
+bool
+DecoderHostAndroid::ImportTransport::writeFromFile(const QString& path, const QString& reference) {
+    if (!isContentUri(reference)) {
+        return dsd_qt::DocumentImportTransport::writeFromFile(path, reference);
+    }
+    return saveContentDocument(path, reference, aborted());
+}
+
+void
+DecoderHostAndroid::ImportTransport::discardWrite(const QString& reference) {
+    platformDiscardPendingDownload(reference);
 }
 
 bool

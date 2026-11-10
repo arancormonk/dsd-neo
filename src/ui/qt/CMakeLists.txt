@@ -29,6 +29,7 @@ target_sources(
         backup_apply_fs.cpp
         backup_archive.cpp
         backup_archive_build.cpp
+        backup_archive_incoming.cpp
         backup_archive_parse.cpp
         backup_archive_rules.cpp
         backup_typed_paths.cpp
@@ -126,6 +127,7 @@ qt_add_resources(
         qml/Util.js
         qml/Main.qml
         qml/PointerBarrier.qml
+        qml/GatedTapHandler.qml
         # WP-D4 site chooser. Keep resource paths on their own lines for the audit.
         qml/SiteChooserSheet.qml
         qml/BandRail.qml
@@ -160,6 +162,8 @@ qt_add_resources(
         qml/ScanListScreen.qml
         qml/ScanListCard.qml
         qml/ScanEntryRow.qml
+        qml/ImportKindPicker.qml
+        qml/IncomingDocumentFlow.qml
         qml/ImportsScreen.qml
         qml/LevelMeter.qml
         qml/LogoMark.qml

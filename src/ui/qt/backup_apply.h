@@ -111,6 +111,9 @@ void sweep_stale_staging();
  */
 bool discard_staging(const QString& stagingDir);
 
+/** discard_staging() under @p dataRoot, a data root the caller read (a worker takes the one the UI thread read). */
+bool discard_staging(const QString& dataRoot, const QString& stagingDir);
+
 /** What a test makes a named apply step do. */
 enum class Fault {
     None,

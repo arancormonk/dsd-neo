@@ -119,9 +119,9 @@ Rectangle {
         color: control.textColor
     }
 
-    TapHandler {
+    GatedTapHandler {
         id: tap
         enabled: control.enabled
-        onTapped: control.activate()
+        onAllowedTap: control.activate()
     }
 }

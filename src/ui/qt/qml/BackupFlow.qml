@@ -67,13 +67,15 @@ Item {
         openPicker.open();
     }
 
-    // The restore past its picker, for a document already chosen.
+    // The restore past its picker, for a document already chosen. False when
+    // a restore cannot start now (restoreOpen()); the caller says why.
     function restoreFromReference(ref) {
         if (!restoreOpen())
-            return;
+            return false;
         start("unlock");
         restoreBegun();
         showUnlock(ref);
+        return true;
     }
 
     // Settings' "Cancel restore": drop a restore that waits for the next start,

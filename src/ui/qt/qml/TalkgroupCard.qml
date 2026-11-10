@@ -112,7 +112,7 @@ Rectangle {
             }
         }
     }
-    TapHandler {
-        onLongPressed: card.editRequested()
+    GatedTapHandler {
+        onAllowedLongPress: card.editRequested()
     }
 }

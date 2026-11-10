@@ -1078,7 +1078,10 @@ a prepared target list, including
 `examples/trunk_scan_targets.csv`. It is also available as **Trunk scan targets**
 in the imported-files library. Choose the CSV and any requested companion files,
 review the target preview, name the list, select its receiver settings, and Save.
-The list's Play button starts the imported CSV directly.
+The list's Play button starts the imported CSV directly. On Android a target CSV can
+also come from another app: open it with **Open with** or **Share** → DSD-neo and
+choose **Target CSV**, which opens the editor on a new list with those targets, as
+Import target CSV does (`android/README.md` "Opening files from other apps").
 
 The CSV stays authoritative. Its target IDs, order, columns and supported `options`
 are preserved; the preview shows inherited timing, squelch and NFM or AM bandwidth separately from explicit values.

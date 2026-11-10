@@ -51,12 +51,15 @@ extern "C" {
 typedef enum {
     DSD_BACKUP_OK = 0,
     DSD_BACKUP_ERR_ARGS = -1,      /**< NULL pointer with a length, empty passphrase or output buffer too small. */
-    DSD_BACKUP_ERR_FORMAT = -2,    /**< Not a sealed backup: short, bad magic, reserved bytes set, wrong length. */
-    DSD_BACKUP_ERR_VERSION = -3,   /**< Sealed backup of an unknown format version. */
+    DSD_BACKUP_ERR_FORMAT = -2,    /**< Damaged: magic, then short, version 0, reserved bytes set or wrong length.
+                                        dsd_backup_parse_header() and dsd_backup_open() also return it for a file with
+                                        no magic; only dsd_backup_check_header() returns ERR_NOT_BACKUP. */
+    DSD_BACKUP_ERR_VERSION = -3,   /**< Sealed backup of a newer format version (above 1). */
     DSD_BACKUP_ERR_PARAMS = -4,    /**< Unknown KDF or KDF parameters outside the accepted range. */
     DSD_BACKUP_ERR_AUTH = -5,      /**< Wrong passphrase or tampered data; nothing was released. */
     DSD_BACKUP_ERR_TOO_LARGE = -6, /**< Payload longer than ::DSD_BACKUP_MAX_PAYLOAD_BYTES. */
-    DSD_BACKUP_ERR_INTERNAL = -7   /**< OpenSSL failure (allocation, RNG, cipher). */
+    DSD_BACKUP_ERR_INTERNAL = -7,  /**< OpenSSL failure (allocation, RNG, cipher). */
+    DSD_BACKUP_ERR_NOT_BACKUP = -8 /**< No backup magic: not a sealed backup at all (dsd_backup_check_header()). */
 } dsd_backup_status;
 
 /** scrypt cost parameters stored in the header (N = 2^log2_n). */
@@ -72,8 +75,38 @@ void dsd_backup_kdf_params_default(dsd_backup_kdf_params* out);
 /** Sealed size for a payload of `payload_len` bytes (header + payload + tag), or 0 when it exceeds the maximum. */
 size_t dsd_backup_sealed_size(size_t payload_len);
 
+/** 1 when `bytes` holds at least the 8 magic bytes and they match, else 0 (also for NULL). */
+int dsd_backup_has_magic(const uint8_t* bytes, size_t len);
+
+/**
+ * Classify the start of a document as a sealed backup, without deriving a key and without the whole file.
+ *
+ * Reads only the first min(`header_len`, ::DSD_BACKUP_HEADER_BYTES) bytes of `header`; `total_len` is the whole
+ * document's length. The first failing check decides:
+ *
+ * 1. no magic (fewer than 8 bytes, or other bytes) → ERR_NOT_BACKUP;
+ * 2. `header_len` below ::DSD_BACKUP_HEADER_BYTES → ERR_FORMAT;
+ * 3. version 0 → ERR_FORMAT; version above 1 → ERR_VERSION;
+ * 4. reserved bytes set → ERR_FORMAT;
+ * 5. unknown KDF or parameters outside the accepted range → ERR_PARAMS;
+ * 6. payload length above ::DSD_BACKUP_MAX_PAYLOAD_BYTES → ERR_TOO_LARGE;
+ * 7. `total_len` other than header + payload + tag → ERR_FORMAT.
+ *
+ * A NULL `header` with a non-zero `header_len` is ERR_ARGS. Steps 1-6 need no length, so a caller that does not know
+ * it can pass UINT64_MAX: a passing header then ends in ERR_FORMAT at step 7.
+ *
+ * @param kdf_out          Optional; receives the header's KDF parameters on success.
+ * @param payload_len_out  Optional; receives the payload length on success.
+ *
+ * @return DSD_BACKUP_OK, or ERR_ARGS / ERR_NOT_BACKUP / ERR_FORMAT / ERR_VERSION / ERR_PARAMS / ERR_TOO_LARGE.
+ */
+int dsd_backup_check_header(const uint8_t* header, size_t header_len, uint64_t total_len,
+                            dsd_backup_kdf_params* kdf_out, size_t* payload_len_out);
+
 /**
  * Validate a sealed backup's header and overall length without deriving a key.
+ *
+ * dsd_backup_check_header() over the whole `sealed` buffer, except that a missing magic is ERR_FORMAT.
  *
  * @param kdf_out          Optional; receives the header's KDF parameters on success.
  * @param payload_len_out  Optional; receives the payload length on success.
@@ -106,7 +139,8 @@ int dsd_backup_seal_with(const uint8_t* pass, size_t pass_len, const dsd_backup_
  *
  * `out` needs the payload length reported by dsd_backup_parse_header() and must not overlap `sealed`. `*out_len` is
  * the payload length on success and 0 on failure. On ERR_AUTH (wrong passphrase or tampering) every byte written to
- * `out` has been wiped, so no unauthenticated plaintext is released.
+ * `out` has been wiped, so no unauthenticated plaintext is released. The header fails as in dsd_backup_parse_header()
+ * (a missing magic is ERR_FORMAT).
  */
 int dsd_backup_open(const uint8_t* pass, size_t pass_len, const uint8_t* sealed, size_t sealed_len, uint8_t* out,
                     size_t out_cap, size_t* out_len);

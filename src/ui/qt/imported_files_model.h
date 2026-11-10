@@ -40,6 +40,7 @@ struct LibraryFile;
 
 class DecoderHost;
 class ImportService;
+struct ImportProbe;
 
 class ImportedFilesModel : public QAbstractListModel {
     Q_OBJECT
@@ -155,6 +156,25 @@ class ImportedFilesModel : public QAbstractListModel {
     Q_INVOKABLE void cancelImport(int id);
 
     /**
+     * @brief Tell what the document @p reference names is (#831, a document opened from another app) before anything
+     * is asked of the user: its start is read on the import worker (ImportService::probeDocument()), and its whole
+     * length only when it starts like a backup (up to backup::kMaxSealedBytes + 1).
+     *
+     * Probes are not imports: importing() never counts them, and cancelImport() never reaches them.
+     *
+     * @return The request id (> 0); documentInspected() answers it exactly once, queued. Result keys: kind, name.
+     *         kind is "backup", "newerBackup", "damagedBackup" or "tooLargeBackup" (backup::classify_incoming()),
+     *         "other" for anything that is no backup, "unreadable" when the document could not be read, or
+     *         "cancelled"; name is the document's name, empty when unknown.
+     */
+    Q_INVOKABLE int inspectDocument(const QString& reference);
+    /**
+     * @brief Cancel probe @p id: one not answered yet is answered "cancelled" at once (queued), and its read is told to
+     * stop; its result, whenever the read returns, is dropped. Once answered, or for an unknown id, it does nothing.
+     */
+    Q_INVOKABLE void cancelInspect(int id);
+
+    /**
      * @brief Adopt a file this process generated, recording where it came from.
      *
      * beginImport()'s stage and commit, run at once on the calling thread: the source is a plain path we wrote
@@ -235,6 +255,8 @@ class ImportedFilesModel : public QAbstractListModel {
     void entriesChanged();
     void importingChanged();
     void importFinished(int id, const QVariantMap& result);
+    /** inspectDocument()'s answer, exactly once per id. */
+    void documentInspected(int id, const QVariantMap& result);
 
   private:
     /** What a request imports into: a new row of a type, or the row a replace began against (its commit needs that row
@@ -273,6 +295,10 @@ class ImportedFilesModel : public QAbstractListModel {
     QVariantMap importNow(const QString& reference, const QString& providerName, const QString& hint,
                           const QString& type, const ImportTarget& target, const QVariantMap& origin);
     void finishImport(qint64 id, const QVariantMap& staged, bool cancelled, const ImportTarget& target);
+    /** A probe's commit: answer it, unless its cancel already did. */
+    void finishInspect(qint64 id, int probed, const ImportProbe& probe);
+    /** Emit documentInspected(@p id, @p result) later, from the event loop. */
+    void answerInspection(int id, const QVariantMap& result);
     QVariantMap commitStaged(const QVariantMap& staged, bool cancelled, const ImportTarget& target,
                              const QVariantMap& origin);
     QVariantMap commitNewFile(const QVariantMap& staged, const QVariantMap& origin);
@@ -383,6 +409,8 @@ class ImportedFilesModel : public QAbstractListModel {
     QHash<qint64, InFlight> m_inFlight;
     /* Imports answered at their cancel whose commit has not run yet: it publishes nothing and answers nothing. */
     QSet<qint64> m_dropped;
+    /* Probes not answered yet; apart from m_inFlight, so a probe is never an import (importing(), cancelImport()). */
+    QSet<qint64> m_probes;
 };
 
 } // namespace dsd_qt

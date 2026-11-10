@@ -49,6 +49,9 @@ Item {
     // list, Explore or a wizard test. The key sheet may write its profile.
     property string sessionSystemUid: ""
     signal systemProfileSaved(string uid)
+    // A key sheet apply still waiting for the decoder, which outlives the
+    // sheet; Main reaches the sheet only through this screen.
+    readonly property bool keyApplyActive: keySheet.applyActive
     // After an Activity restart the reattached session has no saved-system map,
     // but the persisted session label still names what is playing — the header
     // should agree with the history rows it sits above. A map without a name (a
@@ -706,9 +709,9 @@ Item {
                         color: Theme.textSecondary
                     }
 
-                    TapHandler {
+                    GatedTapHandler {
                         id: spectrumTap
-                        onTapped: screen.openSpectrum()
+                        onAllowedTap: screen.openSpectrum()
                     }
                 }
 
@@ -795,10 +798,10 @@ Item {
                         }
                     }
 
-                    TapHandler {
+                    GatedTapHandler {
                         id: liveTap
                         enabled: livePill.acts
-                        onTapped: livePill.activate()
+                        onAllowedTap: livePill.activate()
                     }
                 }
             }
@@ -1728,8 +1731,8 @@ Item {
                     font.pixelSize: Theme.fontSize(12)
                     color: Theme.textPrimary
                 }
-                TapHandler {
-                    onTapped: siteSheet.visible = true
+                GatedTapHandler {
+                    onAllowedTap: siteSheet.visible = true
                 }
             }
 
@@ -1766,8 +1769,8 @@ Item {
                     font.pixelSize: Theme.fontSize(12)
                     color: Theme.textPrimary
                 }
-                TapHandler {
-                    onTapped: decryptionRow.activate()
+                GatedTapHandler {
+                    onAllowedTap: decryptionRow.activate()
                 }
             }
 
@@ -2853,9 +2856,9 @@ Item {
                 color: Theme.textSubdued
             }
 
-            TapHandler {
+            GatedTapHandler {
                 id: lostLineTap
-                onTapped: lostLine.activate()
+                onAllowedTap: lostLine.activate()
             }
         }
     }

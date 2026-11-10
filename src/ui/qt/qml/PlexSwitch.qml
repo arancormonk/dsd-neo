@@ -71,12 +71,12 @@ Item {
         }
     }
 
-    TapHandler {
+    GatedTapHandler {
         enabled: Navigation.allows(control) && control.enabled && control.interactive
         // Report the request only — never assign checked here. A self-assignment
         // would destroy the instantiation site's `checked:` binding on the first
         // tap, leaving the switch permanently detached from its backing property.
         // Owners flip the backing property in onToggled and the binding follows.
-        onTapped: control.activate()
+        onAllowedTap: control.activate()
     }
 }

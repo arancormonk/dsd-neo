@@ -524,10 +524,10 @@ Item {
                 color: deviceStatus.state === "ready" || deviceStatus.alerting ? Theme.textPrimary : Theme.textSubdued
             }
 
-            TapHandler {
+            GatedTapHandler {
                 id: pillTap
                 enabled: dongleStatusPill.actionable
-                onTapped: dongleStatusPill.activate()
+                onAllowedTap: dongleStatusPill.activate()
             }
         }
     }
@@ -1017,9 +1017,9 @@ Item {
                         }
                         // Long-press manages the card: the design keeps card faces clean,
                         // so destructive actions hide behind the press.
-                        TapHandler {
+                        GatedTapHandler {
                             acceptedButtons: Qt.LeftButton
-                            onLongPressed: manageMenu.openFor(card.index, card.name)
+                            onAllowedLongPress: manageMenu.openFor(card.index, card.name)
                         }
                     }
                 }
@@ -1135,11 +1135,11 @@ Item {
 
                     // The whole card is the tap target, More's spot aside (More takes
                     // its own press). Long-press manages the card, as a system card's does.
-                    TapHandler {
+                    GatedTapHandler {
                         id: faceTap
                         enabled: exploreFace.enabled
-                        onTapped: exploreFace.activate()
-                        onLongPressed: exploreMenu.openFor()
+                        onAllowedTap: exploreFace.activate()
+                        onAllowedLongPress: exploreMenu.openFor()
                     }
                     Rectangle {
                         anchors.fill: parent

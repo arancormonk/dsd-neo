@@ -1102,10 +1102,10 @@ Item {
                                 font.weight: crumbStep.current ? Font.DemiBold : Font.Normal
                                 color: crumbStep.current ? Theme.textPrimary : Theme.cyan
                             }
-                            TapHandler {
+                            GatedTapHandler {
                                 id: crumbTap
                                 enabled: !crumbStep.current
-                                onTapped: crumb.activate()
+                                onAllowedTap: crumb.activate()
                             }
                         }
                     }

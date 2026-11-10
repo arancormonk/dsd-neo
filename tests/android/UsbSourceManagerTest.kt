@@ -7,6 +7,7 @@ import android.content.Intent
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -337,6 +338,28 @@ private fun anUnrelatedDetachChangesNothing() {
     check(DsdNative.stopCauses.isEmpty() && rig.record().optBoolean("ready")) { "another dongle's detach leaves the session alone" }
 }
 
+// #831 B9: the activity is exported, so any app can start it with a USB_DEVICE_ATTACHED intent whose EXTRA_DEVICE no
+// class loader here knows. Reading it throws, on API 33+ past IntentExtras' probe, and that must read as no device extra
+// rather than crash the running decoder. ATTACHED and DETACHED are protected broadcasts, so only the system sends them
+// to the receiver; the broadcasts below check that its reads of the same extra hold too.
+private fun anUnreadableDeviceExtraIsNoDevice(sdk: Int) {
+    Build.VERSION.SDK_INT = sdk
+    val rig = Rig()
+    rig.connect(rtl(RTL_A))
+    DsdNative.sessionUsesLocalReceiver = true
+    UsbSourceManager.takeAttachment()
+    val attach = Intent(UsbManager.ACTION_USB_DEVICE_ATTACHED).putUnreadableExtra(UsbManager.EXTRA_DEVICE)
+    UsbSourceManager.reportAttachment(rig.context, attach)
+    rig.context.broadcast(attach)
+    check(UsbSourceManager.takeAttachment() == "") { "API $sdk: nothing is attached" }
+    check(DsdNative.stopCauses.isEmpty() && rig.record().optBoolean("ready")) { "API $sdk: the session goes on" }
+    // A detach whose device cannot be read is one with no device extra, which counts as the connected receiver's (the
+    // broadcast receiver's rule since #647): it stops the session that uses it, as on main.
+    rig.context.broadcast(Intent(UsbManager.ACTION_USB_DEVICE_DETACHED).putUnreadableExtra(UsbManager.EXTRA_DEVICE))
+    check(DsdNative.stopCauses == listOf("detached") && !rig.record().optBoolean("ready")) {
+        "API $sdk: read as a detach with no device: ${DsdNative.stopCauses}"
+    }
+}
 
 private fun await(latch: CountDownLatch, what: String) {
     check(latch.await(2, TimeUnit.SECONDS)) { what }
@@ -1017,6 +1040,9 @@ private val CASES = linkedMapOf<String, () -> Unit>(
     "detach_other_session" to ::aDetachDuringAnotherSessionClosesTheConnection,
     "detach_configured" to ::aConfiguredSessionKeepsTheConnectionUntilItEnds,
     "detach_unrelated" to ::anUnrelatedDetachChangesNothing,
+    "unreadable_device_extra_30" to { anUnreadableDeviceExtraIsNoDevice(30) },
+    "unreadable_device_extra_33" to { anUnreadableDeviceExtraIsNoDevice(33) },
+    "unreadable_device_extra_36" to { anUnreadableDeviceExtraIsNoDevice(36) },
     "swap_second_session" to ::aSecondSessionGetsAFreshDescriptor,
     "swap_gone" to ::aDeviceGoneMidSwapFailsTheStart,
     "swap_permission" to ::aRevokedPermissionFailsTheStart,

@@ -73,15 +73,6 @@ class DocumentSaveTransport {
     std::atomic<bool> m_aborted{false};
 };
 
-/**
- * @brief Copy @p sourcePath into the local document @p reference names (a file:// URL or a plain absolute path).
- *
- * Writes owner-only through QSaveFile, so no failure leaves a partial document; stops before any chunk once
- * @p aborted (optional) is set. Touches no host state: DecoderHost::copyFileToDocument(), the base save transport and
- * a platform's worker jobs share it.
- */
-bool copy_file_to_local_document(const QString& sourcePath, const QString& reference, const std::atomic<bool>* aborted);
-
 } // namespace dsd_qt
 
 #endif // DSD_NEO_SRC_UI_QT_DOCUMENT_SAVE_TRANSPORT_H_

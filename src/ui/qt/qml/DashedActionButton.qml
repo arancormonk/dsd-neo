@@ -86,7 +86,7 @@ Item {
         color: Theme.cyan
     }
 
-    TapHandler {
-        onTapped: control.activate()
+    GatedTapHandler {
+        onAllowedTap: control.activate()
     }
 }

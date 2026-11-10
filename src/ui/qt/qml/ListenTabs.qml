@@ -246,9 +246,9 @@ Rectangle {
                     color: Theme.cyan
                 }
 
-                TapHandler {
+                GatedTapHandler {
                     id: tap
-                    onTapped: tab.choose()
+                    onAllowedTap: tab.choose()
                 }
             }
         }

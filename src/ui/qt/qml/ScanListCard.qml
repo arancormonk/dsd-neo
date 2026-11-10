@@ -67,7 +67,7 @@ UiPanel {
         onClicked: card.edit()
     }
 
-    TapHandler {
-        onLongPressed: card.edit()
+    GatedTapHandler {
+        onAllowedLongPress: card.edit()
     }
 }

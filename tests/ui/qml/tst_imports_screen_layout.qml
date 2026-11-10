@@ -21,6 +21,21 @@ Item {
     width: 420
     height: 900
 
+    // A wrapping pill on its own, for words longer than any kind's.
+    Item {
+        id: pillBox
+        y: 860
+        width: 200
+        height: 40
+        Ui.FilterPill {
+            id: longPill
+            width: Math.min(implicitWidth, pillBox.width)
+            wrapLabel: true
+            caret: false
+            visible: false
+        }
+    }
+
     Loader {
         id: screenLoader
 
@@ -537,7 +552,193 @@ Item {
             verify(sheet !== null);
             sheet.visible = false;
         }
+
+        function sheetOf(item) {
+            var sheet = item;
+            while (sheet && typeof sheet.requestDismiss !== "function")
+                sheet = sheet.parent;
+            verify(sheet !== null);
+            return sheet;
+        }
+
+        // #831 B8: on the narrowest phone with the largest text, the longer
+        // kinds were one-line pills wider than the sheet, which cut them off.
+        // Each pill now fits inside the sheet, its label wraps between words
+        // inside the pill, and the pill grows to hold it.
+        function test_kind_pills_fit_a_narrow_sheet_at_large_text() {
+            var width = root.width;
+            try {
+                root.width = 320;
+                Ui.Theme.fontScale = 2;
+                kindTc.importButton.clicked();
+                var picker = findChild(kindTc.screen, "importKindPicker");
+                verify(picker !== null);
+                var sheet = sheetOf(picker);
+                tryCompare(sheet, "visible", true);
+                waitForRendering(kindTc.screen);
+                var scroll = findChild(sheet, "modalSheetScroll");
+                verify(scroll !== null);
+                var kinds = ["chan", "group", "keys", "p25Bandplan", "src", "dmrTgKeys", "vertexKeys", "trunkTargets"];
+                var labels = ["Channel map", "Talkgroups", "Keys", "P25 band plan", "Radio IDs", "DMR key mappings", "Vertex keystreams", "Target CSV"];
+                var wrapped = 0;
+                for (var i = 0; i < kinds.length; i++) {
+                    var pill = findChild(picker, "importKind_" + kinds[i]);
+                    verify(pill !== null && pill.visible);
+                    var where = labels[i] + ": ";
+                    verify(pill.width <= picker.width + 0.5, where + "the pill is wider than the sheet: " + pill.width + " > " + picker.width);
+                    var inSheet = pill.mapToItem(scroll, 0, 0);
+                    verify(inSheet.x >= -0.5 && inSheet.x + pill.width <= scroll.width + 0.5, where + "the pill leaves the sheet: " + [inSheet.x, pill.width, scroll.width]);
+                    verify(pill.height >= Ui.Theme.minimumTouchSize);
+                    var label = findChild(pill, "filterPillLabel");
+                    compare(label.text, labels[i]);
+                    verify(!label.truncated);
+                    verify(label.contentWidth <= label.width + 0.5, where + "the label is wider than its line: " + label.contentWidth + " > " + label.width);
+                    // Between words only (issue #646): never more lines than words.
+                    verify(label.lineCount <= labels[i].split(" ").length, where + label.lineCount + " lines");
+                    if (label.lineCount > 1)
+                        wrapped++;
+                    var inPill = label.mapToItem(pill, 0, 0);
+                    verify(inPill.x >= 0 && inPill.x + label.width <= pill.width, where + "the label leaves the pill horizontally");
+                    verify(inPill.y >= 0 && inPill.y + label.height <= pill.height, where + "the label leaves the pill vertically");
+                }
+                verify(wrapped > 0, "a long kind wraps at this width and text size");
+                // The key format follows Keys, inside the sheet as well.
+                findChild(picker, "importKind_keys").clicked();
+                var format = findChild(kindTc.screen, "importKeyFormat");
+                verify(format !== null);
+                tryCompare(format, "visible", true);
+                var formatAt = format.mapToItem(scroll, 0, 0);
+                verify(formatAt.x >= -0.5 && formatAt.x + format.width <= scroll.width + 0.5);
+                sheet.visible = false;
+            } finally {
+                Ui.Theme.resetFontScale();
+                root.width = width;
+                kindTc.screen.pendingType = "chan";
+                kindTc.screen.pendingKeyHex = false;
+            }
+        }
+
+        // The kind and key format the sheet holds decide what is imported.
+        function test_kind_and_key_format_choose_the_type() {
+            kindTc.importButton.clicked();
+            var picker = findChild(kindTc.screen, "importKindPicker");
+            var sheet = sheetOf(picker);
+            tryCompare(sheet, "visible", true);
+            try {
+                findChild(picker, "importKind_keys").clicked();
+                var format = findChild(kindTc.screen, "importKeyFormat");
+                verify(format.visible);
+                compare(format.currentIndex, 0);
+                var types = [];
+                for (var hex of [false, true]) {
+                    format.selected(hex ? 1 : 0);
+                    compare(kindTc.screen.pendingKeyHex, hex);
+                    kindTc.screen.importPickedFile();
+                    types.push(findChild(kindTc.screen, "importsCsvImport").type);
+                    var request = testContext.lastDocumentRequest();
+                    compare(request.kind, "open");
+                    testContext.answerDocumentCancelled(request.id);
+                }
+                compare(types, ["keysDec", "keysHex"]);
+                findChild(picker, "importKind_src").clicked();
+                compare(kindTc.screen.pendingType, "src");
+                verify(!format.visible);
+            } finally {
+                sheet.visible = false;
+                kindTc.screen.pendingType = "chan";
+                kindTc.screen.pendingKeyHex = false;
+            }
+        }
+
+        // #831 B3: a screen reader names the Imports sheets by what they are
+        // for, not by the "Dialog" every unnamed sheet reads as.
+        function test_sheets_have_accessible_names() {
+            kindTc.importButton.clicked();
+            var typeSheet = sheetOf(findChild(kindTc.screen, "importKindPicker"));
+            tryCompare(typeSheet, "visible", true);
+            compare(typeSheet.Accessible.role, Accessible.Dialog);
+            compare(typeSheet.Accessible.name, "File contents");
+            // Not its first line again, which is read right after the name.
+            var first = typeSheet.content[0];
+            compare(first.text, "Import file");
+            verify(typeSheet.Accessible.name !== first.text);
+            typeSheet.visible = false;
+
+            var groups = testContext.writeFixtureCsv("named-sheet.csv", "id,mode,name\n1001,A,Dispatch\n");
+            var result = testContext.importNamed(groups, "Dispatch groups.csv", "group");
+            verify(result.ok, "the fixture did not import");
+            try {
+                kindTc.screen.actionRow = importedFiles.rowForPath(result.path);
+                var name = importedFiles.get(kindTc.screen.actionRow).name;
+                verify(name.length > 0);
+                var actionSheet = findChild(kindTc.screen, "importsActionSheet");
+                actionSheet.visible = true;
+                compare(actionSheet.Accessible.name, name);
+                actionSheet.visible = false;
+                var removeSheet = findChild(kindTc.screen, "importsRemoveSheet");
+                removeSheet.visible = true;
+                compare(removeSheet.Accessible.name, "Remove " + name + "?");
+                removeSheet.visible = false;
+            } finally {
+                kindTc.screen.actionRow = -1;
+                importedFiles.remove(importedFiles.rowForPath(result.path));
+            }
+        }
     }
+    // #831 B8, issue #646: a wrapping pill keeps whole words. A word wider
+    // than the pill is drawn smaller, down to its normal-text size, then
+    // elided; with room again it is drawn full size on one line.
+    TestCase {
+        name: "FilterPillWrap"
+        when: windowShown
+
+        function labelOf(pill) {
+            var label = findChild(pill, "filterPillLabel");
+            verify(label !== null);
+            return label;
+        }
+        function test_a_long_word_never_leaves_the_pill_data() {
+            return [
+                {tag: "shrinks", box: 200, scale: 2, text: "Ultrakeystreams list", elided: false},
+                {tag: "elides", box: 120, scale: 1, text: "Supercalifragilistic keys", elided: true}
+            ];
+        }
+        function test_a_long_word_never_leaves_the_pill(data) {
+            var box = pillBox.width;
+            try {
+                pillBox.width = data.box;
+                Ui.Theme.fontScale = data.scale;
+                longPill.text = data.text;
+                longPill.visible = true;
+                waitForRendering(longPill);
+                var label = labelOf(longPill);
+                var full = Math.round(Ui.Theme.fontSize(13));
+                verify(longPill.width <= pillBox.width + 0.5);
+                verify(label.contentWidth <= label.width + 0.5, "the label is wider than its line: " + label.contentWidth + " > " + label.width);
+                var inPill = label.mapToItem(longPill, 0, 0);
+                verify(inPill.x >= 0 && inPill.x + label.width <= longPill.width + 0.5);
+                verify(inPill.y >= 0 && inPill.y + label.height <= longPill.height + 0.5);
+                verify(label.lineCount <= data.text.split(" ").length, label.lineCount + " lines");
+                compare(label.elided, data.elided);
+                compare(label.truncated, data.elided);
+                if (!data.elided)
+                    verify(label.fitPixelSize < full && label.fitPixelSize >= 13, "drawn smaller: " + label.fitPixelSize);
+                compare(longPill.Accessible.name, data.text, "the pill still reads the whole label");
+
+                pillBox.width = 800;
+                waitForRendering(longPill);
+                compare(label.fitPixelSize, full, "full size again once there is room");
+                verify(!label.truncated);
+                compare(label.lineCount, 1);
+                compare(longPill.width, longPill.implicitWidth);
+            } finally {
+                longPill.visible = false;
+                pillBox.width = box;
+                Ui.Theme.resetFontScale();
+            }
+        }
+    }
+
     // #832: an import answers later, from the import worker.
     TestCase {
         id: importTc
@@ -603,6 +804,78 @@ Item {
             tryCompare(importTc.flow, "active", false);
             compare(importedFiles.count, 0, "the cancelled copy added nothing");
             compare(importTc.screen.notice, "");
+        }
+
+        // #831: a file another app opened, its kind already chosen, imports as
+        // a new file whatever row was last updated, and says how it went.
+        function test_import_incoming_imports_and_says_so() {
+            importTc.screen.pendingRow = 3;
+            importTc.screen.notice = "Old notice";
+            testContext.holdImports(true);
+            verify(importTc.screen.importIncoming(groups("incoming-groups.csv", 3), "incoming-groups.csv", "group"));
+            compare(importTc.screen.pendingRow, -1);
+            compare(importTc.screen.notice, "");
+            verify(importTc.flow.copying);
+            verify(importTc.screen.importActive, "a running import is reported");
+            testContext.holdImports(false);
+            tryCompare(importTc.flow, "active", false);
+            verify(!importTc.screen.importActive);
+            compare(importedFiles.count, 1);
+            compare(importedFiles.get(0).type, "group");
+            compare(importTc.screen.notice, "Imported · 3 talkgroups");
+            verify(!importTc.screen.noticeIsProblem);
+        }
+
+        // #831: the screen cancels its import when hidden, so a file handed to
+        // it hidden is refused rather than imported with no one to see it.
+        function test_import_incoming_refused_while_hidden() {
+            importTc.screen.visible = false;
+            verify(!importTc.screen.importIncoming(groups("incoming-hidden.csv", 1), "incoming-hidden.csv", "group"));
+            verify(!importTc.flow.active);
+            verify(!importTc.screen.importActive);
+            importTc.screen.visible = true;
+            wait(50);
+            compare(importedFiles.count, 0, "nothing was imported");
+        }
+
+        // #831: begin() would replace an import still copying or waiting on
+        // its companion sheet; importIncoming() refuses instead and leaves it.
+        function test_import_incoming_refused_while_an_import_runs() {
+            importTc.screen.pendingType = "group";
+            testContext.holdImports(true);
+            importTc.screen.importPickedFile();
+            accept(groups("incoming-first.csv", 2));
+            verify(importTc.flow.copying);
+            var reference = importTc.flow.reference;
+            verify(!importTc.screen.importIncoming(groups("incoming-second.csv", 1), "incoming-second.csv", "group"));
+            verify(importTc.flow.copying);
+            compare(importTc.flow.reference, reference, "the running import is untouched");
+            testContext.holdImports(false);
+            tryCompare(importTc.flow, "active", false);
+            compare(importedFiles.count, 1);
+            compare(importedFiles.get(0).accepted, 2, "the first import landed");
+
+            var map = testContext.writeFixtureCsv("incoming-map.csv", "channel,frequency,mode,keys_dec_csv\n1,851012500,p25,missing.csv\n");
+            verify(importTc.screen.importIncoming(map, "incoming-map.csv", "chan"));
+            tryVerify(function () { return importTc.flow.requiredFiles.length > 0; }, 5000, "the companions are asked for");
+            verify(importTc.flow.active && !importTc.flow.copying);
+            verify(!importTc.screen.importIncoming(groups("incoming-third.csv", 1), "incoming-third.csv", "group"));
+            verify(importTc.flow.requiredFiles.length > 0, "the companion sheet still waits");
+            compare(importTc.flow.fileName, "incoming-map.csv");
+            findChild(importTc.flow, "csvCompanionSheet").requestDismiss();
+            tryCompare(importTc.flow, "active", false);
+            compare(importedFiles.count, 1, "nothing else was imported");
+        }
+
+        // #831: a key mapping apply outlives the action sheet that started it.
+        function test_map_apply_reports_while_pending() {
+            var apply = findChild(importTc.screen, "importsMapApply");
+            verify(apply !== null);
+            verify(!importTc.screen.mapApplyActive);
+            apply.requestId = "incoming-test";
+            verify(importTc.screen.mapApplyActive);
+            apply.requestId = "";
+            verify(!importTc.screen.mapApplyActive);
         }
 
         // Each failure says what went wrong.

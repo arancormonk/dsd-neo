@@ -134,6 +134,14 @@ Rectangle {
     function importTargets() {
         targetImport.pick("trunkTargets", importContext());
     }
+    // A target CSV already chosen (#831: opened from another app), for the
+    // draft openFor() just started: called after it, since openFor() ends any
+    // import. False while another import of this editor runs.
+    function importTargetsFrom(ref, name) {
+        if (targetImport.active)
+            return false;
+        return targetImport.begin(ref, name, "trunkTargets", importContext());
+    }
 
     CsvImportFlow {
         id: targetImport
@@ -923,9 +931,9 @@ Rectangle {
                             }
                         }
                     }
-                    TapHandler {
+                    GatedTapHandler {
                         objectName: "scanAdvancedTap"
-                        onTapped: advHeader.toggle()
+                        onAllowedTap: advHeader.toggle()
                     }
                 }
 

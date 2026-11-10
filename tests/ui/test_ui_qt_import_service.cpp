@@ -3,7 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/* Unit tests: the import worker (#832): staging folders, the startup sweep, commits, cancel, teardown, journal. */
+/* Unit tests: the import worker (#832): staging folders, the startup sweep, commits, cancel, teardown, journal; its
+ * document reads and probes (#831). */
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -155,18 +156,22 @@ class FakeTransport : public DocumentImportTransport {
     copy(qint64 request, const QString& reference, const QString& destPath, qint64 maxBytes) override {
         (void)reference;
         (void)maxBytes;
-        std::unique_lock<std::mutex> guard(m_lock);
-        m_entered.insert(request);
-        m_changed.notify_all();
-        if (m_mode == Mode::WaitForCancel) {
-            m_changed.wait(guard, [this, request]() { return m_cancels.contains(request); });
+        if (!enter(request)) {
             return DecoderHost::DocumentCancelled;
         }
-        if (m_mode == Mode::Block) {
-            m_changed.wait(guard, [this]() { return m_released; });
-        }
-        guard.unlock();
         write_file(destPath, "copied");
+        return DecoderHost::DocumentCopied;
+    }
+
+    /* A probe in the same modes: it answers the reference as its header, the cap as its length and a fixed name. */
+    int
+    probe(qint64 request, const QString& reference, dsd_qt::ImportProbe* out, qint64 maxCount) override {
+        if (!enter(request)) {
+            return DecoderHost::DocumentCancelled;
+        }
+        out->header = reference.toUtf8();
+        out->total = maxCount;
+        out->displayName = QStringLiteral("probed.dsdbak");
         return DecoderHost::DocumentCopied;
     }
 
@@ -209,6 +214,22 @@ class FakeTransport : public DocumentImportTransport {
     }
 
   private:
+    /* Note @p request's start, then wait as the mode says; false once it was cancelled (WaitForCancel). */
+    bool
+    enter(qint64 request) {
+        std::unique_lock<std::mutex> guard(m_lock);
+        m_entered.insert(request);
+        m_changed.notify_all();
+        if (m_mode == Mode::WaitForCancel) {
+            m_changed.wait(guard, [this, request]() { return m_cancels.contains(request); });
+            return false;
+        }
+        if (m_mode == Mode::Block) {
+            m_changed.wait(guard, [this]() { return m_released; });
+        }
+        return true;
+    }
+
     const Mode m_mode;
     mutable std::mutex m_lock;
     std::condition_variable m_changed;
@@ -482,6 +503,200 @@ test_teardown_idle() {
     CHECK(!dir.isEmpty() && !QFileInfo::exists(dir), "its staging folder is gone once teardown returns");
 }
 
+/* Wait, without running the event loop, until @p done holds; false after about five seconds. */
+bool
+wait_without_events(const std::function<bool()>& done) {
+    for (int i = 0; i < 2500 && !done(); ++i) {
+        QThread::msleep(2);
+    }
+    return done();
+}
+
+/* The commits of document reads: each id with its copy result. */
+struct Reads {
+    QMap<qint64, int> copied;
+    int commits = 0;
+
+    ImportService::ReadCommit
+    commit() {
+        return [this](qint64 id, int code) {
+            copied.insert(id, code);
+            ++commits;
+        };
+    }
+};
+
+/*
+ * A document read (#831): the transport copies into the caller's file, with no staging folder, the commit hands back
+ * the copy's result, and the file is then the caller's. A cancel that comes after the copy ended, before the commit,
+ * commits DocumentCancelled and leaves the copy for the caller to remove.
+ */
+void
+test_read_document() {
+    const QTemporaryDir dir;
+    CHECK(dir.isValid(), "a scratch directory exists");
+    QDir(ImportService::stagingRoot()).removeRecursively();
+    auto transport = std::make_shared<FakeTransport>(FakeTransport::Mode::Copy);
+    ImportService service(transport);
+    Reads reads;
+    const QString dest = dir.filePath(QStringLiteral("job.in"));
+    const qint64 id = service.readDocument(QStringLiteral("/backup.dsdbak"), dest, 64, reads.commit());
+    CHECK(id > 0 && service.busy(), "a read is a request");
+    CHECK(wait_until([&reads]() { return reads.commits == 1; }), "the read commits");
+    CHECK(reads.copied.value(id, -1) == DecoderHost::DocumentCopied, "with the copy's result");
+    CHECK(read_file(dest) == "copied", "the copy is in the caller's file");
+    CHECK(transport->forgets() == QList<qint64>{id}, "the transport forgets the read once it ended");
+    settle();
+    CHECK(read_file(dest) == "copied" && !service.busy(), "the service never removes a copy it handed over");
+    CHECK(!QFileInfo::exists(ImportService::stagingRoot()), "a read stages nothing in the service's folder");
+
+    const QString late = dir.filePath(QStringLiteral("late.in"));
+    const qint64 lateId = service.readDocument(QStringLiteral("/backup.dsdbak"), late, 64, reads.commit());
+    CHECK(wait_without_events([&transport, lateId]() { return transport->forgets().contains(lateId); }),
+          "a second read's copy ends");
+    service.cancel(lateId);
+    CHECK(wait_until([&reads]() { return reads.commits == 2; }), "the second read commits");
+    CHECK(reads.copied.value(lateId, -1) == DecoderHost::DocumentCancelled,
+          "a cancel after the copy ended commits DocumentCancelled");
+    CHECK(read_file(late) == "copied", "and leaves the copy to the caller");
+}
+
+/* A read cancelled before its copy started never copies; one cancelled during its copy stops it; neither leaves one. */
+void
+test_read_cancel() {
+    const QTemporaryDir dir;
+    CHECK(dir.isValid(), "a scratch directory exists");
+    auto transport = std::make_shared<FakeTransport>(FakeTransport::Mode::WaitForCancel);
+    ImportService service(transport);
+    Reads reads;
+    const QString a = dir.filePath(QStringLiteral("a.in"));
+    const QString b = dir.filePath(QStringLiteral("b.in"));
+    const qint64 running = service.readDocument(QStringLiteral("/a.dsdbak"), a, 64, reads.commit());
+    const qint64 queued = service.readDocument(QStringLiteral("/b.dsdbak"), b, 64, reads.commit());
+    CHECK(wait_until([&transport, running]() { return transport->entered(running); }), "the first read's copy starts");
+    service.cancel(queued);
+    service.cancel(running);
+    CHECK(wait_until([&reads]() { return reads.commits == 2; }), "both cancelled reads commit");
+    settle();
+    CHECK(reads.commits == 2 && reads.copied.value(running, -1) == DecoderHost::DocumentCancelled
+              && reads.copied.value(queued, -1) == DecoderHost::DocumentCancelled,
+          "each cancelled read commits DocumentCancelled once");
+    CHECK(!transport->entered(queued), "a read cancelled before it started never copies");
+    CHECK(!QFileInfo::exists(a) && !QFileInfo::exists(b), "a cancelled read leaves no copy");
+}
+
+/*
+ * Teardown with a read whose copy ignores its cancel: the service waits a bounded time, never commits, and the read it
+ * left behind removes the copy it finishes, since no one will take it.
+ */
+void
+test_read_teardown_blocked() {
+    const QTemporaryDir dir;
+    CHECK(dir.isValid(), "a scratch directory exists");
+    auto transport = std::make_shared<FakeTransport>(FakeTransport::Mode::Block);
+    auto service = std::make_unique<ImportService>(transport);
+    Reads reads;
+    const QString dest = dir.filePath(QStringLiteral("job.in"));
+    const qint64 id = service->readDocument(QStringLiteral("/backup.dsdbak"), dest, 64, reads.commit());
+    CHECK(wait_until([&transport, id]() { return transport->entered(id); }), "the read's copy starts and blocks");
+    service.reset();
+    CHECK(transport->cancels() == QList<qint64>{id}, "teardown cancels the read");
+    transport->release();
+    CHECK(wait_until([&transport, id]() { return transport->forgets().contains(id); }), "the left-behind read ends");
+    CHECK(!QFileInfo::exists(dest), "and removes the copy it finished after the cancel");
+    settle();
+    CHECK(reads.commits == 0, "no read commits after teardown");
+}
+
+/* The commits of document probes: each id with its result and what it read. */
+struct Probes {
+    QMap<qint64, int> probed;
+    QMap<qint64, dsd_qt::ImportProbe> found;
+    int commits = 0;
+
+    ImportService::ProbeCommit
+    commit() {
+        return [this](qint64 id, int code, const dsd_qt::ImportProbe& probe) {
+            probed.insert(id, code);
+            found.insert(id, probe);
+            ++commits;
+        };
+    }
+};
+
+/*
+ * A document probe (#831): a request like any other that stages nothing; the commit gets the probe's result and what
+ * it read, the name included, taken before the transport forgot the request. A cancel after the probe ended, before
+ * its commit, commits DocumentCancelled.
+ */
+void
+test_probe_document() {
+    QDir(ImportService::stagingRoot()).removeRecursively();
+    auto transport = std::make_shared<FakeTransport>(FakeTransport::Mode::Copy);
+    ImportService service(transport);
+    Probes probes;
+    const qint64 id = service.probeDocument(QStringLiteral("/in.dsdbak"), 99, probes.commit());
+    CHECK(id > 0 && service.busy(), "a probe is a request");
+    CHECK(wait_until([&probes]() { return probes.commits == 1; }), "the probe commits");
+    const dsd_qt::ImportProbe found = probes.found.value(id);
+    CHECK(probes.probed.value(id, -1) == DecoderHost::DocumentCopied && found.header == "/in.dsdbak"
+              && found.total == 99 && found.displayName == QStringLiteral("probed.dsdbak"),
+          "with the probe's result, header, length and name, for the cap it was given");
+    CHECK(transport->forgets() == QList<qint64>{id}, "the transport forgets the probe once it ended");
+    CHECK(!QFileInfo::exists(ImportService::stagingRoot()) && !service.busy(), "a probe stages nothing");
+
+    const qint64 late = service.probeDocument(QStringLiteral("/late.csv"), 99, probes.commit());
+    CHECK(wait_without_events([&transport, late]() { return transport->forgets().contains(late); }),
+          "a second probe ends");
+    service.cancel(late);
+    CHECK(wait_until([&probes]() { return probes.commits == 2; }), "the second probe commits");
+    CHECK(probes.probed.value(late, -1) == DecoderHost::DocumentCancelled,
+          "a cancel after the probe ended commits DocumentCancelled");
+}
+
+/* A probe cancelled before it started never reads; one cancelled while it reads stops; each commits once. */
+void
+test_probe_cancel() {
+    auto transport = std::make_shared<FakeTransport>(FakeTransport::Mode::WaitForCancel);
+    ImportService service(transport);
+    Probes probes;
+    const qint64 running = service.probeDocument(QStringLiteral("/a.csv"), 64, probes.commit());
+    const qint64 queued = service.probeDocument(QStringLiteral("/b.csv"), 64, probes.commit());
+    CHECK(wait_until([&transport, running]() { return transport->entered(running); }), "the first probe starts");
+    service.cancel(queued);
+    service.cancel(running);
+    CHECK(wait_until([&probes]() { return probes.commits == 2; }), "both cancelled probes commit");
+    settle();
+    CHECK(probes.commits == 2 && probes.probed.value(running, -1) == DecoderHost::DocumentCancelled
+              && probes.probed.value(queued, -1) == DecoderHost::DocumentCancelled,
+          "each cancelled probe commits DocumentCancelled once");
+    CHECK(!transport->entered(queued), "a probe cancelled before it started never reads");
+    const QList<qint64> forgets = transport->forgets();
+    CHECK(forgets.size() == 2 && forgets.contains(running) && forgets.contains(queued),
+          "the transport forgets each probe, started or not");
+}
+
+/* Teardown with a probe that ignores its cancel: bounded, no commit, and the probe left behind still forgets. */
+void
+test_probe_teardown_blocked() {
+    auto transport = std::make_shared<FakeTransport>(FakeTransport::Mode::Block);
+    auto service = std::make_unique<ImportService>(transport);
+    Probes probes;
+    const qint64 id = service->probeDocument(QStringLiteral("/in.dsdbak"), 64, probes.commit());
+    CHECK(wait_until([&transport, id]() { return transport->entered(id); }), "the probe starts and blocks");
+    QElapsedTimer timer;
+    timer.start();
+    service.reset();
+    const qint64 took = timer.elapsed();
+    CHECK(took >= ImportService::kStopWaitMs - 100 && took < qint64{ImportService::kStopWaitMs} * 4,
+          "teardown waits about kStopWaitMs for a blocked probe, then returns");
+    CHECK(transport->cancels() == QList<qint64>{id}, "teardown cancels the probe");
+    transport->release();
+    CHECK(wait_until([&transport, id]() { return transport->forgets().contains(id); }), "the left-behind probe ends");
+    settle();
+    CHECK(probes.commits == 0, "no probe commits after teardown");
+}
+
 QStringList
 entries(bool* ok) {
     return ImportService::journalEntries(ok);
@@ -569,9 +784,17 @@ main(int argc, char** argv) {
     test_busy();
     test_staging_failure();
     test_teardown_idle();
+    test_read_document();
+    test_read_cancel();
     CHECK(abandonedWarnings == 0, "a teardown that finished in time warns of nothing");
     test_teardown_blocked();
     CHECK(abandonedWarnings == 1, "a teardown that left a copy behind says so");
+    test_read_teardown_blocked();
+    CHECK(abandonedWarnings == 2, "so does one that left a read behind");
+    test_probe_document();
+    test_probe_cancel();
+    test_probe_teardown_blocked();
+    CHECK(abandonedWarnings == 3, "and one that left a probe behind");
     test_journal();
     QDir(dataDir).removeRecursively();
     return failures != 0 ? 1 : 0;

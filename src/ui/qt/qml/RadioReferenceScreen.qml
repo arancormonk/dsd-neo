@@ -560,9 +560,9 @@ Item {
                             wrapMode: Text.Wrap
                         }
 
-                        TapHandler {
+                        GatedTapHandler {
                             enabled: browseSheet.rowsEnabled
-                            onTapped: sheetRow.choose()
+                            onAllowedTap: sheetRow.choose()
                         }
                     }
                 }
@@ -1015,9 +1015,9 @@ Item {
                     }
                 }
 
-                TapHandler {
+                GatedTapHandler {
                     enabled: !radioReference.busy
-                    onTapped: {
+                    onAllowedTap: {
                         backToResults.goBack();
                     }
                 }
@@ -1304,9 +1304,9 @@ Item {
                                 color: Theme.divider
                             }
 
-                            TapHandler {
+                            GatedTapHandler {
                                 enabled: !radioReference.busy
-                                onTapped: siteRow.choose()
+                                onAllowedTap: siteRow.choose()
                             }
                         }
                     }

@@ -143,6 +143,37 @@ Item {
             verify(!screen.csvMode);
         }
 
+        // #831: a target CSV opened from another app starts the new draft's
+        // targets, as a picked one does; a second while one runs is refused
+        // and leaves the first alone.
+        function test_import_targets_from_a_reference() {
+            var header = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n";
+            var first = testContext.writeFixtureCsv("incoming-targets.csv", header + "one,p25-conventional,851500000,,,,\ntwo,p25-conventional,852500000,,,,\n");
+            var second = testContext.writeFixtureCsv("incoming-other.csv", header + "three,p25-conventional,853500000,,,,\n");
+            var flow = findChild(screen, "targetCsvImport");
+            try {
+                screen.openFor(-1);
+                testContext.holdImports(true);
+                verify(screen.importTargetsFrom(first, "incoming-targets.csv"));
+                verify(flow.copying);
+                compare(flow.type, "trunkTargets");
+                verify(!screen.importTargetsFrom(second, "incoming-other.csv"), "refused while an import runs");
+                verify(flow.copying);
+                compare(flow.fileName, "incoming-targets.csv");
+                testContext.holdImports(false);
+                tryCompare(flow, "active", false);
+                verify(screen.csvMode, "the draft takes the imported targets");
+                compare(screen.targetRows.length, 2);
+                compare(screen.targetRows[0].id, "one");
+                compare(screen.validationText, "");
+                verify(screen.fingerprint() !== screen.initialDraft, "closing asks before the imported targets are lost");
+            } finally {
+                testContext.holdImports(false);
+                while (importedFiles.count)
+                    importedFiles.remove(0);
+            }
+        }
+
         // ---- issue #829: the target CSV pick belongs to the list it was asked for ----
 
         function targetsFile(name) {

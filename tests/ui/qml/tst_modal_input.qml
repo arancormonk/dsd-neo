@@ -26,7 +26,9 @@ Item {
             verify(value !== null, name + " exists");
             return value;
         }
+        property bool savedNotificationExplained: false
         function init() {
+            savedNotificationExplained = prefs.notificationExplained;
             testContext.useLifecycleHost(true, true, true);
             while (savedSystems.count)
                 savedSystems.remove(0);
@@ -53,11 +55,14 @@ Item {
             waitForRendering(item("monitorScreen"));
         }
         function cleanup() {
-            for (var name of ["siteSheet", "networkSheet", "siteChooserSheet", "talkgroupEditSheet"])
+            for (var name of ["siteSheet", "networkSheet", "siteChooserSheet", "talkgroupEditSheet", "squelchSheet"])
                 item(name).visible = false;
             app.scanWarnings = "";
             app.talkgroupsOpen = false;
             app.spectrumOpen = false;
+            app.height = 900;
+            item("notificationExplanation").visible = false;
+            prefs.notificationExplained = savedNotificationExplained;
             testContext.setMetric("uiMessage", "");
             testContext.useLifecycleHost(false);
             while (savedSystems.count)
@@ -148,6 +153,60 @@ Item {
             mouseClick(stop, stop.width / 2, stop.height / 2);
             tryCompare(explanation, "visible", false);
             compare(decoderHost.sessionState, 2);
+        }
+        // A short window: the note's "Not now" lies over "Stop listening". A
+        // mouse click on it closes the note and keeps listening: Stop's press
+        // began under the note, so the same release does not stop the session.
+        function test_notification_not_now_over_stop_keeps_listening() {
+            app.height = 280;
+            var explanation = item("notificationExplanation");
+            explanation.visible = true;
+            waitForRendering(explanation);
+            var stop = item("stopListeningButton");
+            var later = item("notificationNotNow");
+            var target = stop.mapToItem(null, stop.width / 2, stop.height / 2);
+            var onLater = later.mapFromItem(null, target.x, target.y);
+            verify(later.contains(onLater), "Not now lies over Stop listening");
+            var stops = decoderHost.stopCalls();
+            mousePress(later, onLater.x, onLater.y);
+            mouseRelease(later, onLater.x, onLater.y);
+            tryCompare(explanation, "visible", false);
+            verify(prefs.notificationExplained);
+            wait(60);
+            compare(decoderHost.stopCalls(), stops, "the click that closed the note did not stop the session");
+            compare(decoderHost.sessionState, 2);
+            mouseClick(stop, stop.width / 2, stop.height / 2);
+            compare(decoderHost.stopCalls(), stops + 1, "a click on Stop itself still stops");
+        }
+        // The monitor's own sheets: in a short window the Squelch sheet's
+        // Close scrolls over "Stop listening". The monitor stays enabled for
+        // its sheet, and Stop's press began under the sheet, so the release
+        // that closed the sheet does not reach Stop.
+        function test_monitor_sheet_close_over_stop_keeps_listening() {
+            app.height = 300;
+            var sheet = item("squelchSheet");
+            sheet.visible = true;
+            waitForRendering(sheet);
+            var monitor = item("monitorScreen");
+            verify(monitor.enabled, "the monitor stays enabled for its own sheet");
+            var stop = item("stopListeningButton");
+            var close = item("squelchClose");
+            var scroll = findChild(sheet, "modalSheetScroll");
+            verify(scroll !== null);
+            var target = stop.mapToItem(null, stop.width / 2, stop.height / 2);
+            var at = close.mapToItem(null, close.width / 2, close.height / 2);
+            scroll.contentY = Math.max(0, Math.min(scroll.contentHeight - scroll.height, scroll.contentY + at.y - target.y));
+            waitForRendering(sheet);
+            var onClose = close.mapFromItem(null, target.x, target.y);
+            verify(close.contains(onClose), "Close lies over Stop listening");
+            var stops = decoderHost.stopCalls();
+            mousePress(close, onClose.x, onClose.y);
+            mouseRelease(close, onClose.x, onClose.y);
+            tryCompare(sheet, "visible", false);
+            wait(60);
+            compare(decoderHost.stopCalls(), stops, "the click that closed the sheet did not stop the session");
+            compare(decoderHost.sessionState, 2);
+            verify(stop.enabled);
         }
         function test_keyboard_keeps_wizard_action_visible() {
             testContext.useLifecycleHost(true, true, false);

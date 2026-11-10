@@ -117,6 +117,13 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     qint64 requestOpenDocument() override;
     qint64 requestSaveDocument(const QString& suggestedName, const QString& mimeType) override;
     void cancelDocumentRequest(qint64 requestId) override;
+
+    /** @brief Whether a request waits for its answer: one was made and not yet answered or cancelled. */
+    bool
+    documentRequestPending() const override {
+        return m_document_request != 0;
+    }
+
     /** @brief DownloadsSave's name for a Download-folder row it published, from memory only. */
     QString savedDocumentName(const QString& reference) const override;
     /** @brief DownloadsSave deletes the row on its own thread, if it is still pending and no write took it. */
@@ -248,40 +255,28 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      */
     bool engineBusy() const override;
 
-    /*
-     * Document copies (#580). These run on BackupModel's worker thread, never the Qt main thread: the JNI calls
-     * attach that thread, use the application's ContentResolver, and never wait on the Qt or Android main thread,
-     * which BackupModel's destructor may be blocking in waitForDone(). A content:// reference goes to the platform's
-     * ContentResolver; a file:// URL or plain path takes the base host's copy.
-     *
-     * For a content:// reference, copyDocumentToFile() replaces @p destPath: whatever is there is removed before the
-     * copy starts (DocumentLocalFailed when it cannot be), so a failure leaves nothing at @p destPath and
-     * DocumentCopied always names this copy's file. The platform's DocumentLocalFailed (no held ContentResolver, or
-     * its temp file or the rename failed) passes through, as does DocumentTooLarge. A copy reported without its file
-     * (a failed JNI call reads as 0) is DocumentLocalFailed too; any other answer is DocumentFailed.
-     */
-    int copyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) const override;
-    bool copyFileToDocument(const QString& sourcePath, const QString& reference) const override;
-
     /**
      * @brief The import copies' transport (#832; decoder_host_android_imports.cpp), on the import worker thread.
      *
-     * A content:// reference goes over JNI to DocumentCopies' import copies, on the held ContentResolver, as the
-     * backup's copies do: the destination is cleared first (DocumentLocalFailed when it cannot be), and without a held
-     * ContentResolver the copy is DocumentLocalFailed. The platform's codes pass through, DocumentCancelled included.
+     * A content:// reference goes over JNI to DocumentCopies' import copies, on the held ContentResolver: the
+     * destination is cleared first (DocumentLocalFailed when it cannot be), and without a held ContentResolver the copy
+     * is DocumentLocalFailed. The platform's codes pass through, DocumentCancelled included.
      * A copy reported without its file (a failed JNI call reads as 0) is DocumentLocalFailed; any other answer is
-     * DocumentFailed. Any other reference takes the base transport's local copy. cancel() and forget() reach both
-     * sides; progress() reads the side the latest copy took. abortDocumentTransfers() stops the platform's copies
-     * (DocumentCopies.abort()) and aborts the transport.
+     * DocumentFailed. Any other reference takes the base transport's local copy. A content:// probe (#831) goes to
+     * DocumentCopies.probeImportDocument() under the same request id, and its record (document_probe_record.h) gives
+     * the result; a record that does not read, or no held ContentResolver, is DocumentFailed. cancel() and forget()
+     * reach both sides; progress() reads the side the latest copy took. abortDocumentTransfers() stops the platform's
+     * copies (DocumentCopies.abort()) and aborts the transport.
      */
     std::shared_ptr<dsd_qt::DocumentImportTransport> importTransport() const override;
 
     /**
      * @brief The export saves' transport (#826; decoder_host_android_documents.cpp), on the export writer's thread.
      *
-     * A content:// reference saves as copyFileToDocument() does, in the same order: aborted or without a held
-     * ContentResolver the Download-folder row (#829) is discarded and the save fails; otherwise DocumentCopies'
-     * copyFileToDocument() runs over JNI, and a failure discards the row. Any other reference takes the base
+     * A content:// reference saves as the import transport's writeFromFile() (the backup's save) does, in the same
+     * order (saveContentDocument()): aborted or without a held ContentResolver the Download-folder row (#829) is
+     * discarded and the save fails; otherwise DocumentCopies' copyFileToDocument() runs over JNI, and a failure discards
+     * the row. Any other reference takes the base
      * transport's local copy. discardPendingDownload() is DownloadsSave's discard. Its abort() also raises the
      * platform's process-wide abort (DocumentCopies.abort()), so it is for teardown only.
      */
@@ -386,6 +381,9 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      */
     bool shareRecordingFile(const QString& path, const QString& title) override;
 
+    /** @brief IncomingDocuments.take() (#831): a document that reached it since refresh() last polled. */
+    QString newerIncomingDocument() override;
+
   private:
     /**
      * @brief Makes its host one postSignInFill() can reach, from construction until it goes
@@ -473,17 +471,12 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     static QByteArray readServiceState();
     /** @brief Whether the application's ContentResolver is held, without which no platform transfer can run. */
     static bool platformHoldsResolver();
-    /**
-     * @brief DocumentCopies.copyDocumentToFile() over JNI: a DocumentCopy value, 0 when the call failed, and
-     * DocumentLocalFailed without a held ContentResolver.
-     */
-    static int platformCopyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes);
-    /** @brief DocumentCopies.copyFileToDocument() over JNI; false when the call failed. */
+    /** @brief DocumentCopies.copyFileToDocument() over JNI (the backup's save, #831); false when the call failed. */
     static bool platformCopyFileToDocument(const QString& sourcePath, const QString& reference);
     /**
-     * @brief A save to the content URI @p reference, for copyFileToDocument() and the save transport: refused when
-     * @p aborted or without a held ContentResolver, and its Download-folder row discarded whenever the platform did not
-     * write it.
+     * @brief A save to the content URI @p reference, for the backup's save (ImportTransport::writeFromFile()) and the
+     * export saves' transport: refused when @p aborted or without a held ContentResolver, and its Download-folder row
+     * discarded whenever the platform did not write it.
      */
     static bool saveContentDocument(const QString& sourcePath, const QString& reference, bool aborted);
     /** @brief DocumentCopies.abort() over JNI: cancel every provider call in flight and refuse new ones, process-wide. */
@@ -508,6 +501,11 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     static QString platformImportName(qint64 request);
     static bool platformImportNoSpace(qint64 request);
     static void platformForgetImport(qint64 request);
+    /**
+     * @brief DocumentCopies.probeImportDocument() (#831): its record (document_probe_record.h); empty without a held
+     * ContentResolver or when the call failed.
+     */
+    static QString platformProbeImportDocument(qint64 request, const QString& reference, qint64 maxCount);
     void requestServiceStop();
     /* Call recordings (#708) over JNI: RecordingShare, RecordingPlayback and RecordingExport. */
     /** @brief RecordingShare.roots(); empty when the call failed. */
@@ -583,7 +581,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     void refreshLocation();
     /**
      * @brief Make @p id the live document request (#829). One it replaces is cancelled on the platform and answered
-     * documentPickCancelled(), queued; a record of its own that still comes is dropped.
+     * documentPickCancelled(), queued; a record of its own that still comes is dropped. The caller publishes the
+     * change (publishDocumentRequest()) once its platform call returned.
      */
     void beginDocumentRequest(qint64 id);
     /** @brief Answer @p id documentPickUnavailable(@p reason), queued, unless it is no longer the live request then. */
@@ -599,6 +598,18 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     static void platformCancelDocument(qint64 id);
     /** @brief DocumentPicker.pollResult(): the oldest record not yet read, or empty. */
     static QString platformPollDocumentPick();
+    /**
+     * @brief Emit documentRequestChanged() when whether a request is live differs from @p wasPending. An answer calls
+     * it after its signal, so a slot that asks again from inside the answer leaves nothing changed to tell.
+     */
+    void publishDocumentRequest(bool wasPending);
+    /**
+     * @brief Offer the document IncomingDocuments holds (#831), taken first: a slot of the signal may run refresh()
+     * again, and then finds none.
+     */
+    void refreshIncomingDocuments();
+    /** @brief IncomingDocuments.take(): the URI waiting, once; empty when none waits or the call failed. */
+    static QString platformTakeIncomingDocument();
     /*
      * DownloadsSave over JNI (#829), from any thread; none waits on a provider. start() hands it the held
      * ContentResolver and releases the app's leftover persisted grants on its own thread.

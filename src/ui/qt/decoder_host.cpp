@@ -18,7 +18,6 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QIODevice>
-#include <QSaveFile>
 
 #include "document_import_transport.h"
 #include "document_save_transport.h"
@@ -32,12 +31,6 @@
 namespace dsd_qt {
 
 namespace {
-
-/** @brief A copy_stream_capped() predicate that stops once @p aborted is raised (never with no flag). */
-std::function<bool(qint64)>
-until_aborted(const std::atomic<bool>* aborted) {
-    return [aborted](qint64) { return aborted == nullptr || !aborted->load(); };
-}
 
 /** @brief Keep a weak reference to @p transport, dropping the expired ones; abort it when @p aborted is already set. */
 template <typename Transport>
@@ -81,33 +74,6 @@ DecoderHost::DecoderHost(QObject* parent) : QObject(parent) {
 }
 
 DecoderHost::~DecoderHost() = default;
-
-int
-DecoderHost::copyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) const {
-    const QString path = local_document_path(reference);
-    if (path.isEmpty() || destPath.isEmpty() || maxBytes < 0 || !QFileInfo(path).isFile()) {
-        return DocumentFailed;
-    }
-    QFile source(path);
-    if (!source.open(QIODevice::ReadOnly)) {
-        return DocumentFailed;
-    }
-    if (source.size() > maxBytes) {
-        return DocumentTooLarge;
-    }
-    // QSaveFile writes beside the destination and renames on commit, so no
-    // failure, cap included, can leave a partial file there. Every failure on
-    // that side is this device's, not the document's.
-    QSaveFile out(destPath);
-    if (!open_private(out)) {
-        return DocumentLocalFailed;
-    }
-    const int copied = copy_stream_capped(source, out, maxBytes, until_aborted(&m_documentTransfersAborted));
-    if (copied != DocumentCopied) {
-        return copied;
-    }
-    return out.commit() ? DocumentCopied : DocumentLocalFailed;
-}
 
 bool
 DecoderHost::copyFileToDocument(const QString& sourcePath, const QString& reference) const {
@@ -400,6 +366,31 @@ DecoderHost::refuseDocumentRequest() {
 void
 DecoderHost::cancelDocumentRequest(qint64 requestId) {
     m_refusedDocumentRequests.remove(requestId);
+}
+
+QString
+DecoderHost::takeIncomingDocument() {
+    /* Into the slot without a signal: the take's own signal tells both, and no slot can take it mid-take. */
+    QString newer = newerIncomingDocument();
+    if (!newer.isEmpty()) {
+        m_incomingDocument.swap(newer);
+    }
+    if (m_incomingDocument.isEmpty()) {
+        return QString();
+    }
+    QString reference;
+    reference.swap(m_incomingDocument);
+    Q_EMIT incomingDocumentChanged();
+    return reference;
+}
+
+void
+DecoderHost::offerIncomingDocument(const QString& reference) {
+    if (reference.isEmpty()) {
+        return;
+    }
+    m_incomingDocument = reference;
+    Q_EMIT incomingDocumentChanged();
 }
 
 QVariantMap

@@ -100,9 +100,9 @@ Item {
         color: Theme.textPrimary
     }
 
-    TapHandler {
+    GatedTapHandler {
         id: tap
         enabled: control.enabled
-        onTapped: control.activate()
+        onAllowedTap: control.activate()
     }
 }

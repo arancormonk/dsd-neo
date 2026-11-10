@@ -273,10 +273,10 @@ Item {
                 visible: entryRow.index < d.entries.length - 1 || d.more
                 color: Theme.divider
             }
-            TapHandler {
+            GatedTapHandler {
                 id: entryTap
                 gesturePolicy: TapHandler.ReleaseWithinBounds
-                onTapped: entryRow.activate()
+                onAllowedTap: entryRow.activate()
             }
         }
 

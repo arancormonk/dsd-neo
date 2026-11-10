@@ -8672,12 +8672,18 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
   it is not compiled. `TETRA_CRYPTO` pins both directions to upstream's vectors.
 - `backup_seal.c` / `<dsd-neo/crypto/backup_seal.h>` seal and open passphrase-protected backups (scrypt + AES-256-GCM,
   issue #580). The 64-byte header is the GCM AAD. Seal and open both accept only log2(N) 14..17, r 8 and p 1..4, so an
-  untrusted file cannot demand more scrypt memory than that. `dsd_backup_open()` wipes its output on any failure:
-  plaintext leaves only after the tag verifies. New backups use `dsd_backup_kdf_params_default()` (log2(N) 16, r 8, p 2,
-  about 64 MiB). `dsd_backup_derive_key()` is a known-answer helper without that policy; never pass it untrusted
-  parameters. The Qt archive inside the envelope is under UI, Qt, "Configuration backup". Tests: `BACKUP_SEAL`,
-  `FUZZ_CRYPTO_BACKUP_HEADER` (`dsd_backup_parse_header()`, the only parser that runs before authentication),
-  `HEADERS_PUBLIC_CRYPTO_BACKUP_SEAL` and `HEADERS_PUBLIC_CRYPTO_BACKUP_SEAL_CXX`.
+  untrusted file cannot demand more scrypt memory than that. `dsd_backup_check_header()` judges a header from its first
+  64 bytes and a separate total length, with a fixed precedence: no magic → `ERR_NOT_BACKUP`, then short header, version
+  0 → `ERR_FORMAT`, version above 1 → `ERR_VERSION`, reserved bytes → `ERR_FORMAT`, KDF → `ERR_PARAMS`, payload over the
+  cap → `ERR_TOO_LARGE`, length mismatch → `ERR_FORMAT`; `dsd_backup_has_magic()` is its first step alone.
+  `dsd_backup_parse_header()` and `dsd_backup_open()` run the same checks over the whole buffer and still report a
+  missing magic as `ERR_FORMAT`. `dsd_backup_open()` wipes its output on any failure: plaintext leaves only after the
+  tag verifies. New backups use `dsd_backup_kdf_params_default()` (log2(N) 16, r 8, p 2, about 64 MiB).
+  `dsd_backup_derive_key()` is a known-answer helper without that policy; never pass it untrusted parameters. The Qt
+  archive inside the envelope is under UI, Qt, "Configuration backup". Tests: `BACKUP_SEAL`, `FUZZ_CRYPTO_BACKUP_HEADER`
+  (`dsd_backup_check_header()` and its whole-buffer form `dsd_backup_parse_header()`, the only parsers that run before
+  authentication), `HEADERS_PUBLIC_CRYPTO_BACKUP_SEAL`
+  and `HEADERS_PUBLIC_CRYPTO_BACKUP_SEAL_CXX`.
 - Build files: `src/crypto/CMakeLists.txt`
 
 ## Protocols
@@ -13091,23 +13097,25 @@ Qt Quick frontend (`src/ui/qt`):
 - Composing (preedit) text (issue #718): an Android keyboard holds the word being typed as preedit, which
   `TextInput.text` leaves out, so forms would save a name without its last word, judge an edit unchanged or reject a
   field as empty. `input_commit.{h,cpp}` (`InputCommit`, the `inputCommit` context object, wrapped by
-  `Navigation.commitComposing()`/`Navigation.composing`) commits it at action boundaries rather than from a
-  window-wide press filter, which would fire before Qt routes a tap inside the composing text to the keyboard and
-  break cursor taps, selection handles and drags. It calls `QInputMethod::commit()` (Android finishes composing and
-  delivers the word); when the focus item still reports `inputMethodComposing` (offscreen/test platforms) it sends
-  the item its `preeditText` as a commit and resets the input method. Callers: `activate()` of `OutlineButton`,
-  `GradientButton`, `IconButton`, `DashedActionButton` and `BottomNav` (commit and finish editing: focus leaves the
-  text field so `editingFinished` drafts, such as the profile editor's fallback algorithm, update before the action
-  reads them; an `OutlineButton` with `finishesEditing: false` only commits the word, as the RadioReference
-  password's Show and "Check account" do) and of `DecodeChip`, `FilterPill`, `SegmentedControl` segments and
-  `DisclosureRow` (commit only); `ModalSheet.requestDismiss()`; `Navigation.back()` before its focus clear. A button
-  gated on a field's committed text puts that term in `inputValid` (visuals dim on it) rather than `enabled`: its
-  default `enabled` is `inputValid || Navigation.composing`, so it is live while a word is composing, and a tap commits
-  first and calls `clicked()` only if `inputValid` then holds; otherwise it is disabled as before (accessibility and
-  keyboard included), and a real guard (busy, permission) stays in `enabled`. Callers: the profile editor's "Use this
-  key" and "Use override", `KeySheet`'s apply, Scan list "Add frequency", RadioReference Find/Open, the wizard's
-  Continue/Save, Tone filter Apply and Explore's Start.
-  Tests: `UI_QT_INPUT_COMMIT`, `UI_QT_QML_CALL_LISTS` (`tst_input_commit.qml`, `tst_modal_sheet_outside_tap.qml`,
+  `Navigation.commitComposing()`/`Navigation.composing`) commits it at action boundaries rather than from a window-wide
+  press filter, which would fire before Qt routes a tap inside the composing text to the keyboard and break cursor taps,
+  selection handles and drags. It calls `QInputMethod::commit()` (Android finishes composing and delivers the word);
+  when the focus item still reports `inputMethodComposing` (offscreen/test platforms) it sends the item its
+  `preeditText` as a commit and resets the input method. Callers: `activate()` of `OutlineButton`, `GradientButton`,
+  `IconButton`, `DashedActionButton` and `BottomNav` (commit and finish editing: focus leaves the text field so
+  `editingFinished` drafts, such as the profile editor's fallback algorithm, update before the action reads them; an
+  `OutlineButton` with `finishesEditing: false` only commits the word, as the RadioReference password's Show and "Check
+  account" do) and of `DecodeChip`, `FilterPill`, `SegmentedControl` segments and `DisclosureRow` (commit only);
+  `ModalSheet.requestDismiss()`; `Navigation.back()` before its focus clear; `Navigation.clearInput()` before it takes
+  the focus away (#831), so a sheet or layer that opens or closes by itself, as the incoming-file sheet does when a file
+  arrives while a field holds a composing word, never leaves a field that saves on `editingFinished` to save it without
+  that word (`tst_incoming_document.qml`). A button gated on a field's committed text puts that term in `inputValid`
+  (visuals dim on it) rather than `enabled`: its default `enabled` is `inputValid || Navigation.composing`, so it is
+  live while a word is composing, and a tap commits first and calls `clicked()` only if `inputValid` then holds;
+  otherwise it is disabled as before (accessibility and keyboard included), and a real guard (busy, permission) stays in
+  `enabled`. Callers: the profile editor's "Use this key" and "Use override", `KeySheet`'s apply, Scan list "Add
+  frequency", RadioReference Find/Open, the wizard's Continue/Save, Tone filter Apply and Explore's Start. Tests:
+  `UI_QT_INPUT_COMMIT`, `UI_QT_QML_CALL_LISTS` (`tst_input_commit.qml`, `tst_modal_sheet_outside_tap.qml`,
   `tst_signal_search.qml`, `tst_settings_backup.qml`, `tst_csv_import_flow.qml`, `tst_talkgroup_edit_sheet.qml`,
   `tst_modal_input.qml`, `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`, `tst_tone_filter_sheet.qml`,
   `tst_scan_row_edits.qml`, `tst_spectrum_screen.qml`, `tst_scan_list_screen.qml`, `tst_radioreference_screen.qml`,
@@ -13214,6 +13222,14 @@ Qt Quick frontend (`src/ui/qt`):
   a failure shows under the row and keeps the earlier file, and closing or reopening the wizard cancels the copy and
   drops its answer.
   `registerTalkgroupList()` saves the index before it adds the row and answers false, adding nothing, when it cannot.
+  Document probes (#831): a document opened from another app is told apart before anything is asked.
+  `inspectDocument(reference)` returns an id and `documentInspected(id, {kind, name})` answers it exactly once, queued;
+  the probe runs on the import worker (`ImportService::probeDocument()`, capped at `backup::kMaxSealedBytes`) and
+  `kind` is `backup::classify_incoming()`'s name (`backup`, `newerBackup`, `damagedBackup`, `tooLargeBackup`,
+  `other`), `unreadable` for any probe that failed, or `cancelled`. Probes are kept apart from imports (`m_probes`), so
+  `importing` and `cancelImport()` never see them; `cancelInspect(id)` answers `cancelled` at once and drops the late
+  result, and the destructor cancels the probes in flight on a service that outlives the model. Tests:
+  `UI_QT_IMPORTED_FILES`.
   `import_names.{h,cpp}` is the one rule both platforms use to name a stored import (`sanitized_import_name`: C0
   control characters, NUL included, become `_` first, since a C-string rename would cut the name at a NUL; at most
   247 UTF-8 bytes so a " (999)" suffix always fits; the provider's name, else the picker's hint, each taken as given
@@ -13232,45 +13248,56 @@ Qt Quick frontend (`src/ui/qt`):
   and never waits: on POSIX it resolves the path (`dsd_path_canonical()`) and opens it with
   `dsd_fopen_existing_regular_file()` (non-blocking, the resolved name not followed, refused unless the descriptor is
   a regular file), so a FIFO swapped in after the check is refused too; Windows, with no FIFO at a file path, opens a
-  plain `QFile`. `UI_QT_IMPORT_TRANSPORT`'s `stop_mid_copy` overrides it with a paced device. The copy's
-  per-chunk predicate checks the request's cancel and the transport's abort; a write or commit that hits `ENOSPC`
-  (`ResourceError` or errno) is `DocumentLocalFailed` with `noSpace`. `abortDocumentTransfers()` aborts every transport
-  handed out (the host keeps weak references), and one handed out after it starts aborted.
-  `document_save_transport.{h,cpp}` is the export saves' transport (#826): `DecoderHost::saveTransport()` hands out a
-  new `DocumentSaveTransport` each call (a platform host through `keepSaveTransport()`), which never calls the host, so
-  the export writer may keep it and finish a save past the host. `save(sourcePath, reference)` blocks and answers
-  whether the document now holds the source's bytes; `discardPendingDownload(reference)` lets go of a picked
-  Download-folder row nothing will be saved to (base: no-op); `abort()` fails the running save at its next chunk and
-  every later one. The base transport's save is `copy_file_to_local_document()`, the same local copy (file URL or
-  absolute path, owner-only through `QSaveFile`, no cap) `DecoderHost::copyFileToDocument()` makes on the host's own
-  flag. `abortDocumentTransfers()` aborts every save transport handed out too, and one handed out after it starts
-  aborted. `abort()` calls the protected `abortPlatform()`, which a platform transport uses to stop its own copies. The
-  base save asks the protected `proceedCopy(copied)` before each chunk (base: true until `abort()`); the abort test
-  overrides it to hold a copy partway until the abort lands. Test: `UI_QT_SIGNAL_SEARCH` (local saves, abort before and
-  during a save (held after its first chunk), the hand-out, a transport past its host).
-  `document_export_writer.{h,cpp}` is the export writer (#826): `DocumentExportWriter(transport, cacheRoot, owner,
-  reply)` lives on its owner's thread. `submit(token, bytes, reference)` runs one job at a time on a one-thread
-  `QThreadPool`: it writes the bytes to `<token>.csv` in the writer's own owner-only folder `<cacheRoot>/<uuid>/`
-  (`QSaveFile` + `open_private()`), hands that file to `transport->save()`, and removes it whatever happened; a job that
-  cannot stage (no folder or lock, an open, write or commit failure) calls `discardPendingDownload(reference)` instead
-  and fails. `submit()` answers false, discarding the reference's Download-folder row at once, while a job runs
-  (`busy()`), once the transport is aborted, or always when `cacheRoot` is empty or relative (that writer makes no
-  folder or lock and sweeps nothing). `reply(token, ok)` is queued to the owner's thread through a shared link (mutex,
-  owner and writer pointers) the destructor clears, so a job that ends after the writer never reaches it. Each writer
-  holds `<cacheRoot>/<uuid>.lock` (`QLockFile`, `setStaleLockTime(0)`: age never makes it stale) for its life; the
-  constructor sweeps every other writer's folder (and orphan lock) whose lock it can take with `tryLock(0)` (no lock, or
-  a holder whose process is gone), so a live writer in this or another process keeps its folder. Only names a writer
-  gives count: a brace-less lowercase UUID (`QUuid::fromString()` round-tripping `WithoutBraces`), with or without
-  `.lock`; a lock file named `.lock` alone (whose stem is the cache root itself) and every other entry are never locked
-  or removed. The destructor aborts the transport only when a job is still running, waits up to `kStopWaitMs` (2000),
-  and then removes its folder and lock; a job blocked past that keeps its worker and lock (never deleted, as
-  `ImportService`'s) and its folder until the process ends, for a later sweep. Test: `UI_QT_SIGNAL_SEARCH` (save, failed
-  save, staging failures, refusals, sweep against in-process, child-process, dead and day-old locks, a bare `.lock` and
-  other names left alone, an empty or relative root, cooperative and blocked teardown).
-  `import_service.{h,cpp}` is the import worker (#832) the library and the replay imports share; `ui_load()` makes the
-  one service (not published to QML) from `host->importTransport()` right after `ImportService::sweepStaging()`, which
-  runs once after the restore applies and removes `<AppData>/import-staging/` wholly (a link is removed, never
-  followed). `submit(stage, commit)` returns a process-unique positive id that is also the transport's request id.
+  plain `QFile`. `UI_QT_IMPORT_TRANSPORT`'s `stop_mid_copy`, `test_probe_stops_without_magic` and `stop_mid_probe`
+  override it with a paced device. The copy's per-chunk predicate checks the request's cancel and the transport's abort;
+  a write or commit that hits `ENOSPC` (`ResourceError` or errno) is `DocumentLocalFailed` with `noSpace`.
+  `writeFromFile(path, reference)` (#831) is the backup's save: no request id, so only `abort()` stops it; the base
+  transport writes a file URL or absolute path whole, private, through `QSaveFile` (`copy_file_to_local_document()`,
+  which `DecoderHost::copyFileToLocalDocument()` shares), and `discardWrite(reference)` drops a save destination that
+  will never be written (a no-op in the base). `probe(request, reference, out, maxCount)` (#831) reads a document's
+  start into an `ImportProbe` (`header`, at most `kProbeHeaderBytes`, 64, `DSD_BACKUP_HEADER_BYTES`; `displayName`;
+  `total`): only a header that starts with the backup magic (`dsd_backup_has_magic()`) is read on, discarding, to count
+  its length, which stops at `maxCount + 1`; any other document is never read past its header (`total` -1). The declared
+  size is never used. It shares the copies' request records (cancel, forget, one transfer at a time, progress), writes
+  nothing, and answers `DocumentCopied`, `DocumentCancelled` or `DocumentFailed`. The base transport probes only a
+  regular file, as it copies only one: the same check before the open, then `openSource()`, so a FIFO is refused and
+  never waited on (#830 B1). `abortDocumentTransfers()` aborts every transport handed out (the host keeps weak
+  references), and one handed out after it starts aborted. `document_save_transport.{h,cpp}` is the export saves'
+  transport (#826): `DecoderHost::saveTransport()` hands out a new `DocumentSaveTransport` each call (a platform host
+  through `keepSaveTransport()`), which never calls the host, so the export writer may keep it and finish a save past
+  the host. `save(sourcePath, reference)` blocks and answers whether the document now holds the source's bytes;
+  `discardPendingDownload(reference)` lets go of a picked Download-folder row nothing will be saved to (base: no-op);
+  `abort()` fails the running save at its next chunk and every later one. The base transport's save is
+  `copy_file_to_local_document()`, the same local copy (file URL or absolute path, owner-only through `QSaveFile`, no
+  cap) `DecoderHost::copyFileToDocument()` makes on the host's own flag. `abortDocumentTransfers()` aborts every save
+  transport handed out too, and one handed out after it starts aborted. `abort()` calls the protected `abortPlatform()`,
+  which a platform transport uses to stop its own copies. The base save asks the protected `proceedCopy(copied)` before
+  each chunk (base: true until `abort()`); the abort test overrides it to hold a copy partway until the abort lands.
+  Test: `UI_QT_SIGNAL_SEARCH` (local saves, abort before and during a save (held after its first chunk), the hand-out, a
+  transport past its host). `document_export_writer.{h,cpp}` is the export writer (#826):
+  `DocumentExportWriter(transport, cacheRoot, owner, reply)` lives on its owner's thread. `submit(token, bytes,
+  reference)` runs one job at a time on a one-thread `QThreadPool`: it writes the bytes to `<token>.csv` in the writer's
+  own owner-only folder `<cacheRoot>/<uuid>/` (`QSaveFile` + `open_private()`), hands that file to `transport->save()`,
+  and removes it whatever happened; a job that cannot stage (no folder or lock, an open, write or commit failure) calls
+  `discardPendingDownload(reference)` instead and fails. `submit()` answers false, discarding the reference's
+  Download-folder row at once, while a job runs (`busy()`), once the transport is aborted, or always when `cacheRoot` is
+  empty or relative (that writer makes no folder or lock and sweeps nothing). `reply(token, ok)` is queued to the
+  owner's thread through a shared link (mutex, owner and writer pointers) the destructor clears, so a job that ends
+  after the writer never reaches it. Each writer holds `<cacheRoot>/<uuid>.lock` (`QLockFile`, `setStaleLockTime(0)`:
+  age never makes it stale) for its life; the constructor sweeps every other writer's folder (and orphan lock) whose
+  lock it can take with `tryLock(0)` (no lock, or a holder whose process is gone), so a live writer in this or another
+  process keeps its folder. Only names a writer gives count: a brace-less lowercase UUID (`QUuid::fromString()`
+  round-tripping `WithoutBraces`), with or without `.lock`; a lock file named `.lock` alone (whose stem is the cache
+  root itself) and every other entry are never locked or removed. The destructor aborts the transport only when a job is
+  still running, waits up to `kStopWaitMs` (2000), and then removes its folder and lock; a job blocked past that keeps
+  its worker and lock (never deleted, as `ImportService`'s) and its folder until the process ends, for a later sweep.
+  Test: `UI_QT_SIGNAL_SEARCH` (save, failed save, staging failures, refusals, sweep against in-process, child-process,
+  dead and day-old locks, a bare `.lock` and other names left alone, an empty or relative root, cooperative and blocked
+  teardown). `import_service.{h,cpp}` is the import worker (#832) the library and the replay imports share, with the
+  document probes and the backup's restore reads (#831); `ui_load()` makes the one service (not published to QML) from
+  `host->importTransport()` right after `ImportService::sweepStaging()`, which runs once after the restore applies and
+  removes `<AppData>/import-staging/` wholly (a link is removed, never followed). `submit(stage, commit)` returns a
+  process-unique positive id that is also the transport's request id.
   `stage` runs on a one-thread `QThreadPool`, requests in order, with its own owner-only folder
   `import-staging/<uuid>/` (made by the worker; when it cannot be made the stage is skipped and the commit gets
   `{ok: false, error: "local"}`). It touches no QObject. When a stage ends, the worker calls `transport->forget(id)`
@@ -13283,6 +13310,17 @@ Qt Quick frontend (`src/ui/qt`):
   destructor cancels every request, queues their folders' removal and waits `kStopWaitMs` (2 s). If a copy ignores
   the cancel, the pool is left to finish it without the service (never deleted, as `closeRecordingWork()`), and no
   commit runs. The service is created before the models that use it, so as the engine's child it is destroyed first.
+  `readDocument(reference, destPath, maxBytes, commit)` (#831, the backup's restore) is a request of another kind on
+  the same worker, ids, `cancel()`, `progress()` and teardown: the stage copies the document straight into the
+  caller's `destPath` through the transport, with no staging folder (`enqueue(..., staged = false)`, the shape a second
+  folderless kind takes), so the service never removes a copy it hands over, and the commit gets the copy's
+  `DocumentCopy` value, `DocumentCancelled` for a cancelled request. Only `DocumentCopied` hands the file over; for any
+  other value the caller removes `destPath`, since a cancel that lands after the copy ended leaves it. With no commit
+  to come (teardown), the stage removes a copy that ended after the cancel.
+  `probeDocument(reference, maxCount, commit)` (#831, a document opened from another app) is a third kind, also
+  folderless: the stage runs `transport->probe()` and returns what it read, the name included, before the worker has
+  the transport forget the request, and the commit gets the probe's `DocumentCopy` value with the `ImportProbe`
+  (`DocumentCancelled` for a cancelled request).
   The commit journal `<AppData>/import_journal.json` (`journalAdd`/`journalRemove`/`journalEntries`, Qt thread)
   lists the clean absolute directories a commit creates until the index naming them is saved (a journal left empty is
   removed; a missing one is empty). A journal that cannot be read, or holds anything but absolute paths, gives
@@ -13841,16 +13879,16 @@ Qt Quick frontend (`src/ui/qt`):
   `dsd_realtime_mono_ms()`) once `app.exec()` returns; a `TeardownStage` declared first in a scope logs `teardown:
   <name> started` when made and `teardown: <name> took <n> ms` when the scope ends, so a hang names the stage that
   started and never took, and nothing unless hooks were installed when it was made, so the desktop and tests that
-  install none are unaffected. `~BackupModel`, `~CallHistoryModel`, `~SignalSearchModel` and `~RadioReferenceModel`,
-  whose bodies wait with no timeout (a worker pool, a synchronous save, a store flush, the RadioReference client), each
-  declare one first. `main()` times the QML engine's and the host's destruction the same way, then flushes with
-  `DiagnosticsLog::kShutdownFlushMs` (500 ms) as its bound and writes that flush's own time to
-  `diagnostics/teardown-flush.marker` (`teardownFlushMarkerWrite()`, unsynced); the next UI start reports it once and
-  removes it (`teardownFlushMarkerTake()`: `teardown: the previous process's final diagnostics flush took N ms`, with `,
-  and timed out` or `, and failed to write` (`TeardownFlush`); a malformed marker is dropped). Tests:
-  `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_BACKUP_MODEL`, `UI_QT_RADIO_REFERENCE`, `UI_QT_SIGNAL_SEARCH` (each destructor
-  marks its stage only while hooks are installed, through `tests/ui/teardown_trace_capture.h`), `UI_QT_DIAGNOSTICS_LOG`
-  (`teardownFlushMarkerRoundTrip()`).
+  install none are unaffected. `~BackupModel` (its worker, at most `ImportService::kStopWaitMs`), `~CallHistoryModel`,
+  `~SignalSearchModel` and `~RadioReferenceModel`, whose bodies wait (the last three with no timeout: a synchronous
+  save, a store flush, the RadioReference client), each declare one first. `main()` times the QML engine's and the
+  host's destruction the same way, then flushes with `DiagnosticsLog::kShutdownFlushMs` (500 ms) as its bound and writes
+  that flush's own time to `diagnostics/teardown-flush.marker` (`teardownFlushMarkerWrite()`, unsynced); the next UI
+  start reports it once and removes it (`teardownFlushMarkerTake()`: `teardown: the previous process's final diagnostics
+  flush took N ms`, with `, and timed out` or `, and failed to write` (`TeardownFlush`); a malformed marker is dropped).
+  Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_BACKUP_MODEL`, `UI_QT_RADIO_REFERENCE`, `UI_QT_SIGNAL_SEARCH` (each
+  destructor marks its stage only while hooks are installed, through `tests/ui/teardown_trace_capture.h`),
+  `UI_QT_DIAGNOSTICS_LOG` (`teardownFlushMarkerRoundTrip()`).
 - Configuration backup (issue #580; user rules in `android/README.md` "Backup and restore"). The sealed envelope is
   crypto's `backup_seal`; everything inside it is Qt code.
   - Archive (`backup_archive.{h,cpp}` public surface, `backup_archive_build.cpp` export, `backup_archive_parse.cpp`
@@ -13908,6 +13946,19 @@ Qt Quick frontend (`src/ui/qt`):
     RadioReference generator), so a new producer token must join it. Passphrases are NFC UTF-8 of at least 8 code
     points (`backup_passphrase_ok()`); the byte and normalized copies the backup code makes are wiped, the strings
     QML hands it cannot be.
+  - Envelope verdicts (`backup_archive.{h,cpp}`): `backup_open()` judges the header with `dsd_backup_check_header()`, so
+    its status tells a file without the magic (`ERR_NOT_BACKUP`) from a damaged backup (`ERR_FORMAT`), and
+    `backup_error_from_seal_status()` maps NOT_BACKUP → `NotBackup`, VERSION (above 1) → `NewerVersion`, FORMAT (magic,
+    then a short header, version 0, reserved bytes or a wrong length) and PARAMS → `Damaged`, TOO_LARGE → `TooLarge`
+    (#831 B7: a truncated backup used to say "not a backup" and version 0 "newer"). `classify_incoming(header, total)`
+    judges a document from its first 64 bytes and its length, with no passphrase, as `IncomingKind`
+    (`incoming_kind_name()`: `backup`, `newerBackup`, `damagedBackup`, `tooLargeBackup`, `other`): NOT_BACKUP, then a
+    length above `kMaxSealedBytes` (before the version, as Restore refuses such a file first), then VERSION, then
+    TOO_LARGE, then FORMAT/PARAMS; a negative (unknown) `total` keeps
+    the verdicts that need no length and is otherwise `damagedBackup`. The classifier lives in
+    `backup_archive_incoming.cpp`, so the import library (`ImportedFilesModel`'s probes) links it without the
+    snapshot and its stores. Tests: `UI_QT_BACKUP_ARCHIVE`, and
+    `UI_QT_BACKUP_MODEL` for the restore's errors.
   - Staging and apply (`backup_apply.h`, `backup_stage.cpp`, `backup_apply.cpp`, module-private
     `backup_apply_fs.{h,cpp}`): `stage_restore()` takes the data root its caller read (the model passes the UI thread's
     reading to its worker) and writes `restore-staging-<job>/` (files, stores, settings, avoids and a manifest, each
@@ -13951,15 +14002,30 @@ Qt Quick frontend (`src/ui/qt`):
     restore (`QSaveFile` writes through a link, so the models' own saves replace it only when it could not be read, by
     renaming the link aside: `json_store` above).
     `ApplyEnv` injects the engine check, free space and a fault per named step.
-  - `backup_model.{h,cpp}`: `BackupModel`, context property `backup`. One low-priority worker thread (a `QThreadPool` of
-    one) runs each job; work and replies cross through two queues under one `std::mutex`, and a job's files are its own
-    (`<CacheLocation>/backup/<job>.dsdbak` or `.in`, `restore-staging-<job>/`), so a cancelled job removes only them
-    (`discard_staging()` for its staging directory). Construction sweeps both (`sweep_stale_staging()`).
-    `prepareExport()` snapshots on the UI thread, then builds and seals on the worker; `saveExport()` calls
-    `DecoderHost::copyFileToDocument()`, and a refused save (busy, nothing prepared) hands its reference to
-    `discardPendingDownload()` (#829), since nothing will write it; `inspectRestore()` copies the document with
-    `copyDocumentToFile()` (capped at 64 MiB), opens, parses, checks free space (twice the archive plus 1 MiB) and
-    stages, and the UI thread promotes.
+  - `backup_model.{h,cpp}`: `BackupModel`, context property `backup`, made in `ui_load()` with the host, the import
+    worker (`ImportService`, held by `QPointer`) and a transport of its own (`host->importTransport()`). One
+    low-priority worker thread (a `QThreadPool` of one) runs each job; work and replies cross through two queues in a
+    `Shared` state under one `std::mutex`, and a job's files are its own (`<CacheLocation>/backup/<job>.dsdbak` or
+    `.in`, `restore-staging-<job>/`), so a cancelled job removes only them (`discard_staging()` for its staging
+    directory, under the data root the UI thread read). Construction sweeps both (`sweep_stale_staging()`).
+    `prepareExport()` snapshots on the UI thread, then builds and seals on the worker; `saveExport()` writes through the
+    transport's `writeFromFile()` (not cancellable, as before), and a refused save (busy, nothing prepared, no
+    transport) hands its reference to the transport's `discardWrite()` (#829), since nothing will write it.
+    `inspectRestore()` (#831 B4) submits `ImportService::readDocument()` into the job's `<job>.in` (capped at 64 MiB;
+    refused as `Io` once the service is gone), and the read's commit queues the inspection, which reads and removes that
+    file, opens, parses, checks free space (twice the archive plus 1 MiB) and stages; the UI thread promotes. `cancel()`
+    (and `discardRestore()`) cancels the read by its request id, so Cancel answers at once and the next backup job never
+    waits behind a provider read that only a cancel stops. The read shares the one import worker, so a provider that
+    ignores the cancel still holds every later library import, replay import, document probe and restore read until it
+    answers. A read's commit for a dropped job removes the copy. Jobs capture
+    the `Shared` state (queues, transport, their cancel flags), never the model or the host, and each queued job carries
+    a `drop()`. The destructor clears the model link, runs `drop()` for jobs never started (their files go; a save's
+    destination goes to `discardWrite()`), calls `abortDocumentTransfers()` while a job may run, cancels the read, waits
+    `ImportService::kStopWaitMs`, then abandons the pool as `ImportService` does (`abandon_worker()` in
+    `abandoned_workers.h`, which the Android recording transfers share; warning `backup: a job did not stop within
+    ...`). A running save keeps its export file, which it removes when it ends. A job that ends without the model
+    removes its own files and reports nothing; a read whose model is gone removes its copy at its commit.
+    `setInspectionHold()` is a test seam (an inspection waits there before it reads its copy).
     `commitRestore()` refuses while a job runs, a session is on screen or `engineBusy()`, commits, and asks `quitApp()`
     once; a refused commit leaves the stage as it was. `restorePending` follows the committed stage on disk, and
     `restoreCancellable` (pending, no complete journal) with it; `discardRestore()` reports `RestoreInProgress` once the
@@ -13969,8 +14035,7 @@ Qt Quick frontend (`src/ui/qt`):
     could not write (`DecoderHost::DocumentLocalFailed`) or read back, an argument or OpenSSL failure once the header
     has parsed (`backup_error_from_open_status()`), a staging or promotion that failed.
     `startupOutcome` is this start's `ApplyResult`, else the result file until acknowledged, and carries the restored
-    backup's `notIncluded` lines. The destructor calls `abortDocumentTransfers()` while a job may be on the worker, then
-    waits for it. Production seals with `dsd_backup_kdf_params_default()`.
+    backup's `notIncluded` lines. Production seals with `dsd_backup_kdf_params_default()`.
   - QML: one `BackupFlow.qml` in `Main.qml` (z 22, above the scan layers) serves both Settings instances through
     `exportBackupRequested()`, `restoreBackupRequested()` and `cancelRestoreRequested()`. `backup.flowActive` (set for
     the flow's whole length, kept while the app closes) joins `autoStartBlocked`, a USB grant that lands while it is set
@@ -14033,7 +14098,10 @@ Qt Quick frontend (`src/ui/qt`):
     force key, a scan list's port, key IDs, talkgroup overrides and a profile's force.
   - Tests: `UI_QT_BACKUP_ARCHIVE`, `UI_QT_BACKUP_APPLY` (every step crashed in a clean apply and in a rollback; two
     restores in a row), `UI_QT_BACKUP_MODEL` (with `test_recorder_parity()` against the QML fixture's
-    `tests/ui/qml_backup_recorder.h`), `UI_QT_QML_CALL_LISTS` (`tst_settings_backup.qml`,
+    `tests/ui/qml_backup_recorder.h`; #831 B4: a held read cancelled, the job file kept past the read's commit with
+    cache and data on separate roots, no import worker, a held save aborted at teardown, a stuck read and save left
+    behind in bounded time and their late files removed, an unstarted save dropped at teardown; `GatedTransport` holds
+    the reads and saves), `UI_QT_IMPORT_SERVICE` (document reads), `UI_QT_QML_CALL_LISTS` (`tst_settings_backup.qml`,
     `tst_util_decryption_protocol.qml`), `UI_QT_DECRYPTION_PROFILES`, `UI_QT_PERSISTENCE` (`test_prefs_key_table()`),
     `UI_QT_ANDROID_HOST`, `ANDROID_DOCUMENT_TRANSFER_JVM`, `BACKUP_SEAL`; a replay system without its recording in
     `UI_QT_SESSION_ARGS` and `tst_session_initialized.qml`.
@@ -14117,6 +14185,68 @@ Qt Quick frontend (`src/ui/qt`):
   `testContext.lastDocumentRequest()` / `documentCalls()` and answers with `answerDocumentPicked`,
   `answerDocumentCancelled`, `answerDocumentUnavailable` (on whichever host is installed) and `setSavedDocumentName`.
   Test: `UI_QT_IMPORTED_FILES` (base defaults).
+  `documentRequestPending` (NOTIFY `documentRequestChanged`; base false) is true while a request of this host waits for
+  its answer, so QML can hold other work until the picker is back (#831).
+- Documents from other apps (issue #831): one incoming document waits in the host's slot until the UI takes it.
+  `incomingDocumentPending` (NOTIFY `incomingDocumentChanged`) says one waits; `takeIncomingDocument()` returns its
+  reference once and empties the slot (empty, with no signal, when none waits); a platform host calls the protected
+  `offerIncomingDocument(reference)`, which replaces a document not yet taken and emits (an empty reference offers
+  nothing). A take first asks the protected virtual `newerIncomingDocument()` for one the platform received since its
+  last offer and, without a signal, puts it in the slot in place of the older one, so a take between two polls returns
+  the newer document and it is never offered after it; the take's one signal follows. The base host never offers one,
+  and its `newerIncomingDocument()` returns none. The reference is a plain string end to end, like a picked one. QML
+  tests: the `decoderHost` map and `ImportOnlyHost` both carry the slot and `documentRequestPending`; a case drives them
+  with `testContext.emitIncomingDocument(ref)` and `setDocumentRequestPending(bool)` on whichever host is installed.
+  Tests: `UI_QT_IMPORTED_FILES` (the base slot), `tst_context_fixture.qml` (both fakes).
+- `qml/IncomingDocumentFlow.qml` (#831) shows one incoming document: Main's only instance (`incomingDocument`, z 22 like
+  `BackupFlow` and declared before it, so the backup flow stays the top item) is non-visual apart from its `ModalSheet`
+  (`incomingDocumentSheet`, accessible name "Incoming file"; the line under the name heading reads "From another app").
+  `phase` runs "" → `probing` → `presenting` → `handingOff` → ""; `busy` is set before `takeIncomingDocument()` and
+  holds until the destination accepted the document or it was dropped, and joins `autoStartBlocked`. The probe is
+  `importedFiles.inspectDocument()`, answered by `documentInspected(id, {kind, name})`; every way out but a hand-off
+  drops the document and `cancelInspect()`s a probe still reading: Cancel/Close call `drop()`, and Back, Escape and an
+  outside tap reach it through the sheet's `dismissHandler`. The name heading is a `ReadableText` (PlainText) with "This
+  file" when the provider gave none. A backup follows `backup.restorePending`/`restoreCancellable`,
+  `decoderHost.sessionActive` and `backup.busy` live (`backupState`): a session on shows "Stop listening" ("Stop replay"
+  when `replaying`, "Stopping…" disabled while `sessionState` is Stopping) calling `decoderHost.stop()` itself (D3: the
+  Monitor's Stop is under the sheet), and Restore enables once `backup.restoreAllowed && !backup.restorePending`.
+  Problem lines reuse `BackupFlow.errorText()` (through `restoreFlow`; without one a backup's problem line stays empty)
+  and `Util.restorePartWayText()`, are `Accessible.AlertMessage`, and are read out once each time one appears
+  (`onProblemTextChanged` → `Navigation.announce`). "Other" asks with `ImportKindPicker` (Import stays disabled until a
+  kind is chosen). `handOff(target, type)` copies the reference and name, closes the sheet and emits
+  `handOffRequested(target, reference, name, type)`; Main answers `handOffDone(accepted)`, and a refusal opens the sheet
+  again with "Couldn't open that now. Try again."
+- Main's free test, `mainRoot.intakeFree` (#831): a document waits while any owner holds the screen: an open modal, the
+  intake's own `busy`, the wizard, onboarding, the scan-list editor, Explore setup, Signal search, either RadioReference
+  screen, `backup.flowActive`/`busy`, `importedFiles.importing`, `importsScreen.importActive` and `mapApplyActive`,
+  `monitor.keyApplyActive`, `radioReference.busy`, `replayFiles.copying`, `decoderHost.recordingTransferActive`,
+  `documentRequestPending`, `awaitingUsbAccess`, `localDeviceRequestPending`, `restartCloser.active` (a close for a
+  restart, #830: a probe then would make it give up as refused), `restartInFlight` (from `pendingRestart` through its
+  start until the session runs or the start failed: `restartStarting`, set by `finishPendingRestart()`, settled by
+  `settleRestartStart()`), and until `decoderHost.sessionStateKnown` (a `Q_PROPERTY` of
+  `DecoderHost::sessionStateKnown()`; before Android's first poll a running session reads as Idle, and an import routed
+  then would be cancelled when Imports hides under the monitor). `incomingDocumentChanged` and `onIntakeFreeChanged`
+  only `Qt.callLater(maybeTakeIncoming)`, which reads both again. Idle layers (Imports at rest, Diagnostics, Licenses,
+  Call recordings, Spectrum, Talkgroups, the session's History and Settings) may stay beneath; `routeIncoming()` closes
+  them first (`closeIntakeLayers()`), then: Restore → `currentTab = 2` when idle and
+  `backupFlow.restoreFromReference(ref)`; Import → `importsOpen` (over the session's Settings while monitoring, Imports
+  re-added above them) and, a turn later, `importsScreen.importIncoming(ref, name, type)`; Target CSV →
+  `scanListEditor.openFor(-1)`, `scanListOpen`, `importTargetsFrom(ref, name)`. During a session that editor (z 20)
+  opens over the monitor, so `scanListOpen` is one of the monitor's `enabled` terms, and the scan-warnings panel (z 21,
+  `scanWarningsPanel`) hides while it is open rather than cover Save. QML tests: `tst_incoming_document.qml`
+  (`testContext.setSessionStateKnown()`, `holdRecordingTransfers()` for a save that outlives its sheet).
+- Overlays over the live monitor (#831): a mouse click on a sheet's Cancel, a menu row or any control that closes its
+  cover on release never acts on the control beneath, Stop listening included; that is the press-time rule of
+  `GatedTapHandler` (see the QML rules below, which give the measured delivery). `MonitorScreen.enabled` keeps a term
+  for each full-screen layer that can cover it (wizard, RadioReference, Signal search, Spectrum, Talkgroups, the
+  scan-list editor, Diagnostics, Licenses, Call recordings, the RR account, Imports and the session's History and
+  Settings): a layer has no barrier, so a press on a part of it that takes none reaches the monitor's items (its list
+  flicks) as well as its tap handlers. Its terms for Main-level sheets (site chooser, session and Listen menus, Radio)
+  are older than the rule, which now covers every sheet; a sheet's barrier takes the press from items beneath, and the
+  monitor has no drag or pinch handler that could take it back. QML tests: `tst_incoming_document.qml` (mouse clicks on
+  the incoming sheet's Cancel over Stop listening, the Spectrum's waterfall and Imports' "Import file", a mouse and a
+  touch drag on its scrim over the waterfall, and the scan-list editor's Save over Stop), `tst_modal_input.qml` (the
+  notification note's "Not now" and the Squelch sheet's Close over Stop), `tst_main_overlay_layering.qml`.
 - File browser (issue #830): `DecoderHost::fileBrowserSupported` (CONSTANT; base false, Android true) offers the app's
   own browser; it is also the C++ capability for same-tree companion confinement and copying local replay picks.
   `fileAccess` (NOTIFY `fileAccessChanged`) is `{declared, granted, route ("settings" | "permission" | "none"),
@@ -14256,41 +14386,49 @@ Qt Quick frontend (`src/ui/qt`):
   pick) holds the top. QML tests: every engine has a scripted `restartCloser` (`testContext.setCloseRefused()`,
   `closeBegins()`, `finishClose(outcome)`), and `testContext.copiedTexts()` keeps what the readings host's `copyText()`
   was asked to copy. Test: `UI_QT_QML_FILE_BROWSER` (screen and singleton, and Main's wiring).
-- `qml/CsvImportFlow.qml` imports a CSV and its companions for three owners: Imported files (`ImportsScreen`), the
-  scan list editor's target CSV (`ScanListScreen`) and the wizard's trunking-data fields (`WizardScreen`). Its primary
-  and companion pickers (`csvPrimaryPicker`, `csvCompanionPicker`) are `DocumentPicker`s with no filter (`browseKind`
-  "csv", title "Choose a CSV file": DSD-neo's file browser lists CSV and text files, #830); a picked document is then
-  copied on the import worker (`beginImport()`, #832, under UI, Qt, "imported_files_model"), which names the stored file
-  from the provider's own name for it, the picker's `displayName` only as the hint; a companion's `displayName` names
-  its "Selected:" line until a library choice names the library file (#829 B3). The busy sheet names the file by the
-  host's `displayName` as given, since the host decodes it (#830: `map%20v2.csv` stays that); only a pick with no name
-  falls back to the reference's last segment, decoded once (`Util.referenceName()`). A companion's browser stacks above
-  the open sheet as the top modal (the sheet stays up, covered): Back at its locations ends only that pick, with every
+- `qml/CsvImportFlow.qml` imports a CSV and its companions for three owners: Imported files (`ImportsScreen`), the scan
+  list editor's target CSV (`ScanListScreen`) and the wizard's trunking-data fields (`WizardScreen`). Its primary and
+  companion pickers (`csvPrimaryPicker`, `csvCompanionPicker`) are `DocumentPicker`s with no filter (`browseKind` "csv",
+  title "Choose a CSV file": DSD-neo's file browser lists CSV and text files, #830); a picked document is then copied on
+  the import worker (`beginImport()`, #832, under UI, Qt, "imported_files_model"), which names the stored file from the
+  provider's own name for it, the picker's `displayName` only as the hint; a companion's `displayName` names its
+  "Selected:" line until a library choice names the library file (#829 B3). The busy sheet names the file by the host's
+  `displayName` as given, since the host decodes it (#830: `map%20v2.csv` stays that); only a pick with no name falls
+  back to the reference's last segment, decoded once (`Util.referenceName()`). A companion's browser stacks above the
+  open sheet as the top modal (the sheet stays up, covered): Back at its locations ends only that pick, with every
   choice and generation kept, and the next Back is the sheet's own. `pick(kind, context)` / `begin(…, context)` first
   cancel the import before (with that import's context), then keep `context`, and `finished(result, context)` hands it
   back. `complete()` closes both pickers silently; an owner ends a pick or a copy by calling the flow's `cancel()`.
   Ownership (#829 B4, #832): each owner cancels its flow when it stops being visible (`onVisibleChanged`, so Imports'
   Back, which clears `importsOpen` in `Main.qml` directly, and the wizard's Save, which clears `wizardOpen`, both count)
   and when it is reused (`WizardScreen.openForAdd/openForFound/ openForEdit`, `ScanListScreen.openFor`), and bumps its
-  generation then, so an answer from before is dropped. Newer choice wins: the wizard keeps a generation per CSV field
-  (`csvGenerations`, bumped by `assignCsvPath()` and by `applyRadioReference()` for the files it writes), the scan list
-  editor one for its targets (`targetsGeneration`, bumped by `selectTargets()` and the target source switch), the flow
-  one per companion slot (`companionGenerations`, bumped by every write to the slot). A pick carries what it was asked
-  with (`WizardScreen.csvContext()`: `{target, keyFormat, generation, fieldGeneration}`;
-  `ScanListScreen.importContext()`: `{generation, targets}`; `ImportsScreen.importContext()`: `{replacing, replacePath,
-  generation}`) and the owner's `wanted(context)` answers whether it still holds; a pick that comes back after a newer
-  choice ends as cancelled with nothing copied or imported and no notice, and a late companion pick leaves the slot
-  alone (B6: a later pick never carries an earlier reference). The wizard fills `context.target` with
-  `context.keyFormat`, never `pickerTarget`, which the next sheet rewrites. An update names its row by the stored path
-  taken at pick time (`replacePath`): `beginImport()` refuses a row that went with `error` "changed" ("That file changed
-  while you were picking. Try again."), and the flow refuses an update whose row gave no path (`replacing` with an empty
-  `replacePath`) the same way before it copies anything, so an update never becomes a new import. Choosing a decryption
-  profile in the wizard clears the key file and bumps its generation too. A primary picker that is `unavailable` ends
-  the flow with `{ok false, error "unavailable", detail: message}`; a companion one brings the sheet back with every
-  choice kept and the message in `csvCompanionNotice` (cleared by the next "Choose a file…", a library choice or the end
-  of the import). Owners show `Util.importMessage(result, "csv")`, which gives `detail` for "changed" and "unavailable"
-  (Imports' notice, the scan list's validation line, the wizard's `csvNotice`); each of those lines and the companion
-  notice is an `AlertMessage` while it reports a problem and is read out once per failure while `Navigation.allows` it
+  generation then, so an answer from before is dropped. A document already chosen (#831) enters through
+  `ImportsScreen.importIncoming(ref, name, type)` (a new import; false while the screen is hidden, which would cancel
+  it) or `ScanListScreen.importTargetsFrom(ref, name)` (after `openFor(-1)`), each false while its flow is `active`,
+  because `begin()` refuses only while copying and would cancel an import waiting on its companion sheet. Imports' kind
+  question is `qml/ImportKindPicker.qml` (`kind`, `keyHex`, read-only `type`), shared with the intake sheet; its
+  `FilterPill`s set `wrapLabel`, which draws the label as a `WholeWordLabel` inside the pill's width (bounded by the
+  picker's), so a long kind wraps between words at a narrow sheet or large text and the pill grows taller (B8). The
+  pill's natural width is its label on one line at the full text size, never at a size a fit shrank it to, so it grows
+  back when there is room. Newer choice wins: the wizard keeps a generation per CSV field (`csvGenerations`, bumped by
+  `assignCsvPath()` and by `applyRadioReference()` for the files it writes), the scan list editor one for its targets
+  (`targetsGeneration`, bumped by `selectTargets()` and the target source switch), the flow one per companion slot
+  (`companionGenerations`, bumped by every write to the slot). A pick carries what it was asked with
+  (`WizardScreen.csvContext()`: `{target, keyFormat, generation, fieldGeneration}`; `ScanListScreen.importContext()`:
+  `{generation, targets}`; `ImportsScreen.importContext()`: `{replacing, replacePath, generation}`) and the owner's
+  `wanted(context)` answers whether it still holds; a pick that comes back after a newer choice ends as cancelled with
+  nothing copied or imported and no notice, and a late companion pick leaves the slot alone (B6: a later pick never
+  carries an earlier reference). The wizard fills `context.target` with `context.keyFormat`, never `pickerTarget`, which
+  the next sheet rewrites. An update names its row by the stored path taken at pick time (`replacePath`):
+  `beginImport()` refuses a row that went with `error` "changed" ("That file changed while you were picking. Try
+  again."), and the flow refuses an update whose row gave no path (`replacing` with an empty `replacePath`) the same way
+  before it copies anything, so an update never becomes a new import. Choosing a decryption profile in the wizard clears
+  the key file and bumps its generation too. A primary picker that is `unavailable` ends the flow with `{ok false, error
+  "unavailable", detail: message}`; a companion one brings the sheet back with every choice kept and the message in
+  `csvCompanionNotice` (cleared by the next "Choose a file…", a library choice or the end of the import). Owners show
+  `Util.importMessage(result, "csv")`, which gives `detail` for "changed" and "unavailable" (Imports' notice, the scan
+  list's validation line, the wizard's `csvNotice`); each of those lines and the companion notice is an `AlertMessage`
+  while it reports a problem and is read out once per failure while `Navigation.allows` it
   (`announced`/`announcements` for tests). Tests: `UI_QT_QML_CSV_IMPORT_FLOW`, `UI_QT_IMPORTED_FILES`, and the scan
   list, imports, wizard band plan, modal input and settings layout QML suites.
 - The wizard's Replay file Browse (`WizardScreen.qml`, issue #829) opens `wizardReplayPicker`, a `DocumentPicker`
@@ -14937,9 +15075,9 @@ Tests: `ANDROID_WATCHDOG_JVM` (`LooperWatchdogTest.kt`, `ActivityTraceTest.kt`, 
 `ANDROID_SCREEN_POLICY_JVM` (`ScreenTraceTest.kt`), `UI_QT_DIAGNOSTICS_LOG` (the golden records pass `redact()`
 unchanged; an unbroken `dispatchKeyEvent` frame is dropped).
 
-Configuration backup (issue #580; the Qt side is under UI, Qt, "Configuration backup") adds five `DecoderHost`
-methods. `quitApp()` and `engineBusy()` are called on the Qt main thread; the document copies are called from a worker
-thread, which the rest of the interface never is.
+Configuration backup (issue #580; the Qt side is under UI, Qt, "Configuration backup") uses `DecoderHost`'s
+`quitApp()`, `engineBusy()` and `abortDocumentTransfers()`, called on the Qt main thread, and the document transport
+`importTransport()` hands out, whose reads and saves run on worker threads (#831).
 
 - Startup apply: `ui_load()` runs `apply_pending_restore()` right after the settings recovery
   (`recover_settings_files()`), before any model reads a store (the native
@@ -14952,57 +15090,72 @@ thread, which the rest of the interface never is.
   (`finishAndRemoveTask()`) to the Android main thread without waiting, and `DsdNeoActivity.onDestroy` stops the
   engine and the service and ends the process as for any finish. The base host answers false, and the model then
   leaves the confirmed restore waiting for the next start.
-- Document copies run on `BackupModel`'s worker thread, never the Qt main thread (`decoder_host_android_documents.cpp`).
-  A `content://` reference goes over JNI to `DocumentCopies.kt` through the application `ContentResolver` the
-  constructor holds; a file URL or plain path takes the base host's copy. The read side refuses a provider-declared size
-  over the cap before opening, counts the cap while copying (`DocumentTransfer.kt`), writes a temp file beside the
-  destination and renames it; a stale destination is removed first, and `DocumentCopied` counts only when the file is
-  there. A failure on this device's side (no held `ContentResolver`, a stale destination that stays, the temp file, a
-  write to it through `DocumentTransfer.LocalOutput`, the rename, a copy reported without its file because the JNI call
-  failed) is `DocumentLocalFailed` (`LOCAL_FAILED`), not the document's `DocumentFailed`; the codes cross JNI as plain
-  ints, and the `document_transfer` suite checks that both sides name the same values. A save opens the document `wt`,
-  else `w`; a file (not a provider's pipe) is cut back to the copy's length and synced. A save that fails once the
-  document is open closes it with `closeWithError()`, so a provider reading a pipe or socket sees the failure rather
-  than a short document, and deletes it; only a whole save closes normally. The write side is
-  `DocumentCopies.beginWrite()` and its `DocumentWrite` (`finish(length)` / `fail()`), which call recording exports use
-  too. `fail()` leaves a Download-folder row to `DownloadsSave` (`deleteDocument()` cannot remove a MediaStore row), and
-  `copyFileToDocument()` settles one at every exit: published only when the whole save was written, so a row that could
-  not be published fails the save. A save the host never hands to Kotlin (aborted, no resolver) or whose JNI call
-  failed discards it.
-- Import copies (#832): `DocumentCopies.copyImportDocument()` is the same capped temp-file copy for one import request
-  id, from the import worker. One `query(DISPLAY_NAME, SIZE)` under the copy's own signal publishes the name
-  (`importName()`) and declared size (`importProgress()`, `[copied, declared]`: `copied` is -1 once the copy ended,
-  `declared` stays until the next copy or `forgetImport()`, so a refused copy still says how large it is; `[-1, -1]`
-  with no copy) before the open; a failed or null lookup still opens. `cancelImport(id)` cancels by exact id (never
-  `RecordingExport`'s "every id up to"): the running copy stops in its provider call or at its next chunk, and every
-  later copy for that id (a CSV's companions) answers `DocumentCancelled` (`CANCELLED`) until `forgetImport(id)`. A
-  local write failure with `ENOSPC` is `DocumentLocalFailed` and sets `importNoSpace()`. Only import copies answer
-  `DocumentCancelled`; `abort()` cancels and refuses them too, as `DocumentFailed`.
+- Document copies run on a worker thread, never the Qt main thread. Every read of a picked document, the backup's
+  restore included (#831), is an import copy on the import worker (below); the backup's save runs on `BackupModel`'s
+  worker through the import transport's `writeFromFile()`. A `content://` reference goes over JNI to
+  `DocumentCopies.kt` through the application `ContentResolver` the constructor holds; a file URL or plain path takes
+  the base transport's copy. The codes cross JNI as plain ints, and the `document_transfer` suite checks that both
+  sides name the same values. A save opens the document `wt`, else `w`; a file (not a provider's pipe) is cut back to
+  the copy's length and synced. A save that fails once the document is open closes it with `closeWithError()`, so a
+  provider reading a pipe or socket sees the failure rather than a short document, and deletes it; only a whole save
+  closes normally. The write side is `DocumentCopies.beginWrite()` and its `DocumentWrite` (`finish(length)` /
+  `fail()`), which call recording exports use too. `fail()` leaves a Download-folder row to `DownloadsSave`
+  (`deleteDocument()` cannot remove a MediaStore row), and `copyFileToDocument()` settles one at every exit: published
+  only when the whole save was written, so a row that could not be published fails the save.
+- Import copies (#832): `DocumentCopies.copyImportDocument()` copies one document for one import request id, from the
+  import worker. It refuses a provider-declared size over the cap before opening, counts the cap while copying
+  (`DocumentTransfer.kt`), writes a temp file beside the destination and renames it. One `query(DISPLAY_NAME, SIZE)`
+  under the copy's own signal publishes the name (`importName()`) and declared size (`importProgress()`,
+  `[copied, declared]`: `copied` is -1 once the copy ended, `declared` stays until the next copy or `forgetImport()`,
+  so a refused copy still says how large it is; `[-1, -1]` with no copy) before the open; a failed or null lookup
+  still opens. `cancelImport(id)` cancels by exact id (never `RecordingExport`'s "every id up to"): the running copy
+  stops in its provider call or at its next chunk, and every later copy for that id (a CSV's companions) answers
+  `DocumentCancelled` (`CANCELLED`) until `forgetImport(id)`. A failure on this device's side (the temp file, a write
+  to it through `DocumentTransfer.LocalOutput`, the rename) is `DocumentLocalFailed` (`LOCAL_FAILED`), not the
+  document's `DocumentFailed`; one with `ENOSPC` also sets `importNoSpace()`. `abort()` cancels and refuses import
+  copies too, as `DocumentFailed`.
+- Import probes (#831): `DocumentCopies.probeImportDocument(resolver, request, uri, maxCount)` runs as an import copy
+  of its request (`runImport()`: the same table, cancel, forget and abort) and answers a record `code;total;header;name`
+  (`android/document_probe_record.h`): code COPIED, FAILED or CANCELLED; header the first 64 bytes as lowercase hex
+  (`DocumentTransfer.readUpTo()`, short reads included); total counted only after the backup magic
+  (`DocumentTransfer.countCapped()`, stopping at `maxCount + 1`), else -1; and the `DISPLAY_NAME` (one query, no size),
+  last and verbatim. It opens with `openAssetFileDescriptor(uri, "r", signal)` and closes every stream. Its magic is a
+  copy of `DSD_BACKUP_MAGIC` used only to decide whether to count; the `document_transfer` suite's
+  `backup_probe_constants_match` check pins it, and the header size, to `backup_seal`, and the C++ side still
+  classifies the header itself.
 - The C++ side of the import copies is `DecoderHostAndroid::ImportTransport` (`decoder_host_android_imports.cpp`,
   handed out by `importTransport()`), whose JNI calls (`platformCopyImportDocument()` and the five request-table
-  calls) sit beside `platformCopyDocumentToFile()` in `decoder_host_android.cpp`. A `content://` reference is read as
-  the backup's copy is: the destination is cleared first, no held `ContentResolver` is `DocumentLocalFailed`,
-  `DocumentCopied` counts only with its file in place (a failed JNI call reads as 0), codes 1-4 pass through and any
-  other answer is `DocumentFailed`. Any other reference takes the base transport's local copy. `cancel()` and
-  `forget()` reach both sides; `progress()` reads the side the request's latest copy took.
+  calls) sit in `decoder_host_android.cpp`. For a `content://` reference the destination is cleared first (a stale
+  destination that stays is `DocumentLocalFailed`), no held `ContentResolver` is `DocumentLocalFailed`, `DocumentCopied`
+  counts only with its file in place (a failed JNI call reads as 0, so that is `DocumentLocalFailed` too), codes 1-4
+  pass through and any other answer is `DocumentFailed`. Any other reference takes the base transport's local copy. A
+  `content://` `probe()` (#831) calls `platformProbeImportDocument()` and reads its record
+  (`parse_document_probe_record()`: plain decimals, hex of at most 64 bytes, a length no shorter than the header); the
+  name is taken whatever the code, the header and length only for `DocumentCopied`; a record that does not read, a code
+  other than copied/cancelled, no held `ContentResolver` or an abort is `DocumentFailed`. `cancel()` and `forget()`
+  reach both sides; `progress()` reads the side the request's latest copy took. `writeFromFile()` (#831, the backup's
+  save) sends a `content://` save through `saveContentDocument()`, as the export saves' transport does (below), so a
+  save that ends after the host is gone settles its Download-folder row too; `discardWrite()` discards one never
+  started.
 - The export saves' transport (#826) is `DecoderHostAndroid::SaveTransport` (`decoder_host_android_documents.cpp`,
-  handed out by `saveTransport()`). A `content://` save takes `saveContentDocument()`, the dispatch
-  `copyFileToDocument()` shares: aborted or without a held `ContentResolver` it discards the Download-folder row and
-  fails; otherwise `platformCopyFileToDocument()`, and a failure discards the row. Any other reference takes the base
-  transport's local copy. `discardPendingDownload()` is `DownloadsSave.discard()`.
-- `abortDocumentTransfers()` (teardown only: `~BackupModel`, and `closeRecordingWork()` while a recording transfer
-  runs) calls `platformAbortDocumentCopies()` (`DocumentCopies.abort()`), which cancels the `CancellationSignal` of
-  every provider call in flight and raises `DocumentTransfer`'s sticky flag, which every chunk checks, and then the base
+  handed out by `saveTransport()`). A `content://` save takes `saveContentDocument()`, the dispatch the backup's
+  `writeFromFile()` shares: aborted or without a held `ContentResolver` it discards the Download-folder row
+  (`platformDiscardPendingDownload()`) and fails; otherwise `platformCopyFileToDocument()`, and a failure, a failed JNI
+  call included, discards the row. Any other reference takes the base transport's local copy. `discardPendingDownload()`
+  is `DownloadsSave.discard()`.
+- `abortDocumentTransfers()` (teardown only: `~BackupModel`, and `closeRecordingWork()` while a recording transfer runs)
+  calls `platformAbortDocumentCopies()` (`DocumentCopies.abort()`), which cancels the `CancellationSignal` of every
+  provider call in flight and raises `DocumentTransfer`'s sticky flag, which every chunk checks, and then the base
   host's abort. A save transport's `abort()` raises the same process-wide platform abort, since a platform copy keeps
   its own cancellation; the export writer aborts its transport only at its teardown. The delete is skipped after an
   abort, so a save stopped partway leaves a partial document, which never opens as a backup. An export cut there can
   leave a short CSV at a location picked through a provider (a Download-folder row is deleted, since `DownloadsSave`
   removes a row it never published).
-- Tests: `UI_QT_ANDROID_HOST` (engine-busy decision, document, import and save-transport dispatch),
-  `UI_QT_IMPORT_TRANSPORT` (the base transport's cap, cancel, abort and progress, and the host's hand-out),
-  `ANDROID_DOCUMENT_TRANSFER_JVM` (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` and its import copies
-  against provider stubs), `UI_QT_BACKUP_MODEL` (a refused save discards its reference). Real providers, JNI and
-  `finishAndRemoveTask()` need a device or emulator.
+- Tests: `UI_QT_ANDROID_HOST` (engine-busy decision, import dispatch, the import transport's save and its rows,
+  save-transport dispatch), `UI_QT_IMPORT_TRANSPORT` (the base transport's cap, cancel, abort, progress, save and probe,
+  and the host's hand-out), `ANDROID_DOCUMENT_TRANSFER_JVM` (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt`'s
+  import copies and saves against provider stubs), `UI_QT_BACKUP_MODEL` (a refused save discards its reference). Real
+  providers, JNI and `finishAndRemoveTask()` need a device or emulator.
 
 Document picker (issue #829; the host API and `qml/DocumentPicker.qml` are under UI, Qt, "Document picker"):
 `DecoderHostAndroid::documentPickerSupported()` is true, so no screen opens Qt's `FileDialog` on Android and Qt's own
@@ -15015,7 +15168,9 @@ request code (1305) is never used.
   `create()` Qt's context only when `QAndroidApplication::isActivityContext()`; false there, or a call that failed
   (both Kotlin entries return true), answers `documentPickUnavailable(id, "failed")`, queued, unless the request was
   replaced first. `cancelDocumentRequest()` forgets the live id and calls `DocumentPicker.cancel()`; other ids are
-  ignored.
+  ignored. `documentRequestPending()` is `m_document_request != 0`; `documentRequestChanged` is emitted when that
+  flips: for a start once the platform call returned, for an end after the answer that ended the request (so a slot
+  that asks again inside the answer leaves nothing to tell).
 - Answers: `refresh()` drains `DocumentPicker.pollResult()` every tick (`refreshDocumentPicks()`), live request or
   not, and `android/document_pick_record.h` (JNI-free) turns each JSON record (`{"id","kind":"picked","uri","name",
   "downloads"}`, `{"id","kind":"cancelled"}`, `{"id","kind":"unavailable","reason"}`) into the signal, for the live id
@@ -15353,13 +15508,58 @@ instance's `QtActivityBase.onCreate()` sees Qt started and calls `restartApplica
 `Runtime.exit(0)`) inside `super.onCreate()`, before any of the app's teardown; the session dies with the process. That
 stays as it is, with no cleanup fallback. The app prevents it and records what still gets through:
 
-- The manifest's `launchMode="singleTask"` brings the one instance forward for all three outside launches: a USB
-  attachment (to `onNewIntent`), the launcher icon and the decoding notification, where `singleTop` could create a
-  second instance over a picker or permission prompt. The cost: each of the three closes a document picker or
-  permission prompt open in the app's task, which returns cancelled. A closed document picker answers its request
-  `documentPickCancelled` (`DocumentPicker` gets `RESULT_CANCELED` for the live launch's code), and the flow ends
-  quietly as on a reject; an interrupted location prompt is a cancel (the location paragraph under UI, Qt). Share
-  sheets run in their own task.
+- The manifest's `launchMode="singleTask"` brings the one instance forward (to `onNewIntent`) for all four outside
+  launches: a USB attachment, a document another app opens with or shares to DSD-neo (#831, below), the launcher icon
+  and the decoding notification, where `singleTop` could create a second instance over a picker or permission prompt.
+  The cost: each of the four closes a document picker or permission prompt open in the app's task, which returns
+  cancelled. A closed document picker answers its request `documentPickCancelled` (`DocumentPicker` gets
+  `RESULT_CANCELED` for the live launch's code), and the flow ends quietly as on a reject; an interrupted location
+  prompt is a cancel (the location paragraph under UI, Qt). Share sheets run in their own task.
+- Extras guard (#831 B6). Qt's `QtActivityBase.addReferrer()` reads `getExtras().getString(...)`, unguarded, inside
+  `super.onCreate()` and `super.onNewIntent()`; on API 29-32 the first read unparcels every value, so an unknown
+  Parcelable another app puts in the extras would crash the app there. `IntentExtras.sanitize(intent, log)` runs
+  before each of the two `super` calls (on `getIntent()` in `onCreate`): `extras?.size()` unparcels a copy, and a
+  `RuntimeException` replaces the intent's extras with none (`replaceExtras(null)`) and records `launch extras dropped:
+  <exception class>`. The first failure is final: a bundle that failed keeps a partial map and never throws again, so
+  it is not probed again or trusted. The rule itself is `sanitize(probe, clear, log)`. On API 33+ values unparcel
+  one at a time, past that probe, so each reader of an extra guards its own read (`IncomingDocuments`, and B9 below).
+- USB extra read (#831 B9). Any app can start the exported activity with a `USB_DEVICE_ATTACHED` intent whose
+  `EXTRA_DEVICE` no class loader knows; on API 33+ the typed getter then throws `BadParcelableException`, which
+  crashed the running decoder from `onCreate` or `onNewIntent`. The receiver is not reachable this way: ATTACHED and
+  DETACHED are protected broadcasts on every API level, and below API 33 only the app's own permission reply can be
+  sent to it (an unreadable device there names no request, so the reply is ignored).
+  `UsbSourceManager.usbDeviceExtra()` now reads it inside a `RuntimeException` catch, and an unreadable extra is no
+  device: an attach reports nothing, and a detach is one with no device extra, which (the existing rule) counts as the
+  connected receiver's. Test: `ANDROID_USB_BROKER_JVM` cases `unreadable_device_extra_30`/`_33`/`_36`.
+- Replay guard (#831 B1). A relaunch from Recents re-delivers the intent the task started with: after process death
+  with the saved state, for an emptied task with `FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY`. `LaunchDelivery.fresh(saved,
+  fromHistory)` (plain Kotlin) is true only with neither, and `onCreate` reports its launch intent to
+  `UsbSourceManager.reportAttachment()` and `IncomingDocuments.report()` only when fresh, after
+  `initializeAttachments()`; a cold launch is fresh, so the attachment that starts the app still reports. Before this,
+  the USB report was unconditional, and a Recents relaunch attached the dongle again. `onNewIntent` is always a new
+  delivery and reports both.
+- Intake gate (#831). The Open with filter is VIEW + `DEFAULT` + scheme `content` + `text/csv`,
+  `text/comma-separated-values`, `text/plain`, `application/octet-stream`; the Share filter is SEND + `DEFAULT` + the
+  same types without `text/plain` and with no scheme (a filter that lists a scheme does not match an intent with no
+  data, which a SEND is). No `*/*`, no SEND_MULTIPLE. Filters never see `EXTRA_STREAM`, and an intent with no action
+  passes the action test, so `IncomingDocumentIntake` (plain Kotlin) decides every delivery, in order: the action is
+  VIEW or SEND (MAIN and USB_DEVICE_ATTACHED are other launches and log nothing; any other action is refused); one URI,
+  VIEW's data or SEND's `EXTRA_STREAM` alone (a SEND's data, `EXTRA_TEXT` and ClipData are never read; a list is
+  `manyUris`); scheme `content`, in any case; not the app's own provider (an authority under `<package>.`, or one
+  `resolveContentProvider()` gives this package; a `<user>@` prefix is dropped first, as the resolver drops it); a read
+  grant recorded for the app (`checkUriPermission(uri, myPid, myUid, FLAG_GRANT_READ_URI_PERMISSION)`), which may come
+  from an earlier delivery and is not sender authentication. A refusal is one record, `incoming document refused:
+  action=<VIEW|SEND|other> reason=<action|noUri|manyUris|scheme|ownProvider|noGrant>`, never a URI, authority or name.
+  `IncomingDocuments` (the Android shell) reads the intent, with the stream through `IntentCompat.getParcelableExtra()`
+  (the typed getter only on API 34+) inside a `RuntimeException` catch, and leaves an accepted URI's text in one
+  `IncomingMailbox`: a newer document replaces one not yet taken, `take()` returns it once (`""` when none waits), and
+  nothing is persisted. The Qt host polls it: `refresh()` ends with `refreshIncomingDocuments()`
+  (`decoder_host_android_documents.cpp`, JNI-free, after `refreshDocumentPicks()`), which takes through
+  `platformTakeIncomingDocument()` (`IncomingDocuments.take()`, `decoder_host_android.cpp`, kept in
+  `proguard-rules.pro`) and only then offers the reference to the host's slot, since a slot of the signal may run
+  `refresh()` again. Its `newerIncomingDocument()` override takes through the same call, so a take after a newer
+  delivery and before the next poll returns that one (`UI_QT_ANDROID_HOST`). The activity callbacks only read the intent
+  and make the two lookups; no provider query, open or copy runs there.
 - `android:configChanges` lists every flag android-36 defines except `resourcesUnused` (19 flags; that one is meant
   for activities that use no resources, and this one has the splash, strings and the notice), so no configuration
   change recreates the activity. `assetsPaths` (a runtime overlay turned on) exists only from android-36, so
@@ -15398,6 +15598,19 @@ Tests: `ANDROID_A11Y_BRIDGE_JVM` (`run_jvm_tests.py --suite a11y_bridge`):
   is added: the emulator runs below cover it.
 - The environment-writer checks are under "QML garbage collector". `UI_QT_DIAGNOSTICS_LOG` holds the
   `accessibility:` record shapes and checks each survives redaction unchanged.
+
+Tests for the #831 intake: `ANDROID_INCOMING_DOCUMENT_JVM` (`--suite incoming_document`) runs the gate and
+`LaunchDelivery` with no stubs (`IncomingDocumentIntakeTest.kt`: VIEW and SEND accepted; MAIN and USB not documents;
+EDIT, SEND_MULTIPLE and no action refused; SEND with data only, a stream list, VIEW without data; `file:`, `FILE:`,
+`http(s):`; the three own providers by name, user-prefixed, and one the resolver gives the app; no grant on a URI
+never received; the record's shape; the fresh table), then `IncomingDocuments` and the mailbox against stubs of the
+intent, its extras, the package manager, the grant check and `IntentCompat` (`IncomingDocumentsTest.kt`: API 30/33/34
+reads, lists, a string stream, `EXTRA_TEXT`, a bad parcel, both `resolveContentProvider()` overloads, an escaped
+authority). Its checks pin the four filters' exact elements (`incoming_document_filters()`) and the guarded reports and
+record (`incoming_document_reports()`). `ANDROID_INTENT_EXTRAS_JVM` (`--suite intent_extras`) runs `IntentExtras`
+against the same stubs, whose extras unparcel as API 29-32's do (`IntentExtrasTest.kt`), and
+`intent_extras_order()` pins the guard before both `super` calls. The real Parcel path and the Recents relaunch are
+device checks.
 
 #### Display size (density)
 
@@ -15808,12 +16021,46 @@ stop of its own or is read twice), whose tap, accessibility press, Return, keypa
 through one guarded `activate()`. Its focus ring sits on the card's own edge, because the list clips. Test:
 `tst_imports_screen_layout.qml` `test_row_press_action`.
 
+A pointer tap acts only if its press began, and it ends, while its control could take input (#831). Measured on Qt 6.12:
+with a mouse, a press on a control built on a `TapHandler` (which, unlike a `MouseArea` or a Qt Quick Control, does not
+take the press as an item) also reaches the tap handlers beneath it, a sheet's barrier notwithstanding; a touch press
+does not, and a press on a `MouseArea` (a scrim, a barrier) or a Control reaches nothing beneath. `Navigation.allows()`
+refuses a handler beneath while the cover is up, but a control that closes the cover on that release has taken it away
+by the time the handler beneath reports its tap. Every tap in `src/ui/qt/qml` therefore goes through
+`qml/GatedTapHandler.qml`, a `TapHandler` that reads `Navigation.allows(gate)` (its parent unless `gate` is set) when
+the press begins and again at the tap, and emits `allowedTap(eventPoint, button)` and `allowedLongPress()`; a new
+control uses it and handles those, never a bare `TapHandler` or a `GatedTapHandler`'s `onTapped`/`onLongPressed`
+(Semgrep `dsd-neo.qml-bare-tap-handler` and `dsd-neo.qml-gated-tap-ungated-signal`, which also rejects
+`onSingleTapped`/`onDoubleTapped`; it cannot see a handler reached another way, `Connections { function onTapped() }` or
+`.tapped.connect(...)`). Keyboard and accessibility presses do not come through it and keep the control's own guarded
+activation. A drag or pinch is not a tap: a drag, mouse or touch, that begins anywhere on a cover, its scrim included,
+can take the grab for a `DragHandler` beneath, so a `DragHandler` or `PinchHandler` binds
+`enabled: Navigation.allows(item) && …` (the Spectrum's pan and pinch, `BandRail`, the recording seek bar). A
+`MouseArea` takes the press itself and sits above what it covers (a sheet's barrier, the scan-warnings panel, which lies
+outside every navigation surface), so it needs neither, and Qt Quick Controls (`PlexCheckBox`, `PlexToggle`,
+`PlexInput`) take the press too and sit in sheets or in layers that stand down when covered. A `PlexComboBox` list is
+the one cover that closed on the press itself, before any handler beneath judged it, and let that press through to the
+control under the finger; it is modal (undimmed) and closes on the release outside it, so the press that dismisses it
+reaches nothing beneath. Tests: `tst_gated_tap_handler.qml` (a sheet closed on release or while the press is held, a
+sheet opened while it is held, a long press, keyboard and accessibility presses, a choice list closed by a mouse or
+touch tap on a button beneath it), and the overlay cases above.
+
 A choice of one among several that says which one is current (a `SegmentedControl` segment, a `BottomNav` tab) is
 `Accessible.RadioButton` with `checkable: true` and `checked` while it is the current one (issue #646). Qt 6.11.3's
 Android bridge maps `PageTab` to a class name TalkBack does not recognise and never passes `selected` on, so the bottom
 tabs, page tabs marked selected, were heard by name alone; checkable and checked do reach TalkBack ("checked, Listen,
-radio button"). `BottomNav` keeps `selected` set for platforms that read it. Names carry no role or position words.
-Tests: `tst_bottom_nav_a11y.qml`.
+radio button"). `BottomNav` keeps `selected` set for platforms that read it. The rows of an open `PlexComboBox` list are
+such choices too (#831): a Controls `ItemDelegate` is a `ListItem`, which carries no press action, so the bridge made
+each row a TextView neither focusable nor clickable, and a TalkBack double tap picked the row at the screen's centre.
+Each row's node is a child item filling it (`plexComboRow`): a Controls button writes its own unchecked, uncheckable
+state over any `Accessible.checkable` and `checked` set on it. The delegate stays a node, as its `Accessible.ignored`
+does not hold once the list opens, so it is nameless (`Accessible.name: ""`): one named node, one swipe stop, per row.
+That node is `Accessible.RadioButton`, checkable and checked while current, and answers both Press and Toggle. Only
+while the list shows is it focusable and does its press action choose the row as a tap does (`choose()` checks the row's
+`visible` and `enabled` and the list's): the rows stay built once the list closes, and Android can keep its copy of a
+node. Names carry no role or position words. Tests: `tst_bottom_nav_a11y.qml`, `tst_a11y_combo_list.qml` (one named node
+per row on a first open and a reopen, each row's role, state and press action for a string and a text-role list, Toggle,
+a touch on a row finding that row, the bridge's double tap, and a closed list's row refusing it).
 
 The Listen tabs (`qml/ListenTabs.qml`, issue #646) are Material primary tabs in the app's tokens: `model` of
 `{id, label}`, the caller's `currentId`, and `selected(id)` only for a change of tab. Each tab (`listenTab_<id>`) is

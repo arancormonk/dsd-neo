@@ -51,6 +51,7 @@ class DecoderHost : public QObject {
     Q_PROPERTY(SessionState sessionState READ sessionState NOTIFY sessionStateChanged)
     Q_PROPERTY(bool sessionActive READ sessionActive NOTIFY sessionStateChanged)
     Q_PROPERTY(bool transitioning READ transitioning NOTIFY sessionStateChanged)
+    Q_PROPERTY(bool sessionStateKnown READ sessionStateKnown NOTIFY sessionStateKnownChanged)
     Q_PROPERTY(QString failureText READ failureText NOTIFY sessionStateChanged)
     Q_PROPERTY(bool localDeviceBrokered READ localDeviceBrokered CONSTANT)
     Q_PROPERTY(bool localDeviceReady READ localDeviceReady NOTIFY localDeviceChanged)
@@ -59,6 +60,8 @@ class DecoderHost : public QObject {
     Q_PROPERTY(bool locationSupported READ locationSupported CONSTANT)
     Q_PROPERTY(bool shareSupported READ shareSupported CONSTANT)
     Q_PROPERTY(bool documentPickerSupported READ documentPickerSupported CONSTANT)
+    Q_PROPERTY(bool documentRequestPending READ documentRequestPending NOTIFY documentRequestChanged)
+    Q_PROPERTY(bool incomingDocumentPending READ incomingDocumentPending NOTIFY incomingDocumentChanged)
     Q_PROPERTY(bool fileBrowserSupported READ fileBrowserSupported CONSTANT)
     Q_PROPERTY(QVariantMap fileAccess READ fileAccess NOTIFY fileAccessChanged)
     Q_PROPERTY(int localDeviceFailureKind READ localDeviceFailureKind NOTIFY localDeviceChanged)
@@ -107,10 +110,10 @@ class DecoderHost : public QObject {
     Q_ENUM(LocalDeviceFailureKind)
 
     /**
-     * @brief copyDocumentToFile() results. DocumentFailed: the document could not be read (or the copy was aborted);
-     * DocumentLocalFailed: it could, but this device could not write the copy (its destination could not be cleared,
-     * opened, written or committed). DocumentCancelled: the import request the copy belongs to was cancelled; only
-     * import copies answer it, never the backup's.
+     * @brief Document copy results (DocumentImportTransport::copy()). DocumentFailed: the document could not be read
+     * (or the copy was aborted); DocumentLocalFailed: it could, but this device could not write the copy (its
+     * destination could not be cleared, opened, written or committed). DocumentCancelled: the request the copy belongs
+     * to was cancelled.
      */
     enum DocumentCopy {
         DocumentCopied = 0,
@@ -176,23 +179,13 @@ class DecoderHost : public QObject {
     }
 
     /**
-     * @brief Copy a picked document to @p destPath (written private, through QSaveFile).
-     *
-     * The base host takes a file:// URL or a plain absolute path. A source larger than @p maxBytes gives
-     * DocumentTooLarge, and a destination that cannot be written DocumentLocalFailed; any failure leaves no file at
-     * @p destPath. The destination's directory must exist.
-     *
-     * @return A DocumentCopy value.
-     */
-    virtual int copyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) const;
-
-    /**
-     * @brief Copy @p sourcePath into the document @p reference chose.
+     * @brief Copy @p sourcePath into the document @p reference chose: the base host's recording save.
      *
      * The base host takes a file:// URL or a plain absolute path and writes it private, through QSaveFile, so a
-     * failure leaves no partial document.
+     * failure leaves no partial document. Picked documents are read, and the backup saved, through the document
+     * transport (importTransport()).
      */
-    virtual bool copyFileToDocument(const QString& sourcePath, const QString& reference) const;
+    bool copyFileToDocument(const QString& sourcePath, const QString& reference) const;
 
     /**
      * @brief Stop every document copy in progress and refuse new ones, for the rest of the process.
@@ -492,6 +485,28 @@ class DecoderHost : public QObject {
     discardPendingDownload(const QString& reference) {
         (void)reference;
     }
+
+    /** @brief Whether a request of this host waits for its answer (documentRequestChanged()); the base host: false. */
+    virtual bool
+    documentRequestPending() const {
+        return false;
+    }
+
+    /*
+     * A document another app opened with this one, or shared to it (issue #831): the platform offers its reference, a
+     * plain string as documentPicked()'s, and the UI takes it when it is free to. One waits at a time; a newer one
+     * replaces one not yet taken. The base host never offers one. Call these on the Qt thread.
+     */
+    bool
+    incomingDocumentPending() const {
+        return !m_incomingDocument.isEmpty();
+    }
+
+    /**
+     * @brief The newest reference waiting, once, which leaves none waiting; empty, with no signal, when none waits.
+     * One the platform received since its last offer (newerIncomingDocument()) replaces the slot's first.
+     */
+    Q_INVOKABLE QString takeIncomingDocument();
 
     /*
      * The app's own file browser (issue #830). Call every member on the Qt thread. The browser opens a session first
@@ -973,6 +988,10 @@ class DecoderHost : public QObject {
      * "noResult", "failed" or "unsupported" (the host has no picker).
      */
     void documentPickUnavailable(qint64 requestId, const QString& reason);
+    /** @brief documentRequestPending() changed; it comes after the answer that ended a request. */
+    void documentRequestChanged();
+    /** @brief A document was offered, replacing any not taken, or the one waiting was taken. */
+    void incomingDocumentChanged();
     /** @brief fileAccess() changed. */
     void fileAccessChanged();
     /** @brief Roots request @p requestId ended: {status, generation, roots}. */
@@ -988,6 +1007,19 @@ class DecoderHost : public QObject {
     void fileAccessRequestDone(qint64 requestId, const QString& outcome);
 
   protected:
+    /** @brief Leave @p reference for takeIncomingDocument(), in place of any not taken; empty is no document. */
+    void offerIncomingDocument(const QString& reference);
+
+    /**
+     * @brief A document the platform received since its last offer, taken from it; empty with none. The base host:
+     * none. takeIncomingDocument() asks first, so a take between two polls returns the newer document, not the one
+     * the slot held, and the newer one is never offered after it. It must not emit or call back into the host.
+     */
+    virtual QString
+    newerIncomingDocument() {
+        return QString();
+    }
+
     /** @brief What a file browser request asks; decides the signal that answers it. */
     enum class FileRequestKind { Roots, Listing, Page, Handoff, Access };
 
@@ -1149,6 +1181,8 @@ class DecoderHost : public QObject {
     qint64 m_documentRequestId = 0;
     /* The base host's requests whose queued "unsupported" answer has not run yet and was not cancelled. */
     QSet<qint64> m_refusedDocumentRequests;
+    /* The incoming document waiting for takeIncomingDocument(); empty with none. */
+    QString m_incomingDocument;
     /* The file requests not yet delivered; the open sessions; the access request a new one joins (0: none). */
     QHash<qint64, FileRequestState> m_fileRequests;
     QSet<qint64> m_fileSessions;

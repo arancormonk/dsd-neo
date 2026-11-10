@@ -5,7 +5,9 @@
 
 /**
  * @file
- * @brief The import copies' transport (#832): a picked document copied into a local file, cancellable by request id.
+ * @brief The document copies' transport (#832): a picked document copied into a local file, cancellable by request id,
+ * the start of a received document read to tell a backup from a CSV (its probe, #831), and a local file written into a
+ * picked document (the backup's save, #831).
  *
  * DecoderHost hands one out (importTransport()); the import worker keeps it, so a copy still running at teardown never
  * reaches back into a host that is gone. Thread-agnostic: any thread may call any member, and no member touches a
@@ -15,6 +17,7 @@
 #ifndef DSD_NEO_SRC_UI_QT_DOCUMENT_IMPORT_TRANSPORT_H_
 #define DSD_NEO_SRC_UI_QT_DOCUMENT_IMPORT_TRANSPORT_H_
 
+#include <QByteArray>
 #include <QHash>
 #include <QString>
 #include <QtGlobal>
@@ -40,6 +43,23 @@ struct ImportCopyProgress {
     bool noSpace = false;
 };
 
+/** @brief How much of a document probe() reads as its header: a backup's whole header (DSD_BACKUP_HEADER_BYTES). */
+constexpr int kProbeHeaderBytes = 64;
+
+/** @brief What probe() read of a document. */
+struct ImportProbe {
+    /** The document's first bytes: kProbeHeaderBytes of them, fewer only when the document is that short. */
+    QByteArray header;
+    /**
+     * The document's length, counted on its bytes, when its header starts with the backup magic; at most maxCount + 1
+     * (or the header's length, when that is more), so anything above maxCount means "larger". -1 for any other
+     * document, which is never read past its header.
+     */
+    qint64 total = -1;
+    /** The document's name: the source file's, or the one its provider gave; empty when unknown. */
+    QString displayName;
+};
+
 class DocumentImportTransport {
   public:
     DocumentImportTransport() = default;
@@ -61,6 +81,23 @@ class DocumentImportTransport {
      *         copy (progress() then says whether it ran out of space).
      */
     virtual int copy(qint64 request, const QString& reference, const QString& destPath, qint64 maxBytes);
+
+    /**
+     * @brief Read the start of the document @p reference names for request @p request into @p out (ImportProbe): its
+     * header, its name, and its length only when the header starts with the backup magic, counted up to
+     * @p maxCount + 1.
+     *
+     * Blocks until the read ends; callers run it on the import worker. Read-only: it writes no file, and never takes a
+     * provider's declared size, which is only a hint. It shares the copies' request records: cancel(@p request) stops
+     * it at its next read and refuses it until forget(@p request), a second read of a request that is reading is
+     * DocumentFailed, and progress() names the document and counts the bytes read. The base transport takes a file://
+     * URL or a plain absolute path, as copy() does, and probes only a regular file, as copy() copies only one.
+     *
+     * @return A DecoderHost::DocumentCopy value: DocumentCopied with @p out filled, DocumentCancelled once
+     *         cancel(@p request) was called before or during the read, else DocumentFailed (an abort included). @p out
+     *         may still name the document after a failure.
+     */
+    virtual int probe(qint64 request, const QString& reference, ImportProbe* out, qint64 maxCount);
 
     /**
      * @brief Cancel import @p request: the copy it runs stops at its next chunk, and every later copy for it answers
@@ -85,7 +122,27 @@ class DocumentImportTransport {
     virtual void forget(qint64 request);
 
     /**
-     * @brief Stop every copy in progress and fail every later one (DocumentFailed), for the rest of this transport.
+     * @brief Write the local file @p path into the document @p reference names (a save), whole or not at all.
+     *
+     * Blocks until the write ends; the backup's worker runs it. A write has no request id, so no cancel reaches it;
+     * abort() does. The base transport takes a file:// URL or a plain absolute path and writes it private through
+     * QSaveFile, so a failure leaves no partial document. A transport whose saves can go to a Download-folder row the
+     * picker made (#829) settles that row at every exit, so a write that ends after the host is gone needs no host.
+     *
+     * @return Whether the whole file was written.
+     */
+    virtual bool writeFromFile(const QString& path, const QString& reference);
+
+    /**
+     * @brief Drop @p reference, a save destination writeFromFile() will never write (a Download-folder row, #829).
+     *
+     * Never blocks, from any thread. The base transport writes no Download-folder rows, so it has nothing to drop.
+     */
+    virtual void discardWrite(const QString& reference);
+
+    /**
+     * @brief Stop every copy and write in progress and fail every later one (DocumentFailed, or false), for the rest
+     * of this transport.
      *
      * DecoderHost::abortDocumentTransfers() calls it on every transport it handed out, at teardown.
      */
@@ -96,7 +153,7 @@ class DocumentImportTransport {
     /**
      * @brief Open @p path, a regular file, for reading; nullptr when it cannot be opened.
      *
-     * The only source a copy opens. The base transport never waits on what it opens: on POSIX a name that leads to
+     * The only source a copy or a probe opens. The base transport never waits on what it opens: on POSIX a name that leads to
      * anything but a regular file by now (a FIFO swapped in after the check) is refused at once. A test overrides it
      * to hand the copy a device it paces.
      */
@@ -114,6 +171,7 @@ class DocumentImportTransport {
     /** End the copy begin() started: DocumentCancelled for a failure after a cancel, else @p copied. */
     int finish(qint64 request, int copied);
     int copyLocal(qint64 request, const QString& path, const QString& destPath, qint64 maxBytes);
+    int probeLocal(qint64 request, const QString& path, ImportProbe* out, qint64 maxCount);
     /** DocumentLocalFailed, noting whether @p out failed for want of space. */
     int localFailure(qint64 request, const QSaveFile& out);
     /** Record @p bytes copied; false once the copy must stop. */
@@ -147,6 +205,14 @@ bool open_private(QSaveFile& out);
  */
 int copy_stream_capped(QIODevice& source, QSaveFile& out, qint64 maxBytes,
                        const std::function<bool(qint64)>& proceed = std::function<bool(qint64)>());
+
+/**
+ * @brief Copy the local file @p sourcePath into the document @p reference names (a file:// URL or a plain absolute
+ * path), written private through QSaveFile and stopped before any chunk once @p aborted is set.
+ *
+ * @return Whether the whole file was written; any failure leaves no document.
+ */
+bool copy_file_to_local_document(const QString& sourcePath, const QString& reference, const std::atomic<bool>* aborted);
 
 } // namespace dsd_qt
 

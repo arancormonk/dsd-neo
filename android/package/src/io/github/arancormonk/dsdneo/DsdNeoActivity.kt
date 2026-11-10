@@ -69,12 +69,20 @@ import org.qtproject.qt.android.bindings.QtActivity
  * activity and is never lost.
  *
  * Qt 6.11.3 restarts the whole process, with none of the teardown below, when a second instance of this activity is
- * created in a process Qt already started (#782). The manifest keeps that from happening: `singleTask`, so a USB
- * attachment (to [onNewIntent]), the launcher icon and the decoding notification all bring this one instance forward,
- * and every configuration change handled in place. Those three also close a document picker or permission dialog open
- * in the app's task, which comes back cancelled: the pickers' flows end quietly, and so does a location request
- * ([LocationSupport]). One recreation that gets through anyway is recorded by [LaunchGuard], first among the launch
- * statements, for the next process's `exit:` line.
+ * created in a process Qt already started (#782). The manifest keeps that from happening: `singleTask`, so all four
+ * outside launches (a USB attachment, a document another app opens with or shares to DSD-neo, the launcher icon and the
+ * decoding notification) bring this one instance forward, to [onNewIntent] when it runs, and every configuration change
+ * handled in place. Each of the four also closes a document picker or permission dialog open in the app's task, which
+ * comes back cancelled: the pickers' flows end quietly, and so does a location request ([LocationSupport]). One
+ * recreation that gets through anyway is recorded by [LaunchGuard], first among the launch statements, for the next
+ * process's `exit:` line.
+ *
+ * Intents come from other apps too (#831), so each delivered one goes through [IntentExtras] before Qt's `super` call
+ * reads its extras: on API 29-32 an unreadable Parcelable there crashes Qt's `addReferrer()`. Its two inputs are then
+ * reported: a USB attachment to [UsbSourceManager], and a document to [IncomingDocuments], whose gate takes only one
+ * content URI that is not the app's own and that the app holds a read grant for. `onCreate` reports its launch intent
+ * only when it is a fresh delivery ([LaunchDelivery]): a relaunch from Recents hands back the intent the task started
+ * with, which must not attach a dongle or open a document again.
  *
  * The document pickers are the app's own (#829): [DocumentPicker] launches them for a result, and [onActivityResult]
  * hands it every result first. It claims its own request codes, including a result that comes after process death,
@@ -85,11 +93,13 @@ class DsdNeoActivity : QtActivity() {
     private var backCallback: OnBackInvokedCallback? = null
     private var keyboardObserver: ViewTreeObserver.OnGlobalLayoutListener? = null
 
-    // WP-S2: intents carry only a validated USB attachment, never start options.
+    // WP-S2: intents carry only a validated USB attachment or a gated incoming document, never start options.
     override fun onCreate(savedInstanceState: Bundle?) {
         // Before Qt starts: native diagnostics ask it for the process facts as soon as they start.
         ProcessFacts.attach(this)
         trace.created(this)
+        // Before super.onCreate(), where Qt reads the extras (#831 B6).
+        IntentExtras.sanitize(intent, HostDiagnostics::submit)
         LaunchGuard.onCreate(ProcessFacts::setStateSummary)
         AccessibilityBridge.effects = AccessibilityRestartNotice
         QmlGcPolicy.beforeQt(HostDiagnostics::submit)
@@ -108,12 +118,21 @@ class DsdNeoActivity : QtActivity() {
         keyboardObserver = observer
         window.decorView.viewTreeObserver.addOnGlobalLayoutListener(observer)
         UsbSourceManager.initializeAttachments(this)
-        UsbSourceManager.reportAttachment(this, intent)
+        // A relaunch from Recents re-delivers the first launch intent; only a fresh one is reported (#831 B1).
+        val fromHistory = (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0
+        val fresh = LaunchDelivery.fresh(savedInstanceState != null, fromHistory)
+        if (fresh) {
+            UsbSourceManager.reportAttachment(this, intent)
+            IncomingDocuments.report(this, intent, HostDiagnostics::submit)
+        }
     }
 
+    // Every new intent is a new delivery. Qt reads its extras inside super.onNewIntent() (#831 B6).
     override fun onNewIntent(intent: Intent) {
+        IntentExtras.sanitize(intent, HostDiagnostics::submit)
         super.onNewIntent(intent)
         UsbSourceManager.reportAttachment(this, intent)
+        IncomingDocuments.report(this, intent, HostDiagnostics::submit)
     }
 
     // The notification permission, the autofill service and storage access (#830) can change while we are away.

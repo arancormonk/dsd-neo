@@ -42,7 +42,6 @@
 }
 
 -keep,allowoptimization class io.github.arancormonk.dsdneo.DocumentCopies {
-    public static int copyDocumentToFile(android.content.ContentResolver, java.lang.String, java.lang.String, long);
     public static boolean copyFileToDocument(android.content.ContentResolver, java.lang.String, java.lang.String);
     public static void abort();
     # Imports (#832), from the import worker.
@@ -52,6 +51,8 @@
     public static java.lang.String importName(long);
     public static boolean importNoSpace(long);
     public static void forgetImport(long);
+    # Documents opened from other apps (#831): the probe, from the import worker.
+    public static java.lang.String probeImportDocument(android.content.ContentResolver, long, java.lang.String, long);
 }
 
 # Call recordings (#708): playback, export/save and share.
@@ -91,6 +92,11 @@
     public static boolean create(android.app.Activity, long, java.lang.String, java.lang.String);
     public static void cancel(long);
     public static java.lang.String pollResult();
+}
+
+# Documents other apps open with DSD-neo or share to it (#831): the host's poll.
+-keep,allowoptimization class io.github.arancormonk.dsdneo.IncomingDocuments {
+    public static java.lang.String take();
 }
 
 -keep,allowoptimization class io.github.arancormonk.dsdneo.DownloadsSave {

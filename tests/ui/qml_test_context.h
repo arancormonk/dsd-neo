@@ -135,9 +135,10 @@ using dsd_qt::CallHistoryFilterModel;
 using dsd_qt::CallHistoryModel;
 
 /**
- * @brief The switch that holds import copies (#832): while held, every copy waits before it starts until the switch
- * opens or its request is cancelled, so a case can see an import in flight and cancel it there. Held even through a
- * cancel, a cancelled copy waits too, so a case can see the flow while it waits for that answer.
+ * @brief The switch that holds import copies (#832) and document probes (#831): while held, every copy or probe waits
+ * before it starts until the switch opens or its request is cancelled, so a case can see an import in flight and
+ * cancel it there. Held even through a cancel, a cancelled copy waits too, so a case can see the flow while it waits
+ * for that answer.
  */
 struct ImportCopyGate {
     std::mutex lock;
@@ -165,7 +166,7 @@ struct ImportCopyGate {
     }
 };
 
-/** @brief The base transport behind an ImportCopyGate: the copy itself is the production local-file copy. */
+/** @brief The base transport behind an ImportCopyGate: the copy and probe themselves are the production local ones. */
 class HeldImportTransport : public dsd_qt::DocumentImportTransport {
   public:
     explicit HeldImportTransport(std::shared_ptr<ImportCopyGate> gate) : m_gate(std::move(gate)) {}
@@ -173,13 +174,18 @@ class HeldImportTransport : public dsd_qt::DocumentImportTransport {
     int
     copy(qint64 request, const QString& reference, const QString& destPath, qint64 maxBytes) override {
         {
-            std::unique_lock<std::mutex> guard(m_gate->lock);
+            const std::lock_guard<std::mutex> guard(m_gate->lock);
             m_gate->references.append(reference);
-            ++m_gate->waiting;
-            m_gate->changed.wait(guard, [&] { return m_gate->opens(request); });
-            --m_gate->waiting;
         }
+        wait(request);
         return DocumentImportTransport::copy(request, reference, destPath, maxBytes);
+    }
+
+    /* #831: a document probe waits at the same gate, so a case can see an incoming document while it is read. */
+    int
+    probe(qint64 request, const QString& reference, dsd_qt::ImportProbe* out, qint64 maxCount) override {
+        wait(request);
+        return DocumentImportTransport::probe(request, reference, out, maxCount);
     }
 
     void
@@ -193,6 +199,15 @@ class HeldImportTransport : public dsd_qt::DocumentImportTransport {
     }
 
   private:
+    /* Wait at the gate until it lets @p request go on. */
+    void
+    wait(qint64 request) {
+        std::unique_lock<std::mutex> guard(m_gate->lock);
+        ++m_gate->waiting;
+        m_gate->changed.wait(guard, [&] { return m_gate->opens(request); });
+        --m_gate->waiting;
+    }
+
     std::shared_ptr<ImportCopyGate> m_gate;
 };
 
@@ -310,6 +325,68 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
             documentCall(QStringLiteral("discardPendingDownload"), {{QStringLiteral("reference"), reference}}));
     }
 
+    /* Issue #831: a picker request in flight, as a case sets it (testContext.setDocumentRequestPending()); the requests
+     * above leave it alone. A case offers an incoming document through testContext.emitIncomingDocument(). */
+    bool requestPending = false;
+
+    bool
+    documentRequestPending() const override {
+        return requestPending;
+    }
+
+    void
+    setDocumentRequestPending(bool pending) {
+        if (requestPending != pending) {
+            requestPending = pending;
+            Q_EMIT documentRequestChanged();
+        }
+    }
+
+    using dsd_qt::DecoderHost::offerIncomingDocument;
+
+    /* Issue #831: whether the session state is known yet, as Android's host reports it after its first poll; a case
+     * sets it through testContext.setSessionStateKnown(). */
+    bool stateKnown = true;
+
+    bool
+    sessionStateKnown() const override {
+        return stateKnown;
+    }
+
+    void
+    setSessionStateKnown(bool known) {
+        if (stateKnown != known) {
+            stateKnown = known;
+            Q_EMIT sessionStateKnownChanged();
+        }
+    }
+
+    /* Issue #831: a recording save or export that runs on after its sheet closed. While held, a transfer begun through
+     * saveRecording()/exportRecordings() stays active until endHeldTransfer(); otherwise the base host's runs. */
+    bool holdTransfers = false;
+
+    /* The host offers exports, as Android's does, for its whole life: the property is CONSTANT, so the answer never
+     * follows holdTransfers. An export that is not held goes to the base host, which has no zip and fails it. */
+    bool
+    recordingExportSupported() const override {
+        return true;
+    }
+
+    void
+    endHeldTransfer() {
+        if (recordingTransferActive()) {
+            finishRecordingTransfer(TransferDone, {});
+        }
+    }
+
+  protected:
+    bool
+    beginRecordingTransfer(const QStringList& paths, const QStringList& names, const QString& reference,
+                           bool zip) override {
+        return holdTransfers || dsd_qt::DecoderHost::beginRecordingTransfer(paths, names, reference, zip);
+    }
+
+  public:
     /** @brief What lastDocumentRequest() reports: {id, kind ("open" or "save"), name, mime}. */
     static QVariantMap
     documentRequest(qint64 id, const QString& kind, const QString& name, const QString& mime) {
@@ -2834,6 +2911,46 @@ class ReadingMap : public QQmlPropertyMap {
         noteCall(QStringLiteral("discardPendingDownload"), {{QStringLiteral("reference"), reference}});
     }
 
+    /* Issue #831: the incoming document slot and the picker-in-flight reading, as DecoderHost publishes them; a case
+     * drives both through testContext (emitIncomingDocument(), setDocumentRequestPending()). */
+    Q_INVOKABLE QString
+    takeIncomingDocument() {
+        if (m_incomingDocument.isEmpty()) {
+            return QString();
+        }
+        QString reference;
+        reference.swap(m_incomingDocument);
+        insert(QStringLiteral("incomingDocumentPending"), false);
+        Q_EMIT incomingDocumentChanged();
+        return reference;
+    }
+
+    void
+    offerIncomingDocument(const QString& reference) {
+        if (reference.isEmpty()) {
+            return;
+        }
+        m_incomingDocument = reference;
+        insert(QStringLiteral("incomingDocumentPending"), true);
+        Q_EMIT incomingDocumentChanged();
+    }
+
+    void
+    setDocumentRequestPending(bool pending) {
+        if (value(QStringLiteral("documentRequestPending")).toBool() != pending) {
+            insert(QStringLiteral("documentRequestPending"), pending);
+            Q_EMIT documentRequestChanged();
+        }
+    }
+
+    void
+    setSessionStateKnown(bool known) {
+        if (value(QStringLiteral("sessionStateKnown")).toBool() != known) {
+            insert(QStringLiteral("sessionStateKnown"), known);
+            Q_EMIT sessionStateKnownChanged();
+        }
+    }
+
     /* Issue #830: the file browser. Each call is kept in `calls` as ImportOnlyHost::fileCall() shapes it; a request
      * returns a new id from the picker's sequence and a case answers it through testContext. The
      * `fileBrowserSupported` and `fileAccess` readings are in the map. */
@@ -2921,6 +3038,7 @@ class ReadingMap : public QQmlPropertyMap {
     void qualityChanged();
     void runningChanged();
     void sessionStateChanged();
+    void sessionStateKnownChanged();
     void sessionInitialized();
     void localDeviceChanged();
     void typographyChanged();
@@ -2933,6 +3051,8 @@ class ReadingMap : public QQmlPropertyMap {
     void documentPicked(qint64 requestId, const QString& reference, const QString& displayName, bool inDownloads);
     void documentPickCancelled(qint64 requestId);
     void documentPickUnavailable(qint64 requestId, const QString& reason);
+    void documentRequestChanged();
+    void incomingDocumentChanged();
     void fileAccessChanged();
     void fileRootsListed(qint64 requestId, const QVariantMap& result);
     void folderListed(qint64 requestId, const QVariantMap& result);
@@ -2941,6 +3061,7 @@ class ReadingMap : public QQmlPropertyMap {
 
   private:
     qint64 m_documentRequestId = 0;
+    QString m_incomingDocument;
 
     void
     noteFileCall(const QString& name, const QVariantMap& args) {
@@ -3926,9 +4047,10 @@ class Setup : public QObject {
      * `exists` is whether the item has an accessible interface. `inTree` is whether it can be reached from the top:
      * every ancestor's interface lists the one below it among its children, which is how the Android bridge builds
      * its node tree (childIdListForAccessibleObject). `role` is the QAccessible::Role value; `name`, `description`
-     * and `value` are the interface's texts; `invisible`, `checked` and `focusable` are its state flags.
+     * and `value` are the interface's texts; `invisible`, `checkable`, `checked` and `focusable` are its state flags.
      * `currentValue` is the value interface's reading (a progress bar's, which the Android bridge reads after the
-     * name), or undefined when it has none.
+     * name), or undefined when it has none. `actions` are its action names: the Android bridge makes a node
+     * clickable only with a press or toggle action, and a static text or heading never (#831).
      */
     Q_INVOKABLE QVariantMap
     accessibleNode(QObject* item) const {
@@ -3944,10 +4066,48 @@ class Setup : public QObject {
                 {QStringLiteral("description"), iface->text(QAccessible::Description)},
                 {QStringLiteral("value"), iface->text(QAccessible::Value)},
                 {QStringLiteral("invisible"), static_cast<bool>(iface->state().invisible)},
+                {QStringLiteral("checkable"), static_cast<bool>(iface->state().checkable)},
                 {QStringLiteral("checked"), static_cast<bool>(iface->state().checked)},
                 {QStringLiteral("focusable"), static_cast<bool>(iface->state().focusable)},
                 {QStringLiteral("childCount"), iface->childCount()},
-                {QStringLiteral("currentValue"), value != nullptr ? value->currentValue() : QVariant()}};
+                {QStringLiteral("currentValue"), value != nullptr ? value->currentValue() : QVariant()},
+                {QStringLiteral("actions"),
+                 iface->actionInterface() != nullptr ? iface->actionInterface()->actionNames() : QStringList()}};
+    }
+
+    /** @brief #831: perform @p action (an action name such as "Toggle") on @p item; false when it does not offer it. */
+    Q_INVOKABLE bool
+    accessibleDoAction(QObject* item, const QString& action) const {
+        QAccessibleInterface* iface = item != nullptr ? QAccessible::queryAccessibleInterface(item) : nullptr;
+        QAccessibleActionInterface* actions = iface != nullptr && iface->isValid() ? iface->actionInterface() : nullptr;
+        if (actions == nullptr || !actions->actionNames().contains(action)) {
+            return false;
+        }
+        actions->doAction(action);
+        return true;
+    }
+
+    /**
+     * @brief #831: a screen reader's double tap on @p item, as the Android bridge performs it (clickAction_helper):
+     * the press action, else the toggle action. False when the item offers neither, as the bridge reports.
+     */
+    Q_INVOKABLE bool
+    accessibleClick(QObject* item) const {
+        QAccessibleInterface* iface = item != nullptr ? QAccessible::queryAccessibleInterface(item) : nullptr;
+        QAccessibleActionInterface* actions = iface != nullptr && iface->isValid() ? iface->actionInterface() : nullptr;
+        if (actions == nullptr) {
+            return false;
+        }
+        const QStringList names = actions->actionNames();
+        if (names.contains(QAccessibleActionInterface::pressAction())) {
+            actions->doAction(QAccessibleActionInterface::pressAction());
+            return true;
+        }
+        if (names.contains(QAccessibleActionInterface::toggleAction())) {
+            actions->doAction(QAccessibleActionInterface::toggleAction());
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -4278,7 +4438,8 @@ class Setup : public QObject {
      * @brief Forget them, and put the player and the transfer back at rest (nothing open, nothing running). The
      * document picker's records go too, on every host: no lastDocumentRequest() from before the reset and no name set
      * through setSavedDocumentName(); and so do the file browser's calls (fileCalls()) and the references the import
-     * copies were asked for (importReferences()).
+     * copies were asked for (importReferences()). So do an incoming document not taken, a picker request set in
+     * flight, a session state set unknown and a held recording transfer (#831), so none reaches a later case.
      */
     Q_INVOKABLE void
     resetHostPlayback() {
@@ -4286,10 +4447,18 @@ class Setup : public QObject {
         m_host_readings->copiedTexts.clear();
         m_host_readings->lastDocumentRequest.clear();
         m_host_readings->savedDocumentNames.clear();
+        (void)m_host_readings->takeIncomingDocument();
+        m_host_readings->setDocumentRequestPending(false);
+        m_host_readings->setSessionStateKnown(true);
         for (ImportOnlyHost* host : {m_import_host, m_initializing_host}) {
             host->lastDocumentRequest.clear();
             host->documentCalls.clear();
             host->savedDocumentNames.clear();
+            (void)host->takeIncomingDocument();
+            host->setDocumentRequestPending(false);
+            host->setSessionStateKnown(true);
+            host->holdTransfers = false;
+            host->endHeldTransfer();
             host->fileCalls.clear();
             const std::lock_guard<std::mutex> guard(host->importGate->lock);
             host->importGate->references.clear();
@@ -4552,8 +4721,8 @@ class Setup : public QObject {
     }
 
     /**
-     * @brief Hold every import copy before it starts (#832), or let the held ones go on. A cancel lets its copy go on
-     * (to answer "cancelled") unless @p evenCancelled.
+     * @brief Hold every import copy and document probe before it starts (#832, #831), or let the held ones go on. A
+     * cancel lets its copy go on (to answer "cancelled") unless @p evenCancelled.
      */
     Q_INVOKABLE void
     holdImports(bool held, bool evenCancelled = false) {
@@ -4922,6 +5091,51 @@ class Setup : public QObject {
             Q_EMIT m_host_readings->documentPickUnavailable(id, reason);
         } else {
             Q_EMIT m_lifecycle_host->documentPickUnavailable(id, reason);
+        }
+    }
+
+    /**
+     * @brief Offer @p reference on the installed host as a document another app opened with this one (#831), as the
+     * Android host's poll does: it replaces one not taken, and incomingDocumentChanged() follows.
+     */
+    Q_INVOKABLE void
+    emitIncomingDocument(const QString& reference) {
+        if (hostReadingsInstalled()) {
+            m_host_readings->offerIncomingDocument(reference);
+        } else {
+            m_lifecycle_host->offerIncomingDocument(reference);
+        }
+    }
+
+    /** @brief Whether the installed host has a picker request in flight (documentRequestPending, #831). */
+    Q_INVOKABLE void
+    setDocumentRequestPending(bool pending) {
+        if (hostReadingsInstalled()) {
+            m_host_readings->setDocumentRequestPending(pending);
+        } else {
+            m_lifecycle_host->setDocumentRequestPending(pending);
+        }
+    }
+
+    /**
+     * @brief Hold the lifecycle host's next recording save or export open (#831), or (@p held false) end the one held,
+     * as done, and run them again as the base host does.
+     */
+    Q_INVOKABLE void
+    holdRecordingTransfers(bool held) {
+        m_lifecycle_host->holdTransfers = held;
+        if (!held) {
+            m_lifecycle_host->endHeldTransfer();
+        }
+    }
+
+    /** @brief Whether the installed host knows its session state yet (sessionStateKnown, #831). */
+    Q_INVOKABLE void
+    setSessionStateKnown(bool known) {
+        if (hostReadingsInstalled()) {
+            m_host_readings->setSessionStateKnown(known);
+        } else {
+            m_lifecycle_host->setSessionStateKnown(known);
         }
     }
 
@@ -6018,6 +6232,9 @@ class Setup : public QObject {
         /* Issue #829: unlike the base host's, true, so the screens take the app's picker, which a case answers
          * through testContext; setDocumentPickerSupported(false) puts Qt's FileDialog back. */
         host[QStringLiteral("documentPickerSupported")] = true;
+        /* Issue #831: no picker request in flight and no incoming document; a case drives both through testContext. */
+        host[QStringLiteral("documentRequestPending")] = false;
+        host[QStringLiteral("incomingDocumentPending")] = false;
         /* Issue #830: no file browser, as the base host; setFileBrowserSupported(true) gives the screens one. Its
          * access reading is an API 36 sideload's before the grant (ImportOnlyHost::fileAccessReading()). */
         host[QStringLiteral("fileBrowserSupported")] = false;
@@ -6027,6 +6244,8 @@ class Setup : public QObject {
         host[QStringLiteral("localDeviceRequestedSource")] = QString();
         host[QStringLiteral("receiverHealth")] = dsd_qt::DecoderHost::healthyReceiver();
         host[QStringLiteral("sessionState")] = 0;
+        /* As every desktop host: the state above is the decoder's own; a case clears it through testContext. */
+        host[QStringLiteral("sessionStateKnown")] = true;
         host[QStringLiteral("keyboardTop")] = -1;
         /* Issue #708: no player and no zip, as the base host; a case scripts the playback and transfer states. */
         host[QStringLiteral("playbackSupported")] = false;

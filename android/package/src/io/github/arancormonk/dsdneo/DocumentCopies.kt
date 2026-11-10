@@ -23,11 +23,12 @@ import java.io.IOException
 import java.io.OutputStream
 
 /**
- * The backup's document copies (#580) and the imports' (#832): the Android half that DecoderHostAndroid calls over JNI.
+ * The document copies of the imports (#832) and of the backup's restore (#831), the probes of documents opened from
+ * other apps (#831), and the backup's save (#580): the Android half that DecoderHostAndroid calls over JNI.
  *
- * The copies run on the Qt backup or import worker thread, never on a main thread. The Qt side calls them straight
- * from that thread and must not wait on either main thread, which teardown may be blocking. They use the application's
- * ContentResolver, because the Activity may be finishing.
+ * The copies run on the Qt import worker thread and the save on the backup's worker, never on a main thread. The Qt
+ * side calls them straight from that thread and must not wait on either main thread, which teardown may be blocking.
+ * They use the application's ContentResolver, because the Activity may be finishing.
  *
  * Each transfer registers a CancellationSignal and passes it to every provider call it makes. [abort], at teardown,
  * cancels those calls (a size lookup, or an open a cloud provider holds while it downloads), stops the byte copy at
@@ -104,8 +105,6 @@ object DocumentCopies {
     /** How many transfers hold a signal; the tests check that none leaks. */
     internal fun transfersInFlight(): Int = synchronized(inFlight) { inFlight.size }
 
-    private fun begin(): CancellationSignal? = CancellationSignal().takeIf(::register)
-
     /** Count [signal] in flight, so [abort] cancels it; false once aborted. */
     private fun register(signal: CancellationSignal): Boolean = synchronized(inFlight) {
         !DocumentTransfer.isAborted && inFlight.add(signal)
@@ -116,39 +115,21 @@ object DocumentCopies {
     }
 
     /**
-     * Copy the document [uriText] names to [destPath], at most [maxBytes] of it: a DocumentTransfer result.
-     *
-     * The copy lands in a private temp file beside [destPath] and is renamed over it only once complete, so no
-     * failure, the cap included, leaves a partial file there. A size the provider declares above the cap is refused
-     * before the open, which spares a cloud provider downloading a document that cannot fit. The cap still counts the
-     * bytes actually read. A cancelled provider call (OperationCanceledException) is a failure like any other. A
-     * failure on this device's side (the temp file, a write to it, the rename) is LOCAL_FAILED, not FAILED.
-     */
-    @JvmStatic
-    fun copyDocumentToFile(resolver: ContentResolver, uriText: String, destPath: String, maxBytes: Long): Int {
-        if (!copyable(destPath, maxBytes)) {
-            return DocumentTransfer.FAILED
-        }
-        val signal = begin() ?: return DocumentTransfer.FAILED
-        return try {
-            copyToFile(resolver, uriText, destPath, maxBytes, signal, null)
-        } finally {
-            end(signal)
-        }
-    }
-
-    /**
      * Copy the document [uriText] names to [destPath] for import [request], at most [maxBytes] of it: a
      * DocumentTransfer result.
      *
-     * The copy is [copyDocumentToFile]'s, under a signal of its own. One lookup asks the provider for the document's
-     * name and size, and both are published ([importName], [importProgress]) before the open; a lookup that fails or
-     * answers nothing does not stop the copy. While the copy runs, [importProgress] counts its bytes. A copy onto a
-     * full disk is LOCAL_FAILED, and [importNoSpace] then says so.
+     * The copy lands in a private temp file beside [destPath] and is renamed over it only once complete, so no
+     * failure, the cap included, leaves a partial file there. One lookup asks the provider for the document's name and
+     * size, and both are published ([importName], [importProgress]) before the open; a lookup that fails or answers
+     * nothing does not stop the copy. A declared size above the cap is refused before the open, which spares a cloud
+     * provider downloading a document that cannot fit; the cap still counts the bytes actually read. While the copy
+     * runs, [importProgress] counts its bytes. A cancelled provider call (OperationCanceledException) is a failure like
+     * any other. A failure on this device's side (the temp file, a write to it, the rename) is LOCAL_FAILED, not
+     * FAILED; a copy onto a full disk is LOCAL_FAILED, and [importNoSpace] then says so.
      *
      * [cancelImport] of [request] stops this copy, in the provider call it waits in or at its next chunk, and refuses
-     * every later copy for [request] until [forgetImport]: those answer CANCELLED. An [abort] answers FAILED, as for
-     * the backup. Only COPIED leaves a file at [destPath].
+     * every later copy for [request] until [forgetImport]: those answer CANCELLED. An [abort] answers FAILED. Only
+     * COPIED leaves a file at [destPath].
      */
     @JvmStatic
     fun copyImportDocument(
@@ -161,6 +142,45 @@ object DocumentCopies {
         if (!copyable(destPath, maxBytes)) {
             return DocumentTransfer.FAILED
         }
+        return runImport(request) { copy -> copyToFile(resolver, uriText, destPath, maxBytes, copy) }
+    }
+
+    /**
+     * Read the start of the document [uriText] names for import [request] (#831), so a document opened from another
+     * app can be told apart (a backup, or a CSV) before it is imported: a record `code;total;header;name` that
+     * android/document_probe_record.h reads.
+     *
+     * code is a DocumentTransfer result: COPIED, FAILED or CANCELLED. header is the document's first
+     * [PROBE_HEADER_BYTES] bytes as lowercase hex, fewer only when the document is that short. Only a header that
+     * starts with the backup magic is read on, discarding, to count the document's length (total), which stops at
+     * [maxCount] + 1; any other leaves total -1 and is never read past its header. The provider's declared size is
+     * never asked for: only the bytes read count. One query asks for the document's name (DISPLAY_NAME), which ends
+     * the record verbatim, empty when there is none; a lookup that fails or answers nothing still reads. Nothing is
+     * written. Every stream is closed before it returns.
+     *
+     * The probe is an import copy of [request] in every other way: [cancelImport] stops it, in the provider call it
+     * waits in or at its next read, and refuses it until [forgetImport] (CANCELLED); [abort] fails it (FAILED); a
+     * probe while a copy of the request runs is FAILED; [importName] and [importProgress] see it.
+     */
+    @JvmStatic
+    fun probeImportDocument(resolver: ContentResolver, request: Long, uriText: String, maxCount: Long): String {
+        val probe = Probe()
+        val code = if (maxCount < 0) {
+            DocumentTransfer.FAILED
+        } else {
+            runImport(request) { import -> readProbe(resolver, uriText, maxCount, import, probe) }
+        }
+        val counted = code == DocumentTransfer.COPIED
+        val header = if (counted) probe.header else ByteArray(0)
+        return "$code;${if (counted) probe.total else -1L};${hex(header)};${probe.name.orEmpty()}"
+    }
+
+    /**
+     * Run [transfer], a copy or probe of import [request], registered as its latest copy and in flight: the request's
+     * result once [transfer] returns, CANCELLED for any failure after a cancel, and a refusal without running it once
+     * aborted (FAILED), cancelled (CANCELLED), or while another copy of the request runs (FAILED).
+     */
+    private fun runImport(request: Long, transfer: (ImportCopy) -> Int): Int {
         val copy = synchronized(inFlight) {
             if (DocumentTransfer.isAborted) {
                 return DocumentTransfer.FAILED
@@ -178,7 +198,7 @@ object DocumentCopies {
             }
         }
         val result = try {
-            copyToFile(resolver, uriText, destPath, maxBytes, copy.signal, copy)
+            transfer(copy)
         } finally {
             synchronized(inFlight) {
                 inFlight.remove(copy.signal)
@@ -188,6 +208,77 @@ object DocumentCopies {
         val cancelled = synchronized(inFlight) { copy.owner.cancelled }
         return if (cancelled && result != DocumentTransfer.COPIED) DocumentTransfer.CANCELLED else result
     }
+
+    /** What a probe read: the header, the counted length (-1 when not counted) and the provider's name. */
+    private class Probe {
+        var header = ByteArray(0)
+        var total = -1L
+        var name: String? = null
+    }
+
+    /**
+     * The read [probeImportDocument] describes, under [import]'s signal, into [probe]: a DocumentTransfer result. A
+     * cancelled provider call (OperationCanceledException) is a failure like any other.
+     */
+    private fun readProbe(
+        resolver: ContentResolver,
+        uriText: String,
+        maxCount: Long,
+        import: ImportCopy,
+        probe: Probe,
+    ): Int =
+        try {
+            val uri = Uri.parse(uriText)
+            probe.name = lookUp(resolver, uri, import.signal, NAME_ONLY).first
+            import.name = probe.name
+            val document = resolver.openAssetFileDescriptor(uri, "r", import.signal)
+            if (document == null) {
+                DocumentTransfer.FAILED
+            } else {
+                document.use { opened ->
+                    opened.createInputStream().use { input ->
+                        probe.header = DocumentTransfer.readUpTo(input, PROBE_HEADER_BYTES, import)
+                        if (startsWithBackupMagic(probe.header)) {
+                            val read = probe.header.size.toLong()
+                            probe.total = DocumentTransfer.countCapped(input, read, maxCount, import)
+                        }
+                    }
+                }
+                DocumentTransfer.COPIED
+            }
+        } catch (e: OperationCanceledException) {
+            Log.i(TAG, "a document probe was cancelled")
+            DocumentTransfer.FAILED
+        } catch (e: Exception) {
+            Log.w(TAG, "failed to read the start of a document", e)
+            DocumentTransfer.FAILED
+        }
+
+    /** Whether [header] starts with [BACKUP_MAGIC]. */
+    private fun startsWithBackupMagic(header: ByteArray): Boolean =
+        header.size >= BACKUP_MAGIC.size && BACKUP_MAGIC.indices.all { header[it] == BACKUP_MAGIC[it] }
+
+    /** [bytes] as lowercase hex, two digits each. */
+    private fun hex(bytes: ByteArray): String = buildString(bytes.size * 2) {
+        for (byte in bytes) {
+            val value = byte.toInt() and 0xff
+            append(HEX_DIGITS[value shr 4])
+            append(HEX_DIGITS[value and 0x0f])
+        }
+    }
+
+    private const val HEX_DIGITS = "0123456789abcdef"
+
+    /** How much a probe reads as its header: a backup's whole header (DSD_BACKUP_HEADER_BYTES, kProbeHeaderBytes). */
+    private const val PROBE_HEADER_BYTES = 64
+
+    /*
+     * The backup magic, only to tell whether a probe reads on to count. A copy of DSD_BACKUP_MAGIC in
+     * src/crypto/backup_seal.c, which stays the only judge of a backup: the C++ side classifies the header this
+     * returns. The document_transfer suite checks that the two are the same bytes.
+     */
+    private const val BACKUP_MAGIC_TEXT = "DSDNEOBK"
+    private val BACKUP_MAGIC = BACKUP_MAGIC_TEXT.toByteArray(Charsets.US_ASCII)
 
     /** Cancel import [request]: the copy it runs, if any, and every later one, until [forgetImport]. */
     @JvmStatic
@@ -228,26 +319,24 @@ object DocumentCopies {
         destPath.isNotEmpty() && maxBytes >= 0 && File(destPath).parentFile != null
 
     /**
-     * The copy [copyDocumentToFile] describes, under [signal]. An [import] copy also asks the provider for the
-     * document's name, reports what it finds and copies, stops on its own cancel (once more before the rename), and
-     * records a full disk.
+     * The copy [copyImportDocument] describes, under [import]'s signal: it reports what it finds and copies, stops on
+     * its own cancel (once more before the rename), and records a full disk.
      */
     private fun copyToFile(
         resolver: ContentResolver,
         uriText: String,
         destPath: String,
         maxBytes: Long,
-        signal: CancellationSignal,
-        import: ImportCopy?,
+        import: ImportCopy,
     ): Int {
         val directory = File(destPath).parentFile ?: return DocumentTransfer.FAILED
-        val steps = import ?: DocumentTransfer.NoSteps
+        val signal = import.signal
         var staging: File? = null
         return try {
             val uri = Uri.parse(uriText)
-            val (name, declared) = lookUp(resolver, uri, signal, if (import == null) SIZE else NAME_AND_SIZE)
-            import?.name = name
-            import?.declared = declared ?: -1L
+            val (name, declared) = lookUp(resolver, uri, signal, NAME_AND_SIZE)
+            import.name = name
+            import.declared = declared ?: -1L
             if (declared != null && declared > maxBytes) {
                 return DocumentTransfer.TOO_LARGE
             }
@@ -258,18 +347,18 @@ object DocumentCopies {
             val copied = document.use { opened ->
                 opened.createInputStream().use { input ->
                     DocumentTransfer.LocalOutput(localStream(temp)).use { output ->
-                        DocumentTransfer.copyCapped(input, output, maxBytes, steps)
+                        DocumentTransfer.copyCapped(input, output, maxBytes, import)
                     }
                 }
             }
             if (copied < 0) {
                 return DocumentTransfer.TOO_LARGE
             }
-            steps.check()
+            import.check()
             if (temp.renameTo(File(destPath))) DocumentTransfer.COPIED else DocumentTransfer.LOCAL_FAILED
         } catch (e: DocumentTransfer.LocalFailure) {
             Log.w(TAG, "could not write the copy of a document", e)
-            import?.noSpace = outOfSpace(e)
+            import.noSpace = outOfSpace(e)
             DocumentTransfer.LOCAL_FAILED
         } catch (e: OperationCanceledException) {
             Log.i(TAG, "a document copy was cancelled")
@@ -415,8 +504,10 @@ object DocumentCopies {
         }
     }
 
-    private val SIZE = arrayOf(OpenableColumns.SIZE)
     private val NAME_AND_SIZE = arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE)
+
+    /** A probe's lookup: the name alone, since a declared size is only a hint and the probe counts the bytes. */
+    private val NAME_ONLY = arrayOf(OpenableColumns.DISPLAY_NAME)
 
     /**
      * The name and size the provider reports for [uri], in one query of [columns]; each null when it reports none, or

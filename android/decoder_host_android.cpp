@@ -56,6 +56,7 @@ constexpr const char* kPlaybackClass = "io/github/arancormonk/dsdneo/RecordingPl
 constexpr const char* kExportClass = "io/github/arancormonk/dsdneo/RecordingExport";
 constexpr const char* kRecordingShareClass = "io/github/arancormonk/dsdneo/RecordingShare";
 constexpr const char* kPickerClass = "io/github/arancormonk/dsdneo/DocumentPicker";
+constexpr const char* kIncomingClass = "io/github/arancormonk/dsdneo/IncomingDocuments";
 constexpr const char* kDownloadsClass = "io/github/arancormonk/dsdneo/DownloadsSave";
 constexpr const char* kFileBrowserClass = "io/github/arancormonk/dsdneo/FileBrowser";
 constexpr const char* kSignInClass = "io/github/arancormonk/dsdneo/SignInAutofill";
@@ -652,28 +653,13 @@ DecoderHostAndroid::quitApp() {
 }
 
 /*
- * The JNI transport of the document copies (decoder_host_android_documents.cpp), on BackupModel's worker thread.
- * QJniObject attaches that thread to the VM and loads the app classes through Qt's class loader, and its call frames
- * release their local references; the calls use the held ContentResolver. Neither waits on another thread.
+ * The JNI transport of the backup's save (the import transport's writeFromFile(), #831), on BackupModel's worker
+ * thread. QJniObject attaches that thread to the VM and loads the app classes through Qt's class loader, and its call
+ * frames release their local references; the save uses the held ContentResolver and waits on no other thread.
  */
 bool
 DecoderHostAndroid::platformHoldsResolver() {
     return g_content_resolver.load() != nullptr;
-}
-
-int
-DecoderHostAndroid::platformCopyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) {
-    const jobject resolver = g_content_resolver.load();
-    if (resolver == nullptr) {
-        return DocumentLocalFailed; // the app never held its ContentResolver: nothing to do with the document
-    }
-    const QJniObject uri = QJniObject::fromString(reference);
-    const QJniObject dest = QJniObject::fromString(destPath);
-    // Must match DocumentCopies.kt: @JvmStatic fun copyDocumentToFile(ContentResolver, String, String, Long): Int.
-    return QJniObject::callStaticMethod<jint>(
-        kDocumentsClass, "copyDocumentToFile",
-        "(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;J)I", resolver, uri.object(),
-        dest.object(), static_cast<jlong>(maxBytes));
 }
 
 bool
@@ -764,6 +750,21 @@ void
 DecoderHostAndroid::platformForgetImport(qint64 request) {
     // Must match DocumentCopies.kt: @JvmStatic fun forgetImport(request: Long).
     QJniObject::callStaticMethod<void>(kDocumentsClass, "forgetImport", "(J)V", static_cast<jlong>(request));
+}
+
+QString
+DecoderHostAndroid::platformProbeImportDocument(qint64 request, const QString& reference, qint64 maxCount) {
+    const jobject resolver = g_content_resolver.load();
+    if (resolver == nullptr) {
+        return QString();
+    }
+    const QJniObject uri = QJniObject::fromString(reference);
+    // Must match DocumentCopies.kt: @JvmStatic fun probeImportDocument(ContentResolver, Long, String, Long): String.
+    const QJniObject record = QJniObject::callStaticObjectMethod(
+        kDocumentsClass, "probeImportDocument",
+        "(Landroid/content/ContentResolver;JLjava/lang/String;J)Ljava/lang/String;", resolver,
+        static_cast<jlong>(request), uri.object(), static_cast<jlong>(maxCount));
+    return record.isValid() ? record.toString() : QString();
 }
 
 /*
@@ -1071,6 +1072,13 @@ DecoderHostAndroid::platformPollDocumentPick() {
     // Must match DocumentPicker.kt: @JvmStatic fun pollResult(): String.
     const QJniObject record = QJniObject::callStaticObjectMethod(kPickerClass, "pollResult", "()Ljava/lang/String;");
     return record.isValid() ? record.toString() : QString();
+}
+
+QString
+DecoderHostAndroid::platformTakeIncomingDocument() {
+    // Must match IncomingDocuments.kt: @JvmStatic fun take(): String.
+    const QJniObject uri = QJniObject::callStaticObjectMethod(kIncomingClass, "take", "()Ljava/lang/String;");
+    return uri.isValid() ? uri.toString() : QString();
 }
 
 /* #829: DownloadsSave runs every MediaStore and grant call on its own thread; these only hand work over or read memory,

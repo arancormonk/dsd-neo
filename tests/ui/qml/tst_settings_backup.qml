@@ -320,6 +320,47 @@ Item {
             compare(row.subtitle, "Replaces your setup on this phone");
         }
 
+        // #831: a restore from a document already chosen says whether it
+        // started; refused, it takes no step and leaves the flow as it was.
+        function test_restore_from_reference_refused_data() {
+            return [
+                {tag: "listening", phase: 2},
+                {tag: "starting", phase: 1},
+                {tag: "busy", busy: true},
+                {tag: "restore waiting", pending: true},
+                {tag: "another step open", picker: true}
+            ];
+        }
+        function test_restore_from_reference_refused(data) {
+            if (data.phase)
+                testContext.setLifecyclePhase(data.phase);
+            if (data.busy)
+                verify(testContext.setBackup("busy", true));
+            if (data.pending)
+                verify(testContext.setBackup("restorePending", true));
+            var step = "";
+            if (data.picker) {
+                flow.beginRestore();
+                step = "restorePicker";
+            }
+            compare(flow.step, step);
+            var flowCalls = calls("setFlowActive").length;
+            compare(flow.restoreFromReference(pickedReference), false);
+            compare(flow.step, step, "no step was taken");
+            compare(calls("setFlowActive").length, flowCalls);
+            compare(calls("inspectRestore").length, 0);
+            compare(part("backupUnlockSheet").visible, false);
+        }
+        function test_restore_from_reference_starts_the_unlock() {
+            compare(flow.restoreFromReference(pickedReference), true);
+            compare(flow.step, "unlock");
+            tryCompare(part("backupUnlockSheet"), "visible", true);
+            compare(lastFlowActive(), true);
+            part("backupUnlockField").text = pass;
+            part("backupUnlockButton").activate();
+            compare(calls("inspectRestore")[0].args[0], pickedReference, "the reference reaches the model as given");
+        }
+
         function test_export_focus_returns_to_its_row() {
             var row = findChild(settings, "settingsBackupExportRow");
             row.forceActiveFocus();

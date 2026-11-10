@@ -19,6 +19,92 @@ TestCase {
     }
 
     SignalSpy {
+        id: incomingSpy
+        signalName: "incomingDocumentChanged"
+    }
+
+    SignalSpy {
+        id: requestSpy
+        signalName: "documentRequestChanged"
+    }
+
+    // Issue #831: the incoming document slot and the picker-in-flight reading, on both hosts a case can install.
+    function test_incoming_document_readings() {
+        var ref = "content://com.Example.Provider/document/primary%3ADownload%2Fa%20b.csv";
+        for (var lifecycle = 0; lifecycle < 2; ++lifecycle) {
+            testContext.useLifecycleHost(lifecycle === 1);
+            incomingSpy.target = decoderHost;
+            requestSpy.target = decoderHost;
+            incomingSpy.clear();
+            requestSpy.clear();
+            compare(decoderHost.incomingDocumentPending, false);
+            compare(decoderHost.documentRequestPending, false);
+            compare(decoderHost.takeIncomingDocument(), "", "an empty take");
+            compare(incomingSpy.count, 0, "an empty take tells nothing");
+
+            testContext.emitIncomingDocument("content://com.Other.Files/document/old.csv");
+            testContext.emitIncomingDocument(ref);
+            compare(incomingSpy.count, 2);
+            compare(decoderHost.incomingDocumentPending, true);
+            var taken = decoderHost.takeIncomingDocument();
+            compare(typeof taken, "string");
+            compare(taken, ref, "the newer one, as it was sent");
+            compare(decoderHost.incomingDocumentPending, false);
+            compare(incomingSpy.count, 3);
+            compare(decoderHost.takeIncomingDocument(), "", "taken once");
+
+            testContext.setDocumentRequestPending(true);
+            compare(decoderHost.documentRequestPending, true);
+            testContext.setDocumentRequestPending(false);
+            compare(decoderHost.documentRequestPending, false);
+            compare(requestSpy.count, 2);
+        }
+        testContext.useLifecycleHost(false);
+    }
+
+    SignalSpy {
+        id: knownSpy
+        signalName: "sessionStateKnownChanged"
+    }
+
+    // Issue #831: whether the session state is known, which Main waits for before it takes a document: known on both
+    // hosts until a case says otherwise, and known again after the reset.
+    function test_session_state_known_reading() {
+        for (var lifecycle = 0; lifecycle < 2; ++lifecycle) {
+            testContext.useLifecycleHost(lifecycle === 1);
+            knownSpy.target = decoderHost;
+            knownSpy.clear();
+            compare(decoderHost.sessionStateKnown, true);
+            testContext.setSessionStateKnown(false);
+            compare(decoderHost.sessionStateKnown, false);
+            compare(knownSpy.count, 1);
+        }
+        testContext.resetHostPlayback();
+        for (lifecycle = 0; lifecycle < 2; ++lifecycle) {
+            testContext.useLifecycleHost(lifecycle === 1);
+            compare(decoderHost.sessionStateKnown, true, "the reset makes it known again");
+        }
+        testContext.useLifecycleHost(false);
+    }
+
+    // Issue #831: the reset drops an incoming document not taken and a picker request in flight, on every host.
+    function test_reset_clears_incoming_document_and_request() {
+        for (var lifecycle = 0; lifecycle < 2; ++lifecycle) {
+            testContext.useLifecycleHost(lifecycle === 1);
+            testContext.emitIncomingDocument("content://com.Other.Files/document/left.csv");
+            testContext.setDocumentRequestPending(true);
+        }
+        testContext.resetHostPlayback();
+        for (lifecycle = 0; lifecycle < 2; ++lifecycle) {
+            testContext.useLifecycleHost(lifecycle === 1);
+            compare(decoderHost.incomingDocumentPending, false);
+            compare(decoderHost.documentRequestPending, false);
+            compare(decoderHost.takeIncomingDocument(), "", "nothing reaches a later case");
+        }
+        testContext.useLifecycleHost(false);
+    }
+
+    SignalSpy {
         id: revisionSpy
         target: recordings
         signalName: "revisionChanged"

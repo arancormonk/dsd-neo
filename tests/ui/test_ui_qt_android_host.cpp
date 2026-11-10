@@ -32,6 +32,7 @@
 #include <utility>
 #include "../../android/decoder_host_android.h"
 #include "../../android/document_pick_record.h"
+#include "../../android/document_probe_record.h"
 #include "../../android/local_device_state.h"
 #include "../../android/location_record.h"
 #include "../../android/run_status.h"
@@ -56,16 +57,11 @@ service_state() {
 }
 
 namespace {
-/* The platform's document transport: it records each call, and answers as the test arranged. */
+/* The platform's backup save: it records each call, and answers as the test arranged. */
 struct PlatformCopies {
     int calls = 0;
     QString reference;
-    QString destPath;
     QString sourcePath;
-    qint64 maxBytes = -1;
-    bool destExisted = false;
-    int answer = dsd_qt::DecoderHost::DocumentCopied;
-    bool writesDest = true; // As the Kotlin side's rename does on a copy.
     bool saves = true;
     bool holdsResolver = true;
     int aborts = 0; // DocumentCopies.abort(): the process-wide platform abort
@@ -95,6 +91,12 @@ struct PlatformImports {
     qint64 total = -1;
     QString name;
     bool noSpace = false;
+    /* #831: the probes, and the record each answers. */
+    int probes = 0;
+    qint64 probeRequest = -1;
+    QString probeReference;
+    qint64 probeMaxCount = -1;
+    QString probeRecord = QStringLiteral("0;-1;4142;probed.csv");
 };
 } // namespace
 
@@ -171,6 +173,13 @@ struct PlatformPicker {
 static PlatformPicker&
 picker() {
     static PlatformPicker value;
+    return value;
+}
+
+/* IncomingDocuments' mailbox (#831), as take() hands it out: the URI waiting, once. */
+static QString&
+incoming_mailbox() {
+    static QString value;
     return value;
 }
 
@@ -453,23 +462,6 @@ DecoderHostAndroid::platformHoldsResolver() {
     return platform().holdsResolver;
 }
 
-int
-DecoderHostAndroid::platformCopyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) {
-    PlatformCopies& copies = platform();
-    ++copies.calls;
-    copies.reference = reference;
-    copies.destPath = destPath;
-    copies.maxBytes = maxBytes;
-    copies.destExisted = QFileInfo::exists(destPath);
-    if (copies.writesDest) {
-        QFile out(destPath);
-        if (out.open(QIODevice::WriteOnly)) {
-            out.write("copied");
-        }
-    }
-    return copies.answer;
-}
-
 bool
 DecoderHostAndroid::platformCopyFileToDocument(const QString& sourcePath, const QString& reference) {
     PlatformCopies& copies = platform();
@@ -522,6 +514,16 @@ DecoderHostAndroid::platformImportNoSpace(qint64) {
 void
 DecoderHostAndroid::platformForgetImport(qint64 request) {
     imports().forgotten.append(request);
+}
+
+QString
+DecoderHostAndroid::platformProbeImportDocument(qint64 request, const QString& reference, qint64 maxCount) {
+    PlatformImports& i = imports();
+    ++i.probes;
+    i.probeRequest = request;
+    i.probeReference = reference;
+    i.probeMaxCount = maxCount;
+    return i.probeRecord;
 }
 
 void
@@ -662,6 +664,13 @@ QString
 DecoderHostAndroid::platformPollDocumentPick() {
     QStringList& records = picker().records;
     return records.isEmpty() ? QString() : records.takeFirst();
+}
+
+QString
+DecoderHostAndroid::platformTakeIncomingDocument() {
+    QString uri;
+    uri.swap(incoming_mailbox());
+    return uri;
 }
 
 QString
@@ -1092,6 +1101,144 @@ check_document_reentrant_drain() {
     check(host.answers.size() == 2, "nothing else is answered afterwards");
 }
 
+/*
+ * #831: a document another app opened with this one waits in IncomingDocuments until refresh() takes it into the
+ * host's slot, before the signal, so a slot that runs refresh() again finds none and it arrives once.
+ */
+static void
+check_incoming_document_poll() {
+    incoming_mailbox().clear();
+    PickerHost host;
+    int changes = 0;
+    QStringList taken;
+    bool reentered = false;
+    bool mailboxEmptyAtSignal = false;
+    QObject::connect(&host, &dsd_qt::DecoderHost::incomingDocumentChanged, &host, [&] {
+        if (++changes == 1) {
+            mailboxEmptyAtSignal = incoming_mailbox().isEmpty();
+        }
+        if (!reentered) {
+            reentered = true;
+            host.refresh();
+            taken.append(host.takeIncomingDocument());
+        }
+    });
+    host.refresh();
+    check(changes == 0 && !host.incomingDocumentPending(), "an empty mailbox offers nothing and tells nothing");
+
+    incoming_mailbox() = picked_uri();
+    host.refresh();
+    check(mailboxEmptyAtSignal, "the document is taken from the mailbox before the signal");
+    check(taken == QStringList{picked_uri()}, "the slot takes the document as it was sent");
+    check(changes == 2, "one offer and one take: the re-entered refresh() delivers nothing again");
+    check(!host.incomingDocumentPending() && !host.property("incomingDocumentPending").toBool(), "none waits");
+    host.refresh();
+    check(changes == 2 && host.takeIncomingDocument().isEmpty(), "a later refresh() has nothing to offer");
+
+    /* Two deliveries between polls reach the mailbox as the newer one; two polls before a take keep the newer. */
+    reentered = true;
+    incoming_mailbox() = row_uri();
+    host.refresh();
+    incoming_mailbox() = picked_uri();
+    host.refresh();
+    check(changes == 4 && host.property("incomingDocumentPending").toBool(), "each offer is told");
+    check(host.takeIncomingDocument() == picked_uri() && changes == 5, "the newer document replaces one not taken");
+}
+
+/*
+ * #831: a take between two polls returns the document that reached IncomingDocuments since the last one, not the
+ * older one the slot held, and that newer one is not offered again after it.
+ */
+static void
+check_incoming_document_take_prefers_newer() {
+    incoming_mailbox().clear();
+    PickerHost host;
+    int changes = 0;
+    QStringList taken;
+    QObject::connect(&host, &dsd_qt::DecoderHost::incomingDocumentChanged, &host, [&] {
+        ++changes;
+        if (host.incomingDocumentPending()) {
+            return;
+        }
+        /* A slot that takes again, or polls, from inside the take's signal finds nothing. */
+        taken.append(host.takeIncomingDocument());
+        host.refresh();
+    });
+    incoming_mailbox() = row_uri();
+    host.refresh();
+    check(changes == 1 && host.incomingDocumentPending(), "the older document waits in the slot");
+    incoming_mailbox() = picked_uri();
+    check(host.takeIncomingDocument() == picked_uri(), "the take returns the newer document");
+    check(incoming_mailbox().isEmpty(), "the take empties the mailbox");
+    check(changes == 2 && taken == QStringList{QString()}, "one signal for the take; a take inside it finds none");
+    check(!host.incomingDocumentPending(), "the older document is gone");
+    host.refresh();
+    check(changes == 2 && host.takeIncomingDocument().isEmpty(), "the newer document is not offered again");
+
+    /* With the slot empty, a take still returns one the mailbox holds. */
+    incoming_mailbox() = row_uri();
+    check(host.takeIncomingDocument() == row_uri() && incoming_mailbox().isEmpty(), "a take reaches the mailbox");
+}
+
+/* #831: documentRequestPending follows the live request, told after the answer that ends it. */
+static void
+check_document_request_pending() {
+    picker() = PlatformPicker();
+    PickerHost host;
+    QStringList seen;
+    qsizetype openedAtNotify = -1;
+    QObject::connect(&host, &dsd_qt::DecoderHost::documentRequestChanged, &host, [&] {
+        openedAtNotify = picker().opened.size();
+        seen.append(host.property("documentRequestPending").toBool() ? QStringLiteral("pending")
+                                                                     : QStringLiteral("idle"));
+    });
+    QObject::connect(&host, &dsd_qt::DecoderHost::documentPicked, &host,
+                     [&](qint64, const QString&, const QString&, bool) { seen.append(QStringLiteral("answer")); });
+    QObject::connect(&host, &dsd_qt::DecoderHost::documentPickUnavailable, &host,
+                     [&](qint64, const QString&) { seen.append(QStringLiteral("answer")); });
+    check(!host.documentRequestPending(), "no request is pending at first");
+
+    const qint64 open = host.requestOpenDocument();
+    check(seen == QStringList{QStringLiteral("pending")}, "a request starts pending");
+    check(openedAtNotify == 1, "the start is told once the platform call returned, not inside it");
+    const qint64 save = host.requestSaveDocument(QStringLiteral("a.zip"), QStringLiteral("application/zip"));
+    QCoreApplication::processEvents();
+    check(seen.size() == 1 && host.documentRequestPending(), "a replacing request stays pending");
+    picker().records = QStringList{picked_record(open, picked_uri(), false), picked_record(save, picked_uri(), false)};
+    host.refresh();
+    check(seen == QStringList({QStringLiteral("pending"), QStringLiteral("answer"), QStringLiteral("idle")}),
+          "an answer ends it, the change told after the answer; the replaced request's record changes nothing");
+
+    seen.clear();
+    const qint64 cancelled = host.requestOpenDocument();
+    host.cancelDocumentRequest(cancelled + 1);
+    check(seen == QStringList{QStringLiteral("pending")}, "another id's cancel changes nothing");
+    host.cancelDocumentRequest(cancelled);
+    check(seen == QStringList({QStringLiteral("pending"), QStringLiteral("idle")}) && !host.documentRequestPending(),
+          "a cancel ends it");
+
+    seen.clear();
+    picker().takes = false;
+    host.requestOpenDocument();
+    picker().takes = true;
+    QCoreApplication::processEvents();
+    check(seen == QStringList({QStringLiteral("pending"), QStringLiteral("answer"), QStringLiteral("idle")}),
+          "a request the platform could not take ends with its queued answer");
+
+    /* A slot that asks again from inside an answer tells its own request, and nothing follows the answer. */
+    seen.clear();
+    const qint64 first = host.requestOpenDocument();
+    QObject::connect(&host, &dsd_qt::DecoderHost::documentPickCancelled, &host, [&host, first](qint64 id) {
+        if (id == first) {
+            host.requestOpenDocument();
+        }
+    });
+    picker().records = QStringList{QStringLiteral(R"({"id":%1,"kind":"cancelled"})").arg(first)};
+    host.refresh();
+    check(seen == QStringList({QStringLiteral("pending"), QStringLiteral("pending")}) && host.documentRequestPending(),
+          "a request made inside the answer is pending, and the answer's end tells nothing after it");
+}
+
 static QByteArray
 read_file(const QString& path) {
     QFile file(path);
@@ -1104,103 +1251,10 @@ write_file(const QString& path, const QByteArray& bytes) {
     check(file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size(), "a fixture file is written");
 }
 
-/* The backup's document copies (#580): which transport a reference takes, and what the platform's answer means. */
-static void
-check_document_dispatch() {
-    using dsd_android::DecoderHostAndroid;
-    using dsd_qt::DecoderHost;
-    const QTemporaryDir dir;
-    check(dir.isValid(), "a scratch directory exists");
-    const QString source = dir.filePath(QStringLiteral("source.bin"));
-    const QString dest = dir.filePath(QStringLiteral("dest.in"));
-    const QString content = QStringLiteral("content://com.example.documents/document/primary%3Abackup.dsdbak");
-    write_file(source, "backup");
-    DecoderHostAndroid host;
-
-    platform() = PlatformCopies();
-    check(host.copyDocumentToFile(QUrl::fromLocalFile(source).toString(), dest, 1024) == DecoderHost::DocumentCopied
-              && read_file(dest) == "backup",
-          "a file URL takes the base host's copy");
-    const QString saved = dir.filePath(QStringLiteral("saved.bin"));
-    check(host.copyFileToDocument(source, saved) && read_file(saved) == "backup", "a plain path takes the base save");
-    check(platform().calls == 0, "local references never reach the platform");
-
-    QFile::remove(dest);
-    platform() = PlatformCopies();
-    check(host.copyDocumentToFile(content, dest, 77) == DecoderHost::DocumentCopied, "a content URI copies");
-    check(platform().calls == 1 && platform().reference == content && platform().destPath == dest
-              && platform().maxBytes == 77,
-          "a content URI goes to the platform with its arguments");
-
-    /* A file already at the destination must not pass for this copy. */
-    write_file(dest, "stale");
-    platform() = PlatformCopies();
-    platform().writesDest = false;
-    check(host.copyDocumentToFile(content, dest, 77) == DecoderHost::DocumentLocalFailed,
-          "a copy reported without its file (a failed JNI call reads as 0) is the app's failure, not the document's");
-    check(!platform().destExisted, "a stale destination is removed before the platform copies");
-    check(!QFileInfo::exists(dest), "a failed copy leaves nothing at the destination");
-
-    struct Answer {
-        int platform;
-        bool writes;
-        int result;
-        const char* why;
-    };
-
-    static const Answer kAnswers[] = {
-        {DecoderHost::DocumentTooLarge, false, DecoderHost::DocumentTooLarge, "too large passes through"},
-        {DecoderHost::DocumentFailed, false, DecoderHost::DocumentFailed, "a failure passes through"},
-        {DecoderHost::DocumentLocalFailed, false, DecoderHost::DocumentLocalFailed,
-         "this device's failure passes through"},
-        {7, true, DecoderHost::DocumentFailed, "an unknown answer is a failure"},
-    };
-    for (const Answer& answer : kAnswers) {
-        QFile::remove(dest);
-        platform() = PlatformCopies();
-        platform().answer = answer.platform;
-        platform().writesDest = answer.writes;
-        check(host.copyDocumentToFile(content, dest, 77) == answer.result, answer.why);
-    }
-
-    QDir(dir.path()).mkpath(QStringLiteral("busy/inner"));
-    platform() = PlatformCopies();
-    check(host.copyDocumentToFile(content, dir.filePath(QStringLiteral("busy")), 77) == DecoderHost::DocumentLocalFailed
-              && platform().calls == 0,
-          "a destination that cannot be cleared is this device's failure, before the platform is asked");
-    check(host.copyDocumentToFile(content, QString(), 77) == DecoderHost::DocumentFailed
-              && host.copyDocumentToFile(content, dest, -1) == DecoderHost::DocumentFailed && platform().calls == 0,
-          "an empty destination or a negative cap never reaches the platform");
-
-    /* Without the application's ContentResolver no platform transfer can run: the app's failure, never the document's,
-     * and the platform is not asked. */
-    platform() = PlatformCopies();
-    platform().holdsResolver = false;
-    check(host.copyDocumentToFile(content, dest, 77) == DecoderHost::DocumentLocalFailed && platform().calls == 0,
-          "a copy without a held ContentResolver is the app's failure");
-    check(!host.copyFileToDocument(source, content) && platform().calls == 0,
-          "a save without a held ContentResolver fails without asking the platform");
-
-    platform() = PlatformCopies();
-    check(host.copyFileToDocument(source, content) && platform().calls == 1 && platform().sourcePath == source
-              && platform().reference == content,
-          "a content URI saves through the platform");
-    platform().saves = false;
-    check(!host.copyFileToDocument(source, content), "a failed platform save fails");
-
-    host.abortDocumentTransfers();
-    platform() = PlatformCopies();
-    check(host.copyDocumentToFile(content, dest, 77) == DecoderHost::DocumentFailed
-              && !host.copyFileToDocument(source, content) && platform().calls == 0,
-          "after an abort no transfer reaches the platform");
-    check(host.copyDocumentToFile(QUrl::fromLocalFile(source).toString(), dir.filePath(QStringLiteral("late.in")), 1024)
-              == DecoderHost::DocumentFailed,
-          "after an abort the base host's copies fail too");
-}
-
 /*
- * The import copies' transport (#832): a content URI goes to the platform's import copy with its request id, and its
- * answer is read as the backup's is; any other reference takes the base transport's local copy.
+ * The import copies' transport (#832): a content URI goes to the platform's import copy with its request id, a copy
+ * counts only with its file in place and an unknown answer is a failure; any other reference takes the base
+ * transport's local copy.
  */
 static void
 check_import_dispatch() {
@@ -1223,7 +1277,7 @@ check_import_dispatch() {
     check(imports().copies == 1 && imports().request == 41 && imports().reference == content
               && imports().destPath == dest && imports().maxBytes == 77,
           "the platform's import copy gets the request id and the copy's arguments");
-    check(platform().calls == 0, "an import never takes the backup's platform copy");
+    check(platform().calls == 0, "an import never takes the backup's platform save");
 
     imports() = PlatformImports();
     imports().bytes = 512;
@@ -1296,13 +1350,159 @@ check_import_dispatch() {
     check(transport->copy(46, source, dir.filePath(QStringLiteral("local.csv")), 77) == DecoderHost::DocumentCopied,
           "and the base transport's");
 
+    /* The backup's save (#831): a content URI goes to the platform (check_download_discards() checks its rows), any
+     * other reference takes the base transport's save. */
+    (void)take_discarded();
+    platform() = PlatformCopies();
+    check(transport->writeFromFile(source, content) && platform().calls == 1 && platform().sourcePath == source
+              && platform().reference == content,
+          "a content URI saves through the platform");
+    platform() = PlatformCopies();
+    const QString saved = dir.filePath(QStringLiteral("saved.csv"));
+    check(transport->writeFromFile(source, QUrl::fromLocalFile(saved).toString()) && read_file(saved) == "1,a\n"
+              && platform().calls == 0 && take_discarded().isEmpty(),
+          "a file URL takes the base transport's save");
+    transport->discardWrite(content);
+    check(take_discarded() == QStringList{content}, "a save never started discards its row");
+
     host.abortDocumentTransfers();
     QFile::remove(dest);
     imports() = PlatformImports();
     check(transport->copy(47, content, dest, 77) == DecoderHost::DocumentFailed && imports().copies == 0,
           "after the host's abort no import reaches the platform");
+    platform() = PlatformCopies();
+    check(!transport->writeFromFile(source, content) && platform().calls == 0
+              && take_discarded() == QStringList{content},
+          "nor a save, whose row is discarded");
     check(host.importTransport()->copy(48, content, dest, 77) == DecoderHost::DocumentFailed && imports().copies == 0,
           "and a transport handed out after it starts aborted");
+}
+
+/*
+ * #831: a content URI's probe goes to the platform with its request id and cap, and its record gives the result: the
+ * name always, the header and length only for a whole probe; a record that does not read, or an unknown code, is a
+ * failure. Any other reference takes the base transport's probe.
+ */
+static void
+check_probe_dispatch() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    const QTemporaryDir dir;
+    check(dir.isValid(), "a scratch directory exists");
+    const QString source = dir.filePath(QStringLiteral("talkgroups.csv"));
+    const QString content = QStringLiteral("content://com.example.documents/document/primary%3Atalkgroups.csv");
+    write_file(source, "1,a\n");
+    DecoderHostAndroid host;
+    const std::shared_ptr<dsd_qt::DocumentImportTransport> transport = host.importTransport();
+    platform() = PlatformCopies();
+    imports() = PlatformImports();
+
+    dsd_qt::ImportProbe probe;
+    imports().probeRecord = QStringLiteral("0;1000;4453444e454f424b00;Backup;1.dsdbak");
+    check(transport->probe(51, content, &probe, 999) == DecoderHost::DocumentCopied,
+          "a content URI is probed by the platform");
+    check(imports().probes == 1 && imports().probeRequest == 51 && imports().probeReference == content
+              && imports().probeMaxCount == 999,
+          "the platform's probe gets the request id, the reference and the cap");
+    check(probe.header == QByteArray("DSDNEOBK\0", 9) && probe.total == 1000
+              && probe.displayName == QStringLiteral("Backup;1.dsdbak"),
+          "the record gives the header, the length and the name, verbatim");
+
+    struct Answer {
+        const char* record;
+        int result;
+        const char* name;
+        const char* why;
+    };
+
+    static const Answer kAnswers[] = {
+        {"2;-1;;broken.csv", DecoderHost::DocumentFailed, "broken.csv", "a failure names the document"},
+        {"4;-1;;", DecoderHost::DocumentCancelled, "", "a cancelled probe passes through"},
+        {"1;-1;;", DecoderHost::DocumentFailed, "", "a code a probe never answers is a failure"},
+        {"", DecoderHost::DocumentFailed, "", "an empty record (a failed JNI call) is a failure"},
+        {"0;-1;zz;x", DecoderHost::DocumentFailed, "", "a record that does not read is a failure"},
+    };
+    for (const Answer& answer : kAnswers) {
+        imports() = PlatformImports();
+        imports().probeRecord = QString::fromUtf8(answer.record);
+        probe = dsd_qt::ImportProbe();
+        probe.total = 7;
+        check(transport->probe(52, content, &probe, 999) == answer.result && probe.header.isEmpty() && probe.total == -1
+                  && probe.displayName == QString::fromUtf8(answer.name),
+              answer.why);
+    }
+
+    imports() = PlatformImports();
+    check(transport->probe(53, QUrl::fromLocalFile(source).toString(), &probe, 999) == DecoderHost::DocumentCopied
+              && probe.header == "1,a\n" && probe.displayName == QStringLiteral("talkgroups.csv")
+              && imports().probes == 0,
+          "a file URL takes the base transport's probe");
+    check(transport->probe(54, content, nullptr, 999) == DecoderHost::DocumentFailed
+              && transport->probe(54, content, &probe, -1) == DecoderHost::DocumentFailed && imports().probes == 0,
+          "no result or a negative cap never reaches the platform");
+    platform().holdsResolver = false;
+    check(transport->probe(54, content, &probe, 999) == DecoderHost::DocumentFailed && imports().probes == 0,
+          "a probe without a held ContentResolver fails");
+    platform() = PlatformCopies();
+
+    /* A probe's request is the import copies' request: its cancel and forget reach the platform's table. */
+    transport->cancel(55);
+    transport->forget(55);
+    check(imports().cancelled == QList<qint64>{55} && imports().forgotten == QList<qint64>{55},
+          "a probe's cancel and forget reach the platform");
+
+    host.abortDocumentTransfers();
+    check(transport->probe(56, content, &probe, 999) == DecoderHost::DocumentFailed && imports().probes == 0,
+          "after the host's abort no probe reaches the platform");
+}
+
+/* #831: the probe record's reader takes only a whole record, the name last and verbatim. */
+static void
+check_probe_record() {
+    using dsd_android::DocumentProbeRecord;
+    using dsd_android::parse_document_probe_record;
+    DocumentProbeRecord record;
+    check(parse_document_probe_record(QStringLiteral("0;-1;;"), &record) && record.code == 0 && record.total == -1
+              && record.header.isEmpty() && record.name.isEmpty(),
+          "an empty header and name read");
+    check(parse_document_probe_record(QStringLiteral("0;67108865;4453444E454f42;a;b;c"), &record)
+              && record.total == 67108865 && record.header == QByteArray("DSDNEOB")
+              && record.name == QStringLiteral("a;b;c"),
+          "hex of either case, a large length and a name holding ';' read");
+    check(parse_document_probe_record(QStringLiteral("4;-1;;n\u00e9e \U0001F4C1.csv"), &record)
+              && record.name == QStringLiteral("n\u00e9e \U0001F4C1.csv"),
+          "a name outside ASCII reads verbatim");
+    const QString hex64 = QString(128, QLatin1Char('a'));
+    check(parse_document_probe_record(QStringLiteral("0;64;") + hex64 + QStringLiteral(";x"), &record)
+              && record.header.size() == dsd_qt::kProbeHeaderBytes,
+          "a whole header reads");
+
+    record = DocumentProbeRecord();
+    record.code = 9;
+    const QString kRefused[] = {
+        QString(),
+        QStringLiteral("0;-1;"),
+        QStringLiteral("0;-1"),
+        QStringLiteral(";-1;;"),
+        QStringLiteral("-1;-1;;"),
+        QStringLiteral("+0;-1;;"),
+        QStringLiteral(" 0;-1;;"),
+        QStringLiteral("0;-2;;"),
+        QStringLiteral("0; 5;;"),
+        QStringLiteral("0;5x;;"),
+        QStringLiteral("0;1234567890123456789;;"),
+        QStringLiteral("99999999999;-1;;"),
+        QStringLiteral("0;-1;abc;"),
+        QStringLiteral("0;-1;zz;"),
+        QStringLiteral("0;-1;44 53;"),
+        QStringLiteral("0;3;44534e45;"),
+        QStringLiteral("0;99;") + hex64 + QStringLiteral("aa;"),
+    };
+    for (const QString& refused : kRefused) {
+        check(!parse_document_probe_record(refused, &record), qPrintable(QStringLiteral("refused: ") + refused));
+    }
+    check(record.code == 9, "a refused record leaves the result untouched");
+    check(!parse_document_probe_record(QStringLiteral("0;-1;;"), nullptr), "no result refuses");
 }
 
 /*
@@ -1831,14 +2031,17 @@ check_download_discards() {
     host.discardPendingDownload(row);
     check(take_discarded() == QStringList{row}, "a discard goes to DownloadsSave");
 
-    // The backup's save: the platform settles a row it was asked to write; a call that failed may not have.
+    /* The backup's save (#831), through the document transport, which settles a row without the host: the platform
+     * settles a row it was asked to write; a call that failed may not have. */
+    const std::shared_ptr<dsd_qt::DocumentImportTransport> backupSaves = host.importTransport();
     platform() = PlatformCopies();
-    check(host.copyFileToDocument(a, row) && take_discarded().isEmpty(), "a written save leaves its row to settle");
+    check(backupSaves->writeFromFile(a, row) && take_discarded().isEmpty(), "a written save leaves its row to settle");
     platform().saves = false;
-    check(!host.copyFileToDocument(a, row) && take_discarded() == QStringList{row}, "a failed save discards its row");
+    check(!backupSaves->writeFromFile(a, row) && take_discarded() == QStringList{row},
+          "a failed save discards its row");
     platform() = PlatformCopies();
     platform().holdsResolver = false;
-    check(!host.copyFileToDocument(a, row) && platform().calls == 0 && take_discarded() == QStringList{row},
+    check(!backupSaves->writeFromFile(a, row) && platform().calls == 0 && take_discarded() == QStringList{row},
           "a save without a resolver discards its row");
     platform() = PlatformCopies();
 
@@ -1881,7 +2084,7 @@ check_download_discards() {
     check(!host.exportRecordings(exported, row) && ended(DecoderHost::TransferFailed)
               && take_discarded() == QStringList{row},
           "a transfer after the teardown abort discards its row");
-    check(!host.copyFileToDocument(a, row) && take_discarded() == QStringList{row},
+    check(!backupSaves->writeFromFile(a, row) && take_discarded() == QStringList{row},
           "a backup save after the teardown abort discards its row");
 }
 
@@ -3912,8 +4115,12 @@ main(int argc, char** argv) {
     check_document_pick_record();
     check_document_requests();
     check_document_reentrant_drain();
-    check_document_dispatch();
+    check_incoming_document_poll();
+    check_incoming_document_take_prefers_newer();
+    check_document_request_pending();
     check_import_dispatch();
+    check_probe_dispatch();
+    check_probe_record();
     check_save_transport_dispatch();
     check_stop_publishes_stopping();
     check_session_state_known_after_first_poll();

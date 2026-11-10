@@ -5022,7 +5022,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_session_args
-        PRIVATE Qt6::Gui dsd-neo_runtime
+        PRIVATE Qt6::Gui dsd-neo_crypto dsd-neo_runtime
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_session_args
@@ -5054,7 +5054,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_scan_list_targets
-        PRIVATE Qt6::Gui dsd-neo_runtime
+        PRIVATE Qt6::Gui dsd-neo_crypto dsd-neo_runtime
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_scan_list_targets
@@ -5116,7 +5116,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_import_transport
-        PRIVATE Qt6::Gui dsd-neo_runtime dsd-neo_platform
+        PRIVATE Qt6::Gui dsd-neo_crypto dsd-neo_runtime dsd-neo_platform
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_import_transport
@@ -5149,7 +5149,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_restart_closer
-        PRIVATE Qt6::Gui dsd-neo_runtime dsd-neo_platform
+        PRIVATE Qt6::Gui dsd-neo_crypto dsd-neo_runtime dsd-neo_platform
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_restart_closer
@@ -5180,7 +5180,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_import_service
-        PRIVATE Qt6::Gui dsd-neo_runtime dsd-neo_platform
+        PRIVATE Qt6::Gui dsd-neo_crypto dsd-neo_runtime dsd-neo_platform
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_import_service
@@ -5228,6 +5228,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_archive_incoming.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_typed_paths.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -5410,6 +5411,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_archive_incoming.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_typed_paths.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -5468,6 +5470,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_archive_incoming.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_typed_paths.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -5679,6 +5682,7 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/diagnostics_log.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_archive_incoming.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_typed_paths.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/input_commit.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
@@ -23095,6 +23099,20 @@ if(Python3_Interpreter_FOUND)
             sign_in_autofill
     )
     add_test(
+        NAME ANDROID_INCOMING_DOCUMENT_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            incoming_document
+    )
+    add_test(
+        NAME ANDROID_INTENT_EXTRAS_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            intent_extras
+    )
+    add_test(
         NAME ANDROID_FILE_BROWSER_JVM
         COMMAND
             ${Python3_EXECUTABLE}
@@ -23118,6 +23136,8 @@ if(Python3_Interpreter_FOUND)
         ANDROID_RECORDING_SHARE_JVM
         ANDROID_A11Y_BRIDGE_JVM
         ANDROID_SIGN_IN_AUTOFILL_JVM
+        ANDROID_INCOMING_DOCUMENT_JVM
+        ANDROID_INTENT_EXTRAS_JVM
         ANDROID_FILE_BROWSER_JVM
         PROPERTIES
             SKIP_RETURN_CODE 77

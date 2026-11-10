@@ -204,6 +204,13 @@ began (saved), an interrupt after it began (saved, interrupt kept), the teardown
 (returns without it; the publication still completes), the 16-name bound and the release of persisted grants. The
 abort case runs last but one: it is sticky for the process. Last, with the worker shut down, an insert answers empty
 and a settle deletes the row it claimed.
+`ANDROID_INCOMING_DOCUMENT_JVM` (the `incoming_document` suite, issue #831) runs the Open with / Share intake gate
+`IncomingDocumentIntake.kt` and `LaunchDelivery.kt`, the Recents replay rule, with no stubs, then `IncomingDocuments.kt`
+and its mailbox against stubs of the delivered intent, its extras, the package manager, the grant check and
+`IntentCompat`; `ANDROID_INTENT_EXTRAS_JVM` (`intent_extras`) runs `IntentExtras.kt` against the same stubs, whose
+extras unparcel as API 29-32's do, so a bundle with an unknown Parcelable throws on every read until the guard drops
+it. `DsdNeoActivity` never compiles here, so both first read the manifest's filters and the activity's guard and
+report order from the sources ("Launch policy" in `docs/code_map.md` lists the cases).
 `ANDROID_FILE_BROWSER_JVM` (the `file_browser` suite, issue #830) runs `FileListing.kt`, the in-app file browser's
 folder reads, with no stubs, against temporary folders and a `GatedFs` that fails an open, fails an iteration part way,
 makes up a folder of 50,000 files and holds reads until the test lets them go. Containment is checked on real paths:

@@ -319,6 +319,56 @@ Limits:
 - A file replaced by a link between the moment it is picked and the moment it is copied, inside a folder of the app's
   own, is not checked again.
 
+## Opening files from other apps
+
+**Open with** or **Share** on a file in another app (a file manager, a chat or mail app) hands it to DSD-neo (#831).
+DSD-neo shows it once nothing on screen could lose work: the first-run screen is done, no sheet is open, no editor,
+wizard, Explore setup, RadioReference screen or Signal search is open, and no import, backup task, recording export,
+decryption apply, file picker, USB permission prompt, listen restart or close for a restart is still running. Just after
+DSD-neo starts, it also waits until it knows whether a session is running. So after a new install the file waits until
+**Get started** is tapped. Screens that only show things (Imported files, Diagnostics, Licenses, Call recordings,
+Spectrum, Talkgroups, and History or Settings during a session) may stay open. When the file goes on, they close, except
+Imported files, which an import opens or keeps open (over the session's Settings during a session). A file sent while
+another is being handled waits for it; a newer one replaces one still waiting.
+
+DSD-neo first reads the start of the file (**Checking the file…**) and decides by what it holds, not by its name:
+
+- **A DSD-neo backup** offers **Restore…**, which goes on as Settings → Backup → **Restore from backup** does after its
+  picker: the passphrase, then **Replace your setup?**. While a session runs, the sheet says **Stop listening before
+  restoring.** and offers **Stop listening** (**Stop replay** for a replay), and **Restore…** becomes available once
+  the session has stopped. DSD-neo never stops a session by itself. While another backup task runs, the sheet says
+  **Another backup task is still running. Try again in a moment.** and **Restore…** comes back once it ends. A backup
+  made by a newer DSD-neo, a damaged one, a file too large to be one, or a restore already waiting is named, with
+  **Close**.
+- **Anything else** asks **What does this file contain?** with the kinds of Imported files → **Import file**, and for
+  **Keys** whether they are decimal or hex. **Import** copies it into Imported files as a picked file would; during a
+  session Imported files opens over the session's Settings. **Target CSV** instead starts a new scan list with those
+  targets in the scan list editor, to name and save (Imported files' own Target CSV only keeps the file).
+- A file DSD-neo cannot read says **Couldn't read that file. Open it again from the other app.**
+
+**Cancel**, Back or a tap outside the sheet drops the file; send it again to start over. If the screen the file was
+going to cannot take it at that moment (a session started meanwhile, say), the sheet stays with **Couldn't open that
+now. Try again.**
+
+Limits:
+
+- **File types.** Open with lists DSD-neo for files the other app labels `text/csv`, `text/comma-separated-values`,
+  `text/plain` or `application/octet-stream`; Share for the same types except `text/plain`, which would list DSD-neo for
+  every shared link or piece of text. Apps that offer a file to any app list it too. A file the other app labels with
+  another type (an upper-case or parameterised type, `application/vnd.ms-excel`, `text/x-csv`, or a download that kept
+  the server's own type) does not list DSD-neo: open it from a file manager that labels files by their extension, or
+  pick it in Imported files or **Restore from backup**.
+- **What DSD-neo takes.** One `content:` document the other app gave DSD-neo permission to read, and never one of
+  DSD-neo's own files. Anything else (a `file:` path, several files, shared text with no file, a document no read
+  permission was recorded for) is ignored, with one line in Diagnostics and nothing on screen.
+- An app that lets a file be read only once fails the second read (the check, then the import or restore) as **Couldn't
+  read that file**. No such app is known.
+- The other app shares only the file itself: a channel map's companion files are asked for on the companion sheet, as
+  for a picked file.
+- The check and a restore's read of the backup run on the import worker with library and replay imports, one job at a
+  time. An app that is slow, or that ignores Cancel, delays the next import, check or restore read until it answers.
+- API 29 itself is not tested on a device (its emulator image cannot run the arm64 app); API 30 takes the same paths.
+
 ## Imported files (trunking CSVs)
 
 The C core only opens real filesystem paths (`src/runtime/path_policy.c` requires
@@ -373,7 +423,8 @@ file it was started on, or says "That file changed while you were picking. Try a
 meanwhile. A device with no picker gets DSD-neo's file browser instead; when the picker fails otherwise, the import
 ends with the reason; on the companion sheet the reason shows above the companions and the files already chosen stay.
 On the wizard's **File** source the reason shows under the Replay file row, where a failed replay copy says why too,
-and the earlier file stays.
+and the earlier file stays. A scan list's target CSV can also come from another app: open the file with Open with or
+Share and choose **Target CSV**, which starts a new scan list with it.
 
 The library itself (one JSON-persisted
 row per stored file, with dry-run validation counts from
@@ -388,7 +439,7 @@ list and a source ID list cannot be distinguished by content: validation uses th
 With Android's picker no storage permissions are involved: the picker grants access to the one document picked, and
 DSD-neo copies it right away. DSD-neo's file browser reads the inbox without one and other storage with the access
 described in [Choosing files without a file picker](#choosing-files-without-a-file-picker); it copies the file the
-same way.
+same way. A CSV can also be opened from another app with Open with or Share (see "Opening files from other apps").
 
 ## Call recordings
 
@@ -601,13 +652,13 @@ file, and a restore never touches kept files.
 **Restore from backup** replaces this phone's setup with the backup's, so stop listening first (the row reads **Stop
 listening to restore** until then). Pick the file in the file picker, or in DSD-neo's file browser (see
 [Choosing files without a file picker](#choosing-files-without-a-file-picker); it lists `.dsdbak` files, and Show all
-files the rest, since DSD-neo checks the file's contents, not its name), and enter its passphrase. Back from the
-browser's list of places ends the restore, as backing out of the picker does. A wrong passphrase reads the same as a
-file damaged on the way (**Wrong passphrase, or the file is damaged.**). When the file itself is the problem (not a
-DSD-neo backup, made by a newer DSD-neo, too large, damaged, or unreadable), **Choose another file** opens the picker
-(or the browser) again and takes only the file picked there. When the device has no picker, the browser opens
-instead; when the picker fails otherwise, either time, the restore stops, the Settings card says why, and **Restore
-from backup** starts over.
+files the rest, since DSD-neo checks the file's contents, not its name), or open the file from another app with Open
+with or Share (see "Opening files from other apps"), and enter its passphrase. Back from the browser's list of places
+ends the restore, as backing out of the picker does. A wrong passphrase reads the same as a file damaged on the way
+(**Wrong passphrase, or the file is damaged.**). When the file itself is the problem (not a DSD-neo backup, made by a
+newer DSD-neo, too large, damaged, or unreadable), **Choose another file** opens the picker (or the browser) again and
+takes only the file picked there. When the device has no picker, the browser opens instead; when the picker fails
+otherwise, either time, the restore stops, the Settings card says why, and **Restore from backup** starts over.
 DSD-neo checks the whole backup before it changes anything. An imported file this phone cannot read (a channel map whose
 companion files it refuses, say) is left out of the restore rather than refusing the whole backup; whatever named it
 loses that reference. Then it asks **Replace your setup?** with the backup's date, app version and counts, how many
@@ -1428,6 +1479,9 @@ identity changes only on confirmed session initialization, never when the
 service queues a start.
 
 Activity cold-start/new intents and receiver broadcasts share one dedupe tracker.
+A relaunch from Recents hands the Activity its first launch intent again; it is not
+a new attachment, so the Activity reports its launch intent only on a fresh start
+(no saved state, no launched-from-history flag) and never attaches the dongle again.
 It validates deviceName and VID/PID against the current USB device list, retains
 one pending attachment (newest wins), and forgets suppression on detach. Polling
 consumes that pending identity, including on the first host refresh. App-specific
@@ -1441,7 +1495,8 @@ runs on the JVM in `ANDROID_USB_BROKER_JVM`; verify the rest on a device:
 - Cold launch from the USB intent followed by the receiver's duplicate report
   starts exactly once; a duplicate new intent, which `singleTask` hands to the
   running Activity's `onNewIntent`, does not restart it. Detach and reattach permits
-  one new start.
+  one new start. A relaunch from Recents, after `am kill` or after the app was closed
+  while its task stayed in Recents, reports no attachment.
 - Mismatched deviceName or VID/PID, unknown devices, and a device removed before
   polling produce no start. With two devices, only the newest pending attachment
   is delivered; detaching it cancels the pending delivery.
@@ -1861,13 +1916,14 @@ module behind it, so androiddeployqt has nothing extra to package.
   appears on the next start's `exit:` line (see "How the previous run ended");
   Android 10 keeps no such record, so there it leaves nothing to report.
 - **One instance closes pickers and permission prompts.** Because of `singleTask`, a
-  USB attachment, a tap on the launcher icon and a tap on the decoding notification
-  all bring the running app forward, and each closes a file picker or a permission
-  prompt open over it. The flow that opened it ends as if cancelled, quietly: a CSV
-  import, backup, replay recording or call recording picker ends with no error, and an interrupted location
-  prompt returns the site chooser to its idle text, with nothing reported as
-  denied; Android asks again on the next tap. Share sheets open in their own task
-  and are not affected.
+  USB attachment, a file another app opens with or shares to DSD-neo, a tap on the
+  launcher icon and a tap on the decoding notification all bring the running app
+  forward, and each closes a file picker or a permission prompt open over it. The
+  flow that opened it ends as if cancelled, quietly: a CSV import, backup, replay
+  recording or call recording picker ends with no error, and an interrupted location
+  prompt returns the site chooser to its idle text, with nothing reported as denied;
+  Android asks again on the next tap. Share sheets open in their own task and are
+  not affected.
 
 ## Diagnostics
 
@@ -2075,7 +2131,8 @@ teardown: main() returning at uptime 1236.010 s; flushing, at most 500 ms
 
 The models whose destructors can wait (`~BackupModel`, `~CallHistoryModel`,
 `~SignalSearchModel`, `~RadioReferenceModel`) each mark their stage inside the QML
-engine's. A stage that started and never took is the one that held the teardown;
+engine's; `~BackupModel` waits at most 2 s for a backup save, then leaves it behind.
+A stage that started and never took is the one that held the teardown;
 when the last record is a stage's `took`, the hold is in an object no marker covers
 (other models, the app's settings, the QML objects). A watchdog incident during the
 wait names the activity `in Qt teardown`. Uptimes on the Kotlin and native sides

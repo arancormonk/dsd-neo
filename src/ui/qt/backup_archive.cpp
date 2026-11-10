@@ -5,7 +5,8 @@
 
 /* The backup archive's public surface (issue #580): the typed path table, error names, the summary map, the snapshot
  * and the passphrase and seal wrappers. Export lives in backup_archive_build.cpp, restore validation in
- * backup_archive_parse.cpp, and the rules both share in backup_archive_rules.cpp. */
+ * backup_archive_parse.cpp, the rules both share in backup_archive_rules.cpp, and the incoming-document classifier in
+ * backup_archive_incoming.cpp. */
 
 #include "backup_archive.h"
 
@@ -66,10 +67,11 @@ BackupError
 backup_error_from_seal_status(int status) {
     switch (status) {
         case DSD_BACKUP_OK: return BackupError::None;
-        case DSD_BACKUP_ERR_FORMAT: return BackupError::NotBackup;
+        case DSD_BACKUP_ERR_NOT_BACKUP: return BackupError::NotBackup;
         case DSD_BACKUP_ERR_VERSION: return BackupError::NewerVersion;
         case DSD_BACKUP_ERR_AUTH: return BackupError::WrongPassphrase;
         case DSD_BACKUP_ERR_TOO_LARGE: return BackupError::TooLarge;
+        case DSD_BACKUP_ERR_FORMAT:
         case DSD_BACKUP_ERR_PARAMS: return BackupError::Damaged;
         default: return BackupError::Io;
     }
@@ -193,8 +195,10 @@ backup_seal(const QByteArray& archive, const QString& passphrase, const dsd_back
 QByteArray
 backup_open(const QByteArray& sealed, const QString& passphrase, int* status) {
     size_t payload = 0;
-    int rc = dsd_backup_parse_header(reinterpret_cast<const uint8_t*>(sealed.constData()),
-                                     static_cast<size_t>(sealed.size()), nullptr, &payload);
+    // The check that tells a file without the magic (NOT_BACKUP) from a damaged backup (FORMAT).
+    int rc = dsd_backup_check_header(reinterpret_cast<const uint8_t*>(sealed.constData()),
+                                     static_cast<size_t>(sealed.size()), static_cast<uint64_t>(sealed.size()), nullptr,
+                                     &payload);
     QByteArray archive;
     if (rc == DSD_BACKUP_OK) {
         QByteArray pass = backup_passphrase_bytes(passphrase);

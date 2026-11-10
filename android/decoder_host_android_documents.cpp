@@ -2,18 +2,17 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 /*
- * The backup's document copies (#580) and the export saves' transport (#826), less their JNI transport
- * (platformHoldsResolver(), platformCopy*() and platformAbortDocumentCopies() in decoder_host_android.cpp), so the
- * desktop host test compiles this dispatch as it ships. They run on BackupModel's worker thread and the export
- * writer's.
+ * The export saves' transport (#826) and the teardown abort, less their JNI transport (platformHoldsResolver(),
+ * platformCopyFileToDocument() and platformAbortDocumentCopies() in decoder_host_android.cpp), so the desktop host test
+ * compiles this dispatch as it ships. The saves run on the export writer's thread.
  *
  * The document picker's requests and answers (#829), less their JNI transport (platform*Document*() there), on the Qt
  * thread. The Download-folder rows its saves write into (DownloadsSave.kt) are named and discarded through
- * platformSavedDocumentName() and platformDiscardPendingDownload() there, from any thread.
+ * platformSavedDocumentName() and platformDiscardPendingDownload() there, from any thread. The documents other apps
+ * open with this one (#831) reach the host's slot here too, through platformTakeIncomingDocument(): each refresh()
+ * offers one, and a take asks for one newer first.
  */
 
-#include <QFile>
-#include <QFileInfo>
 #include <QLatin1String>
 #include <QObject>
 #include <QString>
@@ -31,43 +30,6 @@ namespace dsd_android {
 bool
 DecoderHostAndroid::isContentUri(const QString& reference) {
     return QUrl(reference).scheme() == QLatin1String("content");
-}
-
-int
-DecoderHostAndroid::copyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) const {
-    if (!isContentUri(reference)) {
-        return dsd_qt::DecoderHost::copyDocumentToFile(reference, destPath, maxBytes);
-    }
-    if (documentTransfersAborted() || destPath.isEmpty() || maxBytes < 0) {
-        return DocumentFailed;
-    }
-    if (!platformHoldsResolver()) {
-        return DocumentLocalFailed; // the app's own state, not the document
-    }
-    /* Cleared first, so that a file found at destPath afterwards can only be this copy's (see below). A destination
-     * that stays is this device's failure, not the document's. */
-    QFile::remove(destPath);
-    if (QFileInfo::exists(destPath) || QFileInfo(destPath).isSymLink()) {
-        return DocumentLocalFailed;
-    }
-    const int copied = platformCopyDocumentToFile(reference, destPath, maxBytes);
-    if (copied == DocumentTooLarge || copied == DocumentLocalFailed) {
-        return copied;
-    }
-    /* A JNI call that failed (no such method, or an Error the Kotlin side does not catch) also reads as 0, so a copy
-     * counts only with its file in place; without it the failure is the app's own, not the document's. */
-    if (copied == DocumentCopied) {
-        return QFileInfo(destPath).isFile() ? DocumentCopied : DocumentLocalFailed;
-    }
-    return DocumentFailed;
-}
-
-bool
-DecoderHostAndroid::copyFileToDocument(const QString& sourcePath, const QString& reference) const {
-    if (!isContentUri(reference)) {
-        return dsd_qt::DecoderHost::copyFileToDocument(sourcePath, reference);
-    }
-    return saveContentDocument(sourcePath, reference, documentTransfersAborted());
 }
 
 bool
@@ -121,20 +83,24 @@ DecoderHostAndroid::saveTransport() const {
 qint64
 DecoderHostAndroid::requestOpenDocument() {
     const qint64 id = nextDocumentRequestId();
+    const bool wasPending = m_document_request != 0;
     beginDocumentRequest(id);
     if (!platformOpenDocument(id)) {
         refuseDocumentRequestLater(id, QStringLiteral("failed"));
     }
+    publishDocumentRequest(wasPending);
     return id;
 }
 
 qint64
 DecoderHostAndroid::requestSaveDocument(const QString& suggestedName, const QString& mimeType) {
     const qint64 id = nextDocumentRequestId();
+    const bool wasPending = m_document_request != 0;
     beginDocumentRequest(id);
     if (!platformSaveDocument(id, suggestedName, mimeType)) {
         refuseDocumentRequestLater(id, QStringLiteral("failed"));
     }
+    publishDocumentRequest(wasPending);
     return id;
 }
 
@@ -145,6 +111,7 @@ DecoderHostAndroid::cancelDocumentRequest(qint64 requestId) {
     }
     m_document_request = 0;
     platformCancelDocument(requestId);
+    publishDocumentRequest(true);
 }
 
 QString
@@ -178,6 +145,7 @@ DecoderHostAndroid::refuseDocumentRequestLater(qint64 id, const QString& reason)
             if (m_document_request == id) {
                 m_document_request = 0;
                 Q_EMIT documentPickUnavailable(id, reason);
+                publishDocumentRequest(true);
             }
         },
         Qt::QueuedConnection);
@@ -188,8 +156,27 @@ DecoderHostAndroid::refreshDocumentPicks() {
     /* Drained even with no request live: a record for a request since given up may be a Download-folder row, which
      * deliver_document_pick_record() discards. */
     for (QString record = platformPollDocumentPick(); !record.isEmpty(); record = platformPollDocumentPick()) {
+        const bool wasPending = m_document_request != 0;
         deliver_document_pick_record(*this, m_document_request, record);
+        publishDocumentRequest(wasPending);
     }
+}
+
+void
+DecoderHostAndroid::publishDocumentRequest(bool wasPending) {
+    if (wasPending != (m_document_request != 0)) {
+        Q_EMIT documentRequestChanged();
+    }
+}
+
+void
+DecoderHostAndroid::refreshIncomingDocuments() {
+    offerIncomingDocument(platformTakeIncomingDocument());
+}
+
+QString
+DecoderHostAndroid::newerIncomingDocument() {
+    return platformTakeIncomingDocument();
 }
 
 } // namespace dsd_android

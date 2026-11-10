@@ -82,7 +82,12 @@ QtObject {
         if (typeof inputCommit !== "undefined" && inputCommit !== null)
             inputCommit.commitComposing(finishEditing === true);
     }
+    // The composing word is committed first (#831): a field that saves on
+    // editingFinished would otherwise save what it held without it, when a
+    // sheet or a layer opens by itself (a file another app sent) and takes
+    // the focus from the field.
     function clearInput(window) {
+        commitComposing(false);
         if (window && window.activeFocusItem)
             window.activeFocusItem.focus = false;
         Qt.inputMethod.hide();

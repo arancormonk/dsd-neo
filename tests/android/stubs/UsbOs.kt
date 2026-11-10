@@ -8,6 +8,9 @@ object Build {
     object VERSION_CODES { const val TIRAMISU = 33 }
 }
 
+// What a getter throws for an extra whose class no class loader here knows (BaseBundle on API 33+, Parcel below).
+class BadParcelableException(message: String) : RuntimeException(message)
+
 // The broker's clock, moved by the test only.
 object SystemClock {
     @Volatile var nowMs = 1_000_000L

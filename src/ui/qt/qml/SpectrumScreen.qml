@@ -433,10 +433,10 @@ Item {
                 }
             }
 
-            TapHandler {
+            GatedTapHandler {
                 objectName: "spectrumGoToOpen"
                 enabled: screen.goToAllowed
-                onTapped: goToSheet.open(screen.tunedHz)
+                onAllowedTap: goToSheet.open(screen.tunedHz)
             }
         }
 
@@ -826,9 +826,9 @@ Item {
             // A fingertip covers several channels, so the tap snaps to the strongest
             // peak near it. The gate is an affordance only — the engine refuses the
             // tune on its own if trunking took the tuner in the meantime.
-            TapHandler {
+            GatedTapHandler {
                 enabled: !screen.viewOnly && spectrum.hasData
-                onTapped: function (eventPoint) {
+                onAllowedTap: function (eventPoint) {
                     // Touching the spectrum is taking over; a sweep that carried on
                     // underneath would move the radio off what was just chosen.
                     screen.stopSweep();
@@ -836,9 +836,13 @@ Item {
                 }
             }
 
+            // Drags and pinches are not taps (GatedTapHandler): a drag that began on
+            // a sheet over the waterfall takes the grab from the sheet's barrier,
+            // so these stand down while anything covers it. The pan retunes.
             PinchHandler {
                 id: pinch
 
+                enabled: Navigation.allows(gestureArea)
                 target: null
                 // Wider than the model's 1x-8x so the clamp lives in one place.
                 minimumScale: 0.1
@@ -860,6 +864,7 @@ Item {
             DragHandler {
                 id: pan
 
+                enabled: Navigation.allows(gestureArea)
                 target: null
                 xAxis.enabled: true
                 yAxis.enabled: false
@@ -976,9 +981,9 @@ Item {
                                 color: Theme.buttonSecondaryText
                             }
 
-                            TapHandler {
+                            GatedTapHandler {
                                 enabled: spectrum.hasData
-                                onTapped: {
+                                onAllowedTap: {
                                     screen.stopSweep();
                                     screen.stepBy(-1);
                                 }
@@ -1062,9 +1067,9 @@ Item {
                                 }
                             }
 
-                            TapHandler {
+                            GatedTapHandler {
                                 enabled: spectrum.hasData
-                                onTapped: screen.toggleSweep()
+                                onAllowedTap: screen.toggleSweep()
                             }
                         }
 
@@ -1095,9 +1100,9 @@ Item {
                                 color: Theme.buttonSecondaryText
                             }
 
-                            TapHandler {
+                            GatedTapHandler {
                                 enabled: spectrum.hasData
-                                onTapped: {
+                                onAllowedTap: {
                                     screen.stopSweep();
                                     screen.stepBy(1);
                                 }
@@ -1159,9 +1164,9 @@ Item {
                                 }
                             }
 
-                            TapHandler {
+                            GatedTapHandler {
                                 enabled: spectrum.hasData
-                                onTapped: {
+                                onAllowedTap: {
                                     screen.stopSweep();
                                     screen.hopToSignal(-1);
                                 }
@@ -1207,9 +1212,9 @@ Item {
                                 }
                             }
 
-                            TapHandler {
+                            GatedTapHandler {
                                 enabled: spectrum.hasData
-                                onTapped: {
+                                onAllowedTap: {
                                     screen.stopSweep();
                                     screen.hopToSignal(1);
                                 }

@@ -578,6 +578,7 @@ DecoderHostAndroid::refresh() {
     refreshRecordingTransfer();
     refreshRecordingShares();
     refreshDocumentPicks();
+    refreshIncomingDocuments();
     refreshFileBrowser();
 }
 } // namespace dsd_android

@@ -327,10 +327,10 @@ make_diagnostics(QQmlApplicationEngine& engine) {
     return new DiagnosticsLogModel(nullptr, &engine);
 }
 
-// Issue #832: the one import worker the library and the replay imports share. No import has started yet, so whatever
-// an earlier run staged is stale; the sweep runs after a restore has applied and before the service exists. The
-// service is the engine's child before the models that use it, so it goes before them: no commit reaches a model that
-// is being destroyed.
+// Issue #832: the one import worker the library, the replay imports and the backup's restore reads share. No import
+// has started yet, so whatever an earlier run staged is stale; the sweep runs after a restore has applied and before
+// the service exists. The service is the engine's child before the models that use it, so it goes before them: no
+// commit reaches a model that is being destroyed.
 static ImportService*
 start_imports(QQmlApplicationEngine& engine, const DecoderHost* host) {
     ImportService::sweepStaging();
@@ -369,7 +369,8 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* commands = make_command_bridge(engine, metrics);
     auto* diagnostics = make_diagnostics(engine);
     auto* prefs = new AppPrefs(&engine);
-    auto* backupModel = new BackupModel(host, restoreOutcome, &engine);
+    // #831: the restore reads its document on the import worker; the save writes through a transport of its own.
+    auto* backupModel = new BackupModel(host, imports, host->importTransport(), restoreOutcome, &engine);
     auto* restartCloser = make_restart_closer(host, imports, backupModel, &engine);
     auto* sessionArgs = new SessionArgsBuilder(prefs, &engine);
     auto* systems = new SavedSystemsModel(&engine);

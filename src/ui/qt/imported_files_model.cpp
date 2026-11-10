@@ -64,6 +64,21 @@ failure(const QString& error) {
     return {{QStringLiteral("ok"), false}, {QStringLiteral("error"), error}};
 }
 
+/* documentInspected()'s result. */
+QVariantMap
+inspection(const QString& kind, const QString& name) {
+    return {{QStringLiteral("kind"), kind}, {QStringLiteral("name"), name}};
+}
+
+/* What a probe that ended with @p probed found: the document's kind once read, else why it was not. */
+QString
+inspection_kind(int probed, const ImportProbe& probe) {
+    if (probed == DecoderHost::DocumentCopied) {
+        return backup::incoming_kind_name(backup::classify_incoming(probe.header, probe.total));
+    }
+    return probed == DecoderHost::DocumentCancelled ? QStringLiteral("cancelled") : QStringLiteral("unreadable");
+}
+
 QVariantMap
 busy_failure() {
     auto result = failure(QStringLiteral("busy"));
@@ -348,8 +363,18 @@ ImportedFilesModel::setReplaceFile(ReplaceFile replaceFile) {
     m_replaceFile = std::move(replaceFile);
 }
 
-// Never calls the service: the app's is destroyed before the models.
-ImportedFilesModel::~ImportedFilesModel() = default;
+/*
+ * The app's service is destroyed before the models, so this reaches only a service that outlives the model (or is its
+ * child, not yet destroyed): no probe goes on reading for a model that is gone. Their commits find no model and
+ * answer nothing.
+ */
+ImportedFilesModel::~ImportedFilesModel() {
+    if (m_imports) {
+        for (const qint64 id : std::as_const(m_probes)) {
+            m_imports->cancel(id);
+        }
+    }
+}
 
 int
 ImportedFilesModel::rowCount(const QModelIndex& parent) const {
@@ -762,6 +787,49 @@ ImportedFilesModel::cancelImport(int id) {
     m_dropped.insert(id);
     answerQueued(id, result);
     updateImporting(before);
+}
+
+int
+ImportedFilesModel::inspectDocument(const QString& reference) {
+    if (!m_imports) {
+        const auto id = static_cast<int>(ImportService::newRequestId());
+        answerInspection(id, inspection(QStringLiteral("unreadable"), QString()));
+        return id;
+    }
+    const qint64 id = m_imports->probeDocument(
+        reference, backup::kMaxSealedBytes,
+        [self = QPointer<ImportedFilesModel>(this)](qint64 request, int probed, const ImportProbe& probe) {
+            if (self) {
+                self->finishInspect(request, probed, probe);
+            }
+        });
+    m_probes.insert(id);
+    return static_cast<int>(id);
+}
+
+void
+ImportedFilesModel::cancelInspect(int id) {
+    if (!m_probes.remove(id)) {
+        return;
+    }
+    // As cancelImport(): answered now, not after a read a provider may hold.
+    if (m_imports) {
+        m_imports->cancel(id);
+    }
+    answerInspection(id, inspection(QStringLiteral("cancelled"), QString()));
+}
+
+void
+ImportedFilesModel::finishInspect(qint64 id, int probed, const ImportProbe& probe) {
+    if (m_probes.remove(id)) {
+        Q_EMIT documentInspected(static_cast<int>(id), inspection(inspection_kind(probed, probe), probe.displayName));
+    }
+}
+
+void
+ImportedFilesModel::answerInspection(int id, const QVariantMap& result) {
+    QMetaObject::invokeMethod(
+        this, [this, id, result]() { Q_EMIT documentInspected(id, result); }, Qt::QueuedConnection);
 }
 
 void

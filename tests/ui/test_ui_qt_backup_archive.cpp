@@ -63,6 +63,7 @@
 #include "decode_mode_flag.h"
 #include "decoder_host.h"
 #include "decryption_profiles_model.h"
+#include "document_import_transport.h"
 #include "imported_files_model.h"
 #include "json_store.h"
 #include "qt_ui.h"
@@ -2089,10 +2090,11 @@ test_passphrases() {
     expect("NFD opens an NFC seal",
            dsd_qt::backup::backup_open(sealed, nfd, &status) == "DNBA payload" && status == DSD_BACKUP_OK);
     expect("not a sealed backup",
-           dsd_qt::backup::backup_open("plain text", nfc, &status).isEmpty() && status == DSD_BACKUP_ERR_FORMAT);
+           dsd_qt::backup::backup_open("plain text", nfc, &status).isEmpty() && status == DSD_BACKUP_ERR_NOT_BACKUP);
 
     using dsd_qt::backup::backup_error_from_seal_status;
-    expect("status mapping", backup_error_from_seal_status(DSD_BACKUP_ERR_FORMAT) == BackupError::NotBackup
+    expect("status mapping", backup_error_from_seal_status(DSD_BACKUP_ERR_NOT_BACKUP) == BackupError::NotBackup
+                                 && backup_error_from_seal_status(DSD_BACKUP_ERR_FORMAT) == BackupError::Damaged
                                  && backup_error_from_seal_status(DSD_BACKUP_ERR_VERSION) == BackupError::NewerVersion
                                  && backup_error_from_seal_status(DSD_BACKUP_ERR_AUTH) == BackupError::WrongPassphrase
                                  && backup_error_from_seal_status(DSD_BACKUP_ERR_TOO_LARGE) == BackupError::TooLarge
@@ -2105,7 +2107,8 @@ test_passphrases() {
            backup_error_from_open_status(DSD_BACKUP_ERR_INTERNAL) == BackupError::StagingFailed
                && backup_error_from_open_status(DSD_BACKUP_ERR_ARGS) == BackupError::StagingFailed
                && backup_error_from_open_status(DSD_BACKUP_ERR_AUTH) == BackupError::WrongPassphrase
-               && backup_error_from_open_status(DSD_BACKUP_ERR_FORMAT) == BackupError::NotBackup
+               && backup_error_from_open_status(DSD_BACKUP_ERR_NOT_BACKUP) == BackupError::NotBackup
+               && backup_error_from_open_status(DSD_BACKUP_ERR_FORMAT) == BackupError::Damaged
                && backup_error_from_open_status(DSD_BACKUP_ERR_VERSION) == BackupError::NewerVersion
                && backup_error_from_open_status(DSD_BACKUP_ERR_PARAMS) == BackupError::Damaged
                && backup_error_from_open_status(DSD_BACKUP_ERR_TOO_LARGE) == BackupError::TooLarge
@@ -2118,30 +2121,127 @@ test_passphrases() {
            dsd_qt::backup::backup_error_name(BackupError::StagingFailed) == "StagingFailed");
 }
 
+/* @p sealed with the big-endian field at @p offset (@p bytes wide) set to @p value. */
+QByteArray
+with_header_field(QByteArray sealed, int offset, int bytes, quint64 value) {
+    for (int i = 0; i < bytes; ++i) {
+        sealed[offset + i] = static_cast<char>(value >> (8 * (bytes - 1 - i)));
+    }
+    return sealed;
+}
+
+/* What Restore says for @p sealed, by the passphrase it was sealed under. */
+BackupError
+restore_error(const QByteArray& sealed, const QString& passphrase) {
+    int status = DSD_BACKUP_OK;
+    dsd_qt::backup::backup_open(sealed, passphrase, &status);
+    return dsd_qt::backup::backup_error_from_open_status(status);
+}
+
+/* B7: a file that starts like a backup is damaged, never "not a backup"; version 0 is damaged, never "newer". */
+void
+test_restore_names_damaged_backups() {
+    const QString pass = QStringLiteral("correct horse battery");
+    int status = -100;
+    const QByteArray sealed = dsd_qt::backup::backup_seal("DNBA payload", pass, test_kdf(), &status);
+    expect("seal a backup to damage", status == DSD_BACKUP_OK && sealed.startsWith("DSDNEOBK"));
+
+    expect("an intact backup opens", restore_error(sealed, pass) == BackupError::None);
+    expect("a backup one byte short is damaged",
+           restore_error(sealed.left(sealed.size() - 1), pass) == BackupError::Damaged);
+    expect("a backup cut inside its header is damaged", restore_error(sealed.left(20), pass) == BackupError::Damaged);
+    expect("a backup one byte long is damaged", restore_error(sealed + 'x', pass) == BackupError::Damaged);
+    expect("a version 0 backup is damaged",
+           restore_error(with_header_field(sealed, 8, 2, 0), pass) == BackupError::Damaged);
+    expect("a backup with reserved bytes set is damaged",
+           restore_error(with_header_field(sealed, 56, 8, 1), pass) == BackupError::Damaged);
+    expect("a version 2 backup is newer",
+           restore_error(with_header_field(sealed, 8, 2, 2), pass) == BackupError::NewerVersion);
+    const QByteArray csv = read_file(example("group.csv"));
+    expect("CSV bytes are not a backup", !csv.isEmpty() && restore_error(csv, pass) == BackupError::NotBackup);
+    expect("an empty file is not a backup", restore_error(QByteArray(), pass) == BackupError::NotBackup);
+}
+
+void
+test_incoming_classification() {
+    using dsd_qt::backup::classify_incoming;
+    using dsd_qt::backup::IncomingKind;
+    using dsd_qt::backup::kMaxSealedBytes;
+    int status = -100;
+    const QByteArray sealed =
+        dsd_qt::backup::backup_seal("DNBA payload", QStringLiteral("correct horse battery"), test_kdf(), &status);
+    expect("seal a backup to classify", status == DSD_BACKUP_OK);
+    const qint64 size = sealed.size();
+    const QByteArray header = sealed.left(DSD_BACKUP_HEADER_BYTES);
+    const QByteArray csv = read_file(example("group.csv"));
+    expect("read a CSV example", csv.size() > DSD_BACKUP_HEADER_BYTES);
+
+    expect("a whole backup", classify_incoming(sealed, size) == IncomingKind::Backup);
+    expect("a backup's header and length", classify_incoming(header, size) == IncomingKind::Backup);
+    expect("a backup one byte short", classify_incoming(header, size - 1) == IncomingKind::DamagedBackup);
+    expect("a backup one byte long", classify_incoming(header, size + 1) == IncomingKind::DamagedBackup);
+    expect("a backup of unknown length", classify_incoming(header, -1) == IncomingKind::DamagedBackup);
+    expect("a header cut short", classify_incoming(header.left(40), size) == IncomingKind::DamagedBackup);
+    expect("the magic alone, length unknown", classify_incoming(header.left(8), -1) == IncomingKind::DamagedBackup);
+    expect("version 0", classify_incoming(with_header_field(header, 8, 2, 0), size) == IncomingKind::DamagedBackup);
+    expect("reserved bytes set",
+           classify_incoming(with_header_field(header, 56, 8, 1), size) == IncomingKind::DamagedBackup);
+    expect("unusable key parameters",
+           classify_incoming(with_header_field(header, 11, 1, 30), size) == IncomingKind::DamagedBackup);
+
+    const QByteArray newer = with_header_field(header, 8, 2, 2);
+    expect("version 2", classify_incoming(newer, size) == IncomingKind::NewerBackup);
+    expect("version 2 of unknown length", classify_incoming(newer, -1) == IncomingKind::NewerBackup);
+    expect("version 2 over the cap, as Restore refuses it",
+           classify_incoming(newer, kMaxSealedBytes + 1) == IncomingKind::TooLargeBackup);
+    expect("version 2 at the cap", classify_incoming(newer, kMaxSealedBytes) == IncomingKind::NewerBackup);
+
+    const QByteArray huge = with_header_field(header, 48, 8, quint64{DSD_BACKUP_MAX_PAYLOAD_BYTES} + 1U);
+    expect("a payload over the cap", classify_incoming(huge, size) == IncomingKind::TooLargeBackup);
+    expect("a payload over the cap, length unknown", classify_incoming(huge, -1) == IncomingKind::TooLargeBackup);
+    expect("a file over the cap", classify_incoming(header, kMaxSealedBytes + 1) == IncomingKind::TooLargeBackup);
+    expect("a damaged file over the cap",
+           classify_incoming(with_header_field(header, 56, 8, 1), kMaxSealedBytes + 1) == IncomingKind::TooLargeBackup);
+
+    expect("CSV bytes", classify_incoming(csv.left(DSD_BACKUP_HEADER_BYTES), csv.size()) == IncomingKind::NotBackup);
+    expect("CSV bytes over the cap", classify_incoming(csv, kMaxSealedBytes + 1) == IncomingKind::NotBackup);
+    expect("CSV bytes of unknown length", classify_incoming(csv, -1) == IncomingKind::NotBackup);
+    expect("an empty file", classify_incoming(QByteArray(), 0) == IncomingKind::NotBackup);
+    expect("seven magic bytes", classify_incoming(header.left(7), -1) == IncomingKind::NotBackup);
+
+    using dsd_qt::backup::incoming_kind_name;
+    expect("kind names", incoming_kind_name(IncomingKind::Backup) == "backup"
+                             && incoming_kind_name(IncomingKind::NewerBackup) == "newerBackup"
+                             && incoming_kind_name(IncomingKind::DamagedBackup) == "damagedBackup"
+                             && incoming_kind_name(IncomingKind::TooLargeBackup) == "tooLargeBackup"
+                             && incoming_kind_name(IncomingKind::NotBackup) == "other");
+}
+
 void
 test_host_document_copies() {
     TestHost host;
     expect("base host cannot quit", !host.quitApp());
     expect("base host has no out-of-process engine", !host.engineBusy());
+    // A picked document is read through the base document transport's local copy (#831), one request at a time.
+    dsd_qt::DocumentImportTransport reads;
     QTemporaryDir dir;
     const QByteArray payload(1000, 'b');
     const QString source = dir.filePath("source.dsdbak");
     expect("write copy source", write_file(source, payload));
 
     const QString fromUrl = dir.filePath("from-url.bin");
-    expect("file:// reference copies",
-           host.copyDocumentToFile(QUrl::fromLocalFile(source).toString(), fromUrl, payload.size())
-                   == dsd_qt::DecoderHost::DocumentCopied
-               && read_file(fromUrl) == payload);
+    expect("file:// reference copies", reads.copy(1, QUrl::fromLocalFile(source).toString(), fromUrl, payload.size())
+                                               == dsd_qt::DecoderHost::DocumentCopied
+                                           && read_file(fromUrl) == payload);
     expect("copy is private", !(QFile::permissions(fromUrl)
                                 & (QFileDevice::ReadGroup | QFileDevice::ReadOther | QFileDevice::WriteOther)));
     const QString fromPath = dir.filePath("from-path.bin");
     expect("plain path copies",
-           host.copyDocumentToFile(source, fromPath, payload.size() + 5) == dsd_qt::DecoderHost::DocumentCopied
+           reads.copy(1, source, fromPath, payload.size() + 5) == dsd_qt::DecoderHost::DocumentCopied
                && read_file(fromPath) == payload);
     const QString capped = dir.filePath("capped.bin");
     expect("one byte over the cap is too large",
-           host.copyDocumentToFile(source, capped, payload.size() - 1) == dsd_qt::DecoderHost::DocumentTooLarge);
+           reads.copy(1, source, capped, payload.size() - 1) == dsd_qt::DecoderHost::DocumentTooLarge);
     expect("too large leaves no destination", !QFileInfo::exists(capped));
 #ifdef Q_OS_LINUX
     // procfs reports no size, so only the cap counted while copying can refuse it.
@@ -2149,22 +2249,21 @@ test_host_document_copies() {
     expect("procfs source reports no size", QFileInfo(proc).isFile() && QFileInfo(proc).size() == 0);
     const QString streamed = dir.filePath("streamed.bin");
     expect("the cap is counted while copying",
-           host.copyDocumentToFile(proc, streamed, 16) == dsd_qt::DecoderHost::DocumentTooLarge);
+           reads.copy(1, proc, streamed, 16) == dsd_qt::DecoderHost::DocumentTooLarge);
     expect("a cap met while copying leaves no destination", !QFileInfo::exists(streamed));
     expect("an unsized source within the cap copies",
-           host.copyDocumentToFile(proc, streamed, 1 << 20) == dsd_qt::DecoderHost::DocumentCopied
+           reads.copy(1, proc, streamed, 1 << 20) == dsd_qt::DecoderHost::DocumentCopied
                && QFileInfo(streamed).size() > 16);
 #endif
     const QString failed = dir.filePath("failed.bin");
     expect("missing source fails",
-           host.copyDocumentToFile(dir.filePath("absent"), failed, 10) == dsd_qt::DecoderHost::DocumentFailed);
-    expect("opaque reference fails",
-           host.copyDocumentToFile("content://x/y", failed, 10) == dsd_qt::DecoderHost::DocumentFailed);
+           reads.copy(1, dir.filePath("absent"), failed, 10) == dsd_qt::DecoderHost::DocumentFailed);
+    expect("opaque reference fails", reads.copy(1, "content://x/y", failed, 10) == dsd_qt::DecoderHost::DocumentFailed);
     expect("failure leaves no destination", !QFileInfo::exists(failed));
     // A destination this device cannot write is its own failure, not the document's.
     const QString nowhere = dir.filePath("no-such-dir/copy.bin");
     expect("a destination that cannot be opened is a local failure",
-           host.copyDocumentToFile(source, nowhere, payload.size()) == dsd_qt::DecoderHost::DocumentLocalFailed
+           reads.copy(1, source, nowhere, payload.size()) == dsd_qt::DecoderHost::DocumentLocalFailed
                && !QFileInfo::exists(nowhere));
     const QString locked = dir.filePath("locked");
     expect("a locked directory",
@@ -2174,8 +2273,7 @@ test_host_document_copies() {
         DSD_FPRINTF(stderr, "note: directory permissions are not enforced here; locked-destination case skipped\n");
     } else {
         expect("a destination in a directory it cannot write to is a local failure",
-               host.copyDocumentToFile(source, locked + "/copy.bin", payload.size())
-                       == dsd_qt::DecoderHost::DocumentLocalFailed
+               reads.copy(1, source, locked + "/copy.bin", payload.size()) == dsd_qt::DecoderHost::DocumentLocalFailed
                    && !QFileInfo::exists(locked + "/copy.bin"));
     }
     QFile::setPermissions(locked, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
@@ -2213,6 +2311,8 @@ main(int argc, char** argv) {
     test_typed_path_table();
     test_unknown_store_name();
     test_passphrases();
+    test_restore_names_damaged_backups();
+    test_incoming_classification();
     test_host_document_copies();
     test_startup_clears_missing_library_paths_twice();
 #ifndef _WIN32

@@ -17,17 +17,24 @@ class IntentFilter {
 
 class Intent(var action: String? = null) {
     private val extras = mutableMapOf<String, Any>()
+    /** Extras another app put in that no class loader here knows: every getter for one throws, as the platform's do. */
+    private val unreadable = mutableSetOf<String>()
     var targetPackage: String? = null
     fun setPackage(name: String): Intent { targetPackage = name; return this }
     fun putExtra(name: String, value: Int): Intent { extras[name] = value; return this }
     fun putExtra(name: String, value: Boolean): Intent { extras[name] = value; return this }
     fun putExtra(name: String, value: UsbDevice): Intent { extras[name] = value; return this }
+    fun putUnreadableExtra(name: String): Intent { unreadable += name; return this }
     fun hasExtra(name: String) = name in extras
     fun getIntExtra(name: String, fallback: Int) = extras[name] as? Int ?: fallback
     fun getBooleanExtra(name: String, fallback: Boolean) = extras[name] as? Boolean ?: fallback
     @Suppress("UNCHECKED_CAST")
-    fun <T> getParcelableExtra(name: String): T? = extras[name] as T?
-    fun <T> getParcelableExtra(name: String, type: Class<T>): T? = extras[name]?.let { type.cast(it) }
+    fun <T> getParcelableExtra(name: String): T? = read(name) as T?
+    fun <T> getParcelableExtra(name: String, type: Class<T>): T? = read(name)?.let { type.cast(it) }
+    private fun read(name: String): Any? {
+        if (name in unreadable) throw android.os.BadParcelableException("ClassNotFoundException when unmarshalling: x.Evil")
+        return extras[name]
+    }
     /** What the framework does to a PendingIntent's intent before it sends it: a copy, with its own extras added. */
     fun copy(): Intent = Intent(action).also { it.extras.putAll(extras); it.targetPackage = targetPackage }
 }
