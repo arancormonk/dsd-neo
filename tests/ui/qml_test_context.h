@@ -3786,6 +3786,18 @@ class Setup : public QObject {
                  iface->actionInterface() != nullptr ? iface->actionInterface()->actionNames() : QStringList()}};
     }
 
+    /** @brief #831: perform @p action (an action name such as "Toggle") on @p item; false when it does not offer it. */
+    Q_INVOKABLE bool
+    accessibleDoAction(QObject* item, const QString& action) const {
+        QAccessibleInterface* iface = item != nullptr ? QAccessible::queryAccessibleInterface(item) : nullptr;
+        QAccessibleActionInterface* actions = iface != nullptr && iface->isValid() ? iface->actionInterface() : nullptr;
+        if (actions == nullptr || !actions->actionNames().contains(action)) {
+            return false;
+        }
+        actions->doAction(action);
+        return true;
+    }
+
     /**
      * @brief #831: a screen reader's double tap on @p item, as the Android bridge performs it (clickAction_helper):
      * the press action, else the toggle action. False when the item offers neither, as the bridge reports.

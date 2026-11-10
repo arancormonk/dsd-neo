@@ -113,6 +113,38 @@ Item {
             fresh.popup.close();
         }
 
+        // One named node per row, its radio button: a named ListItem around it
+        // would be a second swipe stop with no state.
+        function namedNodes(list) {
+            return testContext.accessibleNodesUnder(list).filter(function (node) {
+                return node.inTree && node.name.length > 0;
+            });
+        }
+        function test_each_row_is_one_named_node() {
+            for (var pass = 0; pass < 2; ++pass) {
+                var list = openList(choice);
+                var named = namedNodes(list);
+                compare(named.map(function (node) {
+                    return node.name;
+                }), ["Analog only", "Auto", "P25", "DMR"], (pass ? "reopened: " : "first open: ") + "one named node per row");
+                for (var i = 0; i < named.length; ++i) {
+                    compare(named[i].role, Accessible.RadioButton, "row " + i + "'s one node is its radio button");
+                    compare(named[i].objectName, "plexComboRow");
+                }
+                choice.popup.close();
+                tryCompare(choice.popup, "visible", false);
+            }
+        }
+
+        // Toggle, the action a desktop reader may send a radio button, picks
+        // the row as Press does.
+        function test_toggle_picks_that_row() {
+            var list = openList();
+            verify(testContext.accessibleDoAction(rowNode(list, 2), "Toggle"), "the row offers Toggle");
+            compare(choice.currentIndex, 2);
+            tryCompare(choice.popup, "visible", false);
+        }
+
         function test_a_screen_readers_double_tap_picks_that_row() {
             var list = openList();
             var activated = -1;

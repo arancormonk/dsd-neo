@@ -66,8 +66,11 @@ ComboBox {
         // settle on a row, and its double tap picked the one at the screen's
         // centre. The row's node is a child of its own (rowNode), as the
         // button writes its own unchecked, uncheckable state over any
-        // Accessible.checkable and checked set on it.
+        // Accessible.checkable and checked set on it. The delegate stays a
+        // node all the same (Qt clears its ignored flag once the list opens),
+        // so it goes nameless: one named node per row, one swipe stop.
         Accessible.ignored: true
+        Accessible.name: ""
         /** The row's choice, as a tap makes it, while its list shows. */
         function choose() {
             if (option.visible && option.enabled && control.popup.visible)
@@ -99,6 +102,8 @@ ComboBox {
             Accessible.checked: control.currentIndex === option.index
             Accessible.focusable: option.visible
             Accessible.onPressAction: option.choose()
+            // A radio button is toggled too: a desktop reader may send that.
+            Accessible.onToggleAction: option.choose()
         }
     }
     // The list takes the press that dismisses it (#831). A ComboBox list
