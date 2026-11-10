@@ -266,6 +266,10 @@ PlexFlickable {
                 visible: parent.visible
                 title: qsTr("Choose with another app")
                 subtitle: ""
+                // Not while DSD-neo closes for a restart: a pick there would
+                // start a copy the close cuts short.
+                enabled: !restartCloser.active
+                opacity: enabled ? 1 : 0.5
                 onTapped: FileBrowser.otherApp(d.token)
             }
         }

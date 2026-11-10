@@ -257,8 +257,9 @@ Choose files in DSD-neo** opens it first even where Android has a picker; **Choo
 then hands the pick to Android's picker, and backing out of that picker returns to the browser, at its list of places.
 The browser lists only the files the pick can use (CSV and `.txt` for imports, `.dsdbak` for Restore, `.wav` and symbol
 captures for replay); **Show all files** lists the rest, hidden files included. Back goes up one folder, and from the
-list of places it ends the pick. A file that takes a moment to check (a slow USB drive) shows **Opening `name`…**, and
-further taps on files wait for it.
+list of places it ends the pick. The folder's path is one line above it that scrolls sideways; on a short screen (a
+car's) it sits beside Back in place of the title. A file that takes a moment to check (a slow USB drive) shows
+**Opening `name`…**, and further taps on files wait for it.
 
 The places it lists:
 
@@ -297,13 +298,14 @@ mounted as shared storage, such as an SD card, opens right away. Such a drive's 
 after it restarts.** with a **Close DSD-neo** button; then open DSD-neo again. The close waits while an import, a replay
 copy or a backup is still copying (**Wait for the copy to finish, then close DSD-neo.**). Otherwise it asks first and
 names what ends: listening stops, an open CSV import or the restore being chosen is dropped, a system being added or
-edited with changes not yet saved is dropped, and a restore already confirmed applies when DSD-neo opens again.
-Listening is stopped and allowed to finish before the app closes; if it does not stop within ten seconds, Android does
-not close the app, or the app is still running five seconds after it was told to close (some launchers keep it), DSD-neo
-stays open and says **DSD-neo could not close itself. Close it from Android's recent apps, then open it again.** A drive
-pulled out while the browser shows it goes back to the list of places with **The drive was removed.**, which clears once
-the drive is listed again. A file tapped just as the device's drives change (a drive plugged in) is checked once more,
-quietly.
+edited with changes not yet saved is dropped, and a restore already confirmed applies when DSD-neo opens again. While it
+closes, files can't be picked (**DSD-neo is closing, so files can't be picked now.**), and a copy that began anyway
+stops the close with the same wait line. Listening is stopped and allowed to finish before the app closes; if it does
+not stop within ten seconds, Android does not close the app, or the app is still running five seconds after it was told
+to close (some launchers keep it), DSD-neo stays open and says **DSD-neo could not close itself. Close it from Android's
+recent apps, then open it again.** A drive pulled out while the browser shows it goes back to the list of places with
+**The drive was removed.**, which clears once the drive is listed again. A file tapped just as the device's drives
+change (a drive plugged in) is checked once more, quietly.
 
 Limits:
 

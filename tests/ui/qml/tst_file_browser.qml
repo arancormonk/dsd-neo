@@ -500,23 +500,73 @@ Item {
             answerListing([]);
             compare(screen.crumbLine, "Device storage › Radio");
 
-            // Long names wrap at a large font on a phone, and the list stays below.
+            // Long names at a large font on a phone: one line, each crumb no
+            // wider than it, and the list below.
             root.width = 360;
             Ui.Theme.fontScale = 1.6;
             item("fileBrowserCrumb0").activate();
             folderDown(["Radio scanner captures from the county", "Talkgroup lists for the regional system"]);
             answerListing([entry(storagePath, "x.csv", false, 1, 0)]);
             waitForRendering(screen);
-            var flow = item("fileBrowserCrumbs");
+            var line = item("fileBrowserCrumbs");
             for (var i = 0; i < 3; ++i) {
-                var crumb = item("fileBrowserCrumb" + i);
+                var crumb = findChild(line, "fileBrowserCrumb" + i);
+                verify(crumb !== null, "crumb " + i + " exists");
                 verify(crumb.height >= Ui.Theme.minimumTouchSize, "crumb " + i + " is a touch target");
-                verify(crumb.width <= flow.width + 0.5, "crumb " + i + " fits the screen");
+                verify(crumb.width <= line.width + 0.5, "crumb " + i + " fits the screen");
             }
-            var flowBottom = flow.mapToItem(screen, 0, flow.height).y;
+            compare(line.height, Math.max(Ui.Theme.minimumTouchSize, Ui.Theme.fontSize(14) * 1.4 + 12), "one line, however deep");
             var list = item("fileBrowserList");
-            verify(list.mapToItem(screen, 0, 0).y >= flowBottom, "the list starts below the crumbs");
-            verify(flow.height > Ui.Theme.minimumTouchSize, "the crumbs wrapped");
+            verify(list.mapToItem(screen, 0, 0).y >= line.mapToItem(screen, 0, line.height).y, "the list starts below the crumbs");
+        }
+
+        // A deep path of long names on a short, wide screen (a car's) at a
+        // large font: the crumbs keep to one line that scrolls, showing the
+        // open folder, and the folder keeps room for two rows.
+        function test_crumbs_keep_the_list_room_data() {
+            return [
+                {tag: "640x360 at 1.6", width: 640, height: 360, scale: 1.6},
+                {tag: "800x360 at 1.3", width: 800, height: 360, scale: 1.3}
+            ];
+        }
+        function test_crumbs_keep_the_list_room(data) {
+            root.width = data.width;
+            root.height = data.height;
+            Ui.Theme.fontScale = data.scale;
+            openAtRoots();
+            openRoot("storage");
+            var names = ["Radio scanner captures from the county", "Talkgroup lists for the regional system", "Recordings made at the fire station", "Exported keys for the encrypted channels", "Backups from the previous head unit"];
+            var at = folderDown(names);
+            answerListing([entry(at, "First talkgroup list for the county.csv", false, 4200, 0), entry(at, "Second talkgroup list for the county.csv", false, 4200, 0), entry(at, "third.csv", false, 4200, 0)]);
+            waitForRendering(screen);
+            var line = item("fileBrowserCrumbs");
+            compare(line.count, 6, "every step of the path");
+            verify(!item("fileBrowserTitle").visible, "on a short screen the path takes the title's place");
+            compare(line.mapToItem(screen, 0, 0).y, item("fileBrowserBack").mapToItem(screen, 0, 0).y + (item("fileBrowserBack").height - line.height) / 2, "beside Back");
+            compare(line.height, Math.max(Ui.Theme.minimumTouchSize, Ui.Theme.fontSize(14) * 1.4 + 12), "on one line");
+            verify(line.contentWidth > line.width, "longer than the screen: it scrolls");
+            var list = item("fileBrowserList");
+            var first = entryRow(at + "/First talkgroup list for the county.csv");
+            var second = entryRow(at + "/Second talkgroup list for the county.csv");
+            verify(list.height >= first.height + second.height, "the folder keeps room for two rows: " + list.height + " < " + (first.height + second.height));
+            tryVerify(function () {
+                var current = findChild(line, "fileBrowserCrumb5");
+                if (!current)
+                    return false;
+                var x = current.mapToItem(line, 0, 0).x;
+                return x >= -0.5 && x + current.width <= line.width + 0.5;
+            }, 1000, "the open folder's crumb is in view");
+            compare(screen.crumbLine, ["Device storage"].concat(names).join(" › "), "the whole path is still there");
+
+            // A crumb scrolled out of view comes back into it with the focus.
+            var top = findChild(line, "fileBrowserCrumb0");
+            top.forceActiveFocus();
+            tryVerify(function () {
+                var x = top.mapToItem(line, 0, 0).x;
+                return x >= -0.5 && x + top.width <= line.width + 0.5;
+            }, 1000, "a focused crumb scrolls into view");
+            top.activate();
+            compare(last("requestFolderListing").path, storagePath, "and still goes there");
         }
 
         function test_back_levels() {
@@ -749,6 +799,80 @@ Item {
             verify(item("fileBrowserHiddenByName").visible);
             back();
             verify(!item("fileBrowserHiddenByName").visible, "only in the folder it is about");
+        }
+
+        // Settings may close again before its "settingsOpened" answer is read
+        // (an OEM screen that finishes at once): the return still shows how
+        // else to allow access, in either order.
+        function test_settings_return_before_its_answer_data() {
+            return [
+                {tag: "answer first", returnFirst: false},
+                {tag: "return first", returnFirst: true}
+            ];
+        }
+        function test_settings_return_before_its_answer(data) {
+            testContext.setFileAccess(access({apiLevel: 31}));
+            openAtRoots([rootRecord("inbox"), rootRecord("storage", {state: "needsAccess"})]);
+            var help = item("fileBrowserAccessHelp");
+            item("fileBrowserAllowAccess").clicked();
+            var id = last("requestFileAccess").id;
+            if (data.returnFirst)
+                screen.applicationActivated();
+            verify(!help.visible, "nothing before the answer");
+            testContext.answerFileAccess(id, "settingsOpened");
+            if (!data.returnFirst) {
+                verify(!help.visible, "nothing while Settings is open");
+                screen.applicationActivated();
+            }
+            verify(help.visible, "back without the grant: the computer route");
+            verify(item("fileBrowserAppInfoStep").visible);
+
+            // A plain activation with no request out shows nothing.
+            Ui.FileBrowser.dismiss(Ui.FileBrowser.request.token);
+            open();
+            answerRoots([rootRecord("inbox"), rootRecord("storage", {state: "needsAccess"})]);
+            screen.applicationActivated();
+            verify(!item("fileBrowserAccessHelp").visible, "no return without a request");
+        }
+
+        // While DSD-neo closes for a restart, nothing new can be picked: a
+        // pick would start a copy the close would cut short.
+        function test_no_pick_while_closing() {
+            testContext.setFileAccess(access({granted: true}));
+            openAtRoots([rootRecord("inbox"), rootRecord("removable:6187-25A8", {title: "SanDisk", path: "/mnt/media_rw/6187-25A8", state: "needsRestart"})]);
+            var other = item("fileBrowserOtherApp");
+            verify(other.enabled);
+            item("fileBrowserClose:removable:6187-25A8").clicked();
+            item("confirmActionButton", item("fileBrowserCloseConfirm")).clicked();
+            verify(restartCloser.begin(), "the close begins");
+            verify(!other.enabled, "another app's picker is not offered while closing");
+            var token = Ui.FileBrowser.request.token;
+            other.activate();
+            compare(Ui.FileBrowser.request.token, token, "and does nothing");
+            openRoot("inbox");
+            answerListing([entry(inboxPath, "a.csv", false, 10, 0), entry(inboxPath, "Lists", true)]);
+            waitForRendering(screen);
+            var notice = item("fileBrowserClosingNotice");
+            verify(notice.visible, "the folder says why");
+            compare(notice.text, "DSD-neo is closing, so files can't be picked now.");
+            var row = entryRow(inboxPath + "/a.csv");
+            verify(row.opacity < 1, "files show dimmed");
+            row.activate();
+            compare(callsNamed("requestFileHandoff").length, 0, "a file tapped while closing is not opened");
+            compare(entryRow(inboxPath + "/Lists").opacity, 1, "folders still open");
+            back();
+            answerRoots([rootRecord("inbox"), rootRecord("removable:6187-25A8", {title: "SanDisk", path: "/mnt/media_rw/6187-25A8", state: "needsRestart"})]);
+
+            // A copy that began while listening stopped: the close gives way.
+            testContext.finishClose("refused");
+            compare(item("fileBrowserCloseProblem:removable:6187-25A8").text, "Wait for the copy to finish, then close DSD-neo.");
+            verify(other.enabled, "the close over, picks work again");
+            openRoot("inbox");
+            answerListing([entry(inboxPath, "a.csv", false, 10, 0)]);
+            waitForRendering(screen);
+            verify(!item("fileBrowserClosingNotice").visible);
+            entryRow(inboxPath + "/a.csv").activate();
+            compare(callsNamed("requestFileHandoff").length, 1);
         }
 
         function test_access_rows() {

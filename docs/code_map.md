@@ -14122,31 +14122,37 @@ Qt Quick frontend (`src/ui/qt`):
   focus alone. Locations: inbox, Saved, storage, then removable volumes (title the platform's description, else
   "Removable storage"), `StableRows` keyed by root key; `removed` and `needsAccess` roots have no row. The access row
   shows while `fileAccess` is not granted and the route is `permission`, or `settings` in a build that declares it;
-  `settingsOpened` followed by a return (a `fileAccess` change or the app becoming active) without the grant, `noRoute`
-  and `failed` show the adb line with Copy on Android 11 and later (plus the App info step on 11 and 12), `blocked` (and
-  on Android 10 `noRoute` and `failed`) the App info line. On Android 10 a plain `denied` (the dialog can still show)
-  says "Access was not allowed. Allow access asks again." instead. A `fileAccess` change re-lists the locations, or,
-  under an open folder, checks them behind it: a folder whose location is no longer `ready` goes back to the locations,
-  saying "The drive was removed." for a removable one (also on a `gone` listing there). That notice (`d.removedKey`)
-  clears when a locations answer lists the drive again after one that did not (a `gone` listing can come before Android
-  reports the drive gone, so a list that still has it then is not a return). A `needsRestart` drive offers Close
-  DSD-neo: `restartCloser.refused()` shows the refusal line, else a `ConfirmDialog` lists what ends
+  `settingsOpened` followed by a return (a `fileAccess` change or the app becoming active; an activation while the
+  access request is out counts too, so a Settings screen that closes before its answer is read is not missed) without
+  the grant, `noRoute` and `failed` show the adb line with Copy on Android 11 and later (plus the App info step on 11
+  and 12), `blocked` (and on Android 10 `noRoute` and `failed`) the App info line. On Android 10 a plain `denied` (the
+  dialog can still show) says "Access was not allowed. Allow access asks again." instead. A `fileAccess` change re-lists
+  the locations, or, under an open folder, checks them behind it: a folder whose location is no longer `ready` goes back
+  to the locations, saying "The drive was removed." for a removable one (also on a `gone` listing there). That notice
+  (`d.removedKey`) clears when a locations answer lists the drive again after one that did not (a `gone` listing can
+  come before Android reports the drive gone, so a list that still has it then is not a return). A `needsRestart` drive
+  offers Close DSD-neo: `restartCloser.refused()` shows the refusal line, else a `ConfirmDialog` lists what ends
   (`decoderHost.sessionActive`; a `csv` request's import or a `backup` request's restore; the system editor's unsaved
   draft, which Main reports through `unsavedDraft()` as "add" or "edit" from `WizardScreen.hasUnsavedDraft()` and
   `editRow`; `backup.restorePending`), and its confirm emits `closeConfirmed()`, which Main answers with
   `dropPendingStarts()` and `restartCloser.begin()`; "Closing DSD-neo…" shows while `restartCloser.active`, and a
-  `finished` other than "closing" shows the failure line and keeps the browser. Folder rows (`StableRows` keyed by path,
-  Saved rows by reference; a listing's `hiddenByName` items, whose names are not valid UTF-8, have no row, and a line
-  says how many) are named "Lists, folder" / "dmr.csv, file, 4.2 MB, Nov 9" (`Util.sizeText`; "MMM d", with ", yyyy"
-  when the year is not that of `savedSystems.realtimeNowMs()`; a `modifiedMs` of 0 shows no date). Show all files
-  (`showAll`) and Show more (`requestMorePage(session, snapshot, entries.length)`, appended) sit below. "Reading
-  folder…" shows 250 ms after a request; problems are `AlertMessage`s read out once through `Navigation.announce()`
-  (`announcements` counts them). Focus: the opener is kept, the first row of each answer takes the focus, and on the end
-  the opener gets it back when it is presented and allowed, else the top surface, unless a modal that opened since (the
-  unlock sheet after a restore pick) holds the top. QML tests: every engine has a scripted `restartCloser`
-  (`testContext.setCloseRefused()`, `closeBegins()`, `finishClose(outcome)`), and `testContext.copiedTexts()` keeps what
-  the readings host's `copyText()` was asked to copy. Test: `UI_QT_QML_FILE_BROWSER` (screen and singleton, and Main's
-  wiring).
+  `finished` other than "closing" shows the failure line (the refusal line for "refused") and keeps the browser. While
+  `restartCloser.active` nothing new can be picked: a file tap does nothing (files show dimmed, and a folder says
+  "DSD-neo is closing, so files can't be picked now.") and Choose with another app is disabled, since a pick would start
+  a copy the close cuts short. The path is one line of crumbs that scrolls sideways (a `Flickable` of a `Row`), shows
+  its end and scrolls a focused crumb into view; a crumb is at most the line's width, its name cut in the middle on
+  screen and read whole. On a screen under 480 px tall (`compactHeader`) a folder's crumbs take the title's place beside
+  Back, so the folder keeps room for its rows. Folder rows (`StableRows` keyed by path, Saved rows by reference; a
+  listing's `hiddenByName` items, whose names are not valid UTF-8, have no row, and a line says how many) are named
+  "Lists, folder" / "dmr.csv, file, 4.2 MB, Nov 9" (`Util.sizeText`; "MMM d", with ", yyyy" when the year is not that of
+  `savedSystems.realtimeNowMs()`; a `modifiedMs` of 0 shows no date). Show all files (`showAll`) and Show more
+  (`requestMorePage(session, snapshot, entries.length)`, appended) sit below. "Reading folder…" shows 250 ms after a
+  request; problems are `AlertMessage`s read out once through `Navigation.announce()` (`announcements` counts them).
+  Focus: the opener is kept, the first row of each answer takes the focus, and on the end the opener gets it back when
+  it is presented and allowed, else the top surface, unless a modal that opened since (the unlock sheet after a restore
+  pick) holds the top. QML tests: every engine has a scripted `restartCloser` (`testContext.setCloseRefused()`,
+  `closeBegins()`, `finishClose(outcome)`), and `testContext.copiedTexts()` keeps what the readings host's `copyText()`
+  was asked to copy. Test: `UI_QT_QML_FILE_BROWSER` (screen and singleton, and Main's wiring).
 - `qml/CsvImportFlow.qml` imports a CSV and its companions for three owners: Imported files (`ImportsScreen`), the
   scan list editor's target CSV (`ScanListScreen`) and the wizard's trunking-data fields (`WizardScreen`). Its primary
   and companion pickers (`csvPrimaryPicker`, `csvCompanionPicker`) are `DocumentPicker`s with no filter (`browseKind`

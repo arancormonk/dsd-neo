@@ -131,7 +131,10 @@ Item {
             objectName: "fileBrowserEntry:" + key
             width: ListView.view.width
             height: Math.max(Theme.minimumTouchSize, labels.height + 24)
-            opacity: index < entryRows.shown ? 1 : 0
+            // A file cannot be picked while DSD-neo closes for a restart (the
+            // screen's closing line says so): it shows dimmed.
+            opacity: index < entryRows.shown ? (inert ? 0.5 : 1) : 0
+            readonly property bool inert: !folder && restartCloser.active
             readonly property bool navigationAllowed: Navigation.allows(entryRow)
             activeFocusOnTab: (navigationAllowed && visible && live) || activeFocus
             Accessible.role: Accessible.Button

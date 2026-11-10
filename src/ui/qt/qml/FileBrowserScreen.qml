@@ -39,6 +39,10 @@ Item {
     // The column everything below the header sits in: the screen's width on a
     // phone, a readable measure on a car's or tablet's wide screen.
     readonly property real contentWidth: Math.min(Theme.formWidth, width - 2 * Theme.screenPadding)
+    // A short screen (a car's, a phone on its side) has no height to spare
+    // for a title and a path above a folder's rows: in a folder the path
+    // takes the title's place beside Back. The title shows at the places.
+    readonly property bool compactHeader: d.view === "folder" && height < 480
     // The last problem read out and how many have been, for tests.
     property string announced: ""
     property int announcements: 0
@@ -173,6 +177,7 @@ Item {
         d.accessHelp = false;
         d.accessBlocked = false;
         d.accessDenied = false;
+        d.accessReturnSeen = false;
         d.closeKey = "";
         d.closeProblem = "";
         d.copied = "";
@@ -327,8 +332,9 @@ Item {
             return;
         }
         // A tap again (a slow drive) would only start the check over and
-        // tie up another reader: the first one is still going.
-        if (d.opening !== null)
+        // tie up another reader: the first one is still going. While DSD-neo
+        // closes for a restart, a pick would start a copy the close cuts short.
+        if (d.opening !== null || restartCloser.active)
             return;
         d.notice = "";
         d.opening = entry;
@@ -342,6 +348,7 @@ Item {
     function askAccess() {
         d.accessBlocked = false;
         d.accessDenied = false;
+        d.accessReturnSeen = false;
         d.accessId = decoderHost.requestFileAccess(d.session);
     }
     function copy(text) {
@@ -506,8 +513,14 @@ Item {
     }
     function accessAnswered(outcome) {
         d.accessId = 0;
+        var returned = d.accessReturnSeen;
+        d.accessReturnSeen = false;
         if (outcome === "settingsOpened") {
             d.accessAwaitingReturn = true;
+            // Settings may have closed again (an OEM screen that finishes at
+            // once) before this answer was read: that return already happened.
+            if (returned)
+                accessReturned();
         } else if (outcome === "denied") {
             // Android 10, "Don't allow" once: the dialog can still show, so
             // Allow access is the way to ask again, not App info.
@@ -527,6 +540,14 @@ Item {
         }
     }
     // Back from Settings without the switch turned on: say how else to allow it.
+    // The app is in front again. While an access request is out, that is a
+    // return from the screen it opened, whichever comes first: this or its
+    // answer.
+    function applicationActivated() {
+        if (d.accessId !== 0)
+            d.accessReturnSeen = true;
+        accessReturned();
+    }
     function accessReturned() {
         if (!d.accessAwaitingReturn || screen.access.granted === true)
             return;
@@ -676,6 +697,7 @@ Item {
             return;
         locations.revealFocus(focus);
         folder.revealFocus(focus);
+        crumbList.reveal(focus);
     }
     Connections {
         target: screen.Window.window
@@ -762,7 +784,7 @@ Item {
         target: Qt.application
         function onStateChanged() {
             if (screen.shown && Qt.application.state === Qt.ApplicationActive)
-                screen.accessReturned();
+                screen.applicationActivated();
         }
     }
     Connections {
@@ -770,7 +792,11 @@ Item {
         function onFinished(outcome) {
             if (!screen.shown || outcome === "closing")
                 return;
-            d.closeProblem = qsTr("DSD-neo could not close itself. Close it from Android's recent apps, then open it again.");
+            // A copy that began while listening stopped: the close gave way to it.
+            if (outcome === "refused")
+                d.closeProblem = qsTr("Wait for the copy to finish, then close DSD-neo.");
+            else
+                d.closeProblem = qsTr("DSD-neo could not close itself. Close it from Android's recent apps, then open it again.");
             Navigation.announce(screen, null, d.closeProblem);
         }
     }
@@ -865,6 +891,8 @@ Item {
         property bool accessHelp: false
         property bool accessBlocked: false
         property bool accessDenied: false
+        // The app came back to the front while an access request was out.
+        property bool accessReturnSeen: false
         // The drive whose Close DSD-neo was pressed, and why it did not close.
         property string closeKey: ""
         property string closeProblem: ""
@@ -927,19 +955,20 @@ Item {
         Item {
             id: header
             width: parent.width
-            height: Math.max(backButton.height, title.height)
+            height: Math.max(backButton.height, screen.compactHeader ? crumbList.height : title.height)
 
             IconButton {
                 id: backButton
                 objectName: "fileBrowserBack"
                 icon: "back"
                 x: 0
-                y: title.lineCount > 1 ? 0 : (header.height - height) / 2
+                y: title.visible && title.lineCount > 1 ? 0 : (header.height - height) / 2
                 onClicked: screen.requestDismiss()
             }
             ReadableText {
                 id: title
                 objectName: "fileBrowserTitle"
+                visible: !screen.compactHeader
                 heading: true
                 x: backButton.width + 14
                 y: lineCount > 1 ? (backButton.height - Theme.fontSize(22) * 1.3) / 2 : (header.height - height) / 2
@@ -954,82 +983,130 @@ Item {
             }
         }
 
-        // Where the open folder is: each step up is a button to it.
-        Flow {
-            id: crumbFlow
+        // Where the open folder is: each step up is a button to it. One line
+        // that scrolls sideways, as the talkgroup filter chips do, so a deep
+        // path of long names never takes the folder's rows' room; it shows
+        // its end, the open folder, and a crumb that takes the focus scrolls
+        // into view.
+        Item {
+            id: crumbSlot
+            width: parent.width
+            height: visible ? crumbList.height : 0
+            visible: d.view === "folder" && !screen.compactHeader
+        }
+        Flickable {
+            id: crumbList
             objectName: "fileBrowserCrumbs"
-            x: (parent.width - width) / 2
-            width: screen.contentWidth
+            parent: screen.compactHeader ? header : crumbSlot
+            x: screen.compactHeader ? backButton.width + 14 : (crumbSlot.width - width) / 2
+            y: screen.compactHeader ? (header.height - height) / 2 : 0
+            width: screen.compactHeader ? header.width - backButton.width - 14 : screen.contentWidth
+            height: Math.max(Theme.minimumTouchSize, Theme.fontSize(14) * 1.4 + 12)
             visible: d.view === "folder"
+            clip: true
+            contentWidth: crumbRow.width
+            contentHeight: height
+            flickableDirection: Flickable.HorizontalFlick
+            boundsBehavior: Flickable.StopAtBounds
+            readonly property int count: crumbRepeater.count
+            // The end, the open folder, shows whenever the path or the room
+            // changes.
+            onContentWidthChanged: showEnd()
+            onWidthChanged: showEnd()
+            function showEnd() {
+                contentX = Math.max(0, contentWidth - width);
+            }
+            function reveal(item) {
+                if (!Navigation.contains(crumbRow, item))
+                    return;
+                var left = item.mapToItem(crumbRow, 0, 0).x;
+                if (left < contentX)
+                    contentX = left;
+                else if (left + item.width > contentX + width)
+                    contentX = Math.min(contentWidth - width, left + item.width - width);
+            }
 
-            Repeater {
-                model: screen.crumbs()
-                Row {
-                    id: crumbStep
-                    required property int index
-                    required property var modelData
-                    readonly property bool current: index === screen.crumbs().length - 1
-                    height: crumb.height
+            Row {
+                id: crumbRow
+                height: crumbList.height
 
-                    Text {
-                        visible: crumbStep.index > 0
-                        width: 20
-                        height: crumb.height
-                        text: "›"
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                        font.family: Theme.sans
-                        font.pixelSize: Theme.fontSize(15)
-                        color: Theme.textSubdued
-                        Accessible.ignored: true
-                    }
-                    Item {
-                        id: crumb
-                        objectName: "fileBrowserCrumb" + crumbStep.index
-                        readonly property real room: crumbFlow.width - (crumbStep.index > 0 ? 20 : 0)
-                        // The first crumb lines up with the column's other
-                        // lines; every crumb pads its sides alike, so the gaps
-                        // around each separator match.
-                        readonly property real leading: crumbStep.index > 0 ? 8 : 0
-                        readonly property real trailing: 8
-                        width: Math.min(room, crumbLabel.implicitWidth + leading + trailing)
-                        height: Math.max(Theme.minimumTouchSize, crumbLabel.height + 12)
-                        readonly property bool navigationAllowed: Navigation.allows(crumb)
-                        activeFocusOnTab: (navigationAllowed && !crumbStep.current) || activeFocus
-                        Accessible.role: crumbStep.current ? Accessible.StaticText : Accessible.Button
-                        Accessible.name: !navigationAllowed ? "" : crumbStep.current ? crumbStep.modelData.title : qsTr("Go to %1").arg(crumbStep.modelData.title)
-                        Accessible.ignored: !navigationAllowed || !visible
-                        Accessible.onPressAction: activate()
-                        function activate() {
-                            if (!crumbStep.current && Navigation.allows(crumb))
-                                screen.openFolder(d.root, crumbStep.modelData.path);
-                        }
-                        Keys.onSpacePressed: activate()
-                        Keys.onReturnPressed: activate()
-                        Keys.onEnterPressed: activate()
-                        FocusFrame {}
-                        Rectangle {
-                            anchors.fill: parent
-                            radius: Theme.radiusButton
-                            color: crumbTap.pressed && !crumbStep.current ? Theme.chipSelectedFill : "transparent"
-                        }
+                Repeater {
+                    id: crumbRepeater
+                    model: screen.crumbs()
+
+                    delegate: Row {
+                        id: crumbStep
+                        required property int index
+                        required property var modelData
+                        readonly property bool current: index === crumbRepeater.count - 1
+                        height: crumbList.height
+
                         Text {
-                            id: crumbLabel
-                            x: crumb.leading
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: Math.min(implicitWidth, crumb.room - crumb.leading - crumb.trailing)
-                            text: crumbStep.modelData.title
-                            textFormat: Text.PlainText
-                            wrapMode: Text.WrapAnywhere
+                            visible: crumbStep.index > 0
+                            width: 20
+                            height: crumb.height
+                            text: "›"
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
                             font.family: Theme.sans
-                            font.pixelSize: Theme.fontSize(14)
-                            font.weight: crumbStep.current ? Font.DemiBold : Font.Normal
-                            color: crumbStep.current ? Theme.textPrimary : Theme.cyan
+                            font.pixelSize: Theme.fontSize(15)
+                            color: Theme.textSubdued
+                            Accessible.ignored: true
                         }
-                        TapHandler {
-                            id: crumbTap
-                            enabled: !crumbStep.current
-                            onTapped: crumb.activate()
+                        Item {
+                            id: crumb
+                            objectName: "fileBrowserCrumb" + crumbStep.index
+                            // No crumb is wider than the line: a longer name is cut
+                            // in its middle on screen, and read whole.
+                            readonly property real room: crumbList.width - (crumbStep.index > 0 ? 20 : 0)
+                            // The first crumb lines up with the column's other
+                            // lines; every crumb pads its sides alike, so the gaps
+                            // around each separator match.
+                            readonly property real leading: crumbStep.index > 0 ? 8 : 0
+                            readonly property real trailing: 8
+                            width: Math.min(room, crumbLabel.implicitWidth + leading + trailing)
+                            height: crumbList.height
+                            readonly property bool navigationAllowed: Navigation.allows(crumb)
+                            activeFocusOnTab: (navigationAllowed && !crumbStep.current) || activeFocus
+                            Accessible.role: crumbStep.current ? Accessible.StaticText : Accessible.Button
+                            Accessible.name: !navigationAllowed ? "" : crumbStep.current ? crumbStep.modelData.title : qsTr("Go to %1").arg(crumbStep.modelData.title)
+                            Accessible.ignored: !navigationAllowed || !visible
+                            Accessible.onPressAction: activate()
+                            function activate() {
+                                if (!crumbStep.current && Navigation.allows(crumb))
+                                    screen.openFolder(d.root, crumbStep.modelData.path);
+                            }
+                            Keys.onSpacePressed: activate()
+                            Keys.onReturnPressed: activate()
+                            Keys.onEnterPressed: activate()
+                            // Inside the crumb: the line clips at its edges.
+                            FocusFrame {
+                                anchors.margins: 0
+                            }
+                            Rectangle {
+                                anchors.fill: parent
+                                radius: Theme.radiusButton
+                                color: crumbTap.pressed && !crumbStep.current ? Theme.chipSelectedFill : "transparent"
+                            }
+                            Text {
+                                id: crumbLabel
+                                objectName: "fileBrowserCrumbLabel"
+                                x: crumb.leading
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Math.min(implicitWidth, crumb.room - crumb.leading - crumb.trailing)
+                                text: crumbStep.modelData.title
+                                textFormat: Text.PlainText
+                                elide: Text.ElideMiddle
+                                font.family: Theme.sans
+                                font.pixelSize: Theme.fontSize(14)
+                                font.weight: crumbStep.current ? Font.DemiBold : Font.Normal
+                                color: crumbStep.current ? Theme.textPrimary : Theme.cyan
+                            }
+                            TapHandler {
+                                id: crumbTap
+                                enabled: !crumbStep.current
+                                onTapped: crumb.activate()
+                            }
                         }
                     }
                 }
@@ -1051,6 +1128,13 @@ Item {
             width: screen.contentWidth
             visible: screen.reading
             text: qsTr("Reading folder…")
+        }
+        FileBrowserLine {
+            objectName: "fileBrowserClosingNotice"
+            x: (parent.width - width) / 2
+            width: screen.contentWidth
+            visible: d.view === "folder" && restartCloser.active
+            text: qsTr("DSD-neo is closing, so files can't be picked now.")
         }
         FileBrowserLine {
             objectName: "fileBrowserOpening"
