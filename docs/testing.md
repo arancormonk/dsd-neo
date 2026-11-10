@@ -3471,6 +3471,67 @@ An emulator under heavy host load can stall the passed-through dongle's stream b
 recovery (`RTL-SDR: the receiver sent no samples for <ms> ms; resetting the USB device`); read such stalls as rig
 conditions until the same build stalls on a phone.
 
+### Android file browser on the emulator
+
+DSD-neo's file browser (#830) runs against scripted hosts in CTest (`UI_QT_QML_FILE_BROWSER`, `UI_QT_ANDROID_HOST`,
+`UI_QT_RESTART_CLOSER`, `ANDROID_FILE_BROWSER_JVM`). What only Android decides (which volumes it reports, when a drive
+becomes readable, what a grant changes) is checked by hand on an emulator. This is a manual check, not part of CTest or
+CI.
+
+1. Use an AVD from the API 36 `google_apis` x86_64 image and the sideload APK (the arm64 APK runs there through the
+   image's NDK translation). To make every pick open the browser, turn Android's picker off with
+   `adb shell pm disable-user --user 0 com.google.android.documentsui` (back with `pm enable`), or turn on Settings ›
+   Libraries › Choose files in DSD-neo.
+2. The inbox needs no grant: `adb push FILE /storage/emulated/0/Android/data/io.github.arancormonk.dsdneo/files/Inbox/`.
+   Device storage needs All files access:
+   `adb shell appops set --uid io.github.arancormonk.dsdneo MANAGE_EXTERNAL_STORAGE allow`. The grant applies to the
+   running app at once; taking it back (`default` or `deny`) closes the app, as Android does on a phone.
+3. A USB drive. Android mounts a USB drive outside shared storage (an invisible volume at `/mnt/media_rw/<UUID>`,
+   with no `/storage/<UUID>`), and an app can read it only if it started with All files access. The emulator has no
+   USB drive of its own, so attach a disk image to a USB controller and declare it in the image's fstab. This changes
+   the system image, so use an AVD made for it.
+   - Make a small FAT32 image with a file on it (`sfdisk` and mtools):
+
+     ```sh
+     truncate -s 64M usb.img
+     echo 'start=2048, type=c' | sfdisk -q usb.img
+     mformat -i usb.img@@1M -F -v USBSTICK ::
+     mcopy -i usb.img@@1M list.csv ::/list.csv
+     ```
+
+   - Boot with a writable system and the image on an xHCI controller. Give the image as a `-blockdev`: the
+     `-drive if=none,...` form makes this emulator's QEMU exit.
+
+     ```sh
+     emulator -avd <avd> -writable-system -qemu \
+       -device qemu-xhci,id=xhci \
+       -blockdev driver=raw,node-name=stick,file.driver=file,file.filename=$PWD/usb.img \
+       -device usb-storage,bus=xhci.0,drive=stick
+     ```
+
+   - Once per AVD, let vold manage USB disks: `adb root`, `adb remount` (reboot and repeat both if it asks), then
+     `adb shell 'echo "/devices/*/usb* auto auto defaults voldmanaged=usb:auto" >> /vendor/etc/fstab.ranchu'` and
+     `adb reboot`. Boot with the same `-qemu` arguments every time.
+   - `adb shell sm list-volumes all` now lists a `public:<major>,<minor>` volume, mounted, with the image's UUID,
+     and its row shows in the browser under the volume's description. With the grant given while DSD-neo runs, the
+     row says DSD-neo can open the drive after it restarts; after Close DSD-neo and a new start, the new process has
+     group 1077 (`external_storage`) on its `Groups:` line in `adb shell cat /proc/<pid>/status`, and the drive lists.
+     `adb shell sm unmount <volume>` with the drive open goes back to the places with "The drive was removed.";
+     `sm mount <volume>` brings it back. Android tells the app through its storage volume callback; no `MEDIA_*`
+     broadcast is sent for either.
+
+   Never stand in for a USB drive with `adb shell sm set-virtual-disk true`. That disk is an adoptable SD card
+   mounted as shared storage at `/storage/<id>`: it opens right after the grant, with no restart, so it shows none of
+   a USB drive's behavior.
+4. Android 10. The arm64 APK does not run on the x86_64 API 29 image, which has no translation, so the app's
+   Android 10 branches are covered by `ANDROID_FILE_BROWSER_JVM`, and the platform behavior they rely on is checked
+   with a probe: a small Java app with the same storage entries in its manifest (`READ_EXTERNAL_STORAGE` and
+   `requestLegacyExternalStorage`), built for the image with the SDK's `aapt2`, `javac`, `d8`, `zipalign` and
+   `apksigner`, that lists and reads the same paths. On API 29, `adb install` exempts an app from the storage
+   restriction, so legacy storage is on before any grant; before `pm grant <package>
+   android.permission.READ_EXTERNAL_STORAGE`, device storage folders exist but cannot be listed, and after it they list
+   and read in the same process, read-only.
+
 ## Continuous Integration
 
 GitHub Actions runs tests and quality checks on pull requests, primary-branch
