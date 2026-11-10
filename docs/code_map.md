@@ -14103,11 +14103,26 @@ Qt Quick frontend (`src/ui/qt`):
   = 2` when idle and `backupFlow.restoreFromReference(ref)`; Import → `importsOpen` (over the session's Settings while
   monitoring, Imports re-added above them) and, a turn later, `importsScreen.importIncoming(ref, name, type)`; Target
   CSV → `scanListEditor.openFor(-1)`, `scanListOpen`, `importTargetsFrom(ref, name)`. During a session that editor
-  (z 20) opens over the monitor, so `scanListOpen` is one of the monitor's `enabled` terms (its taps are passive: a
-  click on the editor's Save, over "Stop listening", would otherwise also stop the session), and the scan-warnings
+  (z 20) opens over the monitor, so `scanListOpen` is one of the monitor's `enabled` terms, and the scan-warnings
   panel (z 21, `scanWarningsPanel`) hides while it is open rather than cover Save. QML tests:
   `tst_incoming_document.qml` (`testContext.setSessionStateKnown()`, `holdRecordingTransfers()` for a save that
   outlives its sheet).
+- Overlays over the live monitor (#831): a press on a button in a sheet or layer also reaches every enabled tap handler
+  beneath it (Qt delivers a press to pointer handlers under the point before an item accepts it). `Navigation.allows()`
+  refuses those while the overlay is the top modal or layer, but a button that closes the overlay on release lets the
+  same release reach the control underneath once it is allowed again, "Stop listening" among them. So whatever covers
+  the monitor turns `enabled` off below it: Main's `MonitorScreen.enabled` has a term for each covering layer (wizard,
+  RadioReference, Signal search, Spectrum, Talkgroups, the scan-list editor, Diagnostics, Licenses, Call recordings, the
+  RR account, Imports and the session's History and Settings) and `sheetOverMonitor`, true while any `Navigation.modals`
+  entry lies outside the monitor (every Main-level sheet: the site chooser, the session and Listen menus, Radio, Scan
+  lists, failure details, the notification note, the incoming file, Backup, and the sheets of the layers above). The
+  monitor's own sheets (Key, Squelch, Passband, Tone filter, receive policy, scan avoids, history detail, the other-slot
+  menu, receiver, Site, Network) cannot disable the monitor, which would disable them too; its parts (header, strip,
+  recent list, live actions, lost line, Stop) take `enabled: !screen.ownSheetOpen` instead, true while a modal inside
+  the screen is open. A layer that only shows a MouseArea (the scan-warnings panel, a sheet's scrim) accepts the press
+  itself and needs no term. QML tests: `tst_modal_input.qml` (mouse clicks on the notification note's "Not now" and the
+  Squelch sheet's Close over Stop), `tst_incoming_document.qml` (the incoming sheet's Cancel and the scan-list editor's
+  Save over Stop), `tst_main_overlay_layering.qml`.
 - `qml/DocumentPicker.qml` is the one picker screens use (`mode` "open"/"save", `title`, `nameFilters`,
   `defaultSuffix`, `mimeType`, `suggestedName`). `open()` asks the host when `documentPickerSupported`, cancelling its
   own earlier request first, and otherwise opens a `FileDialog` it makes through an `Instantiator` (a QtObject root,

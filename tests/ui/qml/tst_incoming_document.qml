@@ -478,6 +478,43 @@ Item {
             scanLists.remove(scanLists.count - 1);
         }
 
+        // A short window during a session: the sheet scrolls, and its Cancel
+        // can sit over "Stop listening". A mouse click there drops the file
+        // and keeps listening; the release that closed the sheet must not
+        // reach the monitor's passive tap.
+        function test_cancel_over_stop_keeps_listening() {
+            app.height = 400;
+            testContext.setLifecyclePhase(2);
+            tryCompare(app, "monitorMode", true);
+            var monitor = findChild(app, "monitorScreen");
+            tryCompare(monitor, "enabled", true);
+            var stop = findChild(monitor, "stopListeningButton");
+            verify(stop !== null && stop.visible);
+            offer(targetsFile());
+            var cancel = part("incomingDocumentCancel");
+            var scroll = findChild(sheet, "modalSheetScroll");
+            verify(scroll !== null);
+            // Scroll Cancel onto Stop listening's centre, as far as the sheet goes.
+            var target = stop.mapToItem(null, stop.width / 2, stop.height / 2);
+            var at = cancel.mapToItem(null, cancel.width / 2, cancel.height / 2);
+            scroll.contentY = Math.max(0, Math.min(scroll.contentHeight - scroll.height, scroll.contentY + at.y - target.y));
+            waitForRendering(sheet);
+            var onCancel = cancel.mapFromItem(null, target.x, target.y);
+            verify(cancel.contains(onCancel), "Cancel lies over Stop listening");
+            var stoodDown = !monitor.enabled;
+            var stops = decoderHost.stopCalls();
+            mousePress(cancel, onCancel.x, onCancel.y);
+            mouseRelease(cancel, onCancel.x, onCancel.y);
+            tryCompare(sheet, "visible", false);
+            verify(!flow.busy);
+            verify(!decoderHost.incomingDocumentPending, "Cancel dropped the file");
+            wait(60);
+            compare(decoderHost.stopCalls(), stops, "the click that cancelled did not stop the session");
+            compare(decoderHost.sessionState, 2);
+            verify(stoodDown, "the monitor took no taps under the sheet");
+            tryCompare(monitor, "enabled", true);
+        }
+
         // ---- waiting until the screen is free (spec §4.4) ----
 
         function test_owners_make_it_wait_data() {

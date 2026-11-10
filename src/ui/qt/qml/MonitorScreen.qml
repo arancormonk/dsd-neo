@@ -513,7 +513,7 @@ Item {
         Item {
             id: header
             objectName: "monitorHeader"
-            enabled: !keySheet.visible
+            enabled: !screen.ownSheetOpen
 
             width: parent.width
             // Stacked only in tier 0 on a phone; otherwise the actions share the
@@ -1097,7 +1097,7 @@ Item {
         parent: screen.stripInList ? stripSlot : stripHost
         width: parent ? parent.width : 0
         spacing: Theme.gap
-        enabled: !keySheet.visible
+        enabled: !screen.ownSheetOpen
 
         // The concurrent TDMA call on the non-hero slot: identity plus its own
         // call controls, so a second conversation is never invisible or untouchable.
@@ -1461,7 +1461,7 @@ Item {
         // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
         objectName: "recentCallsList"
 
-        enabled: !keySheet.visible
+        enabled: !screen.ownSheetOpen
         anchors.top: stripHost.bottom
         anchors.topMargin: screen.scrollAll ? 0 : Theme.gap
         anchors.left: parent.left
@@ -2531,6 +2531,15 @@ Item {
         }
     }
 
+    // One of this screen's own sheets is open (a combo list in one counts).
+    // The parts below stand down for it, not the screen, which would disable
+    // the sheet too: a press on a sheet's button also reaches their tap
+    // handlers, and one that closes the sheet on release lets the same
+    // release reach the control underneath ("Stop listening" among them).
+    readonly property bool ownSheetOpen: Navigation.modals.some(function (modal) {
+        return Navigation.contains(screen, modal);
+    })
+
     HistoryDetailSheet {
         id: historyDetail
         objectName: "monitorHistoryDetail"
@@ -2645,7 +2654,7 @@ Item {
         parent: screen.scrollAll ? actionsSlot : actionsHost
         width: parent ? parent.width : 0
         spacing: 10
-        enabled: !keySheet.visible
+        enabled: !screen.ownSheetOpen
         // A deterministic grid: four equal columns when the longest word of any
         // label fits a quarter cell (less the 12 px OutlineButton keeps either
         // side), else two. Labels break only at a space, into one line or two
@@ -2783,7 +2792,7 @@ Item {
             id: lostLine
             objectName: "monitorReceiverLostLine"
             visible: lostLineHost.shown
-            enabled: !keySheet.visible
+            enabled: !screen.ownSheetOpen
             readonly property bool navigationAllowed: Navigation.allows(lostLine)
             function activate() {
                 if (visible && enabled && Navigation.allows(lostLine))
@@ -2875,7 +2884,7 @@ Item {
         // 3 is DecoderHost.Stopping. The host publishes it the moment Stop is
         // tapped (#718), so the tap reads as taken while the engine winds down.
         text: decoderHost.sessionState === 3 ? qsTr("Stopping…") : screen.system && screen.system.sourceType === "file" ? qsTr("Stop replay") : qsTr("Stop listening")
-        enabled: !decoderHost.transitioning && !keySheet.visible
+        enabled: !decoderHost.transitioning && !screen.ownSheetOpen
         onClicked: decoderHost.stop()
     }
     // #647 D1a: the session's receiver. Healthy: its name and status. Lost:
