@@ -1010,9 +1010,10 @@ object UsbSourceManager {
         DsdNative.nativeHostDiagnostic("usb: $text")
     }
 
-    // Any app can deliver a USB intent: the activity is exported, and so is the receiver below API 33. An extra it
-    // cannot unparcel throws here, on API 33+ past IntentExtras' probe, since values unparcel one at a time there; that
-    // is no device, never a crash of the running decoder (#831 B9).
+    // Any app can start the exported activity with a USB_DEVICE_ATTACHED intent; to the receiver only the app's own
+    // permission reply can be forged (below API 33, where it is exported), since ATTACHED and DETACHED are protected
+    // broadcasts. An extra that cannot be unparcelled throws here, on API 33+ past IntentExtras' probe, since values
+    // unparcel one at a time there; that is no device, never a crash of the running decoder (#831 B9).
     @Suppress("DEPRECATION")
     private fun usbDeviceExtra(intent: Intent): UsbDevice? = try {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

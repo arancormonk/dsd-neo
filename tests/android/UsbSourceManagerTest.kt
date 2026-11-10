@@ -338,9 +338,10 @@ private fun anUnrelatedDetachChangesNothing() {
     check(DsdNative.stopCauses.isEmpty() && rig.record().optBoolean("ready")) { "another dongle's detach leaves the session alone" }
 }
 
-// #831 B9: the activity is exported (and the receiver too, below API 33), so any app can deliver a USB intent whose
-// EXTRA_DEVICE no class loader here knows. Reading it throws, on API 33+ past IntentExtras' probe, and that must read as
-// no device extra rather than crash the running decoder.
+// #831 B9: the activity is exported, so any app can start it with a USB_DEVICE_ATTACHED intent whose EXTRA_DEVICE no
+// class loader here knows. Reading it throws, on API 33+ past IntentExtras' probe, and that must read as no device extra
+// rather than crash the running decoder. ATTACHED and DETACHED are protected broadcasts, so only the system sends them
+// to the receiver; the broadcasts below check that its reads of the same extra hold too.
 private fun anUnreadableDeviceExtraIsNoDevice(sdk: Int) {
     Build.VERSION.SDK_INT = sdk
     val rig = Rig()

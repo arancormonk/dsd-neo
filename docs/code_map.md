@@ -15074,9 +15074,11 @@ stays as it is, with no cleanup fallback. The app prevents it and records what s
   <exception class>`. The first failure is final: a bundle that failed keeps a partial map and never throws again, so
   it is not probed again or trusted. The rule itself is `sanitize(probe, clear, log)`. On API 33+ values unparcel
   one at a time, past that probe, so each reader of an extra guards its own read (`IncomingDocuments`, and B9 below).
-- USB extra read (#831 B9). Any app can send the exported activity (and, below API 33, the exported receiver) a USB
-  intent whose `EXTRA_DEVICE` no class loader knows; on API 33+ the typed getter then throws
-  `BadParcelableException`, which crashed the running decoder from `onCreate`, `onNewIntent` or the receiver.
+- USB extra read (#831 B9). Any app can start the exported activity with a `USB_DEVICE_ATTACHED` intent whose
+  `EXTRA_DEVICE` no class loader knows; on API 33+ the typed getter then throws `BadParcelableException`, which
+  crashed the running decoder from `onCreate` or `onNewIntent`. The receiver is not reachable this way: ATTACHED and
+  DETACHED are protected broadcasts on every API level, and below API 33 only the app's own permission reply can be
+  sent to it (an unreadable device there names no request, so the reply is ignored).
   `UsbSourceManager.usbDeviceExtra()` now reads it inside a `RuntimeException` catch, and an unreadable extra is no
   device: an attach reports nothing, and a detach is one with no device extra, which (the existing rule) counts as the
   connected receiver's. Test: `ANDROID_USB_BROKER_JVM` cases `unreadable_device_extra_30`/`_33`/`_36`.
