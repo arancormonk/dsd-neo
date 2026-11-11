@@ -17,6 +17,8 @@
  * - A block the level squelch closes is silence on both lanes, and the lane resumes when it opens; such a block, the
  *   lane's first or the first at a new rate, already compensates the lane's de-emphasis at that rate.
  * - The lane's coefficient follows a change of rate.
+ * - With the carrier off centre the lane is centred, and a lane switched on mid-stream is, sample for sample, the lane
+ *   of a demodulator that ran it all along, across a squelched block and a reconfiguration at a new rate.
  * - Through the output resampler, the lane makes exactly as many samples as the normalised lane at the same places:
  *   fed the same input, it makes the same samples, block for block, whatever the block sizes, and after a reset.
  *
@@ -56,12 +58,13 @@ struct FmSource {
     int rate_hz;
     double phase;
     long n;
+    double offset_hz = 0.0; /* the carrier's offset from the channel centre */
 
     void
     fill(float* iq, int pairs) {
         for (int k = 0; k < pairs; k++, n++) {
             const double t = (double)n / (double)rate_hz;
-            phase += 2.0 * kPi * kDeviationHz * std::cos(2.0 * kPi * kToneHz * t) / (double)rate_hz;
+            phase += 2.0 * kPi * (offset_hz + kDeviationHz * std::cos(2.0 * kPi * kToneHz * t)) / (double)rate_hz;
             iq[(size_t)(2 * k)] = (float)(0.5 * std::cos(phase));
             iq[(size_t)(2 * k) + 1] = (float)(0.5 * std::sin(phase));
         }
@@ -369,6 +372,81 @@ test_resampler_keeps_the_lane_in_step(void) {
     dsd_neo_aligned_free(s);
 }
 
+/* The mean of @p n samples. */
+double
+mean_of(const float* x, int n) {
+    double sum = 0.0;
+    for (int i = 0; i < n; i++) {
+        sum += (double)x[i];
+    }
+    return n > 0 ? sum / (double)n : 0.0;
+}
+
+/* A carrier 1.5 kHz off centre, with no de-emphasis: the lane is the modem's centred output, so the offset is centred
+   out of it (an uncentred lane would sit 0.0625 off zero), and it is so from the first block of a lane switched on
+   mid-stream, sample for sample the lane of a demodulator that ran it all along: no restart of the centring, no step.
+   That holds on across a squelched block and a reconfiguration at a new rate, both of which start the modem over. */
+void
+test_lane_follows_the_modem_centring(void) {
+    demod_state* all_along = new_fsk_demod(48000, 1, 0);
+    demod_state* switched = new_fsk_demod(48000, 0, 0);
+    if (!all_along || !switched) {
+        fail("allocation");
+        dsd_neo_aligned_free(all_along);
+        dsd_neo_aligned_free(switched);
+        return;
+    }
+    FmSource a = {48000, 0.0, 0, 1500.0};
+    FmSource b = {48000, 0.0, 0, 1500.0};
+    for (int blk = 0; blk < 40; blk++) { /* 0.4 s: the centring (time constant 4000 samples) has settled */
+        run_block(all_along, a);
+        run_block(switched, b);
+    }
+    switched->voice_lane_enabled = 1;
+    int same = 1;
+    double worst_mean = 0.0;
+    for (int blk = 0; blk < 30; blk++) {
+        if (blk == 10) {
+            all_along->channel_squelch_level.store(1.0f);
+            switched->channel_squelch_level.store(1.0f);
+        } else if (blk == 11) {
+            all_along->channel_squelch_level.store(0.0f);
+            switched->channel_squelch_level.store(0.0f);
+        } else if (blk == 20) {
+            /* A new rate: the modem is configured for it, which starts it over. */
+            dsd_fsk_modem_config cfg = {};
+            cfg.sample_rate_hz = 24000;
+            cfg.symbol_rate_hz = 9600;
+            cfg.levels = 2;
+            for (demod_state* s : {all_along, switched}) {
+                s->complex_rate = 24000;
+                s->rate_in = 24000;
+                s->rate_out = 24000;
+                dsd_fsk_modem_configure(&s->fsk_modem_state, &cfg);
+            }
+            a = FmSource{24000, 0.0, 0, 1500.0};
+            b = FmSource{24000, 0.0, 0, 1500.0};
+        }
+        run_block(all_along, a);
+        run_block(switched, b);
+        same &= switched->voice_lane_active && all_along->result_len == switched->result_len
+                && same_bits(all_along->voice_result, switched->voice_result, switched->result_len);
+        if (blk < 10) {
+            const double m = std::fabs(mean_of(switched->voice_result, switched->result_len));
+            worst_mean = m > worst_mean ? m : worst_mean;
+        }
+    }
+    if (!same) {
+        fail("a lane switched on mid-stream is not the lane that ran all along (centring restarted or stepped)");
+    }
+    if (worst_mean > 0.002) {
+        DSD_FPRINTF(stderr, "  carrier 1.5 kHz off: the lane's mean is %.5f\n", worst_mean);
+        fail("the lane does not centre a carrier offset out");
+    }
+    dsd_neo_aligned_free(all_along);
+    dsd_neo_aligned_free(switched);
+}
+
 } // namespace
 
 int
@@ -378,6 +456,7 @@ main(void) {
     test_squelched_block_is_silence();
     test_squelched_block_publishes_the_lane_gain();
     test_coefficient_follows_rate();
+    test_lane_follows_the_modem_centring();
     test_resampler_keeps_the_lane_in_step();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "DSP_FSK_VOICE_LANE: %d failure(s)\n", g_failures);

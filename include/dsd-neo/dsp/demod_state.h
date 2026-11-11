@@ -158,9 +158,9 @@ struct demod_state {
        slowed the CQPSK chain by about 5 %). */
     alignas(DSD_DEMOD_BUF_ALIGN) float hb_workbuf[DSD_DEMOD_ALIGNED_FLOATS(DSD_DEMOD_WORKBUF_LENGTH)];
     /* The voice lane EDACS plays analog calls from (issue #518): the FSK discriminator's centred output, as the modem
-       computes it ahead of its peak normaliser, at the FM monitor's output scale and through a de-emphasis of its own, parallel to result (at
-       the complex rate) and to voice_resamp_outbuf (resampled as resamp_outbuf is). Valid only while
-       voice_lane_active. They sit after hb_workbuf so they move none of the buffers before them. */
+       computes it ahead of its peak normaliser, at the FM monitor's output scale and through a de-emphasis of its
+       own, parallel to result (at the complex rate) and to voice_resamp_outbuf (resampled as resamp_outbuf is). Valid
+       only while voice_lane_active. They sit after hb_workbuf so they move none of the buffers before them. */
     alignas(DSD_DEMOD_BUF_ALIGN) float voice_result[DSD_DEMOD_ALIGNED_FLOATS(MAXIMUM_BUF_LENGTH)];
     alignas(DSD_DEMOD_BUF_ALIGN) float voice_resamp_outbuf[DSD_DEMOD_ALIGNED_FLOATS(MAXIMUM_BUF_LENGTH * 4)];
     /* The output resampler's mirrored history for the voice lane; its taps, ratio and phase are the main lane's. */
@@ -371,17 +371,11 @@ struct demod_state {
     dsd_fll_band_edge_state_t fll_band_edge_state; /* Sample-rate FLL band-edge */
     dsd_fsk_modem_state fsk_modem_state;           /* FSK discriminator state */
     /* The voice lane (voice_result): whether the stream asks for it this block, and whether this block made it; the
-       de-emphasis time constant it runs in us (DSD_NEO_DEEMPH, whatever the monitor's own runs; 0 none), the coefficient
-       and the rate and constant it was made for, and the filter's state; the voice resampler history's next write index
-       and the taps per phase it was laid out for. */
+       de-emphasis time constant it runs in us (DSD_NEO_DEEMPH, whatever the monitor's own runs; 0 none), the
+       coefficient and the rate and constant it was made for, and the filter's state; the voice resampler history's
+       next write index and the taps per phase it was laid out for. Its discriminator runs from the modem's state. */
     int voice_lane_enabled;
     int voice_lane_active;
-    /* The lane's own discriminator (it runs beside the FSK modem, not inside it): the last sample, whether there is
-       one, and the slow carrier centring. */
-    float voice_lane_prev_i;
-    float voice_lane_prev_q;
-    int voice_lane_have_prev;
-    float voice_lane_dc;
     int voice_lane_tau_us;
     int voice_lane_coef_rate_hz;
     int voice_lane_coef_tau_us;

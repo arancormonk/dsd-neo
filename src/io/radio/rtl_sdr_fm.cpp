@@ -5418,14 +5418,12 @@ demod_take_squelch_setting(struct demod_state* d) {
     d->squelch_context = key;
 }
 
-/* The demod thread, before a block: whether it runs the FSK voice lane. A lane that starts runs its discriminator,
-   de-emphasis and resampler history from silence, not from what they held when it last stopped. */
+/* The demod thread, before a block: whether it runs the FSK voice lane. A lane that starts runs its de-emphasis and its
+   resampler history from silence, not from what they held when it last stopped (its discriminator is the modem's). */
 static void
 demod_take_voice_lane_setting(struct demod_state* d) {
     const int enabled = g_voice_lane_requested.load(std::memory_order_acquire) ? 1 : 0;
     if (enabled && !d->voice_lane_enabled) {
-        d->voice_lane_have_prev = 0;
-        d->voice_lane_dc = 0.0f;
         d->voice_lane_deemph_avg = 0.0f;
         resamp_clear_voice_lane(d);
     }

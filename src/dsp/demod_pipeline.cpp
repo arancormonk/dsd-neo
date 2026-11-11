@@ -2770,19 +2770,16 @@ voice_lane_track_coefficient(struct demod_state* d) {
     d->voice_lane_coef_tau_us = d->voice_lane_tau_us;
 }
 
-/* The voice lane's own discriminator over the block's samples into voice_result (issue #518): the phase step per
-   sample less a slow carrier centring, as the FSK modem computes it ahead of its peak normaliser, at the FM monitor's
-   output scale for the rate the discriminator runs at (DSD_DEMOD_MONITOR_OUTPUT_SCALE), then the lane's de-emphasis. So
-   EDACS analog voice reads at the monitor audio's level, with the level information the normaliser throws away, and
-   its de-emphasis is the one dsd_demod_deemph_compensation() makes up. It runs beside the modem, never inside it, so
-   the modem's loop, which every FSK digital decode runs, stays as it was. @p modem_fresh: the modem started over before
-   this block (a reset or a new configuration), and so does the lane's discriminator. */
+/* The voice lane's discriminator over the block's samples into voice_result (issue #518): the phase step per sample
+   less the slow carrier centring, the modem's own computation ahead of its peak normaliser, from where the modem stood
+   before this block (@p modem, its state then), so the lane is the modem's centred output in every case: a reset, a
+   new configuration or the lane turning on mid-stream. Then the FM monitor's output scale for the rate the discriminator
+   runs at (DSD_DEMOD_MONITOR_OUTPUT_SCALE) and the lane's de-emphasis. So EDACS analog voice reads at the monitor
+   audio's level, with the level information the normaliser throws away, and its de-emphasis is the one
+   dsd_demod_deemph_compensation() makes up. It runs beside the modem, never inside it, so the modem's loop, which every
+   FSK digital decode runs, stays as it was. */
 static void
-voice_lane_run(struct demod_state* d, int modem_fresh) {
-    if (modem_fresh) {
-        d->voice_lane_have_prev = 0;
-        d->voice_lane_dc = 0.0f;
-    }
+voice_lane_run(struct demod_state* d, const dsd_fsk_modem_state* modem) {
     const int rate_hz = d->complex_rate > 0 ? d->complex_rate : 48000;
     const float scale =
         (float)(DSD_DEMOD_MONITOR_OUTPUT_SCALE * ((double)rate_hz / DSD_DEMOD_MONITOR_SCALE_REFERENCE_HZ));
@@ -2790,22 +2787,23 @@ voice_lane_run(struct demod_state* d, int modem_fresh) {
     const int deemph = alpha > 0.0f;
     const float* iq = d->lowpassed;
     float* v = d->voice_result;
-    float prev_i = d->voice_lane_prev_i;
-    float prev_q = d->voice_lane_prev_q;
-    float dc = d->voice_lane_dc;
+    int have_prev = modem->have_prev;
+    float prev_i = modem->prev_i;
+    float prev_q = modem->prev_q;
+    float dc = modem->dc_est;
     float avg = d->voice_lane_deemph_avg;
     for (int n = 0; n < d->result_len; n++) {
         const float cur_i = iq[(size_t)(n << 1) + 0];
         const float cur_q = iq[(size_t)(n << 1) + 1];
         float centred = 0.0f;
-        if (d->voice_lane_have_prev) {
+        if (have_prev) {
             const float re = cur_i * prev_i + cur_q * prev_q;
             const float im = cur_q * prev_i - cur_i * prev_q;
             const float freq = phase_delta_small_angle_or_atan2(im, re);
             dc += 0.00025f * (freq - dc);
             centred = freq - dc;
         }
-        d->voice_lane_have_prev = 1;
+        have_prev = 1;
         prev_i = cur_i;
         prev_q = cur_q;
         const float x = centred * scale;
@@ -2816,9 +2814,6 @@ voice_lane_run(struct demod_state* d, int modem_fresh) {
             v[n] = x;
         }
     }
-    d->voice_lane_prev_i = prev_i;
-    d->voice_lane_prev_q = prev_q;
-    d->voice_lane_dc = dc;
     d->voice_lane_deemph_avg = avg;
 }
 
@@ -2840,19 +2835,19 @@ full_demod_handle_fsk_output(struct demod_state* d) {
             d->result[i] = 0.0f;
         }
         if (d->voice_lane_active) {
-            /* Silence, and the lane's discriminator and de-emphasis start over with the modem. */
+            /* Silence, and the lane's de-emphasis starts over with the modem. */
             DSD_MEMSET(d->voice_result, 0, (size_t)d->result_len * sizeof(float));
-            d->voice_lane_have_prev = 0;
-            d->voice_lane_dc = 0.0f;
             d->voice_lane_deemph_avg = 0.0f;
         }
-    } else {
-        const int modem_fresh = !d->fsk_modem_state.have_prev;
+    } else if (d->voice_lane_active) {
+        /* Where the modem stands before the block: the lane runs its discriminator on from there. */
+        const dsd_fsk_modem_state modem = d->fsk_modem_state;
         d->result_len = dsd_fsk_modem_discriminator_process(&d->fsk_modem_state, d->lowpassed, d->lp_len, d->result,
                                                             MAXIMUM_BUF_LENGTH);
-        if (d->voice_lane_active) {
-            voice_lane_run(d, modem_fresh);
-        }
+        voice_lane_run(d, &modem);
+    } else {
+        d->result_len = dsd_fsk_modem_discriminator_process(&d->fsk_modem_state, d->lowpassed, d->lp_len, d->result,
+                                                            MAXIMUM_BUF_LENGTH);
     }
     return 1;
 }

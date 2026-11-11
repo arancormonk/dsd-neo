@@ -8496,20 +8496,21 @@ Notes:
     modem normalises to a +/-30000 peak (the release register needs it), which throws the voice's level away. While
     the decoder asks for it (`rtl_stream_set_voice_lane()`, through the runtime hook `set_voice_lane`: EDACS before an
     analog call's tune, off when the call ends or its tune is refused; process-wide, `g_voice_lane_requested`, taken
-    by the demod thread before each block in `demod_take_voice_lane_setting()`, which starts the lane's discriminator,
-    de-emphasis and resampler history from silence when it turns on), an FSK block also makes a calibrated lane
+    by the demod thread before each block in `demod_take_voice_lane_setting()`, which starts the lane's de-emphasis
+    and resampler history from silence when it turns on), an FSK block also makes a calibrated lane
     (`full_demod_handle_fsk_output()`): the centred discriminator output as the modem computes it ahead of its
-    normaliser, from the lane's own discriminator beside the modem (`voice_lane_run()`, started over whenever the modem
-    is; the modem's own loop, which every FSK digital decode runs, is untouched), at the FM monitor's output scale for
-    the complex rate
-    (`DSD_DEMOD_MONITOR_OUTPUT_SCALE`, `DSD_DEMOD_MONITOR_SCALE_REFERENCE_HZ`), through its own one-pole de-emphasis
-    at the complex rate (`voice_lane_tau_us` from `DSD_NEO_DEEMPH`, whatever the monitor's own; the coefficient made
-    again when the rate moves, `dsd_demod_deemph_alpha()`, the monitor's quantisation), into `demod_state::voice_result`
-    (a squelched block: silence, the de-emphasis starting over with the modem). `dsd_demod_deemph_compensation()`
-    is then the lane's, so the published de-emphasis gain (`g_pub_monitor_deemph_gain`) makes it up as it does the
-    monitor's; the lane switching moves that gain with the next block and moves no generation (a reader of the lane
-    notes it as a new reception). `demod_finish_output_block()` resamples the lane with the main lane's taps, ratio
-    and starting phase over its own history (`resamp_process_voice_lane()`, `voice_resamp_hist`, cleared with the main
+    normaliser, run beside the modem from the modem's own state before the block (`voice_lane_run()`: its previous
+    sample and carrier centring, so a reset, a new configuration or a mid-stream lane-on leave the lane equal to the
+    modem; the modem's loop, which every FSK digital decode runs, is untouched), at the FM monitor's output scale for
+    the complex rate (`DSD_DEMOD_MONITOR_OUTPUT_SCALE`, `DSD_DEMOD_MONITOR_SCALE_REFERENCE_HZ`), through its own
+    one-pole de-emphasis at the complex rate (`voice_lane_tau_us` from `DSD_NEO_DEEMPH`, whatever the monitor's own;
+    the coefficient made again when the rate moves, `dsd_demod_deemph_alpha()`, the monitor's quantisation), into
+    `demod_state::voice_result` (a squelched block: silence, the de-emphasis starting over with the modem).
+    `dsd_demod_deemph_compensation()` is then the lane's, so the published de-emphasis gain
+    (`g_pub_monitor_deemph_gain`) makes it up as it does the monitor's; the lane switching moves that gain with the
+    next block and moves no generation (a reader of the lane notes it as a new reception).
+    `demod_finish_output_block()` resamples the lane with the main lane's taps, ratio and starting phase over its own
+    history (`resamp_process_voice_lane()`, `voice_resamp_hist`, cleared with the main
     lane's: `rtl_demod_reset_resampler_state()`, `resamp_design()`), so it makes exactly the main lane's samples at
     the same places, and marks each such sample's flag with `DSD_RING_FLAG_VOICE`. The ring keeps the lane in
     `output_state::voice` (allocated with the ring, untouched until a lane runs) at the samples' positions; the reads
