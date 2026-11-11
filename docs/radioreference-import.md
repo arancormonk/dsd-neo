@@ -219,7 +219,8 @@ conventional list, of the repeaters you chose). RadioReference sends these as nu
 the app asks RadioReference for the state names, using your signed-in account, and fills them in on the
 saved systems; no other detail about you is sent. The place shows on the saved system's card on Listen
 ("Johnson, Iowa", "Iowa · 5 counties", "Iowa") and drives Listen's **Place** order and search. A system saved
-before this, or one whose names have not arrived, shows **No place** until they do.
+before this, or one whose names have not arrived, shows no place on its card, and in **Place** order it falls
+under a **No place** heading until they arrive.
 
 **Update from RadioReference** brings an existing saved system up to date. It is in the card's **More** menu
 for a system with RadioReference sites, in the site chooser when a site has no coordinates, and under Listen's

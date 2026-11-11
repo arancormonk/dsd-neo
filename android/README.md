@@ -209,7 +209,7 @@ remaining requests; API 29–30 uses the network provider. Fix acquisition and w
 reverse geocoding each have a separate 20-second timeout. Request IDs and
 separate fix/geocode status preserve a usable fix when geocoding fails and prevent
 late responses from replacing a newer search. Activity teardown cancels the request.
-The Sites chooser uses a separate coordinate-only request: at most 30-second-old fixes,
+The Sites chooser and Listen's Nearest order use a separate coordinate-only request: at most 30-second-old fixes,
 an accurate recent cache or fresh provider updates, and no reverse-geocoding wait. It offers
 fine and coarse foreground permission together when permission is first needed, respects
 existing approximate access, and adds GPS when fine permission is granted. A coarse result
@@ -2602,9 +2602,9 @@ sites is one card with a site button. With TalkBack, a sort or search reorders t
 follows what is on the screen.
 
 Place and Nearest need to know where each system is. A system you imported from RadioReference carries its
-places; for the rest, **Update from RadioReference** (under the sort button when systems have no place yet, and in
-a card's **More** menu) fetches them for your RadioReference-linked systems. It needs your RadioReference sign-in
-and only changes names, positions and places. See [RadioReference
+places; for the rest, **Update from RadioReference** (offered under the sort button in Place or Nearest order when
+systems have no place yet, and in a card's **More** menu) fetches them for your RadioReference-linked
+systems. It needs your RadioReference sign-in and only changes names, positions and places. See [RadioReference
 import](../docs/radioreference-import.md#places-and-update-from-radioreference).
 
 ### Pinned shortcuts

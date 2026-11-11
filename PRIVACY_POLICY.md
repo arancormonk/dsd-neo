@@ -93,8 +93,8 @@ The app keeps your location at the precision you allowed, approximate or precise
 have granted precise location, Use my location can use it too. Getting a location and turning
 it into a postal code are done by your device's location services (on most phones they are
 Google's), which may use Wi-Fi, mobile network and GPS information and contact their provider
-to do it, under that provider's terms. The app asks for location only while you are using it, never in the
-background.
+to do it, under that provider's terms. The app asks for location only while you are using it,
+never in the background.
 
 The last location the app got (latitude, longitude, accuracy and time) is saved on your
 device so it can pick nearby sites and order your saved systems by distance. It stops being

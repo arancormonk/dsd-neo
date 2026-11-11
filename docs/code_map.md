@@ -11788,7 +11788,8 @@ Qt Quick frontend (`src/ui/qt`):
   the strip, the section restore, then plain focus reveal (none starts while a restore is owed). `resetScrollMemory()`
   forgets the places and anything owed, for tests that reuse one Home. The body holds the status cards (backup result,
   USB details, failure, replay completion) on every tab, then three section Columns, `listenSystemsSection` (Add a
-  system and hint, the search and sort controls, saved-system cards), `listenScanListsSection` (Add a scan list, `scanListsEmptyHint`, scan-list cards) and
+  system and hint, the search and sort controls, saved-system cards), `listenScanListsSection` (Add a scan list,
+  `scanListsEmptyHint`, scan-list cards) and
   `listenExploreSection` (the Signal search row, then `exploreCard`). Each is `visible` and `enabled` only while its
   tab is current, and its height is `shown ? implicitHeight : 0`, keyed on the tab, never on `visible` (B1). Disabled,
   a hidden section's controls take no focus, key or press (Qt keeps focus and key delivery on an item that only goes
@@ -11875,7 +11876,8 @@ Qt Quick frontend (`src/ui/qt`):
   `minimumTouchSize + 6`, the site button centred on Play; 122 px at normal text), never above the top padding; the
   refresh hint takes the full width 8 px below the lower of labels and actions; the card ends `cardPadding` below the
   lowest. A card without the hint is 122 px at normal text, as before, and grows at large text. The site button lines up
-  against Play's own condition (`playShown`, the card's `playUid` being set), not Play's `visible`, so a hidden card's site button stays clear of Play.
+  against Play's own condition (`playShown`, the card's `playUid` being set), not Play's `visible`, so a hidden card's
+  site button stays clear of Play.
   Keyboard focus moving onto a control in the body restarts the owned `revealFocusTimer`, which reveals
   `activeFocusItem` through `Theme.revealFocus(scrollBody, scrollBody.contentItem, item)`; the timer lets a stronger
   scroll writer cancel a pending reveal (the precedence is under Listen tabs, above). `Theme.revealFocus` maps the
@@ -13774,27 +13776,27 @@ Qt Quick frontend (`src/ui/qt`):
   (key type, key CSV or decryption profile on the displayed row, B13); `title` is `site_group_title()` of the lead,
   the same text a Listen pin shows; `refreshHint` is the "Refresh from RadioReference" test, re-run on
   `importedFiles.entriesChanged`. Place labels: "Johnson, Iowa" (one state, one county), "Iowa · 5 counties", "Iowa",
-  "Illinois, Iowa, South Dakota" (several states, names sorted; their Place section reads "Several states"), and "No
-  place" when no state has a name yet. Orders (`sortId` mirrors `AppPrefs::systemsSort`; `effectiveSort` is the
-  one applied): `name` (natural order from `text_order`), `recent` (latest `lastHeard` first, never-listened after by
-  name), `added` (lead row's position, the default), `place` (sections: single states by state name, "Several states",
-  "No place"; within a state one county by county name, then several counties, then none, then name) and `nearest`
-  (haversine distance to the nearest non-avoided site that has coordinates, then "All sites avoided", then "No
-  coordinates", each by name). Every order ends on `key`. `nearest` needs `setLocationSupported(true)` and an
-  unexpired fix; without them `effectiveSort` is `name` and the stored preference is untouched. Search
-  (`system_search_query.{h,cpp}`): the text is split into terms that must all match (a number and a following
-  MHz/kHz is one term); a term matches a folded substring of the card's text (members' names and site names, place
-  state and county names, and the protocol label, supplied by `protocolLabels` from `Util.js`) or a frequency of any
-  member (a bare number of three digits or more reads as MHz). A row whose frequency or place an edit cleared ranks
-  as unplaced and without coordinates. Rebuilds are coalesced into one `QTimer::singleShot(0)` pass; a query change
-  only refilters and a sort change only re-sorts. The diff against the old list emits removes, one-row moves (the
-  longest increasing run stays), inserts and one `dataChanged` per card with the roles that changed, so a delegate
-  survives a sort and keeps the keyboard. With `screenReaderActive`, a reorder the user asked for (query, sort, a fix
-  after `markLocationRequested()`) is one reset, and any other reorder is held while `holdReorders` is set (Home
-  visible on Systems) and released as a reset, so TalkBack's swipe order always matches the screen; the count is
-  read once. `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, B1, B2, B13, titles against a real
-  pin, each order and its ties, place and distance labels, search, signals, screen-reader holds and the location mark,
-  coalescing, a random-edit mirror check, and a 500-row timing check).
+  "Illinois, Iowa, South Dakota" (several states, names sorted; their Place section reads "Several states"). A card
+  with no named state has an empty label, and Place order puts it under a "No place" section. Orders (`sortId` mirrors
+  `AppPrefs::systemsSort`; `effectiveSort` is the one applied): `name` (natural order from `text_order`), `recent`
+  (latest `lastHeard` first, never-listened after by name), `added` (lead row's position, the default), `place`
+  (sections: single states by state name, "Several states", "No place"; within a state one county by county name, then
+  several counties, then none, then name) and `nearest` (haversine distance to the nearest non-avoided site that has
+  coordinates, then "All sites avoided", then "No coordinates", each by name). Every order ends on `key`. `nearest`
+  needs `setLocationSupported(true)` and an unexpired fix; without them `effectiveSort` is `name` and the stored
+  preference is untouched. Search (`system_search_query.{h,cpp}`): the text is split into terms that must all match (a
+  number and a following MHz/kHz is one term); a term matches a folded substring of the card's text (members' names
+  and site names, place state and county names, and the protocol label, supplied by `protocolLabels` from `Util.js`)
+  or a frequency of any member (a bare number of three digits or more reads as MHz). A row whose frequency or place an
+  edit cleared ranks as unplaced and without coordinates. Rebuilds are coalesced into one `QTimer::singleShot(0)`
+  pass; a query change only refilters and a sort change only re-sorts. The diff against the old list emits removes,
+  one-row moves (the longest increasing run stays), inserts and one `dataChanged` per card with the roles that
+  changed, so a delegate survives a sort and keeps the keyboard. With `screenReaderActive`, a reorder the user asked
+  for (query, sort, a fix after `markLocationRequested()`) is one reset, and any other reorder is held while
+  `holdReorders` is set (Home visible on Systems) and released as a reset, so TalkBack's swipe order always matches
+  the screen; the count is read once. `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, B1, B2,
+  B13, titles against a real pin, each order and its ties, place and distance labels, search, signals, screen-reader
+  holds and the location mark, coalescing, a random-edit mirror check, and a 500-row timing check).
 - `text_order.{h,cpp}` (`TextOrder`, the `textOrder` context object) is the one place that decides how names sort and
   match: `text_fold()` (case and accents folded, by code point), `text_compare_names()` (natural order: leading
   punctuation skipped, digit runs by value, a shorter digit run first on a tie, then the raw text, so different
