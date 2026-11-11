@@ -2772,8 +2772,8 @@ voice_lane_track_coefficient(struct demod_state* d) {
 
 /* The voice lane's discriminator over the block's samples into voice_result (issue #518): the phase step per sample
    less the slow carrier centring, the modem's own computation ahead of its peak normaliser, from where the modem stood
-   before this block (@p modem, its state then), so the lane is the modem's centred output in every case: a reset, a
-   new configuration or the lane turning on mid-stream. Then the FM monitor's output scale for the rate the discriminator
+   before this block (@p modem, its state then), so the lane is the modem's centred output in every case: a reset, a new
+   configuration or the lane turning on mid-stream. Then the FM monitor's output scale for the rate the discriminator
    runs at (DSD_DEMOD_MONITOR_OUTPUT_SCALE) and the lane's de-emphasis. So EDACS analog voice reads at the monitor
    audio's level, with the level information the normaliser throws away, and its de-emphasis is the one
    dsd_demod_deemph_compensation() makes up. It runs beside the modem, never inside it, so the modem's loop, which every

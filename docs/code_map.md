@@ -8510,18 +8510,17 @@ Notes:
     (`g_pub_monitor_deemph_gain`) makes it up as it does the monitor's; the lane switching moves that gain with the
     next block and moves no generation (a reader of the lane notes it as a new reception).
     `demod_finish_output_block()` resamples the lane with the main lane's taps, ratio and starting phase over its own
-    history (`resamp_process_voice_lane()`, `voice_resamp_hist`, cleared with the main
-    lane's: `rtl_demod_reset_resampler_state()`, `resamp_design()`), so it makes exactly the main lane's samples at
-    the same places, and marks each such sample's flag with `DSD_RING_FLAG_VOICE`. The ring keeps the lane in
+    history (`resamp_process_voice_lane()`, `voice_resamp_hist`, cleared with the main lane's:
+    `rtl_demod_reset_resampler_state()`, `resamp_design()`), so it makes exactly the main lane's samples at the same
+    places, and marks each such sample's flag with `DSD_RING_FLAG_VOICE`. The ring keeps the lane in
     `output_state::voice` (allocated with the ring, untouched until a lane runs) at the samples' positions; the reads
-    hand the flags back without that bit, so the samples and flags are bit for bit the same with the lane on or off,
-    and `rtl_stream_read_lanes()` (`RtlSdrOrchestrator::read()` with a voice buffer, `dsd_rtl_stream_read_ex()`, the
-    hook's `read_lanes`) gives each sample's lane value, 0 where the lane did not run for it. Off, the lane costs
-    nothing but a load per block (the FSK demod block costs what it did before the lane); on, it adds about 25-41% to
-    the FSK demod block, only during EDACS analog calls on an RTL input. Tests: `IO_RTL_VOICE_LANE` (replayed captures
-    through the real stream, read API, resampler and ring: the lane switched on and off, a gap, a retune, three rates,
-    flag and sample identity, level, positions), `DSP_FSK_VOICE_LANE`, `ENGINE_IO_HOOKS_INSTALL`,
-    `IO_RTL_STREAM_ORCHESTRATOR`.
+    hand the flags back without that bit, so the samples and flags are bit for bit the same with the lane on or off, and
+    `rtl_stream_read_lanes()` (`RtlSdrOrchestrator::read()` with a voice buffer, `dsd_rtl_stream_read_ex()`, the hook's
+    `read_lanes`) gives each sample's lane value, 0 where the lane did not run for it. Off, the lane costs nothing but a
+    load per block (the FSK demod block costs what it did before the lane); on, it adds about 25-41% to the FSK demod
+    block, only during EDACS analog calls on an RTL input. Tests: `IO_RTL_VOICE_LANE` (replayed captures through the
+    real stream, read API, resampler and ring: the lane switched on and off, a gap, a retune, three rates, flag and
+    sample identity, level, positions), `DSP_FSK_VOICE_LANE`, `ENGINE_IO_HOOKS_INSTALL`, `IO_RTL_STREAM_ORCHESTRATOR`.
   - The squelch setting reaches the demod thread through `g_squelch_auto_word` (mode and margin) beside the existing
     `channel_squelch_level`, which the level gate reads under a LEVEL word only. A switch to AUTO stores the word
     alone and leaves the level, so a block that took the old LEVEL word still gates on it; a switch to LEVEL stores the
