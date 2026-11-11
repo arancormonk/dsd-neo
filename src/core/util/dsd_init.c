@@ -412,6 +412,7 @@ init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
     opts->trunk_scan_idle_dwell_ms = 3000;
     opts->trunk_scan_activity_hold_ms = 1200;
     opts->scan_voice_only = 0;
+    opts->scan_skip_silent = 0;
     opts->scan_voice_qualify_ms = 1000;
     opts->scan_voice_hold_ms = 2000;
     opts->scan_max_visit_ms = 0;

@@ -399,6 +399,9 @@ void svc_set_slot_pref(dsd_opts* opts, int pref);
 void svc_set_slots_onoff(dsd_opts* opts, int mask);
 /** @brief Gate trunk scan on voice: leave a signal that carries no voice. */
 void svc_set_scan_voice_only(dsd_opts* opts, int on);
+
+/** Session-wide skip-silent setting (#834); stores 0/1. The caller tells the engine through dsd_scan_quiet_setting_changed(). */
+void svc_set_scan_skip_silent(dsd_opts* opts, int on);
 /** @brief Voice qualify window in ms (clamped to 100..600000). */
 void svc_set_scan_voice_qualify_ms(dsd_opts* opts, int ms);
 /** @brief Voice hold time in ms (clamped to 100..600000). */

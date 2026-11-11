@@ -261,6 +261,24 @@ test_scan_voice_long_opts_are_removed(void) {
     return 0;
 }
 
+/* The session-wide skip-silent switches (#834) take no value and must leave this pre-getopt pass, or getopt rejects
+ * them. */
+static int
+test_scan_skip_silent_long_opts_are_removed(void) {
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--scan-skip-silent";
+    char arg2[] = "--no-scan-skip-silent";
+    char arg3[] = "-fi";
+    char* argv[] = {arg0, arg1, arg2, arg3, NULL};
+
+    int new_argc = dsd_cli_compact_args(4, argv);
+    if (new_argc != 2 || argv[1] == NULL || strcmp(argv[1], "-fi") != 0) {
+        DSD_FPRINTF(stderr, "expected only -fi to survive, got argc=%d\n", new_argc);
+        return 1;
+    }
+    return 0;
+}
+
 /* The per-visit cap (issue #507) must leave this pre-getopt pass in BOTH spellings. A
  * surviving bare value token looks like a positional argument to
  * bootstrap_compacted_arg_disables_inherited_trunk_scan(), which would switch off a
@@ -840,6 +858,7 @@ main(void) {
     rc |= test_trunk_scan_list_long_opts_are_removed();
     rc |= test_trunk_scan_hold_long_opt_is_removed();
     rc |= test_scan_voice_long_opts_are_removed();
+    rc |= test_scan_skip_silent_long_opts_are_removed();
     rc |= test_scan_max_visit_long_opts_are_removed();
     rc |= test_am_bandwidth_long_opts_are_removed();
     rc |= test_analog_record_max_gap_long_opts_are_removed();

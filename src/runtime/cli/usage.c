@@ -528,6 +528,9 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("                 Trunked targets use idle dwell and protocol call-following timers.\n");
     printf("                 Analog rows and targets ignore it and hold on carrier.\n");
     printf("      --no-scan-voice-only  Turn --scan-voice-only off (also over a config file value).\n");
+    printf("      --scan-skip-silent  Skip a silent conventional scan channel after a quick RF check; applies to\n");
+    printf("                 -Y and --trunk-scan conventional targets, never a row option.\n");
+    printf("      --no-scan-skip-silent  Turn --scan-skip-silent off (also over a config file value).\n");
     printf("      --scan-voice-qualify-ms <ms>  Window after sync in which voice must appear or the scan moves on "
            "(100..600000, default 1000).\n");
     printf("      --scan-voice-hold-ms <ms>  Time to stay after the last voice frame (100..600000, default 2000).\n");
@@ -556,6 +559,8 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("                 May vary based on system stregnth, etc.\n");
     printf("  -t <secs>     Voice/sync-loss hangtime in seconds (default 2); also conventional -Y scan speed.\n");
     printf("                 Does not set --trunk-scan target dwell or DMR control-channel acquisition time.\n");
+    printf("                 In --trunk-scan, -t never shortens a conventional target's idle dwell; see "
+           "--scan-skip-silent.\n");
     printf("\n");
     printf(" Trunking Example TCP: dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv --frontend terminal "
            "2> log.txt\n");

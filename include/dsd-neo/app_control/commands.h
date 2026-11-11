@@ -255,6 +255,9 @@ enum dsd_app_command_id {
     DSD_APP_CMD_SCAN_VOICE_ONLY_SET = 505,       // payload: int32_t on(0/1)
     DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET = 506, // payload: int32_t ms (100..600000)
     DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET = 507,    // payload: int32_t ms (100..600000)
+    // Session-wide scan skip-silent (#834): skip a silent conventional scan channel after a quick RF check. Never a
+    // scan-row setting; a scan-mode row never captures or restores it.
+    DSD_APP_CMD_SCAN_SKIP_SILENT_SET = 513, // payload: int32_t on(0/1)
     // Configured NFM channel-filter width (issue #525): the full RF passband in Hz, 8000..25000, or 0 for the
     // 16000 default. Refused with a toast, changing nothing, when out of range or when the front end the analog
     // preset runs on cannot filter it at its DSP rate; applied live to a running analog monitor.

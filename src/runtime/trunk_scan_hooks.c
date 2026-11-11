@@ -184,6 +184,13 @@ dsd_trunk_scan_hook_enc_lockout_clear_snapshots(const dsd_state* state) {
     }
 }
 
+void
+dsd_scan_quiet_setting_changed(dsd_state* state) {
+    if (g_trunk_scan_hooks.quiet_setting_changed) {
+        g_trunk_scan_hooks.quiet_setting_changed(state);
+    }
+}
+
 int
 dsd_trunk_scan_hook_control(dsd_opts* opts, dsd_state* state, int op) {
     if (!g_trunk_scan_hooks.control) {

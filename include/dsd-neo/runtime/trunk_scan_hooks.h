@@ -110,6 +110,7 @@ typedef struct {
     int (*list_set)(dsd_opts* opts, dsd_state* state, uint32_t session, int list, int enabled, uint32_t request);
     int (*decryption_apply)(dsd_opts* opts, dsd_state* state, const char* target_id, uint64_t generation,
                             uint32_t fields, const dsd_key_set* keys, const dsd_dmr_key_map* map, int force);
+    void (*quiet_setting_changed)(dsd_state* state);
 } dsd_trunk_scan_hooks;
 
 /** Install a copy of @p hooks; NULL clears every slot. */
@@ -220,6 +221,14 @@ void dsd_trunk_scan_hook_enc_lockout_clear_snapshots(const dsd_state* state);
  * thread, the way the command queue does: it may retune.
  */
 int dsd_trunk_scan_hook_control(dsd_opts* opts, dsd_state* state, int op);
+
+/**
+ * @brief The session-wide scan skip-silent setting (dsd_opts::scan_skip_silent) was written (#834).
+ *
+ * Called on the decoder thread by the app-control handler after it stores the value; the engine implementation
+ * invalidates the quiet checks already made. A no-op when nothing is installed (headless runs, tests).
+ */
+void dsd_scan_quiet_setting_changed(dsd_state* state);
 
 /**
  * @brief Put one avoided target back into the rotation (issue #672), named by its identity: the scan session

@@ -582,6 +582,8 @@ static int
 apply_trunking_section_scan_timing_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     if (strcmp(key_lc, "scan_voice_only") == 0) {
         assign_bool_key(&cfg->trunk_scan_voice_only, val);
+    } else if (strcmp(key_lc, "scan_skip_silent") == 0) {
+        assign_bool_key(&cfg->trunk_scan_skip_silent, val);
     } else if (strcmp(key_lc, "scan_voice_qualify_ms") == 0) {
         int parsed = 0;
         if (user_config_parse_int_value(val, &parsed) == 0) {

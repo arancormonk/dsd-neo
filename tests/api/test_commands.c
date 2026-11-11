@@ -147,6 +147,7 @@ static const sample k_samples[] = {
     {"slot_pref_set", "{\"value\":2}"},
     {"slots_onoff_set", "{\"value\":3}"},
     {"scan_voice_only_set", "{\"value\":1}"},
+    {"scan_skip_silent_set", "{\"value\":1}"},
     {"scan_voice_qualify_ms_set", "{\"value\":1000}"},
     {"scan_voice_hold_ms_set", "{\"value\":2000}"},
     {"nfm_bandwidth_set", "{\"value\":12500}"},

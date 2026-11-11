@@ -8318,6 +8318,72 @@ test_scoped_mode_commands_and_config(void) {
     return rc;
 }
 
+static int g_quiet_setting_calls;
+
+static void
+count_quiet_setting_changed(dsd_state* state) {
+    (void)state;
+    g_quiet_setting_calls++;
+}
+
+/* Session-wide skip-silent (#834): a plain int32 setter that tells the engine through the runtime hook, never
+ * coalesces, ignores a short payload, and is not a scan-row setting (a row enter/leave never touches it). */
+static int
+test_scan_skip_silent_command(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    dsd_trunk_scan_hooks hooks = {0};
+    hooks.quiet_setting_changed = count_quiet_setting_changed;
+    dsd_trunk_scan_hooks_set(&hooks);
+    g_quiet_setting_calls = 0;
+
+    rc |= expect_int("skip-silent id", DSD_APP_CMD_SCAN_SKIP_SILENT_SET, 513);
+    rc |= expect_int("skip-silent rejects action shape", dsd_app_command_action(DSD_APP_CMD_SCAN_SKIP_SILENT_SET),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    rc |= expect_int("skip-silent rejects u32 shape", dsd_app_command_set_u32(DSD_APP_CMD_SCAN_SKIP_SILENT_SET, 1U),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+
+    rc |=
+        expect_int("skip-silent queued", post_i32(DSD_APP_CMD_SCAN_SKIP_SILENT_SET, 1), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("skip-silent drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("skip-silent applied", opts.scan_skip_silent, 1);
+    rc |= expect_int("skip-silent told the engine", g_quiet_setting_calls, 1);
+    rc |= expect_contains("skip-silent toast", state.ui_msg, "Silent channel skip -> On");
+
+    /* A scan-mode row enter and leave neither captures nor restores it. */
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    rc |= expect_int("enter row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
+    rc |= expect_int("skip-silent survives row enter", opts.scan_skip_silent, 1);
+    rc |= expect_int("skip-silent off queued", post_i32(DSD_APP_CMD_SCAN_SKIP_SILENT_SET, 0),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("skip-silent off drained", dsd_app_drain_cmds(&opts, &state), 1);
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_int("row leave does not restore skip-silent", opts.scan_skip_silent, 0);
+    rc |= expect_contains("skip-silent off toast", state.ui_msg, "Silent channel skip -> Off");
+
+    {
+        uint8_t short_payload = 0xFFU;
+        dsd_app_command_submit(DSD_APP_CMD_SCAN_SKIP_SILENT_SET, &short_payload, sizeof(short_payload));
+        rc |= expect_int("short skip-silent drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("short skip-silent ignored", opts.scan_skip_silent, 0);
+        rc |= expect_int("short skip-silent not announced", g_quiet_setting_calls, 2);
+    }
+
+    rc |= expect_int("skip-silent first queued", post_i32(DSD_APP_CMD_SCAN_SKIP_SILENT_SET, 1),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("skip-silent never coalesces", post_i32(DSD_APP_CMD_SCAN_SKIP_SILENT_SET, 7),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("skip-silent pair drained", dsd_app_drain_cmds(&opts, &state), 2);
+    rc |= expect_int("skip-silent nonzero means on", opts.scan_skip_silent, 1);
+
+    dsd_trunk_scan_hooks_set(NULL);
+    freeState(&state);
+    return rc;
+}
+
 static int
 test_scoped_row_option_commands(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -30358,6 +30424,7 @@ main(void) {
 #endif
     rc |= test_trunk_set();
     rc |= test_scan_voice_gate_commands();
+    rc |= test_scan_skip_silent_command();
     rc |= test_channel_cycle_passes_a_refused_row(0);
     rc |= test_channel_cycle_first_refusal_names_no_row(0);
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP

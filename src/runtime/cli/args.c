@@ -872,6 +872,7 @@ enum {
     CLI_TONE_FILTER_SEEN = 1 << 8,
     CLI_SCAN_VOICE_ONLY_SEEN = 1 << 9,
     CLI_SCAN_MAX_VISIT_SEEN = 1 << 10,
+    CLI_SCAN_SKIP_SILENT_SEEN = 1 << 11,
 };
 
 /**
@@ -1857,6 +1858,16 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         if (strcmp(argv[i], "--scan-voice-only") == 0) {                                                               \
             opts->scan_voice_only = 1;                                                                                 \
             analog_cli_seen |= CLI_SCAN_VOICE_ONLY_SEEN;                                                               \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--no-scan-skip-silent") == 0) {                                                           \
+            opts->scan_skip_silent = 0;                                                                                \
+            analog_cli_seen &= ~CLI_SCAN_SKIP_SILENT_SEEN;                                                             \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--scan-skip-silent") == 0) {                                                              \
+            opts->scan_skip_silent = 1;                                                                                \
+            analog_cli_seen |= CLI_SCAN_SKIP_SILENT_SEEN;                                                              \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--scan-voice-qualify-ms") == 0) {                                                         \
@@ -2936,6 +2947,8 @@ dsd_warn_ineffective_scan_opts(const dsd_opts* opts, unsigned int seen) {
                                   "[trunking] scan_voice_only");
     dsd_warn_ineffective_scan_opt(opts->scan_max_visit_ms > 0, seen & CLI_SCAN_MAX_VISIT_SEEN, "--scan-max-visit-ms",
                                   "[trunking] scan_max_visit_ms");
+    dsd_warn_ineffective_scan_opt(opts->scan_skip_silent, seen & CLI_SCAN_SKIP_SILENT_SEEN, "--scan-skip-silent",
+                                  "[trunking] scan_skip_silent");
 }
 
 /* What runs once every option has been read, whatever order they came in. @p analog_cli_seen has bit

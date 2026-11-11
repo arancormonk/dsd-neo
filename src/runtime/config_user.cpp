@@ -203,6 +203,7 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
     cfg->trunk_scan_idle_dwell_ms = 3000;
     cfg->trunk_scan_activity_hold_ms = 1200;
     cfg->trunk_scan_voice_only = 0;
+    cfg->trunk_scan_skip_silent = 0;
     cfg->trunk_scan_voice_qualify_ms = 1000;
     cfg->trunk_scan_voice_hold_ms = 2000;
     cfg->trunk_scan_max_visit_ms = 0;
@@ -1162,6 +1163,7 @@ render_trunking_section(FILE* out, const dsdneoUserConfig* cfg) {
     DSD_FPRINTF(out, "scanner = %s\n", ini_bool(cfg->trunk_scanner));
     DSD_FPRINTF(out, "p25_prefer_candidates = %s\n", ini_bool(cfg->trunk_p25_prefer_candidates));
     DSD_FPRINTF(out, "scan_voice_only = %s\n", ini_bool(cfg->trunk_scan_voice_only));
+    DSD_FPRINTF(out, "scan_skip_silent = %s\n", ini_bool(cfg->trunk_scan_skip_silent));
     DSD_FPRINTF(out, "scan_voice_qualify_ms = %d\n", cfg->trunk_scan_voice_qualify_ms);
     DSD_FPRINTF(out, "scan_voice_hold_ms = %d\n", cfg->trunk_scan_voice_hold_ms);
     DSD_FPRINTF(out, "scan_max_visit_ms = %d\n", cfg->trunk_scan_max_visit_ms);
@@ -1800,6 +1802,7 @@ apply_trunking_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     }
     opts->p25_prefer_candidates = cfg->trunk_p25_prefer_candidates ? (uint8_t)1 : (uint8_t)0;
     opts->scan_voice_only = cfg->trunk_scan_voice_only ? 1 : 0;
+    opts->scan_skip_silent = cfg->trunk_scan_skip_silent ? 1 : 0;
     opts->scan_voice_qualify_ms = cfg->trunk_scan_voice_qualify_ms;
     opts->scan_voice_hold_ms = cfg->trunk_scan_voice_hold_ms;
     opts->scan_max_visit_ms = cfg->trunk_scan_max_visit_ms;
@@ -2281,6 +2284,7 @@ snapshot_trunking_config(const dsd_opts* opts, const dsd_state* state, dsdneoUse
     cfg->trunk_p25_prefer_candidates =
         (configured ? configured->p25_prefer_candidates : opts->p25_prefer_candidates) != 0;
     cfg->trunk_scan_voice_only = (configured ? configured->scan_voice_only : opts->scan_voice_only) ? 1 : 0;
+    cfg->trunk_scan_skip_silent = opts->scan_skip_silent ? 1 : 0; /* session-wide: never captured per row */
     cfg->trunk_scan_voice_qualify_ms = configured ? configured->scan_voice_qualify_ms : opts->scan_voice_qualify_ms;
     cfg->trunk_scan_voice_hold_ms = configured ? configured->scan_voice_hold_ms : opts->scan_voice_hold_ms;
     cfg->trunk_scan_max_visit_ms = configured ? configured->scan_max_visit_ms : opts->scan_max_visit_ms;
