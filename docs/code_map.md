@@ -11337,8 +11337,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   export; otherwise the line says "Exported N detections." / "Exported N avoids." (`Util.countText`, the singular for
   1), "… to Download/DSD-neo as <name>." for a Download-folder save (`savedToDownloads`,
   `decoderHost.savedDocumentName()`, the name last) or "The export couldn't be written. Try another location." Each
-  entry point has its own result line (`ExportMessage`: plain text, `Accessible.AlertMessage`, gated as `searchMessage`
-  is, the alert colour for a failure) directly under its button and apart from `searchMessage`, so neither hides the
+  entry point has its own result line (`qml/ExportMessage.qml`, a `ReadableText`: plain text, `Accessible.AlertMessage`,
+  named from its own gate and a swipe stop while in the tree, the alert colour for a failure) directly under its button and apart from `searchMessage`, so neither hides the
   other; its visibility depends on its message only, so an avoid result stays when the lists empty. The detections
   line lives in `recentDetections` and reads the screen's state, so the Loader swap at a session's start or stop keeps
   it. Each message is `{text, error, heard}`, and a new export clears both. `announceExport()`, as
@@ -12937,7 +12937,7 @@ Qt Quick frontend (`src/ui/qt`):
   radio); a call no party named (no target text or id, no source, a `slotNProtocolLabel`) by `<protocol> call`, TETRA
   alone adding "identity not decoded" (`heroIdentityNote`). The hero's channel shows whenever it differs from the
   headline. The Android notification applies the same rules (`SlotCall.headline`). The painted hero headline
-  (`heroHeadlineText`, a Canvas) carries it as its accessible name. On a private call the actions name the radio:
+  (`heroHeadlineText`, a Canvas, out of the tree) is read by the hero, whose accessible name leads with it. On a private call the actions name the radio:
   **Hold** (the strip menu's **Hold radio n**) holds it, as the decoder's hold matches either party of a private call,
   and **Avoid TG**/**Lock out** are disabled, since the decoder refuses a lockout whose target is a radio (below).
   Tests: `tst_monitor_call_identity.qml`, `tst_monitor_other_slot.qml`, `UI_QT_METRICS_MODEL`
@@ -16159,7 +16159,11 @@ that carries meaning reaches a screen reader one of these ways:
 
 - `qml/ReadableText.qml`: static text named by its own words (`heading: true` for a screen, sheet or section title).
   It leaves the tree while hidden or behind the top layer, as `MicroLabel` does, and holds an empty name there, so a
-  value that changes under a closed sheet renames nothing. Plain text only; a styled text sets its own name.
+  value that changes under a closed sheet renames nothing. Plain text only; a styled text sets its own name. A line
+  that reports a problem (a save that fails, an export's error, a refused import) is a `ReadableText` with the
+  `AlertMessage` role, always or while it reports one, never a plain `Text` naming itself: it is focusable whenever
+  it is in the tree, whatever its role (below). `qml/ExportMessage.qml`, the line under an export button (Signal
+  search, History), is one.
 - A group: one accessible parent named by what its plain `Text` children show, `Util.shownText(item)` (each visible
   child's text; a child with its own `accessibleName` is read on its own and adds nothing). For a label and its value
   or a strip of live readings: the Monitor's hero and reading groups, the Spectrum status line, SiteSheet's field
@@ -16174,11 +16178,14 @@ that carries meaning reaches a screen reader one of these ways:
 - Decorative text (a scale's ends, a sizing probe, an overflow count, a glyph) stays plain.
 
 A heading (`MicroLabel`, a `ReadableText` with `heading: true`, the signal search's paused ranges row) sets
-`Accessible.focusable`. Qt reports a node focusable only when its item takes Tab focus or has a text role
-(`QAccessibleQuickItem::state()`), and Heading is not one; the Android bridge passes that on (`setFocusable`), and
-TalkBack's linear navigation skips a text node that is neither focusable nor clickable, so without it every section and
-screen heading was skipped and a section's lines (the Network sheet's "(none announced)") were heard without it. The
-text walk reports any enabled heading in the tree that is not focusable. A heading is a swipe stop and Qt's bridge reads
+`Accessible.focusable`, and so does an alert line (every `ReadableText` while in the tree, the Signal search's paced
+`searchMessage`). Qt reports a node focusable only when its item takes Tab focus or has a text role
+(`QAccessibleQuickItem::state()`: StaticText and EditableText), and Heading and AlertMessage are not; the Android
+bridge passes that on (`setFocusable`), and TalkBack's linear navigation skips a text node that is neither focusable
+nor clickable, so without it every section and screen heading was skipped and a section's lines (the Network sheet's
+"(none announced)") were heard without it, and the lines that report a problem were skipped. The text walk reports any
+enabled heading, and any text item in another role than StaticText or EditableText, in the tree that is not focusable
+(`testContext.unfocusableTextNodes()`). A heading is a swipe stop and Qt's bridge reads
 out each rename of the one TalkBack is on, so no heading follows a reading a scan moves on every hop: the Spectrum's
 scale ticks are plain text out of the tree (a scale, like BandRail's rail ends), its Go to caption is read in its
 field's name ("Go to frequency in MHz"), and the headings that do name a moving reading are paced (above).
@@ -16229,6 +16236,11 @@ it shows.
 A sheet out of sight or under another leaves the tree through its parts' gates, and every part of a sheet that a
 screen reader reaches has its own navigation gate (`Accessible.ignored: !Navigation.allows(…) || …`): Qt lifts an
 ungated part over its ignored panel, and it stayed reachable under the top sheet (the text walk's covered-sheet case).
+A screen or card is no different: each of its named parts (a notice line, a progress bar, a named `SegmentedControl`,
+whose root takes its name through `accessibleName` and is gated only then, the Spectrum's tune buttons, the Licenses
+text) carries its own gate, and a text its parent already reads is out of the tree (`Accessible.ignored: true`, the
+Monitor's painted headline, which the hero reads); the text walk's covered-screen case covers each screen and card
+with a sheet, every branch shown, finds nothing of it in the tree, and every node back once the sheet closes.
 Leaving the tree raises only ObjectDestroyed, which Android's bridge does not pass on, and a sheet opening raises no
 show (its parts are still out of the tree as they become visible), so each `ModalSheet` has a refresh node under the
 window's content item, never out of the tree, that shows and hides with the sheet's turn on top; the bridge passes that

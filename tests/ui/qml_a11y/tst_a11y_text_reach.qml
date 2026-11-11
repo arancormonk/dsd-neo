@@ -137,11 +137,19 @@ Item {
             {file: "BackupFlow"},
             {file: "BackupResultCard", open: function (card) {
                 card.outcome = {kind: "restored", detail: "Settings and saved systems were restored."};
+                card.actionError = "The backup file couldn't be removed.";
             }},
             {file: "BandRail"},
             {file: "BottomNav"},
-            {file: "CallRecordingPlayer"},
-            {file: "CallRecordingsScreen"},
+            // Each line that reports a problem shown as one (an alert), so the walk asks whether a swipe reaches it.
+            {file: "CallRecordingPlayer", open: function (player) {
+                player.notice = "The recording couldn't be saved.";
+                player.noticeProblem = true;
+            }},
+            {file: "CallRecordingsScreen", open: function (screen) {
+                screen.notice = "The export couldn't be written.";
+                screen.noticeProblem = true;
+            }},
             {file: "ChoiceSheet", open: function (sheet) {
                 sheet.open("Pick one", ["First", "Second"], function () {});
             }},
@@ -177,9 +185,15 @@ Item {
                     channel: "", tg: "100", src: "2001", sourceName: "", enc: false, emergency: false, detail: "",
                     durationSecs: 12, freqHz: 851012500, accessCode: -1, accessCodeText: ""});
             }},
-            {file: "HistoryScreen"},
+            // History's warning that its saves are failing.
+            {file: "HistoryScreen", open: function (screen) {
+                callHistory.setSaveFailing(true);
+            }},
             {file: "HomeScreen"},
-            {file: "ImportsScreen"},
+            {file: "ImportsScreen", open: function (screen) {
+                screen.notice = "The file couldn't be imported.";
+                screen.noticeIsProblem = true;
+            }},
             {file: "KeySheet"},
             {file: "LicensesScreen"},
             // Issue #646: the Listen tabs as Listen fills them.
@@ -209,8 +223,19 @@ Item {
             {file: "ScanEntryRow", properties: {parseInteger: function (text) { return parseInt(text, 10); },
                 frequencyValid: function () { return true; }}},
             {file: "ScanListCard", properties: {listName: "County scan", entryCount: 3}},
-            {file: "ScanListScreen"},
-            {file: "SettingsScreen"},
+            {file: "ScanListScreen", open: function (screen) {
+                // Set as showImportProblem() sets it, without its announcement: Accessible.announce() on the
+                // screen makes the screen's root a node of its own (nameless, its parts gated).
+                screen.validationText = "The target CSV couldn't be read.";
+                screen.validationIsProblem = true;
+            }},
+            // Settings' notices as problems, and a restore waiting for the next start.
+            {file: "SettingsScreen", open: function (screen) {
+                screen.backupNotice = "The backup couldn't be written.";
+                screen.backupNoticeProblem = true;
+                findChild(screen, "recordingStoreNotices").notices = [{text: "The recordings list couldn't be read.", problem: true}];
+                testContext.setBackup("restorePending", true);
+            }},
             {file: "SignalSearchRangeEditor", open: function (sheet) {
                 sheet.visible = true;
                 sheet.errorText = "Start must be below end.";
@@ -235,7 +260,10 @@ Item {
             {file: "TalkgroupSaveFlow"},
             {file: "TalkgroupsScreen"},
             {file: "ToneFilterSheet"},
-            {file: "WizardScreen"}
+            {file: "WizardScreen", open: function (wizard) {
+                wizard.csvNotice = "The CSV couldn't be copied.";
+                wizard.csvNoticeIsProblem = true;
+            }}
         ]
 
         // Visible text that no node on its own chain reads, each with why. An entry with readBy names the item that
@@ -370,8 +398,9 @@ Item {
             return false;
         }
         // The unexplained unreached texts under @p scope, the subtrees of @p skipped left out, as failure lines.
-        // A heading TalkBack's swipes skip (not focusable) is unreached too: its section's lines would be heard without
-        // it, the "(none announced)" lines of the Network sheet among them.
+        // A heading or an alert line TalkBack's swipes skip (not focusable) is unreached too: a heading's section
+        // would be heard without it, the "(none announced)" lines of the Network sheet among them, and an alert
+        // (History's save warning, a failed export) not at all.
         function unexplained(scope, skipped, where) {
             var problems = [];
             var found = testContext.unreachedTexts(scope, skipped);
@@ -379,11 +408,12 @@ Item {
                 if (!explained(found[i], problems))
                     problems.push(where + ": " + describe(found[i]));
             }
-            var headings = testContext.unfocusableHeadings(scope);
-            for (var h = 0; h < headings.length; ++h) {
-                if (!within(headings[h].item, skipped))
-                    problems.push(where + ": heading a swipe cannot reach: " + headings[h].file + " "
-                                  + JSON.stringify(headings[h].name));
+            var stops = testContext.unfocusableTextNodes(scope);
+            for (var h = 0; h < stops.length; ++h) {
+                if (!within(stops[h].item, skipped))
+                    problems.push(where + ": " + (stops[h].role === Accessible.Heading ? "heading" : "text node (role "
+                                  + stops[h].role + ")") + " a swipe cannot reach: " + stops[h].file + "#"
+                                  + stops[h].objectName + " " + JSON.stringify(stops[h].name));
             }
             return problems;
         }
@@ -452,6 +482,8 @@ Item {
             Ui.Navigation.modals = [];
             Ui.Navigation.layers = [];
             testContext.resetPins();
+            callHistory.setSaveFailing(false);
+            testContext.resetBackup();
             // Issue #828: the store notice case's files would otherwise put a card on every later Home.
             testContext.setSignalSearchStoreFiles([]);
         }
@@ -618,6 +650,51 @@ Item {
             searchFake.status = {phase: 0};
             searchFake.history = [];
             compare(left.length, 0, data.tag + ": under the menu, still in the tree: " + JSON.stringify(left));
+        }
+
+        // Each screen and card (every component test_3b leaves out), open with every branch shown, then covered by a
+        // sheet: nothing of it is in the tree, and each node that was comes back once the sheet closes. A part with no
+        // gate of its own stayed reachable under the sheet, its name included: History's save warning under the detail
+        // sheet, the Call recordings notices and export progress, Settings' notices, the Scan list's named choices,
+        // the Spectrum's tune buttons, the wizard's copy progress and Home's backup error.
+        function test_3d_covered_screen_leaves_the_tree_data() {
+            return components_data().filter(function (row) {
+                return !/Sheet$|Dialog$|Menu$|Flow$|Editor$|Selector$/.test(row.spec.file);
+            });
+        }
+        function test_3d_covered_screen_leaves_the_tree(data) {
+            var item = build(data.spec);
+            open(item, data.spec);
+            reveal(item);
+            Ui.Navigation.layers = [];
+            Ui.Navigation.modals = [];
+            waitForRendering(host);
+            wait(20);
+            var before = testContext.accessibleNodesUnder(item).filter(function (node) {
+                return node.inTree;
+            });
+            var cover = Qt.createQmlObject("import QtQuick; Item { visible: true }", host);
+            Ui.Navigation.modals = [cover];
+            waitForRendering(host);
+            wait(20);
+            var left = testContext.accessibleNodesUnder(item).filter(function (node) {
+                return node.inTree;
+            }).map(function (node) {
+                return node.file + "#" + node.objectName + " " + JSON.stringify(node.name);
+            });
+            Ui.Navigation.modals = [];
+            cover.destroy();
+            waitForRendering(host);
+            wait(20);
+            var lost = before.filter(function (node) {
+                return !testContext.accessibleNode(node.item).inTree;
+            }).map(function (node) {
+                return node.file + "#" + node.objectName + " " + JSON.stringify(node.name);
+            });
+            dispose(item);
+            verify(before.length > 0, data.spec.file + " has nodes in the tree before the sheet");
+            compare(left.length, 0, data.spec.file + " covered still has in the tree: " + JSON.stringify(left));
+            compare(lost.length, 0, data.spec.file + " uncovered lost from the tree: " + JSON.stringify(lost));
         }
 
         // The monitor in a two-slot call with its details open: the hero, the other slot and every reading group.

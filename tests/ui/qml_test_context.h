@@ -4246,24 +4246,36 @@ class Setup : public QObject {
     }
 
     /**
-     * @brief Issue #782: the headings under @p root that TalkBack cannot move to: each visible item whose accessible
-     * node is in the tree with the Heading role and is not focusable. Qt reports a Heading node focusable only when the
-     * item takes Tab focus or sets `Accessible.focusable` (QAccessibleQuickItem::state(): text roles are focusable,
-     * Heading is not one), the Android bridge passes that on (setFocusable), and TalkBack's linear navigation skips a
-     * text node that is neither focusable nor clickable. Disabled items are left out. Each entry gives the item, its name
-     * and the declaring file.
+     * @brief Issue #782: the text nodes under @p root that TalkBack cannot move to: each visible item whose accessible
+     * node is in the tree, is not focusable, and is a heading, or a text item (`Text`, `ReadableText`) with any role
+     * but StaticText or EditableText (an AlertMessage line). Qt reports such a node focusable only when the item takes
+     * Tab focus or sets `Accessible.focusable` (QAccessibleQuickItem::state(): only StaticText and EditableText are
+     * text roles, focusable by themselves), the Android bridge passes that on (setFocusable), and TalkBack's linear
+     * navigation skips a text node that is neither focusable nor clickable: a heading's section, or the line that
+     * reports a problem, would be heard without it. Disabled items are left out. Each entry gives the item, its name,
+     * role, objectName and the declaring file.
      */
     Q_INVOKABLE QVariantList
-    unfocusableHeadings(QObject* root) const {
+    unfocusableTextNodes(QObject* root) const {
         QVariantList out;
         if (auto* item = qobject_cast<QQuickItem*>(root)) {
-            collectUnfocusableHeadings(item, out);
+            collectUnfocusableTextNodes(item, out);
         }
         return out;
     }
 
+    /** @brief Whether @p iface on @p item is a heading, or a text item reported in a role that is not a text role. */
+    static bool
+    nonTextRoleOnText(const QQuickItem* item, QAccessibleInterface* iface) {
+        const QAccessible::Role role = iface->role();
+        if (role == QAccessible::Heading) {
+            return true;
+        }
+        return item->inherits("QQuickText") && role != QAccessible::StaticText && role != QAccessible::EditableText;
+    }
+
     static void
-    collectUnfocusableHeadings(QQuickItem* item, QVariantList& out) {
+    collectUnfocusableTextNodes(QQuickItem* item, QVariantList& out) {
         if (!item->isVisible()) {
             return;
         }
@@ -4271,17 +4283,19 @@ class Setup : public QObject {
         // A disabled item is never focusable (QAccessibleQuickItem::state()); the screens disable themselves under an
         // open sheet, where the navigation gate takes them out of the tree on a phone.
         if (iface != nullptr && iface->isValid() && iface->object() == item && item->isEnabled()
-            && iface->role() == QAccessible::Heading && accessibleInTree(iface) && !iface->state().focusable) {
+            && nonTextRoleOnText(item, iface) && accessibleInTree(iface) && !iface->state().focusable) {
             const QQmlContext* context = qmlContext(item);
             out.append(QVariantMap{
                 {QStringLiteral("item"), QVariant::fromValue(static_cast<QObject*>(item))},
                 {QStringLiteral("name"), iface->text(QAccessible::Name)},
+                {QStringLiteral("role"), static_cast<int>(iface->role())},
+                {QStringLiteral("objectName"), item->objectName()},
                 {QStringLiteral("file"), context != nullptr ? context->baseUrl().fileName() : QString()},
             });
         }
         const QList<QQuickItem*> children = item->childItems();
         for (QQuickItem* child : children) {
-            collectUnfocusableHeadings(child, out);
+            collectUnfocusableTextNodes(child, out);
         }
     }
 

@@ -462,26 +462,6 @@ Item {
             screen.exportPickUnavailable(message);
         }
     }
-    // The line under an export button: the result, plain text (it can name a
-    // saved file), read out by announceExport().
-    component ExportMessage: Text {
-        id: exportMessage
-        property var message: ({})
-        width: parent ? parent.width : 0
-        visible: text.length > 0
-        text: message.text || ""
-        textFormat: Text.PlainText
-        wrapMode: Text.Wrap
-        color: message.error ? Theme.alert : Theme.textSecondary
-        font.family: Theme.sans
-        font.pixelSize: Theme.fontSize(14)
-        // Gated as every node a screen reader reaches is: behind an open
-        // sheet it leaves the tree, and holds no name.
-        readonly property bool navigationAllowed: Navigation.allows(exportMessage)
-        Accessible.role: Accessible.AlertMessage
-        Accessible.ignored: !navigationAllowed || !visible
-        Accessible.name: Accessible.ignored ? "" : text
-    }
     onLiveSeqChanged: {
         // Read from status itself: `receiving` and liveShown may not have
         // caught up with an update that brought the hit and its first
@@ -1075,6 +1055,10 @@ Item {
                     readonly property bool navigationAllowed: Navigation.allows(searchMessage)
                     Accessible.role: Accessible.AlertMessage
                     Accessible.ignored: !navigationAllowed || !visible
+                    // An alert is no text role Qt makes focusable by itself, and
+                    // TalkBack's swipes skip a text node that is not (see
+                    // ReadableText): focusable while in the tree.
+                    Accessible.focusable: navigationAllowed && visible
                     // A role alone reads nothing (issue #782): the message is its
                     // name, paced, since two ranges that take turns clipping
                     // rename the warning every pass. Every other line changes on

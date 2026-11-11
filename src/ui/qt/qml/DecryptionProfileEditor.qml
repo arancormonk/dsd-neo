@@ -409,7 +409,7 @@ ModalSheet {
         color: Theme.textSecondary
         font.pixelSize: Theme.fontSize(13)
     }
-    Text {
+    ReadableText {
         id: errorLabel
         objectName: "profileError"
         width: parent.width
@@ -421,8 +421,6 @@ ModalSheet {
         color: Theme.alert
         font.pixelSize: Theme.fontSize(14)
         Accessible.role: Accessible.AlertMessage
-        Accessible.name: text
-        Accessible.ignored: !Navigation.allows(errorLabel) || !visible
     }
     GradientButton {
         objectName: "profileSave"

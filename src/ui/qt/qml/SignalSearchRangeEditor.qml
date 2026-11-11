@@ -184,7 +184,7 @@ ModalSheet {
                 settings = next;
             }
         }
-        Text {
+        ReadableText {
             id: rangeErrorText
             width: parent.width
             visible: sheet.errorText.length > 0
@@ -194,9 +194,6 @@ ModalSheet {
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(14)
             Accessible.role: Accessible.AlertMessage
-            // A role alone reads nothing (issue #782): the error is its name.
-            Accessible.name: text
-            Accessible.ignored: !Navigation.allows(rangeErrorText) || !visible
         }
         GradientButton {
             objectName: "searchRangeSave"

@@ -639,7 +639,9 @@ Item {
             height: Math.min(400, contentHeight)
             clip: true
             model: channelReview.rows
-            delegate: Text {
+            // Its own gate, as every node a screen reader reaches has
+            // (ReadableText), though nothing opens over this sheet today.
+            delegate: ReadableText {
                 required property var modelData
                 // An nfm or am row (issue #526) has no keys or identifiers: the parser refuses them there.
                 readonly property bool analog: modelData.mode === "nfm" || modelData.mode === "am"
@@ -651,8 +653,6 @@ Item {
                 wrapMode: Text.WrapAnywhere
                 color: Theme.textPrimary
                 font.pixelSize: Theme.fontSize(14)
-                Accessible.role: Accessible.StaticText
-                Accessible.name: text
             }
         }
         OutlineButton {

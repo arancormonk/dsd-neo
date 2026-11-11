@@ -11,7 +11,9 @@ import QtQuick
 // or behind the top layer, as MicroLabel does, and holds no name there, so a
 // value that changes under a closed sheet raises nothing. Plain text only: a
 // styled text sets its own name. A text an accessible parent already reads (a
-// button's label, a row named for its whole line) stays a plain Text.
+// button's label, a row named for its whole line) stays a plain Text. A line
+// that reports a problem is one of these with the AlertMessage role, kept
+// focusable so TalkBack's swipes reach it.
 Text {
     id: readable
     // Its words can be a typed, imported or received name (issue #802):
@@ -20,9 +22,11 @@ Text {
     // A screen or sheet title, which TalkBack can move between as a heading.
     property bool heading: false
     Accessible.role: heading ? Accessible.Heading : Accessible.StaticText
-    // A heading is not focusable unless told (see MicroLabel); static text is.
-    // Only while in the tree (see OutlineButton).
-    Accessible.focusable: heading && navigationAllowed && visible
+    // Qt counts only StaticText as a text role that is focusable by itself: a
+    // heading or an alert line is not unless told (see MicroLabel), and
+    // TalkBack's swipes skip a text node that is not. So it is told, for every
+    // role, only while in the tree (see OutlineButton).
+    Accessible.focusable: navigationAllowed && visible
     readonly property bool navigationAllowed: Navigation.allows(readable)
     // Gate first: see OutlineButton.
     Accessible.ignored: !navigationAllowed || !visible

@@ -76,6 +76,10 @@ Item {
             color: Theme.textPrimary
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(14)
+            // A text field is a node of its own: its own gate, so a sheet
+            // that opens over the screen (Open with) takes it out of the tree.
+            readonly property bool navigationAllowed: Navigation.allows(licenseText)
+            Accessible.ignored: !navigationAllowed || !visible
         }
     }
 }

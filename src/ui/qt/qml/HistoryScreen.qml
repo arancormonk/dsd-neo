@@ -121,7 +121,7 @@ Item {
 
         // Issue #708 (B6): a save that cannot reach the disk is retried on its own;
         // until one lands, the reader is told the log is not safe yet.
-        Text {
+        ReadableText {
             objectName: "historySaveFailing"
             width: parent.width
             visible: callHistory.saveFailing === true
@@ -131,7 +131,6 @@ Item {
             font.pixelSize: Theme.fontSize(13)
             color: Theme.alert
             Accessible.role: Accessible.AlertMessage
-            Accessible.name: text
         }
 
         Flow {
