@@ -371,6 +371,49 @@ Item {
             compare(summary.text, "Updated 2 systems.")
             verify(sheet.visible)
         }
+        // Update from the keyboard: it disables while the update runs, so the keyboard goes to the first site. When a
+        // saved site reorders the rows (rebuilt, so the focused one goes), it goes to the new first site; Update, once
+        // offered again, takes it when nothing here holds it.
+        function test_update_keeps_the_keyboard() {
+            prefs.setLocationFix(41, -91, Date.now(), 10)
+            savedSystems.update(1, {hasSitePos: false})
+            sheet.openFor(0)
+            var update = findChild(sheet, "siteUpdateFromRr")
+            var firstSite = function () { return findChild(sheet, "siteChoice" + sheet.rows[0]) }
+            compare(sheet.rows, [0, 1])
+            update.forceActiveFocus()
+            verify(update.activeFocus)
+            keyClick(Qt.Key_Space)
+            verify(rrPlaces.updating)
+            tryVerify(function () { return firstSite().activeFocus }, 1000, "the first site has the keyboard")
+            testContext.finishRrPlacesUpdate(0, 1)
+            verify(update.enabled)
+            verify(firstSite().activeFocus, "a site that stays keeps it")
+
+            update.forceActiveFocus()
+            keyClick(Qt.Key_Space)
+            tryVerify(function () { return firstSite().activeFocus }, 1000)
+            // South gains a position nearer than North: the rows reorder, and Update is no longer offered.
+            savedSystems.update(1, {hasSitePos: true, siteLat: 41, siteLon: -91})
+            compare(sheet.rows, [1, 0])
+            verify(!update.visible)
+            tryVerify(function () { return firstSite().activeFocus }, 1000, "the new first site has it")
+            testContext.finishRrPlacesUpdate(1, 0)
+            verify(firstSite().activeFocus)
+
+            // The rows rebuild and the update ends in one turn (no event in between): the keyboard, lost with the
+            // focused site, goes to Update, offered again.
+            savedSystems.update(0, {hasSitePos: false})
+            update.forceActiveFocus()
+            keyClick(Qt.Key_Space)
+            tryVerify(function () { return firstSite().activeFocus }, 1000)
+            compare(sheet.rows, [1, 0])
+            savedSystems.update(1, {hasSitePos: false})
+            compare(sheet.rows, [0, 1], "rebuilt: the focused site went")
+            testContext.finishRrPlacesUpdate(0, 1)
+            tryVerify(function () { return update.activeFocus && update.enabled }, 1000, "Update has it again")
+            verify(sheet.visible)
+        }
         function test_avoid_toggle() {
             sheet.setAvoid(1, true)
             verify(savedSystems.get(1).avoidSite)

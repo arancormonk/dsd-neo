@@ -66,6 +66,11 @@ ModalSheet {
     }))
     // An update this sheet started, whose summary it then shows.
     property bool rrUpdateStarted: false
+    // Update had the keyboard when pressed. It disables while the update
+    // runs, and the rows are rebuilt as sites are saved and when it ends, so
+    // whenever the keyboard is then left on no control here it goes to
+    // Update (offered again) or else the first site, as Home's notice keeps it.
+    property bool rrKeyboard: false
     function orderedRows() {
         var siblings = savedSystems.siblingRows(groupRow);
         if (prefs.lastFixAt <= 0)
@@ -91,6 +96,7 @@ ModalSheet {
         avoidFailedUid = "";
         locationUpdated = false;
         rrUpdateStarted = false;
+        rrKeyboard = false;
         refresh();
         visible = rows.length > 0;
     }
@@ -136,7 +142,8 @@ ModalSheet {
         else
             listenPins.pin("site", uid);
     }
-    function updateFromRadioReference() {
+    // @a hadFocus: Update had the keyboard.
+    function updateFromRadioReference(hadFocus) {
         userAction();
         var uids = rows.map(function (row) {
             return savedSystems.get(row).uid;
@@ -147,6 +154,20 @@ ModalSheet {
             return;
         }
         rrUpdateStarted = true;
+        rrKeyboard = !!hadFocus && rrPlaces.updating;
+        keepKeyboard();
+    }
+    function keepKeyboard() {
+        if (!rrKeyboard || !visible)
+            return;
+        rrKeyboard = rrPlaces.updating;
+        var window = sheet.Window.window;
+        var focused = window ? window.activeFocusItem : null;
+        if (focused && focused !== sheet && Navigation.contains(sheet, focused))
+            return;
+        var target = rrUpdate.visible && rrUpdate.enabled ? rrUpdate : rrUpdate.nextItemInFocusChain(true);
+        if (target && target !== sheet && Navigation.contains(sheet, target))
+            target.forceActiveFocus();
     }
     function useLocation() {
         userAction();
@@ -181,6 +202,8 @@ ModalSheet {
         target: savedSystems
         function onSitesChanged() {
             sheet.refresh();
+            if (sheet.rrKeyboard)
+                Qt.callLater(sheet.keepKeyboard);
         }
     }
     // What an update changed (names, positions) shows at once.
@@ -189,6 +212,8 @@ ModalSheet {
         ignoreUnknownSignals: true
         function onUpdateFinished() {
             sheet.refresh();
+            if (sheet.rrKeyboard)
+                Qt.callLater(sheet.keepKeyboard);
         }
     }
     Connections {
@@ -275,12 +300,13 @@ ModalSheet {
         }
     }
     OutlineButton {
+        id: rrUpdate
         objectName: "siteUpdateFromRr"
         width: parent.width
         visible: sheet.missingPositions
         enabled: !rrPlaces.updating
         text: qsTr("Update from RadioReference")
-        onClicked: sheet.updateFromRadioReference()
+        onClicked: sheet.updateFromRadioReference(activeFocus)
     }
     // Moves with every system done, so it is paced for a screen reader.
     LiveText {
