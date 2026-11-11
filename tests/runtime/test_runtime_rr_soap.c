@@ -434,14 +434,21 @@ test_details_keep_states_and_counties(void) {
     dsd_rr_trs_details_free(&statewide);
     dsd_rr_trs_details_free(&statewide);
 
-    /* Existing fixtures without these arrays stay empty, not failed. */
-    dsd_rr_trs_details none;
+    /* The real-air TETRA capture names one state (785) and two counties. */
+    dsd_rr_trs_details tetra;
     DSD_MEMSET(&err, 0, sizeof(err));
-    DSD_MEMSET(&none, 0, sizeof(none));
-    if (parse_fixture("trs_details_tetra.xml", RR_SHAPE_TRS_DETAILS, &none, &err) == 0) {
-        expect("tetra ids are bounded by what the response carries", none.state_count <= 64U);
+    DSD_MEMSET(&tetra, 0, sizeof(tetra));
+    expect("tetra details parse", parse_fixture("trs_details_tetra.xml", RR_SHAPE_TRS_DETAILS, &tetra, &err) == 0);
+    expect_ll("tetra state count", (long long)tetra.state_count, 1);
+    if (tetra.state_count == 1U) {
+        expect_ll("tetra state", tetra.state_ids[0], 785);
     }
-    dsd_rr_trs_details_free(&none);
+    expect_ll("tetra county count", (long long)tetra.county_count, 2);
+    if (tetra.county_count == 2U) {
+        expect_ll("tetra first county", tetra.county_ids[0], 5893);
+        expect_ll("tetra second county", tetra.county_ids[1], 5894);
+    }
+    dsd_rr_trs_details_free(&tetra);
     dsd_rr_trs_details_free(NULL);
 }
 
