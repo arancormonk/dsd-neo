@@ -308,6 +308,7 @@ typedef struct {
     atomic_int started;
     atomic_int done;
     int created; /* written by the hook on the saving thread, read after the save returns */
+    int blocked; /* likewise: the refresh was blocked on the lock, unfinished, at the decoder's checked point */
     int rc;
     dsd_thread_t thread;
 } refresh_race;
@@ -324,7 +325,9 @@ refresh_race_run(void* arg) {
 }
 
 /* At the decoder's "file checked, about to replace" point (inside the managed-file lock): start the refresh, and wait,
-   two seconds at most, until it is blocked on the lock, or has finished because nothing held it back. */
+   ten seconds at most (a loaded host can leave a new thread unscheduled for a while), until it is blocked on the lock,
+   or has finished because nothing held it back. Whether it was blocked is read here, while the decoder still holds the
+   lock: once the save unlocks, the refresh may finish at any moment. */
 static void
 refresh_race_at_checked(dsd_managed_file_step step) {
     refresh_race* race = &s_refresh_race;
@@ -336,16 +339,18 @@ refresh_race_at_checked(dsd_managed_file_step step) {
         return;
     }
     race->created = 1;
-    for (int i = 0; i < 2000 && dsd_managed_file_test_waiters() < 1 && !atomic_load(&race->done); i++) {
+    for (int i = 0; i < 10000 && dsd_managed_file_test_waiters() < 1 && !atomic_load(&race->done); i++) {
         dsd_sleep_ms(1);
     }
+    race->blocked = dsd_managed_file_test_waiters() >= 1 && !atomic_load(&race->done);
 }
 
 /* Discussion #748 follow-up R4: the terminal RadioReference refresh replaces a stored group list under the
    managed-file lock, so it cannot land between the decoder's check of the file and its rewrite ("decoder checks A,
    refresh installs B, decoder writes over B"). Driven deterministically: the refresh starts at the decoder's checked
    point and must wait for the rewrite; it then lands on top, and the decoder's next save sees the change and refuses
-   until the list is reloaded. */
+   until the list is reloaded. The checks run after the refresh has finished: the refresh may take the lock the moment
+   the save releases it, before the saving thread runs again, so "still waiting" is only true inside the save. */
 static int
 test_refresh_waits_for_decoder_rewrite(const char* dir) {
     char path[DSD_TEST_PATH_MAX];
@@ -372,11 +377,11 @@ test_refresh_waits_for_decoder_rewrite(const char* dir) {
     dsd_managed_file_test_set_hook(refresh_race_at_checked);
     rc |= expect_int("race: decoder save", dsd_tg_policy_write_group_file(opts, st), 0);
     dsd_managed_file_test_set_hook(NULL);
-    rc |= expect_int("race: refresh started at the checked point", atomic_load(&race->started), 1);
-    rc |= expect_int("race: refresh waited for the save", atomic_load(&race->done), 0);
     if (race->created) {
         (void)dsd_thread_join(race->thread);
     }
+    rc |= expect_int("race: refresh started at the checked point", atomic_load(&race->started), 1);
+    rc |= expect_int("race: refresh waited for the save", race->blocked, 1);
     rc |= expect_int("race: refresh written", race->rc, 0);
     rc |= expect_int("race: the refresh is on disk", file_is(path, k_refresh), 1);
     rc |= expect_int("race: the next save refuses the unreloaded refresh", dsd_tg_policy_write_group_file(opts, st), 2);
