@@ -9356,10 +9356,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   `dsd_nxdn_foreign_control_last_m()`, decode clock); no RAN, received control channel, CC hunt note or Type-C note is
   written; its site broadcasts are printed only, every other message prints its type only (no grant, call, release or
   control-sync effect); its superframe SACCH segment never enters the SACCH assembly, which it empties, so no superframe
-  mixes the two channels' segments; and the frame skips the decoder's own carrier-sync stamp (`nxdn_mark_carrier_sync_active()`)
-  and plays no voice (the frame-sync accept still stamps `last_cc_sync_time` for any NXDN sync,
-  `frame_sync_note_cc_sync()`). A call on this site's control channel
-  itself (followed frequency equal to `p25_cc_freq` or `trunk_cc_freq`) is the site's own.
+  mixes the two channels' segments; and the frame skips the decoder's own carrier-sync stamp
+  (`nxdn_mark_carrier_sync_active()`) and plays no voice (the frame-sync accept stamps no sync clock for any NXDN
+  sync). A call on this site's control channel itself (followed frequency equal to `p25_cc_freq` or `trunk_cc_freq`) is
+  the site's own.
 - NXDN return from a voice channel that is another site's control channel (discussion #748). That control channel keeps
   NXDN frame sync on the followed frequency, so once the call's DISC is missed the synced-frames loop never reaches
   noCarrier(), whose hangtime return is the only other way back. `dsd_engine_trunk_receive_release_due()` (the synced
@@ -10268,14 +10268,16 @@ Private per-protocol modules worth knowing about:
 - `src/protocol/nxdn/nxdn_confirm.{c,h}` — its NXDN counterpart, and for the same reason: the 10-symbol sync word and
   one-parity-bit LICH ahead of it are weak enough that receiver noise clears both. Channel decoders report their CRC
   verdicts to it, and `nxdn_frame.c` consults it before refreshing the scan hold or synthesizing voice, as
-  `nxdn_deperm.c`/`nxdn_element.c` do before publishing a RAN or a call. The engine clears it with the carrier through
-  `nxdn_confirm_reset()`, the one entry point exported in `<dsd-neo/protocol/nxdn/nxdn.h>`.
-  `NXDN_Elements_Content_decode()` carries no CRC verdict of its own: the channel decoders in `nxdn_deperm.c` and
-  `NXDN_SACCH_Full_decode()` hand it CRC-verified content only, so the gate lives in those callers, with
-  `nxdn_confirm_is_confirmed()` as the frame-level check at the sites that publish a call or refresh a scan hold.
-  Evidence confirms at once, before the RAN and call it unlocks are published; a signal search hears a frame's
-  confirmation once, from `nxdn_confirm_end_frame()`, after they are (`NXDN_CONFIRM`, `NXDN_DEPERM_PRIMITIVES`), which
-  also stamps `dsd_state::nxdn_confirm_lock_m` for the NXDN control-channel hunt.
+  `nxdn_deperm.c`/`nxdn_element.c` do before publishing a RAN or a call. The frame sync's NXDN accept
+  (`frame_sync_try_nxdn()`) stamps no sync clock of its own, so the scan hold (`last_cc_sync_time`, which a `-Y` scan
+  steps by and the trunking state machines read) moves only on a confirmed frame (`FRAME_SYNC_INTERNAL_HELPERS`,
+  `NXDN_FRAME_ROUTING`). The engine clears the confirmation with the carrier through `nxdn_confirm_reset()`, the one
+  entry point exported in `<dsd-neo/protocol/nxdn/nxdn.h>`. `NXDN_Elements_Content_decode()` carries no CRC verdict of
+  its own: the channel decoders in `nxdn_deperm.c` and `NXDN_SACCH_Full_decode()` hand it CRC-verified content only, so
+  the gate lives in those callers, with `nxdn_confirm_is_confirmed()` as the frame-level check at the sites that publish
+  a call or refresh a scan hold. Evidence confirms at once, before the RAN and call it unlocks are published; a signal
+  search hears a frame's confirmation once, from `nxdn_confirm_end_frame()`, after they are (`NXDN_CONFIRM`,
+  `NXDN_DEPERM_PRIMITIVES`), which also stamps `dsd_state::nxdn_confirm_lock_m` for the NXDN control-channel hunt.
 - `src/protocol/m17/m17_confirm.{c,h}` — the same module for M17, whose sync chain opens on a preamble that is only an
   alternating symbol run. Frame handlers report `(own check || confirmed)`, `dispatch_m17.c` reports it on an EOT, and
   `dsd_frame_sync.c` reads the raw state to decide whether to keep extending a candidate chain.

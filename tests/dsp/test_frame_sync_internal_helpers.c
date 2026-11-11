@@ -2365,6 +2365,36 @@ nxdn96_fsw(dsd_opts* opts, dsd_state* state, int polarity, int swapped, dsd_nxdn
     return sync;
 }
 
+/* An NXDN sync is a ten-symbol word that receiver noise clears (#398): its accept leaves the sync clock a -Y scan holds
+ * on and the trunking state machines read where it was, NXDN48 and NXDN96 alike. Only a frame the transmission's CRCs
+ * confirmed moves it (nxdn_mark_carrier_sync_active(), NXDN_FRAME_ROUTING). */
+static void
+test_an_nxdn_sync_accept_leaves_the_sync_clock(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset(&opts, &state);
+    opts.frame_nxdn48 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.last_cc_sync_time = 1000;
+    state.last_cc_sync_time_m = 7.0;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+    assert(state.last_cc_sync_time == 1000);
+    assert(fabs(state.last_cc_sync_time_m - 7.0) < 1e-9);
+
+    nxdn96_sync_setup(&opts, &state);
+    state.last_cc_sync_time = 1000;
+    state.last_cc_sync_time_m = 7.0;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, DSD_NXDN96_LICH_GOOD) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, DSD_NXDN96_LICH_GOOD) == DSD_SYNC_NXDN_POS);
+    assert(state.last_cc_sync_time == 1000);
+    assert(fabs(state.last_cc_sync_time_m - 7.0) < 1e-9);
+}
+
 static void
 test_nxdn96_follows_the_receiver_sync_rules(void) {
     static dsd_opts opts;
@@ -5582,6 +5612,7 @@ main(void) {
     test_m17_candidate_expires_without_a_following_sync();
     test_short_m17_window_estimates_levels_without_warm_start_history();
     test_m17_alternating_runs_alone_are_never_a_sync();
+    test_an_nxdn_sync_accept_leaves_the_sync_clock();
     test_a_dpmr_frame_is_not_reopened_by_the_nxdn_matcher();
     test_the_dpmr_frame_suppression_is_scoped_to_its_own_profile();
     test_a_p25p1_frame_is_not_reopened_by_the_nxdn96_matcher();

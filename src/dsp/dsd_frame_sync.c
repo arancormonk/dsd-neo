@@ -2364,9 +2364,9 @@ frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
      * altogether -- so what the span withholds is the sync, not the levels. Refusing here rather
      * than at the profile gate keeps the estimate flowing while denying the accept everything it
      * costs P25p1: the symbols the handler would read, a slicer warm-started from P25 payload,
-     * the control-channel timestamp, and the lastsynctype that keeps use_symbol()'s C4FM
-     * threshold tracker engaged between one P25p1 sync and the next (#388). The offset is left
-     * alone for the same reason -- inside this span it belongs to the frame P25p1 opened.
+     * and the lastsynctype that keeps use_symbol()'s C4FM threshold tracker engaged between one
+     * P25p1 sync and the next (#388). The offset is left alone for the same reason -- inside this
+     * span it belongs to the frame P25p1 opened.
      *
      * The second span withholds it for a transmission proved on 2400/4 that the hunt has since
      * stepped off, which this matcher would otherwise read at twice its rate and accept as
@@ -2387,7 +2387,9 @@ frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
      * nxdn_finalize_sync_reject() read the protocol from it, and a payload hit or a reset may have left another. */
     state->lastsynctype = synctype;
     if (accepts) {
-        frame_sync_note_cc_sync(ctx);
+        /* No sync clock here: a ten-symbol word and a one-parity-bit LICH are what receiver noise clears (#398), so the
+           clock a -Y scan holds on and the trunking state machines read waits for a frame the transmission's CRCs
+           confirmed (nxdn_mark_carrier_sync_active()). */
         dsd_sync_warm_start_thresholds_outer_only(opts, state, 10);
         return synctype;
     }
