@@ -11300,45 +11300,44 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   shown session's list, read as one consistent pair (revision, permanent get, session get, revision, again until the
   two revisions are equal, at most `kAvoidReadTries` = 32 times), a frequency in both written once, as `permanent`. It
   returns `{token, count}`: a token above 0 with the row count, `{0, 0}` for no rows, `{0, -1}` for an unknown kind or
-  avoid lists that kept changing. `saveExport(token, reference)` hands the pending file to the model's
-  `PendingExport` (`pending_export.{h,cpp}`: the token, the pending bytes and the `DocumentExportWriter`, shared with
-  other CSV exports; `reset()` first in every prepare) and forgets it; a token that is not the pending one, or a save
-  while one runs, is refused and
-  the reference's Download-folder row let go of (through the save transport). `discardExport(token)` drops only that
-  token's file, and `exportFinished(token, ok)` reports an accepted save on the GUI thread. The model owns the helper,
-  made in its constructor from `host->saveTransport()` (a base transport without a host) under
-  `<CacheLocation>/signal-search-export`, and destroys it (and so the writer) inside its own teardown stage; the model
-  lives as long as the
-  QML engine, so a writer's abort (process-wide on Android) only ever happens at teardown. The files are built by
-  `signal_search_export.{h,cpp}` (pure builders the tests feed records to): the detections file's columns are
+  avoid lists that kept changing. `saveExport(token, reference)` hands the pending file to the model's `PendingExport`
+  (`pending_export.{h,cpp}`: the token, the pending bytes and the `DocumentExportWriter`, shared with other CSV
+  exports; `reset()` first in every prepare) and forgets it; a token that is not the pending one, or a save while one
+  runs, is refused and the reference's Download-folder row let go of (through the save transport).
+  `discardExport(token)` drops only that token's file, and `exportFinished(token, ok)` reports an accepted save on the
+  GUI thread. The model owns the helper, made in its constructor from `host->saveTransport()` (a base transport
+  without a host) under `<CacheLocation>/signal-search-export`, and destroys it (and so the writer) inside its own
+  teardown stage; the model lives as long as the QML engine, so a writer's abort (process-wide on Android) only ever
+  happens at teardown. The files are built by `signal_search_export.{h,cpp}` (pure builders the tests feed records
+  to): the detections file's columns are
   `started_utc,ended_utc,ended,frequency_hz,frequency_mhz,listen_mode,identification,protocol,access,tone,site,slot,`
   `target,source,encryption,power_dbfs,noise_dbfs,range,bandwidth_hz,saved_names` (UTC times with milliseconds, empty
   for a 0 time; `identification` `confirmed`, `unresolved` or `rf-only`; a party's received text, else its non-zero
-  number; levels to 0.1 dB, empty when not finite), and leave out the input spec, PPM, bias tee, gain, Airspy
-  settings and ids. `saved_names` is hitMap()'s `knownLabel`: both call `knownMatches()` at the detection's match
-  width (bandwidth, or the step when narrower), the export once per frequency and width. `csv_text.{h,cpp}` writes
-  each record: UTF-8 with a byte order mark, CRLF after every record, `.` decimals, RFC 4180 quoting, and a leading
-  `'` on a text column that starts like a formula. Test: `UI_QT_SIGNAL_SEARCH` (exact rows, locale, avoid reads
-  retried, tokens, a 1,000-row export over a heavy index).
-  The screen's side (#826): **Export detections…**, a full-width `OutlineButton` ending Recent detections after Show
-  more (inside `recentDetections`, shown while the history has rows), and **Export avoids…** after the Permanent avoids
-  list (shown while either list the screen shows has an entry, `avoidsExportShown`) both call `beginExport(kind)`,
-  which takes the rows through `prepareExport()` at the press. A count of 0 says "No detections to export." / "No
-  avoids to export." and any other 0 token "The avoid lists were changing. Try again.", with no picker; otherwise one
-  screen-level `DocumentPicker` (`searchExportPicker`: save, `text/csv`, "CSV files (*.csv)", suffix `csv`) asks
-  under "Signal search detections yyyy-MM-dd.csv" / "Signal search avoids yyyy-MM-dd.csv" (the local date from
-  `savedSystems.realtimeNowMs()`; always a lowercase `.csv`, since Android's save picker appends the type's extension
-  to `x.CSV`). Both buttons are disabled while an export is pending (`exportToken`, from the press until the pick backs
-  out or the file is written). An accepted pick goes to `saveExport(token, reference)`; a refusal (false) has already
-  let the Download-folder row go in C++, so the screen releases that token (only while it still holds it) and shows the
-  failure at once. A cancelled pick calls `discardExport(token)` and says nothing; an unavailable one discards and shows
-  the picker's message; hiding the screen calls `picker.cancel()`, and a write already running finishes. An
-  `exportFinished(token, ok)` for a token the screen no longer holds is ignored, so a late result never clears a newer
-  export; otherwise the line says "Exported N detections." / "Exported N avoids." (`Util.countText`, the singular for
-  1), "… to Download/DSD-neo as <name>." for a Download-folder save (`savedToDownloads`,
-  `decoderHost.savedDocumentName()`, the name last) or "The export couldn't be written. Try another location." Each
-  entry point has its own result line (`qml/ExportMessage.qml`, a `ReadableText`: plain text, `Accessible.AlertMessage`,
-  named from its own gate and a swipe stop while in the tree, the alert colour for a failure) directly under its button and apart from `searchMessage`, so neither hides the
+  number; levels to 0.1 dB, empty when not finite), and leave out the input spec, PPM, bias tee, gain, Airspy settings
+  and ids. `saved_names` is hitMap()'s `knownLabel`: both call `knownMatches()` at the detection's match width
+  (bandwidth, or the step when narrower), the export once per frequency and width. `csv_text.{h,cpp}` writes each
+  record: UTF-8 with a byte order mark, CRLF after every record, `.` decimals, RFC 4180 quoting, and a leading `'` on
+  a text column that starts like a formula. Test: `UI_QT_SIGNAL_SEARCH` (exact rows, locale, avoid reads retried,
+  tokens, a 1,000-row export over a heavy index). The screen's side (#826): **Export detections…**, a full-width
+  `OutlineButton` ending Recent detections after Show more (inside `recentDetections`, shown while the history has
+  rows), and **Export avoids…** after the Permanent avoids list (shown while either list the screen shows has an
+  entry, `avoidsExportShown`) both call `beginExport(kind)`, which takes the rows through `prepareExport()` at the
+  press. A count of 0 says "No detections to export." / "No avoids to export." and any other 0 token "The avoid lists
+  were changing. Try again.", with no picker; otherwise one screen-level `DocumentPicker` (`searchExportPicker`: save,
+  `text/csv`, "CSV files (*.csv)", suffix `csv`) asks under "Signal search detections yyyy-MM-dd.csv" / "Signal search
+  avoids yyyy-MM-dd.csv" (the local date from `savedSystems.realtimeNowMs()`; always a lowercase `.csv`, since
+  Android's save picker appends the type's extension to `x.CSV`). Both buttons are disabled while an export is pending
+  (`exportToken`, from the press until the pick backs out or the file is written). An accepted pick goes to
+  `saveExport(token, reference)`; a refusal (false) has already let the Download-folder row go in C++, so the screen
+  releases that token (only while it still holds it) and shows the failure at once. A cancelled pick calls
+  `discardExport(token)` and says nothing; an unavailable one discards and shows the picker's message; hiding the
+  screen calls `picker.cancel()`, and a write already running finishes. An `exportFinished(token, ok)` for a token the
+  screen no longer holds is ignored, so a late result never clears a newer export; otherwise the line says "Exported N
+  detections." / "Exported N avoids." (`Util.countText`, the singular for 1), "… to Download/DSD-neo as <name>." for a
+  Download-folder save (`savedToDownloads`, `decoderHost.savedDocumentName()`, the name last) or "The export couldn't
+  be written. Try another location." Each entry point has its own result line (`qml/ExportMessage.qml`, a
+  `ReadableText`: plain text, `Accessible.AlertMessage`, named from its own gate and a swipe stop while in the tree,
+  the alert colour for a failure) directly under its button and apart from `searchMessage`, so neither hides the
   other; its visibility depends on its message only, so an avoid result stays when the lists empty. The detections
   line lives in `recentDetections` and reads the screen's state, so the Loader swap at a session's start or stop keeps
   it. Each message is `{text, error, heard}`, and a new export clears both. `announceExport()`, as
@@ -12156,9 +12155,10 @@ Qt Quick frontend (`src/ui/qt`):
     same-end preference in `same_reception_row()`) uses `row_merge_end_secs()`: the end only while the duration is
     known, else the start. So a clock-shifted row (a span of hours) absorbs no later call of its talkgroup and source
     inside that span, and a real chain longer than an hour continues in a new row once it crosses the cap; the row
-    past the cap keeps its real end. An update still reaches it by its fragment. The end is stored as `end` (omitted when not known) in the rows store
-    and the spill. A row an older build stored has no `end`: it ends at `when + durationSecs` when the duration is
-    known, else not known. Notices keep no end. Tests: `UI_QT_CALL_HISTORY_MODEL`.
+    past the cap keeps its real end. An update still reaches it by its fragment. The end is stored as `end` (omitted
+    when not known) in the rows store and the spill. A row an older build stored has no `end`: it ends at
+    `when + durationSecs` when the duration is known, else not known. Notices keep no end. Tests:
+    `UI_QT_CALL_HISTORY_MODEL`.
   - Persistence: `call_history.json` (rows) and `call_history_seen.json` (seen map, newest 2048 in retention order);
     `call_history_spill.jsonl` holds what the background capture found until a save covers it (below).
     Both are rewritten whole, so the debounce follows their size (issue #745):
@@ -12204,13 +12204,13 @@ Qt Quick frontend (`src/ui/qt`):
     store knows before its row exists shows when the row arrives. The provider also names many rows' recordings in one
     read (`recordingEntryNames()`, the recording store below), for a History export.
   - Export rows and file (History CSV export; `call_history_export.{h,cpp}`): `exportRows(sourceRows)` turns this
-    model's rows, in the order given (one out of range skipped), into `ExportRow`s of plain values, each read through
-    the role History shows it by (`data()`: a channel id by its `setChannelNames()` name, the access code, tone, site
-    and analog mode texts), and every row's recording names from one `recordingEntryNames()` call (none without a
-    provider, or when its answer does not cover every row), so an export takes the store's lock once. The row's `end`
-    and the other internal fields stay out. `call_history_export::file(rows, zone)` is the pure builder: BOM, CRLF,
-    `csv_text` quoting and formula guard on the text columns (name, radio_name, system, channel, access_code, tone,
-    site, message, recordings), header
+    model's rows, in the order given (a row out of range is skipped), into `ExportRow`s of plain values, each read
+    through the role History shows it by (`data()`: a channel id by its `setChannelNames()` name, the access code,
+    tone, site and analog mode texts), and every row's recording names from one `recordingEntryNames()` call (none
+    without a provider, or when its answer does not cover every row), so an export takes the store's lock once. The
+    row's `end` and the other internal fields stay out. `call_history_export::file(rows, zone)` is the pure builder:
+    BOM, CRLF, `csv_text` quoting and formula guard on the text columns (name, radio_name, system, channel,
+    access_code, tone, site, message, recordings), header
     `started_local,utc_offset,started_utc,duration_s,type,name,talkgroup,radio_id,radio_name,system,channel,`
     `frequency_hz,access_code,tone,site,analog_mode,encrypted,emergency,message,recordings`. The start is written in
     the zone given at that instant (`yyyy-MM-dd HH:mm:ss`), that instant's offset (`UTC+05:30`) and ISO UTC (`...Z`),
@@ -12218,7 +12218,7 @@ Qt Quick frontend (`src/ui/qt`):
     `type` is `call` or `message`; `analog_mode` is `NFM`, `AM`, `analog` (mode unknown) or empty; flags `1`/`0`. The
     recordings cell joins the names with ` | `, each `\` written `\\` and each `|` written `\|`
     (`joinRecordingNames()`; `splitRecordingNames()` reads it back). No clock or locale is read. Tests:
-    `UI_QT_CALL_HISTORY_EXPORT`.
+    `UI_QT_CALL_HISTORY_EXPORT`. The file's columns and rules for readers are in `docs/csv-formats.md` "History file".
   - Exporter (`call_history_exporter.{h,cpp}`, `CallHistoryExporter`, context property `historyExport`): what
     History's **Export…** calls. `prepare(view)` drops any pending file first (`PendingExport::reset()`), then takes
     only a `CallHistoryFilterModel` whose source is its own model (anything else: `{token 0, count -1}`), maps every
@@ -12237,6 +12237,22 @@ Qt Quick frontend (`src/ui/qt`):
     Decided limit: a press during a recording-store folder replacement waits for that step, as History's list does.
     Tests: `UI_QT_CALL_HISTORY_EXPORT` (filtered rows, refused views, tokens, busy, teardown, and an end-to-end
     export whose recordings cells equal the store's zip selection names).
+  - Export…, the screen's side (`qml/HistoryScreen.qml`; `tst_history_export.qml`): an **Export…** button beside
+    **Clear** (accessible name **Export history as a CSV file**), disabled while this screen's export is pending,
+    while `historyExport.busy` (so both History screens are disabled while either writes) and while the list shows no
+    row. `beginExport()` first calls `flushPendingSearch()`, so a search typed in the last 250 ms is in the file, then
+    `historyExport.prepare(historyView)`. A count of 0 says "No entries to export." and a token of 0 otherwise "The
+    export couldn't be written. Try another location."; neither opens the picker. Otherwise a screen-level
+    `DocumentPicker` (`exportPicker`: save, `text/csv`, suffix `csv`) asks under "Call history yyyy-MM-dd.csv" (local
+    date from `savedSystems.realtimeNowMs()`). `exportPicked()` calls `historyExport.save()`; a refusal releases the
+    token and shows the failure at once; a cancelled pick calls `discard()`; hiding the screen cancels the picker.
+    `exportFinished(token, ok)` ignores a token the screen does not hold, so the other History screen's result never
+    clears or replaces this one's message. The line is an `ExportMessage` ({text, error, heard}) read once through
+    `Navigation.announce()` only while the screen is visible and `Navigation.allows()` it, as Signal search does.
+    Messages (`Util.countText`, the saved name last): "Exported N entries." / "Exported 1 entry." / "Exported N of M
+    entries. The search and filters left out the rest." and, for a Download-folder save, "Exported N entries to
+    Download/DSD-neo as <name>." / "Exported 1 entry to Download/DSD-neo as <name>." / "Exported N of M entries to
+    Download/DSD-neo as <name>.".
   - Background capture (issue #708, B1; `call_history_tap.{h,cpp}`): Qt pauses the GUI thread on Android in the
     background, the UI tick was the ring's only reader, and the ring keeps 254 committed rows a slot, so a busy system
     overwrote calls History never saw. When the application turns Suspended or Hidden, after `saveNow()`, the model
@@ -12937,9 +12953,10 @@ Qt Quick frontend (`src/ui/qt`):
   radio); a call no party named (no target text or id, no source, a `slotNProtocolLabel`) by `<protocol> call`, TETRA
   alone adding "identity not decoded" (`heroIdentityNote`). The hero's channel shows whenever it differs from the
   headline. The Android notification applies the same rules (`SlotCall.headline`). The painted hero headline
-  (`heroHeadlineText`, a Canvas, out of the tree) is read by the hero, whose accessible name leads with it. On a private call the actions name the radio:
-  **Hold** (the strip menu's **Hold radio n**) holds it, as the decoder's hold matches either party of a private call,
-  and **Avoid TG**/**Lock out** are disabled, since the decoder refuses a lockout whose target is a radio (below).
+  (`heroHeadlineText`, a Canvas, out of the tree) is read by the hero, whose accessible name leads with it. On a
+  private call the actions name the radio: **Hold** (the strip menu's **Hold radio n**) holds it, as the decoder's hold
+  matches either party of a private call, and **Avoid TG**/**Lock out** are disabled, since the decoder refuses a
+  lockout whose target is a radio (below).
   Tests: `tst_monitor_call_identity.qml`, `tst_monitor_other_slot.qml`, `UI_QT_METRICS_MODEL`
   (`test_slot_kind_and_labels()`). The panel sits in a plain `Item` (`otherSlotHost`) that holds its place: during a
   scan rotation that has visited a two-slot carrier (`rotationReservesStrip`, latched by handlers on
@@ -14365,7 +14382,7 @@ Qt Quick frontend (`src/ui/qt`):
   to `discardPendingDownload`, never one another picker waits for. `savedToDownloads` says the last accepted save
   went to the Download folder; it is set before `accepted`, so a save owner that no longer wants an accepted pick
   (`BackupFlow.savePicked()`, `CallRecordingPlayer.savePicked()`, `CallRecordingsScreen.exportPicked()`,
-  `SignalSearchScreen.exportPicked()`) discards a Download-folder row itself. On the desktop path an open clears the
+  `SignalSearchScreen.exportPicked()`, `HistoryScreen.exportPicked()`) discards a Download-folder row itself. On the desktop path an open clears the
   dialog's selection (`currentFiles = []`: `selectedFiles` is read-only and `selectedFile = ""` is refused), so an
   accept with no new choice answers `noResult`, never the previous file; a dialog that cannot open answers `failed`.
   Issue #830: an open picker with a `browseKind` ("csv", "backup" or "replay"; empty never browses) can be served by

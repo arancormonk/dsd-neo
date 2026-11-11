@@ -3050,11 +3050,12 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   refresh node raised its hide or show under the window (`testContext.accessibleParentRole()`). The text walk's
   `test_3b_covered_sheet_leaves_the_tree` covers each sheet with another, every branch shown, and finds nothing of it
   in the tree; `test_3d_covered_screen_leaves_the_tree` does the same for every other component (the screens and
-  cards), and checks that each node in the tree before the sheet is back once it closes. `tst_a11y_scan_churn.qml`'s `test_j_first_spectrum_open_builds_at_once` opens the Spectrum through the
-  monitor for the first time with a screen reader on: the loader is not asynchronous, the screen is built and shown in
-  the same turn, and it puts at most 20 nodes in the tree. The first-open stall under TalkBack is a Qt limit, measured
-  on the emulator, not here. `P25_MOTOROLA_ALIAS`'s `test_held_call_keeps_its_names` holds an ended call on a
-  labelled trunk-scan target and on a listed talkgroup: each is named while held as it was while active.
+  cards), and checks that each node in the tree before the sheet is back once it closes.
+  `tst_a11y_scan_churn.qml`'s `test_j_first_spectrum_open_builds_at_once` opens the Spectrum through the monitor for
+  the first time with a screen reader on: the loader is not asynchronous, the screen is built and shown in the same
+  turn, and it puts at most 20 nodes in the tree. The first-open stall under TalkBack is a Qt limit, measured on the
+  emulator, not here. `P25_MOTOROLA_ALIAS`'s `test_held_call_keeps_its_names` holds an ended call on a labelled
+  trunk-scan target and on a listed talkgroup: each is named while held as it was while active.
 - **Text reach.** `tst_a11y_text_reach.qml` checks that TalkBack can read every visible word (`docs/code_map.md`,
   "Qt QML editing convention"). `testContext.unreachedTexts(root, skipped)` walks the visible, unfaded `Text` items
   under `root` (subtrees in `skipped` left out) and reports each whose words (letters and digits, lower-cased) are not
@@ -3074,8 +3075,8 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   line, which the switch's checked state says); one without either is text with nothing to read. The same walk reports
   every enabled heading, and every text item in a role other than StaticText or EditableText (an alert line), in the
   tree that is not focusable (`testContext.unfocusableTextNodes()`), which TalkBack's swipes would skip; the open hooks
-  put the screens whose alert role is conditional into their problem state (History's failing saves, a problem notice). `test_1` is the positive control, and
-  `test_9` fails on an entry nothing needs any more. A new component goes in `components`, with how it opens. Failure
+  put the screens whose alert role is conditional into their problem state (History's failing saves, a problem
+  notice). `test_1` is the positive control, and `test_9` fails on an entry nothing needs any more. A new component goes in `components`, with how it opens. Failure
   messages list the first 25 problems: a run reporting every one, a message of several hundred lines, crashed at exit.
 - **Paced names.** `tst_a11y_paced_names.qml` checks that the app's period is 5 s, then sets
   `Navigation.speechPeriodMs` to 100 ms and updates each moving reading 40 times a few milliseconds apart (as 4 Hz for

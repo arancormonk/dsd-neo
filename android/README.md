@@ -239,12 +239,12 @@ than a document reads **That app gave DSD-neo a file it can't open. Pick the fil
 writes a picked file while the app is open and keeps no lasting permission to it. A pick that comes back after Android
 closed DSD-neo in the background is ignored: open the screen again and pick the file.
 
-With no save picker, a save (Back up, Export as zip, Save to file, Export detections or avoids) goes straight to the
-phone's **Download/DSD-neo** folder, which Files and other file managers show. The file appears there only once it is
-completely written; a save that fails or is cancelled leaves nothing behind. When a file of that name is already
-there, Android adds a number, as in `dsd-neo-backup-2026-11-08 (1).dsdbak`. When even the Download folder cannot be
-written, the save says **This device has no save picker, and DSD-neo could not save to the Download folder.** Files
-saved there stay after DSD-neo is uninstalled; a backup there stays encrypted with its passphrase.
+With no save picker, a save (Back up, Export as zip, Save to file, Export detections or avoids, Export history) goes
+straight to the phone's **Download/DSD-neo** folder, which Files and other file managers show. The file appears there
+only once it is completely written; a save that fails or is cancelled leaves nothing behind. When a file of that name
+is already there, Android adds a number, as in `dsd-neo-backup-2026-11-08 (1).dsdbak`. When even the Download folder
+cannot be written, the save says **This device has no save picker, and DSD-neo could not save to the Download
+folder.** Files saved there stay after DSD-neo is uninstalled; a backup there stays encrypted with its passphrase.
 
 At start DSD-neo gives back any lasting file permissions an earlier version kept from picks, since it no longer uses
 them and Android limits how many an app may hold.
@@ -579,6 +579,18 @@ History keeps every call heard while DSD-neo is in the background or the screen 
 second, a background thread reads the calls the decoder logged and writes new ones to a small file, which History takes
 in when you come back, or at the next start if Android closed DSD-neo meanwhile. While that file cannot be written (the
 phone is full), DSD-neo holds only the newest 508 calls it found, so History can miss older ones from that time.
+
+### Exporting History
+
+**Export…** on History saves the rows the list shows as a CSV file for a spreadsheet on a computer. The search and the
+filters apply, so the file holds only what you see, newest first. The save picker suggests `Call history <date>.csv`
+(the date is today's, as `yyyy-MM-dd`). On a device with no save picker, the file goes to **Download/DSD-neo** instead.
+The result shows as a line under the buttons and is read out once by a screen reader: **Exported 12 entries.**,
+**Exported 1 entry.**, **Exported 5 of 12 entries. The search and filters left out the rest.**, **No entries to
+export.**, or, for a save to the Download folder, **Exported 12 entries to Download/DSD-neo as <name>.** (the singular
+for one entry) and its **5 of 12** form. The file is built when you press **Export…**, so calls that arrive while the
+picker is open are not in it. See [History file](../docs/csv-formats.md#history-file) for the columns. A History
+export is not part of a backup.
 
 ### Extra decoder arguments the app refuses
 
