@@ -12219,6 +12219,24 @@ Qt Quick frontend (`src/ui/qt`):
     recordings cell joins the names with ` | `, each `\` written `\\` and each `|` written `\|`
     (`joinRecordingNames()`; `splitRecordingNames()` reads it back). No clock or locale is read. Tests:
     `UI_QT_CALL_HISTORY_EXPORT`.
+  - Exporter (`call_history_exporter.{h,cpp}`, `CallHistoryExporter`, context property `historyExport`): what
+    History's **Export…** calls. `prepare(view)` drops any pending file first (`PendingExport::reset()`), then takes
+    only a `CallHistoryFilterModel` whose source is its own model (anything else: `{token 0, count -1}`), maps every
+    row the view shows to its source row in the view's order (the model's; the proxy never sorts), reads them with one
+    `exportRows()` call (so the recording store's lock is taken once) and builds the file with
+    `call_history_export::file()` in `QTimeZone::systemTimeZone()`, read once per prepare. No row shown:
+    `{token 0, count 0}`; else it holds the file and returns `{token, count, total}`, `total` being every row the
+    model holds (the screen's "37 of 214"). `save(token, reference)`, `discard(token)`, `busy` (`busyChanged()`) and
+    `finished(token, ok)` are `PendingExport`'s, on the GUI thread; both History screens share the one exporter, so a
+    second prepare replaces the first's file and the first's save is refused. A second constructor takes the save
+    transport, cache root and zone directly (the tests' seam; the app's constructor passes `host->saveTransport()`,
+    `<CacheLocation>/history-export` and the system zone). `ui_load()` makes it a child of the QML engine right after
+    History and the recording store, so it is destroyed after both (children go in creation order); its destructor
+    destroys the `PendingExport` first, which aborts a running save and waits at most
+    `DocumentExportWriter::kStopWaitMs`. The writer's job holds only the file's bytes, never the model or the store.
+    Decided limit: a press during a recording-store folder replacement waits for that step, as History's list does.
+    Tests: `UI_QT_CALL_HISTORY_EXPORT` (filtered rows, refused views, tokens, busy, teardown, and an end-to-end
+    export whose recordings cells equal the store's zip selection names).
   - Background capture (issue #708, B1; `call_history_tap.{h,cpp}`): Qt pauses the GUI thread on Android in the
     background, the UI tick was the ring's only reader, and the ring keeps 254 committed rows a slot, so a busy system
     overwrote calls History never saw. When the application turns Suspended or Hidden, after `saveNow()`, the model

@@ -69,6 +69,7 @@ target_sources(
         scan_list_toggle_model.cpp
         spectrum_model.cpp
         call_history_export.cpp
+        call_history_exporter.cpp
         csv_text.cpp
         document_export_writer.cpp
         pending_export.cpp

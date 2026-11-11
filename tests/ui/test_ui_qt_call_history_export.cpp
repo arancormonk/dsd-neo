@@ -3,20 +3,28 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-// History CSV export: the file builder (columns, time zones, formula guard, the recordings cell) and the model's export
-// rows (display values through data(), recording names in one provider call).
+// History CSV export: the file builder (columns, time zones, formula guard, the recordings cell), the model's export
+// rows (display values through data(), recording names in one provider call), and the exporter History's screens call
+// (the rows a filter view shows, the token flow, the save through the writer, its teardown).
 
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QDate>
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
+#include <QEventLoop>
+#include <QFile>
+#include <QIODevice>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QLatin1String>
 #include <QList>
 #include <QLocale>
 #include <QModelIndex>
+#include <QObject>
+#include <QPair>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QString>
@@ -24,23 +32,35 @@
 #include <QTemporaryDir>
 #include <QTime>
 #include <QTimeZone>
+#include <QTimer>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
 #include <clocale>
+#include <condition_variable>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/analog_mode.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
+#include <functional>
+#include <memory>
+#include <mutex>
 #include <stdio.h>
 #include "../test_support/qt_test_paths.h"
 #include "call_history_export.h"
+#include "call_history_exporter.h"
+#include "call_history_filter.h"
 #include "call_history_model.h"
 #include "call_recording_provider.h"
 #include "csv_text.h"
+#include "document_export_writer.h"
+#include "document_save_transport.h"
 #include "json_store.h"
+#include "recording_store.h"
 
+using dsd_qt::CallHistoryExporter;
+using dsd_qt::CallHistoryFilterModel;
 using dsd_qt::CallHistoryModel;
 namespace history_export = dsd_qt::call_history_export;
 
@@ -545,6 +565,488 @@ test_export_rows_full_log() {
     model.setRecordingProvider(nullptr);
 }
 
+/* --- The exporter History's screens call. --- */
+
+/* Runs the event loop for about @p ms. */
+void
+spin(int ms) {
+    QEventLoop loop;
+    QTimer::singleShot(ms, &loop, &QEventLoop::quit);
+    loop.exec();
+}
+
+/* Runs the event loop until @p done holds or about 10 s pass; whether it held. */
+bool
+spin_until(const std::function<bool()>& done) {
+    for (int i = 0; i < 1000 && !done(); ++i) {
+        spin(10);
+    }
+    return done();
+}
+
+QByteArray
+read_bytes(const QString& path) {
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+}
+
+/* What @p dir holds, hidden entries too. */
+QStringList
+entries(const QString& dir) {
+    return QDir(dir).entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot, QDir::Name);
+}
+
+/* A save transport that writes nothing: each save records the bytes it was handed and waits at a gate, which an abort
+ * opens too; each Download-folder row let go of is recorded. */
+class GateTransport : public dsd_qt::DocumentSaveTransport {
+  public:
+    explicit GateTransport(bool open) : m_open(open) {}
+
+    bool
+    save(const QString& sourcePath, const QString& reference) override {
+        const QByteArray bytes = read_bytes(sourcePath);
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_saves.append(qMakePair(reference, bytes));
+        m_cv.wait(lock, [this]() { return m_open || aborted(); });
+        m_returned++;
+        return !aborted();
+    }
+
+    void
+    discardPendingDownload(const QString& reference) override {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_discards.append(reference);
+    }
+
+    void
+    openGate() {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_open = true;
+        m_cv.notify_all();
+    }
+
+    QList<QPair<QString, QByteArray>>
+    saves() const {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        return m_saves;
+    }
+
+    QStringList
+    discards() const {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        return m_discards;
+    }
+
+    int
+    returned() const {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        return m_returned;
+    }
+
+  protected:
+    void
+    abortPlatform() override {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_cv.notify_all();
+    }
+
+  private:
+    mutable std::mutex m_mutex;
+    std::condition_variable m_cv;
+    bool m_open;
+    int m_returned = 0;
+    QList<QPair<QString, QByteArray>> m_saves;
+    QStringList m_discards;
+};
+
+/* What an exporter reported: each finished(token, ok) with busy() as it arrived, and busy() at each busyChanged(). */
+struct ExporterLog {
+    QList<QPair<int, bool>> finished;
+    QList<bool> busyAtFinished;
+    QList<bool> busyChanges;
+
+    void
+    follow(CallHistoryExporter* exporter) {
+        QObject::connect(exporter, &CallHistoryExporter::finished, exporter, [this, exporter](int token, bool ok) {
+            finished.append(qMakePair(token, ok));
+            busyAtFinished.append(exporter->busy());
+        });
+        QObject::connect(exporter, &CallHistoryExporter::busyChanged, exporter,
+                         [this, exporter]() { busyChanges.append(exporter->busy()); });
+    }
+};
+
+/* An exporter of @p model saving through @p transport, staging under @p root, writing times in UTC; @p zoneReads (when
+ * given) counts its reads of the zone. */
+std::unique_ptr<CallHistoryExporter>
+make_exporter(const std::shared_ptr<dsd_qt::DocumentSaveTransport>& transport, const QString& root,
+              CallHistoryModel* model, int* zoneReads = nullptr) {
+    return std::make_unique<CallHistoryExporter>(
+        transport, root + QStringLiteral("/history-export"), model,
+        [zoneReads]() {
+            if (zoneReads != nullptr) {
+                (*zoneReads)++;
+            }
+            return QTimeZone(QTimeZone::UTC);
+        },
+        nullptr);
+}
+
+/* Whether @p map is a prepared export of @p count rows out of @p total. */
+bool
+prepared(const QVariantMap& map, int count, int total) {
+    return map.value(QStringLiteral("token")).toInt() > 0 && map.value(QStringLiteral("count")).toInt() == count
+           && map.value(QStringLiteral("total")).toInt() == total;
+}
+
+/* Whether @p map says nothing was prepared, with @p count (0: no rows shown; -1: not a History view of the model). */
+bool
+not_prepared(const QVariantMap& map, int count) {
+    return map.value(QStringLiteral("token")).toInt() == 0 && map.value(QStringLiteral("count")).toInt() == count;
+}
+
+int
+token_of(const QVariantMap& map) {
+    return map.value(QStringLiteral("token")).toInt();
+}
+
+/* Six rows, newest first. A search for "fire" over the County system's clear calls shows rows 0 and 4 only: row 1 is
+ * another system's, row 2 is encrypted, row 3 a message (its text holds "Fire"), and the search does not find row 5. */
+QJsonArray
+filter_store() {
+    const qint64 base = sample_when();
+    QJsonObject dispatch = stored_row(base, 100, 1);
+    dispatch.insert(QLatin1String("name"), QStringLiteral("Fire Dispatch"));
+    QJsonObject city = stored_row(base - 3600, 101, 2);
+    city.insert(QLatin1String("name"), QStringLiteral("Fire North"));
+    city.insert(QLatin1String("systemName"), QStringLiteral("City"));
+    QJsonObject ops = stored_row(base - 7200, 102, 3);
+    ops.insert(QLatin1String("name"), QStringLiteral("Fire Ops"));
+    ops.insert(QLatin1String("enc"), true);
+    QJsonObject sms = stored_row(base - 10800, 103, 4);
+    sms.insert(QLatin1String("kind"), CallHistoryModel::KindNotice);
+    sms.insert(QLatin1String("durationSecs"), -1);
+    sms.insert(QLatin1String("name"), QStringLiteral("SMS 5103 > 103"));
+    sms.insert(QLatin1String("detail"), QStringLiteral("Fire at the station"));
+    QJsonObject tac = stored_row(base - 14400, 104, 5);
+    tac.insert(QLatin1String("name"), QStringLiteral("Fire Tac"));
+    QJsonObject police = stored_row(base - 18000, 105, 6);
+    police.insert(QLatin1String("name"), QStringLiteral("Police"));
+    return QJsonArray{dispatch, city, ops, sms, tac, police};
+}
+
+/* The exporter writes the rows a History view shows (search, system and kind applied), in the list's order, with the
+ * log's total; the zone is read once per prepare; the save goes through the transport to a local file holding the
+ * builder's bytes, and its outcome comes back as finished(token, ok). Unfiltered, the whole log. */
+void
+test_exporter_shown_rows(const QString& root) {
+    save_store(filter_store());
+    CallHistoryModel model;
+    expect(__LINE__, model.count() == 6);
+    CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    view.setFilterText(QStringLiteral("fire"));
+    view.setFilterSystem(QStringLiteral("County"));
+    view.setFilterKind(1);
+    expect(__LINE__, view.rowCount() == 2);
+    int zoneReads = 0;
+    const auto exporter = make_exporter(std::make_shared<dsd_qt::DocumentSaveTransport>(), root, &model, &zoneReads);
+    ExporterLog log;
+    log.follow(exporter.get());
+
+    const QVariantMap shown = exporter->prepare(&view);
+    expect(__LINE__, prepared(shown, 2, 6));
+    expect(__LINE__, zoneReads == 1);
+    const QString path = root + QStringLiteral("/shown rows.csv");
+    expect(__LINE__, exporter->save(token_of(shown), path));
+    expect(__LINE__, spin_until([&log]() { return log.finished.size() == 1; }));
+    expect(__LINE__, log.finished.value(0) == qMakePair(token_of(shown), true));
+    const QByteArray file = read_bytes(path);
+    expect(__LINE__, file == history_export::file(model.exportRows({0, 4}), QTimeZone(QTimeZone::UTC)));
+    // Two records after the header, in the list's order.
+    expect(__LINE__, file.count("\r\n") == 3);
+    expect(__LINE__, file.indexOf("Fire Dispatch") > 0 && file.indexOf("Fire Dispatch") < file.indexOf("Fire Tac"));
+
+    // With no search and no filter: the whole log.
+    view.setFilterText(QString());
+    view.setFilterSystem(QString());
+    view.setFilterKind(0);
+    const QVariantMap all = exporter->prepare(&view);
+    expect(__LINE__, prepared(all, 6, 6) && token_of(all) != token_of(shown));
+    expect(__LINE__, zoneReads == 2);
+    const QString whole = root + QStringLiteral("/whole log.csv");
+    expect(__LINE__, exporter->save(token_of(all), whole));
+    expect(__LINE__, spin_until([&log]() { return log.finished.size() == 2; }));
+    expect(__LINE__, log.finished.value(1) == qMakePair(token_of(all), true));
+    expect(__LINE__,
+           read_bytes(whole) == history_export::file(model.exportRows({0, 1, 2, 3, 4, 5}), QTimeZone(QTimeZone::UTC)));
+
+    // A save the transport fails is still answered, with ok false.
+    const QVariantMap again = exporter->prepare(&view);
+    expect(__LINE__, exporter->save(token_of(again), QStringLiteral("relative.csv")));
+    expect(__LINE__, spin_until([&log]() { return log.finished.size() == 3; }));
+    expect(__LINE__, log.finished.value(2) == qMakePair(token_of(again), false));
+}
+
+/* Only a History filter view of the exporter's own model is exported: one over another model, one with no model, a
+ * plain object and none are refused with {0, -1}, and the refusal drops the file a prepare before it held. */
+void
+test_exporter_refuses_other_views(const QString& root) {
+    save_store(filter_store());
+    CallHistoryModel model;
+    CallHistoryModel other;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    CallHistoryFilterModel foreign;
+    foreign.setSourceModel(&other);
+    CallHistoryFilterModel unset;
+    QObject plain;
+    const auto transport = std::make_shared<GateTransport>(true);
+    const auto exporter = make_exporter(transport, root, &model);
+
+    const int token = token_of(exporter->prepare(&view));
+    expect(__LINE__, token > 0);
+    expect(__LINE__, not_prepared(exporter->prepare(&foreign), -1));
+    expect(__LINE__, !exporter->save(token, QStringLiteral("after-refusal")));
+    expect(__LINE__, transport->discards() == QStringList{QStringLiteral("after-refusal")});
+    expect(__LINE__, not_prepared(exporter->prepare(&unset), -1));
+    expect(__LINE__, not_prepared(exporter->prepare(&plain), -1));
+    expect(__LINE__, not_prepared(exporter->prepare(nullptr), -1));
+    expect(__LINE__, transport->saves().isEmpty() && !exporter->busy());
+}
+
+/* The token flow: the two History screens share one exporter, so a second prepare replaces the first's file (its save
+ * is refused and its picked document's Download-folder row let go of); a used, discarded or stale token is refused the
+ * same way; a discard of another token leaves the pending file; a prepare that finds no rows shown drops it. */
+void
+test_exporter_tokens(const QString& root) {
+    save_store(filter_store());
+    CallHistoryModel model;
+    CallHistoryFilterModel idle;
+    idle.setSourceModel(&model);
+    CallHistoryFilterModel session;
+    session.setSourceModel(&model);
+    session.setFilterText(QStringLiteral("police"));
+    const auto transport = std::make_shared<GateTransport>(true);
+    const auto exporter = make_exporter(transport, root, &model);
+    ExporterLog log;
+    log.follow(exporter.get());
+
+    const QVariantMap first = exporter->prepare(&idle);
+    const QVariantMap second = exporter->prepare(&session);
+    expect(__LINE__, prepared(first, 6, 6) && prepared(second, 1, 6) && token_of(first) != token_of(second));
+    expect(__LINE__, !exporter->save(token_of(first), QStringLiteral("first")));
+    expect(__LINE__, transport->discards() == QStringList{QStringLiteral("first")});
+    expect(__LINE__, exporter->save(token_of(second), QStringLiteral("second")));
+    expect(__LINE__, spin_until([&log]() { return log.finished.size() == 1; }));
+    expect(__LINE__, log.finished.value(0) == qMakePair(token_of(second), true));
+    const auto saves = transport->saves();
+    expect(__LINE__, saves.size() == 1 && saves.value(0).first == QStringLiteral("second"));
+    expect(__LINE__, saves.value(0).second == history_export::file(model.exportRows({5}), QTimeZone(QTimeZone::UTC)));
+    // Used once: a second save of the same token is refused.
+    expect(__LINE__, !exporter->save(token_of(second), QStringLiteral("again")));
+    expect(__LINE__, !exporter->save(0, QStringLiteral("zero")));
+
+    // A discard of another token (or 0) leaves the pending file; its own drops it.
+    const int kept = token_of(exporter->prepare(&idle));
+    exporter->discard(0);
+    exporter->discard(kept + 1);
+    expect(__LINE__, exporter->save(kept, QStringLiteral("kept")));
+    expect(__LINE__, spin_until([&log]() { return log.finished.size() == 2; }));
+    const int dropped = token_of(exporter->prepare(&idle));
+    exporter->discard(dropped);
+    expect(__LINE__, !exporter->save(dropped, QStringLiteral("discarded")));
+
+    // The list emptied between the press and the read: nothing to export, and the file before it is gone.
+    const int emptied = token_of(exporter->prepare(&idle));
+    idle.setFilterText(QStringLiteral("no such call"));
+    expect(__LINE__, not_prepared(exporter->prepare(&idle), 0));
+    expect(__LINE__, !exporter->save(emptied, QStringLiteral("emptied")));
+    expect(__LINE__, transport->discards()
+                         == (QStringList{QStringLiteral("first"), QStringLiteral("again"), QStringLiteral("zero"),
+                                         QStringLiteral("discarded"), QStringLiteral("emptied")}));
+    expect(__LINE__, transport->saves().size() == 2 && log.finished.size() == 2);
+}
+
+/* busy is true from an accepted save until its finished(), with busyChanged() at each edge (false again before
+ * finished() arrives); a save while one runs is refused, its file dropped and its reference let go of. */
+void
+test_exporter_busy(const QString& root) {
+    save_store(filter_store());
+    CallHistoryModel model;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    const auto transport = std::make_shared<GateTransport>(false);
+    const auto exporter = make_exporter(transport, root, &model);
+    ExporterLog log;
+    log.follow(exporter.get());
+
+    const int token = token_of(exporter->prepare(&view));
+    expect(__LINE__, !exporter->busy() && log.busyChanges.isEmpty());
+    expect(__LINE__, exporter->save(token, QStringLiteral("running")));
+    expect(__LINE__, exporter->busy() && log.busyChanges == QList<bool>{true});
+    expect(__LINE__, spin_until([&transport]() { return transport->saves().size() == 1; }));
+
+    const int next = token_of(exporter->prepare(&view));
+    expect(__LINE__, next > 0 && !exporter->save(next, QStringLiteral("while-running")));
+    expect(__LINE__, transport->discards() == QStringList{QStringLiteral("while-running")});
+    expect(__LINE__, exporter->busy() && log.busyChanges == QList<bool>{true});
+
+    transport->openGate();
+    expect(__LINE__, spin_until([&log]() { return log.finished.size() == 1; }));
+    expect(__LINE__, log.finished.value(0) == qMakePair(token, true) && log.busyAtFinished == QList<bool>{false});
+    expect(__LINE__, !exporter->busy() && log.busyChanges == (QList<bool>{true, false}));
+    // The refused save used its file up.
+    expect(__LINE__, !exporter->save(next, QStringLiteral("after")));
+    expect(__LINE__, transport->saves().size() == 1);
+}
+
+/* Teardown with a save running: the exporter stops the writer (the transport aborted), returns within the writer's
+ * bound, and its staging folder goes. */
+void
+test_exporter_teardown(const QString& root) {
+    save_store(filter_store());
+    CallHistoryModel model;
+    CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    const auto transport = std::make_shared<GateTransport>(false);
+    const QString exportRoot = root + QStringLiteral("/teardown");
+    auto exporter = make_exporter(transport, exportRoot, &model);
+    int finished = 0;
+    QObject receiver;
+    QObject::connect(exporter.get(), &CallHistoryExporter::finished, &receiver, [&finished]() { finished++; });
+    expect(__LINE__, exporter->save(token_of(exporter->prepare(&view)), QStringLiteral("teardown")));
+    expect(__LINE__, spin_until([&transport]() { return transport->saves().size() == 1; }));
+    QElapsedTimer timer;
+    timer.start();
+    exporter.reset();
+    expect(__LINE__, timer.elapsed() < dsd_qt::DocumentExportWriter::kStopWaitMs);
+    expect(__LINE__, transport->aborted() && transport->returned() == 1);
+    expect(__LINE__, entries(exportRoot + QStringLiteral("/history-export")).isEmpty());
+    spin(50);
+    expect(__LINE__, finished == 0);
+}
+
+/* --- End to end with the real recording store. --- */
+
+const quint64 kRing = 0x00C0FFEE12345678ULL;
+const QLatin1String kOwnerUid("1a2b3c4d-0000-4000-8000-00000000000a");
+
+QString
+ring_fragment(qint64 row) {
+    return dsd_qt::call_history_fragment_key(kRing, 0, static_cast<qulonglong>(row));
+}
+
+/* A recording published into @p folder: the file, and its `publish` journal line as the format contract spells it. */
+void
+publish_recording(const QString& folder, const QString& id, const QString& file, qint64 start, qint64 row) {
+    QFile wav(folder + QLatin1Char('/') + file);
+    expect(__LINE__, wav.open(QIODevice::WriteOnly | QIODevice::Truncate) && wav.write(QByteArray(1000, 'w')) == 1000);
+    QJsonObject o;
+    o.insert(QStringLiteral("v"), 1);
+    o.insert(QStringLiteral("type"), QStringLiteral("publish"));
+    o.insert(QStringLiteral("t"), start + 5);
+    o.insert(QStringLiteral("id"), id);
+    o.insert(QStringLiteral("file"), file);
+    o.insert(QStringLiteral("folder"), QStringLiteral("/somewhere"));
+    o.insert(QStringLiteral("start"), start);
+    o.insert(QStringLiteral("duration_ms"), 4000);
+    o.insert(QStringLiteral("rate"), 8000);
+    o.insert(QStringLiteral("instance"), QStringLiteral("%1").arg(kRing, 16, 16, QLatin1Char('0')).toUpper());
+    o.insert(QStringLiteral("slot"), 0);
+    o.insert(QStringLiteral("row"), row);
+    o.insert(QStringLiteral("pending"), false);
+    o.insert(QStringLiteral("epoch"), 0);
+    o.insert(QStringLiteral("rdio"), false);
+    o.insert(QStringLiteral("failed"), false);
+    o.insert(QStringLiteral("system"), QStringLiteral("County"));
+    o.insert(QStringLiteral("target"), QStringLiteral("Fire"));
+    o.insert(QStringLiteral("source"), QStringLiteral("1234"));
+    QFile journal(folder + QStringLiteral("/recordings.jsonl"));
+    const QByteArray line = QJsonDocument(o).toJson(QJsonDocument::Compact) + '\n';
+    expect(__LINE__, journal.open(QIODevice::WriteOnly | QIODevice::Append) && journal.write(line) == line.size());
+}
+
+/* The names a recordings zip gives the recordings @p maps lists, the selection's hold released at once. */
+QStringList
+zip_names_of(dsd_qt::RecordingStore& store, const QVariantList& maps) {
+    QStringList ids;
+    for (const QVariant& map : maps) {
+        ids.append(map.toMap().value(QStringLiteral("id")).toString());
+    }
+    const QVariantMap selection = store.selectRecordings(ids);
+    store.releaseSelection(selection.value(QStringLiteral("selection")).toInt());
+    return selection.value(QStringLiteral("names")).toStringList();
+}
+
+/* A History export with the real recording store as the model's provider, saved through the base transport to a local
+ * file: each row's recordings cell holds the names a recordings zip gives the same recordings (nested kept, start
+ * order), and the owner's Export as zip names them the same. */
+void
+test_exporter_real_recordings(const QString& root) {
+    const QString base = root + QStringLiteral("/recording roots");
+    expect(__LINE__, QDir().mkpath(base + QStringLiteral("/ext")) && QDir().mkpath(base + QStringLiteral("/int")));
+    dsd_qt::RecordingStore store;
+    store.setRoots({base + QStringLiteral("/ext/Call recordings"), base + QStringLiteral("/int/Call recordings")});
+    store.hostSessionReport(true, false, false);
+    store.start();
+    const QString folder = store.beginSession(QStringLiteral("saved"), kOwnerUid, QStringLiteral("County"));
+    expect(__LINE__, !folder.isEmpty() && QDir().mkpath(folder + QStringLiteral("/sub")));
+    const qint64 start = sample_when();
+    publish_recording(folder, QStringLiteral("0000000000000097-1"), QStringLiteral("b.wav"), start + 100, 1);
+    publish_recording(folder, QStringLiteral("0000000000000097-2"), QStringLiteral("sub/a.wav"), start, 1);
+    publish_recording(folder, QStringLiteral("0000000000000097-3"), QStringLiteral("c.wav"), start + 200, 2);
+    store.endSession();
+    const QStringList both{ring_fragment(1), ring_fragment(2)};
+    expect(__LINE__, spin_until([&store, &both]() {
+               return store.recordingCount() == 3 && store.recordingsForFragments(both).size() == 3;
+           }));
+
+    // A row that holds every recording, one that holds the last, and one whose fragment has none.
+    QJsonObject merged = stored_row(start + 300, 200, 1);
+    merged.insert(QLatin1String("fr"), QJsonArray{ring_fragment(1), ring_fragment(2)});
+    QJsonObject single = stored_row(start - 3600, 201, 2);
+    single.insert(QLatin1String("fr"), QJsonArray{ring_fragment(2)});
+    QJsonObject none = stored_row(start - 7200, 202, 3);
+    none.insert(QLatin1String("fr"), QJsonArray{ring_fragment(9)});
+    save_store(QJsonArray{merged, single, none});
+    CallHistoryModel model;
+    model.setRecordingProvider(&store);
+    CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    const auto exporter = make_exporter(std::make_shared<dsd_qt::DocumentSaveTransport>(), root, &model);
+    ExporterLog log;
+    log.follow(exporter.get());
+    const QVariantMap map = exporter->prepare(&view);
+    expect(__LINE__, prepared(map, 3, 3));
+    const QString path = root + QStringLiteral("/with recordings.csv");
+    expect(__LINE__, exporter->save(token_of(map), path));
+    expect(__LINE__, spin_until([&log]() { return log.finished.size() == 1; }));
+    expect(__LINE__, log.finished.value(0) == qMakePair(token_of(map), true));
+
+    const QList<QByteArray> records = read_bytes(path).mid(head().size()).split('\n');
+    expect(__LINE__, records.size() == 4 && records.value(3).isEmpty());
+    const QList<QStringList> fragments{{ring_fragment(1), ring_fragment(2)}, {ring_fragment(2)}, {ring_fragment(9)}};
+    QList<QStringList> zipNames;
+    for (int i = 0; i < fragments.size(); i++) {
+        zipNames.append(zip_names_of(store, store.recordingsForFragments(fragments.value(i))));
+        const QByteArray cell =
+            dsd_qt::csv_text::field(history_export::joinRecordingNames(zipNames.value(i)), true).toUtf8();
+        expect(__LINE__, records.value(i).endsWith("," + cell + "\r"));
+    }
+    const QString owner = QStringLiteral("County (1a2b3c4d)/");
+    expect(__LINE__, zipNames.value(0)
+                         == (QStringList{owner + QStringLiteral("sub/a.wav"), owner + QStringLiteral("b.wav"),
+                                         owner + QStringLiteral("c.wav")}));
+    expect(__LINE__, zipNames.value(1) == QStringList{owner + QStringLiteral("c.wav")} && zipNames.value(2).isEmpty());
+    expect(__LINE__, records.value(0).endsWith(",County (1a2b3c4d)/sub/a.wav | County (1a2b3c4d)/b.wav | "
+                                               "County (1a2b3c4d)/c.wav\r"));
+    const QVariantMap every = store.selectForExport(kOwnerUid, QStringLiteral("all"));
+    store.releaseSelection(every.value(QStringLiteral("selection")).toInt());
+    expect(__LINE__, every.value(QStringLiteral("names")).toStringList() == zipNames.value(0));
+    model.setRecordingProvider(nullptr);
+}
+
 } // namespace
 
 int
@@ -568,6 +1070,14 @@ main(int argc, char** argv) {
     test_recording_names();
     test_export_rows_match_display();
     test_export_rows_full_log();
+    QTemporaryDir exportDir;
+    expect(__LINE__, exportDir.isValid());
+    test_exporter_shown_rows(exportDir.path());
+    test_exporter_refuses_other_views(exportDir.path());
+    test_exporter_tokens(exportDir.path());
+    test_exporter_busy(exportDir.path());
+    test_exporter_teardown(exportDir.path());
+    test_exporter_real_recordings(exportDir.path());
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "UI_QT_CALL_HISTORY_EXPORT: %d failure(s)\n", g_failures);
         return 1;

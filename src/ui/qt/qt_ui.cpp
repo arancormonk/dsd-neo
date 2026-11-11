@@ -29,6 +29,7 @@
 #include "auto_start_attachment.h"
 #include "backup_apply.h"
 #include "backup_model.h"
+#include "call_history_exporter.h"
 #include "call_history_filter.h"
 #include "call_history_model.h"
 #include "command_bridge.h"
@@ -219,6 +220,13 @@ wire_recordings(QQmlApplicationEngine& engine, DecoderHost* host, const AppPrefs
     return recordings;
 }
 
+// History's Export…. Made after History and the recording store, so it is destroyed after them (the engine's children
+// go in creation order); its writer's job holds only the file's bytes, never either of them.
+static CallHistoryExporter*
+make_history_export(QQmlApplicationEngine& engine, const DecoderHost* host, CallHistoryModel* history) {
+    return new CallHistoryExporter(host, history, &engine);
+}
+
 // Issue #708: what call recording is doing, and why a recording switch was refused.
 static RecordingStatus*
 wire_recording_status(QQmlApplicationEngine& engine, DecoderHost* host, UiController* controller,
@@ -228,6 +236,16 @@ wire_recording_status(QQmlApplicationEngine& engine, DecoderHost* host, UiContro
     commands->setRecordingStatus(recordingStatus);
     recording_status_follow_host(recordingStatus, host);
     return recordingStatus;
+}
+
+// The call log, the two views that filter it, and History's export.
+static void
+publish_history_context(QQmlContext* context, CallHistoryModel* history, CallHistoryFilterModel* historyView,
+                        CallHistoryFilterModel* monitorView, CallHistoryExporter* historyExport) {
+    context->setContextProperty(QStringLiteral("callHistory"), history);
+    context->setContextProperty(QStringLiteral("historyView"), historyView);
+    context->setContextProperty(QStringLiteral("monitorView"), monitorView);
+    context->setContextProperty(QStringLiteral("historyExport"), historyExport);
 }
 
 // Issue #708: the call recording store and status, to QML.
@@ -386,6 +404,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
         wire_decryption_profiles(engine, host, systems, scanLists, sessionArgs, scanListStarter, commands, metrics);
     auto* history = make_history(engine);
     auto* recordings = wire_recordings(engine, host, prefs, history, sessionArgs, scanListStarter);
+    auto* historyExport = make_history_export(engine, host, history);
     auto* talkgroups = new TalkgroupListModel(history, &engine);
     auto* talkgroupView = new TalkgroupFilterModel(&engine);
     talkgroupView->setSourceModel(talkgroups);
@@ -438,10 +457,8 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("importedFiles"), importedFiles);
     context->setContextProperty(QStringLiteral("replayFiles"), replays);
     context->setContextProperty(QStringLiteral("radioReference"), radioReference);
-    context->setContextProperty(QStringLiteral("callHistory"), history);
+    publish_history_context(context, history, historyView, monitorView, historyExport);
     publish_recording_context(context, recordings, recordingStatus);
-    context->setContextProperty(QStringLiteral("historyView"), historyView);
-    context->setContextProperty(QStringLiteral("monitorView"), monitorView);
     context->setContextProperty(QStringLiteral("talkgroups"), talkgroups);
     context->setContextProperty(QStringLiteral("talkgroupView"), talkgroupView);
     context->setContextProperty(QStringLiteral("spectrum"), spectrum);
