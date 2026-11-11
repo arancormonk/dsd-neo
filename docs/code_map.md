@@ -2617,8 +2617,9 @@ suite runs under this compiler.
   shows is `dsd_output_s16_block()` (`dsd_audio2.c`, the writer every mixer and the legacy short output use): under
   `-y` the raw fd (`-o -`) and UDP take each block as f32, s16 / 32768 (exact), in whole frames of at most 1920
   samples per write (one write and one datagram per block for every size a mixer writes), while the local device
-  stream is 16-bit in either format and takes the block unchanged. Nothing resets the gain at call boundaries in
-  either format. The beeper also uses the shared s16 sink conversion. Outside the chain: EDACS analog voice (no raw-fd output under `-y`). Tests: `DECODE_IQ_FLOAT_OUTPUT_*` (both formats
+  stream is 16-bit in either format and takes the block unchanged. The speech AGC starts over at the same reception
+  boundaries in either format (see the voice chain invariant). The beeper also uses the shared s16 sink conversion.
+  Outside the chain: EDACS analog voice (no raw-fd output under `-y`). Tests: `DECODE_IQ_FLOAT_OUTPUT_*` (both formats
   replayed and compared), `CORE_AUDIO2_HELPERS`, `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_P25P2_PLAYOUT`.
 - API note (decoded PCM voice, `dsd_audio_play_decoded_pcm16()` in `<dsd-neo/core/audio.h>`, `dsd_audio2.c`, issue
   #658): a decoder that synthesizes its own 8 kHz mono int16 voice (M17's Codec2) settles its own gates before calling.

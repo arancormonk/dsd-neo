@@ -7153,11 +7153,23 @@ voice_level_started_over(const dsd_state* state) {
     return 1;
 }
 
+/* One DC frame of @p level through @p slot's chain as concealment (nothing learns from it): its last sample. */
+static float
+voice_level_probe(const dsd_opts* opts, dsd_state* state, int slot, float level) {
+    float frame[DSD_VOICE_FRAME_SAMPLES];
+    for (int n = 0; n < DSD_VOICE_FRAME_SAMPLES; n++) {
+        frame[n] = level;
+    }
+    const dsd_voice_frame_info info = {(uint8_t)DSD_VOICE_MEDIA_CONCEALED, 1U, 1U, 0U};
+    dsd_voice_chain_run(opts, state, slot, frame, &info);
+    return frame[DSD_VOICE_FRAME_SAMPLES - 1];
+}
+
 /*
  * Issue #652: the no-carrier pass reset the digital output gain in float output (-y) only, to the -g setting. One gain
  * stage serves both formats now (issue #653), and its speech level (issue #518) is the slot's reception's: the
  * no-carrier pass, a fade, keeps what both slots' speech AGCs learned in either format (the next frames' transmission
- * decides), and a fixed gain stays the -g multiplier.
+ * decides), and a fixed gain playing when the carrier fades is the -g multiplier on both slots before and after it.
  */
 static int
 test_no_carrier_keeps_the_digital_gain_in_either_format(void) {
@@ -7174,16 +7186,21 @@ test_no_carrier_keeps_the_digital_gain_in_either_format(void) {
             opts->audio_gain = 0.0f;
             opts->audio_gainR = 0.0f;
             rc |= expect_true("no carrier: the speech material", teach_voice_level(opts, state) == 0);
+            char tag[128];
             if (fixed) {
                 opts->audio_gain = 50.0f;
                 opts->audio_gainR = 50.0f;
+                for (int slot = 0; slot < 2; slot++) {
+                    DSD_SNPRINTF(tag, sizeof(tag), "no carrier: %s fixed: slot %d plays x50 before the pass",
+                                 floating_point ? "-y" : "s16", slot + 1);
+                    rc |= expect_true(tag, fabsf(voice_level_probe(opts, state, slot, 100.0f) - 5000.0f) < 1e-3f);
+                }
             }
             dsd_speech_agc_learned before[2];
             snapshot_voice_level(state, before);
 
             noCarrier(opts, state);
 
-            char tag[128];
             DSD_SNPRINTF(tag, sizeof(tag), "no carrier: %s %s: the speech level keeps what it learned",
                          floating_point ? "-y" : "s16", fixed ? "fixed" : "auto");
             rc |= expect_true(tag, before[0].commits > 0 && before[1].commits > 0 && voice_level_kept(state, before));
@@ -7191,6 +7208,22 @@ test_no_carrier_keeps_the_digital_gain_in_either_format(void) {
                          fixed ? "fixed" : "auto");
             rc |= expect_true(tag, fabsf(opts->audio_gain - (fixed ? 50.0f : 0.0f)) < 1e-6f
                                        && fabsf(opts->audio_gainR - (fixed ? 50.0f : 0.0f)) < 1e-6f);
+            if (fixed) {
+                for (int slot = 0; slot < 2; slot++) {
+                    DSD_SNPRINTF(tag, sizeof(tag), "no carrier: %s fixed: slot %d plays x50 after the pass",
+                                 floating_point ? "-y" : "s16", slot + 1);
+                    rc |= expect_true(tag, fabsf(voice_level_probe(opts, state, slot, 100.0f) - 5000.0f) < 1e-3f);
+                }
+            } else {
+                /* The next frame plays at the gain the slot learned, not at the start gain. */
+                const dsd_speech_agc* agc = dsd_voice_level_agc(state, 0);
+                const float want =
+                    agc ? 100.0f * powf(10.0f, (agc->learned.gain_db + agc->learned.atten_db) / 20.0f) : 0.0f;
+                DSD_SNPRINTF(tag, sizeof(tag), "no carrier: %s auto: the next frame plays at the learned gain",
+                             floating_point ? "-y" : "s16");
+                rc |=
+                    expect_true(tag, want > 140.0f && fabsf(voice_level_probe(opts, state, 0, 100.0f) - want) < 0.05f);
+            }
             free_test_runtime(opts, state);
         }
     }

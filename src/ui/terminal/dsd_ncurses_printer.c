@@ -693,9 +693,20 @@ ui_render_input_sources_block(dsd_opts* opts, dsd_state* state) {
     ui_render_input_level_status(opts, state);
 }
 
-/* A digital output's gain, as the analog row shows its own: auto with what the voice chain applies over the decoder's
-   level (`-g 1`), one value per channel, or the fixed `-g` multiplier. Both forms take the room the widest auto form
-   takes, so the flags after them hold their columns when the mode or the value changes (issue #518). */
+/* One applied gain in dB, signed, one decimal, saturated as ui_num() does at five characters, with no padding: the
+   field's own span holds the column. */
+static const char*
+ui_gain_db(char* buf, size_t size, double db) {
+    const char* text = ui_num(buf, size, db, 5, 1, DSD_NUMBER_TEXT_PLUS);
+    while (*text == ' ') {
+        text++;
+    }
+    return text;
+}
+
+/* A digital output's gain: auto with what the voice chain applies over the decoder's level (`-g 1`), one value per
+   channel, or the fixed `-g` multiplier. Both forms are padded after the text to the room the widest auto form takes,
+   so the flags after them hold their columns when the mode or the value changes (issue #518). */
 static void
 ui_row_digital_gain_fields(ui_row* row, const dsd_opts* opts, const dsd_state* state, const char* keys) {
     static const char k_auto_span_1[] = "G: Auto (+18.0 dB) (+|-)";
@@ -704,13 +715,13 @@ ui_row_digital_gain_fields(ui_row* row, const dsd_opts* opts, const dsd_state* s
     char text[64];
     if (!(opts->audio_gain > 0.0f)) {
         char left[16];
-        ui_num(left, sizeof left, state ? (double)state->aout_gain : 0.0, 5, 1, DSD_NUMBER_TEXT_PLUS);
+        const char* left_db = ui_gain_db(left, sizeof left, state ? (double)state->aout_gain : 0.0);
         if (stereo) {
             char right[16];
-            ui_num(right, sizeof right, state ? (double)state->aout_gainR : 0.0, 5, 1, DSD_NUMBER_TEXT_PLUS);
-            DSD_SNPRINTF(text, sizeof text, "G: Auto (%s / %s dB) (%s)", left, right, keys);
+            const char* right_db = ui_gain_db(right, sizeof right, state ? (double)state->aout_gainR : 0.0);
+            DSD_SNPRINTF(text, sizeof text, "G: Auto (%s / %s dB) (%s)", left_db, right_db, keys);
         } else {
-            DSD_SNPRINTF(text, sizeof text, "G: Auto (%s dB) (%s)", left, keys);
+            DSD_SNPRINTF(text, sizeof text, "G: Auto (%s dB) (%s)", left_db, keys);
         }
     } else {
         DSD_SNPRINTF(text, sizeof text, "G: x%.4g (%s) Manual", (double)opts->audio_gain, keys);

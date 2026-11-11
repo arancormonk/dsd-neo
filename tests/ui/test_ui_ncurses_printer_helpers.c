@@ -1813,13 +1813,13 @@ test_output_rows_fixed_width(void) {
     opts.use_hpf_d = 1;
     reset_printw_capture();
     ui_render_pulse_digital_output(&opts, &state);
-    assert_capture_equals("| Pulse Digital Output: 8 kHz; 2 Ch; G: Auto ( +4.5 / -12.0 dB) (+|-) HPF\n");
+    assert_capture_equals("| Pulse Digital Output: 8 kHz; 2 Ch; G: Auto (+4.5 / -12.0 dB) (+|-)  HPF\n");
     const int flag_col = capture_column_of(" HPF");
     state.aout_gain = 18.0f;
     state.aout_gainR = 0.0f;
     reset_printw_capture();
     ui_render_pulse_digital_output(&opts, &state);
-    assert_capture_contains(" G: Auto (+18.0 /  +0.0 dB) (+|-) HPF\n");
+    assert_capture_contains(" G: Auto (+18.0 / +0.0 dB) (+|-)  HPF\n");
     assert(capture_column_of(" HPF") == flag_col);
     opts.audio_gain = 2.5f;
     reset_printw_capture();
@@ -1831,7 +1831,7 @@ test_output_rows_fixed_width(void) {
     state.aout_gain = -0.04f;
     reset_printw_capture();
     ui_render_pulse_digital_output(&opts, &state);
-    assert_capture_equals("| Pulse Digital Output: 8 kHz; 1 Ch; G: Auto ( +0.0 dB) (+|-) HPF\n");
+    assert_capture_equals("| Pulse Digital Output: 8 kHz; 1 Ch; G: Auto (+0.0 dB) (+|-)  HPF\n");
     const int mono_col = capture_column_of(" HPF");
     opts.audio_gain = 0.001f;
     reset_printw_capture();
@@ -1873,7 +1873,7 @@ test_output_rows_fixed_width(void) {
     opts.udp_sockfdA = DSD_INVALID_SOCKET;
     reset_printw_capture();
     ui_render_udp_output(&opts, &state);
-    assert_capture_contains("| UDP Digital Output: 127.0.0.1:23456; 8 kHz 2 Ch; G: Auto (+18.0 /  +0.0 dB) (+|-)\n");
+    assert_capture_contains("| UDP Digital Output: 127.0.0.1:23456; 8 kHz 2 Ch; G: Auto (+18.0 / +0.0 dB) (+|-)\n");
     assert(strstr(g_printw_capture, "UDP Analog Output") == NULL);
     opts.udp_sockfdA = (dsd_socket_t)0;
     reset_printw_capture();
