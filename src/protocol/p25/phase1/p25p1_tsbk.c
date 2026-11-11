@@ -39,6 +39,8 @@
 
 enum {
     TSBK_MAX_BLOCKS = 3,
+    /* Where the first block starts: the 24-dibit sync and the 32-dibit NID with the status symbol inside it. */
+    TSBK_FIRST_BLOCK_START = 57,
     TSBK_DIBITS_PER_REP = 98,
     TSBK_DIBITS_WITH_STATUS = 101,
     TSBK_SOFT_BITS_PER_REP = 196,
@@ -67,6 +69,9 @@ typedef struct {
     int16_t tsbk_llr[TSBK_SOFT_BITS_PER_REP];
     uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK];
     int tsbk_decoded_bits[TSBK_BITS_PER_BLOCK];
+    /* The block's dibits read so far, status symbols included, and the data dibits among them. */
+    int read_count;
+    int data_count;
 } tsbk_decode_ctx_t;
 
 // Takes no options: the slot preference is the user's, and a control frame leaves it as set (issue #657).
@@ -129,30 +134,51 @@ tsbk_decode_repetition_bytes(const uint8_t tsbk_dibit[TSBK_DIBITS_PER_REP],
     (void)p25_12_soft_llr(tsbk_dibit, tsbk_llr, tsbk_byte);
 }
 
+/* Reads the block on to its dibit @p end (of TSBK_DIBITS_WITH_STATUS): data dibits into the block, status symbols to the
+   status accumulator. */
 static void
-tsbk_read_repetition_samples(dsd_opts* opts, dsd_state* state, int* skipdibit, uint8_t tsbk_dibit[TSBK_DIBITS_PER_REP],
-                             int16_t tsbk_llr[TSBK_SOFT_BITS_PER_REP]) {
-    int k = 0;
-    for (int i = 0; i < TSBK_DIBITS_WITH_STATUS; i++) {
+tsbk_read_repetition_samples(dsd_opts* opts, dsd_state* state, int* skipdibit, tsbk_decode_ctx_t* ctx, int end) {
+    while (ctx->read_count < end) {
         dsd_dibit_soft_t soft;
         int dibit = getDibitSoft(opts, state, &soft);
-        if ((*skipdibit / 36) == 0) {
-            tsbk_dibit[k] = (uint8_t)dibit;
-            tsbk_llr[(k * 2) + 0] = soft.llr[0];
-            tsbk_llr[(k * 2) + 1] = soft.llr[1];
-            k++;
-        } else {
+        if ((*skipdibit / 36) != 0) {
             p25_status_accum_add(state, dibit);
             *skipdibit = 0;
+        } else if (ctx->data_count < TSBK_DIBITS_PER_REP) {
+            const int k = ctx->data_count++;
+            ctx->tsbk_dibit[k] = (uint8_t)dibit;
+            ctx->tsbk_llr[(k * 2) + 0] = soft.llr[0];
+            ctx->tsbk_llr[(k * 2) + 1] = soft.llr[1];
         }
         (*skipdibit)++;
+        ctx->read_count++;
     }
 }
 
+/* Whether the TSDU ended with the @p blocks blocks before this one, read from the start of this one: such a TSDU pads
+   the span up to its next status symbol with null dibits (TIA-102.BAAA-A 8.2.4; p25p1_block_unit_dibits()), where a
+   TSDU that goes on carries this block's trellis-coded data. Reads that span (so the read stops where the next frame's
+   sync starts when it was the end) and takes it for the nulls when at most a fifth of its data dibits read otherwise:
+   in the captures measured nulls read 20-21 of 21, the data of real blocks at most 13. */
+static int
+tsbk_read_trailing_nulls(dsd_opts* opts, dsd_state* state, int* skipdibit, tsbk_decode_ctx_t* ctx, int blocks) {
+    const int span =
+        (int)p25p1_block_unit_dibits(blocks) - (TSBK_FIRST_BLOCK_START + (blocks * TSBK_DIBITS_WITH_STATUS));
+    if (span <= 0 || span >= TSBK_DIBITS_WITH_STATUS) {
+        return 0;
+    }
+    tsbk_read_repetition_samples(opts, state, skipdibit, ctx, span);
+    int misread = 0;
+    for (int i = 0; i < ctx->data_count; i++) {
+        misread += (ctx->tsbk_dibit[i] != 0U) ? 1 : 0;
+    }
+    return ctx->data_count > 0 && misread * 5 <= ctx->data_count;
+}
+
+/* Reads the rest of the block (from where a trailing-null check left it) and decodes it; returns its CRC verdict. */
 static int
 tsbk_decode_block(dsd_opts* opts, dsd_state* state, int* skipdibit, tsbk_decode_ctx_t* ctx) {
-    tsbk_init_decode_ctx(ctx);
-    tsbk_read_repetition_samples(opts, state, skipdibit, ctx->tsbk_dibit, ctx->tsbk_llr);
+    tsbk_read_repetition_samples(opts, state, skipdibit, ctx, TSBK_DIBITS_WITH_STATUS);
     tsbk_decode_repetition_bytes(ctx->tsbk_dibit, ctx->tsbk_llr, ctx->tsbk_byte);
     tsbk_bits_from_bytes(ctx->tsbk_byte, ctx->tsbk_decoded_bits);
     return crc16_lb_bridge(ctx->tsbk_decoded_bits, 80);
@@ -1055,11 +1081,19 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
     tsbk_prepare_frame_state(state);
 
     int skipdibit = 36 - 14;
+    /* The last block failed its CRC with its last-block flag clear: a flag the CRC did not vouch for. */
+    int unvouched_more = 0;
     for (int block = 0; block < TSBK_MAX_BLOCKS; block++) {
         tsbk_decode_ctx_t ctx;
         unsigned long long int PDU[24];
         DSD_MEMSET(PDU, 0, sizeof(PDU));
+        tsbk_init_decode_ctx(&ctx);
 
+        /* Read on behind such a flag, a TSDU that ended there took the next frame's sync and NID for its next blocks
+           and lost that frame: the span its end pads with nulls says which. */
+        if (unvouched_more && tsbk_read_trailing_nulls(opts, state, &skipdibit, &ctx, block)) {
+            break;
+        }
         int err = tsbk_decode_block(opts, state, &skipdibit, &ctx);
         /* An input interruption cut the block (a Signal search left the frame): the rest of it is erasures the reader
            stood in, which the list decoder may still fit to a CRC by chance. Neither it nor a block after it counts or
@@ -1083,6 +1117,7 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
             }
             break;
         }
+        unvouched_more = err != 0;
     }
 
     DSD_FPRINTF(stderr, "%s", KNRM);

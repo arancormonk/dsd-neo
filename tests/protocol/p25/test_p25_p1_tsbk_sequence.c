@@ -563,6 +563,122 @@ test_network_status_code(void) {
     return rc;
 }
 
+/* The span after @p blocks blocks that a TSDU of that many fills with trailing nulls (TIA-102.BAAA-A 8.2.4), read on
+   from where the last block ended: 21 nulls and a status symbol after one block, 28 and one after two. @p errors of the
+   nulls read as -3 instead. Status symbols carry 1, which no null check may count. */
+static void
+append_null_span(int blocks, int errors, int* skipdibit) {
+    const int span = (int)p25p1_block_unit_dibits(blocks) - (57 + (101 * blocks));
+    for (int i = 0; i < span; i++) {
+        if ((*skipdibit / 36) == 0) {
+            g_stream[g_stream_len++] = errors > 0 ? 3U : 0U;
+            errors--;
+        } else {
+            g_stream[g_stream_len++] = 1U;
+            *skipdibit = 0;
+        }
+        (*skipdibit)++;
+    }
+}
+
+/* The next frame's sync word (+P25p1, 0x5575F5FF77FF), as dibits. */
+static void
+append_next_sync(void) {
+    static const uint8_t sync[24] = {1, 1, 1, 1, 1, 3, 1, 1, 3, 3, 1, 1, 3, 3, 3, 3, 1, 3, 1, 3, 3, 3, 3, 3};
+    for (int i = 0; i < 24 && g_stream_len < (int)sizeof(g_stream); i++) {
+        g_stream[g_stream_len++] = sync[i];
+    }
+}
+
+/* One TSDU of @p blocks blocks in a row, the last of them with its CRC broken but its last-block flag clear, then the
+   trailing nulls with @p null_errors misread and the next frame's sync; or, when @p next_block is given, that block
+   instead. */
+static void
+build_failed_last_block_stream(int blocks, int null_errors, const uint8_t* next_block) {
+    /* The 0x1111 grant (flag clear) with two of its payload bytes changed under the old CRC: the block decodes clean
+       and fails its CRC. (A changed CRC byte would not do: the list decoder's next candidate repairs a flip that close
+       to the trellis's end.) */
+    static const uint8_t k_grant_1111_bytes[12] = {0x00, 0x00, 0x00, 0x10, 0x0A, 0x11,
+                                                   0x11, 0x00, 0x01, 0x01, 0xAE, 0x8E};
+    uint8_t broken_bytes[12];
+    DSD_MEMCPY(broken_bytes, k_grant_1111_bytes, sizeof(broken_bytes));
+    broken_bytes[4] ^= 0x5AU;
+    broken_bytes[6] ^= 0x3CU;
+    uint8_t broken[98];
+    encode_tsbk_dibits(broken_bytes, broken);
+
+    int skipdibit = 36 - 14;
+    DSD_MEMSET(g_stream, 0, sizeof(g_stream));
+    g_stream_len = 0;
+    g_stream_pos = 0;
+    for (int b = 1; b < blocks; b++) {
+        append_tsbk_stream_block(k_group_grant_1111_dibits, &skipdibit);
+    }
+    append_tsbk_stream_block(broken, &skipdibit);
+    if (next_block != NULL) {
+        append_tsbk_stream_block(next_block, &skipdibit);
+        return;
+    }
+    append_null_span(blocks, null_errors, &skipdibit);
+    append_next_sync();
+}
+
+static void
+run_tsdu(dsd_opts* opts, dsd_state* state) {
+    reset_decode_counters();
+    g_channel_freq = 0;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    processTSBK(opts, state);
+}
+
+/* A block whose CRC fails says nothing about whether another follows: its last-block flag is as damaged as the rest.
+   Read on behind it, a one-block TSDU took the next frame's sync and NID for its second and third blocks and lost that
+   frame, on the air and in the CQPSK fixtures. The span a TSDU ending there pads with trailing nulls says which: nulls
+   end the TSDU where its next frame starts; another block's data reads on. */
+static int
+test_failed_block_trailing_nulls(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+
+    /* One block, then its 21 nulls and status symbol: the read stops at the next frame's sync. */
+    build_failed_last_block_stream(1, 0, NULL);
+    run_tsdu(&opts, &state);
+    rc |= expect_eq_int("failed one-block tsdu fails its crc", (int)state.p25_p1_fec_err, 1);
+    rc |= expect_eq_int("failed one-block tsdu stops at the next sync", g_stream_pos, 101 + 22);
+    rc |= expect_eq_int("failed one-block tsdu reads no further block", (int)state.p25_p1_fec_ok, 0);
+    rc |= expect_eq_int("failed one-block tsdu collects the span's status symbol", g_status_count, 3 + 1);
+    rc |= expect_eq_int("failed one-block tsdu has no length", (int)state.p25_p1_unit_dibits, 0);
+
+    /* A fifth of the nulls misread (4 of 21) still ends it; a fifth and one more (5) reads on. */
+    build_failed_last_block_stream(1, 4, NULL);
+    run_tsdu(&opts, &state);
+    rc |= expect_eq_int("nulls with 4 of 21 misread end the tsdu", g_stream_pos, 101 + 22);
+    build_failed_last_block_stream(1, 5, NULL);
+    run_tsdu(&opts, &state);
+    rc |= expect_eq_int("nulls with 5 of 21 misread read on", g_stream_pos > 101 + 22, 1);
+
+    /* Two blocks, the second failed, then its 28 nulls and status symbol: 5 of them misread still end it. */
+    build_failed_last_block_stream(2, 5, NULL);
+    run_tsdu(&opts, &state);
+    rc |= expect_eq_int("failed two-block tsdu dispatches its first block", g_mac_count, 1);
+    rc |= expect_eq_int("failed two-block tsdu stops at the next sync", g_stream_pos, 202 + 29);
+    rc |= expect_eq_int("failed two-block tsdu has no length", (int)state.p25_p1_unit_dibits, 0);
+    build_failed_last_block_stream(2, 6, NULL);
+    run_tsdu(&opts, &state);
+    rc |= expect_eq_int("nulls with 6 of 28 misread read on", g_stream_pos > 202 + 29, 1);
+
+    /* The failed block followed by a real block (the 0x2222 grant, flagged last): the TSDU reads on and decodes it. */
+    build_failed_last_block_stream(1, 0, k_group_grant_2222_dibits);
+    run_tsdu(&opts, &state);
+    rc |= expect_eq_int("failed block then a real block reads it", g_stream_pos, 202);
+    rc |= expect_eq_int("failed block then a real block dispatches it", g_mac_count, 1);
+    rc |= expect_eq_int("failed block then a real block counts both", (int)(state.p25_p1_fec_ok + state.p25_p1_fec_err),
+                        2);
+    return rc;
+}
+
 int
 main(void) {
     dsd_decode_clock_use_test(1000000000ULL);
@@ -756,6 +872,7 @@ main(void) {
         rc |= expect_eq_int("cut tsdu has no length", (int)state.p25_p1_unit_dibits, 0);
     }
     g_interrupt_at = -1;
+    rc |= test_failed_block_trailing_nulls();
     rc |= test_network_status_code();
     dsd_signal_search_site_set(NULL);
     dsd_rtl_stream_metrics_hooks_set(NULL);
