@@ -3861,9 +3861,43 @@ test_dmr_ss3_stamps_the_slot_each_channel_carries(void) {
     return rc;
 }
 
+/* Three loud voiced AMBE+2 frames on @p slot, staged as the DMR BS voice burst stages them: pitch index 40 and gain
+   index 26, which the vocoder synthesizes at about -30 dBFS RMS with a peak near 5300, so two of them still sum under
+   the mixer's ceiling. */
+static void
+dmr_ss3_stage_loud_burst(dmr_stamp_fixture* fx, int slot) {
+    char ambe_d[49] = {0};
+    char ambe_fr[4][24];
+    char imbe_fr[8][23] = {{0}};
+    char imbe7100_fr[7][24] = {{0}};
+    set_ambe2450_b0(ambe_d, 40);
+    /* b2, the gain index: ambe_d[8..11] then ambe_d[36], MSB first. */
+    static const int k_gain_bits[5] = {8, 9, 10, 11, 36};
+    for (int i = 0; i < 5; i++) {
+        ambe_d[k_gain_bits[i]] = (char)((26 >> (4 - i)) & 1);
+    }
+    DSD_MEMSET(ambe_fr, 0, sizeof ambe_fr);
+    (void)mbe_encodeAmbe3600x2450Frame(ambe_d, ambe_fr);
+    for (int frame = 0; frame < 3; frame++) {
+        fx->state->currentslot = slot;
+        processMbeFrame(fx->opts, fx->state, owner_of(fx->state->synctype), imbe_fr, ambe_fr, imbe7100_fr);
+        dsd_dmr_mix_store_frame(fx->state, slot, frame);
+    }
+}
+
+static double
+s16_level_db(const short* x, size_t n) {
+    double sum = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        sum += (double)x[i] * (double)x[i];
+    }
+    return 10.0 * log10((sum / (double)n) + 1e-12);
+}
+
 /* Issue #518: the one-channel SS3 mix plays the vocoder's frames at their level. A clear talker beside a companion that
  * staged nothing this burst (its last frame clear, so still audible) plays alone at its own level, not averaged with
- * that silence; two clear talkers play their sum. */
+ * that silence; two clear talkers play their sum, 6.02 dB over one. The frames are loud, so nearly every sample tells
+ * a sum from an average, and the level is checked as well as each sample. */
 static int
 test_dmr_ss3_mono_plays_the_vocoder_level(void) {
     int rc = 0;
@@ -3873,17 +3907,21 @@ test_dmr_ss3_mono_plays_the_vocoder_level(void) {
             return 1;
         }
         fx.opts->pulse_digi_out_channels = 1;
-        dmr_stamp_stage_burst(&fx, 0);
+        dmr_ss3_stage_loud_burst(&fx, 0);
         if (both) {
-            dmr_stamp_stage_burst(&fx, 1);
+            dmr_ss3_stage_loud_burst(&fx, 1);
         }
+        static short talker[3 * 160];
         static short want[3 * 160];
         int peak = 0;
+        int telling = 0;
         for (int k = 0; k < 3; k++) {
             for (int i = 0; i < 160; i++) {
                 const int v = fx.state->s_l4[k][i] + (both ? fx.state->s_r4[k][i] : 0);
+                talker[(k * 160) + i] = fx.state->s_l4[k][i];
                 want[(k * 160) + i] = (short)v;
                 peak = abs(v) > peak ? abs(v) : peak;
+                telling += abs(v) >= 2 ? 1 : 0; /* a sum and an average of it differ here */
             }
         }
         const char* tag = both ? "dmr ss3 mono two clear talkers" : "dmr ss3 mono one talker beside a silent slot";
@@ -3891,6 +3929,8 @@ test_dmr_ss3_mono_plays_the_vocoder_level(void) {
         // Under the mixer's ceiling, so the limiter leaves the sum as it is.
         DSD_SNPRINTF(check, sizeof(check), "%s: voice staged, under the ceiling", tag);
         rc |= expect_eq_int(check, peak > 0 && peak <= 29204, 1);
+        DSD_SNPRINTF(check, sizeof(check), "%s: most samples tell a sum from an average", tag);
+        rc |= expect_eq_int(check, telling >= (3 * 160 * 8) / 10, 1);
         dmr_mix_run(fx.opts, fx.state);
         DSD_SNPRINTF(check, sizeof(check), "%s: samples", tag);
         rc |= expect_eq_int(check, (int)g_dmr_mix_mono_count, 3 * 160);
@@ -3900,6 +3940,14 @@ test_dmr_ss3_mono_plays_the_vocoder_level(void) {
         }
         DSD_SNPRINTF(check, sizeof(check), "%s: at the vocoder's level", tag);
         rc |= expect_eq_int(check, mismatches, 0);
+        /* The level over one talker's: 0 dB alone, 6.02 dB for two identical talkers summed (an average would read
+           -6.02 and 0 dB). */
+        const double over_db = s16_level_db(g_dmr_mix_mono, 3U * 160U) - s16_level_db(talker, 3U * 160U);
+        const double want_db = both ? 6.0206 : 0.0;
+        if (!(fabs(over_db - want_db) < 0.05)) {
+            DSD_FPRINTF(stderr, "%s: level %+.3f dB over one talker, want %+.3f dB\n", tag, over_db, want_db);
+            rc = 1;
+        }
         dmr_stamp_fixture_close(&fx);
     }
     return rc;
