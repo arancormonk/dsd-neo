@@ -697,6 +697,135 @@ test_metadata_edit_and_hold() {
           recorder.resets == 1 && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("A"));
 }
 
+/* Only a state's own section is tiered by its county count; "Several states" and "No place" are in name order. Equal
+   titles in one place are ordered by key. */
+void
+test_place_other_sections_by_name() {
+    Fixture f;
+    const QVariantMap iowa = state(19, QStringLiteral("Iowa"));
+    const QVariantMap illinois = state(17, QStringLiteral("Illinois"));
+    const QVariantMap johnson = county(1, 19, QStringLiteral("Johnson"));
+    f.add({placed(plain(QStringLiteral("Zulu"), QStringLiteral("851.0")), {iowa, illinois}, {johnson}),
+           placed(plain(QStringLiteral("Alpha"), QStringLiteral("852.0")), {iowa, illinois},
+                  {johnson, county(2, 19, QStringLiteral("Linn")), county(3, 17, QStringLiteral("Cook"))}),
+           placed(plain(QStringLiteral("Mike"), QStringLiteral("853.0")), {iowa, illinois}, {}),
+           placed(plain(QStringLiteral("Yankee"), QStringLiteral("854.0")), {QVariantMap{{QStringLiteral("stid"), 5}}},
+                  {county(9, 5, QStringLiteral("Named county"))}),
+           plain(QStringLiteral("Bravo"), QStringLiteral("855.0")),
+           placed(plain(QStringLiteral("Twin"), QStringLiteral("856.0")), {iowa}, {johnson}),
+           placed(plain(QStringLiteral("Twin"), QStringLiteral("857.0")), {iowa}, {johnson})});
+    f.prefs.setSystemsSort(QStringLiteral("place"));
+    settle();
+    check("several states and no place in name order, not by county count",
+          f.column(SavedSystemCards::TitleRole)
+              == QStringList({QStringLiteral("Twin"), QStringLiteral("Twin"), QStringLiteral("Alpha"),
+                              QStringLiteral("Mike"), QStringLiteral("Zulu"), QStringLiteral("Bravo"),
+                              QStringLiteral("Yankee")}));
+    const QString twinA = f.uidOf(5);
+    const QString twinB = f.uidOf(6);
+    check("place: equal titles in one place by key", f.at(0, SavedSystemCards::KeyRole) == qMin(twinA, twinB)
+                                                         && f.at(1, SavedSystemCards::KeyRole) == qMax(twinA, twinB));
+}
+
+/* Equal distances and titles, and equal stamps and titles, are ordered by key. */
+void
+test_tie_breaks_by_key() {
+    Fixture f;
+    f.add({positioned(site(QStringLiteral("Twin — A"), 501, 1, QStringLiteral("851.0"), QStringLiteral("A")), 42.0,
+                      -93.6),
+           positioned(site(QStringLiteral("Twin — A"), 500, 1, QStringLiteral("852.0"), QStringLiteral("A")), 42.0,
+                      -93.6)});
+    f.cards->setLocationSupported(true);
+    set_fix(f.prefs, 41.6, -93.6);
+    f.prefs.setSystemsSort(QStringLiteral("nearest"));
+    settle();
+    const QString first = qMin(f.systems->groupKey(0), f.systems->groupKey(1));
+    check("nearest: equal distance and title by key",
+          f.cards->effectiveSort() == QStringLiteral("nearest") && f.at(0, SavedSystemCards::KeyRole) == first);
+
+    Fixture g;
+    g.add({plain(QStringLiteral("Same"), QStringLiteral("851.0")),
+           plain(QStringLiteral("Same"), QStringLiteral("852.0"))});
+    check("stamp both", g.systems->update(0, {{QStringLiteral("lastHeard"), 4000}})
+                            && g.systems->update(1, {{QStringLiteral("lastHeard"), 4000}}));
+    g.prefs.setSystemsSort(QStringLiteral("recent"));
+    settle();
+    check("last listened: equal stamp and title by key",
+          g.at(0, SavedSystemCards::KeyRole) == qMin(g.uidOf(0), g.uidOf(1)));
+}
+
+/* Rows A..C named so the name order is the reverse of their distance order from 41.6, -93.6. */
+void
+add_distance_rows(Fixture& f) {
+    f.add({positioned(site(QStringLiteral("Charlie — S"), 100, 1, QStringLiteral("851.0"), QStringLiteral("S")), 41.7,
+                      -93.6),
+           positioned(site(QStringLiteral("Bravo — S"), 200, 1, QStringLiteral("852.0"), QStringLiteral("S")), 42.6,
+                      -93.6),
+           positioned(site(QStringLiteral("Alpha — S"), 300, 1, QStringLiteral("853.0"), QStringLiteral("S")), 43.6,
+                      -93.6)});
+}
+
+/* R15: only the fix the user asked for is a user-asked change. */
+void
+test_location_request_mark() {
+    Fixture f;
+    add_distance_rows(f);
+    f.cards->setLocationSupported(true);
+    f.prefs.setSystemsSort(QStringLiteral("nearest"));
+    settle();
+    check("no fix yet: name order", f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Alpha"));
+    f.cards->setScreenReaderActive(true);
+    f.cards->setHoldReorders(true);
+    Recorder recorder(*f.cards);
+    set_fix(f.prefs, 41.6, -93.6);
+    settle();
+    check("a fix nobody asked for here is held on screen",
+          recorder.resets == 0 && recorder.moves == 0
+              && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Alpha"));
+    f.cards->markLocationRequested();
+    set_fix(f.prefs, 41.6, -93.6);
+    settle();
+    check("the fix the user asked for applies as a reset",
+          recorder.resets == 1 && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Charlie"));
+    recorder.clear();
+    f.prefs.setLocationFix(0, 0, 0);
+    settle();
+    check("the mark is spent: an expiry is a background change, held",
+          recorder.resets == 0 && recorder.moves == 0
+              && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Charlie"));
+    check("and it goes back to name order", f.cards->effectiveSort() == QStringLiteral("name"));
+}
+
+/* A held reorder applies as moves once the screen reader is off; a background reorder with one on and no hold is a
+   reset. */
+void
+test_reader_off_and_unheld_background() {
+    Fixture f;
+    add_distance_rows(f);
+    f.prefs.setSystemsSort(QStringLiteral("recent"));
+    settle();
+    f.cards->setScreenReaderActive(true);
+    f.cards->setHoldReorders(true);
+    Recorder recorder(*f.cards);
+    check("listen to Charlie", f.systems->update(0, {{QStringLiteral("lastHeard"), 7000}}));
+    settle();
+    check("held", recorder.resets == 0 && recorder.moves == 0
+                      && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Alpha"));
+    f.cards->setScreenReaderActive(false);
+    settle();
+    check("screen reader off: the held reorder applies as moves",
+          recorder.resets == 0 && recorder.moves > 0 && recorder.followed()
+              && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Charlie"));
+    recorder.clear();
+    f.cards->setScreenReaderActive(true);
+    f.cards->setHoldReorders(false);
+    check("listen to Bravo", f.systems->update(1, {{QStringLiteral("lastHeard"), 8000}}));
+    settle();
+    check("a background reorder with a screen reader and no hold is a reset",
+          recorder.resets == 1 && recorder.moves == 0
+              && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Bravo"));
+}
+
 void
 test_coalescing() {
     Fixture f;
@@ -864,6 +993,10 @@ main(int argc, char** argv) {
     test_search_adapter();
     test_sort_signals();
     test_metadata_edit_and_hold();
+    test_place_other_sections_by_name();
+    test_tie_breaks_by_key();
+    test_location_request_mark();
+    test_reader_off_and_unheld_background();
     test_coalescing();
     test_signals_follow_random_changes();
     test_refresh_hint();

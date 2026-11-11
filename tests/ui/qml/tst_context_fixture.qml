@@ -156,20 +156,22 @@ TestCase {
         compare(recordings.recordingCountForDetection("17:9"), 0);
     }
 
-    // Listen's saved-system cards are the production model; the harness resets what a case may leave on it and
-    // carries the host's location support to it, as qt_ui.cpp does.
+    // Listen's saved-system cards are the production model; the harness resets what a case may leave on it, and
+    // setLocationSupported() sets the host's reading and the cards' together, as qt_ui.cpp does.
     function test_saved_system_cards_registered_and_reset() {
         verify(savedSystemCards !== undefined && savedSystemCards !== null);
         compare(savedSystemCards.sortId, "added");
         savedSystemCards.query = "metro";
         savedSystemCards.holdReorders = true;
         savedSystemCards.screenReaderActive = true;
+        testContext.setLocationSupported(true);
         testContext.resetSavedSystemCards();
         compare(savedSystemCards.query, "");
         compare(savedSystemCards.holdReorders, false);
         compare(savedSystemCards.screenReaderActive, false);
-        testContext.setLocationSupported(true);
+        compare(decoderHost.locationSupported, true, "a reset leaves location support to setLocationSupported()");
         testContext.setLocationSupported(false);
+        compare(decoderHost.locationSupported, false);
     }
 
     function test_01_the_fixture_carries_every_reading_the_screens_read() {

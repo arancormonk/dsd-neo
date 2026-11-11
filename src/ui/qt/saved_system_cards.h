@@ -151,6 +151,13 @@ class SavedSystemCards : public QAbstractListModel {
     /** @brief Whether this platform can take a location fix (DecoderHost::locationSupported()); Nearest needs it. */
     void setLocationSupported(bool supported);
 
+    /**
+     * @brief The next location change is the user's own (Nearest's Use or Update location): call right before asking
+     *        for a fix. That change then counts as user-asked (a reorder resets under a screen reader); any other
+     *        (a 24 h expiry, a fix another screen took) is a background change.
+     */
+    Q_INVOKABLE void markLocationRequested();
+
     /** @brief The shown row of the card keyed @p key, or -1. */
     Q_INVOKABLE int rowForKey(const QString& key) const;
 
@@ -247,18 +254,27 @@ class SavedSystemCards : public QAbstractListModel {
         qint64 hz = 0;
     };
 
+    /** The location fix one rebuild measures from, read once (valid only with location support). */
+    struct Fix {
+        bool valid = false;
+        qint64 at = 0;
+        double lat = 0;
+        double lon = 0;
+    };
+
     void scheduleRebuild();
     void rebuild();
-    void collectCards();
+    Fix readFix() const;
+    void collectCards(const Fix& fix);
     QList<Member> readMembers();
-    Card buildCard(const QList<const Member*>& group, const QHash<QString, bool>& rrFiles) const;
+    Card buildCard(const QList<const Member*>& group, const QHash<QString, bool>& rrFiles, const Fix& fix) const;
     void placeCard(Card& card, const QList<const Member*>& group) const;
-    void locateCard(Card& card, const QList<const Member*>& group) const;
+    static void locateCard(Card& card, const QList<const Member*>& group, const Fix& fix);
     /** @p member's search text and frequency, from the cache while what they are made of is unchanged; kept in @p next. */
     RowText memberText(const Member& member, QHash<QString, RowText>& next) const;
     QHash<QString, bool> radioReferenceFiles() const;
-    void sortCards();
-    QString applicableSort() const;
+    void sortCards(const Fix& fix);
+    QString applicableSort(const Fix& fix) const;
     QList<Card> filteredCards() const;
     void publish(QList<Card>&& next, bool userAsked);
     QList<Card> heldOrder(QList<Card>&& next) const;
@@ -281,6 +297,7 @@ class SavedSystemCards : public QAbstractListModel {
     QVariantMap m_protocolLabels;
     QString m_query;
     QString m_effectiveSort;
+    Fix m_fix; // the fix the cards' distances were measured from
     int m_totalCount = 0;
     int m_rebuildCount = 0;
     bool m_locationSupported = false;
@@ -291,6 +308,7 @@ class SavedSystemCards : public QAbstractListModel {
     bool m_orderDirty = true;
     bool m_userAsked = false;
     bool m_reorderHeld = false;
+    bool m_locationRequested = false; // markLocationRequested() until the next location change
 };
 
 } // namespace dsd_qt

@@ -5621,15 +5621,14 @@ class Setup : public QObject {
         }
     }
 
-    /** @brief The saved-system cards as a fresh Home finds them: no search, no screen reader, nothing held, and no
-     *         location support (setLocationSupported() turns it on). */
+    /** @brief The saved-system cards as a fresh Home finds them: no search, no screen reader, nothing held. Location
+     *         support is left as setLocationSupported() last set it on the host and the cards together. */
     Q_INVOKABLE void
     resetSavedSystemCards() {
         if (m_saved_system_cards != nullptr) {
             m_saved_system_cards->setQuery(QString());
             m_saved_system_cards->setScreenReaderActive(false);
             m_saved_system_cards->setHoldReorders(false);
-            m_saved_system_cards->setLocationSupported(false);
         }
     }
 

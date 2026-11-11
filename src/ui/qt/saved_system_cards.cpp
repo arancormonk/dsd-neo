@@ -154,12 +154,15 @@ by_added(const Card& a, const Card& b) {
     return a.key < b.key;
 }
 
-/* Sections: one state by its name, then several states, then no place. Within one: one county by its name, then
-   several counties, then none; then the name. */
+/* Sections: one state by its name, then several states, then no place. Within a state's section: one county by its
+   name, then several counties, then none; then the name. The other two sections are in name order. */
 bool
 by_place(const Card& a, const Card& b) {
     if (a.placeKind != b.placeKind) {
         return a.placeKind < b.placeKind;
+    }
+    if (a.placeKind != 0) {
+        return by_name(a, b); // "Several states" and "No place" are in name order
     }
     if (a.stateRank != b.stateRank) {
         return a.stateRank < b.stateRank;
@@ -350,10 +353,11 @@ SavedSystemCards::SavedSystemCards(SavedSystemsModel* systems, AppPrefs* prefs, 
             m_userAsked = true;
             scheduleRebuild();
         });
-        // A new fix (Update location) or one that expired: distances and possibly the order applied.
+        /* A new fix or one that expired: distances and possibly the order applied. Only the fix the user asked for
+           (markLocationRequested()) is a user-asked change; an expiry or a fix another screen took is not. */
         connect(m_prefs, &AppPrefs::locationChanged, this, [this]() {
             m_cardsDirty = true;
-            m_userAsked = true;
+            m_userAsked = m_userAsked || std::exchange(m_locationRequested, false);
             scheduleRebuild();
         });
     }
@@ -464,6 +468,11 @@ SavedSystemCards::setLocationSupported(bool supported) {
     scheduleRebuild();
 }
 
+void
+SavedSystemCards::markLocationRequested() {
+    m_locationRequested = true;
+}
+
 int
 SavedSystemCards::rowForKey(const QString& key) const {
     for (int i = 0; i < m_shown.size(); ++i) {
@@ -490,12 +499,17 @@ SavedSystemCards::rebuild() {
     const bool userAsked = std::exchange(m_userAsked, false);
     const int shownBefore = shownCount();
     const int totalBefore = m_totalCount;
+    const Fix fix = readFix();
+    if (fix.valid != m_fix.valid || fix.at != m_fix.at) {
+        m_cardsDirty = true; // the distances were measured from another fix, or none
+    }
+    m_fix = fix;
     if (m_cardsDirty) {
-        collectCards();
+        collectCards(fix);
         m_orderDirty = true;
     }
     if (m_orderDirty) {
-        sortCards();
+        sortCards(fix);
     }
     m_cardsDirty = false;
     m_orderDirty = false;
@@ -559,8 +573,20 @@ SavedSystemCards::radioReferenceFiles() const {
     return files;
 }
 
+SavedSystemCards::Fix
+SavedSystemCards::readFix() const {
+    Fix fix;
+    fix.at = m_locationSupported && m_prefs != nullptr ? m_prefs->lastFixAt() : 0;
+    fix.valid = fix.at > 0;
+    if (fix.valid) {
+        fix.lat = m_prefs->lastLat();
+        fix.lon = m_prefs->lastLon();
+    }
+    return fix;
+}
+
 void
-SavedSystemCards::collectCards() {
+SavedSystemCards::collectCards(const Fix& fix) {
     const QList<Member> members = readMembers();
     QHash<QString, int> cardOf;
     QList<QList<const Member*>> groups;
@@ -581,7 +607,7 @@ SavedSystemCards::collectCards() {
     QStringList titles;
     QStringList places;
     for (const QList<const Member*>& group : groups) {
-        Card card = buildCard(group, rrFiles);
+        Card card = buildCard(group, rrFiles, fix);
         QStringList lines;
         QSet<QString> flags;
         for (const Member* member : group) {
@@ -639,7 +665,8 @@ SavedSystemCards::memberText(const Member& member, QHash<QString, RowText>& next
 }
 
 SavedSystemCards::Card
-SavedSystemCards::buildCard(const QList<const Member*>& group, const QHash<QString, bool>& rrFiles) const {
+SavedSystemCards::buildCard(const QList<const Member*>& group, const QHash<QString, bool>& rrFiles,
+                            const Fix& fix) const {
     const Member& lead = *group.first();
     const bool grouped = !lead.groupKey.isEmpty();
     // Play starts the one site not avoided, or the row itself in no group; the card describes that row.
@@ -667,7 +694,7 @@ SavedSystemCards::buildCard(const QList<const Member*>& group, const QHash<QStri
         card.rrLinked = card.rrLinked || site_grouped(member->rrSid, member->rrSiteId) || !member->place.isEmpty();
     }
     placeCard(card, group);
-    locateCard(card, group);
+    locateCard(card, group, fix);
     return card;
 }
 
@@ -699,18 +726,15 @@ SavedSystemCards::placeCard(Card& card, const QList<const Member*>& group) const
     } else if (countyNames.isEmpty()) {
         card.placeLabel = card.placeState;
     } else {
-        card.placeLabel = tr("%1 · %2 counties").arg(card.placeState).arg(countyNames.size());
+        card.placeLabel = tr("%1 · %2 counties").arg(card.placeState, QString::number(countyNames.size()));
     }
 }
 
 void
-SavedSystemCards::locateCard(Card& card, const QList<const Member*>& group) const {
-    const bool fix = m_locationSupported && m_prefs != nullptr && m_prefs->lastFixAt() > 0;
-    if (!fix) {
+SavedSystemCards::locateCard(Card& card, const QList<const Member*>& group, const Fix& fix) {
+    if (!fix.valid) {
         return;
     }
-    const double lat = m_prefs->lastLat();
-    const double lon = m_prefs->lastLon();
     bool playable = false;
     double nearest = std::numeric_limits<double>::infinity();
     for (const Member* member : group) {
@@ -718,7 +742,8 @@ SavedSystemCards::locateCard(Card& card, const QList<const Member*>& group) cons
             continue;
         }
         playable = true;
-        const double distance = member->hasSitePos ? site_distance_km(lat, lon, member->siteLat, member->siteLon) : -1;
+        const double distance =
+            member->hasSitePos ? site_distance_km(fix.lat, fix.lon, member->siteLat, member->siteLon) : -1;
         if (distance >= 0 && distance < nearest) {
             nearest = distance;
         }
@@ -732,17 +757,17 @@ SavedSystemCards::locateCard(Card& card, const QList<const Member*>& group) cons
 }
 
 QString
-SavedSystemCards::applicableSort() const {
+SavedSystemCards::applicableSort(const Fix& fix) const {
     const QString stored = sortId();
-    if (stored == sort_nearest() && !(m_locationSupported && m_prefs != nullptr && m_prefs->lastFixAt() > 0)) {
+    if (stored == sort_nearest() && !fix.valid) {
         return sort_name();
     }
     return stored;
 }
 
 void
-SavedSystemCards::sortCards() {
-    const QString sort = applicableSort();
+SavedSystemCards::sortCards(const Fix& fix) {
+    const QString sort = applicableSort(fix);
     for (Card& card : m_all) {
         if (sort == QLatin1String("place")) {
             card.section =
