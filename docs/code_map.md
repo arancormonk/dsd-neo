@@ -9355,22 +9355,28 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   corrects 11 bits and the soft search flips up to 3 more, so a corrupted control channel TSDU's NID can decode as an
   LDU1 of another NAC (seen at 10-14 corrections on a simulcast site): it decoded noise as voice and moved the received
   identity, `state->nac` and the Phase 2 seed. The carrier's established NAC (`dsd_state::p25_p1_carrier_nac`) is the
-  NAC of the last unborrowed NID naming a usable NAC (not 0x000/0xFFF) that was accepted, valid only while the carrier
+  NAC of the last unborrowed NID naming a usable NAC (`p25p1_nid_nac_usable()`: not 0x000/0xFFF, the one received-NAC
+  rule the dispatcher's NAC writes and the access-code reader share) that was accepted, valid only while the carrier
   count, the accepted trunk tuning generation (`dsd_trunk_tuning_generation()`) and the sync history drop count
   (`dsd_frame_sync_history_carry::drops`) it was taken under are current: a carrier boundary, every accepted tune (a
   control channel return, which is no carrier boundary, included), a trunk scan visit and every other sync history
   drop end it, and `dsd_state_forget_p25p1_carrier_nac()` ends it at the carrier codes' forget (the no-carrier pass,
   a voice channel tune), a trunk scan target's restore, a NID an input interruption cut and the engine loop that takes
-  an interruption up. A NID naming a usable NAC other than the established one off the air is taken at once with at
+  an interruption up. A NID naming a NAC other than the established one off the air is taken at once with at
   most 4 corrections (`P25P1_NID_NAC_CHANGE_MAX_CORRECTIONS`, OP25's `rx_sync` NID limit; the corrections are
   `p25p1_nid_result::error_count`, BCH plus soft flips, and a parity disagreement does not count). With more, a soft
   result past the BCH radius included, it is provisional: the DUID reads invalid, so nothing decodes, it counts in
   `nid_failures_total`, `-v 2` prints `[NID NAC xxx held, n corrections]`, nothing takes its NAC (received identity,
-  frame NAC, `state->nac`, seed, proof), and the NAC is held as the candidate. The next NID on the same stream settles
-  it, however far behind: naming the candidate (at any count) confirms it and is decoded as an ordinary NAC change,
-  naming the established NAC discards it, naming a third NAC costly replaces it. The first NID on a carrier, borrowed
-  decodes (which name no NAC), 0x000/0xFFF decodes, hand-set seeds and the #804 distinct-colour-code rule above are
-  unchanged; the rule is codec-independent, C4FM included. Costs and limits: the first frame of a real NAC change on
+  frame NAC, `state->nac`, seed, proof), and the NAC is held as the candidate. 0x000 and 0xFFF are held like any other
+  NAC: they are the words a dead or stuck input decodes as, so a costly NID naming either on a carrier with an
+  established NAC is the likeliest miscorrection, and decoding it would play the frame as voice (an LDU1) or start a
+  call (an HDU). The next NID naming a NAC on the same stream (any accepted or held decode that did not borrow its NAC)
+  settles it, with no time window: naming the candidate (at any count) confirms it and is decoded as an ordinary NAC
+  change, naming the established NAC discards it, naming a third NAC costly replaces it, and any other accepted NID
+  drops it. A confirmed or cheap 0x000/0xFFF decodes but, as before, takes no NAC and never becomes the established
+  NAC. The first NID on a carrier (0x000/0xFFF too), borrowed decodes (which name no NAC), a 0x000/0xFFF decode with at
+  most 4 corrections, hand-set seeds and the #804 distinct-colour-code rule above are unchanged; the rule is
+  codec-independent, C4FM included. Costs and limits: the first frame of a real NAC change on
   the same stream whose NID needed 5 or more corrections is not decoded (the next NID, whatever it needed, confirms
   it); a costly miscorrection that keeps the established NAC but names a wrong DUID is not caught. Other Phase 1 gates
   read the verdict (`p25p1_nid_verdict`: NAC, DUID, corrections, parity agreement, borrowed, disposition) and the

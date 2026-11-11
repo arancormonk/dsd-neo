@@ -79,11 +79,6 @@ p25p1_llr_reliability(int16_t llr) {
     return (uint8_t)v;
 }
 
-static int
-p25p1_valid_decoded_nac(int nac) {
-    return nac != 0 && nac != 0xFFF;
-}
-
 static void
 p25p1_append_bch_bits(char bch_code[63], uint8_t bch_reliab[63], int* index_bch_code, int dibit,
                       const dsd_dibit_soft_t* soft) {
@@ -158,7 +153,7 @@ p25p1_read_nid_fields(dsd_opts* opts, dsd_state* state, uint8_t* duid, char bch_
 
 static void
 p25p1_apply_nac_update(dsd_state* state, int new_nac) {
-    int valid_nac = p25p1_valid_decoded_nac(new_nac);
+    int valid_nac = p25p1_nid_nac_usable(new_nac);
 
     /* A NID split by a carrier boundary names no carrier's NAC (issue #804): the BCH may accept the split word, but
        neither the received identity nor state->nac, the seed's NAC or the frame's takes it. The boundary zeroed

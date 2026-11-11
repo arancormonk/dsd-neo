@@ -15,7 +15,7 @@
  * sentinel between carriers:
  * - DMR `dmr_color_code`: the slot type's Golay(20,8) (behind the BS colour-code lock) or the MS embedded
  *   signalling's QR(16,7,6); 16 until one decodes, and back to 16 at every carrier boundary.
- * - P25 Phase 1 `nac`: the BCH(63,16) network identifier; 0 between carriers. `p25p1_valid_decoded_nac()` refuses
+ * - P25 Phase 1 `nac`: the BCH(63,16) network identifier; 0 between carriers. `p25p1_nid_nac_usable()` refuses
  *   NAC 0x000 and 0xFFF, dsd-neo's own acceptance rule (a dead or stuck input decodes as an all-zero or all-one NID),
  *   so a carrier whose NID decodes either leaves `nac` at 0 and shows no NAC.
  * - P25 Phase 2 `p2_proven_nac`: the NAC the latest checked Phase 2 proof on this carrier named (issue #802), -1 for

@@ -991,11 +991,12 @@ Notes
   console diagnostics are suppressed.
 - P25p2 on a single frequency without trunking recovers the scrambling code from the channel's own scrambled
   FACCH/SACCH; `-X` (below) sets it by hand.
-- A P25 Phase 1 NID that names another NAC than the carrier's earlier NIDs did is taken at once only when it needed
-  at most 4 bit corrections. A costlier one (5 or more, as a corrupted control channel frame read as voice of another
-  NAC can need) is held: that frame is not decoded and the NAC shown, the received identity and the Phase 2 seed stay
-  as they were (`-v 2` prints `[NID NAC xxx held, n corrections]`). The next NID settles it: naming the same new NAC
-  confirms the change and decodes, naming the old NAC drops it. The first NID after a tune, a carrier loss or any other
+- A P25 Phase 1 NID that names another NAC than the carrier's earlier NIDs did (000 and FFF included) is taken at
+  once only when it needed at most 4 bit corrections. A costlier one (5 or more, as a corrupted control channel frame
+  read as voice of another NAC can need) is held: that frame is not decoded and the NAC shown, the received identity
+  and the Phase 2 seed stay as they were (`-v 2` prints `[NID NAC xxx held, n corrections]`). The next NID settles it:
+  naming the same new NAC confirms the change and decodes, naming the old NAC drops it. NAC 000 and FFF are never
+  shown or taken as the carrier's NAC. The first NID after a tune, a carrier loss or any other
   carrier change is taken at once whatever it needed, so a real NAC change on one carrier costs at most its first
   frame. This applies to C4FM and CQPSK alike.
 

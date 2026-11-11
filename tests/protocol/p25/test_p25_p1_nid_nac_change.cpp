@@ -56,6 +56,7 @@ static int g_failures;
     } while (0)
 
 enum {
+    NID_DUID_HDU = 0x0,
     NID_DUID_TDU = 0x3,
     NID_DUID_LDU1 = 0x5,
     NID_DUID_TSDU = 0x7,
@@ -265,7 +266,8 @@ test_cheap_nac_change_taken_at_once(void) {
 
 /* A NID naming another NAC with 5 or 11 corrections is held: the LDU1 is not decoded, nothing takes its NAC (the
    received identity, the frame NAC, state->nac, the seed and its proof), and it counts as a failed NID. The next NID
-   naming the same NAC confirms it, however far behind (a 1800-dibit PDU between them, or more). */
+   naming the same NAC confirms it. The two are far apart on purpose: the rule has no time window, and this pins that
+   a long gap (a 1800-dibit PDU's worth, or more) between them does not lose the confirmation. */
 static void
 test_costly_nac_change_held_then_confirmed(void) {
     static const int counts[] = {5, 11};
@@ -290,7 +292,8 @@ test_costly_nac_change_held_then_confirmed(void) {
             CHECK(state->nid_failures_total == 1U);
             CHECK(p25p1_carrier_nac_established(state) == 0x1A6);
 
-            /* The next NID names the same NAC, after a long gap and itself costly: the change is confirmed. */
+            /* The next NID names the same NAC, after a long gap and itself costly: the change is confirmed (no time
+               window expires it). */
             const uint32_t gap_symbols = 1800U * 40U;
             state->symbol_clock += gap_symbols;
             state->symbolcnt += gap_symbols;
@@ -353,6 +356,164 @@ test_soft_decode_past_bch_radius_held(void) {
     CHECK(g_ldu1_frames == 0);
     expect_nac_untouched(state, 0x1A6, 0x1A6ULL, 1U);
     CHECK(state->nid_failures_total == 1U);
+    free(state);
+    free(opts);
+}
+
+/* A costly NID naming NAC 0x000 or 0xFFF (the words a dead or stuck input decodes as) on a carrier with an established
+   NAC is held like any other NAC: its LDU1 is not decoded and nothing moves. */
+static void
+test_costly_dead_nac_held(void) {
+    static const int nacs[] = {0x000, 0xFFF};
+    static const int counts[] = {5, 11};
+    for (int n = 0; n < 2; n++) {
+        for (int c = 0; c < 2; c++) {
+            dsd_opts* opts = new_opts();
+            dsd_state* state = new_state();
+            establish_proven(opts, state);
+
+            nid_air nid = nid_with_errors(nacs[n], NID_DUID_LDU1, k_error_bits, counts[c]);
+            const struct p25p1_nid_result alone = decode_alone(&nid, 0x1A6);
+            CHECK(alone.status == NID_OK && alone.nac == nacs[n] && alone.duid == NID_DUID_LDU1);
+            CHECK(alone.error_count == counts[c] && alone.nac_borrowed == 0);
+
+            (void)dispatch_nid(opts, state, &nid);
+            CHECK(g_ldu1_frames == 0 && g_other_frames == 0);
+            expect_nac_untouched(state, 0x1A6, 0x1A6ULL, 1U);
+            CHECK(state->p2_proven_nac == 0x1A6);
+            CHECK(state->nid_failures_total == 1U);
+            CHECK(p25p1_carrier_nac_established(state) == 0x1A6);
+            free(state);
+            free(opts);
+        }
+    }
+}
+
+/* An HDU naming NAC 0x000 at 11 corrections (a TSDU read as the all-zero word's neighbour) is held: nothing reaches the
+   HDU handler, which would close the voice output and start a call. */
+static void
+test_costly_dead_nac_hdu_held(void) {
+    dsd_opts* opts = new_opts();
+    dsd_state* state = new_state();
+    establish_proven(opts, state);
+
+    nid_air nid = nid_with_errors(0x000, NID_DUID_HDU, k_error_bits, 11);
+    const struct p25p1_nid_result alone = decode_alone(&nid, 0x1A6);
+    CHECK(alone.status == NID_OK && alone.nac == 0x000 && alone.duid == NID_DUID_HDU);
+    CHECK(alone.error_count == 11 && alone.nac_borrowed == 0);
+
+    (void)dispatch_nid(opts, state, &nid);
+    CHECK(g_other_frames == 0 && g_ldu1_frames == 0);
+    expect_nac_untouched(state, 0x1A6, 0x1A6ULL, 1U);
+    CHECK(state->nid_failures_total == 1U);
+    free(state);
+    free(opts);
+}
+
+/* A NID naming 0x000 with at most four corrections decodes as before, and takes no NAC; with no established NAC a
+   costly one decodes too. */
+static void
+test_cheap_or_first_dead_nac_dispatched(void) {
+    static const int counts[] = {0, 4};
+    for (int c = 0; c < 2; c++) {
+        dsd_opts* opts = new_opts();
+        dsd_state* state = new_state();
+        establish_proven(opts, state);
+
+        nid_air nid = nid_with_errors(0x000, NID_DUID_LDU1, k_error_bits, counts[c]);
+        const struct p25p1_nid_result alone = decode_alone(&nid, 0x1A6);
+        CHECK(alone.status == NID_OK && alone.nac == 0x000 && alone.error_count == counts[c]);
+
+        (void)dispatch_nid(opts, state, &nid);
+        CHECK(g_ldu1_frames == 1);
+        CHECK(state->nac == 0x1A6 && state->rx_id.access == 0x1A6U);
+        CHECK(state->p2_cc == 0x1A6ULL && state->p2_cc_verified == 1U);
+        CHECK(state->nid_failures_total == 0U);
+        CHECK(p25p1_carrier_nac_established(state) == 0x1A6);
+        free(state);
+        free(opts);
+    }
+
+    dsd_opts* opts = new_opts();
+    dsd_state* state = new_state();
+    nid_air nid = nid_with_errors(0x000, NID_DUID_LDU1, k_error_bits, 11);
+    (void)dispatch_nid(opts, state, &nid);
+    CHECK(g_ldu1_frames == 1);
+    CHECK(state->nid_failures_total == 0U);
+    CHECK(p25p1_carrier_nac_established(state) == -1);
+    free(state);
+    free(opts);
+}
+
+/* A held 0x000 is a candidate like any other: a second costly 0x000 right after it decodes, yet never becomes the
+   carrier's NAC, and settles the candidate, so a third costly one is held again. A cheap 0x000 settles a held NAC
+   too. */
+static void
+test_dead_nac_candidate_settled(void) {
+    dsd_opts* opts = new_opts();
+    dsd_state* state = new_state();
+    establish_proven(opts, state);
+
+    nid_air first = nid_with_errors(0x000, NID_DUID_LDU1, k_error_bits, 11);
+    (void)dispatch_nid(opts, state, &first);
+    CHECK(g_ldu1_frames == 0 && state->nid_failures_total == 1U);
+
+    nid_air second = nid_with_errors(0x000, NID_DUID_LDU1, k_other_error_bits, 11);
+    (void)dispatch_nid(opts, state, &second);
+    CHECK(g_ldu1_frames == 1);
+    CHECK(state->nac == 0x1A6 && state->p2_cc == 0x1A6ULL && state->p2_cc_verified == 1U);
+    CHECK(p25p1_carrier_nac_established(state) == 0x1A6);
+
+    (void)dispatch_nid(opts, state, &first);
+    CHECK(g_ldu1_frames == 1 && state->nid_failures_total == 2U);
+    free(state);
+    free(opts);
+
+    opts = new_opts();
+    state = new_state();
+    establish_proven(opts, state);
+    nid_air held = nid_with_errors(0x0E1, NID_DUID_LDU1, k_error_bits, 11);
+    (void)dispatch_nid(opts, state, &held);
+    nid_air cheap_dead = nid_with_errors(0x000, NID_DUID_LDU1, k_error_bits, 2);
+    (void)dispatch_nid(opts, state, &cheap_dead);
+    CHECK(g_ldu1_frames == 1);
+    nid_air again = nid_with_errors(0x0E1, NID_DUID_LDU1, k_other_error_bits, 11);
+    (void)dispatch_nid(opts, state, &again);
+    CHECK(g_ldu1_frames == 1 && state->nid_failures_total == 2U);
+    expect_nac_untouched(state, 0x1A6, 0x1A6ULL, 1U);
+    free(state);
+    free(opts);
+}
+
+/* A costly NID naming a third NAC replaces the held one: the held NAC's next costly NID is held again (and becomes the
+   candidate in turn), while the third NAC's next one confirms it. */
+static void
+test_third_nac_replaces_candidate(void) {
+    const nid_air first = nid_with_errors(0x0E1, NID_DUID_LDU1, k_error_bits, 11);
+    const nid_air third = nid_with_errors(0x0BB, NID_DUID_LDU1, k_error_bits, 11);
+    const nid_air first_again = nid_with_errors(0x0E1, NID_DUID_LDU1, k_other_error_bits, 11);
+    const nid_air third_again = nid_with_errors(0x0BB, NID_DUID_LDU1, k_other_error_bits, 11);
+
+    dsd_opts* opts = new_opts();
+    dsd_state* state = new_state();
+    establish_proven(opts, state);
+    (void)dispatch_nid(opts, state, &first);
+    (void)dispatch_nid(opts, state, &third);
+    CHECK(g_ldu1_frames == 0 && state->nid_failures_total == 2U);
+    (void)dispatch_nid(opts, state, &first_again);
+    CHECK(g_ldu1_frames == 0 && state->nid_failures_total == 3U);
+    expect_nac_untouched(state, 0x1A6, 0x1A6ULL, 1U);
+    free(state);
+    free(opts);
+
+    opts = new_opts();
+    state = new_state();
+    establish_proven(opts, state);
+    (void)dispatch_nid(opts, state, &first);
+    (void)dispatch_nid(opts, state, &third);
+    (void)dispatch_nid(opts, state, &third_again);
+    CHECK(g_ldu1_frames == 1 && state->nid_failures_total == 2U);
+    expect_nac_taken(state, 0x0BB);
     free(state);
     free(opts);
 }
@@ -528,6 +689,11 @@ main(void) {
     test_costly_nac_change_held_then_confirmed();
     test_held_nac_discarded_by_established_nac();
     test_soft_decode_past_bch_radius_held();
+    test_costly_dead_nac_held();
+    test_costly_dead_nac_hdu_held();
+    test_cheap_or_first_dead_nac_dispatched();
+    test_dead_nac_candidate_settled();
+    test_third_nac_replaces_candidate();
     test_first_nid_on_a_stream_taken();
     test_cut_nid_forgets_the_established_nac();
     test_borrowed_nac_and_hand_set_seed_unchanged();

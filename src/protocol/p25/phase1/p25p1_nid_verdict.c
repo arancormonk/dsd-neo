@@ -11,12 +11,6 @@
 #include <stdint.h>
 #include "dsd-neo/core/state_fwd.h"
 
-/* dsd-neo takes no NAC 0x000 or 0xFFF off a NID (a dead or stuck input decodes as either). */
-static int
-p25p1_nid_nac_usable(int nac) {
-    return nac > 0 && nac < 0xFFF;
-}
-
 /* Whether the established NAC still describes the stream: the carrier, the accepted tune and the sync histories it was
    named under are all still current. */
 static int
@@ -48,13 +42,16 @@ p25p1_nid_verdict_classify(const dsd_state* state, const struct p25p1_nid_result
     verdict.parity_agreed = decoded->status == NID_OK ? 1U : 0U;
     verdict.nac_borrowed = decoded->nac_borrowed != 0 ? 1U : 0U;
 
-    /* A borrowed NAC is the decoder's own and 0x000/0xFFF none dsd-neo takes: neither names a change. Nor does any NID
-       before the carrier's NIDs established a NAC. */
+    /* A borrowed NAC is the decoder's own, read off nothing. Nor is any NID before the carrier's NIDs established a NAC
+       weighed against one. */
     const int established = p25p1_carrier_nac_established(state);
-    if (verdict.nac_borrowed || !p25p1_nid_nac_usable(decoded->nac) || established < 0 || decoded->nac == established) {
+    if (verdict.nac_borrowed || established < 0 || decoded->nac == established) {
         return verdict;
     }
-    verdict.nac_changed = 1U;
+    /* 0x000 and 0xFFF never become the carrier's NAC, so they change nothing; but a costly NID naming either is as much
+       a miscorrection as any other, and the likeliest one (the words a dead or stuck input decodes as), so it is
+       weighed like one below. */
+    verdict.nac_changed = p25p1_nid_nac_usable(decoded->nac) ? 1U : 0U;
     if (decoded->error_count <= P25P1_NID_NAC_CHANGE_MAX_CORRECTIONS) {
         return verdict;
     }
@@ -71,8 +68,7 @@ p25p1_nid_verdict_classify(const dsd_state* state, const struct p25p1_nid_result
 
 void
 p25p1_nid_verdict_commit(dsd_state* state, const p25p1_nid_verdict* verdict) {
-    if (state == NULL || verdict == NULL || verdict->disposition == P25P1_NID_REJECTED || verdict->nac_borrowed
-        || !p25p1_nid_nac_usable(verdict->nac)) {
+    if (state == NULL || verdict == NULL || verdict->disposition == P25P1_NID_REJECTED || verdict->nac_borrowed) {
         return;
     }
     /* A NID a carrier boundary split names no carrier's NAC (issue #804). */
@@ -85,10 +81,14 @@ p25p1_nid_verdict_commit(dsd_state* state, const p25p1_nid_verdict* verdict) {
         rec->candidate_valid = 1U;
         return;
     }
+    /* An accepted NID settles the candidate; only a usable NAC becomes the carrier's. */
+    rec->candidate_valid = 0U;
+    if (!p25p1_nid_nac_usable(verdict->nac)) {
+        return;
+    }
     rec->nac = (uint16_t)verdict->nac;
     rec->carrier_seq = state->carrier_seq;
     rec->sync_history_drops = state->frame_sync_carry.drops;
     rec->tune_generation = dsd_trunk_tuning_generation();
     rec->valid = 1U;
-    rec->candidate_valid = 0U;
 }
