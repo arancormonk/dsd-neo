@@ -37,9 +37,9 @@
  * reports once, and a restart after a half-written save logs nothing twice (B6).
  * Issue #809: uidForFragment() finds the row holding a fragment, through a merge and a reload, and none once the row
  * is trimmed or the log cleared. B1: a row keeps its end, so a merged or updated span past the plausible cap reads
- * unknown and stays so (after a later update of an earlier fragment, a reload and a spill fold), the row still chains
- * from its real end, a row an older build stored ends where its known duration says, and a row with no start stamp
- * keeps its duration unknown through an update. */
+ * unknown and stays so (after a later update of an earlier fragment, a reload and a spill fold), a row past the cap
+ * chains merges from its start, not its end (a clock-shifted span absorbs nothing), a row an older build stored ends
+ * where its known duration says, and a row with no start stamp keeps its duration unknown through an update. */
 
 #include <QByteArray>
 #include <QChar>
@@ -4798,9 +4798,29 @@ test_fold_after_cap_keeps_unknown(void) {
     expect("the spill-folded row keeps its real end", stored_end_of_tg(tg) == when + 3610);
 }
 
-/* After (a), a third fragment within the window of the row's real end (not of its first fragment's) merges. */
+/* The end the rows store keeps for the row that starts at @p when, 0 when it keeps none. */
+qint64
+stored_end_of_when(qint64 when) {
+    for (const auto& value : dsd_qt::json_store_load_array("call_history.json")) {
+        const QJsonObject row = value.toObject();
+        if (row.value(QLatin1String("when")).toVariant().toLongLong() == when) {
+            return row.value(QLatin1String("end")).toVariant().toLongLong();
+        }
+    }
+    return 0;
+}
+
+/* Whether @p model holds two rows: the newest of @p newestSecs, and under it one of unknown duration. */
+bool
+new_row_over_unknown(const CallHistoryModel& model, int newestSecs) {
+    return model.count() == 2 && duration_of(model, 0) == newestSecs && duration_of(model, 1) == -1;
+}
+
+/* After (a) the row's span is past the cap, so the merge window chains from its start, not its end: a third fragment
+ * within 20 s of the real end starts a new row (a chain longer than an hour continues in a new row once it crosses the
+ * cap). The first row keeps its real end. */
 void
-test_chain_merges_from_real_end(void) {
+test_chain_past_cap_starts_new_row(void) {
     const time_t when = 1754612000;
     const uint32_t tg = 31004U;
     resetStorage();
@@ -4812,9 +4832,9 @@ test_chain_merges_from_real_end(void) {
         model.refresh(ring.state);
         ring.commit(0, tg, kB1Src, when + 3625, when + 3640);
         model.refresh(ring.state);
-        expect("a third fragment chains from the real end", model.count() == 1 && duration_of(model, 0) == -1);
+        expect("a third fragment past the cap starts a new row", new_row_over_unknown(model, 15));
     } // destructor flushes the stores
-    expect("the chained row ends with the third fragment", stored_end_of_tg(tg) == when + 3640);
+    expect("the row past the cap keeps its real end", stored_end_of_when(when) == when + 3610);
 
     resetStorage();
     RingFixture ring;
@@ -4829,8 +4849,7 @@ test_chain_merges_from_real_end(void) {
         CallHistoryModel restored;
         ring.commit(0, tg, kB1Src, when + 3625, when + 3640);
         restored.refresh(ring.state);
-        expect("a third fragment chains from the real end after a reload",
-               restored.count() == 1 && duration_of(restored, 0) == -1);
+        expect("a third fragment past the cap starts a new row after a reload", new_row_over_unknown(restored, 15));
     }
 
     RingFixture first;
@@ -4842,10 +4861,36 @@ test_chain_merges_from_real_end(void) {
     write_spill(spill_line_of(first) + spill_line_of(second) + spill_line_of(third));
     {
         CallHistoryModel folded;
-        expect("a third fragment folded from the spill chains from the real end",
-               folded.count() == 1 && duration_of(folded, 0) == -1);
+        expect("a third fragment folded from the spill past the cap starts a new row",
+               new_row_over_unknown(folded, 15));
     }
-    expect("the spill-chained row ends with the third fragment", stored_end_of_tg(tg) == when + 3640);
+    expect("the spill-folded row past the cap keeps its real end", stored_end_of_when(when) == when + 3610);
+}
+
+/* A clock-shifted fragment (a span of hours: unknown duration, its end far away) absorbs no later call of the same
+ * talkgroup and source that starts inside that span. */
+void
+test_clock_shifted_span_absorbs_nothing(void) {
+    const time_t when = 1754640000;
+    const uint32_t tg = 31012U;
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        ring.commit(0, tg, kB1Src, when, when + 5 * 3600);
+        model.refresh(ring.state);
+        expect("a span of hours reads unknown", model.count() == 1 && duration_of(model, 0) == -1);
+        ring.commit(0, tg, kB1Src, when + 7200, when + 7210);
+        model.refresh(ring.state);
+        expect("a later call inside the span is a row of its own", new_row_over_unknown(model, 10));
+    } // destructor flushes the stores
+    expect("the clock-shifted row keeps its end", stored_end_of_when(when) == when + 5 * 3600);
+    CallHistoryModel restored;
+    expect("both rows survive a reload", new_row_over_unknown(restored, 10));
+    ring.commit(0, tg, kB1Src, when + 9000, when + 9004);
+    restored.refresh(ring.state);
+    expect("a call inside the span after a reload is a row of its own",
+           restored.count() == 3 && duration_of(restored, 0) == 4);
 }
 
 /* A row an older build stored has no end: a known duration implies one, an unknown duration none. */
@@ -5101,7 +5146,8 @@ main(int argc, char** argv) {
     test_fold_past_cap_is_unknown();
     test_update_past_cap_is_unknown();
     test_fold_after_cap_keeps_unknown();
-    test_chain_merges_from_real_end();
+    test_chain_past_cap_starts_new_row();
+    test_clock_shifted_span_absorbs_nothing();
     test_old_row_end_derived();
     test_cap_exact_keeps_3600();
     test_unknown_learns_end();

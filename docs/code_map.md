@@ -12145,12 +12145,15 @@ Qt Quick frontend (`src/ui/qt`):
   - Duration and end: a voice row keeps its end (`Row::end`, seconds, 0 when not known) beside `durationSecs`. The
     ring's `event_time` becomes the end only when the raw `event_start_time` is set and not after it (`row_from_item()`);
     a row with no start stamp (`--playfiles`) takes `event_time` as its start and keeps no end, so an update never turns
-    its unknown duration into 0. `row_end_secs()` is the end when known, else the start: the merge window chains from
-    it, and `load()` seeds each row's seen entry with it. `foldRow()` (every merge, update and spill fold) takes the
-    later of the two `row_end_secs()` whenever either side knew its end, and sets the duration from
-    `call_history_duration_secs()`, the one plausibility rule a fresh row also gets: a merged span past 3,600 s reads
-    unknown (-1) and stays so when an earlier fragment updates, while the row still chains from its real end. With
-    neither end known the duration stays unknown. The end is stored as `end` (omitted when not known) in the rows store
+    its unknown duration into 0. `row_end_secs()` is the end when known, else the start; `load()` seeds each row's
+    seen entry with it. `foldRow()` (every merge, update and spill fold) takes the later of the two `row_end_secs()`
+    whenever either side knew its end, and sets the duration from `call_history_duration_secs()`, the one plausibility
+    rule a fresh row also gets: a merged span past 3,600 s reads unknown (-1) and stays so when an earlier fragment
+    updates. With neither end known the duration stays unknown. Matching (the merge window in `rows_mergeable()`, the
+    same-end preference in `same_reception_row()`) uses `row_merge_end_secs()`: the end only while the duration is
+    known, else the start. So a clock-shifted row (a span of hours) absorbs no later call of its talkgroup and source
+    inside that span, and a real chain longer than an hour continues in a new row once it crosses the cap; the row
+    past the cap keeps its real end. An update still reaches it by its fragment. The end is stored as `end` (omitted when not known) in the rows store
     and the spill. A row an older build stored has no `end`: it ends at `when + durationSecs` when the duration is
     known, else not known. Notices keep no end. Tests: `UI_QT_CALL_HISTORY_MODEL`.
   - Persistence: `call_history.json` (rows) and `call_history_seen.json` (seen map, newest 2048 in retention order);

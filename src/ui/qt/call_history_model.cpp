@@ -131,6 +131,20 @@ row_end_secs(const CallHistoryModel::Row& row) {
 }
 
 /**
+ * @brief The end a merge matches a row by: its end while its span is plausible (a known duration), else its start.
+ *
+ * A span past the cap is a clock-shifted row or a chain of fragments longer than an hour. Matching by its stored end
+ * would let a clock-shifted row absorb every later call of its talkgroup and source inside a span of hours, so it
+ * matches from its start, as a row of unknown duration always has. A real chain longer than an hour therefore
+ * continues in a new row once it crosses the cap. foldRow() still takes the real end (row_end_secs()), so the
+ * row's duration stays unknown and the stored end stays real.
+ */
+qint64
+row_merge_end_secs(const CallHistoryModel::Row& row) {
+    return row.durationSecs >= 0 ? row_end_secs(row) : row.when;
+}
+
+/**
  * @brief Whether a (session, start) pair is older in retention order than another.
  *
  * What a full log gives up first, and what the seen map forgets first: the oldest session,
@@ -1308,8 +1322,8 @@ rows_mergeable(const CallHistoryModel::Row& existing, const CallHistoryModel::Ro
     // the tight one, or two distinct back-to-back calls on a busy talkgroup
     // collapse into one row (the wildcard above cannot tell units apart).
     const bool srcKnownMatch = existing.src != 0 && existing.src == row.src;
-    return call_history_merge_within_window(existing.when, row_end_secs(existing), row.when, row_end_secs(row),
-                                            srcKnownMatch);
+    return call_history_merge_within_window(existing.when, row_merge_end_secs(existing), row.when,
+                                            row_merge_end_secs(row), srcKnownMatch);
 }
 
 /**
@@ -1369,7 +1383,7 @@ same_reception_row(const QList<CallHistoryModel::Row>& rows, const CallHistoryMo
         if (!rows_same_reception(existing, row) || row_holds_ring_of(existing, row)) {
             continue;
         }
-        if (row_end_secs(existing) == row_end_secs(row)) {
+        if (row_merge_end_secs(existing) == row_merge_end_secs(row)) {
             return i;
         }
         if (first < 0) {
