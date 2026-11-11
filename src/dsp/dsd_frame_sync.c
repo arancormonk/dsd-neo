@@ -4594,11 +4594,27 @@ frame_sync_p25p1_mod_compare_settle(const dsd_opts* opts, dsd_state* state, int 
     frame_sync_p25p1_mod_compare_end(state);
 }
 
-/* The other chain's pass is over: refund it to the dwell and settle on the chain that read more. */
+/* The current pass read the carrier whole up to now: no frame went by unread between its frames (@p missed), and it is
+ * not a frame's length or more past its last one. */
+static int
+frame_sync_p25p1_mod_compare_pass_read_whole(const dsd_state* state, int missed) {
+    const dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
+    return !missed && (uint32_t)(state->symbolcnt - cmp->last_frame_end) < cmp->last_frame_read;
+}
+
+/* The other chain's pass is over: refund it to the dwell and settle on the chain it chose. */
 static void
 frame_sync_p25p1_mod_compare_decide(const dsd_opts* opts, dsd_state* state) {
     const dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
     frame_sync_p25p1_mod_compare_refund(state);
+    /* The other chain's pass starts cold, where the incumbent's started on a frame its chain had read: the CQPSK chain
+     * can spend most of the pass settling, syncing every slot while the NIDs fail. So the pass is judged as the
+     * incumbent's was, from its own first frame: two or more frames read whole from there to the pass's end take the
+     * profile, whatever the totals say, since the incumbent's pass did not read whole (or there would be no trial). */
+    if (cmp->trial_frames > 1 && frame_sync_p25p1_mod_compare_pass_read_whole(state, cmp->trial_missed)) {
+        frame_sync_p25p1_mod_compare_settle(opts, state, !cmp->incumbent_rf_mod);
+        return;
+    }
     const int winner = frame_sync_p25p1_mod_compare_leader(state);
     /* A verdict needs the winner to have validated something in its own pass: the other chain wins only by reading
      * more than the incumbent, but an incumbent whose only frame was the one that opened the comparison -- the
@@ -4634,6 +4650,8 @@ frame_sync_p25p1_mod_compare_open(const dsd_opts* opts, dsd_state* state, uint32
     cmp->last_frame_end = state->symbolcnt;
     cmp->last_frame_read = consumed;
     cmp->trial_read = 0;
+    cmp->trial_frames = 0;
+    cmp->trial_missed = 0;
     cmp->window_start = state->symbolcnt - consumed;
     cmp->carrier_seq = state->carrier_seq;
     cmp->verdict_valid = 0;
@@ -4641,26 +4659,35 @@ frame_sync_p25p1_mod_compare_open(const dsd_opts* opts, dsd_state* state, uint32
     dsd_frame_sync_p25p1_mod_compare_publish(state);
 }
 
-/* A frame validated in the current pass, @p consumed symbols long, counts for that pass's chain if it came on it. The
- * incumbent's pass also notes a search after a frame at least as long as the frame: a frame went by unread. */
+/* A frame validated in the current pass, @p consumed symbols long, counts for that pass's chain if it came on it. Each
+ * pass also notes a search after one of its frames at least as long as the frame: a frame went by unread. The
+ * incumbent's pass runs from the frame that opened it, the other chain's from its own first frame. */
 static void
 frame_sync_p25p1_mod_compare_count_frame(dsd_state* state, uint32_t consumed) {
     dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
-    const int window_chain = cmp->phase == 1 ? cmp->incumbent_rf_mod : !cmp->incumbent_rf_mod;
+    const int incumbent_pass = cmp->phase == 1;
+    const int window_chain = incumbent_pass ? cmp->incumbent_rf_mod : !cmp->incumbent_rf_mod;
     if (state->p25_p1_validated_rf_mod != window_chain) {
         return;
     }
-    if (cmp->phase != 1) {
+    /* The search before the other chain's first frame is its cold start, not a frame gone by. */
+    const uint32_t search = (state->symbolcnt - consumed) - cmp->last_frame_end;
+    const int missed =
+        (incumbent_pass || cmp->trial_frames > 0) && search <= (uint32_t)INT_MAX && search >= cmp->last_frame_read;
+    cmp->last_frame_end = state->symbolcnt;
+    cmp->last_frame_read = consumed;
+    if (!incumbent_pass) {
+        if (missed) {
+            cmp->trial_missed = 1;
+        }
         cmp->trial_read += consumed;
+        cmp->trial_frames++;
         dsd_frame_sync_p25p1_mod_compare_publish(state);
         return;
     }
-    const uint32_t search = (state->symbolcnt - consumed) - cmp->last_frame_end;
-    if (search <= (uint32_t)INT_MAX && search >= cmp->last_frame_read) {
+    if (missed) {
         cmp->incumbent_missed = 1;
     }
-    cmp->last_frame_end = state->symbolcnt;
-    cmp->last_frame_read = consumed;
     cmp->incumbent_read += consumed;
     cmp->incumbent_frames++;
 }
@@ -4673,13 +4700,14 @@ frame_sync_p25p1_mod_compare_end_incumbent_pass(const dsd_opts* opts, dsd_state*
     /* A pass that let a frame go by unread does not keep it, nor does one that ends a frame's length or more after its
      * last validated frame. A pass whose only frame is the one that opened the comparison has measured nothing: a long
      * opening frame (a data PDU) can fill most of it, and the search after it may hold a sync that never validated. */
-    if (cmp->incumbent_frames > 0 && !cmp->incumbent_missed
-        && (uint32_t)(state->symbolcnt - cmp->last_frame_end) < cmp->last_frame_read) {
+    if (cmp->incumbent_frames > 0 && frame_sync_p25p1_mod_compare_pass_read_whole(state, cmp->incumbent_missed)) {
         frame_sync_p25p1_mod_compare_settle(opts, state, cmp->incumbent_rf_mod);
         return;
     }
     cmp->phase = 2;
     cmp->trial_read = 0;
+    cmp->trial_frames = 0;
+    cmp->trial_missed = 0;
     cmp->window_start = state->symbolcnt;
     cmp->counter_at_trial = state->sps_hunt_counter;
     frame_sync_p25p1_set_chain(opts, state, !cmp->incumbent_rf_mod);
@@ -4734,10 +4762,11 @@ frame_sync_p25p1_mod_compare_step(const dsd_opts* opts, dsd_state* state, int va
  * finds each frame's sync within a frame of the last one's end: a one-block TSDU reads 134 symbols of its 180-symbol
  * slot and the search to the next is 46. A search after a validated frame at least as long as that frame, before the
  * next one or the pass's end, means a frame went by unread. A pass with no such gap keeps its chain with no trial, so
- * a carrier one chain reads whole pays nothing; a pass with one gives the other chain a pass of its own, and that
- * chain takes the profile only by reading strictly more, since the incumbent was measured settled and the other
- * chain's pass includes its settling. The probe's trial flag keeps the votes off both passes, and the dwell gets back
- * what the other chain's pass searched.
+ * a carrier one chain reads whole pays nothing; a pass with one gives the other chain a pass of its own. That pass
+ * starts cold, where the incumbent's started on a frame its chain had read, and the CQPSK chain can spend most of it
+ * settling, so it is judged as the incumbent's was, from its own first frame: read whole from there to the pass's end
+ * (two frames or more), the other chain takes the profile; otherwise it takes it only by reading strictly more. The
+ * probe's trial flag keeps the votes off both passes, and the dwell gets back what the other chain's pass searched.
  *
  * The winner becomes the learned modulation, and a frame on the chain a comparison chose opens no other, so a control
  * channel the session returns to is not compared again until that knowledge is withdrawn (a dwell on that chain that

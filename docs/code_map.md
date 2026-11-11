@@ -6756,10 +6756,14 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   one search pass (`DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS`) are added up. P25p1 frames come back to back, so a search
   after a validated frame at least as long as that frame, before the next one or the pass's end, is a frame read by
   nobody (a one-block TSDU reads 134 of its 180-symbol slot, and the search to the next is 46); a pass without one keeps
-  the chain at once, a pass with one puts the other chain on for a pass of its own, and the chain that read strictly
-  more keeps the profile and becomes the learned modulation, with a verdict that stops a frame on that chain opening
-  another comparison. The other chain's pass is refunded to the dwell (the counter goes back to its value when that pass
-  began).
+  the chain at once, a pass with one puts the other chain on for a pass of its own, and the chain that wins keeps the
+  profile and becomes the learned modulation, with a verdict that stops a frame on that chain opening another
+  comparison. The other chain's pass is judged as the incumbent's was, from its own first frame, because it starts cold
+  (on the s72 LSM capture the CQPSK chain synced every slot of its pass, but the NIDs of the first five failed while its
+  loops settled): two or more frames read whole from there to the pass's end win it the profile whatever the totals say
+  (the incumbent's pass did not read whole, or there would be no trial); otherwise the chain that read strictly more
+  wins, and a tie keeps the incumbent. The other chain's pass is refunded to the dwell (the counter goes back to its
+  value when that pass began).
   - The other chain's pass starts at a `getFrameSync()` entry and is one search pass long, so on a carrier that chain
     cannot sync it runs out on the symbol the matchless-pass timeout fires on. It ends there instead, on whichever runs
     out first, its symbols read or the call's symbols searched (a read that commits no symbol counts only in the
@@ -6779,7 +6783,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     back to the leading chain), a dwell expiry that overtakes it (put back on the leading chain before the hunt moves;
     the expiry still judges the chain the dwell ran on), and `dsd_frame_sync_reset_acquisition()` (a trunk-scan switch,
     a row or input boundary; the caller owns the demodulator and the learned modulation). The leading chain is the
-    incumbent unless the other chain has read more. Each of those boundaries, and a tune on either thread, also
+    incumbent unless the other chain has read more (read whole decides only at the pass's end). Each of those boundaries, and a tune on either thread, also
     consumes the pending NID stamp (`seen_symbolcnt`) with no comparison running, and a stamp read across a
     `carrier_seq` change or with no frame read since the mark opens none (`seen_carrier_seq`): no comparison opens
     on the carrier reached from the carrier left's last frame.
@@ -6823,9 +6827,17 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     against 330 read) does not count as missed, and a conventional call is judged at about one LDU of resolution. The
     TSBK/MPDU success count (`p25_p1_fec_ok`) would be finer for control channels, but it says nothing about voice
     frames (HDU, LDU1/2, TDU), so the NID stays the one check that covers every DUID.
+  - Decided limit: a verdict for a chain that reads part of the carrier is not reopened while that chain decodes often
+    enough to keep the dwell spent (C4FM read two TSBKs in nine on s72 after its verdict and held it for 28 s): no
+    dwell expires into a CQPSK probe or withdraws the verdict, and a frame on its chain opens no comparison. Only a
+    frame on the other chain does, which the votes reach now and then but rarely keep (on s72 they put CQPSK on right
+    after a C4FM verdict, and a GFSK vote took it back before the cold chain read a frame). So the other chain's pass
+    is what has to be fair; an other chain still settling at the pass's end, or missing frames after its first, loses
+    on the totals as before.
   Without the comparison, a chain that reads part of an LSM simulcast carrier (C4FM: about half the 769 MHz control
   channel's TSBKs) kept the profile for as long as the carrier stayed up. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
-  (`test_p25p1_partial_chain_loses_the_comparison`, `test_p25p1_comparison_ends_cleanly`,
+  (`test_p25p1_partial_chain_loses_the_comparison`, `test_p25p1_settled_trial_that_reads_whole_wins`,
+  `test_p25p1_comparison_ends_cleanly`,
   `test_p25p1_cqpsk_trial_leaves_half_the_dwell_to_fsk_modes`),
   `ENGINE_TRUNK_RETUNE_REGRESSION` (`test_chain_comparison_in_flight_tunes_on_the_leading_chain`), `ENGINE_TRUNK_SCAN`,
   `DECODE_IQ_P25P1_CQPSK_SIMULCAST_CC_AUTO`.

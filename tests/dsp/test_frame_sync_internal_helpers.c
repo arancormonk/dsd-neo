@@ -4148,6 +4148,84 @@ compare_into_trial(dsd_opts* opts, dsd_state* state, int incumbent_rf_mod) {
     assert(state->rf_mod == !incumbent_rf_mod);
 }
 
+/* The other chain's pass from its start: @p settle symbols searched with nothing validated, then @p frames one-block
+ * TSDUs @p gap symbols of search apart, then the rest of the pass idle. */
+static void
+compare_trial_after_settling(dsd_opts* opts, dsd_state* state, uint32_t settle, int frames, uint32_t gap) {
+    uint32_t used = 0;
+    for (int i = 0; i < frames; i++) {
+        const uint32_t search = i == 0 ? settle : gap;
+        compare_frame(opts, state, search, 134U);
+        used += search + 134U;
+    }
+    if (used < (uint32_t)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS) {
+        compare_idle(opts, state, (uint32_t)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS - used);
+    }
+}
+
+/*
+ * The other chain's pass starts cold. On the s72 LSM simulcast capture the CQPSK chain synced every slot of its pass
+ * from the start, but the NIDs of the first five failed while its loops settled; it then read every TSBK to the pass's
+ * end, which came to the four TSBKs C4FM had read in its pass while missing one in two or three. The tie kept C4FM,
+ * and the C4FM verdict held the profile on a chain reading a quarter of the carrier for the whole capture. The other
+ * chain's pass is now judged as the incumbent's is, from its own first frame: read whole from there, it takes the
+ * profile whatever the totals say.
+ */
+static void
+test_p25p1_settled_trial_that_reads_whole_wins(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_rtl_stream_metrics_hooks hooks = {
+        .output_rate_hz = fake_output_rate_hz,
+        .apply_demod_profile = fake_apply_demod_profile,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    const uint32_t pass = (uint32_t)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+
+    /* C4FM reads one TSBK in three (402 symbols); CQPSK settles, then reads three back to back to the pass's end
+     * (402 symbols): a tie on the totals, which the CQPSK chain takes. */
+    compare_into_trial(&opts, &state, 0);
+    compare_trial_after_settling(&opts, &state, pass - 3U * 134U - 2U * 46U, 3, 46U);
+    assert(state.p25_p1_mod_compare.phase == 0);
+    assert(state.rf_mod == 1 && g_profile_cqpsk == 1);
+    assert(state.p25_p1_validated_rf_mod == 1);
+    assert(state.p25_p1_mod_compare.verdict_valid == 1 && state.p25_p1_mod_compare.verdict_rf_mod == 1);
+    assert(state.p25_p1_mod_probe_active == 0);
+
+    /* Either way round: a C4FM chain that settles late and then reads whole beats a CQPSK incumbent that missed. */
+    compare_into_trial(&opts, &state, 1);
+    compare_trial_after_settling(&opts, &state, pass - 2U * 134U - 46U, 2, 46U);
+    assert(state.rf_mod == 0 && state.p25_p1_validated_rf_mod == 0);
+    assert(state.p25_p1_mod_compare.verdict_valid == 1 && state.p25_p1_mod_compare.verdict_rf_mod == 0);
+
+    /* One frame is no run of frames: a single TSDU at the pass's end reads less, and the incumbent keeps the
+     * profile. */
+    compare_into_trial(&opts, &state, 0);
+    compare_trial_after_settling(&opts, &state, pass - 134U, 1, 46U);
+    assert(state.rf_mod == 0 && state.p25_p1_validated_rf_mod == 0);
+    assert(state.p25_p1_mod_compare.verdict_valid == 1 && state.p25_p1_mod_compare.verdict_rf_mod == 0);
+
+    /* A frame missed after the first is a frame gone by, as in the incumbent's pass: the totals decide, and a tie
+     * keeps the incumbent. */
+    compare_into_trial(&opts, &state, 0);
+    compare_trial_after_settling(&opts, &state, 946U, 1, 46U);
+    compare_frame(&opts, &state, 46U, 134U);
+    compare_frame(&opts, &state, 46U + 180U, 134U);
+    compare_idle(&opts, &state, pass - 946U - 3U * 134U - 46U - 226U);
+    assert(state.p25_p1_mod_compare.phase == 0);
+    assert(state.rf_mod == 0 && state.p25_p1_validated_rf_mod == 0);
+    assert(state.p25_p1_mod_compare.verdict_rf_mod == 0);
+
+    /* So is a pass that stops reading a frame's length or more before its end: the totals decide. */
+    compare_into_trial(&opts, &state, 0);
+    compare_trial_after_settling(&opts, &state, 0U, 3, 46U);
+    assert(state.p25_p1_mod_compare.phase == 0);
+    assert(state.rf_mod == 0 && state.p25_p1_validated_rf_mod == 0);
+    assert(state.p25_p1_mod_compare.verdict_rf_mod == 0);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
 /*
  * How a comparison ends when its passes are cut short or read nothing, and what it leaves behind.
  */
@@ -5498,6 +5576,7 @@ main(void) {
     test_validated_p25p1_modulation_outranks_the_heuristics();
     test_validated_cqpsk_survives_rotation_but_not_disproof();
     test_p25p1_partial_chain_loses_the_comparison();
+    test_p25p1_settled_trial_that_reads_whole_wins();
     test_p25p1_comparison_ends_cleanly();
     test_p25p1_chain_steps_serialize_with_watchdog_tunes();
     test_p25p1_stale_validation_opens_no_comparison();
