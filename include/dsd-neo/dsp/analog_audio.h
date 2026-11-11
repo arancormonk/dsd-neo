@@ -5,8 +5,8 @@
 
 /**
  * @file
- * @brief The analog monitor's audio chain: voice band-pass, the legacy 960 Hz filters, then a fixed gain or the AGC
- * (issue #518).
+ * @brief The analog monitor's audio chain: voice band-pass, the legacy 960 Hz filters, then a fixed gain or the speech
+ * AGC (<dsd-neo/dsp/speech_agc.h>, issue #518).
  *
  * Decoder-thread only. Each chain keeps its filter and AGC state in the DSD_STATE_EXT_DSP_ANALOG_AUDIO slot of the
  * state it runs on, allocated on first use; if that allocation fails the chain still applies the fixed gain, unfiltered.
@@ -19,6 +19,7 @@
 #include <dsd-neo/core/state_fwd.h>
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -42,17 +43,31 @@ typedef enum {
     DSD_ANALOG_AUDIO_CHAIN_EDACS = 1,
 } dsd_analog_audio_chain;
 
-/** The samples are heard: the AGC adapts to them. Without it the gain holds, and dropping it rolls the gain back
-    (dsd_voice_agc_process()). */
-#define DSD_ANALOG_AUDIO_PLAYING        0x1U
+/** The samples are qualified reception (the squelch open, the tone policy passing, no digital carrier, no retune
+    unresolved): the AGC may learn from them, whether or not anything plays or records them. Without it the AGC holds;
+    where it drops the reception closed and the AGC undoes what the tail taught (dsd_speech_agc_gate_closed()).
+    dsd_analog_audio_process_runs_f() takes it per sample instead. */
+#define DSD_ANALOG_AUDIO_LEARN                   0x1U
 /** The samples start another reception (a new EDACS call): filters and AGC start over before them. */
-#define DSD_ANALOG_AUDIO_RESET          0x2U
+#define DSD_ANALOG_AUDIO_RESET                   0x2U
 /** The samples are dropped (a block that straddles a retune, partly the old channel's): the chain neither filters nor
     counts them, turns them into silence, and starts over with the samples after them. */
-#define DSD_ANALOG_AUDIO_DISCARD        0x4U
+#define DSD_ANALOG_AUDIO_DISCARD                 0x4U
 
 /** The fixed gain's reference level: the reference signal plays at -12 dBFS peak (-15 dBFS RMS) at `-n 50`. */
-#define DSD_ANALOG_AUDIO_REFERENCE_PEAK 8231.0
+#define DSD_ANALOG_AUDIO_REFERENCE_PEAK          8231.0
+
+/** The speech AGC's start gains over `-n 50`, dB, per band (issue #518): a nominal talker at rated deviation (FM) or
+    modulation (AM) plays at the AGC's speech target from the first word. FM is narrowband up to this channel width
+    (`--nfm-bandwidth-hz`, default 16000), wideband above it. */
+#define DSD_ANALOG_AUDIO_START_GAIN_FM_NARROW_DB 4.537f
+#define DSD_ANALOG_AUDIO_START_GAIN_FM_WIDE_DB   (-1.482f)
+#define DSD_ANALOG_AUDIO_START_GAIN_AM_DB        (-2.553f)
+#define DSD_ANALOG_AUDIO_FM_NARROW_MAX_WIDTH_HZ  16000
+
+/** A gap at least this long between two samples the AGC learns from starts a new reception: the AGC starts over at
+    its start gain (dsd_analog_audio_process_runs_f()). */
+#define DSD_ANALOG_AUDIO_NEW_RECEPTION_GAP_NS    1000000000ULL
 
 /**
  * @brief The gain that takes @p source's reference signal to DSD_ANALOG_AUDIO_REFERENCE_PEAK before any de-emphasis:
@@ -95,25 +110,49 @@ dsd_analog_gain_is_auto(float gain) {
 }
 
 /**
- * @brief Run @p chain over @p n samples of @p buf in place, at @p rate_hz.
- *
- * In order: the voice band-pass when `use_pbf` is set (on the monitor chain under AM, the AM one, the FM one otherwise:
- * EDACS and the FSK discriminator output are FM), the legacy 960 Hz low-pass (`use_lpf`) and high-pass (`use_hpf`),
- * then the fixed gain (`-n N`: the source gain x N / 50, on RTL monitor audio times the stream's de-emphasis gain,
- * dsd_rtl_stream_metrics_hook_monitor_deemph_gain()) or, with the gain on auto, the AGC on the same reference gain.
- * Every filter's state is the chain's own. The filters run whether or not the samples are heard; the AGC adapts only to
- * DSD_ANALOG_AUDIO_PLAYING samples. The chain starts over on DSD_ANALOG_AUDIO_RESET, after DSD_ANALOG_AUDIO_DISCARD,
- * and on a change of source, rate or band, and on a new reception: a new RTL stream generation or de-emphasis gain (on
- * an RTL input), trunk-tuning generation or announced boundary (dsd_analog_audio_note_reception()). Samples whose
- * collection began in another reception than the one now (dsd_analog_audio_block_begin()) straddle a boundary and are
- * dropped as DSD_ANALOG_AUDIO_DISCARD drops them; samples collected wholly after one start the chain over. So a retune
- * never hands the next channel the last one's level or filter history, whichever path collected the samples. Publishes
- * the gain applied, in dB over the `-n 50` gain, in dsd_state::aout_gainA. The output is not clipped.
+ * @brief Run @p chain over @p n samples of @p buf in place, at @p rate_hz, every sample learning as
+ * DSD_ANALOG_AUDIO_LEARN in @p flags says: dsd_analog_audio_process_runs_f() with no per-sample flags.
  *
  * @return 0 on success, -1 on a NULL argument.
  */
 int dsd_analog_audio_process_f(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain, float* buf,
                                size_t n, dsd_analog_audio_source source, int rate_hz, unsigned int flags);
+
+/**
+ * @brief Run @p chain over @p n samples of @p buf in place, at @p rate_hz, with a learn flag per sample.
+ *
+ * In order: the voice band-pass when `use_pbf` is set (on the monitor chain under AM, the AM one, the FM one otherwise:
+ * EDACS and the FSK discriminator output are FM), the legacy 960 Hz low-pass (`use_lpf`) and high-pass (`use_hpf`),
+ * then the source gain (the gain that takes the source's reference signal to the `-n 50` level, on RTL monitor audio
+ * times the stream's de-emphasis gain, dsd_rtl_stream_metrics_hook_monitor_deemph_gain()) and the speech AGC over it:
+ * fixed at N / 50 for `-n N`, automatic on `-n 0`, its limiter holding -1 dBFS either way. On automatic a reception
+ * starts at the band's start gain (DSD_ANALOG_AUDIO_START_GAIN_*_DB; on RTL monitor audio less the `vol` trim over its
+ * default 2, so the trim does not move where the AGC starts). The AGC runs at @p rate_hz; at a rate it does not support
+ * (dsd_speech_agc_init()) the chain plays the fixed gain, with the limiter, and logs that once per rate.
+ *
+ * The filters run whether or not the samples learn. @p learn holds one flag per sample (nonzero: the sample is
+ * qualified reception, DSD_ANALOG_AUDIO_LEARN); NULL takes DSD_ANALOG_AUDIO_LEARN in @p flags for every sample. Where
+ * the flag drops the reception closed and the AGC rolls back what its tail taught; where it rises one opened
+ * (dsd_speech_agc_process_runs()), the flag of the call before carrying over. A sample that learns at least
+ * DSD_ANALOG_AUDIO_NEW_RECEPTION_GAP_NS after the last one that learned starts a new reception: the AGC starts over
+ * before it, whether samples that did not learn came between or none came at all (a source that stopped sending). The
+ * gap is the longer of the samples processed between the two at @p rate_hz and their decode-clock times: the clock is
+ * read once per call (dsd_decode_now_mono_ns()) as the time of its last sample, and each earlier sample sits its
+ * distance in samples before it, so how a caller splits its samples into calls does not move the times.
+ *
+ * The chain starts over on DSD_ANALOG_AUDIO_RESET, after DSD_ANALOG_AUDIO_DISCARD, and on a change of source, rate or
+ * band, and on a new reception: a new RTL stream generation or de-emphasis gain (on an RTL input), trunk-tuning
+ * generation or announced boundary (dsd_analog_audio_note_reception()). Samples whose collection began in another
+ * reception than the one now (dsd_analog_audio_block_begin()) straddle a boundary and are dropped as
+ * DSD_ANALOG_AUDIO_DISCARD drops them; samples collected wholly after one start the chain over. So a retune never hands
+ * the next channel the last one's level or filter history, whichever path collected the samples. Publishes the gain
+ * applied (AGC and limiter), in dB over the `-n 50` gain, in dsd_state::aout_gainA.
+ *
+ * @return 0 on success, -1 on a NULL argument.
+ */
+int dsd_analog_audio_process_runs_f(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain, float* buf,
+                                    size_t n, dsd_analog_audio_source source, int rate_hz, unsigned int flags,
+                                    const uint8_t* learn);
 
 /**
  * @brief Note that @p chain starts collecting the samples it will process next: the reception they begin in.
@@ -130,7 +169,7 @@ void dsd_analog_audio_block_begin(const dsd_opts* opts, dsd_state* state, dsd_an
  */
 void dsd_analog_audio_note_reception(const dsd_state* state);
 
-/** dsd_analog_audio_process_f() on int16 samples, saturating the output to int16. */
+/** dsd_analog_audio_process_f() on int16 samples, saturating the output to int16 (the limiter keeps it under). */
 int dsd_analog_audio_process_s(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain, short* buf,
                                size_t n, dsd_analog_audio_source source, int rate_hz, unsigned int flags);
 

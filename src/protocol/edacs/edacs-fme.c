@@ -727,12 +727,12 @@ edacs_analog_input_rate_hz(const dsd_opts* opts) {
 }
 
 /* One block through the chain under the dynamic squelch (issue #625): each run of samples the gate heard, or did not,
-   goes through with its own playing flag, so the AGC adapts to exactly the samples heard and holds while the gate is
-   closed (as the monitor's symbol_process_unsynced_audio_runs() does); then the closed samples are silenced, as the
-   level squelch's zeroed I/Q silences a closed block. Returns 1 when the gate heard any sample of the block. */
+   goes through with its own learn flag, so the AGC learns from exactly the samples heard and holds while the gate is
+   closed; then the closed samples are silenced, as the level squelch's zeroed I/Q silences a closed block. Returns 1
+   when the gate heard any sample of the block. */
 static int
 edacs_process_analog_block_runs(const dsd_opts* opts, dsd_state* state, short* block, const uint8_t* sql_flags,
-                                dsd_analog_audio_source source, int rate_hz, unsigned int playing, unsigned int reset) {
+                                dsd_analog_audio_source source, int rate_hz, unsigned int learn, unsigned int reset) {
     int any_heard = 0;
     unsigned int start = 0U;
     while (start < (unsigned int)EDACS_ANALOG_BLOCK_SAMPLES) {
@@ -743,7 +743,7 @@ edacs_process_analog_block_runs(const dsd_opts* opts, dsd_state* state, short* b
             end++;
         }
         (void)dsd_analog_audio_process_s(opts, state, DSD_ANALOG_AUDIO_CHAIN_EDACS, block + start, end - start, source,
-                                         rate_hz, (heard ? playing : 0U) | reset);
+                                         rate_hz, (heard ? learn : 0U) | reset);
         any_heard |= heard;
         reset = 0U;
         start = end;
@@ -758,7 +758,7 @@ edacs_process_analog_block_runs(const dsd_opts* opts, dsd_state* state, short* b
 
 /* The analog voice chain (voice band-pass, legacy filters, then a fixed gain or the AGC) over the three blocks in
    order. The symbol register is built from the raw first block before this, so decoding never sees the filters. On an
-   RTL input EDACS reads the FSK discriminator output; a call the talkgroup gate mutes does not move the AGC, and
+   RTL input EDACS reads the FSK discriminator output; the AGC does not learn from a call the talkgroup gate mutes, and
    @p first_of_call starts the chain over for another channel's call. With @p sql_flags (2880, the dynamic squelch's)
    the closed samples hold the AGC and play silence; NULL plays every sample. Returns 1 when any sample plays: one the
    dynamic squelch heard, or any at all without @p sql_flags. */
@@ -767,7 +767,7 @@ edacs_process_analog_triplet(const dsd_opts* opts, dsd_state* state, short* anal
                              const uint8_t* sql_flags, int first_of_call, int rate_hz) {
     const dsd_analog_audio_source source =
         opts->audio_in_type == AUDIO_IN_RTL ? DSD_ANALOG_AUDIO_SOURCE_RTL_FSK : DSD_ANALOG_AUDIO_SOURCE_PCM16;
-    const unsigned int flags = edacs_analog_call_muted(opts, state) ? 0U : DSD_ANALOG_AUDIO_PLAYING;
+    const unsigned int flags = edacs_analog_call_muted(opts, state) ? 0U : DSD_ANALOG_AUDIO_LEARN;
     short* blocks[3] = {analog1, analog2, analog3};
     int any_heard = sql_flags == NULL;
     for (int i = 0; i < 3; i++) {

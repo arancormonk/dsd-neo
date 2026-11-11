@@ -5836,7 +5836,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `symbol_process_unsynced_analog()` offers the tap the block after every sample it adds, the one that completes the
   block included (`dsd_analog_rx_tap_partial()`), and the tap reads what is waiting once `DSD_ANALOG_RX_TAP_READ_MS` (20
   ms) of input, at the input's current rate, has built up; `symbol_finalize_unsynced_analog_block()` hands it the rest
-  after the raw WAV write and before the audio chain (`symbol_process_unsynced_audio()`), whose in-place voice band-pass
+  after the raw WAV write and before the audio chain (`symbol_run_unsynced_chain()`), whose in-place voice band-pass
   takes every CTCSS tone 40 dB down. It then hands the processed block to the engine's analog call through the
   `analog_call_block` frame-sync hook, as a block descriptor (`dsd_analog_call_block`, `runtime/frame_sync_hooks.h`,
   issue #668) whose input is one of four (`DSD_ANALOG_CALL_*`, issue #756; `symbol_analog_call_input()`): RECEPTION, the
@@ -5876,8 +5876,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   dropped or skipped read finds nothing itself, so a carrier that opens inside a dropped read's own samples and closes
   before the next read ends (at most about 40 ms, just after a stall) begins no call: the drop refuses those samples by
   design (decided limit). The finalizer splits a block that ends under a passing gate at that point where the chain's
-  runs are chosen (`symbol_process_unsynced_audio()` and `symbol_process_unsynced_audio_runs()`): the start is a run
-  that does not play, so the AGC neither adapts to nor plays it, and it is silence in `analog_out_f` before every sink
+  learn flags are set (`symbol_run_unsynced_chain()`): the start is a run that does not learn, so the AGC neither
+  learns from it nor plays it, and it is silence in `analog_out_f` before every sink
   and the hook; the sink gate ramps in from silence after it. The level path, which has no sink gate, ramps the rest in
   the same way (`symbol_apply_level_ramp()`, 5 ms, the gain in `dsd_state::analog_level_gain` while `analog_level_ramp`
   is set, carried into the next block when the verdict came in the block's last 5 ms and ended by a block that neither
@@ -6249,7 +6249,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   A/B'd on real captures and measured worse, so change it only with `tools/replay_ab.sh` evidence
   (`docs/testing.md`). The CQPSK path does not use any of this: it has a real timing loop in `costas.cpp`.
 - The analog monitor's audible output leaves `dsd_symbol.c` in `symbol_output_unsynced_analog()`, after the audio
-  chain (`symbol_process_unsynced_audio()`, below) and only while the gate is open; for `audio_out_type == 8` it goes
+  chain (`symbol_run_unsynced_chain()`, below) and only while the gate is open; for `audio_out_type == 8` it goes
   through `dsd_udp_audio_hook_blast_analog()` with a byte count of int16 mono samples.
 - Analog output at the sink rate (issue #633). Every analog sink runs at `dsd_opts_analog_sink_rate_hz()` (48 kHz):
   the local raw stream, the UDP analog socket and the `-6` raw WAV (`openWavOutFileRaw()`). The monitor runs at its own
@@ -6374,11 +6374,15 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   signal shaped below 300 Hz, as transmitters send it, about 32 dB, since its skirt reaches past 254 Hz), AM: a
   Butterworth high-pass at 200 Hz; both a 3400 Hz Butterworth low-pass; `tools/design_voice_filters.py` derives the
   prototype and every bound `DSP_ANALOG_VOICE` holds), the legacy 960 Hz one-pole low-pass and high-pass (`-v 0x2`,
-  `0x4`; the chain's own copies at its rate, not `dsd_state`'s `RCFilter`/`HRCFilter`), then the gain stage: `-n N` is
-  the chain's gain x N / 50, `-n 0` (the default) the AGC on the same reference gain, a causal per-sample
-  peak-envelope recurrence with no added latency whose output depends only on the sample and playing-flag sequence
-  (500 ms hold, 20 dB/s or 3 dB/s release by where the input level sits, at most 18 dB over the reference gain, frozen
-  under -36 dB of the reference and while not playing, rolled back 250 ms when the gate closes). The source gain takes
+  `0x4`; the chain's own copies at its rate, not `dsd_state`'s `RCFilter`/`HRCFilter`), then the gain stage: the
+  chain's gain (the `-n 50` level), then the speech AGC (`dsd_speech_agc`, below) at the chain's rate over it, fixed at
+  N / 50 for `-n N` (`dsd_speech_agc_set_fixed()`, its -1 dBFS limiter still running) or automatic on `-n 0` (the
+  default). On automatic a reception starts at the band's start gain over `-n 50`
+  (`analog_audio_start_gain_db()`, issue #518 D6/D7): FM narrowband (`--nfm-bandwidth-hz` up to 16000, the default)
+  +4.537 dB, FM wideband -1.482 dB, AM -2.553 dB, on RTL monitor audio less the `vol` trim over its default 2; a
+  setting change applies from the next reset (`dsd_speech_agc_set_start_gain_db()`). At a rate the AGC refuses (under
+  8 kHz: PCM input at its own rate) the chain plays the fixed gain, `-n 50` on auto, through a `dsd_peak_limiter` and
+  logs that once per rate. The source gain takes
   each source's reference signal to -12 dBFS peak: RTL monitor audio after the `vol` trim (0.25 at the default 2:
   1 kHz at 3 kHz deviation after the 1/pi output scale, or AM at 50%) by 32924, the RTL FSK discriminator output
   (+/-30000: the -8 source monitor under digital decoding, told by `rtl_symbol_cache_output_kind`, and EDACS on RTL,
@@ -6399,16 +6403,28 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   reception moved since, silence out, whichever path collected it (the -8 source monitor's block too, where no tap
   tracks the boundary), and starts over on the next one, which a block collected wholly after the boundary does at once.
   The monitor chain runs the AM band whenever the monitor runs AM, a receiver ahead of PCM input (an AM scan row on
-  rigctl) included; EDACS and the FSK output always run FM. `symbol_finalize_unsynced_analog_block()` takes the block's
-  gate decision once, after the tap (`symbol_unsynced_audio_allowed()`, which has no side effects), and hands it to the
-  chain as the playing flag and to the sink, so the AGC adapts to exactly the audio that plays; a block that straddles a
-  retune or reset (`dsd_analog_rx_block_straddles_boundary()`), partly the old channel's and never played, goes in with
-  `DSD_ANALOG_AUDIO_DISCARD`: the chain neither filters it nor counts it, turns it into silence, and starts over with
-  the next block, so the old channel leaves nothing in the new one's filters. EDACS runs the EDACS chain with the
-  talkgroup gate as its playing flag and a reset per call, after the symbol register is read from the raw block; under
-  a dynamic squelch it runs the chain per run of heard and unheard samples and silences the closed ones
-  (`edacs_process_analog_block_runs()`, issue #625). The M17
-  encoder keeps its own band-pass, 960 Hz one-poles (`dsd_voice_onepole`) and AGC at 8 kHz in its stream context
+  rigctl) included; EDACS and the FSK output always run FM. The AGC learns from qualified reception, not from what plays
+  (issue #518 B1/B2): `symbol_finalize_unsynced_analog_block()` takes the block's gate decision once, after the tap
+  (`symbol_unsynced_audio_allowed()`, which has no side effects), for the sink, and the learn decision
+  (`symbol_unsynced_block_learns()`: one rate, no boundary straddled, the squelch level open, no digital carrier, no
+  retune unresolved, the tone policy passing; never the monitor switch, `audio_out`, a mute or `-P`), and runs the
+  chain once over the block with a learn flag per sample (`symbol_run_unsynced_chain()`,
+  `dsd_analog_audio_process_runs_f()`): 0 over the tone policy's ineligible prefix (issue #668) and, under the auto or
+  PCM noise squelch, wherever the sample's own gate is closed. The AGC's `process_runs` turns a 1 -> 0 edge into a
+  complete rollback of what the reception's tail taught and a 0 -> 1 edge into an opening checkpoint; the chain adds
+  the new-reception rule: before a sample that learns, a gap of 1 s or more since the last one that learned
+  (`DSD_ANALOG_AUDIO_NEW_RECEPTION_GAP_NS`), counted in processed samples at the chain rate or on the decode clock
+  (`dsd_decode_now_mono_ns()` read once per call as its last sample's time, earlier samples placed by their distance
+  before it, so a source that stops sending counts too and the partition does not), resets the AGC. With the default
+  open squelch on a continuous stream neither an edge nor a gap occurs; the AGC's own detector and attenuator keep hiss
+  out. A block that straddles a retune or reset (`dsd_analog_rx_block_straddles_boundary()`), partly the old channel's
+  and never played, goes in with `DSD_ANALOG_AUDIO_DISCARD`: the chain neither filters it nor counts it, turns it into
+  silence, and starts over with the next block, so the old channel leaves nothing in the new one's filters. EDACS runs
+  the EDACS chain with the talkgroup gate as its learn flag and a reset per call, after the symbol register is read
+  from the raw block; under a dynamic squelch it runs the chain per run of heard and unheard samples and silences the
+  closed ones (`edacs_process_analog_block_runs()`, issue #625), each call reading the decode clock. The M17
+  encoder keeps its own band-pass, 960 Hz one-poles (`dsd_voice_onepole`) and `dsd_voice_agc` (used there alone) at
+  8 kHz in its stream context
   (`m17_voice_chain`) and runs them over the whole codec2 frame, 160 samples at 3200 bit/s and 320 at 1600
   (`m17_voice_chain_process()`; an explicit `-n` keeps `analog_gain()`). Its input reader low-passes at 3400 Hz
   (`DSD_VOICE_BAND_LOWPASS`, at the input rate) before keeping one sample in `m17_rate / 8000`, and scales RTL monitor
@@ -6422,15 +6438,19 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   manual unkey while VOX hears a carrier) resets as the idle path's end does, so the next key-up sends a new LSF; a
   monitored stream (`-8`) ends its call there, so the next one begins its own.
   The analog_voice and analog_audio sources keep IEEE semantics under fast-math, which would fold away their
-  non-finite-sample guards. The published `dsd_state::aout_gainA` is the gain applied, in dB over the `-n 50` gain,
-  which the terminal shows as `G: Auto (+x dB)`. Tests: `DSP_ANALOG_VOICE`, `DSP_ANALOG_AUDIO`, `DSP_SYMBOL_REPLAY`
-  (`test_chain_playing_follows_the_sink`), `RTL_SYMBOL_CACHE_GENERATION` (source routing), `IO_RTL_MONITOR_DEEMPH`
-  (the reference through the real demodulator, ring and chain under every de-emphasis), `M17_STATE_DISPATCH`
-  (`test_stream_voice_chain_covers_the_whole_frame`, `test_stream_voice_chain_onepoles_run_at_8k`,
+  non-finite-sample guards. The published `dsd_state::aout_gainA` is the gain applied (AGC and limiter), in dB over the
+  `-n 50` gain, which the terminal shows as `G: Auto (+x dB)`. Tests: `DSP_ANALOG_VOICE`, `DSP_ANALOG_AUDIO` (start
+  gains, hiss in pauses, open-squelch noise, the transmission after it, rollback at a close, the new-reception rule
+  across partitions, pauses and rates, the limiter in fixed mode), `DSP_SYMBOL_REPLAY`
+  (`test_chain_learns_from_reception_not_output`, `test_call_audio_level_ignores_the_output`,
+  `test_tone_rejected_start_leaves_the_agc_alone`), `RTL_SYMBOL_CACHE_GENERATION` (source routing),
+  `IO_RTL_MONITOR_DEEMPH` (the reference through the real demodulator, ring and chain under every de-emphasis),
+  `M17_STATE_DISPATCH` (`test_stream_voice_chain_covers_the_whole_frame`, `test_stream_voice_chain_onepoles_run_at_8k`,
   `test_encoder_rtl_input_reaches_pcm_scale`), `EDACS_GRANT_TUNE_MATRIX` (`rtl-unclipped`), the `DECODE_IQ_ANALOG_*`
-  level, parity and fixed-gain cases.
+  level, speech-level (P.56), noise and fixed-gain cases.
 - The speech level AGC is `src/dsp/speech_agc.c` (`<dsd-neo/dsp/speech_agc.h>`), one module for digital and analog
-  voice that aims every talker at one active speech level (P.56 -24 dBFS). It is not wired into a chain yet. Pure and
+  voice that aims every talker at one active speech level (P.56 -24 dBFS): the digital voice chain runs one per slot
+  (`src/core/audio/voice_level.c`) and the analog audio chain one per chain (`src/dsp/analog_audio.c`). Pure and
   caller-owned: the state is sized at compile time for 8-192 kHz (init refuses other rates) and nothing is allocated.
   It analyses 20 ms frames: a frame is speech when it stands 9 dB over a tracked noise floor (which restarts when the
   noise drops 10 dB under it or the floor goes stale under voiced audio) and its autocorrelation, on the frame
@@ -6490,8 +6510,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   the per-channel cache in `demod_state`. On the decoder side (`dsd_symbol.c`) the monitor reads each RTL sample with
   its flag (`dsd_rtl_stream_io_hook_read_ex()`) into `dsd_state::analog_out_flags`, beside `analog_out_f`. Under the
   auto squelch (`dsd_squelch_dynamic_in_force()`: an AUTO setting on an RTL-family input) the block gate's level
-  comparison is off, the audio chain runs each run of heard and unheard samples with its own playing flag
-  (`symbol_process_unsynced_audio_runs()`: the AGC adapts to exactly what is heard and rolls back at the close), and
+  comparison is off, each sample's gate joins its learn flag in the audio chain (`symbol_run_unsynced_chain()`: the
+  AGC learns from exactly the qualified samples and rolls back at the close), and
   the sink ramps each sample in over 5 ms and out over 10 ms after every filter (`symbol_apply_sink_gate()`), so a
   closed stretch is exact silence and a block with nothing heard is not written. A block the block gate rejects (a
   muted output, digital sync, a retune still landing, the tone policy) plays nothing, not even a fade, and the next

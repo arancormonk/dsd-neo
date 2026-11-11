@@ -594,15 +594,25 @@ Notes
   prompt takes the same values, fractions included, and the `+` / `-` keys step by 1: from auto `+` goes to `1`,
   stepping below `0.001` goes back to auto, and they stop at `50`. Since issue #653 `-g N` under `-y` is this fixed
   multiplier too, where it used to scale a float auto gain that kept adapting.
-- `-n <num>` Analog output gain. `0` (the default; anything under `1` too) is auto: an AGC brings analog voice to the
-  level digital voice plays at, FM and AM alike, never above -10 dBFS peak and at most 18 dB above the reference gain.
-  `1`–`100` is a fixed gain, `50` the reference: there a 1 kHz tone at 3 kHz deviation, or AM at 50% modulation, plays at
-  -12 dBFS peak (-15 dBFS RMS) at the default RTL `vol` of 2, live and in I/Q replay alike, under any `DSD_NEO_DEEMPH`
-  setting (the gain makes up what the FM de-emphasis takes off 1 kHz); `100` is 6 dB louder. The
-  menu's Analog gain... prompt and the `*` / `/` keys work over the same range; from auto they step from `50`, and
-  stepping below `1` goes back to auto. A value above `100`, NaN or infinity is refused with an error, at the prompt
-  too (a value above `100` used to be clamped to `100`). Since issue #518 a fixed `-n` plays RTL monitor audio about
-  9 dB louder than before, and up to 18 dB more where the old default filter (see `-v`) cut it.
+- `-n <num>` Analog output gain. `0` (the default; anything under `1` too) is auto: each transmission's speech is
+  brought to -24 dBFS active speech, the level `-g 0` aims digital voice at, FM and AM alike. It starts from a level
+  set for the band, where a typical talker at full deviation or modulation already plays near that level: narrowband
+  FM (`--nfm-bandwidth-hz` up to 16000, the default) 4.5 dB over `-n 50`, wideband FM 1.5 dB under it, AM 2.6 dB under
+  it; the RTL `vol` trim does not move that start. The gain moves only on speech, never on hiss, open-squelch noise or
+  steady tones, holds through pauses, stays within 12 dB below and 15 dB above the start, and never lets a peak past
+  -1 dBFS. Hiss or noise with no speech in it fades toward -36 dBFS after a second and comes back at once with the next
+  speech. What it learns does not depend on whether the audio plays, is muted or is recorded. A channel change, a
+  retune or a gap of a second or more between transmissions (squelch closed, or the input sending nothing) starts it
+  from the band's level again. Below 8 kHz (PCM input at its own rate) it plays at the `-n 50` level instead and logs
+  `Automatic analog gain inactive`.
+  `1`–`100` is a fixed gain, `50` the reference: there a 1 kHz tone at 3 kHz deviation, or AM at 50% modulation, plays
+  at -12 dBFS peak (-15 dBFS RMS) at the default RTL `vol` of 2, live and in I/Q replay alike, under any
+  `DSD_NEO_DEEMPH` setting (the gain makes up what the FM de-emphasis takes off 1 kHz); `100` is 6 dB louder. Peaks are
+  held at -1 dBFS there too. A fixed `-n` is a calibration, not a loudness match: `-n 50` is not the level of a fixed
+  `-g 1`. The menu's Analog gain... prompt and the `*` / `/` keys work over the same range; from auto they step from
+  `50`, and stepping below `1` goes back to auto. A value above `100`, NaN or infinity is refused with an error, at the
+  prompt too (a value above `100` used to be clamped to `100`). Since issue #518 a fixed `-n` plays RTL monitor audio
+  about 9 dB louder than before, and up to 18 dB more where the old default filter (see `-v`) cut it.
 - `-nm` Enable the DMR single-slot mono decoder without changing the active decode preset.
 - `-z <0|1|2>` TDMA slot preference (0 = slot 1, 1 = slot 2, 2 = auto). When both slots carry audible voice, the
   preferred slot plays alone, in both ears (with one-channel output, alone); auto plays both. It applies to DMR and P25

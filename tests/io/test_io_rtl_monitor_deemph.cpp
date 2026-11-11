@@ -66,7 +66,7 @@ tone_sink(const rtl_stream_test_tone_block* block, void* ctx) {
     }
     dsd_analog_audio_block_begin(t->opts, t->state, DSD_ANALOG_AUDIO_CHAIN_MONITOR);
     (void)dsd_analog_audio_process_f(t->opts, t->state, DSD_ANALOG_AUDIO_CHAIN_MONITOR, buf, (size_t)n,
-                                     DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR, block->rate_hz, DSD_ANALOG_AUDIO_PLAYING);
+                                     DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR, block->rate_hz, DSD_ANALOG_AUDIO_LEARN);
     const int seg = block->segment;
     if (seg != t->last_segment) {
         t->last_segment = seg;

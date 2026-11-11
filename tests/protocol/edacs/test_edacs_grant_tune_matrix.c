@@ -2234,10 +2234,11 @@ edacs_run_analog_sql_helper_cases(void) {
     return rc;
 }
 
-/* The hashes of a 48 kHz call's outputs, from the code before issue #633 (edacs_golden_call()). */
-#define EDACS_GOLDEN_UDP_WAV    0xA172D3D3E27E68FBULL
-#define EDACS_GOLDEN_STATIC_WAV 0x9CD69F783969D5FEULL
-#define EDACS_GOLDEN_FD         0xDEF38AC945E89533ULL
+/* The hashes of a 48 kHz call's outputs (edacs_golden_call()), taken from the code before issue #633 and re-taken when
+   the analog chain moved to the speech AGC (issue #518), which changed only the level the call's tone plays at. */
+#define EDACS_GOLDEN_UDP_WAV    0x2E84BDF647C507FFULL
+#define EDACS_GOLDEN_STATIC_WAV 0x73378B303D178529ULL
+#define EDACS_GOLDEN_FD         0x77A90F2F1AD7DEACULL
 
 /* --- Issue #633: EDACS analog voice runs at 48 kHz, whatever rate it is read at --- */
 
@@ -3700,7 +3701,7 @@ edacs_golden_call(int out) {
 }
 
 /* At 48 kHz nothing changes: the audio, the per-call and static WAVs and the stdout stream of a whole call are
-   byte-for-byte what they were before issue #633 (hashes taken from the code before it). */
+   byte-for-byte what they were before issue #633 (hashes taken from the code before it, at the speech AGC's level). */
 static int
 edacs_run_golden_48k_cases(void) {
     static const uint64_t want[3] = {EDACS_GOLDEN_UDP_WAV, EDACS_GOLDEN_STATIC_WAV, EDACS_GOLDEN_FD};

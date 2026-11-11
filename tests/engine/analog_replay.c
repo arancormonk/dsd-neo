@@ -142,6 +142,7 @@
 
 #include "../test_support/test_support.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
+#include "p56.h"
 
 #define ANALOG_MAX_PROBES      8
 #define ANALOG_MAX_BLOCK       8192
@@ -179,6 +180,8 @@ typedef struct {
     analog_limit min_inband_db;
     analog_limit min_rms_dbfs;
     analog_limit max_rms_dbfs;
+    analog_limit min_p56_dbfs;
+    analog_limit max_p56_dbfs;
     analog_limit max_peak_dbfs;
     analog_limit max_clip;
     analog_limit audible_dbfs;
@@ -239,6 +242,11 @@ typedef struct {
 } analog_tone_track;
 
 static analog_limits g_limits;
+/* The delivered audio, int16 units, kept for the P.56 level when a bound asks for it (--analog-{min,max}-p56-dbfs). */
+static float* g_p56_audio;
+static size_t g_p56_len;
+static size_t g_p56_cap;
+static int g_p56_failed;
 /* The run read audio input, where the delivery check applies (--analog-max-delivery-error-pct). */
 static int g_delivery_pcm;
 static analog_probe g_probes[ANALOG_MAX_PROBES];
@@ -310,6 +318,8 @@ static const analog_scalar_arg k_scalar_args[] = {
     {"--analog-min-inband-db", &g_limits.min_inband_db, -ANALOG_DB_LIMIT, ANALOG_DB_LIMIT},
     {"--analog-min-rms-dbfs", &g_limits.min_rms_dbfs, -ANALOG_DB_LIMIT, 0.0},
     {"--analog-max-rms-dbfs", &g_limits.max_rms_dbfs, -ANALOG_DB_LIMIT, 0.0},
+    {"--analog-min-p56-dbfs", &g_limits.min_p56_dbfs, -ANALOG_DB_LIMIT, 0.0},
+    {"--analog-max-p56-dbfs", &g_limits.max_p56_dbfs, -ANALOG_DB_LIMIT, 0.0},
     {"--analog-max-peak-dbfs", &g_limits.max_peak_dbfs, -ANALOG_DB_LIMIT, 0.0},
     {"--analog-max-clip", &g_limits.max_clip, 0.0, 1e12},
     {"--analog-audible-dbfs", &g_limits.audible_dbfs, -ANALOG_DB_LIMIT, 0.0},
@@ -356,6 +366,8 @@ analog_usage(void) {
                 "  --analog-min-inband-db DB         300-3000 Hz energy over 3400-6000 Hz energy\n"
                 "  --analog-min-rms-dbfs DB          RMS level of the delivered audio\n"
                 "  --analog-max-rms-dbfs DB\n"
+                "  --analog-min-p56-dbfs DB          active speech level (ITU-T P.56) of the delivered audio\n"
+                "  --analog-max-p56-dbfs DB\n"
                 "  --analog-max-peak-dbfs DB         largest sample of the delivered audio\n"
                 "  --analog-max-clip N               samples at int16 full scale\n"
                 "  --analog-audible-dbfs DB          block RMS counted as audible (default -50)\n"
@@ -2133,6 +2145,36 @@ analog_db(double ratio) {
     return db > ANALOG_DB_LIMIT ? ANALOG_DB_LIMIT : db;
 }
 
+static int
+analog_p56_wanted(void) {
+    return g_limits.min_p56_dbfs.set || g_limits.max_p56_dbfs.set;
+}
+
+/* Keeps a delivered block for the P.56 level. */
+static void
+analog_p56_keep(const double* x, size_t n) {
+    if (!analog_p56_wanted() || g_p56_failed) {
+        return;
+    }
+    if (g_p56_len + n > g_p56_cap) {
+        size_t cap = g_p56_cap > 0U ? g_p56_cap : 48000U;
+        while (cap < g_p56_len + n) {
+            cap *= 2U;
+        }
+        float* grown = (float*)realloc(g_p56_audio, cap * sizeof(float));
+        if (!grown) {
+            g_p56_failed = 1;
+            return;
+        }
+        g_p56_audio = grown;
+        g_p56_cap = cap;
+    }
+    for (size_t i = 0; i < n; i++) {
+        g_p56_audio[g_p56_len + i] = (float)(x[i] * ANALOG_FULL_SCALE);
+    }
+    g_p56_len += n;
+}
+
 static void
 analog_score_levels(const double* x, size_t n, double block_start_ms, double rate) {
     double sum_sq = 0.0;
@@ -2147,6 +2189,7 @@ analog_score_levels(const double* x, size_t n, double block_start_ms, double rat
         }
     }
     double block_ms = (double)n * 1000.0 / rate;
+    analog_p56_keep(x, n);
     g_totals.energy_total += sum_sq;
     g_totals.samples_captured += n;
     g_totals.captured_ms += block_ms;
@@ -2847,6 +2890,8 @@ typedef struct {
     int have_lock;
     double total_ms;
     double rms_dbfs;
+    int have_p56;
+    double p56_dbfs;
     double peak_dbfs;
     double inband_db;
     double snr_db;
@@ -2865,6 +2910,9 @@ analog_report_measure(analog_report_ctx* ctx) {
     ctx->tone_ref = ctx->have_audio ? g_totals.tone_energy / captured : 0.0;
     ctx->have_tone = ctx->have_audio && g_limits.expect_tone_hz.set && analog_measurable(g_limits.expect_tone_hz.value);
     ctx->rms_dbfs = ctx->have_audio ? analog_db(g_totals.energy_total / captured) : 0.0;
+    ctx->have_p56 = ctx->have_audio && analog_p56_wanted() && !g_p56_failed && g_p56_len > 0U;
+    ctx->p56_dbfs =
+        ctx->have_p56 ? dsd_test_p56_level_dbfs(g_p56_audio, g_p56_len, (int)g_totals.deliver_hz, NULL) : 0.0;
     ctx->peak_dbfs = analog_db(g_totals.peak * g_totals.peak);
     double rest = g_totals.residual_energy > ANALOG_POWER_FLOOR ? g_totals.residual_energy : ANALOG_POWER_FLOOR;
     ctx->snr_db = analog_db(g_totals.tone_energy / rest);
@@ -2882,6 +2930,9 @@ analog_print_metric_line(const analog_report_ctx* ctx) {
     analog_print_value(line, sizeof(line), "first_audible_ms", ctx->have_first, g_totals.first_audible_ms);
     analog_print_value(line, sizeof(line), "last_audible_ms", ctx->have_last, g_totals.last_audible_ms);
     analog_print_value(line, sizeof(line), "rms_dbfs", ctx->have_audio, ctx->rms_dbfs);
+    if (analog_p56_wanted()) {
+        analog_print_value(line, sizeof(line), "p56_dbfs", ctx->have_p56, ctx->p56_dbfs);
+    }
     analog_print_value(line, sizeof(line), "peak_dbfs", ctx->have_audio, ctx->peak_dbfs);
     size_t used = strlen(line);
     DSD_SNPRINTF(line + used, sizeof(line) - used, " clip=%llu", (unsigned long long)g_totals.clip_count);
@@ -3013,6 +3064,8 @@ analog_check_limits(const analog_report_ctx* ctx) {
     analog_check_min("in-band ratio dB", ctx->have_audio, ctx->inband_db, &g_limits.min_inband_db);
     analog_check_min("RMS dBFS", ctx->have_audio, ctx->rms_dbfs, &g_limits.min_rms_dbfs);
     analog_check_max("RMS dBFS", ctx->have_audio, ctx->rms_dbfs, &g_limits.max_rms_dbfs);
+    analog_check_min("P.56 dBFS", ctx->have_p56, ctx->p56_dbfs, &g_limits.min_p56_dbfs);
+    analog_check_max("P.56 dBFS", ctx->have_p56, ctx->p56_dbfs, &g_limits.max_p56_dbfs);
     analog_check_max("peak dBFS", ctx->have_audio, ctx->peak_dbfs, &g_limits.max_peak_dbfs);
     analog_check_max("clipped samples", 1, (double)g_totals.clip_count, &g_limits.max_clip);
     analog_check_max("tone lock ms", ctx->have_lock, g_tone.first_lock_ms, &g_limits.max_tone_lock_ms);
@@ -3289,6 +3342,7 @@ main(int argc, char** argv) {
     free(state);
     free(opts);
     free((void*)args);
+    free(g_p56_audio);
     analog_remove_scaled();
     analog_raw_wav_remove();
     analog_scene_free();

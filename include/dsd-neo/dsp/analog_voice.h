@@ -5,7 +5,8 @@
 
 /**
  * @file
- * @brief Voice band-pass, legacy one-pole filters and AGC for the analog monitor (issue #518).
+ * @brief Voice band-pass and legacy one-pole filters for the analog audio chain, and the peak AGC the M17 encoder's
+ * microphone runs (issue #518; received audio is levelled by <dsd-neo/dsp/speech_agc.h>).
  *
  * Pure signal processing with no global state: the caller owns each instance and feeds it samples at the rate it was
  * designed for. Every core is a causal per-sample recurrence, so its output depends only on the sample sequence (and,
