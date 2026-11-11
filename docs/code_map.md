@@ -6781,12 +6781,16 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   nobody (a one-block TSDU reads 134 of its 180-symbol slot, and the search to the next is 46); a pass without one keeps
   the chain at once, a pass with one puts the other chain on for a pass of its own, and the chain that wins keeps the
   profile and becomes the learned modulation, with a verdict that stops a frame on that chain opening another
-  comparison. The other chain's pass is judged as the incumbent's was, from its own first frame, because it starts cold
-  (on the s72 LSM capture the CQPSK chain synced every slot of its pass, but the NIDs of the first five failed while its
-  loops settled): two or more frames read whole from there to the pass's end win it the profile whatever the totals say
-  (the incumbent's pass did not read whole, or there would be no trial); otherwise the chain that read strictly more
-  wins, and a tie keeps the incumbent. The other chain's pass is refunded to the dwell (the counter goes back to its
-  value when that pass began).
+  comparison. A CQPSK pass measured second is judged as the incumbent's was, from its own first frame, because it starts
+  cold (on the s72 LSM capture the CQPSK chain synced every slot of its pass, but the NIDs of the first five failed while
+  its loops settled; its first NID after a chain step came 75 to 1155 symbols later on the site A, site B and fixture
+  captures under `-fa`): two or more frames read whole from there to the pass's end win it the profile whatever the
+  totals say (the incumbent's pass did not read whole, or there would be no trial). The C4FM chain has no loop to settle
+  (its first NID came within a slot or two of a step, 33 to 211 symbols, on the carriers it reads whole), so a C4FM
+  pass whose first frame comes late is reading part of the carrier, as C4FM does on an LSM one (s72: a C4FM pass whose
+  first frame came 1310 symbols in, against a CQPSK incumbent that read 1206 symbols with one frame missed), and gets
+  no such excuse. Otherwise the chain that read strictly more wins, and a tie keeps the incumbent. The other chain's
+  pass is refunded to the dwell (the counter goes back to its value when that pass began).
   - The other chain's pass starts at a `getFrameSync()` entry and is one search pass long, so on a carrier that chain
     cannot sync it runs out on the symbol the matchless-pass timeout fires on. It ends there instead, on whichever runs
     out first, its symbols read or the call's symbols searched (a read that commits no symbol counts only in the
@@ -6855,8 +6859,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     dwell expires into a CQPSK probe or withdraws the verdict, and a frame on its chain opens no comparison. Only a
     frame on the other chain does, which the votes reach now and then but rarely keep (on s72 they put CQPSK on right
     after a C4FM verdict, and a GFSK vote took it back before the cold chain read a frame). So the other chain's pass
-    is what has to be fair; an other chain still settling at the pass's end, or missing frames after its first, loses
-    on the totals as before.
+    is what has to be fair; a CQPSK chain still settling at the pass's end, or missing frames after its first, loses
+    on the totals as before, and so does a C4FM chain however late its frames start.
   Without the comparison, a chain that reads part of an LSM simulcast carrier (C4FM: about half the 769 MHz control
   channel's TSBKs) kept the profile for as long as the carrier stayed up. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
   (`test_p25p1_partial_chain_loses_the_comparison`, `test_p25p1_settled_trial_that_reads_whole_wins`,

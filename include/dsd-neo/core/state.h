@@ -586,8 +586,8 @@ typedef struct {
 /* The one comparison of the two P25p1 demodulator chains an acquisition gets (frame sync's
  * frame_sync_p25p1_mod_compare_note()). The first NID-decoded P25p1 frame on the 4800/4 profile measures
  * what validated frames read on the chain that carried it over one search pass; a chain that let a frame go
- * by unread in it gets the other chain measured for as long. That chain keeps the profile if it read the
- * carrier whole from its own first frame; otherwise the one that read more does.
+ * by unread in it gets the other chain measured for as long. A CQPSK chain measured second, which starts cold,
+ * keeps the profile if it read the carrier whole from its own first frame; otherwise the one that read more does.
  * Zero is "no comparison, no verdict". */
 typedef struct {
     int phase;                 /* 0 none, 1 measuring the incumbent chain, 2 measuring the other chain */
@@ -599,7 +599,7 @@ typedef struct {
     uint32_t last_frame_read;  /* symbols that frame read */
     uint32_t trial_read;       /* symbols validated frames read in the other chain's pass */
     int trial_frames;          /* validated frames in that pass */
-    int trial_missed;          /* a search after one of them, past the first, as long as the frame */
+    int trial_missed;          /* a search after one of them, past the first, as long as the frame (CQPSK) */
     int counter_at_trial;      /* dsd_state::sps_hunt_counter when the other chain's pass began */
     uint32_t window_start;     /* dsd_state::symbolcnt the current window opened at */
     uint32_t seen_symbolcnt;   /* the dsd_state::p25_p1_validated_symbolcnt last read, or consumed at a boundary */

@@ -4614,11 +4614,17 @@ static void
 frame_sync_p25p1_mod_compare_decide(const dsd_opts* opts, dsd_state* state) {
     const dsd_p25p1_mod_compare* cmp = &state->p25_p1_mod_compare;
     frame_sync_p25p1_mod_compare_refund(state);
-    /* The other chain's pass starts cold, where the incumbent's started on a frame its chain had read: the CQPSK chain
-     * can spend most of the pass settling, syncing every slot while the NIDs fail. So the pass is judged as the
-     * incumbent's was, from its own first frame: two or more frames read whole from there to the pass's end take the
-     * profile, whatever the totals say, since the incumbent's pass did not read whole (or there would be no trial). */
-    if (cmp->trial_frames > 1 && frame_sync_p25p1_mod_compare_pass_read_whole(state, cmp->trial_missed)) {
+    /* The CQPSK chain's pass starts cold, where the incumbent's started on a frame its chain had read: its loops can
+     * spend most of the pass settling, syncing every slot while the NIDs fail (its first NID came up to 1155 symbols
+     * after the step on site A). So a CQPSK pass is judged as the incumbent's was, from its own first frame:
+     * two or more frames read whole from there to the pass's end take the profile, whatever the totals say, since the
+     * incumbent's pass did not read whole (or there would be no trial). The C4FM chain has nothing to settle: on the
+     * carriers it reads whole, its first NID came within a slot or two of a step (33 to 211 symbols). A C4FM pass whose
+     * first frame comes late is reading part of the carrier, as C4FM does on an LSM simulcast one, and two frames it
+     * caught at the end say nothing against a CQPSK incumbent that read most of its pass: it wins on its total
+     * alone. */
+    if (cmp->incumbent_rf_mod == 0 && cmp->trial_frames > 1
+        && frame_sync_p25p1_mod_compare_pass_read_whole(state, cmp->trial_missed)) {
         frame_sync_p25p1_mod_compare_settle(opts, state, !cmp->incumbent_rf_mod);
         return;
     }
@@ -4771,9 +4777,10 @@ frame_sync_p25p1_mod_compare_step(const dsd_opts* opts, dsd_state* state, int va
  * next one or the pass's end, means a frame went by unread. A pass with no such gap keeps its chain with no trial, so
  * a carrier one chain reads whole pays nothing; a pass with one gives the other chain a pass of its own. That pass
  * starts cold, where the incumbent's started on a frame its chain had read, and the CQPSK chain can spend most of it
- * settling, so it is judged as the incumbent's was, from its own first frame: read whole from there to the pass's end
- * (two frames or more), the other chain takes the profile; otherwise it takes it only by reading strictly more. The
- * probe's trial flag keeps the votes off both passes, and the dwell gets back what the other chain's pass searched.
+ * settling, so a CQPSK pass is judged as the incumbent's was, from its own first frame: read whole from there to the
+ * pass's end (two frames or more), it takes the profile. The C4FM chain settles within a slot, so a C4FM pass, and a
+ * CQPSK one that does not read whole, take it only by reading strictly more. The probe's trial flag keeps the votes off
+ * both passes, and the dwell gets back what the other chain's pass searched.
  *
  * The winner becomes the learned modulation, and a frame on the chain a comparison chose opens no other, so a control
  * channel the session returns to is not compared again until that knowledge is withdrawn (a dwell on that chain that
