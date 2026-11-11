@@ -346,7 +346,9 @@ Item {
             });
         if (radioReference.conventional) {
             rows.sort(function (a, b) {
-                return String(a.site.descr).localeCompare(String(b.site.descr));
+                // textOrder, not localeCompare: Qt for Android has no ICU, so localeCompare is code-point order
+                // there. Equal names keep the record's order.
+                return textOrder.compare(String(a.site.descr), String(b.site.descr)) || a.index - b.index;
             });
         }
         return rows;
@@ -488,8 +490,9 @@ Item {
         /** Whether a row can be tapped. Off while a request is running. */
         property bool rowsEnabled: true
         property alias searchText: placeSearch.text
+        readonly property string foldedQuery: textOrder.fold(searchText.trim())
         readonly property var filteredRows: (rows || []).filter(function (row) {
-            return String(row.name).toLocaleLowerCase().indexOf(searchText.trim().toLocaleLowerCase()) >= 0;
+            return textOrder.fold(String(row.name)).indexOf(foldedQuery) >= 0;
         })
         accessibleName: title
         PlexTextField {
@@ -1187,9 +1190,12 @@ Item {
                     }
 
                     Repeater {
-                        model: screen.siteRows.filter(function (row) {
-                            return String(row.site.descr).toLocaleLowerCase().indexOf(screen.siteSearch.trim().toLocaleLowerCase()) >= 0;
-                        })
+                        model: {
+                            var query = textOrder.fold(screen.siteSearch.trim());
+                            return screen.siteRows.filter(function (row) {
+                                return textOrder.fold(String(row.site.descr)).indexOf(query) >= 0;
+                            });
+                        }
 
                         Item {
                             id: siteRow

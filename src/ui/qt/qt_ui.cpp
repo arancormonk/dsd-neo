@@ -62,6 +62,7 @@
 #include "store_notices.h"
 #include "talkgroup_filter_model.h"
 #include "talkgroup_list_model.h"
+#include "text_order.h"
 #include "ui_controller.h"
 
 namespace dsd_qt {
@@ -293,6 +294,7 @@ static void
 publish_input_context(QQmlContext* context, DecoderHost* host, RadioReferenceModel* radioReference, AppPrefs* prefs,
                       QObject* owner) {
     context->setContextProperty(QStringLiteral("inputCommit"), new InputCommit(owner));
+    context->setContextProperty(QStringLiteral("textOrder"), new TextOrder(owner));
     context->setContextProperty(QStringLiteral("screenReader"), new ScreenReaderState(owner));
     context->setContextProperty(QStringLiteral("signInAutofill"),
                                 new SignInAutofill(host, radioReference, prefs, owner));

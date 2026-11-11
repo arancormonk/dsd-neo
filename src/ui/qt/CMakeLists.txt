@@ -68,6 +68,7 @@ target_sources(
         scan_list_starter.cpp
         scan_list_toggle_model.cpp
         spectrum_model.cpp
+        text_order.cpp
         csv_text.cpp
         document_export_writer.cpp
         signal_search_export.cpp

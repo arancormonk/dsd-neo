@@ -5539,6 +5539,25 @@ if(DSD_ENABLE_QT_UI)
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
     )
 
+    # Name order and accent-blind fold for the saved-systems and RadioReference
+    # lists. Qt for Android has no ICU, so this is hand-written and pure QtCore.
+    add_executable(
+        dsd-neo_test_ui_qt_text_order
+        ui/test_ui_qt_text_order.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/text_order.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_text_order
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(dsd-neo_test_ui_qt_text_order PRIVATE Qt6::Core)
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_text_order
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(dsd-neo_test_ui_qt_text_order PROPERTIES AUTOMOC ON)
+    add_test(NAME UI_QT_TEXT_ORDER COMMAND dsd-neo_test_ui_qt_text_order)
+
     # What the spectrum model does with the frames a producer hands it, and what
     # the waterfall does with the model: the frame-identity check that keeps a
     # re-read of an unreplaced frame from scrolling a duplicate row, the history
@@ -5685,6 +5704,8 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_archive_incoming.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_typed_paths.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/input_commit.cpp
+            # B7/B8: the ICU-free name order and fold the RadioReference lists use.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/text_order.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp

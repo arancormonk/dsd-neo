@@ -130,6 +130,7 @@
 #include "store_notices.h"
 #include "talkgroup_filter_model.h"
 #include "talkgroup_list_model.h"
+#include "text_order.h"
 
 using dsd_qt::CallHistoryFilterModel;
 using dsd_qt::CallHistoryModel;
@@ -6441,6 +6442,8 @@ class Setup : public QObject {
         ctx->setContextProperty(QStringLiteral("restartCloser"), m_restart_closer);
         // Issue #718: the production composing-text commit, on its fallback path here.
         ctx->setContextProperty(QStringLiteral("inputCommit"), new dsd_qt::InputCommit(engine));
+        // B7/B8: the production name order and fold (ICU-free), as the RadioReference lists use it.
+        ctx->setContextProperty(QStringLiteral("textOrder"), new dsd_qt::TextOrder(engine));
         // Issue #828: the production list, which outlives every engine here as it does in the app.
         ctx->setContextProperty(QStringLiteral("storeNotices"), dsd_qt::StoreNotices::instance());
     }

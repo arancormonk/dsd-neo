@@ -358,6 +358,7 @@ jobs:
             dsd-neo_test_ui_qt_import_service \
             dsd-neo_test_ui_qt_replay_store \
             dsd-neo_test_ui_qt_input_commit \
+            dsd-neo_test_ui_qt_text_order \
             dsd-neo_test_ui_qt_backup_archive \
             dsd-neo_test_ui_qt_backup_apply \
             dsd-neo_test_ui_qt_backup_model \

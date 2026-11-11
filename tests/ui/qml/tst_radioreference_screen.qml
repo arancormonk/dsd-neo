@@ -858,6 +858,62 @@ Item {
                       2000, "an expired subscription was not named as such: " + notice.text)
         }
 
+        function conventionalSystemWith(sites) {
+            testContext.setRadioReference("hasAppKey", true)
+            testContext.setRadioReference("credentialsReady", true)
+            testContext.setRadioReference("conventional", true)
+            testContext.setRadioReference("trunked", false)
+            testContext.setRadioReference("systemDetails", {
+                                              "sid": 9341,
+                                              "name": "Users Group",
+                                              "typeDescr": "DMR",
+                                              "flavorDescr": "Conventional Networked"
+                                          })
+            var rows = []
+            for (var i = 0; i < sites.length; ++i)
+                rows.push({ "siteNumber": 320000 + i, "descr": sites[i], "freqCount": 1, "controlFreqMhz": "",
+                            "simulcast": false, "freqMhz": "444.525", "colorCode": "1" })
+            testContext.setRadioReference("sites", rows)
+        }
+
+        // B7: the repeater list is ordered by the ICU-free helper, not localeCompare (code-point order on Android):
+        // numbers by value, accents folded, equal names in record order.
+        function test_04b_the_repeater_list_orders_names_the_same_everywhere() {
+            conventionalSystemWith(["beta", "Alpha", "\u00C9b\u00E8ne", "alpha 10", "alpha 2"])
+            var names = tc.screen.siteRows.map(function (row) { return row.site.descr })
+            compare(names.join("|"), ["Alpha", "alpha 2", "alpha 10", "beta", "\u00C9b\u00E8ne"].join("|"))
+            // Accent-blind: Ébène sorts with the e's, after beta only because "eb" > "be".
+            compare(tc.screen.siteRows[4].index, 2, "sorting lost the row's index into sites()")
+
+            conventionalSystemWith(["Same", "Same", "Same"])
+            var order = tc.screen.siteRows.map(function (row) { return row.index })
+            compare(order.join(","), "0,1,2", "equal names left record order")
+        }
+
+        // B8: searching is accent-blind on both the site list and the browse sheets.
+        function test_04c_searches_ignore_accents_and_case() {
+            conventionalSystemWith(["Alpha", "\u00C9b\u00E8ne"])
+            tc.screen.siteSearch = "eben"
+            var shown = null
+            tryVerify(function () { shown = textShowing(tc.screen, "\u00C9b\u00E8ne"); return shown !== null },
+                      2000, "site search 'eben' did not find the repeater named with accents")
+            verify(textShowing(tc.screen, "Alpha") === null, "site search 'eben' still showed Alpha")
+            tc.screen.siteSearch = ""
+
+            testContext.setRadioReference("countries", [
+                                              { "coid": 1, "name": "S\u00E3o Paulo", "code": "BR" },
+                                              { "coid": 2, "name": "Canada", "code": "CA" }
+                                          ])
+            var sheet = findChild(tc.screen, "radioReferenceCountrySheet")
+            verify(sheet !== null)
+            sheet.searchText = "sao"
+            compare(sheet.filteredRows.length, 1)
+            compare(sheet.filteredRows[0].name, "S\u00E3o Paulo")
+            sheet.searchText = "CANADA"
+            compare(sheet.filteredRows.length, 1)
+            sheet.searchText = ""
+        }
+
         // The three browse levels are one component now, so a break in it breaks
         // country, state and county at once — and the highlight is the only
         // thing on the sheet that says which one you are already on.
