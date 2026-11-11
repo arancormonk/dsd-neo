@@ -1677,19 +1677,25 @@ frame_sync_try_m17_bert_after_context(frame_sync_match_ctx* ctx, int ham_brt, in
 }
 
 /*
- * An LSF sent again right behind the first. A transmitter may repeat its link setup frame before the stream starts:
- * the m17-fme sample sends every stream's LSF twice. No preamble precedes the second, so it was not taken, and the
- * hunt ran on through its payload, where words within one error of the packet, stream and EOT words turned up and
- * cost the stream its first four frames (issue #834). Only straight after an LSF of the same polarity (the inverted
- * LSF word reads as the stream word).
+ * A tolerance for an LSF sent twice. The M17 specification sends one LSF synchronization burst per transmission, but
+ * m17-fme sends two, from its stream and its packet encoder alike (m17_str_encoder.c, m17_pkt_encoder.c), and its
+ * sample recording does. No preamble precedes the second, so it was not taken, and the hunt ran on through its
+ * payload, where words within one error of the packet, stream and EOT words turned up and cost the stream its first
+ * four frames (issue #834). Only straight after an LSF of the same polarity (the inverted LSF word reads as the stream
+ * word). The packet sync word is within two errors of the LSF word, so behind an LSF that did not declare stream mode,
+ * where a conformant packet frame follows, the repeat is declined whenever the packet word matches at least as well:
+ * a packet's first frame read with one error would otherwise be taken as a second LSF.
  */
 static int
-frame_sync_try_m17_lsf_again(frame_sync_match_ctx* ctx, int ham_lsf, int ham_str, int is_inverted) {
-    const int last = ctx->state->lastsynctype;
-    if (!is_inverted && last == DSD_SYNC_M17_LSF_POS && ham_lsf <= 1) {
+frame_sync_try_m17_lsf_again(frame_sync_match_ctx* ctx, int ham_lsf, int ham_str, int ham_pkt, int ham_brt,
+                             int is_inverted) {
+    const dsd_state* state = ctx->state;
+    const int last = state->lastsynctype;
+    const int packet_may_follow = state->m17_lsf_stream_mode == 0U;
+    if (!is_inverted && last == DSD_SYNC_M17_LSF_POS && ham_lsf <= 1 && !(packet_may_follow && ham_pkt <= ham_lsf)) {
         return frame_sync_accept_m17(ctx, "+M17 LSF", DSD_SYNC_M17_LSF_POS);
     }
-    if (is_inverted && last == DSD_SYNC_M17_LSF_NEG && ham_str <= 1) {
+    if (is_inverted && last == DSD_SYNC_M17_LSF_NEG && ham_str <= 1 && !(packet_may_follow && ham_brt <= ham_str)) {
         return frame_sync_accept_m17(ctx, "-M17 LSF", DSD_SYNC_M17_LSF_NEG);
     }
     return DSD_SYNC_NONE;
@@ -1736,7 +1742,7 @@ frame_sync_try_m17_lsf_or_bert(frame_sync_match_ctx* ctx, int ham_lsf, int ham_s
         return from_candidate;
     }
 
-    const int again = frame_sync_try_m17_lsf_again(ctx, ham_lsf, ham_str, is_inverted);
+    const int again = frame_sync_try_m17_lsf_again(ctx, ham_lsf, ham_str, ham_pkt, ham_brt, is_inverted);
     if (again != DSD_SYNC_NONE) {
         return again;
     }

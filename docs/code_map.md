@@ -6909,9 +6909,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   taken as before. A packet sync is refused right after an LSF whose CRC passed and declared stream mode (TYPE bit 0,
   `dsd_state::m17_lsf_stream_mode`, written by `m17_finalize_lsf_crc()` and cleared at every `processM17LSF()`;
   `frame_sync_m17_packet_can_follow()`), and the LSF word straight after an LSF of the same polarity is taken as a
-  repeated LSF (`frame_sync_try_m17_lsf_again()`): the m17-fme recording sends every stream LSF twice, and the hunt
-  used to match packet, stream and EOT words inside the second, which cost the stream its first four frames and split
-  the call (issue #834; `M17_FRAME_SYNC`, `DECODE_IQ_M17_LSF_OFFAIR`). The candidate also keeps the sync anchor
+  repeated LSF (`frame_sync_try_m17_lsf_again()`). That is a tolerance, not the specification, which sends one LSF
+  synchronization burst per transmission: m17-fme sends two from its stream and packet encoders, and the hunt used to
+  match packet, stream and EOT words inside the second, which cost the stream its first four frames and split the call
+  (issue #834; `M17_FRAME_SYNC`, `DECODE_IQ_M17_LSF_OFFAIR`). Behind an LSF that did not declare stream mode the
+  repeat is declined when the packet word matches at least as well, since the packet word is two errors from the LSF
+  word and a conformant packet's first frame follows there. The candidate also keeps the sync anchor
   recording (`dsd_symbol_hold_sync_anchor()`), and the LSF or BERT word that spends it names the preamble's last 16
   symbols and the word to it (`frame_sync_consume_m17_pre_candidate()`), for the grid's move at the matched filter's
   switch-on (see the sync anchor entry).

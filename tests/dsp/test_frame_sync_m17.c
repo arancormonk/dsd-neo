@@ -267,6 +267,12 @@ main(void) {
     /* A transmitter may send its LSF twice: the second is taken as an LSF, with no preamble ahead of it. */
     rc |= run_m17_after_lsf_case(DSD_SYNC_M17_LSF_POS, 1U, M17_LSF, DSD_SYNC_M17_LSF_POS, "M17 LSF repeated");
     rc |= run_m17_after_lsf_case(DSD_SYNC_M17_LSF_NEG, 1U, M17_STR, DSD_SYNC_M17_LSF_NEG, "M17 inverted LSF repeated");
+    /* Behind a packet-mode LSF a packet frame follows, and its sync word read with one error (here at position 1) is
+     * one error from the LSF word too: it stays a packet rather than a repeated LSF. */
+    rc |= run_m17_after_lsf_case(DSD_SYNC_M17_LSF_POS, 0U, "11113333", DSD_SYNC_M17_PKT_POS,
+                                 "M17 packet LSF to a one-error packet word");
+    rc |= run_m17_after_lsf_case(DSD_SYNC_M17_LSF_NEG, 0U, "33331111", DSD_SYNC_M17_PKT_NEG,
+                                 "M17 inverted packet LSF to a one-error packet word");
     /* Filled with '3', the inverted packet word runs into the inverted stream word within one error. */
     g_fill_override = '1';
     rc |= run_m17_after_lsf_case(DSD_SYNC_M17_LSF_NEG, 1U, M17_BRT, -1, "M17 inverted stream LSF refuses a packet");

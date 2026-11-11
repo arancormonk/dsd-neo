@@ -70,8 +70,9 @@ dsd_dispatch_handle_m17(dsd_opts* opts, dsd_state* state) {
          * 184 marker symbols leave behind are skewed with it: the centre sat near half the outer level. The hunt for
          * the next transmission slices and times its preamble against that centre, and with it the timing loop's
          * crossings fell off the zero crossings, the preamble read at the wrong phase and the next LSF was missed or
-         * failed its CRC on clean signal. The transmission has ended: hunt from the levels a lost carrier leaves
-         * (noCarrier()), and the next preamble sets its own (issue #834). */
+         * failed its CRC on clean signal. The transmission has ended: put the centre and the extremes back where a lost
+         * carrier leaves them (the values noCarrier() sets; nothing else of its reset is done here), and the next
+         * preamble sets its own (issue #834). */
         state->max = 15000.0f;
         state->min = -15000.0f;
         state->center = 0.0f;
