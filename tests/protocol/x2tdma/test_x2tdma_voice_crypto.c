@@ -56,6 +56,8 @@ static int g_stream_pos;
 static int g_readback[144];
 static int g_stream_overrun;
 
+// GNU ld --wrap requires these exact external symbol names.
+// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 int __wrap_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal);
 void __wrap_skipDibit(dsd_opts* opts, dsd_state* state, int count);
 
@@ -79,6 +81,8 @@ __wrap_skipDibit(dsd_opts* opts, dsd_state* state, int count) {
         (void)__wrap_get_dibit_and_analog_signal(opts, state, NULL);
     }
 }
+
+// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 
 static char g_ambe_fr[4][24];
 
