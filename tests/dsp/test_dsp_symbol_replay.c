@@ -829,11 +829,33 @@ test_symbol_helper_analog_i16_conversion_contract(void) {
     assert(output[5] == -1);
 }
 
+/* The symbolizer's filter for this sync reads, sample for sample, as @p wrapper's impulse response. */
+static void
+expect_matched_filter_is(const dsd_opts* opts, const dsd_state* state, float (*wrapper)(float, int), const char* what) {
+    enum { kImpulseSamples = 160 };
+
+    static float want[kImpulseSamples];
+    init_rrc_filter_memory();
+    for (int n = 0; n < kImpulseSamples; n++) {
+        want[n] = wrapper(n == 0 ? 1.0f : 0.0f, state->samplesPerSymbol);
+    }
+    init_rrc_filter_memory();
+    for (int n = 0; n < kImpulseSamples; n++) {
+        const float got = dsd_symbol_test_apply_matched_filter(opts, state, n == 0 ? 1.0f : 0.0f, 0, 0);
+        if (fabsf(got - want[n]) > 1e-6f) {
+            DSD_FPRINTF(stderr, "%s: impulse response sample %d is %.6f, want %.6f\n", what, n, (double)got,
+                        (double)want[n]);
+            assert(0);
+        }
+    }
+}
+
+/* NXDN96 and NXDN48 run one receive pulse in symbols (NXDN TS 1-A 3.5), NXDN96's at 4800 symbol/s; dPMR runs the same
+   pulse under its own kind (issue #834: NXDN96 ran DMR's root raised cosine). */
 static void
 test_symbol_matched_filter_uses_active_nxdn_variant(void) {
     static dsd_opts opts;
     static dsd_state state;
-    const float sample = 1.0f;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -843,28 +865,21 @@ test_symbol_matched_filter_uses_active_nxdn_variant(void) {
     state.lastsynctype = DSD_SYNC_NXDN_POS;
     state.samplesPerSymbol = 10;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
-
-    init_rrc_filter_memory();
-    const float expected_nxdn96 = dmr_filter(sample, state.samplesPerSymbol);
-    init_rrc_filter_memory();
-    const float actual_nxdn96 = dsd_symbol_test_apply_matched_filter(&opts, &state, sample, 0, 0);
-    assert(fabsf(actual_nxdn96 - expected_nxdn96) < 1e-6f);
+    expect_matched_filter_is(&opts, &state, nxdn_filter, "NXDN96");
 
     state.samplesPerSymbol = 20;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
-    init_rrc_filter_memory();
-    const float expected_nxdn48 = nxdn_filter(sample, state.samplesPerSymbol);
-    init_rrc_filter_memory();
-    const float actual_nxdn48 = dsd_symbol_test_apply_matched_filter(&opts, &state, sample, 0, 0);
-    assert(fabsf(actual_nxdn48 - expected_nxdn48) < 1e-6f);
+    expect_matched_filter_is(&opts, &state, nxdn_filter, "NXDN48");
 
     opts.frame_dpmr = 1;
     state.lastsynctype = DSD_SYNC_DPMR_FS1_POS;
-    init_rrc_filter_memory();
-    const float expected_dpmr = dpmr_filter(sample, state.samplesPerSymbol);
-    init_rrc_filter_memory();
-    const float actual_dpmr = dsd_symbol_test_apply_matched_filter(&opts, &state, sample, 0, 0);
-    assert(fabsf(actual_dpmr - expected_dpmr) < 1e-6f);
+    expect_matched_filter_is(&opts, &state, dpmr_filter, "dPMR");
+
+    state.samplesPerSymbol = 10;
+    state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    expect_matched_filter_is(&opts, &state, dmr_filter, "DMR");
+    state.lastsynctype = DSD_SYNC_YSF_POS;
+    expect_matched_filter_is(&opts, &state, dmr_filter, "YSF");
 }
 
 /* Every M17 sync hands the stream to the receive half of M17's own pulse, the encoder's root-raised-cosine taps at

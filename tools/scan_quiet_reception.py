@@ -155,7 +155,7 @@ CARRIER_ON_FRACTION = 0.1  # a 10 ms window is carrier when its power exceeds th
 
 DMR_OUTER_HZ = 1944.0  # ETSI TS 102 361-1 section 10.2.2.1
 DMR_SYNTH_OUTER = bif.DMR_SYNTH_OUTER_LEVEL
-DMR_GEN_ARGS = ["--cc", "2", "--s1", "voice", "--s2", "idle", "--snr", "200", "--seed", "7"]
+DMR_GEN_ARGS = ["--cc", "2", "--s1", "voice", "--s2", "idle", "--snr", "200", "--seed", "7", "--pulse", "rc"]
 DMR_SLOT_SYMBOLS = 144  # 12 CACH (or MS guard) + 132 burst dibits: 30 ms at 4800 symbol/s
 DMR_LEAD_SYMBOLS = 960  # dmr_synth.c: the random (with --ms, silent) lead before the first period
 DMR_RAMP_S = 0.0015  # ETSI TS 102 361-1 10.2.3.1.1, figure 10.3: regions A and C
@@ -423,8 +423,9 @@ def dmr_synth_audio(work_dir, extra):
 
 
 def dmr_levels(audio):
-    """The generator's symbol levels: it centres symbol k on sample k * sps with raised-cosine pulses, which cross zero
-    at every other centre, so the audio there is the level times DMR_SYNTH_OUTER / 3 (0 for an --ms silent symbol)."""
+    """The generator's symbol levels: it centres symbol k on sample k * sps with raised-cosine pulses (--pulse rc in
+    DMR_GEN_ARGS), which cross zero at every other centre, so the audio there is the level times DMR_SYNTH_OUTER / 3 (0
+    for an --ms silent symbol)."""
     levels = np.round(audio[:: RATE_HZ // 4800] * 3.0 / DMR_SYNTH_OUTER)
     if not set(np.unique(levels)) <= {-3.0, -1.0, 0.0, 1.0, 3.0}:
         raise SystemExit("the DMR generator's audio does not sit on its symbol levels at the symbol centres")

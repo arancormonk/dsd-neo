@@ -6332,15 +6332,27 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
 - `dsd_filters.c` owns the per-protocol matched filters, selected by kind rather than by calling one of four
   wrappers, because the symbol grid has to know when the stream it samples changes identity. It reads the raw
   discriminator until a sync names a protocol and the filter's output afterwards, and that output describes the
-  signal one group delay in the past — 67 samples for NXDN48 at 20 samples per symbol. What the filter module
+  signal one group delay in the past — 80 samples for NXDN48 at 20 samples per symbol. What the filter module
   promises the symbolizer is small: the delay, stated without disturbing a running filter, and a way to push
   history into a filter without reading an output. Each history sample is stored twice, one tap-count apart,
   so the oldest-to-newest dot product reads contiguous lanes. Apply and prime share the same push; reset and SPS
   redesign clear both copies. `MATCHED_FILTER_SEAM` pins the timing promise and compares wrapped histories with
-  independent linear convolution. The kinds are DMR's (also YSF and NXDN96), P25 Phase 1's, NXDN48's, dPMR's and
-  M17's; `symbol_matched_filter_kind()` in `dsd_symbol.c` picks one from `lastsynctype`, and the hunt reads the raw
-  stream. M17's is the receive half of its root-raised-cosine pulse (roll-off 0.5), the encoder's transmit taps
-  `dsd_m17_rrc_48khz_taps`; M17 ran unfiltered from #399 until #834, which cost an ideal signal about 6 dB.
+  independent linear convolution. The kinds are DMR's (also YSF), P25 Phase 1's, NXDN's (NXDN48 and NXDN96), dPMR's
+  and M17's; `symbol_matched_filter_kind()` in `dsd_symbol.c` picks one from `lastsynctype`, and the hunt reads the raw
+  stream. Each is the receive filter its standard pairs with the transmit pulse, designed in symbols so every rate
+  reads the same pulse (#834; `DSP_AUDIO_FILTERS` pins the DMR, NXDN and dPMR filters' spectra and taps against the
+  standards'):
+  - DMR and YSF: the root raised cosine of roll-off 0.2 (ETSI TS 102 361-1 10.2.2.2), four symbols either side, 81
+    taps at 10 samples per symbol (three either side lost bursts on an off-air recording). It was a legacy low-pass
+    flat to 3 kHz until #834, which cost an ideal DMR signal about 1.5 dB.
+  - NXDN and dPMR: that root raised cosine times the inverse sinc pi f T / sin(pi f T) (NXDN TS 1-A 3.5, ETSI TS 102
+    658 14.2.2.2), which undoes the sinc of the transmitter's held symbols; four symbols either side, 161 taps at 20
+    samples per symbol and 81 for NXDN96 at 10. Before #834 NXDN48 and dPMR ran root raised cosines too wide for 2400
+    symbol/s and NXDN96 ran DMR's, which cost an ideal NXDN signal 4 to 5.5 dB and dPMR 2 dB.
+  - P25 Phase 1: the integrate-and-dump sinc that TIA-102.BAAA's C4FM pairs with its raised cosine times inverse-sinc
+    transmit filter (OP25's `transfer_function_rx`).
+  - M17: the receive half of its root-raised-cosine pulse (roll-off 0.5), the encoder's transmit taps
+    `dsd_m17_rrc_48khz_taps`; M17 ran unfiltered from #399 until #834, which cost an ideal signal about 6 dB.
   `use_cosine_filter` (`-l`, the menu's cosine filter) switches every kind off; no decode preset sets it.
 - `dsd_symbol.c` pays for every switch so the grid does not move. It keeps the raw samples it has consumed
   (`dsd_state::matched_filter`, see `core/state.h`); a filter switching on is primed from that history and fed its

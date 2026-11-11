@@ -501,8 +501,9 @@ missing or is new and exits 1, or exits 0 when every derived fixture reproduces 
 committed set. A generator change that is meant to change fixtures must then change only the intended files: regenerate
 into a copy, check that `diff -rq` against the committed set lists exactly those, copy only those in, and run
 `--verify` again, which must pass. It is not a CTest case (the bytes are pinned to one numpy version). Without
-`--dmr-synth-gen` the copy keeps the committed `dmr_voice_synth`, and without `--speech-synth-gen` the committed
-`speech_*_synth` fixtures ("Speech level parity" below); the OK line names the fixtures it did not verify.
+`--dmr-synth-gen` the copy keeps the committed `dmr_voice_synth` and `dmr_bs_weak`, and without
+`--speech-synth-gen` the committed `speech_*_synth` fixtures ("Speech level parity" below); the OK line names the
+fixtures it did not verify.
 
 `nxdn48_attenuated` is `nxdn48` replayed 20 dB down, for the per-row squelch cases
 (`DECODE_IQ_SCAN_NXDN48_SQUELCH_*`, issue #521). The source is normalized near full scale, so
@@ -1988,15 +1989,20 @@ The query treats the outer `open_output()` call as the file-access sink without 
 Those checks run before the actual open, and exclusive creation prevents following existing or dangling symlinks.
 The alerts are handled individually with the `DMR_SYNTH_OUTPUT_PATHS` evidence; the query remains enabled.
 
-What the generator models: a DMR repeater (BS) outbound channel at 48 kHz as raised-cosine 4FSK discriminator audio
-(alpha 0.2) with white Gaussian noise and an optional symbol-clock offset; CACH/TACT, voice superframes (voice sync,
-EMB, embedded LC), voice LC, PI, terminator and idle bursts with their FEC built through the project's decoders, AMBE+2
-voice from mbelib-neo's encoder, DMRA AES-256, AES-128 and RC4 voice with the per-superframe MI advance and late-entry
-MI fragments, and faults placed on a named burst: a lost burst (the redundant-carrier copy that ends the BS frame loop
+What the generator models: a DMR repeater (BS) outbound channel at 48 kHz as 4FSK discriminator audio through ETSI TS
+102 361-1's square root raised cosine (alpha 0.2), whose receive half is the decoder's DMR filter, with white Gaussian
+noise and an optional symbol-clock offset. Until issue #834 it wrote the whole raised cosine, which suited the decoder's
+old wide low-pass; through the matched root raised cosine that pulse carries inter-symbol interference, and
+`DMR_SYNTH_RC4_BURST_LOSS` read one unprotected bit wrong. `--pulse rc` still writes the raised cosine, whose audio at
+each symbol centre is that symbol's level: the I/Q fixture builder and `tools/scan_quiet_reception.py` read the symbols
+back that way and shape them themselves. The channel carries CACH/TACT, voice superframes (voice sync, EMB, embedded
+LC), voice LC, PI, terminator and idle bursts with their FEC built through the project's decoders, AMBE+2 voice from
+mbelib-neo's encoder, DMRA AES-256, AES-128 and RC4 voice with the per-superframe MI advance and late-entry MI
+fragments, and faults placed on a named burst: a lost burst (the redundant-carrier copy that ends the BS frame loop
 exactly there), CACH and sync noise, a wrong colour code, a TACT miscorrected to the other slot, corrupted late-entry
 fragments, and voice superframes lost after the headers. It can also change the colour code from a given voice
-superframe on, with no new header (`--cc-change`), and start the voice at another point of its waveform
-(`--voice-t0`), so separately generated calls carry different audio. Output is deterministic for a given seed.
+superframe on, with no new header (`--cc-change`), and start the voice at another point of its waveform (`--voice-t0`),
+so separately generated calls carry different audio. Output is deterministic for a given seed.
 With `--ms` it writes one MS transmission instead (issue #834): the MS sourced voice and data syncs, no CACH, and slot
 1's bursts alone, 27.5 ms on every 60 ms, with the audio at 0 between them. `DMR_SYNTH_MS_CLEAR_VOICE` decodes it
 through the MS path and checks the 24 Golay-protected bits of every frame (`MATCH protected`): across the silent gaps a
@@ -2059,6 +2065,15 @@ The two sigidwiki DMR fixtures, `dmr_voice` and `dmr_t3_cc`, are control channel
 before issue #729 `-fs` read their data bursts as voice, and the old voice cases pinned that. `DECODE_IQ_DMR_T3_CC` and
 `DECODE_IQ_DMR_POLARITY_AUTO` now pin what they are: CSBK and idle bursts on colour code 1, found at the polarity the
 decoder proves, with no voice burst decoded.
+
+`dmr_bs_weak` (504 kB) takes the same generator's call (5 s, `--seed 7`) as symbols rather than as its discriminator
+audio: the generator's raised-cosine pulse is not the standard's, and a receive filter is matched to the standard's.
+The script reads the levels at the symbol centres, sends them through ETSI TS 102 361-1's square root raised cosine
+(roll-off 0.2, eight symbols either side, unity DC gain, outer +/-1944 Hz) as `tools/scan_quiet_reception.py`'s DMR BS
+row does, and adds complex Gaussian noise at 8 dB S/N inside 12.5 kHz (seed 7). `DECODE_IQ_DMR_BS_WEAK` (`-fs`) and
+`_AUTO` (`-fa`) need at least 146 lines printing `Color Code=02 |`, each a burst whose slot type or EMB decoded, of
+about 160. Until issue #834 the DMR matched filter was a low-pass flat to 3 kHz rather than the receive half of that
+pulse, and 132 decoded under either preset; behind the root raised cosine, 158 and 160.
 
 ### MBE capture checks (issue #661)
 

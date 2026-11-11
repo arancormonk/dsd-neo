@@ -629,8 +629,8 @@ DPMR_SYNTH_NAME = "dpmr_synth"
 
 # A clear DMR BS voice call on slot 1, slot 2 idle (a repeater's usual traffic), written by the test generator tests/protocol/dmr/dmr_synth.c (issue #729): the
 # two sigidwiki DMR recordings are control channels received at inverted polarity, not voice, so the voice and audio
-# chain cases need a call that really is one. The generator writes discriminator audio (raised-cosine 4FSK), its
-# +/-3 symbol level at DMR_SYNTH_OUTER_LEVEL in s16 units. remodulate() maps that known level to
+# chain cases need a call that really is one. The generator writes discriminator audio (raised-cosine 4FSK under
+# --pulse rc, which this fixture has kept since #729), its +/-3 symbol level at DMR_SYNTH_OUTER_LEVEL in s16 units. remodulate() maps that known level to
 # DMR_VOICE_SYNTH_OUTER_HZ, the +/-1944 Hz of ETSI TS 102 361-1 section 10.2.2.1 (Table 10.3), with nothing removed:
 # a 99.5th-percentile mapping put the outer symbols near 1300 Hz (the raised-cosine overshoot sits about 1.6 times
 # above the level), and removing the audio's mean left them at +1880 / -2008 Hz. check_dmr_outer_deviation()
@@ -638,11 +638,25 @@ DPMR_SYNTH_NAME = "dpmr_synth"
 # which links mbelib-neo's AMBE encoder.
 DMR_VOICE_SYNTH_NAME = "dmr_voice_synth"
 DMR_VOICE_SYNTH_ARGS = ["-t", "4", "--cc", "2", "--s1", "voice", "--s2", "idle", "--snr", "40", "--seed", "7",
-                        "--lead", "0.3", "--tail", "0.2"]
+                        "--lead", "0.3", "--tail", "0.2", "--pulse", "rc"]
 DMR_VOICE_SYNTH_OUTER_HZ = 1944.0
 DMR_SYNTH_OUTER_LEVEL = 9000.0  # tests/protocol/dmr/dmr_synth.c: level 3 times its 3000 s16 scale
 DMR_SYNTH_SYMBOL_RATE = 4800
 DMR_OUTER_TOLERANCE = 0.03
+# The same generator's BS call (slot 1 voice, slot 2 idle, colour code 2) at the standard's pulse, in noise (issue
+# #834). It reads the generator's symbols back from its raised-cosine audio (--pulse rc: the audio at a symbol centre
+# is that symbol's level) and sends them through ETSI TS 102 361-1 clause 10.2.2.2's square root raised cosine
+# (roll-off 0.2), at unity DC gain so a held level 3 is the outer 1944 Hz, as tools/scan_quiet_reception.py's DMR BS
+# row does, in complex Gaussian noise at DMR_BS_WEAK_SNR_DB inside the 12.5 kHz channel. dsd-neo's DMR filter was not
+# that pulse's receive half until #834, which cost about 1.5 dB: here it lost about one burst in six.
+DMR_BS_WEAK_NAME = "dmr_bs_weak"
+DMR_BS_WEAK_ARGS = ["-t", "5", "--cc", "2", "--s1", "voice", "--s2", "idle", "--snr", "200", "--seed", "7",
+                    "--pulse", "rc"]
+DMR_BS_WEAK_SNR_DB = 8.0
+DMR_BS_WEAK_NOISE_SEED = 7
+DMR_BS_WEAK_RRC_ALPHA = 0.2
+DMR_BS_WEAK_RRC_SPAN_SYMBOLS = 8  # either side of the centre
+DMR_BS_WEAK_CHANNEL_HZ = 12500.0
 DPMR_SYNTH_SEED = 407
 DPMR_SYNTH_SYMBOL_RATE = 2400
 DPMR_SYNTH_OUTER_DEVIATION_HZ = 1050.0
@@ -1661,12 +1675,10 @@ def m17_transmission_dibits(stream_frames):
     return dibits + m17_repeat_word(M17_EOT_WORD)
 
 
-def m17_modulate(dibits, delay=0.0):
-    """4FSK through a root raised cosine at unity DC gain, so a held level 3 is the outer deviation, @p delay samples
-    late (the frequency read between samples)."""
-    sps = SAMPLE_RATE_HZ // M17_SYNTH_SYMBOL_RATE
-    t = np.arange(-M17_SYNTH_RRC_SPAN_SYMBOLS * sps, M17_SYNTH_RRC_SPAN_SYMBOLS * sps + 1) / sps
-    a = M17_SYNTH_RRC_ALPHA
+def rrc_unity_dc_taps(a, sps, span_symbols):
+    """A root raised cosine of roll-off a, span_symbols either side of the centre at sps samples per symbol, summing to
+    sps: impulses through it hold a repeated level at that level."""
+    t = np.arange(-span_symbols * sps, span_symbols * sps + 1) / sps
     with np.errstate(divide="ignore", invalid="ignore"):
         taps = (np.sin(math.pi * t * (1 - a)) + 4 * a * t * np.cos(math.pi * t * (1 + a))) / (
             math.pi * t * (1 - (4 * a * t) ** 2)
@@ -1676,6 +1688,14 @@ def m17_modulate(dibits, delay=0.0):
     taps[edge] = a / math.sqrt(2) * ((1 + 2 / math.pi) * math.sin(math.pi / (4 * a))
                                      + (1 - 2 / math.pi) * math.cos(math.pi / (4 * a)))
     taps *= sps / taps.sum()
+    return taps
+
+
+def m17_modulate(dibits, delay=0.0):
+    """4FSK through a root raised cosine at unity DC gain, so a held level 3 is the outer deviation, @p delay samples
+    late (the frequency read between samples)."""
+    sps = SAMPLE_RATE_HZ // M17_SYNTH_SYMBOL_RATE
+    taps = rrc_unity_dc_taps(M17_SYNTH_RRC_ALPHA, sps, M17_SYNTH_RRC_SPAN_SYMBOLS)
     impulses = np.zeros(len(dibits) * sps)
     impulses[::sps] = [M17_DIBIT_TO_LEVEL[dibit] for dibit in dibits]
     freq_hz = np.convolve(impulses, taps, mode="same") * M17_SYNTH_OUTER_HZ / 3.0
@@ -1743,20 +1763,53 @@ def check_dmr_outer_deviation(samples):
 
 def build_dmr_voice_synth(out_dir, generator, work_dir):
     """Write the synthetic DMR BS voice fixture from the test generator's discriminator audio (issue #729)."""
+    samples = dmr_synth_baseband(dmr_synth_wav_audio(generator, DMR_VOICE_SYNTH_ARGS, work_dir, DMR_VOICE_SYNTH_NAME))
+    check_dmr_outer_deviation(samples)
+    written = write_fixture(out_dir, DMR_VOICE_SYNTH_NAME, samples)
+    print(f"{DMR_VOICE_SYNTH_NAME:28s} synth   {written // 1024:6d} KiB")
+    return written
+
+
+def dmr_synth_wav_audio(generator, args, work_dir, name):
+    """Run the DMR test generator with args; return its 48 kHz discriminator audio as floats."""
     os.makedirs(work_dir, exist_ok=True)
     generator = os.path.abspath(generator)
     with tempfile.TemporaryDirectory(prefix="dmr-synth-", dir=work_dir) as synth_dir:
-        wav_name = DMR_VOICE_SYNTH_NAME + ".wav"
-        subprocess.run([generator, "-o", wav_name] + DMR_VOICE_SYNTH_ARGS, cwd=synth_dir, check=True)
+        wav_name = name + ".wav"
+        subprocess.run([generator, "-o", wav_name] + args, cwd=synth_dir, check=True, capture_output=True)
         wav_path = os.path.join(synth_dir, wav_name)
         with wave.open(wav_path, "rb") as wav:
             if wav.getnchannels() != 1 or wav.getsampwidth() != 2 or wav.getframerate() != SAMPLE_RATE_HZ:
                 raise SystemExit(f"{wav_path}: expected 48 kHz mono s16 from the DMR generator")
-            audio = np.frombuffer(wav.readframes(wav.getnframes()), dtype="<i2").astype(np.float64)
-    samples = dmr_synth_baseband(audio)
-    check_dmr_outer_deviation(samples)
-    written = write_fixture(out_dir, DMR_VOICE_SYNTH_NAME, samples)
-    print(f"{DMR_VOICE_SYNTH_NAME:28s} synth   {written // 1024:6d} KiB")
+            return np.frombuffer(wav.readframes(wav.getnframes()), dtype="<i2").astype(np.float64)
+
+
+def dmr_synth_symbol_levels(audio):
+    """The generator's symbol levels: its raised-cosine pulses centre symbol k on sample k * sps and cross zero at every
+    other centre, so the audio there is the level times DMR_SYNTH_OUTER_LEVEL / 3."""
+    levels = np.round(audio[:: SAMPLE_RATE_HZ // DMR_SYNTH_SYMBOL_RATE] * 3.0 / DMR_SYNTH_OUTER_LEVEL)
+    if not set(np.unique(levels)) <= {-3.0, -1.0, 1.0, 3.0}:
+        raise SystemExit(f"{DMR_BS_WEAK_NAME}: the DMR generator's audio does not sit on its symbol levels")
+    return levels
+
+
+def build_dmr_bs_weak(out_dir, generator, work_dir):
+    """Write the DMR BS call at the standard's pulse in noise (issue #834; see DMR_BS_WEAK_NAME)."""
+    levels = dmr_synth_symbol_levels(dmr_synth_wav_audio(generator, DMR_BS_WEAK_ARGS, work_dir, DMR_BS_WEAK_NAME))
+    sps = SAMPLE_RATE_HZ // DMR_SYNTH_SYMBOL_RATE
+    impulses = np.zeros(len(levels) * sps)
+    impulses[::sps] = levels
+    taps = rrc_unity_dc_taps(DMR_BS_WEAK_RRC_ALPHA, sps, DMR_BS_WEAK_RRC_SPAN_SYMBOLS)
+    freq_hz = np.convolve(impulses, taps, mode="same") * DMR_VOICE_SYNTH_OUTER_HZ / 3.0
+    signal = np.exp(2j * math.pi * np.cumsum(freq_hz) / SAMPLE_RATE_HZ)
+    spectrum = np.abs(np.fft.fft(signal)) ** 2 / len(signal) ** 2
+    freqs = np.fft.fftfreq(len(signal), 1.0 / SAMPLE_RATE_HZ)
+    power = float(spectrum[np.abs(freqs) <= DMR_BS_WEAK_CHANNEL_HZ / 2.0].sum())
+    sigma = math.sqrt(power / 10.0 ** (DMR_BS_WEAK_SNR_DB / 10.0) * SAMPLE_RATE_HZ / DMR_BS_WEAK_CHANNEL_HZ / 2.0)
+    rng = np.random.default_rng(DMR_BS_WEAK_NOISE_SEED)
+    samples = signal + rng.normal(0.0, sigma, len(signal)) + 1j * rng.normal(0.0, sigma, len(signal))
+    written = write_fixture(out_dir, DMR_BS_WEAK_NAME, samples)
+    print(f"{DMR_BS_WEAK_NAME:28s} synth   {written // 1024:6d} KiB")
     return written
 
 
@@ -2934,8 +2987,10 @@ def build_all_derived(out_dir, dmr_synth_gen, speech_synth_gen, cache):
     total += build_squelch_burst(out_dir)
     if dmr_synth_gen:
         total += build_dmr_voice_synth(out_dir, dmr_synth_gen, cache)
+        total += build_dmr_bs_weak(out_dir, dmr_synth_gen, cache)
     else:
-        print(f"{DMR_VOICE_SYNTH_NAME:28s} skipped (needs --dmr-synth-gen)")
+        for name in (DMR_VOICE_SYNTH_NAME, DMR_BS_WEAK_NAME):
+            print(f"{name:28s} skipped (needs --dmr-synth-gen)")
     if speech_synth_gen:
         total += build_speech_synth(out_dir, speech_synth_gen, cache)
     else:
@@ -2985,7 +3040,7 @@ def verify_derived(args):
     # Without a generator the copy keeps the fixtures it writes, so they compare equal unchecked.
     unchecked = []
     if not args.dmr_synth_gen:
-        unchecked.append(f"{DMR_VOICE_SYNTH_NAME} (needs --dmr-synth-gen)")
+        unchecked.append(f"{DMR_VOICE_SYNTH_NAME}, {DMR_BS_WEAK_NAME} (needs --dmr-synth-gen)")
     if not args.speech_synth_gen:
         unchecked.append(f"{', '.join(entry[0] for entry in SPEECH_SYNTH)} (needs --speech-synth-gen)")
     if unchecked:
@@ -3009,7 +3064,7 @@ def main():
     )
     parser.add_argument(
         "--dmr-synth-gen",
-        help="the built DMR test generator (dsd-neo_test_dmr_synth_gen) that writes the dmr_voice_synth fixture",
+        help="the built DMR test generator (dsd-neo_test_dmr_synth_gen) that writes dmr_voice_synth and dmr_bs_weak",
     )
     parser.add_argument(
         "--speech-synth-gen",

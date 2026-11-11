@@ -4,7 +4,7 @@
  * dmr_synth: synthetic DMR repeater (BS) dual-slot test signal for the DMR_SYNTH_* end-to-end tests (issue #729),
  * or with --ms a single MS transmission (issue #834).
  *
- * Writes a 48 kHz mono 16-bit WAV of raised-cosine 4FSK discriminator audio carrying a DMR BS outbound channel:
+ * Writes a 48 kHz mono 16-bit WAV of 4FSK discriminator audio carrying a DMR BS outbound channel:
  * CACH/TACT, voice superframes (BS voice sync, EMB, embedded LC, AMBE+2 2450 from mbelib-neo's encoder), data bursts
  * (voice LC header, PI header, terminator with LC, idle), optional DMRA voice encryption (AES-256 0x25, AES-128 0x24,
  * RC4 0x21) with the per-superframe MI advance and late-entry MI fragments, and fault injection.
@@ -66,6 +66,10 @@
  *   --lead SEC         idle bursts on both slots before the calls (default 0.6)
  *   --tail SEC         idle bursts after the calls (default 0.4)
  *   --invert           write the discriminator audio at the other polarity (a receiver that inverts it)
+ *   --pulse rrc|rc     the 4FSK pulse (default rrc): rrc is ETSI TS 102 361-1 clause 10.2.2.2's square root raised
+ *                      cosine (roll-off 0.2), the transmit half whose receive half is the decoder's DMR filter; rc is
+ *                      the whole raised cosine, which crosses zero at every other symbol centre, so the audio at a
+ *                      centre is that symbol's level: for tools that read the symbols back and shape them themselves
  *   --ms               an MS transmission instead of the BS channel (ETSI TS 102 361-1 section 9.1.1: MS sourced
  *                      voice and data syncs, no CACH): slot 1's bursts alone, 27.5 ms on every 60 ms, with the
  *                      audio at 0 (no symbol) in the CACH position before each burst, the whole of slot 2, the lead,
@@ -367,6 +371,7 @@ typedef struct {
     uint32_t tg, src;
     int hdr_repeat, term, le;
     int invert;
+    int pulse_rc;
     int ms;
     int lose_first;
     uint64_t seed;
@@ -1053,11 +1058,36 @@ emit_voice_burst(slot_call* c, int slot, burst_desc bd, int period, FILE* ef, in
     apply_fault(cfg.faults[fi].mode, slot, frag, out);
 }
 
-/* Raised-cosine 4FSK at 48 kHz (alpha 0.2, +/-8 symbol taps) at the configured symbol-clock offset. */
+/* One symbol's pulse at t symbols from its centre, roll-off 0.2: the square root raised cosine (--pulse rrc) or the
+   whole raised cosine (--pulse rc). Both carry a held level at that level. */
+static double
+pulse_at(double t) {
+    const double alpha = 0.2;
+    if (cfg.pulse_rc) {
+        if (fabs(t) < 1e-9) {
+            return 1.0;
+        }
+        double den = 1.0 - pow(2.0 * alpha * t, 2.0);
+        double sn = sin(SYNTH_PI * t) / (SYNTH_PI * t);
+        return fabs(den) < 1e-9 ? (SYNTH_PI / 4.0) * sn : sn * cos(SYNTH_PI * alpha * t) / den;
+    }
+    if (fabs(t) < 1e-9) {
+        return 1.0 + alpha * (4.0 / SYNTH_PI - 1.0);
+    }
+    double four_a_t = 4.0 * alpha * t;
+    if (fabs(fabs(four_a_t) - 1.0) < 1e-9) {
+        return alpha / sqrt(2.0)
+               * ((1.0 + 2.0 / SYNTH_PI) * sin(SYNTH_PI / (4.0 * alpha))
+                  + (1.0 - 2.0 / SYNTH_PI) * cos(SYNTH_PI / (4.0 * alpha)));
+    }
+    return (sin(SYNTH_PI * t * (1.0 - alpha)) + four_a_t * cos(SYNTH_PI * t * (1.0 + alpha)))
+           / (SYNTH_PI * t * (1.0 - four_a_t * four_a_t));
+}
+
+/* 4FSK at 48 kHz through pulse_at() (+/-8 symbol taps) at the configured symbol-clock offset. */
 static float*
 modulate(const int* sym, size_t nsym, size_t* nsamp_out) {
     static const double k_level[5] = {1.0, 3.0, -1.0, -3.0, 0.0}; /* DIBIT_SILENT last */
-    const double alpha = 0.2;
     const double sps = 48000.0 / (4800.0 * (1.0 + cfg.ppm * 1e-6));
     const size_t nsamp = (size_t)((double)nsym * sps);
     float* x = calloc(nsamp, sizeof(float));
@@ -1069,16 +1099,7 @@ modulate(const int* sym, size_t nsym, size_t* nsamp_out) {
         long lo = (long)(centre - 8.0 * sps);
         long hi = (long)(centre + 8.0 * sps);
         for (long n = lo < 0 ? 0 : lo; n <= hi && n < (long)nsamp; n++) {
-            double t = ((double)n - centre) / sps;
-            double h;
-            if (fabs(t) < 1e-9) {
-                h = 1.0;
-            } else {
-                double den = 1.0 - pow(2.0 * alpha * t, 2.0);
-                double sn = sin(SYNTH_PI * t) / (SYNTH_PI * t);
-                h = fabs(den) < 1e-9 ? (SYNTH_PI / 4.0) * sn : sn * cos(SYNTH_PI * alpha * t) / den;
-            }
-            x[n] += (float)(k_level[sym[s]] * h);
+            x[n] += (float)(k_level[sym[s]] * pulse_at(((double)n - centre) / sps));
         }
     }
     *nsamp_out = nsamp;
@@ -1259,6 +1280,17 @@ next_arg(int argc, char** argv, int* i) {
 }
 
 static void
+parse_pulse(const char* v) {
+    if (strcmp(v, "rrc") == 0) {
+        cfg.pulse_rc = 0;
+    } else if (strcmp(v, "rc") == 0) {
+        cfg.pulse_rc = 1;
+    } else {
+        usage();
+    }
+}
+
+static void
 parse_args(int argc, char** argv, int* have_key) {
     for (int i = 1; i < argc; i++) {
         const char* a = argv[i];
@@ -1325,6 +1357,8 @@ parse_args(int argc, char** argv, int* have_key) {
             cfg.term = 0;
         } else if (strcmp(a, "--invert") == 0) {
             cfg.invert = 1;
+        } else if (strcmp(a, "--pulse") == 0) {
+            parse_pulse(next_arg(argc, argv, &i));
         } else if (strcmp(a, "--ms") == 0) {
             cfg.ms = 1;
         } else if (strcmp(a, "--no-le") == 0) {

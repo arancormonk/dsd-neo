@@ -19540,6 +19540,31 @@ if(DSD_HAS_RADIO)
         -fs
         "Color Code=02 \\| VC6"
     )
+    # Issue #834: DMR's matched filter is the receive half of its root-raised-cosine pulse (roll-off 0.2). The same
+    # generator's call, 5 s of it, at the standard's pulse in noise at 8 dB S/N in 12.5 kHz (dmr_bs_weak in
+    # tools/build_iq_fixtures.py): about 160 bursts, each line printing the colour code from a slot type or EMB that
+    # decoded. Behind the legacy filter, a low-pass flat to 3 kHz, 132 did under -fs and -fa; behind the RRC 0.2,
+    # 158 and 160. 146 sits halfway.
+    foreach(_dmr_mode IN ITEMS -fs -fa)
+        if(_dmr_mode STREQUAL "-fa")
+            set(_dmr_name DECODE_IQ_DMR_BS_WEAK_AUTO)
+        else()
+            set(_dmr_name DECODE_IQ_DMR_BS_WEAK)
+        endif()
+        add_test(
+            NAME ${_dmr_name}
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DMODE=${_dmr_mode}"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/dmr_bs_weak.iq.json"
+                "-DEXPECTED=Color Code=02 \\|" -DMIN_MATCHES=146 -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+        )
+        set_tests_properties(
+            ${_dmr_name}
+            PROPERTIES LABELS "iq-decode" TIMEOUT 120
+        )
+    endforeach()
     # The sigidwiki DMR recordings are control channels received at inverted polarity. A BS voice sync is an inverted
     # data sync, so -fs used to read every burst as voice and publish a colour code from noise-made EMBs (issue #729).
     # The decoder now proves the polarity from the bursts and decodes them as what they are, without -xr.

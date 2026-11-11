@@ -418,6 +418,7 @@ symbol_matched_filter_kind(const dsd_opts* opts, const dsd_state* state, int rtl
     }
     if (DSD_SYNC_IS_DMR_BS(state->lastsynctype) || DSD_SYNC_IS_DMR_MS(state->lastsynctype)
         || DSD_SYNC_IS_YSF(state->lastsynctype)) {
+        /* DMR and YSF both send root-raised-cosine pulses of roll-off 0.2 at 4800 symbol/s. */
         return DSD_SPS_FILTER_DMR;
     }
     if (DSD_SYNC_IS_P25P1(state->lastsynctype)) {
@@ -433,6 +434,7 @@ symbol_matched_filter_kind(const dsd_opts* opts, const dsd_state* state, int rtl
         return DSD_SPS_FILTER_NONE;
     }
     if (DSD_SYNC_IS_NXDN(state->lastsynctype)) {
+        /* NXDN48 and NXDN96 share one receive pulse in symbols (NXDN TS 1-A 3.5), so one kind at either rate. */
         const dsd_nxdn_variant variant = dsd_frame_sync_active_nxdn_variant(opts, state);
         if (variant == DSD_NXDN_VARIANT_48) {
             return DSD_SPS_FILTER_NXDN;
@@ -443,7 +445,7 @@ symbol_matched_filter_kind(const dsd_opts* opts, const dsd_state* state, int rtl
         if (state->samplesPerSymbol == 8) {
             return DSD_SPS_FILTER_NONE;
         }
-        return DSD_SPS_FILTER_DMR;
+        return DSD_SPS_FILTER_NXDN;
     }
     return DSD_SPS_FILTER_NONE;
 }
@@ -3279,7 +3281,7 @@ symbol_take_sample_into_history(dsd_opts* opts, dsd_state* state, symbol_work_ct
  * The stream the grid samples changes identity when a sync names a protocol: up
  * to that point the grid reads the raw discriminator, afterwards the matched
  * filter's output, which describes the signal one group delay in the past. Left
- * alone that makes the decoder re-read content it has already consumed -- 3.35
+ * alone that makes the decoder re-read content it has already consumed -- four
  * symbols for NXDN48 at 20 samples per symbol, 4.5 for P25p1, and for P25p1 half
  * a symbol of phase on top -- at every accept, which noCarrier makes roughly
  * once per frame rather than once per call (issue #444). Switching back is the

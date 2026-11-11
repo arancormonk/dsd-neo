@@ -8,7 +8,7 @@
  * protocol, and the matched-filtered one from the accept onward. Those are not
  * the same signal: a symmetric FIR of L taps reports the signal (L-1)/2 samples
  * in the past, so at the moment the filter switches on the decoder starts
- * re-reading content it has already consumed -- 3.35 symbols for NXDN48 at 20
+ * re-reading content it has already consumed -- four symbols for NXDN48 at 20
  * samples per symbol, 4.5 for P25p1, and for P25p1 the leftover is exactly half
  * a symbol of phase as well (issue #444).
  *
