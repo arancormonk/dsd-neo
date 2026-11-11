@@ -12255,6 +12255,14 @@ Qt Quick frontend (`src/ui/qt`):
     entries. The search and filters left out the rest." and, for a Download-folder save, "Exported N entries to
     Download/DSD-neo as <name>." / "Exported 1 entry to Download/DSD-neo as <name>." / "Exported N of M entries to
     Download/DSD-neo as <name>.".
+  - Header and list room (`qml/HistoryScreen.qml`; `tst_history_export.qml`): the header (title, Export… and Clear,
+    the export's result line, search, the save warning, the filter pills) sits in `historyHeaderScroll`, a
+    `PlexFlickable`; the list (`callLogList`) keeps at least 40% of the screen (`listMinHeight`) and the header takes
+    its own height up to the rest. A header that fits does not move; a taller one (2x text with the result line or the
+    save warning on a 360x640 phone) scrolls inside its room and ends on a `Theme.divider` hairline, where a fixed
+    column pushed the list off the screen. The focused control (`Theme.revealFocus()` on
+    the window's `activeFocusItem`, and again when the header's room changes) and a new result line scroll into its
+    view. The list keeps its `KeepPlace` model handling (issue #782) unchanged.
   - Background capture (issue #708, B1; `call_history_tap.{h,cpp}`): Qt pauses the GUI thread on Android in the
     background, the UI tick was the ring's only reader, and the ring keeps 254 committed rows a slot, so a busy system
     overwrote calls History never saw. When the application turns Suspended or Hidden, after `saveNow()`, the model

@@ -131,6 +131,7 @@ Item {
                 }
             }
             historyExport.setBusy(false);
+            callHistory.setSaveFailing(false);
             Ui.Theme.resetFontScale();
             root.width = 360;
         }
@@ -455,6 +456,64 @@ Item {
             compare(line.Accessible.name, "Exported 2 entries.");
             wait(20);
             compare(screen.announcements, before + 1, "once");
+        }
+
+        // The header grows with the text size, the export's result line and the save warning. At 360x640 with
+        // text at 2x and both shown it is taller than the screen: it scrolls inside its room, the list keeps at
+        // least 40% of the screen, and every header control can be brought into view above the list, a focused one
+        // by itself. Both History screens.
+        function test_header_scrolls_and_the_list_keeps_its_room_data() {
+            return [{tag: "idle 1.0", session: false, scale: 1.0}, {tag: "idle 2.0", session: false, scale: 2.0},
+                    {tag: "session 1.0", session: true, scale: 1.0}, {tag: "session 2.0", session: true, scale: 2.0}];
+        }
+        function test_header_scrolls_and_the_list_keeps_its_room(data) {
+            var screen = data.session ? sessionLoader.item : idleLoader.item;
+            Ui.Theme.fontScale = data.scale;
+            callHistory.setSaveFailing(true);
+            screen.setExportMessage("Exported 2 entries to Download/DSD-neo as Call history 2026-11-09 for the county fire dispatch talkgroups (12).csv.", false);
+            verify(waitForPolish(screen));
+            waitForRendering(screen);
+            var list = findChild(screen, "callLogList");
+            var listRect = rectIn(list, screen);
+            verify(list.height >= screen.height * 0.4 - 0.5, "the list keeps its room: " + describe(listRect) + " in " + screen.height);
+            verify(listRect.y + listRect.height <= screen.height + 0.5, "the list ends on the screen: " + describe(listRect));
+            var scroll = findChild(screen, "historyHeaderScroll");
+            verify(scroll !== null, "the header scrolls");
+            verify(scroll.height <= screen.height * 0.6 + 0.5, "the header takes at most the rest: " + scroll.height);
+            verify(listRect.y >= scroll.y + scroll.height, "the list starts under the header");
+            if (data.scale === 2.0)
+                verify(scroll.contentHeight > scroll.height, "at 2x the header is taller than its room");
+            function inView(item) {
+                var r = rectIn(item, screen);
+                return r.y >= scroll.y - 0.5 && r.y + r.height <= scroll.y + scroll.height + 0.5 && r.x >= 0
+                    && r.x + r.width <= screen.width + 0.5;
+            }
+            // A focused control scrolls into view, from either end.
+            var focusable = ["historyActivityFilter", "historyExportButton", "historySystemFilter", "historySearch",
+                             "clearHistoryButton"];
+            for (var name of focusable) {
+                var control = findChild(screen, name);
+                verify(control !== null && control.visible, name + " is shown");
+                control.forceActiveFocus();
+                tryVerify(function () { return inView(control); }, 2000, name + " scrolls into view when focused: " + describe(rectIn(control, screen)));
+            }
+            // Every line can be scrolled into view.
+            var lines = ["historyExportMessage", "historySaveFailing"];
+            if (!data.session)
+                lines.push("historyTitle");
+            for (name of lines) {
+                var line = findChild(screen, name);
+                verify(line !== null && line.visible, name + " is shown");
+                var top = line.mapToItem(scroll.contentItem, 0, 0).y;
+                scroll.contentY = Math.max(0, Math.min(top, scroll.contentHeight - scroll.height));
+                verify(inView(line), name + " can be scrolled into view: " + describe(rectIn(line, screen)));
+            }
+            // A new result comes into view wherever the header was scrolled to.
+            scroll.contentY = Math.max(0, scroll.contentHeight - scroll.height);
+            screen.setExportMessage("Exported 1 entry to Download/DSD-neo as Call history 2026-11-09 for the county fire dispatch talkgroups (13).csv.", false);
+            var result = exportLine(screen);
+            tryVerify(function () { return inView(result); }, 2000, "a new result scrolls into view: " + describe(rectIn(result, screen)));
+            scroll.contentY = 0;
         }
 
         // Title and buttons share a line when they fit; at a large text size on a narrow phone the buttons take
