@@ -522,11 +522,12 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
     g_other++;
 }
 
-void
+int
 processTSBK(dsd_opts* opts, dsd_state* state) {
     /* A one-block TSDU's decoder stops at the block's end, before the padding. */
     read_rest(opts, state, 158);
     g_tsdu++;
+    return 1;
 }
 
 void

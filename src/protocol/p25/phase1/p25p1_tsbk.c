@@ -1076,11 +1076,12 @@ tsbk_dispatch_message(dsd_opts* opts, dsd_state* state, const tsbk_decode_ctx_t*
     }
 }
 
-void
+int
 processTSBK(dsd_opts* opts, dsd_state* state) {
     tsbk_prepare_frame_state(state);
 
     int skipdibit = 36 - 14;
+    int crc_passed = 0;
     /* The last block failed its CRC with its last-block flag clear: a flag the CRC did not vouch for. */
     int unvouched_more = 0;
     for (int block = 0; block < TSBK_MAX_BLOCKS; block++) {
@@ -1102,6 +1103,7 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
             break;
         }
         tsbk_update_fec_counters(opts, state, err);
+        crc_passed |= err == 0;
 
         int MFID = ctx.tsbk_byte[1];
         int protectbit = (ctx.tsbk_byte[0] >> 6) & 0x1;
@@ -1127,4 +1129,5 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
 
     // When on a CC, rotate the symbol out file every hour, if enabled
     rotate_symbol_out_file(opts, state);
+    return crc_passed;
 }

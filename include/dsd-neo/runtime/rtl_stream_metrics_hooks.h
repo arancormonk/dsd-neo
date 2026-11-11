@@ -291,18 +291,19 @@ void dsd_rtl_stream_metrics_hook_p25p2_err_update(int slot, int facch_ok, int fa
 /**
  * @brief Tell the CQPSK timing loop the carrier is proven P25 on tuning generation @p tune_generation.
  *
- * The decoder thread calls it when a P25 Phase 1 frame validates (its NID passed the rules a sync anchor needs,
- * p25p1_nid_verdict_validates()) or a Phase 2 window passes a MAC PDU's CRC or, opened by a tolerant sync, its verdict,
- * with the dsd_trunk_tuning_generation() the frame was synced on: a frame read across a completed tune (its handler's
- * grant, say) proves nothing about the carrier reached, and its proof is stale from the start. While the proof holds,
- * the Gardner's gain steps to its P25 post-lock value once locked at 4800 and 6000 sym/s (op25_gardner_cc()); a tune
- * completed since leaves it stale, which counts as none. A no-op until the engine installs the hook.
+ * The decoder thread calls it when a P25 Phase 1 TSDU validates (its NID passed the rules a sync anchor needs,
+ * p25p1_nid_verdict_validates()) with a TSBK that passed its CRC (never a voice or data frame), or a Phase 2 window
+ * passes a MAC PDU's CRC or, opened by a tolerant sync, its verdict, with the dsd_trunk_tuning_generation() the frame
+ * was synced on: a frame read across a completed tune (its handler's grant, say) proves nothing about the carrier
+ * reached, and its proof is stale from the start. While the proof holds, the Gardner's gain steps to its P25 post-lock
+ * value once locked at 4800 and 6000 sym/s (op25_gardner_cc()); a tune completed since leaves it stale, which counts as
+ * none. A no-op until the engine installs the hook.
  */
 void dsd_rtl_stream_metrics_hook_note_p25_proven(uint64_t tune_generation);
 /**
  * @brief Withdraw the P25 proof dsd_rtl_stream_metrics_hook_note_p25_proven() gave: the decoder calls it at a tune,
  * a no-carrier exit, a symbol profile or modulation change and a decode-mode switch, so the timing loop keeps its
- * acquisition-era gains until the next validated P25 frame. A no-op until the engine installs the hook.
+ * acquisition-era gains until P25 content proves the carrier again. A no-op until the engine installs the hook.
  */
 void dsd_rtl_stream_metrics_hook_forget_p25_proof(void);
 int dsd_rtl_stream_metrics_hook_symbol_cache_pending(void);

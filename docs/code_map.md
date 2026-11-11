@@ -3435,20 +3435,23 @@ suite runs under this compiler.
     `dsd_rtl_stream_metrics_hook_forget_p25_proof()`): the decoder thread's word to the CQPSK Gardner that the carrier
     is P25, which lets its gain step to 0.01 once locked (DSP, "CQPSK Gardner" below). The value is the tuning
     generation (`dsd_trunk_tuning_generation()`) the proving frame was synced on, plus 1, or 0 for none; the engine
-    installs `rtl_stream_set_p25_timing_proof()`, an atomic store into `demod_state::p25_timing_proof`, and the
-    default is a no-op, so headless and test builds keep the gains of before. Set by a P25p1 frame that validated
-    (`p25p1_note_frame_decoded()`: `p25p1_nid_verdict_validates()`, not cut) and by a P25p2 window with a MAC PDU
-    whose CRC passed or a tolerant window whose verdict passed (`p25p2_window_done()`, not when the window retuned);
-    both pass the generation read before the frame's handlers ran, so a frame whose grant tuned away leaves a stale
-    proof. Withdrawn by `dsd_frame_sync_reset_mod_state()` (every accepted tune, a CC change, the acquisition reset of
-    a scan row or target, an input boundary or a decode-mode command; a symbol profile change), by every move of
-    `rf_mod` in the frame sync (`frame_sync_move_rf_mod()`: a vote's switch, a P25p1 chain step or CQPSK probe, a
-    P25p2 or DMR accept, the TETRA profile), by the no-carrier pass (`no_carrier_reset_decode_state()`), by
-    `dsd_engine_forget_carrier_decoding()` (every carrier boundary, a stream gap included) and by a config apply that
-    changes the decode mode (`cfg_forget_rx_tone_on_boundary()`). X2-TDMA, DMR and NXDN under `-mq`, Auto's CQPSK
-    trial before a P25 frame validates and TETRA never set it. Tests: `P25_P1_SYNC_DISPATCH`, `P25_P2_TOLERANT_WINDOW`
-    (set), `FRAME_SYNC_P25_TIMING_PROOF`, `ENGINE_P25_TIMING_PROOF`, `APP_COMMAND_QUEUE` (withdrawn),
-    `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL` (the installation).
+    installs `rtl_stream_set_p25_timing_proof()`, an atomic store into `demod_state::p25_timing_proof`, and the default
+    is a no-op, so headless and test builds keep the gains of before. Set by a P25p1 TSDU that validated
+    (`p25p1_note_frame_decoded()`: `p25p1_nid_verdict_validates()`, not cut) with a TSBK whose CRC passed
+    (`processTSBK()` returns that, through `p25p1_dispatch_by_duid()`), never by a P25p1 voice or data frame (HDU,
+    LDU1/2, TDU, TDULC, PDU), so a conventional or voice-channel Phase 1 carrier keeps the gains of before (why: DSP,
+    "CQPSK Gardner"); and by a P25p2 window with a MAC PDU whose CRC passed or a tolerant window whose verdict passed
+    (`p25p2_window_done()`, not when the window retuned); both pass the generation read before the frame's handlers ran,
+    so a frame whose grant tuned away leaves a stale proof. Withdrawn by `dsd_frame_sync_reset_mod_state()` (every
+    accepted tune, a CC change, the acquisition reset of a scan row or target, an input boundary or a decode-mode
+    command; a symbol profile change), by every move of `rf_mod` in the frame sync (`frame_sync_move_rf_mod()`: a vote's
+    switch, a P25p1 chain step or CQPSK probe, a P25p2 or DMR accept, the TETRA profile), by the no-carrier pass
+    (`no_carrier_reset_decode_state()`), by `dsd_engine_forget_carrier_decoding()` (every carrier boundary, a stream gap
+    included) and by a config apply that changes the decode mode (`cfg_forget_rx_tone_on_boundary()`). X2-TDMA, DMR and
+    NXDN under `-mq`, Auto's CQPSK trial before P25 content proves the carrier, Phase 1 voice and TETRA never set it.
+    Tests: `P25_P1_SYNC_DISPATCH`, `P25_P2_TOLERANT_WINDOW` (set), `FRAME_SYNC_P25_TIMING_PROOF`,
+    `ENGINE_P25_TIMING_PROOF`, `APP_COMMAND_QUEUE` (withdrawn), `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL` (the
+    installation).
   - Stream notices and reads with no stream (issue #518): `include/dsd-neo/runtime/stream_notice_hooks.h` carries what
     the input stream got over by itself (`DSD_STREAM_NOTICE_USB_RECOVERED`, `DSD_STREAM_NOTICE_CAPTURE_STOPPED`),
     posted from the stream's controller with `dsd_runtime_stream_notice_post()` into the sink app-control installs at
@@ -7114,17 +7117,29 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     that buffer's capacity. Only its adaptive gain is decided per block, and not on the TETRA chain, which keeps one
     gain (TETRA receive chain above). Test: `DSP_COSTAS` (1-, 2- and 3-pair blocks, warm and cold, from
     each buffer, bit-exact against the whole stream).
-  - The Gardner gain rule (`op25_gardner_gain_mu_for_lock()`): a set gain (`ted_gain_is_set`, `DSD_NEO_TED_GAIN`)
-    holds; the TETRA chain runs `kTetraGardnerGain`; otherwise 0.025 until the lock condition holds: 240 processed
-    symbols whose lock metric (`lock_accum` over `lock_count`) averages 0.05 or more, accumulated since the TED last
-    started over (a retune, a reset), not 240 consecutive locked symbols, so a fade after a long lock is judged against
-    that history. From there `kP25ProvenLockGain` (0.01) at 4800 and 6000 sym/s (`cqpsk_rate_is_p25()`, within 10% of
-    either) while the decoder's P25 timing proof holds for the current tuning generation (Runtime, "The P25 timing
-    proof" above; `gardner_p25_proven()`: one atomic load per block, the generation's only behind a proof, a stale one
-    counts as none); without it 0.018 at 5500 sym/s and above and the requested gain below, as before the proof
-    existed. The rate alone never selects the step (X2-TDMA shares 4800/4). An uplink session decides its gain without
-    the proof (TETRA never proves P25). Tests: `DSP_COSTAS` (values with, without and with a stale proof at 4800 and
-    6000, before the lock, set gains, the TETRA chain and a TETRA fallback stream; the proof taken per block),
+  - The Gardner gain rule (`op25_gardner_gain_mu_for_lock()`): a set gain (`ted_gain_is_set`, `DSD_NEO_TED_GAIN`) holds;
+    the TETRA chain runs `kTetraGardnerGain`; otherwise 0.025 until the lock condition holds: 240 processed symbols
+    whose lock metric (`lock_accum` over `lock_count`) averages 0.05 or more, accumulated since the TED last started
+    over (a retune, a reset), not 240 consecutive locked symbols, so a fade after a long lock is judged against that
+    history. From there `kP25ProvenLockGain` (0.01) at 4800 and 6000 sym/s (`cqpsk_rate_is_p25()`, within 10% of either)
+    while the decoder's P25 timing proof holds for the current tuning generation (Runtime, "The P25 timing proof" above;
+    `gardner_p25_proven()`: one atomic load per block, the generation's only behind a proof, a stale one counts as
+    none); without it 0.018 at 5500 sym/s and above and the requested gain below, as before the proof existed. Phase 1
+    proves only by a TSBK that passed its CRC, never by its voice frames, for a measured reason: every site A
+    capture's envelope cycles at about 3 Hz, a simulcast beat (sites a few Hz apart with different path delays), and the
+    composite's symbol timing swings with it, 0.12 to 0.24 of a symbol on the voice dwells. A 0.01 loop follows that
+    swing less and samples further from the symbol centres in the weak part of each cycle: proven by their LDUs, the s77
+    and s85 voice dwells decoded the same frames with 13% and 147% more IMBE errors. On a control channel the same
+    slowness is what keeps the 0.025 loop from walking off by whole symbols in the deep troughs (on s72 it drifted 8
+    symbols in 9 s, where 0.01 held within a sample for the whole 36 s), and every slip costs frames until the next
+    sync; a 3 to 6 s voice dwell has no slip to save and pays only the lag. Phase 2 voice pays the same lag, and its
+    frame gain pays for it on the clean captures (1.4 to 4.5% more AMBE frames on s5, s7 and s113, and 5 to 6 fewer R-S
+    failures a run on s5 and s113). Measured limit, accepted: on noisy Phase 2 the gain is not uniform. With noise added
+    to s5, s5n3's mean 4V/2V burst count stays flat (+0.5) but 6 of 12 realizations lose up to 6 bursts; s5 under `-fa`
+    decodes 7.7 more AMBE frames with AMBE errors per frame up from 0.052 to 0.062; s5n5 gains overall (+8.3 bursts,
+    +26.7 AMBE frames). The rate alone never selects the step (X2-TDMA shares 4800/4). An uplink session decides its
+    gain without the proof (TETRA never proves P25). Tests: `DSP_COSTAS` (values with, without and with a stale proof at
+    4800 and 6000, before the lock, set gains, the TETRA chain and a TETRA fallback stream; the proof taken per block),
     `DSP_TETRA_CHAIN` (a proof changes no symbol of the chain or an uplink session).
   - The post-demod audio decimator (`full_demod_apply_post_audio_decimation()`, only on an I/Q replay whose sidecar
     sets `post_downsample` above 1; every live source and committed fixture runs 1; only the audio monitor runs it:

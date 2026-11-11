@@ -45,7 +45,9 @@ void processLDU1(dsd_opts* opts, dsd_state* state);
 void processLDU2(dsd_opts* opts, dsd_state* state);
 void processTDU(dsd_opts* opts, dsd_state* state);
 void processTDULC(dsd_opts* opts, dsd_state* state);
-void processTSBK(dsd_opts* opts, dsd_state* state);
+/** Decode a TSDU's TSBKs: 1 when at least one of its blocks passed its CRC (and so counted and dispatched), else 0. A
+    block an input interruption cut never counts. */
+int processTSBK(dsd_opts* opts, dsd_state* state);
 void processMPDU(dsd_opts* opts, dsd_state* state);
 
 /** What processP2() did with the window behind a P25 Phase 2 sync. */

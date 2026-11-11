@@ -249,11 +249,13 @@ cqpsk_symbol_rate_hz(const demod_state* d) {
    250 ppm off decoded 73 BSCH at 0.025, 79 at 0.07), and decoded less at every rate from 36 to 144 kHz. */
 static const float kTetraGardnerGain = 0.07f;
 
-/* The Gardner gain once the loop has locked on a carrier the decoder proved P25 on this tune. Slower than 0.018 and
-   0.025, it holds the timing a lock found instead of following simulcast's delay spread from symbol to symbol: on site A
-   captures it decoded 4-8% more P25p1 TSBKs, and more P25p2 frames with fewer R-S failures, than the
-   gains it replaces; on single-site captures it decoded the same. Acquisition keeps 0.025, as 0.01 would find timing
-   too slowly. */
+/* The Gardner gain once the loop has locked on a carrier the decoder proved P25 on this tune (a Phase 1 TSBK or a
+   Phase 2 MAC PDU that passed its CRC). Slower than 0.018 and 0.025, it holds the timing a lock found instead of
+   following simulcast's delay spread from symbol to symbol: on site A captures it decoded 4-8% more P25p1
+   TSBKs, and more P25p2 frames with fewer R-S failures, than the gains it replaces; on single-site captures it decoded
+   the same. On Phase 1 voice dwells it lagged the timing swing of the sites' beat and added IMBE errors with no frames
+   to gain, so Phase 1 voice never proves the carrier (docs/code_map.md, the Gardner gain rule). Acquisition keeps
+   0.025, as 0.01 would find timing too slowly. */
 static const float kP25ProvenLockGain = 0.01f;
 
 /* Whether @p rate_hz is a P25 CQPSK symbol rate, Phase 1's 4800 sym/s or Phase 2's 6000, within the rounding an integer

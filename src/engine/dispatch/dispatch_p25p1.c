@@ -430,7 +430,8 @@ p25p1_handle_tdu(dsd_opts* opts, dsd_state* state) {
     processTDU(opts, state);
 }
 
-static void
+/* 1 when a TSBK of the TSDU passed its CRC (processTSBK()). */
+static int
 p25p1_handle_tsbk(dsd_opts* opts, dsd_state* state) {
     state->dmrburstL = 29;
 
@@ -445,7 +446,7 @@ p25p1_handle_tsbk(dsd_opts* opts, dsd_state* state) {
 
     state->lastp25type = 3;
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " TSBK         ");
-    processTSBK(opts, state);
+    return processTSBK(opts, state);
 }
 
 static void
@@ -484,20 +485,24 @@ p25p1_handle_unknown_duid(dsd_opts* opts, dsd_state* state, uint8_t duid) {
     p25_status_accum_classify(state);
 }
 
-static void DSD_ATTR_USED
+/* Decode the data unit by its DUID: 1 when it was a TSDU with a TSBK that passed its CRC, the one P25p1 content that
+   proves the carrier to the CQPSK timing loop (p25p1_note_frame_decoded()), else 0. */
+static int DSD_ATTR_USED
 p25p1_dispatch_by_duid(dsd_opts* opts, dsd_state* state, uint8_t duid) {
     p25p1_clear_pdu_summary_display(state);
 
+    int tsbk_crc_passed = 0;
     switch (duid) {
         case P25P1_DUID_HDU: p25p1_handle_hdu(opts, state); break;
         case P25P1_DUID_LDU1: p25p1_handle_ldu1(opts, state); break;
         case P25P1_DUID_LDU2: p25p1_handle_ldu2(opts, state); break;
         case P25P1_DUID_TDULC: p25p1_handle_tdulc(opts, state); break;
         case P25P1_DUID_TDU: p25p1_handle_tdu(opts, state); break;
-        case P25P1_DUID_TSBK: p25p1_handle_tsbk(opts, state); break;
+        case P25P1_DUID_TSBK: tsbk_crc_passed = p25p1_handle_tsbk(opts, state); break;
         case P25P1_DUID_MPDU: p25p1_handle_mpdu(opts, state); break;
         default: p25p1_handle_unknown_duid(opts, state, duid); break;
     }
+    return tsbk_crc_passed;
 }
 
 int
@@ -522,16 +527,20 @@ p25p1_decoded_unit_dibits(const dsd_state* state, uint8_t duid) {
 }
 
 /* Tell the frame sync what the frame was: one that validated (p25p1_nid_verdict_validates()) and was read whole
-   anchors the next data unit's sync where it ends (dsd_p25p1_sync_anchor), and proves the carrier P25 to the CQPSK
-   timing loop for @p tune_generation, the tune it was synced on (dsd_rtl_stream_metrics_hook_note_p25_proven()). */
+   anchors the next data unit's sync where it ends (dsd_p25p1_sync_anchor). When it was also a TSDU with a TSBK that
+   passed its CRC (@p tsbk_crc_passed), it proves the carrier P25 to the CQPSK timing loop for @p tune_generation, the
+   tune it was synced on (dsd_rtl_stream_metrics_hook_note_p25_proven()). Voice and data frames never do: on a simulcast
+   voice dwell the loop's slower post-lock gain lags the timing swing of the sites' beat, and a dwell is too short for
+   the symbol slips it saves on a control channel to pay for that (docs/code_map.md, the Gardner gain rule). */
 static void
-p25p1_note_frame_decoded(dsd_state* state, uint8_t duid, const p25p1_nid_verdict* verdict, uint64_t tune_generation) {
+p25p1_note_frame_decoded(dsd_state* state, uint8_t duid, const p25p1_nid_verdict* verdict, uint64_t tune_generation,
+                         int tsbk_crc_passed) {
     /* A frame an input interruption cut was not read whole; a carrier boundary inside it fails the frame sync's own
        context check. */
     const int validated =
         duid != P25P1_DUID_INVALID && p25p1_nid_verdict_validates(verdict) && !state->input_interrupted;
     dsd_frame_sync_p25p1_frame_decoded(state, verdict->nac, validated ? p25p1_decoded_unit_dibits(state, duid) : 0U);
-    if (validated) {
+    if (validated && tsbk_crc_passed) {
         dsd_rtl_stream_metrics_hook_note_p25_proven(tune_generation);
     }
 }
@@ -581,8 +590,8 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
         state->tdma_carrier = 0U;
     }
     state->p25_p1_unit_dibits = 0U;
-    p25p1_dispatch_by_duid(opts, state, duid);
-    p25p1_note_frame_decoded(state, duid, &verdict, tune_generation);
+    const int tsbk_crc_passed = p25p1_dispatch_by_duid(opts, state, duid);
+    p25p1_note_frame_decoded(state, duid, &verdict, tune_generation, tsbk_crc_passed);
     /* The 63-bit BCH over the NID is the one verdict this path has that covers every DUID.
      * When it fails the DUID is invalid, p25p1_handle_unknown_duid() decodes nothing, and
      * the 33 dibits already read validated nothing. Past that the picture is mixed --

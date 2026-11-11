@@ -813,11 +813,12 @@ processTDU(dsd_opts* opts, dsd_state* state) {
     g_other_frames++;
 }
 
-void
+int
 processTSBK(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     g_tsdu_frames++;
+    return 1;
 }
 
 void

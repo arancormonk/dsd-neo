@@ -367,9 +367,9 @@ struct demod_state {
     int ted_gain_is_set;      /* env/API/UI override; disables automatic mode-specific gain changes */
     float ted_effective_gain; /* loop gain actually used by mode-specific TED */
     /* The decoder's proof that the carrier is P25 (rtl_stream_set_p25_timing_proof()): the tuning generation
-       (dsd_trunk_tuning_generation()) a validated P25 frame was decoded on, plus 1; 0 while there is none. The decoder
-       thread writes it, the Gardner reads it once per block (op25_gardner_cc()), and a proof of another generation
-       counts as none. */
+       (dsd_trunk_tuning_generation()) the proving P25 content (a Phase 1 TSBK or a Phase 2 MAC PDU that passed its CRC)
+       was decoded on, plus 1; 0 while there is none. The decoder thread writes it, the Gardner reads it once per block
+       (op25_gardner_cc()), and a proof of another generation counts as none. */
     std::atomic<uint64_t> p25_timing_proof;
     int ted_sps;              /* nominal samples per symbol at complex_rate */
     int ted_sps_override;     /* >0 = manual override (used during P25P2 VC tunes) */

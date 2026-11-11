@@ -623,13 +623,14 @@ build_failed_last_block_stream(int blocks, int null_errors, const uint8_t* next_
     append_next_sync();
 }
 
-static void
+/* processTSBK()'s report: whether a block passed its CRC. */
+static int
 run_tsdu(dsd_opts* opts, dsd_state* state) {
     reset_decode_counters();
     g_channel_freq = 0;
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
-    processTSBK(opts, state);
+    return processTSBK(opts, state);
 }
 
 /* A block whose CRC fails says nothing about whether another follows: its last-block flag is as damaged as the rest.
@@ -644,7 +645,7 @@ test_failed_block_trailing_nulls(void) {
 
     /* One block, then its 21 nulls and status symbol: the read stops at the next frame's sync. */
     build_failed_last_block_stream(1, 0, NULL);
-    run_tsdu(&opts, &state);
+    rc |= expect_eq_int("failed one-block tsdu reports no crc pass", run_tsdu(&opts, &state), 0);
     rc |= expect_eq_int("failed one-block tsdu fails its crc", (int)state.p25_p1_fec_err, 1);
     rc |= expect_eq_int("failed one-block tsdu stops at the next sync", g_stream_pos, 101 + 22);
     rc |= expect_eq_int("failed one-block tsdu reads no further block", (int)state.p25_p1_fec_ok, 0);
@@ -671,7 +672,7 @@ test_failed_block_trailing_nulls(void) {
 
     /* The failed block followed by a real block (the 0x2222 grant, flagged last): the TSDU reads on and decodes it. */
     build_failed_last_block_stream(1, 0, k_group_grant_2222_dibits);
-    run_tsdu(&opts, &state);
+    rc |= expect_eq_int("failed block then a real block reports a crc pass", run_tsdu(&opts, &state), 1);
     rc |= expect_eq_int("failed block then a real block reads it", g_stream_pos, 202);
     rc |= expect_eq_int("failed block then a real block dispatches it", g_mac_count, 1);
     rc |= expect_eq_int("failed block then a real block counts both", (int)(state.p25_p1_fec_ok + state.p25_p1_fec_err),
@@ -697,9 +698,11 @@ main(void) {
     // Issue #657: a control frame leaves the user's slot preference as set (it used to reset it to Auto).
     opts.slot_preference = 1;
 
-    processTSBK(&opts, &state);
+    /* The TSDU reports that its TSBKs passed their CRC: the dispatcher proves the carrier P25 by it. */
+    const int two_block_passed = processTSBK(&opts, &state);
 
     int rc = 0;
+    rc |= expect_eq_int("crc-valid tsdu reports a crc pass", two_block_passed, 1);
     rc |= expect_eq_int("tsbk keeps the slot preference", opts.slot_preference, 1);
     rc |= expect_eq_int("mac dispatch count", g_mac_count, 2);
     rc |= expect_eq_int("first group", g_mac_group[0], 0x1111);
@@ -751,7 +754,7 @@ main(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     g_ber_ok = 0;
     g_ber_err = 0;
-    processTSBK(&opts, &state);
+    rc |= expect_eq_int("tsdu with one block passing reports a crc pass", processTSBK(&opts, &state), 1);
     rc |= expect_eq_int("corrupt block fails its crc", state.p25_p1_fec_err > 0, 1);
     rc |= expect_eq_int("radio ber hook sees the crc failure", g_ber_err, (int)state.p25_p1_fec_err);
     rc |= expect_eq_int("only crc-valid blocks are search evidence", g_evidence, (int)state.p25_p1_fec_ok);
@@ -788,7 +791,7 @@ main(void) {
     g_site_notes = 0;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    processTSBK(&opts, &state);
+    rc |= expect_eq_int("tsdu whose every block failed reports no crc pass", processTSBK(&opts, &state), 0);
     rc |= expect_eq_int("corrupt net-sts fails its crc", state.p25_p1_fec_err > 0, 1);
     rc |= expect_eq_int("corrupt net-sts notes no site", g_site_notes, 0);
     rc |= expect_eq_int("corrupt net-sts names no system", (int)state.p2_wacn, 0);
@@ -861,9 +864,11 @@ main(void) {
         g_interrupt_at = cuts[c];
         g_evidence = 0;
 
-        processTSBK(&opts, &state);
+        const int cut_passed = processTSBK(&opts, &state);
 
         rc |= expect_eq_int("cut tsdu is interrupted", state.input_interrupted, 1);
+        rc |=
+            expect_eq_int("cut tsdu reports a crc pass only for a block before the cut", cut_passed, grants_before[c]);
         rc |= expect_eq_int("cut tsdu dispatches only the blocks before the cut", g_mac_count, grants_before[c]);
         rc |=
             expect_eq_int("cut tsdu counts only the blocks before the cut", (int)state.p25_p1_fec_ok, grants_before[c]);

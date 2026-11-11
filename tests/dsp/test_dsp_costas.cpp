@@ -999,7 +999,7 @@ gardner_qpsk_stream(int sps, int n_syms) {
  * stale. Each block's gain is the one the lock and the proof at its start decide.
  */
 /* The decoder's doing before block @p b: it withdraws the proof before block 9 (a profile change, say), proves P25
- * again before block 11 (a validated frame), and a tune completes before block 13, leaving the proof stale. Returns
+ * again before block 11 (a TSBK that passed its CRC), and a tune completes before block 13, leaving the proof stale. Returns
  * whether the proof holds for block @p b. */
 static int
 gardner_p25_proof_at_block(demod_state* s, int b) {

@@ -2956,13 +2956,17 @@ Gardner/Costas/FLL-band-edge symbol chain.
   Without it the gain is OP25's 0.025 while the loop acquires, and the TETRA receive chain's own 0.07 while that chain
   runs (`-fT`). Once the loop has locked (240 symbols whose lock measure averages 0.05 or more, counted since it last
   started over, so a fade later is judged against that history), the gain steps lower:
-  - to 0.01 at 4800 and 6000 sym/s while dsd-neo has proven the carrier P25 since the last tune: a Phase 1 frame
-    whose NID passed, or a Phase 2 MAC PDU that passed its CRC (or a Phase 2 window a near-miss sync opened that passed
-    its checks). The slower gain holds the timing the lock found instead of following a simulcast site's echoes from
-    symbol to symbol. A tune, a lost carrier, a symbol rate or modulation change and a decode-mode switch withdraw the
-    proof, and the gain goes back to 0.025 until a P25 frame proves the carrier again.
-  - otherwise (X2-TDMA, Auto's CQPSK trial before a P25 frame decodes, DMR and NXDN through `-mq`), to 0.018 at 5500
-    sym/s and above, and not at all below.
+  - to 0.01 at 4800 and 6000 sym/s while dsd-neo has proven the carrier P25 since the last tune: a Phase 1 control
+    channel message (TSBK) that passed its CRC, or a Phase 2 MAC PDU that passed its CRC (or a Phase 2 window a
+    near-miss sync opened that passed its checks). The slower gain holds the timing the lock found instead of
+    following a simulcast site's echoes from symbol to symbol. A tune, a lost carrier, a symbol rate or modulation
+    change and a decode-mode switch withdraw the proof, and the gain goes back to 0.025 until P25 proves the carrier
+    again. Phase 1 voice never proves it: on a simulcast voice channel the signal fades and its timing sways a few
+    times a second as the sites' signals beat, the slower gain follows that sway too late, and a call is too short to
+    win anything back, so voice frames came out with more errors. On a noisy Phase 2 simulcast channel the slower gain
+    is not always better either: on one noisy test capture about half the runs lost up to 6 of about 235 voice bursts.
+  - otherwise (Phase 1 voice and conventional channels, X2-TDMA, Auto's CQPSK trial before P25 is proven, DMR and
+    NXDN through `-mq`), to 0.018 at 5500 sym/s and above, and not at all below.
   The terminal's CQPSK timing gain menu row and the DSP panel's `g:` show the gain set, or 0.025 when none is, also
   while the loop runs a post-lock gain or the TETRA chain runs 0.07
 - `DSD_NEO_IQ_DC_BLOCK=1` — enable DC blocker

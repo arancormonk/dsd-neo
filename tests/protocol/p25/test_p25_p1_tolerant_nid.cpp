@@ -539,11 +539,12 @@ processTDU(dsd_opts* opts, dsd_state* state) {
     handled(state);
 }
 
-void
+int
 processTSBK(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     state->p25_p1_unit_dibits = g_reported_unit;
     handled(state);
+    return 1;
 }
 
 void
