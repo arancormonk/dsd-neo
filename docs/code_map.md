@@ -14382,9 +14382,10 @@ Qt Quick frontend (`src/ui/qt`):
   to `discardPendingDownload`, never one another picker waits for. `savedToDownloads` says the last accepted save
   went to the Download folder; it is set before `accepted`, so a save owner that no longer wants an accepted pick
   (`BackupFlow.savePicked()`, `CallRecordingPlayer.savePicked()`, `CallRecordingsScreen.exportPicked()`,
-  `SignalSearchScreen.exportPicked()`, `HistoryScreen.exportPicked()`) discards a Download-folder row itself. On the desktop path an open clears the
-  dialog's selection (`currentFiles = []`: `selectedFiles` is read-only and `selectedFile = ""` is refused), so an
-  accept with no new choice answers `noResult`, never the previous file; a dialog that cannot open answers `failed`.
+  `SignalSearchScreen.exportPicked()`, `HistoryScreen.exportPicked()`) discards a Download-folder row itself. On the
+  desktop path an open clears the dialog's selection (`currentFiles = []`: `selectedFiles` is read-only and
+  `selectedFile = ""` is refused), so an accept with no new choice answers `noResult`, never the previous file; a
+  dialog that cannot open answers `failed`.
   Issue #830: an open picker with a `browseKind` ("csv", "backup" or "replay"; empty never browses) can be served by
   DSD-neo's file browser through the `FileBrowser` singleton (`qml/FileBrowser.qml`, one browse request app-wide:
   `request` is null or `{token, kind, title, allowOtherApp}`; `open(kind, title, allowOtherApp)` returns a token > 0,

@@ -587,7 +587,7 @@ filters apply, so the file holds only what you see, newest first. The save picke
 (the date is today's, as `yyyy-MM-dd`). On a device with no save picker, the file goes to **Download/DSD-neo** instead.
 The result shows as a line under the buttons and is read out once by a screen reader: **Exported 12 entries.**,
 **Exported 1 entry.**, **Exported 5 of 12 entries. The search and filters left out the rest.**, **No entries to
-export.**, or, for a save to the Download folder, **Exported 12 entries to Download/DSD-neo as <name>.** (the singular
+export.**, **The export couldn't be written. Try another location.**, or, for a save to the Download folder, **Exported 12 entries to Download/DSD-neo as <name>.** (the singular
 for one entry) and its **5 of 12** form. The file is built when you press **Export…**, so calls that arrive while the
 picker is open are not in it. See [History file](../docs/csv-formats.md#history-file) for the columns. A History
 export is not part of a backup.

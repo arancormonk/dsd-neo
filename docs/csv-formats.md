@@ -1410,13 +1410,13 @@ you see. An empty cell means there is no value.
 | `system` | The saved system the session ran on (`Exploring` when you held the tuner on a frequency). |
 | `channel` | The name of the scan channel. |
 | `frequency_hz` | The frequency in whole hertz. Empty when not known. |
-| `access_code` | Short text with a letter first: `CC 1`, `NAC 293`, `RAN 5` or `CAN 0`. |
+| `access_code` | Short text with a letter first: `CC 1`, `NAC 293` (the NAC is in hex), `RAN 5` or `CAN 0`. |
 | `tone` | The received tone or code, such as `CTCSS 100.0 Hz` or `DCS D023N / D047I`. |
 | `site` | The site line, such as `DMR · Con+ · Net 3 · Site 5`. |
 | `analog_mode` | `NFM` or `AM` for an analog call, `analog` when the mode is not known (audio input), and empty for digital. |
 | `encrypted`, `emergency` | `1` or `0`. |
 | `message` | The text of an SMS or GPS notice, or other notice detail. Line breaks inside it are kept in the quoted field. |
-| `recordings` | The row's call recordings, oldest first, each as the entry name that **Export as zip** gives it on Call recordings (`<folder name>/<file>`), joined with ` | ` (space, pipe, space). Inside a name, each backslash is written as two backslashes and each pipe as a backslash and a pipe, so the list splits without a doubt: split on a pipe that has a space on both sides and is not preceded by a backslash, then undo the escapes. Empty when there is none. |
+| `recordings` | The row's call recordings, oldest first, each as the entry name that **Export as zip** gives it on Call recordings (`<folder name>/<file>`; when two recordings share a name the zip calls the second `… (2)`, and the CSV keeps the stored name), joined with ` | ` (space, pipe, space). Inside a name, each backslash is written as two backslashes and each pipe as a backslash and a pipe, so the list splits without a doubt: split on a pipe that has a space on both sides and is not preceded by a backslash, then undo the escapes. Empty when there is none. |
 
 Limits:
 
@@ -1439,9 +1439,9 @@ Limits:
 - History `started_local` is written as `yyyy-MM-dd HH:mm:ss` so that Excel, Google Sheets and Numbers can read it as a
   date and time (the evidence for Sheets and Numbers is weaker than for Excel). LibreOffice Calc keeps it as text unless
   you tick **Detect special numbers** in the Text Import dialog or set the column type to **Date (YMD)**.
-- Excel, History file: in **Data > From Text/CSV**, set **Line breaks** to **Ignore quoted line breaks**, so a message
-  with line breaks stays in one cell. Opening the file by double-click can split such a message across rows. A narrow
-  column can show `frequency_hz` as `8.51E+08` until you widen it; the value in the cell is exact.
+- Excel, History file: to keep a message with line breaks in one cell, use **Data > From Text/CSV**, choose
+  **Transform Data**, open the Source step's settings and set **Line breaks** to **Ignore quoted line breaks**.
+  **File > Open** and Excel's older Text Import Wizard can split such a message across rows. A narrow column can show `frequency_hz` as `8.51E+08` until you widen it; the value in the cell is exact.
 - Python: open the file with `encoding="utf-8-sig"`, so the BOM does not become part of the first column name.
   pandas' `read_csv` already handles it.
 

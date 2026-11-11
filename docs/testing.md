@@ -3076,8 +3076,9 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   every enabled heading, and every text item in a role other than StaticText or EditableText (an alert line), in the
   tree that is not focusable (`testContext.unfocusableTextNodes()`), which TalkBack's swipes would skip; the open hooks
   put the screens whose alert role is conditional into their problem state (History's failing saves, a problem
-  notice). `test_1` is the positive control, and `test_9` fails on an entry nothing needs any more. A new component goes in `components`, with how it opens. Failure
-  messages list the first 25 problems: a run reporting every one, a message of several hundred lines, crashed at exit.
+  notice). `test_1` is the positive control, and `test_9` fails on an entry nothing needs any more. A new component
+  goes in `components`, with how it opens. Failure messages list the first 25 problems: a run reporting every one, a
+  message of several hundred lines, crashed at exit.
 - **Paced names.** `tst_a11y_paced_names.qml` checks that the app's period is 5 s, then sets
   `Navigation.speechPeriodMs` to 100 ms and updates each moving reading 40 times a few milliseconds apart (as 4 Hz for
   10 s is 40 updates over two 5 s periods): the Monitor's and Spectrum's readings, a recording's position, Signal
