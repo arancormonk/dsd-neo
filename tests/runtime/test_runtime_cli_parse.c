@@ -11036,7 +11036,9 @@ test_scan_flags_are_in_the_trunking_help_section(void) {
     initState(state);
     char help_path[1024];
     int test_rc = 0;
-    if (test_create_temp_ini_with_contents("", help_path, sizeof help_path) != 0) {
+    int help_fd = dsd_test_mkstemp(help_path, sizeof help_path, "runtime_cli_help");
+    int saved_stdout = dsd_dup(DSD_STDOUT_FILENO);
+    if (help_fd < 0 || saved_stdout < 0) {
         test_rc = 1;
     } else {
         char arg0[] = "dsd-neo";
@@ -11044,11 +11046,12 @@ test_scan_flags_are_in_the_trunking_help_section(void) {
         char* argv[] = {arg0, arg1, NULL};
         int argc_effective = 0;
         int exit_rc = -1;
-        FILE* redirected = freopen(help_path, "w", stdout);
-        int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
         (void)fflush(stdout);
-        test_redirect_stdout_to_null();
-        if (redirected == NULL || rc != DSD_PARSE_ONE_SHOT || read_file_to_buffer(help_path, text, 131072) != 0) {
+        int redirected = dsd_dup2(help_fd, DSD_STDOUT_FILENO);
+        int rc = redirected < 0 ? DSD_PARSE_ERROR : dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+        (void)fflush(stdout);
+        (void)dsd_dup2(saved_stdout, DSD_STDOUT_FILENO);
+        if (redirected < 0 || rc != DSD_PARSE_ONE_SHOT || read_file_to_buffer(help_path, text, 131072) != 0) {
             DSD_FPRINTF(stderr, "could not capture the help text\n");
             test_rc = 1;
         } else {
@@ -11065,7 +11068,13 @@ test_scan_flags_are_in_the_trunking_help_section(void) {
                 test_rc = 1;
             }
         }
+    }
+    if (help_fd >= 0) {
+        dsd_close(help_fd);
         (void)remove(help_path);
+    }
+    if (saved_stdout >= 0) {
+        dsd_close(saved_stdout);
     }
     freeState(state);
     free(opts);
