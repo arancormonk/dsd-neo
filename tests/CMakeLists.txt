@@ -8091,6 +8091,7 @@ target_link_libraries(
     PRIVATE
         dsd-neo_platform
         ${MBE_LINK_TARGET}
+        dsd-neo_dsp
         dsd-neo_test_speech_level
         ${DSD_NEO_TEST_MATH_LIB}
 )
@@ -20865,6 +20866,47 @@ if(DSD_HAS_RADIO)
         -26.08
     )
 
+    # The syllable-gated noise fixtures carry band-limited noise with no pitch, not speech (issue #518): on narrowband
+    # FM at the default auto gain the speech AGC must learn nothing from them. Each case replays the fixture at auto and
+    # at -n 50 and runs the -n 50 audio through a speech AGC set up as the monitor's (`gated-nfm`), which must give the
+    # decoder's own output to within 4 LSB, so the state it reads is the decoder's: no frame committed and the learned
+    # gain at the +4.54 dB start gain throughout (measured: 0 commits, exactly +4.54 dB on all nine). What the output
+    # does lose is the attenuator's: it eases the non-speech from the first frame at 6 dB/s and lets go in each
+    # syllable gap (the level falls 14 dB, read as quieting), so the output runs 0-5 dB under the start gain (the
+    # attenuator reaches -2.6 to -5.3 dB). The case holds the attenuator to that rate and to 0 dB or less, and the
+    # limiter idle.
+    foreach(
+        _gated
+        nfm_notone_synth
+        nfm_ctcss_synth_1000
+        nfm_ctcss_synth_670
+        nfm_ctcss_synth_1506
+        nfm_ctcss_synth_drop
+        nfm_dcs_synth_023n
+        nfm_dcs_synth_023i
+        nfm_dcs_synth_noisy
+        nfm_dcs_synth_drop
+    )
+        string(TOUPPER "${_gated}" _gated_name)
+        string(REPLACE "NFM_" "" _gated_name "${_gated_name}")
+        string(REPLACE "_SYNTH" "" _gated_name "${_gated_name}")
+        add_test(
+            NAME DECODE_IQ_ANALOG_GATED_NOISE_${_gated_name}
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DTOOL_BIN=$<TARGET_FILE:dsd-neo_test_speech_parity_tool>"
+                -DMODE=-fA
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${_gated}.iq.json"
+                "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/speech_level/GATED_${_gated_name}"
+                -DGATED=ON -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/speech_level_check.cmake"
+        )
+        set_tests_properties(
+            DECODE_IQ_ANALOG_GATED_NOISE_${_gated_name}
+            PROPERTIES LABELS "iq-decode;analog" TIMEOUT 240
+        )
+    endforeach()
+
     # Restart safety: bootstrap + engine lifecycle twice inside one process, the
     # shape an embedding host (Android service, GUI shell) uses. Lives here
     # because it replays an I/Q fixture and therefore needs the radio pipeline.
@@ -22169,7 +22211,7 @@ if(DSD_HAS_RADIO)
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE
         nfm_squelch_real_b
-        "-fA -n 50 --analog-audible-dbfs -40 --analog-min-captured-ms 3900 --analog-min-audible-ms 2500 --analog-min-inband-db 20 --analog-min-p56-dbfs -27.71 --analog-max-p56-dbfs -25.71"
+        "-fA -n 50 --analog-audible-dbfs -40 --analog-min-captured-ms 3900 --analog-min-audible-ms 2500 --analog-min-inband-db 20 --analog-min-p56-dbfs -27.71 --analog-max-p56-dbfs -26.31"
         ""
         "${_analog_off_path}"
     )
@@ -22177,11 +22219,14 @@ if(DSD_HAS_RADIO)
     # AM speech toward its -24 dBFS active speech target (ITU-T P.56, test_support/p56.h).
     # The excerpts are too short for established speech (2.7-6.6 s of it, docs/testing.md),
     # so each case holds the whole stream's P.56 level to +/-1 dB of what it measures,
-    # unclipped, and that window lies nearer -24 dBFS than the excerpt's -n 50 level (the
-    # smoke cases above and DECODE_IQ_ANALOG_AM_REAL pin those): nfm_ctcss_real -22.98 dBFS
-    # (-31.90 at -n 50: quiet speech, hiss about 15-20 dB under it, which P.56 counts as
-    # active), nfm_squelch_real_a -26.04 (-29.31), nfm_squelch_real_b -22.15 (-26.71) and
-    # am_airband_real -22.39 (-18.12). Established speech against digital voice is
+    # unclipped, and every level that window allows lies nearer -24 dBFS than every level
+    # the excerpt's -n 50 window allows (the smoke cases above and DECODE_IQ_ANALOG_AM_REAL
+    # pin those): nfm_ctcss_real -22.98 dBFS (-31.90 at -n 50: quiet speech, hiss about
+    # 15-20 dB under it, which P.56 counts as active), nfm_squelch_real_a -26.04 (-29.31),
+    # nfm_squelch_real_b -22.15 (-26.71) and am_airband_real -22.39 (-18.12).
+    # nfm_squelch_real_b's two levels are only 0.86 dB apart in distance from -24 dBFS, so
+    # its windows stop short on the sides that face each other: -23.15 to -21.70 at auto
+    # (2.30 dB from -24 at most) and -27.71 to -26.31 at -n 50 (2.31 dB at least). Established speech against digital voice is
     # DECODE_IQ_SPEECH_PARITY's. The old cases held whole-stream RMS to -24.9 dBFS, a level a
     # control channel decoded as voice played at (issue #729), not digital speech.
     # DECODE_IQ_ANALOG_NEG_PARITY_FIXED shows the fixed gain alone misses the NFM window.
@@ -22208,7 +22253,7 @@ if(DSD_HAS_RADIO)
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_PARITY_NFM_SQUELCH_B
         nfm_squelch_real_b
-        "-fA --analog-min-captured-ms 3900 --analog-min-p56-dbfs -23.15 --analog-max-p56-dbfs -21.15 --analog-max-clip 0"
+        "-fA --analog-min-captured-ms 3900 --analog-min-p56-dbfs -23.15 --analog-max-p56-dbfs -21.70 --analog-max-clip 0"
         ""
         "${_analog_off_path}"
     )

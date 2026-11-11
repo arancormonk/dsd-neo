@@ -89,8 +89,9 @@
 #define MAX_FAULTS       64
 #define SYMBOLS_PER_SLOT 144 /* 12 CACH + 132 burst dibits, 30 ms */
 
-static const uint8_t k_cach_interleave[24] = {0, 7,  8, 9,  1,  10, 11, 12, 2,  13, 14, 15,
-                                              3, 16, 4, 17, 18, 19, 5,  20, 21, 22, 6,  23};
+static const uint8_t k_cach_interleave[24] = {
+    0, 7, 8, 9, 1, 10, 11, 12, 2, 13, 14, 15, 3, 16, 4, 17, 18, 19, 5, 20, 21, 22, 6, 23,
+};
 static const char k_voice_sync[] = "131111333113313313113313";
 static const char k_data_sync[] = "313333111331131131331131";
 /* Dibit offsets (from the burst start) the decoder's redundant-carrier check compares between consecutive bursts. */
@@ -1422,11 +1423,17 @@ main(int argc, char** argv) {
     }
 
     if (!have_key) {
-        static const uint8_t k_test_key[32] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0xFE, 0xDC, 0xBA,
-                                               0x98, 0x76, 0x54, 0x32, 0x10, 0x0F, 0x1E, 0x2D, 0x3C, 0x4B, 0x5A,
-                                               0x69, 0x78, 0x87, 0x96, 0xA5, 0xB4, 0xC3, 0xD2, 0xE1, 0xF0};
+        static const uint8_t k_test_key[32] = {
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10,
+            0x0F, 0x1E, 0x2D, 0x3C, 0x4B, 0x5A, 0x69, 0x78, 0x87, 0x96, 0xA5, 0xB4, 0xC3, 0xD2, 0xE1, 0xF0,
+        };
         DSD_MEMCPY(cfg.key, k_test_key, 32);
-        cfg.keylen = cfg.alg == ALG_AES256 ? 32 : cfg.alg == ALG_AES128 ? 16 : 5;
+        cfg.keylen = 5;
+        if (cfg.alg == ALG_AES256) {
+            cfg.keylen = 32;
+        } else if (cfg.alg == ALG_AES128) {
+            cfg.keylen = 16;
+        }
     }
     if ((cfg.alg == ALG_AES256 && cfg.keylen != 32) || (cfg.alg == ALG_AES128 && cfg.keylen != 16)
         || (cfg.alg == ALG_RC4 && cfg.keylen != 5)) {

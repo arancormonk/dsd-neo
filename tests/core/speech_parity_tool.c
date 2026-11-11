@@ -24,12 +24,22 @@
  *       reference gain (-g 1): the AGC must have moved the level toward -24 dBFS from there, or kept it within 3 dB of
  *       it (a few frames of speech can step the gain past the target, which the established bound allows), and left it
  *       within 10 dB of -24 dBFS, the startup bound at 1 s.
+ *   dsd-neo_test_speech_parity_tool gated-nfm FIXED AUTO
+ *       A capture with no speech in it (syllable-gated band-limited noise) replayed on narrowband FM: FIXED at -n 50,
+ *       AUTO at the default auto gain, both 48 kHz mono. The tool runs FIXED, which is what the monitor's speech AGC
+ *       took in, through a speech AGC set up as the analog chain sets its own (narrowband start gain, the coloured-noise
+ *       veto) and requires its output to be AUTO's, so the AGC state it reads is the decoder's. That state must show no
+ *       speech learned: no frame committed and the learned gain within 1 dB of the start gain throughout. The
+ *       attenuator, which eases non-speech, may only move down at its 6 dB/s and stay at or under 0 dB, and the
+ *       limiter must never act.
  *
  * Every FILE and OUT is a bare file name in the working directory; an output must not exist yet.
  */
 
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/dsp/analog_audio.h>
+#include <dsd-neo/dsp/speech_agc.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <math.h>
 #include <mbelib-neo/mbelib.h>
@@ -487,12 +497,12 @@ measure_established(rendition* r, double from_s) {
         return -1;
     }
     const size_t from = (size_t)lround((from_s + r->lead_s) * (double)r->rate);
-    size_t to = (size_t)lround((TALKER_SECONDS + r->lead_s) * (double)r->rate);
-    to = to < a.n ? to : a.n;
+    const size_t to = (size_t)lround((TALKER_SECONDS + r->lead_s) * (double)r->rate);
     int rc = 0;
-    if (to < from + (size_t)r->rate) {
-        DSD_FPRINTF(stderr, "speech parity: %s: %s ends at %.2f s, before 1 s of established speech\n", r->name,
-                    r->file, (double)a.n / (double)r->rate);
+    /* The output must hold the whole talker: a decoder that dropped its end must not pass on what is left. */
+    if (a.n < to || to < from + (size_t)r->rate) {
+        DSD_FPRINTF(stderr, "speech parity: %s: %s ends at %.2f s, before the talker's end at %.2f s\n", r->name,
+                    r->file, (double)a.n / (double)r->rate, (double)to / (double)r->rate);
         rc = -1;
     } else {
         r->level = dsd_test_p56_level_dbfs(a.x + from, to - from, r->rate, NULL);
@@ -561,8 +571,10 @@ cmd_established(int argc, char** argv) {
         hi = fmax(hi, r[k].level);
     }
     const int spread_ok = !fail && hi - lo <= max_spread;
-    DSD_FPRINTF(stderr, "speech parity: spread %.2f dB (limit %.2f)%s\n", hi - lo, max_spread,
-                spread_ok ? "" : "  FAIL");
+    if (!fail) {
+        DSD_FPRINTF(stderr, "speech parity: spread %.2f dB (limit %.2f)%s\n", hi - lo, max_spread,
+                    spread_ok ? "" : "  FAIL");
+    }
     if (fail || !spread_ok) {
         return 1;
     }
@@ -635,6 +647,97 @@ cmd_level(int argc, char** argv) {
     return 0;
 }
 
+/* ------------------------------------------------------------------------------------------------- gated noise */
+
+#define GATED_RATE_HZ          48000
+#define GATED_FRAME            960
+/* The attenuator falls 6 dB/s: this much per 20 ms frame, with room for float rounding. */
+#define GATED_ATT_STEP_DB      0.1201
+#define GATED_MAX_GAIN_MOVE_DB 1.0
+/* The replica reads the -n 50 output rounded to int16, the decoder the float samples: a few LSB apart. */
+#define GATED_MAX_DIFF_LSB     4.0
+
+typedef struct {
+    size_t frames;
+    int commits;
+    double gain_lo;
+    double gain_hi;
+    double atten_min;
+    int atten_fast;
+    int limited;
+    double max_diff;
+} gated_result;
+
+static void
+gated_frame(dsd_speech_agc* agc, const audio* fixed, const audio* auto_out, size_t at, gated_result* r) {
+    float buf[GATED_FRAME];
+    const float atten_before = agc->learned.atten_db;
+    DSD_MEMCPY(buf, fixed->x + at, sizeof buf);
+    dsd_speech_agc_process(agc, buf, GATED_FRAME, 1, 1, 0);
+    for (size_t i = 0; i < GATED_FRAME; i++) {
+        r->max_diff = fmax(r->max_diff, fabs((double)buf[i] - (double)auto_out->x[at + i]));
+    }
+    const double g = (double)agc->learned.gain_db;
+    r->gain_lo = fmin(r->gain_lo, g);
+    r->gain_hi = fmax(r->gain_hi, g);
+    r->atten_min = fmin(r->atten_min, (double)agc->learned.atten_db);
+    r->atten_fast += (double)agc->learned.atten_db < (double)atten_before - GATED_ATT_STEP_DB;
+    r->limited += agc->g_lim < 1.0f;
+    r->frames++;
+}
+
+static int
+cmd_gated_nfm(const char* fixed_name, const char* auto_name) {
+    audio fixed;
+    audio auto_out;
+    if (read_audio(fixed_name, GATED_RATE_HZ, 1, &fixed) != 0) {
+        return 1;
+    }
+    if (read_audio(auto_name, GATED_RATE_HZ, 1, &auto_out) != 0) {
+        free(fixed.x);
+        return 1;
+    }
+    dsd_speech_agc* agc = (dsd_speech_agc*)calloc(1U, sizeof *agc);
+    const float start = DSD_ANALOG_AUDIO_START_GAIN_FM_NARROW_DB;
+    int rc = 1;
+    if (agc != NULL && fixed.n == auto_out.n
+        && dsd_speech_agc_init(agc, GATED_RATE_HZ, start, DSD_SPEECH_AGC_TARGET_DBFS, DSD_SPEECH_AGC_CEILING_DBFS)
+               == 0) {
+        dsd_speech_agc_set_noise_veto(agc, 1);
+        gated_result r = {0U, 0, INFINITY, -INFINITY, 0.0, 0, 0, 0.0};
+        for (size_t at = 0; at + GATED_FRAME <= fixed.n; at += GATED_FRAME) {
+            gated_frame(agc, &fixed, &auto_out, at, &r);
+        }
+        r.commits = agc->learned.commits;
+        const int same = r.max_diff <= GATED_MAX_DIFF_LSB;
+        const int learned_none = r.commits == 0 && r.gain_lo >= (double)start - GATED_MAX_GAIN_MOVE_DB
+                                 && r.gain_hi <= (double)start + GATED_MAX_GAIN_MOVE_DB;
+        const int eased_ok = r.atten_min <= 0.0 && r.atten_fast == 0 && r.limited == 0;
+        DSD_FPRINTF(stderr,
+                    "speech parity: gated noise, %zu frames: output %s the decoder's (max %.1f LSB apart); %d commits, "
+                    "learned gain %+.2f..%+.2f dB (start %+.2f); attenuator down to %.2f dB, %d frames faster than "
+                    "6 dB/s; limiter acted on %d frames\n",
+                    r.frames, same ? "is" : "FAIL: is not", r.max_diff, r.commits, r.gain_lo, r.gain_hi, (double)start,
+                    r.atten_min, r.atten_fast, r.limited);
+        if (!learned_none) {
+            DSD_FPRINTF(stderr, "speech parity: FAIL: the AGC learned from noise\n");
+        }
+        if (!eased_ok) {
+            DSD_FPRINTF(stderr, "speech parity: FAIL: the attenuator or the limiter misbehaved\n");
+        }
+        rc = (same && learned_none && eased_ok && r.frames > 0U) ? 0 : 1;
+    } else {
+        DSD_FPRINTF(stderr, "speech parity: gated noise: %zu and %zu samples, or no AGC\n", fixed.n, auto_out.n);
+    }
+    free(agc);
+    free(fixed.x);
+    free(auto_out.x);
+    if (rc == 0) {
+        DSD_FPRINTF(stderr, "GATED NOISE OK\n");
+    }
+    return rc;
+}
+
 int
 main(int argc, char** argv) {
     if (argc == 4 && strcmp(argv[1], "source") == 0) {
@@ -651,12 +754,15 @@ main(int argc, char** argv) {
     if (argc >= 3 && strcmp(argv[1], "established") == 0) {
         return cmd_established(argc - 2, argv + 2);
     }
+    if (argc == 4 && strcmp(argv[1], "gated-nfm") == 0) {
+        return cmd_gated_nfm(argv[2], argv[3]);
+    }
     if (argc >= 5 && strcmp(argv[1], "level") == 0) {
         return cmd_level(argc - 2, argv + 2);
     }
     DSD_FPRINTF(stderr,
-                "usage: %s source RATE OUT.wav | encode imbe|ambe2450|ambe2400 OUT | established ... | level "
-                "...\n",
+                "usage: %s source RATE OUT.wav | encode imbe|ambe2450|ambe2400 OUT | established ... | level ... | "
+                "gated-nfm FIXED AUTO\n",
                 argv[0]);
     return 2;
 }

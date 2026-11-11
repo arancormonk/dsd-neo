@@ -1955,15 +1955,16 @@ The generator's voice is a vowel-like buzz, not speech: the harmonics of a pitch
 by three formants, under a 3 Hz envelope that never pauses. Until issue #518 (B21) each harmonic's phase was the pitch
 times the time rather than its integral, so the frequencies swung wider as the call went on (by 4 s the pitch track
 jumped between 70 and 270 Hz and some frames sounded like noise), and the source peaked at +8 dBFS, past the encoder's
-nominal full scale, so the fixture decoded at -13.3 dBFS P.56 at `-g 1` with its peaks held at -1 dBFS. The phase is
+nominal full scale, so the fixture decoded at -13.27 dBFS P.56 at `-g 1` with its peaks held at -1 dBFS. The phase is
 now the integral and the source peaks near -6 dBFS. `DMR_SYNTH_VOICE_SOURCE` (`--voice-selftest`) checks over the first
 60 s that every harmonic's frequency stays within 0.1% of h times the pitch contour (the old phase was off by up to
 9300%) and that no sample passes -3 dBFS (it read +8.17). `DECODE_IQ_SPEECH_LEVEL_DMR_SYNTH_FIXED` holds the
 regenerated fixture at -27.08 dBFS P.56 at `-g 1` (+/-1 dB; peaks -7.5 dBFS). The DMR voice, MBE capture, voice-chain,
 float-output, receive-policy and Airspy cases decode the regenerated call unchanged: 52 voice bursts, the same routing,
-WAV and sample counts. The two sigidwiki DMR
-fixtures, `dmr_voice` and `dmr_t3_cc`, are control channels received at inverted polarity; before issue #729 `-fs`
-read their data bursts as voice, and the old voice cases pinned that. `DECODE_IQ_DMR_T3_CC` and
+WAV and sample counts.
+
+The two sigidwiki DMR fixtures, `dmr_voice` and `dmr_t3_cc`, are control channels received at inverted polarity;
+before issue #729 `-fs` read their data bursts as voice, and the old voice cases pinned that. `DECODE_IQ_DMR_T3_CC` and
 `DECODE_IQ_DMR_POLARITY_AUTO` now pin what they are: CSBK and idle bursts on colour code 1, found at the polarity the
 decoder proves, with no voice burst decoded.
 
@@ -2113,7 +2114,9 @@ Changing the talker (its seed, steps or length in the tool) changes the digital 
 regenerate the fixtures in the same change; `--verify --speech-synth-gen` fails until they match.
 
 Off-air speech is too short for established speech. Each excerpt's case holds the whole output's P.56 level to +/-1 dB
-of what the speech AGC measures there, and the excerpt at its fixed reference gain to a level farther from -24 dBFS.
+of what the speech AGC measures there, and the excerpt at its fixed reference gain to a level farther from -24 dBFS
+(`nfm_squelch_real_b`'s two windows are cut short on the sides that face each other, since its levels are only
+0.86 dB apart in distance from -24).
 The digital cases, `DECODE_IQ_SPEECH_LEVEL_*` (`tests/speech_level_check.cmake`), replay the fixture twice, at the
 default auto gain and at `-g 1`, and require the auto level to have moved toward -24 dBFS from the `-g 1` one, or to
 lie within 3 dB of it (a few frames of speech can step the gain past the target), and to lie within 10 dB of it (the
@@ -2141,9 +2144,18 @@ rate. `p25p1_cqpsk_vc`'s 0.3 s of speech commits once, and that first step towar
 of the speech overshoots, so its level moves 0.9 dB away from -24 dBFS while staying within 3 dB of it. The analog
 gap noise between words is 11-17 dB under the speech, so P.56 counts it as active.
 
-The fixtures with no speech keep their own assertions: the tone calibration (`-n 50` 1 kHz windows), the syllable-gated
-noise fixtures (`nfm_ctcss_synth_*`, `nfm_dcs_synth_*`, `nfm_notone_synth`: band-limited noise with no pitch, not
-speech), `noise_floor` (the attenuator), and the control channels and filler (no audio).
+The fixtures with no speech keep their own assertions: the tone calibration (`-n 50` 1 kHz windows), `noise_floor`
+(the attenuator), and the control channels and filler (no audio). The syllable-gated noise fixtures
+(`nfm_ctcss_synth_*`, `nfm_dcs_synth_*`, `nfm_notone_synth`) carry band-limited noise with no pitch, not speech, and
+`DECODE_IQ_ANALOG_GATED_NOISE_*` (one per fixture, `tests/speech_level_check.cmake` with `GATED`) check that the speech
+AGC learns nothing from them. Each replays the fixture at the default auto gain and at `-n 50`, and the tool's
+`gated-nfm` check runs the `-n 50` audio (what the AGC took in) through a speech AGC set up as the monitor's own: its
+output must be the decoder's to within 4 LSB (measured 1.3), so the state it reads is the decoder's. On all nine no
+frame commits and the learned gain stays at the +4.54 dB start gain. The output still runs 0-5 dB under the start gain:
+that is the attenuator, which eases the noise from the first frame at 6 dB/s (no speech has been learned) and lets go in
+each syllable gap, where the level falls 14 dB. The cases hold it to that rate and to 0 dB or less (it reaches -2.6 to
+-5.3 dB), and require the limiter never to act. A speech fixture fails the same check (`speech_nfm_synth`: 214
+commits), and so does a mismatched output.
 
 ### Analog monitor audio checks
 
@@ -2248,10 +2260,10 @@ between runs. Measured on the commit that added them:
 | `DECODE_IQ_ANALOG_SILENT_STREAM_TIME` | `nfm_tone_synth` under `-fi` (monitor off) | total 1500 ms, no audio at all | audible 0 ms, total 1400 to 1600 ms |
 | `DECODE_IQ_ANALOG_NFM_REAL_CTCSS_SMOKE` | `nfm_ctcss_real`, `-n 50`, audible from -40 dBFS | captured 6000 ms, audible 4360 ms, in-band 18.4 dB, RMS -31.9 dBFS, P.56 -31.90 dBFS | captured ≥ 5800, audible ≥ 3500, in-band ≥ 14, RMS ≤ -25 dBFS, P.56 -32.90 to -30.90 dBFS |
 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_A_SMOKE` | `nfm_squelch_real_a`, `-n 50`, audible from -40 dBFS | captured 4000 ms, audible 1820 ms from 460 ms, in-band 23.7 dB, P.56 -29.31 dBFS | captured ≥ 3900, audible ≥ 1200, first audible 250 to 1000 ms, in-band ≥ 18, P.56 -30.31 to -28.31 dBFS |
-| `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE` | `nfm_squelch_real_b`, `-n 50`, audible from -40 dBFS | captured 4000 ms, audible 3180 ms, in-band 25.5 dB, P.56 -26.71 dBFS | captured ≥ 3900, audible ≥ 2500, in-band ≥ 20, P.56 -27.71 to -25.71 dBFS |
+| `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE` | `nfm_squelch_real_b`, `-n 50`, audible from -40 dBFS | captured 4000 ms, audible 3180 ms, in-band 25.5 dB, P.56 -26.71 dBFS | captured ≥ 3900, audible ≥ 2500, in-band ≥ 20, P.56 -27.71 to -26.31 dBFS (cut short toward -24 so it cannot meet `PARITY_NFM_SQUELCH_B`'s window) |
 | `DECODE_IQ_ANALOG_PARITY_NFM_REAL` | `nfm_ctcss_real` under `-fA` (default chain) | P.56 active level -22.98 dBFS (RMS -23.12), no clipping: toward the speech AGC's -24 dBFS target from -31.90 at `-n 50` | captured ≥ 5800, P.56 -23.98 to -21.98 dBFS, clip 0 |
 | `DECODE_IQ_ANALOG_PARITY_NFM_SQUELCH_A` | `nfm_squelch_real_a` under `-fA` (default chain) | P.56 -26.04 dBFS, no clipping; -29.31 at `-n 50` | captured ≥ 3900, P.56 -27.04 to -25.04 dBFS, clip 0 |
-| `DECODE_IQ_ANALOG_PARITY_NFM_SQUELCH_B` | `nfm_squelch_real_b` under `-fA` (default chain) | P.56 -22.15 dBFS, no clipping; -26.71 at `-n 50` | captured ≥ 3900, P.56 -23.15 to -21.15 dBFS, clip 0 |
+| `DECODE_IQ_ANALOG_PARITY_NFM_SQUELCH_B` | `nfm_squelch_real_b` under `-fA` (default chain) | P.56 -22.15 dBFS, no clipping; -26.71 at `-n 50` | captured ≥ 3900, P.56 -23.15 to -21.70 dBFS (cut short away from -24: at most 2.30 dB from it, the `-n 50` window at least 2.31), clip 0 |
 | `DECODE_IQ_ANALOG_PARITY_NFM_REAL_DEEMPH_NFM` | `nfm_ctcss_real` under `-fA` and `DSD_NEO_DEEMPH=nfm` | P.56 -23.70 dBFS (RMS -23.89), no clipping: the coloured-noise veto leaves real speech levelled (-23.25 dBFS without it) | captured ≥ 5800, P.56 -24.70 to -22.70 dBFS, clip 0 |
 | `DECODE_IQ_ANALOG_PARITY_AM_REAL` | `am_airband_real` under `-fM` (default chain) | P.56 -22.39 dBFS, no clipping; -18.12 at `-n 50` | captured ≥ 7800, P.56 -23.39 to -21.39 dBFS, clip 0 |
 | `DECODE_IQ_ANALOG_NOISE_FLOOR_EASED` | `noise_floor` under `-fA` (default chain, open squelch), audible from -28 dBFS | open-squelch noise, no speech: the attenuator eases it from -7.4 dBFS RMS (the start gain) toward -36 dBFS once a second passes with nothing learned; audible 3460 ms, the last audible block ends at 3480 ms, -31.4 dBFS RMS from 4.5 s on (B2: the old AGC held it at -21.1 dBFS RMS throughout) | captured ≥ 9800, last audible 2000 to 4500 ms, clip 0 |
@@ -2327,8 +2339,9 @@ A few things about these numbers. Since issue #518 the default monitor chain is 
 Each reception starts at its band's start gain over `-n 50`: FM narrowband (`--nfm-bandwidth-hz` up to 16000, the
 default) +4.54 dB, FM wideband -1.48 dB, AM -2.55 dB. The AGC learns only from what it takes for speech, so a steady
 tone or receiver noise does not set its gain: a tone moves it for at most 240 ms before it is turned away (6 commits
-toward the target, at most 7 dB), and after a second with nothing learned the attenuator eases any non-speech toward
--36 dBFS at 6 dB/s. The 1.5 s tone fixtures therefore measure the start gain, the turn-away and the start of the
+toward the target, at most 7 dB), and once a second has passed with nothing learned (from the reception's first frame
+when nothing has been learned yet) the attenuator eases any non-speech toward -36 dBFS at 6 dB/s, letting go on a
+speech-like frame or when the level falls 6 dB under what it was easing (quieting). The 1.5 s tone fixtures therefore measure the start gain, the turn-away and the start of the
 easing (-15.36 dBFS RMS on FM, -20.04 on AM), and their tone SNR drops by the gain's movement (37.5 to 30.4 dB on FM).
 The old AGC took a steady tone's peaks to -10 dBFS and matched a -24.9 dBFS RMS "digital level" that came from a
 control channel decoded as voice (issue #729); real speech plays 9-12 dB under digital voice at the old defaults
@@ -2459,7 +2472,8 @@ its noise and real-carrier cases reuse `noise_floor` and the excerpts. The noise
 they reuse the same bursts, copies and excerpts. The NFM recording cases of issue #756 add none: the host makes their
 capture at run time (`--analog-synth-pauses`). The speech level parity fixtures go past the budget: the three
 `speech_*_synth` take 2,678,400 bytes (9.3 s each: the talker reaches 2 s of speech at 3.8 s, and 5.2 s of established
-speech follow; at 8 s the established level came within 0.5 dB of its bound), 7,670,400 bytes in all. A pull request that adds analog fixtures states the running total.
+speech follow; at 8 s the established level came within 0.5 dB of its bound), 7,670,400 bytes in all. A pull request
+that adds analog fixtures states the running total.
 
 #### Auto squelch classifier (design gate)
 

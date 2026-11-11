@@ -600,8 +600,8 @@ Notes
   FM (`--nfm-bandwidth-hz` up to 16000, the default) 4.5 dB over `-n 50`, wideband FM 1.5 dB under it, AM 2.6 dB under
   it; the RTL `vol` trim does not move that start. The gain moves only on speech, never on hiss, open-squelch noise or
   steady tones, holds through pauses, stays within 12 dB below and 15 dB above the start, and never lets a peak past
-  -1 dBFS. Hiss or noise with no speech in it fades toward -36 dBFS after a second and comes back at once with the next
-  speech. What it learns does not depend on whether the audio plays, is muted or is recorded. A channel change, a
+  -1 dBFS. Hiss or noise with no speech in it fades toward -36 dBFS once a second has passed without speech (from the
+  start of a transmission that has had none yet) and comes back at once with the next speech. What it learns does not depend on whether the audio plays, is muted or is recorded. A channel change, a
   retune or a gap of a second or more between transmissions (squelch closed, or the input sending nothing) starts it
   from the band's level again. Below 8 kHz (PCM input at its own rate) it plays at the `-n 50` level instead and logs
   `Automatic analog gain inactive`.

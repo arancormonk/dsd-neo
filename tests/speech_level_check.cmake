@@ -6,18 +6,23 @@
 # (the fixed reference gain, -g 1), and the first run's level must have moved from that one toward -24 dBFS. As
 # iq_decode_check.cmake does, each run must exit 0 and raise no sanitizer report.
 #
-# Expected -D inputs: DSD_BIN, TOOL_BIN, MODE, FIXTURE, WORK_DIR, CHANNELS, MIN, MAX. Optional: REFERENCE.
-foreach(
-    _var
+# With GATED (a DECODE_IQ_ANALOG_GATED_NOISE_* case), the fixture is narrowband FM with no speech in it: it is replayed
+# at the default auto gain and at -n 50, and the tool's `gated-nfm` check reads the speech AGC's state from them (no
+# speech learned; the attenuator and limiter in bounds). CHANNELS, MIN and MAX are then not used.
+#
+# Expected -D inputs: DSD_BIN, TOOL_BIN, MODE, FIXTURE, WORK_DIR, and CHANNELS, MIN, MAX unless GATED. Optional:
+# REFERENCE, GATED.
+set(_required
     DSD_BIN
     TOOL_BIN
     MODE
     FIXTURE
     WORK_DIR
-    CHANNELS
-    MIN
-    MAX
 )
+if(NOT GATED)
+    list(APPEND _required CHANNELS MIN MAX)
+endif()
+foreach(_var ${_required})
     if(NOT DEFINED ${_var})
         message(FATAL_ERROR "speech_level_check: missing -D${_var}")
     endif()
@@ -57,15 +62,29 @@ endfunction()
 
 _level_replay(voice.raw "${MODE}")
 set(_toward)
-if(DEFINED REFERENCE)
-    _level_replay(reference.raw "${MODE} ${REFERENCE}")
-    set(_toward --toward reference.raw)
+if(GATED)
+    _level_replay(reference.raw "${MODE} -n 50")
+    set(_check gated-nfm reference.raw voice.raw)
+else()
+    if(DEFINED REFERENCE)
+        _level_replay(reference.raw "${MODE} ${REFERENCE}")
+        set(_toward --toward reference.raw)
+    endif()
+    set(_check
+        level
+        --min-dbfs
+        ${MIN}
+        --max-dbfs
+        ${MAX}
+        ${_toward}
+        voice.raw
+        8000
+        ${CHANNELS}
+    )
 endif()
 
 execute_process(
-    COMMAND
-        "${TOOL_BIN}" level --min-dbfs ${MIN} --max-dbfs ${MAX} ${_toward}
-        voice.raw 8000 ${CHANNELS}
+    COMMAND "${TOOL_BIN}" ${_check}
     WORKING_DIRECTORY "${WORK_DIR}"
     RESULT_VARIABLE _rc
     OUTPUT_VARIABLE _out
