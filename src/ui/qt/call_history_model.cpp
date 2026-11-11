@@ -1613,12 +1613,15 @@ CallHistoryModel::foldRow(Row& existing, const Row& row) {
     }
     // The row keeps its end, so one plausibility rule decides on every fold and update: a span past the cap reads
     // unknown, and a later update of an earlier fragment cannot rebuild a duration from that fragment alone. With
-    // neither end known the duration stays unknown; a side whose end is unknown still counts from its start.
+    // neither end known the duration stays unknown; a side whose end is unknown still counts from its start, so both
+    // ends are read before the start moves (a start-less row's end is its start).
     const qint64 start = qMin(existing.when, row.when);
+    const qint64 end = qMax(row_end_secs(existing), row_end_secs(row));
+    const bool endKnown = existing.end > 0 || row.end > 0;
     existing.when = start;
-    if (existing.end > 0 || row.end > 0) {
-        existing.end = qMax(row_end_secs(existing), row_end_secs(row));
-        existing.durationSecs = call_history_duration_secs(start, existing.end);
+    if (endKnown) {
+        existing.end = end;
+        existing.durationSecs = call_history_duration_secs(start, end);
     }
     existing.enc = existing.enc || row.enc;
     existing.emergency = existing.emergency || row.emergency;

@@ -12151,7 +12151,9 @@ Qt Quick frontend (`src/ui/qt`):
     seeds each row's seen entry with it. `foldRow()` (every merge, update and spill fold) takes the later of the two
     `row_end_secs()` whenever either side knew its end, and sets the duration from `call_history_duration_secs()`, the
     one plausibility rule a fresh row also gets: a merged span past 3,600 s reads unknown (-1) and stays so when an
-    earlier fragment updates. With neither end known the duration stays unknown. Matching (the merge window in
+    earlier fragment updates. It reads both ends before it moves the start: a start-less row's end is its start, and a
+    backlog (read newest first) folds an earlier fragment into it, so reading after the move would end the row at the
+    earlier fragment. With neither end known the duration stays unknown. Matching (the merge window in
     `rows_mergeable()`, the same-end preference in `same_reception_row()`) uses `row_merge_end_secs()`: the end only
     while the duration is known, else the start. So a clock-shifted row (a span of hours) absorbs no later call of its
     talkgroup and source inside that span, and a real chain longer than an hour continues in a new row once it crosses

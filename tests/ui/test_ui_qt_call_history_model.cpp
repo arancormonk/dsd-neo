@@ -5024,6 +5024,80 @@ test_startless_fragment_extends_known_end(void) {
     expect("a start-less fragment heard after the end extends it", model.count() == 1 && duration_of(model, 0) == 15);
 }
 
+/* Two fragments of @p tg: [@p when, @p when + 10], and a start-less one heard at @p when + 15. */
+void
+commit_known_then_startless(RingFixture& ring, uint32_t tg, time_t when) {
+    ring.commit(0, tg, kB1Src, when, when + 10);
+    ring.commit(0, tg, kB1Src, 0, when + 15);
+}
+
+/* Whether @p model holds one row of @p secs. */
+bool
+one_row_of(const CallHistoryModel& model, int secs) {
+    return model.count() == 1 && duration_of(model, 0) == secs;
+}
+
+/* A fold reads both rows' ends before it moves the start. Read newest first (a backlog), the start-less fragment is
+ * the row the known one folds into: its end is its start, which the fold must not lose by taking the earlier start
+ * first. The row ends at the start-less fragment in every order, and a fragment within 20 s of that end merges. */
+void
+test_startless_fold_keeps_later_end(void) {
+    const time_t when = 1754636000;
+    const uint32_t tg = 31013U;
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        commit_known_then_startless(ring, tg, when);
+        model.refresh(ring.state);
+        expect("a backlog fold ends at the start-less fragment", one_row_of(model, 15));
+        ring.commit(0, tg, kB1Src, when + 34, when + 40);
+        model.refresh(ring.state);
+        expect("a fragment within 20 s of the backlog row's end merges", one_row_of(model, 40));
+    }
+
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        ring.commit(0, tg, kB1Src, when, when + 10);
+        model.refresh(ring.state);
+        ring.commit(0, tg, kB1Src, 0, when + 15);
+        model.refresh(ring.state);
+        expect("a live fold ends at the start-less fragment", one_row_of(model, 15));
+        ring.commit(0, tg, kB1Src, when + 34, when + 40);
+        model.refresh(ring.state);
+        expect("a fragment within 20 s of the live row's end merges", one_row_of(model, 40));
+    }
+
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        commit_known_then_startless(ring, tg, when);
+        model.refresh(ring.state);
+    } // destructor flushes the stores
+    expect("the backlog row stores the start-less fragment's end", stored_end_of_tg(tg) == when + 15);
+    {
+        CallHistoryModel restored;
+        expect("the backlog row keeps its end after a reload", one_row_of(restored, 15));
+        ring.commit(0, tg, kB1Src, when + 34, when + 40);
+        restored.refresh(ring.state);
+        expect("a fragment within 20 s of the reloaded row's end merges", one_row_of(restored, 40));
+    }
+
+    RingFixture known;
+    RingFixture startless;
+    known.commit(0, tg, kB1Src, when, when + 10);
+    startless.commit(0, tg, kB1Src, 0, when + 15);
+    write_spill(spill_line_of(startless) + spill_line_of(known));
+    {
+        CallHistoryModel folded;
+        expect("a known fragment folded from the spill into a start-less row ends at the start-less one",
+               one_row_of(folded, 15));
+    }
+}
+
 } // namespace
 
 int
@@ -5154,6 +5228,7 @@ main(int argc, char** argv) {
     test_unknown_learns_end();
     test_startless_row_update_stays_unknown();
     test_startless_fragment_extends_known_end();
+    test_startless_fold_keeps_later_end();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {
