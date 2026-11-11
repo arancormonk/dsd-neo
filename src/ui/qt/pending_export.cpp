@@ -5,6 +5,7 @@
 
 #include "pending_export.h"
 
+#include <functional>
 #include <limits>
 #include <utility>
 
@@ -18,11 +19,14 @@ PendingExport::PendingExport(std::shared_ptr<DocumentSaveTransport> transport, c
     /* The writer's reply never runs after the writer is gone, and the writer goes first in ~PendingExport(). */
     m_writer = std::make_unique<DocumentExportWriter>(m_transport, cacheRoot, owner, [this](int token, bool ok) {
         m_busy = false;
-        if (m_busyChanged) {
-            m_busyChanged();
+        /* Copies: an owner may destroy this helper from busyChanged, so no member is read once it has run. */
+        const std::function<void()> busyChanged = m_busyChanged;
+        const Reply reply = m_reply;
+        if (busyChanged) {
+            busyChanged();
         }
-        if (m_reply) {
-            m_reply(token, ok);
+        if (reply) {
+            reply(token, ok);
         }
     });
 }

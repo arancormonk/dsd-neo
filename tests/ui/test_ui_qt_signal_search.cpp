@@ -2095,7 +2095,8 @@ test_export_avoid_reads() {
     permanentReads = 0;
     moving = 1000;
     assert(!dsd_qt::signal_search_export::readAvoids(source, &permanent, &session));
-    assert(permanentReads == dsd_qt::signal_search_export::kAvoidReadTries && permanentReads == 32);
+    static_assert(dsd_qt::signal_search_export::kAvoidReadTries == 32, "the avoid lists are read 32 times at most");
+    assert(permanentReads == dsd_qt::signal_search_export::kAvoidReadTries);
     assert(permanent.empty() && session.empty());
 }
 
@@ -2406,7 +2407,6 @@ test_pending_export_tokens(const QString& root) {
         assert(transport->discards().size() == 5);
 
         // A refused submit (a job running) has consumed the file: nothing stays pending.
-        transport->setResult(true);
         auto gate = std::make_shared<GateTransport>(false);
         dsd_qt::PendingExport held(gate, cacheRoot + QStringLiteral("2"), &owner, log.reply());
         const int h1 = held.hold(first);
@@ -2452,6 +2452,28 @@ test_pending_export_busy_changed(const QString& root) {
     assert(!pending.busy());
 }
 
+/* An owner that destroys the helper from busyChanged at a save's end still gets the reply. */
+static void
+test_pending_export_destroyed_from_busy_changed(const QString& root) {
+    const QString cacheRoot = root + QStringLiteral("/pending destroyed/export");
+    auto transport = std::make_shared<GateTransport>();
+    QObject owner;
+    QList<QPair<int, bool>> replies;
+    std::unique_ptr<dsd_qt::PendingExport> pending;
+    pending = std::make_unique<dsd_qt::PendingExport>(
+        transport, cacheRoot, &owner, [&replies](int token, bool ok) { replies.append(qMakePair(token, ok)); },
+        [&pending]() {
+            if (pending && !pending->busy()) {
+                pending.reset();
+            }
+        });
+    const int token = pending->hold(QByteArray("rows"));
+    assert(pending->save(token, QStringLiteral("content://picked/destroyed")));
+    assert(spin_until([&replies]() { return !replies.isEmpty(); }));
+    assert(pending == nullptr);
+    assert(replies == (QList<QPair<int, bool>>{qMakePair(token, true)}));
+}
+
 int
 main(int argc, char** argv) {
     if (argc == 3 && strcmp(argv[1], "--hold-export-lock") == 0) {
@@ -2471,6 +2493,7 @@ main(int argc, char** argv) {
     test_export_writer_sweep(temp.path());
     test_pending_export_tokens(temp.path());
     test_pending_export_busy_changed(temp.path());
+    test_pending_export_destroyed_from_busy_changed(temp.path());
     test_export_writer_sweep_leaves_other_entries(temp.path());
     test_export_writer_refuses_unrooted_cache(temp.path());
     test_export_writer_teardown_stops(temp.path());
