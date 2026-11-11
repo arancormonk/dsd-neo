@@ -67,8 +67,20 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr double kReferencePeak = 0.125;
 
 /* Each replay's centre, a new one each time: the auto squelch remembers a channel's floor for the process (its floor
-   cache), so a replay on a centre heard before would start from that floor and set other flags. */
-uint64_t g_center_hz = 851000000ULL;
+   cache), and seeds a channel it has not heard from one heard within 5 MHz of it (k_cache_neighbour_hz in
+   squelch_floor.c). A replay on a centre heard before, or near one, would start from that floor, not from nothing, and
+   what it starts from would hang on which replays ran before it. So the centres step by more than that reach (the
+   capture's retune stays 0.5 MHz above its own centre), and every replay's squelch starts cold. */
+constexpr uint64_t kCenterStepHz = 20000000ULL;
+uint64_t g_center_hz = 451000000ULL;
+
+/* The next replay's centre. */
+uint64_t
+next_center_hz(void) {
+    const uint64_t center_hz = g_center_hz;
+    g_center_hz += kCenterStepHz;
+    return center_hz;
+}
 
 std::vector<std::string> g_dirs;
 int g_failures = 0;
@@ -285,8 +297,7 @@ int replay_meta(const char* meta, const char* mode, int resample_mode, int auto_
 int
 replay(const Spec& spec, LanePlan plan, Run* out) {
     char meta[DSD_TEST_PATH_MAX];
-    const uint64_t center_hz = g_center_hz;
-    g_center_hz += 1000000ULL;
+    const uint64_t center_hz = next_center_hz();
     if (write_capture("dsdneo_voice_lane", spec.rate_hz, center_hz, kSegments, sizeof kSegments / sizeof kSegments[0],
                       meta, sizeof meta)
         != 0) {
@@ -654,8 +665,7 @@ default_lane_gain(int rate_hz) {
 void
 check_resumed(void) {
     char meta[DSD_TEST_PATH_MAX];
-    const uint64_t center_hz = g_center_hz;
-    g_center_hz += 1000000ULL;
+    const uint64_t center_hz = next_center_hz();
     if (write_capture("dsdneo_voice_lane", 48000U, center_hz, kSegments, sizeof kSegments / sizeof kSegments[0], meta,
                       sizeof meta)
         != 0) {
