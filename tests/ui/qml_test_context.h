@@ -1013,6 +1013,7 @@ class RrPlacesFake : public QObject {
     Q_PROPERTY(QString progressText READ progressText NOTIFY progressTextChanged)
     Q_PROPERTY(QString summaryText READ summaryText NOTIFY summaryTextChanged)
     Q_PROPERTY(int unplacedCount READ unplacedCount NOTIFY unplacedCountChanged)
+    Q_PROPERTY(QString unplacedText READ unplacedText NOTIFY unplacedCountChanged)
   public:
     using QObject::QObject;
 
@@ -1034,6 +1035,15 @@ class RrPlacesFake : public QObject {
     int
     unplacedCount() const {
         return m_unplaced;
+    }
+
+    QString
+    unplacedText() const {
+        if (m_unplaced <= 0) {
+            return QString();
+        }
+        return m_unplaced == 1 ? QStringLiteral("1 saved system has no place yet")
+                               : QStringLiteral("%1 saved systems have no place yet").arg(m_unplaced);
     }
 
     Q_INVOKABLE void
@@ -1068,7 +1078,8 @@ class RrPlacesFake : public QObject {
     void
     finish(int updated, int unreachable) {
         m_updating = false;
-        m_summary = QStringLiteral("Updated %1 systems.").arg(updated);
+        m_summary =
+            updated == 1 ? QStringLiteral("Updated 1 system.") : QStringLiteral("Updated %1 systems.").arg(updated);
         if (unreachable > 0) {
             m_summary += QStringLiteral(" %1 could not be reached.").arg(unreachable);
         }

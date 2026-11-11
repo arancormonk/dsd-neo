@@ -163,13 +163,6 @@ struct RrPlaceService::Request {
     Fetch kind = FetchState;
     quint64 generation = 0;
     int key = 0;
-    dsd_rr_auth auth{};
-
-    Request() = default;
-    Request(const Request&) = delete;
-    Request& operator=(const Request&) = delete;
-
-    ~Request() { DSD_SECURE_ZERO(&auth, sizeof(auth)); }
 };
 
 void
@@ -256,7 +249,16 @@ RrPlaceService::RrPlaceService(RadioReferenceModel* rr, SavedSystemsModel* syste
         connect(m_systems, &QAbstractItemModel::rowsInserted, this, &RrPlaceService::recountUnplaced);
         connect(m_systems, &QAbstractItemModel::rowsRemoved, this, &RrPlaceService::recountUnplaced);
         connect(m_systems, &QAbstractItemModel::modelReset, this, &RrPlaceService::recountUnplaced);
-        connect(m_systems, &QAbstractItemModel::dataChanged, this, &RrPlaceService::recountUnplaced);
+        connect(m_systems, &QAbstractItemModel::dataChanged, this,
+                [this](const QModelIndex&, const QModelIndex&, const QList<int>& roles) {
+                    /* Only what decides the count: an empty list means every role. */
+                    const bool counts = roles.isEmpty() || roles.contains(SavedSystemsModel::PlaceRole)
+                                        || roles.contains(SavedSystemsModel::RrSidRole)
+                                        || roles.contains(SavedSystemsModel::RrSiteIdRole);
+                    if (counts) {
+                        recountUnplaced();
+                    }
+                });
         recountUnplaced();
     }
     if (m_rr != nullptr) {
@@ -301,19 +303,19 @@ RrPlaceService::submit(Fetch kind, int key) {
     request->kind = kind;
     request->generation = m_generation;
     request->key = key;
-    if (!m_rr->fillAuth(&request->auth)) {
+    /* On the stack only for the call: the client copies it into its own job and scrubs that copy itself. */
+    dsd_rr_auth auth;
+    if (!m_rr->fillAuth(&auth)) {
+        DSD_SECURE_ZERO(&auth, sizeof(auth));
         return false;
     }
     quint64 id = 0;
     switch (kind) {
-        case FetchState:
-            id = dsd_rr_fetch_state_info(m_client, &request->auth, key, &onFetchDone, request.get());
-            break;
-        case FetchDetails:
-            id = dsd_rr_fetch_trs_details(m_client, &request->auth, key, &onFetchDone, request.get());
-            break;
-        case FetchSites: id = dsd_rr_fetch_trs_sites(m_client, &request->auth, key, &onFetchDone, request.get()); break;
+        case FetchState: id = dsd_rr_fetch_state_info(m_client, &auth, key, &onFetchDone, request.get()); break;
+        case FetchDetails: id = dsd_rr_fetch_trs_details(m_client, &auth, key, &onFetchDone, request.get()); break;
+        case FetchSites: id = dsd_rr_fetch_trs_sites(m_client, &auth, key, &onFetchDone, request.get()); break;
     }
+    DSD_SECURE_ZERO(&auth, sizeof(auth));
     if (id == 0U) {
         return false;
     }
@@ -344,6 +346,7 @@ RrPlaceService::submitNext() {
         }
         const int stid = m_stateQueue.takeFirst();
         if (!submit(FetchState, stid)) {
+            m_resolveAsked.remove(stid);
             m_failedStates.insert(stid);
             noteStateSettled(stid);
         }
@@ -365,7 +368,29 @@ RrPlaceService::stopRequests() {
     }
     m_inFlight = 0;
     m_stateQueue.clear();
+    m_resolveAsked.clear();
     m_generation++;
+}
+
+void
+RrPlaceService::stopUpdateRequests() {
+    /* The update's own states: those it asked for that no resolveStates() call (a load) also wants. */
+    QSet<int> own;
+    for (const int stid : m_update.awaitedStates) {
+        if (!m_resolveAsked.contains(stid)) {
+            own.insert(stid);
+        }
+    }
+    m_stateQueue.erase(
+        std::remove_if(m_stateQueue.begin(), m_stateQueue.end(), [&own](int stid) { return own.contains(stid); }),
+        m_stateQueue.end());
+    const bool updateInFlight = m_inFlight != 0U && (m_inFlightKind != FetchState || own.contains(m_inFlightKey));
+    if (updateInFlight) {
+        (void)dsd_rr_cancel(m_client, m_inFlight);
+        m_inFlight = 0;
+        /* Drops that one late reply; nothing else is in flight. */
+        m_generation++;
+    }
 }
 
 void
@@ -415,6 +440,7 @@ RrPlaceService::resolveStates(const QVariantList& stids) {
             applyCachedState(stid);
         } else {
             m_failedStates.remove(stid);
+            m_resolveAsked.insert(stid);
             queueState(stid);
         }
     }
@@ -424,10 +450,14 @@ RrPlaceService::resolveStates(const QVariantList& stids) {
 void
 RrPlaceService::applyStateReply(const Reply& reply) {
     const int stid = reply.key;
+    m_resolveAsked.remove(stid);
     if (!reply.ok) {
         m_failedStates.insert(stid);
         noteStateSettled(stid);
         return;
+    }
+    if (m_updating && m_update.awaitedStates.contains(stid)) {
+        m_update.namedStates.insert(stid);
     }
     m_states.insert(stid, StateEntry{reply.stateName, reply.counties});
     m_failedStates.remove(stid);
@@ -485,7 +515,10 @@ RrPlaceService::updateFromRadioReference(const QStringList& uids) {
     if (!signedIn()) {
         return false;
     }
-    if (m_updating || m_systems.isNull()) {
+    if (m_systems.isNull()) {
+        return false;
+    }
+    if (m_updating) {
         return true;
     }
     Update update;
@@ -513,6 +546,12 @@ RrPlaceService::updateFromRadioReference(const QStringList& uids) {
         }
         update.total++;
     }
+    if (update.total == 0) {
+        /* Nothing to update: answered at once, without an update that starts and stops. */
+        setSummary(0, 0);
+        Q_EMIT updateFinished(0, 0);
+        return true;
+    }
     m_update = update;
     m_updateSerial++;
     m_updating = true;
@@ -529,8 +568,10 @@ RrPlaceService::cancelUpdate() {
     if (!m_updating) {
         return;
     }
-    stopRequests();
+    stopUpdateRequests();
     finishUpdate(false);
+    /* Lookups a load asked for carry on. */
+    submitNext();
 }
 
 void
@@ -553,6 +594,9 @@ RrPlaceService::applySitesReply(int sid, bool ok, const QList<SiteRecord>& sites
 
 QPair<int, int>
 RrPlaceService::refreshSystemRows(int sid, const QList<SiteRecord>& sites) {
+    if (m_systems.isNull()) {
+        return qMakePair(0, static_cast<int>(m_update.siteUids.value(sid).size()));
+    }
     QList<SavedSystemsModel::SiteRefresh> refreshes;
     int unlisted = 0;
     for (const QString& uid : m_update.siteUids.value(sid)) {
@@ -604,6 +648,7 @@ RrPlaceService::beginNamesPhase() {
     const quint64 serial = m_updateSerial;
     for (const int stid : stids) {
         if (m_states.contains(stid)) {
+            m_update.namedStates.insert(stid);
             applyCachedState(stid);
             if (serial != m_updateSerial) {
                 return; /* ended from a handler of the saved rows' signals */
@@ -629,12 +674,20 @@ RrPlaceService::noteStateSettled(int stid) {
 void
 RrPlaceService::finishUpdate(bool namesDone) {
     if (namesDone && !m_systems.isNull()) {
-        /* A row with no site counts as updated once every state its place names was answered. */
+        /* A row with no site counts once this update looked up or applied one of its states: unreachable when any of
+         * them failed, else updated. A row it named nothing for (no state ids, nothing left to name) counts as
+         * neither. */
         for (const QString& uid : m_update.placeUids) {
             const QList<int> stids = place_state_ids(m_systems->getByUid(uid).value(kPlace).toMap());
-            const bool reached =
-                std::none_of(stids.cbegin(), stids.cend(), [this](int stid) { return m_failedStates.contains(stid); });
-            (reached ? m_update.updated : m_update.unreachable)++;
+            const bool failed =
+                std::any_of(stids.cbegin(), stids.cend(), [this](int stid) { return m_failedStates.contains(stid); });
+            const bool named = std::any_of(stids.cbegin(), stids.cend(),
+                                           [this](int stid) { return m_update.namedStates.contains(stid); });
+            if (failed) {
+                m_update.unreachable++;
+            } else if (named) {
+                m_update.updated++;
+            }
         }
     }
     const int updated = m_update.updated;
@@ -642,15 +695,30 @@ RrPlaceService::finishUpdate(bool namesDone) {
     m_update = Update();
     m_updateSerial++;
     m_updating = false;
-    m_summaryText = tr("Updated %1 systems.").arg(updated);
-    if (unreachable > 0) {
-        m_summaryText += QLatin1Char(' ') + tr("%1 could not be reached.").arg(unreachable);
-    }
     setProgress();
     Q_EMIT updatingChanged();
-    Q_EMIT summaryTextChanged();
+    setSummary(updated, unreachable);
     recountUnplaced();
     Q_EMIT updateFinished(updated, unreachable);
+}
+
+void
+RrPlaceService::setSummary(int updated, int unreachable) {
+    QString text = updated == 1 ? tr("Updated 1 system.") : tr("Updated %1 systems.").arg(updated);
+    if (unreachable > 0) {
+        text += QLatin1Char(' ') + tr("%1 could not be reached.").arg(unreachable);
+    }
+    m_summaryText = text;
+    Q_EMIT summaryTextChanged();
+}
+
+QString
+RrPlaceService::unplacedText() const {
+    if (m_unplacedCount <= 0) {
+        return QString();
+    }
+    return m_unplacedCount == 1 ? tr("1 saved system has no place yet")
+                                : tr("%1 saved systems have no place yet").arg(m_unplacedCount);
 }
 
 void

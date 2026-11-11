@@ -32,6 +32,7 @@
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
+#include <QThread>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
@@ -141,6 +142,7 @@ struct Fake {
     QString holdMethod;
     QSemaphore held;
     QSemaphore proceed;
+    QSemaphore answered; /* released as each answer leaves perform() */
 
     QStringList
     requests() {
@@ -291,6 +293,7 @@ fake_perform(void* ctx, const dsd_rr_request* req, dsd_rr_response* resp) {
     resp->body[payload.size()] = '\0';
     resp->body_len = static_cast<size_t>(payload.size());
     resp->status = DSD_RR_OK;
+    fake->answered.release();
     return 0;
 }
 
@@ -703,7 +706,7 @@ test_update_skips_moved_and_counts_unlisted() {
     expect_int("moved: finished once", finished.count, 1);
     expect_int("moved: one updated", finished.updated, 1);
     expect_int("moved: the unlisted site counted", finished.unreachable, 1);
-    expect_str("moved: summary", h.service.summaryText(), "Updated 1 systems. 1 could not be reached.");
+    expect_str("moved: one system, singular", h.service.summaryText(), "Updated 1 system. 1 could not be reached.");
 }
 
 /* Partial success: a system RadioReference does not answer is counted per saved system; the others are saved. */
@@ -854,10 +857,30 @@ test_update_place_rows_and_edges() {
     expect_int("place rows: one updated", finished.updated, 1);
     expect("place rows: no site read", h.fake.requests().filter("getTrsSites").isEmpty());
 
+    int toggles = 0;
+    QObject::connect(&h.service, &RrPlaceService::updatingChanged, [&toggles]() { toggles++; });
+    QObject::connect(&h.service, &RrPlaceService::progressTextChanged, [&toggles]() { toggles++; });
     expect("nothing: started", h.service.updateFromRadioReference({h.systems.get(1).value("uid").toString()}));
     expect_int("nothing: finished at once", finished.count, 2);
     expect_int("nothing: nothing updated", finished.updated, 0);
+    expect_str("nothing: summary", h.service.summaryText(), "Updated 0 systems.");
+    expect_int("nothing: no updating or progress change", toggles, 0);
     expect("nothing: idle", !h.service.updating());
+
+    /* Rows with a place but nothing to look up (no state id; already named) are neither updated nor unreachable. */
+    h.systems.add({{"name", "No state"},
+                   {"sourceType", "usb"},
+                   {"place", QVariantMap{{"counties", QVariantList{QVariantMap{{"ctid", 5000}}}}}}});
+    expect("nothing named: started", h.service.updateFromRadioReference({h.systems.get(0).value("uid").toString(),
+                                                                         h.systems.get(2).value("uid").toString()}));
+    settle(h);
+    expect_int("nothing named: finished", finished.count, 3);
+    expect_int("nothing named: none updated", finished.updated, 0);
+    expect_int("nothing named: none unreachable", finished.unreachable, 0);
+
+    /* Without saved systems there is nothing to update at all. */
+    RrPlaceService alone(&h.model, nullptr);
+    expect("no systems: refused", !alone.updateFromRadioReference({"x"}));
 }
 
 /* unplacedCount counts what an update could place and shows no place, and follows the saved systems. */
@@ -872,8 +895,12 @@ test_unplaced_count() {
     named.insert("states", QVariantList{QVariantMap{{"stid", 19}, {"name", "Iowa"}}});
     h.systems.add(site_row("Named", 6673, 23581, "Linn Co Simulcast", named));
     expect_int("unplaced: the site and the repeater list", h.service.unplacedCount(), 2);
+    expect_str("unplaced: plural", h.service.unplacedText(), "2 saved systems have no place yet");
     h.systems.remove(0);
     expect_int("unplaced: follows a removal", h.service.unplacedCount(), 1);
+    expect_str("unplaced: singular", h.service.unplacedText(), "1 saved system has no place yet");
+    h.systems.remove(0);
+    expect("unplaced: none, no notice", h.service.unplacedCount() == 0 && h.service.unplacedText().isEmpty());
 }
 
 /* ------------------------------------------------------------------------- */
@@ -965,6 +992,55 @@ test_failed_lookups_leave_the_import_screen_alone() {
     expect("isolation: the refresh's lookups failed too", h.service.stateFailed(19));
 }
 
+/* Cancelling an update stops only its own requests: a state lookup a system load asked for carries on and names the
+ * rows. */
+void
+test_cancel_keeps_load_lookups() {
+    clear_store();
+    Harness h;
+    h.systems.add(
+        site_row("SARA — Johnson Co Simulcast", 6673, 16863, "Johnson Co Simulcast", county_place(836, {19, 17, 46})));
+    {
+        QMutexLocker lock(&h.fake.mutex);
+        h.fake.holdMethod = QStringLiteral("getStateInfo");
+    }
+    h.model.loadSystem(6673);
+    expect("load lookup: Iowa's lookup in flight", await_hold(h.fake));
+    Finished finished;
+    record_finished(h.service, &finished);
+    expect("load lookup: update started",
+           h.service.updateFromRadioReference({h.systems.get(0).value("uid").toString()}));
+    h.service.cancelUpdate();
+    expect_int("load lookup: the update ended", finished.count, 1);
+    h.fake.proceed.release();
+    settle(h);
+    expect("load lookup: the load's lookup named the row", johnson_iowa(place_of(h.systems, 0)));
+    expect_int("load lookup: the load's other states asked too", h.fake.count("getStateInfo:46"), 1);
+    expect_int("load lookup: the update read no system", h.fake.count("getTrsDetails:6673"), 0);
+}
+
+/* A completed load asks for its system's states through the queued connection: not inside the load's own signal, and
+ * then for real, naming the saved rows. */
+void
+test_load_lookup_is_queued() {
+    clear_store();
+    Harness h;
+    h.systems.add(site_row("SARA", 6673, 16863, "Johnson Co Simulcast", county_place(836, {19, 17, 46})));
+    bool busyAtSignal = true;
+    int askedAtSignal = -1;
+    QObject::connect(&h.model, &RadioReferenceModel::systemPlaceIdsReady, &h.service,
+                     [&h, &busyAtSignal, &askedAtSignal](const QVariantList&) {
+                         busyAtSignal = h.service.busy();
+                         askedAtSignal = static_cast<int>(h.fake.requests().size());
+                     });
+    h.model.loadSystem(6673);
+    settle(h);
+    expect("queued: nothing asked inside the load's signal", !busyAtSignal && askedAtSignal == 0);
+    expect("queued: the system's states asked after it",
+           h.fake.requests() == (QStringList{"getStateInfo:19", "getStateInfo:17", "getStateInfo:46"}));
+    expect("queued: the saved row is named", johnson_iowa(place_of(h.systems, 0)));
+}
+
 /* The QML surface. RrPlacesFake in tests/ui/qml_test_context.h publishes exactly these properties, so the QML
  * fixture completeness check holds screens to what this service really has; change both together. */
 void
@@ -975,24 +1051,68 @@ test_qml_properties() {
         names.append(QString::fromLatin1(meta.property(i).name()));
     }
     expect("qml: the published properties",
-           names == (QStringList{"updating", "progressText", "summaryText", "unplacedCount"}));
+           names == (QStringList{"updating", "progressText", "summaryText", "unplacedCount", "unplacedText"}));
 }
 
 /* ------------------------------------------------------------------------- */
 /* Teardown                                                                   */
 /* ------------------------------------------------------------------------- */
 
+/* Destroying the service with a request held on its worker cancels it and returns: nothing lands afterwards. */
 void
 test_destroy_with_a_request_in_flight() {
     clear_store();
     Harness h;
+    h.systems.add(site_row("SARA", 6673, 16863, "Johnson Co Simulcast", county_place(836, {19})));
+    const QVariantMap before = place_of(h.systems, 0);
+    Fake fake;
     {
-        QMutexLocker lock(&h.fake.mutex);
-        h.fake.holdMethod = QStringLiteral("getStateInfo");
+        QMutexLocker lock(&fake.mutex);
+        fake.holdMethod = QStringLiteral("getStateInfo");
     }
-    h.service.resolveStates({19});
-    expect("teardown: a lookup in flight", await_hold(h.fake));
-    /* ~Harness destroys the service first; its client cancels the held request and joins. */
+    dsd_rr_transport transport{&fake_perform, &fake};
+    auto* service = new RrPlaceService(&h.model, &h.systems);
+    service->setTransportForTests(&transport);
+    service->resolveStates({19});
+    expect("teardown: a lookup in flight", await_hold(fake));
+    delete service;
+    for (int i = 0; i < 10; i++) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    }
+    expect("teardown: the row is unchanged", place_of(h.systems, 0) == before);
+    expect_int("teardown: the held request was the only one", fake.count("getStateInfo:19"), 1);
+}
+
+/* A reply posted to a service that is destroyed before it is delivered runs nothing: the row keeps its place and no
+ * count is told. */
+void
+test_destroy_with_a_reply_posted() {
+    clear_store();
+    Harness h;
+    h.systems.add(site_row("SARA", 6673, 16863, "Johnson Co Simulcast", county_place(836, {19})));
+    const QVariantMap before = place_of(h.systems, 0);
+    Fake fake;
+    {
+        QMutexLocker lock(&fake.mutex);
+        fake.holdMethod = QStringLiteral("getStateInfo");
+    }
+    dsd_rr_transport transport{&fake_perform, &fake};
+    int changes = 0;
+    auto* service = new RrPlaceService(&h.model, &h.systems);
+    service->setTransportForTests(&transport);
+    QObject::connect(service, &RrPlaceService::unplacedCountChanged, [&changes]() { changes++; });
+    service->resolveStates({19});
+    expect("posted: a lookup in flight", await_hold(fake));
+    fake.proceed.release();
+    /* No event processing from here: the answer is parsed and its reply posted on the worker, never delivered. */
+    expect("posted: the answer was served", fake.answered.tryAcquire(1, 15000));
+    QThread::msleep(100);
+    delete service;
+    for (int i = 0; i < 10; i++) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    }
+    expect("posted: the row is unchanged", place_of(h.systems, 0) == before);
+    expect_int("posted: no count told", changes, 0);
 }
 
 void
@@ -1038,8 +1158,11 @@ main(int argc, char** argv) {
     test_update_place_rows_and_edges();
     test_unplaced_count();
     test_failed_lookups_leave_the_import_screen_alone();
+    test_cancel_keeps_load_lookups();
+    test_load_lookup_is_queued();
     test_qml_properties();
     test_destroy_with_a_request_in_flight();
+    test_destroy_with_a_reply_posted();
     test_destructor_marks_its_teardown_stage();
 
     QDir(dataDir).removeRecursively();

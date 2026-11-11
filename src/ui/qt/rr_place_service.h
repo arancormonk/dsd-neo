@@ -52,6 +52,9 @@ class RrPlaceService : public QObject {
     /* Saved systems an update could place that show no place yet (no named state): a RadioReference site, or a row
      * whose place has ids. */
     Q_PROPERTY(int unplacedCount READ unplacedCount NOTIFY unplacedCountChanged)
+    /* The notice for unplacedCount: "1 saved system has no place yet", "%1 saved systems have no place yet", or empty
+     * at 0. */
+    Q_PROPERTY(QString unplacedText READ unplacedText NOTIFY unplacedCountChanged)
 
   public:
     /** @brief At most this many states per resolveStates() call; the rest of a longer list stay unnamed. */
@@ -84,13 +87,15 @@ class RrPlaceService : public QObject {
      * @brief Update the saved systems @p uids from RadioReference: each saved site's name, position and place ids
      *        (rows still on the site they were read for), then the names of any place left unnamed.
      *
-     * @return false when signed out (the caller opens the account screen); true otherwise, and updateFinished()
-     *         follows exactly once (at once when there is nothing to update; while an update runs, a second call
-     *         changes nothing and the running one's signal is that answer).
+     * @return false when signed out (the caller opens the account screen) or there are no saved systems; true
+     *         otherwise, and updateFinished() follows exactly once: at once, with no change to `updating` or
+     *         `progressText`, when none of @p uids can be updated; while an update runs, a second call changes nothing
+     *         and the running one's signal is that answer.
      */
     Q_INVOKABLE bool updateFromRadioReference(const QStringList& uids);
 
-    /** @brief Stop the running update and every request of this service; what was saved stays. No-op when idle. */
+    /** @brief Stop the running update and its own requests (state lookups a load asked for carry on); what was saved
+     *         stays. No-op when no update runs. */
     Q_INVOKABLE void cancelUpdate();
 
     bool
@@ -112,6 +117,8 @@ class RrPlaceService : public QObject {
     unplacedCount() const {
         return m_unplacedCount;
     }
+
+    QString unplacedText() const;
 
     /** @brief Whether a request is in flight or queued. */
     bool
@@ -171,6 +178,7 @@ class RrPlaceService : public QObject {
         QVariantList stateIds;            /* that system's Trs.sState, once its details arrived */
         bool namesPhase = false;
         QSet<int> awaitedStates;
+        QSet<int> namedStates; /* states the names step applied (from the cache or an answer) */
         int total = 0;
         int done = 0;
         int updated = 0;
@@ -201,6 +209,9 @@ class RrPlaceService : public QObject {
     void finishUpdate(bool namesDone);
     /** @brief Stop every request: cancel the one in flight, drop the queue and any late reply. */
     void stopRequests();
+    /** @brief Stop only the running update's requests: its system reads and the states no load asked for. */
+    void stopUpdateRequests();
+    void setSummary(int updated, int unreachable);
     void onCredentialsChanged();
     void recountUnplaced();
     void setProgress();
@@ -216,6 +227,8 @@ class RrPlaceService : public QObject {
     Fetch m_inFlightKind = FetchState;
     int m_inFlightKey = 0;
     QList<int> m_stateQueue;
+    /* States a resolveStates() call (a load) asked for and that have not been answered yet. */
+    QSet<int> m_resolveAsked;
 
     /* For the process; dropped at any credential change. */
     QHash<int, StateEntry> m_states;

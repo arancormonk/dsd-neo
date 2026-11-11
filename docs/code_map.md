@@ -13483,25 +13483,29 @@ Qt Quick frontend (`src/ui/qt`):
   `rr_place_service.{h,cpp}` (`RrPlaceService`, the `rrPlaces` context object, built in `qt_ui.cpp` over the model and
   `savedSystems`) names them, isolated from the import screen: its own client and transport
   (`setTransportForTests()`), one request in flight, replies marshalled to the GUI thread with a generation that every
-  stop bumps, and only the account borrowed (`RadioReferenceModel::fillAuth()`, public but not invokable; nothing
-  logged). `resolveStates(stids)` (queued from `systemPlaceIdsReady`; the first 8 positive ids) applies a known state
+  stop bumps, and only the account borrowed (`RadioReferenceModel::fillAuth()`, public but not invokable, filled into
+  a stack `dsd_rr_auth` that is zeroed right after the client copies it; nothing logged). `resolveStates(stids)` (queued from `systemPlaceIdsReady`; the first 8 positive ids) applies a known state
   from its process cache and looks up the others with `getStateInfo`, applying each answer with
   `SavedSystemsModel::applyPlaceNames()`; a failure is recorded per state (`stateFailed()`) and asked again only by a
   later call, and a save that failed is retried at the next resolve from the cache. It installs its cache as the
   saved systems' `setPlaceNameCache()` fill (`fillPlaceNames()`), so a row saved before or after the names arrive ends
   named. Any `credentialsChanged` stops every request and drops the cache. `updateFromRadioReference(uids)` (false
-  while signed out: open the account screen; otherwise `updateFinished(updated, unreachable)` follows once) reads each
+  while signed out: open the account screen, or with no saved systems; otherwise `updateFinished(updated,
+  unreachable)` follows once, at once with no `updating`/`progressText` change when no row can be updated) reads each
   distinct system of the rows that are sites (`getTrsDetails` for `sState`, then `getTrsSites`) and applies, through
   `SavedSystemsModel::refreshSites()`, the site name, position and place ids to every row still on that system and
   site, keeping the names it already had for unchanged ids; a site RadioReference no longer lists, an unanswered system
   or a failed save counts as unreachable, a row moved to another system meanwhile counts as neither. Then it looks up
   the states any of the rows' places still lacks names for (a conventional list with a place and no site counts as
-  updated when they all answer). `updating`, `progressText` ("Updating %1 of %2", saved systems), `summaryText`
-  ("Updated %1 systems." and " %1 could not be reached.") and `unplacedCount` (rows that are a site or have a place
-  and show no named state; recounted on every change of the saved systems) are its properties; `cancelUpdate()` stops
-  every request (queued lookups included) and ends the update with what was saved. A step that saves rows checks
-  that its update survived the rows' signals. QML fixtures publish `RrPlacesFake` (the same four properties, pinned
-  by `UI_QT_RR_PLACE_SERVICE`; `missingContextKeys()` checks `rrPlaces` reads). Tests: `UI_QT_RADIO_REFERENCE`
+  unreachable when one of its states failed, updated when the step looked up or applied one of them, else neither). `updating`, `progressText` ("Updating %1 of %2", saved systems), `summaryText`
+  ("Updated 1 system." / "Updated %1 systems.", then " %1 could not be reached."), `unplacedCount` (rows that are a
+  site or have a place and show no named state; recounted on row inserts, removals, resets and a `dataChanged` whose
+  roles are empty or include place or the RadioReference ids) and `unplacedText` ("1 saved system has no place yet" /
+  "%1 saved systems have no place yet", empty at 0) are its properties; `cancelUpdate()` stops only the update's own
+  requests (its system reads and the states no `resolveStates()` call also asked for), so a load's lookups carry on,
+  and ends the update with what was saved. A step that saves rows checks that its update survived the rows' signals.
+  QML fixtures publish `RrPlacesFake` (the same five properties, pinned by `UI_QT_RR_PLACE_SERVICE`;
+  `missingContextKeys()` checks `rrPlaces` reads). Tests: `UI_QT_RADIO_REFERENCE`
   (place per import shape, the signal), `UI_QT_RR_PLACE_SERVICE` (names, order of names and saves, per-state failure,
   failed-save retry, sign-out, Update from RadioReference incl. partial success, moved and unlisted rows, cancels,
   and failed lookups leaving the import screen's lists, busy, system, plan, status and a library refresh alone).
