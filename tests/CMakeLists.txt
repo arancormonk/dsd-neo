@@ -8673,25 +8673,6 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
 endif()
 
 # The engine commits and publishes the last call before the frontends' stop hooks.
-# A no-carrier exit and every carrier boundary that leaves the carrier withdraw the P25 proof the CQPSK timing loop's
-# post-lock gain follows; a stream gap on the same carrier keeps it.
-add_executable(
-    dsd-neo_test_engine_p25_timing_proof
-    engine/test_engine_p25_timing_proof.c
-)
-target_include_directories(
-    dsd-neo_test_engine_p25_timing_proof
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
-)
-target_link_libraries(
-    dsd-neo_test_engine_p25_timing_proof
-    PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
-)
-add_test(
-    NAME ENGINE_P25_TIMING_PROOF
-    COMMAND dsd-neo_test_engine_p25_timing_proof
-)
-
 add_executable(
     dsd-neo_test_engine_lifecycle_finalize
     engine/test_engine_lifecycle_finalize.c
@@ -8707,6 +8688,36 @@ target_link_libraries(
 add_test(
     NAME ENGINE_LIFECYCLE_FINALIZE
     COMMAND dsd-neo_test_engine_lifecycle_finalize
+)
+
+# A no-carrier exit and every carrier boundary withdraw the P25 proof the CQPSK timing loop's post-lock gain follows,
+# a stream gap included, and so does a return to the control channel whose timing moves the chain. Where GNU ld --wrap
+# replaces the rigctl client, the real trunk tunes are driven to the withdrawal as well.
+add_executable(
+    dsd-neo_test_engine_p25_timing_proof
+    engine/test_engine_p25_timing_proof.c
+)
+target_include_directories(
+    dsd-neo_test_engine_p25_timing_proof
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_engine_p25_timing_proof
+    PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
+)
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_engine_p25_timing_proof
+        PRIVATE DSD_NEO_TEST_RIGCTL_TUNE_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_engine_p25_timing_proof
+        PRIVATE "LINKER:--wrap=SetFreq" "LINKER:--wrap=SetModulationKind"
+    )
+endif()
+add_test(
+    NAME ENGINE_P25_TIMING_PROOF
+    COMMAND dsd-neo_test_engine_p25_timing_proof
 )
 
 add_executable(

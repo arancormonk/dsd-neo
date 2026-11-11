@@ -705,6 +705,13 @@ frame_sync_move_rf_mod(dsd_state* state, int rf_mod) {
     state->rf_mod = rf_mod;
 }
 
+void
+dsd_frame_sync_note_chain_change(const dsd_state* state, dsd_frame_sync_chain before) {
+    if (state && (state->rf_mod != before.rf_mod || state->sps_hunt_idx != before.sps_hunt_idx)) {
+        dsd_rtl_stream_metrics_hook_forget_p25_proof();
+    }
+}
+
 static inline void
 frame_sync_maybe_force_dmr_gfsk(const dsd_opts* opts, dsd_state* state) {
     if (!opts->mod_cli_lock || opts->mod_gfsk) {

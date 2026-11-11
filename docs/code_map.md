@@ -3443,15 +3443,21 @@ suite runs under this compiler.
     "CQPSK Gardner"); and by a P25p2 window with a MAC PDU whose CRC passed or a tolerant window whose verdict passed
     (`p25p2_window_done()`, not when the window retuned); both pass the generation read before the frame's handlers ran,
     so a frame whose grant tuned away leaves a stale proof. Withdrawn by `dsd_frame_sync_reset_mod_state()` (every
-    accepted tune, a CC change, the acquisition reset of a scan row or target, an input boundary or a decode-mode
-    command; a symbol profile change), by every move of `rf_mod` in the frame sync (`frame_sync_move_rf_mod()`: a vote's
-    switch, a P25p1 chain step or CQPSK probe, a P25p2 or DMR accept, the TETRA profile), by the no-carrier pass
-    (`no_carrier_reset_decode_state()`), by `dsd_engine_forget_carrier_decoding()` (every carrier boundary, a stream gap
-    included) and by a config apply that changes the decode mode (`cfg_forget_rx_tone_on_boundary()`). X2-TDMA, DMR and
-    NXDN under `-mq`, Auto's CQPSK trial before P25 content proves the carrier, Phase 1 voice and TETRA never set it.
-    Tests: `P25_P1_SYNC_DISPATCH`, `P25_P2_TOLERANT_WINDOW` (set), `FRAME_SYNC_P25_TIMING_PROOF`,
-    `ENGINE_P25_TIMING_PROOF`, `APP_COMMAND_QUEUE` (withdrawn), `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL` (the
-    installation).
+    accepted trunk-tuning or scanner tune, a CC change, the acquisition reset of a scan row or target, an input boundary
+    or a decode-mode command; the frame sync's symbol profile change), by every move of `rf_mod` in the frame sync
+    (`frame_sync_move_rf_mod()`: a vote's switch, a P25p1 chain step or CQPSK probe, a P25p2 or DMR accept, the TETRA
+    profile), by every chain change made outside it (`dsd_frame_sync_note_chain_change()`: `rf_mod` or `sps_hunt_idx`
+    compared across each command in `apply_cmd()`, which covers the modulation controls, the P25p2 helper, a config's
+    `[demod]` or `[mode]`, an import and a scan scope's resume, and across the control channel's timing a return that
+    retunes nothing applies, `dsd_engine_apply_cc_symbol_timing()`; a change that restates the chain keeps it), by a
+    manual tune through io_control (`manual_tune_moved()`: no trunk-tuning generation stales it and under trunking no
+    carrier boundary runs), by the no-carrier pass (`no_carrier_reset_decode_state()`), by
+    `dsd_engine_forget_carrier_decoding()` (every carrier boundary, a stream gap included) and by a config apply that
+    changes the decode mode (`cfg_forget_rx_tone_on_boundary()`). X2-TDMA, DMR and NXDN under `-mq`, Auto's CQPSK trial
+    before P25 content proves the carrier, Phase 1 voice and TETRA never set it. Tests: `P25_P1_SYNC_DISPATCH`,
+    `P25_P2_TOLERANT_WINDOW` (set), `FRAME_SYNC_P25_TIMING_PROOF`, `ENGINE_P25_TIMING_PROOF` (also the real trunk tunes
+    where GNU ld `--wrap` replaces the rigctl client), `APP_COMMAND_QUEUE` (withdrawn),
+    `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL` (the installation).
   - Stream notices and reads with no stream (issue #518): `include/dsd-neo/runtime/stream_notice_hooks.h` carries what
     the input stream got over by itself (`DSD_STREAM_NOTICE_USB_RECOVERED`, `DSD_STREAM_NOTICE_CAPTURE_STOPPED`),
     posted from the stream's controller with `dsd_runtime_stream_notice_post()` into the sink app-control installs at
@@ -6800,10 +6806,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     back to the leading chain), a dwell expiry that overtakes it (put back on the leading chain before the hunt moves;
     the expiry still judges the chain the dwell ran on), and `dsd_frame_sync_reset_acquisition()` (a trunk-scan switch,
     a row or input boundary; the caller owns the demodulator and the learned modulation). The leading chain is the
-    incumbent unless the other chain has read more (read whole decides only at the pass's end). Each of those boundaries, and a tune on either thread, also
-    consumes the pending NID stamp (`seen_symbolcnt`) with no comparison running, and a stamp read across a
-    `carrier_seq` change or with no frame read since the mark opens none (`seen_carrier_seq`): no comparison opens
-    on the carrier reached from the carrier left's last frame.
+    incumbent unless the other chain has read more (read whole decides only at the pass's end). Each of those
+    boundaries, and a tune on either thread, also consumes the pending NID stamp (`seen_symbolcnt`) with no comparison
+    running, and a stamp read across a `carrier_seq` change or with no frame read since the mark opens none
+    (`seen_carrier_seq`): no comparison opens on the carrier reached from the carrier left's last frame.
   - Tunes: `dsd_engine_trunk_tune_to_freq_request()` and `dsd_engine_trunk_tune_to_cc_request()` (the latter also
     under `dsd_engine_return_to_cc_request()`, when it retunes; one that retunes nothing leaves the comparison going
     and does not apply the control channel's timing under it) end a comparison in flight on the leading chain before

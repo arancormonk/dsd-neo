@@ -2960,10 +2960,11 @@ Gardner/Costas/FLL-band-edge symbol chain.
     channel message (TSBK) that passed its CRC, or a Phase 2 MAC PDU that passed its CRC (or a Phase 2 window a
     near-miss sync opened that passed its checks). The slower gain holds the timing the lock found instead of
     following a simulcast site's echoes from symbol to symbol. A tune, a lost carrier, a symbol rate or modulation
-    change and a decode-mode switch withdraw the proof, and the gain goes back to 0.025 until P25 proves the carrier
-    again. Phase 1 voice never proves it: on a simulcast voice channel the signal fades and its timing sways a few
-    times a second as the sites' signals beat, the slower gain follows that sway too late, and a call is too short to
-    win anything back, so voice frames came out with more errors. On a noisy Phase 2 simulcast channel the slower gain
+    change (the hunt's, or one made with the modulation controls, the P25 Phase 2 helper or a config's `[demod]`) and
+    a decode-mode switch withdraw the proof, and the gain goes back to 0.025 until P25 proves the carrier again.
+    Phase 1 voice never proves it: on a simulcast voice channel the signal fades and its timing sways a few times a
+    second as the sites' signals beat, the slower gain follows that sway too late, and a call is too short to win
+    anything back, so voice frames came out with more errors. On a noisy Phase 2 simulcast channel the slower gain
     is not always better either: on one noisy test capture about half the runs lost up to 6 of about 235 voice bursts.
   - otherwise (Phase 1 voice and conventional channels, X2-TDMA, Auto's CQPSK trial before P25 is proven, DMR and
     NXDN through `-mq`), to 0.018 at 5500 sym/s and above, and not at all below.

@@ -118,6 +118,21 @@ void dsd_frame_sync_reset_mod_state(void);
  * Set forget_p25_modulation for conventional rows; trunk targets own their learned modulation. */
 void dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int forget_p25_modulation);
 
+/** @brief The chain the decoder runs: its modulation (@c dsd_state::rf_mod) and symbol profile
+ *         (@c dsd_state::sps_hunt_idx). */
+typedef struct {
+    int rf_mod;
+    int sps_hunt_idx;
+} dsd_frame_sync_chain;
+
+/**
+ * @brief Withdraw the P25 proof the CQPSK timing loop follows when code outside the frame sync left @p state on a chain
+ *        other than @p before (a modulation control, a config's [demod], the P25p2 helper, a control channel's
+ *        timing): another chain on the front end, which the proof given on the old one does not speak for, as at the
+ *        frame sync's own moves. One that restates the chain keeps it.
+ */
+void dsd_frame_sync_note_chain_change(const dsd_state* state, dsd_frame_sync_chain before);
+
 /**
  * @brief Return the NXDN variant selected by the enabled mode and active SPS hunt profile.
  */

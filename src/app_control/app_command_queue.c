@@ -3505,11 +3505,14 @@ manual_tune_io_leg(dsd_opts* opts, const dsd_state* state, uint32_t hz, uint64_t
 /* The receiver moved to another carrier under a manual tune (issue #522): with rigctl on PCM input nothing else reports
    this hop (io_control does not advance the trunk-tuning generation, and there is no RTL stream generation to move), so
    the tone heard on the old channel goes here; nor does anything else tell the NXDN control-channel hunt, whose
-   attribution of the receiver it outdates. */
+   attribution of the receiver it outdates. Nor does anything withdraw the proof that the carrier left was P25, which
+   the CQPSK timing loop's post-lock gain follows: no tuning generation stales it, and under trunking no carrier
+   boundary runs. */
 static void
 manual_tune_moved(const dsd_opts* opts, dsd_state* state) {
     dsd_analog_rx_reset(state);
     nxdn_cc_hunt_note_retune(opts, state);
+    dsd_rtl_stream_metrics_hook_forget_p25_proof();
 }
 
 /* The io_control leg of request_manual_tune() to @p freq: its RTL_STREAM_TUNE_* result, or -1 for a frequency the
@@ -10825,7 +10828,13 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int
     }
     g_apply_cmd_guard_held = guarded;
     g_config_recording_applied = 0;
+    /* Every modulation or symbol profile change made outside the frame sync and the engine's tunes is a command's (the
+       modulation controls, the P25p2 helper, a config's [demod] or [mode], an import, a scan scope's resume), and each
+       writes the chain before or without publishing it: compared across the whole command, so one that restates the
+       chain in force, or a scoped one whose row puts the same chain back, keeps the P25 proof. */
+    const dsd_frame_sync_chain chain_before = {state ? state->rf_mod : 0, state ? state->sps_hunt_idx : 0};
     const int result = apply_cmd_scoped(opts, state, c, guarded, scan_list_code);
+    dsd_frame_sync_note_chain_change(state, chain_before);
     g_apply_cmd_guard_held = 0;
     if (guarded) {
         if (state && command_changes_call_verdict(c)) {
