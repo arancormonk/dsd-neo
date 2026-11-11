@@ -10724,23 +10724,23 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   decoders).
   - SYNC. `tetra_bsch_parse()` returns `TETRA_BSCH_FOREIGN` for a CRC-passed BSCH whose MCC, MNC or colour code is not
     the home's, when the home's network was known (`bsch_foreign()`), before anything of it is taken (the cell forget,
-    the identity and seed, the received identity, the publication, the clock); `-v 1` logs
-    `[TETRA BSCH] MCC=... MNC=... CC=0x..: another cell on the followed carrier; not taken on`. Once synchronised, an MS
-    takes on only SYNC of its own colour code (clause 23.6.2; ETSI ETR 300-1 clause 5.8.1.1.1: the BSCH is not
-    scrambled, so nothing else keeps an adjacent cell's out). `tetra_sb_bsch()` runs the clock to the burst's slot as
-    for a failed BSCH, counts the burst for its verdict only (no signalling evidence, no polarity, no home evidence) and
-    leaves block 2, which is that cell's, undecoded. The home's seed stays, so the other cell's CRC-protected blocks and
-    speech fail as they would for an MS, and its grants, allocations and releases do nothing.
+    the identity and seed, the received identity, the publication, the clock); it logs (`opts->verbose > 0`, the
+    default) `[TETRA BSCH] MCC=... MNC=... CC=0x..: another cell on the followed carrier; not taken on`. Once
+    synchronised, an MS takes on only SYNC of its own colour code (clause 23.6.2; ETSI ETR 300-1 clause 5.8.1.1.1: the
+    BSCH is not scrambled, so nothing else keeps an adjacent cell's out). `tetra_sb_bsch()` runs the clock to the
+    burst's slot as for a failed BSCH, counts the burst for its verdict only (no signalling evidence, no polarity, no
+    home evidence) and leaves block 2, which is that cell's, undecoded. The home's seed stays, so the other cell's
+    CRC-protected blocks and speech fail as they would for an MS, and its grants, allocations and releases do nothing.
   - Direct mode. A DSB, read by the hard decision (`tetra_sb_try_dmo()`) or only the soft one (`tetra_sb_soft_dsb()`),
     is consumed (`tetra_dmo_guarded()`): it does not enter direct mode, forget what the trunked carrier proved, set the
-    polarity or publish, since a trunked call's carrier is no direct mode channel; `-v 1` logs
-    `[TETRA DMO DSB] sys=... comm=...: direct mode on the followed carrier; not taken on`.
+    polarity or publish, since a trunked call's carrier is no direct mode channel; it logs (`opts->verbose > 0`, the
+    default) `[TETRA DMO DSB] sys=... comm=...: direct mode on the followed carrier; not taken on`.
   - SYSINFO. `sysinfo_applies()` in `tetra_mac.c` applies one only when its main carrier is a valid frequency equal to
     the home's control channel and, when both are known, its location area is the home's: every carrier of a cell names
     the cell's own main carrier (clause 21.4.4.1). Any other is another cell's, perhaps of the home's colour code, and
     changes nothing: no cell forget, no `trunk_cc_freq`, carrier, band, offset, location area, hyperframe, security or
     received identity, no `tetra_sm_on_cc_sync()` (so no control channel candidate), no location area for the call
-    records, no count in `frames_sysinfo`; `-v 1` logs it
+    records, no count in `frames_sysinfo`; it is logged (`opts->verbose > 0`, the default)
     `[TETRA SYSINFO] main carrier ... Hz LA ...: another cell on the followed carrier; not applied`.
     `tetra_mac_parse_block()` returns 0 for its block, which still counts as carrier evidence (it passed its CRC under
     the home's seed) but not as the home's. A home SYSINFO that names a location area while the home has none gives the
@@ -10762,12 +10762,12 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   `read_allocation()` reads it as `TETRA_ALLOC_OTHER_CELL`, guarding or not, and its PDU (a MAC-RESOURCE, or the MAC-END
   that completes a TM-SDU, clear or decrypted) is decoded and printed only (`tetra_mac_sdu_other_cell()`): the
   `[TETRA CHANNEL-ALLOCATION]` line ends `cell change: for another cell; logged only`, and nothing publishes its
-  address, takes a call PDU of it (`tetra_calls_on_event()` acts on nothing; `-v 2` says so), attaches its allocation,
-  event label or usage marker (`tetra_calls_on_allocation()` is not called), proves or maintains a call, or reaches the
-  state machine. Its MM PDUs are printed without writing the D-MM STATUS shown or the KSG a network uses
-  (`tetra_mm_dispatch_as()`, from `tetra_mle_dispatch_sdu()`). An allocation left unread (encrypted with no key: EN 300
-  392-7 clause 6.7.1.2 encrypts everything after the allocation-present flag) has no flag the decoder knows, and its PDU
-  is handled as any other.
+  address, takes a call PDU of it (`tetra_calls_on_event()` acts on nothing and, at `opts->verbose > 1`, the default,
+  logs so), attaches its allocation, event label or usage marker (`tetra_calls_on_allocation()` is not called), proves
+  or maintains a call, or reaches the state machine. Its MM PDUs are printed without writing the D-MM STATUS shown or
+  the KSG a network uses (`tetra_mm_dispatch_as()`, from `tetra_mle_dispatch_sdu()`). An allocation left unread
+  (encrypted with no key: EN 300 392-7 clause 6.7.1.2 encrypts everything after the allocation-present flag) has no
+  flag the decoder knows, and its PDU is handled as any other.
 - Known limits of a guarded follow, decided rather than worked around:
   - Same network and colour code. With equal MCC, MNC and colour code (or colour code 0 on both) another cell's bursts
     descramble with the home's seed and nothing in a PDU or in speech says whose they are; an MS has the same blindness

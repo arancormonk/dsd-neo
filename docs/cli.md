@@ -775,7 +775,7 @@ Android session whose saved extra arguments carry one refuses to start the same 
   After a call the decoder goes back to the control channel it left. TETRA cells reuse frequencies, so a traffic channel
   can carry another cell's bursts too, and while the decoder follows a call it does not take them on there: another
   cell's SYNC (another network or colour code), its SYSINFO (another main carrier or location area) and direct mode
-  bursts are ignored (`-v 1` logs `another cell on the followed carrier; not taken on`, `...; not applied` or
+  bursts are ignored (the log says `another cell on the followed carrier; not taken on`, `...; not applied` or
   `direct mode on the followed carrier; not taken on`), the control channel stays the one the call left, and Return to
   CC, skip and lockout go back to it. Turning trunking off and on during a call returns to it at once, since what was
   heard meanwhile cannot be trusted. Known limits: a cell with the same network and colour code on the same frequency
@@ -2829,7 +2829,7 @@ Out-of-range decimal keys are rejected without changing the installed key.
     D-OTAR key provide of trunked mode keys, which names those keys' algorithm (`TMO downlink · encrypted (TEA2)`).
     On an encrypted network these messages are usually encrypted too, and rare.
   - With the key: load the 80-bit key without a TEA. Once repeated encrypted signalling proves one of TEA1-TEA3,
-    `-v 2` logs `[TETRA AIR] ... proved by a repeat under TEA1` and the TETRA row names it; that needs signalling the
+    the log says `[TETRA AIR] ... proved by a repeat under TEA1` and the TETRA row names it; that needs signalling the
     network repeats under that key, so loading the right key alone does not guarantee it. The Security row's
     `TEA1 key` is the key and algorithm that apply to the carrier, not that proof.
   - A clue from the uplink: a radio's U-LOCATION UPDATE DEMAND names the algorithm it proposes, which the network
