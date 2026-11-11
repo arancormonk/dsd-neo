@@ -67,7 +67,8 @@ class CallHistoryExporter : public QObject {
      *        tells how it went.
      *
      * Refused (false) for a token that is 0 or not the pending one, and while a save runs; a refused save lets go of
-     * the reference's Download-folder row, and the pending file is used up either way.
+     * the reference's Download-folder row. A save that reaches the writer uses the pending file up, even when the
+     * writer refuses it; a stale or 0 token leaves the pending file held.
      */
     Q_INVOKABLE bool save(int token, const QString& reference);
     /** @brief Drop the pending file @p token (a cancelled picker); another token is left alone. */

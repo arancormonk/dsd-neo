@@ -4627,7 +4627,8 @@ test_destructor_marks_its_teardown_stage(void) {
 }
 
 /* B1: a row keeps its end. A span longer than the plausible cap reads as unknown on every path (a fold, an update, a
- * reload, a spill fold), and the row still chains from its real end. */
+ * reload, a spill fold). A row chains from its stored end only while its duration is known; a row past the cap chains
+ * from its start (row_merge_end_secs()). */
 int
 duration_of(const CallHistoryModel& model, int row) {
     return row >= 0 && row < model.count() ? model.data(model.index(row), CallHistoryModel::DurationSecsRole).toInt()

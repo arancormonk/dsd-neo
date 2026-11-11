@@ -1441,7 +1441,8 @@ Limits:
   you tick **Detect special numbers** in the Text Import dialog or set the column type to **Date (YMD)**.
 - Excel, History file: to keep a message with line breaks in one cell, use **Data > From Text/CSV**, choose
   **Transform Data**, open the Source step's settings and set **Line breaks** to **Ignore quoted line breaks**.
-  **File > Open** and Excel's older Text Import Wizard can split such a message across rows. A narrow column can show `frequency_hz` as `8.51E+08` until you widen it; the value in the cell is exact.
+  **File > Open** and Excel's older Text Import Wizard can split such a message across rows. A narrow column can show
+  `frequency_hz` as `8.51E+08` until you widen it; the value in the cell is exact.
 - Python: open the file with `encoding="utf-8-sig"`, so the BOM does not become part of the first column name.
   pandas' `read_csv` already handles it.
 

@@ -12145,18 +12145,18 @@ Qt Quick frontend (`src/ui/qt`):
     embedding host reuses for another run keeps its ring and identity, and the rows the earlier run left there stay that
     session's.
   - Duration and end: a voice row keeps its end (`Row::end`, seconds, 0 when not known) beside `durationSecs`. The
-    ring's `event_time` becomes the end only when the raw `event_start_time` is set and not after it (`row_from_item()`);
-    a row with no start stamp (`--playfiles`) takes `event_time` as its start and keeps no end, so an update never turns
-    its unknown duration into 0. `row_end_secs()` is the end when known, else the start; `load()` seeds each row's
-    seen entry with it. `foldRow()` (every merge, update and spill fold) takes the later of the two `row_end_secs()`
-    whenever either side knew its end, and sets the duration from `call_history_duration_secs()`, the one plausibility
-    rule a fresh row also gets: a merged span past 3,600 s reads unknown (-1) and stays so when an earlier fragment
-    updates. With neither end known the duration stays unknown. Matching (the merge window in `rows_mergeable()`, the
-    same-end preference in `same_reception_row()`) uses `row_merge_end_secs()`: the end only while the duration is
-    known, else the start. So a clock-shifted row (a span of hours) absorbs no later call of its talkgroup and source
-    inside that span, and a real chain longer than an hour continues in a new row once it crosses the cap; the row
-    past the cap keeps its real end. An update still reaches it by its fragment. The end is stored as `end` (omitted
-    when not known) in the rows store and the spill. A row an older build stored has no `end`: it ends at
+    ring's `event_time` becomes the end only when the raw `event_start_time` is set and not after it
+    (`row_from_item()`); a row with no start stamp (`--playfiles`) takes `event_time` as its start and keeps no end, so
+    an update never turns its unknown duration into 0. `row_end_secs()` is the end when known, else the start; `load()`
+    seeds each row's seen entry with it. `foldRow()` (every merge, update and spill fold) takes the later of the two
+    `row_end_secs()` whenever either side knew its end, and sets the duration from `call_history_duration_secs()`, the
+    one plausibility rule a fresh row also gets: a merged span past 3,600 s reads unknown (-1) and stays so when an
+    earlier fragment updates. With neither end known the duration stays unknown. Matching (the merge window in
+    `rows_mergeable()`, the same-end preference in `same_reception_row()`) uses `row_merge_end_secs()`: the end only
+    while the duration is known, else the start. So a clock-shifted row (a span of hours) absorbs no later call of its
+    talkgroup and source inside that span, and a real chain longer than an hour continues in a new row once it crosses
+    the cap; the row past the cap keeps its real end. An update still reaches it by its fragment. The end is stored as
+    `end` (omitted when not known) in the rows store and the spill. A row an older build stored has no `end`: it ends at
     `when + durationSecs` when the duration is known, else not known. Notices keep no end. Tests:
     `UI_QT_CALL_HISTORY_MODEL`.
   - Persistence: `call_history.json` (rows) and `call_history_seen.json` (seen map, newest 2048 in retention order);
@@ -12578,7 +12578,7 @@ Qt Quick frontend (`src/ui/qt`):
     start). Tests: `UI_QT_RECORDING_STORE` (`test_search_key_parse_and_compaction`, `test_detection_index`,
     `test_detection_root_away_keeps_membership`, `test_detection_order_newest_first`,
     `test_queries_between_rebuild_slices` (every read between slices of a rebuild, through the slice hook, the
-    batched History names included), `test_entry_names_match_zip_selection`, `test_entry_names_one_lock`,
+    batched History names included), `test_entry_names_match_zip_selection`, `test_entry_names_batch`,
     `test_revision_coalesced_passes`, `test_detection_from_c_writer`).
   - Deletion: only indexed entries, by id (`deleteRecordings()`, `deleteFolder(uid)`, `deleteUnfinished()`,
     `deleteAll()`), on the worker. Waits while `dsd_rdio_upload_holds()` (asked outside the store's lock), the player
@@ -16283,11 +16283,15 @@ Test: `tst_readable_text_gate.qml`.
 A notice that is read out when it is set (a picker failure, an import problem, a Download-folder save's location;
 issue #829) goes through `Navigation.announce(owner, line, text)`: it does nothing for an empty text or while
 `Navigation.allows(line)` is false (`line` null: no gate, as for the backup card's notices, which live on Settings),
-records `announced`/`announcements` on `owner` for tests, and calls `owner.Accessible.announce(text)` when the Qt in
-use has it. Each failure is read once, and a repeat is read again. Used by `BackupFlow`, `WizardScreen` (`csvNotice`,
+records `announced`/`announcements` on `owner` for tests, and calls `Accessible.announce(text)` on `line` (on `owner`
+when `line` is null) when the Qt in use has it. Speaking makes the speaker an accessible node: a line is a gated
+`ReadableText`, but an owner screen has no gate, and it would stay in the tree under a sheet
+(`test_3d_covered_screen_leaves_the_tree` with an export result set). Each failure is read once, and a repeat is read
+again. Used by `BackupFlow`, `WizardScreen` (`csvNotice`,
 `replayNotice`), `CallRecordingsScreen`, `CallRecordingPlayer`, `CsvImportFlow` (the companion sheet's notice),
 `ImportsScreen` (an import problem, `noticeLine`), `ScanListScreen` (a target CSV import problem,
-`validationMessage`) and `SignalSearchScreen` (an export's result, once its line can be reached: `announceExport()`).
+`validationMessage`), `SignalSearchScreen` (an export's result, once its line can be reached: `announceExport()`) and
+`HistoryScreen` (its export's result, the same way).
 
 Building a screen raises a hide for each accessible item created hidden: Qt makes an item accessible as its
 `Accessible` properties are set, before its gate is evaluated. The bridge answers each hide on a large new subtree with
