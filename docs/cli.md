@@ -76,10 +76,11 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - Symbol files: `-i capture.bin` replays a `-c` symbol capture with the soft metrics it recorded; `-i file.raw` or
   `.sym` reads a float symbol file, one native-order 32-bit float per symbol at the nominal levels (outer ±3, inner
   ±1). A float symbol file is sliced as PCM audio is, on the adaptive thresholds in its own units, whatever the
-  modulation (a P25 Phase 2 or `-mq` session included), and its soft-decision reliabilities (voice error counts and
-  soft FEC: AMBE/IMBE, P25 Phase 2 DUID, ESS, FACCH and SACCH) are measured against the same thresholds, so they are
-  real but on another scale than a radio input's. Only the CQPSK demodulator of a radio or `--iq-replay` input slices
-  and measures P25 symbols at the fixed π/4-DQPSK levels (TETRA's, from any input, at the quadrant levels about 0).
+  modulation but TETRA (a P25 Phase 2 or `-mq` session included), and its soft-decision reliabilities (voice error
+  counts and soft FEC: AMBE/IMBE, P25 Phase 2 DUID, ESS, FACCH and SACCH) are measured against the same thresholds, so
+  they are real but on another scale than a radio input's. TETRA, from any input, is sliced and measured at its
+  quadrant levels about 0. Of the rest, only the CQPSK demodulator of a radio or `--iq-replay` input slices and
+  measures P25 symbols at the fixed π/4-DQPSK levels.
   A float symbol file of a CQPSK capture therefore decodes close to, not exactly as, the radio input it came from:
   the adaptive inner/outer edge sits at 5/8 of the averaged outer level, about 2.1 levels on a noisy simulcast
   against the CQPSK slicer's fixed 2, so noisy outer symbols near that edge can slice the other way (0.6% of the
