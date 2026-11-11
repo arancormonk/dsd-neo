@@ -220,6 +220,15 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         ${_dsd_neo_dsp_ieee_c_sources}
         PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-fno-math-errno"
     )
+    # The speech AGC's output is meant to be the same bits on every compiler and
+    # architecture with one libm: no fused multiply-adds, which Clang on arm64 and
+    # GCC with FMA would otherwise form and round differently (MSVC's /fp:precise
+    # does not contract).
+    set_property(
+        SOURCE speech_agc.c
+        APPEND
+        PROPERTY COMPILE_OPTIONS "-ffp-contract=off"
+    )
 elseif(MSVC)
     set_source_files_properties(
         ${_dsd_neo_dsp_ieee_c_sources}

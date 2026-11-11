@@ -168,6 +168,22 @@ elseif(MSVC)
         PROPERTIES COMPILE_OPTIONS "/fp:precise"
     )
 endif()
+# The speech AGC's float output is meant to be the same bits on every compiler and
+# architecture with one libm (issue #518), so neither it nor the tests that build its
+# input and read its output let the compiler fuse a multiply and an add: Clang on
+# arm64 and GCC with FMA would otherwise round them differently. MSVC's /fp:precise
+# above does not contract.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    set_property(
+        SOURCE
+            dsp/test_dsp_speech_agc.c
+            dsp/test_dsp_analog_audio.c
+            test_support/p56.c
+            test_support/speech_synth.c
+        APPEND
+        PROPERTY COMPILE_OPTIONS "-ffp-contract=off"
+    )
+endif()
 
 add_library(dsd-neo_test_support INTERFACE)
 target_include_directories(
@@ -21717,10 +21733,11 @@ if(DSD_HAS_RADIO)
     # the levels the width bounds hold.
     set(_analog_channel "-v 0 -n 50")
 
-    # 1 kHz at 3 kHz deviation through the default chain: 37.5 dB tone SNR, 52.3 dB
-    # in-band ratio, -13.2 dBFS RMS at the -10 dBFS peak the AGC holds it to, audible
-    # from the first block, no clipping. The probe on the tone itself must agree with
-    # the fit (0.00 dBc measured), which shows the probe reads a real line at its level.
+    # 1 kHz at 3 kHz deviation through the default chain: 30.4 dB tone SNR (the speech
+    # AGC's gain moves while it turns the tone away; 37.5 dB at a fixed gain), 52.3 dB
+    # in-band ratio, -15.36 dBFS RMS, audible from the first block, no clipping. The
+    # probe on the tone itself must agree with the fit (0.01 dBc measured), which shows
+    # the probe reads a real line at its level.
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_TONE
         nfm_tone_synth
@@ -22103,8 +22120,8 @@ if(DSD_HAS_RADIO)
 
     # Native AM (issue #524). am_tone_synth is a 1 kHz tone at 50% depth on a 0 Hz
     # carrier with noise 30 dB down across the band: through -fM's default chain it
-    # measures 31.7 dB tone SNR, 50.4 dB in-band ratio and -13.5 dBFS RMS (the AGC holds
-    # the peak at -10 dBFS, as for FM), audible from the first block, unclipped; the
+    # measures 30.3 dB tone SNR, 50.4 dB in-band ratio and -20.04 dBFS RMS (the speech
+    # AGC turns the tone away, as for FM), audible from the first block, unclipped; the
     # probe on the tone agrees with the fit. The FM monitor finds no tone on it (see the
     # negative control below), so the level comes from the AM detector.
     dsd_neo_add_analog_replay_test(
@@ -22161,7 +22178,7 @@ if(DSD_HAS_RADIO)
     # Issue #526: -Y map rows declaring am on a digital (-fa) session. The host enters
     # the row the way the scanner commits it, so the replay's front end opens the AM
     # monitor at the row's width. Row 0 (--am-bandwidth-hz 8333) on am_tone_synth
-    # measures 31.6 dB tone SNR, 43.0 dB in-band ratio and -13.5 dBFS RMS, unclipped,
+    # measures 30.3 dB tone SNR, 43.1 dB in-band ratio and -20.04 dBFS RMS, unclipped,
     # through the default chain: the FM monitor finds no tone there, so the tone comes
     # from the AM detector the row selects (the wider channel lets in more of the
     # fixture's noise than AM_TONE's default 6 kHz, which reads 50.4 dB in-band). Row 1
@@ -22623,7 +22640,7 @@ if(DSD_HAS_RADIO)
         ""
         "ANALOG AUDIO FAIL: total ms"
     )
-    # A lower bound above what the tone measures (37.5 dB).
+    # A lower bound above what the tone measures (30.4 dB through the default chain).
     dsd_neo_add_analog_replay_fail_test(
         DECODE_IQ_ANALOG_NEG_TONE_SNR
         nfm_tone_synth

@@ -617,12 +617,14 @@ detector's 0.25 gain), 0.25 after the default `vol` of 2, and take a gain of
 13.65 dB at 750 us), and the gain stage makes that up with the gain the stream
 publishes (issue #518 B8/B9). The FSK discriminator output a digital front end delivers (+/-30000,
 read by the `-8` source monitor and EDACS analog voice) takes 8231/30000 instead:
-scaled as monitor audio it used to clip every sample. The default `-n 0` is a
-per-sample AGC that brings FM and AM speech to the level digital voice plays at.
-The FM and AM tone fixtures measure -15.1 and -15.0 dBFS RMS at `-n 50`
-(`DECODE_IQ_ANALOG_NFM_TONE_FIXED50` and its `_DEEMPH_*` variants,
-`_AM_TONE_FIXED50`), and real NFM and AM speech -23.8 and -23.9 dBFS under the
-AGC, against -24.9 for DMR voice (`DECODE_IQ_ANALOG_PARITY_*`).
+scaled as monitor audio it used to clip every sample. The default `-n 0` is the
+speech AGC (`<dsd-neo/dsp/speech_agc.h>`), which aims speech at -24 dBFS active
+level (P.56), the level `-g 0` aims digital voice at. The FM and AM tone fixtures
+measure -15.1 and -15.0 dBFS RMS at `-n 50` (`DECODE_IQ_ANALOG_NFM_TONE_FIXED50`
+and its `_DEEMPH_*` variants, `_AM_TONE_FIXED50`), and real NFM and AM speech
+-22.98 and -21.90 dBFS P.56 under the AGC (`DECODE_IQ_ANALOG_PARITY_*`). The
+earlier peak AGC's claim of matching digital voice at -24.9 dBFS RMS did not hold:
+that figure came from a control channel decoded as voice (issue #518 B1).
 
 ## Regression Coverage
 

@@ -128,7 +128,8 @@ int dsd_analog_audio_process_f(const dsd_opts* opts, dsd_state* state, dsd_analo
  * fixed at N / 50 for `-n N`, automatic on `-n 0`, its limiter holding -1 dBFS either way. On automatic a reception
  * starts at the band's start gain (DSD_ANALOG_AUDIO_START_GAIN_*_DB; on RTL monitor audio less the `vol` trim over its
  * default 2, so the trim does not move where the AGC starts). The AGC runs at @p rate_hz; at a rate it does not support
- * (dsd_speech_agc_init()) the chain plays the fixed gain, with the limiter, and logs that once per rate.
+ * (dsd_speech_agc_init()) the chain plays the fixed gain (`-n 50` on auto) with the limiter, and on auto logs that once
+ * per rate.
  *
  * The filters run whether or not the samples learn. @p learn holds one flag per sample (nonzero: the sample is
  * qualified reception, DSD_ANALOG_AUDIO_LEARN); NULL takes DSD_ANALOG_AUDIO_LEARN in @p flags for every sample. Where

@@ -62,7 +62,9 @@ typedef struct {
     dsd_speech_agc agc;
     /* The AGC runs at this chain's rate; at a rate it does not support, the fixed gain plays through the limiter. */
     int agc_ok;
+    int agc_rate_hz;
     dsd_peak_limiter limiter;
+    /* The last unsupported rate auto was asked for at (analog_audio_log_unsupported_rate()). */
     int unsupported_rate_logged;
     /* The new-reception rule (dsd_analog_audio_process_runs_f()): whether a sample learned since the AGC last started
        over, the decode-clock time of the last one, the samples processed after it, and the last sample's flag. */
@@ -190,29 +192,36 @@ analog_audio_reception_now(const dsd_opts* opts, const analog_audio_ext* ext) {
     return r;
 }
 
-/* The AGC at the chain's rate, or, at a rate it does not support, the limiter alone (logged once per rate). */
+/* The AGC at the chain's rate, or, at a rate it does not support, the limiter alone. */
 static void
 analog_audio_agc_configure(analog_audio_chain_state* cs, int run_rate_hz, float start_gain_db) {
     cs->agc_ok = dsd_speech_agc_init(&cs->agc, run_rate_hz, start_gain_db, DSD_SPEECH_AGC_TARGET_DBFS,
                                      DSD_SPEECH_AGC_CEILING_DBFS)
                  == 0;
+    cs->agc_rate_hz = run_rate_hz;
     cs->learned = 0;
     cs->since_learn = 0U;
     cs->last_learn_ns = 0U;
     cs->learn_prev = -1;
-    if (cs->agc_ok) {
+    if (!cs->agc_ok) {
+        (void)dsd_peak_limiter_init(&cs->limiter, run_rate_hz, DSD_SPEECH_AGC_CEILING_DBFS);
+    }
+}
+
+/* Auto asked for at a rate the AGC does not support: say so, once per rate. A fixed -n plays as asked and says
+   nothing. */
+static void
+analog_audio_log_unsupported_rate(analog_audio_chain_state* cs) {
+    if (cs->unsupported_rate_logged == cs->agc_rate_hz) {
         return;
     }
-    (void)dsd_peak_limiter_init(&cs->limiter, run_rate_hz, DSD_SPEECH_AGC_CEILING_DBFS);
-    if (cs->unsupported_rate_logged != run_rate_hz) {
-        cs->unsupported_rate_logged = run_rate_hz;
-        if (run_rate_hz < DSD_SPEECH_AGC_MIN_RATE_HZ) {
-            LOG_WARN("Automatic analog gain inactive: %d Hz audio is below %d Hz; playing at the -n 50 level\n",
-                     run_rate_hz, DSD_SPEECH_AGC_MIN_RATE_HZ);
-        } else {
-            LOG_WARN("Automatic analog gain inactive: %d Hz audio is above %d Hz; playing at the -n 50 level\n",
-                     run_rate_hz, DSD_SPEECH_AGC_MAX_RATE_HZ);
-        }
+    cs->unsupported_rate_logged = cs->agc_rate_hz;
+    if (cs->agc_rate_hz < DSD_SPEECH_AGC_MIN_RATE_HZ) {
+        LOG_WARN("Automatic analog gain inactive: %d Hz audio is below %d Hz; playing at the -n 50 level\n",
+                 cs->agc_rate_hz, DSD_SPEECH_AGC_MIN_RATE_HZ);
+    } else {
+        LOG_WARN("Automatic analog gain inactive: %d Hz audio is above %d Hz; playing at the -n 50 level\n",
+                 cs->agc_rate_hz, DSD_SPEECH_AGC_MAX_RATE_HZ);
     }
 }
 
@@ -361,13 +370,16 @@ analog_audio_run_agc(analog_audio_chain_state* cs, float* buf, size_t n, const u
 }
 
 /* The gain stage: the source gain, then the AGC, fixed at N / 50 or automatic; publishes what it applied over the
-   -n 50 gain. At a rate the AGC does not support, the fixed gain (-n 50 on auto) through the limiter. */
+   -n 50 gain. At a rate the AGC does not support, the fixed gain (-n 50 on auto, logged) through the limiter. */
 static void
 analog_audio_run_gain(const dsd_opts* opts, dsd_state* state, analog_audio_chain_state* cs, float* buf, size_t n,
                       unsigned int flags, const uint8_t* learn, uint64_t end_ns, float start_gain_db) {
     const int is_auto = dsd_analog_gain_is_auto(opts->audio_gainA);
     const double setting = is_auto ? 1.0 : (double)opts->audio_gainA / ANALOG_AUDIO_UNITY_SETTING;
     if (!cs->agc_ok) {
+        if (is_auto) {
+            analog_audio_log_unsupported_rate(cs);
+        }
         analog_audio_apply_gain(buf, n, cs->source_gain * setting);
         dsd_peak_limiter_process(&cs->limiter, buf, n);
         state->aout_gainA = (float)(20.0 * log10(setting * (double)cs->limiter.gain));

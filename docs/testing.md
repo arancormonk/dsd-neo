@@ -2207,7 +2207,7 @@ a missed bound), the named `ANALOG AUDIO FAIL:` line, an `ANALOG METRIC:` line (
 | --- | --- | --- |
 | `DECODE_IQ_ANALOG_NEG_ADJACENT_UNFILTERED` | `DECODE_IQ_ANALOG_NFM_ADJACENT`'s 12.5 kHz bound with `DSD_NEO_CHANNEL_LPF=0`, options spelled `--opt=VALUE` | the probe's measured level: about -20 dBc against -40 (-76.6 with the channel filter); "not measured" does not count |
 | `DECODE_IQ_ANALOG_NEG_AUDIBLE_NOT_SILENT` | the silence pattern (`--analog-max-audible-ms 0`, `--analog-min-total-ms 1400`) on `nfm_tone_synth` | audible ms, while the stream-time bound holds |
-| `DECODE_IQ_ANALOG_NEG_TONE_SNR` | a 60 dB tone SNR floor on `nfm_tone_synth` (37.5 dB) | tone SNR |
+| `DECODE_IQ_ANALOG_NEG_TONE_SNR` | a 60 dB tone SNR floor on `nfm_tone_synth` (30.4 dB through the default chain) | tone SNR |
 | `DECODE_IQ_ANALOG_NEG_TONE_NOT_MEASURED` | an SNR bound without `--analog-expect-tone-hz` | tone SNR "not measured" |
 | `DECODE_IQ_ANALOG_NEG_BAD_BOUND` | a malformed bound value | exit status 2 before the replay starts |
 | `DECODE_IQ_ANALOG_NEG_MISSING_VALUE` | a host option as the last argument, with no value | exit status 2 and "needs a value" before the replay starts |

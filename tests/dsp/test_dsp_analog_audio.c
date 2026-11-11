@@ -26,12 +26,14 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "p56.h"
 #include "speech_synth.h"
+#include "test_support.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -1189,27 +1191,118 @@ test_new_reception_after_a_second(void) {
     }
 }
 
+/* The new-reception rule with the closed run and the next learning samples in one buffer, a learn flag per sample, fed
+   in calls of @p block samples (0: random sizes), so the call boundaries fall inside the closed run and around its end
+   and a call can hold both. Returns the gain after it; the output goes to @p out (n_out samples). */
+static float
+joined_reception_gain(int rate, double closed_s, size_t block, float* out, size_t n_out) {
+    fixture f = fixture_new();
+    clock_start(rate);
+    const size_t n_a = secs(rate, 4.0);
+    const size_t n_closed = secs(rate, closed_s);
+    const size_t n_b = secs(rate, 0.1);
+    const size_t n = n_a + n_closed + n_b;
+    float* x = alloc_f(n);
+    float* a = talker(rate, n_a, -40.0, 71U);
+    DSD_MEMCPY(x, a, n_a * sizeof(float));
+    uint8_t* learn = (uint8_t*)calloc(n, 1U);
+    if (!learn) {
+        DSD_FPRINTF(stderr, "out of memory\n");
+        exit(2);
+    }
+    for (size_t i = 0; i < n; i++) {
+        learn[i] = (i < n_a || i >= n_a + n_closed) ? 1U : 0U;
+    }
+    g_block_rng = 777U;
+    chain_feed(&f, DSD_ANALOG_AUDIO_SOURCE_PCM16, rate, x, n, block, learn, 0U, NULL);
+    const float got = f.state->aout_gainA;
+    DSD_MEMCPY(out, x, (n < n_out ? n : n_out) * sizeof(float));
+    free(learn);
+    free(a);
+    free(x);
+    fixture_free(&f);
+    return got;
+}
+
+/* The same rule inside one buffer: a closure just under a second keeps the gain, one just over starts it over, and the
+   output is the same, sample for sample, whether the buffer goes in 20 ms calls, 37-sample calls or random ones. */
+static void
+test_new_reception_inside_one_buffer(void) {
+    const int rates[] = {48000, 8000};
+    const double closures[] = {0.98, 1.02};
+    for (size_t r = 0; r < sizeof rates / sizeof rates[0]; r++) {
+        const int rate = rates[r];
+        const size_t n_out = secs(rate, 5.2);
+        float* want = alloc_f(n_out);
+        float* got = alloc_f(n_out);
+        for (size_t c = 0; c < sizeof closures / sizeof closures[0]; c++) {
+            const float g = joined_reception_gain(rate, closures[c], (size_t)rate / 50U, want, n_out);
+            const int restarted = fabs((double)g - k_fm_narrow_db) < 1e-3;
+            CHECK(restarted == (closures[c] > 1.0), "%d Hz: %.2f s closed in one buffer: gain %.3f dB", rate,
+                  closures[c], (double)g);
+            CHECK(restarted || g > (float)k_fm_narrow_db + 8.0f, "%d Hz: %.2f s closed lost the gain (%.3f dB)", rate,
+                  closures[c], (double)g);
+            const size_t blocks[] = {37U, 0U};
+            for (size_t b = 0; b < sizeof blocks / sizeof blocks[0]; b++) {
+                const float gb = joined_reception_gain(rate, closures[c], blocks[b], got, n_out);
+                int same = fabsf(gb - g) < 1e-4f;
+                for (size_t i = 0; same && i < n_out; i++) {
+                    same = fabsf(got[i] - want[i]) <= 1e-3f;
+                }
+                CHECK(same, "%d Hz: %.2f s closed in calls of %zu: not the 20 ms calls' output", rate, closures[c],
+                      blocks[b]);
+            }
+        }
+        free(got);
+        free(want);
+    }
+}
+
 /* Under 8 kHz (PCM input at 2.4-8 kHz runs the chain at its own rate) the speech AGC does not run: the chain plays the
-   -n 50 gain on auto, the fixed one otherwise, through the -1 dBFS limiter, and publishes it. */
+   -n 50 gain on auto, the fixed one otherwise, through the -1 dBFS limiter, and publishes it. On auto it logs that once
+   per rate; a fixed -n logs nothing. */
 static void
 test_unsupported_rate_plays_fixed_gain(void) {
     fixture f = fixture_new();
     f.opts->use_pbf = 0;
+    dsd_test_capture_stderr cap;
+    CHECK(dsd_test_capture_stderr_begin(&cap, "dsdneo_analog_audio_log") == 0, "capture stderr");
     float x[4] = {1000.0f, -1000.0f, 31000.0f, -31000.0f};
     (void)dsd_analog_audio_process_f(f.opts, f.state, DSD_ANALOG_AUDIO_CHAIN_MONITOR, x, 4U,
                                      DSD_ANALOG_AUDIO_SOURCE_PCM16, 4000, DSD_ANALOG_AUDIO_LEARN);
+    float again[2] = {0.0f, 0.0f};
+    (void)dsd_analog_audio_process_f(f.opts, f.state, DSD_ANALOG_AUDIO_CHAIN_MONITOR, again, 2U,
+                                     DSD_ANALOG_AUDIO_SOURCE_PCM16, 4000, DSD_ANALOG_AUDIO_RESET);
+    /* A fixed -n plays as asked at any rate, with nothing to say. */
+    f.opts->audio_gainA = 100.0f;
+    float y[2] = {1000.0f, -1000.0f};
+    (void)dsd_analog_audio_process_f(f.opts, f.state, DSD_ANALOG_AUDIO_CHAIN_MONITOR, y, 2U,
+                                     DSD_ANALOG_AUDIO_SOURCE_PCM16, 6000, DSD_ANALOG_AUDIO_RESET);
+    const float fixed_gain_db = f.state->aout_gainA;
+    f.opts->audio_gainA = 0.0f;
+    float z[2] = {0.0f, 0.0f};
+    (void)dsd_analog_audio_process_f(f.opts, f.state, DSD_ANALOG_AUDIO_CHAIN_MONITOR, z, 2U,
+                                     DSD_ANALOG_AUDIO_SOURCE_PCM16, 6000, DSD_ANALOG_AUDIO_LEARN);
+    (void)dsd_test_capture_stderr_end(&cap);
+    char log[1024];
+    CHECK(dsd_test_capture_stderr_read(&cap, log, sizeof log) == 0, "read the capture");
     CHECK(fabsf(x[0] - 1000.0f) < 1e-3f && fabsf(x[1] + 1000.0f) < 1e-3f, "auto at 4 kHz: %.3f %.3f", (double)x[0],
           (double)x[1]);
     CHECK(fabsf(x[2]) <= 29204.0f && fabsf(x[3]) <= 29204.0f, "auto at 4 kHz passed the ceiling: %.1f %.1f",
           (double)x[2], (double)x[3]);
-    f.opts->audio_gainA = 100.0f;
-    float y[2] = {1000.0f, -1000.0f};
-    (void)dsd_analog_audio_process_f(f.opts, f.state, DSD_ANALOG_AUDIO_CHAIN_MONITOR, y, 2U,
-                                     DSD_ANALOG_AUDIO_SOURCE_PCM16, 4000, DSD_ANALOG_AUDIO_RESET);
-    CHECK(fabsf(y[0] - 2000.0f) < 1e-3f && fabsf(y[1] + 2000.0f) < 1e-3f, "-n 100 at 4 kHz: %.3f %.3f", (double)y[0],
+    CHECK(fabsf(y[0] - 2000.0f) < 1e-3f && fabsf(y[1] + 2000.0f) < 1e-3f, "-n 100 at 6 kHz: %.3f %.3f", (double)y[0],
           (double)y[1]);
-    CHECK(fabs((double)f.state->aout_gainA - 6.0206) < 1e-3, "-n 100 at 4 kHz publishes %.3f dB",
-          (double)f.state->aout_gainA);
+    CHECK(fabs((double)fixed_gain_db - 6.0206) < 1e-3, "-n 100 at 6 kHz publishes %.3f dB", (double)fixed_gain_db);
+    /* Auto at 4 kHz says so once over two calls; the fixed gain at 6 kHz says nothing; auto at 6 kHz says so once. */
+    const char* const line_4k = "Automatic analog gain inactive: 4000 Hz audio is below 8000 Hz; playing at the -n 50 "
+                                "level\n";
+    const char* const line_6k = "Automatic analog gain inactive: 6000 Hz audio is below 8000 Hz; playing at the -n 50 "
+                                "level\n";
+    const char* first = strstr(log, line_4k);
+    CHECK(first != NULL && strstr(first + 1, line_4k) == NULL, "the 4 kHz line not logged exactly once: [%s]", log);
+    const char* six = strstr(log, line_6k);
+    CHECK(six != NULL && strstr(six + 1, line_6k) == NULL && strlen(log) == strlen(line_4k) + strlen(line_6k),
+          "the log holds other than one line per rate: [%s]", log);
     fixture_free(&f);
 }
 
@@ -1267,6 +1360,7 @@ main(void) {
     test_next_transmission_after_noise();
     test_rollback_at_close();
     test_new_reception_after_a_second();
+    test_new_reception_inside_one_buffer();
     test_unsupported_rate_plays_fixed_gain();
     test_fixed_gain_keeps_the_limiter();
     test_slot_lifetime_and_args();

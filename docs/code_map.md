@@ -6381,8 +6381,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`analog_audio_start_gain_db()`, issue #518 D6/D7): FM narrowband (`--nfm-bandwidth-hz` up to 16000, the default)
   +4.537 dB, FM wideband -1.482 dB, AM -2.553 dB, on RTL monitor audio less the `vol` trim over its default 2; a
   setting change applies from the next reset (`dsd_speech_agc_set_start_gain_db()`). At a rate the AGC refuses (under
-  8 kHz: PCM input at its own rate) the chain plays the fixed gain, `-n 50` on auto, through a `dsd_peak_limiter` and
-  logs that once per rate. The source gain takes
+  8 kHz: PCM input at its own rate) the chain plays the fixed gain, `-n 50` on auto, through a `dsd_peak_limiter`, and
+  on auto logs that once per rate. The source gain takes
   each source's reference signal to -12 dBFS peak: RTL monitor audio after the `vol` trim (0.25 at the default 2:
   1 kHz at 3 kHz deviation after the 1/pi output scale, or AM at 50%) by 32924, the RTL FSK discriminator output
   (+/-30000: the -8 source monitor under digital decoding, told by `rtl_symbol_cache_output_kind`, and EDACS on RTL,
@@ -6417,9 +6417,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`dsd_decode_now_mono_ns()` read once per call as its last sample's time, earlier samples placed by their distance
   before it, so a source that stops sending counts too and the partition does not), resets the AGC. With the default
   open squelch on a continuous stream neither an edge nor a gap occurs; the AGC's own detector and attenuator keep hiss
-  out. A block that straddles a retune or reset (`dsd_analog_rx_block_straddles_boundary()`), partly the old channel's
-  and never played, goes in with `DSD_ANALOG_AUDIO_DISCARD`: the chain neither filters it nor counts it, turns it into
-  silence, and starts over with the next block, so the old channel leaves nothing in the new one's filters. EDACS runs
+  out. Decided behaviour: the clock cannot tell a decoder that stalled from an input that stopped, so a decoder-thread
+  stall of about a second inside a continuous transmission (a slow `-6` raw WAV write or sync, which the finalizer
+  already notes can hold the decoder, or the host pausing the process) restarts the AGC at the start gain when the
+  backlog is processed, as a new reception would. A block that straddles a retune or reset
+  (`dsd_analog_rx_block_straddles_boundary()`), partly the old channel's and never played, goes in with
+  `DSD_ANALOG_AUDIO_DISCARD`: the chain neither filters it nor counts it, turns it into silence, and starts over with
+  the next block, so the old channel leaves nothing in the new one's filters. EDACS runs
   the EDACS chain with the talkgroup gate as its learn flag and a reset per call, after the symbol register is read
   from the raw block; under a dynamic squelch it runs the chain per run of heard and unheard samples and silences the
   closed ones (`edacs_process_analog_block_runs()`, issue #625), each call reading the decode clock. The M17
