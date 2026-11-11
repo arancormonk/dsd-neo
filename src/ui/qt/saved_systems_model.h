@@ -75,7 +75,8 @@ class SavedSystemsModel : public QAbstractListModel {
         HasSitePosRole,
         AvoidSiteRole,
         AirspyRole,
-        PlaceRole // RadioReference place, validPlace()'s form; empty = none
+        PlaceRole,        // RadioReference place, validPlace()'s form; empty = none
+        KeyConfiguredRole // a direct key, a key file or a decryption profile: whether one is set, never which
     };
 
     /**

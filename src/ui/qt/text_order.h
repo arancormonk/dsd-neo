@@ -34,6 +34,12 @@ QString text_fold(const QString& s);
 /** @brief Natural, accent- and case-blind order of two names; <0, 0 (only for identical strings) or >0. */
 int text_compare_names(const QString& a, const QString& b);
 
+/**
+ * @brief text_compare_names() of @p a and @p b given their text_fold() as @p aFolded and @p bFolded, for a caller
+ *        that orders many names and folds each once.
+ */
+int text_compare_folded_names(const QString& aFolded, const QString& a, const QString& bFolded, const QString& b);
+
 /** @brief Whether an already folded haystack contains an already folded needle (an empty needle matches). */
 bool text_fold_contains(const QString& foldedHaystack, const QString& foldedNeedle);
 
@@ -44,8 +50,8 @@ class TextOrder : public QObject {
   public:
     explicit TextOrder(QObject* parent = nullptr);
 
-    Q_INVOKABLE QString fold(const QString& s) const;
-    Q_INVOKABLE int compare(const QString& a, const QString& b) const;
+    Q_INVOKABLE static QString fold(const QString& s);
+    Q_INVOKABLE static int compare(const QString& a, const QString& b);
 };
 
 } // namespace dsd_qt

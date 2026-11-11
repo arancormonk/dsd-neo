@@ -416,6 +416,8 @@ SavedSystemsModel::detailRoleValue(const Row& row, int role) {
         case HasSitePosRole: return row.hasSitePos;
         case AvoidSiteRole: return row.avoidSite;
         case PlaceRole: return row.place;
+        case KeyConfiguredRole:
+            return !row.encKeyType.isEmpty() || !row.keyCsvPath.isEmpty() || !row.decryptionProfileUid.isEmpty();
         default: return QVariant();
     }
 }
@@ -492,6 +494,7 @@ SavedSystemsModel::roleNames() const {
     roles.insert(HasSitePosRole, QByteArrayLiteral("hasSitePos"));
     roles.insert(AvoidSiteRole, QByteArrayLiteral("avoidSite"));
     roles.insert(PlaceRole, QByteArrayLiteral("place"));
+    roles.insert(KeyConfiguredRole, QByteArrayLiteral("keyConfigured"));
     return roles;
 }
 

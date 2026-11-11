@@ -117,6 +117,7 @@
 #include "qml_backup_recorder.h"
 #include "qml_gc_policy.h"
 #include "qml_spectrum_stub.h"
+#include "saved_system_cards.h"
 #include "saved_systems_model.h"
 #include "scan_avoid_list_model.h"
 #include "scan_list_starter.h"
@@ -5138,6 +5139,9 @@ class Setup : public QObject {
     setLocationSupported(bool supported) {
         m_host[QStringLiteral("locationSupported")] = supported;
         m_host_readings->insert(QStringLiteral("locationSupported"), supported);
+        if (m_saved_system_cards != nullptr) {
+            m_saved_system_cards->setLocationSupported(supported); // as qt_ui.cpp sets it from the host
+        }
         m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
     }
 
@@ -5617,6 +5621,18 @@ class Setup : public QObject {
         }
     }
 
+    /** @brief The saved-system cards as a fresh Home finds them: no search, no screen reader, nothing held, and no
+     *         location support (setLocationSupported() turns it on). */
+    Q_INVOKABLE void
+    resetSavedSystemCards() {
+        if (m_saved_system_cards != nullptr) {
+            m_saved_system_cards->setQuery(QString());
+            m_saved_system_cards->setScreenReaderActive(false);
+            m_saved_system_cards->setHoldReorders(false);
+            m_saved_system_cards->setLocationSupported(false);
+        }
+    }
+
     /** @brief Issue #646: store @p value under the settings key @p key as it is, past AppPrefs' checks, as a damaged
      *         file or another build would leave it. The real AppPrefs reads the same file. */
     Q_INVOKABLE void
@@ -5832,8 +5848,8 @@ class Setup : public QObject {
 
     Q_INVOKABLE QStringList
     missingContextKeys(const QStringList& qmlFiles) const {
-        /* `backup` and `rrPlaces` are QObjects, whose properties answer an unknown name with `undefined` just as a map
-         * does; their keys are the properties the fakes publish. */
+        /* `backup`, `rrPlaces` and `savedSystemCards` are QObjects, whose properties answer an unknown name with
+         * `undefined` just as a map does; their keys are the properties the fakes (or the real cards model) publish. */
         const auto propertyKeys = [](const QMetaObject& meta) {
             QVariantMap keys;
             for (int i = meta.propertyOffset(); i < meta.propertyCount(); ++i) {
@@ -5849,13 +5865,14 @@ class Setup : public QObject {
             {QStringLiteral("radioReference"), m_radio_reference},
             {QStringLiteral("backup"), backupKeys},
             {QStringLiteral("rrPlaces"), propertyKeys(RrPlacesFake::staticMetaObject)},
+            {QStringLiteral("savedSystemCards"), propertyKeys(dsd_qt::SavedSystemCards::staticMetaObject)},
             {QStringLiteral("recordings"), RecordingsFake::rest()},
             {QStringLiteral("recordingStatus"), m_recording_status}};
         /* Group 3 captures the "(" that marks a call rather than a read. The name must not follow a "." or a word
          * character: `model.recordings.length` is a role's length, not a read of the `recordings` store. */
         static const QRegularExpression read(
-            QStringLiteral("(?<![.\\w])(metrics|prefs|decoderHost|radioReference|backup|rrPlaces|recordings|"
-                           "recordingStatus)"
+            QStringLiteral("(?<![.\\w])(metrics|prefs|decoderHost|radioReference|backup|rrPlaces|savedSystemCards|"
+                           "recordings|recordingStatus)"
                            "\\.([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()?"));
 
         QStringList missing;
@@ -6568,6 +6585,10 @@ class Setup : public QObject {
         app_prefs->setSystemsSort(QStringLiteral("added"));
         ctx->setContextProperty(QStringLiteral("listenPins"),
                                 new dsd_qt::ListenPins(app_prefs, saved_systems, scan_lists, engine));
+        /* Listen's saved-system cards, the production model over the same stores; resetSavedSystemCards() between
+         * cases. Nearest follows setLocationSupported(), off as the host map starts. */
+        m_saved_system_cards = new dsd_qt::SavedSystemCards(saved_systems, app_prefs, imported_files, engine);
+        ctx->setContextProperty(QStringLiteral("savedSystemCards"), m_saved_system_cards);
         auto* profiles = new dsd_qt::DecryptionProfilesModel(engine);
         profiles->setReferences(saved_systems, scan_lists);
         auto* starter = new dsd_qt::ScanListStarter(app_prefs, saved_systems, engine);
@@ -6675,6 +6696,7 @@ class Setup : public QObject {
     ImportOnlyHost* m_import_host = nullptr;
     dsd_qt::ImportedFilesModel* m_imported_files = nullptr;
     dsd_qt::SavedSystemsModel* m_saved_systems = nullptr;
+    dsd_qt::SavedSystemCards* m_saved_system_cards = nullptr;
     ReplayFilesFake* m_replay_files = nullptr;
     ImportOnlyHost* m_initializing_host = nullptr;
     ImportOnlyHost* m_lifecycle_host = nullptr;

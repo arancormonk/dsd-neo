@@ -62,6 +62,7 @@ target_sources(
         replay_store.cpp
         restart_closer.cpp # Issue #830
         site_groups.cpp # WP-D4
+        saved_system_cards.cpp
         saved_systems_model.cpp
         scan_avoid_list_model.cpp
         scan_lists_model.cpp
@@ -69,6 +70,7 @@ target_sources(
         scan_list_starter.cpp
         scan_list_toggle_model.cpp
         spectrum_model.cpp
+        system_search_query.cpp
         text_order.cpp
         csv_text.cpp
         document_export_writer.cpp

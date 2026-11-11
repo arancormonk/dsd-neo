@@ -5620,6 +5620,58 @@ if(DSD_ENABLE_QT_UI)
     set_target_properties(dsd-neo_test_ui_qt_text_order PROPERTIES AUTOMOC ON)
     add_test(NAME UI_QT_TEXT_ORDER COMMAND dsd-neo_test_ui_qt_text_order)
 
+    # Listen's saved-system cards over the real saved systems, prefs and
+    # library: grouping, the display row, orders, search and the diff signals.
+    # The library model links the engine facade, so it joins the deferred
+    # engine link below.
+    add_executable(
+        dsd-neo_test_ui_qt_saved_system_cards
+        ui/test_ui_qt_saved_system_cards.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_system_cards.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/system_search_query.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/text_order.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/listen_pins.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_archive_incoming.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_typed_paths.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_saved_system_cards
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/qt
+            ${PROJECT_SOURCE_DIR}/src/core/file
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_saved_system_cards
+        PRIVATE Qt6::Gui Qt6::Qml
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_saved_system_cards
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_saved_system_cards
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_SAVED_SYSTEM_CARDS
+        COMMAND dsd-neo_test_ui_qt_saved_system_cards
+    )
+
     # What the spectrum model does with the frames a producer hands it, and what
     # the waterfall does with the model: the frame-identity check that keeps a
     # re-read of an unreplaced frame from scrolling a duplicate row, the history
@@ -5768,6 +5820,9 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/input_commit.cpp
             # B7/B8: the ICU-free name order and fold the RadioReference lists use.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/text_order.cpp
+            # Listen's saved-system cards and their search adapter.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_system_cards.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/system_search_query.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
@@ -9382,6 +9437,7 @@ foreach(
     dsd-neo_test_ui_qt_imported_files_model
     dsd-neo_test_ui_qt_radio_reference_model
     dsd-neo_test_ui_qt_rr_place_service
+    dsd-neo_test_ui_qt_saved_system_cards
     dsd-neo_test_ui_qt_sign_in_autofill
     dsd-neo_test_ui_qt_backup_archive
     dsd-neo_test_ui_qt_backup_apply

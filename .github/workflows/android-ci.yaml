@@ -384,6 +384,7 @@ jobs:
             dsd-neo_test_ui_qt_talkgroup_list_model \
             dsd-neo_test_ui_qt_radio_reference_model \
             dsd-neo_test_ui_qt_rr_place_service \
+            dsd-neo_test_ui_qt_saved_system_cards \
             dsd-neo_test_ui_qt_sign_in_autofill
 
       # The QML test carries its own headless environment (offscreen platform,

@@ -50,6 +50,7 @@
 #include "replay_store.h"
 #include "restart_closer.h"
 #include "rr_place_service.h"
+#include "saved_system_cards.h"
 #include "saved_systems_model.h"
 #include "scan_list_starter.h"
 #include "scan_lists_model.h"
@@ -331,6 +332,17 @@ publish_radio_reference(QQmlContext* context, RadioReferenceModel* radioReferenc
     context->setContextProperty(QStringLiteral("rrPlaces"), new RrPlaceService(radioReference, systems, owner));
 }
 
+/* Listen's shortcuts, and its saved-system cards (one per site group, searched and sorted), Nearest offered where the
+   platform can take a location fix. */
+static void
+publish_listen(QQmlContext* context, ListenPins* pins, SavedSystemsModel* systems, AppPrefs* prefs,
+               ImportedFilesModel* importedFiles, const DecoderHost* host, QObject* owner) {
+    context->setContextProperty(QStringLiteral("listenPins"), pins);
+    auto* cards = new SavedSystemCards(systems, prefs, importedFiles, owner);
+    cards->setLocationSupported(host->locationSupported());
+    context->setContextProperty(QStringLiteral("savedSystemCards"), cards);
+}
+
 ListenPins*
 load_listen_pins(AppPrefs* prefs, ImportedFilesModel* importedFiles, SavedSystemsModel* systems,
                  ScanListsModel* scanLists, QObject* owner) {
@@ -469,7 +481,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("talkgroupView"), talkgroupView);
     context->setContextProperty(QStringLiteral("spectrum"), spectrum);
     context->setContextProperty(QStringLiteral("knownFrequencies"), knownFrequencies);
-    context->setContextProperty(QStringLiteral("listenPins"), listenPins);
+    publish_listen(context, listenPins, systems, prefs, importedFiles, host, &engine);
     context->setContextProperty(QStringLiteral("signalSearch"), signalSearch);
     publish_app_context(context, host, radioReference, prefs, &engine);
 

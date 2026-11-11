@@ -125,8 +125,13 @@ text_fold(const QString& s) {
 
 int
 text_compare_names(const QString& a, const QString& b) {
+    return text_compare_folded_names(text_fold(a), a, text_fold(b), b);
+}
+
+int
+text_compare_folded_names(const QString& aFolded, const QString& a, const QString& bFolded, const QString& b) {
     int length_tie = 0;
-    const int folded = compare_folded(text_fold(a), text_fold(b), length_tie);
+    const int folded = compare_folded(aFolded, bFolded, length_tie);
     if (folded != 0) {
         return folded;
     }
@@ -145,12 +150,12 @@ text_fold_contains(const QString& foldedHaystack, const QString& foldedNeedle) {
 TextOrder::TextOrder(QObject* parent) : QObject(parent) {}
 
 QString
-TextOrder::fold(const QString& s) const {
+TextOrder::fold(const QString& s) {
     return text_fold(s);
 }
 
 int
-TextOrder::compare(const QString& a, const QString& b) const {
+TextOrder::compare(const QString& a, const QString& b) {
     return text_compare_names(a, b);
 }
 

@@ -78,6 +78,14 @@ test_order() {
     /* Documented limit: no decomposition for the sharp s. */
     check(text_compare_names(s(u"\u00DF"), QStringLiteral("ss")) != 0);
     check(text_compare_names(QStringLiteral("same"), QStringLiteral("same")) == 0);
+    /* The pre-folded form answers as text_compare_names() does. */
+    const QStringList names{s(u"\u00C9clair"),         QStringLiteral("Eclair"), QStringLiteral("Site 2"),
+                            QStringLiteral("site 10"), QStringLiteral("007"),    QStringLiteral("7")};
+    for (const QString& a : names) {
+        for (const QString& b : names) {
+            check(dsd_qt::text_compare_folded_names(text_fold(a), a, text_fold(b), b) == text_compare_names(a, b));
+        }
+    }
     check(text_compare_names(QString(), QStringLiteral("a")) < 0);
     check(text_compare_names(QStringLiteral("alpha 2"), QStringLiteral("alpha 10")) < 0);
 }
