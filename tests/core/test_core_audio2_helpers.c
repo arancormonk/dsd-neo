@@ -2351,7 +2351,6 @@ run_decoded_pcm16_case(dsd_opts* opts, dsd_state* state, const short* pcm, int f
     opts->audio_out = audio_out;
     g_audio_write_channels = channels;
     state->audio_out_buf_p = history + 100;
-    state->aout_max_buf_p = state->aout_max_buf;
     // A frame another path staged and never mixed: not this one's.
     state->audio_out_idx = 160;
     reset_sink_capture();
@@ -2558,7 +2557,6 @@ test_decoded_pcm16_unrecorded_frames_play_without_recording(void) {
         opts->dmr_stereo_wav = per_call ? 1 : 0;
         for (int record = 0; record <= 1; record++) {
             state->audio_out_buf_p = history + 100;
-            state->aout_max_buf_p = state->aout_max_buf;
             state->audio_out_idx = 160;
             reset_sink_capture();
             reset_gate_capture();

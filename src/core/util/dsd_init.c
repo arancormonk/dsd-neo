@@ -818,16 +818,10 @@ init_state_sync_and_stream_defaults(dsd_state* state) {
     state->p25_lcw_retune_disabled_warned = 0;
     state->slot1light[0] = '\0';
     state->slot2light[0] = '\0';
-    state->aout_gain = 25.0f;
-    state->aout_gainR = 25.0f;
-    state->aout_gainA = 0.0f; //use purely as a display or internal value, no user setting
-    DSD_MEMSET(state->aout_max_buf, 0, sizeof(float) * 200);
-    state->aout_max_buf_p = state->aout_max_buf;
-    state->aout_max_buf_idx = 0;
-
-    DSD_MEMSET(state->aout_max_bufR, 0, sizeof(float) * 200);
-    state->aout_max_buf_pR = state->aout_max_bufR;
-    state->aout_max_buf_idxR = 0;
+    /* Readouts of the applied gains, in dB: the voice chain and the analog monitor set them as they run. */
+    state->aout_gain = 0.0f;
+    state->aout_gainR = 0.0f;
+    state->aout_gainA = 0.0f;
 
     state->samplesPerSymbol = 10;
     state->symbolCenter = 4;

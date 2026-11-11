@@ -197,7 +197,7 @@ expect_call_reset(const char* label, const dsd_opts* opts, const dsd_state* stat
     rc |= expect_int("call-reset-cipher-reset", state->nxdn_cipher_type, 0);
     rc |= expect_int("call-reset-r-state", state->R, key_cleared ? 0 : 42);
     rc |= expect_int("call-reset-sacch-reset", all_sacch_segments_are(1U, state), 1);
-    // The voice chain's gain level carries across calls in both output formats (issue #653).
+    // A call end never writes the gain readout, in either output format: the voice chain sets it (issues #653, #518).
     (void)opts;
     rc |= expect_float_close("call-reset-gain-kept", state->aout_gain, 9.0f, 1e-6f);
     return rc;

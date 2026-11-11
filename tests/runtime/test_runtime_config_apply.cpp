@@ -1195,8 +1195,7 @@ test_ui_command_queue_applies_fifo(void) {
     int rc = 0;
     rc |= expect_int_eq("coalesced gain drain count", applied, 1);
     rc |= expect_int_eq("coalesced gain final digital gain", (int)opts->audio_gain, 11);
-    rc |= expect_int_eq("coalesced gain final left state gain", (int)state->aout_gain, 11);
-    rc |= expect_int_eq("coalesced gain final right state gain", (int)state->aout_gainR, 11);
+    rc |= expect_int_eq("coalesced gain final right slot gain", (int)opts->audio_gainR, 11);
 
     free_test_runtime(&runtime);
     return rc;

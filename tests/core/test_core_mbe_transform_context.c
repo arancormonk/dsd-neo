@@ -25,6 +25,7 @@
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
+#include <dsd-neo/dsp/speech_agc.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
@@ -79,13 +80,15 @@ owner_of(int synctype) {
     return DSD_VOICE_PROTOCOL_NONE;
 }
 
-/* These cases check synthesis, crypto and routing against mbelib's own output: a fixed unity gain with the high-pass
-   off (use_hpf_d 0) leaves the voice chain every frame runs through (issue #653) a pass-through. The chain itself is
-   CORE_VOICE_CHAIN's, and its place on each path the voice-chain cases below. */
+/* These cases check synthesis, crypto and routing against mbelib's own output: unity gain (a setting below 0, which
+   no user surface reaches, skips the speech level and its limiter) with the high-pass off leaves the voice chain every
+   frame runs through (issue #653) a pass-through, whatever the options were before. The chain itself is
+   CORE_VOICE_CHAIN's and CORE_VOICE_LEVEL's, and its place on each path the voice-chain cases below. */
 static void
 pass_through_voice_chain(dsd_opts* opts) {
-    opts->audio_gain = 1.0f;
-    opts->audio_gainR = 1.0f;
+    opts->audio_gain = -1.0f;
+    opts->audio_gainR = -1.0f;
+    opts->use_hpf_d = 0;
 }
 
 static int
@@ -585,10 +588,6 @@ init_mbe_state(dsd_state* state, mbe_parms* cur, mbe_parms* prev, mbe_parms* pre
     state->audio_out_buf_p = out_l + 100;
     state->audio_out_bufR = out_r;
     state->audio_out_buf_pR = out_r + 100;
-    state->aout_max_buf_p = state->aout_max_buf;
-    state->aout_max_buf_pR = state->aout_max_bufR;
-    state->aout_gain = 1.0f;
-    state->aout_gainR = 1.0f;
     x2_slots_judged_clear(state);
 }
 
@@ -902,7 +901,7 @@ test_play_mbe_files_records_the_static_wav_in_either_format(void) {
         opts->floating_point = floating;
         opts->wav_out_f = wav;
         opts->static_wav_file = 1;
-        // The digital high-pass's filter state is set up by the engine, which this test does not run.
+        // The two formats are compared on the gain stage alone.
         opts->use_hpf_d = 0;
         state->optind = 1;
 
@@ -2716,8 +2715,6 @@ test_process_mbe_frame_p25p2_short_staging_provenance(void) {
     state.audio_out_float_bufR = out_f[1];
     state.audio_out_float_buf_p = out_f[0] + 100;
     state.audio_out_float_buf_pR = out_f[1] + 100;
-    state.aout_max_buf_p = state.aout_max_buf;
-    state.aout_max_buf_pR = state.aout_max_bufR;
     state.synctype = DSD_SYNC_P25P2_POS;
     state.p2_wacn = 1;
     state.p2_sysid = 1;
@@ -3939,6 +3936,10 @@ test_dmr_muted_slot_stages_silence_not_its_last_frame(void) {
             return 1;
         }
         initState(state);
+        // The fixture's frames decode to near silence after a reset (peaks under one int16 unit by the third): a fixed
+        // gain keeps every staged frame audible, which is what the case reads. The level is not what it checks.
+        opts->audio_gain = 50.0f;
+        opts->audio_gainR = 50.0f;
         state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
         const short* staged = slot == 0 ? state->s_l : state->s_r;
         const char* name = slot == 0 ? "slot 1" : "slot 2";
@@ -4800,8 +4801,6 @@ run_provoice_library_parity(int soft_path) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     pass_through_voice_chain(&opts);
     opts.floating_point = 1;
-    opts.audio_gain = 1.0f;
-    opts.audio_gainR = 1.0f;
     init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_PROVOICE_POS;
     mbe_initMbeParms(&lib_cur, &lib_prev, &lib_prev_enhanced);
@@ -5883,8 +5882,6 @@ run_owner_verdict_case(const owner_verdict_case* c, int floating, int dispatched
     state.audio_out_float_bufR = out_f[1];
     state.audio_out_float_buf_p = out_f[0] + 100;
     state.audio_out_float_buf_pR = out_f[1] + 100;
-    state.aout_max_buf_p = state.aout_max_buf;
-    state.aout_max_buf_pR = state.aout_max_bufR;
     state.frame_dispatch_active = 1;
     state.frame_dispatch_synctype = owner_verdict_dispatch_synctype(c->owner);
     state.frame_dispatch_active = dispatched;
@@ -6523,8 +6520,6 @@ run_chain_case(const chain_protocol_case* p, const chain_output_case* c, short* 
     state->currentslot = p->slot;
     state->p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     x2_slots_judged_clear(state);
-    state->aout_gain = 15.0f;
-    state->aout_gainR = 15.0f;
     opts->pulse_digi_out_channels = 1;
     g_chain_emitted_count = 0;
     g_chain_emitted_float = c->floating;
@@ -6554,12 +6549,19 @@ run_chain_case(const chain_protocol_case* p, const chain_output_case* c, short* 
     }
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     *gain_out = p->slot == 1 ? state->aout_gainR : state->aout_gain;
-    const float other_gain = p->slot == 1 ? state->aout_gain : state->aout_gainR;
+    const int chain_slot = p->slot == 1 ? 1 : 0;
+    const dsd_speech_agc* agc = dsd_voice_level_agc(state, chain_slot);
+    const dsd_speech_agc* other = dsd_voice_level_agc(state, 1 - chain_slot);
     sf_close(file);
     opts->wav_out_f = NULL;
     opts->wav_out_fR = NULL;
 
-    int rc = expect_eq_int("voice chain: the other slot's gain untouched", fabsf(other_gain - 15.0f) < 1e-6f, 1);
+    // The call's slot ran its speech AGC on every frame, and its readout is that AGC's gain; the other slot's ran none.
+    int rc = expect_eq_int("voice chain: the slot's speech AGC ran on every frame",
+                           agc != NULL && agc->frames == (uint64_t)CHAIN_FRAMES, 1);
+    rc |= expect_eq_int("voice chain: the readout is the AGC's gain",
+                        agc != NULL && fabsf(*gain_out - dsd_speech_agc_gain_db(agc)) < 1e-6f, 1);
+    rc |= expect_eq_int("voice chain: the other slot's speech AGC untouched", other != NULL && other->frames == 0U, 1);
     SF_INFO info;
     DSD_MEMSET(&info, 0, sizeof(info));
     SNDFILE* written = sf_open(wav_path, SFM_READ, &info);
@@ -6627,9 +6629,9 @@ test_voice_chain_per_call_wav_is_format_independent(void) {
             const int a = ref_wav[i] < 0 ? -ref_wav[i] : ref_wav[i];
             peak = a > peak ? a : peak;
         }
-        // The recording is not silent, and the auto gain moved off its starting level: it is the gained frame.
-        DSD_SNPRINTF(label, sizeof(label), "voice chain %s: the auto gain ran on the call", protocols[p].tag);
-        rc |= expect_eq_int(label, peak > 0 && fabsf(ref_gain - 15.0f) > 0.5f, 1);
+        // The recording is not silent (run_chain_case checked the speech AGC ran on every frame).
+        DSD_SNPRINTF(label, sizeof(label), "voice chain %s: the recording carries the call", protocols[p].tag);
+        rc |= expect_eq_int(label, peak > 0, 1);
         // What the short output staged is the chain output it wrote to the WAV.
         DSD_SNPRINTF(label, sizeof(label), "voice chain %s: short staging is the per-call WAV", protocols[p].tag);
         rc |= expect_eq_mem(label, ref_staged, ref_wav, sizeof(ref_staged));

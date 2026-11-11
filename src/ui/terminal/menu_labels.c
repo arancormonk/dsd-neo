@@ -1140,11 +1140,12 @@ const char*
 lbl_gain_dig(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
     const float g = (c && c->opts) ? c->opts->audio_gain : 0.0f;
-    /* The setting as set, fractions included (no int cast: a fraction would read 0, and NaN would be undefined). */
+    /* The setting as set, fractions included (no int cast: a fraction would read 0, and NaN would be undefined), as the
+       multiplier the status row shows (issue #518). */
     if (!(g > 0.0f)) {
         DSD_SNPRINTF(b, n, "Digital gain... [auto]");
     } else {
-        DSD_SNPRINTF(b, n, "Digital gain... [%.4g]", (double)g);
+        DSD_SNPRINTF(b, n, "Digital gain... [x%.4g]", (double)g);
     }
     return b;
 }

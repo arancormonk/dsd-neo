@@ -581,14 +581,19 @@ Notes
 
 ## Levels & Audio
 
-- `-g <num>` Digital output gain, the same in integer and `-y` float output and in the WAVs. `0` = auto: a peak
-  normalizer to about -0.8 dBFS over the last 0.5 s, at most x50, cutting at once on a louder peak and rising by at
-  most 5% per 20 ms, its level carried from call to call. `0.001`–`50` is a fixed multiplier on the vocoder's
-  reference level (`1`; `0.5` is 6 dB quieter), saturating at full scale. Any other value (negative, above `50`,
-  between `0` and `0.001`, NaN or infinity) is refused with an error; it is never clamped or played as auto. The
-  menu's Digital gain... prompt takes the same values, fractions included, and the `+` / `-` keys step by 1: from auto
-  `+` goes to `1`, stepping below `0.001` goes back to auto, and they stop at `50`. Since issue #653 `-g N` under
-  `-y` is this fixed multiplier too, where it used to scale a float auto gain that kept adapting.
+- `-g <num>` Digital output gain, the same in integer and `-y` float output and in the WAVs. `0` = auto (the default):
+  each slot's speech is brought to one level, -24 dBFS active speech, from the decoder's own level (`-g 1`) at the start
+  of each transmission; the gain moves only on decoded speech, never on encrypted audio it cannot decrypt, silence,
+  noise or tones, holds through pauses, stays within 12 dB below and 15 dB above the decoder's level, and never lets a
+  peak past -1 dBFS. Tone frames (DTMF and other call tones) play no louder than the decoder's level. A new
+  transmission, a new channel or a new file starts at the decoder's level again; a short fade inside one transmission
+  does not. `0.001`–`50` is a fixed multiplier on the vocoder's reference level (`1`; `0.5` is 6 dB quieter), with peaks
+  held at -1 dBFS. The terminal shows the auto gain in dB (`G: Auto (+3.5 dB)`, one value per channel on stereo output)
+  and a fixed one as its multiplier (`G: x2 (+|-) Manual`). Any other value (negative, above `50`, between `0` and
+  `0.001`, NaN or infinity) is refused with an error; it is never clamped or played as auto. The menu's Digital gain...
+  prompt takes the same values, fractions included, and the `+` / `-` keys step by 1: from auto `+` goes to `1`,
+  stepping below `0.001` goes back to auto, and they stop at `50`. Since issue #653 `-g N` under `-y` is this fixed
+  multiplier too, where it used to scale a float auto gain that kept adapting.
 - `-n <num>` Analog output gain. `0` (the default; anything under `1` too) is auto: an AGC brings analog voice to the
   level digital voice plays at, FM and AM alike, never above -10 dBFS peak and at most 18 dB above the reference gain.
   `1`–`100` is a fixed gain, `50` the reference: there a 1 kHz tone at 3 kHz deviation, or AM at 50% modulation, plays at

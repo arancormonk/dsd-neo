@@ -504,7 +504,8 @@ test_tetra_network_options(void) {
 }
 
 /* -g / -n with one value. Returns the parse rc (0 parsed, -1 refused); the out values are the settings afterwards:
-   *gain is audio_gain for -g and audio_gainA for -n, *gain_r and *aout the -g mirrors (audio_gainR, aout_gain). */
+   *gain is audio_gain for -g and audio_gainA for -n, *gain_r the -g mirror (audio_gainR), *aout the applied-gain
+   readout (aout_gain). */
 static int
 parse_gain_option(const char* option, const char* value, float* gain, float* gain_r, float* aout) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -562,8 +563,9 @@ test_digital_gain_option(void) {
         int bad = refused ? rc != -1 : rc != 0;
         if (!bad && !refused) {
             bad = !(fabsf(g - cases[i].want) < 1e-7f) || !(fabsf(g_r - cases[i].want) < 1e-7f);
-            /* A fixed gain is the applied gain too; auto leaves the playback default alone. */
-            if (cases[i].want > 0.0f && !(fabsf(aout - cases[i].want) < 1e-7f)) {
+            /* The applied-gain readout is the voice chain's, in dB, and starts at 0 dB (the start gain): the option
+               seeds no level, fixed or auto (issue #518). */
+            if (!(fabsf(aout) < 1e-7f)) {
                 bad = 1;
             }
         }

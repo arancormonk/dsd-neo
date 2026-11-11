@@ -22,6 +22,7 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/core/voice_chain.h>
+#include <dsd-neo/dsp/speech_agc.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rdio_export.h>
@@ -47,6 +48,7 @@
 #include "dsd-neo/platform/file_compat.h"
 #include "dsd-neo/platform/platform.h"
 #include "dsd-neo/platform/posix_compat.h"
+#include "speech_synth.h"
 #include "test_support.h"
 
 static int
@@ -504,8 +506,6 @@ prepare_gain_stage(dsd_state* state) {
     state->audio_out_buf_p = out_buf + 100;
     state->audio_out_idx = 0;
     state->audio_out_idx2 = 0;
-    state->aout_max_buf_p = state->aout_max_buf;
-    state->aout_max_buf_idx = 0;
 }
 
 static int
@@ -1793,7 +1793,6 @@ test_sdrtrunk_json_withheld_frames_run_the_voice_chain(void) {
     opts.floating_point = 1;
     opts.use_hpf_d = 1;
     state.event_history_s = history;
-    state.aout_gain = 25.0f;
     mbe_initMbeParms(&cur, &prev, &prev_enhanced);
     state.cur_mp = &cur;
     state.prev_mp = &prev;
@@ -1802,7 +1801,10 @@ test_sdrtrunk_json_withheld_frames_run_the_voice_chain(void) {
     rc |= run_sdrtrunk_json(json, &opts, &state);
     rc |= expect_true("sdrtrunk withheld frames move the high-pass",
                       fabs(state.voice_hpf[0].s1) > 1e-9 || fabs(state.voice_hpf[0].s2) > 1e-9);
-    rc |= expect_true("sdrtrunk withheld frames move the auto gain", fabsf(state.aout_gain - 25.0f) > 1e-3f);
+    // They run the speech AGC as frames it cannot decode: its gain and limiter apply, and nothing learns from them.
+    const dsd_speech_agc* agc = dsd_voice_level_agc(&state, 0);
+    rc |= expect_true("sdrtrunk withheld frames run the speech AGC as undecodable",
+                      agc != NULL && agc->frames == 2U && agc->decodable_prev == 0 && agc->learned.commits == 0);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -4210,6 +4212,68 @@ test_play_mbe_files_tell_the_chain_each_frame(void) {
     return rc;
 }
 
+/* Each -r file is a reception of its own (issue #518): its first frame plays at the start gain, whatever the speech
+   AGC learned before it. The slot first learns quiet speech, which lifts its gain; a three-frame .amb (too short for
+   the AGC to commit anything) then finds it back at the start, nothing learned. */
+static int
+test_play_mbe_files_start_each_file_at_the_start_gain(void) {
+    enum { TEACH = 3 * 8000 };
+
+    static float speech[TEACH];
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur, prev, prev_enhanced;
+    dsd_test_speech_params sp;
+    dsd_test_speech_defaults(&sp, 31U);
+    sp.level_dbfs = -45.0;
+    int rc = expect_int("file start: speech material", dsd_test_synth_speech(speech, TEACH, 8000, &sp), 0);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    mbe_initMbeParms(&cur, &prev, &prev_enhanced);
+    state.cur_mp = &cur;
+    state.prev_mp = &prev;
+    state.prev_mp_enhanced = &prev_enhanced;
+    const dsd_voice_frame_info learn = {(uint8_t)DSD_VOICE_MEDIA_SPEECH, 1U, 1U, 0U};
+    for (int off = 0; off + 160 <= TEACH; off += 160) {
+        DSD_MEMCPY(state.audio_out_temp_buf, speech + off, 160 * sizeof(float));
+        dsd_voice_chain_run(&opts, &state, 0, state.audio_out_temp_buf, &learn);
+    }
+    const dsd_speech_agc* agc = dsd_voice_level_agc(&state, 0);
+    rc |= expect_int("file start: the speech taught the slot",
+                     agc != NULL && agc->learned.commits > 0 && dsd_speech_agc_gain_db(agc) > 6.0f, 1);
+
+    char path[DSD_TEST_PATH_MAX];
+    char ambe_d[49];
+    int fd = dsd_test_mkstemp(path, sizeof path, "voice_level_file_start");
+    FILE* f = fd >= 0 ? dsd_test_fdopen(fd, "wb") : NULL;
+    if (!f) {
+        if (fd >= 0) {
+            dsd_close(fd);
+            (void)remove(path);
+        }
+        dsd_state_ext_free_all(&state);
+        return 1;
+    }
+    int wrc = fwrite(".amb", 1, 4, f) == 4 ? 0 : 1;
+    file_info_ambe_d(0, ambe_d);
+    for (int i = 0; i < 3; i++) {
+        wrc |= write_ambe_record(f, ambe_d, 0U);
+    }
+    wrc |= fclose(f) != 0;
+    rc |= expect_int("file start: file written", wrc, 0);
+    state.optind = 1;
+    char* argv[] = {"dsd-neo", path};
+    playMbeFiles(&opts, &state, 2, argv);
+    (void)remove(path);
+    agc = dsd_voice_level_agc(&state, 0);
+    rc |= expect_int("file start: the file started over at the start gain, nothing learned",
+                     agc != NULL && agc->learned.commits == 0 && agc->frames == ((uint64_t)TEACH / 160U) + 3U
+                         && fabsf(dsd_speech_agc_gain_db(agc)) < 1e-4f && fabsf(state.aout_gain) < 1e-4f,
+                     1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 /* SDRTrunk JSON frame @p ambe_fr as the export's hex: its 36 dibits in transmit order, two per hex digit. */
 static void
 sdrtrunk_hex_of(const char ambe_fr[4][24], char hex[19]) {
@@ -4331,6 +4395,7 @@ main(void) {
     rc |= test_sdrtrunk_dmr_capture_and_late_entry();
     rc |= test_sdrtrunk_json_tells_the_chain_each_frame();
     rc |= test_play_mbe_files_tell_the_chain_each_frame();
+    rc |= test_play_mbe_files_start_each_file_at_the_start_gain();
     rc |= test_mbe_out_write_creates_slot_files_and_closes();
     rc |= test_mbe_out_folder_with_separator_is_not_doubled();
     rc |= test_mbe_out_refuses_unconfirmed_and_carrier_crossing_frames();

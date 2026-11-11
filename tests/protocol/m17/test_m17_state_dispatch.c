@@ -267,8 +267,6 @@ prepare_voice_output(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(g_voice_history, 0, sizeof(g_voice_history));
     state->audio_out_buf = g_voice_history;
     state->audio_out_buf_p = g_voice_history + 100;
-    state->aout_max_buf_p = state->aout_max_buf;
-    state->aout_gain = 1.0f;
     opts->audio_gain = 1.0f;
     opts->pulse_digi_out_channels = 1;
     opts->pulse_digi_rate_out = 8000;
@@ -3466,7 +3464,6 @@ run_voice_format_case(uint8_t dt, int floating, int channels, int out_type, floa
     opts->floating_point = floating;
     opts->pulse_digi_out_channels = channels;
     opts->audio_gain = gain;
-    state->aout_gain = gain;
     state->m17_str_dt = dt;
     state->m17_can_en = -1;
     m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);

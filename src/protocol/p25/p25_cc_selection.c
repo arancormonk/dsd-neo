@@ -7,6 +7,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -111,8 +112,10 @@ p25_sm_select_control_channel(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
         p25_sm_clear_manual_selection_calls(ctx, opts, state);
         dsd_mbe_purge_slot_audio(state, 0);
         dsd_mbe_purge_slot_audio(state, 1);
-        // The user left the channel: what the Phase 2 playout queued there is dropped, not played (issue #651).
+        // The user left the channel: what the Phase 2 playout queued there is dropped, not played (issue #651), and
+        // the next channel's voice starts at the start gain (issue #518).
         dsd_p25p2_playout_discard(opts, state);
+        dsd_voice_level_reset(state, -1);
         p25_p2_frame_reset();
         p25_sm_forget_selected_site(ctx, state);
         selection->require_site_cache = 1;

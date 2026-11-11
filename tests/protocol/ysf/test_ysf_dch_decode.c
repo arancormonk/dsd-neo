@@ -1234,8 +1234,6 @@ prepare_gain_stage(dsd_state* state) {
     static short out_buf[100 + (160 * 96)];
     state->audio_out_buf = out_buf;
     state->audio_out_buf_p = out_buf + 100;
-    state->aout_max_buf_p = state->aout_max_buf;
-    state->aout_max_buf_idx = 0;
 }
 
 static void
@@ -1258,7 +1256,6 @@ test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors(void) {
     /* A fixed gain of 3, so the staged frame shows the gain stage ran exactly once (issue #652: float output skipped it;
        twice would stage 9x). */
     opts.audio_gain = 3.0F;
-    state.aout_gain = 3.0F;
     prepare_gain_stage(&state);
 
     make_fich_bits_for_vd_type2(fich_bits);

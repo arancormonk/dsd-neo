@@ -46,7 +46,6 @@
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <errno.h>
-#include <math.h>
 #include <mbelib-neo/mbelib.h>
 #include <sndfile.h>
 #include <stdint.h>
@@ -580,142 +579,39 @@ dsd_audio_clamp_pcm16_f32(float sample) {
     return sample;
 }
 
-/* One slot's gain state: the auto gain's level and peak history, and the fixed `-g` setting (issue #653). */
-typedef struct {
-    float* gain;
-    float* history;
-    float** history_p;
-    int* history_idx;
-    float fixed;
-} dsd_voice_gain_slot;
-
-static dsd_voice_gain_slot
-dsd_voice_gain_slot_of(const dsd_opts* opts, dsd_state* state, int slot) {
-    dsd_voice_gain_slot g;
-    if (slot == 1) {
-        g.gain = &state->aout_gainR;
-        g.history = state->aout_max_bufR;
-        g.history_p = &state->aout_max_buf_pR;
-        g.history_idx = &state->aout_max_buf_idxR;
-        g.fixed = opts->audio_gainR;
-    } else {
-        g.gain = &state->aout_gain;
-        g.history = state->aout_max_buf;
-        g.history_p = &state->aout_max_buf_p;
-        g.history_idx = &state->aout_max_buf_idx;
-        g.fixed = opts->audio_gain;
-    }
-    return g;
-}
-
-enum {
-    DSD_VOICE_GAIN_HISTORY = 25, /* frames of peak history the auto gain looks back over: 500 ms */
-};
-
-/* The peak of @p frame together with the slot's last DSD_VOICE_GAIN_HISTORY - 1 frame peaks, after recording this
-   frame's peak in the history. The ring is walked by index, so a state whose pointer was never set still works. */
-static float
-dsd_voice_gain_history_peak(const dsd_voice_gain_slot* g, const float* frame) {
-    float block_max = 0.0F;
-    for (int n = 0; n < DSD_VOICE_FRAME_SAMPLES; n++) {
-        const float a = fabsf(frame[n]);
-        if (a > block_max) {
-            block_max = a;
-        }
-    }
-    int idx = *g->history_idx;
-    if (idx < 0 || idx >= DSD_VOICE_GAIN_HISTORY) {
-        idx = 0;
-    }
-    g->history[idx] = block_max;
-    idx++;
-    if (idx >= DSD_VOICE_GAIN_HISTORY) {
-        idx = 0;
-    }
-    *g->history_idx = idx;
-    *g->history_p = &g->history[idx];
-
-    float max = block_max;
-    for (int i = 0; i < DSD_VOICE_GAIN_HISTORY; i++) {
-        if (g->history[i] > max) {
-            max = g->history[i];
-        }
-    }
-    return max;
-}
-
-/* The auto gain: normalize the history's peak to 30000, at most x50; a louder peak cuts the gain at once, a quieter one
-   lets it rise by at most 5% per frame, ramped across the frame. Returns the per-sample step. */
-static float
-dsd_voice_auto_gain_step(const dsd_voice_gain_slot* g, const float* frame) {
-    // Only a level no gain law can leave (a zeroed or corrupt state) starts over at unity; a legitimate gain below 1,
-    // set by a peak above 30000, keeps its 5% release.
-    if (!(*g->gain > 0.0F) || !(*g->gain <= 50.0F)) {
-        *g->gain = 1.0F;
-    }
-    const float max = dsd_voice_gain_history_peak(g, frame);
-    float gainfactor = (max > 0.0F) ? (30000.0F / max) : 50.0F;
-    if (gainfactor < *g->gain) {
-        *g->gain = gainfactor;
-        return 0.0F;
-    }
-    if (gainfactor > 50.0F) {
-        gainfactor = 50.0F;
-    }
-    float delta = gainfactor - *g->gain;
-    if (delta > (0.05F * *g->gain)) {
-        delta = 0.05F * *g->gain;
-    }
-    return delta / (float)DSD_VOICE_FRAME_SAMPLES;
-}
-
-static void
-dsd_voice_gain_apply(const dsd_opts* opts, dsd_state* state, int slot, float* frame) {
-    dsd_voice_gain_slot g = dsd_voice_gain_slot_of(opts, state, slot);
-    if (g.fixed < 0.0F) {
-        return;
-    }
-    if (g.fixed > 0.0F) {
-        // A fixed gain is a plain multiplier, the same in both output formats.
-        *g.gain = g.fixed;
-        for (int n = 0; n < DSD_VOICE_FRAME_SAMPLES; n++) {
-            frame[n] *= g.fixed;
-        }
-        return;
-    }
-    const float step = dsd_voice_auto_gain_step(&g, frame);
-    for (int n = 0; n < DSD_VOICE_FRAME_SAMPLES; n++) {
-        frame[n] *= *g.gain + ((float)n * step);
-    }
-    *g.gain += (float)DSD_VOICE_FRAME_SAMPLES * step;
-}
-
-/* The slot's filter state starts over at a reception boundary: a new call on the slot (one nonzero epoch to another)
-   or a frame of another protocol family. Frames before a call is known, and a call's first frames after them, keep
-   it, so no step is cut into a running stream. */
-static void
-dsd_voice_hpf_follow_reception(dsd_state* state, int slot) {
-    dsd_voice_hpf_state* f = &state->voice_hpf[slot];
+/* The reception the slot's frame belongs to: its active call's transmission, which a fade the call state heals keeps
+   (a new raw epoch does not cut it), and the protocol family. */
+static dsd_voice_reception
+dsd_voice_reception_of(const dsd_state* state, int slot) {
+    dsd_voice_reception r = {0U, 0};
     dsd_call_snapshot call;
-    uint64_t epoch = 0;
     // The protocol the frame was dispatched under, as dsd_mbe_out_frame_protocol() reads it: YSF and scrambled dPMR
     // decode under a borrowed synctype but stay their own.
     int protocol = state->frame_dispatch_active ? state->frame_dispatch_synctype : state->synctype;
     if (dsd_call_state_get(state, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
-        epoch = call.epoch;
+        r.transmission = dsd_call_snapshot_transmission(&call);
         protocol = call.protocol;
     }
-    const int family = dsd_call_state_protocol_family(protocol);
-    const int new_call = epoch != 0U && f->call_epoch != 0U && epoch != f->call_epoch;
-    const int new_family = family != 0 && f->protocol_family != 0 && family != f->protocol_family;
-    if (new_call || new_family) {
+    r.family = dsd_call_state_protocol_family(protocol);
+    return r;
+}
+
+/* The slot's filter state starts over at a reception boundary: a new transmission on the slot (one nonzero value to
+   another) or a frame of another protocol family. Frames before a call is known, and a call's first frames after them,
+   keep it, so no step is cut into a running stream. */
+static void
+dsd_voice_hpf_follow_reception(dsd_state* state, int slot, const dsd_voice_reception* r) {
+    dsd_voice_hpf_state* f = &state->voice_hpf[slot];
+    const int new_transmission = r->transmission != 0U && f->transmission != 0U && r->transmission != f->transmission;
+    const int new_family = r->family != 0 && f->protocol_family != 0 && r->family != f->protocol_family;
+    if (new_transmission || new_family) {
         dsd_voice_hpf_reset(state, slot);
     }
-    if (epoch != 0U) {
-        f->call_epoch = epoch;
+    if (r->transmission != 0U) {
+        f->transmission = r->transmission;
     }
-    if (family != 0) {
-        f->protocol_family = family;
+    if (r->family != 0) {
+        f->protocol_family = r->family;
     }
 }
 
@@ -756,13 +652,14 @@ dsd_voice_chain_run(const dsd_opts* opts, dsd_state* state, int slot, float* fra
     if (g_voice_chain_observer != NULL) {
         g_voice_chain_observer(g_voice_chain_observer_ctx, slot, frame, info);
     }
-    dsd_voice_hpf_follow_reception(state, slot);
+    const dsd_voice_reception reception = dsd_voice_reception_of(state, slot);
+    dsd_voice_hpf_follow_reception(state, slot, &reception);
     if (opts->use_hpf_d == 1) {
         dsd_voice_hpf_process(state, slot, frame, DSD_VOICE_FRAME_SAMPLES);
     } else {
         dsd_voice_hpf_reset(state, slot);
     }
-    dsd_voice_gain_apply(opts, state, slot, frame);
+    dsd_voice_level_run(opts, state, slot, frame, info, &reception);
     for (int n = 0; n < DSD_VOICE_FRAME_SAMPLES; n++) {
         frame[n] = dsd_audio_clamp_pcm16_f32(frame[n]);
     }

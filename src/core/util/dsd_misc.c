@@ -482,7 +482,7 @@ dsd_voice_hpf_reset(dsd_state* state, int slot) {
         if (slot < 0 || slot == s) {
             state->voice_hpf[s].s1 = 0.0;
             state->voice_hpf[s].s2 = 0.0;
-            state->voice_hpf[s].call_epoch = 0U;
+            state->voice_hpf[s].transmission = 0U;
             state->voice_hpf[s].protocol_family = 0;
         }
     }

@@ -12,7 +12,9 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/speech_agc.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
@@ -34,6 +36,7 @@
 #include "../../src/app_control/commands_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "speech_synth.h"
 #include "test_env.h"
 #include "test_support.h"
 
@@ -260,6 +263,34 @@ received_tone_kept(const dsd_state* state, uint32_t seeded_generation) {
            && state->analog_rx.generation == seeded_generation;
 }
 
+/* Quiet speech through both slots' voice chains, as decoded speech, until each slot's speech AGC has lifted its gain. */
+static void
+teach_voice_level(dsd_opts* opts, dsd_state* state) {
+    enum { TEACH = 3 * 8000 };
+
+    static float speech[TEACH];
+    dsd_test_speech_params sp;
+    dsd_test_speech_defaults(&sp, 61U);
+    sp.level_dbfs = -45.0;
+    assert(dsd_test_synth_speech(speech, TEACH, 8000, &sp) == 0);
+    const float saved_gain = opts->audio_gain;
+    const float saved_gain_r = opts->audio_gainR;
+    opts->audio_gain = 0.0f;
+    opts->audio_gainR = 0.0f;
+    const dsd_voice_frame_info learn = {(uint8_t)DSD_VOICE_MEDIA_SPEECH, 1U, 1U, 0U};
+    float frame[DSD_VOICE_FRAME_SAMPLES];
+    for (int slot = 0; slot < 2; slot++) {
+        for (int off = 0; off + DSD_VOICE_FRAME_SAMPLES <= TEACH; off += DSD_VOICE_FRAME_SAMPLES) {
+            DSD_MEMCPY(frame, speech + off, sizeof frame);
+            dsd_voice_chain_run(opts, state, slot, frame, &learn);
+        }
+        const dsd_speech_agc* agc = dsd_voice_level_agc(state, slot);
+        assert(agc && agc->learned.commits > 0 && agc->learned.gain_db > 3.0f);
+    }
+    opts->audio_gain = saved_gain;
+    opts->audio_gainR = saved_gain_r;
+}
+
 static void
 test_selection(dsd_opts* opts, dsd_state* state, int voice, int cc_type) {
     setup(opts, state);
@@ -279,8 +310,14 @@ test_selection(dsd_opts* opts, dsd_state* state, int voice, int cc_type) {
     seed_carrier_codes(state);
     seed_received_tone(state);
     const uint32_t tone_generation = state->analog_rx.generation;
+    teach_voice_level(opts, state);
     select_cc(opts, state, CC_B);
     expect_cc_toast(state, "Applied: P25 control channel -> 852.000000 MHz");
+    /* The user left the channel: both slots' digital voice starts at the start gain on the next one (issue #518). */
+    for (int slot = 0; slot < 2; slot++) {
+        const dsd_speech_agc* agc = dsd_voice_level_agc(state, slot);
+        assert(agc && agc->learned.commits == 0 && fabsf(agc->learned.gain_db) < 1e-6f);
+    }
     expect_carrier_codes_kept(state);
 #ifdef USE_RADIO
     /* An accepted entry is a new channel whichever branch took it (issue #671): the tone heard on the old one goes. */

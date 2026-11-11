@@ -99,10 +99,6 @@ reset_state(int synctype, int slot) {
     g_state.audio_out_buf_p = out_l + 100;
     g_state.audio_out_bufR = out_r;
     g_state.audio_out_buf_pR = out_r + 100;
-    g_state.aout_max_buf_p = g_state.aout_max_buf;
-    g_state.aout_max_buf_pR = g_state.aout_max_bufR;
-    g_state.aout_gain = 1.0f;
-    g_state.aout_gainR = 1.0f;
 }
 
 static int

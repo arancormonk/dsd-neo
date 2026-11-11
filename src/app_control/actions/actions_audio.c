@@ -39,19 +39,12 @@ ui_handle_toggle_mute(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
     return 1;
 }
 
-/* The digital gain setting, mirrored to both slots and to the applied gains. Auto (0) restarts the auto gain from its
-   playback default. */
+/* The digital gain setting, mirrored to both slots. The voice chain takes it at the next frame: a fixed gain at once,
+   auto from what the speech AGC learned, starting at the fixed gain it leaves (issue #518). */
 static void
-store_digital_gain(dsd_opts* opts, dsd_state* state, double g) {
+store_digital_gain(dsd_opts* opts, double g) {
     opts->audio_gain = (float)g;
     opts->audio_gainR = opts->audio_gain;
-    if (g > 0.0) {
-        state->aout_gain = opts->audio_gain;
-        state->aout_gainR = opts->audio_gain;
-    } else {
-        state->aout_gain = 25;
-        state->aout_gainR = 25;
-    }
 }
 
 /* A double payload of a full double, or 0 when it is shorter (the queue refuses those before dispatch). */
@@ -66,14 +59,14 @@ read_double_payload(const struct dsd_app_command* c, double* out) {
 
 static int
 ui_handle_gain_delta(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)state;
     int32_t d = 0;
     if (c->n >= (int)sizeof(int32_t)) {
         DSD_MEMCPY(&d, c->data, sizeof(int32_t));
     }
     if (d != 0) {
-        store_digital_gain(opts, state,
-                           dsd_gain_setting_step(opts->audio_gain, d, DSD_DIGITAL_GAIN_MIN, DSD_DIGITAL_GAIN_MAX,
-                                                 DSD_DIGITAL_GAIN_STEP_FROM_AUTO));
+        store_digital_gain(opts, dsd_gain_setting_step(opts->audio_gain, d, DSD_DIGITAL_GAIN_MIN, DSD_DIGITAL_GAIN_MAX,
+                                                       DSD_DIGITAL_GAIN_STEP_FROM_AUTO));
     }
     return 1;
 }
@@ -96,9 +89,10 @@ ui_handle_again_delta(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
    guard. */
 static int
 ui_handle_gain_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)state;
     double g = 0.0;
     if (read_double_payload(c, &g) && dsd_digital_gain_setting_valid(g)) {
-        store_digital_gain(opts, state, g);
+        store_digital_gain(opts, g);
     }
     return 1;
 }

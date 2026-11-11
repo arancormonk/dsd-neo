@@ -2524,8 +2524,10 @@ mbe_file_end_replayed_call(dsd_opts* opts, dsd_state* state) {
     }
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;
-    // A file is a reception of its own: its first frame starts from clear high-pass state (issue #653).
+    // A file is a reception of its own: its first frame starts from clear high-pass state (issue #653) and the start
+    // gain (issue #518).
     dsd_voice_hpf_reset(state, -1);
+    dsd_voice_level_reset(state, -1);
 }
 
 void

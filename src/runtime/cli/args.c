@@ -745,7 +745,7 @@ cli_parse_double_option(const char* option_name, const char* in, double* out, in
    the float setting, so 1e-50 is refused instead of rounding to 0 (auto); nan and inf are refused too, which needs this
    file's IEEE semantics (src/runtime/CMakeLists.txt). Out-of-range values are refused, never clamped. */
 static int
-cli_apply_digital_gain(const char* in, dsd_opts* opts, dsd_state* state, int* out_exit_rc) {
+cli_apply_digital_gain(const char* in, dsd_opts* opts, int* out_exit_rc) {
     double g = 0.0;
     if (!cli_parse_double_strict(in, &g) || !dsd_digital_gain_setting_valid(g)) {
         LOG_ERROR("Invalid -g value \"%s\" (expected 0 for auto, or %g..%g)\n", in ? in : "", DSD_DIGITAL_GAIN_MIN,
@@ -756,8 +756,6 @@ cli_apply_digital_gain(const char* in, dsd_opts* opts, dsd_state* state, int* ou
     opts->audio_gain = (float)g;
     opts->audio_gainR = (float)g;
     if (g > 0.0) {
-        state->aout_gain = (float)g;
-        state->aout_gainR = (float)g;
         LOG_INFO("NOTICE: Setting audio out gain to %g\n", g);
     } else {
         LOG_INFO("NOTICE: Enabling audio out auto-gain\n");
@@ -3377,7 +3375,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             LOG_INFO("NOTICE: Saving symbol capture to %s\n", opts->symbol_out_file);                                  \
             break;                                                                                                     \
         case 'g':                                                                                                      \
-            if (!cli_apply_digital_gain(optarg, opts, state, out_exit_rc)) {                                           \
+            if (!cli_apply_digital_gain(optarg, opts, out_exit_rc)) {                                                  \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             break;                                                                                                     \

@@ -5,8 +5,8 @@
 
 /**
  * @file
- * @brief The digital voice chain (issue #653): one high-pass and one gain per slot, run once on each decoded 8 kHz
- * voice frame before anything consumes it.
+ * @brief The digital voice chain (issue #653): one high-pass and one speech level AGC per slot (issue #518), run once
+ * on each decoded 8 kHz voice frame before anything consumes it.
  *
  * A decoder that synthesizes a voice frame (the vocoder, YSF V/D2, MBE file, SDRTrunk JSON playback, M17 Codec2 and
  * TETRA speech) runs dsd_voice_chain_run() on it in place, with what it knows about the frame (dsd_voice_frame_info),
@@ -22,6 +22,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/dsp/speech_agc.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -71,21 +72,41 @@ int dsd_voice_frame_may_learn(const dsd_voice_frame_info* info);
 
 /**
  * @brief Run the chain on one frame of slot @p slot (0 or 1) in place: the high-pass when `opts->use_hpf_d` is 1, then
- * the slot's gain, then saturation to the int16 range.
+ * the slot's speech level AGC (dsd_speech_agc, <dsd-neo/dsp/speech_agc.h>), then saturation to the int16 range.
  *
- * @p slot picks the filter and gain state, whatever buffer holds @p frame (X2-TDMA synthesizes both timeslots into the
- * left buffer). The gain is the fixed `-g` multiplier (`audio_gain`, slot 2 `audio_gainR`) when it is above 0, unity
- * when it is below 0, and otherwise the auto gain: a peak normalizer to 30000 over the last 25 frames, at most x50,
- * attacking at once and releasing at most 5% per frame, its level carried across calls. The slot's filter state starts
- * over when the slot's call (a new nonzero epoch) or the frame's protocol family changes, and while the high-pass is
- * off.
+ * @p slot picks the filter and AGC state, whatever buffer holds @p frame (X2-TDMA synthesizes both timeslots into the
+ * left buffer). With `-g 0` (`audio_gain`, slot 2 `audio_gainR`) the AGC aims the slot's speech at
+ * DSD_SPEECH_AGC_TARGET_DBFS from the start gain, 0 dB (the `-g 1` level, the decoder's own), learning only from frames
+ * dsd_voice_frame_may_learn() takes; a tone frame plays at no more than the start gain; an undecodable one never
+ * teaches, and when the slot's frames turn decodable again its limiter starts over. A `-g` above 0 is a fixed multiplier
+ * through the AGC's limiter (DSD_SPEECH_AGC_CEILING_DBFS); switching back to auto keeps what the AGC learned and starts
+ * from the fixed gain, within the AGC's range. A setting below 0 (no user surface sets one) passes the frame at unity.
+ * Each frame leaves the gain it got, in dB, in `aout_gain` (slot 2 `aout_gainR`) for the readouts.
+ *
+ * Both run for the slot's reception. The filter starts over when the slot's transmission
+ * (dsd_call_snapshot_transmission() of its active call: one nonzero value to another) or the frame's protocol family
+ * changes, and while the high-pass is off; a fade the call state heals keeps the transmission, and so the filter. The
+ * AGC starts over when the transmission, the family or the producer's talkspurt (one nonzero value to another) changes,
+ * and at dsd_voice_level_reset(). Frames before a call is known keep both.
  *
  * @param frame DSD_VOICE_FRAME_SAMPLES int16-scale samples.
- * @param info What the decoder knows about the frame; NULL for a frame nothing may learn from. The gain does not read
- *             it yet.
+ * @param info What the decoder knows about the frame; NULL for a frame nothing may learn from (decodable, no tone).
  */
 void dsd_voice_chain_run(const dsd_opts* opts, dsd_state* state, int slot, float* frame,
                          const dsd_voice_frame_info* info);
+
+/**
+ * @brief Slot @p slot's speech level starts a new reception (both slots when @p slot is negative): its AGC goes back to
+ * the start gain with nothing learned, and forgets the reception it ran for.
+ *
+ * The receiver left the carrier (a carrier boundary other than a stream gap, a trunk-scan target switch, a manual P25
+ * control-channel selection) or a file starts. A stream gap, the no-carrier pass, a crypto purge and a rate change keep
+ * it: the next frames' transmission decides. Decoder thread only.
+ */
+void dsd_voice_level_reset(dsd_state* state, int slot);
+
+/** @brief Slot @p slot's speech AGC, for diagnostics and tests; NULL before the slot's first frame. */
+const dsd_speech_agc* dsd_voice_level_agc(const dsd_state* state, int slot);
 
 /**
  * @brief Stage the chained left frame (`audio_out_temp_buf`) for the short mixers: `s_l`, the output ring and, above 8

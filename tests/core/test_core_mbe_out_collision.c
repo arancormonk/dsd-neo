@@ -147,7 +147,6 @@ test_capture_never_truncates_an_existing_file(void) {
     static short out_buf[100 + (160 * 64)];
     state.audio_out_buf = out_buf;
     state.audio_out_buf_p = out_buf + 100;
-    state.aout_max_buf_p = state.aout_max_buf;
 
     static const char json[] =
         "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"false\","

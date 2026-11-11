@@ -1980,22 +1980,40 @@ so one call gives the same audio in every output. `CORE_VOICE_CHAIN` holds the h
 Butterworth response (-3 dB at 300 Hz, unity at Nyquist, flat within 0.05 dB from 1 kHz up) and runs a sine sweep
 through the live filter; it checks that each slot filters on its own state, that the state starts over at a new call or
 protocol family (and not when a call becomes known mid-stream, after a boundary reset included, nor for a borrowed
-decoder's synctype), the gain laws (fixed `-g` a plain multiplier, unity below 0, the auto gain's attack, a legitimate
-gain below unity kept, a zeroed level recovering), and that the alert tone is a clean sine with the same samples in
+decoder's synctype), the gain laws (fixed `-g` a plain multiplier held at the -1 dBFS ceiling, unity below 0, auto
+starting at the decoder's level and holding the same ceiling, the dB readout), and that the alert tone is a clean sine
+with the same samples in
 both formats after sink conversion, its phase running across blocks (ID 41 ends a block partway through a cycle).
 `CORE_MBE_TRANSFORM_CONTEXT`'s voice-chain case decodes P25 Phase 1, NXDN, DMR slot 2, D-STAR and X2-TDMA slot 2
 frames through the real vocoder under integer and float output, the null output, a mute partway, and stereo presets,
-and requires byte-identical per-call WAVs, chained frames and gain levels, shared short staging equal to the WAV in
+and requires byte-identical per-call WAVs, chained frames and gain levels (the call's slot's speech AGC ran on every
+frame, the other slot's on none), shared short staging equal to the WAV in
 both formats, the mono mixer's playback equal to the WAV and to the converted float output within one LSB, and a
 recording the high-pass changes. `CORE_MBE_FILE_IO` checks that SDRTrunk JSON
-playback chains the frames it withholds (encrypted, no key). Its other cases set a fixed
-unity gain with the high-pass off (`pass_through_voice_chain()`), which leaves the chain a pass-through, so they still
-compare synthesis against mbelib's own output.
+playback chains the frames it withholds (encrypted, no key) as frames the speech AGC cannot decode, and that each `-r`
+file starts at the start gain. Its other cases set unity gain with the high-pass off (`pass_through_voice_chain()`: a
+gain below 0, which skips the speech AGC and its limiter), which leaves the chain a pass-through, so they still compare
+synthesis against mbelib's own output.
+
+`CORE_VOICE_LEVEL` drives each slot's speech AGC (issue #518) with deterministic quiet speech
+(`test_support/speech_synth.h`) and reads the gain it holds from a DC probe frame nothing learns from. The same speech
+lifts the gain at least 6 dB as decoded speech and leaves it at exactly 0 dB as ciphertext, refused speech, repeats,
+tone frames or frames with no media; zeros, AMBE silence, comfort noise, near-silent decoded speech and loud ciphertext
+leave it there too. Auto starts at the decoder's level on a zeroed or an `initState()` state. Tone frames play at no
+more than the start gain from their first sample and leave the learned gain as it was. The high-pass and the AGC keep
+their state across a fade the call state heals; a new transmission, another protocol family and a new TETRA
+talkspurt start the AGC over, and a frame naming none keeps it; `dsd_voice_level_reset()` resets one slot or both; a
+crypto purge and a rate change keep it; fixed and auto keep the estimate; a slot's first decodable frame after
+ciphertext resets that slot's limiter only. `ENGINE_NO_CARRIER_RESET` checks the engine's side: every carrier boundary
+but a stream gap starts both slots over, the stream gap and the no-carrier pass keep them, and a TETRA stream gap
+inside one transmission keeps the level while the next talker starts it over (a TETRA codec seam plays the speech).
 
 What each producer tells the chain about a frame (`dsd_voice_frame_info`) is read through a test observer
 (`dsd_voice_chain_set_observer_for_test()`, `src/core/audio/voice_chain_internal.h`). `CORE_VOICE_CHAIN` checks
 `dsd_voice_media_of_mbe()` flag by flag (a tone flag before any concealment flag), `dsd_voice_frame_may_learn()`, and
-that a frame and the gain come out the same with any info as with none. `CORE_MBE_TRANSFORM_CONTEXT` decodes real
+that the observer sees each frame and its info before the chain touches them. The observer stays: the speech AGC's
+state cannot tell no media from concealment, nor show a talkspurt a frame carried. `CORE_MBE_TRANSFORM_CONTEXT`
+decodes real
 frames through the vocoder: DMR speech, tone, AMBE silence, erasure, a C0 past correction that repeats and then mutes
 (the vocoder's own status string names each), and a frame that fails to decode, on both slots; an RC4 frame with no
 key is not decodable whatever the encrypted-audio mute, a clear one is under reverse mute, and a refused slot is not

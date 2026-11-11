@@ -5,7 +5,8 @@
 
 /*
  * The digital voice chain (issue #653): one high-pass and one gain per slot, run once on each decoded frame before any
- * consumer, the same for both output formats.
+ * consumer, the same for both output formats. The speech level the auto gain learns (issue #518) has tests of its own
+ * (CORE_VOICE_LEVEL).
  */
 
 #include <dsd-neo/core/audio.h>
@@ -71,14 +72,7 @@ new_opts(void) {
 
 static dsd_state*
 new_state(void) {
-    dsd_state* state = calloc(1, sizeof(*state));
-    if (state) {
-        state->aout_gain = 25.0f;
-        state->aout_gainR = 25.0f;
-        state->aout_max_buf_p = state->aout_max_buf;
-        state->aout_max_buf_pR = state->aout_max_bufR;
-    }
-    return state;
+    return calloc(1, sizeof(dsd_state));
 }
 
 static void
@@ -323,7 +317,9 @@ test_high_pass_restarts_at_reception_boundaries(void) {
     return rc;
 }
 
-/* The chain's gain: a fixed -g is a plain multiplier in both formats; below 0, unity; 0, the auto gain. */
+/* The chain's gain (issue #518): a fixed -g is a plain multiplier held at the speech AGC's -1 dBFS ceiling, in both
+   formats; below 0, unity; 0, the speech AGC, which starts at the reference level (-g 1) and holds the same ceiling.
+   Every frame leaves the gain it got, in dB, for the readouts. */
 static int
 test_chain_gain_laws(void) {
     int rc = 0;
@@ -336,53 +332,56 @@ test_chain_gain_laws(void) {
     }
     opts->use_hpf_d = 0;
     float frame[DSD_VOICE_FRAME_SAMPLES];
+    const double ceiling = 29204.0; // DSD_SPEECH_AGC_CEILING_DBFS in int16 units
 
     opts->audio_gain = 3.0f;
-    state->aout_gain = 9.0f; // a stale level the fixed gain does not read
     fill_dc(frame, 1000.0f);
     dsd_voice_chain_run(opts, state, 0, frame, NULL);
     rc |= expect_near("fixed gain multiplies by the setting", frame[17], 3000.0, 1e-3);
-    rc |= expect_near("fixed gain is what the level reads", state->aout_gain, 3.0, 1e-6);
+    rc |= expect_near("fixed gain multiplies the whole frame", frame[159], 3000.0, 1e-3);
+    rc |= expect_near("the readout is the fixed gain in dB", state->aout_gain, 20.0 * log10(3.0), 1e-3);
 
+    // A fixed gain past full scale is held at the ceiling from the first sample, not clipped at full scale.
     opts->audio_gainR = 50.0f;
     fill_dc(frame, 1000.0f);
     dsd_voice_chain_run(opts, state, 1, frame, NULL);
-    rc |= expect_near("fixed gain saturates at full scale", frame[3], 32767.0, 1e-3);
+    float peak = 0.0f;
+    for (int n = 0; n < DSD_VOICE_FRAME_SAMPLES; n++) {
+        peak = fabsf(frame[n]) > peak ? fabsf(frame[n]) : peak;
+    }
+    rc |= expect_near("fixed gain is held at the ceiling", frame[0], ceiling, 1e-3);
+    rc |= expect_true("no sample of a fixed gain passes the ceiling", peak <= (float)ceiling);
+    rc |= expect_near("slot 2's readout is the gain the limiter left", state->aout_gainR,
+                      20.0 * log10(ceiling / 1000.0), 0.01);
 
     opts->audio_gain = -1.0f;
     fill_dc(frame, 1000.0f);
     dsd_voice_chain_run(opts, state, 0, frame, NULL);
     rc |= expect_near("negative gain is unity", frame[3], 1000.0, 1e-3);
+    rc |= expect_near("negative gain reads 0 dB", state->aout_gain, 0.0, 1e-6);
 
-    // Auto: a loud frame is cut at once to the 30000 peak target.
-    opts->audio_gain = 0.0f;
-    state->aout_gain = 25.0f;
-    fill_dc(frame, 2000.0f);
-    dsd_voice_chain_run(opts, state, 0, frame, NULL);
-    rc |= expect_near("auto gain attacks at once", state->aout_gain, 15.0, 1e-4);
-    rc |= expect_near("auto gain output at the target", frame[159], 30000.0, 1e-2);
-
-    // A peak above 30000 takes the gain below unity, which the next frames keep and release by 5% each.
-    fill_dc(frame, 32000.0f);
-    dsd_voice_chain_run(opts, state, 0, frame, NULL);
-    rc |= expect_true("auto gain may go below unity", state->aout_gain < 1.0f);
-    const float below = state->aout_gain;
-    fill_dc(frame, 100.0f);
-    dsd_voice_chain_run(opts, state, 0, frame, NULL);
-    rc |= expect_near("a legitimate gain below unity is kept", state->aout_gain, below, 1e-6);
-
-    // A level no gain law leaves (a zeroed state) starts over at unity instead of freezing at 0.
-    dsd_state* zeroed = new_state();
-    if (!zeroed) {
+    // Auto on a fresh slot: the reference level; a DC frame is not speech and teaches nothing (and, under -36 dBFS, is
+    // not loud enough for the attenuator either).
+    dsd_state* fresh = new_state();
+    if (!fresh) {
         free(opts);
         free_state(state);
         return 1;
     }
-    zeroed->aout_gain = 0.0f;
-    fill_dc(frame, 1000.0f);
-    dsd_voice_chain_run(opts, zeroed, 0, frame, NULL);
-    rc |= expect_true("zeroed auto gain recovers", zeroed->aout_gain > 1.0f && frame[0] >= 999.0f);
-    free_state(zeroed);
+    opts->audio_gain = 0.0f;
+    const dsd_voice_frame_info speech = {(uint8_t)DSD_VOICE_MEDIA_SPEECH, 1U, 1U, 0U};
+    for (int k = 0; k < 60; k++) {
+        fill_dc(frame, 400.0f);
+        dsd_voice_chain_run(opts, fresh, 0, frame, &speech);
+        rc |= expect_near("auto starts at the reference level and a DC frame teaches nothing", frame[159], 400.0, 1e-3);
+    }
+    rc |= expect_near("the auto readout reads 0 dB", fresh->aout_gain, 0.0, 1e-4);
+    // A frame past the ceiling is cut at once.
+    fill_dc(frame, 32000.0f);
+    dsd_voice_chain_run(opts, fresh, 0, frame, &speech);
+    rc |= expect_near("auto holds the ceiling from the first loud sample", frame[0], ceiling, 1e-3);
+    rc |= expect_true("the readout carries the limiter", fresh->aout_gain < -0.5f);
+    free_state(fresh);
 
     free_state(state);
     free(opts);
@@ -464,18 +463,16 @@ observe_chain(void* ctx, int slot, const float* frame, const dsd_voice_frame_inf
     g_observed_sample = frame[5];
 }
 
-/* The chain takes each frame's info and, in this release, changes nothing for it: a frame comes out the same with any
-   info as with none, under the auto gain and the high-pass, and the gain moves the same. */
+/* The chain hands the test seam each frame, as its producer made it, and the frame's info before it touches either; a
+   frame with no info is seen as NULL. */
 static int
-test_chain_takes_the_info_without_acting_on_it(void) {
+test_chain_shows_each_frame_and_its_info(void) {
     int rc = 0;
     dsd_opts* opts = new_opts();
-    dsd_state* with = new_state();
-    dsd_state* without = new_state();
-    if (!opts || !with || !without) {
+    dsd_state* state = new_state();
+    if (!opts || !state) {
         free(opts);
-        free_state(with);
-        free_state(without);
+        free_state(state);
         return 1;
     }
     opts->audio_gain = 0.0f;
@@ -487,32 +484,26 @@ test_chain_takes_the_info_without_acting_on_it(void) {
         {(uint8_t)DSD_VOICE_MEDIA_NONE, 1U, 0U, 0U},
     };
     float a[DSD_VOICE_FRAME_SAMPLES];
-    float b[DSD_VOICE_FRAME_SAMPLES];
     for (int slot = 0; slot <= 1; slot++) {
-        for (int k = 0; k < 12; k++) {
+        for (int k = 0; k < 8; k++) {
             for (int n = 0; n < DSD_VOICE_FRAME_SAMPLES; n++) {
                 a[n] = (float)(1500.0 * sin(2.0 * k_pi * 700.0 * (double)(n + (k * DSD_VOICE_FRAME_SAMPLES)) / 8000.0));
-                b[n] = a[n];
             }
+            const float made = a[5];
             g_observed_runs = 0;
             dsd_voice_chain_set_observer_for_test(observe_chain, NULL);
             const dsd_voice_frame_info* info = &infos[(size_t)k % (sizeof(infos) / sizeof(infos[0]))];
-            dsd_voice_chain_run(opts, with, slot, a, info);
+            dsd_voice_chain_run(opts, state, slot, a, info);
             rc |= expect_true("the observer sees the frame before the chain",
                               g_observed_runs == 1 && g_observed_slot == slot && g_observed_info == info
-                                  && fabsf(g_observed_sample - b[5]) <= 1e-6f);
-            dsd_voice_chain_run(opts, without, slot, b, NULL);
+                                  && fabsf(g_observed_sample - made) <= 1e-6f);
+            dsd_voice_chain_run(opts, state, slot, a, NULL);
             rc |= expect_true("the observer sees no info as NULL", g_observed_runs == 2 && g_observed_info == NULL);
             dsd_voice_chain_set_observer_for_test(NULL, NULL);
-            rc |=
-                expect_true("the frame comes out the same with any info", frames_match(a, b, DSD_VOICE_FRAME_SAMPLES));
         }
     }
-    rc |= expect_near("the gain moves the same with any info", with->aout_gain, without->aout_gain, 1e-6);
-    rc |= expect_near("slot 2's gain moves the same with any info", with->aout_gainR, without->aout_gainR, 1e-6);
     free(opts);
-    free_state(with);
-    free_state(without);
+    free_state(state);
     return rc;
 }
 
@@ -643,7 +634,7 @@ main(void) {
     rc |= test_chain_gain_laws();
     rc |= test_media_of_mbe();
     rc |= test_frame_may_learn();
-    rc |= test_chain_takes_the_info_without_acting_on_it();
+    rc |= test_chain_shows_each_frame_and_its_info();
     rc |= test_beeper_tone_is_the_same_in_both_formats();
     rc |= test_beeper_on_udp_uses_the_digital_port();
     if (rc == 0) {

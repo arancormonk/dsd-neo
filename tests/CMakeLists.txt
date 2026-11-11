@@ -7660,6 +7660,23 @@ target_link_libraries(
 )
 add_test(NAME CORE_VOICE_CHAIN COMMAND dsd-neo_test_core_voice_chain)
 
+# The voice chain's speech level (issue #518): what teaches each slot's speech AGC, where it starts, and the reception
+# boundaries that start it over, on the deterministic speech-like material.
+add_executable(dsd-neo_test_core_voice_level core/test_core_voice_level.c)
+target_include_directories(
+    dsd-neo_test_core_voice_level
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(
+    dsd-neo_test_core_voice_level
+    PRIVATE
+        dsd-neo_core
+        dsd-neo_test_speech_level
+        ${LIBS}
+        ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME CORE_VOICE_LEVEL COMMAND dsd-neo_test_core_voice_level)
+
 # The audio sinks' write path: device failure and recovery reports, the -o - descriptor's failure and drops (issue
 # #659). The platform writes and the log are stubbed.
 add_executable(
@@ -8017,6 +8034,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             ${LIBS}
             dsd-neo_fec
             dsd-neo_test_support
+            dsd-neo_test_speech_level
     )
 else()
     target_link_libraries(
@@ -8026,6 +8044,7 @@ else()
             ${LIBS}
             dsd-neo_fec
             dsd-neo_test_support
+            dsd-neo_test_speech_level
     )
 endif()
 add_test(NAME CORE_MBE_FILE_IO COMMAND dsd-neo_test_core_mbe_file_io)
@@ -8158,7 +8177,10 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_engine_no_carrier_reset
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/engine
+        ${PROJECT_SOURCE_DIR}/src/protocol/tetra
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     target_compile_definitions(
@@ -8205,6 +8227,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             ${LIBS}
             dsd-neo_feature_radio
             dsd-neo_test_support
+            dsd-neo_test_speech_level
     )
 else()
     target_link_libraries(
@@ -8214,6 +8237,7 @@ else()
             ${LIBS}
             dsd-neo_feature_radio
             dsd-neo_test_support
+            dsd-neo_test_speech_level
     )
 endif()
 add_test(
@@ -9892,7 +9916,11 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_app_p25_cc_selection
-    PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
+    PRIVATE
+        ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+        ${LIBS}
+        dsd-neo_test_support
+        dsd-neo_test_speech_level
 )
 add_test(NAME APP_P25_CC_SELECTION COMMAND dsd-neo_test_app_p25_cc_selection)
 

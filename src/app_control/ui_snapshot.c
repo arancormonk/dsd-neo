@@ -166,6 +166,13 @@ ui_snapshot_copy_trunk_chan_map(dsd_state* dst, ui_snapshot_store_mark* mark, co
     return 0;
 }
 
+/* The applied gain readouts (issue #518) ride the config_autosave_enabled..last_dibit range the terminal renders from;
+ * the voice level's adaptation state is decoder-owned, in a state extension no range copies. */
+_Static_assert(offsetof(dsd_state, aout_gain) >= offsetof(dsd_state, config_autosave_enabled)
+                   && UI_SNAPSHOT_FIELD_END(aout_gainA) <= UI_SNAPSHOT_FIELD_END(last_dibit)
+                   && offsetof(dsd_state, aout_gain) < offsetof(dsd_state, aout_gainR)
+                   && offsetof(dsd_state, aout_gainR) < offsetof(dsd_state, aout_gainA),
+               "the gain readouts must ride the config_autosave_enabled..last_dibit copy range");
 /* The heap tail must stay outside every UI_SNAPSHOT_COPY_RANGE: a raw byte copy of the
  * pointer would alias the decoder's live buffer into g_pub/g_consume, and the next
  * reserve() on the snapshot would realloc the decoder's memory out from under it. */
@@ -448,8 +455,7 @@ ui_snapshot_copy_render_state(dsd_state* dst, ui_snapshot_marks* marks, const ds
     /* Decoder-owned argv is private, and may outlive neither session nor playback. */
     dst->cli_argc_effective = 0;
     dst->cli_argv = NULL;
-    UI_SNAPSHOT_COPY_RANGE(dst, src, config_autosave_enabled, aout_gainA);
-    UI_SNAPSHOT_COPY_RANGE(dst, src, aout_max_buf_idx, last_dibit);
+    UI_SNAPSHOT_COPY_RANGE(dst, src, config_autosave_enabled, last_dibit);
 
     UI_SNAPSHOT_COPY_RANGE(dst, src, input_sample_buffer, directmode);
     UI_SNAPSHOT_COPY_RANGE(dst, src, dmr_alias_format, DMRvcR);

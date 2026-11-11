@@ -711,11 +711,19 @@ dsd_audio_play_decoded_frame(const dsd_opts* opts, dsd_state* state, const short
     }
 }
 
+/* The left staging (dsd_voice_stage_short_left()) writes the output ring, and above 8 kHz the upsampled float ring
+   too: both must exist. */
+static int
+dsd_audio_left_staging_ready(const dsd_opts* opts, const dsd_state* state) {
+    return state->audio_out_buf_p != NULL
+           && (opts->pulse_digi_rate_out <= 8000 || state->audio_out_float_buf_p != NULL);
+}
+
 void
 dsd_audio_play_decoded_pcm16_record(const dsd_opts* opts, dsd_state* state, const short* pcm, size_t count, int record,
                                     const dsd_voice_frame_info* info) {
-    if (!opts || !state || !pcm || !state->audio_out_buf_p || !state->aout_max_buf_p
-        || opts->pulse_digi_out_channels < 1 || opts->pulse_digi_out_channels > 2) {
+    if (!opts || !state || !pcm || !dsd_audio_left_staging_ready(opts, state) || opts->pulse_digi_out_channels < 1
+        || opts->pulse_digi_out_channels > 2) {
         return;
     }
     /* Voice decoded while an input interruption stands comes from a frame it cut (a Signal search left the frame, or a

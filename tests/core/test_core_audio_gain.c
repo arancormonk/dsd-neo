@@ -401,18 +401,17 @@ test_process_audio_native_left_clamps_and_tracks_output(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
 
-    // A fixed -g is a plain multiplier, the setting itself (issue #653).
-    opts.audio_gain = 2.0f;
+    // A gain setting below 0 passes the frame at unity, so the chain's own int16 saturation is what reaches staging.
+    opts.audio_gain = -1.0f;
     opts.pulse_digi_rate_out = 8000;
-    state.aout_gain = 2.0f;
     static short out[200];
     static float out_float[200];
     DSD_MEMSET(out, 0, sizeof(out));
     DSD_MEMSET(out_float, 0, sizeof(out_float));
     state.audio_out_buf = out;
     state.audio_out_float_buf = out_float;
-    state.audio_out_temp_buf[0] = 20000.0f;
-    state.audio_out_temp_buf[1] = -20000.0f;
+    state.audio_out_temp_buf[0] = 40000.0f;
+    state.audio_out_temp_buf[1] = -40000.0f;
     state.audio_out_temp_buf[2] = 100.0f;
     state.audio_out_buf_p = state.audio_out_buf;
     state.audio_out_float_buf_p = state.audio_out_float_buf;
@@ -424,13 +423,13 @@ test_process_audio_native_left_clamps_and_tracks_output(void) {
     int rc = 0;
     rc |= expect_int_eq("left clamp positive output", out[0], 32767);
     rc |= expect_int_eq("left clamp negative output", out[1], -32768);
-    rc |= expect_int_eq("left scaled sample output", out[2], 200);
+    rc |= expect_int_eq("left unity sample output", out[2], 100);
     rc |= expect_int_eq("left mirror positive", state.s_l[0], 32767);
     rc |= expect_int_eq("left mirror negative", state.s_l[1], -32768);
     rc |= expect_int_eq("left native index", state.audio_out_idx, 160);
     rc |= expect_int_eq("left native long index", state.audio_out_idx2, 160);
     rc |= expect_true("left output pointer advanced", state.audio_out_buf_p == out + 160);
-    rc |= expect_float_close("left manual gain unchanged", state.aout_gain, 2.0f, 1e-6f);
+    rc |= expect_float_close("left unity reads 0 dB", state.aout_gain, 0.0f, 1e-6f);
     return rc;
 }
 
@@ -441,17 +440,17 @@ test_process_audio_native_right_clamps_and_tracks_output(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
 
+    // A fixed -g is a plain multiplier, the setting itself (issue #653), under the speech AGC's ceiling (issue #518).
     opts.audio_gainR = 3.0f;
     opts.pulse_digi_rate_out = 8000;
-    state.aout_gainR = 3.0f;
     static short out[200];
     static float out_float[200];
     DSD_MEMSET(out, 0, sizeof(out));
     DSD_MEMSET(out_float, 0, sizeof(out_float));
     state.audio_out_bufR = out;
     state.audio_out_float_bufR = out_float;
-    state.audio_out_temp_bufR[0] = 12000.0f;
-    state.audio_out_temp_bufR[1] = -12000.0f;
+    state.audio_out_temp_bufR[0] = 9000.0f;
+    state.audio_out_temp_bufR[1] = -9000.0f;
     state.audio_out_temp_bufR[2] = 100.0f;
     state.audio_out_buf_pR = state.audio_out_bufR;
     state.audio_out_float_buf_pR = state.audio_out_float_bufR;
@@ -459,20 +458,23 @@ test_process_audio_native_right_clamps_and_tracks_output(void) {
     chain_and_stage_right(&opts, &state);
 
     int rc = 0;
-    rc |= expect_int_eq("right clamp positive output", out[0], 32767);
-    rc |= expect_int_eq("right clamp negative output", out[1], -32768);
+    rc |= expect_int_eq("right scaled positive output", out[0], 27000);
+    rc |= expect_int_eq("right scaled negative output", out[1], -27000);
     rc |= expect_int_eq("right scaled sample output", out[2], 300);
-    rc |= expect_int_eq("right mirror positive", state.s_r[0], 32767);
-    rc |= expect_int_eq("right mirror negative", state.s_r[1], -32768);
+    rc |= expect_int_eq("right mirror positive", state.s_r[0], 27000);
+    rc |= expect_int_eq("right mirror negative", state.s_r[1], -27000);
     rc |= expect_int_eq("right native index", state.audio_out_idxR, 160);
     rc |= expect_int_eq("right native long index", state.audio_out_idx2R, 160);
     rc |= expect_true("right output pointer advanced", state.audio_out_buf_pR == out + 160);
-    rc |= expect_float_close("right manual gain unchanged", state.aout_gainR, 3.0f, 1e-6f);
+    rc |= expect_float_close("right fixed gain reads in dB", state.aout_gainR, 9.5424f, 1e-3f);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
+/* Auto gain (issue #518) starts at the reference level (-g 1) on a fresh state, on either slot: the first frame stages at
+   unity and reads 0 dB. */
 static int
-test_process_audio_auto_gain_ramps_from_peak_history(void) {
+test_process_audio_auto_gain_starts_at_unity(void) {
     static dsd_opts opts = {0};
     static dsd_state state = {0};
     DSD_MEMSET(&opts, 0, sizeof opts);
@@ -480,8 +482,6 @@ test_process_audio_auto_gain_ramps_from_peak_history(void) {
 
     opts.audio_gain = 0.0f;
     opts.pulse_digi_rate_out = 8000;
-    state.aout_gain = 1.0f;
-    state.aout_max_buf_p = state.aout_max_buf;
     static short out[200];
     static float out_float[200];
     DSD_MEMSET(out, 0, sizeof(out));
@@ -497,17 +497,16 @@ test_process_audio_auto_gain_ramps_from_peak_history(void) {
     chain_and_stage_left(&opts, &state);
 
     int rc = 0;
-    rc |= expect_int_eq("auto gain first sample", out[0], 1000);
-    rc |= expect_int_eq("auto gain last sample ramps", out[159], 1049);
-    rc |= expect_float_close("auto gain capped ramp target", state.aout_gain, 1.05f, 1e-6f);
-    rc |= expect_int_eq("auto gain peak history index", state.aout_max_buf_idx, 1);
-    rc |= expect_float_close("auto gain peak history stores block", state.aout_max_buf[0], 1000.0f, 1e-6f);
+    rc |= expect_int_eq("auto gain first sample at unity", out[0], 1000);
+    rc |= expect_int_eq("auto gain last sample at unity", out[159], 1000);
+    rc |= expect_float_close("auto gain reads 0 dB", state.aout_gain, 0.0f, 1e-6f);
     rc |= expect_int_eq("auto gain output index", state.audio_out_idx, 160);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
 static int
-test_process_audio_right_auto_gain_tracks_peak_history(void) {
+test_process_audio_right_auto_gain_starts_at_unity(void) {
     static dsd_opts opts = {0};
     static dsd_state state = {0};
     DSD_MEMSET(&opts, 0, sizeof opts);
@@ -515,10 +514,6 @@ test_process_audio_right_auto_gain_tracks_peak_history(void) {
 
     opts.audio_gainR = 0.0f;
     opts.pulse_digi_rate_out = 8000;
-    state.aout_gainR = 10.0f;
-    state.aout_max_bufR[3] = 20000.0f;
-    state.aout_max_buf_idxR = 24;
-    state.aout_max_buf_pR = state.aout_max_bufR + 24;
     static short out[200];
     static float out_float[200];
     DSD_MEMSET(out, 0, sizeof(out));
@@ -535,18 +530,16 @@ test_process_audio_right_auto_gain_tracks_peak_history(void) {
     chain_and_stage_right(&opts, &state);
 
     int rc = 0;
-    rc |= expect_int_eq("right auto gain first sample", out[0], 1500);
-    rc |= expect_int_eq("right auto gain negative sample", out[1], -3000);
-    rc |= expect_int_eq("right auto gain small sample", out[2], 375);
-    rc |= expect_int_eq("right auto gain peak sample", out[3], -6000);
-    rc |= expect_int_eq("right auto gain mirror sample", state.s_r[0], 1500);
-    rc |= expect_float_close("right auto gain falls to peak target", state.aout_gainR, 1.5f, 1e-6f);
-    rc |= expect_float_close("right auto gain stores block peak", state.aout_max_bufR[24], 4000.0f, 1e-6f);
-    rc |= expect_int_eq("right auto gain wraps history index", state.aout_max_buf_idxR, 0);
-    rc |= expect_true("right auto gain wraps history pointer", state.aout_max_buf_pR == state.aout_max_bufR);
+    rc |= expect_int_eq("right auto gain first sample", out[0], 1000);
+    rc |= expect_int_eq("right auto gain negative sample", out[1], -2000);
+    rc |= expect_int_eq("right auto gain small sample", out[2], 250);
+    rc |= expect_int_eq("right auto gain peak sample", out[3], -4000);
+    rc |= expect_int_eq("right auto gain mirror sample", state.s_r[0], 1000);
+    rc |= expect_float_close("right auto gain reads 0 dB", state.aout_gainR, 0.0f, 1e-6f);
     rc |= expect_int_eq("right auto gain output index", state.audio_out_idxR, 160);
     rc |= expect_int_eq("right auto gain long output index", state.audio_out_idx2R, 160);
     rc |= expect_true("right auto gain output pointer advanced", state.audio_out_buf_pR == out + 160);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -559,7 +552,6 @@ test_stage_short_left_upsampled_clamps_and_tracks_output(void) {
 
     opts.audio_gain = 1.0f;
     opts.pulse_digi_rate_out = 48000;
-    state.aout_gain = 1.0f;
     static short out[1000];
     static float out_float[1000];
     DSD_MEMSET(out, 0, sizeof(out));
@@ -597,9 +589,9 @@ test_process_audio_upsampled_right_clamps_and_tracks_output(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
 
-    opts.audio_gainR = 1.0f;
+    // Unity through the chain's int16 saturation (a setting below 0): the samples staging clamps and repeats.
+    opts.audio_gainR = -1.0f;
     opts.pulse_digi_rate_out = 48000;
-    state.aout_gainR = 1.0f;
     state.dmr_stereo = 1;
     state.currentslot = 1;
     static short out[1000];
@@ -1349,8 +1341,8 @@ main(void) {
     rc |= test_manual_analog_gain_helper();
     rc |= test_process_audio_native_left_clamps_and_tracks_output();
     rc |= test_process_audio_native_right_clamps_and_tracks_output();
-    rc |= test_process_audio_auto_gain_ramps_from_peak_history();
-    rc |= test_process_audio_right_auto_gain_tracks_peak_history();
+    rc |= test_process_audio_auto_gain_starts_at_unity();
+    rc |= test_process_audio_right_auto_gain_starts_at_unity();
     rc |= test_stage_short_left_upsampled_clamps_and_tracks_output();
     rc |= test_process_audio_upsampled_right_clamps_and_tracks_output();
     rc |= test_play_synthesized_voice_slot_off_clears_pending_output();

@@ -556,11 +556,13 @@ typedef struct {
 
 /* One slot's digital voice high-pass (`-v 0x8`, issue #653): the transposed direct form II state of the 2nd-order
    Butterworth section dsd_voice_hpf_process() runs on 8 kHz vocoder frames, and the reception it last ran for, so a new
-   call or protocol on the slot starts from clear state (<dsd-neo/core/voice_chain.h>). */
+   transmission or protocol on the slot starts from clear state (<dsd-neo/core/voice_chain.h>). */
 typedef struct {
     double s1;
     double s2;
-    uint64_t call_epoch; /* The last nonzero call epoch the slot's frames belonged to; 0 before the first. */
+    /* The last nonzero transmission (dsd_call_snapshot_transmission()) the slot's frames belonged to; 0 before the
+       first. A fade the call state heals keeps it. */
+    uint64_t transmission;
     int protocol_family; /* dsd_call_state_protocol_family() of the last frame; 0 before the first. */
 } dsd_voice_hpf_state;
 
@@ -1002,8 +1004,6 @@ struct dsd_state {
     float* audio_out_float_buf_p;
     float* audio_out_float_bufR;
     float* audio_out_float_buf_pR;
-    float* aout_max_buf_p;
-    float* aout_max_buf_pR;
     struct mbe_parameters* cur_mp;
     struct mbe_parameters* prev_mp;
     struct mbe_parameters* prev_mp_enhanced;
@@ -1509,13 +1509,12 @@ struct dsd_state {
     int numtdulc;
     int firstframe;
     char slot0light[8];
+    /* Display only: the gain the digital voice chain last applied on slot 1 and slot 2, in dB over the decoder's level
+       (`-g 1`), set by every chained frame (<dsd-neo/core/voice_chain.h>); and the analog monitor's, in dB over `-n
+       50`. Their adaptation state stays with the decoder (state extensions). */
     float aout_gain;
     float aout_gainR;
     float aout_gainA;
-    float aout_max_buf[200];
-    float aout_max_bufR[200];
-    int aout_max_buf_idx;
-    int aout_max_buf_idxR;
     int samplesPerSymbol;
     int symbolCenter;
     char algid[9];

@@ -298,15 +298,17 @@ expect_gain(const char* tag, double got, double want) {
     return 0;
 }
 
-/* The digital setting and its three mirrors: the right slot's setting and both applied gains (25, the auto gain's
-   playback default, under auto). */
+/* What the applied gain readouts hold before any action: the actions never write them (issue #518). */
+#define DIGITAL_GAIN_READOUT_DB 7.25f
+
+/* The digital setting and the right slot's mirror. The applied gains are the voice chain's readouts, which it sets at
+   the next frame: an action leaves them alone, so switching to auto seeds no starting level (issue #518 B4). */
 static int
 expect_digital_gain(const char* tag, const dsd_opts* opts, const dsd_state* state, double want) {
-    const double applied = (want > 0.0) ? want : 25.0;
     int rc = expect_gain(tag, opts->audio_gain, want);
     rc |= expect_gain(tag, opts->audio_gainR, want);
-    rc |= expect_gain(tag, state->aout_gain, applied);
-    rc |= expect_gain(tag, state->aout_gainR, applied);
+    rc |= expect_gain(tag, state->aout_gain, DIGITAL_GAIN_READOUT_DB);
+    rc |= expect_gain(tag, state->aout_gainR, DIGITAL_GAIN_READOUT_DB);
     return rc;
 }
 
@@ -321,6 +323,8 @@ test_digital_gain_actions(void) {
     struct dsd_app_command cmd;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    state.aout_gain = DIGITAL_GAIN_READOUT_DB;
+    state.aout_gainR = DIGITAL_GAIN_READOUT_DB;
 
     const double accepted[] = {0.001, 0.0011, 0.5, 2.5, 50.0, 0.0};
     for (size_t i = 0; i < sizeof accepted / sizeof accepted[0]; i++) {

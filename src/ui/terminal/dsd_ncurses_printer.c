@@ -693,15 +693,30 @@ ui_render_input_sources_block(dsd_opts* opts, dsd_state* state) {
     ui_render_input_level_status(opts, state);
 }
 
-/* A digital output's gains (0..100 %) in three places, then its mode word. */
+/* A digital output's gain, as the analog row shows its own: auto with what the voice chain applies over the decoder's
+   level (`-g 1`), one value per channel, or the fixed `-g` multiplier. Both forms take the room the widest auto form
+   takes, so the flags after them hold their columns when the mode or the value changes (issue #518). */
 static void
 ui_row_digital_gain_fields(ui_row* row, const dsd_opts* opts, const dsd_state* state, const char* keys) {
-    char gain[16];
-    ui_row_field(row, " G: %s%%", ui_num(gain, sizeof gain, (double)state->aout_gain * 2.0, 3, 0, 0));
-    if (opts->pulse_digi_out_channels == 2) {
-        ui_row_field(row, " G: %s%%", ui_num(gain, sizeof gain, (double)state->aout_gainR * 2.0, 3, 0, 0));
+    static const char k_auto_span_1[] = "G: Auto (+18.0 dB) (+|-)";
+    static const char k_auto_span_2[] = "G: Auto (+18.0 / +18.0 dB) (+|-)";
+    const int stereo = opts->pulse_digi_out_channels == 2;
+    char text[64];
+    if (!(opts->audio_gain > 0.0f)) {
+        char left[16];
+        ui_num(left, sizeof left, state ? (double)state->aout_gain : 0.0, 5, 1, DSD_NUMBER_TEXT_PLUS);
+        if (stereo) {
+            char right[16];
+            ui_num(right, sizeof right, state ? (double)state->aout_gainR : 0.0, 5, 1, DSD_NUMBER_TEXT_PLUS);
+            DSD_SNPRINTF(text, sizeof text, "G: Auto (%s / %s dB) (%s)", left, right, keys);
+        } else {
+            DSD_SNPRINTF(text, sizeof text, "G: Auto (%s dB) (%s)", left, keys);
+        }
+    } else {
+        DSD_SNPRINTF(text, sizeof text, "G: x%.4g (%s) Manual", (double)opts->audio_gain, keys);
     }
-    ui_row_field(row, " (%s) %s", keys, opts->audio_gain == 0 ? "Auto  " : "Manual");
+    const int span = (int)(stereo ? sizeof k_auto_span_2 : sizeof k_auto_span_1) - 1;
+    ui_row_field(row, " %-*s", span, text);
     if (opts->use_hpf_d == 1) {
         ui_row_field(row, " HPF");
     }

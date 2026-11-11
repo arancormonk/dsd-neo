@@ -22,6 +22,8 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/core/voice_chain.h>
+#include <dsd-neo/dsp/speech_agc.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -111,6 +113,10 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, c
     (void)imbe7100_fr;
 }
 
+/* 1: the stub vocoder runs each frame through the voice chain before staging it, as the real one does; 0: it stages
+   the tag as it is, so the cases read it back. */
+static int g_stub_runs_chain = 0;
+
 void
 processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, dsd_vocoder_soft_bit imbe_fr[8][23],
                     dsd_vocoder_soft_bit ambe_fr[4][24], dsd_vocoder_soft_bit imbe7100_fr[7][24]) {
@@ -121,8 +127,21 @@ processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protoco
     const int slot = state->currentslot & 1;
     const int tag = g_next_tag[slot]++;
     short* s = (slot == 0) ? state->s_l : state->s_r;
-    for (int i = 0; i < 160; i++) {
-        s[i] = (short)tag;
+    if (g_stub_runs_chain) {
+        /* As the vocoder does: the frame through its slot's voice chain, then staged. */
+        float* frame = (slot == 0) ? state->audio_out_temp_buf : state->audio_out_temp_bufR;
+        for (int i = 0; i < 160; i++) {
+            frame[i] = (float)tag;
+        }
+        const dsd_voice_frame_info info = {(uint8_t)DSD_VOICE_MEDIA_SPEECH, 1U, 1U, 0U};
+        dsd_voice_chain_run(opts, state, slot, frame, &info);
+        for (int i = 0; i < 160; i++) {
+            s[i] = (short)frame[i];
+        }
+    } else {
+        for (int i = 0; i < 160; i++) {
+            s[i] = (short)tag;
+        }
     }
     const int frame = g_frames_in_burst[slot]++;
     if (g_hook && slot == g_hook_slot && frame == g_hook_frame) {
@@ -260,8 +279,6 @@ setup(int floating, int channels) {
     g_opts.slot2_on = 1;
     g_opts.slot_preference = 2; // Auto: both audible slots play side by side
     g_opts.audio_gain = 0;
-    g_state.aout_gain = 25.0f;
-    g_state.aout_gainR = 25.0f;
     g_state.p2_wacn = 0xBEE00;
     g_state.p2_sysid = 0x1A2;
     g_state.p2_cc = 0x293;
@@ -609,7 +626,9 @@ capture_played(const dsd_opts* opts, dsd_state* state, size_t bytes, const void*
 }
 
 /* A short call's tail flushed at release, with the digital high-pass on and a static WAV open: the output and the WAV
-   get exactly the six frames decoded, the same samples, and no high-pass decay block (issue #651 item 3). */
+   get exactly the six frames decoded, the same samples, and no high-pass decay block (issue #651 item 3). The stub
+   vocoder runs each frame through the voice chain here, so the high-pass and the speech level really run (issue #518
+   B13: before, the stub staged its tags past the chain and the high-pass this case names never ran). */
 static int
 test_partial_flush_with_hpf_and_static_wav(void) {
     static short wav[24 * 320];
@@ -632,12 +651,18 @@ test_partial_flush_with_hpf_and_static_wav(void) {
     g_opts.wav_out_f = sf_open(path, SFM_WRITE, &info);
     g_opts.static_wav_file = 1;
     g_opts.use_hpf_d = 1;
+    g_stub_runs_chain = 1;
     open_slot(0, 100, 1000);
     superframe_plan plan;
     plan_voice(&plan, 0, -1); /* 2V at pair 0, a 4V at pair 1: six frames */
     /* Timeslots 11, 0, 1 and 2: the window ends with slot 1's pair-1 burst decoded and its pair still open. */
     run_windows(&plan, 11, 1);
+    const dsd_speech_agc* agc = dsd_voice_level_agc(&g_state, 0);
+    rc |= expect_int("flush: the six frames ran the speech level", agc != NULL && agc->frames == 6U, 1);
+    rc |= expect_int("flush: and the high-pass",
+                     fabs(g_state.voice_hpf[0].s1) > 1e-9 || fabs(g_state.voice_hpf[0].s2) > 1e-9, 1);
     dsd_p25p2_flush_partial_audio(&g_opts, &g_state);
+    g_stub_runs_chain = 0;
     sf_close(g_opts.wav_out_f);
     g_opts.wav_out_f = NULL;
     rc |= expect_int("flush played blocks", g_block_count, 6);

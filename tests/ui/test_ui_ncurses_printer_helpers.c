@@ -1806,17 +1806,42 @@ test_output_rows_fixed_width(void) {
     opts.audio_out_type = 0;
     opts.pulse_digi_rate_out = 8000;
     opts.pulse_digi_out_channels = 2;
+    /* Issue #518: the applied gain in dB per channel under auto, the -g multiplier under a fixed gain, each form in the
+       room the widest auto form takes, so the flags after it keep their column. */
     state.aout_gain = 4.5f;
-    state.aout_gainR = 50.0f;
+    state.aout_gainR = -12.04f;
+    opts.use_hpf_d = 1;
     reset_printw_capture();
     ui_render_pulse_digital_output(&opts, &state);
-    assert_capture_equals("| Pulse Digital Output: 8 kHz; 2 Ch; G:   9% G: 100% (+|-) Auto\n");
-    const int mode_col = capture_column_of(" (+|-)");
-    state.aout_gain = 50.0f;
+    assert_capture_equals("| Pulse Digital Output: 8 kHz; 2 Ch; G: Auto ( +4.5 / -12.0 dB) (+|-) HPF\n");
+    const int flag_col = capture_column_of(" HPF");
+    state.aout_gain = 18.0f;
     state.aout_gainR = 0.0f;
     reset_printw_capture();
     ui_render_pulse_digital_output(&opts, &state);
-    assert(capture_column_of(" (+|-)") == mode_col);
+    assert_capture_contains(" G: Auto (+18.0 /  +0.0 dB) (+|-) HPF\n");
+    assert(capture_column_of(" HPF") == flag_col);
+    opts.audio_gain = 2.5f;
+    reset_printw_capture();
+    ui_render_pulse_digital_output(&opts, &state);
+    assert_capture_contains(" G: x2.5 (+|-) Manual");
+    assert(capture_column_of(" HPF") == flag_col);
+    opts.pulse_digi_out_channels = 1;
+    opts.audio_gain = 0.0f;
+    state.aout_gain = -0.04f;
+    reset_printw_capture();
+    ui_render_pulse_digital_output(&opts, &state);
+    assert_capture_equals("| Pulse Digital Output: 8 kHz; 1 Ch; G: Auto ( +0.0 dB) (+|-) HPF\n");
+    const int mono_col = capture_column_of(" HPF");
+    opts.audio_gain = 0.001f;
+    reset_printw_capture();
+    ui_render_pulse_digital_output(&opts, &state);
+    assert_capture_equals("| Pulse Digital Output: 8 kHz; 1 Ch; G: x0.001 (+|-) Manual   HPF\n");
+    assert(capture_column_of(" HPF") == mono_col);
+    opts.audio_gain = 0.0f;
+    opts.use_hpf_d = 0;
+    opts.pulse_digi_out_channels = 2;
+    state.aout_gain = 18.0f;
 
     opts.frame_provoice = 1;
     opts.audio_in_type = AUDIO_IN_PULSE;
@@ -1848,7 +1873,7 @@ test_output_rows_fixed_width(void) {
     opts.udp_sockfdA = DSD_INVALID_SOCKET;
     reset_printw_capture();
     ui_render_udp_output(&opts, &state);
-    assert_capture_contains("| UDP Digital Output: 127.0.0.1:23456; 8 kHz 2 Ch; G: 100% G:   0% (+|-) Auto\n");
+    assert_capture_contains("| UDP Digital Output: 127.0.0.1:23456; 8 kHz 2 Ch; G: Auto (+18.0 /  +0.0 dB) (+|-)\n");
     assert(strstr(g_printw_capture, "UDP Analog Output") == NULL);
     opts.udp_sockfdA = (dsd_socket_t)0;
     reset_printw_capture();

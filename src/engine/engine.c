@@ -2868,12 +2868,6 @@ no_carrier_reset_voice_and_audio_metrics(dsd_state* state) {
     state->slot1light[0] = '\0';
     state->slot2light[0] = '\0';
     state->firstframe = 0;
-    DSD_MEMSET(state->aout_max_buf, 0, sizeof(float) * 200);
-    state->aout_max_buf_p = state->aout_max_buf;
-    state->aout_max_buf_idx = 0;
-    DSD_MEMSET(state->aout_max_bufR, 0, sizeof(float) * 200);
-    state->aout_max_buf_pR = state->aout_max_bufR;
-    state->aout_max_buf_idxR = 0;
     set_underscores(state->algid, 8);
     set_underscores(state->keyid, 16);
     mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
@@ -3581,6 +3575,9 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     dsd_event_flush_orphan_recordings(opts, state);
     dsd_engine_forget_carrier_codes(state);
     dsd_engine_forget_carrier_decoding(opts, state);
+    /* The digital voice level starts the next carrier's reception at its start gain (issue #518). Not in the forget
+       above, which a stream gap runs too: that is the same carrier, whose transmissions decide. */
+    dsd_voice_level_reset(state, -1);
     dsd_engine_forget_untrunked_carrier_state(opts, state);
     if (kind == DSD_CARRIER_BOUNDARY_TUNE) {
         /* The user's tune moved the receiver without the legacy legs: what they last sent no longer says where it is
@@ -3724,7 +3721,8 @@ no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
 
 
    The voice chain's high-pass starts the next reception clear here too (issue #653), under the same guard: the
-   watchdog's crypto expiry purges a slot's filter state under it. Its gain level carries on. */
+   watchdog's crypto expiry purges a slot's filter state under it. Its speech level carries on: the transmission the
+   next frames belong to decides whether they start a reception of their own (dsd_voice_chain_run()). */
 static int
 no_carrier_drain_playout(dsd_opts* opts, dsd_state* state, int guard_held) {
     if (!guard_held && !p25_sm_tick_guard_try_enter()) {
@@ -3847,9 +3845,10 @@ dsd_engine_no_carrier_identity_stale(dsd_state* state, int guard_held) {
     }
 }
 
-// One voice chain gain serves both output formats (issue #653), so its setting and starting level do too.
+// One voice chain gain serves both output formats (issue #653), so its setting does too. Auto gain starts at the
+// speech AGC's start gain on every entry path (issue #518): nothing seeds it here.
 static int
-live_scanner_apply_audio_gain(dsd_opts* opts, dsd_state* state) {
+live_scanner_apply_audio_gain(dsd_opts* opts) {
     if (opts->audio_gain > 50.0f) {
         opts->audio_gain = 50.0f;
     }
@@ -3861,11 +3860,6 @@ live_scanner_apply_audio_gain(dsd_opts* opts, dsd_state* state) {
     }
     if (opts->audio_gainR < 0.0f) {
         opts->audio_gainR = 0.0f;
-    }
-    // Auto gain (0) starts at 15.
-    if (!(opts->audio_gain > 0.0f)) {
-        state->aout_gain = 15.0f;
-        state->aout_gainR = 15.0f;
     }
     return 0;
 }
@@ -4330,7 +4324,7 @@ liveScanner(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* 
     if (!opts || !state) {
         return -1;
     }
-    (void)live_scanner_apply_audio_gain(opts, state);
+    (void)live_scanner_apply_audio_gain(opts);
 #ifdef USE_RADIO
     if (live_scanner_start_rtl_if_needed(opts, state) != 0) {
         return -1;

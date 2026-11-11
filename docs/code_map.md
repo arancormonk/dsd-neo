@@ -2217,12 +2217,13 @@ suite runs under this compiler.
   direction the export uses. Every core CSV importer shares its token helpers through the module-private
   `src/core/file/csv_parse_internal.h`; the channel map's key column accepts decimal, `0x` hex and `<iden>-<chan>`
   spellings there.
-- State extension slots (`<dsd-neo/core/state_ext.h>`): engine owns 0, 1, 3 and 7; core 2, 4, 5 and 8; runtime 6;
-  DSP 9, 10 and 11 (taken from the core range as runtime took 6 from the engine's): 9 is `DSD_STATE_EXT_DSP_ANALOG_RX`,
-  the analog receive working state, 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, the analog monitor's audio chains, and 11
-  `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate; app-control owns 16, from the ui
-  range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still waits on its tune (issue #644).
-  `CORE_STATE_EXT` pins these four.
+- State extension slots (`<dsd-neo/core/state_ext.h>`): engine owns 0, 1, 3 and 7; core 2, 4, 5 and 8, and 13 (taken
+  from the io range): `DSD_STATE_EXT_CORE_VOICE_LEVEL`, the digital voice chain's per-slot speech AGC and the reception
+  it runs for (issue #518); runtime 6; DSP 9, 10 and 11 (taken from the core range as runtime took 6 from the
+  engine's): 9 is `DSD_STATE_EXT_DSP_ANALOG_RX`, the analog receive working state, 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`,
+  the analog monitor's audio chains, and 11 `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink
+  rate; app-control owns 16, from the ui range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still
+  waits on its tune (issue #644). `CORE_STATE_EXT` pins these five.
 - API note: `dsd_state::analog_rx` (`dsd_analog_rx_publication` in `<dsd-neo/core/state.h>`, issues #522 and #523) is
   the received-tone publication every frontend reads: int-only (`carrier_open`, `tone_kind`, `tone_state`,
   `ctcss_tenths_hz`, `ctcss_off_value` (1 while the locked CTCSS tone rests on transmitter tone error alone, issue #643:
@@ -2608,9 +2609,8 @@ suite runs under this compiler.
   classification there for lockout. P25 Phase 2 playout snapshots the P25 rule and actual staged-media provenance
   per frame, so a queued muted frame remains silent.
 - Invariant (digital voice output formats, issue #652): integer and float (`-y`) output are one chain, not two. The
-  vocoder runs the filter and gain once with `dsd_voice_chain_run()` (the fixed `-g`
-  gain, or the auto gain: per slot, peaks toward 30000, `aout_gain`/`aout_gainR` carried from call to call, its peak
-  history cleared by the no-carrier reset), and stages each frame's 16-bit samples (`s_l`/`s_r`, and
+  vocoder runs the filter and gain once with `dsd_voice_chain_run()` (the fixed `-g` gain, or the slot's speech AGC,
+  issue #518: see the voice chain invariant below), and stages each frame's 16-bit samples (`s_l`/`s_r`, and
   `mbe_short_silenced`) the same way in both formats, as do the vocoder bypasses (SDRTrunk JSON playback, YSF V/D2, M17 Codec2).
   Every protocol plays through the same mixers (MS, SS, SS3, the P25 Phase 2 playout), so routing, muting, the digital
   high-pass, the audible-audio stamp and the static and per-call WAVs are the same in both. The one place the format
@@ -2794,7 +2794,7 @@ suite runs under this compiler.
   `docs/testing.md`).
 - Invariant (vocoder PCM scale, `<dsd-neo/core/vocoder.h>`): mbelib-neo's float PCM is int16 / 7
   (`mbe_floattoshort()` multiplies by 7), and from 2.3 it synthesizes speech at that reference level. The voice
-  buffers (`audio_out_temp_buf`/`R`) hold int16-scale samples, which the voice chain's fixed and auto gain and the
+  buffers (`audio_out_temp_buf`/`R`) hold int16-scale samples, which the voice chain's fixed gain and speech AGC and the
   WAV writers expect, so every caller of an
   `mbe_process*f` API scales the frame it gets with `dsd_mbe_float_to_pcm16_scale()`: `store_process_result()` in
   `dsd_mbe.c` for the vocoder's own paths, SDRTrunk JSON playback in `dsd_file.c` and YSF V/D2 in `ysf.c`. A new
@@ -2802,9 +2802,10 @@ suite runs under this compiler.
 - Invariant (digital voice chain, `<dsd-neo/core/voice_chain.h>`, issue #653): every decoded 8 kHz voice frame goes
   through its slot's chain exactly once, in place, before anything reads it: the digital high-pass (`use_hpf_d`, `-v
   0x8`; a 2nd-order Butterworth at 300 Hz, unity in the voice band, `dsd_voice_hpf_*()` in `dsd_misc.c`), then the
-  slot's gain (the fixed `-g` multiplier `audio_gain`/`audio_gainR`, unity below 0, or the auto peak normalizer on
-  `aout_gain`/`aout_max_buf` and their `R` twins), then saturation to the int16 range (`dsd_voice_chain_run()` in
-  `dsd_audio.c`). It runs whatever the output format, output type, mute or preset say, before consumer gates, and
+  slot's speech level (issue #518, `src/core/audio/voice_level.c`: the slot's `dsd_speech_agc` at 8 kHz, start gain 0
+  dB, target -24 dBFS, ceiling -1 dBFS; a fixed `-g` multiplier `audio_gain`/`audio_gainR` through its limiter, unity
+  below 0 with no AGC at all), then saturation to the int16 range (`dsd_voice_chain_run()` in `dsd_audio.c`). It runs
+  whatever the output format, output type, mute or preset say, before consumer gates, and
   never decides who hears a frame; the gates still do. Producers: the vocoder at the top of its post stage
   (`mbe_post_audio_and_recording()`, on the buffer and slot `processMbeFrameInternal()` names for the decode: the right
   buffer for the slot path's slot 2, the left one otherwise, with X2-TDMA's timeslot as the slot), MBE file playback
@@ -2821,20 +2822,40 @@ suite runs under this compiler.
   (TETRA's transmission count, 0 elsewhere). `dsd_voice_frame_may_learn()` is the one rule over it: decodable,
   admitted speech. The vocoder keeps its synthesis's media in `mbe_frame_ctx_t` and builds the info just before the
   chain, which does not move. M17's encoder monitor (its own transmission decoded back) and a caller with nothing to
-  say pass NULL. The gain does not read the info yet. Tests: `CORE_VOICE_CHAIN` (the helpers),
+  say pass NULL. The speech AGC learns only from frames `dsd_voice_frame_may_learn()` takes (B3: no ciphertext, no
+  repeat, mute noise, comfort noise, silence, failed decode or tone frame teaches it, and a muted but decodable,
+  admitted frame does, so recordings do not depend on output toggles); a tone frame plays at no more than the start
+  gain (D12); an undecodable frame only stops it learning, and the slot's first decodable frame after one resets its
+  limiter and pitch history; NULL counts as decodable, never as speech. Tests: `CORE_VOICE_CHAIN` (the helpers),
   `CORE_MBE_TRANSFORM_CONTEXT` (real decodes per owner), `CORE_MBE_FILE_IO` (files, JSON), `YSF_DCH_DECODE`,
   `M17_STATE_DISPATCH`, `TETRA_VOICE_PIPELINE`. Consumers take the chained frame
   as it is: the per-call WAV writers and the shared short staging (`dsd_voice_stage_short_left/right()`: `s_l`/`s_r`,
   the output ring and the 48 kHz upsample). No mixer filters or gains. The same staged samples feed every mixer in
   both formats, and float serialization happens only at the sink. The per-call and static WAVs therefore agree
   across output formats. Each slot keeps its own filter state (`dsd_state::voice_hpf[2]`), cleared
-  when the slot's frames move to a new call (one nonzero epoch to another) or protocol family (the dispatched synctype,
+  when the slot's frames move to a new transmission (`dsd_call_snapshot_transmission()` of the active call, one nonzero
+  value to another: a fade the call state heals keeps it, B18) or protocol family (the dispatched synctype,
   `frame_dispatch_synctype`, so a borrowed decoder does not count), while the high-pass is off, at each MBE playback
   file, at the carrier boundary and in the no-carrier pass's guarded playout drain, in `dsd_mbe_purge_slot_audio()` and
   in `init_audio_filters()` (startup, rate change, input switch). These resets forget the reception too, so a call
-  learned partway through the frames after one does not restart the filter. The gain level carries across calls (the
-  no-carrier pass clears only its peak history), so no protocol code writes `aout_gain`; the engine seeds 15 in auto
-  mode and clamps `-g` for both formats.
+  learned partway through the frames after one does not restart the filter. Each slot's speech AGC
+  (`DSD_STATE_EXT_CORE_VOICE_LEVEL`, allocated at the slot pair's first frame; unity if that fails) follows its own
+  tracker of {transmission, protocol family, talkspurt}: a change between two nonzero values starts it over, and a
+  frame that names none keeps it. `dsd_voice_level_reset()` starts it over where the receiver leaves the carrier:
+  `dsd_engine_carrier_boundary()` for every kind but STREAM_GAP (after that kind's early return, not inside
+  `dsd_engine_forget_carrier_decoding()`, which a stream gap runs too), the trunk-scan target switch
+  (`trunk_scan_leave_carrier()`), a manual P25 control-channel selection (`p25_sm_select_control_channel()`), and each
+  MBE playback file (`mbe_file_end_replayed_call()`). It is kept across a stream gap, the no-carrier pass, fade and
+  terminator heals, late-entry identity, crypto purges and `init_audio_filters()`; fixed and auto keep its estimate
+  (back to auto it starts from the fixed gain within its range). All of these run on the decoder thread; the no-carrier
+  pass touches no AGC state. Nothing seeds the auto level on any entry path (B4): every slot starts at the start gain.
+  `aout_gain`/`aout_gainR` are display readouts only, the gain each slot's last frame got in dB (the terminal's "G:
+  Auto (+x.x dB)"), and ride the snapshot's `config_autosave_enabled..last_dibit` range with `aout_gainA`; the AGC
+  state stays decoder-owned. No protocol code writes them; the engine clamps `-g` for both formats. Tests:
+  `CORE_VOICE_LEVEL` (learning, start level, tracker, resets kept and taken, fixed and auto, tones, decodability per
+  slot), `ENGINE_NO_CARRIER_RESET` (carrier boundaries, stream gap, no-carrier, a TETRA stream gap against a new
+  talker), `ENGINE_TRUNK_SCAN`, `APP_P25_CC_SELECTION`, `CORE_MBE_FILE_IO` (file start),
+  `APP_CONTROL_SNAPSHOT_EVENT_HISTORY` (the render range, field by field).
   `beeper()` builds its tone once on the int16 scale and plays the same samples in both formats. Tests:
   `CORE_VOICE_CHAIN`, `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_AUDIO_GAIN`, `DECODE_IQ_VOICE_CHAIN_*`.
 - API note (gain settings, `<dsd-neo/core/gain_setting.h>`, issue #518 voice level): a digital gain (`-g`,
