@@ -126,6 +126,17 @@ typedef struct {
     size_t count;
 } dsd_rr_county_list;
 
+/**
+ * getStateInfo as a whole: the state's own id and name, kept even when the
+ * county list is empty (a state that lists no counties still has an identity).
+ * Each county row carries the same stid/state_name, as in a bare county list.
+ */
+typedef struct {
+    int stid;
+    char state_name[64];
+    dsd_rr_county_list counties;
+} dsd_rr_state_info;
+
 /* ------------------------------------------------------------------------- */
 /* Trunked systems                                                            */
 /* ------------------------------------------------------------------------- */
@@ -181,6 +192,10 @@ typedef struct {
     dsd_rr_trs_sysid* sysids;
     size_t sysid_count;
     int bandplan_count;
+    int* state_ids; /**< Trs.sState stids, in response order; positive only, at most 64 kept. */
+    size_t state_count;
+    int* county_ids; /**< Trs.sCounty ctids, in response order; positive only, at most 512 kept. */
+    size_t county_count;
 } dsd_rr_trs_details;
 
 typedef struct {
@@ -195,6 +210,7 @@ typedef struct {
 
 typedef struct {
     int site_db_id;  /**< TrsSite.siteId - database row id, NOT the RF site. */
+    int county_id;   /**< TrsSite.siteCtid - the site's county; 0 when absent, nil or not positive. */
     int site_number; /**< TrsSite.siteNumber - the RF site. Display only: it repeats within a system. */
     char descr[128];
     int zone_number;
@@ -285,6 +301,7 @@ typedef struct {
 void dsd_rr_country_list_free(dsd_rr_country_list* list);
 void dsd_rr_state_list_free(dsd_rr_state_list* list);
 void dsd_rr_county_list_free(dsd_rr_county_list* list);
+void dsd_rr_state_info_free(dsd_rr_state_info* info);
 void dsd_rr_trs_list_free(dsd_rr_trs_list* list);
 void dsd_rr_support_list_free(dsd_rr_support_list* list);
 void dsd_rr_support_maps_free(dsd_rr_support_maps* maps);
@@ -394,6 +411,9 @@ int dsd_rr_get_country_states(dsd_rr_client* client, const dsd_rr_auth* auth, in
                               dsd_rr_error* err);
 int dsd_rr_get_state_counties(dsd_rr_client* client, const dsd_rr_auth* auth, int stid, dsd_rr_county_list* out,
                               dsd_rr_error* err);
+/** getStateInfo, keeping the state's own id and name even when it lists no counties. */
+int dsd_rr_get_state_info(dsd_rr_client* client, const dsd_rr_auth* auth, int stid, dsd_rr_state_info* out,
+                          dsd_rr_error* err);
 int dsd_rr_get_state_trs(dsd_rr_client* client, const dsd_rr_auth* auth, int stid, dsd_rr_trs_list* out,
                          dsd_rr_error* err);
 int dsd_rr_get_county_trs(dsd_rr_client* client, const dsd_rr_auth* auth, int ctid, dsd_rr_trs_list* out,
@@ -441,6 +461,9 @@ uint64_t dsd_rr_fetch_country_states(dsd_rr_client* client, const dsd_rr_auth* a
                                      void* user);
 uint64_t dsd_rr_fetch_state_counties(dsd_rr_client* client, const dsd_rr_auth* auth, int stid, dsd_rr_done_cb cb,
                                      void* user);
+/** Result: heap dsd_rr_state_info*, freed with dsd_rr_state_info_free() then free(). */
+uint64_t dsd_rr_fetch_state_info(dsd_rr_client* client, const dsd_rr_auth* auth, int stid, dsd_rr_done_cb cb,
+                                 void* user);
 uint64_t dsd_rr_fetch_state_trs(dsd_rr_client* client, const dsd_rr_auth* auth, int stid, dsd_rr_done_cb cb,
                                 void* user);
 uint64_t dsd_rr_fetch_county_trs(dsd_rr_client* client, const dsd_rr_auth* auth, int ctid, dsd_rr_done_cb cb,

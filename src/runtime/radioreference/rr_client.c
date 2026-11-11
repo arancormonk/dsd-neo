@@ -111,6 +111,7 @@ typedef enum {
     RR_M_COUNTRIES,
     RR_M_COUNTRY_STATES,
     RR_M_STATE_COUNTIES,
+    RR_M_STATE_INFO,
     RR_M_STATE_TRS,
     RR_M_COUNTY_TRS,
     RR_M_TRS_DETAILS,
@@ -137,6 +138,7 @@ static const rr_method_def k_methods[] = {
     [RR_M_COUNTRIES] = {"getCountryList", NULL, RR_SHAPE_COUNTRY_LIST, 0, sizeof(dsd_rr_country_list)},
     [RR_M_COUNTRY_STATES] = {"getCountryInfo", "coid", RR_SHAPE_STATE_LIST, 1, sizeof(dsd_rr_state_list)},
     [RR_M_STATE_COUNTIES] = {"getStateInfo", "stid", RR_SHAPE_COUNTY_LIST, 1, sizeof(dsd_rr_county_list)},
+    [RR_M_STATE_INFO] = {"getStateInfo", "stid", RR_SHAPE_STATE_INFO, 1, sizeof(dsd_rr_state_info)},
     [RR_M_STATE_TRS] = {"getStateInfo", "stid", RR_SHAPE_TRS_LIST, 1, sizeof(dsd_rr_trs_list)},
     [RR_M_COUNTY_TRS] = {"getCountyInfo", "ctid", RR_SHAPE_TRS_LIST, 1, sizeof(dsd_rr_trs_list)},
     [RR_M_TRS_DETAILS] = {"getTrsDetails", "sid", RR_SHAPE_TRS_DETAILS, 1, sizeof(dsd_rr_trs_details)},
@@ -670,6 +672,7 @@ rr_free_sink(rr_method method, void* sink) {
         case RR_SHAPE_COUNTRY_LIST: dsd_rr_country_list_free((dsd_rr_country_list*)sink); break;
         case RR_SHAPE_STATE_LIST: dsd_rr_state_list_free((dsd_rr_state_list*)sink); break;
         case RR_SHAPE_COUNTY_LIST: dsd_rr_county_list_free((dsd_rr_county_list*)sink); break;
+        case RR_SHAPE_STATE_INFO: dsd_rr_state_info_free((dsd_rr_state_info*)sink); break;
         case RR_SHAPE_TRS_LIST: dsd_rr_trs_list_free((dsd_rr_trs_list*)sink); break;
         case RR_SHAPE_TRS_DETAILS: dsd_rr_trs_details_free((dsd_rr_trs_details*)sink); break;
         case RR_SHAPE_SITE_LIST: dsd_rr_site_list_free((dsd_rr_site_list*)sink); break;
@@ -988,6 +991,12 @@ dsd_rr_get_state_counties(dsd_rr_client* client, const dsd_rr_auth* auth, int st
 }
 
 int
+dsd_rr_get_state_info(dsd_rr_client* client, const dsd_rr_auth* auth, int stid, dsd_rr_state_info* out,
+                      dsd_rr_error* err) {
+    return rr_call(client, auth, RR_M_STATE_INFO, stid, out, err);
+}
+
+int
 dsd_rr_get_state_trs(dsd_rr_client* client, const dsd_rr_auth* auth, int stid, dsd_rr_trs_list* out,
                      dsd_rr_error* err) {
     return rr_call(client, auth, RR_M_STATE_TRS, stid, out, err);
@@ -1187,6 +1196,11 @@ dsd_rr_fetch_country_states(dsd_rr_client* client, const dsd_rr_auth* auth, int 
 uint64_t
 dsd_rr_fetch_state_counties(dsd_rr_client* client, const dsd_rr_auth* auth, int stid, dsd_rr_done_cb cb, void* user) {
     return rr_submit(client, auth, RR_M_STATE_COUNTIES, stid, cb, user);
+}
+
+uint64_t
+dsd_rr_fetch_state_info(dsd_rr_client* client, const dsd_rr_auth* auth, int stid, dsd_rr_done_cb cb, void* user) {
+    return rr_submit(client, auth, RR_M_STATE_INFO, stid, cb, user);
 }
 
 uint64_t

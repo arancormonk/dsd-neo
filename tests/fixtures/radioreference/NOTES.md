@@ -76,6 +76,22 @@ cannot carry over between records. The live `trs_sites_p25.xml` has no nil latit
 site 16863 carries `(41.65503, -91.60244, 20)` and site 48391 carries the `(0,0,0)` sentinel.
 The SOAP test also constructs decimal grammar and range-boundary cases in memory.
 
+## Place fixtures (captured 2026-11-11)
+
+These carry the geographic ids the parser keeps for the saved-systems "place" label. All are public
+system data; none holds account data.
+
+- `trs_details_multistate.xml` is `getTrsDetails(6673)` (SARA Network), byte-exact: `sState` 19, 17, 46 and 23
+  `sCounty` rows.
+- `trs_details_statewide.xml` is `getTrsDetails(8734)` (ISICS), byte-exact: `sCounty` includes 3329, the
+  "Statewide" pseudo-county of Iowa.
+- `trs_sites_ctid.xml` is the first three sites of `getTrsSites(6673)`. Sites 1 and 2 are unedited (`siteCtid` 836
+  and 841). **Synthetic:** the third site's `siteCtid` was replaced by an `xsi:nil="true"` element, because the
+  live capture never showed a nil `siteCtid`. The array count was edited to 3.
+- `state_info_19.xml` is `getStateInfo(19)` (Iowa), byte-exact, 102 county rows.
+- `state_info_empty_counties.xml` is **synthetic**: a `getStateInfo` envelope with a state id and name, an empty
+  `trsList` and an empty `countyList`, for a state that lists no counties.
+
 ## Corrections to the plan's API description
 
 These are wire facts that contradict the plan text. Each is a small parameter/lexical detail, not a
