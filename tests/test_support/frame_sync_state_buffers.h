@@ -17,11 +17,14 @@
 
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <stdlib.h>
 
 static inline void
 free_state_buffers(dsd_state* state) {
+    /* Whatever the run attached, the sync anchor an M17 preamble arms among it. */
+    dsd_state_ext_free_all(state);
     free(state->dibit_buf);
     free(state->dmr_payload_buf);
     free(state->dmr_soft_buf);

@@ -5930,7 +5930,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   sub-symbol shift (coarse), refined by a least-squares fit of the word's zero crossings, and the grid moves up to two
   samples (a positive offset consumes extra samples) at the next symbol start, whatever `have_sync` says. State lives in
   state-ext slot 12 (borrowed from the io range), allocated by the first note; samples are recorded only on the live
-  multi-sample path and only while `lastsynctype` is DMR. A stream flush, an RTL FSK timing reset, a switch to another
+  multi-sample path and only while a caller keeps it armed (DMR BS around a sync, M17 across a preamble).
+  A stream flush, an RTL FSK timing reset, a switch to another
   matched filter (the seam keeps the content position, but the recorded samples were shaped by the old filter), or a
   rewind the seam's history cannot cover resets it, together with a move it queued that the grid took at the start of
   the same symbol; a fractional rate alternating `samplesPerSymbol`, and the group
@@ -5938,6 +5939,15 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   exact BS voice or data sync. Tracking range (documented limit): one correction per sync word, so voice on both slots
   (syncs up to ~330 ms apart) tracks +/-50 ppm cleanly; idle or data bursts give a sync every burst. Tests:
   `DSP_SYMBOL_ANCHOR`, `DMR_SYNTH_DRIFT_*`.
+  M17 is the second caller (issue #834). Its preamble candidate holds a recording (`dsd_symbol_hold_sync_anchor()`
+  arms one, or keeps a running one from lapsing at 64 symbols) and the LSF or BERT word names the preamble's tail and
+  the word. The matched filter switches on at the very next sample, which would reset the anchor, so the seam measures
+  first, without a look-ahead symbol (`dsd_symbol_anchor_take_switch_offset()`, half a symbol of margin, which the
+  grid's centre at `(sps - 1) / 2` leaves inside the word's last span), and takes the move as part of the samples it
+  owes (`seam_switch_on_move()` in `dsd_symbol.c`), so the LSF's first symbol is already read at the corrected phase.
+  The hunt's crossing loop otherwise left the grid up to two samples off the preamble's symbols, which the raw stream
+  read through and the M17 filter's narrower eye does not. Only on the switch-on side of the seam (a filter of
+  shorter delay before, the unfiltered hunt or DMR's under AUTO, where the preamble passes NXDN96's sync).
 - `dsd_state::symbol_clock`/`symbol_clock_epoch` (issue #729): a 64-bit count of every symbol the grid produced that no
   protocol resets (NXDN resets `symbolcnt`), and an epoch DSP bumps on an RTL stream flush or profile change (any reset
   of the RTL symbol cache, also one the profile refresh meets ahead of a take), a symbol-capture replay starting over
@@ -6901,7 +6911,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `frame_sync_m17_packet_can_follow()`), and the LSF word straight after an LSF of the same polarity is taken as a
   repeated LSF (`frame_sync_try_m17_lsf_again()`): the m17-fme recording sends every stream LSF twice, and the hunt
   used to match packet, stream and EOT words inside the second, which cost the stream its first four frames and split
-  the call (issue #834; `M17_FRAME_SYNC`, `DECODE_IQ_M17_LSF_OFFAIR`). A transmission joined after its preamble opens on the same exact sync word three frames
+  the call (issue #834; `M17_FRAME_SYNC`, `DECODE_IQ_M17_LSF_OFFAIR`). The candidate also keeps the sync anchor
+  recording (`dsd_symbol_hold_sync_anchor()`), and the LSF or BERT word that spends it names the preamble's last 16
+  symbols and the word to it (`frame_sync_consume_m17_pre_candidate()`), for the grid's move at the matched filter's
+  switch-on (see the sync anchor entry).
+  A transmission joined after its preamble opens on the same exact sync word three frames
   (`DSD_FRAME_SYNC_M17_FRAME_SYMBOLS`, 192) running (`frame_sync_try_m17_join()`, `dsd_state::m17_join_hits`, cleared
   with the preamble candidate and with the NXDN96 sync; every exact word is kept, whichever path took its window,
   since the payload matches some word a few times a frame): the stream word is a stream, the LSF word repeated an
@@ -10588,7 +10602,10 @@ Private per-protocol modules worth knowing about:
   `NXDN_DEPERM_PRIMITIVES`), which also stamps `dsd_state::nxdn_confirm_lock_m` for the NXDN control-channel hunt.
 - `src/protocol/m17/m17_confirm.{c,h}` — the same module for M17, whose sync chain opens on a preamble that is only an
   alternating symbol run. Frame handlers report `(own check || confirmed)`, `dispatch_m17.c` reports it on an EOT, and
-  `dsd_frame_sync.c` reads the raw state to decide whether to keep extending a candidate chain.
+  `dsd_frame_sync.c` reads the raw state to decide whether to keep extending a candidate chain. The EOT also puts the
+  slicer levels back where a lost carrier leaves them (`max`/`min` +/-15000, `center` 0, as `noCarrier()`): the marker
+  is seven outer symbols of one sign to one of the other, and the next transmission's hunt sliced and timed its
+  preamble against the skewed centre it left (issue #834).
 - `src/protocol/dstar/dstar_confirm.{c,h}` and `src/protocol/provoice/provoice_confirm.{c,h}` — the same shape again,
   answering only the SPS hunt rather than gating audio (issue #421). Neither protocol has a per-frame check: a D-STAR
   superframe costs 1992 symbols and a ProVoice frame 736, and the AMBE/IMBE error counts they leave in

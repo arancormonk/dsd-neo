@@ -43,6 +43,8 @@
 
 static void
 reset(dsd_opts* opts, dsd_state* state) {
+    /* An M17 preamble run allocates the symbol grid's sync anchor in a state extension slot. */
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
 }

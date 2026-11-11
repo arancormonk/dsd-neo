@@ -25,6 +25,13 @@ dsd_symbol_anchor* dsd_symbol_anchor_get(dsd_state* state);
 /** Forget every sample and centre: the stream the grid read them from has ended. No-op before first use. */
 void dsd_symbol_anchor_reset(dsd_state* state);
 
+/**
+ * The move a named sync word asks for, measured now, at the matched filter's switch-on right behind it: the switch
+ * discards the recording, and the seam takes the move as part of the samples it owes (dsd_symbol.c). Whole samples,
+ * at most two either way; 0 when no sync word is pending or the recording cannot place it. Clears the pending word.
+ */
+int dsd_symbol_anchor_take_switch_offset(const dsd_state* state);
+
 /** Whether the anchor still needs the grid: recording, or holding a move for it. Once not, the grid drops it from
     dsd_state::symbol_anchor_hot and touches nothing of it until the next dsd_symbol_arm_sync_anchor(). */
 int dsd_symbol_anchor_hot(const dsd_symbol_anchor* anchor);

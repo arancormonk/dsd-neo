@@ -218,6 +218,67 @@ test_reset_drops_the_pending_move(void) {
     free(state);
 }
 
+/* At a matched filter's switch-on right behind the sync word (M17's LSF, issue #834): measured with no look-ahead
+   symbol, after a recording a preamble kept alive past the 64 symbols an armed anchor waits. */
+static int
+run_switch(double offset, int lead_symbols) {
+    static float samples[N_SYMBOLS * SPS];
+    int centres[N_SYMBOLS];
+    char dibits[N_SYMBOLS];
+    /* The grid's centre is sample (SPS - 1) / 2 of its span (dsd_opts_symbol_center()), which leaves the half symbol
+       the measurement reads past the last centre inside the sync word's own span: one sample before make_signal()'s. */
+    make_signal(offset - 1.0, 1.0, 0.0, samples, centres, dibits);
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
+    dsd_symbol_hold_sync_anchor(state);
+    dsd_symbol_anchor* anchor = DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR);
+    assert(anchor != NULL);
+    for (int k = 0; k < lead_symbols; k++) { /* the run, held a symbol at a time */
+        for (int i = 0; i < SPS; i++) {
+            dsd_symbol_anchor_push_sample(anchor, 0.0f, i == (SPS - 1) / 2);
+        }
+        dsd_symbol_anchor_end_symbol(anchor, SPS);
+        dsd_symbol_hold_sync_anchor(state);
+    }
+    for (int k = 0; k < 8 + SYNC_LEN; k++) {
+        for (int i = 0; i < SPS; i++) {
+            dsd_symbol_anchor_push_sample(anchor, samples[k * SPS + i], i == (SPS - 1) / 2);
+        }
+        dsd_symbol_anchor_end_symbol(anchor, SPS);
+    }
+    dsd_symbol_note_sync_anchor(state, k_sync, SYNC_LEN);
+    const int move = dsd_symbol_anchor_take_switch_offset(state);
+    assert(dsd_symbol_anchor_take_switch_offset(state) == 0); /* taken once */
+    assert(dsd_symbol_anchor_take_slip(anchor) == 0);         /* nothing queued for the grid behind it */
+    dsd_state_ext_free_all(state);
+    free(state);
+    return move;
+}
+
+static void
+test_switch_measures_without_a_look_ahead_symbol(void) {
+    assert(run_switch(0.0, 0) == 0);
+    assert(run_switch(0.3, 0) == 0);
+    assert(run_switch(1.0, 0) == 1);
+    assert(run_switch(-1.0, 0) == -1);
+    assert(run_switch(2.0, 0) == 2);
+    assert(run_switch(-2.0, 0) == -2);
+    /* A preamble longer than an armed anchor waits: held, the recording is still there for the sync word. */
+    assert(run_switch(2.0, 100) == 2);
+    assert(run_switch(-1.0, 100) == -1);
+}
+
+static void
+test_switch_without_a_named_word_moves_nothing(void) {
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
+    assert(dsd_symbol_anchor_take_switch_offset(state) == 0); /* no anchor at all */
+    dsd_symbol_arm_sync_anchor(state);
+    assert(dsd_symbol_anchor_take_switch_offset(state) == 0); /* recording, no word named */
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
 int
 main(void) {
     test_measures_whole_and_fractional_offsets();
@@ -226,6 +287,8 @@ main(void) {
     test_declines();
     test_ring_queues_the_move_toward_the_symbols();
     test_reset_drops_the_pending_move();
+    test_switch_measures_without_a_look_ahead_symbol();
+    test_switch_without_a_named_word_moves_nothing();
     printf("symbol anchor: OK\n");
     return 0;
 }

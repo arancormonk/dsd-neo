@@ -36,6 +36,7 @@
 #include <dsd-neo/dsp/p25p1_sync_anchor.h>
 #include <dsd-neo/dsp/p25p2_sync_anchor.h>
 #include <dsd-neo/dsp/symbol.h>
+#include <dsd-neo/dsp/symbol_anchor.h>
 #include <dsd-neo/dsp/symbol_timing_debug.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/dsp/sync_hamming.h>
@@ -1474,6 +1475,9 @@ frame_sync_note_m17_pre_candidate(frame_sync_match_ctx* ctx, int ham_pre, int ha
 
     state->m17_pre_candidate = (ham_pre <= 1) ? 1 : 2;
     state->m17_pre_candidate_ttl = DSD_FRAME_SYNC_M17_CANDIDATE_TTL;
+    /* The grid records the run while it lasts, so the sync word that spends the candidate can measure where the
+       symbols really sit before the matched filter switches on behind it (frame_sync_consume_m17_pre_candidate()). */
+    dsd_symbol_hold_sync_anchor(state);
 }
 
 /** @brief Age a latched candidate by one evaluation, dropping it when it lapses. */
@@ -1626,11 +1630,22 @@ frame_sync_accept_m17(frame_sync_match_ctx* ctx, const char* label, int synctype
     return synctype;
 }
 
+/* The last 16 preamble symbols ahead of an LSF or BERT sync word, then the word: what the grid just read, at the
+   transmitter's polarity (the measurement takes the sign from the data). */
+#define M17_PRE_TAIL_LSF M17_PIV M17_PIV M17_LSF
+#define M17_PRE_TAIL_BRT M17_PRE M17_PRE M17_BRT
+
 /**
  * @brief Spend a candidate on the sync word that confirmed it, at the polarity that word named.
+ *
+ * The preamble's tail and the word, @p run_and_word, are named to the symbol grid: the hunt set its phase on the
+ * preamble's crossings and can sit up to two samples off the symbols' centres there, which the matched filter that
+ * switches on behind this word does not read through. The grid measures them before the switch and moves by what
+ * they ask (issue #834).
  */
 static void
-frame_sync_consume_m17_pre_candidate(dsd_state* state, int polarity) {
+frame_sync_consume_m17_pre_candidate(dsd_state* state, int polarity, const char* run_and_word) {
+    dsd_symbol_note_sync_anchor(state, run_and_word, (int)strlen(run_and_word));
     state->m17_polarity = (uint8_t)polarity;
     state->m17_pre_candidate = 0;
     state->m17_pre_candidate_ttl = 0;
@@ -1695,7 +1710,7 @@ frame_sync_try_m17_from_candidate(frame_sync_match_ctx* ctx, int ham_lsf, int ha
     for (int pass = 0; pass < 2; pass++) {
         const int inverted = (ctx->opts->inverted_m17 == 0) ? pass : !pass;
         if ((inverted ? ham_str : ham_lsf) <= 1) {
-            frame_sync_consume_m17_pre_candidate(state, inverted ? 2 : 1);
+            frame_sync_consume_m17_pre_candidate(state, inverted ? 2 : 1, M17_PRE_TAIL_LSF);
             return inverted ? frame_sync_accept_m17(ctx, "-M17 LSF", DSD_SYNC_M17_LSF_NEG)
                             : frame_sync_accept_m17(ctx, "+M17 LSF", DSD_SYNC_M17_LSF_POS);
         }
@@ -1703,7 +1718,7 @@ frame_sync_try_m17_from_candidate(frame_sync_match_ctx* ctx, int ham_lsf, int ha
     for (int pass = 0; pass < 2; pass++) {
         const int inverted = (ctx->opts->inverted_m17 == 0) ? pass : !pass;
         if ((inverted ? ham_pkt : ham_brt) <= 1) {
-            frame_sync_consume_m17_pre_candidate(state, inverted ? 2 : 1);
+            frame_sync_consume_m17_pre_candidate(state, inverted ? 2 : 1, M17_PRE_TAIL_BRT);
             return inverted ? frame_sync_accept_m17(ctx, "-M17 BRT", DSD_SYNC_M17_BRT_NEG)
                             : frame_sync_accept_m17(ctx, "+M17 BRT", DSD_SYNC_M17_BRT_POS);
         }

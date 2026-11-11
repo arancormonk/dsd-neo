@@ -257,13 +257,15 @@ anchor_slip_for(double offset) {
     return 0;
 }
 
-static void
-anchor_measure_pending(dsd_symbol_anchor* anchor) {
+/* Measures the named sync word with @p margin_before / @p margin_after samples around its first / last centre, and
+   writes the move it asks for. Returns 0 when the recording cannot place it. */
+static int
+anchor_measure_slip(dsd_symbol_anchor* anchor, uint64_t margin_before, uint64_t margin_after, int* out_slip) {
     anchor->sync_pending = 0;
     const int count = anchor->sync_count;
     const int sps = anchor->samples_per_symbol;
-    if ((uint64_t)count + 1U > anchor->symbol_total || sps < 2 || sps > DSD_SYMBOL_TIMING_MAX_SPAN) {
-        return;
+    if ((uint64_t)count > anchor->symbol_total || sps < 2 || sps > DSD_SYMBOL_TIMING_MAX_SPAN) {
+        return 0;
     }
 
     /* The sync word's centres, and a linear copy of the samples around them, so the measurement reads plain arrays.
@@ -272,15 +274,14 @@ anchor_measure_pending(dsd_symbol_anchor* anchor) {
     uint64_t first = 0;
     uint64_t last = 0;
     if (!anchor_gather_centres(anchor, count, abs_centres, &first, &last)) {
-        return;
+        return 0;
     }
-    const uint64_t margin = (uint64_t)sps;
-    if (first < margin || last + margin >= anchor->sample_total
-        || anchor->sample_total - (first - margin) > ANCHOR_RING_SAMPLES) {
-        return;
+    if (first < margin_before || last + margin_after >= anchor->sample_total
+        || anchor->sample_total - (first - margin_before) > ANCHOR_RING_SAMPLES) {
+        return 0;
     }
-    const uint64_t base = first - margin;
-    const uint64_t span = last + margin - base + 1U;
+    const uint64_t base = first - margin_before;
+    const uint64_t span = last + margin_after - base + 1U;
 
     float window[ANCHOR_RING_SAMPLES];
     for (uint64_t n = 0; n < span; n++) {
@@ -292,9 +293,39 @@ anchor_measure_pending(dsd_symbol_anchor* anchor) {
     }
 
     double offset = 0.0;
-    if (dsd_symbol_anchor_measure_offset(window, (int)span, centres, anchor->sync, count, sps, &offset)) {
-        anchor->slip = anchor_slip_for(offset);
+    if (!dsd_symbol_anchor_measure_offset(window, (int)span, centres, anchor->sync, count, sps, &offset)) {
+        return 0;
     }
+    *out_slip = anchor_slip_for(offset);
+    return 1;
+}
+
+/* A sync word read inside a frame: measured one symbol on, with a symbol of room either side. */
+static void
+anchor_measure_pending(dsd_symbol_anchor* anchor) {
+    const uint64_t margin = (uint64_t)anchor->samples_per_symbol;
+    if (anchor->symbol_total < (uint64_t)anchor->sync_count + 1U) {
+        anchor->sync_pending = 0;
+        return;
+    }
+    int slip = 0;
+    if (anchor_measure_slip(anchor, margin, margin, &slip)) {
+        anchor->slip = slip;
+    }
+}
+
+int
+dsd_symbol_anchor_take_switch_offset(const dsd_state* state) {
+    dsd_symbol_anchor* anchor =
+        state ? DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR) : NULL;
+    if (anchor == NULL || !anchor->sync_pending) {
+        return 0;
+    }
+    /* No look-ahead symbol: the filter switches on at the first sample after the sync word. The measurement reads at
+       most half a symbol past the last centre, which the sync word's own last span holds. */
+    const uint64_t margin = (uint64_t)(anchor->samples_per_symbol / 2);
+    int slip = 0;
+    return anchor_measure_slip(anchor, margin, margin, &slip) ? slip : 0;
 }
 
 void
@@ -311,6 +342,20 @@ dsd_symbol_anchor_end_symbol(dsd_symbol_anchor* anchor, int samples_per_symbol) 
     } else if (++anchor->armed_symbols > ANCHOR_ARMED_MAX_SYMBOLS) {
         anchor->armed = 0;
     }
+}
+
+void
+dsd_symbol_hold_sync_anchor(dsd_state* state) {
+    dsd_symbol_anchor* anchor = dsd_symbol_anchor_get(state);
+    if (anchor == NULL) {
+        return;
+    }
+    if (!anchor->armed) {
+        dsd_symbol_arm_sync_anchor(state);
+        return;
+    }
+    anchor->armed_symbols = 0;
+    state->symbol_anchor_hot = 1U;
 }
 
 void

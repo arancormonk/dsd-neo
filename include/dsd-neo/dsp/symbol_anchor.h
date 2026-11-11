@@ -45,6 +45,15 @@ struct dsd_state;
 void dsd_symbol_arm_sync_anchor(struct dsd_state* state);
 
 /**
+ * @brief Keep a recording going across a run that announces a sync word without saying when it comes.
+ *
+ * M17's preamble runs for up to 192 symbols ahead of its LSF or BERT sync word. Called once a symbol while the run
+ * lasts, this arms a recording that is not running and keeps a running one from lapsing, without restarting it, so
+ * the sync word's measurement has the run's last symbols to work with.
+ */
+void dsd_symbol_hold_sync_anchor(struct dsd_state* state);
+
+/**
  * @brief Name the sync word the symbol grid just read.
  *
  * The last @p count symbols getSymbol() returned were @p sync_dibits ('0'..'3',

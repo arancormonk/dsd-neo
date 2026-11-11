@@ -659,11 +659,15 @@ DPMR_DIBIT_TO_LEVEL = {1: 3.0, 0: 1.0, 2: -1.0, 3: -3.0}
 # from m17_frame_dibits() and friends, which m17_self_check() holds to the committed reference vectors
 # (tests/protocol/m17/fixtures/m17_reference_vectors.h). The noise is complex Gaussian at a set S/N inside the
 # 12.5 kHz channel, the measure tools/scan_quiet_reception.py uses: without its matched filter dsd-neo decoded none of
-# m17_lsf_weak's link setups.
+# m17_lsf_weak's link setups. m17_lsf_clean is the clean case, eight shorter transmissions each delayed by its own
+# fraction of a sample, so the hunt meets each preamble at another phase: the hunt's timing loop left the grid up to
+# two samples off the preamble's symbols, and an EOT left the next hunt slicing against its skewed levels, which cost
+# about one LSF in five on clean signal.
 #
 # name, S/N dB in 12.5 kHz, seed, stream frames per transmission, gap s, each transmission's delay in samples
 M17_SYNTH = [
     ("m17_lsf_weak", 9.0, 807, 6, 0.2, (0.0, 0.0, 0.0, 0.0)),
+    ("m17_lsf_clean", 30.0, 10, 2, 0.2, (0.0, 0.25, 0.5, 0.75, 0.125, 0.375, 0.625, 0.875)),
 ]
 M17_SYNTH_DST = "N0CALL"
 M17_SYNTH_SRC = "LSF-FIRST"

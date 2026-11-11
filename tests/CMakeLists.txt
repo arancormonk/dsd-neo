@@ -20853,6 +20853,34 @@ if(DSD_HAS_RADIO)
         )
     endforeach()
 
+    # Issue #834: clean LSF-first transmissions decode every LSF. Eight transmissions at 30 dB, each delayed by its own
+    # fraction of a sample (m17_lsf_clean, M17_SYNTH). The hunt's timing loop left the grid up to two samples off the
+    # preamble's symbols, which the matched filter behind the LSF does not read through, and each EOT left the next
+    # hunt slicing against levels its marker skewed. Before issue #834 this realization decoded 7 of the 8 LSFs under
+    # -fz and 2 under -fa; with the matched filter but without the grid's move at the switch and the reset at the EOT,
+    # 8 and 5. Each transmission has two stream frames.
+    foreach(_m17_mode IN ITEMS -fz -fa)
+        if(_m17_mode STREQUAL "-fa")
+            set(_m17_name DECODE_IQ_M17_LSF_CLEAN_AUTO)
+        else()
+            set(_m17_name DECODE_IQ_M17_LSF_CLEAN)
+        endif()
+        add_test(
+            NAME ${_m17_name}
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DMODE=${_m17_mode} -Z"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/m17_lsf_clean.iq.json"
+                "-DEXPECTED=\\[1A\\]\\[B4\\] \\(CRC CHK\\) E: 1AB4; C: 1AB4;"
+                -DMIN_MATCHES=8 "-DEXPECTED2=LC: 2/6" -DMIN_MATCHES2=8 -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+        )
+        set_tests_properties(
+            ${_m17_name}
+            PROPERTIES LABELS "iq-decode" TIMEOUT 120
+        )
+    endforeach()
+
     # Issue #834: the m17-fme recording sends its stream LSF twice behind the preamble. The second LSF went untaken, and
     # the hunt matched words within one error inside it: a packet sync (impossible behind a stream-mode LSF), then an
     # EOT, which lost the stream's first four frames and ended its call. The repeat is taken as an LSF now, and the

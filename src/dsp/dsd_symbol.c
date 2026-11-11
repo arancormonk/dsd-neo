@@ -498,6 +498,27 @@ seam_prime(const dsd_matched_filter_seam* seam, dsd_sps_filter_kind kind, int sp
     }
 }
 
+/*
+ * The samples M17's switch-on moves the grid by, on top of the delay it owes. The grid's phase is the hunt's, set by
+ * zero crossings on the unfiltered stream; on M17's preamble, whose crossings fall on a sample when the clocks line
+ * up, the loop's dead band leaves the sampling instant up to two samples off the symbols' centres. The raw stream reads
+ * through that, the matched filter's narrower eye does not: two samples off it closes, and the LSF behind the
+ * switch lost its CRC on clean signal. The preamble's last symbols and the sync word were recorded for this
+ * (frame_sync_try_m17_lsf_or_bert()), and are measured here, before the switch discards them; the seam then takes the
+ * move with the samples it owes, so the first symbol behind the sync word is read at the corrected phase (issue #834).
+ * The hunt need not have run unfiltered: under AUTO the preamble passes NXDN96's sync and runs behind DMR's filter. A
+ * filter switch discards the recording, so what is measured was all read through one filter, a symmetric one, whose
+ * crossings sit where the signal's do, and the seam keeps the content position across the switch. Only on the
+ * switch-on side of the seam (a longer filter than the one before), where the move rides on the samples owed.
+ */
+static int
+seam_switch_on_move(const dsd_state* state, dsd_sps_filter_kind kind) {
+    if (kind != DSD_SPS_FILTER_M17) {
+        return 0;
+    }
+    return dsd_symbol_anchor_take_switch_offset(state);
+}
+
 void
 dsd_symbol_matched_filter_reset(dsd_state* state) {
     if (!state) {
@@ -3324,7 +3345,7 @@ symbol_sync_matched_filter_seam(dsd_opts* opts, dsd_state* state, int have_sync,
         }
     } else {
         seam_prime(seam, kind, sps, newer_than_in_hand + 1, delay);
-        for (int owed = delay - previous_delay; owed > 0; owed--) {
+        for (int owed = delay - previous_delay + seam_switch_on_move(state, kind); owed > 0; owed--) {
             (void)dsd_sps_filter_apply(kind, work->sample, sps);
             if (!work->sample_replayed) {
                 symbol_process_analog_capture(opts, state, work, have_sync);
