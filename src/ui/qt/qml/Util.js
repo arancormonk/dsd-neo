@@ -1044,3 +1044,11 @@ function shownKey(item) {
     }
     return key
 }
+
+// Text from the air (an SMS body, an alias) drawn on a one-line label: each
+// run of line breaks becomes one space, since a Text lays out every line it is
+// given and a second line runs over whatever sits beside or under the label.
+// Display only; the details and the export keep the text as received.
+function oneLine(text) {
+    return String(text).replace(/[\r\n\v\f\u0085\u2028\u2029]+/g, " ")
+}
