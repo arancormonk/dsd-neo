@@ -2932,7 +2932,7 @@ test_entry_names_match_zip_selection(void) {
 /* An export reads up to 1,000 rows, each with many fragments, in one call: every row still gets exactly its own
  * recordings' names. */
 void
-test_entry_names_one_lock(void) {
+test_entry_names_batch(void) {
     constexpr int kRows = 1000;
     constexpr int kFragments = 6;
     Roots roots;
@@ -3162,7 +3162,7 @@ main(int argc, char** argv) {
     test_detection_order_newest_first();
     test_queries_between_rebuild_slices();
     test_entry_names_match_zip_selection();
-    test_entry_names_one_lock();
+    test_entry_names_batch();
     test_revision_coalesced_passes();
     test_detection_from_c_writer();
     test_platform_path_names_the_qt_file();

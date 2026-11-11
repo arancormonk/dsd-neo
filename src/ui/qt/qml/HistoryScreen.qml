@@ -46,6 +46,8 @@ Item {
     // `heard` once read out; a heard message is gone on the next visit, an
     // unheard one waits to be read.
     property var exportMessage: ({ text: "", error: false, heard: false })
+    // Main's savedSystems, whose clock dates an export's suggested name.
+    property var systems: typeof savedSystems !== "undefined" ? savedSystems : null
     // Navigation.announce()'s record of what was read out.
     property string announced: ""
     property int announcements: 0
@@ -56,7 +58,7 @@ Item {
         flushPendingSearch();
         setExportMessage("", false);
         // Read before the exporter holds a file: a failure here leaves nothing pending.
-        var stamp = Qt.formatDate(new Date(savedSystems.realtimeNowMs()), "yyyy-MM-dd");
+        var stamp = Qt.formatDate(new Date(screen.systems.realtimeNowMs()), "yyyy-MM-dd");
         // The exporter builds the whole file now; a list that changes later does not change it.
         var prepared = historyExport.prepare(historyView) || {};
         var token = Number(prepared.token) || 0;

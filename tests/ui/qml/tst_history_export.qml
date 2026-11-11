@@ -22,6 +22,7 @@ Item {
         width: root.width
         height: 640
         source: uiDir + "/HistoryScreen.qml"
+        onLoaded: item.systems = clockStub
     }
 
     Loader {
@@ -31,7 +32,17 @@ Item {
         width: root.width
         height: 640
         source: uiDir + "/HistoryScreen.qml"
-        onLoaded: item.showTitle = false
+        onLoaded: {
+            item.showTitle = false;
+            item.systems = clockStub;
+        }
+    }
+
+    // A fixed clock: local noon on 2026-11-09, so an export's suggested name
+    // is known whenever the test runs.
+    QtObject {
+        id: clockStub
+        function realtimeNowMs() { return new Date(2026, 10, 9, 12, 0, 0).getTime(); }
     }
 
     TestCase {
@@ -65,9 +76,6 @@ Item {
         }
         function noRequest() {
             return JSON.stringify(testContext.lastDocumentRequest()) === "{}";
-        }
-        function today() {
-            return Qt.formatDate(new Date(savedSystems.realtimeNowMs()), "yyyy-MM-dd");
         }
         // Press @p screen's Export… over the log: the id of the save request it opens.
         function beginExport(screen) {
@@ -220,7 +228,7 @@ Item {
             var screen = sessionLoader.item;
             beginExport(screen);
             var request = testContext.lastDocumentRequest();
-            compare(request.name, "Call history " + today() + ".csv");
+            compare(request.name, "Call history 2026-11-09.csv");
             compare(request.mime, "text/csv");
             var picker = exportPicker(screen);
             compare(picker.mode, "save");
