@@ -26,9 +26,11 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+/* Every buffer here holds at least one sample: the allocation is exactly @p n, which the callers index up to. */
 static float*
 alloc_samples(size_t n) {
-    float* x = (float*)calloc(n > 0 ? n : 1, sizeof(float));
+    assert(n > 0);
+    float* x = (float*)calloc(n, sizeof(float));
     assert(x != NULL);
     return x;
 }
