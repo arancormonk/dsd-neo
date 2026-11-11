@@ -10862,6 +10862,147 @@ test_scan_max_visit_warns_without_scan_mode(void) {
     return test_rc;
 }
 
+/* Runs the bootstrap (INI first, then argv) and returns the stderr text. The caller owns opts and state. */
+static int
+scan_warn_bootstrap(const char* ini, char* a1, char* a2, dsd_opts* opts, dsd_state* state, char* out, size_t out_size) {
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    char cfg_path[1024];
+    if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        return -1;
+    }
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
+    char* argv[] = {arg0, arg1, arg2, a1, a2, NULL};
+    int argc = 3 + (a1 ? 1 : 0) + (a2 ? 1 : 0);
+    dsd_test_capture_stderr cap;
+    out[0] = '\0';
+    if (dsd_test_capture_stderr_begin(&cap, "runtime_cli_parse") != 0) {
+        (void)remove(cfg_path);
+        return -1;
+    }
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(argc, argv, opts, state, &argc_effective, &exit_rc);
+    int bad = dsd_test_capture_stderr_end(&cap) != 0 || read_file_to_buffer(cap.path, out, out_size) != 0;
+    (void)remove(cap.path);
+    (void)remove(cfg_path);
+    return (bad || rc != DSD_BOOTSTRAP_CONTINUE || exit_rc != 0) ? -1 : 0;
+}
+
+/* "no effect without -Y or --trunk-scan" names the flag only when the command line set the value; a value that
+ * only the config file set is named by its [trunking] key (#834 B6). */
+static int
+test_scan_option_warnings_name_their_source(void) {
+    struct warn_case {
+        const char* ini;
+        const char* a1;
+        const char* a2;
+        const char* want;
+        const char* not_want;
+    };
+    static const struct warn_case cases[] = {
+        {"[trunking]\nscan_voice_only = true\n", NULL, NULL, "[trunking] scan_voice_only has no effect without",
+         "--scan-voice-only has no effect"},
+        {"[trunking]\nscan_voice_only = true\n", "--scan-voice-only", NULL, "--scan-voice-only has no effect without",
+         "[trunking] scan_voice_only has no effect"},
+        {"[trunking]\nscan_voice_only = false\n", "--scan-voice-only", NULL, "--scan-voice-only has no effect without",
+         "[trunking] scan_voice_only has no effect"},
+        {"[trunking]\nscan_voice_only = true\n", "--no-scan-voice-only", NULL, NULL, "scan_voice_only has no effect"},
+        {"[trunking]\nscan_max_visit_ms = 1000\n", NULL, NULL, "[trunking] scan_max_visit_ms has no effect without",
+         "--scan-max-visit-ms has no effect"},
+        {"[trunking]\nscan_max_visit_ms = 1000\n", "--scan-max-visit-ms=5000", NULL,
+         "--scan-max-visit-ms has no effect without", "[trunking] scan_max_visit_ms has no effect"},
+        {"[trunking]\nscan_max_visit_ms = 1000\n", "--scan-max-visit-ms=0", NULL, NULL, "scan_max_visit_ms has no"},
+    };
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        char a1[64] = {0};
+        char a2[64] = {0};
+        if (cases[i].a1) {
+            DSD_SNPRINTF(a1, sizeof a1, "%s", cases[i].a1);
+        }
+        if (cases[i].a2) {
+            DSD_SNPRINTF(a2, sizeof a2, "%s", cases[i].a2);
+        }
+        char out[8192];
+        int rc = scan_warn_bootstrap(cases[i].ini, cases[i].a1 ? a1 : NULL, cases[i].a2 ? a2 : NULL, opts, state, out,
+                                     sizeof out);
+        if (rc != 0 || (cases[i].want && !strstr(out, cases[i].want))
+            || (cases[i].not_want && strstr(out, cases[i].not_want))) {
+            DSD_FPRINTF(stderr, "scan warning case %zu: rc=%d want \"%s\" not \"%s\", stderr was \"%s\"\n", i, rc,
+                        cases[i].want ? cases[i].want : "(none)", cases[i].not_want ? cases[i].not_want : "(none)",
+                        out);
+            test_rc = 1;
+        }
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
+/* Help: --no-scan-voice-only sits in the Trunking Options section beside --scan-voice-only. */
+static int
+test_scan_flags_are_in_the_trunking_help_section(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    char* text = (char*)calloc(1, 131072);
+    if (!opts || !state || !text) {
+        free(opts);
+        free(state);
+        free(text);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    char help_path[1024];
+    int test_rc = 0;
+    if (test_create_temp_ini_with_contents("", help_path, sizeof help_path) != 0) {
+        test_rc = 1;
+    } else {
+        char arg0[] = "dsd-neo";
+        char arg1[] = "-h";
+        char* argv[] = {arg0, arg1, NULL};
+        int argc_effective = 0;
+        int exit_rc = -1;
+        FILE* redirected = freopen(help_path, "w", stdout);
+        int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+        (void)fflush(stdout);
+        test_redirect_stdout_to_null();
+        if (redirected == NULL || rc != DSD_PARSE_ONE_SHOT || read_file_to_buffer(help_path, text, 131072) != 0) {
+            DSD_FPRINTF(stderr, "could not capture the help text\n");
+            test_rc = 1;
+        } else {
+            const char* section = strstr(text, "Trunking Options:");
+            const char* voice = section ? strstr(section, "--scan-voice-only  ") : NULL;
+            const char* no_voice = section ? strstr(section, "--no-scan-voice-only") : NULL;
+            const char* first_no_voice = strstr(text, "--no-scan-voice-only");
+            if (!voice || !no_voice || first_no_voice != no_voice || !(voice < no_voice)) {
+                DSD_FPRINTF(stderr, "scan switches are not together in the Trunking Options help section\n");
+                test_rc = 1;
+            }
+        }
+        (void)remove(help_path);
+    }
+    freeState(state);
+    free(opts);
+    free(state);
+    free(text);
+    return test_rc;
+}
+
 /* A config-inherited trunk scan survives a CLI cap override in both spellings: the pre-getopt
  * compaction has to consume the flag and its value, or the bare value token reads as a
  * positional input and the inherited trunk scan is switched off. */
@@ -12529,6 +12670,8 @@ main(void) {
     rc |= test_scan_max_visit_rejects_ms_values_outside_range();
     rc |= test_scan_max_visit_boundary_and_off_values_parse();
     rc |= test_scan_max_visit_warns_without_scan_mode();
+    rc |= test_scan_option_warnings_name_their_source();
+    rc |= test_scan_flags_are_in_the_trunking_help_section();
     rc |= test_bootstrap_inherited_trunk_scan_preserves_max_visit_override();
     rc |= test_squelch_option();
     rc |= test_nfm_bandwidth_long_option_parses();

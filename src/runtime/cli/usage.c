@@ -409,7 +409,6 @@ static void
 dsd_cli_usage_section_advanced_key_options(void) {
     printf("  --no-force-key Disable privacy/scrambler forcing and DMR algorithm fallback.\n");
     printf("  --strict-crc   Disable -F CRC relaxation.\n");
-    printf("  --no-scan-voice-only Disable conventional voice-only scanning.\n");
     printf("  -b <dec>      Manually Enter Basic Privacy Key (Decimal Value of Key Number)\n");
     printf("\n");
     printf("  -H <hex>      Manually Enter Hytera 10/32/64 Char Basic Privacy Hex Key (see example below)\n");
@@ -528,6 +527,7 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("      --scan-voice-only  Digital conventional scan rows/targets: hold only for decoded voice.\n");
     printf("                 Trunked targets use idle dwell and protocol call-following timers.\n");
     printf("                 Analog rows and targets ignore it and hold on carrier.\n");
+    printf("      --no-scan-voice-only  Turn --scan-voice-only off (also over a config file value).\n");
     printf("      --scan-voice-qualify-ms <ms>  Window after sync in which voice must appear or the scan moves on "
            "(100..600000, default 1000).\n");
     printf("      --scan-voice-hold-ms <ms>  Time to stay after the last voice frame (100..600000, default 2000).\n");
