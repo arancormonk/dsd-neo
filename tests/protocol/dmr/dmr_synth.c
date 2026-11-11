@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 /*
- * dmr_synth: synthetic DMR repeater (BS) dual-slot test signal for the DMR_SYNTH_* end-to-end tests (issue #729).
+ * dmr_synth: synthetic DMR repeater (BS) dual-slot test signal for the DMR_SYNTH_* end-to-end tests (issue #729),
+ * or with --ms a single MS transmission (issue #834).
  *
  * Writes a 48 kHz mono 16-bit WAV of raised-cosine 4FSK discriminator audio carrying a DMR BS outbound channel:
  * CACH/TACT, voice superframes (BS voice sync, EMB, embedded LC, AMBE+2 2450 from mbelib-neo's encoder), data bursts
@@ -65,6 +66,12 @@
  *   --lead SEC         idle bursts on both slots before the calls (default 0.6)
  *   --tail SEC         idle bursts after the calls (default 0.4)
  *   --invert           write the discriminator audio at the other polarity (a receiver that inverts it)
+ *   --ms               an MS transmission instead of the BS channel (ETSI TS 102 361-1 section 9.1.1: MS sourced
+ *                      voice and data syncs, no CACH): slot 1's bursts alone, 27.5 ms on every 60 ms, with the
+ *                      audio at 0 (no symbol) in the CACH position before each burst, the whole of slot 2, the lead,
+ *                      the tail and the random symbols around them. A burst is dibits 12-143 of every even
+ *                      144-dibit period counted from dibit 960 (sample 9600 at 0 ppm), the layout an I/Q builder
+ *                      keys the carrier by. Needs --s2 idle (the default)
  *
  * dsd-neo_test_dmr_synth_gen --voice-selftest checks the voice source alone (its pitch and its range) and writes nothing.
  *
@@ -94,6 +101,10 @@ static const uint8_t k_cach_interleave[24] = {
 };
 static const char k_voice_sync[] = "131111333113313313113313";
 static const char k_data_sync[] = "313333111331131131331131";
+/* MS sourced voice 7F7D5DD57DFD and data D5D7F77FD757 (ETSI TS 102 361-1 Table 9.2), as dsd-neo's sync_patterns.h. */
+static const char k_ms_voice_sync[] = "133313311131311113313331";
+static const char k_ms_data_sync[] = "311131133313133331131113";
+#define DIBIT_SILENT 4 /* --ms: no symbol, audio 0 */
 /* Dibit offsets (from the burst start) the decoder's redundant-carrier check compares between consecutive bursts. */
 static const int k_redundant_pos[8] = {16, 27, 1, 32, 3, 33, 13, 7};
 
@@ -356,6 +367,7 @@ typedef struct {
     uint32_t tg, src;
     int hdr_repeat, term, le;
     int invert;
+    int ms;
     int lose_first;
     uint64_t seed;
     fault_t faults[MAX_FAULTS];
@@ -627,8 +639,9 @@ build_voice_burst(int slot, int vc, int cc, char fr[3][4][24], const uint8_t* fr
     put_frame_dibits(fr[0], 0, 36, out + 12);
     put_frame_dibits(fr[1], 0, 18, out + 48);
     if (vc == 1) {
+        const char* sync = cfg.ms ? k_ms_voice_sync : k_voice_sync;
         for (int i = 0; i < 24; i++) {
-            out[66 + i] = k_voice_sync[i] == '1' ? 1 : 3;
+            out[66 + i] = sync[i] == '1' ? 1 : 3;
         }
     } else {
         make_emb(cc, k_lcss[vc], vc == 6 ? NULL : frag32, out + 66);
@@ -656,8 +669,9 @@ build_data_burst(int slot, int cc, int dtype, const uint8_t* data96, int* out) {
     for (int i = 0; i < 5; i++) {
         out[61 + i] = (st[(size_t)2 * i] << 1) | st[((size_t)2 * i) + 1];
     }
+    const char* sync = cfg.ms ? k_ms_data_sync : k_data_sync;
     for (int i = 0; i < 24; i++) {
-        out[66 + i] = k_data_sync[i] == '1' ? 1 : 3;
+        out[66 + i] = sync[i] == '1' ? 1 : 3;
     }
     for (int i = 0; i < 5; i++) {
         out[90 + i] = (st[10 + 2 * i] << 1) | st[10 + 2 * i + 1];
@@ -1042,7 +1056,7 @@ emit_voice_burst(slot_call* c, int slot, burst_desc bd, int period, FILE* ef, in
 /* Raised-cosine 4FSK at 48 kHz (alpha 0.2, +/-8 symbol taps) at the configured symbol-clock offset. */
 static float*
 modulate(const int* sym, size_t nsym, size_t* nsamp_out) {
-    static const double k_level[4] = {1.0, 3.0, -1.0, -3.0};
+    static const double k_level[5] = {1.0, 3.0, -1.0, -3.0, 0.0}; /* DIBIT_SILENT last */
     const double alpha = 0.2;
     const double sps = 48000.0 / (4800.0 * (1.0 + cfg.ppm * 1e-6));
     const size_t nsamp = (size_t)((double)nsym * sps);
@@ -1311,6 +1325,8 @@ parse_args(int argc, char** argv, int* have_key) {
             cfg.term = 0;
         } else if (strcmp(a, "--invert") == 0) {
             cfg.invert = 1;
+        } else if (strcmp(a, "--ms") == 0) {
+            cfg.ms = 1;
         } else if (strcmp(a, "--no-le") == 0) {
             cfg.le = 0;
         } else if (strcmp(a, "--le-corrupt") == 0) {
@@ -1415,6 +1431,9 @@ main(int argc, char** argv) {
     if (!cfg.out) {
         usage();
     }
+    if (cfg.ms && cfg.voice[1]) {
+        die("--ms transmits on slot 1 alone; drop --s2 voice");
+    }
     FILE* wav = open_output(cfg.out, "wbx");
     FILE* ef = cfg.expect ? open_output(cfg.expect, "wx") : NULL;
     g_rng ^= cfg.seed * 0x9E3779B97F4A7C15ULL;
@@ -1494,7 +1513,7 @@ main(int argc, char** argv) {
         die("out of memory");
     }
     for (int i = 0; i < lead_sym; i++) {
-        sym[i] = rand_dibit();
+        sym[i] = cfg.ms ? DIBIT_SILENT : rand_dibit();
     }
     size_t kpos = (size_t)lead_sym;
     int idx[2] = {0, 0};
@@ -1531,10 +1550,17 @@ main(int argc, char** argv) {
                 build_data_burst(slot, g_cc, 9, d96, out);
                 break;
         }
+        if (cfg.ms) {
+            /* No CACH, and an MS keys up only for its own bursts: slot 2 and the idle periods carry nothing. */
+            const int keep_from = (slot == 0 && bd.type != B_IDLE) ? 12 : SYMBOLS_PER_SLOT;
+            for (int i = 0; i < keep_from; i++) {
+                out[i] = DIBIT_SILENT;
+            }
+        }
         kpos += SYMBOLS_PER_SLOT;
     }
     for (; kpos < nsym; kpos++) {
-        sym[kpos] = rand_dibit();
+        sym[kpos] = cfg.ms ? DIBIT_SILENT : rand_dibit();
     }
     if (ef && fclose(ef) != 0) {
         die("cannot write the expectation file");

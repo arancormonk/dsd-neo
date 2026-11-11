@@ -16363,6 +16363,16 @@ dsd_neo_add_dmr_synth_test(
     GEN "-t 12 --alg none"
     MAX_MISSING 6
 )
+# An MS transmission (issue #834): MS syncs, no CACH, slot 1's bursts alone with nothing between them. dsd-neo's MS
+# path decodes every frame, short of the bursts the voice gate skips at call start, with the Golay-protected bits of
+# each right. The unprotected bits are not checked: across the silent gaps a few percent of the frames come out with
+# one of them wrong, where the continuous BS channel has none.
+dsd_neo_add_dmr_synth_test(
+    DMR_SYNTH_MS_CLEAR_VOICE
+    GEN "-t 12 --alg none --ms"
+    MATCH protected
+    MAX_MISSING 6
+)
 # A receiver that inverts the discriminator: BS voice syncs read as data syncs until the decoder proves the polarity
 # from the bursts (issue #729), with no -xr. A clear call and an AES-256 call: every frame decoded after that matches.
 dsd_neo_add_dmr_synth_test(

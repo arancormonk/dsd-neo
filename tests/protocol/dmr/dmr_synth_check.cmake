@@ -11,14 +11,18 @@
 # position whose VC number matches, counting frame-sync-miss bursts; after a
 # BS loop drop-out the decoder can only re-enter at a later VC1) and is
 # re-anchored to the superframe whose expected frames the burst matches best
-# when a run of bursts went missing unseen.
+# when a run of bursts went missing unseen. An MS transmission (--ms, issue
+# #834) prints one "DMR MS/DM MODE/MONO ... | VC*" line per superframe, at
+# burst A; its frames are slot 1's, VC1 to VC6 in order, three per burst.
 #
 # Required -D inputs: DSD_BIN, GEN_BIN, WORK_DIR, CASE, GEN_ARGS.
 # Optional -D inputs:
 #   DEC_ARGS          extra decoder arguments (keys), shell-quoted
 #   MATCH             all (default): every decoded frame equals its plaintext;
 #                     after_fault: every frame decoded after the first fault
-#                     burst does; none: no plaintext check
+#                     burst does; protected: every decoded frame's 24
+#                     Golay-protected bits (C0 and C1, the first six hex
+#                     digits) equal its plaintext's; none: no plaintext check
 #   MAX_MISSING       per voice slot, decoded frames >= expected - MAX_MISSING
 #   MIN_PERCENT       per voice slot, decoded frames >= MIN_PERCENT% of expected
 #   RECOVER           next_superframe: on the fault slot, the first frame
@@ -174,6 +178,7 @@ set(_have_1 0) # a burst of the slot has been placed
 set(_have_2 0)
 set(_cur_slot "")
 set(_cur_vc "")
+set(_ms_vc "") # the MS superframe's next burst number after a flush, "" outside one
 set(_pending)
 set(_decoded) # entries "slot|sf|vc|frame|hex|line"
 
@@ -249,8 +254,14 @@ foreach(_line IN LISTS _lines)
     math(EXPR _ln "${_ln} + 1")
     if(_line MATCHES "<SLOT([12])>.*\\| VC([1-6])")
         _dmr_synth_flush()
+        set(_ms_vc "")
         set(_cur_slot ${CMAKE_MATCH_1})
         set(_cur_vc ${CMAKE_MATCH_2})
+    elseif(_line MATCHES "DMR MS/DM MODE/MONO .*\\| VC\\*")
+        _dmr_synth_flush()
+        set(_cur_slot 1)
+        set(_cur_vc 1)
+        set(_ms_vc 2)
     elseif(_line MATCHES "^ *AMBE ([0-9A-F]+) err")
         set(_last_ambe_ln ${_ln})
         if(NOT "${_cur_slot}" STREQUAL "")
@@ -259,6 +270,11 @@ foreach(_line IN LISTS _lines)
             list(LENGTH _pending _np)
             if(_np EQUAL 3)
                 _dmr_synth_flush()
+                if(NOT "${_ms_vc}" STREQUAL "" AND _ms_vc LESS_EQUAL 6)
+                    set(_cur_slot 1)
+                    set(_cur_vc ${_ms_vc})
+                    math(EXPR _ms_vc "${_ms_vc} + 1")
+                endif()
             endif()
         endif()
     elseif(_line MATCHES "Frame Sync Err")
@@ -275,6 +291,7 @@ foreach(_line IN LISTS _lines)
         list(APPEND _dropout_lns ${_ln})
     elseif(_line MATCHES "Sync:")
         _dmr_synth_flush()
+        set(_ms_vc "")
     endif()
 endforeach()
 _dmr_synth_flush()
@@ -300,6 +317,10 @@ foreach(_entry IN LISTS _decoded)
     set(_check 0)
     if(MATCH STREQUAL "all")
         set(_check 1)
+    elseif(MATCH STREQUAL "protected")
+        set(_check 1)
+        string(SUBSTRING "${_hx}" 0 6 _hx)
+        string(SUBSTRING "${_exp_hx}" 0 6 _exp_hx)
     elseif(MATCH STREQUAL "after_fault")
         math(EXPR _burst "${_sf} * 6 + ${_vc} - 1")
         if(_s EQUAL _fault_slot AND _burst GREATER _fault_burst)

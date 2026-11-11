@@ -1974,6 +1974,12 @@ exactly there), CACH and sync noise, a wrong colour code, a TACT miscorrected to
 fragments, and voice superframes lost after the headers. It can also change the colour code from a given voice
 superframe on, with no new header (`--cc-change`), and start the voice at another point of its waveform
 (`--voice-t0`), so separately generated calls carry different audio. Output is deterministic for a given seed.
+With `--ms` it writes one MS transmission instead (issue #834): the MS sourced voice and data syncs, no CACH, and slot
+1's bursts alone, 27.5 ms on every 60 ms, with the audio at 0 between them. `DMR_SYNTH_MS_CLEAR_VOICE` decodes it
+through the MS path and checks the 24 Golay-protected bits of every frame (`MATCH protected`): across the silent gaps a
+few percent of the frames (11 of 540 in the case's 12 s call) come out with one unprotected bit wrong, which the
+continuous BS channel never does. The checker places an MS frame by the one `VC*` line the MS path prints per
+superframe, then VC1 to VC6 three frames at a time.
 
 `DMR_SYNTH_RECEIVE_NAMES` (`tests/protocol/dmr/dmr_receive_names_check.py`, issue #637) decodes three repeaters that
 share one frequency and differ only by colour code, named with `--dcc-name`: three calls with silence between them,
@@ -1988,14 +1994,15 @@ used to search parity are the project's. The checker places each decoded frame b
 before it and the per-slot burst sequence, re-anchoring by content after an unseen gap, and names every mismatch by
 case, slot, superframe, VC and frame with the expected and decoded value.
 
-What it does not prove: the channel is ideal apart from noise and clock offset (no fading, multipath, frequency
-offset, deviation error or receiver filtering), the signal comes in as discriminator audio rather than I/Q, and only
-the BS path is covered. A pass shows the decoder agrees with an independent model of the standard, not with a real
-radio; `tools/replay_ab.sh` on real captures remains the evidence for decode quality.
+What it does not prove: the channel is ideal apart from noise and clock offset (no fading, multipath, frequency offset,
+deviation error or receiver filtering), the signal comes in as discriminator audio rather than I/Q, and the MS path is
+covered only for a clear voice call. A pass shows the decoder agrees with an independent model of the standard, not with
+a real radio; `tools/replay_ab.sh` on real captures remains the evidence for decode quality.
 
 | Case | What it pins |
 | --- | --- |
 | `DMR_SYNTH_CLEAR_VOICE` | A clear call decodes exactly, at most the two bursts the voice gate skips at call start missing. |
+| `DMR_SYNTH_MS_CLEAR_VOICE` | An MS transmission (`--ms`) decodes through the MS path: every frame but the bursts the voice gate skips at call start, the 24 Golay-protected bits of each right. |
 | `DMR_SYNTH_AES256_CALL_START`, `DMR_SYNTH_AES128_BOTH_SLOTS` | Every decoded frame of an encrypted call decrypts right from superframe 0 on, on one or both slots. |
 | `DMR_SYNTH_AES256_BURST_LOSS`, `DMR_SYNTH_RC4_BURST_LOSS` | One burst lost at slot 1 superframe 10 VC3: every later frame decrypts right, and every frame from the next superframe's first opened burst on is decoded. |
 | `DMR_SYNTH_AES256_LOSS_NO_LE` | The same with every later late-entry MI undecodable, so the MI chain has to survive on its own. |
