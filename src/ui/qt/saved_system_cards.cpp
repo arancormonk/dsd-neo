@@ -12,6 +12,7 @@
 #include <QSet>
 #include <QTimer>
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <limits>
 #include <numeric>
@@ -124,6 +125,13 @@ rank_names(const QStringList& names, QHash<QString, int>& ranks) {
     for (int i = 0; i < keyed.size(); ++i) {
         ranks.insert(keyed.at(i).second, i);
     }
+}
+
+/* Whether two fixes name the same place: within 1e-7 degrees (about a centimetre), finer than any fix. */
+bool
+same_position(double lat, double lon, double otherLat, double otherLon) {
+    constexpr double kDegrees = 1e-7;
+    return std::fabs(lat - otherLat) <= kDegrees && std::fabs(lon - otherLon) <= kDegrees;
 }
 
 bool
@@ -357,7 +365,9 @@ SavedSystemCards::SavedSystemCards(SavedSystemsModel* systems, AppPrefs* prefs, 
            (markLocationRequested()) is a user-asked change; an expiry or a fix another screen took is not. */
         connect(m_prefs, &AppPrefs::locationChanged, this, [this]() {
             m_cardsDirty = true;
-            m_userAsked = m_userAsked || std::exchange(m_locationRequested, false);
+            // The mark is spent by this change whatever else is pending, so a later expiry is never taken for it.
+            const bool requested = std::exchange(m_locationRequested, false);
+            m_userAsked = m_userAsked || requested;
             scheduleRebuild();
         });
     }
@@ -500,7 +510,7 @@ SavedSystemCards::rebuild() {
     const int shownBefore = shownCount();
     const int totalBefore = m_totalCount;
     const Fix fix = readFix();
-    if (fix.valid != m_fix.valid || fix.at != m_fix.at) {
+    if (fix.valid != m_fix.valid || fix.at != m_fix.at || !same_position(fix.lat, fix.lon, m_fix.lat, m_fix.lon)) {
         m_cardsDirty = true; // the distances were measured from another fix, or none
     }
     m_fix = fix;

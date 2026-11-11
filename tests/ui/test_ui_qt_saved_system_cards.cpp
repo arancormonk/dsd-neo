@@ -796,6 +796,40 @@ test_location_request_mark() {
     check("and it goes back to name order", f.cards->effectiveSort() == QStringLiteral("name"));
 }
 
+/* The mark is spent by the location change it was for, even when another user-asked change is pending in the same
+   turn; a later expiry is then a background change. A new fix at the same moment but another place re-measures. */
+void
+test_location_mark_spent_with_other_changes() {
+    Fixture f;
+    add_distance_rows(f);
+    f.cards->setLocationSupported(true);
+    f.prefs.setSystemsSort(QStringLiteral("nearest"));
+    settle();
+    f.cards->setScreenReaderActive(true);
+    f.cards->setHoldReorders(true);
+    Recorder recorder(*f.cards);
+    f.cards->markLocationRequested();
+    f.cards->setQuery(QStringLiteral(" ")); // a user-asked change pending in the same turn
+    const qint64 at = dsd_qt::realtimeMSecsSinceEpoch();
+    f.prefs.setLocationFix(41.6, -93.6, at, 10);
+    settle();
+    check("the asked-for fix resets to distance order",
+          recorder.resets == 1 && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Charlie"));
+    recorder.clear();
+    f.prefs.setLocationFix(0, 0, 0);
+    settle();
+    check("the mark was spent: a later expiry is held", recorder.resets == 0 && recorder.moves == 0);
+    f.cards->setScreenReaderActive(false);
+    f.prefs.setLocationFix(41.6, -93.6, at, 10);
+    settle();
+    const double before = f.at(0, SavedSystemCards::DistanceKmRole).toDouble();
+    f.prefs.setLocationFix(43.6, -93.6, at, 10);
+    settle();
+    const int alpha = f.cards->rowForKey(f.systems->groupKey(2));
+    check("a fix at the same moment in another place re-measures",
+          alpha >= 0 && f.at(alpha, SavedSystemCards::DistanceKmRole).toDouble() < 1.0 && before > 1.0);
+}
+
 /* A held reorder applies as moves once the screen reader is off; a background reorder with one on and no hold is a
    reset. */
 void
@@ -996,6 +1030,7 @@ main(int argc, char** argv) {
     test_place_other_sections_by_name();
     test_tie_breaks_by_key();
     test_location_request_mark();
+    test_location_mark_spent_with_other_changes();
     test_reader_off_and_unheld_background();
     test_coalescing();
     test_signals_follow_random_changes();
