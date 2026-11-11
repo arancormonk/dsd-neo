@@ -11962,6 +11962,32 @@ if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
 endif()
 add_test(NAME M17_STATE_DISPATCH COMMAND dsd-neo_test_m17_state_dispatch)
 
+# Issue #518 B17: the stream encoder's microphone level through real Codec2 at 3200 and 1600 bit/s, end to end:
+# what it sends, decoded raw, and what its monitor plays. Only a Codec2 build encodes voice.
+if(DSD_HAS_CODEC2)
+    add_executable(
+        dsd-neo_test_m17_encoder_codec2
+        protocol/m17/test_m17_encoder_codec2.c
+    )
+    target_include_directories(
+        dsd-neo_test_m17_encoder_codec2
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/protocol/m17
+    )
+    target_link_libraries(
+        dsd-neo_test_m17_encoder_codec2
+        PRIVATE
+            dsd-neo_proto_m17
+            dsd-neo_proto_nxdn
+            dsd-neo_feature_codec2
+            ${CODEC2_LIBRARIES}
+            dsd-neo_test_speech_level
+            dsd-neo_test_support
+    )
+    add_test(NAME M17_ENCODER_CODEC2 COMMAND dsd-neo_test_m17_encoder_codec2)
+endif()
+
 add_executable(
     dsd-neo_test_m17_confirm
     protocol/m17/test_m17_confirm.c

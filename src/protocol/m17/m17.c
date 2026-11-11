@@ -680,14 +680,16 @@ m17_can_matches_state(const dsd_state* state) {
    M17 is outside talkgroup policy, so it settles its own gates here: an encrypted stream plays only once decrypted, and
    only a CAN the filter allows plays. @p nsam is the decoder's real output: 160 samples per 3200 frame, 320 at 1600.
    What plays is then decoded, decrypted, admitted speech of a confirmed stream; the encoder's own transmission, decoded
-   back for its monitor, is not received speech and tells the chain nothing. */
+   back for its monitor, is not received speech: it plays at the level it was sent at, on the chain's monitor stage,
+   and teaches the receive slot nothing (issue #518). */
 static void
 m17_play_codec2_voice(const dsd_opts* opts, dsd_state* state, const short* samples, size_t nsam) {
     if ((state->m17_enc != 0 && state->m17_payload_decrypted == 0U) || !m17_can_matches_state(state)) {
         return;
     }
     static const dsd_voice_frame_info k_received = {(uint8_t)DSD_VOICE_MEDIA_SPEECH, 1U, 1U, 0U};
-    dsd_audio_play_decoded_pcm16(opts, state, samples, nsam, s_m17_monitoring_local_tx ? NULL : &k_received);
+    static const dsd_voice_frame_info k_tx_monitor = {(uint8_t)DSD_VOICE_MEDIA_TX_MONITOR, 1U, 1U, 0U};
+    dsd_audio_play_decoded_pcm16(opts, state, samples, nsam, s_m17_monitoring_local_tx ? &k_tx_monitor : &k_received);
 }
 #endif
 
@@ -1664,6 +1666,8 @@ typedef struct {
     uint8_t nil[368];
     size_t nsam;
     int sql_hit;
+    /* The current read's VOX decision (m17_str_decide_key()), made once, before the microphone chain. */
+    int vox_keyed;
     int eot_out;
     /* The iteration's read under the dynamic squelch (issue #625): whether it ran the stream's gate, and whether any
        sample was heard. */
@@ -2232,7 +2236,9 @@ m17_voice_chain_init(m17_voice_chain* chain) {
    band-pass (`use_pbf`), the legacy 960 Hz filters, then, with the gain on auto, the voice AGC referenced to PCM input;
    an explicit -n keeps analog_gain()'s 0..5x. The filters and the AGC carry their state from piece to piece, so the
    frame is processed as one run whatever its length. The 960 Hz filters are the chain's own, designed at 8 kHz: run
-   from dsd_state's, designed for the monitor's input rate, they acted at 160 Hz on 48 kHz input (issue #617). */
+   from dsd_state's, designed for the monitor's input rate, they acted at 160 Hz on 48 kHz input (issue #617).
+   The AGC learns only from a @p keyed frame and holds through the rest without a rollback (issue #518): what one
+   transmission taught, however short, carries to the next, and nothing the microphone hears between them moves it. */
 static void
 m17_voice_filter_piece(const dsd_opts* opts, m17_voice_chain* chain, float* tmp, size_t len) {
     if (opts->use_pbf == 1) {
@@ -2261,7 +2267,8 @@ m17_voice_store_piece(const float* tmp, short* out, size_t len) {
 }
 
 void
-m17_voice_chain_process(const dsd_opts* opts, dsd_state* state, m17_voice_chain* chain, short* voice, size_t nsam) {
+m17_voice_chain_process(const dsd_opts* opts, dsd_state* state, m17_voice_chain* chain, short* voice, size_t nsam,
+                        int keyed) {
     if (!opts || !state || !chain || !voice) {
         return;
     }
@@ -2273,27 +2280,16 @@ m17_voice_chain_process(const dsd_opts* opts, dsd_state* state, m17_voice_chain*
             tmp[i] = (float)voice[done + i];
         }
         m17_voice_filter_piece(opts, chain, tmp, len);
-        if (is_auto) {
+        if (is_auto && keyed) {
             dsd_voice_agc_process(&chain->agc, tmp, len, 1);
+        } else if (is_auto) {
+            dsd_voice_agc_process_held(&chain->agc, tmp, len);
         }
         m17_voice_store_piece(tmp, voice + done, len);
         done += len;
     }
     if (!is_auto) {
         analog_gain(opts, state, voice, (int)nsam);
-    }
-}
-
-static void
-m17_str_voice_chain(m17_str_ctx* ctx, short* voice) {
-    m17_voice_chain_process(ctx->opts, ctx->state, &ctx->voice_chain, voice, ctx->nsam);
-}
-
-static void
-m17_str_apply_filters_and_gain(m17_str_ctx* ctx) {
-    m17_str_voice_chain(ctx, ctx->voice1);
-    if (ctx->st == 2) {
-        m17_str_voice_chain(ctx, ctx->voice2);
     }
 }
 
@@ -2348,13 +2344,39 @@ m17_encoder_vox_keyed(int heard, int lich_cnt, int* sql_hit) {
     return (*sql_hit > 10 && lich_cnt == 0) ? 0 : 1;
 }
 
+/* The VOX's decision for the current read, from what it hears (the squelch flags, or the input level the read published
+   before any filter or gain). Once per read, before the microphone chain, so the AGC learns from the frames the read
+   keys and the frame built after it reuses the decision: the VOX counts each read once, as it always did. */
+static void
+m17_str_decide_key(m17_str_ctx* ctx) {
+    const int heard = m17_encoder_squelch_heard(ctx->opts, ctx->squelch_gated, ctx->squelch_heard);
+    ctx->vox_keyed = m17_encoder_vox_keyed(heard, ctx->lich_cnt, &ctx->sql_hit);
+}
+
+/* Whether the current read is transmitted: the VOX's decision with VOX on, the TX toggle (or the automatic key-up of a
+   run without a terminal) otherwise. */
+static int
+m17_str_read_keyed(const m17_str_ctx* ctx) {
+    return ctx->state->m17_vox == 1 ? ctx->vox_keyed : ctx->state->m17encoder_tx == 1;
+}
+
+static void
+m17_str_voice_chain(m17_str_ctx* ctx, short* voice) {
+    m17_voice_chain_process(ctx->opts, ctx->state, &ctx->voice_chain, voice, ctx->nsam, m17_str_read_keyed(ctx));
+}
+
+static void
+m17_str_apply_filters_and_gain(m17_str_ctx* ctx) {
+    m17_str_voice_chain(ctx, ctx->voice1);
+    if (ctx->st == 2) {
+        m17_str_voice_chain(ctx, ctx->voice2);
+    }
+}
+
 static void
 m17_str_update_vox_and_eot(m17_str_ctx* ctx) {
-    const int heard = m17_encoder_squelch_heard(ctx->opts, ctx->squelch_gated, ctx->squelch_heard);
-    const int keyed = m17_encoder_vox_keyed(heard, ctx->lich_cnt, &ctx->sql_hit);
-
     if (ctx->state->m17_vox == 1) {
-        if (!keyed) {
+        if (!ctx->vox_keyed) {
             /* Unkeying ends the open stream (issue #625): this frame carries the EOS bit and the EOT marker follows,
                without dead air. */
             if (ctx->state->m17encoder_tx == 1 && !ctx->eot_out) {
@@ -2718,6 +2740,7 @@ m17_str_run_iteration(m17_str_ctx* ctx) {
         return read_result;
     }
     m17_str_update_input_power(ctx);
+    m17_str_decide_key(ctx);
     m17_str_apply_filters_and_gain(ctx);
     m17_str_encode_codec2(ctx, &frame);
     m17_str_build_stream_frame(ctx, &frame);
@@ -2747,6 +2770,7 @@ m17_str_end_open(m17_str_ctx* ctx) {
     DSD_MEMSET(ctx->voice1, 0, sizeof(short) * ctx->nsam);
     DSD_MEMSET(ctx->voice2, 0, sizeof(short) * ctx->nsam);
     ctx->ending = 1;
+    m17_str_decide_key(ctx);
     m17_str_encode_codec2(ctx, &frame);
     m17_str_build_stream_frame(ctx, &frame);
     m17_str_build_ip_frame(ctx, &frame);

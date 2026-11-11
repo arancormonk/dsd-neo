@@ -69,8 +69,10 @@ typedef struct {
 
 /* Design @p chain for 8 kHz microphone audio, the AGC referenced to PCM input (m17.c). */
 void m17_voice_chain_init(m17_voice_chain* chain);
-/* Run @p chain over one codec2 frame of @p nsam samples (m17.c). */
-void m17_voice_chain_process(const dsd_opts* opts, dsd_state* state, m17_voice_chain* chain, short* voice, size_t nsam);
+/* Run @p chain over one codec2 frame of @p nsam samples (m17.c). The AGC learns from the frame when @p keyed and holds,
+   with no rollback, when not. */
+void m17_voice_chain_process(const dsd_opts* opts, dsd_state* state, m17_voice_chain* chain, short* voice, size_t nsam,
+                             int keyed);
 
 /* The stream encoder's input side: one sample kept in dec of the input-rate audio, through the anti-alias low-pass
    first, a pass-through when the input already runs at 8 kHz. */

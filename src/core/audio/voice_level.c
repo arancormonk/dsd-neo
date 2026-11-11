@@ -5,7 +5,8 @@
 
 /*
  * The digital voice chain's speech level (issue #518): one speech AGC (<dsd-neo/dsp/speech_agc.h>) per slot at the
- * voice rate, with the reception it runs for, in DSD_STATE_EXT_CORE_VOICE_LEVEL. Decoder thread only, like the chain.
+ * voice rate, with the reception it runs for, and the M17 encoder monitor's fixed-unity one, in
+ * DSD_STATE_EXT_CORE_VOICE_LEVEL. Decoder thread only, like the chain.
  */
 
 #include <dsd-neo/core/state.h>
@@ -34,6 +35,8 @@ typedef struct {
 
 typedef struct {
     voice_level_slot slot[2];
+    /* The M17 encoder's monitor: unity gain through the limiter, nothing learned (DSD_VOICE_MEDIA_TX_MONITOR). */
+    dsd_speech_agc tx_monitor;
 } voice_level_ext;
 
 static voice_level_ext*
@@ -46,14 +49,16 @@ voice_level_ext_get(dsd_state* state) {
     if (!ext) {
         return NULL;
     }
-    for (int s = 0; s < 2; s++) {
-        if (dsd_speech_agc_init(&ext->slot[s].agc, (int)DSD_VOICE_HPF_RATE_HZ, VOICE_LEVEL_START_GAIN_DB,
-                                DSD_SPEECH_AGC_TARGET_DBFS, DSD_SPEECH_AGC_CEILING_DBFS)
+    for (int s = 0; s < 3; s++) {
+        dsd_speech_agc* agc = s < 2 ? &ext->slot[s].agc : &ext->tx_monitor;
+        if (dsd_speech_agc_init(agc, (int)DSD_VOICE_HPF_RATE_HZ, VOICE_LEVEL_START_GAIN_DB, DSD_SPEECH_AGC_TARGET_DBFS,
+                                DSD_SPEECH_AGC_CEILING_DBFS)
             != 0) {
             free(ext);
             return NULL;
         }
     }
+    dsd_speech_agc_set_fixed(&ext->tx_monitor, 1.0f);
     if (dsd_state_ext_set(state, DSD_STATE_EXT_CORE_VOICE_LEVEL, ext, free) != 0) {
         free(ext);
         return NULL;
@@ -120,10 +125,28 @@ voice_level_follow(voice_level_slot* s, const dsd_voice_reception* reception, ui
     }
 }
 
+/* The encoder's own transmission plays at the level it went out at, whatever -g says, and the slot's AGC neither learns
+   from it nor starts over for it. */
+static void
+voice_level_run_tx_monitor(dsd_state* state, float* frame, float* shown) {
+    voice_level_ext* ext = voice_level_ext_get(state);
+    if (!ext) {
+        /* Unity, without the limiter: no memory for it. */
+        *shown = 0.0f;
+        return;
+    }
+    dsd_speech_agc_process(&ext->tx_monitor, frame, DSD_VOICE_FRAME_SAMPLES, 0, 1, 0);
+    *shown = dsd_speech_agc_gain_db(&ext->tx_monitor);
+}
+
 void
 dsd_voice_level_run(const dsd_opts* opts, dsd_state* state, int slot, float* frame, const dsd_voice_frame_info* info,
                     const dsd_voice_reception* reception) {
     float* shown = slot == 1 ? &state->aout_gainR : &state->aout_gain;
+    if (info && info->media == (uint8_t)DSD_VOICE_MEDIA_TX_MONITOR) {
+        voice_level_run_tx_monitor(state, frame, shown);
+        return;
+    }
     const float setting = slot == 1 ? opts->audio_gainR : opts->audio_gain;
     voice_level_ext* ext = setting < 0.0f ? NULL : voice_level_ext_get(state);
     if (!ext) {

@@ -2822,14 +2822,18 @@ suite runs under this compiler.
   `admitted` (`dsd_receive_current_allows()` on the slot the verdict judges; files, JSON and M17 1) and `talkspurt`
   (TETRA's transmission count, 0 elsewhere). `dsd_voice_frame_may_learn()` is the one rule over it: decodable,
   admitted speech. The vocoder keeps its synthesis's media in `mbe_frame_ctx_t` and builds the info just before the
-  chain, which does not move. M17's encoder monitor (its own transmission decoded back) and a caller with nothing to
-  say pass NULL. The speech AGC learns only from frames `dsd_voice_frame_may_learn()` takes (B3: no ciphertext, no
+  chain, which does not move. A caller with nothing to say passes NULL. M17's encoder monitor (its own transmission
+  decoded back) passes `DSD_VOICE_MEDIA_TX_MONITOR` (issue #518 B17): its frames skip the slot's AGC, its tracker and
+  `-g`, and play at unity through a fixed-gain speech AGC of their own in the same extension (`tx_monitor`, the
+  -1 dBFS limiter only), so the monitor plays the level the encoder sends and leaves the receive slot as it was; the
+  high-pass still applies. The speech AGC learns only from frames `dsd_voice_frame_may_learn()` takes (B3: no ciphertext, no
   repeat, mute noise, comfort noise, silence, failed decode or tone frame teaches it, and a muted but decodable,
   admitted frame does, so recordings do not depend on output toggles); a tone frame plays at no more than the start
   gain (D12); an undecodable frame only stops it learning, and the slot's first decodable frame after one resets its
   limiter and pitch history; NULL counts as decodable, never as speech. Tests: `CORE_VOICE_CHAIN` (the helpers),
   `CORE_MBE_TRANSFORM_CONTEXT` (real decodes per owner), `CORE_MBE_FILE_IO` (files, JSON), `YSF_DCH_DECODE`,
-  `M17_STATE_DISPATCH`, `TETRA_VOICE_PIPELINE`. Consumers take the chained frame
+  `M17_STATE_DISPATCH`, `TETRA_VOICE_PIPELINE`, `CORE_VOICE_LEVEL` (`test_tx_monitor_plays_at_unity`),
+  `M17_ENCODER_CODEC2`. Consumers take the chained frame
   as it is: the per-call WAV writers and the shared short staging (`dsd_voice_stage_short_left/right()`: `s_l`/`s_r`,
   the output ring and the 48 kHz upsample). No mixer filters or gains. The same staged samples feed every mixer in
   both formats, and float serialization happens only at the sink. The per-call and static WAVs therefore agree
@@ -6436,7 +6440,16 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   encoder keeps its own band-pass, 960 Hz one-poles (`dsd_voice_onepole`) and `dsd_voice_agc` (used there alone) at
   8 kHz in its stream context
   (`m17_voice_chain`) and runs them over the whole codec2 frame, 160 samples at 3200 bit/s and 320 at 1600
-  (`m17_voice_chain_process()`; an explicit `-n` keeps `analog_gain()`). Its input reader low-passes at 3400 Hz
+  (`m17_voice_chain_process()`; an explicit `-n` keeps `analog_gain()`). The transmit contract (issue #518 B17): the
+  AGC learns only from reads that are transmitted and holds through the rest with `dsd_voice_agc_process_held()` (no
+  attack, no release, output limited to the target, and none of the receive AGC's 250 ms rollback, which would undo a
+  short transmission), so the gain one transmission learned carries to the next and room noise between them moves
+  nothing; it starts over only with the stream context (`m17_str_init()`: encoder start, which an input switch needs
+  too). The read's key state is decided once, before the chain, from what the VOX already reads (the read's squelch
+  flags, or the input level it published before any filter or gain): `m17_str_decide_key()` advances the VOX count
+  (`sql_hit`) once per read, and the frame built after it reuses that decision (`m17_str_update_vox_and_eot()`), so the
+  VOX keys and unkeys on the same reads as before; without VOX the TX toggle (`m17encoder_tx`) is the key state
+  (`m17_str_read_keyed()`). Its input reader low-passes at 3400 Hz
   (`DSD_VOICE_BAND_LOWPASS`, at the input rate) before keeping one sample in `m17_rate / 8000`, and scales RTL monitor
   audio by the RTL monitor gain after the `vol` trim (`m17_encoder_read_block()`), so it reaches codec2 at PCM scale.
   On RTL it reads each sample's squelch flag (`read_ex`); while the stream's gate runs
@@ -6456,7 +6469,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `test_tone_rejected_start_leaves_the_agc_alone`), `RTL_SYMBOL_CACHE_GENERATION` (source routing),
   `IO_RTL_MONITOR_DEEMPH` (the reference through the real demodulator, ring and chain under every de-emphasis),
   `M17_STATE_DISPATCH` (`test_stream_voice_chain_covers_the_whole_frame`, `test_stream_voice_chain_onepoles_run_at_8k`,
-  `test_encoder_rtl_input_reaches_pcm_scale`), `EDACS_GRANT_TUNE_MATRIX` (`rtl-unclipped`), the `DECODE_IQ_ANALOG_*`
+  `test_encoder_rtl_input_reaches_pcm_scale`, `test_stream_encoder_mic_holds_while_unkeyed`,
+  `test_stream_encoder_mic_keeps_gain_across_key_ups`, `test_stream_encoder_vox_keys_on_the_same_reads`),
+  `M17_ENCODER_CODEC2`, `DSP_ANALOG_VOICE` (`test_agc_held`), `EDACS_GRANT_TUNE_MATRIX` (`rtl-unclipped`), the `DECODE_IQ_ANALOG_*`
   level, speech-level (P.56), noise and fixed-gain cases.
 - The speech level AGC is `src/dsp/speech_agc.c` (`<dsd-neo/dsp/speech_agc.h>`), one module for digital and analog
   voice that aims every talker at one active speech level (P.56 -24 dBFS): the digital voice chain runs one per slot
@@ -8896,8 +8911,10 @@ Notes:
     is outside talkgroup policy) and hands the decoder's real output, 160 samples per 3200 frame and 320 per 1600
     frame, to `dsd_audio_play_decoded_pcm16()` (see the Core audio API note). So the mute, the slot 1 switch, the
     digital gain (`-g` and its live controls), the high-pass, the stream's channel count and sample format (`-y`),
-    the WAVs and the audible-audio stamp follow the shared chain and mixers. Tests: `M17_STATE_DISPATCH`, `CORE_AUDIO2_HELPERS`,
-    `DECODE_IQ_M17_VOICE_OUTPUT`.
+    the WAVs and the audible-audio stamp follow the shared chain and mixers. The stream encoder's own monitor is the
+    exception to the gain: it plays at the level sent (`DSD_VOICE_MEDIA_TX_MONITOR`, see the voice chain invariant).
+    Tests: `M17_STATE_DISPATCH`, `CORE_AUDIO2_HELPERS`, `DECODE_IQ_M17_VOICE_OUTPUT`, `M17_ENCODER_CODEC2` (real
+    Codec2 at 3200 and 1600: the encoder's input level, the raw decoded output and the monitor, through key-ups).
 
 - M17 IP dispatch validates the received length before reading a stream or control frame or changing its state.
   MPKT header conversion reads only its 34-byte prefix, since a valid packet can be shorter than a 54-byte stream

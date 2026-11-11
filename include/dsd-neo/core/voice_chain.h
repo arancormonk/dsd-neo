@@ -40,11 +40,13 @@ extern "C" {
 
 /** What a synthesized voice frame carries, as its decoder knows it. */
 typedef enum {
-    DSD_VOICE_MEDIA_NONE = 0,  /**< no decoded media: a decode failure's or a P25 tail erasure's silence */
-    DSD_VOICE_MEDIA_CONCEALED, /**< synthesized in place of speech: a repeat, a mute's comfort noise, an erasure,
-                                    AMBE silence, an uncorrectable D-STAR C0, a TETRA bad frame */
-    DSD_VOICE_MEDIA_SPEECH,    /**< a decoded speech frame */
-    DSD_VOICE_MEDIA_TONE,      /**< a tone frame (DTMF, call progress and other AMBE tones), repeated or erased too */
+    DSD_VOICE_MEDIA_NONE = 0,   /**< no decoded media: a decode failure's or a P25 tail erasure's silence */
+    DSD_VOICE_MEDIA_CONCEALED,  /**< synthesized in place of speech: a repeat, a mute's comfort noise, an erasure,
+                                     AMBE silence, an uncorrectable D-STAR C0, a TETRA bad frame */
+    DSD_VOICE_MEDIA_SPEECH,     /**< a decoded speech frame */
+    DSD_VOICE_MEDIA_TONE,       /**< a tone frame (DTMF, call progress and other AMBE tones), repeated or erased too */
+    DSD_VOICE_MEDIA_TX_MONITOR, /**< the M17 encoder's own transmission, decoded back for its monitor: it plays at
+                                     unity through a limiter of its own and never touches a slot's speech AGC */
 } dsd_voice_media;
 
 /**
@@ -82,6 +84,10 @@ int dsd_voice_frame_may_learn(const dsd_voice_frame_info* info);
  * through the AGC's limiter (DSD_SPEECH_AGC_CEILING_DBFS); switching back to auto keeps what the AGC learned and starts
  * from the fixed gain, within the AGC's range. A setting below 0 (no user surface sets one) passes the frame at unity.
  * Each frame leaves the gain it got, in dB, in `aout_gain` (slot 2 `aout_gainR`) for the readouts.
+ *
+ * A DSD_VOICE_MEDIA_TX_MONITOR frame (the M17 encoder's monitor) takes neither the slot's AGC nor `-g`: it plays at
+ * unity through a fixed-gain speech AGC of its own, which only limits it at DSD_SPEECH_AGC_CEILING_DBFS, so the monitor
+ * plays the level the encoder transmits and leaves the slots' speech level as it was.
  *
  * Both run for the slot's reception. The filter starts over when the slot's transmission
  * (dsd_call_snapshot_transmission() of its active call: one nonzero value to another) or the frame's protocol family

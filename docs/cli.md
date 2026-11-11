@@ -2729,6 +2729,14 @@ Input, squelch and VOX
   dead air, as a manual unkey's does.
 - A manual unkey while VOX still hears a carrier ends that stream the same way, with its dead air; VOX then keys a new
   stream, with its own LSF and, when monitored, its own call.
+
+Microphone level
+
+- With `-n 0` (auto, the default) the encoder levels the microphone so its peaks sit at -10 dBFS, with up to 18 dB of
+  boost. It learns only while it transmits (keyed by hand or by VOX) and holds between transmissions, so each
+  transmission starts at the level the last one ended on, however short it was, and nothing the microphone picks up
+  between them changes it. It starts over when the encoder starts.
+- `-n 1`–`100` is a fixed gain: `20` passes the microphone through as it is, `100` is 5 times louder.
 - On a local audio output the encoder lets the last frame and the EOT marker play before it queues the dead air, so a
   full output cannot drop them. At shutdown it lets everything queued play before the output closes, a VOX unkey's
   end included. The packet encoder (`-fP`) ends the same way.
@@ -2736,8 +2744,9 @@ Input, squelch and VOX
 Monitor
 
 - Without `-8` the stream encoder decodes each frame it sends and plays the voice on the digital output, opened at
-  8 kHz mono, as a received M17 call plays: with `-g`, `-y` and the high-pass. With `-8` the 48 kHz transmit baseband
-  plays on the analog output instead. An explicit `-8` works before or after `-fZ`.
+  8 kHz mono, with `-y` and the high-pass as a received M17 call plays, but at the level it was sent at: `-g` and the
+  automatic gain do not apply, so you hear what other radios receive. Peaks are held at -1 dBFS. With `-8` the 48 kHz
+  transmit baseband plays on the analog output instead. An explicit `-8` works before or after `-fZ`.
 
 Examples
 

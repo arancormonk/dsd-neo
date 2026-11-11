@@ -181,6 +181,16 @@ void dsd_voice_agc_reset(dsd_voice_agc* agc);
  */
 void dsd_voice_agc_process(dsd_voice_agc* agc, float* buf, size_t n, int playing);
 
+/**
+ * @brief Apply the AGC to @p n samples of @p buf in place, held: the gain neither attacks nor releases and the output
+ * stays limited to the target, as while not playing, but nothing rolls back.
+ *
+ * For a transmitter's microphone between transmissions: what a transmission taught stays for the next one, however
+ * short it was, and nothing heard in between moves it. The next dsd_voice_agc_process() that plays goes on from the
+ * held state, its hold time included. A non-finite input sample comes out as 0.
+ */
+void dsd_voice_agc_process_held(dsd_voice_agc* agc, float* buf, size_t n);
+
 /** The gain the next sample would get. */
 double dsd_voice_agc_gain(const dsd_voice_agc* agc);
 

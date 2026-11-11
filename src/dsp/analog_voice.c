@@ -350,15 +350,9 @@ agc_track(dsd_voice_agc* agc, double a) {
     }
 }
 
-void
-dsd_voice_agc_process(dsd_voice_agc* agc, float* buf, size_t n, int playing) {
-    if (!agc || !buf || !(agc->ref_gain > 0.0)) {
-        return;
-    }
-    if (n == 0U) {
-        return;
-    }
-    agc_set_playing(agc, playing ? 1 : 0);
+/* The gain over @p n samples: tracking the envelope while playing, limited to the target either way. */
+static void
+agc_apply(dsd_voice_agc* agc, float* buf, size_t n) {
     const double target = (double)DSD_VOICE_AGC_TARGET_PEAK;
     for (size_t i = 0; i < n; i++) {
         const double x = (double)buf[i];
@@ -377,6 +371,28 @@ dsd_voice_agc_process(dsd_voice_agc* agc, float* buf, size_t n, int playing) {
         }
         buf[i] = (float)(x * g);
     }
+}
+
+void
+dsd_voice_agc_process(dsd_voice_agc* agc, float* buf, size_t n, int playing) {
+    if (!agc || !buf || !(agc->ref_gain > 0.0) || n == 0U) {
+        return;
+    }
+    agc_set_playing(agc, playing ? 1 : 0);
+    agc_apply(agc, buf, n);
+}
+
+void
+dsd_voice_agc_process_held(dsd_voice_agc* agc, float* buf, size_t n) {
+    if (!agc || !buf || !(agc->ref_gain > 0.0) || n == 0U) {
+        return;
+    }
+    /* Out of playing without agc_roll_back(): the checkpoints go, the envelope and its hold stay. */
+    agc->playing = 0;
+    agc->points_head = 0;
+    agc->points_count = 0;
+    agc->since_checkpoint = 0U;
+    agc_apply(agc, buf, n);
 }
 
 double

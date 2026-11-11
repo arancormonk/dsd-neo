@@ -2024,7 +2024,9 @@ while unknown); D-STAR and ProVoice decodable. `CORE_MBE_FILE_IO` plays `.amb` (
 count that repeats), `.dmb` and `.imb` records and SDRTrunk JSON (clear and encrypted with no key, speech, silence
 and a repeat). `YSF_DCH_DECODE` checks
 V/D2's frames from stubbed mbelib results. `M17_STATE_DISPATCH` checks received Codec2 voice is decodable, admitted
-speech and the stream encoder's own decoded monitor passes no info. `TETRA_VOICE_PIPELINE` checks the 240-to-160
+speech and the stream encoder's own decoded monitor is the monitor's (`DSD_VOICE_MEDIA_TX_MONITOR`): it plays the
+decoded samples as they are under a fixed `-g 3` and under auto, and leaves the receive slot's speech AGC as it
+started. `TETRA_VOICE_PIPELINE` checks the 240-to-160
 recut (an output frame is concealment or undecodable when either codec frame it draws on was) and the transmission
 count passed as the talkspurt: kept when a talker is named, a call renamed, or the speech resumes after a short stream
 gap (`tetra_forget_carrier()`, twice in a row too, a rename during the gap included); advanced for another talker, the
@@ -2478,6 +2480,16 @@ channel filter designs at; without it every plan it printed was the fallback.
 | `RUNTIME_CLI_PARSE` encoder-rate cases | `-fZ` opens the digital output at 8 kHz mono; `-fB` and `-fP` keep 48 kHz. Explicit `-8` survives every supported manual selector in either argument order, including after an analog preset. |
 | `M17_STATE_DISPATCH` IP bounds cases | Every truncated stream/control prefix uses an exact-sized allocation and leaves state untouched; a valid MPKT shorter than a stream frame reads only its own header. A sender-shaped 52-byte text-metadata packet retains its final nonzero application byte, with only the two CRC bytes excluded from the payload. ASan checks those bounds. |
 | `DECODE_IQ_M17_VOICE_OUTPUT` (Codec2 builds) | The M17 fixture on stdout: `-fz` whole s16 frames, `-fz -y` twice its bytes, `-fa` twice, `-fa -y` four times; `-g 1` and `-g 50` differ. |
+
+#### M17 encoder microphone level (issue #518 B17, regression cases)
+
+| Case | What it pins |
+| --- | --- |
+| `M17_STATE_DISPATCH` microphone cases | `encodeM17STR()` over a scripted UDP microphone (40 ms reads of a 1 kHz tone and noise, keyed by the TX toggle between reads), at 3200 and 1600 bit/s, the fake Codec2 logging each frame's level. A settled tone reaches Codec2 at the AGC's target (-10 dBFS peak). Loud room noise while unkeyed leaves the next transmission at the level the last ended on (on main it came out 12 dB low). A 120 ms transmission 12 dB louder leaves the next one exactly 12 dB lower, and one longer than 250 ms whose gain rose over its end leaves the next one 0.8 dB on (one read's release); a rollback at each key-up plays the first at full level and the second 4.2 dB down. |
+| `M17_STATE_DISPATCH` VOX key-state case | The VOX on a -40 dBFS level squelch, over transmissions, short gaps that hold it keyed and long ones that unkey it: `m17encoder_tx` as each read starts matches, read for read and at both rates, the sequence the encoder produced before the microphone learned its key state (a second VOX count per read unkeys it 18 reads early). The read that keys it plays its tone at the target from its first frame, which a key state one read late does not (+1.8 dB). |
+| `M17_ENCODER_CODEC2` (Codec2 builds) | The same encoder with real Codec2 at 3200 and 1600 bit/s, over a steady vowel with loud room noise, a 120 ms transmission and a long one between key-ups. A replay of the input through the microphone chain with the script's key state, encoded by the test's own Codec2, matches every frame sent bit for bit, so its levels are the encoder's input: the settled vowel peaks at -10 dBFS, and the key-up levels hold as in the microphone cases. The raw decoded output (the sent bits through the test's own decoder) stays within 3 dB of the input (Codec2 decodes this vowel 1.6 dB hot at 3200 and 2.4 dB at 1600) and follows its level changes within 2 dB. The encoder's monitor plays each read within 0.5 dB of the raw decoded output, and all of them within 0.05 dB, at a fixed `-g 3`. Samples are not compared: Codec2's unvoiced phases come from one process-wide generator. |
+| `DSP_ANALOG_VOICE` hold case | `dsd_voice_agc_process_held()` at 8 and 48 kHz: loud and quiet held input moves no gain and stays within the target, nothing rolls back after a short or a long run, and playing again goes on from the held envelope and its hold time. |
+| `CORE_VOICE_LEVEL` encoder monitor case | `DSD_VOICE_MEDIA_TX_MONITOR` frames play at unity under auto and `-g 3`, are held at the -1 dBFS ceiling, and leave a taught slot's speech AGC byte for byte as it was. |
 
 #### Auto squelch replay cases
 

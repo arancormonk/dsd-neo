@@ -611,6 +611,73 @@ test_decodability_returns_per_slot(void) {
     return rc;
 }
 
+/* @p a holds what @p b holds: what it learned, its gains and limiter, and how far its signal state has run. */
+static int
+agc_same(const dsd_speech_agc* a, const dsd_speech_agc* b) {
+    const dsd_speech_agc_learned* la = &a->learned;
+    const dsd_speech_agc_learned* lb = &b->learned;
+    return a->frames == b->frames && a->frame_pos == b->frame_pos && a->decim_pos == b->decim_pos
+           && a->cp_count == b->cp_count && a->fixed == b->fixed && la->commits == lb->commits && la->steps == lb->steps
+           && la->run_len == lb->run_len && la->since_commit == lb->since_commit && fabsf(la->power - lb->power) <= 0.0f
+           && fabsf(la->gain_db - lb->gain_db) <= 0.0f && fabsf(la->atten_db - lb->atten_db) <= 0.0f
+           && fabsf(la->noise_floor_db - lb->noise_floor_db) <= 0.0f && fabsf(a->g_cur - b->g_cur) <= 0.0f
+           && fabsf(a->g_lim - b->g_lim) <= 0.0f && fabsf(a->frame_sumsq - b->frame_sumsq) <= 0.0f;
+}
+
+/* The M17 encoder's monitor (DSD_VOICE_MEDIA_TX_MONITOR, issue #518 B17): its frames play at unity under auto and
+   under a fixed -g, through a limiter of their own at the ceiling, and the slot's AGC, taught or not, is left exactly
+   as it was: it neither learns from them nor starts over for them, and their limiting does not reach its frames. */
+static int
+test_tx_monitor_plays_at_unity(const float* speech) {
+    int rc = 0;
+    dsd_opts* opts = new_opts();
+    dsd_state* state = new_state();
+    if (!opts || !state) {
+        free(opts);
+        free_state(state);
+        return 1;
+    }
+    teach_slot(opts, state, 0, speech, 0U);
+    rc |= expect_true("tx monitor: the slot learned first", slot_learned(state, 0));
+    dsd_speech_agc before;
+    DSD_MEMCPY(&before, agc_of(state, 0), sizeof before);
+    const dsd_voice_frame_info monitor = frame_info(DSD_VOICE_MEDIA_TX_MONITOR, 1, 1);
+    float frame[FRAME];
+    const float gains[2] = {0.0f, 3.0f};
+    for (int g = 0; g < 2; g++) {
+        opts->audio_gain = gains[g];
+        int unity = 1;
+        for (size_t off = 0; off + FRAME <= TEACH_N; off += FRAME) {
+            DSD_MEMCPY(frame, speech + off, sizeof(frame));
+            dsd_voice_chain_run(opts, state, 0, frame, &monitor);
+            for (int n = 0; n < FRAME; n++) {
+                unity &= fabsf(frame[n] - speech[off + (size_t)n]) <= 0.0f;
+            }
+        }
+        rc |= expect_true(g == 0 ? "tx monitor: unity under auto" : "tx monitor: unity under -g 3", unity);
+        rc |= expect_near("tx monitor: the readout shows unity", state->aout_gain, 0.0, 1e-6);
+    }
+    /* Full scale: held at the ceiling. */
+    for (int n = 0; n < FRAME; n++) {
+        frame[n] = (n & 1) ? 32767.0f : -32767.0f;
+    }
+    dsd_voice_chain_run(opts, state, 0, frame, &monitor);
+    float peak = 0.0f;
+    for (int n = 0; n < FRAME; n++) {
+        peak = fabsf(frame[n]) > peak ? fabsf(frame[n]) : peak;
+    }
+    const double ceiling = 32768.0 * pow(10.0, DSD_SPEECH_AGC_CEILING_DBFS / 20.0);
+    rc |= expect_true("tx monitor: limited at the ceiling", peak <= ceiling + 1.0 && frame[FRAME - 1] != 0.0f);
+    rc |= expect_true("tx monitor: the slot's AGC is exactly as it was", agc_same(agc_of(state, 0), &before));
+    /* The slot's own next frame plays at the gain it held, its limiter untouched by the monitor's. */
+    opts->audio_gain = 0.0f;
+    rc |= expect_near("tx monitor: the slot plays at its learned gain", db_of(probe_gain(opts, state, 0)),
+                      before.learned.gain_db, 1e-3);
+    free_state(state);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -628,6 +695,7 @@ main(void) {
     rc |= test_explicit_resets_and_what_keeps_the_level(speech);
     rc |= test_fixed_and_auto_keep_the_estimate(speech);
     rc |= test_decodability_returns_per_slot();
+    rc |= test_tx_monitor_plays_at_unity(speech);
     free(speech);
     if (rc == 0) {
         DSD_FPRINTF(stdout, "CORE_VOICE_LEVEL: OK\n");
