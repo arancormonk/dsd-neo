@@ -16287,11 +16287,11 @@ records `announced`/`announcements` on `owner` for tests, and calls `Accessible.
 when `line` is null) when the Qt in use has it. Speaking makes the speaker an accessible node: a line is a gated
 `ReadableText`, but an owner screen has no gate, and it would stay in the tree under a sheet
 (`test_3d_covered_screen_leaves_the_tree` with an export result set). Each failure is read once, and a repeat is read
-again. Used by `BackupFlow`, `WizardScreen` (`csvNotice`,
-`replayNotice`), `CallRecordingsScreen`, `CallRecordingPlayer`, `CsvImportFlow` (the companion sheet's notice),
-`ImportsScreen` (an import problem, `noticeLine`), `ScanListScreen` (a target CSV import problem,
-`validationMessage`), `SignalSearchScreen` (an export's result, once its line can be reached: `announceExport()`) and
-`HistoryScreen` (its export's result, the same way).
+again. Used by `BackupFlow`, `WizardScreen` (`csvNotice`, `replayNotice`), `CallRecordingsScreen`,
+`CallRecordingPlayer`, `CsvImportFlow` (the companion sheet's notice), `ImportsScreen` (an import problem,
+`noticeLine`), `ScanListScreen` (a target CSV import problem, `validationMessage`), `FileBrowserScreen`,
+`IncomingDocumentFlow`, `SignalSearchScreen` (an export's result, once its line can be reached:
+`announceExport()`) and `HistoryScreen` (its export's result, the same way).
 
 Building a screen raises a hide for each accessible item created hidden: Qt makes an item accessible as its
 `Accessible` properties are set, before its gate is evaluated. The bridge answers each hide on a large new subtree with

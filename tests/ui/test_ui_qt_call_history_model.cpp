@@ -2495,7 +2495,7 @@ test_site_store_rejects_bad_parts(void) {
     QJsonArray rows;
     rows.append(stored_site_row(19000, when, p25_site_json(0x1A3)));
     for (int i = 0; i < bad.size(); i++) {
-        rows.append(stored_site_row(19001 + static_cast<qulonglong>(i), when + 100 * (i + 1), bad.at(i).site));
+        rows.append(stored_site_row(19001 + static_cast<qulonglong>(i), when + INT64_C(100) * (i + 1), bad.at(i).site));
     }
     const qint64 channelsAt = when + 100 * (bad.size() + 1);
     QJsonObject unknownKind = stored_site_row(19100, channelsAt, QJsonValue::Undefined);
@@ -4878,14 +4878,14 @@ test_clock_shifted_span_absorbs_nothing(void) {
     RingFixture ring;
     {
         CallHistoryModel model;
-        ring.commit(0, tg, kB1Src, when, when + 5 * 3600);
+        ring.commit(0, tg, kB1Src, when, when + INT64_C(5) * 3600);
         model.refresh(ring.state);
         expect("a span of hours reads unknown", model.count() == 1 && duration_of(model, 0) == -1);
         ring.commit(0, tg, kB1Src, when + 7200, when + 7210);
         model.refresh(ring.state);
         expect("a later call inside the span is a row of its own", new_row_over_unknown(model, 10));
     } // destructor flushes the stores
-    expect("the clock-shifted row keeps its end", stored_end_of_when(when) == when + 5 * 3600);
+    expect("the clock-shifted row keeps its end", stored_end_of_when(when) == when + INT64_C(5) * 3600);
     CallHistoryModel restored;
     expect("both rows survive a reload", new_row_over_unknown(restored, 10));
     ring.commit(0, tg, kB1Src, when + 9000, when + 9004);

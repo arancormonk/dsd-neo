@@ -21,6 +21,7 @@
 #include <QJsonValue>
 #include <QLatin1String>
 #include <QLocale>
+#include <QMap>
 #include <QPair>
 #include <QStringView>
 #include <QVariant>
@@ -37,9 +38,11 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/received_identity_site.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <iterator>
 #include <limits>
+#include <stddef.h>
 #include <stdint.h>
 #include <utility>
 

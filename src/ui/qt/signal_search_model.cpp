@@ -26,7 +26,6 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <iterator>
-#include <limits>
 #include <map>
 #include <stddef.h>
 #include <utility>

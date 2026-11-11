@@ -6,6 +6,7 @@
 #include "call_history_exporter.h"
 
 #include <QList>
+#include <QMap>
 #include <QModelIndex>
 #include <QStandardPaths>
 #include <QVariant>

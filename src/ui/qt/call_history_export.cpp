@@ -14,7 +14,6 @@
 #include <QStringList>
 #include <QStringView>
 #include <QTimeZone>
-#include <QVector>
 #include <Qt>
 #include <QtGlobal>
 #include "call_history_model.h"

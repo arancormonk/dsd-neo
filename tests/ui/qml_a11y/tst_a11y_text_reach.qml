@@ -225,10 +225,8 @@ Item {
                 frequencyValid: function () { return true; }}},
             {file: "ScanListCard", properties: {listName: "County scan", entryCount: 3}},
             {file: "ScanListScreen", open: function (screen) {
-                // Set as showImportProblem() sets it, without its announcement: Accessible.announce() on the
-                // screen makes the screen's root a node of its own (nameless, its parts gated).
-                screen.validationText = "The target CSV couldn't be read.";
-                screen.validationIsProblem = true;
+                // The import problem through the real path: Navigation.announce speaks through the problem line.
+                screen.showImportProblem("The target CSV couldn't be read.");
             }},
             // Settings' notices as problems, and a restore waiting for the next start.
             {file: "SettingsScreen", open: function (screen) {
