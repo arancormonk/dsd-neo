@@ -47,7 +47,18 @@ void processTDU(dsd_opts* opts, dsd_state* state);
 void processTDULC(dsd_opts* opts, dsd_state* state);
 void processTSBK(dsd_opts* opts, dsd_state* state);
 void processMPDU(dsd_opts* opts, dsd_state* state);
-void processP2(dsd_opts* opts, dsd_state* state);
+
+/** What processP2() did with the window behind a P25 Phase 2 sync. */
+typedef enum {
+    /** Collected and dispatched burst by burst; or, behind an exact sync, cut short by a carrier boundary or an input
+        interruption, as before. */
+    P25P2_WINDOW_DISPATCHED = 0,
+    /** Opened by a sync the hunt accepted within its tolerance (dsd_p25p2_sync_anchor) and not dispatched: the window
+        verdict failed, or a carrier boundary or an input interruption cut it first. Nothing of it took effect. */
+    P25P2_WINDOW_REJECTED = 1,
+} p25p2_window_outcome;
+
+p25p2_window_outcome processP2(dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus
 }

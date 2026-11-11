@@ -28,6 +28,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/dsp/p25p2_sync_anchor.h>
 #include <dsd-neo/fec/ez.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_crc.h>
@@ -55,6 +56,7 @@
 #include "dsd-neo/platform/platform.h"
 #include "p25p2_frame_internal.h"
 #include "p25p2_seed_recover.h"
+#include "p25p2_window_verdict.h"
 
 extern int p2bit[4320];
 extern int16_t p2llr[1400];
@@ -303,7 +305,6 @@ static int dibit = 0;
 static int vc_counter = 0;
 static int framing_counter = 0;
 
-static uint64_t isch = 0;
 static int isch_decoded = -1;
 static uint8_t p2_duid[8] = {0};
 static int16_t duid_decoded = -1;
@@ -383,7 +384,6 @@ p25_p2_frame_reset(void) {
     DSD_MEMSET(p2xllr, 0, sizeof(p2xllr));
 
     // Reset decoded state
-    isch = 0;
     isch_decoded = -1;
     DSD_MEMSET(p2_duid, 0, sizeof(p2_duid));
     duid_decoded = -1;
@@ -801,45 +801,23 @@ p25p2_process_sacchc(dsd_opts* opts, dsd_state* state, int timeslot_index) {
     p25p2_process_sacch(opts, state, 0, P25P2_ACCH_SACCH);
 }
 
+/* Collected ISCH @p framing_index (0-2) of the window in p2bit: a decoded I-ISCH sets the channel number, and a
+   channel-1 one the descrambler offset. A window collects only the ISCHs after its timeslots 0-2 (the fourth is the
+   next sync, which processP2() does not read), so any other index changes nothing. */
 void
 p25p2_process_isch(dsd_opts* opts, dsd_state* state, int framing_index) {
     framing_counter = framing_index;
     UNUSED(opts);
 
-    isch = 0;
-    uint8_t isch_reliab[40];
-    for (int i = 0; i < 40; i++) {
-        int abs_bit = i + 320 + (360 * framing_counter);
-        isch = isch << 1;
-        isch = isch | p2bit[abs_bit];
-        isch_reliab[i] = p25p2_reliability_for_abs_bit(abs_bit);
-    }
-
-    if (isch != 0x575D57F7FF) {
-        isch_decoded = isch_lookup_soft(isch, isch_reliab);
-
-        if (isch_decoded > -1) {
-            int uf_count = isch_decoded & 0x3;
-            int free = (isch_decoded >> 2) & 0x1;
-            int isch_loc = (isch_decoded >> 3) & 0x3;
-            int chan_num = (isch_decoded >> 5) & 0x3;
-            UNUSED2(uf_count, free);
-            state->p2_vch_chan_num = chan_num;
-
-            //relative position to the only chan 1 we should see
-            if (chan_num == 1 && isch_loc == 0) {
-                state->p2_scramble_offset = 12 - framing_counter;
-                s_isch_located = 1;
-            } else if (chan_num == 1 && isch_loc == 1) {
-                state->p2_scramble_offset = 4 - framing_counter;
-                s_isch_located = 1;
-            } else if (chan_num == 1 && isch_loc == 2) {
-                state->p2_scramble_offset = 8 - framing_counter;
-                s_isch_located = 1;
-            }
-
-        } else {
-            // If -2(no return value) or -1(fec error)
+    // -2 for the S-ISCH word or nothing decoded
+    isch_decoded = p25p2_window_isch_soft_decode(p2bit, p2llr, framing_counter);
+    if (isch_decoded > -1) {
+        state->p2_vch_chan_num = (isch_decoded >> 5) & 0x3;
+        //relative position to the only chan 1 we should see
+        const int offset = p25p2_window_isch_offset(isch_decoded, framing_counter);
+        if (offset >= 0) {
+            state->p2_scramble_offset = offset;
+            s_isch_located = 1;
         }
     }
 
@@ -1999,10 +1977,71 @@ p25p2_window_position(dsd_state* state, uint32_t entry_symbol, int* retire_first
     return proven;
 }
 
-void
-processP2(dsd_opts* opts, dsd_state* state) {
-    const uint32_t entry_symbol = state->symbolcnt;
-    state->dmr_stereo = 1;
+/* Where continuity alone places the window just collected: the start the previous window predicts when this window's
+   sync came right after it (20 dibits) on the same carrier, with no retune since; -1 otherwise. Pure. */
+static int
+p25p2_window_continuity_start(const dsd_state* state, uint32_t entry_symbol) {
+    if (!s_prev_window.valid || s_prev_window.carrier_seq != state->carrier_seq
+        || p25p2_retune_token_changed(&s_prev_window.token)
+        || entry_symbol - s_prev_window.end_symbol != P25P2_SYNC_DIBITS) {
+        return -1;
+    }
+    return p25p2_timeslot_mod12(s_prev_window.start + 4);
+}
+
+/* The verdict on the window just collected, which a tolerant sync opened predicting superframe timeslot @p start
+   (dsd_p25p2_sync_anchor): the stream must still be the one the anchor measured and continuity predict the same start,
+   and the window's own ISCHs and DUIDs agree with it (p25p2_tolerant_window_verdict()). Pure: it decides before any of
+   the window takes effect. */
+static p25p2_window_verdict
+p25p2_judge_tolerant_window(const dsd_state* state, uint32_t entry_symbol, int start) {
+    const int context_holds =
+        dsd_frame_sync_p25p2_window_context_holds(state) && p25p2_window_continuity_start(state, entry_symbol) == start;
+    int duids[4];
+    for (int ts = 0; ts < 4; ts++) {
+        duids[ts] = p25p2_window_duid(ts);
+    }
+    return p25p2_tolerant_window_verdict(p2bit, p2llr, start, context_holds, duids);
+}
+
+/* A window a tolerant sync opened failed its verdict: it may be no window at all, or one read a few symbols off. Nothing
+   of it takes effect (no ISCH, position, playout, descrambling, burst or continuity), as when the exact hunt misses a
+   sync: the next window's continuity retires its timeslots as lost. */
+static void
+p25p2_reject_tolerant_window(const dsd_opts* opts, dsd_state* state, p25p2_window_verdict verdict, int entry_stereo) {
+    state->dmr_stereo = entry_stereo;
+    unsigned int bit_errors = 0U;
+    (void)dsd_frame_sync_p25p2_tolerant_start(state, &bit_errors);
+    dsd_frame_sync_p25p2_window_decoded(state, 0, -1);
+    DSD_FPRINTF(stderr, " P25p2 ~sync rejected");
+    if (opts->verbose > 1) {
+        DSD_FPRINTF(stderr, " [%u bit errors, verdict %d]", bit_errors, (int)verdict);
+    }
+    DSD_FPRINTF(stderr, "\n");
+}
+
+/* The superframe timeslot the window just positioned may anchor the next window's sync at (dsd_p25p2_sync_anchor):
+   its position proven and not contradicted, a start at timeslot 2 or 3 of a group of four (the next sync is then an
+   S-ISCH 20 dibits on), and a received I-ISCH of its own matching that start with no ISCH contradicting it. -1
+   otherwise, or when its sync-time context is gone. Pure. */
+static int
+p25p2_window_anchor_start(const dsd_state* state, int contradicted) {
+    if (!s_window_proven || contradicted || !dsd_frame_sync_p25p2_window_context_holds(state)) {
+        return -1;
+    }
+    const int start = p25p2_timeslot_mod12(state->p2_scramble_offset);
+    if ((start & 3) < 2) {
+        return -1;
+    }
+    p25p2_window_evidence evidence;
+    p25p2_window_isch_evidence(p2bit, start, &evidence);
+    return (evidence.i_isch_matches > 0 && evidence.contradictions == 0) ? start : -1;
+}
+
+/* Read the window behind a P25p2 sync into p2bit/p2llr. Returns 0 when a carrier boundary or an input interruption cut
+   it: then nothing of it dispatches, and the frame sync is told so. */
+static int
+p25p2_collect_window(dsd_opts* opts, dsd_state* state) {
     /* A superframe belongs to one carrier (issue #575). What the slots gathered over superframes of a carrier the
        receiver has since left goes before this one is collected; a superframe the carrier boundary split while it was
        collected (a replay read adopting a recorded retune) is dropped whole, as on a sync loss: its bursts read before
@@ -2018,8 +2057,9 @@ processP2(dsd_opts* opts, dsd_state* state) {
     if (state->carrier_seq != carrier_seq) {
         p25p2_frame_forget_carrier(state);
         state->dmr_stereo = 0;
+        dsd_frame_sync_p25p2_window_decoded(state, 0, -1);
         DSD_FPRINTF(stderr, "\n");
-        return;
+        return 0;
     }
     /* An input interruption cut the window (a Signal search left it, or a live read gave up on a stalled input): the
        rest is erasures the reader stood in, so none of its bursts dispatches, as when a sync loss misses a window. The
@@ -2027,13 +2067,65 @@ processP2(dsd_opts* opts, dsd_state* state) {
        window finds this one missing from its continuity. */
     if (state->input_interrupted) {
         state->dmr_stereo = 0;
+        dsd_frame_sync_p25p2_window_decoded(state, 0, -1);
         DSD_FPRINTF(stderr, "\n");
-        return;
+        return 0;
+    }
+    return 1;
+}
+
+/* Whether the window just collected may dispatch: always behind an exact sync. A window a tolerant sync opened
+   predicting superframe timeslot @p tolerant_start is judged whole before anything of it takes effect; one that passes
+   runs as an exact one does, with the channel activity its sync did not note, and one that fails has no effect. */
+static int
+p25p2_admit_window(dsd_opts* opts, dsd_state* state, uint32_t entry_symbol, int tolerant_start, int entry_stereo) {
+    if (tolerant_start < 0) {
+        return 1;
+    }
+    const p25p2_window_verdict verdict = p25p2_judge_tolerant_window(state, entry_symbol, tolerant_start);
+    if (verdict != P25P2_WINDOW_PASS) {
+        p25p2_reject_tolerant_window(opts, state, verdict, entry_stereo);
+        return 0;
+    }
+    dsd_frame_sync_p25p2_note_sync_activity(opts, state);
+    return 1;
+}
+
+/* The window just dispatched is done. The next window measures its position from this one, unless this one's position
+   was a guess or a retune moved the receiver while it was dispatched (@p window_token); the next window's sync may be
+   read within a few bit errors only after a window an I-ISCH of its own placed (@p anchor_start). */
+static void
+p25p2_window_done(dsd_state* state, uint32_t entry_symbol, const p25p2_retune_token* window_token, int anchor_start) {
+    const int retuned = p25p2_retune_token_changed(window_token);
+    s_prev_window.valid = s_window_proven && !retuned;
+    s_prev_window.carrier_seq = state->carrier_seq;
+    s_prev_window.token = *window_token;
+    s_prev_window.start = p25p2_timeslot_mod12(state->p2_scramble_offset);
+    s_prev_window.end_symbol = entry_symbol + P25P2_WINDOW_DIBITS;
+    s_window_proven = 1;
+    p25p2_window_set_slot_unproven(0);
+    dsd_frame_sync_p25p2_window_decoded(state, 1, retuned ? -1 : anchor_start);
+}
+
+/* Collect the window behind a P25p2 sync (four timeslots and the three ISCHs between them) and dispatch it. Returns
+   P25P2_WINDOW_REJECTED for a window a tolerant sync opened that did not dispatch: its verdict failed, or a carrier
+   boundary or an input interruption cut it first. */
+p25p2_window_outcome
+processP2(dsd_opts* opts, dsd_state* state) {
+    const uint32_t entry_symbol = state->symbolcnt;
+    const int entry_stereo = state->dmr_stereo;
+    const int tolerant_start = dsd_frame_sync_p25p2_tolerant_start(state, NULL);
+    state->dmr_stereo = 1;
+    if (!p25p2_collect_window(opts, state)) {
+        return tolerant_start >= 0 ? P25P2_WINDOW_REJECTED : P25P2_WINDOW_DISPATCHED;
+    }
+    if (!p25p2_admit_window(opts, state, entry_symbol, tolerant_start, entry_stereo)) {
+        return P25P2_WINDOW_REJECTED;
     }
 
     //look at our ISCH values and determine location in superframe before running frame scramble
     s_isch_located = 0;
-    for (framing_counter = 0; framing_counter < 4; framing_counter++) {
+    for (framing_counter = 0; framing_counter < P25P2_WINDOW_ISCHS; framing_counter++) {
         //run ISCH in here so we know when to start descramble offset
         p25p2_process_isch(opts, state, framing_counter);
     }
@@ -2049,6 +2141,7 @@ processP2(dsd_opts* opts, dsd_state* state) {
         // slot: none is kept, and the VPDU drops this window's fragments.
         DSD_MEMSET(state->p25_mac_frag, 0, sizeof(state->p25_mac_frag));
     }
+    const int anchor_start = p25p2_window_anchor_start(state, contradicted);
 
     // On a carrier whose scrambling code is unproven, the window's own scrambled signalling may give the code: once
     // it is confirmed, the window descrambles with it below (issue #804).
@@ -2079,18 +2172,11 @@ processP2(dsd_opts* opts, dsd_state* state) {
         p25p2_process_duid(opts, state);
     }
 
-    // The next window measures its position from this one, unless this one's position was a guess or a retune
-    // moved the receiver while it was dispatched.
-    s_prev_window.valid = s_window_proven && !p25p2_retune_token_changed(&window_token);
-    s_prev_window.carrier_seq = state->carrier_seq;
-    s_prev_window.token = window_token;
-    s_prev_window.start = p25p2_timeslot_mod12(state->p2_scramble_offset);
-    s_prev_window.end_symbol = entry_symbol + P25P2_WINDOW_DIBITS;
-    s_window_proven = 1;
-    p25p2_window_set_slot_unproven(0);
+    p25p2_window_done(state, entry_symbol, &window_token, anchor_start);
 
     state->dmr_stereo = 0;
     state->p2_is_lcch = 0;
 
     DSD_FPRINTF(stderr, "\n");
+    return P25P2_WINDOW_DISPATCHED;
 }

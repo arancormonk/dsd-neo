@@ -7,14 +7,12 @@
  * installation, the position the hunt scores a tolerant word at, and the distance it scores. The matcher that accepts
  * a tolerant word is frame_sync_try_p25p1() in dsd_frame_sync.c. */
 
-#include <dsd-neo/core/p25_cqpsk_dibit.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/p25p1_sync_anchor.h>
-#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "frame_sync_internal.h"
@@ -25,50 +23,14 @@ enum {
 
 int
 dsd_p25p1_sync_bit_distance(const char* window, uint8_t map_idx, int inverted) {
-    const char* pattern = inverted ? INV_P25P1_SYNC : P25P1_SYNC;
-    if (window == NULL) {
-        return 2 * P25P1_SYNC_DIBITS;
-    }
-    int bits = 0;
-    for (int i = 0; i < P25P1_SYNC_DIBITS; i++) {
-        const char c = window[i];
-        if (c == '\0') {
-            return 2 * P25P1_SYNC_DIBITS;
-        }
-        if (c < '0' || c > '3') {
-            bits += 2;
-            continue;
-        }
-        const unsigned int got = dsd_p25_cqpsk_correct_dibit(map_idx, (uint8_t)(c - '0'));
-        const unsigned int diff = got ^ (unsigned int)(pattern[i] - '0');
-        bits += (int)((diff & 1U) + ((diff >> 1) & 1U));
-    }
-    return bits;
+    return frame_sync_p25_sync_bit_distance(window, inverted ? INV_P25P1_SYNC : P25P1_SYNC, P25P1_SYNC_DIBITS, map_idx);
 }
 
-/* The stream and receiver setup as they stand, for a sync word whose first dibit is @p sync_clock. */
-static void
-p25p1_anchor_context_now(const dsd_state* state, uint64_t sync_clock, dsd_p25p1_sync_context* out) {
-    out->sync_clock = sync_clock;
-    out->tune_generation = dsd_trunk_tuning_generation();
-    out->symbol_clock_epoch = state->symbol_clock_epoch;
-    out->symbol_clock_input = state->symbol_clock_input;
-    out->carrier_seq = state->carrier_seq;
-    out->sync_history_drops = state->frame_sync_carry.drops;
-    out->sps_hunt_idx = state->sps_hunt_idx;
-    out->rf_mod = state->rf_mod;
-    out->map_idx = state->p25_cqpsk_dibit_map_idx;
-    out->inverted = 0U;
-}
-
-/* Whether @p ctx still describes the stream: nothing that ends the history carry has happened since
-   (dsd_frame_sync_history_carry), nor a profile or modulation change, and no off-thread tune awaits reconciling. */
+/* Whether @p ctx still describes the stream (frame_sync_p25_sync_context_holds()) with no off-thread tune awaiting
+   reconciling. */
 static int
-p25p1_anchor_context_current(const dsd_state* state, const dsd_p25p1_sync_context* ctx) {
-    return ctx->symbol_clock_epoch == state->symbol_clock_epoch && ctx->symbol_clock_input == state->symbol_clock_input
-           && ctx->carrier_seq == state->carrier_seq && ctx->sync_history_drops == state->frame_sync_carry.drops
-           && ctx->sps_hunt_idx == state->sps_hunt_idx && ctx->rf_mod == state->rf_mod
-           && ctx->tune_generation == dsd_trunk_tuning_generation() && !dsd_frame_sync_off_thread_tune_pending();
+p25p1_anchor_context_current(const dsd_state* state, const dsd_p25_sync_context* ctx) {
+    return frame_sync_p25_sync_context_holds(state, ctx) && !dsd_frame_sync_off_thread_tune_pending();
 }
 
 void
@@ -84,7 +46,7 @@ frame_sync_p25p1_anchor_note_sync(dsd_state* state, int synctype, int tolerant_n
     if (state->symbol_clock < (uint64_t)P25P1_SYNC_DIBITS || dsd_frame_sync_off_thread_tune_pending()) {
         return;
     }
-    p25p1_anchor_context_now(state, state->symbol_clock - (uint64_t)P25P1_SYNC_DIBITS, &rec->frame);
+    frame_sync_p25_sync_context_now(state, state->symbol_clock - (uint64_t)P25P1_SYNC_DIBITS, &rec->frame);
     rec->frame.inverted = synctype == DSD_SYNC_P25P1_NEG ? 1U : 0U;
     rec->frame_valid = 1U;
 }

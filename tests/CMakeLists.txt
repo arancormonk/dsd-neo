@@ -10720,6 +10720,70 @@ else()
 endif()
 add_test(NAME P25_P2_ACCH_VERDICT COMMAND dsd-neo_test_p25_p2_acch_verdict)
 
+# P25 P2 window verdict: what a window's own ISCHs and DUIDs say about its start, and the verdict on a window a tolerant
+# sync opened
+add_executable(
+    dsd-neo_test_p25_p2_window_verdict
+    protocol/p25/test_p25_p2_window_verdict.c
+    protocol/p25/p25p2_burst_builder.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_window_verdict
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2
+        ${_PUBLIC_INCLUDES}
+)
+# Real frame processing reaches the core vocoder, which reaches the DMR and NXDN ciphers.
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_p25_p2_window_verdict
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_proto_nxdn
+            dsd-neo_core
+            "-Wl,--end-group"
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_p25_p2_window_verdict
+        PRIVATE
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_proto_nxdn
+            dsd-neo_core
+    )
+endif()
+add_test(NAME P25_P2_WINDOW_VERDICT COMMAND dsd-neo_test_p25_p2_window_verdict)
+
+# P25 P2 windows a tolerant sync opened, through processP2(), the real burst handlers and the P25p2 dispatcher: the
+# verdict judges the whole window before anything of it takes effect
+add_executable(
+    dsd-neo_test_p25_p2_tolerant_window
+    protocol/p25/test_p25_p2_tolerant_window.c
+    protocol/p25/p25p2_burst_builder.c
+    ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p2.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_tolerant_window
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${PROJECT_SOURCE_DIR}/src/engine/dispatch
+        ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_p25_p2_tolerant_window
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(
+    NAME P25_P2_TOLERANT_WINDOW
+    COMMAND dsd-neo_test_p25_p2_tolerant_window
+)
+
 # A P25 Phase 2 voice channel replayed from a float symbol file counts its AMBE errors: the reliabilities are measured
 # on the adaptive thresholds its symbols were sliced on, not the RTL CQPSK phase levels (tests/
 # p25p2_float_symbol_ambe_check.cmake).
@@ -10863,6 +10927,7 @@ add_executable(
     dsd-neo_test_p25_p1_sync_dispatch
     protocol/p25/test_p25_p1_sync_dispatch.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p1.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25_sync_context.c
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_anchor.c
     ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
@@ -10897,6 +10962,7 @@ add_executable(
     dsd-neo_test_p25_p1_nid_nac_change
     protocol/p25/test_p25_p1_nid_nac_change.cpp
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p1.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25_sync_context.c
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_anchor.c
     ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
@@ -10932,6 +10998,7 @@ add_executable(
     dsd-neo_test_p25_p1_tolerant_nid
     protocol/p25/test_p25_p1_tolerant_nid.cpp
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p1.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25_sync_context.c
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_anchor.c
     ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
@@ -13061,6 +13128,59 @@ if(DSD_HAS_RADIO)
     add_test(
         NAME P25_P1_TOLERANT_SYNC
         COMMAND dsd-neo_test_p25_p1_tolerant_sync
+    )
+
+    # P25 Phase 2 CQPSK windows whose syncs come through a few bits off, end to end: the real frame sync, symbol
+    # reader and dibit slicer on the RTL CQPSK path, the P25p2 dispatcher and processP2() with the real burst handling.
+    add_executable(
+        dsd-neo_test_p25_p2_tolerant_sync
+        protocol/p25/test_p25_p2_tolerant_sync.c
+        protocol/p25/p25p2_burst_builder.c
+        ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p2.c
+    )
+    target_include_directories(
+        dsd-neo_test_p25_p2_tolerant_sync
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2
+            ${PROJECT_SOURCE_DIR}/src/engine/dispatch
+    )
+    # The real frame sync, processP2() and what they reach in core, which reach back into each other.
+    set(_dsd_neo_p25p2_tolerant_sync_libs
+        dsd-neo_dsp
+        dsd-neo_proto_p25
+        dsd-neo_proto_dmr
+        dsd-neo_proto_nxdn
+        dsd-neo_proto_tetra
+        dsd-neo_core
+        dsd-neo_runtime
+        dsd-neo_io_iq
+        dsd-neo_platform
+    )
+    if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+        target_link_libraries(
+            dsd-neo_test_p25_p2_tolerant_sync
+            PRIVATE
+                "-Wl,--start-group"
+                ${_dsd_neo_p25p2_tolerant_sync_libs}
+                "-Wl,--end-group"
+        )
+    else()
+        target_link_libraries(
+            dsd-neo_test_p25_p2_tolerant_sync
+            PRIVATE ${_dsd_neo_p25p2_tolerant_sync_libs}
+        )
+    endif()
+    target_link_libraries(
+        dsd-neo_test_p25_p2_tolerant_sync
+        PRIVATE
+            dsd-neo_test_support
+            ${DSD_NEO_TEST_MATH_LIB}
+            ${LIBSNDFILE_LIBRARIES}
+    )
+    add_test(
+        NAME P25_P2_TOLERANT_SYNC
+        COMMAND dsd-neo_test_p25_p2_tolerant_sync
     )
 
     # Real frame-sync + symbol + dibit chain on the RTL sample path: the payload
@@ -15551,6 +15671,39 @@ target_link_libraries(
         ${LIBSNDFILE_LIBRARIES}
 )
 add_test(NAME FRAME_SYNC_P25_ANCHOR COMMAND dsd-neo_test_frame_sync_p25_anchor)
+
+# The P25 Phase 2 sync anchor: after a window its own I-ISCH placed, the hunt accepts a sync word within a few bit
+# errors where the next window's sync must be, and only there.
+add_executable(
+    dsd-neo_test_frame_sync_p25p2_anchor
+    dsp/test_frame_sync_p25p2_anchor.c
+    test_support/frame_sync_dsp_stubs.c
+    test_support/frame_sync_dibit_stubs.c
+)
+if(DSD_HAS_RADIO)
+    target_compile_definitions(
+        dsd-neo_test_frame_sync_p25p2_anchor
+        PRIVATE USE_RADIO
+    )
+endif()
+target_include_directories(
+    dsd-neo_test_frame_sync_p25p2_anchor
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_frame_sync_p25p2_anchor
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
+        dsd-neo_test_audio_sink
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(
+    NAME FRAME_SYNC_P25P2_ANCHOR
+    COMMAND dsd-neo_test_frame_sync_p25p2_anchor
+)
 
 # Frame sync level-window estimator parity with the established sync scanner.
 add_executable(

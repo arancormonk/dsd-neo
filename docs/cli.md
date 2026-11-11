@@ -1008,6 +1008,13 @@ Notes
   `[tolerant sync, n bit errors]` (`[tolerant sync, n bit errors, dropped: ...]` with what the NID was, when it
   failed the check). C4FM, symbol files and audio inputs
   are unchanged.
+- P25 Phase 2 on CQPSK from a radio or `--iq-replay` input does the same for its sync word, with up to 4 of its 40 bits
+  wrong, at one place only: right where the next four timeslots must start after four timeslots whose own ISCH said
+  where in the superframe they were, on the same carrier, tune and stream. The four timeslots behind such a word decode
+  only when their own ISCHs agree with where they must be (one matches, none points elsewhere) and at most one of them
+  carries an unreadable burst type; otherwise nothing of them is decoded, shown or counted, and the line reads
+  `P25p2 ~sync rejected`. With `-v 1` or more the sync shows as `+P25p2~`. Every other word must match exactly, as
+  before; C4FM (`-m3`), symbol files and audio inputs are unchanged.
 
 ## Analog reception (`-fA`, `-fM`)
 

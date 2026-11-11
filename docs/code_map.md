@@ -5734,6 +5734,32 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `FRAME_SYNC_SPS_HUNT_FALSE_SYNC`. The first crossing a frame records is still pending when the next hunt starts and
   moves the grid on its first symbol; it was measured against the thresholds the warm start set, which are still in
   force, and dropping it was measured worse on faNXDN (issue #729), so it stays.
+- P25 sync anchors (`frame_sync_p25_sync_context.c`, `frame_sync_p25p1_anchor.c`, `frame_sync_p25p2_anchor.c`;
+  `<dsd-neo/dsp/p25p1_sync_anchor.h>`, `<dsd-neo/dsp/p25p2_sync_anchor.h>`; state `dsd_state::p25_p1_sync_anchor` and
+  `p25_p2_sync_anchor`, decoder-thread private). After a validated P25 Phase 1 frame, or a Phase 2 window an I-ISCH of
+  its own placed, the hunt may accept a sync word a few bits off (6 of 48, 4 of 40) at the one position the next
+  frame's or window's sync must take on the RTL CQPSK 4-level path (`frame_sync_cqpsk_4level_enabled()`; 4800/4 for
+  Phase 1, 6000/4 for Phase 2), under the dibit map and polarity the anchor's exact sync matched, scored by Gray-coded
+  bit distance (`frame_sync_p25_sync_bit_distance()`). Both share the sync-time context (`dsd_p25_sync_context`:
+  symbol clock and epoch, input generation, carrier count, accepted tuning generation, sync history drops, SPS profile,
+  modulation, map, polarity), captured at every accept of their protocol and checked where the word is scored and when
+  the frame or window reports itself; a pending off-thread tune is checked by the frame sync where it captures and
+  scores (`frame_sync_p25_sync_context_holds()` itself reads no off-thread notice, so `processP2()` reaches the Phase 2
+  window functions without the frame sync's objects). Any accepted sync spends both anchors
+  (`frame_sync_p25p1_anchor_note_accept()`, `frame_sync_p25p2_anchor_note_accept()`), as does the first window at or
+  past the expected position, so one window is scored and the rest of the hunt is exact. The Phase 1 try is the last
+  step of `frame_sync_try_p25p1()`; the Phase 2 try (`frame_sync_try_tolerant_p25p2()`) runs only when every exact
+  matcher of every protocol failed at the position (after `k_frame_sync_tries`, the P2 rotated and inverted ones
+  included), and the symbol-timing diagnostic does not measure it. A tolerant P2 accept writes no modulation and pushes
+  no demodulator profile (the anchor holds `rf_mod` 1), skips the acceptance-time centre refit, and notes no channel
+  activity; `printFrameSync()` labels it `+P25p2~`. No pre-emption: the P2 word's distance to itself shifted 1-12
+  symbols, the symbols shifted in matching, is at least 5 bits (7, 8, 7, 7, 6 for 1-5), so an exact word a slip put
+  after the expected position is matched where it is. The Phase 1 anchor and its validation are in Protocols (P25
+  Phase 1); the Phase 2 window verdict in Protocols (P25 Phase 2 voice dispatch). Diagnostics, never reset:
+  `tolerant_syncs`, `tolerant_frames` (P1) and `tolerant_windows` (P2, windows whose verdict passed). Tests:
+  `FRAME_SYNC_P25_ANCHOR`, `FRAME_SYNC_P25P2_ANCHOR` (distance and shifted bound, the expected position only,
+  thresholds, late exact words win, map and polarity, every invalidation, installation, the withheld accept effects,
+  C4FM and symbol files).
 - Sync anchor (`symbol_anchor.c`, `include/dsd-neo/dsp/symbol_anchor.h`, issue #729). A decoder that reads burst after
   burst without returning to the hunt (DMR BS for a whole repeater call) left the grid open loop, so a TX/RX clock
   offset walked it off the symbols until a sync was lost. `dsd_symbol_note_sync_anchor()` names a sync word the grid
@@ -8935,6 +8961,13 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   this way (unproven windows included) breaks the playout's timeline (`dsd_p25p2_playout_break()`: tails still queued
   play, and what follows starts a later pair, so a stream opening beside such a tail waits behind it), and promotes a
   deferred rekey before its bursts decode: the pair it waited for will not complete.
+- ISCHs (`p25p2_process_isch()`, `p25p2_window_verdict.c`). A window collects the ISCHs after its timeslots 0-2 only:
+  the fourth is the next window's sync, which `processP2()` does not read into `p2bit` (bits 1400-1439 stay zero, which
+  decodes to nothing), so the loop reads three and `p25p2_process_isch()` changes nothing for any other index (no
+  behaviour change: the fourth read was dead). The ISCH ahead of superframe timeslot t is an I-ISCH naming channel
+  t mod 4 and location t / 4 when t mod 4 is 0 or 1, the S-ISCH (the sync word) when it is 2 or 3; a window a sync opens
+  starts at 2 or 3 mod 4. The I-ISCH code (`<dsd-neo/fec/p25p2_isch.h>`, the 128 codewords and the S-ISCH, which
+  `isch_lookup()` reads too) has a minimum distance of 14.
 - A window nothing locates (no I-ISCH and no continuity, the first after a tune included) is unproven: its 4V/2V,
   FACCH and SACCH bursts are not dispatched, since a CRC proves a MAC payload, not which slot it belongs to. LCCH
   (DUID 13/4) still is, but both slots' pending MAC assemblies are discarded and the VPDU drops the window's fragment
@@ -9002,6 +9035,42 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   voice (4V C0 Golay, ESS) is not solved from, a channel whose probe sees no clean scrambled FACCH/SACCH stays
   unresolved, and an I-ISCH-to-offset mapping that is wrong systematically would also break decoding with a known
   code (the real-air fixture pins it).
+- Tolerant sync and the window verdict (`dsd_p25p2_sync_anchor`, frame sync side below in DSP). On the RTL CQPSK
+  6000/4 path the hunt accepts a sync word within 4 bit errors at one position only: where the next window's sync ends
+  after a window an I-ISCH of its own placed (`dsd_frame_sync_p25p2_tolerant_start()` says so, with the superframe
+  timeslot the anchor predicts, the anchor's start plus 4). Such a window is judged whole before any of it takes
+  effect, after the carrier and input checks and before the ISCH loop (`p25p2_tolerant_window_verdict()`, pure over
+  `p2bit`/`p2llr`): it passes only when its sync-time context still holds and continuity (`s_prev_window`, the window
+  20 dibits back) predicts the same start, no collected ISCH contradicts the start (an I-ISCH within 3 bits of a
+  codeword of another channel or location, or of the S-ISCH where an I-ISCH belongs, or the reverse; nor would the soft
+  read the exact path positions by locate it elsewhere), at least one matches it (an I-ISCH within 3 bits of the
+  predicted channel and location, or the S-ISCH inside the window within 4), and at most one of its four DUIDs is one
+  the dispatch does not handle (`p25p2_window_duid_dispatches()`, kept in step with `p25p2_duid_dispatch()`), so a
+  passing window cannot abort midway. The sync that opened it, continuity, DUIDs and MAC CRCs are never corroboration.
+  A passing window notes the channel activity its sync did not (`dsd_frame_sync_p25p2_note_sync_activity()`: the VC-sync
+  hook on a followed voice channel, else `last_cc_sync_time`) and then runs exactly as an exact window does. A failing
+  one has no effect at all: no ISCH, position, playout break or retirement, seed recovery, descrambling, dispatch, MAC
+  fragment wipe or channel activity, `s_prev_window` untouched (so the next exact window retires its four timeslots as
+  lost, as after a missed sync), `dmr_stereo` back as it was, the anchor and the window context spent, one stderr line
+  ` P25p2 ~sync rejected` (`-v 2` adds the bit errors and the verdict). `processP2()` returns `P25P2_WINDOW_REJECTED`
+  for it, and for a tolerant window a carrier boundary or an input interruption cut first; `dsd_dispatch_handle_p25p2()`
+  maps that to `DSD_FRAME_VERDICT_UNPRODUCTIVE` (the SPS hunt pays for it as for a missed sync: the handler ran and
+  validated nothing, which is not WITHHELD's engine policy decline) and every dispatched window to PRODUCTIVE, as before.
+  Installation: every window reports itself (`dsd_frame_sync_p25p2_window_decoded()`); one installs the next anchor
+  when its position is proven and not contradicted, it starts at 2 or 3 mod 4, an I-ISCH of its own matches its start
+  and none contradicts it (`p25p2_window_anchor_start()`, read before dispatch), no retune changed the token while it
+  was dispatched, and the frame sync finds its sync-time context still current and the window read no further than its
+  end. An exact window placed only by continuity or its S-ISCH installs nothing, so an anchor is at most one window
+  from a received I-ISCH; a tolerant window that passed renews it only with an I-ISCH. Decided limits: a corrupted word
+  that a slip moved 1-5 symbols can be accepted at the expected position (it needs at least 2 helpful errors at a
+  5-symbol slip, more nearer), and its misread window then fails the verdict and is lost, as the exact hunt would have
+  lost it (the exact word inside it the hunt could have matched is consumed); a window the hunt missed whole leaves the
+  next exact-only; a MAC CRC failure in a later timeslot of a passing window does not undo voice already played, as for
+  an exact window. Tests: `P25_P2_WINDOW_VERDICT` (the ISCH code and layout against the burst builder, every verdict,
+  windows misread 1-5 dibits either way, the fourth ISCH), `P25_P2_TOLERANT_WINDOW` (through `processP2()` and the
+  dispatcher: a failed window changes nothing, a later-slot DUID failure plays no voice, a passing window decodes as the
+  exact one, the missed-sync equivalence, installation, the context, the fourth ISCH), `P25_P2_TOLERANT_SYNC` (a
+  real-shaped stream through the real frame sync, dibit chain, dispatcher and `processP2()`), `FRAME_SYNC_P25P2_ANCHOR`.
 - Burst kind. `dsd_state::p2_is_lcch` is set for an LCCH's MAC PDU only and cleared when it returns, so an LCCH whose
   decode failed cannot make the next FACCH or SACCH of the window an LCCH (its CRC-16 path rejected valid bursts).
   The MAC opcode is no service option: no burst writes it into `dmr_so`/`dmr_soR`, which carry the service options
@@ -9028,7 +9097,8 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   discards the playout before `p25_p2_frame_reset()`.
 
 Tests: `P25_P2_VOICE_OUTPUT` (end to end through the DUID dispatch, against a tagging stand-in vocoder),
-`P25_P2_RELIABILITY` (window position, retirement, unproven windows, the retune token), `P25_P2_ACCH_VERDICT` (windows
+`P25_P2_RELIABILITY` (window position, retirement, unproven windows, the retune token, the three collected ISCHs),
+`P25_P2_WINDOW_VERDICT`, `P25_P2_TOLERANT_WINDOW`, `P25_P2_TOLERANT_SYNC`, `P25_P2_ACCH_VERDICT` (windows
 built as a site sends them, `tests/protocol/p25/p25p2_burst_builder.h`, through the real RS, CRC and XCCH: the verdict,
 the ladder and its ceilings, `-F`, the burst kind, `dmr_so`, DUID 10, Signal search evidence from any checked MAC and
 its slot), `P25_P2_VPDU_GRANTS`, `P25_P2_XCCH_HELPERS`, `APP_P25_CC_SELECTION`, `P25_P2_SEED_RECOVER` (code recovery
@@ -9392,7 +9462,7 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   (941/963, 581/591), the rest a symbol slip; the decoders read LDUs, TDULCs and HDUs to their end and a one-block TSDU
   to dibit 158.
   - Owner and contents: frame-sync state in `dsd_state::p25_p1_sync_anchor`, decoder-thread private. The anchor holds
-    the validated frame's sync context (`dsd_p25p1_sync_context`: `symbol_clock` at the word's first dibit and
+    the validated frame's sync context (`dsd_p25_sync_context`: `symbol_clock` at the word's first dibit and
     `symbol_clock_epoch`, input generation, `carrier_seq`, accepted trunk tuning generation, sync history drop count,
     SPS profile, modulation, dibit map and polarity), its NAC, and the expected position (sync clock plus the unit's
     length). Beside it, the context of the frame being decoded, captured when the frame sync accepted its sync

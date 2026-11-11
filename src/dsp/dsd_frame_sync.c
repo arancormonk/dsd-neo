@@ -34,6 +34,7 @@
 #include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/p25p1_sync_anchor.h>
+#include <dsd-neo/dsp/p25p2_sync_anchor.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/symbol_timing_debug.h>
 #include <dsd-neo/dsp/sync_calibration.h>
@@ -266,31 +267,6 @@ frame_sync_publish_ui_throttled(const dsd_opts* opts, dsd_state* state) {
        (issue #628). */
     dsd_squelch_publish_status(opts, state);
     dsd_telemetry_publish_both_and_redraw(opts, state);
-}
-
-static void
-p25p2_note_sync_activity(dsd_opts* opts, dsd_state* state) {
-    if (!state) {
-        return;
-    }
-    const int voice_tuned = (opts && opts->trunk_enable == 1 && (opts->trunk_is_tuned == 1)) ? 1 : 0;
-
-    /*
-     * Exact P25P2 sync means the channel is present, but while following a VC it
-     * does not necessarily mean voice is still active. TDMA VCs can keep sending
-     * LCCH/idle after a call ends; refreshing last_vc_sync_time here holds the
-     * trunk release path open and delays return to the CC. Voice/MAC handlers
-     * update last_vc_sync_time when the call is actually active.
-    */
-    if (voice_tuned) {
-        dsd_frame_sync_hook_p25_sm_vc_sync(opts, state);
-        return;
-    }
-
-    const time_t now = dsd_decode_time();
-    const double nowm = dsd_decode_now_mono_s();
-    state->last_cc_sync_time = now;
-    state->last_cc_sync_time_m = nowm;
 }
 
 void
@@ -543,6 +519,7 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;
     dsd_state_forget_p25p1_sync_anchor(state);
+    dsd_state_forget_p25p2_sync_anchor(state);
     /* Nor do the sync join histories: an NXDN96 lock's flywheel or an FSW, or an M17 word, seen before it, and the
        frame sync's history carried from its last no-sync exit. */
     dsd_state_forget_sync_join_histories(state);
@@ -790,12 +767,23 @@ frame_sync_report_p25p2_params(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* A P25p2 sync word accepted within the tolerance at the anchor's expected position (dsd_p25p2_sync_anchor): the
+   superframe timeslot the window behind it must start at, and the bits the word was off by. */
+typedef struct {
+    int start;
+    int bit_errors;
+} frame_sync_p25p2_tolerance;
+
+/* @p tolerance is NULL for an exact (normal, inverted or rotated) match. A tolerant accept writes no modulation (the
+   anchor's context holds rf_mod 1) and notes no channel activity: processP2() notes it once the window's verdict
+   passes (dsd_frame_sync_p25p2_note_sync_activity()). */
 static void
 frame_sync_accept_p25p2(frame_sync_match_ctx* ctx, int synctype, int inverted, const char* label,
-                        int set_last_before_info, frame_sync_p25_center_mode_t center_mode) {
+                        int set_last_before_info, frame_sync_p25_center_mode_t center_mode,
+                        const frame_sync_p25p2_tolerance* tolerance) {
     dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    if (!opts->mod_cli_lock) {
+    if (!opts->mod_cli_lock && tolerance == NULL) {
         state->rf_mod = 1;
 #ifdef USE_RADIO
         rtl_maybe_apply_active_demod_profile(opts, state);
@@ -813,11 +801,15 @@ frame_sync_accept_p25p2(frame_sync_match_ctx* ctx, int synctype, int inverted, c
     if (!set_last_before_info) {
         state->lastsynctype = synctype;
     }
-    p25p2_note_sync_activity(opts, state);
+    if (tolerance == NULL) {
+        dsd_frame_sync_p25p2_note_sync_activity(opts, state);
+    }
     if (center_mode != FRAME_SYNC_P25_CENTER_SKIP
         && (center_mode == FRAME_SYNC_P25_CENTER_FORCE || state->rf_mod == 1)) {
         dsd_sync_warm_start_center_outer_only(state, 20);
     }
+    frame_sync_p25p2_anchor_note_sync(state, synctype, tolerance ? tolerance->start : -1,
+                                      tolerance ? tolerance->bit_errors : 0, dsd_frame_sync_off_thread_tune_pending());
 }
 
 #ifdef USE_RADIO
@@ -840,7 +832,7 @@ frame_sync_try_rotated_p25(frame_sync_match_ctx* ctx, const char* symbols, const
 
     frame_sync_set_p25_cqpsk_dibit_map(ctx, map_idx);
     if (phase2) {
-        frame_sync_accept_p25p2(ctx, synctype, inverted, label, set_last_before_info, FRAME_SYNC_P25_CENTER_SKIP);
+        frame_sync_accept_p25p2(ctx, synctype, inverted, label, set_last_before_info, FRAME_SYNC_P25_CENTER_SKIP, NULL);
     } else {
         frame_sync_accept_p25p1(ctx, synctype, label, FRAME_SYNC_P25_CENTER_SKIP, NULL);
     }
@@ -1010,13 +1002,13 @@ frame_sync_try_p25p2(frame_sync_match_ctx* ctx) {
 
     if (strcmp(ctx->synctest20, P25P2_SYNC) == 0) {
         frame_sync_set_p25_cqpsk_dibit_map(ctx, DSD_P25_CQPSK_DIBIT_MAP_IDENTITY);
-        frame_sync_accept_p25p2(ctx, DSD_SYNC_P25P2_POS, 0, "+P25p2", 1, FRAME_SYNC_P25_CENTER_AUTO);
+        frame_sync_accept_p25p2(ctx, DSD_SYNC_P25P2_POS, 0, "+P25p2", 1, FRAME_SYNC_P25_CENTER_AUTO, NULL);
         return DSD_SYNC_P25P2_POS;
     }
 
     if (strcmp(ctx->synctest20, INV_P25P2_SYNC) == 0) {
         frame_sync_set_p25_cqpsk_dibit_map(ctx, DSD_P25_CQPSK_DIBIT_MAP_IDENTITY);
-        frame_sync_accept_p25p2(ctx, DSD_SYNC_P25P2_NEG, 1, "-P25p2", 0, FRAME_SYNC_P25_CENTER_AUTO);
+        frame_sync_accept_p25p2(ctx, DSD_SYNC_P25P2_NEG, 1, "-P25p2", 0, FRAME_SYNC_P25_CENTER_AUTO, NULL);
         return DSD_SYNC_P25P2_NEG;
     }
 
@@ -1031,6 +1023,38 @@ frame_sync_try_p25p2(frame_sync_match_ctx* ctx) {
     return DSD_SYNC_NONE;
 #endif
 }
+
+#ifdef USE_RADIO
+/* After every exact matcher of every protocol failed at this position: the window at the anchor's expected position,
+ * read under the anchor's dibit map and polarity, within DSD_P25P2_TOLERANT_SYNC_MAX_BIT_ERRORS bits of the word
+ * (dsd_p25p2_sync_anchor), on the RTL CQPSK 6000/4 path. The first window to reach that position spends the anchor, so
+ * no other window is scored. The accept skips the acceptance-time centre refit (CENTER_SKIP: a word with symbols off is
+ * no reference to refit on), writes no modulation and notes no channel activity; whether the window behind it
+ * dispatches is its verdict's to say (processP2()). */
+static int
+frame_sync_try_tolerant_p25p2(frame_sync_match_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    uint8_t map_idx = DSD_P25_CQPSK_DIBIT_MAP_IDENTITY;
+    int inverted = 0;
+    int start = 0;
+    if (ctx->opts->frame_p25p2 != 1 || !frame_sync_p25p2_anchor_take(state, &map_idx, &inverted, &start)
+        || dsd_frame_sync_off_thread_tune_pending() || !frame_sync_match_window_ready(ctx, 20)
+        || dsd_state_carrier_settling(state, 20U) || !frame_sync_cqpsk_4level_enabled(ctx->opts, state)) {
+        return DSD_SYNC_NONE;
+    }
+    const int bit_errors = dsd_p25p2_sync_bit_distance(ctx->synctest20, map_idx, inverted);
+    if (bit_errors > DSD_P25P2_TOLERANT_SYNC_MAX_BIT_ERRORS) {
+        return DSD_SYNC_NONE;
+    }
+    const int synctype = inverted ? DSD_SYNC_P25P2_NEG : DSD_SYNC_P25P2_POS;
+    const frame_sync_p25p2_tolerance tolerance = {start, bit_errors};
+    frame_sync_set_p25_cqpsk_dibit_map(ctx, map_idx);
+    frame_sync_accept_p25p2(ctx, synctype, inverted, inverted ? "-P25p2~" : "+P25p2~", !inverted,
+                            FRAME_SYNC_P25_CENTER_SKIP, &tolerance);
+    state->p25_p2_sync_anchor.tolerant_syncs++;
+    return synctype;
+}
+#endif
 
 /**
  * @brief Record that an FS2 sync just opened a dPMR frame on the 2400/4 profile.
@@ -2459,6 +2483,7 @@ frame_sync_try_protocol_matches_inner(frame_sync_match_ctx* ctx) {
         const int sync_type = k_frame_sync_tries[i].try_match(ctx);
         if (sync_type != DSD_SYNC_NONE) {
             frame_sync_p25p1_anchor_note_accept(ctx->state, sync_type);
+            frame_sync_p25p2_anchor_note_accept(ctx->state, sync_type);
             return sync_type;
         }
     }
@@ -2478,6 +2503,18 @@ frame_sync_try_protocol_matches(frame_sync_match_ctx* ctx) {
     if (sync_type != DSD_SYNC_NONE && frame_sync_match_window_ready(ctx, DSD_SYMBOL_TIMING_TEMPLATE_SYMS)) {
         dsd_symbol_timing_report_sync(ctx->state, sync_type, ctx->synctest8);
     }
+#ifdef USE_RADIO
+    /* The P25p2 anchor's word is tried last, once nothing matched exactly; a word with symbols off is no timing
+       reference, so the symbol-timing diagnostic does not measure it. */
+    if (sync_type == DSD_SYNC_NONE) {
+        const int tolerant = frame_sync_try_tolerant_p25p2(ctx);
+        if (tolerant != DSD_SYNC_NONE) {
+            frame_sync_p25p1_anchor_note_accept(ctx->state, tolerant);
+            frame_sync_p25p2_anchor_note_accept(ctx->state, tolerant);
+        }
+        return tolerant;
+    }
+#endif
     return sync_type;
 }
 

@@ -1188,11 +1188,19 @@ test_isch_channel_one_location_sets_scramble_offset(void) {
     p2bit[320] = 1;
     g_isch_lookup_result = (1 << 5) | (0 << 3);
     state.p2_scramble_offset = -1;
-    p25p2_process_isch(&opts, &state, 3);
+    p25p2_process_isch(&opts, &state, 2);
 
     int rc = 0;
     rc |= expect_int("isch loc0 channel", state.p2_vch_chan_num, 1);
-    rc |= expect_int("isch loc0 offset", state.p2_scramble_offset, 9);
+    rc |= expect_int("isch loc0 offset", state.p2_scramble_offset, 10);
+
+    /* A window collects the ISCHs after its timeslots 0-2 only: the fourth is the next sync, never read into p2bit, so
+       its index changes nothing even when a lookup would decode it. */
+    state.p2_vch_chan_num = 7;
+    state.p2_scramble_offset = 42;
+    p25p2_process_isch(&opts, &state, 3);
+    rc |= expect_int("isch fourth preserves channel", state.p2_vch_chan_num, 7);
+    rc |= expect_int("isch fourth preserves offset", state.p2_scramble_offset, 42);
 
     g_isch_lookup_result = (1 << 5) | (1 << 3);
     state.p2_scramble_offset = -1;

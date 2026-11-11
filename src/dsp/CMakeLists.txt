@@ -28,7 +28,9 @@ target_sources(
         frame_sync_level.c
         dsd_frame_sync.c
         frame_sync_profile.c
+        frame_sync_p25_sync_context.c
         frame_sync_p25p1_anchor.c
+        frame_sync_p25p2_anchor.c
         frame_sync_p25p1_compare.c
         frame_sync_policy.c
         sync_hamming.c

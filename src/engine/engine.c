@@ -2761,8 +2761,9 @@ no_carrier_reset_decode_state(dsd_state* state, int preserve_scan_state) {
      * not. */
     state->p25_p1_nid_evidence = 0;
     state->p25_p1_nid_evidence_symbolcnt = 0;
-    /* Nor does the P25p1 sync anchor: the next data unit's sync is matched exactly. */
+    /* Nor do the P25 sync anchors: the next data unit's or window's sync is matched exactly. */
     dsd_state_forget_p25p1_sync_anchor(state);
+    dsd_state_forget_p25p2_sync_anchor(state);
     state->err_str[0] = '\0';
     state->err_strR[0] = '\0';
     set_spaces(state->fsubtype, 14);

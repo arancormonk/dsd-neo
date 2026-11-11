@@ -49,6 +49,7 @@ target_sources(
         phase2/p25p2_vpdu.c
         phase2/p25p2_xcch.c
         phase2/p25p2_soft.c
+        phase2/p25p2_window_verdict.c
 )
 
 target_include_directories(

@@ -8,6 +8,8 @@
 #include <stdint.h>
 #include <time.h>
 
+struct dsd_p25_sync_context;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -157,6 +159,17 @@ void frame_sync_p25p1_set_chain(const dsd_opts* opts, dsd_state* state, int chai
 void frame_sync_p25p1_mod_compare_end(dsd_state* state);
 /** @brief The chain the comparison would keep if it ended now: the incumbent, unless the other chain has read more. */
 int frame_sync_p25p1_mod_compare_leader(const dsd_state* state);
+/* What the P25 Phase 1 and Phase 2 sync anchors share (frame_sync_p25_sync_context.c). */
+/** Bit errors between the first @p dibits of @p window, read under CQPSK dibit map @p map_idx, and @p pattern: each
+ * dibit counts the bits it differs by (P25's dibits are Gray coded over the four levels), a byte outside '0'..'3' 2.
+ * 2 * @p dibits for a NULL or short window. */
+int frame_sync_p25_sync_bit_distance(const char* window, const char* pattern, int dibits, uint8_t map_idx);
+/** The stream and receiver setup as they stand, for a sync word whose first dibit is @p sync_clock (polarity 0). */
+void frame_sync_p25_sync_context_now(const dsd_state* state, uint64_t sync_clock, struct dsd_p25_sync_context* out);
+/** Whether @p ctx still describes the stream: nothing that ends the history carry has happened since
+ * (dsd_frame_sync_history_carry), nor a profile or modulation change. A pending off-thread tune is the caller's to
+ * check (dsd_frame_sync_off_thread_tune_pending()). */
+int frame_sync_p25_sync_context_holds(const dsd_state* state, const struct dsd_p25_sync_context* ctx);
 /* The P25p1 sync anchor's frame-sync side (frame_sync_p25p1_anchor.c, dsd_p25p1_sync_anchor). */
 /** Capture the sync-time context of the P25p1 sync just accepted (@p synctype), the window ending on the latest
  * symbol: @p tolerant_nac is the anchor's NAC for a tolerant accept and -1 for an exact one, @p bit_errors the bits the
@@ -169,6 +182,20 @@ void frame_sync_p25p1_anchor_note_accept(dsd_state* state, int synctype);
  * 4800/4 profile and its context still holds. The first window at or past that position spends it, whatever it holds.
  * 0 otherwise. */
 int frame_sync_p25p1_anchor_take(dsd_state* state, uint8_t* out_map_idx, int* out_inverted, int* out_nac);
+/* The P25p2 sync anchor's frame-sync side (frame_sync_p25p2_anchor.c, dsd_p25p2_sync_anchor). */
+/** Capture the sync-time context of the P25p2 sync just accepted (@p synctype), the window ending on the latest
+ * symbol. @p tolerant_start is the superframe timeslot the anchor predicts for a tolerant accept and -1 for an exact
+ * one, @p bit_errors the bits the word was off by. No context is captured while an off-thread tune is pending
+ * (@p tune_pending). */
+void frame_sync_p25p2_anchor_note_sync(dsd_state* state, int synctype, int tolerant_start, int bit_errors,
+                                       int tune_pending);
+/** A sync of any protocol was accepted (@p synctype): the anchor is spent, and another protocol's leaves no P25p2
+ * window context. */
+void frame_sync_p25p2_anchor_note_accept(dsd_state* state, int synctype);
+/** The anchor's map, polarity and predicted window start when the window ending on the latest symbol starts at its
+ * expected position on the 6000/4 profile and its context still holds (a pending off-thread tune is the caller's to
+ * check). The first window at or past that position spends it, whatever it holds. 0 otherwise. */
+int frame_sync_p25p2_anchor_take(dsd_state* state, uint8_t* out_map_idx, int* out_inverted, int* out_start);
 double frame_sync_elapsed_seconds(double nowm, time_t now, double mono_stamp, time_t wall_stamp);
 void frame_sync_p25_slot_activity(const dsd_opts* opts, const dsd_state* state, time_t now, double nowm,
                                   double mac_hold, double dt, int* left_active, int* right_active);
