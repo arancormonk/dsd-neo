@@ -1951,6 +1951,12 @@ test_place_malformed_dropped() {
             {"counties", QVariantList{QVariantMap{{"ctid", 907}, {"stid", 19}, {"name", "Johnson"}}}},
             {"candidateStates", QVariantList{19, 17}}};
         expect("malformed: duplicates by id merge", model.get(bad.size() + 1).value("place").toMap() == merged);
+        const QJsonArray saved = json_store_load_array(QStringLiteral("saved_systems.json"));
+        bool dropsSaved = saved.size() == bad.size() + 2;
+        for (int i = 0; i < bad.size() && dropsSaved; ++i) {
+            dropsSaved = saved.at(i).toObject().value("place").toObject().isEmpty();
+        }
+        expect("malformed: the load saves the drops", dropsSaved);
         expect("malformed: add() stores no malformed place",
                model.add({{"name", "Added"}, {"place", bad.at(1).toObject().toVariantMap()}})
                    && model.get(model.count() - 1).value("place").toMap().isEmpty());
@@ -2046,8 +2052,9 @@ test_update_keeps_fresh_conventional_place() {
     empty_systems(model);
 }
 
-/* An accepted re-import whose site was renamed renames a generated "System — Site" name; a name of the user's own
- * stays. */
+/* An edit that renames the row's own RadioReference site (a re-import, or an Update from RadioReference that changes no
+ * tuning) renames a generated "System — Site" name; a name of the user's own stays, and so does every name when the
+ * edit names another site or no site id. */
 void
 test_update_renames_generated_name() {
     SavedSystemsModel model;
@@ -2067,9 +2074,17 @@ test_update_renames_generated_name() {
     expect("rename: the name it sent is renamed", model.get(2).value("name") == "SARA — New");
     SavedSystemsModel reloaded;
     expect("rename: persists", reloaded.get(0).value("name") == "SARA — New");
-    expect("rename: a site rename without a re-import renames nothing",
+    expect("rename: a site name without its site id renames nothing",
            model.update(1, {{"name", "SARA — New"}, {"siteName", "Newer"}})
                && model.get(1).value("name") == "SARA — New");
+    expect("rename: the same site renamed without a tuning change",
+           model.update(0, {{"rrSiteId", 3}, {"siteName", "Newest"}}));
+    expect("rename: follows it too", model.get(0).value("name") == "SARA — Newest"
+                                         && model.get(0).value("rrSiteId").toInt() == 3
+                                         && model.get(0).value("siteName") == "Newest");
+    expect("rename: another site's name",
+           model.update(0, {{"freqMhz", "852.5"}, {"rrSid", 12}, {"rrSiteId", 4}, {"siteName", "East"}}));
+    expect("rename: renames nothing", model.get(0).value("name") == "SARA — Newest");
     empty_systems(model);
 }
 
@@ -2186,6 +2201,13 @@ test_invalidate_path_provenance() {
            spans == QList<QPair<int, int>>{{0, 2}} && log == QStringList{"dataChanged", "sitesChanged"});
     SavedSystemsModel reloaded;
     expect("invalidate: persists", geography_cleared(reloaded.get(0)) && reloaded.get(0).value("groupCsvPath") == path);
+    // Rows that name the file but hold nothing to clear need no save and no signal.
+    log.clear();
+    spans.clear();
+    expect("invalidate: store blocked again", block_systems_store());
+    expect("invalidate: rows already clear need no save", model.invalidatePathProvenance(path));
+    expect("invalidate: and send no signal", log.isEmpty() && spans.isEmpty());
+    expect("invalidate: store unblocked again", unblock_systems_store());
     empty_systems(model);
 }
 

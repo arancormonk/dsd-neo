@@ -84,9 +84,10 @@ class ImportedFilesModel : public QAbstractListModel {
     /** What must let go of a library file's old meaning before the user's own bytes replace it; false refuses. */
     using BeforeUserReplace = std::function<bool(const QString& path)>;
     /**
-     * @brief Run @p hook with the stored path before an update (Update from file) installs its bytes, never for a
-     * RadioReference refresh. False refuses the update with `save` before the index or the file changes; a later
-     * failure leaves what the hook did. qt_ui.cpp points it at SavedSystemsModel::invalidatePathProvenance().
+     * @brief Run @p hook with the stored path before an update (Update from file) of a RadioReference file installs
+     * the user's bytes; never for a refresh, nor for a file without RadioReference provenance. False refuses the
+     * update with `save` before the index or the file changes; a later failure leaves what the hook did. qt_ui.cpp
+     * points it at SavedSystemsModel::invalidatePathProvenance().
      */
     void setBeforeUserReplace(BeforeUserReplace hook);
 

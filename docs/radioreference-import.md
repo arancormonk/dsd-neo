@@ -198,12 +198,13 @@ During a lookup the nearest-site action is disabled. A failed refresh labels any
 
 Editing a saved site's frequency, decode flag or CSV selections clears what it kept from RadioReference:
 its grouping IDs, avoid, site name, location and place. So does removing a library file it uses, or
-replacing that file with your own (**Update from file**); **Refresh from RadioReference** keeps them. An
+replacing a file RadioReference made with your own (**Update from file**); **Refresh from
+RadioReference** keeps them, and so does updating a file you picked yourself, such as a key list. An
 edit that re-imports the site keeps the new import's details, and a name made from the site ("System —
-Site") follows a renamed site. Renaming or avoiding a site preserves them. Older imports with provenance only on the library file show
-**Refresh from RadioReference to enable site grouping** and stay ungrouped; re-import the site to create
-the saved-row identity. Refreshing only a library CSV cannot infer which saved row represents which site.
-Manual rows never group.
+Site") follows a renamed site. Renaming or avoiding a site preserves them. Older imports with provenance
+only on the library file show **Refresh from RadioReference to enable site grouping** and stay
+ungrouped; re-import the site to create the saved-row identity. Refreshing only a library CSV cannot
+infer which saved row represents which site. Manual rows never group.
 
 ## Terminal UI
 

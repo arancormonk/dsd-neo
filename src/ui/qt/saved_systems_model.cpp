@@ -296,10 +296,10 @@ changes_site_tuning(const QVariantMap& previous, const QVariantMap& system) {
 
 /**
  * @brief The fields an edit that changes the tuning applies: the stored provenance cleared, then what @p system
- * carries of its own (an edit-mode re-import), with a generated "base — oldSite" name following a renamed site.
+ * carries of its own (an edit-mode re-import).
  */
 QVariantMap
-reimport_fields(const QVariantMap& previous, const QVariantMap& system) {
+reimport_fields(const QVariantMap& system) {
     QVariantMap fields = rr_provenance_cleared(system);
     for (const char* key : kFreshProvenanceKeys) {
         const QString name = QLatin1String(key);
@@ -307,14 +307,31 @@ reimport_fields(const QVariantMap& previous, const QVariantMap& system) {
             fields.insert(name, system.value(name));
         }
     }
-    const QString siteKey = QStringLiteral("siteName");
-    if (system.contains(siteKey)) {
-        const QString nameKey = QStringLiteral("name");
-        const QString name = (system.contains(nameKey) ? system : previous).value(nameKey).toString();
-        fields.insert(nameKey,
-                      site_generated_name(name, previous.value(siteKey).toString(), system.value(siteKey).toString()));
-    }
     return fields;
+}
+
+/**
+ * @brief A generated "base — oldSite" name follows its site: when @p system renames the site of the row's own
+ * RadioReference site id (a re-import or an Update from RadioReference), with or without a tuning change.
+ */
+void
+rename_generated_name(const QVariantMap& previous, const QVariantMap& system, QVariantMap* fields) {
+    const QString siteKey = QStringLiteral("siteName");
+    const QString siteIdKey = QStringLiteral("rrSiteId");
+    const int storedSite = previous.value(siteIdKey).toInt();
+    int site = 0;
+    if (!system.contains(siteKey) || storedSite <= 0 || !stored_int(system.value(siteIdKey), &site)
+        || site != storedSite) {
+        return;
+    }
+    const QString oldSite = previous.value(siteKey).toString();
+    const QString newSite = system.value(siteKey).toString();
+    if (newSite == oldSite) {
+        return;
+    }
+    const QString nameKey = QStringLiteral("name");
+    const QString name = (system.contains(nameKey) ? system : previous).value(nameKey).toString();
+    fields->insert(nameKey, site_generated_name(name, oldSite, newSite));
 }
 
 } // namespace
@@ -719,7 +736,8 @@ SavedSystemsModel::update(int row, const QVariantMap& system) {
     // WP-D4, B11: changed tuning/CSV content no longer describes the imported site; only what this edit carries of
     // its own (a re-import's fresh provenance) describes it now.
     const auto previous = get(row);
-    const QVariantMap fields = changes_site_tuning(previous, system) ? reimport_fields(previous, system) : system;
+    QVariantMap fields = changes_site_tuning(previous, system) ? reimport_fields(system) : system;
+    rename_generated_name(previous, system, &fields);
     // Missing encKeyValue means Keep; a present empty value explicitly clears it.
     auto next = m_rows;
     next[row] = rowFromMap(fields, m_rows.at(row));
@@ -926,10 +944,14 @@ SavedSystemsModel::clearPathProvenance(const QString& path, bool clearFields) {
                 }
             }
         }
-        if (names) {
-            // The file no longer describes the site, and the site leaves its group with the only chooser that could
-            // lift its avoid.
-            row = rowFromMap(cleared, row);
+        if (!names) {
+            continue;
+        }
+        // The file no longer describes the site, and the site leaves its group with the only chooser that could lift
+        // its avoid. A row with nothing to clear (and no field cleared) is left out: no save, no signal for it.
+        const Row clearedRow = rowFromMap(cleared, row);
+        if (clearFields || mapFromRow(clearedRow) != mapFromRow(row)) {
+            row = clearedRow;
             first = first < 0 ? i : first;
             last = i;
         }
@@ -1089,6 +1111,9 @@ SavedSystemsModel::load() {
             row.decodeFlag = QStringLiteral("-mq");
         }
         migrated |= normalizeLoaded(row);
+        // A place validPlace() dropped is saved dropped, as the other repairs are.
+        const QVariant storedPlace = stored.value(QStringLiteral("place"));
+        migrated |= storedPlace.isValid() && row.place.isEmpty() && storedPlace != QVariant(QVariantMap());
         rows.append(row);
     }
     beginResetModel();
@@ -1111,8 +1136,9 @@ SavedSystemsModel::normalizeLoaded(Row& row) {
     // Outside a group, a site's avoid could never be lifted (the chooser that lifts it lists only a group's sites; a
     // lone RadioReference site keeps it, its "1 site" chooser opens), and its name and position are what older edits
     // left behind when they cleared only the ids. A place stays: a conventional multi-repeater row has one, no ids.
-    const bool orphan = row.avoidSite || !row.siteName.isEmpty() || row.hasSitePos || std::abs(row.siteLat) > 0
-                        || std::abs(row.siteLon) > 0;
+    constexpr double kCoordinateEpsilon = 1e-9;
+    const bool orphan = row.avoidSite || !row.siteName.isEmpty() || row.hasSitePos
+                        || std::abs(row.siteLat) > kCoordinateEpsilon || std::abs(row.siteLon) > kCoordinateEpsilon;
     row.avoidSite = false;
     row.siteName.clear();
     row.siteLat = 0;
