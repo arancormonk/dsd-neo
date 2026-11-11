@@ -12203,6 +12203,22 @@ Qt Quick frontend (`src/ui/qt`):
     changed through `recordingFragmentsChanged()`, and the rows holding them re-read the two roles. A recording the
     store knows before its row exists shows when the row arrives. The provider also names many rows' recordings in one
     read (`recordingEntryNames()`, the recording store below), for a History export.
+  - Export rows and file (History CSV export; `call_history_export.{h,cpp}`): `exportRows(sourceRows)` turns this
+    model's rows, in the order given (one out of range skipped), into `ExportRow`s of plain values, each read through
+    the role History shows it by (`data()`: a channel id by its `setChannelNames()` name, the access code, tone, site
+    and analog mode texts), and every row's recording names from one `recordingEntryNames()` call (none without a
+    provider, or when its answer does not cover every row), so an export takes the store's lock once. The row's `end`
+    and the other internal fields stay out. `call_history_export::file(rows, zone)` is the pure builder: BOM, CRLF,
+    `csv_text` quoting and formula guard on the text columns (name, radio_name, system, channel, access_code, tone,
+    site, message, recordings), header
+    `started_local,utc_offset,started_utc,duration_s,type,name,talkgroup,radio_id,radio_name,system,channel,`
+    `frequency_hz,access_code,tone,site,analog_mode,encrypted,emergency,message,recordings`. The start is written in
+    the zone given at that instant (`yyyy-MM-dd HH:mm:ss`), that instant's offset (`UTC+05:30`) and ISO UTC (`...Z`),
+    all three empty for no start; durations, talkgroups, radio ids and frequencies that are not known are empty;
+    `type` is `call` or `message`; `analog_mode` is `NFM`, `AM`, `analog` (mode unknown) or empty; flags `1`/`0`. The
+    recordings cell joins the names with ` | `, each `\` written `\\` and each `|` written `\|`
+    (`joinRecordingNames()`; `splitRecordingNames()` reads it back). No clock or locale is read. Tests:
+    `UI_QT_CALL_HISTORY_EXPORT`.
   - Background capture (issue #708, B1; `call_history_tap.{h,cpp}`): Qt pauses the GUI thread on Android in the
     background, the UI tick was the ring's only reader, and the ring keeps 254 committed rows a slot, so a busy system
     overwrote calls History never saw. When the application turns Suspended or Hidden, after `saveNow()`, the model

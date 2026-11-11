@@ -255,6 +255,41 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      */
     Q_INVOKABLE QVariantMap recordFor(const QString& uid) const;
 
+    /**
+     * @brief One row as a History export writes it: plain values, each read through the role History shows it by
+     *        (data()), so the file says what the screen says.
+     */
+    struct ExportRow {
+        qint64 when = 0;       // WhenRole: the start in seconds, 0 when not known
+        int durationSecs = -1; // DurationSecsRole: -1 when not known
+        int kind = KindVoice;  // KindRole
+        QString name;          // NameRole: a channel id shown by its name
+        qulonglong tg = 0;
+        qulonglong src = 0;
+        QString sourceName;
+        QString systemName;
+        QString channel; // ChannelRole: the channel's display name
+        qint64 freqHz = 0;
+        QString accessCode;   // AccessCodeRole: "NAC 293"
+        QString receivedTone; // ReceivedToneRole
+        QString siteText;     // SiteTextRole
+        bool analog = false;
+        QString analogMode; // AnalogModeRole: "NFM", "AM", or empty when not known or not analog
+        bool enc = false;
+        bool emergency = false;
+        QString detail;             // DetailRole
+        QStringList recordingNames; // CallRecordingProvider::recordingEntryNames()
+    };
+
+    /**
+     * @brief The rows at @p sourceRows (this model's rows, in the order given; a row out of range is skipped) as an
+     *        export writes them.
+     *
+     * Every row's recording names come from one recordingEntryNames() call to the provider (none without one), so an
+     * export takes the recording store's lock once, not once per row.
+     */
+    QList<ExportRow> exportRows(const QList<int>& sourceRows) const;
+
     bool
     saveFailing() const {
         return m_saveFailing;

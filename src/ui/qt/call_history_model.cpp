@@ -507,6 +507,62 @@ CallHistoryModel::recordFor(const QString& uid) const {
     return record;
 }
 
+namespace {
+
+/** @brief The row at @p idx as an export writes it, every value through data(), recordings left to the caller. */
+CallHistoryModel::ExportRow
+export_row_at(const CallHistoryModel& model, const QModelIndex& idx) {
+    const auto text = [&model, &idx](int role) { return model.data(idx, role).toString(); };
+    CallHistoryModel::ExportRow row;
+    row.when = model.data(idx, CallHistoryModel::WhenRole).toLongLong();
+    row.durationSecs = model.data(idx, CallHistoryModel::DurationSecsRole).toInt();
+    row.kind = model.data(idx, CallHistoryModel::KindRole).toInt();
+    row.name = text(CallHistoryModel::NameRole);
+    row.tg = model.data(idx, CallHistoryModel::TgRole).toULongLong();
+    row.src = model.data(idx, CallHistoryModel::SrcRole).toULongLong();
+    row.sourceName = text(CallHistoryModel::SourceNameRole);
+    row.systemName = text(CallHistoryModel::SystemNameRole);
+    row.channel = text(CallHistoryModel::ChannelRole);
+    row.freqHz = model.data(idx, CallHistoryModel::FreqHzRole).toLongLong();
+    row.accessCode = text(CallHistoryModel::AccessCodeRole);
+    row.receivedTone = text(CallHistoryModel::ReceivedToneRole);
+    row.siteText = text(CallHistoryModel::SiteTextRole);
+    row.analog = model.data(idx, CallHistoryModel::AnalogRole).toBool();
+    row.analogMode = text(CallHistoryModel::AnalogModeRole);
+    row.enc = model.data(idx, CallHistoryModel::EncRole).toBool();
+    row.emergency = model.data(idx, CallHistoryModel::EmergencyRole).toBool();
+    row.detail = text(CallHistoryModel::DetailRole);
+    return row;
+}
+
+} // namespace
+
+QList<CallHistoryModel::ExportRow>
+CallHistoryModel::exportRows(const QList<int>& sourceRows) const {
+    QList<ExportRow> rows;
+    QList<QStringList> fragments;
+    rows.reserve(sourceRows.size());
+    fragments.reserve(sourceRows.size());
+    for (const int source : sourceRows) {
+        if (source < 0 || source >= m_rows.size()) {
+            continue;
+        }
+        rows.append(export_row_at(*this, index(source)));
+        fragments.append(m_rows.at(source).fragments);
+    }
+    if (m_recordings == nullptr) {
+        return rows;
+    }
+    // One read for every row: the store takes its lock once. An answer that does not cover every row names none.
+    const QList<QStringList> names = m_recordings->recordingEntryNames(fragments);
+    if (names.size() == rows.size()) {
+        for (qsizetype i = 0; i < rows.size(); i++) {
+            rows[i].recordingNames = names.at(i);
+        }
+    }
+    return rows;
+}
+
 void
 CallHistoryModel::setRecordingProvider(const CallRecordingProvider* provider) {
     if (provider == m_recordings) {
