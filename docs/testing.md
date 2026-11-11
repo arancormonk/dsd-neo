@@ -2037,11 +2037,11 @@ a real radio; `tools/replay_ab.sh` on real captures remains the evidence for dec
 The same generator writes the I/Q fixture `dmr_voice_synth` (a clear call on slot 1, colour code 2, slot 2 idle),
 which the DMR voice, MBE capture, voice-chain and float-output cases replay: `tools/build_iq_fixtures.py
 --dmr-synth-gen build/dev-debug/tests/dsd-neo_test_dmr_synth_gen` regenerates it with the other fixtures (without the
-option the script skips it). Its outer symbols sit at the standard's +/-1944 Hz: the script sets the deviation from the
-generator's known +/-3 level and measures the written baseband, refusing a synthesis more than 3 % off (a fixed
-99.5th-percentile deviation once put them near 1300 Hz). Its bytes follow mbelib-neo's AMBE encoder: the committed
-ones are 2.6.8's, so an mbelib bump that changes the encoder fails `--verify --dmr-synth-gen` until the fixture is
-regenerated.
+option the script skips it). Its outer symbols sit at the standard's +/-1944 Hz: the script maps the generator's known
++/-3 level to it, with no mean removed, and measures the +3 and -3 symbols of the written baseband separately, refusing
+a synthesis with either more than 3 % off (a 99.5th-percentile deviation once put them near 1300 Hz, and removing the
+audio's mean put them at 1880 Hz and -2008 Hz). Its bytes follow mbelib-neo's AMBE encoder: the committed ones are
+2.6.8's, so an mbelib bump that changes the encoder fails `--verify --dmr-synth-gen` until the fixture is regenerated.
 
 The generator's voice is a vowel-like buzz, not speech: the harmonics of a pitch gliding between 80 and 160 Hz, weighted
 by three formants, under a 3 Hz envelope that never pauses. Until issue #518 (B21) each harmonic's phase was the pitch
