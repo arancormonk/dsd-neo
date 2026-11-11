@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QCoreApplication>
 #include <QEvent>
+#include <QLatin1Char>
+#include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QString>
@@ -10,6 +12,7 @@
 #include <cmath>
 #include <limits>
 #include "site_groups.h"
+#include "stored_int.h"
 
 namespace dsd_qt {
 SiteInteractionGuard::SiteInteractionGuard(QObject* parent) : QObject(parent) {
@@ -47,20 +50,58 @@ site_distance_km(double lat, double lon, double siteLat, double siteLon) {
     return 6371.0088 * 2 * std::atan2(std::sqrt(h), std::sqrt(1 - h));
 }
 
+QString
+receiver_identity(const QVariantMap& system) {
+    const QString source = system.value(QStringLiteral("sourceType")).toString();
+    const QString host = system.value(QStringLiteral("host")).toString().trimmed().toLower();
+    const QString port = QString::number(stored_int_or(system.value(QStringLiteral("port")), 0));
+    if (source == QLatin1String("airspy")) {
+        return source + QLatin1Char('|')
+               + system.value(QStringLiteral("airspy")).toMap().value(QStringLiteral("serial")).toString().toUpper();
+    }
+    if (source == QLatin1String("rtltcp") || source == QLatin1String("tcp")) {
+        return source + QLatin1Char('|') + host + QLatin1Char(':') + port;
+    }
+    if (source == QLatin1String("udp")) {
+        return source + QLatin1Char('|') + port;
+    }
+    return source == QLatin1String("file")
+               ? source + QLatin1Char('|') + system.value(QStringLiteral("filePath")).toString()
+               : source;
+}
+
+QString
+site_group_key(const QVariantMap& row) {
+    const int sid = row.value(QStringLiteral("rrSid")).toInt();
+    if (sid <= 0 || row.value(QStringLiteral("rrSiteId")).toInt() <= 0) {
+        return QString();
+    }
+    return QString::number(sid) + QLatin1Char('|') + receiver_identity(row);
+}
+
+QString
+site_group_title(const QVariantMap& lead) {
+    const QString name = lead.value(QStringLiteral("name")).toString();
+    const QString siteName = lead.value(QStringLiteral("siteName")).toString();
+    const QString suffix = QStringLiteral(" — ") + siteName;
+    if (siteName.isEmpty() || name.size() <= suffix.size() || !name.endsWith(suffix)) {
+        return name;
+    }
+    return name.left(name.size() - suffix.size());
+}
+
 QVariantList
 site_sibling_rows(const QVariantList& rows, int row) {
     QVariantList result;
     if (row < 0 || row >= rows.size()) {
         return result;
     }
-    const auto selected = rows[row].toMap();
-    const int sid = selected.value("rrSid").toInt();
-    if (sid <= 0 || selected.value("rrSiteId").toInt() <= 0) {
+    const QString key = site_group_key(rows[row].toMap());
+    if (key.isEmpty()) {
         return result;
     }
     for (int i = 0; i < rows.size(); ++i) {
-        const auto candidate = rows[i].toMap();
-        if (candidate.value("rrSid").toInt() == sid && candidate.value("rrSiteId").toInt() > 0) {
+        if (site_group_key(rows[i].toMap()) == key) {
             result.append(i);
         }
     }

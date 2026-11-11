@@ -226,6 +226,18 @@ Item {
             compare(starts.count, 1)
             compare(savedSystems.get(starts.signalArguments[0][0]).uid, uid)
         }
+        // B4: the same system saved for another receiver is another group: the chooser lists this receiver's sites
+        // once, and its nearest is one of them.
+        function test_other_receiver_is_another_group() {
+            savedSystems.add({name:"North", rrSid:12, rrSiteId:16863, siteName:"North", siteLat:41.1, siteLon:-91, hasSitePos:true, sourceType:"rtltcp", host:"127.0.0.1", port:1234})
+            sheet.refresh()
+            compare(sheet.rows, [0, 1])
+            prefs.setLocationFix(41.1, -91, Date.now(), 100)
+            compare(sheet.nearest, 1)
+            sheet.openFor(2)
+            compare(sheet.rows, [2])
+            compare(sheet.nearest, 2)
+        }
         function test_idle_starts() { sheet.choose(1); compare(starts.count, 1); compare(switches.count, 0) }
         function test_running_requires_restart() {
             sheet.sessionState = 2; sheet.choose(1)

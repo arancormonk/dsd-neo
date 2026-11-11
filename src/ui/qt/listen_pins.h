@@ -141,9 +141,9 @@ class ListenPins : public QObject {
     QVariantList m_entries;
     // The label each key last resolved to this run, for a pin whose target has gone missing since.
     QHash<QString, QString> m_lastLabels;
-    // Each saved row's RadioReference group (0 for none) by UID, as the last refresh saw it: how a system pin whose row
-    // has since left its group is found.
-    QHash<QString, int> m_groupOf;
+    // Each saved row's site group (site_group_key(), empty for none) by UID, as the last refresh saw it: how a system
+    // pin whose row has since left its group is found.
+    QHash<QString, QString> m_groupOf;
     // The pins a removal leaves, worked out before the rows go and stored once they have.
     QVariantList m_pendingPins;
     bool m_prunePending = false;

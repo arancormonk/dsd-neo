@@ -728,6 +728,22 @@ Item {
             testContext.setAttachedDeviceSource("");
         }
 
+        // B5: a group's pin reads as its card, the name an import generated without its site, and keeps that name
+        // when the lead goes; a site pin names its site once.
+        function test_strip_group_title() {
+            var lead = addSystem("SARA — Johnson Simulcast", {siteName: "Johnson Simulcast", rrSid: 9, rrSiteId: 1});
+            var polk = addSystem("SARA — Polk", {siteName: "Polk", freqMhz: "852.5", rrSid: 9, rrSiteId: 2});
+            pin("system", polk);
+            pin("site", polk);
+            waitForRendering(home);
+            compare(JSON.stringify(stripTexts()), JSON.stringify(["SARA", "SARA · Polk"]));
+            compare(stripPins()[0].accessibleName, "Choose a site of SARA");
+            var buttons = stripPins();
+            verify(savedSystems.remove(savedSystems.rowForUid(lead)));
+            tryCompare(buttons[0], "accessibleName", "Start SARA");
+            compare(buttons[0].text, "SARA", "the group keeps its name");
+        }
+
         // A rename on screen renames the pin's own button; it is not made again.
         function test_strip_follows_rename() {
             var uid = addSystem("Alpha");

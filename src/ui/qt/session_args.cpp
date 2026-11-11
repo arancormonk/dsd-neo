@@ -11,6 +11,7 @@
 #include "recording_sessions.h"
 #include "saved_systems_model.h"
 #include "session_args.h"
+#include "site_groups.h"
 #include "stored_int.h"
 
 #include <algorithm>
@@ -963,29 +964,6 @@ session_args_effective_bandwidth_khz(const QString& decodeFlag, const QString& s
 
 namespace {
 
-/* The receiver a scan list runs on, as its argv names it: the source, then the device the source opens (an Airspy by
-   its serial, rtl_tcp and TCP audio by host and port, UDP audio by its port, a file by its path). A host is matched
-   without case or the blanks the argv trims. */
-QString
-scan_join_radio(const QVariantMap& list) {
-    const QString source = list.value(QStringLiteral("sourceType")).toString();
-    const QString host = list.value(QStringLiteral("host")).toString().trimmed().toLower();
-    const QString port = QString::number(stored_int_or(list.value(QStringLiteral("port")), 0));
-    if (source == QLatin1String("airspy")) {
-        return source + QLatin1Char('|')
-               + list.value(QStringLiteral("airspy")).toMap().value(QStringLiteral("serial")).toString().toUpper();
-    }
-    if (source == QLatin1String("rtltcp") || source == QLatin1String("tcp")) {
-        return source + QLatin1Char('|') + host + QLatin1Char(':') + port;
-    }
-    if (source == QLatin1String("udp")) {
-        return source + QLatin1Char('|') + port;
-    }
-    return source == QLatin1String("file")
-               ? source + QLatin1Char('|') + list.value(QStringLiteral("filePath")).toString()
-               : source;
-}
-
 /* An Airspy setting as the engine takes it (dsd_airspy_config_set()): the gain mode by name in any case, a sample
    rate of "auto" as 0, a switch written true/on/yes or false/off/no (any case) or as a number as 0 or 1, a number as a
    number; anything else as written, for the engine to refuse. */
@@ -1080,7 +1058,7 @@ scan_join_settings(const QVariantMap& list, const SessionArgPrefs& prefs) {
     const bool rtl = is_rtl_source(source);
     const bool tuned = rtl || source == QLatin1String("airspy");
     return {
-        {QStringLiteral("Different radio source"), scan_join_radio(list)},
+        {QStringLiteral("Different radio source"), receiver_identity(list)},
         {QStringLiteral("Different gain"), rtl ? QVariant(gain >= 0 ? gain : prefs.gainDb) : QVariant()},
         {QStringLiteral("Different PPM correction"), rtl ? scan_join_ppm(list, prefs) : QVariant()},
         {QStringLiteral("Different bandwidth"),

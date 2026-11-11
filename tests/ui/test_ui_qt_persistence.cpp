@@ -65,6 +65,7 @@
 #include "listen_pins.h"
 #include "saved_systems_model.h"
 #include "scan_lists_model.h"
+#include "site_groups.h"
 
 using dsd_qt::AppPrefs;
 using dsd_qt::json_store_load_array;
@@ -2928,6 +2929,21 @@ struct PinsWorld {
         return systems.get(systems.count() - 1).value("uid").toString();
     }
 
+    /* A RadioReference site saved for @p receiver (its sourceType and the fields naming the device). */
+    QString
+    site(const QString& name, int sid, int siteId, const QString& siteName, const QVariantMap& receiver) {
+        QVariantMap row{{"name", name},
+                        {"freqMhz", QStringLiteral("851.%1").arg(systems.count())},
+                        {"rrSid", sid},
+                        {"rrSiteId", siteId},
+                        {"siteName", siteName}};
+        for (auto it = receiver.cbegin(); it != receiver.cend(); ++it) {
+            row.insert(it.key(), it.value());
+        }
+        expect("pins: add site", systems.add(row));
+        return systems.get(systems.count() - 1).value("uid").toString();
+    }
+
     QString
     list(const QString& name) {
         expect("pins: add list", lists.add({{"name", name}}));
@@ -3288,6 +3304,83 @@ test_system_pin_follows_group_when_row_leaves() {
            entry_for(pins, "system:" + lone).value("label") == "Lone" && pins.isPinned("system", lone));
 }
 
+/* B4: a system saved for two receivers is two cards, so a system pin never crosses to the other receiver's: not when
+ * the pinned site leaves its group, not when it is removed, and the other card never shows as pinned. */
+void
+test_system_pin_stays_on_its_receiver() {
+    PinsWorld w;
+    const QVariantMap usb{{"sourceType", "usb"}};
+    // The rtl_tcp copy comes first, so a group of the system alone would lead with it.
+    const QString tcp =
+        w.site("County", 7, 1, "North", {{"sourceType", "rtltcp"}, {"host", "127.0.0.1"}, {"port", 1234}});
+    const QString north = w.site("County", 7, 1, "North", usb);
+    const QString south = w.site("County", 7, 2, "South", usb);
+    const QString east = w.site("County", 7, 3, "East", usb);
+    ListenPins pins(&w.prefs, &w.systems, &w.lists);
+    expect("receiver: pin the USB card", pins.pin("system", north).isEmpty());
+    expect("receiver: the USB card is pinned", pins.isPinned("system", south) && pins.isPinned("system", east));
+    expect("receiver: the rtl_tcp card is not", !pins.isPinned("system", tcp));
+    expect("receiver: the pinned site leaves its group",
+           w.systems.update(w.systems.rowForUid(north), {{"freqMhz", "852.5"}}));
+    expect("receiver: the pin moves to the USB lead, not the rtl_tcp site",
+           pin_keys(pins) == QStringList{"system:" + south});
+    expect("receiver: remove the USB lead", w.systems.remove(w.systems.rowForUid(south)));
+    expect("receiver: the pin moves to a USB site that stays", pin_keys(pins) == QStringList{"system:" + east});
+    expect("receiver: still not the rtl_tcp card", !pins.isPinned("system", tcp));
+}
+
+/* Startup clears every missing library file in one turn, one after another (prune_missing_csv_paths()). Each clear
+ * moves a pin as it lands: A leaves and the pin goes to B, then B leaves too and, the group's last site, keeps it. */
+void
+test_system_pin_through_sequential_invalidations() {
+    const QString fileA = QStringLiteral("/data/imports/a.csv");
+    const QString fileB = QStringLiteral("/data/imports/b.csv");
+    PinsWorld w;
+    const QString a = w.system("County", 7, 1, "A", fileA);
+    const QString b = w.system("County", 7, 2, "B", fileB);
+    ListenPins pins(&w.prefs, &w.systems, &w.lists);
+    expect("sequential: pin the card through A", pins.pin("system", a).isEmpty());
+    expect("sequential: clear A", w.systems.clearCsvPath(fileA));
+    expect("sequential: clear B", w.systems.clearCsvPath(fileB));
+    expect("sequential: the pin ends on B", pin_keys(pins) == QStringList{"system:" + b});
+    const AppPrefs reread;
+    expect("sequential: stored on B",
+           reread.pinned().size() == 1 && reread.pinned().first().toMap().value("uid").toString() == b);
+}
+
+/* B5: a group is named once, as its card is: the lead's name without the " — site" an import generated, and a removal
+ * of the lead keeps that name. A site pin is its own row's name so trimmed, then the site. A custom name stays. */
+void
+test_group_title_labels() {
+    PinsWorld w;
+    const QVariantMap usb{{"sourceType", "usb"}};
+    const QString lead = w.site("SARA — Johnson Simulcast", 9, 1, "Johnson Simulcast", usb);
+    const QString polk = w.site("SARA — Polk", 9, 2, "Polk", usb);
+    const QString custom = w.site("My SARA", 11, 1, "Johnson Simulcast", usb);
+    ListenPins pins(&w.prefs, &w.systems, &w.lists);
+    for (const auto& pin :
+         {std::make_pair("system", polk), std::make_pair("site", polk), std::make_pair("system", custom)}) {
+        expect("titles: pin", pins.pin(pin.first, pin.second).isEmpty());
+    }
+    const auto label = [&pins](const QString& key) { return entry_for(pins, key).value("label").toString(); };
+    expect("titles: a generated name loses its site", label("system:" + polk) == QStringLiteral("SARA"));
+    // What Listen's card shows for the group: the title of its lead.
+    const auto cardTitle = [&w](const QString& uid) {
+        const QVariantList group = w.systems.siblingRows(w.systems.rowForUid(uid));
+        return dsd_qt::site_group_title(w.systems.get(group.first().toInt()));
+    };
+    expect("titles: the pin reads as its card", label("system:" + polk) == cardTitle(polk));
+    expect("titles: the accessible name too", entry_for(pins, "system:" + polk).value("accessibleName")
+                                                  == ListenPins::text(ListenPins::Text::ChooseSiteName, "SARA"));
+    expect("titles: a site once", label("site:" + polk) == QStringLiteral("SARA · Polk"));
+    expect("titles: a custom name stays", label("system:" + custom) == QStringLiteral("My SARA"));
+    expect("titles: Pin to Listen names the group",
+           pins.action("system", polk).value("accessibleName").toString() == ListenPins::actionName(true, "SARA"));
+    expect("titles: remove the lead", w.systems.remove(w.systems.rowForUid(lead)));
+    expect("titles: the group keeps its name",
+           label("system:" + polk) == QStringLiteral("SARA") && label("system:" + polk) == cardTitle(polk));
+}
+
 /* A site edited out of its group keeps its pin, and its new standalone card shows it pinned: the revision moves so a
  * binding that asks again sees it, though no entry changed. */
 void
@@ -3545,6 +3638,9 @@ main(int argc, char** argv) {
     test_prune_on_remove();
     test_system_pin_rehomes_to_sibling();
     test_system_pin_follows_group_when_row_leaves();
+    test_system_pin_stays_on_its_receiver();
+    test_system_pin_through_sequential_invalidations();
+    test_group_title_labels();
     test_site_pin_after_leaving_group();
     test_labels_follow_rename_and_site();
     test_failed_remove_keeps_pin();

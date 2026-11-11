@@ -13647,34 +13647,39 @@ Qt Quick frontend (`src/ui/qt`):
   `clearCsvPath`, `invalidatePathProvenance` and `applyPlaceNames` return true when nothing needs changing, and signal
   one `dataChanged` spanning the rows they changed (B14: one per row re-ran every pin's bookkeeping each time). So
   `rowsAboutToBeRemoved`/`rowsRemoved` (then `sitesChanged`, `countChanged`) mean the removal is on disk, and whatever
-  follows rows out of the model can prune on them. A site is grouped while `rrSid > 0` and `rrSiteId > 0`
-  (`site_groups.cpp`). A row's `place` (role `place`) is the RadioReference geography an import captured: `{states:
-  [{stid, name?}], counties: [{ctid, stid?, name?}], candidateStates: [stid]}`, held to
-  `SavedSystemsModel::validPlace()` (ids whole numbers, not text, in 1..INT32_MAX; names text of at most 128 characters;
-  at most 64 states or candidate states and 512 counties; repeats of an id merged into the first). A place that breaks
-  it anywhere is dropped whole wherever it arrives (load, `add`, `update`, a restored backup at its first load); the row
-  keeps everything else. `applyPlaceNames(stid, stateName, countyNames)` (metadata only) names the state and the listed
-  counties in every row whose place names them, links those counties to the state and adds the state to a row whose
-  county now links to it. `setPlaceNameCache()` installs a fill that `add`, `addAll` and `update` run, before their
-  save, on a place whose ids are new. `addAll(rows, keySourceUid)` saves a per-site import (B6): every row is checked
-  first (as `add`, and with a key source as `addWithKeyFrom`, which `add` and `addWithKeyFrom` call), takes a fresh
-  UID, has its replay copy adopted, then one save and one `rowsInserted` range; it returns the first new row or -1 with
-  nothing inserted and no signal (a copy adopted before a failed save stays kept, as for `add`). One rule clears stale
-  provenance (B11): `rr_provenance_cleared()` (`site_groups.cpp`) zeroes `rrSid`, `rrSiteId`, `avoidSite` (only the
-  group's `SiteChooserSheet` can lift an avoid), `siteName`, `siteLat`, `siteLon`, `hasSitePos` and `place`. `update`
-  applies it when the edit changes the frequency, decode flag or a CSV field, then applies what the edit carries of its
-  own of `rrSid`, `rrSiteId`, `siteName`, the position and `place` (validated): an ordinary edit carries none and ends
-  cleared, an edit-mode re-import keeps its fresh identity. Any edit carrying a changed `siteName` and the row's own
-  `rrSiteId` renames a generated `base — oldSite` name (`site_generated_name()`), with or without a tuning change.
-  `clearCsvPath` (a library file removed) and `invalidatePathProvenance` (a library file replaced with the user's own
-  bytes, keeping the path; see "Replacing a library file in place") apply it to every row naming the path. Load drops
-  what a row outside a group cannot use: its `avoidSite` (a lone RadioReference site keeps its avoid: its "1 site"
-  chooser lifts it), and the `siteName` and position older edits left when they cleared only the ids; its `place` stays
-  (a conventional multi-repeater row has one and no ids). Load saves that with the UID repair (one warning when that
-  save fails; the clear repeats at the next load). A replay copy in `replays/` a row gains is adopted before the save
-  and one no row names after a saved edit or remove is released (`replay_store.{h,cpp}`). Tests: `UI_QT_PERSISTENCE`,
-  `UI_QT_SITE_GROUPS`, `UI_QT_REPLAY_STORE`, `UI_QT_BACKUP_ARCHIVE` and `UI_QT_BACKUP_APPLY` (`place` through a backup
-  and its restore).
+  follows rows out of the model can prune on them. A site is grouped while `rrSid > 0` and `rrSiteId > 0`, by
+  `site_group_key()` (`site_groups.cpp`): `"<rrSid>|<receiver>"`, the receiver being `receiver_identity()` (the source,
+  then an Airspy's serial, an rtl_tcp or TCP host without case or blanks and its port, a UDP port or a file path;
+  `session_args.cpp` joins scan lists on the same identity), so a system saved for two receivers is two groups (B4).
+  `siblingRows()`, `nearestRow()`, `siteCount()`, the site chooser and `ListenPins` all group by that key. A group's
+  title is `site_group_title()` of its lead: the name without an exact trailing " — " + its `siteName` (the name a
+  per-site import generated), else the name; a custom name lives on the lead row and moves with it (B5). A row's `place`
+  (role `place`) is the RadioReference geography an import captured: `{states: [{stid, name?}], counties: [{ctid, stid?,
+  name?}], candidateStates: [stid]}`, held to `SavedSystemsModel::validPlace()` (ids whole numbers, not text, in
+  1..INT32_MAX; names text of at most 128 characters; at most 64 states or candidate states and 512 counties; repeats of
+  an id merged into the first). A place that breaks it anywhere is dropped whole wherever it arrives (load, `add`,
+  `update`, a restored backup at its first load); the row keeps everything else. `applyPlaceNames(stid, stateName,
+  countyNames)` (metadata only) names the state and the listed counties in every row whose place names them, links those
+  counties to the state and adds the state to a row whose county now links to it. `setPlaceNameCache()` installs a fill
+  that `add`, `addAll` and `update` run, before their save, on a place whose ids are new. `addAll(rows, keySourceUid)`
+  saves a per-site import (B6): every row is checked first (as `add`, and with a key source as `addWithKeyFrom`, which
+  `add` and `addWithKeyFrom` call), takes a fresh UID, has its replay copy adopted, then one save and one `rowsInserted`
+  range; it returns the first new row or -1 with nothing inserted and no signal (a copy adopted before a failed save
+  stays kept, as for `add`). One rule clears stale provenance (B11): `rr_provenance_cleared()` (`site_groups.cpp`)
+  zeroes `rrSid`, `rrSiteId`, `avoidSite` (only the group's `SiteChooserSheet` can lift an avoid), `siteName`,
+  `siteLat`, `siteLon`, `hasSitePos` and `place`. `update` applies it when the edit changes the frequency, decode flag
+  or a CSV field, then applies what the edit carries of its own of `rrSid`, `rrSiteId`, `siteName`, the position and
+  `place` (validated): an ordinary edit carries none and ends cleared, an edit-mode re-import keeps its fresh identity.
+  Any edit carrying a changed `siteName` and the row's own `rrSiteId` renames a generated `base — oldSite` name
+  (`site_generated_name()`), with or without a tuning change. `clearCsvPath` (a library file removed) and
+  `invalidatePathProvenance` (a library file replaced with the user's own bytes, keeping the path; see "Replacing a
+  library file in place") apply it to every row naming the path. Load drops what a row outside a group cannot use: its
+  `avoidSite` (a lone RadioReference site keeps its avoid: its "1 site" chooser lifts it), and the `siteName` and
+  position older edits left when they cleared only the ids; its `place` stays (a conventional multi-repeater row has one
+  and no ids). Load saves that with the UID repair (one warning when that save fails; the clear repeats at the next
+  load). A replay copy in `replays/` a row gains is adopted before the save and one no row names after a saved edit or
+  remove is released (`replay_store.{h,cpp}`). Tests: `UI_QT_PERSISTENCE`, `UI_QT_SITE_GROUPS`, `UI_QT_REPLAY_STORE`,
+  `UI_QT_BACKUP_ARCHIVE` and `UI_QT_BACKUP_APPLY` (`place` through a backup and its restore).
 - `listen_pins.{h,cpp}` (`listenPins`, issue #801) resolves the shortcuts pinned to Listen. They are stored in
   `AppPrefs::pinned` (`listen/pinned`, portable): a JSON array in one string, each `{kind, uid}` with kind `system` (a
   saved row's UID, standing for its Home card), `site` (one saved row), `scan` (a scan list's UID), `search` or
@@ -13686,24 +13691,25 @@ Qt Quick frontend (`src/ui/qt`):
   over `AppPrefs`, `SavedSystemsModel` and `ScanListsModel` after both load and before `prune_missing_csv_paths()`, so a
   `system` pin whose row that startup cleanup takes out of its group follows the group as below. `entries` holds every
   stored pin in order as `{key, kind, uid, label, accessibleName, found}` (`key` = `kind:uid`); a system is named by its
-  group's lead and its accessible name says whether a tap starts it or chooses a site (no site, or several, it can
-  play), a site is "system · site". `revision` moves on every entries change and on every row, data, sites or reset
-  signal of either model, because `isPinned()` follows groups: a system pin matches its group's card through any of its
-  sites, and a row in no group also matches a site pin of itself (a site edited out of its group keeps its pin). `pin()`
-  refuses a full row ("Pinned is full (6). Unpin one first.") or a target not saved, and never writes `lastStarted*`;
-  `unpin()` removes what `isPinned()` matched and `unpinKey()` one entry. Pins are never pruned at load, at a model
-  reset or when pinning: a store that cannot be read loads as `[]`, and its pins stay, `found` false, still counting
-  toward the cap, until it loads again. Only `rowsAboutToBeRemoved`, which both models signal only for a removal they
-  saved, prunes: a `site` or `scan` pin goes with its row, and a `system` pin moves to a remaining site of its group
-  (`siblingRows()` before the removal), else goes. The kept list is worked out there and stored at `rowsRemoved`, so no
-  `listenPins` signal lands inside the model's removal. A `system` pin is the system, not its row: `refresh()` remembers
-  each row's group by UID, and when the pinned row leaves its group (an edit of its frequency, decode flag or a CSV
-  field, or a library file's removal or update) while the group still has sites, the next `dataChanged`/`sitesChanged`
-  moves the pin to the group's lead and stores it; a group's last site keeps its pin (also at startup, see
-  `load_listen_pins()` above; `UI_QT_BACKUP_ARCHIVE`). `action()` is every source's Pin to Listen (see "Pin to Listen"
-  above). User text
-  lives in `ListenPins::text()`. The QML fixture publishes it over the real `AppPrefs`, clears pins for each test file,
-  and `testContext.resetPins()` clears them between cases. Tests: `UI_QT_PERSISTENCE`.
+  group's title (`site_group_title()` of the lead, as its card) and its accessible name says whether a tap starts it or
+  chooses a site (no site, or several, it can play), a site is "title · site" (its own row's title). `revision` moves on
+  every entries change and on every row, data, sites or reset signal of either model, because `isPinned()` follows
+  groups: a system pin matches its group's card through any of its sites, and a row in no group also matches a site pin
+  of itself (a site edited out of its group keeps its pin). `pin()` refuses a full row ("Pinned is full (6). Unpin one
+  first.") or a target not saved, and never writes `lastStarted*`; `unpin()` removes what `isPinned()` matched and
+  `unpinKey()` one entry. Pins are never pruned at load, at a model reset or when pinning: a store that cannot be read
+  loads as `[]`, and its pins stay, `found` false, still counting toward the cap, until it loads again. Only
+  `rowsAboutToBeRemoved`, which both models signal only for a removal they saved, prunes: a `site` or `scan` pin goes
+  with its row, and a `system` pin moves to a remaining site of its group (`siblingRows()` before the removal), else
+  goes. The kept list is worked out there and stored at `rowsRemoved`, so no `listenPins` signal lands inside the
+  model's removal. A `system` pin is the system, not its row: `refresh()` remembers each row's group key
+  (`site_group_key()`) by UID, and when the pinned row leaves its group (an edit of its frequency, decode flag, a CSV
+  field or its receiver, or a library file's removal or update) while the group still has sites, the next
+  `dataChanged`/`sitesChanged` moves the pin to the group's lead and stores it, synchronously, so several changes in one
+  turn (startup's missing-file clears) move it one step at a time; a group's last site keeps its pin (also at startup,
+  see `load_listen_pins()` above; `UI_QT_BACKUP_ARCHIVE`). `action()` is every source's Pin to Listen (see "Pin to
+  Listen" above). User text lives in `ListenPins::text()`. The QML fixture publishes it over the real `AppPrefs`, clears
+  pins for each test file, and `testContext.resetPins()` clears them between cases. Tests: `UI_QT_PERSISTENCE`.
 - Removing a library file (issue #801) runs in this order: `ImportsScreen.qml`'s Remove file clears the path from saved
   systems (`SavedSystemsModel::clearCsvPath`), then from scan lists (`ScanListsModel::clearCsvPath`), then calls
   `ImportedFilesModel::remove()`, which deletes the file (one already gone counts as deleted) and its bundle folder

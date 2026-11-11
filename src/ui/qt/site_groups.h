@@ -22,6 +22,24 @@ class SiteInteractionGuard : public QObject {
 bool site_position_valid(double lat, double lon);
 // Negative means unavailable. All distances are kilometers.
 double site_distance_km(double lat, double lon, double siteLat, double siteLon);
+/*
+ * The receiver a saved system or scan list runs on, as its argv names it: the source, then the device the source opens
+ * (an Airspy by its serial, rtl_tcp and TCP audio by host and port, UDP audio by its port, a file by its path). A host
+ * is matched without case or the blanks the argv trims. Scan lists join on it, and site groups split by it.
+ */
+QString receiver_identity(const QVariantMap& system);
+/*
+ * The site group @p row belongs to, "<rrSid>|<receiver_identity()>" for a RadioReference site (rrSid and rrSiteId
+ * above 0), else empty: a system saved for two receivers is two groups. Every view of a group (siblings, nearest, site
+ * count, cards and pins) groups by this key.
+ */
+QString site_group_key(const QVariantMap& row);
+/*
+ * A group's name, from its lead row: the name without the " — <siteName>" an import generated, else the name as it is.
+ * The card and its pin both show it.
+ */
+QString site_group_title(const QVariantMap& lead);
+// The rows of @p row's group (site_group_key()) in row order; empty for a row in no group.
 QVariantList site_sibling_rows(const QVariantList& rows, int row);
 int site_nearest_row(const QVariantList& rows, int row, double lat, double lon);
 /*
