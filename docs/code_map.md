@@ -13637,18 +13637,36 @@ Qt Quick frontend (`src/ui/qt`):
   store, kept name after the move, dismissal and announcements across a rebuilt Home, gating, both scratch-settings and
   both default-settings sentences, 360 px at the largest text).
 - `saved_systems_model.{h,cpp}` (`savedSystems`, `saved_systems.json`) writes save-first (issue #801): `add`,
-  `update`, `remove`, `setAvoidSite`, `clearCsvPath` and `touch` build the next rows, save them, and only then change
-  the model and signal. A failed save changes nothing in memory, sends no signal and returns false (`touch` stays
-  `void`: recency is advisory, and an unsaved stamp stays out of memory too). `clearCsvPath` returns true when nothing
-  names the path. So `rowsAboutToBeRemoved`/`rowsRemoved` (then `sitesChanged`, `countChanged`,
-  `mostRecentRowChanged`) mean the removal is on disk, and whatever follows rows out of the model can prune on them.
-  A site is grouped while `rrSid > 0` and `rrSiteId > 0` (`site_groups.cpp`). An edit of its frequency, decode flag or
-  a CSV field, or the removal of a library file it names, zeroes both and also clears `avoidSite`, because only the
-  group's `SiteChooserSheet` can lift an avoid. Load clears `avoidSite` on any row outside a group and saves that with
-  the UID repair (one warning when that save fails; the clear repeats at the next load). A lone RadioReference site
-  keeps its avoid: its "1 site" chooser lifts it. A replay copy in `replays/` a row gains is adopted before the save
-  and one no row names after a saved edit or remove is released (`replay_store.{h,cpp}`). Tests: `UI_QT_PERSISTENCE`,
-  `UI_QT_REPLAY_STORE`.
+  `update`, `remove`, `setAvoidSite`, `clearCsvPath`, `invalidatePathProvenance`, `applyPlaceNames` and `touch` build
+  the next rows, save them, and only then change the model and signal. A failed save changes nothing in memory, sends
+  no signal and returns false (`touch` stays `void`: recency is advisory, and an unsaved stamp stays out of memory
+  too). `clearCsvPath`, `invalidatePathProvenance` and `applyPlaceNames` return true when nothing needs changing, and
+  signal one `dataChanged` spanning the rows they changed (B14: one per row re-ran every pin's bookkeeping each
+  time). So `rowsAboutToBeRemoved`/`rowsRemoved` (then `sitesChanged`, `countChanged`) mean the removal is on disk, and
+  whatever follows rows out of the model can prune on them. A site is grouped while `rrSid > 0` and `rrSiteId > 0`
+  (`site_groups.cpp`). A row's `place` (role `place`) is the RadioReference geography an import captured:
+  `{states: [{stid, name?}], counties: [{ctid, stid?, name?}], candidateStates: [stid]}`, held to
+  `SavedSystemsModel::validPlace()` (ids whole numbers, not text, in 1..INT32_MAX; names text of at most 128
+  characters; at most 64 states or candidate states and 512 counties; repeats of an id merged into the first). A place
+  that breaks it anywhere is dropped whole wherever it arrives (load, `add`, `update`, a restored backup at its first
+  load); the row keeps everything else. `applyPlaceNames(stid, stateName, countyNames)` (metadata only) names the
+  state and the listed counties in every row whose place names them, links those counties to the state and adds the
+  state to a row whose county now links to it. `setPlaceNameCache()` installs a fill that `add` and `update` run, before
+  their save, on a place whose ids are new. One rule clears stale provenance (B11): `rr_provenance_cleared()`
+  (`site_groups.cpp`) zeroes `rrSid`, `rrSiteId`, `avoidSite` (only the group's `SiteChooserSheet` can lift an
+  avoid), `siteName`, `siteLat`, `siteLon`, `hasSitePos` and `place`. `update` applies it when the edit changes the
+  frequency, decode flag or a CSV field, then applies what the edit carries of its own of `rrSid`, `rrSiteId`,
+  `siteName`, the position and `place` (validated): an ordinary edit carries none and ends cleared, an edit-mode
+  re-import keeps its fresh identity, and a changed `siteName` there renames a generated `base — oldSite` name
+  (`site_generated_name()`). `clearCsvPath` (a library file removed) and `invalidatePathProvenance` (a library file
+  replaced with the user's own bytes, keeping the path; see "Replacing a library file in place") apply it to every row
+  naming the path. Load drops what a row outside a group cannot use: its `avoidSite` (a lone RadioReference site keeps
+  its avoid: its "1 site" chooser lifts it), and the `siteName` and position older edits left when they cleared only
+  the ids; its `place` stays (a conventional multi-repeater row has one and no ids). Load saves that with the UID repair
+  (one warning when that save fails; the clear repeats at the next load). A replay copy in `replays/` a row gains is
+  adopted before the save and one no row names after a saved edit or remove is released (`replay_store.{h,cpp}`).
+  Tests: `UI_QT_PERSISTENCE`, `UI_QT_SITE_GROUPS`, `UI_QT_REPLAY_STORE`, `UI_QT_BACKUP_ARCHIVE` and
+  `UI_QT_BACKUP_APPLY` (`place` through a backup and its restore).
 - `listen_pins.{h,cpp}` (`listenPins`, issue #801) resolves the shortcuts pinned to Listen. They are stored in
   `AppPrefs::pinned` (`listen/pinned`, portable): a JSON array in one string, each `{kind, uid}` with kind `system` (a
   saved row's UID, standing for its Home card), `site` (one saved row), `scan` (a scan list's UID), `search` or
@@ -13672,7 +13690,7 @@ Qt Quick frontend (`src/ui/qt`):
   (`siblingRows()` before the removal), else goes. The kept list is worked out there and stored at `rowsRemoved`, so no
   `listenPins` signal lands inside the model's removal. A `system` pin is the system, not its row: `refresh()` remembers
   each row's group by UID, and when the pinned row leaves its group (an edit of its frequency, decode flag or a CSV
-  field, or a library file's removal) while the group still has sites, the next `dataChanged`/`sitesChanged` moves the
+  field, or a library file's removal or update) while the group still has sites, the next `dataChanged`/`sitesChanged` moves the
   pin to the group's lead and stores it; a group's last site keeps its pin (also at startup, see `load_listen_pins()`
   above; `UI_QT_BACKUP_ARCHIVE`). `action()` is every source's Pin to Listen (see "Pin to Listen" above). User text
   lives in `ListenPins::text()`. The QML fixture publishes it over the real `AppPrefs`, clears pins for each test file,
@@ -13708,7 +13726,12 @@ Qt Quick frontend (`src/ui/qt`):
   decoder's rewrite check and its replace never straddle a Qt install. The lock covers the one rename, never the copy,
   and marks `DSD_MANAGED_FILE_STEP_INSTALLED` once the file is in place. The move is the last step, so nothing is ever
   rolled back over the file: a failure before it (the index cannot be saved) leaves the file as it was, and a failed
-  move puts the old index back. Bundle replaces (channel maps, target lists) take the same path. `ImportsScreen.qml` then calls `reloadIfInUse()` for a `group` or `chan` row whenever a session runs,
+  move puts the old index back. Before an update (never a refresh) touches the index, `setBeforeUserReplace()`'s hook
+  runs with the stored path: `qt_ui.cpp`'s `wire_library_replace()` points it at
+  `SavedSystemsModel::invalidatePathProvenance()`, since the user's own bytes no longer describe the RadioReference site
+  the systems naming the file came from (B11). Dependency first, as a removal clears references before the file goes:
+  a failed save there refuses the update with `save` and nothing changes; an index save or move that fails after it
+  leaves those rows cleared over the file's old bytes, which is safe (`test_user_replace_lets_go_first`). Bundle replaces (channel maps, target lists) take the same path. `ImportsScreen.qml` then calls `reloadIfInUse()` for a `group` or `chan` row whenever a session runs,
   after an update (not a new import, a cancel or an unusable file) and after a refresh: it posts
   `CommandBridge::reloadGroupList(path)` / `reloadChannelMap(path)`, and the decoder reloads the file only if it is
   the one it uses at that moment. The screen no longer takes `sessionSystem` (the saved system a session started

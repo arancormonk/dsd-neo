@@ -20,6 +20,8 @@
 #include <QSet>
 #include <QUuid>
 #include <QVariant>
+#include <cmath>
+#include <limits>
 
 #include <dsd-neo/runtime/log.h>
 #include "json_store.h"
@@ -51,7 +53,307 @@ bias_tee_from_stored(const QVariant& value) {
     return (mode >= -1 && mode <= 1) ? mode : -1;
 }
 
+constexpr int kPlaceMaxStates = 64;
+constexpr int kPlaceMaxCounties = 512;
+constexpr int kPlaceMaxName = 128;
+
+/** A RadioReference id: a whole number (never text or a bool) in 1..INT32_MAX. */
+bool
+place_id(const QVariant& raw, int* id) {
+    const int type = raw.typeId();
+    if (type == QMetaType::Double) {
+        const double value = raw.toDouble();
+        if (!(value >= 1.0 && value <= static_cast<double>(std::numeric_limits<int>::max()))) {
+            return false; // NaN included
+        }
+        *id = static_cast<int>(value);
+        return !(value - *id > 0.0);
+    }
+    const bool whole = type == QMetaType::Int || type == QMetaType::UInt || type == QMetaType::LongLong
+                       || type == QMetaType::ULongLong;
+    int value = 0;
+    if (!whole || !stored_int(raw, &value) || value < 1) {
+        return false;
+    }
+    *id = value;
+    return true;
+}
+
+/** An entry's optional name: absent leaves @p name empty; text up to the limit; anything else fails. */
+bool
+place_name(const QVariantMap& entry, QString* name) {
+    name->clear();
+    const auto it = entry.constFind(QStringLiteral("name"));
+    if (it == entry.cend()) {
+        return true;
+    }
+    if (it->typeId() != QMetaType::QString) {
+        return false;
+    }
+    *name = it->toString();
+    return name->size() <= kPlaceMaxName;
+}
+
+/** The list @p place holds at @p key, of at most @p max entries; an absent key is an empty list. */
+bool
+place_list(const QVariantMap& place, const QString& key, int max, QVariantList* list) {
+    list->clear();
+    const auto it = place.constFind(key);
+    if (it == place.cend()) {
+        return true;
+    }
+    if (it->typeId() != QMetaType::QVariantList) {
+        return false;
+    }
+    *list = it->toList();
+    return list->size() <= max;
+}
+
+/** Append @p entry, or merge it into the entry @p id already has, which takes only the keys it lacks. */
+void
+merge_place_entry(QVariantList* out, QHash<int, qsizetype>* at, int id, const QVariantMap& entry) {
+    const auto found = at->constFind(id);
+    if (found == at->cend()) {
+        at->insert(id, out->size());
+        out->append(entry);
+        return;
+    }
+    QVariantMap kept = out->at(*found).toMap();
+    for (auto it = entry.cbegin(); it != entry.cend(); ++it) {
+        if (!kept.contains(it.key())) {
+            kept.insert(it.key(), it.value());
+        }
+    }
+    (*out)[*found] = kept;
+}
+
+/** One state or county entry, keyed by @p idKey, with an optional state link when @p linked. */
+bool
+place_entry(const QVariant& value, const QString& idKey, bool linked, int* id, QVariantMap* entry) {
+    if (value.typeId() != QMetaType::QVariantMap) {
+        return false;
+    }
+    const QVariantMap raw = value.toMap();
+    QString name;
+    if (!place_id(raw.value(idKey), id) || !place_name(raw, &name)) {
+        return false;
+    }
+    *entry = QVariantMap{{idKey, *id}};
+    if (!name.isEmpty()) {
+        entry->insert(QStringLiteral("name"), name);
+    }
+    const QString link = QStringLiteral("stid");
+    if (linked && raw.contains(link)) {
+        int stid = 0;
+        if (!place_id(raw.value(link), &stid)) {
+            return false;
+        }
+        entry->insert(link, stid);
+    }
+    return true;
+}
+
+/** The entries @p place holds at @p key, validated and merged by id into @p out. */
+bool
+place_entries(const QVariantMap& place, const QString& key, const QString& idKey, int max, QVariantList* out) {
+    QVariantList raw;
+    if (!place_list(place, key, max, &raw)) {
+        return false;
+    }
+    QHash<int, qsizetype> at;
+    const bool linked = idKey != QLatin1String("stid");
+    for (const QVariant& value : raw) {
+        int id = 0;
+        QVariantMap entry;
+        if (!place_entry(value, idKey, linked, &id, &entry)) {
+            return false;
+        }
+        merge_place_entry(out, &at, id, entry);
+    }
+    return true;
+}
+
+/** The candidate state ids, validated, each once. */
+bool
+place_candidates(const QVariantMap& place, QVariantList* out) {
+    QVariantList raw;
+    if (!place_list(place, QStringLiteral("candidateStates"), kPlaceMaxStates, &raw)) {
+        return false;
+    }
+    QSet<int> seen;
+    for (const QVariant& value : raw) {
+        int stid = 0;
+        if (!place_id(value, &stid)) {
+            return false;
+        }
+        if (!seen.contains(stid)) {
+            seen.insert(stid);
+            out->append(stid);
+        }
+    }
+    return true;
+}
+
+/** Every id a place holds, in order: what decides whether its names need filling again. */
+QList<int>
+place_ids(const QVariantMap& place) {
+    QList<int> ids;
+    for (const auto& [key, idKey] : {std::make_pair("states", "stid"), std::make_pair("counties", "ctid")}) {
+        for (const QVariant& entry : place.value(QLatin1String(key)).toList()) {
+            ids.append(entry.toMap().value(QLatin1String(idKey)).toInt());
+        }
+        ids.append(0);
+    }
+    for (const QVariant& stid : place.value(QStringLiteral("candidateStates")).toList()) {
+        ids.append(stid.toInt());
+    }
+    return ids;
+}
+
+/** Set @p entry's name to @p name when it is a usable name and differs; true when it changed. */
+bool
+set_place_name(QVariantMap& entry, const QString& name) {
+    if (name.isEmpty() || name.size() > kPlaceMaxName || entry.value(QStringLiteral("name")).toString() == name) {
+        return false;
+    }
+    entry.insert(QStringLiteral("name"), name);
+    return true;
+}
+
+/** Name and link the counties @p countyNames covers in @p counties; @p linked says whether any links to @p stid. */
+bool
+name_place_counties(QVariantList& counties, int stid, const QHash<int, QString>& countyNames, bool* linked) {
+    bool changed = false;
+    const QString link = QStringLiteral("stid");
+    for (QVariant& value : counties) {
+        QVariantMap county = value.toMap();
+        const auto name = countyNames.constFind(county.value(QStringLiteral("ctid")).toInt());
+        if (name == countyNames.cend()) {
+            *linked = *linked || county.value(link).toInt() == stid;
+            continue;
+        }
+        *linked = true;
+        bool countyChanged = set_place_name(county, *name);
+        if (county.value(link).toInt() != stid) {
+            county.insert(link, stid);
+            countyChanged = true;
+        }
+        if (countyChanged) {
+            value = county;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+/** @p stid's names applied to @p place (see SavedSystemsModel::applyPlaceNames()); true when anything changed. */
+bool
+apply_place_names(QVariantMap& place, int stid, const QString& stateName, const QHash<int, QString>& countyNames) {
+    bool linked = false;
+    QVariantList counties = place.value(QStringLiteral("counties")).toList();
+    bool changed = name_place_counties(counties, stid, countyNames, &linked);
+    QVariantList states = place.value(QStringLiteral("states")).toList();
+    bool listed = false;
+    for (QVariant& value : states) {
+        QVariantMap state = value.toMap();
+        if (state.value(QStringLiteral("stid")).toInt() == stid) {
+            listed = true;
+            if (set_place_name(state, stateName)) {
+                value = state;
+                changed = true;
+            }
+        }
+    }
+    if (linked && !listed && states.size() < kPlaceMaxStates) {
+        QVariantMap state{{QStringLiteral("stid"), stid}};
+        set_place_name(state, stateName);
+        states.append(state);
+        changed = true;
+    }
+    if (changed) {
+        place.insert(QStringLiteral("states"), states);
+        place.insert(QStringLiteral("counties"), counties);
+    }
+    return changed;
+}
+
+/** The keys an import carries of its own site; an edit that changes the tuning keeps only these, never stored ones. */
+constexpr const char* kFreshProvenanceKeys[] = {"rrSid",   "rrSiteId",   "siteName", "siteLat",
+                                                "siteLon", "hasSitePos", "place"};
+
+/** Whether @p system changes a field that decides what the row's imported site is. */
+bool
+changes_site_tuning(const QVariantMap& previous, const QVariantMap& system) {
+    for (const char* key : {"freqMhz", "decodeFlag", "chanCsvPath", "groupCsvPath", "keyCsvPath", "keyCsvHex",
+                            "p25BandplanCsvPath", "srcCsvPath"}) {
+        const QString name = QLatin1String(key);
+        if (system.contains(name) && system.value(name) != previous.value(name)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * @brief The fields an edit that changes the tuning applies: the stored provenance cleared, then what @p system
+ * carries of its own (an edit-mode re-import), with a generated "base — oldSite" name following a renamed site.
+ */
+QVariantMap
+reimport_fields(const QVariantMap& previous, const QVariantMap& system) {
+    QVariantMap fields = rr_provenance_cleared(system);
+    for (const char* key : kFreshProvenanceKeys) {
+        const QString name = QLatin1String(key);
+        if (system.contains(name)) {
+            fields.insert(name, system.value(name));
+        }
+    }
+    const QString siteKey = QStringLiteral("siteName");
+    if (system.contains(siteKey)) {
+        const QString nameKey = QStringLiteral("name");
+        const QString name = (system.contains(nameKey) ? system : previous).value(nameKey).toString();
+        fields.insert(nameKey,
+                      site_generated_name(name, previous.value(siteKey).toString(), system.value(siteKey).toString()));
+    }
+    return fields;
+}
+
 } // namespace
+
+QVariantMap
+SavedSystemsModel::validPlace(const QVariant& raw) {
+    if (raw.typeId() != QMetaType::QVariantMap) {
+        return QVariantMap();
+    }
+    const QVariantMap place = raw.toMap();
+    QVariantList states;
+    QVariantList counties;
+    QVariantList candidates;
+    if (!place_entries(place, QStringLiteral("states"), QStringLiteral("stid"), kPlaceMaxStates, &states)
+        || !place_entries(place, QStringLiteral("counties"), QStringLiteral("ctid"), kPlaceMaxCounties, &counties)
+        || !place_candidates(place, &candidates)) {
+        return QVariantMap();
+    }
+    if (states.isEmpty() && counties.isEmpty() && candidates.isEmpty()) {
+        return QVariantMap();
+    }
+    return {{QStringLiteral("states"), states},
+            {QStringLiteral("counties"), counties},
+            {QStringLiteral("candidateStates"), candidates}};
+}
+
+void
+SavedSystemsModel::setPlaceNameCache(PlaceNameFill fill) {
+    m_placeNames = std::move(fill);
+}
+
+void
+SavedSystemsModel::fillPlaceNames(Row& row, const QVariantMap& previous) const {
+    if (!m_placeNames || row.place.isEmpty() || place_ids(row.place) == place_ids(previous)) {
+        return;
+    }
+    m_placeNames(row.place);
+    row.place = validPlace(row.place);
+}
 
 SavedSystemsModel::SavedSystemsModel(QObject* parent)
     : QAbstractListModel(parent), m_realtime_now_ms(&realtimeMSecsSinceEpoch) {
@@ -95,6 +397,7 @@ SavedSystemsModel::detailRoleValue(const Row& row, int role) {
         case SiteLonRole: return row.siteLon;
         case HasSitePosRole: return row.hasSitePos;
         case AvoidSiteRole: return row.avoidSite;
+        case PlaceRole: return row.place;
         default: return QVariant();
     }
 }
@@ -170,6 +473,7 @@ SavedSystemsModel::roleNames() const {
     roles.insert(SiteLonRole, QByteArrayLiteral("siteLon"));
     roles.insert(HasSitePosRole, QByteArrayLiteral("hasSitePos"));
     roles.insert(AvoidSiteRole, QByteArrayLiteral("avoidSite"));
+    roles.insert(PlaceRole, QByteArrayLiteral("place"));
     return roles;
 }
 
@@ -257,6 +561,9 @@ SavedSystemsModel::fillRowDetails(const QVariantMap& map, Row& row) {
     if (map.contains(QStringLiteral("avoidSite"))) {
         row.avoidSite = map.value(QStringLiteral("avoidSite")).toBool();
     }
+    if (map.contains(QStringLiteral("place"))) {
+        row.place = validPlace(map.value(QStringLiteral("place")));
+    }
 }
 
 SavedSystemsModel::Row
@@ -333,6 +640,7 @@ SavedSystemsModel::mapFromRow(const Row& row) const {
     map.insert(QStringLiteral("siteLon"), row.siteLon);
     map.insert(QStringLiteral("hasSitePos"), row.hasSitePos);
     map.insert(QStringLiteral("avoidSite"), row.avoidSite);
+    map.insert(QStringLiteral("place"), row.place);
 
     map.insert(QStringLiteral("name"), row.name);
     map.insert(QStringLiteral("sourceType"), row.sourceType);
@@ -368,6 +676,7 @@ SavedSystemsModel::add(const QVariantMap& system) {
     Row row = rowFromMap(system, Row());
     row.uid = QUuid::createUuid().toString(QUuid::WithoutBraces);
     row.filePath = migratedReplay(QString(), row.filePath);
+    fillPlaceNames(row, QVariantMap());
     auto next = m_rows;
     next.append(row);
     if (!adoptReplay(row.filePath) || !saveRows(next)) {
@@ -378,7 +687,6 @@ SavedSystemsModel::add(const QVariantMap& system) {
     endInsertRows();
     Q_EMIT sitesChanged();
     Q_EMIT countChanged();
-    Q_EMIT mostRecentRowChanged();
     return true;
 }
 
@@ -408,22 +716,14 @@ SavedSystemsModel::update(int row, const QVariantMap& system) {
     if (row < 0 || row >= m_rows.size() || !radio_settings_valid(system.value(QStringLiteral("radioSettings")))) {
         return false;
     }
-    // WP-D4: changed tuning/CSV content no longer describes the imported site.
-    QVariantMap fields = system;
+    // WP-D4, B11: changed tuning/CSV content no longer describes the imported site; only what this edit carries of
+    // its own (a re-import's fresh provenance) describes it now.
     const auto previous = get(row);
-    for (const char* key : {"freqMhz", "decodeFlag", "chanCsvPath", "groupCsvPath", "keyCsvPath", "keyCsvHex",
-                            "p25BandplanCsvPath", "srcCsvPath"}) {
-        if (previous.value("rrSid").toInt() > 0 && fields.contains(key) && fields.value(key) != previous.value(key)) {
-            fields.insert("rrSid", 0);
-            fields.insert("rrSiteId", 0);
-            // Only the group's site chooser lifts an avoid; a site out of its group would stay avoided for good.
-            fields.insert("avoidSite", false);
-            break;
-        }
-    }
+    const QVariantMap fields = changes_site_tuning(previous, system) ? reimport_fields(previous, system) : system;
     // Missing encKeyValue means Keep; a present empty value explicitly clears it.
     auto next = m_rows;
     next[row] = rowFromMap(fields, m_rows.at(row));
+    fillPlaceNames(next[row], m_rows.at(row).place);
     // A draft opened before the replay migration finished still names the cached file: it saves as the copy.
     next[row].filePath = migratedReplay(next.at(row).uid, next.at(row).filePath);
     const QString previousFile = m_rows.at(row).filePath;
@@ -479,7 +779,6 @@ SavedSystemsModel::remove(int row) {
     endRemoveRows();
     Q_EMIT sitesChanged();
     Q_EMIT countChanged();
-    Q_EMIT mostRecentRowChanged();
     releaseReplayIfUnused(file);
     return true;
 }
@@ -555,8 +854,8 @@ SavedSystemsModel::touch(int row) {
     if (row < 0 || row >= m_rows.size()) {
         return;
     }
-    // Recency is advisory, so a failed save is not reported; it stays out of memory, though, so the most recent row
-    // shown now is the one the next launch shows.
+    // Recency is advisory, so a failed save is not reported; it stays out of memory, though, so the recency shown now
+    // is the one the next launch shows.
     auto next = m_rows;
     next[row].lastHeard = m_realtime_now_ms() / 1000;
     if (!saveRows(next)) {
@@ -565,7 +864,6 @@ SavedSystemsModel::touch(int row) {
     m_rows = std::move(next);
     const QModelIndex idx = index(row);
     Q_EMIT dataChanged(idx, idx, {LastHeardRole});
-    Q_EMIT mostRecentRowChanged();
 }
 
 QStringList
@@ -599,56 +897,85 @@ SavedSystemsModel::csvPaths() const {
 
 bool
 SavedSystemsModel::clearCsvPath(const QString& path) {
+    return clearPathProvenance(path, true);
+}
+
+bool
+SavedSystemsModel::invalidatePathProvenance(const QString& path) {
+    return clearPathProvenance(path, false);
+}
+
+bool
+SavedSystemsModel::clearPathProvenance(const QString& path, bool clearFields) {
     if (path.isEmpty()) {
         return true;
     }
+    const QVariantMap cleared = rr_provenance_cleared(QVariantMap());
     auto next = m_rows;
-    QList<int> changed;
+    int first = -1;
+    int last = -1;
     for (int i = 0; i < next.size(); i++) {
         Row& row = next[i];
-        bool rowChanged = false;
+        bool names = false;
         for (QString Row::* field :
              {&Row::chanCsvPath, &Row::groupCsvPath, &Row::keyCsvPath, &Row::p25BandplanCsvPath, &Row::srcCsvPath}) {
             if (row.*field == path) {
-                (row.*field).clear();
-                rowChanged = true;
+                names = true;
+                if (clearFields) {
+                    (row.*field).clear();
+                }
             }
         }
-        if (rowChanged) {
-            // The site leaves its group, and with it the only chooser that could lift its avoid.
-            row.rrSid = 0;
-            row.rrSiteId = 0;
-            row.avoidSite = false;
-            changed.append(i);
+        if (names) {
+            // The file no longer describes the site, and the site leaves its group with the only chooser that could
+            // lift its avoid.
+            row = rowFromMap(cleared, row);
+            first = first < 0 ? i : first;
+            last = i;
         }
     }
-    if (changed.isEmpty()) {
+    if (first < 0) {
         return true;
     }
     // Saved first, so a failure leaves every reference in place for a retry to clear.
     if (!saveRows(next)) {
         return false;
     }
-    m_rows = std::move(next);
-    for (const int i : changed) {
-        const QModelIndex idx = index(i);
-        Q_EMIT dataChanged(idx, idx);
-    }
+    commitChangedRange(std::move(next), first, last, {});
     Q_EMIT sitesChanged();
     return true;
 }
 
-int
-SavedSystemsModel::mostRecentRow() const {
-    int best = 0;
-    qint64 bestHeard = -1;
-    for (int i = 0; i < m_rows.size(); i++) {
-        if (m_rows.at(i).lastHeard > bestHeard) {
-            bestHeard = m_rows.at(i).lastHeard;
-            best = i;
+void
+SavedSystemsModel::commitChangedRange(QList<Row>&& next, int first, int last, const QList<int>& roles) {
+    m_rows = std::move(next);
+    // One signal for the whole span: each dataChanged re-runs whatever follows the model over every row.
+    Q_EMIT dataChanged(index(first), index(last), roles);
+}
+
+bool
+SavedSystemsModel::applyPlaceNames(int stid, const QString& stateName, const QHash<int, QString>& countyNames) {
+    if (stid <= 0) {
+        return true;
+    }
+    auto next = m_rows;
+    int first = -1;
+    int last = -1;
+    for (int i = 0; i < next.size(); i++) {
+        if (apply_place_names(next[i].place, stid, stateName, countyNames)) {
+            first = first < 0 ? i : first;
+            last = i;
         }
     }
-    return best;
+    if (first < 0) {
+        return true;
+    }
+    // A failure leaves every row as it was; the next resolve of this state tries again.
+    if (!saveRows(next)) {
+        return false;
+    }
+    commitChangedRange(std::move(next), first, last, {PlaceRole});
+    return true;
 }
 
 QString
@@ -761,12 +1088,7 @@ SavedSystemsModel::load() {
         if (row.decodeFlag == QLatin1String("-f1 -mq")) {
             row.decodeFlag = QStringLiteral("-mq");
         }
-        // An avoid outside a group, kept by edits before they dropped it, could never be lifted: the site chooser
-        // that lifts it lists only a group's sites. A lone RadioReference site keeps it; its "1 site" chooser opens.
-        if (row.avoidSite && (row.rrSid <= 0 || row.rrSiteId <= 0)) {
-            row.avoidSite = false;
-            migrated = true;
-        }
+        migrated |= normalizeLoaded(row);
         rows.append(row);
     }
     beginResetModel();
@@ -779,7 +1101,24 @@ SavedSystemsModel::load() {
     }
     Q_EMIT sitesChanged();
     Q_EMIT countChanged();
-    Q_EMIT mostRecentRowChanged();
+}
+
+bool
+SavedSystemsModel::normalizeLoaded(Row& row) {
+    if (row.rrSid > 0 && row.rrSiteId > 0) {
+        return false;
+    }
+    // Outside a group, a site's avoid could never be lifted (the chooser that lifts it lists only a group's sites; a
+    // lone RadioReference site keeps it, its "1 site" chooser opens), and its name and position are what older edits
+    // left behind when they cleared only the ids. A place stays: a conventional multi-repeater row has one, no ids.
+    const bool orphan = row.avoidSite || !row.siteName.isEmpty() || row.hasSitePos || std::abs(row.siteLat) > 0
+                        || std::abs(row.siteLon) > 0;
+    row.avoidSite = false;
+    row.siteName.clear();
+    row.siteLat = 0;
+    row.siteLon = 0;
+    row.hasSitePos = false;
+    return orphan;
 }
 
 bool

@@ -9,14 +9,17 @@
  *
  * A "system" is everything one tap needs to start listening: the input spec, the
  * decode selection, trunking, and any per-system tuner overrides. Persistence is a
- * single JSON file in the app data directory — small, human-recoverable, and free
- * of schema migrations for a list that rarely exceeds a handful of rows.
+ * single JSON file in the app data directory, small and human-recoverable. Lists
+ * grow to hundreds of rows (a per-site RadioReference import adds one per site),
+ * and load() brings older rows up to the current rules in place, without schema
+ * versions.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_SAVED_SYSTEMS_MODEL_H_
 #define DSD_NEO_SRC_UI_QT_SAVED_SYSTEMS_MODEL_H_
 
 #include <QAbstractListModel>
+#include <QHash>
 #include <QList>
 #include <QMap>
 #include <QObject>
@@ -28,6 +31,7 @@
 #include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
+#include <functional>
 #include <type_traits> // IWYU pragma: keep -- QPointer's conversion checks.
 
 namespace dsd_qt {
@@ -36,7 +40,6 @@ class ReplayStore;
 class SavedSystemsModel : public QAbstractListModel {
     Q_OBJECT
     Q_PROPERTY(int count READ count NOTIFY countChanged)
-    Q_PROPERTY(int mostRecentRow READ mostRecentRow NOTIFY mostRecentRowChanged)
 
   public:
     enum Roles {
@@ -71,8 +74,24 @@ class SavedSystemsModel : public QAbstractListModel {
         SiteLonRole,
         HasSitePosRole,
         AvoidSiteRole,
-        AirspyRole
+        AirspyRole,
+        PlaceRole // RadioReference place, validPlace()'s form; empty = none
     };
+
+    /**
+     * @brief @p raw as a stored place, or an empty map when it is none or breaks the schema anywhere.
+     *
+     * A place is `{states: [{stid, name?}], counties: [{ctid, stid?, name?}], candidateStates: [stid]}`: RadioReference
+     * ids, whole numbers (not text) in 1..INT32_MAX; names text of at most 128 characters (an empty one is left out);
+     * at most 64 states, 64 candidate states and 512 counties. Entries repeating an id merge into the first, which takes
+     * only what it lacked. Unknown keys are ignored. A place with no entry at all is none.
+     */
+    static QVariantMap validPlace(const QVariant& raw);
+
+    /** Fills names and county links a place lacks from what is already known (no network); may leave it as it was. */
+    using PlaceNameFill = std::function<void(QVariantMap& place)>;
+    /** @brief The fill add() and update() run on a place whose ids are new, before they save. Empty = none. */
+    void setPlaceNameCache(PlaceNameFill fill);
 
     /** Private-store secret access for session argument assembly only. Not invokable from QML.
      * QString copies cannot promise erasure. Never log or export the returned value. */
@@ -141,8 +160,11 @@ class SavedSystemsModel : public QAbstractListModel {
     /**
      * @brief Replace one system's fields. Unknown keys are ignored. Persists first; false leaves the row as it was.
      *
-     * A changed frequency, decode flag or CSV field takes an imported site out of its group (rrSid and rrSiteId
-     * zeroed) and drops its avoid, which only the group's site chooser could lift.
+     * A changed frequency, decode flag or CSV field no longer describes the imported site: the row's stored
+     * RadioReference provenance and geography are cleared (rr_provenance_cleared(): its group, its avoid, which only
+     * the group's site chooser could lift, its site name, position and place). What @p system itself carries of
+     * rrSid, rrSiteId, siteName, siteLat, siteLon, hasSitePos and place is then applied, validated: an edit-mode
+     * re-import keeps its fresh identity. A changed siteName there renames a generated "base — oldSite" name.
      */
     Q_INVOKABLE bool update(int row, const QVariantMap& system);
 
@@ -152,8 +174,8 @@ class SavedSystemsModel : public QAbstractListModel {
     /**
      * @brief Remove one system. Persists first: on a failed save it returns false, keeps the row and signals nothing.
      *
-     * A saved removal signals rowsAboutToBeRemoved/rowsRemoved, then sitesChanged, countChanged and
-     * mostRecentRowChanged, so whatever follows rows out of the model sees only removals that will hold.
+     * A saved removal signals rowsAboutToBeRemoved/rowsRemoved, then sitesChanged and countChanged, so whatever
+     * follows rows out of the model sees only removals that will hold.
      */
     Q_INVOKABLE bool remove(int row);
 
@@ -183,14 +205,6 @@ class SavedSystemsModel : public QAbstractListModel {
      */
     Q_INVOKABLE qint64 realtimeNowMs() const;
 
-    /**
-     * @brief Row most recently heard, or 0 when the list is non-empty but unheard.
-     *
-     * A NOTIFY property, not an invokable: the home screen's featured play button
-     * binds to it, and an invokable in a binding would never re-evaluate.
-     */
-    int mostRecentRow() const;
-
     /** @brief Names of systems whose CSV fields reference @p path; for delete warnings. */
     Q_INVOKABLE QStringList systemsReferencingPath(const QString& path) const;
 
@@ -202,16 +216,34 @@ class SavedSystemsModel : public QAbstractListModel {
      *
      * Called when a library file is removed: a saved system pointing at a
      * deleted file would otherwise fail its next start with an opaque
-     * "configure failed". A site that loses a file leaves its group and its
-     * avoid. Returns false, with every row unchanged, when the save fails, and
-     * true when nothing referenced @p path.
+     * "configure failed". A row that loses a file loses its RadioReference
+     * provenance and geography too (rr_provenance_cleared()). One dataChanged
+     * spans the changed rows. Returns false, with every row unchanged, when the
+     * save fails, and true when nothing referenced @p path.
      */
     Q_INVOKABLE bool clearCsvPath(const QString& path);
+
+    /**
+     * @brief Clear the RadioReference provenance and geography of every system whose CSV fields name @p path, keeping
+     * the path. Persists first.
+     *
+     * Called before the user's own bytes replace a library file in place: the file no longer describes the site the
+     * rows came from. Returns false, with every row unchanged, when the save fails; true when nothing names @p path.
+     */
+    Q_INVOKABLE bool invalidatePathProvenance(const QString& path);
+
+    /**
+     * @brief RadioReference's names for state @p stid and its counties, applied to every row whose place names those
+     * ids: the state's name, each listed county's name and its link to @p stid, and @p stid in the row's states once
+     * one of its counties links to it. Metadata only, one save, one dataChanged spanning the changed rows.
+     *
+     * @return false when the save failed (every row as it was); true otherwise, nothing to change included.
+     */
+    bool applyPlaceNames(int stid, const QString& stateName, const QHash<int, QString>& countyNames);
 
   Q_SIGNALS:
     void sitesChanged();
     void countChanged();
-    void mostRecentRowChanged();
 
   private:
     struct Row {
@@ -231,6 +263,7 @@ class SavedSystemsModel : public QAbstractListModel {
         double siteLon = 0;
         bool hasSitePos = false;
         bool avoidSite = false;
+        QVariantMap place; // validPlace()'s form
         // QString copies cannot promise secret erasure. Key values belong only to
         // private persistence and argv assembly, never labels or diagnostics.
         QString name;
@@ -274,6 +307,14 @@ class SavedSystemsModel : public QAbstractListModel {
     static QVariant detailRoleValue(const Row& row, int role);
     static QVariant tuningRoleValue(const Row& row, int role);
     QVariantMap mapFromRow(const Row& row) const;
+    /** Load's normalization of a stored row; true when it changed something the store should save. */
+    static bool normalizeLoaded(Row& row);
+    /** Run the place-name fill on @p row's place when its ids differ from @p previous's. */
+    void fillPlaceNames(Row& row, const QVariantMap& previous) const;
+    /** Clear the provenance of every row with a CSV field naming @p path, blanking those fields too if asked. */
+    bool clearPathProvenance(const QString& path, bool clearFields);
+    /** Install @p next, saved, and signal one dataChanged from @p first to @p last. */
+    void commitChangedRange(QList<Row>&& next, int first, int last, const QList<int>& roles);
 
     void load();
     bool save() const;
@@ -287,6 +328,7 @@ class SavedSystemsModel : public QAbstractListModel {
 
     QList<Row> m_rows;
     QPointer<ReplayStore> m_replays;
+    PlaceNameFill m_placeNames;
     bool m_storeLoaded = true;
     /* The one real clock, in ms since the Unix epoch, that touch() stamps lastHeard from and realtimeNowMs() ages it
        against. */

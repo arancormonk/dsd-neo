@@ -81,6 +81,7 @@ extern "C" {
 #include "import_service.h"
 #include "imported_files_model.h"
 #include "json_store.h"
+#include "saved_systems_model.h"
 
 namespace {
 
@@ -1261,6 +1262,90 @@ test_failed_update_leaves_the_file(bool viaRefresh) {
     expect("failed update alias landed", read_file(path) == before + "789,D,Learned\n");
     expect("failed update decoder save after both", decoder.save() == 0);
     model.remove(model.rowForPath(path));
+}
+
+/* B11: a library file updated with the user's own bytes no longer describes the RadioReference site the saved systems
+ * naming it came from. They let go of it first, as a removal clears references before the file goes: when that save
+ * fails the update is refused (`save`) with the file and the rows as they were; when the install fails after it, the
+ * rows stay cleared over the file's old bytes. A RadioReference refresh keeps them. */
+void
+test_user_replace_lets_go_first() {
+    TestHost host;
+    dsd_qt::SavedSystemsModel systems;
+    while (systems.count() > 0 && systems.remove(0)) {}
+    QTemporaryDir fixtures;
+    const auto original = fixtures.filePath("original.csv");
+    const auto replacement = fixtures.filePath("replacement.csv");
+    const QByteArray before("id,mode,name\n123,A,Original\n");
+    const QByteArray after("id,mode,name\n321,B,Replacement\n");
+    expect("lets go: fixtures", write_file(original, before) && write_file(replacement, after));
+    QString path;
+    {
+        dsd_qt::ImportedFilesModel library(&host);
+        path = importAndWait(library, original, "sites.csv", "group").value("path").toString();
+    }
+    const QVariantMap place{{"states", QVariantList{QVariantMap{{"stid", 19}, {"name", "Iowa"}}}}};
+    const QVariantMap site{{"name", "SARA — North"}, {"rrSid", 12},          {"rrSiteId", 3},
+                           {"siteName", "North"},    {"siteLat", 41.6},      {"siteLon", -91.6},
+                           {"hasSitePos", true},     {"groupCsvPath", path}, {"place", place}};
+    expect("lets go: a grouped site names the file", systems.add(site));
+    const auto grouped = [&systems]() {
+        const QVariantMap row = systems.get(0);
+        return row.value("rrSiteId").toInt() == 3 && row.value("siteName") == "North"
+               && row.value("hasSitePos").toBool() && !row.value("place").toMap().isEmpty();
+    };
+    const auto cleared = [&systems, &path]() {
+        const QVariantMap row = systems.get(0);
+        return row.value("rrSid").toInt() == 0 && row.value("rrSiteId").toInt() == 0
+               && row.value("siteName").toString().isEmpty() && !row.value("hasSitePos").toBool()
+               && row.value("place").toMap().isEmpty() && row.value("groupCsvPath") == path;
+    };
+    const auto letGo = [&systems](const QString& stored) { return systems.invalidatePathProvenance(stored); };
+    const QString url = QUrl::fromLocalFile(replacement).toString();
+
+    {
+        // A RadioReference refresh is trusted: the rows keep their site.
+        dsd_qt::ImportedFilesModel library(&host);
+        library.setBeforeUserReplace(letGo);
+        expect("lets go: a refresh lands",
+               library.refreshGeneratedFile(library.rowForPath(path), original).value("ok").toBool());
+        expect("lets go: a refresh keeps the rows' site", grouped());
+    }
+    {
+        dsd_qt::ImportedFilesModel library(&host);
+        library.setBeforeUserReplace(letGo);
+        const QString store = dsd_qt::json_store_path("saved_systems.json");
+        expect("lets go: systems store blocked", QFile::rename(store, store + ".held") && QDir().mkdir(store));
+        const QVariantMap refused = replaceAndWait(library, library.rowForPath(path), url, "replacement.csv");
+        expect("lets go: systems store unblocked", QDir().rmdir(store) && QFile::rename(store + ".held", store));
+        expect("lets go: a failed let-go refuses the update", refused.value("error") == "save");
+        expect("lets go: the file keeps its bytes", read_file(path) == before);
+        expect("lets go: the library keeps its counts",
+               library.get(library.rowForPath(path)).value("accepted").toInt() == 1);
+        expect("lets go: the rows keep their site", grouped());
+    }
+    {
+        dsd_qt::ImportedFilesModel library(&host);
+        library.setBeforeUserReplace(letGo);
+        library.setReplaceFile([](const QString&, const QString&) {
+            errno = EIO;
+            return -1;
+        });
+        const QVariantMap failed = replaceAndWait(library, library.rowForPath(path), url, "replacement.csv");
+        expect("lets go: a failed install is reported", failed.value("error") == "local");
+        expect("lets go: the file keeps its bytes after a failed install", read_file(path) == before);
+        expect("lets go: the rows stay cleared", cleared());
+    }
+    expect("lets go: the site again", systems.update(0, site) && grouped());
+    {
+        dsd_qt::ImportedFilesModel library(&host);
+        library.setBeforeUserReplace(letGo);
+        const QVariantMap updated = replaceAndWait(library, library.rowForPath(path), url, "replacement.csv");
+        expect("lets go: an update lands", updated.value("ok").toBool() && read_file(path) == after);
+        expect("lets go: and the rows let go of the site", cleared());
+        library.remove(library.rowForPath(path));
+    }
+    while (systems.count() > 0 && systems.remove(0)) {}
 }
 
 void
@@ -4183,6 +4268,7 @@ main(int argc, char** argv) {
         expect("initialization signal is available", host.metaObject()->indexOfSignal("sessionInitialized()") >= 0);
     }
     test_metadata_failure_keeps_file();
+    test_user_replace_lets_go_first();
     test_update_waits_for_decoder_rewrite(false);
     test_update_waits_for_decoder_rewrite(true);
     test_failed_update_leaves_the_file(false);

@@ -5,6 +5,7 @@
 #include <QMap>
 #include <QString>
 #include <QVariant>
+#include <QVariantMap>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -89,5 +90,29 @@ site_nearest_row(const QVariantList& rows, int row, double lat, double lon) {
         }
     }
     return nearest;
+}
+
+QVariantMap
+rr_provenance_cleared(const QVariantMap& row) {
+    QVariantMap cleared = row;
+    cleared.insert(QStringLiteral("rrSid"), 0);
+    cleared.insert(QStringLiteral("rrSiteId"), 0);
+    // Only the group's site chooser lifts an avoid; a site out of its group would stay avoided for good.
+    cleared.insert(QStringLiteral("avoidSite"), false);
+    cleared.insert(QStringLiteral("siteName"), QString());
+    cleared.insert(QStringLiteral("siteLat"), 0.0);
+    cleared.insert(QStringLiteral("siteLon"), 0.0);
+    cleared.insert(QStringLiteral("hasSitePos"), false);
+    cleared.insert(QStringLiteral("place"), QVariantMap());
+    return cleared;
+}
+
+QString
+site_generated_name(const QString& name, const QString& oldSite, const QString& newSite) {
+    const QString separator = QStringLiteral(" — ");
+    if (oldSite.isEmpty() || newSite.isEmpty() || !name.endsWith(separator + oldSite)) {
+        return name;
+    }
+    return name.left(name.size() - oldSite.size()) + newSite;
 }
 } // namespace dsd_qt

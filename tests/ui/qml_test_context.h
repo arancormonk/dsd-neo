@@ -6427,6 +6427,9 @@ class Setup : public QObject {
             const int row = imported_files->rowForPath(path);
             return row >= 0 && imported_files->get(row).value("type") == "trunkTargets";
         });
+        // B11: as qt_ui.cpp's wire_library_replace(), an update lets the saved systems naming the file go of their site.
+        imported_files->setBeforeUserReplace(
+            [saved_systems](const QString& path) { return saved_systems->invalidatePathProvenance(path); });
         starter->setDecryptionProfiles(profiles);
         session_args->setDecryptionProfiles(profiles);
         ctx->setContextProperty(QStringLiteral("decryptionProfiles"), profiles);

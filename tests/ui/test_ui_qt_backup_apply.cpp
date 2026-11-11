@@ -2265,6 +2265,48 @@ test_restore_keeps_import_named_file(TestHost& host) {
 }
 
 /**
+ * A saved system's RadioReference place goes through the backup and its restore as it was saved, and the restored
+ * model loads it. A place the restore carries that breaks the schema (a hand-edited or foreign backup) is dropped
+ * when the model loads the restored store; its row loads without it.
+ */
+void
+test_restore_place() {
+    put_back(Tree());
+    const QVariantMap place{{"states", QVariantList{QVariantMap{{"stid", 19}, {"name", "Iowa"}}}},
+                            {"counties", QVariantList{QVariantMap{{"ctid", 907}, {"stid", 19}, {"name", "Johnson"}}}},
+                            {"candidateStates", QVariantList{19, 17}}};
+    {
+        dsd_qt::SavedSystemsModel systems;
+        expect(
+            "place: a system with a place",
+            systems.add(
+                {{"name", "Johnson County"}, {"sourceType", "usb"}, {"rrSid", 12}, {"rrSiteId", 3}, {"place", place}}));
+        expect("place: a second system", systems.add({{"name", "Linn County"}, {"sourceType", "usb"}}));
+    }
+    const auto built = dsd_qt::backup::backup_build_archive(dsd_qt::backup::backup_take_snapshot(), nullptr);
+    dsd_qt::backup::ParseResult parsed = dsd_qt::backup::backup_parse_archive(built.archive, root());
+    expect("place: the backup builds and parses",
+           built.error == BackupError::None && parsed.error == BackupError::None);
+    QJsonArray rows = parsed.stores.value("saved_systems.json");
+    expect("place: the backup carries it",
+           rows.size() == 2
+               && dsd_qt::SavedSystemsModel::validPlace(rows.at(0).toObject().value("place").toObject().toVariantMap())
+                      == place);
+    QJsonObject edited = rows.at(1).toObject();
+    edited.insert("place", QJsonObject{{"states", QJsonArray{QJsonObject{{"stid", "19"}}}}});
+    rows.replace(1, edited);
+    parsed.stores.insert("saved_systems.json", rows);
+    const Tree tree = capture();
+    stage_over(parsed, built.archive, tree);
+    expect("place: applied", apply().outcome == ApplyOutcome::Applied);
+    dsd_qt::SavedSystemsModel restored;
+    expect("place: the restored system keeps its place",
+           restored.rowCount() == 2 && restored.get(0).value("place").toMap() == place);
+    expect("place: a malformed place is dropped at load, the row kept",
+           restored.get(1).value("name") == "Linn County" && restored.get(1).value("place").toMap().isEmpty());
+}
+
+/**
  * Two restores in a row: B, exported from a restored A, is restored over it. The second restore's journal owns
  * exactly what the first restore wrote (the moved "-1" bundle and the files with free names included), the stores and
  * the generated folders; its only owned roots are A's two bundles, so no wider root gains deletion authority, and
@@ -2407,6 +2449,7 @@ main(int argc, char** argv) {
         test_two_restores_in_a_row(backup, old, reference);
         test_bundle_named_from_outside(host, old);
         test_restore_keeps_import_named_file(host);
+        test_restore_place();
     }
     dsd_app_signal_search_store_close();
 

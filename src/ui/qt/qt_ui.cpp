@@ -13,6 +13,7 @@
 #include <QFontDatabase>
 #include <QLatin1String>
 #include <QObject>
+#include <QPointer>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
@@ -161,6 +162,15 @@ wire_decryption_profiles(QQmlApplicationEngine& engine, DecoderHost* host, Saved
         }
     });
     return decryptionProfiles;
+}
+
+// B11: a library file replaced with the user's own bytes no longer describes the RadioReference site the saved
+// systems naming it came from; they let go of that before the bytes are installed.
+static void
+wire_library_replace(ImportedFilesModel* files, SavedSystemsModel* systems) {
+    const QPointer<SavedSystemsModel> guarded(systems);
+    files->setBeforeUserReplace(
+        [guarded](const QString& path) { return guarded.isNull() || guarded->invalidatePathProvenance(path); });
 }
 
 static void
@@ -384,6 +394,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* scanListStarter = new ScanListStarter(prefs, systems, &engine);
     auto* importedFiles = new ImportedFilesModel(host, imports, &engine);
     wire_target_files(scanListStarter, scanLists, importedFiles);
+    wire_library_replace(importedFiles, systems);
     auto* decryptionProfiles =
         wire_decryption_profiles(engine, host, systems, scanLists, sessionArgs, scanListStarter, commands, metrics);
     auto* history = make_history(engine);

@@ -196,8 +196,11 @@ If approximate access was already granted, it is respected; precise location can
 app permission settings. GPS participates when precise access is granted. No background location is requested.
 During a lookup the nearest-site action is disabled. A failed refresh labels any saved location still in use.
 
-Editing a saved site's frequency, decode flag or CSV selections clears its RadioReference grouping IDs.
-Renaming or avoiding a site preserves them. Older imports with provenance only on the library file show
+Editing a saved site's frequency, decode flag or CSV selections clears what it kept from RadioReference:
+its grouping IDs, avoid, site name, location and place. So does removing a library file it uses, or
+replacing that file with your own (**Update from file**); **Refresh from RadioReference** keeps them. An
+edit that re-imports the site keeps the new import's details, and a name made from the site ("System —
+Site") follows a renamed site. Renaming or avoiding a site preserves them. Older imports with provenance only on the library file show
 **Refresh from RadioReference to enable site grouping** and stay ungrouped; re-import the site to create
 the saved-row identity. Refreshing only a library CSV cannot infer which saved row represents which site.
 Manual rows never group.

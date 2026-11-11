@@ -59,6 +59,24 @@ main(int argc, char** argv) {
     model.update(1, {{"freqMhz", "852"}});
     check(model.get(1).value("rrSid").toInt() == 0 && model.get(1).value("rrSiteId").toInt() == 0,
           "tuning edit clears provenance");
+
+    const QVariantMap cleared = rr_provenance_cleared(north);
+    check(cleared.value("rrSid").toInt() == 0 && cleared.value("rrSiteId").toInt() == 0
+              && !cleared.value("avoidSite").toBool() && cleared.value("siteName").toString().isEmpty()
+              && std::abs(cleared.value("siteLat").toDouble()) < 1e-9
+              && std::abs(cleared.value("siteLon").toDouble()) < 1e-9 && !cleared.value("hasSitePos").toBool()
+              && cleared.contains("place") && cleared.value("place").toMap().isEmpty(),
+          "provenance cleared: every RadioReference key, present and empty");
+    check(cleared.value("name") == "North" && cleared.value("freqMhz") == "851", "provenance cleared: the rest kept");
+    check(site_generated_name(QStringLiteral("SARA — Old"), "Old", "New") == QStringLiteral("SARA — New"),
+          "generated name follows its site");
+    check(site_generated_name(QStringLiteral("My SARA"), "Old", "New") == QStringLiteral("My SARA"),
+          "a custom name stays");
+    check(site_generated_name(QStringLiteral("SARA Old"), "Old", "New") == QStringLiteral("SARA Old"),
+          "only the generated separator counts");
+    check(site_generated_name(QStringLiteral("SARA — Old"), "", "New") == QStringLiteral("SARA — Old")
+              && site_generated_name(QStringLiteral("SARA — Old"), "Old", "") == QStringLiteral("SARA — Old"),
+          "an empty site name renames nothing");
     QDir(dir).removeRecursively();
     return failures ? 1 : 0;
 }

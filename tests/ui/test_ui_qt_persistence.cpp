@@ -29,7 +29,9 @@
 #include <QMap>
 #include <QMetaProperty>
 #include <QMetaType>
+#include <QModelIndex>
 #include <QObject>
+#include <QPair>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QString>
@@ -604,7 +606,6 @@ test_saved_systems(void) {
 
         model.touch(1);
         expect("touch stamps lastHeard", model.get(1).value(QStringLiteral("lastHeard")).toLongLong() > 0);
-        expect("mostRecentRow follows the touch", model.mostRecentRow() == 1);
 
         /* The legacy simulcast chip flags are rewritten on load, not on save. */
         QVariantMap legacy;
@@ -1623,7 +1624,6 @@ record_signals(SavedSystemsModel& model, QStringList& log) {
     note(&SavedSystemsModel::dataChanged, "dataChanged");
     note(&SavedSystemsModel::sitesChanged, "sitesChanged");
     note(&SavedSystemsModel::countChanged, "countChanged");
-    note(&SavedSystemsModel::mostRecentRowChanged, "mostRecentRowChanged");
 }
 
 void
@@ -1634,8 +1634,7 @@ empty_systems(SavedSystemsModel& model) {
 }
 
 /* A removal whose save fails changes nothing: the card stays, and anything that follows rows out (a pinned shortcut)
- * keeps it, because the system is still there on the next launch. A saved removal signals rows, sites, count, then
- * the most recent row. */
+ * keeps it, because the system is still there on the next launch. A saved removal signals rows, sites, then count. */
 void
 test_remove_failure_keeps_row() {
     QStringList log;
@@ -1656,17 +1655,15 @@ test_remove_failure_keeps_row() {
     }
     expect("remove: a saved removal reports success", model.remove(0));
     expect("remove: a saved removal drops the row", model.count() == 1 && model.get(0).value("name") == "Second");
-    expect("remove: a saved removal signals rows, sites, count and recency in order",
-           log
-               == QStringList{"rowsAboutToBeRemoved", "rowsRemoved", "sitesChanged", "countChanged",
-                              "mostRecentRowChanged"});
+    expect("remove: a saved removal signals rows, sites and count in order",
+           log == QStringList{"rowsAboutToBeRemoved", "rowsRemoved", "sitesChanged", "countChanged"});
     expect("remove: a row past the end is refused", !model.remove(1) && !model.remove(-1));
     SavedSystemsModel reloaded;
     expect("remove: a saved removal persists", reloaded.count() == 1);
 }
 
-/* Recency is advisory, so touch() reports nothing, but a stamp that did not save stays out of memory: the most recent
- * row the app shows is the one the next launch shows. */
+/* Recency is advisory, so touch() reports nothing, but a stamp that did not save stays out of memory: the recency the
+ * app shows is the one the next launch shows. */
 void
 test_touch_failure_keeps_memory() {
     QStringList log;
@@ -1808,6 +1805,491 @@ test_load_migrates_orphaned_avoid() {
     expect("orphan: an unsaved clear warns once", g_migration_warnings - before == 1);
     expect("orphan: data directory permissions restored", QFile::setPermissions(directory, permissions));
     SavedSystemsModel model;
+    empty_systems(model);
+}
+
+/* A RadioReference place as an import stores it: Iowa, Johnson county linked to it, and the system's two states. */
+QVariantMap
+iowa_place() {
+    return {{"states", QVariantList{QVariantMap{{"stid", 19}, {"name", "Iowa"}}}},
+            {"counties", QVariantList{QVariantMap{{"ctid", 907}, {"stid", 19}, {"name", "Johnson"}}}},
+            {"candidateStates", QVariantList{19, 17}}};
+}
+
+QVariantMap
+illinois_place() {
+    return {{"states", QVariantList{QVariantMap{{"stid", 17}, {"name", "Illinois"}}}},
+            {"counties", QVariantList{QVariantMap{{"ctid", 613}, {"stid", 17}, {"name", "Rock Island"}}}},
+            {"candidateStates", QVariantList{17}}};
+}
+
+/* The place a row shows to QML, by its role name. */
+QVariantMap
+place_role(const SavedSystemsModel& model, int row) {
+    const int role = model.roleNames().key(QByteArrayLiteral("place"), -1);
+    return role < 0 ? QVariantMap{{"missing role", true}} : model.data(model.index(row), role).toMap();
+}
+
+/* A grouped RadioReference site with a position, an avoid and a place: everything an edit can leave stale. */
+QVariantMap
+grouped_site(const char* name, int site, const QString& groupCsv = QString()) {
+    return {{"name", name},       {"freqMhz", "851.0125"}, {"decodeFlag", "-ft"},      {"rrSid", 12},
+            {"rrSiteId", site},   {"siteName", "North"},   {"siteLat", 41.65503},      {"siteLon", -91.60244},
+            {"hasSitePos", true}, {"avoidSite", true},     {"groupCsvPath", groupCsv}, {"place", iowa_place()}};
+}
+
+/* Every piece of RadioReference provenance and geography @p row may hold is gone. */
+bool
+geography_cleared(const QVariantMap& row) {
+    return row.value("rrSid").toInt() == 0 && row.value("rrSiteId").toInt() == 0 && !row.value("avoidSite").toBool()
+           && row.value("siteName").toString().isEmpty() && !row.value("hasSitePos").toBool()
+           && std::abs(row.value("siteLat").toDouble()) < 1e-9 && std::abs(row.value("siteLon").toDouble()) < 1e-9
+           && row.value("place").toMap().isEmpty();
+}
+
+/* A saved place comes back as it went in: from the model, through its role, and from disk after a reload. */
+void
+test_place_round_trip() {
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("place: a system with a place", model.add({{"name", "Iowa ISICS"}, {"place", iowa_place()}}));
+    expect("place: a state-only place",
+           model.add(
+               {{"name", "Statewide"}, {"place", QVariantMap{{"states", QVariantList{QVariantMap{{"stid", 19}}}}}}}));
+    expect("place: a system without one", model.add({{"name", "Manual"}}));
+    expect("place: get() returns it", model.get(0).value("place").toMap() == iowa_place());
+    expect("place: the role returns it", place_role(model, 0) == iowa_place());
+    const QVariantMap stateOnly{{"states", QVariantList{QVariantMap{{"stid", 19}}}},
+                                {"counties", QVariantList{}},
+                                {"candidateStates", QVariantList{}}};
+    expect("place: state-only data is a place", model.get(1).value("place").toMap() == stateOnly);
+    expect("place: no place is an empty map", model.get(2).value("place").toMap().isEmpty());
+    SavedSystemsModel reloaded;
+    expect("place: reload returns it",
+           reloaded.get(0).value("place").toMap() == iowa_place() && place_role(reloaded, 0) == iowa_place());
+    expect("place: reload returns the state-only place", reloaded.get(1).value("place").toMap() == stateOnly);
+    expect("place: an edit that keeps the tuning keeps the place",
+           model.update(0, {{"name", "Renamed"}}) && model.get(0).value("place").toMap() == iowa_place());
+    empty_systems(model);
+}
+
+/* A place that breaks the schema anywhere is dropped whole at load (the row loads without it), and add() refuses to
+ * store one either; duplicates by id are merged. */
+void
+test_place_malformed_dropped() {
+    const auto state = [](const QJsonValue& stid) { return QJsonObject{{"stid", stid}}; };
+    const auto states = [](const QJsonArray& list) { return QJsonObject{{"states", list}}; };
+    QJsonArray many;
+    for (int i = 1; i <= 65; ++i) {
+        many.append(QJsonObject{{"stid", i}});
+    }
+    QJsonArray counties;
+    for (int i = 1; i <= 513; ++i) {
+        counties.append(QJsonObject{{"ctid", i}});
+    }
+    const QList<QJsonValue> bad{
+        states(QJsonArray{state("19")}),                                                         // a string id
+        states(QJsonArray{state(0)}),                                                            // below the id range
+        states(QJsonArray{state(2147483648.0)}),                                                 // 2^31, past INT32_MAX
+        states(QJsonArray{state(19.5)}),                                                         // not a whole number
+        states(QJsonArray{state(true)}),                                                         // a bool
+        states(QJsonArray{state(-4)}),                                                           // negative
+        states(many),                                                                            // 65 states
+        QJsonObject{{"counties", counties}},                                                     // 513 counties
+        states(QJsonArray{QJsonObject{{"stid", 19}, {"name", QString(129, QLatin1Char('x'))}}}), // a 129-char name
+        states(QJsonArray{QJsonObject{{"stid", 19}, {"name", 7}}}),                              // a name not text
+        QJsonObject{{"counties", QJsonArray{QJsonObject{{"ctid", 907}, {"stid", "19"}}}}},       // a county's state
+        QJsonObject{{"counties", QJsonArray{QJsonObject{{"name", "Johnson"}}}}},                 // a county with no id
+        QJsonObject{{"candidateStates", QJsonArray{19, "17"}}},                                  // a candidate as text
+        QJsonObject{{"states", QJsonObject{{"stid", 19}}}},                                      // states not a list
+        QJsonObject{{"states", QJsonArray{19}}},                                                 // an entry not a map
+        QJsonValue(QStringLiteral("Iowa")),                                                      // not a map at all
+    };
+    QJsonArray rows;
+    for (const QJsonValue& place : bad) {
+        rows.append(QJsonObject{{"name", "Bad"}, {"rrSid", 12}, {"rrSiteId", 5}, {"place", place}});
+    }
+    // The limits themselves are allowed, and duplicates merge: the first entry keeps its place, a later one only fills
+    // what it lacked.
+    QJsonArray sixtyFour;
+    for (int i = 1; i <= 64; ++i) {
+        sixtyFour.append(QJsonObject{{"stid", i}});
+    }
+    rows.append(QJsonObject{
+        {"name", "Limits"},
+        {"place", QJsonObject{{"states", sixtyFour},
+                              {"counties", QJsonArray{QJsonObject{{"ctid", 2147483647.0},
+                                                                  {"name", QString(128, QLatin1Char('y'))}}}}}}});
+    rows.append(QJsonObject{
+        {"name", "Duplicates"},
+        {"place",
+         QJsonObject{{"states", QJsonArray{QJsonObject{{"stid", 19}}, QJsonObject{{"stid", 19}, {"name", "Iowa"}}}},
+                     {"counties", QJsonArray{QJsonObject{{"ctid", 907}, {"name", "Johnson"}},
+                                             QJsonObject{{"ctid", 907}, {"stid", 19}, {"name", "Other"}}}},
+                     {"candidateStates", QJsonArray{19, 19, 17}}}}});
+    expect("malformed: fixture saved", json_store_save_array(QStringLiteral("saved_systems.json"), rows));
+    {
+        SavedSystemsModel model;
+        expect("malformed: every row loads", model.count() == bad.size() + 2);
+        for (int i = 0; i < bad.size(); ++i) {
+            const QVariantMap row = model.get(i);
+            if (!row.value("place").toMap().isEmpty() || row.value("rrSid").toInt() != 12) {
+                DSD_FPRINTF(
+                    stderr, "malformed place %d: %s\n", i,
+                    QJsonDocument(QJsonObject{{"place", bad.at(i)}}).toJson(QJsonDocument::Compact).constData());
+            }
+            expect("malformed: the row loads without its place, keeping the rest",
+                   row.value("place").toMap().isEmpty() && row.value("rrSid").toInt() == 12);
+        }
+        const QVariantMap limits = model.get(bad.size()).value("place").toMap();
+        expect("malformed: 64 states, INT32_MAX and a 128-char name are allowed",
+               limits.value("states").toList().size() == 64
+                   && limits.value("counties").toList().value(0).toMap().value("ctid").toInt() == 2147483647
+                   && limits.value("counties").toList().value(0).toMap().value("name").toString().size() == 128);
+        const QVariantMap merged{
+            {"states", QVariantList{QVariantMap{{"stid", 19}, {"name", "Iowa"}}}},
+            {"counties", QVariantList{QVariantMap{{"ctid", 907}, {"stid", 19}, {"name", "Johnson"}}}},
+            {"candidateStates", QVariantList{19, 17}}};
+        expect("malformed: duplicates by id merge", model.get(bad.size() + 1).value("place").toMap() == merged);
+        expect("malformed: add() stores no malformed place",
+               model.add({{"name", "Added"}, {"place", bad.at(1).toObject().toVariantMap()}})
+                   && model.get(model.count() - 1).value("place").toMap().isEmpty());
+        expect("malformed: update() stores no malformed place",
+               model.update(model.count() - 1, {{"place", bad.at(0).toObject().toVariantMap()}})
+                   && model.get(model.count() - 1).value("place").toMap().isEmpty());
+        empty_systems(model);
+    }
+}
+
+/* An edit of the tuning or a CSV field no longer describes the imported site: its group, avoid, site name, position
+ * and place all go, in memory and on disk (B11). A conventional multi-repeater row has a place and no ids; it loses
+ * the place the same way. */
+void
+test_update_clears_geography() {
+    SavedSystemsModel model;
+    empty_systems(model);
+    for (const char* key :
+         {"freqMhz", "decodeFlag", "chanCsvPath", "groupCsvPath", "keyCsvPath", "p25BandplanCsvPath", "srcCsvPath"}) {
+        expect("geography: grouped site", model.add(grouped_site("SARA — North", 3)));
+        const int row = model.count() - 1;
+        expect("geography: the edit saves", model.update(row, {{key, "changed"}}));
+        if (!geography_cleared(model.get(row))) {
+            DSD_FPRINTF(stderr, "geography: an edit of %s left provenance behind\n", key);
+        }
+        expect("geography: an edit clears every piece of provenance", geography_cleared(model.get(row)));
+        SavedSystemsModel reloaded;
+        expect("geography: the clear persists", geography_cleared(reloaded.get(row)));
+    }
+    expect("geography: grouped site for the key format", model.add(grouped_site("SARA — North", 3)));
+    expect("geography: a key format edit", model.update(model.count() - 1, {{"keyCsvHex", true}}));
+    expect("geography: a key format edit clears it too", geography_cleared(model.get(model.count() - 1)));
+    expect("geography: a conventional place",
+           model.add({{"name", "County fire"}, {"freqMhz", "154.43"}, {"place", iowa_place()}}));
+    expect("geography: its frequency edited", model.update(model.count() - 1, {{"freqMhz", "154.13"}}));
+    expect("geography: the conventional place goes", model.get(model.count() - 1).value("place").toMap().isEmpty());
+    expect("geography: a site whose tuning did not change",
+           model.add(grouped_site("SARA — North", 3)) && model.update(model.count() - 1, {{"freqMhz", "851.0125"}}));
+    expect("geography: an unchanged value keeps everything",
+           model.get(model.count() - 1).value("rrSiteId").toInt() == 3
+               && model.get(model.count() - 1).value("siteName") == "North"
+               && model.get(model.count() - 1).value("place").toMap() == iowa_place());
+    empty_systems(model);
+}
+
+/* An edit-mode re-import changes a CSV path and carries the import's own provenance: that fresh identity, position and
+ * place are kept, never cleared with the stale ones (B11: update() used to zero rrSid/rrSiteId whatever came in). The
+ * old avoid still goes. */
+void
+test_update_keeps_fresh_import() {
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("fresh: grouped site", model.add(grouped_site("SARA — North", 3, "/data/imports/old.csv")));
+    const QVariantMap reimport{{"groupCsvPath", "/data/imports/new.csv"},
+                               {"rrSid", 12},
+                               {"rrSiteId", 9},
+                               {"siteName", "South"},
+                               {"siteLat", 40.5},
+                               {"siteLon", -90.25},
+                               {"hasSitePos", true},
+                               {"place", illinois_place()}};
+    expect("fresh: the re-import saves", model.update(0, reimport));
+    expect("fresh: the import's system and site ids are kept",
+           model.get(0).value("rrSid").toInt() == 12 && model.get(0).value("rrSiteId").toInt() == 9);
+    const auto kept = [](const QVariantMap& row) {
+        return row.value("rrSid").toInt() == 12 && row.value("rrSiteId").toInt() == 9
+               && row.value("siteName") == "South" && row.value("hasSitePos").toBool()
+               && std::abs(row.value("siteLat").toDouble() - 40.5) < 1e-9
+               && std::abs(row.value("siteLon").toDouble() + 90.25) < 1e-9
+               && row.value("place").toMap() == illinois_place() && !row.value("avoidSite").toBool()
+               && row.value("groupCsvPath") == "/data/imports/new.csv";
+    };
+    expect("fresh: the import's identity, position and place are kept", kept(model.get(0)));
+    SavedSystemsModel reloaded;
+    expect("fresh: and persist", kept(reloaded.get(0)));
+    empty_systems(model);
+}
+
+/* A conventional multi-repeater re-import carries a place and no ids: the place is kept, the old site's name and
+ * position are not. */
+void
+test_update_keeps_fresh_conventional_place() {
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("conventional: grouped site", model.add(grouped_site("County", 3)));
+    expect("conventional: the re-import saves", model.update(0, {{"freqMhz", "154.43"}, {"place", illinois_place()}}));
+    const QVariantMap row = model.get(0);
+    expect("conventional: the fresh place is kept", row.value("place").toMap() == illinois_place());
+    expect("conventional: the old site's metadata goes",
+           row.value("rrSid").toInt() == 0 && row.value("rrSiteId").toInt() == 0
+               && row.value("siteName").toString().isEmpty() && !row.value("hasSitePos").toBool()
+               && !row.value("avoidSite").toBool());
+    empty_systems(model);
+}
+
+/* An accepted re-import whose site was renamed renames a generated "System — Site" name; a name of the user's own
+ * stays. */
+void
+test_update_renames_generated_name() {
+    SavedSystemsModel model;
+    empty_systems(model);
+    QVariantMap generated = grouped_site("SARA — Old", 3);
+    generated.insert("siteName", "Old");
+    QVariantMap custom = generated;
+    custom.insert("name", "My SARA");
+    expect("rename: rows", model.add(generated) && model.add(custom) && model.add(generated));
+    const QVariantMap reimport{{"freqMhz", "851.5"}, {"rrSid", 12}, {"rrSiteId", 3}, {"siteName", "New"}};
+    expect("rename: the re-imports save", model.update(0, reimport) && model.update(1, reimport));
+    expect("rename: a generated name follows the site", model.get(0).value("name") == "SARA — New");
+    expect("rename: a name of the user's own stays", model.get(1).value("name") == "My SARA");
+    QVariantMap withName = reimport;
+    withName.insert("name", "SARA — Old"); // the wizard sends the name it showed
+    expect("rename: a re-import naming the row", model.update(2, withName));
+    expect("rename: the name it sent is renamed", model.get(2).value("name") == "SARA — New");
+    SavedSystemsModel reloaded;
+    expect("rename: persists", reloaded.get(0).value("name") == "SARA — New");
+    expect("rename: a site rename without a re-import renames nothing",
+           model.update(1, {{"name", "SARA — New"}, {"siteName", "Newer"}})
+               && model.get(1).value("name") == "SARA — New");
+    empty_systems(model);
+}
+
+/* Clearing a removed file's references signals once for all the rows it changed (B14: one dataChanged per row, each
+ * re-running every pin's bookkeeping), and takes their geography with their group. */
+void
+test_clear_csv_path_one_signal() {
+    const QString path = QStringLiteral("/data/imports/county.csv");
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("one signal: rows", model.add({{"name", "A"}, {"groupCsvPath", path}})
+                                   && model.add({{"name", "B"}, {"chanCsvPath", path}}) && model.add({{"name", "C"}})
+                                   && model.add({{"name", "D"}, {"srcCsvPath", path}}));
+    QList<QPair<int, int>> spans;
+    QObject::connect(
+        &model, &SavedSystemsModel::dataChanged, &model,
+        [&spans](const QModelIndex& from, const QModelIndex& to) { spans.append({from.row(), to.row()}); });
+    expect("one signal: the clear saves", model.clearCsvPath(path));
+    expect("one signal: exactly one dataChanged", spans.size() == 1);
+    expect("one signal: spanning every changed row", spans.value(0) == qMakePair(0, 3));
+    empty_systems(model);
+}
+
+void
+test_clear_csv_path_clears_geography() {
+    const QString path = QStringLiteral("/data/imports/county.csv");
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("clear geography: grouped site", model.add(grouped_site("SARA — North", 3, path)));
+    expect("clear geography: unrelated site", model.add(grouped_site("SARA — North", 4)));
+    expect("clear geography: the clear saves", model.clearCsvPath(path));
+    expect("clear geography: the site loses every piece", geography_cleared(model.get(0)));
+    expect("clear geography: the other site keeps its own",
+           model.get(1).value("place").toMap() == iowa_place() && model.get(1).value("siteName") == "North");
+    SavedSystemsModel reloaded;
+    expect("clear geography: persists", geography_cleared(reloaded.get(0)));
+    empty_systems(model);
+}
+
+/* Rows left with a site name and position outside a group (older edits cleared only the ids) drop them at load, and
+ * the load saves that; a place stays, since a conventional multi-repeater row has one with no ids. */
+void
+test_load_drops_orphan_position() {
+    const QString store = QStringLiteral("saved_systems.json");
+    const QJsonObject place = QJsonObject::fromVariantMap(iowa_place());
+    const auto row = [&place](const char* name, int sid, int site) {
+        return QJsonObject{{"uid", QUuid::createUuid().toString(QUuid::WithoutBraces)},
+                           {"name", name},
+                           {"rrSid", sid},
+                           {"rrSiteId", site},
+                           {"siteName", "North"},
+                           {"siteLat", 41.65503},
+                           {"siteLon", -91.60244},
+                           {"hasSitePos", true},
+                           {"place", place}};
+    };
+    expect("orphan position: fixture saved",
+           json_store_save_array(store, QJsonArray{row("Orphan", 0, 0), row("No site", 12, 0), row("Site", 12, 5)}));
+    const auto orphaned = [](const QVariantMap& r) {
+        return r.value("siteName").toString().isEmpty() && !r.value("hasSitePos").toBool()
+               && std::abs(r.value("siteLat").toDouble()) < 1e-9 && std::abs(r.value("siteLon").toDouble()) < 1e-9
+               && r.value("place").toMap() == iowa_place();
+    };
+    {
+        SavedSystemsModel model;
+        expect("orphan position: an ungrouped row drops its site", orphaned(model.get(0)));
+        expect("orphan position: a row with no site id drops it", orphaned(model.get(1)));
+        expect("orphan position: a grouped site keeps everything",
+               model.get(2).value("siteName") == "North" && model.get(2).value("hasSitePos").toBool()
+                   && model.get(2).value("place").toMap() == iowa_place());
+    }
+    const QJsonArray stored = json_store_load_array(store);
+    expect("orphan position: the load saves it", stored.at(0).toObject().value("siteName").toString().isEmpty()
+                                                     && !stored.at(1).toObject().value("hasSitePos").toBool()
+                                                     && stored.at(2).toObject().value("siteName") == "North");
+    SavedSystemsModel model;
+    empty_systems(model);
+}
+
+/* Replacing a library file with the user's own bytes clears the provenance and geography of the rows naming it, and
+ * keeps the path (B11). Saved first: a failure leaves every row as it was and signals nothing. */
+void
+test_invalidate_path_provenance() {
+    const QString path = QStringLiteral("/data/imports/county.csv");
+    QStringList log;
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("invalidate: rows",
+           model.add(grouped_site("SARA — North", 3, path)) && model.add(grouped_site("SARA — North", 4))
+               && model.add({{"name", "Conventional"}, {"chanCsvPath", path}, {"place", iowa_place()}}));
+    QList<QPair<int, int>> spans;
+    QObject::connect(
+        &model, &SavedSystemsModel::dataChanged, &model,
+        [&spans](const QModelIndex& from, const QModelIndex& to) { spans.append({from.row(), to.row()}); });
+    record_signals(model, log);
+    expect("invalidate: store blocked", block_systems_store());
+    expect("invalidate: a failed save reports failure", !model.invalidatePathProvenance(path));
+    expect("invalidate: a failed save keeps every row", model.get(0).value("rrSiteId").toInt() == 3
+                                                            && model.get(0).value("place").toMap() == iowa_place()
+                                                            && model.get(2).value("place").toMap() == iowa_place());
+    expect("invalidate: a failed save sends no signal", log.isEmpty() && spans.isEmpty());
+    expect("invalidate: store unblocked", unblock_systems_store());
+    expect("invalidate: an empty path needs nothing", model.invalidatePathProvenance(QString()));
+    expect("invalidate: an unreferenced path needs nothing",
+           model.invalidatePathProvenance(QStringLiteral("/data/imports/none.csv")) && log.isEmpty());
+    expect("invalidate: a saved clear reports success", model.invalidatePathProvenance(path));
+    expect("invalidate: the rows naming the file lose their provenance",
+           geography_cleared(model.get(0)) && geography_cleared(model.get(2)));
+    expect("invalidate: they keep the path",
+           model.get(0).value("groupCsvPath") == path && model.get(2).value("chanCsvPath") == path);
+    expect("invalidate: another site keeps its own",
+           model.get(1).value("rrSiteId").toInt() == 4 && model.get(1).value("place").toMap() == iowa_place());
+    expect("invalidate: one dataChanged over the span, then sitesChanged",
+           spans == QList<QPair<int, int>>{{0, 2}} && log == QStringList{"dataChanged", "sitesChanged"});
+    SavedSystemsModel reloaded;
+    expect("invalidate: persists", geography_cleared(reloaded.get(0)) && reloaded.get(0).value("groupCsvPath") == path);
+    empty_systems(model);
+}
+
+/* A resolved state's names reach every row whose place names its ids: the state's name, its counties' names and
+ * links, and the state itself on a row whose county now links to it. One save and one ranged signal; a failed save
+ * leaves every row as it was. */
+void
+test_apply_place_names() {
+    const QVariantMap unnamed{{"states", QVariantList{QVariantMap{{"stid", 19}}}},
+                              {"counties", QVariantList{QVariantMap{{"ctid", 907}}}},
+                              {"candidateStates", QVariantList{19}}};
+    const QVariantMap countiesOnly{
+        {"counties", QVariantList{QVariantMap{{"ctid", 907}}, QVariantMap{{"ctid", 908}}, QVariantMap{{"ctid", 5}}}},
+        {"candidateStates", QVariantList{19, 17}}};
+    QStringList log;
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("names: rows", model.add({{"name", "A"}, {"place", unnamed}}) && model.add({{"name", "Manual"}})
+                              && model.add({{"name", "B"}, {"place", countiesOnly}})
+                              && model.add({{"name", "C"}, {"place", illinois_place()}}));
+    QList<QPair<int, int>> spans;
+    QList<QList<int>> roles;
+    QObject::connect(&model, &SavedSystemsModel::dataChanged, &model,
+                     [&](const QModelIndex& from, const QModelIndex& to, const QList<int>& changed) {
+                         spans.append({from.row(), to.row()});
+                         roles.append(changed);
+                     });
+    record_signals(model, log);
+    const QHash<int, QString> counties{{907, "Johnson"}, {908, "Linn"}};
+    expect("names: store blocked", block_systems_store());
+    expect("names: a failed save reports failure", !model.applyPlaceNames(19, "Iowa", counties));
+    expect("names: a failed save keeps every row",
+           model.get(0).value("place").toMap() == unnamed
+               && model.get(2).value("place").toMap() == SavedSystemsModel::validPlace(countiesOnly));
+    expect("names: a failed save sends no signal", log.isEmpty());
+    expect("names: store unblocked", unblock_systems_store());
+    expect("names: applied", model.applyPlaceNames(19, "Iowa", counties));
+    const QVariantMap a{{"states", QVariantList{QVariantMap{{"stid", 19}, {"name", "Iowa"}}}},
+                        {"counties", QVariantList{QVariantMap{{"ctid", 907}, {"stid", 19}, {"name", "Johnson"}}}},
+                        {"candidateStates", QVariantList{19}}};
+    expect("names: a named state and its county", model.get(0).value("place").toMap() == a);
+    const QVariantMap b{{"states", QVariantList{QVariantMap{{"stid", 19}, {"name", "Iowa"}}}},
+                        {"counties", QVariantList{QVariantMap{{"ctid", 907}, {"stid", 19}, {"name", "Johnson"}},
+                                                  QVariantMap{{"ctid", 908}, {"stid", 19}, {"name", "Linn"}},
+                                                  QVariantMap{{"ctid", 5}}}},
+                        {"candidateStates", QVariantList{19, 17}}};
+    expect("names: linked counties bring their state", model.get(2).value("place").toMap() == b);
+    expect("names: other rows untouched",
+           model.get(1).value("place").toMap().isEmpty() && model.get(3).value("place").toMap() == illinois_place());
+    expect("names: one ranged place-only signal", spans == QList<QPair<int, int>>{{0, 2}}
+                                                      && roles == QList<QList<int>>{{SavedSystemsModel::PlaceRole}}
+                                                      && log == QStringList{"dataChanged"});
+    SavedSystemsModel reloaded;
+    expect("names: persist",
+           reloaded.get(0).value("place").toMap() == a && reloaded.get(2).value("place").toMap() == b);
+    log.clear();
+    expect("names: nothing left to change needs no save", model.applyPlaceNames(19, "Iowa", counties) && log.isEmpty());
+    expect("names: an unknown state changes nothing", model.applyPlaceNames(44, "Texas", {}) && log.isEmpty());
+    expect("names: a name over the limit is not applied",
+           model.applyPlaceNames(17, QString(129, QLatin1Char('x')), {})
+               && model.get(3).value("place").toMap() == illinois_place());
+    empty_systems(model);
+}
+
+/* The place-name cache fills a place whose ids are new on add() and update(), before the save; a place whose ids did
+ * not change is left alone. */
+void
+test_place_name_cache() {
+    SavedSystemsModel model;
+    empty_systems(model);
+    int fills = 0;
+    model.setPlaceNameCache([&fills](QVariantMap& place) {
+        ++fills;
+        QVariantList states = place.value("states").toList();
+        for (QVariant& state : states) {
+            QVariantMap named = state.toMap();
+            named.insert("name", named.value("stid").toInt() == 19 ? "Iowa" : "Illinois");
+            state = named;
+        }
+        place.insert("states", states);
+    });
+    const QVariantMap unnamed{{"states", QVariantList{QVariantMap{{"stid", 19}}}}};
+    expect("cache: add", model.add({{"name", "A"}, {"place", unnamed}}));
+    expect("cache: add fills before the save",
+           fills == 1
+               && model.get(0).value("place").toMap().value("states").toList().value(0).toMap().value("name")
+                      == "Iowa");
+    {
+        SavedSystemsModel reloaded;
+        expect("cache: the fill was saved",
+               reloaded.get(0).value("place").toMap().value("states").toList().value(0).toMap().value("name")
+                   == "Iowa");
+    }
+    expect("cache: a rename", model.update(0, {{"name", "Renamed"}}));
+    expect("cache: the same place ids", model.update(0, {{"place", unnamed}}));
+    expect("cache: no fill when the ids did not change", fills == 1);
+    expect("cache: new ids",
+           model.update(0, {{"place", QVariantMap{{"states", QVariantList{QVariantMap{{"stid", 17}}}}}}}));
+    expect("cache: update fills them",
+           fills == 2
+               && model.get(0).value("place").toMap().value("states").toList().value(0).toMap().value("name")
+                      == "Illinois");
+    expect("cache: a row without a place", model.add({{"name", "Manual"}}) && fills == 2);
+    model.setPlaceNameCache({});
     empty_systems(model);
 }
 
@@ -2804,6 +3286,18 @@ main(int argc, char** argv) {
     test_set_avoid_failure_reports();
     test_avoid_cleared_when_site_leaves_group();
     test_load_migrates_orphaned_avoid();
+    test_place_round_trip();
+    test_place_malformed_dropped();
+    test_update_clears_geography();
+    test_update_keeps_fresh_import();
+    test_update_keeps_fresh_conventional_place();
+    test_update_renames_generated_name();
+    test_clear_csv_path_one_signal();
+    test_clear_csv_path_clears_geography();
+    test_load_drops_orphan_position();
+    test_invalidate_path_provenance();
+    test_apply_place_names();
+    test_place_name_cache();
     test_add_with_retained_key();
     test_radio_settings();
     test_pinned_pref_sanitizes();
