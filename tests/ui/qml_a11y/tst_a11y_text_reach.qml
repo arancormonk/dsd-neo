@@ -185,9 +185,10 @@ Item {
                     channel: "", tg: "100", src: "2001", sourceName: "", enc: false, emergency: false, detail: "",
                     durationSecs: 12, freqHz: 851012500, accessCode: -1, accessCodeText: ""});
             }},
-            // History's warning that its saves are failing.
+            // History's warning that its saves are failing, and an export's result line (ExportMessage).
             {file: "HistoryScreen", open: function (screen) {
                 callHistory.setSaveFailing(true);
+                screen.exportMessage = {text: "Exported 2 entries.", error: false, heard: false};
             }},
             {file: "HomeScreen"},
             {file: "ImportsScreen", open: function (screen) {
@@ -240,8 +241,11 @@ Item {
                 sheet.visible = true;
                 sheet.errorText = "Start must be below end.";
             }},
+            // With both export result lines under their buttons (ExportMessage).
             {file: "SignalSearchScreen", open: function (screen) {
                 screen.localFailure = "The radio is in use by a session.";
+                screen.avoidsExportMessage = {text: "Exported 2 avoids.", error: true, heard: false};
+                screen.detectionsExportMessage = {text: "Exported 3 detections.", error: false, heard: false};
             }},
             {file: "SiteChooserSheet"},
             {file: "SiteSheet"},

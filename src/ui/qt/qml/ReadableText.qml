@@ -22,10 +22,10 @@ Text {
     // A screen or sheet title, which TalkBack can move between as a heading.
     property bool heading: false
     Accessible.role: heading ? Accessible.Heading : Accessible.StaticText
-    // Qt counts only StaticText as a text role that is focusable by itself: a
-    // heading or an alert line is not unless told (see MicroLabel), and
-    // TalkBack's swipes skip a text node that is not. So it is told, for every
-    // role, only while in the tree (see OutlineButton).
+    // Qt counts only StaticText and EditableText as text roles that are
+    // focusable by themselves: a heading or an alert line is not unless told
+    // (see MicroLabel), and TalkBack's swipes skip a text node that is not. So
+    // it is told, for every role, only while in the tree (see OutlineButton).
     Accessible.focusable: navigationAllowed && visible
     readonly property bool navigationAllowed: Navigation.allows(readable)
     // Gate first: see OutlineButton.
