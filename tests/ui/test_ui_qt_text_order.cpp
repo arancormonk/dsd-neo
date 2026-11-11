@@ -43,6 +43,8 @@ test_fold() {
     check(text_fold(s(u"\uFB01re")) == QStringLiteral("fire"));
     check(text_fold(s(u"\uFF11\uFF12\uFF13")) == QStringLiteral("123"));
     check(text_fold(QString()).isEmpty());
+    /* A non-spacing mark outside the BMP (U+1D165 is spacing; U+1E8D0 Mende Kikakui is non-spacing) is dropped. */
+    check(text_fold(s(u"a\U0001E8D0b")) == QStringLiteral("ab"));
 }
 
 void
@@ -61,7 +63,9 @@ test_order() {
     check(text_compare_names(QStringLiteral("site 2"), QStringLiteral("Site 2"))
           == -text_compare_names(QStringLiteral("Site 2"), QStringLiteral("site 2")));
     check(text_compare_names(QStringLiteral("apple"), QStringLiteral("Banana")) < 0);
-    check(text_compare_names(s(u"\u00C9clair"), QStringLiteral("Eclair")) != 0);
+    /* Folded-equal, so the raw string decides: "E" (0x45) sorts before U+00C9. */
+    check(text_compare_names(s(u"\u00C9clair"), QStringLiteral("Eclair")) > 0);
+    check(text_compare_names(QStringLiteral("Eclair"), s(u"\u00C9clair")) < 0);
     check(text_compare_names(s(u"\u00C9clair"), QStringLiteral("Eclairs")) < 0);
     /* Equal value: shorter run first, and never equal. */
     check(text_compare_names(QStringLiteral("007"), QStringLiteral("7")) > 0);
@@ -139,6 +143,52 @@ test_antisymmetry() {
     }
 }
 
+/* Digit runs in any script sort before every other character, so the order stays a strict weak order (Task 8 feeds
+   it to std::sort) across Arabic-Indic digits, ASCII digits and letters of several scripts. */
+void
+test_transitive_across_scripts() {
+    const QStringList corpus = {
+        s(u"\u0662"),
+        s(u"\u0663"),
+        QStringLiteral("2"),
+        QStringLiteral("3"),
+        QStringLiteral("10"),
+        s(u"\u0661\u0660"),
+        s(u"\u0662a"),
+        QStringLiteral("2a"),
+        QStringLiteral("a"),
+        QStringLiteral("z"),
+        s(u"\u0430"),
+        s(u"\u05D0"),
+        s(u"\u0627"),
+        s(u"\u4E2D"),
+        s(u"\u0627 2"),
+        s(u"\u0662 \u0627"),
+        QStringLiteral("a2"),
+        s(u"\u0430\u0662"),
+        QStringLiteral("2 \u0430"),
+        QString(),
+    };
+    check(text_compare_names(QStringLiteral("5"), QStringLiteral("a")) < 0);
+    check(text_compare_names(s(u"\u0665"), QStringLiteral("a")) < 0);
+    check(text_compare_names(s(u"\u0665"), s(u"\u0430")) < 0);
+    check(text_compare_names(s(u"\u0665"), s(u"\u4E2D")) < 0);
+    for (const QString& x : corpus) {
+        for (const QString& y : corpus) {
+            const int xy = text_compare_names(x, y);
+            check((xy < 0) == (text_compare_names(y, x) > 0));
+            for (const QString& z : corpus) {
+                if (xy <= 0 && text_compare_names(y, z) <= 0) {
+                    check(text_compare_names(x, z) <= 0);
+                }
+                if (xy < 0 && text_compare_names(y, z) <= 0) {
+                    check(text_compare_names(x, z) < 0);
+                }
+            }
+        }
+    }
+}
+
 } // namespace
 
 int
@@ -147,5 +197,6 @@ main() {
     test_contains();
     test_order();
     test_antisymmetry();
+    test_transitive_across_scripts();
     return 0;
 }

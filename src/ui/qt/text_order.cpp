@@ -87,6 +87,12 @@ compare_folded(const QString& a, const QString& b, int& length_tie) {
             j = je;
             continue;
         }
+        /* Any digit run sorts before any other character, whatever script the digits are in: comparing a digit's
+           code point with a letter's is not transitive across scripts, and std::sort needs a strict weak order. */
+        const bool a_digit = is_digit(ua[i]);
+        if (a_digit != is_digit(ub[j])) {
+            return a_digit ? -1 : 1;
+        }
         if (ua[i] != ub[j]) {
             return ua[i] < ub[j] ? -1 : 1;
         }
@@ -106,13 +112,14 @@ compare_folded(const QString& a, const QString& b, int& length_tie) {
 QString
 text_fold(const QString& s) {
     const QString decomposed = s.normalized(QString::NormalizationForm_KD);
-    QString out;
-    out.reserve(decomposed.size());
-    for (const QChar ch : decomposed) {
-        if (ch.category() != QChar::Mark_NonSpacing) {
-            out.append(ch);
+    /* Code points, not UTF-16 units: a mark outside the BMP is a surrogate pair. */
+    QList<char32_t> kept;
+    for (const uint cp : decomposed.toUcs4()) {
+        if (QChar::category(cp) != QChar::Mark_NonSpacing) {
+            kept.append(static_cast<char32_t>(cp));
         }
     }
+    const QString out = QString::fromUcs4(kept.constData(), kept.size());
     return out.toCaseFolded();
 }
 

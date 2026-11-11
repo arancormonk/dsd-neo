@@ -882,7 +882,7 @@ Item {
             conventionalSystemWith(["beta", "Alpha", "\u00C9b\u00E8ne", "alpha 10", "alpha 2"])
             var names = tc.screen.siteRows.map(function (row) { return row.site.descr })
             compare(names.join("|"), ["Alpha", "alpha 2", "alpha 10", "beta", "\u00C9b\u00E8ne"].join("|"))
-            // Accent-blind: Ébène sorts with the e's, after beta only because "eb" > "be".
+            // Accent-blind: Ébène sorts as "ebene", and e sorts after b.
             compare(tc.screen.siteRows[4].index, 2, "sorting lost the row's index into sites()")
 
             conventionalSystemWith(["Same", "Same", "Same"])
