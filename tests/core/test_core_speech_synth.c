@@ -405,6 +405,6 @@ main(void) {
     test_steady_signal_levels();
     test_deemphasis();
     test_bad_arguments();
-    printf("TEST_SUPPORT_SPEECH_SYNTH: OK\n");
+    printf("CORE_SPEECH_SYNTH: OK\n");
     return 0;
 }

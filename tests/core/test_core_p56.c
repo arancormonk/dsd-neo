@@ -223,6 +223,6 @@ main(void) {
     test_gap_bridging();
     test_rates_read_one_waveform();
     test_silence_and_invalid();
-    printf("TEST_SUPPORT_P56: OK\n");
+    printf("CORE_P56: OK\n");
     return 0;
 }

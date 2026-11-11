@@ -70,6 +70,8 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         core/speech_parity_tool.c
         core/test_core_audio_gain.c
         core/test_core_init_state.c
+        core/test_core_p56.c
+        core/test_core_speech_synth.c
         dsp/test_dsp_am_demod.cpp
         dsp/test_dsp_analog_ctcss.c
         dsp/test_dsp_analog_audio.c
@@ -100,8 +102,6 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         runtime/test_runtime_squelch.c
         test_support/p56.c
         test_support/speech_synth.c
-        test_support/test_p56.c
-        test_support/test_speech_synth.c
         ui/test_ui_cmd_actions.c
         ui/test_ui_menu_callbacks.c
         ui/test_ui_menu_labels.c
@@ -120,6 +120,8 @@ elseif(MSVC)
         core/speech_parity_tool.c
         core/test_core_audio_gain.c
         core/test_core_init_state.c
+        core/test_core_p56.c
+        core/test_core_speech_synth.c
         dsp/test_dsp_am_demod.cpp
         dsp/test_dsp_analog_ctcss.c
         dsp/test_dsp_analog_audio.c
@@ -150,8 +152,6 @@ elseif(MSVC)
         runtime/test_runtime_squelch.c
         test_support/p56.c
         test_support/speech_synth.c
-        test_support/test_p56.c
-        test_support/test_speech_synth.c
         ui/test_ui_cmd_actions.c
         ui/test_ui_menu_callbacks.c
         ui/test_ui_menu_labels.c
@@ -425,7 +425,7 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_p25_shims PUBLIC dsd-neo_proto_p25)
 
 # Voice level test material: the P.56 active speech level meter and the deterministic speech-like and non-speech
-# generators (test_support/p56.h, test_support/speech_synth.h), with tests of their own.
+# generators (test_support/p56.h, test_support/speech_synth.h); CORE_P56 and CORE_SPEECH_SYNTH test them.
 add_library(
     dsd-neo_test_speech_level
     STATIC
@@ -438,25 +438,16 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_speech_level PUBLIC ${DSD_NEO_TEST_MATH_LIB})
 
-add_executable(dsd-neo_test_test_support_p56 test_support/test_p56.c)
-target_link_libraries(
-    dsd-neo_test_test_support_p56
-    PRIVATE dsd-neo_test_speech_level
-)
-add_test(NAME TEST_SUPPORT_P56 COMMAND dsd-neo_test_test_support_p56)
+add_executable(dsd-neo_test_core_p56 core/test_core_p56.c)
+target_link_libraries(dsd-neo_test_core_p56 PRIVATE dsd-neo_test_speech_level)
+add_test(NAME CORE_P56 COMMAND dsd-neo_test_core_p56)
 
-add_executable(
-    dsd-neo_test_test_support_speech_synth
-    test_support/test_speech_synth.c
-)
+add_executable(dsd-neo_test_core_speech_synth core/test_core_speech_synth.c)
 target_link_libraries(
-    dsd-neo_test_test_support_speech_synth
+    dsd-neo_test_core_speech_synth
     PRIVATE dsd-neo_test_speech_level
 )
-add_test(
-    NAME TEST_SUPPORT_SPEECH_SYNTH
-    COMMAND dsd-neo_test_test_support_speech_synth
-)
+add_test(NAME CORE_SPEECH_SYNTH COMMAND dsd-neo_test_core_speech_synth)
 
 if(DSD_ENABLE_FUZZING)
     add_subdirectory(fuzz)
