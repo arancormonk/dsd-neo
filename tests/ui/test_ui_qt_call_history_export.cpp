@@ -203,6 +203,14 @@ test_empty_values() {
     }
 }
 
+/* A zone that is not valid leaves only the local time and its offset empty: the UTC time does not depend on it. */
+void
+test_invalid_zone() {
+    const QByteArray record = record_of(voice_row(), QTimeZone());
+    expect(__LINE__, record.startsWith(",,2026-11-07T14:03:22Z,42,call,County Fire,"));
+    expect(__LINE__, record_of(CallHistoryModel::ExportRow(), QTimeZone()) == ",,,,call,,,,,,,,,,,,0,0,,\r\n");
+}
+
 /* The formula guard on every text column (a recordings folder name starting `=` too), none on the time, numeric and
  * fixed columns. */
 void
@@ -234,7 +242,8 @@ test_formula_guard() {
 }
 
 /* Each row's own offset in the zone given: two rows an hour apart across New York's 2026-11-01 DST end show the same
- * local time with UTC-04:00 then UTC-05:00; Kolkata's half hour; UTC. */
+ * local time with UTC-04:00 then UTC-05:00; St. John's half hour in winter and summer; Kolkata's half hour;
+ * Kathmandu's quarter hour; UTC. */
 void
 test_time_zones() {
     expect(__LINE__, record_of(voice_row(), QTimeZone(QTimeZone::UTC)).startsWith("2026-11-07 14:03:22,UTC+00:00,"));
@@ -257,6 +266,24 @@ test_time_zones() {
     } else {
         expect(__LINE__,
                record_of(voice_row(), kolkata).startsWith("2026-11-07 19:33:22,UTC+05:30,2026-11-07T14:03:22Z,42,"));
+    }
+    const QTimeZone johns(QByteArrayLiteral("America/St_Johns"));
+    if (!johns.isValid()) {
+        printf("SKIP time zones: America/St_Johns is not available on this host\n");
+    } else {
+        CallHistoryModel::ExportRow winter;
+        winter.when = utc_secs(2026, 1, 15, 12, 0, 0);
+        CallHistoryModel::ExportRow summer;
+        summer.when = utc_secs(2026, 7, 15, 12, 0, 0);
+        expect(__LINE__, record_of(winter, johns).startsWith("2026-01-15 08:30:00,UTC-03:30,2026-01-15T12:00:00Z,"));
+        expect(__LINE__, record_of(summer, johns).startsWith("2026-07-15 09:30:00,UTC-02:30,2026-07-15T12:00:00Z,"));
+    }
+    const QTimeZone kathmandu(QByteArrayLiteral("Asia/Kathmandu"));
+    if (!kathmandu.isValid()) {
+        printf("SKIP time zones: Asia/Kathmandu is not available on this host\n");
+    } else {
+        expect(__LINE__,
+               record_of(voice_row(), kathmandu).startsWith("2026-11-07 19:48:22,UTC+05:45,2026-11-07T14:03:22Z,42,"));
     }
 }
 
@@ -540,7 +567,7 @@ test_export_rows_full_log() {
     for (int i = 0; i < kRows; i++) {
         // Newest first, an hour apart, each its own talkgroup: nothing folds.
         stored.append(
-            stored_row(base - qint64{i} * 3600, static_cast<qulonglong>(i + 1), static_cast<qulonglong>(i + 1)));
+            stored_row(base - qint64{i} * 3600, static_cast<qulonglong>(i) + 1, static_cast<qulonglong>(i) + 1));
     }
     save_store(stored);
     CallHistoryModel model;
@@ -559,7 +586,7 @@ test_export_rows_full_log() {
         return;
     }
     for (int i = 0; i < kRows; i++) {
-        expect(__LINE__, rows.at(i).tg == static_cast<qulonglong>(i + 1));
+        expect(__LINE__, rows.at(i).tg == static_cast<qulonglong>(i) + 1);
         expect(__LINE__, rows.at(i).recordingNames == QStringList{QStringLiteral("R/F%1.wav").arg(i + 1)});
     }
     model.setRecordingProvider(nullptr);
@@ -1065,6 +1092,7 @@ main(int argc, char** argv) {
     test_empty_values();
     test_formula_guard();
     test_time_zones();
+    test_invalid_zone();
     test_locale_independent();
     test_text_values();
     test_recording_names();

@@ -64,20 +64,24 @@ offsetText(int seconds) {
     return QString::asprintf("UTC%c%02d:%02d", seconds < 0 ? '-' : '+', magnitude / 3600, (magnitude % 3600) / 60);
 }
 
-/* The three time fields of a start: local in @p zone, that instant's offset, UTC; all empty with no start. */
+/* The three time fields of a start: local in @p zone, that instant's offset, UTC; all empty with no start. A zone
+ * that is not valid leaves the local time and offset empty; the UTC time does not depend on it. */
 QStringList
 timeFields(qint64 when, const QTimeZone& zone) {
     if (when <= 0) {
         return {QString(), QString(), QString()};
     }
-    const QDateTime local = QDateTime::fromSecsSinceEpoch(when, zone);
     const QDateTime utc = QDateTime::fromSecsSinceEpoch(when, QTimeZone::UTC);
-    if (!local.isValid() || !utc.isValid()) {
+    if (!utc.isValid()) {
         return {QString(), QString(), QString()};
     }
     // toString() with a format names and numbers in the C locale whatever the default locale.
-    return {local.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")), offsetText(local.offsetFromUtc()),
-            utc.toString(Qt::ISODate)};
+    const QString utcText = utc.toString(Qt::ISODate);
+    const QDateTime local = zone.isValid() ? QDateTime::fromSecsSinceEpoch(when, zone) : QDateTime();
+    if (!local.isValid()) {
+        return {QString(), QString(), utcText};
+    }
+    return {local.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")), offsetText(local.offsetFromUtc()), utcText};
 }
 
 /* A number that 0 means "not known" for: empty then. */
@@ -119,8 +123,8 @@ file(const QList<CallHistoryModel::ExportRow>& rows, const QTimeZone& zone) {
     const QVector<bool> text = textColumns();
     QByteArray out = csv_text::bom();
     out += csv_text::record(header(), QVector<bool>(text.size(), false));
-    for (const CallHistoryModel::ExportRow& row : rows) {
-        out += csv_text::record(fields(row, zone), text);
+    for (qsizetype i = 0; i < rows.size(); ++i) {
+        out += csv_text::record(fields(rows.at(i), zone), text);
     }
     return out;
 }
