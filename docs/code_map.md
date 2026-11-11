@@ -6736,13 +6736,27 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `test_order_flag_cleared_on_evidence`, `test_proven_2400_4_hold_spans_the_search_order`), `FRAME_SYNC_POLICY`,
   `DECODE_IQ_SEARCH_SCHEDULE_*` (the whole chain from a 4800/4 C4FM start, landing 0, 350 and 700 ms into each
   capture, `tests/engine/search_schedule_replay.c`; dPMR within 1.9 s pins the one-pass dwell).
-- P25p1 chain choice on 4800/4 (`dsd_frame_sync.c`, unlocked RTL sessions with P25p1 on). The votes cannot move a P25p1
-  signal onto CQPSK, so alternate 4800/4 dwells that expired with nothing decoded try the CQPSK chain
-  (`frame_sync_maybe_probe_p25p1_cqpsk()`, `p25_p1_mod_probe_next_qpsk`; the trial's dwell is kept off the votes by
-  `p25_p1_mod_probe_active`). The CQPSK chain cannot read DMR, NXDN96, YSF or M17, so when any of them is enabled a
-  trial that has validated nothing by half its dwell -- the hunt counter, symbols the search spent, at half the dwell,
-  which the budget path checks on every symbol once a pass has run (2700 of 5400; handler-read frames do not count) --
-  hands the rest of it back to C4FM with the votes free (`frame_sync_p25p1_cqpsk_trial_half_dwell()`,
+- P25p1 chain choice on 4800/4 (`dsd_frame_sync.c`, unlocked RTL sessions with P25p1 on). The modulation votes
+  (`frame_sync_maybe_auto_switch_modulation()`, every 24 symbols) can put a P25p1 signal on CQPSK but do not keep it
+  there. Their thresholds are asymmetric (`frame_sync_decide_mod_switch()`): two QPSK votes enter CQPSK (from the SNR
+  bias or the CQPSK sync hamming); a single GFSK vote enters GFSK; C4FM takes two (three from CQPSK, five inside the 2 s
+  CQPSK dwell a vote's switch arms). Nothing else holds a CQPSK chain the votes chose until a frame validates on it
+  (`frame_sync_hold_validated_p25p1_modulation()`), so three C4FM votes (five inside its dwell) or one GFSK vote take it
+  back, and on a 4800/4 profile with DMR or NXDN96 on, the GFSK votes come from P25 payload too: NXDN96's ten-symbol
+  window, outside the C4FM frame span that silences it (#388), matches P25 content often (on the site A and site B
+  captures under `-fa`, 196 of the 197 GFSK votes that switched the chain, at a scaled hamming of 0 to 12 of 24). That
+  is by design rather than a vote hysteresis for P25: the votes are guesses, and P25p1's chains are defended by frame
+  evidence instead, the validated-frame hold, the vote freeze over a probe's or comparison's pass
+  (`p25_p1_mod_probe_active`) and the chain comparison below. The one measured case of a GFSK vote taking a CQPSK chain
+  the votes chose, before it validated a frame (s72 under `-fa`, one realization in 12, before the comparison's
+  second-pass rule), followed a comparison the cold CQPSK chain lost on a tie, which that rule now settles; with it no
+  vote moved CQPSK to GFSK in any of 12 realizations of the site A s24, s72, s104 and s5 captures or the site B
+  capture under `-fa`. Because the votes do not keep CQPSK, alternate 4800/4 dwells that expired with nothing decoded
+  try the CQPSK chain (`frame_sync_maybe_probe_p25p1_cqpsk()`, `p25_p1_mod_probe_next_qpsk`; the trial's dwell is kept
+  off the votes by `p25_p1_mod_probe_active`). The CQPSK chain cannot read DMR, NXDN96, YSF or M17, so when any of them
+  is enabled a trial that has validated nothing by half its dwell -- the hunt counter, symbols the search spent, at half
+  the dwell, which the budget path checks on every symbol once a pass has run (2700 of 5400; handler-read frames do not
+  count) -- hands the rest of it back to C4FM with the votes free (`frame_sync_p25p1_cqpsk_trial_half_dwell()`,
   `FRAME_SYNC_HUNT_CHAIN_HANDBACK` from `frame_sync_no_sync_sps_hunt()`: `getFrameSync()` rebuilds its window in place
   and keeps hunting, so neither its no-sync hooks nor the engine's `noCarrier()` after a no-sync return run, since the
   dwell goes on, from the budget path and from the matchless-pass timeout alike, which can reach the point on the same
