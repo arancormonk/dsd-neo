@@ -33,7 +33,9 @@
  *       attenuator, which eases non-speech, may only move down at its 6 dB/s and stay at or under 0 dB, and the
  *       limiter must never act.
  *
- * Every FILE and OUT is a bare file name in the working directory; an output must not exist yet.
+ * Every FILE and OUT is one of the work file names the parity checks use (k_work_files: talker.wav, talker.imb,
+ * talker.amb, talker.dmb, and the decoder outputs imbe.raw, ambe2450.raw, ambe2400.raw, fm_nb.raw, fm_wb.raw, am.raw,
+ * voice.raw and reference.raw), opened in the working directory; an output must not exist yet.
  */
 
 #include <dsd-neo/core/parse.h>
@@ -147,20 +149,33 @@ established_from_s(double* from_s) {
 
 /* ------------------------------------------------------------------------------------------------- files */
 
-static int
-bare_name(const char* name) {
-    return name != NULL && name[0] != '\0' && strcmp(name, ".") != 0 && strstr(name, "..") == NULL
-           && strchr(name, '/') == NULL && strchr(name, '\\') == NULL && strchr(name, ':') == NULL;
+/* The files the parity checks (speech_parity_check.cmake, speech_level_check.cmake, tools/build_iq_fixtures.py) write
+   and read in their work folder. The tool opens only these: a name on the command line picks one, and the path opened
+   is the table's own string. */
+static const char* const k_work_files[] = {
+    "talker.wav",   "talker.imb", "talker.amb", "talker.dmb", "imbe.raw",  "ambe2450.raw",
+    "ambe2400.raw", "fm_nb.raw",  "fm_wb.raw",  "am.raw",     "voice.raw", "reference.raw",
+};
+
+/* The work file @p name names, or NULL when it is not one. */
+static const char*
+work_file(const char* name) {
+    for (size_t i = 0; name != NULL && i < sizeof k_work_files / sizeof k_work_files[0]; i++) {
+        if (strcmp(name, k_work_files[i]) == 0) {
+            return k_work_files[i];
+        }
+    }
+    return NULL;
 }
 
 static FILE*
 create_output(const char* name) {
-    if (!bare_name(name)) {
-        DSD_FPRINTF(stderr, "speech parity: %s: outputs are bare file names in the working directory\n",
-                    name ? name : "(null)");
+    const char* path = work_file(name);
+    if (path == NULL) {
+        DSD_FPRINTF(stderr, "speech parity: %s is not one of the tool's work file names\n", name ? name : "(null)");
         return NULL;
     }
-    FILE* f = dsd_fopen_private(name, "wbx");
+    FILE* f = dsd_fopen_private(path, "wbx");
     if (f == NULL) {
         DSD_FPRINTF(stderr, "speech parity: cannot create %s (it must not exist yet)\n", name);
     }
@@ -372,12 +387,13 @@ typedef struct {
     int rate;
 } audio;
 
-/* The whole of @p name, a bare file name in the working directory; NULL when it cannot be read or is empty. */
+/* The whole of @p name, one of the work files; NULL when it cannot be read or is empty. */
 static unsigned char*
 read_file(const char* name, size_t* len) {
     *len = 0;
+    const char* path = work_file(name);
     /* Binary: the local-file opener reads text on Windows. */
-    FILE* f = bare_name(name) ? dsd_fopen_existing_regular_file(name, "rb") : NULL;
+    FILE* f = path != NULL ? dsd_fopen_existing_regular_file(path, "rb") : NULL;
     if (f == NULL) {
         DSD_FPRINTF(stderr, "speech parity: cannot open %s\n", name ? name : "(null)");
         return NULL;

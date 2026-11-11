@@ -153,7 +153,7 @@ synth_voiced(float* out, size_t n, int rate, const voiced_params* vp, double rms
         y[i] = v;
         sumsq += v * v;
     }
-    const double scale = 32768.0 * pow(10.0, rms_dbfs / 20.0) / sqrt(sumsq / (double)(n > 0 ? n : 1U) + 1e-300);
+    const double scale = 32768.0 * pow(10.0, rms_dbfs / 20.0) / sqrt(sumsq / (double)n + 1e-300);
     for (size_t i = 0; i < n; i++) {
         out[i] = (float)(y[i] * scale);
     }

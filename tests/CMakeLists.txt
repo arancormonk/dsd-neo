@@ -8100,6 +8100,19 @@ set_tests_properties(
     DECODE_MBE_SPEECH_LEVEL
     PROPERTIES LABELS "voice-chain" TIMEOUT 120
 )
+# The tool opens only its own work file names: a path on the command line is refused before anything is opened.
+add_test(
+    NAME SPEECH_PARITY_TOOL_WORK_FILES
+    COMMAND
+        dsd-neo_test_speech_parity_tool encode imbe
+        "${CMAKE_CURRENT_BINARY_DIR}/speech_parity/talker.imb"
+)
+set_tests_properties(
+    SPEECH_PARITY_TOOL_WORK_FILES
+    PROPERTIES
+        LABELS "voice-chain"
+        PASS_REGULAR_EXPRESSION "is not one of the tool's work file names"
+)
 
 # Issue #661: capture and per-call WAV names never land on a taken one. GNU ld --wrap pins the nonce and the decode time
 # so the colliding names are known in advance, as the other wrap tests do.
