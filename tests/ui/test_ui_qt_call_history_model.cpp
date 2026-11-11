@@ -36,7 +36,10 @@
  * in either store, keeps the log owed, is retried on a growing delay without another change,
  * reports once, and a restart after a half-written save logs nothing twice (B6).
  * Issue #809: uidForFragment() finds the row holding a fragment, through a merge and a reload, and none once the row
- * is trimmed or the log cleared. */
+ * is trimmed or the log cleared. B1: a row keeps its end, so a merged or updated span past the plausible cap reads
+ * unknown and stays so (after a later update of an earlier fragment, a reload and a spill fold), the row still chains
+ * from its real end, a row an older build stored ends where its known duration says, and a row with no start stamp
+ * keeps its duration unknown through an update. */
 
 #include <QByteArray>
 #include <QChar>
@@ -4623,6 +4626,358 @@ test_destructor_marks_its_teardown_stage(void) {
     expect("no teardown marker after the markers go off", TeardownCapture::lines().size() == 2);
 }
 
+/* B1: a row keeps its end. A span longer than the plausible cap reads as unknown on every path (a fold, an update, a
+ * reload, a spill fold), and the row still chains from its real end. */
+int
+duration_of(const CallHistoryModel& model, int row) {
+    return row >= 0 && row < model.count() ? model.data(model.index(row), CallHistoryModel::DurationSecsRole).toInt()
+                                           : -2;
+}
+
+/* The end the rows store keeps for the row of talkgroup @p tg, 0 when it keeps none. */
+qint64
+stored_end_of_tg(qulonglong tg) {
+    const QJsonObject row = stored_row_with_tg(dsd_qt::json_store_load_array("call_history.json"), tg);
+    return row.value(QLatin1String("end")).toVariant().toLongLong();
+}
+
+/* The spill line the background tap writes for the one call @p ring holds now: the row and seen entry a model that
+ * logs it alone stores, as test_site_spill_round_trip() builds one. Leaves the stores empty. */
+QByteArray
+spill_line_of(const RingFixture& ring) {
+    resetStorage();
+    {
+        CallHistoryModel model;
+        model.refresh(ring.state);
+    } // destructor flushes the stores
+    const QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    const QJsonArray seen = dsd_qt::json_store_load_array("call_history_seen.json");
+    expect("one call to spill", rows.size() == 1 && seen.size() == 1);
+    QJsonObject seenEntry = seen.at(0).toObject();
+    QJsonObject line;
+    line.insert(QLatin1String("v"), 1);
+    line.insert(QLatin1String("key"), seenEntry.value(QLatin1String("key")));
+    seenEntry.remove(QLatin1String("key"));
+    line.insert(QLatin1String("seen"), seenEntry);
+    line.insert(QLatin1String("row"), rows.at(0));
+    resetStorage();
+    return QJsonDocument(line).toJson(QJsonDocument::Compact) + '\n';
+}
+
+/* An empty log with @p lines in the spill, for the next model to fold. */
+void
+write_spill(const QByteArray& lines) {
+    resetStorage();
+    QDir().mkpath(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
+    QFile spill(dsd_qt::json_store_path(QStringLiteral("call_history_spill.jsonl")));
+    expect("the spill is written", spill.open(QIODevice::WriteOnly) && spill.write(lines) == lines.size());
+    spill.close();
+}
+
+constexpr uint32_t kB1Src = 3101U;
+
+/* (a) Two fragments of one call, the second within the merge window of the first, span 3,610 s: past the cap, so the
+ * row reads unknown, and keeps the later end. */
+void
+test_fold_past_cap_is_unknown(void) {
+    const time_t when = 1754600000;
+    const uint32_t tg = 31001U;
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        ring.commit(0, tg, kB1Src, when, when + 1800);
+        model.refresh(ring.state);
+        expect("the first fragment lands with its duration", model.count() == 1 && duration_of(model, 0) == 1800);
+        ring.commit(0, tg, kB1Src, when + 1810, when + 3610);
+        model.refresh(ring.state);
+        expect("fragments spanning past the cap fold into a row of unknown duration",
+               model.count() == 1 && duration_of(model, 0) == -1);
+    } // destructor flushes the stores
+    expect("the folded row keeps the later end", stored_end_of_tg(tg) == when + 3610);
+    {
+        CallHistoryModel restored;
+        expect("the folded row reads unknown after a reload", restored.count() == 1 && duration_of(restored, 0) == -1);
+    }
+
+    RingFixture first;
+    RingFixture second;
+    first.commit(0, tg, kB1Src, when, when + 1800);
+    second.commit(0, tg, kB1Src, when + 1810, when + 3610);
+    write_spill(spill_line_of(first) + spill_line_of(second));
+    {
+        CallHistoryModel folded;
+        expect("fragments folded from the spill past the cap read unknown",
+               folded.count() == 1 && duration_of(folded, 0) == -1);
+    }
+    expect("the spill-folded row keeps the later end", stored_end_of_tg(tg) == when + 3610);
+}
+
+/* (b) A logged 3,500 s fragment whose update ends past the cap reads unknown, and keeps the update's end. */
+void
+test_update_past_cap_is_unknown(void) {
+    const time_t when = 1754604000;
+    const uint32_t tg = 31002U;
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        Event_History* item = ring.commit(0, tg, kB1Src, when, when + 3500);
+        model.refresh(ring.state);
+        expect("the fragment lands with its duration", model.count() == 1 && duration_of(model, 0) == 3500);
+        item->event_time = when + 3700;
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("an update past the cap reads unknown", model.count() == 1 && duration_of(model, 0) == -1);
+    } // destructor flushes the stores
+    expect("the updated row keeps the update's end", stored_end_of_tg(tg) == when + 3700);
+    {
+        CallHistoryModel restored;
+        expect("the updated row reads unknown after a reload", restored.count() == 1 && duration_of(restored, 0) == -1);
+    }
+
+    RingFixture call;
+    Event_History* item = call.commit(0, tg, kB1Src, when, when + 3500);
+    QByteArray lines = spill_line_of(call);
+    item->event_time = when + 3700;
+    lines += spill_line_of(call);
+    write_spill(lines);
+    {
+        CallHistoryModel folded;
+        expect("an update folded from the spill past the cap reads unknown",
+               folded.count() == 1 && duration_of(folded, 0) == -1);
+    }
+    expect("the spill-folded update keeps its end", stored_end_of_tg(tg) == when + 3700);
+}
+
+/* After (a), an update of the first fragment does not rebuild a plausible duration from that fragment alone. */
+void
+test_fold_after_cap_keeps_unknown(void) {
+    const time_t when = 1754608000;
+    const uint32_t tg = 31003U;
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        ring.commit(0, tg, kB1Src, when, when + 1800);
+        model.refresh(ring.state);
+        ring.commit(0, tg, kB1Src, when + 1810, when + 3610);
+        model.refresh(ring.state);
+        // The first fragment sits under the second now.
+        ring.rings[0].Event_History_Items[2].event_time = when + 1805;
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("an update of the first fragment keeps the row unknown",
+               model.count() == 1 && duration_of(model, 0) == -1);
+    } // destructor flushes the stores
+    expect("the row keeps its real end", stored_end_of_tg(tg) == when + 3610);
+    {
+        CallHistoryModel restored;
+        expect("the row reads unknown after a reload", restored.count() == 1 && duration_of(restored, 0) == -1);
+        ring.rings[0].Event_History_Items[2].event_time = when + 1808;
+        ring.touchCommitted(0);
+        restored.refresh(ring.state);
+        expect("an update of the first fragment after a reload keeps the row unknown",
+               restored.count() == 1 && duration_of(restored, 0) == -1);
+    }
+
+    RingFixture first;
+    RingFixture second;
+    Event_History* item = first.commit(0, tg, kB1Src, when, when + 1800);
+    QByteArray lines = spill_line_of(first);
+    second.commit(0, tg, kB1Src, when + 1810, when + 3610);
+    lines += spill_line_of(second);
+    item->event_time = when + 1805;
+    lines += spill_line_of(first);
+    write_spill(lines);
+    {
+        CallHistoryModel folded;
+        expect("an update of the first fragment folded from the spill keeps the row unknown",
+               folded.count() == 1 && duration_of(folded, 0) == -1);
+    }
+    expect("the spill-folded row keeps its real end", stored_end_of_tg(tg) == when + 3610);
+}
+
+/* After (a), a third fragment within the window of the row's real end (not of its first fragment's) merges. */
+void
+test_chain_merges_from_real_end(void) {
+    const time_t when = 1754612000;
+    const uint32_t tg = 31004U;
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        ring.commit(0, tg, kB1Src, when, when + 1800);
+        ring.commit(0, tg, kB1Src, when + 1810, when + 3610);
+        model.refresh(ring.state);
+        ring.commit(0, tg, kB1Src, when + 3625, when + 3640);
+        model.refresh(ring.state);
+        expect("a third fragment chains from the real end", model.count() == 1 && duration_of(model, 0) == -1);
+    } // destructor flushes the stores
+    expect("the chained row ends with the third fragment", stored_end_of_tg(tg) == when + 3640);
+
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        ring.commit(0, tg, kB1Src, when, when + 1800);
+        ring.commit(0, tg, kB1Src, when + 1810, when + 3610);
+        model.refresh(ring.state);
+        expect("the first two fragments fold", model.count() == 1);
+    } // destructor flushes the stores
+    {
+        CallHistoryModel restored;
+        ring.commit(0, tg, kB1Src, when + 3625, when + 3640);
+        restored.refresh(ring.state);
+        expect("a third fragment chains from the real end after a reload",
+               restored.count() == 1 && duration_of(restored, 0) == -1);
+    }
+
+    RingFixture first;
+    RingFixture second;
+    RingFixture third;
+    first.commit(0, tg, kB1Src, when, when + 1800);
+    second.commit(0, tg, kB1Src, when + 1810, when + 3610);
+    third.commit(0, tg, kB1Src, when + 3625, when + 3640);
+    write_spill(spill_line_of(first) + spill_line_of(second) + spill_line_of(third));
+    {
+        CallHistoryModel folded;
+        expect("a third fragment folded from the spill chains from the real end",
+               folded.count() == 1 && duration_of(folded, 0) == -1);
+    }
+    expect("the spill-chained row ends with the third fragment", stored_end_of_tg(tg) == when + 3640);
+}
+
+/* A row an older build stored has no end: a known duration implies one, an unknown duration none. */
+void
+test_old_row_end_derived(void) {
+    const time_t when = 1754616000;
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        ring.commit(0, 31005U, kB1Src, when, when + 40);
+        ring.commit(0, 31006U, kB1Src, when + 100, when + 130);
+        model.refresh(ring.state);
+        expect("two calls land", model.count() == 2);
+    } // destructor flushes the stores
+    QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    for (int i = 0; i < rows.size(); i++) {
+        QJsonObject row = rows.at(i).toObject();
+        row.remove(QLatin1String("end"));
+        if (row.value(QLatin1String("tg")).toVariant().toULongLong() == 31006U) {
+            row.insert(QLatin1String("durationSecs"), -1);
+        }
+        rows.replace(i, row);
+    }
+    expect("an older build's history saved", dsd_qt::json_store_save_array("call_history.json", rows));
+    {
+        CallHistoryModel restored;
+        expect("the older store loads", restored.count() == 2);
+        expect("an unknown duration stays unknown", duration_of(restored, row_with_tg(restored, 31006U)) == -1);
+        RingFixture other;
+        other.commit(0, 31007U, kB1Src, when + 500, when + 504);
+        restored.refresh(other.state);
+        expect("a new call is logged", restored.count() == 3);
+    } // destructor flushes the stores
+    expect("a known duration implies the end", stored_end_of_tg(31005U) == when + 40);
+    expect("an unknown duration implies none", stored_end_of_tg(31006U) == 0);
+    CallHistoryModel again;
+    RingFixture later;
+    later.commit(0, 31005U, kB1Src, when + 55, when + 60);
+    again.refresh(later.state);
+    expect("a fragment within the window of the derived end merges",
+           again.count() == 3 && duration_of(again, row_with_tg(again, 31005U)) == 60);
+}
+
+/* A merged span of exactly the cap is plausible, and keeps it. */
+void
+test_cap_exact_keeps_3600(void) {
+    const time_t when = 1754620000;
+    const uint32_t tg = 31008U;
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        ring.commit(0, tg, kB1Src, when, when + 1800);
+        model.refresh(ring.state);
+        ring.commit(0, tg, kB1Src, when + 1810, when + 3600);
+        model.refresh(ring.state);
+        expect("a merged span of exactly the cap keeps it", model.count() == 1 && duration_of(model, 0) == 3600);
+    } // destructor flushes the stores
+    CallHistoryModel restored;
+    expect("the cap span survives a reload", restored.count() == 1 && duration_of(restored, 0) == 3600);
+}
+
+/* A row whose end was not known (its end stamp before its start) learns it from an update, and gains a duration. */
+void
+test_unknown_learns_end(void) {
+    const time_t when = 1754624000;
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    Event_History* item = ring.commit(0, 31009U, kB1Src, when, when - 5);
+    model.refresh(ring.state);
+    expect("a row with no plausible end reads unknown", model.count() == 1 && duration_of(model, 0) == -1);
+    item->event_time = when + 30;
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("the row learns its end and its duration", model.count() == 1 && duration_of(model, 0) == 30);
+}
+
+/* A row with no start stamp (--playfiles) keeps no end, so an update (a source label learned) never turns its unknown
+ * duration into 0. */
+void
+test_startless_row_update_stays_unknown(void) {
+    const time_t when = 1754628000;
+    const uint32_t tg = 31010U;
+    resetStorage();
+    RingFixture ring;
+    Event_History* item = ring.commit(0, tg, kB1Src, 0, when);
+    {
+        CallHistoryModel model;
+        model.refresh(ring.state);
+        expect("a start-less row reads unknown", model.count() == 1 && duration_of(model, 0) == -1);
+        DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", "Unit 3101");
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("the label update lands", model.count() == 1
+                                             && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                                                    == QStringLiteral("Unit 3101"));
+        expect("the update keeps the duration unknown", duration_of(model, 0) == -1);
+    } // destructor flushes the stores
+    expect("a start-less row stores no end", stored_end_of_tg(tg) == 0);
+    {
+        CallHistoryModel restored;
+        expect("the start-less row reads unknown after a reload",
+               restored.count() == 1 && duration_of(restored, 0) == -1);
+    }
+
+    RingFixture call;
+    Event_History* fragment = call.commit(0, tg, kB1Src, 0, when);
+    QByteArray lines = spill_line_of(call);
+    DSD_SNPRINTF(fragment->s_name, sizeof(fragment->s_name), "%s", "Unit 3101");
+    lines += spill_line_of(call);
+    write_spill(lines);
+    CallHistoryModel folded;
+    expect("a label update folded from the spill keeps the duration unknown",
+           folded.count() == 1 && duration_of(folded, 0) == -1);
+}
+
+/* A start-less fragment folded into a row that knows its end still extends the row to the moment it was heard. */
+void
+test_startless_fragment_extends_known_end(void) {
+    const time_t when = 1754632000;
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    ring.commit(0, 31011U, kB1Src, when, when + 10);
+    model.refresh(ring.state);
+    ring.commit(0, 31011U, kB1Src, 0, when + 15);
+    model.refresh(ring.state);
+    expect("a start-less fragment heard after the end extends it", model.count() == 1 && duration_of(model, 0) == 15);
+}
+
 } // namespace
 
 int
@@ -4743,6 +5098,15 @@ main(int argc, char** argv) {
     test_failed_save_is_kept_and_retried();
     test_restart_after_a_half_written_save();
     test_unreadable_stores_are_kept_by_the_worker();
+    test_fold_past_cap_is_unknown();
+    test_update_past_cap_is_unknown();
+    test_fold_after_cap_keeps_unknown();
+    test_chain_merges_from_real_end();
+    test_old_row_end_derived();
+    test_cap_exact_keeps_3600();
+    test_unknown_learns_end();
+    test_startless_row_update_stays_unknown();
+    test_startless_fragment_extends_known_end();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

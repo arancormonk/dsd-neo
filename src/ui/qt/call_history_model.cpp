@@ -124,10 +124,10 @@ analog_fallback_name(uint8_t mode) {
                                             : QStringLiteral("Analog");
 }
 
-/** @brief End of a logged row on the shared timeline; unknown durations count as 0. */
+/** @brief End of a logged row on the shared timeline: its end when known, else its start. */
 qint64
 row_end_secs(const CallHistoryModel::Row& row) {
-    return row.when + qMax(row.durationSecs, 0);
+    return row.end > 0 ? row.end : row.when;
 }
 
 /**
@@ -1004,6 +1004,9 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
     row_take_site(row, item);
     if (row.kind == CallHistoryModel::KindVoice) {
         row.durationSecs = call_history_duration_secs(start, end);
+        /* The end only with the start it is measured from: a row with no start stamp (--playfiles) takes event_time
+         * as its start, and an end kept there would turn its unknown duration into 0 at the next update. */
+        row.end = (start > 0 && end >= start) ? end : 0;
     }
     return row;
 }
@@ -1535,11 +1538,14 @@ CallHistoryModel::foldRow(Row& existing, const Row& row) {
     if (existing.analog && dsd_analog_mode_known(existing.analogMode) == 0) {
         existing.analogMode = row.analogMode;
     }
+    // The row keeps its end, so one plausibility rule decides on every fold and update: a span past the cap reads
+    // unknown, and a later update of an earlier fragment cannot rebuild a duration from that fragment alone. With
+    // neither end known the duration stays unknown; a side whose end is unknown still counts from its start.
     const qint64 start = qMin(existing.when, row.when);
-    const qint64 span = qMax(row_end_secs(existing), row_end_secs(row)) - start;
     existing.when = start;
-    if ((existing.durationSecs >= 0 || row.durationSecs >= 0) && span <= kCallHistoryMaxPlausibleDurationSecs) {
-        existing.durationSecs = static_cast<int>(span);
+    if (existing.end > 0 || row.end > 0) {
+        existing.end = qMax(row_end_secs(existing), row_end_secs(row));
+        existing.durationSecs = call_history_duration_secs(start, existing.end);
     }
     existing.enc = existing.enc || row.enc;
     existing.emergency = existing.emergency || row.emergency;
@@ -2260,6 +2266,17 @@ row_analog_from_json(CallHistoryModel::Row& row, const QJsonObject& obj) {
     }
 }
 
+/**
+ * @brief A stored voice row's end (B1): `end` when stored; a row an older build stored, which kept none, ends where its
+ * known duration says, else not known. An end before the row's start is not known, and a notice keeps none.
+ */
+void
+row_end_from_json(CallHistoryModel::Row& row, const QJsonObject& obj) {
+    const qint64 derived = row.durationSecs >= 0 ? row.when + row.durationSecs : 0;
+    const qint64 end = json_i64_or(obj, "end", derived);
+    row.end = row.kind == CallHistoryModel::KindVoice && row.when > 0 && end >= row.when ? end : 0;
+}
+
 /** @brief One stored row. */
 CallHistoryModel::Row
 row_from_json(const QJsonObject& obj) {
@@ -2275,6 +2292,7 @@ row_from_json(const QJsonObject& obj) {
     row.systemName = obj.value(QLatin1String("systemName")).toString();
     row.systemUid = obj.value(QLatin1String("systemUid")).toString();
     row.kind = obj.value(QLatin1String("kind")).toInt(CallHistoryModel::KindVoice);
+    row_end_from_json(row, obj);
     row.detail = obj.value(QLatin1String("detail")).toString();
     row.channel = obj.value(QLatin1String("channel")).toString();
     row.channelName = obj.value(QLatin1String("channelName")).toString();
@@ -2347,6 +2365,9 @@ row_to_json(const CallHistoryModel::Row& row) {
         obj.insert(QLatin1String("em"), true);
     }
     obj.insert(QLatin1String("durationSecs"), row.durationSecs);
+    if (row.end > 0) {
+        obj.insert(QLatin1String("end"), row.end);
+    }
     obj.insert(QLatin1String("systemName"), row.systemName);
     obj.insert(QLatin1String("systemUid"), row.systemUid);
     obj.insert(QLatin1String("kind"), row.kind);
@@ -2421,7 +2442,7 @@ CallHistoryModel::load() {
         // evicted or lost is logged again as new rows, one per fragment.
         // The seed's site text digest is the text the row shows, as a ring walk reads it: a relaunch re-reads nothing.
         m_seen.insert(keyFor(*it), SeenState{it->when,
-                                             it->when + qMax(it->durationSecs, 0),
+                                             row_end_secs(*it),
                                              it->src,
                                              it->emergency,
                                              it->enc,

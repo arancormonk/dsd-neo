@@ -438,6 +438,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         bool emergency = false;
         bool enc = false;
         int durationSecs = -1;
+        /* When the call ended, in seconds; 0 when not known. Kept only with a start stamp it is measured from, and
+           persisted (`end`), so a span past the plausible cap still reads unknown after a fold, an update or a reload,
+           and the row chains from its real end. Notices keep none. */
+        qint64 end = 0;
         QString systemName;
         QString systemUid;
         int kind = KindVoice;
