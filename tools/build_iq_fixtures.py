@@ -626,14 +626,20 @@ DPMR_SYNTH_NAME = "dpmr_synth"
 
 # A clear DMR BS voice call on slot 1, slot 2 idle (a repeater's usual traffic), written by the test generator tests/protocol/dmr/dmr_synth.c (issue #729): the
 # two sigidwiki DMR recordings are control channels received at inverted polarity, not voice, so the voice and audio
-# chain cases need a call that really is one. The generator writes discriminator audio (raised-cosine 4FSK, outer
-# symbols at +/-1944 Hz), which remodulate() turns back into baseband with the audio's 99.5th percentile at the
-# deviation below (the raised-cosine overshoot sits a little above the outer level). It needs the built generator
-# (--dmr-synth-gen), which links mbelib-neo's AMBE encoder.
+# chain cases need a call that really is one. The generator writes discriminator audio (raised-cosine 4FSK), its
+# +/-3 symbol level at DMR_SYNTH_OUTER_LEVEL in s16 units. remodulate() maps the audio's 99.5th percentile to the
+# deviation it is given, and the raised-cosine overshoot puts that percentile about 1.6 times above the +/-3 level, so
+# the deviation is set from the known level instead: the outer symbols land on DMR_VOICE_SYNTH_OUTER_HZ, the
+# +/-1944 Hz of ETSI TS 102 361-1 section 10.2.1 (a fixed 2100 Hz percentile put them near 1300 Hz).
+# check_dmr_outer_deviation() measures them in the written baseband. It needs the built generator (--dmr-synth-gen),
+# which links mbelib-neo's AMBE encoder.
 DMR_VOICE_SYNTH_NAME = "dmr_voice_synth"
 DMR_VOICE_SYNTH_ARGS = ["-t", "4", "--cc", "2", "--s1", "voice", "--s2", "idle", "--snr", "40", "--seed", "7",
                         "--lead", "0.3", "--tail", "0.2"]
-DMR_VOICE_SYNTH_DEVIATION = 2100.0 / (SAMPLE_RATE_HZ / 2.0)
+DMR_VOICE_SYNTH_OUTER_HZ = 1944.0
+DMR_SYNTH_OUTER_LEVEL = 9000.0  # tests/protocol/dmr/dmr_synth.c: level 3 times its 3000 s16 scale
+DMR_SYNTH_SYMBOL_RATE = 4800
+DMR_OUTER_TOLERANCE = 0.03
 DPMR_SYNTH_SEED = 407
 DPMR_SYNTH_SYMBOL_RATE = 2400
 DPMR_SYNTH_OUTER_DEVIATION_HZ = 1050.0
@@ -1478,6 +1484,30 @@ def build_dpmr_synth(out_dir):
     return written
 
 
+def dmr_synth_deviation(audio):
+    """The remodulate() deviation that puts the DMR generator's +/-3 level on DMR_VOICE_SYNTH_OUTER_HZ."""
+    percentile = np.percentile(np.abs(audio - np.mean(audio)), 99.5)
+    return DMR_VOICE_SYNTH_OUTER_HZ * percentile / DMR_SYNTH_OUTER_LEVEL / (SAMPLE_RATE_HZ / 2.0)
+
+
+def check_dmr_outer_deviation(samples):
+    """Refuse a DMR synthesis whose outer symbols miss DMR_VOICE_SYNTH_OUTER_HZ by more than DMR_OUTER_TOLERANCE.
+
+    The generator centres symbol k on sample k * sps, and its raised-cosine pulses cross zero at every other centre,
+    so the instantaneous frequency there is the symbol's own level. The outer symbols are the larger half of them.
+    """
+    sps = SAMPLE_RATE_HZ // DMR_SYNTH_SYMBOL_RATE
+    centres = np.arange(sps, len(samples), sps)
+    freq = np.abs(np.angle(samples[centres] * np.conj(samples[centres - 1]))) * SAMPLE_RATE_HZ / (2.0 * math.pi)
+    outer = float(np.median(freq[freq > np.median(freq)]))
+    if abs(outer - DMR_VOICE_SYNTH_OUTER_HZ) > DMR_OUTER_TOLERANCE * DMR_VOICE_SYNTH_OUTER_HZ:
+        raise SystemExit(
+            f"{DMR_VOICE_SYNTH_NAME}: outer symbols at {outer:.0f} Hz, not {DMR_VOICE_SYNTH_OUTER_HZ:.0f} Hz "
+            f"+/-{DMR_OUTER_TOLERANCE:.0%}"
+        )
+    return outer
+
+
 def build_dmr_voice_synth(out_dir, generator, work_dir):
     """Write the synthetic DMR BS voice fixture from the test generator's discriminator audio (issue #729)."""
     os.makedirs(work_dir, exist_ok=True)
@@ -1490,7 +1520,8 @@ def build_dmr_voice_synth(out_dir, generator, work_dir):
             if wav.getnchannels() != 1 or wav.getsampwidth() != 2 or wav.getframerate() != SAMPLE_RATE_HZ:
                 raise SystemExit(f"{wav_path}: expected 48 kHz mono s16 from the DMR generator")
             audio = np.frombuffer(wav.readframes(wav.getnframes()), dtype="<i2").astype(np.float64)
-    samples = remodulate(audio, DMR_VOICE_SYNTH_DEVIATION)
+    samples = remodulate(audio, dmr_synth_deviation(audio))
+    check_dmr_outer_deviation(samples)
     written = write_fixture(out_dir, DMR_VOICE_SYNTH_NAME, samples)
     print(f"{DMR_VOICE_SYNTH_NAME:28s} synth   {written // 1024:6d} KiB")
     return written
