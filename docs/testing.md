@@ -555,6 +555,19 @@ P25 Phase 1 tolerance widened to all 48 bits, `_AUTO_CQPSK` fails on a sync stam
 capture on the FSK chain, where no sync is tolerated; that case also needs at least 10 DMR CSBKs (14) after the noise,
 which the CQPSK chain cannot decode. Both pass on e902f9b77 too: they guard the tolerance, not a fix.
 
+`p25p1_cqpsk_cc_then_long_noise` (`DERIVED_THEN_NOISE`, 288 kB) is the first second of `p25p1_cqpsk_cc`, then two
+seconds of `noise_floor` from 0.5 s, stamped from second 58 as above. One second of noise is too short for the Auto hunt
+to reach 2400 baud; two are not, and there the ten-symbol NXDN48 and IDAS words open frames on the noise, as they do on
+`noise_floor` alone. `DECODE_IQ_P25P1_CQPSK_CC_THEN_LONG_NOISE_AUTO` (`-fa -Z`) needs at least 3 of those syncs (8 here,
+`-Z` also printing the ones whose LICH fails; one LICH that passes claims voice) and at least 12 site identity lines
+(16) from the control channel before them, and pins that nothing of the noise frames is published: no `RAN`, `Src=`,
+`Location Information` or `Alias`, `Total audio errors: 0`, and an event history (`-J`) of its two startup rows only.
+Every channel of those frames fails its CRC, and the NXDN confirmation gate (`nxdn_confirm.{c,h}`) holds the RAN, the
+call, the voice and the scan hold until one passes; with the voice gate removed, the case fails on its audio errors.
+It passes on e902f9b77 too: it pins that gate, not a fix. The noise offset was chosen so the frames open on this
+fixture: the hunt's phase moves with timing changes (see above), so if a later change stops them opening the case
+fails on its sync count rather than passing on nothing, and a new offset is needed.
+
 `p25p1_c4fm_adjacent_72k` and `p25p1_cqpsk_adjacent_72k` (`DERIVED_ADJACENT`, 288 kB each) are the two P25 control
 channels at the 72 kHz RTL-SDR DSP bandwidth, next to an equal-level copy of themselves, reversed in time, 12.5 kHz up
 (issue #806). Above about 51.4 kHz every non-TETRA digital channel profile used to run a 63-tap fallback filter cut at

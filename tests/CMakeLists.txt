@@ -18968,6 +18968,30 @@ if(DSD_HAS_RADIO)
             PROPERTIES LABELS "iq-decode" TIMEOUT 120
         )
     endforeach()
+    # A second of the control channel, then two of receiver noise (DERIVED_THEN_NOISE), under Auto: the hunt reaches
+    # 2400 baud inside the noise, where the ten-symbol NXDN48 and IDAS words open frames on it (8 syncs with -Z, which
+    # also prints those whose LICH fails; at least 3 here). Nothing of them may be published: no RAN, unit, location or
+    # alias, no vocoder frame, and no event row but the two startup ones. -Z prints each frame's channels and their CRC
+    # verdicts, all failed.
+    add_test(
+        NAME DECODE_IQ_P25P1_CQPSK_CC_THEN_LONG_NOISE_AUTO
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" "-DMODE=-fa -Z"
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/p25p1_cqpsk_cc_then_long_noise.iq.json"
+            "-DEXPECTED=WACN: 92065; SYS: 0D5" -DMIN_MATCHES=12
+            "-DEXPECTED2=Sync: (NXDN48|IDAS D|JPN DCR)" -DMIN_MATCHES2=3
+            "-DEXPECTED3=Total audio errors: 0"
+            "-DNOT_EXPECTED=RAN [0-9]|Src=[0-9]|Location Information|Alias"
+            "-DEVENT_EXPECTED=Event History Initialized"
+            "-DEVENT_COUNT_REGEX=[0-9][0-9]:[0-9][0-9]:[0-9][0-9] "
+            -DEVENT_COUNT=2
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/iq_decode_events/DECODE_IQ_P25P1_CQPSK_CC_THEN_LONG_NOISE_AUTO"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_P25P1_CQPSK_CC_THEN_LONG_NOISE_AUTO
+        PROPERTIES LABELS "iq-decode;iq-reject" TIMEOUT 120
+    )
     # Every burst of this capture but its SACCHs is a scrambled data channel burst (DUID 10), a known kind: none is a
     # DUID error, which would abort its window before the SACCHs that follow it (issue #804). Nothing in the capture
     # names the site's scrambling code: it is recovered from the SACCHs themselves (the first SACCH window gives it, a

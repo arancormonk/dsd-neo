@@ -570,11 +570,19 @@ GAP_CAPTURE_STARTED_UTC = "2026-07-30T00:00:00Z"
 # for byte, as DERIVED_RETUNE does, with no event between them. The capture starts at second 58, so the console's
 # HH:MM:SS stamps read :58 and :59 for the control channel and :00 and :01 after it.
 #
+# p25p1_cqpsk_cc_then_long_noise is the first second of the control channel and then two seconds of noise_floor from
+# 0.5 s: long enough for the Auto hunt to reach 2400 baud, where the NXDN and IDAS sync words, ten sign-sliced symbols,
+# open frames on the noise. Nothing of those frames may be published (docs/testing.md).
+#
 # name, (source fixture, start s, length s) pieces in order
 DERIVED_THEN_NOISE = [
     (
         "p25p1_cqpsk_cc_then_noise",
         (("p25p1_cqpsk_cc", 0.0, 2.0), ("noise_floor", 0.0, 1.0), ("dmr_t3_cc", 0.0, 1.0)),
+    ),
+    (
+        "p25p1_cqpsk_cc_then_long_noise",
+        (("p25p1_cqpsk_cc", 0.0, 1.0), ("noise_floor", 0.5, 2.0)),
     ),
 ]
 THEN_NOISE_CAPTURE_STARTED_UTC = "2026-07-30T00:00:58Z"
