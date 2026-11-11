@@ -3583,11 +3583,24 @@ test_stream_voice_tells_the_chain_received_speech(void) {
 /* The stream encoder (-fZ) with its decoded monitor: the voice it decodes back from its own transmission runs the
    chain as the monitor's (DSD_VOICE_MEDIA_TX_MONITOR) and plays at the level codec2 decoded it at, under a fixed -g 3 as
    under auto (issue #518 B17); the receive slot's speech AGC is left exactly as it started. */
-/* Exact float equality, which an untouched AGC means: nothing ran, so every value is still the one init set. Written as a
-   zero tolerance because the float-compare rule wants one. */
+/* Whether @p a and @p b hold the same bits, read as 32-bit words. An untouched AGC is one whose values are still the
+   very bits init set, so this is the claim, with no float compare. The AGC's learned block and its gains are 4-byte
+   fields only, so the words are their values' bits, with no padding between them. */
 static int
-float_same(float a, float b) {
-    return fabsf(a - b) <= 0.0f;
+same_words(const void* a, const void* b, size_t size) {
+    uint32_t wa[128] = {0};
+    uint32_t wb[128] = {0};
+    if (size % sizeof(uint32_t) != 0U || size > sizeof wa) {
+        return 0;
+    }
+    DSD_MEMCPY(wa, a, size);
+    DSD_MEMCPY(wb, b, size);
+    for (size_t i = 0U; i < size / sizeof(uint32_t); i++) {
+        if (wa[i] != wb[i]) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static int
@@ -3647,11 +3660,12 @@ monitor_run(float gain) {
     DSD_MEMSET(&fresh, 0, sizeof fresh);
     (void)dsd_speech_agc_init(&fresh, 8000, 0.0f, DSD_SPEECH_AGC_TARGET_DBFS, DSD_SPEECH_AGC_CEILING_DBFS);
     const dsd_speech_agc* slot0 = dsd_voice_level_agc(&state, 0);
-    /* Untouched: no sample run, nothing learned, the start gain, the limiter open. */
+    /* Untouched: no sample run, and the learned state, the gain and the limiter bit for bit what init set. */
     const int untouched = slot0 == NULL
-                          || (slot0->frames == 0U && slot0->frame_pos == 0 && slot0->learned.commits == 0
-                              && float_same(slot0->g_cur, fresh.g_cur) && float_same(slot0->g_lim, fresh.g_lim)
-                              && float_same(slot0->learned.gain_db, fresh.learned.gain_db));
+                          || (slot0->frames == 0U && slot0->frame_pos == 0
+                              && same_words(&slot0->learned, &fresh.learned, sizeof fresh.learned)
+                              && same_words(&slot0->g_cur, &fresh.g_cur, sizeof fresh.g_cur)
+                              && same_words(&slot0->g_lim, &fresh.g_lim, sizeof fresh.g_lim));
     err |= expect_int("m17 encoder monitor: the receive slot's AGC untouched", untouched, 1);
     dsd_pcm_stream_close(opts.audio_in_stdin);
     opts.audio_in_stdin = NULL;
