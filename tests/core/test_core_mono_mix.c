@@ -200,11 +200,12 @@ expect_burst(const char* tag, int want) {
 
 /* The DMR superframe mix in one channel. Two talkers sum; one talker plays at its own level whether its companion is
    silent but audible (before: averaged with that silence, -6 dB), duplicated by the preference or the burst hint
-   (a copy is no second talker: a plain sum would double it), held out, switched off or not the DMR mono slot. */
+   (a copy is no second talker: a plain sum would double it), held out, switched off, not the DMR mono slot, or left
+   with a stale frame the vocoder did not stage this burst. */
 static int
 test_dmr_mono_sums_its_talkers(void) {
     int rc = 0;
-    for (int c = 0; c < 8; c++) {
+    for (int c = 0; c < 9; c++) {
         dmr_rig rig;
         if (dmr_rig_open(&rig) != 0) {
             return 1;
@@ -256,6 +257,16 @@ test_dmr_mono_sums_its_talkers(void) {
                 opts->dmr_mono = 1;
                 state->dmr_mono_slot = 1;
                 want = 5000;
+                break;
+            case 8:
+                // The vocoder skipped the slot's staging (mbe_post_slot_classify() SKIP): s_r still holds an earlier
+                // frame, which the store keeps but does not mark fresh. Only freshness tells it from a talker.
+                tag = "a stale frame the vocoder did not stage this burst";
+                for (int k = 0; k < 3; k++) {
+                    fill(state->s_r, 5000);
+                    state->mbe_short_silenced[1] = 1U;
+                    dsd_dmr_mix_store_frame(state, 1, k);
+                }
                 break;
             default: break;
         }

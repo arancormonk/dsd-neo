@@ -3140,9 +3140,12 @@ dmr_stamp_noted(void) {
     return stamp != 0U;
 }
 
-/* What a stereo DMR mix emitted: its blocks, and per channel the signs its samples took (1 positive, 2 negative). */
+/* What a stereo DMR mix emitted: its blocks, and per channel the signs its samples took (1 positive, 2 negative). A
+   one-channel 16-bit mix also keeps its samples. */
 static int g_dmr_mix_blocks = 0;
 static int g_dmr_mix_signs[2];
+static short g_dmr_mix_mono[3 * 160];
+static size_t g_dmr_mix_mono_count = 0;
 
 static void
 dmr_mix_capture_blast(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
@@ -3152,6 +3155,11 @@ dmr_mix_capture_blast(const dsd_opts* opts, dsd_state* state, size_t nsam, const
         return;
     }
     const size_t width = opts->floating_point ? sizeof(float) : sizeof(short);
+    if (!opts->floating_point && opts->pulse_digi_out_channels == 1 && nsam == 160U * sizeof(short)
+        && g_dmr_mix_mono_count + 160U <= sizeof(g_dmr_mix_mono) / sizeof(g_dmr_mix_mono[0])) {
+        DSD_MEMCPY(&g_dmr_mix_mono[g_dmr_mix_mono_count], data, nsam);
+        g_dmr_mix_mono_count += 160U;
+    }
     for (size_t i = 0U; i < nsam / width; i++) {
         const float v = opts->floating_point ? ((const float*)data)[i] : (float)((const short*)data)[i];
         if (v > 1e-6f) {
@@ -3169,6 +3177,7 @@ dmr_mix_run(dsd_opts* opts, dsd_state* state) {
     g_dmr_mix_blocks = 0;
     g_dmr_mix_signs[0] = 0;
     g_dmr_mix_signs[1] = 0;
+    g_dmr_mix_mono_count = 0;
     dmr_stamp_clear();
     dsd_udp_audio_hooks_set(hooks);
     playSynthesizedVoiceSS3(opts, state);
@@ -3848,6 +3857,50 @@ test_dmr_ss3_stamps_the_slot_each_channel_carries(void) {
             rc |= expect_eq_int(tag, dmr_stamp_noted(), cases[c].want_stamp);
             dmr_stamp_fixture_close(&fx);
         }
+    }
+    return rc;
+}
+
+/* Issue #518: the one-channel SS3 mix plays the vocoder's frames at their level. A clear talker beside a companion that
+ * staged nothing this burst (its last frame clear, so still audible) plays alone at its own level, not averaged with
+ * that silence; two clear talkers play their sum. */
+static int
+test_dmr_ss3_mono_plays_the_vocoder_level(void) {
+    int rc = 0;
+    for (int both = 0; both <= 1; both++) {
+        dmr_stamp_fixture fx;
+        if (!dmr_stamp_fixture_open(&fx, 0)) {
+            return 1;
+        }
+        fx.opts->pulse_digi_out_channels = 1;
+        dmr_stamp_stage_burst(&fx, 0);
+        if (both) {
+            dmr_stamp_stage_burst(&fx, 1);
+        }
+        static short want[3 * 160];
+        int peak = 0;
+        for (int k = 0; k < 3; k++) {
+            for (int i = 0; i < 160; i++) {
+                const int v = fx.state->s_l4[k][i] + (both ? fx.state->s_r4[k][i] : 0);
+                want[(k * 160) + i] = (short)v;
+                peak = abs(v) > peak ? abs(v) : peak;
+            }
+        }
+        const char* tag = both ? "dmr ss3 mono two clear talkers" : "dmr ss3 mono one talker beside a silent slot";
+        char check[128];
+        // Under the mixer's ceiling, so the limiter leaves the sum as it is.
+        DSD_SNPRINTF(check, sizeof(check), "%s: voice staged, under the ceiling", tag);
+        rc |= expect_eq_int(check, peak > 0 && peak <= 29204, 1);
+        dmr_mix_run(fx.opts, fx.state);
+        DSD_SNPRINTF(check, sizeof(check), "%s: samples", tag);
+        rc |= expect_eq_int(check, (int)g_dmr_mix_mono_count, 3 * 160);
+        int mismatches = 0;
+        for (size_t i = 0; i < g_dmr_mix_mono_count; i++) {
+            mismatches += g_dmr_mix_mono[i] != want[i] ? 1 : 0;
+        }
+        DSD_SNPRINTF(check, sizeof(check), "%s: at the vocoder's level", tag);
+        rc |= expect_eq_int(check, mismatches, 0);
+        dmr_stamp_fixture_close(&fx);
     }
     return rc;
 }
@@ -7107,6 +7160,7 @@ main(void) {
     rc |= test_dmr_mixes_stamp_vocoder_media();
     rc |= test_dmr_muted_slot_stages_silence_not_its_last_frame();
     rc |= test_dmr_ss3_stamps_the_slot_each_channel_carries();
+    rc |= test_dmr_ss3_mono_plays_the_vocoder_level();
     rc |= test_dmr_stereo_mixes_play_a_vertex_keystream_call();
     rc |= test_dmr_mono_disabled_slot_stages_silence();
     rc |= test_dmr_straight_keystream_burst_stays_audible_under_reverse_mute();

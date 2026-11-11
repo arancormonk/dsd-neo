@@ -61,14 +61,12 @@ endif()
 # checks fold away, so the tests' own sources keep IEEE semantics; the
 # production code they exercise keeps the build's flags. The decode-clock test
 # is here because its bounds must round like decode_clock.c, which divides
-# ns / 1e9 exactly where fast-math would multiply by an inexact 1e-9, and the
-# audio2 test because it checks the f32 samples float output carries.
+# ns / 1e9 exactly where fast-math would multiply by an inexact 1e-9.
 # Production sources that src/runtime, src/app_control and src/ui/terminal
 # build with IEEE semantics keep them when a test compiles them directly: a
 # source property set there does not reach targets in this directory.
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     set_source_files_properties(
-        core/test_core_audio2_helpers.c
         core/test_core_audio_gain.c
         core/test_core_init_state.c
         dsp/test_dsp_am_demod.cpp
@@ -118,7 +116,6 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     )
 elseif(MSVC)
     set_source_files_properties(
-        core/test_core_audio2_helpers.c
         core/test_core_audio_gain.c
         core/test_core_init_state.c
         dsp/test_dsp_am_demod.cpp
