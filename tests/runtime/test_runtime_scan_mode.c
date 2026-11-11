@@ -1835,9 +1835,8 @@ main(void) {
         if (m == DSD_SCAN_MODE_DMR) {
             assert(o->dmr_stereo == 1 && o->dmr_mono == 0);
         }
-        if (m == DSD_SCAN_MODE_M17) {
-            assert(o->use_cosine_filter == 0);
-        }
+        /* No row's preset touches the matched-filter switch, M17's included (issue #834). */
+        assert(o->use_cosine_filter == 1);
         dsd_scan_mode_configured(o, s, &restored);
         assert(settings_identical(&baseline, &restored));
         dsd_scan_mode_copy_snapshot(copy, s);

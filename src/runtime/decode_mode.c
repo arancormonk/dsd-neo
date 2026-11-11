@@ -522,7 +522,6 @@ decode_mode_apply_m17(dsd_opts* o, dsd_state* s) {
     o->dmr_stereo = 0;
     o->dmr_mono = 0;
     s->dmr_stereo = 0;
-    o->use_cosine_filter = 0;
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "M17");
 }
 

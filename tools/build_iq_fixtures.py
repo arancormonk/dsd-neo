@@ -648,6 +648,42 @@ DPMR_SYNTH_FRAME_REPEATS = 30
 DPMR_SYNTH_NOISE_SIGMA = 0.02
 DPMR_DIBIT_TO_LEVEL = {1: 3.0, 0: 1.0, 2: -1.0, 3: -3.0}
 
+# M17 voice transmissions that open with their link setup frame, in noise (issue #834). The m17 capture is joined in
+# the stream and holds no LSF, so no fixture had the frame M17's matched filter switches on at: a filter switching on
+# from a cold history once cost that frame its CRC (#399). Each transmission is a preamble, the LSF, one LICH
+# superframe of stream frames and the end-of-transmission marker, at the specification's pulse shape (root raised
+# cosine, roll-off 0.5) and outer deviation (2400 Hz), with M17_SYNTH_GAP_S of noise alone after it. The frames come
+# from m17_frame_dibits() and friends, which m17_self_check() holds to the committed reference vectors
+# (tests/protocol/m17/fixtures/m17_reference_vectors.h). The noise is complex Gaussian at a set S/N inside the
+# 12.5 kHz channel, the measure tools/scan_quiet_reception.py uses: without its matched filter dsd-neo decoded none of
+# m17_lsf_weak's link setups.
+#
+# name, S/N dB in 12.5 kHz, seed, stream frames per transmission, gap s, each transmission's delay in samples
+M17_SYNTH = [
+    ("m17_lsf_weak", 9.0, 807, 6, 0.2, (0.0, 0.0, 0.0, 0.0)),
+]
+M17_SYNTH_DST = "N0CALL"
+M17_SYNTH_SRC = "LSF-FIRST"
+M17_SYNTH_TYPE = 0x0005  # stream, voice, no encryption, CAN 0
+M17_SYNTH_LEAD_S = 0.25
+M17_SYNTH_SYMBOL_RATE = 4800
+M17_SYNTH_OUTER_HZ = 2400.0
+M17_SYNTH_RRC_ALPHA = 0.5
+M17_SYNTH_RRC_SPAN_SYMBOLS = 4  # either side: the 81 taps of dsd-neo's own M17 transmit filter at 10 samples/symbol
+M17_SYNTH_CHANNEL_HZ = 12500.0
+M17_SYNC_LSF = 0x55F7
+M17_SYNC_STREAM = 0xFF5D
+M17_PREAMBLE_WORD = 0x7777  # +3, -3 alternating, ahead of an LSF
+M17_EOT_WORD = 0x555D
+M17_FRAME_SYMBOLS = 192
+M17_PUNCTURE_P1 = "11" + "0111" * 14 + "011"
+M17_PUNCTURE_P2 = "1" * 11 + "0"
+M17_RANDOMIZER = bytes.fromhex(
+    "d6b5e23082ff8462ba4e9690d898dd5d0cc85243911df86e682f35da14eacd76198dd580d133871357182d2978c3"
+)
+M17_BASE40 = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/."
+M17_DIBIT_TO_LEVEL = {1: 3.0, 0: 1.0, 2: -1.0, 3: -3.0}  # M17 spec: 01 +3, 00 +1, 10 -1, 11 -3
+
 # Deterministic TETRA Synchronisation Bursts carrying one valid BSCH. The
 # physical channel runs at 18 ksym/s pi/4-DQPSK; the selected identity is
 # deliberately conspicuous in decoder output so the CTest assertion proves
@@ -1482,6 +1518,187 @@ def build_dpmr_synth(out_dir):
     written = write_fixture(out_dir, DPMR_SYNTH_NAME, samples)
     print(f"{DPMR_SYNTH_NAME:28s} synth   {written // 1024:6d} KiB")
     return written
+
+
+def m17_bits(value, width):
+    return [(value >> (width - 1 - i)) & 1 for i in range(width)]
+
+
+def m17_bytes_bits(data):
+    return [bit for byte in data for bit in m17_bits(byte, 8)]
+
+
+def m17_callsign(text):
+    """Base-40 address of a callsign, first character least significant (M17 specification, address encoding)."""
+    value = 0
+    for char in reversed(text):
+        value = value * 40 + M17_BASE40.index(char)
+    return value
+
+
+def m17_crc16(data):
+    """CRC-16 of the LSF: polynomial 0x5935, register from 0xFFFF (src/protocol/m17/m17_algorithms.c)."""
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= byte << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x5935) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return crc
+
+
+def m17_lsf_bytes(dst, src, type_word, meta=bytes(14)):
+    body = dst.to_bytes(6, "big") + src.to_bytes(6, "big") + type_word.to_bytes(2, "big") + meta
+    return body + m17_crc16(body).to_bytes(2, "big")
+
+
+def m17_convolve(bits):
+    """Rate-1/2, K = 5: g1 = 1+D^3+D^4 sent first, g2 = 1+D+D^2+D^4, register from zero."""
+    d1 = d2 = d3 = d4 = 0
+    out = []
+    for d in bits:
+        out += [d ^ d3 ^ d4, d ^ d1 ^ d2 ^ d4]
+        d1, d2, d3, d4 = d, d1, d2, d3
+    return out
+
+
+def m17_puncture(bits, pattern):
+    return [bit for i, bit in enumerate(bits) if pattern[i % len(pattern)] == "1"]
+
+
+def m17_golay24(data):
+    """Extended Golay (24,12): the 12 data bits, the (23,12) parity of 0xC75, then even overall parity."""
+    rem = data << 11
+    for shift in range(22, 10, -1):
+        if rem >> shift & 1:
+            rem ^= 0xC75 << (shift - 11)
+    word = ((data << 11) | rem) << 1
+    return m17_bits(word | (bin(word).count("1") & 1), 24)
+
+
+def m17_lich_bits(lsf, count):
+    """One 48-bit LICH chunk (40 LSF bits, the 3-bit counter, 5 reserved zeros) as four Golay (24,12) words."""
+    content = m17_bytes_bits(lsf)[40 * count : 40 * count + 40] + m17_bits(count, 3) + [0] * 5
+    out = []
+    for block in range(4):
+        out += m17_golay24(int("".join(map(str, content[12 * block : 12 * block + 12])), 2))
+    return out
+
+
+def m17_frame_dibits(sync_word, payload_bits):
+    """Sync word, then the 368 payload bits interleaved (QPP 45, 92) and randomized."""
+    interleaved = [0] * 368
+    for i, bit in enumerate(payload_bits):
+        interleaved[(45 * i + 92 * i * i) % 368] = bit
+    randomizer = m17_bytes_bits(M17_RANDOMIZER)
+    bits = m17_bits(sync_word, 16) + [bit ^ mask for bit, mask in zip(interleaved, randomizer)]
+    return [2 * bits[i] + bits[i + 1] for i in range(0, len(bits), 2)]
+
+
+def m17_lsf_frame(lsf):
+    return m17_frame_dibits(M17_SYNC_LSF, m17_puncture(m17_convolve(m17_bytes_bits(lsf) + [0] * 4), M17_PUNCTURE_P1))
+
+
+def m17_stream_frame(lsf, lich_count, frame_number, payload=bytes(16)):
+    type1 = m17_bits(frame_number, 16) + m17_bytes_bits(payload) + [0] * 4
+    payload_bits = m17_lich_bits(lsf, lich_count) + m17_puncture(m17_convolve(type1), M17_PUNCTURE_P2)
+    return m17_frame_dibits(M17_SYNC_STREAM, payload_bits)
+
+
+def m17_repeat_word(word):
+    return m17_frame_dibits(word, [])[:8] * (M17_FRAME_SYMBOLS // 8)
+
+
+def m17_self_check():
+    """Hold the frame builders to the committed reference vectors' frame hashes (FNV-1a 64 over the dibits)."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tests", "protocol", "m17", "fixtures",
+                        "m17_reference_vectors.h")
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+
+    def array(name):
+        body = text.split(f"{name}[", 1)[1].split("{", 1)[1].split("}", 1)[0]
+        return bytes(int(token.rstrip("U"), 16) for token in body.replace(",", " ").split())
+
+    def scalar(name):
+        return int(text.split(f"{name} = ", 1)[1].split(";", 1)[0].replace("UINT64_C(", "").rstrip(")U"), 16)
+
+    def fnv(dibits):
+        value = 1469598103934665603
+        for dibit in dibits:
+            value = ((value ^ dibit) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+        return value
+
+    lsf = array("M17_REF_LSF_BYTES")
+    stream = m17_stream_frame(lsf, 0, scalar("M17_REF_STREAM_FN"), array("M17_REF_STREAM_PAYLOAD_BYTES"))
+    for label, dibits, want in (
+        ("LSF", m17_lsf_frame(lsf), "M17_REF_LSF_FRAME_DIBIT_FNV64"),
+        ("stream", stream, "M17_REF_STREAM_FRAME_DIBIT_FNV64"),
+    ):
+        if fnv(dibits) != scalar(want):
+            raise SystemExit(f"m17_self_check: the {label} frame does not match {want}")
+    if m17_lsf_bytes(m17_callsign("N0CALL"), m17_callsign("DSD-NEO"), 0x0C95, lsf[14:28]) != lsf:
+        raise SystemExit("m17_self_check: the LSF fields do not match M17_REF_LSF_BYTES")
+
+
+def m17_transmission_dibits(stream_frames):
+    lsf = m17_lsf_bytes(m17_callsign(M17_SYNTH_DST), m17_callsign(M17_SYNTH_SRC), M17_SYNTH_TYPE)
+    dibits = m17_repeat_word(M17_PREAMBLE_WORD) + m17_lsf_frame(lsf)
+    for fn in range(stream_frames):
+        last = 0x8000 if fn == stream_frames - 1 else 0
+        dibits += m17_stream_frame(lsf, fn % 6, fn | last)
+    return dibits + m17_repeat_word(M17_EOT_WORD)
+
+
+def m17_modulate(dibits, delay=0.0):
+    """4FSK through a root raised cosine at unity DC gain, so a held level 3 is the outer deviation, @p delay samples
+    late (the frequency read between samples)."""
+    sps = SAMPLE_RATE_HZ // M17_SYNTH_SYMBOL_RATE
+    t = np.arange(-M17_SYNTH_RRC_SPAN_SYMBOLS * sps, M17_SYNTH_RRC_SPAN_SYMBOLS * sps + 1) / sps
+    a = M17_SYNTH_RRC_ALPHA
+    with np.errstate(divide="ignore", invalid="ignore"):
+        taps = (np.sin(math.pi * t * (1 - a)) + 4 * a * t * np.cos(math.pi * t * (1 + a))) / (
+            math.pi * t * (1 - (4 * a * t) ** 2)
+        )
+    taps[t == 0] = 1 + a * (4 / math.pi - 1)
+    edge = np.isclose(np.abs(t), 1 / (4 * a))
+    taps[edge] = a / math.sqrt(2) * ((1 + 2 / math.pi) * math.sin(math.pi / (4 * a))
+                                     + (1 - 2 / math.pi) * math.cos(math.pi / (4 * a)))
+    taps *= sps / taps.sum()
+    impulses = np.zeros(len(dibits) * sps)
+    impulses[::sps] = [M17_DIBIT_TO_LEVEL[dibit] for dibit in dibits]
+    freq_hz = np.convolve(impulses, taps, mode="same") * M17_SYNTH_OUTER_HZ / 3.0
+    if delay != 0.0:
+        n = np.arange(len(freq_hz), dtype=np.float64)
+        freq_hz = np.interp(n - delay, n, freq_hz, left=0.0)
+    return np.exp(2j * math.pi * np.cumsum(freq_hz) / SAMPLE_RATE_HZ)
+
+
+def m17_synth_samples(snr_db, seed, stream_frames, gap_s, delays):
+    """The transmissions on a carrier keyed only while they last, in noise at snr_db inside the 12.5 kHz channel."""
+    dibits = m17_transmission_dibits(stream_frames)
+    burst = m17_modulate(dibits)
+    gap = np.zeros(int(round(gap_s * SAMPLE_RATE_HZ)), dtype=complex)
+    signal = np.concatenate(
+        [np.zeros(int(round(M17_SYNTH_LEAD_S * SAMPLE_RATE_HZ)), dtype=complex)]
+        + [np.concatenate([m17_modulate(dibits, delay), gap]) for delay in delays]
+    )
+    spectrum = np.abs(np.fft.fft(burst)) ** 2 / len(burst) ** 2
+    freqs = np.fft.fftfreq(len(burst), 1.0 / SAMPLE_RATE_HZ)
+    burst_power = float(spectrum[np.abs(freqs) <= M17_SYNTH_CHANNEL_HZ / 2.0].sum())
+    sigma = math.sqrt(burst_power / 10.0 ** (snr_db / 10.0) * SAMPLE_RATE_HZ / M17_SYNTH_CHANNEL_HZ / 2.0)
+    rng = np.random.default_rng(seed)
+    return signal + rng.normal(0.0, sigma, len(signal)) + 1j * rng.normal(0.0, sigma, len(signal))
+
+
+def build_m17_synth(out_dir):
+    """Write the LSF-first M17 transmissions in noise (issue #834; see M17_SYNTH)."""
+    m17_self_check()
+    total = 0
+    for name, snr_db, seed, stream_frames, gap_s, delays in M17_SYNTH:
+        written = write_fixture(out_dir, name, m17_synth_samples(snr_db, seed, stream_frames, gap_s, delays))
+        total += written
+        print(f"{name:28s} synth   {written // 1024:6d} KiB")
+    return total
 
 
 def dmr_synth_deviation(audio):
@@ -2632,6 +2849,7 @@ def derived_fixture_names():
         + [entry[0] for entry in DERIVED_GAP]
         + [entry[0] for entry in DERIVED_THEN_NOISE]
         + [DPMR_SYNTH_NAME]
+        + [entry[0] for entry in M17_SYNTH]
         + [entry[0] for entry in NFM_SYNTH]
         + [entry[0] for entry in AM_SYNTH]
         + [entry[0] for entry in ANALOG_CTCSS_SYNTH]
@@ -2687,6 +2905,7 @@ def build_all_derived(out_dir, dmr_synth_gen, speech_synth_gen, cache):
     total += build_derived_gap(out_dir)
     total += build_then_noise(out_dir)
     total += build_dpmr_synth(out_dir)
+    total += build_m17_synth(out_dir)
     total += build_tetra_synth(out_dir)
     total += build_tetra_gap(out_dir)
     total += build_tetra_stress(out_dir)

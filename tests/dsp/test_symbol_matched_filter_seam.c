@@ -135,7 +135,7 @@ dsd_analog_audio_note_reception(const dsd_state* state) {
 #define CENTER     4
 #define TOTAL      6000 /* samples in the WAV: far more than any sequence reads */
 #define PHASE_SYMS 20   /* symbols read in each phase of a sequence */
-#define MAX_KINDS  3
+#define MAX_KINDS  4
 
 /* Deterministic and non-repeating, so a rewind or a skip of one sample shows. */
 static short
@@ -155,6 +155,7 @@ kind_slot(dsd_sps_filter_kind kind) {
         case DSD_SPS_FILTER_NONE: return 0;
         case DSD_SPS_FILTER_P25: return 1;
         case DSD_SPS_FILTER_DMR: return 2;
+        case DSD_SPS_FILTER_M17: return 3;
         default: assert(0); return 0;
     }
 }
@@ -164,6 +165,7 @@ kind_name(dsd_sps_filter_kind kind) {
     switch (kind) {
         case DSD_SPS_FILTER_P25: return "p25";
         case DSD_SPS_FILTER_DMR: return "dmr";
+        case DSD_SPS_FILTER_M17: return "m17";
         default: return "raw";
     }
 }
@@ -174,7 +176,7 @@ build_references(void) {
         g_raw[n] = stimulus(n);
         g_ref[0][n] = (float)g_raw[n];
     }
-    const dsd_sps_filter_kind kinds[] = {DSD_SPS_FILTER_P25, DSD_SPS_FILTER_DMR};
+    const dsd_sps_filter_kind kinds[] = {DSD_SPS_FILTER_P25, DSD_SPS_FILTER_DMR, DSD_SPS_FILTER_M17};
     for (unsigned k = 0; k < sizeof(kinds) / sizeof(kinds[0]); k++) {
         const int delay = dsd_sps_filter_group_delay(kinds[k], SPS);
         assert(delay > 0);
@@ -441,6 +443,23 @@ test_filter_switch_drops_the_anchor_move(const char* wav_path) {
     grid_close(&g);
 }
 
+/* M17 switches its filter on at the sync that opens a transmission, the link setup frame's, and keeps it through the
+   stream until the grid returns to the hunt: the LSF behind that sync is read from the filter's output at the
+   position the grid was about to read, which is what a filter switching on from a cold history once cost its CRC
+   (#399, #834). */
+static void
+test_m17_filter_switches_at_the_lsf_and_back(const char* wav_path) {
+    static dsd_opts opts;
+    static dsd_state state;
+    grid g;
+    grid_open(&g, &opts, &state, wav_path);
+    assert(run_phase(&g, DSD_SYNC_NONE, DSD_SPS_FILTER_NONE, "m17") == 0);
+    assert(run_phase(&g, DSD_SYNC_M17_LSF_POS, DSD_SPS_FILTER_M17, "m17") == 0);
+    assert(run_phase(&g, DSD_SYNC_M17_STR_POS, DSD_SPS_FILTER_M17, "m17") == 0);
+    assert(run_phase(&g, DSD_SYNC_NONE, DSD_SPS_FILTER_NONE, "m17") == 0);
+    grid_close(&g);
+}
+
 typedef struct {
     const char* name;
     void (*run)(const char* wav_path);
@@ -455,6 +474,7 @@ static const seam_case kCases[] = {
     {"handing-back", test_switch_on_while_handing_back_continues_the_position},
     {"fractional-anchor", test_fractional_span_keeps_the_sync_anchor},
     {"anchor-move", test_filter_switch_drops_the_anchor_move},
+    {"m17", test_m17_filter_switches_at_the_lsf_and_back},
 };
 
 /* An optional argument names one case to run alone, for watching it fail. */

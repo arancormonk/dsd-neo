@@ -63,6 +63,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "m17_rrc_taps.h"
 #include "pcm_tap_synth.h"
 #include "speech_synth.h"
 #include "symbol_test_support.h"
@@ -864,6 +865,44 @@ test_symbol_matched_filter_uses_active_nxdn_variant(void) {
     init_rrc_filter_memory();
     const float actual_dpmr = dsd_symbol_test_apply_matched_filter(&opts, &state, sample, 0, 0);
     assert(fabsf(actual_dpmr - expected_dpmr) < 1e-6f);
+}
+
+/* Every M17 sync hands the stream to the receive half of M17's own pulse, the encoder's root-raised-cosine taps at
+   unity DC gain, as each other mode's sync hands it to that mode's filter; the hunt stays unfiltered (issue #834). */
+static void
+test_symbol_matched_filter_runs_m17_rrc_after_an_m17_sync(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static const int syncs[] = {DSD_SYNC_M17_LSF_POS, DSD_SYNC_M17_LSF_NEG, DSD_SYNC_M17_STR_POS, DSD_SYNC_M17_STR_NEG,
+                                DSD_SYNC_M17_PKT_POS, DSD_SYNC_M17_PKT_NEG, DSD_SYNC_M17_BRT_POS, DSD_SYNC_M17_BRT_NEG,
+                                DSD_SYNC_M17_PRE_POS, DSD_SYNC_M17_PRE_NEG, DSD_SYNC_M17_EOT_POS, DSD_SYNC_M17_EOT_NEG};
+    double tap_sum = 0.0;
+    for (int n = 0; n < DSD_M17_RRC_48KHZ_TAP_COUNT; n++) {
+        tap_sum += dsd_m17_rrc_48khz_taps[n];
+    }
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.use_cosine_filter = 1;
+    opts.frame_m17 = 1;
+    state.samplesPerSymbol = 10;
+    for (size_t s = 0; s < sizeof(syncs) / sizeof(syncs[0]); s++) {
+        state.lastsynctype = syncs[s];
+        init_rrc_filter_memory();
+        for (int n = 0; n < DSD_M17_RRC_48KHZ_TAP_COUNT; n++) {
+            const float got = dsd_symbol_test_apply_matched_filter(&opts, &state, n == 0 ? 1.0f : 0.0f, 0, 0);
+            const float want = (float)(dsd_m17_rrc_48khz_taps[n] / tap_sum);
+            if (fabsf(got - want) > 1e-6f) {
+                DSD_FPRINTF(stderr, "M17 sync %d: impulse response tap %d is %.6f, want %.6f\n", syncs[s], n,
+                            (double)got, (double)want);
+                assert(0);
+            }
+        }
+    }
+
+    state.lastsynctype = DSD_SYNC_NONE;
+    init_rrc_filter_memory();
+    assert(fabsf(dsd_symbol_test_apply_matched_filter(&opts, &state, 1.0f, 0, 0) - 1.0f) < 1e-6f);
 }
 
 static void
@@ -6949,6 +6988,7 @@ main(void) {
     test_symbol_helper_window_sync_and_timing_contracts();
     test_symbol_helper_analog_i16_conversion_contract();
     test_symbol_matched_filter_uses_active_nxdn_variant();
+    test_symbol_matched_filter_runs_m17_rrc_after_an_m17_sync();
     test_symbol_helper_rtl_cache_and_center_contract();
     test_rx_tone_tap_reads_raw_block_before_voice_filters();
     test_carrier_stamp_does_not_need_audio_out();

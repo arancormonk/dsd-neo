@@ -338,6 +338,13 @@ static sps_fir g_fir_dpmr = {.base = dpmrcoeffs,
                              .base_sps = DPMR_BASE_SPS,
                              .design_kind = SPS_FIR_DESIGN_RRC,
                              .rrc_alpha = 0.2f};
+/* M17 sends root-raised-cosine pulses of roll-off 0.5; the receive half is the same filter, so the encoder's transmit
+   taps are its matched filter. */
+static sps_fir g_fir_m17 = {.base = dsd_m17_rrc_48khz_taps,
+                            .base_len = DSD_M17_RRC_48KHZ_TAP_COUNT,
+                            .base_sps = 10,
+                            .design_kind = SPS_FIR_DESIGN_RRC,
+                            .rrc_alpha = 0.5f};
 
 float
 dmr_filter(float sample, int samples_per_symbol) {
@@ -365,6 +372,7 @@ init_rrc_filter_memory(void) {
     reset_sps_fir(&g_fir_dmr);
     reset_sps_fir(&g_fir_nxdn);
     reset_sps_fir(&g_fir_dpmr);
+    reset_sps_fir(&g_fir_m17);
 }
 
 /*
@@ -383,6 +391,7 @@ sps_fir_for_kind(dsd_sps_filter_kind kind) {
         case DSD_SPS_FILTER_P25: return &g_fir_p25;
         case DSD_SPS_FILTER_NXDN: return &g_fir_nxdn;
         case DSD_SPS_FILTER_DPMR: return &g_fir_dpmr;
+        case DSD_SPS_FILTER_M17: return &g_fir_m17;
         case DSD_SPS_FILTER_NONE:
         default: return NULL;
     }

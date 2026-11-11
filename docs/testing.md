@@ -785,6 +785,17 @@ construction: every CCH CRC-7 in it passes, and `DECODE_IQ_DPMR_SYNTH` asserts
 the identity the vectors encode. Its voice payload is deterministic filler, so
 the run reports vocoder errors; the CCH is what it pins.
 
+`m17_lsf_weak` (`M17_SYNTH`, 233 kB) is synthetic as well: four M17 voice transmissions, each a preamble, a link setup
+frame, one LICH superframe of stream frames and the EOT marker, at M17's root-raised-cosine pulse (roll-off 0.5) and
+2400 Hz outer deviation, with 0.2 s of noise alone after each, in complex Gaussian noise at 9 dB S/N inside 12.5 kHz
+(seed 807). The frames come from the fixture builder's own M17 encoder, which `m17_self_check()` holds to the LSF and
+stream frame hashes in `tests/protocol/m17/fixtures/m17_reference_vectors.h`. The committed `m17` capture is joined in
+the stream and has no LSF, and the LSF is the frame M17's matched filter switches on at (issue #834; a filter switching
+on from a cold history once cost it its CRC, #399). `DECODE_IQ_M17_LSF_WEAK` (`-fz`) and `_AUTO` (`-fa`) run `-Z` and
+need at least three LSFs whose CRC passes on their own frame (the check printed on the bytes' line, which a
+LICH-reassembled LSF prints on a line of its own) and three complete LICH superframes. Without the filter this
+realization decodes neither; with it, four of each under both presets.
+
 `DECODE_IQ_DSTAR_AUTO_HUNT` and `DECODE_IQ_P25P2_CC_AUTO_HUNT` assert on an `SPS hunt:` rotation line rather than a
 decoded payload. The `dstar` (4 s) and `p25p2_cc` (2 s) fixtures are shorter than one full hunt rotation (~6 s at
 48 kHz), so under `-fa` they cannot be expected to decode; what they can prove is that the hunt is not pinned on its
@@ -837,9 +848,11 @@ rather than a count, per the policy above, plus the absence of any hunt rotation
 `DECODE_IQ_M17_AUTO` covers issue #399. M17's own profile is where the hunt starts, so the `m17` capture needs no
 rotation and gets none: it must publish the same identity under `-fa` that `DECODE_IQ_M17` asserts under `-fz`.
 Before the fix it published nothing, because AUTO demanded an exact repeated preamble marker that real M17 never
-presents, and because `-fz` switches the matched filter off through the global `use_cosine_filter` while AUTO left it
-on over every M17 payload. A BERT transmission has no fixture; under `-fa` its first frames report unproductive to
-the SPS hunt until PRBS9 locks, which is the price of a frame type that carries no CRC of its own.
+presents, and because `-fz` switched the matched filter off through the global `use_cosine_filter` while AUTO left it
+on over every M17 payload, switching on from a cold history. M17 now runs its own filter after a sync under both,
+behind the seam that pays off the switch (issue #834; `DECODE_IQ_M17_LSF_WEAK` above). A BERT transmission has no
+fixture; under `-fa` its first frames report unproductive to the SPS hunt until PRBS9 locks, which is the price of a
+frame type that carries no CRC of its own.
 
 The other half of #399 — that a capture containing no M17 does not decode any — is pinned in
 `FRAME_SYNC_INTERNAL_HELPERS` (`test_m17_alternating_runs_alone_are_never_a_sync`) rather than as a reject case on

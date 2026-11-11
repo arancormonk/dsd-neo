@@ -403,12 +403,13 @@ symbol_timing_debug_char(const dsd_state* state, int timing_level, char c) {
     }
 }
 
-/* M17 is deliberately absent below. Its own preset says so -- -fz clears use_cosine_filter
- * outright -- but that is a global switch, so under AUTO the flag kept its default and M17
- * frames were the only ones handed a matched filter their preset rejects. The filter also runs
- * from a cold history the moment a sync sets lastsynctype, and its group delay lands on the very
- * payload that sync introduces: it cost the LSF its CRC and the stream its LICH, which is why
- * AUTO could match M17 sync words and never decode a frame behind them (#399). */
+/* M17 gets the receive half of its own root-raised-cosine pulse after an M17 sync, as every other
+ * mode gets its filter. It was taken out once (#399): -fz switched the filters off, AUTO left this
+ * one on, and a filter switching on from a cold history put its group delay on the very payload
+ * the sync introduced, which cost the LSF its CRC and the stream its LICH. The seam below now
+ * primes a filter with the history it missed and pays off that delay at every switch (#444), and
+ * without its matched filter an ideal M17 signal needed about 6 dB more S/N than DMR or P25
+ * Phase 1 (#834). */
 static inline dsd_sps_filter_kind
 symbol_matched_filter_kind(const dsd_opts* opts, const dsd_state* state, int rtl_symbol_rate_output,
                            int cqpsk_symbol_rate) {
@@ -421,6 +422,9 @@ symbol_matched_filter_kind(const dsd_opts* opts, const dsd_state* state, int rtl
     }
     if (DSD_SYNC_IS_P25P1(state->lastsynctype)) {
         return DSD_SPS_FILTER_P25;
+    }
+    if (DSD_SYNC_IS_M17(state->lastsynctype)) {
+        return DSD_SPS_FILTER_M17;
     }
     if (DSD_SYNC_IS_DPMR(state->lastsynctype)) {
         if (opts->frame_dpmr == 1) {

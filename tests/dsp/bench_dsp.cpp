@@ -1693,15 +1693,16 @@ bench_one_analog_rx(const BenchOptions& opts, const char* name, const AnalogRxSi
 static int
 bench_matched_filters(const BenchOptions& opts) {
     const dsd_sps_filter_kind kinds[] = {DSD_SPS_FILTER_P25, DSD_SPS_FILTER_DMR, DSD_SPS_FILTER_NXDN,
-                                         DSD_SPS_FILTER_DPMR};
-    const char* names[] = {"matched_p25_sps10", "matched_dmr_sps10", "matched_nxdn_sps20", "matched_dpmr_sps20"};
-    const int rates[] = {10, 10, 20, 20};
+                                         DSD_SPS_FILTER_DPMR, DSD_SPS_FILTER_M17};
+    const char* names[] = {"matched_p25_sps10", "matched_dmr_sps10", "matched_nxdn_sps20", "matched_dpmr_sps20",
+                           "matched_m17_sps10"};
+    const int rates[] = {10, 10, 20, 20, 10};
     float samples[256];
     for (int i = 0; i < 256; i++) {
         samples[i] = std::sin(0.31f * static_cast<float>(i));
     }
     int ran = 0;
-    for (int k = 0; k < 4; k++) {
+    for (int k = 0; k < static_cast<int>(sizeof(kinds) / sizeof(kinds[0])); k++) {
         init_rrc_filter_memory();
         ran += run_case(opts, names[k], "sample", 256.0, [&]() -> float {
             float sum = 0.0f;

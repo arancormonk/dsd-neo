@@ -8290,7 +8290,8 @@ test_scoped_mode_commands_and_config(void) {
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("scanner toggle drained", dsd_app_drain_cmds(opts, state), 1);
     rc |= expect_int("exit restores M17", opts->frame_m17, 1);
-    rc |= expect_int("exit restores M17 filter", opts->use_cosine_filter, 0);
+    /* The M17 preset leaves the matched-filter switch as configured (issue #834). */
+    rc |= expect_int("exit restores the configured filter switch", opts->use_cosine_filter, 1);
     rc |= expect_int("exit restores configured timing at live input rate", state->samplesPerSymbol, 20);
     rc |= expect_int("exit restores configured profile", state->sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
     opts->scanner_mode = 1;

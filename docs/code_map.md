@@ -6327,7 +6327,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   history into a filter without reading an output. Each history sample is stored twice, one tap-count apart,
   so the oldest-to-newest dot product reads contiguous lanes. Apply and prime share the same push; reset and SPS
   redesign clear both copies. `MATCHED_FILTER_SEAM` pins the timing promise and compares wrapped histories with
-  independent linear convolution.
+  independent linear convolution. The kinds are DMR's (also YSF and NXDN96), P25 Phase 1's, NXDN48's, dPMR's and
+  M17's; `symbol_matched_filter_kind()` in `dsd_symbol.c` picks one from `lastsynctype`, and the hunt reads the raw
+  stream. M17's is the receive half of its root-raised-cosine pulse (roll-off 0.5), the encoder's transmit taps
+  `dsd_m17_rrc_48khz_taps`; M17 ran unfiltered from #399 until #834, which cost an ideal signal about 6 dB.
+  `use_cosine_filter` (`-l`, the menu's cosine filter) switches every kind off; no decode preset sets it.
 - `dsd_symbol.c` pays for every switch so the grid does not move. It keeps the raw samples it has consumed
   (`dsd_state::matched_filter`, see `core/state.h`); a filter switching on is primed from that history and fed its
   delay's worth of samples whose outputs are discarded, one switching off hands back the samples it still had in
@@ -6902,7 +6906,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`frame_sync_m17_chain_has_evidence()`, a BERT PRBS lock) or waits for three fresh hits. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
   (`test_m17_joins_on_a_sync_word_three_frames_running`, `test_an_nxdn96_data_call_stays_nxdn96_under_auto`),
   `DECODE_IQ_NOISE_FLOOR_M17_NO_SYNC`, `DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_NXDN96_SYNC`, `DECODE_IQ_M17_MID_STREAM_JOIN`
-  (`m17_after_retune`: noise, then a stream landed in mid-frame) and its `_AUTO` twin, `DECODE_IQ_M17`.
+  (`m17_after_retune`: noise, then a stream landed in mid-frame) and its `_AUTO` twin, `DECODE_IQ_M17`,
+  `DECODE_IQ_M17_LSF_WEAK` and its `_AUTO` twin (`m17_lsf_weak`: LSF-first transmissions at 9 dB, the LSF read
+  behind the matched filter's switch-on).
 - NXDN96 sync acceptance (`frame_sync_try_nxdn()`, `frame_sync_nxdn96_accepts()` in `dsd_frame_sync.c`), after the
   receiver rules of NXDN TS 1-A 5.3 and Table 5.9-3, on the NXDN96 window (`frame_sync_nxdn96_window()`: 4800/4, or a
   symbol capture with NXDN96 alone on). The sign-sliced FSW match (ten symbols, five variants per polarity) passes about

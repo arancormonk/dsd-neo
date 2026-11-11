@@ -20824,6 +20824,36 @@ if(DSD_HAS_RADIO)
         "SRC: N0CALL"
     )
 
+    # Issue #834: M17 runs its root-raised-cosine matched filter after an M17 sync, as every other mode runs its own.
+    # Four transmissions, each a preamble, a link setup frame, one LICH superframe and the EOT, at 9 dB S/N in
+    # 12.5 kHz (M17_SYNTH in tools/build_iq_fixtures.py). The LSF is the frame the filter switches on at, the one a
+    # filter switching on from a cold history once cost its CRC (#399): its own frame decodes behind the switch (the
+    # bytes, then the CRC check on the same line, which only the LSF frame prints so; a LICH-reassembled LSF prints
+    # its check on a line of its own), and the stream frames' LICH reassembles. Without the filter not one LSF or
+    # LICH superframe decodes here; with it all four of each do, under -fz and -fa (3 leaves a margin).
+    foreach(_m17_mode IN ITEMS -fz -fa)
+        if(_m17_mode STREQUAL "-fa")
+            set(_m17_name DECODE_IQ_M17_LSF_WEAK_AUTO)
+        else()
+            set(_m17_name DECODE_IQ_M17_LSF_WEAK)
+        endif()
+        add_test(
+            NAME ${_m17_name}
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DMODE=${_m17_mode} -Z"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/m17_lsf_weak.iq.json"
+                "-DEXPECTED=\\[1A\\]\\[B4\\] \\(CRC CHK\\) E: 1AB4; C: 1AB4;"
+                -DMIN_MATCHES=3 "-DEXPECTED2=LC: 6/6" -DMIN_MATCHES2=3 -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+        )
+        set_tests_properties(
+            ${_m17_name}
+            PROPERTIES LABELS "iq-decode" TIMEOUT 120
+        )
+    endforeach()
+
+
     # Issue #388: P25 Phase 1 C4FM on its own profile, which is where AUTO starts -- the hunt
     # performs no rotation on this capture and needs none. What it used to fail on is the
     # company 4800/4 keeps: NXDN96's matcher takes five variants per polarity over ten

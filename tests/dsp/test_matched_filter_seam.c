@@ -36,12 +36,13 @@ kind_name(dsd_sps_filter_kind kind) {
         case DSD_SPS_FILTER_P25: return "p25";
         case DSD_SPS_FILTER_NXDN: return "nxdn";
         case DSD_SPS_FILTER_DPMR: return "dpmr";
+        case DSD_SPS_FILTER_M17: return "m17";
         default: return "none";
     }
 }
 
 static const dsd_sps_filter_kind kKinds[] = {DSD_SPS_FILTER_DMR, DSD_SPS_FILTER_P25, DSD_SPS_FILTER_NXDN,
-                                             DSD_SPS_FILTER_DPMR};
+                                             DSD_SPS_FILTER_DPMR, DSD_SPS_FILTER_M17};
 static const int kSps[] = {20, 10, 8, 5, 4, 3, 2};
 
 /* A deterministic, non-repeating stimulus: every position is distinguishable,
