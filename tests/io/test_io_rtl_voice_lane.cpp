@@ -250,7 +250,9 @@ struct Run {
     std::vector<float> voice;
     std::vector<uint8_t> flags;
     std::vector<Batch> batches;
-    size_t resumed_at = 0U; /* replay_resumed(): the first batch of the resumed stream */
+    size_t resumed_at = 0U;  /* replay_resumed(): the first batch of the resumed stream */
+    int lane_available = -1; /* rtl_stream_voice_lane_available() while the stream ran, and once it stopped */
+    int lane_after_stop = -1;
 };
 
 /* Whether the lane is asked for while the demod makes batch @p k: never, always, or on, off and on again. */
@@ -354,6 +356,7 @@ replay_stream(const char* meta, const StreamCfg& cfg, LanePlan plan, Run* out) {
         DSD_FPRINTF(stderr, "FAIL: could not start the replay of %s\n", meta);
         rc = 1;
     } else {
+        out->lane_available = rtl_stream_voice_lane_available();
         static float norm[65536];
         static float voice[65536];
         static uint8_t flags[65536];
@@ -382,6 +385,7 @@ replay_stream(const char* meta, const StreamCfg& cfg, LanePlan plan, Run* out) {
     if (ctx) {
         (void)rtl_stream_destroy(ctx);
     }
+    out->lane_after_stop = rtl_stream_voice_lane_available();
     if (captured) {
         (void)dsd_test_capture_stderr_end(&cap);
         static char log[1 << 16];
@@ -593,6 +597,9 @@ check_capture(const Spec& spec, double tau_gain) {
 
     Run always;
     expect("replay with the lane on", replay(spec, kLaneAlways, &always) == 0);
+    /* A running stream says it can carry the lane, so EDACS plays it; a stopped one, whose ring is gone, says not. */
+    DSD_SNPRINTF(label, sizeof label, "%s: the running stream can carry the lane, the stopped one cannot", name);
+    expect(label, always.lane_available == 1 && always.lane_after_stop == 0);
     DSD_SNPRINTF(label, sizeof label, "%s: the normalised samples are the same with the lane on throughout", name);
     expect(label, same_bits(never.norm, always.norm) && never.flags == always.flags);
     double ref = 0.0;

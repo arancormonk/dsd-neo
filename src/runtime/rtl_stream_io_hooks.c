@@ -97,6 +97,14 @@ dsd_rtl_stream_io_hook_set_voice_lane(int enable) {
     }
 }
 
+int
+dsd_rtl_stream_io_hook_voice_lane_available(void) {
+    if (!g_rtl_stream_io_hooks.read_lanes) {
+        return 0;
+    }
+    return g_rtl_stream_io_hooks.voice_lane_available ? (g_rtl_stream_io_hooks.voice_lane_available() ? 1 : 0) : 1;
+}
+
 double
 dsd_rtl_stream_io_hook_return_pwr(const dsd_state* state) {
     if (!state || !state->rtl_ctx) {

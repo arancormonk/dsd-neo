@@ -3035,6 +3035,17 @@ edacs_call_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
    20000 peak. */
 static int g_call_reference = 0;
 
+/* Issue #518: a stream that cannot carry the voice lane. Under g_call_no_read_lanes no read_lanes hook is installed;
+   under g_call_lane_unavailable the stream says it has no lane buffer (the ring's allocation failed), and its voice
+   lane reads 0 as the real ring's does then. */
+static int g_call_no_read_lanes = 0;
+static int g_call_lane_unavailable = 0;
+
+static int
+edacs_call_voice_lane_available(void) {
+    return g_call_lane_unavailable ? 0 : 1;
+}
+
 /* The stream's voice lane beside it (issue #518): the same signal at the RTL monitor's scale, where the 8000 peak tone
    reads 0.25; or, under g_call_reference, the reference beside an unrelated normalised signal. */
 static int
@@ -3052,6 +3063,9 @@ edacs_call_read_lanes(void* rtl_ctx, float* out, float* voice, uint8_t* flags, s
     if (voice != NULL) {
         voice[0] =
             g_call_reference ? (float)(0.125 * sin(2.0 * 3.14159265358979323846 * 1000.0 * t)) : out[0] / 32000.0f;
+        if (g_call_lane_unavailable) {
+            voice[0] = 0.0f;
+        }
     }
     return rc;
 }
@@ -3165,8 +3179,9 @@ edacs_run_analog_call(int mode) {
         .return_pwr = edacs_call_return_pwr,
         .read_ex = edacs_call_read_ex,
         .squelch_status = edacs_call_squelch_status,
-        .read_lanes = edacs_call_read_lanes,
+        .read_lanes = g_call_no_read_lanes ? NULL : edacs_call_read_lanes,
         .set_voice_lane = edacs_call_set_voice_lane,
+        .voice_lane_available = edacs_call_voice_lane_available,
     });
     g_lane_request_count = 0;
     dsd_rtl_stream_metrics_hooks rates;
@@ -3302,6 +3317,50 @@ edacs_run_voice_lane_level_cases(void) {
             rc |= edacs_expect(g_process_last_source == (int)DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR, "analog-b10",
                                "voice-lane-level", "the chain runs the lane as RTL monitor audio");
         }
+    }
+    return rc;
+}
+
+/* Issue #518: where the stream cannot carry the voice lane (no read_lanes hook, or a lane buffer that was not
+   allocated) an analog call plays the FSK samples it read before the lane, through the chain as FSK audio, never the
+   silence the missing lane reads. At a fixed `-n 50` the stream's 1 kHz tone at 8000 peak plays at the FSK source's
+   level, 48 kHz in and out; and the lane is not asked for, since its work would go nowhere. */
+static int
+edacs_run_voice_lane_fallback_cases(void) {
+    int rc = 0;
+    for (int c = 0; c < 2; c++) {
+        const long reads = 10L * edacs_triplet_reads(48000U);
+        edacs_call_defaults(reads, 48000U);
+        g_call_cap = reads;
+        g_call_no_read_lanes = c == 0;
+        g_call_lane_unavailable = c == 1;
+        g_call_gain_a = 50.0f;
+        (void)edacs_run_analog_call(DSD_SQUELCH_MODE_LEVEL);
+        g_call_no_read_lanes = 0;
+        g_call_lane_unavailable = 0;
+        g_call_gain_a = 0.0f;
+        const char* why = c == 0 ? "no read_lanes hook" : "no lane buffer";
+        const double rms_db =
+            g_call_played_count > 0
+                ? 10.0 * log10((g_call_played_sum_sq / (double)g_call_played_count) / (32768.0 * 32768.0))
+                : -200.0;
+        const double want_db =
+            20.0
+            * log10((8000.0 * dsd_analog_audio_source_gain(DSD_ANALOG_AUDIO_SOURCE_RTL_FSK)) / (sqrt(2.0) * 32768.0));
+        const int ok = g_call_played_count > 2L * EDACS_ANALOG_TRIPLET_SAMPLES && fabs(rms_db - want_db) < 0.5;
+        if (!ok) {
+            DSD_FPRINTF(stderr, "  %s: played %.2f dBFS RMS over %ld samples, want %.2f\n", why, rms_db,
+                        g_call_played_count, want_db);
+        }
+        rc |= edacs_expect(ok, "analog-b10", "voice-lane-fallback",
+                           "without a voice lane the call plays its FSK samples at the FSK source's level");
+        rc |= edacs_expect(g_process_last_source == (int)DSD_ANALOG_AUDIO_SOURCE_RTL_FSK, "analog-b10",
+                           "voice-lane-fallback", "the chain runs the FSK samples as FSK audio");
+        int asked = 0;
+        for (int i = 0; i < g_lane_request_count && i < 8; i++) {
+            asked |= g_lane_requests[i];
+        }
+        rc |= edacs_expect(asked == 0, "analog-b10", "voice-lane-fallback", "a stream without the lane is not asked");
     }
     return rc;
 }
@@ -4139,6 +4198,7 @@ main(void) {
     rc |= edacs_run_tune_completion_race_case();
     rc |= edacs_run_voice_lane_request_cases();
     rc |= edacs_run_voice_lane_level_cases();
+    rc |= edacs_run_voice_lane_fallback_cases();
     rc |= edacs_run_analog_gap_case(48000U);
     rc |= edacs_run_analog_gap_case(24000U);
     rc |= edacs_run_no_stream_cases();

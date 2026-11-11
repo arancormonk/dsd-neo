@@ -11172,6 +11172,12 @@ rtl_stream_voice_lane_requested(void) {
     return g_voice_lane_requested.load(std::memory_order_acquire);
 }
 
+/* The ring is set up and torn down with the stream on the decoder thread, which is where this is read. */
+extern "C" int
+rtl_stream_voice_lane_available(void) {
+    return (output.buffer != NULL && output.voice != NULL) ? 1 : 0;
+}
+
 extern "C" uint32_t
 rtl_stream_session_generation(void) {
     return g_rtl_session_generation.load(std::memory_order_acquire);

@@ -151,6 +151,14 @@ rtl_stream_set_voice_lane(int enable) {
     g_voice_lane_set = enable;
 }
 
+/* Whether the stub stream has its voice lane buffer. */
+static int g_voice_lane_available = 1;
+
+int
+rtl_stream_voice_lane_available(void) {
+    return g_voice_lane_available;
+}
+
 int
 rtl_stream_get_squelch_status(rtl_stream_squelch_status* out) {
     out->active = 1;
@@ -175,6 +183,12 @@ rtl_stream_return_pwr(const RtlSdrContext* ctx) {
 static int
 rtl_stream_io_test_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
     return rtl_stream_read((RtlSdrContext*)rtl_ctx, out, count, out_got);
+}
+
+static int
+rtl_stream_io_test_read_lanes(void* rtl_ctx, float* out, float* voice, uint8_t* flags, size_t count, int* out_got,
+                              int want_no_stream) {
+    return rtl_stream_read_lanes((RtlSdrContext*)rtl_ctx, out, voice, flags, count, out_got, want_no_stream);
 }
 
 static void
@@ -293,6 +307,11 @@ test_rtl_stream_io_installer(void) {
     assert(g_voice_lane_set == 1);
     dsd_rtl_stream_io_hook_set_voice_lane(0);
     assert(g_voice_lane_set == 0);
+    /* Whether the stream carries the lane is rtl_stream_voice_lane_available()'s answer: no lane buffer, no lane. */
+    assert(dsd_rtl_stream_io_hook_voice_lane_available() == 1);
+    g_voice_lane_available = 0;
+    assert(dsd_rtl_stream_io_hook_voice_lane_available() == 0);
+    g_voice_lane_available = 1;
 
     /* The dynamic squelch's status reaches the runtime table, and dsd_state through the publication. */
     dsd_rtl_squelch_status status;
@@ -334,6 +353,10 @@ test_rtl_stream_io_installer(void) {
     g_voice_lane_set = -1;
     dsd_rtl_stream_io_hook_set_voice_lane(1);
     assert(g_voice_lane_set == -1);
+    /* Without read_lanes the stream carries no lane; with it and no say from the stream, it does. */
+    assert(dsd_rtl_stream_io_hook_voice_lane_available() == 0);
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){.read_lanes = rtl_stream_io_test_read_lanes});
+    assert(dsd_rtl_stream_io_hook_voice_lane_available() == 1);
 
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
 }

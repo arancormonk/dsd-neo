@@ -2472,7 +2472,8 @@ Each replay uses its own centre frequency: the auto squelch keeps a channel's fl
 replay on the same centre would start from it and set other flags. `DSP_FSK_VOICE_LANE` covers the lane in the demod
 (level at 24, 48 and 72 kHz under none, 50, 75 and 750 us; the compensation the monitor's; a squelched block; the
 coefficient following the rate; the resampler keeping the lane in step), and `EDACS_GRANT_TUNE_MATRIX` the call: the
-lane asked for around an RTL call only, and a call the talkgroup gate mutes recording at the AGC's level.
+lane asked for around an RTL call only, a call the talkgroup gate mutes recording at the AGC's level, and a stream with
+no lane (no lane buffer, or no `read_lanes` hook) playing the FSK samples at the FSK source's level, not silence.
 
 The 12.5 kHz probe on `nfm_adjacent_synth` reads -76.6 dBc (`-v 0 -n 50`), against -78.4 dBc on `nfm_tone_synth`,
 which has no interferer: at the default channel width it measures the floor, so its bound catches a channel filter that lets the

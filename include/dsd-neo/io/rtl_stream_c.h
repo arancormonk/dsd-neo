@@ -292,6 +292,13 @@ void rtl_stream_set_voice_lane(int enable);
 /** @brief Whether the FSK voice lane is asked for (rtl_stream_set_voice_lane()). */
 int rtl_stream_voice_lane_requested(void);
 
+/**
+ * @brief Whether the open stream can carry the FSK voice lane: 0 with no stream, or when its output ring's lane buffer
+ * could not be allocated (it is allocated with the ring, so a device short of memory may run without it). Without it
+ * every voice-lane sample reads 0, so a reader plays the FSK output instead.
+ */
+int rtl_stream_voice_lane_available(void);
+
 /** @brief Start of the last NO_STREAM wait slice on this reader thread, in real monotonic milliseconds.
  * Read only after DSD_RTL_READ_NO_STREAM; 0 if no slice has been recorded. */
 uint64_t rtl_stream_no_stream_since_ms(void);

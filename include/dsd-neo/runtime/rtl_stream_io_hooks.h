@@ -66,6 +66,9 @@ typedef struct {
                       int want_no_stream);
     /* Ask for the FSK voice lane, or stop it (rtl_stream_set_voice_lane()). Optional. */
     void (*set_voice_lane)(int enable);
+    /* Whether the stream can carry the FSK voice lane (rtl_stream_voice_lane_available()). Optional: without it, a
+       stream with read_lanes carries it. */
+    int (*voice_lane_available)(void);
 } dsd_rtl_stream_io_hooks;
 
 void dsd_rtl_stream_io_hooks_set(dsd_rtl_stream_io_hooks hooks);
@@ -102,6 +105,13 @@ int dsd_rtl_stream_io_hook_read_lanes(dsd_state* state, float* out, float* voice
 
 /** @brief Ask the RTL stream for its FSK voice lane, or stop it (issue #518); nothing without the hook. */
 void dsd_rtl_stream_io_hook_set_voice_lane(int enable);
+
+/**
+ * @brief Whether the RTL stream carries the FSK voice lane: 1 with the read_lanes hook, unless the voice_lane_available
+ * hook says its stream cannot (its lane buffer was not allocated); 0 without read_lanes, where every voice sample
+ * reads 0.
+ */
+int dsd_rtl_stream_io_hook_voice_lane_available(void);
 
 /** @brief The auto squelch's status through the hook: 0, or -1 (zeroed) with no stream or no hook. */
 int dsd_rtl_stream_io_hook_squelch_status(const dsd_state* state, dsd_rtl_squelch_status* out);
