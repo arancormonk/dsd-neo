@@ -158,6 +158,19 @@ class SavedSystemsModel : public QAbstractListModel {
     Q_INVOKABLE bool addWithKeyFrom(const QString& sourceUid, const QVariantMap& system);
 
     /**
+     * @brief Append every system in @p systems (a per-site import's rows), all in one save, or none of them.
+     *
+     * Every row is checked first as add() checks it, and, when @p keySourceUid names a row, takes that row's retained
+     * key as addWithKeyFrom() would; an empty @p keySourceUid takes keys from the maps, as add() does. Each row gets
+     * a fresh UID, its replay copy is adopted before the save (a copy adopted before a save that fails stays kept, as
+     * add()'s does), and its place is filled from the place-name cache. One rowsInserted range follows the save.
+     *
+     * @return The first inserted row, or -1 when nothing was inserted (an empty list, a refused row or key, a replay
+     *         copy that could not be adopted, or a failed save); no signal then.
+     */
+    Q_INVOKABLE int addAll(const QVariantList& systems, const QString& keySourceUid);
+
+    /**
      * @brief Replace one system's fields. Unknown keys are ignored. Persists first; false leaves the row as it was.
      *
      * A changed frequency, decode flag or CSV field no longer describes the imported site: the row's stored
@@ -309,6 +322,12 @@ class SavedSystemsModel : public QAbstractListModel {
     QVariantMap mapFromRow(const Row& row) const;
     /** Load's normalization of a stored row; true when it changed something the store should save. */
     static bool normalizeLoaded(Row& row);
+    /** @p system with row @p source's retained key (addWithKeyFrom()'s rule) in @p fields; false when it cannot be. */
+    bool takeRetainedKey(int source, const QVariantMap& system, QVariantMap* fields) const;
+    /** addAll()'s new row from @p system: checked, a fresh UID, its replay path and place filled; false = refused. */
+    bool newRow(const QVariant& system, int keySource, Row* row) const;
+    /** Adopt @p added's replay copies, save the rows with it appended, insert it as one range: its first row or -1. */
+    int appendRows(const QList<Row>& added);
     /** Run the place-name fill on @p row's place when its ids differ from @p previous's. */
     void fillPlaceNames(Row& row, const QVariantMap& previous) const;
     /** Clear the provenance of every row with a CSV field naming @p path, blanking those fields too if asked. */

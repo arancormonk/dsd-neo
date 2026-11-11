@@ -159,11 +159,14 @@ and the browse picks do not carry over. A finished import clears the query.
 
 ## Saved sites in Qt and Android
 
-For trunked systems, enable **Import each selected site as its own system**, select the sites, and import.
-The setup wizard saves one row per site with its own frequency and CSV files, using the source and tuner
-settings you choose. Frequency, protocol and channel/group CSV edits in that wizard apply to the first
-site; the other sites retain their individual import settings. A single-site import records the same
-site identity. Identity uses RadioReference's database site ID, not the RF site number.
+For trunked systems, enable **Import each selected site as its own system**, select the sites, and
+import. The setup wizard saves one row per site with its own frequency and CSV files, using the source
+and tuner settings you choose. Frequency, protocol and channel/group CSV edits in that wizard apply to
+the first site; the other sites retain their individual import settings. The sites are saved together:
+if the save fails, none of them is added and Save can be tried again without making copies. A site whose
+frequency, protocol or channel/group CSV you edited is saved without its RadioReference site, position
+and place. A single-site import records the same site identity. Identity uses RadioReference's database
+site ID, not the RF site number.
 
 An import fills the wizard's **Channel map** and **Talkgroups** rows with the files it generated. When it
 generates none for a row (a TETRA system that lists no talkgroups, a single conventional repeater), that

@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <algorithm>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <qanystringview.h>
 #include <utility>
@@ -687,45 +688,87 @@ SavedSystemsModel::mapFromRow(const Row& row) const {
 
 bool
 SavedSystemsModel::add(const QVariantMap& system) {
-    if (!radio_settings_valid(system.value(QStringLiteral("radioSettings")))) {
-        return false;
-    }
-    Row row = rowFromMap(system, Row());
-    row.uid = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    row.filePath = migratedReplay(QString(), row.filePath);
-    fillPlaceNames(row, QVariantMap());
-    auto next = m_rows;
-    next.append(row);
-    if (!adoptReplay(row.filePath) || !saveRows(next)) {
-        return false;
-    }
-    beginInsertRows(QModelIndex(), count(), count());
-    m_rows = std::move(next);
-    endInsertRows();
-    Q_EMIT sitesChanged();
-    Q_EMIT countChanged();
-    return true;
+    return addAll({system}, QString()) >= 0;
 }
 
 bool
 SavedSystemsModel::addWithKeyFrom(const QString& sourceUid, const QVariantMap& system) {
-    const int source = rowForUid(sourceUid);
-    if (source < 0 || system.contains(QStringLiteral("encKeyValue"))) {
-        return false;
+    return rowForUid(sourceUid) >= 0 && addAll({system}, sourceUid) >= 0;
+}
+
+int
+SavedSystemsModel::addAll(const QVariantList& systems, const QString& keySourceUid) {
+    const int keySource = keySourceUid.isEmpty() ? -1 : rowForUid(keySourceUid);
+    if (systems.isEmpty() || (!keySourceUid.isEmpty() && keySource < 0)) {
+        return -1;
+    }
+    QList<Row> added;
+    added.reserve(systems.size());
+    for (const QVariant& system : systems) {
+        Row row;
+        if (!newRow(system, keySource, &row)) {
+            return -1;
+        }
+        added.append(row);
+    }
+    return appendRows(added);
+}
+
+bool
+SavedSystemsModel::takeRetainedKey(int source, const QVariantMap& system, QVariantMap* fields) const {
+    *fields = system;
+    if (source < 0) {
+        return true;
     }
     const Row& stored = m_rows.at(source);
+    if (system.contains(QStringLiteral("encKeyValue"))) {
+        return false;
+    }
     if (!stored.decryptionProfileUid.isEmpty()
-        && system.value("decryptionProfileUid").toString() == stored.decryptionProfileUid) {
-        return add(system);
+        && system.value(QStringLiteral("decryptionProfileUid")).toString() == stored.decryptionProfileUid) {
+        return true;
     }
     if (stored.encKeyType.isEmpty() || stored.encKeyValue.isEmpty()
         || system.value(QStringLiteral("encKeyType")).toString() != stored.encKeyType) {
         return false;
     }
-    // This map stays in C++; add() assigns a fresh UID and persists the private value.
-    QVariantMap fields = system;
-    fields.insert(QStringLiteral("encKeyValue"), stored.encKeyValue);
-    return add(fields);
+    // This map stays in C++; the row persists the private value under its own fresh UID.
+    fields->insert(QStringLiteral("encKeyValue"), stored.encKeyValue);
+    return true;
+}
+
+bool
+SavedSystemsModel::newRow(const QVariant& system, int keySource, Row* row) const {
+    QVariantMap fields;
+    if (system.typeId() != QMetaType::QVariantMap
+        || !radio_settings_valid(system.toMap().value(QStringLiteral("radioSettings")))
+        || !takeRetainedKey(keySource, system.toMap(), &fields)) {
+        return false;
+    }
+    *row = rowFromMap(fields, Row());
+    row->uid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    row->filePath = migratedReplay(QString(), row->filePath);
+    fillPlaceNames(*row, QVariantMap());
+    return true;
+}
+
+int
+SavedSystemsModel::appendRows(const QList<Row>& added) {
+    if (!std::all_of(added.cbegin(), added.cend(), [this](const Row& row) { return adoptReplay(row.filePath); })) {
+        return -1;
+    }
+    auto next = m_rows;
+    next.append(added);
+    if (!saveRows(next)) {
+        return -1;
+    }
+    const int first = count();
+    beginInsertRows(QModelIndex(), first, first + static_cast<int>(added.size()) - 1);
+    m_rows = std::move(next);
+    endInsertRows();
+    Q_EMIT sitesChanged();
+    Q_EMIT countChanged();
+    return first;
 }
 
 bool

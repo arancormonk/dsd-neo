@@ -2315,6 +2315,216 @@ test_place_name_cache() {
     empty_systems(model);
 }
 
+/* Every insertion signal @p model sends, with its row range, in order, into @p log (declared before the model). */
+void
+record_inserts(SavedSystemsModel& model, QStringList& log) {
+    const auto range = [&log](const char* name) {
+        return [&log, name](const QModelIndex&, int first, int last) {
+            log.append(QStringLiteral("%1 %2-%3").arg(QString::fromLatin1(name)).arg(first).arg(last));
+        };
+    };
+    QObject::connect(&model, &SavedSystemsModel::rowsAboutToBeInserted, &model, range("rowsAboutToBeInserted"));
+    QObject::connect(&model, &SavedSystemsModel::rowsInserted, &model, range("rowsInserted"));
+    QObject::connect(&model, &SavedSystemsModel::sitesChanged, &model, [&log]() { log.append("sitesChanged"); });
+    QObject::connect(&model, &SavedSystemsModel::countChanged, &model, [&log]() { log.append("countChanged"); });
+}
+
+/* One site of a per-site RadioReference import, as the wizard hands it over. */
+QVariantMap
+batch_site(int siteId, const QString& freq) {
+    const QString site = QStringLiteral("Site %1").arg(siteId);
+    return {{"name", QStringLiteral("SARA — ") + site},
+            {"rrSid", 12},
+            {"rrSiteId", siteId},
+            {"siteName", site},
+            {"freqMhz", freq},
+            {"decodeFlag", "-f1"},
+            {"trunking", true}};
+}
+
+QVariantList
+batch_sites() {
+    return {batch_site(16863, "851"), batch_site(48391, "852"), batch_site(70001, "853")};
+}
+
+bool
+rows_are_sites(const SavedSystemsModel& model, int first, const QList<int>& siteIds) {
+    if (model.count() != first + siteIds.size()) {
+        return false;
+    }
+    for (int i = 0; i < siteIds.size(); ++i) {
+        if (model.get(first + i).value("rrSiteId").toInt() != siteIds.at(i)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* B6: a per-site import saves every site in one save or none. A failed save adds no row and signals nothing; the
+ * retry adds each site once. */
+void
+test_add_all_atomic_on_save_failure() {
+    QStringList log;
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("add all: an earlier row", model.add({{"name", "Earlier"}}));
+    record_inserts(model, log);
+    expect("add all: store blocked", block_systems_store());
+    expect("add all: a failed save reports -1", model.addAll(batch_sites(), QString()) == -1);
+    expect("add all: a failed save adds no row", model.count() == 1);
+    expect("add all: a failed save signals nothing", log.isEmpty());
+    expect("add all: store unblocked", unblock_systems_store());
+    {
+        SavedSystemsModel reloaded;
+        expect("add all: nothing of a failed batch is on disk", reloaded.count() == 1);
+    }
+    expect("add all: the retry answers the first new row", model.addAll(batch_sites(), QString()) == 1);
+    expect("add all: the retry adds each site once", rows_are_sites(model, 1, {16863, 48391, 70001}));
+    {
+        SavedSystemsModel reloaded;
+        expect("add all: the batch persists", rows_are_sites(reloaded, 1, {16863, 48391, 70001}));
+    }
+    // A store that fails once a row is in: a batch saved row by row would keep the rows before the failure.
+    empty_systems(model);
+    expect("part way: an earlier row", model.add({{"name", "Earlier"}}));
+    bool blocked = false;
+    const auto block = QObject::connect(&model, &SavedSystemsModel::rowsInserted, &model,
+                                        [&blocked]() { blocked = blocked || block_systems_store(); });
+    const int first = model.addAll(batch_sites(), QString());
+    QObject::disconnect(block);
+    expect("part way: store unblocked", !blocked || unblock_systems_store());
+    expect("part way: the batch is saved whole or not at all",
+           (first == 1 && rows_are_sites(model, 1, {16863, 48391, 70001})) || (first == -1 && model.count() == 1));
+    SavedSystemsModel reloaded;
+    expect("part way: the disk agrees", reloaded.count() == model.count());
+    empty_systems(model);
+}
+
+/* A row the model refuses anywhere in the batch refuses all of it, before anything is saved. */
+void
+test_add_all_invalid_later_row() {
+    QStringList log;
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("invalid: an earlier row", model.add({{"name", "Earlier"}}));
+    record_inserts(model, log);
+    QVariantList sites = batch_sites();
+    QVariantMap refused = sites.at(2).toMap();
+    refused.insert("radioSettings", QVariantMap{{"unknown", true}});
+    sites[2] = refused;
+    expect("invalid: a refused third row refuses the batch", model.addAll(sites, QString()) == -1);
+    expect("invalid: a row that is no map refuses the batch",
+           model.addAll({batch_site(16863, "851"), QStringLiteral("not a system")}, QString()) == -1);
+    expect("invalid: an empty batch adds nothing", model.addAll({}, QString()) == -1);
+    expect("invalid: no row was added", model.count() == 1);
+    expect("invalid: and nothing signalled", log.isEmpty());
+    SavedSystemsModel reloaded;
+    expect("invalid: nothing was saved", reloaded.count() == 1);
+}
+
+/* With a key source, every row takes its retained key (addWithKeyFrom()'s rule) or the batch adds nothing. */
+void
+test_add_all_retained_key() {
+    SavedSystemsModel model;
+    empty_systems(model);
+    const QString key = QString::number(17 * 3);
+    expect("keyed: source", model.add({{"name", "Private source"}, {"encKeyType", "basic"}, {"encKeyValue", key}}));
+    const QString sourceUid = model.get(0).value("uid").toString();
+    // The wizard's draft carries the source's own fields, uid included, but never its key.
+    QVariantList sites;
+    for (const QVariant& site : batch_sites()) {
+        QVariantMap keyed = model.get(0);
+        keyed.insert(site.toMap());
+        sites.append(keyed);
+    }
+    expect("keyed: a key type mismatch refuses the batch", [&]() {
+        QVariantList mismatched = sites;
+        QVariantMap last = mismatched.at(2).toMap();
+        last.insert("encKeyType", "rc4");
+        mismatched[2] = last;
+        return model.addAll(mismatched, sourceUid) == -1;
+    }());
+    expect("keyed: a replacement value refuses the batch", [&]() {
+        QVariantList replaced = sites;
+        QVariantMap last = replaced.at(2).toMap();
+        last.insert("encKeyValue", key);
+        replaced[2] = last;
+        return model.addAll(replaced, sourceUid) == -1;
+    }());
+    expect("keyed: an unknown source refuses the batch",
+           model.addAll(sites, QUuid::createUuid().toString(QUuid::WithoutBraces)) == -1);
+    expect("keyed: refused batches add nothing", model.count() == 1);
+    expect("keyed: the batch is added", model.addAll(sites, sourceUid) == 1);
+    SavedSystemsModel reloaded;
+    expect("keyed: every site persists", rows_are_sites(reloaded, 1, {16863, 48391, 70001}));
+    QStringList uids{sourceUid};
+    for (int row = 1; row < reloaded.count(); ++row) {
+        const QString uid = reloaded.get(row).value("uid").toString();
+        expect("keyed: each site has a fresh identity", !uid.isEmpty() && !uids.contains(uid));
+        uids.append(uid);
+        expect("keyed: each site keeps the private key", reloaded.keyValueForUid(uid) == key);
+        expect("keyed: the map hides it", !reloaded.get(row).contains("encKeyValue"));
+    }
+
+    empty_systems(model);
+    expect("profile: source", model.add({{"name", "Profiled"}, {"decryptionProfileUid", "profile-1"}}));
+    const QString profiled = model.get(0).value("uid").toString();
+    QVariantMap viaProfile = batch_site(16863, "851");
+    viaProfile.insert("decryptionProfileUid", "profile-1");
+    expect("profile: a source's profile carries the batch", model.addAll({viaProfile}, profiled) == 1);
+    expect("profile: the site names the profile", model.get(1).value("decryptionProfileUid") == "profile-1");
+    expect("profile: without a key", model.keyValueForUid(model.get(1).value("uid").toString()).isEmpty());
+    QVariantMap own = batch_site(48391, "852");
+    own.insert("encKeyType", "basic");
+    own.insert("encKeyValue", QString::number(19 * 3));
+    expect("own: without a source, keys come from the maps", model.addAll({own}, QString()) == 2);
+    expect("own: the row keeps its own key",
+           model.keyValueForUid(model.get(2).value("uid").toString()) == QString::number(19 * 3));
+    empty_systems(model);
+}
+
+/* The batch inserts once, at the end, after its one save: one range, then sites and count; each row is filled from
+ * the place-name cache before that save, and takes a fresh identity. */
+void
+test_add_all_one_insert_range() {
+    QStringList log;
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("range: first row", model.add({{"name", "First"}}));
+    expect("range: second row", model.add({{"name", "Second"}}));
+    record_inserts(model, log);
+    int fills = 0;
+    model.setPlaceNameCache([&fills](QVariantMap& place) {
+        ++fills;
+        place.insert("states", QVariantList{QVariantMap{{"stid", 19}, {"name", "Iowa"}}});
+    });
+    const QString takenUid = model.get(0).value("uid").toString();
+    QVariantList sites;
+    for (const QVariant& site : batch_sites()) {
+        QVariantMap placed = site.toMap();
+        placed.insert("uid", takenUid);
+        placed.insert("place", QVariantMap{{"states", QVariantList{QVariantMap{{"stid", 19}}}}});
+        sites.append(placed);
+    }
+    expect("range: the first new row is answered", model.addAll(sites, QString()) == 2);
+    expect("range: one insertion range, then sites and count",
+           log == QStringList{"rowsAboutToBeInserted 2-4", "rowsInserted 2-4", "sitesChanged", "countChanged"});
+    expect("range: every row was filled", fills == 3);
+    QStringList uids;
+    for (int row = 0; row < model.count(); ++row) {
+        uids.append(model.get(row).value("uid").toString());
+    }
+    uids.removeDuplicates();
+    expect("range: every row has its own identity", uids.size() == 5);
+    model.setPlaceNameCache({});
+    SavedSystemsModel reloaded;
+    expect("range: the fill was saved",
+           reloaded.count() == 5
+               && reloaded.get(4).value("place").toMap().value("states").toList().value(0).toMap().value("name")
+                      == "Iowa");
+    empty_systems(model);
+}
+
 void
 test_foundation_key_type_migration() {
     QJsonArray rows;
@@ -3321,6 +3531,10 @@ main(int argc, char** argv) {
     test_apply_place_names();
     test_place_name_cache();
     test_add_with_retained_key();
+    test_add_all_atomic_on_save_failure();
+    test_add_all_invalid_later_row();
+    test_add_all_retained_key();
+    test_add_all_one_insert_range();
     test_radio_settings();
     test_pinned_pref_sanitizes();
     test_pinned_pref_round_trip();

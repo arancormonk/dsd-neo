@@ -34,6 +34,7 @@
 #include <QThread>
 #include <QUrl>
 #include <QVariant>
+#include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
 #include <cerrno>
@@ -600,6 +601,45 @@ test_failed_save_after_adopt_keeps_the_copy() {
     SavedSystemsModel systems;
     rig.store->reclaim(systems, systems.storeLoaded());
     CHECK(QFileInfo::exists(c), "a kept copy nobody names survives");
+}
+
+/* B6: addAll() adopts every copy its rows name before its one save. A copy it cannot adopt adds no row at all; copies
+   adopted before a save that then fails stay kept and unreferenced, never deleted, as add()'s do. */
+void
+test_add_all_adopts_before_its_save() {
+    reset_data();
+    write_file(sources_dir() + QStringLiteral("/g.wav"), QByteArray("g"));
+    write_file(sources_dir() + QStringLiteral("/h.wav"), QByteArray("h"));
+    QString g;
+    QString h;
+    {
+        Rig rig;
+        SavedSystemsModel systems;
+        systems.setReplayStore(rig.store.get());
+        g = rig.import(QStringLiteral("content://test/g.wav"), QString()).value("path").toString();
+        h = rig.import(QStringLiteral("content://test/h.wav"), QString()).value("path").toString();
+        const QVariantList rows{replay_system(QStringLiteral("G"), g), replay_system(QStringLiteral("H"), h)};
+        const QByteArray recorded = read_file(ReplayStore::manifestPath());
+        write_file(ReplayStore::manifestPath(), QByteArray("[{"));
+        int first = 0;
+        const QByteArray log = captured_stderr([&]() { first = systems.addAll(rows, QString()); });
+        CHECK(first == -1, "a copy that could not be adopted refuses the whole batch");
+        CHECK(log.contains("could not be marked as used"), "the refusal is logged");
+        CHECK(systems.count() == 0, "no row was added");
+        write_file(ReplayStore::manifestPath(), recorded);
+
+        const QString store = dsd_qt::json_store_path(QStringLiteral("saved_systems.json"));
+        CHECK(QDir().mkpath(store), "the saved systems store is blocked");
+        CHECK(systems.addAll(rows, QString()) == -1, "the save fails");
+        CHECK(QDir(store).removeRecursively(), "the store is unblocked");
+        CHECK(systems.count() == 0, "a failed save adds no row");
+        CHECK(manifest().value(g) == QStringLiteral("kept") && manifest().value(h) == QStringLiteral("kept"),
+              "every copy was adopted before the save");
+    }
+    Rig rig;
+    SavedSystemsModel systems;
+    rig.store->reclaim(systems, systems.storeLoaded());
+    CHECK(QFileInfo::exists(g) && QFileInfo::exists(h), "kept copies nobody names survive");
 }
 
 /* A manifest that cannot be read refuses the save that would name a copy, and is set aside at the next start. */
@@ -1218,6 +1258,7 @@ main(int argc, char** argv) {
     test_copy_is_recorded_pending();
     test_repicked_copy_is_reclaimed();
     test_failed_save_after_adopt_keeps_the_copy();
+    test_add_all_adopts_before_its_save();
     test_unreadable_manifest();
     test_release_after_remove_and_edit();
     test_restore_keeps_kept_copies();

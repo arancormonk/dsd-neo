@@ -621,6 +621,36 @@ Item {
         return hangtimeValid() && encryptionValid && nameText.trim().length > 0;
     }
 
+    // Whether @a sys still tunes what the import answered (@a imported): only
+    // then do the import's site, position and place describe it.
+    function keepsImportedTuning(sys, imported) {
+        return sys.freqMhz === imported.freqMhz && sys.decodeFlag === imported.decodeFlag && sys.chanCsvPath === (imported.chanCsvPath || "") && sys.groupCsvPath === (imported.groupCsvPath || "");
+    }
+
+    // A per-site batch: every site receives the source/tuner answers, its
+    // protocol and CSVs stay site-specific, and one save adds every site or
+    // none of them. An edited site keeps none of its import's RadioReference
+    // details (the keys SavedSystemsModel clears for an edit).
+    function commitSites(sys) {
+        var sites = importedSites.map(function (imported, i) {
+            var site = i === 0 ? Object.assign({}, imported, sys) : Object.assign({}, sys, imported);
+            if (!keepsImportedTuning(site, imported)) {
+                for (var key of ["rrSid", "rrSiteId", "avoidSite", "siteName", "siteLat", "siteLon", "hasSitePos", "place"])
+                    delete site[key];
+            }
+            return site;
+        });
+        var keySource = encryptionEditor.keepingKey ? retainedKeySourceUid : "";
+        var keyGone = encryptionEditor.keepingKey && savedSystems.rowForUid(keySource) < 0;
+        var first = keyGone ? -1 : savedSystems.addAll(sites, keySource);
+        if (first < 0) {
+            csvNotice = keyGone ? qsTr("The retained key is unavailable. Choose Replace or Clear before saving.") : qsTr("Could not save this imported system.");
+            csvNoticeIsProblem = true;
+            return;
+        }
+        wizard.saved(first);
+    }
+
     function commit() {
         if (!hangtimeValid() || !encryptionValid || replayPending)
             return;
@@ -653,32 +683,15 @@ Item {
         if (!encryptionEditor.keepingKey)
             sys.encKeyValue = encryptionEditor.clearingKey ? "" : encKeyValue;
         if (importedSites.length > 0) {
-            // Every site receives the source/tuner answers; its protocol and CSVs stay site-specific.
-            for (var i = 0; i < importedSites.length; ++i) {
-                var site = i === 0 ? Object.assign({}, importedSites[i], sys) : Object.assign({}, sys, importedSites[i]);
-                if (site.freqMhz !== importedSites[i].freqMhz || site.decodeFlag !== importedSites[i].decodeFlag || site.chanCsvPath !== (importedSites[i].chanCsvPath || "") || site.groupCsvPath !== (importedSites[i].groupCsvPath || "")) {
-                    site.rrSid = 0;
-                    site.rrSiteId = 0;
-                }
-                if (encryptionEditor.keepingKey) {
-                    if (!savedSystems.addWithKeyFrom(retainedKeySourceUid, site)) {
-                        csvNotice = qsTr("The retained key is unavailable. Choose Replace or Clear before saving.");
-                        csvNoticeIsProblem = true;
-                        return;
-                    }
-                } else {
-                    if (!savedSystems.add(site)) {
-                        csvNotice = qsTr("Could not save this imported system.");
-                        csvNoticeIsProblem = true;
-                        return;
-                    }
-                }
-            }
-            wizard.saved(savedSystems.count - importedSites.length);
+            commitSites(sys);
             return;
         }
-        if (importedSite && importedSite.rrSiteId > 0 && sys.freqMhz === importedSite.freqMhz && sys.decodeFlag === importedSite.decodeFlag && sys.chanCsvPath === (importedSite.chanCsvPath || "") && sys.groupCsvPath === (importedSite.groupCsvPath || "")) {
-            for (var key of ["rrSid", "rrSiteId", "siteName", "siteLat", "siteLon", "hasSitePos"])
+        if (importedSite && keepsImportedTuning(sys, importedSite)) {
+            var copied = importedSite.rrSiteId > 0 ? ["rrSid", "rrSiteId", "siteName", "siteLat", "siteLon", "hasSitePos"] : [];
+            // A conventional multi-repeater import has a place and no site.
+            if (importedSite.place !== undefined)
+                copied.push("place");
+            for (var key of copied)
                 sys[key] = importedSite[key];
         }
         if (editRow >= 0) {

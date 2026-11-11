@@ -13450,7 +13450,11 @@ Qt Quick frontend (`src/ui/qt`):
   plan. `WizardScreen.applyRadioReference()` answers both CSV rows from the import: a supplied file replaces the row,
   and an absent one clears a file an earlier import generated (`chanCsvGenerated`/`groupCsvGenerated`, seeded on an
   edit from the library row's `radioreference` origin), keeping a hand-picked file only while editing that saved
-  system; a per-site batch's rows carry their own (possibly empty) paths. `tetraRateError()` holds the wizard's tune
+  system; a per-site batch's rows carry their own (possibly empty) paths. `commit()` saves a per-site batch with one
+  `savedSystems.addAll()` (all sites or none) and reports its first row; a draft site whose frequency, decode flag or
+  channel/group file was edited drops the keys `rr_provenance_cleared()` clears, and a single import's RadioReference
+  ids, position and `place` are copied only while those fields still match the import (`place` without a site id for
+  a conventional multi-repeater import). `tetraRateError()` holds the wizard's tune
   step for `-fT` on an Airspy or off 72 kHz, and a source switch to an Airspy keeps `-fT` (issue #803;
   `tst_wizard_sites.qml`, `tst_wizard_decode_chip.qml`, `tst_radioreference_screen.qml`). See
   `docs/radioreference-import.md`. Nearby import uses `DecoderHost` request IDs and
@@ -13636,10 +13640,10 @@ Qt Quick frontend (`src/ui/qt`):
   names, the Signal search files, a scratch and an in-memory settings file), `tst_home_store_notices.qml` (labels per
   store, kept name after the move, dismissal and announcements across a rebuilt Home, gating, both scratch-settings and
   both default-settings sentences, 360 px at the largest text).
-- `saved_systems_model.{h,cpp}` (`savedSystems`, `saved_systems.json`) writes save-first (issue #801): `add`, `update`,
-  `remove`, `setAvoidSite`, `clearCsvPath`, `invalidatePathProvenance`, `applyPlaceNames` and `touch` build the next
-  rows, save them, and only then change the model and signal. A failed save changes nothing in memory, sends no signal
-  and returns false (`touch` stays `void`: recency is advisory, and an unsaved stamp stays out of memory too).
+- `saved_systems_model.{h,cpp}` (`savedSystems`, `saved_systems.json`) writes save-first (issue #801): `add`, `addAll`,
+  `update`, `remove`, `setAvoidSite`, `clearCsvPath`, `invalidatePathProvenance`, `applyPlaceNames` and `touch` build
+  the next rows, save them, and only then change the model and signal. A failed save changes nothing in memory, sends no
+  signal and returns false (`touch` stays `void`: recency is advisory, and an unsaved stamp stays out of memory too).
   `clearCsvPath`, `invalidatePathProvenance` and `applyPlaceNames` return true when nothing needs changing, and signal
   one `dataChanged` spanning the rows they changed (B14: one per row re-ran every pin's bookkeeping each time). So
   `rowsAboutToBeRemoved`/`rowsRemoved` (then `sitesChanged`, `countChanged`) mean the removal is on disk, and whatever
@@ -13651,22 +13655,26 @@ Qt Quick frontend (`src/ui/qt`):
   it anywhere is dropped whole wherever it arrives (load, `add`, `update`, a restored backup at its first load); the row
   keeps everything else. `applyPlaceNames(stid, stateName, countyNames)` (metadata only) names the state and the listed
   counties in every row whose place names them, links those counties to the state and adds the state to a row whose
-  county now links to it. `setPlaceNameCache()` installs a fill that `add` and `update` run, before their save, on a
-  place whose ids are new. One rule clears stale provenance (B11): `rr_provenance_cleared()` (`site_groups.cpp`) zeroes
-  `rrSid`, `rrSiteId`, `avoidSite` (only the group's `SiteChooserSheet` can lift an avoid), `siteName`, `siteLat`,
-  `siteLon`, `hasSitePos` and `place`. `update` applies it when the edit changes the frequency, decode flag or a CSV
-  field, then applies what the edit carries of its own of `rrSid`, `rrSiteId`, `siteName`, the position and `place`
-  (validated): an ordinary edit carries none and ends cleared, an edit-mode re-import keeps its fresh identity. Any edit
-  carrying a changed `siteName` and the row's own `rrSiteId` renames a generated `base — oldSite` name
-  (`site_generated_name()`), with or without a tuning change. `clearCsvPath` (a library file removed) and
-  `invalidatePathProvenance` (a library file replaced with the user's own bytes, keeping the path; see "Replacing a
-  library file in place") apply it to every row naming the path. Load drops what a row outside a group cannot use: its
-  `avoidSite` (a lone RadioReference site keeps its avoid: its "1 site" chooser lifts it), and the `siteName` and
-  position older edits left when they cleared only the ids; its `place` stays (a conventional multi-repeater row has one
-  and no ids). Load saves that with the UID repair (one warning when that save fails; the clear repeats at the next
-  load). A replay copy in `replays/` a row gains is adopted before the save and one no row names after a saved edit or
-  remove is released (`replay_store.{h,cpp}`). Tests: `UI_QT_PERSISTENCE`, `UI_QT_SITE_GROUPS`, `UI_QT_REPLAY_STORE`,
-  `UI_QT_BACKUP_ARCHIVE` and `UI_QT_BACKUP_APPLY` (`place` through a backup and its restore).
+  county now links to it. `setPlaceNameCache()` installs a fill that `add`, `addAll` and `update` run, before their
+  save, on a place whose ids are new. `addAll(rows, keySourceUid)` saves a per-site import (B6): every row is checked
+  first (as `add`, and with a key source as `addWithKeyFrom`, which `add` and `addWithKeyFrom` now call), takes a fresh
+  UID, has its replay copy adopted, then one save and one `rowsInserted` range; it returns the first new row or -1 with
+  nothing inserted and no signal (a copy adopted before a failed save stays kept, as for `add`). One rule clears stale
+  provenance (B11): `rr_provenance_cleared()` (`site_groups.cpp`) zeroes `rrSid`, `rrSiteId`, `avoidSite` (only the
+  group's `SiteChooserSheet` can lift an avoid), `siteName`, `siteLat`, `siteLon`, `hasSitePos` and `place`. `update`
+  applies it when the edit changes the frequency, decode flag or a CSV field, then applies what the edit carries of its
+  own of `rrSid`, `rrSiteId`, `siteName`, the position and `place` (validated): an ordinary edit carries none and ends
+  cleared, an edit-mode re-import keeps its fresh identity. Any edit carrying a changed `siteName` and the row's own
+  `rrSiteId` renames a generated `base — oldSite` name (`site_generated_name()`), with or without a tuning change.
+  `clearCsvPath` (a library file removed) and `invalidatePathProvenance` (a library file replaced with the user's own
+  bytes, keeping the path; see "Replacing a library file in place") apply it to every row naming the path. Load drops
+  what a row outside a group cannot use: its `avoidSite` (a lone RadioReference site keeps its avoid: its "1 site"
+  chooser lifts it), and the `siteName` and position older edits left when they cleared only the ids; its `place` stays
+  (a conventional multi-repeater row has one and no ids). Load saves that with the UID repair (one warning when that
+  save fails; the clear repeats at the next load). A replay copy in `replays/` a row gains is adopted before the save
+  and one no row names after a saved edit or remove is released (`replay_store.{h,cpp}`). Tests: `UI_QT_PERSISTENCE`,
+  `UI_QT_SITE_GROUPS`, `UI_QT_REPLAY_STORE`, `UI_QT_BACKUP_ARCHIVE` and `UI_QT_BACKUP_APPLY` (`place` through a backup
+  and its restore).
 - `listen_pins.{h,cpp}` (`listenPins`, issue #801) resolves the shortcuts pinned to Listen. They are stored in
   `AppPrefs::pinned` (`listen/pinned`, portable): a JSON array in one string, each `{kind, uid}` with kind `system` (a
   saved row's UID, standing for its Home card), `site` (one saved row), `scan` (a scan list's UID), `search` or

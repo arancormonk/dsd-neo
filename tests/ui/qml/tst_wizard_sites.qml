@@ -17,6 +17,12 @@ Item {
         source: uiDir + "/HomeScreen.qml"
         active: false
     }
+    Component {
+        id: savedSpy
+        SignalSpy {
+            signalName: "saved"
+        }
+    }
     TestCase {
         name: "WizardSites"
         when: windowShown
@@ -206,6 +212,178 @@ Item {
             compare(savedSystems.get(0).freqMhz, "853");
             compare(savedSystems.get(0).rrSiteId, 0);
             compare(savedSystems.get(1).rrSiteId, 48391);
+        }
+
+        // A site's place, as a RadioReference import answers it.
+        function placeOf(ctid) {
+            return {
+                states: [{
+                        stid: 19
+                    }],
+                counties: [{
+                        ctid: ctid,
+                        stid: 19
+                    }],
+                candidateStates: [19]
+            };
+        }
+        function placedSite(id, freq) {
+            var placed = site(id, freq);
+            placed.siteLat = 41.65;
+            placed.siteLon = -91.6;
+            placed.hasSitePos = true;
+            placed.place = placeOf(id);
+            return placed;
+        }
+        function placeCounty(row) {
+            var counties = savedSystems.get(row).place.counties || [];
+            return counties.length === 1 ? counties[0].ctid : 0;
+        }
+        // The store file exists, so blockPath() can move it aside.
+        function blockSystemsStore() {
+            savedSystems.add({
+                name: "Store"
+            });
+            savedSystems.remove(savedSystems.count - 1);
+            var store = testContext.storePath("saved_systems.json");
+            verify(testContext.blockPath(store, true), "could not block the store");
+            return store;
+        }
+
+        // B6: a per-site import saves every site or none. A site the model
+        // refused part way used to leave the sites before it saved, and a
+        // second Save then added those again.
+        function test_batch_refused_site_saves_nothing() {
+            var refused = site(70001, "853");
+            refused.radioSettings = {
+                unknown: true
+            };
+            loader.item.applyRadioReference({
+                ok: true,
+                rows: [site(16863, "851"), site(48391, "852"), refused]
+            });
+            loader.item.commit();
+            compare(savedSystems.count, 0, "the sites before the refused one stayed saved");
+            verify(loader.item.csvNoticeIsProblem);
+        }
+
+        function test_batch_failed_save_saves_nothing_and_retry_adds_once() {
+            loader.item.applyRadioReference({
+                ok: true,
+                rows: [site(16863, "851"), site(48391, "852"), site(70001, "853")]
+            });
+            var store = blockSystemsStore();
+            try {
+                loader.item.commit();
+            } finally {
+                verify(testContext.blockPath(store, false), "could not unblock the store");
+            }
+            compare(savedSystems.count, 0);
+            verify(loader.item.csvNoticeIsProblem);
+            loader.item.commit();
+            compare(savedSystems.count, 3, "the retry saved each site once");
+            compare(savedSystems.get(0).rrSiteId, 16863);
+            compare(savedSystems.get(1).rrSiteId, 48391);
+            compare(savedSystems.get(2).rrSiteId, 70001);
+        }
+
+        function test_batch_reports_first_inserted_row() {
+            savedSystems.add({
+                name: "Earlier row"
+            });
+            var spy = savedSpy.createObject(null, {
+                target: loader.item
+            });
+            loader.item.applyRadioReference({
+                ok: true,
+                rows: [site(16863, "851"), site(48391, "852")]
+            });
+            loader.item.commit();
+            compare(savedSystems.count, 3);
+            compare(spy.count, 1);
+            compare(spy.signalArguments[0][0], 1, "saved() names the first site's row");
+            spy.destroy();
+        }
+
+        // An edited draft site no longer describes the imported site: none of
+        // its RadioReference details are saved, only the ids were before.
+        function test_batch_edited_site_drops_its_site_details() {
+            loader.item.applyRadioReference({
+                ok: true,
+                rows: [placedSite(16863, "851"), placedSite(48391, "852")]
+            });
+            loader.item.freqText = "853";
+            loader.item.commit();
+            compare(savedSystems.count, 2);
+            var edited = savedSystems.get(0);
+            compare(edited.rrSid, 0);
+            compare(edited.rrSiteId, 0);
+            compare(edited.siteName, "", "the edited site kept its site name");
+            verify(!edited.hasSitePos, "the edited site kept its position");
+            compare(edited.siteLat, 0);
+            compare(edited.siteLon, 0);
+            compare(Object.keys(edited.place).length, 0, "the edited site kept its place");
+            var kept = savedSystems.get(1);
+            compare(kept.rrSiteId, 48391);
+            compare(kept.siteName, "Site 48391");
+            verify(kept.hasSitePos);
+            compare(placeCounty(1), 48391, "an unchanged site keeps its place");
+        }
+
+        // A single import's place is saved with it while its tuning is what
+        // the import answered; a conventional multi-repeater import has a
+        // place and no site id.
+        function test_single_import_place_data() {
+            var conventional = {
+                ok: true,
+                name: "County fire",
+                freqMhz: "154.43",
+                decodeFlag: "-f1",
+                trunking: false,
+                place: placeOf(1201)
+            };
+            var trunked = placedSite(16863, "851");
+            trunked.ok = true;
+            return [
+                {
+                    tag: "conventional",
+                    result: conventional,
+                    edit: "",
+                    county: 1201,
+                    siteId: 0
+                },
+                {
+                    tag: "conventional edited",
+                    result: conventional,
+                    edit: "154.44",
+                    county: 0,
+                    siteId: 0
+                },
+                {
+                    tag: "site",
+                    result: trunked,
+                    edit: "",
+                    county: 16863,
+                    siteId: 16863
+                },
+                {
+                    tag: "site edited",
+                    result: trunked,
+                    edit: "852",
+                    county: 0,
+                    siteId: 0
+                }
+            ];
+        }
+        function test_single_import_place(data) {
+            loader.item.applyRadioReference(data.result);
+            if (data.edit.length > 0)
+                loader.item.freqText = data.edit;
+            loader.item.commit();
+            compare(savedSystems.count, 1);
+            compare(placeCounty(0), data.county);
+            compare(savedSystems.get(0).rrSiteId, data.siteId);
+            compare(savedSystems.get(0).hasSitePos, data.siteId > 0);
         }
 
         // Issue #803: stale files on adoption. A library file the way a
