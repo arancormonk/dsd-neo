@@ -21,7 +21,8 @@
  * the samples do not.
  *
  * Random numbers come from a seeded xorshift64* generator inside this module, never from libc rand(), so one seed
- * gives the same samples in every process.
+ * gives the same samples in every process on one platform. The samples go through libm (log, cos), so another libm
+ * can give slightly different ones.
  *
  * Exact zeros need no generator: speech pauses are exact zeros already, and a test that needs a run of zeros clears
  * its buffer with DSD_MEMSET.

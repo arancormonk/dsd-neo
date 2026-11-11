@@ -5,9 +5,9 @@
 
 /*
  * The test P.56 meter (test_support/p56.h) against what the method must read: sines 3.01 dB under their peak at every
- * rate, levels that follow amplitude scaling, the activity of on/off bursts (on time plus the 200 ms hangover and the
- * envelope's fall), short gaps bridged and longer ones not, one reading of one waveform at 8, 22.05 and 48 kHz, and the
- * silent, unmeasurable and invalid cases.
+ * rate, white noise and a vowel that never stop at their RMS, levels that follow amplitude scaling, the activity of
+ * on/off bursts (on time plus the 200 ms hangover and the envelope's fall), short gaps bridged and longer ones not, one
+ * reading of one waveform at 8, 22.05 and 48 kHz, and the silent, unmeasurable and invalid cases.
  */
 
 #include <assert.h>
@@ -55,6 +55,49 @@ test_sine_reads_rms(void) {
                 assert(0);
             }
             assert(act > 0.99 && act <= 1.0);
+        }
+        free(x);
+    }
+}
+
+static double
+rms_dbfs(const float* x, size_t n) {
+    double sum = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        sum += (double)x[i] * (double)x[i];
+    }
+    return 10.0 * log10((sum / (double)n) / (32768.0 * 32768.0));
+}
+
+/* White noise and a sustained vowel that fill the whole signal are active all the time but for the envelope's rise at
+   the start (some 25 ms), so they read their RMS. */
+static void
+test_steady_signals_read_rms(void) {
+    static const int k_rates[2] = {8000, 48000};
+    static const double k_levels[2] = {-20.0, -40.0};
+    for (int r = 0; r < 2; r++) {
+        const size_t n = samples(4.0, k_rates[r]);
+        float* x = alloc_samples(n);
+        for (int l = 0; l < 2; l++) {
+            for (int vowel = 0; vowel <= 1; vowel++) {
+                if (vowel) {
+                    dsd_test_vowel_params v;
+                    dsd_test_vowel_defaults(&v, 21U);
+                    v.level_dbfs = k_levels[l];
+                    v.duration_s = 4.0;
+                    assert(dsd_test_synth_vowel(x, n, k_rates[r], &v) == 0);
+                } else {
+                    assert(dsd_test_synth_noise(x, n, k_rates[r], 20U, DSD_TEST_NOISE_WHITE, k_levels[l]) == 0);
+                }
+                double act = 0.0;
+                const double level = dsd_test_p56_level_dbfs(x, n, k_rates[r], &act);
+                const double rms = rms_dbfs(x, n);
+                if (fabs(level - rms) > 0.05 || act < 0.99) {
+                    DSD_FPRINTF(stderr, "%s at %.0f dBFS, %d Hz: level %.4f, RMS %.4f, activity %.4f\n",
+                                vowel ? "vowel" : "white noise", k_levels[l], k_rates[r], level, rms, act);
+                    assert(0);
+                }
+            }
         }
         free(x);
     }
@@ -218,6 +261,7 @@ test_silence_and_invalid(void) {
 int
 main(void) {
     test_sine_reads_rms();
+    test_steady_signals_read_rms();
     test_scaling_tracks_level();
     test_burst_activity();
     test_gap_bridging();

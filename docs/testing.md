@@ -2213,12 +2213,12 @@ tone and hiss checks give the same verdicts):
   agrees on 99.3% of commits or more and turns the same tones away on the same frames.
 
 What these checks do not cover. The P.56 meter (`tests/test_support/p56.h`) is the project's own method B, held to
-sines, bursts and hangover by its unit test, not the ITU reference code. The -1 dBFS ceiling is per sample: the 8 to
-48 kHz conversion after the chain reached +0.34 dBFS true peak at worst. EDACS analog voice is measured at the IO,
-demodulator and chain levels (`IO_RTL_VOICE_LANE`, `DSP_FSK_VOICE_LANE`, `DSP_ANALOG_AUDIO`,
+sines, steady noise, bursts and hangover by its unit test (`CORE_P56`), not the ITU reference code. The -1 dBFS ceiling
+is per sample: the 8 to 48 kHz conversion after the chain reached +0.34 dBFS true peak at worst. EDACS analog voice is
+measured at the IO, demodulator and chain levels (`IO_RTL_VOICE_LANE`, `DSP_FSK_VOICE_LANE`, `DSP_ANALOG_AUDIO`,
 `EDACS_GRANT_TUNE_MATRIX`), not end to end, since an I/Q replay refuses the trunking tunes an EDACS call needs. The
-analog new-reception rule reads the decode clock once per block and places the block's samples before that reading,
-so a decoder that stalls for about a second inside a transmission looks like a gap in the input and starts the AGC over.
+analog new-reception rule reads the decode clock once per block and places the block's samples before that reading, so a
+decoder that stalls for about a second inside a transmission looks like a gap in the input and starts the AGC over.
 
 ### Analog monitor audio checks
 
