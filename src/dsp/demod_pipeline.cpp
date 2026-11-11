@@ -2776,17 +2776,19 @@ full_demod_debug_cqpsk_symbols(const struct demod_state* d) {
     if (evm_count > 0 && evm_ref_acc > 1e-9) {
         double mse = evm_err_acc / (double)evm_count;
         double ref_pwr = evm_ref_acc / (double)evm_count;
-        double evm_rms = sqrt(mse);
         double ref_rms = sqrt(ref_pwr);
-        double evm_pct = (ref_rms > 1e-9) ? (evm_rms / ref_rms) * 100.0 : 0.0;
         double bias = dsd_rtl_stream_metrics_hook_snr_bias_evm();
         /* On the CQPSK SNR meter's Es/N0 scale, not against ref_pwr (5, the levels' mean power, which read about
            4.9 dB above the meter on any channel). The RMS AGC ahead of the timing loop leaves the I/Q error about the
            four points almost all tangential, and a tangential error of variance v reads (4/pi)^2 * v in these level
-           units, so the meter's ratio is (16/pi^2) / mse. IO_RTL_CQPSK_DEBUG_SNR holds the two together. */
+           units, so the meter's ratio is (16/pi^2) / mse. EVM is measured against the same reference, so before the
+           bias SNR = -20*log10(EVM/100); the line names the bias it takes off the SNR (EVM keeps it).
+           IO_RTL_CQPSK_DEBUG_SNR holds the SNR to the meter and the fields to each other. */
         const double meter_scale = 16.0 / (3.14159265358979323846 * 3.14159265358979323846);
+        double evm_pct = sqrt(mse / meter_scale) * 100.0;
         double snr_db = (mse > 1e-12) ? 10.0 * log10(meter_scale / mse) - bias : 99.0;
-        DSD_FPRINTF(stderr, "[CQPSK] EVM:%.2f%% SNR:%.1f dB ref_rms:%.2f n:%d\n", evm_pct, snr_db, ref_rms, evm_count);
+        DSD_FPRINTF(stderr, "[CQPSK] EVM:%.2f%% SNR:%.1f dB bias:%.1f dB ref_rms:%.2f n:%d\n", evm_pct, snr_db, bias,
+                    ref_rms, evm_count);
     }
     hist_p3 = hist_p1 = hist_m1 = hist_m3 = hist_other = 0;
     hist_samples = 0;

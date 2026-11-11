@@ -3135,13 +3135,16 @@ With `DSD_NEO_DEBUG_CQPSK=1`, every 25 blocks the CQPSK chain also prints a symb
 
 ```text
 [SYM] +3:25.1% +1:24.9% -1:25.0% -3:25.0% (n=4800)
-[CQPSK] EVM:7.68% SNR:13.8 dB ref_rms:2.24 n:4800
+[CQPSK] EVM:12.00% SNR:14.8 dB bias:3.6 dB ref_rms:2.24 n:4800
 ```
 
-`EVM` is the RMS distance of the sliced differential-phase symbols from their levels (±1, ±3), as a share of the
-levels' RMS (`ref_rms`, about 2.24). `SNR` comes from the same symbols on the meter's scale, with the same estimator
-bias taken off, so the two agree within a few tenths of a dB, on simulcast as on a single tower. Earlier builds
-measured it against `ref_rms`, which put it about 5 dB above the meter on any signal.
+`EVM` is the RMS distance of the sliced differential-phase symbols from their levels (±1, ±3), on the meter's scale:
+as a share of 4/π, the level-unit size of an error as large as the received point itself. `SNR` comes from the same
+symbols with the meter's estimator bias (`bias`) taken off, so it agrees with the meter within a few tenths of a dB,
+on simulcast as on a single tower, and `SNR = -20*log10(EVM/100) - bias` on every line (`EVM` has no bias taken off).
+`ref_rms` is the RMS of the levels the symbols were sliced to, about 2.24 when the four are equally common. Earlier
+builds measured both `EVM` and `SNR` against `ref_rms` (the `SNR` about 5 dB above the meter on any signal), and
+printed no `bias`.
 
 ## Handy Examples
 

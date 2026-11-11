@@ -7303,8 +7303,11 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   The `DSD_NEO_DEBUG_CQPSK` `[CQPSK] EVM ... SNR` line (`full_demod_debug_cqpsk_symbols()`, DSP) reads the
   differential-phase symbols' mean squared error `mse` about the levels on the meter's scale,
   `10*log10((16/pi^2) / mse)` less the same bias: a tangential error of variance v reads (4/pi)^2 * v in level units.
-  It is debug output only; nothing reads it. `IO_RTL_CQPSK_DEBUG_SNR` holds the two within 0.6 dB on synthetic
-  CQPSK at known SNRs (P25 Phase 1 and 2 rates, through `rtl_stream_test_snr_update_block()`).
+  Its EVM is `sqrt(mse / (16/pi^2))` against that same reference and carries no bias, and the line prints the bias
+  it took off the SNR, so `SNR = -20*log10(EVM/100) - bias` on every line; `ref_rms` is only the sliced levels' RMS.
+  It is debug output only; nothing reads it. `IO_RTL_CQPSK_DEBUG_SNR` holds the SNR within 0.6 dB of the meter and
+  the fields to that identity on synthetic CQPSK at known SNRs (P25 Phase 1 and 2 rates, through
+  `rtl_stream_test_snr_update_block()`).
 - CF32 input levels (`runtime/input_level.c`): finite checks, peak and clipping stay in the input's float precision;
   `0.98f` is the first float at or above the double clipping threshold. Ordered double sums retain the original
   variance calculation. `IO_INPUT_LEVEL_METRICS` checks exact output bits against a scalar double reference across

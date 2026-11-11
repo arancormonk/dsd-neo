@@ -11,6 +11,10 @@
  * frontend shows for CQPSK) updates every other block, as the demod thread runs it on a CQPSK stream; the debug line is
  * read from stderr. Both subtract the same estimator bias, so the two must agree: the debug line once read its
  * differential-phase error against the levels' mean power (5), about 4.9 dB above the meter on any channel.
+ *
+ * The line's own fields must agree too: EVM is measured against the reference the SNR uses, so on every line
+ * SNR = -20*log10(EVM/100) - bias, with the bias the line names being the one the chain reports. EVM once stayed
+ * relative to the levels' RMS (about 2.24) after the SNR moved to the meter's scale, 4.9 dB apart.
  */
 
 #include <cmath>
@@ -43,6 +47,9 @@ constexpr int kNumSymbols = 36000;
 constexpr int kWarmupSymbols = 4000;
 constexpr double kAmplitude = 0.35;
 constexpr double kToleranceDb = 0.6;
+/* The fields are printed to 0.01% (EVM) and 0.1 dB (SNR, bias): rounding alone stays well inside these. */
+constexpr double kFieldToleranceDb = 0.15;
+constexpr double kBiasTolerance = 0.06;
 constexpr size_t kCaptureBytes = (size_t)256U * 1024U;
 
 int g_bias_sps = 10;
@@ -215,6 +222,52 @@ mean_debug_snr(const char* text, double* out_db) {
     return 0;
 }
 
+/* Every "[CQPSK] EVM" line in @p text names the chain's bias (@p bias) and has SNR = -20*log10(EVM/100) - bias. */
+int
+check_line_fields(const char* text, double bias, int sps, double snr_in_db) {
+    static const char kTag[] = "[CQPSK] EVM:";
+    int lines = 0;
+    int rc = 0;
+    for (const char* p = strstr(text, kTag); p; p = strstr(p + 1, kTag)) {
+        const char* eol = strchr(p, '\n');
+        char* end = nullptr;
+        const double evm_pct = strtod(p + sizeof(kTag) - 1U, &end);
+        const char* snr = strstr(p, "SNR:");
+        if (end == p + sizeof(kTag) - 1U || !snr || (eol && snr > eol)) {
+            DSD_FPRINTF(stderr, "sps=%d in=%.0f dB: unreadable line\n", sps, snr_in_db);
+            return 1;
+        }
+        const double snr_db = strtod(snr + 4, &end);
+        if (end == snr + 4 || !(evm_pct > 0.0)) {
+            DSD_FPRINTF(stderr, "sps=%d in=%.0f dB: unreadable line\n", sps, snr_in_db);
+            return 1;
+        }
+        lines++;
+        const double from_evm = -20.0 * std::log10(evm_pct / 100.0) - bias;
+        if (!(std::fabs(from_evm - snr_db) <= kFieldToleranceDb)) {
+            DSD_FPRINTF(stderr,
+                        "sps=%d in=%.0f dB: EVM %.2f%% gives SNR %.2f dB less the bias, the line says %.1f dB\n", sps,
+                        snr_in_db, evm_pct, from_evm, snr_db);
+            rc = 1;
+        }
+        const char* named = strstr(p, "bias:");
+        const double named_bias = (named && (!eol || named < eol)) ? strtod(named + 5, &end) : -100.0;
+        if (!(std::fabs(named_bias - bias) <= kBiasTolerance)) {
+            DSD_FPRINTF(stderr, "sps=%d in=%.0f dB: the line does not name the bias it took off (%.2f dB)\n", sps,
+                        snr_in_db, bias);
+            rc = 1;
+        }
+        if (rc != 0) {
+            return rc;
+        }
+    }
+    if (lines < 2) {
+        DSD_FPRINTF(stderr, "sps=%d in=%.0f dB: too few [CQPSK] EVM lines\n", sps, snr_in_db);
+        return 1;
+    }
+    return 0;
+}
+
 int
 check_case(int sps, double snr_in_db, char* buf) {
     std::vector<float> iq = synthesize(sps);
@@ -244,7 +297,7 @@ check_case(int sps, double snr_in_db, char* buf) {
         DSD_FPRINTF(stderr, "  FAIL: the debug line is not on the meter's scale (tolerance %.1f dB)\n", kToleranceDb);
         return 1;
     }
-    return 0;
+    return check_line_fields(buf, chain_bias_evm(), sps, snr_in_db);
 }
 
 } // namespace
