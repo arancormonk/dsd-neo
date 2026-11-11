@@ -314,11 +314,14 @@ changed_roles(const Card& before, const Card& after) {
     return roles;
 }
 
+/* Each section starts on its first card. A held order can show a section in two runs; only the first starts it, so a
+   heading is never read twice. */
 void
 mark_section_starts(QList<Card>& cards) {
-    for (int i = 0; i < cards.size(); ++i) {
-        const QString& section = cards.at(i).section;
-        cards[i].sectionStart = !section.isEmpty() && (i == 0 || cards.at(i - 1).section != section);
+    QSet<QString> started;
+    for (Card& card : cards) {
+        card.sectionStart = !card.section.isEmpty() && !started.contains(card.section);
+        started.insert(card.section);
     }
 }
 
@@ -515,6 +518,8 @@ SavedSystemCards::rebuild() {
     const int shownBefore = shownCount();
     const int totalBefore = m_totalCount;
     const Fix fix = readFix();
+    /* Not only locationChanged: AppPrefs drops a fix 24 wall-clock hours on at the first read, before its expiry timer
+     * (monotonic, stopped while a phone sleeps) says so. */
     if (fix.valid != m_fix.valid || fix.at != m_fix.at || !same_position(fix.lat, fix.lon, m_fix.lat, m_fix.lon)) {
         m_cardsDirty = true; // the distances were measured from another fix, or none
     }

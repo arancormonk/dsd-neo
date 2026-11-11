@@ -697,6 +697,49 @@ test_metadata_edit_and_hold() {
           recorder.resets == 1 && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("A"));
 }
 
+/* R24: a held order (screen reader, background reorder) never starts a section twice. Xray moves from Iowa to Missouri
+   and is held where it was; Alpha, new in Kansas, goes first (it has no card before it in the new order), so Kansas
+   shows above and below Missouri: only its first card starts the section. */
+void
+test_held_order_starts_each_section_once() {
+    Fixture f;
+    const QVariantMap kansas = state(20, QStringLiteral("Kansas"));
+    f.add({placed(plain(QStringLiteral("Xray"), QStringLiteral("851.0")), {state(19, QStringLiteral("Iowa"))}, {}),
+           placed(plain(QStringLiteral("Yankee"), QStringLiteral("852.0")), {kansas}, {})});
+    f.prefs.setSystemsSort(QStringLiteral("place"));
+    settle();
+    f.cards->setScreenReaderActive(true);
+    f.cards->setHoldReorders(true);
+    Recorder recorder(*f.cards);
+    check("Xray moves to Missouri",
+          f.systems->update(
+              0, {{QStringLiteral("place"),
+                   QVariantMap{{QStringLiteral("states"), QVariantList{state(29, QStringLiteral("Missouri"))}},
+                               {QStringLiteral("counties"), QVariantList()}}}}));
+    settle();
+    check("the reorder is held", recorder.resets == 0 && recorder.moves == 0
+                                     && f.column(SavedSystemCards::TitleRole)
+                                            == QStringList({QStringLiteral("Xray"), QStringLiteral("Yankee")}));
+    f.add({placed(plain(QStringLiteral("Alpha"), QStringLiteral("853.0")), {kansas}, {})});
+    check("the new card shows at once, the order still held",
+          recorder.resets == 0 && recorder.followed()
+              && f.column(SavedSystemCards::TitleRole)
+                     == QStringList({QStringLiteral("Alpha"), QStringLiteral("Xray"), QStringLiteral("Yankee")}));
+    check("sections as held",
+          f.column(SavedSystemCards::SectionRole)
+              == QStringList({QStringLiteral("Kansas"), QStringLiteral("Missouri"), QStringLiteral("Kansas")}));
+    check("Kansas starts once",
+          f.column(SavedSystemCards::SectionStartRole)
+              == QStringList({QStringLiteral("true"), QStringLiteral("true"), QStringLiteral("false")}));
+    f.cards->setHoldReorders(false);
+    settle();
+    check("released: Kansas together, each section started once",
+          f.column(SavedSystemCards::SectionRole)
+                  == QStringList({QStringLiteral("Kansas"), QStringLiteral("Kansas"), QStringLiteral("Missouri")})
+              && f.column(SavedSystemCards::SectionStartRole)
+                     == QStringList({QStringLiteral("true"), QStringLiteral("false"), QStringLiteral("true")}));
+}
+
 /* Only a state's own section is tiered by its county count; "Several states" and "No place" are in name order. Equal
    titles in one place are ordered by key. */
 void
@@ -828,6 +871,37 @@ test_location_mark_spent_with_other_changes() {
     const int alpha = f.cards->rowForKey(f.systems->groupKey(2));
     check("a fix at the same moment in another place re-measures",
           alpha >= 0 && f.at(alpha, SavedSystemCards::DistanceKmRole).toDouble() < 1.0 && before > 1.0);
+}
+
+/* A fix can lapse with no locationChanged: AppPrefs drops it lazily, at the first read 24 wall-clock hours on, and its
+   expiry timer runs on the monotonic clock, which stops while a phone sleeps. The next rebuild, for whatever reason,
+   notices it: the distances measured from it go and the order falls back to name. Here the stored stamp is moved back
+   behind AppPrefs, and a search (which changes no card) is the rebuild. */
+void
+test_lapsed_fix_is_dropped_at_the_next_rebuild() {
+    Fixture f;
+    add_distance_rows(f);
+    f.cards->setLocationSupported(true);
+    f.prefs.setSystemsSort(QStringLiteral("nearest"));
+    set_fix(f.prefs, 41.6, -93.6);
+    settle();
+    check("measured from the fix", f.cards->effectiveSort() == QStringLiteral("nearest")
+                                       && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Charlie")
+                                       && f.at(0, SavedSystemCards::DistanceKmRole).toDouble() >= 0);
+    QSettings(QSettings::IniFormat, QSettings::UserScope, AppPrefs::settingsOrganization(),
+              AppPrefs::settingsApplication())
+        .setValue(QStringLiteral("location/lastFixAt"), dsd_qt::realtimeMSecsSinceEpoch() - 25LL * 60 * 60 * 1000);
+    f.cards->setQuery(QStringLiteral("S"));
+    settle();
+    check("the lapsed fix falls back to name order",
+          f.cards->effectiveSort() == QStringLiteral("name")
+              && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Alpha"));
+    bool measured = false;
+    for (int row = 0; row < f.cards->rowCount(); ++row) {
+        measured = measured || f.at(row, SavedSystemCards::DistanceKmRole).toDouble() >= 0
+                   || !f.at(row, SavedSystemCards::DistanceStateRole).toString().isEmpty();
+    }
+    check("no card keeps a distance from it", !measured);
 }
 
 /* R17: a location request that ends without a fix (failed, cancelled, superseded) gives its mark back, so a later
@@ -1048,11 +1122,13 @@ main(int argc, char** argv) {
     test_search_adapter();
     test_sort_signals();
     test_metadata_edit_and_hold();
+    test_held_order_starts_each_section_once();
     test_place_other_sections_by_name();
     test_tie_breaks_by_key();
     test_location_request_mark();
     test_location_mark_spent_with_other_changes();
     test_location_request_cleared();
+    test_lapsed_fix_is_dropped_at_the_next_rebuild();
     test_reader_off_and_unheld_background();
     test_coalescing();
     test_signals_follow_random_changes();
