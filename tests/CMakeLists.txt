@@ -16963,6 +16963,33 @@ if(DSD_HAS_RADIO)
     endif()
     add_test(NAME IO_RTL_DEMOD_CONFIG COMMAND dsd-neo_test_io_rtl_demod_config)
 
+    # The DSD_NEO_DEBUG_CQPSK EVM/SNR line on the CQPSK SNR meter's scale, on synthetic CQPSK at known SNRs.
+    add_executable(
+        dsd-neo_test_io_rtl_cqpsk_debug_snr
+        io/test_io_rtl_cqpsk_debug_snr.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_cqpsk_debug_snr
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_cqpsk_debug_snr
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_core
+            dsd-neo_test_support
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_cqpsk_debug_snr
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_CQPSK_DEBUG_SNR
+        COMMAND dsd-neo_test_io_rtl_cqpsk_debug_snr
+    )
+
     # Issue #806: the complex rate beside rate_out, X10 (FSK/CQPSK under a replay's post-demod decimation) and X11 (the
     # TED a symbol profile lands on).
     add_executable(

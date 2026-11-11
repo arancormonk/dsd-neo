@@ -3095,7 +3095,8 @@ DMR Tier III (env helpers for `--calc-lcn`)
 Debug (verbose/developer)
 
 - `DSD_NEO_DEBUG_SYNC=1` — verbose sync detection output
-- `DSD_NEO_DEBUG_CQPSK=1` — verbose CQPSK Gardner/Costas/FLL-band-edge state output
+- `DSD_NEO_DEBUG_CQPSK=1` — verbose CQPSK Gardner/Costas/FLL-band-edge state output, symbol histogram and EVM/SNR line
+  ([CQPSK SNR](#cqpsk-snr-dsd_neo_debug_cqpsk))
 - `DSD_NEO_DEBUG_SYMBOL_TIMING=1|2` — symbol-timing diagnostics on the decoder's symbol grid
 - `DSD_NEO_SYNC_WARMSTART=0` — disable sync warm-start calibration
 
@@ -3119,6 +3120,28 @@ SYMTIMING: sync=29 win=13113313 sps=20 jitter=-1 off=0 accum=0
 Collect the `off` distribution over a call to see the phase the grid settled on, and compare runs to see whether it
 is stable. Level `2` additionally enables the per-sample `+ - O X` trace and the per-symbol jitter line; that is tens
 of thousands of characters per second, so prefer level `1` unless you need the within-symbol detail.
+
+### CQPSK SNR (`DSD_NEO_DEBUG_CQPSK`)
+
+The SNR meter for CQPSK (P25 LSM/simulcast and Phase 2) measures how far the received points sit from the four
+ideal points. The CQPSK chain's AGC runs ahead of the timing loop and evens out the signal's strength sample by
+sample, so the beat between simulcast transmitters (the envelope rising and falling) does not reach the meter. What
+is left is phase error. On a simulcast site that error is real: the same symbol arrives from several towers tens of
+microseconds apart, and the overlap smears each symbol into its neighbours. So a simulcast site reads lower than its
+signal strength suggests, and past some point a stronger signal does not raise the reading. A low reading there comes
+from the site, not from a weak signal.
+
+With `DSD_NEO_DEBUG_CQPSK=1`, every 25 blocks the CQPSK chain also prints a symbol histogram and an EVM line:
+
+```text
+[SYM] +3:25.1% +1:24.9% -1:25.0% -3:25.0% (n=4800)
+[CQPSK] EVM:7.68% SNR:13.8 dB ref_rms:2.24 n:4800
+```
+
+`EVM` is the RMS distance of the sliced differential-phase symbols from their levels (±1, ±3), as a share of the
+levels' RMS (`ref_rms`, about 2.24). `SNR` comes from the same symbols on the meter's scale, with the same estimator
+bias taken off, so the two agree within a few tenths of a dB, on simulcast as on a single tower. Earlier builds
+measured it against `ref_rms`, which put it about 5 dB above the meter on any signal.
 
 ## Handy Examples
 

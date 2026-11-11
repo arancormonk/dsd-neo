@@ -7293,6 +7293,18 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   estimate's answer; a read a batch raced is answered (relaxed, as before) but never cached. The decoder polls them
   per symbol, the rings change per block.
   `IO_RTL_VIEW_RINGS` checks cached against fresh answers.
+- CQPSK SNR (`demod_snr_qpsk_*` in `radio/rtl_sdr_fm.cpp`, `rtl_stream_get_snr_cqpsk()`): the demod thread's I/Q
+  scatter about the four points of the timing loop's output, every other block, less `dsd_snr_bias_evm_db()`. The
+  CQPSK RMS AGC (alpha 0.45 per sample) runs ahead of the timing loop, so a simulcast envelope beat never reaches the
+  estimator and the scatter left is almost all tangential: the meter measures phase error. On simulcast that error
+  is real (delay spread smears each symbol into its neighbours), so a simulcast site reads lower than its signal
+  strength suggests. A phase-domain estimate reads the same (median within 0.1-0.25 dB on real P25 Phase 1 and 2
+  simulcast and non-simulcast captures), so it would add nothing.
+  The `DSD_NEO_DEBUG_CQPSK` `[CQPSK] EVM ... SNR` line (`full_demod_debug_cqpsk_symbols()`, DSP) reads the
+  differential-phase symbols' mean squared error `mse` about the levels on the meter's scale,
+  `10*log10((16/pi^2) / mse)` less the same bias: a tangential error of variance v reads (4/pi)^2 * v in level units.
+  It is debug output only; nothing reads it. `IO_RTL_CQPSK_DEBUG_SNR` holds the two within 0.6 dB on synthetic
+  CQPSK at known SNRs (P25 Phase 1 and 2 rates, through `rtl_stream_test_snr_update_block()`).
 - CF32 input levels (`runtime/input_level.c`): finite checks, peak and clipping stay in the input's float precision;
   `0.98f` is the first float at or above the double clipping threshold. Ordered double sums retain the original
   variance calculation. `IO_INPUT_LEVEL_METRICS` checks exact output bits against a scalar double reference across
