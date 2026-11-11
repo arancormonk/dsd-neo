@@ -5609,6 +5609,14 @@ class Setup : public QObject {
         }
     }
 
+    /** @brief The saved-systems order back on its default, through the real AppPrefs. */
+    Q_INVOKABLE void
+    resetSystemsSort() {
+        if (m_app_prefs != nullptr) {
+            m_app_prefs->setSystemsSort(QStringLiteral("added"));
+        }
+    }
+
     /** @brief Issue #646: store @p value under the settings key @p key as it is, past AppPrefs' checks, as a damaged
      *         file or another build would leave it. The real AppPrefs reads the same file. */
     Q_INVOKABLE void
@@ -5994,6 +6002,7 @@ class Setup : public QObject {
         prefs[QStringLiteral("monitorDetailsExpanded")] = false;
         /* Issue #646: Listen opens on Systems, as on a fresh install. */
         prefs[QStringLiteral("listenSection")] = QStringLiteral("systems");
+        prefs[QStringLiteral("systemsSort")] = QStringLiteral("added");
         /* Issue #830: Android's picker first, as on a fresh install. */
         prefs[QStringLiteral("chooseFilesInApp")] = false;
         /* RadioReference account: empty on purpose, so the screen's first state
@@ -6556,6 +6565,7 @@ class Setup : public QObject {
         app_prefs->setPinned({});
         /* Issue #646: the Listen tab too, on the same shared file; resetListenSection() between cases. */
         app_prefs->setListenSection(QStringLiteral("systems"));
+        app_prefs->setSystemsSort(QStringLiteral("added"));
         ctx->setContextProperty(QStringLiteral("listenPins"),
                                 new dsd_qt::ListenPins(app_prefs, saved_systems, scan_lists, engine));
         auto* profiles = new dsd_qt::DecryptionProfilesModel(engine);

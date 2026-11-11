@@ -108,6 +108,9 @@ class AppPrefs : public QObject {
     /* Issue #646: the Listen tab last chosen ("systems", "scanLists" or "explore"), so Listen opens on it. How this
      * phone's screen was arranged, like the one above: device-local. */
     Q_PROPERTY(QString listenSection READ listenSection WRITE setListenSection NOTIFY listenSectionChanged)
+    /* The order the saved-systems list is shown in ("name", "place", "nearest", "recent" or "added"). How this
+     * phone's screen was arranged, like the one above: device-local. */
+    Q_PROPERTY(QString systemsSort READ systemsSort WRITE setSystemsSort NOTIFY systemsSortChanged)
     /* Issue #830: open the file browser DSD-neo has (Android) before Android's picker when Restore, a CSV import or a
      * replay file asks for a file. Whether this device's picker works is the device's, so device-local. */
     Q_PROPERTY(bool chooseFilesInApp READ chooseFilesInApp WRITE setChooseFilesInApp NOTIFY chooseFilesInAppChanged)
@@ -309,6 +312,12 @@ class AppPrefs : public QObject {
     /** @brief Store @p section if it is one of the three ids; any other text is refused and writes nothing. */
     void setListenSection(const QString& section);
 
+    /** @brief The saved-systems order: "name", "place", "nearest", "recent" or "added"; anything else stored reads as
+     *         "added". Device-local. */
+    QString systemsSort() const;
+    /** @brief Store @p sort if it is one of the five ids; any other text is refused and writes nothing. */
+    void setSystemsSort(const QString& sort);
+
     /** @brief Pickers that DSD-neo's file browser serves open it first; off by default. Device-local. */
     bool chooseFilesInApp() const;
     void setChooseFilesInApp(bool on);
@@ -378,6 +387,7 @@ class AppPrefs : public QObject {
     void searchChanged();
     void monitorDetailsExpandedChanged();
     void listenSectionChanged();
+    void systemsSortChanged();
     void chooseFilesInAppChanged();
     void recordCallsChanged();
     void recordUnknownOnlyChanged();

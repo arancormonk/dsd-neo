@@ -1292,6 +1292,61 @@ test_screen_policy_prefs() {
     stored.remove(legacyKey);
 }
 
+/* The saved-systems sort last chosen, one of five ids, "added" for anything else. */
+void
+test_systems_sort_pref() {
+    QSettings stored = prefs_file();
+    const QString key = QStringLiteral("listen/systemsSort");
+    stored.remove(key);
+    {
+        AppPrefs prefs;
+        int changes = 0;
+        QObject::connect(&prefs, &AppPrefs::systemsSortChanged, &prefs, [&changes]() { ++changes; });
+        expect("the sort defaults to the order added", prefs.systemsSort() == QStringLiteral("added"));
+        prefs.setSystemsSort(QStringLiteral("added"));
+        expect("choosing the default on a fresh install is not a change", changes == 0 && !stored.contains(key));
+        int want = 0;
+        for (const char* id : {"name", "place", "nearest", "recent", "added"}) {
+            const QString sort = QLatin1String(id);
+            prefs.setSystemsSort(sort);
+            ++want;
+            expect(qPrintable(QStringLiteral("%1 reads back and is stored").arg(sort)),
+                   prefs.systemsSort() == sort && stored.value(key).toString() == sort);
+            expect(qPrintable(QStringLiteral("%1 notifies once").arg(sort)), changes == want);
+            prefs.setSystemsSort(sort);
+            expect(qPrintable(QStringLiteral("%1 again does not notify").arg(sort)), changes == want);
+        }
+        prefs.setSystemsSort(QStringLiteral("name"));
+        ++want;
+        for (const char* text : {"bogus", "", "Name"}) {
+            prefs.setSystemsSort(QLatin1String(text));
+            expect(qPrintable(QStringLiteral("\"%1\" is refused without a write").arg(QLatin1String(text))),
+                   changes == want && stored.value(key).toString() == QStringLiteral("name")
+                       && prefs.systemsSort() == QStringLiteral("name"));
+        }
+    }
+    {
+        AppPrefs reloaded;
+        expect("the sort persists across instances", reloaded.systemsSort() == QStringLiteral("name"));
+        int changes = 0;
+        QObject::connect(&reloaded, &AppPrefs::systemsSortChanged, &reloaded, [&changes]() { ++changes; });
+        const QVariant damaged[] = {QStringLiteral("bogus"), QStringLiteral("Name"), 2,
+                                    QStringList{QStringLiteral("name"), QStringLiteral("place")}};
+        for (const QVariant& value : damaged) {
+            stored.setValue(key, value);
+            expect("a stored unknown value reads as the order added",
+                   reloaded.systemsSort() == QStringLiteral("added"));
+            expect("reading a stored unknown value writes nothing and does not notify",
+                   changes == 0 && stored.value(key) == value);
+        }
+        stored.setValue(key, QStringLiteral("bogus"));
+        reloaded.setSystemsSort(QStringLiteral("added"));
+        expect("choosing the default over the damage writes it",
+               stored.value(key).toString() == QStringLiteral("added") && changes == 1);
+    }
+    stored.remove(key);
+}
+
 /* Issue #646: the Listen tab last chosen, one of three ids, Systems for anything else. */
 void
 test_listen_section_pref() {
@@ -2607,6 +2662,8 @@ test_prefs_key_table(void) {
         {"listenSection", QStringLiteral("explore"), "listen/section"},
         // Issue #830: whether DSD-neo's file browser opens before Android's picker.
         {"chooseFilesInApp", true, "ui/chooseFilesInApp"},
+        // The saved-systems sort last chosen.
+        {"systemsSort", QStringLiteral("nearest"), "listen/systemsSort"},
     };
     QStringList covered;
     int writable = 0;
@@ -2691,6 +2748,7 @@ test_prefs_key_table(void) {
         QStringLiteral("listen/acceptedStartUid"),
         QStringLiteral("listen/lastStartedCompanions"),
         QStringLiteral("listen/section"),
+        QStringLiteral("listen/systemsSort"),
         QStringLiteral("location/lastAccuracyM"),
         QStringLiteral("location/lastFixAt"),
         QStringLiteral("location/lastLat"),
@@ -2705,6 +2763,7 @@ test_prefs_key_table(void) {
     expect("portable keys are the table minus device-local",
            portable.size() + local.size() == names.size() && !portable.contains(QStringLiteral("ui/onboardingDone"))
                && !portable.contains(QStringLiteral("listen/section"))
+               && !portable.contains(QStringLiteral("listen/systemsSort"))
                && portable.contains(QStringLiteral("listen/keepAwake"))
                && portable.contains(QStringLiteral("listen/lastStartedUid"))
                && portable.contains(QStringLiteral("rr/appKey"))
@@ -3583,6 +3642,7 @@ main(int argc, char** argv) {
     test_receiver_prefs();
     test_screen_policy_prefs();
     test_listen_section_pref();
+    test_systems_sort_pref();
     test_hangtime_unreadable_value();
     test_recording_prefs();
     test_analog_max_gap_pref();

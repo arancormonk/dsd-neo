@@ -504,6 +504,7 @@ populate(TestHost& host) {
                                                                          {"search/port", 1235}}));
     // Issue #646: the Listen tab this device last showed, which stays on it.
     dsd_qt::AppPrefs().setListenSection("explore");
+    dsd_qt::AppPrefs().setSystemsSort("nearest");
     return f;
 }
 
@@ -721,6 +722,8 @@ test_round_trip(const Fixture& f) {
                                              && !snapshot.prefs.contains("ui/onboardingDone"));
     expect("the Listen tab stays on the device",
            dsd_qt::AppPrefs().listenSection() == "explore" && !snapshot.prefs.contains("listen/section"));
+    expect("the saved-systems sort stays on the device",
+           dsd_qt::AppPrefs().systemsSort() == "nearest" && !snapshot.prefs.contains("listen/systemsSort"));
     expect("snapshot avoids come from the in-memory list", snapshot.avoids == QList<quint32>({156800000U, 162550000U}));
     expect("snapshot app tag and time",
            snapshot.app == QString::fromUtf8(GIT_TAG) && snapshot.createdAt > 1700000000LL);

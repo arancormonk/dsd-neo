@@ -119,6 +119,9 @@ enum Key {
     // Issue #830: DSD-neo's file browser before Android's picker. Device-local: whether this device's picker works is
     // the device's, not something a backup should carry to another one.
     kChooseFilesInApp,
+    // The order the saved-systems list is shown in. Device-local: it follows how this device's screen was arranged,
+    // like kListenSection.
+    kSystemsSort,
     kKeyCount
 };
 
@@ -171,6 +174,7 @@ constexpr AppPrefs::KeySpec kKeyTable[] = {
     {"listen/pinned", true},
     {"listen/section", false},
     {"ui/chooseFilesInApp", false},
+    {"listen/systemsSort", false},
 };
 static_assert(sizeof(kKeyTable) / sizeof(kKeyTable[0]) == kKeyCount, "key table and Key enum must stay in step");
 
@@ -258,6 +262,20 @@ QString
 sane_listen_section(const QVariant& raw) {
     const QString section = raw.metaType().id() == QMetaType::QString ? raw.toString() : QString();
     return is_listen_section(section) ? section : QStringLiteral("systems");
+}
+
+/** @brief Whether @p sort names a saved-systems order. The ids are persisted: never rename one. */
+bool
+is_systems_sort(const QString& sort) {
+    return sort == QLatin1String("name") || sort == QLatin1String("place") || sort == QLatin1String("nearest")
+           || sort == QLatin1String("recent") || sort == QLatin1String("added");
+}
+
+/** @brief The order @p raw names, else the order added: text QSettings did not write as one string included. */
+QString
+sane_systems_sort(const QVariant& raw) {
+    const QString sort = raw.metaType().id() == QMetaType::QString ? raw.toString() : QString();
+    return is_systems_sort(sort) ? sort : QStringLiteral("added");
 }
 
 /** @brief @p port if it is a usable TCP port, else the rtl_tcp default. */
@@ -904,6 +922,26 @@ AppPrefs::setListenSection(const QString& section) {
     }
     m_settings.setValue(key_name(kListenSection), section);
     Q_EMIT listenSectionChanged();
+}
+
+QString
+AppPrefs::systemsSort() const {
+    return sane_systems_sort(m_settings.value(key_name(kSystemsSort)));
+}
+
+void
+AppPrefs::setSystemsSort(const QString& sort) {
+    if (!is_systems_sort(sort)) {
+        return;
+    }
+    // Compared with the raw stored value (absent counts as the order added), so choosing it over a value that only
+    // reads as that still lands.
+    const QVariant stored = m_settings.value(key_name(kSystemsSort), QStringLiteral("added"));
+    if (stored.metaType().id() == QMetaType::QString && stored.toString() == sort) {
+        return;
+    }
+    m_settings.setValue(key_name(kSystemsSort), sort);
+    Q_EMIT systemsSortChanged();
 }
 
 bool
