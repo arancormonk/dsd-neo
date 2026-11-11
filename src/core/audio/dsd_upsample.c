@@ -2,7 +2,7 @@
 /*-------------------------------------------------------------------------------
  * dsd_upsample.c
  * Simplified 8k to 48k Upsample Functions
- * Uses linear interpolation for smooth transitions without ringing.
+ * Repeats each sample six times (a zero-order hold), with no interpolation.
  *
  *
  *
