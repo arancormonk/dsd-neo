@@ -9381,6 +9381,72 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   it); a costly miscorrection that keeps the established NAC but names a wrong DUID is not caught. Other Phase 1 gates
   read the verdict (`p25p1_nid_verdict`: NAC, DUID, corrections, parity agreement, borrowed, disposition) and the
   established NAC (`p25p1_carrier_nac_established()`, -1 for none) rather than re-deriving them.
+- Phase 1 CQPSK sync anchor (`dsd_p25p1_sync_anchor`, `src/dsp/frame_sync_p25p1_anchor.c`,
+  `<dsd-neo/dsp/p25p1_sync_anchor.h>`; matcher `frame_sync_try_tolerant_p25p1()` in `dsd_frame_sync.c`). The hunt
+  matches the 24-dibit sync word exactly (normal, inverted, rotated CQPSK maps), and on the RTL CQPSK path one symbol of
+  a simulcast word past a slicer threshold lost the whole frame (8-11% of a site A control channel's frames). On a
+  continuous outbound carrier every data unit is padded to whole 70-bit segments, each followed by a status symbol, and
+  the next unit's sync starts where it ends (TIA-102.BAAA-A 8.2): HDU 396 dibits, LDU1/LDU2 864, TDU 72, TDULC 216, a
+  TSDU or PDU `p25p1_block_unit_dibits()` of its 196-bit blocks (TSDU 180/288/360 for 1-3 blocks; a PDU's header and
+  the data blocks its header announces). Measured on site A: consecutive sync words a multiple of 36 dibits apart
+  (941/963, 581/591), the rest a symbol slip; the decoders read LDUs, TDULCs and HDUs to their end and a one-block TSDU
+  to dibit 158.
+  - Owner and contents: frame-sync state in `dsd_state::p25_p1_sync_anchor`, decoder-thread private. The anchor holds
+    the validated frame's sync context (`dsd_p25p1_sync_context`: `symbol_clock` at the word's first dibit and
+    `symbol_clock_epoch`, input generation, `carrier_seq`, accepted trunk tuning generation, sync history drop count,
+    SPS profile, modulation, dibit map and polarity), its NAC, and the expected position (sync clock plus the unit's
+    length). Beside it, the context of the frame being decoded, captured when the frame sync accepted its sync
+    (`frame_sync_p25p1_anchor_note_sync()`, from `frame_sync_accept_p25p1()`; none while an off-thread tune is
+    pending), whether that sync was tolerant (`frame_tolerant`, `frame_nac`), its bit errors (`sync_bit_errors`, 0 for
+    exact) and two never-reset diagnostics, `tolerant_syncs` and `tolerant_frames`.
+  - Installation: the dispatcher reports every Phase 1 frame (`dsd_frame_sync_p25p1_frame_decoded()`). One that
+    validated (`p25p1_nid_verdict_validates()`: accepted by the NAC rule above, unborrowed, at most 11 corrections
+    (`P25P1_NID_BCH_RADIUS`), a usable NAC, a defined DUID), was not cut by an input interruption, and whose length is
+    known (`p25p1_decoded_unit_dibits()`: by DUID, or `dsd_state::p25_p1_unit_dibits` as `processTSBK()` reads it from
+    a CRC-passed last block and `processMPDU()` from a CRC-passed header) installs the anchor, when the sync-time
+    context still holds and the decoder did not read past the unit's end. Any validated frame replaces the anchor (an
+    exact new-NAC frame included); a frame that does not validate installs nothing.
+  - Matching (`frame_sync_p25p1_anchor_take()`): only after the exact checks failed, on `frame_sync_cqpsk_4level_enabled()`
+    and 4800/4, with a live anchor, for the window whose first dibit is the expected position (an integer compare a
+    window). The window is read under the anchor's map and polarity and scored by Gray-coded bit distance
+    (`dsd_p25p1_sync_bit_distance()`; `dsd_sync_hamming_distance()` counts dibits and is unchanged); at most
+    `DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS` (6 of 48, OP25's dedicated P1 framer) is accepted, with the anchor's map
+    and polarity. The first window at or past the expected position spends the anchor whatever it holds, so one window a
+    frame is scored and the rest of the hunt is exact, later grid slots included.
+  - No pre-emption bound: the word's distance to itself shifted by 1-5 symbols is 9, 10, 9, 8 and 9 bits even when the
+    symbols shifted in match, so an exact word a slip of 1-5 symbols put near the expected position is never beaten
+    there: the expected-position window is then more than 6 bits off and the exact word is matched where it is. The
+    bound covers that range only; nothing farther is scored.
+  - Strict NID (`p25p1_nid_verdict_passes_tolerant_sync()`, in `p25p1_decode_nid_and_duid()` before
+    `p25p1_nid_verdict_commit()` and `p25p1_handle_nid_decode_success()`): behind a tolerant word the frame decodes
+    only when the NID validates, its parity agrees (NID_OK), it needed at most 4 corrections
+    (`P25P1_NID_TOLERANT_SYNC_MAX_CORRECTIONS`) and it names the anchor's NAC. Anything else drops the frame: nothing
+    is committed or published (NAC, received identity, seed, counters; `-v 2` prints `[tolerant sync, n bit errors,
+    dropped: ...]` with what the NID was), the dispatcher returns `DSD_FRAME_VERDICT_UNPRODUCTIVE` (no PROFILE_PROVEN, not even inside a NID
+    evidence window, so no SPS-hunt credit), no validated-modulation stamp feeds the chain comparison or the modulation
+    hold, and the hunt resumes past the NID it read. A misaligned NID after a slipped word needs this: a word 3 bits
+    off one symbol late behind a `1` is 6 bits off at the expected position, and the NID read one symbol off decodes
+    as an LDU1 of the carrier's own NAC with 2 corrections and the parity bit disagreeing (`P25_P1_TOLERANT_SYNC`).
+  - Effects of a tolerant accept: the anchor's map and polarity, `FRAME_SYNC_P25_CENTER_SKIP` (no acceptance-time level
+    refit; per-window tracking runs), the frame-local `sync_bit_errors`, and no `last_cc_sync_time` (a decoded TSBK
+    notes control channel activity itself). Kept as for an exact accept, none of them credit: the demodulator profile
+    re-push on CQPSK (it re-asserts the chain), `frame_sync_set_basic_lock()`, the P25p1 frame span flag, the frame's
+    labels, `lastsynctype` (already P25p1: any other accepted sync spends the anchor). The dispatcher's
+    `p25_frame_nac_valid` clear is frame-local, as behind any sync.
+  - Invalidation: a NID failure behind any sync (the accept spent the anchor and the frame installs nothing); a change of
+    the clock epoch, input generation, carrier count, tuning generation, sync history drop count, SPS profile or
+    modulation, or an off-thread tune pending, checked when the window is scored and again at installation against the
+    sync-time context; any accepted sync of any protocol (`frame_sync_p25p1_anchor_note_accept()`); and
+    `dsd_state_forget_p25p1_sync_anchor()` at a P25p1 chain step (`frame_sync_p25p1_set_chain()`), an acquisition
+    reset (scan rows, scan visits, input boundaries), a trunk scan target's restore and the no-carrier pass.
+  - Decided limits: a NID miscorrection to another codeword with the anchor's NAC, clean parity and at most 4
+    corrections passes, as behind an exact word; the frame's own payload FEC/CRC then judges it. A slipped word is lost
+    as before (a false candidate at the expected position that fails the strict check consumes its sync and NID, so a
+    clean word 1-2 symbols late behind it is lost too); a unit missed whole leaves the next one exact-only. Phase 1
+    CQPSK on the RTL path only (C4FM, symbol files and PCM inputs are exact-only). Tests: `FRAME_SYNC_P25_ANCHOR`,
+    `P25_P1_TOLERANT_NID`, `P25_P1_TOLERANT_SYNC` (a real-shaped stream through the real frame sync, dibit chain,
+    dispatcher and NID decoder), `P25_P1_TSBK_SEQUENCE` and `P25_P1_MDPU_HELPERS` (lengths), `ENGINE_NO_CARRIER_RESET`,
+    `ENGINE_TRUNK_SCAN`.
 - A Phase 2 call's NAC is the carrier's proven NAC (`p2_proven_nac`, issue #802 B7/B8), -1 for none: the NAC the latest
   checked Phase 2 proof on this carrier named. `p25p2_note_seed_proven()` sets it to the seed a burst descrambled with,
   and a network status that passed its CRC to the NAC it carries, whatever seed is configured (a hand-set seed stays

@@ -10863,6 +10863,7 @@ add_executable(
     dsd-neo_test_p25_p1_sync_dispatch
     protocol/p25/test_p25_p1_sync_dispatch.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p1.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_anchor.c
     ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
@@ -10896,6 +10897,7 @@ add_executable(
     dsd-neo_test_p25_p1_nid_nac_change
     protocol/p25/test_p25_p1_nid_nac_change.cpp
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p1.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_anchor.c
     ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
@@ -10923,6 +10925,38 @@ target_link_libraries(
     PRIVATE dsd-neo_fec dsd-neo_runtime dsd-neo_test_support
 )
 add_test(NAME P25_P1_NID_NAC_CHANGE COMMAND dsd-neo_test_p25_p1_nid_nac_change)
+
+# P25 P1 NID behind a sync word accepted within the tolerance, and the anchor each frame leaves (real dispatcher, BCH/soft
+# NID decoder and anchor)
+add_executable(
+    dsd-neo_test_p25_p1_tolerant_nid
+    protocol/p25/test_p25_p1_tolerant_nid.cpp
+    ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p1.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_anchor.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_check_nid.cpp
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_nid_verdict.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_soft.cpp
+)
+target_include_directories(
+    dsd-neo_test_p25_p1_tolerant_nid
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_include_directories(
+    dsd-neo_test_p25_p1_tolerant_nid
+    SYSTEM
+    PRIVATE ${_MBE_TARGET_INCLUDE_DIRS}
+)
+# The test stubs mbe_initMbeParms() instead of linking mbe-neo; see
+# CORE_AUDIO2_HELPERS for why that needs MBE_STATIC.
+target_compile_definitions(dsd-neo_test_p25_p1_tolerant_nid PRIVATE MBE_STATIC)
+target_link_libraries(
+    dsd-neo_test_p25_p1_tolerant_nid
+    PRIVATE dsd-neo_fec dsd-neo_runtime dsd-neo_test_support
+)
+add_test(NAME P25_P1_TOLERANT_NID COMMAND dsd-neo_test_p25_p1_tolerant_nid)
 
 # P25 P1 TSBK -> vPDU bridge (Group Voice Channel Grant)
 add_executable(
@@ -12985,6 +13019,48 @@ if(DSD_HAS_RADIO)
     add_test(
         NAME FRAME_SYNC_P25P2_RTL
         COMMAND dsd-neo_test_frame_sync_p25p2_rtl
+    )
+
+    # P25 Phase 1 CQPSK sync words a few symbols off, after a validated frame: a real-shaped stream through the real
+    # frame sync, symbol and dibit chain on the RTL path, the real dispatcher and the real NID decoder.
+    add_executable(
+        dsd-neo_test_p25_p1_tolerant_sync
+        protocol/p25/test_p25_p1_tolerant_sync.cpp
+        test_support/frame_sync_dsp_stubs.c
+        ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit.c
+        ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p1.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_check_nid.cpp
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_nid_verdict.c
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_soft.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_p25_p1_tolerant_sync
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_include_directories(
+        dsd-neo_test_p25_p1_tolerant_sync
+        SYSTEM
+        PRIVATE ${_MBE_TARGET_INCLUDE_DIRS}
+    )
+    # The test stubs mbe_initMbeParms() instead of linking mbe-neo; see
+    # CORE_AUDIO2_HELPERS for why that needs MBE_STATIC.
+    target_compile_definitions(
+        dsd-neo_test_p25_p1_tolerant_sync
+        PRIVATE MBE_STATIC
+    )
+    dsd_neo_link_dsp_test(dsd-neo_test_p25_p1_tolerant_sync
+      dsd-neo_fec
+      dsd-neo_test_call_state_support
+      dsd-neo_test_support
+      ${DSD_NEO_TEST_MATH_LIB}
+      ${LIBSNDFILE_LIBRARIES}
+    )
+    add_test(
+        NAME P25_P1_TOLERANT_SYNC
+        COMMAND dsd-neo_test_p25_p1_tolerant_sync
     )
 
     # Real frame-sync + symbol + dibit chain on the RTL sample path: the payload
@@ -15445,6 +15521,36 @@ add_test(
     COMMAND dsd-neo_test_frame_sync_history_carry
 )
 set_tests_properties(FRAME_SYNC_HISTORY_CARRY PROPERTIES LABELS "tetra")
+
+# The P25 Phase 1 sync anchor: a sync word within the tolerance at the position a validated frame ends, and only there,
+# on the stream that frame was read on.
+add_executable(
+    dsd-neo_test_frame_sync_p25_anchor
+    dsp/test_frame_sync_p25_anchor.c
+    test_support/frame_sync_dsp_stubs.c
+    test_support/frame_sync_dibit_stubs.c
+)
+if(DSD_HAS_RADIO)
+    target_compile_definitions(
+        dsd-neo_test_frame_sync_p25_anchor
+        PRIVATE USE_RADIO
+    )
+endif()
+target_include_directories(
+    dsd-neo_test_frame_sync_p25_anchor
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_frame_sync_p25_anchor
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
+        dsd-neo_test_audio_sink
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(NAME FRAME_SYNC_P25_ANCHOR COMMAND dsd-neo_test_frame_sync_p25_anchor)
 
 # Frame sync level-window estimator parity with the established sync scanner.
 add_executable(

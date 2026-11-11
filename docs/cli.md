@@ -999,6 +999,15 @@ Notes
   shown or taken as the carrier's NAC. The first NID after a tune, a carrier loss or any other
   carrier change is taken at once whatever it needed, so a real NAC change on one carrier costs at most its first
   frame. This applies to C4FM and CQPSK alike.
+- P25 Phase 1 on CQPSK from a radio or `--iq-replay` input (`-mq`, or the CQPSK chain the hunt chose) accepts a frame
+  sync word with up to 6 of its 48 bits wrong at one place only: right where the last frame it decoded ends, on the
+  same carrier, tune and stream. A simulcast site's words often come through with a symbol or two off, which used to
+  lose the whole frame. Such a frame decodes only when its NID decodes cleanly (parity agreeing, at most 4 bit
+  corrections) and names the same NAC; otherwise it is dropped unseen. Every other word, the first after a gap,
+  a tune or a lost frame included, must match exactly, as before. `-v 2` marks these frames
+  `[tolerant sync, n bit errors]` (`[tolerant sync, n bit errors, dropped: ...]` with what the NID was, when it
+  failed the check). C4FM, symbol files and audio inputs
+  are unchanged.
 
 ## Analog reception (`-fA`, `-fM`)
 

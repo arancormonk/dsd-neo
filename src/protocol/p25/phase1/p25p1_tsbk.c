@@ -1076,6 +1076,11 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
         tsbk_dispatch_message(opts, state, &ctx, err, MFID, protectbit, PDU);
 
         if (last_block) {
+            /* The TSDU's length on air, when a block that passed its CRC says it is the last: a flag the CRC did not
+               vouch for may end the read early or late (p25p1_block_unit_dibits()). */
+            if (err == 0) {
+                state->p25_p1_unit_dibits = p25p1_block_unit_dibits(block + 1);
+            }
             break;
         }
     }

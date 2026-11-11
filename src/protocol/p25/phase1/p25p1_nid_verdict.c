@@ -92,3 +92,19 @@ p25p1_nid_verdict_commit(dsd_state* state, const p25p1_nid_verdict* verdict) {
     rec->tune_generation = dsd_trunk_tuning_generation();
     rec->valid = 1U;
 }
+
+int
+p25p1_nid_verdict_validates(const p25p1_nid_verdict* verdict) {
+    return verdict != NULL && verdict->disposition == P25P1_NID_ACCEPTED && !verdict->nac_borrowed
+           && verdict->corrections <= P25P1_NID_BCH_RADIUS && p25p1_nid_nac_usable(verdict->nac)
+           && p25p1_nid_duid_defined(verdict->duid);
+}
+
+int
+p25p1_nid_verdict_passes_tolerant_sync(const p25p1_nid_verdict* verdict, int anchor_nac) {
+    /* A tolerant word one symbol off its real position reads a NID one symbol off too, which the BCH can still take for
+       a codeword of the carrier's own NAC with its parity bit disagreeing (TIA-102.BAAA-A puts the parity after the
+       BCH word): only a clean decode of the anchor's NAC is the next data unit's. */
+    return p25p1_nid_verdict_validates(verdict) && verdict->parity_agreed
+           && verdict->corrections <= P25P1_NID_TOLERANT_SYNC_MAX_CORRECTIONS && verdict->nac == anchor_nac;
+}

@@ -604,6 +604,25 @@ main(void) {
                         g_evidence_protocol[0] == 'P' && g_evidence_protocol[1] == '2' && g_evidence_protocol[2] == '5'
                             && !g_evidence_protocol[3],
                         1);
+    /* The TSDU's length on air, by the CRC-checked last block (TIA-102.BAAA-A 8.2.4): two blocks take 288 dibits. */
+    rc |= expect_eq_int("two-block tsdu length", (int)state.p25_p1_unit_dibits, 288);
+
+    /* Three blocks, the last flagged: 360. */
+    {
+        int skipdibit = 36 - 14;
+        DSD_MEMSET(g_stream, 0, sizeof(g_stream));
+        g_stream_len = 0;
+        g_stream_pos = 0;
+        append_tsbk_stream_block(k_group_grant_1111_dibits, &skipdibit);
+        append_tsbk_stream_block(k_group_grant_1111_dibits, &skipdibit);
+        append_tsbk_stream_block(k_group_grant_2222_dibits, &skipdibit);
+        reset_decode_counters();
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        processTSBK(&opts, &state);
+        rc |= expect_eq_int("three-block tsdu dispatches three blocks", g_mac_count, 3);
+        rc |= expect_eq_int("three-block tsdu length", (int)state.p25_p1_unit_dibits, 360);
+    }
 
     /* A block whose CRC fails is no evidence. */
     build_two_block_stream();
@@ -620,6 +639,8 @@ main(void) {
     rc |= expect_eq_int("corrupt block fails its crc", state.p25_p1_fec_err > 0, 1);
     rc |= expect_eq_int("radio ber hook sees the crc failure", g_ber_err, (int)state.p25_p1_fec_err);
     rc |= expect_eq_int("only crc-valid blocks are search evidence", g_evidence, (int)state.p25_p1_fec_ok);
+    /* Its last-block flag is no length: the CRC did not vouch for it. */
+    rc |= expect_eq_int("tsdu with a failed block has no length", (int)state.p25_p1_unit_dibits, 0);
 
     build_network_status_stream();
     reset_decode_counters();
@@ -631,6 +652,7 @@ main(void) {
     processTSBK(&opts, &state);
 
     rc |= expect_eq_int("net-sts missing-iden stores wacn", (int)state.p2_wacn, 0xABCDE);
+    rc |= expect_eq_int("one-block tsdu length", (int)state.p25_p1_unit_dibits, 180);
     rc |= expect_eq_int("net-sts missing-iden stores sysid", (int)state.p2_sysid, 0x123);
     rc |= expect_eq_int("net-sts missing-iden marks p1 cc fdma", state.p25_cc_is_tdma, 0);
     rc |= expect_eq_int("net-sts missing-iden leaves p25 cc empty", (int)state.p25_cc_freq, 0);
@@ -731,6 +753,7 @@ main(void) {
             expect_eq_int("cut tsdu counts only the blocks before the cut", (int)state.p25_p1_fec_ok, grants_before[c]);
         rc |= expect_eq_int("cut tsdu counts no fec error", (int)state.p25_p1_fec_err, 0);
         rc |= expect_eq_int("cut tsdu reports only the blocks before the cut", g_evidence, grants_before[c]);
+        rc |= expect_eq_int("cut tsdu has no length", (int)state.p25_p1_unit_dibits, 0);
     }
     g_interrupt_at = -1;
     rc |= test_network_status_code();

@@ -33,6 +33,7 @@
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/p25p1_sync_anchor.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/symbol_timing_debug.h>
 #include <dsd-neo/dsp/sync_calibration.h>
@@ -541,6 +542,7 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     state->rtl_fsk_sps_accum = 0;
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;
+    dsd_state_forget_p25p1_sync_anchor(state);
     /* Nor do the sync join histories: an NXDN96 lock's flywheel or an FSW, or an M17 word, seen before it, and the
        frame sync's history carried from its last no-sync exit. */
     dsd_state_forget_sync_join_histories(state);
@@ -720,9 +722,17 @@ frame_sync_maybe_force_dmr_gfsk(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* A P25p1 sync word accepted within the tolerance at the anchor's expected position (dsd_p25p1_sync_anchor): the
+   anchor's NAC, which the frame's NID must name, and the bits the word was off by. */
+typedef struct {
+    int nac;
+    int bit_errors;
+} frame_sync_p25p1_tolerance;
+
+/* @p tolerance is NULL for an exact (normal, inverted or rotated) match. */
 static void
 frame_sync_accept_p25p1(frame_sync_match_ctx* ctx, int synctype, const char* label,
-                        frame_sync_p25_center_mode_t center_mode) {
+                        frame_sync_p25_center_mode_t center_mode, const frame_sync_p25p1_tolerance* tolerance) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
 #ifdef USE_RADIO
@@ -754,13 +764,19 @@ frame_sync_accept_p25p1(frame_sync_match_ctx* ctx, int synctype, const char* lab
         printFrameSync(opts, state, label, ctx->synctest_pos + 1, ctx->modulation);
     }
     state->lastsynctype = synctype;
-    frame_sync_note_cc_sync(ctx);
+    /* A tolerant word keeps no control channel alive before its frame validates: a decoded TSBK notes the activity
+       itself (p25_sm_note_cc_activity()). */
+    if (tolerance == NULL) {
+        frame_sync_note_cc_sync(ctx);
+    }
     if (center_mode != FRAME_SYNC_P25_CENTER_SKIP
         && (center_mode == FRAME_SYNC_P25_CENTER_FORCE || state->rf_mod == 1)) {
         dsd_sync_warm_start_center_outer_only(state, 24);
     } else if (state->rf_mod == 0) {
         dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
     }
+    frame_sync_p25p1_anchor_note_sync(state, synctype, tolerance ? tolerance->nac : -1,
+                                      tolerance ? tolerance->bit_errors : 0);
 }
 
 static void
@@ -826,11 +842,40 @@ frame_sync_try_rotated_p25(frame_sync_match_ctx* ctx, const char* symbols, const
     if (phase2) {
         frame_sync_accept_p25p2(ctx, synctype, inverted, label, set_last_before_info, FRAME_SYNC_P25_CENTER_SKIP);
     } else {
-        frame_sync_accept_p25p1(ctx, synctype, label, FRAME_SYNC_P25_CENTER_SKIP);
+        frame_sync_accept_p25p1(ctx, synctype, label, FRAME_SYNC_P25_CENTER_SKIP, NULL);
     }
     if (center_result == DSD_WARM_START_OK) {
         frame_sync_apply_p25_cqpsk_raw_fit(ctx, &fit);
     }
+    return synctype;
+}
+#endif
+
+#ifdef USE_RADIO
+/* After the exact matches failed: the window at the anchor's expected position, read under the anchor's dibit map and
+ * polarity, within DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS bits of the word (dsd_p25p1_sync_anchor), on the RTL CQPSK
+ * 4800/4 path. The first window to reach that position spends the anchor, so no other window is scored. The accept
+ * keeps the levels as they are (CENTER_SKIP: a word with symbols off is no reference to refit them on) and keeps no
+ * control channel alive; whether its frame decodes is the NID's to say, past the dispatcher's strict check. */
+static int
+frame_sync_try_tolerant_p25p1(frame_sync_match_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    uint8_t map_idx = DSD_P25_CQPSK_DIBIT_MAP_IDENTITY;
+    int inverted = 0;
+    int nac = 0;
+    if (!frame_sync_p25p1_anchor_take(state, &map_idx, &inverted, &nac)
+        || !frame_sync_cqpsk_4level_enabled(ctx->opts, state)) {
+        return DSD_SYNC_NONE;
+    }
+    const int bit_errors = dsd_p25p1_sync_bit_distance(ctx->synctest, map_idx, inverted);
+    if (bit_errors > DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS) {
+        return DSD_SYNC_NONE;
+    }
+    const int synctype = inverted ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS;
+    const frame_sync_p25p1_tolerance tolerance = {nac, bit_errors};
+    frame_sync_set_p25_cqpsk_dibit_map(ctx, map_idx);
+    frame_sync_accept_p25p1(ctx, synctype, inverted ? "-P25p1 " : "+P25p1", FRAME_SYNC_P25_CENTER_SKIP, &tolerance);
+    state->p25_p1_sync_anchor.tolerant_syncs++;
     return synctype;
 }
 #endif
@@ -844,13 +889,13 @@ frame_sync_try_p25p1(frame_sync_match_ctx* ctx) {
 
     if (strcmp(ctx->synctest, P25P1_SYNC) == 0) {
         frame_sync_set_p25_cqpsk_dibit_map(ctx, DSD_P25_CQPSK_DIBIT_MAP_IDENTITY);
-        frame_sync_accept_p25p1(ctx, DSD_SYNC_P25P1_POS, "+P25p1", FRAME_SYNC_P25_CENTER_AUTO);
+        frame_sync_accept_p25p1(ctx, DSD_SYNC_P25P1_POS, "+P25p1", FRAME_SYNC_P25_CENTER_AUTO, NULL);
         return DSD_SYNC_P25P1_POS;
     }
 
     if (strcmp(ctx->synctest, INV_P25P1_SYNC) == 0) {
         frame_sync_set_p25_cqpsk_dibit_map(ctx, DSD_P25_CQPSK_DIBIT_MAP_IDENTITY);
-        frame_sync_accept_p25p1(ctx, DSD_SYNC_P25P1_NEG, "-P25p1 ", FRAME_SYNC_P25_CENTER_AUTO);
+        frame_sync_accept_p25p1(ctx, DSD_SYNC_P25P1_NEG, "-P25p1 ", FRAME_SYNC_P25_CENTER_AUTO, NULL);
         return DSD_SYNC_P25P1_NEG;
     }
 
@@ -860,7 +905,12 @@ frame_sync_try_p25p1(frame_sync_match_ctx* ctx) {
     if (sync_type != DSD_SYNC_NONE) {
         return sync_type;
     }
-    return frame_sync_try_rotated_p25(ctx, ctx->synctest, INV_P25P1_SYNC, 24, DSD_SYNC_P25P1_NEG, 0, "-P25p1 ", 0, 0);
+    sync_type =
+        frame_sync_try_rotated_p25(ctx, ctx->synctest, INV_P25P1_SYNC, 24, DSD_SYNC_P25P1_NEG, 0, "-P25p1 ", 0, 0);
+    if (sync_type != DSD_SYNC_NONE) {
+        return sync_type;
+    }
+    return frame_sync_try_tolerant_p25p1(ctx);
 #else
     return DSD_SYNC_NONE;
 #endif
@@ -2406,6 +2456,7 @@ frame_sync_try_protocol_matches_inner(frame_sync_match_ctx* ctx) {
         }
         const int sync_type = k_frame_sync_tries[i].try_match(ctx);
         if (sync_type != DSD_SYNC_NONE) {
+            frame_sync_p25p1_anchor_note_accept(ctx->state, sync_type);
             return sync_type;
         }
     }
@@ -4400,6 +4451,8 @@ frame_sync_maybe_probe_p25p1_cqpsk(const dsd_opts* opts, dsd_state* state, int p
 /* Put the 4800/4 profile on one P25p1 chain, as the probe above does. */
 void
 frame_sync_p25p1_set_chain(const dsd_opts* opts, dsd_state* state, int chain) {
+    /* A chain step restarts what the P25p1 frames are read on, whichever way it goes. */
+    dsd_state_forget_p25p1_sync_anchor(state);
     state->rf_mod = chain;
     if (chain == 1) {
         qpsk_dwell_arm();

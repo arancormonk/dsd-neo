@@ -276,6 +276,50 @@ typedef struct {
     uint8_t candidate_valid;
 } dsd_p25p1_carrier_nac;
 
+/* Where a P25 Phase 1 sync word stood on the stream, and the stream it was read on: the symbol clock at the word's
+ * first dibit, what that clock is measured in, and the receiver's setup (the history carry's terms,
+ * dsd_frame_sync_history_carry). */
+typedef struct {
+    uint64_t sync_clock;      /* dsd_state::symbol_clock of the sync word's first dibit */
+    uint64_t tune_generation; /* dsd_trunk_tuning_generation() */
+    uint32_t symbol_clock_epoch;
+    uint32_t symbol_clock_input;
+    uint32_t carrier_seq;
+    uint32_t sync_history_drops; /* dsd_frame_sync_history_carry::drops */
+    int sps_hunt_idx;
+    int rf_mod;
+    uint8_t map_idx;  /* the CQPSK dibit map the word matched under (dsd_state::p25_cqpsk_dibit_map_idx) */
+    uint8_t inverted; /* 1 for the inverted word (DSD_SYNC_P25P1_NEG) */
+} dsd_p25p1_sync_context;
+
+/* The P25 Phase 1 sync anchor: where the data unit after the last validated one starts (src/dsp/
+ * frame_sync_p25p1_anchor.c). On a continuous outbound carrier every data unit is padded to whole 36-dibit segments
+ * and the next one's sync starts where it ends (TIA-102.BAAA-A 8.2), so the hunt, which matches sync words exactly,
+ * may there accept one within DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS bit errors, on the RTL CQPSK 4800/4 path only.
+ * Installed when a frame validates (its NID decoded unborrowed, within the BCH radius, naming a usable NAC and a
+ * defined DUID, accepted by the NAC rule), from the sync-time context the frame sync captured when it accepted that
+ * frame's sync, and only when the stream is still that one. Spent by the first window the hunt reaches at or past the
+ * expected position and by any accepted sync; forgotten by a change of anything in the context, a pending off-thread
+ * tune, a P25p1 chain step, an acquisition reset and the no-carrier pass (dsd_state_forget_p25p1_sync_anchor()).
+ * Written and read by the frame sync, which the P25p1 dispatcher tells what each frame was
+ * (dsd_frame_sync_p25p1_frame_decoded()). Decoder-thread private. */
+typedef struct {
+    dsd_p25p1_sync_context anchor; /* the validated frame's sync */
+    uint64_t expected_clock;       /* anchor.sync_clock plus the frame's length: where the next sync starts */
+    uint16_t nac;                  /* the NAC the validated frame's NID named */
+    uint8_t valid;
+    /* The sync of the frame being decoded, as the frame sync accepted it, until its dispatcher reports the frame. */
+    dsd_p25p1_sync_context frame;
+    uint16_t frame_nac;      /* a tolerant sync's: the NAC its frame's NID must name, the anchor's */
+    uint8_t frame_valid;     /* captured, with no off-thread tune pending */
+    uint8_t frame_tolerant;  /* accepted within the tolerance: stands until the frame is reported, whatever else goes */
+    uint8_t sync_bit_errors; /* bits its sync word was off by: 0 for an exact (normal, inverted, rotated) match */
+    /* Diagnostics, never reset: tolerant syncs the frame sync accepted, and those whose NID passed the dispatcher's
+       strict check (counted there). */
+    uint32_t tolerant_syncs;
+    uint32_t tolerant_frames;
+} dsd_p25p1_sync_anchor;
+
 /* The highest frequency, in Hz, a trunking channel is stored or tuned at, the same on every platform: the largest value
  * a 32-bit long holds (long is 32-bit on Windows, and trunk frequencies are stored as long), which also fits the
  * uint32_t tuner path. No trunking band comes near it. A channel-map row, an over-the-air channel computation or a
@@ -2038,6 +2082,12 @@ struct dsd_state {
     uint8_t p25_frame_nac_valid;
     /* The NAC the carrier's Phase 1 NIDs established, and a costly NAC change awaiting the next NID. */
     dsd_p25p1_carrier_nac p25_p1_carrier_nac;
+    /* Where the P25p1 data unit after the last validated one starts, and the sync of the frame being decoded. */
+    dsd_p25p1_sync_anchor p25_p1_sync_anchor;
+    /* The length in dibits of the P25p1 data unit being decoded as its decoder read it, for a TSDU (its block count, by
+     * the CRC-checked last block) and a PDU (its header's block count, by the header's CRC); 0 while unknown. The
+     * dispatcher clears it before each frame (p25p1_block_unit_dibits()). */
+    uint32_t p25_p1_unit_dibits;
 
     // Candidate evaluation tracking (current freq and start time in monotonic seconds)
     long p25_cc_eval_freq;
@@ -2900,6 +2950,14 @@ static inline void
 dsd_state_forget_p25p1_carrier_nac(dsd_state* state) {
     state->p25_p1_carrier_nac.valid = 0U;
     state->p25_p1_carrier_nac.candidate_valid = 0U;
+}
+
+/* The P25 Phase 1 sync anchor goes, with the sync context of a frame being decoded: the next data unit's sync is
+   matched exactly, wherever it is (dsd_p25p1_sync_anchor). */
+static inline void
+dsd_state_forget_p25p1_sync_anchor(dsd_state* state) {
+    state->p25_p1_sync_anchor.valid = 0U;
+    state->p25_p1_sync_anchor.frame_valid = 0U;
 }
 
 /* Raise an input interruption for @p reason (dsd_input_interrupt_reason). A reason already standing that ranks higher

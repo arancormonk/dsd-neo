@@ -117,6 +117,12 @@ dsd_frame_sync_p25p1_mod_compare_publish(const dsd_state* state) {
     (void)state;
 }
 
+/* The real P25p1 sync anchor (frame_sync_p25p1_anchor.c) reads whether an off-thread tune awaits reconciling. */
+int
+dsd_frame_sync_off_thread_tune_pending(void) {
+    return 0;
+}
+
 /* The capture opener of the revision before issue #661, kept with its counter so this harness also links and runs
    against it: the first frame written creates the capture now. */
 // NOLINTNEXTLINE(misc-use-internal-linkage): main's dispatcher links against this stub.

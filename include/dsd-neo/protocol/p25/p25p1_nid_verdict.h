@@ -89,6 +89,41 @@ void p25p1_nid_verdict_commit(dsd_state* state, const p25p1_nid_verdict* verdict
  */
 int p25p1_carrier_nac_established(const dsd_state* state);
 
+/** Corrections (BCH plus soft flips) within the BCH(63,16) code's design radius: past it the soft search alone made the
+    word a codeword. */
+#define P25P1_NID_BCH_RADIUS                    11
+
+/** Corrections a NID behind a sync word the hunt accepted within its tolerance may need (OP25 rx_sync's NID limit). */
+#define P25P1_NID_TOLERANT_SYNC_MAX_CORRECTIONS 4
+
+/** Whether @p duid is one of the seven data unit IDs TIA-102.BAAA-A Table 8-4 defines. */
+static inline int
+p25p1_nid_duid_defined(uint8_t duid) {
+    switch (duid) {
+        case 0x0: /* HDU */
+        case 0x3: /* TDU */
+        case 0x5: /* LDU1 */
+        case 0x7: /* TSDU */
+        case 0xA: /* LDU2 */
+        case 0xC: /* PDU */
+        case 0xF: /* TDULC */ return 1;
+        default: return 0;
+    }
+}
+
+/**
+ * @brief Whether @p verdict validates its frame for the P25p1 sync anchor (dsd_p25p1_sync_anchor): accepted, its NAC
+ * read off the air (not borrowed) and usable, within the BCH radius, naming a defined DUID.
+ */
+int p25p1_nid_verdict_validates(const p25p1_nid_verdict* verdict);
+
+/**
+ * @brief Whether @p verdict lets the frame behind a tolerant sync word decode: it validates, its parity agrees (NID_OK),
+ * it needed at most P25P1_NID_TOLERANT_SYNC_MAX_CORRECTIONS corrections, and it names @p anchor_nac, the NAC of the
+ * frame the anchor was taken from. Anything else drops the frame.
+ */
+int p25p1_nid_verdict_passes_tolerant_sync(const p25p1_nid_verdict* verdict, int anchor_nac);
+
 #ifdef __cplusplus
 }
 #endif

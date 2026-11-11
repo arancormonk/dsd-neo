@@ -735,6 +735,12 @@ dsd_frame_sync_p25p1_mod_compare_publish(const dsd_state* state) {
     (void)state;
 }
 
+/* The real P25p1 sync anchor (frame_sync_p25p1_anchor.c) reads whether an off-thread tune awaits reconciling. */
+int
+dsd_frame_sync_off_thread_tune_pending(void) {
+    return 0;
+}
+
 void
 dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype) {
     (void)opts;

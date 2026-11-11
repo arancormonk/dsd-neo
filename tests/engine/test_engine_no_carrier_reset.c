@@ -12061,6 +12061,8 @@ main(void) {
     state->p25_p1_carrier_nac.valid = 1U;
     state->p25_p1_carrier_nac.candidate_nac = 0x00EU;
     state->p25_p1_carrier_nac.candidate_valid = 1U;
+    state->p25_p1_sync_anchor.valid = 1U;
+    state->p25_p1_sync_anchor.frame_valid = 1U;
     /* Issue #651: a Phase 2 frame still queued as the carrier drops, both slots switched off by the user. The frame
        drains first, under the user's switches, and the return to the control channel below leaves them as set (issue
        #657: it used to turn both slots back on). */
@@ -12085,6 +12087,9 @@ main(void) {
        first NID names its own at once. */
     rc |= expect_true("p25-rtl-nocarrier-forgets-carrier-nac",
                       state->p25_p1_carrier_nac.valid == 0U && state->p25_p1_carrier_nac.candidate_valid == 0U);
+    /* And where the carrier's next Phase 1 data unit would have started: the next sync is matched exactly. */
+    rc |= expect_true("p25-rtl-nocarrier-forgets-sync-anchor",
+                      state->p25_p1_sync_anchor.valid == 0U && state->p25_p1_sync_anchor.frame_valid == 0U);
     rc |= expect_true("p25-rtl-nocarrier-syncs-selected-cc",
                       state->p25_cc_freq == 769868750 && state->trunk_cc_freq == 769868750);
     rc |= expect_true("p25-rtl-nocarrier-cc-profile-rate", g_rtl_symbol_rate_hz == 4800);

@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <stdint.h>
 #include <time.h>
 
 #ifdef __cplusplus
@@ -156,6 +157,18 @@ void frame_sync_p25p1_set_chain(const dsd_opts* opts, dsd_state* state, int chai
 void frame_sync_p25p1_mod_compare_end(dsd_state* state);
 /** @brief The chain the comparison would keep if it ended now: the incumbent, unless the other chain has read more. */
 int frame_sync_p25p1_mod_compare_leader(const dsd_state* state);
+/* The P25p1 sync anchor's frame-sync side (frame_sync_p25p1_anchor.c, dsd_p25p1_sync_anchor). */
+/** Capture the sync-time context of the P25p1 sync just accepted (@p synctype), the window ending on the latest
+ * symbol: @p tolerant_nac is the anchor's NAC for a tolerant accept and -1 for an exact one, @p bit_errors the bits the
+ * word was off by. No context is captured while an off-thread tune is pending. */
+void frame_sync_p25p1_anchor_note_sync(dsd_state* state, int synctype, int tolerant_nac, int bit_errors);
+/** A sync of any protocol was accepted (@p synctype): the anchor is spent, and another protocol's leaves no P25p1
+ * frame context. */
+void frame_sync_p25p1_anchor_note_accept(dsd_state* state, int synctype);
+/** The anchor's map, polarity and NAC when the window ending on the latest symbol starts at its expected position on the
+ * 4800/4 profile and its context still holds. The first window at or past that position spends it, whatever it holds.
+ * 0 otherwise. */
+int frame_sync_p25p1_anchor_take(dsd_state* state, uint8_t* out_map_idx, int* out_inverted, int* out_nac);
 double frame_sync_elapsed_seconds(double nowm, time_t now, double mono_stamp, time_t wall_stamp);
 void frame_sync_p25_slot_activity(const dsd_opts* opts, const dsd_state* state, time_t now, double nowm,
                                   double mac_hold, double dt, int* left_active, int* right_active);
