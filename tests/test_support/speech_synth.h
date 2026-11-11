@@ -153,6 +153,15 @@ typedef enum {
  */
 int dsd_test_synth_noise(float* out, size_t n, int rate_hz, uint64_t seed, dsd_test_noise_kind kind, double rms_dbfs);
 
+/**
+ * @brief An FM receiver's one-pole de-emphasis of time constant @p tau_s (75 us is the default monitor's, 750 us
+ * DSD_NEO_DEEMPH=nfm) over @p buf in place, from rest: y[n] = (1 - a) x[n] + a y[n-1], a = exp(-1 / (rate x tau)),
+ * accumulated in double.
+ * @return 0, or -1 for bad arguments (a NULL @p buf, a rate under DSD_TEST_SYNTH_MIN_RATE_HZ, or @p tau_s not
+ *         positive and finite).
+ */
+int dsd_test_deemphasis(float* buf, size_t n, int rate_hz, double tau_s);
+
 #ifdef __cplusplus
 }
 #endif

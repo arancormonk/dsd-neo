@@ -709,6 +709,20 @@ noise_filter_run(synth_noise_filter* f, double x) {
 }
 
 int
+dsd_test_deemphasis(float* buf, size_t n, int rate_hz, double tau_s) {
+    if (!synth_rate_ok(buf, rate_hz) || !(tau_s > 0.0) || !isfinite(tau_s)) {
+        return -1;
+    }
+    const double a = exp(-1.0 / ((double)rate_hz * tau_s));
+    double y = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        y = ((1.0 - a) * (double)buf[i]) + (a * y);
+        buf[i] = (float)y;
+    }
+    return 0;
+}
+
+int
 dsd_test_synth_noise(float* out, size_t n, int rate_hz, uint64_t seed, dsd_test_noise_kind kind, double rms_dbfs) {
     if (!synth_rate_ok(out, rate_hz) || (int)kind < DSD_TEST_NOISE_WHITE || (int)kind > DSD_TEST_NOISE_RUMBLE) {
         return -1;

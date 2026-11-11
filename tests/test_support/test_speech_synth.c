@@ -22,6 +22,10 @@
 #include "p56.h"
 #include "speech_synth.h"
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 static float*
 alloc_samples(size_t n) {
     float* x = (float*)calloc(n > 0 ? n : 1, sizeof(float));
@@ -330,6 +334,36 @@ test_steady_signal_levels(void) {
     free(x);
 }
 
+/* The de-emphasis is the receiver's one-pole: its first output is (1 - a) of a step, it settles to the step, and a 1 kHz
+   sine in steady state comes out at the analytic gain (750 us at 48 kHz: -13.65 dB). */
+static void
+test_deemphasis(void) {
+    const int rate = 48000;
+    const size_t n = samples(1.0, rate);
+    float* x = alloc_samples(n);
+    for (size_t i = 0; i < n; i++) {
+        x[i] = 1.0f;
+    }
+    const double a = exp(-1.0 / (48000.0 * 750e-6));
+    assert(dsd_test_deemphasis(x, n, rate, 750e-6) == 0);
+    assert(fabs((double)x[0] - (1.0 - a)) < 1e-7 && fabs((double)x[n - 1] - 1.0) < 1e-6);
+    for (size_t i = 0; i < n; i++) {
+        x[i] = (float)sin(2.0 * M_PI * 1000.0 * (double)i / (double)rate);
+    }
+    assert(dsd_test_deemphasis(x, n, rate, 750e-6) == 0);
+    const size_t half = n / 2;
+    const double w = 2.0 * M_PI * 1000.0 / (double)rate;
+    const double want = 20.0 * log10((1.0 - a) / sqrt(1.0 - (2.0 * a * cos(w)) + (a * a)));
+    /* A unit sine reads 20 log10(sqrt(0.5) / 32768) dBFS. */
+    const double got = rms_dbfs(x + half, n - half) - (20.0 * log10(sqrt(0.5) / 32768.0));
+    assert(fabs(want + 13.65) < 0.01 && fabs(got - want) < 0.01);
+    assert(dsd_test_deemphasis(NULL, n, rate, 750e-6) == -1);
+    assert(dsd_test_deemphasis(x, n, 7999, 750e-6) == -1);
+    assert(dsd_test_deemphasis(x, n, rate, 0.0) == -1);
+    assert(dsd_test_deemphasis(x, n, rate, NAN) == -1);
+    free(x);
+}
+
 static void
 test_bad_arguments(void) {
     float* x = alloc_samples(16000);
@@ -367,6 +401,7 @@ main(void) {
     test_real_pauses();
     test_vowels();
     test_steady_signal_levels();
+    test_deemphasis();
     test_bad_arguments();
     printf("TEST_SUPPORT_SPEECH_SYNTH: OK\n");
     return 0;

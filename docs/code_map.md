@@ -6470,15 +6470,15 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (1 dB for the first 20 steps, then +0.12 / -0.20 dB), within -12/+15 dB of the start gain. A separate attenuator
   eases long non-speech (open-squelch hiss) down to -24 dB without touching the estimate. The gain ramps over the
   next frame (no added latency), then a peak limiter holds every sample at -1 dBFS. The coloured-noise veto
-  (`dsd_speech_agc_set_noise_veto()`, off after init, kept by a reset) also asks a frame that passes the pitch cue for
-  a strict interior peak of at least 0.4 in a pre-emphasised copy (x[n] - 0.9 x[n-1]), taken from the same lag products
+  (`dsd_speech_agc_set_noise_veto()`, off after init, kept by a reset) also asks a frame that passes the pitch cue for a
+  strict interior peak of at least 0.4 in a pre-emphasised copy (x[n] - 0.9 x[n-1]), taken from the same lag products
   without a second correlation: FM hiss after 750 us de-emphasis passes the pitch cue on a few percent of frames, which
   would keep the attenuator from easing it. Only the analog chain turns it on. Digital voice carries no receiver hiss,
-  the frame target is calibrated on digital speech, and the digital output stays the same bits. Flags: `learn` and `decodable`
-  per call, `tone` caps a decoder's tone frames at the start gain; `dsd_speech_agc_process_runs()` takes a learn flag
-  per sample and turns its edges into `dsd_speech_agc_gate_closed()` (a complete rollback to the oldest of 13
-  per-frame checkpoints, dropping any pending run) and `dsd_speech_agc_gate_opened()`. The output is bit-identical
-  for any partition. `dsd_peak_limiter` is the same limiter on its own, for mixers. The source and its test keep IEEE
+  the frame target is calibrated on digital speech, and the digital output stays the same bits. Flags: `learn` and
+  `decodable` per call, `tone` caps a decoder's tone frames at the start gain; `dsd_speech_agc_process_runs()` takes a
+  learn flag per sample and turns its edges into `dsd_speech_agc_gate_closed()` (a complete rollback to the oldest of 13
+  per-frame checkpoints, dropping any pending run) and `dsd_speech_agc_gate_opened()`. The output is bit-identical for
+  any partition. `dsd_peak_limiter` is the same limiter on its own, for mixers. The source and its test keep IEEE
   semantics under fast-math. Tests: `DSP_SPEECH_AGC` (synthetic talkers, the gain law, startup, vowels, tones, hum,
   pitch edges, noise, attenuator, tone cap, decodability, rollback against a control, partitions, cross-rate, ceiling,
   reset, non-finite, fixed mode, the limiter, the veto on de-emphasised hiss), `DSP_SPEECH_AGC_LONG` (the floor after

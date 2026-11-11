@@ -201,11 +201,11 @@ synth_receiver_hiss(float* x, size_t n, int rate, uint64_t seed, double tau_s, d
     const size_t lead = secs(rate, 0.05);
     float* w = alloc_f(n + lead);
     rng_t r = {seed * 0x9E3779B97F4A7C15ULL + 1U};
-    const double a = tau_s > 0.0 ? exp(-1.0 / ((double)rate * tau_s)) : 0.0;
-    double y = 0.0;
     for (size_t i = 0; i < n + lead; i++) {
-        y = ((1.0 - a) * rng_gauss(&r)) + (a * y);
-        w[i] = (float)y;
+        w[i] = (float)rng_gauss(&r);
+    }
+    if (tau_s > 0.0) {
+        assert(dsd_test_deemphasis(w, n + lead, rate, tau_s) == 0);
     }
     dsd_voice_bandpass bp;
     assert(dsd_voice_bandpass_design(&bp, DSD_VOICE_BAND_FM, rate) == 0);
@@ -1065,9 +1065,9 @@ test_veto_floor_recovery_after_long_hiss(void) {
         uint32_t restarted = 0;
         const float scale = (float)pow(10.0, (levels[i] - 15.0 + 35.5) / 20.0);
         const long kdrop = glide_first_commit(drop, rate, scale, &restarted);
-        SAY("750 us hiss %+.0f dBFS, veto: %d commits on it, its last 5 s at %.2f dBFS; quieter speech after it "
-            "commits "
-            "at %.2f s; speech 15 dB under it at %.2f s (floor restarts on its first frame: %u)\n",
+        SAY("750 us hiss %+.0f dBFS, veto: %d commits on it, its last 5 s at %.2f dBFS; "
+            "quieter speech after it commits at %.2f s; "
+            "speech 15 dB under it at %.2f s (floor restarts on its first frame: %u)\n",
             levels[i], c, out, 0.02 * (double)(k + 1), 0.02 * (double)(kdrop + 1), restarted);
         assert(c == 0 && out <= -30.0);
         assert(k >= 0 && k < 35);
@@ -1835,17 +1835,17 @@ test_partition_identity(void) {
         const size_t F = (size_t)frame_len(rate);
         stream_t s;
         stream_make(&s, rate);
+        /* The veto's stream: the same with 750 us hiss under it, in its own buffer so every mode keeps its input. */
+        float* plain = s.x;
+        float* hissy = alloc_f(s.n);
+        synth_receiver_hiss(hissy, s.n, rate, 154, 750e-6, -40.0);
+        add_into(hissy, plain, s.n);
         const size_t chunks[] = {1, 0, F, F - 1, F + 1};
         for (int mode = 0; mode < 3; mode++) {
             const int veto = mode == 2;
             const int runs = mode != 0;
             const float g0 = runs ? 4.537f : 0.0f;
-            if (veto) {
-                float* hiss = alloc_f(s.n);
-                synth_receiver_hiss(hiss, s.n, rate, 154, 750e-6, -40.0);
-                add_into(s.x, hiss, s.n);
-                free(hiss);
-            }
+            s.x = veto ? hissy : plain;
             float* yref = alloc_f(s.n);
             dsd_speech_agc* ref = drive_fresh(&s, rate, g0, veto, runs, yref, s.n);
             assert(ref->learned.commits > 100 && ref->learned.rejections >= 1);
@@ -1869,6 +1869,8 @@ test_partition_identity(void) {
             free(yref);
             free(ref);
         }
+        s.x = plain;
+        free(hissy);
         stream_free(&s);
     }
 }
