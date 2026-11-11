@@ -14,6 +14,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/embedded_alias.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
@@ -25,10 +26,12 @@
 #include <dsd-neo/dsp/p25p2_sync_anchor.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/fec/p25p2_isch.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
@@ -41,6 +44,8 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "frame_sync_internal.h"
 #include "p25p2_burst_builder.h"
+#include "p25p2_seed_recover.h"
+#include "test_support.h"
 
 extern int p2bit[4320];
 
@@ -48,6 +53,8 @@ dsd_frame_verdict dsd_dispatch_handle_p25p2(dsd_opts* opts, dsd_state* state);
 
 #define CODE_OF(w, s, n) ((((uint64_t)(w)) << 24) | (((uint64_t)(s)) << 12) | (uint64_t)(n))
 #define TEST_CODE        CODE_OF(0xBEE00U, 0x164U, 0x161U)
+/* Another system's code: a window scrambled with it fails under TEST_CODE, and code recovery may solve it. */
+#define OTHER_CODE       CODE_OF(0xBEE00U, 0x164U, 0x2A5U)
 #define TEST_T0_NS       UINT64_C(1000000000000)
 
 enum {
@@ -55,6 +62,7 @@ enum {
     DUID_SACCH_S = 3,
     DUID_2V = 6,
     DUID_FACCH_S = 9,
+    MAC_END_PTT = 2,
     MAC_IDLE = 3,
     STRONG_LLR = 200,
     SYNC_DIBITS = 20,
@@ -70,6 +78,9 @@ static dsd_state* g_state;
 static uint8_t g_bits[1440];
 static int16_t g_llr[1400];
 static int g_feed_pos = -1;
+/* The window dibit at which the stand-in reader adopts a new carrier (a replay read crossing a recorded retune); -1
+   none. */
+static int g_carrier_cut_at = -1;
 
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
@@ -78,6 +89,9 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     int16_t llr0 = 0;
     int16_t llr1 = 0;
     if (g_feed_pos >= 0 && g_feed_pos < WINDOW_DIBITS) {
+        if (state && g_feed_pos == g_carrier_cut_at) {
+            state->carrier_seq++;
+        }
         const int bit = g_feed_pos * 2;
         dibit = (g_bits[bit] << 1) | g_bits[bit + 1];
         llr0 = g_llr[bit];
@@ -178,6 +192,16 @@ nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint32
     (void)slot;
 }
 
+/* Calls of the VC-sync hook: the channel activity a sync notes on a followed voice channel. */
+static int g_vc_sync_hooks;
+
+static void
+count_vc_sync(dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_vc_sync_hooks++;
+}
+
 static int
 expect(const char* tag, int cond) {
     if (!cond) {
@@ -196,6 +220,12 @@ fresh_decoder(void) {
     DSD_MEMSET(g_state, 0, sizeof(*g_state));
     dsd_decode_clock_use_test(TEST_T0_NS);
     p25_p2_frame_reset();
+    Event_History_I* history = (Event_History_I*)calloc(2U, sizeof(Event_History_I));
+    if (history != NULL) {
+        init_event_history(&history[0], 0, 255);
+        init_event_history(&history[1], 0, 255);
+    }
+    g_state->event_history_s = history;
     g_state->p2_wacn = TEST_CODE >> 24;
     g_state->p2_sysid = (TEST_CODE >> 12) & 0xFFFU;
     g_state->p2_cc = TEST_CODE & 0xFFFU;
@@ -222,19 +252,26 @@ fresh_decoder(void) {
     g_ambe_frames = 0;
     g_ambe_hash = 0;
     g_vpdu_retunes = 0;
+    g_vc_sync_hooks = 0;
 }
 
-/* A MAC_IDLE whose payload varies by @p salt, CRC filled. */
+/* The opcode of the MAC PDU a built window's signalling carries. */
+static int g_mac_opcode = MAC_IDLE;
+
+/* A MAC PDU (g_mac_opcode) whose payload varies by @p salt, CRC filled. */
 static void
 idle_slot(p25p2_bb_slot* slot, int duid, int salt) {
     DSD_MEMSET(slot, 0, sizeof(*slot));
     slot->duid = duid;
     slot->fill_crc = 1;
-    slot->mac[0] = (uint8_t)(MAC_IDLE << 5);
+    slot->mac[0] = (uint8_t)(g_mac_opcode << 5);
     for (int i = 1; i < 18; i++) {
         slot->mac[i] = (uint8_t)((salt * 37) + (i * 11));
     }
 }
+
+/* The scrambling code built windows are sent with. */
+static uint64_t g_build_code = TEST_CODE;
 
 /* A voice window: 4V, FACCH, 4V, SACCH (or four 4V when @p all_voice). */
 static void
@@ -250,7 +287,7 @@ build(int t0, int all_voice) {
         idle_slot(&slots[1], DUID_FACCH_S, t0);
         idle_slot(&slots[3], DUID_SACCH_S, t0 + 1);
     }
-    p25p2_bb_window(TEST_CODE, t0, slots, g_bits);
+    p25p2_bb_window(g_build_code, t0, slots, g_bits);
     for (int i = 0; i < 1400; i++) {
         g_llr[i] = (int16_t)(g_bits[i] ? STRONG_LLR : -STRONG_LLR);
     }
@@ -345,7 +382,49 @@ typedef struct {
     int vpdu_calls;
     int ambe_frames;
     uint64_t ambe_hash;
+    /* Calls, recent activity and event history: their revisions move with any change. */
+    uint64_t call_revision;
+    uint64_t recent_revision;
+    int call_phase[2];
+    uint64_t call_epoch[2];
+    uint64_t history_revision[2];
+    uint64_t history_push_seq[2];
+    /* Scrambling code recovery: its state extension, and the candidate it holds. */
+    int seed_recover;
+    int seed_pending;
+    uint64_t seed_code;
+    /* MBE capture: the open handles and their flags. */
+    const FILE* mbe_out_f;
+    const FILE* mbe_out_fR;
+    int mbe_out;
+    int mbe_outR;
+    int vc_sync_hooks;
 } window_effects;
+
+static void
+snapshot_calls_and_capture(window_effects* out) {
+    static dsd_call_state_snapshot calls;
+    static dsd_recent_activity_snapshot recent;
+    DSD_MEMSET(&calls, 0, sizeof(calls));
+    DSD_MEMSET(&recent, 0, sizeof(recent));
+    (void)dsd_call_state_copy_snapshot(g_state, &calls);
+    (void)dsd_recent_activity_copy_snapshot(g_state, &recent);
+    out->call_revision = calls.revision;
+    out->recent_revision = recent.revision;
+    for (int slot = 0; slot < 2; slot++) {
+        out->call_phase[slot] = (int)calls.slots[slot].phase;
+        out->call_epoch[slot] = calls.slots[slot].epoch;
+        out->history_revision[slot] = g_state->event_history_s[slot].revision;
+        out->history_push_seq[slot] = g_state->event_history_s[slot].push_seq;
+    }
+    out->seed_recover = dsd_state_ext_get_const(g_state, DSD_STATE_EXT_PROTO_P25P2_SEED_RECOVER) != NULL;
+    out->seed_pending = p25p2_seed_recover_pending(g_state, &out->seed_code);
+    out->mbe_out_f = g_opts->mbe_out_f;
+    out->mbe_out_fR = g_opts->mbe_out_fR;
+    out->mbe_out = g_opts->mbe_out;
+    out->mbe_outR = g_opts->mbe_outR;
+    out->vc_sync_hooks = g_vc_sync_hooks;
+}
 
 static void
 snapshot(window_effects* out) {
@@ -374,6 +453,7 @@ snapshot(window_effects* out) {
     out->vpdu_calls = g_vpdu_calls;
     out->ambe_frames = g_ambe_frames;
     out->ambe_hash = g_ambe_hash;
+    snapshot_calls_and_capture(out);
 }
 
 static int
@@ -387,9 +467,25 @@ same_state_fields(const window_effects* a, const window_effects* b) {
 }
 
 static int
+same_calls(const window_effects* a, const window_effects* b) {
+    return a->call_revision == b->call_revision && a->recent_revision == b->recent_revision
+           && a->call_phase[0] == b->call_phase[0] && a->call_phase[1] == b->call_phase[1]
+           && a->call_epoch[0] == b->call_epoch[0] && a->call_epoch[1] == b->call_epoch[1]
+           && a->history_revision[0] == b->history_revision[0] && a->history_revision[1] == b->history_revision[1]
+           && a->history_push_seq[0] == b->history_push_seq[0] && a->history_push_seq[1] == b->history_push_seq[1];
+}
+
+static int
+same_calls_and_capture(const window_effects* a, const window_effects* b) {
+    return same_calls(a, b) && a->seed_recover == b->seed_recover && a->seed_pending == b->seed_pending
+           && a->seed_code == b->seed_code && a->mbe_out_f == b->mbe_out_f && a->mbe_out_fR == b->mbe_out_fR
+           && a->mbe_out == b->mbe_out && a->mbe_outR == b->mbe_outR && a->vc_sync_hooks == b->vc_sync_hooks;
+}
+
+static int
 same_effects(const window_effects* a, const window_effects* b) {
-    return same_state_fields(a, b) && a->p2_cc_verified == b->p2_cc_verified && a->tdma_carrier == b->tdma_carrier
-           && a->p25_p2_audio_allowed[0] == b->p25_p2_audio_allowed[0]
+    return same_state_fields(a, b) && same_calls_and_capture(a, b) && a->p2_cc_verified == b->p2_cc_verified
+           && a->tdma_carrier == b->tdma_carrier && a->p25_p2_audio_allowed[0] == b->p25_p2_audio_allowed[0]
            && a->p25_p2_audio_allowed[1] == b->p25_p2_audio_allowed[1]
            && memcmp(a->p25_mac_frag, b->p25_mac_frag, sizeof(a->p25_mac_frag)) == 0
            && memcmp(a->ess_b, b->ess_b, sizeof(a->ess_b)) == 0
@@ -414,39 +510,129 @@ anchored_by_exact_window(void) {
     return anchored_by_exact_window_of(0);
 }
 
-/* A window a tolerant sync opened whose verdict fails changes nothing: no ISCH, position, slot, playout, burst, MAC
-   fragment, seed or channel activity, and the dispatcher's frame verdict is UNPRODUCTIVE. The anchor is gone. Its
-   bursts are real voice and signalling, and every one of its ISCHs is erased: nothing corroborates its start. */
+/* An MBE capture open on both slots, as -d keeps one through a call. */
+static FILE*
+open_capture(char* path, size_t path_size) {
+    const int fd = dsd_test_mkstemp(path, path_size, "p25p2_tolerant_mbe");
+    if (fd < 0) {
+        return NULL;
+    }
+    (void)dsd_close(fd);
+    return dsd_fopen_private(path, "wb");
+}
+
+static void
+close_capture(FILE** handle, short int* flag, const char* path) {
+    if (*handle != NULL) {
+        (void)fclose(*handle);
+        *handle = NULL;
+    }
+    *flag = 0;
+    (void)remove(path);
+}
+
+/* The windows a tolerant sync's verdict fails. */
+typedef enum {
+    /* MAC_IDLE signalling, every ISCH erased: nothing corroborates the start. */
+    UNCONFIRMED_IDLE = 0,
+    /* As IDLE but MAC_END_PTT, on a followed voice channel (the VC-sync hook notes activity) with an MBE capture open
+       on both slots: dispatched, it ends the calls and closes the capture. */
+    UNCONFIRMED_FOLLOWED = 1,
+    /* The ISCHs intact but timeslots 2 and 3 carry DUIDs nothing decodes, sent with another code on a carrier whose
+       code is unproven: dispatched, its own I-ISCH locates it and code recovery takes up the signalling that fails
+       under the code in force. */
+    UNCONFIRMED_DUIDS = 2,
+} unconfirmed_kind;
+
+/* What a window of @p kind does, opened by a tolerant sync whose verdict fails (@p tolerant) or by an exact sync, which
+   continuity places when its ISCHs are erased. */
 static int
-test_failed_window_has_no_effects(void) {
+run_unconfirmed_window(unconfirmed_kind kind, int tolerant, window_effects* before, window_effects* after,
+                       p25p2_window_outcome* outcome) {
+    char path[2][512];
+    const int followed = kind == UNCONFIRMED_FOLLOWED;
     fresh_decoder();
-    int rc = anchored_by_exact_window();
-    const int start = sync_tolerant(3);
-    rc |= expect("tolerant sync at the expected position", start == 6);
+    int rc = anchored_by_exact_window_of(1);
+    if (kind == UNCONFIRMED_DUIDS) {
+        rc |= expect("code unproven", g_state->p2_cc_verified == 0U);
+    }
+    if (followed) {
+        g_opts->trunk_enable = 1;
+        g_opts->trunk_is_tuned = 1;
+        g_opts->mbe_out_f = open_capture(path[0], sizeof(path[0]));
+        g_opts->mbe_out_fR = open_capture(path[1], sizeof(path[1]));
+        g_opts->mbe_out = 1;
+        g_opts->mbe_outR = 1;
+        rc |= expect("capture open", g_opts->mbe_out_f != NULL && g_opts->mbe_out_fR != NULL);
+    }
+    if (tolerant) {
+        rc |= expect("tolerant sync at the expected position", sync_tolerant(3) == 6);
+    } else {
+        sync_exact();
+    }
+    g_mac_opcode = followed ? MAC_END_PTT : MAC_IDLE;
+    g_build_code = kind == UNCONFIRMED_DUIDS ? OTHER_CODE : TEST_CODE;
     build(6, 0);
-    set_isch(0, 0U);
-    set_isch(1, 0U);
-    set_isch(2, 0U);
+    g_mac_opcode = MAC_IDLE;
+    g_build_code = TEST_CODE;
+    if (kind == UNCONFIRMED_DUIDS) {
+        set_duid(2, 0x03U);
+        set_duid(3, 0x03U);
+    } else {
+        set_isch(0, 0U);
+        set_isch(1, 0U);
+        set_isch(2, 0U);
+    }
     /* Stale values a dispatched window would overwrite. */
     g_state->p2_vch_chan_num = 3;
     g_state->dmr_stereo = 0;
     g_state->p2_is_lcch = 0;
     g_state->p25_mac_frag[0].active = 1U;
     g_state->p25_mac_frag[0].collected = 7U;
-    window_effects before;
-    window_effects after;
-    snapshot(&before);
-    const p25p2_window_outcome outcome = feed();
-    snapshot(&after);
-    rc |= expect("failed window is rejected", outcome == P25P2_WINDOW_REJECTED);
-    rc |= expect("failed window has no effects", same_effects(&before, &after));
-    rc |=
-        expect("no burst reached a decoder", g_vpdu_calls == before.vpdu_calls && g_ambe_frames == before.ambe_frames);
-    rc |= expect("anchor cleared", g_state->p25_p2_sync_anchor.valid == 0U);
-    rc |= expect("window context spent", g_state->p25_p2_sync_anchor.frame_valid == 0U);
-    rc |= expect("tolerant window not counted", g_state->p25_p2_sync_anchor.tolerant_windows == 0U);
-    rc |= expect("read whole",
-                 g_state->symbol_clock == (uint64_t)FIRST_SYNC + ((uint64_t)2U * (SYNC_DIBITS + WINDOW_DIBITS)));
+    snapshot(before);
+    *outcome = feed();
+    snapshot(after);
+    if (followed) {
+        close_capture(&g_opts->mbe_out_f, &g_opts->mbe_out, path[0]);
+        close_capture(&g_opts->mbe_out_fR, &g_opts->mbe_outR, path[1]);
+    }
+    return rc;
+}
+
+/* A window a tolerant sync opened whose verdict fails changes nothing: no ISCH, position, slot, playout, burst, MAC
+   fragment, call, event, code recovery, MBE capture or channel activity, and the dispatcher's frame verdict is
+   UNPRODUCTIVE (below). The anchor is gone. Its bursts are real voice and signalling. The same window behind an exact
+   sync changes the calls, the capture, the activity and the code recovery, so the comparison can see them. */
+static int
+test_failed_window_has_no_effects(void) {
+    int rc = 0;
+    for (int kind = UNCONFIRMED_IDLE; kind <= UNCONFIRMED_DUIDS; kind++) {
+        window_effects before;
+        window_effects after;
+        p25p2_window_outcome outcome = P25P2_WINDOW_DISPATCHED;
+        rc |= run_unconfirmed_window((unconfirmed_kind)kind, 1, &before, &after, &outcome);
+        rc |= expect("failed window is rejected", outcome == P25P2_WINDOW_REJECTED);
+        rc |= expect("failed window has no effects", same_effects(&before, &after));
+        rc |= expect("no burst reached a decoder",
+                     g_vpdu_calls == before.vpdu_calls && g_ambe_frames == before.ambe_frames);
+        rc |= expect("anchor cleared", g_state->p25_p2_sync_anchor.valid == 0U);
+        rc |= expect("window context spent", g_state->p25_p2_sync_anchor.frame_valid == 0U);
+        rc |= expect("tolerant window not counted", g_state->p25_p2_sync_anchor.tolerant_windows == 0U);
+        rc |= expect("read whole",
+                     g_state->symbol_clock == (uint64_t)FIRST_SYNC + ((uint64_t)2U * (SYNC_DIBITS + WINDOW_DIBITS)));
+
+        rc |= run_unconfirmed_window((unconfirmed_kind)kind, 0, &before, &after, &outcome);
+        rc |= expect("exact window dispatches", outcome == P25P2_WINDOW_DISPATCHED);
+        if (kind == UNCONFIRMED_DUIDS) {
+            rc |= expect("exact window: code recovery", !before.seed_pending && after.seed_pending);
+        } else {
+            rc |= expect("exact window: calls change", after.call_revision != before.call_revision);
+        }
+        if (kind == UNCONFIRMED_FOLLOWED) {
+            rc |= expect("exact window: capture closed", after.mbe_out_f == NULL && after.mbe_out_fR == NULL);
+            rc |= expect("exact sync: VC-sync hook", before.vc_sync_hooks == 1);
+        }
+    }
     return rc;
 }
 
@@ -628,8 +814,8 @@ test_installation(void) {
     return rc;
 }
 
-/* The stream moving after a tolerant sync, or a window cut, fails the verdict: the window's context no longer holds,
-   or continuity no longer predicts the anchor's start. */
+/* The stream moving after a tolerant sync fails the verdict: the window's context no longer holds, or continuity no
+   longer predicts the anchor's start. */
 static int
 test_context_fails_verdict(void) {
     int rc = 0;
@@ -648,15 +834,52 @@ test_context_fails_verdict(void) {
         rc |= expect("moved stream rejects", feed() == P25P2_WINDOW_REJECTED);
         rc |= expect("nothing decoded", g_vpdu_calls == 2 && g_state->p25_p2_sync_anchor.valid == 0U);
     }
-    /* An input interruption cut the window: nothing of it dispatched, behind either sync. */
-    fresh_decoder();
-    rc |= anchored_by_exact_window();
-    rc |= expect("tolerant sync", sync_tolerant(1) == 6);
-    build(6, 0);
-    g_state->input_interrupted = 1;
-    rc |= expect("cut tolerant window rejected", feed() == P25P2_WINDOW_REJECTED);
-    g_state->input_interrupted = 0;
-    rc |= expect("cut window anchors nothing", g_state->p25_p2_sync_anchor.valid == 0U);
+    return rc;
+}
+
+/* A window an input interruption or a carrier boundary cut while it was collected never reaches the verdict: behind a
+   tolerant sync it is charged as the same cut behind an exact sync (PRODUCTIVE, as before) and leaves the same state.
+   None of its bursts dispatches, the anchor and the window context are spent, and no tolerant window is counted. The
+   exact sync noted its channel activity when it was accepted, and the tolerant one never does: both stamps are cleared
+   after the sync, and the tolerant window must leave them clear. */
+static int
+test_cut_window_charged_as_exact(void) {
+    int rc = 0;
+    for (int carrier_cut = 0; carrier_cut <= 1; carrier_cut++) {
+        window_effects result[2];
+        for (int tolerant = 0; tolerant <= 1; tolerant++) {
+            fresh_decoder();
+            rc |= anchored_by_exact_window();
+            const int vpdu_before = g_vpdu_calls;
+            if (tolerant) {
+                rc |= expect("tolerant sync", sync_tolerant(1) == 6);
+            } else {
+                sync_exact();
+            }
+            g_state->last_cc_sync_time = 0;
+            g_state->last_cc_sync_time_m = 0.0;
+            build(6, 0);
+            if (carrier_cut) {
+                g_carrier_cut_at = 350;
+            } else {
+                g_state->input_interrupted = 1;
+            }
+            g_feed_pos = 0;
+            const dsd_frame_verdict verdict = dsd_dispatch_handle_p25p2(g_opts, g_state);
+            g_feed_pos = -1;
+            g_carrier_cut_at = -1;
+            g_state->input_interrupted = 0;
+            snapshot(&result[tolerant]);
+            rc |= expect("cut window: productive", verdict == DSD_FRAME_VERDICT_PRODUCTIVE);
+            rc |= expect("cut window dispatches no burst", g_vpdu_calls == vpdu_before);
+            rc |= expect("cut window anchors nothing", g_state->p25_p2_sync_anchor.valid == 0U);
+            rc |= expect("cut window context spent", g_state->p25_p2_sync_anchor.frame_valid == 0U
+                                                         && g_state->p25_p2_sync_anchor.frame_tolerant == 0U);
+            rc |= expect("cut window not counted", g_state->p25_p2_sync_anchor.tolerant_windows == 0U);
+            rc |= expect("cut window notes no activity", g_state->last_cc_sync_time == 0);
+        }
+        rc |= expect("cut tolerant window leaves what the cut exact one leaves", same_effects(&result[0], &result[1]));
+    }
     return rc;
 }
 
@@ -688,6 +911,11 @@ main(void) {
     if (g_opts == NULL || g_state == NULL) {
         return 1;
     }
+    dsd_frame_sync_hooks saved_hooks;
+    dsd_frame_sync_hooks_get(&saved_hooks);
+    dsd_frame_sync_hooks hooks = saved_hooks;
+    hooks.p25_sm_vc_sync = count_vc_sync;
+    dsd_frame_sync_hooks_set(&hooks);
     int rc = 0;
     rc |= test_failed_window_has_no_effects();
     rc |= test_dispatcher_verdict();
@@ -696,7 +924,9 @@ main(void) {
     rc |= test_after_failure_as_after_missed_sync();
     rc |= test_installation();
     rc |= test_context_fails_verdict();
+    rc |= test_cut_window_charged_as_exact();
     rc |= test_fourth_isch_ignored();
+    dsd_frame_sync_hooks_set(&saved_hooks);
     dsd_state_ext_free_all(g_state);
     free(g_state->event_history_s);
     free(g_state);

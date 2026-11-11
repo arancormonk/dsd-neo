@@ -56,6 +56,13 @@ typedef enum {
     P25P2_WINDOW_FAIL_DUIDS = 4,          /**< two or more timeslots carry no DUID the dispatch handles */
 } p25p2_window_verdict;
 
+/** @p timeslot as a superframe timeslot, 0-11 (negative counts wrap). */
+int p25p2_timeslot_mod12(int timeslot);
+
+/** The reliability (|LLR| clamped to 255) of window bit @p abs_bit in @p llr (the p2llr layout); 0 outside the window's
+    1400 bits. */
+uint8_t p25p2_llr_reliability(const int16_t* llr, int abs_bit);
+
 /** The 40 bits of collected ISCH @p fc (0-2), bit 39 first; 0 for any other @p fc (the fourth is never collected). */
 uint64_t p25p2_window_isch_word(const int* bits, int fc);
 
@@ -83,7 +90,8 @@ int p25p2_window_isch_offset(int decoded, int fc);
 int p25p2_window_soft_offset(const int* bits, const int16_t* llr);
 
 /** Whether the burst dispatch handles DUID @p duid (p25p2_window_duid()'s value): anything else counts toward aborting
-    the window. Kept in step with p25p2_duid_dispatch() (p25p2_frame.c). */
+    the window. p25p2_duid_dispatch() (p25p2_frame.c) decides by this predicate too, so a window the verdict passed
+    cannot abort midway. */
 int p25p2_window_duid_dispatches(int duid);
 
 /**

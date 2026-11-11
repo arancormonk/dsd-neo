@@ -343,20 +343,6 @@ test_fourth_isch_never_read(void) {
     check(p25p2_window_soft_offset(g_bits, g_llr) % 12 == 3, "fourth ISCH moves nothing", 0, 0);
 }
 
-/* The DUIDs the burst dispatch handles (p25p2_duid_dispatch()); anything else counts toward aborting a window. */
-static void
-test_duid_dispatch_set(void) {
-    static const int handled[] = {0, 3, 4, 6, 9, 10, 12, 13, 15};
-    int expected[16] = {0};
-    for (size_t i = 0; i < sizeof(handled) / sizeof(handled[0]); i++) {
-        expected[handled[i]] = 1;
-    }
-    for (int duid = 0; duid < 16; duid++) {
-        check(p25p2_window_duid_dispatches(duid) == expected[duid], "DUID dispatch set", duid, expected[duid]);
-    }
-    check(!p25p2_window_duid_dispatches(-1) && !p25p2_window_duid_dispatches(-2), "no DUID is not dispatched", 0, 0);
-}
-
 int
 main(void) {
     test_isch_code();
@@ -364,7 +350,6 @@ main(void) {
     test_verdicts();
     test_misread_windows();
     test_fourth_isch_never_read();
-    test_duid_dispatch_set();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d check(s) failed\n", g_failures);
         return 1;

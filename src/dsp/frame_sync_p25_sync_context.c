@@ -6,7 +6,9 @@
 /* What the P25 Phase 1 and Phase 2 sync anchors share (dsd_p25p1_sync_anchor, dsd_p25p2_sync_anchor): the sync-time
  * context they measure the stream by, and the distance a sync word is scored by. Nothing here reads the off-thread tune
  * notices (frame_sync_p25p1_compare.c), which only the frame sync consults: processP2() reaches the Phase 2 anchor's
- * window functions without the frame sync. */
+ * window functions without the frame sync, and needs no notice: it runs under the P25 SM tick guard the watchdog tunes
+ * under, and the engine withholds any frame while a tune request is unresolved or the tuning generation moved since the
+ * hunt began (dsd_trunk_tuning_frame_is_current()). */
 
 #include <dsd-neo/core/p25_cqpsk_dibit.h>
 #include <dsd-neo/core/state.h>

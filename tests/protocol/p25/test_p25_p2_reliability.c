@@ -32,6 +32,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "p25p2_frame_internal.h"
+#include "p25p2_window_verdict.h"
 #include "test_env.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
@@ -1477,6 +1478,52 @@ test_duid10_is_no_duid_error(void) {
     return rc;
 }
 
+/* One predicate (p25p2_window_duid_dispatches()) decides which DUIDs the burst dispatch handles, for the dispatch and for
+   the verdict on a window a tolerant sync opened: whatever DUID a received byte decodes to counts toward aborting the
+   window exactly when the predicate rejects it. Two timeslots of it ahead of a SACCH abort the window before the SACCH
+   only then. */
+static int
+test_duid_errors_follow_dispatch_predicate(void) {
+    printf("Test 27c: a DUID counts toward the abort exactly when the dispatch predicate rejects it... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    int dispatched_seen = 0;
+    int rejected_seen = 0;
+    for (int byte = 0; byte < 256; byte++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        p25_p2_frame_reset();
+        reset_xcch_stubs();
+        seed_duid_bits(0, (uint8_t)byte);
+        seed_duid_bits(1, (uint8_t)byte);
+        seed_duid_bits(2, 0xC6U);
+        seed_duid_bits(3, 0xC6U);
+        const int duid = p25p2_window_duid(0);
+        const int dispatches = p25p2_window_duid_dispatches(duid);
+        dispatched_seen += dispatches;
+        rejected_seen += !dispatches;
+
+        p25p2_process_duid(&opts, &state);
+
+        if ((g_sacch_mac_calls > 0) != dispatches) {
+            DSD_FPRINTF(stderr, "received 0x%02X (DUID %d): dispatches %d, SACCH calls %d\n", byte, duid, dispatches,
+                        g_sacch_mac_calls);
+            rc = 1;
+        }
+    }
+    reset_xcch_stubs();
+    rc |= expect_int("some received DUIDs dispatch", dispatched_seen > 0, 1);
+    rc |= expect_int("some received DUIDs do not", rejected_seen > 0, 1);
+    rc |= expect_int("no DUID decoded never dispatches", p25p2_window_duid_dispatches(-1), 0);
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
 static int
 test_duid_abort_resolves_staged_rekey(void) {
     printf("Test 28: DUID abort plays the retired pair and then resolves a staged rekey... ");
@@ -2661,6 +2708,7 @@ main(void) {
     failures += test_teardown_without_partial_int16_audio_skips_playback_but_clears_state();
     failures += test_duid_invalid_burst_aborts_without_reopening_crypto();
     failures += test_duid10_is_no_duid_error();
+    failures += test_duid_errors_follow_dispatch_predicate();
     failures += test_duid_abort_resolves_staged_rekey();
     failures += test_duid_lcch_release_defers_during_vc_grace();
     failures += test_duid_lcch_release_tears_down_after_vc_grace();

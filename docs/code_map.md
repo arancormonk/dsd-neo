@@ -5745,7 +5745,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   modulation, map, polarity), captured at every accept of their protocol and checked where the word is scored and when
   the frame or window reports itself; a pending off-thread tune is checked by the frame sync where it captures and
   scores (`frame_sync_p25_sync_context_holds()` itself reads no off-thread notice, so `processP2()` reaches the Phase 2
-  window functions without the frame sync's objects). Any accepted sync spends both anchors
+  window functions without the frame sync's objects; it needs none, since it runs under the P25 SM tick guard the
+  watchdog tunes under, and the engine withholds a frame while a tune request is unresolved or the tuning generation
+  moved since the hunt began, `dsd_trunk_tuning_frame_is_current()`). Any accepted sync spends both anchors
   (`frame_sync_p25p1_anchor_note_accept()`, `frame_sync_p25p2_anchor_note_accept()`), as does the first window at or
   past the expected position, so one window is scored and the rest of the hunt is exact. The Phase 1 try is the last
   step of `frame_sync_try_p25p1()`; the Phase 2 try (`frame_sync_try_tolerant_p25p2()`) runs only when every exact
@@ -9045,17 +9047,20 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   codeword of another channel or location, or of the S-ISCH where an I-ISCH belongs, or the reverse; nor would the soft
   read the exact path positions by locate it elsewhere), at least one matches it (an I-ISCH within 3 bits of the
   predicted channel and location, or the S-ISCH inside the window within 4), and at most one of its four DUIDs is one
-  the dispatch does not handle (`p25p2_window_duid_dispatches()`, kept in step with `p25p2_duid_dispatch()`), so a
-  passing window cannot abort midway. The sync that opened it, continuity, DUIDs and MAC CRCs are never corroboration.
+  the dispatch does not handle (`p25p2_window_duid_dispatches()`, the predicate `p25p2_duid_dispatch()` counts DUID
+  errors by), so a passing window cannot abort midway. The sync that opened it, continuity, DUIDs and MAC CRCs are never corroboration.
   A passing window notes the channel activity its sync did not (`dsd_frame_sync_p25p2_note_sync_activity()`: the VC-sync
   hook on a followed voice channel, else `last_cc_sync_time`) and then runs exactly as an exact window does. A failing
   one has no effect at all: no ISCH, position, playout break or retirement, seed recovery, descrambling, dispatch, MAC
   fragment wipe or channel activity, `s_prev_window` untouched (so the next exact window retires its four timeslots as
   lost, as after a missed sync), `dmr_stereo` back as it was, the anchor and the window context spent, one stderr line
   ` P25p2 ~sync rejected` (`-v 2` adds the bit errors and the verdict). `processP2()` returns `P25P2_WINDOW_REJECTED`
-  for it, and for a tolerant window a carrier boundary or an input interruption cut first; `dsd_dispatch_handle_p25p2()`
-  maps that to `DSD_FRAME_VERDICT_UNPRODUCTIVE` (the SPS hunt pays for it as for a missed sync: the handler ran and
-  validated nothing, which is not WITHHELD's engine policy decline) and every dispatched window to PRODUCTIVE, as before.
+  for it; `dsd_dispatch_handle_p25p2()` maps that to `DSD_FRAME_VERDICT_UNPRODUCTIVE` (the SPS hunt pays for it as for
+  a missed sync: the handler ran and validated nothing, which is not WITHHELD's engine policy decline) and every other
+  window to PRODUCTIVE, as before. A window a carrier boundary or an input interruption cut while it was collected never
+  reaches the verdict and is charged the same whichever sync opened it (`P25P2_WINDOW_DISPATCHED`, PRODUCTIVE): none of
+  its bursts dispatches, `dmr_stereo` goes to 0, the anchor and the window context are spent, and a carrier boundary
+  also forgets what the slots gathered on the carrier left (`p25p2_frame_forget_carrier()`).
   Installation: every window reports itself (`dsd_frame_sync_p25p2_window_decoded()`); one installs the next anchor
   when its position is proven and not contradicted, it starts at 2 or 3 mod 4, an I-ISCH of its own matches its start
   and none contradicts it (`p25p2_window_anchor_start()`, read before dispatch), no retune changed the token while it

@@ -148,26 +148,6 @@ static const uint8_t duid_canonical[16] = {
     0x00U, 0x17U, 0x2EU, 0x39U, 0x4BU, 0x5CU, 0x65U, 0x72U, 0x8DU, 0x9AU, 0xA3U, 0xB4U, 0xC6U, 0xD1U, 0xE8U, 0xFFU,
 };
 
-static uint8_t
-p25p2_abs_llr_reliability(int16_t llr) {
-    int v = llr < 0 ? -(int)llr : (int)llr;
-    if (v > 255) {
-        v = 255;
-    }
-    return (uint8_t)v;
-}
-
-static uint8_t
-p25p2_reliability_for_abs_bit(int abs_bit) {
-    if (abs_bit < 0) {
-        return 0;
-    }
-    if (abs_bit >= 1400) {
-        return 0;
-    }
-    return p25p2_abs_llr_reliability(p2llr[abs_bit]);
-}
-
 static int
 p25p2_duid_is_exact(uint8_t received, int decoded) {
     return decoded >= 0 && decoded < 16 && received == duid_canonical[decoded];
@@ -349,11 +329,6 @@ static struct {
 
 /* A channel-1 I-ISCH in the window being collected set p2_scramble_offset. */
 static int s_isch_located = 0;
-
-static int
-p25p2_timeslot_mod12(int timeslot) {
-    return ((timeslot % 12) + 12) % 12;
-}
 
 // Reset all P25P2 frame processing global state variables.
 // This must be called when tuning to a new P25P2 voice channel to clear stale
@@ -1540,7 +1515,7 @@ p25p2_duid_read(int timeslot_index, uint8_t bits[8], uint8_t reliab8[8]) {
     for (int i = 0; i < 8; i++) {
         int abs_bit = duid_offsets[i] + (timeslot_index * 360);
         bits[i] = (uint8_t)p2bit[abs_bit];
-        reliab8[i] = p25p2_reliability_for_abs_bit(abs_bit);
+        reliab8[i] = p25p2_llr_reliability(p2llr, abs_bit);
         complete = (complete << 1) | bits[i];
     }
     return p25p2_duid_lookup_soft((uint8_t)complete, reliab8);
@@ -1747,6 +1722,13 @@ p25p2_duid_dispatch(dsd_opts* opts, dsd_state* state, time_t now, int p2_pending
         DSD_FPRINTF(stderr, " (unaligned)");
         return;
     }
+    // One predicate says which DUIDs dispatch, for this switch and for the verdict on a window a tolerant sync opened:
+    // a window that passed it cannot reach the abort below midway.
+    if (!p25p2_window_duid_dispatches(duid_decoded)) {
+        DSD_FPRINTF(stderr, " DUID ERR %d", duid_decoded);
+        (*err_counter)++;
+        return;
+    }
     switch (duid_decoded) {
         case 0:
         case 6: p25p2_duid_dispatch_voice(opts, state, now, valid_site); break;
@@ -1768,10 +1750,7 @@ p25p2_duid_dispatch(dsd_opts* opts, dsd_state* state, time_t now, int p2_pending
             s_ts_kind = DSD_P25P2_BURST_OTHER;
             DSD_FPRINTF(stderr, " DATCH");
             break;
-        default:
-            DSD_FPRINTF(stderr, " DUID ERR %d", duid_decoded);
-            (*err_counter)++;
-            break;
+        default: break;
     }
 }
 
@@ -2039,7 +2018,9 @@ p25p2_window_anchor_start(const dsd_state* state, int contradicted) {
 }
 
 /* Read the window behind a P25p2 sync into p2bit/p2llr. Returns 0 when a carrier boundary or an input interruption cut
-   it: then nothing of it dispatches, and the frame sync is told so. */
+   it: then none of its bursts dispatches, dmr_stereo is 0, the frame sync is told so (the window's context is spent,
+   the anchor cleared), and a carrier boundary also forgets what the slots gathered on the carrier left
+   (p25p2_frame_forget_carrier()). The same whichever sync opened the window: a tolerant one's verdict is not reached. */
 static int
 p25p2_collect_window(dsd_opts* opts, dsd_state* state) {
     /* A superframe belongs to one carrier (issue #575). What the slots gathered over superframes of a carrier the
@@ -2108,8 +2089,9 @@ p25p2_window_done(dsd_state* state, uint32_t entry_symbol, const p25p2_retune_to
 }
 
 /* Collect the window behind a P25p2 sync (four timeslots and the three ISCHs between them) and dispatch it. Returns
-   P25P2_WINDOW_REJECTED for a window a tolerant sync opened that did not dispatch: its verdict failed, or a carrier
-   boundary or an input interruption cut it first. */
+   P25P2_WINDOW_REJECTED for a window a tolerant sync opened whose verdict failed. A window a carrier boundary or an
+   input interruption cut returns P25P2_WINDOW_DISPATCHED whichever sync opened it: the cut is the input's, not the
+   sync's, so the hunt is charged for it as for any cut window. */
 p25p2_window_outcome
 processP2(dsd_opts* opts, dsd_state* state) {
     const uint32_t entry_symbol = state->symbolcnt;
@@ -2117,7 +2099,7 @@ processP2(dsd_opts* opts, dsd_state* state) {
     const int tolerant_start = dsd_frame_sync_p25p2_tolerant_start(state, NULL);
     state->dmr_stereo = 1;
     if (!p25p2_collect_window(opts, state)) {
-        return tolerant_start >= 0 ? P25P2_WINDOW_REJECTED : P25P2_WINDOW_DISPATCHED;
+        return P25P2_WINDOW_DISPATCHED;
     }
     if (!p25p2_admit_window(opts, state, entry_symbol, tolerant_start, entry_stereo)) {
         return P25P2_WINDOW_REJECTED;

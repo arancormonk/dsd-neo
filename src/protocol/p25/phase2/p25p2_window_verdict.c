@@ -23,7 +23,7 @@ enum {
     P25P2_WINDOW_TIMESLOTS = 4,
 };
 
-static int
+int
 p25p2_timeslot_mod12(int timeslot) {
     return ((timeslot % P25P2_SUPERFRAME_TIMESLOTS) + P25P2_SUPERFRAME_TIMESLOTS) % P25P2_SUPERFRAME_TIMESLOTS;
 }
@@ -96,7 +96,7 @@ p25p2_window_isch_evidence(const int* bits, int start, p25p2_window_evidence* ou
     }
 }
 
-static uint8_t
+uint8_t
 p25p2_llr_reliability(const int16_t* llr, int abs_bit) {
     if (abs_bit < 0 || abs_bit >= P25P2_WINDOW_BITS) {
         return 0U;

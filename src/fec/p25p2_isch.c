@@ -2,6 +2,15 @@
 /*
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
+/*-------------------------------------------------------------------------------
+ * p25p2_isch.c
+ * P25 Phase 2 I-ISCH codeword table, moved from ez.cpp
+ *
+ * original copyrights for portions used below (OP25, EZPWD)
+ *
+ * LWVMOBILE
+ * 2022-09 DSD-FME Florida Man Edition
+ *-----------------------------------------------------------------------------*/
 
 /* The P25 Phase 2 ISCH code (<dsd-neo/fec/p25p2_isch.h>). The codewords are the table OP25 decodes I-ISCHs with. */
 

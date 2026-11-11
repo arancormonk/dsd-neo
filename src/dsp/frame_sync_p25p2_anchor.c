@@ -8,7 +8,11 @@
  * tolerant word is frame_sync_try_tolerant_p25p2() in dsd_frame_sync.c; the verdict on the window behind it is
  * processP2()'s. processP2() calls in here without the frame sync, so nothing here reads the off-thread tune notices:
  * the frame sync checks them where it captures and scores, and a tune the receiver made while a window was read moves
- * the tuning generation or processP2()'s retune token. */
+ * the tuning generation or processP2()'s retune token. No off-thread tune can slip past that: the engine runs
+ * processFrame(), so processP2(), under the P25 SM tick guard the watchdog takes for its tunes, so none lands while a
+ * window is read; and it dispatches a frame only while dsd_trunk_tuning_frame_is_current() finds no tune request
+ * unresolved and the generation unmoved since the hunt began, so one between the sync and the dispatch withholds the
+ * window. Linking the frame sync's notices into processP2() would add nothing. */
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>

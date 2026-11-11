@@ -50,11 +50,13 @@ void processMPDU(dsd_opts* opts, dsd_state* state);
 
 /** What processP2() did with the window behind a P25 Phase 2 sync. */
 typedef enum {
-    /** Collected and dispatched burst by burst; or, behind an exact sync, cut short by a carrier boundary or an input
-        interruption, as before. */
+    /** Collected and dispatched burst by burst; or, whichever sync opened it, cut short by a carrier boundary or an
+        input interruption: then none of its bursts dispatched, dmr_stereo is 0, the anchor is cleared and the window's
+        sync-time context spent, and a carrier boundary also forgot what the slots gathered on the carrier left. */
     P25P2_WINDOW_DISPATCHED = 0,
-    /** Opened by a sync the hunt accepted within its tolerance (dsd_p25p2_sync_anchor) and not dispatched: the window
-        verdict failed, or a carrier boundary or an input interruption cut it first. Nothing of it took effect. */
+    /** Opened by a sync the hunt accepted within its tolerance (dsd_p25p2_sync_anchor) and its window verdict failed:
+        none of it took effect. dmr_stereo is back as it was, the anchor is cleared and the window's sync-time context
+        spent, and one stderr line reports it. */
     P25P2_WINDOW_REJECTED = 1,
 } p25p2_window_outcome;
 
