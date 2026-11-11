@@ -74,6 +74,7 @@
 #include "document_save_transport.h"
 #include "json_store.h"
 #include "known_frequency_index.h"
+#include "pending_export.h"
 #include "saved_systems_model.h"
 #include "scan_lists_model.h"
 #include "session_args.h"
@@ -2356,6 +2357,101 @@ test_export_model_detections(const QString& root) {
     dsd_app_signal_search_store_close();
 }
 
+/* The shared pending-export helper: tokens, the stale-token refusal, and consume-before-submit. */
+static void
+test_pending_export_tokens(const QString& root) {
+    const QString cacheRoot = root + QStringLiteral("/pending tokens/export");
+    auto transport = std::make_shared<GateTransport>();
+    QObject owner;
+    ExportReplies log;
+    const QByteArray first("first"), second("second");
+    {
+        dsd_qt::PendingExport pending(transport, cacheRoot, &owner, log.reply());
+        assert(!pending.busy());
+        // Nothing pending: a 0 or unknown token is refused and lets go of the reference's Download-folder row.
+        assert(!pending.save(0, QStringLiteral("content://picked/none")));
+        assert(transport->discards() == QStringList{QStringLiteral("content://picked/none")});
+
+        const int a = pending.hold(first);
+        assert(a > 0);
+        const int b = pending.hold(second);
+        assert(b > 0 && b != a);
+        // The second hold replaced the first; the old token is stale.
+        assert(!pending.save(a, QStringLiteral("content://picked/stale")));
+        assert(transport->discards().size() == 2
+               && transport->discards().last() == QStringLiteral("content://picked/stale"));
+        pending.discard(a);
+        assert(pending.save(b, QStringLiteral("content://picked/b")));
+        assert(pending.busy());
+        assert(spin_until([&log]() { return !log.replies.isEmpty(); }));
+        assert(log.replies == (QList<QPair<int, bool>>{qMakePair(b, true)}));
+        assert(!pending.busy());
+        assert(transport->saves().size() == 1 && transport->saves()[0].bytes == second);
+        // Consumed: the same token again is stale.
+        assert(!pending.save(b, QStringLiteral("content://picked/again")));
+        assert(transport->discards().size() == 3);
+
+        // discard() clears only a matching token; reset() drops whatever is pending.
+        const int c = pending.hold(first);
+        pending.discard(c + 1);
+        pending.discard(0);
+        const int d = pending.hold(first);
+        assert(d != c);
+        pending.reset();
+        assert(!pending.save(d, QStringLiteral("content://picked/reset")));
+        assert(transport->discards().size() == 4);
+        const int e = pending.hold(first);
+        pending.discard(e);
+        assert(!pending.save(e, QStringLiteral("content://picked/discarded")));
+        assert(transport->discards().size() == 5);
+
+        // A refused submit (a job running) has consumed the file: nothing stays pending.
+        transport->setResult(true);
+        auto gate = std::make_shared<GateTransport>(false);
+        dsd_qt::PendingExport held(gate, cacheRoot + QStringLiteral("2"), &owner, log.reply());
+        const int h1 = held.hold(first);
+        assert(held.save(h1, QStringLiteral("content://picked/h1")));
+        const int h2 = held.hold(second);
+        assert(!held.save(h2, QStringLiteral("content://picked/h2")));
+        assert(gate->discards() == QStringList{QStringLiteral("content://picked/h2")});
+        assert(!held.save(h2, QStringLiteral("content://picked/h2b")));
+        assert(gate->discards().size() == 2);
+        gate->openGate();
+        assert(spin_until([&log]() { return log.replies.size() == 2; }));
+    }
+    // Tokens count up and wrap from INT_MAX to 1, never 0.
+    assert(dsd_qt::PendingExport::nextToken(0) == 1 && dsd_qt::PendingExport::nextToken(41) == 42);
+    assert(dsd_qt::PendingExport::nextToken(std::numeric_limits<int>::max() - 1) == std::numeric_limits<int>::max());
+    assert(dsd_qt::PendingExport::nextToken(std::numeric_limits<int>::max()) == 1);
+}
+
+/* busyChanged runs after an accepted submit (busy), then right before the reply (idle). */
+static void
+test_pending_export_busy_changed(const QString& root) {
+    const QString cacheRoot = root + QStringLiteral("/pending busy/export");
+    auto transport = std::make_shared<GateTransport>();
+    QObject owner;
+    QStringList order;
+    dsd_qt::PendingExport* helper = nullptr;
+    dsd_qt::PendingExport pending(
+        transport, cacheRoot, &owner,
+        [&](int token, bool ok) {
+            order.append(QStringLiteral("reply %1 %2 busy=%3").arg(token).arg(ok).arg(helper->busy()));
+        },
+        [&]() { order.append(QStringLiteral("busyChanged busy=%1").arg(helper->busy())); });
+    helper = &pending;
+    // A refused save changes nothing.
+    assert(!pending.save(5, QStringLiteral("content://picked/x")));
+    assert(order.isEmpty());
+    const int token = pending.hold(QByteArray("rows"));
+    assert(pending.save(token, QStringLiteral("content://picked/ok")));
+    assert(order == QStringList{QStringLiteral("busyChanged busy=1")});
+    assert(spin_until([&order]() { return order.size() == 3; }));
+    assert(order[1] == QStringLiteral("busyChanged busy=0"));
+    assert(order[2] == QStringLiteral("reply %1 1 busy=0").arg(token));
+    assert(!pending.busy());
+}
+
 int
 main(int argc, char** argv) {
     if (argc == 3 && strcmp(argv[1], "--hold-export-lock") == 0) {
@@ -2373,6 +2469,8 @@ main(int argc, char** argv) {
     test_export_writer_saves(temp.path());
     test_export_writer_staging_failures(temp.path());
     test_export_writer_sweep(temp.path());
+    test_pending_export_tokens(temp.path());
+    test_pending_export_busy_changed(temp.path());
     test_export_writer_sweep_leaves_other_entries(temp.path());
     test_export_writer_refuses_unrooted_cache(temp.path());
     test_export_writer_teardown_stops(temp.path());

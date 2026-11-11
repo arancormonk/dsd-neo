@@ -11301,11 +11301,14 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   two revisions are equal, at most `kAvoidReadTries` = 32 times), a frequency in both written once, as `permanent`. It
   returns `{token, count}`: a token above 0 with the row count, `{0, 0}` for no rows, `{0, -1}` for an unknown kind or
   avoid lists that kept changing. `saveExport(token, reference)` hands the pending file to the model's
-  `DocumentExportWriter` and forgets it; a token that is not the pending one, or a save while one runs, is refused and
+  `PendingExport` (`pending_export.{h,cpp}`: the token, the pending bytes and the `DocumentExportWriter`, shared with
+  other CSV exports; `reset()` first in every prepare) and forgets it; a token that is not the pending one, or a save
+  while one runs, is refused and
   the reference's Download-folder row let go of (through the save transport). `discardExport(token)` drops only that
-  token's file, and `exportFinished(token, ok)` reports an accepted save on the GUI thread. The model owns the writer,
+  token's file, and `exportFinished(token, ok)` reports an accepted save on the GUI thread. The model owns the helper,
   made in its constructor from `host->saveTransport()` (a base transport without a host) under
-  `<CacheLocation>/signal-search-export`, and destroys it inside its own teardown stage; the model lives as long as the
+  `<CacheLocation>/signal-search-export`, and destroys it (and so the writer) inside its own teardown stage; the model
+  lives as long as the
   QML engine, so a writer's abort (process-wide on Android) only ever happens at teardown. The files are built by
   `signal_search_export.{h,cpp}` (pure builders the tests feed records to): the detections file's columns are
   `started_utc,ended_utc,ended,frequency_hz,frequency_mhz,listen_mode,identification,protocol,access,tone,site,slot,`
