@@ -34,6 +34,7 @@ target_sources(
         phase1/p25p1_check_hdu.cpp
         phase1/p25p1_check_ldu.cpp
         phase1/p25p1_check_nid.cpp
+        phase1/p25p1_nid_verdict.c
         phase1/p25p1_rs_soft_reliability.cpp
         phase1/p25p1_soft.cpp
         # Shared protocol modules

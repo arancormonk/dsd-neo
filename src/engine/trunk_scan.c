@@ -2519,6 +2519,8 @@ trunk_scan_restore_target_snapshot(dsd_trunk_scan_coord* coord, dsd_state* state
     trunk_scan_restore_snapshot(state, &rt->snapshot);
     state->nac = 0;
     state->p25_frame_nac_valid = 0U; // the last Phase 1 frame's NAC is the target left's (issue #804)
+    /* And so is the NAC the target left's Phase 1 NIDs established. */
+    dsd_state_forget_p25p1_carrier_nac(state);
     dsd_state_forget_p2_proof(state);
     state->dmr_color_code = 16;
     state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_NONE;

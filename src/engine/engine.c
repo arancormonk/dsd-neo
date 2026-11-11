@@ -2816,6 +2816,9 @@ dsd_engine_forget_carrier_code_values(dsd_state* state) {
     /* So is the NAC of the last Phase 1 frame (issue #804): a network status on the next carrier is never paired with
      * it. */
     state->p25_frame_nac_valid = 0U;
+    /* And the NAC this carrier's NIDs established, with a NAC change held for corroboration: the next carrier's first
+     * NID names its own at once. */
+    dsd_state_forget_p25p1_carrier_nac(state);
     /* The Phase 2 proofs are the carrier's too: the next carrier's bursts, or a network status broadcast, prove the seed
      * and a NAC again. p2_cc itself is the descrambling key and stays. */
     dsd_state_forget_p2_proof(state);
@@ -4252,6 +4255,10 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
         const int interrupt_reason = state->input_interrupt_reason;
         state->input_interrupted = 0;
         state->input_interrupt_reason = DSD_INTERRUPT_NONE;
+        if (interrupted) {
+            /* What was being received was cut: the NAC its Phase 1 NIDs established says nothing of what follows. */
+            dsd_state_forget_p25p1_carrier_nac(state);
+        }
         if (interrupt_reason == DSD_INTERRUPT_STREAM_GAP) {
             /* A gap in the radio stream cut what was being decoded (issue #518 D5): reset it here, outside the frame
                the gap ended, before anything this pass may wait on (a pending scan tune). The boundary takes the tick

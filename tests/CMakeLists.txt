@@ -10866,6 +10866,13 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_nid_verdict.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/trunk_tuning_hooks.c
+)
+target_link_libraries(
+    dsd-neo_test_p25_p1_sync_dispatch
+    PRIVATE dsd-neo_platform
 )
 target_include_directories(
     dsd-neo_test_p25_p1_sync_dispatch
@@ -10883,6 +10890,39 @@ target_include_directories(
 # CORE_AUDIO2_HELPERS for why that needs MBE_STATIC.
 target_compile_definitions(dsd-neo_test_p25_p1_sync_dispatch PRIVATE MBE_STATIC)
 add_test(NAME P25_P1_SYNC_DISPATCH COMMAND dsd-neo_test_p25_p1_sync_dispatch)
+
+# P25 P1 NID naming another NAC: a costly NAC change waits for the next NID (real dispatcher and BCH/soft NID decoder)
+add_executable(
+    dsd-neo_test_p25_p1_nid_nac_change
+    protocol/p25/test_p25_p1_nid_nac_change.cpp
+    ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p1.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_check_nid.cpp
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_nid_verdict.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_soft.cpp
+)
+target_include_directories(
+    dsd-neo_test_p25_p1_nid_nac_change
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_include_directories(
+    dsd-neo_test_p25_p1_nid_nac_change
+    SYSTEM
+    PRIVATE ${_MBE_TARGET_INCLUDE_DIRS}
+)
+# The test stubs mbe_initMbeParms() instead of linking mbe-neo; see
+# CORE_AUDIO2_HELPERS for why that needs MBE_STATIC.
+target_compile_definitions(
+    dsd-neo_test_p25_p1_nid_nac_change
+    PRIVATE MBE_STATIC
+)
+target_link_libraries(
+    dsd-neo_test_p25_p1_nid_nac_change
+    PRIVATE dsd-neo_fec dsd-neo_runtime dsd-neo_test_support
+)
+add_test(NAME P25_P1_NID_NAC_CHANGE COMMAND dsd-neo_test_p25_p1_nid_nac_change)
 
 # P25 P1 TSBK -> vPDU bridge (Group Voice Channel Grant)
 add_executable(

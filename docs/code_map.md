@@ -9349,6 +9349,32 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   (`p25_frame_nac` with `p25_frame_nac_valid`), which a network status in that frame is paired with: invalid from every
   P25p1 sync until its NID decodes, after a NID that failed, was cut or was split by a carrier boundary, at every
   carrier boundary (`dsd_engine_forget_carrier_code_values()`) and at a trunk scan target switch.
+- A Phase 1 NID that would change the carrier's NAC needs corroboration when it was costly
+  (`p25p1_nid_verdict_classify()` and `p25p1_nid_verdict_commit()`, `src/protocol/p25/phase1/p25p1_nid_verdict.c`,
+  run in `p25p1_decode_nid_and_duid()` before `p25p1_handle_nid_decode_success()` publishes anything). The BCH(63,16)
+  corrects 11 bits and the soft search flips up to 3 more, so a corrupted control channel TSDU's NID can decode as an
+  LDU1 of another NAC (seen at 10-14 corrections on a simulcast site): it decoded noise as voice and moved the received
+  identity, `state->nac` and the Phase 2 seed. The carrier's established NAC (`dsd_state::p25_p1_carrier_nac`) is the
+  NAC of the last unborrowed NID naming a usable NAC (not 0x000/0xFFF) that was accepted, valid only while the carrier
+  count, the accepted trunk tuning generation (`dsd_trunk_tuning_generation()`) and the sync history drop count
+  (`dsd_frame_sync_history_carry::drops`) it was taken under are current: a carrier boundary, every accepted tune (a
+  control channel return, which is no carrier boundary, included), a trunk scan visit and every other sync history
+  drop end it, and `dsd_state_forget_p25p1_carrier_nac()` ends it at the carrier codes' forget (the no-carrier pass,
+  a voice channel tune), a trunk scan target's restore, a NID an input interruption cut and the engine loop that takes
+  an interruption up. A NID naming a usable NAC other than the established one off the air is taken at once with at
+  most 4 corrections (`P25P1_NID_NAC_CHANGE_MAX_CORRECTIONS`, OP25's `rx_sync` NID limit; the corrections are
+  `p25p1_nid_result::error_count`, BCH plus soft flips, and a parity disagreement does not count). With more, a soft
+  result past the BCH radius included, it is provisional: the DUID reads invalid, so nothing decodes, it counts in
+  `nid_failures_total`, `-v 2` prints `[NID NAC xxx held, n corrections]`, nothing takes its NAC (received identity,
+  frame NAC, `state->nac`, seed, proof), and the NAC is held as the candidate. The next NID on the same stream settles
+  it, however far behind: naming the candidate (at any count) confirms it and is decoded as an ordinary NAC change,
+  naming the established NAC discards it, naming a third NAC costly replaces it. The first NID on a carrier, borrowed
+  decodes (which name no NAC), 0x000/0xFFF decodes, hand-set seeds and the #804 distinct-colour-code rule above are
+  unchanged; the rule is codec-independent, C4FM included. Costs and limits: the first frame of a real NAC change on
+  the same stream whose NID needed 5 or more corrections is not decoded (the next NID, whatever it needed, confirms
+  it); a costly miscorrection that keeps the established NAC but names a wrong DUID is not caught. Other Phase 1 gates
+  read the verdict (`p25p1_nid_verdict`: NAC, DUID, corrections, parity agreement, borrowed, disposition) and the
+  established NAC (`p25p1_carrier_nac_established()`, -1 for none) rather than re-deriving them.
 - A Phase 2 call's NAC is the carrier's proven NAC (`p2_proven_nac`, issue #802 B7/B8), -1 for none: the NAC the latest
   checked Phase 2 proof on this carrier named. `p25p2_note_seed_proven()` sets it to the seed a burst descrambled with,
   and a network status that passed its CRC to the NAC it carries, whatever seed is configured (a hand-set seed stays

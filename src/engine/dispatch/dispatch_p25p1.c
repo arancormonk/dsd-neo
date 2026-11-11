@@ -18,6 +18,7 @@
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
+#include <dsd-neo/protocol/p25/p25p1_nid_verdict.h>
 #include <dsd-neo/runtime/colors.h>
 #include <mbelib-neo/mbelib.h>
 #include <stdint.h>
@@ -221,6 +222,19 @@ p25p1_handle_nid_decode_success(const dsd_opts* opts, dsd_state* state, uint8_t*
     p25p1_apply_duid_update(state, duid, decoded->duid);
 }
 
+/* A NID naming another NAC than the carrier's at a costly correction count (p25p1_nid_verdict_classify()): as likely a
+   miscorrected NID of the carrier's own frame as a real NAC change, so nothing decodes and nothing takes its NAC until
+   the next NID confirms it. It counts as a NID that failed. */
+static void
+p25p1_handle_nid_nac_held(const dsd_opts* opts, dsd_state* state, uint8_t* duid, const p25p1_nid_verdict* verdict) {
+    state->nid_failures_total++;
+    if (opts->verbose > 1) {
+        DSD_FPRINTF(stderr, " [NID NAC %03X held, %d corrections]", (unsigned int)verdict->nac, verdict->corrections);
+    }
+    *duid = P25P1_DUID_INVALID;
+    state->debug_header_critical_errors++;
+}
+
 static void
 p25p1_handle_nid_decode_failure(const dsd_opts* opts, dsd_state* state, uint8_t* duid, enum NidResult status) {
     state->nid_failures_total++;
@@ -252,15 +266,23 @@ p25p1_decode_nid_and_duid(dsd_opts* opts, dsd_state* state) {
     state->p25_frame_nac_valid = 0U;
     p25p1_read_nid_fields(opts, state, &duid, bch_code, bch_reliab, &parity, &parity_reliab);
     /* An input interruption cut the NID (a Signal search left the frame): the rest of it is erasures the reader stood
-       in, which the BCH can take for the all-zero codeword (NAC 0, an HDU). Nothing of it decodes. */
+       in, which the BCH can take for the all-zero codeword (NAC 0, an HDU). Nothing of it decodes, and the NAC the
+       carrier's NIDs established says nothing of what follows the cut. */
     if (state->input_interrupted) {
+        dsd_state_forget_p25p1_carrier_nac(state);
         return P25P1_DUID_INVALID;
     }
 
     observed_nac = p25p1_observed_nac(state);
     struct p25p1_nid_result decoded = p25p1_nid_decode(bch_code, bch_reliab, observed_nac, parity, parity_reliab);
-    if (decoded.status > 0) {
+    /* Read against the NAC the carrier's NIDs established before anything publishes it: a costly NAC change waits for
+       the next NID. */
+    const p25p1_nid_verdict verdict = p25p1_nid_verdict_classify(state, &decoded);
+    p25p1_nid_verdict_commit(state, &verdict);
+    if (verdict.disposition == P25P1_NID_ACCEPTED) {
         p25p1_handle_nid_decode_success(opts, state, &duid, &decoded);
+    } else if (verdict.disposition == P25P1_NID_PROVISIONAL) {
+        p25p1_handle_nid_nac_held(opts, state, &duid, &verdict);
     } else {
         p25p1_handle_nid_decode_failure(opts, state, &duid, decoded.status);
     }

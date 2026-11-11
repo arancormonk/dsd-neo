@@ -252,10 +252,29 @@ typedef struct {
     uint64_t tune_generation; /* dsd_trunk_tuning_generation() when the history began */
     int sps_hunt_idx;
     int rf_mod;
-    /* Bumped by every drop (dsd_state_forget_sync_join_histories()); a call that saw it move keeps nothing. */
+    /* Bumped by every drop (dsd_state_forget_sync_join_histories()); a call that saw it move keeps nothing. The P25
+       Phase 1 carrier NAC (dsd_p25p1_carrier_nac) reads it too, as the same stream boundary. */
     uint32_t drops;
     uint8_t valid;
 } dsd_frame_sync_history_carry;
+
+/* The NAC the P25 Phase 1 NIDs on the carrier being received established, and a NAC change held for corroboration
+ * (p25p1_nid_verdict_classify(), src/protocol/p25/phase1/p25p1_nid_verdict.c). Established by an unborrowed NID naming
+ * a usable NAC (not 0x000 or 0xFFF), it holds only on the stream it was named on: the carrier count, the accepted trunk
+ * tuning generation and the sync history drop count it was taken under must all still be current, so a carrier
+ * boundary, an accepted tune (a control channel return, which is no carrier boundary, included), a trunk scan visit
+ * and every other sync history drop end it. dsd_state_forget_p25p1_carrier_nac() also ends it at the carrier codes'
+ * forget (the no-carrier pass, a carrier boundary, a voice channel tune), a trunk scan target's restore and an input
+ * interruption (the engine loop that takes it up, and a NID it cut). Decoder-thread private. */
+typedef struct {
+    uint64_t tune_generation;    /* dsd_trunk_tuning_generation() when established */
+    uint32_t carrier_seq;        /* dsd_state::carrier_seq when established */
+    uint32_t sync_history_drops; /* dsd_frame_sync_history_carry::drops when established */
+    uint16_t nac;                /* the established NAC, when valid */
+    uint16_t candidate_nac;      /* another NAC a costly NID named, when candidate_valid */
+    uint8_t valid;
+    uint8_t candidate_valid;
+} dsd_p25p1_carrier_nac;
 
 /* The highest frequency, in Hz, a trunking channel is stored or tuned at, the same on every platform: the largest value
  * a 32-bit long holds (long is 32-bit on Windows, and trunk frequencies are stored as long), which also fits the
@@ -2017,6 +2036,8 @@ struct dsd_state {
      * boundary; p25_frame_nac is meaningless then. */
     uint16_t p25_frame_nac;
     uint8_t p25_frame_nac_valid;
+    /* The NAC the carrier's Phase 1 NIDs established, and a costly NAC change awaiting the next NID. */
+    dsd_p25p1_carrier_nac p25_p1_carrier_nac;
 
     // Candidate evaluation tracking (current freq and start time in monotonic seconds)
     long p25_cc_eval_freq;
@@ -2871,6 +2892,14 @@ static inline void
 dsd_state_toast_publish(dsd_state* state, time_t expire) {
     state->ui_msg_expire = expire;
     state->ui_msg_seq++;
+}
+
+/* The NAC the P25 Phase 1 NIDs established on the carrier goes, with any NAC change held for corroboration: the next
+   NID is the first on its carrier. */
+static inline void
+dsd_state_forget_p25p1_carrier_nac(dsd_state* state) {
+    state->p25_p1_carrier_nac.valid = 0U;
+    state->p25_p1_carrier_nac.candidate_valid = 0U;
 }
 
 /* Raise an input interruption for @p reason (dsd_input_interrupt_reason). A reason already standing that ranks higher
