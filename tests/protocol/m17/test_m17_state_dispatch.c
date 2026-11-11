@@ -3583,6 +3583,13 @@ test_stream_voice_tells_the_chain_received_speech(void) {
 /* The stream encoder (-fZ) with its decoded monitor: the voice it decodes back from its own transmission runs the
    chain as the monitor's (DSD_VOICE_MEDIA_TX_MONITOR) and plays at the level codec2 decoded it at, under a fixed -g 3 as
    under auto (issue #518 B17); the receive slot's speech AGC is left exactly as it started. */
+/* Exact float equality, which an untouched AGC means: nothing ran, so every value is still the one init set. Written as a
+   zero tolerance because the float-compare rule wants one. */
+static int
+float_same(float a, float b) {
+    return fabsf(a - b) <= 0.0f;
+}
+
 static int
 monitor_run(float gain) {
     static dsd_opts opts;
@@ -3643,8 +3650,8 @@ monitor_run(float gain) {
     /* Untouched: no sample run, nothing learned, the start gain, the limiter open. */
     const int untouched = slot0 == NULL
                           || (slot0->frames == 0U && slot0->frame_pos == 0 && slot0->learned.commits == 0
-                              && fabsf(slot0->g_cur - fresh.g_cur) <= 0.0f && fabsf(slot0->g_lim - fresh.g_lim) <= 0.0f
-                              && fabsf(slot0->learned.gain_db - fresh.learned.gain_db) <= 0.0f);
+                              && float_same(slot0->g_cur, fresh.g_cur) && float_same(slot0->g_lim, fresh.g_lim)
+                              && float_same(slot0->learned.gain_db, fresh.learned.gain_db));
     err |= expect_int("m17 encoder monitor: the receive slot's AGC untouched", untouched, 1);
     dsd_pcm_stream_close(opts.audio_in_stdin);
     opts.audio_in_stdin = NULL;
@@ -3738,31 +3745,34 @@ fake_udp_mic_read(dsd_opts* opts, int16_t* out) {
     return 1;
 }
 
-/* Run the stream encoder over @p script at 3200 (@p dt 2) or 1600 bit/s (3), on auto gain with no filters, keyed by
-   the script's PTT or, with @p vox, by the VOX on a level squelch at -40 dBFS. */
+/* A fresh encoder setup at 3200 (@p dt 2) or 1600 bit/s (3), on auto gain with no filters, keyed by the script's PTT or,
+   with @p vox, by the VOX on a level squelch at -40 dBFS. */
 static void
-mic_run(const mic_segment* script, size_t len, uint8_t dt, int vox) {
-    static dsd_opts opts;
-    static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&state, 0, sizeof state);
-    opts.audio_in_type = AUDIO_IN_UDP;
-    opts.input_volume_multiplier = 1;
-    opts.monitor_input_audio = 1;
-    opts.audio_out = 1;
-    opts.audio_out_type = 8;
-    opts.audio_gainA = 0.0f;
-    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
-    opts.rtl_squelch_level = dB_to_pwr(-40.0);
-    state.m17_rate = 8000;
-    state.m17_can_en = -1;
-    state.m17_vox = vox;
-    state.m17_str_dt = dt;
-    state.codec2_1600 = dt == 3U ? TEST_CODEC2_1600 : NULL;
+mic_prepare(dsd_opts* opts, dsd_state* state, uint8_t dt, int vox) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_UDP;
+    opts->input_volume_multiplier = 1;
+    opts->monitor_input_audio = 1;
+    opts->audio_out = 1;
+    opts->audio_out_type = 8;
+    opts->audio_gainA = 0.0f;
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    opts->rtl_squelch_level = dB_to_pwr(-40.0);
+    state->m17_rate = 8000;
+    state->m17_can_en = -1;
+    state->m17_vox = vox;
+    state->m17_str_dt = dt;
+    state->codec2_1600 = dt == 3U ? TEST_CODEC2_1600 : NULL;
+}
+
+/* One stream encoder session (encodeM17STR()) over @p script on @p opts / @p state as they stand. */
+static void
+mic_encode(dsd_opts* opts, dsd_state* state, const mic_segment* script, size_t len) {
     g_mic_script = script;
     g_mic_script_len = len;
     g_mic_reads = 0;
-    g_mic_state = &state;
+    g_mic_state = state;
     g_mic_phase = 0.0;
     g_mic_noise = 0x9E3779B97F4A7C15ULL;
     g_mic_iters = 0;
@@ -3773,12 +3783,21 @@ mic_run(const mic_segment* script, size_t len, uint8_t dt, int vox) {
     DSD_MEMSET(g_codec2_encode_rms, 0, sizeof g_codec2_encode_rms);
     dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){.udp_read_sample = fake_udp_mic_read});
     exitflag = 0;
-    (void)encodeM17STR(&opts, &state);
+    (void)encodeM17STR(opts, state);
     exitflag = 0;
     g_mic_frame_at[g_mic_iters] = g_codec2_encode_count;
     dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
-    dsd_state_ext_free_all(&state);
     g_mic_state = NULL;
+}
+
+/* Run the stream encoder once over @p script on a fresh setup (mic_prepare()). */
+static void
+mic_run(const mic_segment* script, size_t len, uint8_t dt, int vox) {
+    static dsd_opts opts;
+    static dsd_state state;
+    mic_prepare(&opts, &state, dt, vox);
+    mic_encode(&opts, &state, script, len);
+    dsd_state_ext_free_all(&state);
 }
 
 /* The RMS level, in dB re full scale, of the codec2 frames read @p iter handed the encoder (all of them, or with
@@ -3867,6 +3886,30 @@ test_stream_encoder_mic_keeps_gain_across_key_ups(void) {
         err |=
             expect_db_near("mic: the gain rose over the long transmission's end", ended - mic_iter_db(66, 0), 5.6, 0.2);
         err |= expect_db_near("mic: the next transmission after a long one", next - ended, 0.8, 0.1);
+    }
+    return err;
+}
+
+/* The gain starts over when the encoder starts: a second session on the same decoder state opens at the reference gain,
+   as the first did, not at the gain the first learned (a quiet tone the first lifted 18 dB). */
+static int
+test_stream_encoder_mic_starts_over_at_encoder_start(void) {
+    static const mic_segment script[] = {
+        {50, 1, 1000.0, 0.0},
+        {5, 0, 0.0, 0.0},
+    };
+    static dsd_opts opts;
+    static dsd_state state;
+    int err = 0;
+    for (size_t r = 0U; r < 2U; r++) {
+        mic_prepare(&opts, &state, k_mic_rates[r], 0);
+        mic_encode(&opts, &state, script, sizeof script / sizeof script[0]);
+        const double first_open = mic_iter_db(0, 1);
+        const double first_learned = mic_iter_db(49, 0);
+        mic_encode(&opts, &state, script, sizeof script / sizeof script[0]);
+        err |= expect_db_near("mic: the first session learned a boost", first_learned - first_open, 18.0, 0.1);
+        err |= expect_db_near("mic: a second session opens where the first did", mic_iter_db(0, 1), first_open, 0.01);
+        dsd_state_ext_free_all(&state);
     }
     return err;
 }
@@ -4671,6 +4714,7 @@ main(void) {
     err |= test_stream_encoder_monitor_plays_what_it_sends();
     err |= test_stream_encoder_mic_holds_while_unkeyed();
     err |= test_stream_encoder_mic_keeps_gain_across_key_ups();
+    err |= test_stream_encoder_mic_starts_over_at_encoder_start();
     err |= test_stream_encoder_vox_keys_on_the_same_reads();
 #endif
     err |= test_bert_payload_locks_from_default_state_and_continues();

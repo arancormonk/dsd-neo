@@ -72,9 +72,9 @@ typedef enum DSD_ATTR_PACKED dsd_state_ext_id {
     /* The symbol grid's sync anchor: recent samples and symbol centres (src/dsp/symbol_anchor.c, issue #729).
      * Decoder-thread private. */
     DSD_STATE_EXT_DSP_SYMBOL_ANCHOR = 12,
-    /* The digital voice chain's speech level per slot: each slot's speech AGC and the reception it runs for
-     * (src/core/audio/voice_level.c, issue #518). Decoder-thread private: frontends read the applied gain from
-     * dsd_state::aout_gain/aout_gainR. */
+    /* The digital voice chain's speech level per slot: each slot's speech AGC and the reception it runs for, and the M17
+     * encoder monitor's fixed-unity limiter (src/core/audio/voice_level.c, issue #518). Decoder-thread private:
+     * frontends read the applied gain from dsd_state::aout_gain/aout_gainR. */
     DSD_STATE_EXT_CORE_VOICE_LEVEL = 13,
     /* App-control's frequency entry that sent a scan to one of its rows and still waits on its tune (issue #644,
      * src/app_control/scan_entry_toast.c): what its landing's toast names. Decoder-thread private. */

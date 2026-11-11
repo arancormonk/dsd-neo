@@ -6470,7 +6470,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `IO_RTL_MONITOR_DEEMPH` (the reference through the real demodulator, ring and chain under every de-emphasis),
   `M17_STATE_DISPATCH` (`test_stream_voice_chain_covers_the_whole_frame`, `test_stream_voice_chain_onepoles_run_at_8k`,
   `test_encoder_rtl_input_reaches_pcm_scale`, `test_stream_encoder_mic_holds_while_unkeyed`,
-  `test_stream_encoder_mic_keeps_gain_across_key_ups`, `test_stream_encoder_vox_keys_on_the_same_reads`),
+  `test_stream_encoder_mic_keeps_gain_across_key_ups`, `test_stream_encoder_mic_starts_over_at_encoder_start`,
+  `test_stream_encoder_vox_keys_on_the_same_reads`),
   `M17_ENCODER_CODEC2`, `DSP_ANALOG_VOICE` (`test_agc_held`), `EDACS_GRANT_TUNE_MATRIX` (`rtl-unclipped`), the `DECODE_IQ_ANALOG_*`
   level, speech-level (P.56), noise and fixed-gain cases.
 - The speech level AGC is `src/dsp/speech_agc.c` (`<dsd-neo/dsp/speech_agc.h>`), one module for digital and analog

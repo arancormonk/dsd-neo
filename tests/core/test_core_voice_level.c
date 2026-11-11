@@ -611,6 +611,13 @@ test_decodability_returns_per_slot(void) {
     return rc;
 }
 
+/* Exact float equality, which the unity and untouched-state checks below mean: the same arithmetic on the same input
+   gives the same bits. Written as a zero tolerance because the float-compare rule wants one. */
+static int
+float_same(float a, float b) {
+    return fabsf(a - b) <= 0.0f;
+}
+
 /* @p a holds what @p b holds: what it learned, its gains and limiter, and how far its signal state has run. */
 static int
 agc_same(const dsd_speech_agc* a, const dsd_speech_agc* b) {
@@ -618,10 +625,10 @@ agc_same(const dsd_speech_agc* a, const dsd_speech_agc* b) {
     const dsd_speech_agc_learned* lb = &b->learned;
     return a->frames == b->frames && a->frame_pos == b->frame_pos && a->decim_pos == b->decim_pos
            && a->cp_count == b->cp_count && a->fixed == b->fixed && la->commits == lb->commits && la->steps == lb->steps
-           && la->run_len == lb->run_len && la->since_commit == lb->since_commit && fabsf(la->power - lb->power) <= 0.0f
-           && fabsf(la->gain_db - lb->gain_db) <= 0.0f && fabsf(la->atten_db - lb->atten_db) <= 0.0f
-           && fabsf(la->noise_floor_db - lb->noise_floor_db) <= 0.0f && fabsf(a->g_cur - b->g_cur) <= 0.0f
-           && fabsf(a->g_lim - b->g_lim) <= 0.0f && fabsf(a->frame_sumsq - b->frame_sumsq) <= 0.0f;
+           && la->run_len == lb->run_len && la->since_commit == lb->since_commit && float_same(la->power, lb->power)
+           && float_same(la->gain_db, lb->gain_db) && float_same(la->atten_db, lb->atten_db)
+           && float_same(la->noise_floor_db, lb->noise_floor_db) && float_same(a->g_cur, b->g_cur)
+           && float_same(a->g_lim, b->g_lim) && float_same(a->frame_sumsq, b->frame_sumsq);
 }
 
 /* The M17 encoder's monitor (DSD_VOICE_MEDIA_TX_MONITOR, issue #518 B17): its frames play at unity under auto and
@@ -651,7 +658,7 @@ test_tx_monitor_plays_at_unity(const float* speech) {
             DSD_MEMCPY(frame, speech + off, sizeof(frame));
             dsd_voice_chain_run(opts, state, 0, frame, &monitor);
             for (int n = 0; n < FRAME; n++) {
-                unity &= fabsf(frame[n] - speech[off + (size_t)n]) <= 0.0f;
+                unity &= float_same(frame[n], speech[off + (size_t)n]);
             }
         }
         rc |= expect_true(g == 0 ? "tx monitor: unity under auto" : "tx monitor: unity under -g 3", unity);

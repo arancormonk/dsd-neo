@@ -63,13 +63,15 @@ static const mic_segment k_script[] = {
     {5, 1, 3.981, 0.0},    /* a long transmission: 200 ms 12 dB up (126-130) ... */
     {20, 1, 1.0, 0.0},     /* ... then 800 ms of the vowel, the gain rising over its end (131-150) */
     {10, 0, 0.0, 0.0},     /* (151-160) */
-    {5, 1, 1.0, 0.0},      /* the next transmission (161-165) */
-    {10, 0, 0.0, 0.0},     /* (166-175): the last transmission ends inside the script */
+    {12, 1, 1.0, 0.0},     /* the next transmission (161-172) */
+    {10, 0, 0.0, 0.0},     /* (173-182): the last transmission ends inside the script */
 };
 
 static float g_vowel[MAX_ITERS * ITER_SAMPLES];
 static int16_t g_input[MAX_ITERS * ITER_SAMPLES];
 static int g_keyed[MAX_ITERS];
+/* Reads since the transmission keyed (0 for the read that keys it); -1 while unkeyed. */
+static int g_keyed_for[MAX_ITERS];
 static long g_reads;
 static long g_iters;
 static dsd_state* g_state;
@@ -141,6 +143,7 @@ fake_udp_mic_read(dsd_opts* opts, int16_t* out) {
         }
         g_state->m17encoder_tx = seg->keyed;
         g_keyed[iter] = seg->keyed;
+        g_keyed_for[iter] = !seg->keyed ? -1 : (iter > 0 && g_keyed[iter - 1] ? g_keyed_for[iter - 1] + 1 : 0);
     }
     const double v = ((double)g_vowel[g_reads] * seg->vowel_gain) + (seg->noise * noise_sample());
     g_input[g_reads] = (int16_t)lrint(v);
@@ -327,10 +330,12 @@ decoded_tracks_input(long a0, long a1, long b0, long b1) {
 }
 
 /* The codec2 input (exact, from the replay) and the raw decoded output through the key-ups. Codec2 does not keep the
-   level exactly: on this vowel it decodes 1.6 dB (3200) and 2.4 dB (1600) over its input, and a 12 dB step comes out
-   up to 1.6 dB short at 1600. So the decoded output is held to its input within 3 dB, and its level changes to the
-   input's within 2 dB; a decoded comparison skips a transmission's first two reads, where the decoder is still coming
-   out of the frames before. */
+   level exactly: it sends each frame's energy in 5 bits over -10..40 dB, steps of about 1.6 dB, and decodes this vowel
+   up to 2.4 dB off its input (measured on the system libcodec2 1.2.0 and on dsd-neo's pinned fork, which Windows and
+   macOS build, compiled with GCC -O3, with Clang and FMA contraction, and with -ffast-math). So the decoded output is held
+   to its input within 3 dB, and its level changes to the input's within 3 dB (measured up to 1.9 dB, at 1600); a
+   decoded comparison skips a transmission's first two reads, where the decoder is still coming out of the frames
+   before. */
 static void
 check_levels(uint8_t dt) {
     const char* rate = dt == 3U ? "1600" : "3200";
@@ -355,8 +360,8 @@ check_levels(uint8_t dt) {
     CHECK(all_sent(75, 85), "%s: the transmission after the noise was not all sent", rate);
     const double after_noise = level_db(g_encoded_in, 75, 80) - level_db(g_encoded_in, 45, 50);
     CHECK(fabs(after_noise) < 0.05, "%s: after unkeyed room noise the codec2 input moved %.2f dB", rate, after_noise);
-    const double noise_out = decoded_tracks_input(45, 50, 77, 82);
-    CHECK(fabs(noise_out) < 2.0, "%s: after unkeyed room noise the decoded output is %.2f dB off the input", rate,
+    const double noise_out = decoded_tracks_input(40, 50, 77, 85);
+    CHECK(fabs(noise_out) < 3.0, "%s: after unkeyed room noise the decoded output is %.2f dB off the input", rate,
           noise_out);
 
     /* A 120 ms transmission 12 dB up leaves the gain 12 dB lower for the next one. */
@@ -367,28 +372,33 @@ check_levels(uint8_t dt) {
           "%s: after a 120 ms transmission the codec2 input moved %.2f dB, want "
           "%.2f",
           rate, after_short, short_drop);
-    const double short_out = decoded_tracks_input(45, 50, 110, 115);
-    CHECK(fabs(short_out) < 2.0, "%s: after a 120 ms transmission the decoded output is %.2f dB off the input", rate,
+    const double short_out = decoded_tracks_input(40, 50, 110, 116);
+    CHECK(fabs(short_out) < 3.0, "%s: after a 120 ms transmission the decoded output is %.2f dB off the input", rate,
           short_out);
 
     /* A long transmission whose gain rose over its end: the next goes on where it ended (one read's release). */
-    CHECK(all_sent(161, 166), "%s: the transmission after the long one was not all sent", rate);
+    CHECK(all_sent(161, 173), "%s: the transmission after the long one was not all sent", rate);
     const double rose_in = level_db(g_encoded_in, 150, 151) - level_db(g_encoded_in, 144, 145);
     const double next_in = level_db(g_encoded_in, 161, 162) - level_db(g_encoded_in, 150, 151);
     CHECK(rose_in > 4.0, "%s: the gain rose only %.2f dB over the long transmission's end", rate, rose_in);
     CHECK(fabs(next_in - 0.8) < 0.1, "%s: after a long transmission the codec2 input moved %.2f dB, want 0.8", rate,
           next_in);
-    const double long_out = decoded_tracks_input(147, 151, 163, 166);
-    CHECK(fabs(long_out) < 2.0, "%s: after a long transmission the decoded output is %.2f dB off the input", rate,
+    const double long_out = decoded_tracks_input(141, 151, 163, 173);
+    CHECK(fabs(long_out) < 3.0, "%s: after a long transmission the decoded output is %.2f dB off the input", rate,
           long_out);
 }
 
-/* The monitor plays what was sent at the level it was decoded at, at -g 3 as at unity: read for read, the level of the
-   raw decoded output. Levels, not samples: codec2 draws unvoiced phases from one process-wide generator, so two
-   decoders of the same frames differ sample by sample, by a few units on the vowel and wholly on noise. */
+/* The monitor plays what was sent at the level it was decoded at, at -g 3 as at unity: over every read sent, the level of
+   the raw decoded output, and read for read on the vowel once a transmission is two reads in. Levels, not samples, and
+   not read for read on noise or at a key-up: codec2 synthesizes unvoiced sound with random phases from one process-wide
+   generator, so the monitor's decoder and the test's, drawing at different times, differ sample by sample there, and a
+   read's level with them (up to 3.9 dB measured across codec2 builds). On the vowel the two stay within 0.4 dB in every
+   build measured (see check_levels()), and within 0.1 dB over the whole run; the limits leave room for builds not
+   measured and still catch a monitor that took -g 3 (+9.5 dB). */
 static void
 check_monitor(uint8_t dt) {
     long compared = 0;
+    long voiced = 0;
     long off = 0;
     double worst = 0.0;
     double mon_acc = 0.0;
@@ -405,20 +415,26 @@ check_monitor(uint8_t dt) {
             dec += d * d;
             mon += m * m;
         }
-        if (dec > 0.0 && mon > 0.0) {
+        if (!(dec > 0.0 && mon > 0.0)) {
+            continue;
+        }
+        mon_acc += mon;
+        dec_acc += dec;
+        compared++;
+        const mic_segment* seg = segment_at(it);
+        if (g_keyed_for[it] >= 2 && seg != NULL && seg->vowel_gain > 0.0) {
             const double diff = 10.0 * log10(mon / dec);
             worst = fabs(diff) > fabs(worst) ? diff : worst;
-            off += fabs(diff) > 0.5;
-            mon_acc += mon;
-            dec_acc += dec;
-            compared++;
+            off += fabs(diff) > 1.0;
+            voiced++;
         }
     }
     const double overall = dec_acc > 0.0 && mon_acc > 0.0 ? 10.0 * log10(mon_acc / dec_acc) : 999.0;
-    CHECK(compared > 100 && off == 0 && fabs(overall) < 0.05,
-          "%s: the monitor played %ld reads, %ld more than 0.5 dB off the raw decoded output (worst %+.2f dB, all "
-          "%+.3f dB)",
-          dt == 3U ? "1600" : "3200", compared, off, worst, overall);
+    CHECK(
+        compared > 100 && voiced > 80 && off == 0 && fabs(overall) < 0.2,
+        "%s: the monitor played %ld reads, %+.3f dB off the raw decoded output; %ld of %ld vowel reads more than 1 dB "
+        "off (worst %+.2f dB)",
+        dt == 3U ? "1600" : "3200", compared, overall, off, voiced, worst);
 }
 
 int
