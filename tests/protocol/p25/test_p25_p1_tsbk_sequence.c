@@ -563,9 +563,10 @@ test_network_status_code(void) {
     return rc;
 }
 
-/* The span after @p blocks blocks that a TSDU of that many fills with trailing nulls (TIA-102.BAAA-A 8.2.4), read on
-   from where the last block ended: 21 nulls and a status symbol after one block, 28 and one after two. @p errors of the
-   nulls read as -3 instead. Status symbols carry 1, which no null check may count. */
+/* The span after @p blocks blocks that a TSDU of that many fills with trailing nulls (to its next status symbol:
+   TIA-102.BAAA-A 5.1.2, as 8.2.4 has it for a PDU; OP25's TSDU encoder pads so), read on from where the last block
+   ended: 21 nulls and a status symbol after one block, 28 and one after two. @p errors of the nulls read as -3 instead.
+   Status symbols carry 1, which no null check may count. */
 static void
 append_null_span(int blocks, int errors, int* skipdibit) {
     const int span = (int)p25p1_block_unit_dibits(blocks) - (57 + (101 * blocks));
@@ -723,7 +724,8 @@ main(void) {
                         g_evidence_protocol[0] == 'P' && g_evidence_protocol[1] == '2' && g_evidence_protocol[2] == '5'
                             && !g_evidence_protocol[3],
                         1);
-    /* The TSDU's length on air, by the CRC-checked last block (TIA-102.BAAA-A 8.2.4): two blocks take 288 dibits. */
+    /* The TSDU's length on air, by the CRC-checked last block, padded to its next status symbol (TIA-102.BAAA-A 5.1.2,
+       8.2): two blocks take 288 dibits. */
     rc |= expect_eq_int("two-block tsdu length", (int)state.p25_p1_unit_dibits, 288);
 
     /* Three blocks, the last flagged: 360. */

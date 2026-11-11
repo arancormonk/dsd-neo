@@ -29,8 +29,9 @@ enum {
 };
 
 /** Dibits a TSDU or a PDU of @p blocks 196-bit trellis blocks (a TSDU's TSBKs; a PDU's header and data blocks) occupies
-    on air: the 112 bits of sync and NID and the blocks, padded to the next status symbol (TIA-102.BAAA-A 8.2.4). A TSDU
-    of 1, 2 or 3 blocks takes 180, 288 or 360. 0 below one block. */
+    on air: the 112 bits of sync and NID and the blocks, padded with nulls to the next status symbol (TIA-102.BAAA-A
+    5.1.2 and 8.2; 8.2.4 for a PDU; a TSDU, whose format is TIA-102.AABB's, is padded the same way, as OP25's TSDU
+    encoder does). A TSDU of 1, 2 or 3 blocks takes 180, 288 or 360. 0 below one block. */
 static inline uint32_t
 p25p1_block_unit_dibits(int blocks) {
     if (blocks < 1) {

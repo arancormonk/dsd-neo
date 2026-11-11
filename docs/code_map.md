@@ -9637,14 +9637,18 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
 - A TSDU ends at its last block (`processTSBK()`, `src/protocol/p25/phase1/p25p1_tsbk.c`): a block that passed its CRC
   reads on when its last-block flag is clear and ends the TSDU when it is set. A block that failed its CRC says nothing
   either way, and read on behind its flag a one-block TSDU took the next frame's sync and NID for a second and third
-  block and lost that frame (every CQPSK fixture lost one so, and the site A control channel about one a minute). So
-  after a failed block whose flag is clear, the decoder first reads the span a TSDU ending there pads with null dibits
-  up to its next status symbol (21 data dibits and a status symbol after one block, 28 and one after two;
-  `p25p1_block_unit_dibits()`): when at most a fifth of them read as anything but a null the TSDU ended, and the read
-  stops where the next frame's sync starts; otherwise they are the next block's first dibits and it reads on (measured:
-  nulls read 20-21 of 21, the data of real second and third blocks at most 13). A failed block with its flag set ends
-  the TSDU as before, and a TSDU ended this way still has no length for the anchor (its CRC vouched for nothing).
-  Tests: `P25_P1_TSBK_SEQUENCE`.
+  block and lost that frame (every CQPSK fixture lost one so, and the site A control channel 0.4 to 1.5 frames
+  in each 32-40 s segment measured). So after a failed block whose flag is clear, the decoder first reads the span a
+  TSDU ending there pads with null dibits up to its next status symbol (21 data dibits and a status symbol after one
+  block, 28 and one after two; `p25p1_block_unit_dibits()`; null padding to a status boundary is TIA-102.BAAA-A 5.1.2,
+  spelled out for a PDU in 8.2.4, and OP25's TSDU encoder pads a TSDU so): when at most a fifth of them read as anything
+  but a null the TSDU ended, and the read stops where the next frame's sync starts; otherwise they are the next block's
+  first dibits and it reads on. The fifth holds by the trellis's structure, not only on the captures: the span carries
+  every fourth trellis step's dibit pair from the first, only a step from data dibit 1 to data dibit 1 sends two nulls
+  and the first step always sends a non-null, so a real block reads 17 of 21 nulls about once in 10^7 random blocks
+  (measured: nulls read 20-21 of 21, the data of real second and third blocks at most 13). A failed block with its flag
+  set ends the TSDU as before, and a TSDU ended this way still has no length for the anchor (its CRC vouched for
+  nothing). Tests: `P25_P1_TSBK_SEQUENCE`.
 - A Phase 2 call's NAC is the carrier's proven NAC (`p2_proven_nac`, issue #802 B7/B8), -1 for none: the NAC the latest
   checked Phase 2 proof on this carrier named. `p25p2_note_seed_proven()` sets it to the seed a burst descrambled with,
   and a network status that passed its CRC to the NAC it carries, whatever seed is configured (a hand-set seed stays

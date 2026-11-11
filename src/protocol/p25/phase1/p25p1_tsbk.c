@@ -156,10 +156,15 @@ tsbk_read_repetition_samples(dsd_opts* opts, dsd_state* state, int* skipdibit, t
 }
 
 /* Whether the TSDU ended with the @p blocks blocks before this one, read from the start of this one: such a TSDU pads
-   the span up to its next status symbol with null dibits (TIA-102.BAAA-A 8.2.4; p25p1_block_unit_dibits()), where a
-   TSDU that goes on carries this block's trellis-coded data. Reads that span (so the read stops where the next frame's
-   sync starts when it was the end) and takes it for the nulls when at most a fifth of its data dibits read otherwise:
-   in the captures measured nulls read 20-21 of 21, the data of real blocks at most 13. */
+   the span up to its next status symbol with null dibits (p25p1_block_unit_dibits(); null bits pad a data unit to a
+   status boundary per TIA-102.BAAA-A 5.1.2, as 8.2.4 spells out for a PDU, and OP25's TSDU encoder pads a TSDU so; the
+   TSDU's own format is TIA-102.AABB's), where a TSDU that goes on carries this block's trellis-coded data. Reads that
+   span (so the read stops where the next frame's sync starts when it was the end) and takes it for the nulls when at
+   most a fifth of its data dibits read otherwise. A real block reads so only by rare chance, by the trellis's
+   structure: the span holds the dibit pairs of every fourth trellis step from the first, only a step from data dibit 1
+   to data dibit 1 sends two nulls, and the first step, from state 0, always sends one non-null, so 17 of 21 nulls takes
+   data dibits 1, 1 at six or more of the nine steps between (about 1 in 10^7 random blocks; 23 of 28 after two blocks,
+   about 1 in 10^10). In the captures measured nulls read 20-21 of 21, the data of real blocks at most 13. */
 static int
 tsbk_read_trailing_nulls(dsd_opts* opts, dsd_state* state, int* skipdibit, tsbk_decode_ctx_t* ctx, int blocks) {
     const int span =

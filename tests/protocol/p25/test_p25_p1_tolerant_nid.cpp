@@ -358,7 +358,8 @@ test_validated_frames_anchor_at_their_length(void) {
         free(state);
         free(opts);
     }
-    /* The block-count lengths themselves (TIA-102.BAAA-A 8.2.4): 1-3 block TSDUs, and a header with 16 data blocks. */
+    /* The block-count lengths themselves (TIA-102.BAAA-A 5.1.2, 8.2, and 8.2.4 for a PDU): 1-3 block TSDUs, and a
+       header with 16 data blocks. */
     CHECK(p25p1_block_unit_dibits(0) == 0U);
     CHECK(p25p1_block_unit_dibits(1) == 180U);
     CHECK(p25p1_block_unit_dibits(2) == 288U);
