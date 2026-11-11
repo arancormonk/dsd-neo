@@ -360,14 +360,15 @@ Windows console runs:
   Files are capture segments: a frame of another protocol or format, a call end the protocol signals, a lost
   carrier, a retune and a trunk-scan switch each end the open capture, and the next frame starts another. Two-slot
   protocols write one file per slot (`_S1`, `_S2`); X2-TDMA writes both slots into one. Each frame is saved by its
-  own verdict, not the previous frame's, the one that decides its audio and its per-call WAV: encryption judged by
-  the protocol that owns the call (DMR, P25 Phase 1 and Phase 2, NXDN, dPMR, X2-TDMA), the encrypted-audio mute and
-  reverse mute (`-q`), plus talkgroup policy; D-STAR, ProVoice and YSF (all three voice modes) classify no
-  encryption, so policy alone decides theirs; and for SDRTrunk JSON playback, slot 1's policy once playback's own
-  decode and crypto checks pass. X2-TDMA says whether a superframe is encrypted only after its first three voice
-  frames: those frames follow the slot's previous superframe. At the start of a transmission nothing is known yet,
-  so they are saved only where both clear and encrypted audio would be: with encrypted audio unmuted and without
-  `-q`. YSF frames are captured once a FICH has verified the transmission on the carrier.
+  own verdict, not the previous frame's, the one that decides its audio and its per-call WAV: encryption judged by the
+  protocol that owns the call (DMR, P25 Phase 1 and Phase 2, NXDN, dPMR, X2-TDMA), the encrypted-audio mute and reverse
+  mute (`-q`), plus talkgroup policy; D-STAR, ProVoice and YSF (all three voice modes) classify no encryption, so policy
+  alone decides theirs; and for SDRTrunk JSON playback, slot 1's policy once playback's own decode and crypto checks
+  pass. X2-TDMA says whether a superframe is encrypted only after its first three voice frames: those frames follow the
+  slot's previous superframe, so when a call changes between clear and encrypted, those three frames (60 ms) take the
+  old verdict once, for audio, recording and capture alike. At the start of a transmission nothing is known yet, so they
+  are saved only where both clear and encrypted audio would be: with encrypted audio unmuted and without `-q`. YSF
+  frames are captured once a FICH has verified the transmission on the carrier.
 - `-J <file>` Append event log output. Every line starts with a `YYYY-MM-DD HH:MM:SS` stamp, so the file
   filters, sorts and splits by time with ordinary line tools. An event's detail lines (`Text:` for a decoded
   text message, `Talker Alias:`, `GPS:`, `DSD-neo:` for a decoder notice) follow its line and repeat that
@@ -2119,7 +2120,7 @@ setting, shown apart from what is received, and it is off by default: then the o
     the session, with a notice, as `-xr` or the menu toggle would; `-xr` only sets where it starts.
 - Disable DMR/dPMR/NXDN/M17 input filtering: `-l`
 - Filter bitmap, analog and digital (advanced): `-v <n>`, default `0x1`. Decimal or `0x` hex, `0`-`0xF` (a leading
-  zero is still decimal); a sign, `0b`, extra text or a bit above `0x8` is refused. `0x1` the analog monitor's voice
+  zero is still decimal); a sign, `0b`, extra text or a value above `0xF` is refused. `0x1` the analog monitor's voice
   band-pass: 300-3400 Hz, which takes every CTCSS tone at least 40 dB down on FM, and a DCS signal about 32 dB (a
   200 Hz high-pass on AM); `0x2` a 960 Hz low-pass and `0x4` a 960 Hz high-pass on the analog monitor; `0x8` the
   digital voice high-pass (off by default since issue #518; `-v 0x9` turns it back on beside the band-pass): a

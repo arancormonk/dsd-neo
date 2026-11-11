@@ -2189,6 +2189,11 @@ file settles at, and convergence the time until it first comes within 1.5 dB of 
 | Convergence, slowest | ≤ 7 s | 6.28 s | | 6.62 s |
 | First gain change after the reception starts | ≥ 0.120 s | 0.120 s at the earliest; median 0.38 s, 95th percentile 1.70 s, latest 2.56 s | | 0.120 s at the earliest |
 
+Each measure counts the files it applies to: established speech the 135 validation files, swing 166 natural and FM
+files, startup the 154 validation and calibration files, and convergence the 67 of those that start more than 1.5 dB
+off. With the veto, the measures past the first three rows were run on the extended set only, so its n 135 column is
+empty there.
+
 With every bound met, the production code gives the prototype it was ported from the same per-frame decisions and
 gains on every file, and the same output bits except on samples the limiter holds, where the prototype ran one float
 step over the ceiling. The transition checks held too (shown without the veto; with it the rollback, decodability,
