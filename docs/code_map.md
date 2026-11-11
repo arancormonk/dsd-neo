@@ -13475,6 +13475,36 @@ Qt Quick frontend (`src/ui/qt`):
   the same saved UID restart as a manual site switch; Main waits for Idle and resolves the UID again. Location
   completion itself never starts a session. Tests: `ANDROID_LOCATION_JVM`, `RUNTIME_RR_SOAP`,
   `UI_QT_RADIO_REFERENCE`, `UI_QT_QML_CALL_LISTS` (`tst_site_chooser_sheet.qml`, `tst_site_restart.qml`).
+  Places: the model keeps the system's `Trs.sState`/`Trs.sCounty` ids in `systemDetails` (`stateIds`, `countyIds`) and
+  each site's `TrsSite.siteCtid`; every importable plan, a per-site batch's plans and `performImport()`'s result (and
+  its batch rows) carry `place` = `rr_site_place()`: the counties of the sites the plan took (matched by site id; a
+  conventional list's chosen repeaters only), the system's states as `candidateStates`, and the state outright when
+  there is exactly one; no names. A completed load sends `systemPlaceIdsReady(stids)` (never `systemChanged`).
+  `rr_place_service.{h,cpp}` (`RrPlaceService`, the `rrPlaces` context object, built in `qt_ui.cpp` over the model and
+  `savedSystems`) names them, isolated from the import screen: its own client and transport
+  (`setTransportForTests()`), one request in flight, replies marshalled to the GUI thread with a generation that every
+  stop bumps, and only the account borrowed (`RadioReferenceModel::fillAuth()`, public but not invokable; nothing
+  logged). `resolveStates(stids)` (queued from `systemPlaceIdsReady`; the first 8 positive ids) applies a known state
+  from its process cache and looks up the others with `getStateInfo`, applying each answer with
+  `SavedSystemsModel::applyPlaceNames()`; a failure is recorded per state (`stateFailed()`) and asked again only by a
+  later call, and a save that failed is retried at the next resolve from the cache. It installs its cache as the
+  saved systems' `setPlaceNameCache()` fill (`fillPlaceNames()`), so a row saved before or after the names arrive ends
+  named. Any `credentialsChanged` stops every request and drops the cache. `updateFromRadioReference(uids)` (false
+  while signed out: open the account screen; otherwise `updateFinished(updated, unreachable)` follows once) reads each
+  distinct system of the rows that are sites (`getTrsDetails` for `sState`, then `getTrsSites`) and applies, through
+  `SavedSystemsModel::refreshSites()`, the site name, position and place ids to every row still on that system and
+  site, keeping the names it already had for unchanged ids; a site RadioReference no longer lists, an unanswered system
+  or a failed save counts as unreachable, a row moved to another system meanwhile counts as neither. Then it looks up
+  the states any of the rows' places still lacks names for (a conventional list with a place and no site counts as
+  updated when they all answer). `updating`, `progressText` ("Updating %1 of %2", saved systems), `summaryText`
+  ("Updated %1 systems." and " %1 could not be reached.") and `unplacedCount` (rows that are a site or have a place
+  and show no named state; recounted on every change of the saved systems) are its properties; `cancelUpdate()` stops
+  every request (queued lookups included) and ends the update with what was saved. A step that saves rows checks
+  that its update survived the rows' signals. QML fixtures publish `RrPlacesFake` (the same four properties, pinned
+  by `UI_QT_RR_PLACE_SERVICE`; `missingContextKeys()` checks `rrPlaces` reads). Tests: `UI_QT_RADIO_REFERENCE`
+  (place per import shape, the signal), `UI_QT_RR_PLACE_SERVICE` (names, order of names and saves, per-state failure,
+  failed-save retry, sign-out, Update from RadioReference incl. partial success, moved and unlisted rows, cancels,
+  and failed lookups leaving the import screen's lists, busy, system, plan, status and a library refresh alone).
 - `json_store.{h,cpp}` holds the Qt models' JSON-array stores in the app data root (`json_store_root()`): saved
   systems, scan lists, imported files, decryption profiles, call history and its seen map, Signal search ranges. A store
   that could not be read whole is never written over (issue #828):
@@ -13661,8 +13691,12 @@ Qt Quick frontend (`src/ui/qt`):
   an id merged into the first). A place that breaks it anywhere is dropped whole wherever it arrives (load, `add`,
   `update`, a restored backup at its first load); the row keeps everything else. `applyPlaceNames(stid, stateName,
   countyNames)` (metadata only) names the state and the listed counties in every row whose place names them, links those
-  counties to the state and adds the state to a row whose county now links to it. `setPlaceNameCache()` installs a fill
-  that `add`, `addAll` and `update` run, before their save, on a place whose ids are new. `addAll(rows, keySourceUid)`
+  counties to the state and adds the state to a row whose county now links to it (`namePlace()`, the same rule on one
+  place). `setPlaceNameCache()` installs a fill (`RrPlaceService`'s cache) that `add`, `addAll`, `update` and
+  `refreshSites` run, before their save, on a place whose ids are new. `refreshSites(refreshes)` is Update from
+  RadioReference's metadata-only write: by uid, only to a row still on the refresh's `rrSid`/`rrSiteId`, the site name
+  (renaming a generated name as `update` does), position and place; one save, one `dataChanged` span and
+  `sitesChanged`, the count of rows still on their site, or -1 with nothing changed. `addAll(rows, keySourceUid)`
   saves a per-site import (B6): every row is checked first (as `add`, and with a key source as `addWithKeyFrom`, which
   `add` and `addWithKeyFrom` call), takes a fresh UID, has its replay copy adopted, then one save and one `rowsInserted`
   range; it returns the first new row or -1 with nothing inserted and no signal (a copy adopted before a failed save

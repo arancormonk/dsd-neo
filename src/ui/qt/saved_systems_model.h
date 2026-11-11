@@ -259,6 +259,32 @@ class SavedSystemsModel : public QAbstractListModel {
      */
     bool applyPlaceNames(int stid, const QString& stateName, const QHash<int, QString>& countyNames);
 
+    /** @brief applyPlaceNames()'s rule on one place (a cache fill's): true when @p place changed. */
+    static bool namePlace(QVariantMap& place, int stid, const QString& stateName,
+                          const QHash<int, QString>& countyNames);
+
+    /** @brief One saved site's fresh RadioReference record, for refreshSites(). */
+    struct SiteRefresh {
+        QString uid;
+        int rrSid = 0;
+        int rrSiteId = 0;
+        /** What the record says now: siteName, siteLat, siteLon, hasSitePos and place, each optional. */
+        QVariantMap fields;
+    };
+
+    /**
+     * @brief Update from RadioReference's fresh records, applied to every row a refresh names by uid that is still
+     * the site @p rrSid / @p rrSiteId it describes (a row edited onto another site meanwhile is left alone).
+     *
+     * Metadata only, as update() takes them without a tuning change: the site name (a changed one renames a generated
+     * "base — oldSite" name), the position, the place (filled from the place-name cache when its ids are new). One
+     * save, then one dataChanged spanning the changed rows and sitesChanged.
+     *
+     * @return The rows that were still the site they describe (changed or not), or -1 when the save failed (every
+     *         row as it was, no signal).
+     */
+    int refreshSites(const QList<SiteRefresh>& refreshes);
+
   Q_SIGNALS:
     void sitesChanged();
     void countChanged();

@@ -1001,6 +1001,109 @@ class RestartCloserFake : public QObject {
     bool m_active = false;
 };
 
+/**
+ * @brief The `rrPlaces` service (RrPlaceService): its QML surface, recorded rather than run.
+ *
+ * The properties are exactly the real service's (UI_QT_RR_PLACE_SERVICE pins that list), so missingContextKeys() holds
+ * a screen's reads to what production publishes. A case scripts it through the C++ members.
+ */
+class RrPlacesFake : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(bool updating READ updating NOTIFY updatingChanged)
+    Q_PROPERTY(QString progressText READ progressText NOTIFY progressTextChanged)
+    Q_PROPERTY(QString summaryText READ summaryText NOTIFY summaryTextChanged)
+    Q_PROPERTY(int unplacedCount READ unplacedCount NOTIFY unplacedCountChanged)
+  public:
+    using QObject::QObject;
+
+    bool
+    updating() const {
+        return m_updating;
+    }
+
+    QString
+    progressText() const {
+        return m_updating ? QStringLiteral("Updating 1 of %1").arg(updateUids.size()) : QString();
+    }
+
+    QString
+    summaryText() const {
+        return m_summary;
+    }
+
+    int
+    unplacedCount() const {
+        return m_unplaced;
+    }
+
+    Q_INVOKABLE void
+    resolveStates(const QVariantList& stids) {
+        resolveRequests.append(QVariant(stids));
+    }
+
+    /** @brief As the service: false while signed out; otherwise an update runs until finish(). */
+    Q_INVOKABLE bool
+    updateFromRadioReference(const QStringList& uids) {
+        if (!signedIn) {
+            return false;
+        }
+        if (!m_updating) {
+            updateUids = uids;
+            m_updating = true;
+            Q_EMIT updatingChanged();
+            Q_EMIT progressTextChanged();
+        }
+        return true;
+    }
+
+    Q_INVOKABLE void
+    cancelUpdate() {
+        if (m_updating) {
+            ++cancels;
+            finish(0, 0);
+        }
+    }
+
+    /** @brief End the running update with the service's summary and signal. */
+    void
+    finish(int updated, int unreachable) {
+        m_updating = false;
+        m_summary = QStringLiteral("Updated %1 systems.").arg(updated);
+        if (unreachable > 0) {
+            m_summary += QStringLiteral(" %1 could not be reached.").arg(unreachable);
+        }
+        Q_EMIT updatingChanged();
+        Q_EMIT progressTextChanged();
+        Q_EMIT summaryTextChanged();
+        Q_EMIT updateFinished(updated, unreachable);
+    }
+
+    void
+    setUnplacedCount(int count) {
+        if (m_unplaced != count) {
+            m_unplaced = count;
+            Q_EMIT unplacedCountChanged();
+        }
+    }
+
+    bool signedIn = true;
+    QStringList updateUids;
+    QVariantList resolveRequests;
+    int cancels = 0;
+
+  Q_SIGNALS:
+    void updatingChanged();
+    void progressTextChanged();
+    void summaryTextChanged();
+    void unplacedCountChanged();
+    void updateFinished(int updated, int unreachable);
+
+  private:
+    bool m_updating = false;
+    QString m_summary;
+    int m_unplaced = 0;
+};
+
 class TestUiController : public QObject {
     Q_OBJECT
     // WP-S2: exercise Main.qml signal routing and overlay binding.
@@ -5710,24 +5813,30 @@ class Setup : public QObject {
 
     Q_INVOKABLE QStringList
     missingContextKeys(const QStringList& qmlFiles) const {
-        /* `backup` is a QObject, whose properties answer an unknown name with `undefined` just as a map does; its
-         * keys are the properties the fake publishes. */
-        QVariantMap backupKeys;
-        const QMetaObject& backupMeta = BackupRecorder::staticMetaObject;
-        for (int i = backupMeta.propertyOffset(); i < backupMeta.propertyCount(); ++i) {
-            backupKeys.insert(QString::fromLatin1(backupMeta.property(i).name()), true);
-        }
-        const QHash<QString, QVariantMap> maps = {{QStringLiteral("metrics"), m_metrics},
-                                                  {QStringLiteral("prefs"), m_prefs},
-                                                  {QStringLiteral("decoderHost"), m_host},
-                                                  {QStringLiteral("radioReference"), m_radio_reference},
-                                                  {QStringLiteral("backup"), backupKeys},
-                                                  {QStringLiteral("recordings"), RecordingsFake::rest()},
-                                                  {QStringLiteral("recordingStatus"), m_recording_status}};
+        /* `backup` and `rrPlaces` are QObjects, whose properties answer an unknown name with `undefined` just as a map
+         * does; their keys are the properties the fakes publish. */
+        const auto propertyKeys = [](const QMetaObject& meta) {
+            QVariantMap keys;
+            for (int i = meta.propertyOffset(); i < meta.propertyCount(); ++i) {
+                keys.insert(QString::fromLatin1(meta.property(i).name()), true);
+            }
+            return keys;
+        };
+        const QVariantMap backupKeys = propertyKeys(BackupRecorder::staticMetaObject);
+        const QHash<QString, QVariantMap> maps = {
+            {QStringLiteral("metrics"), m_metrics},
+            {QStringLiteral("prefs"), m_prefs},
+            {QStringLiteral("decoderHost"), m_host},
+            {QStringLiteral("radioReference"), m_radio_reference},
+            {QStringLiteral("backup"), backupKeys},
+            {QStringLiteral("rrPlaces"), propertyKeys(RrPlacesFake::staticMetaObject)},
+            {QStringLiteral("recordings"), RecordingsFake::rest()},
+            {QStringLiteral("recordingStatus"), m_recording_status}};
         /* Group 3 captures the "(" that marks a call rather than a read. The name must not follow a "." or a word
          * character: `model.recordings.length` is a role's length, not a read of the `recordings` store. */
         static const QRegularExpression read(
-            QStringLiteral("(?<![.\\w])(metrics|prefs|decoderHost|radioReference|backup|recordings|recordingStatus)"
+            QStringLiteral("(?<![.\\w])(metrics|prefs|decoderHost|radioReference|backup|rrPlaces|recordings|"
+                           "recordingStatus)"
                            "\\.([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()?"));
 
         QStringList missing;
@@ -6465,6 +6574,9 @@ class Setup : public QObject {
         // Issue #830: the close before a restart, scripted (setCloseRefused(), finishClose()).
         m_restart_closer = new RestartCloserFake(engine);
         ctx->setContextProperty(QStringLiteral("restartCloser"), m_restart_closer);
+        // RadioReference place names and Update from RadioReference, recorded (RrPlacesFake).
+        m_rr_places = new RrPlacesFake(engine);
+        ctx->setContextProperty(QStringLiteral("rrPlaces"), m_rr_places);
         // Issue #718: the production composing-text commit, on its fallback path here.
         ctx->setContextProperty(QStringLiteral("inputCommit"), new dsd_qt::InputCommit(engine));
         // B7/B8: the production name order and fold (ICU-free), as the RadioReference lists use it.
@@ -6499,6 +6611,7 @@ class Setup : public QObject {
     RadioReferenceRecorder* m_radio_reference_recorder = nullptr;
     BackupRecorder* m_backup = nullptr;
     RestartCloserFake* m_restart_closer = nullptr;
+    RrPlacesFake* m_rr_places = nullptr;
     QQmlEngine* m_engine = nullptr;
     dsd_qt::SpectrumModel* m_spectrum = nullptr;
     /* Issue #672: the Monitor's avoid list, the production model, filled by setScanAvoids(). */

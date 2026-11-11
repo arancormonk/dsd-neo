@@ -55,6 +55,7 @@ target_sources(
         metrics_model.cpp
         qt_ui.cpp
         radio_reference_model.cpp
+        rr_place_service.cpp
         recording_journal.cpp
         recording_status.cpp
         recording_store.cpp

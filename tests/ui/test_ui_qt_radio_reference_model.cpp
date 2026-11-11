@@ -751,6 +751,118 @@ test_mixed_simulcast_qml_plan() {
     }
 }
 
+/** @brief The ids of a place list (`states` by stid, `counties` by ctid), in order. */
+QList<int>
+place_ids(const QVariantMap& place, const char* list, const char* id) {
+    QList<int> out;
+    for (const QVariant& entry : place.value(QLatin1String(list)).toList()) {
+        out.append(entry.toMap().value(QLatin1String(id)).toInt());
+    }
+    return out;
+}
+
+QList<int>
+place_candidates(const QVariantMap& place) {
+    QList<int> out;
+    for (const QVariant& stid : place.value(QStringLiteral("candidateStates")).toList()) {
+        out.append(stid.toInt());
+    }
+    return out;
+}
+
+/* A per-site import keeps the place RadioReference already sent: the site's county (TrsSite.siteCtid) and the
+ * system's states (Trs.sState) as candidates only. SARA spans three states, so the Johnson County site has no state
+ * until a name lookup links its county; nothing is named yet. */
+void
+test_per_site_import_carries_its_place() {
+    Harness h;
+    h.model.loadSystem(6673);
+    pump(h.model);
+    const QVariantMap plan = h.model.buildImportPlan({0, 1}, {{"eachSite", true}});
+    const QVariantList plans = plan.value("plans").toList();
+    expect_int("place: two per-site plans", plans.size(), 2);
+    if (plans.size() != 2) {
+        return;
+    }
+    const QVariantMap johnson = plans[0].toMap().value("place").toMap();
+    expect("place: Johnson county only", place_ids(johnson, "counties", "ctid") == QList<int>{836});
+    expect("place: SARA's three states are candidates", place_candidates(johnson) == (QList<int>{19, 17, 46}));
+    expect("place: no state before the county is linked", place_ids(johnson, "states", "stid").isEmpty());
+    expect("place: no county name yet",
+           !johnson.value("counties").toList().value(0).toMap().contains(QStringLiteral("name")));
+    expect("place: the Linn site has its own county",
+           place_ids(plans[1].toMap().value("place").toMap(), "counties", "ctid") == QList<int>{841});
+
+    const QVariantMap result = h.model.performImport(plan, "SARA", -1);
+    const QVariantList rows = result.value("rows").toList();
+    expect_int("place: batch rows", rows.size(), 2);
+    if (rows.size() == 2) {
+        expect("place: the batch row carries its place", rows[0].toMap().value("place").toMap() == johnson);
+        expect("place: each batch row its own county",
+               place_ids(rows[1].toMap().value("place").toMap(), "counties", "ctid") == QList<int>{841});
+    }
+
+    const QVariantMap single = h.model.buildImportPlan({0}, {});
+    const QVariantMap imported = h.model.performImport(single, "SARA Johnson", -1);
+    expect("place: a single import's result carries the place", imported.value("place").toMap() == johnson);
+}
+
+/* A system in one state is placed in that state at once; there is nothing to choose between. */
+void
+test_single_state_import_has_its_state() {
+    Harness h;
+    h.model.loadSystem(12574);
+    pump(h.model);
+    const QVariantMap plan = h.model.buildImportPlan({0}, {});
+    const QVariantMap place = plan.value("place").toMap();
+    expect("single state: the state at once", place_ids(place, "states", "stid") == QList<int>{19});
+    expect("single state: the candidate", place_candidates(place) == QList<int>{19});
+    expect("single state: the site's county", place_ids(place, "counties", "ctid") == QList<int>{841});
+    expect("single state: carried through the import",
+           h.model.performImport(plan, "Cap+", -1).value("place").toMap() == place);
+}
+
+/* A conventional scan list keeps the counties of the repeaters chosen, not every county the system lists. With no
+ * file to write (the plan's texts removed, as QML may hand back) the place still arrives. */
+void
+test_conventional_import_counties_of_the_chosen_repeaters() {
+    Harness h;
+    h.model.loadSystem(9340);
+    pump(h.model);
+    const QVariantMap plan = h.model.buildImportPlan({0, 1}, {});
+    const QVariantMap place = plan.value("place").toMap();
+    expect("conventional: the two repeaters' counties", place_ids(place, "counties", "ctid") == (QList<int>{809, 795}));
+    expect("conventional: the one state", place_ids(place, "states", "stid") == QList<int>{19});
+    expect("conventional: no RadioReference site id", !plan.contains("rrSiteId"));
+
+    QVariantMap noFiles = plan;
+    noFiles.insert("groupCsvText", QString());
+    noFiles.insert("chanCsvText", QString());
+    const QVariantMap result = h.model.performImport(noFiles, "Repeaters", -1);
+    expect("conventional: an import with no files succeeds", result.value("ok").toBool());
+    expect("conventional: no file was written", !result.contains("chanCsvPath") && !result.contains("groupCsvPath"));
+    expect("conventional: the place arrives without files", result.value("place").toMap() == place);
+}
+
+/* The system's states are announced once its load completes, on a signal of their own: systemChanged() keeps
+ * meaning the loaded system changed. */
+void
+test_system_place_ids_are_announced() {
+    Harness h;
+    QList<QVariantList> announced;
+    int systemChanges = 0;
+    QObject::connect(&h.model, &dsd_qt::RadioReferenceModel::systemPlaceIdsReady,
+                     [&announced](const QVariantList& stids) { announced.append(stids); });
+    QObject::connect(&h.model, &dsd_qt::RadioReferenceModel::systemChanged, [&systemChanges]() { systemChanges++; });
+    h.model.loadSystem(6673);
+    pump(h.model);
+    expect_int("place ids: announced once", announced.size(), 1);
+    if (!announced.isEmpty()) {
+        expect("place ids: SARA's states in order", announced[0] == (QVariantList{19, 17, 46}));
+    }
+    expect_int("place ids: the load's own systemChanged pair", systemChanges, 2);
+}
+
 void
 test_import_lands_in_the_library(void) {
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
@@ -1963,6 +2075,10 @@ main(int argc, char** argv) {
     test_conventional_system();
     test_import_lands_in_the_library();
     test_per_site_import();
+    test_per_site_import_carries_its_place();
+    test_single_state_import_has_its_state();
+    test_conventional_import_counties_of_the_chosen_repeaters();
+    test_system_place_ids_are_announced();
     test_site_import_without_coverage();
     test_mixed_simulcast_qml_plan();
     test_refresh_replaces_a_row_in_place();

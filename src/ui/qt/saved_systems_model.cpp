@@ -1057,6 +1057,49 @@ SavedSystemsModel::applyPlaceNames(int stid, const QString& stateName, const QHa
     return true;
 }
 
+bool
+SavedSystemsModel::namePlace(QVariantMap& place, int stid, const QString& stateName,
+                             const QHash<int, QString>& countyNames) {
+    return stid > 0 && apply_place_names(place, stid, stateName, countyNames);
+}
+
+int
+SavedSystemsModel::refreshSites(const QList<SiteRefresh>& refreshes) {
+    auto next = m_rows;
+    int applied = 0;
+    int first = -1;
+    int last = -1;
+    for (const SiteRefresh& refresh : refreshes) {
+        const int row = rowForUid(refresh.uid);
+        if (row < 0 || refresh.rrSid <= 0 || m_rows.at(row).rrSid != refresh.rrSid
+            || m_rows.at(row).rrSiteId != refresh.rrSiteId) {
+            continue;
+        }
+        applied++;
+        // update()'s metadata path: the ids stay, so rename_generated_name() sees the row's own site.
+        QVariantMap fields = refresh.fields;
+        fields.insert(QStringLiteral("rrSid"), refresh.rrSid);
+        fields.insert(QStringLiteral("rrSiteId"), refresh.rrSiteId);
+        rename_generated_name(get(row), fields, &fields);
+        Row updated = rowFromMap(fields, m_rows.at(row));
+        fillPlaceNames(updated, m_rows.at(row).place);
+        if (mapFromRow(updated) != mapFromRow(m_rows.at(row))) {
+            next[row] = updated;
+            first = first < 0 ? row : qMin(first, row);
+            last = qMax(last, row);
+        }
+    }
+    if (first < 0) {
+        return applied;
+    }
+    if (!saveRows(next)) {
+        return -1;
+    }
+    commitChangedRange(std::move(next), first, last, {});
+    Q_EMIT sitesChanged();
+    return applied;
+}
+
 QString
 SavedSystemsModel::keyValueForUid(const QString& uid) const {
     const int row = rowForUid(uid);

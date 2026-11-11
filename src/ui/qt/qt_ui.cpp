@@ -49,6 +49,7 @@
 #include "recording_store.h"
 #include "replay_store.h"
 #include "restart_closer.h"
+#include "rr_place_service.h"
 #include "saved_systems_model.h"
 #include "scan_list_starter.h"
 #include "scan_lists_model.h"
@@ -321,6 +322,15 @@ publish_app_context(QQmlContext* context, DecoderHost* host, RadioReferenceModel
     context->setContextProperty(QStringLiteral("storeNotices"), StoreNotices::instance());
 }
 
+/* The RadioReference import, and the service that names the saved systems' places from the same account (created after
+   both, which it follows). */
+static void
+publish_radio_reference(QQmlContext* context, RadioReferenceModel* radioReference, SavedSystemsModel* systems,
+                        QObject* owner) {
+    context->setContextProperty(QStringLiteral("radioReference"), radioReference);
+    context->setContextProperty(QStringLiteral("rrPlaces"), new RrPlaceService(radioReference, systems, owner));
+}
+
 ListenPins*
 load_listen_pins(AppPrefs* prefs, ImportedFilesModel* importedFiles, SavedSystemsModel* systems,
                  ScanListsModel* scanLists, QObject* owner) {
@@ -450,7 +460,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("scanListStarter"), scanListStarter);
     context->setContextProperty(QStringLiteral("importedFiles"), importedFiles);
     context->setContextProperty(QStringLiteral("replayFiles"), replays);
-    context->setContextProperty(QStringLiteral("radioReference"), radioReference);
+    publish_radio_reference(context, radioReference, systems, &engine);
     context->setContextProperty(QStringLiteral("callHistory"), history);
     publish_recording_context(context, recordings, recordingStatus);
     context->setContextProperty(QStringLiteral("historyView"), historyView);
