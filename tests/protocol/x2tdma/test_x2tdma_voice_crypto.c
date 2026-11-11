@@ -401,7 +401,6 @@ expect_frame(const char* tag, const rig_config* cfg, int slot, int f, int audibl
     return 0;
 }
 
-/* One superframe of a sequence: its timeslot and what its second burst signals. */
 /* What happens to the slot's call before a superframe. */
 typedef enum {
     STEP_CONTINUE = 0, /* the call goes on */

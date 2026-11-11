@@ -7539,8 +7539,8 @@ add_test(
     COMMAND dsd-neo_test_core_audio_input_switch
 )
 
-# The one-channel mix of two slots (issue #518): fresh talkers summed through the mixer's limiter, and the DMR superframe
-# mix's sources.
+# The one-channel mix of two slots (issue #518): fresh talkers summed through the mixer's limiter, and the DMR
+# superframe mix's sources.
 add_executable(dsd-neo_test_core_mono_mix core/test_core_mono_mix.c)
 target_include_directories(
     dsd-neo_test_core_mono_mix
@@ -17409,8 +17409,8 @@ if(DSD_HAS_RADIO)
     set_tests_properties(IO_RTL_STREAM_INPUT_GAP PROPERTIES TIMEOUT 120)
 
     # Issue #518 B10: the FSK voice lane EDACS plays analog calls from, through the real stream creation, read API,
-    # demodulator, output resampler and ring: the normalised samples and flags unchanged, the lane's level and positions,
-    # with the lane switched on and off, a gap, a retune and three rates.
+    # demodulator, output resampler and ring: the normalised samples and flags unchanged, the lane's level and
+    # positions, with the lane switched on and off, a gap, a retune and three rates.
     add_executable(dsd-neo_test_io_rtl_voice_lane io/test_io_rtl_voice_lane.cpp)
     target_include_directories(
         dsd-neo_test_io_rtl_voice_lane
@@ -22226,9 +22226,10 @@ if(DSD_HAS_RADIO)
     # nfm_squelch_real_b -22.15 (-26.71) and am_airband_real -22.39 (-18.12).
     # nfm_squelch_real_b's two levels are only 0.86 dB apart in distance from -24 dBFS, so
     # its windows stop short on the sides that face each other: -23.15 to -21.70 at auto
-    # (2.30 dB from -24 at most) and -27.71 to -26.31 at -n 50 (2.31 dB at least). Established speech against digital voice is
-    # DECODE_IQ_SPEECH_PARITY's. The old cases held whole-stream RMS to -24.9 dBFS, a level a
-    # control channel decoded as voice played at (issue #729), not digital speech.
+    # (2.30 dB from -24 at most) and -27.71 to -26.31 at -n 50 (2.31 dB at least). Established
+    # speech against digital voice is DECODE_IQ_SPEECH_PARITY's. The old cases held whole-stream
+    # RMS to -24.9 dBFS, a level a control channel decoded as voice played at (issue #729), not
+    # digital speech.
     # DECODE_IQ_ANALOG_NEG_PARITY_FIXED shows the fixed gain alone misses the NFM window.
     set(_analog_speech_level_nfm
         "--analog-min-p56-dbfs -23.98 --analog-max-p56-dbfs -21.98 --analog-max-clip 0"

@@ -59,6 +59,15 @@ main(void) {
     for (size_t i = 0; i < sizeof(k_bad) / sizeof(k_bad[0]); i++) {
         assert(refused(k_bad[i], 15));
     }
+    /* A maximum that is not a whole hex digit's range bounds the value, not the digits: 0x9 and 9 pass under 9,
+       0xA and 10 do not, and 0x9 under 8 does not either. */
+    assert(parses_as("0x9", 9, 9));
+    assert(parses_as("9", 9, 9));
+    assert(refused("0xA", 9));
+    assert(refused("0xa", 9));
+    assert(refused("10", 9));
+    assert(refused("0x9", 8));
+    assert(refused("0x100000000", 0xFFFFFFFFu));
     assert(refused(NULL, 15));
     assert(dsd_parse_uint_dec_or_hex_strict("1", 15, NULL) == -1);
     return 0;
