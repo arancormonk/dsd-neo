@@ -1538,14 +1538,30 @@ frame_sync_try_m17_eot(frame_sync_match_ctx* ctx, int ham_eot, int ham_eot_inv, 
     return state->lastsynctype;
 }
 
+/*
+ * Whether a packet frame can follow the sync before it. The M17 specification (Part I, the air interface) has a link
+ * setup frame name its transmission's mode in bit 0 of its TYPE field, the packet/stream indicator: a stream-mode LSF
+ * (1) is followed by stream frames, and packet frames follow only a packet-mode one. A packet sync word right after an
+ * LSF whose CRC passed and declared stream mode is therefore never the transmission's: the hunt met one within a
+ * single error inside the m17-fme sample's repeated LSF, which cost the stream its first four frames and, read as a
+ * packet that ended, sent AUTO's hunt off the transmission (issue #834). An LSF that failed its CRC says nothing, and
+ * every new LSF is read afresh (processM17LSF()), so a packet transmission behind its own preamble and LSF is taken.
+ */
+static int
+frame_sync_m17_packet_can_follow(const dsd_state* state, int lsf_type, int pkt_type) {
+    if (state->lastsynctype == lsf_type) {
+        return state->m17_lsf_stream_mode == 0U;
+    }
+    return state->lastsynctype == pkt_type && frame_sync_m17_chain_has_evidence(state);
+}
+
 static int
 frame_sync_try_m17_packet(frame_sync_match_ctx* ctx, int ham_pkt, int ham_brt, int is_inverted) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
 
     if (ham_pkt <= 1 && !is_inverted) {
-        if (state->lastsynctype != DSD_SYNC_M17_LSF_POS
-            && !(state->lastsynctype == DSD_SYNC_M17_PKT_POS && frame_sync_m17_chain_has_evidence(state))) {
+        if (!frame_sync_m17_packet_can_follow(state, DSD_SYNC_M17_LSF_POS, DSD_SYNC_M17_PKT_POS)) {
             return DSD_SYNC_NONE;
         }
         printFrameSync(opts, state, "+M17 PKT", ctx->synctest_pos + 1, ctx->modulation);
@@ -1556,8 +1572,7 @@ frame_sync_try_m17_packet(frame_sync_match_ctx* ctx, int ham_pkt, int ham_brt, i
     }
 
     if (ham_brt <= 1 && is_inverted) {
-        if (state->lastsynctype != DSD_SYNC_M17_LSF_NEG
-            && !(state->lastsynctype == DSD_SYNC_M17_PKT_NEG && frame_sync_m17_chain_has_evidence(state))) {
+        if (!frame_sync_m17_packet_can_follow(state, DSD_SYNC_M17_LSF_NEG, DSD_SYNC_M17_PKT_NEG)) {
             return DSD_SYNC_NONE;
         }
         printFrameSync(opts, state, "-M17 PKT", ctx->synctest_pos + 1, ctx->modulation);
@@ -1646,33 +1661,69 @@ frame_sync_try_m17_bert_after_context(frame_sync_match_ctx* ctx, int ham_brt, in
                        : frame_sync_accept_m17(ctx, "+M17 BRT", DSD_SYNC_M17_BRT_POS);
 }
 
+/*
+ * An LSF sent again right behind the first. A transmitter may repeat its link setup frame before the stream starts:
+ * the m17-fme sample sends every stream's LSF twice. No preamble precedes the second, so it was not taken, and the
+ * hunt ran on through its payload, where words within one error of the packet, stream and EOT words turned up and
+ * cost the stream its first four frames (issue #834). Only straight after an LSF of the same polarity (the inverted
+ * LSF word reads as the stream word).
+ */
+static int
+frame_sync_try_m17_lsf_again(frame_sync_match_ctx* ctx, int ham_lsf, int ham_str, int is_inverted) {
+    const int last = ctx->state->lastsynctype;
+    if (!is_inverted && last == DSD_SYNC_M17_LSF_POS && ham_lsf <= 1) {
+        return frame_sync_accept_m17(ctx, "+M17 LSF", DSD_SYNC_M17_LSF_POS);
+    }
+    if (is_inverted && last == DSD_SYNC_M17_LSF_NEG && ham_str <= 1) {
+        return frame_sync_accept_m17(ctx, "-M17 LSF", DSD_SYNC_M17_LSF_NEG);
+    }
+    return DSD_SYNC_NONE;
+}
+
+/* The LSF or BERT word that spends a preamble candidate. */
+static int
+frame_sync_try_m17_from_candidate(frame_sync_match_ctx* ctx, int ham_lsf, int ham_str, int ham_brt, int ham_pkt) {
+    dsd_state* state = ctx->state;
+    if (state->m17_pre_candidate == 0) {
+        return DSD_SYNC_NONE;
+    }
+    /* An alternating run is symmetric: read one symbol later, the marker is its own
+     * inversion, so a preamble can never say which polarity the transmission has -- the old
+     * code's answer was whichever phase it happened to accept on. The sync word behind it
+     * can say, because M17_LSF and M17_STR are not shifts of each other. Try both readings
+     * and let the one that matches name the polarity the rest of the chain locks to. */
+    for (int pass = 0; pass < 2; pass++) {
+        const int inverted = (ctx->opts->inverted_m17 == 0) ? pass : !pass;
+        if ((inverted ? ham_str : ham_lsf) <= 1) {
+            frame_sync_consume_m17_pre_candidate(state, inverted ? 2 : 1);
+            return inverted ? frame_sync_accept_m17(ctx, "-M17 LSF", DSD_SYNC_M17_LSF_NEG)
+                            : frame_sync_accept_m17(ctx, "+M17 LSF", DSD_SYNC_M17_LSF_POS);
+        }
+    }
+    for (int pass = 0; pass < 2; pass++) {
+        const int inverted = (ctx->opts->inverted_m17 == 0) ? pass : !pass;
+        if ((inverted ? ham_pkt : ham_brt) <= 1) {
+            frame_sync_consume_m17_pre_candidate(state, inverted ? 2 : 1);
+            return inverted ? frame_sync_accept_m17(ctx, "-M17 BRT", DSD_SYNC_M17_BRT_NEG)
+                            : frame_sync_accept_m17(ctx, "+M17 BRT", DSD_SYNC_M17_BRT_POS);
+        }
+    }
+    return DSD_SYNC_NONE;
+}
+
 static int
 frame_sync_try_m17_lsf_or_bert(frame_sync_match_ctx* ctx, int ham_lsf, int ham_str, int ham_brt, int ham_pkt,
                                int is_inverted) {
-    dsd_state* state = ctx->state;
+    const dsd_state* state = ctx->state;
 
-    if (state->m17_pre_candidate != 0) {
-        /* An alternating run is symmetric: read one symbol later, the marker is its own
-         * inversion, so a preamble can never say which polarity the transmission has -- the old
-         * code's answer was whichever phase it happened to accept on. The sync word behind it
-         * can say, because M17_LSF and M17_STR are not shifts of each other. Try both readings
-         * and let the one that matches name the polarity the rest of the chain locks to. */
-        for (int pass = 0; pass < 2; pass++) {
-            const int inverted = (ctx->opts->inverted_m17 == 0) ? pass : !pass;
-            if ((inverted ? ham_str : ham_lsf) <= 1) {
-                frame_sync_consume_m17_pre_candidate(state, inverted ? 2 : 1);
-                return inverted ? frame_sync_accept_m17(ctx, "-M17 LSF", DSD_SYNC_M17_LSF_NEG)
-                                : frame_sync_accept_m17(ctx, "+M17 LSF", DSD_SYNC_M17_LSF_POS);
-            }
-        }
-        for (int pass = 0; pass < 2; pass++) {
-            const int inverted = (ctx->opts->inverted_m17 == 0) ? pass : !pass;
-            if ((inverted ? ham_pkt : ham_brt) <= 1) {
-                frame_sync_consume_m17_pre_candidate(state, inverted ? 2 : 1);
-                return inverted ? frame_sync_accept_m17(ctx, "-M17 BRT", DSD_SYNC_M17_BRT_NEG)
-                                : frame_sync_accept_m17(ctx, "+M17 BRT", DSD_SYNC_M17_BRT_POS);
-            }
-        }
+    const int from_candidate = frame_sync_try_m17_from_candidate(ctx, ham_lsf, ham_str, ham_brt, ham_pkt);
+    if (from_candidate != DSD_SYNC_NONE) {
+        return from_candidate;
+    }
+
+    const int again = frame_sync_try_m17_lsf_again(ctx, ham_lsf, ham_str, is_inverted);
+    if (again != DSD_SYNC_NONE) {
+        return again;
     }
 
     /* A BERT session repeats its own sync word without a fresh preamble between frames. */

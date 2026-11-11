@@ -20853,6 +20853,24 @@ if(DSD_HAS_RADIO)
         )
     endforeach()
 
+    # Issue #834: the m17-fme recording sends its stream LSF twice behind the preamble. The second LSF went untaken, and
+    # the hunt matched words within one error inside it: a packet sync (impossible behind a stream-mode LSF), then an
+    # EOT, which lost the stream's first four frames and ended its call. The repeat is taken as an LSF now, and the
+    # stream decodes from its first frame (FSN 0, printed under -Z) with no packet or EOT in a capture that has none.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_M17_LSF_OFFAIR
+        m17_lsf_offair
+        "-fz -Z"
+        "FSN: 00000"
+        "M17 PKT|M17 EOT"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_M17_LSF_OFFAIR_AUTO
+        m17_lsf_offair
+        "-fa -Z"
+        "FSN: 00000"
+        "M17 PKT|M17 EOT"
+    )
 
     # Issue #388: P25 Phase 1 C4FM on its own profile, which is where AUTO starts -- the hunt
     # performs no rotation on this capture and needs none. What it used to fail on is the

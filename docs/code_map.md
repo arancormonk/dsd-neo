@@ -6896,7 +6896,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   words and the alternating preamble are cheap for receiver noise to reproduce. A preamble candidate needs
   `DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS` (32) consecutive windows within one error, then the LSF or BERT word within one
   error (`frame_sync_try_m17_lsf_or_bert()`); a stream or packet frame after an LSF, and a chain with evidence, are
-  taken as before. A transmission joined after its preamble opens on the same exact sync word three frames
+  taken as before. A packet sync is refused right after an LSF whose CRC passed and declared stream mode (TYPE bit 0,
+  `dsd_state::m17_lsf_stream_mode`, written by `m17_finalize_lsf_crc()` and cleared at every `processM17LSF()`;
+  `frame_sync_m17_packet_can_follow()`), and the LSF word straight after an LSF of the same polarity is taken as a
+  repeated LSF (`frame_sync_try_m17_lsf_again()`): the m17-fme recording sends every stream LSF twice, and the hunt
+  used to match packet, stream and EOT words inside the second, which cost the stream its first four frames and split
+  the call (issue #834; `M17_FRAME_SYNC`, `DECODE_IQ_M17_LSF_OFFAIR`). A transmission joined after its preamble opens on the same exact sync word three frames
   (`DSD_FRAME_SYNC_M17_FRAME_SYMBOLS`, 192) running (`frame_sync_try_m17_join()`, `dsd_state::m17_join_hits`, cleared
   with the preamble candidate and with the NXDN96 sync; every exact word is kept, whichever path took its window,
   since the payload matches some word a few times a frame): the stream word is a stream, the LSF word repeated an

@@ -796,6 +796,10 @@ need at least three LSFs whose CRC passes on their own frame (the check printed 
 LICH-reassembled LSF prints on a line of its own) and three complete LICH superframes. Without the filter this
 realization decodes neither; with it, four of each under both presets.
 
+`m17_lsf_offair` (140 kB) is cut from the m17-fme recording at its second transmission's start, where the stream LSF is
+sent twice: `DECODE_IQ_M17_LSF_OFFAIR` and `_AUTO` need the stream's frame 0 (`FSN: 00000`) and no packet or EOT sync,
+where before the hunt matched both inside the repeated LSF (issue #834).
+
 `DECODE_IQ_DSTAR_AUTO_HUNT` and `DECODE_IQ_P25P2_CC_AUTO_HUNT` assert on an `SPS hunt:` rotation line rather than a
 decoded payload. The `dstar` (4 s) and `p25p2_cc` (2 s) fixtures are shorter than one full hunt rotation (~6 s at
 48 kHz), so under `-fa` they cannot be expected to decode; what they can prove is that the hunt is not pinned on its

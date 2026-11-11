@@ -2626,6 +2626,11 @@ struct dsd_state {
     uint8_t m17_pre_run;
     uint8_t m17_pre_candidate;
     uint8_t m17_pre_candidate_ttl;
+    /* 1 when the link setup frame just read passed its CRC and declared stream mode (TYPE bit 0, the packet/stream
+     * indicator, is 1), so the frames behind it are stream frames and never packet frames; 0 before any LSF, after one
+     * that failed its CRC and after a packet-mode one. Frame sync reads it for the sync right after an LSF (issue
+     * #834). */
+    uint8_t m17_lsf_stream_mode;
     /* M17 joined mid-transmission (src/dsp/dsd_frame_sync.c): the windows that lately held a stream, LSF, packet or BERT
      * sync word exactly, with the word (kind 1-4) and where (dsd_state::symbolcnt). The same word exactly one and two
      * 192-symbol frames before a window joins the transmission there, for that frame alone: the history is cleared

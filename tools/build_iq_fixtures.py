@@ -167,6 +167,9 @@ FIXTURES = [
     # deviation stays near M17's real +/-2.4 kHz so the synthetic FM signal fits
     # the 12.5 kHz channel filter profile (0.15 * 24 kHz Nyquist = 3.6 kHz peak).
     ("m17", "m17", "audio", 19, 4.3, 0.15),
+    # The same recording's second transmission from its start: preamble, its stream LSF sent twice, then the stream
+    # (issue #834). The repeated LSF used to go untaken, and the hunt matched packet, stream and EOT words inside it.
+    ("m17_lsf_offair", "m17", "audio", 7.5, 1.5, 0.15),
 ]
 
 # Audio sources recorded after a receiver's de-emphasis, and the single-pole time constant

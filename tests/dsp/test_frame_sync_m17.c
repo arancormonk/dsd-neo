@@ -22,6 +22,8 @@
 static size_t g_sample_index;
 static const char* g_sync_pattern = M17_PRE;
 static char g_fill_symbol = '1';
+/* A fill a case names itself, for a refusal whose default fill would complete another sync word (0: the default). */
+static char g_fill_override = 0;
 
 static float
 symbol_level_for_m17(char dibit) {
@@ -161,6 +163,9 @@ run_one_on_state(dsd_opts* opts, dsd_state* state, const char* pattern, int expe
     g_sample_index = 0U;
     g_sync_pattern = pattern;
     g_fill_symbol = (expected_sync < 0) ? '3' : '1';
+    if (g_fill_override != 0) {
+        g_fill_symbol = g_fill_override;
+    }
     state->rtl_symbol_cache_pos = 0;
     state->rtl_symbol_cache_len = 0;
     state->rtl_symbol_cache_published_pending = 0;
@@ -200,6 +205,30 @@ run_m17_chain_case(int initial_last, uint8_t initial_polarity, const char* patte
     return rc;
 }
 
+/* The sync after a link setup frame, with what that LSF declared: 1 a stream (its CRC passed and TYPE bit 0 is set),
+   0 a packet one or one whose CRC failed (issue #834). */
+static int
+run_m17_after_lsf_case(int lsf_type, uint8_t stream_mode, const char* pattern, int expected_sync, const char* label) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int fake_rtl_context;
+
+    dsd_frame_sync_reset_mod_state();
+    if (!init_m17_sync_case(&opts, &state, &fake_rtl_context)) {
+        return 1;
+    }
+    state.lastsynctype = lsf_type;
+    state.m17_polarity = (uint8_t)(lsf_type == DSD_SYNC_M17_LSF_NEG ? 2U : 1U);
+    state.m17_confirm_weak_streak = 1U;
+    state.m17_lsf_stream_mode = stream_mode;
+
+    install_hooks();
+    const int rc = run_one_on_state(&opts, &state, pattern, expected_sync, label);
+    clear_hooks();
+    free_state_buffers(&state);
+    return rc;
+}
+
 static int
 run_m17_sync_case(int initial_last, uint8_t initial_polarity, const char* pattern, int expected_sync,
                   const char* label) {
@@ -229,5 +258,20 @@ main(void) {
     rc |= run_m17_chain_case(DSD_SYNC_M17_PKT_POS, 1U, M17_PKT, -1, "M17 packet chain needs evidence", 0, 1);
     rc |= run_m17_chain_case(DSD_SYNC_M17_BRT_POS, 1U, M17_BRT, -1, "M17 BERT chain needs a PRBS9 lock", 1, 0);
     rc |= run_m17_chain_case(DSD_SYNC_M17_STR_POS, 1U, M17_EOT, -1, "M17 EOT needs a transmission to end", 0, 1);
+
+    /* A stream-mode LSF is followed by stream frames, never packet frames; a packet LSF, or one that failed its CRC,
+     * leaves the packet word open (issue #834). */
+    rc |= run_m17_after_lsf_case(DSD_SYNC_M17_LSF_POS, 1U, M17_PKT, -1, "M17 stream LSF refuses a packet");
+    rc |= run_m17_after_lsf_case(DSD_SYNC_M17_LSF_POS, 1U, M17_STR, DSD_SYNC_M17_STR_POS, "M17 stream LSF to stream");
+    rc |= run_m17_after_lsf_case(DSD_SYNC_M17_LSF_POS, 0U, M17_PKT, DSD_SYNC_M17_PKT_POS, "M17 packet LSF to packet");
+    /* A transmitter may send its LSF twice: the second is taken as an LSF, with no preamble ahead of it. */
+    rc |= run_m17_after_lsf_case(DSD_SYNC_M17_LSF_POS, 1U, M17_LSF, DSD_SYNC_M17_LSF_POS, "M17 LSF repeated");
+    rc |= run_m17_after_lsf_case(DSD_SYNC_M17_LSF_NEG, 1U, M17_STR, DSD_SYNC_M17_LSF_NEG, "M17 inverted LSF repeated");
+    /* Filled with '3', the inverted packet word runs into the inverted stream word within one error. */
+    g_fill_override = '1';
+    rc |= run_m17_after_lsf_case(DSD_SYNC_M17_LSF_NEG, 1U, M17_BRT, -1, "M17 inverted stream LSF refuses a packet");
+    g_fill_override = 0;
+    rc |= run_m17_after_lsf_case(DSD_SYNC_M17_LSF_NEG, 0U, M17_BRT, DSD_SYNC_M17_PKT_NEG,
+                                 "M17 inverted packet LSF to packet");
     return rc;
 }
