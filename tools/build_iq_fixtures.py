@@ -322,10 +322,20 @@ DERIVED_ATTENUATED = [
 # at 0 dB the frame sync words read within two bit errors 85% of the time, and a gate held to one bit decodes 10 of
 # its RANs where two bits decode 29 (the matcher before these rules, 30). Deterministic from the seed.
 #
+#
+# p25p1_cqpsk_cc_simulcast_noisy and p25p2_cc_noisy pin the tolerant P25 CQPSK sync (docs/code_map.md, P25 sync
+# anchors): on a weak simulcast carrier a sync word with a few bits wrong where the next frame or window starts is the
+# frame or window, which an exact match loses. Levels and seeds come from a sweep (seeds 1-5) against e902f9b77, the
+# exact-match build. At 4 dB the simulcast control channel's 52 CRC-passed TSBKs fell to 37-40 there and stayed at
+# 43-52 with the tolerance; seed 4 reads 39 and 52. At 3 dB p25p2_cc's SACCH MAC PDUs (10 on air; the scrambling code
+# given with -X) fell to 2-6 and stayed at 6-7; seed 1 reads 2 and 7. Deterministic from the seed.
+#
 # name, source fixture, wideband SNR dB, seed
 DERIVED_AWGN = [
     ("nxdn96_weak", "nxdn96", 8.0, 8007),
     ("nxdn96_weak_0db", "nxdn96", 0.0, 17),
+    ("p25p1_cqpsk_cc_simulcast_noisy", "p25p1_cqpsk_cc_simulcast", 4.0, 4),
+    ("p25p2_cc_noisy", "p25p2_cc", 3.0, 1),
 ]
 
 # A committed P25 control channel next to an equal-level neighbour 12.5 kHz up, at the 72 kHz RTL-SDR DSP bandwidth
@@ -551,6 +561,23 @@ DERIVED_GAP = [
     ("ysf_gap", "ysf", 4.0, 12.0, "driver_overflow"),
 ]
 GAP_CAPTURE_STARTED_UTC = "2026-07-30T00:00:00Z"
+
+# A P25 Phase 1 CQPSK control channel that goes off the air: the whole clean control channel, one second of receiver
+# noise (the start of noise_floor), then one second of a DMR control channel (the start of dmr_t3_cc). Every frame the
+# control channel decodes leaves the tolerant sync's anchor live where the next frame would start, so the first window
+# after the carrier ends is scored against the P25 sync word within the tolerance; noise or another protocol there must
+# open no P25 frame (docs/code_map.md, P25 sync anchors). The pieces are committed 48 kHz cu8 fixtures concatenated byte
+# for byte, as DERIVED_RETUNE does, with no event between them. The capture starts at second 58, so the console's
+# HH:MM:SS stamps read :58 and :59 for the control channel and :00 and :01 after it.
+#
+# name, (source fixture, start s, length s) pieces in order
+DERIVED_THEN_NOISE = [
+    (
+        "p25p1_cqpsk_cc_then_noise",
+        (("p25p1_cqpsk_cc", 0.0, 2.0), ("noise_floor", 0.0, 1.0), ("dmr_t3_cc", 0.0, 1.0)),
+    ),
+]
+THEN_NOISE_CAPTURE_STARTED_UTC = "2026-07-30T00:00:58Z"
 
 # A dPMR signal synthesized from the CCH reference vectors (issue #407).
 #
@@ -1325,6 +1352,26 @@ def build_derived_gap(out_dir):
         written = build_gap_fixture(out_dir, out_dir, name, source, gap_at_s, gap_s, reason)
         total += written
         print(f"{name:28s} gap     sidecar on {source}.iq")
+    return total
+
+
+def build_then_noise(out_dir):
+    """Write the transmission-then-noise fixtures from the committed fixtures in out_dir (see DERIVED_THEN_NOISE)."""
+    total = 0
+    for name, pieces in DERIVED_THEN_NOISE:
+        payload = b""
+        for source, start_s, length_s in pieces:
+            if source == name:
+                raise ValueError(f"{name}: would overwrite its own source")
+            data = read_committed_capture(out_dir, source)
+            start = round(start_s * SAMPLE_RATE_HZ) * CU8_ALIGN_BYTES
+            stop = start + round(length_s * SAMPLE_RATE_HZ) * CU8_ALIGN_BYTES
+            if start < 0 or stop <= start or stop > len(data):
+                raise ValueError(f"{name}: {source} has no {length_s} s from {start_s} s")
+            payload += data[start:stop]
+        written = write_capture(out_dir, name, payload, capture_started_utc=THEN_NOISE_CAPTURE_STARTED_UTC)
+        total += written
+        print(f"{name:28s} concat  {written // 1024:6d} KiB")
     return total
 
 
@@ -2477,6 +2524,7 @@ def derived_fixture_names():
         + [entry[0] for entry in DERIVED_CLIP]
         + [entry[0] for entry in DERIVED_RETUNE]
         + [entry[0] for entry in DERIVED_GAP]
+        + [entry[0] for entry in DERIVED_THEN_NOISE]
         + [DPMR_SYNTH_NAME]
         + [entry[0] for entry in NFM_SYNTH]
         + [entry[0] for entry in AM_SYNTH]
@@ -2530,6 +2578,7 @@ def build_all_derived(out_dir, dmr_synth_gen, cache):
     total += build_clip(out_dir)
     total += build_derived_retune(out_dir)
     total += build_derived_gap(out_dir)
+    total += build_then_noise(out_dir)
     total += build_dpmr_synth(out_dir)
     total += build_tetra_synth(out_dir)
     total += build_tetra_gap(out_dir)

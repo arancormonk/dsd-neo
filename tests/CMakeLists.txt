@@ -18915,6 +18915,59 @@ if(DSD_HAS_RADIO)
         ""
         6
     )
+    # The simulcast control channel with noise at 4 dB wideband SNR (DERIVED_AWGN). Several sync words then come in a few
+    # bits off where the last frame ends; an exact match loses those frames, the tolerant sync accepts them and the
+    # strict NID check behind it decides (docs/code_map.md, P25 sync anchors). Every TSBK that passes its CRC prints its
+    # message's title on a line of its own, one space in: 52 here, 39 on e902f9b77, which matched sync words exactly
+    # (52 on both builds without the noise). The console prints "[tolerant sync, n bit errors]" for each frame a tolerant sync
+    # opened and its NID then passed (16 here), so the case shows where the frames came from. A control channel carries
+    # no voice: a header or voice frame on it would be noise taken for one.
+    add_test(
+        NAME DECODE_IQ_P25P1_CQPSK_SIMULCAST_NOISY_CC
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" "-DMODE=-f1 -mq"
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/p25p1_cqpsk_cc_simulcast_noisy.iq.json"
+            "-DEXPECTED=\n [A-Z]" -DMIN_MATCHES=46
+            "-DEXPECTED2=\\[tolerant sync, [0-9]+ bit errors\\]"
+            -DMIN_MATCHES2=6 "-DEXPECTED3=WACN: 92065; SYS: 0D5"
+            "-DNOT_EXPECTED= HDU| LDU[12]" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_P25P1_CQPSK_SIMULCAST_NOISY_CC
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
+    )
+    # The clean CQPSK control channel, then receiver noise, then a DMR control channel (DERIVED_THEN_NOISE), under Auto
+    # on the CQPSK chain and under Auto alone. On the CQPSK chain each frame the control channel decodes leaves the
+    # tolerant sync scoring the place the next frame would start; after the carrier ends that place holds noise, and no
+    # P25 sync may be accepted there or anywhere after it (the capture starts at second 58, so a P25 sync stamped :00 to
+    # :09 is past the end), nor may a header, voice frame or encryption parameters appear. With the tolerance widened to
+    # every bit of the word, the _AUTO_CQPSK case fails on a sync stamped :00. Auto alone reads this capture on the FSK
+    # chain, where no sync is tolerated: it pins the same output there and that the DMR control channel after the noise
+    # still decodes (14 CSBKs), which the CQPSK chain cannot. The P25 control channel decodes either way (42 site
+    # identities).
+    foreach(_suffix AUTO AUTO_CQPSK)
+        set(_mode -fa)
+        set(_dmr_args "-DEXPECTED2=Color Code=01 \\| CSBK" -DMIN_MATCHES2=10)
+        if(_suffix STREQUAL "AUTO_CQPSK")
+            set(_mode "-fa -mq")
+            set(_dmr_args)
+        endif()
+        add_test(
+            NAME DECODE_IQ_P25P1_CQPSK_CC_THEN_NOISE_${_suffix}
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DMODE=${_mode}"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/p25p1_cqpsk_cc_then_noise.iq.json"
+                "-DEXPECTED=WACN: 92065; SYS: 0D5" -DMIN_MATCHES=36 ${_dmr_args}
+                "-DNOT_EXPECTED=:0[0-9] Sync: [+-]P25| HDU| LDU[12]| TDU|ALG ID| ENC"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+        )
+        set_tests_properties(
+            DECODE_IQ_P25P1_CQPSK_CC_THEN_NOISE_${_suffix}
+            PROPERTIES LABELS "iq-decode" TIMEOUT 120
+        )
+    endforeach()
     # Every burst of this capture but its SACCHs is a scrambled data channel burst (DUID 10), a known kind: none is a
     # DUID error, which would abort its window before the SACCHs that follow it (issue #804). Nothing in the capture
     # names the site's scrambling code: it is recovered from the SACCHs themselves (the first SACCH window gives it, a
@@ -18933,6 +18986,27 @@ if(DSD_HAS_RADIO)
     )
     set_tests_properties(
         DECODE_IQ_P25P2_CC
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
+    )
+    # The same capture with noise at 3 dB wideband SNR (DERIVED_AWGN), with the site's scrambling code given so every
+    # SACCH whose window is found can decode. Several windows' sync words then come in a few bits off where the window
+    # after a decoded one starts; an exact match loses those windows, the tolerant sync accepts them when the window's
+    # ISCHs and DUIDs agree (docs/code_map.md, P25 Phase 2). 7 of the 10 SACCH MAC PDUs pass their CRC here, 2 on
+    # e902f9b77, which matched sync words exactly (10 on both builds without the noise). "+P25p2~" marks a sync the
+    # tolerance accepted (11 here).
+    add_test(
+        NAME DECODE_IQ_P25P2_CC_NOISY
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+            "-DMODE=-f2 -X BEE00164161"
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/p25p2_cc_noisy.iq.json"
+            "-DEXPECTED=P25p2 SACCH  MAC_IDLE" -DMIN_MATCHES=5
+            "-DEXPECTED2=Sync: [+-]P25p2~" -DMIN_MATCHES2=4
+            "-DNOT_EXPECTED=DUID ERR 10" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_P25P2_CC_NOISY
         PROPERTIES LABELS "iq-decode" TIMEOUT 120
     )
     # A clear BS voice call on slot 1 (slot 2 idle) from the DMR test generator (issue #729).
