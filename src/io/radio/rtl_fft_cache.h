@@ -77,6 +77,17 @@ class FftSetupCache {
      *              ordered spectrum. Untouched when the size is rejected.
      * @return false when pffft has no setup for @p n.
      */
+    /**
+     * @brief Build the setup and work buffer for @p n points now, so a later
+     * forward() at that size allocates nothing.
+     *
+     * @return false when pffft rejects the size or an allocation fails.
+     */
+    bool
+    prepare(int n) {
+        return get(n) != nullptr;
+    }
+
     bool
     forward(int n, float* inout) {
         const PFFFT_Setup* setup = get(n);

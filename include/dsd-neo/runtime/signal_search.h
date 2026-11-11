@@ -194,6 +194,10 @@ int dsd_signal_search_validate_config(const dsd_signal_search_config* config, ch
 uint32_t dsd_signal_search_channel_count(const dsd_signal_search_range* range);
 uint32_t dsd_signal_search_frequency(const dsd_signal_search_range* range, uint32_t index);
 int dsd_signal_search_fft_size(uint32_t rate, const dsd_signal_search_range* range);
+/** The smallest power-of-two transform, from 32 to DSD_SEARCH_MAX_FFT points, with at least 8 bins across
+ * @p width_hz at @p rate; 0 when none has. dsd_signal_search_fft_size() sizes a valid range with it, over the
+ * narrower of its step and width. */
+int dsd_signal_fft_size_for_width(uint32_t rate, double width_hz);
 /** Plan contiguous channels in a usable RF lobe. Hardware DC and edges are never used.
  * capture_offset is the hardware centre minus the requested frequency, including Fs/4/edge tuning.
  * Returns 1 for a span, 0 at end, -1 if the rate/offset cannot cover this range. */

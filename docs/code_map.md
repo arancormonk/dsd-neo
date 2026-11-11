@@ -7486,6 +7486,31 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   gain/PPM supervision is suspended during discovery. `rtl_stream_tune_async()` and
   `rtl_stream_tune_poll()` reuse the controller's completion ledger and settling gates;
   the search owner reserves tagged manual tunes, including against unsolicited UDP tunes.
+- Scan quiet request (`radio/signal_measure.cpp`, `io/signal_measure.h`, issue #834): whether one landed conventional
+  channel carries no power above its local floor. `dsd_signal_quiet_detector_*` is the measurement (the shared tap runs
+  one with `dsd_signal_quiet_params_default()`, the shipped `DSD_SIGNAL_QUIET_THRESHOLD_DB` and
+  `DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR`; calibration drives its own with explicit parameters). It judges
+  `DSD_SIGNAL_QUIET_WINDOWS` (9) back-to-back sub-windows, each the smallest whole number of transforms of at least
+  10 ms, in every requested width class (`DSD_SIGNAL_QUIET_CLASS_12K5`, `_6K25`, `_ANALOG` with the request's analog
+  width, AM minimum to NFM maximum). The transform puts at least 8 bins across the narrowest class
+  (`dsd_signal_fft_size_for_width()`, which also sizes Signal search's ranges), so a sub-window stays under 13.75 ms
+  and one lies inside any 27.5 ms DMR burst; the nine span at least 90 ms. Each sub-window and class goes through the
+  same channel measurement as Signal search (`measure_channel()`: geometry, channel bins, the eight sideband blocks),
+  with the floor from either the trimmed mean (Signal search's) or the lowest block. The request is quiet only when
+  every sub-window of every class is valid and its (S+N)/N is below the threshold; the result carries the highest
+  ratio with its power and floor. Clipping (over 1% of pairs so far, checked at each sub-window end), capture changes,
+  drops and non-finite samples fail it as for a search; a channel whose geometry does not fit is measured but never
+  valid. Buffers are prepared once per transform size (`NO_MEMORY` only when that fails). Tap owners: the tap holds
+  one request, Signal search's or a quiet one. `rtl_signal_quiet_request()` is refused (`UNSUPPORTED`) while a search
+  owns the tuner or holds a request or an unread report; a search request (even a refused one) supersedes a quiet one,
+  and `rtl_signal_measure_cancel()` never touches it. Ticket and status word: one lock-free `std::atomic<uint32_t>`
+  holds `ticket << 2 | quiet owner << 1 | done`; the 30-bit ticket moves at every request (search or quiet), quiet
+  cancel and reset (search cancels too, unless a quiet request owns the tap), never to 0. Writes happen only under
+  `tap_mutex`, the done bit with release after the result; `rtl_signal_quiet_status()` reads it with acquire and no
+  lock, so a superseded, cancelled, reset or taken ticket reads lost (-1) at once, with no further samples.
+  `rtl_signal_quiet_take()` (under `tap_mutex` only) consumes the result or reports `SUPERSEDED`;
+  `rtl_signal_quiet_cancel()` and `take()` act only on a matching ticket, so a stale call never touches a newer
+  request. Request, quiet cancel and reset keep the lock order (`feed_mutex`, then `tap_mutex`).
 - Tagged retune ownership (issue #671): a queued tagged retune defers a tune of another owner, but a manual tune's tag
   (`RTL_STREAM_TUNE_ID_MANUAL_BIT`) only asks for its completion. It owns nothing, so a second frequency entry or an
   owner tune coalesces into a queued manual request as into an untagged one. The tag it takes over never runs, so the

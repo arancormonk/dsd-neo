@@ -55,9 +55,12 @@ float rtl_device_test_signal_clip_level(const rtl_device_test_conversion* conver
    on bad arguments. */
 int rtl_device_test_widen_cu8(const rtl_device_test_conversion* conversion, int fs4_shift_active,
                               const unsigned char* bytes, size_t len, float* out);
-/* While @p fail is set, the Signal search tap has no detector and cannot allocate one (its next request fails as an
-   allocation failure); clearing it lets the next request allocate again. */
+/* While @p fail is set, the shared tap has no search or quiet detector and cannot allocate one (its next request of
+   either kind fails as an allocation failure); clearing it lets the next request allocate again. */
 void rtl_signal_measure_test_fail_allocation(int fail);
+/* Set the tap's ticket counter, so the next request (search or quiet), cancel or reset takes the ticket after
+   @p ticket (wrapping past the last 30-bit value to 1). */
+void rtl_signal_measure_test_set_ticket(uint32_t ticket);
 int rtl_stream_test_prepare_reconfigure_input(size_t queued_samples, size_t* out_used_after,
                                               uint32_t* out_generation_before, uint32_t* out_generation_after);
 int rtl_stream_test_retune_output_pending(size_t queued_samples, int cached_symbols, size_t* out_ring_pending,
