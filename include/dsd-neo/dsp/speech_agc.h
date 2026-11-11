@@ -116,6 +116,7 @@ typedef struct {
     float tone_cap;           /**< the start gain, linear: the most a tone frame gets */
     int fixed;
     float fixed_gain;
+    int fixed_seed; /**< a fixed gain was set since the last reset: leaving fixed mode starts from it */
     int noise_veto; /**< the coloured-noise veto (dsd_speech_agc_set_noise_veto()) */
 
     dsd_speech_agc_learned learned;
@@ -161,7 +162,8 @@ typedef struct {
  */
 int dsd_speech_agc_init(dsd_speech_agc* agc, int rate_hz, float start_gain_db, float target_dbfs, float ceiling_dbfs);
 
-/** A new reception: back to the start gain with nothing learned, an opening checkpoint, clear signal state. */
+/** A new reception: back to the start gain with nothing learned, an opening checkpoint, clear signal state. A fixed
+    gain stays fixed, but leaving fixed mode no longer starts from it until it is set again. */
 void dsd_speech_agc_reset(dsd_speech_agc* agc);
 
 /** The start gain for the next reset (and every one after it); the current reception keeps its own. A gain out of
@@ -185,8 +187,9 @@ void dsd_speech_agc_set_noise_veto(dsd_speech_agc* agc, int on);
  *
  * A positive finite @p gain is a fixed linear gain: nothing is learned and tone frames are not capped, but the limiter
  * still runs; gains above 1e6 count as 1e6. Anything else means automatic; leaving fixed mode keeps what was learned
- * and starts from the fixed gain, clamped into the controller's range, with the attenuator at 0. The switch is a new
- * opening checkpoint, so a gate close never restores a gain from before it.
+ * and starts from the fixed gain, clamped into the controller's range, with the attenuator at 0, when that fixed gain
+ * was set within the current reception. A reset since then wins: the new reception stays at its start gain. The switch
+ * is a new opening checkpoint, so a gate close never restores a gain from before it.
  */
 void dsd_speech_agc_set_fixed(dsd_speech_agc* agc, float gain);
 

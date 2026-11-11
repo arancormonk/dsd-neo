@@ -1679,6 +1679,46 @@ test_fixed_to_auto_then_close(void) {
     free(agc);
 }
 
+/* A reset is a new reception: it starts at the start gain whatever fixed gain the reception before it played, even
+   when automatic gain takes over after it; within one reception the switch starts from the fixed gain. */
+static void
+test_reset_wins_over_the_fixed_gain(void) {
+    const int rate = 8000;
+    const size_t F = (size_t)frame_len(rate);
+    float* x = alloc_f(F);
+    dsd_speech_agc* agc = new_agc(rate, 0.0f);
+    for (int round = 0; round < 2; round++) {
+        dsd_speech_agc_set_fixed(agc, 50.0f);
+        for (size_t i = 0; i < F; i++) {
+            x[i] = 100.0f;
+        }
+        dsd_speech_agc_process(agc, x, F, 0, 1, 0);
+        assert(fabsf(x[0] - 5000.0f) < 1e-3f);
+        dsd_speech_agc_reset(agc);
+        if (round == 1) {
+            /* The fixed setting stays through the reset, then auto: still the start gain. */
+            dsd_speech_agc_set_fixed(agc, 50.0f);
+            dsd_speech_agc_reset(agc);
+        }
+        dsd_speech_agc_set_fixed(agc, 0.0f);
+        for (size_t i = 0; i < F; i++) {
+            x[i] = 100.0f;
+        }
+        dsd_speech_agc_process(agc, x, F, 0, 1, 0);
+        SAY("reset then auto: first sample %.3f (round %d)\n", (double)x[0], round);
+        assert(fabsf(x[0] - 100.0f) < 1e-3f && fabsf(agc->learned.gain_db) < 1e-6f);
+    }
+    dsd_speech_agc_set_fixed(agc, 2.0f);
+    for (size_t i = 0; i < F; i++) {
+        x[i] = 100.0f;
+    }
+    dsd_speech_agc_process(agc, x, F, 0, 1, 0);
+    dsd_speech_agc_set_fixed(agc, 0.0f);
+    assert(fabsf(agc->learned.gain_db - 6.0206f) < 1e-3f);
+    free(agc);
+    free(x);
+}
+
 /* The start gain is bounded (init refuses, the setter ignores, anything past +-60 dB), and at the bounds the output
    stays finite and under the ceiling for the largest input the AGC takes. */
 static void
@@ -2228,6 +2268,7 @@ main(int argc, char** argv) {
     test_non_finite();
     test_fixed_mode_and_start_gain();
     test_fixed_to_auto_then_close();
+    test_reset_wins_over_the_fixed_gain();
     test_start_gain_range();
     test_stale_counters_saturate();
     test_peak_limiter();

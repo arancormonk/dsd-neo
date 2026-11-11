@@ -2870,7 +2870,8 @@ suite runs under this compiler.
   (`p25_sm_select_control_channel()`), and each MBE playback file (`mbe_file_end_replayed_call()`). It is kept across a
   stream gap, the no-carrier pass, fade and terminator heals, late-entry identity, crypto purges and
   `init_audio_filters()`; fixed and auto keep its estimate (back to auto it starts from the fixed gain within its
-  range). All of these run on the decoder thread; the no-carrier pass touches no AGC state. Nothing seeds the auto level
+  range, but only within the reception that fixed gain was set in: after a reset auto starts at the start gain). All
+  of these run on the decoder thread; the no-carrier pass touches no AGC state. Nothing seeds the auto level
   on any entry path (B4): every slot starts at the start gain. `aout_gain`/`aout_gainR` are display readouts only, the
   gain each slot's last frame got in dB (the terminal's "G: Auto (+x.x dB)"), and ride the snapshot's
   `config_autosave_enabled..last_dibit` range with `aout_gainA`; the AGC state stays decoder-owned. No protocol code
@@ -6448,50 +6449,47 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   backlog is processed, as a new reception would. A block that straddles a retune or reset
   (`dsd_analog_rx_block_straddles_boundary()`), partly the old channel's and never played, goes in with
   `DSD_ANALOG_AUDIO_DISCARD`: the chain neither filters it nor counts it, turns it into silence, and starts over with
-  the next block, so the old channel leaves nothing in the new one's filters. EDACS runs
-  the EDACS chain once per triplet (`edacs_process_analog_triplet()`) over the triplet's voice (issue #518 B10: on RTL
-  the stream's voice lane, or its FSK samples when the stream has no lane; on audio input the samples), after the
-  symbol register is read from the normalised samples, with a reset per call and a learn flag per sample from the
-  squelch the call runs: the dynamic squelch's own gate per sample (closed samples then play silence, issue #625), the
-  level squelch's power test for the triplet, every sample with none. The talkgroup gate, the output switches and the
-  record policy have no say, so a call the talkgroup mutes but the record policy keeps records at the AGC's level; one
-  call per triplet reads the decode clock once, so the new-reception rule places each sample exactly. The played and
-  recorded blocks are the chain's output. The M17
-  encoder keeps its own band-pass, 960 Hz one-poles (`dsd_voice_onepole`) and `dsd_voice_agc` (used there alone) at
-  8 kHz in its stream context
-  (`m17_voice_chain`) and runs them over the whole codec2 frame, 160 samples at 3200 bit/s and 320 at 1600
-  (`m17_voice_chain_process()`; an explicit `-n` keeps `analog_gain()`). The transmit contract (issue #518 B17): the
-  AGC learns only from reads that are transmitted and holds through the rest with `dsd_voice_agc_process_held()` (no
-  attack, no release, output limited to the target, and none of the receive AGC's 250 ms rollback, which would undo a
-  short transmission), so the gain one transmission learned carries to the next and room noise between them moves
-  nothing; it starts over only with the stream context (`m17_str_init()`: encoder start, which an input switch needs
-  too). The read's key state is decided once, before the chain, from what the VOX already reads (the read's squelch
-  flags, or the input level it published before any filter or gain): `m17_str_decide_key()` advances the VOX count
-  (`sql_hit`) once per read, and the frame built after it reuses that decision (`m17_str_update_vox_and_eot()`), so the
-  VOX keys and unkeys on the same reads as before; without VOX the TX toggle (`m17encoder_tx`) is the key state
-  (`m17_str_read_keyed()`). Its input reader low-passes at 3400 Hz
+  the next block, so the old channel leaves nothing in the new one's filters. EDACS runs the EDACS chain once per
+  triplet (`edacs_process_analog_triplet()`) over the triplet's voice (issue #518 B10: on RTL the stream's voice lane,
+  or its FSK samples when the stream has no lane; on audio input the samples), after the symbol register is read from
+  the normalised samples, with a reset per call and a learn flag per sample from the squelch the call runs: the dynamic
+  squelch's own gate per sample (closed samples then play silence, issue #625), the level squelch's power test for the
+  triplet, every sample with none. The talkgroup gate, the output switches and the record policy have no say, so a call
+  the talkgroup mutes but the record policy keeps records at the AGC's level; one call per triplet reads the decode
+  clock once, so the new-reception rule places each sample exactly. The played and recorded blocks are the chain's
+  output. The M17 encoder keeps its own band-pass, 960 Hz one-poles (`dsd_voice_onepole`) and `dsd_voice_agc` (used
+  there alone) at 8 kHz in its stream context (`m17_voice_chain`) and runs them over the whole codec2 frame, 160 samples
+  at 3200 bit/s and 320 at 1600 (`m17_voice_chain_process()`; an explicit `-n` keeps `analog_gain()`). The transmit
+  contract (issue #518 B17): the AGC learns only from reads that are transmitted and holds through the rest with
+  `dsd_voice_agc_process_held()` (no attack, no release, output limited to the target, and none of the receive AGC's 250
+  ms rollback, which would undo a short transmission), so the gain one transmission learned carries to the next and room
+  noise between them moves nothing; it starts over only with the stream context (`m17_str_init()`: encoder start, which
+  an input switch needs too). The read's key state is decided once, before the chain, from what the VOX already reads
+  (the read's squelch flags, or the input level it published before any filter or gain): `m17_str_decide_key()` advances
+  the VOX count (`sql_hit`) once per read, and the frame built after it reuses that decision
+  (`m17_str_update_vox_and_eot()`), so the VOX keys and unkeys on the same reads as before; without VOX the TX toggle
+  (`m17encoder_tx`) is the key state (`m17_str_read_keyed()`). Its input reader low-passes at 3400 Hz
   (`DSD_VOICE_BAND_LOWPASS`, at the input rate) before keeping one sample in `m17_rate / 8000`, and scales RTL monitor
-  audio by the RTL monitor gain after the `vol` trim (`m17_encoder_read_block()`), so it reaches codec2 at PCM scale.
-  On RTL it reads each sample's squelch flag (`read_ex`); while the stream's gate runs
+  audio by the RTL monitor gain after the `vol` trim (`m17_encoder_read_block()`), so it reaches codec2 at PCM scale. On
+  RTL it reads each sample's squelch flag (`read_ex`); while the stream's gate runs
   (`dsd_squelch_stream_gate_running()`, asked once a block's first sample is in) a closed sample fades to silence before
   the low-pass, and the read records whether any sample was heard (`m17_encoder_input::squelch_heard`). A stream's end
   (`m17_str_end_stream()`, and the packet encoder's) drains a local output after the EOT marker, before its dead air,
   and `m17_str_finalize()` drains again at shutdown, whatever ended the last stream: an asynchronous output drops its
   oldest samples when full, and the engine closes it without a drain. A stream that ends while keyed (a shutdown, or a
   manual unkey while VOX hears a carrier) resets as the idle path's end does, so the next key-up sends a new LSF; a
-  monitored stream (`-8`) ends its call there, so the next one begins its own.
-  The analog_voice and analog_audio sources keep IEEE semantics under fast-math, which would fold away their
-  non-finite-sample guards. The published `dsd_state::aout_gainA` is the gain applied (AGC and limiter), in dB over the
-  `-n 50` gain, which the terminal shows as `G: Auto (+x dB)`. Tests: `DSP_ANALOG_VOICE`, `DSP_ANALOG_AUDIO` (start
-  gains, hiss in pauses, open-squelch noise, the transmission after it, rollback at a close, the new-reception rule
-  across partitions, pauses and rates, the limiter in fixed mode), `DSP_SYMBOL_REPLAY`
-  (`test_chain_learns_from_reception_not_output`, `test_call_audio_level_ignores_the_output`,
-  `test_tone_rejected_start_leaves_the_agc_alone`), `RTL_SYMBOL_CACHE_GENERATION` (source routing),
-  `IO_RTL_MONITOR_DEEMPH` (the reference through the real demodulator, ring and chain under every de-emphasis),
-  `M17_STATE_DISPATCH` (`test_stream_voice_chain_covers_the_whole_frame`, `test_stream_voice_chain_onepoles_run_at_8k`,
-  `test_encoder_rtl_input_reaches_pcm_scale`, `test_stream_encoder_mic_holds_while_unkeyed`,
-  `test_stream_encoder_mic_keeps_gain_across_key_ups`, `test_stream_encoder_mic_starts_over_at_encoder_start`,
-  `test_stream_encoder_vox_keys_on_the_same_reads`),
+  monitored stream (`-8`) ends its call there, so the next one begins its own. The analog_voice and analog_audio sources
+  keep IEEE semantics under fast-math, which would fold away their non-finite-sample guards. The published
+  `dsd_state::aout_gainA` is the gain applied (AGC and limiter), in dB over the `-n 50` gain, which the terminal shows
+  as `G: Auto (+x dB)`. Tests: `DSP_ANALOG_VOICE`, `DSP_ANALOG_AUDIO` (start gains, hiss in pauses, open-squelch noise,
+  the transmission after it, rollback at a close, the new-reception rule across partitions, pauses and rates, the
+  limiter in fixed mode), `DSP_SYMBOL_REPLAY` (`test_chain_learns_from_reception_not_output`,
+  `test_call_audio_level_ignores_the_output`, `test_tone_rejected_start_leaves_the_agc_alone`),
+  `RTL_SYMBOL_CACHE_GENERATION` (source routing), `IO_RTL_MONITOR_DEEMPH` (the reference through the real demodulator,
+  ring and chain under every de-emphasis), `M17_STATE_DISPATCH` (`test_stream_voice_chain_covers_the_whole_frame`,
+  `test_stream_voice_chain_onepoles_run_at_8k`, `test_encoder_rtl_input_reaches_pcm_scale`,
+  `test_stream_encoder_mic_holds_while_unkeyed`, `test_stream_encoder_mic_keeps_gain_across_key_ups`,
+  `test_stream_encoder_mic_starts_over_at_encoder_start`, `test_stream_encoder_vox_keys_on_the_same_reads`),
   `M17_ENCODER_CODEC2`, `DSP_ANALOG_VOICE` (`test_agc_held`), `EDACS_GRANT_TUNE_MATRIX` (`rtl-unclipped`), the
   `DECODE_IQ_ANALOG_*` level, speech-level (P.56), noise and fixed-gain cases.
 - The speech level AGC is `src/dsp/speech_agc.c` (`<dsd-neo/dsp/speech_agc.h>`), one module for digital and analog
@@ -9001,14 +8999,12 @@ the chain as FSK audio, as before the lane, with a warning once (`edacs_analog_v
 slot 1 is on, on the local stream, UDP and the raw fd alike (`edacs_analog_output_enabled()`, the mixers' rule); it
 notes the audible-audio stamp only when one of them receives it (the shared output rule: the raw fd takes 16-bit output
 only, and the null output or a local stream that is not open receives nothing) and the squelch the call runs opened on
-it (see Core). Tests:
-`EDACS_GRANT_TUNE_MATRIX` (the `analog-633` cases, with golden hashes of a 48 kHz call's audio, WAVs and stdout; the
-`analog-b10` cases: the voice lane asked for and stopped around a call, never for audio input, the FSK samples played
-at the FSK source's level when the stream has no lane, and a call the
-talkgroup gate mutes recording what the heard call records at the AGC's level; the
-emitter's outputs and stamp under each gate, squelch, output type and sample format; the `analog-717` and `digital-717`
-failed-tune rollbacks), `ENGINE_EDACS_FAILED_GRANT_STALL` (a control channel that keeps syncing after a failed grant
-tune is decoded again).
+it (see Core). Tests: `EDACS_GRANT_TUNE_MATRIX` (the `analog-633` cases, with golden hashes of a 48 kHz call's audio,
+WAVs and stdout; the `analog-b10` cases: the voice lane asked for and stopped around a call, never for audio input, the
+FSK samples played at the FSK source's level when the stream has no lane, and a call the talkgroup gate mutes recording
+what the heard call records at the AGC's level; the emitter's outputs and stamp under each gate, squelch, output type
+and sample format; the `analog-717` and `digital-717` failed-tune rollbacks), `ENGINE_EDACS_FAILED_GRANT_STALL` (a
+control channel that keeps syncing after a failed grant tune is decoded again).
 
 P25 manual control-channel selection lives in `src/protocol/p25/p25_cc_selection.c`. The Frequency command routes
 active single-system P25 sessions here; the module holds the watchdog guard through the runtime CC tuning hook,

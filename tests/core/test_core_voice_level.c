@@ -555,6 +555,58 @@ test_fixed_and_auto_keep_the_estimate(const float* speech) {
     return rc;
 }
 
+/* The first sample a DC frame of 100 plays at on @p slot, as concealment. */
+static float
+first_sample_of(const dsd_opts* opts, dsd_state* state, int slot) {
+    float frame[FRAME];
+    for (int n = 0; n < FRAME; n++) {
+        frame[n] = 100.0f;
+    }
+    const dsd_voice_frame_info info = frame_info(DSD_VOICE_MEDIA_CONCEALED, 1, 1);
+    dsd_voice_chain_run(opts, state, slot, frame, &info);
+    return frame[0];
+}
+
+/* A new reception starts at the start gain even when auto takes over from a fixed -g between receptions: the
+   fixed->auto start applies only within the reception the fixed gain played in. Both ways a reception starts over: an
+   explicit reset (a carrier boundary) and the tracker (the next transmission, seen on the frame auto takes over on). */
+static int
+test_a_new_reception_wins_over_the_fixed_gain(void) {
+    int rc = 0;
+    dsd_opts* opts = new_opts();
+    dsd_state* state = new_state();
+    if (!opts || !state) {
+        free(opts);
+        free_state(state);
+        return 1;
+    }
+    opts->audio_gain = 50.0f;
+    rc |= expect_near("reset wins: the fixed call plays x50", first_sample_of(opts, state, 0), 5000.0, 1e-3);
+    dsd_voice_level_reset(state, 0);
+    opts->audio_gain = 0.0f;
+    rc |= expect_near("reset wins: auto after a reset starts at the start gain", first_sample_of(opts, state, 0), 100.0,
+                      1e-3);
+
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    rc |= expect_true("reset wins: call observed", observe_call(state, 0U, 100U, 10.0) > 0);
+    opts->audio_gain = 50.0f;
+    rc |= expect_near("reset wins: the fixed call plays x50 again", first_sample_of(opts, state, 0), 5000.0, 1e-3);
+    rc |= expect_true("reset wins: call ended", dsd_call_state_end(state, 0U, 11.0) > 0);
+    rc |= expect_true("reset wins: next call observed", observe_call(state, 0U, 200U, 12.0) > 0);
+    opts->audio_gain = 0.0f;
+    rc |= expect_near("reset wins: auto on the next transmission starts at the start gain",
+                      first_sample_of(opts, state, 0), 100.0, 1e-3);
+
+    /* Within one reception the switch still starts from the fixed gain. */
+    opts->audio_gain = 2.0f;
+    rc |= expect_near("within: the fixed gain plays", first_sample_of(opts, state, 0), 200.0, 1e-3);
+    opts->audio_gain = 0.0f;
+    rc |= expect_near("within: auto starts from it", first_sample_of(opts, state, 0), 200.0, 1e-2);
+    free_state(state);
+    free(opts);
+    return rc;
+}
+
 /* Decodability per slot: ciphertext past the ceiling drives the slot's limiter down; when the slot's frames turn
    decodable the limiter starts over at once (a clear frame plays at its gain), while the other slot's undecodable
    frames keep theirs, and decodable frames after a loud decodable one release at the limiter's own pace. */
@@ -701,6 +753,7 @@ main(void) {
     rc |= test_talkspurt_decides_the_reception(speech);
     rc |= test_explicit_resets_and_what_keeps_the_level(speech);
     rc |= test_fixed_and_auto_keep_the_estimate(speech);
+    rc |= test_a_new_reception_wins_over_the_fixed_gain();
     rc |= test_decodability_returns_per_slot();
     rc |= test_tx_monitor_plays_at_unity(speech);
     free(speech);

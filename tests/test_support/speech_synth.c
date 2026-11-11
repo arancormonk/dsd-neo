@@ -21,7 +21,7 @@
 #define SYNTH_INT16_FULL     32768.0
 /* A 0 dB-stress vowel plays this far above the talker's nominal P.56 level. Pauses, edges and stress put the meter's
    reading of long speech about this far under the vowels (measured over seeds and pitches, and checked by
-   TEST_SUPPORT_SPEECH_SYNTH). */
+   CORE_SPEECH_SYNTH). */
 #define SYNTH_SPEECH_CAL_DB  3.9
 #define SYNTH_FRICATIVE_DB   (-12.0)
 #define SYNTH_VIBRATO_HZ     5.0

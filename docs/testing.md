@@ -2016,10 +2016,12 @@ leave it there too. Auto starts at the decoder's level on a zeroed or an `initSt
 more than the start gain from their first sample and leave the learned gain as it was. The high-pass and the AGC keep
 their state across a fade the call state heals; a new transmission, another protocol family and a new TETRA
 talkspurt start the AGC over, and a frame naming none keeps it; `dsd_voice_level_reset()` resets one slot or both; a
-crypto purge and a rate change keep it; fixed and auto keep the estimate; a slot's first decodable frame after
-ciphertext resets that slot's limiter only. `ENGINE_NO_CARRIER_RESET` checks the engine's side: every carrier boundary
-but a stream gap starts both slots over, the stream gap and the no-carrier pass keep them, and a TETRA stream gap
-inside one transmission keeps the level while the next talker starts it over (a TETRA codec seam plays the speech).
+crypto purge and a rate change keep it; fixed and auto keep the estimate within a reception, and a reset after a fixed
+gain leaves auto at the start gain (`DSP_SPEECH_AGC` and `DSP_ANALOG_AUDIO` check the same); a slot's first decodable
+frame after ciphertext resets that slot's limiter only. `ENGINE_NO_CARRIER_RESET` checks the engine's side: every
+carrier boundary but a stream gap starts both slots over, the stream gap and the no-carrier pass keep them, and a TETRA
+stream gap inside one transmission keeps the level while the next talker starts it over (a TETRA codec seam plays the
+speech).
 
 What each producer tells the chain about a frame (`dsd_voice_frame_info`) is read through a test observer
 (`dsd_voice_chain_set_observer_for_test()`, `src/core/audio/voice_chain_internal.h`). `CORE_VOICE_CHAIN` checks

@@ -230,6 +230,9 @@ dsd_speech_agc_reset(dsd_speech_agc* agc) {
     agc->tone_ramp_left = 0;
     agc->g_last = agc->g_cur;
     agc->learn_prev = -1;
+    /* A new reception starts at the start gain: auto taking over after the reset does not start from the fixed gain
+       the reception before it played. */
+    agc->fixed_seed = 0;
     agc_cp_restart(agc); /* the opening checkpoint */
 }
 
@@ -255,13 +258,17 @@ dsd_speech_agc_set_fixed(dsd_speech_agc* agc, float gain) {
     if (gain > 0.0f && isfinite(gain)) {
         agc->fixed = 1;
         agc->fixed_gain = gain < AGC_FIXED_GAIN_MAX ? gain : AGC_FIXED_GAIN_MAX;
+        agc->fixed_seed = 1;
         return;
     }
     if (!agc->fixed) {
         return;
     }
-    /* Back to automatic: the estimate stays, the gain starts where the fixed one was (within range), E at 0. */
     agc->fixed = 0;
+    if (!agc->fixed_seed) {
+        return; /* reset since the fixed gain was set: the reception stays at its start gain */
+    }
+    /* Back to automatic: the estimate stays, the gain starts where the fixed one was (within range), E at 0. */
     const float lo = agc->start_gain_db - DSD_SPEECH_AGC_MAX_CUT_DB;
     const float hi = agc->start_gain_db + DSD_SPEECH_AGC_MAX_BOOST_DB;
     const float g_db = 20.0f * log10f(agc->fixed_gain);

@@ -1364,6 +1364,41 @@ test_fixed_gain_keeps_the_limiter(void) {
     fixture_free(&f);
 }
 
+/* A new reception (a second or more since the last learning sample) starts at the start gain even when auto takes over
+   from a fixed -n after it; within one reception the switch starts from the fixed gain (-n 100: +6.02 dB). */
+static void
+test_new_reception_wins_over_the_fixed_gain(void) {
+    const int rate = 48000;
+    const dsd_analog_audio_source pcm = DSD_ANALOG_AUDIO_SOURCE_PCM16;
+    float zeros[960];
+    clock_start(rate);
+    fixture f = fixture_new();
+    f.opts->audio_gainA = 100.0f;
+    const size_t n = secs(rate, 0.5);
+    float* x = talker(rate, n, -30.0, 91U);
+    chain_feed(&f, pcm, rate, x, n, 960U, NULL, DSD_ANALOG_AUDIO_LEARN, NULL);
+    clock_pause(1.5);
+    /* The next reception's first block still plays at the fixed gain; auto takes over after it. */
+    DSD_MEMSET(zeros, 0, sizeof zeros);
+    chain_feed(&f, pcm, rate, zeros, 960U, 960U, NULL, DSD_ANALOG_AUDIO_LEARN, NULL);
+    f.opts->audio_gainA = 0.0f;
+    DSD_MEMSET(zeros, 0, sizeof zeros);
+    chain_feed(&f, pcm, rate, zeros, 960U, 960U, NULL, DSD_ANALOG_AUDIO_LEARN, NULL);
+    CHECK(fabs((double)f.state->aout_gainA - k_fm_narrow_db) < 1e-3,
+          "auto after a new reception under a fixed gain starts at %.3f dB", (double)f.state->aout_gainA);
+    /* Within one reception: fixed, then auto from the fixed gain. */
+    f.opts->audio_gainA = 100.0f;
+    DSD_MEMSET(zeros, 0, sizeof zeros);
+    chain_feed(&f, pcm, rate, zeros, 960U, 960U, NULL, DSD_ANALOG_AUDIO_LEARN, NULL);
+    f.opts->audio_gainA = 0.0f;
+    DSD_MEMSET(zeros, 0, sizeof zeros);
+    chain_feed(&f, pcm, rate, zeros, 960U, 960U, NULL, DSD_ANALOG_AUDIO_LEARN, NULL);
+    CHECK(fabs((double)f.state->aout_gainA - 6.0206) < 1e-3, "auto within the reception starts at %.3f dB",
+          (double)f.state->aout_gainA);
+    free(x);
+    fixture_free(&f);
+}
+
 int
 main(void) {
     test_source_gains();
@@ -1393,6 +1428,7 @@ main(void) {
     test_new_reception_inside_one_buffer();
     test_unsupported_rate_plays_fixed_gain();
     test_fixed_gain_keeps_the_limiter();
+    test_new_reception_wins_over_the_fixed_gain();
     test_slot_lifetime_and_args();
     if (g_failures) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
