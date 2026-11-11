@@ -3442,22 +3442,27 @@ suite runs under this compiler.
     LDU1/2, TDU, TDULC, PDU), so a conventional or voice-channel Phase 1 carrier keeps the gains of before (why: DSP,
     "CQPSK Gardner"); and by a P25p2 window with a MAC PDU whose CRC passed or a tolerant window whose verdict passed
     (`p25p2_window_done()`, not when the window retuned); both pass the generation read before the frame's handlers ran,
-    so a frame whose grant tuned away leaves a stale proof. Withdrawn by `dsd_frame_sync_reset_mod_state()` (every
-    accepted trunk-tuning or scanner tune, a CC change, the acquisition reset of a scan row or target, an input boundary
-    or a decode-mode command; the frame sync's symbol profile change), by every move of `rf_mod` in the frame sync
-    (`frame_sync_move_rf_mod()`: a vote's switch, a P25p1 chain step or CQPSK probe, a P25p2 or DMR accept, the TETRA
-    profile), by every chain change made outside it (`dsd_frame_sync_note_chain_change()`: `rf_mod` or `sps_hunt_idx`
-    compared across each command in `apply_cmd()`, which covers the modulation controls, the P25p2 helper, a config's
-    `[demod]` or `[mode]`, an import and a scan scope's resume, and across the control channel's timing a return that
-    retunes nothing applies, `dsd_engine_apply_cc_symbol_timing()`; a change that restates the chain keeps it), by a
-    manual tune through io_control (`manual_tune_moved()`: no trunk-tuning generation stales it and under trunking no
-    carrier boundary runs), by the no-carrier pass (`no_carrier_reset_decode_state()`), by
-    `dsd_engine_forget_carrier_decoding()` (every carrier boundary, a stream gap included) and by a config apply that
-    changes the decode mode (`cfg_forget_rx_tone_on_boundary()`). X2-TDMA, DMR and NXDN under `-mq`, Auto's CQPSK trial
-    before P25 content proves the carrier, Phase 1 voice and TETRA never set it. Tests: `P25_P1_SYNC_DISPATCH`,
-    `P25_P2_TOLERANT_WINDOW` (set), `FRAME_SYNC_P25_TIMING_PROOF`, `ENGINE_P25_TIMING_PROOF` (also the real trunk tunes
-    where GNU ld `--wrap` replaces the rigctl client), `APP_COMMAND_QUEUE` (withdrawn),
-    `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL` (the installation).
+    so a frame whose grant tuned away leaves a stale proof. X2-TDMA, DMR and NXDN under `-mq`, Auto's CQPSK trial
+    before P25 content proves the carrier, Phase 1 voice and TETRA never set it. Withdrawn by:
+    - `dsd_frame_sync_reset_mod_state()`: every accepted trunk-tuning or scanner tune, a CC change, the acquisition
+      reset of a scan row or target, an input boundary or a decode-mode command, the frame sync's symbol profile change.
+    - Every move of `rf_mod` in the frame sync (`frame_sync_move_rf_mod()`): a vote's switch, a P25p1 chain step or
+      CQPSK probe, a P25p2 or DMR accept, the TETRA profile.
+    - Every chain change made outside it (`dsd_frame_sync_note_chain_change()`), a change that restates the chain
+      keeping it: `rf_mod`, `sps_hunt_idx` and the CQPSK state the RTL front end was last asked for
+      (`rtl_stream_requested_cqpsk()`) compared across each command in `apply_cmd()` (the modulation controls, the DSP
+      menu's CQPSK toggle, the P25p2 helper, a config's `[demod]` or `[mode]`, an import, a scan scope's resume), and
+      the control channel's timing that a return retuning nothing applies (`dsd_engine_apply_cc_symbol_timing()`).
+    - A TDMA grant on the voice carrier already tuned (`p25_grant_try_tune_vc()`), when it moves `rf_mod` onto CQPSK.
+    - A manual tune through io_control (`manual_tune_moved()`): no trunk-tuning generation stales the proof, and under
+      trunking no carrier boundary runs.
+    - The no-carrier pass (`no_carrier_reset_decode_state()`) and `dsd_engine_forget_carrier_decoding()` (every carrier
+      boundary, a stream gap included).
+    - A config apply that changes the decode mode (`cfg_forget_rx_tone_on_boundary()`).
+
+    Tests: `P25_P1_SYNC_DISPATCH`, `P25_P2_TOLERANT_WINDOW` (set), `FRAME_SYNC_P25_TIMING_PROOF`,
+    `ENGINE_P25_TIMING_PROOF` (also the real trunk tunes where GNU ld `--wrap` replaces the rigctl client),
+    `APP_COMMAND_QUEUE`, `P25_SM_CORE` (withdrawn), `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL` (the installation).
   - Stream notices and reads with no stream (issue #518): `include/dsd-neo/runtime/stream_notice_hooks.h` carries what
     the input stream got over by itself (`DSD_STREAM_NOTICE_USB_RECOVERED`, `DSD_STREAM_NOTICE_CAPTURE_STOPPED`),
     posted from the stream's controller with `dsd_runtime_stream_notice_post()` into the sink app-control installs at

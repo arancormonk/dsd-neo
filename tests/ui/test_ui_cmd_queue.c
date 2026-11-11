@@ -15416,6 +15416,44 @@ submit_cqpsk_toggle(void) {
     (void)dsd_app_command_dsp_op(&dsp);
 }
 
+/* The DSP menu's CQPSK toggle moves the front end between the FSK discriminator and the CQPSK chain and leaves the
+   decoder's modulation and symbol profile as they were: the P25 proof the CQPSK timing loop follows is withdrawn both
+   ways, as at every other chain change. A command that leaves the front end's chain alone keeps it. */
+static int
+test_cqpsk_toggle_withdraws_p25_proof(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("p25 proof cq: P25 set up",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_P25P1, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:48");
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    reset_rx_family_wrap();
+    g_fake_cqpsk = 0;
+    dsd_rtl_stream_metrics_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.p25_timing_proof = capture_p25_proof;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+
+    submit_cqpsk_toggle();
+    rc |= drain_mod_command(&opts, &state, DSD_APP_COMMAND_SUBMIT_QUEUED, "p25 proof cq: CQPSK on withdraws it", 1);
+    rc |= expect_int("p25 proof cq: CQPSK requested on", __wrap_rtl_stream_requested_cqpsk(), 1);
+    rc |= expect_int("p25 proof cq: the decoder's modulation stays", state.rf_mod, 0);
+    submit_cqpsk_toggle();
+    rc |= drain_mod_command(&opts, &state, DSD_APP_COMMAND_SUBMIT_QUEUED, "p25 proof cq: CQPSK off withdraws it", 1);
+    rc |= expect_int("p25 proof cq: CQPSK requested off", __wrap_rtl_stream_requested_cqpsk(), 0);
+    rc |= drain_mod_command(&opts, &state, dsd_app_command_action(DSD_APP_CMD_INVERT_TOGGLE),
+                            "p25 proof cq: a command leaving the chain alone keeps it", 0);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    reset_rx_family_wrap();
+    freeState(&state);
+    return rc;
+}
+
 /*
  * Issue #525: DSD_APP_CMD_NFM_BANDWIDTH_SET edits the configured NFM width and hands it to the running front end, live.
  * A width outside 8000..25000 Hz, or one the front end cannot filter at its DSP rate, is refused with a toast that
@@ -30082,6 +30120,7 @@ main(void) {
     rc |= test_input_switch_to_pcm_leaves_am();
     rc |= test_tcp_switch_leaves_am_with_unfit_nfm_width();
     rc |= test_nfm_bandwidth_set_applies_live_and_refuses();
+    rc |= test_cqpsk_toggle_withdraws_p25_proof();
     rc |= test_nfm_bandwidth_set_replaces_a_queued_switch();
     rc |= test_nfm_bandwidth_set_after_a_queued_cqpsk_toggle();
     rc |= test_cqpsk_off_under_am_refused_keeps_cqpsk();

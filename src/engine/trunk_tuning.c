@@ -248,12 +248,13 @@ dsd_engine_apply_cc_symbol_timing(const dsd_opts* opts, dsd_state* state) {
     }
     const int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
     /* A return that retuned nothing keeps the carrier, and only a chain this moves withdraws its P25 proof. */
-    const dsd_frame_sync_chain before = {state->rf_mod, state->sps_hunt_idx};
+    const dsd_frame_sync_chain before = {state->rf_mod, state->sps_hunt_idx, -1};
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, dsd_engine_current_demod_rate(opts, state));
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
     state->rf_mod = (state->p25_cc_is_tdma == 1) ? 1 : dsd_engine_p25_fdma_cc_wants_cqpsk(opts, state);
     dsd_engine_select_p25_sps_profile(state, state->p25_cc_is_tdma == 1);
-    dsd_frame_sync_note_chain_change(state, before);
+    const dsd_frame_sync_chain after = {state->rf_mod, state->sps_hunt_idx, -1};
+    dsd_frame_sync_note_chain_change(before, after);
 }
 
 void

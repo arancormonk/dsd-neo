@@ -24,12 +24,10 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
-#include <math.h>
-#ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
-#endif
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -337,10 +335,67 @@ age_stalled_vc_reacquire_case(p25_sm_ctx_t* ctx, dsd_state* state, double age_s)
 }
 #endif
 
+/* What the decoder handed the CQPSK timing loop as its P25 proof: the calls, and the last value (0 = withdrawn). */
+static int g_p25_proof_calls;
+static uint64_t g_p25_proof_last;
+
+static void
+capture_p25_proof(uint64_t proof) {
+    g_p25_proof_calls++;
+    g_p25_proof_last = proof;
+}
+
+/* A TDMA voice carrier tuned for a slot-0 call; a grant for slot 1 then comes with the decoder's modulation at
+   @p rf_mod. Returns the proof calls that grant made. */
+static int
+tdma_reuse_grant_proof_calls(int rf_mod) {
+    static dsd_opts o;
+    static dsd_state s;
+    dsd_state_ext_free_all(&s);
+    DSD_MEMSET(&o, 0, sizeof(o));
+    DSD_MEMSET(&s, 0, sizeof(s));
+    o.trunk_enable = 1;
+    o.trunk_tune_group_calls = 1;
+    s.p25_cc_freq = 851000000;
+    setup_tdma_iden(&s, 2);
+    p25_sm_event_t slot0 = p25_sm_ev_group_grant((2 << 12) | 0x0000, 0, 3101, 4101, 0);
+    p25_sm_event_t slot1 = p25_sm_ev_group_grant((2 << 12) | 0x0001, 0, 3102, 4102, 0);
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &o, &s);
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_tune_to_freq_calls = 0;
+    p25_sm_event(&ctx, &o, &s, &slot0);
+    assert(g_result_tune_to_freq_calls == 1 && ctx.state == P25_SM_TUNED && o.trunk_is_tuned == 1);
+
+    dsd_rtl_stream_metrics_hooks hooks = {0};
+    hooks.p25_timing_proof = capture_p25_proof;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    s.rf_mod = rf_mod;
+    g_p25_proof_calls = 0;
+    g_p25_proof_last = 1U;
+    p25_sm_event(&ctx, &o, &s, &slot1);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    assert(g_result_tune_to_freq_calls == 1); /* the carrier tuned already: no tune */
+    assert(ctx.slots[1].grant_active == 1 && s.rf_mod == 1);
+    dsd_state_ext_free_all(&s);
+    return g_p25_proof_calls;
+}
+
+/* A TDMA grant on the voice carrier already tuned puts the decoder on the CQPSK chain with no tune: a chain the frame
+   sync had moved off it gets the P25 proof withdrawn, as every other modulation change does; one already on it keeps
+   the proof. */
+static void
+test_tdma_grant_on_the_tuned_carrier_withdraws_p25_proof(void) {
+    install_result_tuning_hooks();
+    assert(tdma_reuse_grant_proof_calls(0) > 0 && g_p25_proof_last == 0U);
+    assert(tdma_reuse_grant_proof_calls(1) == 0);
+}
+
 int
 main(void) {
     static dsd_opts opts;
     static dsd_state st;
+    test_tdma_grant_on_the_tuned_carrier_withdraws_p25_proof();
     install_trunk_tuning_hooks();
     init_basic(&opts, &st);
 

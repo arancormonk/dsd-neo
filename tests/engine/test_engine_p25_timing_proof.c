@@ -33,6 +33,8 @@
 #ifdef DSD_NEO_TEST_RIGCTL_TUNE_WRAP
 #include <dsd-neo/platform/sockets.h>
 #include <stdbool.h>
+#include <string.h>
+#include "test_support.h"
 #endif
 
 static int g_proof_calls;
@@ -123,7 +125,10 @@ test_trunk_tunes(dsd_opts* opts, dsd_state* state) {
     opts->rigctl_sockfd = DSD_INVALID_SOCKET;
     opts->trunk_enable = 1;
 
+    /* The refusals log what failed; that log is captured and checked, not left in the test's output. */
     g_set_freq_ok = 0;
+    dsd_test_capture_stderr cap;
+    rc |= expect("the refusals' log is captured", dsd_test_capture_stderr_begin(&cap, "p25-proof-refusals") == 0);
     proven();
     rc |= expect("a refused voice channel tune fails",
                  dsd_engine_trunk_tune_to_freq_request(opts, state, 852012500L, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
@@ -132,6 +137,12 @@ test_trunk_tunes(dsd_opts* opts, dsd_state* state) {
     rc |= expect("a refused control channel tune fails",
                  dsd_engine_trunk_tune_to_cc_request(opts, state, 851012500L, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
     rc |= expect("a refused control channel tune keeps the proof", g_proof_calls == 0);
+    (void)dsd_test_capture_stderr_end(&cap);
+    char log[1024];
+    rc |= expect("the refusals' log is read", dsd_test_capture_stderr_read(&cap, log, sizeof log) == 0);
+    rc |= expect("each refusal is logged",
+                 strstr(log, "Rigctl frequency update failed for 852012500 Hz.") != NULL
+                     && strstr(log, "Rigctl frequency update failed for 851012500 Hz.") != NULL);
 
     g_set_freq_ok = 1;
     proven();

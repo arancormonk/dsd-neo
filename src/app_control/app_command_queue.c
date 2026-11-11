@@ -10801,6 +10801,26 @@ recording_command_outcome(const struct dsd_app_command* c, int result) {
     return result == UI_CMD_APPLY_COMPLETED ? DSD_APP_RECORDING_COMMAND_APPLIED : DSD_APP_RECORDING_COMMAND_FAILED;
 }
 
+/* The chain a command may move (apply_cmd()): the decoder's, and on a running RTL front end the CQPSK state it was last
+   asked for, which the DSP menu's CQPSK toggle moves alone (svc_toggle_rtl_cqpsk()). */
+static dsd_frame_sync_chain
+cmd_chain_of(const dsd_opts* opts, const dsd_state* state) {
+    dsd_frame_sync_chain chain = {0, 0, -1};
+    if (!state) {
+        return chain;
+    }
+    chain.rf_mod = state->rf_mod;
+    chain.sps_hunt_idx = state->sps_hunt_idx;
+#ifdef USE_RADIO
+    if (opts && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
+        chain.front_end_cqpsk = rtl_stream_requested_cqpsk();
+    }
+#else
+    (void)opts;
+#endif
+    return chain;
+}
+
 /* @p scan_list_code receives what a DSD_APP_CMD_SCAN_LIST_SET did, for its retained result (issue #697): SEARCH when
    Signal search refuses it, the coordinator's answer once the handler asked it, INVALID for anything that stops it
    before then. */
@@ -10829,12 +10849,13 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int
     g_apply_cmd_guard_held = guarded;
     g_config_recording_applied = 0;
     /* Every modulation or symbol profile change made outside the frame sync and the engine's tunes is a command's (the
-       modulation controls, the P25p2 helper, a config's [demod] or [mode], an import, a scan scope's resume), and each
-       writes the chain before or without publishing it: compared across the whole command, so one that restates the
-       chain in force, or a scoped one whose row puts the same chain back, keeps the P25 proof. */
-    const dsd_frame_sync_chain chain_before = {state ? state->rf_mod : 0, state ? state->sps_hunt_idx : 0};
+       modulation controls, the DSP menu's CQPSK toggle, the P25p2 helper, a config's [demod] or [mode], an import, a
+       scan scope's resume), and each writes the chain before or without publishing it, or moves the front end alone:
+       compared across the whole command, so one that restates the chain in force, or a scoped one whose row puts the
+       same chain back, keeps the P25 proof. */
+    const dsd_frame_sync_chain chain_before = cmd_chain_of(opts, state);
     const int result = apply_cmd_scoped(opts, state, c, guarded, scan_list_code);
-    dsd_frame_sync_note_chain_change(state, chain_before);
+    dsd_frame_sync_note_chain_change(chain_before, cmd_chain_of(opts, state));
     g_apply_cmd_guard_held = 0;
     if (guarded) {
         if (state && command_changes_call_verdict(c)) {

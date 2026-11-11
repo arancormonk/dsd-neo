@@ -706,8 +706,9 @@ frame_sync_move_rf_mod(dsd_state* state, int rf_mod) {
 }
 
 void
-dsd_frame_sync_note_chain_change(const dsd_state* state, dsd_frame_sync_chain before) {
-    if (state && (state->rf_mod != before.rf_mod || state->sps_hunt_idx != before.sps_hunt_idx)) {
+dsd_frame_sync_note_chain_change(dsd_frame_sync_chain before, dsd_frame_sync_chain after) {
+    if (after.rf_mod != before.rf_mod || after.sps_hunt_idx != before.sps_hunt_idx
+        || after.front_end_cqpsk != before.front_end_cqpsk) {
         dsd_rtl_stream_metrics_hook_forget_p25_proof();
     }
 }
