@@ -99,6 +99,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/rigctl_passband.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
@@ -127,7 +128,6 @@
 
 struct CODEC2;
 #ifdef USE_RADIO
-#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_options.h>
 #endif
 #ifdef USE_RTLSDR
@@ -2764,6 +2764,9 @@ no_carrier_reset_decode_state(dsd_state* state, int preserve_scan_state) {
     /* Nor do the P25 sync anchors: the next data unit's or window's sync is matched exactly. */
     dsd_state_forget_p25p1_sync_anchor(state);
     dsd_state_forget_p25p2_sync_anchor(state);
+    /* Nor the proof that the carrier was P25: the CQPSK timing loop keeps its acquisition gains until the next carrier
+       proves itself. */
+    dsd_rtl_stream_metrics_hook_forget_p25_proof();
     state->err_str[0] = '\0';
     state->err_strR[0] = '\0';
     set_spaces(state->fsubtype, 14);
@@ -3532,6 +3535,9 @@ dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
     // Nor a span measured on the symbol clock: the symbols the old target produced are not time elapsed on the new one
     // (a DMR slot's missed superframes, issue #729).
     state->symbol_clock_epoch++;
+    // Nor the proof that the carrier was P25, which the CQPSK timing loop's post-lock gain follows: the next validated
+    // frame gives it again, after a stream gap too.
+    dsd_rtl_stream_metrics_hook_forget_p25_proof();
 }
 
 /* A gap in the radio stream on the same carrier (issue #518 D5): the samples the decoders were reading stopped and

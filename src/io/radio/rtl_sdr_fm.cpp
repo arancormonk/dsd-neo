@@ -11148,6 +11148,12 @@ rtl_stream_request_cqpsk_reacquire(void) {
     return 1;
 }
 
+extern "C" void
+rtl_stream_set_p25_timing_proof(uint64_t proof) {
+    /* An atomic the demod thread reads at its next Gardner block: no queue, as nothing else changes with it. */
+    demod.p25_timing_proof.store(proof, std::memory_order_release);
+}
+
 /* A TED change on CQPSK installs the CQPSK channel profile for the symbol rate @p sps gives at the demod rate (the
    stream's own symbol rate before a rate is known): TETRA's at 18000 sym/s, the P25 CQPSK one otherwise
    (rtl_demod_cqpsk_channel_profile()). Off CQPSK the profile is left alone. */

@@ -18,6 +18,7 @@
  * kicks with adaptive damping for abrupt raw-error jumps.
  */
 
+#include <atomic>
 #include <cmath>
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
@@ -25,6 +26,7 @@
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/mem.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -854,6 +856,226 @@ test_tetra_chain_gardner_gain(void) {
     return rc;
 }
 
+/* Whether the decoder has proven P25 for the timing loop (demod_state::p25_timing_proof): no proof, a proof on the
+ * current tuning generation, or one of a generation a tune has since left (stale). */
+namespace {
+enum gardner_p25_proof { P25_PROOF_NONE = 0, P25_PROOF_CURRENT = 1, P25_PROOF_STALE = 2 };
+
+struct gardner_gain_case {
+    const char* label;
+    int symbol_rate;
+    int sps;
+    int lock_count;
+    float lock_accum;
+    float ted_gain;
+    int ted_gain_is_set;
+    const char* env_gain; /* DSD_NEO_TED_GAIN, or NULL */
+    int tetra_chain;
+    gardner_p25_proof proof;
+    float want;
+};
+} // namespace
+
+static void
+gardner_set_p25_proof(demod_state* s, gardner_p25_proof proof) {
+    if (proof == P25_PROOF_NONE) {
+        s->p25_timing_proof.store(0U);
+        return;
+    }
+    s->p25_timing_proof.store(dsd_trunk_tuning_generation() + 1U);
+    if (proof == P25_PROOF_STALE) {
+        dsd_trunk_tuning_generation_advance(); /* a tune completed since the proof */
+    }
+}
+
+/* One 64-symbol block of a constant through op25_gardner_cc() under @p c; returns whether the effective gain is the
+ * one @p c wants. */
+static int
+expect_gardner_gain(const gardner_gain_case& c) {
+    if (c.env_gain) {
+        dsd_test_setenv("DSD_NEO_TED_GAIN", c.env_gain, 1);
+    } else {
+        dsd_test_unsetenv("DSD_NEO_TED_GAIN");
+    }
+    dsd_neo_config_init();
+    const int pairs = 64 * c.sps;
+    std::vector<float> buf((size_t)pairs * 2U);
+    for (int k = 0; k < pairs; k++) {
+        buf[(size_t)k * 2U] = 0.6f;
+        buf[((size_t)k * 2U) + 1U] = 0.2f;
+    }
+    demod_state* s = alloc_state();
+    if (!s) {
+        DSD_FPRINTF(stderr, "state alloc failed\n");
+        return 1;
+    }
+    s->cqpsk_enable = 1;
+    s->tetra_chain = c.tetra_chain;
+    s->lowpassed = buf.data();
+    s->lp_len = pairs * 2;
+    s->complex_rate = c.symbol_rate * c.sps;
+    s->rate_out = s->complex_rate;
+    s->ted_sps = c.sps;
+    s->ted_gain = c.ted_gain;
+    s->ted_gain_is_set = c.ted_gain_is_set;
+    s->ted_state.lock_count = c.lock_count;
+    s->ted_state.lock_accum = c.lock_accum;
+    gardner_set_p25_proof(s, c.proof);
+    op25_gardner_cc(s);
+    const float got = s->ted_effective_gain;
+    dsd_neo_aligned_free(s);
+    dsd_test_unsetenv("DSD_NEO_TED_GAIN");
+    dsd_neo_config_init();
+    if (fabsf(got - c.want) > 0.0001f) {
+        DSD_FPRINTF(stderr, "%s: got effective TED gain %.6f want %.6f\n", c.label, got, c.want);
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * Test: once locked (240 processed symbols whose lock metric averages 0.05 or more) the Gardner steps to 0.01 at 4800
+ * and 6000 sym/s while the decoder has proven P25 on the current tune. Without that proof, or with a stale one (another
+ * tuning generation), it keeps the gains it had before the proof existed: 0.025 at 4800, 0.018 at 6000 once locked.
+ * Acquisition (before the lock condition) keeps 0.025 with the proof. A set gain (the demod's, or DSD_NEO_TED_GAIN)
+ * holds with it, and so does every TETRA gain: the chain's 0.07 and a fallback stream's 0.018 at 18000 sym/s (TETRA never
+ * proves P25, but a proof left over must not reach it).
+ */
+static int
+test_gardner_p25_proven_lock_gain(void) {
+    static const gardner_gain_case cases[] = {
+        {"P25p1 proven, locked", 4800, 10, 240, 24.0f, 0.025f, 0, NULL, 0, P25_PROOF_CURRENT, 0.01f},
+        {"P25p2 proven, locked", 6000, 8, 240, 24.0f, 0.025f, 0, NULL, 0, P25_PROOF_CURRENT, 0.01f},
+        {"P25p1 proven, locked, 24 kHz", 4800, 5, 4000, 400.0f, 0.025f, 0, NULL, 0, P25_PROOF_CURRENT, 0.01f},
+        {"P25p2 proven, locked, 24 kHz", 6000, 4, 4000, 400.0f, 0.025f, 0, NULL, 0, P25_PROOF_CURRENT, 0.01f},
+        {"P25p1 unproven, locked", 4800, 10, 240, 24.0f, 0.025f, 0, NULL, 0, P25_PROOF_NONE, 0.025f},
+        {"P25p2 unproven, locked", 6000, 8, 240, 24.0f, 0.025f, 0, NULL, 0, P25_PROOF_NONE, 0.018f},
+        {"P25p1 stale proof, locked", 4800, 10, 240, 24.0f, 0.025f, 0, NULL, 0, P25_PROOF_STALE, 0.025f},
+        {"P25p2 stale proof, locked", 6000, 8, 240, 24.0f, 0.025f, 0, NULL, 0, P25_PROOF_STALE, 0.018f},
+        {"P25p1 proven, 239 symbols", 4800, 10, 239, 239.0f, 0.025f, 0, NULL, 0, P25_PROOF_CURRENT, 0.025f},
+        {"P25p2 proven, 239 symbols", 6000, 8, 239, 239.0f, 0.025f, 0, NULL, 0, P25_PROOF_CURRENT, 0.025f},
+        {"P25p1 proven, metric below 0.05", 4800, 10, 1000, 49.0f, 0.025f, 0, NULL, 0, P25_PROOF_CURRENT, 0.025f},
+        {"P25p2 proven, metric below 0.05", 6000, 8, 1000, 49.0f, 0.025f, 0, NULL, 0, P25_PROOF_CURRENT, 0.025f},
+        {"P25p1 proven, set gain", 4800, 10, 240, 24.0f, 0.031f, 1, NULL, 0, P25_PROOF_CURRENT, 0.031f},
+        {"P25p2 proven, set gain", 6000, 8, 240, 24.0f, 0.031f, 1, NULL, 0, P25_PROOF_CURRENT, 0.031f},
+        {"P25p2 proven, DSD_NEO_TED_GAIN", 6000, 8, 240, 24.0f, 0.04f, 0, "0.04", 0, P25_PROOF_CURRENT, 0.04f},
+        {"TETRA chain proven", 18000, 4, 240, 24.0f, 0.025f, 0, NULL, 1, P25_PROOF_CURRENT, 0.07f},
+        {"TETRA chain proven, set gain", 18000, 4, 240, 24.0f, 0.031f, 1, NULL, 1, P25_PROOF_CURRENT, 0.031f},
+        {"TETRA fallback proven", 18000, 4, 240, 24.0f, 0.025f, 0, NULL, 0, P25_PROOF_CURRENT, 0.018f},
+        {"TETRA fallback proven, 3 sps", 18000, 3, 240, 24.0f, 0.025f, 0, NULL, 0, P25_PROOF_CURRENT, 0.018f},
+    };
+    int rc = 0;
+    for (const gardner_gain_case& c : cases) {
+        rc |= expect_gardner_gain(c);
+    }
+    return rc;
+}
+
+/* Diagonal QPSK symbols at @p sps samples each, linearly interpolated between symbol centres. */
+static std::vector<float>
+gardner_qpsk_stream(int sps, int n_syms) {
+    std::vector<float> sym_r((size_t)n_syms + 1U);
+    std::vector<float> sym_j((size_t)n_syms + 1U);
+    uint32_t lcg = 0x13579BDFu;
+    for (int k = 0; k <= n_syms; k++) {
+        lcg = lcg * 1664525u + 1013904223u;
+        sym_r[(size_t)k] = (lcg & 0x10000u) ? 0.7f : -0.7f;
+        sym_j[(size_t)k] = (lcg & 0x20000u) ? 0.7f : -0.7f;
+    }
+    std::vector<float> iq((size_t)n_syms * (size_t)sps * 2U);
+    for (int n = 0; n < n_syms * sps; n++) {
+        const int k = n / sps;
+        const float f = (float)(n % sps) / (float)sps;
+        iq[(size_t)n * 2U] = (1.0f - f) * sym_r[(size_t)k] + f * sym_r[(size_t)k + 1];
+        iq[((size_t)n * 2U) + 1U] = (1.0f - f) * sym_j[(size_t)k] + f * sym_j[(size_t)k + 1];
+    }
+    return iq;
+}
+
+/*
+ * Test: the proof is read once per block, at its start, like the lock: a stream of 50-symbol blocks acquires at 0.025,
+ * steps to 0.01 at the first block that starts locked with the proof, goes back to the unproven gain at the first block
+ * after the decoder withdraws the proof, to 0.01 again after it proves P25 anew, and back once a tune leaves the proof
+ * stale. Each block's gain is the one the lock and the proof at its start decide.
+ */
+/* The decoder's doing before block @p b: it withdraws the proof before block 9 (a profile change, say), proves P25
+ * again before block 11 (a validated frame), and a tune completes before block 13, leaving the proof stale. Returns
+ * whether the proof holds for block @p b. */
+static int
+gardner_p25_proof_at_block(demod_state* s, int b) {
+    if (b == 9) {
+        gardner_set_p25_proof(s, P25_PROOF_NONE);
+    } else if (b == 11) {
+        gardner_set_p25_proof(s, P25_PROOF_CURRENT);
+    } else if (b == 13) {
+        dsd_trunk_tuning_generation_advance();
+    }
+    return (b < 9 || (b >= 11 && b < 13)) ? 1 : 0;
+}
+
+/* Whether the lock condition holds at the start of the next block. */
+static int
+gardner_block_starts_locked(const demod_state* s) {
+    const int count = s->ted_state.lock_count;
+    return count >= 240 && s->ted_state.lock_accum / (float)count >= 0.05f;
+}
+
+static int
+gardner_p25_proof_blocks(int symbol_rate, int sps, float unproven_locked) {
+    dsd_test_unsetenv("DSD_NEO_TED_GAIN");
+    dsd_neo_config_init();
+    const int block_syms = 50;
+    const int blocks = 16;
+    const std::vector<float> stream = gardner_qpsk_stream(sps, block_syms * blocks);
+    demod_state* s = alloc_state();
+    if (!s) {
+        DSD_FPRINTF(stderr, "state alloc failed\n");
+        return 1;
+    }
+    s->cqpsk_enable = 1;
+    s->complex_rate = symbol_rate * sps;
+    s->rate_out = s->complex_rate;
+    s->ted_sps = sps;
+    s->ted_gain = 0.025f;
+    gardner_set_p25_proof(s, P25_PROOF_CURRENT);
+    std::vector<float> work((size_t)block_syms * (size_t)sps * 2U);
+    int rc = 0;
+    int proven_blocks = 0;
+    int acquiring_blocks = 0;
+    for (int b = 0; b < blocks; b++) {
+        const int proven = gardner_p25_proof_at_block(s, b);
+        const int locked = gardner_block_starts_locked(s);
+        const float want = !locked ? 0.025f : (proven ? 0.01f : unproven_locked);
+        DSD_MEMCPY(work.data(), stream.data() + (size_t)b * work.size(), work.size() * sizeof(float));
+        s->lowpassed = work.data();
+        s->lp_len = (int)work.size();
+        op25_gardner_cc(s);
+        if (fabsf(s->ted_effective_gain - want) > 0.0001f) {
+            DSD_FPRINTF(stderr, "GARDNER P25 PROOF %d sym/s block %d: gain %.6f want %.6f (locked %d proven %d)\n",
+                        symbol_rate, b, s->ted_effective_gain, want, locked, proven);
+            rc = 1;
+        }
+        proven_blocks += locked && proven;
+        acquiring_blocks += !locked;
+    }
+    dsd_neo_aligned_free(s);
+    /* Not vacuous: the stream acquired, then locked with the proof before it was withdrawn and after it came back. */
+    if (acquiring_blocks == 0 || proven_blocks < 3) {
+        DSD_FPRINTF(stderr, "GARDNER P25 PROOF %d sym/s: %d acquiring and %d proven locked blocks\n", symbol_rate,
+                    acquiring_blocks, proven_blocks);
+        rc = 1;
+    }
+    return rc;
+}
+
+static int
+test_gardner_p25_proof_per_block(void) {
+    int rc = 0;
+    rc |= gardner_p25_proof_blocks(4800, 5, 0.025f);
+    rc |= gardner_p25_proof_blocks(6000, 4, 0.018f);
+    return rc;
+}
+
 /*
  * Test: on the TETRA chain a Costas phase driven past its +-pi/2 rail steps a quarter turn back, to the same lock of the
  * quarter-turn detector, and the loop settles there; it is not pinned at the rail with its frequency wound up. The
@@ -1317,9 +1539,13 @@ gardner_split_state(void) {
     if (s) {
         s->cqpsk_enable = 1;
         s->ted_sps = kGardnerSps;
-        s->rate_out = 4800 * kGardnerSps; /* P25p1: below the adaptive gain's symbol rate, so the gain holds */
+        /* P25p1 with no P25 proof: below 5500 sym/s the gain then holds at 0.025 whatever the lock, so the cut cannot
+           move it. With a proof it steps once locked, at the first block that starts locked
+           (test_gardner_p25_proof_per_block()), and where the stream is cut decides which block that is. */
+        s->rate_out = 4800 * kGardnerSps;
         s->complex_rate = 4800 * kGardnerSps;
         s->ted_gain = 0.025f;
+        s->p25_timing_proof.store(0U);
     }
     return s;
 }
@@ -1692,6 +1918,12 @@ main(void) {
         return 1;
     }
     if (test_tetra_chain_gardner_gain() != 0) {
+        return 1;
+    }
+    if (test_gardner_p25_proven_lock_gain() != 0) {
+        return 1;
+    }
+    if (test_gardner_p25_proof_per_block() != 0) {
         return 1;
     }
     if (test_tetra_chain_costas_steps_off_rail() != 0) {

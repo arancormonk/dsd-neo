@@ -21,6 +21,8 @@
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
 #include <dsd-neo/protocol/p25/p25p1_nid_verdict.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <mbelib-neo/mbelib.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -520,18 +522,24 @@ p25p1_decoded_unit_dibits(const dsd_state* state, uint8_t duid) {
 }
 
 /* Tell the frame sync what the frame was: one that validated (p25p1_nid_verdict_validates()) and was read whole
-   anchors the next data unit's sync where it ends (dsd_p25p1_sync_anchor). */
+   anchors the next data unit's sync where it ends (dsd_p25p1_sync_anchor), and proves the carrier P25 to the CQPSK
+   timing loop for @p tune_generation, the tune it was synced on (dsd_rtl_stream_metrics_hook_note_p25_proven()). */
 static void
-p25p1_note_frame_decoded(dsd_state* state, uint8_t duid, const p25p1_nid_verdict* verdict) {
+p25p1_note_frame_decoded(dsd_state* state, uint8_t duid, const p25p1_nid_verdict* verdict, uint64_t tune_generation) {
     /* A frame an input interruption cut was not read whole; a carrier boundary inside it fails the frame sync's own
        context check. */
     const int validated =
         duid != P25P1_DUID_INVALID && p25p1_nid_verdict_validates(verdict) && !state->input_interrupted;
     dsd_frame_sync_p25p1_frame_decoded(state, verdict->nac, validated ? p25p1_decoded_unit_dibits(state, duid) : 0U);
+    if (validated) {
+        dsd_rtl_stream_metrics_hook_note_p25_proven(tune_generation);
+    }
 }
 
 dsd_frame_verdict
 dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
+    /* The tune the frame was synced on: its handler may tune away (a grant) before the frame is reported. */
+    const uint64_t tune_generation = dsd_trunk_tuning_generation();
     p25_status_accum_reset(state);
     p25p1_sync_acceptance sync;
     sync.nac = dsd_frame_sync_p25p1_tolerant_nac(state, &sync.bit_errors);
@@ -574,7 +582,7 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     }
     state->p25_p1_unit_dibits = 0U;
     p25p1_dispatch_by_duid(opts, state, duid);
-    p25p1_note_frame_decoded(state, duid, &verdict);
+    p25p1_note_frame_decoded(state, duid, &verdict, tune_generation);
     /* The 63-bit BCH over the NID is the one verdict this path has that covers every DUID.
      * When it fails the DUID is invalid, p25p1_handle_unknown_duid() decodes nothing, and
      * the 33 dibits already read validated nothing. Past that the picture is mixed --

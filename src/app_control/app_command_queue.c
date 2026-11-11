@@ -91,6 +91,7 @@
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rigctl_passband.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/signal_search.h>
@@ -9754,7 +9755,9 @@ ui_cfg_note_refused_row(dsd_opts* opts, dsd_state* state, int radio_rc) {
    capture clock, issue #572), and one that changed the decode mode a decode-mode change, which
    forgets the tone too. Out of the analog monitor nothing else forgets it before the row can
    come back, since no monitor block need arrive in between. An unrelated settings change keeps
-   it, including the mode every runtime apply restates. */
+   it, including the mode every runtime apply restates. A decode-mode change also withdraws the
+   proof that the carrier is P25 from the CQPSK timing loop, as the command's acquisition reset
+   does (dsd_frame_sync_reset_acquisition()). */
 static void
 cfg_forget_rx_tone_on_boundary(dsd_opts* opts, dsd_state* state, int old_audio_in_type, const char* old_audio_in_dev,
                                dsdneoUserDecodeMode old_decode_mode) {
@@ -9763,6 +9766,7 @@ cfg_forget_rx_tone_on_boundary(dsd_opts* opts, dsd_state* state, int old_audio_i
         ui_input_left(opts, state);
     } else if (dsd_infer_decode_mode_preset_exact(opts) != old_decode_mode) {
         dsd_analog_rx_reset(state);
+        dsd_rtl_stream_metrics_hook_forget_p25_proof();
     }
 }
 

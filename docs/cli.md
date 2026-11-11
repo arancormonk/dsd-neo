@@ -2129,7 +2129,8 @@ setting, shown apart from what is received, and it is off by default: then the o
   first moments before its C_ALOHA arrives, read as standard. Sites are told apart by the values sent, never by this
   text. Capacity Plus and Connect Plus numbers are shown as sent.
 - Env (CQPSK timing):
-  - `DSD_NEO_TED_GAIN=<float>` overrides the CQPSK/OP25 Gardner timing loop gain.
+  - `DSD_NEO_TED_GAIN=<float>` overrides the CQPSK/OP25 Gardner timing loop gain, including the lower gains it steps to
+    once locked ("CQPSK timing" below).
   - When using RTL CQPSK input, the symbol sampler may gently nudge `symbolCenter` based on the smoothed CQPSK Gardner residual.
   - If you are debugging symbol-center drift, consider freezing windows (`DSD_NEO_WINDOW_FREEZE=1`) while testing.
 
@@ -2951,9 +2952,19 @@ from the active SPS hunt profile rather than from the front end's published symb
 Gardner/Costas/FLL-band-edge symbol chain.
 
 - `DSD_NEO_TED_GAIN=<float>` — CQPSK/OP25 Gardner timing loop gain override, 0.01 to 0.5 (the menu's range; a value
-  outside it is taken as the nearest end, and one that is not a number is ignored). Without it the gain is OP25's
-  0.025, and the TETRA receive chain's own 0.07 while that chain runs (`-fT`). The terminal's CQPSK timing gain menu
-  row and the DSP panel's `g:` show the gain set, or 0.025 when none is, also while the TETRA chain runs 0.07
+  outside it is taken as the nearest end, and one that is not a number is ignored). A set gain holds throughout.
+  Without it the gain is OP25's 0.025 while the loop acquires, and the TETRA receive chain's own 0.07 while that chain
+  runs (`-fT`). Once the loop has locked (240 symbols whose lock measure averages 0.05 or more, counted since it last
+  started over, so a fade later is judged against that history), the gain steps lower:
+  - to 0.01 at 4800 and 6000 sym/s while dsd-neo has proven the carrier P25 since the last tune: a Phase 1 frame
+    whose NID passed, or a Phase 2 MAC PDU that passed its CRC (or a Phase 2 window a near-miss sync opened that passed
+    its checks). The slower gain holds the timing the lock found instead of following a simulcast site's echoes from
+    symbol to symbol. A tune, a lost carrier, a symbol rate or modulation change and a decode-mode switch withdraw the
+    proof, and the gain goes back to 0.025 until a P25 frame proves the carrier again.
+  - otherwise (X2-TDMA, Auto's CQPSK trial before a P25 frame decodes, DMR and NXDN through `-mq`), to 0.018 at 5500
+    sym/s and above, and not at all below.
+  The terminal's CQPSK timing gain menu row and the DSP panel's `g:` show the gain set, or 0.025 when none is, also
+  while the loop runs a post-lock gain or the TETRA chain runs 0.07
 - `DSD_NEO_IQ_DC_BLOCK=1` — enable DC blocker
 - `DSD_NEO_IQ_DC_SHIFT=<k>` — DC shift coefficient
 

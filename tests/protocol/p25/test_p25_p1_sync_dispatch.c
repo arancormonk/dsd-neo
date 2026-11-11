@@ -24,7 +24,9 @@
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -54,6 +56,12 @@ static int g_interrupt_at_dibit = -1;
    none. */
 static int g_boundary_at_dibit = -1;
 
+/* The P25 proofs the dispatcher gave the CQPSK timing loop, and the tuning generation of the last. */
+static int g_p25_proofs;
+static uint64_t g_p25_proof_generation;
+/* processTSBK() completes a tune (a grant's) when set, as a handler that follows a grant does. */
+static int g_tsbk_tunes;
+
 static void
 reset_stub_state(void) {
     g_dibit_reads = 0;
@@ -71,6 +79,9 @@ reset_stub_state(void) {
     g_close_mbe_r_calls = 0;
     g_resume_calls = 0;
     g_status_classify_calls = 0;
+    g_p25_proofs = 0;
+    g_p25_proof_generation = 0U;
+    g_tsbk_tunes = 0;
 }
 
 int
@@ -115,6 +126,12 @@ printFrameInfo(dsd_opts* opts, dsd_state* state) {
 void
 dsd_frame_sync_p25p1_mod_compare_publish(const dsd_state* state) {
     (void)state;
+}
+
+void
+dsd_rtl_stream_metrics_hook_note_p25_proven(uint64_t tune_generation) {
+    g_p25_proofs++;
+    g_p25_proof_generation = tune_generation;
 }
 
 /* The real P25p1 sync anchor (frame_sync_p25p1_anchor.c) reads whether an off-thread tune awaits reconciling. */
@@ -247,6 +264,9 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
     state->lastp25type = 3;
     g_tsbk_frame_nac_valid = state->p25_frame_nac_valid;
     p25_search_note_p1_network_code(state, 0xBEE00U, 0x1A3U);
+    if (g_tsbk_tunes) {
+        dsd_trunk_tuning_generation_advance();
+    }
 }
 
 void
@@ -1018,6 +1038,64 @@ test_p25p1_nid_is_no_phase2_proof(void) {
     assert(dsd_access_code_current(&state, DSD_SYNC_P25P2_POS, 0U, 0U, NULL, &value) == 0);
 }
 
+/* A frame that validates (p25p1_nid_verdict_validates()) proves the carrier P25 to the CQPSK timing loop on the tune it
+   was synced on, so the Gardner may step to its P25 post-lock gain; nothing else does: a failed, borrowed, unusable or
+   cut NID. A handler that tunes away (a grant) leaves the proof with the generation the frame was synced on, stale on
+   the channel reached. */
+static void
+test_p25p1_validated_frame_proves_p25(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.rf_mod = 1;
+    const uint64_t generation = dsd_trunk_tuning_generation();
+    (void)dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(g_p25_proofs == 1 && g_p25_proof_generation == generation);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.synctype = DSD_SYNC_P25P1_POS;
+    g_check_result = NID_DECODE_FAIL;
+    (void)dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(g_p25_proofs == 0);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.nac = 0x293;
+    g_nac_borrowed = 1;
+    (void)dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(g_p25_proofs == 0);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.synctype = DSD_SYNC_P25P1_POS;
+    g_new_nac = 0xFFF;
+    (void)dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(g_p25_proofs == 0);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.synctype = DSD_SYNC_P25P1_POS;
+    g_interrupt_at_dibit = 15;
+    (void)dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(g_p25_proofs == 0);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.synctype = DSD_SYNC_P25P1_POS;
+    g_test_duid = 0x7U;
+    g_tsbk_tunes = 1;
+    const uint64_t synced_on = dsd_trunk_tuning_generation();
+    (void)dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(dsd_trunk_tuning_generation() == synced_on + 1U);
+    assert(g_p25_proofs == 1 && g_p25_proof_generation == synced_on);
+}
+
 int
 main(void) {
     test_sync_pattern_lengths();
@@ -1038,6 +1116,7 @@ main(void) {
     test_p25p1_nid_cut_by_an_input_interruption_decodes_nothing();
     test_p25p1_nid_split_by_a_carrier_boundary_notes_no_nac();
     test_p25p1_decoded_nid_ends_the_two_slot_carrier();
+    test_p25p1_validated_frame_proves_p25();
     printf("P25_P1_SYNC_DISPATCH: OK\n");
     return 0;
 }

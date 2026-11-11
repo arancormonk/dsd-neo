@@ -4575,6 +4575,60 @@ test_config_apply_mode_change_clears_received_tone(void) {
     return rc;
 }
 
+/* What the decoder handed the CQPSK timing loop as its P25 proof: the calls, and the last value (0 = withdrawn). */
+static int g_p25_proof_calls;
+static uint64_t g_p25_proof_last = 1U;
+
+static void
+capture_p25_proof(uint64_t proof) {
+    g_p25_proof_calls++;
+    g_p25_proof_last = proof;
+}
+
+static void
+arm_p25_proof_capture(void) {
+    g_p25_proof_calls = 0;
+    g_p25_proof_last = 1U;
+}
+
+/* A decode-mode switch withdraws the proof that the carrier is P25, which the CQPSK timing loop's post-lock gain
+   follows: the command's acquisition reset does, and so does a config apply that changes the mode. One that restates the
+   mode in force keeps it. */
+static int
+test_decode_mode_switch_withdraws_p25_proof(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_rtl_stream_metrics_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.p25_timing_proof = capture_p25_proof;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("p25 proof: P25 set up",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_P25P1, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+    arm_p25_proof_capture();
+    rc |= expect_int("p25 proof: mode change queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("p25 proof: mode change drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("p25 proof: the mode command withdraws it", g_p25_proof_calls > 0 && g_p25_proof_last == 0U);
+    freeState(&state);
+
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("p25 proof: P25 set up for the config",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_P25P1, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+    arm_p25_proof_capture();
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_P25P1, "p25 proof: config restating P25");
+    rc |= expect_int("p25 proof: a config restating the mode keeps it", g_p25_proof_calls, 0);
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_DMR, "p25 proof: config to dmr");
+    rc |= expect_true("p25 proof: a config changing the mode withdraws it",
+                      g_p25_proof_calls > 0 && g_p25_proof_last == 0U);
+    freeState(&state);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    return rc;
+}
+
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /*
  * Connecting TCP audio -- from the settings form with a host and port, or the menu's
@@ -30119,6 +30173,7 @@ main(void) {
     rc |= test_config_reopen_failures_keep_the_input();
     rc |= test_config_apply_input_change_clears_received_tone();
     rc |= test_config_apply_mode_change_clears_received_tone();
+    rc |= test_decode_mode_switch_withdraws_p25_proof();
     rc |= test_failed_config_reopen_stages_no_file_rate();
     rc |= test_config_without_decode_keeps_file_timing();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP

@@ -95,6 +95,7 @@ dsd_engine_rtl_stream_metrics_hooks_install(void) {
     hooks.snr_qpsk_const_db = rtl_stream_estimate_snr_qpsk_const;
     hooks.p25p1_ber_update = rtl_stream_p25p1_ber_update;
     hooks.p25p2_err_update = rtl_stream_p25p2_err_update;
+    hooks.p25_timing_proof = rtl_stream_set_p25_timing_proof;
     hooks.stream_active = rtl_stream_is_active;
     hooks.input_level = rtl_stream_get_input_level;
     hooks.set_channel_squelch = rtl_stream_metrics_set_channel_squelch;

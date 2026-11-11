@@ -32,6 +32,7 @@
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
@@ -257,13 +258,15 @@ fresh_decoder(void) {
 
 /* The opcode of the MAC PDU a built window's signalling carries. */
 static int g_mac_opcode = MAC_IDLE;
+/* Cleared: the built MAC PDUs carry no CRC, so each fails its checksum behind a clean R-S word. */
+static int g_mac_fill_crc = 1;
 
-/* A MAC PDU (g_mac_opcode) whose payload varies by @p salt, CRC filled. */
+/* A MAC PDU (g_mac_opcode) whose payload varies by @p salt, CRC filled (unless g_mac_fill_crc is cleared). */
 static void
 idle_slot(p25p2_bb_slot* slot, int duid, int salt) {
     DSD_MEMSET(slot, 0, sizeof(*slot));
     slot->duid = duid;
-    slot->fill_crc = 1;
+    slot->fill_crc = g_mac_fill_crc;
     slot->mac[0] = (uint8_t)(g_mac_opcode << 5);
     for (int i = 1; i < 18; i++) {
         slot->mac[i] = (uint8_t)((salt * 37) + (i * 11));
@@ -883,6 +886,83 @@ test_cut_window_charged_as_exact(void) {
     return rc;
 }
 
+/* What the windows handed the CQPSK timing loop as their P25 proof: the calls, and the generation of the last. */
+static int g_p25_proofs;
+static uint64_t g_p25_proof;
+
+static void
+capture_p25_proof(uint64_t proof) {
+    g_p25_proofs++;
+    g_p25_proof = proof;
+}
+
+/* A window proves the carrier P25 to the CQPSK timing loop, once, when it is done: one with a MAC PDU that passed its
+   CRC, or one a tolerant sync opened whose verdict passed, on the tuning generation it was dispatched on. A window of
+   voice alone behind an exact sync proves nothing, nor does one whose MAC PDUs failed their CRC, a window whose verdict
+   failed, or one a burst of which tuned away. */
+static int
+test_window_proves_p25(void) {
+    dsd_rtl_stream_metrics_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.p25_timing_proof = capture_p25_proof;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    int rc = 0;
+
+    fresh_decoder();
+    g_p25_proofs = 0;
+    build(2, 0);
+    sync_exact();
+    rc |= expect("MAC window dispatches", feed() == P25P2_WINDOW_DISPATCHED);
+    rc |= expect("a MAC PDU that passed its CRC proves P25 once",
+                 g_p25_proofs == 1 && g_p25_proof == dsd_trunk_tuning_generation() + 1U);
+
+    fresh_decoder();
+    g_p25_proofs = 0;
+    build(2, 1);
+    sync_exact();
+    rc |= expect("voice window dispatches", feed() == P25P2_WINDOW_DISPATCHED);
+    rc |= expect("voice alone behind an exact sync proves nothing", g_p25_proofs == 0);
+
+    fresh_decoder();
+    g_p25_proofs = 0;
+    g_mac_fill_crc = 0;
+    build(2, 0);
+    g_mac_fill_crc = 1;
+    sync_exact();
+    rc |= expect("CRC-failed window dispatches", feed() == P25P2_WINDOW_DISPATCHED);
+    rc |= expect("MAC PDUs that failed their CRC prove nothing", g_p25_proofs == 0);
+
+    fresh_decoder();
+    rc |= anchored_by_exact_window_of(1);
+    g_p25_proofs = 0;
+    rc |= expect("tolerant sync", sync_tolerant(2) == 6);
+    build(6, 1);
+    rc |= expect("tolerant voice window passes", feed() == P25P2_WINDOW_DISPATCHED);
+    rc |= expect("a passed verdict proves P25", g_p25_proofs == 1 && g_p25_proof == dsd_trunk_tuning_generation() + 1U);
+
+    fresh_decoder();
+    rc |= anchored_by_exact_window_of(1);
+    g_p25_proofs = 0;
+    rc |= expect("tolerant sync", sync_tolerant(2) == 6);
+    build(6, 0);
+    set_isch(0, 0U);
+    set_isch(1, 0U);
+    set_isch(2, 0U);
+    rc |= expect("failed window rejected", feed() == P25P2_WINDOW_REJECTED);
+    rc |= expect("a failed verdict proves nothing", g_p25_proofs == 0);
+
+    fresh_decoder();
+    g_p25_proofs = 0;
+    build(2, 0);
+    sync_exact();
+    g_vpdu_retunes = 1;
+    rc |= expect("retuning window dispatches", feed() == P25P2_WINDOW_DISPATCHED);
+    rc |= expect("a window that tuned away proves nothing", g_p25_proofs == 0);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    return rc;
+}
+
 /* The fourth ISCH a window would hold (bits 1400-1439, the next sync) is never read, whatever p2bit holds there: a
    channel-1 I-ISCH placed there does not position a window its own ISCHs leave to continuity. */
 static int
@@ -926,6 +1006,7 @@ main(void) {
     rc |= test_context_fails_verdict();
     rc |= test_cut_window_charged_as_exact();
     rc |= test_fourth_isch_ignored();
+    rc |= test_window_proves_p25();
     dsd_frame_sync_hooks_set(&saved_hooks);
     dsd_state_ext_free_all(g_state);
     free(g_state->event_history_s);

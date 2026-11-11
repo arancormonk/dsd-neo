@@ -3431,6 +3431,24 @@ suite runs under this compiler.
     issue #518 follow-up), which a scan scope's push uses for every setting, levels included; a table without it falls
     back to the level call, with an AUTO setting off. Tests: `RUNTIME_RTL_STREAM_METRICS_HOOKS`,
     `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL`.
+  - The P25 timing proof (`p25_timing_proof`, `dsd_rtl_stream_metrics_hook_note_p25_proven()` /
+    `dsd_rtl_stream_metrics_hook_forget_p25_proof()`): the decoder thread's word to the CQPSK Gardner that the carrier
+    is P25, which lets its gain step to 0.01 once locked (DSP, "CQPSK Gardner" below). The value is the tuning
+    generation (`dsd_trunk_tuning_generation()`) the proving frame was synced on, plus 1, or 0 for none; the engine
+    installs `rtl_stream_set_p25_timing_proof()`, an atomic store into `demod_state::p25_timing_proof`, and the
+    default is a no-op, so headless and test builds keep the gains of before. Set by a P25p1 frame that validated
+    (`p25p1_note_frame_decoded()`: `p25p1_nid_verdict_validates()`, not cut) and by a P25p2 window with a MAC PDU
+    whose CRC passed or a tolerant window whose verdict passed (`p25p2_window_done()`, not when the window retuned);
+    both pass the generation read before the frame's handlers ran, so a frame whose grant tuned away leaves a stale
+    proof. Withdrawn by `dsd_frame_sync_reset_mod_state()` (every accepted tune, a CC change, the acquisition reset of
+    a scan row or target, an input boundary or a decode-mode command; a symbol profile change), by every move of
+    `rf_mod` in the frame sync (`frame_sync_move_rf_mod()`: a vote's switch, a P25p1 chain step or CQPSK probe, a
+    P25p2 or DMR accept, the TETRA profile), by the no-carrier pass (`no_carrier_reset_decode_state()`), by
+    `dsd_engine_forget_carrier_decoding()` (every carrier boundary, a stream gap included) and by a config apply that
+    changes the decode mode (`cfg_forget_rx_tone_on_boundary()`). X2-TDMA, DMR and NXDN under `-mq`, Auto's CQPSK
+    trial before a P25 frame validates and TETRA never set it. Tests: `P25_P1_SYNC_DISPATCH`, `P25_P2_TOLERANT_WINDOW`
+    (set), `FRAME_SYNC_P25_TIMING_PROOF`, `ENGINE_P25_TIMING_PROOF`, `APP_COMMAND_QUEUE` (withdrawn),
+    `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL` (the installation).
   - Stream notices and reads with no stream (issue #518): `include/dsd-neo/runtime/stream_notice_hooks.h` carries what
     the input stream got over by itself (`DSD_STREAM_NOTICE_USB_RECOVERED`, `DSD_STREAM_NOTICE_CAPTURE_STOPPED`),
     posted from the stream's controller with `dsd_runtime_stream_notice_post()` into the sink app-control installs at
@@ -7084,6 +7102,18 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     that buffer's capacity. Only its adaptive gain is decided per block, and not on the TETRA chain, which keeps one
     gain (TETRA receive chain above). Test: `DSP_COSTAS` (1-, 2- and 3-pair blocks, warm and cold, from
     each buffer, bit-exact against the whole stream).
+  - The Gardner gain rule (`op25_gardner_gain_mu_for_lock()`): a set gain (`ted_gain_is_set`, `DSD_NEO_TED_GAIN`)
+    holds; the TETRA chain runs `kTetraGardnerGain`; otherwise 0.025 until the lock condition holds: 240 processed
+    symbols whose lock metric (`lock_accum` over `lock_count`) averages 0.05 or more, accumulated since the TED last
+    started over (a retune, a reset), not 240 consecutive locked symbols, so a fade after a long lock is judged against
+    that history. From there `kP25ProvenLockGain` (0.01) at 4800 and 6000 sym/s (`cqpsk_rate_is_p25()`, within 10% of
+    either) while the decoder's P25 timing proof holds for the current tuning generation (Runtime, "The P25 timing
+    proof" above; `gardner_p25_proven()`: one atomic load per block, the generation's only behind a proof, a stale one
+    counts as none); without it 0.018 at 5500 sym/s and above and the requested gain below, as before the proof
+    existed. The rate alone never selects the step (X2-TDMA shares 4800/4). An uplink session decides its gain without
+    the proof (TETRA never proves P25). Tests: `DSP_COSTAS` (values with, without and with a stale proof at 4800 and
+    6000, before the lock, set gains, the TETRA chain and a TETRA fallback stream; the proof taken per block),
+    `DSP_TETRA_CHAIN` (a proof changes no symbol of the chain or an uplink session).
   - The post-demod audio decimator (`full_demod_apply_post_audio_decimation()`, only on an I/Q replay whose sidecar
     sets `post_downsample` above 1; every live source and committed fixture runs 1; only the audio monitor runs it:
     the FSK discriminator and the CQPSK chain emit at `complex_rate`) streams on both paths: the 16-tap

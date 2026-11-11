@@ -330,6 +330,10 @@ static struct {
 /* A channel-1 I-ISCH in the window being collected set p2_scramble_offset. */
 static int s_isch_located = 0;
 
+/* The window being dispatched proved the carrier P25: a MAC PDU of it passed its CRC, or a tolerant sync opened it and
+   its verdict passed. Reported to the CQPSK timing loop when the window is done (p25p2_window_done()). */
+static int s_window_proves_p25 = 0;
+
 // Reset all P25P2 frame processing global state variables.
 // This must be called when tuning to a new P25P2 voice channel to clear stale
 // data from the previous channel that would otherwise cause decode failures.
@@ -645,6 +649,10 @@ static void
 p25p2_acch_note_evidence(const dsd_state* state, const p25p2_acch_verdict* verdict, int mac_slot) {
     if (verdict->checksum_ok && verdict->kind != P25P2_ACCH_LCCH) {
         p25_sm_note_traffic_activity(state, mac_slot);
+    }
+    /* Any of them, an LCCH too, is P25 on the carrier: proof for the CQPSK timing loop. */
+    if (verdict->checksum_ok) {
+        s_window_proves_p25 = 1;
     }
 }
 
@@ -2086,6 +2094,10 @@ p25p2_window_done(dsd_state* state, uint32_t entry_symbol, const p25p2_retune_to
     s_window_proven = 1;
     p25p2_window_set_slot_unproven(0);
     dsd_frame_sync_p25p2_window_decoded(state, 1, retuned ? -1 : anchor_start);
+    /* A window that tuned away (a grant) proves nothing about the carrier reached. */
+    if (s_window_proves_p25 && !retuned) {
+        dsd_rtl_stream_metrics_hook_note_p25_proven(window_token->tune_generation);
+    }
 }
 
 /* Collect the window behind a P25p2 sync (four timeslots and the three ISCHs between them) and dispatch it. Returns
@@ -2104,6 +2116,9 @@ processP2(dsd_opts* opts, dsd_state* state) {
     if (!p25p2_admit_window(opts, state, entry_symbol, tolerant_start, entry_stereo)) {
         return P25P2_WINDOW_REJECTED;
     }
+    /* A window a tolerant sync opened has passed its verdict here: P25 on the carrier. An exact one proves it with a
+       MAC PDU's CRC. */
+    s_window_proves_p25 = tolerant_start >= 0;
 
     //look at our ISCH values and determine location in superframe before running frame scramble
     s_isch_located = 0;

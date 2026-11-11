@@ -8673,6 +8673,25 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
 endif()
 
 # The engine commits and publishes the last call before the frontends' stop hooks.
+# A no-carrier exit and every carrier boundary that leaves the carrier withdraw the P25 proof the CQPSK timing loop's
+# post-lock gain follows; a stream gap on the same carrier keeps it.
+add_executable(
+    dsd-neo_test_engine_p25_timing_proof
+    engine/test_engine_p25_timing_proof.c
+)
+target_include_directories(
+    dsd-neo_test_engine_p25_timing_proof
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_engine_p25_timing_proof
+    PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
+)
+add_test(
+    NAME ENGINE_P25_TIMING_PROOF
+    COMMAND dsd-neo_test_engine_p25_timing_proof
+)
+
 add_executable(
     dsd-neo_test_engine_lifecycle_finalize
     engine/test_engine_lifecycle_finalize.c
@@ -15671,6 +15690,39 @@ target_link_libraries(
         ${LIBSNDFILE_LIBRARIES}
 )
 add_test(NAME FRAME_SYNC_P25_ANCHOR COMMAND dsd-neo_test_frame_sync_p25_anchor)
+
+# The frame sync withdraws the P25 proof the CQPSK timing loop's post-lock gain follows at every acquisition restart,
+# symbol profile change and modulation move, and keeps it while a carrier decodes P25.
+add_executable(
+    dsd-neo_test_frame_sync_p25_timing_proof
+    dsp/test_frame_sync_p25_timing_proof.c
+    test_support/frame_sync_dsp_stubs.c
+    test_support/frame_sync_dibit_stubs.c
+)
+if(DSD_HAS_RADIO)
+    target_compile_definitions(
+        dsd-neo_test_frame_sync_p25_timing_proof
+        PRIVATE USE_RADIO
+    )
+endif()
+target_include_directories(
+    dsd-neo_test_frame_sync_p25_timing_proof
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_frame_sync_p25_timing_proof
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
+        dsd-neo_test_audio_sink
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(
+    NAME FRAME_SYNC_P25_TIMING_PROOF
+    COMMAND dsd-neo_test_frame_sync_p25_timing_proof
+)
 
 # The P25 Phase 2 sync anchor: after a window its own I-ISCH placed, the hunt accepts a sync word within a few bit
 # errors where the next window's sync must be, and only there.

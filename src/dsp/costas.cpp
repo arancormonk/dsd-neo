@@ -18,6 +18,7 @@
  */
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -27,6 +28,7 @@
 #include <dsd-neo/dsp/tetra_uplink_timing.h>
 #include <dsd-neo/platform/fp_opaque.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <iterator>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/dsp/ted.h"
@@ -247,13 +249,44 @@ cqpsk_symbol_rate_hz(const demod_state* d) {
    250 ppm off decoded 73 BSCH at 0.025, 79 at 0.07), and decoded less at every rate from 36 to 144 kHz. */
 static const float kTetraGardnerGain = 0.07f;
 
-/* The Gardner gain: the requested one (ted_gain, else 0.025), lowered to 0.018 at 5500 sym/s and above once 240 symbols
-   in the lock metric (@p lock_accum over @p lock_count) holds at 0.05, unless a gain was set. A block decides it from
-   the lock at its start, so where a block starts decides when it moves; the TETRA chain, whose output must not depend
-   on the cut, keeps its gain, a set one or kTetraGardnerGain (on TETRA captures the lowered one also decoded less),
-   and an uplink session decides it every DSD_TETRA_UL_GAIN_SYMBOLS symbols instead (gardner_run_loop()). */
+/* The Gardner gain once the loop has locked on a carrier the decoder proved P25 on this tune. Slower than 0.018 and
+   0.025, it holds the timing a lock found instead of following simulcast's delay spread from symbol to symbol: on site A
+   captures it decoded 4-8% more P25p1 TSBKs, and more P25p2 frames with fewer R-S failures, than the
+   gains it replaces; on single-site captures it decoded the same. Acquisition keeps 0.025, as 0.01 would find timing
+   too slowly. */
+static const float kP25ProvenLockGain = 0.01f;
+
+/* Whether @p rate_hz is a P25 CQPSK symbol rate, Phase 1's 4800 sym/s or Phase 2's 6000, within the rounding an integer
+   samples-per-symbol leaves at the demod rate. The rate alone says nothing of the protocol (X2-TDMA runs at 4800): the
+   decoder's proof does. */
+static bool
+cqpsk_rate_is_p25(int rate_hz) {
+    return (rate_hz >= 4320 && rate_hz <= 5280) || (rate_hz >= 5400 && rate_hz <= 6600);
+}
+
+/* The lock condition the gain steps at: 240 processed symbols whose lock metric (@p lock_accum over @p lock_count)
+   averages 0.05 or more. */
+static bool
+gardner_locked(float lock_accum, int lock_count) {
+    if (lock_count < 240) {
+        return false;
+    }
+    /* Below 0.05 is unlocked; anything else, as before the rule took a proof, is locked. */
+    const float lock_metric = lock_accum / (float)lock_count;
+    return !(lock_metric < 0.05f);
+}
+
+/* The Gardner gain: the requested one (ted_gain, else 0.025) until the lock condition holds (gardner_locked() over
+   @p lock_accum and @p lock_count: every symbol since the timing loop last started over counts, so it is no run of 240
+   locked ones, and a fade after a long lock is judged against that history). From there, while the decoder has proven
+   P25 on the current tune (@p p25_proven) and the symbol rate is a P25 one, kP25ProvenLockGain; without that proof,
+   0.018 at 5500 sym/s and above and the requested gain below, as before the proof existed. A set gain holds
+   throughout. A block decides it from the lock at its start, so where a block starts decides when it moves; the TETRA
+   chain, whose output must not depend on the cut, keeps its gain, a set one or kTetraGardnerGain (on TETRA captures
+   the lowered one also decoded less), and an uplink session decides it every DSD_TETRA_UL_GAIN_SYMBOLS symbols instead
+   (gardner_run_loop()). */
 static float
-op25_gardner_gain_mu_for_lock(const demod_state* d, float lock_accum, int lock_count) {
+op25_gardner_gain_mu_for_lock(const demod_state* d, float lock_accum, int lock_count, bool p25_proven) {
     const float requested = (d && d->ted_gain > 0.0f) ? d->ted_gain : 0.025f;
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
@@ -267,24 +300,28 @@ op25_gardner_gain_mu_for_lock(const demod_state* d, float lock_accum, int lock_c
         return kTetraGardnerGain;
     }
 
-    if (cqpsk_symbol_rate_hz(d) < 5500) {
+    const int rate_hz = cqpsk_symbol_rate_hz(d);
+    const bool p25_lock_gain = p25_proven && cqpsk_rate_is_p25(rate_hz);
+    if (rate_hz < 5500 && !p25_lock_gain) {
         return requested;
     }
-    if (lock_count < 240) {
+    if (!gardner_locked(lock_accum, lock_count)) {
         return requested;
     }
-
-    float lock_metric = lock_accum / (float)lock_count;
-    if (lock_metric < 0.05f) {
-        return requested;
-    }
-
-    return 0.018f;
+    return p25_lock_gain ? kP25ProvenLockGain : 0.018f;
 }
 
 static float
-op25_gardner_gain_mu_for_state(const demod_state* d, const ted_state_t* ted) {
-    return op25_gardner_gain_mu_for_lock(d, ted ? ted->lock_accum : 0.0f, ted ? ted->lock_count : 0);
+op25_gardner_gain_mu_for_state(const demod_state* d, const ted_state_t* ted, bool p25_proven) {
+    return op25_gardner_gain_mu_for_lock(d, ted ? ted->lock_accum : 0.0f, ted ? ted->lock_count : 0, p25_proven);
+}
+
+/* Whether the decoder has proven P25 on the current tuning generation (demod_state::p25_timing_proof): one atomic load
+   per block, and the generation's only behind a proof. A proof of another generation, from before a tune, is none. */
+static bool
+gardner_p25_proven(const demod_state* d) {
+    const uint64_t proof = d->p25_timing_proof.load(std::memory_order_acquire);
+    return proof != 0U && proof == dsd_trunk_tuning_generation() + 1U;
 }
 
 /*
@@ -996,7 +1033,8 @@ fll_commit_loop(dsd_fll_band_edge_state_t* f, const fll_loop_context_t* ctx) {
    until the next decision. */
 static inline void
 gardner_uplink_decide_gain(gardner_loop_context_t* ctx, const demod_state* d, dsd_tetra_ul_timing* ul) {
-    ul->gain_mu = op25_gardner_gain_mu_for_lock(d, ctx->lock_accum, ctx->lock_count);
+    /* An uplink session is TETRA's, which never proves P25. */
+    ul->gain_mu = op25_gardner_gain_mu_for_lock(d, ctx->lock_accum, ctx->lock_count, false);
     ctx->gain_mu = ul->gain_mu;
     ctx->gain_omega = 0.1f * ul->gain_mu * ul->gain_mu;
 }
@@ -1104,7 +1142,7 @@ op25_gardner_cc(struct demod_state* d) {
         return;
     }
 
-    const float gain_mu = op25_gardner_gain_mu_for_state(d, ted);
+    const float gain_mu = op25_gardner_gain_mu_for_state(d, ted, gardner_p25_proven(d));
     d->ted_effective_gain = gain_mu;
     const float gain_omega = 0.1f * gain_mu * gain_mu;
 

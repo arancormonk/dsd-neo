@@ -47,6 +47,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
@@ -69,7 +70,6 @@
 
 #ifdef USE_RADIO
 #include <dsd-neo/core/power.h>
-#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 
 enum {
@@ -271,6 +271,9 @@ frame_sync_publish_ui_throttled(const dsd_opts* opts, dsd_state* state) {
 
 void
 dsd_frame_sync_reset_mod_state(void) {
+    /* Every caller starts an acquisition over (a tune, a scan row or target, a decode-mode switch, a symbol profile
+       change): the CQPSK timing loop keeps its acquisition gains until P25 is proven again. */
+    dsd_rtl_stream_metrics_hook_forget_p25_proof();
     atomic_store(&g_vote_qpsk, 0);
     atomic_store(&g_vote_c4fm, 0);
     atomic_store(&g_vote_gfsk, 0);
@@ -692,10 +695,20 @@ frame_sync_find_rotated_p25_cqpsk_map(const char* raw_window, const char* expect
 }
 #endif
 
+/* The frame sync moves the decoder's modulation to @p rf_mod. A move puts another chain on the front end, which the
+   P25 proof given on the old one does not speak for (dsd_rtl_stream_metrics_hook_forget_p25_proof()). */
+static inline void
+frame_sync_move_rf_mod(dsd_state* state, int rf_mod) {
+    if (state->rf_mod != rf_mod) {
+        dsd_rtl_stream_metrics_hook_forget_p25_proof();
+    }
+    state->rf_mod = rf_mod;
+}
+
 static inline void
 frame_sync_maybe_force_dmr_gfsk(const dsd_opts* opts, dsd_state* state) {
     if (!opts->mod_cli_lock || opts->mod_gfsk) {
-        state->rf_mod = 2;
+        frame_sync_move_rf_mod(state, 2);
     }
 }
 
@@ -784,7 +797,7 @@ frame_sync_accept_p25p2(frame_sync_match_ctx* ctx, int synctype, int inverted, c
     dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
     if (!opts->mod_cli_lock && tolerance == NULL) {
-        state->rf_mod = 1;
+        frame_sync_move_rf_mod(state, 1);
 #ifdef USE_RADIO
         rtl_maybe_apply_active_demod_profile(opts, state);
 #endif
@@ -2567,7 +2580,7 @@ frame_sync_apply_cli_mod_lock(const dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RADIO
         const int moved = state->rf_mod != forced;
 #endif
-        state->rf_mod = forced;
+        frame_sync_move_rf_mod(state, forced);
 #ifdef USE_RADIO
         if (moved) {
             rtl_maybe_apply_active_demod_profile(opts, state);
@@ -2824,7 +2837,7 @@ frame_sync_apply_mod_switch(const dsd_opts* opts, dsd_state* state, int do_switc
     } else if (state->rf_mod == 1) {
         qpsk_dwell_disarm();
     }
-    state->rf_mod = do_switch;
+    frame_sync_move_rf_mod(state, do_switch);
 #ifdef USE_RADIO
     rtl_maybe_apply_active_demod_profile(opts, state);
 #else
@@ -2839,7 +2852,7 @@ void
 frame_sync_maybe_auto_switch_modulation(const dsd_opts* opts, dsd_state* state, int t_max, int* lastt) {
     /* TETRA is pi/4-DQPSK only: there is no other modulation to vote for. */
     if (state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_18000_4) {
-        state->rf_mod = 1;
+        frame_sync_move_rf_mod(state, 1);
         return;
     }
     if (*lastt < t_max) {
@@ -4477,7 +4490,7 @@ frame_sync_maybe_probe_p25p1_cqpsk(const dsd_opts* opts, dsd_state* state, int p
         return;
     }
 
-    state->rf_mod = probe_qpsk;
+    frame_sync_move_rf_mod(state, probe_qpsk);
     state->p25_p1_mod_probe_active = 1;
     if (probe_qpsk) {
         qpsk_dwell_arm();
@@ -4492,7 +4505,7 @@ void
 frame_sync_p25p1_set_chain(const dsd_opts* opts, dsd_state* state, int chain) {
     /* A chain step restarts what the P25p1 frames are read on, whichever way it goes. */
     dsd_state_forget_p25p1_sync_anchor(state);
-    state->rf_mod = chain;
+    frame_sync_move_rf_mod(state, chain);
     if (chain == 1) {
         qpsk_dwell_arm();
     } else {
