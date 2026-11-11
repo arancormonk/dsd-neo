@@ -153,6 +153,22 @@ int resamp_process_block(struct demod_state* s, const float* in, int in_len, flo
 int resamp_process_block_flags(struct demod_state* s, const float* in, const uint8_t* in_flags, int in_len, float* out,
                                uint8_t* out_flags);
 
+/**
+ * @brief The FSK voice lane through the output resampler (issue #518): the main lane's taps and ratio from @p phase,
+ * the phase its block started from, over the lane's own history (voice_resamp_hist), so @p in_len inputs make exactly
+ * the outputs the main lane's resamp_process_block() made from its own @p in_len, each at the same place. Passes the
+ * samples through where the main lane does.
+ *
+ * @return Number of output samples written, or -1 on a NULL argument.
+ */
+int resamp_process_voice_lane(struct demod_state* s, int phase, const float* in, int in_len, float* out);
+
+/**
+ * @brief Start the voice lane's resampler history over (resamp_process_voice_lane()), as a reset of the main lane's
+ * starts it over.
+ */
+void resamp_clear_voice_lane(struct demod_state* s);
+
 #ifdef __cplusplus
 }
 #endif

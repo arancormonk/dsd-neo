@@ -445,6 +445,107 @@ check_fill_tags(int in_hz, const size_t* sizes, size_t nsizes, size_t total_out)
     free(got);
 }
 
+/* Issue #518: two lanes of one input (the FSK discriminator and its voice lane). */
+typedef struct {
+    const float* a;
+    const float* b;
+    size_t n;
+    size_t pos;
+} pair_reader_ctx;
+
+static int
+read_pair(void* ctx, float* a, float* b, uint8_t* tag) {
+    pair_reader_ctx* r = (pair_reader_ctx*)ctx;
+    if (r->pos >= r->n) {
+        return 0;
+    }
+    *tag = input_tag(r->pos);
+    *a = r->a[r->pos];
+    *b = r->b[r->pos++];
+    return 1;
+}
+
+/* fill_pair() in sizes of @p sizes (cycled): lane a and its tags come out exactly as fill() makes them of lane a alone,
+   and lane b exactly as fill() makes it of lane b alone, so output k of each is made from the same inputs. A pair out
+   of step is refused. */
+static void
+check_fill_pair(int in_hz, const size_t* sizes, size_t nsizes, size_t total_out) {
+    const size_t n = (size_t)in_hz;
+    float* in_a = make_tone(n, in_hz, in_hz >= 4000 ? 1000.0 : 200.0, 5000.0);
+    float* in_b = make_tone(n, in_hz, in_hz >= 4000 ? 700.0 : 150.0, 0.125);
+    float* want_a = (float*)malloc(total_out * sizeof(float));
+    float* want_b = (float*)malloc(total_out * sizeof(float));
+    float* got_a = (float*)malloc(total_out * sizeof(float));
+    float* got_b = (float*)malloc(total_out * sizeof(float));
+    uint8_t* want_tags = (uint8_t*)malloc(total_out);
+    uint8_t* tags = (uint8_t*)malloc(total_out);
+    if (!in_a || !in_b || !want_a || !want_b || !got_a || !got_b || !want_tags || !tags) {
+        CHECK(0, "allocation");
+    } else {
+        dsd_rate_converter a;
+        dsd_rate_converter b;
+        dsd_rate_converter alone;
+        dsd_rate_converter_init(&a);
+        dsd_rate_converter_init(&b);
+        dsd_rate_converter_init(&alone);
+        (void)dsd_rate_converter_configure(&a, in_hz, OUT_HZ);
+        (void)dsd_rate_converter_configure(&b, in_hz, OUT_HZ);
+        (void)dsd_rate_converter_configure(&alone, in_hz, OUT_HZ);
+        reader_ctx ra = {in_a, n, 0U};
+        CHECK(dsd_rate_converter_fill(&alone, want_a, want_tags, total_out, read_next, &ra) == (int)total_out,
+              "%d Hz: lane a alone", in_hz);
+        dsd_rate_converter_clear(&alone);
+        reader_ctx rb = {in_b, n, 0U};
+        CHECK(dsd_rate_converter_fill(&alone, want_b, NULL, total_out, read_next, &rb) == (int)total_out,
+              "%d Hz: lane b alone", in_hz);
+        pair_reader_ctx ctx = {in_a, in_b, n, 0U};
+        size_t done = 0;
+        size_t k = 0;
+        while (done < total_out) {
+            size_t size = sizes[k++ % nsizes];
+            if (size > total_out - done) {
+                size = total_out - done;
+            }
+            CHECK(dsd_rate_converter_fill_pair(&a, &b, got_a + done, got_b + done, tags + done, size, read_pair, &ctx)
+                      == (int)size,
+                  "%d Hz: fill_pair(%zu)", in_hz, size);
+            done += size;
+        }
+        CHECK(same_bits(want_a, got_a, total_out) && memcmp(want_tags, tags, total_out) == 0,
+              "%d Hz: lane a differs from fill() of it alone", in_hz);
+        CHECK(same_bits(want_b, got_b, total_out), "%d Hz: lane b differs from fill() of it alone", in_hz);
+        /* Out of step (one cleared, the other not): refused, whatever the input. */
+        dsd_rate_converter_clear(&b);
+        const int out_of_step = a.rs.phase != b.rs.phase || a.carry_len != b.carry_len || a.carry_pos != b.carry_pos;
+        if (out_of_step) {
+            CHECK(dsd_rate_converter_fill_pair(&a, &b, got_a, got_b, NULL, 1U, read_pair, &ctx) == -1,
+                  "%d Hz: a pair out of step converts", in_hz);
+        }
+        dsd_rate_converter_free(&a);
+        dsd_rate_converter_free(&b);
+        dsd_rate_converter_free(&alone);
+    }
+    free(in_a);
+    free(in_b);
+    free(want_a);
+    free(want_b);
+    free(got_a);
+    free(got_b);
+    free(want_tags);
+    free(tags);
+}
+
+static void
+test_fill_pair_keeps_lanes_in_step(void) {
+    static const size_t odd[] = {7, 13, 960, 1};
+    static const size_t blocks[] = {960};
+    check_fill_pair(48000, blocks, 1U, 9600U);
+    check_fill_pair(24000, odd, 4U, 9600U);
+    check_fill_pair(96000, odd, 4U, 9600U);
+    check_fill_pair(44100, blocks, 1U, 9600U);
+    check_fill_pair(12500, odd, 4U, 9600U);
+}
+
 static void
 test_fill_tags_follow_their_inputs(void) {
     static const size_t odd[] = {7, 13, 960, 1};
@@ -568,6 +669,7 @@ main(void) {
     test_ratio_approximation();
     test_pull_and_push_contracts();
     test_fill_tags_follow_their_inputs();
+    test_fill_pair_keeps_lanes_in_step();
     check_decimation_rejects(96000, 32);
     check_decimation_rejects(192000, 64);
     check_decimation_rejects(768000, 256);

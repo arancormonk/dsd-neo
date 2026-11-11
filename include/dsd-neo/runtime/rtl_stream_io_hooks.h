@@ -60,6 +60,12 @@ typedef struct {
     int (*read_ex2)(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got, int want_no_stream);
     /* Start of the last NO_STREAM wait slice on this reader thread, in real monotonic milliseconds; 0 if unknown. */
     uint64_t (*no_stream_since_ms)(void);
+    /* read_ex2 with the FSK voice lane into @p voice (or NULL), sample for sample (rtl_stream_read_lanes()). Optional:
+       without it, dsd_rtl_stream_io_hook_read_lanes() reads through read_ex2 with every voice sample 0. */
+    int (*read_lanes)(void* rtl_ctx, float* out, float* voice, uint8_t* flags, size_t count, int* out_got,
+                      int want_no_stream);
+    /* Ask for the FSK voice lane, or stop it (rtl_stream_set_voice_lane()). Optional. */
+    void (*set_voice_lane)(int enable);
 } dsd_rtl_stream_io_hooks;
 
 void dsd_rtl_stream_io_hooks_set(dsd_rtl_stream_io_hooks hooks);
@@ -84,6 +90,18 @@ int dsd_rtl_stream_io_hook_read_ex(dsd_state* state, float* out, uint8_t* flags,
  */
 int dsd_rtl_stream_io_hook_read_ex2(dsd_state* state, float* out, uint8_t* flags, size_t count, int* out_got,
                                     int want_no_stream);
+
+/**
+ * @brief dsd_rtl_stream_io_hook_read_ex2() with the FSK voice lane (issue #518): into @p voice (as many as @p out, or
+ * NULL) each sample's voice-lane sample, FM monitor audio at the monitor's scale, 0 where the lane did not run for it
+ * (dsd_rtl_stream_io_hook_set_voice_lane()). @p out and @p flags read as dsd_rtl_stream_io_hook_read_ex2() reads them.
+ * Without the read_lanes hook every voice sample is 0.
+ */
+int dsd_rtl_stream_io_hook_read_lanes(dsd_state* state, float* out, float* voice, uint8_t* flags, size_t count,
+                                      int* out_got, int want_no_stream);
+
+/** @brief Ask the RTL stream for its FSK voice lane, or stop it (issue #518); nothing without the hook. */
+void dsd_rtl_stream_io_hook_set_voice_lane(int enable);
 
 /** @brief The auto squelch's status through the hook: 0, or -1 (zeroed) with no stream or no hook. */
 int dsd_rtl_stream_io_hook_squelch_status(const dsd_state* state, dsd_rtl_squelch_status* out);

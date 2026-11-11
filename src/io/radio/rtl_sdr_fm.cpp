@@ -527,8 +527,12 @@ static std::atomic<uint32_t> g_rtl_output_generation{1};
    block reaches the ring. Whatever changes it (a family or FM <-> AM switch, a retune or rate change) moves the
    generation first and publishes the new gain at the latest with the next block, so a reader that loads it before the
    generation never pairs a new gain with the old generation; it may pair the old gain with the new generation until
-   that block. A session starts and ends at 1.0 (rtl_stream_advance_session_generation()). */
+   that block. The FSK voice lane starting or stopping changes it with the next block and moves no generation. A
+   session starts and ends at 1.0 (rtl_stream_advance_session_generation()). */
 static std::atomic<float> g_pub_monitor_deemph_gain{1.0f};
+/* Whether the decoder asks for the FSK voice lane (rtl_stream_set_voice_lane(), issue #518): EDACS, for the length of
+   an analog call. The demod thread takes it before each block (demod_take_voice_lane_setting()). */
+static std::atomic<int> g_voice_lane_requested{0};
 /* Stream opens and stops (rtl_stream_session_generation(), issue #671). */
 static std::atomic<uint32_t> g_rtl_session_generation{0U};
 
@@ -1492,11 +1496,33 @@ static void* g_test_live_read_pause_ctx = NULL;
 static void (*g_test_output_clear_pause_hook)(void*) = NULL;
 static void* g_test_output_clear_pause_ctx = NULL;
 #endif
+/* The voice lane's sample at ring position @p at, whose flag is @p flag: silence where the lane did not run. */
+static inline float
+ring_voice_at(const struct output_state* o, size_t at, uint8_t flag) {
+    return ((flag & DSD_RING_FLAG_VOICE) != 0U && o->voice) ? o->voice[at] : 0.0f;
+}
+
+/* The flag (without the voice lane's bit) and the voice-lane sample at ring position @p at into @p flags[@p got] and
+   @p voice[@p got], each when it is not NULL; with neither the ring is not read. */
+static inline void
+ring_take_flag_and_voice(const struct output_state* o, size_t at, uint8_t* flags, float* voice, size_t got) {
+    if (!flags && !voice) {
+        return;
+    }
+    const uint8_t f = o->flags ? o->flags[at] : 0U;
+    if (flags) {
+        flags[got] = (uint8_t)(f & ~DSD_RING_FLAG_VOICE);
+    }
+    if (voice) {
+        voice[got] = ring_voice_at(o, at, f);
+    }
+}
+
 /* The consumer's tail snapshot, copy and tail store run under ready_m, which a clear of the ring from another thread
  * (rtl_stream_clear_output_ring()) also takes. Otherwise a clear landing between the snapshot and the store would be
  * undone by the store: the old tail over the reset head reads as a ring nearly full of the old stream's samples. */
 static int
-ring_read_available(struct output_state* o, float* out, uint8_t* flags, size_t count) {
+ring_read_available(struct output_state* o, float* out, float* voice, uint8_t* flags, size_t count) {
     if (!o || !o->buffer || !out || count == 0 || ring_is_empty(o)) {
         return 0;
     }
@@ -1505,9 +1531,7 @@ ring_read_available(struct output_state* o, float* out, uint8_t* flags, size_t c
     size_t tail = o->tail.load();
     const size_t head = o->head.load();
     while (got < count && tail != head) {
-        if (flags) {
-            flags[got] = o->flags ? o->flags[tail] : 0U;
-        }
+        ring_take_flag_and_voice(o, tail, flags, voice, got);
         out[got++] = o->buffer[tail];
         tail++;
         if (tail >= o->capacity) {
@@ -3330,10 +3354,10 @@ retune_settle_should_discard(const struct demod_state* d, float mean_abs, float 
 /* The FM monitor's output scale: discriminator radians into roughly [-1, 1]. A live stream sets it in
    optimal_settings() and an I/Q replay in controller_apply_replay_settings(), so replayed monitor audio comes out at the
    level the same signal plays at live. */
-static const float kMonitorDiscriminatorOutputScale = (float)(1.0 / M_PI);
+static const float kMonitorDiscriminatorOutputScale = (float)DSD_DEMOD_MONITOR_OUTPUT_SCALE;
 
 /* The demod rate the monitor's output scale is calibrated at. */
-static const float kMonitorScaleReferenceRateHz = 48000.0f;
+static const float kMonitorScaleReferenceRateHz = (float)DSD_DEMOD_MONITOR_SCALE_REFERENCE_HZ;
 
 /* The rate the discriminator runs at: the complex rate, ahead of any post-decimation. With the live rate step it is
    the DSP bandwidth on every live source (issue #806); an I/Q replay runs the rate its sidecar records. */
@@ -4825,14 +4849,25 @@ demod_copy_output_flags(struct output_state* o, size_t at, const uint8_t* flags,
     }
 }
 
-/* Samples and their flags go in at the same positions, before the head that publishes both. */
+/* @p count voice-lane samples at @p at (none without a lane or a voice buffer). */
+static inline void
+demod_copy_output_voice(struct output_state* o, size_t at, const float* voice, size_t count) {
+    if (voice && o->voice && count > 0U) {
+        DSD_MEMCPY(o->voice + at, voice, count * sizeof(float));
+    }
+}
+
+/* Samples, their voice-lane samples (@p voice, or NULL) and their flags go in at the same positions, before the head
+   that publishes them. */
 static size_t
-demod_copy_output_chunk(struct output_state* o, const float* data, const uint8_t* flags, size_t count, size_t free_sp) {
+demod_copy_output_chunk(struct output_state* o, const float* data, const float* voice, const uint8_t* flags,
+                        size_t count, size_t free_sp) {
     size_t write_now = (count < free_sp) ? count : free_sp;
     size_t h = o->head.load();
     size_t to_end = o->capacity - h;
     if (to_end >= write_now) {
         DSD_MEMCPY(o->buffer + h, data, write_now * sizeof(float));
+        demod_copy_output_voice(o, h, voice, write_now);
         demod_copy_output_flags(o, h, flags, write_now);
         h += write_now;
         if (h >= o->capacity) {
@@ -4843,18 +4878,20 @@ demod_copy_output_chunk(struct output_state* o, const float* data, const uint8_t
     }
     if (to_end > 0U) {
         DSD_MEMCPY(o->buffer + h, data, to_end * sizeof(float));
+        demod_copy_output_voice(o, h, voice, to_end);
         demod_copy_output_flags(o, h, flags, to_end);
     }
     size_t remaining = write_now - to_end;
     DSD_MEMCPY(o->buffer, data + to_end, remaining * sizeof(float));
+    demod_copy_output_voice(o, 0U, voice ? voice + to_end : NULL, remaining);
     demod_copy_output_flags(o, 0U, flags ? flags + to_end : NULL, remaining);
     o->head.store(remaining);
     return write_now;
 }
 
 static size_t
-demod_write_output_samples_interruptible(struct output_state* o, const float* data, const uint8_t* flags,
-                                         size_t count) {
+demod_write_output_samples_interruptible(struct output_state* o, const float* data, const float* voice,
+                                         const uint8_t* flags, size_t count) {
     if (!o || !o->buffer || !data || count == 0U) {
         return 0U;
     }
@@ -4868,8 +4905,11 @@ demod_write_output_samples_interruptible(struct output_state* o, const float* da
             }
             continue;
         }
-        size_t write_now = demod_copy_output_chunk(o, data, flags, count, free_sp);
+        size_t write_now = demod_copy_output_chunk(o, data, voice, flags, count, free_sp);
         data += write_now;
+        if (voice) {
+            voice += write_now;
+        }
         if (flags) {
             flags += write_now;
         }
@@ -4891,15 +4931,53 @@ demod_publish_deemph_gain(const struct demod_state* d) {
     }
 }
 
+/* The flags of a block the voice lane ran for, in @p buf: the squelch's own (@p flags, which may be @p buf, or NULL for
+ * none: every sample open), each with DSD_RING_FLAG_VOICE. */
+static const uint8_t*
+demod_mark_voice_flags(const uint8_t* flags, uint8_t* buf, size_t count) {
+    if (!flags) {
+        DSD_MEMSET(buf, DSD_RING_FLAG_VOICE, count * sizeof(uint8_t));
+        return buf;
+    }
+    for (size_t i = 0; i < count; i++) {
+        buf[i] = (uint8_t)(flags[i] | DSD_RING_FLAG_VOICE);
+    }
+    return buf;
+}
+
+/* The voice lane of a block that made it, beside the @p count samples demod_finish_output_block() hands on: resampled
+ * as they were (from @p phase, the resampler's phase before them) with its own history, and their flags marked (@p
+ * flags, rewritten in place in @p flag_buf). Returns the voice samples, or NULL when the block has no lane. */
+static const float*
+demod_finish_voice_lane(struct demod_state* d, int resample, int phase, size_t count, const uint8_t** flags,
+                        uint8_t* flag_buf) {
+    if (!d->voice_lane_active) {
+        return NULL;
+    }
+    const float* voice = d->voice_result;
+    if (resample) {
+        if (resamp_process_voice_lane(d, phase, d->voice_result, d->result_len, d->voice_resamp_outbuf) != (int)count) {
+            return NULL;
+        }
+        voice = d->voice_resamp_outbuf;
+    }
+    *flags = demod_mark_voice_flags(*flags, flag_buf, count);
+    return voice;
+}
+
 /* The block's output as the ring takes it: resampled and scaled as its kind wants. Returns the sample count (0: none)
- * and points @p out_data at the samples and @p out_flags at their auto squelch flags (NULL: the block has none). */
+ * and points @p out_data at the samples, @p out_voice at the voice lane's beside them (NULL: the block has none) and
+ * @p out_flags at their flags (NULL: the block has none). */
 static size_t
-demod_finish_output_block(struct demod_state* d, const float** out_data, const uint8_t** out_flags) {
+demod_finish_output_block(struct demod_state* d, const float** out_data, const float** out_voice,
+                          const uint8_t** out_flags) {
     *out_flags = NULL;
+    *out_voice = NULL;
     if (d->result_len <= 0) {
         return 0U;
     }
     const int flagged = d->result_flags_active;
+    const int phase = d->resamp_phase;
     demod_publish_deemph_gain(d);
     /* Digital streams carry discriminator/symbol values, not audio, so the monitor output
      * scale must not be applied to them. CQPSK output is symbol-rate and never resampled. */
@@ -4920,6 +4998,7 @@ demod_finish_output_block(struct demod_state* d, const float** out_data, const u
         }
         *out_data = d->resamp_outbuf;
         *out_flags = flagged ? d->resamp_outflags : NULL;
+        *out_voice = demod_finish_voice_lane(d, 1, phase, (size_t)out_n, out_flags, d->resamp_outflags);
         return (size_t)out_n;
     }
     if (scaled) {
@@ -4927,6 +5006,7 @@ demod_finish_output_block(struct demod_state* d, const float** out_data, const u
     }
     *out_data = d->result;
     *out_flags = flagged ? d->result_flags : NULL;
+    *out_voice = demod_finish_voice_lane(d, 0, phase, (size_t)d->result_len, out_flags, d->result_flags);
     return (size_t)d->result_len;
 }
 
@@ -4936,9 +5016,10 @@ demod_write_output_block(struct demod_state* d, struct output_state* o) {
         return 0U;
     }
     const float* data = NULL;
+    const float* voice = NULL;
     const uint8_t* flags = NULL;
-    const size_t count = demod_finish_output_block(d, &data, &flags);
-    return count > 0U ? demod_write_output_samples_interruptible(o, data, flags, count) : 0U;
+    const size_t count = demod_finish_output_block(d, &data, &voice, &flags);
+    return count > 0U ? demod_write_output_samples_interruptible(o, data, voice, flags, count) : 0U;
 }
 
 /* ---------------- Replay decoder pacing (issue #572) ----------------
@@ -5100,15 +5181,16 @@ demod_publish_replay_output_block(struct demod_state* d, struct output_state* o,
         return 0U;
     }
     const float* data = NULL;
+    const float* voice = NULL;
     const uint8_t* flags = NULL;
-    const size_t count = demod_finish_output_block(d, &data, &flags);
+    const size_t count = demod_finish_output_block(d, &data, &voice, &flags);
     if (count == 0U || demod_output_write_cancelled()) {
         return 0U;
     }
     rtl_stream_replay_batch tag = demod_replay_batch_tag(span, o);
     RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DEMOD_BEFORE_PUBLISH, count);
     dsd_mutex_lock(&o->ready_m);
-    const size_t published = demod_copy_output_chunk(o, data, flags, count, ring_free(o));
+    const size_t published = demod_copy_output_chunk(o, data, voice, flags, count, ring_free(o));
     if (published > 0U) {
         tag.output_generation = g_rtl_output_generation.load(std::memory_order_acquire);
         tag.output_count = (uint32_t)published;
@@ -5333,6 +5415,18 @@ demod_take_squelch_setting(struct demod_state* d) {
     d->squelch_context = key;
 }
 
+/* The demod thread, before a block: whether it runs the FSK voice lane. A lane that starts runs its de-emphasis and its
+   resampler history from silence, not from what it held when it last stopped. */
+static void
+demod_take_voice_lane_setting(struct demod_state* d) {
+    const int enabled = g_voice_lane_requested.load(std::memory_order_acquire) ? 1 : 0;
+    if (enabled && !d->voice_lane_enabled) {
+        d->voice_lane_deemph_avg = 0.0f;
+        resamp_clear_voice_lane(d);
+    }
+    d->voice_lane_enabled = enabled;
+}
+
 /* The demod thread, after a block: what the dynamic squelch shows (the noise squelch when it ran, else the tracker). */
 static void
 demod_publish_squelch_status(const struct demod_state* d) {
@@ -5550,6 +5644,7 @@ demod_thread_fn(void* arg) {
         }
         demod_feed_wideband_spectrum(d);
         demod_take_squelch_setting(d);
+        demod_take_voice_lane_setting(d);
         g_demod_fed_since_reset.store(1, std::memory_order_relaxed);
         full_demod(d);
         demod_publish_block_state(d);
@@ -7916,6 +8011,12 @@ output_init(struct output_state* s) {
         s->flags = static_cast<uint8_t*>(flags_ptr);
         DSD_MEMSET(s->flags, 0, s->capacity * sizeof(uint8_t));
     }
+    /* The voice lane's samples, written only while EDACS plays an analog call: untouched, its pages cost nothing until
+       then. Without it the stream carries no voice lane, and a voice read gets silence. */
+    s->voice = static_cast<float*>(dsd_neo_aligned_malloc(s->capacity * sizeof(float)));
+    if (!s->voice) {
+        LOG_WARN("Failed to allocate the output ring's voice lane (%zu samples).\n", s->capacity);
+    }
     s->head.store(0);
     s->tail.store(0);
     /* Metrics */
@@ -7940,6 +8041,10 @@ output_cleanup(struct output_state* s) {
     if (s->flags) {
         dsd_neo_aligned_free(s->flags);
         s->flags = NULL;
+    }
+    if (s->voice) {
+        dsd_neo_aligned_free(s->voice);
+        s->voice = NULL;
     }
 }
 
@@ -10368,8 +10473,8 @@ rtl_stream_replay_mark_output_drained(void) {
 }
 
 static int
-rtl_stream_read_live_available(struct controller_state* s, struct output_state* outp, float* out, uint8_t* flags,
-                               size_t count, int* out_gated) {
+rtl_stream_read_live_available(struct controller_state* s, struct output_state* outp, float* out, float* voice,
+                               uint8_t* flags, size_t count, int* out_gated) {
     if (!s || !outp || !out_gated) {
         return -1;
     }
@@ -10382,7 +10487,7 @@ rtl_stream_read_live_available(struct controller_state* s, struct output_state* 
     s->live_output_read_active.fetch_add(1, std::memory_order_acq_rel);
     uint32_t generation_before = g_rtl_output_generation.load(std::memory_order_acquire);
     *out_gated = s->timeout_gate_request_id.load(std::memory_order_acquire) != 0U;
-    int got = *out_gated ? 0 : ring_read_available(outp, out, flags, count);
+    int got = *out_gated ? 0 : ring_read_available(outp, out, voice, flags, count);
     uint32_t generation_after = g_rtl_output_generation.load(std::memory_order_acquire);
     *out_gated = s->timeout_gate_request_id.load(std::memory_order_acquire) != 0U;
     if (*out_gated || generation_after != generation_before) {
@@ -10484,7 +10589,8 @@ rtl_live_read_no_stream(rtl_live_read_idle* idle, int* result) {
 }
 
 static int
-rtl_stream_read_live_samples(float* out, uint8_t* flags, size_t count, const dsd_opts* live_opts, int want_no_stream) {
+rtl_stream_read_live_samples(float* out, float* voice, uint8_t* flags, size_t count, const dsd_opts* live_opts,
+                             int want_no_stream) {
     rtl_live_read_idle idle = {live_opts, -1, 0, 0U, want_no_stream, 0};
     for (;;) {
         if (!output.buffer || dsd_exitflag_load()
@@ -10494,7 +10600,7 @@ rtl_stream_read_live_samples(float* out, uint8_t* flags, size_t count, const dsd
 
         int gated = 0;
         RTL_LIVE_TEST_READ_START();
-        int got = rtl_stream_read_live_available(&controller, &output, out, flags, count, &gated);
+        int got = rtl_stream_read_live_available(&controller, &output, out, voice, flags, count, &gated);
         if (got != 0) {
             return got;
         }
@@ -10535,7 +10641,7 @@ rtl_stream_read_live_samples(float* out, uint8_t* flags, size_t count, const dsd
 }
 
 static int
-rtl_stream_read_live(float* out, uint8_t* flags, size_t count, dsd_opts* opts, const dsd_opts* live_opts,
+rtl_stream_read_live(float* out, float* voice, uint8_t* flags, size_t count, dsd_opts* opts, const dsd_opts* live_opts,
                      const dsd_state* state, int want_no_stream) {
     sync_requested_ppm_after_failed_apply(opts);
     if (!rtl_signal_search_bypassed()) {
@@ -10545,7 +10651,7 @@ rtl_stream_read_live(float* out, uint8_t* flags, size_t count, dsd_opts* opts, c
 
     int perf_on = rtl_perf_enabled();
     uint64_t perf_read_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
-    int got = rtl_stream_read_live_samples(out, flags, count, live_opts ? live_opts : opts, want_no_stream);
+    int got = rtl_stream_read_live_samples(out, voice, flags, count, live_opts ? live_opts : opts, want_no_stream);
     if (got <= 0) {
         return got;
     }
@@ -10575,7 +10681,7 @@ replay_note_batch_read_locked(size_t n) {
  * occupied, so the caller looks again instead of waiting in a read nothing may ever satisfy. It notes what it took of
  * the ring's batch under the same lock. */
 /* The ring's flags for @p n samples from @p t into @p flags, in the same two segments as the samples (open when the ring
- * has no flag buffer). */
+ * has no flag buffer), without the voice lane's bit. */
 static void
 ring_copy_flags(const struct output_state* o, size_t t, size_t first, size_t n, uint8_t* flags) {
     if (!flags) {
@@ -10589,10 +10695,25 @@ ring_copy_flags(const struct output_state* o, size_t t, size_t first, size_t n, 
     if (n > first) {
         DSD_MEMCPY(flags + first, o->flags, (n - first) * sizeof(uint8_t));
     }
+    for (size_t i = 0; i < n; i++) {
+        flags[i] = (uint8_t)(flags[i] & ~DSD_RING_FLAG_VOICE);
+    }
+}
+
+/* The voice lane's samples for @p n samples from @p t into @p voice (NULL: none asked for). */
+static void
+ring_copy_voice(const struct output_state* o, size_t t, size_t n, float* voice) {
+    if (!voice) {
+        return;
+    }
+    for (size_t i = 0; i < n; i++) {
+        const size_t at = (t + i) % o->capacity;
+        voice[i] = ring_voice_at(o, at, o->flags ? o->flags[at] : 0U);
+    }
 }
 
 static int
-ring_read_available_copy(struct output_state* o, float* out, uint8_t* flags, size_t count) {
+ring_read_available_copy(struct output_state* o, float* out, float* voice, uint8_t* flags, size_t count) {
     if (!o || !o->buffer || !out || count == 0U) {
         return 0;
     }
@@ -10607,6 +10728,7 @@ ring_read_available_copy(struct output_state* o, float* out, uint8_t* flags, siz
         if (n > first) {
             DSD_MEMCPY(out + first, o->buffer, (n - first) * sizeof(float));
         }
+        ring_copy_voice(o, t, n, voice);
         ring_copy_flags(o, t, first, n, flags);
         t += n;
         if (t >= o->capacity) {
@@ -10691,7 +10813,7 @@ rtl_stream_replay_wait_for_output(void) {
  * on whether the reader had reached the capture's end by the last read, which a fast replay has and a realtime one,
  * still pacing, has not. */
 static int
-rtl_stream_read_replay(float* out, uint8_t* flags, size_t count) {
+rtl_stream_read_replay(float* out, float* voice, uint8_t* flags, size_t count) {
     for (;;) {
         if (!output.buffer || !g_stream) {
             return -1;
@@ -10705,7 +10827,7 @@ rtl_stream_read_replay(float* out, uint8_t* flags, size_t count) {
             RTL_REPLAY_TEST_STAGE(RTL_STREAM_TEST_REPLAY_DECODER_OUTPUT_FOUND, used);
             int perf_on = rtl_perf_enabled();
             uint64_t perf_read_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
-            int got = ring_read_available_copy(&output, out, flags, count);
+            int got = ring_read_available_copy(&output, out, voice, flags, count);
             if (got > 0) {
                 if (perf_on) {
                     rtl_perf_record_consumer_read(dsd_realtime_mono_ns() - perf_read_start_ns, (size_t)got);
@@ -10728,6 +10850,8 @@ rtl_stream_read_replay(float* out, uint8_t* flags, size_t count) {
  * @brief Batched consumer API: read up to count samples with fewer wakeups/locks, and each sample's auto squelch flag.
  *
  * @param out   Destination buffer for audio samples.
+ * @param voice Destination for each sample's FSK voice-lane sample (rtl_stream_set_voice_lane()), 0 where the lane did
+ *              not run for it; or NULL.
  * @param flags Destination for one flag byte per sample (DSD_SQUELCH_FLAG_CLOSED), or NULL.
  * @param count Maximum number of samples to read.
  * @param opts  Decoder options (must not be NULL; used for runtime PPM changes).
@@ -10740,8 +10864,8 @@ rtl_stream_read_replay(float* out, uint8_t* flags, size_t count) {
  *         DSD_RTL_READ_NO_STREAM while a live device has no stream (rtl_stream_read_live_samples()), or -1 on exit.
  */
 extern "C" int
-dsd_rtl_stream_read_ex(float* out, uint8_t* flags, size_t count, dsd_opts* opts, const dsd_opts* live_opts,
-                       const dsd_state* state, int want_no_stream) {
+dsd_rtl_stream_read_ex(float* out, float* voice, uint8_t* flags, size_t count, dsd_opts* opts,
+                       const dsd_opts* live_opts, const dsd_state* state, int want_no_stream) {
     if (count == 0) {
         return 0;
     }
@@ -10756,15 +10880,15 @@ dsd_rtl_stream_read_ex(float* out, uint8_t* flags, size_t count, dsd_opts* opts,
         return -1;
     }
     if (!replay_active) {
-        return rtl_stream_read_live(out, flags, count, opts, live_opts, state, want_no_stream);
+        return rtl_stream_read_live(out, voice, flags, count, opts, live_opts, state, want_no_stream);
     }
-    return rtl_stream_read_replay(out, flags, count);
+    return rtl_stream_read_replay(out, voice, flags, count);
 }
 
-/* dsd_rtl_stream_read_ex() without the flags. */
+/* dsd_rtl_stream_read_ex() without the voice lane or the flags. */
 extern "C" int
 dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, const dsd_state* state) {
-    return dsd_rtl_stream_read_ex(out, NULL, count, opts, NULL, state, 0);
+    return dsd_rtl_stream_read_ex(out, NULL, NULL, count, opts, NULL, state, 0);
 }
 
 extern "C" int
@@ -11026,6 +11150,16 @@ rtl_stream_output_generation(void) {
 extern "C" double
 rtl_stream_monitor_deemph_gain(void) {
     return (double)g_pub_monitor_deemph_gain.load(std::memory_order_acquire);
+}
+
+extern "C" void
+rtl_stream_set_voice_lane(int enable) {
+    g_voice_lane_requested.store(enable ? 1 : 0, std::memory_order_release);
+}
+
+extern "C" int
+rtl_stream_voice_lane_requested(void) {
+    return g_voice_lane_requested.load(std::memory_order_acquire);
 }
 
 extern "C" uint32_t
@@ -13160,7 +13294,7 @@ rtl_stream_test_full_output_write_on_stop(rtl_stream_test_full_output_write* out
     if (started) {
         static const float samples[64] = {0.0f};
         const uint64_t start_ms = dsd_realtime_mono_ms();
-        out->written = demod_write_output_samples_interruptible(&output, samples, NULL, 64U);
+        out->written = demod_write_output_samples_interruptible(&output, samples, NULL, NULL, 64U);
         out->elapsed_ms = dsd_realtime_mono_ms() - start_ms;
         watchdog.done.store(1, std::memory_order_release);
         (void)dsd_thread_join(watchdog_thread);
@@ -14025,7 +14159,8 @@ rtl_stream_test_tune_timeout_read_gate(size_t queued_samples, int* out_read_whil
     *out_generation_after_gate = rtl_stream_output_generation();
     float sample = 0.0f;
     int gated = 0;
-    *out_read_while_pending = rtl_stream_read_live_available(&test_controller, &test_output, &sample, NULL, 1U, &gated);
+    *out_read_while_pending =
+        rtl_stream_read_live_available(&test_controller, &test_output, &sample, NULL, NULL, 1U, &gated);
     *out_used_while_pending = ring_used(&test_output);
 
     controller_signal_manual_retune_complete(&test_controller, RTL_STREAM_TUNE_FAILED);
@@ -14037,7 +14172,7 @@ rtl_stream_test_tune_timeout_read_gate(size_t queued_samples, int* out_read_whil
     test_output.head.store(1U, std::memory_order_release);
     int gated_after_failure = 0;
     *out_read_after_failed_completion =
-        rtl_stream_read_live_available(&test_controller, &test_output, &sample, NULL, 1U, &gated_after_failure);
+        rtl_stream_read_live_available(&test_controller, &test_output, &sample, NULL, NULL, 1U, &gated_after_failure);
 
     /* A later timed-out request can install a fresh gate. Its successful
      * controller boundary reopens reads for replacement output. */
@@ -14048,7 +14183,7 @@ rtl_stream_test_tune_timeout_read_gate(size_t queued_samples, int* out_read_whil
     controller_signal_manual_retune_complete(&test_controller, RTL_STREAM_TUNE_OK);
     int gated_after_recovery = 0;
     *out_read_after_recovery =
-        rtl_stream_read_live_available(&test_controller, &test_output, &sample, NULL, 1U, &gated_after_recovery);
+        rtl_stream_read_live_available(&test_controller, &test_output, &sample, NULL, NULL, 1U, &gated_after_recovery);
 
     controller_cleanup(&test_controller);
     output_cleanup(&test_output);
@@ -16638,8 +16773,9 @@ post_chain_test_run(int blocks, int pairs) {
         demod.lp_len = pairs * 2;
         full_demod(&demod);
         const float* data = NULL;
+        const float* voice = NULL;
         const uint8_t* flags = NULL;
-        emitted += (long long)demod_finish_output_block(&demod, &data, &flags);
+        emitted += (long long)demod_finish_output_block(&demod, &data, &voice, &flags);
     }
     return emitted;
 }
@@ -17143,7 +17279,7 @@ read_race_reader(void* arg) {
     ReadRaceContext* ctx = static_cast<ReadRaceContext*>(arg);
     float samples[16];
     int gated = 0;
-    ctx->read_got.store(rtl_stream_read_live_available(&controller, &output, samples, NULL, 16U, &gated),
+    ctx->read_got.store(rtl_stream_read_live_available(&controller, &output, samples, NULL, NULL, 16U, &gated),
                         std::memory_order_release);
     DSD_THREAD_RETURN;
 }
@@ -17266,7 +17402,7 @@ rtl_stream_test_live_read_during_family_switch_clear(rtl_stream_test_clear_race_
         float samples[16];
         int gated = 0;
         out->read_generation = rtl_stream_output_generation();
-        out->read_got = rtl_stream_read_live_available(&controller, &output, samples, NULL, 16U, &gated);
+        out->read_got = rtl_stream_read_live_available(&controller, &output, samples, NULL, NULL, 16U, &gated);
         out->switch_done_during_read = ctx->switch_done.load(std::memory_order_acquire);
     }
     ctx->release.store(1, std::memory_order_release);
@@ -17355,7 +17491,7 @@ rtl_stream_test_run_live_read(struct rtl_device* dev, uint64_t search_owner, con
     if (started) {
         float sample = 0.0f;
         const uint64_t read_started_ms = dsd_realtime_mono_ms();
-        *out_got = rtl_stream_read_live_samples(&sample, NULL, 1U, live_opts, want_no_stream);
+        *out_got = rtl_stream_read_live_samples(&sample, NULL, NULL, 1U, live_opts, want_no_stream);
         *out_waited_ms = dsd_realtime_mono_ms() - read_started_ms;
         feeder->read_done.store(1, std::memory_order_release);
         (void)dsd_thread_join(thread);
@@ -18392,8 +18528,8 @@ squelch_test_ring_round_trip(size_t at, int n, int with_flags, int replay_read) 
     static float got[1024];
     static uint8_t flags[1024];
     DSD_MEMSET(flags, 0xEE, sizeof flags);
-    const int read = replay_read ? ring_read_available_copy(&output, got, flags, (size_t)n)
-                                 : ring_read_available(&output, got, flags, (size_t)n);
+    const int read = replay_read ? ring_read_available_copy(&output, got, NULL, flags, (size_t)n)
+                                 : ring_read_available(&output, got, NULL, flags, (size_t)n);
     if (read != n) {
         return 0;
     }
@@ -18540,7 +18676,7 @@ squelch_test_ring_checks(void) {
         demod.result[i] = 1.0f + (float)i;
     }
     float got[5] = {0};
-    if (demod_write_output_block(&demod, &output) != 5U || ring_read_available(&output, got, NULL, 5U) != 5
+    if (demod_write_output_block(&demod, &output) != 5U || ring_read_available(&output, got, NULL, NULL, 5U) != 5
         || fabsf(got[4] - 5.0f) > 1e-6f) {
         return 11;
     }

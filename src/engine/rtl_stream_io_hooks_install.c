@@ -29,6 +29,12 @@ rtl_stream_io_read_ex2(void* rtl_ctx, float* out, uint8_t* flags, size_t count, 
 }
 
 static int
+rtl_stream_io_read_lanes(void* rtl_ctx, float* out, float* voice, uint8_t* flags, size_t count, int* out_got,
+                         int want_no_stream) {
+    return rtl_stream_read_lanes((RtlSdrContext*)rtl_ctx, out, voice, flags, count, out_got, want_no_stream);
+}
+
+static int
 rtl_stream_io_squelch_status(const void* rtl_ctx, dsd_rtl_squelch_status* out) {
     (void)rtl_ctx;
     rtl_stream_squelch_status st;
@@ -63,6 +69,8 @@ dsd_engine_rtl_stream_io_hooks_install(void) {
     hooks.squelch_status = rtl_stream_io_squelch_status;
     hooks.read_ex2 = rtl_stream_io_read_ex2;
     hooks.no_stream_since_ms = rtl_stream_no_stream_since_ms;
+    hooks.read_lanes = rtl_stream_io_read_lanes;
+    hooks.set_voice_lane = rtl_stream_set_voice_lane;
 #endif
     dsd_rtl_stream_io_hooks_set(hooks);
 }

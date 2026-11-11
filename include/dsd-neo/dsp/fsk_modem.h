@@ -41,6 +41,13 @@ void dsd_fsk_modem_configure(dsd_fsk_modem_state* st, const dsd_fsk_modem_config
 void dsd_fsk_modem_release(dsd_fsk_modem_state* st);
 int dsd_fsk_modem_discriminator_process(dsd_fsk_modem_state* st, const float* iq_interleaved, int len_interleaved,
                                         float* out_samples, int max_samples);
+/**
+ * @brief dsd_fsk_modem_discriminator_process() that also writes, into @p raw_samples (as many as @p out_samples), the
+ * centred discriminator output each normalised sample was scaled from: the phase step per sample in radians, before the
+ * peak normaliser (issue #518). @p out_samples comes out exactly as dsd_fsk_modem_discriminator_process() writes it.
+ */
+int dsd_fsk_modem_discriminator_process_raw(dsd_fsk_modem_state* st, const float* iq_interleaved, int len_interleaved,
+                                            float* out_samples, float* raw_samples, int max_samples);
 
 #ifdef __cplusplus
 }

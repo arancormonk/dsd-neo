@@ -338,3 +338,75 @@ dsd_rate_converter_fill(dsd_rate_converter* c, float* out, uint8_t* tags, size_t
     }
     return (int)count;
 }
+
+/* Whether @p a and @p b convert alike and stand at the same place: the same mode and ratio, the same phase and the same
+   outputs kept, so one input each makes as many outputs each. */
+static int
+rate_converter_in_step(const dsd_rate_converter* a, const dsd_rate_converter* b) {
+    return a->mode == b->mode && a->L == b->L && a->M == b->M && a->rs.phase == b->rs.phase
+           && a->carry_len == b->carry_len && a->carry_pos == b->carry_pos;
+}
+
+/* One input of each lane through its converter: their outputs kept to be taken, tagged @p tag. 0, or -1 when either
+   failed or the two made different counts. */
+static int
+rate_converter_pair_push(dsd_rate_converter* a, dsd_rate_converter* b, float sample_a, float sample_b, uint8_t tag) {
+    const int got_a = dsd_resampler_process_block(&a->rs, &sample_a, 1, a->carry, DSD_RATE_CONVERTER_CARRY);
+    const int got_b = dsd_resampler_process_block(&b->rs, &sample_b, 1, b->carry, DSD_RATE_CONVERTER_CARRY);
+    if (got_a < 0 || got_b != got_a) {
+        return -1;
+    }
+    a->carry_len = got_a;
+    a->carry_pos = 0;
+    a->carry_tag = tag;
+    b->carry_len = got_b;
+    b->carry_pos = 0;
+    b->carry_tag = tag;
+    return 0;
+}
+
+/* Whether a pair fill can run: its arguments, a usable mode, and the two converters in step. */
+static int
+rate_converter_pair_ready(const dsd_rate_converter* a, const dsd_rate_converter* b, const float* out_a,
+                          const float* out_b, size_t count, dsd_rate_converter_read_pair_fn read) {
+    if (!a || !b || !read || ((!out_a || !out_b) && count > 0) || count > (size_t)INT32_MAX) {
+        return 0;
+    }
+    return (a->mode == DSD_RATE_CONVERTER_IDENTITY || a->mode == DSD_RATE_CONVERTER_CONVERTING)
+           && rate_converter_in_step(a, b);
+}
+
+int
+dsd_rate_converter_fill_pair(dsd_rate_converter* a, dsd_rate_converter* b, float* out_a, float* out_b, uint8_t* tags,
+                             size_t count, dsd_rate_converter_read_pair_fn read, void* ctx) {
+    if (!rate_converter_pair_ready(a, b, out_a, out_b, count, read)) {
+        return -1;
+    }
+    size_t done = 0;
+    while (done < count) {
+        if (a->carry_pos < a->carry_len) {
+            const size_t took = rate_converter_take_carry(a, out_a + done, tags ? tags + done : NULL, count - done);
+            (void)rate_converter_take_carry(b, out_b + done, NULL, took);
+            done += took;
+            continue;
+        }
+        float sample_a = 0.0f;
+        float sample_b = 0.0f;
+        uint8_t tag = 0U;
+        if (!read(ctx, &sample_a, &sample_b, &tag)) {
+            return -1;
+        }
+        if (a->mode == DSD_RATE_CONVERTER_IDENTITY) {
+            if (tags) {
+                tags[done] = tag;
+            }
+            out_a[done] = sample_a;
+            out_b[done++] = sample_b;
+            continue;
+        }
+        if (rate_converter_pair_push(a, b, sample_a, sample_b, tag) != 0) {
+            return -1;
+        }
+    }
+    return (int)count;
+}

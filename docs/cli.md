@@ -608,7 +608,9 @@ Notes
   `1`–`100` is a fixed gain, `50` the reference: there a 1 kHz tone at 3 kHz deviation, or AM at 50% modulation, plays
   at -12 dBFS peak (-15 dBFS RMS) at the default RTL `vol` of 2, live and in I/Q replay alike, under any
   `DSD_NEO_DEEMPH` setting (the gain makes up what the FM de-emphasis takes off 1 kHz); `100` is 6 dB louder. Peaks are
-  held at -1 dBFS there too. A fixed `-n` is a calibration, not a loudness match: `-n 50` is not the level of a fixed
+  held at -1 dBFS there too. EDACS analog calls on radio input keep the same levels, auto and fixed: since issue #518
+  they play the voice channel's FM audio, de-emphasized and scaled by `vol` as the FM monitor's is, not the evened-out
+  signal the EDACS decoder reads, which hid how loud the talker was. A fixed `-n` is a calibration, not a loudness match: `-n 50` is not the level of a fixed
   `-g 1`. The menu's Analog gain... prompt and the `*` / `/` keys work over the same range; from auto they step from
   `50`, and stepping below `1` goes back to auto. A value above `100`, NaN or infinity is refused with an error, at the
   prompt too (a value above `100` used to be clamped to `100`). Since issue #518 a fixed `-n` plays RTL monitor audio

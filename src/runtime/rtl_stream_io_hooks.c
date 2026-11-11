@@ -68,6 +68,35 @@ dsd_rtl_stream_io_hook_read_ex2(dsd_state* state, float* out, uint8_t* flags, si
     return g_rtl_stream_io_hooks.read_ex2((void*)state->rtl_ctx, out, flags, count, out_got_ptr, want_no_stream);
 }
 
+int
+dsd_rtl_stream_io_hook_read_lanes(dsd_state* state, float* out, float* voice, uint8_t* flags, size_t count,
+                                  int* out_got, int want_no_stream) {
+    if (!g_rtl_stream_io_hooks.read_lanes) {
+        int got_tmp = 0;
+        int* out_got_ptr = out_got ? out_got : &got_tmp;
+        const int rc = dsd_rtl_stream_io_hook_read_ex2(state, out, flags, count, out_got_ptr, want_no_stream);
+        if (voice && *out_got_ptr > 0) {
+            DSD_MEMSET(voice, 0, (size_t)*out_got_ptr * sizeof(float));
+        }
+        return rc;
+    }
+    int got_tmp = 0;
+    int* out_got_ptr = out_got ? out_got : &got_tmp;
+    *out_got_ptr = 0;
+    if (!state || !state->rtl_ctx || !out || count == 0) {
+        return -1;
+    }
+    return g_rtl_stream_io_hooks.read_lanes((void*)state->rtl_ctx, out, voice, flags, count, out_got_ptr,
+                                            want_no_stream);
+}
+
+void
+dsd_rtl_stream_io_hook_set_voice_lane(int enable) {
+    if (g_rtl_stream_io_hooks.set_voice_lane) {
+        g_rtl_stream_io_hooks.set_voice_lane(enable);
+    }
+}
+
 double
 dsd_rtl_stream_io_hook_return_pwr(const dsd_state* state) {
     if (!state || !state->rtl_ctx) {

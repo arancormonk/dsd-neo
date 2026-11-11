@@ -119,6 +119,38 @@ rtl_stream_read_ex2(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t count
     return DSD_RTL_READ_NO_STREAM;
 }
 
+static int g_rtl_read_lanes_calls = 0;
+static float* g_last_voice = NULL;
+static int g_voice_lane_set = -1;
+
+int
+rtl_stream_read_lanes(RtlSdrContext* ctx, float* out, float* voice, uint8_t* flags, size_t count, int* out_got,
+                      int want_no_stream) {
+    ++g_rtl_read_lanes_calls;
+    g_last_rtl_ctx = ctx;
+    g_last_rtl_count = count;
+    g_last_want_no_stream = want_no_stream;
+    g_last_voice = voice;
+    if (count > 0U) {
+        out[0] = 6.5f;
+        if (voice) {
+            voice[0] = 0.125f;
+        }
+        if (flags) {
+            flags[0] = 1U;
+        }
+    }
+    if (out_got != NULL) {
+        *out_got = count > 0U ? 1 : 0;
+    }
+    return 3;
+}
+
+void
+rtl_stream_set_voice_lane(int enable) {
+    g_voice_lane_set = enable;
+}
+
 int
 rtl_stream_get_squelch_status(rtl_stream_squelch_status* out) {
     out->active = 1;
@@ -160,6 +192,9 @@ reset_rtl_stub(void) {
     g_rtl_read_calls = 0;
     g_rtl_read_ex_calls = 0;
     g_rtl_read_ex2_calls = 0;
+    g_rtl_read_lanes_calls = 0;
+    g_last_voice = NULL;
+    g_voice_lane_set = -1;
     g_last_want_no_stream = -1;
     g_rtl_return_pwr_calls = 0;
     g_last_rtl_ctx = NULL;
@@ -247,6 +282,17 @@ test_rtl_stream_io_installer(void) {
     assert(dsd_rtl_stream_io_hook_read_ex2(&state, &sample, &flag, 1U, &got, 1) == DSD_RTL_READ_NO_STREAM);
     assert(g_rtl_read_ex2_calls == 1 && g_last_want_no_stream == 1 && g_last_rtl_count == 1U);
     assert(g_rtl_read_ex_calls == 1 && g_rtl_read_calls == 1);
+    /* The voice lane's read (issue #518) goes to rtl_stream_read_lanes() with the voice buffer and the ask; its switch
+       goes to rtl_stream_set_voice_lane(). */
+    float voice = 0.0f;
+    flag = 0U;
+    assert(dsd_rtl_stream_io_hook_read_lanes(&state, &sample, &voice, &flag, 1U, &got, 1) == 3);
+    assert(g_rtl_read_lanes_calls == 1 && g_last_voice == &voice && g_last_want_no_stream == 1);
+    assert(got == 1 && sample == 6.5f && voice == 0.125f && flag == 1U && g_rtl_read_ex2_calls == 1);
+    dsd_rtl_stream_io_hook_set_voice_lane(1);
+    assert(g_voice_lane_set == 1);
+    dsd_rtl_stream_io_hook_set_voice_lane(0);
+    assert(g_voice_lane_set == 0);
 
     /* The dynamic squelch's status reaches the runtime table, and dsd_state through the publication. */
     dsd_rtl_squelch_status status;
@@ -280,6 +326,14 @@ test_rtl_stream_io_installer(void) {
     flag = 7U;
     assert(dsd_rtl_stream_io_hook_read_ex2(&state, &sample, &flag, 1U, &got, 1) == 7);
     assert(g_rtl_read_calls == 4 && got == 1 && flag == 0U && g_rtl_read_ex2_calls == 1);
+    /* ... and so does read_lanes, with every voice sample silent; the lane switch does nothing. */
+    voice = 7.0f;
+    flag = 7U;
+    assert(dsd_rtl_stream_io_hook_read_lanes(&state, &sample, &voice, &flag, 1U, &got, 1) == 7);
+    assert(g_rtl_read_calls == 5 && got == 1 && flag == 0U && voice == 0.0f && g_rtl_read_lanes_calls == 1);
+    g_voice_lane_set = -1;
+    dsd_rtl_stream_io_hook_set_voice_lane(1);
+    assert(g_voice_lane_set == -1);
 
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
 }

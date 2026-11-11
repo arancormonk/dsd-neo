@@ -28,10 +28,11 @@ extern "C" {
 /** Where a chain's samples come from, which sets the gain that takes the reference signal to the reference level. */
 typedef enum {
     /** RTL FM or AM monitor audio after the volume trim (`vol`, default 2): a 1 kHz tone at 3 kHz deviation, or AM at
-        50%, reads 0.125 x vol peak, FM less the de-emphasis at 1 kHz, which the chain makes up. */
+        50%, reads 0.125 x vol peak, FM less the de-emphasis at 1 kHz, which the chain makes up. EDACS analog voice on
+        an RTL input is this too: the stream's FSK voice lane (rtl_stream_read_lanes()) at the monitor's scale, with the
+        trim and a de-emphasis the stream's published gain makes up the same way. */
     DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR = 0,
-    /** RTL FSK discriminator output, normalised to +/-30000 peak: the -8 source monitor under digital decoding, and
-        EDACS analog voice on an RTL input. */
+    /** RTL FSK discriminator output, normalised to +/-30000 peak: the -8 source monitor under digital decoding. */
     DSD_ANALOG_AUDIO_SOURCE_RTL_FSK = 1,
     /** PCM input at int16 scale. */
     DSD_ANALOG_AUDIO_SOURCE_PCM16 = 2,

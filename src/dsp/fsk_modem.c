@@ -5,6 +5,7 @@
 
 #include <dsd-neo/dsp/fsk_modem.h>
 #include <math.h>
+#include <stddef.h>
 #include "dsd-neo/core/safe_api.h"
 
 #define DSD_FSK_DISCRIMINATOR_TARGET   30000.0f
@@ -132,9 +133,11 @@ scale_discriminator_sample(dsd_fsk_modem_state* st, float centered) {
     return clip_pcm_float(centered * (DSD_FSK_DISCRIMINATOR_TARGET / peak));
 }
 
-int
-dsd_fsk_modem_discriminator_process(dsd_fsk_modem_state* st, const float* iq_interleaved, int len_interleaved,
-                                    float* out_samples, int max_samples) {
+/* The discriminator over a block: the normalised samples into @p out_samples and, with @p raw_samples, the centred
+   frequency each was scaled from. The normalised samples are the same whether or not the raw ones are asked for. */
+static int
+discriminator_process(dsd_fsk_modem_state* st, const float* iq_interleaved, int len_interleaved, float* out_samples,
+                      float* raw_samples, int max_samples) {
     if (!st || !out_samples || max_samples <= 0 || !iq_interleaved || len_interleaved < 2) {
         return 0;
     }
@@ -149,16 +152,34 @@ dsd_fsk_modem_discriminator_process(dsd_fsk_modem_state* st, const float* iq_int
             st->prev_i = cur_i;
             st->prev_q = cur_q;
             st->have_prev = 1;
+            if (raw_samples) {
+                raw_samples[out_count] = 0.0f;
+            }
             out_samples[out_count++] = 0.0f;
             continue;
         }
 
         float freq = discriminator_frequency(cur_i, cur_q, st->prev_i, st->prev_q);
         float centered = update_centered_frequency(&st->dc_est, freq);
+        if (raw_samples) {
+            raw_samples[out_count] = centered;
+        }
         out_samples[out_count++] = scale_discriminator_sample(st, centered);
         st->prev_i = cur_i;
         st->prev_q = cur_q;
     }
 
     return out_count;
+}
+
+int
+dsd_fsk_modem_discriminator_process(dsd_fsk_modem_state* st, const float* iq_interleaved, int len_interleaved,
+                                    float* out_samples, int max_samples) {
+    return discriminator_process(st, iq_interleaved, len_interleaved, out_samples, NULL, max_samples);
+}
+
+int
+dsd_fsk_modem_discriminator_process_raw(dsd_fsk_modem_state* st, const float* iq_interleaved, int len_interleaved,
+                                        float* out_samples, float* raw_samples, int max_samples) {
+    return discriminator_process(st, iq_interleaved, len_interleaved, out_samples, raw_samples, max_samples);
 }

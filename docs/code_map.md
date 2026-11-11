@@ -6385,12 +6385,14 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   on auto logs that once per rate. The source gain takes
   each source's reference signal to -12 dBFS peak: RTL monitor audio after the `vol` trim (0.25 at the default 2:
   1 kHz at 3 kHz deviation after the 1/pi output scale, or AM at 50%) by 32924, the RTL FSK discriminator output
-  (+/-30000: the -8 source monitor under digital decoding, told by `rtl_symbol_cache_output_kind`, and EDACS on RTL,
-  which, like the symbol path, reads it with no `vol` trim) by 8231/30000, PCM by 1. The chain's gain is the source
+  (+/-30000: the -8 source monitor under digital decoding, told by `rtl_symbol_cache_output_kind`, which, like the
+  symbol path, reads it with no `vol` trim) by 8231/30000, PCM by 1. EDACS analog voice on RTL is RTL monitor audio:
+  the stream's FSK voice lane after the `vol` trim (IO, "The FSK voice lane"). The chain's gain is the source
   gain, and on RTL monitor audio from an RTL input times the stream's de-emphasis gain
   (`dsd_rtl_stream_metrics_hook_monitor_deemph_gain()`, issue #518 B8/B9: the FM de-emphasis takes the 1 kHz reference
   down 0.87 dB at 75 us, 13.65 dB at 750 us, and this makes it up, so `-n 50` and the AGC's start hold whatever
-  `DSD_NEO_DEEMPH` selects; 1.0 under AM, FSK, PCM and with no stream). It sits at the gain stage, not the monitor's
+  `DSD_NEO_DEEMPH` selects; on the FSK discriminator the voice lane's while it runs; 1.0 under AM, FSK without the lane,
+  PCM and with no stream). It sits at the gain stage, not the monitor's
   output scale, so the monitor samples, the `-6` raw WAV and the M17 encoder's RTL input
   (`dsd_analog_audio_source_gain()` alone) keep their level. Each chain (monitor, EDACS) keeps its band-pass and AGC
   in `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, allocated on first use (the fixed gain alone if that fails), and starts over on
@@ -6399,7 +6401,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   generation), trunk-tuning generation or a boundary
   `dsd_analog_rx_reset()` announces (`dsd_analog_audio_note_reception()`: a scan row commit, a reconnect, the legacy
   `-Y` rigctl retune, which moves neither generation) -- is partly the channel before it: the caller notes when a block
-  starts filling (`dsd_analog_audio_block_begin()`; EDACS once for its three blocks), and the chain drops a block whose
+  starts filling (`dsd_analog_audio_block_begin()`; EDACS once for its triplet), and the chain drops a block whose
   reception moved since, silence out, whichever path collected it (the -8 source monitor's block too, where no tap
   tracks the boundary), and starts over on the next one, which a block collected wholly after the boundary does at once.
   The monitor chain runs the AM band whenever the monitor runs AM, a receiver ahead of PCM input (an AM scan row on
@@ -6424,9 +6426,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`dsd_analog_rx_block_straddles_boundary()`), partly the old channel's and never played, goes in with
   `DSD_ANALOG_AUDIO_DISCARD`: the chain neither filters it nor counts it, turns it into silence, and starts over with
   the next block, so the old channel leaves nothing in the new one's filters. EDACS runs
-  the EDACS chain with the talkgroup gate as its learn flag and a reset per call, after the symbol register is read
-  from the raw block; under a dynamic squelch it runs the chain per run of heard and unheard samples and silences the
-  closed ones (`edacs_process_analog_block_runs()`, issue #625), each call reading the decode clock. The M17
+  the EDACS chain once per triplet (`edacs_process_analog_triplet()`) over the triplet's voice (issue #518 B10: on RTL
+  the stream's voice lane, on audio input the samples), after the symbol register is read from the normalised samples,
+  with a reset per call and a learn flag per sample from the squelch the call runs: the dynamic squelch's own gate per
+  sample (closed samples then play silence, issue #625), the level squelch's power test for the triplet, every sample
+  with none. The talkgroup gate, the output switches and the record policy have no say, so a call the talkgroup mutes
+  but the record policy keeps records at the AGC's level; one call per triplet reads the decode clock once, so the
+  new-reception rule places each sample exactly. The played and recorded blocks are the chain's output. The M17
   encoder keeps its own band-pass, 960 Hz one-poles (`dsd_voice_onepole`) and `dsd_voice_agc` (used there alone) at
   8 kHz in its stream context
   (`m17_voice_chain`) and runs them over the whole codec2 frame, 160 samples at 3200 bit/s and 320 at 1600
@@ -8440,6 +8446,31 @@ Notes:
     copy them under the same cursors. `dsd_rtl_stream_read_ex()` / `rtl_stream_read_ex()` and the runtime hook
     `dsd_rtl_stream_io_hook_read_ex()` hand them to the decoder; a host that installs only `read` gets them all open.
     Tests: `IO_RTL_SQUELCH_PLUMBING`, `ENGINE_IO_HOOKS_INSTALL`.
+  - The FSK voice lane (issue #518 B10). EDACS plays analog calls on the 9600 bit/s FSK discriminator, whose output the
+    modem normalises to a +/-30000 peak (the release register needs it), which throws the voice's level away. While
+    the decoder asks for it (`rtl_stream_set_voice_lane()`, through the runtime hook `set_voice_lane`: EDACS before an
+    analog call's tune, off when the call ends or its tune is refused; process-wide, `g_voice_lane_requested`, taken
+    by the demod thread before each block in `demod_take_voice_lane_setting()`, which starts the lane's de-emphasis
+    and resampler history from silence when it turns on), an FSK block also makes a calibrated lane
+    (`full_demod_handle_fsk_output()`): the centred discriminator output ahead of the normaliser
+    (`dsd_fsk_modem_discriminator_process_raw()`), at the FM monitor's output scale for the complex rate
+    (`DSD_DEMOD_MONITOR_OUTPUT_SCALE`, `DSD_DEMOD_MONITOR_SCALE_REFERENCE_HZ`), through its own one-pole de-emphasis
+    at the complex rate (`voice_lane_tau_us` from `DSD_NEO_DEEMPH`, whatever the monitor's own; the coefficient made
+    again when the rate moves, `dsd_demod_deemph_alpha()`, the monitor's quantisation), into `demod_state::voice_result`
+    (a squelched block: silence, the de-emphasis starting over with the modem). `dsd_demod_deemph_compensation()`
+    is then the lane's, so the published de-emphasis gain (`g_pub_monitor_deemph_gain`) makes it up as it does the
+    monitor's; the lane switching moves that gain with the next block and moves no generation (a reader of the lane
+    notes it as a new reception). `demod_finish_output_block()` resamples the lane with the main lane's taps, ratio
+    and starting phase over its own history (`resamp_process_voice_lane()`, `voice_resamp_hist`, cleared with the main
+    lane's: `rtl_demod_reset_resampler_state()`, `resamp_design()`), so it makes exactly the main lane's samples at
+    the same places, and marks each such sample's flag with `DSD_RING_FLAG_VOICE`. The ring keeps the lane in
+    `output_state::voice` (allocated with the ring, untouched until a lane runs) at the samples' positions; the reads
+    hand the flags back without that bit, so the samples and flags are bit for bit the same with the lane on or off,
+    and `rtl_stream_read_lanes()` (`RtlSdrOrchestrator::read()` with a voice buffer, `dsd_rtl_stream_read_ex()`, the
+    hook's `read_lanes`) gives each sample's lane value, 0 where the lane did not run for it. Off, the lane costs
+    nothing but a load per block. Tests: `IO_RTL_VOICE_LANE` (replayed captures through the real stream, read API,
+    resampler and ring: the lane switched on and off, a gap, a retune, three rates, flag and sample identity, level,
+    positions), `DSP_FSK_VOICE_LANE`, `ENGINE_IO_HOOKS_INSTALL`, `IO_RTL_STREAM_ORCHESTRATOR`.
   - The squelch setting reaches the demod thread through `g_squelch_auto_word` (mode and margin) beside the existing
     `channel_squelch_level`, which the level gate reads under a LEVEL word only. A switch to AUTO stores the word
     alone and leaves the level, so a block that took the old LEVEL word still gates on it; a switch to LEVEL stores the
@@ -8901,13 +8932,21 @@ disowns it and touches nothing else. Only otherwise does EDACS own the recovery:
 tuned state, disowns the failure and retunes, the rollback or the retry, when `dsd_trunk_tuning_hook_tuner_free()`
 answers free (no manual tune, trunk scan or `-Y` scan owns the tuner); its own control-channel tune makes the tuner
 frequency agree with the radio. The converter starts over at every retune, during a
-triplet or between two, and the PCM staging held from before the call is dropped when it ends. A triplet plays
+triplet or between two, and the PCM staging held from before the call is dropped when it ends. On an RTL input an
+analog call plays the stream's FSK voice lane (issue #518 B10; IO, "The FSK voice lane"), not the normalised samples
+the release register reads: EDACS asks for it before the call's tune and stops it when the call ends or the tune is
+refused (`edacs_voice_lane_set()`), reads it beside each sample with its flag (`dsd_rtl_stream_io_hook_read_lanes()`),
+scales it by the `vol` trim as the monitor's audio is, and converts it beside the samples through a second converter
+configured and cleared with the first (`dsd_rate_converter_fill_pair()`), so each converted voice sample is made from
+the same input samples as its normalised one. A triplet plays
 (`edacs_emit_analog_audio()`) only past the talkgroup gate, and only while the output is unmuted (`audio_out` 1) and
 slot 1 is on, on the local stream, UDP and the raw fd alike (`edacs_analog_output_enabled()`, the mixers' rule); it
 notes the audible-audio stamp only when one of them receives it (the shared output rule: the raw fd takes 16-bit output
 only, and the null output or a local stream that is not open receives nothing) and the squelch the call runs opened on
 it (see Core). Tests:
 `EDACS_GRANT_TUNE_MATRIX` (the `analog-633` cases, with golden hashes of a 48 kHz call's audio, WAVs and stdout; the
+`analog-b10` cases: the voice lane asked for and stopped around a call, never for audio input, and a call the
+talkgroup gate mutes recording what the heard call records at the AGC's level; the
 emitter's outputs and stamp under each gate, squelch, output type and sample format; the `analog-717` and `digital-717`
 failed-tune rollbacks), `ENGINE_EDACS_FAILED_GRANT_STALL` (a control channel that keeps syncing after a failed grant
 tune is decoded again).

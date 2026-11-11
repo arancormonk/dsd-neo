@@ -423,6 +423,8 @@ resamp_design(struct demod_state* s, int L, int M) {
     /* A new resampler's outputs map to no input before its first: their flags start closed. */
     DSD_MEMSET(s->resamp_flag_hist, DSD_SQUELCH_FLAG_CLOSED, sizeof(s->resamp_flag_hist));
     s->resamp_flag_head = 0;
+    /* The voice lane's history starts over with the main lane's, so the two stay sample for sample alike. */
+    resamp_clear_voice_lane(s);
     return (designed && s->resamp_taps != NULL && s->resamp_hist != NULL) ? 1 : 0;
 }
 
@@ -491,6 +493,47 @@ resamp_process_block(struct demod_state* s, const float* DSD_NEO_RESTRICT in, in
         return out_len;
     }
     if (out != in && in && out && in_len > 0) {
+        DSD_MEMCPY(out, in, (size_t)in_len * sizeof(float));
+    }
+    return in_len;
+}
+
+void
+resamp_clear_voice_lane(struct demod_state* s) {
+    if (!s) {
+        return;
+    }
+    DSD_MEMSET(s->voice_resamp_hist, 0, sizeof(s->voice_resamp_hist));
+    s->voice_resamp_hist_head = 0;
+}
+
+int
+resamp_process_voice_lane(struct demod_state* s, int phase, const float* in, int in_len, float* out) {
+    if (!s || !in || !out || in_len < 0) {
+        return -1;
+    }
+    dsd_resampler_state state = demod_resampler_state_copy_in(s);
+    const int k = state.taps_per_phase;
+    int out_len = -1;
+    if (state.enabled && state.taps && state.hist && k >= 1 && k <= DSD_RESAMPLER_MAX_TAPS_PER_PHASE) {
+        /* The history holds the lane's last inputs, mirrored over 2 K: laid out for another K it starts over. */
+        if (s->voice_resamp_hist_k != k) {
+            resamp_clear_voice_lane(s);
+            s->voice_resamp_hist_k = k;
+        }
+        state.phase = phase;
+        state.hist = s->voice_resamp_hist;
+        state.hist_head = s->voice_resamp_hist_head;
+        out_len = dsd_resampler_process_block(&state, in, in_len, out, MAXIMUM_BUF_LENGTH * 4);
+        if (out_len >= 0) {
+            s->voice_resamp_hist_head = state.hist_head;
+        }
+    }
+    if (out_len >= 0) {
+        return out_len;
+    }
+    /* The main lane passes its samples through here too (resamp_process_block()). */
+    if (out != in && in_len > 0) {
         DSD_MEMCPY(out, in, (size_t)in_len * sizeof(float));
     }
     return in_len;

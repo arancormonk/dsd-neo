@@ -60,6 +60,14 @@ enum { EDACS_ANALOG_SQL_NONE = 0, EDACS_ANALOG_SQL_LEVEL = 1, EDACS_ANALOG_SQL_G
 int edacs_collect_analog_triplet_flags(dsd_opts* opts, dsd_state* state, struct dsd_rate_converter* conv,
                                        short* analog1, short* analog2, short* analog3, uint8_t* flags, double* pwr);
 
+/* edacs_collect_analog_triplet_flags() with the triplet's voice into @p voice (2880, or NULL; issue #518): on an RTL
+   input the stream's FSK voice lane at the RTL monitor's scale with the monitor's `vol` trim, read beside each sample
+   (dsd_rtl_stream_io_hook_read_lanes()) and converted through @p voice_conv beside @p conv, which must be configured
+   and cleared with it; on audio input the samples themselves. The samples and flags read as without it. */
+int edacs_collect_analog_triplet_lanes(dsd_opts* opts, dsd_state* state, struct dsd_rate_converter* conv,
+                                       struct dsd_rate_converter* voice_conv, short* analog1, short* analog2,
+                                       short* analog3, float* voice, uint8_t* flags, double* pwr);
+
 /* The squelch an analog call runs (EDACS_ANALOG_SQL_*): the gate under a dynamic setting on a radio input whose stream
    runs it (@p gate_running: its status active with a valid plan), the level under a LEVEL setting above 0, else none.
    A dynamic setting on audio input runs none. */

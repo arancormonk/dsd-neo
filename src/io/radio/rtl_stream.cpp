@@ -23,8 +23,8 @@
 extern "C" {
 // Backend operations hidden from the installed context API.
 int dsd_rtl_stream_open(dsd_opts* opts);
-int dsd_rtl_stream_read_ex(float* out, uint8_t* flags, size_t count, dsd_opts* opts, const dsd_opts* live_opts,
-                           const dsd_state* state, int want_no_stream);
+int dsd_rtl_stream_read_ex(float* out, float* voice, uint8_t* flags, size_t count, dsd_opts* opts,
+                           const dsd_opts* live_opts, const dsd_state* state, int want_no_stream);
 uint32_t rtl_stream_output_generation(void);
 int dsd_rtl_stream_tune(dsd_opts* opts, uint32_t frequency);
 int dsd_rtl_stream_tune_tagged(dsd_opts* opts, uint32_t frequency, uint64_t request_id);
@@ -171,6 +171,11 @@ RtlSdrOrchestrator::read(float* out, uint8_t* flags, size_t count, int& out_got)
 
 int
 RtlSdrOrchestrator::read(float* out, uint8_t* flags, size_t count, int& out_got, int want_no_stream) {
+    return read(out, nullptr, flags, count, out_got, want_no_stream);
+}
+
+int
+RtlSdrOrchestrator::read(float* out, float* voice, uint8_t* flags, size_t count, int& out_got, int want_no_stream) {
     if (!started_) {
         return -1;
     }
@@ -182,7 +187,7 @@ RtlSdrOrchestrator::read(float* out, uint8_t* flags, size_t count, int& out_got,
     for (;;) {
         const uint32_t generation_before = rtl_stream_output_generation();
         /* The started copy carries the PPM mirrors; the caller's live options carry the receive mode in force. */
-        int got = dsd_rtl_stream_read_ex(out, flags, count, opts_, caller_opts_, nullptr, want_no_stream);
+        int got = dsd_rtl_stream_read_ex(out, voice, flags, count, opts_, caller_opts_, nullptr, want_no_stream);
         /* A failure, or a live read with no stream (issue #518 D4): DSD_RTL_READ_YIELD, or DSD_RTL_READ_NO_STREAM to a
            reader that asked for it, carried as it is, never taken for the other. */
         if (got < 0) {

@@ -12904,6 +12904,16 @@ target_include_directories(
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_am_demod ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_AM_DEMOD COMMAND dsd-neo_test_dsp_am_demod)
 
+# The FSK discriminator's voice lane EDACS plays analog calls from (issue #518 B10): level, de-emphasis, the
+# normalised lane unchanged, squelch, and the output resampler keeping the lane in step.
+add_executable(dsd-neo_test_dsp_fsk_voice_lane dsp/test_dsp_fsk_voice_lane.cpp)
+target_include_directories(
+    dsd-neo_test_dsp_fsk_voice_lane
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_fsk_voice_lane ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_FSK_VOICE_LANE COMMAND dsd-neo_test_dsp_fsk_voice_lane)
+
 add_executable(dsd-neo_test_dsp_demod_misc dsp/test_dsp_demod_misc.cpp)
 target_include_directories(
     dsd-neo_test_dsp_demod_misc
@@ -15164,6 +15174,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     add_executable(
         dsd-neo_test_edacs_grant_tune_matrix
         protocol/edacs/test_edacs_grant_tune_matrix.c
+        test_support/speech_synth.c
     )
     target_include_directories(
         dsd-neo_test_edacs_grant_tune_matrix
@@ -15191,7 +15202,8 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=open_wav_file"
             "-Wl,--wrap=dsd_audio_write"
             "-Wl,--wrap=dsd_audio_output_health_get"
-            "-Wl,--wrap=dsd_analog_audio_process_s"
+            "-Wl,--wrap=dsd_analog_audio_process_runs_f"
+            "-Wl,--wrap=dsd_audio_group_gate_mono"
             "-Wl,--wrap=dsd_rate_converter_clear"
     )
     add_test(
@@ -17315,6 +17327,36 @@ if(DSD_HAS_RADIO)
         COMMAND dsd-neo_test_io_rtl_stream_input_gap
     )
     set_tests_properties(IO_RTL_STREAM_INPUT_GAP PROPERTIES TIMEOUT 120)
+
+    # Issue #518 B10: the FSK voice lane EDACS plays analog calls from, through the real stream creation, read API,
+    # demodulator, output resampler and ring: the normalised samples and flags unchanged, the lane's level and positions,
+    # with the lane switched on and off, a gap, a retune and three rates.
+    add_executable(dsd-neo_test_io_rtl_voice_lane io/test_io_rtl_voice_lane.cpp)
+    target_include_directories(
+        dsd-neo_test_io_rtl_voice_lane
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/io/radio
+            ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_voice_lane
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_io_iq
+            dsd-neo_dsp
+            dsd-neo_core
+            dsd-neo_platform
+            dsd-neo_test_support
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_voice_lane
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(NAME IO_RTL_VOICE_LANE COMMAND dsd-neo_test_io_rtl_voice_lane)
+    set_tests_properties(IO_RTL_VOICE_LANE PROPERTIES TIMEOUT 120)
 
     # Issue #701: a run-time re-plan reopens an I/Q replay where the stopped stream left it. The checkpoint after a
     # MUTE, a RETUNE and a completed --iq-loop pass names the event to apply next and the media time so far, and the

@@ -1796,20 +1796,48 @@ deemph_filter(struct demod_state* fm) {
     fm->deemph_avg = avg; /* write back state */
 }
 
+float
+dsd_demod_deemph_alpha(int rate_hz, int tau_us) {
+    if (tau_us <= 0) {
+        return 0.0f;
+    }
+    const double fs = rate_hz >= 1 ? (double)rate_hz : 1.0;
+    const double tau_s = (double)tau_us / 1000000.0;
+    const double alpha = 1.0 - exp(-1.0 / (fs * tau_s));
+    int coef_q15 = (int)lrint(alpha * (double)(1 << 15));
+    if (coef_q15 < 1) {
+        coef_q15 = 1;
+    } else if (coef_q15 > ((1 << 15) - 1)) {
+        coef_q15 = ((1 << 15) - 1);
+    }
+    return (float)((double)coef_q15 / (double)(1 << 15));
+}
+
+/* The inverse of the one-pole de-emphasis's magnitude at 1 kHz: H(z) = a / (1 - (1 - a) z^-1), so the gain is
+   |1 - (1 - a) e^-jw| / a at w = 2 pi 1000 / rate. The filters clamp the coefficient to 1. */
+static double
+deemph_gain_at_1khz(float alpha, int rate_hz) {
+    const double a = alpha < 1.0f ? (double)alpha : 1.0;
+    const double pole = 1.0 - a;
+    const double w = 2.0 * M_PI * 1000.0 / (double)rate_hz;
+    return sqrt(1.0 - (2.0 * pole * cos(w)) + (pole * pole)) / a;
+}
+
 /* The conditions full_demod() runs deemph_filter() under: monitor output (the FSK discriminator returns before it),
-   no CQPSK, not the raw pass-through, de-emphasis on with a coefficient. H(z) = a / (1 - (1 - a) z^-1), so the gain
-   is |1 - (1 - a) e^-jw| / a at w = 2 pi 1000 / rate_out. */
+   no CQPSK, not the raw pass-through, de-emphasis on with a coefficient. On the FSK discriminator, the voice lane's
+   de-emphasis while it runs (full_demod_handle_fsk_output()). */
 double
 dsd_demod_deemph_compensation(const struct demod_state* d) {
+    if (d && d->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
+        return (d->voice_lane_enabled && d->voice_lane_deemph_a > 0.0f && d->complex_rate > 0)
+                   ? deemph_gain_at_1khz(d->voice_lane_deemph_a, d->complex_rate)
+                   : 1.0;
+    }
     if (!d || d->output_kind != DSD_DEMOD_OUTPUT_AUDIO_MONITOR || d->cqpsk_enable || d->mode_demod == &raw_demod
         || !d->deemph || !(d->deemph_a > 0.0f) || d->rate_out <= 0) {
         return 1.0;
     }
-    /* deemph_filter() clamps the coefficient to 1. */
-    const double a = d->deemph_a < 1.0f ? (double)d->deemph_a : 1.0;
-    const double pole = 1.0 - a;
-    const double w = 2.0 * M_PI * 1000.0 / (double)d->rate_out;
-    return sqrt(1.0 - (2.0 * pole * cos(w)) + (pole * pole)) / a;
+    return deemph_gain_at_1khz(d->deemph_a, d->rate_out);
 }
 
 /**
@@ -2730,11 +2758,53 @@ full_demod_apply_iq_balance(struct demod_state* d) {
     }
 }
 
+/* The voice lane's de-emphasis coefficient for the rate the discriminator runs at and the time constant asked for,
+   made again only when either moved. */
+static void
+voice_lane_track_coefficient(struct demod_state* d) {
+    if (d->voice_lane_coef_rate_hz == d->complex_rate && d->voice_lane_coef_tau_us == d->voice_lane_tau_us) {
+        return;
+    }
+    d->voice_lane_deemph_a = dsd_demod_deemph_alpha(d->complex_rate, d->voice_lane_tau_us);
+    d->voice_lane_coef_rate_hz = d->complex_rate;
+    d->voice_lane_coef_tau_us = d->voice_lane_tau_us;
+}
+
+/* The voice lane over the block's centred discriminator output, in place in voice_result (issue #518): the FM monitor's
+   output scale at the rate the discriminator runs at (DSD_DEMOD_MONITOR_OUTPUT_SCALE), then the lane's de-emphasis.
+   So EDACS analog voice reads at the monitor audio's level, with the level information the peak normaliser throws
+   away, and its de-emphasis is the one dsd_demod_deemph_compensation() makes up. */
+static void
+voice_lane_finish(struct demod_state* d) {
+    const int rate_hz = d->complex_rate > 0 ? d->complex_rate : 48000;
+    const float scale =
+        (float)(DSD_DEMOD_MONITOR_OUTPUT_SCALE * ((double)rate_hz / DSD_DEMOD_MONITOR_SCALE_REFERENCE_HZ));
+    float* v = d->voice_result;
+    const int n = d->result_len;
+    float alpha = d->voice_lane_deemph_a;
+    if (!(alpha > 0.0f)) {
+        for (int i = 0; i < n; i++) {
+            v[i] *= scale;
+        }
+        return;
+    }
+    if (alpha > 1.0f) {
+        alpha = 1.0f;
+    }
+    float avg = d->voice_lane_deemph_avg;
+    for (int i = 0; i < n; i++) {
+        avg += ((v[i] * scale) - avg) * alpha;
+        v[i] = avg;
+    }
+    d->voice_lane_deemph_avg = avg;
+}
+
 static int
 full_demod_handle_fsk_output(struct demod_state* d) {
     if (d->output_kind != DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
         return 0;
     }
+    d->voice_lane_active = d->voice_lane_enabled ? 1 : 0;
     int in_pairs = d->lp_len >> 1;
     if (d->channel_squelched) {
         dsd_fsk_modem_reset(&d->fsk_modem_state);
@@ -2742,6 +2812,16 @@ full_demod_handle_fsk_output(struct demod_state* d) {
         for (int i = 0; i < d->result_len; i++) {
             d->result[i] = 0.0f;
         }
+        if (d->voice_lane_active) {
+            /* Silence, and the de-emphasis starts over with the modem. */
+            DSD_MEMSET(d->voice_result, 0, (size_t)d->result_len * sizeof(float));
+            d->voice_lane_deemph_avg = 0.0f;
+        }
+    } else if (d->voice_lane_active) {
+        voice_lane_track_coefficient(d);
+        d->result_len = dsd_fsk_modem_discriminator_process_raw(&d->fsk_modem_state, d->lowpassed, d->lp_len, d->result,
+                                                                d->voice_result, MAXIMUM_BUF_LENGTH);
+        voice_lane_finish(d);
     } else {
         d->result_len = dsd_fsk_modem_discriminator_process(&d->fsk_modem_state, d->lowpassed, d->lp_len, d->result,
                                                             MAXIMUM_BUF_LENGTH);
@@ -2984,6 +3064,8 @@ full_demod_apply_squelch_envelope(struct demod_state* d) {
  */
 void
 full_demod(struct demod_state* d) {
+    /* Only an FSK discriminator block with the lane asked for makes it (full_demod_handle_fsk_output()). */
+    d->voice_lane_active = 0;
     full_demod_apply_halfband_decimation(d);
     full_demod_apply_live_step(d);
     full_demod_test_post_step_tap(d);

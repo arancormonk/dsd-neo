@@ -129,6 +129,24 @@ int dsd_rate_converter_process(dsd_rate_converter* c, const float* in, size_t in
 int dsd_rate_converter_fill(dsd_rate_converter* c, float* out, uint8_t* tags, size_t count,
                             dsd_rate_converter_read_fn read, void* ctx);
 
+/** Reads the next input sample of two lanes into @p a and @p b, and its tag into @p tag (starting at 0): 1, or 0 when
+    the input ended. */
+typedef int (*dsd_rate_converter_read_pair_fn)(void* ctx, float* a, float* b, uint8_t* tag);
+
+/**
+ * @brief dsd_rate_converter_fill() over two lanes of one input at once (issue #518: the FSK discriminator and its voice
+ * lane): exactly @p count outputs each into @p out_a and @p out_b, from the same inputs, so output k of one is made
+ * from the same input samples as output k of the other.
+ *
+ * @p a and @p b must convert alike and be in step: configured for the same rates and cleared together, and driven only
+ * by this. @p a's outputs (and @p tags) are exactly what dsd_rate_converter_fill() would make of lane a alone.
+ *
+ * @return @p count, or -1 on an argument error, an unusable mode, converters out of step, or when @p read ends the
+ *         input.
+ */
+int dsd_rate_converter_fill_pair(dsd_rate_converter* a, dsd_rate_converter* b, float* out_a, float* out_b,
+                                 uint8_t* tags, size_t count, dsd_rate_converter_read_pair_fn read, void* ctx);
+
 #ifdef __cplusplus
 }
 #endif

@@ -2254,6 +2254,19 @@ a replay that decimates by 2 after the demodulator, each across an FM -> AM -> F
 -15.0 dBFS RMS +/-0.2 (measured -15.05 to -15.09), and each de-emphasis lands within 0.05 dB of none.
 `DSP_DEMOD_MISC` checks the gain against the filter's own response at 8 to 78.125 kHz.
 
+EDACS analog voice on an RTL input plays the FSK voice lane (issue #518 B10), not the peak-normalised discriminator
+output the release register reads, which hides the voice's level. `IO_RTL_VOICE_LANE` replays synthetic 9600 bit/s
+captures (48 kHz, 60 kHz resampled to 48 kHz, 24 kHz) through the real stream, read API, resampler and ring with the
+auto squelch on, the lane switched on and off part-way, across a driver overflow and a retune. The normalised samples
+and flags stay bit for bit the same with the lane on, off or switched; a batch made with the lane off reads silence on
+it; the lane reads the 1 kHz reference at 0.125 peak once the published gain makes up its de-emphasis, and a tone 20 dB
+down reads 20 dB down; with no de-emphasis it sits at the normalised samples' positions, not one sample either side.
+Each replay uses its own centre frequency: the auto squelch keeps a channel's floor for the process, so a second
+replay on the same centre would start from it and set other flags. `DSP_FSK_VOICE_LANE` covers the lane in the demod
+(level at 24, 48 and 72 kHz under none, 50, 75 and 750 us; the compensation the monitor's; a squelched block; the
+coefficient following the rate; the resampler keeping the lane in step), and `EDACS_GRANT_TUNE_MATRIX` the call: the
+lane asked for around an RTL call only, and a call the talkgroup gate mutes recording at the AGC's level.
+
 The 12.5 kHz probe on `nfm_adjacent_synth` reads -76.6 dBc (`-v 0 -n 50`), against -78.4 dBc on `nfm_tone_synth`,
 which has no interferer: at the default channel width it measures the floor, so its bound catches a channel filter that lets the
 neighbour through, not finer changes. The probe itself reads a real line at its true level: in

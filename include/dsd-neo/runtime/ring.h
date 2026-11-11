@@ -17,14 +17,22 @@
 
 #include <dsd-neo/platform/threading.h>
 
+/* The flag bit (struct output_state::flags) that says the voice lane ran for a sample and its voice sample is in
+   struct output_state::voice. The squelch's DSD_SQUELCH_FLAG_CLOSED is bit 0. */
+#define DSD_RING_FLAG_VOICE 0x80U
+
 struct output_state {
     /* Sample rate of the ring's contents. Written by the controller and demod threads (rate-chain finalize, family
        switch) and read by the decoder and UI threads through dsd_rtl_stream_output_rate(). */
     std::atomic<int> rate{0};
     float* buffer = nullptr;
     /* One flag byte per sample, at the sample's position (the auto squelch's DSD_SQUELCH_FLAG_CLOSED; 0 is open):
-       written with the samples before the head that publishes both, and read with them. NULL: every sample open. */
+       written with the samples before the head that publishes both, and read with them. NULL: every sample open.
+       DSD_RING_FLAG_VOICE marks a sample the voice lane ran for; the stream's reads hand back the other bits only. */
     uint8_t* flags = nullptr;
+    /* The FSK voice lane's sample at each position DSD_RING_FLAG_VOICE marks (issue #518), written with the sample and
+       its flag; what the other positions hold is never read. NULL: no voice lane. */
+    float* voice = nullptr;
     size_t capacity = 0;
     std::atomic<size_t> head{0U};
     std::atomic<size_t> tail{0U};
