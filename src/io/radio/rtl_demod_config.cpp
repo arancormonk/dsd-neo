@@ -1301,6 +1301,8 @@ rtl_demod_reset_audio_monitor_state(struct demod_state* demod) {
     }
     demod->deemph_avg = 0.0f;
     demod->voice_lane_deemph_avg = 0.0f;
+    demod->voice_lane_have_prev = 0;
+    demod->voice_lane_dc = 0.0f;
     demod->dc_avg = 0.0f;
     demod->audio_lpf_state = 0.0f;
     /* Cold, so the AM detector warm-starts from the new channel's own level rather than dividing it by the last one's

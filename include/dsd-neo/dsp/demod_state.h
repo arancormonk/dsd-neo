@@ -157,8 +157,8 @@ struct demod_state {
        their sizes cannot decide where its SIMD loads fall (one more int there moved it off a 64-byte boundary and
        slowed the CQPSK chain by about 5 %). */
     alignas(DSD_DEMOD_BUF_ALIGN) float hb_workbuf[DSD_DEMOD_ALIGNED_FLOATS(DSD_DEMOD_WORKBUF_LENGTH)];
-    /* The voice lane EDACS plays analog calls from (issue #518): the FSK discriminator's centred output ahead of its
-       peak normaliser, at the FM monitor's output scale and through a de-emphasis of its own, parallel to result (at
+    /* The voice lane EDACS plays analog calls from (issue #518): the FSK discriminator's centred output, as the modem
+       computes it ahead of its peak normaliser, at the FM monitor's output scale and through a de-emphasis of its own, parallel to result (at
        the complex rate) and to voice_resamp_outbuf (resampled as resamp_outbuf is). Valid only while
        voice_lane_active. They sit after hb_workbuf so they move none of the buffers before them. */
     alignas(DSD_DEMOD_BUF_ALIGN) float voice_result[DSD_DEMOD_ALIGNED_FLOATS(MAXIMUM_BUF_LENGTH)];
@@ -376,6 +376,12 @@ struct demod_state {
        and the taps per phase it was laid out for. */
     int voice_lane_enabled;
     int voice_lane_active;
+    /* The lane's own discriminator (it runs beside the FSK modem, not inside it): the last sample, whether there is
+       one, and the slow carrier centring. */
+    float voice_lane_prev_i;
+    float voice_lane_prev_q;
+    int voice_lane_have_prev;
+    float voice_lane_dc;
     int voice_lane_tau_us;
     int voice_lane_coef_rate_hz;
     int voice_lane_coef_tau_us;

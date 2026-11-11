@@ -8500,10 +8500,12 @@ Notes:
     modem normalises to a +/-30000 peak (the release register needs it), which throws the voice's level away. While
     the decoder asks for it (`rtl_stream_set_voice_lane()`, through the runtime hook `set_voice_lane`: EDACS before an
     analog call's tune, off when the call ends or its tune is refused; process-wide, `g_voice_lane_requested`, taken
-    by the demod thread before each block in `demod_take_voice_lane_setting()`, which starts the lane's de-emphasis
-    and resampler history from silence when it turns on), an FSK block also makes a calibrated lane
-    (`full_demod_handle_fsk_output()`): the centred discriminator output ahead of the normaliser
-    (`dsd_fsk_modem_discriminator_process_raw()`), at the FM monitor's output scale for the complex rate
+    by the demod thread before each block in `demod_take_voice_lane_setting()`, which starts the lane's discriminator,
+    de-emphasis and resampler history from silence when it turns on), an FSK block also makes a calibrated lane
+    (`full_demod_handle_fsk_output()`): the centred discriminator output as the modem computes it ahead of its
+    normaliser, from the lane's own discriminator beside the modem (`voice_lane_run()`, started over whenever the modem
+    is; the modem's own loop, which every FSK digital decode runs, is untouched), at the FM monitor's output scale for
+    the complex rate
     (`DSD_DEMOD_MONITOR_OUTPUT_SCALE`, `DSD_DEMOD_MONITOR_SCALE_REFERENCE_HZ`), through its own one-pole de-emphasis
     at the complex rate (`voice_lane_tau_us` from `DSD_NEO_DEEMPH`, whatever the monitor's own; the coefficient made
     again when the rate moves, `dsd_demod_deemph_alpha()`, the monitor's quantisation), into `demod_state::voice_result`
