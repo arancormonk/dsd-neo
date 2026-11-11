@@ -754,6 +754,7 @@ SavedSystemsModel::newRow(const QVariant& system, int keySource, Row* row) const
 
 int
 SavedSystemsModel::appendRows(const QList<Row>& added) {
+    // Adopts in order and stops at the first refusal.
     if (!std::all_of(added.cbegin(), added.cend(), [this](const Row& row) { return adoptReplay(row.filePath); })) {
         return -1;
     }

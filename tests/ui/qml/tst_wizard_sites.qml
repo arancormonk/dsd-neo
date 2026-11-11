@@ -35,6 +35,7 @@ Item {
         property var libraryPaths: []
         function cleanup() {
             home.active = false;
+            testContext.blockSystemsStoreAtPlaceFill(0);
             while (savedSystems.count)
                 savedSystems.remove(0);
             if (libraryPath.length)
@@ -170,6 +171,7 @@ Item {
             savedSystems.remove(0);
             loader.item.commit();
             compare(savedSystems.count, 0);
+            compare(loader.item.csvNotice, "The retained key is unavailable. Choose Replace or Clear before saving.");
             verify(loader.item.csvNoticeIsProblem);
             var editor = findChild(loader.item, "wizardEncryptionEditor");
             editor.keyAction = "clear";
@@ -232,22 +234,13 @@ Item {
             placed.siteLat = 41.65;
             placed.siteLon = -91.6;
             placed.hasSitePos = true;
+            placed.avoidSite = true;
             placed.place = placeOf(id);
             return placed;
         }
         function placeCounty(row) {
             var counties = savedSystems.get(row).place.counties || [];
             return counties.length === 1 ? counties[0].ctid : 0;
-        }
-        // The store file exists, so blockPath() can move it aside.
-        function blockSystemsStore() {
-            savedSystems.add({
-                name: "Store"
-            });
-            savedSystems.remove(savedSystems.count - 1);
-            var store = testContext.storePath("saved_systems.json");
-            verify(testContext.blockPath(store, true), "could not block the store");
-            return store;
         }
 
         // B6: a per-site import saves every site or none. A site the model
@@ -264,21 +257,34 @@ Item {
             });
             loader.item.commit();
             compare(savedSystems.count, 0, "the sites before the refused one stayed saved");
+            compare(loader.item.csvNotice, "Could not save this imported system.");
             verify(loader.item.csvNoticeIsProblem);
         }
 
+        // The store fails part way: blocked while the second site is built,
+        // after the first one used to be saved on its own.
         function test_batch_failed_save_saves_nothing_and_retry_adds_once() {
+            // The store file exists, so blockPath() can move it aside.
+            savedSystems.add({
+                name: "Store"
+            });
+            savedSystems.remove(savedSystems.count - 1);
+            var store = testContext.storePath("saved_systems.json");
             loader.item.applyRadioReference({
                 ok: true,
-                rows: [site(16863, "851"), site(48391, "852"), site(70001, "853")]
+                rows: [placedSite(16863, "851"), placedSite(48391, "852"), placedSite(70001, "853")]
             });
-            var store = blockSystemsStore();
+            testContext.blockSystemsStoreAtPlaceFill(2);
             try {
                 loader.item.commit();
+                verify(!testContext.fileExists(store), "the store was not blocked part way");
             } finally {
-                verify(testContext.blockPath(store, false), "could not unblock the store");
+                testContext.blockSystemsStoreAtPlaceFill(0);
+                if (!testContext.fileExists(store))
+                    verify(testContext.blockPath(store, false), "could not unblock the store");
             }
-            compare(savedSystems.count, 0);
+            compare(savedSystems.count, 0, "the sites saved before the failure stayed");
+            compare(loader.item.csvNotice, "Could not save this imported system.");
             verify(loader.item.csvNoticeIsProblem);
             loader.item.commit();
             compare(savedSystems.count, 3, "the retry saved each site once");
@@ -319,6 +325,7 @@ Item {
             compare(edited.rrSid, 0);
             compare(edited.rrSiteId, 0);
             compare(edited.siteName, "", "the edited site kept its site name");
+            verify(!edited.avoidSite, "the edited site kept its avoid");
             verify(!edited.hasSitePos, "the edited site kept its position");
             compare(edited.siteLat, 0);
             compare(edited.siteLon, 0);

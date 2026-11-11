@@ -4707,6 +4707,27 @@ class Setup : public QObject {
     }
 
     /**
+     * @brief Block the saved systems store (blockPath()) from inside the @p call-th place fill savedSystems runs while
+     * it builds new rows, so a save fails part way through a batch whose rows carry a place (B6); 0 removes the fill.
+     * Unblock with blockPath(storePath("saved_systems.json"), false).
+     */
+    Q_INVOKABLE void
+    blockSystemsStoreAtPlaceFill(int call) {
+        if (call <= 0) {
+            m_saved_systems->setPlaceNameCache({});
+            return;
+        }
+        auto fills = std::make_shared<int>(0);
+        const QString store = storePath(QStringLiteral("saved_systems.json"));
+        // A case checks the store is blocked with fileExists(), false once a folder stands there.
+        m_saved_systems->setPlaceNameCache([this, fills, call, store](QVariantMap&) {
+            if (++*fills == call) {
+                blockPath(store, true);
+            }
+        });
+    }
+
+    /**
      * @brief Import @p path as @p type through the library's own async import, and answer its result once it is in
      * (#832); a fixture's one-line import. The stored copy takes the file's own name.
      */
@@ -6365,6 +6386,7 @@ class Setup : public QObject {
         m_lifecycle_host = m_import_host;
         auto* imported_files = new dsd_qt::ImportedFilesModel(m_import_host, engine);
         auto* saved_systems = new dsd_qt::SavedSystemsModel(engine);
+        m_saved_systems = saved_systems;
         auto* app_prefs = new dsd_qt::AppPrefs(engine);
         m_app_prefs = app_prefs;
         auto* session_args = new dsd_qt::SessionArgsBuilder(app_prefs, engine);
@@ -6518,6 +6540,7 @@ class Setup : public QObject {
     CommandRecorder* m_commands = nullptr;
     ImportOnlyHost* m_import_host = nullptr;
     dsd_qt::ImportedFilesModel* m_imported_files = nullptr;
+    dsd_qt::SavedSystemsModel* m_saved_systems = nullptr;
     ReplayFilesFake* m_replay_files = nullptr;
     ImportOnlyHost* m_initializing_host = nullptr;
     ImportOnlyHost* m_lifecycle_host = nullptr;

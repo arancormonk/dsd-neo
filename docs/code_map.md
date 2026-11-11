@@ -13657,7 +13657,7 @@ Qt Quick frontend (`src/ui/qt`):
   counties in every row whose place names them, links those counties to the state and adds the state to a row whose
   county now links to it. `setPlaceNameCache()` installs a fill that `add`, `addAll` and `update` run, before their
   save, on a place whose ids are new. `addAll(rows, keySourceUid)` saves a per-site import (B6): every row is checked
-  first (as `add`, and with a key source as `addWithKeyFrom`, which `add` and `addWithKeyFrom` now call), takes a fresh
+  first (as `add`, and with a key source as `addWithKeyFrom`, which `add` and `addWithKeyFrom` call), takes a fresh
   UID, has its replay copy adopted, then one save and one `rowsInserted` range; it returns the first new row or -1 with
   nothing inserted and no signal (a copy adopted before a failed save stays kept, as for `add`). One rule clears stale
   provenance (B11): `rr_provenance_cleared()` (`site_groups.cpp`) zeroes `rrSid`, `rrSiteId`, `avoidSite` (only the
