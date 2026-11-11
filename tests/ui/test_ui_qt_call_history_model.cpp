@@ -44,6 +44,7 @@
 #include <QByteArray>
 #include <QChar>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -5098,6 +5099,49 @@ test_startless_fold_keeps_later_end(void) {
     }
 }
 
+/* A row with no start time (load() keeps one: the detail sheet leaves its time out, the export its time cells empty)
+ * shows no made-up date or time in the list: its day section reads "TIME UNKNOWN" and its time is empty, not the epoch
+ * in local time. A row with a start keeps its day and time. */
+void
+test_row_without_start_time_reads_unknown(void) {
+    const time_t when = 1754644000;
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        ring.commit(0, 31014U, kB1Src, when, when + 5);
+        ring.commit(0, 31015U, kB1Src, when + 100, when + 105);
+        model.refresh(ring.state);
+        expect("two calls land", model.count() == 2);
+    } // destructor flushes the stores
+    QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    for (int i = 0; i < rows.size(); i++) {
+        QJsonObject row = rows.at(i).toObject();
+        if (row.value(QLatin1String("tg")).toVariant().toULongLong() == 31015U) {
+            row.insert(QLatin1String("when"), 0);
+            row.remove(QLatin1String("end"));
+            row.insert(QLatin1String("durationSecs"), -1);
+        }
+        rows.replace(i, row);
+    }
+    expect("a row without a start time saved", dsd_qt::json_store_save_array("call_history.json", rows));
+    CallHistoryModel restored;
+    const int unknown = row_with_tg(restored, 31015U);
+    const int known = row_with_tg(restored, 31014U);
+    expect("both rows load", restored.count() == 2 && unknown >= 0 && known >= 0);
+    expect("a row without a start time is in the unknown-time section",
+           restored.data(restored.index(unknown), CallHistoryModel::DayLabelRole).toString()
+               == QStringLiteral("TIME UNKNOWN"));
+    expect("a row without a start time shows no time",
+           restored.data(restored.index(unknown), CallHistoryModel::TimeTextRole).toString().isEmpty());
+    expect("a row with a start keeps its time",
+           restored.data(restored.index(known), CallHistoryModel::TimeTextRole).toString()
+               == QDateTime::fromSecsSinceEpoch(when).toString(QStringLiteral("HH:mm")));
+    expect("a row with a start keeps its day",
+           restored.data(restored.index(known), CallHistoryModel::DayLabelRole).toString()
+               != QStringLiteral("TIME UNKNOWN"));
+}
+
 } // namespace
 
 int
@@ -5229,6 +5273,7 @@ main(int argc, char** argv) {
     test_startless_row_update_stays_unknown();
     test_startless_fragment_extends_known_end();
     test_startless_fold_keeps_later_end();
+    test_row_without_start_time_reads_unknown();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

@@ -175,7 +175,7 @@ seen_key(int slot, qulonglong seq, qint64 when, qulonglong tg, int kind) {
 }
 
 /**
- * @brief "TODAY" / "YESTERDAY" / "MON 3 AUG" for the list's day sections.
+ * @brief "TODAY" / "YESTERDAY" / "MON 3 AUG" for the list's day sections; "TIME UNKNOWN" for a row with no start.
  *
  * A deliberate real-time exception to the rule that decoded stamps are compared on the decode
  * clock. The log spans sessions, and its sections name the viewer's calendar day, retired by the
@@ -184,6 +184,10 @@ seen_key(int slot, qulonglong seq, qint64 when, qulonglong tg, int kind) {
  */
 QString
 day_label(qint64 when) {
+    if (when <= 0) {
+        // No start stamp: the detail sheet and the export leave its time out, so the list makes up no date.
+        return QStringLiteral("TIME UNKNOWN");
+    }
     const QDate day = QDateTime::fromSecsSinceEpoch(when).date();
     const QDate today = realtimeCurrentDate();
     if (day == today) {
@@ -193,6 +197,12 @@ day_label(qint64 when) {
         return QStringLiteral("YESTERDAY");
     }
     return QLocale().toString(day, QStringLiteral("ddd d MMM")).toUpper();
+}
+
+/** @brief "12:04" for a row's time in the list; empty for a row with no start, as day_label() names no day. */
+QString
+time_text(qint64 when) {
+    return when > 0 ? QDateTime::fromSecsSinceEpoch(when).toString(QStringLiteral("HH:mm")) : QString();
 }
 
 /** @brief The wait before the next debounced save, once the last save wrote @p bytes. */
@@ -401,8 +411,7 @@ row_role_value(const CallHistoryModel::Row& row, int role) {
         case CallHistoryModel::WhenRole: return row.when;
         case CallHistoryModel::DurationSecsRole: return row.durationSecs;
         case CallHistoryModel::DayLabelRole: return day_label(row.when);
-        case CallHistoryModel::TimeTextRole:
-            return QDateTime::fromSecsSinceEpoch(row.when).toString(QStringLiteral("HH:mm"));
+        case CallHistoryModel::TimeTextRole: return time_text(row.when);
         case CallHistoryModel::KindRole: return row.kind;
         case CallHistoryModel::DetailRole: return row.detail;
         case CallHistoryModel::ChannelRole: return row.channel;

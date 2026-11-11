@@ -110,8 +110,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         DurationSecsRole, // -1 when unknown
         SystemNameRole,
         SystemUidRole,
-        DayLabelRole,   // "TODAY" / "YESTERDAY" / "MON 3 AUG" — drives list sections
-        TimeTextRole,   // "12:04"
+        DayLabelRole,   // "TODAY" / "YESTERDAY" / "MON 3 AUG", "TIME UNKNOWN" with no start — drives list sections
+        TimeTextRole,   // "12:04", empty with no start
         KindRole,       // RowKind: voice call or data/control notice
         DetailRole,     // notice payload: decoded text message or GPS string
         ChannelRole,    // scan channel the row was heard on (-Y row name or trunk-scan target id), else empty

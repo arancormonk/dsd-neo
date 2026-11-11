@@ -477,8 +477,9 @@ Item {
             emergency: model.emergency
             hasRecording: model.hasRecording
             // The frequency a search found is not added: the meta line, read as
-            // the row's description, already leads with it.
-            accessibleName: model.name + ", " + model.timeText
+            // the row's description, already leads with it. A row with no start
+            // time has no time to read.
+            accessibleName: model.timeText.length > 0 ? model.name + ", " + model.timeText : model.name
             onActivated: detailSheet.open(callHistory.recordFor(model.uid))
         }
     }

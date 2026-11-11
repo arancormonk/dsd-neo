@@ -12681,7 +12681,9 @@ Qt Quick frontend (`src/ui/qt`):
     detail; the monitor's notice rows keep their detail (or "data message") first, then the code, then the frequency.
     The exception is a History row its search found by frequency (next bullet), which leads with it. `CallRow` renders
     its name and meta line as plain text: aliases and SMS bodies are what the air delivered, and Qt's automatic
-    rich-text detection would draw a tag in them as markup.
+    rich-text detection would draw a tag in them as markup. A History row with no start time (`when` 0, which `load()`
+    keeps) is listed under a "TIME UNKNOWN" section (`day_label()`) with no time (`TimeTextRole` empty) and an
+    accessible name without one, as the details sheet leaves its time out and the export its time cells empty.
   - History search (`CallHistoryFilterModel`, `frequency_query.{h,cpp}`): the trimmed text matches the name, the
     talkgroup and unit when above 0 (0 is "none decoded", which no row prints), the source label, a notice's detail,
     the channel, and the frequency. The frequency is searched only when the text has a decimal point or the MHz unit

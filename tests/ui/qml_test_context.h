@@ -2744,6 +2744,9 @@ class CallLogStore : public QAbstractListModel {
             case CallHistoryModel::ReceivedToneRole: row.receivedTone = value.toString(); return true;
             case CallHistoryModel::SiteTextRole: row.siteText = value.toString(); return true;
             case CallHistoryModel::AnalogModeRole: row.analogMode = value.toString(); return true;
+            case CallHistoryModel::WhenRole: row.when = value.toLongLong(); return true;
+            case CallHistoryModel::DayLabelRole: row.dayLabel = value.toString(); return true;
+            case CallHistoryModel::TimeTextRole: row.timeText = value.toString(); return true;
             default: return false;
         }
     }
