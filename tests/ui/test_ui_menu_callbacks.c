@@ -1005,7 +1005,9 @@ expect_gain_sent(const char* tag, int want_id, double want) {
     int rc = expect_int(tag, g_cmd.calls, 1);
     rc |= expect_int(tag, g_cmd.id, want_id);
     rc |= expect_int(tag, (int)g_cmd.n, (int)sizeof(double));
-    if (g_cmd.calls == 1 && g_cmd.n >= sizeof(double) && !(fabs(cmd_double() - want) < 1e-12)) {
+    /* No gain setting is negative, so a typed -0 is sent as +0 (auto). */
+    if (g_cmd.calls == 1 && g_cmd.n >= sizeof(double)
+        && (!(fabs(cmd_double() - want) < 1e-12) || signbit(cmd_double()))) {
         DSD_FPRINTF(stderr, "%s: sent %.12g want %.12g\n", tag, cmd_double(), want);
         rc = 1;
     }
@@ -1035,6 +1037,10 @@ test_gain_prompt_callbacks(UiCtx* ctx) {
     cb_gain_dig(ctx, 1, 0.0);
     rc |= expect_gain_sent("digital gain 0 is auto", DSD_APP_CMD_GAIN_SET, 0.0);
     rc |= expect_str("digital gain auto status", g_status, "Applying digital gain: auto");
+    reset_capture();
+    cb_gain_dig(ctx, 1, -0.0);
+    rc |= expect_gain_sent("digital gain -0 is auto", DSD_APP_CMD_GAIN_SET, 0.0);
+    rc |= expect_str("digital gain -0 status", g_status, "Applying digital gain: auto");
     const double dig_bad[] = {0.0004, 1e-50, 50.0001, 70.0, -1.0, 1e39, NAN, INFINITY, -INFINITY};
     for (size_t i = 0; i < sizeof dig_bad / sizeof dig_bad[0]; i++) {
         reset_capture();

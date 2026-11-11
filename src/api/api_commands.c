@@ -250,7 +250,7 @@ submit_gain(const api_command_desc* d, const dsd_json_node* params, uint64_t* re
         return API_INVALID_PARAMS;
     }
     const int valid =
-        (d->cmd_id == DSD_APP_CMD_AGAIN_SET) ? dsd_analog_gain_setting(v, &v) : dsd_digital_gain_setting_valid(v);
+        (d->cmd_id == DSD_APP_CMD_AGAIN_SET) ? dsd_analog_gain_setting(v, &v) : dsd_digital_gain_setting(v, &v);
     return valid ? dsd_app_command_set_double(d->cmd_id, v) : API_INVALID_PARAMS;
 }
 

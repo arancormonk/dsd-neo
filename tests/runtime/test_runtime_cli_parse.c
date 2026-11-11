@@ -547,11 +547,12 @@ test_digital_gain_option(void) {
     const struct {
         const char* value;
         float want; /* the setting, or -1 when the value must be refused */
-    } cases[] = {{"0", 0.0f},         {"0.0", 0.0f},       {"-0", 0.0f},       {"0.001", 0.001f}, {"0.0011", 0.0011f},
-                 {"0.5", 0.5f},       {"1", 1.0f},         {"2.5", 2.5f},      {"50", 50.0f},     {"0.0004", -1.0f},
-                 {"0.000999", -1.0f}, {"1e-50", -1.0f},    {"50.0001", -1.0f}, {"51", -1.0f},     {"1e39", -1.0f},
-                 {"1e400", -1.0f},    {"nan", -1.0f},      {"-nan", -1.0f},    {"NAN", -1.0f},    {"inf", -1.0f},
-                 {"-inf", -1.0f},     {"infinity", -1.0f}, {"-1", -1.0f},      {"3junk", -1.0f},  {"", -1.0f}};
+    } cases[] = {{"0", 0.0f},         {"0.0", 0.0f},       {"-0", 0.0f},        {"-0.0", 0.0f},     {"0.001", 0.001f},
+                 {"0.0011", 0.0011f}, {"0.5", 0.5f},       {"1", 1.0f},         {"2.5", 2.5f},      {"50", 50.0f},
+                 {"0.0004", -1.0f},   {"0.000999", -1.0f}, {"1e-50", -1.0f},    {"50.0001", -1.0f}, {"51", -1.0f},
+                 {"1e39", -1.0f},     {"1e400", -1.0f},    {"nan", -1.0f},      {"-nan", -1.0f},    {"NAN", -1.0f},
+                 {"inf", -1.0f},      {"-inf", -1.0f},     {"infinity", -1.0f}, {"-1", -1.0f},      {"3junk", -1.0f},
+                 {"", -1.0f}};
 
     int test_rc = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
@@ -563,6 +564,10 @@ test_digital_gain_option(void) {
         int bad = refused ? rc != -1 : rc != 0;
         if (!bad && !refused) {
             bad = !(fabsf(g - cases[i].want) < 1e-7f) || !(fabsf(g_r - cases[i].want) < 1e-7f);
+            /* A typed -0 is auto stored as +0: no setting carries a negative sign. */
+            if (signbit(g) || signbit(g_r)) {
+                bad = 1;
+            }
             /* The applied-gain readout is the voice chain's, in dB, and starts at 0 dB (the start gain): the option
                seeds no level, fixed or auto (issue #518). */
             if (!(fabsf(aout) < 1e-7f)) {

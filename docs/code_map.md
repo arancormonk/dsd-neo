@@ -2883,15 +2883,15 @@ suite runs under this compiler.
   Hz) alike. Before, they played at -4.9 and -17.6 dBFS RMS. A deferred P25 Phase 2 alert keeps its ID and length.
   Tests: `CORE_VOICE_CHAIN`, `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_AUDIO_GAIN`, `DECODE_IQ_VOICE_CHAIN_*`.
 - API note (gain settings, `<dsd-neo/core/gain_setting.h>`, issue #518 voice level): a digital gain (`-g`,
-  `audio_gain`/`audio_gainR`) is 0 (auto) or 0.001..50; `dsd_digital_gain_setting_valid()` refuses NaN, infinities,
-  negative values, values above 50 and positive values under 0.001 (1e-50 would round to 0, auto). An analog gain
-  (`-n`, `audio_gainA`) keeps `-n`'s rule: `dsd_analog_gain_setting()` maps anything under 1 to 0 (auto), keeps
-  1..100 and refuses NaN, infinities and values above 100. Both check the value in double before it narrows to the
-  float setting; nothing is clamped. Every surface applies them and is built with IEEE semantics: the CLI (`args.c`),
-  the `GAIN_SET`/`AGAIN_SET` handlers (double payloads, `actions_audio.c`), the menu prompts (`menu_callbacks.c`) and
-  the API (`api_commands.c`). `dsd_gain_setting_step()` is the `GAIN_DELTA`/`AGAIN_DELTA` rule: whole steps on the
-  float setting, counting from 0 (digital: `+` lands on 1) or from 50 (analog) when auto, back to auto below the
-  minimum, stopping at the top. Tests: `RUNTIME_CLI_PARSE`, `APP_CONTROL_ACTIONS`,
+  `audio_gain`/`audio_gainR`) is 0 (auto) or 0.001..50; `dsd_digital_gain_setting()` keeps those (a typed -0 as +0) and
+  refuses NaN, infinities, negative values, values above 50 and positive values under 0.001 (1e-50 would round to 0,
+  auto). An analog gain (`-n`, `audio_gainA`) keeps `-n`'s rule: `dsd_analog_gain_setting()` maps anything under 1 to 0
+  (auto), keeps 1..100 and refuses NaN, infinities and values above 100. Both check the value in double before it
+  narrows to the float setting; nothing is clamped. Every surface applies them and is built with IEEE semantics: the CLI
+  (`args.c`), the `GAIN_SET`/`AGAIN_SET` handlers (double payloads, `actions_audio.c`), the menu prompts
+  (`menu_callbacks.c`) and the API (`api_commands.c`). `dsd_gain_setting_step()` is the `GAIN_DELTA`/`AGAIN_DELTA` rule:
+  whole steps on the float setting, counting from 0 (digital: `+` lands on 1) or from 50 (analog) when auto, back to
+  auto below the minimum, stopping at the top. Tests: `RUNTIME_CLI_PARSE`, `APP_CONTROL_ACTIONS`,
   `API_COMMAND_PAYLOADS`, `UI_MENU_CALLBACKS`, `UI_MENU_LABELS`.
 - API note (analog receive options, `<dsd-neo/core/opts.h>`): `analog_demod` (`dsd_analog_demod`) is set by the
   decode presets (and restored with the scan-settings snapshot when a typed row is left); no width, CLI or menu code

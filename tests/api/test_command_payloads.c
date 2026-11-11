@@ -258,7 +258,8 @@ expect_gain_sent(const char* request, int cmd_id, double want) {
     }
     double v = -1.0;
     DSD_MEMCPY(&v, g_last, sizeof v);
-    if (!(fabs(v - want) < 1e-12)) {
+    /* No gain setting is negative, so a -0 request is sent as +0 (auto). */
+    if (!(fabs(v - want) < 1e-12) || signbit(v)) {
         DSD_FPRINTF(stderr, "%s sent %.12g, want %.12g\n", request, v, want);
         assert(0);
     }
@@ -271,8 +272,8 @@ test_gain_values(void) {
     const struct {
         const char* value;
         double want;
-    } dig_ok[] = {{"0", 0.0},    {"0.0", 0.0}, {"0.001", 0.001}, {"0.0011", 0.0011}, {"0.5", 0.5},
-                  {"5e-1", 0.5}, {"20", 20.0}, {"50", 50.0},     {"50.0", 50.0}};
+    } dig_ok[] = {{"0", 0.0},   {"0.0", 0.0},  {"-0", 0.0},  {"-0.0", 0.0}, {"0.001", 0.001}, {"0.0011", 0.0011},
+                  {"0.5", 0.5}, {"5e-1", 0.5}, {"20", 20.0}, {"50", 50.0},  {"50.0", 50.0}};
 
     for (size_t i = 0; i < sizeof dig_ok / sizeof dig_ok[0]; i++) {
         DSD_SNPRINTF(request, sizeof request, "{\"cmd\":\"gain_set\",\"params\":{\"value\":%s}}", dig_ok[i].value);
@@ -290,8 +291,8 @@ test_gain_values(void) {
     const struct {
         const char* value;
         double want;
-    } ana_ok[] = {{"0", 0.0}, {"0.5", 0.0}, {"0.999", 0.0}, {"1e-50", 0.0}, {"-9", 0.0},
-                  {"1", 1.0}, {"1.5", 1.5}, {"37.5", 37.5}, {"100", 100.0}};
+    } ana_ok[] = {{"0", 0.0},  {"-0.0", 0.0}, {"0.5", 0.0}, {"0.999", 0.0}, {"1e-50", 0.0},
+                  {"-9", 0.0}, {"1", 1.0},    {"1.5", 1.5}, {"37.5", 37.5}, {"100", 100.0}};
 
     for (size_t i = 0; i < sizeof ana_ok / sizeof ana_ok[0]; i++) {
         DSD_SNPRINTF(request, sizeof request, "{\"cmd\":\"again_set\",\"params\":{\"value\":%s}}", ana_ok[i].value);

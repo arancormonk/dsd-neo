@@ -91,7 +91,7 @@ static int
 ui_handle_gain_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     double g = 0.0;
-    if (read_double_payload(c, &g) && dsd_digital_gain_setting_valid(g)) {
+    if (read_double_payload(c, &g) && dsd_digital_gain_setting(g, &g)) {
         store_digital_gain(opts, g);
     }
     return 1;

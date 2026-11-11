@@ -42,12 +42,21 @@ extern "C" {
 #define DSD_ANALOG_GAIN_STEP_FROM_AUTO  50.0
 
 /**
- * @brief Whether @p value is a valid digital gain setting: 0 (auto) or DSD_DIGITAL_GAIN_MIN..DSD_DIGITAL_GAIN_MAX.
- * Written so NaN fails: every comparison with it is false.
+ * @brief The digital gain setting @p value selects, in @p out: 0 (auto) for 0, the value itself for
+ * DSD_DIGITAL_GAIN_MIN..DSD_DIGITAL_GAIN_MAX. Returns 1, or 0 with @p out untouched for anything else. A typed -0 is
+ * stored as +0, so no setting carries a negative sign. Written so NaN fails: every comparison with it is false.
  */
 static inline int
-dsd_digital_gain_setting_valid(double value) {
-    return (value == 0.0 || (value >= DSD_DIGITAL_GAIN_MIN && value <= DSD_DIGITAL_GAIN_MAX)) ? 1 : 0;
+dsd_digital_gain_setting(double value, double* out) {
+    if (value == 0.0) {
+        *out = 0.0;
+        return 1;
+    }
+    if (value >= DSD_DIGITAL_GAIN_MIN && value <= DSD_DIGITAL_GAIN_MAX) {
+        *out = value;
+        return 1;
+    }
+    return 0;
 }
 
 /**

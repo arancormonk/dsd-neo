@@ -747,7 +747,7 @@ cli_parse_double_option(const char* option_name, const char* in, double* out, in
 static int
 cli_apply_digital_gain(const char* in, dsd_opts* opts, int* out_exit_rc) {
     double g = 0.0;
-    if (!cli_parse_double_strict(in, &g) || !dsd_digital_gain_setting_valid(g)) {
+    if (!cli_parse_double_strict(in, &g) || !dsd_digital_gain_setting(g, &g)) {
         LOG_ERROR("Invalid -g value \"%s\" (expected 0 for auto, or %g..%g)\n", in ? in : "", DSD_DIGITAL_GAIN_MIN,
                   DSD_DIGITAL_GAIN_MAX);
         cli_set_exit_rc(out_exit_rc, 1);
@@ -769,8 +769,8 @@ static int
 cli_apply_analog_gain(const char* in, dsd_opts* opts, int* out_exit_rc) {
     double g = 0.0;
     if (!cli_parse_double_strict(in, &g) || !dsd_analog_gain_setting(g, &g)) {
-        LOG_ERROR("Invalid -n value \"%s\" (expected 0 for auto, %g..%g, or m)\n", in ? in : "", DSD_ANALOG_GAIN_MIN,
-                  DSD_ANALOG_GAIN_MAX);
+        LOG_ERROR("Invalid -n value \"%s\" (expected under %g (0) for auto, %g..%g, or m)\n", in ? in : "",
+                  DSD_ANALOG_GAIN_MIN, DSD_ANALOG_GAIN_MIN, DSD_ANALOG_GAIN_MAX);
         cli_set_exit_rc(out_exit_rc, 1);
         return 0;
     }

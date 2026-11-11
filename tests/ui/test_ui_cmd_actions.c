@@ -307,6 +307,11 @@ static int
 expect_digital_gain(const char* tag, const dsd_opts* opts, const dsd_state* state, double want) {
     int rc = expect_gain(tag, opts->audio_gain, want);
     rc |= expect_gain(tag, opts->audio_gainR, want);
+    /* No setting is negative, so the stored sign never is either: a -0 payload is auto stored as +0. */
+    if (signbit(opts->audio_gain) || signbit(opts->audio_gainR)) {
+        DSD_FPRINTF(stderr, "%s: the digital gain setting is stored as negative zero\n", tag);
+        rc = 1;
+    }
     rc |= expect_gain(tag, state->aout_gain, DIGITAL_GAIN_READOUT_DB);
     rc |= expect_gain(tag, state->aout_gainR, DIGITAL_GAIN_READOUT_DB);
     return rc;
@@ -326,7 +331,7 @@ test_digital_gain_actions(void) {
     state.aout_gain = DIGITAL_GAIN_READOUT_DB;
     state.aout_gainR = DIGITAL_GAIN_READOUT_DB;
 
-    const double accepted[] = {0.001, 0.0011, 0.5, 2.5, 50.0, 0.0};
+    const double accepted[] = {0.001, 0.0011, 0.5, 2.5, 50.0, 0.0, 2.5, -0.0};
     for (size_t i = 0; i < sizeof accepted / sizeof accepted[0]; i++) {
         cmd = cmd_double(DSD_APP_CMD_GAIN_SET, accepted[i]);
         rc |= expect_int("gain set dispatch", dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd), 1);

@@ -961,7 +961,7 @@ cb_gain_dig(void* u, int ok, double g) {
     if (!c || !ok) {
         return;
     }
-    if (!dsd_digital_gain_setting_valid(g)) {
+    if (!dsd_digital_gain_setting(g, &g)) {
         ui_statusf("Digital gain must be 0 (auto) or %g..%g", DSD_DIGITAL_GAIN_MIN, DSD_DIGITAL_GAIN_MAX);
         return;
     }
