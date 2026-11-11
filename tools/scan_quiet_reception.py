@@ -10,8 +10,8 @@ seeds (five by default).
 
 S/N is the signal power over the noise power inside the mode's class width (12.5 kHz or 6.25 kHz for digital modes,
 the configured channel width for analog), both measured at the replayed 48 kHz baseband. For a burst train (DMR MS)
-the signal power is the power during the bursts. The noise is fixed (its power and the cu8 scale never change); the
-signal is scaled.
+the signal power is the power during the bursts' symbols, not their power ramps. The noise is fixed (its power and
+the cu8 scale never change); the signal is scaled.
 
 Digital criterion: at least 90 % of the frames the clean run (the same signal, no added noise) passes still pass
 CRC/FEC. Each row counts one kind of frame:
@@ -28,27 +28,34 @@ CRC/FEC. Each row counts one kind of frame:
   ysf     frames whose FICH passes Golay and CRC
   m17     stream frames whose LICH passes Golay ("LC: n/6")
 
-Rows come in two roles. "clean signal" rows are ideal signals at the standard's pulse shape, symbol rate and
-deviation; they set the thresholds. "off-air check" rows replay a committed off-air fixture as recorded (deviation
-rescaled where it was remodulated) and only check the clean rows' order of magnitude. An off-air row whose clean run
-passes fewer than 90 % of the frames dsd-neo received is reported as never reaching the criterion. A clean row whose
-signal was regenerated from an off-air recording's own symbols keeps the errors baked into those symbols; it is swept
-against its clean run's pass count either way, and its clean fraction is reported.
+Rows come in four roles; only "clean signal" rows set a mode's threshold:
+
+  clean signal       an ideal signal at the standard's pulse shape, symbol rate and deviation: a generator, or a
+                     recording's own symbols re-synthesized (P25 Phase 1 and 2, M17)
+  regenerated check  a recording's own symbols re-synthesized where a generator now sets the threshold (NXDN, YSF)
+  off-air check      a committed off-air fixture as recorded (deviation rescaled where it was remodulated)
+  diagnostic         a generator with one deliberate departure from the standard, which shows why a threshold sits
+                     where it does: the YSF frame sync or the NXDN FSW with every symbol at an outer level, as
+                     dsd-neo's sign-only sync patterns draw them
+
+An off-air row whose clean run passes fewer than 90 % of the frames dsd-neo received is reported as never reaching
+the criterion. Any other row is swept against its clean run's pass count, and its clean fraction is reported; a row
+regenerated from a recording keeps the errors baked into its symbols.
 
 Where a parameter stays uncertain after research the tool measures every candidate (one row each) and keeps the
-lower threshold for the mode, the safe direction for the skip calibration: YSF's deviation, P25 Phase 2's transmit
-filter and D-STAR's Gaussian BT.
+lower threshold for the mode, the safe direction for the skip calibration: YSF's deviation (1800 Hz, C4FM's own;
+2290 Hz, OP25 dv_tx.py's 0.42/0.33 of it; 2700 Hz, MMDVM's YSF_LEVELA_HI 1893 against DMR_LEVELA 1362 for 1944 Hz
+through the same filter), P25 Phase 2's transmit filter and D-STAR's Gaussian BT.
 
 Clean-signal sources (sources per parameter in the issue #834 Task 4 report):
 
-  p25p1, p25p2, nxdn96, nxdn48, ysf, m17   the symbols dsd-neo reads from the committed off-air fixture (its -c
-           symbol capture, recovered by symbol_levels()), cut to the carrier and repeated to 10 s, re-synthesized:
+  p25p1, p25p2, m17 (and the nxdn and ysf regenerated checks)   the symbols dsd-neo reads from the committed off-air
+           fixture (its -c symbol capture, recovered by symbol_levels()), cut to the carrier and repeated to 10 s,
+           re-synthesized:
              p25p1   C4FM: raised cosine (alpha 0.2) times inverse sinc, outer deviation 1800 Hz (TIA-102.BAAA)
              nxdn96, nxdn48   root raised cosine (alpha 0.2) times sinc, outer 2400 / 1050 Hz (NXDN TS 1-A 3.3-3.4)
              m17     root raised cosine (alpha 0.5), outer 2400 Hz (M17 specification 1.2-1.3)
-             ysf     root raised cosine (alpha 0.2), outer 1800, 2290 or 2700 Hz (no public specification: C4FM's
-                     1800 Hz; OP25 dv_tx.py's 0.42/0.33 of it; MMDVM's YSF_LEVELA_HI 1893 against DMR_LEVELA 1362
-                     for 1944 Hz through the same filter)
+             ysf     root raised cosine (alpha 0.2), outer 2290 Hz
              p25p2   H-DQPSK, the base station's outbound (+/-pi/4, +/-3pi/4 per symbol at 6000 symbol/s), through
                      the "harmonized" raised cosine (alpha 1, 3600 Hz) or a root raised cosine (alpha 0.2)
            Each FM transmit filter is applied to symbol impulses at unity DC gain, so a held level 3 is the outer
@@ -56,7 +63,14 @@ Clean-signal sources (sources per parameter in the issue #834 Task 4 report):
   dmr_bs   the DMR test generator (tests/protocol/dmr/dmr_synth.c, --dmr-synth-gen): slot 1 a clear voice call,
            slot 2 idle, remodulated with build_iq_fixtures.remodulate() at the ETSI outer deviation of 1944 Hz
   dmr_ms   the same generator with --ms (MS syncs, no CACH, slot 1's bursts alone, 27.5 ms on every 60 ms); the
-           carrier is keyed off between the bursts
+           carrier is at full power for each burst's 27.5 ms and ramps up and down over 1.5 ms either side, inside the
+           guard time (ETSI TS 102 361-1 10.2.3.1.1, figure 10.3)
+  nxdn96, nxdn48   this tool's NXDN generator (nxdn_*() below, NXDN TS 1-A and MMDVMHost): RDCH voice frames of
+           FSW, LICH, SACCH (CRC-6, K=5 rate-1/2 code, punctured, interleaved) carrying a VCALL over the four-frame
+           superframe, and random voice bits, scrambled by the X^9+X^4+1 PN per frame; RRC 0.2 x sinc
+  ysf      this tool's YSF generator (ysf_*() below, MMDVMHost and dsd-neo's decoder): frame sync, FICH (Golay (24,12),
+           CRC-16, K=5 rate-1/2 code, interleave) of a V/D mode 2 frame, then random payload bits; RRC 0.2 at
+           1800, 2290 or 2700 Hz
   dpmr     build_iq_fixtures.modulate_4fsk() over the dPMR CCH reference vectors (dpmr_symbol_stream())
   dstar    this tool's D-STAR DV transmission (dstar_*() below): bit sync, frame sync, the radio header (CRC-CCITT,
            rate-1/2 K=3 convolutional code, 24-bit interleave, x^7+x^4+1 scrambler), then voice frames of 72 AMBE
@@ -123,6 +137,8 @@ START_DB = 30.0
 FLOOR_DB = -10.0
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 CLEAN = "clean signal"
+REGEN_CHECK = "regenerated check"
+DIAGNOSTIC = "diagnostic"
 OFF_AIR = "off-air check"
 
 # Nominal outer symbol deviation (Hz) of the off-air fixtures remodulated from discriminator audio, for the off-air
@@ -137,6 +153,7 @@ DMR_SYNTH_OUTER = bif.DMR_SYNTH_OUTER_LEVEL
 DMR_GEN_ARGS = ["--cc", "2", "--s1", "voice", "--s2", "idle", "--snr", "200", "--seed", "7"]
 DMR_SLOT_SYMBOLS = 144  # 12 CACH (or MS guard) + 132 burst dibits: 30 ms at 4800 symbol/s
 DMR_LEAD_SYMBOLS = 960  # dmr_synth.c: the random (with --ms, silent) lead before the first period
+DMR_RAMP_S = 0.0015  # ETSI TS 102 361-1 10.2.3.1.1, figure 10.3: regions A and C
 NFM_TONE_DEVIATION_HZ = {12500: 1500.0, 25000: 3000.0}  # 60 % of +/-2.5 kHz and +/-5 kHz
 AM_TONE_DEPTH = 0.3
 SHAPER_SPAN_SYMBOLS = 8  # transmit filter taps either side of the centre
@@ -175,6 +192,7 @@ class Row:
     unit_re: str = ""
     unit_weight: int = 1
     analog: bool = False
+    regenerated: bool = False  # from a recording's captured symbols, which keep its errors
 
 
 @dataclass
@@ -411,22 +429,37 @@ def dmr_bs_source(work_dir):
     return Source(samples, note=f"dmr_synth.c BS, slot 1 voice, slot 2 idle, outer {DMR_OUTER_HZ:.0f} Hz")
 
 
-def dmr_ms_source(work_dir):
-    """dmr_synth.c --ms: a burst is dibits 12-143 of every even 144-dibit period after the 960-dibit lead; a period
-    whose burst the generator left silent (the call over) stays keyed off."""
+def dmr_ms_source(work_dir, ramp=True):
+    """dmr_synth.c --ms: a burst is dibits 12-143 of every even 144-dibit period after the 960-dibit lead, symbol k
+    centred on sample k * sps; a period whose burst the generator left silent (the call over) stays keyed off.
+
+    The carrier is the burst's 27.5 ms symbol transmission period (region B of ETSI TS 102 361-1 figure 10.3: from
+    half a symbol before the first symbol's centre to half a symbol after the last's) at full power, with a raised
+    cosine power ramp in the 1.5 ms before it and after it (regions A and C, clause 10.2.3.1.1), inside the guard
+    time; nothing else. ramp=False keys it on and off at the region B edges instead."""
     audio, expected = dmr_synth_audio(work_dir, ["--ms", "--lead", "0", "--tail", "0"])
     n = sample_count()
+    sps = RATE_HZ // 4800
     samples = dmr_baseband(audio)[:n]
-    symbol = np.arange(n) // (RATE_HZ // 4800) - DMR_LEAD_SYMBOLS
-    period = symbol // DMR_SLOT_SYMBOLS
-    on = (symbol >= 0) & (period % 2 == 0) & (symbol % DMR_SLOT_SYMBOLS >= 12)
+    symbol = (np.arange(n) + sps // 2) // sps - DMR_LEAD_SYMBOLS
+    period = np.floor_divide(symbol, DMR_SLOT_SYMBOLS)
+    on = (symbol >= 0) & (period % 2 == 0) & (np.mod(symbol, DMR_SLOT_SYMBOLS) >= 12)
     level = np.abs(audio[:n])
+    envelope = np.zeros(n)
+    ramp_n = round(DMR_RAMP_S * RATE_HZ)
+    shape = 0.5 - 0.5 * np.cos(math.pi * (np.arange(ramp_n) + 0.5) / ramp_n)
     for p in np.unique(period[on]):
-        span = on & (period == p)
+        span = np.flatnonzero(on & (period == p))
         if np.mean(level[span]) < 0.1 * DMR_SYNTH_OUTER:
-            on &= ~span
-    note = "dmr_synth.c --ms, slot 1 voice bursts, carrier keyed off between them"
-    return Source(np.where(on, samples, 0.0), note=note, on=on, expected=expected)
+            on[span] = False
+            continue
+        first, last = int(span[0]), int(span[-1]) + 1
+        envelope[first:last] = 1.0
+        if ramp:
+            envelope[max(0, first - ramp_n) : first] = shape[ramp_n - (first - max(0, first - ramp_n)) :]
+            envelope[last : min(n, last + ramp_n)] = shape[::-1][: min(n, last + ramp_n) - last]
+    note = "dmr_synth.c --ms, slot 1 voice bursts" + (", 1.5 ms power ramps" if ramp else ", keyed hard")
+    return Source(samples * envelope, note=note, on=on, expected=expected)
 
 
 # ---------------------------------------------------------------- D-STAR generator
@@ -526,6 +559,173 @@ def dstar_source(bt):
     return Source(samples, note=note, expected=expected)
 
 
+# ---------------------------------------------------------------- shared FEC (YSF and NXDN generators)
+
+
+def msb_bits(value, width):
+    return [(value >> (width - 1 - i)) & 1 for i in range(width)]
+
+
+def k5_convolve(bits):
+    """Rate-1/2, K = 5 convolutional code of YSF and NXDN: g1 = 1+D^3+D^4 sent first, g2 = 1+D+D^2+D^4, register
+    from zero (MMDVMHost YSFConvolution.cpp and NXDNConvolution.cpp encode(); NXDN TS 1-A 4.5)."""
+    d1 = d2 = d3 = d4 = 0
+    out = []
+    for d in bits:
+        out += [d ^ d3 ^ d4, d ^ d1 ^ d2 ^ d4]
+        d1, d2, d3, d4 = d, d1, d2, d3
+    return out
+
+
+def bits_to_levels(bits):
+    """Bit pairs to 4FSK levels, first bit most significant (01 +3, 00 +1, 10 -1, 11 -3; NXDN TS 1-A Table 3.3-1,
+    the YSF and P25 mapping alike)."""
+    return np.array([bif.DPMR_DIBIT_TO_LEVEL[2 * bits[i] + bits[i + 1]] for i in range(0, len(bits), 2)])
+
+
+# ---------------------------------------------------------------- YSF generator
+#
+# Yaesu publishes no System Fusion air interface, so this follows two independent implementations: MMDVMHost
+# (YSFFICH.cpp, YSFConvolution.cpp, Golay24128.cpp, CRC.cpp addCCITT162) and dsd-neo's decoder
+# (src/protocol/ysf/ysf.c ysf_conv_fich(), ysf_crc16()). A frame is 480 symbols (100 ms at 4800 symbol/s): the
+# frame sync, the FICH (200 bits), then 720 payload bits.
+
+YSF_FS = 0xD471C9634D  # MMDVM YSFDefines.h YSF_SYNC_BYTES; dsd-neo FUSION_SYNC
+YSF_FRAMES_PER_SECOND = 10
+YSF_PAYLOAD_BITS = 720
+YSF_SEED = 834
+GOLAY_23_12 = 0xC75  # x^11 + x^10 + x^6 + x^5 + x^4 + x^2 + 1
+
+
+def golay_24_12(data):
+    """Extended Golay (24,12): data in the top 12 bits, the (23,12) parity, then even overall parity (MMDVM
+    ENCODING_TABLE_24128 layout)."""
+    rem = data << 11
+    for shift in range(22, 10, -1):
+        if rem >> shift & 1:
+            rem ^= GOLAY_23_12 << (shift - 11)
+    word = ((data << 11) | rem) << 1
+    return word | (word.bit_count() & 1)
+
+
+def crc16_ccitt_inverted(bits):
+    """CRC-16 x^16+x^12+x^5+1, register from zero, inverted (MMDVM addCCITT162; dsd-neo ysf_crc16())."""
+    crc = 0
+    for bit in bits:
+        top = (crc >> 15) & 1
+        crc = (crc << 1) & 0xFFFF
+        if top ^ bit:
+            crc ^= 0x1021
+    return crc ^ 0xFFFF
+
+
+def ysf_fich_bits(fn):
+    """The 200 transmitted FICH bits of a V/D mode 2 communications frame numbered fn of 8: FI 1, CS 0, CM 0 (group),
+    BN 0, BT 0, FN, FT 7, MR 2, VoIP 0, DT 2, SQL 0."""
+    info = msb_bits(1, 2) + msb_bits(0, 2) + msb_bits(0, 2) + msb_bits(0, 2) + msb_bits(0, 2) + msb_bits(fn, 3)
+    info += msb_bits(7, 3) + [0, 0] + msb_bits(2, 3) + [0] + msb_bits(2, 2) + [0] + msb_bits(0, 7)
+    info += msb_bits(crc16_ccitt_inverted(info), 16)
+    words = [int("".join(map(str, info[12 * k : 12 * k + 12])), 2) for k in range(4)]
+    coded = k5_convolve([b for w in words for b in msb_bits(golay_24_12(w), 24)] + [0, 0, 0, 0])
+    sent = [0] * 200
+    for i in range(100):
+        position = 40 * (i % 5) + 2 * (i // 5)  # MMDVM YSFFICH.cpp INTERLEAVE_TABLE
+        sent[position], sent[position + 1] = coded[2 * i], coded[2 * i + 1]
+    return sent
+
+
+def ysf_source(outer_hz, outer_sync=False):
+    """outer_sync=True (a diagnostic, not a YSF signal) sends the frame sync's symbols at outer levels, as dsd-neo's
+    sign-only sync pattern draws them; the standard frame sync has inner symbols too."""
+    rng = np.random.default_rng(YSF_SEED)
+    levels = []
+    for frame in range(round(DURATION_S * YSF_FRAMES_PER_SECOND)):
+        sync = bits_to_levels(msb_bits(YSF_FS, 40))
+        if outer_sync:
+            sync = 3.0 * np.sign(sync)
+        rest = ysf_fich_bits(frame % 8) + rng.integers(0, 2, YSF_PAYLOAD_BITS).tolist()
+        levels += [sync, bits_to_levels(rest)]
+    samples = fm_from_levels(np.concatenate(levels), 4800, rrc_response(0.2, 4800), outer_hz)[: sample_count()]
+    note = f"YSF V/D mode 2 generator, RRC 0.2, outer {outer_hz:.0f} Hz" + (
+        ", sync at outer levels" if outer_sync else ""
+    )
+    return Source(samples, note=note)
+
+
+# ---------------------------------------------------------------- NXDN generator
+#
+# NXDN TS 1-A (frame, LICH, SACCH coding, scrambler) and MMDVMHost (NXDNLICH.cpp, NXDNSACCH.cpp, NXDNCRC.cpp
+# createCRC6(), NXDNConvolution.cpp, NXDNControl.cpp SCRAMBLER), checked against dsd-neo's decoder
+# (src/protocol/nxdn). A frame is 384 bits (192 symbols): FSW 20, LICH 16, SACCH 60, then 288 bits of voice. NXDN96
+# and NXDN48 share it at 4800 and 2400 symbol/s (40 and 80 ms).
+
+NXDN_FSW = 0xCDF59  # NXDN TS 1-A Table 4.4-2
+# LICH: RF channel RDCH (2), functional channel SACCH superframe (2), option voice in both halves (3), outbound (1)
+NXDN_LICH = (2 << 6) | (2 << 4) | (3 << 2) | (1 << 1)
+NXDN_RAN = 1
+NXDN_SEED = 834
+# The 72-bit layer 3 message the superframe's four SACCHs carry: VCALL (type 0x01), group, source 101, destination
+# 1, clear (NXDN TS 1-A 6.4.1.1 field order, as MMDVM NXDNLayer3).
+NXDN_SACCH_MESSAGE = bytes([0x01, 0x00, 0x20, 0x00, 0x65, 0x00, 0x01, 0x00, 0x00])
+NXDN_SACCH_PUNCTURE = (5, 11, 17, 23, 29, 35, 41, 47, 53, 59, 65, 71)  # MMDVM NXDNSACCH.cpp PUNCTURE_LIST
+
+
+def nxdn_scrambler_signs():
+    """The per-symbol sign of the scrambler over a frame's 192 symbols: X^9 + X^4 + 1 from S8..S0 = 011100100, reset
+    every frame, nothing on the FSW's 10 symbols (NXDN TS 1-A 4.6)."""
+    reg = [0, 0, 1, 0, 0, 1, 1, 1, 0]  # S0..S8
+    signs = [1] * 10
+    for _ in range(182):
+        out = reg[0]
+        signs.append(-1 if out else 1)
+        reg = reg[1:] + [reg[0] ^ reg[4]]
+    return np.array(signs, dtype=np.float64)
+
+
+def nxdn_crc6(bits):
+    """CRC-6 of the SACCH: x^6 + x^5 + x^2 + x + 1, register 0x3F (MMDVM createCRC6(); NXDN TS 1-A 4.5.1)."""
+    crc = 0x3F
+    for bit in bits:
+        top = (crc >> 5) & 1
+        crc = (crc << 1) & 0x3F
+        if bit ^ top:
+            crc ^= 0x27
+    return msb_bits(crc, 6)
+
+
+def nxdn_frame_bits(part, rng):
+    """One RDCH voice frame carrying part (0-3) of the superframe's SACCH message; 384 bits before scrambling."""
+    lich = NXDN_LICH | ((NXDN_LICH >> 4).bit_count() & 1)  # even parity over the 4 most significant bits
+    bits = msb_bits(NXDN_FSW, 20)
+    for b in msb_bits(lich, 8):
+        bits += [b, 1]  # NXDN TS 1-A 4.5.3: each LICH bit sent as the dibit (b, 1)
+    message = [b for byte in NXDN_SACCH_MESSAGE for b in msb_bits(byte, 8)]
+    sacch = msb_bits(3 - part, 2) + msb_bits(NXDN_RAN, 6) + message[18 * part : 18 * part + 18]
+    coded = k5_convolve(sacch + nxdn_crc6(sacch) + [0, 0, 0, 0])
+    punctured = [b for i, b in enumerate(coded) if i not in NXDN_SACCH_PUNCTURE]
+    interleaved = [0] * 60
+    for i, b in enumerate(punctured):
+        interleaved[5 * (i % 12) + i // 12] = b  # MMDVM NXDNSACCH.cpp INTERLEAVE_TABLE
+    return bits + interleaved + rng.integers(0, 2, 288).tolist()
+
+
+def nxdn_source(symbol_rate, outer_hz, outer_sync=False):
+    """outer_sync=True (a diagnostic, not an NXDN signal) sends the FSW's two inner symbols at outer levels, as
+    dsd-neo's sign-only sync pattern draws them."""
+    rng = np.random.default_rng(NXDN_SEED)
+    signs = nxdn_scrambler_signs()
+    levels = []
+    for frame in range(round(DURATION_S * symbol_rate / 192)):
+        frame_levels = bits_to_levels(nxdn_frame_bits(frame % 4, rng)) * signs
+        if outer_sync:
+            frame_levels[:10] = 3.0 * np.sign(frame_levels[:10])
+        levels.append(frame_levels)
+    synth = fm_from_levels(np.concatenate(levels), symbol_rate, nxdn_response(symbol_rate), outer_hz)
+    note = f"NXDN RDCH voice generator, RRC 0.2 x sinc, outer {outer_hz:.0f} Hz"
+    note += ", FSW at outer levels" if outer_sync else ""
+    return Source(repeat_to_length(synth), note=note)
+
+
 # ---------------------------------------------------------------- dPMR and analog
 
 
@@ -582,11 +782,13 @@ def line_row(key, mode, label, width, role, args, build, pass_re, unit_re, weigh
     return Row(key, mode, label, width, role, args, build, pass_re, unit_re, weight)
 
 
-def regen_row(key, mode, label, width, args, name, rate, synth, note, pass_re, unit_re, sync_levels=None):
+def regen_row(key, mode, label, width, args, name, rate, synth, note, pass_re, unit_re, sync_levels=None, role=CLEAN):
     def build(work_dir):
         return regenerated_source(name, args, rate, synth, note, work_dir, sync_levels)
 
-    return line_row(key, mode, label, width, CLEAN, args, build, pass_re, unit_re)
+    row = line_row(key, mode, label, width, role, args, build, pass_re, unit_re)
+    row.regenerated = True
+    return row
 
 
 def off_air_row(key, mode, label, width, args, name, pass_re, unit_re):
@@ -658,8 +860,34 @@ def digital_rows():
     ):
         pass_re, unit_re = rf"Sync: {label} .*PF [1-4]/4", rf"Sync: {label} "
         rows.append(
-            regen_row(
+            line_row(
                 key,
+                key,
+                label,
+                width,
+                CLEAN,
+                args,
+                lambda _w, r=rate, o=outer: nxdn_source(r, o),
+                pass_re,
+                unit_re,
+            )
+        )
+        rows.append(
+            line_row(
+                f"{key}_outer_sync",
+                key,
+                f"{label} (FSW at outer levels)",
+                width,
+                DIAGNOSTIC,
+                args,
+                lambda _w, r=rate, o=outer: nxdn_source(r, o, outer_sync=True),
+                pass_re,
+                unit_re,
+            )
+        )
+        rows.append(
+            regen_row(
+                f"{key}_regen",
                 key,
                 label,
                 width,
@@ -671,6 +899,7 @@ def digital_rows():
                 pass_re,
                 unit_re,
                 NXDN_FSW_LEVELS,
+                REGEN_CHECK,
             )
         )
         rows.append(off_air_row(f"{key}_offair", key, label, width, args, key, pass_re, unit_re))
@@ -694,21 +923,48 @@ def digital_rows():
         )
     for outer in (1800.0, 2290.0, 2700.0):
         rows.append(
-            regen_row(
+            line_row(
                 f"ysf_{outer:.0f}",
                 "ysf",
                 f"YSF (outer {outer:.0f} Hz)",
                 12500,
+                CLEAN,
                 ["-fy"],
-                "ysf",
-                4800,
-                lambda lv, o=outer: fm_from_levels(lv, 4800, rrc_response(0.2, 4800), o),
-                f"RRC 0.2, outer {outer:.0f} Hz",
+                lambda _w, o=outer: ysf_source(o),
                 YSF_PASS,
                 r"Sync: [+-]YSF ",
-                YSF_FS_LEVELS,
             )
         )
+    rows.append(
+        line_row(
+            "ysf_outer_sync",
+            "ysf",
+            "YSF (outer 2700 Hz, sync at outer levels)",
+            12500,
+            DIAGNOSTIC,
+            ["-fy"],
+            lambda _w: ysf_source(2700.0, outer_sync=True),
+            YSF_PASS,
+            r"Sync: [+-]YSF ",
+        )
+    )
+    rows.append(
+        regen_row(
+            "ysf_regen",
+            "ysf",
+            "YSF (outer 2290 Hz)",
+            12500,
+            ["-fy"],
+            "ysf",
+            4800,
+            lambda lv: fm_from_levels(lv, 4800, rrc_response(0.2, 4800), 2290.0),
+            "RRC 0.2, outer 2290 Hz",
+            YSF_PASS,
+            r"Sync: [+-]YSF ",
+            YSF_FS_LEVELS,
+            REGEN_CHECK,
+        )
+    )
     rows.append(off_air_row("ysf_offair", "ysf", "YSF", 12500, ["-fy"], "ysf", YSF_PASS, r"Sync: [+-]YSF "))
     m17_pass, m17_unit = r"Sync: [+-]M17 STR LC: [1-6]/6", r"Sync: [+-]M17 STR"
     rows += [
@@ -779,11 +1035,14 @@ def analog_rows():
 
 
 def band_power(source, width_hz):
-    """Mean power of the signal inside +/- width/2, over its bursts for a burst train."""
+    """Mean power of the signal inside +/- width/2; for a burst train, during its bursts (region B), not its ramps."""
     spectrum = np.abs(np.fft.fft(source.samples)) ** 2 / len(source.samples) ** 2
     freqs = np.fft.fftfreq(len(source.samples), 1.0 / RATE_HZ)
     power = float(spectrum[np.abs(freqs) <= width_hz / 2.0].sum())
-    return power if source.on is None else power * len(source.on) / int(np.count_nonzero(source.on))
+    if source.on is None:
+        return power
+    in_band = power / float(np.mean(np.abs(source.samples) ** 2))
+    return float(np.mean(np.abs(source.samples[source.on]) ** 2)) * in_band
 
 
 def noise_for(key, seed):
@@ -923,7 +1182,8 @@ def clean_check(row, source, result, work_dir, rows):
         result.detail = f"the clean signal passes {passed} of {units} frames"
         return None
     if below:
-        result.detail = f"the clean signal passes {passed} of {units} frames (errors in the source's own symbols)"
+        why = " (errors in the recording's own symbols)" if row.regenerated else ""
+        result.detail = f"the clean signal passes {passed} of {units} frames{why}"
     return passed
 
 
