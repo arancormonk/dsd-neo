@@ -1684,12 +1684,20 @@ frame_sync_dmr_refresh_cleared_soft(dsd_state* state, int readback) {
     for (int i = 0; i < DMR_RESAMPLE_SYMBOLS && dibits + i < clear_floor; i++) {
         const float symbol = dsd_symbol_history_get_back(state, readback - 1 - i);
         const int d = dibits[i] & 3;
-        const uint8_t rel = dmr_compute_reliability(state, symbol);
+        /* dmr_resample_cach() re-slices them on the adaptive thresholds, whatever the modulation. */
+        const uint8_t rel = dmr_compute_reliability(state, symbol, DSD_DIBIT_SLICER_ADAPTIVE);
         soft[i].reliability = rel;
         soft[i].llr[0] = (int16_t)(((d >> 1) & 1) ? rel : -(int)rel);
         soft[i].llr[1] = (int16_t)((d & 1) ? rel : -(int)rel);
     }
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_frame_sync_test_dmr_refresh_cleared_soft(dsd_state* state, int readback) {
+    frame_sync_dmr_refresh_cleared_soft(state, readback);
+}
+#endif
 
 /* dmr_resample_on_sync(), and what of the 90 dibits the burst is decoded back from dmr_payload_p (its CACH, the first
  * half of its payload, its slot type's first half or EMB, and the sync) is the stream's, for its decoder
@@ -2861,16 +2869,30 @@ frame_sync_cqpsk_4level_enabled(const dsd_opts* opts, const dsd_state* state) {
     return 0;
 }
 
+/* Whether the CQPSK hunt reads TETRA's quadrant levels: the 18000/4 profile on QPSK. */
+static int
+frame_sync_cqpsk_tetra_levels(const dsd_state* state) {
+    return state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_18000_4 && state->rf_mod == 1;
+}
+
 /* The level the hunt slices CQPSK symbols about. TETRA's (the 18000/4 profile, a candidate only when TETRA is the
  * decode mode) are arg(z) * 4/pi of the differential phasor, cut at the quadrant edges 0 and +-2 as digitize() cuts
  * their payload, both on QPSK only (rf_mod 1, the test dsd_tetra_quadrant_levels() makes for digitize()): the
  * adaptive centre, the midpoint of the averaged extremes, does not enter. P25's CQPSK hunt keeps it. */
 static float
 frame_sync_cqpsk_slice_center(const dsd_state* state) {
-    if (state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_18000_4 && state->rf_mod == 1) {
-        return 0.0f;
+    return frame_sync_cqpsk_tetra_levels(state) ? 0.0f : state->center;
+}
+
+/* The slicer frame_sync_store_dmr_payload_symbol() cuts with, whose coordinates the dibit's reliability is measured in:
+ * the CQPSK hunt's fixed levels about the centre frame_sync_cqpsk_slice_center() names, else the adaptive thresholds
+ * (a QPSK session's float symbol file or PCM input among them). */
+static dsd_dibit_slicer
+frame_sync_payload_slicer(const dsd_state* state, int cqpsk_4level) {
+    if (!cqpsk_4level) {
+        return DSD_DIBIT_SLICER_ADAPTIVE;
     }
-    return state->center;
+    return frame_sync_cqpsk_tetra_levels(state) ? DSD_DIBIT_SLICER_TETRA_QUADRANT : DSD_DIBIT_SLICER_CQPSK_PHASE;
 }
 
 static int
@@ -2995,7 +3017,7 @@ frame_sync_store_dmr_payload_symbol(dsd_state* state, float symbol, int cqpsk_4l
     }
 
     *state->dmr_payload_p = d;
-    uint8_t rel = dmr_compute_reliability(state, symbol);
+    uint8_t rel = dmr_compute_reliability(state, symbol, frame_sync_payload_slicer(state, cqpsk_4level));
     if (state->dmr_soft_p) {
         state->dmr_soft_p->reliability = rel;
         state->dmr_soft_p->llr[0] = (int16_t)(((d >> 1) & 1) ? rel : -(int)rel);

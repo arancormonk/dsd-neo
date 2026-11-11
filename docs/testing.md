@@ -694,6 +694,18 @@ the I/Q replay, at least 90 of the 100 (all of them here), which a float symbol 
 loses (TETRA's frame-sync slicer has fixed thresholds in the symbol domain). These are deterministic regression
 boundaries, not receiver-sensitivity claims.
 
+`DECODE_P25P2_FLOAT_SYMBOL_AMBE_ERRORS` (`tests/p25p2_float_symbol_ambe_check.cmake`) needs no I/Q fixture: the
+generator `dsd-neo_test_p25p2_voice_symbol_file` builds eight superframes of a P25 Phase 2 voice channel with the test
+burst builder (`tests/protocol/p25/p25p2_burst_builder.c`; 4V and 2V bursts of random voice bits, SACCHs, ISCHs,
+scrambled for `-X BEE00164161`) and writes the same dibits twice, as a float symbol file at the nominal levels with a
+little noise and as a soft symbol capture at full confidence. Replayed with a frame log, both must decode the same
+AMBE frames, at least 200, and the float replay must count errors in exactly the frames the full-confidence replay does
+(random voice bits leave Golay something to correct in nearly every frame); a `-c` capture of the float replay must
+replay to the same frames and counts. Measured against the fixed CQPSK levels, as they were before reliabilities followed
+the slicer, a float symbol file's reliabilities read 0 and every count with them. Error counts are
+reliability-weighted, so the float replay's are not the full-confidence replay's numbers, only nonzero in the same
+frames.
+
 `provoice` is the sigidwiki ProVoice clip, one 3.5 s transmission (issue #588). Unlike the other audio sources it was
 recorded from a receiver's de-emphasized audio rather than from its discriminator: its 9600 baud clock line is there,
 but the roll-off smears each transition across its neighbours and, as recorded, it gives no frame sync at all. The

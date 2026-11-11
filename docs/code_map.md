@@ -1622,6 +1622,23 @@ suite runs under this compiler.
   indexes the ring unchecked, so no decoder runs without it. The CLI (`apps/dsd-cli/main.c`) and the Android
   `nativeInit` refuse to start a state with `init_failed` set. Test builds fail one checked allocation at a time
   through `dsd_init_test_alloc_fail_after()` (`CORE_INIT_STATE`).
+- Invariant (dibit reliability coordinates, `<dsd-neo/core/dibit.h>`, `src/core/frames/dsd_dibit.c`): a four-level
+  dibit's reliability is measured in the coordinates of the slicer that cut it, and every caller of
+  `dmr_compute_reliability()` names that slicer (`dsd_dibit_slicer`): `DSD_DIBIT_SLICER_CQPSK_PHASE` for P25's CQPSK
+  slicers (`digitize()`'s `cqpsk_slice_aligned()` under `want_cqpsk_p25_slice()`, the hunt's
+  `frame_sync_slice_cqpsk_dibit()` under `frame_sync_cqpsk_4level_enabled()`), the fixed ±1/±3 levels of the RTL
+  demodulator's arg * 4/pi about `state->center`, SNR-weighted; `DSD_DIBIT_SLICER_TETRA_QUADRANT` for TETRA's quadrant
+  slicer (`dsd_tetra_quadrant_levels()` in `digitize()`, the 18000/4 hunt profile in the frame sync), the same levels
+  about 0; `DSD_DIBIT_SLICER_ADAPTIVE` for everything else, `c4fm_reliability_from_thresholds()` with its SNR weight
+  in the input's own units. `rf_mod` does not choose: a QPSK session (a P2 sync sets `rf_mod` 1) fed by a float
+  symbol file, scaled by 10000, or by PCM audio is cut on the adaptive thresholds, and measured against the fixed
+  levels its reliabilities, and both LLRs `compute_dibit_soft_metric()` scales by them, read 0, which zeroes every soft
+  consumer (AMBE error counts, the P2 soft DUID rescue, ESS/FACCH/SACCH erasure ranking). DMR's CACH re-read
+  (`dmr_resample_cach()`, `frame_sync_dmr_refresh_cleared_soft()`) slices on the adaptive thresholds and measures
+  there. The claim is per slicer: reliabilities are nonzero and fall toward its decision boundary, not equal across
+  coordinate systems. TETRA's LLR magnitudes still come from the adaptive ideals (its decoder reads
+  `cqpsk_soft_symbol_to_viterbi_cost()`, not these LLRs; only a `-c` capture records them). Tests:
+  `DIBIT_RELIABILITY_SLICER`, `DIBIT_RTL_FSK_RELIABILITY`, `DECODE_P25P2_FLOAT_SYMBOL_AMBE_ERRORS`.
 - API note (transmission): `dsd_call_snapshot::transmission_epoch` names the logical transmission an epoch belongs to:
   its own epoch, or for an epoch that reacquired a recoverably-ended one (`call_state_seed_reacquired_snapshot()`),
   that epoch's. `dsd_call_snapshot_transmission()` reads it (falling back to `epoch`). State bound to one call keys on

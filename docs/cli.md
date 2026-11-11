@@ -73,6 +73,19 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
   replayable at the configured rate. Remove that mislabeled-file fallback after those captures are migrated or their
   support window ends; explicitly raw stream and file inputs remain supported independently.
 - OP25/FME capture BIN: `-i file.bin`.
+- Symbol files: `-i capture.bin` replays a `-c` symbol capture with the soft metrics it recorded; `-i file.raw` or
+  `.sym` reads a float symbol file, one native-order 32-bit float per symbol at the nominal levels (outer ±3, inner
+  ±1). A float symbol file is sliced as PCM audio is, on the adaptive thresholds in its own units, whatever the
+  modulation (a P25 Phase 2 or `-mq` session included), and its soft-decision reliabilities (voice error counts and
+  soft FEC: AMBE/IMBE, P25 Phase 2 DUID, ESS, FACCH and SACCH) are measured against the same thresholds, so they are
+  real but on another scale than a radio input's. Only the CQPSK demodulator of a radio or `--iq-replay` input slices
+  and measures P25 symbols at the fixed π/4-DQPSK levels (TETRA's, from any input, at the quadrant levels about 0).
+  A float symbol file of a CQPSK capture therefore decodes close to, not exactly as, the radio input it came from:
+  the adaptive inner/outer edge sits at 5/8 of the averaged outer level, about 2.1 levels on a noisy simulcast
+  against the CQPSK slicer's fixed 2, so noisy outer symbols near that edge can slice the other way (0.6% of the
+  decoded dibits on a simulcast P25 Phase 2 call), and the thresholds settle over the first thousand or so symbols.
+  A `-c` capture made while replaying one records the sync search's dibits on two levels (their sign), where a radio
+  input's CQPSK search records four; that difference is in the capture only, not in what decodes.
 - RTL‑SDR (USB): `-i rtl` or advanced string:
   - `rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]`
   - Examples: `rtl:0:851.375M:22:-2:24:0:2`, `rtl:1:450M:0:0:12:0:2`

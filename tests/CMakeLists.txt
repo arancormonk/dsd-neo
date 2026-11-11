@@ -10720,6 +10720,39 @@ else()
 endif()
 add_test(NAME P25_P2_ACCH_VERDICT COMMAND dsd-neo_test_p25_p2_acch_verdict)
 
+# A P25 Phase 2 voice channel replayed from a float symbol file counts its AMBE errors: the reliabilities are measured
+# on the adaptive thresholds its symbols were sliced on, not the RTL CQPSK phase levels (tests/
+# p25p2_float_symbol_ambe_check.cmake).
+add_executable(
+    dsd-neo_test_p25p2_voice_symbol_file
+    protocol/p25/p25p2_voice_symbol_file.c
+    protocol/p25/p25p2_burst_builder.c
+)
+target_include_directories(
+    dsd-neo_test_p25p2_voice_symbol_file
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2
+        ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_p25p2_voice_symbol_file
+    PRIVATE dsd-neo_proto_p25 dsd-neo_fec dsd-neo_platform
+)
+add_test(
+    NAME DECODE_P25P2_FLOAT_SYMBOL_AMBE_ERRORS
+    COMMAND
+        ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+        "-DCONVERT_BIN=$<TARGET_FILE:dsd-neo_test_p25p2_voice_symbol_file>"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/float_symbol_replay/DECODE_P25P2_FLOAT_SYMBOL_AMBE_ERRORS"
+        "-DMIN_FRAMES=200" -P
+        "${CMAKE_CURRENT_SOURCE_DIR}/p25p2_float_symbol_ambe_check.cmake"
+)
+set_tests_properties(
+    DECODE_P25P2_FLOAT_SYMBOL_AMBE_ERRORS
+    PROPERTIES TIMEOUT 240
+)
+
 # P25 P2 scrambling code recovery from a carrier's own FACCH/SACCH, through processP2() and the real RS, CRC and XCCH
 # handlers (issue #804)
 add_executable(
@@ -15156,6 +15189,39 @@ target_link_libraries(
 add_test(
     NAME DIBIT_TETRA_QUADRANT_SLICER
     COMMAND dsd-neo_test_dibit_tetra_quadrant_slicer
+)
+
+# A dibit's reliability is measured in the coordinates of the slicer that cut it, through digitize(), the frame sync
+# hunt's payload store and the DMR CACH re-read: the RTL CQPSK phase domain's fixed levels, TETRA's quadrant levels
+# about 0, or the adaptive thresholds in the input's own units (a QPSK session's float symbol file or PCM audio).
+add_executable(
+    dsd-neo_test_dibit_reliability_slicer
+    core/test_dibit_reliability_slicer.c
+    ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit.c
+    test_support/frame_sync_dsp_stubs.c
+)
+if(DSD_HAS_RADIO)
+    target_compile_definitions(
+        dsd-neo_test_dibit_reliability_slicer
+        PRIVATE USE_RADIO
+    )
+endif()
+target_include_directories(
+    dsd-neo_test_dibit_reliability_slicer
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_dibit_reliability_slicer
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
+        dsd-neo_test_audio_sink
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(
+    NAME DIBIT_RELIABILITY_SLICER
+    COMMAND dsd-neo_test_dibit_reliability_slicer
 )
 
 # These standalone slicer tests supply their own clock/config/radio stubs.

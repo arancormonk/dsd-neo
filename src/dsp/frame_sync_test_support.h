@@ -23,6 +23,9 @@ int dsd_frame_sync_test_capture_tetra_soft(const dsd_state* state, float* dst, i
 /* frame_sync_process_dibit_and_payload(): the hunt's slice of one symbol into dibit_buf and dmr_payload_buf. Returns
    the dibit as the history character ('0'..'3'). */
 int dsd_frame_sync_test_process_dibit_and_payload(dsd_opts* opts, dsd_state* state, float symbol);
+/* frame_sync_dmr_refresh_cleared_soft(): the soft metrics of the dibits a DMR sync re-read below the payload buffer's
+   floor, from the symbol history. */
+void dsd_frame_sync_test_dmr_refresh_cleared_soft(dsd_state* state, int readback);
 void dsd_frame_sync_test_set_recent_hamming(int ham_c4fm, int ham_qpsk, int ham_gfsk);
 void dsd_frame_sync_test_get_mod_votes(int* out_c4fm, int* out_qpsk, int* out_gfsk);
 /** @brief Whether the 2 s QPSK dwell is currently armed. */
