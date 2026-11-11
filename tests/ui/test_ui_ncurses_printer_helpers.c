@@ -1426,7 +1426,20 @@ test_rtl_and_soapy_input_source_rendering(void) {
     g_stub_max_x = 200;
     reset_printw_capture();
     ui_render_m17_encoder_status(&vox_opts, &vox_state);
-    assert_capture_equals("| M17 Encoder: Vox Mode; SQL:  -70.0 : -80.0 dB; Input Gain (/|*): Auto F: |  |  |  |\n");
+    assert_capture_equals("| M17 Encoder: Vox Mode; SQL:  -70.0 : -80.0 dB; Input Gain (/|*): Auto   F: |  |  |  |\n");
+    /* A fixed analog gain keeps its fraction, as the menu label shows it, in the room auto takes (issue #518). */
+    const int vox_filter_col = capture_column_of(" F:");
+    vox_opts.audio_gainA = 37.25f;
+    reset_printw_capture();
+    ui_render_m17_encoder_status(&vox_opts, &vox_state);
+    assert_capture_contains(" Input Gain (/|*): 37.25% F:");
+    assert(capture_column_of(" F:") == vox_filter_col);
+    vox_opts.audio_gainA = 100.0f;
+    reset_printw_capture();
+    ui_render_m17_encoder_status(&vox_opts, &vox_state);
+    assert_capture_contains(" Input Gain (/|*):   100% F:");
+    assert(capture_column_of(" F:") == vox_filter_col);
+    vox_opts.audio_gainA = 0.0f;
     g_stub_max_x = 80;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -1859,6 +1872,12 @@ test_output_rows_fixed_width(void) {
     reset_printw_capture();
     ui_render_pulse_analog_output(&opts, &state);
     assert_capture_contains(" G: 100% (/|*) Manual     PWR:");
+    assert(capture_column_of(" PWR:") == pwr_col);
+    /* A fraction shows as the menu label shows it, not rounded to a whole percent (issue #518). */
+    opts.audio_gainA = 37.5f;
+    reset_printw_capture();
+    ui_render_pulse_analog_output(&opts, &state);
+    assert_capture_contains(" G: 37.5% (/|*) Manual    PWR:");
     assert(capture_column_of(" PWR:") == pwr_col);
     opts.audio_gainA = 0.0f;
     state.aout_gainA = 18.0f;

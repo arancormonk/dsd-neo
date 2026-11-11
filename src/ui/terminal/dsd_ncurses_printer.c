@@ -758,8 +758,9 @@ ui_row_analog_filters_field(ui_row* row, const dsd_opts* opts) {
                  opts->use_pbf == 1 ? "VB" : "  ");
 }
 
-/* The analog monitor's gain: auto with what the AGC applies over the reference level, or the fixed -n setting, both in
-   the room the auto form takes so the readings after it hold their columns when the mode changes. */
+/* The analog monitor's gain: auto with what the AGC applies over the reference level, or the fixed -n setting with its
+   fraction as the menu shows it, both in the room the auto form takes so the readings after it hold their columns when
+   the mode changes. */
 static void
 ui_row_analog_gain_field(ui_row* row, const dsd_opts* opts, const dsd_state* state) {
     static const char k_auto_span[] = "G: Auto (+18.0 dB) (/|*)";
@@ -769,8 +770,7 @@ ui_row_analog_gain_field(ui_row* row, const dsd_opts* opts, const dsd_state* sta
         DSD_SNPRINTF(text, sizeof text, "G: Auto (%s dB) (/|*)",
                      ui_num(value, sizeof value, state ? (double)state->aout_gainA : 0.0, 5, 1, DSD_NUMBER_TEXT_PLUS));
     } else {
-        DSD_SNPRINTF(text, sizeof text, "G: %s%% (/|*) Manual",
-                     ui_num(value, sizeof value, (double)opts->audio_gainA, 3, 0, 0));
+        DSD_SNPRINTF(text, sizeof text, "G: %.4g%% (/|*) Manual", (double)opts->audio_gainA);
     }
     ui_row_field(row, " %-*s", (int)(sizeof k_auto_span - 1U), text);
 }
@@ -860,12 +860,14 @@ ui_render_m17_encoder_status(const dsd_opts* opts, const dsd_state* state) {
             ui_row_field(&row, " SQL: %s : %s;%*s", ui_num(pwr, sizeof pwr, pwr_to_dB(opts->rtl_pwr), 6, 1, 0), vox_sql,
                          pad, "");
         }
+        /* The fixed setting keeps its fraction as the menu shows it ("37.25%" at the widest), and auto takes the same
+           room, so the filters after it hold their column. */
         if (dsd_analog_gain_is_auto(opts->audio_gainA)) {
-            ui_row_field(&row, " Input Gain (/|*): Auto");
+            ui_row_field(&row, " Input Gain (/|*): %-6s", "Auto");
         } else {
             char gain[16];
-            ui_row_field(&row, " Input Gain (/|*): %s%%",
-                         ui_num(gain, sizeof gain, (double)opts->audio_gainA, 3, 0, 0));
+            DSD_SNPRINTF(gain, sizeof gain, "%.4g%%", (double)opts->audio_gainA);
+            ui_row_field(&row, " Input Gain (/|*): %6s", gain);
         }
         ui_row_analog_filters_field(&row, opts);
         ui_row_end(&row);
