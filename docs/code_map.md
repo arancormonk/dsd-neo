@@ -5793,7 +5793,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `tolerant_syncs`, `tolerant_frames` (P1) and `tolerant_windows` (P2, windows whose verdict passed). Tests:
   `FRAME_SYNC_P25_ANCHOR`, `FRAME_SYNC_P25P2_ANCHOR` (distance and shifted bound, the expected position only,
   thresholds, late exact words win, map and polarity, every invalidation, installation, the withheld accept effects,
-  C4FM and symbol files).
+  C4FM and symbol files); through the whole receive chain, `DECODE_IQ_P25P1_CQPSK_SIMULCAST_NOISY_CC`,
+  `DECODE_IQ_P25P2_CC_NOISY` and `DECODE_IQ_P25P1_CQPSK_CC_THEN_NOISE_*` (`docs/testing.md`).
 - Sync anchor (`symbol_anchor.c`, `include/dsd-neo/dsp/symbol_anchor.h`, issue #729). A decoder that reads burst after
   burst without returning to the hunt (DMR BS for a whole repeater call) left the grid open loop, so a TX/RX clock
   offset walked it off the symbols until a sync was lost. `dsd_symbol_note_sync_anchor()` names a sync word the grid
@@ -7159,9 +7160,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     composite's symbol timing swings with it, 0.12 to 0.24 of a symbol on the voice dwells. A 0.01 loop follows that
     swing less and samples further from the symbol centres in the weak part of each cycle: proven by their LDUs, the s77
     and s85 voice dwells decoded the same frames with 13% and 147% more IMBE errors. On a control channel the same
-    slowness is what keeps the 0.025 loop from walking off by whole symbols in the deep troughs (on s72 it drifted 8
-    symbols in 9 s, where 0.01 held within a sample for the whole 36 s), and every slip costs frames until the next
-    sync; a 3 to 6 s voice dwell has no slip to save and pays only the lag. Phase 2 voice pays the same lag, and its
+    slowness is what keeps the loop from walking off by whole symbols in the deep troughs, as the 0.025 loop does (on
+    s72 it drifted 8 symbols in 9 s, where 0.01 held within a sample for the whole 36 s), and every slip costs frames
+    until the next sync; a 3 to 6 s voice dwell has no slip to save and pays only the lag. Phase 2 voice pays the same lag, and its
     frame gain pays for it on the clean captures (1.4 to 4.5% more AMBE frames on s5, s7 and s113, and 5 to 6 fewer R-S
     failures a run on s5 and s113). Measured limit, accepted: on noisy Phase 2 the gain is not uniform. With noise added
     to s5, s5n3's mean 4V/2V burst count stays flat (+0.5) but 6 of 12 realizations lose up to 6 bursts; s5 under `-fa`
@@ -9155,7 +9156,7 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   one has no effect at all: no ISCH, position, playout break or retirement, seed recovery, descrambling, dispatch, MAC
   fragment wipe or channel activity, `s_prev_window` untouched (so the next exact window retires its four timeslots as
   lost, as after a missed sync), `dmr_stereo` back as it was, the anchor and the window context spent, one stderr line
-  ` P25p2 ~sync rejected` (`-v 2` adds the bit errors and the verdict). `processP2()` returns `P25P2_WINDOW_REJECTED`
+  ` P25p2 ~sync rejected` (`opts->verbose > 1`, the default, adds the bit errors and the verdict). `processP2()` returns `P25P2_WINDOW_REJECTED`
   for it; `dsd_dispatch_handle_p25p2()` maps that to `DSD_FRAME_VERDICT_UNPRODUCTIVE` (the SPS hunt pays for it as for
   a missed sync: the handler ran and validated nothing, which is not WITHHELD's engine policy decline) and every other
   window to PRODUCTIVE, as before. A window a carrier boundary or an input interruption cut while it was collected never
@@ -9176,7 +9177,8 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   windows misread 1-5 dibits either way, the fourth ISCH), `P25_P2_TOLERANT_WINDOW` (through `processP2()` and the
   dispatcher: a failed window changes nothing, a later-slot DUID failure plays no voice, a passing window decodes as the
   exact one, the missed-sync equivalence, installation, the context, the fourth ISCH), `P25_P2_TOLERANT_SYNC` (a
-  real-shaped stream through the real frame sync, dibit chain, dispatcher and `processP2()`), `FRAME_SYNC_P25P2_ANCHOR`.
+  real-shaped stream through the real frame sync, dibit chain, dispatcher and `processP2()`), `FRAME_SYNC_P25P2_ANCHOR`,
+  `DECODE_IQ_P25P2_CC_NOISY` (a noisy replay: SACCH MAC PDUs an exact match loses).
 - Burst kind. `dsd_state::p2_is_lcch` is set for an LCCH's MAC PDU only and cleared when it returns, so an LCCH whose
   decode failed cannot make the next FACCH or SACCH of the window an LCCH (its CRC-16 path rejected valid bursts).
   The MAC opcode is no service option: no burst writes it into `dmr_so`/`dmr_soR`, which carry the service options
@@ -9542,7 +9544,7 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   most 4 corrections (`P25P1_NID_NAC_CHANGE_MAX_CORRECTIONS`, OP25's `rx_sync` NID limit; the corrections are
   `p25p1_nid_result::error_count`, BCH plus soft flips, and a parity disagreement does not count). With more, a soft
   result past the BCH radius included, it is provisional: the DUID reads invalid, so nothing decodes, it counts in
-  `nid_failures_total`, `-v 2` prints `[NID NAC xxx held, n corrections]`, nothing takes its NAC (received identity,
+  `nid_failures_total`, `opts->verbose > 1` (the default) prints `[NID NAC xxx held, n corrections]`, nothing takes its NAC (received identity,
   frame NAC, `state->nac`, seed, proof), and the NAC is held as the candidate. 0x000 and 0xFFF are held like any other
   NAC: they are the words a dead or stuck input decodes as, so a costly NID naming either on a carrier with an
   established NAC is the likeliest miscorrection, and decoding it would play the frame as voice (an LDU1) or start a
@@ -9600,8 +9602,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     `p25p1_nid_verdict_commit()` and `p25p1_handle_nid_decode_success()`): behind a tolerant word the frame decodes
     only when the NID validates, its parity agrees (NID_OK), it needed at most 4 corrections
     (`P25P1_NID_TOLERANT_SYNC_MAX_CORRECTIONS`) and it names the anchor's NAC. Anything else drops the frame: nothing
-    is committed or published (NAC, received identity, seed, counters; `-v 2` prints `[tolerant sync, n bit errors,
-    dropped: ...]` with what the NID was), the dispatcher returns `DSD_FRAME_VERDICT_UNPRODUCTIVE` (no PROFILE_PROVEN, not even inside a NID
+    is committed or published (NAC, received identity, seed, counters; `opts->verbose > 1`, the default, prints
+    `[tolerant sync, n bit errors, dropped: ...]` with what the NID was), the dispatcher returns `DSD_FRAME_VERDICT_UNPRODUCTIVE` (no PROFILE_PROVEN, not even inside a NID
     evidence window, so no SPS-hunt credit), no validated-modulation stamp feeds the chain comparison or the modulation
     hold, and the hunt resumes past the NID it read. A misaligned NID after a slipped word needs this: a word 3 bits
     off one symbol late behind a `1` is 6 bits off at the expected position, and the NID read one symbol off decodes
@@ -9630,7 +9632,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     CQPSK on the RTL path only (C4FM, symbol files and PCM inputs are exact-only). Tests: `FRAME_SYNC_P25_ANCHOR`,
     `P25_P1_TOLERANT_NID`, `P25_P1_TOLERANT_SYNC` (a real-shaped stream through the real frame sync, dibit chain,
     dispatcher and NID decoder), `P25_P1_TSBK_SEQUENCE` and `P25_P1_MDPU_HELPERS` (lengths), `ENGINE_NO_CARRIER_RESET`,
-    `ENGINE_TRUNK_SCAN`.
+    `ENGINE_TRUNK_SCAN`, `DECODE_IQ_P25P1_CQPSK_SIMULCAST_NOISY_CC` (a noisy simulcast replay: CRC-passed TSBKs an exact
+    match loses) and `DECODE_IQ_P25P1_CQPSK_CC_THEN_NOISE_*` (no P25 sync after the carrier ends).
 - A TSDU ends at its last block (`processTSBK()`, `src/protocol/p25/phase1/p25p1_tsbk.c`): a block that passed its CRC
   reads on when its last-block flag is clear and ends the TSDU when it is set. A block that failed its CRC says nothing
   either way, and read on behind its flag a one-block TSDU took the next frame's sync and NID for a second and third

@@ -994,7 +994,7 @@ Notes
 - A P25 Phase 1 NID that names another NAC than the carrier's earlier NIDs did (000 and FFF included) is taken at
   once only when it needed at most 4 bit corrections. A costlier one (5 or more, as a corrupted control channel frame
   read as voice of another NAC can need) is held: that frame is not decoded and the NAC shown, the received identity
-  and the Phase 2 seed stay as they were (`-v 2` prints `[NID NAC xxx held, n corrections]`). The next NID settles it:
+  and the Phase 2 seed stay as they were (the console prints `[NID NAC xxx held, n corrections]`). The next NID settles it:
   naming the same new NAC confirms the change and decodes, naming the old NAC drops it. NAC 000 and FFF are never
   shown or taken as the carrier's NAC. The first NID after a tune, a carrier loss or any other
   carrier change is taken at once whatever it needed, so a real NAC change on one carrier costs at most its first
@@ -1004,7 +1004,7 @@ Notes
   same carrier, tune and stream. A simulcast site's words often come through with a symbol or two off, which used to
   lose the whole frame. Such a frame decodes only when its NID decodes cleanly (parity agreeing, at most 4 bit
   corrections) and names the same NAC; otherwise it is dropped unseen. Every other word, the first after a gap,
-  a tune or a lost frame included, must match exactly, as before. `-v 2` marks these frames
+  a tune or a lost frame included, must match exactly, as before. The console marks these frames
   `[tolerant sync, n bit errors]` (`[tolerant sync, n bit errors, dropped: ...]` with what the NID was, when it
   failed the check). C4FM, symbol files and audio inputs
   are unchanged.
@@ -1013,8 +1013,8 @@ Notes
   where in the superframe they were, on the same carrier, tune and stream. The four timeslots behind such a word decode
   only when their own ISCHs agree with where they must be (one matches, none points elsewhere) and at most one of them
   carries an unreadable burst type; otherwise nothing of them is decoded, shown or counted, and the line reads
-  `P25p2 ~sync rejected`. With `-v 1` or more the sync shows as `+P25p2~`. Every other word must match exactly, as
-  before; C4FM (`-m3`), symbol files and audio inputs are unchanged.
+  `P25p2 ~sync rejected` (with the word's bit errors and the verdict's code). The sync shows as `+P25p2~`. Every other
+  word must match exactly, as before; C4FM (`-m3`), symbol files and audio inputs are unchanged.
 
 ## Analog reception (`-fA`, `-fM`)
 
