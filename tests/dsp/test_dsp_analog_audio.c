@@ -424,10 +424,10 @@ test_not_learning_holds(void) {
     CHECK(fabsf(f.state->aout_gainA - adapted) < 1e-4f, "speech that does not learn moved the gain %.3f -> %.3f dB",
           (double)adapted, (double)f.state->aout_gainA);
     free(x);
-    x = talker(rate, n, -3.0, 21U);
-    chain_feed(&f, DSD_ANALOG_AUDIO_SOURCE_PCM16, rate, x, n, 960U, NULL, 0U, NULL);
-    CHECK(peak_of(x, n) <= 29204.0, "output peak %.1f above the -1 dBFS ceiling", peak_of(x, n));
-    free(x);
+    float* hot = talker(rate, n, -3.0, 21U);
+    chain_feed(&f, DSD_ANALOG_AUDIO_SOURCE_PCM16, rate, hot, n, 960U, NULL, 0U, NULL);
+    CHECK(peak_of(hot, n) <= 29204.0, "output peak %.1f above the -1 dBFS ceiling", peak_of(hot, n));
+    free(hot);
     fixture_free(&f);
 }
 

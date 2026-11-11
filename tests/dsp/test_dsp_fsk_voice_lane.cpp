@@ -14,7 +14,8 @@
  *   24, 48 and 72 kHz and with no, 50, 75 and 750 us de-emphasis; the compensation is the monitor's for the same
  *   coefficient and rate, and 1 with the lane off.
  * - The normalised samples are bit for bit the same with the lane on or off.
- * - A block the level squelch closes is silence on both lanes, and the lane resumes when it opens.
+ * - A block the level squelch closes is silence on both lanes, and the lane resumes when it opens; such a block, the
+ *   lane's first or the first at a new rate, already compensates the lane's de-emphasis at that rate.
  * - The lane's coefficient follows a change of rate.
  * - Through the output resampler, the lane makes exactly as many samples as the normalised lane at the same places:
  *   fed the same input, it makes the same samples, block for block, whatever the block sizes, and after a reset.
@@ -259,6 +260,33 @@ test_squelched_block_is_silence(void) {
     dsd_neo_aligned_free(s);
 }
 
+/* A lane whose first block, or first block at a new rate, the squelch closes already compensates its own de-emphasis
+   at that rate, so the gain the stream publishes does not move again when the squelch opens. */
+void
+test_squelched_block_publishes_the_lane_gain(void) {
+    demod_state* s = new_fsk_demod(48000, 1, 75);
+    if (!s) {
+        fail("allocation");
+        return;
+    }
+    s->channel_squelch_level.store(1.0f);
+    FmSource src = {48000, 0.0, 0};
+    run_block(s, src);
+    const double want48 = monitor_compensation(48000, 75);
+    if (!s->channel_squelched || std::fabs(dsd_demod_deemph_compensation(s) - want48) > 1e-12) {
+        fail("a lane's first block, squelched, does not publish the lane's gain");
+    }
+    s->complex_rate = 24000;
+    s->rate_in = 24000;
+    s->rate_out = 24000;
+    FmSource slow = {24000, 0.0, 0};
+    run_block(s, slow);
+    if (std::fabs(dsd_demod_deemph_compensation(s) - monitor_compensation(24000, 75)) > 1e-12) {
+        fail("a squelched block at a new rate publishes the old rate's lane gain");
+    }
+    dsd_neo_aligned_free(s);
+}
+
 void
 test_coefficient_follows_rate(void) {
     demod_state* s = new_fsk_demod(48000, 1, 75);
@@ -348,6 +376,7 @@ main(void) {
     test_level_at_rates_and_deemphasis();
     test_normalised_lane_unchanged();
     test_squelched_block_is_silence();
+    test_squelched_block_publishes_the_lane_gain();
     test_coefficient_follows_rate();
     test_resampler_keeps_the_lane_in_step();
     if (g_failures != 0) {

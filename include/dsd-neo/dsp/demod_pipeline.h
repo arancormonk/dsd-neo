@@ -152,13 +152,6 @@ void deemph_filter(struct demod_state* fm);
 float dsd_demod_deemph_alpha(int rate_hz, int tau_us);
 
 /**
- * Apply post-demod deemphasis IIR filter with Q15 coefficient.
- *
- * @param fm Demodulator state (reads/writes result, updates deemph_avg).
- */
-void deemph_filter(struct demod_state* fm);
-
-/**
  * The gain that makes up for the de-emphasis the next block's output runs through, at 1 kHz (issue #518): the inverse
  * of the filter's magnitude there, from the quantised coefficient it applies at the rate it runs at: the monitor's
  * (`deemph_a` at `rate_out`, after the post-demod decimator), or on the FSK discriminator the voice lane's while it

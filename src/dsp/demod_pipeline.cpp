@@ -2805,6 +2805,10 @@ full_demod_handle_fsk_output(struct demod_state* d) {
         return 0;
     }
     d->voice_lane_active = d->voice_lane_enabled ? 1 : 0;
+    if (d->voice_lane_active) {
+        /* On a squelched block too: the compensation the block publishes is the coefficient's at this rate. */
+        voice_lane_track_coefficient(d);
+    }
     int in_pairs = d->lp_len >> 1;
     if (d->channel_squelched) {
         dsd_fsk_modem_reset(&d->fsk_modem_state);
@@ -2818,7 +2822,6 @@ full_demod_handle_fsk_output(struct demod_state* d) {
             d->voice_lane_deemph_avg = 0.0f;
         }
     } else if (d->voice_lane_active) {
-        voice_lane_track_coefficient(d);
         d->result_len = dsd_fsk_modem_discriminator_process_raw(&d->fsk_modem_state, d->lowpassed, d->lp_len, d->result,
                                                                 d->voice_result, MAXIMUM_BUF_LENGTH);
         voice_lane_finish(d);

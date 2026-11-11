@@ -1507,11 +1507,15 @@ edacs_analog_track_rate(const dsd_opts* opts, edacs_analog_ctx* call) {
         return 1;
     }
     const int mode = dsd_rate_converter_configure(&call->conv, in_hz, EDACS_ANALOG_RATE_HZ);
-    /* The voice lane converts beside the samples, alike (a filter that could not be allocated fails it). */
-    const int voice_mode = dsd_rate_converter_configure(&call->voice_conv, in_hz, EDACS_ANALOG_RATE_HZ);
-    if ((mode != DSD_RATE_CONVERTER_IDENTITY && mode != DSD_RATE_CONVERTER_CONVERTING) || voice_mode != mode) {
+    if (mode != DSD_RATE_CONVERTER_IDENTITY && mode != DSD_RATE_CONVERTER_CONVERTING) {
         LOG_ERROR("edacs_analog: analog voice at %d Hz cannot be converted to %d Hz; leaving the call.\n", in_hz,
                   EDACS_ANALOG_RATE_HZ);
+        return 0;
+    }
+    /* On an RTL input the voice lane converts beside the samples, alike; audio input is its own voice. */
+    if (opts->audio_in_type == AUDIO_IN_RTL
+        && dsd_rate_converter_configure(&call->voice_conv, in_hz, EDACS_ANALOG_RATE_HZ) != mode) {
+        LOG_ERROR("edacs_analog: no memory to convert the voice lane from %d Hz; leaving the call.\n", in_hz);
         return 0;
     }
     call->conv_in_hz = in_hz;

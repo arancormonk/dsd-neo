@@ -33,6 +33,9 @@ struct output_state {
     /* The FSK voice lane's sample at each position DSD_RING_FLAG_VOICE marks (issue #518), written with the sample and
        its flag; what the other positions hold is never read. NULL: no voice lane. */
     float* voice = nullptr;
+    /* Set (for good) once the demod first hands a block with the voice lane, before the head that publishes it: until
+       then no flag carries DSD_RING_FLAG_VOICE, and the reads leave the flags as they are. */
+    std::atomic<int> voice_written{0};
     size_t capacity = 0;
     std::atomic<size_t> head{0U};
     std::atomic<size_t> tail{0U};

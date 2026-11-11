@@ -4863,6 +4863,9 @@ static size_t
 demod_copy_output_chunk(struct output_state* o, const float* data, const float* voice, const uint8_t* flags,
                         size_t count, size_t free_sp) {
     size_t write_now = (count < free_sp) ? count : free_sp;
+    if (voice && !o->voice_written.load(std::memory_order_relaxed)) {
+        o->voice_written.store(1, std::memory_order_release);
+    }
     size_t h = o->head.load();
     size_t to_end = o->capacity - h;
     if (to_end >= write_now) {
@@ -8017,6 +8020,7 @@ output_init(struct output_state* s) {
     if (!s->voice) {
         LOG_WARN("Failed to allocate the output ring's voice lane (%zu samples).\n", s->capacity);
     }
+    s->voice_written.store(0, std::memory_order_relaxed);
     s->head.store(0);
     s->tail.store(0);
     /* Metrics */
@@ -10695,20 +10699,26 @@ ring_copy_flags(const struct output_state* o, size_t t, size_t first, size_t n, 
     if (n > first) {
         DSD_MEMCPY(flags + first, o->flags, (n - first) * sizeof(uint8_t));
     }
+    if (!o->voice_written.load(std::memory_order_acquire)) {
+        return;
+    }
     for (size_t i = 0; i < n; i++) {
         flags[i] = (uint8_t)(flags[i] & ~DSD_RING_FLAG_VOICE);
     }
 }
 
-/* The voice lane's samples for @p n samples from @p t into @p voice (NULL: none asked for). */
+/* The voice lane's samples for @p n samples from @p t into @p voice (NULL: none asked for), in the same two segments
+   as the samples (@p first before the ring's end). */
 static void
-ring_copy_voice(const struct output_state* o, size_t t, size_t n, float* voice) {
+ring_copy_voice(const struct output_state* o, size_t t, size_t first, size_t n, float* voice) {
     if (!voice) {
         return;
     }
-    for (size_t i = 0; i < n; i++) {
-        const size_t at = (t + i) % o->capacity;
-        voice[i] = ring_voice_at(o, at, o->flags ? o->flags[at] : 0U);
+    for (size_t i = 0; i < first; i++) {
+        voice[i] = ring_voice_at(o, t + i, o->flags ? o->flags[t + i] : 0U);
+    }
+    for (size_t i = first; i < n; i++) {
+        voice[i] = ring_voice_at(o, i - first, o->flags ? o->flags[i - first] : 0U);
     }
 }
 
@@ -10728,7 +10738,7 @@ ring_read_available_copy(struct output_state* o, float* out, float* voice, uint8
         if (n > first) {
             DSD_MEMCPY(out + first, o->buffer, (n - first) * sizeof(float));
         }
-        ring_copy_voice(o, t, n, voice);
+        ring_copy_voice(o, t, first, n, voice);
         ring_copy_flags(o, t, first, n, flags);
         t += n;
         if (t >= o->capacity) {

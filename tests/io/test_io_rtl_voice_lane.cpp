@@ -15,8 +15,11 @@
  * squelch on (so the flags are the 9600 bit/s path's own): a 1 kHz tone at 3 kHz deviation, the same tone 20 dB down,
  * a stretch of carrier-off noise, a driver overflow (a gap the demod starts over at) and a retune, at three rates: 48 kHz
  * with no resampler, 60 kHz resampled to 48 kHz, and 24 kHz left at 24 kHz (which EDACS converts to 48 kHz itself).
- * A capture cannot change its rate part-way (a RETUNE at another rate seals the writer, issue #806 X9), so each rate
- * is its own capture; DSP_FSK_VOICE_LANE covers the lane's de-emphasis following a rate change.
+ * A replay holds one rate chain per stream: a capture cannot change its rate part-way (a RETUNE at another rate seals
+ * the writer, issue #806 X9), and a run-time bandwidth or mode change re-plans the replay by stopping its stream and
+ * resuming from the checkpoint on the new chain (issue #701). So the rate change covered is that one: a 48 kHz replay
+ * stopped part-way with the lane on and resumed at 24 kHz, resampled back to 48 kHz. DSP_FSK_VOICE_LANE covers the
+ * lane's de-emphasis following a rate change, and a resampler redesign, inside one demodulator.
  *
  * - The normalised samples and the flags are bit for bit the same whether the lane runs, stops part-way or never runs.
  * - Every batch the demod made with the lane off reads silence on it; with it on, the lane carries the tone at the
@@ -50,6 +53,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "dsd-neo/core/iq_replay_checkpoint.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/io/iq_types.h"
@@ -234,6 +238,7 @@ struct Run {
     std::vector<float> voice;
     std::vector<uint8_t> flags;
     std::vector<Batch> batches;
+    size_t resumed_at = 0U; /* replay_resumed(): the first batch of the resumed stream */
 };
 
 /* Whether the lane is asked for while the demod makes batch @p k: never, always, or on, off and on again. */
@@ -292,22 +297,46 @@ replay(const Spec& spec, LanePlan plan, Run* out) {
                        out);
 }
 
+/* How one stream of a replay runs: the decode mode, the digital resampler, the squelch, an explicit DSP bandwidth (0:
+   the capture's) and a checkpoint to resume from; it stops after @c stop_after reads (0: at the capture's end). The
+   lane plan counts the run's reads from @c first_read on, so a resumed stream goes on with the plan. */
+struct StreamCfg {
+    const char* mode;
+    int resample_mode;
+    int auto_squelch;
+    int bw_khz;
+    const dsd_iq_replay_checkpoint* resume;
+    size_t stop_after;
+    size_t first_read;
+};
+
+/* One stream's reads into @p out; returns 0, or 1 on a failure, with the stream's log printed only then. */
 int
-replay_meta(const char* meta, const char* mode, int resample_mode, int auto_squelch, LanePlan plan, Run* out) {
+replay_stream(const char* meta, const StreamCfg& cfg, LanePlan plan, Run* out) {
     std::unique_ptr<dsd_opts> opts(new dsd_opts());
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->iq_replay_requested = 1;
     opts->iq_replay_rate_mode = DSD_IQ_REPLAY_RATE_FAST;
-    if (apply_mode(opts.get(), mode) != 0) {
-        DSD_FPRINTF(stderr, "FAIL: unknown mode %s\n", mode);
+    if (apply_mode(opts.get(), cfg.mode) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: unknown mode %s\n", cfg.mode);
         return 1;
     }
-    opts->rtl_squelch_mode = auto_squelch ? DSD_SQUELCH_MODE_AUTO : DSD_SQUELCH_MODE_LEVEL;
+    opts->rtl_squelch_mode = cfg.auto_squelch ? DSD_SQUELCH_MODE_AUTO : DSD_SQUELCH_MODE_LEVEL;
     opts->rtl_squelch_margin_db = 10;
-    opts->digital_resample_mode = resample_mode;
+    opts->digital_resample_mode = cfg.resample_mode;
+    if (cfg.bw_khz > 0) {
+        dsd_opts_set_rtl_dsp_bw(opts.get(), cfg.bw_khz, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    }
+    if (cfg.resume) {
+        opts->iq_replay_resume_pending = 1;
+        opts->iq_replay_resume = *cfg.resume;
+    }
     DSD_SNPRINTF(opts->iq_replay_path, sizeof(opts->iq_replay_path), "%s", meta);
     DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "iqreplay:%s", meta);
-    rtl_stream_set_voice_lane(0);
+    /* The stream logs what it opens and replays: kept, and shown only for a failing run. */
+    dsd_test_capture_stderr cap;
+    const int captured = dsd_test_capture_stderr_begin(&cap, "dsdneo_voice_lane_log") == 0;
+    rtl_stream_set_voice_lane(lane_wanted(plan, cfg.first_read));
     RtlSdrContext* ctx = NULL;
     int rc = 0;
     if (rtl_stream_create(opts.get(), &ctx) != 0 || !ctx || rtl_stream_start(ctx) != 0) {
@@ -318,7 +347,7 @@ replay_meta(const char* meta, const char* mode, int resample_mode, int auto_sque
         static float voice[65536];
         static uint8_t flags[65536];
         const uint64_t start_ns = dsd_time_monotonic_ns();
-        for (size_t k = 0;; k++) {
+        for (size_t k = cfg.first_read; cfg.stop_after == 0U || k < cfg.first_read + cfg.stop_after; k++) {
             const int lane = lane_wanted(plan, k);
             rtl_stream_set_voice_lane(lane);
             int got = 0;
@@ -328,7 +357,6 @@ replay_meta(const char* meta, const char* mode, int resample_mode, int auto_sque
             const Batch b = {out->norm.size(), (size_t)got, lane, rtl_stream_monitor_deemph_gain(),
                              rtl_stream_output_rate(ctx)};
             out->batches.push_back(b);
-
             out->norm.insert(out->norm.end(), norm, norm + got);
             out->voice.insert(out->voice.end(), voice, voice + got);
             out->flags.insert(out->flags.end(), flags, flags + got);
@@ -342,6 +370,54 @@ replay_meta(const char* meta, const char* mode, int resample_mode, int auto_sque
     }
     if (ctx) {
         (void)rtl_stream_destroy(ctx);
+    }
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        static char log[1 << 16];
+        if (dsd_test_capture_stderr_read(&cap, log, sizeof log) == 0 && rc != 0) {
+            DSD_FPRINTF(stderr, "%s", log);
+        }
+    }
+    return rc;
+}
+
+int
+replay_meta(const char* meta, const char* mode, int resample_mode, int auto_squelch, LanePlan plan, Run* out) {
+    rtl_stream_set_voice_lane(0);
+    const StreamCfg cfg = {mode, resample_mode, auto_squelch, 0, nullptr, 0U, 0U};
+    const int rc = replay_stream(meta, cfg, plan, out);
+    rtl_stream_set_voice_lane(0);
+    return rc;
+}
+
+/* The replay of a fresh 48 kHz capture stopped after @p stop_after reads and resumed from its checkpoint at an
+   explicit 24 kHz DSP bandwidth, the digital resampler on (it takes the resumed stream back up to 48 kHz), as a run-time
+   bandwidth change re-plans a running replay (issue #701). The lane plan runs on across the two streams. */
+int
+replay_resumed(LanePlan plan, size_t stop_after, Run* out) {
+    char meta[DSD_TEST_PATH_MAX];
+    const uint64_t center_hz = g_center_hz;
+    g_center_hz += 1000000ULL;
+    if (write_capture("dsdneo_voice_lane", 48000U, center_hz, kSegments, sizeof kSegments / sizeof kSegments[0], meta,
+                      sizeof meta)
+        != 0) {
+        return 1;
+    }
+    rtl_stream_set_voice_lane(0);
+    StreamCfg cfg = {"provoice", DSD_DIGITAL_RESAMPLE_ON, 1, 0, nullptr, stop_after, 0U};
+    int rc = replay_stream(meta, cfg, plan, out);
+    dsd_iq_replay_checkpoint checkpoint{};
+    if (rc == 0 && rtl_stream_replay_checkpoint(&checkpoint) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: the stopped replay left no checkpoint\n");
+        rc = 1;
+    }
+    out->resumed_at = out->batches.size();
+    cfg.bw_khz = 24;
+    cfg.resume = &checkpoint;
+    cfg.stop_after = 0U;
+    cfg.first_read = stop_after;
+    if (rc == 0) {
+        rc = replay_stream(meta, cfg, plan, out);
     }
     rtl_stream_set_voice_lane(0);
     return rc;
@@ -569,6 +645,46 @@ default_lane_gain(int rate_hz) {
     return g;
 }
 
+/* The closest a replay comes to a rate change in one stream: a replay holds one rate chain per stream (a RETUNE at
+   another rate seals the capture writer), and a run-time bandwidth or mode change re-plans it by stopping the stream
+   and resuming the capture from its checkpoint on the new chain (issue #701). The lane stays asked for across that, as
+   it does through an EDACS call: the resumed stream runs it from its first block at the new rate (24 kHz, resampled back
+   to 48 kHz), its de-emphasis gain the new rate's, the reference at its level, and the normalised samples and flags
+   the same as with the lane off. */
+void
+check_resumed(void) {
+    Run never;
+    Run always;
+    const size_t stop_after = 300U;
+    expect("resumed replay without the lane", replay_resumed(kLaneNever, stop_after, &never) == 0);
+    expect("resumed replay with the lane", replay_resumed(kLaneAlways, stop_after, &always) == 0);
+    expect("resumed at 24 kHz: the normalised samples and flags are the same with the lane",
+           !never.norm.empty() && same_bits(never.norm, always.norm) && never.flags == always.flags);
+    expect("resumed at 24 kHz: both streams read", always.resumed_at > 0U && always.resumed_at < always.batches.size());
+    const double gain48 = default_lane_gain(48000);
+    const double gain24 = default_lane_gain(24000);
+    int gains_ok = always.resumed_at > 0U && always.resumed_at < always.batches.size();
+    std::vector<double> levels;
+    for (size_t k = 0; k < always.batches.size(); k++) {
+        const Batch& b = always.batches[k];
+        const double want = k < always.resumed_at ? gain48 : gain24;
+        gains_ok &= std::fabs(b.gain - want) < 1e-4 && b.rate_hz == 48000U ? 1 : 0;
+        /* The resumed stream's reference tone, past its first 0.2 s and before the carrier drops. */
+        if (k >= always.resumed_at && b.at >= always.batches[always.resumed_at].at + 9600U && b.at < (size_t)144000U
+            && b.n >= (size_t)192U) {
+            levels.push_back(tone_peak(always.voice, b.at, b.n, b.rate_hz) * b.gain);
+        }
+    }
+    expect("resumed at 24 kHz: the published gain is the lane's at each stream's rate", gains_ok != 0);
+    const double level = median(levels);
+    expect("resumed at 24 kHz: the lane reads the reference at the monitor's level",
+           !levels.empty() && std::fabs(level - kReferencePeak) < 0.03 * kReferencePeak);
+    if (levels.empty() || std::fabs(level - kReferencePeak) >= 0.03 * kReferencePeak || !gains_ok) {
+        DSD_FPRINTF(stderr, "  resumed: %zu batches (%zu before the resume), level %.5f over %zu batches\n",
+                    always.batches.size(), always.resumed_at, level, levels.size());
+    }
+}
+
 } // namespace
 
 /* The evidence run: @p meta replayed under @p mode with the lane off, then on throughout, the squelch off (the auto
@@ -608,6 +724,7 @@ main(int argc, char** argv) {
         check_capture(spec, default_lane_gain((int)spec.rate_hz));
         check_alignment(spec);
     }
+    check_resumed();
     for (const std::string& dir : g_dirs) {
         static const char* const kFiles[] = {"capture.iq", "capture.iq.json", nullptr};
         (void)dsd_test_remove_temp_dir(dir.c_str(), kFiles);

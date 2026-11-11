@@ -233,12 +233,15 @@ __wrap_dsd_rate_converter_clear(dsd_rate_converter* converter) {
 
 static unsigned char g_process_reset[EDACS_PROCESS_LOG_CAP];
 static unsigned char g_process_loud[EDACS_PROCESS_LOG_CAP];
+/* Issue #518 B10: the source the chain last ran (-1: none since it was cleared). */
+static int g_process_last_source = -1;
 
 int
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 __wrap_dsd_analog_audio_process_runs_f(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain, float* buf,
                                        size_t n, dsd_analog_audio_source source, int rate_hz, unsigned int flags,
                                        const uint8_t* learn) {
+    g_process_last_source = (int)source;
     if (g_process_watch && g_process_count < EDACS_PROCESS_LOG_CAP) {
         int loud = 0;
         for (size_t i = 0; i < n && buf != NULL; i++) {
@@ -3027,22 +3030,37 @@ edacs_call_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
     return edacs_call_read_ex(rtl_ctx, out, NULL, count, out_got);
 }
 
+/* Issue #518 B10: while set, the stream's lanes carry unrelated signals: the voice lane the reference signal, 1 kHz at
+   3 kHz deviation at the monitor's scale (0.125 peak, before the `vol` trim), the normalised samples a 1.7 kHz tone at
+   20000 peak. */
+static int g_call_reference = 0;
+
 /* The stream's voice lane beside it (issue #518): the same signal at the RTL monitor's scale, where the 8000 peak tone
-   reads 0.25. */
+   reads 0.25; or, under g_call_reference, the reference beside an unrelated normalised signal. */
 static int
 edacs_call_read_lanes(void* rtl_ctx, float* out, float* voice, uint8_t* flags, size_t count, int* out_got,
                       int want_no_stream) {
     (void)want_no_stream;
     const int rc = edacs_call_read_ex(rtl_ctx, out, flags, count, out_got);
-    if (rc == 0 && voice != NULL) {
-        voice[0] = out[0] / 32000.0f;
+    if (rc != 0) {
+        return rc;
+    }
+    const double t = (double)(g_rtl_read_count - 1) / (double)g_call_rate_hz;
+    if (g_call_reference) {
+        out[0] = (float)(20000.0 * sin(2.0 * 3.14159265358979323846 * 1700.0 * t));
+    }
+    if (voice != NULL) {
+        voice[0] =
+            g_call_reference ? (float)(0.125 * sin(2.0 * 3.14159265358979323846 * 1000.0 * t)) : out[0] / 32000.0f;
     }
     return rc;
 }
 
-/* Issue #518 B10: each voice-lane request (1 on, 0 off) and the stream reads made by then; and a call whose tune is
-   refused at once. */
+/* Issue #518 B10: each voice-lane request (1 on, 0 off) and the stream reads made by then; a call whose tune is
+   refused at once; the call's RTL `vol` trim and analog gain (`-n`, 0 auto). */
 static int g_call_tune_refused = 0;
+static int g_call_volume = 2;
+static float g_call_gain_a = 0.0f;
 static int g_lane_requests[8];
 static long g_lane_request_reads[8];
 static int g_lane_request_count = 0;
@@ -3079,12 +3097,22 @@ edacs_call_output_rate_hz(void) {
 /* The UDP analog output: each 960-sample block in order, whether it played anything after the gate closed, and
    whether the call before the drop played at all. The output runs at 48 kHz whatever rate the stream is read at (issue
    #633), so output sample @p at is input time at * rate / 48000. */
+/* Issue #518 B10: what the UDP output played after its first triplet: sum of squares, count and peak. */
+static double g_call_played_sum_sq = 0.0;
+static long g_call_played_count = 0;
+static int g_call_played_peak = 0;
+
 static void
 edacs_call_blast_analog(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
     (void)opts;
     (void)state;
     const short* block = (const short*)data;
     const long count = (long)(nsam / sizeof(short));
+    for (long k = 0; k < count && block != NULL && g_call_blasted >= (long)EDACS_ANALOG_TRIPLET_SAMPLES; k++) {
+        g_call_played_sum_sq += (double)block[k] * (double)block[k];
+        g_call_played_peak = abs(block[k]) > g_call_played_peak ? abs(block[k]) : g_call_played_peak;
+        g_call_played_count++;
+    }
     for (long k = 0; k < count && block != NULL; k++) {
         const int64_t at = (int64_t)(g_call_blasted + k) * (int64_t)g_call_rate_hz;
         const int loud = block[k] != 0;
@@ -3118,7 +3146,8 @@ edacs_run_analog_call(int mode) {
     g_opts.trunk_tune_group_calls = 1;
     g_opts.audio_in_type = AUDIO_IN_RTL;
     /* The monitor's default trim, which the voice lane runs under as the monitor's audio does (issue #518). */
-    g_opts.rtl_volume_multiplier = 2;
+    g_opts.rtl_volume_multiplier = g_call_volume;
+    g_opts.audio_gainA = g_call_gain_a;
     g_opts.audio_out = 1;
     g_opts.audio_out_type = 8;
     g_opts.slot1_on = 1;
@@ -3149,6 +3178,10 @@ edacs_run_analog_call(int mode) {
     g_call_blasted = 0;
     g_call_loud_after_close = 0;
     g_call_loud_before_drop = 0;
+    g_call_played_sum_sq = 0.0;
+    g_call_played_count = 0;
+    g_call_played_peak = 0;
+    g_process_last_source = -1;
 
     edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_group_msg1(0, 4, 321, 1234),
                               edacs_standard_group_msg2(1234));
@@ -3196,9 +3229,6 @@ edacs_call_defaults(long drop, unsigned int rate_hz) {
     g_call_unmodulated = 0;
 }
 
-/* Under AUTO and NOISE an analog call ends on the gate within the level squelch's time of its carrier dropping, at
-   every drop phase and closing delay up to the bound, and its tail plays silence. A 24 kHz stream runs at 48 kHz too
-   (issue #633): its triplets, the gate's hold and the level squelch's readings all count 48 kHz samples. */
 /* Issue #518 B10: an analog call on an RTL input asks for the stream's voice lane before its tune, so every sample of
    the voice channel carries it, and stops it when the call ends; a tune refused at once stops it again; a digital
    call, or one on audio input, never asks for it. */
@@ -3232,6 +3262,53 @@ edacs_run_voice_lane_request_cases(void) {
     return rc;
 }
 
+/* Issue #518 B10: on an RTL input an analog call plays the stream's voice lane at the RTL monitor's calibration, never
+   the normalised samples the release register reads. At a fixed `-n 50` the reference signal on the lane (0.125 peak,
+   at the default `vol` 2) plays at -12 dBFS peak and -15 dBFS RMS, whatever the normalised samples carry (here an
+   unrelated tone at another level), 6 dB lower at `vol` 1, at 48 kHz and on a 24 kHz stream EDACS converts, through
+   the chain's RTL monitor source. The fake publishes no de-emphasis gain, so the chain's is 1. */
+static int
+edacs_run_voice_lane_level_cases(void) {
+    static const unsigned int rates[2] = {48000U, 24000U};
+    static const int volumes[2] = {2, 1};
+    int rc = 0;
+    for (int r = 0; r < 2; r++) {
+        for (int v = 0; v < 2; v++) {
+            const long reads = 10L * edacs_triplet_reads(rates[r]);
+            edacs_call_defaults(reads, rates[r]);
+            g_call_cap = reads;
+            g_call_reference = 1;
+            g_call_volume = volumes[v];
+            g_call_gain_a = 50.0f;
+            (void)edacs_run_analog_call(DSD_SQUELCH_MODE_LEVEL);
+            g_call_reference = 0;
+            g_call_volume = 2;
+            g_call_gain_a = 0.0f;
+            const double rms_db =
+                g_call_played_count > 0
+                    ? 10.0 * log10(g_call_played_sum_sq / (double)g_call_played_count / (32768.0 * 32768.0))
+                    : -200.0;
+            const double peak_db = 20.0 * log10(((double)g_call_played_peak + 1e-9) / 32768.0);
+            const double want_drop = v == 0 ? 0.0 : 6.0206;
+            const int ok = g_call_played_count > 2L * EDACS_ANALOG_TRIPLET_SAMPLES
+                           && fabs(rms_db - (-15.0 - want_drop)) < 0.2 && fabs(peak_db - (-12.0 - want_drop)) < 0.2;
+            if (!ok) {
+                DSD_FPRINTF(stderr, "  %u Hz, vol %d: played %.2f dBFS RMS, %.2f dBFS peak over %ld samples\n",
+                            rates[r], volumes[v], rms_db, peak_db, g_call_played_count);
+            }
+            rc |=
+                edacs_expect(ok, "analog-b10", "voice-lane-level",
+                             "the lane's reference plays at -n 50's level, -12 dBFS peak at vol 2, 6 dB down at vol 1");
+            rc |= edacs_expect(g_process_last_source == (int)DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR, "analog-b10",
+                               "voice-lane-level", "the chain runs the lane as RTL monitor audio");
+        }
+    }
+    return rc;
+}
+
+/* Under AUTO and NOISE an analog call ends on the gate within the level squelch's time of its carrier dropping, at
+   every drop phase and closing delay up to the bound, and its tail plays silence. A 24 kHz stream runs at 48 kHz too
+   (issue #633): its triplets, the gate's hold and the level squelch's readings all count 48 kHz samples. */
 static int
 edacs_run_analog_call_release_cases(void) {
     int rc = 0;
@@ -4061,6 +4138,7 @@ main(void) {
     rc |= edacs_run_rtl_rate_switch_case();
     rc |= edacs_run_tune_completion_race_case();
     rc |= edacs_run_voice_lane_request_cases();
+    rc |= edacs_run_voice_lane_level_cases();
     rc |= edacs_run_analog_gap_case(48000U);
     rc |= edacs_run_analog_gap_case(24000U);
     rc |= edacs_run_no_stream_cases();
