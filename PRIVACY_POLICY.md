@@ -1,6 +1,6 @@
 # DSD-neo Privacy Policy
 
-**Effective date: November 10, 2026**
+**Effective date: November 11, 2026**
 
 This policy covers the DSD-neo Android app (package `io.github.arancormonk.dsdneo`)
 distributed on Google Play. The same practices apply to the side-loaded Android APK and the
@@ -14,9 +14,9 @@ report to the developer or anyone else.
 
 Data leaves your device only when you use a feature that needs another service, and only to
 the service you choose: an SDR server or audio stream you point the app at, RadioReference
-when you sign in or import a system, an rdio-scanner server you upload calls to, and your
-device's location service when you use location. Each is described below, with what it
-receives.
+when you sign in, import a system or update its places, an rdio-scanner server you upload
+calls to, and your device's location service when you use location. Each is described below,
+with what it receives.
 
 ## Everything runs on your device
 
@@ -60,12 +60,14 @@ in their own settings.
 ## RadioReference
 
 The app talks to RadioReference's web service (radioreference.com) when you sign in, check
-your account, browse or search for a system, import a system or refresh an import. Each
-request carries your RadioReference username and password, the app's RadioReference
-application key (or the one you entered), and what you asked for: a ZIP code, a country,
-state or county, a system ID, or a site. RadioReference returns the system's details, and the
-app builds its channel and talkgroup files on your device. RadioReference handles this data
-under its own privacy policy.
+your account, browse or search for a system, import a system, refresh an import or update a
+saved system's places. Each request carries your RadioReference username and password, the
+app's RadioReference application key (or the one you entered), and what you asked for: a ZIP
+code, a country, state or county, a system ID, or a site. Updating places asks for a state's
+name and counties by its RadioReference number, and re-reads the sites of systems you saved
+from RadioReference; your location is not part of it. RadioReference returns the system's
+details, and the app builds its channel and talkgroup files on your device. RadioReference
+handles this data under its own privacy policy.
 
 The app saves your username (and an application key you entered) on your device. It keeps
 your password in memory only, while the app runs, and never writes it to storage or to its
@@ -74,27 +76,32 @@ password manager you use can fill them in and save them under its own terms.
 
 ## Location
 
-Location is optional and only used in the RadioReference screens:
+Location is optional and only used in the RadioReference screens and on Listen's Systems tab:
 
 - **Use my location** finds your ZIP code so you don't have to type it. The app asks Android
   for your location, then asks Android's geocoder to turn it into a postal code. It sends
   only the resulting ZIP code to RadioReference, never your coordinates.
 - **The nearby-site chooser** uses your location to sort a system's sites by distance. The
   sorting happens on your device.
+- **Listen's Nearest order** uses your location to sort your saved systems by distance. The
+  app asks Android for your coordinates only, with no postal-code lookup, and sends nothing
+  to RadioReference. The distances are worked out on your device.
 
 The first time you use location, the app asks for approximate location (Use my location) or
-for approximate and precise location (the nearby-site chooser). Once you have granted precise
-location, Use my location can use it too. Getting a location and turning it into a postal
-code are done by your device's location services (on most phones they are Google's), which
-may use Wi-Fi, mobile network and GPS information and contact their provider to do it, under
-that provider's terms. The app asks for location only while you are using it, never in the
+for approximate and precise location (the nearby-site chooser and Listen's Nearest order).
+The app keeps your location at the precision you allowed, approximate or precise. Once you
+have granted precise location, Use my location can use it too. Getting a location and turning
+it into a postal code are done by your device's location services (on most phones they are
+Google's), which may use Wi-Fi, mobile network and GPS information and contact their provider
+to do it, under that provider's terms. The app asks for location only while you are using it, never in the
 background.
 
 The last location the app got (latitude, longitude, accuracy and time) is saved on your
-device so it can pick nearby sites. It stops being used after 24 hours and is removed the
-next time the app checks it, while it is running or when you open it again. The app does not
-write it to its diagnostics log, and it is not part of the app's own backup file. If you deny
-location, ZIP code, browse and system ID searches all still work.
+device so it can pick nearby sites and order your saved systems by distance. It stops being
+used after 24 hours and is removed the next time the app checks it, while it is running or
+when you open it again. The app does not write it to its diagnostics log, and it is not part
+of the app's own backup file. If you deny location, ZIP code, browse and system ID searches
+all still work.
 
 ## Files and settings on your device
 
@@ -131,7 +138,7 @@ over the air. It leaves your device only if you copy or share it yourself.
 - **Internet:** used only for the connections described above.
 - **Network state:** lets the app see whether the device is online. It sends nothing.
 - **Location** (optional, approximate or precise, only while the app is in use): only for Use
-  my location and the nearby-site chooser, as described above.
+  my location, the nearby-site chooser and Listen's Nearest order, as described above.
 - **Foreground service and notifications:** keep decoding running while the app is in the
   background and show its status.
 - **Wake lock:** keep the device awake during long decode sessions.

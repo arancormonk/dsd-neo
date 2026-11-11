@@ -175,7 +175,10 @@ files. A file you picked yourself stays only while you are editing that saved sy
 each site of a per-site import keep only the files their own import generated. A bandwidth that cannot
 decode TETRA is emptied too, so a TETRA import runs at 72 kHz.
 
-Home groups sibling sites under one card with an **n sites ›** chooser. **Use my location** requests a
+Home groups sibling sites under one card with an **n sites ›** chooser. Sites group by RadioReference
+system and by receiver: a system saved for two receivers (two dongles, or a dongle and an rtl_tcp host) is
+two cards, each with its own sites. A card for several sites takes its name from the system, without the
+" — Site" a per-site import added. **Use my location** requests a
 foreground fix, names the nearest eligible saved site in this system, and orders the available sites by
 distance. Avoided sites appear last; sites without coordinates are explained and cannot be ranked.
 Distances appear in miles by default. Enable **Settings → Units → Use metric units** to display kilometers.
@@ -208,6 +211,29 @@ Site") follows a renamed site. Renaming or avoiding a site preserves them. Older
 only on the library file show **Refresh from RadioReference to enable site grouping** and stay
 ungrouped; re-import the site to create the saved-row identity. Refreshing only a library CSV cannot
 infer which saved row represents which site. Manual rows never group.
+
+### Places and Update from RadioReference
+
+An import also keeps where the system is: the states and the counties of the sites you imported (for a
+conventional list, of the repeaters you chose). RadioReference sends these as numbers. After a system loads,
+the app asks RadioReference for the state names, using your signed-in account, and fills them in on the
+saved systems; no other detail about you is sent. The place shows on the saved system's card on Listen
+("Johnson, Iowa", "Iowa · 5 counties", "Iowa") and drives Listen's **Place** order and search. A system saved
+before this, or one whose names have not arrived, shows **No place** until they do.
+
+**Update from RadioReference** brings an existing saved system up to date. It is in the card's **More** menu
+for a system with RadioReference sites, in the site chooser when a site has no coordinates, and under Listen's
+**Place** and **Nearest** order as "%1 saved systems have no place yet". For each saved RadioReference site it
+re-reads the site's name, position and place, and it fills in missing place names for any saved system. It
+changes nothing else: frequencies, files, keys, avoids and the order you added systems in stay as they are, and
+a name that was made from the site (the "System — Site" form) follows a renamed site. A site RadioReference no
+longer lists, or a system it did not answer for, is counted as "could not be reached" and left alone. It needs
+your RadioReference account: signed out, it opens the account screen instead. **Cancel** stops it and keeps what
+it had saved. A site you edited (frequency, decode flag or a CSV file) no longer links to RadioReference, so the
+update skips it.
+
+The site chooser's note for a site without coordinates reads "No coordinates. Use Update from RadioReference to
+check for new location data."
 
 ## Terminal UI
 

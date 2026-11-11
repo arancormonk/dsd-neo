@@ -3644,6 +3644,12 @@ suite runs under this compiler.
     `src/runtime/curl_common.h`, alongside `rdio_export.c`'s use of it.
     `dsd_rr_site::has_position` validates latitude/longitude independently of the optional coverage radius;
     `(0,0)` is a missing-position placeholder. Invalid coverage becomes zero and never erases valid coordinates.
+    Places: `dsd_rr_trs_details` keeps the system's `Trs.sState` and `Trs.sCounty` ids (`state_ids`, `county_ids`;
+    strict positive whole numbers, at most 64 and 512 kept, only arrays directly under the result) and
+    `dsd_rr_site::county_id` the site's `siteCtid` (0 when absent, nil or not positive). `getStateInfo` returns a
+    `dsd_rr_state_info` (the state's id and name, kept even when it lists no counties, and its counties with the state
+    copied down) through `dsd_rr_get_state_info()`/`dsd_rr_fetch_state_info()`. Fixtures and their provenance are in
+    `tests/fixtures/radioreference/NOTES.md`; tests are in `RUNTIME_RR_SOAP`.
     Each importable kind is one row of `k_protocols[]` in `radioreference/rr_generate.c` (trunked or
     conventional, channel-map need, decode flags, sidecar token, short name, talkgroup-ID ceiling `id_max`, read
     through `dsd_rr_protocol_id_max()`, 0 = none), mirrored by `k_decode_modes[]` in `rr_import.c`. New kinds go
@@ -11782,7 +11788,7 @@ Qt Quick frontend (`src/ui/qt`):
   the strip, the section restore, then plain focus reveal (none starts while a restore is owed). `resetScrollMemory()`
   forgets the places and anything owed, for tests that reuse one Home. The body holds the status cards (backup result,
   USB details, failure, replay completion) on every tab, then three section Columns, `listenSystemsSection` (Add a
-  system and hint, saved-system cards), `listenScanListsSection` (Add a scan list, `scanListsEmptyHint`, scan-list cards) and
+  system and hint, the search and sort controls, saved-system cards), `listenScanListsSection` (Add a scan list, `scanListsEmptyHint`, scan-list cards) and
   `listenExploreSection` (the Signal search row, then `exploreCard`). Each is `visible` and `enabled` only while its
   tab is current, and its height is `shown ? implicitHeight : 0`, keyed on the tab, never on `visible` (B1). Disabled,
   a hidden section's controls take no focus, key or press (Qt keeps focus and key delivery on an item that only goes
@@ -11859,15 +11865,17 @@ Qt Quick frontend (`src/ui/qt`):
   `tst_home_pinned.qml` through Main), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_text_reach.qml` reaches every pin, More, the
   title once and each sheet row; `tst_a11y_scan_churn.qml` changes pinned targets behind the wizard with no event from
   the strip or the closed sheet).
-- Listen body layout (issue #646 B1, B8, B3). In `qml/HomeScreen.qml` a saved-system card is shown on its own condition,
-  `readonly property bool shown` (no sites, or the first of its group), and its height is `shown ? fullHeight : 0`,
-  never keyed on `visible`, which also goes false while Main hides Home: a collapsing card would cut the body's range
-  and Flickable would clamp the scroll position. `fullHeight` follows the content: the label column is centred 10 px
+- Listen body layout (issue #646 B1, B8, B3). In `qml/HomeScreen.qml` one saved-system card is built for each row of
+  `savedSystemCards` (see "Saved-system cards" below), which already holds one row per group, so a card has no
+  condition of its own to be shown or collapsed: its height is `fullHeight`, and a row that leaves the model goes with
+  its delegate. The section stays keyed on its tab, never on `visible`, which also goes false while Main hides Home:
+  a collapsing section would cut the body's range and Flickable would clamp the scroll position. `fullHeight` follows
+  the content: the label column is centred 10 px
   above the middle of the actions' box, `[0, actionsBottom + cardPadding]` (More at the top, Play at
   `minimumTouchSize + 6`, the site button centred on Play; 122 px at normal text), never above the top padding; the
   refresh hint takes the full width 8 px below the lower of labels and actions; the card ends `cardPadding` below the
   lowest. A card without the hint is 122 px at normal text, as before, and grows at large text. The site button lines up
-  against Play's own condition (`playShown`), not Play's `visible`, so a hidden card's site button stays clear of Play.
+  against Play's own condition (`playShown`, the card's `playUid` being set), not Play's `visible`, so a hidden card's site button stays clear of Play.
   Keyboard focus moving onto a control in the body restarts the owned `revealFocusTimer`, which reveals
   `activeFocusItem` through `Theme.revealFocus(scrollBody, scrollBody.contentItem, item)`; the timer lets a stronger
   scroll writer cancel a pending reveal (the precedence is under Listen tabs, above). `Theme.revealFocus` maps the
@@ -11878,6 +11886,40 @@ Qt Quick frontend (`src/ui/qt`):
   640 wide at 1.6 with the tabs in the body (where they are body stops kept in view), the
   helper with an offset column, the site button held while hidden; the scroll-across-tabs cases in
   `tst_home_dongle_status.qml` and `tst_home_pinned_strip.qml` also check after a layout while hidden).
+- Listen Systems search and sort (`qml/SavedSystemsControls.qml`, `objectName` `savedSystemsControls`; inside
+  `listenSystemsSection` of `HomeScreen.qml`). The controls show while at least one system is saved. They hold the
+  search row (a `PlexTextField` "Search saved systems", `Accessible.searchEdit`, 250 ms debounce, a "Clear search text"
+  button over its right end), the Sort pill (`FilterPill` "Sort: %1", accessible name "Sort systems, %1", opening a
+  `ChoiceSheet` that marks the current choice; Nearest is offered only when `decoderHost.locationSupported`), and the
+  notices under them: the count line ("%1 of %2 systems", with Clear search), the no-match card ("No saved systems match
+  “%1”", with Clear search), the location line, the place notice and the update status. Stack rule: the field and pill
+  share a row only while the pill takes at most 40% of it and the field keeps 180 px, else the pill goes under the
+  field; heights are keyed on each part's own `shown`, never on `visible` (#646 B1). A stored `nearest` on a build or
+  phone without a location shows as Name and the preference is left alone. Each search that lands is announced once
+  (`Navigation.announce`, queued after the card model's rebuild; skipped while Home is hidden, a sheet covers it or
+  another tab is current, and never repeated for the same text). Nearest without a fix says "Nearest needs your
+  location" and "Showing names until a location arrives" with a flat "Use my location" action; with a fix it says
+  "Using your location from %1" with "Update location". Both go through the site chooser's request contract
+  (`radioReference.nextLocationRequestId()`, `decoderHost.requestSiteLocation`; a newer request elsewhere supersedes
+  it, hiding Home or leaving Systems cancels it, a late or retired answer is ignored), and call
+  `savedSystemCards.markLocationRequested()` right before a request and `clearLocationRequest()` when it fails, is
+  cancelled or answered, so only a fix the user asked for here resets a screen reader's order. In Place or Nearest
+  order the place notice shows `rrPlaces.unplacedText` ("%1 saved systems have no place yet") with "Update from
+  RadioReference"; the card menu offers the same for a card with RadioReference sites (`rrUpdate`), and the site
+  chooser's no-coordinates note offers it too. Signed out, `updateFromRadioReference()` returns false and Home (or the
+  chooser) emits `openRadioReferenceAccount`, which `Main.qml` answers by opening the account screen. While it runs the
+  update shows `rrPlaces.progressText` ("Updating %1 of %2") with Cancel; its summary ("Updated %1 systems. %1 could
+  not be reached.") is announced once and stays until Systems is left. Notice actions use the opt-in `flat` variant of
+  `OutlineButton` (no border or fill, cyan label), each at the end of its line or under it when both do not fit, with
+  48 dp targets that never meet. `Repeater.onItemRemoved` notes a card that held the keyboard; a 0 ms timer then moves
+  focus to the search field, or to Add a system when nothing is saved (and waits while a sheet is open); the
+  keyboard also follows Update to Cancel and back. `revealSystemsTop()` scrolls up to the search row after a sort or a
+  search that lands, only while Home is visible on Systems. `SiteChooserSheet.qml`'s note reads "No coordinates. Use
+  Update from RadioReference to check for new location data." beside its own button, and the site button's accessible
+  name now includes its site count. `ChoiceSheet.open()` takes an optional fourth `current` argument. Tests:
+  `UI_QT_QML_CALL_LISTS` (`tst_home_systems_search_sort.qml`, with `tst_home_tabs`, `tst_home_layout_fixes`,
+  `tst_home_pinned`, `tst_site_chooser_sheet`, `tst_wizard_sites`, `tst_listen_tabs_flows`), `UI_QT_QML_BACK_MODALS`
+  (Back closes the sort sheet), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_scan_churn.qml`, `tst_a11y_text_reach.qml`).
 - Pin to Listen (issue #801 D4/D5, B3). Every source offers the same action from `ListenPins::action(kind, uid)`
   (`{pinned, text, accessibleName, enabled, description}`: "Pin to Listen"/"Unpin from Listen", "Pin <label> to Listen";
   not pinned while full, disabled with `Text::FullRefusal` as its description). In `qml/HomeScreen.qml` `pinAction(kind,
@@ -13719,6 +13761,46 @@ Qt Quick frontend (`src/ui/qt`):
   load). A replay copy in `replays/` a row gains is adopted before the save and one no row names after a saved edit or
   remove is released (`replay_store.{h,cpp}`). Tests: `UI_QT_PERSISTENCE`, `UI_QT_SITE_GROUPS`, `UI_QT_REPLAY_STORE`,
   `UI_QT_BACKUP_ARCHIVE` and `UI_QT_BACKUP_APPLY` (`place` through a backup and its restore).
+- `saved_system_cards.{h,cpp}` (`savedSystemCards`, `SavedSystemCards : QAbstractListModel`) is what Listen's Systems
+  list shows: one card per `site_group_key()` group (a system saved for two receivers is two cards), or one per row
+  outside a group (key = the row's UID); the lead is the lowest row. It reads `SavedSystemsModel`, `AppPrefs` and
+  `ImportedFilesModel` and never changes them; `m_rows` order is untouched, and every QML action carries a UID that
+  the screen resolves to a row at click time. Roles: `key`, `leadUid`, `playUid`, `title`, `siteCount`, `name`,
+  `sourceType`, `host`, `port`, `freqMhz`, `decodeFlag`, `trunking`, `filePath`, `keyConfigured`, `lastHeard`,
+  `refreshHint`, `placeLabel`, `distanceKm`, `distanceState`, `section`, `sectionStart`, `rrLinked`. The card shows the
+  one non-avoided site when exactly one is left, else the lead (B2); `playUid` is that site (the row itself outside a
+  group), empty when a group has none or several to play; `siteCount` is the group size, 0 outside a group;
+  `lastHeard` is the group's latest (B1); `keyConfigured` reads the computed `SavedSystemsModel::KeyConfiguredRole`
+  (key type, key CSV or decryption profile on the displayed row, B13); `title` is `site_group_title()` of the lead,
+  the same text a Listen pin shows; `refreshHint` is the "Refresh from RadioReference" test, re-run on
+  `importedFiles.entriesChanged`. Place labels: "Johnson, Iowa" (one state, one county), "Iowa · 5 counties", "Iowa",
+  "Illinois, Iowa, South Dakota" (several states, names sorted; their Place section reads "Several states"), and "No
+  place" when no state has a name yet. Orders (`sortId` mirrors `AppPrefs::systemsSort`; `effectiveSort` is the
+  one applied): `name` (natural order from `text_order`), `recent` (latest `lastHeard` first, never-listened after by
+  name), `added` (lead row's position, the default), `place` (sections: single states by state name, "Several states",
+  "No place"; within a state one county by county name, then several counties, then none, then name) and `nearest`
+  (haversine distance to the nearest non-avoided site that has coordinates, then "All sites avoided", then "No
+  coordinates", each by name). Every order ends on `key`. `nearest` needs `setLocationSupported(true)` and an
+  unexpired fix; without them `effectiveSort` is `name` and the stored preference is untouched. Search
+  (`system_search_query.{h,cpp}`): the text is split into terms that must all match (a number and a following
+  MHz/kHz is one term); a term matches a folded substring of the card's text (members' names and site names, place
+  state and county names, and the protocol label, supplied by `protocolLabels` from `Util.js`) or a frequency of any
+  member (a bare number of three digits or more reads as MHz). A row whose frequency or place an edit cleared ranks
+  as unplaced and without coordinates. Rebuilds are coalesced into one `QTimer::singleShot(0)` pass; a query change
+  only refilters and a sort change only re-sorts. The diff against the old list emits removes, one-row moves (the
+  longest increasing run stays), inserts and one `dataChanged` per card with the roles that changed, so a delegate
+  survives a sort and keeps the keyboard. With `screenReaderActive`, a reorder the user asked for (query, sort, a fix
+  after `markLocationRequested()`) is one reset, and any other reorder is held while `holdReorders` is set (Home
+  visible on Systems) and released as a reset, so TalkBack's swipe order always matches the screen; the count is
+  read once. `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, B1, B2, B13, titles against a real
+  pin, each order and its ties, place and distance labels, search, signals, screen-reader holds and the location mark,
+  coalescing, a random-edit mirror check, and a 500-row timing check).
+- `text_order.{h,cpp}` (`TextOrder`, the `textOrder` context object) is the one place that decides how names sort and
+  match: `text_fold()` (case and accents folded, by code point), `text_compare_names()` (natural order: leading
+  punctuation skipped, digit runs by value, a shorter digit run first on a tie, then the raw text, so different
+  strings never compare equal) and `text_fold_contains()`. `text_compare_folded_names()` takes names already folded,
+  so a sort folds each once. The RadioReference screen's lists and filters and `SavedSystemCards` both use it; `ß`,
+  `Ø`, `Æ` and `Ł` are not decomposed (a documented limit). Tests: `UI_QT_TEXT_ORDER`, `tst_radioreference_screen.qml`.
 - `listen_pins.{h,cpp}` (`listenPins`, issue #801) resolves the shortcuts pinned to Listen. They are stored in
   `AppPrefs::pinned` (`listen/pinned`, portable): a JSON array in one string, each `{kind, uid}` with kind `system` (a
   saved row's UID, standing for its Home card), `site` (one saved row), `scan` (a scan list's UID), `search` or
@@ -14167,6 +14249,12 @@ Qt Quick frontend (`src/ui/qt`):
     stored value, so choosing `systems` over damage lands. Device-local: kept out of backups and kept on restore. The QML
     fixture's `prefs` map carries it as `systems`; the real key is set back to `systems` for each test file, and
     `testContext.resetListenSection()` does that between cases (a Home already built keeps its tab).
+  - `AppPrefs::systemsSort` (`listen/systemsSort`) is the order of Listen's saved systems, a string id (`name`, `place`,
+    `nearest`, `recent`, `added`; never rename one), default `added`. Anything else stored reads as `added` and is not
+    rewritten; the setter refuses unknown ids and compares with the raw stored value. Device-local like `listenSection`:
+    kept out of backups and kept on restore. A stored `nearest` where Nearest is not offered (desktop, no location) is
+    shown as Name and the preference is left as it was. The QML fixture seeds it and `testContext.resetSystemsSort()`
+    resets it. Tests: `UI_QT_PERSISTENCE`, `UI_QT_BACKUP_ARCHIVE`.
   - The voice hang time (`decode/hangtimeSec`, a double) reads stored text that is no number as the 2 s default, and
     its setter counts such text as different from every value, so choosing 0 s over it lands (`toDouble()` would read
     it as 0 s and drop the write).
