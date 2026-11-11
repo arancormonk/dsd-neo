@@ -2783,6 +2783,94 @@ class CallLogStore : public QAbstractListModel {
     qint64 m_clock = 1'700'000'000;
 };
 
+/**
+ * @brief The `historyExport` (CallHistoryExporter) both History screens share, scripted by the case.
+ *
+ * prepare() answers `prepared` and records the view it was given with that view's search text and row count at the
+ * call, so a case can tell which search the file would hold. save() answers `saveAccepted`; an accepted save turns
+ * busy, as the real exporter's does, until finish() ends it: busy clears first, then finished(), as there. discard()
+ * only records. reset() puts it back to {token 7, count 2, total 2}, saves accepted, idle and no calls.
+ */
+class HistoryExportFake : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
+    Q_PROPERTY(QVariantMap prepared MEMBER prepared)
+    Q_PROPERTY(bool saveAccepted MEMBER saveAccepted)
+    /* Oldest first: ["prepare", view, searchText, rowCount], ["save", token, reference], ["discard", token]. */
+    Q_PROPERTY(QVariantList calls READ calls)
+  public:
+    explicit HistoryExportFake(QObject* parent) : QObject(parent) { reset(); }
+
+    bool
+    busy() const {
+        return m_busy;
+    }
+
+    QVariantList
+    calls() const {
+        return m_calls;
+    }
+
+    Q_INVOKABLE QVariantMap
+    prepare(QObject* view) {
+        m_calls.append(QVariant(QVariantList{QStringLiteral("prepare"), QVariant::fromValue(view),
+                                             view != nullptr ? view->property("filterText") : QVariant(),
+                                             view != nullptr ? view->property("count") : QVariant()}));
+        return prepared;
+    }
+
+    Q_INVOKABLE bool
+    save(int token, const QString& reference) {
+        m_calls.append(QVariant(QVariantList{QStringLiteral("save"), token, reference}));
+        if (!saveAccepted) {
+            return false;
+        }
+        setBusy(true);
+        return true;
+    }
+
+    Q_INVOKABLE void
+    discard(int token) {
+        m_calls.append(QVariant(QVariantList{QStringLiteral("discard"), token}));
+    }
+
+    /** @brief A save running (from the other History screen, say) or not. */
+    Q_INVOKABLE void
+    setBusy(bool on) {
+        if (on != m_busy) {
+            m_busy = on;
+            Q_EMIT busyChanged();
+        }
+    }
+
+    /** @brief End the save of @p token, written whole (@p ok) or not. */
+    Q_INVOKABLE void
+    finish(int token, bool ok) {
+        setBusy(false);
+        Q_EMIT finished(token, ok);
+    }
+
+    Q_INVOKABLE void
+    reset() {
+        prepared =
+            QVariantMap{{QStringLiteral("token"), 7}, {QStringLiteral("count"), 2}, {QStringLiteral("total"), 2}};
+        saveAccepted = true;
+        m_calls.clear();
+        setBusy(false);
+    }
+
+    QVariantMap prepared;
+    bool saveAccepted = true;
+
+  Q_SIGNALS:
+    void busyChanged();
+    void finished(int token, bool ok);
+
+  private:
+    QVariantList m_calls;
+    bool m_busy = false;
+};
+
 // WP-D3: keep the fixture readings and record the nearby button's actual invocation.
 /** QObject-backed readings: Connections cannot target QVariantMap values.
  * Lifecycle tests still switch to the dedicated DecoderHost implementation. */
@@ -5822,6 +5910,8 @@ class Setup : public QObject {
         ctx->setContextProperty(QStringLiteral("callHistory"), store);
         ctx->setContextProperty(QStringLiteral("historyView"), historyView);
         ctx->setContextProperty(QStringLiteral("monitorView"), monitorView);
+        // History's Export… (CallHistoryExporter), scripted by the case: one for both History screens, as in the app.
+        ctx->setContextProperty(QStringLiteral("historyExport"), new HistoryExportFake(engine));
         ctx->setContextProperty(QStringLiteral("talkgroups"), m_talkgroups);
         ctx->setContextProperty(QStringLiteral("talkgroupView"), talkgroupView);
         ctx->setContextProperty(QStringLiteral("sansFontFamily"), QStringLiteral("IBM Plex Sans"));
