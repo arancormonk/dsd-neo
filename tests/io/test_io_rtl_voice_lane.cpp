@@ -390,30 +390,30 @@ replay_meta(const char* meta, const char* mode, int resample_mode, int auto_sque
     return rc;
 }
 
-/* The replay of a fresh 48 kHz capture stopped after @p stop_after reads and resumed from its checkpoint at an
-   explicit 24 kHz DSP bandwidth, the digital resampler on (it takes the resumed stream back up to 48 kHz), as a run-time
-   bandwidth change re-plans a running replay (issue #701). The lane plan runs on across the two streams. */
+/* The replay of the 48 kHz capture @p meta stopped after @p stop_after reads and resumed at an explicit 24 kHz DSP
+   bandwidth, the digital resampler on (it takes the resumed stream back up to 48 kHz), as a run-time bandwidth change
+   re-plans a running replay (issue #701). The lane plan runs on across the two streams, and the squelch is off, since
+   both runs replay one capture (the auto squelch keeps a channel's floor for the process).
+
+   Where a stopped replay resumes is not where its decoder stopped reading: the checkpoint is where the replay reader
+   stood after the last chunk it handed the demodulator, and the reader may have handed one more chunk than the decoder
+   took by the time the stream stops, so a resumed replay goes on "about a chunk later" (docs/cli.md). Which of the two
+   it is depends on thread timing (under load both occur). So the stopped stream's checkpoint goes into @p checkpoint,
+   and the stream resumes from @p resume_from when given (another run's checkpoint), else from its own: two runs resumed
+   from one checkpoint replay the same samples. */
 int
-replay_resumed(LanePlan plan, size_t stop_after, Run* out) {
-    char meta[DSD_TEST_PATH_MAX];
-    const uint64_t center_hz = g_center_hz;
-    g_center_hz += 1000000ULL;
-    if (write_capture("dsdneo_voice_lane", 48000U, center_hz, kSegments, sizeof kSegments / sizeof kSegments[0], meta,
-                      sizeof meta)
-        != 0) {
-        return 1;
-    }
+replay_resumed(const char* meta, LanePlan plan, size_t stop_after, const dsd_iq_replay_checkpoint* resume_from,
+               dsd_iq_replay_checkpoint* checkpoint, Run* out) {
     rtl_stream_set_voice_lane(0);
-    StreamCfg cfg = {"provoice", DSD_DIGITAL_RESAMPLE_ON, 1, 0, nullptr, stop_after, 0U};
+    StreamCfg cfg = {"provoice", DSD_DIGITAL_RESAMPLE_ON, 0, 0, nullptr, stop_after, 0U};
     int rc = replay_stream(meta, cfg, plan, out);
-    dsd_iq_replay_checkpoint checkpoint{};
-    if (rc == 0 && rtl_stream_replay_checkpoint(&checkpoint) != 0) {
+    if (rc == 0 && rtl_stream_replay_checkpoint(checkpoint) != 0) {
         DSD_FPRINTF(stderr, "FAIL: the stopped replay left no checkpoint\n");
         rc = 1;
     }
     out->resumed_at = out->batches.size();
     cfg.bw_khz = 24;
-    cfg.resume = &checkpoint;
+    cfg.resume = resume_from ? resume_from : checkpoint;
     cfg.stop_after = 0U;
     cfg.first_read = stop_after;
     if (rc == 0) {
@@ -653,11 +653,27 @@ default_lane_gain(int rate_hz) {
    the same as with the lane off. */
 void
 check_resumed(void) {
+    char meta[DSD_TEST_PATH_MAX];
+    const uint64_t center_hz = g_center_hz;
+    g_center_hz += 1000000ULL;
+    if (write_capture("dsdneo_voice_lane", 48000U, center_hz, kSegments, sizeof kSegments / sizeof kSegments[0], meta,
+                      sizeof meta)
+        != 0) {
+        expect("resumed: the capture is written", false);
+        return;
+    }
     Run never;
     Run always;
     const size_t stop_after = 300U;
-    expect("resumed replay without the lane", replay_resumed(kLaneNever, stop_after, &never) == 0);
-    expect("resumed replay with the lane", replay_resumed(kLaneAlways, stop_after, &always) == 0);
+    dsd_iq_replay_checkpoint never_stop{};
+    dsd_iq_replay_checkpoint always_stop{};
+    expect("resumed replay without the lane",
+           replay_resumed(meta, kLaneNever, stop_after, nullptr, &never_stop, &never) == 0);
+    /* The run with the lane resumes where the run without it did, whichever chunk its own reader stopped after. */
+    expect("resumed replay with the lane",
+           replay_resumed(meta, kLaneAlways, stop_after, &never_stop, &always_stop, &always) == 0);
+    expect("resumed at 24 kHz: the stopped streams made the same batches with the lane",
+           never.resumed_at == always.resumed_at && never.resumed_at > 0U);
     expect("resumed at 24 kHz: the normalised samples and flags are the same with the lane",
            !never.norm.empty() && same_bits(never.norm, always.norm) && never.flags == always.flags);
     expect("resumed at 24 kHz: both streams read", always.resumed_at > 0U && always.resumed_at < always.batches.size());
@@ -682,6 +698,11 @@ check_resumed(void) {
     if (levels.empty() || std::fabs(level - kReferencePeak) >= 0.03 * kReferencePeak || !gains_ok) {
         DSD_FPRINTF(stderr, "  resumed: %zu batches (%zu before the resume), level %.5f over %zu batches\n",
                     always.batches.size(), always.resumed_at, level, levels.size());
+    }
+    if (!same_bits(never.norm, always.norm)) {
+        DSD_FPRINTF(stderr, "  resumed: stopped readers at bytes %llu and %llu, both resumed from %llu\n",
+                    (unsigned long long)never_stop.data_offset, (unsigned long long)always_stop.data_offset,
+                    (unsigned long long)never_stop.data_offset);
     }
 }
 
