@@ -52,7 +52,7 @@ foreach(_codec imbe:imb ambe2450:amb ambe2400:dmb)
     list(GET _pair 0 _name)
     list(GET _pair 1 _ext)
     _parity_run("encode ${_name}" "encode_${_name}.log" "${TOOL_BIN}" encode ${_name} "talker.${_ext}")
-    _parity_run("play talker.${_ext}" "${_name}.raw" "${DSD_BIN}" --frontend none -r "talker.${_ext}" -o -)
+    _parity_run("play talker.${_ext}" "${_name}.raw" "${DSD_BIN}" --frontend none -o - -r "talker.${_ext}")
     list(APPEND _renditions "${_name}:${_name}.raw:8000:1:0")
 endforeach()
 
