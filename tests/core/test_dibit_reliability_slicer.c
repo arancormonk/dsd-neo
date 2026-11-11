@@ -20,8 +20,10 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #ifdef USE_RADIO
@@ -32,8 +34,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/state_fwd.h"
 #include "frame_sync_test_support.h"
 
 enum { BUF_LEN = 1000001, FLOOR = 200 };
@@ -392,6 +392,8 @@ test_dmr_resample_refresh_uses_adaptive_thresholds(void) {
             soft[i] = (dsd_dibit_soft_t){0};
         }
         dsd_frame_sync_test_dmr_refresh_cleared_soft(r.state, READBACK);
+        /* The refresh takes each LLR's sign from the dibit this test wrote, so check_signs() cannot fail on a sign
+           here; what it asserts is that both LLRs and the reliability measured in the symbols' units are nonzero. */
         for (int i = 0; i < READBACK - WRITTEN; i++) {
             sliced s = {.dibit = dibits[i], .soft = soft[i]};
             rc |= check_signs(mod ? "DMR re-read, QPSK" : "DMR re-read, C4FM", r.state->symbol_history[i], s);

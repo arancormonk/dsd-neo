@@ -736,7 +736,9 @@ AMBE frames, at least 200, and the float replay must count errors in exactly the
 replay to the same frames and counts. Measured against the fixed CQPSK levels, as they were before reliabilities followed
 the slicer, a float symbol file's reliabilities read 0 and every count with them. Error counts are
 reliability-weighted, so the float replay's are not the full-confidence replay's numbers, only nonzero in the same
-frames.
+frames. That frame-for-frame match is a strict pin: it holds while the weighting never rounds a corrected frame's count
+down to 0. If a later change to the weighting makes it fail, check whether the differing frames are such roundings
+before treating it as a coordinates regression.
 
 `provoice` is the sigidwiki ProVoice clip, one 3.5 s transmission (issue #588). Unlike the other audio sources it was
 recorded from a receiver's de-emphasized audio rather than from its discriminator: its 9600 baud clock line is there,

@@ -13,6 +13,9 @@
 # included: the capture records the reliabilities the replay measured.
 #
 # Expected -D inputs: DSD_BIN, CONVERT_BIN, WORK_DIR, MIN_FRAMES.
+#
+# The generator's and the three replays' own timeouts (30 + 3 x 60 s) stay under the test's TIMEOUT (240 s), so a hung
+# step fails here, with its output and the work folder removed, before ctest kills the script.
 foreach(_var DSD_BIN CONVERT_BIN WORK_DIR MIN_FRAMES)
     if(NOT DEFINED ${_var})
         message(FATAL_ERROR "p25p2_float_symbol_ambe_check: missing -D${_var}")
@@ -34,7 +37,7 @@ execute_process(
     RESULT_VARIABLE _rc
     OUTPUT_VARIABLE _out
     ERROR_VARIABLE _err
-    TIMEOUT 60
+    TIMEOUT 30
 )
 if(NOT "${_rc}" STREQUAL "0")
     _ambe_fail("generator exited with '${_rc}'\n${_out}\n${_err}")
@@ -50,7 +53,7 @@ function(_ambe_replay leg input extra out_var)
         RESULT_VARIABLE _rc
         OUTPUT_VARIABLE _out
         ERROR_VARIABLE _err
-        TIMEOUT 110
+        TIMEOUT 60
     )
     set(_all "${_out}\n${_err}")
     if(

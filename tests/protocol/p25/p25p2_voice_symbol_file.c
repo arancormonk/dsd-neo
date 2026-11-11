@@ -9,20 +9,21 @@
  *
  *   dsd-neo_test_p25p2_voice_symbol_file
  *
- * Run in the test's work directory; writes the one fixed file symbols.raw. Every superframe carries two voice channels
- * (timeslots 0-9, each channel four 4V bursts and a 2V), then two SACCHs (10, 11), scrambled with the code
+ * Run in the test's work directory; writes two fixed files of the same dibits: symbols.raw, and capture.bin, a soft
+ * symbol capture (as -c writes) that records every dibit at full confidence. Every superframe carries two voice
+ * channels (timeslots 0-9, each channel four 4V bursts and a 2V), then two SACCHs (10, 11), scrambled with the code
  * BEE00/164/161 (-X BEE00164161), the ISCHs as a site sends them (p25p2_burst_builder.c). The voice bits are
- * pseudo-random: their AMBE frames are no speech, and Golay decoding finds errors in most, which only reliabilities
- * the slicer measured can count.
+ * pseudo-random: their AMBE frames are no speech, and Golay decoding finds errors in most, which only reliabilities the
+ * slicer measured can count.
  */
 
+#include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 
-#include "dsd-neo/core/dibit.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/platform/file_compat.h"
 #include "p25p2_burst_builder.h"
 
 enum {
