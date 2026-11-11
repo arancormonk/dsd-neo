@@ -12201,7 +12201,8 @@ Qt Quick frontend (`src/ui/qt`):
     `hasRecording` roles ask a `CallRecordingProvider` (the call recording store; none, and so no recordings, until one
     is set with `setRecordingProvider()`) by the row's fragments; the provider names the fragments whose recordings
     changed through `recordingFragmentsChanged()`, and the rows holding them re-read the two roles. A recording the
-    store knows before its row exists shows when the row arrives.
+    store knows before its row exists shows when the row arrives. The provider also names many rows' recordings in one
+    read (`recordingEntryNames()`, the recording store below), for a History export.
   - Background capture (issue #708, B1; `call_history_tap.{h,cpp}`): Qt pauses the GUI thread on Android in the
     background, the UI tick was the ring's only reader, and the ring keeps 254 committed rows a slot, so a busy system
     overwrote calls History never saw. When the application turns Suspended or Hidden, after `saveNow()`, the model
@@ -12497,10 +12498,16 @@ Qt Quick frontend (`src/ui/qt`):
     when nothing but a torn line lies past the cursor; the rewrite's owner-only mode is best-effort (FUSE-backed storage
     may refuse it). History reads (`CallRecordingProvider`) take the store's lock; the worker lets a waiting History
     read in before each slice of 128 records of a whole-folder read, each recheck and each delete, and sums (usage,
-    limit, compaction) are taken on shared copies outside the lock. A folder read again (storage back, a journal
-    replaced) drops its entries and rebuilds them slice by slice, so the GUI's reads (`recordingsForFragments()`,
-    `hasRecordingForFragments()`, the detection reads, `selectRecordings()`, `selectPath()`, `isIndexedPath()`) take it
-    from a copy made as the read began (`m_committed`, `holdCommittedFolderLocked()`) until the read is complete
+    limit, compaction) are taken on shared copies outside the lock. A History export reads every row's recording names
+    at once (`recordingEntryNames()`, one list per row): one hold of the lock for the whole batch, each row's recordings
+    found as `recordingsForFragments()` finds them (`fragmentEntriesLocked()`: each once, by a set; start, then publish
+    order), each named by `recording_entry_name()` (`<folder name>/<file>`, a nested file keeping its sub-folders), the
+    helper `selectLocked()` names a zip's entries with, so the two never differ. The provider's default (no store) gives
+    one empty list per row. Decided limit: an export pressed while a folder is replaced waits for that step, as
+    History's list does. A folder read again (storage back, a journal replaced) drops its entries and rebuilds them
+    slice by slice, so the GUI's reads (`recordingsForFragments()`, `hasRecordingForFragments()`,
+    `recordingEntryNames()`, the detection reads, `selectRecordings()`, `selectPath()`, `isIndexedPath()`) take it from
+    a copy made as the read began (`m_committed`, `holdCommittedFolderLocked()`) until the read is complete
     (`commitFolderLocked()`, which moves the revision): a delivery the GUI handles between two slices never finds a
     History row's or a detection's recordings gone (an open detection list closed itself). Changes reach the GUI as one
     queued delivery at a time (`changed()`, `recordingFragmentsChanged()`, `revisionChanged()`, `limitReached()`), so a
@@ -12520,7 +12527,8 @@ Qt Quick frontend (`src/ui/qt`):
     follows the totals, can stay quiet while `revision` moves (one recording replaced by another of the same size and
     start). Tests: `UI_QT_RECORDING_STORE` (`test_search_key_parse_and_compaction`, `test_detection_index`,
     `test_detection_root_away_keeps_membership`, `test_detection_order_newest_first`,
-    `test_queries_between_rebuild_slices` (every read between slices of a rebuild, through the slice hook),
+    `test_queries_between_rebuild_slices` (every read between slices of a rebuild, through the slice hook, the
+    batched History names included), `test_entry_names_match_zip_selection`, `test_entry_names_one_lock`,
     `test_revision_coalesced_passes`, `test_detection_from_c_writer`).
   - Deletion: only indexed entries, by id (`deleteRecordings()`, `deleteFolder(uid)`, `deleteUnfinished()`,
     `deleteAll()`), on the worker. Waits while `dsd_rdio_upload_holds()` (asked outside the store's lock), the player

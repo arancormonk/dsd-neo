@@ -164,6 +164,11 @@ recording_folder_base_name(const QString& kind, const QString& uid, const QStrin
     return tag.isEmpty() ? label : QStringLiteral("%1 (%2)").arg(label, tag);
 }
 
+QString
+recording_entry_name(const QString& folder, const QString& file) {
+    return QFileInfo(folder).fileName() + QLatin1Char('/') + file;
+}
+
 bool
 recording_journal_tail_settled(QIODevice& file, qint64 offset) {
     if (offset < 0 || !file.seek(offset)) {
@@ -2084,13 +2089,14 @@ class RecordingStore::ReaderLock {
     const RecordingStore& m_store;
 };
 
-QVariantList
-RecordingStore::recordingsForFragments(const QStringList& fragments) const {
-    const ReaderLock lock(*this);
+QList<const RecordingStore::Entry*>
+RecordingStore::fragmentEntriesLocked(const QStringList& fragments) const {
     QList<const Entry*> found;
+    QSet<const Entry*> seen;
     for (const QString& fragment : fragments) {
         for (const Entry* entry : readerEntriesLocked(fragment, false)) {
-            if (!found.contains(entry)) {
+            if (!seen.contains(entry)) {
+                seen.insert(entry);
                 found.append(entry);
             }
         }
@@ -2098,8 +2104,14 @@ RecordingStore::recordingsForFragments(const QStringList& fragments) const {
     std::sort(found.begin(), found.end(), [](const Entry* a, const Entry* b) {
         return a->start != b->start ? a->start < b->start : a->order < b->order;
     });
+    return found;
+}
+
+QVariantList
+RecordingStore::recordingsForFragments(const QStringList& fragments) const {
+    const ReaderLock lock(*this);
     QVariantList list;
-    for (const Entry* entry : std::as_const(found)) {
+    for (const Entry* entry : fragmentEntriesLocked(fragments)) {
         list.append(entryMap(*entry));
     }
     return list;
@@ -2112,6 +2124,21 @@ RecordingStore::hasRecordingForFragments(const QStringList& fragments) const {
         return m_committed.isEmpty() ? m_byFragment.contains(fragment)
                                      : !readerEntriesLocked(fragment, false).isEmpty();
     });
+}
+
+QList<QStringList>
+RecordingStore::recordingEntryNames(const QList<QStringList>& fragmentsPerRow) const {
+    const ReaderLock lock(*this);
+    QList<QStringList> rows;
+    rows.reserve(fragmentsPerRow.size());
+    for (const QStringList& fragments : fragmentsPerRow) {
+        QStringList names;
+        for (const Entry* entry : fragmentEntriesLocked(fragments)) {
+            names.append(recording_entry_name(entry->folder, entry->file));
+        }
+        rows.append(names);
+    }
+    return rows;
 }
 
 /* --- Signal search (issue #809). --- */
@@ -2333,7 +2360,7 @@ RecordingStore::selectLocked(QList<const Entry*> entries) {
     qint64 bytes = 0;
     for (const Entry* entry : std::as_const(entries)) {
         paths.append(entry->path);
-        names.append(QFileInfo(entry->folder).fileName() + QLatin1Char('/') + entry->file);
+        names.append(recording_entry_name(entry->folder, entry->file));
         bytes += entry->bytes;
     }
     int selection = 0;
