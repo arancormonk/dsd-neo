@@ -525,14 +525,18 @@ static std::atomic<uint32_t> g_rtl_output_generation{1};
 /* The gain that makes up for the de-emphasis the monitor audio in the output ring ran through, at 1 kHz
    (rtl_stream_monitor_deemph_gain(), issue #518). The demod thread stores it with every block it writes, before the
    block reaches the ring. Whatever changes it (a family or FM <-> AM switch, a retune or rate change) moves the
-   generation first, so a reader that loads it before the generation never pairs a new gain with the old generation. */
+   generation first and publishes the new gain at the latest with the next block, so a reader that loads it before the
+   generation never pairs a new gain with the old generation; it may pair the old gain with the new generation until
+   that block. A session starts and ends at 1.0 (rtl_stream_advance_session_generation()). */
 static std::atomic<float> g_pub_monitor_deemph_gain{1.0f};
 /* Stream opens and stops (rtl_stream_session_generation(), issue #671). */
 static std::atomic<uint32_t> g_rtl_session_generation{0U};
 
+/* A stream opens or stops: a new session, which publishes no de-emphasis gain until its first block. */
 static void
 rtl_stream_advance_session_generation(void) {
     (void)g_rtl_session_generation.fetch_add(1U, std::memory_order_acq_rel);
+    g_pub_monitor_deemph_gain.store(1.0f, std::memory_order_release);
 }
 
 /* Gaps the stream had on the same carrier (issue #518 D5): a USB recovery or rtl_tcp reconnect
@@ -12076,6 +12080,9 @@ rtl_stream_apply_analog_request(int kind, int width_hz) {
         rtl_demod_clear_filter_histories(&demod);
         rtl_demod_reset_resampler_state(&demod);
         rtl_stream_clear_output_ring(rtl_stream_active_output(), 1);
+        /* The new kind's de-emphasis is final here, after the generation moved: published now rather than with the
+           next block, so a reader that notes a block in between already has it. */
+        demod_publish_deemph_gain(&demod);
     }
 }
 
@@ -18783,6 +18790,11 @@ monitor_tone_test_run(const rtl_stream_test_tone_segment* segments, int count,
         }
     }
     return handed;
+}
+
+extern "C" void
+rtl_stream_test_session_boundary(void) {
+    rtl_stream_advance_session_generation();
 }
 
 extern "C" int

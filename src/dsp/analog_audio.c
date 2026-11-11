@@ -146,7 +146,7 @@ static analog_audio_reception
 analog_audio_reception_now(const dsd_opts* opts, const analog_audio_ext* ext) {
     analog_audio_reception r;
     /* The gain before the generation: the stream moves the generation before it publishes a new gain, so a new gain is
-       never read with the old generation. */
+       never read with the old generation. A block noted with the old gain and the new generation is dropped. */
     r.deemph_gain = analog_audio_deemph_gain(opts);
     r.rtl_generation = opts->audio_in_type == AUDIO_IN_RTL ? dsd_rtl_stream_metrics_hook_stream_generation() : 0U;
     r.tune_generation = dsd_trunk_tuning_generation();

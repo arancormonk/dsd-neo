@@ -1745,6 +1745,10 @@ int rtl_stream_test_monitor_tone(const dsd_opts* opts, int rate_hz, int forced_r
                                  void (*sink)(const rtl_stream_test_tone_block* block, void* ctx), void* ctx,
                                  rtl_stream_test_tone_result* out);
 
+/* The session boundary a stream open and a stream stop both move (rtl_stream_advance_session_generation()), with no
+ * stream: the session generation advances and the published de-emphasis gain goes back to 1.0. */
+void rtl_stream_test_session_boundary(void);
+
 /* The auto squelch's plumbing in the IO layer (issue #518 follow-up). Returns 0, or the number of the first check that
  * failed:
  *   1-4  the setting: AUTO with its margin (clamped) reaches demod_state with the level gate off, LEVEL puts the level

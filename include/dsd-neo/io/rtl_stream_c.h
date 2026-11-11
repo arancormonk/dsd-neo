@@ -294,11 +294,14 @@ uint32_t rtl_stream_output_generation(void);
 /**
  * @brief Return the gain that makes up for the de-emphasis the monitor audio in the output ring ran through, at 1 kHz
  * (issue #518): dsd_demod_deemph_compensation() of the last block the demod wrote, 1.0 for a block without
- * de-emphasis (AM, the FSK discriminator, CQPSK symbols, `DSD_NEO_DEEMPH=off`) and before the first block.
+ * de-emphasis (AM, the FSK discriminator, CQPSK symbols, `DSD_NEO_DEEMPH=off`) and before a session's first block (a
+ * stream open or stop resets it).
  *
- * The demod stores it with each block before the block reaches the ring, and whatever changes it moves the output
- * generation first: read it before rtl_stream_output_generation(), and a gain read with a generation is the gain of
- * that generation's samples.
+ * The demod stores it with each block before the block reaches the ring, so samples read from the ring are never older
+ * than the gain read after them. Whatever changes it moves the output generation first, then publishes the new gain
+ * (an FM <-> AM switch at once, anything else with the next block). Read it before rtl_stream_output_generation(): a
+ * new gain is never read with the old generation, but the old gain can be read with the new generation until that
+ * block, so a reader that notes a block in that window drops it as straddling the change.
  */
 double rtl_stream_monitor_deemph_gain(void);
 

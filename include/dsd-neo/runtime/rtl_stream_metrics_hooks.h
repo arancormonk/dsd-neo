@@ -124,7 +124,9 @@ uint32_t dsd_rtl_stream_metrics_hook_stream_generation(void);
  *
  * The analog chain multiplies the RTL monitor's gain by it, so `-n 50` plays the reference tone at the reference level
  * whatever the de-emphasis. The stream publishes it with the samples, and whatever changes it moves the stream
- * generation first: read it before dsd_rtl_stream_metrics_hook_stream_generation(), and the pair belongs together.
+ * generation first: read it before dsd_rtl_stream_metrics_hook_stream_generation(), and a new gain is never read with
+ * the old generation (the old gain can be read with the new one until the next block; rtl_stream_monitor_deemph_gain()
+ * says when).
  *
  * @return The gain; 1.0 with no hook installed (no RTL front end: PCM input, tests, radio-off builds) or when the hook
  *         reports a gain that is not positive.

@@ -15,6 +15,9 @@
  *   stretch plays at the reference level.
  * - At a 48 kHz and a 24 kHz live DSP rate, the 78,125 Hz an Airspy forces, and an I/Q replay that decimates by 2
  *   after the demodulator, where the de-emphasis runs at the decimated rate, not the discriminator's.
+ * - A stream open starts the next session at no gain (1.0), whatever the last session published.
+ *
+ * A passing run prints only its OK line; a failing case prints what it measured.
  */
 
 #include <cmath>
@@ -146,8 +149,6 @@ run_case(const RateCase& rc, const DeemphCase& dc, double* fm_out) {
     static const char* const kStretch[3] = {"FM", "AM", "FM after AM"};
     for (int seg = 0; seg < 3; seg++) {
         const double level = rms_dbfs(levels.sum_sq[seg], levels.count[seg]);
-        std::printf("%s, %s, %s: %.3f dBFS RMS (stream gain %.4f, de-emphasis at %d Hz)\n", rc.name, dc.name,
-                    kStretch[seg], level, levels.gain[seg], r.rate_out_hz);
         if (std::fabs(level - kReferenceDbfs) > kReferenceTolDb) {
             std::fprintf(stderr, "%s, %s, %s: -n 50 plays the reference at %.3f dBFS RMS, want %.1f +/-%.1f\n", rc.name,
                          dc.name, kStretch[seg], level, kReferenceDbfs, kReferenceTolDb);
@@ -165,9 +166,38 @@ run_case(const RateCase& rc, const DeemphCase& dc, double* fm_out) {
         std::fprintf(stderr, "%s, %s: FM after AM %.3f dBFS, before %.3f\n", rc.name, dc.name, fm_after, *fm_out);
         fail = 1;
     }
+    /* What a failing case measured, stretch by stretch. */
+    for (int seg = 0; fail && seg < 3; seg++) {
+        std::fprintf(stderr, "  %s, %s, %s: %.3f dBFS RMS (stream gain %.4f, de-emphasis at %d Hz)\n", rc.name, dc.name,
+                     kStretch[seg], rms_dbfs(levels.sum_sq[seg], levels.count[seg]), levels.gain[seg], r.rate_out_hz);
+    }
     dsd_state_ext_free_all(state);
     std::free(state);
     std::free(opts);
+    return fail;
+}
+
+/* A stream open or stop starts a new session at no de-emphasis gain (1.0), whatever the last session published: the
+   gain a reader takes before the new stream's first block is not the old stream's. A 750 us session runs before the
+   boundary (the one dsd_rtl_stream_open() and dsd_rtl_stream_soft_stop() both move), and a 75 us one after it. */
+int
+test_session_resets_gain(void) {
+    double fm = 0.0;
+    const DeemphCase nfm = {"750 us (nfm), first session", "nfm", 750};
+    const RateCase live = {"live 48 kHz", 48000, 0, 0U};
+    int fail = run_case(live, nfm, &fm);
+    const double published = rtl_stream_monitor_deemph_gain();
+    const uint32_t session = rtl_stream_session_generation();
+    rtl_stream_test_session_boundary();
+    const double after = rtl_stream_monitor_deemph_gain();
+    if (std::fabs(published - 4.8123) > 1e-3 || rtl_stream_session_generation() == session
+        || std::fabs(after - 1.0) > 1e-9) {
+        std::fprintf(stderr, "session reset: published %.4f, after the session boundary %.4f, want 4.8123 then 1\n",
+                     published, after);
+        fail = 1;
+    }
+    const DeemphCase def = {"75 us (default), second session", NULL, 75};
+    fail |= run_case(live, def, &fm);
     return fail;
 }
 
@@ -207,6 +237,7 @@ main(void) {
             }
         }
     }
+    fail |= test_session_resets_gain();
     (void)dsd_test_unsetenv("DSD_NEO_DEEMPH");
     dsd_neo_config_init();
     dsd_rtl_stream_metrics_hooks_set(NULL);

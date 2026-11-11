@@ -3467,7 +3467,7 @@ suite runs under this compiler.
     the last read's samples carry: the batch's under a replay, the stream's read after the read live), and the gain that
     makes up the monitor audio's de-emphasis at 1 kHz (`monitor_deemph_gain`, `rtl_stream_monitor_deemph_gain()`,
     issue #518 B8/B9; 1.0 with no hook or a gain that is not positive, so PCM input, tests and radio-off builds keep
-    their level; read it before the generation); the engine
+    their level; read before the generation it is never a new gain with the old generation); the engine
     installs `rtl_stream_request_analog_profile()`, `rtl_stream_request_digital_family_landing()`,
     `rtl_stream_get_analog_profile()`, `rtl_stream_analog_family_active()`, `rtl_stream_family_landing_after_pending()`,
     `rtl_stream_output_rate_for_family()` and `rtl_stream_get_replay_batch()` behind them. It also hands the
@@ -8135,12 +8135,15 @@ Notes:
     `dsd_demod_deemph_compensation()` is the inverse of the de-emphasis magnitude at 1 kHz from the quantised
     coefficient and the rate it runs at (`rate_out`, after the post-demod decimator; 1.0 where `full_demod()` runs none:
     off, AM, FSK, CQPSK, the raw pass-through). `demod_finish_output_block()` publishes it for every block before the
-    block reaches the ring (`g_pub_monitor_deemph_gain`, `rtl_stream_monitor_deemph_gain()`, issue #518 B8/B9); a kind,
-    family, retune or rate change that moves it clears the ring and moves the generation first, so a gain read before
-    the generation belongs to that generation's samples. The analog chain applies it at its gain stage; the output
-    scale ignores it. Tests: `DSP_DEMOD_MISC` (the gain against `deemph_filter()`'s own 1 kHz response at 8 to
-    78.125 kHz), `IO_RTL_MONITOR_DEEMPH` (`rtl_stream_test_monitor_tone()`), `IO_RTL_ANALOG_FAMILY_SWITCH` (the scale
-    unchanged under `nfm` and `off`).
+    block reaches the ring (`g_pub_monitor_deemph_gain`, `rtl_stream_monitor_deemph_gain()`, issue #518 B8/B9). A kind,
+    family, retune or rate change that moves it clears the ring and moves the generation first, and the new gain comes
+    with the next block (an FM <-> AM switch publishes it at once, its state final). So a gain read before the
+    generation is never a new gain with the old generation, but can be the old gain with the new one until that block;
+    a block noted in that window is dropped as straddling the change. A stream open or stop (a new session,
+    `rtl_stream_advance_session_generation()`) puts it back to 1.0. The analog chain applies it at its gain stage; the
+    output scale ignores it. Tests: `DSP_DEMOD_MISC` (the gain against `deemph_filter()`'s own 1 kHz response at 8 to
+    78.125 kHz), `IO_RTL_MONITOR_DEEMPH` (`rtl_stream_test_monitor_tone()`, and the reset across two sessions via
+    `rtl_stream_test_session_boundary()`), `IO_RTL_ANALOG_FAMILY_SWITCH` (the scale unchanged under `nfm` and `off`).
   - A retune on `AUDIO_MONITOR` (the M17 encoder's monitor stream included) returns the de-emphasis, DC, audio-LPF
     and squelch-envelope state and the channel, half-band and resampler histories to fresh-open values. A retune that
     leaves the stream on another demod rate resolves the analog channel again for that rate

@@ -1808,7 +1808,7 @@ dsd_demod_deemph_compensation(const struct demod_state* d) {
     /* deemph_filter() clamps the coefficient to 1. */
     const double a = d->deemph_a < 1.0f ? (double)d->deemph_a : 1.0;
     const double pole = 1.0 - a;
-    const double w = 2.0 * 3.14159265358979323846 * 1000.0 / (double)d->rate_out;
+    const double w = 2.0 * M_PI * 1000.0 / (double)d->rate_out;
     return sqrt(1.0 - (2.0 * pole * cos(w)) + (pole * pole)) / a;
 }
 
