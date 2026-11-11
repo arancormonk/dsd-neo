@@ -532,7 +532,7 @@ Item {
                 item.showSection("systems");
                 savedSystemCards.query = data.query;
                 if (data.update)
-                    item.updateAllFromRadioReference();
+                    findChild(item, "savedSystemsControls").updateAllFromRadioReference();
                 if (data.finish)
                     testContext.finishRrPlacesUpdate(1, 1);
                 waitForRendering(host);

@@ -22,6 +22,16 @@ Item {
             height: 800
         }
     }
+    // Opens the Sort sheet as a card leaves (once, after Home has noted it), for the focus hand-on case.
+    Connections {
+        id: sheetOnRemoval
+        property var sheet: null
+        enabled: false
+        function onItemRemoved() {
+            enabled = false;
+            sheet.open("Sort systems", ["Name"], null);
+        }
+    }
     SignalSpy { id: played; target: home; signalName: "playSystem" }
     SignalSpy { id: accountOpened; target: home; signalName: "openRadioReferenceAccount" }
 
@@ -43,9 +53,9 @@ Item {
             home.visible = true;
             home.showSection("systems");
             home.resetScrollMemory();
-            home.announcements = 0;
-            home.announced = "";
-            home.announcedQuery = "";
+            controls().announcements = 0;
+            controls().announced = "";
+            controls().announcedQuery = "";
             root.width = 411;
             Ui.Theme.resetFontScale();
             played.clear();
@@ -56,7 +66,7 @@ Item {
             for (var modal of Ui.Navigation.modals.slice())
                 modal.visible = false;
             root.forceActiveFocus();
-            home.cancelNearestLocation();
+            controls().cancelNearestLocation();
             home.visible = true;
             home.showSection("systems");
             emptySystems();
@@ -138,6 +148,9 @@ Item {
         function field() {
             return item("systemsSearch");
         }
+        function controls() {
+            return item("savedSystemsControls");
+        }
         // Types @a text into the search field and waits for it to land (250 ms debounce).
         function search(text) {
             field().text = text;
@@ -204,10 +217,10 @@ Item {
         function test_search_announced_once() {
             addThree();
             search("fire");
-            compare(home.announcements, 1);
-            compare(home.announced, "1 of 3 systems");
+            compare(controls().announcements, 1);
+            compare(controls().announced, "1 of 3 systems");
             wait(300);
-            compare(home.announcements, 1, "read once");
+            compare(controls().announcements, 1, "read once");
 
             field().text = "story";
             home.showSection("scanLists");
@@ -215,13 +228,13 @@ Item {
             wait(300);
             home.showSection("systems");
             wait(300);
-            compare(home.announcements, 1, "not read on another tab, nor on coming back");
+            compare(controls().announcements, 1, "not read on another tab, nor on coming back");
 
             field().text = "linn";
             item("systemsSortSheet").open("Sort systems", ["Name"], null);
             tryCompare(savedSystemCards, "query", "linn", 2000);
             wait(50);
-            compare(home.announcements, 1, "not read under a sheet");
+            compare(controls().announcements, 1, "not read under a sheet");
             item("systemsSortSheet").visible = false;
 
             field().text = "johnson";
@@ -229,7 +242,7 @@ Item {
             compare(savedSystemCards.query, "johnson", "hiding lands it");
             wait(300);
             home.visible = true;
-            compare(home.announcements, 1, "not read while hidden");
+            compare(controls().announcements, 1, "not read while hidden");
         }
 
         // No match: a card says so and offers Clear search, which brings every card back and says how many.
@@ -241,19 +254,19 @@ Item {
             verify(card.visible);
             compare(item("systemsNoMatchText").text, "No saved systems match “zzz”");
             verify(!item("systemsSearchCount").visible, "no 0 of 3 line beside the card");
-            compare(home.announced, "No saved systems match “zzz”");
+            compare(controls().announced, "No saved systems match “zzz”");
             tap(item("systemsNoMatchClear"));
             compare(field().text, "");
             compare(savedSystemCards.query, "");
             settle();
             verify(!card.visible);
             compare(titles().length, 3);
-            compare(home.announced, "3 of 3 systems");
+            compare(controls().announced, "3 of 3 systems");
             // The field's own ×.
             search("linn");
             var clear = item("systemsSearchClear");
             verify(clear.visible);
-            compare(clear.accessibleName, "Clear search");
+            compare(clear.accessibleName, "Clear search text");
             tap(clear);
             compare(savedSystemCards.query, "");
             verify(!clear.visible);
@@ -293,7 +306,8 @@ Item {
             compare(titles(), ["Charlie", "alpha", "Bravo", "Delta"]);
         }
 
-        // The stored order survives a new Home (and the app's next start: it is the real AppPrefs).
+        // The order is the device's AppPrefs value, not Home's own: a second Home reads the stored choice, and a change
+        // to the stored value reaches it (UI_QT_PERSISTENCE covers the value across an AppPrefs reload).
         function test_order_persists() {
             add("Bravo");
             add("Alpha");
@@ -348,21 +362,46 @@ Item {
             var button = item("systemsLocationButton");
             compare(button.text, "Use my location");
             tap(button);
+            compare(item("systemsLocationText").text, "Finding your location…");
+            compare(line.detail, "Showing names until a location arrives", "still names while it is found");
+            decoderHost.locationResult(controls().locationId, false, 0, 0, 0, 0, false, "", "", "denied");
+            compare(item("systemsLocationText").text, "Location unavailable. Check location access in your device settings, then try again.");
+            compare(line.detail, "Showing names until a location arrives", "and after it failed");
+            tap(button);
             var requests = hostCallsNamed("requestSiteLocation");
-            compare(requests.length, 1);
-            var id = requests[0].id;
-            compare(home.locationId, id);
+            compare(requests.length, 2);
+            var id = requests[1].id;
+            compare(controls().locationId, id);
             verify(!button.enabled, "one request at a time");
             decoderHost.locationResult(id, true, 41.6, -93.6, 25, savedSystems.realtimeNowMs(), false, "", "", "");
             settle();
-            compare(home.locationId, 0);
+            compare(controls().locationId, 0);
             verify(prefs.lastFixAt > 0);
             compare(titles(), ["Near", "Far", "Unplaced"]);
             compare(sectionsShown(), ["No coordinates:Unplaced"]);
             compare(findChild(entryTitled("Near"), "savedSystemPlace").text, "6.9 mi");
             compare(item("systemsLocationText").text, "Using your location from a moment ago");
+            compare(line.detail, "", "names no longer");
             compare(button.text, "Update location");
             verify(button.enabled);
+        }
+
+        // Issue #646 B1: hidden, the location line keeps its height (its second line counts by its words, not by
+        // whether it is drawn), so the body's range does not move.
+        function test_location_line_height_held_while_hidden() {
+            testContext.setLocationSupported(true);
+            site("Far", 1, 43.6, -93.6);
+            prefs.systemsSort = "nearest";
+            settle();
+            var line = item("systemsLocation");
+            var height = line.height;
+            verify(height > 0);
+            home.visible = false;
+            settle();
+            compare(line.height, height, "a hidden line keeps its height");
+            home.visible = true;
+            settle();
+            compare(line.height, height);
         }
 
         // Update location asks again; a failure says so and keeps the last fix; a newer request elsewhere and Home
@@ -379,32 +418,32 @@ Item {
             var button = item("systemsLocationButton");
             compare(button.text, "Update location");
             tap(button);
-            var first = home.locationId;
+            var first = controls().locationId;
             verify(first > 0);
             decoderHost.locationResult(first, false, 0, 0, 0, 0, false, "", "", "denied");
-            compare(home.locationId, 0);
+            compare(controls().locationId, 0);
             compare(item("systemsLocationText").text, "Location unavailable. Distances still use your saved location. Try again.");
             compare(titles(), ["Far", "Near"]);
 
             tap(button);
-            var second = home.locationId;
+            var second = controls().locationId;
             verify(second > first);
             radioReference.nextLocationRequestId(); // the site chooser asks
-            compare(home.locationId, 0, "superseded");
+            compare(controls().locationId, 0, "superseded");
             compare(hostCallsNamed("cancelLocationRequest").pop().id, second);
             decoderHost.locationResult(second, true, 41.6, -93.6, 25, savedSystems.realtimeNowMs(), false, "", "", "");
             settle();
             compare(titles(), ["Far", "Near"], "a retired request's answer is not taken");
 
             tap(button);
-            var third = home.locationId;
+            var third = controls().locationId;
             home.visible = false;
-            compare(home.locationId, 0, "hiding gives it up");
+            compare(controls().locationId, 0, "hiding gives it up");
             compare(hostCallsNamed("cancelLocationRequest").pop().id, third);
             home.visible = true;
 
             tap(button);
-            decoderHost.locationResult(home.locationId, true, 41.6, -93.6, 25, savedSystems.realtimeNowMs(), false, "", "", "");
+            decoderHost.locationResult(controls().locationId, true, 41.6, -93.6, 25, savedSystems.realtimeNowMs(), false, "", "", "");
             settle();
             compare(titles(), ["Near", "Far"]);
         }
@@ -442,7 +481,7 @@ Item {
             var summary = item("systemsRrSummary");
             verify(summary.visible);
             compare(summary.text, "Updated 2 systems. 1 could not be reached.");
-            tryCompare(home, "announced", "Updated 2 systems. 1 could not be reached.");
+            tryCompare(controls(), "announced", "Updated 2 systems. 1 could not be reached.");
             home.showSection("explore");
             home.showSection("systems");
             verify(!item("systemsRrStatus").visible, "the summary goes once Systems is left");
@@ -470,9 +509,13 @@ Item {
             add("Bravo");
             settle();
             var charlie = entryTitled("Charlie");
-            chooseSort("Name");
+            var play = findChild(charlie, "savedSystemPlay");
+            play.forceActiveFocus();
+            prefs.systemsSort = "name";
+            settle();
             compare(titles(), ["Alpha", "Bravo", "Charlie"]);
             verify(entryTitled("Charlie") === charlie, "the card kept its delegate");
+            verify(play.activeFocus, "and the keyboard on it");
             search("charlie");
             verify(entryTitled("Charlie") === charlie, "and through a search");
         }
@@ -510,6 +553,76 @@ Item {
             tryVerify(function () {
                 return field().input.activeFocus;
             }, 1000, "the search field has the keyboard");
+        }
+
+        // A card that leaves with the keyboard on it while a sheet opens over Home: the sheet hands the keyboard back as
+        // it closes (the card is gone), and then it goes to the search field.
+        function test_focus_fallback_waits_for_a_sheet() {
+            addThree();
+            var play = findChild(entryTitled("Story Sheriff"), "savedSystemPlay");
+            play.forceActiveFocus();
+            var sheet = item("systemsSortSheet");
+            // The sheet opens as the card leaves, before the keyboard is handed on.
+            sheetOnRemoval.sheet = sheet;
+            sheetOnRemoval.target = item("savedSystemCardsRepeater");
+            sheetOnRemoval.enabled = true;
+            savedSystemCards.query = "linn";
+            settle();
+            wait(50); // the hand-on's own turn passes under the sheet
+            verify(!sheetOnRemoval.enabled, "it opened");
+            verify(sheet.visible);
+            verify(home.systemsFocusOwed, "the hand-on waits for the sheet");
+            verify(!field().input.activeFocus, "nothing moves under the sheet");
+            sheet.visible = false;
+            tryVerify(function () {
+                return field().input.activeFocus;
+            }, 1000, "the search field has the keyboard once the sheet closed");
+        }
+
+        // One saved system: its count reads in the singular.
+        function test_count_singular() {
+            add("Alpha");
+            add("Bravo");
+            settle();
+            search("alpha");
+            compare(item("systemsSearchCountText").text, "1 of 2 systems");
+            savedSystems.remove(1);
+            settle();
+            compare(item("systemsSearchCountText").text, "1 of 1 system");
+        }
+
+        // Update from RadioReference from the keyboard: the keyboard follows the control that replaces the one pressed,
+        // Update → Cancel → Update; an update that ends on its own hands Cancel's keyboard to Update too, or to the
+        // search field once nothing is left to place.
+        function test_update_keeps_the_keyboard() {
+            site("County", 1);
+            settle();
+            testContext.setRrPlacesUnplaced(1);
+            prefs.systemsSort = "place";
+            settle();
+            var update = item("systemsPlaceUpdate");
+            update.forceActiveFocus();
+            keyClick(Qt.Key_Space);
+            verify(rrPlaces.updating);
+            var cancel = item("systemsRrCancel");
+            tryVerify(function () {
+                return cancel.activeFocus;
+            }, 1000, "Cancel has the keyboard");
+            keyClick(Qt.Key_Space);
+            compare(testContext.rrPlacesCancels(), 1);
+            tryVerify(function () {
+                return update.activeFocus && update.visible;
+            }, 1000, "Update has it again");
+
+            keyClick(Qt.Key_Space);
+            tryVerify(function () {
+                return cancel.activeFocus;
+            }, 1000);
+            testContext.setRrPlacesUnplaced(0);
+            testContext.finishRrPlacesUpdate(1, 0);
+            tryVerify(function () {
+                return field().input.activeFocus;
+            }, 1000, "nothing left to place: the search field");
         }
 
         // Removing the last saved system while searching: the keyboard lands on Add a system, the controls go, and no
@@ -577,6 +690,40 @@ Item {
             verify(pill.x + pill.width <= controls.width + 0.5, "the pill inside the column");
             verify(pill.height >= 48 && input.height >= 48, "touch size");
             verify(controls.height >= pill.y + pill.height - 0.5, "the row holds the pill");
+        }
+
+        // The notices' actions are text buttons at the end of their line (under it when both do not fit), each a 48 dp
+        // target that meets neither the other notice's nor the first card.
+        function test_notice_actions_clear_neighbours_data() {
+            return [{tag: "360 x 1.0", width: 360, scale: 1.0}, {tag: "360 x 2.0", width: 360, scale: 2.0},
+                {tag: "1000 x 1.0", width: 1000, scale: 1.0}];
+        }
+        function test_notice_actions_clear_neighbours(data) {
+            testContext.setLocationSupported(true);
+            site("County", 1, 41.7, -93.6);
+            testContext.setRrPlacesUnplaced(2);
+            prefs.systemsSort = "nearest";
+            root.width = data.width;
+            Ui.Theme.fontScale = data.scale;
+            settle();
+            var section = item("listenSystemsSection");
+            var rect = function (control) {
+                var p = control.mapToItem(section, 0, 0);
+                return {x: p.x, y: p.y, w: control.width, h: control.height};
+            };
+            var meet = function (a, b) {
+                return a.x < b.x + b.w - 0.5 && b.x < a.x + a.w - 0.5 && a.y < b.y + b.h - 0.5 && b.y < a.y + a.h - 0.5;
+            };
+            var location = rect(item("systemsLocationButton"));
+            var update = rect(item("systemsPlaceUpdate"));
+            var card = rect(item("savedSystemCard", entryTitled("County")));
+            var row = rect(item("systemsSortPill"));
+            for (var target of [location, update])
+                verify(target.h >= 48 && target.w >= 48, "a 48 dp target");
+            verify(!meet(location, update), "the two actions apart");
+            verify(!meet(update, card), "Update clear of the first card");
+            verify(!meet(location, row), "Use my location clear of Sort");
+            verify(item("systemsLocationButton").flat && item("systemsPlaceUpdate").flat, "text-style actions");
         }
 
         // Tab order: the field, its ×, the pill, then the cards.

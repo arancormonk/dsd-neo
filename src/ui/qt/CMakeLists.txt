@@ -163,6 +163,7 @@ qt_add_resources(
         qml/GradientButton.qml
         qml/HistoryScreen.qml
         qml/HomeScreen.qml
+        qml/SavedSystemsControls.qml
         qml/ScanListScreen.qml
         qml/ScanListCard.qml
         qml/ScanEntryRow.qml

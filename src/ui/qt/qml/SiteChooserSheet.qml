@@ -338,7 +338,7 @@ ModalSheet {
                 objectName: "sitePositionNotice" + siteRow.modelData
                 width: parent.width
                 visible: !siteRow.site.hasSitePos
-                text: qsTr("No coordinates. Use Update from RadioReference in this system's menu to check for new location data.")
+                text: qsTr("No coordinates. Use Update from RadioReference to check for new location data.")
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 font.family: Theme.sans

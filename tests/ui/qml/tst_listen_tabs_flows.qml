@@ -251,7 +251,7 @@ Item {
                 verify(savedSystems.add({name: "County", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
                     freqMhz: "851.5", rrSid: 12, rrSiteId: 100}));
                 if (data.from === "home") {
-                    home.updateAllFromRadioReference();
+                    findChild(home, "savedSystemsControls").updateAllFromRadioReference();
                 } else {
                     app.openSiteChooser(0);
                     tryCompare(chooser, "visible", true);

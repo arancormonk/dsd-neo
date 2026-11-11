@@ -346,7 +346,7 @@ Item {
             sheet.openFor(0)
             var note = findChild(sheet, "sitePositionNotice1")
             verify(note.visible)
-            compare(note.text, "No coordinates. Use Update from RadioReference in this system's menu to check for new location data.")
+            compare(note.text, "No coordinates. Use Update from RadioReference to check for new location data.")
             var update = findChild(sheet, "siteUpdateFromRr")
             verify(update.visible && update.enabled)
             compare(update.text, "Update from RadioReference")

@@ -9,6 +9,13 @@ Rectangle {
 
     property string text: ""
     property color textColor: Theme.buttonSecondaryText
+    // A text-style action at the end of a line of text (a Material text
+    // button): no outline or fill at rest, the label in the accent colour,
+    // flatInset padding each side; pressed or focused it shows as any button.
+    property bool flat: false
+    readonly property real flatInset: 12
+    // The label's height, for a caller that lines the label (not the 48 dp target) up with text.
+    readonly property real labelHeight: label.implicitHeight
     signal clicked
 
     property string accessibleName: text
@@ -88,11 +95,12 @@ Rectangle {
     Keys.onEnterPressed: activate()
     FocusFrame {}
 
-    implicitWidth: Math.max(Theme.minimumTouchSize, label.implicitWidth + 2 * Theme.cardPadding)
+    implicitWidth: Math.max(Theme.minimumTouchSize, label.implicitWidth + 2 * (flat ? flatInset : Theme.cardPadding))
     implicitHeight: Math.max(Theme.minimumTouchSize, label.implicitHeight + 24)
     radius: Theme.radiusButton
-    color: control.shownChecked || (tap.pressed && control.enabled && control.inputValid) ? Qt.alpha(Theme.cyan, 0.08) : Theme.panel
-    border.width: 1
+    color: control.shownChecked || (tap.pressed && control.enabled && control.inputValid) ? Qt.alpha(Theme.cyan, 0.08)
+        : flat ? "transparent" : Theme.panel
+    border.width: flat ? 0 : 1
     border.color: control.shownChecked ? Theme.cyan : Theme.controlBorder
     opacity: enabled && inputValid ? 1.0 : 0.5
 
@@ -116,7 +124,7 @@ Rectangle {
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(15)
         font.weight: Font.DemiBold
-        color: control.textColor
+        color: control.flat ? Theme.cyan : control.textColor
     }
 
     GatedTapHandler {

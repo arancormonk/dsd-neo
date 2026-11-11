@@ -638,7 +638,7 @@ Item {
                 var pill = findChild(home, "systemsSortPill");
                 pill.forceActiveFocus();
                 testContext.startAccessibilityCount();
-                home.chooseSort("name");
+                findChild(home, "savedSystemsControls").chooseSort("name");
                 wait(50);
                 testContext.stopAccessibilityCount();
                 verify(showHide(section) > 0, "the chosen order applies as a reset");

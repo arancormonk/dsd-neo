@@ -390,115 +390,20 @@ Item {
             manageMenu.openFor(row, title, rrLinked);
     }
 
-    // The order shown: the stored one, except Nearest where this device takes
-    // no location fix, which shows as Name (the cards fall back the same way)
-    // and leaves the stored choice alone.
-    readonly property bool locationSupported: !!decoderHost && decoderHost.locationSupported === true
-    readonly property string shownSort: savedSystemCards.sortId === "nearest" && !locationSupported ? "name" : savedSystemCards.sortId
-    function sortLabel(id) {
-        return id === "name" ? qsTr("Name") : id === "place" ? qsTr("Place") : id === "nearest" ? qsTr("Nearest")
-            : id === "recent" ? qsTr("Last listened") : qsTr("Order added");
-    }
-    function openSortChoices() {
-        var ids = ["name", "place"];
-        if (locationSupported)
-            ids.push("nearest");
-        ids.push("recent", "added");
-        sortSheet.open(qsTr("Sort systems"), ids.map(sortLabel), function (index) {
-            screen.chooseSort(ids[index]);
-        }, ids.indexOf(shownSort));
-    }
-    // The sheet hands the focus back to the pill; the list moves under it.
-    function chooseSort(id) {
-        if (prefsStore && prefsStore.systemsSort !== undefined && prefsStore.systemsSort !== id)
-            prefsStore.systemsSort = id;
-        revealSystemsTop();
-    }
-
-    // Search: the field's text reaches the cards 250 ms after the last key
-    // (as History's), and each change that lands is read out once, with
-    // how many it shows, while Home shows Systems with nothing over it.
-    // A tab switch or Home hiding lands what was typed without reading it.
-    property bool systemsAnnounceOwed: false
-    property string announcedQuery: ""
-    // Navigation.announce()'s record of what was read out.
-    property string announced: ""
-    property int announcements: 0
-    function commitSystemsSearch(announce) {
-        systemsSearchDebounce.stop();
-        if (savedSystemCards.query === systemsSearch.text)
-            return;
-        savedSystemCards.query = systemsSearch.text;
-        systemsAnnounceOwed = announce;
-        // After the cards' own rebuild, which the query change has queued.
-        if (announce)
-            Qt.callLater(screen.announceSystemsCount);
-        revealSystemsTop();
-    }
-    function flushSystemsSearch() {
-        if (systemsSearchDebounce.running)
-            commitSystemsSearch(false);
-    }
-    // From the field's × or Clear search; @a hadFocus: the control had the
-    // keyboard, which then goes to the field (the control goes away).
-    function clearSystemsSearch(hadFocus) {
-        systemsSearch.text = "";
-        commitSystemsSearch(true);
-        if (hadFocus)
-            systemsSearch.input.forceActiveFocus();
-    }
-    readonly property string systemsCountText: qsTr("%1 of %2 systems").arg(savedSystemCards.shownCount).arg(savedSystemCards.totalCount)
-    readonly property string noMatchText: qsTr("No saved systems match “%1”").arg(savedSystemCards.query)
-    function announceSystemsCount() {
-        if (!systemsAnnounceOwed)
-            return;
-        systemsAnnounceOwed = false;
-        if (!visible || section !== "systems" || savedSystemCards.totalCount < 1 || !Navigation.allows(listenSystemsSection))
-            return;
-        var query = savedSystemCards.query;
-        var text = query.length > 0 && savedSystemCards.shownCount === 0 ? noMatchText : systemsCountText;
-        if (query === announcedQuery && text === announced)
-            return;
-        if (Navigation.announce(screen, null, text))
-            announcedQuery = query;
-    }
-    Timer {
-        id: systemsSearchDebounce
-        interval: 250
-        onTriggered: screen.commitSystemsSearch(true)
-    }
-    // With the last system gone the controls go too: the search is dropped,
-    // and a keyboard on them moves to Add a system.
-    Connections {
-        target: savedSystemCards
-        function onTotalCountChanged() {
-            if (savedSystemCards.totalCount > 0)
-                return;
-            var focused = screen.holdsFocus(systemsControls);
-            systemsSearchDebounce.stop();
-            systemsSearch.text = "";
-            savedSystemCards.query = "";
-            if (focused)
-                addSystemButton.forceActiveFocus();
-        }
-    }
     // Leaving Systems (another tab, or Home hidden): what was typed lands
     // unread, a location request is given up and an update's summary goes.
     function leaveSystems() {
-        flushSystemsSearch();
-        cancelNearestLocation();
-        locationNotice = "";
-        rrSummaryShown = false;
+        savedControls.leave();
     }
 
     // Brings the search row into view after a change the user asked for, on
     // Systems only. It leaves a tab's place still owed to its restore and a
     // revealTop() claim (a failure card) alone, and moves only up to the row.
     function revealSystemsTop() {
-        if (!visible || section !== "systems" || restorePending || focusRevealHeld || !systemsControls.shown)
+        if (!visible || section !== "systems" || restorePending || focusRevealHeld || !savedControls.shown)
             return;
         content.forceLayout();
-        var top = systemsControls.mapToItem(scrollBody.contentItem, 0, 0).y - Theme.gap;
+        var top = savedControls.searchRow.mapToItem(scrollBody.contentItem, 0, 0).y - Theme.gap;
         if (scrollBody.contentY > top) {
             scrollBody.cancelFlick();
             scrollBody.contentY = clampedScroll(top);
@@ -520,14 +425,15 @@ Item {
             || Navigation.contains(item, screen) || !Navigation.presented(item);
     }
     function settleSystemsFocus() {
+        // Under a sheet it waits: the sheet hands the focus back as it closes, and this checks again then.
         if (!systemsFocusOwed || Navigation.topModal)
             return;
         systemsFocusOwed = false;
         var window = screen.Window.window;
         if (!window || !visible || !focusLost(window.activeFocusItem))
             return;
-        if (systemsControls.shown)
-            systemsSearch.input.forceActiveFocus();
+        if (savedControls.shown)
+            savedControls.searchInput.forceActiveFocus();
         else
             addSystemButton.forceActiveFocus();
     }
@@ -536,108 +442,12 @@ Item {
         interval: 0
         onTriggered: screen.settleSystemsFocus()
     }
-
-    // Nearest: the location fix is asked for only from its own button, under
-    // the site chooser's contract: one request id (radioReference's), a newer
-    // request anywhere supersedes it, Home hiding or leaving Systems cancels
-    // it. The cards are told the next location change is the user's own, and
-    // told again when the request ends without one.
-    property double locationId: 0
-    property string locationNotice: ""
-    readonly property bool hasFix: !!prefsStore && prefsStore.lastFixAt > 0
-    function requestNearestLocation() {
-        locationNotice = "";
-        var previous = locationId;
-        locationId = 0;
-        if (previous)
-            decoderHost.cancelLocationRequest(previous);
-        locationId = radioReference.nextLocationRequestId();
-        savedSystemCards.markLocationRequested();
-        decoderHost.requestSiteLocation(locationId);
-    }
-    function cancelNearestLocation() {
-        if (!locationId)
-            return;
-        decoderHost.cancelLocationRequest(locationId);
-        locationId = 0;
-        savedSystemCards.clearLocationRequest();
-    }
-    Component.onDestruction: cancelNearestLocation()
     Connections {
-        target: radioReference
-        ignoreUnknownSignals: true
-        function onLocationRequestAllocated(requestId) {
-            if (screen.locationId && screen.locationId !== requestId) {
-                decoderHost.cancelLocationRequest(screen.locationId);
-                screen.locationId = 0;
-                savedSystemCards.clearLocationRequest();
-            }
+        target: Navigation
+        function onTopModalChanged() {
+            if (screen.systemsFocusOwed && !Navigation.topModal)
+                systemsFocusTimer.restart();
         }
-    }
-    Connections {
-        target: decoderHost
-        ignoreUnknownSignals: true
-        function onLocationResult(requestId, fixOk, lat, lon, accuracyM, fixAtMs, geocodeOk, postal, country, error) {
-            if (!screen.locationId || requestId !== screen.locationId)
-                return;
-            screen.locationId = 0;
-            if (fixOk && screen.prefsStore && typeof screen.prefsStore.setLocationFix === "function")
-                screen.prefsStore.setLocationFix(lat, lon, fixAtMs, accuracyM);
-            // Spent by the change the fix made; a fix that changed nothing, or none, leaves no mark behind.
-            savedSystemCards.clearLocationRequest();
-            var placed = fixOk && screen.hasFix;
-            screen.locationNotice = placed ? "" : screen.hasFix ? qsTr("Location unavailable. Distances still use your saved location. Try again.") : qsTr("Location unavailable. Check location access in your device settings, then try again.");
-            if (placed)
-                screen.revealSystemsTop();
-        }
-        // A permission prompt Android closed unanswered: nothing failed.
-        function onLocationCancelled(requestId) {
-            if (screen.locationId && requestId === screen.locationId) {
-                screen.locationId = 0;
-                savedSystemCards.clearLocationRequest();
-            }
-        }
-    }
-    // How old the fix is, as the location line says it.
-    function fixAgeText(fixAtMs, nowMs) {
-        var minutes = Math.max(0, Math.floor((nowMs - fixAtMs) / 60000));
-        if (minutes < 1)
-            return qsTr("a moment ago");
-        if (minutes < 60)
-            return qsTr("%1 min ago").arg(minutes);
-        return qsTr("%1 h ago").arg(Math.floor(minutes / 60));
-    }
-    readonly property string locationText: locationId ? qsTr("Finding your location…") : locationNotice.length > 0 ? locationNotice
-        : hasFix ? qsTr("Using your location from %1").arg((heardTick, fixAgeText(prefsStore.lastFixAt, savedSystems.realtimeNowMs())))
-        : qsTr("Nearest needs your location")
-
-    // Update from RadioReference (the card's menu and the place notice):
-    // signed out, the account screen opens instead. Its progress and, once
-    // done, its summary show above the cards until Systems is left.
-    property bool rrSummaryShown: false
-    function updateFromRadioReference(uids) {
-        if (!rrPlaces.updateFromRadioReference(uids)) {
-            openRadioReferenceAccount();
-            return;
-        }
-        rrSummaryShown = true;
-    }
-    function updateAllFromRadioReference() {
-        var uids = [];
-        for (var row = 0; row < savedSystems.count; ++row)
-            uids.push(savedSystems.get(row).uid);
-        updateFromRadioReference(uids);
-    }
-    Connections {
-        target: rrPlaces
-        ignoreUnknownSignals: true
-        function onUpdateFinished() {
-            Qt.callLater(screen.announceRrSummary);
-        }
-    }
-    function announceRrSummary() {
-        if (rrSummaryShown && visible && section === "systems" && rrPlaces.summaryText.length > 0)
-            Navigation.announce(screen, rrSummaryLine, rrPlaces.summaryText);
     }
 
     // Issue #646 B3: keyboard focus moving onto a control in the body scrolls
@@ -694,59 +504,6 @@ Item {
         font.weight: Font.Bold
         font.letterSpacing: -0.24
         color: Theme.textPrimary
-    }
-
-    // A line over the saved systems (and an optional second one) with its
-    // action beside it, the action dropping under the lines, left-aligned,
-    // when both do not fit. Its height is keyed on `shown`, never `visible`.
-    component SystemsNotice: Item {
-        id: notice
-
-        property bool shown: true
-        property alias text: noticeText.text
-        property alias textObjectName: noticeText.objectName
-        property alias detail: noticeDetail.text
-        property alias actionText: noticeAction.text
-        property alias actionObjectName: noticeAction.objectName
-        property alias actionEnabled: noticeAction.enabled
-        // @a hadFocus: the action had the keyboard when pressed.
-        signal action(bool hadFocus)
-        readonly property bool stacked: Math.max(noticeText.implicitWidth, noticeDetail.visible ? noticeDetail.implicitWidth : 0)
-            + Theme.gap + noticeAction.implicitWidth > width
-        visible: shown
-        width: parent ? parent.width : 0
-        height: !shown ? 0 : stacked ? noticeLines.height + 6 + noticeAction.height : Math.max(noticeLines.height, noticeAction.height)
-
-        Column {
-            id: noticeLines
-            width: notice.stacked ? notice.width : notice.width - noticeAction.width - Theme.gap
-            y: notice.stacked ? 0 : (notice.height - height) / 2
-            spacing: 2
-            ReadableText {
-                id: noticeText
-                width: parent.width
-                wrapMode: Text.Wrap
-                color: Theme.textPrimary
-                font.family: Theme.sans
-                font.pixelSize: Theme.fontSize(14)
-            }
-            ReadableText {
-                id: noticeDetail
-                width: parent.width
-                visible: text.length > 0
-                wrapMode: Text.Wrap
-                color: Theme.textSecondary
-                font.family: Theme.sans
-                font.pixelSize: Theme.fontSize(13)
-            }
-        }
-        OutlineButton {
-            id: noticeAction
-            x: notice.stacked ? 0 : notice.width - width
-            y: notice.stacked ? noticeLines.height + 6 : (notice.height - height) / 2
-            width: Math.min(implicitWidth, notice.width)
-            onClicked: notice.action(activeFocus)
-        }
     }
 
     Rectangle {
@@ -1212,192 +969,21 @@ Item {
                     }
                 }
 
-                // Search and Sort, whenever a system is saved. One row while
-                // the pill takes at most 40% of it and the field keeps 180 px;
-                // otherwise the field, then the pill under it, left-aligned.
-                // Tab order: the field, its ×, the pill. Heights are keyed on
-                // their own conditions, never on `visible` (issue #646 B1).
-                Item {
-                    id: systemsControls
+                // Search and Sort, and the lines they put over the cards.
+                SavedSystemsControls {
+                    id: savedControls
 
-                    objectName: "systemsControls"
-                    readonly property bool shown: savedSystemCards.totalCount >= 1
-                    readonly property bool stacked: sortPill.implicitWidth > 0.4 * width || width - sortPill.implicitWidth - Theme.gap < 180
-                    visible: shown
                     width: parent.width
-                    height: shown ? (stacked ? systemsSearch.height + 8 + sortPill.height : Math.max(systemsSearch.height, sortPill.height)) : 0
-
-                    PlexTextField {
-                        id: systemsSearch
-
-                        objectName: "systemsSearch"
-                        width: systemsControls.stacked ? parent.width : parent.width - sortPill.width - Theme.gap
-                        height: implicitHeight
-                        label: qsTr("Search saved systems")
-                        inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
-                        // Room for the × over the end of the line.
-                        input.anchors.rightMargin: systemsSearchClear.visible ? systemsSearchClear.width + 4 : 14
-                        // Changed from outside (a reset, the last system removed): the field follows.
-                        Binding {
-                            target: systemsSearch
-                            property: "text"
-                            value: savedSystemCards.query
-                        }
-                        onTextChanged: {
-                            if (text !== savedSystemCards.query)
-                                systemsSearchDebounce.restart();
-                            else
-                                systemsSearchDebounce.stop();
-                        }
-                        Component.onCompleted: input.Accessible.searchEdit = true
-                    }
-                    IconButton {
-                        id: systemsSearchClear
-
-                        objectName: "systemsSearchClear"
-                        icon: "close"
-                        accessibleName: qsTr("Clear search")
-                        visible: systemsSearch.text.length > 0
-                        x: systemsSearch.x + systemsSearch.width - width - 2
-                        y: systemsSearch.y + systemsSearch.labelHeight + (systemsSearch.height - systemsSearch.labelHeight - systemsSearch.helperHeight - height) / 2
-                        onClicked: screen.clearSystemsSearch(activeFocus)
-                    }
-                    FilterPill {
-                        id: sortPill
-
-                        objectName: "systemsSortPill"
-                        x: systemsControls.stacked ? 0 : parent.width - width
-                        y: systemsControls.stacked ? systemsSearch.height + 8 : (parent.height - height) / 2
-                        width: Math.min(implicitWidth, parent.width)
-                        wrapLabel: true
-                        text: qsTr("Sort: %1").arg(screen.sortLabel(screen.shownSort))
-                        accessibleName: qsTr("Sort systems, %1").arg(screen.sortLabel(screen.shownSort))
-                        onClicked: screen.openSortChoices()
-                    }
-                }
-
-                // While a search is applied: how many cards it shows, and the
-                // way back to all of them. With none, the card below says so.
-                SystemsNotice {
-                    id: systemsCount
-
-                    objectName: "systemsSearchCount"
-                    textObjectName: "systemsSearchCountText"
-                    actionObjectName: "systemsClearSearch"
-                    shown: systemsControls.shown && savedSystemCards.query.length > 0 && savedSystemCards.shownCount > 0
-                    text: screen.systemsCountText
-                    actionText: qsTr("Clear search")
-                    onAction: function (hadFocus) {
-                        screen.clearSystemsSearch(hadFocus);
-                    }
-                }
-
-                // Nearest: where the distances are measured from, and the one
-                // way to ask for (or refresh) a fix. Never asked for on its own.
-                SystemsNotice {
-                    objectName: "systemsLocation"
-                    textObjectName: "systemsLocationText"
-                    actionObjectName: "systemsLocationButton"
-                    shown: systemsControls.shown && screen.shownSort === "nearest"
-                    text: screen.locationText
-                    detail: !screen.hasFix && !screen.locationId && !screen.locationNotice.length ? qsTr("Showing names until a location arrives") : ""
-                    actionText: screen.hasFix ? qsTr("Update location") : qsTr("Use my location")
-                    actionEnabled: !screen.locationId
-                    onAction: screen.requestNearestLocation()
-                }
-
-                // Place and Nearest order cards by place: the systems an update
-                // could place, and that update.
-                SystemsNotice {
-                    objectName: "systemsPlaceNotice"
-                    textObjectName: "systemsPlaceNoticeText"
-                    actionObjectName: "systemsPlaceUpdate"
-                    shown: systemsControls.shown && (screen.shownSort === "place" || screen.shownSort === "nearest")
-                        && rrPlaces.unplacedText.length > 0 && !rrPlaces.updating
-                    text: rrPlaces.unplacedText
-                    actionText: qsTr("Update from RadioReference")
-                    onAction: screen.updateAllFromRadioReference()
-                }
-
-                // An Update from RadioReference started here: how far it is,
-                // with Cancel, then what it did.
-                Item {
-                    id: rrStatus
-
-                    objectName: "systemsRrStatus"
-                    readonly property bool shown: systemsControls.shown && (rrPlaces.updating || (screen.rrSummaryShown && rrPlaces.summaryText.length > 0))
-                    readonly property bool stacked: rrProgress.implicitWidth + Theme.gap + rrCancel.implicitWidth > width
-                    visible: shown
-                    width: parent.width
-                    height: !shown ? 0 : !rrPlaces.updating ? rrSummaryLine.height
-                        : stacked ? rrProgress.height + 6 + rrCancel.height : Math.max(rrProgress.height, rrCancel.height)
-
-                    // Moves with every system done, so it is paced for a screen reader.
-                    LiveText {
-                        id: rrProgress
-                        objectName: "systemsRrProgress"
-                        visible: rrPlaces.updating
-                        width: rrStatus.stacked ? parent.width : Math.min(implicitWidth, parent.width)
-                        y: rrStatus.stacked ? 0 : (parent.height - height) / 2
-                        text: rrPlaces.progressText
-                        wrapMode: Text.Wrap
-                        color: Theme.textSecondary
-                        font.family: Theme.sans
-                        font.pixelSize: Theme.fontSize(14)
-                    }
-                    OutlineButton {
-                        id: rrCancel
-                        objectName: "systemsRrCancel"
-                        visible: rrPlaces.updating
-                        x: rrStatus.stacked ? 0 : parent.width - width
-                        y: rrStatus.stacked ? rrProgress.height + 6 : (parent.height - height) / 2
-                        width: Math.min(implicitWidth, parent.width)
-                        text: qsTr("Cancel")
-                        onClicked: rrPlaces.cancelUpdate()
-                    }
-                    ReadableText {
-                        id: rrSummaryLine
-                        objectName: "systemsRrSummary"
-                        visible: !rrPlaces.updating
-                        width: parent.width
-                        text: rrPlaces.summaryText
-                        wrapMode: Text.Wrap
-                        color: Theme.textSecondary
-                        font.family: Theme.sans
-                        font.pixelSize: Theme.fontSize(14)
-                    }
-                }
-
-                // A search that matches nothing says so, and offers the way back.
-                UiPanel {
-                    id: systemsNoMatch
-
-                    objectName: "systemsNoMatch"
-                    readonly property bool shown: systemsControls.shown && savedSystemCards.query.length > 0 && savedSystemCards.shownCount === 0
-                    visible: shown
-                    width: parent.width
-                    height: shown ? noMatchBody.implicitHeight + 2 * Theme.cardPadding : 0
-                    Column {
-                        id: noMatchBody
-                        x: Theme.cardPadding
-                        y: Theme.cardPadding
-                        width: parent.width - 2 * Theme.cardPadding
-                        spacing: 10
-                        ReadableText {
-                            objectName: "systemsNoMatchText"
-                            width: parent.width
-                            text: screen.noMatchText
-                            wrapMode: Text.Wrap
-                            color: Theme.textPrimary
-                            font.family: Theme.sans
-                            font.pixelSize: Theme.fontSize(15)
-                        }
-                        OutlineButton {
-                            objectName: "systemsNoMatchClear"
-                            width: Math.min(implicitWidth, parent.width)
-                            text: qsTr("Clear search")
-                            onClicked: screen.clearSystemsSearch(activeFocus)
-                        }
+                    prefsStore: screen.prefsStore
+                    current: screen.visible && screen.section === "systems"
+                    heardTick: screen.heardTick
+                    sortSheet: sortSheet
+                    onOpenRadioReferenceAccount: screen.openRadioReferenceAccount()
+                    onRevealRequested: screen.revealSystemsTop()
+                    // A keyboard on them goes to Add a system.
+                    onEmptied: function (hadFocus) {
+                        if (hadFocus)
+                            addSystemButton.forceActiveFocus();
                     }
                 }
 
@@ -1407,6 +993,7 @@ Item {
                 Repeater {
                     id: systemCards
 
+                    objectName: "savedSystemCardsRepeater"
                     model: savedSystemCards
                     onItemRemoved: function (index, item) {
                         screen.noteCardRemoved(item);
@@ -1912,7 +1499,7 @@ Item {
             else if (key === "pin")
                 screen.togglePin("system", systemUid, actions[index].pinned);
             else if (key === "rrUpdate")
-                screen.updateFromRadioReference(screen.rowsOf(systemUid).map(function (member) {
+                savedControls.updateFromRadioReference(screen.rowsOf(systemUid).map(function (member) {
                     return savedSystems.get(member).uid;
                 }));
             else if (key === "remove")
