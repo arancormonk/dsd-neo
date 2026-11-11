@@ -617,7 +617,8 @@ Notes
   about 9 dB louder than before, and up to 18 dB more where the old default filter (see `-v`) cut it.
 - `-nm` Enable the DMR single-slot mono decoder without changing the active decode preset.
 - `-z <0|1|2>` TDMA slot preference (0 = slot 1, 1 = slot 2, 2 = auto). When both slots carry audible voice, the
-  preferred slot plays alone, in both ears (with one-channel output, alone); auto plays both. It applies to DMR and P25
+  preferred slot plays alone, in both ears (with one-channel output, alone); auto plays both (with one-channel output,
+  summed). It applies to DMR and P25
   Phase 2, in integer and `-y` float output, and stays as set: decoding never changes it. A talkgroup hold prefers the
   held slot.
 - `-8` Monitor the source audio (helpful when mixing analog/digital). It plays on a sound device or UDP (port + 2);
@@ -636,10 +637,15 @@ Notes
 - P25 Phase 2 voice plays as each timeslot pair completes (every 60 ms of air time), in integer and `-y` float output
   alike: both slots side by side, every frame once, 18 frames per slot per 360 ms superframe. A slot whose call starts
   or ends mid-superframe is heard from its first frame to its last while the other slot plays on; a lost voice burst
-  plays as silence in its place. One active slot plays in both ears; with one-channel output two slots are averaged.
-- `-a` Enable call alert beep (UI). The alert is the same clean tone in integer and `-y` float output. Conventional
-  analog calls sound no alert: the beep would land in the analog audio on `-o -` (on UDP output an alert goes to the
-  digital port, never the analog one).
+  plays as silence in its place. One active slot plays in both ears.
+- One-channel output (DMR and P25 Phase 2) sums the slots that carry decoded voice. A single talker plays at its own
+  level, also while the other slot is silent or plays a lost burst's silence (before, it was averaged with that silence
+  and played 6 dB low). Two talkers at once are summed under a limiter that keeps peaks at -1 dBFS: two talkers of
+  equal level play about 3 dB louder than one, and while both talk neither keeps its exact level.
+- `-a` Enable call alert beep (UI). The alert is the same clean tone in integer and `-y` float output, at the level
+  digital speech plays (-24 dBFS RMS) for the call and data alerts alike. Before, the call alert played about 19 dB
+  louder and the data alert about 6 dB louder. Conventional analog calls sound no alert: the beep would land in the
+  analog audio on `-o -` (on UDP output an alert goes to the digital port, never the analog one).
 
 ## Modes & Decoders (`-f`)
 

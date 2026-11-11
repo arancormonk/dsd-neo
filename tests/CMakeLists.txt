@@ -62,11 +62,10 @@ endif()
 # production code they exercise keeps the build's flags. The decode-clock test
 # is here because its bounds must round like decode_clock.c, which divides
 # ns / 1e9 exactly where fast-math would multiply by an inexact 1e-9, and the
-# audio2 test because its mono-mixer stub divides by a slot count, which Clang
-# turns into an approximate reciprocal under fast-math. Production sources that
-# src/runtime, src/app_control and src/ui/terminal build with IEEE semantics
-# keep them when a test compiles them directly: a source property set there does
-# not reach targets in this directory.
+# audio2 test because it checks the f32 samples float output carries.
+# Production sources that src/runtime, src/app_control and src/ui/terminal
+# build with IEEE semantics keep them when a test compiles them directly: a
+# source property set there does not reach targets in this directory.
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     set_source_files_properties(
         core/test_core_audio2_helpers.c
@@ -7539,6 +7538,16 @@ add_test(
     NAME CORE_AUDIO_INPUT_SWITCH
     COMMAND dsd-neo_test_core_audio_input_switch
 )
+
+# The one-channel mix of two slots (issue #518): fresh talkers summed through the mixer's limiter, and the DMR superframe
+# mix's sources.
+add_executable(dsd-neo_test_core_mono_mix core/test_core_mono_mix.c)
+target_include_directories(
+    dsd-neo_test_core_mono_mix
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_core_mono_mix PRIVATE dsd-neo_core)
+add_test(NAME CORE_MONO_MIX COMMAND dsd-neo_test_core_mono_mix)
 
 add_executable(dsd-neo_test_core_audio_gain core/test_core_audio_gain.c)
 target_include_directories(

@@ -2219,7 +2219,7 @@ suite runs under this compiler.
   spellings there.
 - State extension slots (`<dsd-neo/core/state_ext.h>`): engine owns 0, 1, 3 and 7; core 2, 4, 5 and 8, and 13 (taken
   from the io range): `DSD_STATE_EXT_CORE_VOICE_LEVEL`, the digital voice chain's per-slot speech AGC and the reception
-  it runs for (issue #518); runtime 6; DSP 9, 10 and 11 (taken from the core range as runtime took 6 from the
+  it runs for, and the DMR superframe mixer's one-channel limiter (issue #518); runtime 6; DSP 9, 10 and 11 (taken from the core range as runtime took 6 from the
   engine's): 9 is `DSD_STATE_EXT_DSP_ANALOG_RX`, the analog receive working state, 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`,
   the analog monitor's audio chains, and 11 `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink
   rate; app-control owns 16, from the ui range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still
@@ -2565,6 +2565,23 @@ suite runs under this compiler.
   preference is applied as a tie-break in both formats: with both slots audible, the preferred slot fills both
   channels while it carries voice (DMR: `dsd_dmr_preferred_slot_fills_both()`, the slot a hold names standing in for
   the preference; P25 Phase 2: a decoded frame of the preferred slot, never fill).
+- Invariant (one-channel mix of two slots, `audio_mix_mono_sum_s16()` in `src/core/audio/mix.c`, issue #518): SS3 and
+  the P25 Phase 2 playout sum the slots that are audible and carry fresh decoded audio of their own; they no longer
+  average them, which played a talker 6 dB down beside a silent companion. SS3 reads frame k of a slot as fresh from
+  `dsd_state::s4_fresh` (set by `dsd_dmr_mix_store_frame()` from `mbe_short_silenced` as the BS and MS voice bursts
+  store each frame, and cleared wherever `s_l4`/`s_r4` are), and the channel a copy filled (the preference, the burst
+  hint, a muted or switched-off companion, DMR mono) is never a second talker: a plain sum would double the copied
+  one. The playout reads its entries' `fresh`, so a fill beside a talker is no second talker. One talker plays at its
+  own level. Two are summed through the mixer's own `dsd_peak_limiter` (-1 dBFS ceiling, instant attack, 50 dB/s
+  release): two independent talkers at equal level play about 3 dB RMS above one, and colliding peaks are limited, so
+  neither keeps its exact level while both talk. Every block goes through the limiter, so its gain releases on time
+  whichever slots play. SS3's limiter sits in `DSD_STATE_EXT_CORE_VOICE_LEVEL` (`dsd_voice_level_dmr_mix_limiter()`,
+  decoder thread) and goes back to unity at `dsd_voice_level_reset()` of both slots (the carrier boundaries). The
+  playout's is `dsd_p25p2_playout::mono_limiter`, owned like its queues (the watchdog's release emits under the tick
+  guard, and nothing here takes it), and goes back to unity when both queues reset (`dsd_p25p2_playout_reset()` of
+  both slots: after the carrier boundary's drain, a discard, a call teardown), so queued audio drains through the old
+  state first. Stereo routing and the static WAV are unchanged. Tests: `CORE_MONO_MIX`, `CORE_P25P2_PLAYOUT`,
+  `P25_P2_VOICE_OUTPUT`, `CORE_AUDIO2_HELPERS`, `CORE_AUDIO_GAIN`.
 - Invariant (encrypted-audio verdict, `src/core/audio/voice_crypto.c`, `<dsd-neo/core/audio.h>`, issue #655): each
   vocoder frame gets one verdict after its keystream: `mbe_frame_slot_muted()` switches on the explicit
   `mbe_frame_ctx_t::protocol` (`dsd_voice_protocol`) its caller supplied. The borrowed codec synctype never selects
@@ -2697,7 +2714,8 @@ suite runs under this compiler.
     (`dsd_p25p2_playout_entry::live`). The slot switches are read at emission and never written: a switched-off slot
     stays silent, a hold included (issue #657).
   - Output. Routing comes from content: two audible slots play as stereo, one plays in both ears; one-channel output
-    averages two (`audio_mix_mono_from_slots_s16()`) and plays one alone. With a slot preference set, a block in
+    sums the audible slots whose frame is `fresh` (never fill) through the playout's limiter (see the one-channel mix
+    invariant). With a slot preference set, a block in
     which both slots are audible and the preferred slot's frame is decoded media (`fresh`, never fill) plays that
     slot alone, in both ears; the static WAV follows. The playout filters nothing: the vocoder's voice chain
     high-passed and gained each frame on its slot before it was queued; the static WAV records each played stereo block,
@@ -2861,7 +2879,10 @@ suite runs under this compiler.
   slot), `ENGINE_NO_CARRIER_RESET` (carrier boundaries, stream gap, no-carrier, a TETRA stream gap against a new
   talker), `ENGINE_TRUNK_SCAN`, `APP_P25_CC_SELECTION`, `CORE_MBE_FILE_IO` (file start),
   `APP_CONTROL_SNAPSHOT_EVENT_HISTORY` (the render range, field by field).
-  `beeper()` builds its tone once on the int16 scale and plays the same samples in both formats. Tests:
+  `beeper()` builds its tone once on the int16 scale and plays the same samples in both formats, at
+  `DSD_ALERT_TONE_RMS_DBFS` (-24 dBFS RMS, where digital speech plays; issue #518): the voice alerts (ID 40, 1250 Hz)
+  and the data alert (ID 80, 2500 Hz) alike. Before, they played at -4.9 and -17.6 dBFS RMS. A deferred P25 Phase 2
+  alert keeps its ID and length. Tests:
   `CORE_VOICE_CHAIN`, `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_AUDIO_GAIN`, `DECODE_IQ_VOICE_CHAIN_*`.
 - API note (gain settings, `<dsd-neo/core/gain_setting.h>`, issue #518 voice level): a digital gain (`-g`,
   `audio_gain`/`audio_gainR`) is 0 (auto) or 0.001..50; `dsd_digital_gain_setting_valid()` refuses NaN, infinities,

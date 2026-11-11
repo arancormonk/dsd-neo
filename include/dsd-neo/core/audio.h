@@ -19,6 +19,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/voice_chain.h>
+#include <dsd-neo/dsp/speech_agc.h>
 #include <dsd-neo/platform/sndfile_fwd.h>
 
 #include <stddef.h>
@@ -107,6 +108,12 @@ void playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state); // short mono mix
 void playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state); // short stereo mix
 /** @brief Play synthesized voice (short stereo mix 3v2 DMR). */
 void playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state); // short stereo mix 3v2 DMR
+/**
+ * @brief Keep the frame the vocoder just synthesized on DMR slot @p slot (0 or 1) as frame @p frame (0-2) of the burst
+ * playSynthesizedVoiceSS3() mixes: its short samples (s_l/s_r into s_l4/s_r4, and the upsampled ones), and whether
+ * they are the slot's own decoded audio (dsd_state::s4_fresh) rather than silence or a frame the vocoder left out.
+ */
+void dsd_dmr_mix_store_frame(dsd_state* state, int slot, int frame);
 
 /**
  * @brief Decoded media the vocoder staged for a DMR slot since the stereo mix last ran (issue #574).
@@ -228,8 +235,18 @@ void audio_mono_to_stereo_s16(const short* in, short* out, size_t n);
 /** @brief Mix two int16 channels with per-channel mute flags into interleaved stereo. */
 void audio_mix_interleave_stereo_s16(const short* left, const short* right, size_t n, int encL, int encR,
                                      short* stereo_out);
-/** @brief Mix two int16 channels with mute flags into mono output (the average when both are on). */
-void audio_mix_mono_from_slots_s16(const short* left, const short* right, size_t n, int l_on, int r_on, short* out);
+/**
+ * @brief The one-channel mix of two slots (issue #518): the slots that carry fresh decoded audio of their own
+ * (@p l_real, @p r_real) are summed, never averaged, so one talker plays at its own level beside a silent, filled or
+ * duplicated companion. Neither: silence.
+ *
+ * Every block goes through the mixer's own @p limiter (initialized by its owner and kept across blocks), so two hot
+ * talkers stay under its ceiling; one talker, which the voice chain already holds under that ceiling, passes unchanged
+ * once the limiter has released. Two independent talkers at equal level sum about 3 dB above either alone. A NULL or
+ * never initialized @p limiter leaves only the int16 clamp.
+ */
+void audio_mix_mono_sum_s16(const short* left, const short* right, size_t n, int l_real, int r_real,
+                            dsd_peak_limiter* limiter, short* out);
 
 /** @brief Return 1 when P25p2 decode should queue audio for the slot under decrypt and media policy. */
 int dsd_p25p2_decode_audio_allowed(const dsd_opts* opts, const dsd_state* state, int slot, int alg);
@@ -429,8 +446,16 @@ dsd_dmr_key_material dsd_dmr_slot_key_material(const dsd_state* state, int slot,
  */
 int dsd_dmr_voice_slot_can_decrypt(const dsd_state* state, int slot, int algid, unsigned long long r_key);
 
-/** @brief Terminal call-alert and event beeper. */
-void beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len);
+/** The level of every alert tone (issue #518): the RMS of its sine, in dB re int16 full scale (32768), where digital
+    speech plays. */
+#define DSD_ALERT_TONE_RMS_DBFS (-24.0)
+
+/**
+ * @brief Terminal call-alert and event beeper: a sine of 31.25 Hz x @p id at DSD_ALERT_TONE_RMS_DBFS for @p len 20 ms
+ * blocks (twice as many on outputs other than Pulse), on channel @p lr in stereo output. The voice alerts use ID 40
+ * (1250 Hz), the data alert ID 80 (2500 Hz).
+ */
+void beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int len);
 
 /** @brief Open input audio device based on opts. Returns 0 on success. */
 int openAudioInDevice(dsd_opts* opts, dsd_state* state);

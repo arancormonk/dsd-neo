@@ -21,6 +21,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/dsp/speech_agc.h>
 
 #include <stdint.h>
 
@@ -151,7 +152,6 @@ typedef struct dsd_p25p2_playout_alert {
     uint64_t
         after; /**< The slot's dsd_p25p2_playout_slot::pushed then: it sounds once no entry of seq <= after is left. */
     int id;
-    int ad;
     int len;
 } dsd_p25p2_playout_alert;
 
@@ -162,6 +162,9 @@ typedef struct dsd_p25p2_playout {
     /** Per slot, oldest first, behind the playout's alert lock. */
     dsd_p25p2_playout_alert alerts[2][DSD_P25P2_PLAYOUT_ALERTS];
     uint8_t alert_count[2];
+    /** The one-channel mix's limiter (audio_mix_mono_sum_s16()), kept across blocks like the queues it plays; it starts
+        over when both queues do (dsd_p25p2_playout_reset() of both slots), after the drain at a carrier boundary. */
+    dsd_peak_limiter mono_limiter;
 } dsd_p25p2_playout;
 
 /**
@@ -214,7 +217,7 @@ void dsd_p25p2_playout_break(dsd_state* state);
  * thread may call this; it never sounds anything itself. Returns 1 when the alert was taken (or, past
  * DSD_P25P2_PLAYOUT_ALERTS waiting, dropped rather than sounded early), 0 to have the caller sound it now.
  */
-int dsd_p25p2_playout_defer_alert(const dsd_opts* opts, dsd_state* state, int slot, int id, int ad, int len);
+int dsd_p25p2_playout_defer_alert(const dsd_opts* opts, dsd_state* state, int slot, int id, int len);
 
 /**
  * @brief Whether either queue still holds an entry (audio, fill, a placeholder or a barrier). Any thread may call this:

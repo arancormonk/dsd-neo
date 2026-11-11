@@ -573,21 +573,10 @@ apply_dmr_bs_voice_keystream(dsd_state* state, char ambe_fr[4][24], char ambe_fr
 }
 
 static void
-store_dmr_bs_processed_audio(dsd_state* state, uint8_t internalslot, uint8_t frame_index) {
-    if (internalslot == 0) {
-        DSD_MEMCPY(state->s_l4[frame_index], state->s_l, sizeof(state->s_l));
-        DSD_MEMCPY(state->s_l4u[frame_index], state->s_lu, sizeof(state->s_lu));
-    } else {
-        DSD_MEMCPY(state->s_r4[frame_index], state->s_r, sizeof(state->s_r));
-        DSD_MEMCPY(state->s_r4u[frame_index], state->s_ru, sizeof(state->s_ru));
-    }
-}
-
-static void
 process_dmr_bs_voice_frame(dsd_opts* opts, dsd_state* state, uint8_t internalslot, char frame[4][24],
                            uint8_t frame_index) {
     processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_DMR, NULL, frame, NULL);
-    store_dmr_bs_processed_audio(state, internalslot, frame_index);
+    dsd_dmr_mix_store_frame(state, internalslot, frame_index);
 }
 
 /* Each frame decodes at its position in the superframe (burst @p vc, 1..6), which is where every DMR voice cipher's
@@ -769,6 +758,7 @@ finalize_dmr_bs(dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ctx) {
 
     DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
     DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
+    DSD_MEMSET(state->s4_fresh, 0, sizeof(state->s4_fresh));
     dsd_audio_dmr_mix_media_discard(0);
     dsd_audio_dmr_mix_media_discard(1);
 

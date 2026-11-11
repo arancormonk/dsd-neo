@@ -114,6 +114,7 @@ p25_mpdu_prepare_state(dsd_state* state) {
     state->p25_p1_duid_mpdu++;
     DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
     DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
+    DSD_MEMSET(state->s4_fresh, 0, sizeof(state->s4_fresh));
     state->currentslot = 0;
 
     p25_status_accum_ensure_started(state);

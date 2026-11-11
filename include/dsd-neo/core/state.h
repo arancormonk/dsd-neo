@@ -1243,6 +1243,10 @@ struct dsd_state {
     uint8_t mbe_slot_muted[2];
     short s_l4[18][160]; //quad sample for up to a P25p2 4V
     short s_r4[18][160]; //quad sample for up to a P25p2 4V
+    /* Per slot, per frame of the DMR superframe mix (s_l4/s_r4 rows 0-2): 1 when the row holds the slot's own audio the
+       vocoder staged this burst, 0 for silence, a frame it left out, or nothing yet. The two-slot mono mix sums only
+       fresh rows, so a silent or duplicated slot never counts as a second talker (issue #518). */
+    uint8_t s4_fresh[2][3];
     //new stereo short sample storage tapped from 48_k internal upsampling
     short s_lu[160 * 6];     //single sample left
     short s_ru[160 * 6];     //single sample right

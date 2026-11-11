@@ -690,6 +690,7 @@ init_state_core_buffers(dsd_state* state) {
     DSD_MEMSET(state->s_r, 0, sizeof(state->s_r));
     DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
     DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
+    DSD_MEMSET(state->s4_fresh, 0, sizeof(state->s4_fresh));
 
     DSD_MEMSET(state->s_lu, 0, sizeof(state->s_lu));
     DSD_MEMSET(state->s_ru, 0, sizeof(state->s_ru));

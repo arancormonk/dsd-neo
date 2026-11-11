@@ -103,7 +103,8 @@ void dsd_voice_chain_run(const dsd_opts* opts, dsd_state* state, int slot, float
 
 /**
  * @brief Slot @p slot's speech level starts a new reception (both slots when @p slot is negative): its AGC goes back to
- * the start gain with nothing learned, and forgets the reception it ran for.
+ * the start gain with nothing learned, and forgets the reception it ran for. For both slots the DMR superframe mixer's
+ * one-channel limiter (audio_mix_mono_sum_s16()) goes back to unity too.
  *
  * The receiver left the carrier (a carrier boundary other than a stream gap, a trunk-scan target switch, a manual P25
  * control-channel selection) or a file starts. A stream gap, the no-carrier pass, a crypto purge and a rate change keep

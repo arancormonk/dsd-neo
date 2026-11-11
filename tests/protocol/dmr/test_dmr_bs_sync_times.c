@@ -378,6 +378,13 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     g_play_ss3_calls++;
 }
 
+void
+dsd_dmr_mix_store_frame(dsd_state* state, int slot, int frame) {
+    (void)state;
+    (void)slot;
+    (void)frame;
+}
+
 int
 dsd_telemetry_is_active(void) {
     return 1;

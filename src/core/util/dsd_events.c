@@ -610,7 +610,7 @@ static void
 watchdog_event_maybe_beep_call_end(dsd_opts* opts, dsd_state* state, uint8_t slot, int last_event_is_data) {
     if (!last_event_is_data
         && dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_END)) {
-        beeper(opts, state, slot, 40, 86, 3);
+        beeper(opts, state, slot, 40, 3);
     }
 }
 
@@ -1382,7 +1382,7 @@ watchdog_event_admitted_start_alert(dsd_opts* opts, dsd_state* state, uint8_t sl
     lifecycle->start_alert_pending = 0U;
     if (call->phase == DSD_CALL_PHASE_ACTIVE && call->receive_verdict != DSD_RECEIVE_REJECTED
         && dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_START)) {
-        beeper(opts, state, slot, 40, 86, 3);
+        beeper(opts, state, slot, 40, 3);
     }
 }
 
@@ -1446,7 +1446,7 @@ watchdog_event_history_authoritative(dsd_opts* opts, dsd_state* state, uint8_t s
         if (call->receive_verdict == DSD_RECEIVE_CHECKING) {
             lifecycle->start_alert_pending = 1U;
         } else if (call->receive_verdict != DSD_RECEIVE_REJECTED) {
-            beeper(opts, state, slot, 40, 86, 3);
+            beeper(opts, state, slot, 40, 3);
         }
     }
 }
@@ -4051,7 +4051,7 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
                    (unsigned long long)observation->ota_target_id, notice);
 
     if (dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_DATA)) {
-        beeper(opts, state, slot, 80, 20, 3);
+        beeper(opts, state, slot, 80, 3);
     }
     return 0;
 }

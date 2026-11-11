@@ -581,7 +581,7 @@ test_invalid_2v_duid(int floating) {
     return rc;
 }
 
-/* A one-channel output gets 160-sample blocks: one call at its level, two calls averaged (issue #651 item 6). */
+/* A one-channel output gets 160-sample blocks: one call at its level, two calls summed (issues #651 item 6, #518). */
 static int
 test_mono_output(void) {
     int rc = 0;
@@ -594,7 +594,7 @@ test_mono_output(void) {
     rc |= expect_int("mono blocks", g_block_count, 18);
     for (int b = 0; b < g_block_count; b++) {
         rc |= expect_int("mono block size", g_blocks[b].channels, 1);
-        rc |= expect_int("mono two calls averaged", g_blocks[b].left, (FIRST_TAG0 + b + FIRST_TAG1 + b) / 2);
+        rc |= expect_int("mono two calls summed", g_blocks[b].left, FIRST_TAG0 + b + FIRST_TAG1 + b);
     }
     return rc;
 }

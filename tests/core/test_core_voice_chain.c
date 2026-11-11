@@ -529,14 +529,24 @@ capture_tone(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* da
     }
 }
 
+// The RMS of @p n samples in dB re @p full_scale.
+static double
+tone_rms_db(const double* x, size_t n, double full_scale) {
+    double sum = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        sum += x[i] * x[i];
+    }
+    return 10.0 * log10(sum / (double)n) - 20.0 * log10(full_scale);
+}
+
 /* The alert tone is built once on the int16 scale: short output plays a clean sine at its level, float output the same
-   samples / 32768, and the tone runs on across its 20 ms blocks. */
+   samples / 32768, and the tone runs on across its 20 ms blocks. Every alert, the voice ones (ID 40) and the data one
+   (ID 80), plays at -24 dBFS RMS in both formats, where digital speech plays (issue #518); before, they played at
+   -4.9 and -17.6. */
 static int
 test_beeper_tone_is_the_same_in_both_formats(void) {
-    static const struct {
-        int id;
-        int ad;
-    } alerts[] = {{40, 86}, {80, 20}, {41, 86}}; // ID 41 ends a block partway through a cycle
+    static const int alerts[] = {40, 80, 41}; // ID 41 ends a block partway through a cycle
+    static double level[6U * 160U];
 
     int rc = 0;
     dsd_opts* opts = new_opts();
@@ -551,13 +561,13 @@ test_beeper_tone_is_the_same_in_both_formats(void) {
     opts->pulse_digi_out_channels = 1;
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = capture_tone});
     for (size_t a = 0; a < sizeof(alerts) / sizeof(alerts[0]); a++) {
-        const double amplitude = ((double)alerts[a].ad * 75.0 / 8000.0) * 32767.0;
-        const double step = 2.0 * k_pi * (31.25 * (double)alerts[a].id) / 8000.0;
+        const double amplitude = 32768.0 * pow(10.0, -24.0 / 20.0) * sqrt(2.0);
+        const double step = 2.0 * k_pi * (31.25 * (double)alerts[a]) / 8000.0;
 
         g_tone_float = 0;
         g_tone_count = 0;
         opts->floating_point = 0;
-        beeper(opts, state, 0, alerts[a].id, alerts[a].ad, 3);
+        beeper(opts, state, 0, alerts[a], 3);
         // UDP output doubles the length.
         rc |= expect_true("short tone length", g_tone_count == (size_t)6U * 160U);
         int worst = 0;
@@ -565,20 +575,26 @@ test_beeper_tone_is_the_same_in_both_formats(void) {
             const double want = amplitude * sin((double)i * step);
             const int err = abs((int)g_tone_s16[i] - (int)lrint(want));
             worst = err > worst ? err : worst;
+            level[i] = (double)g_tone_s16[i];
         }
         rc |= expect_true("short tone is the sine at its level, phase running across blocks", worst == 0);
+        const double short_db = tone_rms_db(level, g_tone_count, 32768.0);
+        rc |= expect_true("short tone at -24 dBFS RMS", fabs(short_db - DSD_ALERT_TONE_RMS_DBFS) < 0.05);
 
         g_tone_float = 1;
         g_tone_count = 0;
         opts->floating_point = 1;
-        beeper(opts, state, 0, alerts[a].id, alerts[a].ad, 3);
+        beeper(opts, state, 0, alerts[a], 3);
         rc |= expect_true("float tone length", g_tone_count == (size_t)6U * 160U);
         float worst_f = 0.0f;
         for (size_t i = 0; i < g_tone_count; i++) {
             const float diff = fabsf(g_tone_f32[i] - ((float)g_tone_s16[i] / 32768.0f));
             worst_f = diff > worst_f ? diff : worst_f;
+            level[i] = (double)g_tone_f32[i];
         }
         rc |= expect_true("float tone carries the short tone's samples", worst_f < 1e-7f);
+        const double float_db = tone_rms_db(level, g_tone_count, 1.0);
+        rc |= expect_true("float tone at -24 dBFS RMS", fabs(float_db - DSD_ALERT_TONE_RMS_DBFS) < 0.05);
     }
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     free_state(state);
@@ -615,7 +631,7 @@ test_beeper_on_udp_uses_the_digital_port(void) {
     g_tone_count = 0;
     g_analog_port_samples = 0;
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = capture_tone, .blast_analog = capture_analog_port});
-    beeper(opts, state, 0, 40, 86, 3);
+    beeper(opts, state, 0, 40, 3);
     int rc = expect_true("the alert reaches the digital port", g_tone_count == (size_t)6U * 160U);
     rc |= expect_true("the alert never reaches the analog port", g_analog_port_samples == 0U);
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});

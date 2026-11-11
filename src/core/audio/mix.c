@@ -12,7 +12,9 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/dsp/speech_agc.h>
 
+#include <math.h>
 #include <stddef.h>
 
 void
@@ -27,20 +29,38 @@ audio_mix_interleave_stereo_s16(const short* left, const short* right, size_t n,
     }
 }
 
+/* The short voice mixers' frames: 8 kHz, at most this many samples go through the limiter at once. */
+enum { MIX_MONO_BLOCK = 160 };
+
+static short
+mix_to_s16(float v) {
+    if (v >= 32767.0f) {
+        return 32767;
+    }
+    if (v <= -32768.0f) {
+        return -32768;
+    }
+    return (short)lrintf(v);
+}
+
 void
-audio_mix_mono_from_slots_s16(const short* left, const short* right, size_t n, int l_on, int r_on, short* out) {
+audio_mix_mono_sum_s16(const short* left, const short* right, size_t n, int l_real, int r_real,
+                       dsd_peak_limiter* limiter, short* out) {
     if (!left || !right || !out) {
         return;
     }
-    for (size_t i = 0; i < n; i++) {
-        if (l_on && r_on) {
-            out[i] = (short)(((int)left[i] + (int)right[i]) / 2);
-        } else if (l_on) {
-            out[i] = left[i];
-        } else if (r_on) {
-            out[i] = right[i];
-        } else {
-            out[i] = 0;
+    float mix[MIX_MONO_BLOCK];
+    for (size_t at = 0; at < n; at += MIX_MONO_BLOCK) {
+        const size_t m = (n - at < MIX_MONO_BLOCK) ? n - at : MIX_MONO_BLOCK;
+        for (size_t i = 0; i < m; i++) {
+            const int l = l_real ? left[at + i] : 0;
+            const int r = r_real ? right[at + i] : 0;
+            mix[i] = (float)(l + r);
+        }
+        // Every block goes through the limiter, so its gain releases on time whichever slots play.
+        dsd_peak_limiter_process(limiter, mix, m);
+        for (size_t i = 0; i < m; i++) {
+            out[at + i] = mix_to_s16(mix[i]);
         }
     }
 }

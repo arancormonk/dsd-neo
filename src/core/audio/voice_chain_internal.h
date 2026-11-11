@@ -14,6 +14,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/voice_chain.h>
+#include <dsd-neo/dsp/speech_agc.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -31,6 +32,10 @@ typedef struct {
    the slot's speech AGC to the frame in place and leave its gain in dB in aout_gain/aout_gainR. */
 void dsd_voice_level_run(const dsd_opts* opts, dsd_state* state, int slot, float* frame,
                          const dsd_voice_frame_info* info, const dsd_voice_reception* reception);
+
+/* The DMR superframe mixer's one-channel limiter (audio_mix_mono_sum_s16()), kept with the slots' speech level and
+   reset with it at a carrier boundary (dsd_voice_level_reset() of both slots); NULL without memory for it. */
+dsd_peak_limiter* dsd_voice_level_dmr_mix_limiter(dsd_state* state);
 
 /* Called by dsd_voice_chain_run() for every frame it takes, before it touches the frame: the slot, the frame's
    DSD_VOICE_FRAME_SAMPLES samples as the producer made them, and its info (NULL when the producer gave none). */

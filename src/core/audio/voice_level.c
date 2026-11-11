@@ -5,8 +5,8 @@
 
 /*
  * The digital voice chain's speech level (issue #518): one speech AGC (<dsd-neo/dsp/speech_agc.h>) per slot at the
- * voice rate, with the reception it runs for, and the M17 encoder monitor's fixed-unity one, in
- * DSD_STATE_EXT_CORE_VOICE_LEVEL. Decoder thread only, like the chain.
+ * voice rate, with the reception it runs for, the M17 encoder monitor's fixed-unity one and the DMR superframe mixer's
+ * one-channel limiter, in DSD_STATE_EXT_CORE_VOICE_LEVEL. Decoder thread only, like the chain.
  */
 
 #include <dsd-neo/core/state.h>
@@ -37,6 +37,8 @@ typedef struct {
     voice_level_slot slot[2];
     /* The M17 encoder's monitor: unity gain through the limiter, nothing learned (DSD_VOICE_MEDIA_TX_MONITOR). */
     dsd_speech_agc tx_monitor;
+    /* The DMR superframe mixer's one-channel limiter: two slots' talkers summed stay under the ceiling. */
+    dsd_peak_limiter dmr_mix;
 } voice_level_ext;
 
 static voice_level_ext*
@@ -57,6 +59,10 @@ voice_level_ext_get(dsd_state* state) {
             free(ext);
             return NULL;
         }
+    }
+    if (dsd_peak_limiter_init(&ext->dmr_mix, (int)DSD_VOICE_HPF_RATE_HZ, DSD_SPEECH_AGC_CEILING_DBFS) != 0) {
+        free(ext);
+        return NULL;
     }
     dsd_speech_agc_set_fixed(&ext->tx_monitor, 1.0f);
     if (dsd_state_ext_set(state, DSD_STATE_EXT_CORE_VOICE_LEVEL, ext, free) != 0) {
@@ -91,6 +97,16 @@ dsd_voice_level_reset(dsd_state* state, int slot) {
             *(s == 1 ? &state->aout_gainR : &state->aout_gain) = VOICE_LEVEL_START_GAIN_DB;
         }
     }
+    /* The DMR mixer's limiter goes with both slots: the next talkers are another reception's. */
+    if (slot < 0) {
+        dsd_peak_limiter_reset(&ext->dmr_mix);
+    }
+}
+
+dsd_peak_limiter*
+dsd_voice_level_dmr_mix_limiter(dsd_state* state) {
+    voice_level_ext* ext = state ? voice_level_ext_get(state) : NULL;
+    return ext ? &ext->dmr_mix : NULL;
 }
 
 const dsd_speech_agc*

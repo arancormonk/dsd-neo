@@ -3199,11 +3199,7 @@ dmr_mix_stage_frame(dsd_opts* opts, dsd_state* state, int slot, int frame) {
     ambe_fr[2][15] = 1;
     state->currentslot = slot;
     processMbeFrame(opts, state, owner_of(state->synctype), imbe_fr, ambe_fr, imbe7100_fr);
-    if (slot == 0) {
-        DSD_MEMCPY(state->s_l4[frame], state->s_l, sizeof(state->s_l4[frame]));
-    } else {
-        DSD_MEMCPY(state->s_r4[frame], state->s_r, sizeof(state->s_r4[frame]));
-    }
+    dsd_dmr_mix_store_frame(state, slot, frame);
 }
 
 static short

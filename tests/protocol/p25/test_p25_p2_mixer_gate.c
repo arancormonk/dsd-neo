@@ -698,7 +698,7 @@ run_beeper_float_stereo_case(void) {
     opts.floating_point = 1;
     opts.pulse_digi_out_channels = 2;
 
-    beeper(&opts, &st, 1, 40, 86, 1);
+    beeper(&opts, &st, 1, 40, 1);
 
     float out[160 * 2] = {0.0f};
     rc |= expect_eq("beeper float stereo calls", g_audio_capture_calls, 2);
@@ -736,7 +736,7 @@ run_beeper_short_mono_case(void) {
     opts.floating_point = 0;
     opts.pulse_digi_out_channels = 1;
 
-    beeper(&opts, &st, 0, 40, 86, 1);
+    beeper(&opts, &st, 0, 40, 1);
 
     short out[160] = {0};
     rc |= expect_eq("beeper short mono calls", g_audio_capture_calls, 2);
@@ -855,7 +855,7 @@ test_playout_stamps_frames_of_audible_slots(void) {
     opts.audio_out_type = 8;
     opts.pulse_digi_out_channels = 2;
     stamp_clear();
-    beeper(&opts, &st, 0, 40, 86, 1);
+    beeper(&opts, &st, 0, 40, 1);
     rc |= expect_eq("beeper plays", g_audio_capture_calls >= 1, 1);
     rc |= expect_eq("beeper stamps nothing", stamp_noted(), 0);
     return rc;

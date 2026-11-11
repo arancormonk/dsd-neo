@@ -280,21 +280,22 @@ test_audio_mix_helpers_apply_channel_gates(void) {
     audio_mix_interleave_stereo_s16(left_s, right_s, 2, 1, 0, stereo_s);
 
     short mono[2] = {-1, -1};
-    audio_mix_mono_from_slots_s16(left_s, right_s, 2, 1, 1, mono);
+    audio_mix_mono_sum_s16(left_s, right_s, 2, 1, 1, NULL, mono);
 
     int rc = 0;
     rc |= expect_int_eq("mix s16 muted left 0", stereo_s[0], 0);
     rc |= expect_int_eq("mix s16 right 0", stereo_s[1], 10);
     rc |= expect_int_eq("mix s16 muted left 1", stereo_s[2], 0);
     rc |= expect_int_eq("mix s16 right 1", stereo_s[3], 20);
-    rc |= expect_int_eq("mono average 0", mono[0], 5);
-    rc |= expect_int_eq("mono average 1", mono[1], 11);
+    // Two talkers are summed, not averaged (issue #518): each keeps its own level.
+    rc |= expect_int_eq("mono sum 0", mono[0], 11);
+    rc |= expect_int_eq("mono sum 1", mono[1], 22);
 
-    audio_mix_mono_from_slots_s16(left_s, right_s, 2, 1, 0, mono);
+    audio_mix_mono_sum_s16(left_s, right_s, 2, 1, 0, NULL, mono);
     rc |= expect_int_eq("mono left only", mono[0], 1);
-    audio_mix_mono_from_slots_s16(left_s, right_s, 2, 0, 1, mono);
+    audio_mix_mono_sum_s16(left_s, right_s, 2, 0, 1, NULL, mono);
     rc |= expect_int_eq("mono right only", mono[0], 10);
-    audio_mix_mono_from_slots_s16(left_s, right_s, 2, 0, 0, mono);
+    audio_mix_mono_sum_s16(left_s, right_s, 2, 0, 0, NULL, mono);
     rc |= expect_int_eq("mono neither slot", mono[0], 0);
 
     short guard_s[2] = {7, 8};
