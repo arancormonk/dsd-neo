@@ -158,6 +158,10 @@ class SavedSystemCards : public QAbstractListModel {
      */
     Q_INVOKABLE void markLocationRequested();
 
+    /** @brief The request markLocationRequested() was for ended without a fix (it failed, was cancelled or was
+     *         superseded): the next location change is a background change again. */
+    Q_INVOKABLE void clearLocationRequest();
+
     /** @brief The shown row of the card keyed @p key, or -1. */
     Q_INVOKABLE int rowForKey(const QString& key) const;
 

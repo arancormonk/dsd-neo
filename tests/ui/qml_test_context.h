@@ -1090,6 +1090,15 @@ class RrPlacesFake : public QObject {
         Q_EMIT updateFinished(updated, unreachable);
     }
 
+    /** @brief No summary, as before any update. */
+    void
+    clearSummary() {
+        if (!m_summary.isEmpty()) {
+            m_summary.clear();
+            Q_EMIT summaryTextChanged();
+        }
+    }
+
     void
     setUnplacedCount(int count) {
         if (m_unplaced != count) {
@@ -2991,6 +3000,18 @@ class ReadingMap : public QQmlPropertyMap {
     shareRecording(const QString& path, const QString& title) {
         noteCall(QStringLiteral("shareRecording"), {{QStringLiteral("path"), path}, {QStringLiteral("title"), title}});
         return shareAccepted;
+    }
+
+    /* Listen's Nearest order: a location request only records itself, {name, id}; a case answers it with the map's
+     * own locationResult() or locationCancelled(), as a platform host would later. */
+    Q_INVOKABLE void
+    requestSiteLocation(qint64 requestId) {
+        noteCall(QStringLiteral("requestSiteLocation"), {{QStringLiteral("id"), requestId}});
+    }
+
+    Q_INVOKABLE void
+    cancelLocationRequest(qint64 requestId) {
+        noteCall(QStringLiteral("cancelLocationRequest"), {{QStringLiteral("id"), requestId}});
     }
 
     /* Issue #829: the document picker. A request only records itself and returns a new id; a case answers it through
@@ -5630,6 +5651,59 @@ class Setup : public QObject {
             m_saved_system_cards->setScreenReaderActive(false);
             m_saved_system_cards->setHoldReorders(false);
         }
+    }
+
+    /** @brief `prefs` as the real AppPrefs (true) or the plain map (false), the `decoderHost` left as it is: a case
+     *         that needs both the map's host readings and the production preferences (Listen's sort and location). */
+    Q_INVOKABLE void
+    useAppPrefs(bool on) {
+        m_engine->rootContext()->setContextProperty(
+            QStringLiteral("prefs"), on ? QVariant::fromValue<QObject*>(m_app_prefs) : QVariant(m_prefs));
+    }
+
+    /** @brief The `rrPlaces` fake as a fresh run has it: signed in, nothing unplaced, no update, nothing recorded. */
+    Q_INVOKABLE void
+    resetRrPlaces() {
+        if (m_rr_places == nullptr) {
+            return;
+        }
+        m_rr_places->cancelUpdate();
+        m_rr_places->signedIn = true;
+        m_rr_places->setUnplacedCount(0);
+        m_rr_places->updateUids.clear();
+        m_rr_places->resolveRequests.clear();
+        m_rr_places->cancels = 0;
+        m_rr_places->clearSummary();
+    }
+
+    /** @brief Whether the `rrPlaces` fake answers as signed in to RadioReference. */
+    Q_INVOKABLE void
+    setRrPlacesSignedIn(bool signedIn) {
+        m_rr_places->signedIn = signedIn;
+    }
+
+    /** @brief How many saved systems the `rrPlaces` fake reports without a place (its unplacedText follows). */
+    Q_INVOKABLE void
+    setRrPlacesUnplaced(int count) {
+        m_rr_places->setUnplacedCount(count);
+    }
+
+    /** @brief The uids the running (or last) Update from RadioReference was asked for. */
+    Q_INVOKABLE QStringList
+    rrPlacesUpdateUids() const {
+        return m_rr_places->updateUids;
+    }
+
+    /** @brief How many running updates QML cancelled. */
+    Q_INVOKABLE int
+    rrPlacesCancels() const {
+        return m_rr_places->cancels;
+    }
+
+    /** @brief End the running Update from RadioReference with the service's summary. */
+    Q_INVOKABLE void
+    finishRrPlacesUpdate(int updated, int unreachable) {
+        m_rr_places->finish(updated, unreachable);
     }
 
     /** @brief Issue #646: store @p value under the settings key @p key as it is, past AppPrefs' checks, as a damaged

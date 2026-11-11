@@ -32,32 +32,8 @@ Item {
     signal addSystem
     signal importSystem
     signal chooseSites(int row)
-    property int siteRevision: 0
-    Connections {
-        target: savedSystems
-        function onSitesChanged() {
-            screen.siteRevision++;
-        }
-    }
-    // Every library change, a file replaced in place included: a user's own
-    // file over a RadioReference one no longer asks for a refresh (#832).
-    Connections {
-        target: importedFiles
-        function onEntriesChanged() {
-            screen.siteRevision++;
-        }
-    }
-    function needsSiteRefresh(row) {
-        var sys = savedSystems.get(row);
-        if (!sys.trunking || (sys.rrSid > 0 && sys.rrSiteId > 0))
-            return false;
-        for (var path of [sys.chanCsvPath, sys.groupCsvPath]) {
-            var libraryRow = importedFiles.rowForPath(path || "");
-            if (libraryRow >= 0 && importedFiles.get(libraryRow).origin === "radioreference")
-                return true;
-        }
-        return false;
-    }
+    // Update from RadioReference needs the account: signed out, Main opens it.
+    signal openRadioReferenceAccount
     signal playSystem(int row)
     signal editSystem(int row)
     // Tap starts exploring with what was used last; long-press changes it. Same
@@ -86,7 +62,7 @@ Item {
     // Keep auto-start blocked throughout menu-to-confirmation transitions.
     readonly property bool managementSheetOpen: manageMenu.visible || scanMenu.visible || addSystemMenu.visible
         || removeSystem.visible || systemRemovalError.visible || removeScanList.visible || scanListRemovalError.visible
-        || scanTogether.visible || pinnedSheet.visible || exploreMenu.visible || searchMenu.visible
+        || scanTogether.visible || pinnedSheet.visible || exploreMenu.visible || searchMenu.visible || sortSheet.visible
 
     // #647 WP6: where the host brokers USB access the title and the receiver
     // pill are pinned above the scrolling body, so the receiver's state and its
@@ -151,6 +127,8 @@ Item {
     readonly property font pinLabelFont: Theme.pinLabelFont
     onVisibleChanged: {
         takePins();
+        if (!visible)
+            leaveSystems();
         if (visible && restorePending)
             restoreTimer.restart();
     }
@@ -210,6 +188,8 @@ Item {
         focusRevealHeld = false;
         if (holdsFocus(sectionItem(section)) && !listenTabs.focusCurrent())
             scrollBody.forceActiveFocus();
+        if (section === "systems")
+            leaveSystems();
         section = id;
         if (prefsStore && prefsStore.listenSection !== undefined)
             prefsStore.listenSection = id;
@@ -356,6 +336,310 @@ Item {
         focusRevealHeld = true;
     }
 
+    // Saved systems: one card per site group or system from savedSystemCards,
+    // searched and sorted. A card names its systems by uid; the row is looked
+    // up when a control acts, never held across a change.
+    Binding {
+        target: savedSystemCards
+        property: "protocolLabels"
+        value: screen.decodeLabels()
+    }
+    // With a screen reader on, a reorder is a reset (Android hears of a move
+    // only through a hide and show), and one nobody asked for waits while
+    // the cards are on screen.
+    Binding {
+        target: savedSystemCards
+        property: "screenReaderActive"
+        value: typeof screenReader !== "undefined" && screenReader !== null && screenReader.active
+    }
+    Binding {
+        target: savedSystemCards
+        property: "holdReorders"
+        value: screen.visible && screen.section === "systems"
+    }
+    // The protocol label search finds a card by, per decode flag (the cards'
+    // meta line's), with "" for any other flag.
+    function decodeLabels() {
+        var labels = {"": Util.decodeLabel("")};
+        for (var mode of Util.DECODE_MODES)
+            labels[mode.flag] = mode.short;
+        for (var flag in Util.LEGACY_DECODE_LABELS)
+            labels[flag] = Util.LEGACY_DECODE_LABELS[flag];
+        return labels;
+    }
+    function rowsOf(uid) {
+        var row = savedSystems.rowForUid(uid);
+        if (row < 0)
+            return [];
+        var siblings = savedSystems.siblingRows(row);
+        return siblings.length > 0 ? siblings : [row];
+    }
+    function playCard(playUid) {
+        var row = savedSystems.rowForUid(playUid);
+        if (row >= 0)
+            playSystem(row);
+    }
+    function chooseCardSites(leadUid) {
+        var row = savedSystems.rowForUid(leadUid);
+        if (row >= 0)
+            chooseSites(row);
+    }
+    function manageCard(leadUid, title, rrLinked) {
+        var row = savedSystems.rowForUid(leadUid);
+        if (row >= 0)
+            manageMenu.openFor(row, title, rrLinked);
+    }
+
+    // The order shown: the stored one, except Nearest where this device takes
+    // no location fix, which shows as Name (the cards fall back the same way)
+    // and leaves the stored choice alone.
+    readonly property bool locationSupported: !!decoderHost && decoderHost.locationSupported === true
+    readonly property string shownSort: savedSystemCards.sortId === "nearest" && !locationSupported ? "name" : savedSystemCards.sortId
+    function sortLabel(id) {
+        return id === "name" ? qsTr("Name") : id === "place" ? qsTr("Place") : id === "nearest" ? qsTr("Nearest")
+            : id === "recent" ? qsTr("Last listened") : qsTr("Order added");
+    }
+    function openSortChoices() {
+        var ids = ["name", "place"];
+        if (locationSupported)
+            ids.push("nearest");
+        ids.push("recent", "added");
+        sortSheet.open(qsTr("Sort systems"), ids.map(sortLabel), function (index) {
+            screen.chooseSort(ids[index]);
+        }, ids.indexOf(shownSort));
+    }
+    // The sheet hands the focus back to the pill; the list moves under it.
+    function chooseSort(id) {
+        if (prefsStore && prefsStore.systemsSort !== undefined && prefsStore.systemsSort !== id)
+            prefsStore.systemsSort = id;
+        revealSystemsTop();
+    }
+
+    // Search: the field's text reaches the cards 250 ms after the last key
+    // (as History's), and each change that lands is read out once, with
+    // how many it shows, while Home shows Systems with nothing over it.
+    // A tab switch or Home hiding lands what was typed without reading it.
+    property bool systemsAnnounceOwed: false
+    property string announcedQuery: ""
+    // Navigation.announce()'s record of what was read out.
+    property string announced: ""
+    property int announcements: 0
+    function commitSystemsSearch(announce) {
+        systemsSearchDebounce.stop();
+        if (savedSystemCards.query === systemsSearch.text)
+            return;
+        savedSystemCards.query = systemsSearch.text;
+        systemsAnnounceOwed = announce;
+        // After the cards' own rebuild, which the query change has queued.
+        if (announce)
+            Qt.callLater(screen.announceSystemsCount);
+        revealSystemsTop();
+    }
+    function flushSystemsSearch() {
+        if (systemsSearchDebounce.running)
+            commitSystemsSearch(false);
+    }
+    // From the field's × or Clear search; @a hadFocus: the control had the
+    // keyboard, which then goes to the field (the control goes away).
+    function clearSystemsSearch(hadFocus) {
+        systemsSearch.text = "";
+        commitSystemsSearch(true);
+        if (hadFocus)
+            systemsSearch.input.forceActiveFocus();
+    }
+    readonly property string systemsCountText: qsTr("%1 of %2 systems").arg(savedSystemCards.shownCount).arg(savedSystemCards.totalCount)
+    readonly property string noMatchText: qsTr("No saved systems match “%1”").arg(savedSystemCards.query)
+    function announceSystemsCount() {
+        if (!systemsAnnounceOwed)
+            return;
+        systemsAnnounceOwed = false;
+        if (!visible || section !== "systems" || savedSystemCards.totalCount < 1 || !Navigation.allows(listenSystemsSection))
+            return;
+        var query = savedSystemCards.query;
+        var text = query.length > 0 && savedSystemCards.shownCount === 0 ? noMatchText : systemsCountText;
+        if (query === announcedQuery && text === announced)
+            return;
+        if (Navigation.announce(screen, null, text))
+            announcedQuery = query;
+    }
+    Timer {
+        id: systemsSearchDebounce
+        interval: 250
+        onTriggered: screen.commitSystemsSearch(true)
+    }
+    // With the last system gone the controls go too: the search is dropped,
+    // and a keyboard on them moves to Add a system.
+    Connections {
+        target: savedSystemCards
+        function onTotalCountChanged() {
+            if (savedSystemCards.totalCount > 0)
+                return;
+            var focused = screen.holdsFocus(systemsControls);
+            systemsSearchDebounce.stop();
+            systemsSearch.text = "";
+            savedSystemCards.query = "";
+            if (focused)
+                addSystemButton.forceActiveFocus();
+        }
+    }
+    // Leaving Systems (another tab, or Home hidden): what was typed lands
+    // unread, a location request is given up and an update's summary goes.
+    function leaveSystems() {
+        flushSystemsSearch();
+        cancelNearestLocation();
+        locationNotice = "";
+        rrSummaryShown = false;
+    }
+
+    // Brings the search row into view after a change the user asked for, on
+    // Systems only. It leaves a tab's place still owed to its restore and a
+    // revealTop() claim (a failure card) alone, and moves only up to the row.
+    function revealSystemsTop() {
+        if (!visible || section !== "systems" || restorePending || focusRevealHeld || !systemsControls.shown)
+            return;
+        content.forceLayout();
+        var top = systemsControls.mapToItem(scrollBody.contentItem, 0, 0).y - Theme.gap;
+        if (scrollBody.contentY > top) {
+            scrollBody.cancelFlick();
+            scrollBody.contentY = clampedScroll(top);
+        }
+    }
+
+    // A card that leaves with the keyboard on it (filtered out, removed) hands
+    // it to the search field, or to Add a system with nothing saved; checked
+    // once the cards and a closing sheet's own hand-back have settled.
+    property bool systemsFocusOwed: false
+    function noteCardRemoved(item) {
+        if (!holdsFocus(item))
+            return;
+        systemsFocusOwed = true;
+        systemsFocusTimer.restart();
+    }
+    function focusLost(item) {
+        return !item || item === scrollBody || item === content || item === listenSystemsSection
+            || Navigation.contains(item, screen) || !Navigation.presented(item);
+    }
+    function settleSystemsFocus() {
+        if (!systemsFocusOwed || Navigation.topModal)
+            return;
+        systemsFocusOwed = false;
+        var window = screen.Window.window;
+        if (!window || !visible || !focusLost(window.activeFocusItem))
+            return;
+        if (systemsControls.shown)
+            systemsSearch.input.forceActiveFocus();
+        else
+            addSystemButton.forceActiveFocus();
+    }
+    Timer {
+        id: systemsFocusTimer
+        interval: 0
+        onTriggered: screen.settleSystemsFocus()
+    }
+
+    // Nearest: the location fix is asked for only from its own button, under
+    // the site chooser's contract: one request id (radioReference's), a newer
+    // request anywhere supersedes it, Home hiding or leaving Systems cancels
+    // it. The cards are told the next location change is the user's own, and
+    // told again when the request ends without one.
+    property double locationId: 0
+    property string locationNotice: ""
+    readonly property bool hasFix: !!prefsStore && prefsStore.lastFixAt > 0
+    function requestNearestLocation() {
+        locationNotice = "";
+        var previous = locationId;
+        locationId = 0;
+        if (previous)
+            decoderHost.cancelLocationRequest(previous);
+        locationId = radioReference.nextLocationRequestId();
+        savedSystemCards.markLocationRequested();
+        decoderHost.requestSiteLocation(locationId);
+    }
+    function cancelNearestLocation() {
+        if (!locationId)
+            return;
+        decoderHost.cancelLocationRequest(locationId);
+        locationId = 0;
+        savedSystemCards.clearLocationRequest();
+    }
+    Component.onDestruction: cancelNearestLocation()
+    Connections {
+        target: radioReference
+        ignoreUnknownSignals: true
+        function onLocationRequestAllocated(requestId) {
+            if (screen.locationId && screen.locationId !== requestId) {
+                decoderHost.cancelLocationRequest(screen.locationId);
+                screen.locationId = 0;
+                savedSystemCards.clearLocationRequest();
+            }
+        }
+    }
+    Connections {
+        target: decoderHost
+        ignoreUnknownSignals: true
+        function onLocationResult(requestId, fixOk, lat, lon, accuracyM, fixAtMs, geocodeOk, postal, country, error) {
+            if (!screen.locationId || requestId !== screen.locationId)
+                return;
+            screen.locationId = 0;
+            if (fixOk && screen.prefsStore && typeof screen.prefsStore.setLocationFix === "function")
+                screen.prefsStore.setLocationFix(lat, lon, fixAtMs, accuracyM);
+            // Spent by the change the fix made; a fix that changed nothing, or none, leaves no mark behind.
+            savedSystemCards.clearLocationRequest();
+            var placed = fixOk && screen.hasFix;
+            screen.locationNotice = placed ? "" : screen.hasFix ? qsTr("Location unavailable. Distances still use your saved location. Try again.") : qsTr("Location unavailable. Check location access in your device settings, then try again.");
+            if (placed)
+                screen.revealSystemsTop();
+        }
+        // A permission prompt Android closed unanswered: nothing failed.
+        function onLocationCancelled(requestId) {
+            if (screen.locationId && requestId === screen.locationId) {
+                screen.locationId = 0;
+                savedSystemCards.clearLocationRequest();
+            }
+        }
+    }
+    // How old the fix is, as the location line says it.
+    function fixAgeText(fixAtMs, nowMs) {
+        var minutes = Math.max(0, Math.floor((nowMs - fixAtMs) / 60000));
+        if (minutes < 1)
+            return qsTr("a moment ago");
+        if (minutes < 60)
+            return qsTr("%1 min ago").arg(minutes);
+        return qsTr("%1 h ago").arg(Math.floor(minutes / 60));
+    }
+    readonly property string locationText: locationId ? qsTr("Finding your location…") : locationNotice.length > 0 ? locationNotice
+        : hasFix ? qsTr("Using your location from %1").arg((heardTick, fixAgeText(prefsStore.lastFixAt, savedSystems.realtimeNowMs())))
+        : qsTr("Nearest needs your location")
+
+    // Update from RadioReference (the card's menu and the place notice):
+    // signed out, the account screen opens instead. Its progress and, once
+    // done, its summary show above the cards until Systems is left.
+    property bool rrSummaryShown: false
+    function updateFromRadioReference(uids) {
+        if (!rrPlaces.updateFromRadioReference(uids)) {
+            openRadioReferenceAccount();
+            return;
+        }
+        rrSummaryShown = true;
+    }
+    function updateAllFromRadioReference() {
+        var uids = [];
+        for (var row = 0; row < savedSystems.count; ++row)
+            uids.push(savedSystems.get(row).uid);
+        updateFromRadioReference(uids);
+    }
+    Connections {
+        target: rrPlaces
+        ignoreUnknownSignals: true
+        function onUpdateFinished() {
+            Qt.callLater(screen.announceRrSummary);
+        }
+    }
+    function announceRrSummary() {
+        if (rrSummaryShown && visible && section === "systems" && rrPlaces.summaryText.length > 0)
+            Navigation.announce(screen, rrSummaryLine, rrPlaces.summaryText);
+    }
+
     // Issue #646 B3: keyboard focus moving onto a control in the body scrolls
     // it into view once the move has settled. The timer is owned, so a scroll
     // with a stronger claim can cancel a reveal still pending: revealTop()
@@ -410,6 +694,59 @@ Item {
         font.weight: Font.Bold
         font.letterSpacing: -0.24
         color: Theme.textPrimary
+    }
+
+    // A line over the saved systems (and an optional second one) with its
+    // action beside it, the action dropping under the lines, left-aligned,
+    // when both do not fit. Its height is keyed on `shown`, never `visible`.
+    component SystemsNotice: Item {
+        id: notice
+
+        property bool shown: true
+        property alias text: noticeText.text
+        property alias textObjectName: noticeText.objectName
+        property alias detail: noticeDetail.text
+        property alias actionText: noticeAction.text
+        property alias actionObjectName: noticeAction.objectName
+        property alias actionEnabled: noticeAction.enabled
+        // @a hadFocus: the action had the keyboard when pressed.
+        signal action(bool hadFocus)
+        readonly property bool stacked: Math.max(noticeText.implicitWidth, noticeDetail.visible ? noticeDetail.implicitWidth : 0)
+            + Theme.gap + noticeAction.implicitWidth > width
+        visible: shown
+        width: parent ? parent.width : 0
+        height: !shown ? 0 : stacked ? noticeLines.height + 6 + noticeAction.height : Math.max(noticeLines.height, noticeAction.height)
+
+        Column {
+            id: noticeLines
+            width: notice.stacked ? notice.width : notice.width - noticeAction.width - Theme.gap
+            y: notice.stacked ? 0 : (notice.height - height) / 2
+            spacing: 2
+            ReadableText {
+                id: noticeText
+                width: parent.width
+                wrapMode: Text.Wrap
+                color: Theme.textPrimary
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(14)
+            }
+            ReadableText {
+                id: noticeDetail
+                width: parent.width
+                visible: text.length > 0
+                wrapMode: Text.Wrap
+                color: Theme.textSecondary
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(13)
+            }
+        }
+        OutlineButton {
+            id: noticeAction
+            x: notice.stacked ? 0 : notice.width - width
+            y: notice.stacked ? noticeLines.height + 6 : (notice.height - height) / 2
+            width: Math.min(implicitWidth, notice.width)
+            onClicked: notice.action(activeFocus)
+        }
     }
 
     Rectangle {
@@ -858,6 +1195,7 @@ Item {
                     width: parent.width
                     spacing: 6
                     DashedActionButton {
+                        id: addSystemButton
                         objectName: "addSystemButton"
                         width: parent.width
                         text: qsTr("+ Add a system")
@@ -874,14 +1212,215 @@ Item {
                     }
                 }
 
+                // Search and Sort, whenever a system is saved. One row while
+                // the pill takes at most 40% of it and the field keeps 180 px;
+                // otherwise the field, then the pill under it, left-aligned.
+                // Tab order: the field, its ×, the pill. Heights are keyed on
+                // their own conditions, never on `visible` (issue #646 B1).
+                Item {
+                    id: systemsControls
+
+                    objectName: "systemsControls"
+                    readonly property bool shown: savedSystemCards.totalCount >= 1
+                    readonly property bool stacked: sortPill.implicitWidth > 0.4 * width || width - sortPill.implicitWidth - Theme.gap < 180
+                    visible: shown
+                    width: parent.width
+                    height: shown ? (stacked ? systemsSearch.height + 8 + sortPill.height : Math.max(systemsSearch.height, sortPill.height)) : 0
+
+                    PlexTextField {
+                        id: systemsSearch
+
+                        objectName: "systemsSearch"
+                        width: systemsControls.stacked ? parent.width : parent.width - sortPill.width - Theme.gap
+                        height: implicitHeight
+                        label: qsTr("Search saved systems")
+                        inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
+                        // Room for the × over the end of the line.
+                        input.anchors.rightMargin: systemsSearchClear.visible ? systemsSearchClear.width + 4 : 14
+                        // Changed from outside (a reset, the last system removed): the field follows.
+                        Binding {
+                            target: systemsSearch
+                            property: "text"
+                            value: savedSystemCards.query
+                        }
+                        onTextChanged: {
+                            if (text !== savedSystemCards.query)
+                                systemsSearchDebounce.restart();
+                            else
+                                systemsSearchDebounce.stop();
+                        }
+                        Component.onCompleted: input.Accessible.searchEdit = true
+                    }
+                    IconButton {
+                        id: systemsSearchClear
+
+                        objectName: "systemsSearchClear"
+                        icon: "close"
+                        accessibleName: qsTr("Clear search")
+                        visible: systemsSearch.text.length > 0
+                        x: systemsSearch.x + systemsSearch.width - width - 2
+                        y: systemsSearch.y + systemsSearch.labelHeight + (systemsSearch.height - systemsSearch.labelHeight - systemsSearch.helperHeight - height) / 2
+                        onClicked: screen.clearSystemsSearch(activeFocus)
+                    }
+                    FilterPill {
+                        id: sortPill
+
+                        objectName: "systemsSortPill"
+                        x: systemsControls.stacked ? 0 : parent.width - width
+                        y: systemsControls.stacked ? systemsSearch.height + 8 : (parent.height - height) / 2
+                        width: Math.min(implicitWidth, parent.width)
+                        wrapLabel: true
+                        text: qsTr("Sort: %1").arg(screen.sortLabel(screen.shownSort))
+                        accessibleName: qsTr("Sort systems, %1").arg(screen.sortLabel(screen.shownSort))
+                        onClicked: screen.openSortChoices()
+                    }
+                }
+
+                // While a search is applied: how many cards it shows, and the
+                // way back to all of them. With none, the card below says so.
+                SystemsNotice {
+                    id: systemsCount
+
+                    objectName: "systemsSearchCount"
+                    textObjectName: "systemsSearchCountText"
+                    actionObjectName: "systemsClearSearch"
+                    shown: systemsControls.shown && savedSystemCards.query.length > 0 && savedSystemCards.shownCount > 0
+                    text: screen.systemsCountText
+                    actionText: qsTr("Clear search")
+                    onAction: function (hadFocus) {
+                        screen.clearSystemsSearch(hadFocus);
+                    }
+                }
+
+                // Nearest: where the distances are measured from, and the one
+                // way to ask for (or refresh) a fix. Never asked for on its own.
+                SystemsNotice {
+                    objectName: "systemsLocation"
+                    textObjectName: "systemsLocationText"
+                    actionObjectName: "systemsLocationButton"
+                    shown: systemsControls.shown && screen.shownSort === "nearest"
+                    text: screen.locationText
+                    detail: !screen.hasFix && !screen.locationId && !screen.locationNotice.length ? qsTr("Showing names until a location arrives") : ""
+                    actionText: screen.hasFix ? qsTr("Update location") : qsTr("Use my location")
+                    actionEnabled: !screen.locationId
+                    onAction: screen.requestNearestLocation()
+                }
+
+                // Place and Nearest order cards by place: the systems an update
+                // could place, and that update.
+                SystemsNotice {
+                    objectName: "systemsPlaceNotice"
+                    textObjectName: "systemsPlaceNoticeText"
+                    actionObjectName: "systemsPlaceUpdate"
+                    shown: systemsControls.shown && (screen.shownSort === "place" || screen.shownSort === "nearest")
+                        && rrPlaces.unplacedText.length > 0 && !rrPlaces.updating
+                    text: rrPlaces.unplacedText
+                    actionText: qsTr("Update from RadioReference")
+                    onAction: screen.updateAllFromRadioReference()
+                }
+
+                // An Update from RadioReference started here: how far it is,
+                // with Cancel, then what it did.
+                Item {
+                    id: rrStatus
+
+                    objectName: "systemsRrStatus"
+                    readonly property bool shown: systemsControls.shown && (rrPlaces.updating || (screen.rrSummaryShown && rrPlaces.summaryText.length > 0))
+                    readonly property bool stacked: rrProgress.implicitWidth + Theme.gap + rrCancel.implicitWidth > width
+                    visible: shown
+                    width: parent.width
+                    height: !shown ? 0 : !rrPlaces.updating ? rrSummaryLine.height
+                        : stacked ? rrProgress.height + 6 + rrCancel.height : Math.max(rrProgress.height, rrCancel.height)
+
+                    // Moves with every system done, so it is paced for a screen reader.
+                    LiveText {
+                        id: rrProgress
+                        objectName: "systemsRrProgress"
+                        visible: rrPlaces.updating
+                        width: rrStatus.stacked ? parent.width : Math.min(implicitWidth, parent.width)
+                        y: rrStatus.stacked ? 0 : (parent.height - height) / 2
+                        text: rrPlaces.progressText
+                        wrapMode: Text.Wrap
+                        color: Theme.textSecondary
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(14)
+                    }
+                    OutlineButton {
+                        id: rrCancel
+                        objectName: "systemsRrCancel"
+                        visible: rrPlaces.updating
+                        x: rrStatus.stacked ? 0 : parent.width - width
+                        y: rrStatus.stacked ? rrProgress.height + 6 : (parent.height - height) / 2
+                        width: Math.min(implicitWidth, parent.width)
+                        text: qsTr("Cancel")
+                        onClicked: rrPlaces.cancelUpdate()
+                    }
+                    ReadableText {
+                        id: rrSummaryLine
+                        objectName: "systemsRrSummary"
+                        visible: !rrPlaces.updating
+                        width: parent.width
+                        text: rrPlaces.summaryText
+                        wrapMode: Text.Wrap
+                        color: Theme.textSecondary
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(14)
+                    }
+                }
+
+                // A search that matches nothing says so, and offers the way back.
+                UiPanel {
+                    id: systemsNoMatch
+
+                    objectName: "systemsNoMatch"
+                    readonly property bool shown: systemsControls.shown && savedSystemCards.query.length > 0 && savedSystemCards.shownCount === 0
+                    visible: shown
+                    width: parent.width
+                    height: shown ? noMatchBody.implicitHeight + 2 * Theme.cardPadding : 0
+                    Column {
+                        id: noMatchBody
+                        x: Theme.cardPadding
+                        y: Theme.cardPadding
+                        width: parent.width - 2 * Theme.cardPadding
+                        spacing: 10
+                        ReadableText {
+                            objectName: "systemsNoMatchText"
+                            width: parent.width
+                            text: screen.noMatchText
+                            wrapMode: Text.Wrap
+                            color: Theme.textPrimary
+                            font.family: Theme.sans
+                            font.pixelSize: Theme.fontSize(15)
+                        }
+                        OutlineButton {
+                            objectName: "systemsNoMatchClear"
+                            width: Math.min(implicitWidth, parent.width)
+                            text: qsTr("Clear search")
+                            onClicked: screen.clearSystemsSearch(activeFocus)
+                        }
+                    }
+                }
+
+                // A card per site group or system, in the order chosen. A card
+                // that moves keeps its delegate (and the keyboard on it); one
+                // that leaves hands the keyboard on (noteCardRemoved()).
                 Repeater {
-                    model: savedSystems
+                    id: systemCards
 
-                    UiPanel {
-                        id: card
+                    model: savedSystemCards
+                    onItemRemoved: function (index, item) {
+                        screen.noteCardRemoved(item);
+                    }
 
-                        required property int index
-                        required property string name
+                    Column {
+                        id: entry
+
+                        objectName: "savedSystemEntry"
+                        required property string key
+                        required property string leadUid
+                        required property string playUid
+                        required property string title
+                        required property int siteCount
                         required property string sourceType
                         required property string host
                         required property int port
@@ -889,137 +1428,170 @@ Item {
                         required property string decodeFlag
                         required property bool trunking
                         required property string filePath
-                        required property string encKeyType
-                        required property string keyCsvPath
+                        required property bool keyConfigured
                         required property double lastHeard
+                        required property bool refreshHint
+                        required property string placeLabel
+                        required property double distanceKm
+                        required property string section
+                        required property bool sectionStart
+                        required property bool rrLinked
 
                         width: content.width
-                        property var siblings: (screen.siteRevision, savedSystems.siblingRows(index))
-                        // One card per group of sites, on its first site. Keyed on
-                        // its own condition, not on `visible`, which also goes false
-                        // while Main hides Home and would collapse the body (issue #646 B1).
-                        readonly property bool shown: siblings.length === 0 || siblings[0] === index
-                        readonly property bool hasSites: siblings.length > 0
-                        visible: shown
-                        height: shown ? fullHeight : 0
-                        readonly property var playableSites: siblings.filter(function (row) {
-                            return !savedSystems.get(row).avoidSite;
-                        })
-                        // Play's own condition, which the site button lines up
-                        // against: never Play's `visible`, which also goes false
-                        // with the section or Home hidden (issue #646).
-                        readonly property bool playShown: siblings.length === 0 || playableSites.length === 1
-                        property bool refreshHint: (screen.siteRevision, screen.needsSiteRefresh(index))
+                        spacing: 8
 
-                        // Issue #646 B8: as tall as what it holds, so larger text grows
-                        // the card instead of running its labels into the hint or past
-                        // its edges. At normal text that is the actions' 122 px, as
-                        // before. Play counts even while it is hidden (several sites to
-                        // play): the site button is centred on it.
-                        readonly property real actionsBottom: Math.max(manageButton.y + manageButton.height, play.y + play.height,
-                            hasSites ? siteButton.y + siteButton.height : 0)
-                        readonly property real labelsBottom: labels.y + labels.height
-                        // The hint takes the full width, so it starts below both.
-                        readonly property real hintTop: Math.max(labelsBottom, actionsBottom) + 8
-                        readonly property real fullHeight: (refreshHint ? hintTop + refreshHintText.height : Math.max(labelsBottom, actionsBottom)) + Theme.cardPadding
-
-                        Column {
-                            id: labels
-                            anchors.left: parent.left
-                            anchors.right: card.hasSites ? siteButton.left : play.left
-                            anchors.leftMargin: Theme.cardPadding
-                            anchors.rightMargin: 12
-                            // Centred 10 px above the middle of the actions' box: the
-                            // actions plus the bottom padding, 122 px at normal text,
-                            // so they sit where they always have; never above the top
-                            // padding.
-                            y: Math.max(Theme.cardPadding, (card.actionsBottom + Theme.cardPadding - height) / 2 - 10)
-                            spacing: 4
-
-                            ReadableText {
-                                width: parent.width
-                                objectName: "savedSystemTitle"
-                                text: card.name
-                                font.family: Theme.sans
-                                font.pixelSize: Theme.fontSize(17)
-                                font.weight: Font.Bold
-                                color: Theme.textPrimary
-                                elide: Text.ElideRight
-                            }
-
-                            ReadableText {
-                                width: parent.width
-                                text: Util.systemMeta(card)
-                                font.family: Theme.mono
-                                font.pixelSize: Theme.fontSize(12)
-                                color: Theme.textSubdued
-                                elide: Text.ElideRight
-                            }
-
-                            ReadableText {
-                                width: parent.width
-                                // heardTick forces the minute-by-minute refresh.
-                                objectName: "savedSystemMeta"
-                                text: ((card.encKeyType.length > 0 || card.keyCsvPath.length > 0) ? qsTr("key configured") + " · " : "") + (screen.heardTick, Util.heardText(card.lastHeard, savedSystems.realtimeNowMs()))
-                                font.family: Theme.sans
-                                font.pixelSize: Theme.fontSize(13)
-                                color: Theme.textSecondary
-                                elide: Text.ElideRight
-                            }
-                        }
-
-                        ReadableText {
-                            id: refreshHintText
-                            objectName: "savedSystemRefreshHint"
-                            x: Theme.cardPadding
-                            y: card.hintTop
-                            width: parent.width - 2 * Theme.cardPadding
-                            visible: card.refreshHint
-                            text: qsTr("Refresh from RadioReference to enable site grouping")
+                        // Place and Nearest order: the section's name over its first card.
+                        MicroLabel {
+                            objectName: "savedSystemSection"
+                            visible: entry.sectionStart && entry.section.length > 0
+                            width: parent.width
+                            topPadding: 6
                             wrapMode: Text.Wrap
-                            color: Theme.textSecondary
-                            font.pixelSize: Theme.fontSize(12)
-                        }
-                        OutlineButton {
-                            id: siteButton
-                            objectName: "homeSiteChooserButton"
-                            accessibleName: qsTr("Choose sites for %1").arg(card.name)
-                            width: implicitWidth
-                            anchors.right: parent.right
-                            anchors.verticalCenter: play.verticalCenter
-                            anchors.rightMargin: card.playShown ? Theme.cardPadding + play.width + 8 : Theme.cardPadding
-                            text: card.siblings.length === 1 ? qsTr("1 site") : qsTr("%1 sites").arg(card.siblings.length)
-                            visible: card.hasSites
-                            onClicked: screen.chooseSites(card.index)
-                        }
-                        PlayCircle {
-                            id: play
-                            accessibleName: card.sourceType === "file" ? qsTr("Play %1").arg(card.name) : qsTr("Listen to %1").arg(card.name)
-                            objectName: "savedSystemPlay"
-                            visible: card.playShown
-                            anchors.right: parent.right
-                            anchors.rightMargin: Theme.cardPadding
-                            anchors.top: parent.top
-                            anchors.topMargin: Theme.minimumTouchSize + 6
-                            enabled: !decoderHost.transitioning
-                            onClicked: screen.playSystem(card.playableSites.length === 1 ? card.playableSites[0] : card.index)
+                            text: entry.section
                         }
 
-                        IconButton {
-                            id: manageButton
-                            objectName: "savedSystemManageButton"
-                            icon: "more"
-                            accessibleName: qsTr("More options for %1").arg(card.name)
-                            anchors.right: parent.right
-                            anchors.rightMargin: Theme.cardPadding + (play.width - width) / 2
-                            anchors.top: parent.top
-                            onClicked: manageMenu.openFor(card.index, card.name)
-                        }
-                        // Long-press manages the card: the design keeps card faces clean,
-                        // so destructive actions hide behind the press.
-                        GatedTapHandler {
-                            acceptedButtons: Qt.LeftButton
-                            onAllowedLongPress: manageMenu.openFor(card.index, card.name)
+                        UiPanel {
+                            id: card
+
+                            objectName: "savedSystemCard"
+                            // The card's own name for its systems, as its Listen pin says it.
+                            readonly property string name: entry.title
+                            readonly property bool hasSites: entry.siteCount > 0
+                            // Play's own condition, which the site button lines up
+                            // against: never Play's `visible`, which also goes false
+                            // with the section or Home hidden (issue #646).
+                            readonly property bool playShown: entry.playUid.length > 0
+                            readonly property bool refreshHint: entry.refreshHint
+                            readonly property string placeText: [entry.placeLabel, savedSystemCards.effectiveSort === "nearest" ? Util.fmtDistanceKm(entry.distanceKm, !!screen.prefsStore && screen.prefsStore.metricUnits === true) : ""].filter(function (part) {
+                                return part.length > 0;
+                            }).join(" · ")
+
+                            width: parent.width
+                            height: fullHeight
+
+                            // Issue #646 B8: as tall as what it holds, so larger text grows
+                            // the card instead of running its labels into the hint or past
+                            // its edges. At normal text that is the actions' 122 px, as
+                            // before. Play counts even while it is hidden (several sites to
+                            // play): the site button is centred on it.
+                            readonly property real actionsBottom: Math.max(manageButton.y + manageButton.height, play.y + play.height,
+                                hasSites ? siteButton.y + siteButton.height : 0)
+                            readonly property real labelsBottom: labels.y + labels.height
+                            // The hint takes the full width, so it starts below both.
+                            readonly property real hintTop: Math.max(labelsBottom, actionsBottom) + 8
+                            readonly property real fullHeight: (refreshHint ? hintTop + refreshHintText.height : Math.max(labelsBottom, actionsBottom)) + Theme.cardPadding
+
+                            Column {
+                                id: labels
+                                anchors.left: parent.left
+                                anchors.right: card.hasSites ? siteButton.left : play.left
+                                anchors.leftMargin: Theme.cardPadding
+                                anchors.rightMargin: 12
+                                // Centred 10 px above the middle of the actions' box: the
+                                // actions plus the bottom padding, 122 px at normal text,
+                                // so they sit where they always have; never above the top
+                                // padding.
+                                y: Math.max(Theme.cardPadding, (card.actionsBottom + Theme.cardPadding - height) / 2 - 10)
+                                spacing: 4
+
+                                ReadableText {
+                                    width: parent.width
+                                    objectName: "savedSystemTitle"
+                                    text: card.name
+                                    font.family: Theme.sans
+                                    font.pixelSize: Theme.fontSize(17)
+                                    font.weight: Font.Bold
+                                    color: Theme.textPrimary
+                                    elide: Text.ElideRight
+                                }
+
+                                ReadableText {
+                                    width: parent.width
+                                    text: Util.systemMeta(entry)
+                                    font.family: Theme.mono
+                                    font.pixelSize: Theme.fontSize(12)
+                                    color: Theme.textSubdued
+                                    elide: Text.ElideRight
+                                }
+
+                                // Where it is, and in Nearest order how far.
+                                ReadableText {
+                                    width: parent.width
+                                    objectName: "savedSystemPlace"
+                                    visible: card.placeText.length > 0
+                                    text: card.placeText
+                                    font.family: Theme.sans
+                                    font.pixelSize: Theme.fontSize(13)
+                                    color: Theme.textSecondary
+                                    elide: Text.ElideRight
+                                }
+
+                                ReadableText {
+                                    width: parent.width
+                                    // heardTick forces the minute-by-minute refresh.
+                                    objectName: "savedSystemMeta"
+                                    text: (entry.keyConfigured ? qsTr("key configured") + " · " : "") + (screen.heardTick, Util.heardText(entry.lastHeard, savedSystems.realtimeNowMs()))
+                                    font.family: Theme.sans
+                                    font.pixelSize: Theme.fontSize(13)
+                                    color: Theme.textSecondary
+                                    elide: Text.ElideRight
+                                }
+                            }
+
+                            ReadableText {
+                                id: refreshHintText
+                                objectName: "savedSystemRefreshHint"
+                                x: Theme.cardPadding
+                                y: card.hintTop
+                                width: parent.width - 2 * Theme.cardPadding
+                                visible: card.refreshHint
+                                text: qsTr("Refresh from RadioReference to enable site grouping")
+                                wrapMode: Text.Wrap
+                                color: Theme.textSecondary
+                                font.pixelSize: Theme.fontSize(12)
+                            }
+                            OutlineButton {
+                                id: siteButton
+                                objectName: "homeSiteChooserButton"
+                                // Says its label too ("2 sites"), which a screen reader otherwise never hears.
+                                accessibleName: qsTr("Choose sites for %1, %2").arg(card.name).arg(text)
+                                width: implicitWidth
+                                anchors.right: parent.right
+                                anchors.verticalCenter: play.verticalCenter
+                                anchors.rightMargin: card.playShown ? Theme.cardPadding + play.width + 8 : Theme.cardPadding
+                                text: entry.siteCount === 1 ? qsTr("1 site") : qsTr("%1 sites").arg(entry.siteCount)
+                                visible: card.hasSites
+                                onClicked: screen.chooseCardSites(entry.leadUid)
+                            }
+                            PlayCircle {
+                                id: play
+                                accessibleName: entry.sourceType === "file" ? qsTr("Play %1").arg(card.name) : qsTr("Listen to %1").arg(card.name)
+                                objectName: "savedSystemPlay"
+                                visible: card.playShown
+                                anchors.right: parent.right
+                                anchors.rightMargin: Theme.cardPadding
+                                anchors.top: parent.top
+                                anchors.topMargin: Theme.minimumTouchSize + 6
+                                enabled: !decoderHost.transitioning
+                                onClicked: screen.playCard(entry.playUid)
+                            }
+
+                            IconButton {
+                                id: manageButton
+                                objectName: "savedSystemManageButton"
+                                icon: "more"
+                                accessibleName: qsTr("More options for %1").arg(card.name)
+                                anchors.right: parent.right
+                                anchors.rightMargin: Theme.cardPadding + (play.width - width) / 2
+                                anchors.top: parent.top
+                                onClicked: screen.manageCard(entry.leadUid, card.name, entry.rrLinked)
+                            }
+                            // Long-press manages the card: the design keeps card faces clean,
+                            // so destructive actions hide behind the press.
+                            GatedTapHandler {
+                                acceptedButtons: Qt.LeftButton
+                                onAllowedLongPress: screen.manageCard(entry.leadUid, card.name, entry.rrLinked)
+                            }
                         }
                     }
                 }
@@ -1313,13 +1885,17 @@ Item {
         property string systemUid: ""
         property string systemName: ""
 
-        function openFor(row, name) {
+        // @a rrLinked: the card's systems come from RadioReference (a site, or
+        // a place), so Update from RadioReference is offered.
+        function openFor(row, name, rrLinked) {
             systemUid = savedSystems.get(row).uid;
             systemName = name;
             var items = [{text: qsTr("Edit"), key: "edit", objectName: "editSavedSystemButton"}];
             if (savedSystems.siblingRows(row).length > 1)
                 items.push({text: qsTr("Sites"), key: "sites", objectName: "sitesSavedSystemButton"});
             items.push(screen.pinAction("system", systemUid, "pinSavedSystemButton"));
+            if (rrLinked === true)
+                items.push({text: qsTr("Update from RadioReference"), key: "rrUpdate", objectName: "updateSavedSystemButton"});
             items.push({text: qsTr("Remove…"), key: "remove", destructive: true, objectName: "removeSavedSystemButton"});
             actions = items;
             open();
@@ -1335,6 +1911,10 @@ Item {
                 screen.chooseSites(row);
             else if (key === "pin")
                 screen.togglePin("system", systemUid, actions[index].pinned);
+            else if (key === "rrUpdate")
+                screen.updateFromRadioReference(screen.rowsOf(systemUid).map(function (member) {
+                    return savedSystems.get(member).uid;
+                }));
             else if (key === "remove")
                 removeSystem.openFor(row);
             // Any other key does nothing; it used to fall through to Remove.
@@ -1415,6 +1995,13 @@ Item {
             if (actions[index].key === "pin")
                 screen.togglePin("search", "", actions[index].pinned);
         }
+    }
+
+    // Sort: the order choices, the one shown checked.
+    ChoiceSheet {
+        id: sortSheet
+        objectName: "systemsSortSheet"
+        choiceObjectNamePrefix: "systemsSortChoice"
     }
 
     PinnedSheet {

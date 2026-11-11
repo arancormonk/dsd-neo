@@ -56,6 +56,16 @@ ModalSheet {
     signal restartSite(string uid)
     signal editSite(int row)
     signal userAction
+    // Update from RadioReference needs the account: signed out, the sheet
+    // closes and Main opens it.
+    signal openRadioReferenceAccount
+    // A site with no coordinates: Update from RadioReference reads the sites
+    // again (B12: re-importing one added a second copy of it).
+    readonly property bool missingPositions: (revision, rows.some(function (row) {
+        return !savedSystems.get(row).hasSitePos;
+    }))
+    // An update this sheet started, whose summary it then shows.
+    property bool rrUpdateStarted: false
     function orderedRows() {
         var siblings = savedSystems.siblingRows(groupRow);
         if (prefs.lastFixAt <= 0)
@@ -80,6 +90,7 @@ ModalSheet {
         notice = "";
         avoidFailedUid = "";
         locationUpdated = false;
+        rrUpdateStarted = false;
         refresh();
         visible = rows.length > 0;
     }
@@ -125,6 +136,18 @@ ModalSheet {
         else
             listenPins.pin("site", uid);
     }
+    function updateFromRadioReference() {
+        userAction();
+        var uids = rows.map(function (row) {
+            return savedSystems.get(row).uid;
+        });
+        if (!rrPlaces.updateFromRadioReference(uids)) {
+            visible = false;
+            openRadioReferenceAccount();
+            return;
+        }
+        rrUpdateStarted = true;
+    }
     function useLocation() {
         userAction();
         notice = "";
@@ -157,6 +180,14 @@ ModalSheet {
     Connections {
         target: savedSystems
         function onSitesChanged() {
+            sheet.refresh();
+        }
+    }
+    // What an update changed (names, positions) shows at once.
+    Connections {
+        target: rrPlaces
+        ignoreUnknownSignals: true
+        function onUpdateFinished() {
             sheet.refresh();
         }
     }
@@ -243,6 +274,35 @@ ModalSheet {
             decoderHost.stop();
         }
     }
+    OutlineButton {
+        objectName: "siteUpdateFromRr"
+        width: parent.width
+        visible: sheet.missingPositions
+        enabled: !rrPlaces.updating
+        text: qsTr("Update from RadioReference")
+        onClicked: sheet.updateFromRadioReference()
+    }
+    // Moves with every system done, so it is paced for a screen reader.
+    LiveText {
+        objectName: "siteUpdateProgress"
+        width: parent.width
+        visible: sheet.missingPositions && rrPlaces.updating
+        text: rrPlaces.progressText
+        wrapMode: Text.Wrap
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(14)
+        color: Theme.textSecondary
+    }
+    ReadableText {
+        objectName: "siteUpdateSummary"
+        width: parent.width
+        visible: sheet.rrUpdateStarted && !rrPlaces.updating && text.length > 0
+        text: rrPlaces.summaryText
+        wrapMode: Text.Wrap
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(14)
+        color: Theme.textSecondary
+    }
     Repeater {
         model: sheet.rows
         Column {
@@ -278,7 +338,7 @@ ModalSheet {
                 objectName: "sitePositionNotice" + siteRow.modelData
                 width: parent.width
                 visible: !siteRow.site.hasSitePos
-                text: qsTr("No coordinates. Re-import this site from RadioReference to check for updated location data.")
+                text: qsTr("No coordinates. Use Update from RadioReference in this system's menu to check for new location data.")
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 font.family: Theme.sans

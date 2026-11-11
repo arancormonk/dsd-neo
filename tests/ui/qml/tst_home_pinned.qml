@@ -622,7 +622,7 @@ Item {
             verify(findChild(app, "pinnedStrip").shown, "the strip shows the pin");
 
             menu = openMenu(cardMore("County"), "savedSystemManageSheet");
-            compare(keys(menu), "edit,sites,pin,remove");
+            compare(keys(menu), "edit,sites,pin,rrUpdate,remove");
             tapPin(menu, "pinSavedSystemButton", "Pin to Listen", "Pin County to Listen");
             comparePinned("system:" + solo + ",system:" + sites[0], "the group's card pins its lead");
             verify(listenPins.isPinned("system", sites[1]), "every site of the group shows the card pinned");
@@ -659,8 +659,9 @@ Item {
             var home = showHome();
             var cardOf = function (uid) {
                 return visualChild(home, function (entry) {
+                    // The card's entry names the group by its lead site.
                     return entry.objectName === "savedSystemManageButton" && entry.visible
-                        && entry.parent.index === savedSystems.rowForUid(uid);
+                        && entry.parent.parent.leadUid === uid;
                 });
             };
             var siteButtons = [];
@@ -690,7 +691,7 @@ Item {
             showHome();
             var more = visualChild(findChild(app, "homeScreen"), function (entry) {
                 return entry.objectName === "savedSystemManageButton" && entry.visible
-                    && entry.parent.index === savedSystems.rowForUid(sites[1]);
+                    && entry.parent.parent.leadUid === sites[1];
             });
             verify(more !== null, "the standalone card's More");
             var menu = openMenu(more, "savedSystemManageSheet");

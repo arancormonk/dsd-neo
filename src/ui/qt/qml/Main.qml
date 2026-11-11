@@ -1841,6 +1841,7 @@ Window {
                 mainRoot.wizardOpen = true;
             }
             onImportSystem: mainRoot.openRadioReference(false)
+            onOpenRadioReferenceAccount: mainRoot.radioReferenceAccountOpen = true
             onChooseSites: function (row) {
                 mainRoot.openSiteChooser(row);
             }
@@ -2621,6 +2622,7 @@ Window {
         onRestartSite: function (uid) {
             mainRoot.restartSite(uid);
         }
+        onOpenRadioReferenceAccount: mainRoot.radioReferenceAccountOpen = true
     }
 
     ModalSheet {

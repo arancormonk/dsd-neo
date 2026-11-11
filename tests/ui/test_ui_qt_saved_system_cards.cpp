@@ -830,6 +830,27 @@ test_location_mark_spent_with_other_changes() {
           alpha >= 0 && f.at(alpha, SavedSystemCards::DistanceKmRole).toDouble() < 1.0 && before > 1.0);
 }
 
+/* R17: a location request that ends without a fix (failed, cancelled, superseded) gives its mark back, so a later
+   fix nobody asked for here is a background change, held on screen. */
+void
+test_location_request_cleared() {
+    Fixture f;
+    add_distance_rows(f);
+    f.cards->setLocationSupported(true);
+    f.prefs.setSystemsSort(QStringLiteral("nearest"));
+    settle();
+    f.cards->setScreenReaderActive(true);
+    f.cards->setHoldReorders(true);
+    Recorder recorder(*f.cards);
+    f.cards->markLocationRequested();
+    f.cards->clearLocationRequest(); // the request failed
+    set_fix(f.prefs, 41.6, -93.6);
+    settle();
+    check("a fix after a cleared request is held",
+          recorder.resets == 0 && recorder.moves == 0
+              && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Alpha"));
+}
+
 /* A held reorder applies as moves once the screen reader is off; a background reorder with one on and no hold is a
    reset. */
 void
@@ -1031,6 +1052,7 @@ main(int argc, char** argv) {
     test_tie_breaks_by_key();
     test_location_request_mark();
     test_location_mark_spent_with_other_changes();
+    test_location_request_cleared();
     test_reader_off_and_unheld_background();
     test_coalescing();
     test_signals_follow_random_changes();

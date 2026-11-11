@@ -64,8 +64,8 @@ Item {
                 name: "Manual"
             });
             home.active = true;
-            verify(home.item.needsSiteRefresh(0));
-            verify(!home.item.needsSiteRefresh(1));
+            verify(refreshHintOf("Legacy"));
+            verify(!refreshHintOf("Manual"));
             compare(savedSystems.siteCount(0), 0);
             compare(savedSystems.siteCount(1), 0);
             savedSystems.add({
@@ -73,7 +73,20 @@ Item {
                 trunking: false,
                 groupCsvPath: libraryPath
             });
-            verify(!home.item.needsSiteRefresh(2));
+            verify(!refreshHintOf("Conventional"));
+        }
+        // Whether Home's card named @a name asks for a refresh, once the cards have followed the saved systems.
+        function refreshHintOf(name) {
+            var card = null;
+            tryVerify(function () {
+                for (var entry of findChild(home.item, "listenSystemsSection").children) {
+                    var found = entry.objectName === "savedSystemEntry" ? findChild(entry, "savedSystemCard") : null;
+                    if (found && found.name === name)
+                        card = found;
+                }
+                return card !== null;
+            }, 1000, name + "'s card");
+            return card.refreshHint;
         }
         function site(id, freq) {
             return {

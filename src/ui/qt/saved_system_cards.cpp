@@ -483,6 +483,11 @@ SavedSystemCards::markLocationRequested() {
     m_locationRequested = true;
 }
 
+void
+SavedSystemCards::clearLocationRequest() {
+    m_locationRequested = false;
+}
+
 int
 SavedSystemCards::rowForKey(const QString& key) const {
     for (int i = 0; i < m_shown.size(); ++i) {

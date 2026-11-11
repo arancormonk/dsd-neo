@@ -9,6 +9,7 @@ Item {
     Ui.SiteChooserSheet { id: sheet }
     SignalSpy { id: starts; target: sheet; signalName: "startSite" }
     SignalSpy { id: switches; target: sheet; signalName: "restartSite" }
+    SignalSpy { id: accountOpened; target: sheet; signalName: "openRadioReferenceAccount" }
     TestCase {
         name: "SiteChooserSheet"
         when: windowShown
@@ -27,6 +28,8 @@ Item {
         }
         function cleanup() {
             sheet.visible = false
+            testContext.resetRrPlaces()
+            accountOpened.clear()
             prefs.metricUnits = false
             prefs.setLocationFix(0, 0, 0)
             testContext.useLifecycleHost(false)
@@ -334,6 +337,39 @@ Item {
             compare(pin.text, "Pin to Listen")
             sheet.sessionState = 2
             verify(pin.visible && pin.enabled, "offered while a session runs")
+        }
+        // B12: a site with no coordinates points at Update from RadioReference (the menu's, and a button here), not at
+        // a re-import that would add a second copy of the site.
+        function test_no_coordinates_offers_update() {
+            verify(!findChild(sheet, "siteUpdateFromRr").visible, "every site placed: nothing to offer")
+            savedSystems.update(1, {hasSitePos: false})
+            sheet.openFor(0)
+            var note = findChild(sheet, "sitePositionNotice1")
+            verify(note.visible)
+            compare(note.text, "No coordinates. Use Update from RadioReference in this system's menu to check for new location data.")
+            var update = findChild(sheet, "siteUpdateFromRr")
+            verify(update.visible && update.enabled)
+            compare(update.text, "Update from RadioReference")
+
+            testContext.setRrPlacesSignedIn(false)
+            update.clicked()
+            verify(!sheet.visible, "signed out: the sheet makes way for the account screen")
+            compare(accountOpened.count, 1)
+            testContext.setRrPlacesSignedIn(true)
+
+            sheet.openFor(0)
+            update.clicked()
+            compare(testContext.rrPlacesUpdateUids(), [savedSystems.get(0).uid, savedSystems.get(1).uid])
+            verify(!update.enabled, "one update at a time")
+            var progress = findChild(sheet, "siteUpdateProgress")
+            verify(progress.visible)
+            compare(progress.text, "Updating 1 of 2")
+            testContext.finishRrPlacesUpdate(2, 0)
+            verify(!progress.visible)
+            var summary = findChild(sheet, "siteUpdateSummary")
+            verify(summary.visible)
+            compare(summary.text, "Updated 2 systems.")
+            verify(sheet.visible)
         }
         function test_avoid_toggle() {
             sheet.setAvoid(1, true)

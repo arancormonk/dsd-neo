@@ -61,6 +61,17 @@ Item {
             }
             return null;
         }
+        // The saved system's card named @a name, once the cards have followed the saved systems.
+        function savedCard(name) {
+            var card = null;
+            tryVerify(function () {
+                card = visualChild(appLoader.item, function (item) {
+                    return item.objectName === "savedSystemCard" && item.name === name;
+                });
+                return card !== null;
+            }, 1000, name + "'s card");
+            return card;
+        }
 
         function test_readiness_updates_without_count_change() {
             var card = visualChild(appLoader.item, "scanListCard");
@@ -189,10 +200,7 @@ Item {
                     rrSid: 12,
                     rrSiteId: 100
                 });
-                var card = visualChild(appLoader.item, function (item) {
-                    return item.name === "Grouped system" && item.sourceType === "usb";
-                });
-                verify(card !== null);
+                var card = savedCard("Grouped system");
                 findChild(appLoader.item, "homeScreen").showSection("systems");
                 var sites = findChild(card, "homeSiteChooserButton");
                 var play = findChild(card, "savedSystemPlay");
@@ -247,10 +255,7 @@ Item {
                 prefs.onboardingDone = true;
                 savedSystems.add({name: "<b>Dock</b>", sourceType: "usb", freqMhz: "851.5"});
                 scanLists.update(0, {name: "<b>Yard</b> &lt;2&gt;"});
-                var card = visualChild(appLoader.item, function (item) {
-                    return item.name === "<b>Dock</b>" && item.sourceType === "usb";
-                });
-                verify(card !== null);
+                var card = savedCard("<b>Dock</b>");
                 var title = findChild(card, "savedSystemTitle");
                 compare(title.text, "<b>Dock</b>");
                 verifyDrawnAsWritten(title, "the saved system's name");
@@ -512,9 +517,7 @@ Item {
                 findChild(appLoader.item, "homeScreen").showSection(data.kind === "scan" ? "scanLists" : "systems");
                 compare(decoderHost.sessionState, 0);
                 tryCompare(uiController, "autoStartBlocked", false);
-                var card = visualChild(appLoader.item, data.kind === "scan" ? "scanListCard" : function (item) {
-                    return item.name === "Manage attached system" && item.sourceType === "usb";
-                });
+                var card = data.kind === "scan" ? visualChild(appLoader.item, "scanListCard") : savedCard("Manage attached system");
                 verify(card !== null);
                 wait(200); // Let the shell's onboarding transition finish before the gesture.
                 mousePress(card, card.width / 4, card.height / 2);

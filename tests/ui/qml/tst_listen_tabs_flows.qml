@@ -234,7 +234,37 @@ Item {
             search.closed();
             verify(!app.signalSearchOpen);
             compareShown("systems", "Listen shows Systems after Signal search closes");
-            compare(visibleNamed(home, "savedSystemPlay").length, 1, "the saved system is listed");
+            tryVerify(function () {
+                return visibleNamed(home, "savedSystemPlay").length === 1;
+            }, 1000, "the saved system is listed");
+        }
+
+        // Update from RadioReference signed out, from Listen or from the site chooser, opens the account screen
+        // over Listen (the chooser makes way for it), and the tab stays.
+        function test_update_signed_out_opens_account_data() {
+            return [{tag: "Listen", from: "home"}, {tag: "site chooser", from: "chooser"}];
+        }
+        function test_update_signed_out_opens_account(data) {
+            var chooser = findChild(app, "siteChooserSheet");
+            try {
+                testContext.setRrPlacesSignedIn(false);
+                verify(savedSystems.add({name: "County", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                    freqMhz: "851.5", rrSid: 12, rrSiteId: 100}));
+                if (data.from === "home") {
+                    home.updateAllFromRadioReference();
+                } else {
+                    app.openSiteChooser(0);
+                    tryCompare(chooser, "visible", true);
+                    chooser.updateFromRadioReference();
+                    verify(!chooser.visible);
+                }
+                verify(app.radioReferenceAccountOpen, "the account screen opens");
+                compare(home.section, "systems");
+            } finally {
+                app.radioReferenceAccountOpen = false;
+                chooser.visible = false;
+                testContext.resetRrPlaces();
+            }
         }
 
         // Edit saved system over a session: the monitor stays on top; Listen shows Systems once the session ends.

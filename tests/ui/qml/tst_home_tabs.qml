@@ -76,6 +76,8 @@ Item {
         function addSystems(count) {
             for (var i = 0; i < count; ++i)
                 verify(savedSystems.add({name: "System " + i, sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5"}));
+            // The cards follow on the next turn.
+            tryCompare(savedSystemCards, "totalCount", savedSystems.count);
         }
         function addLists(count) {
             for (var i = 0; i < count; ++i) {

@@ -586,6 +586,72 @@ Item {
                     + JSON.stringify(counts.chains));
         }
 
+        // Listen's saved systems under a screen reader: Android hears of a move only through a hide and show, so a
+        // reorder nobody asked for (a system just listened to, in Last listened order) waits while the cards are on
+        // screen and raises nothing; the order the user picks applies as one reset (the cards hidden and shown again,
+        // which Android reads afresh), and the keyboard stays on the Sort pill.
+        function test_m_saved_systems_reorder_waits_then_resets() {
+            testContext.setLifecyclePhase(0);
+            verify(!app.monitorMode);
+            verify(screenReader.active, "this run has a screen reader on");
+            var home = findChild(app, "homeScreen");
+            var shownTitles = function () {
+                var section = findChild(home, "listenSystemsSection");
+                section.forceLayout();
+                var entries = [];
+                for (var child of section.children) {
+                    if (child.objectName === "savedSystemEntry" && child.visible)
+                        entries.push(child);
+                }
+                entries.sort(function (a, b) {
+                    return a.y - b.y;
+                });
+                return entries.map(function (entry) {
+                    return entry.title;
+                }).join("|");
+            };
+            try {
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+                var heard = {Charlie: 300, Alpha: 200, Bravo: 100};
+                for (var name of ["Charlie", "Alpha", "Bravo"])
+                    verify(savedSystems.add({name: name, sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5",
+                        lastHeard: heard[name]}));
+                prefs.systemsSort = "recent";
+                tryCompare(home, "visible", true);
+                home.showSection("systems");
+                tryCompare(savedSystemCards, "totalCount", 3);
+                waitForRendering(home);
+                verify(savedSystemCards.screenReaderActive && savedSystemCards.holdReorders);
+                compare(shownTitles(), "Charlie|Alpha|Bravo");
+                var section = findChild(home, "listenSystemsSection");
+
+                testContext.startAccessibilityCount();
+                verify(savedSystems.update(2, {lastHeard: 5000}));
+                wait(50);
+                var counts = testContext.accessibilityCount();
+                testContext.stopAccessibilityCount();
+                compare(showHide(section) + testContext.accessibilityCountWithin(section, "LocationChanged"), 0,
+                        "a reorder nobody asked for raised events: " + JSON.stringify(counts.chains));
+                compare(shownTitles(), "Charlie|Alpha|Bravo", "held while on screen");
+
+                var pill = findChild(home, "systemsSortPill");
+                pill.forceActiveFocus();
+                testContext.startAccessibilityCount();
+                home.chooseSort("name");
+                wait(50);
+                testContext.stopAccessibilityCount();
+                verify(showHide(section) > 0, "the chosen order applies as a reset");
+                compare(shownTitles(), "Alpha|Bravo|Charlie");
+                verify(pill.activeFocus, "the keyboard stays on the pill");
+            } finally {
+                testContext.stopAccessibilityCount();
+                testContext.resetSystemsSort();
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+            }
+        }
+
         // Issue #801 B3: Explore's face carries its frequency in its name. Edited in Explore's setup, Home hidden under
         // it, the face renames nothing; shown again, it reads the new frequency.
         function test_l_hidden_explore_face_stays_silent() {
