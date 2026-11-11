@@ -8334,9 +8334,9 @@ test_scan_skip_silent_command(void) {
     static dsd_opts opts;
     static dsd_state state;
     init_test_context(&opts, &state);
-    dsd_trunk_scan_hooks hooks = {0};
-    hooks.quiet_setting_changed = count_quiet_setting_changed;
-    dsd_trunk_scan_hooks_set(&hooks);
+    dsd_frame_sync_hooks hooks = {0};
+    hooks.scan_quiet_setting_changed = count_quiet_setting_changed;
+    dsd_frame_sync_hooks_set(&hooks);
     g_quiet_setting_calls = 0;
 
     rc |= expect_int("skip-silent id", DSD_APP_CMD_SCAN_SKIP_SILENT_SET, 513);
@@ -8379,7 +8379,17 @@ test_scan_skip_silent_command(void) {
     rc |= expect_int("skip-silent pair drained", dsd_app_drain_cmds(&opts, &state), 2);
     rc |= expect_int("skip-silent nonzero means on", opts.scan_skip_silent, 1);
 
+    /* The table outlives the trunk-scan coordinator: installing and clearing the coordinator's hooks (what its init
+     * and teardown do) leaves the slot in place. */
+    dsd_trunk_scan_hooks scan_hooks = {0};
+    dsd_trunk_scan_hooks_set(&scan_hooks);
     dsd_trunk_scan_hooks_set(NULL);
+    g_quiet_setting_calls = 0;
+    rc |= expect_int("survivor queued", post_i32(DSD_APP_CMD_SCAN_SKIP_SILENT_SET, 0), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("survivor drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("hook survives trunk-scan hook install and clear", g_quiet_setting_calls, 1);
+
+    dsd_frame_sync_hooks_set(NULL);
     freeState(&state);
     return rc;
 }

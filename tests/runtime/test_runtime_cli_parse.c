@@ -10916,6 +10916,11 @@ test_scan_option_warnings_name_their_source(void) {
         {"[trunking]\nscan_max_visit_ms = 1000\n", "--scan-max-visit-ms=5000", NULL,
          "--scan-max-visit-ms has no effect without", "[trunking] scan_max_visit_ms has no effect"},
         {"[trunking]\nscan_max_visit_ms = 1000\n", "--scan-max-visit-ms=0", NULL, NULL, "scan_max_visit_ms has no"},
+        /* An active scan (-Y on argv, or scanner = true in the INI) leaves every one of them silent. */
+        {"[trunking]\nscan_voice_only = true\nscan_max_visit_ms = 1000\nscan_skip_silent = true\n", "-Y", NULL, NULL,
+         "has no effect without"},
+        {"[trunking]\nscanner = true\nscan_voice_only = true\nscan_max_visit_ms = 1000\nscan_skip_silent = true\n",
+         NULL, NULL, NULL, "has no effect without"},
         {"[trunking]\nscan_skip_silent = true\n", NULL, NULL, "[trunking] scan_skip_silent has no effect without",
          "--scan-skip-silent has no effect"},
         {"[trunking]\nscan_skip_silent = false\n", "--scan-skip-silent", NULL,

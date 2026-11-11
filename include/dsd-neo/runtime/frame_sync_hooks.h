@@ -92,6 +92,7 @@ typedef struct {
     int (*signal_search_probe)(const dsd_opts* opts, const dsd_state* state);
     int (*tick_guard_enter)(void);
     void (*tick_guard_leave)(void);
+    void (*scan_quiet_setting_changed)(dsd_state* state);
 } dsd_frame_sync_hooks;
 
 /** The engine's conventional NFM lifecycle sees every processed monitor block, even with muted speakers, with what the
@@ -128,6 +129,14 @@ int dsd_frame_sync_hook_signal_search_probe(const dsd_opts* opts, const dsd_stat
 int dsd_frame_sync_hook_tick_guard_enter(void);
 /** Leave the guard dsd_frame_sync_hook_tick_guard_enter() took (@p taken). */
 void dsd_frame_sync_hook_tick_guard_leave(int taken);
+
+/**
+ * The session-wide scan skip-silent setting (dsd_opts::scan_skip_silent, #834) was written. The app-control handler
+ * calls it on the decoder thread after storing the value; the engine drops the quiet checks it already made. This
+ * table lives for the whole engine run, not a trunk-scan coordinator's, so it serves -Y too. A no-op when nothing is
+ * installed (headless runs, tests).
+ */
+void dsd_scan_quiet_setting_changed(dsd_state* state);
 
 /** Install a copy of @p hooks; NULL clears every slot. */
 void dsd_frame_sync_hooks_set(const dsd_frame_sync_hooks* hooks);

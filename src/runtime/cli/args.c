@@ -2952,7 +2952,8 @@ dsd_warn_ineffective_scan_opts(const dsd_opts* opts, unsigned int seen) {
 }
 
 /* What runs once every option has been read, whatever order they came in. @p analog_cli_seen has bit
-   1 << dsd_analog_demod set for each analog width option given (and CLI_TONE_FILTER_SEEN for a tone switch, CLI_SCAN_*_SEEN for a scan option). */
+   1 << dsd_analog_demod set for each analog width option given (and CLI_TONE_FILTER_SEEN for a tone switch,
+   CLI_SCAN_*_SEEN for each scan option). */
 static int
 cli_finish_parse(dsd_opts* opts, const dsd_state* state, int parse_rc, int analog_cli_seen, int* out_exit_rc) {
     parse_rc = cli_finish_airspy_input(opts, parse_rc, out_exit_rc);
@@ -3022,7 +3023,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     int chan_csv_cli_seen = 0;
     int p25_bandplan_cli_seen = 0;
     unsigned int receive_cli_seen = 0;
-    int analog_cli_seen = 0; /* bit 1 << dsd_analog_demod per analog width option given, CLI_TONE_FILTER_SEEN too */
+    int analog_cli_seen = 0; /* bit 1 << dsd_analog_demod per width option, CLI_TONE_FILTER_SEEN, CLI_SCAN_*_SEEN */
     int config_one_shot_cli_seen = cli_has_config_one_shot_arg(argc, argv);
     DSD_PARSE_ARGS_PRESCAN_BLOCK();
     DSD_PARSE_ARGS_IQ_PRE_BLOCK();

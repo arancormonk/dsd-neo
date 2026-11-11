@@ -3907,6 +3907,11 @@ the P25 profiles (see the startup control-channel hunt below); with nothing inst
 6000/4 (the DSP section's SPS hunt entry); the hunt keeps the answer in `dsd_state::sps_hunt_search_order`.
 `dsd_frame_sync_hooks_get()` copies the installed table out, so a host that replaces one slot keeps the others
 (`tests/engine/search_schedule_replay.c`).
+`scan_quiet_setting_changed` (`dsd_scan_quiet_setting_changed()`, #834) tells the engine that the session-wide
+`opts->scan_skip_silent` was written, so it can drop the quiet checks it already made; app-control's
+`DSD_APP_CMD_SCAN_SKIP_SILENT_SET` handler calls it on the decoder thread. It lives in this table, not the trunk-scan
+one, because this table outlives any trunk-scan coordinator and the setting serves `-Y` too. A no-op with nothing
+installed.
 `analog_call_block` hands the engine's NFM call every processed conventional monitor block as a `dsd_analog_call_block`
 descriptor (issues #756, #668; see `dsd_symbol.c` in the DSP section), borrowed for the synchronous call.
 
@@ -3940,10 +3945,6 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   listening time) and a pending one's when `trunk_scan_resolve_pending_retune()` notices it, instead of the first tick
   after it. A dwell disarmed in between (a hold toggled, activity) stays disarmed, so a release still gets a fresh dwell
   from the next tick.
-- `dsd_scan_quiet_setting_changed()` — the session-wide `opts->scan_skip_silent` (#834) was written; app-control's
-  `DSD_APP_CMD_SCAN_SKIP_SILENT_SET` handler calls it on the decoder thread after storing the value so the engine can
-  drop the quiet checks it already made. A no-op with nothing installed. The setting is never a scan-row option:
-  `scan_mode.c` neither captures nor restores it.
 - `dsd_trunk_scan_hook_dmr_conventional_activity()` / `dsd_trunk_scan_hook_nxdn_conventional_activity()` /
   `dsd_trunk_scan_hook_p25_conventional_activity()` — report decoded conventional activity so the parked target keeps
   its park. Pass only identity that has already cleared the protocol's FEC/CRC gate (DMR's `dmr_flco()` reports only
