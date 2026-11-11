@@ -9,6 +9,7 @@
 
 #include <dsd-neo/core/p25_cqpsk_dibit.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
@@ -16,7 +17,6 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
-#include "dsd-neo/core/state_fwd.h"
 #include "frame_sync_internal.h"
 
 enum {
@@ -122,8 +122,11 @@ frame_sync_p25p1_anchor_take(dsd_state* state, uint8_t* out_map_idx, int* out_in
 }
 
 int
-dsd_frame_sync_p25p1_tolerant_nac(const dsd_state* state) {
+dsd_frame_sync_p25p1_tolerant_nac(const dsd_state* state, unsigned int* out_bit_errors) {
     const dsd_p25p1_sync_anchor* rec = &state->p25_p1_sync_anchor;
+    if (out_bit_errors != NULL) {
+        *out_bit_errors = rec->sync_bit_errors;
+    }
     return rec->frame_tolerant ? (int)rec->frame_nac : -1;
 }
 
@@ -131,6 +134,9 @@ void
 dsd_frame_sync_p25p1_frame_decoded(dsd_state* state, int nac, uint32_t unit_dibits) {
     dsd_p25p1_sync_anchor* rec = &state->p25_p1_sync_anchor;
     const int captured = rec->frame_valid != 0U;
+    if (rec->frame_tolerant && nac >= 0) {
+        rec->tolerant_frames++;
+    }
     rec->frame_valid = 0U;
     rec->frame_tolerant = 0U;
     if (!captured || unit_dibits == 0U || nac <= 0x000 || nac >= 0xFFF) {

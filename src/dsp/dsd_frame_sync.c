@@ -855,8 +855,10 @@ frame_sync_try_rotated_p25(frame_sync_match_ctx* ctx, const char* symbols, const
 /* After the exact matches failed: the window at the anchor's expected position, read under the anchor's dibit map and
  * polarity, within DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS bits of the word (dsd_p25p1_sync_anchor), on the RTL CQPSK
  * 4800/4 path. The first window to reach that position spends the anchor, so no other window is scored. The accept
- * keeps the levels as they are (CENTER_SKIP: a word with symbols off is no reference to refit them on) and keeps no
- * control channel alive; whether its frame decodes is the NID's to say, past the dispatcher's strict check. */
+ * skips the acceptance-time centre refit (CENTER_SKIP: a word with symbols off is no reference to refit on, and a
+ * candidate writes no centre before it validates; on this path the next symbol read replaces the centre either way)
+ * and keeps no control channel alive; whether its frame decodes is the NID's to say, past the dispatcher's strict
+ * check. */
 static int
 frame_sync_try_tolerant_p25p1(frame_sync_match_ctx* ctx) {
     dsd_state* state = ctx->state;

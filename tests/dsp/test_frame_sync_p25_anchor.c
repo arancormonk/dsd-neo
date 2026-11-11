@@ -100,8 +100,9 @@ teardown(dsd_state* state) {
 static void
 validated_frame(dsd_opts* opts, dsd_state* state, uint64_t sync_start, uint32_t unit, uint32_t consumed, int nac) {
     assert(match_at(opts, state, P25P1_SYNC, sync_start) == DSD_SYNC_P25P1_POS);
-    assert(dsd_frame_sync_p25p1_tolerant_nac(state) == -1);
-    assert(state->p25_p1_sync_anchor.sync_bit_errors == 0U);
+    unsigned int bit_errors = 99U;
+    assert(dsd_frame_sync_p25p1_tolerant_nac(state, &bit_errors) == -1);
+    assert(bit_errors == 0U);
     state->symbol_clock = sync_start + consumed;
     dsd_frame_sync_p25p1_frame_decoded(state, nac, unit);
 }
@@ -183,8 +184,9 @@ test_expected_position_threshold(void) {
     state.ftype[0] = '\0';
     state.dmrburstR = 0;
     assert(match_at(&opts, &state, window, EXPECTED) == DSD_SYNC_P25P1_POS);
-    assert(dsd_frame_sync_p25p1_tolerant_nac(&state) == NAC);
-    assert(state.p25_p1_sync_anchor.sync_bit_errors == DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS);
+    unsigned int bit_errors = 0U;
+    assert(dsd_frame_sync_p25p1_tolerant_nac(&state, &bit_errors) == NAC);
+    assert(bit_errors == DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS);
     assert(state.p25_p1_sync_anchor.tolerant_syncs == 1U);
     assert(state.p25_p1_sync_anchor.valid == 0U);
     assert(state.p25_p1_sync_anchor.frame_valid == 1U);
@@ -225,7 +227,7 @@ test_other_positions_exact_only(void) {
         /* Before the expected position the anchor waits for it; at or past it, it is spent. */
         assert(state.p25_p1_sync_anchor.valid == (offsets[i] < 0 ? 1U : 0U));
         assert(match_at(&opts, &state, P25P1_SYNC, (uint64_t)(EXPECTED + offsets[i])) == DSD_SYNC_P25P1_POS);
-        assert(dsd_frame_sync_p25p1_tolerant_nac(&state) == -1);
+        assert(dsd_frame_sync_p25p1_tolerant_nac(&state, NULL) == -1);
         /* Any accepted sync spends it. */
         assert(state.p25_p1_sync_anchor.valid == 0U);
         teardown(&state);
@@ -294,7 +296,7 @@ test_slips_with_real_neighbours(void) {
             } else {
                 assert(found == EXPECTED + slips[s]);
                 assert(sync == DSD_SYNC_P25P1_POS);
-                assert(dsd_frame_sync_p25p1_tolerant_nac(&state) == -1);
+                assert(dsd_frame_sync_p25p1_tolerant_nac(&state, NULL) == -1);
             }
             teardown(&state);
         }
@@ -318,7 +320,7 @@ test_slipped_corrupted_word_one_symbol_early(void) {
     setup(&opts, &state);
     anchored(&opts, &state);
     assert(match_at(&opts, &state, window, EXPECTED) == DSD_SYNC_P25P1_POS);
-    assert(dsd_frame_sync_p25p1_tolerant_nac(&state) == NAC);
+    assert(dsd_frame_sync_p25p1_tolerant_nac(&state, NULL) == NAC);
     teardown(&state);
 }
 
@@ -463,8 +465,8 @@ test_installation(void) {
     static dsd_state state;
 
     static const stream_change_fn changes[] = {
-        epoch_moves,       input_moves,      carrier_moves,         tune_completes,
-        histories_dropped, modulation_moves, off_thread_tune_noted,
+        epoch_moves,       input_moves,   carrier_moves,    tune_completes,
+        histories_dropped, profile_moves, modulation_moves, off_thread_tune_noted,
     };
     for (size_t i = 0; i < sizeof(changes) / sizeof(changes[0]); i++) {
         setup(&opts, &state);
@@ -526,7 +528,7 @@ test_installation(void) {
     assert(match_at(&opts, &state, window, EXPECTED) == DSD_SYNC_P25P1_POS);
     state.symbol_clock = EXPECTED + 864;
     dsd_frame_sync_p25p1_frame_decoded(&state, NAC, 864);
-    assert(dsd_frame_sync_p25p1_tolerant_nac(&state) == -1);
+    assert(dsd_frame_sync_p25p1_tolerant_nac(&state, NULL) == -1);
     assert(state.p25_p1_sync_anchor.valid == 1U && state.p25_p1_sync_anchor.expected_clock == EXPECTED + 864);
     validated_frame(&opts, &state, EXPECTED + 864, 396, 396, 0x2A1);
     assert(state.p25_p1_sync_anchor.valid == 1U && state.p25_p1_sync_anchor.nac == 0x2A1);
@@ -563,7 +565,9 @@ test_map_and_polarity_follow_the_anchor(void) {
     assert(match_at(&opts, &state, raw, EXPECTED) == DSD_SYNC_P25P1_NEG);
     assert(state.p25_cqpsk_dibit_map_idx == DSD_P25_CQPSK_DIBIT_MAP_N1200);
     assert(state.lastsynctype == DSD_SYNC_P25P1_NEG);
-    assert(state.p25_p1_sync_anchor.sync_bit_errors == 3U);
+    unsigned int bit_errors = 0U;
+    assert(dsd_frame_sync_p25p1_tolerant_nac(&state, &bit_errors) == NAC);
+    assert(bit_errors == 3U);
     assert(state.p25_p1_sync_anchor.frame.map_idx == DSD_P25_CQPSK_DIBIT_MAP_N1200);
     assert(state.p25_p1_sync_anchor.frame.inverted == 1U);
     teardown(&state);
@@ -583,8 +587,9 @@ push_sync_levels(dsd_state* state, float bias) {
     }
 }
 
-/* A tolerant accept refits no levels (CENTER_SKIP) and keeps no control channel alive (last_cc_sync_time); an exact
-   accept does both. */
+/* A tolerant accept writes no centre at acceptance (CENTER_SKIP) and keeps no control channel alive
+   (last_cc_sync_time); an exact accept does both. Only the acceptance is pinned: on the RTL CQPSK path the next symbol
+   read replaces the centre either way. */
 static void
 test_tolerant_accept_withholds_sync_time_effects(void) {
     static dsd_opts opts;
@@ -617,6 +622,61 @@ test_tolerant_accept_withholds_sync_time_effects(void) {
     teardown(&state);
 }
 
+static int g_profile_pushes;
+static int g_profile_cqpsk;
+static int g_profile_rate;
+static int g_profile_levels;
+
+static int
+capture_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps) {
+    (void)channel_profile;
+    (void)ted_sps;
+    g_profile_pushes++;
+    g_profile_cqpsk = cqpsk_enable;
+    g_profile_rate = symbol_rate_hz;
+    g_profile_levels = levels;
+    return 0;
+}
+
+/* The tolerant accept @p bits bits off at the expected position, the modulation unlocked on an RTL stream: how many
+   demodulator profiles it pushed. */
+static int
+tolerant_accept_profile_pushes(int bits) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int fake_rtl_context;
+    char window[SYNC_DIBITS + 1];
+    word_with_bit_errors(P25P1_SYNC, bits, window);
+    setup(&opts, &state);
+    anchored(&opts, &state);
+    opts.mod_cli_lock = 0;
+    state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    dsd_rtl_stream_metrics_hooks hooks = {
+        .cqpsk_status = cqpsk_status,
+        .apply_demod_profile = capture_demod_profile,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_profile_pushes = 0;
+    const int synctype = match_at(&opts, &state, window, EXPECTED);
+    assert(synctype == (bits <= DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS ? DSD_SYNC_P25P1_POS : DSD_SYNC_NONE));
+    const int pushes = g_profile_pushes;
+    state.rtl_ctx = NULL;
+    teardown(&state);
+    return pushes;
+}
+
+/* On CQPSK with the modulation unlocked a P25p1 sync re-pushes the demodulator profile already decided, which re-asserts
+   the chain and decides nothing (a P25p1 word is the same on both modulations): a tolerant accept does the same, once,
+   for the 4800/4 CQPSK profile it is on. A word past the tolerance pushes nothing. */
+static void
+test_tolerant_accept_repushes_demod_profile(void) {
+    assert(tolerant_accept_profile_pushes(3) == 1);
+    assert(g_profile_cqpsk == 1);
+    assert(g_profile_rate == 4800);
+    assert(g_profile_levels == 4);
+    assert(tolerant_accept_profile_pushes(DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS + 1) == 0);
+}
+
 /* Off the RTL CQPSK 4-level path (C4FM, a symbol file) nothing is tolerated: the anchor is spent unscored. */
 static void
 test_cqpsk_path_only(void) {
@@ -645,6 +705,7 @@ main(void) {
     test_installation();
     test_map_and_polarity_follow_the_anchor();
     test_tolerant_accept_withholds_sync_time_effects();
+    test_tolerant_accept_repushes_demod_profile();
     test_cqpsk_path_only();
 #endif
     DSD_FPRINTF(stderr, "FRAME_SYNC_P25_ANCHOR: OK\n");

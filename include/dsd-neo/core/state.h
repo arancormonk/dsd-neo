@@ -315,7 +315,7 @@ typedef struct {
     uint8_t frame_tolerant;  /* accepted within the tolerance: stands until the frame is reported, whatever else goes */
     uint8_t sync_bit_errors; /* bits its sync word was off by: 0 for an exact (normal, inverted, rotated) match */
     /* Diagnostics, never reset: tolerant syncs the frame sync accepted, and those whose NID passed the dispatcher's
-       strict check (counted there). */
+       strict check (counted when the dispatcher reports the frame). */
     uint32_t tolerant_syncs;
     uint32_t tolerant_frames;
 } dsd_p25p1_sync_anchor;

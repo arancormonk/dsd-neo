@@ -9398,7 +9398,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     length). Beside it, the context of the frame being decoded, captured when the frame sync accepted its sync
     (`frame_sync_p25p1_anchor_note_sync()`, from `frame_sync_accept_p25p1()`; none while an off-thread tune is
     pending), whether that sync was tolerant (`frame_tolerant`, `frame_nac`), its bit errors (`sync_bit_errors`, 0 for
-    exact) and two never-reset diagnostics, `tolerant_syncs` and `tolerant_frames`.
+    exact) and two never-reset diagnostics, `tolerant_syncs` (counted at the accept) and `tolerant_frames` (counted
+    when the dispatcher reports a tolerant frame that passed the strict check). The frame sync owns every field: the
+    dispatcher reads the tolerant NAC and the bit errors through `dsd_frame_sync_p25p1_tolerant_nac()` and reports the
+    frame through `dsd_frame_sync_p25p1_frame_decoded()`.
   - Installation: the dispatcher reports every Phase 1 frame (`dsd_frame_sync_p25p1_frame_decoded()`). One that
     validated (`p25p1_nid_verdict_validates()`: accepted by the NAC rule above, unborrowed, at most 11 corrections
     (`P25P1_NID_BCH_RADIUS`), a usable NAC, a defined DUID), was not cut by an input interruption, and whose length is
@@ -9427,8 +9430,11 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     hold, and the hunt resumes past the NID it read. A misaligned NID after a slipped word needs this: a word 3 bits
     off one symbol late behind a `1` is 6 bits off at the expected position, and the NID read one symbol off decodes
     as an LDU1 of the carrier's own NAC with 2 corrections and the parity bit disagreeing (`P25_P1_TOLERANT_SYNC`).
-  - Effects of a tolerant accept: the anchor's map and polarity, `FRAME_SYNC_P25_CENTER_SKIP` (no acceptance-time level
-    refit; per-window tracking runs), the frame-local `sync_bit_errors`, and no `last_cc_sync_time` (a decoded TSBK
+  - Effects of a tolerant accept: the anchor's map and polarity, `FRAME_SYNC_P25_CENTER_SKIP` (the acceptance-time
+    centre refit is skipped, so a candidate writes no centre before it validates; on the RTL CQPSK path a refit would
+    not outlive the next symbol anyway, since every symbol read puts back the fixed levels and centre
+    (`apply_rtl_symbol_thresholds()`) and `use_symbol()` then recomputes the centre from the decoder's own level
+    window before the symbol is sliced), the frame-local `sync_bit_errors`, and no `last_cc_sync_time` (a decoded TSBK
     notes control channel activity itself). Kept as for an exact accept, none of them credit: the demodulator profile
     re-push on CQPSK (it re-asserts the chain), `frame_sync_set_basic_lock()`, the P25p1 frame span flag, the frame's
     labels, `lastsynctype` (already P25p1: any other accepted sync spends the anchor). The dispatcher's
@@ -9440,9 +9446,11 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     `dsd_state_forget_p25p1_sync_anchor()` at a P25p1 chain step (`frame_sync_p25p1_set_chain()`), an acquisition
     reset (scan rows, scan visits, input boundaries), a trunk scan target's restore and the no-carrier pass.
   - Decided limits: a NID miscorrection to another codeword with the anchor's NAC, clean parity and at most 4
-    corrections passes, as behind an exact word; the frame's own payload FEC/CRC then judges it. A slipped word is lost
-    as before (a false candidate at the expected position that fails the strict check consumes its sync and NID, so a
-    clean word 1-2 symbols late behind it is lost too); a unit missed whole leaves the next one exact-only. Phase 1
+    corrections passes, as behind an exact word; the frame's own payload FEC/CRC then judges it. A slipped word with bit
+    errors is lost as before: its own errors can bring the expected-position window within the tolerance (3 bits off
+    one symbol late reads 6 there), and that false candidate then fails the strict check and consumes the word's sync
+    and NID; a clean slipped word is never pre-empted (the bound above). A unit missed whole leaves the next one
+    exact-only. Phase 1
     CQPSK on the RTL path only (C4FM, symbol files and PCM inputs are exact-only). Tests: `FRAME_SYNC_P25_ANCHOR`,
     `P25_P1_TOLERANT_NID`, `P25_P1_TOLERANT_SYNC` (a real-shaped stream through the real frame sync, dibit chain,
     dispatcher and NID decoder), `P25_P1_TSBK_SEQUENCE` and `P25_P1_MDPU_HELPERS` (lengths), `ENGINE_NO_CARRIER_RESET`,

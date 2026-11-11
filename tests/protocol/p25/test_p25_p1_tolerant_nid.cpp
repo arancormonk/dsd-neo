@@ -213,7 +213,7 @@ test_clean_nid_decodes(void) {
         CHECK(state->p25_p1_nid_evidence_symbolcnt == state->symbolcnt);
         CHECK(state->p25_p1_sync_anchor.valid == 1U);
         CHECK(state->p25_p1_sync_anchor.expected_clock == (uint64_t)SYNC_AT + P25P1_LDU_DIBITS);
-        CHECK(dsd_frame_sync_p25p1_tolerant_nac(state) == -1);
+        CHECK(dsd_frame_sync_p25p1_tolerant_nac(state, NULL) == -1);
         free(state);
         free(opts);
     }
@@ -252,7 +252,7 @@ expect_dropped(dsd_opts* opts, dsd_state* state, const nid_air* nid) {
     CHECK(state->tdma_carrier == 1U);
     CHECK(state->p25_p1_sync_anchor.valid == 0U);
     CHECK(state->p25_p1_sync_anchor.tolerant_frames == 0U);
-    CHECK(dsd_frame_sync_p25p1_tolerant_nac(state) == -1);
+    CHECK(dsd_frame_sync_p25p1_tolerant_nac(state, NULL) == -1);
 }
 
 /* Behind a tolerant word anything short of a clean NID of the anchor's NAC drops the frame: the parity bit disagreeing,
@@ -302,13 +302,14 @@ test_strict_nid_drops(void) {
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         dsd_opts* opts = new_opts();
         dsd_state* state = new_state(opts);
+        const int failures_before = g_failures;
         expect_dropped(opts, state, &cases[i].nid);
-        if (g_failures != 0) {
-            DSD_FPRINTF(stderr, "  (case: %s)\n", cases[i].name);
-        }
         /* Behind an exact word the frame decodes, as it did before. */
         (void)dispatch_frame(opts, state, &cases[i].nid, -1);
         CHECK(g_ldu1_frames == cases[i].exact_decodes);
+        if (g_failures != failures_before) {
+            DSD_FPRINTF(stderr, "  (case: %s)\n", cases[i].name);
+        }
         free(state);
         free(opts);
     }

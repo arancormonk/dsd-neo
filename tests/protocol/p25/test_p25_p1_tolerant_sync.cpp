@@ -19,7 +19,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <vector>
@@ -80,6 +79,10 @@ static std::vector<int> g_stream;
 static size_t g_read_index;
 static uint32_t g_noise_seed;
 static uint32_t g_data_seed;
+/* What the fake radio adds to every symbol level: a DC offset, and level noise uniform within +/- g_level_noise. */
+static float g_level_offset;
+static float g_level_noise;
+static uint32_t g_level_seed;
 
 /* Data units the dispatcher handed on past the NID, by kind. */
 static int g_hdu;
@@ -105,6 +108,14 @@ level_for_dibit(int dibit) {
     }
 }
 
+/* The level the demodulator hands on for @p dibit: its ideal level, the DC offset and the level noise. */
+static float
+received_level(int dibit) {
+    g_level_seed = (g_level_seed * 1103515245U) + 12345U;
+    const float uniform = ((float)((g_level_seed >> 8) & 0xFFFFU) / 32767.5f) - 1.0f;
+    return level_for_dibit(dibit) + g_level_offset + (g_level_noise * uniform);
+}
+
 static void
 append_word(const char* word) {
     for (size_t i = 0; word[i] != '\0'; i++) {
@@ -117,7 +128,7 @@ static void
 append_sync(int bits) {
     static const int positions[] = {0, 4, 8, 12, 16, 20, 2, 6, 10};
     char word[SYNC_DIBITS + 1];
-    std::memcpy(word, P25P1_SYNC, sizeof(word));
+    DSD_MEMCPY(word, P25P1_SYNC, sizeof(word));
     for (int i = 0; i < bits; i++) {
         word[positions[i]] = (char)('0' + ((word[positions[i]] - '0') ^ 1));
     }
@@ -171,6 +182,9 @@ reset_stream(void) {
     g_noise_seed = 0xC0FFEEU;
     g_data_seed = 0x1234567U;
     g_hdu = g_ldu1 = g_ldu2 = g_tdu = g_tsdu = g_other = 0;
+    g_level_offset = 0.0f;
+    g_level_noise = 0.0f;
+    g_level_seed = 0xBADC0DEU;
 }
 
 extern "C" {
@@ -183,7 +197,7 @@ fake_rtl_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
     }
     for (size_t i = 0; i < count; i++) {
         const int dibit = g_read_index < g_stream.size() ? g_stream[g_read_index] : next_random_dibit(&g_noise_seed);
-        out[i] = level_for_dibit(dibit);
+        out[i] = received_level(dibit);
         g_read_index++;
     }
     *out_got = (int)count;
@@ -287,12 +301,17 @@ stop(dsd_state* state) {
 /* A voice transmission on a continuous carrier: a header, twelve LDUs, a terminator, then noise. Five LDUs' sync words
    are 1 to 6 bits off (two of them back to back), one 7. Matched exactly, each of those six is lost; now the five
    within the tolerance decode, each behind a validated frame, and the one past it is still lost. Nothing decodes from
-   the noise after the terminator. */
+   the noise after the terminator. The levels come through with @p offset added and noise within +/- @p noise: short
+   of a slicer threshold (1.0 from each level) neither may change what decodes, though the decoder's level window
+   (use_symbol()) follows the offset and the hunt's does not (the RTL CQPSK path puts back its fixed levels every
+   symbol). */
 static void
-test_corrupted_syncs_decode(void) {
+corrupted_syncs_decode(float offset, float noise) {
     static dsd_opts opts;
     static dsd_state state;
     reset_stream();
+    g_level_offset = offset;
+    g_level_noise = noise;
     append_unit(DUID_HDU, HDU_DIBITS, 0);
     static const int ldu_sync_bits[12] = {0, 2, 0, 6, 0, 1, 3, 0, 7, 0, 5, 0};
     for (int i = 0; i < 12; i++) {
@@ -308,6 +327,15 @@ test_corrupted_syncs_decode(void) {
     CHECK(g_tsdu == 0 && g_other == 0);
     CHECK(state.nac == NAC);
     stop(&state);
+}
+
+static void
+test_corrupted_syncs_decode(void) {
+    corrupted_syncs_decode(0.0f, 0.0f);
+    corrupted_syncs_decode(0.35f, 0.0f);
+    corrupted_syncs_decode(-0.35f, 0.0f);
+    corrupted_syncs_decode(0.3f, 0.45f);
+    corrupted_syncs_decode(-0.3f, 0.45f);
 }
 
 /* The 33 dibits the dispatcher reads as a NID from @p at, as BCH bits and the parity bit (the status symbol skipped). */
@@ -331,7 +359,7 @@ decode_nid_read_at(size_t at, int observed_nac) {
         }
         bit += 2;
     }
-    std::memset(rel, 200, sizeof(rel));
+    DSD_MEMSET(rel, 200, sizeof(rel));
     return p25p1_nid_decode(bch, rel, observed_nac, parity, 200);
 }
 

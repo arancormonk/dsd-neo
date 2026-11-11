@@ -48,8 +48,11 @@ int dsd_p25p1_sync_bit_distance(const char* window, uint8_t map_idx, int inverte
 /**
  * @brief The NAC the NID of the frame being decoded must name, when its sync was accepted within the tolerance; -1
  * after an exact sync.
+ *
+ * @p out_bit_errors (may be NULL) receives the bits that frame's sync word was off by: 0 after an exact (normal,
+ * inverted or rotated) match.
  */
-int dsd_frame_sync_p25p1_tolerant_nac(const dsd_state* state);
+int dsd_frame_sync_p25p1_tolerant_nac(const dsd_state* state, unsigned int* out_bit_errors);
 
 /**
  * @brief Tell the frame sync what the P25p1 frame its last sync opened was, once decoded.
@@ -59,6 +62,9 @@ int dsd_frame_sync_p25p1_tolerant_nac(const dsd_state* state);
  * holds (the same clock epoch, input, carrier, tuning generation, sync history drops, SPS profile and modulation, no
  * off-thread tune pending) and the decoder has not read past that position. 0 for @p unit_dibits when the frame did
  * not validate or its length is not known: nothing is installed. Either way the frame's sync context is spent.
+ * @p nac is -1 when the frame decoded no NID it may take (an input interruption cut it, or it was dropped behind a
+ * tolerant sync); a frame behind a tolerant sync reported with a NAC passed the strict check, and counts in
+ * dsd_p25p1_sync_anchor::tolerant_frames.
  */
 void dsd_frame_sync_p25p1_frame_decoded(dsd_state* state, int nac, uint32_t unit_dibits);
 
