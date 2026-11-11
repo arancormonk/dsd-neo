@@ -36,6 +36,11 @@
    maximum within this fraction of it. */
 #define AGC_PERIODIC_R           0.5f
 #define AGC_FIRST_PEAK_FRACTION  0.9f
+/* The coloured-noise veto (analog instances, dsd_speech_agc_set_noise_veto()): a frame that passes cue 2 also needs a
+   strict interior peak this high in a first-order pre-emphasised copy of the decimated frame, y[n] = x[n] - c x[n-1].
+   Voice keeps its pitch peaks through the pre-emphasis; hiss after heavy de-emphasis loses them. */
+#define AGC_VETO_R               0.4f
+#define AGC_VETO_PREEMPH         0.9f
 #define AGC_LAG_MIN_S            0.0025f
 #define AGC_LAG_MAX_S            0.015f
 #define AGC_DECIM_RATE_HZ        8000.0f
@@ -236,6 +241,13 @@ dsd_speech_agc_set_start_gain_db(dsd_speech_agc* agc, float start_gain_db) {
 }
 
 void
+dsd_speech_agc_set_noise_veto(dsd_speech_agc* agc, int on) {
+    if (agc_ready(agc)) {
+        agc->noise_veto = on != 0;
+    }
+}
+
+void
 dsd_speech_agc_set_fixed(dsd_speech_agc* agc, float gain) {
     if (!agc_ready(agc)) {
         return;
@@ -265,9 +277,10 @@ dsd_speech_agc_set_fixed(dsd_speech_agc* agc, float gain) {
 }
 
 /* Normalised autocorrelation of the decimated frame over every lag, each lag summed in sample order. @p r gets one
-   value per lag (0 where the correlation is not positive). Returns 0 for a silent frame. */
+   value per lag (0 where the correlation is not positive) and @p acc the raw lag products. Returns 0 for a silent
+   frame (@p acc then unset). */
 static int
-agc_correlate(const dsd_speech_agc* agc, float* r) {
+agc_correlate(const dsd_speech_agc* agc, float* r, float* acc) {
     const float* x = agc->history + agc->lag_hi;
     const int n = agc->decim_pos;
     const int nl = agc->lag_hi - agc->lag_lo + 1;
@@ -283,7 +296,6 @@ agc_correlate(const dsd_speech_agc* agc, float* r) {
         const float v = x[i - agc->lag_lo];
         et += v * v;
     }
-    float acc[DSD_SPEECH_AGC_MAX_LAGS];
     for (int j = 0; j < nl; j++) {
         acc[j] = 0.0f;
     }
@@ -319,12 +331,13 @@ agc_interior_max(const float* r, int j) {
 
 /* Cue 2's peak: the best strict interior local maximum over the lag range (both ends excluded, so a correlation still
    rising at 15 ms, or low-frequency rumble, never counts). @p lag_ms gets the first peak (the shortest interior
-   maximum within AGC_FIRST_PEAK_FRACTION of the best), refined by a parabola, or -1. */
+   maximum within AGC_FIRST_PEAK_FRACTION of the best), refined by a parabola, or -1. @p acc gets the raw lag products
+   for the veto. */
 static float
-agc_pitch(const dsd_speech_agc* agc, float* lag_ms) {
+agc_pitch(const dsd_speech_agc* agc, float* lag_ms, float* acc) {
     float r[DSD_SPEECH_AGC_MAX_LAGS];
     *lag_ms = -1.0f;
-    if (!agc_correlate(agc, r)) {
+    if (!agc_correlate(agc, r, acc)) {
         return 0.0f;
     }
     const int nl = agc->lag_hi - agc->lag_lo + 1;
@@ -350,6 +363,90 @@ agc_pitch(const dsd_speech_agc* agc, float* lag_ms) {
         }
     }
     return best;
+}
+
+/* Sample @p k of the pre-emphasised copy of the decimated frame @p x, whose history starts at -@p lag_hi (the sample
+   before it counts as 0). */
+static inline float
+agc_preemph(const float* x, int k, int lag_hi) {
+    return x[k] - AGC_VETO_PREEMPH * ((k - 1 >= -lag_hi) ? x[k - 1] : 0.0f);
+}
+
+/* The pre-emphasised copy's lag products over the lag range, from the raw ones in @p acc: with w[i] = x[i] - c x[i-1],
+   Aw(t) = (1 + c^2) A(t) - c A(t+1) - c A(t-1) plus the terms at the window's edges. Needs A(lo-1) and A(hi+1) too. */
+static void
+agc_preemph_products(const dsd_speech_agc* agc, const float* acc, float* aw, int nl) {
+    const float* x = agc->history + agc->lag_hi;
+    const int n = agc->decim_pos;
+    const int lo = agc->lag_lo;
+    const int hi = agc->lag_hi;
+    const float c = AGC_VETO_PREEMPH;
+    float alo = 0.0f;
+    float ahi = 0.0f;
+    for (int i = 0; i < n; i++) {
+        alo += x[i] * x[i - lo + 1];
+    }
+    for (int i = 1; i < n; i++) {
+        ahi += x[i] * x[i - hi - 1];
+    }
+    for (int j = 0; j < nl; j++) {
+        const int t = lo + j;
+        const float at = acc[j];
+        const float ap = j + 1 < nl ? acc[j + 1] : ahi;
+        const float am = j > 0 ? acc[j - 1] : alo;
+        const float xm1t1 = j + 1 < nl ? x[-1] * x[-1 - t] : 0.0f;
+        aw[j] = at - c * ap - c * (am + x[-1] * x[-t] - x[n - 1] * x[n - t])
+                + c * c * (at + xm1t1 - x[n - 1] * x[n - 1 - t]);
+    }
+}
+
+/* The coloured-noise veto's test for a frame that passed cue 2 (@p acc: its raw lag products): whether its
+   pre-emphasised copy has a strict interior autocorrelation peak of at least AGC_VETO_R. It compares Aw^2 / Ew(t)
+   against AGC_VETO_R^2 E0, which orders the lags as the normalised r does where Aw > 0, without a square root. */
+static int
+agc_survives_preemphasis(const dsd_speech_agc* agc, const float* acc) {
+    const float* x = agc->history + agc->lag_hi;
+    const int n = agc->decim_pos;
+    const int lo = agc->lag_lo;
+    const int hi = agc->lag_hi;
+    const int nl = hi - lo + 1;
+    float q[DSD_SPEECH_AGC_MAX_LAGS];
+    agc_preemph_products(agc, acc, q, nl);
+    float e0 = 0.0f;
+    for (int i = 0; i < n; i++) {
+        const float v = agc_preemph(x, i, hi);
+        e0 += v * v;
+    }
+    if (!(e0 > 0.0f)) {
+        return 0;
+    }
+    float et = 0.0f;
+    for (int i = 0; i < n; i++) {
+        const float v = agc_preemph(x, i - lo, hi);
+        et += v * v;
+    }
+    for (int j = 0; j < nl; j++) {
+        const int t = lo + j;
+        const float ac = q[j];
+        q[j] = (ac > 0.0f && et > 0.0f) ? ac * ac / et : 0.0f;
+        if (j + 1 == nl) {
+            break;
+        }
+        /* The lagged window's energy for the next lag, as in agc_correlate(). */
+        const float o = agc_preemph(x, n - 1 - t, hi);
+        const float ni = agc_preemph(x, -t - 1, hi);
+        et += ni * ni - o * o;
+        if (et < 0.0f) {
+            et = 0.0f;
+        }
+    }
+    const float need = AGC_VETO_R * AGC_VETO_R * e0;
+    for (int j = 1; j + 1 < nl; j++) {
+        if (agc_interior_max(q, j) && q[j] >= need) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 /* One committed frame level into the estimate. */
@@ -476,7 +573,8 @@ agc_count_floor_frame(dsd_speech_agc_learned* d) {
 }
 
 /* Cue 1 and the noise floor for one eligible frame at or above the absolute floor. Cue 1 reads the floor as it was
-   before this frame. The pitch cue runs only where it can matter: when cue 1 passes, or for the stale-floor watch.
+   before this frame. The pitch cue runs only where it can matter: when cue 1 passes, or for the stale-floor watch; with
+   the veto on, a frame that passes it without surviving the pre-emphasis counts as not periodic (r 0, no lag).
    Returns cue 1; @p r and @p lag_ms get the pitch cue (-1 when it did not run). */
 static int
 agc_floor_and_cue1(dsd_speech_agc* agc, float level_db, float* r, float* lag_ms) {
@@ -485,7 +583,12 @@ agc_floor_and_cue1(dsd_speech_agc* agc, float level_db, float* r, float* lag_ms)
     const int cue1 = level_db >= n_prev + AGC_CUE1_DB;
     const int probe = !cue1 && level_db >= n_prev - AGC_STALE_WINDOW_DB;
     if (cue1 || probe) {
-        *r = agc_pitch(agc, lag_ms);
+        float acc[DSD_SPEECH_AGC_MAX_LAGS];
+        *r = agc_pitch(agc, lag_ms, acc);
+        if (agc->noise_veto && *r >= AGC_PERIODIC_R && !agc_survives_preemphasis(agc, acc)) {
+            *r = 0.0f;
+            *lag_ms = -1.0f;
+        }
     }
     if (probe && *r >= AGC_PERIODIC_R && *lag_ms >= 0.0f) {
         if (agc_stale_probe(agc, *lag_ms)) {

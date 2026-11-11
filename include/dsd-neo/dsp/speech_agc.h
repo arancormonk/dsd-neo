@@ -116,6 +116,7 @@ typedef struct {
     float tone_cap;           /**< the start gain, linear: the most a tone frame gets */
     int fixed;
     float fixed_gain;
+    int noise_veto; /**< the coloured-noise veto (dsd_speech_agc_set_noise_veto()) */
 
     dsd_speech_agc_learned learned;
 
@@ -166,6 +167,18 @@ void dsd_speech_agc_reset(dsd_speech_agc* agc);
 /** The start gain for the next reset (and every one after it); the current reception keeps its own. A gain out of
     init's range is ignored. */
 void dsd_speech_agc_set_start_gain_db(dsd_speech_agc* agc, float start_gain_db);
+
+/**
+ * @brief Turn the coloured-noise veto on (nonzero @p on) or off. Init turns it off; a reset keeps it.
+ *
+ * Analog receivers turn it on right after init. FM hiss after heavy de-emphasis (750 us) is so strongly coloured that
+ * a few percent of its frames pass the pitch cue, enough to keep the attenuator from easing open-squelch hiss down.
+ * With the veto on, a frame that passes the pitch cue must also show a strict interior autocorrelation peak of at
+ * least 0.4 in a first-order pre-emphasised copy (x[n] - 0.9 x[n-1]) of the frame the cue saw; otherwise it counts as
+ * not voiced. Voiced speech keeps its pitch peaks through the pre-emphasis; coloured noise loses them. Digital voice
+ * leaves it off: decoded speech carries no receiver hiss, its output stays as calibrated, and it pays nothing.
+ */
+void dsd_speech_agc_set_noise_veto(dsd_speech_agc* agc, int on);
 
 /**
  * @brief Fixed or automatic gain.

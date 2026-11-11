@@ -6375,9 +6375,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   Butterworth high-pass at 200 Hz; both a 3400 Hz Butterworth low-pass; `tools/design_voice_filters.py` derives the
   prototype and every bound `DSP_ANALOG_VOICE` holds), the legacy 960 Hz one-pole low-pass and high-pass (`-v 0x2`,
   `0x4`; the chain's own copies at its rate, not `dsd_state`'s `RCFilter`/`HRCFilter`), then the gain stage: the
-  chain's gain (the `-n 50` level), then the speech AGC (`dsd_speech_agc`, below) at the chain's rate over it, fixed at
-  N / 50 for `-n N` (`dsd_speech_agc_set_fixed()`, its -1 dBFS limiter still running) or automatic on `-n 0` (the
-  default). On automatic a reception starts at the band's start gain over `-n 50`
+  chain's gain (the `-n 50` level), then the speech AGC (`dsd_speech_agc`, below, with its coloured-noise veto on) at
+  the chain's rate over it, fixed at N / 50 for `-n N` (`dsd_speech_agc_set_fixed()`, its -1 dBFS limiter still
+  running) or automatic on `-n 0` (the default). On automatic a reception starts at the band's start gain over `-n 50`
   (`analog_audio_start_gain_db()`, issue #518 D6/D7): FM narrowband (`--nfm-bandwidth-hz` up to 16000, the default)
   +4.537 dB, FM wideband -1.482 dB, AM -2.553 dB, on RTL monitor audio less the `vol` trim over its default 2; a
   setting change applies from the next reset (`dsd_speech_agc_set_start_gain_db()`). At a rate the AGC refuses (under
@@ -6469,15 +6469,20 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   Committed frames feed a power-domain level estimate, and each committing frame steps the gain toward the target
   (1 dB for the first 20 steps, then +0.12 / -0.20 dB), within -12/+15 dB of the start gain. A separate attenuator
   eases long non-speech (open-squelch hiss) down to -24 dB without touching the estimate. The gain ramps over the
-  next frame (no added latency), then a peak limiter holds every sample at -1 dBFS. Flags: `learn` and `decodable`
+  next frame (no added latency), then a peak limiter holds every sample at -1 dBFS. The coloured-noise veto
+  (`dsd_speech_agc_set_noise_veto()`, off after init, kept by a reset) also asks a frame that passes the pitch cue for
+  a strict interior peak of at least 0.4 in a pre-emphasised copy (x[n] - 0.9 x[n-1]), taken from the same lag products
+  without a second correlation: FM hiss after 750 us de-emphasis passes the pitch cue on a few percent of frames, which
+  would keep the attenuator from easing it. Only the analog chain turns it on. Digital voice carries no receiver hiss,
+  the frame target is calibrated on digital speech, and the digital output stays the same bits. Flags: `learn` and `decodable`
   per call, `tone` caps a decoder's tone frames at the start gain; `dsd_speech_agc_process_runs()` takes a learn flag
   per sample and turns its edges into `dsd_speech_agc_gate_closed()` (a complete rollback to the oldest of 13
   per-frame checkpoints, dropping any pending run) and `dsd_speech_agc_gate_opened()`. The output is bit-identical
   for any partition. `dsd_peak_limiter` is the same limiter on its own, for mixers. The source and its test keep IEEE
   semantics under fast-math. Tests: `DSP_SPEECH_AGC` (synthetic talkers, the gain law, startup, vowels, tones, hum,
   pitch edges, noise, attenuator, tone cap, decodability, rollback against a control, partitions, cross-rate, ceiling,
-  reset, non-finite, fixed mode, the limiter), `DSP_SPEECH_AGC_LONG` (the floor after 60-120 s of hiss); the
-  `dsd-neo_bench_speech_agc` micro-benchmark.
+  reset, non-finite, fixed mode, the limiter, the veto on de-emphasised hiss), `DSP_SPEECH_AGC_LONG` (the floor after
+  60-120 s of hiss, with and without the veto); the `dsd-neo_bench_speech_agc` micro-benchmark.
 - The auto squelch's core (issue #518 follow-up) is `src/dsp/squelch_floor.c` (`<dsd-neo/dsp/squelch_floor.h>`), pure
   and on the channel-filtered I/Q at the channel rate (before any post-decimation). A plan
   (`dsd_squelch_floor_plan_design()`) turns the channel taps and the half-band stage ahead of them into the

@@ -127,7 +127,8 @@ too, so the same run on both compares them; `--case K` runs one case, for a prof
 `build/perf-bench/tests/dsd-neo_bench_analog_record --blocks 20000 --repeat 9`.
 
 The speech AGC benchmark (`dsd-neo_bench_speech_agc`) times `dsd_speech_agc_process()` on synthetic talkers over a
-quiet hiss at 8, 22.05 and 48 kHz, and on open-squelch hiss at 48 kHz, where the pitch cue runs on every frame. Each
+quiet hiss at 8, 22.05 and 48 kHz, and on open-squelch hiss at 48 kHz, where the pitch cue runs on every frame; at
+48 kHz both also run with the coloured-noise veto the analog chain turns on (`veto`). Each
 case runs whole 20 ms frames per call and single samples per call, and prints the fastest and the median ns per sample
 over the repeats. Build it like the others (`--target dsd-neo_bench_speech_agc`) and run
 `build/perf-bench/tests/dsd-neo_bench_speech_agc --seconds 60 --repeat 7`.

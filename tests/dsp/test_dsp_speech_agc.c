@@ -13,6 +13,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/dsp/analog_voice.h>
 #include <dsd-neo/dsp/speech_agc.h>
 #include <math.h>
 #include <stdint.h>
@@ -192,6 +193,34 @@ speech_into(float* out, size_t n, int rate, uint64_t seed, double level_dbfs, do
     assert(dsd_test_synth_speech(out, n, rate, &p) == 0);
 }
 
+/* Open-squelch FM hiss as the analog chain's AGC sees it: white noise through a one-pole de-emphasis of time constant
+   @p tau_s (0: none; 750 us is DSD_NEO_DEEMPH=nfm), then the monitor's own FM voice band-pass, at RMS @p rms_dbfs over
+   the @p n samples. The filters run 50 ms before the first sample. */
+static void
+synth_receiver_hiss(float* x, size_t n, int rate, uint64_t seed, double tau_s, double rms_dbfs) {
+    const size_t lead = secs(rate, 0.05);
+    float* w = alloc_f(n + lead);
+    rng_t r = {seed * 0x9E3779B97F4A7C15ULL + 1U};
+    const double a = tau_s > 0.0 ? exp(-1.0 / ((double)rate * tau_s)) : 0.0;
+    double y = 0.0;
+    for (size_t i = 0; i < n + lead; i++) {
+        y = ((1.0 - a) * rng_gauss(&r)) + (a * y);
+        w[i] = (float)y;
+    }
+    dsd_voice_bandpass bp;
+    assert(dsd_voice_bandpass_design(&bp, DSD_VOICE_BAND_FM, rate) == 0);
+    dsd_voice_bandpass_process(&bp, w, n + lead);
+    double sumsq = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        sumsq += (double)w[lead + i] * (double)w[lead + i];
+    }
+    const double scale = 32768.0 * pow(10.0, rms_dbfs / 20.0) / sqrt(sumsq / (double)n);
+    for (size_t i = 0; i < n; i++) {
+        x[i] = (float)((double)w[lead + i] * scale);
+    }
+    free(w);
+}
+
 /* --------------------------------------------------------------------------------------------- frame tracing */
 
 typedef struct {
@@ -280,6 +309,14 @@ new_agc(int rate, float g0) {
     dsd_speech_agc* agc = (dsd_speech_agc*)calloc(1U, sizeof *agc);
     assert(agc != NULL);
     assert(init_agc(agc, rate, g0) == 0);
+    return agc;
+}
+
+/* An instance as the analog chain runs it: the coloured-noise veto on. */
+static dsd_speech_agc*
+new_analog_agc(int rate, float g0) {
+    dsd_speech_agc* agc = new_agc(rate, g0);
+    dsd_speech_agc_set_noise_veto(agc, 1);
     return agc;
 }
 
@@ -605,13 +642,18 @@ test_first_commit_ramp(void) {
     free(in);
 }
 
-/* Run @p in (learning throughout) from reset; returns the frame trace. */
+/* Run @p in (learning throughout) from reset, with the coloured-noise veto when @p veto; returns the frame trace. */
 static void
-run_fresh(int rate, float g0, float* buf, size_t n, trace_t* t) {
-    dsd_speech_agc* agc = new_agc(rate, g0);
+run_fresh_veto(int rate, float g0, int veto, float* buf, size_t n, trace_t* t) {
+    dsd_speech_agc* agc = veto ? new_analog_agc(rate, g0) : new_agc(rate, g0);
     trace_init(t, n / (size_t)agc->frame_len);
     run_traced(agc, buf, n, NULL, k_learn, t);
     free(agc);
+}
+
+static void
+run_fresh(int rate, float g0, float* buf, size_t n, trace_t* t) {
+    run_fresh_veto(rate, g0, 0, buf, n, t);
 }
 
 /* A reception that starts inside quiet speech, or after exact zeros, commits within half a second of speech. */
@@ -660,9 +702,10 @@ test_start_inside_speech_and_after_zeros(void) {
 }
 
 /* Natural vowels of 300 ms to 1 s are speech, alone at the start of a reception and in the middle of speech; a
-   perfectly steady vowel is a tone within 12 frames of steady sound. */
+   perfectly steady vowel is a tone within 12 frames of steady sound. The same with the coloured-noise veto when
+   @p veto: voiced sound keeps its pitch peaks through the veto's pre-emphasis. */
 static void
-test_vowels(void) {
+test_vowels(int veto) {
     static const int rates[] = {8000, 48000};
     static const double durs[] = {0.3, 0.5, 1.0};
     for (size_t ri = 0; ri < 2; ri++) {
@@ -681,12 +724,12 @@ test_vowels(void) {
                 v.level_dbfs = -36.0;
                 assert(dsd_test_synth_vowel(x + lead, n - lead, rate, &v) == 0);
                 trace_t t;
-                run_fresh(rate, 0.0f, x, n, &t);
+                run_fresh_veto(rate, 0.0f, veto, x, n, &t);
                 const long from = (long)(lead / (size_t)frame_len(rate));
                 const int c = count_commits(&t, from, (long)t.count);
                 const int frames = (int)lround(durs[di] / 0.02);
-                SAY("%d Hz natural vowel %.1f s %s: %d of %d frames committed\n", rate, durs[di], mid ? "mid" : "alone",
-                    c, frames);
+                SAY("%d Hz%s natural vowel %.1f s %s: %d of %d frames committed\n", rate, veto ? " veto" : "", durs[di],
+                    mid ? "mid" : "alone", c, frames);
                 assert(c >= frames / 2);
                 trace_free(&t);
                 free(x);
@@ -707,7 +750,7 @@ test_vowels(void) {
             v.steady = 1;
             assert(dsd_test_synth_vowel(x + lead, n - lead, rate, &v) == 0);
             trace_t t;
-            run_fresh(rate, 0.0f, x, n, &t);
+            run_fresh_veto(rate, 0.0f, veto, x, n, &t);
             const long from = (long)(lead / (size_t)frame_len(rate));
             int c = 0;
             int rej = 0;
@@ -723,8 +766,8 @@ test_vowels(void) {
                 c += t.f[i].committed;
                 rej += t.f[i].rejected;
             }
-            SAY("%d Hz steady vowel 1 s %s: %d frames committed, %d rejections, last commit %ld frames in\n", rate,
-                mid ? "mid" : "alone", c, rej, last - first);
+            SAY("%d Hz%s steady vowel 1 s %s: %d frames committed, %d rejections, last commit %ld frames in\n", rate,
+                veto ? " veto" : "", mid ? "mid" : "alone", c, rej, last - first);
             /* The run may include the vowel's onset frame, so the 12 steady frames end one frame later. */
             assert(rej >= 1 && c <= DSD_SPEECH_AGC_STATIONARY_FRAMES);
             assert(last - first <= DSD_SPEECH_AGC_STATIONARY_FRAMES - 1);
@@ -791,26 +834,28 @@ test_steady_sounds_rejected(void) {
     }
 }
 
-/* Voiced sound with a 1% jitter near the lag range's edges is speech (70 Hz: 14.3 ms; 380-420 Hz around 2.5 ms); a
-   correlation still rising at 15 ms (60 Hz) and rumble are not, at 8, 22.05 and 48 kHz. */
+/* Voiced sound with a 1% jitter near the lag range's edges is speech (70 Hz: 14.3 ms; 380-420 Hz around 2.5 ms), and
+   so is 120 Hz; a correlation still rising at 15 ms (60 Hz) and rumble are not, at 8, 22.05 and 48 kHz. The same with
+   the coloured-noise veto when @p veto. */
 static void
-test_pitch_edges_and_rumble(void) {
+test_pitch_edges_and_rumble(int veto) {
     static const int rates[] = {8000, 22050, 48000};
-    static const double accept[] = {70.0, 380.0, 400.0, 420.0};
+    static const double accept[] = {70.0, 380.0, 400.0, 420.0, 120.0};
+    const size_t n_accept = sizeof accept / sizeof accept[0];
     for (size_t ri = 0; ri < 3; ri++) {
         const int rate = rates[ri];
         const size_t lead = secs(rate, 0.5);
         const size_t n = lead + secs(rate, 2.0);
         const long from = (long)(lead / (size_t)frame_len(rate)) + 3;
-        for (size_t ai = 0; ai < 4 + 2; ai++) {
+        for (size_t ai = 0; ai < n_accept + 2; ai++) {
             float* x = alloc_f(n);
             const char* name;
-            if (ai < 4) {
+            if (ai < n_accept) {
                 voiced_params vp;
                 voiced_defaults(&vp, accept[ai], 0.01, 60 + ai);
                 synth_voiced(x + lead, n - lead, rate, &vp, -30.0);
                 name = "voiced";
-            } else if (ai == 4) {
+            } else if (ai == n_accept) {
                 voiced_params vp;
                 voiced_defaults(&vp, 60.0, 0.01, 65);
                 synth_voiced(x + lead, n - lead, rate, &vp, -30.0);
@@ -820,12 +865,12 @@ test_pitch_edges_and_rumble(void) {
                 name = "rumble";
             }
             trace_t t;
-            run_fresh(rate, 0.0f, x, n, &t);
+            run_fresh_veto(rate, 0.0f, veto, x, n, &t);
             const int c = count_committed_frames(&t, from, (long)t.count);
             const int frames = (int)t.count - (int)from;
-            SAY("%5d Hz %-12s %3.0f Hz: %3d of %3d frames committed\n", rate, name, ai < 4 ? accept[ai] : 0.0, c,
-                frames);
-            if (ai < 4) {
+            SAY("%5d Hz%s %-12s %3.0f Hz: %3d of %3d frames committed\n", rate, veto ? " veto" : "", name,
+                ai < n_accept ? accept[ai] : 0.0, c, frames);
+            if (ai < n_accept) {
                 assert(c * 10 >= frames * 9);
             } else {
                 assert(c == 0);
@@ -906,13 +951,10 @@ glide_first_commit(dsd_speech_agc* agc, int rate, float scale, uint32_t* restart
     return k;
 }
 
-/* Hiss of @p kind at @p db for @p total seconds on @p agc, from a frame boundary; snapshots at 60 s into @p at60 when
-   asked. Returns the frames committed after the first 2 s. */
+/* The @p n samples of hiss @p x on @p agc, from a frame boundary; snapshots at 60 s into @p at60 when asked. Returns
+   the frames committed after the first 2 s. */
 static int
-run_hiss(dsd_speech_agc* agc, int rate, dsd_test_noise_kind kind, double db, double total, dsd_speech_agc** at60) {
-    const size_t n = secs(rate, total);
-    float* x = alloc_f(n);
-    assert(dsd_test_synth_noise(x, n, rate, 72, kind, db) == 0);
+run_hiss_on(dsd_speech_agc* agc, int rate, float* x, size_t n, dsd_speech_agc** at60) {
     trace_t t;
     trace_init(&t, n / (size_t)agc->frame_len);
     const size_t half = secs(rate, 60.0) < n ? secs(rate, 60.0) : n;
@@ -923,6 +965,16 @@ run_hiss(dsd_speech_agc* agc, int rate, dsd_test_noise_kind kind, double db, dou
     run_traced(agc, x + half, n - half, NULL, k_learn, &t);
     const int c = count_commits(&t, 100, (long)t.count);
     trace_free(&t);
+    return c;
+}
+
+/* Hiss of @p kind at @p db for @p total seconds on @p agc (run_hiss_on()). */
+static int
+run_hiss(dsd_speech_agc* agc, int rate, dsd_test_noise_kind kind, double db, double total, dsd_speech_agc** at60) {
+    const size_t n = secs(rate, total);
+    float* x = alloc_f(n);
+    assert(dsd_test_synth_noise(x, n, rate, 72, kind, db) == 0);
+    const int c = run_hiss_on(agc, rate, x, n, at60);
     free(x);
     return c;
 }
@@ -988,6 +1040,58 @@ test_floor_recovery_after_long_hiss(void) {
         assert(k >= 0 && k < 35);
         free(agc);
     }
+}
+
+/* The same recovery on an analog instance (the coloured-noise veto on) after 60 s of hiss through 750 us de-emphasis
+   and the monitor's band-pass, as hot as off-air receiver noise (-13 dBFS) and quieter (-30 dBFS): nothing commits on
+   the hiss, which plays at -30 dBFS or less at its end; quieter speech after it commits within 0.7 s. Speech 15 dB
+   under the -30 dBFS hiss restarts the floor at once (the floor, rising 1 dB/s, is still under -13 dBFS hiss after
+   60 s). The reverse too (speech, the hiss, speech). */
+static void
+test_veto_floor_recovery_after_long_hiss(void) {
+    const int rate = 48000;
+    const float g0 = 4.537f;
+    const size_t n = secs(rate, 60.0);
+    const size_t tail = secs(rate, 5.0);
+    float* x = alloc_f(n);
+    static const double levels[] = {-13.0, -30.0};
+    for (size_t i = 0; i < sizeof levels / sizeof levels[0]; i++) {
+        dsd_speech_agc* agc = new_analog_agc(rate, g0);
+        synth_receiver_hiss(x, n, rate, 74, 750e-6, levels[i]);
+        const int c = run_hiss_on(agc, rate, x, n, NULL);
+        const double out = rms_dbfs(x + n - tail, tail);
+        dsd_speech_agc* drop = clone_agc(agc);
+        const long k = glide_first_commit(agc, rate, 1.0f, NULL);
+        uint32_t restarted = 0;
+        const float scale = (float)pow(10.0, (levels[i] - 15.0 + 35.5) / 20.0);
+        const long kdrop = glide_first_commit(drop, rate, scale, &restarted);
+        SAY("750 us hiss %+.0f dBFS, veto: %d commits on it, its last 5 s at %.2f dBFS; quieter speech after it "
+            "commits "
+            "at %.2f s; speech 15 dB under it at %.2f s (floor restarts on its first frame: %u)\n",
+            levels[i], c, out, 0.02 * (double)(k + 1), 0.02 * (double)(kdrop + 1), restarted);
+        assert(c == 0 && out <= -30.0);
+        assert(k >= 0 && k < 35);
+        if (levels[i] <= -30.0) {
+            assert(restarted == 1U && kdrop >= DSD_SPEECH_AGC_RUN_FRAMES - 1 && kdrop <= DSD_SPEECH_AGC_RUN_FRAMES + 2);
+        }
+        free(drop);
+        free(agc);
+    }
+    dsd_speech_agc* agc = new_analog_agc(rate, g0);
+    const size_t ns = secs(rate, 12.0);
+    float* sp = alloc_f(ns);
+    speech_into(sp, ns, rate, 73, -29.0, 130.0, 0.0);
+    run_traced(agc, sp, ns, NULL, k_learn, NULL);
+    free(sp);
+    synth_receiver_hiss(x, n, rate, 75, 750e-6, -30.0);
+    const int c = run_hiss_on(agc, rate, x, n, NULL);
+    const long k = glide_first_commit(agc, rate, 1.0f, NULL);
+    SAY("speech, then 750 us hiss 60 s, veto: %d commits on the hiss, quieter speech after it commits at %.2f s\n", c,
+        0.02 * (double)(k + 1));
+    assert(c == 0);
+    assert(k >= 0 && k < 35);
+    free(agc);
+    free(x);
 }
 
 /* Per-sample run: @p gains gets each sample's applied gain (controller, attenuator and limiter). */
@@ -1192,6 +1296,79 @@ test_attenuator_release_on_speech(void) {
     trace_free(&t);
     free(x);
     free(agc);
+}
+
+/* What one hiss run did: frames taken for speech, and the output's RMS over its last 5 s. */
+typedef struct {
+    int speech;
+    double tail_dbfs;
+} hiss_run;
+
+/* A copy of @p x into @p y through a fresh 48 kHz FM narrowband instance (the veto on when @p veto), learning
+   throughout as on an open squelch. */
+static hiss_run
+run_open_squelch(const float* x, float* y, size_t n, int veto) {
+    const int rate = 48000;
+    dsd_speech_agc* agc = veto ? new_analog_agc(rate, 4.537f) : new_agc(rate, 4.537f);
+    DSD_MEMCPY(y, x, n * sizeof(float));
+    trace_t t;
+    trace_init(&t, n / (size_t)agc->frame_len);
+    run_traced(agc, y, n, NULL, k_learn, &t);
+    hiss_run r = {0, rms_dbfs(y + n - secs(rate, 5.0), secs(rate, 5.0))};
+    for (size_t i = 0; i < t.count; i++) {
+        r.speech += t.f[i].speech;
+    }
+    trace_free(&t);
+    free(agc);
+    return r;
+}
+
+/* The coloured-noise veto (analog instances). 10 s of open-squelch FM hiss, as hot as off-air receiver noise (-13
+   dBFS) and quieter (-30 dBFS), white noise through the receiver's de-emphasis and the monitor's band-pass. After
+   750 us de-emphasis the hiss is coloured enough that a few percent of its frames pass the pitch cue on their own,
+   which keeps the attenuator from easing it down (-10 dBFS RMS); with the veto no frame is taken for speech and it
+   eases to -30 dBFS or less. After 75 us, 50 us or no de-emphasis the veto finds nothing to turn away: the output is
+   the same bits as without it. The veto is off after init, and a reset keeps it. */
+static void
+test_noise_veto_hiss(void) {
+    const int rate = 48000;
+    const size_t n = secs(rate, 10.0);
+    static const double taus[] = {750e-6, 75e-6, 50e-6, 0.0};
+    static const double levels[] = {-13.0, -30.0};
+    float* x = alloc_f(n);
+    float* off = alloc_f(n);
+    float* on = alloc_f(n);
+    for (size_t ti = 0; ti < sizeof taus / sizeof taus[0]; ti++) {
+        for (size_t li = 0; li < sizeof levels / sizeof levels[0]; li++) {
+            synth_receiver_hiss(x, n, rate, 170 + ti, taus[ti], levels[li]);
+            const hiss_run a = run_open_squelch(x, off, n, 0);
+            const hiss_run b = run_open_squelch(x, on, n, 1);
+            SAY("hiss, de-emphasis %3.0f us, %+.0f dBFS: without the veto %3d speech frames, last 5 s at %6.2f dBFS; "
+                "with it %d, %6.2f dBFS\n",
+                taus[ti] * 1e6, levels[li], a.speech, a.tail_dbfs, b.speech, b.tail_dbfs);
+            assert(b.speech == 0 && b.tail_dbfs <= -30.0);
+            if (ti == 0) {
+                assert(a.speech > 0);
+                if (li == 0) {
+                    assert(a.tail_dbfs > -20.0);
+                }
+            } else {
+                assert(same_bits(on, off, n * sizeof(float)));
+            }
+        }
+    }
+    dsd_speech_agc* agc = new_agc(rate, 4.537f);
+    assert(agc->noise_veto == 0);
+    dsd_speech_agc_set_noise_veto(agc, 7);
+    dsd_speech_agc_reset(agc);
+    assert(agc->noise_veto == 1);
+    dsd_speech_agc_set_noise_veto(agc, 0);
+    assert(agc->noise_veto == 0);
+    dsd_speech_agc_set_noise_veto(NULL, 1);
+    free(agc);
+    free(on);
+    free(off);
+    free(x);
 }
 
 /* Tone frames (auto mode): at most the start gain from the first tone sample, no learning, S and G untouched, and the
@@ -1633,8 +1810,23 @@ drive_runs(dsd_speech_agc* agc, const stream_t* s, float* y, size_t chunk) {
     }
 }
 
+/* Drive a fresh instance (start gain @p g0, the veto on when @p veto) over @p s, with per-call flags or, when @p runs,
+   per-sample learn runs; @p y gets the output. */
+static dsd_speech_agc*
+drive_fresh(const stream_t* s, int rate, float g0, int veto, int runs, float* y, size_t chunk) {
+    dsd_speech_agc* agc = veto ? new_analog_agc(rate, g0) : new_agc(rate, g0);
+    DSD_MEMCPY(y, s->x, s->n * sizeof(float));
+    if (runs) {
+        drive_runs(agc, s, y, chunk);
+    } else {
+        drive_flags(agc, s, y, chunk);
+    }
+    return agc;
+}
+
 /* The output is bit-identical for any partition (one sample, random, a frame, a frame +-1), at 8, 22.05 and 48 kHz,
-   for per-call flags (learn, decodable, tone) and for per-sample learn runs with their closes and opens. */
+   for per-call flags (learn, decodable, tone) and for per-sample learn runs with their closes and opens, and so with
+   the coloured-noise veto on the same stream under 750 us de-emphasised hiss, where it turns frames away. */
 static void
 test_partition_identity(void) {
     static const int rates[] = {8000, 22050, 48000};
@@ -1644,33 +1836,36 @@ test_partition_identity(void) {
         stream_t s;
         stream_make(&s, rate);
         const size_t chunks[] = {1, 0, F, F - 1, F + 1};
-        for (int mode = 0; mode < 2; mode++) {
-            dsd_speech_agc* ref = new_agc(rate, mode ? 4.537f : 0.0f);
-            float* yref = alloc_f(s.n);
-            DSD_MEMCPY(yref, s.x, s.n * sizeof(float));
-            if (mode) {
-                drive_runs(ref, &s, yref, s.n);
-            } else {
-                drive_flags(ref, &s, yref, s.n);
+        for (int mode = 0; mode < 3; mode++) {
+            const int veto = mode == 2;
+            const int runs = mode != 0;
+            const float g0 = runs ? 4.537f : 0.0f;
+            if (veto) {
+                float* hiss = alloc_f(s.n);
+                synth_receiver_hiss(hiss, s.n, rate, 154, 750e-6, -40.0);
+                add_into(s.x, hiss, s.n);
+                free(hiss);
             }
+            float* yref = alloc_f(s.n);
+            dsd_speech_agc* ref = drive_fresh(&s, rate, g0, veto, runs, yref, s.n);
             assert(ref->learned.commits > 100 && ref->learned.rejections >= 1);
+            if (veto) {
+                float* yoff = alloc_f(s.n);
+                free(drive_fresh(&s, rate, g0, 0, runs, yoff, s.n));
+                assert(!same_bits(yoff, yref, s.n * sizeof(float)));
+                free(yoff);
+            }
             for (size_t ci = 0; ci < sizeof chunks / sizeof chunks[0]; ci++) {
-                dsd_speech_agc* agc = new_agc(rate, mode ? 4.537f : 0.0f);
                 float* y = alloc_f(s.n);
-                DSD_MEMCPY(y, s.x, s.n * sizeof(float));
-                if (mode) {
-                    drive_runs(agc, &s, y, chunks[ci]);
-                } else {
-                    drive_flags(agc, &s, y, chunks[ci]);
-                }
+                dsd_speech_agc* agc = drive_fresh(&s, rate, g0, veto, runs, y, chunks[ci]);
                 assert(same_bits(y, yref, s.n * sizeof(float)));
                 assert(same_bits(&agc->learned, &ref->learned, sizeof agc->learned));
                 free(y);
                 free(agc);
             }
             SAY("%5d Hz %s: identical for every partition (%d commits, %u rejections, %u restarts)\n", rate,
-                mode ? "learn runs " : "frame flags", ref->learned.commits, ref->learned.rejections,
-                ref->learned.restarts);
+                veto ? "veto, runs " : (runs ? "learn runs " : "frame flags"), ref->learned.commits,
+                ref->learned.rejections, ref->learned.restarts);
             free(yref);
             free(ref);
         }
@@ -2003,6 +2198,7 @@ main(int argc, char** argv) {
     }
     if (run_long) {
         test_floor_recovery_after_long_hiss();
+        test_veto_floor_recovery_after_long_hiss();
         DSD_FPRINTF(stdout, "DSP_SPEECH_AGC_LONG: OK\n");
         return 0;
     }
@@ -2010,12 +2206,15 @@ main(int argc, char** argv) {
     test_established_talkers();
     test_first_commit_ramp();
     test_start_inside_speech_and_after_zeros();
-    test_vowels();
+    test_vowels(0);
+    test_vowels(1);
     test_steady_sounds_rejected();
-    test_pitch_edges_and_rumble();
+    test_pitch_edges_and_rumble(0);
+    test_pitch_edges_and_rumble(1);
     test_noise_after_speech_and_snr();
     test_attenuator_hiss_and_quieting();
     test_attenuator_release_on_speech();
+    test_noise_veto_hiss();
     test_tone_cap();
     test_decodability_return();
     test_rollback_matches_control();

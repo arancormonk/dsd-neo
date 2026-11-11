@@ -21845,6 +21845,22 @@ if(DSD_HAS_RADIO)
         ""
         "${_analog_off_path}"
     )
+    # The same under the heaviest de-emphasis (DSD_NEO_DEEMPH=nfm, 750 us): the noise is so
+    # coloured that a few percent of its frames pass the AGC's pitch cue, which held it at
+    # -10.0 dBFS RMS for the whole 10 s. The analog AGC's coloured-noise veto turns those
+    # frames away, so it eases as above: 2 dB louder (the de-emphasis made up), every block
+    # after 3.48 s reads under -26 dBFS.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_NOISE_FLOOR_EASED_DEEMPH_NFM
+        noise_floor
+        "-fA --analog-audible-dbfs -26 --analog-min-captured-ms 9800 --analog-min-last-audible-ms 2000 --analog-max-last-audible-ms 4500 --analog-max-clip 0"
+        ""
+        "${_analog_off_path}"
+    )
+    set_tests_properties(
+        DECODE_IQ_ANALOG_NOISE_FLOOR_EASED_DEEMPH_NFM
+        PROPERTIES ENVIRONMENT "DSD_NEO_DEEMPH=nfm"
+    )
     # The same tone with an unmodulated carrier 12.5 kHz up at -6 dB. The default
     # 16 kHz channel filter rejects it: the 12.5 kHz probe reads -76.6 dBc, close to
     # the floor it reads on nfm_tone_synth (-78.4 dBc), so the bound catches a channel
@@ -21992,6 +22008,19 @@ if(DSD_HAS_RADIO)
         "-fA --analog-min-captured-ms 5800 ${_analog_speech_level_nfm}"
         ""
         "${_analog_off_path}"
+    )
+    # The veto leaves real speech levelled under the heaviest de-emphasis too:
+    # nfm_ctcss_real under DSD_NEO_DEEMPH=nfm measures -23.70 dBFS, in the same window.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_PARITY_NFM_REAL_DEEMPH_NFM
+        nfm_ctcss_real
+        "-fA --analog-min-captured-ms 5800 ${_analog_speech_level_nfm}"
+        ""
+        "${_analog_off_path}"
+    )
+    set_tests_properties(
+        DECODE_IQ_ANALOG_PARITY_NFM_REAL_DEEMPH_NFM
+        PROPERTIES ENVIRONMENT "DSD_NEO_DEEMPH=nfm"
     )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_PARITY_AM_REAL

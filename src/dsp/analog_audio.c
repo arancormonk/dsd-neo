@@ -192,12 +192,17 @@ analog_audio_reception_now(const dsd_opts* opts, const analog_audio_ext* ext) {
     return r;
 }
 
-/* The AGC at the chain's rate, or, at a rate it does not support, the limiter alone. */
+/* The AGC at the chain's rate, or, at a rate it does not support, the limiter alone. The AGC runs with the coloured-noise
+   veto: open-squelch FM hiss after heavy de-emphasis (DSD_NEO_DEEMPH=nfm) would otherwise pass its pitch cue often
+   enough to keep the hiss from easing down. */
 static void
 analog_audio_agc_configure(analog_audio_chain_state* cs, int run_rate_hz, float start_gain_db) {
     cs->agc_ok = dsd_speech_agc_init(&cs->agc, run_rate_hz, start_gain_db, DSD_SPEECH_AGC_TARGET_DBFS,
                                      DSD_SPEECH_AGC_CEILING_DBFS)
                  == 0;
+    if (cs->agc_ok) {
+        dsd_speech_agc_set_noise_veto(&cs->agc, 1);
+    }
     cs->agc_rate_hz = run_rate_hz;
     cs->learned = 0;
     cs->since_learn = 0U;

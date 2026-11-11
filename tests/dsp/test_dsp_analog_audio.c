@@ -1028,6 +1028,40 @@ test_open_squelch_noise_eased_down(void) {
     fixture_free(&f);
 }
 
+/* Open-squelch noise after the heaviest receiver de-emphasis (DSD_NEO_DEEMPH=nfm, 750 us), as hot as off-air receiver
+   noise at -n 50 (-13 dBFS RMS), on the monitor and on the EDACS voice lane: the chain's own band-pass leaves it so
+   coloured that a few percent of its frames pass the AGC's pitch cue, which without the coloured-noise veto kept it at
+   -10.8 dBFS RMS. Both chains run the veto, so it eases down to -30 dBFS or less like any other hiss. */
+static void
+test_heavy_deemph_noise_eased_down(void) {
+    const int rate = 48000;
+    const size_t n = secs(rate, 10.0);
+    const dsd_analog_audio_chain chains[] = {DSD_ANALOG_AUDIO_CHAIN_MONITOR, DSD_ANALOG_AUDIO_CHAIN_EDACS};
+    for (size_t c = 0; c < sizeof chains / sizeof chains[0]; c++) {
+        fixture f = fixture_new();
+        f.opts->use_pbf = 1;
+        float* x = alloc_f(n);
+        CHECK(dsd_test_synth_noise(x, n, rate, 42U, DSD_TEST_NOISE_WHITE, 0.0) == 0, "noise");
+        const double a = exp(-1.0 / ((double)rate * 750e-6));
+        double y = 0.0;
+        for (size_t i = 0; i < n; i++) {
+            y = ((1.0 - a) * (double)x[i]) + (a * y);
+            x[i] = (float)y;
+        }
+        const double scale = pow(10.0, (-13.0 - rms_dbfs(x, n)) / 20.0);
+        for (size_t i = 0; i < n; i++) {
+            x[i] = (float)((double)x[i] * scale);
+        }
+        chain_feed_on(&f, chains[c], DSD_ANALOG_AUDIO_SOURCE_PCM16, rate, x, n, 960U, NULL, DSD_ANALOG_AUDIO_LEARN,
+                      NULL);
+        const size_t last = secs(rate, 2.0);
+        const double got = rms_dbfs(x + n - last, last);
+        CHECK(got <= -30.0, "%s: 750 us de-emphasised noise plays at %.2f dBFS RMS", c ? "EDACS" : "monitor", got);
+        free(x);
+        fixture_free(&f);
+    }
+}
+
 /* B2 (issue #518): the transmission after open-squelch noise does not start low. A talker for 6 s, 10 s of hot noise on
    the open squelch, then the same talker again (the carrier quiets the noise): over its first second the second
    transmission gets within 2 dB of the gain the first one had established. The old AGC carried the noise's gain (-8 dB)
@@ -1357,6 +1391,7 @@ main(void) {
     test_short_rounds_and_limits();
     test_hiss_in_pauses_not_lifted();
     test_open_squelch_noise_eased_down();
+    test_heavy_deemph_noise_eased_down();
     test_next_transmission_after_noise();
     test_rollback_at_close();
     test_new_reception_after_a_second();

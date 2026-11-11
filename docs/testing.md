@@ -2153,8 +2153,10 @@ between runs. Measured on the commit that added them:
 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_A_SMOKE` | `nfm_squelch_real_a`, `-n 50`, audible from -40 dBFS | captured 4000 ms, audible 1820 ms from 460 ms, in-band 23.7 dB | captured ≥ 3900, audible ≥ 1200, first audible 250 to 1000 ms, in-band ≥ 18 |
 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE` | `nfm_squelch_real_b`, `-n 50`, audible from -40 dBFS | captured 4000 ms, audible 3180 ms, in-band 25.5 dB | captured ≥ 3900, audible ≥ 2500, in-band ≥ 20 |
 | `DECODE_IQ_ANALOG_PARITY_NFM_REAL` | `nfm_ctcss_real` under `-fA` (default chain) | P.56 active level -22.98 dBFS (RMS -23.12), no clipping: toward the speech AGC's -24 dBFS target from -31.90 at `-n 50` | captured ≥ 5800, P.56 -24 to -22 dBFS, clip 0 |
+| `DECODE_IQ_ANALOG_PARITY_NFM_REAL_DEEMPH_NFM` | `nfm_ctcss_real` under `-fA` and `DSD_NEO_DEEMPH=nfm` | P.56 -23.70 dBFS (RMS -23.89), no clipping: the coloured-noise veto leaves real speech levelled (-23.25 dBFS without it) | captured ≥ 5800, P.56 -24 to -22 dBFS, clip 0 |
 | `DECODE_IQ_ANALOG_PARITY_AM_REAL` | `am_airband_real` under `-fM` (default chain) | P.56 -21.90 dBFS (RMS -22.36), no clipping; -18.12 at `-n 50` | captured ≥ 7800, P.56 -22.9 to -20.9 dBFS, clip 0 |
 | `DECODE_IQ_ANALOG_NOISE_FLOOR_EASED` | `noise_floor` under `-fA` (default chain, open squelch), audible from -28 dBFS | open-squelch noise, no speech: the attenuator eases it from -7.4 dBFS RMS (the start gain) toward -36 dBFS once a second passes with nothing learned; audible 3460 ms, the last audible block ends at 3480 ms, -31.4 dBFS RMS from 4.5 s on (B2: the old AGC held it at -21.1 dBFS RMS throughout) | captured ≥ 9800, last audible 2000 to 4500 ms, clip 0 |
+| `DECODE_IQ_ANALOG_NOISE_FLOOR_EASED_DEEMPH_NFM` | `noise_floor` under `-fA` and `DSD_NEO_DEEMPH=nfm` (750 us), audible from -26 dBFS | the same easing under the heaviest de-emphasis, about 2 dB louder (the gain stage makes up the de-emphasis): audible 3360 ms, the last audible block ends at 3480 ms. Without the analog AGC's coloured-noise veto a few percent of the noise's frames pass the pitch cue, and it plays at -10.0 dBFS RMS throughout | captured ≥ 9800, last audible 2000 to 4500 ms, clip 0 |
 | `DECODE_IQ_ANALOG_NOISE_FIXED50_DEEMPH_NFM` | `noise_floor` under `-fA -n 50` and `DSD_NEO_DEEMPH=nfm` | RMS -10.92 dBFS, peak -1.00 dBFS, no clipping: a fixed gain keeps the speech AGC's limiter | captured ≥ 9800, peak ≤ -0.9 dBFS, clip 0 |
 | `DECODE_IQ_ANALOG_RAW_WAV_NFM_REAL` | `nfm_ctcss_real` under `-fA`, the `-6` raw WAV (issue #643) | raw WAV RMS -28.9 dBFS, peak -13.9 dBFS, no clipping: the monitor's 1/pi-scale samples at the level a PCM input at the reference has (before the fix: every sample 0) | raw WAV RMS ≥ -32 dBFS |
 | `DECODE_IQ_ANALOG_RAW_WAV_AM_REAL` | `am_airband_real` under `-fM`, the `-6` raw WAV | raw WAV RMS -18.3 dBFS, peak -4.5 dBFS, no clipping (before the fix: -117.8 dBFS, samples of -1, 0 and 1) | raw WAV RMS ≥ -21.5 dBFS |
@@ -2253,6 +2255,45 @@ the replay. `IO_RTL_MONITOR_DEEMPH` runs the reference through the real demodula
 a replay that decimates by 2 after the demodulator, each across an FM -> AM -> FM switch. Every case reads
 -15.0 dBFS RMS +/-0.2 (measured -15.05 to -15.09), and each de-emphasis lands within 0.05 dB of none.
 `DSP_DEMOD_MISC` checks the gain against the filter's own response at 8 to 78.125 kHz.
+
+Heavy de-emphasis colours open-squelch hiss so much that its autocorrelation shows pitch-like peaks: after 750 us and
+the voice band-pass, 2.9-5.2% of the hiss's frames pass the speech AGC's pitch cue. That was enough to keep releasing
+the attenuator, so the hiss played at -9.7 to -13.2 dBFS RMS. The analog chain therefore runs the AGC with its
+coloured-noise veto (`dsd_speech_agc_set_noise_veto()`): a frame that passes the pitch cue must also show a strict
+interior autocorrelation peak of at least 0.4 in a pre-emphasised copy of the frame (x[n] - 0.9 x[n-1]). Voice keeps
+its pitch peaks through the pre-emphasis; coloured hiss loses them. The digital chain leaves the veto off, so digital
+output stays the same bits. The checks:
+
+- `DSP_SPEECH_AGC` runs 10 s of hiss (white noise, a one-pole de-emphasis at 48 kHz, then the monitor's own FM
+  band-pass) at -13 and -30 dBFS. After 750 us it plays at -10.82 dBFS RMS over the last 5 s without the veto (18
+  frames taken for speech) and -32.45 with it (none). After 75 us, 50 us or no de-emphasis the veto finds nothing to
+  turn away: the output is the same bits with and without it. Natural vowels, voiced sound at 70, 120 and 380-420 Hz,
+  the steady-tone and rumble cases, and the partition test all run with the veto as well.
+- `DSP_SPEECH_AGC_LONG`: after 60 s of 750 us hiss (none of it committed, -32.4 dBFS at its end) quieter speech commits
+  within 0.38 s, and the same after speech, hiss, speech.
+- `DSP_ANALOG_AUDIO`: 750 us hiss at -13 dBFS through the monitor chain and the EDACS voice lane eases to -30 dBFS or
+  less on both (-14.73 dBFS without the veto).
+- `DECODE_IQ_ANALOG_NOISE_FLOOR_EASED_DEEMPH_NFM` and `DECODE_IQ_ANALOG_PARITY_NFM_REAL_DEEMPH_NFM` hold the replay.
+
+The veto was measured on the corpus the AGC was tuned on (kept outside the repository), with the veto at the analog
+rate (48 kHz) only, as the product runs it. The production code gives the prototype's numbers bit for bit, and
+the calibration (digital) is untouched, so the frame target stays -20.278 dB:
+
+| Measure | Bound | Established corpus (n 135) | Extended corpus (n 140, adds 750 us and 50 us decodes) |
+| --- | --- | --- | --- |
+| Established speech error, max | ≤ 3.0 dB | 1.99 dB | 2.01 dB |
+| Files within 2.0 dB | ≥ 95% | 100% | 99.3% |
+| Files within 1.5 dB | ≥ 90% | 90.4% (13 outside) | 90.0% (14 outside) |
+
+The extended corpus holds the 1.5 dB bound at exactly 90.0%, a thin margin: one more 750 us file outside 1.5 dB would
+break it. Over the extended corpus the gain swing is at most 6.6 dB (99.4% of files within 6.5 dB), the startup error
+at most 9.12 dB at +1 s (91.8% within 6 dB) and 7.20 dB at +2 s (91.8% within 4 dB), and convergence takes 2.01 s at
+the 90th percentile and 6.62 s at most. Every 8 kHz (digital) output is the same bits as before the veto, and with the
+veto off every output is. The 750 us hiss cases play at -32.5 and -38.8 dBFS (synthetic, -13 and -30 dBFS in) and
+-30.4 dBFS (off-air `noise_floor` under `DSD_NEO_DEEMPH=nfm`). On voiced sound at 120 Hz with 1% jitter the veto turns
+away a few frames (94% of frames commit at 8 and 48 kHz, 100% without it); 22.05 kHz audio follows 48 kHz within
+0.216 dB at the 95th percentile (0.113 dB without it). The veto adds about 0.25 ns per sample at 48 kHz on speech
+(6.02 to 6.26 ns) and nothing measurable on hiss; the digital chain pays nothing.
 
 EDACS analog voice on an RTL input plays the FSK voice lane (issue #518 B10), not the peak-normalised discriminator
 output the release register reads, which hides the voice's level. `IO_RTL_VOICE_LANE` replays synthetic 9600 bit/s
