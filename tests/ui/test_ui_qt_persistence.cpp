@@ -3349,7 +3349,7 @@ test_system_pin_through_sequential_invalidations() {
 }
 
 /* B5: a group is named once, as its card is: the lead's name without the " — site" an import generated, and a removal
- * of the lead keeps that name. A site pin is its own row's name so trimmed, then the site. A custom name stays. */
+ * of the lead keeps that name. A site pin is that same group name, then the site. A custom name stays. */
 void
 test_group_title_labels() {
     PinsWorld w;
@@ -3357,9 +3357,10 @@ test_group_title_labels() {
     const QString lead = w.site("SARA — Johnson Simulcast", 9, 1, "Johnson Simulcast", usb);
     const QString polk = w.site("SARA — Polk", 9, 2, "Polk", usb);
     const QString custom = w.site("My SARA", 11, 1, "Johnson Simulcast", usb);
+    const QString customPolk = w.site("SARA — Polk", 11, 2, "Polk", usb);
     ListenPins pins(&w.prefs, &w.systems, &w.lists);
-    for (const auto& pin :
-         {std::make_pair("system", polk), std::make_pair("site", polk), std::make_pair("system", custom)}) {
+    for (const auto& pin : {std::make_pair("system", polk), std::make_pair("site", polk),
+                            std::make_pair("system", custom), std::make_pair("site", customPolk)}) {
         expect("titles: pin", pins.pin(pin.first, pin.second).isEmpty());
     }
     const auto label = [&pins](const QString& key) { return entry_for(pins, key).value("label").toString(); };
@@ -3374,6 +3375,8 @@ test_group_title_labels() {
                                                   == ListenPins::text(ListenPins::Text::ChooseSiteName, "SARA"));
     expect("titles: a site once", label("site:" + polk) == QStringLiteral("SARA · Polk"));
     expect("titles: a custom name stays", label("system:" + custom) == QStringLiteral("My SARA"));
+    expect("titles: a site is named by its group, as its card",
+           label("site:" + customPolk) == QStringLiteral("My SARA · Polk"));
     expect("titles: Pin to Listen names the group",
            pins.action("system", polk).value("accessibleName").toString() == ListenPins::actionName(true, "SARA"));
     expect("titles: remove the lead", w.systems.remove(w.systems.rowForUid(lead)));

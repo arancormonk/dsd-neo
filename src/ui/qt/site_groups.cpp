@@ -10,6 +10,7 @@
 #include <QVariantMap>
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include "site_groups.h"
 #include "stored_int.h"
@@ -51,32 +52,46 @@ site_distance_km(double lat, double lon, double siteLat, double siteLon) {
 }
 
 QString
-receiver_identity(const QVariantMap& system) {
-    const QString source = system.value(QStringLiteral("sourceType")).toString();
-    const QString host = system.value(QStringLiteral("host")).toString().trimmed().toLower();
-    const QString port = QString::number(stored_int_or(system.value(QStringLiteral("port")), 0));
+receiver_identity(const QString& source, const QString& host, int port, const QString& airspySerial,
+                  const QString& filePath) {
     if (source == QLatin1String("airspy")) {
-        return source + QLatin1Char('|')
-               + system.value(QStringLiteral("airspy")).toMap().value(QStringLiteral("serial")).toString().toUpper();
+        return source + QLatin1Char('|') + airspySerial.toUpper();
     }
     if (source == QLatin1String("rtltcp") || source == QLatin1String("tcp")) {
-        return source + QLatin1Char('|') + host + QLatin1Char(':') + port;
+        return source + QLatin1Char('|') + host.trimmed().toLower() + QLatin1Char(':') + QString::number(port);
     }
     if (source == QLatin1String("udp")) {
-        return source + QLatin1Char('|') + port;
+        return source + QLatin1Char('|') + QString::number(port);
     }
-    return source == QLatin1String("file")
-               ? source + QLatin1Char('|') + system.value(QStringLiteral("filePath")).toString()
-               : source;
+    return source == QLatin1String("file") ? source + QLatin1Char('|') + filePath : source;
+}
+
+QString
+receiver_identity(const QVariantMap& system) {
+    return receiver_identity(system.value(QStringLiteral("sourceType")).toString(),
+                             system.value(QStringLiteral("host")).toString(),
+                             stored_int_or(system.value(QStringLiteral("port")), 0),
+                             system.value(QStringLiteral("airspy")).toMap().value(QStringLiteral("serial")).toString(),
+                             system.value(QStringLiteral("filePath")).toString());
+}
+
+bool
+site_grouped(int rrSid, int rrSiteId) {
+    return rrSid > 0 && rrSiteId > 0;
+}
+
+QString
+site_group_key(int rrSid, const QString& receiver) {
+    return QString::number(rrSid) + QLatin1Char('|') + receiver;
 }
 
 QString
 site_group_key(const QVariantMap& row) {
     const int sid = row.value(QStringLiteral("rrSid")).toInt();
-    if (sid <= 0 || row.value(QStringLiteral("rrSiteId")).toInt() <= 0) {
+    if (!site_grouped(sid, row.value(QStringLiteral("rrSiteId")).toInt())) {
         return QString();
     }
-    return QString::number(sid) + QLatin1Char('|') + receiver_identity(row);
+    return site_group_key(sid, receiver_identity(row));
 }
 
 QString
@@ -110,10 +125,16 @@ site_sibling_rows(const QVariantList& rows, int row) {
 
 int
 site_nearest_row(const QVariantList& rows, int row, double lat, double lon) {
+    return site_nearest_among(
+        site_sibling_rows(rows, row), [&rows](int index) { return rows[index].toMap(); }, lat, lon);
+}
+
+int
+site_nearest_among(const QVariantList& indices, const std::function<QVariantMap(int)>& rowAt, double lat, double lon) {
     int nearest = -1;
     double best = std::numeric_limits<double>::infinity();
-    for (const auto& index : site_sibling_rows(rows, row)) {
-        const auto candidate = rows[index.toInt()].toMap();
+    for (const auto& index : indices) {
+        const auto candidate = rowAt(index.toInt());
         if (candidate.value("avoidSite").toBool() || !candidate.value("hasSitePos").toBool()) {
             continue;
         }

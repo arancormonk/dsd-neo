@@ -194,8 +194,11 @@ class SavedSystemsModel : public QAbstractListModel {
 
     /** @brief One system as a field map, for the wizard's edit path and argv building. */
     Q_INVOKABLE QVariantMap get(int row) const;
-    /** @brief The rows of @p row's site group (its RadioReference system on its receiver, site_group_key()), in row
-     *         order; empty for a row in no group. nearestRow() and siteCount() read the same group. */
+    /** @brief Row @p row's site group key (site_group_key(): its RadioReference system on its receiver), read from
+     *         its fields; empty for a row in no group or out of range. */
+    QString groupKey(int row) const;
+    /** @brief The rows of @p row's site group (groupKey()), in row order; empty for a row in no group. nearestRow()
+     *         and siteCount() read the same group. */
     Q_INVOKABLE QVariantList siblingRows(int row) const;
     Q_INVOKABLE int nearestRow(int row, double lat, double lon) const;
     Q_INVOKABLE int siteCount(int row) const;

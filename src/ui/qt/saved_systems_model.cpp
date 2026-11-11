@@ -853,22 +853,35 @@ SavedSystemsModel::get(int row) const {
     return mapFromRow(m_rows.at(row));
 }
 
+QString
+SavedSystemsModel::groupKey(int row) const {
+    if (row < 0 || row >= m_rows.size()) {
+        return QString();
+    }
+    const Row& at = m_rows.at(row);
+    if (!site_grouped(at.rrSid, at.rrSiteId)) {
+        return QString();
+    }
+    return site_group_key(at.rrSid,
+                          receiver_identity(at.sourceType, at.host, at.port,
+                                            at.airspy.value(QStringLiteral("serial")).toString(), at.filePath));
+}
+
 QVariantList
 SavedSystemsModel::siblingRows(int row) const {
     QVariantList rows;
-    for (int i = 0; i < count(); ++i) {
-        rows.append(get(i));
+    const QString key = groupKey(row);
+    for (int i = 0; !key.isEmpty() && i < m_rows.size(); ++i) {
+        if (groupKey(i) == key) {
+            rows.append(i);
+        }
     }
-    return site_sibling_rows(rows, row);
+    return rows;
 }
 
 int
 SavedSystemsModel::nearestRow(int row, double lat, double lon) const {
-    QVariantList rows;
-    for (int i = 0; i < count(); ++i) {
-        rows.append(get(i));
-    }
-    return site_nearest_row(rows, row, lat, lon);
+    return site_nearest_among(siblingRows(row), [this](int index) { return get(index); }, lat, lon);
 }
 
 int

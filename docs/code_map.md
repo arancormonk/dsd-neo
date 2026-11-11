@@ -13651,10 +13651,11 @@ Qt Quick frontend (`src/ui/qt`):
   `site_group_key()` (`site_groups.cpp`): `"<rrSid>|<receiver>"`, the receiver being `receiver_identity()` (the source,
   then an Airspy's serial, an rtl_tcp or TCP host without case or blanks and its port, a UDP port or a file path;
   `session_args.cpp` joins scan lists on the same identity), so a system saved for two receivers is two groups (B4).
-  `siblingRows()`, `nearestRow()`, `siteCount()`, the site chooser and `ListenPins` all group by that key. A group's
-  title is `site_group_title()` of its lead: the name without an exact trailing " — " + its `siteName` (the name a
-  per-site import generated), else the name; a custom name lives on the lead row and moves with it (B5). A row's `place`
-  (role `place`) is the RadioReference geography an import captured: `{states: [{stid, name?}], counties: [{ctid, stid?,
+  `SavedSystemsModel::groupKey(row)` reads that key from the row's fields (no field map built); `siblingRows()`,
+  `nearestRow()`, `siteCount()`, the site chooser and `ListenPins` all group by it. A group's title is
+  `site_group_title()` of its lead: the name without an exact trailing " — " + its `siteName` (the name a per-site
+  import generated), else the name; a custom name lives on the lead row and moves with it (B5). A row's `place` (role
+  `place`) is the RadioReference geography an import captured: `{states: [{stid, name?}], counties: [{ctid, stid?,
   name?}], candidateStates: [stid]}`, held to `SavedSystemsModel::validPlace()` (ids whole numbers, not text, in
   1..INT32_MAX; names text of at most 128 characters; at most 64 states or candidate states and 512 counties; repeats of
   an id merged into the first). A place that breaks it anywhere is dropped whole wherever it arrives (load, `add`,
@@ -13692,17 +13693,17 @@ Qt Quick frontend (`src/ui/qt`):
   `system` pin whose row that startup cleanup takes out of its group follows the group as below. `entries` holds every
   stored pin in order as `{key, kind, uid, label, accessibleName, found}` (`key` = `kind:uid`); a system is named by its
   group's title (`site_group_title()` of the lead, as its card) and its accessible name says whether a tap starts it or
-  chooses a site (no site, or several, it can play), a site is "title · site" (its own row's title). `revision` moves on
-  every entries change and on every row, data, sites or reset signal of either model, because `isPinned()` follows
-  groups: a system pin matches its group's card through any of its sites, and a row in no group also matches a site pin
-  of itself (a site edited out of its group keeps its pin). `pin()` refuses a full row ("Pinned is full (6). Unpin one
-  first.") or a target not saved, and never writes `lastStarted*`; `unpin()` removes what `isPinned()` matched and
-  `unpinKey()` one entry. Pins are never pruned at load, at a model reset or when pinning: a store that cannot be read
-  loads as `[]`, and its pins stay, `found` false, still counting toward the cap, until it loads again. Only
-  `rowsAboutToBeRemoved`, which both models signal only for a removal they saved, prunes: a `site` or `scan` pin goes
-  with its row, and a `system` pin moves to a remaining site of its group (`siblingRows()` before the removal), else
-  goes. The kept list is worked out there and stored at `rowsRemoved`, so no `listenPins` signal lands inside the
-  model's removal. A `system` pin is the system, not its row: `refresh()` remembers each row's group key
+  chooses a site (no site, or several, it can play), a site is "title · site" (its group's title, then its own site
+  name). `revision` moves on every entries change and on every row, data, sites or reset signal of either model, because
+  `isPinned()` follows groups: a system pin matches its group's card through any of its sites, and a row in no group
+  also matches a site pin of itself (a site edited out of its group keeps its pin). `pin()` refuses a full row ("Pinned
+  is full (6). Unpin one first.") or a target not saved, and never writes `lastStarted*`; `unpin()` removes what
+  `isPinned()` matched and `unpinKey()` one entry. Pins are never pruned at load, at a model reset or when pinning: a
+  store that cannot be read loads as `[]`, and its pins stay, `found` false, still counting toward the cap, until it
+  loads again. Only `rowsAboutToBeRemoved`, which both models signal only for a removal they saved, prunes: a `site` or
+  `scan` pin goes with its row, and a `system` pin moves to a remaining site of its group (`siblingRows()` before the
+  removal), else goes. The kept list is worked out there and stored at `rowsRemoved`, so no `listenPins` signal lands
+  inside the model's removal. A `system` pin is the system, not its row: `refresh()` remembers each row's group key
   (`site_group_key()`) by UID, and when the pinned row leaves its group (an edit of its frequency, decode flag, a CSV
   field or its receiver, or a library file's removal or update) while the group still has sites, the next
   `dataChanged`/`sitesChanged` moves the pin to the group's lead and stores it, synchronously, so several changes in one

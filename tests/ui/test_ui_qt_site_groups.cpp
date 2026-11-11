@@ -6,6 +6,7 @@
 #include <QStandardPaths>
 #include <QString>
 #include <QVariant>
+#include <QVariantList>
 #include <QVariantMap>
 #include <cmath>
 #include <cstdio>
@@ -17,18 +18,20 @@
 
 namespace {
 
+int g_failures = 0;
+
+void
+check(bool ok, const char* label) {
+    if (!ok) {
+        std::fprintf(stderr, "FAIL: %s\n", label);
+        ++g_failures;
+    }
+}
+
 /* B4: one RadioReference system saved for several receivers is one group per receiver, as a scan list tells its
- * receivers apart: a USB dongle, an rtl_tcp server by host (any case, blanks trimmed) and port, an Airspy by serial.
- * Returns the number of failed checks. */
-int
+ * receivers apart: a USB dongle, an rtl_tcp server by host (any case, blanks trimmed) and port, an Airspy by serial. */
+void
 check_receiver_groups() {
-    int failures = 0;
-    auto check = [&failures](bool ok, const char* label) {
-        if (!ok) {
-            std::fprintf(stderr, "FAIL: %s\n", label);
-            ++failures;
-        }
-    };
     dsd_qt::SavedSystemsModel model;
     while (model.count() > 0 && model.remove(0)) {}
     const auto site = [&model](int siteId, double lat, const QVariantMap& receiver) {
@@ -57,23 +60,39 @@ check_receiver_groups() {
     // The rtl_tcp site at 41.1 is the closest to the fix; the USB group's nearest is still its own.
     check(model.nearestRow(0, 41.1, -91) == 5, "receivers: nearest never crosses to another receiver");
     check(model.nearestRow(3, 41.1, -91) == 3, "receivers: nearest of a one-site group is itself");
+    QVariantList maps;
+    for (int row = 0; row < model.count(); ++row) {
+        maps.append(model.get(row));
+    }
+    check(dsd_qt::site_sibling_rows(maps, 0) == model.siblingRows(0)
+              && dsd_qt::site_sibling_rows(maps, 1) == model.siblingRows(1)
+              && dsd_qt::site_nearest_row(maps, 0, 41.1, -91) == 5,
+          "receivers: the field-map helpers group as the model does");
+    // The model keys a row from its fields as site_group_key() keys its field map.
+    check(model.add({{"name", "Manual"}, {"sourceType", "file"}, {"filePath", "/x.wav"}})
+              && model.add({{"name", "Replay"},
+                            {"rrSid", 20},
+                            {"rrSiteId", 7},
+                            {"sourceType", "file"},
+                            {"filePath", "/x/Cap.wav"}})
+              && model.add({{"name", "UDP"}, {"rrSid", 20}, {"rrSiteId", 8}, {"sourceType", "udp"}, {"port", 7355}}),
+          "receivers: add rows of other sources");
+    bool same = model.groupKey(-1).isEmpty() && model.groupKey(model.count()).isEmpty();
+    for (int row = 0; row < model.count(); ++row) {
+        same = same && model.groupKey(row) == dsd_qt::site_group_key(model.get(row));
+    }
+    check(same && model.groupKey(6).isEmpty() && model.groupKey(7) == "20|file|/x/Cap.wav"
+              && model.groupKey(8) == "20|udp|7355",
+          "receivers: the model's key is site_group_key() of its row");
     while (model.count() > 0 && model.remove(0)) {}
-    return failures;
 }
 
-/* The receiver and group keys as written, and a group's title. Returns the number of failed checks. */
-int
+/* The receiver and group keys as written, and a group's title. */
+void
 check_keys_and_titles() {
     using dsd_qt::receiver_identity;
     using dsd_qt::site_group_key;
     using dsd_qt::site_group_title;
-    int failures = 0;
-    auto check = [&failures](bool ok, const char* label) {
-        if (!ok) {
-            std::fprintf(stderr, "FAIL: %s\n", label);
-            ++failures;
-        }
-    };
     check(receiver_identity({{"sourceType", "usb"}, {"host", "x"}, {"port", 1}}) == "usb", "receiver: USB");
     check(receiver_identity({{"sourceType", "rtltcp"}, {"host", " Radio.Lan "}, {"port", 1234}})
               == "rtltcp|radio.lan:1234",
@@ -107,7 +126,6 @@ check_keys_and_titles() {
     check(title(QStringLiteral("SARA — "), "") == QStringLiteral("SARA — "), "title: no site name, no cut");
     check(title(QStringLiteral(" — Johnson"), "Johnson") == QStringLiteral(" — Johnson"),
           "title: never cut to nothing");
-    return failures;
 }
 
 } // namespace
@@ -120,13 +138,6 @@ main(int argc, char** argv) {
     dsd_test_qt_isolate_paths();
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir(dir).removeRecursively();
-    int failures = 0;
-    auto check = [&](bool ok, const char* label) {
-        if (!ok) {
-            std::fprintf(stderr, "FAIL: %s\n", label);
-            ++failures;
-        }
-    };
     using namespace dsd_qt;
     check(std::abs(site_distance_km(41, -91, 42, -91) - 111.195) < .01, "haversine km");
     check(site_distance_km(0, 0, 42, -91) < 0, "missing coordinate sentinel");
@@ -175,8 +186,8 @@ main(int argc, char** argv) {
               && site_generated_name(QStringLiteral("SARA — Old"), "Old", "") == QStringLiteral("SARA — Old"),
           "an empty site name renames nothing");
 
-    failures += check_receiver_groups();
-    failures += check_keys_and_titles();
+    check_receiver_groups();
+    check_keys_and_titles();
     QDir(dir).removeRecursively();
-    return failures ? 1 : 0;
+    return g_failures ? 1 : 0;
 }
