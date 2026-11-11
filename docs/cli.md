@@ -597,7 +597,8 @@ Notes
 - `-n <num>` Analog output gain. `0` (the default; anything under `1` too) is auto: an AGC brings analog voice to the
   level digital voice plays at, FM and AM alike, never above -10 dBFS peak and at most 18 dB above the reference gain.
   `1`–`100` is a fixed gain, `50` the reference: there a 1 kHz tone at 3 kHz deviation, or AM at 50% modulation, plays at
-  -12 dBFS peak (-15 dBFS RMS) at the default RTL `vol` of 2, live and in I/Q replay alike; `100` is 6 dB louder. The
+  -12 dBFS peak (-15 dBFS RMS) at the default RTL `vol` of 2, live and in I/Q replay alike, under any `DSD_NEO_DEEMPH`
+  setting (the gain makes up what the FM de-emphasis takes off 1 kHz); `100` is 6 dB louder. The
   menu's Analog gain... prompt and the `*` / `/` keys work over the same range; from auto they step from `50`, and
   stepping below `1` goes back to auto. A value above `100`, NaN or infinity is refused with an error, at the prompt
   too (a value above `100` used to be clamped to `100`). Since issue #518 a fixed `-n` plays RTL monitor audio about
@@ -1167,6 +1168,10 @@ visit.
 
 - The width changes only the channel filter. De-emphasis stays at its 75 us default (`DSD_NEO_DEEMPH`), so existing
   `-fA` audio sounds the same; `DSD_NEO_DEEMPH=nfm` selects the 750 us land-mobile curve (212 Hz corner).
+- The analog gain makes up what the de-emphasis takes off a 1 kHz tone (0.87 dB at 75 us, 13.65 dB at 750 us), so the
+  `-n 50` reference and the AGC's starting level stay the same with any curve, or with none. The curve still shapes the
+  sound: under `nfm` low tones play louder and high tones quieter than at 75 us. The `-6` raw recording keeps the
+  de-emphasized level.
 - The channel squelch measures power after the channel filter, so the noise it sees scales with the width: halving
   the width lowers the noise power by about 3 dB. Re-check a squelch threshold (`sql`, `rtl_sql`) after changing the
   width. The auto and noise squelches (below) need no re-check: the auto squelch rescales its floor with the filter,
@@ -2990,7 +2995,8 @@ Audio/DSP helpers
 `DSD_NEO_DEEMPH` and `DSD_NEO_AUDIO_LPF` are monitor/non-symbol audio helpers for the RTL path and non-RTL sample-window
 paths; they are not part of RTL-family digital FSK symbol decode.
 
-- `DSD_NEO_DEEMPH=off|50|75|nfm` — deemphasis curve
+- `DSD_NEO_DEEMPH=off|50|75|nfm` — deemphasis curve; the analog gain makes up its loss at 1 kHz, so `-n` levels stay
+  the same with any curve
 - `DSD_NEO_AUDIO_LPF=<Hz>|off` — audio low‑pass filter cutoff (or disable)
 - `DSD_NEO_COSTAS_BW=<float>`, `DSD_NEO_COSTAS_DAMPING=<float>` — Costas loop tuning
 - `DSD_NEO_CHANNEL_LPF=0|1` — channel LPF enable/disable (auto-enabled at RTL DSP rates >=20 kHz; mode passbands protect nominal channel edges). An explicit analog width (`--nfm-bandwidth-hz`, `--am-bandwidth-hz`) and AM (`-fM`, its default width included) always run the filter, and `0` with either is an error

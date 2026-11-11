@@ -325,6 +325,13 @@ rtl_stream_get_replay_batch(rtl_stream_replay_batch* out) {
 }
 
 static int g_discontinuity_calls;
+static int g_deemph_gain_calls;
+
+double
+rtl_stream_monitor_deemph_gain(void) {
+    ++g_deemph_gain_calls;
+    return 1.25;
+}
 
 uint64_t
 rtl_stream_discontinuity_seq(void) {
@@ -508,6 +515,8 @@ main(void) {
     test_replay_batch_hook();
     /* The stream's discontinuity count reaches DSP through the table (issue #518). */
     assert(dsd_rtl_stream_metrics_hook_discontinuity_seq() == 0xABCDEF012ULL && g_discontinuity_calls == 1);
+    /* So does the monitor audio's de-emphasis gain (issue #518). */
+    assert(fabs(dsd_rtl_stream_metrics_hook_monitor_deemph_gain() - 1.25) < 1e-12 && g_deemph_gain_calls == 1);
 
     dsd_rtl_stream_metrics_hooks_set(NULL);
     return 0;

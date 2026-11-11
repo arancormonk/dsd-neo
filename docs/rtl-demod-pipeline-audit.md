@@ -613,14 +613,16 @@ voice band-pass and a gain stage (`dsd_analog_audio_process_f()`, issue #518;
 signal to -12 dBFS peak at `-n 50`: FM at 3 kHz deviation and AM at 50% both
 reach the decoder at 0.125 (FM after the 1/pi output scale above, AM from the
 detector's 0.25 gain), 0.25 after the default `vol` of 2, and take a gain of
-32924. The FSK discriminator output a digital front end delivers (+/-30000,
+32924. FM comes in lower by its de-emphasis at 1 kHz (0.87 dB at 75 us,
+13.65 dB at 750 us), and the gain stage makes that up with the gain the stream
+publishes (issue #518 B8/B9). The FSK discriminator output a digital front end delivers (+/-30000,
 read by the `-8` source monitor and EDACS analog voice) takes 8231/30000 instead:
 scaled as monitor audio it used to clip every sample. The default `-n 0` is a
 per-sample AGC that brings FM and AM speech to the level digital voice plays at.
-The FM and AM tone fixtures measure -15.9 and -15.0 dBFS RMS at `-n 50`
-(`DECODE_IQ_ANALOG_NFM_TONE_FIXED50`, `_AM_TONE_FIXED50`), and real NFM and AM
-speech -23.9 dBFS each under the AGC, against -24.9 for DMR voice
-(`DECODE_IQ_ANALOG_PARITY_*`).
+The FM and AM tone fixtures measure -15.1 and -15.0 dBFS RMS at `-n 50`
+(`DECODE_IQ_ANALOG_NFM_TONE_FIXED50` and its `_DEEMPH_*` variants,
+`_AM_TONE_FIXED50`), and real NFM and AM speech -23.8 and -23.9 dBFS under the
+AGC, against -24.9 for DMR voice (`DECODE_IQ_ANALOG_PARITY_*`).
 
 ## Regression Coverage
 
@@ -707,8 +709,8 @@ speech -23.9 dBFS each under the AGC, against -24.9 for DMR voice
   input the stream opens as an RTL-SDR whatever its device string;
   `IO_RTL_DEMOD_CONFIG` the stream-start refusal's fix on a forced rate. `DECODE_IQ_ANALOG_NFM_TONE_8K`,
   `_16K` and `_25K` show the 1 kHz tone keeping its level through each width
-  with the voice filters off at the fixed gain (`-v 0 -n 50`: -15.9 dBFS,
-  bounded to -17.5..-14.5 dBFS; the explicit 16 kHz measuring the same as the
+  with the voice filters off at the fixed gain (`-v 0 -n 50`: -15.0 dBFS,
+  bounded to -16.5..-13.5 dBFS; the explicit 16 kHz measuring the same as the
   default) and, at 8 and 25 kHz, a demodulator noise level at 12.5 kHz the
   default does not reach (-92.8 and -60.6 dBc against -78.4),
   `DECODE_IQ_ANALOG_NFM_BW_8K` and `_25K` that the neighbour 12.5 kHz away is

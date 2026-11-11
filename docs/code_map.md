@@ -3464,7 +3464,10 @@ suite runs under this compiler.
     the batch was captured on, issue #575, and the stream gaps recorded before it, `boundary_seq`, issue #518; decoder
     thread only, while the stream is open; issue #572), and the stream's discontinuity count (`discontinuity_seq`,
     `rtl_stream_discontinuity_seq()`, issue #518; `dsd_rtl_stream_metrics_hook_read_discontinuity_seq()` gives the count
-    the last read's samples carry: the batch's under a replay, the stream's read after the read live); the engine
+    the last read's samples carry: the batch's under a replay, the stream's read after the read live), and the gain that
+    makes up the monitor audio's de-emphasis at 1 kHz (`monitor_deemph_gain`, `rtl_stream_monitor_deemph_gain()`,
+    issue #518 B8/B9; 1.0 with no hook or a gain that is not positive, so PCM input, tests and radio-off builds keep
+    their level; read it before the generation); the engine
     installs `rtl_stream_request_analog_profile()`, `rtl_stream_request_digital_family_landing()`,
     `rtl_stream_get_analog_profile()`, `rtl_stream_analog_family_active()`, `rtl_stream_family_landing_after_pending()`,
     `rtl_stream_output_rate_for_family()` and `rtl_stream_get_replay_batch()` behind them. It also hands the
@@ -6372,17 +6375,24 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   Butterworth high-pass at 200 Hz; both a 3400 Hz Butterworth low-pass; `tools/design_voice_filters.py` derives the
   prototype and every bound `DSP_ANALOG_VOICE` holds), the legacy 960 Hz one-pole low-pass and high-pass (`-v 0x2`,
   `0x4`; the chain's own copies at its rate, not `dsd_state`'s `RCFilter`/`HRCFilter`), then the gain stage: `-n N` is
-  the source gain x N / 50, `-n 0` (the default) the AGC, a causal per-sample peak-envelope recurrence with no added
-  latency whose output depends only on the sample and playing-flag sequence (500 ms hold, 20 dB/s or 3 dB/s release by
-  where the input level sits, at most 18 dB over the reference gain, frozen under -36 dB of the reference and while not
-  playing, rolled back 250 ms when the gate closes). The source gain takes each source's reference signal to -12 dBFS
-  peak: RTL monitor audio after the `vol` trim (0.25 at the default 2: 1 kHz at 3 kHz deviation after the 1/pi output
-  scale, or AM at 50%) by 32924, the RTL FSK discriminator output (+/-30000: the -8 source monitor under digital
-  decoding, told by `rtl_symbol_cache_output_kind`, and EDACS on RTL, which, like the symbol path, reads it with no
-  `vol` trim) by 8231/30000, PCM by 1. Each chain (monitor, EDACS) keeps its band-pass and AGC in
-  `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, allocated on first use (the fixed gain alone if that fails), and starts over on
+  the chain's gain x N / 50, `-n 0` (the default) the AGC on the same reference gain, a causal per-sample
+  peak-envelope recurrence with no added latency whose output depends only on the sample and playing-flag sequence
+  (500 ms hold, 20 dB/s or 3 dB/s release by where the input level sits, at most 18 dB over the reference gain, frozen
+  under -36 dB of the reference and while not playing, rolled back 250 ms when the gate closes). The source gain takes
+  each source's reference signal to -12 dBFS peak: RTL monitor audio after the `vol` trim (0.25 at the default 2:
+  1 kHz at 3 kHz deviation after the 1/pi output scale, or AM at 50%) by 32924, the RTL FSK discriminator output
+  (+/-30000: the -8 source monitor under digital decoding, told by `rtl_symbol_cache_output_kind`, and EDACS on RTL,
+  which, like the symbol path, reads it with no `vol` trim) by 8231/30000, PCM by 1. The chain's gain is the source
+  gain, and on RTL monitor audio from an RTL input times the stream's de-emphasis gain
+  (`dsd_rtl_stream_metrics_hook_monitor_deemph_gain()`, issue #518 B8/B9: the FM de-emphasis takes the 1 kHz reference
+  down 0.87 dB at 75 us, 13.65 dB at 750 us, and this makes it up, so `-n 50` and the AGC's start hold whatever
+  `DSD_NEO_DEEMPH` selects; 1.0 under AM, FSK, PCM and with no stream). It sits at the gain stage, not the monitor's
+  output scale, so the monitor samples, the `-6` raw WAV and the M17 encoder's RTL input
+  (`dsd_analog_audio_source_gain()` alone) keep their level. Each chain (monitor, EDACS) keeps its band-pass and AGC
+  in `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, allocated on first use (the fixed gain alone if that fails), and starts over on
   `DSD_ANALOG_AUDIO_RESET` and on a change of source, rate or band. A block that
-  fills across a new reception -- a new RTL stream generation (RTL input), trunk-tuning generation or a boundary
+  fills across a new reception -- a new RTL stream generation or de-emphasis gain (RTL input, the gain read before the
+  generation), trunk-tuning generation or a boundary
   `dsd_analog_rx_reset()` announces (`dsd_analog_audio_note_reception()`: a scan row commit, a reconnect, the legacy
   `-Y` rigctl retune, which moves neither generation) -- is partly the channel before it: the caller notes when a block
   starts filling (`dsd_analog_audio_block_begin()`; EDACS once for its three blocks), and the chain drops a block whose
@@ -6414,7 +6424,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   The analog_voice and analog_audio sources keep IEEE semantics under fast-math, which would fold away their
   non-finite-sample guards. The published `dsd_state::aout_gainA` is the gain applied, in dB over the `-n 50` gain,
   which the terminal shows as `G: Auto (+x dB)`. Tests: `DSP_ANALOG_VOICE`, `DSP_ANALOG_AUDIO`, `DSP_SYMBOL_REPLAY`
-  (`test_chain_playing_follows_the_sink`), `RTL_SYMBOL_CACHE_GENERATION` (source routing), `M17_STATE_DISPATCH`
+  (`test_chain_playing_follows_the_sink`), `RTL_SYMBOL_CACHE_GENERATION` (source routing), `IO_RTL_MONITOR_DEEMPH`
+  (the reference through the real demodulator, ring and chain under every de-emphasis), `M17_STATE_DISPATCH`
   (`test_stream_voice_chain_covers_the_whole_frame`, `test_stream_voice_chain_onepoles_run_at_8k`,
   `test_encoder_rtl_input_reaches_pcm_scale`), `EDACS_GRANT_TUNE_MATRIX` (`rtl-unclipped`), the `DECODE_IQ_ANALOG_*`
   level, parity and fixed-gain cases.
@@ -8121,6 +8132,15 @@ Notes:
     `IO_RTL_ANALOG_OPEN` (a 78,125 Hz capture).
   - De-emphasis and audio-LPF settings are stored in `demod_state` (`deemph_tau_us`, `audio_lpf_cutoff_hz`) and their
     coefficients recomputed every time the rate chain is finalized (`rtl_demod_refresh_audio_coefficients()`).
+    `dsd_demod_deemph_compensation()` is the inverse of the de-emphasis magnitude at 1 kHz from the quantised
+    coefficient and the rate it runs at (`rate_out`, after the post-demod decimator; 1.0 where `full_demod()` runs none:
+    off, AM, FSK, CQPSK, the raw pass-through). `demod_finish_output_block()` publishes it for every block before the
+    block reaches the ring (`g_pub_monitor_deemph_gain`, `rtl_stream_monitor_deemph_gain()`, issue #518 B8/B9); a kind,
+    family, retune or rate change that moves it clears the ring and moves the generation first, so a gain read before
+    the generation belongs to that generation's samples. The analog chain applies it at its gain stage; the output
+    scale ignores it. Tests: `DSP_DEMOD_MISC` (the gain against `deemph_filter()`'s own 1 kHz response at 8 to
+    78.125 kHz), `IO_RTL_MONITOR_DEEMPH` (`rtl_stream_test_monitor_tone()`), `IO_RTL_ANALOG_FAMILY_SWITCH` (the scale
+    unchanged under `nfm` and `off`).
   - A retune on `AUDIO_MONITOR` (the M17 encoder's monitor stream included) returns the de-emphasis, DC, audio-LPF
     and squelch-envelope state and the channel, half-band and resampler histories to fresh-open values. A retune that
     leaves the stream on another demod rate resolves the analog channel again for that rate

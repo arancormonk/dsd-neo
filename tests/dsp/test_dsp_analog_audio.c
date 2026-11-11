@@ -361,6 +361,98 @@ test_new_reception_starts_over(void) {
     fixture_free(&f);
 }
 
+/* The de-emphasis gain the fake stream publishes (dsd_rtl_stream_metrics_hook_monitor_deemph_gain()). */
+static double g_fake_deemph_gain = 1.0;
+
+static double
+fake_deemph_gain(void) {
+    return g_fake_deemph_gain;
+}
+
+static void
+boundary_deemph(fixture* f) {
+    (void)f;
+    g_fake_deemph_gain = 1.0;
+}
+
+/* One block of +/-@p in (a two-sample square wave, which neither filter nor AGC rounds) through the monitor chain on
+   @p source with @p flags; returns the output's first sample. */
+static double
+deemph_square_out(fixture* f, dsd_analog_audio_source source, double in, unsigned int flags) {
+    float x[2] = {(float)in, (float)-in};
+    dsd_analog_audio_block_begin(f->opts, f->state, DSD_ANALOG_AUDIO_CHAIN_MONITOR);
+    (void)dsd_analog_audio_process_f(f->opts, f->state, DSD_ANALOG_AUDIO_CHAIN_MONITOR, x, 2U, source, 48000, flags);
+    return (double)x[0];
+}
+
+/* B8/B9 (issue #518): on an RTL input the monitor audio arrives de-emphasized, the 1 kHz reference down by the gain
+   the stream publishes; the chain makes it up at the gain stage, so the reference plays at the -12 dBFS reference peak
+   at -n 50 and the AGC starts from the same level, whatever DSD_NEO_DEEMPH selects. aout_gainA stays dB over -n 50.
+   The FSK discriminator output and PCM samples never ran through the de-emphasis, nor does an RTL monitor source off
+   an RTL input: their gain is the source gain alone. A new gain starts the chain over, and a block collected across
+   one is dropped. */
+static void
+test_deemph_gain(void) {
+    fixture f = fixture_new();
+    f.opts->use_pbf = 0;
+    dsd_rtl_stream_metrics_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.stream_generation = fake_rtl_generation;
+    hooks.monitor_deemph_gain = fake_deemph_gain;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    f.opts->audio_in_type = AUDIO_IN_RTL;
+    const dsd_analog_audio_source rtl = DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR;
+    /* 75 us at 48 kHz (+0.865 dB) and 750 us (+13.65 dB), the reference 0.25 taken down by each. */
+    const double gains[] = {1.104727, 4.810934};
+    for (size_t g = 0; g < sizeof gains / sizeof gains[0]; g++) {
+        g_fake_deemph_gain = gains[g];
+        f.opts->audio_gainA = 50.0f;
+        double out = deemph_square_out(&f, rtl, 0.25 / gains[g], DSD_ANALOG_AUDIO_PLAYING);
+        CHECK(fabs(out - 8231.0) < 0.05, "gain %.4f at -n 50: %.3f, want 8231", gains[g], out);
+        CHECK(fabsf(f.state->aout_gainA) < 1e-4f, "gain %.4f at -n 50 publishes %.4f dB, want 0", gains[g],
+              (double)f.state->aout_gainA);
+        f.opts->audio_gainA = 100.0f;
+        out = deemph_square_out(&f, rtl, 0.25 / gains[g], DSD_ANALOG_AUDIO_PLAYING);
+        CHECK(fabs(out - 16462.0) < 0.1, "gain %.4f at -n 100: %.3f, want 16462", gains[g], out);
+        /* Auto: a block the AGC does not adapt to plays at its reference gain, which is the same. */
+        f.opts->audio_gainA = 0.0f;
+        out = deemph_square_out(&f, rtl, 0.25 / gains[g], DSD_ANALOG_AUDIO_RESET);
+        CHECK(fabs(out - 8231.0) < 0.05, "gain %.4f on auto starts at %.3f, want 8231", gains[g], out);
+        CHECK(fabsf(f.state->aout_gainA) < 1e-4f, "gain %.4f on auto publishes %.4f dB, want 0", gains[g],
+              (double)f.state->aout_gainA);
+        /* Never the FSK discriminator nor PCM. */
+        f.opts->audio_gainA = 50.0f;
+        out = deemph_square_out(&f, DSD_ANALOG_AUDIO_SOURCE_RTL_FSK, 30000.0, DSD_ANALOG_AUDIO_PLAYING);
+        CHECK(fabs(out - 8231.0) < 0.05, "gain %.4f on the FSK discriminator: %.3f, want 8231", gains[g], out);
+        out = deemph_square_out(&f, DSD_ANALOG_AUDIO_SOURCE_PCM16, 8231.0, DSD_ANALOG_AUDIO_PLAYING);
+        CHECK(fabs(out - 8231.0) < 0.05, "gain %.4f on PCM: %.3f, want 8231", gains[g], out);
+    }
+    /* Off an RTL input the stream's gain is not the samples': the RTL monitor source gets the source gain alone. */
+    f.opts->audio_in_type = AUDIO_IN_PULSE;
+    const double off_rtl = deemph_square_out(&f, rtl, 0.25, DSD_ANALOG_AUDIO_PLAYING);
+    CHECK(fabs(off_rtl - 8231.0) < 0.05, "off an RTL input: %.3f, want 8231", off_rtl);
+    f.opts->audio_in_type = AUDIO_IN_RTL;
+
+    /* A new gain on the same generation (a gain changes only with one, but the chain keys on both): the block collected
+       across it is dropped, and the next starts over at the new reference gain. */
+    f.opts->audio_gainA = 0.0f;
+    f.opts->use_pbf = 1;
+    g_fake_deemph_gain = gains[1];
+    double phase = 0.0;
+    for (int blk = 0; blk < 400; blk++) {
+        (void)one_block_peak(&f, rtl, 0.0025, &phase, NULL);
+    }
+    CHECK(f.state->aout_gainA > 17.0f, "adapted to a quiet tone (%.2f dB)", (double)f.state->aout_gainA);
+    CHECK(one_block_peak(&f, rtl, 0.25, &phase, boundary_deemph) < 1e-12, "a block across a new gain played");
+    (void)one_block_peak(&f, rtl, 0.0025, &phase, NULL);
+    CHECK(fabsf(f.state->aout_gainA) < 0.5f, "after a new gain the chain played at %.2f dB, not from the reference",
+          (double)f.state->aout_gainA);
+
+    g_fake_deemph_gain = 1.0;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    fixture_free(&f);
+}
+
 /* EDACS collects three blocks and processes them afterwards, so it notes the reception once for the triplet: a retune
    landing during the collection drops all three, the old channel's samples in the first two included. */
 static void
@@ -598,6 +690,7 @@ main(void) {
     test_resets();
     test_chains_are_independent();
     test_new_reception_starts_over();
+    test_deemph_gain();
     test_edacs_triplet_across_a_boundary();
     test_discard_starts_over_after();
     test_legacy_filters_start_over_with_the_chain();

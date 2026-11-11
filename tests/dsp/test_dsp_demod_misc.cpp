@@ -3,7 +3,8 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/* Unit tests for remaining demod helpers: deemph_filter, low_pass_real, and dsd_fm_demod plumbing. */
+/* Unit tests for remaining demod helpers: deemph_filter and its compensation, low_pass_real, and dsd_fm_demod
+   plumbing. */
 
 #include <cmath>
 #include <dsd-neo/dsp/demod_pipeline.h>
@@ -217,6 +218,133 @@ test_channel_lpf_protected_edge(void) {
     return 1;
 }
 
+/* The de-emphasis coefficient the front end runs for @p tau_us at @p rate_hz, quantised to Q15 as
+   rtl_demod_refresh_audio_coefficients() quantises it. */
+static float
+deemph_q15_coefficient(int tau_us, int rate_hz) {
+    const double alpha = 1.0 - std::exp(-1.0 / ((double)rate_hz * (double)tau_us * 1e-6));
+    return (float)((double)std::lrint(alpha * 32768.0) / 32768.0);
+}
+
+/* A 1 kHz sine of amplitude 1 through deemph_filter() at s->rate_out; returns the amplitude of what comes out, fitted
+   over whole cycles of its second half, past the filter's settling (750 us is under 4 ms). */
+static double
+deemph_tone_amplitude(demod_state* s) {
+    const double pi = 3.14159265358979323846;
+    const int n = s->rate_out / 5 < MAXIMUM_BUF_LENGTH ? s->rate_out / 5 : MAXIMUM_BUF_LENGTH;
+    s->deemph_avg = 0.0f;
+    s->result_len = n;
+    for (int i = 0; i < n; i++) {
+        s->result[i] = (float)std::sin(2.0 * pi * 1000.0 * (double)i / (double)s->rate_out);
+    }
+    deemph_filter(s);
+    /* Whole cycles: c cycles of 1 kHz are a whole number of samples when c = 1000 / gcd(rate, 1000). */
+    int a = s->rate_out;
+    int b = 1000;
+    while (b != 0) {
+        const int t = a % b;
+        a = b;
+        b = t;
+    }
+    const int period = s->rate_out / a; /* samples in 1000 / a cycles */
+    const int len = ((n / 2) / period) * period;
+    double in_phase = 0.0;
+    double quadrature = 0.0;
+    for (int i = n - len; i < n; i++) {
+        const double w = 2.0 * pi * 1000.0 * (double)i / (double)s->rate_out;
+        in_phase += (double)s->result[i] * std::sin(w);
+        quadrature += (double)s->result[i] * std::cos(w);
+    }
+    return 2.0 * std::sqrt((in_phase * in_phase) + (quadrature * quadrature)) / (double)len;
+}
+
+/* The FM monitor as full_demod() runs it, de-emphasizing at @p tau_us and @p rate_hz. */
+static void
+deemph_monitor_seed(demod_state* s, int tau_us, int rate_hz) {
+    s->mode_demod = &dsd_fm_demod;
+    s->output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
+    s->cqpsk_enable = 0;
+    s->deemph = 1;
+    s->rate_out = rate_hz;
+    s->deemph_a = deemph_q15_coefficient(tau_us, rate_hz);
+}
+
+/* dsd_demod_deemph_compensation() is the inverse of what deemph_filter() does to 1 kHz at the coefficient and rate the
+   front end runs (issue #518): the de-emphasized tone times the gain comes back to its own level at every monitor and
+   replay rate, and the gain matches the filter's closed form there (the default 48 kHz to 0.001 dB). A block that runs
+   no de-emphasis gets 1. */
+static int
+test_deemph_compensation(demod_state* s) {
+    static const int kRates[] = {8000, 12000, 16000, 24000, 48000, 72000, 78125};
+    static const int kTaus[] = {50, 75, 750};
+    int ok = 1;
+    DSD_MEMSET(s, 0, sizeof(*s));
+    for (int r : kRates) {
+        for (int tau : kTaus) {
+            deemph_monitor_seed(s, tau, r);
+            const double gain = dsd_demod_deemph_compensation(s);
+            const double amplitude = deemph_tone_amplitude(s);
+            if (std::fabs(amplitude * gain - 1.0) > 1e-4) {
+                DSD_FPRINTF(stderr, "deemph compensation %d us @%d: tone %.6f x gain %.6f = %.6f, want 1\n", tau, r,
+                            amplitude, gain, amplitude * gain);
+                ok = 0;
+            }
+        }
+    }
+
+    /* The closed form at the default 48 kHz, with the Q15 codes the front end runs (11166, 7947, 898). */
+    static const struct {
+        int tau_us;
+        int q15;
+        double want_db;
+    } kAt48k[] = {{50, 11166, 0.403}, {75, 7947, 0.865}, {750, 898, 13.647}};
+
+    deemph_monitor_seed(s, 75, 48000);
+    for (const auto& row : kAt48k) {
+        s->deemph_a = (float)row.q15 / 32768.0f;
+        if (std::lrint(deemph_q15_coefficient(row.tau_us, 48000) * 32768.0f) != row.q15) {
+            DSD_FPRINTF(stderr, "deemph compensation: %d us quantises off %d\n", row.tau_us, row.q15);
+            ok = 0;
+        }
+        const double got_db = 20.0 * std::log10(dsd_demod_deemph_compensation(s));
+        if (std::fabs(got_db - row.want_db) > 1e-3) {
+            DSD_FPRINTF(stderr, "deemph compensation %d us @48k: %.4f dB, want %.3f\n", row.tau_us, got_db,
+                        row.want_db);
+            ok = 0;
+        }
+    }
+
+    /* No de-emphasis runs: off (and AM, which clears it), the FSK discriminator, CQPSK symbols, the raw pass-through,
+       and no coefficient or rate. */
+    struct {
+        const char* name;
+        void (*apply)(demod_state*);
+    } const kNone[] = {
+        {"off", [](demod_state* d) { d->deemph = 0; }},
+        {"FSK discriminator", [](demod_state* d) { d->output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR; }},
+        {"CQPSK", [](demod_state* d) { d->cqpsk_enable = 1; }},
+        {"raw pass-through", [](demod_state* d) { d->mode_demod = &raw_demod; }},
+        {"no coefficient", [](demod_state* d) { d->deemph_a = 0.0f; }},
+        {"no rate", [](demod_state* d) { d->rate_out = 0; }},
+    };
+
+    for (const auto& c : kNone) {
+        deemph_monitor_seed(s, 75, 48000);
+        c.apply(s);
+        if (std::fabs(dsd_demod_deemph_compensation(s) - 1.0) > 1e-12) {
+            DSD_FPRINTF(stderr, "deemph compensation: %s gave %.6f, want 1\n", c.name,
+                        dsd_demod_deemph_compensation(s));
+            ok = 0;
+        }
+    }
+    if (std::fabs(dsd_demod_deemph_compensation(NULL) - 1.0) > 1e-12) {
+        DSD_FPRINTF(stderr, "deemph compensation: NULL is not 1\n");
+        ok = 0;
+    }
+    DSD_MEMSET(s, 0, sizeof(*s));
+    return ok;
+}
+
 int
 main(void) {
     demod_state* s = static_cast<demod_state*>(dsd_neo_aligned_malloc(sizeof(demod_state)));
@@ -224,6 +352,11 @@ main(void) {
         return 1;
     }
     DSD_MEMSET(s, 0, sizeof(*s));
+
+    if (!test_deemph_compensation(s)) {
+        dsd_neo_aligned_free(s);
+        return 1;
+    }
 
     if (!test_channel_lpf_protected_edge()) {
         dsd_neo_aligned_free(s);

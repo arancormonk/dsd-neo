@@ -522,6 +522,11 @@ static std::atomic<int> g_retune_diag_blocks_remaining{0};
 static std::atomic<uint32_t> g_retune_settle_seq{0};
 static std::atomic<int> g_retune_settle_blocks_remaining{0};
 static std::atomic<uint32_t> g_rtl_output_generation{1};
+/* The gain that makes up for the de-emphasis the monitor audio in the output ring ran through, at 1 kHz
+   (rtl_stream_monitor_deemph_gain(), issue #518). The demod thread stores it with every block it writes, before the
+   block reaches the ring. Whatever changes it (a family or FM <-> AM switch, a retune or rate change) moves the
+   generation first, so a reader that loads it before the generation never pairs a new gain with the old generation. */
+static std::atomic<float> g_pub_monitor_deemph_gain{1.0f};
 /* Stream opens and stops (rtl_stream_session_generation(), issue #671). */
 static std::atomic<uint32_t> g_rtl_session_generation{0U};
 
@@ -4873,6 +4878,15 @@ demod_write_output_samples_interruptible(struct output_state* o, const float* da
     return written;
 }
 
+/* The block's de-emphasis gain (g_pub_monitor_deemph_gain), stored only when it moved. Demod thread. */
+static inline void
+demod_publish_deemph_gain(const struct demod_state* d) {
+    const float gain = (float)dsd_demod_deemph_compensation(d);
+    if (std::fabs(g_pub_monitor_deemph_gain.load(std::memory_order_relaxed) - gain) > 1e-6f) {
+        g_pub_monitor_deemph_gain.store(gain, std::memory_order_release);
+    }
+}
+
 /* The block's output as the ring takes it: resampled and scaled as its kind wants. Returns the sample count (0: none)
  * and points @p out_data at the samples and @p out_flags at their auto squelch flags (NULL: the block has none). */
 static size_t
@@ -4882,6 +4896,7 @@ demod_finish_output_block(struct demod_state* d, const float** out_data, const u
         return 0U;
     }
     const int flagged = d->result_flags_active;
+    demod_publish_deemph_gain(d);
     /* Digital streams carry discriminator/symbol values, not audio, so the monitor output
      * scale must not be applied to them. CQPSK output is symbol-rate and never resampled. */
     const int digital_output =
@@ -11002,6 +11017,11 @@ rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_
 extern "C" uint32_t
 rtl_stream_output_generation(void) {
     return g_rtl_output_generation.load(std::memory_order_acquire);
+}
+
+extern "C" double
+rtl_stream_monitor_deemph_gain(void) {
+    return (double)g_pub_monitor_deemph_gain.load(std::memory_order_acquire);
 }
 
 extern "C" uint32_t
@@ -18703,6 +18723,116 @@ rtl_stream_test_replay_output_scale(const dsd_opts* opts, float preset_scale, fl
     restore_capture_settings(&capture);
     family_test_restore(saved);
     family_test_release_buffers();
+    return rc == 0 ? 0 : -3;
+}
+
+/* The rate full_demod() takes its input at: the complex rate ahead of the half-band cascade's passes. */
+static int
+monitor_tone_test_input_rate(void) {
+    return demod.complex_rate << (demod.downsample_passes > 0 ? demod.downsample_passes : 0);
+}
+
+/* One block of the reference signal at the input rate into demod.input_cb_buf: 1 kHz at 3 kHz deviation (FM) or 50%
+ * (AM) on a carrier at the centre, amplitude 0.5. @p t counts input samples and @p phase holds the FM carrier's phase
+ * across blocks. Returns the complex samples written. */
+static int
+monitor_tone_test_fill(int kind, int pairs, long long* t, double* phase) {
+    const double rate = (double)monitor_tone_test_input_rate();
+    float* iq = demod.input_cb_buf;
+    for (int i = 0; i < pairs; i++, (*t)++, iq += 2) {
+        const double tone = std::sin(2.0 * M_PI * 1000.0 * (double)*t / rate);
+        if (kind == DSD_ANALOG_DEMOD_AM) {
+            iq[0] = (float)(0.5 * (1.0 + (0.5 * tone)));
+            iq[1] = 0.0f;
+        } else {
+            *phase += 2.0 * M_PI * 3000.0 * tone / rate;
+            iq[0] = (float)(0.5 * std::cos(*phase));
+            iq[1] = (float)(0.5 * std::sin(*phase));
+        }
+    }
+    return pairs;
+}
+
+/* @p segments through the demodulator and the output ring as the demod thread and the decoder run them; a segment of
+ * another kind lands first as a live request does. Returns the blocks handed to @p sink. */
+static int
+monitor_tone_test_run(const rtl_stream_test_tone_segment* segments, int count,
+                      void (*sink)(const rtl_stream_test_tone_block* block, void* ctx), void* ctx) {
+    static float got[MAXIMUM_BUF_LENGTH * 4];
+    /* 10 ms of input, in whole complex samples the input buffer holds. */
+    int pairs = monitor_tone_test_input_rate() / 100;
+    pairs = pairs < MAXIMUM_BUF_LENGTH / 2 ? pairs : MAXIMUM_BUF_LENGTH / 2;
+    long long t = 0;
+    double phase = 0.0;
+    int handed = 0;
+    for (int seg = 0; seg < count; seg++) {
+        if (demod.analog_demod != segments[seg].kind) {
+            rtl_stream_apply_analog_profile_params(DSD_RX_FAMILY_ANALOG, segments[seg].kind, 0, -1, 0, 0);
+        }
+        for (int b = 0; b < segments[seg].blocks; b++) {
+            demod.lowpassed = demod.input_cb_buf;
+            demod.lp_len = 2 * monitor_tone_test_fill(segments[seg].kind, pairs, &t, &phase);
+            full_demod(&demod);
+            (void)demod_write_output_block(&demod, &output);
+            const int n = ring_read_batch(&output, got, sizeof got / sizeof got[0]);
+            if (n > 0 && sink) {
+                const rtl_stream_test_tone_block block = {seg, got, n, (int)output.rate.load()};
+                sink(&block, ctx);
+                handed++;
+            }
+        }
+    }
+    return handed;
+}
+
+extern "C" int
+rtl_stream_test_monitor_tone(const dsd_opts* opts, int rate_hz, int forced_rate_out_hz, uint32_t replay_post,
+                             const rtl_stream_test_tone_segment* segments, int count,
+                             void (*sink)(const rtl_stream_test_tone_block* block, void* ctx), void* ctx,
+                             rtl_stream_test_tone_result* out) {
+    if (!opts || !segments || count <= 0 || !out || rate_hz <= 0 || g_stream || rtl_device_handle) {
+        return -1;
+    }
+    *out = {};
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(0U, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const FamilyTestSaved saved = family_test_save();
+    const CaptureSettingsSnapshot capture = capture_settings_snapshot();
+    const float prev_output_scale = demod.output_scale;
+    const int prev_post = demod.post_downsample;
+    const int prev_rate_in = demod.rate_in;
+    const int prev_rate_out2 = demod.rate_out2;
+    test_stream_set(NULL);
+    int rc = family_test_seed_open(opts, rate_hz, forced_rate_out_hz);
+    /* The scale a live open sets (optimal_settings()); a replay sets its own. */
+    demod.output_scale = kMonitorDiscriminatorOutputScale;
+    if (rc == 0 && replay_post > 0U) {
+        const dsd_iq_replay_config cfg = post_chain_test_config((uint32_t)rate_hz * replay_post, replay_post);
+        rc = controller_apply_replay_settings(&controller, opts, &cfg) != 0 ? -1 : 0;
+    }
+    dsd_live_iq_step_finish(&demod.live_iq_step);
+    if (rc == 0) {
+        out->blocks = monitor_tone_test_run(segments, count, sink, ctx);
+    }
+    out->complex_rate_hz = demod.complex_rate;
+    out->rate_out_hz = demod.rate_out;
+    out->output_rate_hz = (int)output.rate.load();
+    out->deemph_tau_us = demod.deemph ? demod.deemph_tau_us : 0;
+
+    demod.output_scale = prev_output_scale;
+    demod.post_downsample = prev_post;
+    demod.rate_in = prev_rate_in;
+    demod.rate_out2 = prev_rate_out2;
+    demod.result_len = 0;
+    dsd_live_iq_step_disable(&demod.live_iq_step);
+    restore_capture_settings(&capture);
+    family_test_restore(saved);
+    family_test_release_buffers();
+    ring_clear(&output);
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return rc == 0 ? 0 : -3;
 }
 

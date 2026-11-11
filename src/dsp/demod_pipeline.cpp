@@ -1796,6 +1796,22 @@ deemph_filter(struct demod_state* fm) {
     fm->deemph_avg = avg; /* write back state */
 }
 
+/* The conditions full_demod() runs deemph_filter() under: monitor output (the FSK discriminator returns before it),
+   no CQPSK, not the raw pass-through, de-emphasis on with a coefficient. H(z) = a / (1 - (1 - a) z^-1), so the gain
+   is |1 - (1 - a) e^-jw| / a at w = 2 pi 1000 / rate_out. */
+double
+dsd_demod_deemph_compensation(const struct demod_state* d) {
+    if (!d || d->output_kind != DSD_DEMOD_OUTPUT_AUDIO_MONITOR || d->cqpsk_enable || d->mode_demod == &raw_demod
+        || !d->deemph || !(d->deemph_a > 0.0f) || d->rate_out <= 0) {
+        return 1.0;
+    }
+    /* deemph_filter() clamps the coefficient to 1. */
+    const double a = d->deemph_a < 1.0f ? (double)d->deemph_a : 1.0;
+    const double pole = 1.0 - a;
+    const double w = 2.0 * 3.14159265358979323846 * 1000.0 / (double)d->rate_out;
+    return sqrt(1.0 - (2.0 * pole * cos(w)) + (pole * pole)) / a;
+}
+
 /**
  * @brief Apply a simple DC blocking (leaky integrator high-pass) filter to audio.
  *

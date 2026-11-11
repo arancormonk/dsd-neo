@@ -96,6 +96,9 @@ typedef struct {
     int (*replay_batch)(dsd_rtl_stream_replay_batch* out);
     /* The stream's discontinuity count (dsd_rtl_stream_metrics_hook_discontinuity_seq()). */
     uint64_t (*discontinuity_seq)(void);
+    /* The gain that makes up for the monitor audio's de-emphasis at 1 kHz
+       (dsd_rtl_stream_metrics_hook_monitor_deemph_gain()). */
+    double (*monitor_deemph_gain)(void);
 } dsd_rtl_stream_metrics_hooks;
 
 typedef enum DSD_ATTR_PACKED dsd_rtl_stream_channel_profile {
@@ -114,6 +117,19 @@ unsigned int dsd_rtl_stream_metrics_hook_output_rate_hz(void);
 int dsd_rtl_stream_metrics_hook_output_kind(void);
 int dsd_rtl_stream_metrics_hook_symbol_profile(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile);
 uint32_t dsd_rtl_stream_metrics_hook_stream_generation(void);
+/**
+ * @brief The gain that makes up for the de-emphasis the RTL monitor audio ran through, at 1 kHz (issue #518): about
+ * 1.105 (+0.865 dB) at the default 75 us, 4.81 (+13.65 dB) under `DSD_NEO_DEEMPH=nfm`, 1.0 where none runs (AM, the
+ * FSK discriminator, CQPSK, `DSD_NEO_DEEMPH=off`).
+ *
+ * The analog chain multiplies the RTL monitor's gain by it, so `-n 50` plays the reference tone at the reference level
+ * whatever the de-emphasis. The stream publishes it with the samples, and whatever changes it moves the stream
+ * generation first: read it before dsd_rtl_stream_metrics_hook_stream_generation(), and the pair belongs together.
+ *
+ * @return The gain; 1.0 with no hook installed (no RTL front end: PCM input, tests, radio-off builds) or when the hook
+ *         reports a gain that is not positive.
+ */
+double dsd_rtl_stream_metrics_hook_monitor_deemph_gain(void);
 int dsd_rtl_stream_metrics_hook_stream_active(void);
 int dsd_rtl_stream_metrics_hook_input_level(dsd_input_level_snapshot* out);
 /**

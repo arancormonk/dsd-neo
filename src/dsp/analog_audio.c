@@ -31,11 +31,13 @@
 
 #define ANALOG_AUDIO_CHAINS            2
 
-/* Which reception samples belong to: the RTL stream generation (RTL input), the trunk-tuning generation, and the
-   chains' reception epoch, which every boundary dsd_analog_rx_reset() announces moves (dsd_analog_audio_note_reception():
-   a scan row commit, the legacy -Y rigctl retune, a reconnect). */
+/* Which reception samples belong to: the RTL stream generation and the de-emphasis it runs (RTL input), the
+   trunk-tuning generation, and the chains' reception epoch, which every boundary dsd_analog_rx_reset() announces moves
+   (dsd_analog_audio_note_reception(): a scan row commit, the legacy -Y rigctl retune, a reconnect). */
 typedef struct {
     uint32_t rtl_generation;
+    /* The gain that makes up for the RTL monitor audio's de-emphasis at 1 kHz; 1.0 off RTL input. */
+    double deemph_gain;
     uint64_t tune_generation;
     uint32_t epoch;
 } analog_audio_reception;
@@ -45,6 +47,9 @@ typedef struct {
     int band;
     int source;
     int rate_hz;
+    /* The gain that takes the source's reference signal to the reference level on this reception
+       (analog_audio_chain_gain()): the fixed gain at -n 50 and the AGC's reference gain. */
+    double source_gain;
     /* The reception the chain runs on, and the one the block being collected began in. */
     analog_audio_reception reception;
     int block_noted;
@@ -90,10 +95,19 @@ analog_audio_ext_get(dsd_state* state) {
     return ext;
 }
 
-/* The fixed gain for the `-n` setting @p setting (1..100) on @p source. */
+/* The gain that takes @p source's reference signal to the reference level: the source gain, and on RTL monitor audio
+   the de-emphasis made up at 1 kHz, so the reference tone plays at the reference level whatever DSD_NEO_DEEMPH selects
+   (issue #518). The -6 raw WAV and the M17 encoder's input keep the source gain alone. */
 static double
-analog_audio_fixed_gain(dsd_analog_audio_source source, float setting) {
-    return dsd_analog_audio_source_gain(source) * ((double)setting / ANALOG_AUDIO_UNITY_SETTING);
+analog_audio_chain_gain(dsd_analog_audio_source source, double deemph_gain) {
+    const double gain = dsd_analog_audio_source_gain(source);
+    return source == DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR ? gain * deemph_gain : gain;
+}
+
+/* The fixed gain for the `-n` setting @p setting (1..100) over @p source_gain, the chain's gain at -n 50. */
+static double
+analog_audio_fixed_gain(double source_gain, float setting) {
+    return source_gain * ((double)setting / ANALOG_AUDIO_UNITY_SETTING);
 }
 
 static void
@@ -113,14 +127,27 @@ analog_audio_band(const dsd_opts* opts, dsd_analog_audio_chain chain, dsd_analog
                : DSD_VOICE_BAND_FM;
 }
 
+/* Two de-emphasis gains this close are the same one: the stream publishes it as a float. */
+static const double k_deemph_gain_tolerance = 1e-6;
+
 static int
 analog_audio_reception_equal(const analog_audio_reception* a, const analog_audio_reception* b) {
-    return a->rtl_generation == b->rtl_generation && a->tune_generation == b->tune_generation && a->epoch == b->epoch;
+    return a->rtl_generation == b->rtl_generation && fabs(a->deemph_gain - b->deemph_gain) <= k_deemph_gain_tolerance
+           && a->tune_generation == b->tune_generation && a->epoch == b->epoch;
+}
+
+/* The RTL monitor audio's de-emphasis gain on an RTL input, 1.0 on any other. */
+static double
+analog_audio_deemph_gain(const dsd_opts* opts) {
+    return opts->audio_in_type == AUDIO_IN_RTL ? dsd_rtl_stream_metrics_hook_monitor_deemph_gain() : 1.0;
 }
 
 static analog_audio_reception
 analog_audio_reception_now(const dsd_opts* opts, const analog_audio_ext* ext) {
     analog_audio_reception r;
+    /* The gain before the generation: the stream moves the generation before it publishes a new gain, so a new gain is
+       never read with the old generation. */
+    r.deemph_gain = analog_audio_deemph_gain(opts);
     r.rtl_generation = opts->audio_in_type == AUDIO_IN_RTL ? dsd_rtl_stream_metrics_hook_stream_generation() : 0U;
     r.tune_generation = dsd_trunk_tuning_generation();
     r.epoch = ext->epoch;
@@ -137,8 +164,9 @@ analog_audio_chain_configure(analog_audio_chain_state* cs, dsd_voice_band_kind b
     /* A rate of 0 or less designs a pass-through band-pass; the AGC and the legacy filters count at 48 kHz, as the
        monitor's fallback does. */
     const int run_rate_hz = rate_hz > 0 ? rate_hz : 48000;
+    cs->source_gain = analog_audio_chain_gain(source, reception->deemph_gain);
     (void)dsd_voice_bandpass_design(&cs->bandpass, band, rate_hz);
-    (void)dsd_voice_agc_init(&cs->agc, run_rate_hz, dsd_analog_audio_source_gain(source));
+    (void)dsd_voice_agc_init(&cs->agc, run_rate_hz, cs->source_gain);
     (void)dsd_voice_onepole_design(&cs->legacy, run_rate_hz);
     cs->configured = 1;
     cs->band = (int)band;
@@ -198,12 +226,12 @@ dsd_analog_audio_block_begin(const dsd_opts* opts, dsd_state* state, dsd_analog_
 /* The gain stage: the AGC on auto, else the fixed gain; publishes what it applied over the -n 50 gain. */
 static void
 analog_audio_run_gain(const dsd_opts* opts, dsd_state* state, analog_audio_chain_state* cs, float* buf, size_t n,
-                      dsd_analog_audio_source source, unsigned int flags) {
+                      unsigned int flags) {
     if (dsd_analog_gain_is_auto(opts->audio_gainA)) {
         dsd_voice_agc_process(&cs->agc, buf, n, (flags & DSD_ANALOG_AUDIO_PLAYING) ? 1 : 0);
-        state->aout_gainA = (float)(20.0 * log10(dsd_voice_agc_gain(&cs->agc) / dsd_analog_audio_source_gain(source)));
+        state->aout_gainA = (float)(20.0 * log10(dsd_voice_agc_gain(&cs->agc) / cs->source_gain));
     } else {
-        analog_audio_apply_gain(buf, n, analog_audio_fixed_gain(source, opts->audio_gainA));
+        analog_audio_apply_gain(buf, n, analog_audio_fixed_gain(cs->source_gain, opts->audio_gainA));
         state->aout_gainA = (float)(20.0 * log10((double)opts->audio_gainA / ANALOG_AUDIO_UNITY_SETTING));
     }
 }
@@ -226,7 +254,8 @@ dsd_analog_audio_process_f(const dsd_opts* opts, dsd_state* state, dsd_analog_au
         /* No state for the filters or the AGC: the fixed gain, at the reference setting when the gain is on auto. */
         const float setting =
             dsd_analog_gain_is_auto(opts->audio_gainA) ? (float)ANALOG_AUDIO_UNITY_SETTING : opts->audio_gainA;
-        analog_audio_apply_gain(buf, n, analog_audio_fixed_gain(source, setting));
+        analog_audio_apply_gain(
+            buf, n, analog_audio_fixed_gain(analog_audio_chain_gain(source, analog_audio_deemph_gain(opts)), setting));
         return 0;
     }
     analog_audio_chain_state* cs = &ext->chain[chain];
@@ -242,7 +271,7 @@ dsd_analog_audio_process_f(const dsd_opts* opts, dsd_state* state, dsd_analog_au
     }
     analog_audio_chain_configure(cs, analog_audio_band(opts, chain, source), source, rate_hz, &now);
     analog_audio_run_filters(opts, cs, buf, n);
-    analog_audio_run_gain(opts, state, cs, buf, n, source, flags);
+    analog_audio_run_gain(opts, state, cs, buf, n, flags);
     return 0;
 }
 

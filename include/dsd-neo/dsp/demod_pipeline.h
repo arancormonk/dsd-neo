@@ -137,6 +137,19 @@ void qpsk_differential_demod(struct demod_state* fm);
 void deemph_filter(struct demod_state* fm);
 
 /**
+ * The gain that makes up for the de-emphasis the next block's output runs through, at 1 kHz (issue #518): the inverse
+ * of the filter's magnitude there, from the quantised coefficient it applies (`deemph_a`) at the rate it runs at
+ * (`rate_out`, after the post-demod decimator). The monitor's reference tone, 1 kHz at 3 kHz deviation, then reads
+ * the same whatever `DSD_NEO_DEEMPH` selects: about 1.105 (+0.865 dB) at the default 75 us and 48 kHz, 4.81
+ * (+13.65 dB) at 750 us.
+ *
+ * @param d Demodulator state; NULL reads as none.
+ * @return The gain, or 1.0 when the block runs no de-emphasis: off, AM, the FSK discriminator, CQPSK symbols and the
+ *         raw pass-through.
+ */
+double dsd_demod_deemph_compensation(const struct demod_state* d);
+
+/**
  * Apply a simple DC blocking (leaky integrator high-pass) filter to audio.
  *
  * @param fm Demodulator state (reads/writes result, updates dc_avg).
