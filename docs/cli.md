@@ -367,8 +367,7 @@ Windows console runs:
   decode and crypto checks pass. X2-TDMA says whether a superframe is encrypted only after its first three voice
   frames: those frames follow the slot's previous superframe. At the start of a transmission nothing is known yet,
   so they are saved only where both clear and encrypted audio would be: with encrypted audio unmuted and without
-  `-q`. YSF frames are captured once a FICH has verified the transmission on the
-  carrier.
+  `-q`. YSF frames are captured once a FICH has verified the transmission on the carrier.
 - `-J <file>` Append event log output. Every line starts with a `YYYY-MM-DD HH:MM:SS` stamp, so the file
   filters, sorts and splits by time with ordinary line tools. An event's detail lines (`Text:` for a decoded
   text message, `Talker Alias:`, `GPS:`, `DSD-neo:` for a decoder notice) follow its line and repeat that
@@ -600,8 +599,9 @@ Notes
   FM (`--nfm-bandwidth-hz` up to 16000, the default) 4.5 dB over `-n 50`, wideband FM 1.5 dB under it, AM 2.6 dB under
   it; the RTL `vol` trim does not move that start. The gain moves only on speech, never on hiss, open-squelch noise or
   steady tones, holds through pauses, stays within 12 dB below and 15 dB above the start, and never lets a peak past
-  -1 dBFS. Hiss or noise with no speech in it fades toward -36 dBFS once a second has passed without speech (from the
-  start of a transmission that has had none yet) and comes back at once with the next speech. What it learns does not depend on whether the audio plays, is muted or is recorded. A channel change, a
+  -1 dBFS. Hiss or noise with no speech in it fades toward -36 dBFS at 6 dB a second: from the start of a transmission
+  until its first speech, and otherwise once a second has passed since the last speech. It comes back at once with the
+  next speech. What it learns does not depend on whether the audio plays, is muted or is recorded. A channel change, a
   retune or a gap of a second or more between transmissions (squelch closed, or the input sending nothing) starts it
   from the band's level again. Below 8 kHz (PCM input at its own rate) it plays at the `-n 50` level instead and logs
   `Automatic analog gain inactive`.
@@ -610,17 +610,40 @@ Notes
   `DSD_NEO_DEEMPH` setting (the gain makes up what the FM de-emphasis takes off 1 kHz); `100` is 6 dB louder. Peaks are
   held at -1 dBFS there too. EDACS analog calls on radio input keep the same levels, auto and fixed: since issue #518
   they play the voice channel's FM audio, de-emphasized and scaled by `vol` as the FM monitor's is, not the evened-out
-  signal the EDACS decoder reads, which hid how loud the talker was. A fixed `-n` is a calibration, not a loudness match: `-n 50` is not the level of a fixed
-  `-g 1`. The menu's Analog gain... prompt and the `*` / `/` keys work over the same range; from auto they step from
-  `50`, and stepping below `1` goes back to auto. A value above `100`, NaN or infinity is refused with an error, at the
-  prompt too (a value above `100` used to be clamped to `100`). Since issue #518 a fixed `-n` plays RTL monitor audio
-  about 9 dB louder than before, and up to 18 dB more where the old default filter (see `-v`) cut it.
+  signal the EDACS decoder reads, which hid how loud the talker was. A fixed `-n` is a calibration, not a loudness
+  match: `-n 50` is not the level of a fixed `-g 1`. The menu's Analog gain... prompt and the `*` / `/` keys work over
+  the same range; from auto they step from `50`, and stepping below `1` goes back to auto. A value above `100`, NaN or
+  infinity is refused with an error, at the prompt too (a value above `100` used to be clamped to `100`). Since
+  issue #518 a fixed `-n` plays RTL monitor audio about 9 dB louder than before, and up to 18 dB more where the old
+  default filter (see `-v`) cut it.
+- What the automatic gains (`-g 0`, `-n 0`) cannot do. These limits were measured on real and synthetic speech
+  (`docs/testing.md` "The speech AGC's calibration and acceptance"):
+  - Accuracy. Once a transmission has had about 2 s of speech, every talker measured plays within 3 dB of -24 dBFS,
+    95% within 2 dB and 90% within 1.5 dB. Two calls can still differ by about 4 dB, and over one call the gain can
+    move by up to 8-9 dB for some talkers.
+  - Speed. The gain first moves 120 ms into speech (six 20 ms frames of it in a row), then by at most 1 dB per 20 ms,
+    and usually settles within 2 s of speech. Pauses do not count, nor, on analog, speech too noisy to be recognised,
+    so a weak FM signal takes longer, and an open squelch with several talkers can take tens of seconds. A
+    transmission with less than 120 ms of speech plays at the start level, and one that is a single held sound of
+    300-500 ms ends before the gain settles.
+  - Range. A talker more than 15 dB under the target at the start level stays quiet; one more than 12 dB over it is
+    held down by the -1 dBFS limiter.
+  - Tones. A sound that holds one pitch and level for 240 ms or more is taken for a tone and teaches nothing, a long,
+    perfectly steady vowel included. At the start of a transmission a tone the decoder does not mark as one (any
+    analog tone, a P25 tone) can lift the gain by up to about 7 dB over its first 0.24 s before it is turned away.
+    Tones shorter than 240 ms (analog DTMF digits) and P25 Phase 1 DTMF, which the P25 vocoder does not mark as a
+    tone, are taken for speech (twelve DTMF digits moved the gain 0.6 dB), and a long sliding tone (a siren) plays
+    about 4 dB loud. A voice whose pitch sits right at 67 Hz is partly missed.
+  - The -1 dBFS ceiling holds per sample before the output's rate conversion: 8 kHz voice converted for a 48 kHz
+    output can peak up to about 0.3 dB over it.
+  - Muting, the output switches and recording never change what the gain learns, but frames that a talkgroup or
+    receive policy stops before they are decoded (P25 Phase 2, TETRA) teach it nothing.
+  - With `-v 0` the analog speech detector hears the audio unfiltered, CTCSS tones and hum included.
 - `-nm` Enable the DMR single-slot mono decoder without changing the active decode preset.
 - `-z <0|1|2>` TDMA slot preference (0 = slot 1, 1 = slot 2, 2 = auto). When both slots carry audible voice, the
   preferred slot plays alone, in both ears (with one-channel output, alone); auto plays both (with one-channel output,
-  summed). It applies to DMR and P25
-  Phase 2, in integer and `-y` float output, and stays as set: decoding never changes it. A talkgroup hold prefers the
-  held slot.
+  summed). It applies to DMR and P25 Phase 2, in integer and `-y` float output, and stays as set: decoding never
+  changes it. A talkgroup hold prefers the held slot.
 - `-8` Monitor the source audio (helpful when mixing analog/digital). It plays on a sound device or UDP (port + 2);
   with `-o -` while decoding digital modes it is not written to stdout, which carries the decoded voice, and a warning
   says so at startup.
@@ -1190,6 +1213,18 @@ visit.
   `-n 50` reference and the AGC's starting level stay the same with any curve, or with none. The curve still shapes the
   sound: under `nfm` low tones play louder and high tones quieter than at 75 us. The `-6` raw recording keeps the
   de-emphasized level.
+- The automatic analog gain (`-n 0`) starts each transmission at a level set from the width: narrowband FM (2.5 kHz
+  deviation) up to 16000, the default, and wideband FM (5 kHz deviation) above it. A 25 kHz-plan channel heard at the
+  default width therefore starts 9-12 dB loud, with its peaks held at -1 dBFS, until a couple of seconds of speech
+  bring it down; with the squelch open and several talkers, which nothing starts over, it can take tens of seconds to
+  settle within 1.5 dB. Set `--nfm-bandwidth-hz 25000` for such a channel.
+- With the squelch off (the startup -110 dB included) the monitor plays the receiver's hiss between transmissions.
+  The automatic gain learns nothing from it and eases it toward -36 dBFS at 6 dB a second (strong hiss stops near
+  -31 dBFS), and lets go within one 20 ms frame when speech, or a carrier's quieting, comes. Nothing starts the gain
+  over on a continuous stream with the squelch open, so it carries from one transmission to the next. The first
+  100 ms of speech after the hiss play up to about 1.7 dB low, and a weak transmission whose first syllables do not
+  stand out of the hiss plays lower until they do (20 dB down at worst on one low-VHF recording). A squelch
+  (`--squelch auto`, `noise` or a level) avoids all of this: each transmission then starts at the band's level.
 - The channel squelch measures power after the channel filter, so the noise it sees scales with the width: halving
   the width lowers the noise power by about 3 dB. Re-check a squelch threshold (`sql`, `rtl_sql`) after changing the
   width. The auto and noise squelches (below) need no re-check: the auto squelch rescales its floor with the filter,
@@ -1216,9 +1251,10 @@ alone is `auto+10`), so one setting suits every receiver and every channel of a 
   as with the squelch off; lock it out, or let `--scan-max-visit-ms` move a scan on.
 - Gating. With a floor, the gate opens on a 20 ms stretch at the floor plus the margin and closes 3 dB lower or on a
   noise window. It is decided per sample and travels with the audio, so the edges fall on the right samples whatever
-  the read sizes: the monitor ramps in over 5 ms and out over 10 ms to exact silence, and the analog AGC holds while
-  the gate is closed. The floor follows the noise down quickly and up at 1 dB a second, and is learned again after
-  5 s of noise more than 6 dB over it, or a window 20 dB under it.
+  the read sizes: the monitor ramps in over 5 ms and out over 10 ms to exact silence, and the analog AGC learns
+  nothing while the gate is closed (and undoes what up to the last 240 ms before the close taught it). The floor
+  follows the noise down quickly and up at 1 dB a second, and is learned again after 5 s of noise more than 6 dB over
+  it, or a window 20 dB under it.
 - Per channel. Floors are kept for each frequency, tuner gain (an Airspy's gain settings), tuner AGC state, bias tee,
   device and channel rate for 30 minutes of received time, digital and fixed-level time included, so a scan coming
   back to a channel picks its floor up again; a channel within 5 MHz seeds a new channel's floor until three noise
@@ -2082,14 +2118,15 @@ setting, shown apart from what is received, and it is off by default: then the o
     type never decodes but whose voice frames do at the other polarity (a call). Either takes the other polarity for
     the session, with a notice, as `-xr` or the menu toggle would; `-xr` only sets where it starts.
 - Disable DMR/dPMR/NXDN/M17 input filtering: `-l`
-- Filter bitmap, analog and digital (advanced): `-v <n>`, default `0x1`. Decimal or `0x` hex, `0`-`0xF` (a leading zero is
-  still decimal); a sign, `0b`, extra text or a bit above `0x8` is refused. `0x1` the analog monitor's voice band-pass: 300-3400 Hz,
-  which takes every CTCSS tone at least 40 dB down on FM, and a DCS signal about 32 dB (a 200 Hz high-pass on AM); `0x2` a 960 Hz
-  low-pass and `0x4` a 960 Hz high-pass on the analog monitor; `0x8` the digital voice high-pass (off by default): a 2nd-order
-  Butterworth at 300 Hz (-3 dB at 300 Hz, about -19 dB at 100 Hz, within 0.05 dB of unity from 1 kHz up), run on each
-  slot's decoded frames before the gain, so every output that takes digital voice gets it, in both output formats;
-  each slot keeps its own filter state, which starts over at a new call or protocol. `-v 0` plays the demodulator's
-  audio unfiltered.
+- Filter bitmap, analog and digital (advanced): `-v <n>`, default `0x1`. Decimal or `0x` hex, `0`-`0xF` (a leading
+  zero is still decimal); a sign, `0b`, extra text or a bit above `0x8` is refused. `0x1` the analog monitor's voice
+  band-pass: 300-3400 Hz, which takes every CTCSS tone at least 40 dB down on FM, and a DCS signal about 32 dB (a
+  200 Hz high-pass on AM); `0x2` a 960 Hz low-pass and `0x4` a 960 Hz high-pass on the analog monitor; `0x8` the
+  digital voice high-pass (off by default since issue #518; `-v 0x9` turns it back on beside the band-pass): a
+  2nd-order Butterworth at 300 Hz (-3 dB at 300 Hz, about -19 dB at 100 Hz, within 0.05 dB of unity from 1 kHz up),
+  run on each slot's decoded frames before the gain, so every output that takes digital voice gets it, in both output
+  formats; each slot keeps its own filter state, which starts over at a new transmission (not after a fade inside one)
+  or protocol. `-v 0` plays the demodulator's audio unfiltered, and the analog AGC then hears it unfiltered too.
 - Modulation optimizations: `-ma` (auto), `-mc` (C4FM), `-mg` (GFSK), `-mq` (QPSK), `-m2` (P25p2 QPSK 6000 sps)
   - `-mc`, `-mg` and `-mq` lock the demodulator, and the lock holds on either side of a `-f` preset: `-mq -f1` and
     `-f1 -mq` both run P25 Phase 1 on the CQPSK chain. A preset sets its own modulation only when no lock is in force.

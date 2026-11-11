@@ -2219,11 +2219,12 @@ suite runs under this compiler.
   spellings there.
 - State extension slots (`<dsd-neo/core/state_ext.h>`): engine owns 0, 1, 3 and 7; core 2, 4, 5 and 8, and 13 (taken
   from the io range): `DSD_STATE_EXT_CORE_VOICE_LEVEL`, the digital voice chain's per-slot speech AGC and the reception
-  it runs for, and the DMR superframe mixer's one-channel limiter (issue #518); runtime 6; DSP 9, 10 and 11 (taken from the core range as runtime took 6 from the
-  engine's): 9 is `DSD_STATE_EXT_DSP_ANALOG_RX`, the analog receive working state, 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`,
-  the analog monitor's audio chains, and 11 `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink
-  rate; app-control owns 16, from the ui range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still
-  waits on its tune (issue #644). `CORE_STATE_EXT` pins these five.
+  it runs for, and the DMR superframe mixer's one-channel limiter (issue #518); runtime 6; DSP 9, 10 and 11 (taken
+  from the core range as runtime took 6 from the engine's): 9 is `DSD_STATE_EXT_DSP_ANALOG_RX`, the analog receive
+  working state, 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, the analog monitor's audio chains, and 11
+  `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate; app-control owns 16, from the ui
+  range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still waits on its tune (issue #644).
+  `CORE_STATE_EXT` pins these five.
 - API note: `dsd_state::analog_rx` (`dsd_analog_rx_publication` in `<dsd-neo/core/state.h>`, issues #522 and #523) is
   the received-tone publication every frontend reads: int-only (`carrier_open`, `tone_kind`, `tone_state`,
   `ctcss_tenths_hz`, `ctcss_off_value` (1 while the locked CTCSS tone rests on transmitter tone error alone, issue #643:
@@ -2820,7 +2821,8 @@ suite runs under this compiler.
   call site does the same. Silence from `mbe_synthesizeSilencef()` is zero and needs none.
 - Invariant (digital voice chain, `<dsd-neo/core/voice_chain.h>`, issue #653): every decoded 8 kHz voice frame goes
   through its slot's chain exactly once, in place, before anything reads it: the digital high-pass (`use_hpf_d`, `-v
-  0x8`; a 2nd-order Butterworth at 300 Hz, unity in the voice band, `dsd_voice_hpf_*()` in `dsd_misc.c`), then the
+  0x8`, off by default since issue #518 D1; a 2nd-order Butterworth at 300 Hz, unity in the voice band,
+  `dsd_voice_hpf_*()` in `dsd_misc.c`), then the
   slot's speech level (issue #518, `src/core/audio/voice_level.c`: the slot's `dsd_speech_agc` at 8 kHz, start gain 0
   dB, target -24 dBFS, ceiling -1 dBFS; a fixed `-g` multiplier `audio_gain`/`audio_gainR` through its limiter, unity
   below 0 with no AGC at all), then saturation to the int16 range (`dsd_voice_chain_run()` in `dsd_audio.c`). It runs
@@ -2844,21 +2846,21 @@ suite runs under this compiler.
   decoded back) passes `DSD_VOICE_MEDIA_TX_MONITOR` (issue #518 B17): its frames skip the slot's AGC, its tracker and
   `-g`, and play at unity through a fixed-gain speech AGC of their own in the same extension (`tx_monitor`, the
   -1 dBFS limiter only), so the monitor plays the level the encoder sends and leaves the receive slot as it was; the
-  high-pass still applies. The speech AGC learns only from frames `dsd_voice_frame_may_learn()` takes (B3: no ciphertext, no
-  repeat, mute noise, comfort noise, silence, failed decode or tone frame teaches it, and a muted but decodable,
-  admitted frame does, so recordings do not depend on output toggles); a tone frame plays at no more than the start
-  gain (D12); an undecodable frame only stops it learning, and the slot's first decodable frame after one resets its
-  limiter and pitch history; NULL counts as decodable, never as speech. Tests: `CORE_VOICE_CHAIN` (the helpers),
+  high-pass still applies. The speech AGC learns only from frames `dsd_voice_frame_may_learn()` takes (B3: no
+  ciphertext, no repeat, mute noise, comfort noise, silence, failed decode or tone frame teaches it, and a muted but
+  decodable, admitted frame does, so recordings do not depend on output toggles); a tone frame plays at no more than the
+  start gain (D12); an undecodable frame only stops it learning, and the slot's first decodable frame after one resets
+  its limiter and pitch history; NULL counts as decodable, never as speech. Tests: `CORE_VOICE_CHAIN` (the helpers),
   `CORE_MBE_TRANSFORM_CONTEXT` (real decodes per owner), `CORE_MBE_FILE_IO` (files, JSON), `YSF_DCH_DECODE`,
   `M17_STATE_DISPATCH`, `TETRA_VOICE_PIPELINE`, `CORE_VOICE_LEVEL` (`test_tx_monitor_plays_at_unity`),
-  `M17_ENCODER_CODEC2`. Consumers take the chained frame
-  as it is: the per-call WAV writers and the shared short staging (`dsd_voice_stage_short_left/right()`: `s_l`/`s_r`,
-  the output ring and the 48 kHz upsample). No mixer filters or gains. The same staged samples feed every mixer in
-  both formats, and float serialization happens only at the sink. The per-call and static WAVs therefore agree
-  across output formats. Each slot keeps its own filter state (`dsd_state::voice_hpf[2]`), cleared
-  when the slot's frames move to a new transmission (`dsd_call_snapshot_transmission()` of the active call, one nonzero
-  value to another: a fade the call state heals keeps it, B18) or protocol family (the dispatched synctype,
-  `frame_dispatch_synctype`, so a borrowed decoder does not count), while the high-pass is off, at each MBE playback
+  `M17_ENCODER_CODEC2`. Consumers take the chained frame as it is: the per-call WAV writers and the shared short staging
+  (`dsd_voice_stage_short_left/right()`: `s_l`/`s_r`, the output ring and the 48 kHz upsample). No mixer filters or
+  gains. The same staged samples feed every mixer in both formats, and float serialization happens only at the sink. The
+  per-call and static WAVs therefore agree across output formats. Each slot keeps its own filter state
+  (`dsd_state::voice_hpf[2]`), cleared when the slot's frames move to a new transmission
+  (`dsd_call_snapshot_transmission()` of the active call, one nonzero value to another: a fade the call state heals
+  keeps it, B18) or protocol family (the dispatched synctype, `frame_dispatch_synctype`, so a borrowed decoder does not
+  count), while the high-pass is off, at each MBE playback
   file, at the carrier boundary and in the no-carrier pass's guarded playout drain, in `dsd_mbe_purge_slot_audio()` and
   in `init_audio_filters()` (startup, rate change, input switch). These resets forget the reception too, so a call
   learned partway through the frames after one does not restart the filter. Each slot's speech AGC
@@ -6493,8 +6495,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `test_encoder_rtl_input_reaches_pcm_scale`, `test_stream_encoder_mic_holds_while_unkeyed`,
   `test_stream_encoder_mic_keeps_gain_across_key_ups`, `test_stream_encoder_mic_starts_over_at_encoder_start`,
   `test_stream_encoder_vox_keys_on_the_same_reads`),
-  `M17_ENCODER_CODEC2`, `DSP_ANALOG_VOICE` (`test_agc_held`), `EDACS_GRANT_TUNE_MATRIX` (`rtl-unclipped`), the `DECODE_IQ_ANALOG_*`
-  level, speech-level (P.56), noise and fixed-gain cases.
+  `M17_ENCODER_CODEC2`, `DSP_ANALOG_VOICE` (`test_agc_held`), `EDACS_GRANT_TUNE_MATRIX` (`rtl-unclipped`), the
+  `DECODE_IQ_ANALOG_*` level, speech-level (P.56), noise and fixed-gain cases.
 - The speech level AGC is `src/dsp/speech_agc.c` (`<dsd-neo/dsp/speech_agc.h>`), one module for digital and analog
   voice that aims every talker at one active speech level (P.56 -24 dBFS): the digital voice chain runs one per slot
   (`src/core/audio/voice_level.c`) and the analog audio chain one per chain (`src/dsp/analog_audio.c`). Pure and
@@ -6505,7 +6507,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   in a row commit; a run whose last 12 frames hold one level and pitch is a steady tone and lifts the floor instead.
   Committed frames feed a power-domain level estimate, and each committing frame steps the gain toward the target
   (1 dB for the first 20 steps, then +0.12 / -0.20 dB), within -12/+15 dB of the start gain. A separate attenuator
-  eases long non-speech (open-squelch hiss) down to -24 dB without touching the estimate. The gain ramps over the
+  eases long non-speech (open-squelch hiss) down at 6 dB/s, to -24 dB at most, while the output stays over -36 dBFS
+  and no frame has committed in the last second (so from a reception's first frame until its first commit), and lets
+  go within a frame on a frame passing both cues or on quieting; it never touches the estimate. The gain ramps over the
   next frame (no added latency), then a peak limiter holds every sample at -1 dBFS. The coloured-noise veto
   (`dsd_speech_agc_set_noise_veto()`, off after init, kept by a reset) also asks a frame that passes the pitch cue for a
   strict interior peak of at least 0.4 in a pre-emphasised copy (x[n] - 0.9 x[n-1]), taken from the same lag products
