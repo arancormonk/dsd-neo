@@ -2,7 +2,6 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
-import "Util.js" as Util
 
 // Listen's saved systems, above their cards: Search and Sort, then the lines
 // a search or an order puts there (how many a search shows, Nearest's
@@ -281,8 +280,9 @@ Column {
         : hasFix ? qsTr("Using your location from %1").arg((heardTick, fixAgeText(prefsStore.lastFixAt, savedSystems.realtimeNowMs())))
         : qsTr("Nearest needs your location")
 
-    // Update from RadioReference (a card's menu and the place notice): signed
-    // out, the account screen opens instead. Its progress and, once done, its
+    // Update from RadioReference (a card's menu and the place notice, which
+    // updates only the systems it counts): signed out, the account screen
+    // opens instead. Its progress and, once done, its
     // summary show here until Systems is left. The keyboard follows the
     // control that replaces the one pressed: Update → Cancel → Update (or the
     // search field).
@@ -294,11 +294,8 @@ Column {
         }
         rrSummaryShown = true;
     }
-    function updateAllFromRadioReference() {
-        var uids = [];
-        for (var row = 0; row < savedSystems.count; ++row)
-            uids.push(savedSystems.get(row).uid);
-        updateFromRadioReference(uids);
+    function updateUnplacedFromRadioReference() {
+        updateFromRadioReference(rrPlaces.unplacedUids());
     }
     function announceRrSummary() {
         if (rrSummaryShown && current && rrPlaces.summaryText.length > 0)
@@ -423,7 +420,7 @@ Column {
             && !rrPlaces.updating
         text: rrPlaces.unplacedText
         actionText: qsTr("Update from RadioReference")
-        onAction: controls.updateAllFromRadioReference()
+        onAction: controls.updateUnplacedFromRadioReference()
     }
 
     // An Update from RadioReference started here: how far it is, with Cancel,

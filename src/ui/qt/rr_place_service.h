@@ -25,7 +25,6 @@
 #include <QHash>
 #include <QList>
 #include <QObject>
-#include <QPair>
 #include <QPointer>
 #include <QSet>
 #include <QString>
@@ -45,12 +44,12 @@ class RrPlaceService : public QObject {
     Q_OBJECT
     /* An Update from RadioReference is running; progressText says how far. */
     Q_PROPERTY(bool updating READ updating NOTIFY updatingChanged)
-    /* "Updating %1 of %2" (saved systems) while updating, else empty. */
+    /* "Updating %1 of %2" (saved systems, counted as Listen's cards) while updating, else empty. */
     Q_PROPERTY(QString progressText READ progressText NOTIFY progressTextChanged)
     /* The last update's outcome, "Updated %1 systems." with " %1 could not be reached." when any could not. */
     Q_PROPERTY(QString summaryText READ summaryText NOTIFY summaryTextChanged)
-    /* Saved systems an update could place that show no place yet (no named state): a RadioReference site, or a row
-     * whose place has ids. */
+    /* Saved systems an update could place that show no place yet, counted as Listen's cards (a site group, or a row in
+     * none): those with a row that is a RadioReference site, or has place ids, and has no named state. */
     Q_PROPERTY(int unplacedCount READ unplacedCount NOTIFY unplacedCountChanged)
     /* The notice for unplacedCount: "1 saved system has no place yet", "%1 saved systems have no place yet", or empty
      * at 0. */
@@ -93,6 +92,9 @@ class RrPlaceService : public QObject {
      *         and the running one's signal is that answer.
      */
     Q_INVOKABLE bool updateFromRadioReference(const QStringList& uids);
+
+    /** @brief The uids of every row of the cards unplacedCount counts, in row order: what the place notice updates. */
+    Q_INVOKABLE QStringList unplacedUids() const;
 
     /** @brief Stop the running update and its own requests (state lookups a load asked for carry on); what was saved
      *         stays. No-op when no update runs. */
@@ -140,8 +142,9 @@ class RrPlaceService : public QObject {
     void progressTextChanged();
     void summaryTextChanged();
     void unplacedCountChanged();
-    /** @brief An update ended: @p updated saved systems refreshed, @p unreachable not (RadioReference unreachable, the
-     *         site no longer listed, or a save that failed). */
+    /** @brief An update ended, counted as Listen's cards: @p updated those it refreshed any row of, @p unreachable those
+     *         it refreshed none of because RadioReference did not answer, no longer lists the site, or the save
+     *         failed. */
     void updateFinished(int updated, int unreachable);
 
   private:
@@ -173,16 +176,23 @@ class RrPlaceService : public QObject {
         QHash<int, QStringList> siteUids; /* rows per system */
         QStringList placeUids;            /* rows with place ids and no site */
         QStringList uids;                 /* every row above, in the order asked */
+        QHash<QString, QString> cardOf;   /* each row's card (card_key()) as the update began */
         int next = 0;                     /* index into sids of the system being read */
         bool detailsRead = false;         /* its getTrsDetails answered; getTrsSites is next */
         QVariantList stateIds;            /* that system's Trs.sState, once its details arrived */
         bool namesPhase = false;
         QSet<int> awaitedStates;
-        QSet<int> namedStates; /* states the names step applied (from the cache or an answer) */
-        int total = 0;
-        int done = 0;
-        int updated = 0;
-        int unreachable = 0;
+        QSet<int> namedStates;     /* states the names step applied (from the cache or an answer) */
+        int total = 0;             /* cards */
+        QSet<QString> doneCards;   /* cards whose system has been read */
+        QSet<QString> updated;     /* cards any row of which was refreshed */
+        QSet<QString> unreachable; /* cards with a row that could not be */
+    };
+
+    /** @brief One system's rows after its read: those refreshed, and those that could not be. */
+    struct RowsOutcome {
+        QStringList updated;
+        QStringList failed;
     };
 
     /** @brief C completion callback. RUNS ON THE CLIENT'S WORKER THREAD. */
@@ -199,8 +209,8 @@ class RrPlaceService : public QObject {
     /** @brief The cached names of @p stid into the saved rows; a failed save is kept for retryUnapplied(). */
     void applyCachedState(int stid);
     void retryUnapplied();
-    /** @brief Refresh the update's rows of system @p sid from its getTrsSites reply @p sites: {updated, not}. */
-    QPair<int, int> refreshSystemRows(int sid, const QList<SiteRecord>& sites);
+    /** @brief Refresh the update's rows of system @p sid from its getTrsSites reply @p sites. */
+    RowsOutcome refreshSystemRows(int sid, const QList<SiteRecord>& sites);
     /** @brief After the sites: look up the states any of the update's places still lacks names for. */
     void beginNamesPhase();
     /** @brief A state lookup ended (answered or not); the update ends with the last one it waits for. */
@@ -213,6 +223,8 @@ class RrPlaceService : public QObject {
     void stopUpdateRequests();
     void setSummary(int updated, int unreachable);
     void onCredentialsChanged();
+    /** @brief The cards (card_key()) with a row an update could place that shows no place. */
+    QSet<QString> unplacedCards() const;
     void recountUnplaced();
     void setProgress();
     bool signedIn() const;

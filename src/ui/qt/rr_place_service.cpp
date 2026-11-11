@@ -8,7 +8,6 @@
 #include <QAbstractItemModel>
 #include <QMetaObject>
 #include <QModelIndex>
-#include <QPair>
 #include <QVariant>
 #include <Qt>
 
@@ -39,6 +38,13 @@ QString
 c_text(const char* text, size_t capacity) {
     const char* end = std::find(text, text + capacity, '\0');
     return QString::fromUtf8(text, static_cast<qsizetype>(end - text));
+}
+
+/** @brief Row @p row's card on Listen: its site group (site_group_key()), or the row itself (its uid) in none. */
+QString
+card_key(const SavedSystemsModel& systems, int row) {
+    const QString group = systems.groupKey(row);
+    return group.isEmpty() ? systems.data(systems.index(row), SavedSystemsModel::UidRole).toString() : group;
 }
 
 /** @brief Whether @p place shows a place: a state with a name. */
@@ -254,7 +260,8 @@ RrPlaceService::RrPlaceService(RadioReferenceModel* rr, SavedSystemsModel* syste
                     /* Only what decides the count: an empty list means every role. */
                     const bool counts = roles.isEmpty() || roles.contains(SavedSystemsModel::PlaceRole)
                                         || roles.contains(SavedSystemsModel::RrSidRole)
-                                        || roles.contains(SavedSystemsModel::RrSiteIdRole);
+                                        || roles.contains(SavedSystemsModel::RrSiteIdRole)
+                                        || roles.contains(SavedSystemsModel::FilePathRole);
                     if (counts) {
                         recountUnplaced();
                     }
@@ -544,8 +551,9 @@ RrPlaceService::updateFromRadioReference(const QStringList& uids) {
         } else {
             continue;
         }
-        update.total++;
+        update.cardOf.insert(uid, card_key(*m_systems, row));
     }
+    update.total = static_cast<int>(QSet<QString>(update.cardOf.cbegin(), update.cardOf.cend()).size());
     if (update.total == 0) {
         /* Nothing to update: answered at once, without an update that starts and stops. */
         setSummary(0, 0);
@@ -578,27 +586,33 @@ void
 RrPlaceService::applySitesReply(int sid, bool ok, const QList<SiteRecord>& sites) {
     const QStringList uids = m_update.siteUids.value(sid);
     const quint64 serial = m_updateSerial;
-    const QPair<int, int> counted = ok ? refreshSystemRows(sid, sites) : qMakePair(0, static_cast<int>(uids.size()));
+    const RowsOutcome outcome = ok ? refreshSystemRows(sid, sites) : RowsOutcome{QStringList(), uids};
     if (serial != m_updateSerial) {
         /* A handler of the saved rows' signals ended this update (or began another) while they were saved. */
         return;
     }
-    m_update.updated += counted.first;
-    m_update.unreachable += counted.second;
-    m_update.done += static_cast<int>(uids.size());
+    for (const QString& uid : outcome.updated) {
+        m_update.updated.insert(m_update.cardOf.value(uid));
+    }
+    for (const QString& uid : outcome.failed) {
+        m_update.unreachable.insert(m_update.cardOf.value(uid));
+    }
+    for (const QString& uid : uids) {
+        m_update.doneCards.insert(m_update.cardOf.value(uid));
+    }
     m_update.next++;
     m_update.detailsRead = false;
     m_update.stateIds.clear();
     setProgress();
 }
 
-QPair<int, int>
+RrPlaceService::RowsOutcome
 RrPlaceService::refreshSystemRows(int sid, const QList<SiteRecord>& sites) {
     if (m_systems.isNull()) {
-        return qMakePair(0, static_cast<int>(m_update.siteUids.value(sid).size()));
+        return RowsOutcome{QStringList(), m_update.siteUids.value(sid)};
     }
     QList<SavedSystemsModel::SiteRefresh> refreshes;
-    int unlisted = 0;
+    RowsOutcome outcome;
     for (const QString& uid : m_update.siteUids.value(sid)) {
         const QVariantMap stored = m_systems->getByUid(uid);
         /* Gone, or edited onto another system since the update began: no longer this system's to refresh. */
@@ -610,7 +624,7 @@ RrPlaceService::refreshSystemRows(int sid, const QList<SiteRecord>& sites) {
                                        [siteId](const SiteRecord& record) { return record.siteId == siteId; });
         if (site == sites.cend()) {
             /* RadioReference no longer lists it: left as it is, and counted. */
-            unlisted++;
+            outcome.failed.append(uid);
             continue;
         }
         SavedSystemsModel::SiteRefresh refresh;
@@ -625,9 +639,12 @@ RrPlaceService::refreshSystemRows(int sid, const QList<SiteRecord>& sites) {
             kPlace, keep_known_names(rr_site_place({site->countyId}, m_update.stateIds), stored.value(kPlace).toMap()));
         refreshes.append(refresh);
     }
-    const int applied = refreshes.isEmpty() ? 0 : m_systems->refreshSites(refreshes);
-    /* A failed save counts its rows as not updated. */
-    return applied < 0 ? qMakePair(0, unlisted + static_cast<int>(refreshes.size())) : qMakePair(applied, unlisted);
+    /* Each still the site it was read for, so all of them are applied, or none when the save fails. */
+    const bool saved = refreshes.isEmpty() || m_systems->refreshSites(refreshes) >= 0;
+    for (const SavedSystemsModel::SiteRefresh& refresh : refreshes) {
+        (saved ? outcome.updated : outcome.failed).append(refresh.uid);
+    }
+    return outcome;
 }
 
 void
@@ -684,14 +701,15 @@ RrPlaceService::finishUpdate(bool namesDone) {
             const bool named = std::any_of(stids.cbegin(), stids.cend(),
                                            [this](int stid) { return m_update.namedStates.contains(stid); });
             if (failed) {
-                m_update.unreachable++;
+                m_update.unreachable.insert(m_update.cardOf.value(uid));
             } else if (named) {
-                m_update.updated++;
+                m_update.updated.insert(m_update.cardOf.value(uid));
             }
         }
     }
-    const int updated = m_update.updated;
-    const int unreachable = m_update.unreachable;
+    /* A card counts once: updated when any of its rows was, else unreachable when one of them could not be. */
+    const int updated = static_cast<int>(m_update.updated.size());
+    const int unreachable = static_cast<int>((m_update.unreachable - m_update.updated).size());
     m_update = Update();
     m_updateSerial++;
     m_updating = false;
@@ -723,29 +741,50 @@ RrPlaceService::unplacedText() const {
 
 void
 RrPlaceService::setProgress() {
-    const QString text =
-        m_updating ? tr("Updating %1 of %2").arg(qMin(m_update.done + 1, qMax(m_update.total, 1))).arg(m_update.total)
-                   : QString();
+    const QString text = m_updating
+                             ? tr("Updating %1 of %2")
+                                   .arg(qMin(static_cast<int>(m_update.doneCards.size()) + 1, qMax(m_update.total, 1)))
+                                   .arg(m_update.total)
+                             : QString();
     if (text != m_progressText) {
         m_progressText = text;
         Q_EMIT progressTextChanged();
     }
 }
 
-void
-RrPlaceService::recountUnplaced() {
-    int count = 0;
-    if (!m_systems.isNull()) {
-        for (int row = 0; row < m_systems->rowCount(); row++) {
-            const QModelIndex index = m_systems->index(row);
-            const QVariantMap place = m_systems->data(index, SavedSystemsModel::PlaceRole).toMap();
-            const bool site = site_grouped(m_systems->data(index, SavedSystemsModel::RrSidRole).toInt(),
-                                           m_systems->data(index, SavedSystemsModel::RrSiteIdRole).toInt());
-            if ((site || !place.isEmpty()) && !place_named(place)) {
-                count++;
-            }
+QSet<QString>
+RrPlaceService::unplacedCards() const {
+    QSet<QString> cards;
+    if (m_systems.isNull()) {
+        return cards;
+    }
+    for (int row = 0; row < m_systems->rowCount(); row++) {
+        const QModelIndex index = m_systems->index(row);
+        const QVariantMap place = m_systems->data(index, SavedSystemsModel::PlaceRole).toMap();
+        const bool site = site_grouped(m_systems->data(index, SavedSystemsModel::RrSidRole).toInt(),
+                                       m_systems->data(index, SavedSystemsModel::RrSiteIdRole).toInt());
+        if ((site || !place.isEmpty()) && !place_named(place)) {
+            cards.insert(card_key(*m_systems, row));
         }
     }
+    return cards;
+}
+
+QStringList
+RrPlaceService::unplacedUids() const {
+    const QSet<QString> cards = unplacedCards();
+    QStringList uids;
+    for (int row = 0; !cards.isEmpty() && row < m_systems->rowCount(); row++) {
+        if (cards.contains(card_key(*m_systems, row))) {
+            uids.append(m_systems->data(m_systems->index(row), SavedSystemsModel::UidRole).toString());
+        }
+    }
+    return uids;
+}
+
+void
+RrPlaceService::recountUnplaced() {
+    const int count = static_cast<int>(unplacedCards().size());
     if (count != m_unplacedCount) {
         m_unplacedCount = count;
         Q_EMIT unplacedCountChanged();

@@ -2579,8 +2579,8 @@ button, "checked" on the current one, because Qt's Android bridge has no tab rol
 Once you have a saved system, **Systems** shows a **Search saved systems** box and a **Sort** button above the
 cards. Search matches a system's name, its site names, its state and county, its protocol (P25, DMR and so on) and
 its frequencies. Type several words and a system must match all of them; type a frequency such as `851.0125`,
-`851` or `460000 kHz` to find the system that uses it. A line under the box says "%1 of %2 systems" while a
-search is on, and **Clear search** empties it. When nothing matches, Listen says so and offers **Clear search**.
+`851` or `460000 kHz` to find the system that uses it. A line under the box says how many it shows, such as
+"3 of 40 systems", while a search is on, and **Clear search** empties it. When nothing matches, Listen says so and offers **Clear search**.
 TalkBack reads the result count once after you stop typing.
 
 **Sort** offers:
@@ -2601,10 +2601,11 @@ list, only how it is shown. A system saved for two receivers appears as two card
 sites is one card with a site button. With TalkBack, a sort or search reorders the list in one step, so swiping
 follows what is on the screen.
 
-Place and Nearest need to know where each system is. A system you imported from RadioReference carries its
-places; for the rest, **Update from RadioReference** (offered under the sort button in Place or Nearest order when
-systems have no place yet, and in a card's **More** menu) fetches them for your RadioReference-linked
-systems. It needs your RadioReference sign-in and only changes names, positions and places. See [RadioReference
+Place and Nearest need to know where each system is. A system you imported from RadioReference carries its places;
+for the rest, **Update from RadioReference** (offered under the sort button in Place or Nearest order when systems
+have no place yet, as "12 saved systems have no place yet", and in a card's **More** menu) fetches them for your
+RadioReference-linked systems. The line's update covers only the systems it counts. It needs your RadioReference
+sign-in and only changes names, positions and places. See [RadioReference
 import](../docs/radioreference-import.md#places-and-update-from-radioreference).
 
 ### Pinned shortcuts

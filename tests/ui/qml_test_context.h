@@ -1052,6 +1052,12 @@ class RrPlacesFake : public QObject {
         resolveRequests.append(QVariant(stids));
     }
 
+    /** @brief As the service: the rows of the cards unplacedCount counts; here, what the case scripted. */
+    Q_INVOKABLE QStringList
+    unplacedUids() const {
+        return unplacedUidList;
+    }
+
     /** @brief As the service: false while signed out; otherwise an update runs until finish(). */
     Q_INVOKABLE bool
     updateFromRadioReference(const QStringList& uids) {
@@ -1108,6 +1114,7 @@ class RrPlacesFake : public QObject {
     }
 
     bool signedIn = true;
+    QStringList unplacedUidList;
     QStringList updateUids;
     QVariantList resolveRequests;
     int cancels = 0;
@@ -5670,6 +5677,7 @@ class Setup : public QObject {
         m_rr_places->cancelUpdate();
         m_rr_places->signedIn = true;
         m_rr_places->setUnplacedCount(0);
+        m_rr_places->unplacedUidList.clear();
         m_rr_places->updateUids.clear();
         m_rr_places->resolveRequests.clear();
         m_rr_places->cancels = 0;
@@ -5686,6 +5694,12 @@ class Setup : public QObject {
     Q_INVOKABLE void
     setRrPlacesUnplaced(int count) {
         m_rr_places->setUnplacedCount(count);
+    }
+
+    /** @brief The saved systems' uids the `rrPlaces` fake answers unplacedUids() with. */
+    Q_INVOKABLE void
+    setRrPlacesUnplacedUids(const QStringList& uids) {
+        m_rr_places->unplacedUidList = uids;
     }
 
     /** @brief The uids the running (or last) Update from RadioReference was asked for. */

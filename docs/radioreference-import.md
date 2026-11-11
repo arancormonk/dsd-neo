@@ -224,11 +224,13 @@ under a **No place** heading until they arrive.
 
 **Update from RadioReference** brings an existing saved system up to date. It is in the card's **More** menu
 for a system with RadioReference sites, in the site chooser when a site has no coordinates, and under Listen's
-**Place** and **Nearest** order as "%1 saved systems have no place yet". For each saved RadioReference site it
-re-reads the site's name, position and place, and it fills in missing place names for any saved system. It
-changes nothing else: frequencies, files, keys, avoids and the order you added systems in stay as they are, and
-a name that was made from the site (the "System — Site" form) follows a renamed site. A site RadioReference no
-longer lists, or a system it did not answer for, is counted as "could not be reached" and left alone. It needs
+**Place** and **Nearest** order as a line such as "12 saved systems have no place yet", where it updates only
+those systems. For each saved RadioReference site it re-reads the site's name, position and place, and it fills in
+missing place names. It changes nothing else: frequencies, files, keys, avoids and the order you added systems in
+stay as they are, and a name that was made from the site (the "System — Site" form) follows a renamed site. It
+counts systems as Listen shows them: a system with several sites is one, so updating a 35-site system reads
+"Updating 1 of 1" and "Updated 1 system." A site RadioReference no longer lists is left alone; a system it did not
+answer for, or none of whose sites it could update, is counted as "could not be reached". It needs
 your RadioReference account: signed out, it opens the account screen instead. **Cancel** stops it and keeps what
 it had saved. A site you edited (frequency, decode flag or a CSV file) no longer links to RadioReference, so the
 update skips it.

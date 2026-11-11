@@ -468,11 +468,13 @@ Item {
             compare(accountOpened.count, 1, "signed out: the account screen");
             testContext.setRrPlacesSignedIn(true);
 
+            // R23: the systems the notice counts, not every saved one.
+            testContext.setRrPlacesUnplacedUids([savedSystems.get(0).uid]);
             tap(item("systemsPlaceUpdate"));
-            compare(testContext.rrPlacesUpdateUids().length, 2, "every saved system");
+            compare(testContext.rrPlacesUpdateUids(), [savedSystems.get(0).uid], "only the systems it counts");
             verify(!notice.visible, "the notice gives way to the progress");
             verify(item("systemsRrStatus").visible);
-            compare(item("systemsRrProgress").text, "Updating 1 of 2");
+            compare(item("systemsRrProgress").text, "Updating 1 of 1");
             tap(item("systemsRrCancel"));
             compare(testContext.rrPlacesCancels(), 1);
 

@@ -386,6 +386,15 @@ site_row(const QString& name, int sid, int siteId, const QString& siteName, cons
     return row;
 }
 
+/** @brief @p row on an rtl_tcp receiver at @p host: another receiver, so another site group (another card). */
+QVariantMap
+on_receiver(QVariantMap row, const QString& host) {
+    row.insert("sourceType", "rtltcp");
+    row.insert("host", host);
+    row.insert("port", 1234);
+    return row;
+}
+
 QVariantMap
 county_place(int ctid, const QVariantList& candidates) {
     return {{"states", QVariantList()},
@@ -618,7 +627,8 @@ test_sign_out_clears_the_cache() {
 /* ------------------------------------------------------------------------- */
 
 /* An update refreshes each saved site still on the site it was read for: name (a generated system name follows it),
- * position and place ids, keeping the names it already had; then names whatever is still unnamed. */
+ * position and place ids, keeping the names it already had; then names whatever is still unnamed. Linn is saved for
+ * another receiver, so the two sites are two cards of one system, read once. */
 void
 test_update_refreshes_sites() {
     clear_store();
@@ -629,7 +639,7 @@ test_update_refreshes_sites() {
     }
     h.systems.add(
         site_row("SARA — Johnson Co Simulcast", 6673, 16863, "Johnson Co Simulcast", county_place(999, {19})));
-    h.systems.add(site_row("My Linn", 6673, 23581, "Old Linn"));
+    h.systems.add(on_receiver(site_row("My Linn", 6673, 23581, "Old Linn"), "10.0.0.2"));
     Finished finished;
     record_finished(h.service, &finished);
     QStringList progress;
@@ -675,14 +685,16 @@ test_update_refreshes_sites() {
 }
 
 /* A row edited onto another system while its system is read is left alone and not counted; a site RadioReference no
- * longer lists is left alone and counted. */
+ * longer lists is left alone, and its card (here alone on another receiver) counted as not reached. A card with a site
+ * refreshed counts as updated even when another of its sites is no longer listed. */
 void
 test_update_skips_moved_and_counts_unlisted() {
     clear_store();
     Harness h;
     h.systems.add(site_row("SARA — Johnson Co Simulcast", 6673, 16863, "Johnson Co Simulcast"));
     h.systems.add(site_row("SARA — Linn Co Simulcast", 6673, 23581, "Linn Co Simulcast"));
-    h.systems.add(site_row("SARA — Gone", 6673, 99999, "Gone"));
+    h.systems.add(on_receiver(site_row("SARA — Gone", 6673, 99999, "Gone"), "10.0.0.2"));
+    h.systems.add(site_row("SARA — Gone too", 6673, 99998, "Gone too"));
     {
         QMutexLocker lock(&h.fake.mutex);
         h.fake.holdMethod = QStringLiteral("getTrsSites");
@@ -691,7 +703,7 @@ test_update_skips_moved_and_counts_unlisted() {
     Finished finished;
     record_finished(h.service, &finished);
     QStringList uids;
-    for (int row = 0; row < 3; row++) {
+    for (int row = 0; row < 4; row++) {
         uids.append(h.systems.get(row).value("uid").toString());
     }
     expect("moved: started", h.service.updateFromRadioReference(uids));
@@ -703,13 +715,16 @@ test_update_skips_moved_and_counts_unlisted() {
                "Linn Co Simulcast");
     expect_int("moved: and its system", h.systems.get(1).value("rrSid").toInt(), 7777);
     expect_str("moved: the unlisted site is left", h.systems.get(2).value("name").toString(), "SARA — Gone");
+    expect_str("moved: so is the one beside a refreshed site", h.systems.get(3).value("name").toString(),
+               "SARA — Gone too");
     expect_int("moved: finished once", finished.count, 1);
     expect_int("moved: one updated", finished.updated, 1);
     expect_int("moved: the unlisted site counted", finished.unreachable, 1);
     expect_str("moved: one system, singular", h.service.summaryText(), "Updated 1 system. 1 could not be reached.");
 }
 
-/* Partial success: a system RadioReference does not answer is counted per saved system; the others are saved. */
+/* Partial success: a system RadioReference does not answer is counted per card; the others are saved. SARA's five
+ * sites are one card. */
 void
 test_update_partial_success() {
     clear_store();
@@ -737,9 +752,9 @@ test_update_partial_success() {
     expect("partial: started", h.service.updateFromRadioReference(uids));
     settle(h);
     expect_int("partial: finished once", finished.count, 1);
-    expect_int("partial: six updated", finished.updated, 6);
+    expect_int("partial: SARA and Cap+ updated", finished.updated, 2);
     expect_int("partial: one unreachable", finished.unreachable, 1);
-    expect_str("partial: summary", h.service.summaryText(), "Updated 6 systems. 1 could not be reached.");
+    expect_str("partial: summary", h.service.summaryText(), "Updated 2 systems. 1 could not be reached.");
     expect_int("partial: Cap+ placed in Linn County", county_of(place_of(h.systems, 5)).value("ctid").toInt(), 841);
     expect("partial: the unreachable row is unchanged", place_of(h.systems, 6).isEmpty());
     expect_int("partial: one read per system", h.fake.count("getTrsSites:6673"), 1);
@@ -901,6 +916,71 @@ test_unplaced_count() {
     expect_str("unplaced: singular", h.service.unplacedText(), "1 saved system has no place yet");
     h.systems.remove(0);
     expect("unplaced: none, no notice", h.service.unplacedCount() == 0 && h.service.unplacedText().isEmpty());
+}
+
+/* R22: every count is in cards, as Listen shows them. Three sites of one system on one receiver are one card, and the
+ * same system on a second receiver is a second: the notice counts two, and an update of the first card's three sites
+ * reads one system, shows "1 of 1" and updated one. */
+void
+test_counts_are_cards() {
+    clear_store();
+    Harness h;
+    h.systems.add(site_row("SARA — Johnson Co Simulcast", 6673, 16863, "Johnson Co Simulcast"));
+    h.systems.add(site_row("SARA — Linn Co Simulcast", 6673, 23581, "Linn Co Simulcast"));
+    h.systems.add(site_row("SARA — Black Hawk Co Simulcast", 6673, 31563, "Black Hawk Co Simulcast"));
+    h.systems.add(on_receiver(site_row("SARA — Polk Co Simulcast", 6673, 31568, "Polk Co Simulcast"), "10.0.0.2"));
+    h.systems.add({{"name", "Manual"}, {"sourceType", "usb"}, {"freqMhz", "460.0"}});
+    expect_int("cards: two cards have no place", h.service.unplacedCount(), 2);
+    expect_str("cards: the notice counts cards", h.service.unplacedText(), "2 saved systems have no place yet");
+
+    Finished finished;
+    record_finished(h.service, &finished);
+    QStringList progress;
+    QObject::connect(&h.service, &RrPlaceService::progressTextChanged,
+                     [&h, &progress]() { progress.append(h.service.progressText()); });
+    QStringList uids;
+    for (int row = 0; row < 3; row++) {
+        uids.append(h.systems.get(row).value("uid").toString());
+    }
+    expect("cards: started", h.service.updateFromRadioReference(uids));
+    expect_str("cards: progress counts cards", h.service.progressText(), "Updating 1 of 1");
+    settle(h);
+    expect("cards: progress never counted sites", progress.filter("of 3").isEmpty());
+    expect_int("cards: finished once", finished.count, 1);
+    expect_int("cards: one system updated", finished.updated, 1);
+    expect_int("cards: none unreachable", finished.unreachable, 0);
+    expect_str("cards: summary", h.service.summaryText(), "Updated 1 system.");
+    expect_int("cards: the other receiver's card is left", h.service.unplacedCount(), 1);
+    expect_str("cards: singular", h.service.unplacedText(), "1 saved system has no place yet");
+
+    /* Both receivers at once: one system read, two cards. */
+    uids.append(h.systems.get(3).value("uid").toString());
+    expect("cards: both started", h.service.updateFromRadioReference(uids));
+    expect_str("cards: two cards", h.service.progressText(), "Updating 1 of 2");
+    settle(h);
+    expect_int("cards: both updated", finished.updated, 2);
+    expect_str("cards: both in the summary", h.service.summaryText(), "Updated 2 systems.");
+    expect_int("cards: one read for both", h.fake.count("getTrsSites:6673"), 2);
+}
+
+/* R23: the uids of every row of a card the notice counts, in row order: a card with any unplaced row brings all of its
+ * rows; a placed card, and a row an update cannot place, bring none. */
+void
+test_unplaced_uids() {
+    clear_store();
+    Harness h;
+    QVariantMap named = county_place(836, {19});
+    named.insert("states", QVariantList{QVariantMap{{"stid", 19}, {"name", "Iowa"}}});
+    h.systems.add(site_row("SARA — Johnson", 6673, 16863, "Johnson Co Simulcast"));
+    h.systems.add(site_row("Cap+", 12574, 43552, "Cedar Rapids", named));
+    h.systems.add({{"name", "Manual"}, {"sourceType", "usb"}, {"freqMhz", "460.0"}});
+    h.systems.add(site_row("SARA — Linn", 6673, 23581, "Linn Co Simulcast", named));
+    h.systems.add({{"name", "Repeaters"}, {"sourceType", "usb"}, {"place", county_place(836, {19})}});
+    const auto uid = [&h](int row) { return h.systems.get(row).value("uid").toString(); };
+    expect_int("uids: SARA's card and the repeaters", h.service.unplacedCount(), 2);
+    expect("uids: every row of the unplaced cards", h.service.unplacedUids() == (QStringList{uid(0), uid(3), uid(4)}));
+    h.systems.remove(0);
+    expect("uids: a placed card brings none", h.service.unplacedUids() == (QStringList{uid(3)}));
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1157,6 +1237,8 @@ main(int argc, char** argv) {
     test_cancel_from_a_row_signal();
     test_update_place_rows_and_edges();
     test_unplaced_count();
+    test_counts_are_cards();
+    test_unplaced_uids();
     test_failed_lookups_leave_the_import_screen_alone();
     test_cancel_keeps_load_lookups();
     test_load_lookup_is_queued();

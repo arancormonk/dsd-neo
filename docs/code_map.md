@@ -11907,8 +11907,9 @@ Qt Quick frontend (`src/ui/qt`):
   `savedSystemCards.markLocationRequested()` right before a request and `clearLocationRequest()` when it fails, is
   cancelled or answered, so only a fix the user asked for here resets a screen reader's order. In Place or Nearest
   order the place notice shows `rrPlaces.unplacedText` ("%1 saved systems have no place yet") with "Update from
-  RadioReference"; the card menu offers the same for a card with RadioReference sites (`rrUpdate`), and the site
-  chooser's no-coordinates note offers it too. Signed out, `updateFromRadioReference()` returns false and Home (or the
+  RadioReference", which updates only those cards' rows (`rrPlaces.unplacedUids()`); the card menu offers the same for
+  a card with RadioReference sites (`rrUpdate`), all of its rows, and the site chooser's no-coordinates note offers it
+  too, for the group's rows. Signed out, `updateFromRadioReference()` returns false and Home (or the
   chooser) emits `openRadioReferenceAccount`, which `Main.qml` answers by opening the account screen. While it runs the
   update shows `rrPlaces.progressText` ("Updating %1 of %2") with Cancel; its summary ("Updated %1 systems. %1 could
   not be reached.") is announced once and stays until Systems is left. Notice actions use the opt-in `flat` variant of
@@ -11917,8 +11918,10 @@ Qt Quick frontend (`src/ui/qt`):
   focus to the search field, or to Add a system when nothing is saved (and waits while a sheet is open); the
   keyboard also follows Update to Cancel and back. `revealSystemsTop()` scrolls up to the search row after a sort or a
   search that lands, only while Home is visible on Systems. `SiteChooserSheet.qml`'s note reads "No coordinates. Use
-  Update from RadioReference to check for new location data." beside its own button, and the site button's accessible
-  name now includes its site count. `ChoiceSheet.open()` takes an optional fourth `current` argument. Tests:
+  Update from RadioReference to check for new location data." beside its own button; the keyboard on that button
+  follows it to the first site while it is disabled and back to it once it is offered again, whenever the rows'
+  rebuild leaves the keyboard on nothing (`keepKeyboard()`). The site button's accessible name now includes its site
+  count. `ChoiceSheet.open()` takes an optional fourth `current` argument. Tests:
   `UI_QT_QML_CALL_LISTS` (`tst_home_systems_search_sort.qml`, with `tst_home_tabs`, `tst_home_layout_fixes`,
   `tst_home_pinned`, `tst_site_chooser_sheet`, `tst_wizard_sites`, `tst_listen_tabs_flows`), `UI_QT_QML_BACK_MODALS`
   (Back closes the sort sheet), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_scan_churn.qml`, `tst_a11y_text_reach.qml`).
@@ -13539,19 +13542,24 @@ Qt Quick frontend (`src/ui/qt`):
   distinct system of the rows that are sites (`getTrsDetails` for `sState`, then `getTrsSites`) and applies, through
   `SavedSystemsModel::refreshSites()`, the site name, position and place ids to every row still on that system and
   site, keeping the names it already had for unchanged ids; a site RadioReference no longer lists, an unanswered system
-  or a failed save counts as unreachable, a row moved to another system meanwhile counts as neither. Then it looks up
-  the states any of the rows' places still lacks names for (a conventional list with a place and no site counts as
-  unreachable when one of its states failed, updated when the step looked up or applied one of them, else neither). `updating`, `progressText` ("Updating %1 of %2", saved systems), `summaryText`
-  ("Updated 1 system." / "Updated %1 systems.", then " %1 could not be reached."), `unplacedCount` (rows that are a
-  site or have a place and show no named state; recounted on row inserts, removals, resets and a `dataChanged` whose
-  roles are empty or include place or the RadioReference ids) and `unplacedText` ("1 saved system has no place yet" /
-  "%1 saved systems have no place yet", empty at 0) are its properties; `cancelUpdate()` stops only the update's own
+  or a failed save leaves its row not updated, a row moved to another system meanwhile counts as neither. Then it looks
+  up the states any of the rows' places still lacks names for (a conventional list with a place and no site is not
+  updated when one of its states failed, updated when the step looked up or applied one of them, else neither). Every
+  count is in Listen's cards (`card_key()`: the row's site group, or its uid in none, taken as the update begins):
+  `progressText` counts the cards whose system has been read, and a card counts once in the outcome, updated when any
+  of its rows was, else unreachable when one of them was not. `updating`, `progressText` ("Updating %1 of %2"),
+  `summaryText` ("Updated 1 system." / "Updated %1 systems.", then " %1 could not be reached."), `unplacedCount` (cards
+  with a row that is a site or has a place and shows no named state; recounted on row inserts, removals, resets and a
+  `dataChanged` whose roles are empty or include place, the RadioReference ids or the file path) and `unplacedText`
+  ("1 saved system has no place yet" / "%1 saved systems have no place yet", empty at 0) are its properties;
+  `unplacedUids()` lists every row of those cards, in row order, for the place notice; `cancelUpdate()` stops only the update's own
   requests (its system reads and the states no `resolveStates()` call also asked for), so a load's lookups carry on,
   and ends the update with what was saved. A step that saves rows checks that its update survived the rows' signals.
-  QML fixtures publish `RrPlacesFake` (the same five properties, pinned by `UI_QT_RR_PLACE_SERVICE`;
-  `missingContextKeys()` checks `rrPlaces` reads). Tests: `UI_QT_RADIO_REFERENCE`
+  QML fixtures publish `RrPlacesFake` (the same five properties, pinned by `UI_QT_RR_PLACE_SERVICE`, and an
+  `unplacedUids()` a case scripts; `missingContextKeys()` checks `rrPlaces` reads). Tests: `UI_QT_RADIO_REFERENCE`
   (place per import shape, the signal), `UI_QT_RR_PLACE_SERVICE` (names, order of names and saves, per-state failure,
-  failed-save retry, sign-out, Update from RadioReference incl. partial success, moved and unlisted rows, cancels,
+  failed-save retry, sign-out, Update from RadioReference incl. partial success, moved and unlisted rows, counts in
+  cards, the notice's uids, cancels,
   and failed lookups leaving the import screen's lists, busy, system, plan, status and a library refresh alone).
 - `json_store.{h,cpp}` holds the Qt models' JSON-array stores in the app data root (`json_store_root()`): saved
   systems, scan lists, imported files, decryption profiles, call history and its seen map, Signal search ranges. A store
@@ -13784,7 +13792,9 @@ Qt Quick frontend (`src/ui/qt`):
   several counties, then none, then name) and `nearest` (haversine distance to the nearest non-avoided site that has
   coordinates, then "All sites avoided", then "No coordinates", each by name). Every order ends on `key`. `nearest`
   needs `setLocationSupported(true)` and an unexpired fix; without them `effectiveSort` is `name` and the stored
-  preference is untouched. Search (`system_search_query.{h,cpp}`): the text is split into terms that must all match (a
+  preference is untouched. Every rebuild compares the fix with the one the distances were measured from, because
+  AppPrefs drops a fix 24 wall-clock hours on at its first read, before its monotonic expiry timer sends
+  `locationChanged` (the timer stops while a phone sleeps). Search (`system_search_query.{h,cpp}`): the text is split into terms that must all match (a
   number and a following MHz/kHz is one term); a term matches a folded substring of the card's text (members' names
   and site names, place state and county names, and the protocol label, supplied by `protocolLabels` from `Util.js`)
   or a frequency of any member (a bare number of three digits or more reads as MHz). A row whose frequency or place an
@@ -13794,9 +13804,10 @@ Qt Quick frontend (`src/ui/qt`):
   changed, so a delegate survives a sort and keeps the keyboard. With `screenReaderActive`, a reorder the user asked
   for (query, sort, a fix after `markLocationRequested()`) is one reset, and any other reorder is held while
   `holdReorders` is set (Home visible on Systems) and released as a reset, so TalkBack's swipe order always matches
-  the screen; the count is read once. `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, B1, B2,
+  the screen; the count is read once. A held order can show a section in two runs (a new card goes after its new-order
+  predecessor), so `sectionStart` marks only a section's first card in the shown order. `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, B1, B2,
   B13, titles against a real pin, each order and its ties, place and distance labels, search, signals, screen-reader
-  holds and the location mark, coalescing, a random-edit mirror check, and a 500-row timing check).
+  holds and the location mark, one section start in a held order, a fix that lapses with no signal, coalescing, a random-edit mirror check, and a 500-row timing check).
 - `text_order.{h,cpp}` (`TextOrder`, the `textOrder` context object) is the one place that decides how names sort and
   match: `text_fold()` (case and accents folded, by code point), `text_compare_names()` (natural order: leading
   punctuation skipped, digit runs by value, a shorter digit run first on a tie, then the raw text, so different
