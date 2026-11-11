@@ -288,6 +288,29 @@ AM_SYNTH_TONE_HZ = 1000.0
 AM_SYNTH_DEPTH = 0.5
 AM_SYNTH_NOISE_DB = -30.0
 
+# Speech level parity (issue #518): one deterministic talker on FM and AM, so the analog monitor's speech AGC can be
+# held to the level digital voice plays the same talker at (tests/speech_parity_check.cmake). The talker -- 9 s of
+# synthetic running speech with real pauses and two talker-level steps (test_support/speech_synth.h) -- comes from the
+# built test tool (--speech-synth-gen, tests/core/speech_parity_tool.c) as 48 kHz audio, the same waveform the tool
+# encodes for the digital renditions. Each fixture keys a carrier SPEECH_SYNTH_LEAD_S before the talker starts and holds
+# it SPEECH_SYNTH_TAIL_S after. The level follows the nominal talker the analog start gains were set from: FM
+# pre-emphasised at 75 us (the monitor's default de-emphasis undoes it) with the audio's 99.5th percentile at the
+# band's rated peak deviation, 2.5 kHz for a 12.5 kHz channel and 5 kHz for a 25 kHz one; AM with it at 80% modulation
+# (0.04% of the samples go past 100% on negative peaks, where the carrier cuts off).
+# Complex Gaussian noise sits SPEECH_SYNTH_NOISE_DB under the carrier across the 48 kHz span.
+#
+# name, seed, modulation ("fm" or "am"), rated peak deviation Hz (fm) or modulation depth (am)
+SPEECH_SYNTH = [
+    ("speech_nfm_synth", 5301, "fm", 2500.0),
+    ("speech_wfm_synth", 5302, "fm", 5000.0),
+    ("speech_am_synth", 5303, "am", 0.8),
+]
+SPEECH_SYNTH_RATE_HZ = SAMPLE_RATE_HZ
+SPEECH_SYNTH_LEAD_S = 0.25
+SPEECH_SYNTH_TAIL_S = 0.05
+SPEECH_SYNTH_PREEMPHASIS_US = 75.0
+SPEECH_SYNTH_NOISE_DB = -40.0
+
 # Derived fixtures synthesized from already-committed fixtures (no network or
 # ffmpeg needed; run with --derived-only to regenerate just these).
 #
@@ -1418,6 +1441,50 @@ def build_dmr_voice_synth(out_dir, generator, work_dir):
     return written
 
 
+def speech_synth_talker(generator, work_dir):
+    """The parity talker as float samples at SPEECH_SYNTH_RATE_HZ, written by the built test tool."""
+    os.makedirs(work_dir, exist_ok=True)
+    generator = os.path.abspath(generator)
+    with tempfile.TemporaryDirectory(prefix="speech-synth-", dir=work_dir) as synth_dir:
+        wav_name = "talker.wav"
+        subprocess.run([generator, "source", str(SPEECH_SYNTH_RATE_HZ), wav_name], cwd=synth_dir, check=True)
+        wav_path = os.path.join(synth_dir, wav_name)
+        with wave.open(wav_path, "rb") as wav:
+            if wav.getnchannels() != 1 or wav.getsampwidth() != 2 or wav.getframerate() != SPEECH_SYNTH_RATE_HZ:
+                raise SystemExit(f"{wav_path}: expected {SPEECH_SYNTH_RATE_HZ} Hz mono s16 from the speech tool")
+            return np.frombuffer(wav.readframes(wav.getnframes()), dtype="<i2").astype(np.float64)
+
+
+def speech_synth_samples(talker, seed, modulation, rated):
+    """Key a carrier, modulate the talker onto it (see SPEECH_SYNTH), and add the noise floor."""
+    lead = int(round(SPEECH_SYNTH_LEAD_S * SPEECH_SYNTH_RATE_HZ))
+    tail = int(round(SPEECH_SYNTH_TAIL_S * SPEECH_SYNTH_RATE_HZ))
+    if modulation == "fm":
+        talker = undo_deemphasis(talker, SPEECH_SYNTH_PREEMPHASIS_US)
+    audio = np.concatenate((np.zeros(lead), talker / np.percentile(np.abs(talker), 99.5), np.zeros(tail)))
+    if modulation == "fm":
+        phase = np.cumsum(audio * rated) * (2.0 * math.pi / SPEECH_SYNTH_RATE_HZ)
+        samples = np.exp(1j * phase)
+    else:
+        # Past 100% on the negative peaks the carrier cuts off, as a transmitter's does: the envelope never goes below 0.
+        samples = np.maximum(1.0 + rated * audio, 0.0).astype(np.complex128)
+    rng = np.random.default_rng(seed)
+    sigma = math.sqrt(10.0 ** (SPEECH_SYNTH_NOISE_DB / 10.0) / 2.0)
+    count = len(samples)
+    return samples + rng.normal(0.0, sigma, count) + 1j * rng.normal(0.0, sigma, count)
+
+
+def build_speech_synth(out_dir, generator, work_dir):
+    """Write the speech level parity fixtures from the test tool's talker (issue #518)."""
+    talker = speech_synth_talker(generator, work_dir)
+    total = 0
+    for name, seed, modulation, rated in SPEECH_SYNTH:
+        written = write_fixture(out_dir, name, speech_synth_samples(talker, seed, modulation, rated))
+        total += written
+        print(f"{name:28s} synth   {written // 1024:6d} KiB")
+    return total
+
+
 def pack_field(bits, value, offset, width):
     for bit in range(width):
         bits[offset + bit] = (value >> (width - bit - 1)) & 1
@@ -2483,6 +2550,7 @@ def derived_fixture_names():
         + [entry[0] for entry in ANALOG_CTCSS_SYNTH]
         + [entry[0] for entry in ANALOG_DCS_SYNTH]
         + [entry[0] for entry in SQUELCH_BURST]
+        + [entry[0] for entry in SPEECH_SYNTH]
         + [
             TETRA_SYNTH_NAME,
             TETRA_INVERTED_NAME,
@@ -2522,7 +2590,7 @@ def check_only_names(only):
             raise SystemExit(f"--only {name}: no such fixture")
 
 
-def build_all_derived(out_dir, dmr_synth_gen, cache):
+def build_all_derived(out_dir, dmr_synth_gen, speech_synth_gen, cache):
     """Write every fixture derived from committed ones or synthesized (what --derived-only regenerates)."""
     total = 0
     total += build_derived(out_dir)
@@ -2545,6 +2613,11 @@ def build_all_derived(out_dir, dmr_synth_gen, cache):
         total += build_dmr_voice_synth(out_dir, dmr_synth_gen, cache)
     else:
         print(f"{DMR_VOICE_SYNTH_NAME:28s} skipped (needs --dmr-synth-gen)")
+    if speech_synth_gen:
+        total += build_speech_synth(out_dir, speech_synth_gen, cache)
+    else:
+        for name, *_rest in SPEECH_SYNTH:
+            print(f"{name:28s} skipped (needs --speech-synth-gen)")
     return total
 
 
@@ -2578,7 +2651,7 @@ def verify_derived(args):
     with tempfile.TemporaryDirectory(prefix="iq-fixtures-verify-") as scratch:
         copy = os.path.join(scratch, "iq")
         shutil.copytree(committed, copy)
-        build_all_derived(copy, args.dmr_synth_gen, args.cache)
+        build_all_derived(copy, args.dmr_synth_gen, args.speech_synth_gen, args.cache)
         differing = differing_files(committed, copy)
     if differing:
         for rel, why in differing:
@@ -2586,14 +2659,19 @@ def verify_derived(args):
         print(f"verify: FAILED, {len(differing)} file(s) differ from {committed}")
         return 1
     count = sum(len(files) for _base, _dirs, files in os.walk(committed))
-    if args.dmr_synth_gen:
-        print(f"verify: OK, every derived fixture reproduces byte for byte ({count} files in {committed})")
-    else:
-        # Without the generator the copy keeps the committed dmr_voice_synth, so it compares equal unchecked.
+    # Without a generator the copy keeps the fixtures it writes, so they compare equal unchecked.
+    unchecked = []
+    if not args.dmr_synth_gen:
+        unchecked.append(f"{DMR_VOICE_SYNTH_NAME} (needs --dmr-synth-gen)")
+    if not args.speech_synth_gen:
+        unchecked.append(f"{', '.join(entry[0] for entry in SPEECH_SYNTH)} (needs --speech-synth-gen)")
+    if unchecked:
         print(
-            f"verify: OK, every derived fixture but {DMR_VOICE_SYNTH_NAME} reproduces byte for byte ({count} files in "
-            f"{committed}); {DMR_VOICE_SYNTH_NAME} was not verified (needs --dmr-synth-gen)"
+            f"verify: OK, every other derived fixture reproduces byte for byte ({count} files in {committed}); "
+            f"not verified: {'; '.join(unchecked)}"
         )
+    else:
+        print(f"verify: OK, every derived fixture reproduces byte for byte ({count} files in {committed})")
     return 0
 
 
@@ -2609,6 +2687,11 @@ def main():
     parser.add_argument(
         "--dmr-synth-gen",
         help="the built DMR test generator (dsd-neo_test_dmr_synth_gen) that writes the dmr_voice_synth fixture",
+    )
+    parser.add_argument(
+        "--speech-synth-gen",
+        help="the built speech level tool (dsd-neo_test_speech_parity_tool) whose talker the speech_*_synth fixtures "
+        "carry",
     )
     parser.add_argument(
         "--only",
@@ -2636,7 +2719,7 @@ def main():
         total += build_upstream(args)
 
     if not args.only:
-        total += build_all_derived(args.out, args.dmr_synth_gen, args.cache)
+        total += build_all_derived(args.out, args.dmr_synth_gen, args.speech_synth_gen, args.cache)
     else:
         for name in derived_fixture_names():
             if name in args.only:

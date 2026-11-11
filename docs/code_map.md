@@ -6519,7 +6519,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   semantics under fast-math. Tests: `DSP_SPEECH_AGC` (synthetic talkers, the gain law, startup, vowels, tones, hum,
   pitch edges, noise, attenuator, tone cap, decodability, rollback against a control, partitions, cross-rate, ceiling,
   reset, non-finite, fixed mode, the limiter, the veto on de-emphasised hiss), `DSP_SPEECH_AGC_LONG` (the floor after
-  60-120 s of hiss, with and without the veto); the `dsd-neo_bench_speech_agc` micro-benchmark.
+  60-120 s of hiss, with and without the veto); the `dsd-neo_bench_speech_agc` micro-benchmark. End to end,
+  `DECODE_MBE_SPEECH_LEVEL` and `DECODE_IQ_SPEECH_PARITY` hold one synthetic talker's established speech within 3 dB of
+  -24 dBFS from IMBE, AMBE+2 and AMBE 2400 files (`-r`) and from narrowband FM, wideband FM and AM fixtures, all within
+  1.5 dB of each other (`tests/core/speech_parity_tool.c`), and the `DECODE_IQ_SPEECH_LEVEL_*` and
+  `DECODE_IQ_ANALOG_PARITY_*` cases pin the off-air excerpts (`docs/testing.md` "Speech level parity").
 - The auto squelch's core (issue #518 follow-up) is `src/dsp/squelch_floor.c` (`<dsd-neo/dsp/squelch_floor.h>`), pure
   and on the channel-filtered I/Q at the channel rate (before any post-decimation). A plan
   (`dsd_squelch_floor_plan_design()`) turns the channel taps and the half-band stage ahead of them into the
