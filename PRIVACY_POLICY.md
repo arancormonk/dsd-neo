@@ -65,9 +65,11 @@ saved system's places. Each request carries your RadioReference username and pas
 app's RadioReference application key (or the one you entered), and what you asked for: a ZIP
 code, a country, state or county, a system ID, or a site. Updating places asks for a state's
 name and counties by its RadioReference number, and re-reads the sites of systems you saved
-from RadioReference; your location is not part of it. RadioReference returns the system's
-details, and the app builds its channel and talkgroup files on your device. RadioReference
-handles this data under its own privacy policy.
+from RadioReference. After a system loads in the RadioReference import screen, the app also
+asks, with the same account, for the names of that system's states, so a system you save
+from it shows its place. Your location is not part of either. RadioReference returns the
+system's details, and the app builds its channel and talkgroup files on your device.
+RadioReference handles this data under its own privacy policy.
 
 The app saves your username (and an application key you entered) on your device. It keeps
 your password in memory only, while the app runs, and never writes it to storage or to its

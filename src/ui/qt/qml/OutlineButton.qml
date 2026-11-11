@@ -12,6 +12,8 @@ Rectangle {
     // A text-style action at the end of a line of text (a Material text
     // button): no outline or fill at rest, the label in the accent colour,
     // flatInset padding each side; pressed or focused it shows as any button.
+    // Its label is always the accent colour: `textColor` applies only to a
+    // button that is not flat.
     property bool flat: false
     readonly property real flatInset: 12
     // The label's height, for a caller that lines the label (not the 48 dp target) up with text.
