@@ -1163,10 +1163,10 @@ test_quiet_classes(dsd_signal_quiet_detector* d) {
     assert(quiet_verdict(d, wide, centred) && !quiet_verdict(d, narrow, centred) && !quiet_verdict(d, both, centred));
 }
 
-/* Noise 20 dB over kQuietSigma everywhere except the hardware band +0.15..+0.45 Fs of @p q's capture (a bin's hardware
-   offset is its sample frequency less the rotation, folded into -Fs/2..Fs/2), shaped in the frequency domain. */
+/* Noise 20 dB over kQuietSigma everywhere except where @p low says, given a bin's hardware offset as a fraction of Fs
+   (its sample frequency less @p q's rotation, folded into -0.5..0.5), shaped in the frequency domain. */
 static std::vector<float>
-quiet_low_band_noise(const dsd_signal_quiet_request& q, size_t pairs, unsigned seed) {
+quiet_shaped_noise(const dsd_signal_quiet_request& q, size_t pairs, unsigned seed, bool (*low)(double fraction)) {
     const int n = (int)pairs;
     const double rate = q.capture.rate_hz;
     std::vector<float> iq = quiet_noise(pairs, seed);
@@ -1185,13 +1185,19 @@ quiet_low_band_noise(const dsd_signal_quiet_request& q, size_t pairs, unsigned s
     for (int k = 0; k < n; ++k) {
         double hardware = (k < n / 2 ? k : k - n) * rate / n - q.capture.rotation_hz;
         hardware -= rate * std::floor((hardware + rate / 2) / rate);
-        const float gain = (hardware >= 0.15 * rate && hardware < 0.45 * rate) ? 1.0f : 10.0f;
+        const float gain = low(hardware / rate) ? 1.0f : 10.0f;
         iq[2 * (size_t)k] *= gain;
         iq[2 * (size_t)k + 1] *= gain;
     }
     transform(true);
     fft.release();
     return iq;
+}
+
+/* Noise 20 dB up everywhere but the hardware band +0.15..+0.45 Fs. */
+static std::vector<float>
+quiet_low_band_noise(const dsd_signal_quiet_request& q, size_t pairs, unsigned seed) {
+    return quiet_shaped_noise(q, pairs, seed, [](double f) { return f >= 0.15 && f < 0.45; });
 }
 
 /* The floor guard: a weak channel between transmitters that raise its sideband floor on both sides would read quiet
@@ -1238,6 +1244,27 @@ test_quiet_floor_guard(dsd_signal_quiet_detector* d) {
     edge.guard_db = rise - 0.01f;
     const auto over = quiet_run(d, wide, noise, 4096, &edge);
     assert(!over.valid && !over.quiet && std::abs(over.floor_rise_db - rise) < 1e-6f);
+}
+
+/* The floor guard's reference folds each bin by the capture's own rotation, not by Fs/4. A centred I/Q replay feeds the
+   tap unrotated (rotation 0): the noise is 20 dB up everywhere but the band edges, past 0.45 Fs of hardware offset
+   (which the reference leaves out), and hardware +0.04..+0.21 Fs. Folded by the record's rotation, the low bins are
+   about a fifth of the bins the reference counts, so its lower quartile stays on the raised floor round the channel
+   (at hardware -0.1 Fs) and the request is valid. Folded by Fs/4 instead, the edges would count and the low bins
+   would pass a quarter: the reference would fall 20 dB and the guard void the request. */
+static void
+test_quiet_floor_guard_rotation(dsd_signal_quiet_detector* d) {
+    const uint32_t rate = 1536000;
+    auto q = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+    q.capture.rotation_hz = 0;
+    q.capture.capture_offset_hz = 0;
+    q.capture.capture_hz = kQuietChannel + rate / 10;
+    const dsd_signal_quiet_params shipped = dsd_signal_quiet_params_default();
+    const auto noise = quiet_shaped_noise(q, quiet_request_pairs(q), 99,
+                                          [](double f) { return std::abs(f) >= 0.45 || (f >= 0.04 && f < 0.21); });
+    const auto result = quiet_run(d, q, noise, 4096, &shipped);
+    assert(result.failure == DSD_SIGNAL_MEASURE_OK && result.valid && result.quiet);
+    assert(std::abs(result.floor_rise_db) < 3.0f);
 }
 
 /* What a request may ask for: the analog width endpoints (NFM 8 and 25 kHz, AM 5 and 20 kHz), the 6.25 kHz class at
@@ -1720,6 +1747,7 @@ test_quiet(const dsd_signal_measure_request& r) {
     test_quiet_one_subwindow(d);
     test_quiet_classes(d);
     test_quiet_floor_guard(d);
+    test_quiet_floor_guard_rotation(d);
     test_quiet_geometry(d);
     test_quiet_failures(d);
     test_quiet_spans(d);

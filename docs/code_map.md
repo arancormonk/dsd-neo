@@ -7538,7 +7538,15 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   the Fs/4 shift the fed samples carry: a live capture's rate / 4 while the shift is active;
   an I/Q replay's own, whatever the live flags say: 0 for a recording made without the
   shift, and its capture rate / 4 for one made with it, rotated ahead of the replay
-  resampler, so the same Hz at a resampled replay's tap rate.
+  resampler, so the same Hz at a resampled replay's tap rate. Such a shifted replay
+  resampled to another rate keeps only the band around its rotated DC, while
+  `measure_channel()` and the floor guard's reference treat the tap as a circular shift of
+  the whole capture: a channel far from the rotated DC reads another channel's bins. That
+  capture is safe only because measurement is refused on replay (Signal search fails at its
+  tune; trunk scan refuses replay). Any quiet or scan caller must keep that refusal, keyed
+  on the stream fact (`opts->iq_replay_active` / `opts->iq_replay_requested`, or the
+  stream's own source), never on the decode clock, which a replay can leave on SYSTEM
+  (after an RTL restart, for one).
   Leakage rejection runs once per request on both
   windows' power: transmitters are located in the spectrum (not just the requested
   channels), each from the anchor its channels' windows climb to, centred where its

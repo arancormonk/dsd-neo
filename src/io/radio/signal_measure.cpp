@@ -1189,7 +1189,11 @@ struct channel_level {
 /* Measure the channel at @p frequency_hz, @p width Hz wide, in the @p n-point spectrum whose prefix sums @p bins reads,
    scaled by @p norm. Valid when the channel and its sidebands, three widths either side, clear the hardware DC guard
    and stay inside 0.45 Fs, with at least one channel bin and four sideband bins a side. Signal search and quiet
-   requests measure every channel through this. */
+   requests measure every channel through this. The window assumes the tap is the whole capture shifted circularly by
+   the rotation, as every live capture is. A shifted I/Q replay resampled to another rate keeps only the band around
+   its rotated DC, so a channel far from it would read another channel's bins: such a capture is safe only because
+   measurement is refused on replay, which callers key on the stream (opts->iq_replay_active / iq_replay_requested),
+   never on the decode clock. */
 template <typename S>
 channel_level
 measure_channel(const S& bins, const dsd_signal_capture& capture, int n, double frequency_hz, double width, double norm,
