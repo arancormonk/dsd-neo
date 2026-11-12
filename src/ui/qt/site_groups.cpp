@@ -11,7 +11,6 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
-#include <limits>
 #include "site_groups.h"
 #include "stored_int.h"
 
@@ -132,7 +131,7 @@ site_nearest_row(const QVariantList& rows, int row, double lat, double lon) {
 int
 site_nearest_among(const QVariantList& indices, const std::function<QVariantMap(int)>& rowAt, double lat, double lon) {
     int nearest = -1;
-    double best = std::numeric_limits<double>::infinity();
+    double best = 0;
     for (const auto& index : indices) {
         const auto candidate = rowAt(index.toInt());
         if (candidate.value("avoidSite").toBool() || !candidate.value("hasSitePos").toBool()) {
@@ -146,7 +145,7 @@ site_nearest_among(const QVariantList& indices, const std::function<QVariantMap(
             continue;
         }
         const double distance = site_distance_km(lat, lon, siteLat, siteLon);
-        if (distance >= 0 && distance < best) {
+        if (distance >= 0 && (nearest < 0 || distance < best)) {
             nearest = index.toInt();
             best = distance;
         }

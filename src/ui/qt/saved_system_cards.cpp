@@ -16,7 +16,6 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
-#include <limits>
 #include <numeric>
 #include <utility>
 
@@ -806,7 +805,8 @@ SavedSystemCards::locateCard(Card& card, const QList<const Member*>& group, cons
         return;
     }
     bool playable = false;
-    double nearest = std::numeric_limits<double>::infinity();
+    bool positioned = false;
+    double nearest = 0;
     for (const Member* member : group) {
         if (member->avoidSite) {
             continue;
@@ -814,11 +814,12 @@ SavedSystemCards::locateCard(Card& card, const QList<const Member*>& group, cons
         playable = true;
         const double distance =
             member->hasSitePos ? site_distance_km(fix.lat, fix.lon, member->siteLat, member->siteLon) : -1;
-        if (distance >= 0 && distance < nearest) {
+        if (distance >= 0 && (!positioned || distance < nearest)) {
             nearest = distance;
+            positioned = true;
         }
     }
-    if (nearest < std::numeric_limits<double>::infinity()) {
+    if (positioned) {
         card.distanceKm = nearest;
         card.distanceState = QStringLiteral("positioned");
     } else {

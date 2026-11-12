@@ -145,6 +145,17 @@ elseif(MSVC)
     )
 endif()
 
+# A test target that compiles src/ui/qt sources directly gets IEEE semantics,
+# as dsd-neo_ui_qt does: those sources compare against infinity and check for
+# NaN, which fast-math folds away.
+function(dsd_neo_test_ieee_semantics target)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(${target} PRIVATE -fno-fast-math)
+    elseif(MSVC)
+        target_compile_options(${target} PRIVATE /fp:precise)
+    endif()
+endfunction()
+
 add_library(dsd-neo_test_support INTERFACE)
 target_include_directories(
     dsd-neo_test_support
@@ -4857,6 +4868,7 @@ if(DSD_ENABLE_QT_UI)
         PRIVATE QT_NO_KEYWORDS
     )
     set_target_properties(dsd-neo_test_ui_qt_site_groups PROPERTIES AUTOMOC ON)
+    dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_site_groups)
     add_test(NAME UI_QT_SITE_GROUPS COMMAND dsd-neo_test_ui_qt_site_groups)
 
     # What MetricsModel makes of a decoder snapshot: the readings screens gate
@@ -5506,6 +5518,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_rr_place_service
         PROPERTIES AUTOMOC ON
     )
+    dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_rr_place_service)
     add_test(
         NAME UI_QT_RR_PLACE_SERVICE
         COMMAND dsd-neo_test_ui_qt_rr_place_service
@@ -5618,6 +5631,7 @@ if(DSD_ENABLE_QT_UI)
         PRIVATE QT_NO_KEYWORDS
     )
     set_target_properties(dsd-neo_test_ui_qt_text_order PROPERTIES AUTOMOC ON)
+    dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_text_order)
     add_test(NAME UI_QT_TEXT_ORDER COMMAND dsd-neo_test_ui_qt_text_order)
 
     # Listen's saved-system cards over the real saved systems, prefs and
@@ -5669,6 +5683,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_saved_system_cards
         PROPERTIES AUTOMOC ON
     )
+    dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_saved_system_cards)
     add_test(
         NAME UI_QT_SAVED_SYSTEM_CARDS
         COMMAND dsd-neo_test_ui_qt_saved_system_cards
