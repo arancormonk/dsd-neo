@@ -3369,9 +3369,10 @@ test_conventional_activity_hold_and_allowlist_block(void) {
         DSD_FPRINTF(stderr, "allowed conventional activity did not hold target\n");
         test_rc = 1;
     }
-    trunk_scan_test_set_now(0.61);
+    /* The 250 ms hold ends at 0.35 and the idle dwell runs from there (issue #834 B4). */
+    trunk_scan_test_set_now(0.59);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    trunk_scan_test_set_now(0.87);
+    trunk_scan_test_set_now(0.61);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
         DSD_FPRINTF(stderr, "target did not rotate after conventional hold and dwell\n");
@@ -3842,9 +3843,10 @@ test_nxdn_conventional_activity_hold(void) {
         DSD_FPRINTF(stderr, "allowed NXDN conventional activity did not hold target\n");
         test_rc = 1;
     }
-    trunk_scan_test_set_now(0.61);
+    /* The 250 ms hold ends at 0.35 and the idle dwell runs from there (issue #834 B4). */
+    trunk_scan_test_set_now(0.59);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    trunk_scan_test_set_now(0.87);
+    trunk_scan_test_set_now(0.61);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
         DSD_FPRINTF(stderr, "NXDN target did not rotate after conventional hold and dwell\n");
@@ -4131,10 +4133,10 @@ test_p25_conventional_activity_hold(void) {
             test_rc = 1;
         }
         if (cases[i].holds) {
-            // The 250 ms hold expires at 0.35; a fresh idle dwell must still elapse.
+            // The 250 ms hold expires at 0.35; the idle dwell must still elapse from there (issue #834 B4).
             trunk_scan_test_set_now(0.36);
             dsd_engine_trunk_scan_tick(opts, state);
-            trunk_scan_test_set_now(0.60);
+            trunk_scan_test_set_now(0.59);
             dsd_engine_trunk_scan_tick(opts, state);
             if (dsd_engine_trunk_scan_active_index(state) != 0) {
                 DSD_FPRINTF(stderr, "P25 conventional %s rotated before post-hold dwell elapsed\n", cases[i].label);
@@ -4299,9 +4301,10 @@ test_nxdn48_conventional_activity_hold(void) {
         test_rc = 1;
     }
 
-    trunk_scan_test_set_now(0.61);
+    /* The 250 ms hold ends at 0.35 and the idle dwell runs from there (issue #834 B4). */
+    trunk_scan_test_set_now(0.59);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    trunk_scan_test_set_now(0.87);
+    trunk_scan_test_set_now(0.61);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
         DSD_FPRINTF(stderr, "NXDN48 target did not rotate after conventional hold and dwell\n");
@@ -8318,6 +8321,125 @@ test_dwell_due_answers_again_after_a_tick_that_lost_the_guard(void) {
     return test_rc;
 }
 
+/* Two DMR conventional targets with a 250 ms dwell and a 500 ms activity hold, target a on air from 0.0, its hold
+   started by activity at 0.10 that a tick at 0.12 stayed for: the hold ends at 0.60. */
+static int
+activity_hold_scan_init(dsd_opts* opts, dsd_state* state, char* dir, size_t dir_sz, char* target_path, size_t path_sz) {
+    if (scan_control_init("a,dmr-conventional,461000000,,250,500,\n"
+                          "b,dmr-conventional,462000000,,250,500,\n",
+                          opts, state, dir, dir_sz, target_path, path_sz)
+        != 0) {
+        return 1;
+    }
+    trunk_scan_test_set_now(0.10);
+    dsd_engine_trunk_scan_dmr_conventional_activity(opts, state, 1001, 2002, 0, 0, 0);
+    trunk_scan_test_set_now(0.12);
+    dsd_engine_trunk_scan_tick(opts, state);
+    return expect_active_target(state, "the activity hold", 0U);
+}
+
+static void
+activity_hold_scan_done(dsd_opts* opts, dsd_state* state, const char* dir, const char* target_path) {
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+}
+
+/*
+ * Issue #834 B4: once an activity hold ends, the idle dwell runs from the hold's end, whenever a tick first sees it.
+ * The hunt counts the dwell from there while it is still disarmed, so on dead air the target leaves at the hold's end
+ * plus the dwell (to the next 300-symbol point), and a tick that first sees the hold over once that has passed leaves
+ * in that tick, instead of starting a full dwell then.
+ */
+static int
+test_idle_dwell_runs_from_an_activity_holds_end(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (activity_hold_scan_init(&opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    trunk_scan_test_set_now(0.55);
+    test_rc |= expect_control_rc("inside the hold", dsd_trunk_scan_hook_dwell_due(&opts, &state), 0);
+    trunk_scan_test_set_now(0.80);
+    test_rc |= expect_control_rc("200 ms after the hold", dsd_trunk_scan_hook_dwell_due(&opts, &state), 0);
+    trunk_scan_test_set_now(0.86);
+    test_rc |= expect_control_rc("hold end plus the dwell", dsd_trunk_scan_hook_dwell_due(&opts, &state), 1);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the dwell after the hold", 1U);
+    activity_hold_scan_done(&opts, &state, dir, target_path);
+
+    if (activity_hold_scan_init(&opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
+        return 1;
+    }
+    trunk_scan_test_set_now(1.00);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the first tick past the hold end plus the dwell", 1U);
+    activity_hold_scan_done(&opts, &state, dir, target_path);
+    return test_rc;
+}
+
+/* Issue #834 B4, the other side: a stay whose end the coordinator does not know keeps "a fresh full dwell from the tick
+ * that sees it over". An operator's hold released long after an activity hold's deadline, or toggled on and off
+ * between two ticks after it, grants the full dwell from the next tick; the activity's old end is not reused. */
+static int
+test_operator_release_after_an_activity_hold_grants_a_fresh_dwell(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (activity_hold_scan_init(&opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    trunk_scan_test_set_now(0.20);
+    test_rc |= expect_control_rc("hold on",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    trunk_scan_test_set_now(2.00);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    trunk_scan_test_set_now(3.00);
+    test_rc |= expect_control_rc("hold off",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 0);
+    trunk_scan_test_set_now(3.01);
+    test_rc |= expect_control_rc("released, before a tick", dsd_trunk_scan_hook_dwell_due(&opts, &state), 0);
+    trunk_scan_test_set_now(3.05);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the first tick after the release", 0U);
+    trunk_scan_test_set_now(3.29);
+    test_rc |= expect_control_rc("inside the fresh dwell", dsd_trunk_scan_hook_dwell_due(&opts, &state), 0);
+    trunk_scan_test_set_now(3.31);
+    test_rc |= expect_control_rc("the fresh dwell ends", dsd_trunk_scan_hook_dwell_due(&opts, &state), 1);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the fresh dwell's end", 1U);
+    activity_hold_scan_done(&opts, &state, dir, target_path);
+
+    if (activity_hold_scan_init(&opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
+        return 1;
+    }
+    trunk_scan_test_set_now(0.70);
+    test_rc |= expect_control_rc("hold on between ticks",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    trunk_scan_test_set_now(0.72);
+    test_rc |= expect_control_rc("hold off between ticks",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 0);
+    trunk_scan_test_set_now(0.90);
+    test_rc |=
+        expect_control_rc("past the old hold end plus the dwell", dsd_trunk_scan_hook_dwell_due(&opts, &state), 0);
+    trunk_scan_test_set_now(1.00);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the first tick after two toggles", 0U);
+    trunk_scan_test_set_now(1.24);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "inside the fresh dwell after two toggles", 0U);
+    trunk_scan_test_set_now(1.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the fresh dwell's end after two toggles", 1U);
+    activity_hold_scan_done(&opts, &state, dir, target_path);
+    return test_rc;
+}
+
 static int
 test_scan_hold_pauses_rotation_and_release_restarts_dwell(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -10785,8 +10907,8 @@ static int
 test_target_voice_gate_options_apply(void) {
     int rc = 0;
     /* Media at 0.25 with the column hold would lapse at 0.50 and rotate by ~0.80; the row's
-     * 1000 ms hold keeps the target until 1.25 and rotates one dwell later. */
-    rc |= run_target_voice_option_case("row-hold", "--scan-voice-hold-ms 1000", 1.25, 1.60);
+     * 1000 ms hold keeps the target until 1.25 and rotates one dwell after its end (issue #834 B4). */
+    rc |= run_target_voice_option_case("row-hold", "--scan-voice-hold-ms 1000", 1.25, 1.50);
     rc |= run_target_voice_option_case("column-hold", "", 0.50, 0.80);
     /* No media at all: the column dwell would rotate at 0.25; the row's 1000 ms qualify window
      * keeps the target until 1.0. */
@@ -11027,11 +11149,11 @@ test_scan_timing_conventional_activity_hold_restarts(void) {
     test_rc |= expect_scan_timing(&state, "refreshed hold", DSD_SCAN_STAY_ACTIVITY_HOLD, 0.55, 250U, 250U);
     test_rc |= expect_scan_timing_window(&state, "refreshed hold", 0.30, 250U);
 
-    /* The hold lapses at 0.55; the first tick past it re-arms the dwell in place. */
+    /* The hold lapses at 0.55; the first tick past it re-arms the dwell in place, from the hold's end (issue #834 B4). */
     trunk_scan_test_set_now(0.56);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "hold expiry", 0U);
-    test_rc |= expect_scan_timing(&state, "hold expiry", DSD_SCAN_STAY_IDLE_DWELL, 0.81, 250U, 250U);
+    test_rc |= expect_scan_timing(&state, "hold expiry", DSD_SCAN_STAY_IDLE_DWELL, 0.80, 250U, 250U);
     test_rc |= expect_scan_timing_conventional(&state, "hold expiry", 1U);
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
@@ -11220,10 +11342,11 @@ test_scan_timing_voice_gate_phases(void) {
     test_rc |= expect_scan_timing(&state, "voice tail", DSD_SCAN_STAY_ACTIVITY_HOLD, 0.74, 250U, 250U);
     test_rc |= expect_scan_timing_window(&state, "voice tail", 0.49, 250U);
 
+    /* The qualify window runs from the tail's end at 0.74 (issue #834 B4). */
     trunk_scan_test_set_now(0.75);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "qualify", 0U);
-    test_rc |= expect_scan_timing(&state, "qualify", DSD_SCAN_STAY_IDLE_DWELL, 1.00, 250U, 250U);
+    test_rc |= expect_scan_timing(&state, "qualify", DSD_SCAN_STAY_IDLE_DWELL, 0.99, 250U, 250U);
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     dsd_state_ext_free_all(&state);
@@ -13363,7 +13486,8 @@ analog_carrier_hold_case(const char* type, int voice_only) {
     dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
     trunk_scan_test_set_now(1.16);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    test_rc |= expect_scan_timing(&state, "idle", DSD_SCAN_STAY_IDLE_DWELL, 1.41, 250U, 250U);
+    /* The dwell runs from the tail's end at 1.15 (issue #834 B4). */
+    test_rc |= expect_scan_timing(&state, "idle", DSD_SCAN_STAY_IDLE_DWELL, 1.40, 250U, 250U);
     trunk_scan_test_set_now(1.42);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "idle dwell rotation", 1U);
@@ -13764,7 +13888,7 @@ test_nfm_target_tone_check_leaves_no_hold(void) {
     cleanup_paths(dir, target_path, NULL);
     DSD_MEMSET(&state.analog_rx, 0, sizeof(state.analog_rx));
 
-    /* Checked, then allowed: the hold runs 2 s from the last tick that heard it, then a fresh full dwell. */
+    /* Checked, then allowed: the hold runs 2 s from the last tick that heard it, then a full dwell from its end. */
     if (nfm_targets_init(targets, &opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
         return 1;
     }
@@ -13784,10 +13908,11 @@ test_nfm_target_tone_check_leaves_no_hold(void) {
     trunk_scan_test_set_now(2.25);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "the tail holds", 0U);
+    /* A full dwell from the tail's end at 2.30 (issue #834 B4). */
     trunk_scan_test_set_now(2.35);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "a fresh dwell after the tail", 0U);
-    test_rc |= expect_scan_timing(&state, "a fresh dwell", DSD_SCAN_STAY_IDLE_DWELL, 3.35, 1000U, 2000U);
+    test_rc |= expect_scan_timing(&state, "a fresh dwell", DSD_SCAN_STAY_IDLE_DWELL, 3.30, 1000U, 2000U);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     DSD_MEMSET(&state.analog_rx, 0, sizeof(state.analog_rx));
     trunk_scan_test_clear_now();
@@ -13984,7 +14109,8 @@ test_nfm_target_tone_check_arms_a_disarmed_dwell(void) {
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |=
         expect_scan_timing(&state, "the allowed traffic's hold", DSD_SCAN_STAY_ACTIVITY_HOLD, 2.30, 1000U, 2000U);
-    /* A check from 2.20 to 3.00 spans the hold's end: its tick at 2.40, the first past the hold, arms the dwell. */
+    /* A check from 2.20 to 3.00 spans the hold's end: its tick at 2.40, the first past the hold, arms the dwell from the
+       hold's end at 2.30, as a quiet tick would (issue #834 B4). */
     for (int tick = 0; tick < 5; tick++) {
         publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_PENDING);
         trunk_scan_test_set_now(2.20 + (0.20 * tick));
@@ -13998,7 +14124,7 @@ test_nfm_target_tone_check_arms_a_disarmed_dwell(void) {
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "the check dropped unjudged", 0U);
     test_rc |=
-        expect_scan_timing(&state, "the dwell from the hold's end", DSD_SCAN_STAY_IDLE_DWELL, 3.40, 1000U, 2000U);
+        expect_scan_timing(&state, "the dwell from the hold's end", DSD_SCAN_STAY_IDLE_DWELL, 3.30, 1000U, 2000U);
     trunk_scan_test_set_now(3.45);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "the dwell from the hold's end runs out", 1U);
@@ -22166,6 +22292,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_hold_release_before_a_noticed_landing_grants_a_fresh_dwell);
     rc |= run_with_default_tune_hook(test_dwell_due_answers_again_after_a_tick_that_lost_the_guard);
     rc |= run_with_default_tune_hook(test_dwell_due_after_a_tone_check_stay);
+    rc |= run_with_default_tune_hook(test_idle_dwell_runs_from_an_activity_holds_end);
+    rc |= run_with_default_tune_hook(test_operator_release_after_an_activity_hold_grants_a_fresh_dwell);
     rc |= run_with_default_tune_hook(test_scan_advance_moves_now_and_keeps_hold);
     rc |= run_with_default_tune_hook(test_scan_retreat_moves_back_and_keeps_hold);
     rc |= run_with_default_tune_hook(test_scan_retreat_on_two_targets);

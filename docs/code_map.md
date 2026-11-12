@@ -428,7 +428,8 @@ Generated (do not edit/commit):
     Its analog stay reason reads `TONE_PENDING` the same way, ahead of the activity hold and with no window, and
     `trunk_scan_service_hold()` holds the target for it without disarming the idle dwell (every other reason to stay
     disarms it), and arms a disarmed one at the check's first tick with no activity or operator hold on, as a quiet
-    tick would, so the dwell runs through a check as on a quiet channel; `trunk_scan_refresh_analog_carrier_hold()`
+    tick would (from an activity hold's end, `trunk_scan_rearm_dwell()`), so the dwell runs through a check as on a
+    quiet channel; `trunk_scan_refresh_analog_carrier_hold()`
     restarts the hold only on the probe, so only for traffic the policy passes. While the verdict is REJECTED and no
     operator hold is on, both the -Y tick and `trunk_scan_timing_select_reason()` publish `DSD_SCAN_STAY_CARRIER` with
     no window, since no hangtime or dwell counts toward a step while rejected traffic is kept. Rejected traffic that
@@ -3966,8 +3967,18 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   (issue #834 B3). It counts a park still in flight from its landing. Every park's idle dwell runs from its landing
   (`trunk_scan_arm_idle_at_landing()`): a synchronous one's completion (a blocking rigctl tune's latency is not
   listening time) and a pending one's when `trunk_scan_resolve_pending_retune()` notices it, instead of the first tick
-  after it. A dwell disarmed in between (a hold toggled, activity) stays disarmed, so a release still gets a fresh dwell
-  from the next tick.
+  after it. A dwell disarmed in between stays disarmed, and every disarm records its cause
+  (`trunk_scan_disarm_dwell()`, `trunk_scan_dwell_disarm`): a conventional activity hold (the activity callback, and
+  the `CARRIER`/`ACTIVITY_HOLD`/`VOICE` stays) has a known end, `last_allowed_activity_m` plus the effective hold on
+  the coordinator's decode clock, the deadline `trunk_scan_activity_hold_running()` measures; the operator's hold
+  (toggle and held ticks), a completed P25 recovery and every other stay (trunked call follow or CC acquisition, a
+  retune in flight, a tone rejection, a pause) do not. Once an activity hold is over, the hook counts the dwell from
+  its end while it is still disarmed (`trunk_scan_disarmed_dwell_start()`), and the tick that arms it again
+  (`trunk_scan_rearm_dwell()`, also the tone check's arm) starts it there, clamped to now, and weighs the dwell in the
+  same tick, so on dead air the target leaves at the hold's end plus the dwell, to the next 300-symbol point, and a
+  tick that first sees the hold over once both have run advances at once (issue #834 B4). Any other cause keeps a
+  fresh full dwell from the tick that arms it (arm and return), so an operator's release, two toggles between ticks
+  included, never reuses an old activity deadline. Both clocks are the coordinator's (`trunk_scan_now_m()`).
 - `dsd_trunk_scan_hook_dmr_conventional_activity()` / `dsd_trunk_scan_hook_nxdn_conventional_activity()` /
   `dsd_trunk_scan_hook_p25_conventional_activity()` — report decoded conventional activity so the parked target keeps
   its park. Pass only identity that has already cleared the protocol's FEC/CRC gate (DMR's `dmr_flco()` reports only

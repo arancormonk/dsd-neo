@@ -223,6 +223,20 @@ typedef struct {
     nxdn_trunk_diag_ledger nxdn_diag;
 } dsd_trunk_scan_snapshot;
 
+/* Why a target's idle dwell is disarmed (issue #834 B4), which decides where the tick that arms it again starts it. */
+typedef enum {
+    /* A stay whose end the coordinator does not know (a trunked call or control-channel acquisition, a retune in
+       flight, a tone rejection, a pause): a fresh full dwell from the tick that arms it. */
+    TRUNK_SCAN_DWELL_DISARM_OTHER = 0,
+    /* A conventional activity hold: the dwell runs from the hold's end, last_allowed_activity_m plus the effective hold,
+       the deadline trunk_scan_activity_hold_running() measures. */
+    TRUNK_SCAN_DWELL_DISARM_ACTIVITY_HOLD,
+    /* The operator's hold (`Y`, an entry or start hold): its release is a fresh full dwell. */
+    TRUNK_SCAN_DWELL_DISARM_OPERATOR,
+    /* A P25 recovery tune that completed: a fresh full dwell. */
+    TRUNK_SCAN_DWELL_DISARM_RECOVERY,
+} trunk_scan_dwell_disarm;
+
 typedef struct {
     dsd_trunk_scan_target target;
     dsd_trunk_scan_snapshot snapshot;
@@ -240,6 +254,8 @@ typedef struct {
     double visit_since_m;
     int visit_rearm_pending;
     double idle_since_m;
+    /* Why idle_since_m is disarmed; read only while it is (trunk_scan_disarm_dwell()). */
+    trunk_scan_dwell_disarm dwell_disarm;
     /* The due dwell start, and the stay reason, a tick under the coordinator's guard last decided (advance, re-arm or
        stay): dsd_engine_trunk_scan_dwell_due() hands back again only once either differs (issue #834 B3). */
     double dwell_serviced_start_m;
@@ -4287,12 +4303,53 @@ trunk_scan_active_stay_reason(const dsd_opts* opts, const dsd_state* state, cons
     return trunk_scan_conventional_stay_reason(opts, state, rt, now_m, started_m, deadline_m, span_ms);
 }
 
+/* Disarm the idle dwell of @p rt, saying why: the tick that arms it again starts it from what @p cause says. */
+static void
+trunk_scan_disarm_dwell(dsd_trunk_scan_target_runtime* rt, trunk_scan_dwell_disarm cause) {
+    rt->idle_since_m = -1.0;
+    rt->dwell_disarm = cause;
+}
+
+/* Where a disarmed idle dwell starts (issue #834 B4): at its activity hold's end once the hold is over, so dead air after
+ * it counts toward the dwell whenever a tick first sees it, clamped to @p now_m; -1 while the hold runs, and for a stay
+ * whose end the coordinator does not know (an operator's hold, a recovery, a trunked call, a rejection), whose dwell
+ * starts afresh at the tick that arms it. */
+static double
+trunk_scan_disarmed_dwell_start(const dsd_opts* opts, const dsd_trunk_scan_target_runtime* rt, double now_m) {
+    if (rt->dwell_disarm != TRUNK_SCAN_DWELL_DISARM_ACTIVITY_HOLD || rt->last_allowed_activity_m <= 0.0
+        || trunk_scan_activity_hold_running(opts, rt, now_m)) {
+        return -1.0;
+    }
+    const double end_m = rt->last_allowed_activity_m + (double)trunk_scan_target_hold_ms(opts, rt) / 1000.0;
+    return end_m < now_m ? end_m : now_m;
+}
+
+/* Arm a disarmed idle dwell at this tick: from where trunk_scan_disarmed_dwell_start() says it started, else afresh from
+ * @p now_m. Returns 1 when it started earlier, so the tick weighs what has already run of it. */
+static int
+trunk_scan_rearm_dwell(const dsd_opts* opts, dsd_trunk_scan_target_runtime* rt, double now_m) {
+    const double start_m = trunk_scan_disarmed_dwell_start(opts, rt, now_m);
+    rt->idle_since_m = start_m >= 0.0 ? start_m : now_m;
+    return start_m >= 0.0;
+}
+
+/* Why a stay disarms the dwell: a conventional hold has a known end, the stays a trunked state machine or a retune in
+   flight own do not. */
+static trunk_scan_dwell_disarm
+trunk_scan_stay_disarm_cause(dsd_scan_stay_reason stay) {
+    if (stay == DSD_SCAN_STAY_CARRIER || stay == DSD_SCAN_STAY_ACTIVITY_HOLD || stay == DSD_SCAN_STAY_VOICE) {
+        return TRUNK_SCAN_DWELL_DISARM_ACTIVITY_HOLD;
+    }
+    return TRUNK_SCAN_DWELL_DISARM_OTHER;
+}
+
 /* Whether the target on air stays at this tick for a reason of its own. Every such reason but a tone check disarms the
- * idle dwell, so a fresh full dwell starts once it ends. A carrier the tone policy is still checking (issue #527) is no
- * activity, and the dwell runs through it as it would with no carrier: left where it was when armed, and, when the
- * activity hold or the operator's hold had disarmed it, armed at the check's first tick with neither on, as the first
- * quiet tick would arm it. So a check its carrier ends before a verdict adds no dwell, and short bursts the policy
- * never passes cannot park the rotation. Returns 1 when the tick is spent. */
+ * idle dwell, saying why, so it is armed again once the stay ends: from an activity hold's end, afresh after any other
+ * (trunk_scan_rearm_dwell()). A carrier the tone policy is still checking (issue #527) is no activity, and the dwell
+ * runs through it as it would with no carrier: left where it was when armed, and, when the activity hold or the
+ * operator's hold had disarmed it, armed at the check's first tick with neither on, as the first quiet tick would arm
+ * it. So a check its carrier ends before a verdict adds no dwell, and short bursts the policy never passes cannot park
+ * the rotation. Returns 1 when the tick is spent. */
 static int
 trunk_scan_service_hold(const dsd_opts* opts, const dsd_state* state, dsd_trunk_scan_coord* coord, double now_m) {
     const dsd_scan_stay_reason stay = trunk_scan_active_stay_reason(opts, state, coord, now_m, NULL, NULL, NULL);
@@ -4301,9 +4358,9 @@ trunk_scan_service_hold(const dsd_opts* opts, const dsd_state* state, dsd_trunk_
     }
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
     if (stay != DSD_SCAN_STAY_TONE_PENDING) {
-        rt->idle_since_m = -1.0;
+        trunk_scan_disarm_dwell(rt, trunk_scan_stay_disarm_cause(stay));
     } else if (rt->idle_since_m < 0.0 && !coord->hold_active && !trunk_scan_activity_hold_running(opts, rt, now_m)) {
-        rt->idle_since_m = now_m;
+        (void)trunk_scan_rearm_dwell(opts, rt, now_m);
     }
     return 1;
 }
@@ -4462,7 +4519,7 @@ trunk_scan_reconcile_p25_retune_recovery(dsd_trunk_scan_target_runtime* rt, uint
         rt->tune_request_id = 0U;
         rt->tune_pending = 0;
         rt->retry_until_m = 0.0;
-        rt->idle_since_m = -1.0;
+        trunk_scan_disarm_dwell(rt, TRUNK_SCAN_DWELL_DISARM_RECOVERY);
         return 1;
     }
     return -1;
@@ -4905,7 +4962,7 @@ trunk_scan_service_tone_rejection(dsd_opts* opts, dsd_state* state, dsd_trunk_sc
         return 0;
     }
     rt->last_allowed_activity_m = 0.0;
-    rt->idle_since_m = -1.0;
+    trunk_scan_disarm_dwell(rt, TRUNK_SCAN_DWELL_DISARM_OTHER);
     if (alternate) {
         (void)trunk_scan_advance_walk(opts, state, coord, 1, 1);
     }
@@ -5050,6 +5107,19 @@ trunk_scan_end_entry_waiting_on_nothing(dsd_state* state, const dsd_trunk_scan_c
     dsd_engine_scan_entry_intent_cancel(state);
 }
 
+/* Whether the idle dwell of @p rt has run out at a tick that nothing else spent. The first tick after a stay ends arms
+   it again: after an activity hold it runs from the hold's end and is weighed now, so a tick that first sees the hold
+   over once the dwell has passed too advances in it (issue #834 B4); after any other stay it is a fresh full dwell from
+   here. */
+static int
+trunk_scan_idle_dwell_ran_out(const dsd_opts* opts, dsd_trunk_scan_target_runtime* rt, double now_m) {
+    if (rt->idle_since_m < 0.0 && !trunk_scan_rearm_dwell(opts, rt, now_m)) {
+        return 0;
+    }
+    const double dwell_s = (double)trunk_scan_target_dwell_ms(opts, rt) / 1000.0;
+    return (now_m - rt->idle_since_m) >= dwell_s;
+}
+
 static void
 trunk_scan_tick_targets_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, double now_m) {
     trunk_scan_end_entry_waiting_on_nothing(state, coord);
@@ -5087,25 +5157,24 @@ trunk_scan_tick_targets_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
      * following calls on the held system. Disarming the dwell here means a release
      * re-arms it on the next tick and the target gets a full dwell before rotation. */
     if (coord->hold_active) {
-        rt->idle_since_m = -1.0;
+        trunk_scan_disarm_dwell(rt, TRUNK_SCAN_DWELL_DISARM_OPERATOR);
         return;
     }
-    if (rt->idle_since_m < 0.0) {
-        rt->idle_since_m = now_m;
-        return;
-    }
-    double dwell_s = (double)trunk_scan_target_dwell_ms(opts, rt) / 1000.0;
-    if ((now_m - rt->idle_since_m) >= dwell_s) {
+    if (trunk_scan_idle_dwell_ran_out(opts, rt, now_m)) {
         trunk_scan_advance(opts, state, coord);
     }
 }
 
 /* When the idle dwell of the target on air started, or would start once a tick notices its landing: the park's
-   completion (trunk_scan_arm_idle_at_landing()). -1 while nothing is armed, the park is in flight, or its dwell was
-   disarmed (the tick that notices the landing arms it afresh then). */
+   completion (trunk_scan_arm_idle_at_landing()), or, disarmed, the end of an activity hold that is over
+   (trunk_scan_disarmed_dwell_start()). -1 while nothing is armed, the park is in flight, or its dwell was disarmed by a
+   stay the tick that ends it grants a fresh dwell after. */
 static double
-trunk_scan_idle_dwell_start(const dsd_trunk_scan_target_runtime* rt, double now_m) {
-    if (!rt->tune_pending || rt->idle_since_m < 0.0) {
+trunk_scan_idle_dwell_start(const dsd_opts* opts, const dsd_trunk_scan_target_runtime* rt, double now_m) {
+    if (rt->idle_since_m < 0.0) {
+        return rt->tune_pending ? -1.0 : trunk_scan_disarmed_dwell_start(opts, rt, now_m);
+    }
+    if (!rt->tune_pending) {
         return rt->idle_since_m;
     }
     double completed_m = 0.0;
@@ -5118,7 +5187,7 @@ trunk_scan_idle_dwell_start(const dsd_trunk_scan_target_runtime* rt, double now_
 /* The start of the idle dwell of the target on air when it has run out by @p now_m, else -1. */
 static double
 trunk_scan_due_dwell_start(const dsd_opts* opts, const dsd_trunk_scan_target_runtime* rt, double now_m) {
-    const double start_m = trunk_scan_idle_dwell_start(rt, now_m);
+    const double start_m = trunk_scan_idle_dwell_start(opts, rt, now_m);
     const double dwell_s = (double)trunk_scan_target_dwell_ms(opts, rt) / 1000.0;
     return (start_m >= 0.0 && (now_m - start_m) >= dwell_s) ? start_m : -1.0;
 }
@@ -5247,7 +5316,7 @@ trunk_scan_control_hold_toggle(dsd_state* state, dsd_trunk_scan_coord* coord) {
     coord->hold_active = coord->hold_active ? 0 : 1;
     // Disarm at the command boundary: both toggles can arrive before another
     // tick observes the hold. Release must still grant a fresh idle dwell.
-    coord->targets[coord->active].idle_since_m = -1.0;
+    trunk_scan_disarm_dwell(&coord->targets[coord->active], TRUNK_SCAN_DWELL_DISARM_OPERATOR);
     // A held target's due retry is owed in place at once, whatever re-check the rotation had armed.
     coord->targets[coord->active].retry_recheck_m = 0.0;
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
@@ -5718,7 +5787,7 @@ trunk_scan_conventional_activity(trunk_scan_conventional_family family, const ds
     }
     if (rc == 0 && decision.tune_allowed) {
         rt->last_allowed_activity_m = trunk_scan_now_m();
-        rt->idle_since_m = -1.0;
+        trunk_scan_disarm_dwell(rt, TRUNK_SCAN_DWELL_DISARM_ACTIVITY_HOLD);
     }
 }
 
@@ -6452,7 +6521,7 @@ static void
 trunk_scan_clear_target_clocks(dsd_trunk_scan_target_runtime* rt) {
     rt->visit_since_m = -1.0;
     rt->visit_rearm_pending = 0;
-    rt->idle_since_m = -1.0;
+    trunk_scan_disarm_dwell(rt, TRUNK_SCAN_DWELL_DISARM_OTHER);
     rt->retry_until_m = 0.0;
     rt->retry_released_park = 0;
     rt->last_allowed_activity_m = 0.0;
