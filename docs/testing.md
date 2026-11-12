@@ -3949,7 +3949,8 @@ Changes to P25 CQPSK sync acceptance, the NID rules or the CQPSK timing loop (th
 Phase 1 and 2, the NID NAC-change rule, the post-lock timing gain, reliabilities by slicer) are judged on paired
 replays of the same realizations, baseline and change, with each part alone and all together where they can be
 separated, so every effect is attributable. The voice metric above is one column; the rest are counted from the
-logs `replay_ab.sh` keeps in `--out` (`<build>__r<repeat>.log`):
+logs `replay_ab.sh` keeps in `--out` (`<build>__r<repeat>.log`). The captures that work was measured on are not in the
+repository: "site A" and "site B" in `docs/code_map.md` are off-air recordings of two Harris CQPSK simulcast systems.
 
 - **Phase 1**: CRC-passed TSBKs and MBTs; LDUs, IMBE frames, and intervals with an LDU missing.
 - **Phase 2**: MAC PDUs that passed their CRC, 4V and 2V bursts, AMBE frames, R-S and DUID errors.
