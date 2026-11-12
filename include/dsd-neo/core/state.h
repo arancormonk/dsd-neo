@@ -2489,6 +2489,10 @@ struct dsd_state {
     uint8_t provoice_confirmed;
     uint8_t provoice_confirm_weak_streak;
     uint8_t provoice_confirm_frame_evidence;
+    /* Where the last frame began (provoice_confirm_note_frame_start()): a frame runs on only from one read a frame
+       before it. */
+    uint8_t provoice_confirm_last_frame_valid;
+    uint32_t provoice_confirm_last_frame_symbol;
 
     unsigned short esk_mask;
     uint32_t edacs_sys_id;

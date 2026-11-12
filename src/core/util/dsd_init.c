@@ -1093,6 +1093,8 @@ init_state_protocol_defaults_b(dsd_state* state) {
     state->provoice_confirmed = 0;
     state->provoice_confirm_weak_streak = 0;
     state->provoice_confirm_frame_evidence = 0;
+    state->provoice_confirm_last_frame_valid = 0;
+    state->provoice_confirm_last_frame_symbol = 0;
 
     state->p25vc = 0;
     state->payload_miP = 0;

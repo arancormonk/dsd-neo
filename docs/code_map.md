@@ -11042,8 +11042,13 @@ Private per-protocol modules worth knowing about:
   speaker, the MBE capture and the call record only when the transmission is confirmed as the superframe starts (its
   header's CRC, or the superframe before it), so a single sync word the 4800/2 hunt matches on receiver noise under
   `-fa` no longer plays a superframe of noise as a call with no callsigns, at the cost of a late-entry or failed-header
-  call's first superframe (420 ms; `DSTAR_PROCESS`, `DECODE_IQ_MBE_CAPTURE_DSTAR`). ProVoice's still answers only the
-  hunt. Neither protocol has a per-frame check: a D-STAR
+  call's first superframe (420 ms; `DSTAR_PROCESS`, `DECODE_IQ_MBE_CAPTURE_DSTAR`). ProVoice's gates voice the same
+  way: a frame's IMBE pairs reach the vocoder, the speaker, the recordings and the call record only once a frame ran
+  on from the one before it, its sync one frame (`PROVOICE_CONFIRM_FRAME_SYMBOLS`, 768, within one) after the last
+  frame's (`provoice_confirm_note_frame_start()`, the dPMR and NXDN48 rule), so a lone sync word on noise plays
+  nothing, at the cost of a transmission's first frame (four IMBE frames, 80 ms; the committed `provoice` capture,
+  whose frames run on 768 symbols apart, records 156 of its 160; `PROVOICE_PROCESS`, `PROVOICE_CONFIRM`). Neither
+  protocol has a per-frame check: a D-STAR
   superframe costs 1992 symbols and a ProVoice frame 736, and the AMBE/IMBE error counts they leave in
   `dsd_state::errs`/`errs2` are soft corrections, not verdicts. D-STAR confirms on a CRC-16/X.25 — the RF header via
   `processDSTAR_HD()`, or the header rebroadcast in `dstar_slow_data.c` — and both confirm on a second frame arriving

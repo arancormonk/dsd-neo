@@ -5,7 +5,7 @@
 
 /**
  * @file
- * @brief Whether a ProVoice transmission has proved itself well enough to hold a hunt profile.
+ * @brief Whether a ProVoice transmission has proved itself well enough to hold a hunt profile and play its voice.
  *
  * ProVoice has nothing checkable in it. processProVoice() spends 736 dibits per call and the
  * frame carries no CRC, no BCH and no parity outside the vocoder's own codes: the 64-bit opening
@@ -19,12 +19,19 @@
  * What is checkable is that the stream keeps coming. A real voice channel emits frames
  * back to back, each behind a fresh 32-symbol sync word matched exactly, with no error
  * budget; noise does not supply a second one. So a frame counts as weak evidence and has to
- * repeat: two in a row confirm, and getFrameSync() runs the no-carrier hook -- which resets
- * this module -- after DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS matchless symbols, so "in a row"
- * cannot span a dead channel. Against noise that is roughly 4 patterns x 1800 symbols x
- * 2^-32, under two in a million per false match. A real call confirms on its second frame,
- * about 77 ms in, and a single dropped sync mid-call does not break the streak because one
- * missed frame is far short of a whole matchless pass.
+ * repeat: two in a row confirm. "In a row" means the second frame's sync follows the first
+ * frame by one frame, 768 symbols (provoice_confirm_note_frame_start()), as the dPMR and
+ * NXDN48 gates measure it; getFrameSync() also runs the no-carrier hook -- which resets this
+ * module -- after DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS matchless symbols. Against noise a
+ * second exact 32-symbol word one frame after the first is about 4 patterns x 2^-32 per
+ * false match. A real call confirms on its second frame, about 77 ms in; a sync dropped
+ * before that starts the streak over, and one dropped once the call is confirmed changes
+ * nothing, the confirmation being sticky until the carrier goes.
+ *
+ * The same verdict gates the voice: processProVoice() hands a frame's IMBE pairs to the
+ * vocoder, the speaker, the recordings and the call record only once the transmission is
+ * confirmed, so a lone sync word on noise plays nothing, at the cost of a transmission's first
+ * frame (four IMBE frames, 80 ms).
  *
  * The LID would be the obvious content to key on, if it repeated within a transmission. In the
  * committed provoice fixture, one transmission of 40 frames, the field read as the LID takes 16
@@ -42,6 +49,7 @@
 #define DSD_NEO_PROTOCOL_PROVOICE_PROVOICE_CONFIRM_H
 
 #include <dsd-neo/core/state_fwd.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -56,10 +64,24 @@ typedef enum {
 } provoice_evidence;
 
 /** @brief Frames of weak evidence in a row that together confirm a transmission. */
-#define PROVOICE_CONFIRM_WEAK_OBSERVES 2U
+#define PROVOICE_CONFIRM_WEAK_OBSERVES      2U
+
+/** @brief Symbols from one frame's start to the next's in a transmission (a 32-symbol sync word and the 736 symbols
+ * behind it), and the slip either way a run allows. */
+#define PROVOICE_CONFIRM_FRAME_SYMBOLS      768U
+#define PROVOICE_CONFIRM_FRAME_SYMBOLS_SLIP 1U
 
 /** @brief Forget everything learned about the current transmission. */
 void provoice_confirm_reset(dsd_state* state);
+
+/**
+ * @brief Say where a frame whose contents are about to be read begins, before provoice_confirm_begin_frame().
+ *
+ * @p frame_symbol is dsd_state::symbolcnt at the same point of every frame. A frame runs on only from one read
+ * PROVOICE_CONFIRM_FRAME_SYMBOLS (within the slip) before it; one that does not starts the weak streak over. Without
+ * this call a frame runs on (the unit tests' frames, one after another).
+ */
+void provoice_confirm_note_frame_start(dsd_state* state, uint32_t frame_symbol);
 
 /** @brief Start a frame's evidence accounting; call once before decoding its contents. */
 void provoice_confirm_begin_frame(dsd_state* state);
