@@ -62,6 +62,10 @@ Item {
     property int step: 0
     // -1 appends a new system; >= 0 edits in place.
     property int editRow: -1
+    // The edited system's name as the edit opened: a save sends the name only
+    // when the field no longer says this, so an update that renamed the system
+    // meanwhile (a generated name following its site) is not undone.
+    property string editOpenedName: ""
     property string decryptionProfileUid: ""
 
     // Step 1 state
@@ -467,6 +471,7 @@ Item {
         biasTee = sys.biasTee;
         extraField.text = sys.extraArgs;
         nameField.text = sys.name;
+        editOpenedName = sys.name;
         chanCsvPath = sys.chanCsvPath;
         groupCsvPath = sys.groupCsvPath;
         chanCsvGenerated = generatedByRadioReference(chanCsvPath);
@@ -697,6 +702,8 @@ Item {
                 sys[key] = importedSite[key];
         }
         if (editRow >= 0) {
+            if (sys.name === editOpenedName.trim())
+                delete sys.name;
             if (!savedSystems.update(editRow, sys)) {
                 csvNotice = qsTr("Could not save the system.");
                 csvNoticeIsProblem = true;

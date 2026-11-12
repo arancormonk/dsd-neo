@@ -13772,7 +13772,9 @@ Qt Quick frontend (`src/ui/qt`):
   or a CSV field, then applies what the edit carries of its own of `rrSid`, `rrSiteId`, `siteName`, the position and
   `place` (validated): an ordinary edit carries none and ends cleared, an edit-mode re-import keeps its fresh identity.
   Any edit carrying a changed `siteName` and the row's own `rrSiteId` renames a generated `base — oldSite` name
-  (`site_generated_name()`), with or without a tuning change. `clearCsvPath` (a library file removed) and
+  (`site_generated_name()`), with or without a tuning change; an edit with no `name` keeps the stored one (the wizard
+  sends `name` only when its field no longer reads as it opened, so an editor opened before an Update from
+  RadioReference does not undo that rename). `clearCsvPath` (a library file removed) and
   `invalidatePathProvenance` (a library file replaced with the user's own bytes, keeping the path; see "Replacing a
   library file in place") apply it to every row naming the path. Load drops what a row outside a group cannot use: its
   `avoidSite` (a lone RadioReference site keeps its avoid: its "1 site" chooser lifts it), and the `siteName` and

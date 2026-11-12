@@ -424,6 +424,37 @@ Item {
             compare(Object.keys(savedSystems.get(0).place).length, 0, "the old site's place stayed");
         }
 
+        // An edit opened before Update from RadioReference renamed the site
+        // (and the generated name with it) saves without touching the name:
+        // the refreshed name stays, not the one the editor opened with. A
+        // name the user typed is theirs, before or after such an update.
+        function test_edit_open_across_a_site_rename_keeps_the_new_name() {
+            var row = site(16863, "851");
+            row.name = "SARA — Old";
+            row.siteName = "Old";
+            verify(savedSystems.add(row));
+            loader.item.openForEdit(0);
+            compare(loader.item.nameText, "SARA — Old");
+            verify(savedSystems.update(0, {rrSiteId: 16863, siteName: "New"}), "the update renames the site");
+            compare(savedSystems.get(0).name, "SARA — New");
+            loader.item.commit();
+            compare(savedSystems.get(0).siteName, "New");
+            compare(savedSystems.get(0).name, "SARA — New", "the editor's old name came back");
+
+            loader.item.openForEdit(0);
+            loader.item.nameText = "My SARA";
+            loader.item.commit();
+            compare(savedSystems.get(0).name, "My SARA", "a real rename");
+
+            loader.item.openForEdit(0);
+            loader.item.nameText = "Mine";
+            verify(savedSystems.update(0, {rrSiteId: 16863, siteName: "Newer"}));
+            compare(savedSystems.get(0).name, "My SARA", "a custom name is not generated");
+            loader.item.commit();
+            compare(savedSystems.get(0).name, "Mine", "typed during the update, it is saved");
+            compare(savedSystems.get(0).siteName, "Newer");
+        }
+
         // Issue #803: stale files on adoption. A library file the way a
         // RadioReference import adopts one, or the way the CSV picker does.
         function libraryFile(name, kind, generated) {
