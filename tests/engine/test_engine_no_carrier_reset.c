@@ -1039,6 +1039,31 @@ __wrap_p25_sm_tick_guard_try_enter(void) {
     return __real_p25_sm_tick_guard_try_enter();
 }
 
+/* The decoder's realtime clock while a live case runs (issue #834): dsd_realtime_mono_ms() and dsd_sleep_ms() are
+   wrapped, and on the thread that runs the case a sleep moves this fake clock instead of waiting, so the PCM read's
+   500 ms stream pause passes in no real time. Every other thread, and this one outside a live case, gets the real
+   ones. */
+static _Thread_local int g_live_fake_realtime = 0;
+static _Thread_local uint64_t g_live_realtime_ms = 0U;
+uint64_t __real_dsd_realtime_mono_ms(void);
+uint64_t __wrap_dsd_realtime_mono_ms(void);
+void __real_dsd_sleep_ms(unsigned int ms);
+void __wrap_dsd_sleep_ms(unsigned int ms);
+
+uint64_t
+__wrap_dsd_realtime_mono_ms(void) {
+    return g_live_fake_realtime ? g_live_realtime_ms : __real_dsd_realtime_mono_ms();
+}
+
+void
+__wrap_dsd_sleep_ms(unsigned int ms) {
+    if (g_live_fake_realtime) {
+        g_live_realtime_ms += ms;
+        return;
+    }
+    __real_dsd_sleep_ms(ms);
+}
+
 // NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 #endif
 
@@ -11424,8 +11449,9 @@ test_untyped_goto_over_a_pending_goto(void) {
 /*
  * Issue #834 (B1, B2): the live loop (dsd_engine_test_live_scanner_run()) over an input that goes silent, with the real
  * frame-sync hunt, the real symbol reader, the engine's frame-sync hooks and the real interruption routing, on the TEST
- * decode clock. A silent UDP input waits in its real slices (each one also moves the decode clock by its length, so the
- * real stream pause of a PCM read is the decode time it spans too); a stalled RTL stream comes back DSD_RTL_READ_IDLE
+ * decode clock. A silent UDP input waits in its slices on the fake realtime clock (__wrap_dsd_sleep_ms()), each one
+ * moving the decode clock by its length too, so the PCM read's realtime stream pause is the decode time it spans and
+ * takes no real time; a stalled RTL stream comes back DSD_RTL_READ_IDLE
  * to a read that asks for the bound, 100 ms of decode time each, and a read that does not ask waits, as the real one
  * does, until the stall ends. A scan step or a command the silence held back shows by when it happened: before the
  * input came back, or only after.
@@ -11435,6 +11461,7 @@ test_untyped_goto_over_a_pending_goto(void) {
 #define LIVE_SAMPLE_NS    20833ULL /* one 48 kHz sample */
 #define LIVE_RTL_READ_MAX 480U
 #define LIVE_PASS_CAP     200
+#define LIVE_UDP          (-1) /* the input is UDP, not an RTL output kind (RTL_STREAM_OUTPUT_AUDIO_MONITOR is 0) */
 #define LIVE_RTL_IDLE_NS  (100ULL * LIVE_NS_PER_MS)
 
 static struct {
@@ -11583,8 +11610,8 @@ live_stream_generation(void) {
 }
 
 /* The live loop's session: the engine's frame-sync hooks, the frontend runtime (the command queue the pump drains), the
-   TEST decode clock at LIVE_T0_NS, an input silent for @p silent_ms, and the input: UDP, or a live RTL stream of
-   @p output_kind (0: UDP). */
+   TEST decode clock at LIVE_T0_NS, an input silent for @p silent_ms, and the input: UDP (@p output_kind LIVE_UDP, on
+   the fake realtime clock), or a live RTL stream of @p output_kind. */
 static void
 live_session_start(dsd_opts* opts, dsd_state* state, int output_kind, uint64_t silent_ms) {
     DSD_MEMSET(&g_live, 0, sizeof g_live);
@@ -11597,7 +11624,9 @@ live_session_start(dsd_opts* opts, dsd_state* state, int output_kind, uint64_t s
     live_clock_set(LIVE_T0_NS);
     g_live.silent_until_ns = LIVE_T0_NS + silent_ms * LIVE_NS_PER_MS;
     dsd_engine_frame_sync_hooks_install();
-    if (output_kind == 0) {
+    if (output_kind == LIVE_UDP) {
+        g_live_realtime_ms = __real_dsd_realtime_mono_ms();
+        g_live_fake_realtime = 1;
         opts->audio_in_type = AUDIO_IN_UDP;
         dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){.udp_read_sample_wait = live_udp_read_sample_wait});
     } else {
@@ -11621,6 +11650,7 @@ live_session_start(dsd_opts* opts, dsd_state* state, int output_kind, uint64_t s
 
 static void
 live_session_stop(dsd_opts* opts, dsd_state* state) {
+    g_live_fake_realtime = 0;
     dsd_app_frontend_runtime_stop();
     dsd_frame_sync_hooks_set(NULL);
     dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
@@ -11750,7 +11780,7 @@ test_live_y_steps_over_a_silent_input(int output_kind, const char* what, uint64_
         return 1;
     }
     live_session_start(opts, state, output_kind, silent_ms);
-    live_y_list(opts, state, output_kind ? 991012500L : 992012500L);
+    live_y_list(opts, state, output_kind != LIVE_UDP ? 991012500L : 992012500L);
     const int64_t stepped_ms = live_run_until(opts, state, live_y_stepped);
     char label[128];
     DSD_SNPRINTF(label, sizeof label, "-Y over a silent %s steps at its hangtime", what);
@@ -11769,7 +11799,7 @@ test_live_trunk_scan_advances_over_a_silent_input(int output_kind, const char* w
     }
     live_session_start(opts, state, output_kind, silent_ms);
     char path[DSD_TEST_PATH_MAX];
-    const long int base_hz = output_kind ? 993012500L : 994012500L;
+    const long int base_hz = output_kind != LIVE_UDP ? 993012500L : 994012500L;
     g_live_second_hz = base_hz + 1000000L;
     int rc = expect_true("live trunk scan set up", live_trunk_scan(opts, state, path, sizeof path, base_hz) == 0);
     if (rc == 0) {
@@ -11800,7 +11830,7 @@ test_live_held_y_released_over_a_silent_input(int output_kind, const char* what,
         return 1;
     }
     live_session_start(opts, state, output_kind, silent_ms);
-    live_y_list(opts, state, output_kind ? 995012500L : 996012500L);
+    live_y_list(opts, state, output_kind != LIVE_UDP ? 995012500L : 996012500L);
     state->lcn_scan_hold = 1;
     g_live.command_id = DSD_APP_CMD_SCAN_HOLD_TOGGLE;
     g_live.command_at_ns = LIVE_T0_NS + 2500ULL * LIVE_NS_PER_MS;
@@ -11865,17 +11895,80 @@ test_live_analog_y_steps_over_an_idle_monitor(void) {
     return rc;
 }
 
+/* A paused scan owns nothing (engine_scan_owns_hunt()): the operator holds the tuner. A trunk scan paused in place
+   (trunk_scan_paused) or a paused -Y list (lcn_scan_paused, scanner_mode off, no resume pending) over an input that
+   went silent raises no scan-idle interruption: the hunt keeps waiting until the input comes back, tuning nothing, and
+   a command queued meanwhile still takes the decoder back (with no reason of its own). */
+static int
+test_live_paused_scan_keeps_waiting(int output_kind, const char* what, int trunk) {
+    int rc = 0;
+    for (int command = 0; command <= 1; command++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        live_session_start(opts, state, output_kind, 3000U);
+        char path[DSD_TEST_PATH_MAX] = {0};
+        const long int base_hz = 998012500L + (output_kind != LIVE_UDP ? 4000000L : 0L) + (trunk ? 2000000L : 0L);
+        if (trunk) {
+            g_live_second_hz = base_hz + 1000000L;
+            rc |= expect_true("paused live trunk scan set up",
+                              live_trunk_scan(opts, state, path, sizeof path, base_hz) == 0);
+            p25_sm_tick_guard_enter();
+            rc |= expect_true("live trunk scan paused in place",
+                              dsd_engine_trunk_scan_pause_locked(opts, state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE) == 0
+                                  && state->trunk_scan_paused == 1U);
+            p25_sm_tick_guard_leave();
+            g_rtl_tune_calls = 0;
+            g_rigctl_setfreq_calls = 0;
+        } else {
+            live_y_list(opts, state, base_hz);
+            opts->scanner_mode = 0;
+            state->lcn_scan_paused = 1;
+        }
+        char label[160];
+        if (command) {
+            opts->payload = 0;
+            g_live.command_id = DSD_APP_CMD_PAYLOAD_TOGGLE;
+            g_live.command_at_ns = LIVE_T0_NS + 1000ULL * LIVE_NS_PER_MS;
+            const int64_t applied_ms = live_run_until(opts, state, live_payload_toggled);
+            DSD_SNPRINTF(label, sizeof label, "a paused %s over a silent %s still takes a command",
+                         trunk ? "trunk scan" : "-Y", what);
+            rc |= live_expect_between(label, applied_ms, 1000, 1600);
+        } else {
+            dsd_engine_test_live_scanner_run(opts, state, 1);
+            DSD_SNPRINTF(label, sizeof label, "a paused %s over a silent %s keeps its hunt waiting for the input",
+                         trunk ? "trunk scan" : "-Y", what);
+            rc |= live_expect_between(label, (int64_t)live_elapsed_ms(), 3000, 5000);
+        }
+        DSD_SNPRINTF(label, sizeof label, "a paused %s over a silent %s tunes nothing", trunk ? "trunk scan" : "-Y",
+                     what);
+        rc |= expect_true(label, live_tunes() == 0);
+        if (trunk) {
+            dsd_engine_trunk_scan_shutdown(opts, state);
+            (void)remove(path);
+        }
+        live_session_stop(opts, state);
+    }
+    return rc;
+}
+
 static int
 test_live_scan_over_silent_inputs(void) {
     int rc = 0;
-    rc |= test_live_y_steps_over_a_silent_input(0, "UDP input", 5000U);
-    rc |= test_live_trunk_scan_advances_over_a_silent_input(0, "UDP input", 3000U);
-    rc |= test_live_held_y_released_over_a_silent_input(0, "UDP input", 7000U);
+    rc |= test_live_y_steps_over_a_silent_input(LIVE_UDP, "UDP input", 5000U);
+    rc |= test_live_trunk_scan_advances_over_a_silent_input(LIVE_UDP, "UDP input", 3000U);
+    rc |= test_live_held_y_released_over_a_silent_input(LIVE_UDP, "UDP input", 7000U);
     rc |= test_live_y_steps_over_a_silent_input(RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR, "RTL stream", 20000U);
     rc |= test_live_trunk_scan_advances_over_a_silent_input(RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR, "RTL stream", 20000U);
     rc |= test_live_held_y_released_over_a_silent_input(RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR, "RTL stream", 20000U);
     rc |= test_live_command_applied_over_a_stalled_rtl_stream();
     rc |= test_live_analog_y_steps_over_an_idle_monitor();
+    rc |= test_live_paused_scan_keeps_waiting(LIVE_UDP, "UDP input", 0);
+    rc |= test_live_paused_scan_keeps_waiting(LIVE_UDP, "UDP input", 1);
+    rc |= test_live_paused_scan_keeps_waiting(RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR, "RTL stream", 0);
+    rc |= test_live_paused_scan_keeps_waiting(RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR, "RTL stream", 1);
     return rc;
 }
 #endif

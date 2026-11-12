@@ -8444,6 +8444,8 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=p25_sm_tick_guard_try_enter"
             "-Wl,--wrap=dsd_engine_manual_tune_supersede"
             "-Wl,--wrap=rtl_stream_session_generation"
+            "-Wl,--wrap=dsd_realtime_mono_ms"
+            "-Wl,--wrap=dsd_sleep_ms"
             ${LIBS}
             dsd-neo_feature_radio
             dsd-neo_test_support
