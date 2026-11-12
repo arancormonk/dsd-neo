@@ -1179,6 +1179,50 @@ test_coalescing() {
     check("and every card has its stamp", f.at(99, SavedSystemCards::LastHeardRole).toLongLong() == 1099);
 }
 
+/* a11y2 A/C: rebuilt() comes once per rebuild, changed or not, after its row signals and shownCountChanged, with
+   the rows already settled: Home answers the changes it noted then, with one tree refresh for Android's bridge. */
+void
+test_rebuilt_after_the_rows() {
+    Fixture f;
+    QVariantList rows;
+    for (int i = 0; i < 6; ++i) {
+        rows.append(plain(QStringLiteral("Unit %1").arg(i), QStringLiteral("851.%1").arg(i)));
+    }
+    f.add(rows);
+    f.cards->setScreenReaderActive(true);
+    settle();
+    QStringList order;
+    int rebuilds = 0;
+    QString firstAtRebuilt;
+    int shownAtRebuilt = -1;
+    QObject::connect(f.cards.get(), &QAbstractItemModel::dataChanged, f.cards.get(),
+                     [&order]() { order.append(QStringLiteral("rows")); });
+    QObject::connect(f.cards.get(), &SavedSystemCards::shownCountChanged, f.cards.get(),
+                     [&order]() { order.append(QStringLiteral("shown")); });
+    QObject::connect(f.cards.get(), &SavedSystemCards::rebuilt, f.cards.get(), [&]() {
+        order.append(QStringLiteral("rebuilt"));
+        ++rebuilds;
+        firstAtRebuilt = f.at(0, SavedSystemCards::TitleRole).toString();
+        shownAtRebuilt = f.cards->shownCount();
+    });
+    const int before = f.cards->rebuildCount();
+    f.cards->setQuery(QStringLiteral("Unit 4"));
+    f.prefs.setSystemsSort(QStringLiteral("name"));
+    check("nothing rebuilt inside the turn", rebuilds == 0);
+    settle();
+    check("one rebuilt for one coalesced rebuild", rebuilds == 1 && f.cards->rebuildCount() == before + 1);
+    check("after the rows and the count", !order.isEmpty() && order.last() == QStringLiteral("rebuilt")
+                                              && order.contains(QStringLiteral("rows"))
+                                              && order.contains(QStringLiteral("shown")));
+    check("with the rows settled", firstAtRebuilt == QStringLiteral("Unit 4") && shownAtRebuilt == 1);
+    order.clear();
+    f.cards->setQuery(QStringLiteral("Unit"));
+    f.cards->setQuery(QStringLiteral("Unit 4"));
+    settle();
+    check("a rebuild that changes nothing still says so",
+          rebuilds == 2 && order == QStringList({QStringLiteral("rebuilt")}));
+}
+
 /* Random renames, filters and sorts: a view that follows only the signals always ends where the model is. */
 void
 test_signals_follow_random_changes() {
@@ -1363,6 +1407,7 @@ main(int argc, char** argv) {
     test_lapsed_fix_is_dropped_at_the_next_rebuild();
     test_reader_off_and_unheld_background();
     test_coalescing();
+    test_rebuilt_after_the_rows();
     test_signals_follow_random_changes();
     test_refresh_hint();
     test_timing();

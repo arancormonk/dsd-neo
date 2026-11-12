@@ -87,6 +87,21 @@ Rectangle {
         Accessible.passwordEdit: echoMode === TextInput.Password
         readonly property bool navigationAllowed: Navigation.allows(control)
         Accessible.ignored: !navigationAllowed || !visible
+        // A field that keeps the focus takes Enter and Return (the keyboard's
+        // action key, a hardware keyboard's Enter or its keypad's), pressed
+        // and released: TextInput lets both through after `accepted`, and on
+        // Android a hardware Enter that went on moved the keyboard focus to
+        // the next control, where the next letter typed was lost. After the
+        // item, so `accepted` still comes from TextInput itself.
+        Keys.priority: Keys.AfterItem
+        Keys.onPressed: function (event) {
+            if (control.keepsFocusOnEnter && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter))
+                event.accepted = true;
+        }
+        Keys.onReleased: function (event) {
+            if (control.keepsFocusOnEnter && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter))
+                event.accepted = true;
+        }
         onAccepted: {
             control.accepted();
             if (control.nextField)

@@ -3621,6 +3621,7 @@ class AccessibilityCounter {
         r.owners.clear();
         r.scopes.clear();
         r.chains.clear();
+        r.sequence.clear();
     }
 
     /** @brief Put the handler that was installed before start() back. The counts stay readable. */
@@ -3637,8 +3638,9 @@ class AccessibilityCounter {
 
     /**
      * @brief The counts since start(): {total, types: {Type: n}, owners: {name: {Type: n}},
-     * chains: {"Type name < named ancestor < ...": n}}. Emitters with no named object on their chain count under
-     * "<unnamed>".
+     * chains: {"Type name < named ancestor < ...": n}, sequence: ["Type name < ...", ...]}: the sequence is the
+     * events in the order raised (the first kMaxSequence), for a case that asserts on an order. Emitters with no
+     * named object on their chain count under "<unnamed>".
      */
     static QVariantMap
     counts() {
@@ -3648,6 +3650,7 @@ class AccessibilityCounter {
         out.insert(QStringLiteral("types"), toMap(r.types));
         out.insert(QStringLiteral("owners"), nested(r.owners));
         out.insert(QStringLiteral("chains"), toMap(r.chains));
+        out.insert(QStringLiteral("sequence"), r.sequence);
         return out;
     }
 
@@ -3668,10 +3671,13 @@ class AccessibilityCounter {
         QHash<QString, QHash<QString, qint64>> owners;
         QHash<const QObject*, QHash<QString, qint64>> scopes;
         QHash<QString, qint64> chains;
+        QStringList sequence;
     };
 
     /* Distinct chains kept for failure messages; the totals above are never capped. */
     static constexpr int kMaxChains = 2000;
+    /* Events kept in order; the totals above are never capped. */
+    static constexpr int kMaxSequence = 2000;
     /* Far deeper than any screen nests; it only bounds the walk. */
     static constexpr int kMaxDepth = 256;
 
@@ -3738,6 +3744,9 @@ class AccessibilityCounter {
                               + (names.isEmpty() ? QStringLiteral("<unnamed>") : names.join(QStringLiteral(" < ")));
         if (r.chains.contains(chain) || r.chains.size() < kMaxChains) {
             ++r.chains[chain];
+        }
+        if (r.sequence.size() < kMaxSequence) {
+            r.sequence.append(chain);
         }
         forward(event);
     }

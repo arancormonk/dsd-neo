@@ -411,6 +411,65 @@ Item {
         }
     }
 
+    // With a screen reader, Android's bridge keeps its own copy of the tree
+    // and reads it again only for a show or hide (docs/code_map.md, Network
+    // sheet). The cards' positional rows rename, hold and take back rows, and
+    // hold the parts a card lacks, with neither, so Android's copy kept a
+    // row's last card: TalkBack read it, and its focus, which Qt's bridge
+    // carries out as the keyboard focus, landed on parts that had gone, so Tab
+    // skipped controls. Once such a change has landed, one show or hide of
+    // this node (transparent, unnamed and not focusable, under the window's
+    // content item, as each ModalSheet's) has the bridge read the window's
+    // tree again: one event, where a show or hide in the list made it fetch
+    // the scroll body, with every card under it, each time. Made on the first
+    // change, visible as a new item is, so making it raises nothing. Changes
+    // are noted as they come (a row's card, a held row, a line over the
+    // cards) and answered once the cards' rebuild that settles them has been
+    // applied (`rebuilt`): one event a change.
+    property Item systemsTreeRefresh: null
+    property bool systemsTreeOwed: false
+    function noteSystemsChanged() {
+        if (savedSystemCards.screenReaderActive && visible && section === "systems")
+            systemsTreeOwed = true;
+    }
+    function refreshSystemsTree() {
+        if (!systemsTreeOwed)
+            return;
+        systemsTreeOwed = false;
+        if (!savedSystemCards.screenReaderActive || !visible || section !== "systems")
+            return;
+        if (systemsTreeRefresh === null) {
+            if (!Window.contentItem)
+                return;
+            systemsTreeRefresh = systemsTreeRefreshComponent.createObject(Window.contentItem);
+        }
+        systemsTreeRefresh.visible = !systemsTreeRefresh.visible;
+    }
+    Component.onDestruction: {
+        if (systemsTreeRefresh !== null)
+            systemsTreeRefresh.destroy();
+    }
+    Component {
+        id: systemsTreeRefreshComponent
+        Item {
+            objectName: "savedSystemsTreeRefresh"
+            width: 0
+            height: 0
+            opacity: 0
+            Accessible.role: Accessible.Grouping
+            Accessible.focusable: false
+        }
+    }
+    Connections {
+        target: savedSystemCards
+        function onShownCountChanged() {
+            screen.noteSystemsChanged();
+        }
+        function onRebuilt() {
+            screen.refreshSystemsTree();
+        }
+    }
+
     // A card that leaves with the keyboard on it (filtered out, removed) hands
     // it to the search field, or to Add a system with nothing saved; checked
     // once the cards and a closing sheet's own hand-back have settled.
@@ -446,9 +505,16 @@ Item {
     Connections {
         target: Navigation
         function onTopModalChanged() {
+            // After the closing sheet's own deferred hand-back (ModalSheet's
+            // restoreFocus), queued behind this: with its opener gone (the
+            // card that left) it puts the focus on Home, and the hand-on to the
+            // search field must come after it.
             if (screen.systemsFocusOwed && !Navigation.topModal)
-                systemsFocusTimer.restart();
+                Qt.callLater(screen.settleSystemsFocusLater);
         }
+    }
+    function settleSystemsFocusLater() {
+        systemsFocusTimer.restart();
     }
 
     // Issue #646 B3: keyboard focus moving onto a control in the body scrolls
@@ -1003,6 +1069,7 @@ Item {
                     onYChanged: listenSystemsSection.place()
                     onHeightChanged: listenSystemsSection.place()
                     onOpenRadioReferenceAccount: screen.openRadioReferenceAccount()
+                    onPartsShownChanged: screen.noteSystemsChanged()
                     onRevealRequested: screen.revealSystemsTop()
                     // A keyboard on them goes to Add a system.
                     onEmptied: function (hadFocus) {
@@ -1028,6 +1095,18 @@ Item {
                 // invisible) and unnamed, so a copy Android still holds reads
                 // nothing, taking no press or keyboard, and below the section's
                 // end; a longer list takes it back before a row is added.
+                //
+                // A part one card has and another lacks (the section heading,
+                // the place and receiver lines, the refresh hint, the site
+                // button, Play) is shown or hidden with `visible` without a
+                // screen reader. With one, the row's next card would show or
+                // hide it, and each show or hide makes the Android bridge
+                // fetch the part's parent again (the scroll body, with every
+                // card under it): ~140 per sort at 300 cards left TalkBack
+                // silent for over a minute. So in positional rows every such
+                // part stays visible and is held as a held row is: transparent
+                // (Qt reports it invisible), unnamed and out of the tree, off
+                // Tab and presses (disabled), and no height in its column.
                 Repeater {
                     id: systemCards
 
@@ -1063,6 +1142,9 @@ Item {
                         required property bool rrLinked
                         required property string receiverLabel
                         required property bool held
+                        // Rows are positional (a screen reader): a part this
+                        // card lacks is held, never hidden (see the Repeater).
+                        readonly property bool positional: savedSystemCards.screenReaderActive
                         // Held, once the keyboard was handed on (noteCardRemoved()
                         // reads it still on the card): no press or keyboard.
                         property bool parked: false
@@ -1076,21 +1158,33 @@ Item {
                             if (held)
                                 screen.noteCardRemoved(entry);
                             parked = held;
+                            screen.noteSystemsChanged();
                         }
+                        // Another card at this row (positional rows).
+                        onKeyChanged: screen.noteSystemsChanged()
                         onYChanged: if (listenSystemsSection.rowsHeld) listenSystemsSection.place()
                         onHeightChanged: if (listenSystemsSection.rowsHeld) listenSystemsSection.place()
 
                         // Place and Nearest order: the section's name over its first card.
-                        MicroLabel {
-                            objectName: "savedSystemSection"
-                            visible: entry.sectionStart && entry.section.length > 0
+                        // The slot takes the height (none while not shown), so the
+                        // column skips it; the text keeps its own.
+                        Item {
                             width: parent.width
-                            topPadding: 6
-                            wrapMode: Text.Wrap
-                            text: entry.section
-                            Accessible.name: entry.held ? "" : text
-                            Accessible.focusable: navigationAllowed && visible && !entry.held
-                            Accessible.ignored: !navigationAllowed || !visible || entry.held
+                            height: sectionHeading.shown ? sectionHeading.implicitHeight : 0
+                            visible: sectionHeading.shown || entry.positional
+                            MicroLabel {
+                                id: sectionHeading
+                                objectName: "savedSystemSection"
+                                readonly property bool shown: entry.sectionStart && entry.section.length > 0
+                                opacity: shown ? 1 : 0
+                                width: parent.width
+                                topPadding: 6
+                                wrapMode: Text.Wrap
+                                text: entry.section
+                                Accessible.name: entry.held || !shown ? "" : text
+                                Accessible.focusable: navigationAllowed && visible && shown && !entry.held
+                                Accessible.ignored: !navigationAllowed || !visible || !shown || entry.held
+                            }
                         }
 
                         UiPanel {
@@ -1157,7 +1251,6 @@ Item {
                                     objectName: "savedSystemSource"
                                     Accessible.ignored: !navigationAllowed || !visible || entry.held
                                     Accessible.name: navigationAllowed && visible && !entry.held ? text : ""
-                                    // Names the receiver when another card has this title.
                                     text: Util.systemMeta(entry)
                                     font.family: Theme.mono
                                     font.pixelSize: Theme.fontSize(12)
@@ -1165,18 +1258,48 @@ Item {
                                     elide: Text.ElideRight
                                 }
 
-                                // Where it is, and in Nearest order how far.
-                                ReadableText {
+                                // The receiver, when another card has this title
+                                // (one system saved for two receivers): a line of
+                                // its own that wraps, so the address is never cut.
+                                Item {
                                     width: parent.width
-                                    objectName: "savedSystemPlace"
-                                    Accessible.ignored: !navigationAllowed || !visible || entry.held
-                                    Accessible.name: navigationAllowed && visible && !entry.held ? text : ""
-                                    visible: card.placeText.length > 0
-                                    text: card.placeText
-                                    font.family: Theme.sans
-                                    font.pixelSize: Theme.fontSize(13)
-                                    color: Theme.textSecondary
-                                    elide: Text.ElideRight
+                                    height: receiverLine.shown ? receiverLine.implicitHeight : 0
+                                    visible: receiverLine.shown || entry.positional
+                                    ReadableText {
+                                        id: receiverLine
+                                        width: parent.width
+                                        objectName: "savedSystemReceiver"
+                                        readonly property bool shown: entry.receiverLabel.length > 0
+                                        opacity: shown ? 1 : 0
+                                        Accessible.ignored: !navigationAllowed || !visible || !shown || entry.held
+                                        Accessible.name: navigationAllowed && visible && shown && !entry.held ? text : ""
+                                        text: entry.receiverLabel
+                                        wrapMode: Text.Wrap
+                                        font.family: Theme.mono
+                                        font.pixelSize: Theme.fontSize(12)
+                                        color: Theme.textSubdued
+                                    }
+                                }
+
+                                // Where it is, and in Nearest order how far.
+                                Item {
+                                    width: parent.width
+                                    height: placeLine.shown ? placeLine.implicitHeight : 0
+                                    visible: placeLine.shown || entry.positional
+                                    ReadableText {
+                                        id: placeLine
+                                        width: parent.width
+                                        objectName: "savedSystemPlace"
+                                        readonly property bool shown: card.placeText.length > 0
+                                        Accessible.ignored: !navigationAllowed || !visible || !shown || entry.held
+                                        Accessible.name: navigationAllowed && visible && shown && !entry.held ? text : ""
+                                        opacity: shown ? 1 : 0
+                                        text: card.placeText
+                                        font.family: Theme.sans
+                                        font.pixelSize: Theme.fontSize(13)
+                                        color: Theme.textSecondary
+                                        elide: Text.ElideRight
+                                    }
                                 }
 
                                 ReadableText {
@@ -1196,12 +1319,13 @@ Item {
                             ReadableText {
                                 id: refreshHintText
                                 objectName: "savedSystemRefreshHint"
-                                Accessible.ignored: !navigationAllowed || !visible || entry.held
-                                Accessible.name: navigationAllowed && visible && !entry.held ? text : ""
+                                Accessible.ignored: !navigationAllowed || !visible || !card.refreshHint || entry.held
+                                Accessible.name: navigationAllowed && visible && card.refreshHint && !entry.held ? text : ""
                                 x: Theme.cardPadding
                                 y: card.hintTop
                                 width: parent.width - 2 * Theme.cardPadding
-                                visible: card.refreshHint
+                                visible: card.refreshHint || entry.positional
+                                opacity: card.refreshHint ? 1 : 0
                                 text: qsTr("Refresh from RadioReference to enable site grouping")
                                 wrapMode: Text.Wrap
                                 color: Theme.textSecondary
@@ -1211,28 +1335,31 @@ Item {
                                 id: siteButton
                                 objectName: "homeSiteChooserButton"
                                 // Says its label too ("2 sites"), which a screen reader otherwise never hears.
-                                accessibleName: entry.held ? "" : qsTr("Choose sites for %1, %2").arg(card.name).arg(text)
-                                Accessible.focusable: navigationAllowed && visible && !entry.held
-                                Accessible.ignored: !navigationAllowed || !visible || entry.held
+                                accessibleName: entry.held || !card.hasSites ? "" : qsTr("Choose sites for %1, %2").arg(card.name).arg(text)
+                                Accessible.focusable: navigationAllowed && visible && card.hasSites && !entry.held
+                                Accessible.ignored: !navigationAllowed || !visible || !card.hasSites || entry.held
                                 width: implicitWidth
                                 anchors.right: parent.right
                                 anchors.verticalCenter: play.verticalCenter
                                 anchors.rightMargin: card.playShown ? Theme.cardPadding + play.width + 8 : Theme.cardPadding
                                 text: entry.siteCount === 1 ? qsTr("1 site") : qsTr("%1 sites").arg(entry.siteCount)
-                                visible: card.hasSites
+                                visible: card.hasSites || entry.positional
+                                enabled: card.hasSites
+                                opacity: card.hasSites ? 1 : 0
                                 onClicked: screen.chooseCardSites(entry.leadUid)
                             }
                             PlayCircle {
                                 id: play
-                                accessibleName: entry.held ? "" : entry.sourceType === "file" ? qsTr("Play %1").arg(card.name) : qsTr("Listen to %1").arg(card.name)
-                                Accessible.ignored: !navigationAllowed || !visible || entry.held
+                                accessibleName: entry.held || !card.playShown ? "" : entry.sourceType === "file" ? qsTr("Play %1").arg(card.name) : qsTr("Listen to %1").arg(card.name)
+                                Accessible.ignored: !navigationAllowed || !visible || !card.playShown || entry.held
                                 objectName: "savedSystemPlay"
-                                visible: card.playShown
+                                visible: card.playShown || entry.positional
+                                opacity: !card.playShown ? 0 : enabled ? 1 : 0.5
                                 anchors.right: parent.right
                                 anchors.rightMargin: Theme.cardPadding
                                 anchors.top: parent.top
                                 anchors.topMargin: Theme.minimumTouchSize + 6
-                                enabled: !decoderHost.transitioning
+                                enabled: card.playShown && !decoderHost.transitioning
                                 onClicked: screen.playCard(entry.playUid)
                             }
 

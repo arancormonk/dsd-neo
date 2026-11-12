@@ -32,8 +32,19 @@ Item {
             sheet.open("Sort systems", ["Name"], null);
         }
     }
+    // Return and Enter a field let through to the screen around it (a11y2 E).
+    property int enterPassedOn: 0
+    Keys.onPressed: function (event) {
+        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
+            ++enterPassedOn;
+    }
+    Keys.onReleased: function (event) {
+        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
+            ++enterPassedOn;
+    }
     SignalSpy { id: played; target: home; signalName: "playSystem" }
     SignalSpy { id: accountOpened; target: home; signalName: "openRadioReferenceAccount" }
+    SignalSpy { id: sitesChosen; target: home; signalName: "chooseSites" }
 
     TestCase {
         name: "HomeSystemsSearchSort"
@@ -60,6 +71,7 @@ Item {
             Ui.Theme.resetFontScale();
             played.clear();
             accountOpened.clear();
+            sitesChosen.clear();
             settle();
         }
         function cleanup() {
@@ -821,6 +833,82 @@ Item {
             compare(repeater.count, 3);
         }
 
+        // a11y2 A: with a screen reader the rows are positional, and a part one card has and the row's next card
+        // lacks (the section heading, the place and receiver lines, the refresh hint, the site button, Play) is held,
+        // never hidden: still visible (a show or hide made Android's bridge fetch the scroll body, with every card
+        // under it, again), but transparent, out of the tree and unnamed, with no height in its column, no Tab stop
+        // and no press. A tap where it would be reaches nothing. Without a screen reader it is hidden, as before.
+        function test_screen_reader_holds_the_parts_a_card_lacks_data() {
+            return [{tag: "screen reader", reader: true}, {tag: "no screen reader", reader: false}];
+        }
+        function test_screen_reader_holds_the_parts_a_card_lacks(data) {
+            add("Story Fire", {freqMhz: "154.4", place: iowa("Story", 85)});
+            add("Story Sheriff", {freqMhz: "155.775", place: iowa("Story", 85)});
+            for (var i = 0; i < 2; ++i)
+                site("Alliant Energy", 7, undefined, undefined, {rrSiteId: 70 + i, siteName: "Site " + i});
+            settle();
+            savedSystemCards.screenReaderActive = data.reader;
+            prefs.systemsSort = "place";
+            settle();
+            compare(titles(), ["Story Fire", "Story Sheriff", "Alliant Energy"]);
+            var story = entryTitled("Story Sheriff");
+            var alliant = entryTitled("Alliant Energy");
+            var lacking = [[story, "homeSiteChooserButton"], [story, "savedSystemReceiver"],
+                [story, "savedSystemRefreshHint"], [alliant, "savedSystemPlay"], [alliant, "savedSystemPlace"],
+                [alliant, "savedSystemReceiver"], [alliant, "savedSystemRefreshHint"]];
+            for (var pair of lacking) {
+                var part = findChild(pair[0], pair[1]);
+                var label = pair[0].title + " " + pair[1];
+                verify(part !== null, label);
+                if (!data.reader) {
+                    verify(!part.visible, label + ": hidden");
+                    continue;
+                }
+                verify(part.visible, label + ": held, not hidden");
+                compare(part.opacity, 0, label + ": transparent");
+                verify(part.Accessible.ignored, label + ": out of the tree");
+                compare(part.Accessible.name, "", label + ": unnamed");
+                if (pair[1] === "homeSiteChooserButton" || pair[1] === "savedSystemPlay")
+                    verify(!part.enabled && !part.activeFocusOnTab, label + ": no press or Tab stop");
+            }
+            var heading = findChild(story, "savedSystemSection");
+            verify(data.reader ? heading.visible && heading.opacity === 0 && heading.Accessible.ignored
+                && heading.Accessible.name === "" : !heading.visible, "the second card in its section has no heading");
+            compare(findChild(story, "savedSystemCard").y, 0, "and no room is left for one");
+            if (data.reader) {
+                compare(heading.parent.height, 0, "the held heading takes no height");
+                compare(findChild(alliant, "savedSystemPlace").parent.height, 0, "nor does a missing place line");
+            }
+            // What a card shows reads and draws as before.
+            var storyPlay = findChild(story, "savedSystemPlay");
+            verify(storyPlay.visible && storyPlay.opacity === 1 && !storyPlay.Accessible.ignored && storyPlay.enabled);
+            compare(findChild(story, "savedSystemPlace").Accessible.name, "Story, Iowa");
+            compare(findChild(entryTitled("Story Fire"), "savedSystemSection").Accessible.name, "Iowa");
+            compare(findChild(alliant, "savedSystemSection").Accessible.name, "No place");
+            // A tap where Alliant's Play would be plays nothing (its site button moves over there); one where Story's
+            // site button would be opens no site chooser.
+            tap(findChild(alliant, "savedSystemPlay"));
+            compare(played.count, 0, "nothing played");
+            sitesChosen.clear();
+            if (data.reader)
+                tap(findChild(story, "homeSiteChooserButton"));
+            compare(sitesChosen.count, 0, "no site chooser");
+            // The lines and the × over the cards follow the same rule: with no search, the × is held over the field,
+            // and a tap on it reaches the field; the count line is held with no height.
+            var clear = item("systemsSearchClear");
+            var count = item("systemsSearchCount");
+            if (data.reader) {
+                verify(clear.visible && clear.opacity === 0 && clear.Accessible.ignored && clear.Accessible.name === ""
+                    && !clear.enabled && !clear.activeFocusOnTab, "the × is held");
+                verify(count.visible && count.opacity === 0 && count.height === 0 && !count.enabled, "the count line is held");
+                tap(clear);
+                verify(field().input.activeFocus, "a tap on the held × reaches the field");
+            } else {
+                verify(!clear.visible && !count.visible, "hidden without a screen reader");
+            }
+            savedSystemCards.screenReaderActive = false;
+        }
+
         // R29: Nearest puts the distance before the place, so a long place elides and the distance stays.
         function test_nearest_distance_before_place() {
             testContext.setLocationSupported(true);
@@ -835,26 +923,49 @@ Item {
             compare(findChild(entryTitled("Near"), "savedSystemPlace").text, "Johnson, Iowa", "no distance off Nearest");
         }
 
-        // R29: one system saved on two receivers is two cards of one title; each card's source line then names its
-        // receiver. A title no other shown card has is unchanged.
+        // R29: one system saved on two receivers is two cards of one title; each card then names its receiver, on a
+        // line of its own under the source line (a11y2 D: in the source line it was cut short at phone width and gone
+        // at 1.3x text). The line wraps, so at 320 px and 1.3x the whole receiver is drawn and read. A title no other
+        // shown card has has no receiver line, and its source line is unchanged.
         function test_shared_title_names_the_receiver() {
             site("Metro", 1, undefined, undefined, {sourceType: "usb", freqMhz: "851.0125", decodeFlag: "-fp"});
-            site("Metro", 1, undefined, undefined, {host: "192.168.1.5", freqMhz: "852.0125", decodeFlag: "-fp"});
+            site("Metro", 1, undefined, undefined, {host: "192.168.100.250", port: 61234, freqMhz: "852.0125",
+                decodeFlag: "-fp"});
             add("Story Sheriff", {freqMhz: "155.775"});
             settle();
             compare(titles(), ["Metro", "Metro", "Story Sheriff"]);
-            var sources = entries().map(function (entry) {
+            var receiver = function (entry) {
+                var line = findChild(entry, "savedSystemReceiver");
+                verify(line !== null, entry.title + " has a receiver line");
+                return line;
+            };
+            var source = function (entry) {
                 return findChild(entry, "savedSystemSource").text;
-            });
-            verify(sources[0].indexOf("USB") >= 0, sources[0]);
-            verify(sources[1].indexOf("RTL-TCP 192.168.1.5:1234") >= 0, sources[1]);
-            verify(sources[0] !== sources[1], "the two read apart");
-            verify(sources[2].indexOf("155.775 MHz · RTL-TCP · ") === 0 && sources[2].indexOf("127.0.0.1") < 0,
-                "a unique title is unchanged: " + sources[2]);
+            };
+            var cards = entries();
+            compare(receiver(cards[0]).text, "USB");
+            compare(receiver(cards[1]).text, "RTL-TCP 192.168.100.250:61234");
+            compare(source(cards[0]).indexOf("USB"), -1, "the source line leaves the receiver to its own line");
+            compare(source(cards[1]).indexOf("RTL-TCP"), -1, "which says RTL-TCP itself");
+            verify(!receiver(cards[2]).visible, "a unique title has no receiver line");
+            verify(source(cards[2]).indexOf("155.775 MHz · RTL-TCP · ") === 0 && source(cards[2]).indexOf("127.0.0.1") < 0,
+                "a unique title is unchanged: " + source(cards[2]));
+
+            root.width = 320;
+            Ui.Theme.fontScale = 1.3;
+            settle();
+            var line = receiver(entries()[1]);
+            verify(line.visible && line.opacity === 1, "shown");
+            compare(line.Accessible.name, "RTL-TCP 192.168.100.250:61234", "read whole");
+            verify(!line.truncated, "never cut");
+            verify(line.width <= findChild(entries()[1], "savedSystemSource").width + 0.5, "within the labels' column");
+            verify(line.contentWidth <= line.width + 0.5, "wrapped within its width: " + line.contentWidth + " > " + line.width);
+            verify(line.parent.height >= line.implicitHeight - 0.5, "its row is as tall as its lines");
+
             search("852.0125");
             compare(titles(), ["Metro"]);
-            compare(findChild(entries()[0], "savedSystemSource").text.indexOf("192.168.1.5"), -1,
-                "alone in the list, it names no receiver");
+            verify(!receiver(entries()[0]).visible, "alone in the list, it names no receiver");
+            compare(source(entries()[0]).indexOf("192.168.100.250"), -1);
         }
 
         // R29: keypad Enter (and Return) in the search field hides the keyboard and leaves the field with the focus.
@@ -869,6 +980,25 @@ Item {
                 verify(!item("systemsSearchClear").activeFocus, "not the ×");
                 field().text = "";
             }
+        }
+
+        // a11y2 E: a hardware keyboard's Enter (Return, or the keypad's Enter), pressed and released, stays in the
+        // search field: neither the press nor the release reaches anything around it (on Android the keyboard focus
+        // then moved on to the × and the next letter was lost), the field keeps the keyboard and typing goes on.
+        function test_hardware_enter_stays_in_the_search_field() {
+            addThree();
+            var input = field().input;
+            input.forceActiveFocus();
+            keyClick(Qt.Key_L);
+            for (var key of [Qt.Key_Return, Qt.Key_Enter]) {
+                root.enterPassedOn = 0;
+                keyPress(key);
+                keyRelease(key);
+                compare(root.enterPassedOn, 0, "Enter " + key + " stays in the field");
+                verify(input.activeFocus, "the field keeps the keyboard after " + key);
+                keyClick(Qt.Key_I);
+            }
+            compare(field().text, "lii", "every letter lands in the field");
         }
 
         // A card filtered out with the keyboard on it hands the keyboard to the search field.
@@ -1105,6 +1235,88 @@ Item {
         }
 
         // Tab order: the field, its ×, the pill, then the cards.
+        // a11y2 C: with a screen reader the rows are positional, so after a reorder a row shows a card whose parts
+        // differ from its last one's (a site button, Play). Tab from the Sort pill then visits every control each card
+        // shows, in screen order, once, and nothing a card lacks: as without a screen reader.
+        function tabStops(fromItem) {
+            var stops = [];
+            fromItem.forceActiveFocus();
+            var window = home.Window.window;
+            for (var i = 0; i < 40; ++i) {
+                keyClick(Qt.Key_Tab);
+                var at = window.activeFocusItem;
+                var entry = at;
+                while (entry && entry.objectName !== "savedSystemEntry")
+                    entry = entry.parent;
+                if (!entry) {
+                    if (stops.length > 0)
+                        break;
+                    continue;
+                }
+                stops.push(entry.title + ":" + at.objectName);
+            }
+            return stops;
+        }
+        function expectedStops() {
+            var stops = [];
+            for (var entry of entries()) {
+                if (entry.siteCount > 0)
+                    stops.push(entry.title + ":homeSiteChooserButton");
+                if (entry.playUid.length > 0)
+                    stops.push(entry.title + ":savedSystemPlay");
+                stops.push(entry.title + ":savedSystemManageButton");
+            }
+            return stops;
+        }
+        function test_tab_after_a_positional_reorder_data() {
+            return [{tag: "screen reader", reader: true}, {tag: "no screen reader", reader: false}];
+        }
+        function test_tab_after_a_positional_reorder(data) {
+            testContext.setLocationSupported(true);
+            // Near the first fix: groups of several sites (no Play) first; near the second, single sites first.
+            for (var i = 0; i < 4; ++i)
+                site("Alliant Energy", 7, 41.0 + i * 0.001, -93.6);
+            site("Hill Union EMS", 8, 44.0, -93.6);
+            site("Falls Harbor", 9, 43.9, -93.6);
+            add("Story Sheriff", {freqMhz: "155.775"});
+            site("Ridge Lake", 10, 41.1, -93.6);
+            site("Ridge Lake", 10, 41.101, -93.6);
+            settle();
+            savedSystemCards.screenReaderActive = data.reader;
+            prefs.setLocationFix(41.0, -93.6, savedSystems.realtimeNowMs() - 60000, 25);
+            prefs.systemsSort = "nearest";
+            settle();
+            compare(titles(), ["Alliant Energy", "Ridge Lake", "Falls Harbor", "Hill Union EMS", "Story Sheriff"]);
+            var pill = item("systemsSortPill");
+            compare(tabStops(pill), expectedStops(), "before the reorder");
+            var firstRow = item("savedSystemCardsRepeater").itemAt(0);
+            compare(firstRow.playUid, "", "the first row's card has several sites to play");
+            savedSystemCards.markLocationRequested();
+            prefs.setLocationFix(44.0, -93.6, savedSystems.realtimeNowMs(), 25);
+            settle();
+            compare(titles(), ["Hill Union EMS", "Falls Harbor", "Ridge Lake", "Alliant Energy", "Story Sheriff"]);
+            if (data.reader)
+                verify(item("savedSystemCardsRepeater").itemAt(0) === firstRow && firstRow.playUid.length > 0,
+                    "the first row now shows a card with Play");
+            compare(tabStops(pill), expectedStops(), "after the reorder");
+            // Backtab from the last card's More options walks the same stops back.
+            var stops = expectedStops();
+            var window = home.Window.window;
+            var last = findChild(entries()[entries().length - 1], "savedSystemManageButton");
+            last.forceActiveFocus();
+            var back = [];
+            for (i = 0; i < stops.length - 1; ++i) {
+                keyClick(Qt.Key_Backtab);
+                var at = window.activeFocusItem;
+                var entry = at;
+                while (entry && entry.objectName !== "savedSystemEntry")
+                    entry = entry.parent;
+                back.push((entry ? entry.title : "?") + ":" + at.objectName);
+            }
+            compare(back, stops.slice(0, stops.length - 1).reverse(), "Backtab");
+            savedSystemCards.screenReaderActive = false;
+        }
+
         function test_tab_order() {
             add("Alpha");
             settle();

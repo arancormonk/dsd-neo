@@ -11907,7 +11907,9 @@ Qt Quick frontend (`src/ui/qt`):
   it, hiding Home or leaving Systems cancels it, a late or retired answer is ignored), and call
   `savedSystemCards.markLocationRequested()` right before a request and `clearLocationRequest()` when it fails, is
   cancelled or answered, so only a fix the user asked for here reorders a screen reader's cards. Enter in the field
-  hides the keyboard and leaves the focus in it (`PlexTextField.keepsFocusOnEnter`). In Place or Nearest
+  hides the keyboard and leaves the focus in it (`PlexTextField.keepsFocusOnEnter`: the field also takes Return and
+  Enter, pressed and released, after TextInput's own `accepted`, which lets both through; on Android a hardware
+  keyboard's Enter that went on moved the focus to the × and the next letter was lost). In Place or Nearest
   order the place notice shows `rrPlaces.unplacedText` ("%1 saved systems have no place yet") with "Update from
   RadioReference", which updates only those cards' rows (`rrPlaces.unplacedUids()`); the card menu offers the same for
   a card with RadioReference sites (`rrUpdate`), all of its rows, and the site chooser's no-coordinates note offers it
@@ -11929,7 +11931,29 @@ Qt Quick frontend (`src/ui/qt`):
   now there. A held row is drawn at no opacity, its parts leave the tree with empty names (as the Network sheet's held
   rows, "Qt QML editing convention"), it takes no press or keyboard (`parked`, set once the keyboard was handed on),
   and `listenSystemsSection` ends at the bottom of the last card shown (`shownBottom`), so held rows take no scroll
-  room and holding one moves nothing. In Nearest order the place line reads the distance first ("6.9 mi · Johnson,
+  room and holding one moves nothing. A part one card has and another lacks (the section heading, the place and
+  receiver lines, the refresh hint, the site button, Play; over the cards the ×, the count, location and place lines
+  and the no-match card) is shown or hidden with `visible` without a screen reader. With one (`entry.positional`,
+  `SavedSystemsControls.holdsParts`) it stays visible and is held instead, part by part as a held row is: transparent,
+  out of the tree and unnamed, disabled (no Tab stop, and a tap reaches what is under it: the field under the ×), and
+  with no height where a column lays it out (a plain slot `Item` takes the height, so the text keeps its own and no
+  binding loop forms). A row's next card showed or hid ~140 such parts per sort at 300 cards, each a show or hide that
+  had Qt 6.11.3's Android bridge fetch the scroll body, with every card under it, again: TalkBack was silent 73-109 s
+  after each sort on the emulator. Nothing a positional change raises then tells Android its copy of the tree is
+  stale (renames, held rows and held parts raise no show or hide), and TalkBack read a row's last card, and its focus,
+  which Qt's bridge carries out as the keyboard focus (`focusAction_helper`), landed on parts that had gone, so Tab
+  skipped controls. So Home notes each such change (a row's `key` or `held`, the shown count, the controls'
+  `partsShown`) and, once the cards' rebuild that settles it has been applied (`SavedSystemCards::rebuilt`), shows or
+  hides `savedSystemsTreeRefresh` once: a transparent, unnamed, unfocusable node under the window's content item, made
+  on the first change, as each ModalSheet's refresh node, which has the bridge read the window's tree again at the
+  cost of the window's few children. A sort, a search and a Nearest reorder at 300 cards raise no show or hide in the
+  section and that one event. The Sort sheet hands the keyboard focus, and so TalkBack's, back to the pill:
+  `ChoiceSheet.open()` reads its opener before showing, as `ModalSheet.open()` does (the body a management sheet
+  disables holds the pill, which had lost the focus when the sheet read it, and the focus went to Home itself, where
+  TalkBack started from the top). A card that leaves under a sheet leaves the sheet no opener, so Home hands the
+  keyboard on after the sheet's own deferred hand-back (`settleSystemsFocusLater()`). A card whose title another shown
+  card has names its receiver on a line of its own under the source line, which wraps, so the address is never cut at
+  phone width or large text. In Nearest order the place line reads the distance first ("6.9 mi · Johnson,
   Iowa"), so a long place elides and the distance stays. `revealSystemsTop()` scrolls up to the search row after a sort or a
   search that lands, only while Home is visible on Systems. `SiteChooserSheet.qml`'s note reads "No coordinates. Use
   Update from RadioReference to check for new location data." beside its own button. The sheet keeps the keyboard's
@@ -11937,10 +11961,13 @@ Qt Quick frontend (`src/ui/qt`):
   rebuild (any saved-site change, whoever started the update) or a control that disables or hides leaves it on no
   control here, `restoreKeyboard()` puts it back on the same control of that site's row, else that row's first, else
   (the site gone, or Update disabled) the first site's, else Update. The site button's accessible name now includes its site
-  count. `ChoiceSheet.open()` takes an optional fourth `current` argument. Tests:
+  count. `ChoiceSheet.open()` takes an optional fourth `current` argument, and reads the opener before the sheet shows
+  (an open sheet just takes the new choices). Tests:
   `UI_QT_QML_CALL_LISTS` (`tst_home_systems_search_sort.qml`, with `tst_home_tabs`, `tst_home_layout_fixes`,
   `tst_home_pinned`, `tst_site_chooser_sheet`, `tst_wizard_sites`, `tst_listen_tabs_flows`), `UI_QT_QML_BACK_MODALS`
-  (Back closes the sort sheet), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_scan_churn.qml`, `tst_a11y_text_reach.qml`).
+  (Back closes the sort sheet), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_scan_churn.qml`: no show or hide in the section and
+  one tree refresh per sort, search and Nearest reorder at 300 mixed cards, and the Sort sheet's focus back on its pill
+  as TalkBack chooses, History's filter sheet the control; `tst_a11y_text_reach.qml`).
 - Pin to Listen (issue #801 D4/D5, B3). Every source offers the same action from `ListenPins::action(kind, uid)`
   (`{pinned, text, accessibleName, enabled, description}`: "Pin to Listen"/"Unpin from Listen", "Pin <label> to Listen";
   not pinned while full, disabled with `Text::FullRefusal` as its description). In `qml/HomeScreen.qml` `pinAction(kind,
@@ -13844,10 +13871,12 @@ Qt Quick frontend (`src/ui/qt`):
   the count is read once. A held order can show a section in two runs, so `sectionStart` marks only a section's first
   card in the shown order. `receiverLabel` is the receiver ("USB", "RTL-TCP host:port", "Airspy SERIAL") of a card
   whose title another shown card has (one system on two receivers), else empty; TCP, UDP and file cards name their
-  source in the meta already and get none. `Util.systemMeta()` puts it where RTL-TCP's marker goes. `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, B1, B2,
+  source in the meta already and get none. Home shows it on a line of its own under the source line, which then leaves
+  RTL-TCP's marker out. `rebuilt()` follows every rebuild, changed or not, after its row signals and
+  `shownCountChanged`: Home answers the changes it noted there (one tree refresh for Android's bridge). `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, B1, B2,
   B13, titles against a real pin, each order and its ties, place and distance labels, search, signals, screen-reader
-  holds and the location mark, one section start in a held order, a fix that lapses with no signal, coalescing, a random-edit mirror check, positional rows held and taken back, receiver labels for shared titles, and a
-  500-row timing check with and without a screen reader).
+  holds and the location mark, one section start in a held order, a fix that lapses with no signal, coalescing, a random-edit mirror check, positional rows held and taken back, receiver labels for shared titles, `rebuilt()` after
+  the rows, and a 500-row timing check with and without a screen reader).
 - `text_order.{h,cpp}` (`TextOrder`, the `textOrder` context object) is the one place that decides how names sort and
   match: `text_fold()` (case and accents folded, by code point), `text_compare_names()` (natural order: leading
   punctuation skipped, digit runs by value, a shorter digit run first on a tie, then the raw text, so different
@@ -16484,7 +16513,8 @@ the top: a move raises a LocationChanged for each row that shifts and nothing el
 the entry it shows. With a screen reader on (`screenReader.active`), each section is in a fixed order of those keys
 (`NetworkSheet.readingOrder()`): Qt's bridge sends Android no event for a row that moves, and TalkBack swiped a
 reordering section in an order it had left, skipping, repeating and looping (the N-rotate check). Its rows are not
-paced. With `holdRows` (the Network sheet; Listen's Systems cards hold rows the same way through their card model's
+paced. With `holdRows` (the Network sheet; Listen's Systems cards hold rows, and in each row the parts its card lacks,
+the same way through their card model's
 `held` role, positional with a screen reader on) the rows past the end of a shorter or empty list stay, held (`live` is the
 rows holding an entry): they leave the tree (`Accessible.ignored`, which raises ObjectDestroyed, not sent on by
 Android's bridge), are transparent and unnamed, and keep their size below the last row drawn, where the column's height
@@ -16497,7 +16527,10 @@ Unnaming is a NameChanged per row, one call into Java that returns at once unles
 section's "(none announced)" stays in the tree while hidden, so its show as the section empties refreshes Android's copy
 and a swipe reaches it, and its hide does so as the rows come back. A hop to a target with no P25 network therefore
 costs, in main-thread work on Android, one show or hide per section that empties or fills and the sheet's layout,
-whatever the number of rows. Hidden or removed instead, each row would raise a hide (and a show coming back).
+whatever the number of rows. Hidden or removed instead, each row would raise a hide (and a show coming back). Listen's
+cards have no such line in the list: after a change they show or hide one node under the window instead
+(`savedSystemsTreeRefresh`, "Listen Systems search and sort"), whose parent, the window, has few children, so the
+bridge's refresh costs little; a show or hide inside the list makes it fetch the scroll body with every card.
 P25NetworkModel keeps the engine's last-seen times, which order its rows but are not shown, out of them. A scan hop
 publishes the new target's network in one replacement (`P25NetworkModel::replaceForTarget()`, cleared instead while the
 sheet is closed or the session is not live), never an empty list first. The Diagnostics log's lines are read only while

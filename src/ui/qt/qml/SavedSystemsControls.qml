@@ -32,6 +32,17 @@ Column {
     signal emptied(bool hadFocus)
 
     readonly property bool shown: savedSystemCards.totalCount >= 1
+    // With a screen reader the cards' rows are positional, and a line or
+    // control here that a search or an order puts up or takes down is held
+    // rather than hidden, as a card's parts are (HomeScreen's cards): still
+    // visible, transparent, unnamed and out of the tree, taking no press or
+    // Tab, with no height. Each show or hide made Android's bridge fetch the
+    // scroll body, with every card under it, again.
+    readonly property bool holdsParts: savedSystemCards.screenReaderActive
+    // Which of those are up; Home has Android's bridge read its copy of the
+    // tree again when this changes (HomeScreen.noteSystemsChanged()).
+    readonly property string partsShown: [systemsSearchClear.shown, searchCount.shown, locationRow.shown, placeNotice.shown,
+        noMatch.shown, rrStatus.shown].join()
     // Where a keyboard left without a card lands, and the row that comes into view.
     readonly property Item searchRow: searchBar
     readonly property Item searchInput: systemsSearch.input
@@ -65,7 +76,10 @@ Column {
         // The action's drawn label, and how far its target reaches past it either way.
         readonly property real labelHeight: noticeAction.labelHeight
         readonly property real reach: (noticeAction.height - labelHeight) / 2
-        visible: shown
+        // Held, not hidden, with a screen reader (holdsParts).
+        visible: shown || savedSystemCards.screenReaderActive
+        enabled: shown
+        opacity: shown ? 1 : 0
         width: parent ? parent.width : 0
         height: !shown ? 0 : stacked ? noticeLines.height + 4 - reach + noticeAction.height - Theme.gap / 2
             : Math.max(noticeLines.height, noticeAction.height - Theme.gap)
@@ -78,23 +92,37 @@ Column {
             ReadableText {
                 id: noticeText
                 width: parent.width
+                Accessible.ignored: !navigationAllowed || !visible || !notice.shown
+                Accessible.name: navigationAllowed && visible && notice.shown ? text : ""
                 wrapMode: Text.Wrap
                 color: Theme.textPrimary
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(14)
             }
-            ReadableText {
-                id: noticeDetail
+            // The slot takes the height (none without a detail), so the column skips it.
+            Item {
                 width: parent.width
-                visible: text.length > 0
-                wrapMode: Text.Wrap
-                color: Theme.textSecondary
-                font.family: Theme.sans
-                font.pixelSize: Theme.fontSize(13)
+                height: noticeDetail.shown ? noticeDetail.implicitHeight : 0
+                visible: noticeDetail.shown || savedSystemCards.screenReaderActive
+                ReadableText {
+                    id: noticeDetail
+                    readonly property bool shown: text.length > 0
+                    width: parent.width
+                    opacity: shown ? 1 : 0
+                    Accessible.ignored: !navigationAllowed || !visible || !shown || !notice.shown
+                    Accessible.name: navigationAllowed && visible && shown && notice.shown ? text : ""
+                    wrapMode: Text.Wrap
+                    color: Theme.textSecondary
+                    font.family: Theme.sans
+                    font.pixelSize: Theme.fontSize(13)
+                }
             }
         }
         OutlineButton {
             id: noticeAction
+            accessibleName: notice.shown ? text : ""
+            Accessible.focusable: navigationAllowed && visible && notice.shown
+            Accessible.ignored: !navigationAllowed || !visible || !notice.shown
             flat: true
             x: notice.stacked ? -notice.inset : notice.width - width + notice.inset
             y: notice.stacked ? noticeLines.height + 4 - notice.reach : (notice.height - height) / 2
@@ -355,7 +383,7 @@ Column {
             // Enter hides the keyboard; the field keeps the focus.
             keepsFocusOnEnter: true
             // Room for the × over the end of the line.
-            input.anchors.rightMargin: systemsSearchClear.visible ? systemsSearchClear.width + 4 : 14
+            input.anchors.rightMargin: systemsSearchClear.shown ? systemsSearchClear.width + 4 : 14
             // Changed from outside (a reset, the last system removed): the field follows.
             Binding {
                 target: systemsSearch
@@ -375,8 +403,14 @@ Column {
 
             objectName: "systemsSearchClear"
             icon: "close"
-            accessibleName: qsTr("Clear search text")
-            visible: systemsSearch.text.length > 0
+            readonly property bool shown: systemsSearch.text.length > 0
+            accessibleName: shown ? qsTr("Clear search text") : ""
+            Accessible.ignored: !navigationAllowed || !visible || !shown
+            // Held, not hidden, with a screen reader (holdsParts): a tap on
+            // it then reaches the field under it.
+            visible: shown || controls.holdsParts
+            enabled: shown
+            opacity: shown ? 1 : 0
             x: systemsSearch.x + systemsSearch.width - width - 2
             y: systemsSearch.y + systemsSearch.labelHeight + (systemsSearch.height - systemsSearch.labelHeight - systemsSearch.helperHeight - height) / 2
             // Part of the field: a tap while typing leaves the keyboard in it,
@@ -401,6 +435,7 @@ Column {
     // While a search is applied: how many cards it shows, and the way back to
     // all of them. With none, the card below says so.
     SystemsNotice {
+        id: searchCount
         objectName: "systemsSearchCount"
         textObjectName: "systemsSearchCountText"
         actionObjectName: "systemsClearSearch"
@@ -416,6 +451,7 @@ Column {
     // for (or refresh) a fix. Never asked for on its own. Without a fix the
     // cards are in name order, and the line says so throughout.
     SystemsNotice {
+        id: locationRow
         objectName: "systemsLocation"
         textObjectName: "systemsLocationText"
         actionObjectName: "systemsLocationButton"
@@ -497,9 +533,13 @@ Column {
 
     // A search that matches nothing says so, and offers the way back.
     UiPanel {
+        id: noMatch
         objectName: "systemsNoMatch"
         readonly property bool shown: savedSystemCards.query.length > 0 && savedSystemCards.shownCount === 0
-        visible: shown
+        // Held, not hidden, with a screen reader (holdsParts).
+        visible: shown || controls.holdsParts
+        enabled: shown
+        opacity: shown ? 1 : 0
         width: parent.width
         height: shown ? noMatchBody.implicitHeight + 2 * Theme.cardPadding : 0
         Column {
@@ -510,6 +550,8 @@ Column {
             spacing: 10
             ReadableText {
                 objectName: "systemsNoMatchText"
+                Accessible.ignored: !navigationAllowed || !visible || !noMatch.shown
+                Accessible.name: navigationAllowed && visible && noMatch.shown ? text : ""
                 width: parent.width
                 text: controls.noMatchText
                 wrapMode: Text.Wrap
@@ -519,6 +561,9 @@ Column {
             }
             OutlineButton {
                 objectName: "systemsNoMatchClear"
+                accessibleName: noMatch.shown ? text : ""
+                Accessible.focusable: navigationAllowed && visible && noMatch.shown
+                Accessible.ignored: !navigationAllowed || !visible || !noMatch.shown
                 width: Math.min(implicitWidth, parent.width)
                 text: qsTr("Clear search")
                 onClicked: controls.clearSearch(activeFocus)

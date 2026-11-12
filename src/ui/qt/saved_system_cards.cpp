@@ -588,6 +588,7 @@ SavedSystemCards::rebuild() {
     if (shownCount() != shownBefore) {
         Q_EMIT shownCountChanged();
     }
+    Q_EMIT rebuilt();
 }
 
 QList<Member>

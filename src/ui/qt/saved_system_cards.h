@@ -190,6 +190,9 @@ class SavedSystemCards : public QAbstractListModel {
     void screenReaderActiveChanged();
     void holdReordersChanged();
     void protocolLabelsChanged();
+    /** @brief A rebuild has been applied to the rows, changed or not (after any shownCountChanged and
+     *         totalCountChanged it raised): a view that noted a change in it can act on the settled rows. */
+    void rebuilt();
 
   public:
     /* The data a card is built from and holds; public for the comparisons and role reads in the source file. */
