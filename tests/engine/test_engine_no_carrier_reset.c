@@ -896,6 +896,8 @@ __wrap_rtl_stream_request_fsk_reacquire(void) {
 #define FAKE_FRAMES_MAX 16
 static int g_frame_script = 0;
 static int g_frame_syncs_left = 0;
+/* The sync type the scripted hunt finds after the first frame. */
+static int g_frame_sync_type = DSD_SYNC_NXDN_POS;
 static int g_frame_land_at = -1;
 static dsd_trunk_tune_result g_frame_land_result = DSD_TRUNK_TUNE_RESULT_OK; /* how the tune at g_frame_land_at ends */
 /* What happens at g_frame_land_at instead of the landing, when set (issue #803: another tune, a stream stop). */
@@ -918,7 +920,7 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
         return DSD_SYNC_NONE;
     }
     g_frame_syncs_left--;
-    return DSD_SYNC_NXDN_POS;
+    return g_frame_sync_type;
 }
 
 void
@@ -2786,6 +2788,38 @@ frame_was(const char* tag, int frame, const char* label, unsigned long long rkey
         return 1;
     }
     return 0;
+}
+
+/* Issue #834: every sync the live loop's hunt returns moves the scan owner's sync sequence while skip-silent is on, so a
+   scan quiet check requested before it sees activity: YSF and D-STAR syncs too, which stamp no last_cc_sync_time_m.
+   With the setting off the sequence stays (one load). */
+static int
+test_live_loop_syncs_move_the_quiet_sync_sequence(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_ensure(state);
+    int rc = expect_true("a scan owner", owner != NULL);
+    static const int k_types[] = {DSD_SYNC_YSF_POS, DSD_SYNC_DSTAR_VOICE_POS, DSD_SYNC_DMR_BS_DATA_POS};
+    for (size_t i = 0; owner && i < sizeof k_types / sizeof k_types[0]; i++) {
+        for (int on = 0; on <= 1; on++) {
+            opts->scan_skip_silent = on;
+            g_frame_sync_type = k_types[i];
+            const uint64_t before = owner->sync_seq;
+            run_synced_frames(opts, state, 2, -1);
+            if (owner->sync_seq != before + (on ? 2U : 0U)) {
+                DSD_FPRINTF(stderr, "FAIL #834: sync type %d with skip-silent %d moved the sequence by %llu\n",
+                            k_types[i], on, (unsigned long long)(owner->sync_seq - before));
+                rc = 1;
+            }
+        }
+    }
+    g_frame_sync_type = DSD_SYNC_NXDN_POS;
+    opts->scan_skip_silent = 0;
+    free_test_runtime(opts, state);
+    return rc;
 }
 
 /* Issue #671 (B22, through the live loop): a scan stops on a busy row, so a row whose tune timed out usually lands and
@@ -13749,6 +13783,7 @@ main(void) {
     rc |= test_untyped_find_and_enter_row();
     rc |= test_untyped_row_confirmed_only_by_its_landing();
     rc |= test_legacy_step_landing_ends_the_reception_on_it();
+    rc |= test_live_loop_syncs_move_the_quiet_sync_sequence();
     rc |= test_legacy_step_landing_after_a_rigctl_move_and_under_a_hold();
     rc |= test_legacy_step_with_no_row_reopens_its_windows();
     rc |= test_untyped_resume_waits_for_its_row();

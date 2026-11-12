@@ -94,6 +94,7 @@ typedef struct {
     int (*tick_guard_enter)(void);
     void (*tick_guard_leave)(void);
     void (*scan_quiet_setting_changed)(dsd_state* state);
+    int (*scan_quiet_service)(const dsd_opts* opts, dsd_state* state);
 } dsd_frame_sync_hooks;
 
 /** The engine's conventional NFM lifecycle sees every processed monitor block, even with muted speakers, with what the
@@ -144,6 +145,15 @@ void dsd_frame_sync_hook_tick_guard_leave(int taken);
  * installed (headless runs, tests).
  */
 void dsd_scan_quiet_setting_changed(dsd_state* state);
+
+/**
+ * The scan quiet check's in-hunt service (issue #834), asked at the frame-sync hunt's 300-symbol point beside the
+ * trunk-scan dwell: the engine starts, collects and expires the landed channel's measurement here, on the decoder
+ * thread, and answers 1 only when a quiet result it may skip on is ready. The hunt then hands back as at a pass end,
+ * keeping its history, and the engine loop's tick decides. With the skip-silent setting off it is one load and 0;
+ * 0 when nothing is installed.
+ */
+int dsd_frame_sync_hook_scan_quiet_service(const dsd_opts* opts, dsd_state* state);
 
 /** Install a copy of @p hooks; NULL clears every slot. */
 void dsd_frame_sync_hooks_set(const dsd_frame_sync_hooks* hooks);

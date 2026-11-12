@@ -289,7 +289,7 @@ test_y_rows_sharing_a_frequency(void) {
     rc |= expect_match("the first avoided", opts, state, k_p25_hz, channel_row(1, 1U, 2U, "row 2"));
     rc |= expect(dsd_state_trunk_lcn_avoid_set(state, 0U, 0) == 0, "row 0 back");
     rc |= expect_match("none on air", opts, state, k_p25_hz, channel_row(0, 1U, 3U, "row 1"));
-    dsd_engine_scan_landing_note_row(state, 3, k_p25_hz);
+    dsd_engine_scan_landing_note_row(state, 3, k_p25_hz, 0U);
     want_match on_air = channel_row(3, 3U, 3U, "row 4");
     on_air.on_air = 1;
     rc |= expect_match("the row on air", opts, state, k_p25_hz, on_air);
@@ -321,7 +321,7 @@ test_untyped_adjacent_rows_are_one_channel(void) {
     y_list(opts, state, rows, 4);
     int rc = expect_match("a run and a later row", opts, state, k_fire_hz, channel_row(0, 1U, 2U, "row 1"));
     /* The timed step visits every row of a run: one landed on its second row. */
-    dsd_engine_scan_landing_note_row(state, 1, k_fire_hz);
+    dsd_engine_scan_landing_note_row(state, 1, k_fire_hz, 0U);
     rc |= expect_match("the run's second row on air", opts, state, k_fire_hz, on_air_row(1, 1U, 2U, "row 2"));
     rc |= expect(dsd_state_trunk_lcn_avoid_set(state, 0U, 1) == 0, "row 0 avoided");
     rc |= expect_match("on air beside the run's avoided first row", opts, state, k_fire_hz,

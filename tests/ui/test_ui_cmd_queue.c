@@ -2798,7 +2798,7 @@ test_manual_scan_steps_note_landing(void) {
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         init_manual_scan_step_case(&opts, &state, cases[i].leg, cases[i].tune_result);
         dsd_state_lcn_on_air_note(&state, 0); /* landed by the scan */
-        dsd_engine_scan_landing_note_row(&state, 0, 461012500L);
+        dsd_engine_scan_landing_note_row(&state, 0, 461012500L, 0U);
         rc |= expect_true(cases[i].tag, dsd_engine_scan_landing_hz(&opts, &state) == 461012500U);
         rc |= expect_int(cases[i].tag, dsd_app_command_action(cases[i].cmd), DSD_APP_COMMAND_SUBMIT_QUEUED);
         rc |= expect_int(cases[i].tag, dsd_app_drain_cmds(&opts, &state), 1);
@@ -8389,6 +8389,19 @@ test_scan_skip_silent_command(void) {
     rc |= expect_int("survivor queued", post_i32(DSD_APP_CMD_SCAN_SKIP_SILENT_SET, 0), DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("survivor drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("hook survives trunk-scan hook install and clear", g_quiet_setting_calls, 1);
+
+    /* A config apply may write the setting, and whatever else a quiet check was measured under: the engine is told. */
+    g_quiet_setting_calls = 0;
+    {
+        dsdneoUserConfig cfg;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_trunking = 1;
+        cfg.trunk_scan_skip_silent = 1;
+        rc |= expect_int("config apply queued", dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg),
+                         DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("config apply drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("config apply told the engine", g_quiet_setting_calls, 1);
+    }
 
     dsd_frame_sync_hooks_set(NULL);
     freeState(&state);

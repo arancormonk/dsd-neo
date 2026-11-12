@@ -77,6 +77,7 @@
 #include "scan_entry_internal.h"
 #include "scan_landing.h"
 #include "scan_owner.h"
+#include "scan_quiet.h"
 #include "scan_step_untyped.h"
 #if defined(DSD_TRUNK_SCAN_TEST_CLOCK)
 #include "trunk_scan_internal.h"
@@ -3484,9 +3485,10 @@ trunk_scan_arm_visit(dsd_trunk_scan_target_runtime* rt, double parked_m) {
    frequency, which an analog call on audio input is heard on (issue #667 D9). A trunked target's park is its control
    channel, never a call's frequency, so it names none. */
 static void
-trunk_scan_note_landing(dsd_state* state, const dsd_trunk_scan_coord* coord, const dsd_trunk_scan_target_runtime* rt) {
+trunk_scan_note_landing(dsd_state* state, const dsd_trunk_scan_coord* coord, const dsd_trunk_scan_target_runtime* rt,
+                        uint64_t request) {
     const uint32_t hz = trunk_scan_type_is_conventional(rt->target.type) ? rt->target.frequency_hz : 0U;
-    dsd_engine_scan_landing_note_target(state, (int)(rt - coord->targets), coord->session, hz);
+    dsd_engine_scan_landing_note_target(state, (int)(rt - coord->targets), coord->session, hz, request);
 }
 
 /*
@@ -3555,6 +3557,7 @@ trunk_scan_arm_tune_completion(dsd_opts* opts, dsd_state* state, const dsd_trunk
          * next tick. Track the same request here so dwell still restarts. */
         rt->tune_request_id = tune_request_id;
         rt->tune_pending = 1;
+        dsd_engine_scan_quiet_note_change(state);
         const long int hz = trunk_scan_retune_freq(state, &rt->target);
         rt->tune_hz = hz > 0 && (unsigned long)hz <= UINT32_MAX ? (uint32_t)hz : 0U;
         return;
@@ -3562,7 +3565,7 @@ trunk_scan_arm_tune_completion(dsd_opts* opts, dsd_state* state, const dsd_trunk
     rt->tune_request_id = 0U;
     rt->tune_pending = 0;
     if (dsd_trunk_tune_result_is_complete(tune_result)) {
-        trunk_scan_note_landing(state, coord, rt);
+        trunk_scan_note_landing(state, coord, rt, tune_request_id);
     }
     double completed_m = 0.0;
     (void)dsd_trunk_tuning_request_status(tune_request_id, &completed_m);
@@ -3924,6 +3927,8 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
     trunk_scan_recheck_analog_targets(opts, state, coord);
     uint64_t tune_request_id = 0U;
+    /* The output generation before the retune is issued: only a newer capture can be the target's (issue #834). */
+    dsd_engine_scan_landing_note_tune(state);
     dsd_trunk_tune_result tune_result = trunk_scan_retune_active(opts, state, rt, &tune_request_id);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         rt->retry_until_m = now_m + TRUNK_SCAN_RETUNE_RETRY_COOLDOWN_S;
@@ -4555,6 +4560,7 @@ trunk_scan_entry_hold_now(dsd_state* state, dsd_trunk_scan_coord* coord) {
     dsd_engine_scan_entry_intent_cancel(state);
     coord->hold_active = 1;
     coord->entry_hold = 1;
+    dsd_engine_scan_quiet_note_change(state);
     trunk_scan_publish_active_target(state, coord);
 }
 
@@ -4584,7 +4590,7 @@ trunk_scan_resolve_pending_retune(const dsd_opts* opts, dsd_state* state, dsd_tr
     if (result == DSD_TRUNK_TUNE_RESULT_OK) {
         rt->tune_request_id = 0U;
         rt->tune_pending = 0;
-        trunk_scan_note_landing(state, coord, rt);
+        trunk_scan_note_landing(state, coord, rt, request_id);
         trunk_scan_reapply_analog_width(opts, rt);
         /* The visit began when the backend finished the tune, not when this tick noticed, and so did the idle dwell
            (discussion #717): this tick may come a no-sync pass after the landing. */
@@ -4600,7 +4606,7 @@ trunk_scan_resolve_pending_retune(const dsd_opts* opts, dsd_state* state, dsd_tr
             /* A replacement tune the P25 SM owned completed while the coordinator was not
              * looking; its completion stamp belongs to a request this target no longer tracks,
              * so the visit starts from the tick that found the receiver parked again. */
-            trunk_scan_note_landing(state, coord, rt);
+            trunk_scan_note_landing(state, coord, rt, request_id);
             trunk_scan_arm_visit(rt, now_m);
             trunk_scan_entry_park_landed(state, coord, rt, request_id);
         } else {
@@ -5335,6 +5341,7 @@ trunk_scan_control_hold_toggle(dsd_state* state, dsd_trunk_scan_coord* coord) {
     dsd_engine_scan_entry_intent_cancel(state);
     coord->entry_hold = 0;
     coord->hold_active = coord->hold_active ? 0 : 1;
+    dsd_engine_scan_quiet_note_change(state);
     // Disarm at the command boundary: both toggles can arrive before another
     // tick observes the hold. Release must still grant a fresh idle dwell.
     trunk_scan_disarm_dwell(&coord->targets[coord->active], TRUNK_SCAN_DWELL_DISARM_OPERATOR);
@@ -6001,6 +6008,8 @@ trunk_scan_detach(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
     trunk_scan_uninstall_runtime_hooks(coord);
     /* No entry outlives its coordinator (issue #644). */
     dsd_engine_scan_entry_intent_cancel(state);
+    /* Nor does a quiet check of its targets (issue #834). */
+    dsd_engine_scan_quiet_note_change(state);
     trunk_scan_clear_published_target(state);
     (void)dsd_engine_scan_own(state, 0, NULL, NULL);
 }
@@ -6594,6 +6603,7 @@ dsd_engine_trunk_scan_pause_ex_locked(dsd_opts* opts, dsd_state* state, dsd_trun
     trunk_scan_save_target_snapshot(coord, state, rt);
     coord->paused = 1;
     coord->forced_visit_release = 0;
+    dsd_engine_scan_quiet_note_change(state);
     /* The operator left the target an entry held, or was still waiting on (issue #644): the hold and its mark go, and
        nothing waits. An ordinary hold stays for the resume. */
     dsd_engine_scan_entry_intent_cancel(state);
@@ -6641,6 +6651,7 @@ static int
 trunk_scan_resume_rollback(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, int prepare_failed) {
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
     coord->paused = 1;
+    dsd_engine_scan_quiet_note_change(state);
     trunk_scan_publish_active_target(state, coord);
     trunk_scan_clear_target_clocks(rt);
     int monitor_request = 0;
@@ -6728,6 +6739,7 @@ trunk_scan_resume_from(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
     trunk_scan_capture_saved_mod_opts(coord, opts);
     const size_t paused_at = coord->active;
     coord->paused = 0;
+    dsd_engine_scan_quiet_note_change(state);
     coord->active = at;
     trunk_scan_arm_departure(coord);
     /* The target re-parked as a revisit: scopes begun again around the session as it is now, its keys, policy, options
@@ -6947,6 +6959,7 @@ trunk_scan_goto_running(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* 
     if (entry_held) {
         coord->hold_active = 0;
         coord->entry_hold = 0;
+        dsd_engine_scan_quiet_note_change(state);
     }
     /* A park of the target in flight that may still land is waited on, named from the one read that found it so: its
        failure can come on the controller's thread at any time, and an outcome read after it would name no park. */
@@ -6962,6 +6975,7 @@ trunk_scan_goto_running(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* 
     if (entry_held && result == DSD_SCAN_GOTO_SETUP_FAILED) {
         coord->hold_active = 1;
         coord->entry_hold = 1;
+        dsd_engine_scan_quiet_note_change(state);
     }
     trunk_scan_publish_active_target(state, coord);
     return result;
@@ -7035,6 +7049,22 @@ int
 dsd_engine_trunk_scan_paused(const dsd_state* state) {
     const dsd_trunk_scan_coord* coord = state ? trunk_scan_get_const(state) : NULL;
     return coord && coord->paused ? 1 : 0;
+}
+
+uint32_t
+dsd_engine_trunk_scan_quiet_edit_seq(const dsd_state* state) {
+    const dsd_trunk_scan_coord* coord = state ? trunk_scan_get_const(state) : NULL;
+    return coord ? coord->edit_seq : 0U;
+}
+
+int
+dsd_engine_trunk_scan_quiet_activity_since(const dsd_state* state, double since_m) {
+    const dsd_trunk_scan_coord* coord = state ? trunk_scan_get_const(state) : NULL;
+    if (!coord || coord->active >= coord->count) {
+        return 0;
+    }
+    const double activity_m = coord->targets[coord->active].last_allowed_activity_m;
+    return activity_m > 0.0 && activity_m >= since_m;
 }
 
 #ifdef DSD_TRUNK_SCAN_TEST_CLOCK

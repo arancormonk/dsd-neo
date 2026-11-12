@@ -10161,6 +10161,8 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     }
     int kept = 0;
     const int rc = cfg_apply(opts, state, c, &kept);
+    /* An apply may write the skip-silent setting and whatever else a scan quiet check was measured under (#834). */
+    dsd_scan_quiet_setting_changed(state);
     if (!kept) {
         DSD_MEMCPY(&opts->next_start, next_before, sizeof opts->next_start);
     }

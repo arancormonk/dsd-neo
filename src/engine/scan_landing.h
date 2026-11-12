@@ -50,6 +50,8 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/engine/scan_entry.h>
+#include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/tuner_owner.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -57,7 +59,8 @@
 
 enum { DSD_ENGINE_SCAN_LANDING_NONE = 0, DSD_ENGINE_SCAN_LANDING_ROW = 1, DSD_ENGINE_SCAN_LANDING_TARGET = 2 };
 
-/** No landing is in force. A state with no scan owner has none to forget, and gets no owner made for it. */
+/** No landing is in force. A state with no scan owner has none to forget, and gets no owner made for it. The landing
+ * epoch moves (issue #834): a quiet check of the landing forgotten is no longer the visit's. */
 static inline void
 dsd_engine_scan_landing_forget(dsd_state* state) {
     if (!state || !dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN)) {
@@ -66,12 +69,34 @@ dsd_engine_scan_landing_forget(dsd_state* state) {
     dsd_engine_scan_owner* owner = dsd_engine_scan_owner_ensure(state);
     if (owner) {
         owner->landing = (dsd_engine_scan_landing){0};
+        owner->landing_epoch++;
     }
 }
 
-/** The -Y scan committed @p row, on @p freq_hz, after a tune that landed. A placeholder (0 Hz) row notes none. */
+/** A scan row or target tune is about to be requested (issue #834): the RTL stream output generation now, before the
+ * retune is issued, goes with the landing it notes (dsd_engine_scan_landing::generation_before_tune). */
 static inline void
-dsd_engine_scan_landing_note_row(dsd_state* state, int row, long freq_hz) {
+dsd_engine_scan_landing_note_tune(dsd_state* state) {
+    dsd_engine_scan_owner* owner = state ? dsd_engine_scan_owner_ensure(state) : NULL;
+    if (owner) {
+        owner->tune_generation_before = dsd_rtl_stream_metrics_hook_stream_generation();
+    }
+}
+
+/* @p landing, with the visit facts of issue #834 (a new epoch, the generation carried from its tune request, the time
+   it was noted), is the landing in force. */
+static inline void
+dsd_engine_scan_landing_install(dsd_engine_scan_owner* owner, dsd_engine_scan_landing landing) {
+    landing.epoch = ++owner->landing_epoch;
+    landing.generation_before_tune = owner->tune_generation_before;
+    landing.landed_realtime_ms = dsd_realtime_mono_ms();
+    owner->landing = landing;
+}
+
+/** The -Y scan committed @p row, on @p freq_hz, after a tune that landed, from the trunk-tuning request @p request (0
+ * for a synchronous tune). A placeholder (0 Hz) row notes none. */
+static inline void
+dsd_engine_scan_landing_note_row(dsd_state* state, int row, long freq_hz, uint64_t request) {
     if (!state || row < 0 || freq_hz <= 0 || (unsigned long)freq_hz > UINT32_MAX) {
         dsd_engine_scan_landing_forget(state);
         return;
@@ -83,25 +108,38 @@ dsd_engine_scan_landing_note_row(dsd_state* state, int row, long freq_hz) {
                                                  .session = state->lcn_scan_session,
                                                  .map_seq = state->trunk_chan_map_seq,
                                                  .list_rev = state->lcn_list_rev,
-                                                 .index = row};
-        owner->landing = landing;
+                                                 .index = row,
+                                                 .tune_request = request};
+        dsd_engine_scan_landing_install(owner, landing);
     }
 }
 
-/** The trunk scan's retune to target @p index of the coordinator of session @p session completed: a conventional
- * target on its own frequency @p freq_hz, a trunked one (@p freq_hz 0) on its control channel. */
+/** The trunk scan's retune to target @p index of the coordinator of session @p session completed, from the
+ * trunk-tuning request @p request: a conventional target on its own frequency @p freq_hz, a trunked one (@p freq_hz 0)
+ * on its control channel. */
 static inline void
-dsd_engine_scan_landing_note_target(dsd_state* state, int index, uint32_t session, uint32_t freq_hz) {
+dsd_engine_scan_landing_note_target(dsd_state* state, int index, uint32_t session, uint32_t freq_hz, uint64_t request) {
     if (!state || index < 0) {
         dsd_engine_scan_landing_forget(state);
         return;
     }
     dsd_engine_scan_owner* owner = dsd_engine_scan_owner_ensure(state);
     if (owner) {
-        const dsd_engine_scan_landing landing = {
-            .hz = freq_hz, .by = (uint8_t)DSD_ENGINE_SCAN_LANDING_TARGET, .session = session, .index = index};
-        owner->landing = landing;
+        const dsd_engine_scan_landing landing = {.hz = freq_hz,
+                                                 .by = (uint8_t)DSD_ENGINE_SCAN_LANDING_TARGET,
+                                                 .session = session,
+                                                 .index = index,
+                                                 .tune_request = request};
+        dsd_engine_scan_landing_install(owner, landing);
     }
+}
+
+/** The epoch of the landing in force (issue #834), or 0 for none. */
+static inline uint64_t
+dsd_engine_scan_landing_epoch(const dsd_state* state) {
+    const dsd_engine_scan_owner* owner =
+        state ? (const dsd_engine_scan_owner*)dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN) : NULL;
+    return owner && owner->landing.by != DSD_ENGINE_SCAN_LANDING_NONE ? owner->landing.epoch : 0U;
 }
 
 /* The landing record, or NULL with no scan owner. */
@@ -306,6 +344,7 @@ dsd_engine_scan_entry_hold_now(dsd_state* state) {
     dsd_engine_scan_entry_intent_cancel(state);
     state->lcn_scan_hold = 1U;
     state->lcn_scan_entry_hold = 1U;
+    dsd_engine_scan_quiet_note_change(state);
 }
 
 /** A -Y go-to's tune is taken, or a backend moved: the entry hold it replaces goes, hold and mark, and only its own
@@ -316,6 +355,7 @@ dsd_engine_scan_entry_hold_replaced(dsd_state* state) {
     if (state && state->lcn_scan_entry_hold) {
         state->lcn_scan_hold = 0U;
         state->lcn_scan_entry_hold = 0U;
+        dsd_engine_scan_quiet_note_change(state);
     }
 }
 
@@ -333,6 +373,7 @@ dsd_engine_scan_entry_landed(dsd_state* state, int row, uint64_t request) {
     if (ours) {
         state->lcn_scan_hold = 1U;
         state->lcn_scan_entry_hold = 1U;
+        dsd_engine_scan_quiet_note_change(state);
     }
 }
 

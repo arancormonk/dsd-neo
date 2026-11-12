@@ -26,6 +26,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "engine_hooks_install.h"
+#include "scan_quiet.h"
 
 static int
 scan_visit_should_yield_from_frame(const dsd_opts* opts, dsd_state* state) {
@@ -177,5 +178,8 @@ dsd_engine_frame_sync_hooks_install(void) {
     hooks.signal_search_should_yield = dsd_engine_signal_search_should_yield;
     hooks.signal_search_probe = dsd_engine_signal_search_probe;
     hooks.replay_retune = dsd_engine_leave_replay_carrier;
+    /* Engine-wide, so the skip-silent setting reaches a -Y check as well as a trunk-scan one (issue #834). */
+    hooks.scan_quiet_service = dsd_engine_scan_quiet_service;
+    hooks.scan_quiet_setting_changed = dsd_engine_scan_quiet_setting_changed;
     dsd_frame_sync_hooks_set(&hooks);
 }

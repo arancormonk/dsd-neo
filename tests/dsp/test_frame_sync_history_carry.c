@@ -250,6 +250,54 @@ test_burst_across_a_dwell_hand_back_locks(void) {
     free_state_buffers(&state);
 }
 
+/* Issue #834: a scan quiet check ready at the first 300-symbol point after the burst began. */
+static int g_quiet_answers = 0;
+
+static int
+quiet_ready_once_the_burst_began(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    if (g_quiet_answers > 0 || g_pos <= BURST_AT) {
+        return 0;
+    }
+    g_quiet_answers++;
+    return 1;
+}
+
+/* Issue #834: a quiet check's hand-back keeps its history as the dwell's and a pass end's do: the tick may decline the
+   skip (activity, a stay, a lost guard), and the stream then goes on unbroken, so the burst straddling the hand-back
+   still locks, block 1 whole. */
+static void
+test_burst_across_a_quiet_hand_back_locks(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_uplink(&opts, &state);
+    opts.scan_skip_silent = 1;
+    g_quiet_answers = 0;
+    dsd_frame_sync_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.scan_quiet_service = quiet_ready_once_the_burst_began;
+    dsd_frame_sync_hooks_set(&hooks);
+    const int rc = getFrameSync(&opts, &state);
+    assert(rc == DSD_SYNC_NONE);
+    assert(g_quiet_answers == 1);
+    assert(g_pos > BURST_AT && g_pos < DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS);
+    assert(state.frame_sync_carry.valid == 1);
+    const int sync = hunt_to_end(&opts, &state);
+    dsd_frame_sync_hooks_set(NULL);
+    if (sync != DSD_SYNC_TETRA_NDB_POS || g_pos != BURST_AT + CB_TAIL + CB_HALF + CB_ETS) {
+        DSD_FPRINTF(stderr, "FAIL #834: burst across a quiet hand-back: sync %d at %d (want %d at %d)\n", sync, g_pos,
+                    DSD_SYNC_TETRA_NDB_POS, BURST_AT + CB_TAIL + CB_HALF + CB_ETS);
+    }
+    assert(sync == DSD_SYNC_TETRA_NDB_POS);
+    assert(g_pos == BURST_AT + CB_TAIL + CB_HALF + CB_ETS);
+    assert(state.tetra_sync.cb == 1 && state.tetra_sync.b1_valid == 1);
+    for (int i = 0; i < CB_HALF; i++) {
+        assert(state.tetra_sync.b1_dibuf[i] == (uint8_t)(g_block1[i] - '0'));
+    }
+    free_state_buffers(&state);
+}
+
 /* The receiver left the carrier between the calls (dsd_engine_carrier_boundary() bumps carrier_seq): what the history
    holds is the carrier left's, so the next call starts blind and the burst, half of it before, is not matched. */
 static void
@@ -723,6 +771,7 @@ int
 main(void) {
     test_burst_across_the_exit_locks();
     test_burst_across_a_dwell_hand_back_locks();
+    test_burst_across_a_quiet_hand_back_locks();
     test_carrier_change_starts_blind();
     test_symbol_between_calls_starts_blind();
     test_new_epoch_starts_blind();

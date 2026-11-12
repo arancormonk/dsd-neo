@@ -1531,6 +1531,8 @@ untyped_tune_row(dsd_opts* opts, dsd_state* state, int row, long int freq, int w
     if (!untyped_front_end_present(opts)) {
         return DSD_UNTYPED_STEP_FAILED;
     }
+    /* The output generation before any leg moves: only a newer capture can be the row's (issue #834). */
+    dsd_engine_scan_landing_note_tune(state);
     if (opts->use_rigctl == 1) {
         if (no_carrier_tune_rigctl_if_needed(opts, state, freq) != DSD_TRUNK_TUNE_RESULT_OK) {
             return DSD_UNTYPED_STEP_FAILED;
@@ -1562,7 +1564,7 @@ untyped_install_row(dsd_state* state, int row, time_t now, uint64_t request) {
         dsd_state_lcn_on_air_note(state, row);
         dsd_scan_row_keys_apply(state, row);
         dsd_analog_rx_reset(state);
-        dsd_engine_scan_landing_note_row(state, row, freq);
+        dsd_engine_scan_landing_note_row(state, row, freq, request);
         dsd_engine_scan_entry_landed(state, row, request);
         /* The scan has the tuner on a row of its own (issue #644): the operator's calls ended at the boundary, so a
            start that found no list, or turned the scanner on over a manual tune, stops filing its calls as the
@@ -4057,6 +4059,17 @@ live_scanner_receive_should_yield(const dsd_opts* opts, dsd_state* state) {
            && dsd_engine_channel_scan_has_other_row(opts, state);
 }
 
+/* The frame sync's answer. Any sync it returns, YSF and D-STAR's among them, is activity to a scan quiet check
+   (issue #834): one load while skip-silent is off. */
+static int
+live_scanner_frame_sync(dsd_opts* opts, dsd_state* state) {
+    const int synctype = getFrameSync(opts, state);
+    if (synctype > DSD_SYNC_NONE && opts->scan_skip_silent) {
+        dsd_engine_scan_quiet_note_sync(state);
+    }
+    return synctype;
+}
+
 static void
 live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_slicer_threshold_cache* threshold_cache,
                                    uint64_t* frame_tune_generation) {
@@ -4130,7 +4143,7 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
         if (frame_tune_generation) {
             *frame_tune_generation = dsd_trunk_tuning_generation();
         }
-        state->synctype = getFrameSync(opts, state);
+        state->synctype = live_scanner_frame_sync(opts, state);
         (void)dsd_engine_slicer_thresholds_refresh(state, threshold_cache);
     }
 }
@@ -4316,7 +4329,7 @@ live_scanner_main_pass(dsd_opts* opts, dsd_state* state, dsd_engine_slicer_thres
      * the incoming visit before getFrameSync starts emitting its snapshots. */
     dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
     uint64_t frame_tune_generation = dsd_trunk_tuning_generation();
-    state->synctype = getFrameSync(opts, state);
+    state->synctype = live_scanner_frame_sync(opts, state);
     (void)dsd_engine_slicer_thresholds_refresh(state, threshold_cache);
     live_scanner_process_synced_frames(opts, state, threshold_cache, &frame_tune_generation);
 }

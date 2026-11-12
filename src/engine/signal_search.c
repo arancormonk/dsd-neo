@@ -654,6 +654,9 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
     if (search_validate_start(opts, state, config, error, capacity)) {
         return -1;
     }
+    /* A scan quiet check made before the search is not the search's (issue #834): it is dropped at its next reconcile,
+       and the tap lets the search's first request supersede its request meanwhile. */
+    dsd_engine_scan_quiet_note_change(state);
     search_coord* previous = search_get(state);
     if (previous && previous->status.phase == DSD_SEARCH_PAUSED) {
         /* Keep the native session's avoids, including those made before an Activity recreation: both lists live in the

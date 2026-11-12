@@ -9227,6 +9227,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_trunk_diag.c
     ${PROJECT_SOURCE_DIR}/src/dsp/analog_tone_policy.c
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_compare.c
+    # The scan quiet check (issue #834), over a fake signal tap.
+    ${PROJECT_SOURCE_DIR}/src/engine/scan_quiet.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_scan
@@ -9247,6 +9249,17 @@ target_link_libraries(
         dsd-neo_test_event_sync_stub
         dsd-neo_test_support
 )
+# The scan quiet check's realtime bounds run on a fake realtime clock, separate from the TEST decode clock (issue #834).
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_engine_trunk_scan
+        PRIVATE DSD_NEO_TEST_RTL_WRAP=1
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_trunk_scan
+        PRIVATE "-Wl,--wrap=dsd_realtime_mono_ms"
+    )
+endif()
 add_test(NAME ENGINE_TRUNK_SCAN COMMAND dsd-neo_test_engine_trunk_scan)
 
 # The command queue is built in with its test hooks, for the drain's count of its waits for the guard.

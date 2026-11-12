@@ -15,6 +15,8 @@
 static dsd_trunk_tuning_hooks g_trunk_tuning_hooks = {0};
 static dsd_atomic_u64 g_trunk_tuning_generation = {1U};
 static dsd_atomic_u64 g_trunk_tuning_next_request = {0U};
+/* The request whose success last finished (dsd_trunk_tuning_request_landed()), 0 before the first. */
+static dsd_atomic_u64 g_trunk_tuning_last_landed = {0U};
 static atomic_int g_trunk_tuning_request_lock = 0;
 static atomic_int g_trunk_tuning_unresolved_count = 0;
 
@@ -120,6 +122,7 @@ dsd_trunk_tuning_finish_success_locked(dsd_trunk_tuning_request_record* record) 
     }
     const uint64_t request_id = record->request_id;
     dsd_trunk_tuning_generation_advance();
+    dsd_atomic_u64_store_release(&g_trunk_tuning_last_landed, request_id);
     record->state = DSD_TRUNK_TUNING_REQUEST_FINISHED;
     (void)atomic_fetch_add(&g_trunk_tuning_unresolved_count, -1);
     dsd_trunk_tuning_retire_failed_requests_locked(request_id);
@@ -404,6 +407,11 @@ dsd_trunk_tuning_pending_request(void) {
     }
     dsd_trunk_tuning_requests_unlock();
     return newest_request_id;
+}
+
+int
+dsd_trunk_tuning_request_landed(uint64_t request_id) {
+    return request_id != 0U && dsd_atomic_u64_load_acquire(&g_trunk_tuning_last_landed) == request_id;
 }
 
 dsd_trunk_tune_result
