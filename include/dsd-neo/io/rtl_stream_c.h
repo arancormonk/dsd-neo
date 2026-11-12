@@ -267,10 +267,12 @@ int rtl_stream_read(RtlSdrContext* ctx, float* out, size_t count, int* out_got);
  */
 int rtl_stream_read_ex(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t count, int* out_got);
 /**
- * @brief rtl_stream_read_ex() for a reader that takes DSD_RTL_READ_NO_STREAM (@p want_no_stream nonzero): a live read
- * that found nothing for one wait slice while the device has no stream returns it, and never DSD_RTL_READ_YIELD.
+ * @brief rtl_stream_read_ex() for a reader that asks for more of a live read (@p wants, DSD_RTL_READ_WANT_* bits of
+ * <dsd-neo/runtime/rtl_stream_io_hooks.h>). DSD_RTL_READ_WANT_NO_STREAM: a live read that found nothing for one wait
+ * slice while the device has no stream returns DSD_RTL_READ_NO_STREAM, and never DSD_RTL_READ_YIELD.
+ * DSD_RTL_READ_WANT_IDLE_BOUND: a live read that found nothing for 100 ms returns DSD_RTL_READ_IDLE (issue #834).
  */
-int rtl_stream_read_ex2(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t count, int* out_got, int want_no_stream);
+int rtl_stream_read_ex2(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t count, int* out_got, int wants);
 /**
  * @brief rtl_stream_read_ex2() with the FSK voice lane (issue #518): into @p voice (as many as @p out, or NULL) each
  * sample's voice-lane sample, made from the same discriminator output, resampled the same way and read at the same
@@ -280,7 +282,7 @@ int rtl_stream_read_ex2(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t c
  * reads 0. @p out and @p flags come out exactly as rtl_stream_read_ex2() writes them, the lane on or off.
  */
 int rtl_stream_read_lanes(RtlSdrContext* ctx, float* out, float* voice, uint8_t* flags, size_t count, int* out_got,
-                          int want_no_stream);
+                          int wants);
 
 /**
  * @brief Ask for the FSK voice lane (issue #518), or stop it: EDACS asks for the length of an analog call, which it

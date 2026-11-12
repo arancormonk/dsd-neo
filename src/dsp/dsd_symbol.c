@@ -934,6 +934,9 @@ enum {
     /* The cache is empty and the refill's live read gave way to a queued command while the device has no stream
        (issue #518 D4, DSD_RTL_READ_YIELD): no failure (symbol_rtl_read_yielded()). */
     RTL_SYMBOL_CACHE_YIELD = 5,
+    /* The cache is empty and the refill's live read, a hunt's, found nothing for its bound (issue #834,
+       DSD_RTL_READ_IDLE): no failure (symbol_rtl_read_idle_leaves()). */
+    RTL_SYMBOL_CACHE_IDLE = 6,
 };
 
 static inline int
@@ -1259,15 +1262,35 @@ rtl_symbol_cache_fill_replay_batch(dsd_state* state, int got, const dsd_rtl_stre
     return rtl_symbol_cache_pop(state, batch->generation, sample_out);
 }
 
+/* What an empty refill read (@p read_rc) reports: a yield, a hunt read's idle bound, else nothing read. */
+static inline int
+rtl_symbol_cache_empty_status(int read_rc) {
+    if (read_rc == DSD_RTL_READ_YIELD) {
+        return RTL_SYMBOL_CACHE_YIELD;
+    }
+    return read_rc == DSD_RTL_READ_IDLE ? RTL_SYMBOL_CACHE_IDLE : RTL_SYMBOL_CACHE_EMPTY;
+}
+
+/* The refill's read. A hunt's (@p wants DSD_RTL_READ_WANT_IDLE_BOUND, issue #834) may come back DSD_RTL_READ_IDLE;
+   any other reads as it always has. */
+static inline int
+rtl_symbol_cache_read(dsd_state* state, int wants, int* got) {
+    if (wants != 0) {
+        return dsd_rtl_stream_io_hook_read_ex2(state, state->rtl_symbol_cache, NULL, DSD_RTL_SYMBOL_CACHE_CAP, got,
+                                               wants);
+    }
+    return dsd_rtl_stream_io_hook_read(state, state->rtl_symbol_cache, DSD_RTL_SYMBOL_CACHE_CAP, got);
+}
+
 static int
 rtl_symbol_cache_refill(dsd_state* state, int output_kind, int channel_profile, int symbol_rate_hz, int levels,
-                        uint32_t* generation, uint32_t expected_generation, float* sample_out) {
+                        uint32_t* generation, uint32_t expected_generation, float* sample_out, int wants) {
     int got = 0;
     uint32_t read_generation = generation ? *generation : expected_generation;
-    const int read_rc = dsd_rtl_stream_io_hook_read(state, state->rtl_symbol_cache, DSD_RTL_SYMBOL_CACHE_CAP, &got);
+    const int read_rc = rtl_symbol_cache_read(state, wants, &got);
     if (read_rc < 0 || got <= 0) {
         rtl_symbol_cache_reset_pending(state);
-        return read_rc == DSD_RTL_READ_YIELD ? RTL_SYMBOL_CACHE_YIELD : RTL_SYMBOL_CACHE_EMPTY;
+        return rtl_symbol_cache_empty_status(read_rc);
     }
     if (got > DSD_RTL_SYMBOL_CACHE_CAP) {
         got = DSD_RTL_SYMBOL_CACHE_CAP;
@@ -1305,9 +1328,10 @@ rtl_symbol_cache_refill(dsd_state* state, int output_kind, int channel_profile, 
     return rtl_symbol_cache_pop(state, read_generation, sample_out);
 }
 
+/* @p wants: what a refill's live read asks for (DSD_RTL_READ_WANT_IDLE_BOUND for a hunt read, issue #834; else 0). */
 static int
 rtl_symbol_cache_take(dsd_state* state, int output_kind, int channel_profile, int symbol_rate_hz, int levels,
-                      uint32_t* generation, float* sample_out) {
+                      uint32_t* generation, float* sample_out, int wants) {
     if (!state || !sample_out) {
         return RTL_SYMBOL_CACHE_EMPTY;
     }
@@ -1325,7 +1349,7 @@ rtl_symbol_cache_take(dsd_state* state, int output_kind, int channel_profile, in
     }
 
     return rtl_symbol_cache_refill(state, output_kind, channel_profile, symbol_rate_hz, levels, generation,
-                                   expected_generation, sample_out);
+                                   expected_generation, sample_out, wants);
 }
 #endif
 
@@ -2261,10 +2285,11 @@ symbol_stop_after_shutdown(float* sample_out) {
 
 enum { SYMBOL_INPUT_WAIT_SLICE_MS = 100 };
 
-/* A hunt read got no input for its bound (issue #834): a silent PCM input for a stream pause. Under a scan (trunk scan
-   or -Y owns the tuner) the pass ends as a dead-air pass does, with the scan-idle interruption, which does not stand:
-   the hunt returns no sync and the engine loop runs its tick and noCarrier(), which decide what the scan does. Returns
-   1 when it raised it. Asked only once a read came back empty, so a stream that delivers costs nothing. */
+/* A hunt read got no input for its bound (issue #834): a silent PCM input for a stream pause, a live RTL read that came
+   back DSD_RTL_READ_IDLE, an idle analog monitor. Under a scan (trunk scan or -Y owns the tuner) the pass ends as a
+   dead-air pass does, with the scan-idle interruption, which does not stand: the hunt returns no sync and the engine
+   loop runs its tick and noCarrier(), which decide what the scan does. Returns 1 when it raised it. Asked only once a
+   read came back empty, so a stream that delivers costs nothing. */
 static int
 symbol_hunt_idle_ends_pass(const dsd_opts* opts, dsd_state* state) {
     if (!dsd_frame_sync_hook_scan_owns_hunt(opts, state)) {
@@ -2587,6 +2612,57 @@ symbol_rtl_read_yielded(dsd_state* state) {
     state->symbol_replay_symbol_unusable = 1;
 }
 
+/* A hunt read the live stream bounded (DSD_RTL_READ_IDLE, issue #834): the stream delivered nothing for 100 ms, though
+   it still runs. A queued command or a frontend publication a P25 watchdog tick put off takes the decoder back, with no
+   reason of its own, as a silent PCM read gives way to one: the engine loop applies it and the next pass hunts on.
+   Under a scan the pass ends (symbol_hunt_idle_ends_pass()). Else nothing waits on the decoder, and the read reads
+   again. Returns 1 when the read leaves. Nothing of the stream is lost either way: the read found no samples. */
+static int
+symbol_rtl_read_idle_leaves(const dsd_opts* opts, dsd_state* state) {
+    if (dsd_runtime_controls_pending() || dsd_runtime_publish_pending()) {
+        state->input_interrupted = 1;
+        return 1;
+    }
+    return symbol_hunt_idle_ends_pass(opts, state);
+}
+
+/* An idle analog monitor's empty read (success, 0 samples): it leaves the read without a reason of its own, so the
+   engine loop can expire a stalled call, and, in a hunt under a scan, ends the pass as any idle hunt read does (issue
+   #834), so the engine loop also runs noCarrier() for the scan. */
+static inline void
+symbol_rtl_monitor_idle(const dsd_opts* opts, dsd_state* state, const symbol_work_ctx* work) {
+    if (!work->hunting || !symbol_hunt_idle_ends_pass(opts, state)) {
+        state->input_interrupted = 1;
+    }
+}
+
+/* What the decoder's live reads ask for: the idle bound for a hunt read (issue #834), nothing for a frame read, which
+   waits for its samples. */
+static inline int
+symbol_rtl_read_wants(const symbol_work_ctx* work) {
+    return work->hunting ? DSD_RTL_READ_WANT_IDLE_BOUND : 0;
+}
+
+/* One live read of one sample for the one-sample reader, with the stream generation before it in @p read_generation.
+   A hunt read that the stream bounded reads again unless it leaves (symbol_rtl_read_idle_leaves()). Returns the read's
+   result: DSD_RTL_READ_IDLE only when the read left. */
+static int
+symbol_rtl_read_sample(const dsd_opts* opts, dsd_state* state, float* sample_out, symbol_work_ctx* work,
+                       uint32_t* read_generation, int* got) {
+    for (;;) {
+        *read_generation = dsd_rtl_stream_metrics_hook_stream_generation();
+        *got = 0;
+        if (!work->hunting) {
+            return dsd_rtl_stream_io_hook_read_ex(state, sample_out, &work->sample_flag, 1, got);
+        }
+        const int read_rc = dsd_rtl_stream_io_hook_read_ex2(state, sample_out, &work->sample_flag, 1, got,
+                                                            DSD_RTL_READ_WANT_IDLE_BOUND);
+        if (read_rc != DSD_RTL_READ_IDLE || symbol_rtl_read_idle_leaves(opts, state)) {
+            return read_rc;
+        }
+    }
+}
+
 /* The samples a read returned come after a gap in the stream (issue #518 D5: a USB recovery, an rtl_tcp reconnect, or
    one an I/Q replay's capture recorded), whose discontinuity count is @p gap_seq. The decoder takes the count up and
    raises the stream-gap interruption, which stands for every symbol read until the engine loop consumes it and resets
@@ -2643,15 +2719,18 @@ symbol_rtl_read_one(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_
         }
     }
     /* The generation before the read: a live sample past a gap is held only while it has not moved since. */
-    const uint32_t read_generation = dsd_rtl_stream_metrics_hook_stream_generation();
+    uint32_t read_generation = 0U;
     int got = 0;
-    const int read_rc = dsd_rtl_stream_io_hook_read_ex(state, sample_out, &work->sample_flag, 1, &got);
+    const int read_rc = symbol_rtl_read_sample(opts, state, sample_out, work, &read_generation, &got);
     if (read_rc == DSD_RTL_READ_YIELD) {
         symbol_rtl_read_yielded(state);
         return 0;
     }
+    if (read_rc == DSD_RTL_READ_IDLE) {
+        return 0;
+    }
     if (read_rc == 0 && got == 0 && dsd_analog_monitor_tap_active(opts)) {
-        state->input_interrupted = 1;
+        symbol_rtl_monitor_idle(opts, state, work);
         return 0;
     }
     if (read_rc < 0 || got != 1) {
@@ -2677,11 +2756,17 @@ symbol_rtl_read_one(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_
 static inline int
 symbol_read_cached_rtl_sample(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_work_ctx* work) {
     for (;;) {
-        int cache_status =
-            rtl_symbol_cache_take(state, work->rtl_output_kind, work->rtl_channel_profile, work->rtl_symbol_rate_hz,
-                                  work->rtl_symbol_levels, &work->rtl_stream_generation, sample_out);
+        int cache_status = rtl_symbol_cache_take(state, work->rtl_output_kind, work->rtl_channel_profile,
+                                                 work->rtl_symbol_rate_hz, work->rtl_symbol_levels,
+                                                 &work->rtl_stream_generation, sample_out, symbol_rtl_read_wants(work));
         if (cache_status == RTL_SYMBOL_CACHE_READY) {
             return 1;
+        }
+        if (cache_status == RTL_SYMBOL_CACHE_IDLE) {
+            if (symbol_rtl_read_idle_leaves(opts, state)) {
+                return 0;
+            }
+            continue;
         }
         if (cache_status == RTL_SYMBOL_CACHE_GAP) {
             symbol_rtl_stream_gap(state, state->rtl_symbol_cache_boundary_seq);
@@ -3071,11 +3156,17 @@ symbol_try_rtl_symbol_rate_fast_path(dsd_opts* opts, dsd_state* state, symbol_wo
 
     for (;;) {
         apply_rtl_symbol_thresholds(state, work->rtl_symbol_levels);
-        int cache_status =
-            rtl_symbol_cache_take(state, work->rtl_output_kind, work->rtl_channel_profile, work->rtl_symbol_rate_hz,
-                                  work->rtl_symbol_levels, &work->rtl_stream_generation, &work->sample);
+        int cache_status = rtl_symbol_cache_take(
+            state, work->rtl_output_kind, work->rtl_channel_profile, work->rtl_symbol_rate_hz, work->rtl_symbol_levels,
+            &work->rtl_stream_generation, &work->sample, symbol_rtl_read_wants(work));
         if (cache_status == RTL_SYMBOL_CACHE_READY) {
             break;
+        }
+        if (cache_status == RTL_SYMBOL_CACHE_IDLE) {
+            if (symbol_rtl_read_idle_leaves(opts, state)) {
+                return -1;
+            }
+            continue;
         }
         if (cache_status == RTL_SYMBOL_CACHE_GAP) {
             symbol_rtl_stream_gap(state, state->rtl_symbol_cache_boundary_seq);

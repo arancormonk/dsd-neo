@@ -41,11 +41,20 @@ typedef struct {
    stream that is only delayed is still a stream: its reads wait for samples. */
 /* The read was empty and gave way to a queued command: the consumer stands erasures in and lets the engine loop apply
    it (the DSD_INTERRUPT_YIELD interruption), then reads on. */
-#define DSD_RTL_READ_YIELD     (-2)
+#define DSD_RTL_READ_YIELD           (-2)
 /* The read was empty for one wait slice. Only a reader that asks for it gets it
    (dsd_rtl_stream_io_hook_read_ex2()): the EDACS analog call loop, which plays the time that passed as closed squelch
    and ends its call by its own timers. */
-#define DSD_RTL_READ_NO_STREAM (-3)
+#define DSD_RTL_READ_NO_STREAM       (-3)
+/* The live stream delivered nothing for 100 ms (issue #834). Only a reader that asks for it gets it
+   (DSD_RTL_READ_WANT_IDLE_BOUND): the decoder's frame-sync hunt, which then applies a queued command, ends its pass
+   under a scan, or reads again. Frame reads, an I/Q replay's reads and a Signal search's or analog monitor's own bounds
+   are not changed by it. */
+#define DSD_RTL_READ_IDLE            (-4)
+
+/* What a reader asks of a live read (the @p wants bits of dsd_rtl_stream_io_hook_read_ex2() and the reads under it). */
+#define DSD_RTL_READ_WANT_NO_STREAM  0x1 /* DSD_RTL_READ_NO_STREAM while the device has no stream */
+#define DSD_RTL_READ_WANT_IDLE_BOUND 0x2 /* DSD_RTL_READ_IDLE after 100 ms with no samples */
 
 typedef struct {
     int (*read)(void* rtl_ctx, float* out, size_t count, int* out_got);
@@ -55,15 +64,14 @@ typedef struct {
     int (*read_ex)(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got);
     /* The dynamic squelch's status. Optional. */
     int (*squelch_status)(const void* rtl_ctx, dsd_rtl_squelch_status* out);
-    /* read_ex that returns DSD_RTL_READ_NO_STREAM to a reader that asks for it (@p want_no_stream). Optional: without
-       it, dsd_rtl_stream_io_hook_read_ex2() reads through read_ex. */
-    int (*read_ex2)(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got, int want_no_stream);
+    /* read_ex for a reader that asks for more (@p wants, DSD_RTL_READ_WANT_* bits): DSD_RTL_READ_NO_STREAM,
+       DSD_RTL_READ_IDLE. Optional: without it, dsd_rtl_stream_io_hook_read_ex2() reads through read_ex. */
+    int (*read_ex2)(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got, int wants);
     /* Start of the last NO_STREAM wait slice on this reader thread, in real monotonic milliseconds; 0 if unknown. */
     uint64_t (*no_stream_since_ms)(void);
     /* read_ex2 with the FSK voice lane into @p voice (or NULL), sample for sample (rtl_stream_read_lanes()). Optional:
        without it, dsd_rtl_stream_io_hook_read_lanes() reads through read_ex2 with every voice sample 0. */
-    int (*read_lanes)(void* rtl_ctx, float* out, float* voice, uint8_t* flags, size_t count, int* out_got,
-                      int want_no_stream);
+    int (*read_lanes)(void* rtl_ctx, float* out, float* voice, uint8_t* flags, size_t count, int* out_got, int wants);
     /* Ask for the FSK voice lane, or stop it (rtl_stream_set_voice_lane()). Optional. */
     void (*set_voice_lane)(int enable);
     /* Whether the stream can carry the FSK voice lane (rtl_stream_voice_lane_available()). Optional: without it, a
@@ -87,12 +95,14 @@ int dsd_rtl_stream_io_hook_read(dsd_state* state, float* out, size_t count, int*
 int dsd_rtl_stream_io_hook_read_ex(dsd_state* state, float* out, uint8_t* flags, size_t count, int* out_got);
 
 /**
- * @brief dsd_rtl_stream_io_hook_read_ex() for a reader that takes DSD_RTL_READ_NO_STREAM (@p want_no_stream): while the
- * device has no stream, each read that found nothing for one wait slice returns it instead of waiting on, and never
- * DSD_RTL_READ_YIELD. With @p want_no_stream 0 it reads as dsd_rtl_stream_io_hook_read_ex().
+ * @brief dsd_rtl_stream_io_hook_read_ex() for a reader that asks for more of a live read (@p wants,
+ * DSD_RTL_READ_WANT_* bits). DSD_RTL_READ_WANT_NO_STREAM: while the device has no stream, each read that found nothing
+ * for one wait slice returns DSD_RTL_READ_NO_STREAM instead of waiting on, and never DSD_RTL_READ_YIELD.
+ * DSD_RTL_READ_WANT_IDLE_BOUND: a live read that found nothing for 100 ms returns DSD_RTL_READ_IDLE (issue #834). With
+ * @p wants 0 it reads as dsd_rtl_stream_io_hook_read_ex().
  */
 int dsd_rtl_stream_io_hook_read_ex2(dsd_state* state, float* out, uint8_t* flags, size_t count, int* out_got,
-                                    int want_no_stream);
+                                    int wants);
 
 /**
  * @brief dsd_rtl_stream_io_hook_read_ex2() with the FSK voice lane (issue #518): into @p voice (as many as @p out, or
@@ -101,7 +111,7 @@ int dsd_rtl_stream_io_hook_read_ex2(dsd_state* state, float* out, uint8_t* flags
  * Without the read_lanes hook every voice sample is 0.
  */
 int dsd_rtl_stream_io_hook_read_lanes(dsd_state* state, float* out, float* voice, uint8_t* flags, size_t count,
-                                      int* out_got, int want_no_stream);
+                                      int* out_got, int wants);
 
 /** @brief Ask the RTL stream for its FSK voice lane, or stop it (issue #518); nothing without the hook. */
 void dsd_rtl_stream_io_hook_set_voice_lane(int enable);

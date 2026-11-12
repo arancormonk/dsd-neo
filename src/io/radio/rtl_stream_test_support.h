@@ -1321,21 +1321,23 @@ int rtl_stream_test_search_live_read_bound(uint64_t search_owner, const dsd_opts
 
 /* rtl_stream_test_search_live_read_bound()'s read (issue #518 D4) with @p dev as the open device, whose stream (or lack
  * of one, rtl_device_has_stream()) it reads by, for a reader that does (@p want_no_stream) or does not take
- * DSD_RTL_READ_NO_STREAM. After @p event_after_ms the producer calls @p event (when set), then delivers one sample when
+ * DSD_RTL_READ_NO_STREAM, and does (@p want_idle_bound, the decoder's hunt: issue #834) or does not take
+ * DSD_RTL_READ_IDLE. After @p event_after_ms the producer calls @p event (when set), then delivers one sample when
  * @p feed is set. */
 typedef struct {
     struct rtl_device* dev;
     uint64_t search_owner;
     const dsd_opts* live_opts;
     int want_no_stream;
+    int want_idle_bound;
     int event_after_ms;
     void (*event)(void* ctx);
     void* event_ctx;
     int feed;
 } rtl_stream_test_live_read_request;
 
-/* Reports what the read returned (a sample count, -1, 0 for an idle monitor, DSD_RTL_READ_YIELD or
- * DSD_RTL_READ_NO_STREAM) and how long it waited; returns 0 when the read ran. */
+/* Reports what the read returned (a sample count, -1, 0 for an idle monitor, DSD_RTL_READ_YIELD,
+ * DSD_RTL_READ_NO_STREAM or DSD_RTL_READ_IDLE) and how long it waited; returns 0 when the read ran. */
 int rtl_stream_test_live_read(const rtl_stream_test_live_read_request* req, int* out_got, uint64_t* out_waited_ms);
 /* Set or clear a USB device's recovering state (the swap's), which rtl_device_has_stream() reads as no stream. */
 void rtl_device_test_set_recovering(struct rtl_device* dev, int on);

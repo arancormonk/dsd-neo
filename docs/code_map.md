@@ -482,14 +482,16 @@ Generated (do not edit/commit):
     input (a symbol replay ended; a WAV or TCP stream was the peer's audio already) is asked for the session's width
     under the same guard (`dsd_engine_rigctl_ask_session_passband()`, issue #621), as app-control's follow asks a peer a
     command's switch brings. Test: `ENGINE_INPUT_BOUNDARY`.
-  - Idle hunt reads under a scan (issue #834 B1, `live_scanner_main_pass()`): a hunt read that ended its pass with
-    `DSD_INTERRUPT_SCAN_IDLE` (a silent PCM input while trunk scan or -Y owns the tuner; DSP, "Silent inputs") counts
-    as no interruption: the pass runs its tick and `noCarrier()` as after a dead-air pass, so the engine's own tick and
-    step decide what is due (dwell, visit cap, hangtime, departures, pending tunes). No obligation list is kept on the
-    read side. One pass is the outer loop's body; `dsd_engine_test_live_scanner_run()` (`engine_test_support.h`) runs a
-    bounded number of them for tests that drive the real hunt, symbol reader and interruption routing over scripted
-    inputs. Test: `ENGINE_NO_CARRIER_RESET` (`test_live_scan_over_silent_inputs()`: -Y and trunk scan over a silent
-    UDP input, a held -Y released during the silence).
+  - Idle hunt reads under a scan (issue #834 B1/B2, `live_scanner_main_pass()`): a hunt read that ended its pass with
+    `DSD_INTERRUPT_SCAN_IDLE` (a silent PCM input, a stalled RTL stream or an idle analog monitor while trunk scan or
+    -Y owns the tuner; DSP, "Silent inputs" and "Idle hunt reads") counts as no interruption: the pass runs its tick
+    and `noCarrier()` as after a dead-air pass, so the engine's own tick and step decide what is due (dwell, visit cap,
+    hangtime, departures, pending tunes). No obligation list is kept on the read side. One pass is the outer loop's
+    body; `dsd_engine_test_live_scanner_run()` (`engine_test_support.h`) runs a bounded number of them for tests that
+    drive the real hunt, symbol reader and interruption routing over scripted inputs. Test: `ENGINE_NO_CARRIER_RESET`
+    (`test_live_scan_over_silent_inputs()`: -Y and trunk scan over a silent UDP input and a stalled RTL stream, a held
+    -Y released during the silence, a command applied during an RTL stall with no scan, an analog -Y row on an idle
+    monitor).
 - Build files: `src/engine/CMakeLists.txt`
 
 Key public headers:
@@ -3581,9 +3583,11 @@ suite runs under this compiler.
     so a post that took a session's sink has delivered before the sink's removal returns; the slot is cleared after
     that removal and again at session start, so a late post never reaches the next session. A failed notice-mutex initialization
     leaves the sink disabled without accessing an uninitialized lock (`RUNTIME_STREAM_NOTICE_INIT_FAILURE`).
-    `rtl_stream_io_hooks.h` gives a live read two results beside a count and -1: `DSD_RTL_READ_YIELD` (no stream and a command queued) and, for a
-    reader that asks through `read_ex2` (`want_no_stream`), `DSD_RTL_READ_NO_STREAM` (see IO, "Reads while the device
-    has no stream"). Tests: `APP_COMMAND_QUEUE`, `APP_CONTROL_TELEMETRY_HOOKS_INSTALL`, `ENGINE_IO_HOOKS_INSTALL`.
+    `rtl_stream_io_hooks.h` gives a live read three results beside a count and -1: `DSD_RTL_READ_YIELD` (no stream and a
+    command queued) and, for a reader that asks through `read_ex2` (its `wants` bits), `DSD_RTL_READ_NO_STREAM`
+    (`DSD_RTL_READ_WANT_NO_STREAM`; see IO, "Reads while the device has no stream") and `DSD_RTL_READ_IDLE`
+    (`DSD_RTL_READ_WANT_IDLE_BOUND`, issue #834: 100 ms with no samples; IO, "Idle-bounded hunt reads"). Tests:
+    `APP_COMMAND_QUEUE`, `APP_CONTROL_TELEMETRY_HOOKS_INSTALL`, `ENGINE_IO_HOOKS_INSTALL`.
   - Squelch setting (`include/dsd-neo/runtime/squelch.h`, `src/runtime/squelch.c`, issue #518 follow-up): a
     `dsd_squelch_setting` (`<dsd-neo/core/power.h>`: mode LEVEL, AUTO or NOISE -- the dynamic modes,
     `dsd_squelch_mode_is_dynamic()` -- the AUTO margin or NOISE quieting in whole dB 3..30, the LEVEL threshold in
@@ -6456,12 +6460,22 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   brings resets the decoding). A search's failed read and an idle NFM monitor's empty read keep their contracts. The
   M17 encoder takes a yield as `M17_STR_READ_AGAIN` (the block read so far dropped; its loop pumps the command). The
   EDACS analog call loop, which holds the decoder until its call ends, asks for `DSD_RTL_READ_NO_STREAM` instead
-  (`dsd_rtl_stream_io_hook_read_ex2()`, `want_no_stream`) and never yields: each one pays the realtime since the outage
-  began in silent samples at the stream's rate with the squelch flag closed (`edacs_no_stream_pay()`,
+  (`dsd_rtl_stream_io_hook_read_ex2()`, `DSD_RTL_READ_WANT_NO_STREAM`) and never yields: each one pays the realtime
+  since the outage began in silent samples at the stream's rate with the squelch flag closed (`edacs_no_stream_pay()`,
   `dsd_state::edacs_no_stream_*`), and a triplet that holds any has no RF power (`edacs_rtl_triplet_pwr()`), not the
   stream's last measurement, so the level squelch's count and the gate's closed run end the call on its own timers,
   plain or rate-converted; it asks for no shutdown. Tests: `DSP_SYMBOL_RTL_YIELD`, `ENGINE_STREAM_GAP` (the engine
   applies the command), `M17_STATE_DISPATCH`, `EDACS_GRANT_TUNE_MATRIX`.
+- Idle hunt reads (issue #834 B2). Hunt reads (`getSymbol()` without sync) ask the live read for its idle bound
+  (`DSD_RTL_READ_WANT_IDLE_BOUND` through `dsd_rtl_stream_io_hook_read_ex2()`: the one-sample reader,
+  `symbol_rtl_read_sample()`, and both cached readers' refills, `rtl_symbol_cache_read()`); frame reads ask nothing and
+  wait for their samples as before. A read that comes back `DSD_RTL_READ_IDLE` (a connected stream that delivered
+  nothing for 100 ms; the cache refill answers `RTL_SYMBOL_CACHE_IDLE`) is mapped by `symbol_rtl_read_idle_leaves()`: a
+  queued command or a put-off publication leaves with no reason of its own (the engine loop applies it, in every
+  session); else under a scan the pass ends with `DSD_INTERRUPT_SCAN_IDLE`; else the read reads again. An idle analog
+  monitor's empty hunt read under a scan ends the pass the same way (`symbol_rtl_monitor_idle()`). The reason does not
+  stand ("Silent inputs" above) and nothing of the stream is lost. An I/Q replay's reads never come back idle. Tests:
+  `DSP_SYMBOL_RTL_YIELD`, `ENGINE_NO_CARRIER_RESET`, `IO_RTL_RETUNE_PREPARE`, `IO_RTL_REPLAY_EOF_AND_CF32`.
 - `dsd_symbol.c` owns the open-loop FSK symbol grid. Only the inter-frame sync search moves it, by a whole sample at
   a time, on the first zero crossing latched in the previous symbol — a bang-bang loop on one unfiltered sample
   index, and between frames the only thing tracking the sampling instant across a call. Issue #444 documents how
@@ -8997,8 +9011,9 @@ Notes:
     request until the recovery finished (`recovery_request` not IDLE, or `recovering`); rtl_tcp has none from the loss
     of its connection until a reconnected one is published (`tcp_connected`); the other backends report one.
     `rtl_stream_read_live_samples()` asks it only after an empty poll (`rtl_live_read_no_stream()`), so a read that
-    finds samples asks nothing. With no stream, a reader that asks for it (`want_no_stream`, through
-    `dsd_rtl_stream_read_ex()`, `RtlSdrOrchestrator::read()`, `rtl_stream_read_ex2()` and the runtime hook's `read_ex2`)
+    finds samples asks nothing. With no stream, a reader that asks for it (`DSD_RTL_READ_WANT_NO_STREAM` in its
+    `wants`, through `dsd_rtl_stream_read_ex()`, `RtlSdrOrchestrator::read()`, `rtl_stream_read_ex2()` and the runtime
+    hook's `read_ex2`)
     gets `DSD_RTL_READ_NO_STREAM` once a 10 ms wait slice passed; `rtl_stream_no_stream_since_ms()` publishes that
     slice's start on the reader thread, through the runtime `no_stream_since_ms` hook. EDACS counts the first
     interval too, using elapsed real monotonic time, without a clock read on successful sample reads; any other read
@@ -9011,6 +9026,16 @@ Notes:
     Tests: `IO_RTL_RETUNE_PREPARE` (the live read over a device with and without a stream), `IO_RTL_USB_RECOVERY` (a
     read yields while a real recovery runs and the samples after it arrive; a slow stream with a command queued never
     yields and decodes exactly as without one), `IO_RTL_STREAM_ORCHESTRATOR`, `ENGINE_IO_HOOKS_INSTALL`.
+  - Idle-bounded hunt reads (issue #834 B2). A reader's `wants` bits (`DSD_RTL_READ_WANT_*`, through the same path
+    as above) may also ask for the idle bound (`DSD_RTL_READ_WANT_IDLE_BOUND`, the decoder's hunt reads):
+    `rtl_live_read_idle_expired()` then ends a live read that found nothing for 100 ms, timed from its first empty poll
+    so a read that finds samples reads no clock, with `DSD_RTL_READ_IDLE`, stream or no stream, a command queued or not
+    (the decoder decides what it gives way to). The search's failure (-1) and the idle analog monitor's zero read win
+    over it; with no stream a queued command still yields at once, and a reader that asks for both takes
+    `DSD_RTL_READ_NO_STREAM` first. A read that does not ask (frame reads, the EDACS loop, the M17 encoder) is
+    unchanged. A replay's reads (`rtl_stream_read_replay()`) never take it: the replay is paced by the decoder's demand,
+    so a slow block is no silent stream. Tests: `IO_RTL_RETUNE_PREPARE` (`test_hunt_live_read_idle_bound()`),
+    `IO_RTL_REPLAY_EOF_AND_CF32` (`test_replay_reads_never_come_back_idle()`).
   - I/Q replay events on an idle pipeline (issue #572; "Replay events on an idle pipeline" in `rtl_sdr_fm.cpp`,
     `replay_dispatch_pending_events()` in `rtl_device.cpp`). The reader applies every event (RETUNE, MUTE, RESET) and a
     loop rewind only once the pipeline is idle, so it lands between the same two chunks and the same two decoder reads

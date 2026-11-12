@@ -102,6 +102,7 @@
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include "../../src/app_control/commands_internal.h"
 #include "../../src/app_control/services.h"
 #include "engine_hooks_install.h"
@@ -11421,16 +11422,20 @@ test_untyped_goto_over_a_pending_goto(void) {
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 /*
- * Issue #834 (B1): the live loop (dsd_engine_test_live_scanner_run()) over an input that goes silent, with the real
+ * Issue #834 (B1, B2): the live loop (dsd_engine_test_live_scanner_run()) over an input that goes silent, with the real
  * frame-sync hunt, the real symbol reader, the engine's frame-sync hooks and the real interruption routing, on the TEST
  * decode clock. A silent UDP input waits in its real slices (each one also moves the decode clock by its length, so the
- * real stream pause of a PCM read is the decode time it spans too). A scan step or a command the silence held back
- * shows by when it happened: before the input came back, or only after.
+ * real stream pause of a PCM read is the decode time it spans too); a stalled RTL stream comes back DSD_RTL_READ_IDLE
+ * to a read that asks for the bound, 100 ms of decode time each, and a read that does not ask waits, as the real one
+ * does, until the stall ends. A scan step or a command the silence held back shows by when it happened: before the
+ * input came back, or only after.
  */
-#define LIVE_T0_NS     1800000000000000000ULL
-#define LIVE_NS_PER_MS 1000000ULL
-#define LIVE_SAMPLE_NS 20833ULL /* one 48 kHz sample */
-#define LIVE_PASS_CAP  200
+#define LIVE_T0_NS        1800000000000000000ULL
+#define LIVE_NS_PER_MS    1000000ULL
+#define LIVE_SAMPLE_NS    20833ULL /* one 48 kHz sample */
+#define LIVE_RTL_READ_MAX 480U
+#define LIVE_PASS_CAP     200
+#define LIVE_RTL_IDLE_NS  (100ULL * LIVE_NS_PER_MS)
 
 static struct {
     uint64_t now_ns;
@@ -11438,6 +11443,8 @@ static struct {
     uint64_t command_at_ns;   /* once the decode clock reaches this in the silence, command_id is queued (0: none) */
     int command_id;
     int command_queued;
+    int monitor_idle; /* the stalled RTL read is an idle analog monitor's: success with 0 samples, every 100 ms */
+    int bounded_reads;
     /* What a case watches for (live_run_until()), asked at every read and after every pass, and the decode time (ms
        from LIVE_T0_NS) it first answered 1 at, or -1. */
     int (*watch)(const dsd_opts* opts, const dsd_state* state);
@@ -11495,8 +11502,89 @@ live_udp_read_sample_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms)
     return 1;
 }
 
+static int
+live_rtl_read_ex2(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got, int wants) {
+    (void)rtl_ctx;
+    *out_got = 0;
+    live_watch();
+    if (g_live.now_ns < g_live.silent_until_ns) {
+        if (g_live.monitor_idle) {
+            live_clock_set(g_live.now_ns + LIVE_RTL_IDLE_NS);
+            live_queue_command_if_due();
+            return 0;
+        }
+        if ((wants & DSD_RTL_READ_WANT_IDLE_BOUND) != 0) {
+            g_live.bounded_reads++;
+            live_clock_set(g_live.now_ns + LIVE_RTL_IDLE_NS);
+            live_queue_command_if_due();
+            return DSD_RTL_READ_IDLE;
+        }
+        /* A read that does not ask for the bound waits for the stream, as the real one does. */
+        live_clock_set(g_live.silent_until_ns);
+        live_queue_command_if_due();
+    }
+    const size_t n = count < LIVE_RTL_READ_MAX ? count : LIVE_RTL_READ_MAX;
+    for (size_t i = 0; i < n; i++) {
+        out[i] = 0.0f;
+        if (flags) {
+            flags[i] = 0U;
+        }
+    }
+    live_clock_set(g_live.now_ns + (uint64_t)n * LIVE_SAMPLE_NS);
+    *out_got = (int)n;
+    return 0;
+}
+
+static int
+live_rtl_read_ex(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got) {
+    return live_rtl_read_ex2(rtl_ctx, out, flags, count, out_got, 0);
+}
+
+static int
+live_rtl_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
+    return live_rtl_read_ex2(rtl_ctx, out, NULL, count, out_got, 0);
+}
+
+static double
+live_rtl_pwr(const void* rtl_ctx) {
+    (void)rtl_ctx;
+    return 0.0;
+}
+
+static int g_live_output_kind = RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
+
+static int
+live_output_kind(void) {
+    return g_live_output_kind;
+}
+
+static unsigned int
+live_output_rate_hz(void) {
+    return 48000U;
+}
+
+static int
+live_symbol_profile(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile) {
+    if (out_symbol_rate_hz) {
+        *out_symbol_rate_hz = g_live_output_kind == RTL_STREAM_OUTPUT_AUDIO_MONITOR ? 0 : 4800;
+    }
+    if (out_levels) {
+        *out_levels = 2;
+    }
+    if (out_channel_profile) {
+        *out_channel_profile = 0;
+    }
+    return 0;
+}
+
+static uint32_t
+live_stream_generation(void) {
+    return 1U;
+}
+
 /* The live loop's session: the engine's frame-sync hooks, the frontend runtime (the command queue the pump drains), the
-   TEST decode clock at LIVE_T0_NS, and a UDP input silent for @p silent_ms (@p output_kind 0). */
+   TEST decode clock at LIVE_T0_NS, an input silent for @p silent_ms, and the input: UDP, or a live RTL stream of
+   @p output_kind (0: UDP). */
 static void
 live_session_start(dsd_opts* opts, dsd_state* state, int output_kind, uint64_t silent_ms) {
     DSD_MEMSET(&g_live, 0, sizeof g_live);
@@ -11509,9 +11597,25 @@ live_session_start(dsd_opts* opts, dsd_state* state, int output_kind, uint64_t s
     live_clock_set(LIVE_T0_NS);
     g_live.silent_until_ns = LIVE_T0_NS + silent_ms * LIVE_NS_PER_MS;
     dsd_engine_frame_sync_hooks_install();
-    (void)output_kind;
-    opts->audio_in_type = AUDIO_IN_UDP;
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){.udp_read_sample_wait = live_udp_read_sample_wait});
+    if (output_kind == 0) {
+        opts->audio_in_type = AUDIO_IN_UDP;
+        dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){.udp_read_sample_wait = live_udp_read_sample_wait});
+    } else {
+        g_live_output_kind = output_kind;
+        opts->audio_in_type = AUDIO_IN_RTL;
+        state->rtl_ctx = (RtlSdrContext*)state;
+        dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){.read = live_rtl_read,
+                                                              .return_pwr = live_rtl_pwr,
+                                                              .read_ex = live_rtl_read_ex,
+                                                              .read_ex2 = live_rtl_read_ex2});
+        static const dsd_rtl_stream_metrics_hooks metrics = {
+            .output_rate_hz = live_output_rate_hz,
+            .output_kind = live_output_kind,
+            .symbol_profile = live_symbol_profile,
+            .stream_generation = live_stream_generation,
+        };
+        dsd_rtl_stream_metrics_hooks_set(&metrics);
+    }
     dsd_app_frontend_runtime_start(opts, state);
 }
 
@@ -11520,9 +11624,13 @@ live_session_stop(dsd_opts* opts, dsd_state* state) {
     dsd_app_frontend_runtime_stop();
     dsd_frame_sync_hooks_set(NULL);
     dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_trunk_tuning_requests_reset();
     g_rigctl_setfreq_ok = 0;
+    g_live_output_kind = RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
+    state->rtl_ctx = NULL;
     dsd_decode_clock_use_system();
     free_test_runtime(opts, state);
 }
@@ -11632,7 +11740,7 @@ live_expect_between(const char* label, int64_t got_ms, int64_t min_ms, int64_t m
     return 0;
 }
 
-/* B1: -Y over an input that went silent steps at its hangtime (more than one whole second since the row's last
+/* B1/B2: -Y over an input that went silent steps at its hangtime (more than one whole second since the row's last
    sync: two seconds from LIVE_T0_NS), within one bounded pass, long before the input comes back. */
 static int
 test_live_y_steps_over_a_silent_input(int output_kind, const char* what, uint64_t silent_ms) {
@@ -11651,7 +11759,7 @@ test_live_y_steps_over_a_silent_input(int output_kind, const char* what, uint64_
     return rc;
 }
 
-/* B1: a trunk scan over an input that went silent advances at its dwell (250 ms), within one bounded pass. */
+/* B1/B2: a trunk scan over an input that went silent advances at its dwell (250 ms), within one bounded pass. */
 static int
 test_live_trunk_scan_advances_over_a_silent_input(int output_kind, const char* what, uint64_t silent_ms) {
     dsd_opts* opts = NULL;
@@ -11682,7 +11790,7 @@ live_y_released(const dsd_opts* opts, const dsd_state* state) {
     return state->lcn_scan_hold == 0;
 }
 
-/* B1: a held -Y scan over an input that went silent takes the release a frontend sends during the silence, then
+/* B1/B2: a held -Y scan over an input that went silent takes the release a frontend sends during the silence, then
    steps at its hangtime, before the input comes back. Nothing steps while it is held. */
 static int
 test_live_held_y_released_over_a_silent_input(int output_kind, const char* what, uint64_t silent_ms) {
@@ -11710,11 +11818,64 @@ test_live_held_y_released_over_a_silent_input(int output_kind, const char* what,
 }
 
 static int
+live_payload_toggled(const dsd_opts* opts, const dsd_state* state) {
+    (void)state;
+    return opts->payload == 1;
+}
+
+/* B2: with no scan, a connected RTL stream that stops delivering no longer holds a queued command until it delivers
+   again: the hunt read gives way to it within the bound. With nothing queued and no scan, the hunt reads on. */
+static int
+test_live_command_applied_over_a_stalled_rtl_stream(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    live_session_start(opts, state, RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR, 20000U);
+    opts->payload = 0;
+    g_live.command_id = DSD_APP_CMD_PAYLOAD_TOGGLE;
+    g_live.command_at_ns = LIVE_T0_NS + 1000ULL * LIVE_NS_PER_MS;
+    const int64_t applied_ms = live_run_until(opts, state, live_payload_toggled);
+    int rc = live_expect_between("a command queued during an RTL stall is applied", applied_ms, 1000, 1500);
+    rc |= expect_true("the stalled hunt read asked for the bound", g_live.bounded_reads > 0);
+    live_session_stop(opts, state);
+    return rc;
+}
+
+/* B2: an analog -Y row on an RTL monitor that stalls (each read an idle monitor's empty one) steps at its hangtime:
+   the idle read under the scan ends the pass, and noCarrier() runs. */
+static int
+test_live_analog_y_steps_over_an_idle_monitor(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    live_session_start(opts, state, RTL_STREAM_OUTPUT_AUDIO_MONITOR, 20000U);
+    g_live.monitor_idle = 1;
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    live_y_list(opts, state, 997012500L);
+    const int64_t stepped_ms = live_run_until(opts, state, live_y_stepped);
+    int rc =
+        live_expect_between("an analog -Y row on an idle RTL monitor steps at its hangtime", stepped_ms, 1000, 3000);
+    live_session_stop(opts, state);
+    return rc;
+}
+
+static int
 test_live_scan_over_silent_inputs(void) {
     int rc = 0;
     rc |= test_live_y_steps_over_a_silent_input(0, "UDP input", 5000U);
     rc |= test_live_trunk_scan_advances_over_a_silent_input(0, "UDP input", 3000U);
     rc |= test_live_held_y_released_over_a_silent_input(0, "UDP input", 7000U);
+    rc |= test_live_y_steps_over_a_silent_input(RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR, "RTL stream", 20000U);
+    rc |= test_live_trunk_scan_advances_over_a_silent_input(RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR, "RTL stream", 20000U);
+    rc |= test_live_held_y_released_over_a_silent_input(RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR, "RTL stream", 20000U);
+    rc |= test_live_command_applied_over_a_stalled_rtl_stream();
+    rc |= test_live_analog_y_steps_over_an_idle_monitor();
     return rc;
 }
 #endif

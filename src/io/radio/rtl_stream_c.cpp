@@ -165,17 +165,17 @@ rtl_stream_read_ex(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t count,
 }
 
 extern "C" int
-rtl_stream_read_ex2(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t count, int* out_got, int want_no_stream) {
-    return rtl_stream_read_lanes(ctx, out, NULL, flags, count, out_got, want_no_stream);
+rtl_stream_read_ex2(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t count, int* out_got, int wants) {
+    return rtl_stream_read_lanes(ctx, out, NULL, flags, count, out_got, wants);
 }
 
 extern "C" int
 rtl_stream_read_lanes(RtlSdrContext* ctx, float* out, float* voice, uint8_t* flags, size_t count, int* out_got,
-                      int want_no_stream) {
+                      int wants) {
     if (!ctx || !ctx->stream || !out || !out_got) {
         return -1;
     }
-    return ctx->stream->read(out, voice, flags, count, *out_got, want_no_stream);
+    return ctx->stream->read(out, voice, flags, count, *out_got, wants);
 }
 
 /**

@@ -19,6 +19,12 @@
  * inside one, and an idle NFM monitor's empty read (0 samples) interrupts the hunt without standing.
  * An rtl_tcp server that comes back between two reads (its reconnect moved the stream's discontinuity count) does not
  * cut the yield short, and the gap it left is not lost behind it.
+ *
+ * Issue #834 (B2): hunt reads ask the live read for its idle bound, frame reads do not. A hunt read that comes back
+ * DSD_RTL_READ_IDLE (a connected stream that delivered nothing for 100 ms) gives way to a queued command or a put-off
+ * publication with no reason of its own, ends the pass under a scan with the scan-idle interruption, which does not
+ * stand, and otherwise reads again, losing nothing. An idle analog monitor's empty read under a scan ends the pass the
+ * same way.
  */
 
 #include <assert.h>
@@ -28,7 +34,9 @@
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
@@ -60,6 +68,15 @@ static int g_reads = 0;
 static int g_search_running = 0;
 /* The stream's discontinuity count: a reconnect moves it before any sample after it can be read. */
 static uint64_t g_discontinuity = 0U;
+/* Issue #834: the hunt reads still to come back DSD_RTL_READ_IDLE (each that asks for the bound), what the last read
+   asked for (-1: it came through read_ex, asking nothing), the reads that asked for the bound and those that did not,
+   whether a command is queued, and whether a scan owns the hunt. */
+static int g_idle_reads_left = 0;
+static int g_last_wants = -1;
+static int g_bounded_reads = 0;
+static int g_unbounded_reads = 0;
+static int g_commands_queued = 0;
+static int g_scan_owns_hunt = 0;
 
 static void
 check(const char* label, int cond) {
@@ -73,6 +90,13 @@ check(const char* label, int cond) {
 static int
 reads_sample(float got, uint64_t want) {
     return fabsf(got - (float)want) < 0.25f;
+}
+
+/* reads_sample() where a symbol is one sample (the CQPSK and monitor outputs); on the FSK discriminator's, whose symbols
+   the timing loop takes from ten samples each, any symbol passes. */
+static int
+reads_sample_on(int output_kind, float got, uint64_t want) {
+    return output_kind == RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR || reads_sample(got, want);
 }
 
 static int
@@ -101,8 +125,48 @@ fake_read_ex(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_g
 }
 
 static int
+fake_read_ex_counted(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got) {
+    g_last_wants = -1;
+    g_unbounded_reads++;
+    return fake_read_ex(rtl_ctx, out, flags, count, out_got);
+}
+
+static int
+fake_read_ex2(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got, int wants) {
+    g_last_wants = wants;
+    if ((wants & DSD_RTL_READ_WANT_IDLE_BOUND) == 0) {
+        g_unbounded_reads++;
+        return fake_read_ex(rtl_ctx, out, flags, count, out_got);
+    }
+    g_bounded_reads++;
+    if (g_idle_reads_left > 0 && g_instead == 1) {
+        g_idle_reads_left--;
+        if (out_got) {
+            *out_got = 0;
+        }
+        g_reads++;
+        return DSD_RTL_READ_IDLE;
+    }
+    return fake_read_ex(rtl_ctx, out, flags, count, out_got);
+}
+
+static int
 fake_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
+    g_last_wants = -1;
+    g_unbounded_reads++;
     return fake_read_ex(rtl_ctx, out, NULL, count, out_got);
+}
+
+static int
+fake_commands_queued(void) {
+    return g_commands_queued;
+}
+
+static int
+fake_scan_owns_hunt(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_scan_owns_hunt;
 }
 
 static double
@@ -159,8 +223,8 @@ static int g_fake_rtl_context = 0;
 
 static void
 install_fake_stream(void) {
-    dsd_rtl_stream_io_hooks_set(
-        (dsd_rtl_stream_io_hooks){.read = fake_read, .return_pwr = fake_pwr, .read_ex = fake_read_ex});
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+        .read = fake_read, .return_pwr = fake_pwr, .read_ex = fake_read_ex_counted, .read_ex2 = fake_read_ex2});
     static const dsd_rtl_stream_metrics_hooks hooks = {
         .output_rate_hz = fake_output_rate_hz,
         .output_kind = fake_output_kind,
@@ -170,6 +234,9 @@ install_fake_stream(void) {
     };
     dsd_rtl_stream_metrics_hooks_set(&hooks);
     dsd_signal_search_active_set(fake_search_running);
+    dsd_runtime_set_controls_pending(fake_commands_queued);
+    static const dsd_frame_sync_hooks frame_sync_hooks = {.scan_owns_hunt = fake_scan_owns_hunt};
+    dsd_frame_sync_hooks_set(&frame_sync_hooks);
 }
 
 static void
@@ -190,6 +257,12 @@ reset_stream(dsd_opts* opts, dsd_state* state, int output_kind) {
     g_reads = 0;
     g_search_running = 0;
     g_discontinuity = 0U;
+    g_idle_reads_left = 0;
+    g_last_wants = -1;
+    g_bounded_reads = 0;
+    g_unbounded_reads = 0;
+    g_commands_queued = 0;
+    g_scan_owns_hunt = 0;
     g_frame_sync_dsp_stub_shutdown_requests = 0;
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     dsd_decode_clock_use_replay(1788245497LL);
@@ -417,6 +490,135 @@ test_analog_zero_read_contract_kept(dsd_opts* opts, dsd_state* state, int demod)
     engine_consumes(state);
 }
 
+/* hunt_reads_ask_for_the_idle_bound: on every output, hunt reads (have_sync 0) ask the live read for its idle bound and
+   frame reads (have_sync 1) do not, so a frame waits for its samples as it always has. */
+static void
+hunt_reads_ask_for_the_idle_bound(dsd_opts* opts, dsd_state* state, int output_kind, const char* name) {
+    char label[192];
+    reset_stream(opts, state, output_kind);
+    for (int i = 0; i < 200; i++) {
+        (void)getSymbol(opts, state, 0);
+    }
+    DSD_SNPRINTF(label, sizeof label, "%s: hunt reads ask for the idle bound", name);
+    check(label, g_bounded_reads > 0 && g_unbounded_reads == 0 && g_last_wants == DSD_RTL_READ_WANT_IDLE_BOUND);
+    g_bounded_reads = 0;
+    for (int i = 0; i < 200; i++) {
+        (void)getSymbol(opts, state, 1);
+    }
+    DSD_SNPRINTF(label, sizeof label, "%s: frame reads do not", name);
+    check(label, g_unbounded_reads > 0 && g_bounded_reads == 0 && g_last_wants <= 0);
+}
+
+/* idle_reads_again: a hunt read that comes back idle with nothing waiting on the decoder and no scan reads again: no
+   interruption, no shutdown, and the hunt goes on at the next sample, none lost. */
+static void
+idle_reads_again(dsd_opts* opts, dsd_state* state, int output_kind, const char* name) {
+    char label[192];
+    reset_stream(opts, state, output_kind);
+    g_read_size = 37U;
+    uint64_t want = 1U;
+    int in_order = 1;
+    for (int i = 0; i < 100; i++) {
+        in_order &= reads_sample_on(output_kind, getSymbol(opts, state, 0), want++);
+    }
+    g_idle_reads_left = 5;
+    for (int i = 0; i < 100; i++) {
+        in_order &= reads_sample_on(output_kind, getSymbol(opts, state, 0), want++) && state->input_interrupted == 0;
+    }
+    DSD_SNPRINTF(label, sizeof label, "%s: an idle read with nothing waiting reads again, none lost", name);
+    check(label, in_order && g_idle_reads_left == 0);
+    DSD_SNPRINTF(label, sizeof label, "%s: an idle read is no failure (no shutdown)", name);
+    check(label, g_frame_sync_dsp_stub_shutdown_requests == 0);
+}
+
+/* idle_leaves: a hunt read that comes back idle leaves for a queued command with no reason of its own, and under a scan
+   with the scan-idle interruption; neither stands: the next read reaches the stream at the next sample, none lost. A
+   command outranks the scan, as the engine applies it first either way. */
+static void
+idle_leaves(dsd_opts* opts, dsd_state* state, int output_kind, const char* name, int command, int scan) {
+    char label[192];
+    reset_stream(opts, state, output_kind);
+    g_read_size = 37U;
+    uint64_t want = 1U;
+    int in_order = 1;
+    for (int i = 0; i < 100; i++) {
+        in_order &= reads_sample_on(output_kind, getSymbol(opts, state, 0), want++);
+    }
+    g_commands_queued = command;
+    g_scan_owns_hunt = scan;
+    g_idle_reads_left = 1;
+    int raised = 0;
+    for (int i = 0; i < 100 && !raised; i++) {
+        const float symbol = getSymbol(opts, state, 0);
+        raised = state->input_interrupted;
+        if (!raised) {
+            in_order &= reads_sample_on(output_kind, symbol, want++);
+        }
+    }
+    const int want_reason = command ? DSD_INTERRUPT_NONE : DSD_INTERRUPT_SCAN_IDLE;
+    DSD_SNPRINTF(label, sizeof label, "%s (command %d, scan %d): the idle hunt read leaves with reason %d", name,
+                 command, scan, want_reason);
+    check(label, raised && state->input_interrupt_reason == want_reason && g_idle_reads_left == 0);
+    DSD_SNPRINTF(label, sizeof label, "%s (command %d, scan %d): no shutdown", name, command, scan);
+    check(label, g_frame_sync_dsp_stub_shutdown_requests == 0);
+    const int reads = g_reads;
+    in_order &= reads_sample_on(output_kind, getSymbol(opts, state, 0), want++);
+    DSD_SNPRINTF(label, sizeof label, "%s (command %d, scan %d): the interruption does not stand", name, command, scan);
+    check(label, g_reads > reads && in_order);
+    g_commands_queued = 0;
+    g_scan_owns_hunt = 0;
+    engine_consumes(state);
+    for (int i = 0; i < 60; i++) {
+        in_order &= reads_sample_on(output_kind, getSymbol(opts, state, 0), want++) && state->input_interrupted == 0;
+    }
+    DSD_SNPRINTF(label, sizeof label, "%s (command %d, scan %d): reading goes on at the next sample, none lost", name,
+                 command, scan);
+    check(label, in_order);
+}
+
+/* scan_idle_ranks_below_the_yield: the scan-idle reason ranks above a search's and below a yield and a stream gap, so a
+   scan's idle read never lowers an interruption that stands. */
+static void
+scan_idle_ranks_below_the_yield(dsd_opts* opts, dsd_state* state) {
+    reset_stream(opts, state, RTL_STREAM_OUTPUT_SYMBOL_CQPSK);
+    dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SCAN_IDLE);
+    check("scan idle: raised",
+          state->input_interrupted == 1 && state->input_interrupt_reason == DSD_INTERRUPT_SCAN_IDLE);
+    dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_YIELD);
+    check("scan idle: a yield outranks it", state->input_interrupt_reason == DSD_INTERRUPT_YIELD);
+    dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SCAN_IDLE);
+    check("scan idle: it never lowers a yield", state->input_interrupt_reason == DSD_INTERRUPT_YIELD);
+    engine_consumes(state);
+    dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);
+    dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SCAN_IDLE);
+    check("scan idle: it outranks a search's", state->input_interrupt_reason == DSD_INTERRUPT_SCAN_IDLE);
+    engine_consumes(state);
+}
+
+/* analog_idle_under_a_scan: an idle analog monitor's empty hunt read under a scan ends the pass with the scan-idle
+   interruption (so the engine loop runs noCarrier() for the scan), which does not stand. */
+static void
+test_analog_idle_under_a_scan(dsd_opts* opts, dsd_state* state) {
+    reset_stream(opts, state, RTL_STREAM_OUTPUT_AUDIO_MONITOR);
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    for (int i = 0; i < 20; i++) {
+        (void)getSymbol(opts, state, 0);
+    }
+    g_scan_owns_hunt = 1;
+    g_instead = 0;
+    (void)getSymbol(opts, state, 0);
+    check("analog under a scan: the empty read ends the pass",
+          state->input_interrupted == 1 && state->input_interrupt_reason == DSD_INTERRUPT_SCAN_IDLE);
+    check("analog under a scan: no shutdown", g_frame_sync_dsp_stub_shutdown_requests == 0);
+    const int reads = g_reads;
+    (void)getSymbol(opts, state, 0);
+    check("analog under a scan: the interruption does not stand", g_reads == reads + 1);
+    g_scan_owns_hunt = 0;
+    engine_consumes(state);
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -436,7 +638,27 @@ main(void) {
     test_analog_zero_read_contract_kept(opts, state, DSD_ANALOG_DEMOD_FM);
     test_analog_zero_read_contract_kept(opts, state, DSD_ANALOG_DEMOD_AM);
 
+    const int kinds[3] = {
+        RTL_STREAM_OUTPUT_SYMBOL_CQPSK,
+        RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR,
+        RTL_STREAM_OUTPUT_AUDIO_MONITOR,
+    };
+    const char* const names[3] = {"CQPSK symbol cache", "FSK discriminator cache", "one-sample reader"};
+    for (int k = 0; k < 3; k++) {
+        hunt_reads_ask_for_the_idle_bound(opts, state, kinds[k], names[k]);
+    }
+    for (int k = 0; k < 3; k++) {
+        idle_reads_again(opts, state, kinds[k], names[k]);
+        idle_leaves(opts, state, kinds[k], names[k], 1, 0);
+        idle_leaves(opts, state, kinds[k], names[k], 0, 1);
+        idle_leaves(opts, state, kinds[k], names[k], 1, 1);
+    }
+    scan_idle_ranks_below_the_yield(opts, state);
+    test_analog_idle_under_a_scan(opts, state);
+
     dsd_signal_search_active_set(NULL);
+    dsd_runtime_set_controls_pending(NULL);
+    dsd_frame_sync_hooks_set(NULL);
     dsd_decode_clock_use_system();
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
     dsd_rtl_stream_metrics_hooks_set(NULL);
