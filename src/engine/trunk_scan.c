@@ -260,6 +260,8 @@ typedef struct {
        stay): dsd_engine_trunk_scan_dwell_due() hands back again only once either differs (issue #834 B3). */
     double dwell_serviced_start_m;
     dsd_scan_stay_reason dwell_serviced_stay;
+    /* The tick kept it in place for a receive leave with nowhere to go (trunk_scan_receive_keeps_in_place()). */
+    int dwell_serviced_receive_keep;
     double retry_until_m;
     double last_allowed_activity_m;
     uint64_t tune_request_id;
@@ -4969,6 +4971,27 @@ trunk_scan_service_tone_rejection(dsd_opts* opts, dsd_state* state, dsd_trunk_sc
     return 1;
 }
 
+/* Whether the receive policy releases the conventional target on air (issue #637): its traffic is not admitted past the
+   acquisition window, with no activity hold and no operator hold keeping it. Only admitted activity stamps the activity
+   hold (trunk_scan_conventional_activity(), the voice gate's media), data included, so a hold still running keeps the
+   target whatever the receive verdict on air. */
+static int
+trunk_scan_receive_releases(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
+                            const dsd_trunk_scan_target_runtime* rt, double now_m) {
+    return trunk_scan_type_is_conventional(rt->target.type) && !coord->hold_active
+           && !trunk_scan_activity_hold_running(opts, rt, now_m)
+           && dsd_scan_receive_should_leave(opts, state, rt->visit_since_m, now_m);
+}
+
+/* A keep with no stay reason (issue #834 B3): the receive policy releases the target on air but nowhere else can take
+   the receiver, so the tick keeps it in place (trunk_scan_service_release()) until an alternate becomes eligible. */
+static int
+trunk_scan_receive_keeps_in_place(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
+                                  const dsd_trunk_scan_target_runtime* rt, double now_m) {
+    return trunk_scan_receive_releases(opts, state, coord, rt, now_m)
+           && !trunk_scan_rejection_has_alternate(opts, state, coord, now_m);
+}
+
 int
 dsd_engine_trunk_scan_receive_expired(const dsd_opts* opts, const dsd_state* state) {
     const dsd_trunk_scan_coord* coord = trunk_scan_get(state);
@@ -4977,9 +5000,7 @@ dsd_engine_trunk_scan_receive_expired(const dsd_opts* opts, const dsd_state* sta
     }
     const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
     const double now_m = trunk_scan_now_m();
-    return trunk_scan_type_is_conventional(rt->target.type) && !coord->hold_active
-           && !trunk_scan_activity_hold_running(opts, rt, now_m)
-           && dsd_scan_receive_should_leave(opts, state, rt->visit_since_m, now_m)
+    return trunk_scan_receive_releases(opts, state, coord, rt, now_m)
            && trunk_scan_rejection_has_alternate(opts, state, coord, now_m);
 }
 
@@ -4988,11 +5009,7 @@ dsd_engine_trunk_scan_receive_expired(const dsd_opts* opts, const dsd_state* sta
 static int
 trunk_scan_service_release(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
                            dsd_trunk_scan_target_runtime* rt, double now_m) {
-    /* Only admitted activity stamps the target's activity hold (trunk_scan_conventional_activity(), the voice gate's
-       media), data included, so a hold still running keeps the target whatever the receive verdict on air. */
-    if (trunk_scan_type_is_conventional(rt->target.type) && !coord->hold_active
-        && !trunk_scan_activity_hold_running(opts, rt, now_m)
-        && dsd_scan_receive_should_leave(opts, state, rt->visit_since_m, now_m)) {
+    if (trunk_scan_receive_releases(opts, state, coord, rt, now_m)) {
         rt->last_allowed_activity_m = 0.0;
         if (trunk_scan_rejection_has_alternate(opts, state, coord, now_m)) {
             trunk_scan_advance(opts, state, coord);
@@ -5210,11 +5227,14 @@ dsd_engine_trunk_scan_dwell_due(const dsd_opts* opts, const dsd_state* state) {
     }
     /* Due until a tick under the coordinator's guard decides it (trunk_scan_note_dwell_serviced()): a tick that lost
        the guard decided nothing, so the next point asks again (issue #834 B3). One that kept the target for a reason
-       of its own (a tone check, nowhere else to go) is not asked again while that reason stands, so a stay never makes
-       the hunt hand back every 300 symbols, and is asked again once it changes. */
+       of its own (a tone check, a receive leave or a rotation with nowhere else to go) is not asked again while that
+       reason stands, so a stay never makes the hunt hand back every 300 symbols, and is asked again once it changes.
+       The receive keep is weighed only while the mark holds one: a keep that began since then is the tick's choice
+       anyway, as nothing else can take the receiver. */
     const int serviced =
         fabs(start_m - rt->dwell_serviced_start_m) < 1e-9
-        && trunk_scan_active_stay_reason(opts, state, coord, now_m, NULL, NULL, NULL) == rt->dwell_serviced_stay;
+        && trunk_scan_active_stay_reason(opts, state, coord, now_m, NULL, NULL, NULL) == rt->dwell_serviced_stay
+        && (!rt->dwell_serviced_receive_keep || trunk_scan_receive_keeps_in_place(opts, state, coord, rt, now_m));
     return serviced ? 0 : 1;
 }
 
@@ -5234,6 +5254,7 @@ trunk_scan_note_dwell_serviced(const dsd_opts* opts, const dsd_state* state, dsd
     }
     rt->dwell_serviced_start_m = start_m;
     rt->dwell_serviced_stay = trunk_scan_active_stay_reason(opts, state, coord, now_m, NULL, NULL, NULL);
+    rt->dwell_serviced_receive_keep = trunk_scan_receive_keeps_in_place(opts, state, coord, rt, now_m);
 }
 
 /* The body above has a dozen early returns and can rotate; publishing here, once, means the

@@ -3961,10 +3961,15 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   it a silent target's dwell was seen only at the 1800-symbol pass end. The answer stays 1 until a tick that ran under
   the guard decides that dwell start: `trunk_scan_note_dwell_serviced()`, at the end of every guarded tick, records
   the due dwell start and the stay reason the tick left standing (`dwell_serviced_start_m`/`dwell_serviced_stay`),
-  and the hook answers 0 while both still match. So a tick that lost the guard (the P25 watchdog's, a control) is
-  asked again at the next 300-symbol point, a stay (a tone check, nowhere else to go, a rolled-back walk) never makes
-  the hunt hand back every 300 symbols, and a stay reason that changes (a tone check ending) is asked again at once
-  (issue #834 B3). It counts a park still in flight from its landing. Every park's idle dwell runs from its landing
+  and whether it kept the target in place for a receive leave with nowhere to go, a keep with no stay reason
+  (`dwell_serviced_receive_keep`, `trunk_scan_receive_keeps_in_place()`), and the hook answers 0 while all still
+  match (the receive keep is weighed only while the mark holds one). So a tick that lost the guard (the P25
+  watchdog's, a control) is asked again at the next 300-symbol point, a stay (a tone check, a receive leave or a
+  rotation with nowhere else to go, a rolled-back walk) never makes the hunt hand back every 300 symbols, and one that
+  changes (a tone check ending, an alternate's cooldown ending under a receive keep) is asked again at once (issue
+  #834 B3). The visit cap needs no key: with nowhere to go it re-arms and does not spend the tick
+  (`trunk_scan_visit_expired()`), so the dwell is weighed in that tick, and a rotation with nowhere to go re-arms the
+  dwell, which moves its start. It counts a park still in flight from its landing. Every park's idle dwell runs from its landing
   (`trunk_scan_arm_idle_at_landing()`): a synchronous one's completion (a blocking rigctl tune's latency is not
   listening time) and a pending one's when `trunk_scan_resolve_pending_retune()` notices it, instead of the first tick
   after it. A dwell disarmed in between stays disarmed, and every disarm records its cause
@@ -3972,7 +3977,9 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   the `CARRIER`/`ACTIVITY_HOLD`/`VOICE` stays) has a known end, `last_allowed_activity_m` plus the effective hold on
   the coordinator's decode clock, the deadline `trunk_scan_activity_hold_running()` measures; the operator's hold
   (toggle and held ticks), a completed P25 recovery and every other stay (trunked call follow or CC acquisition, a
-  retune in flight, a tone rejection, a pause) do not. Once an activity hold is over, the hook counts the dwell from
+  retune in flight, a tone rejection, a pause) do not. A receive leave (`trunk_scan_service_release()`) zeroes
+  `last_allowed_activity_m` without disarming again, so an activity-hold-disarmed dwell it finds falls back to a fresh
+  dwell (no activity stamp, no known end). Once an activity hold is over, the hook counts the dwell from
   its end while it is still disarmed (`trunk_scan_disarmed_dwell_start()`), and the tick that arms it again
   (`trunk_scan_rearm_dwell()`, also the tone check's arm) starts it there, clamped to now, and weighs the dwell in the
   same tick, so on dead air the target leaves at the hold's end plus the dwell, to the next 300-symbol point, and a

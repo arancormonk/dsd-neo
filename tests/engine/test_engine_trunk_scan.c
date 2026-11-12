@@ -8345,6 +8345,53 @@ activity_hold_scan_done(dsd_opts* opts, dsd_state* state, const char* dir, const
     cleanup_paths(dir, target_path, NULL);
 }
 
+/* Issue #834 B3: the receive policy rejects what target a hears, but nowhere else can take the receiver (b cools down
+ * from a failed retune), so the tick keeps a in place with no stay reason. The hunt is not asked again while that keep
+ * stands, and is at the next point once b's cooldown ends, so the receive leave happens then rather than at the pass
+ * end. */
+static int
+test_dwell_due_after_a_receive_keep_with_nowhere_to_go(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,dmr-conventional,461000000,,250,250,\n"
+                          "b,dmr-conventional,462000000,,250,250,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    /* a's dwell runs out at 0.26; b's retune fails, so b cools down until 2.26 and a is parked again at 0.26. */
+    g_scan_tune_to_freq_failures_remaining = 1;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    g_scan_tune_to_freq_failures_remaining = 0;
+    test_rc |= expect_active_target(&state, "b's failed retune", 0U);
+    /* Traffic on a that the color-code filter rejects, past the 1 s acquisition window. */
+    char err[256] = {0};
+    dsd_receive_filter* dcc = &opts.receive.filters[DSD_RECEIVE_DCC];
+    dcc->enabled = 1;
+    test_rc |= dsd_receive_set_parse(DSD_RECEIVE_DCC, "2", &dcc->block, err, sizeof err) != 0;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.dmr_color_code = 2;
+    trunk_scan_test_set_now(1.40);
+    test_rc |= expect_control_rc("a's dwell due", dsd_trunk_scan_hook_dwell_due(&opts, &state), 1);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "a receive leave with nowhere to go", 0U);
+    trunk_scan_test_set_now(1.46);
+    test_rc |= expect_control_rc("the keep stands", dsd_trunk_scan_hook_dwell_due(&opts, &state), 0);
+    trunk_scan_test_set_now(2.20);
+    test_rc |= expect_control_rc("the keep stands, later", dsd_trunk_scan_hook_dwell_due(&opts, &state), 0);
+    trunk_scan_test_set_now(2.30);
+    test_rc |= expect_control_rc("b's cooldown ended", dsd_trunk_scan_hook_dwell_due(&opts, &state), 1);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the receive leave once b can take the receiver", 1U);
+    dcc->enabled = 0;
+    activity_hold_scan_done(&opts, &state, dir, target_path);
+    return test_rc;
+}
+
 /*
  * Issue #834 B4: once an activity hold ends, the idle dwell runs from the hold's end, whenever a tick first sees it.
  * The hunt counts the dwell from there while it is still disarmed, so on dead air the target leaves at the hold's end
@@ -22292,6 +22339,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_hold_release_before_a_noticed_landing_grants_a_fresh_dwell);
     rc |= run_with_default_tune_hook(test_dwell_due_answers_again_after_a_tick_that_lost_the_guard);
     rc |= run_with_default_tune_hook(test_dwell_due_after_a_tone_check_stay);
+    rc |= run_with_default_tune_hook(test_dwell_due_after_a_receive_keep_with_nowhere_to_go);
     rc |= run_with_default_tune_hook(test_idle_dwell_runs_from_an_activity_holds_end);
     rc |= run_with_default_tune_hook(test_operator_release_after_an_activity_hold_grants_a_fresh_dwell);
     rc |= run_with_default_tune_hook(test_scan_advance_moves_now_and_keeps_hold);
