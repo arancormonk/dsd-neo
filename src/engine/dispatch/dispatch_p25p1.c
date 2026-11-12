@@ -24,6 +24,7 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <mbelib-neo/mbelib.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -510,29 +511,43 @@ dsd_dispatch_matches_p25p1(int synctype) {
     return DSD_SYNC_IS_P25P1(synctype);
 }
 
+/* Each data unit's length on air, the rows the frame sync's anchors read where the next unit's sync starts from
+   (dsd_frame_sync_p25p1_frame_decoded()): a fixed length, or 0 for one its decoder reads (dsd_state::p25_p1_unit_dibits:
+   a TSDU's from a last block that passed its CRC, none when the trailing-null rule or a failed block ended it; a PDU's
+   from a header that passed its CRC). */
+static const struct {
+    uint8_t duid;
+    uint16_t dibits;
+} k_p25p1_unit_lengths[] = {
+    {P25P1_DUID_HDU, P25P1_HDU_DIBITS},
+    {P25P1_DUID_LDU1, P25P1_LDU_DIBITS},
+    {P25P1_DUID_LDU2, P25P1_LDU_DIBITS},
+    {P25P1_DUID_TDU, P25P1_TDU_DIBITS},
+    {P25P1_DUID_TDULC, P25P1_TDULC_DIBITS},
+    {P25P1_DUID_TSBK, 0U},
+    {P25P1_DUID_MPDU, 0U},
+};
+
 /* The length on air of the data unit just decoded, by its DUID, or as its decoder read it (a TSDU's and a PDU's block
    counts); 0 when not known. */
 static uint32_t
 p25p1_decoded_unit_dibits(const dsd_state* state, uint8_t duid) {
-    switch (duid) {
-        case P25P1_DUID_HDU: return P25P1_HDU_DIBITS;
-        case P25P1_DUID_LDU1:
-        case P25P1_DUID_LDU2: return P25P1_LDU_DIBITS;
-        case P25P1_DUID_TDU: return P25P1_TDU_DIBITS;
-        case P25P1_DUID_TDULC: return P25P1_TDULC_DIBITS;
-        case P25P1_DUID_TSBK:
-        case P25P1_DUID_MPDU: return state->p25_p1_unit_dibits;
-        default: return 0U;
+    for (size_t i = 0; i < sizeof(k_p25p1_unit_lengths) / sizeof(k_p25p1_unit_lengths[0]); i++) {
+        if (k_p25p1_unit_lengths[i].duid == duid) {
+            return k_p25p1_unit_lengths[i].dibits != 0U ? k_p25p1_unit_lengths[i].dibits : state->p25_p1_unit_dibits;
+        }
     }
+    return 0U;
 }
 
 /* Tell the frame sync what the frame was: one that validated (p25p1_nid_verdict_validates()) and was read whole
-   anchors the next data unit's sync where it ends (dsd_p25p1_sync_anchor). When it was also a TSDU with a TSBK that
-   passed its CRC (@p tsbk_crc_passed), it proves the carrier P25 to the CQPSK timing loop for @p tune_generation, the
-   tune it was synced on (dsd_rtl_stream_metrics_hook_note_p25_proven()), while the stream is still the one its sync
-   was found on. Voice and data frames never do: on a simulcast voice dwell the loop's slower post-lock gain lags the
-   timing swing of the sites' beat, and a dwell is too short for the symbol slips it saves on a control channel to pay
-   for that (docs/code_map.md, the Gardner gain rule). */
+   anchors the next data unit's sync where it ends (dsd_p25p1_sync_anchor) and, on the C4FM chain, has the symbol
+   grid record that sync word to place itself on. When it was also a TSDU with a TSBK that passed its CRC
+   (@p tsbk_crc_passed), it proves the carrier P25 to the CQPSK timing loop for @p tune_generation, the tune it was
+   synced on (dsd_rtl_stream_metrics_hook_note_p25_proven()), while the stream is still the one its sync was found
+   on. Voice and data frames never do: on a simulcast voice dwell the loop's slower post-lock gain lags the timing
+   swing of the sites' beat, and a dwell is too short for the symbol slips it saves on a control channel to pay for
+   that (docs/code_map.md, the Gardner gain rule). */
 static void
 p25p1_note_frame_decoded(dsd_state* state, uint8_t duid, const p25p1_nid_verdict* verdict, uint64_t tune_generation,
                          int tsbk_crc_passed) {
@@ -544,7 +559,8 @@ p25p1_note_frame_decoded(dsd_state* state, uint8_t duid, const p25p1_nid_verdict
        proof given for a block read before it would look current on the carrier reached; nor does a flush. The proof
        stands only on the stream the frame's sync was accepted on, read before the report spends that context. */
     const int stream_held = dsd_frame_sync_p25p1_frame_context_holds(state);
-    dsd_frame_sync_p25p1_frame_decoded(state, verdict->nac, validated ? p25p1_decoded_unit_dibits(state, duid) : 0U);
+    (void)dsd_frame_sync_p25p1_frame_decoded(state, verdict->nac,
+                                             validated ? p25p1_decoded_unit_dibits(state, duid) : 0U);
     if (validated && tsbk_crc_passed && stream_held) {
         dsd_rtl_stream_metrics_hook_note_p25_proven(tune_generation);
     }
@@ -564,13 +580,13 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     /* A NID an input interruption cut decoded nothing: no data unit follows it, and it is no evidence about the
        demodulator or the profile (processFrame() withholds the verdict). */
     if (state->input_interrupted) {
-        dsd_frame_sync_p25p1_frame_decoded(state, -1, 0U);
+        (void)dsd_frame_sync_p25p1_frame_decoded(state, -1, 0U);
         return DSD_FRAME_VERDICT_WITHHELD;
     }
     /* A tolerant sync whose NID failed the strict check: no frame, so no evidence about the demodulator or the profile
        either, not even inside a window of NIDs that decoded, and the hunt resumes past the NID it read. */
     if (dropped) {
-        dsd_frame_sync_p25p1_frame_decoded(state, -1, 0U);
+        (void)dsd_frame_sync_p25p1_frame_decoded(state, -1, 0U);
         return DSD_FRAME_VERDICT_UNPRODUCTIVE;
     }
     /* A decoded NID is the one place that knows which demodulator actually carried a P25p1

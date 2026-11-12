@@ -19,6 +19,8 @@
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/p25p1_sync_anchor.h>
+#include <dsd-neo/dsp/symbol_anchor.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/protocol/p25/p25.h>
@@ -64,11 +66,22 @@ static uint64_t g_p25_proof_generation;
 /* processTSBK() completes a tune (a grant's) when set, as a handler that follows a grant does. */
 static int g_tsbk_tunes;
 /* processTSBK() reads past its first block across a carrier boundary when set to 1 (a replay read adopting a recorded
-   retune: the carrier count moves, the tuning generation does not), or across a stream flush when set to 2 (the clock's
-   epoch moves). */
+   retune: the carrier count moves, the tuning generation does not), across a stream flush when set to 2 (the clock's
+   epoch moves), onto another input when set to 3, or into a gap in the radio stream when set to 4. */
 static int g_tsbk_stream_moves;
 /* What processTSBK() reports: whether a TSBK of the TSDU passed its CRC. */
 static int g_tsbk_crc_passed = 1;
+/* Where the stand-in decoders past the NID leave the symbol clock, in dibits from their unit's sync word (g_sync_clock);
+   0 leaves it where the NID left it. */
+static uint32_t g_unit_read;
+static uint64_t g_sync_clock;
+/* The length a stand-in TSDU or PDU decoder reports (dsd_state::p25_p1_unit_dibits); 0 for none. */
+static uint32_t g_unit_reported;
+/* The symbol grid's side (src/dsp/symbol_anchor.c): the recordings the dispatcher's report armed for the next data
+   unit's sync word, and the words the frame sync named to it. */
+static int g_grid_arms;
+static int g_grid_notes;
+static char g_grid_note[DSD_SYMBOL_ANCHOR_MAX_SYMS + 1];
 
 static void
 reset_stub_state(void) {
@@ -92,6 +105,35 @@ reset_stub_state(void) {
     g_tsbk_tunes = 0;
     g_tsbk_stream_moves = 0;
     g_tsbk_crc_passed = 1;
+    g_unit_read = 0U;
+    g_sync_clock = 0U;
+    g_unit_reported = 0U;
+    g_grid_arms = 0;
+    g_grid_notes = 0;
+    g_grid_note[0] = '\0';
+}
+
+void
+dsd_symbol_arm_hunt_sync_anchor(dsd_state* state) {
+    (void)state;
+    g_grid_arms++;
+}
+
+void
+dsd_symbol_note_p25p1_sync_anchor(const dsd_state* state, const char* sync_dibits, int count) {
+    (void)state;
+    assert(count > 0 && count <= DSD_SYMBOL_ANCHOR_MAX_SYMS);
+    g_grid_notes++;
+    DSD_MEMCPY(g_grid_note, sync_dibits, (size_t)count);
+    g_grid_note[count] = '\0';
+}
+
+/* A stand-in decoder past the NID read its unit up to g_unit_read dibits from the sync. */
+static void
+stand_in_reads_unit(dsd_state* state) {
+    if (g_unit_read != 0U) {
+        state->symbol_clock = g_sync_clock + g_unit_read;
+    }
 }
 
 int
@@ -223,30 +265,35 @@ p25_status_accum_classify(dsd_state* state) {
 void
 processHDU(dsd_opts* opts, dsd_state* state) {
     (void)opts;
+    stand_in_reads_unit(state);
     state->lastp25type = 2;
 }
 
 void
 processLDU1(dsd_opts* opts, dsd_state* state) {
     (void)opts;
+    stand_in_reads_unit(state);
     state->lastp25type = 1;
 }
 
 void
 processLDU2(dsd_opts* opts, dsd_state* state) {
     (void)opts;
+    stand_in_reads_unit(state);
     state->lastp25type = 2;
 }
 
 void
 processTDULC(dsd_opts* opts, dsd_state* state) {
     (void)opts;
+    stand_in_reads_unit(state);
     state->lastp25type = 0;
 }
 
 void
 processTDU(dsd_opts* opts, dsd_state* state) {
     (void)opts;
+    stand_in_reads_unit(state);
     state->lastp25type = 0;
 }
 
@@ -282,7 +329,13 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
         state->carrier_seq++;
     } else if (g_tsbk_stream_moves == 2) {
         state->symbol_clock_epoch++;
+    } else if (g_tsbk_stream_moves == 3) {
+        state->symbol_clock_input++;
+    } else if (g_tsbk_stream_moves == 4) {
+        dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_STREAM_GAP);
     }
+    stand_in_reads_unit(state);
+    state->p25_p1_unit_dibits = g_unit_reported;
     return g_tsbk_crc_passed;
 }
 
@@ -290,6 +343,8 @@ void
 processMPDU(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     state->lastp25type = 4;
+    stand_in_reads_unit(state);
+    state->p25_p1_unit_dibits = g_unit_reported;
 }
 
 static void
@@ -1166,6 +1221,260 @@ test_p25p1_tsbk_crc_proves_p25(void) {
     assert(g_p25_proofs == 0);
 }
 
+/* Dispatch one P25p1 frame read on the C4FM chain, DUID @p duid, its sync accepted exactly at a fresh position, whose
+   decoders past the NID leave the symbol clock @p read dibits past that sync (0: where the NID left it). Returns the
+   recordings the report armed for the next unit's sync word. */
+static int
+dispatch_c4fm_frame(dsd_opts* opts, dsd_state* state, uint8_t duid, uint32_t read) {
+    state->synctype = DSD_SYNC_P25P1_POS;
+    state->lastsynctype = DSD_SYNC_P25P1_POS;
+    state->rf_mod = 0;
+    state->symbol_clock += 2000U;
+    frame_sync_p25p1_anchor_note_sync(state, DSD_SYNC_P25P1_POS, -1, 0);
+    g_sync_clock = state->symbol_clock - 24U;
+    g_unit_read = read;
+    g_test_duid = duid;
+    const int before = g_grid_arms;
+    (void)dsd_dispatch_handle_p25p1(opts, state);
+    return g_grid_arms - before;
+}
+
+/* On the C4FM chain the frame sync names each exact P25p1 word to the symbol grid's anchor from its second symbol (the
+   recording starts on the first, and the measurement needs a symbol of margin), either polarity. A word within the
+   tolerance names nothing before its NID validates, and the CQPSK chain's grid takes one sample a symbol. */
+static void
+test_p25p1_c4fm_sync_names_the_grid_word(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.symbol_clock = 1000U;
+
+    state.rf_mod = 0;
+    frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_POS, -1, 0);
+    assert(g_grid_notes == 1 && strcmp(g_grid_note, &P25P1_SYNC[1]) == 0);
+    frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_NEG, -1, 0);
+    assert(g_grid_notes == 2 && strcmp(g_grid_note, &INV_P25P1_SYNC[1]) == 0);
+    frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_POS, 0x1A6, 3);
+    assert(g_grid_notes == 2);
+
+    state.rf_mod = 1;
+    frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_POS, -1, 0);
+    assert(g_grid_notes == 2);
+}
+
+/* The arming rows (plan C1): a C4FM frame that validated, whose length on air is known, read on the stream its sync was
+   accepted on, whose decoders stopped at the unit's end or inside its null pad, arms the grid's recording of the next
+   unit's sync word, so that word places the grid for the unit behind it. Every other way a frame ends arms nothing, and
+   the hunt's crossing loop keeps the grid as before. */
+static void
+test_p25p1_c4fm_frame_arms_the_grid_by_its_rows(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* The units, by the length the dispatcher knows and where their decoders stop. */
+    static const struct {
+        uint8_t duid;
+        uint32_t reported; /* the TSDU's or PDU's length as its decoder read it */
+        uint32_t read;
+        int arms;
+        const char* row;
+    } k_units[] = {
+        {0x0U, 0U, 396U, 1, "HDU"},
+        {0x5U, 0U, 864U, 1, "LDU1"},
+        {0xAU, 0U, 864U, 1, "LDU2"},
+        {0x3U, 0U, 72U, 1, "TDU"},
+        {0xFU, 0U, 216U, 1, "TDULC"},
+        {0x7U, 180U, 158U, 1, "TSDU, a last block that passed its CRC, its null pad left to the hunt"},
+        {0x7U, 360U, 360U, 1, "three-block TSDU: no pad"},
+        {0x7U, 0U, 158U, 0, "TSDU the trailing-null rule or a failed block ended"},
+        {0xCU, 288U, 260U, 1, "PDU read to its CRC-valid header's length"},
+        {0xCU, 576U, 260U, 0, "PDU whose header announced blocks its reader did not collect"},
+        {0xCU, 180U, 260U, 0, "PDU read past what its recovered header names"},
+        {0xCU, 0U, 260U, 0, "PDU whose header failed its CRC"},
+        {0x5U, 0U, 865U, 0, "LDU read past its end"},
+        {0x5U, 0U, 828U, 0, "LDU left a segment short"},
+        {0x9U, 0U, 0U, 0, "undefined DUID"},
+    };
+
+    for (size_t i = 0; i < sizeof(k_units) / sizeof(k_units[0]); i++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_stub_state();
+        g_unit_reported = k_units[i].reported;
+        const int arms = dispatch_c4fm_frame(&opts, &state, k_units[i].duid, k_units[i].read);
+        if (arms != k_units[i].arms) {
+            DSD_FPRINTF(stderr, "grid row %s: %d armed\n", k_units[i].row, arms);
+        }
+        assert(arms == k_units[i].arms);
+    }
+
+    /* The NID's rows: failed, held (another NAC at a costly correction count), borrowed, NAC FFF, cut. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    g_check_result = NID_DECODE_FAIL;
+    assert(dispatch_c4fm_frame(&opts, &state, 0x5U, 864U) == 0);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    assert(dispatch_c4fm_frame(&opts, &state, 0x5U, 864U) == 1); /* establishes the carrier's NAC */
+    g_new_nac = 0x2A1;
+    g_error_count = 6;
+    assert(dispatch_c4fm_frame(&opts, &state, 0x5U, 864U) == 0);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.nac = 0x293;
+    g_nac_borrowed = 1;
+    assert(dispatch_c4fm_frame(&opts, &state, 0x5U, 864U) == 0);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    g_new_nac = 0xFFF;
+    assert(dispatch_c4fm_frame(&opts, &state, 0x5U, 864U) == 0);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    g_interrupt_at_dibit = 15;
+    assert(dispatch_c4fm_frame(&opts, &state, 0x5U, 864U) == 0);
+
+    /* The stream's rows, inside a TSDU whose last block passed: a grant tuned away (the tuning generation moves, as a
+       release's or a RESET's tune moves it), a carrier boundary, a flush, another input, a gap in the radio stream. The
+       next TSDU read whole arms again. */
+    for (int moves = 0; moves <= 4; moves++) {
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_stub_state();
+        g_unit_reported = 180U;
+        if (moves == 0) {
+            g_tsbk_tunes = 1;
+        }
+        g_tsbk_stream_moves = moves;
+        assert(dispatch_c4fm_frame(&opts, &state, 0x7U, 158U) == 0);
+        g_tsbk_tunes = 0;
+        g_tsbk_stream_moves = 0;
+        state.input_interrupted = 0;
+        assert(dispatch_c4fm_frame(&opts, &state, 0x7U, 158U) == 1);
+    }
+
+    /* The CQPSK chain's grid is one sample a symbol: nothing to place. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.rf_mod = 1;
+    state.symbol_clock = 2000U;
+    frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_POS, -1, 0);
+    g_sync_clock = state.symbol_clock - 24U;
+    g_unit_read = 864U;
+    g_test_duid = 0x5U;
+    (void)dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(g_grid_arms == 0);
+
+    /* No sync context captured (an off-thread tune was pending at the sync): nothing says where the next sync starts on
+       the stream read. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.rf_mod = 0;
+    g_test_duid = 0x5U;
+    (void)dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(g_grid_arms == 0);
+}
+
+typedef void (*grid_stream_change_fn)(dsd_state* state);
+
+static void
+grid_no_change(dsd_state* state) {
+    (void)state;
+}
+
+static void
+grid_tune(dsd_state* state) {
+    (void)state;
+    dsd_trunk_tuning_generation_advance();
+}
+
+static void
+grid_carrier(dsd_state* state) {
+    state->carrier_seq++;
+}
+
+static void
+grid_flush(dsd_state* state) {
+    state->symbol_clock_epoch++;
+}
+
+static void
+grid_input(dsd_state* state) {
+    state->symbol_clock_input++;
+}
+
+static void
+grid_histories(dsd_state* state) {
+    state->frame_sync_carry.drops++;
+}
+
+static void
+grid_profile(dsd_state* state) {
+    state->sps_hunt_idx++;
+}
+
+static void
+grid_cqpsk(dsd_state* state) {
+    state->rf_mod = 1;
+}
+
+static void
+grid_gfsk(dsd_state* state) {
+    state->rf_mod = 2;
+}
+
+/* Each arming row's own verdict (dsd_frame_sync_p25p1_frame_decoded()): a C4FM sync at 2000 on the symbol clock, then
+   @p change, the decoder at @p read dibits past the sync, a unit of @p unit dibits. */
+static dsd_p25p1_grid_verdict
+grid_verdict_for(grid_stream_change_fn change, int capture, uint32_t unit, uint32_t read) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.rf_mod = 0;
+    state.symbol_clock = 2024U;
+    if (capture) {
+        frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_POS, -1, 0);
+    }
+    change(&state);
+    state.symbol_clock = 2000U + read;
+    const int arms = g_grid_arms;
+    const dsd_p25p1_grid_verdict verdict = dsd_frame_sync_p25p1_frame_decoded(&state, 0x293, unit);
+    assert((g_grid_arms - arms == 1) == (verdict == DSD_P25P1_GRID_ARMED));
+    return verdict;
+}
+
+/* The arming table's rows by the verdict each returns, in their order: the first row that refuses names the reason. */
+static void
+test_p25p1_grid_arming_rows_name_their_verdicts(void) {
+    /* Known length, read to the end or inside the null pad (35 dibits short at most): armed. */
+    assert(grid_verdict_for(grid_no_change, 1, 864U, 864U) == DSD_P25P1_GRID_ARMED);
+    assert(grid_verdict_for(grid_no_change, 1, 180U, 158U) == DSD_P25P1_GRID_ARMED);
+    assert(grid_verdict_for(grid_no_change, 1, 180U, 145U) == DSD_P25P1_GRID_ARMED);
+    /* Another chain: CQPSK, or GFSK when the votes flap, whatever else holds. */
+    assert(grid_verdict_for(grid_cqpsk, 1, 864U, 864U) == DSD_P25P1_GRID_NOT_C4FM);
+    assert(grid_verdict_for(grid_gfsk, 1, 0U, 864U) == DSD_P25P1_GRID_NOT_C4FM);
+    /* No length: a NID that did not validate, a cut read (both report 0), a TSDU of uncertain end, a PDU whose header
+       failed; checked before the stream. */
+    assert(grid_verdict_for(grid_no_change, 1, 0U, 158U) == DSD_P25P1_GRID_NO_LENGTH);
+    assert(grid_verdict_for(grid_tune, 1, 0U, 158U) == DSD_P25P1_GRID_NO_LENGTH);
+    /* The stream: no context captured, a handler's tune, a carrier boundary, a flush, another input, dropped sync
+       histories, a profile step. */
+    static const grid_stream_change_fn k_moves[] = {grid_tune,  grid_carrier,   grid_flush,
+                                                    grid_input, grid_histories, grid_profile};
+    assert(grid_verdict_for(grid_no_change, 0, 864U, 864U) == DSD_P25P1_GRID_NO_STREAM);
+    for (size_t i = 0; i < sizeof(k_moves) / sizeof(k_moves[0]); i++) {
+        assert(grid_verdict_for(k_moves[i], 1, 864U, 864U) == DSD_P25P1_GRID_NO_STREAM);
+    }
+    /* Read into the next unit, then short of it by more than a pad. */
+    assert(grid_verdict_for(grid_no_change, 1, 864U, 865U) == DSD_P25P1_GRID_READ_PAST);
+    assert(grid_verdict_for(grid_no_change, 1, 180U, 144U) == DSD_P25P1_GRID_SHORT_READ);
+    assert(grid_verdict_for(grid_no_change, 1, 576U, 260U) == DSD_P25P1_GRID_SHORT_READ);
+}
+
 int
 main(void) {
     test_sync_pattern_lengths();
@@ -1187,6 +1496,9 @@ main(void) {
     test_p25p1_nid_split_by_a_carrier_boundary_notes_no_nac();
     test_p25p1_decoded_nid_ends_the_two_slot_carrier();
     test_p25p1_tsbk_crc_proves_p25();
+    test_p25p1_c4fm_sync_names_the_grid_word();
+    test_p25p1_c4fm_frame_arms_the_grid_by_its_rows();
+    test_p25p1_grid_arming_rows_name_their_verdicts();
     printf("P25_P1_SYNC_DISPATCH: OK\n");
     return 0;
 }

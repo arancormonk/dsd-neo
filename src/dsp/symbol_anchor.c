@@ -32,8 +32,12 @@
 struct dsd_symbol_anchor {
     float samples[ANCHOR_RING_SAMPLES];
     uint64_t centres[ANCHOR_RING_SYMBOLS];
+    /* Samples each symbol took against its span: the crossing loop's slip (and a queued move) at its start, 0 on a
+       grid nothing moved. */
+    int8_t shifts[ANCHOR_RING_SYMBOLS];
     uint64_t sample_total; /* Samples pushed since the last reset. */
     uint64_t symbol_total; /* Symbols ended since the last reset. */
+    uint64_t symbol_start; /* sample_total when the symbol being pushed started. */
     uint64_t pending_centre;
     int pending_centre_set;
     int samples_per_symbol;
@@ -41,6 +45,7 @@ struct dsd_symbol_anchor {
     int sync_count;
     uint64_t sync_end_symbol; /* symbol_total when the sync word's last symbol had ended. */
     int sync_pending;
+    int sync_nominal;  /* a P25 Phase 1 word (dsd_symbol_note_p25p1_sync_anchor()): measured without the walk */
     int slip;          /* +1: take one sample more at the next symbol; -1: one fewer. */
     int armed;         /* recording: a protocol said a sync word is coming (dsd_symbol_arm_sync_anchor()) */
     int armed_symbols; /* symbols recorded since it was armed */
@@ -197,6 +202,7 @@ dsd_symbol_anchor_reset(dsd_state* state) {
     state->symbol_anchor_hot = 0U;
     anchor->sample_total = 0;
     anchor->symbol_total = 0;
+    anchor->symbol_start = 0;
     anchor->pending_centre_set = 0;
     anchor->sync_pending = 0;
     anchor->slip = 0;
@@ -216,19 +222,31 @@ dsd_symbol_anchor_recording(const dsd_symbol_anchor* anchor) {
     return anchor != NULL && anchor->armed != 0;
 }
 
-/* The protocols whose frames arm a hunt-read recording, one family each (DMR BS and MS one); 0 for every other. */
+/* The protocols whose frames arm a hunt-read recording, one family each (DMR BS and MS one, P25 Phase 1 on C4FM its
+   own); 0 for every other. */
+enum {
+    ANCHOR_FAMILY_NONE = 0,
+    ANCHOR_FAMILY_NXDN,
+    ANCHOR_FAMILY_YSF,
+    ANCHOR_FAMILY_DMR,
+    ANCHOR_FAMILY_P25P1,
+};
+
 static int
 anchor_sync_family(int synctype) {
     if (DSD_SYNC_IS_NXDN(synctype)) {
-        return 1;
+        return ANCHOR_FAMILY_NXDN;
     }
     if (DSD_SYNC_IS_YSF(synctype)) {
-        return 2;
+        return ANCHOR_FAMILY_YSF;
     }
     if (DSD_SYNC_IS_DMR(synctype)) {
-        return 3;
+        return ANCHOR_FAMILY_DMR;
     }
-    return 0;
+    if (DSD_SYNC_IS_P25P1(synctype)) {
+        return ANCHOR_FAMILY_P25P1;
+    }
+    return ANCHOR_FAMILY_NONE;
 }
 
 int
@@ -237,7 +255,7 @@ dsd_symbol_anchor_holds_grid(dsd_symbol_anchor* anchor, int lastsynctype) {
         return 0;
     }
     /* The hunt accepted another protocol's sync (or noCarrier forgot the last one): the grid is that frame's to time,
-       P25's included, and the hold ends there for the rest of the recording. */
+       and the hold ends there for the rest of the recording. */
     if (anchor_sync_family(lastsynctype) != anchor->hold_family) {
         anchor->holds_grid = 0;
         return 0;
@@ -271,6 +289,33 @@ anchor_gather_centres(const dsd_symbol_anchor* anchor, int count, uint64_t* abs_
         abs_centres[k] = centre;
         *first = (centre < *first) ? centre : *first;
         *last = (centre > *last) ? centre : *last;
+    }
+    return 1;
+}
+
+/* A P25 Phase 1 word is read by the hunt, and the first one after acquisition, a lapse or a reset on a grid the
+   crossing loop still moves (no measured word holds it, dsd_symbol_arm_hunt_sync_anchor()): the loop walks the grid a
+   sample at a time over the word's crossings and leaves it where the last ones put it, so the recorded centres are not
+   one grid, and a fit against them reads the walk, not the grid the frame is read on. Each symbol's shift moved every
+   centre after it: taking back the shifts of the symbols after each centre puts the word on the grid the symbols would
+   have had without them, ending at its last centre, which is where the frame's grid goes on. The spans a fractional rate
+   alternates stay as recorded. Returns 0 when that grid would start before the recording. */
+static int
+anchor_nominal_centres(const dsd_symbol_anchor* anchor, int count, uint64_t* abs_centres, uint64_t* first) {
+    if (count < 1 || count > DSD_SYMBOL_ANCHOR_MAX_SYMS) {
+        return 0;
+    }
+    int64_t later_shifts = 0;
+    *first = abs_centres[count - 1];
+    for (int k = count - 2; k >= 0; k--) {
+        const uint64_t next_symbol = anchor->sync_end_symbol - (uint64_t)count + (uint64_t)k + 1U;
+        later_shifts += anchor->shifts[next_symbol & (ANCHOR_RING_SYMBOLS - 1U)];
+        const int64_t centre = (int64_t)abs_centres[k] + later_shifts;
+        if (centre < 0) {
+            return 0;
+        }
+        abs_centres[k] = (uint64_t)centre;
+        *first = (abs_centres[k] < *first) ? abs_centres[k] : *first;
     }
     return 1;
 }
@@ -310,6 +355,9 @@ anchor_measure_slip(dsd_symbol_anchor* anchor, uint64_t margin_before, uint64_t 
     uint64_t first = 0;
     uint64_t last = 0;
     if (!anchor_gather_centres(anchor, count, abs_centres, &first, &last)) {
+        return 0;
+    }
+    if (anchor->sync_nominal && !anchor_nominal_centres(anchor, count, abs_centres, &first)) {
         return 0;
     }
     if (first < margin_before || last + margin_after >= anchor->sample_total
@@ -368,8 +416,11 @@ dsd_symbol_anchor_take_switch_offset(const dsd_state* state) {
 
 void
 dsd_symbol_anchor_end_symbol(dsd_symbol_anchor* anchor, int samples_per_symbol) {
-    anchor->centres[anchor->symbol_total & (ANCHOR_RING_SYMBOLS - 1U)] =
-        anchor->pending_centre_set ? anchor->pending_centre : UINT64_MAX;
+    const uint64_t slot = anchor->symbol_total & (ANCHOR_RING_SYMBOLS - 1U);
+    anchor->centres[slot] = anchor->pending_centre_set ? anchor->pending_centre : UINT64_MAX;
+    const int64_t shift = (int64_t)(anchor->sample_total - anchor->symbol_start) - (int64_t)samples_per_symbol;
+    anchor->shifts[slot] = (int8_t)((shift > INT8_MAX) ? INT8_MAX : ((shift < INT8_MIN) ? INT8_MIN : shift));
+    anchor->symbol_start = anchor->sample_total;
     anchor->pending_centre_set = 0;
     anchor->symbol_total++;
     anchor->samples_per_symbol = samples_per_symbol;
@@ -409,6 +460,7 @@ dsd_symbol_arm_sync_anchor(dsd_state* state) {
     /* A fresh recording: what an earlier one left is not contiguous with it. A move already queued still applies. */
     anchor->sample_total = 0;
     anchor->symbol_total = 0;
+    anchor->symbol_start = 0;
     anchor->pending_centre_set = 0;
     anchor->sync_pending = 0;
     anchor->armed = 1;
@@ -440,6 +492,13 @@ dsd_symbol_anchor_test_place_grid(dsd_state* state) {
     }
 }
 
+int
+dsd_symbol_anchor_test_placed(const dsd_state* state) {
+    const dsd_symbol_anchor* anchor =
+        state ? DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR) : NULL;
+    return anchor != NULL && anchor->placed != 0;
+}
+
 void
 dsd_symbol_anchor_test_queue_slip(dsd_state* state, int slip) {
     dsd_symbol_anchor* anchor = dsd_symbol_anchor_get(state);
@@ -460,8 +519,9 @@ dsd_symbol_anchor_take_slip(dsd_symbol_anchor* anchor) {
     return slip;
 }
 
-void
-dsd_symbol_note_sync_anchor(const dsd_state* state, const char* sync_dibits, int count) {
+/* Names the word for a measurement; @p nominal measures it on the grid without the slips it was read on. */
+static void
+anchor_note_sync(const dsd_state* state, const char* sync_dibits, int count, int nominal) {
     if (state == NULL || sync_dibits == NULL || count <= 0 || count > DSD_SYMBOL_ANCHOR_MAX_SYMS) {
         return;
     }
@@ -477,6 +537,17 @@ dsd_symbol_note_sync_anchor(const dsd_state* state, const char* sync_dibits, int
     }
     DSD_MEMCPY(anchor->sync, sync_dibits, (size_t)count);
     anchor->sync_count = count;
+    anchor->sync_nominal = nominal;
     anchor->sync_end_symbol = anchor->symbol_total;
     anchor->sync_pending = 1;
+}
+
+void
+dsd_symbol_note_sync_anchor(const dsd_state* state, const char* sync_dibits, int count) {
+    anchor_note_sync(state, sync_dibits, count, 0);
+}
+
+void
+dsd_symbol_note_p25p1_sync_anchor(const dsd_state* state, const char* sync_dibits, int count) {
+    anchor_note_sync(state, sync_dibits, count, 1);
 }

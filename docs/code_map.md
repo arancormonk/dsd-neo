@@ -6127,8 +6127,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   every other case 3 or more). A word starting past the span is not covered (the same map's own shift comes within the
   tolerance there). The Phase 1 anchor and its validation are in Protocols (P25 Phase 1); the Phase 2 window verdict
   in Protocols (P25 Phase 2 voice dispatch). Diagnostics, never reset: `tolerant_syncs`, `tolerant_frames` (P1) and
-  `tolerant_windows` (P2, windows whose verdict passed). Tests: `FRAME_SYNC_P25_ANCHOR`, `FRAME_SYNC_P25P2_ANCHOR`
-  (distance and shifted bound, the expected position only, thresholds, late exact words win, map and polarity, every
+  `tolerant_windows` (P2, windows whose verdict passed). On the C4FM chain the Phase 1 sync and report also place the
+  symbol grid on each unit's word (the sync anchor entry below). Tests: `FRAME_SYNC_P25_ANCHOR`,
+  `FRAME_SYNC_P25P2_ANCHOR` (distance and shifted bound, the expected position only, thresholds, late exact words win, map and polarity, every
   invalidation, installation, the withheld accept effects, C4FM and symbol files); through the whole receive chain,
   `DECODE_IQ_P25P1_CQPSK_SIMULCAST_NOISY_CC`, `DECODE_IQ_P25P2_CC_NOISY` and `DECODE_IQ_P25P1_CQPSK_CC_THEN_NOISE_*`
   (`docs/testing.md`).
@@ -6167,18 +6168,43 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   cannot place the word, a word named with no recording armed (read on a grid the hunt timed) and a reset), holds the
   grid for it: `symbol_process_live_samples()` takes no crossing slip while such a recording runs
   (`dsd_symbol_anchor_holds_grid()`), so the word is read and measured on the grid the frame left and the measurement
-  corrects that grid alone, as on a DMR BS call. The hold belongs to the protocol whose frame armed it (NXDN, YSF or
-  DMR, from `lastsynctype` at the arm): once `lastsynctype` names any other (the hunt accepted another protocol's sync,
-  P25's included, or noCarrier forgot the last), it ends for the rest of the recording, so no other protocol's frame
+  corrects that grid alone, as on a DMR BS call. The hold belongs to the protocol whose frame armed it (NXDN, YSF, DMR
+  or P25 Phase 1, from `lastsynctype` at the arm): once `lastsynctype` names any other (the hunt accepted another
+  protocol's sync, or noCarrier forgot the last), it ends for the rest of the recording, so no other protocol's frame
   is read on a held grid. The first frame after acquisition, and
   any grid no word placed, stay the crossing loop's: held at the acquisition's phase, a YSF frame sync read inner
   symbols at the wrong sign and was missed. The decoder names the word the hunt accepted at its frame's entry: NXDN
   the FSW from its second symbol and YSF the frame sync from its second (the recording starts on the word's first
   sample, and the measurement needs a sample of margin before the first centre), DMR MS the 24 dibits below
-  `dmr_payload_p`. An M17 preamble's `dsd_symbol_hold_sync_anchor()` lets the crossing loop back on. P25 never arms the
-  anchor. Tests: `DSP_SYMBOL_ANCHOR` (the hold rules, words with inner symbols), `SYMBOL_MATCHED_FILTER_SEAM`
-  (hunt-hold), `NXDN_FRAME_ROUTING`, `DMR_MS_DATA`, `DMR_SYNTH_MS_CLEAR_VOICE`, `DECODE_IQ_YSF_SYNTH`,
+  `dmr_payload_p`. An M17 preamble's `dsd_symbol_hold_sync_anchor()` lets the crossing loop back on. Tests:
+  `DSP_SYMBOL_ANCHOR` (the hold rules, words with inner symbols), `SYMBOL_MATCHED_FILTER_SEAM` (hunt-hold),
+  `NXDN_FRAME_ROUTING`, `DMR_MS_DATA`, `DMR_SYNTH_MS_CLEAR_VOICE`, `DECODE_IQ_YSF_SYNTH`,
   `DECODE_IQ_NXDN96_SYNTH_SYMBOLS`, `DECODE_IQ_NXDN48_SYNTH_SYMBOLS`.
+  P25 Phase 1 on C4FM (`rf_mod` 0) is the fourth hunt-read caller. The P25 word ends in alternating outer symbols whose
+  crossings, acted on a symbol late, left every frame the hunt read about a sample past its symbols (a whole sample on
+  clean generated frames, 0.5-1.0 samples on real captures), and the frame was read open loop there. The frame sync
+  names each exact word as it accepts it (`frame_sync_p25p1_anchor_note_sync()`, `frame_sync_p25p1_anchor.c`) from its
+  second symbol, 23 symbols (named whole, the recording that starts on its first symbol never measures). The report of
+  the frame behind it arms the recording of the next unit's word (`dsd_frame_sync_p25p1_frame_decoded()`, which
+  returns a `dsd_p25p1_grid_verdict`), by one table of rows (`k_p25p1_grid_rows`; the units' lengths are the
+  dispatcher's `k_p25p1_unit_lengths`): it arms on C4FM when the frame validated (`p25p1_nid_verdict_validates()`, not
+  cut by an input interruption) with a length on air known (HDU, LDU1/2, TDU, TDULC; a TSDU whose last block passed
+  its CRC; a PDU whose header passed its CRC), the frame's sync-time context still holds (no tune in the handler, a
+  grant, release or RESET included; no carrier boundary, flush, input change, profile or modulation change, pending
+  off-thread tune) and its decoders stopped at the unit's end or inside its null pad (at most 35 dibits short, as a
+  TSDU leaves its pad to the hunt). A TSDU the trailing-null rule or a failed block ended, a PDU whose reader stopped
+  short of or past what its header names, a failed, held or borrowed NID and a cut read arm nothing, and the crossing
+  loop keeps the grid as before; a terminator followed by silence lapses after 64 symbols. A word within the tolerance
+  (CQPSK only today) names nothing until its NID validates. P25's word may be the first one measured after
+  acquisition, a lapse or a reset, read while the crossing loop still walks the grid: it is measured against the grid
+  without those slips (each symbol's shift, the samples it took against its span, is recorded), ending at its last
+  centre, where the frame's grid goes on; the spans a fractional rate alternates stay as they were. Only the P25 frame
+  sync asks for that (`dsd_symbol_note_p25p1_sync_anchor()`); NXDN's, YSF's, DMR's and M17's words
+  (`dsd_symbol_note_sync_anchor()`) keep their recorded centres, whatever `lastsynctype` a P25 frame left. The first unit of a transmission is read on the hunt's grid (nothing
+  records before acquisition); from the second the grid sits within half a sample of the symbols at 24, 48, 50, 72 and
+  96 kHz. Tests: `DSP_SYMBOL_ANCHOR` (P25's own hold, the measurement at whole and fractional rates and with clock
+  drift, the second-symbol naming, the walking grid), `DSP_SYMBOL_P25_C4FM_GRID` (through `getSymbol()` and the real
+  crossing loop), `P25_P1_SYNC_DISPATCH` (the naming and every arming row).
 - Slicer warm start (`<dsd-neo/dsp/sync_calibration.h>`, `sync_calibration.c`): an accepted sync sets `min`/`max`,
   `center`, `umid`/`lmid` (5/8 of the way to each rail), `maxref`/`minref` and the rolling min/max buffers from the
   word just read. `dsd_sync_warm_start_thresholds_outer_only()` averages the word's positive and negative symbols,
@@ -6673,7 +6699,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `DSP_SYMBOL_RTL_YIELD`, `ENGINE_NO_CARRIER_RESET`, `IO_RTL_RETUNE_PREPARE`, `IO_RTL_REPLAY_EOF_AND_CF32`.
 - `dsd_symbol.c` owns the open-loop FSK symbol grid. Only the inter-frame sync search moves it, by a whole sample at
   a time, on the first zero crossing latched in the previous symbol — a bang-bang loop on one unfiltered sample
-  index, and between frames the only thing tracking the sampling instant across a call. Issue #444 documents how
+  index, and between frames the only thing tracking the sampling instant across a call — and the sync anchor
+  (`symbol_anchor.c`, above), which DMR BS, NXDN, YSF, DMR MS, M17 and P25 Phase 1 on C4FM name their sync words to and
+  which keeps the crossing loop off the word a hunt-read recording holds. Issue #444 documents how
   sensitive that is; the comment above `symbol_adjust_timing_nxdn()` records the five ways of damping it that were
   A/B'd on real captures and measured worse, so change it only with `tools/replay_ab.sh` evidence
   (`docs/testing.md`). The CQPSK path does not use any of this: it has a real timing loop in `costas.cpp`.

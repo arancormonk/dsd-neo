@@ -74,6 +74,23 @@ int dsd_frame_sync_p25p1_tolerant_nac(const dsd_state* state, unsigned int* out_
  */
 int dsd_frame_sync_p25p1_frame_context_holds(const dsd_state* state);
 
+/** What the report of a P25p1 frame (dsd_frame_sync_p25p1_frame_decoded()) did about the symbol grid's recording of
+    the next data unit's sync word: armed it, or the first reason it did not. */
+typedef enum {
+    /** Armed (dsd_symbol_arm_hunt_sync_anchor()): the next unit's sync word places the grid. */
+    DSD_P25P1_GRID_ARMED = 0,
+    /** Not read on the C4FM chain, whose grid alone the hunt's crossing loop slips. */
+    DSD_P25P1_GRID_NOT_C4FM,
+    /** The frame did not validate, or its length on air is not known. */
+    DSD_P25P1_GRID_NO_LENGTH,
+    /** No sync-time context was captured, or the stream is no longer the one the sync was accepted on. */
+    DSD_P25P1_GRID_NO_STREAM,
+    /** The decoder read past the unit's end. */
+    DSD_P25P1_GRID_READ_PAST,
+    /** The decoder left more of the unit unread than its null pad and last status symbol. */
+    DSD_P25P1_GRID_SHORT_READ,
+} dsd_p25p1_grid_verdict;
+
 /**
  * @brief Tell the frame sync what the P25p1 frame its last sync opened was, once decoded.
  *
@@ -85,8 +102,13 @@ int dsd_frame_sync_p25p1_frame_context_holds(const dsd_state* state);
  * @p nac is -1 when the frame decoded no NID it may take (an input interruption cut it, or it was dropped behind a
  * tolerant sync); a frame behind a tolerant sync reported with a NAC passed the strict check, and counts in
  * dsd_p25p1_sync_anchor::tolerant_frames.
+ *
+ * On the C4FM chain the same report arms the symbol grid's recording of the next unit's sync word, whatever the NAC,
+ * when the frame validated with a known length on the stream its sync was accepted on and its decoder stopped at the
+ * unit's end or inside its null pad: that word, which the frame sync names to the grid as it accepts it, then places
+ * the grid for the unit behind it. Returns what the report did about that recording.
  */
-void dsd_frame_sync_p25p1_frame_decoded(dsd_state* state, int nac, uint32_t unit_dibits);
+dsd_p25p1_grid_verdict dsd_frame_sync_p25p1_frame_decoded(dsd_state* state, int nac, uint32_t unit_dibits);
 
 #ifdef __cplusplus
 }

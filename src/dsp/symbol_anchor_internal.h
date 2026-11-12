@@ -58,6 +58,8 @@ int dsd_symbol_anchor_take_slip(dsd_symbol_anchor* anchor);
 void dsd_symbol_anchor_test_queue_slip(dsd_state* state, int slip);
 /** Tests: mark the grid placed, as a measured word does, so the next dsd_symbol_arm_hunt_sync_anchor() holds it. */
 void dsd_symbol_anchor_test_place_grid(dsd_state* state);
+/** Tests: whether the last named word was measured (the grid is where a sync word put it). */
+int dsd_symbol_anchor_test_placed(const dsd_state* state);
 #endif
 
 #ifdef __cplusplus

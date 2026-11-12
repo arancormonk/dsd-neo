@@ -7950,10 +7950,48 @@ add_test(
     COMMAND dsd-neo_test_symbol_matched_filter_seam
 )
 
+# The symbol grid on a P25 Phase 1 C4FM carrier, through getSymbol() and the hunt's crossing loop: each unit's sync word
+# places the grid for the unit behind it, at whole and fractional rates, either polarity, with clock drift
+add_executable(
+    dsd-neo_test_symbol_p25_c4fm_grid
+    dsp/test_symbol_p25_c4fm_grid.c
+    test_support/frame_sync_dsp_stubs.c
+    test_support/frame_sync_dibit_stubs.c
+)
+target_include_directories(
+    dsd-neo_test_symbol_p25_c4fm_grid
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${LIBSNDFILE_INCLUDE_DIR}
+)
+target_compile_definitions(
+    dsd-neo_test_symbol_p25_c4fm_grid
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_symbol_p25_c4fm_grid
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
+        dsd-neo_test_audio_sink
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(
+    NAME DSP_SYMBOL_P25_C4FM_GRID
+    COMMAND dsd-neo_test_symbol_p25_c4fm_grid
+)
+
 add_executable(dsd-neo_test_dsp_symbol_anchor dsp/test_symbol_anchor.c)
 target_include_directories(
     dsd-neo_test_dsp_symbol_anchor
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_compile_definitions(
+    dsd-neo_test_dsp_symbol_anchor
+    PRIVATE DSD_NEO_TEST_HOOKS
 )
 target_link_libraries(
     dsd-neo_test_dsp_symbol_anchor

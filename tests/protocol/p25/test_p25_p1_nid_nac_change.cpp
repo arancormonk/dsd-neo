@@ -33,6 +33,7 @@ extern "C" {
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/symbol_anchor.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/protocol/p25/p25.h>
@@ -739,6 +740,20 @@ dsd_frame_sync_p25p1_mod_compare_publish(const dsd_state* state) {
 int
 dsd_frame_sync_off_thread_tune_pending(void) {
     return 0;
+}
+
+/* The real P25p1 sync anchor names a C4FM sync word to the symbol grid and arms its recording; these frames are read on
+   no grid. */
+void
+dsd_symbol_note_p25p1_sync_anchor(const dsd_state* state, const char* sync_dibits, int count) {
+    (void)state;
+    (void)sync_dibits;
+    (void)count;
+}
+
+void
+dsd_symbol_arm_hunt_sync_anchor(dsd_state* state) {
+    (void)state;
 }
 
 void

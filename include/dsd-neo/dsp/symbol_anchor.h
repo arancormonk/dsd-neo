@@ -47,17 +47,18 @@ void dsd_symbol_arm_sync_anchor(struct dsd_state* state);
 /**
  * @brief Start recording for a sync word the frame-sync hunt is about to read, and hold the grid for it.
  *
- * NXDN, YSF and DMR MS read a frame or burst, then go back to the hunt for the next one's sync word. The hunt's
- * crossing loop slips the grid a sample at a time on that word's zero crossings, and a fixed word's crossings pull it
- * to a fixed place: the inner symbols in NXDN's and YSF's words (and an MS burst's first crossings after the gap) sat
- * clean frames one or two samples off their symbols, a phase the frame then kept. Called where the frame or burst ends,
+ * NXDN, YSF, DMR MS and P25 Phase 1 on C4FM read a frame or burst, then go back to the hunt for the next one's sync
+ * word. The hunt's crossing loop slips the grid a sample at a time on that word's zero crossings, and a fixed word's
+ * crossings pull it to a fixed place: the inner symbols in NXDN's and YSF's words (and an MS burst's first crossings
+ * after the gap) sat clean frames one or two samples off their symbols, and the alternating crossings that end P25's
+ * word, acted on a symbol late, a sample past them, a phase the frame then kept. Called where the frame or burst ends,
  * right ahead of the next word, this arms a recording as dsd_symbol_arm_sync_anchor() does and, once a measured word
  * has placed the grid, keeps the crossing loop off it until the word is measured or the recording lapses (64 symbols),
  * so the word is read on the grid the frame left and the measurement corrects that grid alone, as on a DMR BS call. A
  * grid no word placed (the first frame after acquisition, a recording that lapsed or could not be measured, a word
- * named with no recording armed, a reset) stays the crossing loop's. The hold is the arming protocol's (NXDN, YSF or
- * DMR, from dsd_state::lastsynctype now): once lastsynctype names another protocol, the hunt having accepted its sync,
- * the hold ends. The decoder that accepts the word names it (dsd_symbol_note_sync_anchor()).
+ * named with no recording armed, a reset) stays the crossing loop's. The hold is the arming protocol's (NXDN, YSF, DMR
+ * or P25 Phase 1, from dsd_state::lastsynctype now): once lastsynctype names another protocol, the hunt having accepted
+ * its sync, the hold ends. The decoder that accepts the word names it (dsd_symbol_note_sync_anchor()).
  */
 void dsd_symbol_arm_hunt_sync_anchor(struct dsd_state* state);
 
@@ -78,9 +79,21 @@ void dsd_symbol_hold_sync_anchor(struct dsd_state* state);
  * by up to two samples. Ignored on a grid without sub-symbol structure (one
  * sample per symbol), with a count outside 1..DSD_SYMBOL_ANCHOR_MAX_SYMS, without
  * a recording armed by dsd_symbol_arm_sync_anchor(), or before it holds that
- * many symbols.
+ * many symbols. The measurement needs a symbol of samples before the first named
+ * centre, so a word whose recording starts on its first symbol is named from its
+ * second.
  */
 void dsd_symbol_note_sync_anchor(const struct dsd_state* state, const char* sync_dibits, int count);
+
+/**
+ * @brief Name the P25 Phase 1 sync word the symbol grid just read (C4FM), as dsd_symbol_note_sync_anchor() does.
+ *
+ * The word is measured against the grid its symbols would have had without the slips the hunt's crossing loop took
+ * while reading it, ending at its last centre: the first word after acquisition, a lapse or a reset is read on a grid
+ * nothing holds, and the frame behind it goes on from that last centre. Only the P25 Phase 1 frame sync calls it; every
+ * other caller's word is measured on the centres it was read on, whatever dsd_state::lastsynctype says.
+ */
+void dsd_symbol_note_p25p1_sync_anchor(const struct dsd_state* state, const char* sync_dibits, int count);
 
 /**
  * @brief Where a known run of symbols sits against the grid that decided it.
