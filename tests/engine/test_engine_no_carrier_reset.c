@@ -6794,6 +6794,7 @@ test_carrier_boundary_restarts_the_evidence(void) {
     state->p25_p1_nid_evidence = 1;
     state->p25_p1_nid_evidence_symbolcnt = 99U;
     state->tdma_carrier = 1U;
+    state->x2tdma_corroborated = 1U;
     const uint32_t carrier_seq = state->carrier_seq;
 
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
@@ -6807,6 +6808,8 @@ test_carrier_boundary_restarts_the_evidence(void) {
     rc |= expect_true("evidence: the boundary restarts the M17 gate", state->m17_confirmed == 0);
     rc |= expect_true("evidence: the boundary restarts the ProVoice gate", state->provoice_confirmed == 0);
     rc |= expect_true("evidence: the boundary restarts the YSF FICH verdict", state->ysf_fich_confirmed == 0);
+    rc |= expect_true("evidence: the boundary forgets the X2-TDMA transmission's corroboration",
+                      state->x2tdma_corroborated == 0U);
     rc |= expect_true("evidence: the boundary drops the Phase 1 NID's evidence",
                       state->p25_p1_nid_evidence == 0 && state->p25_p1_nid_evidence_symbolcnt == 0U);
     rc |= expect_true("evidence: the boundary moves the carrier count", state->carrier_seq == carrier_seq + 1U);
@@ -12935,6 +12938,8 @@ main(void) {
     // Whether the carrier is two-slot TDMA is the carrier's, not one transmission's: a sync loss between the other
     // slot's calls keeps the Monitor's strip in place.
     state->tdma_carrier = 1U;
+    // An X2-TDMA transmission's corroboration is the transmission's: the next one proves itself again.
+    state->x2tdma_corroborated = 1U;
 
     noCarrier(opts, state);
 
@@ -12942,6 +12947,7 @@ main(void) {
                                                      && state->nxdn_confirm_frame_evidence == 0);
     rc |= expect_true("ysf-fich-confirmation-reset", state->ysf_fich_confirmed == 0U);
     rc |= expect_true("no-carrier keeps the two-slot TDMA verdict", state->tdma_carrier == 1U);
+    rc |= expect_true("x2tdma-corroboration-reset", state->x2tdma_corroborated == 0U);
     rc |= expect_true("dstar-confirmation-reset", state->dstar_confirmed == 0 && state->dstar_confirm_weak_streak == 0
                                                       && state->dstar_confirm_frame_evidence == 0);
     rc |= expect_true("provoice-confirmation-reset", state->provoice_confirmed == 0

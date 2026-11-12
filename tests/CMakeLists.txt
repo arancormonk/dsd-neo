@@ -2327,6 +2327,20 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     add_test(NAME X2TDMA_VOICE_CRYPTO COMMAND dsd-neo_test_x2tdma_voice_crypto)
 endif()
 
+# X2-TDMA direct-mode voice through the real frame sync: superframes chained by the 24-symbol gap, and a hunt gap
+# mid-call (protocol/x2tdma/x2tdma_direct_mode_check.py).
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME X2TDMA_DIRECT_MODE
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/protocol/x2tdma/x2tdma_direct_mode_check.py
+            $<TARGET_FILE:dsd-neo>
+    )
+    set_tests_properties(X2TDMA_DIRECT_MODE PROPERTIES TIMEOUT 120)
+endif()
+
 add_executable(
     dsd-neo_test_nxdn_trunk_diag
     protocol/nxdn/test_nxdn_trunk_diag.c

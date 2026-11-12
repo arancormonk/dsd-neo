@@ -609,6 +609,7 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     state->tdma_carrier = 0U;
     /* Nor does an X2-TDMA superframe read before it chain to the next one. */
     state->x2tdma_superframe_valid = 0U;
+    state->x2tdma_corroborated = 0U;
     frame_sync_seed_p25_cqpsk_level_windows(opts, state);
     /* Every caller is a boundary a received tone must not survive: a scan row or target
        change, a decode-mode change, a scope resume (issue #522). */

@@ -2865,6 +2865,8 @@ no_carrier_reset_decode_state(dsd_state* state, int preserve_scan_state) {
     /* Same rule for ProVoice: a frame proves nothing on its own, so the streak that does
      * cannot span the dead channel that brought us here (issue #421). */
     provoice_confirm_reset(state);
+    /* And for X2-TDMA, whose voice plays once a superframe of the transmission proved itself. */
+    state->x2tdma_corroborated = 0U;
     /* And for TETRA: the CRC evidence for the carrier, the partial TM-SDUs, the TDMA clock (which counts symbols the
      * dead channel did not send) and the speech in progress. */
     tetra_forget_carrier(state);
@@ -3557,6 +3559,7 @@ carrier_boundary_forget_evidence(dsd_state* state) {
     state->p25_p1_nid_evidence_symbolcnt = 0;
     // Whether the carrier is two-slot TDMA is the carrier's too: the next one proves its own with a decoded frame.
     state->tdma_carrier = 0U;
+    state->x2tdma_corroborated = 0U;
     // The calls end at the boundary, and a vendor late-entry mode is its call's (issue #657), as is a PI held for the
     // call its lost voice LC header would have opened.
     dmr_le_vendor_reset(state, 0);

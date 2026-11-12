@@ -11060,6 +11060,16 @@ Private per-protocol modules worth knowing about:
   of this transmission verified (`ysf_parse_fich()`); before that it lays out, plays and publishes nothing and the hunt
   reads on through it, since the last layout may be an earlier transmission's: a sync word matched on noise after a
   V/D2 call played that call's layout as five frames of voice and opened a call (`YSF_DCH_DECODE`).
+- X2-TDMA has no confirm module either, and nothing in a superframe can fail a check. Its corroboration is the
+  superframe's (`x2tdma_superframe_corroborated()` in `x2tdma_voice.c`): a later X2-TDMA sync word in its place (the
+  other timeslot's, read after each burst) or a whole superframe before it on the carrier with no hunt gap, the same
+  evidence that marks the carrier two-slot (`tdma_carrier`). A superframe that proves itself corroborates the
+  transmission (`dsd_state::x2tdma_corroborated`, with its carrier count), which `noCarrier()`, the carrier boundary
+  and `dsd_frame_sync_reset_acquisition()` forget. Voice plays, and a voice sync observes a call, only from a
+  corroborated transmission; before, one sync word matched on noise played the 18 frames behind it and opened a call.
+  A repeater call loses its first burst (60 ms), a direct-mode call its first superframe (360 ms); a hunt gap later
+  in the call costs nothing (`X2TDMA_VOICE_HELPERS`; `X2TDMA_DIRECT_MODE` drives direct-mode superframes, chained by
+  the 24-symbol gap and across a hunt gap, through the real frame sync from a float symbol file).
 - `src/protocol/provoice/provoice_frame.{c,h}` — the ProVoice frame-pair deinterleaver. It fills each IMBE 7100x4400
   frame with `dsd_vocoder_soft_bit` cells, a hard bit and the confidence in it, and `provoice.c` hands them to
   `processMbeFrameSoft()` (issue #588). The confidence is `dsd_two_level_symbol_reliability()`

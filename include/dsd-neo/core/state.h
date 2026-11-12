@@ -2472,6 +2472,11 @@ struct dsd_state {
        The vocoder mutes, records, captures and learns from the frames by it (mbe_frame_judge()). */
     uint8_t x2tdma_slot_crypto[2];
     uint64_t x2tdma_slot_crypto_transmission[2];
+    /* An X2-TDMA voice superframe of the current transmission proved itself (processX2TDMAvoice()), on the carrier
+       count x2tdma_corroborated_carrier_seq: its voice plays from every superframe after it, a hunt gap between them
+       included. A sync loss (noCarrier()), an acquisition reset and the carrier boundary forget it. */
+    uint8_t x2tdma_corroborated;
+    uint32_t x2tdma_corroborated_carrier_seq;
     int input_fallback_pending;
 
     //dmr trunking stuff
