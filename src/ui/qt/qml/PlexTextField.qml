@@ -18,6 +18,10 @@ Rectangle {
     property string error: ""
     property string unit: ""
     property var nextField: null
+    // Enter with no next field hides the keyboard; by default the field also
+    // lets go of the keyboard focus. A field whose results show as you type (a
+    // search) keeps it, so the keyboard user stays in the field.
+    property bool keepsFocusOnEnter: false
     property alias echoMode: input.echoMode
     signal accepted
     Accessible.ignored: true
@@ -88,7 +92,8 @@ Rectangle {
             if (control.nextField)
                 control.nextField.input.forceActiveFocus();
             else {
-                focus = false;
+                if (!control.keepsFocusOnEnter)
+                    focus = false;
                 Qt.inputMethod.hide();
             }
         }

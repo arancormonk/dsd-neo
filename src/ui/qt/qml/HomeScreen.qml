@@ -344,9 +344,10 @@ Item {
         property: "protocolLabels"
         value: screen.decodeLabels()
     }
-    // With a screen reader on, a reorder is a reset (Android hears of a move
-    // only through a hide and show), and one nobody asked for waits while
-    // the cards are on screen.
+    // With a screen reader on, the cards' rows are positional: a reorder or a
+    // search renames each row for the card now at its place, and a row past
+    // the end is held, never removed (see the cards' Repeater). A reorder
+    // nobody asked for waits while the cards are on screen.
     Binding {
         target: savedSystemCards
         property: "screenReaderActive"
@@ -942,15 +943,36 @@ Item {
 
                 objectName: "listenSystemsSection"
                 readonly property bool shown: screen.section === "systems"
+                // With rows held (a screen reader, a shorter list), the
+                // section ends at the bottom of the last card shown: held rows
+                // come last, below it, and keep their size, so holding one
+                // moves nothing.
+                readonly property bool rowsHeld: systemCards.count > savedSystemCards.shownCount
+                property real shownBottom: 0
+                function place() {
+                    var shownCards = savedSystemCards.shownCount;
+                    var last = shownCards > 0 ? systemCards.itemAt(shownCards - 1) : savedControls.shown ? savedControls : addSystemColumn;
+                    shownBottom = last ? last.y + last.height : 0;
+                }
                 visible: shown
                 enabled: shown
                 width: parent.width
-                height: shown ? implicitHeight : 0
+                height: !shown ? 0 : rowsHeld ? shownBottom : implicitHeight
                 spacing: Theme.gap
+                onRowsHeldChanged: place()
+                Connections {
+                    target: savedSystemCards
+                    function onShownCountChanged() {
+                        listenSystemsSection.place();
+                    }
+                }
 
                 Column {
+                    id: addSystemColumn
                     width: parent.width
                     spacing: 6
+                    onYChanged: listenSystemsSection.place()
+                    onHeightChanged: listenSystemsSection.place()
                     DashedActionButton {
                         id: addSystemButton
                         objectName: "addSystemButton"
@@ -978,6 +1000,8 @@ Item {
                     current: screen.visible && screen.section === "systems"
                     heardTick: screen.heardTick
                     sortSheet: sortSheet
+                    onYChanged: listenSystemsSection.place()
+                    onHeightChanged: listenSystemsSection.place()
                     onOpenRadioReferenceAccount: screen.openRadioReferenceAccount()
                     onRevealRequested: screen.revealSystemsTop()
                     // A keyboard on them goes to Add a system.
@@ -990,6 +1014,20 @@ Item {
                 // A card per site group or system, in the order chosen. A card
                 // that moves keeps its delegate (and the keyboard on it); one
                 // that leaves hands the keyboard on (noteCardRemoved()).
+                //
+                // With a screen reader on the rows are positional: row i
+                // shows the i-th card, so a sort, a search or a new location
+                // renames rows in place and the keyboard stays on the row it
+                // was on, which now reads the card at its place. Made or
+                // destroyed under a live Android accessibility bridge (Qt
+                // 6.11.3), each delegate made the bridge walk the list again
+                // from Android's main thread: a sort over 300 cards rebuilt
+                // them all and the app stopped responding. A row past the end
+                // of a shorter list is held (`held`), as the Network sheet's
+                // rows are: out of the tree, transparent (Qt reports it
+                // invisible) and unnamed, so a copy Android still holds reads
+                // nothing, taking no press or keyboard, and below the section's
+                // end; a longer list takes it back before a row is added.
                 Repeater {
                     id: systemCards
 
@@ -1023,9 +1061,24 @@ Item {
                         required property string section
                         required property bool sectionStart
                         required property bool rrLinked
+                        required property string receiverLabel
+                        required property bool held
+                        // Held, once the keyboard was handed on (noteCardRemoved()
+                        // reads it still on the card): no press or keyboard.
+                        property bool parked: false
+                        Component.onCompleted: parked = held
 
                         width: content.width
                         spacing: 8
+                        opacity: held ? 0 : 1
+                        enabled: !parked
+                        onHeldChanged: {
+                            if (held)
+                                screen.noteCardRemoved(entry);
+                            parked = held;
+                        }
+                        onYChanged: if (listenSystemsSection.rowsHeld) listenSystemsSection.place()
+                        onHeightChanged: if (listenSystemsSection.rowsHeld) listenSystemsSection.place()
 
                         // Place and Nearest order: the section's name over its first card.
                         MicroLabel {
@@ -1035,6 +1088,9 @@ Item {
                             topPadding: 6
                             wrapMode: Text.Wrap
                             text: entry.section
+                            Accessible.name: entry.held ? "" : text
+                            Accessible.focusable: navigationAllowed && visible && !entry.held
+                            Accessible.ignored: !navigationAllowed || !visible || entry.held
                         }
 
                         UiPanel {
@@ -1049,7 +1105,9 @@ Item {
                             // with the section or Home hidden (issue #646).
                             readonly property bool playShown: entry.playUid.length > 0
                             readonly property bool refreshHint: entry.refreshHint
-                            readonly property string placeText: [entry.placeLabel, savedSystemCards.effectiveSort === "nearest" ? Util.fmtDistanceKm(entry.distanceKm, !!screen.prefsStore && screen.prefsStore.metricUnits === true) : ""].filter(function (part) {
+                            // The distance first: Nearest sorts by it, and a long
+                            // place elides from the end (large text).
+                            readonly property string placeText: [savedSystemCards.effectiveSort === "nearest" ? Util.fmtDistanceKm(entry.distanceKm, !!screen.prefsStore && screen.prefsStore.metricUnits === true) : "", entry.placeLabel].filter(function (part) {
                                 return part.length > 0;
                             }).join(" · ")
 
@@ -1084,6 +1142,8 @@ Item {
                                 ReadableText {
                                     width: parent.width
                                     objectName: "savedSystemTitle"
+                                    Accessible.ignored: !navigationAllowed || !visible || entry.held
+                                    Accessible.name: navigationAllowed && visible && !entry.held ? text : ""
                                     text: card.name
                                     font.family: Theme.sans
                                     font.pixelSize: Theme.fontSize(17)
@@ -1094,6 +1154,10 @@ Item {
 
                                 ReadableText {
                                     width: parent.width
+                                    objectName: "savedSystemSource"
+                                    Accessible.ignored: !navigationAllowed || !visible || entry.held
+                                    Accessible.name: navigationAllowed && visible && !entry.held ? text : ""
+                                    // Names the receiver when another card has this title.
                                     text: Util.systemMeta(entry)
                                     font.family: Theme.mono
                                     font.pixelSize: Theme.fontSize(12)
@@ -1105,6 +1169,8 @@ Item {
                                 ReadableText {
                                     width: parent.width
                                     objectName: "savedSystemPlace"
+                                    Accessible.ignored: !navigationAllowed || !visible || entry.held
+                                    Accessible.name: navigationAllowed && visible && !entry.held ? text : ""
                                     visible: card.placeText.length > 0
                                     text: card.placeText
                                     font.family: Theme.sans
@@ -1117,6 +1183,8 @@ Item {
                                     width: parent.width
                                     // heardTick forces the minute-by-minute refresh.
                                     objectName: "savedSystemMeta"
+                                    Accessible.ignored: !navigationAllowed || !visible || entry.held
+                                    Accessible.name: navigationAllowed && visible && !entry.held ? text : ""
                                     text: (entry.keyConfigured ? qsTr("key configured") + " · " : "") + (screen.heardTick, Util.heardText(entry.lastHeard, savedSystems.realtimeNowMs()))
                                     font.family: Theme.sans
                                     font.pixelSize: Theme.fontSize(13)
@@ -1128,6 +1196,8 @@ Item {
                             ReadableText {
                                 id: refreshHintText
                                 objectName: "savedSystemRefreshHint"
+                                Accessible.ignored: !navigationAllowed || !visible || entry.held
+                                Accessible.name: navigationAllowed && visible && !entry.held ? text : ""
                                 x: Theme.cardPadding
                                 y: card.hintTop
                                 width: parent.width - 2 * Theme.cardPadding
@@ -1141,7 +1211,9 @@ Item {
                                 id: siteButton
                                 objectName: "homeSiteChooserButton"
                                 // Says its label too ("2 sites"), which a screen reader otherwise never hears.
-                                accessibleName: qsTr("Choose sites for %1, %2").arg(card.name).arg(text)
+                                accessibleName: entry.held ? "" : qsTr("Choose sites for %1, %2").arg(card.name).arg(text)
+                                Accessible.focusable: navigationAllowed && visible && !entry.held
+                                Accessible.ignored: !navigationAllowed || !visible || entry.held
                                 width: implicitWidth
                                 anchors.right: parent.right
                                 anchors.verticalCenter: play.verticalCenter
@@ -1152,7 +1224,8 @@ Item {
                             }
                             PlayCircle {
                                 id: play
-                                accessibleName: entry.sourceType === "file" ? qsTr("Play %1").arg(card.name) : qsTr("Listen to %1").arg(card.name)
+                                accessibleName: entry.held ? "" : entry.sourceType === "file" ? qsTr("Play %1").arg(card.name) : qsTr("Listen to %1").arg(card.name)
+                                Accessible.ignored: !navigationAllowed || !visible || entry.held
                                 objectName: "savedSystemPlay"
                                 visible: card.playShown
                                 anchors.right: parent.right
@@ -1167,7 +1240,8 @@ Item {
                                 id: manageButton
                                 objectName: "savedSystemManageButton"
                                 icon: "more"
-                                accessibleName: qsTr("More options for %1").arg(card.name)
+                                accessibleName: entry.held ? "" : qsTr("More options for %1").arg(card.name)
+                                Accessible.ignored: !navigationAllowed || !visible || entry.held
                                 anchors.right: parent.right
                                 anchors.rightMargin: Theme.cardPadding + (play.width - width) / 2
                                 anchors.top: parent.top
@@ -1177,6 +1251,7 @@ Item {
                             // so destructive actions hide behind the press.
                             GatedTapHandler {
                                 acceptedButtons: Qt.LeftButton
+                                enabled: !entry.parked
                                 onAllowedLongPress: screen.manageCard(entry.leadUid, card.name, entry.rrLinked)
                             }
                         }

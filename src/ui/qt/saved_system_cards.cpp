@@ -67,6 +67,23 @@ only_playable(const QList<const Member*>& group) {
     return playable;
 }
 
+/* What tells @p member's receiver apart where the card's meta does not already say it (Util.systemMeta() names a
+   TCP or UDP source's address and a file's name): the dongle, an RTL-TCP server's address, an Airspy's serial. */
+QString
+receiver_text(const Member& member) {
+    if (member.sourceType == QLatin1String("usb")) {
+        return QStringLiteral("USB");
+    }
+    if (member.sourceType == QLatin1String("rtltcp")) {
+        return QStringLiteral("RTL-TCP %1:%2").arg(member.host.trimmed(), QString::number(member.port));
+    }
+    if (member.sourceType == QLatin1String("airspy")) {
+        const QString serial = member.airspySerial.trimmed().toUpper();
+        return serial.isEmpty() ? QStringLiteral("Airspy") : QStringLiteral("Airspy %1").arg(serial);
+    }
+    return QString();
+}
+
 /* HomeScreen's needsSiteRefresh(): a trunked row in no site group whose channel or group file came from
    RadioReference could be grouped by refreshing it. */
 bool
@@ -295,6 +312,7 @@ group_role(const Card& card, int role) {
         case SavedSystemCards::SectionRole: return card.section;
         case SavedSystemCards::SectionStartRole: return card.sectionStart;
         case SavedSystemCards::RrLinkedRole: return card.rrLinked;
+        case SavedSystemCards::ReceiverLabelRole: return card.receiverLabel;
         default: return QVariant();
     }
 }
@@ -308,7 +326,7 @@ card_role(const Card& card, int role) {
 QList<int>
 changed_roles(const Card& before, const Card& after) {
     QList<int> roles;
-    for (int role = SavedSystemCards::KeyRole; role <= SavedSystemCards::RrLinkedRole; ++role) {
+    for (int role = SavedSystemCards::KeyRole; role <= SavedSystemCards::ReceiverLabelRole; ++role) {
         if (card_role(before, role) != card_role(after, role)) {
             roles.append(role);
         }
@@ -324,6 +342,18 @@ mark_section_starts(QList<Card>& cards) {
     for (Card& card : cards) {
         card.sectionStart = !card.section.isEmpty() && !started.contains(card.section);
         started.insert(card.section);
+    }
+}
+
+/* A card whose title another shown card has too (one system saved on two receivers) names its receiver. */
+void
+mark_shared_titles(QList<Card>& cards) {
+    QHash<QString, int> titles;
+    for (const Card& card : cards) {
+        ++titles[card.title];
+    }
+    for (Card& card : cards) {
+        card.receiverLabel = titles.value(card.title) > 1 ? card.receiver : QString();
     }
 }
 
@@ -389,15 +419,20 @@ SavedSystemCards::~SavedSystemCards() = default;
 
 int
 SavedSystemCards::rowCount(const QModelIndex& parent) const {
-    return parent.isValid() ? 0 : static_cast<int>(m_shown.size());
+    return parent.isValid() ? 0 : static_cast<int>(m_shown.size() + m_held.size());
 }
 
 QVariant
 SavedSystemCards::data(const QModelIndex& index, int role) const {
-    if (!index.isValid() || index.row() < 0 || index.row() >= m_shown.size()) {
+    const qsizetype row = index.isValid() ? index.row() : -1;
+    if (row < 0 || row >= m_shown.size() + m_held.size()) {
         return QVariant();
     }
-    return card_role(m_shown.at(index.row()), role);
+    const bool held = row >= m_shown.size();
+    if (role == HeldRole) {
+        return held;
+    }
+    return card_role(held ? m_held.at(row - m_shown.size()) : m_shown.at(row), role);
 }
 
 QHash<int, QByteArray>
@@ -425,6 +460,8 @@ SavedSystemCards::roleNames() const {
         {SectionRole, QByteArrayLiteral("section")},
         {SectionStartRole, QByteArrayLiteral("sectionStart")},
         {RrLinkedRole, QByteArrayLiteral("rrLinked")},
+        {ReceiverLabelRole, QByteArrayLiteral("receiverLabel")},
+        {HeldRole, QByteArrayLiteral("held")},
     };
 }
 
@@ -451,7 +488,7 @@ SavedSystemCards::setScreenReaderActive(bool active) {
     }
     m_screenReaderActive = active;
     Q_EMIT screenReaderActiveChanged();
-    if (!active && m_reorderHeld) {
+    if (!active && (m_reorderHeld || !m_held.isEmpty())) {
         scheduleRebuild();
     }
 }
@@ -572,6 +609,7 @@ SavedSystemCards::readMembers() {
         member.freqMhz = text(SavedSystemsModel::FreqMhzRole);
         member.decodeFlag = text(SavedSystemsModel::DecodeFlagRole);
         member.filePath = text(SavedSystemsModel::FilePathRole);
+        member.airspySerial = at.data(SavedSystemsModel::AirspyRole).toMap().value(QStringLiteral("serial")).toString();
         member.chanCsvPath = text(SavedSystemsModel::ChanCsvPathRole);
         member.groupCsvPath = text(SavedSystemsModel::GroupCsvPathRole);
         member.place = at.data(SavedSystemsModel::PlaceRole).toMap();
@@ -717,6 +755,7 @@ SavedSystemCards::buildCard(const QList<const Member*>& group, const QHash<QStri
     card.decodeFlag = shown.decodeFlag;
     card.trunking = shown.trunking;
     card.filePath = shown.filePath;
+    card.receiver = receiver_text(shown);
     card.keyConfigured = shown.keyConfigured;
     card.refreshHint = needs_site_refresh(shown, rrFiles);
     for (const Member* member : group) {
@@ -840,30 +879,37 @@ SavedSystemCards::filteredCards() const {
 
 void
 SavedSystemCards::publish(QList<Card>&& next, bool userAsked) {
+    /* With a screen reader on screen, a reorder nobody asked for waits: the cards shown keep their places. */
+    const bool hold = m_screenReaderActive && m_holdReorders && !userAsked && reordersShown(next);
+    if (hold) {
+        next = heldOrder(std::move(next));
+    }
+    m_reorderHeld = hold;
+    mark_section_starts(next);
+    mark_shared_titles(next);
+    if (m_screenReaderActive) {
+        applyPositional(std::move(next));
+        return;
+    }
+    releaseHeldRows();
+    applyDiff(std::move(next));
+}
+
+/* Whether @p next puts two cards shown now in the other order. */
+bool
+SavedSystemCards::reordersShown(const QList<Card>& next) const {
     const QHash<QString, int> nextIndex = index_by_key(next);
     int last = -1;
-    bool reorders = false;
     for (const Card& card : m_shown) {
         const int at = nextIndex.value(card.key, -1);
         if (at >= 0) {
-            reorders = reorders || at < last;
+            if (at < last) {
+                return true;
+            }
             last = at;
         }
     }
-    if (reorders && m_screenReaderActive) {
-        if (userAsked || !m_holdReorders) {
-            m_reorderHeld = false;
-            mark_section_starts(next);
-            resetTo(std::move(next));
-            return;
-        }
-        next = heldOrder(std::move(next));
-        m_reorderHeld = true;
-    } else {
-        m_reorderHeld = false;
-    }
-    mark_section_starts(next);
-    applyDiff(std::move(next));
+    return false;
 }
 
 /* The cards still shown keep their places; a new one goes after the card it follows in @p next. */
@@ -897,11 +943,49 @@ SavedSystemCards::heldOrder(QList<Card>&& next) const {
     return held;
 }
 
+/* Row i shows next[i]: one dataChanged per row whose card or held state changed. The rows past the end of @p next keep
+   the cards they showed, held; rows are added only past the end of every row there is. */
 void
-SavedSystemCards::resetTo(QList<Card>&& next) {
-    beginResetModel();
+SavedSystemCards::applyPositional(QList<Card>&& next) {
+    const qsizetype live = m_shown.size();
+    QList<Card> before = std::move(m_shown);
+    before.append(std::move(m_held));
+    const qsizetype rows = before.size();
+    const qsizetype count = next.size();
+    const qsizetype kept = std::min(count, rows);
+    QList<Card> added = next.mid(kept);
+    next.resize(kept);
     m_shown = std::move(next);
-    endResetModel();
+    m_held = before.mid(kept);
+    for (qsizetype row = 0; row < kept; ++row) {
+        QList<int> roles = changed_roles(before.at(row), m_shown.at(row));
+        if (row >= live) {
+            roles.append(HeldRole);
+        }
+        if (!roles.isEmpty()) {
+            Q_EMIT dataChanged(index(static_cast<int>(row)), index(static_cast<int>(row)), roles);
+        }
+    }
+    if (count < live) {
+        Q_EMIT dataChanged(index(static_cast<int>(count)), index(static_cast<int>(live - 1)), {HeldRole});
+    }
+    if (!added.isEmpty()) {
+        beginInsertRows(QModelIndex(), static_cast<int>(rows), static_cast<int>(count - 1));
+        m_shown.append(std::move(added));
+        endInsertRows();
+    }
+}
+
+/* Without a screen reader no row is held: the held ones go. */
+void
+SavedSystemCards::releaseHeldRows() {
+    if (m_held.isEmpty()) {
+        return;
+    }
+    const int first = static_cast<int>(m_shown.size());
+    beginRemoveRows(QModelIndex(), first, first + static_cast<int>(m_held.size()) - 1);
+    m_held.clear();
+    endRemoveRows();
 }
 
 void

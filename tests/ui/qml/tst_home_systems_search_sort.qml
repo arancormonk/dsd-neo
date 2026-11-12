@@ -112,11 +112,11 @@ Item {
                 Object.assign(row, {siteLat: lat, siteLon: lon, hasSitePos: true});
             add(name, Object.assign(row, fields || {}));
         }
-        // Each shown card's entry, in screen order.
+        // Each shown card's entry, in screen order (a row held past a shorter list with a screen reader is none).
         function entries() {
             var out = [];
             for (var child of item("listenSystemsSection").children) {
-                if (child.objectName === "savedSystemEntry" && child.visible)
+                if (child.objectName === "savedSystemEntry" && child.visible && !child.held)
                     out.push(child);
             }
             out.sort(function (a, b) {
@@ -620,14 +620,15 @@ Item {
             verify(entryTitled("Charlie") === charlie, "and through a search");
         }
 
-        // With a screen reader the sort is a reset (Android hears of a move only through a hide and show), and the
-        // keyboard stays on the pill.
-        function test_screen_reader_sort_resets_focus_on_pill() {
+        // With a screen reader the rows are positional (R28): the sort renames each row for the card now at its
+        // place, and the keyboard stays on the pill.
+        function test_screen_reader_sort_renames_rows_focus_on_pill() {
             add("Charlie");
             add("Alpha");
             settle();
             savedSystemCards.screenReaderActive = true;
-            var charlie = entryTitled("Charlie");
+            var first = entryTitled("Charlie");
+            var second = entryTitled("Alpha");
             var pill = item("systemsSortPill");
             pill.forceActiveFocus();
             keyClick(Qt.Key_Space);
@@ -637,9 +638,237 @@ Item {
             tryCompare(sheet, "visible", false);
             settle();
             compare(titles(), ["Alpha", "Charlie"]);
-            verify(entryTitled("Charlie") !== charlie, "rebuilt, not moved");
+            verify(entryTitled("Alpha") === first && entryTitled("Charlie") === second, "renamed in place, not moved");
+            compare(findChild(first, "savedSystemManageButton").Accessible.name, "More options for Alpha");
             tryCompare(pill, "activeFocus", true);
             savedSystemCards.screenReaderActive = false;
+        }
+
+        // The parts of a card a screen reader reaches, each of which a held row takes out of the tree and unnames.
+        readonly property var cardParts: ["savedSystemSection", "savedSystemTitle", "savedSystemSource", "savedSystemPlace",
+            "savedSystemMeta", "savedSystemRefreshHint", "homeSiteChooserButton", "savedSystemPlay",
+            "savedSystemManageButton"]
+        function checkHeld(entry, label) {
+            verify(entry.held, label + ": held");
+            compare(entry.opacity, 0, label + ": transparent");
+            verify(!entry.enabled, label + ": takes no press or keyboard");
+            for (var name of cardParts) {
+                var part = findChild(entry, name);
+                verify(part !== null, label + ": " + name);
+                verify(part.Accessible.ignored, label + ": " + name + " out of the tree");
+                compare(part.Accessible.name, "", label + ": " + name + " unnamed");
+            }
+        }
+        function checkShown(entry, title, label) {
+            verify(!entry.held, label + ": shown");
+            compare(entry.opacity, 1, label + ": drawn");
+            compare(entry.title, title, label + ": its card");
+            compare(findChild(entry, "savedSystemTitle").Accessible.name, title, label + ": the title read");
+            compare(findChild(entry, "savedSystemManageButton").Accessible.name, "More options for " + title,
+                label + ": its actions named for it");
+        }
+        function pad(n) {
+            return String(n).padStart(3, "0");
+        }
+
+        // R28: with a screen reader on, 300 cards keep their 300 delegates (none made or destroyed) through a sort, a
+        // search that narrows them to 5 and back, and a Nearest reorder that a location the user asked for brings. A
+        // row past the 5 is held: transparent, out of the tree and unnamed, below the section's end; a shown row reads
+        // the card now at its place. The keyboard stays on the pill, the field, and the card row it was on. Timings
+        // (settled model and layout, desktop) are printed.
+        function test_screen_reader_300_cards_keep_their_rows() {
+            testContext.setLocationSupported(true);
+            var rows = [];
+            for (var i = 0; i < 300; ++i) {
+                // Name order is the reverse of the order added, and so is the distance from 44.0 against 41.0.
+                rows.push({name: (i % 60 === 0 ? "Harbor " : "Bench ") + pad(299 - i), sourceType: "rtltcp", host: "127.0.0.1",
+                    port: 1234, freqMhz: "851.5", rrSid: 1000 + i, rrSiteId: 1, siteName: "S", siteLat: 41 + i / 100,
+                    siteLon: -93.6, hasSitePos: true});
+            }
+            verify(savedSystems.addAll(rows, "") >= 0);
+            settle();
+            savedSystemCards.screenReaderActive = true;
+            var repeater = item("savedSystemCardsRepeater");
+            compare(repeater.count, 300);
+            var made = 0;
+            var gone = 0;
+            var onMade = function () {
+                ++made;
+            };
+            var onGone = function () {
+                ++gone;
+            };
+            repeater.itemAdded.connect(onMade);
+            repeater.itemRemoved.connect(onGone);
+            var delegates = [];
+            for (i = 0; i < 300; ++i)
+                delegates.push(repeater.itemAt(i));
+            var sameDelegates = function (label) {
+                compare(made, 0, label + ": no delegate made");
+                compare(gone, 0, label + ": no delegate destroyed");
+                compare(repeater.count, 300, label + ": 300 rows");
+                for (var r = 0; r < 300; ++r) {
+                    if (repeater.itemAt(r) !== delegates[r])
+                        fail(label + ": row " + r + " has another delegate");
+                }
+            };
+            try {
+                // A sort through the pill and its sheet, from the keyboard.
+                compare(titles()[0], "Harbor 299");
+                var pill = item("systemsSortPill");
+                pill.forceActiveFocus();
+                keyClick(Qt.Key_Space);
+                var sheet = item("systemsSortSheet");
+                tryCompare(sheet, "visible", true);
+                var started = Date.now();
+                tap(item("systemsSortChoice0", sheet)); // Name
+                tryCompare(sheet, "visible", false);
+                settle();
+                var sortMs = Date.now() - started;
+                sameDelegates("sort");
+                checkShown(repeater.itemAt(0), "Bench 000", "sort row 0");
+                checkShown(repeater.itemAt(299), "Harbor 299", "sort row 299");
+                tryCompare(pill, "activeFocus", true);
+
+                // The same sort and back, on the model alone.
+                started = Date.now();
+                prefs.systemsSort = "added";
+                settle();
+                var resortMs = Date.now() - started;
+                prefs.systemsSort = "name";
+                settle();
+                sameDelegates("resort");
+
+                // A search typed into the field: 300 → 5, and back.
+                var input = field().input;
+                input.forceActiveFocus();
+                started = Date.now();
+                savedSystemCards.query = "harbor";
+                settle();
+                var searchMs = Date.now() - started;
+                compare(savedSystemCards.shownCount, 5);
+                compare(titles(), ["Harbor 059", "Harbor 119", "Harbor 179", "Harbor 239", "Harbor 299"]);
+                sameDelegates("search");
+                for (var row of [5, 6, 150, 299])
+                    checkHeld(repeater.itemAt(row), "search row " + row);
+                for (row = 5; row < 300; ++row) {
+                    if (!repeater.itemAt(row).held || repeater.itemAt(row).opacity !== 0)
+                        fail("search: row " + row + " is not held");
+                }
+                checkShown(repeater.itemAt(4), "Harbor 299", "search row 4");
+                var last = repeater.itemAt(4);
+                var section = item("listenSystemsSection");
+                compare(section.height, last.y + last.height, "the section ends at the last card shown");
+                verify(input.activeFocus, "the field keeps the keyboard");
+                field().text = "";
+                tryCompare(savedSystemCards, "query", "", 2000);
+                settle();
+                compare(savedSystemCards.shownCount, 300);
+                sameDelegates("search cleared");
+                checkShown(repeater.itemAt(299), "Harbor 299", "cleared row 299");
+                verify(input.activeFocus, "the field keeps the keyboard");
+                compare(section.height, section.implicitHeight, "every row shown again");
+
+                // Nearest: the location the user asks for reorders the cards.
+                prefs.setLocationFix(41.0, -93.6, savedSystems.realtimeNowMs() - 60000, 25);
+                prefs.systemsSort = "nearest";
+                settle();
+                compare(titles()[0], "Harbor 299", "nearest 41.0: the first added is nearest");
+                var manage = findChild(repeater.itemAt(0), "savedSystemManageButton");
+                manage.forceActiveFocus();
+                tap(item("systemsLocationButton"));
+                manage.forceActiveFocus();
+                started = Date.now();
+                decoderHost.locationResult(controls().locationId, true, 44.0, -93.6, 25, savedSystems.realtimeNowMs(), false,
+                    "", "", "");
+                settle();
+                var nearestMs = Date.now() - started;
+                compare(titles()[0], "Bench 000", "nearest 44.0: the last added is nearest");
+                sameDelegates("nearest");
+                verify(manage.activeFocus, "the keyboard stays on the row");
+                compare(manage.Accessible.name, "More options for Bench 000", "which reads the card now at its place");
+                console.log("timing with a screen reader, 300 cards: sort through the sheet " + sortMs
+                    + " ms, sort on the model " + resortMs + " ms, search 300 to 5 " + searchMs + " ms, Nearest reorder "
+                    + nearestMs + " ms");
+            } finally {
+                repeater.itemAdded.disconnect(onMade);
+                repeater.itemRemoved.disconnect(onGone);
+            }
+        }
+
+        // R28: a card filtered out from under the keyboard with a screen reader on is held, not removed: the keyboard
+        // goes to the search field, as for a card that leaves.
+        function test_screen_reader_held_card_hands_the_keyboard_on() {
+            addThree();
+            savedSystemCards.screenReaderActive = true;
+            var repeater = item("savedSystemCardsRepeater");
+            var play = findChild(repeater.itemAt(2), "savedSystemPlay");
+            play.forceActiveFocus();
+            verify(play.activeFocus);
+            savedSystemCards.query = "linn";
+            settle();
+            compare(repeater.count, 3, "the rows stay");
+            checkHeld(repeater.itemAt(2), "row 2");
+            tryVerify(function () {
+                return field().input.activeFocus;
+            }, 1000, "the search field has the keyboard");
+            savedSystemCards.query = "";
+            settle();
+            compare(titles(), ["Johnson County", "Linn Fire", "Story Sheriff"]);
+            verify(repeater.itemAt(2).enabled, "taken back, it takes the keyboard again");
+            savedSystemCards.screenReaderActive = false;
+            settle();
+            compare(repeater.count, 3);
+        }
+
+        // R29: Nearest puts the distance before the place, so a long place elides and the distance stays.
+        function test_nearest_distance_before_place() {
+            testContext.setLocationSupported(true);
+            site("Near", 2, 41.7, -93.6, {place: iowa("Johnson", 1)});
+            settle();
+            prefs.systemsSort = "nearest";
+            prefs.setLocationFix(41.6, -93.6, savedSystems.realtimeNowMs(), 25);
+            settle();
+            compare(findChild(entryTitled("Near"), "savedSystemPlace").text, "6.9 mi · Johnson, Iowa");
+            prefs.systemsSort = "name";
+            settle();
+            compare(findChild(entryTitled("Near"), "savedSystemPlace").text, "Johnson, Iowa", "no distance off Nearest");
+        }
+
+        // R29: one system saved on two receivers is two cards of one title; each card's source line then names its
+        // receiver. A title no other shown card has is unchanged.
+        function test_shared_title_names_the_receiver() {
+            site("Metro", 1, undefined, undefined, {sourceType: "usb", freqMhz: "851.0125", decodeFlag: "-fp"});
+            site("Metro", 1, undefined, undefined, {host: "192.168.1.5", freqMhz: "852.0125", decodeFlag: "-fp"});
+            add("Story Sheriff", {freqMhz: "155.775"});
+            settle();
+            compare(titles(), ["Metro", "Metro", "Story Sheriff"]);
+            var sources = entries().map(function (entry) {
+                return findChild(entry, "savedSystemSource").text;
+            });
+            verify(sources[0].indexOf("USB") >= 0, sources[0]);
+            verify(sources[1].indexOf("RTL-TCP 192.168.1.5:1234") >= 0, sources[1]);
+            verify(sources[0] !== sources[1], "the two read apart");
+            verify(sources[2].indexOf("155.775 MHz · RTL-TCP · ") === 0 && sources[2].indexOf("127.0.0.1") < 0,
+                "a unique title is unchanged: " + sources[2]);
+            search("852.0125");
+            compare(titles(), ["Metro"]);
+            compare(findChild(entries()[0], "savedSystemSource").text.indexOf("192.168.1.5"), -1,
+                "alone in the list, it names no receiver");
+        }
+
+        // R29: keypad Enter (and Return) in the search field hides the keyboard and leaves the field with the focus.
+        function test_enter_keeps_the_search_field() {
+            addThree();
+            var input = field().input;
+            for (var key of [Qt.Key_Enter, Qt.Key_Return]) {
+                input.forceActiveFocus();
+                keyClick(Qt.Key_L);
+                keyClick(key);
+                verify(input.activeFocus, "the field keeps the focus after " + key);
+                verify(!item("systemsSearchClear").activeFocus, "not the ×");
+                field().text = "";
+            }
         }
 
         // A card filtered out with the keyboard on it hands the keyboard to the search field.

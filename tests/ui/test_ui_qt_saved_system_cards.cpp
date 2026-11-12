@@ -9,8 +9,8 @@
  *
  * One card per site group (system and receiver), the display row Play starts, the group's last listened and key
  * state, every order and its sections, search (folded text, AND terms, frequencies in MHz and kHz), and the signals a
- * rebuild sends: moves rather than resets without a screen reader, a reset with one, held background reorders, and
- * one coalesced rebuild per turn.
+ * rebuild sends: moves rather than resets without a screen reader, positional rows with one (renamed in place, held
+ * past the end, never reset, moved or removed), held background reorders, and one coalesced rebuild per turn.
  *
  * B1, B2 and B13 lived in HomeScreen.qml's bindings, which read the lead row (`card.lastHeard`, `card.freqMhz`) and
  * only `encKeyType`/`keyCsvPath`. Each of those cases first reads what that binding read from the same rows, to show
@@ -186,10 +186,11 @@ struct Fixture {
         return cards->data(cards->index(row), role);
     }
 
+    /* @p role of each shown card (never a held row). */
     QStringList
     column(int role) const {
         QStringList values;
-        for (int row = 0; row < cards->rowCount(); ++row) {
+        for (int row = 0; row < cards->shownCount(); ++row) {
             values.append(at(row, role).toString());
         }
         return values;
@@ -221,6 +222,7 @@ struct Recorder {
     QList<int> changedRows;
     int moves = 0;
     int inserts = 0;
+    int insertedRows = 0;
     int removes = 0;
     int resets = 0;
     bool singleMoves = true; // the mirror follows one-row moves, which is all the model sends
@@ -245,6 +247,7 @@ struct Recorder {
         connections.append(QObject::connect(
             &model, &QAbstractItemModel::rowsInserted, &model, [this](const QModelIndex&, int first, int last) {
                 ++inserts;
+                insertedRows += last - first + 1;
                 for (int i = first; i <= last; ++i) {
                     mirror.insert(i, model.data(model.index(i), SavedSystemCards::KeyRole).toString());
                 }
@@ -258,14 +261,18 @@ struct Recorder {
             ++resets;
             mirror = keys();
         }));
-        connections.append(
-            QObject::connect(&model, &QAbstractItemModel::dataChanged, &model,
-                             [this](const QModelIndex& from, const QModelIndex& to, const QList<int>& roles) {
-                                 for (int row = from.row(); row <= to.row(); ++row) {
-                                     changedRows.append(row);
-                                     changedRoles.append(roles);
-                                 }
-                             }));
+        connections.append(QObject::connect(
+            &model, &QAbstractItemModel::dataChanged, &model,
+            [this](const QModelIndex& from, const QModelIndex& to, const QList<int>& roles) {
+                for (int row = from.row(); row <= to.row(); ++row) {
+                    changedRows.append(row);
+                    changedRoles.append(roles);
+                    // A positional row (screen reader) shows another card: a view renames it.
+                    if ((roles.isEmpty() || roles.contains(SavedSystemCards::KeyRole)) && row < mirror.size()) {
+                        mirror[row] = model.data(model.index(row), SavedSystemCards::KeyRole).toString();
+                    }
+                }
+            }));
     }
 
     ~Recorder() {
@@ -282,9 +289,15 @@ struct Recorder {
         return singleMoves && mirror == keys();
     }
 
+    /* Nothing but renames in place: no row made, moved, removed or reset. */
+    bool
+    inPlace() const {
+        return moves == 0 && inserts == 0 && removes == 0 && resets == 0;
+    }
+
     void
     clear() {
-        moves = inserts = removes = resets = 0;
+        moves = inserts = insertedRows = removes = resets = 0;
         changedRoles.clear();
         changedRows.clear();
     }
@@ -679,18 +692,127 @@ test_sort_signals() {
     f.cards->setScreenReaderActive(true);
     f.prefs.setSystemsSort(QStringLiteral("added"));
     settle();
-    check("with a screen reader a sort change is one reset", recorder.resets == 1 && recorder.moves == 0);
-    check("reset to the order added",
+    check("with a screen reader a sort change renames rows in place",
+          recorder.inPlace() && recorder.changedRows.size() == 12);
+    check("row by row to the order added",
           recorder.followed() && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("System 20"));
 
     recorder.clear();
     f.cards->setQuery(QStringLiteral("System 1"));
     settle();
-    check("a filter with a screen reader hides cards, no reset",
-          recorder.resets == 0 && recorder.removes > 0 && recorder.followed());
+    check("a filter with a screen reader holds the rows past its cards",
+          recorder.inPlace() && recorder.followed() && f.cards->shownCount() == 10 && f.cards->rowCount() == 12
+              && f.at(10, SavedSystemCards::HeldRole).toBool() && f.at(11, SavedSystemCards::HeldRole).toBool()
+              && !f.at(9, SavedSystemCards::HeldRole).toBool());
     f.cards->setQuery(QString());
     settle();
-    check("clearing it shows them again", recorder.inserts > 0 && recorder.resets == 0 && recorder.followed());
+    check("clearing it takes the held rows back, adding none",
+          recorder.inPlace() && recorder.followed() && f.cards->shownCount() == 12 && f.cards->rowCount() == 12
+              && !f.at(11, SavedSystemCards::HeldRole).toBool());
+}
+
+/* R28: with a screen reader the rows are positional. A filter keeps the rows past its cards, held (each keeps the card
+   it last showed and says it is held), and a longer list takes them back before a row is added; rows are added only
+   past the most there ever were. rowForKey() never finds a held row. With the screen reader off the held rows go and
+   the rows follow their cards again. */
+void
+test_positional_rows() {
+    Fixture f;
+    QVariantList rows;
+    for (int i = 0; i < 6; ++i) {
+        rows.append(plain(QStringLiteral("Unit %1").arg(i), QStringLiteral("851.%1").arg(i)));
+    }
+    f.add(rows);
+    f.cards->setScreenReaderActive(true);
+    Recorder recorder(*f.cards);
+    f.cards->setQuery(QStringLiteral("Unit 4"));
+    settle();
+    check("positional: one card shown, five rows held",
+          recorder.inPlace() && f.cards->shownCount() == 1 && f.cards->rowCount() == 6 && recorder.followed());
+    check("positional: the first row shows the match", f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Unit 4")
+                                                           && !f.at(0, SavedSystemCards::HeldRole).toBool());
+    bool allHeld = true;
+    for (int row = 1; row < 6; ++row) {
+        allHeld = allHeld && f.at(row, SavedSystemCards::HeldRole).toBool();
+    }
+    check("positional: the rest are held", allHeld);
+    check("positional: a held row keeps the card it showed",
+          f.at(5, SavedSystemCards::TitleRole) == QStringLiteral("Unit 5"));
+    check("positional: becoming held changes only that",
+          !recorder.changedRoles.isEmpty() && recorder.changedRoles.last() == QList<int>({SavedSystemCards::HeldRole}));
+    check("positional: rowForKey finds no held row",
+          f.cards->rowForKey(f.keyOf(5)) == -1 && f.cards->rowForKey(f.keyOf(4)) == 0);
+
+    recorder.clear();
+    f.add({plain(QStringLiteral("Unit 6"), QStringLiteral("852.6")),
+           plain(QStringLiteral("Unit 7"), QStringLiteral("852.7"))});
+    f.cards->setQuery(QString());
+    settle();
+    check("positional: past the most rows there were, rows are added at the end only",
+          recorder.moves == 0 && recorder.removes == 0 && recorder.resets == 0 && recorder.inserts == 1
+              && recorder.insertedRows == 2 && f.cards->rowCount() == 8 && f.cards->shownCount() == 8
+              && recorder.followed());
+    check("positional: the held rows came back first",
+          f.column(SavedSystemCards::TitleRole)
+              == QStringList({QStringLiteral("Unit 0"), QStringLiteral("Unit 1"), QStringLiteral("Unit 2"),
+                              QStringLiteral("Unit 3"), QStringLiteral("Unit 4"), QStringLiteral("Unit 5"),
+                              QStringLiteral("Unit 6"), QStringLiteral("Unit 7")}));
+
+    recorder.clear();
+    check("remove two", f.systems->remove(0) && f.systems->remove(0));
+    settle();
+    check("positional: a removed system leaves its row held, not removed",
+          recorder.inPlace() && f.cards->shownCount() == 6 && f.cards->rowCount() == 8 && recorder.followed()
+              && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Unit 2"));
+
+    recorder.clear();
+    f.cards->setScreenReaderActive(false);
+    settle();
+    check("screen reader off: the held rows go", recorder.removes == 1 && recorder.resets == 0
+                                                     && f.cards->rowCount() == 6 && f.cards->shownCount() == 6
+                                                     && recorder.followed());
+    recorder.clear();
+    f.prefs.setSystemsSort(QStringLiteral("name"));
+    f.cards->setQuery(QStringLiteral("Unit 7"));
+    settle();
+    check("and the rows follow their cards again",
+          recorder.removes > 0 && f.cards->rowCount() == 1 && recorder.followed());
+}
+
+/* R29: one system saved on two receivers is two cards with one title; each then names its receiver (the dongle, an
+   RTL-TCP server's address, an Airspy's serial), and a card whose title no other shown card has names none. A
+   TCP or UDP source's meta already says its address, so it names none either. */
+void
+test_receiver_label_for_shared_titles() {
+    Fixture f;
+    QVariantMap airspy =
+        site(QStringLiteral("Metro — North"), 100, 1, QStringLiteral("851.0125"), QStringLiteral("North"));
+    airspy.insert(QStringLiteral("sourceType"), QStringLiteral("airspy"));
+    airspy.insert(QStringLiteral("airspy"),
+                  QVariantMap{{QStringLiteral("serial"), QStringLiteral("a74068c82f531693")}});
+    QVariantMap tcp = plain(QStringLiteral("Marine"), QStringLiteral(""));
+    tcp.insert(QStringLiteral("sourceType"), QStringLiteral("tcp"));
+    tcp.insert(QStringLiteral("host"), QStringLiteral("10.0.0.9"));
+    tcp.insert(QStringLiteral("port"), 7355);
+    f.add(
+        {site(QStringLiteral("Metro — North"), 100, 1, QStringLiteral("851.0125"), QStringLiteral("North")),
+         on_receiver(site(QStringLiteral("Metro — North"), 100, 1, QStringLiteral("851.0125"), QStringLiteral("North")),
+                     QStringLiteral(" 192.168.1.5 ")),
+         airspy, plain(QStringLiteral("Marine"), QStringLiteral("156.8")), tcp,
+         plain(QStringLiteral("Harbour"), QStringLiteral("157.1"))});
+    check("receiver: three Metro cards, two Marine, one Harbour", f.cards->shownCount() == 6);
+    check("receiver: each shared title names its receiver",
+          f.column(SavedSystemCards::ReceiverLabelRole)
+              == QStringList({QStringLiteral("USB"), QStringLiteral("RTL-TCP 192.168.1.5:1234"),
+                              QStringLiteral("Airspy A74068C82F531693"), QStringLiteral("USB"), QString(), QString()}));
+    f.cards->setQuery(QStringLiteral("marine"));
+    settle();
+    check("receiver: a USB card named apart from a TCP one",
+          f.column(SavedSystemCards::ReceiverLabelRole) == QStringList({QStringLiteral("USB"), QString()}));
+    f.cards->setQuery(QStringLiteral("156.8"));
+    settle();
+    check("receiver: alone in the list, a card names none",
+          f.column(SavedSystemCards::ReceiverLabelRole) == QStringList({QString()}));
 }
 
 void
@@ -718,9 +840,11 @@ test_metadata_edit_and_hold() {
     check("its content still changes", recorder.changedRows.contains(2));
     f.add({plain(QStringLiteral("D"), QStringLiteral("854.0"))});
     check("an insert still shows at once", f.cards->rowCount() == 4 && recorder.inserts == 1 && recorder.followed());
+    recorder.clear();
     f.cards->setHoldReorders(false);
     settle();
-    check("released as one reset", recorder.resets == 1 && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("C"));
+    check("released row by row",
+          recorder.inPlace() && recorder.followed() && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("C"));
 
     f.cards->setHoldReorders(true);
     check("listen to A", f.systems->update(0, {{QStringLiteral("lastHeard"), 6000}}));
@@ -728,8 +852,8 @@ test_metadata_edit_and_hold() {
     recorder.clear();
     f.cards->setQuery(QStringLiteral(" "));
     settle();
-    check("the next user-asked change applies the held order as a reset",
-          recorder.resets == 1 && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("A"));
+    check("the next user-asked change applies the held order row by row",
+          recorder.inPlace() && recorder.followed() && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("A"));
 }
 
 /* R24: a held order (screen reader, background reorder) never starts a section twice. Xray moves from Iowa to Missouri
@@ -864,8 +988,9 @@ test_location_request_mark() {
     f.cards->markLocationRequested();
     f.prefs.setLocationFix(41.6, -93.6, now, 10); // newer than the fix at the mark
     settle();
-    check("the fix the user asked for applies as a reset",
-          recorder.resets == 1 && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Charlie"));
+    check("the fix the user asked for applies row by row",
+          recorder.inPlace() && recorder.followed()
+              && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Charlie"));
     recorder.clear();
     f.prefs.setLocationFix(0, 0, 0);
     settle();
@@ -892,8 +1017,9 @@ test_location_mark_spent_with_other_changes() {
     const qint64 at = dsd_qt::realtimeMSecsSinceEpoch();
     f.prefs.setLocationFix(41.6, -93.6, at, 10);
     settle();
-    check("the asked-for fix resets to distance order",
-          recorder.resets == 1 && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Charlie"));
+    check("the asked-for fix applies distance order row by row",
+          recorder.inPlace() && recorder.followed()
+              && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Charlie"));
     recorder.clear();
     f.prefs.setLocationFix(0, 0, 0);
     settle();
@@ -993,8 +1119,8 @@ test_location_mark_survives_an_expiry() {
     recorder.clear();
     f.prefs.setLocationFix(43.6, -93.6, now, 10); // the answer to the request
     settle();
-    check("mark survives an expiry: the answer applies as a reset",
-          recorder.resets == 1 && f.cards->effectiveSort() == QStringLiteral("nearest")
+    check("mark survives an expiry: the answer applies row by row",
+          recorder.inPlace() && recorder.followed() && f.cards->effectiveSort() == QStringLiteral("nearest")
               && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Alpha")
               && f.at(0, SavedSystemCards::DistanceKmRole).toDouble() >= 0
               && f.at(0, SavedSystemCards::DistanceKmRole).toDouble() < 1.0);
@@ -1031,9 +1157,8 @@ test_reader_off_and_unheld_background() {
     f.cards->setHoldReorders(false);
     check("listen to Bravo", f.systems->update(1, {{QStringLiteral("lastHeard"), 8000}}));
     settle();
-    check("a background reorder with a screen reader and no hold is a reset",
-          recorder.resets == 1 && recorder.moves == 0
-              && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Bravo"));
+    check("a background reorder with a screen reader and no hold applies row by row",
+          recorder.inPlace() && recorder.followed() && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Bravo"));
 }
 
 void
@@ -1166,10 +1291,32 @@ test_timing() {
                 "rebuild after one touch %lld ms\n",
                 static_cast<long long>(sortMs), recorder.moves, static_cast<long long>(searchMs),
                 static_cast<long long>(touchMs));
+    // The same with a screen reader: positional rows, renamed in place.
+    f.cards->setQuery(QString());
+    settle();
+    f.cards->setScreenReaderActive(true);
+    recorder.clear();
+    timer.restart();
+    f.prefs.setSystemsSort(QStringLiteral("added"));
+    settle();
+    const qint64 readerSortMs = timer.elapsed();
+    const int renamed = static_cast<int>(recorder.changedRows.size());
+    check("screen reader: the reverse sort renamed rows in place", recorder.inPlace() && recorder.followed());
+    timer.restart();
+    f.cards->setQuery(QStringLiteral("Group 95"));
+    settle();
+    const qint64 readerSearchMs = timer.elapsed();
+    check("screen reader: the keystroke held the rest",
+          recorder.inPlace() && f.cards->shownCount() == 11 && f.cards->rowCount() == 300 && recorder.followed());
+    DSD_FPRINTF(stderr,
+                "timing with a screen reader: reverse sort %lld ms (%d rows renamed), search keystroke %lld ms\n",
+                static_cast<long long>(readerSortMs), renamed, static_cast<long long>(readerSearchMs));
     if (qEnvironmentVariableIntValue("DSD_TEST_TIMING") == 1) {
         check("reverse sort under 50 ms", sortMs < 50);
         check("search keystroke under 50 ms", searchMs < 50);
         check("a rebuild after one change under 50 ms", touchMs < 50);
+        check("screen reader: reverse sort under 50 ms", readerSortMs < 50);
+        check("screen reader: search keystroke under 50 ms", readerSearchMs < 50);
     }
 }
 
@@ -1203,6 +1350,8 @@ main(int argc, char** argv) {
     test_search_adapter();
     test_search_stored_frequency_spellings();
     test_sort_signals();
+    test_positional_rows();
+    test_receiver_label_for_shared_titles();
     test_metadata_edit_and_hold();
     test_held_order_starts_each_section_once();
     test_place_other_sections_by_name();

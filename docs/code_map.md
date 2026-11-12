@@ -11906,7 +11906,8 @@ Qt Quick frontend (`src/ui/qt`):
   (`radioReference.nextLocationRequestId()`, `decoderHost.requestSiteLocation`; a newer request elsewhere supersedes
   it, hiding Home or leaving Systems cancels it, a late or retired answer is ignored), and call
   `savedSystemCards.markLocationRequested()` right before a request and `clearLocationRequest()` when it fails, is
-  cancelled or answered, so only a fix the user asked for here resets a screen reader's order. In Place or Nearest
+  cancelled or answered, so only a fix the user asked for here reorders a screen reader's cards. Enter in the field
+  hides the keyboard and leaves the focus in it (`PlexTextField.keepsFocusOnEnter`). In Place or Nearest
   order the place notice shows `rrPlaces.unplacedText` ("%1 saved systems have no place yet") with "Update from
   RadioReference", which updates only those cards' rows (`rrPlaces.unplacedUids()`); the card menu offers the same for
   a card with RadioReference sites (`rrUpdate`), all of its rows, and the site chooser's no-coordinates note offers it
@@ -11920,9 +11921,16 @@ Qt Quick frontend (`src/ui/qt`):
   update shows `rrPlaces.progressText` ("Updating %1 of %2") with Cancel; its summary ("Updated %1 systems. %1 could
   not be reached.") is announced once and stays until Systems is left. Notice actions use the opt-in `flat` variant of
   `OutlineButton` (no border or fill, cyan label), each at the end of its line or under it when both do not fit, with
-  48 dp targets that never meet. `Repeater.onItemRemoved` notes a card that held the keyboard; a 0 ms timer then moves
-  focus to the search field, or to Add a system when nothing is saved (and waits while a sheet is open); the
-  keyboard also follows Update to Cancel and back. `revealSystemsTop()` scrolls up to the search row after a sort or a
+  48 dp targets that never meet. `Repeater.onItemRemoved` notes a card that held the keyboard, as does a card row
+  that becomes held; a 0 ms timer then moves focus to the search field, or to Add a system when nothing is saved (and
+  waits while a sheet is open); the keyboard also follows Update to Cancel and back. With a screen reader the cards'
+  Repeater rows are positional (the card model's `held` rows, above): a sort, search or location renames each row for
+  the card at its place, so the keyboard stays on the pill, the field or the row it was on, which then reads the card
+  now there. A held row is drawn at no opacity, its parts leave the tree with empty names (as the Network sheet's held
+  rows, "Qt QML editing convention"), it takes no press or keyboard (`parked`, set once the keyboard was handed on),
+  and `listenSystemsSection` ends at the bottom of the last card shown (`shownBottom`), so held rows take no scroll
+  room and holding one moves nothing. In Nearest order the place line reads the distance first ("6.9 mi · Johnson,
+  Iowa"), so a long place elides and the distance stays. `revealSystemsTop()` scrolls up to the search row after a sort or a
   search that lands, only while Home is visible on Systems. `SiteChooserSheet.qml`'s note reads "No coordinates. Use
   Update from RadioReference to check for new location data." beside its own button. The sheet keeps the keyboard's
   place as it moves (`keyboardPlace`: a site's row by uid and which of its controls, or another control); when a rows'
@@ -13795,7 +13803,8 @@ Qt Quick frontend (`src/ui/qt`):
   `ImportedFilesModel` and never changes them; `m_rows` order is untouched, and every QML action carries a UID that
   the screen resolves to a row at click time. Roles: `key`, `leadUid`, `playUid`, `title`, `siteCount`, `name`,
   `sourceType`, `host`, `port`, `freqMhz`, `decodeFlag`, `trunking`, `filePath`, `keyConfigured`, `lastHeard`,
-  `refreshHint`, `placeLabel`, `distanceKm`, `distanceState`, `section`, `sectionStart`, `rrLinked`. The card shows the
+  `refreshHint`, `placeLabel`, `distanceKm`, `distanceState`, `section`, `sectionStart`, `rrLinked`, `receiverLabel`,
+  `held`. The card shows the
   one non-avoided site when exactly one is left, else the lead (B2); `playUid` is that site (the row itself outside a
   group), empty when a group has none or several to play; `siteCount` is the group size, 0 outside a group;
   `lastHeard` is the group's latest (B1); `keyConfigured` reads the computed `SavedSystemsModel::KeyConfiguredRole`
@@ -13819,16 +13828,26 @@ Qt Quick frontend (`src/ui/qt`):
   or a frequency of any member (a bare number of three digits or more reads as MHz; a member's own `freqMhz` is read
   by `session_args_freq_hz()`, the tuner's reading, so every spelling that tunes is found). A row whose frequency or place an
   edit cleared ranks as unplaced and without coordinates. Rebuilds are coalesced into one `QTimer::singleShot(0)`
-  pass; a query change only refilters and a sort change only re-sorts. The diff against the old list emits removes,
-  one-row moves (the longest increasing run stays), inserts and one `dataChanged` per card with the roles that
-  changed, so a delegate survives a sort and keeps the keyboard. With `screenReaderActive`, a reorder the user asked
-  for (query, sort, the first fix newer than the stored one after `markLocationRequested()`; an expiry meanwhile
-  keeps the mark) is one reset, and any other reorder is held while
-  `holdReorders` is set (Home visible on Systems) and released as a reset, so TalkBack's swipe order always matches
-  the screen; the count is read once. A held order can show a section in two runs (a new card goes after its new-order
-  predecessor), so `sectionStart` marks only a section's first card in the shown order. `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, B1, B2,
+  pass; a query change only refilters and a sort change only re-sorts. Without a screen reader the diff against the
+  old list emits removes, one-row moves (the longest increasing run stays), inserts and one `dataChanged` per card with
+  the roles that changed, so a delegate survives a sort and keeps the keyboard. With `screenReaderActive` the rows are
+  positional (`applyPositional()`): row i shows the i-th card, so a reorder or a filter is one `dataChanged` per row
+  whose card changed (its roles), never a reset, a move or a remove. A shorter list keeps the rows past its end, held:
+  `rowCount()` is `shownCount` plus the held rows, each keeping the card it last showed, `held` true (only that role
+  changes as a row is held); a longer list takes them back first, and a row is inserted only past the most rows there
+  ever were. Under Qt 6.11.3's Android bridge each delegate made or destroyed made Android's main thread walk the list
+  again (`childIdListForAccessibleObject`), so the reset this replaced hung the app for minutes at 300 cards. Turning
+  the screen reader off removes the held rows. A reorder nobody asked for is held while `holdReorders` is set (Home
+  visible on Systems): the cards shown keep their rows and a new one goes after its new-order predecessor, until the
+  hold ends or the user asks for a change (query, sort, the first fix newer than the stored one after
+  `markLocationRequested()`; an expiry meanwhile keeps the mark), so TalkBack's swipe order always matches the screen;
+  the count is read once. A held order can show a section in two runs, so `sectionStart` marks only a section's first
+  card in the shown order. `receiverLabel` is the receiver ("USB", "RTL-TCP host:port", "Airspy SERIAL") of a card
+  whose title another shown card has (one system on two receivers), else empty; TCP, UDP and file cards name their
+  source in the meta already and get none. `Util.systemMeta()` puts it where RTL-TCP's marker goes. `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, B1, B2,
   B13, titles against a real pin, each order and its ties, place and distance labels, search, signals, screen-reader
-  holds and the location mark, one section start in a held order, a fix that lapses with no signal, coalescing, a random-edit mirror check, and a 500-row timing check).
+  holds and the location mark, one section start in a held order, a fix that lapses with no signal, coalescing, a random-edit mirror check, positional rows held and taken back, receiver labels for shared titles, and a
+  500-row timing check with and without a screen reader).
 - `text_order.{h,cpp}` (`TextOrder`, the `textOrder` context object) is the one place that decides how names sort and
   match: `text_fold()` (case and accents folded, by code point), `text_compare_names()` (natural order: leading
   punctuation skipped, digit runs by value, a shorter digit run first on a tie, then the raw text, so different
@@ -16465,7 +16484,8 @@ the top: a move raises a LocationChanged for each row that shifts and nothing el
 the entry it shows. With a screen reader on (`screenReader.active`), each section is in a fixed order of those keys
 (`NetworkSheet.readingOrder()`): Qt's bridge sends Android no event for a row that moves, and TalkBack swiped a
 reordering section in an order it had left, skipping, repeating and looping (the N-rotate check). Its rows are not
-paced. With `holdRows` (the Network sheet) the rows past the end of a shorter or empty list stay, held (`live` is the
+paced. With `holdRows` (the Network sheet; Listen's Systems cards hold rows the same way through their card model's
+`held` role, positional with a screen reader on) the rows past the end of a shorter or empty list stay, held (`live` is the
 rows holding an entry): they leave the tree (`Accessible.ignored`, which raises ObjectDestroyed, not sent on by
 Android's bridge), are transparent and unnamed, and keep their size below the last row drawn, where the column's height
 ends (`shownBottom`), so holding one moves nothing; a longer list later reuses them. A hop between P25 targets of 100

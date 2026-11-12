@@ -514,7 +514,12 @@ function systemMeta(sys) {
         // identically, the one case the marker exists to tell apart. Cutting the
         // decode tail instead costs the least: it repeats the chip the user
         // picked, while the source does not appear anywhere else on the card.
-        if (sys.sourceType === "rtltcp")
+        // A saved-system card whose title another card shares names its
+        // receiver (receiverLabel: "USB", "RTL-TCP host:port", "Airspy
+        // serial"), so the two read apart; otherwise only RTL-TCP says it.
+        if (sys.receiverLabel)
+            parts.push(sys.receiverLabel)
+        else if (sys.sourceType === "rtltcp")
             parts.push("RTL-TCP")
         var decode = decodeLabel(sys.decodeFlag)
         parts.push(sys.trunking ? decode + " trunked" : decode)

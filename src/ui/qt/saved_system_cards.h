@@ -26,11 +26,16 @@
  * last) and added (the lead's row).
  *
  * Every source change is coalesced into one queued rebuild, which diffs the shown cards by key into removes, moves,
- * inserts and one dataChanged per card whose roles changed, so surviving delegates stay. Android's accessibility
- * bridge learns of a move only through a hide and show, so while screenReaderActive a reorder is one model reset; a
- * reorder nobody asked for (an import, a lastHeard stamp) is held while holdReorders (Home visible on Systems), and
- * applied as a reset when that ends or at the next user-asked change. Inserts, removes and content changes apply at
- * once. Nothing here holds a source row across a rebuild: QML resolves uids at click time.
+ * inserts and one dataChanged per card whose roles changed, so surviving delegates stay. While screenReaderActive the
+ * rows are positional instead: row i shows the i-th card, so a reorder or a filter is one dataChanged per row whose
+ * card changed, never a reset, a move or a remove. Android's accessibility bridge learns of a move only through a hide
+ * and show, and each delegate made or destroyed under it makes it walk the list again (Qt 6.11.3), so a reset of 300
+ * cards hung the app. A shorter list keeps its rows past the end, held (the held role; a held row keeps the card it
+ * last showed, which the view reads as nothing), and a longer one takes them back before any row is added, so rows
+ * are only ever added past the most ever shown. A reorder nobody asked for (an import, a lastHeard stamp) is held
+ * while holdReorders (Home visible on Systems): the cards keep their rows, and the new order applies when that ends
+ * or at the next user-asked change. Inserts, removes and content changes apply at once. Nothing here holds a source
+ * row across a rebuild: QML resolves uids at click time.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_SAVED_SYSTEM_CARDS_H_
@@ -62,6 +67,7 @@ class SavedSystemCards : public QAbstractListModel {
     Q_PROPERTY(QString sortId READ sortId NOTIFY sortIdChanged)
     /* The order applied: sortId, except "name" for "nearest" without location support or a location fix. */
     Q_PROPERTY(QString effectiveSort READ effectiveSort NOTIFY effectiveSortChanged)
+    /* The cards shown; with a screen reader rowCount() can be more, the rest held. */
     Q_PROPERTY(int shownCount READ shownCount NOTIFY shownCountChanged)
     Q_PROPERTY(int totalCount READ totalCount NOTIFY totalCountChanged)
     Q_PROPERTY(
@@ -94,7 +100,10 @@ class SavedSystemCards : public QAbstractListModel {
         DistanceStateRole, // "positioned" | "noCoordinates" | "allAvoided"; "" without a fix
         SectionRole,       // the section header text in place and nearest orders; "" otherwise
         SectionStartRole,  // the first shown card of its (non-empty) section
-        RrLinkedRole       // a member is a RadioReference site or has a place: Update from RadioReference applies
+        RrLinkedRole,      // a member is a RadioReference site or has a place: Update from RadioReference applies
+        ReceiverLabelRole, // the receiver ("USB", "RTL-TCP host:port", "Airspy serial") when another shown card has
+                           // the same title and the card's meta does not name it already; else empty
+        HeldRole           // a row past the shown cards, kept for a longer list (screen reader only): it reads nothing
     };
 
     SavedSystemCards(SavedSystemsModel* systems, AppPrefs* prefs, ImportedFilesModel* files, QObject* parent = nullptr);
@@ -196,6 +205,7 @@ class SavedSystemCards : public QAbstractListModel {
         QString freqMhz;
         QString decodeFlag;
         QString filePath;
+        QString airspySerial;
         QString chanCsvPath;
         QString groupCsvPath;
         QVariantMap place;
@@ -227,6 +237,8 @@ class SavedSystemCards : public QAbstractListModel {
         QString placeLabel;
         QString distanceState;
         QString section;
+        QString receiver;       // what tells this receiver apart, where the meta does not ("USB"); else empty
+        QString receiverLabel;  // receiver, while another shown card has the same title
         QString haystack;       // system_search_text() of the members' texts, lines joined by '\n'
         QList<qint64> hz;       // the members' frequencies
         QString placeState;     // the one state's name, when the place names exactly one
@@ -282,13 +294,15 @@ class SavedSystemCards : public QAbstractListModel {
     QString applicableSort(const Fix& fix) const;
     QList<Card> filteredCards() const;
     void publish(QList<Card>&& next, bool userAsked);
+    bool reordersShown(const QList<Card>& next) const;
     QList<Card> heldOrder(QList<Card>&& next) const;
+    void applyPositional(QList<Card>&& next);
+    void releaseHeldRows();
     void applyDiff(QList<Card>&& next);
     void removeGone(const QHash<QString, int>& nextIndex);
     void moveSurvivors(const QHash<QString, int>& nextIndex);
     void insertNew(const QList<Card>& next);
     void updateContent(const QList<Card>& next);
-    void resetTo(QList<Card>&& next);
 
     QPointer<SavedSystemsModel> m_systems;
     QPointer<AppPrefs> m_prefs;
@@ -296,6 +310,7 @@ class SavedSystemCards : public QAbstractListModel {
     QList<Card> m_all;   // every card, in source order
     QList<int> m_order;  // m_all's indices in the applied order
     QList<Card> m_shown; // what the view shows, in order
+    QList<Card> m_held;  // the rows after m_shown, held as they last were (screen reader only)
     QHash<QString, RowText> m_rowTexts;
     QHash<QString, int> m_nameRanks;  // each card title's place in name order
     QHash<QString, int> m_placeRanks; // each state and county name's

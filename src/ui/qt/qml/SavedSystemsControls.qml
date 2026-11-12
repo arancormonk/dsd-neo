@@ -352,6 +352,8 @@ Column {
             height: implicitHeight
             label: qsTr("Search saved systems")
             inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
+            // Enter hides the keyboard; the field keeps the focus.
+            keepsFocusOnEnter: true
             // Room for the × over the end of the line.
             input.anchors.rightMargin: systemsSearchClear.visible ? systemsSearchClear.width + 4 : 14
             // Changed from outside (a reset, the last system removed): the field follows.

@@ -586,11 +586,12 @@ Item {
                     + JSON.stringify(counts.chains));
         }
 
-        // Listen's saved systems under a screen reader: Android hears of a move only through a hide and show, so a
-        // reorder nobody asked for (a system just listened to, in Last listened order) waits while the cards are on
-        // screen and raises nothing; the order the user picks applies as one reset (the cards hidden and shown again,
-        // which Android reads afresh), and the keyboard stays on the Sort pill.
-        function test_m_saved_systems_reorder_waits_then_resets() {
+        // Listen's saved systems with a screen reader on (R28): the rows are positional. A reorder nobody asked for
+        // (a system just listened to, in Last listened order) waits while the cards are on screen and raises nothing;
+        // the order the user picks renames each row for the card now at its place, with no delegate made or
+        // destroyed and no show or hide (Qt 6.11.3's Android bridge walks the list again for each delegate made or
+        // destroyed, and refetches a parent for each show or hide), and the keyboard stays on the Sort pill.
+        function test_m_saved_systems_reorder_waits_then_renames_in_place() {
             testContext.setLifecyclePhase(0);
             verify(!app.monitorMode);
             verify(screenReader.active, "this run has a screen reader on");
@@ -600,7 +601,7 @@ Item {
                 section.forceLayout();
                 var entries = [];
                 for (var child of section.children) {
-                    if (child.objectName === "savedSystemEntry" && child.visible)
+                    if (child.objectName === "savedSystemEntry" && child.visible && !child.held)
                         entries.push(child);
                 }
                 entries.sort(function (a, b) {
@@ -609,6 +610,15 @@ Item {
                 return entries.map(function (entry) {
                     return entry.title;
                 }).join("|");
+            };
+            var repeater = null;
+            var made = 0;
+            var gone = 0;
+            var onMade = function () {
+                ++made;
+            };
+            var onGone = function () {
+                ++gone;
             };
             try {
                 while (savedSystems.count)
@@ -625,6 +635,9 @@ Item {
                 verify(savedSystemCards.screenReaderActive && savedSystemCards.holdReorders);
                 compare(shownTitles(), "Charlie|Alpha|Bravo");
                 var section = findChild(home, "listenSystemsSection");
+                repeater = findChild(home, "savedSystemCardsRepeater");
+                repeater.itemAdded.connect(onMade);
+                repeater.itemRemoved.connect(onGone);
 
                 testContext.startAccessibilityCount();
                 verify(savedSystems.update(2, {lastHeard: 5000}));
@@ -640,13 +653,118 @@ Item {
                 testContext.startAccessibilityCount();
                 findChild(home, "savedSystemsControls").chooseSort("name");
                 wait(50);
+                counts = testContext.accessibilityCount();
                 testContext.stopAccessibilityCount();
-                verify(showHide(section) > 0, "the chosen order applies as a reset");
                 compare(shownTitles(), "Alpha|Bravo|Charlie");
+                compare(made + gone, 0, "no delegate made or destroyed");
+                compare(showHide(section), 0, "the chosen order shows or hides nothing: " + churn(counts));
+                verify(testContext.accessibilityCountWithin(section, "NameChanged") > 0, "its rows are renamed");
                 verify(pill.activeFocus, "the keyboard stays on the pill");
             } finally {
                 testContext.stopAccessibilityCount();
+                if (repeater) {
+                    repeater.itemAdded.disconnect(onMade);
+                    repeater.itemRemoved.disconnect(onGone);
+                }
                 testContext.resetSystemsSort();
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+            }
+        }
+
+        // R28 at 300 cards of mixed shapes (site groups and single rows, placed and not): a sort, a search to 5 and
+        // back and a Nearest reorder make and destroy no delegate. What a row's new card shows that its old one did
+        // not (a site button, a place line, a section heading) still shows or hides; those are counted and printed,
+        // and stay a small part of the rows.
+        function test_m2_saved_systems_300_rows_stay() {
+            testContext.setLifecyclePhase(0);
+            verify(screenReader.active, "this run has a screen reader on");
+            var home = findChild(app, "homeScreen");
+            var repeater = null;
+            var made = 0;
+            var gone = 0;
+            var onMade = function () {
+                ++made;
+            };
+            var onGone = function () {
+                ++gone;
+            };
+            var report = [];
+            try {
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+                var rows = [];
+                for (var i = 0; i < 300; ++i) {
+                    var row = {name: (i % 60 === 0 ? "Harbor " : "Bench ") + String(299 - i).padStart(3, "0"), sourceType: "rtltcp",
+                        host: "127.0.0.1", port: 1234, freqMhz: "851.5"};
+                    if (i % 3 !== 0)
+                        Object.assign(row, {rrSid: 1000 + i, rrSiteId: 1, siteName: "S", siteLat: 41 + i / 100, siteLon: -93.6,
+                            hasSitePos: true});
+                    if (i % 4 === 0)
+                        row.place = {states: [{stid: 19, name: "Iowa"}], counties: [], candidateStates: [19]};
+                    rows.push(row);
+                }
+                verify(savedSystems.addAll(rows, "") >= 0);
+                prefs.systemsSort = "added";
+                tryCompare(home, "visible", true);
+                home.showSection("systems");
+                tryCompare(savedSystemCards, "totalCount", 300);
+                waitForRendering(home);
+                var section = findChild(home, "listenSystemsSection");
+                repeater = findChild(home, "savedSystemCardsRepeater");
+                compare(repeater.count, 300);
+                repeater.itemAdded.connect(onMade);
+                repeater.itemRemoved.connect(onGone);
+                var controls = findChild(home, "savedSystemsControls");
+                var step = function (label, change) {
+                    testContext.startAccessibilityCount();
+                    var started = Date.now();
+                    change();
+                    wait(0);
+                    section.forceLayout();
+                    var ms = Date.now() - started;
+                    wait(50);
+                    testContext.stopAccessibilityCount();
+                    compare(made + gone, 0, label + ": no delegate made or destroyed");
+                    compare(repeater.count, 300, label + ": 300 rows");
+                    var shows = testContext.accessibilityCountWithin(section, "ObjectShow");
+                    var hides = testContext.accessibilityCountWithin(section, "ObjectHide");
+                    report.push(label + " " + ms + " ms, " + shows + " shows, " + hides + " hides");
+                    verify(shows + hides < 300, label + ": " + (shows + hides) + " shows and hides");
+                };
+                step("sort Name", function () {
+                    controls.chooseSort("name");
+                });
+                step("sort Order added", function () {
+                    controls.chooseSort("added");
+                });
+                step("search 300 to 5", function () {
+                    savedSystemCards.query = "harbor";
+                });
+                compare(savedSystemCards.shownCount, 5);
+                step("search cleared", function () {
+                    savedSystemCards.query = "";
+                });
+                testContext.setLocationSupported(true);
+                prefs.setLocationFix(41.0, -93.6, savedSystems.realtimeNowMs() - 60000, 25);
+                step("sort Nearest", function () {
+                    controls.chooseSort("nearest");
+                });
+                step("Nearest, a location asked for", function () {
+                    savedSystemCards.markLocationRequested();
+                    prefs.setLocationFix(44.0, -93.6, savedSystems.realtimeNowMs(), 25);
+                });
+                console.log("a11y counts with a screen reader, 300 cards: " + report.join("; "));
+            } finally {
+                testContext.stopAccessibilityCount();
+                if (repeater) {
+                    repeater.itemAdded.disconnect(onMade);
+                    repeater.itemRemoved.disconnect(onGone);
+                }
+                testContext.setLocationSupported(false);
+                prefs.setLocationFix(0, 0, 0, 0);
+                testContext.resetSystemsSort();
+                savedSystemCards.query = "";
                 while (savedSystems.count)
                     savedSystems.remove(0);
             }
