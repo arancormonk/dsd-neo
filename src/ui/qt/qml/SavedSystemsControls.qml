@@ -154,8 +154,9 @@ Column {
         if (searchDebounce.running)
             commitSearch(false);
     }
-    // From the field's ×, or Clear search; @a hadFocus: the control had the
-    // keyboard, which then goes to the field (the control goes away).
+    // From the field's ×, or Clear search; @a hadFocus: the control (or, for
+    // the ×, the field) had the keyboard, which then goes to the field (the
+    // control goes away).
     function clearSearch(hadFocus) {
         systemsSearch.text = "";
         commitSearch(true);
@@ -376,7 +377,10 @@ Column {
             visible: systemsSearch.text.length > 0
             x: systemsSearch.x + systemsSearch.width - width - 2
             y: systemsSearch.y + systemsSearch.labelHeight + (systemsSearch.height - systemsSearch.labelHeight - systemsSearch.helperHeight - height) / 2
-            onClicked: controls.clearSearch(activeFocus)
+            // Part of the field: a tap while typing leaves the keyboard in it,
+            // so typing goes on; from the keyboard the × itself has it.
+            finishesEditing: false
+            onClicked: controls.clearSearch(activeFocus || systemsSearch.input.activeFocus)
         }
         FilterPill {
             id: sortPill

@@ -11891,7 +11891,8 @@ Qt Quick frontend (`src/ui/qt`):
 - Listen Systems search and sort (`qml/SavedSystemsControls.qml`, `objectName` `savedSystemsControls`; inside
   `listenSystemsSection` of `HomeScreen.qml`). The controls show while at least one system is saved. They hold the
   search row (a `PlexTextField` "Search saved systems", `Accessible.searchEdit`, 250 ms debounce, a "Clear search text"
-  button over its right end), the Sort pill (`FilterPill` "Sort: %1", accessible name "Sort systems, %1", opening a
+  `IconButton` over its right end with `finishesEditing: false`, so a tap while typing clears the text and leaves the
+  keyboard in the field, and the keyboard's Enter on the × itself hands it to the field), the Sort pill (`FilterPill` "Sort: %1", accessible name "Sort systems, %1", opening a
   `ChoiceSheet` that marks the current choice; Nearest is offered only when `decoderHost.locationSupported`), and the
   notices under them: the count line ("%1 of %2 systems", with Clear search), the no-match card ("No saved systems match
   “%1”", with Clear search), the location line, the place notice and the update status. Stack rule: the field and pill
@@ -13158,8 +13159,8 @@ Qt Quick frontend (`src/ui/qt`):
   `preeditText` as a commit and resets the input method. Callers: `activate()` of `OutlineButton`, `GradientButton`,
   `IconButton`, `DashedActionButton` and `BottomNav` (commit and finish editing: focus leaves the text field so
   `editingFinished` drafts, such as the profile editor's fallback algorithm, update before the action reads them; an
-  `OutlineButton` with `finishesEditing: false` only commits the word, as the RadioReference password's Show and "Check
-  account" do) and of `DecodeChip`, `FilterPill`, `SegmentedControl` segments and `DisclosureRow` (commit only);
+  `OutlineButton` or `IconButton` with `finishesEditing: false` only commits the word, as the RadioReference
+  password's Show and "Check account" and the Systems search field's × do) and of `DecodeChip`, `FilterPill`, `SegmentedControl` segments and `DisclosureRow` (commit only);
   `ModalSheet.requestDismiss()`; `Navigation.back()` before its focus clear; `Navigation.clearInput()` before it takes
   the focus away (#831), so a sheet or layer that opens or closes by itself, as the incoming-file sheet does when a file
   arrives while a field holds a composing word, never leaves a field that saves on `editingFinished` to save it without

@@ -826,6 +826,55 @@ Item {
             verify(item("systemsLocationButton").flat && item("systemsPlaceUpdate").flat, "text-style actions");
         }
 
+        // The field's × while typing: a tap clears the text and leaves the keyboard in the field, so typing goes on;
+        // a word still composing is finished first, and cleared with the rest. From the keyboard (Tab to the ×, then
+        // Enter) the × goes away and the field has the keyboard. A tap while the field is not in use leaves the
+        // keyboard where it was.
+        function test_clear_keeps_typing() {
+            addThree();
+            var input = field().input;
+            input.forceActiveFocus();
+            keyClick(Qt.Key_L);
+            keyClick(Qt.Key_I);
+            tryCompare(savedSystemCards, "query", "li", 2000);
+            settle();
+            var clear = item("systemsSearchClear");
+            verify(clear.visible);
+            tap(clear);
+            compare(field().text, "");
+            compare(savedSystemCards.query, "");
+            verify(input.activeFocus, "the field keeps the keyboard after a tap on its ×");
+            keyClick(Qt.Key_S);
+            compare(field().text, "s", "typing goes on in the field");
+            tryCompare(savedSystemCards, "query", "s", 2000);
+            settle();
+
+            // A word still composing when the × is tapped.
+            verify(testContext.composeText("to"), "the field holds a composing word");
+            verify(Ui.Navigation.composing);
+            tap(clear);
+            compare(field().text, "");
+            compare(input.preeditText, "", "the word was finished and cleared");
+            verify(!Ui.Navigation.composing);
+            verify(input.activeFocus, "and the field kept the keyboard");
+            compare(savedSystemCards.query, "");
+
+            search("linn");
+            input.forceActiveFocus();
+            keyClick(Qt.Key_Tab);
+            verify(clear.activeFocus, "Tab reaches the ×");
+            keyClick(Qt.Key_Return);
+            compare(savedSystemCards.query, "");
+            verify(!clear.visible);
+            verify(input.activeFocus, "the field has the keyboard after the × goes");
+
+            search("story");
+            root.forceActiveFocus();
+            tap(clear);
+            compare(savedSystemCards.query, "");
+            verify(!input.activeFocus, "a tap with the field not in use does not open the keyboard");
+        }
+
         // Tab order: the field, its ×, the pill, then the cards.
         function test_tab_order() {
             add("Alpha");
