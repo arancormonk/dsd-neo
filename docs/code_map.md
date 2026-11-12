@@ -11097,9 +11097,14 @@ Private per-protocol modules worth knowing about:
   check is the CCH CRC-7, which was there all along: it covers the 41 payload bits behind all six Hamming(12,8)
   blocks, so a passing half means the half decoded. What it replaced was `dpmr_ids_are_strong()`, which accepted a
   CCH whose two leading Hamming blocks merely reported correctable — 13 of 16 syndromes are, so it passed 44% of
-  noise superframes. One half passing is one chance in 128 and has to repeat; both halves in one frame is one in
-  16384 and confirms outright. Evidence confirms before the frame publishes its identity, service and colour code; a
-  signal search hears the frame's confirmation from `dpmr_confirm_end_frame()`, after the publication (`DPMR_CONFIRM`,
+  noise superframes. One half passing is one chance in 128 and has to repeat, on a frame that runs on: its FS2 one
+  frame (`DPMR_CONFIRM_FRAME_SYMBOLS`, 384, within one) after the last frame's (`dpmr_confirm_note_frame_start()`,
+  from `processdPMRvoice()`), so an isolated weak frame starts the streak over. Without that, any two dPMR frames with
+  no carrier reset between them counted as running, and under `-fa` two weak noise frames seconds apart, other
+  protocols' syncs between them, confirmed a transmission, published a call and decoded its voice (one in 8 x 30 min
+  of noise). Both halves in one frame is one in 16384 and confirms outright. Evidence confirms before the frame
+  publishes its identity, service and colour code; a signal search hears the frame's confirmation from
+  `dpmr_confirm_end_frame()`, after the publication (`DPMR_CONFIRM`,
   `DPMR_VOICE_BRIDGE`). `processdPMRvoice()` returns how many halves passed, `dsd_dispatch_handle_dpmr()`
   maps that to `DSD_FRAME_VERDICT_PROFILE_PROVEN` (for two seconds after the last decode) or `UNPRODUCTIVE`, and the
   engine clears both through the exported `dpmr_confirm_reset()` in `<dsd-neo/protocol/dpmr/dpmr.h>`.

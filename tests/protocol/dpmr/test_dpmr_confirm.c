@@ -42,6 +42,51 @@ run_frame(dsd_state* state, int evidence) {
     dpmr_confirm_end_frame(state);
 }
 
+/* "Consecutive" is in time, where frames say where they begin: the second frame's FS2 one frame after the first's,
+ * within a symbol. Two weak frames further apart (other protocols' syncs between them under Auto) are two isolated
+ * passes, and the first frame read after a reset runs on from nothing. */
+static void
+check_weak_frames_must_run(dsd_state* state) {
+    static const struct {
+        uint32_t gap;
+        int confirms;
+    } runs[] = {
+        {DPMR_CONFIRM_FRAME_SYMBOLS, 1},
+        {DPMR_CONFIRM_FRAME_SYMBOLS - 1U, 1},
+        {DPMR_CONFIRM_FRAME_SYMBOLS + 1U, 1},
+        {DPMR_CONFIRM_FRAME_SYMBOLS - 2U, 0},
+        {DPMR_CONFIRM_FRAME_SYMBOLS + 2U, 0},
+        {2U * DPMR_CONFIRM_FRAME_SYMBOLS, 0},
+        {5000U, 0},
+    };
+
+    for (size_t i = 0; i < sizeof(runs) / sizeof(runs[0]); i++) {
+        char label[96];
+        dpmr_confirm_reset(state);
+        dpmr_confirm_note_frame_start(state, 0xFFFFFF00U);
+        run_frame(state, DPMR_EVIDENCE_WEAK);
+        dpmr_confirm_note_frame_start(state, 0xFFFFFF00U + runs[i].gap);
+        run_frame(state, DPMR_EVIDENCE_WEAK);
+        DSD_SNPRINTF(label, sizeof label, "two weak frames %u symbols apart", (unsigned)runs[i].gap);
+        expect(label, dpmr_confirm_is_confirmed(state), runs[i].confirms);
+    }
+    /* An isolated weak frame starts the streak over, and the frame that runs on from it completes it. */
+    dpmr_confirm_reset(state);
+    dpmr_confirm_note_frame_start(state, 1000U);
+    run_frame(state, DPMR_EVIDENCE_WEAK);
+    dpmr_confirm_note_frame_start(state, 6000U);
+    run_frame(state, DPMR_EVIDENCE_WEAK);
+    expect("an isolated weak frame is pending", dpmr_confirm_is_confirmed(state), 0);
+    dpmr_confirm_note_frame_start(state, 6000U + DPMR_CONFIRM_FRAME_SYMBOLS);
+    run_frame(state, DPMR_EVIDENCE_WEAK);
+    expect("the frame running on from it confirms", dpmr_confirm_is_confirmed(state), 1);
+    /* Both halves of one isolated frame still confirm at once. */
+    dpmr_confirm_reset(state);
+    dpmr_confirm_note_frame_start(state, 9000U);
+    run_frame(state, DPMR_EVIDENCE_STRONG);
+    expect("an isolated strong frame confirms", dpmr_confirm_is_confirmed(state), 1);
+}
+
 static int g_search_reports;
 static int g_call_notes;
 
@@ -105,6 +150,8 @@ main(void) {
     expect("a gap breaks the weak streak", dpmr_confirm_is_confirmed(state), 0);
     run_frame(state, DPMR_EVIDENCE_WEAK);
     expect("the streak resumes from the gap", dpmr_confirm_is_confirmed(state), 1);
+
+    check_weak_frames_must_run(state);
 
     /* Noting weak twice inside one frame is one frame's worth of evidence, not two --
      * otherwise a single lucky frame would confirm itself. The voice path cannot reach

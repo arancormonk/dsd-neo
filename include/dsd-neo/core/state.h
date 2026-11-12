@@ -1912,10 +1912,14 @@ struct dsd_state {
      * See issue #407.
      * dpmr_confirmed: this transmission has produced a CRC-verified CCH.
      * dpmr_confirm_weak_streak: consecutive frames carrying one passing half only.
-     * dpmr_confirm_frame_evidence: strongest dpmr_evidence seen since begin_frame(). */
+     * dpmr_confirm_frame_evidence: strongest dpmr_evidence seen since begin_frame().
+     * dpmr_confirm_last_frame_symbol/_valid: symbolcnt where the last FS2 frame began
+     * (dpmr_confirm_note_frame_start()), so a weak streak counts only frames that run on. */
     uint8_t dpmr_confirmed;
     uint8_t dpmr_confirm_weak_streak;
     uint8_t dpmr_confirm_frame_evidence;
+    uint8_t dpmr_confirm_last_frame_valid;
+    uint32_t dpmr_confirm_last_frame_symbol;
     /* The scrambling the current dPMR transmission's last CRC-verified CCH half signalled (issue #655): 0 none yet,
        1 clear, 2 scrambled (Version 3). A half whose CRC-7 failed takes it; a transmission boundary forgets it. */
     uint8_t dpmr_scrambled;
