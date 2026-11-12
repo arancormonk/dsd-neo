@@ -10,7 +10,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Record/Logs/Debug: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `--wav-journal calls.jsonl`, `--record-unknown-only`, `--analog-record-max-gap-ms 2000`, `--analog-record-preroll-ms 200`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `--p25-sm-log p25-sm.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`, `--dmr-debug-burst`, `--dmr-debug-unsynced`
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
 - Levels/Audio: `-g 0|1..50`, `-n 0|1..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0x9`
-- Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fA | -fM` (Auto, `-fa`, is the default)
+- Modes: `-fa | -ft | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fT | -fA | -fM` (Auto, `-fa`, is the default)
 - Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); `--squelch auto[+N]` (open N dB over each analog channel's learned noise floor, radio inputs); `--squelch noise[+N]` (open an FM channel at N dB of quieting, as a radio's squelch does; on audio input from a reference it learns); see [Analog reception](#analog-reception--fa--fm), [Tone filter](#tone-filter-ctcssdcs-receive-policy), [Auto squelch](#auto-squelch---squelch-auto) and [Noise squelch](#noise-squelch---squelch-noise)
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
 - Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (repeatable; `--trunk-scan-off targets.csv` adds a list that starts off; `--trunk-scan-hold <target-id>` starts held on one target; P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`
@@ -625,7 +625,9 @@ Android session whose saved extra arguments carry one refuses to start the same 
   the hunt table below)
 - Passive analog monitor: `-fA` (NFM on a radio input; see [Analog reception](#analog-reception--fa--fm) below)
 - Native AM receiver: `-fM` (I/Q radio inputs only; see [Native AM](#native-am--fm) below)
-- Trunking helper: `-ft` (P25p1 CC + P25p1/p2/DMR voice)
+- DMR and P25: `-ft` decodes DMR, P25 Phase 1 and P25 Phase 2 and turns every other decoder off (X2-TDMA, NXDN48,
+  NXDN96, YSF, M17, dPMR, ProVoice/EDACS, D-STAR and TETRA). Name it when you want DMR and P25 without the rest of
+  Auto's set. It does not start trunk following on its own; `-T` does that.
 - DMR simplex (BS/MS): `-fs` uses the dual-slot decoder; `-fr` uses the single-slot mono decoder
 - P25 Phase 1 only: `-f1`
 - P25 Phase 2 only (6000 sps): `-f2`
@@ -953,7 +955,8 @@ Notes
 - All three Auto entry points install the complete matrix above: CLI `-fa`, config `decode = "auto"`, and the
   interactive Auto choice select the same decoder set. Only `-fa` also resets the demodulator to C4FM and the audio
   layout to stereo; the config path leaves those to its `demod` and `dmr_mono` keys, and the interactive path to the
-  wizard's own answers. To scan a deliberately narrowed set, name the narrower preset rather than Auto.
+  wizard's own answers. To scan a deliberately narrowed set, name the narrower preset rather than Auto (`-ft` for DMR
+  and P25).
 - Auto is also the default. A session that names no `-f` (as the Qt and Android Auto choice does) starts on the same
   decoder set, C4FM demodulator and stereo audio layout as `-fa`, a config whose `[mode]` has no `decode` key keeps
   that set, and such a session autosaves `decode = "auto"`. A modulation flag alone keeps it too: `-mq` (which a
