@@ -85,11 +85,13 @@ impulses at unity DC gain, so a held level 3 is the outer deviation:
            symbols at their mode's pulse and deviation, or the committed fixtures as recorded
 
 Analog criterion: 12 dB SINAD of a 1 kHz tone in dsd-neo's monitor audio (TIA-603 for NFM, ETSI EN 300 676-1 for
-AM). NFM carries the tone at 60 % of the maximum deviation (1.5 kHz on a 12.5 kHz channel, 3 kHz on a 25 kHz one),
-AM at 30 % depth. The audio is scored by dsd-neo_test_analog_replay (tests/engine/analog_replay.c), which runs the
-real engine and fits the tone to every delivered 20 ms block after the monitor's filters: SINAD is
-10 log10(1 + S/(N+D)) from its tone_snr_db. Gain is fixed (-n 50) and the replay squelch is the -110 dB default,
-which passes everything; noise alone must fail the metric, and the tool reports that it does.
+AM), at each configured receive width the scan check calibrates: NFM 8, 12.5, 16 and 25 kHz, AM 5, 6, 10 and 20 kHz.
+NFM carries the tone at 60 % of the transmitter's maximum deviation: 1.5 kHz for a 12.5 kHz channel's transmitter
+(the 8 and 12.5 kHz widths), 3 kHz for a 25 kHz channel's (the 25 kHz width), both at 16 kHz, where either kind is
+received and the lower threshold is kept. AM is at 30 % depth. The audio is scored by dsd-neo_test_analog_replay
+(tests/engine/analog_replay.c), which runs the real engine and fits the tone to every delivered 20 ms block after the
+monitor's filters: SINAD is 10 log10(1 + S/(N+D)) from its tone_snr_db. Gain is fixed (-n 50) and the replay squelch
+is the -110 dB default, which passes everything; noise alone must fail the metric, and the tool reports that it does.
 
 Everything is deterministic: the noise seeds are fixed (--base-seed), the generators run with fixed arguments and
 seeds, and dsd-neo replays at --iq-replay-rate fast.
@@ -100,8 +102,10 @@ Usage:
         --dmr-synth-gen build/dev-debug/tests/dsd-neo_test_dmr_synth_gen --out OUT_DIR [--modes LIST] [--jobs N]
 
 It writes OUT_DIR/thresholds.json, OUT_DIR/thresholds.md (each row, then each mode's kept threshold) and
-OUT_DIR/sweep.csv (every run). Exit status 0 when every requested row was measured or reported, 1 when a decoder or
-generator run fails or a capture would clip, 2 on a usage error.
+OUT_DIR/sweep.csv (every run). With --export-sources DIR instead of --out it measures nothing and writes the requested
+rows' clean sources for the scan check's calibration driver (tests/io/signal_quiet_calibrate.cpp; see export_sources()
+and docs/signal-search.md "Quiet-channel calibration"). Exit status 0 when every requested row was measured or
+reported, 1 when a decoder or generator run fails or a capture would clip, 2 on a usage error.
 """
 
 import argparse
@@ -159,7 +163,11 @@ DMR_GEN_ARGS = ["--cc", "2", "--s1", "voice", "--s2", "idle", "--snr", "200", "-
 DMR_SLOT_SYMBOLS = 144  # 12 CACH (or MS guard) + 132 burst dibits: 30 ms at 4800 symbol/s
 DMR_LEAD_SYMBOLS = 960  # dmr_synth.c: the random (with --ms, silent) lead before the first period
 DMR_RAMP_S = 0.0015  # ETSI TS 102 361-1 10.2.3.1.1, figure 10.3: regions A and C
-NFM_TONE_DEVIATION_HZ = {12500: 1500.0, 25000: 3000.0}  # 60 % of +/-2.5 kHz and +/-5 kHz
+# The test tone at 60 % of the transmitter's maximum deviation: +/-2.5 kHz for a 12.5 kHz channel's (narrowband),
+# +/-5 kHz for a 25 kHz channel's (wideband). The 16 kHz width, at which either kind is received, is measured with
+# both and keeps the lower threshold.
+NFM_NARROW_TONE_HZ = 1500.0
+NFM_WIDE_TONE_HZ = 3000.0
 AM_TONE_DEPTH = 0.3
 SHAPER_SPAN_SYMBOLS = 8  # transmit filter taps either side of the centre
 
@@ -981,8 +989,7 @@ def builder_constants(**values):
                 setattr(bif, name, value)
 
 
-def nfm_source(width_hz):
-    deviation = NFM_TONE_DEVIATION_HZ[width_hz]
+def nfm_source(deviation):
     with builder_constants(
         NFM_SYNTH_DURATION_S=DURATION_S, NFM_SYNTH_DEVIATION_HZ=deviation, NFM_SYNTH_NOISE_DB=-math.inf
     ):
@@ -1224,48 +1231,46 @@ def digital_rows():
     return rows
 
 
+def nfm_row(key, mode, width_hz, deviation, label_note=""):
+    return Row(
+        key,
+        mode,
+        f"NFM {width_hz / 1000:g} kHz{label_note}",
+        width_hz,
+        CLEAN,
+        ["-fA", "--nfm-bandwidth-hz", str(width_hz)],
+        lambda _w, d=deviation: nfm_source(d),
+        analog=True,
+    )
+
+
+def am_row(width_hz):
+    key = f"am_{width_hz // 1000}k"
+    return Row(
+        key,
+        key,
+        f"AM {width_hz / 1000:g} kHz",
+        width_hz,
+        CLEAN,
+        ["-fM", "--am-bandwidth-hz", str(width_hz)],
+        lambda _w: am_source(),
+        analog=True,
+    )
+
+
 def analog_rows():
+    """NFM at the configured widths 8 to 25 kHz and AM at 5 to 20 kHz (the scan check's calibrated domain): a 12.5 kHz
+    channel's transmitter where the width fits it, a 25 kHz channel's where it fits that, both at 16 kHz."""
     return [
-        Row(
-            "nfm_12k5",
-            "nfm_12k5",
-            "NFM 12.5 kHz",
-            12500,
-            CLEAN,
-            ["-fA", "--nfm-bandwidth-hz", "12500"],
-            lambda _w: nfm_source(12500),
-            analog=True,
-        ),
-        Row(
-            "nfm_25k",
-            "nfm_25k",
-            "NFM 25 kHz",
-            25000,
-            CLEAN,
-            ["-fA", "--nfm-bandwidth-hz", "25000"],
-            lambda _w: nfm_source(25000),
-            analog=True,
-        ),
-        Row(
-            "am_6k",
-            "am_6k",
-            "AM 6 kHz",
-            6000,
-            CLEAN,
-            ["-fM", "--am-bandwidth-hz", "6000"],
-            lambda _w: am_source(),
-            analog=True,
-        ),
-        Row(
-            "am_20k",
-            "am_20k",
-            "AM 20 kHz",
-            20000,
-            CLEAN,
-            ["-fM", "--am-bandwidth-hz", "20000"],
-            lambda _w: am_source(),
-            analog=True,
-        ),
+        nfm_row("nfm_8k", "nfm_8k", 8000, NFM_NARROW_TONE_HZ),
+        nfm_row("nfm_12k5", "nfm_12k5", 12500, NFM_NARROW_TONE_HZ),
+        nfm_row("nfm_16k_narrow", "nfm_16k", 16000, NFM_NARROW_TONE_HZ, " (12.5 kHz channel's tone)"),
+        nfm_row("nfm_16k_wide", "nfm_16k", 16000, NFM_WIDE_TONE_HZ, " (25 kHz channel's tone)"),
+        nfm_row("nfm_25k", "nfm_25k", 25000, NFM_WIDE_TONE_HZ),
+        am_row(5000),
+        am_row(6000),
+        am_row(10000),
+        am_row(20000),
     ]
 
 
@@ -1516,6 +1521,29 @@ def write_reports(results, rows):
     print("\n".join(lines))
 
 
+def export_sources(work_dir):
+    """Write each requested row's clean source for tests/io/signal_quiet_calibrate.cpp, which renders the scan check's
+    calibration trials from the same signals: DIR/<row>.cf32 (complex64, little-endian, RATE_HZ, the signal at 0 Hz),
+    DIR/<row>.on for a burst train (one byte per sample, 1 inside a burst's symbol transmission period), and one line
+    per row in DIR/sources.tsv: row, mode, class width (Hz), sample rate (Hz), samples, and band_power() in that width,
+    the power the S/N above is defined on."""
+    os.makedirs(ARGS.export_sources, exist_ok=True)
+    lines = ["row\tmode\twidth_hz\trate_hz\tsamples\tband_power\tburst\tsource"]
+    for row in ARGS.rows:
+        source = row.build(work_dir)
+        stem = os.path.join(ARGS.export_sources, row.key)
+        source.samples.astype("<c8").tofile(stem + ".cf32")
+        if source.on is not None:
+            source.on.astype(np.uint8).tofile(stem + ".on")
+        burst = int(source.on is not None)
+        power = band_power(source, row.width_hz)
+        fields = [row.key, row.mode, row.width_hz, RATE_HZ, len(source.samples), f"{power:.9e}", burst, source.note]
+        lines.append("\t".join(str(value) for value in fields))
+    with open(os.path.join(ARGS.export_sources, "sources.tsv"), "w", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+    return 0
+
+
 def all_rows():
     return digital_rows() + analog_rows()
 
@@ -1532,7 +1560,12 @@ def parse_args():
         default=ctypes.util.find_library("mbe-neo"),
         help="mbelib-neo's shared library, which codes the D-STAR AMBE frames (default: found on the library path)",
     )
-    parser.add_argument("--out", required=True, help="directory for thresholds.json, thresholds.md and sweep.csv")
+    parser.add_argument("--out", help="directory for thresholds.json, thresholds.md and sweep.csv")
+    parser.add_argument(
+        "--export-sources",
+        metavar="DIR",
+        help="write the requested rows' clean sources to DIR for the scan check's calibration and measure nothing",
+    )
     parser.add_argument(
         "--modes",
         default=",".join(modes),
@@ -1549,7 +1582,9 @@ def parse_args():
     args.rows = [row for row in all_rows() if row.key in wanted or row.mode in wanted]
     if args.seeds < 1:
         parser.error("--seeds must be at least 1")
-    if any(row.analog for row in args.rows) and not args.analog_host:
+    if not args.out and not args.export_sources:
+        parser.error("give --out (measure) or --export-sources (export)")
+    if not args.export_sources and any(row.analog for row in args.rows) and not args.analog_host:
         parser.error("the analog rows need --analog-host")
     if any(row.mode in ("dmr_bs", "dmr_ms") and row.role == CLEAN for row in args.rows) and not args.dmr_synth_gen:
         parser.error("dmr_bs and dmr_ms need --dmr-synth-gen")
@@ -1559,6 +1594,9 @@ def parse_args():
 
 
 def main():
+    if ARGS.export_sources:
+        with tempfile.TemporaryDirectory(prefix="scan-quiet-") as work_dir:
+            return export_sources(work_dir)
     os.makedirs(ARGS.out, exist_ok=True)
     rows = []
     # One thread per row runs its clean check and waits on its seeds, which run in the pool.
