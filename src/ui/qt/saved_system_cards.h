@@ -37,15 +37,15 @@
 #define DSD_NEO_SRC_UI_QT_SAVED_SYSTEM_CARDS_H_
 
 #include <QAbstractListModel>
-#include <QByteArray>
 #include <QHash>
 #include <QList>
-#include <QModelIndex>
+#include <QMap>
+#include <QObject>
 #include <QPointer>
 #include <QString>
-#include <QStringList>
 #include <QVariant>
 #include <QVariantMap>
+#include <Qt>
 #include <QtGlobal>
 #include <type_traits> // IWYU pragma: keep -- QPointer's conversion checks.
 

@@ -14,13 +14,13 @@
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
-#include <QMetaObject>
 #include <QMetaType>
 #include <QSet>
 #include <QStringList>
 #include <QUuid>
 #include <QVariant>
 #include <QVariantMap>
+#include <Qt>
 #include <algorithm>
 #include <cmath>
 #include <dsd-neo/core/opts.h>

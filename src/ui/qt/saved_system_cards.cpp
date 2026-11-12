@@ -5,11 +5,13 @@
 
 #include "saved_system_cards.h"
 
+#include <QByteArray>
+#include <QDebug>
 #include <QLatin1Char>
 #include <QLatin1String>
 #include <QMap>
-#include <QPair>
 #include <QSet>
+#include <QStringList>
 #include <QTimer>
 #include <algorithm>
 #include <cmath>
@@ -779,7 +781,7 @@ SavedSystemCards::locateCard(Card& card, const QList<const Member*>& group, cons
 
 QString
 SavedSystemCards::applicableSort(const Fix& fix) const {
-    const QString stored = sortId();
+    QString stored = sortId();
     if (stored == sort_nearest() && !fix.valid) {
         return sort_name();
     }

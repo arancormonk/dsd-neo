@@ -96,7 +96,7 @@ site_group_key(const QVariantMap& row) {
 
 QString
 site_group_title(const QVariantMap& lead) {
-    const QString name = lead.value(QStringLiteral("name")).toString();
+    QString name = lead.value(QStringLiteral("name")).toString();
     const QString siteName = lead.value(QStringLiteral("siteName")).toString();
     const QString suffix = QStringLiteral(" — ") + siteName;
     if (siteName.isEmpty() || name.size() <= suffix.size() || !name.endsWith(suffix)) {

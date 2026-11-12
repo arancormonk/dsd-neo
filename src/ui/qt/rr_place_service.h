@@ -29,9 +29,11 @@
 #include <QSet>
 #include <QString>
 #include <QStringList>
+#include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <type_traits> // IWYU pragma: keep -- QPointer conversion checks.
 
 #include <dsd-neo/runtime/radioreference.h>
 

@@ -6,16 +6,20 @@
 #include "rr_place_service.h"
 
 #include <QAbstractItemModel>
-#include <QMetaObject>
-#include <QModelIndex>
+#include <QChar>
+#include <QDebug>
+#include <QLatin1String>
+#include <QMap>
 #include <QVariant>
 #include <Qt>
 
 #include <algorithm>
 #include <memory>
 #include <stdlib.h>
+#include <utility>
 
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/runtime/radioreference.h>
 
 #include "radio_reference_model.h"
 #include "saved_systems_model.h"
@@ -26,12 +30,12 @@ namespace dsd_qt {
 
 namespace {
 
-const QString kStates = QStringLiteral("states");
-const QString kCounties = QStringLiteral("counties");
-const QString kCandidates = QStringLiteral("candidateStates");
-const QString kStid = QStringLiteral("stid");
-const QString kName = QStringLiteral("name");
-const QString kPlace = QStringLiteral("place");
+constexpr QLatin1String kStates("states");
+constexpr QLatin1String kCounties("counties");
+constexpr QLatin1String kCandidates("candidateStates");
+constexpr QLatin1String kStid("stid");
+constexpr QLatin1String kName("name");
+constexpr QLatin1String kPlace("place");
 
 QString
 c_text(const char* text, size_t capacity) {
@@ -255,7 +259,7 @@ RrPlaceService::submit(Fetch kind, int key) {
         return false;
     }
     /* The callback owns it now. */
-    (void)request.release();
+    [[maybe_unused]] Request* handedOff = request.release();
     m_inFlight = id;
     m_inFlightKind = kind;
     m_inFlightKey = key;
@@ -488,7 +492,7 @@ RrPlaceService::updateFromRadioReference(const QStringList& uids) {
         Q_EMIT updateFinished(0, 0);
         return true;
     }
-    m_update = update;
+    m_update = std::move(update);
     m_updateSerial++;
     m_updating = true;
     m_summaryText.clear();
@@ -656,7 +660,7 @@ RrPlaceService::setSummary(int updated, int unreachable) {
     if (unreachable > 0) {
         text += QLatin1Char(' ') + tr("%1 could not be reached.").arg(unreachable);
     }
-    m_summaryText = text;
+    m_summaryText = std::move(text);
     Q_EMIT summaryTextChanged();
 }
 
