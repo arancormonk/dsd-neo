@@ -369,7 +369,7 @@ ModalSheet {
         id: rrUpdate
         objectName: "siteUpdateFromRr"
         width: parent.width
-        visible: sheet.missingPositions
+        visible: sheet.missingPositions && radioReference.available
         enabled: !rrPlaces.updating
         text: qsTr("Update from RadioReference")
         onClicked: sheet.updateFromRadioReference()
@@ -433,7 +433,8 @@ ModalSheet {
                 objectName: "sitePositionNotice" + siteRow.modelData
                 width: parent.width
                 visible: !siteRow.site.hasSitePos
-                text: qsTr("No coordinates. Use Update from RadioReference to check for new location data.")
+                text: radioReference.available ? qsTr("No coordinates. Use Update from RadioReference to check for new location data.")
+                    : qsTr("No coordinates.")
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 font.family: Theme.sans

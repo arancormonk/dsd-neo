@@ -11918,7 +11918,8 @@ Qt Quick frontend (`src/ui/qt`):
   order the place notice shows `rrPlaces.unplacedText` ("%1 saved systems have no place yet") with "Update from
   RadioReference", which updates only those cards' rows (`rrPlaces.unplacedUids()`); the card menu offers the same for
   a card with RadioReference sites (`rrUpdate`), all of its rows, and the site chooser's no-coordinates note offers it
-  too, for the group's rows. Signed out, `updateFromRadioReference()` returns false and Home (or the
+  too, for the group's rows. All of these (and the notice line) are hidden when `radioReference.available` is false (a
+  build without libcurl or Expat); the chooser's note then drops its pointer to Update. Signed out, `updateFromRadioReference()` returns false and Home (or the
   chooser) emits `openRadioReferenceAccount`, which `Main.qml` answers by opening the account screen. One update runs
   at a time: while `rrPlaces.updating` the place notice is hidden, the chooser's button is disabled, and the card
   menu's `rrUpdate` row is disabled with "Available when the running update ends" as its description (`ActionMenu`

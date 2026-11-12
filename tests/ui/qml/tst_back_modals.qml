@@ -675,6 +675,7 @@ Item {
             verify(!notice.visible);
         }
         function test_grouped_menu_sites() {
+            testContext.setRadioReference("available", true);
             var keys = function (menu) {
                 return menu.actions.map(function (action) { return action.key; }).join();
             };

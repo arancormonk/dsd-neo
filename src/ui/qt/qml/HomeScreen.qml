@@ -1723,7 +1723,8 @@ Item {
         property string systemName: ""
 
         // @a rrLinked: the card's systems come from RadioReference (a site, or
-        // a place), so Update from RadioReference is offered. While an update
+        // a place) and RadioReference is built in, so Update from RadioReference
+        // is offered (hidden where it cannot work). While an update
         // runs it is disabled and says why (the progress line under Systems
         // says how far), and it enables in place when that update ends.
         function openFor(row, name, rrLinked) {
@@ -1733,7 +1734,7 @@ Item {
             if (savedSystems.siblingRows(row).length > 1)
                 items.push({text: qsTr("Sites"), key: "sites", objectName: "sitesSavedSystemButton"});
             items.push(screen.pinAction("system", systemUid, "pinSavedSystemButton"));
-            if (rrLinked === true)
+            if (rrLinked === true && radioReference.available)
                 items.push({text: qsTr("Update from RadioReference"), key: "rrUpdate", objectName: "updateSavedSystemButton",
                     enabled: function () {
                         return !rrPlaces.updating;

@@ -490,7 +490,8 @@ Column {
     }
 
     // Place and Nearest order cards by place: the systems an update could
-    // place, and that update.
+    // place, and that update. Without RadioReference in this build the line
+    // has nothing to offer and goes with its action.
     SystemsNotice {
         id: placeNotice
 
@@ -498,7 +499,7 @@ Column {
         textObjectName: "systemsPlaceNoticeText"
         actionObjectName: "systemsPlaceUpdate"
         shown: (controls.shownSort === "place" || controls.shownSort === "nearest") && rrPlaces.unplacedText.length > 0
-            && !rrPlaces.updating
+            && !rrPlaces.updating && radioReference.available
         text: rrPlaces.unplacedText
         actionText: qsTr("Update from RadioReference")
         onAction: controls.updateUnplacedFromRadioReference()

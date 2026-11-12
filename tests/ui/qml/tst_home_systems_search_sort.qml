@@ -55,6 +55,7 @@ Item {
         when: windowShown
 
         function init() {
+            testContext.setRadioReference("available", true);
             testContext.useAppPrefs(true);
             testContext.setLocationSupported(false);
             testContext.resetSystemsSort();
@@ -79,6 +80,7 @@ Item {
             settle();
         }
         function cleanup() {
+            testContext.setRadioReference("available", false);
             for (var modal of Ui.Navigation.modals.slice())
                 modal.visible = false;
             root.forceActiveFocus();
@@ -594,6 +596,29 @@ Item {
         // (the progress line under Systems says how far), the place notice gives way to that progress, and a call
         // from either asks the service nothing: no second card is taken as updated, and nobody is sent to the account
         // screen. When the update ends, the open menu's Update enables in place and runs.
+        // Without RadioReference in this build neither the place notice (line and action) nor the card menu's
+        // Update is offered.
+        function test_update_hidden_without_radioreference() {
+            site("County", 1);
+            settle();
+            testContext.setRrPlacesUnplaced(2);
+            chooseSort("Place");
+            verify(item("systemsPlaceNotice").visible, "offered with RadioReference");
+            testContext.setRadioReference("available", false);
+            verify(!item("systemsPlaceNotice").visible, "no notice without it");
+            verify(!item("systemsPlaceUpdate").visible && !item("systemsPlaceUpdate").enabled, "no action either");
+            var menu = item("savedSystemManageSheet");
+            home.manageCard(entryTitled("County").leadUid, "County", entryTitled("County").rrLinked);
+            tryCompare(menu, "visible", true);
+            compare(findChild(menu, "updateSavedSystemButton"), null, "no Update in the card menu");
+            menu.visible = false;
+            testContext.setRadioReference("available", true);
+            verify(item("systemsPlaceNotice").visible, "back with it");
+            home.manageCard(entryTitled("County").leadUid, "County", entryTitled("County").rrLinked);
+            tryCompare(menu, "visible", true);
+            verify(findChild(menu, "updateSavedSystemButton") !== null, "Update in the card menu");
+            menu.visible = false;
+        }
         function test_update_refused_while_updating() {
             site("County", 1);
             site("Other", 2);

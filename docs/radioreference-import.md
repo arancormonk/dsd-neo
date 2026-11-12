@@ -238,6 +238,9 @@ update skips it.
 The site chooser's note for a site without coordinates reads "No coordinates. Use Update from RadioReference to
 check for new location data."
 
+A build without RadioReference support (no libcurl or Expat) hides every one of these: the card's menu item, the
+"no place yet" line with its action, and the chooser's button. The chooser's note then reads just "No coordinates."
+
 ## Terminal UI
 
 Open the menu overlay with `Enter`, then **Trunking -> Channels & groups -> Import from

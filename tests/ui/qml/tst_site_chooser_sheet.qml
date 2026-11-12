@@ -14,6 +14,7 @@ Item {
         name: "SiteChooserSheet"
         when: windowShown
         function init() {
+            testContext.setRadioReference("available", true)
             testContext.useLifecycleHost(true)
             testContext.resetPins()
             prefs.metricUnits = false
@@ -27,6 +28,7 @@ Item {
             starts.clear(); switches.clear()
         }
         function cleanup() {
+            testContext.setRadioReference("available", false)
             sheet.visible = false
             testContext.resetRrPlaces()
             accountOpened.clear()
@@ -337,6 +339,21 @@ Item {
             compare(pin.text, "Pin to Listen")
             sheet.sessionState = 2
             verify(pin.visible && pin.enabled, "offered while a session runs")
+        }
+        // Without RadioReference in this build there is no update to offer: no button (so no Tab stop), and the
+        // note does not send the user to one.
+        function test_no_coordinates_without_radioreference() {
+            testContext.setRadioReference("available", false)
+            savedSystems.update(1, {hasSitePos: false})
+            sheet.openFor(0)
+            var note = findChild(sheet, "sitePositionNotice1")
+            verify(note.visible)
+            compare(note.text, "No coordinates.")
+            var update = findChild(sheet, "siteUpdateFromRr")
+            verify(!update.visible, "no Update button")
+            testContext.setRadioReference("available", true)
+            verify(update.visible, "offered again where RadioReference is built in")
+            compare(note.text, "No coordinates. Use Update from RadioReference to check for new location data.")
         }
         // A site with no coordinates points at Update from RadioReference (the menu's, and a button here), not at
         // a re-import that would add a second copy of the site.

@@ -34,6 +34,7 @@ Item {
         }
 
         function init() {
+            testContext.setRadioReference("available", true);
             testContext.useLifecycleHost(true);
             testContext.resetPins();
             testContext.setScanTestUsb(false, false);
@@ -63,6 +64,7 @@ Item {
         }
 
         function cleanup() {
+            testContext.setRadioReference("available", false);
             for (var modal of Ui.Navigation.modals.slice())
                 modal.visible = false;
             findChild(app, "siteChooserSheet").visible = false;
