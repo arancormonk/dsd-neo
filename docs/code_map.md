@@ -11899,8 +11899,10 @@ Qt Quick frontend (`src/ui/qt`):
   share a row only while the pill takes at most 40% of it and the field keeps 180 px, else the pill goes under the
   field; heights are keyed on each part's own `shown`, never on `visible` (#646 B1). A stored `nearest` on a build or
   phone without a location shows as Name and the preference is left alone. Each search that lands is announced once
-  (`Navigation.announce`, queued after the card model's rebuild; skipped while Home is hidden, a sheet covers it or
-  another tab is current, and never repeated for the same text). Nearest without a fix says "Nearest needs your
+  (`Navigation.announce`, from the card model's first `rebuilt` after the query is set, which is the rebuild that
+  applied it, with its counts; never from a `Qt.callLater`, which joins any batch already queued and so can run
+  before that rebuild; skipped while Home is hidden, a sheet covers it or another tab is current, and never repeated
+  for the same text). Nearest without a fix says "Nearest needs your
   location" and "Showing names until a location arrives" with a flat "Use my location" action; with a fix it says
   "Using your location from %1" with "Update location". Both go through the site chooser's request contract
   (`radioReference.nextLocationRequestId()`, `decoderHost.requestSiteLocation`; a newer request elsewhere supersedes
@@ -11929,8 +11931,9 @@ Qt Quick frontend (`src/ui/qt`):
   disabled or hidden with it, and Qt drops the keyboard (`onActiveFocusChanged` sees it lost while not `shown`): Play
   or the site button that the row's card now lacks hands it, through the same timer, to that row's More options, which
   every card has (else the search field); a control over the cards that goes (the ×, Clear search, a notice's action,
-  e.g. the place notice once nothing is left unplaced) hands it to the search field (`keyboardLeft`). The keyboard
-  also follows Update to Cancel and back. With a screen reader the cards' Repeater rows are positional (the card model's `held` rows, above): a sort, search or location renames each row for
+  e.g. the place notice once nothing is left unplaced) hands it to the search field (`keyboardLeft`), as does a notice
+  action disabled with the keyboard on it ("Use my location" or "Update location" while its request runs; the keyboard
+  stays in the field when the answer comes). The keyboard also follows Update to Cancel and back. With a screen reader the cards' Repeater rows are positional (the card model's `held` rows, above): a sort, search or location renames each row for
   the card at its place, so the keyboard stays on the pill, the field or the row it was on, which then reads the card
   now there. A held row is drawn at no opacity, its parts leave the tree with empty names (as the Network sheet's held
   rows, "Qt QML editing convention"), it takes no press or keyboard (`parked`, set once the keyboard was handed on),

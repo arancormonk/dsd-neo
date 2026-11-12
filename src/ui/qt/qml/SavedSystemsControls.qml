@@ -30,8 +30,9 @@ Column {
     signal revealRequested
     // The last system went: the controls go, and @a hadFocus says whether the keyboard was on them.
     signal emptied(bool hadFocus)
-    // A control here went (held, or hidden without a screen reader) with the
-    // keyboard on it, which Qt drops: Home hands it on (the search field).
+    // A control here went (held, or hidden without a screen reader) or was
+    // disabled with the keyboard on it, which Qt drops: Home hands it on (the
+    // search field).
     signal keyboardLeft
 
     readonly property bool shown: savedSystemCards.totalCount >= 1
@@ -75,7 +76,9 @@ Column {
         readonly property alias detailShown: noticeDetail.shown
         // @a hadFocus: the action had the keyboard when pressed.
         signal action(bool hadFocus)
-        // The notice went with the keyboard on its action (controls.keyboardLeft).
+        // The notice went, or its action was disabled (the location line's
+        // while its request runs), with the keyboard on the action
+        // (controls.keyboardLeft).
         signal keyboardLeft
         readonly property real inset: noticeAction.flatInset
         readonly property bool stacked: Math.max(noticeText.implicitWidth, notice.detail.length > 0 ? noticeDetail.implicitWidth : 0)
@@ -135,7 +138,7 @@ Column {
             y: notice.stacked ? noticeLines.height + 4 - notice.reach : (notice.height - height) / 2
             width: Math.min(implicitWidth, notice.width + 2 * notice.inset)
             onActiveFocusChanged: {
-                if (!activeFocus && !notice.shown)
+                if (!activeFocus && (!notice.shown || !enabled))
                     notice.keyboardLeft();
             }
             onClicked: notice.action(activeFocus)
@@ -183,10 +186,10 @@ Column {
         if (savedSystemCards.query === systemsSearch.text)
             return;
         savedSystemCards.query = systemsSearch.text;
+        // Read out from the cards' next rebuild, the one that applies this
+        // query (rebuilt): a deferred call is no use, as one queued now joins
+        // any batch already queued, which runs before that rebuild.
         announceOwed = announce;
-        // After the cards' own rebuild, which the query change has queued.
-        if (announce)
-            Qt.callLater(controls.announceCount);
         revealRequested();
     }
     function flushSearch() {
@@ -226,6 +229,9 @@ Column {
     // With the last system gone the search is dropped.
     Connections {
         target: savedSystemCards
+        function onRebuilt() {
+            controls.announceCount();
+        }
         function onTotalCountChanged() {
             if (savedSystemCards.totalCount > 0)
                 return;

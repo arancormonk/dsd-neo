@@ -257,6 +257,40 @@ Item {
             compare(controls().announcements, 1, "not read while hidden");
         }
 
+        // r7 1: a search that lands while deferred calls are already queued (an update's summary, say) is read out
+        // with the count the cards' rebuild gives it, never the count from before: a deferred call queued at the
+        // commit joins that earlier batch, which runs before the rebuild. Read once; a later rebuild of the same
+        // search reads nothing, and neither does a rebuild that lands after Home was hidden.
+        function test_search_announced_after_its_rebuild() {
+            addThree();
+            var order = [];
+            field().text = "fire";
+            Qt.callLater(function () {
+                order.push("earlier batch:" + savedSystemCards.shownCount);
+            });
+            controls().commitSearch(true); // what the debounce does when it fires
+            settle();
+            compare(order, ["earlier batch:3"], "the earlier batch ran before the cards' rebuild");
+            compare(titles(), ["Linn Fire"]);
+            compare(controls().announced, "1 of 3 systems");
+            compare(controls().announcements, 1);
+
+            add("Fire Tower");
+            settle();
+            compare(titles().length, 2);
+            compare(controls().announcements, 1, "a later rebuild of the same search reads nothing");
+
+            field().text = "story";
+            Qt.callLater(function () {});
+            controls().commitSearch(true);
+            home.visible = false;
+            settle();
+            home.visible = true;
+            settle();
+            compare(savedSystemCards.query, "story");
+            compare(controls().announcements, 1, "not read when Home hid before the rebuild");
+        }
+
         // No match: a card says so and offers Clear search, which brings every card back and says how many.
         function test_no_match_and_clear() {
             addThree();
@@ -1205,6 +1239,40 @@ Item {
             tryVerify(function () {
                 return field().input.activeFocus;
             }, 1000, "nothing left to place: the search field");
+        }
+
+        // r7 2: Use my location from the keyboard: the button is disabled while its request runs, which drops the
+        // keyboard, so it goes to the search field (nothing takes the button's place) and stays there when the
+        // answer comes.
+        function test_location_request_keeps_the_keyboard_data() {
+            return [{tag: "no screen reader", reader: false}, {tag: "screen reader", reader: true}];
+        }
+        function test_location_request_keeps_the_keyboard(data) {
+            testContext.setLocationSupported(true);
+            site("Far", 1, 43.6, -93.6);
+            site("Near", 2, 41.7, -93.6);
+            prefs.systemsSort = "nearest";
+            settle();
+            savedSystemCards.screenReaderActive = data.reader;
+            settle();
+            var button = item("systemsLocationButton");
+            compare(button.text, "Use my location");
+            button.forceActiveFocus();
+            verify(button.activeFocus);
+            keyClick(Qt.Key_Space);
+            verify(controls().locationId > 0, "asked");
+            verify(!button.enabled, "one request at a time");
+            tryVerify(function () {
+                return field().input.activeFocus;
+            }, 1000, "the search field has the keyboard, not " + home.Window.window.activeFocusItem);
+            decoderHost.locationResult(controls().locationId, true, 41.6, -93.6, 25, savedSystems.realtimeNowMs(), false,
+                "", "", "");
+            settle();
+            verify(button.enabled);
+            compare(button.text, "Update location");
+            wait(50);
+            verify(field().input.activeFocus, "the answer leaves the keyboard where it is");
+            savedSystemCards.screenReaderActive = false;
         }
 
         // Removing the last saved system while searching: the keyboard lands on Add a system, the controls go, and no
