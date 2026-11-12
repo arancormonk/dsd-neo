@@ -21376,14 +21376,17 @@ if(DSD_HAS_RADIO)
         "Color Code=02"
         FILES 0
     )
+    # Voice plays and is captured only from a confirmed transmission. The capture's two RF headers fail their CRC, so
+    # the superframes behind them confirm nothing and are withheld; the third superframe runs on from the second and
+    # opens the one capture, with the 84 frames of the four superframes from there.
     dsd_neo_add_iq_mbe_capture_test(
         DECODE_IQ_MBE_CAPTURE_DSTAR
         dstar
         -fd
         "SRC: KB7WUK"
         EXT .dmb
-        MIN_FILES 1
-        MIN_FRAMES 100
+        FILES 1
+        MIN_FRAMES 84
     )
     dsd_neo_add_iq_mbe_capture_test(
         DECODE_IQ_MBE_CAPTURE_NXDN48

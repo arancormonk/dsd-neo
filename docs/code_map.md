@@ -10946,7 +10946,7 @@ Private per-protocol modules worth knowing about:
   accept takes two sign hits at any distance, so under `-fa` noise and other protocols' carriers hand 2400/4 thousands
   of frame bodies an hour, and two short checks frames apart, or one FACCH1 CRC-12 (it decodes twice, about one noise
   frame in 2000), confirmed transmissions of receiver noise, played them and published NXDN "TGT 0 SRC 0" calls (12 in
-  8 x 30 min of `-fa` noise on c1bd84c1e). An NXDN48 frame runs on only from a frame read
+  8 x 30 min of `-fa` noise on c1bd84c1e, with the D-STAR case below). An NXDN48 frame runs on only from a frame read
   `NXDN_CONFIRM_FRAME_SYMBOLS` (192, within one) before it; an isolated one starts the weak and SCCH streaks over, and
   its strong check holds at once only when its sync word followed another of its polarity one frame before it
   (`dsd_state::nxdn48_accept_corroborated`, `frame_sync_nxdn48_note_hit()`) or another check of the frame passed too
@@ -10964,7 +10964,12 @@ Private per-protocol modules worth knowing about:
   is seven outer symbols of one sign to one of the other, and the next transmission's hunt sliced and timed its
   preamble against the skewed centre it left (issue #834).
 - `src/protocol/dstar/dstar_confirm.{c,h}` and `src/protocol/provoice/provoice_confirm.{c,h}` — the same shape again,
-  answering only the SPS hunt rather than gating audio (issue #421). Neither protocol has a per-frame check: a D-STAR
+  answering the SPS hunt (issue #421); D-STAR's also gates voice: a superframe's AMBE frames reach the vocoder, the
+  speaker, the MBE capture and the call record only when the transmission is confirmed as the superframe starts (its
+  header's CRC, or the superframe before it), so a single sync word the 4800/2 hunt matches on receiver noise under
+  `-fa` no longer plays a superframe of noise as a call with no callsigns, at the cost of a late-entry or failed-header
+  call's first superframe (420 ms; `DSTAR_PROCESS`, `DECODE_IQ_MBE_CAPTURE_DSTAR`). ProVoice's still answers only the
+  hunt. Neither protocol has a per-frame check: a D-STAR
   superframe costs 1992 symbols and a ProVoice frame 736, and the AMBE/IMBE error counts they leave in
   `dsd_state::errs`/`errs2` are soft corrections, not verdicts. D-STAR confirms on a CRC-16/X.25 — the RF header via
   `processDSTAR_HD()`, or the header rebroadcast in `dstar_slow_data.c` — and both confirm on a second frame arriving
