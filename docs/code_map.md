@@ -3953,9 +3953,11 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
     widths a changed rate leaves unfit, since it no longer retunes them.
 - `dsd_trunk_scan_hook_dwell_due()` — whether the idle dwell of the target on air has run out
   (`dsd_engine_trunk_scan_dwell_due()`, discussion #717). `getFrameSync()` asks it every 300 symbols, beside the Signal
-  search yield, and on a 1 returns a plain no-sync (history dropped, hunt return marked, no input interruption), so the
-  engine's next pass ticks the rotation under the coordinator's guard and runs its no-carrier pass as after any
-  no-sync return. Without it a silent target's dwell was seen only at the 1800-symbol pass end. It answers 1 once per
+  search yield, and on a 1 returns a plain no-sync (history kept as at a pass end, `frame_sync_history_keep()`, hunt
+  return marked, no input interruption), so the engine's next pass ticks the rotation under the coordinator's guard
+  and runs its no-carrier pass as after any no-sync return; a tick that keeps the target leaves a sync straddling the
+  hand-back to the next call, and one that rotates resets acquisition, which forgets the history (issue #834). Without
+  it a silent target's dwell was seen only at the 1800-symbol pass end. It answers 1 once per
   dwell start (`dwell_yield_from_m`), so a tick that keeps the target never makes the hunt hand back every 300
   symbols, and counts a park still in flight from its landing. Every park's idle dwell runs from its landing
   (`trunk_scan_arm_idle_at_landing()`): a synchronous one's completion (a blocking rigctl tune's latency is not

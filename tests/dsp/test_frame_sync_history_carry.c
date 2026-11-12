@@ -34,6 +34,7 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -199,6 +200,53 @@ test_burst_across_the_exit_locks(void) {
     }
     /* A sync drops the history: the next call starts blind. */
     assert(state.frame_sync_carry.valid == 0);
+    free_state_buffers(&state);
+}
+
+/* A trunk-scan dwell due at the first 300-symbol point after the burst began: the hunt hands back there, inside the
+   pass (discussion #717). */
+static int g_dwell_answers = 0;
+
+static int
+dwell_due_once_the_burst_began(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    if (g_dwell_answers > 0 || g_pos <= BURST_AT) {
+        return 0;
+    }
+    g_dwell_answers++;
+    return 1;
+}
+
+/* Issue #834: the tick a dwell hand-back runs may keep the target (a tone check holds it, nothing else can take the
+   receiver, the tick guard was busy), and the stream then goes on unbroken. The hand-back keeps its history as a pass
+   end does, so the burst straddling it still locks, block 1 whole. */
+static void
+test_burst_across_a_dwell_hand_back_locks(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_uplink(&opts, &state);
+    g_dwell_answers = 0;
+    dsd_trunk_scan_hooks hooks = {0};
+    hooks.dwell_due = dwell_due_once_the_burst_began;
+    dsd_trunk_scan_hooks_set(&hooks);
+    const int rc = getFrameSync(&opts, &state);
+    dsd_trunk_scan_hooks_set(NULL);
+    assert(rc == DSD_SYNC_NONE);
+    assert(g_dwell_answers == 1);
+    /* Handed back inside the burst's first half, before the pass would have ended. */
+    assert(g_pos > BURST_AT && g_pos < DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS);
+    const int sync = hunt_to_end(&opts, &state);
+    if (sync != DSD_SYNC_TETRA_NDB_POS || g_pos != BURST_AT + CB_TAIL + CB_HALF + CB_ETS) {
+        DSD_FPRINTF(stderr, "FAIL #834: burst across a dwell hand-back: sync %d at %d (want %d at %d)\n", sync, g_pos,
+                    DSD_SYNC_TETRA_NDB_POS, BURST_AT + CB_TAIL + CB_HALF + CB_ETS);
+    }
+    assert(sync == DSD_SYNC_TETRA_NDB_POS);
+    assert(g_pos == BURST_AT + CB_TAIL + CB_HALF + CB_ETS);
+    assert(state.tetra_sync.cb == 1 && state.tetra_sync.b1_valid == 1);
+    for (int i = 0; i < CB_HALF; i++) {
+        assert(state.tetra_sync.b1_dibuf[i] == (uint8_t)(g_block1[i] - '0'));
+    }
     free_state_buffers(&state);
 }
 
@@ -674,6 +722,7 @@ test_x2tdma_voice_sync_notes_what_it_cannot_read_back(void) {
 int
 main(void) {
     test_burst_across_the_exit_locks();
+    test_burst_across_a_dwell_hand_back_locks();
     test_carrier_change_starts_blind();
     test_symbol_between_calls_starts_blind();
     test_new_epoch_starts_blind();

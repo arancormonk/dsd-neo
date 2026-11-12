@@ -5635,9 +5635,11 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             /* A trunk-scan target's idle dwell ran out inside the pass (discussion #717). On dead air the hunt hands
                back once per 1800-symbol pass, so a dwell checked only between passes ran up to a pass long (375 ms at
                4800 sym/s, 750 ms at 2400). The hand-back is a no-sync return like the pass's own, only earlier: the
-               engine's next tick rotates under the coordinator's guard, and its no-carrier pass runs as after any. */
+               engine's next tick rotates under the coordinator's guard, and its no-carrier pass runs as after any. It
+               keeps its history as the pass end does: a tick that keeps the target leaves a sync straddling the
+               hand-back to the next call, and one that rotates retunes, which drops the history (issue #834). */
             if (dsd_trunk_scan_hook_dwell_due(opts, state)) {
-                frame_sync_history_drop(state);
+                frame_sync_history_keep(&rt, state);
                 frame_sync_sps_hunt_mark_return(state);
                 return DSD_SYNC_NONE;
             }
