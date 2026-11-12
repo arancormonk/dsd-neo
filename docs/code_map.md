@@ -7167,7 +7167,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     failures a run on s5 and s113). Measured limit, accepted: on noisy Phase 2 the gain is not uniform. With noise added
     to s5, s5n3's mean 4V/2V burst count stays flat (+0.5) but 6 of 12 realizations lose up to 6 bursts; s5 under `-fa`
     decodes 7.7 more AMBE frames with AMBE errors per frame up from 0.052 to 0.062; s5n5 gains overall (+8.3 bursts,
-    +26.7 AMBE frames). The rate alone never selects the step (X2-TDMA shares 4800/4). An uplink session decides its
+    +26.7 AMBE frames). Measured limit, accepted: on a clean site B Phase 2 capture the
+    step gains no frame and costs bits. Its voice channels decode the same 3753 AMBE frames with the AMBE error sum up
+    from 61.0 to 78.5 (0.016 to 0.021 errors per frame, 12 of 12 realizations) under `-f2`, and from 101.9 to 112.1
+    under `-fa`. The rate alone never selects the step (X2-TDMA shares 4800/4). An uplink session decides its
     gain without the proof (TETRA never proves P25). Tests: `DSP_COSTAS` (values with, without and with a stale proof at
     4800 and 6000, before the lock, set gains, the TETRA chain and a TETRA fallback stream; the proof taken per block),
     `DSP_TETRA_CHAIN` (a proof changes no symbol of the chain or an uplink session).
