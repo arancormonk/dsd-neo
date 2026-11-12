@@ -257,9 +257,9 @@ static const float dmr_rrc_taps[81] = {
  * (1 + 0.2) / 2T: NXDN TS 1-A version 1.3 clauses 3.4 and 3.5 (H(f) P(f) out, H(f) D(f) in), ETSI TS 102 658 clause
  * 14.2.2.2 (the same H(f) D(f) receive filter at 2400 symbol/s); MMDVM receives NXDN through RRC 0.2 then an inverse
  * sinc (IO.cpp). The overall response is the Nyquist raised cosine. This is that receive filter at 48 kHz for 2400
- * symbol/s (sps 20, NXDN48 and dPMR), four symbols either side (3.35 lost frames on an off-air NXDN96 recording),
- * from the inverse Fourier transform of H(f) D(f); NXDN96 at 4800 symbol/s and other rates read the same pulse scaled
- * in symbols. The tables it replaces were RRC 0.2 pulses for 16 (NXDN) and about 14.5 (dPMR) samples per symbol, a
+ * symbol/s (sps 20, NXDN48 and dPMR), four symbols either side (three or 3.35 symbols either side lost frames on an
+ * off-air NXDN96 recording), from the inverse Fourier transform of H(f) D(f); NXDN96 at 4800 symbol/s and other rates
+ * read the same pulse scaled in symbols. The tables it replaces were RRC 0.2 pulses for 16 (NXDN) and about 14.5 (dPMR) samples per symbol, a
  * quarter or more too wide in frequency and without the inverse sinc, and NXDN96 ran DMR's.
  */
 static const float nxdn_dpmr_rx_taps[161] = {
@@ -286,15 +286,15 @@ static const float nxdn_dpmr_rx_taps[161] = {
     -0.0644416064f, -0.0721007426f, -0.0772406558f, -0.0798503048f, -0.0799918025f, -0.0777951567f, -0.0734513084f,
     -0.0672037344f, -0.0593389108f, -0.0501759572f, -0.0400557916f, -0.0293301297f, -0.0183506526f, -0.0074586521f,
     0.0030245643f,  0.0128062578f,  0.0216296211f,  0.0292797519f,  0.0355881155f,  0.0404354274f,  0.0437529310f};
-#define NXDN_DPMR_BASE_SPS     20
-#define NXDN_DPMR_BASE_TAP_LEN (int)(sizeof(nxdn_dpmr_rx_taps) / sizeof(nxdn_dpmr_rx_taps[0]))
+#define NXDN_BASE_SPS     20
+#define NXDN_BASE_TAP_LEN (int)(sizeof(nxdn_dpmr_rx_taps) / sizeof(nxdn_dpmr_rx_taps[0]))
 
 // P25 C4FM RX de-emphasis filter - OP25 compatible (transfer_function_rx)
 // Sinc-based filter that inverts the C4FM transmitter's preemphasis (t/sin(t)).
 // Parameters: sample_rate=48000, symbol_rate=4800, span=9, sps=10
 // Generated using IFFT of sinc(pi*f/rate) transfer function
 // See: https://github.com/boatbod/op25/blob/master/op25/gr-op25_repeater/apps/tx/op25_c4fm_mod.py
-#define P25_BASE_SPS           10
+#define P25_BASE_SPS      10
 static const float p25_base_coeffs[91] = {
     2.5136032328468223e-04f,  2.0151157806489389e-04f,  6.5614198114868653e-05f,  -1.1016182521584872e-04f,
     -2.5912718500147703e-04f, -3.1854080534864679e-04f, -2.5499192412346209e-04f, -8.0811341618403253e-05f,
@@ -331,12 +331,12 @@ static sps_fir g_fir_dmr = {.base = dmr_rrc_taps,
                             .design_kind = SPS_FIR_DESIGN_RRC,
                             .rrc_alpha = 0.2f};
 static sps_fir g_fir_nxdn = {.base = nxdn_dpmr_rx_taps,
-                             .base_len = NXDN_DPMR_BASE_TAP_LEN,
-                             .base_sps = NXDN_DPMR_BASE_SPS,
+                             .base_len = NXDN_BASE_TAP_LEN,
+                             .base_sps = NXDN_BASE_SPS,
                              .design_kind = SPS_FIR_DESIGN_INTERP};
 static sps_fir g_fir_dpmr = {.base = nxdn_dpmr_rx_taps,
-                             .base_len = NXDN_DPMR_BASE_TAP_LEN,
-                             .base_sps = NXDN_DPMR_BASE_SPS,
+                             .base_len = NXDN_BASE_TAP_LEN,
+                             .base_sps = NXDN_BASE_SPS,
                              .design_kind = SPS_FIR_DESIGN_INTERP};
 /* M17 sends root-raised-cosine pulses of roll-off 0.5; the receive half is the same filter, so the encoder's transmit
    taps are its matched filter. */

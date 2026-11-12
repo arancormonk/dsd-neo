@@ -224,6 +224,7 @@ test_sps_filters_are_each_modes_receive_pulse(void) {
         {DSD_SPS_FILTER_NXDN, 10, "NXDN96", nxdn_rx_spectrum, NULL},
         {DSD_SPS_FILTER_NXDN, 5, "NXDN96", nxdn_rx_spectrum, NULL},
         {DSD_SPS_FILTER_DPMR, 20, "dPMR", nxdn_rx_spectrum, nxdn_rx_pulse},
+        {DSD_SPS_FILTER_DPMR, 10, "dPMR", nxdn_rx_spectrum, NULL},
     };
     static double taps[DSD_SPS_FILTER_MAX_TAPS];
     int rc = 0;

@@ -6348,7 +6348,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   - NXDN and dPMR: that root raised cosine times the inverse sinc pi f T / sin(pi f T) (NXDN TS 1-A 3.5, ETSI TS 102
     658 14.2.2.2), which undoes the sinc of the transmitter's held symbols; four symbols either side, 161 taps at 20
     samples per symbol and 81 for NXDN96 at 10. Before #834 NXDN48 and dPMR ran root raised cosines too wide for 2400
-    symbol/s and NXDN96 ran DMR's, which cost an ideal NXDN signal 4 to 5.5 dB and dPMR 2 dB.
+    symbol/s and NXDN96 ran DMR's, which cost an ideal NXDN signal 4 to 5 dB and dPMR 2 dB.
   - P25 Phase 1: the integrate-and-dump sinc that TIA-102.BAAA's C4FM pairs with its raised cosine times inverse-sinc
     transmit filter (OP25's `transfer_function_rx`).
   - M17: the receive half of its root-raised-cosine pulse (roll-off 0.5), the encoder's transmit taps

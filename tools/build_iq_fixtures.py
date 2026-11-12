@@ -1776,7 +1776,7 @@ def dmr_synth_wav_audio(generator, args, work_dir, name):
     generator = os.path.abspath(generator)
     with tempfile.TemporaryDirectory(prefix="dmr-synth-", dir=work_dir) as synth_dir:
         wav_name = name + ".wav"
-        subprocess.run([generator, "-o", wav_name] + args, cwd=synth_dir, check=True, capture_output=True)
+        subprocess.run([generator, "-o", wav_name] + args, cwd=synth_dir, check=True)
         wav_path = os.path.join(synth_dir, wav_name)
         with wave.open(wav_path, "rb") as wav:
             if wav.getnchannels() != 1 or wav.getsampwidth() != 2 or wav.getframerate() != SAMPLE_RATE_HZ:

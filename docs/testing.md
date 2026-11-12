@@ -2006,8 +2006,9 @@ so separately generated calls carry different audio. Output is deterministic for
 With `--ms` it writes one MS transmission instead (issue #834): the MS sourced voice and data syncs, no CACH, and slot
 1's bursts alone, 27.5 ms on every 60 ms, with the audio at 0 between them. `DMR_SYNTH_MS_CLEAR_VOICE` decodes it
 through the MS path and checks the 24 Golay-protected bits of every frame (`MATCH protected`): across the silent gaps a
-few percent of the frames (11 of 540 in the case's 12 s call) come out with one unprotected bit wrong, which the
-continuous BS channel never does. The checker places an MS frame by the one `VC*` line the MS path prints per
+few percent of the frames come out with one unprotected bit wrong, which the continuous BS channel never does. Each such
+error is an inner symbol read as outer in a burst whose grid sits one sample late, and the root-raised-cosine filter's
+narrower eye (issue #834) makes more of them. The checker places an MS frame by the one `VC*` line the MS path prints per
 superframe, then VC1 to VC6 three frames at a time.
 
 `DMR_SYNTH_RECEIVE_NAMES` (`tests/protocol/dmr/dmr_receive_names_check.py`, issue #637) decodes three repeaters that
