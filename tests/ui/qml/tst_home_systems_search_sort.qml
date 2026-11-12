@@ -1187,9 +1187,9 @@ Item {
 
         // A sort chosen from the keyboard (Return, Enter, keypad Enter or Space) leaves the sheet closed and the
         // keyboard on the pill. The choice acts on the key's press and hands the keyboard back while the key is still
-        // down, so the key's repeats and its release reach the pill; on Android a repeat is also what reaches the app
-        // after TalkBack took the press of Alt+Enter. A control acts on a key's first press only, so the pill opens
-        // nothing until the key is pressed again.
+        // down, so the key's repeats and its release reach the pill. A held key repeats only on the control that took
+        // its first press, so the pill opens nothing until the key is pressed again. (TalkBack's Alt+Enter passed on
+        // late, press included: tst_a11y_scan_churn.qml, test_m5_*.)
         function test_keyboard_choice_leaves_the_sheet_closed_data() {
             return [{tag: "Return", key: Qt.Key_Return, modifiers: Qt.NoModifier},
                 {tag: "Enter", key: Qt.Key_Enter, modifiers: Qt.NoModifier},

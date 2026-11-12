@@ -650,9 +650,9 @@ Item {
         // A filter chosen from the keyboard (Return, Enter, keypad Enter or
         // Space) leaves the shared choice sheet closed and the keyboard on the
         // pill: the choice acts on the press and hands the keyboard back while
-        // the key is down, so its repeats and release reach the pill, which acts
-        // on a key's first press only (on Android a repeat is also what reaches
-        // the app after TalkBack took Alt+Enter's press).
+        // the key is down, so its repeats and release reach the pill, which
+        // repeats only a key whose first press it took (TalkBack's Alt+Enter
+        // passed on late: tst_a11y_scan_churn.qml, test_m5_*).
         function test_06q_a_keyboard_choice_leaves_the_filter_sheet_closed_data() {
             return [{tag: "Return", key: Qt.Key_Return, modifiers: Qt.NoModifier},
                 {tag: "Enter", key: Qt.Key_Enter, modifiers: Qt.NoModifier},

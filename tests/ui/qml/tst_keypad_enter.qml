@@ -344,6 +344,20 @@ Item {
             compare(otherSpy.count, 1, "the next first press acts");
         }
 
+        // Alt held with an activation key is a screen reader's command only
+        // while one is on (tst_a11y_scan_churn.qml, test_m5_*): without one,
+        // Alt+Return and Alt+Space press the focused control as before.
+        function test_alt_keys_press_without_a_screen_reader() {
+            verify(!screenReader.active, "this run has no screen reader");
+            spy.signalName = "clicked";
+            spy.target = dashed;
+            dashed.forceActiveFocus();
+            keyClick(Qt.Key_Return, Qt.AltModifier);
+            compare(spy.count, 1, "Alt+Return presses it");
+            keyClick(Qt.Key_Space, Qt.AltModifier);
+            compare(spy.count, 2, "Alt+Space presses it");
+        }
+
         // A control covered by a sheet while it has the focus keeps its Tab stop
         // only while it keeps the focus: once the sheet takes the focus, Tab
         // cannot land back on the control under it. Shown again, it is a stop.

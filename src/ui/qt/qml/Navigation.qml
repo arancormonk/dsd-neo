@@ -59,18 +59,31 @@ QtObject {
     // that reaches any other control is taken and does nothing. An action
     // that moves the keyboard while the key is down (a sheet's choice hands
     // it back to the pill that opened the sheet) otherwise had the repeats
-    // act on the control it landed on, and open the sheet again; on Android a
-    // repeat can be all the app sees of Alt+Enter when TalkBack took the
-    // first press. The first press is noted until that key's release, which
-    // every such control passes to activationRelease(). No control acts on a
-    // release. True when @p event should act; an activation key's press,
-    // repeat or not, is taken, so it goes no further.
+    // act on the control it landed on, and open the sheet again. The first
+    // press is noted until that key's release, which every such control
+    // passes to activationRelease(). No control acts on a release. True when
+    // @p event should act; an activation key's press, repeat or not, is
+    // taken, so it goes no further.
+    //
+    // With a screen reader on, an activation key held with Alt is the screen
+    // reader's own command, never the app's: TalkBack's Alt+Enter clicks the
+    // item TalkBack has focused and Alt+Shift+Enter long-presses it. TalkBack
+    // takes the key and makes that click itself, but Android also hands the
+    // app a key an accessibility service has not answered within 500 ms. A
+    // click that keeps TalkBack waiting (a sheet's choice that re-sorts
+    // Listen's cards) had the same press reach the app after the click had
+    // closed the sheet and the keyboard was back on its opener, which opened
+    // the sheet again; a busy TalkBack passes the key on before its click
+    // instead. Such a press, its repeats included, is taken and does nothing:
+    // the screen reader's click is the one action.
     property var heldActivationItem: null
     property int heldActivationKey: 0
     function activationPress(event, item) {
         if (event.key !== Qt.Key_Space && event.key !== Qt.Key_Return && event.key !== Qt.Key_Enter)
             return false;
         event.accepted = true;
+        if ((event.modifiers & Qt.AltModifier) && typeof screenReader !== "undefined" && screenReader !== null && screenReader.active)
+            return false;
         if (!event.isAutoRepeat) {
             heldActivationItem = item;
             heldActivationKey = event.key;

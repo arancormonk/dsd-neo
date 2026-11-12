@@ -11967,7 +11967,8 @@ Qt Quick frontend (`src/ui/qt`):
   disables holds the pill, which had lost the focus when the sheet read it, and the focus went to Home itself, where
   TalkBack started from the top). A sort chosen with Enter or Space hands the keyboard back while the key is still
   down; the pill never took that key's first press, so its repeats (`Navigation.activationPress()`) and release
-  leave the sheet closed. A card that leaves under a sheet leaves the sheet no opener, so Home hands the
+  leave the sheet closed. A sort chosen with TalkBack's Alt+Enter is TalkBack's click; the same Alt+Enter that Android
+  passes on late reaches the pill and is taken without acting (screen reader on), so the sheet stays closed. A card that leaves under a sheet leaves the sheet no opener, so Home hands the
   keyboard on after the sheet's own deferred hand-back (`settleSystemsFocusLater()`). A card whose title another shown
   card has names its receiver on a line of its own under the source line, which wraps, so the address is never cut at
   phone width or large text. In Nearest order the place line reads the distance first ("6.9 mi · Johnson,
@@ -11985,7 +11986,8 @@ Qt Quick frontend (`src/ui/qt`):
   (Back closes the sort sheet), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_scan_churn.qml`: no show or hide in the section and
   one tree refresh per sort, search and Nearest reorder at 300 mixed cards, one for a place named in place and none
   for its rename (`test_m4_saved_systems_part_shown_in_place_refreshes_the_tree`), and the Sort sheet's focus back on
-  its pill as TalkBack chooses, History's filter sheet the control; `tst_a11y_text_reach.qml`).
+  its pill as TalkBack chooses, History's filter sheet the control; the late Alt+Enter after a choice or Cancel,
+  `test_m5_late_screen_reader_keys_leave_the_sort_sheet_closed`; `tst_a11y_text_reach.qml`).
 - Pin to Listen (issue #801 D4/D5, B3). Every source offers the same action from `ListenPins::action(kind, uid)`
   (`{pinned, text, accessibleName, enabled, description}`: "Pin to Listen"/"Unpin from Listen", "Pin <label> to Listen";
   not pinned while full, disabled with `Text::FullRefusal` as its description). In `qml/HomeScreen.qml` `pinAction(kind,
@@ -16278,12 +16280,23 @@ key's repeats (`isAutoRepeat`) act only on that same item, so a key held on Spec
 before. A repeat that reaches any other control is taken and does nothing; no control acts on a release. An action
 that moves the keyboard while the key is down otherwise had the repeats act on the control it landed on: a
 `ChoiceSheet` choice made with Enter or Space hands the keyboard back to the pill that opened the sheet (Listen's Sort
-pill, History's filter pills, on `main` too) and the held key opened the sheet again. On Android a repeat can be all
-the app sees of TalkBack's Alt+Enter, whose first press TalkBack keeps. Tests: `tst_keypad_enter.qml`
+pill, History's filter pills, on `main` too) and the held key opened the sheet again. With a screen reader on
+(`screenReader.active`), Space, Return or Enter held with Alt is the screen reader's command and no control acts on it
+(taken, repeats included): TalkBack's Alt+Enter clicks the item it has focused (Alt+Shift+Enter long-presses it) and
+TalkBack makes that click itself, but Android also hands the app a key an accessibility service has not answered within
+500 ms. On the emulator a Sort choice's click held TalkBack 860 ms while Home re-sorted 300 cards, and the same press
+(not a repeat) reached the app after the sheet had closed and given the keyboard back to the pill, which opened the
+sheet again (Cancel and History's filter choices the same); a busy TalkBack passes the key on before its click
+instead. The click is the one action. Without a screen reader Alt changes nothing. Not covered: a field's `accepted` on
+Enter (TextInput's own handling) and TalkBack's Search-key keymap, whose commands carry no modifier the app can see.
+Tests: `tst_keypad_enter.qml`
 (`heldKeysActOnce()` on every control and screen button there, `test_a_held_key_repeats_only_where_it_went_down`, the
 held Tune down in `test_spectrum_buttons_take_keypad_enter`), `tst_home_systems_search_sort.qml`
 (`test_keyboard_choice_leaves_the_sheet_closed`) and `tst_call_log_follow.qml`
-(`test_06q_a_keyboard_choice_leaves_the_filter_sheet_closed`), each sending repeats through `testContext.sendKey()`.
+(`test_06q_a_keyboard_choice_leaves_the_filter_sheet_closed`), each sending repeats through `testContext.sendKey()`;
+`tst_keypad_enter.qml` `test_alt_keys_press_without_a_screen_reader`, and `UI_QT_QML_A11Y_CHURN`
+(`tst_a11y_scan_churn.qml` `test_m5_late_screen_reader_keys_leave_the_sort_sheet_closed` and its History filter twin:
+the click on a choice or Cancel, then the late Alt+Enter on the pill, and the key first then the click on a choice).
 Issue #646 added keypad Enter to `SegmentedControl`, `BottomNav`, `DashedActionButton`, `PlayCircle`, `CallRow`,
 `DisclosureRow`, `PlexSwitch` and `ToggleRow` and to the Spectrum, Monitor, RadioReference and wizard buttons and rows
 that took Return alone, and moved the Monitor's Spectrum button's keys behind its gate. A control a hidden section can

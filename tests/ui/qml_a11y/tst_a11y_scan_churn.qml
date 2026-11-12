@@ -999,6 +999,156 @@ Item {
             }
         }
 
+        // TalkBack's keyboard commands hold Alt: Alt+Enter clicks the item TalkBack has focused, Alt+Shift+Enter
+        // long-presses it. TalkBack takes the key and makes the click itself, but Android hands the app a key that an
+        // accessibility service has not answered within 500 ms as well. On the emulator (300 cards) the click on a
+        // Sort choice blocked TalkBack for 860 ms while Home re-sorted, and the same Alt+Enter press (not a repeat)
+        // reached the app after the click had closed the sheet and handed the keyboard back to the pill, and opened
+        // the sheet again; a slow TalkBack passes the key on before its click instead. With a screen reader on, a
+        // control takes Space, Return or Enter held with Alt and does nothing: the screen reader's click is the one
+        // action. The press, a repeat and the release, as Android delivered them.
+        function screenReaderCommandKeys(item, key, modifiers) {
+            var taken = testContext.sendKey(item, key, modifiers, true, false);
+            taken = testContext.sendKey(item, key, modifiers, true, true) && taken;
+            testContext.sendKey(item, key, modifiers, false, false);
+            return taken;
+        }
+        function openAsTalkBack(pill, what) {
+            verify(testContext.pressAccessible(pill), "TalkBack's click on " + what);
+            var sheet = null;
+            tryVerify(function () {
+                sheet = Ui.Navigation.topModal;
+                return sheet !== null && sheet.visible;
+            }, 2000, what + " opens its sheet");
+            waitForRendering(sheet);
+            return sheet;
+        }
+        function lateKeysLeaveTheSheetClosed(pill, data, what) {
+            verify(pill.activeFocus, "the keyboard is back on " + what + ", not on " + app.activeFocusItem);
+            var taken = screenReaderCommandKeys(pill, data.key, data.modifiers);
+            wait(50);
+            compare(Ui.Navigation.topModal, null, "the sheet stays closed after " + what + "'s late " + data.tag);
+            verify(taken, "the late keys are taken");
+            verify(pill.activeFocus, "the keyboard stays on " + what);
+        }
+        // Then the click on another choice: the key, passed on first, did nothing on it.
+        function keyFirstThenClick(sheet, choiceText, data) {
+            var choice = textControl(sheet, choiceText);
+            verify(choice !== null, choiceText + " is offered");
+            verify(testContext.focusAccessible(choice));
+            tryVerify(function () {
+                return choice.activeFocus;
+            });
+            var taken = screenReaderCommandKeys(choice, data.key, data.modifiers);
+            wait(50);
+            verify(sheet.visible, "the early " + data.tag + " chose nothing");
+            verify(taken, "the early keys are taken");
+            verify(testContext.pressAccessible(choice));
+            tryVerify(function () {
+                return !sheet.visible;
+            });
+        }
+        function cancelAsTalkBack(sheet) {
+            var cancel = textControl(sheet, "Cancel");
+            verify(cancel !== null, "the sheet has its Cancel");
+            verify(testContext.focusAccessible(cancel));
+            tryVerify(function () {
+                return cancel.activeFocus;
+            });
+            verify(testContext.pressAccessible(cancel));
+            tryVerify(function () {
+                return !sheet.visible;
+            });
+        }
+        function test_m5_late_screen_reader_keys_leave_the_sort_sheet_closed_data() {
+            return [{tag: "Alt+Return", key: Qt.Key_Return, modifiers: Qt.AltModifier},
+                {tag: "Alt+keypad Enter", key: Qt.Key_Enter, modifiers: Qt.AltModifier | Qt.KeypadModifier},
+                {tag: "Alt+Shift+Return", key: Qt.Key_Return, modifiers: Qt.AltModifier | Qt.ShiftModifier}];
+        }
+        function test_m5_late_screen_reader_keys_leave_the_sort_sheet_closed(data) {
+            verify(screenReader.active, "this run has a screen reader on");
+            testContext.setLifecyclePhase(0);
+            var home = findChild(app, "homeScreen");
+            try {
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+                for (var name of ["Charlie", "Alpha", "Bravo"])
+                    verify(savedSystems.add({name: name, sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5"}));
+                prefs.systemsSort = "added";
+                tryCompare(home, "visible", true);
+                home.showSection("systems");
+                tryCompare(savedSystemCards, "totalCount", 3);
+                waitForRendering(home);
+                var pill = findChild(home, "systemsSortPill");
+                chooseAsTalkBack(pill, "the Sort sheet", "Name");
+                compare(savedSystemCards.effectiveSort, "name");
+                lateKeysLeaveTheSheetClosed(pill, data, "the Sort pill");
+                compare(savedSystemCards.effectiveSort, "name");
+
+                cancelAsTalkBack(openAsTalkBack(pill, "the Sort pill"));
+                lateKeysLeaveTheSheetClosed(pill, data, "the Sort pill, after Cancel");
+
+                keyFirstThenClick(openAsTalkBack(pill, "the Sort pill"), "Order added", data);
+                tryCompare(savedSystemCards, "effectiveSort", "added");
+                lateKeysLeaveTheSheetClosed(pill, data, "the Sort pill, after the click");
+
+                // TalkBack passes a plain Return on: it still presses the pill.
+                testContext.sendKey(pill, Qt.Key_Return, Qt.NoModifier, true, false);
+                testContext.sendKey(pill, Qt.Key_Return, Qt.NoModifier, false, false);
+                tryVerify(function () {
+                    return Ui.Navigation.topModal !== null && Ui.Navigation.topModal.visible;
+                }, 2000, "a plain Return opens the sheet");
+                cancelAsTalkBack(Ui.Navigation.topModal);
+            } finally {
+                testContext.stopAccessibilityCount();
+                if (Ui.Navigation.topModal)
+                    Ui.Navigation.topModal.visible = false;
+                testContext.resetSystemsSort();
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+            }
+        }
+        function test_m5_late_screen_reader_keys_leave_the_history_filter_sheet_closed_data() {
+            return test_m5_late_screen_reader_keys_leave_the_sort_sheet_closed_data();
+        }
+        function test_m5_late_screen_reader_keys_leave_the_history_filter_sheet_closed(data) {
+            verify(screenReader.active, "this run has a screen reader on");
+            testContext.setLifecyclePhase(0);
+            app.currentTab = 1;
+            var history = findChild(app, "idleHistoryScreen");
+            var pill = null;
+            try {
+                tryCompare(history, "visible", true);
+                waitForRendering(history);
+                pill = textControl(history, "All activity");
+                verify(pill !== null, "the activity pill");
+                chooseAsTalkBack(pill, "the activity sheet", "Encrypted");
+                compare(pill.text, "Encrypted");
+                lateKeysLeaveTheSheetClosed(pill, data, "the activity pill");
+
+                cancelAsTalkBack(openAsTalkBack(pill, "the activity pill"));
+                lateKeysLeaveTheSheetClosed(pill, data, "the activity pill, after Cancel");
+
+                keyFirstThenClick(openAsTalkBack(pill, "the activity pill"), "All activity", data);
+                compare(pill.text, "All activity");
+                lateKeysLeaveTheSheetClosed(pill, data, "the activity pill, after the click");
+            } finally {
+                testContext.stopAccessibilityCount();
+                if (Ui.Navigation.topModal)
+                    Ui.Navigation.topModal.visible = false;
+                if (pill && pill.text !== "All activity") {
+                    pill.activate();
+                    var sheet = Ui.Navigation.topModal;
+                    if (sheet) {
+                        var all = textControl(sheet, "All activity");
+                        if (all)
+                            all.activate();
+                    }
+                }
+                app.currentTab = 0;
+            }
+        }
+
         // Issue #801 B3: Explore's face carries its frequency in its name. Edited in Explore's setup, Home hidden under
         // it, the face renames nothing; shown again, it reads the new frequency.
         function test_l_hidden_explore_face_stays_silent() {
