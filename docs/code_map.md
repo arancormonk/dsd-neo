@@ -5800,20 +5800,29 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   symbols, the symbols shifted in matching, is at least 5 bits (7, 8, 7, 7, 6 for 1-5; the P1 word's shifted 1-13 at
   least 7), so an exact word a slip put after the expected position is matched where it is. That bound holds under
   the anchor's map and polarity only: the word inverted or under the P1200 map, shifted 10-12 symbols (P1 11-13), lies
-  within the tolerance when the symbols before it match. So either try also refuses a window that ends in the head of
-  an exact word, under any map and polarity the exact matchers take, slipped 1 to the bound's span
-  (`frame_sync_p25_sync_head_ends_window()`, `DSD_P25P2_TOLERANT_SYNC_NO_STEAL_SHIFTS` 12,
-  `DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS` 13): taken, the window behind it fails its verdict (the NID its strict
-  check) and the exact word inside it goes with it. Its cost: a real word whose bit errors fall exactly on such a head
-  is refused, as if exact-only (P2: one error, a -3 read as +3 at dibit 17, makes the tail the inverted word's head
-  11 symbols on; every other case needs 3 or more). A slip past the span is not covered (the same map's own shift
-  comes within the tolerance there). The Phase 1 anchor and its validation are in Protocols (P25
-  Phase 1); the Phase 2 window verdict in Protocols (P25 Phase 2 voice dispatch). Diagnostics, never reset:
-  `tolerant_syncs`, `tolerant_frames` (P1) and `tolerant_windows` (P2, windows whose verdict passed). Tests:
-  `FRAME_SYNC_P25_ANCHOR`, `FRAME_SYNC_P25P2_ANCHOR` (distance and shifted bound, the expected position only,
-  thresholds, late exact words win, map and polarity, every invalidation, installation, the withheld accept effects,
-  C4FM and symbol files); through the whole receive chain, `DECODE_IQ_P25P1_CQPSK_SIMULCAST_NOISY_CC`,
-  `DECODE_IQ_P25P2_CC_NOISY` and `DECODE_IQ_P25P1_CQPSK_CC_THEN_NOISE_*` (`docs/testing.md`).
+  within the tolerance when the symbols before it match, and so does another protocol's word (under `-fa -mq`, an
+  X2-TDMA base voice word 5 symbols late behind the P1 word's first five lies 6 bits off the P1 word). So either try
+  also refuses a window that ends in the head of an exact word of any matcher that runs there, starting 1 to the
+  bound's span of symbols after the expected position (`frame_sync_window_ends_in_exact_head()`,
+  `DSD_P25P2_TOLERANT_SYNC_NO_STEAL_SHIFTS` 12, `DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS` 13): taken, the window behind
+  it fails its verdict (the NID its strict check) and the exact word inside it goes with it. The words are the try
+  table's: every matcher in `k_frame_sync_tries` has a declaration in `k_frame_sync_exact_words` with its exact words
+  (every polarity and variant its options pick; M17's, at 8 symbols, are shorter than any head read), the enable
+  predicate its matcher gates on (decoder on, profile, what stands it down; the matcher calls the same one) and how it
+  reads them (as received, under the four CQPSK maps, or TETRA's four derotations), so a protocol added there is
+  covered (`FRAME_SYNC_P25_ANCHOR` fails for a try-table matcher without one, and checks X2-TDMA's, YSF's and DMR's
+  words against their matchers). On the tolerant profiles no enabled word is longer than the window, so heads cover
+  every start. The check runs once per anchor, only for a window already within the tolerance. Its cost: a real word
+  whose bit errors fall exactly on such a head is refused, as if exact-only (P2: one error, a -3 read as +3 at dibit
+  17, makes the tail the inverted word's head 11 symbols on; P1: 2 bits for an X2-TDMA base voice word 13 symbols on,
+  every other case 3 or more). A word starting past the span is not covered (the same map's own shift comes within the
+  tolerance there). The Phase 1 anchor and its validation are in Protocols (P25 Phase 1); the Phase 2 window verdict
+  in Protocols (P25 Phase 2 voice dispatch). Diagnostics, never reset: `tolerant_syncs`, `tolerant_frames` (P1) and
+  `tolerant_windows` (P2, windows whose verdict passed). Tests: `FRAME_SYNC_P25_ANCHOR`, `FRAME_SYNC_P25P2_ANCHOR`
+  (distance and shifted bound, the expected position only, thresholds, late exact words win, map and polarity, every
+  invalidation, installation, the withheld accept effects, C4FM and symbol files); through the whole receive chain,
+  `DECODE_IQ_P25P1_CQPSK_SIMULCAST_NOISY_CC`, `DECODE_IQ_P25P2_CC_NOISY` and `DECODE_IQ_P25P1_CQPSK_CC_THEN_NOISE_*`
+  (`docs/testing.md`).
 - Sync anchor (`symbol_anchor.c`, `include/dsd-neo/dsp/symbol_anchor.h`, issue #729). A decoder that reads burst after
   burst without returning to the hunt (DMR BS for a whole repeater call) left the grid open loop, so a TX/RX clock
   offset walked it off the symbols until a sync was lost. `dsd_symbol_note_sync_anchor()` names a sync word the grid
@@ -9620,9 +9629,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     for 1-5) even when the symbols shifted in match, so an exact word a slip of 1-13 symbols put after the expected
     position is never beaten there: the expected-position window is then more than 6 bits off and the exact word is
     matched where it is. Under another map or the other polarity the bound does not hold (inverted or P1200, shifted
-    11-13 symbols, 3-5 bits), so a window that ends in the head of an exact word of any map and polarity slipped 1-13
-    symbols is refused (`frame_sync_p25_sync_head_ends_window()`, `DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS`; DSP
-    above). The bound covers that range only; nothing farther is scored.
+    11-13 symbols, 3-5 bits), nor for another protocol's word, so a window that ends in the head of an exact word of
+    any matcher that runs there, starting 1-13 symbols after the expected position, is refused
+    (`frame_sync_window_ends_in_exact_head()`, `DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS`; DSP above). The bound covers
+    that range only; nothing farther is scored.
   - Strict NID (`p25p1_nid_verdict_passes_tolerant_sync()`, in `p25p1_decode_nid_and_duid()` before
     `p25p1_nid_verdict_commit()` and `p25p1_handle_nid_decode_success()`): behind a tolerant word the frame decodes
     only when the NID validates, its parity agrees (NID_OK), it needed at most 4 corrections

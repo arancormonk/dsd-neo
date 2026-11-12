@@ -40,8 +40,10 @@ extern "C" {
  * 10, 9, 8 and 9 for 1 to 5) even when the symbols shifted in match, so the expected-position window then lies more
  * than 6 bits off and the exact word is matched where it is. Under another map or the other polarity it is not:
  * shifted 11 to 13 symbols, the word's head under the P1200 map or inverted lies 3 to 5 bits from the word's tail, and
- * the symbols before it may match. So a window within the tolerance is refused too when it ends in the head of a word,
- * under any map and polarity the exact matchers take, slipped 1 to 13 symbols (frame_sync_p25_sync_head_ends_window()).
+ * the symbols before it may match; nor does it hold for another protocol's word (an X2-TDMA base voice word five
+ * symbols late, behind the anchor word's first five, lies 6 bits off). So a window within the tolerance is refused too
+ * when it ends in the head of an exact word of any matcher that runs there, under each map and polarity it reads it,
+ * starting 1 to 13 symbols after the expected position (frame_sync_window_ends_in_exact_head()).
  */
 #define DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS 13
 

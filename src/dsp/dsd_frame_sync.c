@@ -412,6 +412,83 @@ frame_sync_p25p2_profile_active(const frame_sync_match_ctx* ctx) {
            && ctx->opts->mod_qpsk == 0 && ctx->opts->mod_gfsk == 0 && ctx->state->rf_mod == 0;
 }
 
+/* Whether each protocol's matcher runs at all at this position (its decoder on, its profile, what stands it down), read
+ * apart from whether its window is ready: each matcher's own gate, and what says whose exact words a tolerant P25 word
+ * may not be the head of (frame_sync_window_ends_in_exact_head()). */
+static int
+frame_sync_p25p1_enabled(const frame_sync_match_ctx* ctx) {
+    return ctx->opts->frame_p25p1 == 1 && frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+}
+
+static int
+frame_sync_x2tdma_enabled(const frame_sync_match_ctx* ctx) {
+    return ctx->opts->frame_x2tdma == 1 && frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+}
+
+static int
+frame_sync_ysf_enabled(const frame_sync_match_ctx* ctx) {
+    return ctx->opts->frame_ysf == 1 && frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
+           && !dsd_frame_sync_suppress_p25_alt_sync(ctx->opts, ctx->state);
+}
+
+static int
+frame_sync_m17_enabled(const frame_sync_match_ctx* ctx) {
+    return ctx->opts->frame_m17 == 1 && frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+}
+
+static int
+frame_sync_p25p2_enabled(const frame_sync_match_ctx* ctx) {
+    return ctx->opts->frame_p25p2 == 1 && frame_sync_p25p2_profile_active(ctx);
+}
+
+static int
+frame_sync_dpmr_enabled(const frame_sync_match_ctx* ctx) {
+    return ctx->opts->frame_dpmr == 1 && frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+}
+
+static int
+frame_sync_tetra_enabled(const frame_sync_match_ctx* ctx) {
+    return ctx->opts->frame_tetra == 1;
+}
+
+static int
+frame_sync_dmr_enabled(const frame_sync_match_ctx* ctx) {
+    return ctx->opts->frame_dmr == 1 && frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+}
+
+static int
+frame_sync_provoice_enabled(const frame_sync_match_ctx* ctx) {
+    return ctx->opts->frame_provoice == 1 && frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_9600_2);
+}
+
+static int
+frame_sync_dstar_enabled(const frame_sync_match_ctx* ctx) {
+    return ctx->opts->frame_dstar == 1 && frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_2)
+           && !dsd_frame_sync_suppress_p25_alt_sync(ctx->opts, ctx->state);
+}
+
+static int
+frame_sync_nxdn_enabled(const frame_sync_match_ctx* ctx) {
+    const dsd_opts* opts = ctx->opts;
+    if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN || opts->audio_in_type == AUDIO_IN_SYMBOL_FLT) {
+        /* Symbol captures carry no rate metadata, so an enabled variant must be unambiguous. */
+        return (opts->frame_nxdn48 == 1) != (opts->frame_nxdn96 == 1);
+    }
+    /* The 2400/4 term yields to dPMR outright: that is the profile the two share, and the frame a 12-symbol FS2 opened
+     * is not this matcher's to re-open (#374). */
+    return (opts->frame_nxdn96 == 1 && frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4))
+           || (opts->frame_nxdn48 == 1 && frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_2400_4)
+               && !dsd_frame_sync_suppress_nxdn48_sync(opts, ctx->state));
+}
+
+/* The NXDN frame sync word as the matcher takes it: the five accepted readings of each polarity, positive first. */
+enum { FRAME_SYNC_NXDN_PATTERNS = 5 };
+
+static const char* const k_frame_sync_nxdn_words[] = {
+    "3131331131", "3331331131", "3131331111", "3331331111", "3131311131", "1313113313",
+    "1113113313", "1313113333", "1113113333", "1313133313", NULL,
+};
+
 static int frame_sync_cqpsk_4level_enabled(const dsd_opts* opts, const dsd_state* state);
 static int frame_sync_profile_uses_gfsk_exclusively(const dsd_opts* opts, int profile_index);
 
@@ -865,6 +942,9 @@ frame_sync_try_rotated_p25(frame_sync_match_ctx* ctx, const char* symbols, const
 #endif
 
 #ifdef USE_RADIO
+static int frame_sync_window_ends_in_exact_head(const frame_sync_match_ctx* ctx, const char* window, int dibits,
+                                                int span);
+
 /* After every exact matcher of every protocol failed at this position (frame_sync_try_protocol_matches()): the window at
  * the anchor's expected position, read under the anchor's dibit map and polarity, within
  * DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS bits of the word (dsd_p25p1_sync_anchor), on the RTL CQPSK 4800/4 path. A
@@ -888,8 +968,7 @@ frame_sync_try_tolerant_p25p1(frame_sync_match_ctx* ctx) {
     }
     const int bit_errors = dsd_p25p1_sync_bit_distance(ctx->synctest, map_idx, inverted);
     if (bit_errors > DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS
-        || frame_sync_p25_sync_head_ends_window(ctx->synctest, P25P1_SYNC, INV_P25P1_SYNC, 24,
-                                                DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS)) {
+        || frame_sync_window_ends_in_exact_head(ctx, ctx->synctest, 24, DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS)) {
         return DSD_SYNC_NONE;
     }
     const int synctype = inverted ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS;
@@ -903,8 +982,7 @@ frame_sync_try_tolerant_p25p1(frame_sync_match_ctx* ctx) {
 
 static int
 frame_sync_try_p25p1(frame_sync_match_ctx* ctx) {
-    if (ctx->opts->frame_p25p1 != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
-        || !frame_sync_match_window_ready(ctx, 24)) {
+    if (!frame_sync_p25p1_enabled(ctx) || !frame_sync_match_window_ready(ctx, 24)) {
         return DSD_SYNC_NONE;
     }
 
@@ -963,8 +1041,7 @@ static int
 frame_sync_try_x2tdma(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     /* The burst is decoded back from dibit_buf_p (frame_sync_accept_x2tdma()). */
-    if (opts->frame_x2tdma != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
-        || !frame_sync_match_window_own(ctx, 24)) {
+    if (!frame_sync_x2tdma_enabled(ctx) || !frame_sync_match_window_own(ctx, 24)) {
         return DSD_SYNC_NONE;
     }
 
@@ -989,8 +1066,7 @@ static int
 frame_sync_try_ysf(frame_sync_match_ctx* ctx) {
     dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    if (opts->frame_ysf != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
-        || !frame_sync_match_window_ready(ctx, 20) || dsd_frame_sync_suppress_p25_alt_sync(opts, state)) {
+    if (!frame_sync_ysf_enabled(ctx) || !frame_sync_match_window_ready(ctx, 20)) {
         return DSD_SYNC_NONE;
     }
 
@@ -1017,8 +1093,7 @@ frame_sync_try_ysf(frame_sync_match_ctx* ctx) {
 
 static int
 frame_sync_try_p25p2(frame_sync_match_ctx* ctx) {
-    if (ctx->opts->frame_p25p2 != 1 || !frame_sync_p25p2_profile_active(ctx)
-        || !frame_sync_match_window_ready(ctx, 20)) {
+    if (!frame_sync_p25p2_enabled(ctx) || !frame_sync_match_window_ready(ctx, 20)) {
         return DSD_SYNC_NONE;
     }
 
@@ -1066,8 +1141,7 @@ frame_sync_try_tolerant_p25p2(frame_sync_match_ctx* ctx) {
     }
     const int bit_errors = dsd_p25p2_sync_bit_distance(ctx->synctest20, map_idx, inverted);
     if (bit_errors > DSD_P25P2_TOLERANT_SYNC_MAX_BIT_ERRORS
-        || frame_sync_p25_sync_head_ends_window(ctx->synctest20, P25P2_SYNC, INV_P25P2_SYNC, 20,
-                                                DSD_P25P2_TOLERANT_SYNC_NO_STEAL_SHIFTS)) {
+        || frame_sync_window_ends_in_exact_head(ctx, ctx->synctest20, 20, DSD_P25P2_TOLERANT_SYNC_NO_STEAL_SHIFTS)) {
         return DSD_SYNC_NONE;
     }
     const int synctype = inverted ? DSD_SYNC_P25P2_NEG : DSD_SYNC_P25P2_POS;
@@ -1097,8 +1171,7 @@ static int
 frame_sync_try_dpmr(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    if (opts->frame_dpmr != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_2400_4)
-        || !frame_sync_match_window_ready(ctx, 12)) {
+    if (!frame_sync_dpmr_enabled(ctx) || !frame_sync_match_window_ready(ctx, 12)) {
         return DSD_SYNC_NONE;
     }
 
@@ -1333,7 +1406,7 @@ frame_sync_try_tetra_cb(frame_sync_match_ctx* ctx) {
  * the middle of a control burst's extended training sequence that ends here. Off the uplink it never matches. */
 static int
 frame_sync_try_tetra(frame_sync_match_ctx* ctx) {
-    if (ctx->opts->frame_tetra != 1) {
+    if (!frame_sync_tetra_enabled(ctx)) {
         return DSD_SYNC_NONE;
     }
     int synctype = frame_sync_try_tetra_cb(ctx);
@@ -1707,8 +1780,7 @@ static int
 frame_sync_try_m17(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    if (opts->frame_m17 != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
-        || !frame_sync_match_window_ready(ctx, 8)) {
+    if (!frame_sync_m17_enabled(ctx) || !frame_sync_match_window_ready(ctx, 8)) {
         return DSD_SYNC_NONE;
     }
 
@@ -2068,8 +2140,7 @@ frame_sync_try_dmr_rc_data(frame_sync_match_ctx* ctx) {
 static int
 frame_sync_try_dmr(frame_sync_match_ctx* ctx) {
     /* The burst is decoded back from dmr_payload_p (90 dibits, the sync's included). */
-    if (ctx->opts->frame_dmr != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
-        || !frame_sync_match_window_own(ctx, 24)) {
+    if (!frame_sync_dmr_enabled(ctx) || !frame_sync_match_window_own(ctx, 24)) {
         return DSD_SYNC_NONE;
     }
 
@@ -2152,8 +2223,7 @@ frame_sync_handle_edacs_dotting(frame_sync_match_ctx* ctx) {
 
 static int
 frame_sync_try_provoice(frame_sync_match_ctx* ctx) {
-    const dsd_opts* opts = ctx->opts;
-    if (opts->frame_provoice != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_9600_2)) {
+    if (!frame_sync_provoice_enabled(ctx)) {
         return DSD_SYNC_NONE;
     }
 
@@ -2186,8 +2256,7 @@ static int
 frame_sync_try_dstar(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    if (opts->frame_dstar != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_2)
-        || !frame_sync_match_window_ready(ctx, 24) || dsd_frame_sync_suppress_p25_alt_sync(opts, state)) {
+    if (!frame_sync_dstar_enabled(ctx) || !frame_sync_match_window_ready(ctx, 24)) {
         return DSD_SYNC_NONE;
     }
 
@@ -2240,15 +2309,11 @@ frame_sync_try_dstar(frame_sync_match_ctx* ctx) {
 
 static int
 frame_sync_nxdn_sync_type(const char* symbols) {
-    static const char* const positive_patterns[] = {"3131331131", "3331331131", "3131331111", "3331331111",
-                                                    "3131311131"};
-    static const char* const negative_patterns[] = {"1313113313", "1113113313", "1313113333", "1113113333",
-                                                    "1313133313"};
-    for (size_t i = 0; i < sizeof(positive_patterns) / sizeof(positive_patterns[0]); i++) {
-        if (strcmp(symbols, positive_patterns[i]) == 0) {
+    for (size_t i = 0; i < FRAME_SYNC_NXDN_PATTERNS; i++) {
+        if (strcmp(symbols, k_frame_sync_nxdn_words[i]) == 0) {
             return DSD_SYNC_NXDN_POS;
         }
-        if (strcmp(symbols, negative_patterns[i]) == 0) {
+        if (strcmp(symbols, k_frame_sync_nxdn_words[FRAME_SYNC_NXDN_PATTERNS + i]) == 0) {
             return DSD_SYNC_NXDN_NEG;
         }
     }
@@ -2337,19 +2402,7 @@ static int
 frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    int nxdn_profile_enabled = 0;
-    if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN || opts->audio_in_type == AUDIO_IN_SYMBOL_FLT) {
-        /* Symbol captures carry no rate metadata, so an enabled variant must be unambiguous. */
-        nxdn_profile_enabled = (opts->frame_nxdn48 == 1) != (opts->frame_nxdn96 == 1);
-    } else {
-        /* The 2400/4 term yields to dPMR outright: that is the profile the two share, and the
-         * frame a 12-symbol FS2 opened is not this matcher's to re-open (#374). */
-        nxdn_profile_enabled =
-            (opts->frame_nxdn96 == 1 && frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4))
-            || (opts->frame_nxdn48 == 1 && frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_2400_4)
-                && !dsd_frame_sync_suppress_nxdn48_sync(opts, state));
-    }
-    if (!nxdn_profile_enabled || !frame_sync_match_window_ready(ctx, 10)) {
+    if (!frame_sync_nxdn_enabled(ctx) || !frame_sync_match_window_ready(ctx, 10)) {
         return DSD_SYNC_NONE;
     }
 
@@ -2420,8 +2473,7 @@ static int
 frame_sync_try_provoice_conventional(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    if (opts->frame_provoice != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_9600_2)
-        || !frame_sync_match_window_ready(ctx, 32)) {
+    if (!frame_sync_provoice_enabled(ctx) || !frame_sync_match_window_ready(ctx, 32)) {
         return DSD_SYNC_NONE;
     }
 
@@ -2489,6 +2541,15 @@ frame_sync_try_provoice_conventional(frame_sync_match_ctx* ctx) {
    dibits, past every decoder's own carrier check, which starts at dispatch; one that reads nothing before its sync is
    taken at once. */
 typedef int (*frame_sync_try_fn)(frame_sync_match_ctx* ctx);
+typedef int (*frame_sync_enabled_fn)(const frame_sync_match_ctx* ctx);
+
+/* How a matcher reads its exact words off the window: as received; under the identity and the rotated CQPSK maps
+   (frame_sync_find_rotated_p25_cqpsk_map()); or under the four quarter-turn derotations (tetra_training_derotation()). */
+typedef enum {
+    FRAME_SYNC_WORDS_PLAIN = 0,
+    FRAME_SYNC_WORDS_P25_MAPS = 1,
+    FRAME_SYNC_WORDS_TETRA_ROTATIONS = 2,
+} frame_sync_words_reading;
 
 static const struct {
     frame_sync_try_fn try_match;
@@ -2499,6 +2560,207 @@ static const struct {
     {frame_sync_try_tetra, 57U}, {frame_sync_try_dmr, 90U},    {frame_sync_try_provoice, 32U},
     {frame_sync_try_dstar, 24U}, {frame_sync_try_nxdn, 10U},   {frame_sync_try_provoice_conventional, 32U},
 };
+
+#if defined(USE_RADIO) || defined(DSD_NEO_TEST_HOOKS)
+/* Each matcher's exact sync words, every one it may accept whichever polarity or variant its options pick (a '.' is a
+   symbol it does not read). M17's are within a symbol, the rest exact. */
+static const char* const k_frame_sync_p25p1_words[] = {
+    P25P1_SYNC,
+    INV_P25P1_SYNC,
+    NULL,
+};
+static const char* const k_frame_sync_x2tdma_words[] = {
+    X2TDMA_BS_DATA_SYNC, X2TDMA_MS_DATA_SYNC, X2TDMA_BS_VOICE_SYNC, X2TDMA_MS_VOICE_SYNC, NULL,
+};
+static const char* const k_frame_sync_ysf_words[] = {
+    FUSION_SYNC,
+    INV_FUSION_SYNC,
+    NULL,
+};
+static const char* const k_frame_sync_m17_words[] = {
+    M17_PRE, M17_PIV, M17_LSF, M17_STR, M17_PKT, M17_BRT, M17_EOT, M17_EOT_INV, NULL,
+};
+static const char* const k_frame_sync_p25p2_words[] = {
+    P25P2_SYNC,
+    INV_P25P2_SYNC,
+    NULL,
+};
+static const char* const k_frame_sync_dpmr_words[] = {
+    DPMR_FRAME_SYNC_2,
+    INV_DPMR_FRAME_SYNC_2,
+    NULL,
+};
+static const char* const k_frame_sync_tetra_words[] = {
+    TETRA_NDB_NTS_SYNC,
+    INV_TETRA_NDB_NTS_SYNC,
+    TETRA_SB_SSB_SYNC,
+    INV_TETRA_SB_SSB_SYNC,
+    TETRA_CB_SYNC,
+    INV_TETRA_CB_SYNC,
+    NULL,
+};
+static const char* const k_frame_sync_dmr_words[] = {
+    DMR_MS_DATA_SYNC,
+    DMR_MS_VOICE_SYNC,
+    DMR_BS_DATA_SYNC,
+    DMR_DIRECT_MODE_TS1_DATA_SYNC,
+    DMR_DIRECT_MODE_TS2_DATA_SYNC,
+    DMR_BS_VOICE_SYNC,
+    DMR_DIRECT_MODE_TS1_VOICE_SYNC,
+    DMR_DIRECT_MODE_TS2_VOICE_SYNC,
+    DMR_MS_RC_SYNC,
+    DMR_MS_RC_SYNC_INV,
+    NULL,
+};
+static const char* const k_frame_sync_provoice_words[] = {
+    PROVOICE_SYNC, PROVOICE_EA_SYNC, INV_PROVOICE_SYNC, INV_PROVOICE_EA_SYNC, EDACS_SYNC, INV_EDACS_SYNC, NULL,
+};
+static const char* const k_frame_sync_dstar_words[] = {
+    DSTAR_SYNC, INV_DSTAR_SYNC, DSTAR_HD, INV_DSTAR_HD, NULL,
+};
+static const char* const k_frame_sync_provoice_conventional_words[] = {
+    PROVOICE_CONV_SHORT "................",
+    INV_PROVOICE_CONV_SHORT "................",
+    NULL,
+};
+
+/* What each matcher in k_frame_sync_tries takes, for the tolerant P25 tries (frame_sync_window_ends_in_exact_head()):
+   its enable predicate (the one its gate calls), its exact words and how it reads them. FRAME_SYNC_P25_ANCHOR fails
+   for a matcher in the try table without a declaration here. */
+static const struct {
+    frame_sync_try_fn try_match;
+    frame_sync_enabled_fn enabled;
+    const char* const* words;
+    frame_sync_words_reading reading;
+} k_frame_sync_exact_words[] = {
+    {frame_sync_try_p25p1, frame_sync_p25p1_enabled, k_frame_sync_p25p1_words, FRAME_SYNC_WORDS_P25_MAPS},
+    {frame_sync_try_x2tdma, frame_sync_x2tdma_enabled, k_frame_sync_x2tdma_words, FRAME_SYNC_WORDS_PLAIN},
+    {frame_sync_try_ysf, frame_sync_ysf_enabled, k_frame_sync_ysf_words, FRAME_SYNC_WORDS_PLAIN},
+    {frame_sync_try_m17, frame_sync_m17_enabled, k_frame_sync_m17_words, FRAME_SYNC_WORDS_PLAIN},
+    {frame_sync_try_p25p2, frame_sync_p25p2_enabled, k_frame_sync_p25p2_words, FRAME_SYNC_WORDS_P25_MAPS},
+    {frame_sync_try_dpmr, frame_sync_dpmr_enabled, k_frame_sync_dpmr_words, FRAME_SYNC_WORDS_PLAIN},
+    {frame_sync_try_tetra, frame_sync_tetra_enabled, k_frame_sync_tetra_words, FRAME_SYNC_WORDS_TETRA_ROTATIONS},
+    {frame_sync_try_dmr, frame_sync_dmr_enabled, k_frame_sync_dmr_words, FRAME_SYNC_WORDS_PLAIN},
+    {frame_sync_try_provoice, frame_sync_provoice_enabled, k_frame_sync_provoice_words, FRAME_SYNC_WORDS_PLAIN},
+    {frame_sync_try_dstar, frame_sync_dstar_enabled, k_frame_sync_dstar_words, FRAME_SYNC_WORDS_PLAIN},
+    {frame_sync_try_nxdn, frame_sync_nxdn_enabled, k_frame_sync_nxdn_words, FRAME_SYNC_WORDS_PLAIN},
+    {
+        frame_sync_try_provoice_conventional,
+        frame_sync_provoice_enabled,
+        k_frame_sync_provoice_conventional_words,
+        FRAME_SYNC_WORDS_PLAIN,
+    },
+};
+
+/* The declaration of try-table matcher @p index in k_frame_sync_exact_words, or -1 for none. */
+static int
+frame_sync_exact_words_of(size_t index) {
+    if (index >= sizeof(k_frame_sync_tries) / sizeof(k_frame_sync_tries[0])) {
+        return -1;
+    }
+    for (size_t d = 0U; d < sizeof(k_frame_sync_exact_words) / sizeof(k_frame_sync_exact_words[0]); d++) {
+        if (k_frame_sync_exact_words[d].try_match == k_frame_sync_tries[index].try_match) {
+            return (int)d;
+        }
+    }
+    return -1;
+}
+#endif
+
+#ifdef USE_RADIO
+/* @p raw, a window dibit '0'..'3', as @p reading's @p variant reads it. */
+static int
+frame_sync_read_word_dibit(char raw, frame_sync_words_reading reading, int variant) {
+    static const uint8_t maps[] = {
+        DSD_P25_CQPSK_DIBIT_MAP_IDENTITY,
+        DSD_P25_CQPSK_DIBIT_MAP_X2400,
+        DSD_P25_CQPSK_DIBIT_MAP_N1200,
+        DSD_P25_CQPSK_DIBIT_MAP_P1200,
+    };
+    switch (reading) {
+        case FRAME_SYNC_WORDS_P25_MAPS: return dsd_p25_cqpsk_correct_dibit(maps[variant], (uint8_t)(raw - '0'));
+        case FRAME_SYNC_WORDS_TETRA_ROTATIONS: return tetra_dibit_derotate((unsigned char)raw, variant);
+        default: return raw - '0';
+    }
+}
+
+/* Whether the last @p head of the @p dibits dibits of @p window, read as @p reading's @p variant reads them, are the
+   first @p head of @p word. */
+static int
+frame_sync_window_tail_is_head(const char* window, int dibits, const char* word, int head,
+                               frame_sync_words_reading reading, int variant) {
+    for (int i = 0; i < head; i++) {
+        const char c = window[dibits - head + i];
+        if (word[i] != '.' && frame_sync_read_word_dibit(c, reading, variant) != word[i] - '0') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Whether @p window (@p dibits dibits, '0'..'3', the latest last) ends in the head of an exact sync word a matcher that
+   runs here takes when its word starts 1 to @p span symbols after the window's first: a tolerant P25 word at the expected
+   position must not be that head, or accepting it would consume the exact word. Every try-table matcher, by its
+   declaration in k_frame_sync_exact_words, under its own enable predicate. A word no longer than the window covers every such
+   start; none that runs where a tolerant word is scored is longer. */
+static int
+frame_sync_window_ends_in_exact_head(const frame_sync_match_ctx* ctx, const char* window, int dibits, int span) {
+    if (memchr(window, '\0', (size_t)dibits) != NULL) {
+        return 0;
+    }
+    for (size_t t = 0U; t < sizeof(k_frame_sync_tries) / sizeof(k_frame_sync_tries[0]); t++) {
+        const int d = frame_sync_exact_words_of(t);
+        if (d < 0 || !k_frame_sync_exact_words[d].enabled(ctx)) {
+            continue;
+        }
+        const frame_sync_words_reading reading = k_frame_sync_exact_words[d].reading;
+        const int variants = reading == FRAME_SYNC_WORDS_PLAIN ? 1 : 4;
+        for (const char* const* word = k_frame_sync_exact_words[d].words; *word != NULL; word++) {
+            const int length = (int)strlen(*word);
+            for (int head = dibits - span > 1 ? dibits - span : 1; head < dibits && head < length; head++) {
+                for (int v = 0; v < variants; v++) {
+                    if (frame_sync_window_tail_is_head(window, dibits, *word, head, reading, v)) {
+                        return 1;
+                    }
+                }
+            }
+        }
+    }
+    return 0;
+}
+#endif
+
+#ifdef DSD_NEO_TEST_HOOKS
+size_t
+dsd_frame_sync_test_try_count(void) {
+    return sizeof(k_frame_sync_tries) / sizeof(k_frame_sync_tries[0]);
+}
+
+const char* const*
+dsd_frame_sync_test_try_words(size_t index, int* out_has_enabled, int* out_reading) {
+    const int d = frame_sync_exact_words_of(index);
+    if (d < 0) {
+        return NULL;
+    }
+    if (out_has_enabled != NULL) {
+        *out_has_enabled = k_frame_sync_exact_words[d].enabled != NULL;
+    }
+    if (out_reading != NULL) {
+        *out_reading = (int)k_frame_sync_exact_words[d].reading;
+    }
+    return k_frame_sync_exact_words[d].words;
+}
+
+int
+dsd_frame_sync_test_try_enabled(dsd_opts* opts, dsd_state* state, size_t index) {
+    const int d = frame_sync_exact_words_of(index);
+    if (d < 0 || k_frame_sync_exact_words[d].enabled == NULL) {
+        return 0;
+    }
+    const frame_sync_match_ctx ctx = {.opts = opts, .state = state};
+    return k_frame_sync_exact_words[d].enabled(&ctx);
+}
+#endif
 
 static int
 frame_sync_try_protocol_matches_inner(frame_sync_match_ctx* ctx) {

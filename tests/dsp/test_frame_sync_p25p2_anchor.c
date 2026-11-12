@@ -26,6 +26,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "frame_sync_internal.h"
@@ -373,6 +374,70 @@ test_late_exact_word_of_any_map_wins(void) {
     /* The case is real: windows within the tolerance at the expected position (inverted at 10, 11 and 12 symbols, P1200
        at 10, 11 and 12). */
     assert(within_tolerance == 6);
+}
+
+/* The exact words of every matcher that runs on the 6000/4 CQPSK hunt with every protocol that can run there on (P25p2,
+   and TETRA, whose matcher has no profile of its own), each starting 1 to the span's symbols after the expected position
+   with the anchor's own word before it: wherever that window is within the tolerance, it is not taken. The words come
+   from the matchers' declarations (FRAME_SYNC_P25_ANCHOR checks every matcher declares them). */
+static void
+test_no_exact_word_of_any_protocol_is_pre_empted(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    enum { LEAD = 30 };
+
+    int within_tolerance = 0;
+    int protocols = 0;
+    for (size_t t = 0; t < dsd_frame_sync_test_try_count(); t++) {
+        setup(&opts, &state);
+        opts.frame_tetra = 1;
+        const int enabled = dsd_frame_sync_test_try_enabled(&opts, &state, t);
+        teardown(&state);
+        if (!enabled) {
+            continue;
+        }
+        protocols++;
+        for (const char* const* w = dsd_frame_sync_test_try_words(t, NULL, NULL); *w != NULL; w++) {
+            const int length = (int)strlen(*w);
+            /* No word that runs here is longer than the window, so its heads cover every start. */
+            assert(length <= SYNC_DIBITS);
+            for (int start = 1; start <= DSD_P25P2_TOLERANT_SYNC_NO_STEAL_SHIFTS; start++) {
+                if (start + length <= SYNC_DIBITS) {
+                    continue; /* the whole word inside the expected-position window: no later word */
+                }
+                char stream[LEAD + DSD_P25P2_TOLERANT_SYNC_NO_STEAL_SHIFTS + 64];
+                uint32_t seed = 0x9F9FU + (uint32_t)start;
+                for (int i = 0; i < LEAD; i++) {
+                    seed = (seed * 1103515245U) + 12345U;
+                    stream[i] = (char)('0' + ((seed >> 16) & 3U));
+                }
+                DSD_MEMCPY(stream + LEAD, P25P2_SYNC, (size_t)start);
+                for (int i = 0; i < length; i++) {
+                    stream[LEAD + start + i] = (*w)[i] == '.' ? '1' : (*w)[i];
+                }
+                const int len = LEAD + start + length;
+                stream[len] = '\0';
+                char expected_window[SYNC_DIBITS + 1];
+                DSD_MEMCPY(expected_window, stream + LEAD, SYNC_DIBITS);
+                expected_window[SYNC_DIBITS] = '\0';
+                if (dsd_p25p2_sync_bit_distance(expected_window, DSD_P25_CQPSK_DIBIT_MAP_IDENTITY, 0)
+                    > DSD_P25P2_TOLERANT_SYNC_MAX_BIT_ERRORS) {
+                    continue;
+                }
+                within_tolerance++;
+                setup(&opts, &state);
+                opts.frame_tetra = 1;
+                anchored(&opts, &state);
+                int sync = DSD_SYNC_NONE;
+                (void)hunt(&opts, &state, stream, len, (uint64_t)(EXPECTED - LEAD), &sync);
+                assert(state.p25_p2_sync_anchor.tolerant_syncs == 0U);
+                teardown(&state);
+            }
+        }
+    }
+    assert(protocols == 2);
+    assert(within_tolerance > 0);
 }
 
 /* An exact word at the expected position, inverted or under a rotated map: the exact matchers take it. */
@@ -774,6 +839,7 @@ main(void) {
     test_other_positions_exact_only();
     test_late_exact_word_wins();
     test_late_exact_word_of_any_map_wins();
+    test_no_exact_word_of_any_protocol_is_pre_empted();
     test_exact_words_take_the_exact_path();
     test_map_and_polarity_follow_the_anchor();
     test_invalidations();

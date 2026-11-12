@@ -366,6 +366,179 @@ test_late_exact_word_of_any_map_wins(void) {
     assert(within_tolerance == 5);
 }
 
+/* Another protocol's exact word a slip put after the expected position, under -fa -mq: with X2-TDMA on, the five
+   symbols "11111" and an intact X2-TDMA base voice word give a window at the expected position six bits off the
+   P25p1 word. Taken, the NID read behind it went through the X2-TDMA word, and its burst was lost though the strict
+   NID dropped the frame. It is not taken; the X2-TDMA matcher takes its word where it is. */
+static void
+test_late_exact_word_of_another_protocol_wins(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    enum { LEAD = 40, SLIP = 5 };
+
+    char stream[LEAD + SLIP + SYNC_DIBITS + 1];
+    uint32_t seed = 0x7D7DU;
+    data_dibits(stream, LEAD, &seed);
+    DSD_MEMCPY(stream + LEAD, "11111", SLIP);
+    DSD_MEMCPY(stream + LEAD + SLIP, X2TDMA_BS_VOICE_SYNC, SYNC_DIBITS);
+    const int len = LEAD + SLIP + SYNC_DIBITS;
+    stream[len] = '\0';
+    char expected_window[SYNC_DIBITS + 1];
+    DSD_MEMCPY(expected_window, stream + LEAD, SYNC_DIBITS);
+    expected_window[SYNC_DIBITS] = '\0';
+    assert(dsd_p25p1_sync_bit_distance(expected_window, DSD_P25_CQPSK_DIBIT_MAP_IDENTITY, 0)
+           == DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS);
+
+    for (int anchor = 0; anchor <= 1; anchor++) {
+        setup(&opts, &state);
+        opts.frame_x2tdma = 1;
+        if (anchor) {
+            anchored(&opts, &state);
+        }
+        int sync = DSD_SYNC_NONE;
+        const long found = hunt(&opts, &state, stream, len, (uint64_t)(EXPECTED - LEAD), &sync);
+        assert(found == EXPECTED + SLIP);
+        assert(sync == DSD_SYNC_X2TDMA_VOICE_POS);
+        assert(state.p25_p1_sync_anchor.tolerant_syncs == 0U);
+        teardown(&state);
+    }
+}
+
+/* Every matcher the hunt tries declares its exact words and the enable predicate they are read under: a protocol added
+   to the try table without them would leave its words open to a tolerant P25 word. */
+static void
+test_every_matcher_declares_its_words(void) {
+    const size_t count = dsd_frame_sync_test_try_count();
+    assert(count >= 12U);
+    for (size_t i = 0; i < count; i++) {
+        int has_enabled = 0;
+        int reading = -1;
+        const char* const* words = dsd_frame_sync_test_try_words(i, &has_enabled, &reading);
+        assert(words != NULL && words[0] != NULL);
+        assert(has_enabled == 1);
+        assert(reading >= 0 && reading <= 2);
+        for (const char* const* w = words; *w != NULL; w++) {
+            assert(strlen(*w) >= 8U);
+            for (const char* c = *w; *c != '\0'; c++) {
+                assert((*c >= '0' && *c <= '3') || *c == '.');
+            }
+        }
+    }
+    assert(dsd_frame_sync_test_try_words(count, NULL, NULL) == NULL);
+
+    /* What X2-TDMA, YSF and DMR declare is what their matchers take, each word on its own (the others need a frame's
+       context first: NXDN96 a hit a frame back, M17 a preamble or a frame chain). */
+    static const char* const first_words[] = {X2TDMA_BS_DATA_SYNC, FUSION_SYNC, DMR_MS_DATA_SYNC};
+    int checked = 0;
+    for (size_t i = 0; i < count; i++) {
+        const char* const* words = dsd_frame_sync_test_try_words(i, NULL, NULL);
+        int plain = 0;
+        for (size_t f = 0; f < sizeof(first_words) / sizeof(first_words[0]); f++) {
+            plain |= strcmp(words[0], first_words[f]) == 0;
+        }
+        if (!plain) {
+            continue;
+        }
+        for (const char* const* w = words; *w != NULL; w++) {
+            static dsd_opts opts;
+            static dsd_state state;
+            char stream[40 + 32];
+            uint32_t seed = 0xA1A1U;
+            data_dibits(stream, 40, &seed);
+            const size_t length = strlen(*w);
+            DSD_MEMCPY(stream + 40, *w, length);
+            stream[40 + length] = '\0';
+            /* Under either polarity option: the reverse-channel word a matcher takes under one alone is declared. */
+            long found = -1;
+            int sync = DSD_SYNC_NONE;
+            for (int inverted = 0; inverted <= 1 && found < 0; inverted++) {
+                setup(&opts, &state);
+                opts.frame_x2tdma = 1;
+                opts.frame_ysf = 1;
+                opts.frame_dmr = 1;
+                opts.inverted_dmr = inverted;
+                found = hunt(&opts, &state, stream, (int)(40 + length), 5000U, &sync);
+                teardown(&state);
+            }
+            assert(found == 5000 + 40 + (long)length - (long)SYNC_DIBITS);
+            assert(sync != DSD_SYNC_NONE && !DSD_SYNC_IS_P25(sync));
+            checked++;
+        }
+    }
+    assert(checked == 4 + 2 + 10);
+}
+
+/* The exact words of every matcher that runs on the 4800/4 CQPSK hunt with every protocol of that profile on (the
+   -fa set: P25p1, X2-TDMA, YSF, M17, DMR, NXDN96), each starting 1 to the span's symbols after the expected position
+   with the anchor's own word before it (the best case for a false match): wherever that window is within the tolerance,
+   it is not taken. Every word comes from the matchers' declarations, so a protocol added there is covered here. */
+static void
+test_no_exact_word_of_any_protocol_is_pre_empted(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    enum { LEAD = 40 };
+
+    int within_tolerance = 0;
+    int protocols = 0;
+    for (size_t t = 0; t < dsd_frame_sync_test_try_count(); t++) {
+        setup(&opts, &state);
+        opts.frame_x2tdma = 1;
+        opts.frame_ysf = 1;
+        opts.frame_m17 = 1;
+        opts.frame_dmr = 1;
+        opts.frame_nxdn96 = 1;
+        const int enabled = dsd_frame_sync_test_try_enabled(&opts, &state, t);
+        teardown(&state);
+        if (!enabled) {
+            continue;
+        }
+        protocols++;
+        for (const char* const* w = dsd_frame_sync_test_try_words(t, NULL, NULL); *w != NULL; w++) {
+            const int length = (int)strlen(*w);
+            /* No word that runs here is longer than the window, so its heads cover every start. */
+            assert(length <= SYNC_DIBITS);
+            for (int start = 1; start <= DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS; start++) {
+                char stream[LEAD + DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS + 64];
+                uint32_t seed = 0x8E8EU + (uint32_t)start;
+                data_dibits(stream, LEAD, &seed);
+                DSD_MEMCPY(stream + LEAD, P25P1_SYNC, (size_t)start);
+                for (int i = 0; i < length; i++) {
+                    stream[LEAD + start + i] = (*w)[i] == '.' ? '1' : (*w)[i];
+                }
+                const int len = LEAD + start + length;
+                stream[len] = '\0';
+                if (start + length <= SYNC_DIBITS) {
+                    continue; /* the whole word inside the expected-position window: no later word */
+                }
+                char expected_window[SYNC_DIBITS + 1];
+                DSD_MEMCPY(expected_window, stream + LEAD, SYNC_DIBITS);
+                expected_window[SYNC_DIBITS] = '\0';
+                if (dsd_p25p1_sync_bit_distance(expected_window, DSD_P25_CQPSK_DIBIT_MAP_IDENTITY, 0)
+                    > DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS) {
+                    continue;
+                }
+                within_tolerance++;
+                setup(&opts, &state);
+                opts.frame_x2tdma = 1;
+                opts.frame_ysf = 1;
+                opts.frame_m17 = 1;
+                opts.frame_dmr = 1;
+                opts.frame_nxdn96 = 1;
+                anchored(&opts, &state);
+                int sync = DSD_SYNC_NONE;
+                (void)hunt(&opts, &state, stream, len, (uint64_t)(EXPECTED - LEAD), &sync);
+                assert(state.p25_p1_sync_anchor.tolerant_syncs == 0U);
+                teardown(&state);
+            }
+        }
+    }
+    /* P25p1, X2-TDMA, YSF, M17, DMR and NXDN run there; the case is real for several of their words. */
+    assert(protocols == 6);
+    assert(within_tolerance > 20);
+}
+
 /* r1 review #3: a word with three bit errors one symbol late, behind a '1': the window one symbol early, which is the
    expected position, is 6 bits off and is accepted there. The NID it reads is then one symbol off; the dispatcher's
    strict check is what drops it (P25_P1_TOLERANT_SYNC, the NAC 555 case). */
@@ -805,6 +978,9 @@ main(void) {
     test_other_positions_exact_only();
     test_slips_with_real_neighbours();
     test_late_exact_word_of_any_map_wins();
+    test_late_exact_word_of_another_protocol_wins();
+    test_every_matcher_declares_its_words();
+    test_no_exact_word_of_any_protocol_is_pre_empted();
     test_slipped_corrupted_word_one_symbol_early();
     test_exact_matcher_of_another_protocol_wins();
     test_invalidations();

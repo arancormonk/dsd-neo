@@ -16,7 +16,6 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 #include "frame_sync_internal.h"
 
 int
@@ -39,45 +38,6 @@ frame_sync_p25_sync_bit_distance(const char* window, const char* pattern, int di
         bits += (int)((diff & 1U) + ((diff >> 1) & 1U));
     }
     return bits;
-}
-
-/* Whether the last @p count of the @p dibits dibits of @p window, read under CQPSK dibit map @p map_idx, are the first
-   @p count of @p pattern. */
-static int
-frame_sync_p25_window_tail_is_head(const char* window, int dibits, const char* pattern, int count, uint8_t map_idx) {
-    for (int i = 0; i < count; i++) {
-        const char c = window[dibits - count + i];
-        if (c < '0' || c > '3'
-            || dsd_p25_cqpsk_correct_dibit(map_idx, (uint8_t)(c - '0')) != (uint8_t)(pattern[i] - '0')) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-int
-frame_sync_p25_sync_head_ends_window(const char* window, const char* pattern, const char* inverse, int dibits,
-                                     int max_shift) {
-    /* The maps the exact matchers read a word under: the identity (the plain compare) and the rotated ones
-       (frame_sync_find_rotated_p25_cqpsk_map()). */
-    static const uint8_t maps[] = {
-        DSD_P25_CQPSK_DIBIT_MAP_IDENTITY,
-        DSD_P25_CQPSK_DIBIT_MAP_X2400,
-        DSD_P25_CQPSK_DIBIT_MAP_N1200,
-        DSD_P25_CQPSK_DIBIT_MAP_P1200,
-    };
-    if (window == NULL || dibits <= 0 || memchr(window, '\0', (size_t)dibits) != NULL) {
-        return 0;
-    }
-    for (int shift = 1; shift <= max_shift && shift < dibits; shift++) {
-        for (size_t m = 0; m < sizeof(maps) / sizeof(maps[0]); m++) {
-            if (frame_sync_p25_window_tail_is_head(window, dibits, pattern, dibits - shift, maps[m])
-                || frame_sync_p25_window_tail_is_head(window, dibits, inverse, dibits - shift, maps[m])) {
-                return 1;
-            }
-        }
-    }
-    return 0;
 }
 
 void

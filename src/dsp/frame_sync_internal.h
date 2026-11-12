@@ -164,12 +164,6 @@ int frame_sync_p25p1_mod_compare_leader(const dsd_state* state);
  * dibit counts the bits it differs by (P25's dibits are Gray coded over the four levels), a byte outside '0'..'3' 2.
  * 2 * @p dibits for a NULL or short window. */
 int frame_sync_p25_sync_bit_distance(const char* window, const char* pattern, int dibits, uint8_t map_idx);
-/** Whether the @p dibits dibits of @p window end in the head of a sync word an exact matcher takes there a few symbols
- * on: the first @p dibits - k dibits of @p pattern or its inverse @p inverse, read under the identity or a rotated CQPSK
- * map, are the window's last, for a k of 1 to @p max_shift. A tolerant word at the expected position that ends so may be
- * an exact word a slip of k symbols put late, which the tolerant accept would consume. */
-int frame_sync_p25_sync_head_ends_window(const char* window, const char* pattern, const char* inverse, int dibits,
-                                         int max_shift);
 /** The stream and receiver setup as they stand, for a sync word whose first dibit is @p sync_clock (polarity 0). */
 void frame_sync_p25_sync_context_now(const dsd_state* state, uint64_t sync_clock, struct dsd_p25_sync_context* out);
 /** Whether @p ctx still describes the stream: nothing that ends the history carry has happened since

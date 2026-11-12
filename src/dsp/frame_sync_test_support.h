@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,6 +38,14 @@ int dsd_frame_sync_test_handle_no_sync_timeout(dsd_opts* opts, dsd_state* state,
 /* frame_sync_hunt_budget_exit(): getFrameSync()'s step of the hunt once its budget has run a pass. */
 int dsd_frame_sync_test_hunt_budget_exit(dsd_opts* opts, dsd_state* state);
 void dsd_frame_sync_test_sps_hunt_note_handler_consumption(dsd_state* state);
+/* The protocol matchers the hunt tries (k_frame_sync_tries), and the exact sync words each declares (NULL-terminated),
+   which the tolerant P25 tries read a window's head against: *@p out_has_enabled says whether it declares the enable
+   predicate they are read under, *@p out_reading how it reads them (0 as received, 1 under the CQPSK maps, 2 under
+   TETRA's derotations). NULL for a matcher with no declaration and past the last. */
+size_t dsd_frame_sync_test_try_count(void);
+const char* const* dsd_frame_sync_test_try_words(size_t index, int* out_has_enabled, int* out_reading);
+/* Whether matcher @p index runs at all for @p opts and @p state, by the enable predicate it declares. */
+int dsd_frame_sync_test_try_enabled(dsd_opts* opts, dsd_state* state, size_t index);
 #ifdef USE_RADIO
 int dsd_frame_sync_test_rtl_profile_for_sps_index(const dsd_opts* opts, const dsd_state* state, int profile_index);
 #endif
