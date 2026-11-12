@@ -24,10 +24,11 @@
  *   until the visit changes.
  *
  * A visit is (owner, landing epoch, tune request). A sync (dsd_engine_scan_quiet_note_sync()) since the visit's first
- * request (kept across its retries) ends the check; a changed visit, or any counter its revision snapshot holds, suspends it. The frame-sync hunt runs the
- * check through dsd_frame_sync_hook_scan_quiet_service() (dsd_engine_scan_quiet_service()), and engine service through
- * scan_quiet_publish_eligibility(). RF power is never activity: nothing here touches holds, activity stamps, history
- * or events. Radio-off builds compile it as a no-op service.
+ * request (kept across its retries) ends the check; a changed visit, or any counter its revision snapshot holds,
+ * suspends it. The frame-sync hunt runs the check through dsd_frame_sync_hook_scan_quiet_service()
+ * (dsd_engine_scan_quiet_service()), and engine service through scan_quiet_publish_eligibility(). RF power is never
+ * activity: nothing here touches holds, activity stamps, history or events. Radio-off builds compile it as a no-op
+ * service.
  */
 #ifndef DSD_NEO_ENGINE_SCAN_QUIET_H
 #define DSD_NEO_ENGINE_SCAN_QUIET_H
@@ -105,8 +106,12 @@ void scan_quiet_revisions_read(const dsd_opts* opts, const dsd_state* state, sca
 /** The width classes of a typed row's or a conventional target's @p mode; 0 for a mode in no class. */
 uint8_t scan_quiet_mode_classes(dsd_scan_mode mode);
 /** The width classes of the decoder set in force (an untyped row, or a typed row inheriting it): every class an enabled
- * mode has, or the analog class for an analog session; 0 when any enabled mode has none (X2-TDMA, ProVoice, TETRA). */
-uint8_t scan_quiet_decoder_classes(const dsd_opts* opts);
+ * mode has, or the analog class for an analog session; 0 when any enabled mode has none (X2-TDMA, ProVoice, TETRA).
+ * With the analog monitor on beside a digital set (-8) the set is mixed (D4): the analog class is judged too. The
+ * analog class comes with the configured kind (dsd_opts::analog_demod) and width (dsd_opts_analog_width_hz()) in
+ * @p analog_kind and @p analog_width_hz (either may be NULL; 0 without it); no configured width is no check. Outside
+ * the calibrated analog domain the visit ends DONE at its capture. */
+uint8_t scan_quiet_decoder_classes(const dsd_opts* opts, int* analog_kind, uint32_t* analog_width_hz);
 
 /** Whether the session can make a check at all: the setting on, a radio build, an RTL-family input that is no I/Q
  * replay (neither the stream nor the decode clock). */
@@ -123,14 +128,17 @@ void scan_quiet_publish_eligibility(const dsd_opts* opts, dsd_state* state, int 
                                     const scan_quiet_eligibility* e);
 
 /** The skip decision's quiet half (spec §3.4 (1)-(4)): 1 when @p owner_kind's READY result is still the visit's, its
- * capture and output generation unchanged with no tune pending, at most 250 ms old, with no sync since the request, no
- * analog carrier heard and (trunk scan) no allowed activity since; the result is consumed (DONE: one skip per visit).
- * Any other READY result is declined (DONE), and 0 returned; 0 too with no READY result, or one whose trunk-scan park
- * has not been noted as landed yet. */
-int scan_quiet_apply(const dsd_opts* opts, dsd_state* state, int owner_kind);
+ * revisions unchanged and @p current (the classes, analog kind and width, and DSP rate in force now, as engine service
+ * works them out for its eligibility) equal to what was measured, its capture and output generation unchanged with no
+ * tune pending, at most 250 ms old, with no sync since the request, no analog carrier heard and (trunk scan) no allowed
+ * activity since; the result is consumed (DONE: one skip per visit). Any other READY result is declined (DONE), a
+ * NULL @p current among them, and 0 returned; 0 too with no READY result, or one whose trunk-scan park has not been
+ * noted as landed yet. */
+int scan_quiet_apply(const dsd_opts* opts, dsd_state* state, int owner_kind, const scan_quiet_eligibility* current);
 
-/** The engine saw @p owner_kind's READY result and will not apply it: declined (DONE), unless @p guard_lost (the tick lost
- * the coordinator's guard), which leaves it READY so the next hunt point hands back again. Reconciles either way. */
+/** The engine saw @p owner_kind's READY result and will not apply it: declined (DONE), unless @p guard_lost (the tick
+ * lost the coordinator's guard), which leaves it READY so the next hunt point hands back again. Reconciles either
+ * way. */
 void scan_quiet_reconcile_declined(const dsd_opts* opts, dsd_state* state, int owner_kind, int guard_lost);
 
 /** Format the skip's NOTICE line (spec §3.4) into @p out: "NOTICE: scan: skipped quiet <name | row N> <freq> MHz:

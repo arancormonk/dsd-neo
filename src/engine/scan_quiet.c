@@ -95,21 +95,51 @@ quiet_decoder_narrow(const dsd_opts* opts) {
     return opts->frame_nxdn48 || opts->frame_dpmr || opts->frame_dstar;
 }
 
+/* The analog class's kind and width in force (the configured NFM or AM width), into @p analog_kind and
+   @p analog_width_hz when given; 0 when no width is configured, so the set gets no check. */
+static uint8_t
+quiet_decoder_analog(const dsd_opts* opts, int* analog_kind, uint32_t* analog_width_hz) {
+    const int width_hz = dsd_opts_analog_width_hz(opts);
+    if (width_hz <= 0) {
+        return 0U;
+    }
+    if (analog_kind) {
+        *analog_kind = opts->analog_demod;
+    }
+    if (analog_width_hz) {
+        *analog_width_hz = (uint32_t)width_hz;
+    }
+    return QUIET_CLASS_ANALOG;
+}
+
 uint8_t
-scan_quiet_decoder_classes(const dsd_opts* opts) {
+scan_quiet_decoder_classes(const dsd_opts* opts, int* analog_kind, uint32_t* analog_width_hz) {
+    if (analog_kind) {
+        *analog_kind = 0;
+    }
+    if (analog_width_hz) {
+        *analog_width_hz = 0U;
+    }
     if (!opts || opts->m17encoder == 1) {
         return 0U;
     }
     if (dsd_opts_is_analog_family(opts)) {
-        return QUIET_CLASS_ANALOG;
+        return quiet_decoder_analog(opts, analog_kind, analog_width_hz);
     }
     /* ProVoice and X2-TDMA have no sourced width and time structure, nor TETRA a class: a set holding one gets no
        check. */
     if (opts->frame_x2tdma || opts->frame_provoice || opts->frame_tetra) {
         return 0U;
     }
-    return (uint8_t)((quiet_decoder_wide(opts) ? QUIET_CLASS_12K5 : 0U)
-                     | (quiet_decoder_narrow(opts) ? QUIET_CLASS_6K25 : 0U));
+    const uint8_t digital = (uint8_t)((quiet_decoder_wide(opts) ? QUIET_CLASS_12K5 : 0U)
+                                      | (quiet_decoder_narrow(opts) ? QUIET_CLASS_6K25 : 0U));
+    if (opts->monitor_input_audio != 1 || digital == 0U) {
+        return digital;
+    }
+    /* The analog monitor runs beside the digital decoders (-8): a mixed set, judged in the analog class too (D4); a
+       monitor with no configured width gets no check. */
+    const uint8_t analog = quiet_decoder_analog(opts, analog_kind, analog_width_hz);
+    return analog ? (uint8_t)(digital | analog) : 0U;
 }
 
 int
@@ -245,6 +275,12 @@ quiet_visit_current(const dsd_engine_scan_owner* owner, scan_quiet_check* c, int
     }
     if (adopt) {
         c->key.epoch = landing->epoch;
+        if (!c->origin_set) {
+            /* The hunt never read the park's completion (another landing succeeded first): the wait is bounded from
+               the landing's note. */
+            c->origin_set = 1;
+            c->origin_ms = landing->landed_realtime_ms;
+        }
     }
     return 1;
 }
@@ -481,6 +517,17 @@ quiet_published_as_measured(const scan_quiet_check* c, const scan_quiet_eligibil
            && c->frequency_hz == e->frequency_hz && quiet_revisions_equal(&c->revisions, &e->revisions);
 }
 
+/* Spec §3.4 (1): the effective classes, the analog kind and width (with the analog class) and the DSP rate in force
+   (@p current, this pass's facts) are still the ones measured. */
+static int
+quiet_measured_as_current(const scan_quiet_check* c, const scan_quiet_eligibility* current) {
+    if (!current || current->classes != c->classes || current->dsp_rate_hz != c->dsp_rate_hz) {
+        return 0;
+    }
+    return !(c->classes & QUIET_CLASS_ANALOG)
+           || (current->analog_kind == c->analog_kind && current->analog_width_hz == c->analog_width_hz);
+}
+
 static void
 quiet_start(const dsd_engine_scan_owner* owner, scan_quiet_check* c, const scan_quiet_eligibility* e) {
     quiet_end(c, SCAN_QUIET_WAIT_CAPTURE);
@@ -547,7 +594,7 @@ dsd_engine_scan_quiet_service(const dsd_opts* opts, dsd_state* state) {
 }
 
 int
-scan_quiet_apply(const dsd_opts* opts, dsd_state* state, int owner_kind) {
+scan_quiet_apply(const dsd_opts* opts, dsd_state* state, int owner_kind, const scan_quiet_eligibility* current) {
     dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
     scan_quiet_check* c = quiet_check_get(owner);
     if (!opts || !opts->scan_skip_silent || !c || c->phase != SCAN_QUIET_READY || c->key.owner != owner_kind) {
@@ -559,7 +606,7 @@ scan_quiet_apply(const dsd_opts* opts, dsd_state* state, int owner_kind) {
         return 0;
     }
     c->phase = SCAN_QUIET_DONE; /* consumed, or declined: one skip per visit */
-    return quiet_ready_passes(opts, state, c);
+    return quiet_measured_as_current(c, current) && quiet_ready_passes(opts, state, c);
 }
 
 void
@@ -659,10 +706,11 @@ dsd_engine_scan_quiet_service(const dsd_opts* opts, dsd_state* state) {
 }
 
 int
-scan_quiet_apply(const dsd_opts* opts, dsd_state* state, int owner_kind) {
+scan_quiet_apply(const dsd_opts* opts, dsd_state* state, int owner_kind, const scan_quiet_eligibility* current) {
     (void)opts;
     (void)state;
     (void)owner_kind;
+    (void)current;
     return 0;
 }
 

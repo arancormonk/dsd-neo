@@ -1007,7 +1007,7 @@ test_a_quiet_result_hands_back_within_one_point(void) {
    otherwise be ready; each returned sync is bumped as engine.c's live_scanner_frame_sync() does, so every later
    300-symbol point is a no, and the hunt keeps returning its syncs. */
 static void
-test_no_quiet_hand_back_after_a_sync(void) {
+test_the_hunt_returns_its_syncs_once_the_quiet_service_answers_no(void) {
     static dsd_opts opts;
     static dsd_state state;
     init_hunt_opts_state(&opts, &state, 0);
@@ -1089,7 +1089,7 @@ main(void) {
     test_idle_rotation_period_is_unchanged();
     test_a_trunk_scan_dwell_returns_inside_the_pass();
     test_a_quiet_result_hands_back_within_one_point();
-    test_no_quiet_hand_back_after_a_sync();
+    test_the_hunt_returns_its_syncs_once_the_quiet_service_answers_no();
     test_locked_modulation_rotates_within_equal_timing();
     test_withheld_syncs_do_not_rotate_a_profile();
     test_withheld_syncs_do_not_hold_a_wrong_profile();

@@ -27,7 +27,8 @@ typedef struct {
     /** The RTL stream output generation read when that tune was requested, before it was issued (0 with no stream):
         only a capture of a newer generation can be the landed one. */
     uint32_t generation_before_tune;
-    /** dsd_realtime_mono_ms() when the landing was noted: where a quiet check's wait for its capture is bounded from. */
+    /** dsd_realtime_mono_ms() when the landing was noted: where a quiet check's wait for its capture is bounded
+        from. */
     uint64_t landed_realtime_ms;
 } dsd_engine_scan_landing;
 

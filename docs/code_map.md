@@ -502,7 +502,8 @@ Generated (do not edit/commit):
     - Visit key: (owner, landing epoch, tune request); a trunk-scan park still in flight is published with epoch 0 and
       its request, measured once the tuning ledger's lock-free peek (`dsd_trunk_tuning_request_landed()`) sees it land,
       and adopted when the coordinator notes that very landing (the same request, the next epoch, its row, session and
-      frequency); any other note or forget discards it.
+      frequency); any other note or forget discards it. An adopted check whose completion the hunt never read (another
+      landing succeeded first, so the peek is no longer its) takes the landing's note as its wait origin.
     - Eligibility is published by engine service (`scan_quiet_publish_eligibility()`: the owner's own conditions in
       `scan_quiet_eligibility::eligible`, the classes, analog kind and width, DSP rate, frequency and revision
       snapshot), never in the hunt and never per frame; with the setting off, or the visit DONE
@@ -510,24 +511,31 @@ Generated (do not edit/commit):
       (`scan_quiet_session_supported()`: the setting, a radio build, an RTL-family input that is no I/Q replay by
       `iq_replay_active`, `iq_replay_requested`, the input spec or the REPLAY decode clock), and so is a class to
       judge (`scan_quiet_mode_classes()` for a typed row or target, `scan_quiet_decoder_classes()` for the decoder
-      set: X2-TDMA, ProVoice and TETRA are in no class, so a set holding one gets no check). An ineligible visit is
-      SUSPENDED: the hook does nothing for it until the next publication. A published visit whose classes, width, rate,
-      frequency or revisions differ from what was measured starts over.
-    - WAIT_CAPTURE: a capture of the stream's live output generation (`dsd_rtl_stream_metrics_hook_stream_generation()`)
-      newer than the one read at the tune request (`dsd_engine_scan_landing::generation_before_tune`), centred on the
-      visit (`capture_hz - capture_offset_hz`); read at most every 50 ms, for 1000 ms (realtime) from the landing's note
-      (`landed_realtime_ms`) or the in-flight park's completion read. Known unsupported is DONE, never an error: no
-      Fs/4 rotation (centred I/Q: Airspy, offset-tuned E4000, the shift off), a rate or analog width the calibration
-      did not validate (`dsd_signal_quiet_rate_supported()`, `dsd_signal_quiet_analog_supported()` with the analog
-      kind), a refused request.
+      set: X2-TDMA, ProVoice and TETRA are in no class, so a set holding one gets no check; with the -8 analog monitor
+      on beside a digital set the set is mixed (D4) and the analog class is judged too, at the configured kind and
+      width, which `scan_quiet_decoder_classes()` hands back with the classes). An ineligible visit is SUSPENDED: the
+      hook does nothing for it until the next publication. A published visit whose classes, width, rate, frequency or
+      revisions differ from what was measured starts over.
+    - WAIT_CAPTURE: a capture of the stream's live output generation (`dsd_rtl_stream_metrics_hook_stream_generation()`,
+      which the engine installs as `rtl_stream_output_generation()`, the counter the demod stamps on every tap capture,
+      `demod_feed_signal_search()`) newer than the one read at the tune request
+      (`dsd_engine_scan_landing::generation_before_tune`), centred on the visit (`capture_hz - capture_offset_hz`); read
+      at most every 50 ms, for 1000 ms (realtime) from the landing's note (`landed_realtime_ms`) or the in-flight park's
+      completion read. Known unsupported is DONE, never an error: no Fs/4 rotation (centred I/Q: Airspy, offset-tuned
+      E4000, the shift off), a rate or analog width the calibration did not validate
+      (`dsd_signal_quiet_rate_supported()`, `dsd_signal_quiet_analog_supported()` with the analog kind), a refused
+      request.
     - REQUESTED: 400 ms (realtime), then cancelled and DONE; a lost, capture-changed or dropped request waits for the
       capture again, at most 3 times a visit; clipped, non-finite, failed and busy results are DONE.
     - Reconcile, at every hook call and engine service: a changed visit or revision snapshot (`scan_quiet_revisions`:
       `trunk_chan_map_seq`, `lcn_list_rev`, `lcn_scan_session`, `trunk_scan_lists_seq`, the coordinator's `edit_seq`,
       -Y `edits_epoch`, `lcn_avoid_rev`, `trunk_scan_avoid_rev`, `pcm_input_generation`,
       `rtl_stream_receive_request_seq()`, the configured NFM and AM widths, `quiet_inv_seq`) cancels and suspends; a
-      sync since the visit's first request (`sync_seq`, kept across its retries) cancels and ends it; a READY result older than 250 ms ends it.
-    - Decision (`scan_quiet_apply()`, spec §3.4 (1)-(4)): the visit and revisions unchanged, the tap's capture still the
+      sync since the visit's first request (`sync_seq`, kept across its retries) cancels and ends it; a READY result
+      older than 250 ms ends it.
+    - Decision (`scan_quiet_apply()`, spec §3.4 (1)-(4)): the visit and revisions unchanged; the classes, analog kind
+      and width and DSP rate in force, which the caller passes as this pass's `scan_quiet_eligibility`, equal to those
+      measured (a NULL one declines); the tap's capture still the
       result's and the live output generation still its generation (a reacquire bump before the next block reaches the
       tap), no tune in flight or failed-gated in the ledger (`dsd_trunk_tuning_frame_is_current()`, lock-free), at most
       250 ms old, no sync since the request, no analog carrier heard (any tone verdict), and under trunk scan no allowed
@@ -543,8 +551,11 @@ Generated (do not edit/commit):
       resume, a park put in flight (`tune_pending`), its stop; the -Y release (leave and pause), resume, entry hold set,
       replaced or released, `Y` (through `dsd_engine_channel_scan_entry_cancel()`) and a start's hold let go; a Signal
       search start (the tap lets the search's first request supersede the quiet one meanwhile); the setting and every
-      config apply (`dsd_scan_quiet_setting_changed()`, installed engine-wide as `dsd_engine_scan_quiet_setting_changed()`,
-      which also cancels and suspends at once). Both bumps are one load while skip-silent is off.
+      config apply (`dsd_scan_quiet_setting_changed()`, installed engine-wide as
+      `dsd_engine_scan_quiet_setting_changed()`, which also cancels and suspends at once). Both bumps are one load while
+      skip-silent is off. A mutation site only moves the counter; the request is cancelled, ticket-matched, at the next
+      reconcile, which runs before every outward answer (hook, apply, decline, publication), so no stale result is ever
+      handed back or applied, and a Signal search request supersedes a quiet one at the tap meanwhile.
     - RF power is never activity: the check writes no hold, activity stamp, `idle_since_m`, `last_cc_sync_time`,
       history, event or location output, and reports nothing to the trunk scan. Radio-off builds compile it as a no-op
       service. Tests: `ENGINE_TRUNK_SCAN` (`test_scan_quiet_*`: a fake tap, link fakes of `rtl_signal_quiet_*`,
@@ -3995,8 +4006,13 @@ runs only when the dwell is not due), and on a 1 hands back exactly as the dwell
 (`frame_sync_history_keep()`), the hunt return marked, a plain no-sync with no no-sync hooks. The engine does the
 measurement work (start, collect, expire) inside the call and answers 1 only for a quiet result its tick may skip on,
 so the hunt never hands back for a sync in progress (any sync since the request ended the check). With
-`opts->scan_skip_silent` off the runtime wrapper returns 0 after that one load, never calling the engine; a SUSPENDED or
-DONE check costs two loads more. 0 with nothing installed.
+`opts->scan_skip_silent` off the runtime wrapper returns 0 after that one load, never calling the engine. With it on, a
+SUSPENDED or DONE check (or none) costs the scan-owner extension lookup and a phase load. A check under way
+(WAIT_CAPTURE, REQUESTED, READY) is reconciled at every call, as plan §3.3 asks: the revision snapshot is read again
+(about 13 loads: the state counters, two extension lookups for the trunk-scan and -Y edit counters, and the
+receive-request atomic), then one realtime read, then the phase's own step (WAIT_CAPTURE: a tap capture read at most
+every 50 ms; REQUESTED: the status word's atomic load; READY: a capture read and the ledger's frame gate). That is above
+plan §4.1's per-state figures, and it is paid only with the setting on, once per 300 symbols. 0 with nothing installed.
 `analog_call_block` hands the engine's NFM call every processed conventional monitor block as a `dsd_analog_call_block`
 descriptor (issues #756, #668; see `dsd_symbol.c` in the DSP section), borrowed for the synchronous call.
 
@@ -17849,9 +17865,10 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     replacement's; 0 for an untyped row's synchronous tune and a synchronous park); `generation_before_tune`, the RTL
     output generation `dsd_engine_scan_landing_note_tune()` read at the tune request, before the retune was issued
     (`channel_scan_tune_staged()`, `untyped_tune_row()`, `trunk_scan_switch_to()` before `trunk_scan_retune_active()`),
-    carried on the owner (`tune_generation_before`) until the landing; and `landed_realtime_ms`, when it was noted. As with `dsd_opts_tuned_freq_hz()`, a
-    frequency changed on the peer itself is not seen. Analog rows only take the frequency: digital rows on a rigctl -Y
-    channel keep the `dsd_opts_tuned_freq_hz()` rule. The row or target is the "confirmed on air" proof a typed
+    carried on the owner (`tune_generation_before`) until the landing; and `landed_realtime_ms`, when it was noted. As
+    with `dsd_opts_tuned_freq_hz()`, a frequency changed on the peer itself is not seen. Analog rows only take the
+    frequency: digital rows on a rigctl -Y channel keep the `dsd_opts_tuned_freq_hz()` rule. The row or target is the
+    "confirmed on air" proof a typed
     frequency reads (`dsd_engine_channel_scan_row_confirmed()`, `dsd_engine_trunk_scan_target_confirmed()`; see the
     typed-frequency match under Engine). Tests: `ENGINE_ANALOG_SCAN_CALLS` (a reconnect and a disconnect through the
     real service included, and `C`, `J`, a refused `C` and `=` through the real command queue),
