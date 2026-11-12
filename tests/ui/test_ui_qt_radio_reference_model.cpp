@@ -28,6 +28,7 @@
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
+#include <QMetaType>
 #include <QObject>
 #include <QQmlComponent>
 #include <QQmlContext>
@@ -842,6 +843,33 @@ test_conventional_import_counties_of_the_chosen_repeaters() {
     expect("conventional: an import with no files succeeds", result.value("ok").toBool());
     expect("conventional: no file was written", !result.contains("chanCsvPath") && !result.contains("groupCsvPath"));
     expect("conventional: the place arrives without files", result.value("place").toMap() == place);
+}
+
+/* A site RadioReference sends no county or state for still answers where it is: nowhere. Its plan and its import
+ * result carry an empty place, so a re-import onto a saved row of another site, at the same frequency and decode and
+ * with no file, clears that site's place instead of keeping it under the new site. */
+void
+test_import_without_place_ids_carries_an_empty_place() {
+    Harness h;
+    h.fake.replacements = {
+        {"<siteCtid xsi:type=\"xsd:int\">841</siteCtid>", "<siteCtid xsi:type=\"xsd:int\">0</siteCtid>"},
+        {"tns:stid[1]\"><item xsi:type=\"tns:stid\"><stid xsi:type=\"xsd:int\">19</stid></item>", "tns:stid[0]\">"},
+    };
+    h.model.loadSystem(12574);
+    pump(h.model);
+    QVariantMap plan = h.model.buildImportPlan({0}, {});
+    expect("no place ids: the plan is ok", plan.value("ok").toBool());
+    expect("no place ids: the plan says so", plan.contains("place")
+                                                 && plan.value("place").typeId() == QMetaType::QVariantMap
+                                                 && plan.value("place").toMap().isEmpty());
+    plan.insert("groupCsvText", QString());
+    plan.insert("chanCsvText", QString());
+    const QVariantMap result = h.model.performImport(plan, "Cap+", -1);
+    expect("no place ids: a file-free import succeeds", result.value("ok").toBool());
+    expect("no place ids: with its own site", result.value("rrSiteId").toInt() > 0);
+    expect("no place ids: the result carries the empty place",
+           result.contains("place") && result.value("place").typeId() == QMetaType::QVariantMap
+               && result.value("place").toMap().isEmpty());
 }
 
 /* The system's states are announced once its load completes, on a signal of their own: systemChanged() keeps
@@ -2078,6 +2106,7 @@ main(int argc, char** argv) {
     test_per_site_import_carries_its_place();
     test_single_state_import_has_its_state();
     test_conventional_import_counties_of_the_chosen_repeaters();
+    test_import_without_place_ids_carries_an_empty_place();
     test_system_place_ids_are_announced();
     test_site_import_without_coverage();
     test_mixed_simulcast_qml_plan();

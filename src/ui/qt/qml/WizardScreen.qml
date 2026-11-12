@@ -688,7 +688,9 @@ Item {
         }
         if (importedSite && keepsImportedTuning(sys, importedSite)) {
             var copied = importedSite.rrSiteId > 0 ? ["rrSid", "rrSiteId", "siteName", "siteLat", "siteLon", "hasSitePos"] : [];
-            // A conventional multi-repeater import has a place and no site.
+            // A conventional multi-repeater import has a place and no site. A
+            // RadioReference import always answers one, empty when it sent no
+            // county or state: saved as such, it clears the old site's place.
             if (importedSite.place !== undefined)
                 copied.push("place");
             for (var key of copied)

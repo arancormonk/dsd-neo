@@ -13526,7 +13526,9 @@ Qt Quick frontend (`src/ui/qt`):
   each site's `TrsSite.siteCtid`; every importable plan, a per-site batch's plans and `performImport()`'s result (and
   its batch rows) carry `place` = `rr_site_place()`: the counties of the sites the plan took (matched by site id; a
   conventional list's chosen repeaters only), the system's states as `candidateStates`, and the state outright when
-  there is exactly one; no names. A completed load sends `systemPlaceIdsReady(stids)` (never `systemChanged`).
+  there is exactly one; no names. With no county or state from RadioReference the `place` is present and empty, so an
+  edit-mode re-import of another site at the same tuning clears the old site's place (`update` takes a present empty
+  `place` as clear, an absent one as keep). A completed load sends `systemPlaceIdsReady(stids)` (never `systemChanged`).
   `rr_place_service.{h,cpp}` (`RrPlaceService`, the `rrPlaces` context object, built in `qt_ui.cpp` over the model and
   `savedSystems`) names them, isolated from the import screen: its own client and transport
   (`setTransportForTests()`), one request in flight, replies marshalled to the GUI thread with a generation that every

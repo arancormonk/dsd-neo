@@ -406,6 +406,24 @@ Item {
             compare(savedSystems.get(0).hasSitePos, data.siteId > 0);
         }
 
+        // An edit-mode re-import of another site at the same tuning, with no
+        // file, that RadioReference places nowhere: its result carries an
+        // empty place, and the save clears the old site's place with it.
+        function test_edit_reimport_empty_place_clears() {
+            var old = placedSite(16863, "851");
+            verify(savedSystems.add(old));
+            compare(placeCounty(0), 16863);
+            loader.item.openForEdit(0);
+            var other = site(48391, "851");
+            other.ok = true;
+            other.place = {};
+            loader.item.applyRadioReference(other);
+            loader.item.commit();
+            compare(savedSystems.count, 1);
+            compare(savedSystems.get(0).rrSiteId, 48391, "the new site");
+            compare(Object.keys(savedSystems.get(0).place).length, 0, "the old site's place stayed");
+        }
+
         // Issue #803: stale files on adoption. A library file the way a
         // RadioReference import adopts one, or the way the CSV picker does.
         function libraryFile(name, kind, generated) {

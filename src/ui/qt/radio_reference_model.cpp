@@ -1617,12 +1617,10 @@ RadioReferenceModel::buildImportPlan(const QVariantList& siteIndexes, const QVar
         return map;
     }
     plan_into_map(plan, &map);
-    if (plan.protocol != DSD_RR_PROTO_UNSUPPORTED && plan.site_count > 0) {
-        const QVariantMap place = planPlace(field(plan.site_ids));
-        if (!place.isEmpty()) {
-            map.insert(QStringLiteral("place"), place);
-        }
-    }
+    /* Always present, empty when RadioReference sent no county or state for the sites taken: saving the import onto
+     * a row of another site then clears that site's place instead of keeping it (SavedSystemsModel::update()). */
+    const bool placed = plan.protocol != DSD_RR_PROTO_UNSUPPORTED && plan.site_count > 0;
+    map.insert(QStringLiteral("place"), placed ? planPlace(field(plan.site_ids)) : QVariantMap());
     if (plan.site_count == 1 && !selected.empty() && selected[0] < m_siteData.count) {
         const auto& site = m_siteData.items[selected[0]];
         map.insert("rrSid", m_sid);

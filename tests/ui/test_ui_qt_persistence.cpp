@@ -2475,6 +2475,29 @@ test_reimport_keeps_place_names() {
     empty_systems(model);
 }
 
+/* A re-import of another site at the same tuning, which RadioReference places nowhere, sends an empty place: that
+ * clears the old site's place, on screen and on disk. An edit that sends no place key keeps the stored one. */
+void
+test_reimport_empty_place_clears() {
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("empty place: row", model.add(grouped_site("SARA — North", 3, "/data/imports/old.csv")));
+    expect("empty place: placed",
+           model.update(0, {{"place", iowa_place()}}) && model.get(0).value("place").toMap() == iowa_place());
+    expect("empty place: no place key keeps it",
+           model.update(0, {{"name", "SARA — North"}}) && model.get(0).value("place").toMap() == iowa_place());
+    const QVariantMap other{{"rrSid", 12}, {"rrSiteId", 9}, {"siteName", "Other"}, {"place", QVariantMap()}};
+    expect("empty place: the re-import saves", model.update(0, other));
+    expect("empty place: the new site", model.get(0).value("rrSiteId").toInt() == 9
+                                            && model.get(0).value("siteName").toString() == QStringLiteral("Other"));
+    expect("empty place: the old site's place is gone", model.get(0).value("place").toMap().isEmpty());
+    {
+        SavedSystemsModel reloaded;
+        expect("empty place: and stays gone", reloaded.get(0).value("place").toMap().isEmpty());
+    }
+    empty_systems(model);
+}
+
 /* Every insertion signal @p model sends, with its row range, in order, into @p log (declared before the model). */
 void
 record_inserts(SavedSystemsModel& model, QStringList& log) {
@@ -3792,6 +3815,7 @@ main(int argc, char** argv) {
     test_apply_place_names();
     test_place_name_cache();
     test_reimport_keeps_place_names();
+    test_reimport_empty_place_clears();
     test_add_with_retained_key();
     test_add_all_atomic_on_save_failure();
     test_add_all_invalid_later_row();
