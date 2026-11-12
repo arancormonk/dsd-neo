@@ -472,7 +472,8 @@ RrPlaceService::updateFromRadioReference(const QStringList& uids) {
         seen.insert(uid);
         const QModelIndex index = m_systems->index(row);
         const int sid = m_systems->data(index, SavedSystemsModel::RrSidRole).toInt();
-        if (site_grouped(sid, m_systems->data(index, SavedSystemsModel::RrSiteIdRole).toInt())) {
+        const int siteId = m_systems->data(index, SavedSystemsModel::RrSiteIdRole).toInt();
+        if (site_grouped(sid, siteId)) {
             if (!update.sids.contains(sid)) {
                 update.sids.append(sid);
             }
@@ -486,6 +487,7 @@ RrPlaceService::updateFromRadioReference(const QStringList& uids) {
             continue;
         }
         update.cardOf.insert(uid, card_key(*m_systems, row));
+        update.siteOf.insert(uid, Identity{sid, siteId});
     }
     update.total = static_cast<int>(QSet<QString>(update.cardOf.cbegin(), update.cardOf.cend()).size());
     if (update.total == 0) {
@@ -520,7 +522,14 @@ void
 RrPlaceService::applySitesReply(int sid, bool ok, const QList<SiteRecord>& sites) {
     const QStringList uids = m_update.siteUids.value(sid);
     const quint64 serial = m_updateSerial;
-    const RowsOutcome outcome = ok ? refreshSystemRows(sid, sites) : RowsOutcome{QStringList(), uids};
+    /* Not answered: only the rows still the update's count. */
+    QStringList current;
+    for (const QString& uid : uids) {
+        if (stillTarget(uid)) {
+            current.append(uid);
+        }
+    }
+    const RowsOutcome outcome = ok ? refreshSystemRows(sid, sites) : RowsOutcome{QStringList(), current};
     if (serial != m_updateSerial) {
         /* A handler of the saved rows' signals ended this update (or began another) while they were saved. */
         return;
@@ -543,17 +552,17 @@ RrPlaceService::applySitesReply(int sid, bool ok, const QList<SiteRecord>& sites
 RrPlaceService::RowsOutcome
 RrPlaceService::refreshSystemRows(int sid, const QList<SiteRecord>& sites) {
     if (m_systems.isNull()) {
-        return RowsOutcome{QStringList(), m_update.siteUids.value(sid)};
+        return RowsOutcome(); /* every row gone with the model */
     }
     QList<SavedSystemsModel::SiteRefresh> refreshes;
     RowsOutcome outcome;
     for (const QString& uid : m_update.siteUids.value(sid)) {
-        const QVariantMap stored = m_systems->getByUid(uid);
-        /* Gone, or edited onto another system since the update began: no longer this system's to refresh. */
-        if (stored.value(QStringLiteral("rrSid")).toInt() != sid) {
+        /* Gone, edited onto another system or re-imported as another site since the update began: the reply no
+         * longer describes it, so it is neither refreshed nor counted. */
+        if (!stillTarget(uid)) {
             continue;
         }
-        const int siteId = stored.value(QStringLiteral("rrSiteId")).toInt();
+        const int siteId = m_update.siteOf.value(uid).rrSiteId;
         const auto site = std::find_if(sites.cbegin(), sites.cend(),
                                        [siteId](const SiteRecord& record) { return record.siteId == siteId; });
         if (site == sites.cend()) {
@@ -581,12 +590,27 @@ RrPlaceService::refreshSystemRows(int sid, const QList<SiteRecord>& sites) {
     return outcome;
 }
 
+bool
+RrPlaceService::stillTarget(const QString& uid) const {
+    const auto taken = m_update.siteOf.constFind(uid);
+    const int row = m_systems.isNull() ? -1 : m_systems->rowForUid(uid);
+    if (taken == m_update.siteOf.cend() || row < 0) {
+        return false;
+    }
+    const QModelIndex index = m_systems->index(row);
+    return m_systems->data(index, SavedSystemsModel::RrSidRole).toInt() == taken->rrSid
+           && m_systems->data(index, SavedSystemsModel::RrSiteIdRole).toInt() == taken->rrSiteId;
+}
+
 void
 RrPlaceService::beginNamesPhase() {
     m_update.namesPhase = true;
     QList<int> stids;
     for (const QString& uid : m_update.uids) {
-        const QVariantMap place = m_systems.isNull() ? QVariantMap() : m_systems->getByUid(uid).value(kPlace).toMap();
+        if (m_systems.isNull() || !stillTarget(uid)) {
+            continue;
+        }
+        const QVariantMap place = m_systems->getByUid(uid).value(kPlace).toMap();
         if (!SavedSystemsModel::placeNeedsNames(place)) {
             continue;
         }
@@ -629,6 +653,9 @@ RrPlaceService::finishUpdate(bool namesDone) {
          * them failed, its lookup or the save of its names (the row is then as it was), else updated. A row it named
          * nothing for (no state ids, nothing left to name) counts as neither. */
         for (const QString& uid : m_update.placeUids) {
+            if (!stillTarget(uid)) {
+                continue;
+            }
             const QList<int> stids = place_state_ids(m_systems->getByUid(uid).value(kPlace).toMap());
             const bool failed = std::any_of(stids.cbegin(), stids.cend(), [this](int stid) {
                 return m_failedStates.contains(stid)

@@ -723,6 +723,120 @@ test_update_skips_moved_and_counts_unlisted() {
     expect_str("moved: one system, singular", h.service.summaryText(), "Updated 1 system. 1 could not be reached.");
 }
 
+/* A row re-imported as another site of the same system while that system is read is no longer the site the update
+ * was asked for: the reply (which lists the new site too) is not applied over the fresh import, the row is counted as
+ * neither, and its place is not looked up by the update's names step. */
+void
+test_update_skips_reimported_site() {
+    clear_store();
+    Harness h;
+    h.systems.add(site_row("SARA — Johnson Co Simulcast", 6673, 16863, "Johnson Co Simulcast"));
+    {
+        QMutexLocker lock(&h.fake.mutex);
+        h.fake.holdMethod = QStringLiteral("getTrsSites");
+    }
+    Finished finished;
+    record_finished(h.service, &finished);
+    expect("re-import: started", h.service.updateFromRadioReference({h.systems.get(0).value("uid").toString()}));
+    expect("re-import: sites held", await_hold(h.fake));
+    /* The wizard's edit-mode re-import of SARA's Linn site: same system, another site, its own fresh fields. */
+    expect("re-import: saved as Linn", h.systems.update(0, {{"rrSiteId", 23581},
+                                                            {"siteName", "Linn fresh"},
+                                                            {"siteLat", 42.5},
+                                                            {"siteLon", -91.25},
+                                                            {"hasSitePos", true},
+                                                            {"place", county_place(9999, {19})}}));
+    h.fake.proceed.release();
+    settle(h);
+    const QVariantMap row = h.systems.get(0);
+    expect_int("re-import: still Linn", row.value("rrSiteId").toInt(), 23581);
+    expect_str("re-import: the fresh site name stays", row.value("siteName").toString(), "Linn fresh");
+    expect("re-import: the fresh position stays",
+           qAbs(row.value("siteLat").toDouble() - 42.5) < 1e-9 && qAbs(row.value("siteLon").toDouble() + 91.25) < 1e-9);
+    expect_int("re-import: the fresh place stays", county_of(row.value("place").toMap()).value("ctid").toInt(), 9999);
+    expect_int("re-import: no names looked up for it", h.fake.count("getStateInfo:19"), 0);
+    expect_int("re-import: finished once", finished.count, 1);
+    expect_int("re-import: not updated", finished.updated, 0);
+    expect_int("re-import: not unreachable", finished.unreachable, 0);
+    expect_str("re-import: summary", h.service.summaryText(), "Updated 0 systems.");
+}
+
+/* A system RadioReference does not answer counts only the rows still the site the update was asked for: a row removed
+ * meanwhile, and one edited onto another system, count as neither; the row still on its site counts. */
+void
+test_update_failure_counts_only_current_rows() {
+    clear_store();
+    Harness h;
+    h.systems.add(site_row("SARA — Johnson Co Simulcast", 6673, 16863, "Johnson Co Simulcast"));
+    h.systems.add(on_receiver(site_row("SARA — Linn Co Simulcast", 6673, 23581, "Linn Co Simulcast"), "10.0.0.2"));
+    h.systems.add(on_receiver(site_row("SARA — Polk Co Simulcast", 6673, 31568, "Polk Co Simulcast"), "10.0.0.3"));
+    const QString removed = h.systems.get(0).value("uid").toString();
+    const QString moved = h.systems.get(1).value("uid").toString();
+    const QString kept = h.systems.get(2).value("uid").toString();
+    {
+        QMutexLocker lock(&h.fake.mutex);
+        h.fake.holdMethod = QStringLiteral("getTrsDetails");
+        h.fake.failSids = {6673};
+    }
+    Finished finished;
+    record_finished(h.service, &finished);
+    expect("gone: started", h.service.updateFromRadioReference({removed, moved, kept}));
+    expect("gone: details held", await_hold(h.fake));
+    expect("gone: one removed", h.systems.remove(h.systems.rowForUid(removed)));
+    expect("gone: one edited onto another system", h.systems.update(h.systems.rowForUid(moved), {{"rrSid", 7777}}));
+    h.fake.proceed.release();
+    settle(h);
+    expect_int("gone: finished once", finished.count, 1);
+    expect_int("gone: none updated", finished.updated, 0);
+    expect_int("gone: only the row still on its site counted", finished.unreachable, 1);
+    expect_str("gone: summary", h.service.summaryText(), "Updated 0 systems. 1 could not be reached.");
+
+    /* Only the removed row asked for, and RadioReference not answering: nothing is left to count. */
+    h.systems.add(site_row("SARA — Johnson Co Simulcast", 6673, 16863, "Johnson Co Simulcast"));
+    const QString sole = h.systems.get(h.systems.count() - 1).value("uid").toString();
+    {
+        QMutexLocker lock(&h.fake.mutex);
+        h.fake.holdMethod = QStringLiteral("getTrsDetails");
+    }
+    expect("sole: started", h.service.updateFromRadioReference({sole}));
+    expect("sole: details held", await_hold(h.fake));
+    expect("sole: removed", h.systems.remove(h.systems.rowForUid(sole)));
+    h.fake.proceed.release();
+    settle(h);
+    expect_int("sole: finished", finished.count, 2);
+    expect_int("sole: none updated", finished.updated, 0);
+    expect_int("sole: the removed card not counted", finished.unreachable, 0);
+    expect_str("sole: summary", h.service.summaryText(), "Updated 0 systems.");
+}
+
+/* The names step follows the same rule: a conventional list re-imported as a site while its state is looked up is not
+ * counted when that lookup fails. */
+void
+test_update_names_count_only_current_rows() {
+    clear_store();
+    Harness h;
+    h.systems.add({{"name", "Repeaters"},
+                   {"sourceType", "usb"},
+                   {"freqMhz", "146.755"},
+                   {"decodeFlag", "-fs -Y"},
+                   {"place", county_place(836, {19})}});
+    {
+        QMutexLocker lock(&h.fake.mutex);
+        h.fake.holdMethod = QStringLiteral("getStateInfo");
+        h.fake.failStates = {19};
+    }
+    Finished finished;
+    record_finished(h.service, &finished);
+    expect("names gone: started", h.service.updateFromRadioReference({h.systems.get(0).value("uid").toString()}));
+    expect("names gone: lookup held", await_hold(h.fake));
+    expect("names gone: re-imported as a site", h.systems.update(0, {{"rrSid", 6673}, {"rrSiteId", 16863}}));
+    h.fake.proceed.release();
+    settle(h);
+    expect_int("names gone: finished once", finished.count, 1);
+    expect_int("names gone: none updated", finished.updated, 0);
+    expect_int("names gone: not counted", finished.unreachable, 0);
+}
+
 /* Partial success: a system RadioReference does not answer is counted per card; the others are saved. SARA's five
  * sites are one card. */
 void
@@ -1305,6 +1419,9 @@ main(int argc, char** argv) {
     test_sign_out_clears_the_cache();
     test_update_refreshes_sites();
     test_update_skips_moved_and_counts_unlisted();
+    test_update_skips_reimported_site();
+    test_update_failure_counts_only_current_rows();
+    test_update_names_count_only_current_rows();
     test_update_partial_success();
     test_update_failed_save();
     test_update_failed_name_save();

@@ -13553,7 +13553,10 @@ Qt Quick frontend (`src/ui/qt`):
   distinct system of the rows that are sites (`getTrsDetails` for `sState`, then `getTrsSites`) and applies, through
   `SavedSystemsModel::refreshSites()`, the site name, position and place ids to every row still on that system and
   site, keeping the names it already had for unchanged ids; a site RadioReference no longer lists, an unanswered system
-  or a failed save leaves its row not updated, a row moved to another system meanwhile counts as neither. Then it looks
+  or a failed save leaves its row not updated. Each row's (rrSid, rrSiteId) is taken as the update begins
+  (`Update::siteOf`), and a row that no longer has that exact pair (removed, edited onto another system, re-imported
+  as another site of the same one) is no longer the update's (`stillTarget()`): it is not refreshed, not looked up by
+  the names step and counts as neither, whether its request succeeds or fails. Then it looks
   up the states any of the rows' places still lacks names for (a conventional list with a place and no site is not
   updated when one of its states failed, or saving the names this step applied failed; updated when the step looked
   up or applied one of them, else neither). Every
@@ -13570,7 +13573,7 @@ Qt Quick frontend (`src/ui/qt`):
   QML fixtures publish `RrPlacesFake` (the same five properties, pinned by `UI_QT_RR_PLACE_SERVICE`, and an
   `unplacedUids()` a case scripts; `missingContextKeys()` checks `rrPlaces` reads). Tests: `UI_QT_RADIO_REFERENCE`
   (place per import shape, the signal), `UI_QT_RR_PLACE_SERVICE` (names, order of names and saves, per-state failure,
-  failed-save retry, sign-out, Update from RadioReference incl. partial success, moved and unlisted rows, a call while
+  failed-save retry, sign-out, Update from RadioReference incl. partial success, moved, re-imported, removed and unlisted rows, a call while
   one runs refused, counts in cards, the notice's uids, cancels,
   and failed lookups leaving the import screen's lists, busy, system, plan, status and a library refresh alone).
 - `json_store.{h,cpp}` holds the Qt models' JSON-array stores in the app data root (`json_store_root()`): saved

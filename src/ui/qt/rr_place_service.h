@@ -172,6 +172,12 @@ class RrPlaceService : public QObject {
         double lon = 0;
     };
 
+    /** @brief Which RadioReference site a row was when the update began. */
+    struct Identity {
+        int rrSid = 0;
+        int rrSiteId = 0;
+    };
+
     /** @brief The update in progress. */
     struct Update {
         QList<int> sids;                  /* distinct RadioReference systems, in the order asked */
@@ -179,6 +185,7 @@ class RrPlaceService : public QObject {
         QStringList placeUids;            /* rows with place ids and no site */
         QStringList uids;                 /* every row above, in the order asked */
         QHash<QString, QString> cardOf;   /* each row's card (card_key()) as the update began */
+        QHash<QString, Identity> siteOf;  /* each row's (rrSid, rrSiteId) as the update began */
         int next = 0;                     /* index into sids of the system being read */
         bool detailsRead = false;         /* its getTrsDetails answered; getTrsSites is next */
         QVariantList stateIds;            /* that system's Trs.sState, once its details arrived */
@@ -213,6 +220,10 @@ class RrPlaceService : public QObject {
     void retryUnapplied();
     /** @brief Refresh the update's rows of system @p sid from its getTrsSites reply @p sites. */
     RowsOutcome refreshSystemRows(int sid, const QList<SiteRecord>& sites);
+    /** @brief Whether the update's row @p uid is still saved and still the site it was when the update began. A row
+     *         removed, edited onto another system or re-imported as another site since is no longer the update's: it
+     *         is neither refreshed nor counted, by the sites or by the names. */
+    bool stillTarget(const QString& uid) const;
     /** @brief After the sites: look up the states any of the update's places still lacks names for. */
     void beginNamesPhase();
     /** @brief A state lookup ended (answered or not); the update ends with the last one it waits for. */
