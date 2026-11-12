@@ -85,12 +85,13 @@ impulses at unity DC gain, so a held level 3 is the outer deviation:
            symbols at their mode's pulse and deviation, or the committed fixtures as recorded
 
 Analog criterion: 12 dB SINAD of a 1 kHz tone in dsd-neo's monitor audio (TIA-603 for NFM, ETSI EN 300 676-1 for
-AM), at each configured receive width the scan check calibrates: NFM 8, 12.5, 16 and 25 kHz, AM 5, 6, 10 and 20 kHz.
-NFM carries the tone at 60 % of the transmitter's maximum deviation: 1.5 kHz for a 12.5 kHz channel's transmitter
-(the 8 and 12.5 kHz widths), 3 kHz for a 25 kHz channel's (the 25 kHz width), both at 16 kHz, where either kind is
-received and the lower threshold is kept. AM is at 30 % depth. The audio is scored by dsd-neo_test_analog_replay
-(tests/engine/analog_replay.c), which runs the real engine and fits the tone to every delivered 20 ms block after the
-monitor's filters: SINAD is 10 log10(1 + S/(N+D)) from its tone_snr_db. Gain is fixed (-n 50) and the replay squelch
+AM), at each configured receive width the scan check calibrates: NFM 8, 11.25, 12.5, 16, 20 and 25 kHz, AM 5, 6, 8,
+10, 15 and 20 kHz (the Radio sheet's width steps). NFM carries the tone at 60 % of the transmitter's maximum deviation:
+1.5 kHz for a 12.5 kHz channel's transmitter (the 8 and 12.5 kHz widths), 3 kHz for a 25 kHz channel's (the 25 kHz
+width), both at 11.25, 16 and 20 kHz, where either kind is received and the lower threshold is kept. AM is at 30 %
+depth. The audio is scored by dsd-neo_test_analog_replay (tests/engine/analog_replay.c), which runs the real engine and
+fits the tone to every delivered 20 ms block after the monitor's filters: SINAD is 10 log10(1 + S/(N+D)) from its
+tone_snr_db. Gain is fixed (-n 50) and the replay squelch
 is the -110 dB default, which passes everything; noise alone must fail the metric, and the tool reports that it does.
 
 Everything is deterministic: the noise seeds are fixed (--base-seed), the generators run with fixed arguments and
@@ -164,8 +165,8 @@ DMR_SLOT_SYMBOLS = 144  # 12 CACH (or MS guard) + 132 burst dibits: 30 ms at 480
 DMR_LEAD_SYMBOLS = 960  # dmr_synth.c: the random (with --ms, silent) lead before the first period
 DMR_RAMP_S = 0.0015  # ETSI TS 102 361-1 10.2.3.1.1, figure 10.3: regions A and C
 # The test tone at 60 % of the transmitter's maximum deviation: +/-2.5 kHz for a 12.5 kHz channel's (narrowband),
-# +/-5 kHz for a 25 kHz channel's (wideband). The 16 kHz width, at which either kind is received, is measured with
-# both and keeps the lower threshold.
+# +/-5 kHz for a 25 kHz channel's (wideband). The 11.25, 16 and 20 kHz widths, at which either kind is received, are
+# measured with both and keep the lower threshold.
 NFM_NARROW_TONE_HZ = 1500.0
 NFM_WIDE_TONE_HZ = 3000.0
 AM_TONE_DEPTH = 0.3
@@ -1231,6 +1232,10 @@ def digital_rows():
     return rows
 
 
+NARROW_NOTE = " (12.5 kHz channel's tone)"
+WIDE_NOTE = " (25 kHz channel's tone)"
+
+
 def nfm_row(key, mode, width_hz, deviation, label_note=""):
     return Row(
         key,
@@ -1259,17 +1264,24 @@ def am_row(width_hz):
 
 
 def analog_rows():
-    """NFM at the configured widths 8 to 25 kHz and AM at 5 to 20 kHz (the scan check's calibrated domain): a 12.5 kHz
-    channel's transmitter where the width fits it, a 25 kHz channel's where it fits that, both at 16 kHz."""
+    """NFM and AM at every width the Radio sheet offers (src/ui/qt/qml/Util.js NFM_WIDTHS_HZ, AM_WIDTHS_HZ), the scan
+    check's calibrated widths: a 12.5 kHz channel's transmitter at 8 and 12.5 kHz, a 25 kHz channel's at 25 kHz, and
+    both at 11.25, 16 and 20 kHz, where either is received, the lower threshold kept."""
     return [
         nfm_row("nfm_8k", "nfm_8k", 8000, NFM_NARROW_TONE_HZ),
+        nfm_row("nfm_11k25_narrow", "nfm_11k25", 11250, NFM_NARROW_TONE_HZ, NARROW_NOTE),
+        nfm_row("nfm_11k25_wide", "nfm_11k25", 11250, NFM_WIDE_TONE_HZ, WIDE_NOTE),
         nfm_row("nfm_12k5", "nfm_12k5", 12500, NFM_NARROW_TONE_HZ),
-        nfm_row("nfm_16k_narrow", "nfm_16k", 16000, NFM_NARROW_TONE_HZ, " (12.5 kHz channel's tone)"),
-        nfm_row("nfm_16k_wide", "nfm_16k", 16000, NFM_WIDE_TONE_HZ, " (25 kHz channel's tone)"),
+        nfm_row("nfm_16k_narrow", "nfm_16k", 16000, NFM_NARROW_TONE_HZ, NARROW_NOTE),
+        nfm_row("nfm_16k_wide", "nfm_16k", 16000, NFM_WIDE_TONE_HZ, WIDE_NOTE),
+        nfm_row("nfm_20k_narrow", "nfm_20k", 20000, NFM_NARROW_TONE_HZ, NARROW_NOTE),
+        nfm_row("nfm_20k_wide", "nfm_20k", 20000, NFM_WIDE_TONE_HZ, WIDE_NOTE),
         nfm_row("nfm_25k", "nfm_25k", 25000, NFM_WIDE_TONE_HZ),
         am_row(5000),
         am_row(6000),
+        am_row(8000),
         am_row(10000),
+        am_row(15000),
         am_row(20000),
     ]
 
