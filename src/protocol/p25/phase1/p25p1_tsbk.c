@@ -155,16 +155,25 @@ tsbk_read_repetition_samples(dsd_opts* opts, dsd_state* state, int* skipdibit, t
     }
 }
 
+/* Whether a block's first two data dibits are a pair its first trellis step can send: from state 0 the dibit-pair
+   table (p25_12.c) sends 2, 12, 1 or 15, the dibits 0 2, 3 0, 0 1 and 3 3. */
+static int
+tsbk_first_step_pair(uint8_t first, uint8_t second) {
+    const unsigned int pair = ((unsigned int)first << 2) | second;
+    return pair == 2U || pair == 12U || pair == 1U || pair == 15U;
+}
+
 /* Whether the TSDU ended with the @p blocks blocks before this one, read from the start of this one: such a TSDU pads
    the span up to its next status symbol with null dibits (p25p1_block_unit_dibits(); null bits pad a data unit to a
    status boundary per TIA-102.BAAA-A 5.1.2, as 8.2.4 spells out for a PDU, and OP25's TSDU encoder pads a TSDU so; the
    TSDU's own format is TIA-102.AABB's), where a TSDU that goes on carries this block's trellis-coded data. Reads that
-   span (so the read stops where the next frame's sync starts when it was the end) and takes it for the nulls when at
-   most a fifth of its data dibits read otherwise. A real block reads so only by rare chance, by the trellis's
-   structure: the span holds the dibit pairs of every fourth trellis step from the first, only a step from data dibit 1
-   to data dibit 1 sends two nulls, and the first step, from state 0, always sends one non-null, so 17 of 21 nulls takes
-   data dibits 1, 1 at six or more of the nine steps between (about 1 in 10^7 random blocks; 23 of 28 after two blocks,
-   about 1 in 10^10). In the captures measured nulls read 20-21 of 21, the data of real blocks at most 13. */
+   span (so the read stops where the next frame's sync starts when it was the end) and takes it for the nulls when its
+   first two data dibits are a pair no real block sends there and at most a fifth of its data dibits read otherwise.
+   The first two are the first trellis step's pair, which from state 0 is one of four (tsbk_first_step_pair()), never
+   two nulls, so no real block passes for the nulls without a symbol error there, whatever its data. A count alone does
+   not tell them apart: the span's other pairs are every fourth step's, a step from data dibit 1 to data dibit 1 sends
+   two nulls, and a block of 0x55 bytes sends little else. The fifth admits nulls a weak signal misreads; in the
+   captures measured nulls read 20-21 of 21. */
 static int
 tsbk_read_trailing_nulls(dsd_opts* opts, dsd_state* state, int* skipdibit, tsbk_decode_ctx_t* ctx, int blocks) {
     const int span =
@@ -177,7 +186,8 @@ tsbk_read_trailing_nulls(dsd_opts* opts, dsd_state* state, int* skipdibit, tsbk_
     for (int i = 0; i < ctx->data_count; i++) {
         misread += (ctx->tsbk_dibit[i] != 0U) ? 1 : 0;
     }
-    return ctx->data_count > 0 && misread * 5 <= ctx->data_count;
+    return ctx->data_count >= 2 && !tsbk_first_step_pair(ctx->tsbk_dibit[0], ctx->tsbk_dibit[1])
+           && misread * 5 <= ctx->data_count;
 }
 
 /* Reads the rest of the block (from where a trailing-null check left it) and decodes it; returns its CRC verdict. */

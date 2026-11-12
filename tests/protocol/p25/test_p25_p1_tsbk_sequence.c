@@ -565,15 +565,16 @@ test_network_status_code(void) {
 
 /* The span after @p blocks blocks that a TSDU of that many fills with trailing nulls (to its next status symbol:
    TIA-102.BAAA-A 5.1.2, as 8.2.4 has it for a PDU; OP25's TSDU encoder pads so), read on from where the last block
-   ended: 21 nulls and a status symbol after one block, 28 and one after two. @p errors of the nulls read as -3 instead.
-   Status symbols carry 1, which no null check may count. */
+   ended: 21 nulls and a status symbol after one block, 28 and one after two. @p errors of the nulls, from data dibit
+   @p first on, read as -3 instead. Status symbols carry 1, which no null check may count. */
 static void
-append_null_span(int blocks, int errors, int* skipdibit) {
+append_null_span(int blocks, int first, int errors, int* skipdibit) {
     const int span = (int)p25p1_block_unit_dibits(blocks) - (57 + (101 * blocks));
+    int data = 0;
     for (int i = 0; i < span; i++) {
         if ((*skipdibit / 36) == 0) {
-            g_stream[g_stream_len++] = errors > 0 ? 3U : 0U;
-            errors--;
+            g_stream[g_stream_len++] = (data >= first && data < first + errors) ? 3U : 0U;
+            data++;
         } else {
             g_stream[g_stream_len++] = 1U;
             *skipdibit = 0;
@@ -592,10 +593,10 @@ append_next_sync(void) {
 }
 
 /* One TSDU of @p blocks blocks in a row, the last of them with its CRC broken but its last-block flag clear, then the
-   trailing nulls with @p null_errors misread and the next frame's sync; or, when @p next_block is given, that block
-   instead. */
+   trailing nulls with @p null_errors misread from data dibit @p first_error on and the next frame's sync; or, when
+   @p next_block is given, that block instead. */
 static void
-build_failed_last_block_stream(int blocks, int null_errors, const uint8_t* next_block) {
+build_failed_last_block_stream(int blocks, int first_error, int null_errors, const uint8_t* next_block) {
     /* The 0x1111 grant (flag clear) with two of its payload bytes changed under the old CRC: the block decodes clean
        and fails its CRC. (A changed CRC byte would not do: the list decoder's next candidate repairs a flip that close
        to the trellis's end.) */
@@ -620,7 +621,7 @@ build_failed_last_block_stream(int blocks, int null_errors, const uint8_t* next_
         append_tsbk_stream_block(next_block, &skipdibit);
         return;
     }
-    append_null_span(blocks, null_errors, &skipdibit);
+    append_null_span(blocks, first_error, null_errors, &skipdibit);
     append_next_sync();
 }
 
@@ -634,6 +635,46 @@ run_tsdu(dsd_opts* opts, dsd_state* state) {
     return processTSBK(opts, state);
 }
 
+/* Behind the failed block, a real block whose data reads almost as nulls where a TSDU that ended would pad: a group
+   voice grant on channel 0x5555 to group 0x5555 from 0x555545, flagged last. The trellis sends data dibits 1, 1 (a 0x55
+   byte is four of them) as two nulls, so 18 of the 21 data dibits the trailing-null check reads are nulls. A real
+   block's first trellis step, from state 0, sends one of four pairs, never two nulls: the TSDU reads on and dispatches
+   the grant. */
+static int
+test_failed_block_then_null_heavy_block(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    uint8_t grant[12] = {0x80, 0x00, 0x01, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x45, 0x00, 0x00};
+    rc |= expect_eq_int("null-heavy grant seals its crc", seal_tsbk_crc(grant), 1);
+    rc |= expect_eq_int("null-heavy grant crc", (grant[10] << 8) | grant[11], 0x5FB3);
+    uint8_t dibits[98];
+    encode_tsbk_dibits(grant, dibits);
+    int nulls = 0;
+    for (int i = 0; i < 21; i++) {
+        nulls += dibits[i] == 0U ? 1 : 0;
+    }
+    rc |= expect_eq_int("null-heavy grant reads 18 nulls of 21", nulls, 18);
+    rc |= expect_eq_int("null-heavy grant's first step sends 0 1", (dibits[0] << 2) | dibits[1], 1);
+
+    build_failed_last_block_stream(1, 0, 0, dibits);
+    rc |= expect_eq_int("failed block then a null-heavy block reports a crc pass", run_tsdu(&opts, &state), 1);
+    rc |= expect_eq_int("failed block then a null-heavy block reads it", g_stream_pos, 202);
+    rc |= expect_eq_int("failed block then a null-heavy block dispatches it", g_mac_count, 1);
+    rc |= expect_eq_int("null-heavy grant's group", g_mac_group[0], 0x5555);
+    rc |= expect_eq_int("null-heavy grant's source", g_mac_source[0], 0x555545);
+    rc |= expect_eq_int("failed block then a null-heavy block has its length", (int)state.p25_p1_unit_dibits, 288);
+
+    /* The same behind a failed second block: the third block reads on. */
+    build_failed_last_block_stream(2, 0, 0, dibits);
+    run_tsdu(&opts, &state);
+    rc |= expect_eq_int("failed second block then a null-heavy block reads it", g_stream_pos, 303);
+    rc |= expect_eq_int("failed second block then a null-heavy block dispatches both", g_mac_count, 2);
+    rc |=
+        expect_eq_int("failed second block then a null-heavy block has its length", (int)state.p25_p1_unit_dibits, 360);
+    return rc;
+}
+
 /* A block whose CRC fails says nothing about whether another follows: its last-block flag is as damaged as the rest.
    Read on behind it, a one-block TSDU took the next frame's sync and NID for its second and third blocks and lost that
    frame, on the air and in the CQPSK fixtures. The span a TSDU ending there pads with trailing nulls says which: nulls
@@ -645,7 +686,7 @@ test_failed_block_trailing_nulls(void) {
     int rc = 0;
 
     /* One block, then its 21 nulls and status symbol: the read stops at the next frame's sync. */
-    build_failed_last_block_stream(1, 0, NULL);
+    build_failed_last_block_stream(1, 0, 0, NULL);
     rc |= expect_eq_int("failed one-block tsdu reports no crc pass", run_tsdu(&opts, &state), 0);
     rc |= expect_eq_int("failed one-block tsdu fails its crc", (int)state.p25_p1_fec_err, 1);
     rc |= expect_eq_int("failed one-block tsdu stops at the next sync", g_stream_pos, 101 + 22);
@@ -653,31 +694,52 @@ test_failed_block_trailing_nulls(void) {
     rc |= expect_eq_int("failed one-block tsdu collects the span's status symbol", g_status_count, 3 + 1);
     rc |= expect_eq_int("failed one-block tsdu has no length", (int)state.p25_p1_unit_dibits, 0);
 
-    /* A fifth of the nulls misread (4 of 21) still ends it; a fifth and one more (5) reads on. */
-    build_failed_last_block_stream(1, 4, NULL);
-    run_tsdu(&opts, &state);
-    rc |= expect_eq_int("nulls with 4 of 21 misread end the tsdu", g_stream_pos, 101 + 22);
-    build_failed_last_block_stream(1, 5, NULL);
+    /* A fifth of the nulls misread (4 of 21) past the first two still ends it, wherever they are; a fifth and one more
+       (5) reads on. */
+    for (int first = 2; first <= 21 - 4; first += 5) {
+        build_failed_last_block_stream(1, first, 4, NULL);
+        run_tsdu(&opts, &state);
+        rc |= expect_eq_int("nulls with 4 of 21 misread end the tsdu", g_stream_pos, 101 + 22);
+    }
+    build_failed_last_block_stream(1, 2, 5, NULL);
     run_tsdu(&opts, &state);
     rc |= expect_eq_int("nulls with 5 of 21 misread read on", g_stream_pos > 101 + 22, 1);
+    /* The first two, whatever they read, end it only as a pair no real block's first trellis step sends (from state 0:
+       0 2, 3 0, 0 1, 3 3): one misread to a pair a block sends reads on, since the span is then no more the nulls' than
+       a block's. Read as a pair a block cannot send (a null misread as 1 or 2 first, or as 3 second), it ends. */
+    for (int blocks = 1; blocks <= 2; blocks++) {
+        const int start = 101 * blocks;
+        const int span = blocks == 1 ? 22 : 29;
+        for (int pair = 0; pair < 16; pair++) {
+            build_failed_last_block_stream(blocks, 0, 0, NULL);
+            g_stream[start] = (uint8_t)(pair >> 2);
+            g_stream[start + 1] = (uint8_t)(pair & 3);
+            run_tsdu(&opts, &state);
+            const int block_pair = pair == 2 || pair == 12 || pair == 1 || pair == 15;
+            rc |= expect_eq_int(block_pair ? "nulls behind a block's first pair read on"
+                                           : "nulls behind a pair no block sends end the tsdu",
+                                g_stream_pos == start + span, block_pair ? 0 : 1);
+        }
+    }
 
     /* Two blocks, the second failed, then its 28 nulls and status symbol: 5 of them misread still end it. */
-    build_failed_last_block_stream(2, 5, NULL);
+    build_failed_last_block_stream(2, 2, 5, NULL);
     run_tsdu(&opts, &state);
     rc |= expect_eq_int("failed two-block tsdu dispatches its first block", g_mac_count, 1);
     rc |= expect_eq_int("failed two-block tsdu stops at the next sync", g_stream_pos, 202 + 29);
     rc |= expect_eq_int("failed two-block tsdu has no length", (int)state.p25_p1_unit_dibits, 0);
-    build_failed_last_block_stream(2, 6, NULL);
+    build_failed_last_block_stream(2, 2, 6, NULL);
     run_tsdu(&opts, &state);
     rc |= expect_eq_int("nulls with 6 of 28 misread read on", g_stream_pos > 202 + 29, 1);
 
     /* The failed block followed by a real block (the 0x2222 grant, flagged last): the TSDU reads on and decodes it. */
-    build_failed_last_block_stream(1, 0, k_group_grant_2222_dibits);
+    build_failed_last_block_stream(1, 0, 0, k_group_grant_2222_dibits);
     rc |= expect_eq_int("failed block then a real block reports a crc pass", run_tsdu(&opts, &state), 1);
     rc |= expect_eq_int("failed block then a real block reads it", g_stream_pos, 202);
     rc |= expect_eq_int("failed block then a real block dispatches it", g_mac_count, 1);
     rc |= expect_eq_int("failed block then a real block counts both", (int)(state.p25_p1_fec_ok + state.p25_p1_fec_err),
                         2);
+    rc |= test_failed_block_then_null_heavy_block();
     return rc;
 }
 
