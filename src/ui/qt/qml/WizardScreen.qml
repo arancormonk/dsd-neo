@@ -1635,9 +1635,10 @@ Item {
                         readonly property bool navigationAllowed: Navigation.allows(advHeader)
                         Accessible.ignored: !navigationAllowed || !visible
                         Accessible.onPressAction: toggle()
-                        Keys.onSpacePressed: toggle()
-                        Keys.onReturnPressed: toggle()
-                        Keys.onEnterPressed: toggle()
+                        Keys.onPressed: function (event) {
+                            if (Navigation.activationPress(event))
+                                toggle();
+                        }
                         function toggle() {
                             if (enabled && Navigation.allows(advHeader))
                                 wizard.advancedOpen = !wizard.advancedOpen;
@@ -2059,9 +2060,10 @@ Item {
                         readonly property bool navigationAllowed: Navigation.allows(csvChoice)
                         Accessible.ignored: !navigationAllowed
                         Accessible.onPressAction: choose()
-                        Keys.onReturnPressed: choose()
-                        Keys.onEnterPressed: choose()
-                        Keys.onSpacePressed: choose()
+                        Keys.onPressed: function (event) {
+                            if (Navigation.activationPress(event))
+                                choose();
+                        }
                         FocusFrame {}
                         function choose() {
                             if (!Navigation.allows(csvChoice))

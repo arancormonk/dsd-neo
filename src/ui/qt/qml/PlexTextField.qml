@@ -22,6 +22,11 @@ Rectangle {
     // lets go of the keyboard focus. A field whose results show as you type (a
     // search) keeps it, so the keyboard user stays in the field.
     property bool keepsFocusOnEnter: false
+    // The action the on-screen keyboard's Enter key shows and reports
+    // (EnterKey.type; Android's imeOptions). The default leaves it to Qt; a
+    // search sets Qt.EnterKeySearch, so the keyboard never offers Next, which
+    // Qt turns into a Tab to the next control.
+    property int enterKeyType: Qt.EnterKeyDefault
     property alias echoMode: input.echoMode
     signal accepted
     Accessible.ignored: true
@@ -68,6 +73,7 @@ Rectangle {
         selectionColor: Qt.alpha(Theme.cyan, 0.35)
         selectedTextColor: Theme.textPrimary
         clip: true
+        EnterKey.type: control.enterKeyType
         // Held while it has the focus (see OutlineButton).
         activeFocusOnTab: (Navigation.allows(control) && control.enabled) || activeFocus
         Accessible.role: Accessible.EditableText

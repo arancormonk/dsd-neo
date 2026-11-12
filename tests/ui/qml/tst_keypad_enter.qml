@@ -190,6 +190,19 @@ Item {
             Ui.Navigation.addModal(blocker);
         }
 
+        // A key acts on its first press only: the repeats of a held Enter,
+        // keypad Enter, Return or Space press nothing (a sheet's choice that
+        // hands the keyboard back while the key is down opened the sheet again)
+        // and go no further than the control.
+        function heldKeysActOnce(tag, target) {
+            target.forceActiveFocus();
+            for (var key of [[Qt.Key_Enter, Qt.KeypadModifier], [Qt.Key_Enter, Qt.NoModifier], [Qt.Key_Return, Qt.NoModifier], [Qt.Key_Space, Qt.NoModifier]]) {
+                for (var i = 0; i < 2; ++i)
+                    verify(testContext.sendKey(target, key[0], key[1], true, true), tag + ": a repeat of " + key[0] + " is taken");
+                keyRelease(key[0], key[1]);
+            }
+        }
+
         // Enter, Return and Space each press the focused control once; under a
         // sheet or disabled, none of them does anything.
         function pressAndBlock(tag, target, control) {
@@ -201,6 +214,8 @@ Item {
             compare(spy.count, 2, tag + ": Return presses it");
             keyClick(Qt.Key_Space);
             compare(spy.count, 3, tag + ": Space presses it");
+            heldKeysActOnce(tag, target);
+            compare(spy.count, 3, tag + ": a held key's repeats press nothing");
 
             cover();
             verify(target.activeFocus, tag + " keeps its focus under the sheet");
@@ -489,7 +504,7 @@ Item {
             return found;
         }
         // Each screen button that takes Return: under a sheet no key presses it,
-        // then keypad Enter does, once. `effect` reads how many times it has
+        // nor does a held key's repeat, then keypad Enter does, once. `effect` reads how many times it has
         // acted. Covered first, since a press can close what holds the button.
         function enterActsOnce(tag, target, effect) {
             target.forceActiveFocus();
@@ -501,6 +516,9 @@ Item {
             keyClick(Qt.Key_Return);
             compare(effect(), before, tag + ": under a sheet no key presses it");
             Ui.Navigation.removeModal(blocker);
+            // Before it acts, as acting can take it away.
+            heldKeysActOnce(tag, target);
+            compare(effect(), before, tag + ": a held key's repeats press nothing");
             keyClick(Qt.Key_Enter, Qt.KeypadModifier);
             compare(effect(), before + 1, tag + ": keypad Enter presses it");
         }

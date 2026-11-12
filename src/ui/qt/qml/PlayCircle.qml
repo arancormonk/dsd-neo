@@ -26,9 +26,10 @@ Item {
         if (enabled && Navigation.allows(control) && visible)
             clicked();
     }
-    Keys.onSpacePressed: activate()
-    Keys.onReturnPressed: activate()
-    Keys.onEnterPressed: activate()
+    Keys.onPressed: function (event) {
+        if (Navigation.activationPress(event))
+            activate();
+    }
     FocusFrame {}
 
     implicitWidth: 52

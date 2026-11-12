@@ -11911,7 +11911,10 @@ Qt Quick frontend (`src/ui/qt`):
   cancelled or answered, so only a fix the user asked for here reorders a screen reader's cards. Enter in the field
   hides the keyboard and leaves the focus in it (`PlexTextField.keepsFocusOnEnter`: the field also takes Return and
   Enter, pressed and released, after TextInput's own `accepted`, which lets both through; on Android a hardware
-  keyboard's Enter that went on moved the focus to the × and the next letter was lost). In Place or Nearest
+  keyboard's Enter that went on moved the focus to the × and the next letter was lost). The field declares its
+  keyboard action as Search (`PlexTextField.enterKeyType`, the input's `EnterKey.type`, default `Qt.EnterKeyDefault`
+  for every other field), so Android's keyboard shows a search key (`IME_ACTION_SEARCH`), never Next, whose Enter Qt's
+  input connection turns into a Tab to the ×. In Place or Nearest
   order the place notice shows `rrPlaces.unplacedText` ("%1 saved systems have no place yet") with "Update from
   RadioReference", which updates only those cards' rows (`rrPlaces.unplacedUids()`); the card menu offers the same for
   a card with RadioReference sites (`rrUpdate`), all of its rows, and the site chooser's no-coordinates note offers it
@@ -11962,7 +11965,9 @@ Qt Quick frontend (`src/ui/qt`):
   a Nearest reorder at 300 cards raise no show or hide in the section and that one event. The Sort sheet hands the keyboard focus, and so TalkBack's, back to the pill:
   `ChoiceSheet.open()` reads its opener before showing, as `ModalSheet.open()` does (the body a management sheet
   disables holds the pill, which had lost the focus when the sheet read it, and the focus went to Home itself, where
-  TalkBack started from the top). A card that leaves under a sheet leaves the sheet no opener, so Home hands the
+  TalkBack started from the top). A sort chosen with Enter or Space hands the keyboard back while the key is still
+  down; the pill acts on a key's first press only (`Navigation.activationPress()`), so the held key's repeats and
+  release leave the sheet closed. A card that leaves under a sheet leaves the sheet no opener, so Home hands the
   keyboard on after the sheet's own deferred hand-back (`settleSystemsFocusLater()`). A card whose title another shown
   card has names its receiver on a line of its own under the source line, which wraps, so the address is never cut at
   phone width or large text. In Nearest order the place line reads the distance first ("6.9 mi · Johnson,
@@ -16263,9 +16268,18 @@ never per frame. A control sizes from the label's `height`.
 Tests: `tst_whole_word_label.qml`, and `tst_segmented_whole_words.qml`, which measures every `SegmentedControl` label
 set in the screen or sheet that holds it at 320 and 360 px and text 1.0, 1.6 and 2.0.
 
-A control a keyboard can press takes Return, keypad Enter (`Keys.onEnterPressed`) and Space, each through the control's
+A control a keyboard can press takes Return, keypad Enter and Space, each through the control's
 one guarded activation function (`enabled`, `Navigation.allows()` and any gate of its own), as its accessibility press
 does. A key handler never calls the action directly: a control can keep the keyboard focus while a sheet opens over it.
+Every such control has one `Keys.onPressed` that asks `Navigation.activationPress(event)`: the control acts on the key's
+first press only, and takes the key's repeats (`isAutoRepeat`) without acting, so they go no further; no control acts
+on a release. An action that moves the keyboard while the key is down otherwise had the repeats act on the control it
+landed on: a `ChoiceSheet` choice made with Enter or Space hands the keyboard back to the pill that opened the sheet
+(Listen's Sort pill, History's filter pills, on `main` too) and the held key opened the sheet again. On Android a
+repeat can be all the app sees of TalkBack's Alt+Enter, whose first press TalkBack keeps. Tests: `tst_keypad_enter.qml`
+(`heldKeysActOnce()`, every control and screen button there), `tst_home_systems_search_sort.qml`
+(`test_keyboard_choice_leaves_the_sheet_closed`) and `tst_call_log_follow.qml`
+(`test_06q_a_keyboard_choice_leaves_the_filter_sheet_closed`), each sending repeats through `testContext.sendKey()`.
 Issue #646 added keypad Enter to `SegmentedControl`, `BottomNav`, `DashedActionButton`, `PlayCircle`, `CallRow`,
 `DisclosureRow`, `PlexSwitch` and `ToggleRow` and to the Spectrum, Monitor, RadioReference and wizard buttons and rows
 that took Return alone, and moved the Monitor's Spectrum button's keys behind its gate. A control a hidden section can

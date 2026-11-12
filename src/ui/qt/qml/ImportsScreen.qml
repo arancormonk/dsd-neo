@@ -353,9 +353,10 @@ Item {
                 screen.actionRow = fileRow.index;
                 actionSheet.visible = true;
             }
-            Keys.onReturnPressed: activate()
-            Keys.onEnterPressed: activate()
-            Keys.onSpacePressed: activate()
+            Keys.onPressed: function (event) {
+                if (Navigation.activationPress(event))
+                    activate();
+            }
             // On the card's own edge: the list clips, and a ring drawn outside
             // the card lost its top and sides there.
             FocusFrame {

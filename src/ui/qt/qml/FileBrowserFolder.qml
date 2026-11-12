@@ -146,9 +146,10 @@ Item {
                 if (live && Navigation.allows(entryRow))
                     browser.choose(entry);
             }
-            Keys.onSpacePressed: activate()
-            Keys.onReturnPressed: activate()
-            Keys.onEnterPressed: activate()
+            Keys.onPressed: function (event) {
+                if (Navigation.activationPress(event))
+                    activate();
+            }
             // Inside the row: the list clips at its edges.
             FocusFrame {
                 anchors.margins: 0

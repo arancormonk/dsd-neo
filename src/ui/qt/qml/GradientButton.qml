@@ -41,9 +41,10 @@ Item {
         if (inputValid)
             clicked();
     }
-    Keys.onSpacePressed: activate()
-    Keys.onReturnPressed: activate()
-    Keys.onEnterPressed: activate()
+    Keys.onPressed: function (event) {
+        if (Navigation.activationPress(event))
+            activate();
+    }
     FocusFrame {}
 
     implicitHeight: Math.max(Theme.minimumTouchSize, label.implicitHeight + 24)

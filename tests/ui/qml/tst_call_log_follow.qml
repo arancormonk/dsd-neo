@@ -647,6 +647,58 @@ Item {
             tryCompare(historyView, "filterText", "851.0125")
         }
 
+        // A filter chosen from the keyboard (Return, Enter, keypad Enter or
+        // Space) leaves the shared choice sheet closed and the keyboard on the
+        // pill: the choice acts on the press and hands the keyboard back while
+        // the key is down, so its repeats and release reach the pill, which acts
+        // on a key's first press only (on Android a repeat is also what reaches
+        // the app after TalkBack took Alt+Enter's press).
+        function test_06q_a_keyboard_choice_leaves_the_filter_sheet_closed_data() {
+            return [{tag: "Return", key: Qt.Key_Return, modifiers: Qt.NoModifier},
+                {tag: "Enter", key: Qt.Key_Enter, modifiers: Qt.NoModifier},
+                {tag: "keypad Enter", key: Qt.Key_Enter, modifiers: Qt.KeypadModifier},
+                {tag: "Space", key: Qt.Key_Space, modifiers: Qt.NoModifier}]
+        }
+        function test_06q_a_keyboard_choice_leaves_the_filter_sheet_closed(data) {
+            var pill = findPill(screenLoader.item, "All activity")
+            verify(pill !== null, "the activity pill")
+            pill.forceActiveFocus()
+            keyClick(data.key, data.modifiers)
+            var sheet = Ui.Navigation.topModal
+            verify(sheet !== null && sheet.visible, "the activity sheet opened")
+            var choice = findPill(sheet, "Encrypted")
+            verify(choice !== null, "the Encrypted choice")
+            choice.forceActiveFocus()
+            keyPress(data.key, data.modifiers)
+            verify(!sheet.visible, "the choice closed the sheet")
+            compare(historyView.filterKind, 2)
+            verify(pill.activeFocus, "the keyboard is back on the pill")
+            for (var i = 0; i < 3; ++i) {
+                verify(testContext.sendKey(pill, data.key, data.modifiers, true, true), "repeat " + i + " is taken")
+                verify(!sheet.visible, "repeat " + i + " opened the sheet again")
+            }
+            keyRelease(data.key, data.modifiers)
+            wait(0)
+            verify(!sheet.visible, "the release opened the sheet again")
+            verify(pill.activeFocus, "the keyboard stays on the pill")
+            compare(pill.text, "Encrypted")
+            keyClick(data.key, data.modifiers)
+            tryCompare(sheet, "visible", true)
+            sheet.visible = false
+        }
+        // The control under @p under, shown, whose text is @p text.
+        function findPill(under, text) {
+            for (var i = 0; i < under.children.length; ++i) {
+                var child = under.children[i]
+                if (child.visible && child.text === text && typeof child.activate === "function")
+                    return child
+                var found = findPill(child, text)
+                if (found !== null)
+                    return found
+            }
+            return null
+        }
+
         // Clear filters clears the typing too, which the debounce would otherwise
         // apply after the button had cleared the applied search.
         function test_06k_clear_filters_clears_the_text_being_typed() {

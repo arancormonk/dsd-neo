@@ -644,9 +644,10 @@ Item {
             Accessible.focusable: navigationAllowed && visible
             Accessible.ignored: !navigationAllowed || !visible
             Accessible.onPressAction: activate()
-            Keys.onReturnPressed: activate()
-            Keys.onEnterPressed: activate()
-            Keys.onSpacePressed: activate()
+            Keys.onPressed: function (event) {
+                if (Navigation.activationPress(event))
+                    activate();
+            }
             FocusFrame {}
 
             // The whole label on one line, which the one-row test measures.
@@ -1587,9 +1588,10 @@ Item {
                             else
                                 screen.exploreSetup();
                         }
-                        Keys.onReturnPressed: activate()
-                        Keys.onEnterPressed: activate()
-                        Keys.onSpacePressed: activate()
+                        Keys.onPressed: function (event) {
+                            if (Navigation.activationPress(event))
+                                activate();
+                        }
                         FocusFrame {
                             radius: Theme.radiusPanel + 2
                         }

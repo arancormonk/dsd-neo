@@ -36,9 +36,10 @@ Item {
         if (enabled && Navigation.allows(row))
             toggled(!checked);
     }
-    Keys.onSpacePressed: activate()
-    Keys.onReturnPressed: activate()
-    Keys.onEnterPressed: activate()
+    Keys.onPressed: function (event) {
+        if (Navigation.activationPress(event))
+            activate();
+    }
     FocusFrame {}
     GatedTapHandler {
         onAllowedTap: row.activate()

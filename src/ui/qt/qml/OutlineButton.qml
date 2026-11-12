@@ -92,9 +92,10 @@ Rectangle {
         }
         clicked();
     }
-    Keys.onSpacePressed: activate()
-    Keys.onReturnPressed: activate()
-    Keys.onEnterPressed: activate()
+    Keys.onPressed: function (event) {
+        if (Navigation.activationPress(event))
+            activate();
+    }
     FocusFrame {}
 
     implicitWidth: Math.max(Theme.minimumTouchSize, label.implicitWidth + 2 * (flat ? flatInset : Theme.cardPadding))

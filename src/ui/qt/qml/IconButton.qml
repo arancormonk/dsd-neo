@@ -28,9 +28,10 @@ Item {
         Navigation.commitComposing(control.finishesEditing);
         clicked();
     }
-    Keys.onSpacePressed: activate()
-    Keys.onReturnPressed: activate()
-    Keys.onEnterPressed: activate()
+    Keys.onPressed: function (event) {
+        if (Navigation.activationPress(event))
+            activate();
+    }
     FocusFrame {}
     Rectangle {
         anchors.fill: parent

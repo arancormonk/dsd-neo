@@ -962,9 +962,10 @@ Item {
                             Accessible.role: Accessible.Button
                             Accessible.name: qsTr("Tune down")
                             Accessible.onPressAction: activate()
-                            Keys.onReturnPressed: activate()
-                            Keys.onEnterPressed: activate()
-                            Keys.onSpacePressed: activate()
+                            Keys.onPressed: function (event) {
+                                if (Navigation.activationPress(event))
+                                    activate();
+                            }
                             FocusFrame {}
                             function activate() {
                                 if (spectrum.hasData && Navigation.allows(spectrumStepDownAction)) {
@@ -1000,9 +1001,10 @@ Item {
                             // The step it sweeps by, which its label shows.
                             Accessible.description: sweepLabel.text
                             Accessible.onPressAction: activate()
-                            Keys.onReturnPressed: activate()
-                            Keys.onEnterPressed: activate()
-                            Keys.onSpacePressed: activate()
+                            Keys.onPressed: function (event) {
+                                if (Navigation.activationPress(event))
+                                    activate();
+                            }
                             FocusFrame {}
                             function activate() {
                                 if (spectrum.hasData && Navigation.allows(spectrumSweepToggleAction)) {
@@ -1081,9 +1083,10 @@ Item {
                             Accessible.role: Accessible.Button
                             Accessible.name: qsTr("Tune up")
                             Accessible.onPressAction: activate()
-                            Keys.onReturnPressed: activate()
-                            Keys.onEnterPressed: activate()
-                            Keys.onSpacePressed: activate()
+                            Keys.onPressed: function (event) {
+                                if (Navigation.activationPress(event))
+                                    activate();
+                            }
                             FocusFrame {}
                             function activate() {
                                 if (spectrum.hasData && Navigation.allows(spectrumStepUpAction)) {
@@ -1133,9 +1136,10 @@ Item {
                             Accessible.role: Accessible.Button
                             Accessible.name: qsTr("Previous signal")
                             Accessible.onPressAction: activate()
-                            Keys.onReturnPressed: activate()
-                            Keys.onEnterPressed: activate()
-                            Keys.onSpacePressed: activate()
+                            Keys.onPressed: function (event) {
+                                if (Navigation.activationPress(event))
+                                    activate();
+                            }
                             FocusFrame {}
                             function activate() {
                                 if (spectrum.hasData && Navigation.allows(spectrumSignalDownAction)) {
@@ -1181,9 +1185,10 @@ Item {
                             Accessible.role: Accessible.Button
                             Accessible.name: qsTr("Next signal")
                             Accessible.onPressAction: activate()
-                            Keys.onReturnPressed: activate()
-                            Keys.onEnterPressed: activate()
-                            Keys.onSpacePressed: activate()
+                            Keys.onPressed: function (event) {
+                                if (Navigation.activationPress(event))
+                                    activate();
+                            }
                             FocusFrame {}
                             function activate() {
                                 if (spectrum.hasData && Navigation.allows(spectrumSignalUpAction)) {

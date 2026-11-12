@@ -83,9 +83,10 @@ Rectangle {
                     Navigation.commitComposing(false);
                     control.selected(index);
                 }
-                Keys.onSpacePressed: choose()
-                Keys.onReturnPressed: choose()
-                Keys.onEnterPressed: choose()
+                Keys.onPressed: function (event) {
+                    if (Navigation.activationPress(event))
+                        choose();
+                }
                 FocusFrame {}
                 readonly property bool active: control.currentIndex === index
 

@@ -32,6 +32,10 @@ Item {
             sheet.open("Sort systems", ["Name"], null);
         }
     }
+    Component {
+        id: plainField
+        Ui.PlexTextField {}
+    }
     // Return and Enter a field let through to the screen around it (a11y2 E).
     property int enterPassedOn: 0
     Keys.onPressed: function (event) {
@@ -1156,6 +1160,70 @@ Item {
                 keyClick(Qt.Key_I);
             }
             compare(field().text, "lii", "every letter lands in the field");
+        }
+
+        // The search field declares its keyboard action as Search (Qt.EnterKeySearch, Android's IME_ACTION_SEARCH), so
+        // an Android keyboard shows a search key, never Next ("→|"), whose Enter Qt turns into a Tab that moved the
+        // focus to the × and lost the next letter. Its hints ask for no multi-line Enter. How the keyboard draws the
+        // key is for the device; here, what Qt reports to it and that Enter keeps the field.
+        function test_search_field_declares_a_search_action() {
+            addThree();
+            var input = field().input;
+            compare(input.EnterKey.type, Qt.EnterKeySearch, "the field's Enter key is Search");
+            input.forceActiveFocus();
+            compare(input.inputMethodQuery(Qt.ImEnterKeyType, undefined), Qt.EnterKeySearch, "reported to the keyboard");
+            var hints = input.inputMethodQuery(Qt.ImHints, undefined);
+            compare(hints & Qt.ImhMultiLine, 0, "no multi-line Enter");
+            compare(hints, Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase, "the field's own hints, nothing more");
+            keyClick(Qt.Key_L);
+            keyClick(Qt.Key_Return);
+            verify(input.activeFocus, "Enter keeps the field");
+            keyClick(Qt.Key_I);
+            compare(field().text, "li");
+            // Other fields keep the default.
+            var plain = createTemporaryObject(plainField, root);
+            compare(plain.input.EnterKey.type, Qt.EnterKeyDefault);
+        }
+
+        // A sort chosen from the keyboard (Return, Enter, keypad Enter or Space) leaves the sheet closed and the
+        // keyboard on the pill. The choice acts on the key's press and hands the keyboard back while the key is still
+        // down, so the key's repeats and its release reach the pill; on Android a repeat is also what reaches the app
+        // after TalkBack took the press of Alt+Enter. A control acts on a key's first press only, so the pill opens
+        // nothing until the key is pressed again.
+        function test_keyboard_choice_leaves_the_sheet_closed_data() {
+            return [{tag: "Return", key: Qt.Key_Return, modifiers: Qt.NoModifier},
+                {tag: "Enter", key: Qt.Key_Enter, modifiers: Qt.NoModifier},
+                {tag: "keypad Enter", key: Qt.Key_Enter, modifiers: Qt.KeypadModifier},
+                {tag: "Space", key: Qt.Key_Space, modifiers: Qt.NoModifier}];
+        }
+        function test_keyboard_choice_leaves_the_sheet_closed(data) {
+            addThree();
+            var pill = item("systemsSortPill");
+            var sheet = item("systemsSortSheet");
+            compare(pill.text, "Sort: Order added");
+            pill.forceActiveFocus();
+            keyClick(data.key, data.modifiers);
+            tryCompare(sheet, "visible", true);
+            var choice = item("systemsSortChoice0", sheet);
+            compare(choice.text, "Name");
+            choice.forceActiveFocus();
+            keyPress(data.key, data.modifiers);
+            verify(!sheet.visible, "the choice closed the sheet");
+            verify(pill.activeFocus, "the keyboard is back on the pill");
+            // Still held: it repeats, then it is let go.
+            for (var i = 0; i < 3; ++i) {
+                verify(testContext.sendKey(pill, data.key, data.modifiers, true, true), "repeat " + i + " is taken");
+                verify(!sheet.visible, "repeat " + i + " opened the sheet again");
+            }
+            keyRelease(data.key, data.modifiers);
+            settle();
+            verify(!sheet.visible, "the release opened the sheet again");
+            verify(pill.activeFocus, "the keyboard stays on the pill");
+            compare(pill.text, "Sort: Name");
+            compare(titles(), ["Johnson County", "Linn Fire", "Story Sheriff"]);
+            // A new press opens it.
+            keyClick(data.key, data.modifiers);
+            tryCompare(sheet, "visible", true);
         }
 
         // A card filtered out with the keyboard on it hands the keyboard to the search field.

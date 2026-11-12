@@ -51,6 +51,7 @@
 #include <QHash>
 #include <QIODevice>
 #include <QInputMethodEvent>
+#include <QKeyEvent>
 #include <QList>
 #include <QMetaEnum>
 #include <QMetaObject>
@@ -4481,6 +4482,30 @@ class Setup : public QObject {
         }
         QFocusEvent event(in ? QEvent::FocusIn : QEvent::FocusOut, Qt::ActiveWindowFocusReason);
         QCoreApplication::sendEvent(quick->window(), &event);
+    }
+
+    /**
+     * @brief A key event, pressed (@p press) or released, for the active focus item of @p item's window, as the
+     * platform sends one: @p autoRepeat marks a press the key repeats while held (QKeyEvent::isAutoRepeat()), which
+     * QtTest's keyPress() cannot send. On Android it is also what reaches the app when the first press went elsewhere
+     * (TalkBack took Alt+Enter). Returns whether the window accepted it.
+     */
+    Q_INVOKABLE bool
+    sendKey(QObject* item, int key, int modifiers, bool press, bool autoRepeat) const {
+        auto* quick = qobject_cast<QQuickItem*>(item);
+        if (quick == nullptr || quick->window() == nullptr) {
+            return false;
+        }
+        QString text;
+        if (key == Qt::Key_Space) {
+            text = QStringLiteral(" ");
+        } else if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+            text = QStringLiteral("\r");
+        }
+        QKeyEvent event(press ? QEvent::KeyPress : QEvent::KeyRelease, key, Qt::KeyboardModifiers(modifiers), text,
+                        autoRepeat);
+        QCoreApplication::sendEvent(quick->window(), &event);
+        return event.isAccepted();
     }
 
     /**

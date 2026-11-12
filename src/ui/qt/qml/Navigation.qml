@@ -52,6 +52,22 @@ QtObject {
             return contains(surface, item);
         });
     }
+    // Space, Return and Enter (the keypad's too) act on the focused control on
+    // the key's first press only, the way every control's Keys.onPressed asks
+    // here. A press the held key repeats acts on nothing: an action that moves
+    // the keyboard while the key is down (a sheet's choice hands it back to
+    // the pill that opened the sheet) would otherwise have the repeats act on
+    // the control it landed on, and open the sheet again. On Android a repeat
+    // can be all the app sees of Alt+Enter when TalkBack took the first press.
+    // The release acts on nothing either: no control acts on a release. True
+    // when @p event should act; an activation key's press, repeat or not, is
+    // taken, so it goes no further.
+    function activationPress(event) {
+        if (event.key !== Qt.Key_Space && event.key !== Qt.Key_Return && event.key !== Qt.Key_Enter)
+            return false;
+        event.accepted = true;
+        return !event.isAutoRepeat;
+    }
     // Read @p text out once, a repeat included, while @p line is reachable
     // (no gate when null). @p owner speaks it and keeps the last text read and
     // how many have been (`announced`, `announcements`) for tests. True when read.

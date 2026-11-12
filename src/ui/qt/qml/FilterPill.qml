@@ -37,9 +37,10 @@ Rectangle {
         Navigation.commitComposing(false);
         clicked();
     }
-    Keys.onSpacePressed: activate()
-    Keys.onReturnPressed: activate()
-    Keys.onEnterPressed: activate()
+    Keys.onPressed: function (event) {
+        if (Navigation.activationPress(event))
+            activate();
+    }
     FocusFrame {}
     Accessible.selected: active
 

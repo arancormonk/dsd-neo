@@ -545,9 +545,10 @@ Item {
                             if (browseSheet.rowsEnabled && Navigation.allows(sheetRow))
                                 browseSheet.chosen(modelData);
                         }
-                        Keys.onReturnPressed: choose()
-                        Keys.onEnterPressed: choose()
-                        Keys.onSpacePressed: choose()
+                        Keys.onPressed: function (event) {
+                            if (Navigation.activationPress(event))
+                                choose();
+                        }
                         FocusFrame {}
                         Text {
                             id: placeLabel
@@ -974,9 +975,10 @@ Item {
                 Accessible.onPressAction: goBack()
                 // Held while it has the focus (see OutlineButton).
                 activeFocusOnTab: (Navigation.allows(backToResults) && !radioReference.busy) || activeFocus
-                Keys.onReturnPressed: goBack()
-                Keys.onEnterPressed: goBack()
-                Keys.onSpacePressed: goBack()
+                Keys.onPressed: function (event) {
+                    if (Navigation.activationPress(event))
+                        goBack();
+                }
                 FocusFrame {}
                 function goBack() {
                     if (radioReference.busy || !Navigation.allows(backToResults))
@@ -1220,9 +1222,10 @@ Item {
                                 if (!radioReference.busy && Navigation.allows(siteRow))
                                     screen.toggleSite(modelData.index);
                             }
-                            Keys.onReturnPressed: choose()
-                            Keys.onEnterPressed: choose()
-                            Keys.onSpacePressed: choose()
+                            Keys.onPressed: function (event) {
+                                if (Navigation.activationPress(event))
+                                    choose();
+                            }
                             FocusFrame {}
                             Column {
                                 id: siteLabels
