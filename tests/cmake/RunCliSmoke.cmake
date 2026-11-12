@@ -16,8 +16,9 @@ endif()
 if(DSD_NEO_CLI_SMOKE_MODE STREQUAL "help")
     set(_args "-h")
     set(_want_rc 0)
+    # -ft is a decode preset, not a trunking switch: the help line says so and points at -T.
     set(_want_stdout_regex
-        "Usage: dsd-neo \\[options\\].*Decoder options:.*--tetra-uplink.*--tetra-net <mcc,mnc,colour>.*--tetra-key"
+        "Usage: dsd-neo \\[options\\].*Decoder options:.*\n  -ft           Decode only DMR, P25 Phase 1 and P25 Phase 2; add -T to follow a trunked system\r?\n.*--tetra-uplink.*--tetra-net <mcc,mnc,colour>.*--tetra-key"
     )
     set(_want_stderr_regex "")
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "invalid-option")
