@@ -817,10 +817,10 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
         if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
             (void)dsd_event_enrich_alias(state, 0U, call.epoch, "JPN DCR");
         }
-    } else if (fields->sf_mes == 0x1EU && dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
+    } else if (fields->sf_mes == 0x1EU) {
         // Release signaling decoded over the air: positive end evidence, distinguishable from an
         // engine retune, so the event layer can keep an audible identity-less epoch it closed.
-        dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+        (void)nxdn_end_live_call(opts, state, DSD_CALL_END_TERMINATOR);
     }
     if (fields->sf_fb) {
         state->payload_miN = 0;
@@ -830,7 +830,7 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
 static void
 nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t message_type, uint8_t cipher,
                            uint8_t ota_cipher) {
-    if (!nxdn_dcr_is_sb0_message_type(message_type)) {
+    if (!nxdn_dcr_is_sb0_message_type(message_type) || !nxdn_live_call_is_nxdn(state)) {
         return;
     }
     const int has_key = cipher == 1U && dsd_key_scalar_present(state, 0);
@@ -852,6 +852,26 @@ nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t messa
     }
 }
 
+/* The complete message's cipher field, printed; a scrambler is observed when the message @p acts. */
+static void
+nxdn_sacch2_note_cipher(const dsd_opts* opts, dsd_state* state, uint8_t cipher, int acts) {
+    if (cipher == 0x01) {
+        DSD_FPRINTF(stderr, "Scrambler; ");
+        // A single CRC-accepted SACCH-2 must not flip the classification the VCALLs
+        // established: hold a contradicting observation until it repeats.
+        if (acts) {
+            state->nxdn_cipher_type = nxdn_cipher_observe(state, 1U, 0);
+        }
+        if (dsd_key_scalar_present(state, 0)) {
+            char key_text[24];
+            DSD_FPRINTF(stderr, "Key: %s; ",
+                        dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->R, 0U));
+        }
+    } else if (cipher != 0x00) {
+        DSD_FPRINTF(stderr, "Reserved Comms: %d; ", cipher);
+    }
+}
+
 static void
 nxdn_print_sacch2_complete_message(const dsd_opts* opts, dsd_state* state, const struct nxdn_sacch2_fields* fields,
                                    uint8_t crc_sf_check) {
@@ -863,24 +883,17 @@ nxdn_print_sacch2_complete_message(const dsd_opts* opts, dsd_state* state, const
 
     const uint8_t cipher = (uint8_t)convert_bits_into_output(state->dmr_pdu_sf[0], 2U);
     const uint16_t user_code = (uint16_t)convert_bits_into_output(state->dmr_pdu_sf[0] + 2, 9U);
+    /* A single-frame message rests on one 7-bit CRC, which noise passes one time in 128: printed, and acted on only
+       once the transmission is confirmed (nxdn_update_sacch2_identity_state() noted this frame's check). */
+    const int acts = nxdn_confirm_is_confirmed(state);
     DSD_FPRINTF(stderr, "UC: %03d; ", user_code);
-    if (cipher == 0x01) {
-        DSD_FPRINTF(stderr, "Scrambler; ");
-        // A single CRC-accepted SACCH-2 must not flip the classification the VCALLs
-        // established: hold a contradicting observation until it repeats.
-        state->nxdn_cipher_type = nxdn_cipher_observe(state, 1U, 0);
-        if (dsd_key_scalar_present(state, 0)) {
-            char key_text[24];
-            DSD_FPRINTF(stderr, "Key: %s; ",
-                        dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->R, 0U));
-        }
-    } else if (cipher != 0x00) {
-        DSD_FPRINTF(stderr, "Reserved Comms: %d; ", cipher);
-    }
+    nxdn_sacch2_note_cipher(opts, state, cipher, acts);
 
-    state->dmr_encL = (state->nxdn_cipher_type != 0 && !dsd_key_scalar_present(state, 0)) ? 1 : 0;
-    nxdn_publish_sacch2_crypto(opts, state, fields->sf_mes, cipher == 0x01 ? (uint8_t)state->nxdn_cipher_type : cipher,
-                               cipher);
+    if (acts) {
+        state->dmr_encL = (state->nxdn_cipher_type != 0 && !dsd_key_scalar_present(state, 0)) ? 1 : 0;
+        nxdn_publish_sacch2_crypto(opts, state, fields->sf_mes,
+                                   cipher == 0x01 ? (uint8_t)state->nxdn_cipher_type : cipher, cipher);
+    }
     const uint8_t mfid = (uint8_t)convert_bits_into_output(state->dmr_pdu_sf[0] + 11, 7U);
     if (mfid != 0) {
         DSD_FPRINTF(stderr, "MFID: %02X; ", mfid);
@@ -1302,11 +1315,11 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     //CRC-verified content alone, so this is positive end evidence decoded over the air -- the
     //terminator reason lets the event layer keep an audible epoch whose call identity never
     //decoded, where EXPLICIT reads as a retune.
-    /* Another channel's release ends nothing here (dsd_state::nxdn_frame_foreign). */
-    if (nxdn_message_type_resets_call(MessageType) && !state->nxdn_frame_foreign) {
-        if (dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
-            dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
-        }
+    /* Another channel's release ends nothing here (dsd_state::nxdn_frame_foreign), and neither does one a
+       non-superframe SACCH carried on a transmission not yet confirmed: its 6-bit CRC passes noise one time in 64.
+       It ends an NXDN call only (nxdn_end_live_call()). */
+    if (nxdn_message_type_resets_call(MessageType) && !state->nxdn_frame_foreign && nxdn_confirm_is_confirmed(state)) {
+        (void)nxdn_end_live_call(opts, state, DSD_CALL_END_TERMINATOR);
         nxdn_alias_reset(state);
         state->nxdn_cipher_type = 0; // Force will reactivate it if needed during voice tx
         nxdn_cipher_class_reset(state);

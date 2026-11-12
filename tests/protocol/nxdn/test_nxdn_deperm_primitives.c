@@ -568,6 +568,9 @@ test_sacch2_state_update(void) {
     dsd_call_snapshot unconfirmed_call;
     rc |= expect_int("sacch2-unconfirmed-last-ran", (int)state.nxdn_last_ran, 0);
     rc |= expect_int("sacch2-unconfirmed-canonical", dsd_call_state_get(&state, 0U, &unconfirmed_call), 0);
+    /* Nor its scrambler: a single-frame message's 7-bit CRC passes noise one time in 128. */
+    rc |= expect_int("sacch2-unconfirmed-cipher", state.nxdn_cipher_type, 0);
+    rc |= expect_int("sacch2-unconfirmed-enc-lockout", state.dmr_encL, 0);
 
     nxdn_confirm_begin_frame(&state);
     nxdn_handle_sacch2(&opts, &state, trellis, m_data, 0x2AU, 0x2AU);
@@ -649,6 +652,38 @@ test_sacch2_state_update(void) {
     rc |= expect_int("sacch2-bad-crc-seed-clear", (int)state.payload_miN, 0);
     rc |= expect_int("sacch2-bad-crc-no-call", dsd_call_state_get(&state, 0U, &call), 0);
     rc |= expect_str("sacch2-bad-crc-no-alias", state.generic_talker_alias[0], "");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* A confirmed DCR release ends an NXDN call only: another protocol's call on slot 0 stays. */
+static int
+test_sacch2_release_ends_an_nxdn_call_only(void) {
+    static const uint8_t m_data[5] = {0};
+    static Event_History_I histories[2];
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t trellis[32];
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    init_sacch2_state(&state, histories);
+    const dsd_call_observation p25 = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1U,
+        .policy_target_id = 1U,
+        .ota_source_id = 3840U,
+    };
+    (void)dsd_call_state_observe(&state, &p25, DSD_CALL_BOUNDARY_BEGIN);
+    state.nxdn_confirmed = 1;
+    make_sacch2_trellis(trellis, 1U, 2U, 0x1EU);
+    nxdn_handle_sacch2(&opts, &state, trellis, m_data, 0x15U, 0x15U);
+
+    dsd_call_snapshot call;
+    rc |= expect_int("sacch2-release-p25-call", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("sacch2-release-p25-call-active", call.phase, DSD_CALL_PHASE_ACTIVE);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -1147,6 +1182,7 @@ main(void) {
     rc |= test_bit_window_and_state_helpers();
     rc |= test_sacch_state_update();
     rc |= test_sacch2_state_update();
+    rc |= test_sacch2_release_ends_an_nxdn_call_only();
     rc |= test_ran_after_dcr_stand_in_is_an_access_code();
     rc |= test_cac_crc_failure_reset();
     rc |= test_pich_tch_dcr_csm_alias_state();

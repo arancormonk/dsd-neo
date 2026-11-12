@@ -106,6 +106,10 @@ static int g_stub_cac_resets_sync;
 /* The SCCH's message retunes the receiver (a busy repeater message followed, a preemption): the tune's result, or
    -1 for no tune. */
 static int g_stub_scch_tune = -1;
+/* The SCCH names the Type-D layout, as nxdn_scch_prepare_type_d() does for every SCCH that passes its CRC. */
+static int g_stub_scch_names_type_d;
+/* The location category the FACCH1 decoder read. */
+static char g_facch_category[32];
 
 static dsd_trunk_tune_result
 stub_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
@@ -150,6 +154,8 @@ reset_state(void) {
     g_stub_facch_ok = 1;
     g_stub_cac_resets_sync = 0;
     g_stub_scch_tune = -1;
+    g_stub_scch_names_type_d = 0;
+    g_facch_category[0] = '\0';
     DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
     DSD_MEMSET(g_dibit_reliab_stream, 255, sizeof(g_dibit_reliab_stream));
     g_dibit_stream_pos = 0U;
@@ -283,6 +289,9 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
     (void)reliab;
     nxdn_stub_note_crc(state, g_stub_scch_ok, NXDN_EVIDENCE_WEAK);
     g_scch_calls++;
+    if (g_stub_scch_ok && g_stub_scch_names_type_d) {
+        DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", "Type-D");
+    }
     if (g_stub_scch_tune >= 0) {
         dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = stub_tune_to_freq});
         (void)dsd_trunk_tuning_hook_tune_to_freq(opts, state, 938512500L, 0, NULL);
@@ -310,6 +319,7 @@ nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], cons
     nxdn_stub_note_crc(state, g_stub_facch_ok, NXDN_EVIDENCE_STRONG);
     g_facch_calls++;
     g_facch_frame_channel = state->nxdn_frame_channel;
+    DSD_SNPRINTF(g_facch_category, sizeof(g_facch_category), "%s", state->nxdn_location_category);
     g_facch_part_mask |= 1 << part;
     g_last_facch_bit = bits[0];
     g_last_facch_reliab = reliab[0];
@@ -938,6 +948,37 @@ test_frame_retuned_by_its_scch_stops(void) {
     return rc;
 }
 
+/* The Type-D layout an SCCH names is the frame's: its FACCH1 reads it whatever the frame proves, but it outlives the
+   frame only on a confirmed transmission. One SCCH's 7-bit CRC passes noise one time in 128, and a category left by a
+   false IDAS sync on another protocol's carrier would read the next Type-C VCALL with Type-D's 11-bit IDs. */
+static int
+test_type_d_category_outlives_only_a_confirmed_frame(void) {
+    static const struct {
+        int facch_ok;
+        const char* kept;
+        const char* label;
+    } k_cases[] = {
+        {0, " ", "unconfirmed frame"},
+        {1, "Type-D", "confirmed frame"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0U; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        reset_state();
+        DSD_SNPRINTF(g_state.nxdn_location_category, sizeof(g_state.nxdn_location_category), "%s", " ");
+        g_stub_scch_ok = 1;
+        g_stub_scch_names_type_d = 1;
+        g_stub_facch_ok = k_cases[i].facch_ok;
+        char label[96];
+        (void)route_frame(0x73U);
+        DSD_SNPRINTF(label, sizeof label, "%s: FACCH1 read the Type-D layout", k_cases[i].label);
+        rc |= expect_string(label, g_facch_category, "Type-D");
+        DSD_SNPRINTF(label, sizeof label, "%s: category after the frame", k_cases[i].label);
+        rc |= expect_string(label, g_state.nxdn_location_category, k_cases[i].kept);
+    }
+    return rc;
+}
+
 /* Issue #834: every frame names the FSW the hunt accepted it on (from its second symbol, at the polarity it was
    accepted at), and a frame read whole arms the recording for the next frame's FSW where it ends, so the hunt reads
    that FSW on the grid this frame was read on; one a LICH refused, read 8 dibits in, arms nothing. */
@@ -984,6 +1025,7 @@ main(void) {
     rc |= test_frame_channel_follows_the_lich();
     rc |= test_composite_control_channel_lich();
     rc |= test_frame_retuned_by_its_scch_stops();
+    rc |= test_type_d_category_outlives_only_a_confirmed_frame();
     rc |= test_frame_places_the_grid_on_the_next_fsw();
     dsd_decode_clock_use_system();
 

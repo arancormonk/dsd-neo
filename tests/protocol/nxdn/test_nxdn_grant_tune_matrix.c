@@ -373,6 +373,8 @@ nxdn_setup_fixture(const nxdn_case* test_case) {
     g_state.lastsynctype = DSD_SYNC_NXDN_POS;
     g_state.last_vc_sync_time = dsd_decode_time() - 4;
     g_state.nxdn_rcn = test_case->use_dfa ? 1 : 0;
+    /* A confirmed transmission's messages: an SCCH acts only on one (nxdn_run_unconfirmed_scch_case()). */
+    g_state.nxdn_confirmed = 1;
 
     if (test_case->path == NXDN_MATRIX_TYPE_C) {
         uint16_t map_channel = test_case->use_dfa ? test_case->ofn : test_case->channel;
@@ -632,6 +634,76 @@ nxdn_run_scch_termination_case(void) {
     rc |= nxdn_expect(call.phase == DSD_CALL_PHASE_ENDED, termination.name, "termination", "canonical call ended");
     rc |= nxdn_expect(dsd_call_state_stub_event_sync_count(0U) == 1U, termination.name, "termination",
                       "ended slot synchronized");
+    return rc;
+}
+
+/* An SCCH that passed its 7-bit CRC on a transmission nothing has confirmed (a false IDAS sync) moves nothing: no
+ * control channel from the map, no tune, no call end. On a confirmed one its termination still ends an NXDN call
+ * only, never another protocol's call on slot 0. */
+static int
+nxdn_run_unconfirmed_scch_case(void) {
+    static const nxdn_case busy = {
+        "type-d-scch-unconfirmed-busy", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 6U, 3U, 1400U, 938012500L,
+    };
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    nxdn_setup_fixture(&busy);
+    g_state.nxdn_confirmed = 0;
+    g_state.p25_cc_freq = 0;
+    g_state.trunk_cc_freq = 0;
+    nxdn_install_hooks();
+    nxdn_run_case_decode(&busy);
+
+    int rc = 0;
+    rc |= nxdn_expect(g_tune_count == 0, busy.name, "unconfirmed", "no tune");
+    rc |= nxdn_expect(g_state.p25_cc_freq == 0 && g_state.trunk_cc_freq == 0, busy.name, "unconfirmed",
+                      "no control channel from the map");
+
+    static const nxdn_case termination = {
+        "type-d-scch-unconfirmed-termination",
+        NXDN_MATRIX_TYPE_D,
+        0U,
+        0U,
+        0U,
+        0U,
+        0U,
+        0,
+        0,
+        0,
+        31U,
+        3U,
+        1400U,
+        935000000L,
+    };
+
+    static const struct {
+        const char* name;
+        int protocol;
+        int confirmed;
+    } calls[] = {
+        {"unconfirmed-nxdn-call", DSD_SYNC_NXDN_POS, 0},
+        {"confirmed-p25-call", DSD_SYNC_P25P1_POS, 1},
+    };
+
+    for (size_t i = 0; i < sizeof(calls) / sizeof(calls[0]); i++) {
+        nxdn_setup_fixture(&termination);
+        g_state.nxdn_confirmed = (uint8_t)calls[i].confirmed;
+        g_state.last_vc_sync_time = dsd_decode_time();
+        const dsd_call_observation observation = {
+            .protocol = calls[i].protocol,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = termination.scch_id,
+        };
+        (void)dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+        const unsigned int syncs_before = dsd_call_state_stub_event_sync_count(0U);
+        nxdn_run_case_decode(&termination);
+
+        dsd_call_snapshot call;
+        rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1, termination.name, calls[i].name, "call exists");
+        rc |= nxdn_expect(call.phase == DSD_CALL_PHASE_ACTIVE, termination.name, calls[i].name, "call stays active");
+        rc |= nxdn_expect(dsd_call_state_stub_event_sync_count(0U) == syncs_before, termination.name, calls[i].name,
+                          "no event sync");
+    }
     return rc;
 }
 
@@ -2408,6 +2480,7 @@ main(void) {
     rc |= nxdn_run_active_other_tg_no_tune_case();
     rc |= nxdn_run_hold_match_retune_case();
     rc |= nxdn_run_scch_termination_case();
+    rc |= nxdn_run_unconfirmed_scch_case();
     rc |= nxdn_run_scch_busy_enrich_case("tuned-there", NXDN_RX_TUNED_THERE, 1);
     rc |= nxdn_run_scch_busy_enrich_case("tuned-elsewhere", NXDN_RX_TUNED_ELSEWHERE, 0);
     rc |= nxdn_run_scch_busy_enrich_case("receiver-unknown", NXDN_RX_UNKNOWN, 0);

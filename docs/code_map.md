@@ -9892,8 +9892,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   (the `(unsigned)-1` resets need not, since no reader takes -1): 1 for those two, 0 for the RAN fields (CAC,
   FACCH2/UDCH, SACCH, and the site information message's site code), so `dsd_access_code_current()` gives an IDAS or DCR
   call no access code, and a RAN decoded afterwards reads again. The flag marks the value rather than the carrier:
-  `nxdn_location_category` "Type-D", which labels the terminal's "IDAS - Area", is set by any SCCH that passes its CRC,
-  noise included, and kept across carriers with trunking on, so it could hide a real RAN; and no state marks a DCR
+  `nxdn_location_category` "Type-D", which labels the terminal's "IDAS - Area", is set by any SCCH that passes its CRC
+  for the rest of its frame, noise included, outlives that frame only once the transmission is confirmed (below), and is
+  kept across carriers with trunking on, so it could hide a real RAN; and no state marks a DCR
   carrier (`nxdn_dcr_sf_message_type` drops to 0xFF on every SACCH2 CRC failure and survives the carrier boundary). The
   live displays follow the mark too: outside IDAS, whose area keeps its own label, the terminal's NXDN line prints
   `RAN: --` and the Qt site sheet shows no RAN for a stand-in, which there is DCR's 7 (`ui_render_nxdn_site_line()`,
@@ -10923,7 +10924,22 @@ Private per-protocol modules worth knowing about:
   entry point exported in `<dsd-neo/protocol/nxdn/nxdn.h>`. `NXDN_Elements_Content_decode()` carries no CRC verdict of
   its own: the channel decoders in `nxdn_deperm.c` and `NXDN_SACCH_Full_decode()` hand it CRC-verified content only, so
   the gate lives in those callers, with `nxdn_confirm_is_confirmed()` as the frame-level check at the sites that publish
-  a call or refresh a scan hold. Evidence confirms at once, before the RAN and call it unlocks are published; a signal
+  a call or refresh a scan hold. Content behind a short CRC acts on nothing until the transmission is confirmed: an SCCH
+  (7-bit CRC, `nxdn_scch_info::acts`) is printed, but its recent-activity entries, idle-repeater clears and expiry, its
+  termination's call end, its busy message's control channel and tune, and its call option's cipher, key and crypto
+  publication wait for the confirmation, which the next frame's SCCH gives (a real IDAS message repeats; one acts a
+  frame, 80 ms, later). Its IV parts (IV A in an INFO2 naming ID 31, IV B and C in an INFO1) are the decoder's working
+  IV (`payload_miN`), kept either way and cleared with it at no carrier and when a tuned call is released, so IV A
+  sent before the confirmation still completes the IV the call takes once it is
+  (`test_type_d_scch_iv_a_before_confirmation_is_kept`). The "Type-D" category it names stays with its own frame only,
+  the frame's FACCH1 reading it
+  (`nxdn_decode_frame_channels()`); a single-frame DCR SACCH2's scrambler and crypto, and a non-superframe SACCH's
+  release (`nxdn_message_type()`), Station ID event and control channel sync (`nxdn_element_mark_control_sync()`), the
+  same. NXDN end signalling (a release, a DISC, a VCALL's release, a Type-D termination, a DCR release) ends the call on
+  slot 0 only when it is an NXDN call, and NXDN crypto updates only an NXDN call (`nxdn_end_live_call()`,
+  `nxdn_live_call_is_nxdn()`): an NXDN sync read on another protocol's carrier (a false IDAS sync on a P25 carrier
+  under `-fa`) never ends or encrypts that protocol's call (`NXDN_ELEMENT_BOUNDS`, `NXDN_GRANT_TUNE_MATRIX` and its
+  real-call-state twin, `NXDN_CRC32_BITS`, `NXDN_DEPERM_PRIMITIVES`, `NXDN_FRAME_ROUTING`). Evidence confirms at once, before the RAN and call it unlocks are published; a signal
   search hears a frame's confirmation once, from `nxdn_confirm_end_frame()`, after they are (`NXDN_CONFIRM`,
   `NXDN_DEPERM_PRIMITIVES`), which also stamps `dsd_state::nxdn_confirm_lock_m` for the NXDN control-channel hunt.
 - `src/protocol/m17/m17_confirm.{c,h}` — the same module for M17, whose sync chain opens on a preamble that is only an
