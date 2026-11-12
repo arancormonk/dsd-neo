@@ -19679,7 +19679,9 @@ if(DSD_HAS_RADIO)
     )
     target_include_directories(
         dsd-neo_test_search_schedule_replay
-        PRIVATE ${PROJECT_SOURCE_DIR}/tests/test_support
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/tests/test_support
+            ${PROJECT_SOURCE_DIR}/src/dsp
     )
     target_link_libraries(
         dsd-neo_test_search_schedule_replay
@@ -19725,6 +19727,25 @@ if(DSD_HAS_RADIO)
     # A -mq lock (Settings > Extra decoder arguments) keeps CQPSK on 4800/4; the unlocked hunt reads this capture too.
     dsd_neo_add_search_schedule_test(P25P1_CQPSK_CC_LOCKED p25p1_cqpsk_cc P25 0 3000 -fa -mq)
     dsd_neo_add_search_schedule_test(P25P1_CQPSK_CC p25p1_cqpsk_cc P25 0 3000 -fa)
+    # A C4FM P25p1 carrier keyed while the ordinary Auto rotation dwells on a binary profile: its sync word read there
+    # twice within a frame moves the hunt straight to 4800/4 (frame_sync_p25p1_word_hint_due()), 206-256 ms in, where it
+    # waited out the dwell and the rotation behind it (from 9600/2: its rest, 6000/4 and 4800/2, 2.63-2.68 s; from
+    # 4800/2, its dwell, 1.18-1.23 s).
+    foreach(_start 2 4)
+        foreach(_offset 0 350 700)
+            add_test(
+                NAME DECODE_IQ_C4FM_KEYUP_ON_PROFILE_${_start}_${_offset}
+                COMMAND
+                    dsd-neo_test_search_schedule_replay p25p1_c4fm_cc ${_offset}
+                    500 --ordinary --start-profile ${_start} --expect P25
+                    --expect-profile 0 -- -fa
+            )
+            set_tests_properties(
+                DECODE_IQ_C4FM_KEYUP_ON_PROFILE_${_start}_${_offset}
+                PROPERTIES LABELS "iq-decode" TIMEOUT 120
+            )
+        endforeach()
+    endforeach()
     # A fixture the list does not hold names no scratch file, and the run ends on the refusal with nothing removed that
     # it did not name.
     add_test(

@@ -7254,6 +7254,29 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `test_order_flag_cleared_on_evidence`, `test_proven_2400_4_hold_spans_the_search_order`), `FRAME_SYNC_POLICY`,
   `DECODE_IQ_SEARCH_SCHEDULE_*` (the whole chain from a 4800/4 C4FM start, landing 0, 350 and 700 ms into each
   capture, `tests/engine/search_schedule_replay.c`; dPMR within 1.9 s pins the one-pass dwell).
+- P25p1 word hint on the binary profiles (`frame_sync_p25p1_word_hint_due()`, `frame_sync_p25p1_word_hint()` in
+  `dsd_frame_sync.c`). A C4FM P25p1 carrier keyed while the unlocked hunt dwells elsewhere waited out that dwell and the
+  rotation behind it before the hunt was back on 4800/4 (a public C4FM recording keyed during the 2400/4 dwell first
+  decoded 4.86 s after its first frame, 2.59 s of it the 9600/2, 6000/4 and 4800/2 dwells). On 4800/2 (4800/4's timing)
+  the sign-sliced window holds the carrier's 24-symbol sync word as is, and on 9600/2 (twice the rate) on the last of
+  each symbol's two readings, the window's slide by a symbol reading the other (asking both missed it at its
+  transitions); the exact word of either polarity there, and another of its polarity within one P25p1 frame
+  (`DSD_FRAME_SYNC_P25P1_FRAME_SYMBOLS` C4FM symbols) after it (`dsd_state::p25p1_word_hint_*`, dropped with the sync
+  join histories at a carrier change, a trunk retune or a reset of the symbol count), steps the hunt to 4800/4 at once,
+  a step for the caller's window like a CQPSK trial's handback (the window is rebuilt in place, no no-sync hooks run,
+  4800/4 starts its own dwell), under the P25 SM tick guard on an RTL session as a dwell expiry's step is. Only the
+  unlocked rotation with P25p1 on takes it: not under a `-m` lock, a trunked voice channel the engine tuned, a Signal
+  search order, a P25 control-channel probe or a running trunk scan, nor on a squelched window; a `-Y` typed row runs
+  one protocol family, never P25p1 and a binary one both. One word is a 2^-24 event per symbol, polarity and reading,
+  and on 12 realizations of the four real NXDN and DMR scan captures (about four hours) a one-word rule moved the hunt
+  twice, each time changing what the capture went on to decode; with the second word the logs are identical to the build
+  without the hint, and no hint fires on the noise floor or the NXDN48 and dPMR fixtures. The public recording's first
+  frame now comes 2.70 s late (4.86 s before; 2.52 s with one word), and five carriers of a public Phase 2 system lose
+  133 frames at key-up (376 before). 6000/4 and 2400/4 have no such reading, so a carrier keyed in the 2400/4 dwell
+  still waits that dwell out (the committed `p25p1_c4fm_vc` fixture, whose carrier keys at 1.1 s as the 4800/4 dwell
+  ends, still decodes no P25 frame under `-fa`). Tests: `FRAME_SYNC_SPS_HUNT_FALSE_SYNC`
+  (`test_a_p25p1_word_on_a_binary_profile_steps_to_4800_4`, `test_a_p25p1_word_hint_is_the_unlocked_rotations_alone`),
+  `DECODE_IQ_C4FM_KEYUP_ON_PROFILE_*`.
 - P25p1 chain choice on 4800/4 (`dsd_frame_sync.c`, unlocked RTL sessions with P25p1 on). The modulation votes
   (`frame_sync_maybe_auto_switch_modulation()`, every 24 symbols) can put a P25p1 signal on CQPSK but do not keep it
   there. Their thresholds are asymmetric (`frame_sync_decide_mod_switch()`): two QPSK votes enter CQPSK (from the SNR

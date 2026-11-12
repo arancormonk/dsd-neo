@@ -54,6 +54,7 @@
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
@@ -5247,6 +5248,119 @@ frame_sync_p25p1_cqpsk_trial_half_dwell(const dsd_opts* opts, dsd_state* state, 
     return FRAME_SYNC_HUNT_CHAIN_HANDBACK;
 }
 
+/* The P25p1 frame sync word @p window, the hunt's last 24 x @p stride sign-sliced symbols, holds on the last of every
+ * @p stride window symbols: DSD_SYNC_P25P1_POS or _NEG, else DSD_SYNC_NONE. On 9600/2 that reads one of each C4FM
+ * symbol's two readings, and the window's slide by a symbol reads the other. */
+static int
+frame_sync_window_p25p1_word(const char* window, int stride) {
+    static const char* const k_words[2] = {P25P1_SYNC, INV_P25P1_SYNC};
+    static const int k_types[2] = {DSD_SYNC_P25P1_POS, DSD_SYNC_P25P1_NEG};
+    for (int w = 0; w < 2; w++) {
+        int i = 0;
+        while (i < 24 && window[(i * stride) + stride - 1] == k_words[w][i]) {
+            i++;
+        }
+        if (i == 24) {
+            return k_types[w];
+        }
+    }
+    return DSD_SYNC_NONE;
+}
+
+/* The window symbols one C4FM symbol takes on the binary profile the unlocked hunt is on, where the P25p1 word hint may
+ * run (frame_sync_p25p1_word_hint_due()); 0 elsewhere. */
+static int
+frame_sync_p25p1_word_hint_stride(const dsd_opts* opts, const dsd_state* state) {
+    int stride = 0;
+    if (state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_2) {
+        stride = 1;
+    } else if (state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_9600_2) {
+        stride = 2;
+    } else {
+        return 0;
+    }
+    if (opts->frame_p25p1 != 1 || opts->mod_cli_lock || (opts->trunk_enable == 1 && opts->trunk_is_tuned == 1)
+        || state->sps_hunt_search_order || dsd_trunk_scan_owns_tuner(opts, state)) {
+        return 0;
+    }
+    return stride;
+}
+
+/* Note the P25p1 word @p word read at this symbol on a profile reading @p stride window symbols a C4FM symbol: 1 when
+ * it is the second of its polarity on this profile within a P25p1 frame after the last (another word, not the last one
+ * read again at its other reading). The word is the carrier's: a carrier change, a trunk retune or a reset of the
+ * symbol count drops it (dsd_state_forget_sync_join_histories()). */
+static int
+frame_sync_p25p1_word_hint_note(dsd_state* state, int word, int stride) {
+    const uint32_t since = (uint32_t)state->symbolcnt - state->p25p1_word_hint_symbol;
+    const int again = state->p25p1_word_hint_seen && state->p25p1_word_hint_type == word
+                      && state->p25p1_word_hint_profile == state->sps_hunt_idx && since >= 24U * (uint32_t)stride
+                      && since <= (uint32_t)DSD_FRAME_SYNC_P25P1_FRAME_SYMBOLS * (uint32_t)stride;
+    state->p25p1_word_hint_symbol = (uint32_t)state->symbolcnt;
+    state->p25p1_word_hint_type = word;
+    state->p25p1_word_hint_profile = state->sps_hunt_idx;
+    state->p25p1_word_hint_seen = (uint8_t)!again;
+    return again;
+}
+
+/**
+ * @brief Whether a keyed C4FM P25p1 carrier shows its frame sync word on the binary profile the unlocked hunt is on.
+ *
+ * Under Auto a P25p1 carrier keyed while the hunt dwells on another profile waits out that dwell and the rotation
+ * behind it before the hunt is back on 4800/4: from 9600/2 that is 9600/2's rest, 6000/4 and 4800/2, about 2.6 s of
+ * frames lost. Two of those profiles read the carrier well enough to see its 24-symbol sync word on the symbols' signs,
+ * which is all the word is (its symbols are all outer): 4800/2 (D-STAR's) runs 4800/4's timing, and 9600/2
+ * (ProVoice's and EDACS's) runs twice it, so each C4FM symbol reads twice. The word read whole there, on 9600/2 on
+ * either of its symbols' two readings as the window slides (asking both missed the word at its transitions often
+ * enough to cost a key-up's first frames), and another, of the same polarity, within one P25p1 frame
+ * (DSD_FRAME_SYNC_P25P1_FRAME_SYMBOLS C4FM symbols) after it, as a carrier's next frame brings it, moves the hunt to
+ * 4800/4 at once. One word alone is a 2^-24 event per symbol, polarity and reading: on the real NXDN and DMR scan
+ * captures it moved the hunt twice in some four hours, a rotation phase that changed what they decoded; a second
+ * within the frame is a 2^-24 event again. 6000/4 and 2400/4 have no such reading (no whole ratio, and the 2400/4
+ * channel filter smears the word).
+ *
+ * It is the unlocked rotation's: not under a -m lock, whose walk keeps the demodulator; not on a trunked voice channel
+ * the engine tuned, whose profile the grant chose; not in a Signal search's order or a P25 control-channel probe, which
+ * pick their own profiles; not while trunk scan owns the tuner, whose schedule budgets each target's profiles; and only
+ * with P25p1 on. A -Y typed row runs its own decoder set, and none of them has P25p1 and a binary protocol both. A
+ * squelched window gives none. Like a CQPSK trial's handback it is a step for the caller's window, not a sync and not a
+ * no-sync exit: the window is rebuilt in place and 4800/4 starts its own dwell.
+ */
+static int
+frame_sync_p25p1_word_hint_due(const dsd_opts* opts, dsd_state* state, const frame_sync_runtime_ctx* rt) {
+    const int stride = frame_sync_p25p1_word_hint_stride(opts, state);
+    const unsigned int window_flag = stride == 1 ? FRAME_SYNC_WINDOW_24 : FRAME_SYNC_WINDOW_48;
+    if (stride == 0 || (rt->ready_windows & window_flag) == 0) {
+        return 0;
+    }
+    const int word = frame_sync_window_p25p1_word(stride == 1 ? rt->synctest : rt->synctest48, stride);
+    if (word == DSD_SYNC_NONE || frame_sync_should_skip_snr_or_power_gate(opts, state)
+        || dsd_frame_sync_hook_p25_probe_in_flight(opts, state)) {
+        return 0;
+    }
+    return frame_sync_p25p1_word_hint_note(state, word, stride);
+}
+
+/* Step the unlocked hunt to 4800/4 on a P25p1 word read from a binary profile (frame_sync_p25p1_word_hint_due()). As at
+ * a dwell's expiry, an RTL session with P25p1 on steps under the P25 SM tick guard, and a tune the watchdog made since
+ * moved the receiver and its profile instead. 1 when the caller rebuilds its window. */
+static int
+frame_sync_p25p1_word_hint(const dsd_opts* opts, dsd_state* state, const frame_sync_runtime_ctx* rt) {
+    if (!frame_sync_p25p1_word_hint_due(opts, state, rt)) {
+        return 0;
+    }
+    if (opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
+        frame_sync_apply_sps_hunt_profile(opts, state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0);
+        return 1;
+    }
+    int taken = 0;
+    if (!frame_sync_p25p1_chain_step_begin(opts, state, &taken)) {
+        frame_sync_apply_sps_hunt_profile(opts, state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0);
+    }
+    frame_sync_p25p1_chain_step_end(taken);
+    return 1;
+}
+
 /**
  * @brief End a chain comparison whose other chain's pass ran out inside getFrameSync().
  *
@@ -5686,6 +5800,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 frame_sync_history_drop(state);
                 frame_sync_sps_hunt_mark_return(state);
                 return sync_type;
+            }
+            if (frame_sync_p25p1_word_hint(opts, state, &rt)) {
+                frame_sync_runtime_init(&rt, opts, state);
+                continue;
             }
         }
         frame_sync_maybe_dump_unsynced_dmr(opts, state);

@@ -13,7 +13,7 @@
  * starts on 4800/4 (C4FM unless a -m lock says otherwise), as every Auto visit does.
  *
  * Usage: search_schedule_replay FIXTURE OFFSET_MS DEADLINE_MS [--expect PROTOCOL] [--expect-profile N]
- *        [--hold-ms MS] [--ordinary] [-- DECODER ARGS...]
+ *        [--hold-ms MS] [--ordinary] [--start-profile N] [-- DECODER ARGS...]
  *
  * FIXTURE names one of the in-tree I/Q fixtures in k_schedule_fixtures (tests/fixtures/iq/FIXTURE.iq.json, under the
  * fixture directory the build passes in); the path is built from that list, never from the argument, so the run opens
@@ -21,7 +21,9 @@
  * and goes on cyclically (back to the capture's start at its end) for as long as the run needs. The decoder arguments
  * default to -fa. The run stops DEADLINE_MS after the landing when nothing identified the carrier, and HOLD_MS after it
  * otherwise (DEADLINE_MS by default), so a longer hold shows what the visit decodes once it listens. --ordinary
- * forces the probe's answer to 0 instead: the hunt's ordinary order and dwell, for comparison. Prints
+ * forces the probe's answer to 0 instead: the hunt's ordinary order and dwell, for comparison. --start-profile N puts
+ * the hunt on symbol profile N at the landing, as a carrier keyed while the unlocked rotation dwells there finds it.
+ * Prints
  * "identified=<protocol> at_ms=<decode-clock ms after the landing> profile=<symbol profile index>" (or
  * "identified=none") and exits 0 when the carrier was identified within the deadline, as PROTOCOL and on profile N when
  * they are given.
@@ -50,6 +52,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "frame_sync_internal.h"
 #include "test_support.h"
 
 #ifndef DSD_SEARCH_SCHEDULE_FIXTURE_DIR
@@ -73,6 +76,7 @@ typedef struct {
     const char* expect;
     int expect_profile;
     int ordinary;
+    int start_profile;
     const char* decoder_args[SCHEDULE_MAX_ARGS];
     int decoder_argc;
 } schedule_args;
@@ -85,6 +89,7 @@ static struct {
     uint32_t hold_ms;
     int probing;
     int ordinary;
+    int start_profile;
     int identified;
     uint64_t at_ms;
     int profile;
@@ -161,6 +166,9 @@ schedule_start(dsd_opts* opts, dsd_state* state, void* context) {
     g_run.landed_ms = dsd_decode_now_mono_ms();
     /* The visit's tune resets the acquisition, which keeps the probe's answer for the hunt. */
     dsd_frame_sync_reset_acquisition(opts, state, 1);
+    if (g_run.start_profile >= 0) {
+        frame_sync_apply_sps_hunt_profile(opts, state, g_run.start_profile, 0);
+    }
     return state->sps_hunt_search_order == (g_run.ordinary ? 0U : 1U) ? 0 : -1;
 }
 
@@ -191,6 +199,9 @@ parse_option(int argc, char** argv, int* i, schedule_args* args) {
     if (strcmp(option, "--hold-ms") == 0) {
         return parse_ms(value, &args->hold_ms);
     }
+    if (strcmp(option, "--start-profile") == 0) {
+        return dsd_parse_int_strict(value, 10, 0, DSD_FRAME_SYNC_SPS_PROFILE_COUNT - 1, &args->start_profile);
+    }
     return -1;
 }
 
@@ -198,6 +209,7 @@ static int
 parse_args(int argc, char** argv, schedule_args* args) {
     DSD_MEMSET(args, 0, sizeof(*args));
     args->expect_profile = -1;
+    args->start_profile = -1;
     if (argc < 4 || parse_ms(argv[2], &args->offset_ms) != 0 || parse_ms(argv[3], &args->deadline_ms) != 0
         || args->deadline_ms == 0U) {
         return -1;
@@ -351,6 +363,7 @@ run_engine(const schedule_args* args, const char* json_path) {
         g_run.deadline_ms = args->deadline_ms;
         g_run.hold_ms = args->hold_ms;
         g_run.ordinary = args->ordinary;
+        g_run.start_profile = args->start_profile;
         const dsd_engine_lifecycle_hooks lifecycle = {schedule_start, NULL, NULL};
         dsd_exitflag_store(0);
         if (dsd_runtime_bootstrap(argc, argv, opts, state, NULL, &rc) == DSD_BOOTSTRAP_CONTINUE) {
@@ -370,7 +383,7 @@ main(int argc, char** argv) {
     if (parse_args(argc, argv, &args) != 0) {
         DSD_FPRINTF(stderr,
                     "usage: %s FIXTURE OFFSET_MS DEADLINE_MS [--expect PROTOCOL] [--expect-profile N] "
-                    "[--hold-ms MS] [--ordinary] [-- DECODER ARGS...]\n",
+                    "[--hold-ms MS] [--ordinary] [--start-profile N] [-- DECODER ARGS...]\n",
                     argv[0]);
         return 2;
     }

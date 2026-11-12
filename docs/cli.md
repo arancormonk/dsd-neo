@@ -897,8 +897,11 @@ Notes
 - The hunt dwells on each candidate profile for a bounded budget of symbols searched for sync, so a full rotation over
   the five profiles takes roughly six seconds at 48 kHz. A transmission that starts mid-rotation and lasts less than one
   rotation can therefore be missed entirely even though the same capture decodes under its native preset -- Auto
-  converges on signals that persist, such as a control channel or a call of a few seconds, not on isolated short
-  bursts. Name the narrower preset when you already know the mode and cannot afford the search.
+  converges on signals that persist, such as a control channel or a call of a few seconds, not on isolated short bursts.
+  Name the narrower preset when you already know the mode and cannot afford the search. One shortcut: a P25 Phase 1 C4FM
+  carrier seen while the hunt is on the 4800/2 or 9600/2 profile (its sync word read there exactly, twice within a
+  frame) moves the hunt straight to 4800/4 rather than through the rest of the rotation; a `-m` modulation lock, a
+  trunked voice channel, a Signal search or a trunk scan keeps its own order.
 - What holds a profile is decoded frames, not detected syncs. The dwell is a net budget: symbols spent searching for a
   sync count against it, and symbols a frame handler consumes are credited back. A profile carrying real traffic sits at
   zero, because a decoded frame costs hundreds of symbols and the next sync follows within a few. Credit is counted per

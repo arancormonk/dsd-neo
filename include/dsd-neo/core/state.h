@@ -2120,6 +2120,13 @@ struct dsd_state {
      * fixed-rate 4800/4-level profile. Ignored whenever opts->mod_cli_lock is set. */
     int p25_p1_validated_rf_mod;
     uint32_t p25_p1_validated_symbolcnt;
+    /* The C4FM P25p1 sync word the unlocked hunt last read from a binary profile (frame_sync_p25p1_word_hint_due()),
+     * when one is held (_seen): where (dsd_state::symbolcnt), its sync type and the profile it was read on. A second
+     * one of the same polarity within a P25p1 frame of it moves the hunt to 4800/4. */
+    uint32_t p25p1_word_hint_symbol;
+    int p25p1_word_hint_type;
+    int p25p1_word_hint_profile;
+    uint8_t p25p1_word_hint_seen;
 
     /* That the signal on the current SPS profile is P25p1 at all, and when it last proved it:
      * a decoded 63-bit NID BCH, whatever the DUID turned out to be. A separate stamp from the
@@ -3062,14 +3069,16 @@ dsd_state_raise_input_interrupt(dsd_state* state, int reason) {
 /* The receiver leaves a carrier: symbols read from here on are the next carrier's. A change between symbol reads (an
    input switch, a menu tune) leaves every later symbol whole; one that runs while getSymbol() reads a symbol's samples
    (an I/Q replay retune) splits that symbol, which counts as the carrier left's. The sync join histories are the
-   carrier left's evidence too: an NXDN96 lock or FSW, an NXDN48 hit, or an M17 word, does not pair with the next
-   carrier's (dsd_state_forget_sync_join_histories(), which a trunk retune runs too). */
+   carrier left's evidence too: an NXDN96 lock or FSW, an NXDN48 hit, a P25p1 word the hunt read on a binary profile,
+   or an M17 word, does not pair with the next carrier's (dsd_state_forget_sync_join_histories(), which a trunk retune
+   runs too). */
 static inline void
 dsd_state_forget_sync_join_histories(dsd_state* state) {
     dsd_nxdn96_sync_clear(&state->nxdn96_sync);
     dsd_sync_hit_history_clear(&state->m17_join_hits);
     state->nxdn48_hit_type = 0;
     state->nxdn48_accept_corroborated = 0U;
+    state->p25p1_word_hint_seen = 0U;
     /* The frame sync's own history from its last no-sync exit is the carrier left's too, and so is the history of a
        call in progress, which may not be kept when that call ends (dsd_frame_sync_history_carry::drops). */
     state->frame_sync_carry.valid = 0U;
