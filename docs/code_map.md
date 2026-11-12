@@ -7534,6 +7534,11 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   libairspy's real-to-I/Q conversion halves the amplitude and filters one branch, so ADC
   rails arrive near 0.5 (a documented limit, issue #828; the input-level meter cannot see
   it either). The level is a property of the conversion, so `same_capture()` ignores it.
+  The rotation (`dsd_signal_capture.rotation_hz`, from `rtl_device_signal_rotation_hz()`) is
+  the Fs/4 shift the fed samples carry: a live capture's rate / 4 while the shift is active;
+  an I/Q replay's own, whatever the live flags say: 0 for a recording made without the
+  shift, and its capture rate / 4 for one made with it, rotated ahead of the replay
+  resampler, so the same Hz at a resampled replay's tap rate.
   Leakage rejection runs once per request on both
   windows' power: transmitters are located in the spectrum (not just the requested
   channels), each from the anchor its channels' windows climb to, centred where its

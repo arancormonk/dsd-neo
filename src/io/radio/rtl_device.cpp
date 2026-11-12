@@ -822,6 +822,16 @@ rtl_device_signal_clip_level(const struct rtl_device* dev, int fs4_shift_active)
     return use_two_pass ? kCu8TwoPassClipLevel : kCu8ClipLevel;
 }
 
+int32_t
+rtl_device_signal_rotation_hz(const struct rtl_device* dev, int fs4_shift_active, uint32_t rate_hz) {
+    if (dev && dev->backend == RTL_BACKEND_IQ_REPLAY) {
+        /* The replay rotates at the capture's rate, which its events never change (the reader refuses a file whose
+           events do), ahead of its resampler. */
+        return dev->replay_fs4_shift_enabled ? (int32_t)(dev->replay_initial_sample_rate_hz / 4U) : 0;
+    }
+    return fs4_shift_active ? (int32_t)(rate_hz / 4U) : 0;
+}
+
 /* Persisted IQ metadata and the live transform policy may select the two-pass
  * CU8 transform. New captures use the combined bias-127.5 transform by default. */
 static inline void
