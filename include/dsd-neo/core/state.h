@@ -808,8 +808,9 @@ typedef struct {
 /* Why an input interruption stands (dsd_state::input_interrupt_reason). The values rank: a raise never lowers the
    reason that stands (dsd_state_raise_input_interrupt()). */
 typedef enum {
-    /* None of its own: a hunt read left a silent input's wait for a queued command, or the input ended. The engine loop
-       clears it at its next pass. */
+    /* None of its own: a hunt read left a silent input's wait for a queued command, or the input ended; or a hunt read
+       on a live RTL stream that came back idle (DSD_RTL_READ_IDLE) gave way to a queued command or a put-off
+       publication (issue #834). The engine loop clears it at its next pass. */
     DSD_INTERRUPT_NONE = 0,
     /* A Signal search left the frame, or a live read gave up on a stalled input during a search visit: getSymbol()
        stands erasures in while the search runs. */

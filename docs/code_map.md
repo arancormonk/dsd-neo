@@ -491,7 +491,8 @@ Generated (do not edit/commit):
     drive the real hunt, symbol reader and interruption routing over scripted inputs. Test: `ENGINE_NO_CARRIER_RESET`
     (`test_live_scan_over_silent_inputs()`: -Y and trunk scan over a silent UDP input and a stalled RTL stream, a held
     -Y released during the silence, a command applied during an RTL stall with no scan, an analog -Y row on an idle
-    monitor).
+    monitor, a paused trunk scan or -Y that keeps waiting; the UDP cases run on a fake realtime clock, a link wrap of
+    `dsd_realtime_mono_ms()` and `dsd_sleep_ms()` active on the case's thread only).
 - Build files: `src/engine/CMakeLists.txt`
 
 Key public headers:
@@ -6474,7 +6475,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   queued command or a put-off publication leaves with no reason of its own (the engine loop applies it, in every
   session); else under a scan the pass ends with `DSD_INTERRUPT_SCAN_IDLE`; else the read reads again. An idle analog
   monitor's empty hunt read under a scan ends the pass the same way (`symbol_rtl_monitor_idle()`). The reason does not
-  stand ("Silent inputs" above) and nothing of the stream is lost. An I/Q replay's reads never come back idle. Tests:
+  stand ("Silent inputs" above) and nothing of the stream is lost. An I/Q replay's reads never come back idle. Unlike
+  the silent PCM wait, the RTL mapping does not ask `dsd_frame_sync_hook_decoder_ticks_due()` (spec §4.2 lists only a
+  command or publication, then a scan, then a re-read): in a session with no scan on a connected stream that stopped
+  delivering, a due startup control-channel hunt or DMR recovery tick waits for samples or the receive-timeout
+  reconnect, as before, since a retune of a peer that sends nothing gains little. A paused scan owns nothing, so its
+  idle hunt reads wait as a session with no scan does. Tests:
   `DSP_SYMBOL_RTL_YIELD`, `ENGINE_NO_CARRIER_RESET`, `IO_RTL_RETUNE_PREPARE`, `IO_RTL_REPLAY_EOF_AND_CF32`.
 - `dsd_symbol.c` owns the open-loop FSK symbol grid. Only the inter-frame sync search moves it, by a whole sample at
   a time, on the first zero crossing latched in the previous symbol — a bang-bang loop on one unfiltered sample
