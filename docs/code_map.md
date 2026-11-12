@@ -11055,6 +11055,11 @@ Private per-protocol modules worth knowing about:
   behind its own exact sync word before the carrier drops. `processDSTAR()` and `processProVoice()` return the answer,
   the dispatch handlers map it to `dsd_frame_verdict`, and the engine clears it with the carrier through the exported
   `dstar_confirm_reset()`/`provoice_confirm_reset()`.
+- YSF has no confirm module: its verdict is the FICH's (`dsd_state::ysf_fich_confirmed`, set as soon as a FICH
+  verifies, cleared with the carrier). A frame whose FICH fails is laid out as the last verified one only after a FICH
+  of this transmission verified (`ysf_parse_fich()`); before that it lays out, plays and publishes nothing and the hunt
+  reads on through it, since the last layout may be an earlier transmission's: a sync word matched on noise after a
+  V/D2 call played that call's layout as five frames of voice and opened a call (`YSF_DCH_DECODE`).
 - `src/protocol/provoice/provoice_frame.{c,h}` — the ProVoice frame-pair deinterleaver. It fills each IMBE 7100x4400
   frame with `dsd_vocoder_soft_bit` cells, a hard bit and the confidence in it, and `provoice.c` hands them to
   `processMbeFrameSoft()` (issue #588). The confidence is `dsd_two_level_symbol_reliability()`
