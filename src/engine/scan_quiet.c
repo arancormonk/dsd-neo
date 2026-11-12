@@ -22,6 +22,7 @@
 #include "scan_owner.h"
 #ifdef USE_RADIO
 #include <dsd-neo/engine/scan_voice_gate.h>
+#include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -95,19 +96,32 @@ quiet_decoder_narrow(const dsd_opts* opts) {
     return opts->frame_nxdn48 || opts->frame_dpmr || opts->frame_dstar;
 }
 
-/* The analog class's kind and width in force (the configured NFM or AM width), into @p analog_kind and
-   @p analog_width_hz when given; 0 when no width is configured, so the set gets no check. */
+uint32_t
+scan_quiet_analog_width_hz(int kind, int explicit_width_hz) {
+#ifdef USE_RADIO
+    /* As the stream requests it: an explicit width as typed, the AM default (a definite filtered channel) when unset,
+       and none for an unset NFM width, which keeps the historical enable rule and WIDE fallback. */
+    const int width_hz = rtl_demod_analog_requested_width_hz(kind, explicit_width_hz);
+#else
+    (void)kind;
+    const int width_hz = explicit_width_hz; /* no stream: no default to resolve, and no check is ever made */
+#endif
+    return width_hz > 0 ? (uint32_t)width_hz : 0U;
+}
+
+/* The analog class's kind and the width the stream runs it at (scan_quiet_analog_width_hz() of the configured width),
+   into @p analog_kind and @p analog_width_hz when given; 0 when that width is none, so the set gets no check. */
 static uint8_t
 quiet_decoder_analog(const dsd_opts* opts, int* analog_kind, uint32_t* analog_width_hz) {
-    const int width_hz = dsd_opts_analog_width_hz(opts);
-    if (width_hz <= 0) {
+    const uint32_t width_hz = scan_quiet_analog_width_hz(opts->analog_demod, dsd_opts_analog_width_hz(opts));
+    if (width_hz == 0U) {
         return 0U;
     }
     if (analog_kind) {
         *analog_kind = opts->analog_demod;
     }
     if (analog_width_hz) {
-        *analog_width_hz = (uint32_t)width_hz;
+        *analog_width_hz = width_hz;
     }
     return QUIET_CLASS_ANALOG;
 }
@@ -137,7 +151,7 @@ scan_quiet_decoder_classes(const dsd_opts* opts, int* analog_kind, uint32_t* ana
         return digital;
     }
     /* The analog monitor runs beside the digital decoders (-8): a mixed set, judged in the analog class too (D4); a
-       monitor with no configured width gets no check. */
+       monitor the stream runs at no definite width (an unset NFM width) gets no check. */
     const uint8_t analog = quiet_decoder_analog(opts, analog_kind, analog_width_hz);
     return analog ? (uint8_t)(digital | analog) : 0U;
 }

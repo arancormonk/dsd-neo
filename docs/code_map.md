@@ -513,9 +513,12 @@ Generated (do not edit/commit):
       judge (`scan_quiet_mode_classes()` for a typed row or target, `scan_quiet_decoder_classes()` for the decoder
       set: X2-TDMA, ProVoice and TETRA are in no class, so a set holding one gets no check; with the -8 analog monitor
       on beside a digital set the set is mixed (D4) and the analog class is judged too, at the configured kind and
-      width, which `scan_quiet_decoder_classes()` hands back with the classes). An ineligible visit is SUSPENDED: the
-      hook does nothing for it until the next publication. A published visit whose classes, width, rate, frequency or
-      revisions differ from what was measured starts over.
+      width, which `scan_quiet_decoder_classes()` hands back with the classes). An analog width resolves as the stream
+      requests it (`scan_quiet_analog_width_hz()`, through `rtl_demod_analog_requested_width_hz()`): an explicit width
+      as typed, the AM default (6 kHz, calibrated) when unset, and no check for an unset NFM width, which keeps the
+      historical filter rule and WIDE fallback and so has no definite channel; typed analog rows and targets resolve
+      theirs the same way. An ineligible visit is SUSPENDED: the hook does nothing for it until the next publication. A
+      published visit whose classes, width, rate, frequency or revisions differ from what was measured starts over.
     - WAIT_CAPTURE: a capture of the stream's live output generation (`dsd_rtl_stream_metrics_hook_stream_generation()`,
       which the engine installs as `rtl_stream_output_generation()`, the counter the demod stamps on every tap capture,
       `demod_feed_signal_search()`) newer than the one read at the tune request
@@ -535,15 +538,15 @@ Generated (do not edit/commit):
       older than 250 ms ends it.
     - Decision (`scan_quiet_apply()`, spec §3.4 (1)-(4)): the visit and revisions unchanged; the classes, analog kind
       and width and DSP rate in force, which the caller passes as this pass's `scan_quiet_eligibility`, equal to those
-      measured (a NULL one declines); the tap's capture still the
-      result's and the live output generation still its generation (a reacquire bump before the next block reaches the
-      tap), no tune in flight or failed-gated in the ledger (`dsd_trunk_tuning_frame_is_current()`, lock-free), at most
-      250 ms old, no sync since the request, no analog carrier heard (any tone verdict), and under trunk scan no allowed
-      activity at or after the request (`dsd_engine_trunk_scan_quiet_activity_since()`). Applying consumes the result
-      (DONE: one skip per visit); any decline is DONE, except a lost tick guard
-      (`scan_quiet_reconcile_declined()` with `guard_lost`), which leaves READY so the next hunt point hands back again.
-      A park measured in flight is applied only after its landing is noted. `scan_quiet_log_skip()` writes the NOTICE
-      line (`scan_quiet_format_skip()`). The skip decisions themselves are the trunk scan's and -Y's.
+      measured (a NULL one declines); the tap's capture still the result's and the live output generation still its
+      generation (a reacquire bump before the next block reaches the tap), no tune in flight or failed-gated in the
+      ledger (`dsd_trunk_tuning_frame_is_current()`, lock-free), at most 250 ms old, no sync since the request, no
+      analog carrier heard (any tone verdict), and under trunk scan no allowed activity at or after the request
+      (`dsd_engine_trunk_scan_quiet_activity_since()`). Applying consumes the result (DONE: one skip per visit); any
+      decline is DONE, except a lost tick guard (`scan_quiet_reconcile_declined()` with `guard_lost`), which leaves
+      READY so the next hunt point hands back again. A park measured in flight is applied only after its landing is
+      noted. `scan_quiet_log_skip()` writes the NOTICE line (`scan_quiet_format_skip()`). The skip decisions themselves
+      are the trunk scan's and -Y's.
     - `sync_seq` moves whenever the live loop's frame sync returns a sync (`live_scanner_frame_sync()`, YSF and D-STAR
       included, which stamp no `last_cc_sync_time_m`) and whenever a monitor block found the carrier itself
       (`dsd_engine_analog_call_block()`, `qualified_carrier`); `quiet_inv_seq` moves where a check's facts change with
@@ -17868,13 +17871,12 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     carried on the owner (`tune_generation_before`) until the landing; and `landed_realtime_ms`, when it was noted. As
     with `dsd_opts_tuned_freq_hz()`, a frequency changed on the peer itself is not seen. Analog rows only take the
     frequency: digital rows on a rigctl -Y channel keep the `dsd_opts_tuned_freq_hz()` rule. The row or target is the
-    "confirmed on air" proof a typed
-    frequency reads (`dsd_engine_channel_scan_row_confirmed()`, `dsd_engine_trunk_scan_target_confirmed()`; see the
-    typed-frequency match under Engine). Tests: `ENGINE_ANALOG_SCAN_CALLS` (a reconnect and a disconnect through the
-    real service included, and `C`, `J`, a refused `C` and `=` through the real command queue),
-    `ENGINE_NO_CARRIER_RESET` (pending typed and untyped steps, `test_untyped_row_confirmed_only_by_its_landing`),
-    `ENGINE_TRUNK_SCAN` (`test_target_confirmed_only_by_its_park`), `APP_COMMAND_QUEUE` (a manual step's confirmed,
-    timed-out, refused and deferred tunes), `UI_RIGCTL_CONNECT`.
+    "confirmed on air" proof a typed frequency reads (`dsd_engine_channel_scan_row_confirmed()`,
+    `dsd_engine_trunk_scan_target_confirmed()`; see the typed-frequency match under Engine). Tests:
+    `ENGINE_ANALOG_SCAN_CALLS` (a reconnect and a disconnect through the real service included, and `C`, `J`, a refused
+    `C` and `=` through the real command queue), `ENGINE_NO_CARRIER_RESET` (pending typed and untyped steps,
+    `test_untyped_row_confirmed_only_by_its_landing`), `ENGINE_TRUNK_SCAN` (`test_target_confirmed_only_by_its_park`),
+    `APP_COMMAND_QUEUE` (a manual step's confirmed, timed-out, refused and deferred tunes), `UI_RIGCTL_CONNECT`.
   - Scanner departures (`ENGINE_ANALOG_SCAN_CALLS`, the real tracker): a typed -Y leave ends a call with its row and
     discards a candidate; a trunk-scan advance whose preparation succeeds does too before both snapshots, one whose
     preparation fails leaves either running, and a rollback or a revisit restores neither; the carrier boundary a

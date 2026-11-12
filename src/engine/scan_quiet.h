@@ -105,12 +105,19 @@ void scan_quiet_revisions_read(const dsd_opts* opts, const dsd_state* state, sca
 
 /** The width classes of a typed row's or a conventional target's @p mode; 0 for a mode in no class. */
 uint8_t scan_quiet_mode_classes(dsd_scan_mode mode);
+/** The width the stream runs an analog channel of @p kind at for the configured @p explicit_width_hz
+ * (rtl_demod_analog_requested_width_hz()): an explicit width as typed, the AM default when unset, and 0 (no check) for
+ * an unset NFM width, which keeps the historical filter rule and WIDE fallback and so has no definite channel. Typed
+ * analog rows and targets resolve their width with it, as the decoder set does. Radio-off: @p explicit_width_hz. */
+uint32_t scan_quiet_analog_width_hz(int kind, int explicit_width_hz);
+
 /** The width classes of the decoder set in force (an untyped row, or a typed row inheriting it): every class an enabled
  * mode has, or the analog class for an analog session; 0 when any enabled mode has none (X2-TDMA, ProVoice, TETRA).
  * With the analog monitor on beside a digital set (-8) the set is mixed (D4): the analog class is judged too. The
- * analog class comes with the configured kind (dsd_opts::analog_demod) and width (dsd_opts_analog_width_hz()) in
- * @p analog_kind and @p analog_width_hz (either may be NULL; 0 without it); no configured width is no check. Outside
- * the calibrated analog domain the visit ends DONE at its capture. */
+ * analog class comes with the configured kind (dsd_opts::analog_demod) and the width the stream runs it at
+ * (scan_quiet_analog_width_hz() of dsd_opts_analog_width_hz()) in @p analog_kind and @p analog_width_hz (either may be
+ * NULL; 0 without it); no definite width (an unset NFM width) is no check. Outside the calibrated analog domain the
+ * visit ends DONE at its capture. */
 uint8_t scan_quiet_decoder_classes(const dsd_opts* opts, int* analog_kind, uint32_t* analog_width_hz);
 
 /** Whether the session can make a check at all: the setting on, a radio build, an RTL-family input that is no I/Q

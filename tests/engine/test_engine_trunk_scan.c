@@ -44,6 +44,7 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #ifdef USE_RADIO
+#include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/io/signal_measure.h>
 #endif
 #include <dsd-neo/platform/file_compat.h>
@@ -22301,6 +22302,16 @@ dsd_signal_quiet_rate_supported(uint32_t rate_hz) {
     return g_tap.rate_ok && rate_hz != 0U;
 }
 
+/* The stream's width rule (io/radio/rtl_demod_config.cpp, which this fixture does not link), as it is: an explicit
+   width as typed, else none for NFM and the kind's default for AM. */
+int
+rtl_demod_analog_requested_width_hz(int kind, int explicit_width_hz) {
+    if (explicit_width_hz > 0) {
+        return explicit_width_hz;
+    }
+    return kind == DSD_ANALOG_DEMOD_FM ? 0 : dsd_analog_width_default_hz(kind);
+}
+
 int
 dsd_signal_quiet_analog_supported(int kind, uint32_t width_hz, uint32_t rate_hz) {
     return g_tap.analog_ok && (kind == DSD_ANALOG_DEMOD_FM || kind == DSD_ANALOG_DEMOD_AM) && width_hz != 0U
@@ -23290,7 +23301,7 @@ test_scan_quiet_apply_checks_the_facts_in_force(void) {
         return 1;
     }
     int rc = 0;
-    for (int change = 0; change < 4; change++) {
+    for (int change = 0; change < 5; change++) {
         quiet_land_again(&state, k_qt_hz_a);
         scan_quiet_eligibility e = quiet_elig(&opts, &state);
         e.classes = DSD_SIGNAL_QUIET_CLASS_12K5 | DSD_SIGNAL_QUIET_CLASS_ANALOG;
@@ -23304,10 +23315,11 @@ test_scan_quiet_apply_checks_the_facts_in_force(void) {
             case 0: now.classes = DSD_SIGNAL_QUIET_CLASS_12K5 | DSD_SIGNAL_QUIET_CLASS_6K25; break;
             case 1: now.analog_width_hz = 16000U; break;
             case 2: now.dsp_rate_hz = 24000U; break;
-            default: break; /* unchanged */
+            case 3: now.analog_kind = DSD_ANALOG_DEMOD_AM; break; /* the same width, another kind */
+            default: break;                                       /* unchanged */
         }
         const int applied = scan_quiet_apply(&opts, &state, SCAN_QUIET_OWNER_TRUNK, &now);
-        if (applied != (change == 3) || scan_quiet_phase_get(&state) != SCAN_QUIET_DONE) {
+        if (applied != (change == 4) || scan_quiet_phase_get(&state) != SCAN_QUIET_DONE) {
             DSD_FPRINTF(stderr, "FAIL #834 scan quiet: facts change %d applied %d, phase %d\n", change, applied,
                         (int)scan_quiet_phase_get(&state));
             rc = 1;
@@ -23359,6 +23371,35 @@ test_scan_quiet_mixed_set_judges_the_analog_class(void) {
                             scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.requests == requests);
         }
     }
+    /* An unset width resolves as the stream runs it: AM at its 6 kHz default is measured there; an unset NFM width has
+       no definite channel, so nothing is published as eligible and nothing is requested. */
+    for (int am = 1; am >= 0; am--) {
+        quiet_land_again(&state, k_qt_hz_a);
+        g_tap.analog_ok = 1;
+        opts.analog_demod = am ? DSD_ANALOG_DEMOD_AM : DSD_ANALOG_DEMOD_FM;
+        opts.analog_am_bandwidth_hz = 0;
+        opts.analog_nfm_bandwidth_hz = 0;
+        scan_quiet_eligibility e = quiet_elig(&opts, &state);
+        int kind = -1;
+        uint32_t width = 0U;
+        e.classes = scan_quiet_decoder_classes(&opts, &kind, &width);
+        e.analog_kind = kind;
+        e.analog_width_hz = width;
+        const int requests = g_tap.requests;
+        scan_quiet_publish_eligibility(&opts, &state, SCAN_QUIET_OWNER_TRUNK, &e);
+        if (am) {
+            rc |= qt_expect("an unset AM width is measured at the 6 kHz default",
+                            scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED
+                                && g_tap.last_request.classes
+                                       == (DSD_SIGNAL_QUIET_CLASS_12K5 | DSD_SIGNAL_QUIET_CLASS_ANALOG)
+                                && g_tap.last_request.analog_width_hz == 6000U);
+        } else {
+            rc |= qt_expect("an unset NFM width: no check", e.classes == 0U
+                                                                && scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED
+                                                                && g_tap.requests == requests);
+        }
+    }
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
     opts.frame_dmr = 0;
     opts.monitor_input_audio = 0;
     quiet_rig_finish(&opts, &state, dir, path);
@@ -23617,10 +23658,25 @@ test_scan_quiet_notice_and_classes(void) {
     rc |= scan_quiet_decoder_classes(&opts, &kind, &width) != 7U || kind != DSD_ANALOG_DEMOD_FM || width != 12500U;
     opts.analog_demod = DSD_ANALOG_DEMOD_AM;
     rc |= scan_quiet_decoder_classes(&opts, &kind, &width) != 7U || kind != DSD_ANALOG_DEMOD_AM || width != 6000U;
-    opts.analog_am_bandwidth_hz = 0; /* no configured width: no check */
-    rc |= scan_quiet_decoder_classes(&opts, &kind, &width) != 0U || width != 0U;
+#ifdef USE_RADIO
+    /* An unset AM width runs the AM default, a definite 6 kHz channel the calibration covers: judged there. */
+    opts.analog_am_bandwidth_hz = 0;
+    rc |= scan_quiet_decoder_classes(&opts, &kind, &width) != 7U || kind != DSD_ANALOG_DEMOD_AM || width != 6000U;
+#endif
+    /* An unset NFM width keeps the historical filter rule and WIDE fallback: no definite channel, no check. */
     opts.analog_am_bandwidth_hz = 6000;
     opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts.analog_nfm_bandwidth_hz = 0;
+    rc |= scan_quiet_decoder_classes(&opts, &kind, &width) != 0U || width != 0U;
+    opts.analog_nfm_bandwidth_hz = 12500;
+#ifdef USE_RADIO
+    rc |= scan_quiet_analog_width_hz(DSD_ANALOG_DEMOD_FM, 0) != 0U
+          || scan_quiet_analog_width_hz(DSD_ANALOG_DEMOD_AM, 0) != 6000U
+          || scan_quiet_analog_width_hz(DSD_ANALOG_DEMOD_FM, 16000) != 16000U
+          || scan_quiet_analog_width_hz(DSD_ANALOG_DEMOD_AM, 10000) != 10000U;
+#else
+    rc |= scan_quiet_analog_width_hz(DSD_ANALOG_DEMOD_AM, 0) != 0U;
+#endif
     opts.monitor_input_audio = 0;
     opts.frame_provoice = 1; /* Auto's set holds ProVoice and X2-TDMA: no check */
     rc |= scan_quiet_decoder_classes(&opts, NULL, NULL) != 0U;
