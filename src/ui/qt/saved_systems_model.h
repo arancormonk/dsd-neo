@@ -264,6 +264,10 @@ class SavedSystemsModel : public QAbstractListModel {
     static bool namePlace(QVariantMap& place, int stid, const QString& stateName,
                           const QHash<int, QString>& countyNames);
 
+    /** @brief Whether anything in @p place still lacks a name or, for a county, its state link; or it has candidate
+     *         states and no state yet. */
+    static bool placeNeedsNames(const QVariantMap& place);
+
     /** @brief One saved site's fresh RadioReference record, for refreshSites(). */
     struct SiteRefresh {
         QString uid;
@@ -360,7 +364,8 @@ class SavedSystemsModel : public QAbstractListModel {
     bool newRow(const QVariant& system, int keySource, Row* row) const;
     /** Adopt @p added's replay copies, save the rows with it appended, insert it as one range: its first row or -1. */
     int appendRows(const QList<Row>& added);
-    /** Run the place-name fill on @p row's place when its ids differ from @p previous's. */
+    /** Keep @p previous's names and links for the same ids in @p row's place, then run the place-name fill on it when
+     *  its ids differ from @p previous's or it still lacks a name. */
     void fillPlaceNames(Row& row, const QVariantMap& previous) const;
     /** Clear the provenance of every row with a CSV field naming @p path, blanking those fields too if asked. */
     bool clearPathProvenance(const QString& path, bool clearFields);

@@ -211,6 +211,72 @@ place_ids(const QVariantMap& place) {
     return ids;
 }
 
+/** The entries of a place list keyed by their id. */
+QHash<int, QVariantMap>
+place_entries_by_id(const QVariantMap& place, const QString& list, const QString& idKey) {
+    QHash<int, QVariantMap> out;
+    for (const QVariant& entry : place.value(list).toList()) {
+        const QVariantMap map = entry.toMap();
+        out.insert(map.value(idKey).toInt(), map);
+    }
+    return out;
+}
+
+/** Give @p entry @p known's @p key when it has none of its own. */
+void
+keep_known(QVariantMap& entry, const QVariantMap& known, const QString& key) {
+    if (!entry.contains(key) && known.contains(key)) {
+        entry.insert(key, known.value(key));
+    }
+}
+
+/**
+ * @p place (an import's: ids only) with what @p known (the row's stored place) already held for the same ids: a county's
+ * name and state link, a state's name, and the states those links bring. What @p place carries itself wins. So a
+ * re-import or a refresh of the same site keeps the row's names even when no lookup can name them again.
+ */
+QVariantMap
+keep_known_names(const QVariantMap& place, const QVariantMap& known) {
+    const QString statesKey = QStringLiteral("states");
+    const QString countiesKey = QStringLiteral("counties");
+    const QString stidKey = QStringLiteral("stid");
+    const QString nameKey = QStringLiteral("name");
+    const QHash<int, QVariantMap> oldCounties = place_entries_by_id(known, countiesKey, QStringLiteral("ctid"));
+    const QHash<int, QVariantMap> oldStates = place_entries_by_id(known, statesKey, stidKey);
+    if (oldCounties.isEmpty() && oldStates.isEmpty()) {
+        return place;
+    }
+    QVariantList counties;
+    QList<int> linked;
+    for (const QVariant& value : place.value(countiesKey).toList()) {
+        QVariantMap county = value.toMap();
+        const QVariantMap old = oldCounties.value(county.value(QStringLiteral("ctid")).toInt());
+        keep_known(county, old, nameKey);
+        keep_known(county, old, stidKey);
+        if (county.contains(stidKey) && !linked.contains(county.value(stidKey).toInt())) {
+            linked.append(county.value(stidKey).toInt());
+        }
+        counties.append(county);
+    }
+    QVariantList states;
+    QList<int> listed;
+    for (const QVariant& value : place.value(statesKey).toList()) {
+        QVariantMap state = value.toMap();
+        keep_known(state, oldStates.value(state.value(stidKey).toInt()), nameKey);
+        listed.append(state.value(stidKey).toInt());
+        states.append(state);
+    }
+    for (const int stid : linked) {
+        if (!listed.contains(stid) && states.size() < kPlaceMaxStates) {
+            states.append(oldStates.value(stid, QVariantMap{{stidKey, stid}}));
+        }
+    }
+    QVariantMap out = place;
+    out.insert(countiesKey, counties);
+    out.insert(statesKey, states);
+    return out;
+}
+
 /** Set @p entry's name to @p name when it is a usable name and differs; true when it changed. */
 bool
 set_place_name(QVariantMap& entry, const QString& name) {
@@ -364,9 +430,28 @@ SavedSystemsModel::setPlaceNameCache(PlaceNameFill fill) {
     m_placeNames = std::move(fill);
 }
 
+bool
+SavedSystemsModel::placeNeedsNames(const QVariantMap& place) {
+    const QString nameKey = QStringLiteral("name");
+    const QVariantList states = place.value(QStringLiteral("states")).toList();
+    const QVariantList counties = place.value(QStringLiteral("counties")).toList();
+    const bool unnamedState = std::any_of(
+        states.cbegin(), states.cend(), [&nameKey](const QVariant& state) { return !state.toMap().contains(nameKey); });
+    const bool unnamedCounty = std::any_of(counties.cbegin(), counties.cend(), [&nameKey](const QVariant& county) {
+        const QVariantMap map = county.toMap();
+        return !map.contains(nameKey) || !map.contains(QStringLiteral("stid"));
+    });
+    return unnamedState || unnamedCounty
+           || (states.isEmpty() && !place.value(QStringLiteral("candidateStates")).toList().isEmpty());
+}
+
 void
 SavedSystemsModel::fillPlaceNames(Row& row, const QVariantMap& previous) const {
-    if (!m_placeNames || row.place.isEmpty() || place_ids(row.place) == place_ids(previous)) {
+    if (row.place.isEmpty()) {
+        return;
+    }
+    row.place = validPlace(keep_known_names(row.place, previous));
+    if (!m_placeNames || (place_ids(row.place) == place_ids(previous) && !placeNeedsNames(row.place))) {
         return;
     }
     m_placeNames(row.place);

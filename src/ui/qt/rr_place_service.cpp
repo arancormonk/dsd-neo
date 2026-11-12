@@ -30,7 +30,6 @@ const QString kStates = QStringLiteral("states");
 const QString kCounties = QStringLiteral("counties");
 const QString kCandidates = QStringLiteral("candidateStates");
 const QString kStid = QStringLiteral("stid");
-const QString kCtid = QStringLiteral("ctid");
 const QString kName = QStringLiteral("name");
 const QString kPlace = QStringLiteral("place");
 
@@ -55,20 +54,6 @@ place_named(const QVariantMap& place) {
                        [](const QVariant& state) { return !state.toMap().value(kName).toString().isEmpty(); });
 }
 
-/** @brief Whether anything in @p place still lacks a name or, for a county, its state. */
-bool
-place_needs_names(const QVariantMap& place) {
-    const QVariantList states = place.value(kStates).toList();
-    const QVariantList counties = place.value(kCounties).toList();
-    const bool unnamedState = std::any_of(states.cbegin(), states.cend(),
-                                          [](const QVariant& state) { return !state.toMap().contains(kName); });
-    const bool unnamedCounty = std::any_of(counties.cbegin(), counties.cend(), [](const QVariant& county) {
-        const QVariantMap map = county.toMap();
-        return !map.contains(kName) || !map.contains(kStid);
-    });
-    return unnamedState || unnamedCounty || (states.isEmpty() && !place.value(kCandidates).toList().isEmpty());
-}
-
 /** @brief Every state id @p place names (candidates, states, county links), each once, in that order. */
 QList<int>
 place_state_ids(const QVariantMap& place) {
@@ -87,63 +72,6 @@ place_state_ids(const QVariantMap& place) {
     for (const QVariant& county : place.value(kCounties).toList()) {
         add(county.toMap().value(kStid).toInt());
     }
-    return out;
-}
-
-/** @brief The entries of a place list keyed by their id. */
-QHash<int, QVariantMap>
-entries_by_id(const QVariantMap& place, const QString& list, const QString& idKey) {
-    QHash<int, QVariantMap> out;
-    for (const QVariant& entry : place.value(list).toList()) {
-        const QVariantMap map = entry.toMap();
-        out.insert(map.value(idKey).toInt(), map);
-    }
-    return out;
-}
-
-/**
- * @brief @p fresh (ids only, as RadioReference sent them now) with what @p stored already knew of the same ids: county
- *        names and state links, state names, and the states those links bring.
- *
- * So a refresh whose ids did not change keeps the row's names even when the lookup that would name them again fails.
- */
-QVariantMap
-keep_known_names(const QVariantMap& fresh, const QVariantMap& stored) {
-    if (fresh.isEmpty()) {
-        return fresh;
-    }
-    const QHash<int, QVariantMap> oldCounties = entries_by_id(stored, kCounties, kCtid);
-    const QHash<int, QVariantMap> oldStates = entries_by_id(stored, kStates, kStid);
-    QVariantList counties;
-    QList<int> linked;
-    for (const QVariant& value : fresh.value(kCounties).toList()) {
-        QVariantMap county = value.toMap();
-        const QVariantMap old = oldCounties.value(county.value(kCtid).toInt());
-        for (const QString& key : {kName, kStid}) {
-            if (old.contains(key)) {
-                county.insert(key, old.value(key));
-            }
-        }
-        if (county.contains(kStid) && !linked.contains(county.value(kStid).toInt())) {
-            linked.append(county.value(kStid).toInt());
-        }
-        counties.append(county);
-    }
-    QVariantList states;
-    QList<int> listed;
-    for (const QVariant& value : fresh.value(kStates).toList()) {
-        const int stid = value.toMap().value(kStid).toInt();
-        states.append(oldStates.contains(stid) ? oldStates.value(stid) : value);
-        listed.append(stid);
-    }
-    for (const int stid : linked) {
-        if (!listed.contains(stid)) {
-            states.append(oldStates.contains(stid) ? oldStates.value(stid) : QVariantMap{{kStid, stid}});
-        }
-    }
-    QVariantMap out = fresh;
-    out.insert(kCounties, counties);
-    out.insert(kStates, states);
     return out;
 }
 
@@ -635,8 +563,8 @@ RrPlaceService::refreshSystemRows(int sid, const QList<SiteRecord>& sites) {
         refresh.fields.insert(QStringLiteral("hasSitePos"), site->positioned);
         refresh.fields.insert(QStringLiteral("siteLat"), site->lat);
         refresh.fields.insert(QStringLiteral("siteLon"), site->lon);
-        refresh.fields.insert(
-            kPlace, keep_known_names(rr_site_place({site->countyId}, m_update.stateIds), stored.value(kPlace).toMap()));
+        /* Ids only: refreshSites() keeps the names the row already has for them (SavedSystemsModel::fillPlaceNames()). */
+        refresh.fields.insert(kPlace, rr_site_place({site->countyId}, m_update.stateIds));
         refreshes.append(refresh);
     }
     /* Each still the site it was read for, so all of them are applied, or none when the save fails. */
@@ -653,7 +581,7 @@ RrPlaceService::beginNamesPhase() {
     QList<int> stids;
     for (const QString& uid : m_update.uids) {
         const QVariantMap place = m_systems.isNull() ? QVariantMap() : m_systems->getByUid(uid).value(kPlace).toMap();
-        if (!place_needs_names(place)) {
+        if (!SavedSystemsModel::placeNeedsNames(place)) {
             continue;
         }
         for (const int stid : place_state_ids(place)) {

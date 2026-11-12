@@ -13536,7 +13536,9 @@ Qt Quick frontend (`src/ui/qt`):
   `SavedSystemsModel::applyPlaceNames()`; a failure is recorded per state (`stateFailed()`) and asked again only by a
   later call, and a save that failed is retried at the next resolve from the cache. It installs its cache as the
   saved systems' `setPlaceNameCache()` fill (`fillPlaceNames()`), so a row saved before or after the names arrive ends
-  named. Any `credentialsChanged` stops every request and drops the cache. `updateFromRadioReference(uids)` (false
+  named. Every place commit (add, update, refresh) first keeps the names and county links the row already had for the
+  same ids (an import's place is ids only, so a re-import of the same site never loses them), then runs the fill when
+  its ids changed or it still lacks a name. Any `credentialsChanged` stops every request and drops the cache. `updateFromRadioReference(uids)` (false
   while signed out: open the account screen, or with no saved systems; otherwise `updateFinished(updated,
   unreachable)` follows once, at once with no `updating`/`progressText` change when no row can be updated) reads each
   distinct system of the rows that are sites (`getTrsDetails` for `sState`, then `getTrsSites`) and applies, through

@@ -2371,6 +2371,81 @@ test_place_name_cache() {
     empty_systems(model);
 }
 
+/* @p place as a fresh import carries it: the same ids, no names and no county links. */
+QVariantMap
+ids_only(const QVariantMap& place) {
+    QVariantList states;
+    for (const QVariant& state : place.value("states").toList()) {
+        states.append(QVariantMap{{"stid", state.toMap().value("stid")}});
+    }
+    QVariantList counties;
+    for (const QVariant& county : place.value("counties").toList()) {
+        counties.append(QVariantMap{{"ctid", county.toMap().value("ctid")}});
+    }
+    return {{"states", states}, {"counties", counties}, {"candidateStates", place.value("candidateStates")}};
+}
+
+/* An edit-mode re-import of the same site carries the same place ids without names (rr_site_place()). The names and
+ * county links the row already had for those ids stay: whether the import listed the linked state itself (one
+ * candidate) or not (several), and with the lookup cache empty (a later launch) or never consulted. A row whose names
+ * never arrived (its save failed) takes them from the cache on that commit, though its ids did not change. */
+void
+test_reimport_keeps_place_names() {
+    SavedSystemsModel model;
+    empty_systems(model);
+    QVariantMap single = iowa_place();
+    single.insert("candidateStates", QVariantList{19});
+    expect("re-import names: rows", model.add(grouped_site("SARA — North", 3, "/data/imports/old.csv"))
+                                        && model.add(grouped_site("SARA — South", 4, "/data/imports/old.csv")));
+    expect("re-import names: one candidate", model.update(1, {{"place", single}}));
+    for (int row = 0; row < 2; ++row) {
+        const QVariantMap stored = model.get(row).value("place").toMap();
+        const QVariantMap reimport{{"groupCsvPath", "/data/imports/new.csv"},
+                                   {"rrSid", 12},
+                                   {"rrSiteId", model.get(row).value("rrSiteId")},
+                                   {"siteName", "North"},
+                                   {"place", ids_only(stored)}};
+        expect("re-import names: the re-import saves", model.update(row, reimport));
+        if (model.get(row).value("place").toMap() != stored) {
+            DSD_FPRINTF(stderr, "re-import names: row %d lost its place names\n", row);
+        }
+        expect("re-import names: the stored names and links stay", model.get(row).value("place").toMap() == stored);
+        SavedSystemsModel reloaded;
+        expect("re-import names: and persist", reloaded.get(row).value("place").toMap() == stored);
+    }
+    expect("re-import names: an unchanged place sent again",
+           model.update(0, {{"name", "SARA — North"}, {"place", ids_only(iowa_place())}})
+               && model.get(0).value("place").toMap() == iowa_place());
+
+    int fills = 0;
+    model.setPlaceNameCache([&fills](QVariantMap& place) {
+        ++fills;
+        (void)SavedSystemsModel::namePlace(place, 19, QStringLiteral("Iowa"), {{907, QStringLiteral("Johnson")}});
+    });
+    expect("re-import names: with the cache too, the kept names are the same",
+           model.update(1, {{"groupCsvPath", "/data/imports/newer.csv"}, {"place", ids_only(single)}})
+               && model.get(1).value("place").toMap() == single);
+    model.setPlaceNameCache({});
+    const QVariantMap unnamed = ids_only(iowa_place());
+    expect("re-import names: a row whose names never arrived", model.add({{"name", "Repeaters"}, {"place", unnamed}}));
+    const int last = model.count() - 1;
+    expect("re-import names: stays unnamed without a cache", model.get(last).value("place").toMap() == unnamed);
+    fills = 0;
+    model.setPlaceNameCache([&fills](QVariantMap& place) {
+        ++fills;
+        (void)SavedSystemsModel::namePlace(place, 19, QStringLiteral("Iowa"), {{907, QStringLiteral("Johnson")}});
+    });
+    expect("re-import names: the same ids again", model.update(last, {{"place", unnamed}}));
+    expect("re-import names: the cache names it before the save",
+           fills == 1 && model.get(last).value("place").toMap() == iowa_place());
+    {
+        SavedSystemsModel reloaded;
+        expect("re-import names: the cache fill persists", reloaded.get(last).value("place").toMap() == iowa_place());
+    }
+    model.setPlaceNameCache({});
+    empty_systems(model);
+}
+
 /* Every insertion signal @p model sends, with its row range, in order, into @p log (declared before the model). */
 void
 record_inserts(SavedSystemsModel& model, QStringList& log) {
@@ -3686,6 +3761,7 @@ main(int argc, char** argv) {
     test_invalidate_path_provenance();
     test_apply_place_names();
     test_place_name_cache();
+    test_reimport_keeps_place_names();
     test_add_with_retained_key();
     test_add_all_atomic_on_save_failure();
     test_add_all_invalid_later_row();
