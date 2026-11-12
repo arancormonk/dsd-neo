@@ -19412,6 +19412,47 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_P25P1_C4FM_VOICE_HDU_F1
         PROPERTIES LABELS "iq-decode"
     )
+    # Two short real-air C4FM control channels from GopherTrunk's test data (CF32_CAPTURES in
+    # tools/build_iq_fixtures.py), whose eye is asymmetric: the outer levels sit about 3.3 and 2.8 times the inner ones
+    # instead of 3. Every TSBK that passes its CRC prints its message's title on a line of its own, one space in; the
+    # site identity comes from those blocks and the NAC from each frame's NID. A control channel carries no voice, so a
+    # header or voice frame would be noise taken for one. The floors sit about 20% under what this build decodes, the
+    # same under -f1 and -fa: s9 41 titles, 14 NACs and the identity 8 times under -f1 (35, 12 and 8 under -fa); city
+    # 57, 20 and 18 (54, 19 and 18). They are floors, not counts, because the C4FM level work is meant to raise them.
+    function(
+        dsd_neo_add_gt_c4fm_cc_tests
+        suffix
+        fixture
+        min_tsbk
+        min_nac
+        min_identity
+    )
+        foreach(_mode -f1 -fa)
+            set(_name DECODE_IQ_P25P1_C4FM_CC_GT_${suffix})
+            if(_mode STREQUAL "-fa")
+                string(APPEND _name _AUTO)
+            endif()
+            add_test(
+                NAME ${_name}
+                COMMAND
+                    ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                    "-DMODE=${_mode}"
+                    "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json"
+                    "-DEXPECTED=\n [A-Z]" -DMIN_MATCHES=${min_tsbk}
+                    "-DEXPECTED2=NAC/CC: 164;" -DMIN_MATCHES2=${min_nac}
+                    "-DEXPECTED3=WACN: BEE00; SYS: 164;"
+                    -DMIN_MATCHES3=${min_identity}
+                    "-DNOT_EXPECTED= HDU| LDU[12]" -P
+                    "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+            )
+            set_tests_properties(
+                ${_name}
+                PROPERTIES LABELS "iq-decode" TIMEOUT 120
+            )
+        endforeach()
+    endfunction()
+    dsd_neo_add_gt_c4fm_cc_tests(S9 p25p1_c4fm_cc_gt_s9 28 9 6)
+    dsd_neo_add_gt_c4fm_cc_tests(CITY p25p1_c4fm_cc_gt_city 43 15 14)
     # The CQPSK fixtures run the front end's CQPSK chain throughout only with -mq. A -m lock
     # holds on either side of the preset, so "-f1 -mq" and "-mq -f1" (which ran a C4FM lock
     # until the presets learned to keep an earlier lock) each read about 9,590 CQPSK symbols

@@ -621,7 +621,23 @@ requires at least 15. `tools/tetra/prepare_real_air_fixture.py` verifies the raw
 SCBS, resampled, marginal, and inverted hashes; the adjacent provenance file
 records the source commits, transforms, and parameters.
 
-Both of those captures are control channels. `tetra_call_real_air_72k` is the real-air traffic: 6.5 seconds of the
+The same upstream repository supplies two short real-air P25 Phase 1 C4FM control channels, Apache-2.0:
+`p25p1_c4fm_cc_gt_s9` (1.09 s) and `p25p1_c4fm_cc_gt_city` (1.5 s), two sites of one system (NAC 0x164, WACN BEE00,
+SYS 164). Upstream publishes them as 48 kHz float32 I/Q; `tools/build_iq_fixtures.py` (`CF32_CAPTURES`) downloads
+them from the pinned commit, checks their SHA-256 and only requantizes them to cu8, so their carrier offsets (about
+-51 Hz and -9 Hz) and their asymmetric eye (outer to inner deviation about 3.3 and 2.8 against the nominal 3) stay
+as recorded. `tests/fixtures/iq/p25p1_c4fm_cc_gt.PROVENANCE.md` records the source commits, hashes and published
+capture parameters, beside the upstream license text `p25p1_c4fm_cc_gt.APACHE-2.0.txt`.
+`DECODE_IQ_P25P1_C4FM_CC_GT_S9` and `_CITY` replay them under `-f1`, and the `_AUTO` cases under `-fa`. Each requires
+floors on the TSBK messages whose CRC passes (each prints its title on a line of its own, one space in), on
+`NAC/CC: 164` and on the site identity `WACN: BEE00; SYS: 164`, and no `HDU` or `LDU` on the control channel. The
+floors sit about 20% under what the build that added them decodes (s9: 41 messages, 14 NACs, 8 identities under
+`-f1`, 35, 12 and 8 under `-fa`; city: 57, 20 and 18, and 54, 19 and 18), the same for both modes. With ±45 counts
+of added noise (three seeds) every run stays above them, and under `-fs`, `-fn` or `-fy` neither fixture prints the
+NAC or the identity. They are floors rather than counts because C4FM level work is expected to raise them; raise
+the floors when it does.
+
+Both TETRA captures above are control channels. `tetra_call_real_air_72k` is the real-air traffic: 6.5 seconds of the
 Signal Identification Wiki's `TETRA_IQ.zip`, a 48 kHz recording of one downlink carrier of another network (MCC 228, MNC
 8889, colour code 1, main carrier 1068 at 426.7 MHz) with a cleartext group call on timeslot 2.
 `tools/build_iq_fixtures.py` (`TETRA_EXCERPTS`) cuts it where the floor passes from one talker to the next and resamples

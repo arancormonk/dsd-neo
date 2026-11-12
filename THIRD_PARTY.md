@@ -162,6 +162,14 @@ not a finding that every component is cleared for redistribution.
     commit, hashes, published capture parameters, expected cell identity, and reproduction
     command are recorded in `tests/fixtures/iq/tetra_scbs_real_air.PROVENANCE.md`; the upstream license text is
     `tests/fixtures/iq/tetra_scbs_real_air.APACHE-2.0.txt`.
+  - `p25p1_c4fm_cc_gt_s9` and `p25p1_c4fm_cc_gt_city` derive from two P25 Phase 1 C4FM control-channel captures
+    (`mmr-s9-cc.cfile` and `mmr-city-cc.cfile`, 48 kHz float32 I/Q) from
+    [MattCheramie/GopherTrunk](https://github.com/MattCheramie/GopherTrunk), Apache License 2.0, pinned at commit
+    `f3798e04fa0498a54e969d2d13ec154c0ff0a65e` with their SHA-256 in `tools/build_iq_fixtures.py`
+    (`CF32_CAPTURES`), which requantizes each whole capture to cu8 and changes nothing else. Source commits, hashes,
+    published capture parameters and the reproduction command are recorded in
+    `tests/fixtures/iq/p25p1_c4fm_cc_gt.PROVENANCE.md`; the upstream license text is
+    `tests/fixtures/iq/p25p1_c4fm_cc_gt.APACHE-2.0.txt`.
   - `tests/fixtures/tetra/acelp/hello_tetra.acelp` and its decoder-input reference
     `hello_tetra.codec` come from the `sq5bpf/telive` test sample. Exact source,
     decoder, upstream GPL-3.0 project license, and hashes are recorded in the adjacent `PROVENANCE.md`;
