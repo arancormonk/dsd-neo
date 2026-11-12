@@ -2131,6 +2131,11 @@ struct dsd_state {
     int p25p1_word_hint_type;
     int p25p1_word_hint_profile;
     uint8_t p25p1_word_hint_seen;
+    /* The 4800/4 symbols a word hint's step skipped of the rotation (the rest of the binary profile's dwell and the
+     * dwells between it and 4800/4), which the 4800/4 dwell it opened is owed on top of its own, so the profiles after
+     * 4800/4 come round no earlier than without the hint. Dropped with any change of profile, a dwell's expiry or
+     * restart, a proof of the profile, and with the sync join histories; 0 on every other dwell. */
+    int p25p1_word_hint_dwell_extra;
 
     /* That the signal on the current SPS profile is P25p1 at all, and when it last proved it:
      * a decoded 63-bit NID BCH, whatever the DUID turned out to be. A separate stamp from the
@@ -3074,8 +3079,8 @@ dsd_state_raise_input_interrupt(dsd_state* state, int reason) {
    input switch, a menu tune) leaves every later symbol whole; one that runs while getSymbol() reads a symbol's samples
    (an I/Q replay retune) splits that symbol, which counts as the carrier left's. The sync join histories are the
    carrier left's evidence too: an NXDN96 lock or FSW, an NXDN48 hit, a P25p1 word the hunt read on a binary profile,
-   or an M17 word, does not pair with the next carrier's (dsd_state_forget_sync_join_histories(), which a trunk retune
-   runs too). */
+   or an M17 word, does not pair with the next carrier's, and the dwell a word hint owed 4800/4 is the left carrier's
+   rotation (dsd_state_forget_sync_join_histories(), which a trunk retune runs too). */
 static inline void
 dsd_state_forget_sync_join_histories(dsd_state* state) {
     dsd_nxdn96_sync_clear(&state->nxdn96_sync);
@@ -3083,6 +3088,7 @@ dsd_state_forget_sync_join_histories(dsd_state* state) {
     state->nxdn48_hit_type = 0;
     state->nxdn48_accept_corroborated = 0U;
     state->p25p1_word_hint_seen = 0U;
+    state->p25p1_word_hint_dwell_extra = 0;
     /* The frame sync's own history from its last no-sync exit is the carrier left's too, and so is the history of a
        call in progress, which may not be kept when that call ends (dsd_frame_sync_history_carry::drops). */
     state->frame_sync_carry.valid = 0U;

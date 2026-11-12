@@ -7307,7 +7307,15 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`DSD_FRAME_SYNC_P25P1_FRAME_SYMBOLS` C4FM symbols) after it (`dsd_state::p25p1_word_hint_*`, dropped with the sync
   join histories at a carrier change, a trunk retune or a reset of the symbol count), steps the hunt to 4800/4 at once,
   a step for the caller's window like a CQPSK trial's handback (the window is rebuilt in place, no no-sync hooks run,
-  4800/4 starts its own dwell), under the P25 SM tick guard on an RTL session as a dwell expiry's step is. Only the
+  4800/4 starts its own dwell), under the P25 SM tick guard on an RTL session as a dwell expiry's step is. That dwell
+  is owed the part of the rotation the step skipped on top of its own (`frame_sync_p25p1_word_hint_step()`,
+  `dsd_state::p25p1_word_hint_dwell_extra`): the rest of the binary profile's dwell and the dwells of the profiles
+  between it and 4800/4, each in 4800/4 symbols at its own rate, so the hint moves 4800/4 earlier and never the
+  profiles after it. Without it a word read on a transmission's last frames stepped the hunt as the carrier dropped,
+  4800/4's dwell ran out on the gap, and a carrier keyed again in it met 2400/4 (the committed `p25p1_c4fm_vc` fixture
+  repeated with 8 dB of noise under `-fa` lost a call in three). The extra goes with any profile change, the dwell's
+  expiry or restart, a frame that proves the profile (so a decoded call's end is covered as any other's) and the sync
+  join histories. Only the
   unlocked rotation with P25p1 on takes it: not under a `-m` lock, a trunked voice channel the engine tuned, a Signal
   search order, a P25 control-channel probe or a running trunk scan, nor on a squelched window; a `-Y` typed row runs
   one protocol family, never P25p1 and a binary one both. One word is a 2^-24 event per symbol, polarity and reading,
@@ -7318,8 +7326,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   133 frames at key-up (376 before). 6000/4 and 2400/4 have no such reading, so a carrier keyed in the 2400/4 dwell
   still waits that dwell out (the committed `p25p1_c4fm_vc` fixture, whose carrier keys at 1.1 s as the 4800/4 dwell
   ends, still decodes no P25 frame under `-fa`). Tests: `FRAME_SYNC_SPS_HUNT_FALSE_SYNC`
-  (`test_a_p25p1_word_on_a_binary_profile_steps_to_4800_4`, `test_a_p25p1_word_hint_is_the_unlocked_rotations_alone`),
-  `DECODE_IQ_C4FM_KEYUP_ON_PROFILE_*`.
+  (`test_a_p25p1_word_on_a_binary_profile_steps_to_4800_4`, `test_a_p25p1_word_hint_is_the_unlocked_rotations_alone`,
+  `test_a_p25p1_word_hint_keeps_the_rotation_after_4800_4`), `DECODE_IQ_C4FM_KEYUP_ON_PROFILE_*`.
 - P25p1 chain choice on 4800/4 (`dsd_frame_sync.c`, unlocked RTL sessions with P25p1 on). The modulation votes
   (`frame_sync_maybe_auto_switch_modulation()`, every 24 symbols) can put a P25p1 signal on CQPSK but do not keep it
   there. Their thresholds are asymmetric (`frame_sync_decide_mod_switch()`): two QPSK votes enter CQPSK (from the SNR

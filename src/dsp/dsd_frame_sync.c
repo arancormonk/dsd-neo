@@ -4367,12 +4367,9 @@ frame_sync_sps_profile_has_candidate(const dsd_opts* opts, int profile_index) {
     }
 }
 
-int
-frame_sync_sps_hunt_next_index(const dsd_opts* opts, const dsd_state* state) {
-    if (!opts || !state) {
-        return DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
-    }
-    int current = state->sps_hunt_idx;
+/* The enabled profile the plain round-robin steps to from @p current (frame_sync_sps_hunt_next_index()). */
+static int
+frame_sync_sps_hunt_next_index_after(const dsd_opts* opts, int current) {
     if (current < 0 || current >= DSD_FRAME_SYNC_SPS_PROFILE_COUNT) {
         current = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     }
@@ -4384,6 +4381,14 @@ frame_sync_sps_hunt_next_index(const dsd_opts* opts, const dsd_state* state) {
         next_idx = (next_idx + 1) % DSD_FRAME_SYNC_SPS_PROFILE_COUNT;
     }
     return current;
+}
+
+int
+frame_sync_sps_hunt_next_index(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    }
+    return frame_sync_sps_hunt_next_index_after(opts, state->sps_hunt_idx);
 }
 
 int
@@ -4601,6 +4606,7 @@ frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int ne
          * frame_sync_sps_hunt_note_handler_consumption() -- so leaving it would let a withheld
          * frame refund the incoming profile to a figure the outgoing one had. */
         state->sps_hunt_counter_at_entry = 0;
+        state->p25p1_word_hint_dwell_extra = 0;
     }
     frame_sync_normalize_profile_modulation(state, normalize_profile_modulation, profile_default_modulation);
 
@@ -4677,7 +4683,8 @@ frame_sync_sps_hunt_dwell_symbols(const dsd_opts* opts, const dsd_state* state) 
     if (passes < 1) {
         passes = 1;
     }
-    return passes * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    /* Non-zero only on the 4800/4 dwell a P25p1 word hint opened (frame_sync_p25p1_word_hint_step()). */
+    return (passes * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS) + state->p25p1_word_hint_dwell_extra;
 }
 
 /**
@@ -4766,6 +4773,7 @@ frame_sync_sps_hunt_note_handler_consumption(dsd_state* state) {
          * jump guard above -- both of which exist to keep consumption honest -- have no say
          * in it. */
         state->sps_hunt_counter = 0;
+        state->p25p1_word_hint_dwell_extra = 0;
     } else if (withheld) {
         /* Hand back this cycle's search and nothing else. Charging happens only inside
          * frame_sync_advance_sync_window(), between the snapshot below being stamped and
@@ -4813,6 +4821,7 @@ dsd_frame_sync_sps_hunt_restart_dwell(dsd_state* state) {
     state->sps_hunt_counter = 0;
     state->sps_hunt_symbolcnt_mark = state->symbolcnt;
     state->sps_hunt_counter_at_entry = 0;
+    state->p25p1_word_hint_dwell_extra = 0;
 }
 
 /**
@@ -5348,6 +5357,38 @@ frame_sync_p25p1_word_hint_due(const dsd_opts* opts, dsd_state* state, const fra
     return frame_sync_p25p1_word_hint_note(state, word, stride);
 }
 
+/**
+ * @brief Step to 4800/4 on a word hint, owing its dwell the part of the rotation the step skipped.
+ *
+ * The hint moves 4800/4 earlier, not the rest of the rotation. A word read on a transmission's last frames steps the hunt
+ * as that carrier drops, too late for its frames, and 4800/4's own dwell then ran out on the dead air before the
+ * rotation would have reached 4800/4 at all, so the profiles after it came round early and a carrier keyed again in
+ * the gap met 2400/4 (the committed p25p1_c4fm_vc fixture repeated with noise under -fa, keyed every 3 s, lost its next
+ * call to the 2400/4 dwell). The new dwell is owed the rest of the binary profile's dwell and the whole dwells of the
+ * profiles between it and 4800/4, each counted at its own symbol rate in 4800/4 symbols, so 4800/4 holds at least as
+ * long as the rotation without the hint would have stayed off the profiles after it. A carrier that decodes proves
+ * the profile and drops the extra with the dwell it restarts, so a call's end is covered as any other's. Every
+ * profile's dwell has the same number of passes here: only a Signal search order or a trunk-scan target's P25 trial
+ * varies it, and the hint runs under neither (frame_sync_p25p1_word_hint_stride()).
+ */
+static void
+frame_sync_p25p1_word_hint_step(const dsd_opts* opts, dsd_state* state) {
+    const int dwell = frame_sync_sps_hunt_dwell_symbols(opts, state);
+    const int64_t target_rate = frame_sync_sps_profile_for_index(DSD_FRAME_SYNC_SPS_PROFILE_4800_4)->symbol_rate_hz;
+    int idx = state->sps_hunt_idx;
+    const int left = state->sps_hunt_counter < dwell ? dwell - state->sps_hunt_counter : 0;
+    int64_t skipped = (int64_t)left * target_rate / frame_sync_sps_profile_for_index(idx)->symbol_rate_hz;
+    for (int tries = 0; tries < DSD_FRAME_SYNC_SPS_PROFILE_COUNT; tries++) {
+        idx = frame_sync_sps_hunt_next_index_after(opts, idx);
+        if (idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4) {
+            break;
+        }
+        skipped += (int64_t)dwell * target_rate / frame_sync_sps_profile_for_index(idx)->symbol_rate_hz;
+    }
+    frame_sync_apply_sps_hunt_profile(opts, state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0);
+    state->p25p1_word_hint_dwell_extra = (int)skipped;
+}
+
 /* Step the unlocked hunt to 4800/4 on a P25p1 word read from a binary profile (frame_sync_p25p1_word_hint_due()). As at
  * a dwell's expiry, an RTL session with P25p1 on steps under the P25 SM tick guard, and a tune the watchdog made since
  * moved the receiver and its profile instead. 1 when the caller rebuilds its window. */
@@ -5357,12 +5398,12 @@ frame_sync_p25p1_word_hint(const dsd_opts* opts, dsd_state* state, const frame_s
         return 0;
     }
     if (opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
-        frame_sync_apply_sps_hunt_profile(opts, state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0);
+        frame_sync_p25p1_word_hint_step(opts, state);
         return 1;
     }
     int taken = 0;
     if (!frame_sync_p25p1_chain_step_begin(opts, state, &taken)) {
-        frame_sync_apply_sps_hunt_profile(opts, state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0);
+        frame_sync_p25p1_word_hint_step(opts, state);
     }
     frame_sync_p25p1_chain_step_end(taken);
     return 1;
@@ -5434,6 +5475,7 @@ frame_sync_sps_hunt_unlocked_next_index(const dsd_opts* opts, const dsd_state* s
 static int
 frame_sync_no_sync_sps_hunt_expire(const dsd_opts* opts, dsd_state* state) {
     state->sps_hunt_counter = 0;
+    state->p25p1_word_hint_dwell_extra = 0;
     /* Reaching here is the trial's verdict: its dwell expired with nothing decoded. That is
      * true whether or not the profile then rotates, and this is the one place a probe's flag is
      * cleared (a chain comparison clears its own when it ends), so it must be cleared before the

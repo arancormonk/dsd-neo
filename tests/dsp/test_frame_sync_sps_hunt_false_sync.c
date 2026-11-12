@@ -63,6 +63,8 @@ static const char* g_marker = "";
 static int g_marker_gap = 0;
 static int g_stream_pos = 0;
 static long g_symbols_emitted = 0;
+/* Markers the stream carries before it is filler alone, as a carrier that drops; 0 for no end. */
+static int g_marker_count = 0;
 
 static void
 stream_reset(const char* marker, int gap) {
@@ -77,7 +79,7 @@ stream_next_dibit(void) {
     const int marker_len = (int)strlen(g_marker);
     const int period = g_marker_gap + marker_len;
     char dibit = '1';
-    if (period > 0) {
+    if (period > 0 && (g_marker_count == 0 || g_stream_pos / period < g_marker_count)) {
         const int phase = g_stream_pos % period;
         if (phase >= g_marker_gap) {
             dibit = g_marker[phase - g_marker_gap];
@@ -1266,6 +1268,108 @@ test_a_p25p1_word_on_a_binary_profile_steps_to_4800_4(void) {
     g_forget_histories_at = 0;
 }
 
+/*
+ * A word hint on a transmission's last frames: the carrier drops as the hunt steps to 4800/4. The 4800/4 dwell the step
+ * opened holds as long as the rotation without the hint would have stayed off the profiles after 4800/4: the rest of
+ * the binary profile's dwell and the dwells between it and 4800/4, each counted at its own symbol rate in 4800/4 symbols,
+ * on top of its own. Before, 4800/4's own dwell ran out on the dead air and 2400/4 came round early, where a carrier
+ * keyed again in the gap waited out the 2400/4 dwell (the committed p25p1_c4fm_vc fixture repeated with noise under
+ * -fa lost a call in three). A frame that proves 4800/4 restarts its dwell as any proof does, the extra with it.
+ */
+typedef struct {
+    long reached_4800_4; /* symbols emitted when the hunt was first found on 4800/4 */
+    long left_4800_4;    /* ... and when it was first found off 4800/4 after that (0: never) */
+    int next_idx;
+} HintDwellResult;
+
+static HintDwellResult
+drive_word_hint_dwell(const char* marker, int markers, void (*configure)(dsd_opts*, dsd_state*), int proven_syncs) {
+    static dsd_opts opts;
+    static dsd_state state;
+    HintDwellResult result = {0, 0, -1};
+    init_hunt_opts_state(&opts, &state, 0);
+    configure(&opts, &state);
+    const int buffers = init_state_buffers(&state);
+    assert(buffers);
+    stream_reset(marker, 300);
+    g_marker_count = markers;
+    g_watch_idx = state.sps_hunt_idx;
+    g_idx_left_at = 0;
+    dsd_frame_sync_reset_mod_state();
+    int syncs = 0;
+    while (g_symbols_emitted < 60000 && result.left_4800_4 == 0) {
+        const int sync = getFrameSync(&opts, &state);
+        if (sync != DSD_SYNC_NONE) {
+            syncs++;
+            for (int i = 0; i < 100; i++) {
+                (void)getSymbol(&opts, &state, 1);
+            }
+            state.sps_hunt_last_frame_verdict =
+                syncs <= proven_syncs ? DSD_FRAME_VERDICT_PROFILE_PROVEN : DSD_FRAME_VERDICT_UNPRODUCTIVE;
+        }
+        /* The step to 4800/4 comes inside getFrameSync(), which goes on hunting: the next read shows it. The step off
+           4800/4 is a dwell's expiry, a no-sync return. */
+        if (result.reached_4800_4 == 0 && g_idx_left_at > 0
+            && state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4) {
+            result.reached_4800_4 = g_idx_left_at;
+        }
+        if (result.reached_4800_4 > 0 && state.sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4) {
+            result.left_4800_4 = g_symbols_emitted;
+            result.next_idx = state.sps_hunt_idx;
+        }
+    }
+    g_marker_count = 0;
+    g_watch_idx = -1;
+    free_state_buffers(&state);
+    return result;
+}
+
+/* Symbols @p symbols of a profile at @p rate_hz take, in 4800/4 symbols. */
+static long
+in_4800_4_symbols(long symbols, long rate_hz) {
+    return symbols * 4800L / rate_hz;
+}
+
+static void
+expect_word_hint_dwell(const char* label, const char* marker, void (*configure)(dsd_opts*, dsd_state*), long rate_hz,
+                       long between) {
+    const long dwell = (long)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS * 3;
+    const HintDwellResult r = drive_word_hint_dwell(marker, 2, configure, 0);
+    /* The step comes with the second word, which the binary profile's search read whole (no sync returned on it). */
+    const long word_end = 2L * (300L + (long)strlen(marker));
+    const long want = word_end + dwell + in_4800_4_symbols(dwell - word_end, rate_hz) + between;
+    if (r.reached_4800_4 < word_end - 1 || r.reached_4800_4 > word_end + 1
+        || r.next_idx != DSD_FRAME_SYNC_SPS_PROFILE_2400_4 || r.left_4800_4 < want - 2 || r.left_4800_4 > want + 2) {
+        DSD_FPRINTF(stderr, "FAIL %s: on 4800/4 at %ld, left for profile %d at %ld (want 2400/4 at %ld)\n", label,
+                    r.reached_4800_4, r.next_idx, r.left_4800_4, want);
+    }
+    assert(r.reached_4800_4 >= word_end - 1 && r.reached_4800_4 <= word_end + 1);
+    assert(r.next_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    assert(r.left_4800_4 >= want - 2 && r.left_4800_4 <= want + 2);
+}
+
+static void
+test_a_p25p1_word_hint_keeps_the_rotation_after_4800_4(void) {
+    build_p25_word_markers();
+    const long dwell = (long)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS * 3;
+    /* From 4800/2 the rotation goes on to 4800/4 at once; from 9600/2 it passes 6000/4 and 4800/2 first. */
+    expect_word_hint_dwell("last two frames on 4800/2", P25P1_SYNC, configure_on_4800_2, 4800L, 0L);
+    expect_word_hint_dwell("last two frames on 9600/2", g_p25_word_doubled, configure_on_9600_2, 9600L,
+                           in_4800_4_symbols(dwell, 6000L) + dwell);
+
+    /* A third word, read on 4800/4 as a sync whose frame proves the profile: the dwell starts over from that frame,
+       with no extra left. */
+    const HintDwellResult r = drive_word_hint_dwell(P25P1_SYNC, 3, configure_on_4800_2, 1);
+    const long proof_end = (3L * (300L + 24L)) + 100L;
+    if (r.next_idx != DSD_FRAME_SYNC_SPS_PROFILE_2400_4 || r.left_4800_4 < proof_end + dwell - 2
+        || r.left_4800_4 > proof_end + dwell + 2) {
+        DSD_FPRINTF(stderr, "FAIL proven after a hint: left for profile %d at %ld (want 2400/4 at %ld)\n", r.next_idx,
+                    r.left_4800_4, proof_end + dwell);
+    }
+    assert(r.next_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    assert(r.left_4800_4 >= proof_end + dwell - 2 && r.left_4800_4 <= proof_end + dwell + 2);
+}
+
 static void
 test_a_p25p1_word_hint_is_the_unlocked_rotations_alone(void) {
     build_p25_word_markers();
@@ -1330,6 +1434,7 @@ main(void) {
     test_budget_exit_runs_the_no_sync_hooks();
     test_a_p25p1_word_on_a_binary_profile_steps_to_4800_4();
     test_a_p25p1_word_hint_is_the_unlocked_rotations_alone();
+    test_a_p25p1_word_hint_keeps_the_rotation_after_4800_4();
     return 0;
 }
 
