@@ -1076,7 +1076,7 @@ frame_sync_try_ysf(frame_sync_match_ctx* ctx) {
         frame_sync_set_basic_lock(ctx);
         opts->inverted_ysf = 0;
         state->lastsynctype = DSD_SYNC_YSF_POS;
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 20);
+        dsd_sync_warm_start_thresholds_from_dibits(opts, state, FUSION_SYNC_DIBITS, 20);
         return DSD_SYNC_YSF_POS;
     }
 
@@ -1085,7 +1085,7 @@ frame_sync_try_ysf(frame_sync_match_ctx* ctx) {
         frame_sync_set_basic_lock(ctx);
         opts->inverted_ysf = 1;
         state->lastsynctype = DSD_SYNC_YSF_NEG;
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 20);
+        dsd_sync_warm_start_thresholds_from_dibits(opts, state, INV_FUSION_SYNC_DIBITS, 20);
         return DSD_SYNC_YSF_NEG;
     }
 
@@ -2470,6 +2470,14 @@ frame_sync_nxdn96_accepts(const frame_sync_match_ctx* ctx, int synctype) {
     return accepts;
 }
 
+/* The slicer from the FSW just accepted, at its own levels: the word was sent as the FSW whichever variant matched its
+   signs. */
+static void
+frame_sync_warm_start_nxdn(const dsd_opts* opts, dsd_state* state, int synctype) {
+    const char* fsw = synctype == DSD_SYNC_NXDN_POS ? NXDN_FSW_DIBITS : INV_NXDN_FSW_DIBITS;
+    (void)dsd_sync_warm_start_thresholds_from_dibits(opts, state, fsw, 10);
+}
+
 static int
 frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
@@ -2518,7 +2526,7 @@ frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
         /* No sync clock here: a ten-symbol word and a one-parity-bit LICH are what receiver noise clears (#398), so the
            clock a -Y scan holds on and the trunking state machines read waits for a frame the transmission's CRCs
            confirmed (nxdn_mark_carrier_sync_active()). */
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 10);
+        frame_sync_warm_start_nxdn(opts, state, synctype);
         return synctype;
     }
     return DSD_SYNC_NONE;

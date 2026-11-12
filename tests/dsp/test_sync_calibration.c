@@ -13,10 +13,12 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/runtime/config.h>
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "test_env.h"
 
@@ -589,6 +591,154 @@ test_warm_start_prefill_clamps_to_internal_buffer(void) {
     printf("test_warm_start_prefill_clamps_to_internal_buffer: passed\n\n");
 }
 
+/* The level a sync-pattern dibit character stands for ('0' +1, '1' +3, '2' -1, '3' -3). */
+static float
+level_of_dibit_char(char c) {
+    static const float levels[4] = {1.0f, 3.0f, -1.0f, -3.0f};
+    return levels[c - '0'];
+}
+
+/* The sync word's own levels, scaled and offset as a receiver would read them, pushed oldest first. */
+static void
+push_word_levels(struct dsd_state* state, const char* dibits, float scale, float offset) {
+    for (const char* c = dibits; *c != '\0'; c++) {
+        dsd_symbol_history_push(state, (level_of_dibit_char(*c) * scale) + offset);
+    }
+}
+
+/* NXDN's FSW and YSF's frame sync carry inner symbols. Read as outer-only, NXDN's put the outer rails at 2.6 of 3
+   and YSF's put the centre a quarter of an outer level off; fitted to the word's own levels, the thresholds land
+   on the true rails, at either polarity (issue #834). */
+static void
+test_warm_start_from_dibits_fits_inner_symbols(void) {
+    printf("=== test_warm_start_from_dibits_fits_inner_symbols ===\n");
+
+    static struct dsd_state state;
+    static float history[64];
+    static struct dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.msize = 16;
+
+    const struct {
+        const char* name;
+        const char* dibits;
+    } words[] = {
+        {"NXDN FSW", NXDN_FSW_DIBITS},
+        {"inverted NXDN FSW", INV_NXDN_FSW_DIBITS},
+        {"YSF frame sync", FUSION_SYNC_DIBITS},
+        {"inverted YSF frame sync", INV_FUSION_SYNC_DIBITS},
+    };
+
+    for (size_t w = 0; w < sizeof(words) / sizeof(words[0]); w++) {
+        DSD_MEMSET(&state, 0, sizeof(state));
+        attach_history_fixture(&state, history, 64);
+        const int len = (int)strlen(words[w].dibits);
+        push_word_levels(&state, words[w].dibits, 1000.0f, 250.0f);
+        state.jitter = 7;
+
+        check_int(words[w].name, DSD_WARM_START_OK,
+                  dsd_sync_warm_start_thresholds_from_dibits(&opts, &state, words[w].dibits, len));
+        check_float("max", 3250.0f, state.max, 1.0f);
+        check_float("min", -2750.0f, state.min, 1.0f);
+        check_float("center", 250.0f, state.center, 1.0f);
+        check_float("umid", 250.0f + (3000.0f * DSD_WARM_START_MID_FRACTION), state.umid, 1.0f);
+        check_float("lmid", 250.0f - (3000.0f * DSD_WARM_START_MID_FRACTION), state.lmid, 1.0f);
+        check_float("maxref", 3250.0f * 0.80f, state.maxref, 1.0f);
+        check_float("minref", -2750.0f * 0.80f, state.minref, 1.0f);
+        check_int("stale crossing dropped", -1, state.jitter);
+        check_float("maxbuf prefilled", 3250.0f, state.maxbuf[opts.msize - 1], 1.0f);
+        check_float("minbuf prefilled", -2750.0f, state.minbuf[opts.msize - 1], 1.0f);
+    }
+
+    /* What the outer-only start makes of the same NXDN FSW: the rails a fifth of an inner step short. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    attach_history_fixture(&state, history, 64);
+    push_word_levels(&state, NXDN_FSW_DIBITS, 1000.0f, 0.0f);
+    check_int("outer-only on the FSW", DSD_WARM_START_OK, dsd_sync_warm_start_thresholds_outer_only(&opts, &state, 10));
+    check_float("outer-only FSW max", 2600.0f, state.max, 1.0f);
+
+    printf("test_warm_start_from_dibits_fits_inner_symbols: passed\n\n");
+}
+
+/* On a word of outer symbols alone the fit is the outer-only start's two means. */
+static void
+test_warm_start_from_dibits_matches_outer_only_on_outer_words(void) {
+    printf("=== test_warm_start_from_dibits_matches_outer_only_on_outer_words ===\n");
+
+    static struct dsd_state state;
+    static float history[64];
+    static struct dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+
+    static const float jitter[24] = {0.11f,  -0.07f, 0.03f,  0.19f,  -0.13f, 0.05f,  -0.02f, 0.17f,
+                                     -0.09f, 0.01f,  0.08f,  -0.15f, 0.12f,  -0.04f, 0.06f,  -0.18f,
+                                     0.02f,  0.14f,  -0.11f, 0.09f,  -0.06f, 0.04f,  -0.01f, 0.16f};
+    float outer_only_max = 0.0f;
+    float outer_only_min = 0.0f;
+    for (int pass = 0; pass < 2; pass++) {
+        DSD_MEMSET(&state, 0, sizeof(state));
+        attach_history_fixture(&state, history, 64);
+        for (int i = 0; i < 24; i++) {
+            dsd_symbol_history_push(&state, (level_of_dibit_char(DMR_BS_VOICE_SYNC[i]) * 0.9f) + jitter[i]);
+        }
+        if (pass == 0) {
+            check_int("outer only", DSD_WARM_START_OK, dsd_sync_warm_start_thresholds_outer_only(&opts, &state, 24));
+            outer_only_max = state.max;
+            outer_only_min = state.min;
+        } else {
+            check_int("from dibits", DSD_WARM_START_OK,
+                      dsd_sync_warm_start_thresholds_from_dibits(&opts, &state, DMR_BS_VOICE_SYNC, 24));
+            check_float("max as outer only", outer_only_max, state.max, 1e-4f);
+            check_float("min as outer only", outer_only_min, state.min, 1e-4f);
+        }
+    }
+
+    printf("test_warm_start_from_dibits_matches_outer_only_on_outer_words: passed\n\n");
+}
+
+/* What the fit refuses, leaving the thresholds it found. */
+static void
+test_warm_start_from_dibits_refuses(void) {
+    printf("=== test_warm_start_from_dibits_refuses ===\n");
+
+    static struct dsd_state state;
+    static float history[64];
+    static struct dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    attach_history_fixture(&state, history, 64);
+    push_word_levels(&state, NXDN_FSW_DIBITS, 1000.0f, 0.0f);
+    state.max = 7.0f;
+    state.min = -7.0f;
+    check_int("one level", DSD_WARM_START_DEGENERATE,
+              dsd_sync_warm_start_thresholds_from_dibits(&opts, &state, "1111111111", 10));
+    check_int("not a dibit", DSD_WARM_START_DEGENERATE,
+              dsd_sync_warm_start_thresholds_from_dibits(&opts, &state, "30313x1121", 10));
+    /* The word names the polarity: an FSW read at the other one fits outer levels the wrong way round. */
+    check_int("other polarity", DSD_WARM_START_DEGENERATE,
+              dsd_sync_warm_start_thresholds_from_dibits(&opts, &state, INV_NXDN_FSW_DIBITS, 10));
+    check_int("too short", DSD_WARM_START_DEGENERATE,
+              dsd_sync_warm_start_thresholds_from_dibits(&opts, &state, NXDN_FSW_DIBITS, 1));
+    check_int("no word", DSD_WARM_START_DEGENERATE,
+              dsd_sync_warm_start_thresholds_from_dibits(&opts, &state, NULL, 10));
+    check_int("more than the history holds", DSD_WARM_START_NO_HISTORY,
+              dsd_sync_warm_start_thresholds_from_dibits(&opts, &state, FUSION_SYNC_DIBITS, 20));
+    check_int("no state", DSD_WARM_START_NULL_STATE,
+              dsd_sync_warm_start_thresholds_from_dibits(&opts, NULL, NXDN_FSW_DIBITS, 10));
+    check_float("max untouched", 7.0f, state.max, FLOAT_TOL);
+    check_float("min untouched", -7.0f, state.min, FLOAT_TOL);
+
+    /* Weaker than the outer-only start's floor. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    attach_history_fixture(&state, history, 64);
+    push_word_levels(&state, NXDN_FSW_DIBITS, 0.1f, 0.0f);
+    check_int("span under the floor", DSD_WARM_START_DEGENERATE,
+              dsd_sync_warm_start_thresholds_from_dibits(&opts, &state, NXDN_FSW_DIBITS, 10));
+
+    printf("test_warm_start_from_dibits_refuses: passed\n\n");
+}
+
 static void
 test_warm_start_disabled_env(void) {
     printf("=== test_warm_start_disabled_env ===\n");
@@ -611,6 +761,8 @@ test_warm_start_disabled_env(void) {
     check_int("thresholds disabled", DSD_WARM_START_DISABLED, result);
     result = dsd_sync_warm_start_center_outer_only(&state, 4);
     check_int("center disabled", DSD_WARM_START_DISABLED, result);
+    result = dsd_sync_warm_start_thresholds_from_dibits(&opts, &state, "3311", 4);
+    check_int("from dibits disabled", DSD_WARM_START_DISABLED, result);
 
     (void)dsd_test_unsetenv("DSD_NEO_SYNC_WARMSTART");
     dsd_neo_config_init();
@@ -637,6 +789,9 @@ main(void) {
     test_null_handling();
     test_buffer_prefill();
     test_warm_start_prefill_clamps_to_internal_buffer();
+    test_warm_start_from_dibits_fits_inner_symbols();
+    test_warm_start_from_dibits_matches_outer_only_on_outer_words();
+    test_warm_start_from_dibits_refuses();
     test_warm_start_disabled_env();
     printf("======================================\n");
     printf("Tests: %d, Failures: %d\n", g_test_count, g_fail_count);

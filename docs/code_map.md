@@ -5948,6 +5948,16 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   The hunt's crossing loop otherwise left the grid up to two samples off the preamble's symbols, which the raw stream
   read through and the M17 filter's narrower eye does not. Only on the switch-on side of the seam (a filter of
   shorter delay before, the unfiltered hunt or DMR's under AUTO, where the preamble passes NXDN96's sync).
+- Slicer warm start (`<dsd-neo/dsp/sync_calibration.h>`, `sync_calibration.c`): an accepted sync sets `min`/`max`,
+  `center`, `umid`/`lmid` (5/8 of the way to each rail), `maxref`/`minref` and the rolling min/max buffers from the
+  word just read. `dsd_sync_warm_start_thresholds_outer_only()` averages the word's positive and negative symbols,
+  which are its outer levels only on a word of outer symbols (DMR, P25, dPMR, M17, D-STAR, ProVoice).
+  `dsd_sync_warm_start_thresholds_from_dibits()` takes the word's own levels (`NXDN_FSW_DIBITS`, `FUSION_SYNC_DIBITS`
+  and their inverses in `sync_patterns.h`) and fits symbol = centre + gain * level by least squares, every symbol at
+  its own level; the rails are centre -/+ 3 * gain (on an outer-only word, the two means). NXDN and YSF use it
+  (issue #834): their words carry inner symbols, which the outer-only start averaged into the rails (NXDN's at 2.6 of
+  3, YSF's centre a quarter of an outer level off) and which then read clean inner symbols as outer. Tests:
+  `SYNC_CALIBRATION`, `FRAME_SYNC_INTERNAL_HELPERS`.
 - `dsd_state::symbol_clock`/`symbol_clock_epoch` (issue #729): a 64-bit count of every symbol the grid produced that no
   protocol resets (NXDN resets `symbolcnt`), and an epoch DSP bumps on an RTL stream flush or profile change (any reset
   of the RTL symbol cache, also one the profile refresh meets ahead of a take), a symbol-capture replay starting over
