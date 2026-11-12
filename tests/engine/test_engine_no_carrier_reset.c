@@ -100,8 +100,11 @@
 #include <dsd-neo/app_control/scan_avoid_view.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/io/control.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include "../../src/app_control/commands_internal.h"
 #include "../../src/app_control/services.h"
+#include "engine_hooks_install.h"
 #include "manual_tune_pending.h"
 #include "scan_landing.h"
 #include "scan_owner.h"
@@ -11416,6 +11419,306 @@ test_untyped_goto_over_a_pending_goto(void) {
 }
 #endif
 
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+/*
+ * Issue #834 (B1): the live loop (dsd_engine_test_live_scanner_run()) over an input that goes silent, with the real
+ * frame-sync hunt, the real symbol reader, the engine's frame-sync hooks and the real interruption routing, on the TEST
+ * decode clock. A silent UDP input waits in its real slices (each one also moves the decode clock by its length, so the
+ * real stream pause of a PCM read is the decode time it spans too). A scan step or a command the silence held back
+ * shows by when it happened: before the input came back, or only after.
+ */
+#define LIVE_T0_NS     1800000000000000000ULL
+#define LIVE_NS_PER_MS 1000000ULL
+#define LIVE_SAMPLE_NS 20833ULL /* one 48 kHz sample */
+#define LIVE_PASS_CAP  200
+
+static struct {
+    uint64_t now_ns;
+    uint64_t silent_until_ns; /* the input delivers nothing until the decode clock reaches this */
+    uint64_t command_at_ns;   /* once the decode clock reaches this in the silence, command_id is queued (0: none) */
+    int command_id;
+    int command_queued;
+    /* What a case watches for (live_run_until()), asked at every read and after every pass, and the decode time (ms
+       from LIVE_T0_NS) it first answered 1 at, or -1. */
+    int (*watch)(const dsd_opts* opts, const dsd_state* state);
+    const dsd_opts* opts;
+    const dsd_state* state;
+    int64_t seen_ms;
+    int tunes_when_seen; /* the tunes made by then (live_tunes()) */
+} g_live;
+
+/* The tunes the scan made: rigctl's on a PCM input, the RTL stream's on a radio one. */
+static int
+live_tunes(void) {
+    return g_live.opts && g_live.opts->audio_in_type == AUDIO_IN_RTL ? g_rtl_tune_calls : g_rigctl_setfreq_calls;
+}
+
+static void
+live_clock_set(uint64_t now_ns) {
+    g_live.now_ns = now_ns;
+    dsd_decode_clock_test_set_ns(now_ns);
+}
+
+static uint64_t
+live_elapsed_ms(void) {
+    return (g_live.now_ns - LIVE_T0_NS) / LIVE_NS_PER_MS;
+}
+
+static void
+live_watch(void) {
+    if (g_live.watch && g_live.seen_ms < 0 && g_live.watch(g_live.opts, g_live.state)) {
+        g_live.seen_ms = (int64_t)live_elapsed_ms();
+        g_live.tunes_when_seen = live_tunes();
+    }
+}
+
+/* The command a frontend posts while the input is silent, once its time came. */
+static void
+live_queue_command_if_due(void) {
+    if (g_live.command_at_ns != 0U && !g_live.command_queued && g_live.now_ns >= g_live.command_at_ns) {
+        g_live.command_queued = dsd_app_command_action(g_live.command_id) > 0;
+    }
+}
+
+static int
+live_udp_read_sample_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms) {
+    (void)opts;
+    live_watch();
+    if (g_live.now_ns < g_live.silent_until_ns) {
+        dsd_sleep_ms(timeout_ms);
+        live_clock_set(g_live.now_ns + (uint64_t)timeout_ms * LIVE_NS_PER_MS);
+        live_queue_command_if_due();
+        return -1;
+    }
+    *out = 0;
+    live_clock_set(g_live.now_ns + LIVE_SAMPLE_NS);
+    return 1;
+}
+
+/* The live loop's session: the engine's frame-sync hooks, the frontend runtime (the command queue the pump drains), the
+   TEST decode clock at LIVE_T0_NS, and a UDP input silent for @p silent_ms (@p output_kind 0). */
+static void
+live_session_start(dsd_opts* opts, dsd_state* state, int output_kind, uint64_t silent_ms) {
+    DSD_MEMSET(&g_live, 0, sizeof g_live);
+    g_live.opts = opts;
+    g_live.state = state;
+    g_live.seen_ms = -1;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    dsd_decode_clock_use_test(LIVE_T0_NS);
+    live_clock_set(LIVE_T0_NS);
+    g_live.silent_until_ns = LIVE_T0_NS + silent_ms * LIVE_NS_PER_MS;
+    dsd_engine_frame_sync_hooks_install();
+    (void)output_kind;
+    opts->audio_in_type = AUDIO_IN_UDP;
+    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){.udp_read_sample_wait = live_udp_read_sample_wait});
+    dsd_app_frontend_runtime_start(opts, state);
+}
+
+static void
+live_session_stop(dsd_opts* opts, dsd_state* state) {
+    dsd_app_frontend_runtime_stop();
+    dsd_frame_sync_hooks_set(NULL);
+    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    g_rigctl_setfreq_ok = 0;
+    dsd_decode_clock_use_system();
+    free_test_runtime(opts, state);
+}
+
+/* Run the live loop pass by pass until @p moved answers 1 (asked at every read and after every pass), until 2 s of
+   decode time past the silence, or for LIVE_PASS_CAP passes. Returns the decode time (ms from LIVE_T0_NS) @p moved
+   first answered 1 at, or -1. */
+static int64_t
+live_run_until(dsd_opts* opts, dsd_state* state, int (*moved)(const dsd_opts* opts, const dsd_state* state)) {
+    g_live.watch = moved;
+    g_live.seen_ms = -1;
+    const uint64_t give_up_ms = (g_live.silent_until_ns - LIVE_T0_NS) / LIVE_NS_PER_MS + 2000U;
+    for (int pass = 0; pass < LIVE_PASS_CAP && g_live.seen_ms < 0 && live_elapsed_ms() <= give_up_ms; pass++) {
+        dsd_engine_test_live_scanner_run(opts, state, 1);
+        live_watch();
+    }
+    g_live.watch = NULL;
+    return g_live.seen_ms;
+}
+
+/* An untyped -Y list of two rows over the input, its hangtime (whole seconds) counted from LIVE_T0_NS. */
+static void
+live_y_list(dsd_opts* opts, dsd_state* state, long int base_hz) {
+    opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
+    opts->trunk_hangtime = 1;
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        opts->use_rigctl = 1;
+        opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+        opts->setmod_bw = 0;
+        g_rigctl_setfreq_ok = 1;
+        g_rigctl_setfreq_calls = 0;
+    }
+    state->trunk_lcn_freq[0] = base_hz;
+    state->trunk_lcn_freq[1] = base_hz + 1000000L;
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 0;
+    state->last_cc_sync_time = dsd_decode_time();
+    seed_visit_anchor(state, dsd_decode_now_mono_s());
+}
+
+static int
+live_y_stepped(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return live_tunes() > 0;
+}
+
+/* A trunk scan of two digital conventional targets at the shortest dwell over the input; the first is on air. */
+static int
+live_trunk_scan(dsd_opts* opts, dsd_state* state, char* path, size_t path_size, long int base_hz) {
+    const int fd = dsd_test_mkstemp(path, path_size, "live-trunk-scan-");
+    if (fd < 0) {
+        return -1;
+    }
+    dsd_close(fd);
+    FILE* fp = dsd_fopen_private(path, "w");
+    if (!fp) {
+        return -1;
+    }
+    DSD_FPRINTF(fp,
+                "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+                "first,dmr-conventional,%ld,,250,250,\n"
+                "second,dmr-conventional,%ld,,250,250,\n",
+                base_hz, base_hz + 1000000L);
+    (void)fclose(fp);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                                        .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                                        .return_to_cc_request = dsd_engine_return_to_cc_request});
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        opts->use_rigctl = 1;
+        opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+        opts->setmod_bw = 0;
+        g_rigctl_setfreq_ok = 1;
+    }
+    opts->trunk_scan_enabled = 1;
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
+    char err[256] = {0};
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "live trunk scan init: %s\n", err);
+        return -1;
+    }
+    g_rtl_tune_calls = 0;
+    g_rigctl_setfreq_calls = 0;
+    return 0;
+}
+
+static long int g_live_second_hz = 0;
+
+static int
+live_trunk_scan_advanced(const dsd_opts* opts, const dsd_state* state) {
+    (void)state;
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        return g_rtl_tune_calls > 0 && g_rtl_tune_freq == (uint32_t)g_live_second_hz;
+    }
+    return g_rigctl_setfreq_calls > 0 && g_rigctl_setfreq_freq == g_live_second_hz;
+}
+
+static int
+live_expect_between(const char* label, int64_t got_ms, int64_t min_ms, int64_t max_ms) {
+    if (got_ms < min_ms || got_ms > max_ms) {
+        DSD_FPRINTF(stderr, "FAIL: %s at %lld ms, want [%lld, %lld] ms\n", label, (long long)got_ms, (long long)min_ms,
+                    (long long)max_ms);
+        return 1;
+    }
+    return 0;
+}
+
+/* B1: -Y over an input that went silent steps at its hangtime (more than one whole second since the row's last
+   sync: two seconds from LIVE_T0_NS), within one bounded pass, long before the input comes back. */
+static int
+test_live_y_steps_over_a_silent_input(int output_kind, const char* what, uint64_t silent_ms) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    live_session_start(opts, state, output_kind, silent_ms);
+    live_y_list(opts, state, output_kind ? 991012500L : 992012500L);
+    const int64_t stepped_ms = live_run_until(opts, state, live_y_stepped);
+    char label[128];
+    DSD_SNPRINTF(label, sizeof label, "-Y over a silent %s steps at its hangtime", what);
+    int rc = live_expect_between(label, stepped_ms, 1000, 3000);
+    live_session_stop(opts, state);
+    return rc;
+}
+
+/* B1: a trunk scan over an input that went silent advances at its dwell (250 ms), within one bounded pass. */
+static int
+test_live_trunk_scan_advances_over_a_silent_input(int output_kind, const char* what, uint64_t silent_ms) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    live_session_start(opts, state, output_kind, silent_ms);
+    char path[DSD_TEST_PATH_MAX];
+    const long int base_hz = output_kind ? 993012500L : 994012500L;
+    g_live_second_hz = base_hz + 1000000L;
+    int rc = expect_true("live trunk scan set up", live_trunk_scan(opts, state, path, sizeof path, base_hz) == 0);
+    if (rc == 0) {
+        const int64_t advanced_ms = live_run_until(opts, state, live_trunk_scan_advanced);
+        char label[128];
+        DSD_SNPRINTF(label, sizeof label, "a trunk scan over a silent %s advances at its dwell", what);
+        rc |= live_expect_between(label, advanced_ms, 250, 1500);
+        dsd_engine_trunk_scan_shutdown(opts, state);
+    }
+    (void)remove(path);
+    live_session_stop(opts, state);
+    return rc;
+}
+
+static int
+live_y_released(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    return state->lcn_scan_hold == 0;
+}
+
+/* B1: a held -Y scan over an input that went silent takes the release a frontend sends during the silence, then
+   steps at its hangtime, before the input comes back. Nothing steps while it is held. */
+static int
+test_live_held_y_released_over_a_silent_input(int output_kind, const char* what, uint64_t silent_ms) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    live_session_start(opts, state, output_kind, silent_ms);
+    live_y_list(opts, state, output_kind ? 995012500L : 996012500L);
+    state->lcn_scan_hold = 1;
+    g_live.command_id = DSD_APP_CMD_SCAN_HOLD_TOGGLE;
+    g_live.command_at_ns = LIVE_T0_NS + 2500ULL * LIVE_NS_PER_MS;
+    char label[128];
+    const int64_t released_ms = live_run_until(opts, state, live_y_released);
+    DSD_SNPRINTF(label, sizeof label, "a held -Y scan over a silent %s takes the release", what);
+    int rc = live_expect_between(label, released_ms, 2500, 3500);
+    DSD_SNPRINTF(label, sizeof label, "a held -Y scan over a silent %s does not step while held", what);
+    rc |= expect_true(label, released_ms >= 0 && g_live.tunes_when_seen == 0);
+    const int64_t stepped_ms = live_run_until(opts, state, live_y_stepped);
+    DSD_SNPRINTF(label, sizeof label, "a released -Y scan over a silent %s steps before the input comes back", what);
+    rc |= live_expect_between(label, stepped_ms, released_ms, (int64_t)silent_ms - 1);
+    live_session_stop(opts, state);
+    return rc;
+}
+
+static int
+test_live_scan_over_silent_inputs(void) {
+    int rc = 0;
+    rc |= test_live_y_steps_over_a_silent_input(0, "UDP input", 5000U);
+    rc |= test_live_trunk_scan_advances_over_a_silent_input(0, "UDP input", 3000U);
+    rc |= test_live_held_y_released_over_a_silent_input(0, "UDP input", 7000U);
+    return rc;
+}
+#endif
+
 int
 main(void) {
     int rc = 0;
@@ -13270,6 +13573,7 @@ main(void) {
     rc |= test_dmr_explicit_return_destination();
     rc |= test_fsk_reacquire_watchdog_runs_on_the_decode_clock();
     rc |= test_fsk_reacquire_cooldown_runs_across_a_replay_leave();
+    rc |= test_live_scan_over_silent_inputs();
 #endif
 
     if (rc == 0) {

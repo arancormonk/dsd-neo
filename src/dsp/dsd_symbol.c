@@ -2261,6 +2261,19 @@ symbol_stop_after_shutdown(float* sample_out) {
 
 enum { SYMBOL_INPUT_WAIT_SLICE_MS = 100 };
 
+/* A hunt read got no input for its bound (issue #834): a silent PCM input for a stream pause. Under a scan (trunk scan
+   or -Y owns the tuner) the pass ends as a dead-air pass does, with the scan-idle interruption, which does not stand:
+   the hunt returns no sync and the engine loop runs its tick and noCarrier(), which decide what the scan does. Returns
+   1 when it raised it. Asked only once a read came back empty, so a stream that delivers costs nothing. */
+static int
+symbol_hunt_idle_ends_pass(const dsd_opts* opts, dsd_state* state) {
+    if (!dsd_frame_sync_hook_scan_owns_hunt(opts, state)) {
+        return 0;
+    }
+    dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SCAN_IDLE);
+    return 1;
+}
+
 /* The file or TCP input ended, and the session goes on with the Pulse input (issue #634). That switch replaces the input
    under the decoder, so it is the engine's to make between frames, under the tick guard (dsd_engine_input_fallback()):
    the frame being decoded finishes on silence, and a frame-sync hunt read leaves the hunt for it at once. */
@@ -2899,12 +2912,14 @@ symbol_read_sample_tcp(dsd_opts* opts, dsd_state* state, float* sample_out, cons
    bounded read (@p read_wait) in slices of SYMBOL_INPUT_WAIT_SLICE_MS. A frame-sync hunt read leaves the wait for a
    queued command (issue #634), for decoder-thread timers that are due (a startup control-channel hunt or DMR recovery,
    issue #703; an analog call past its stale deadline, or one a reset ended, issue #667), or for a frontend publication
-   a P25 watchdog tick put off (dsd_runtime_publish_pending()), but only once the input has been silent for a stream
-   pause, as long as the analog receiver takes for a boundary (DSD_ANALOG_STREAM_PAUSE_MIN_MS): the partial symbol and
-   sync history it gives up then belong to a paused stream, and a shorter gap never costs a sync. The silence is counted
-   from the first wait that came back empty, with nothing credited for that wait, which may have ended early. Frame
-   decoding waits on for its samples. Shutdown ends the wait. Returns 1 with a sample, 0 when the input stopped, and -1
-   when the read left with none (for a command: state->input_interrupted). */
+   a P25 watchdog tick put off (dsd_runtime_publish_pending()), and under a scan for the scan's own service (issue #834,
+   symbol_hunt_idle_ends_pass()), but only once the input has been silent for a stream pause, as long as the analog
+   receiver takes for a boundary (DSD_ANALOG_STREAM_PAUSE_MIN_MS): the partial symbol and sync history it gives up then
+   belong to a paused stream, and a shorter gap never costs a sync. The silence is counted from the first wait that came
+   back empty, with nothing credited for that wait, which may have ended early. Frame decoding waits on for its samples.
+   Shutdown ends the wait. Returns 1 with a sample, 0 when the input stopped, and -1 when the read left with none
+   (state->input_interrupted: no reason of its own for a command, a publication or a timer, DSD_INTERRUPT_SCAN_IDLE for
+   a scan). */
 static int
 symbol_wait_pcm_sample(dsd_opts* opts, dsd_state* state, const symbol_work_ctx* work, int16_t* out,
                        symbol_pcm_read_wait_fn read_wait) {
@@ -2927,10 +2942,15 @@ symbol_wait_pcm_sample(dsd_opts* opts, dsd_state* state, const symbol_work_ctx* 
             silent_since_ms = now_ms;
             continue;
         }
-        if (now_ms - silent_since_ms >= DSD_ANALOG_STREAM_PAUSE_MIN_MS
-            && (dsd_runtime_controls_pending() || dsd_runtime_publish_pending()
-                || dsd_frame_sync_hook_decoder_ticks_due(opts, state))) {
+        if (now_ms - silent_since_ms < DSD_ANALOG_STREAM_PAUSE_MIN_MS) {
+            continue;
+        }
+        if (dsd_runtime_controls_pending() || dsd_runtime_publish_pending()
+            || dsd_frame_sync_hook_decoder_ticks_due(opts, state)) {
             state->input_interrupted = 1;
+            return -1;
+        }
+        if (symbol_hunt_idle_ends_pass(opts, state)) {
             return -1;
         }
     }
@@ -3556,11 +3576,13 @@ symbol_commit_symbol(dsd_opts* opts, dsd_state* state, int have_sync, const symb
 /* Whether an interruption a read recorded stands for every symbol until the engine loop consumes it: a stream gap
    (symbol_rtl_stream_gap()) or a yield (symbol_rtl_read_yielded()) always, one a search visit made
    (symbol_rtl_read_failed()) while the search runs, since that read counted no symbol and the count may sit off the
-   throttle for the rest of the frame. */
+   throttle for the rest of the frame. A scan's idle hunt read (DSD_INTERRUPT_SCAN_IDLE, issue #834) cut no frame and
+   never stands. */
 static inline int
 symbol_interruption_stands(const dsd_state* state) {
     return state->input_interrupted
-           && (state->input_interrupt_reason >= DSD_INTERRUPT_YIELD || dsd_signal_search_is_running(state));
+           && (state->input_interrupt_reason == DSD_INTERRUPT_YIELD
+               || state->input_interrupt_reason == DSD_INTERRUPT_STREAM_GAP || dsd_signal_search_is_running(state));
 }
 
 /* Whether a search visit takes the decoder back from a long protocol reader. The yield check runs every 64 symbols. */

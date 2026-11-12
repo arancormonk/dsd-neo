@@ -4244,82 +4244,98 @@ dsd_engine_tetra_trunk_tick_locked(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* One pass of the live loop: the interruption the last pass left, the command pump and the ticks, noCarrier() unless
+   an interruption ended the pass, then a frame-sync hunt and the frames it found. */
+static void
+live_scanner_main_pass(dsd_opts* opts, dsd_state* state, dsd_engine_slicer_threshold_cache* threshold_cache) {
+    /* A hunt read that left a silent input's wait for a queued command (issue #634), or a radio read that gave way
+       to one while the device has no stream (issue #518 D4, DSD_INTERRUPT_YIELD), ended no reception: the pump
+       below applies the command, and unless it replaced the input the pass resumes without noCarrier(). A scan's
+       idle hunt read (issue #834, DSD_INTERRUPT_SCAN_IDLE) ended the pass as dead air does: noCarrier() runs, and
+       with it the scan's step. */
+    const int interrupt_reason = state->input_interrupt_reason;
+    const int input_interrupted = state->input_interrupted;
+    const int interrupted = input_interrupted && interrupt_reason != DSD_INTERRUPT_SCAN_IDLE;
+    state->input_interrupted = 0;
+    state->input_interrupt_reason = DSD_INTERRUPT_NONE;
+    if (input_interrupted) {
+        /* What was being received was cut: the NAC its Phase 1 NIDs established says nothing of what follows. */
+        dsd_state_forget_p25p1_carrier_nac(state);
+    }
+    if (interrupt_reason == DSD_INTERRUPT_STREAM_GAP) {
+        /* A gap in the radio stream cut what was being decoded (issue #518 D5): reset it here, outside the frame
+           the gap ended, before anything this pass may wait on (a pending scan tune). The boundary takes the tick
+           guard. */
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
+    }
+    if (dsd_engine_input_fallback(opts, state) != 0) {
+        return;
+    }
+    dsd_runtime_pump_controls(opts, state);
+    /* A manual tune that timed out lands or fails late (issue #671): two loads while none is pending. An untyped
+       -Y step's row commits as it lands. */
+    (void)dsd_engine_scan_untyped_poll(opts, state);
+    /* An interrupted idle read skips noCarrier(), but a stalled NFM call still expires. */
+    dsd_engine_analog_call_tick(opts, state);
+    if (dsd_engine_signal_search_tick(opts, state)) {
+        dsd_sleep_ms(2);
+        return;
+    }
+    p25_sm_try_tick(opts, state);
+    if (!dsd_trunk_scan_owns_tuner(opts, state) && p25_sm_tick_guard_try_enter()) {
+        dsd_engine_cold_start_tick_locked(opts, state);
+        dsd_engine_tetra_trunk_tick_locked(opts, state);
+        edacs_trunk_tick(opts, state);
+        p25_sm_tick_guard_leave();
+    }
+    dsd_trunk_scan_hook_tick(opts, state);
+    dsd_scan_voice_gate_tick(opts, state, 0, dsd_decode_now_mono_s());
+    dsd_engine_scan_visit_tick(opts, state, dsd_decode_now_mono_s());
+    dsd_runtime_pump_controls(opts, state);
+
+    if (dsd_engine_channel_scan_pending(opts, state)) {
+        dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
+        dsd_sleep_ms(1);
+        return;
+    }
+    if (!interrupted || state->input_boundary) {
+        if (state->input_boundary) {
+            /* The stream the decoder read was replaced: the carrier boundary, before noCarrier(), which keeps a
+               trunking session's recent voice channel as a fade would want it (issue #575). */
+            dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_INPUT_SWITCH, 0);
+        }
+        noCarrier(opts, state);
+        dsd_engine_end_input_boundary(opts, state);
+    }
+    if (dsd_engine_channel_scan_pending(opts, state)) {
+        dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
+        dsd_sleep_ms(1);
+        return;
+    }
+    /* noCarrier and pending-row commits can replace the visit anchors. Publish
+     * the incoming visit before getFrameSync starts emitting its snapshots. */
+    dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
+    uint64_t frame_tune_generation = dsd_trunk_tuning_generation();
+    state->synctype = getFrameSync(opts, state);
+    (void)dsd_engine_slicer_thresholds_refresh(state, threshold_cache);
+    live_scanner_process_synced_frames(opts, state, threshold_cache, &frame_tune_generation);
+}
+
 static void
 live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
     dsd_engine_slicer_threshold_cache threshold_cache;
-    uint64_t frame_tune_generation;
-
     dsd_engine_slicer_threshold_cache_init(&threshold_cache);
-
     while (!dsd_exitflag_load()) {
-        /* A hunt read that left a silent input's wait for a queued command (issue #634), or a radio read that gave way
-           to one while the device has no stream (issue #518 D4, DSD_INTERRUPT_YIELD), ended no reception: the pump
-           below applies the command, and unless it replaced the input the pass resumes without noCarrier(). */
-        const int interrupted = state->input_interrupted;
-        const int interrupt_reason = state->input_interrupt_reason;
-        state->input_interrupted = 0;
-        state->input_interrupt_reason = DSD_INTERRUPT_NONE;
-        if (interrupted) {
-            /* What was being received was cut: the NAC its Phase 1 NIDs established says nothing of what follows. */
-            dsd_state_forget_p25p1_carrier_nac(state);
-        }
-        if (interrupt_reason == DSD_INTERRUPT_STREAM_GAP) {
-            /* A gap in the radio stream cut what was being decoded (issue #518 D5): reset it here, outside the frame
-               the gap ended, before anything this pass may wait on (a pending scan tune). The boundary takes the tick
-               guard. */
-            dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
-        }
-        if (dsd_engine_input_fallback(opts, state) != 0) {
-            continue;
-        }
-        dsd_runtime_pump_controls(opts, state);
-        /* A manual tune that timed out lands or fails late (issue #671): two loads while none is pending. An untyped
-           -Y step's row commits as it lands. */
-        (void)dsd_engine_scan_untyped_poll(opts, state);
-        /* An interrupted idle read skips noCarrier(), but a stalled NFM call still expires. */
-        dsd_engine_analog_call_tick(opts, state);
-        if (dsd_engine_signal_search_tick(opts, state)) {
-            dsd_sleep_ms(2);
-            continue;
-        }
-        p25_sm_try_tick(opts, state);
-        if (!dsd_trunk_scan_owns_tuner(opts, state) && p25_sm_tick_guard_try_enter()) {
-            dsd_engine_cold_start_tick_locked(opts, state);
-            dsd_engine_tetra_trunk_tick_locked(opts, state);
-            edacs_trunk_tick(opts, state);
-            p25_sm_tick_guard_leave();
-        }
-        dsd_trunk_scan_hook_tick(opts, state);
-        dsd_scan_voice_gate_tick(opts, state, 0, dsd_decode_now_mono_s());
-        dsd_engine_scan_visit_tick(opts, state, dsd_decode_now_mono_s());
-        dsd_runtime_pump_controls(opts, state);
+        live_scanner_main_pass(opts, state, &threshold_cache);
+    }
+}
 
-        if (dsd_engine_channel_scan_pending(opts, state)) {
-            dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
-            dsd_sleep_ms(1);
-            continue;
-        }
-        if (!interrupted || state->input_boundary) {
-            if (state->input_boundary) {
-                /* The stream the decoder read was replaced: the carrier boundary, before noCarrier(), which keeps a
-                   trunking session's recent voice channel as a fade would want it (issue #575). */
-                dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_INPUT_SWITCH, 0);
-            }
-            noCarrier(opts, state);
-            dsd_engine_end_input_boundary(opts, state);
-        }
-        if (dsd_engine_channel_scan_pending(opts, state)) {
-            dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
-            dsd_sleep_ms(1);
-            continue;
-        }
-        /* noCarrier and pending-row commits can replace the visit anchors. Publish
-         * the incoming visit before getFrameSync starts emitting its snapshots. */
-        dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
-        frame_tune_generation = dsd_trunk_tuning_generation();
-        state->synctype = getFrameSync(opts, state);
-        (void)dsd_engine_slicer_thresholds_refresh(state, &threshold_cache);
-        live_scanner_process_synced_frames(opts, state, &threshold_cache, &frame_tune_generation);
+void
+dsd_engine_test_live_scanner_run(dsd_opts* opts, dsd_state* state, int max_passes) {
+    dsd_engine_slicer_threshold_cache threshold_cache;
+    dsd_engine_slicer_threshold_cache_init(&threshold_cache);
+    for (int pass = 0; pass < max_passes && !dsd_exitflag_load(); pass++) {
+        live_scanner_main_pass(opts, state, &threshold_cache);
     }
 }
 

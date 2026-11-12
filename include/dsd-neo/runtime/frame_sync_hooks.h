@@ -88,6 +88,7 @@ typedef struct {
     void (*receive_policy_boundary)(dsd_opts* opts, dsd_state* state, int filters_were_enabled);
     void (*replay_retune)(dsd_opts* opts, dsd_state* state);
     int (*decoder_ticks_due)(const dsd_opts* opts, const dsd_state* state);
+    int (*scan_owns_hunt)(const dsd_opts* opts, const dsd_state* state);
     int (*p25_probe_in_flight)(const dsd_opts* opts, const dsd_state* state);
     int (*signal_search_probe)(const dsd_opts* opts, const dsd_state* state);
     int (*tick_guard_enter)(void);
@@ -107,6 +108,12 @@ int dsd_frame_sync_hook_signal_search_should_yield(const dsd_opts* opts, dsd_sta
  * under way): a frame-sync hunt read that sits on a silent input leaves it for them after a stream pause, as it does
  * for a queued command (issue #703). 0 when nothing is installed. Call on the decoder thread outside the SM guard. */
 int dsd_frame_sync_hook_decoder_ticks_due(const dsd_opts* opts, const dsd_state* state);
+
+/** Whether a scan owns the hunt (issue #834): trunk scan owns the tuner, or -Y owns it. A hunt read that got no input
+ * for a bounded time (a silent PCM input for a stream pause, a live RTL read that came back DSD_RTL_READ_IDLE, an idle
+ * analog monitor) then ends the pass with DSD_INTERRUPT_SCAN_IDLE, so the engine loop services the scan. Asked only
+ * after such a read, never while samples flow. 0 when nothing is installed. Decoder thread. */
+int dsd_frame_sync_hook_scan_owns_hunt(const dsd_opts* opts, const dsd_state* state);
 
 /** Whether a P25-driven control-channel probe is in flight: trunking on, the P25 state machine hunting (the startup
  * hunt, or recovery under a P25 owner) and no other protocol owning the control channel. While one is, the frame-sync

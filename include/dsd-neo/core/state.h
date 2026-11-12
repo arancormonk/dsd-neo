@@ -814,6 +814,11 @@ typedef enum {
     /* A Signal search left the frame, or a live read gave up on a stalled input during a search visit: getSymbol()
        stands erasures in while the search runs. */
     DSD_INTERRUPT_SEARCH,
+    /* A hunt read under a scan (trunk scan owns the tuner, or -Y runs) got no input for a bounded time (issue #834: a
+       silent PCM input for DSD_ANALOG_STREAM_PAUSE_MIN_MS, a live RTL read that came back DSD_RTL_READ_IDLE, an idle
+       analog monitor): the pass ends as a dead-air pass does, and the engine loop runs noCarrier(), which services the
+       scan. It does not stand: no frame was cut. */
+    DSD_INTERRUPT_SCAN_IDLE,
     /* A live read with no stream gave way to queued commands: sticky until the engine loop consumes it. */
     DSD_INTERRUPT_YIELD,
     /* The radio stream has a gap on the same carrier (a USB recovery, an rtl_tcp reconnect, or a capture's recorded

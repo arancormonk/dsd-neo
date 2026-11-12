@@ -482,6 +482,14 @@ Generated (do not edit/commit):
     input (a symbol replay ended; a WAV or TCP stream was the peer's audio already) is asked for the session's width
     under the same guard (`dsd_engine_rigctl_ask_session_passband()`, issue #621), as app-control's follow asks a peer a
     command's switch brings. Test: `ENGINE_INPUT_BOUNDARY`.
+  - Idle hunt reads under a scan (issue #834 B1, `live_scanner_main_pass()`): a hunt read that ended its pass with
+    `DSD_INTERRUPT_SCAN_IDLE` (a silent PCM input while trunk scan or -Y owns the tuner; DSP, "Silent inputs") counts
+    as no interruption: the pass runs its tick and `noCarrier()` as after a dead-air pass, so the engine's own tick and
+    step decide what is due (dwell, visit cap, hangtime, departures, pending tunes). No obligation list is kept on the
+    read side. One pass is the outer loop's body; `dsd_engine_test_live_scanner_run()` (`engine_test_support.h`) runs a
+    bounded number of them for tests that drive the real hunt, symbol reader and interruption routing over scripted
+    inputs. Test: `ENGINE_NO_CARRIER_RESET` (`test_live_scan_over_silent_inputs()`: -Y and trunk scan over a silent
+    UDP input, a held -Y released during the silence).
 - Build files: `src/engine/CMakeLists.txt`
 
 Key public headers:
@@ -3900,6 +3908,10 @@ depending directly on protocol headers. The runtime provides a small hook table 
 `include/dsd-neo/runtime/frame_sync_hooks.h`; the engine installs the concrete implementations at startup in
 `src/engine/frame_sync_hooks_install.c`. `decoder_ticks_due` tells a silent-input wait that decoder-thread trunking
 timers are due (issue #703); the engine's answer reads the state machines under the P25 SM tick guard.
+`scan_owns_hunt` (`dsd_frame_sync_hook_scan_owns_hunt()`, issue #834) tells an idle hunt read that a scan owns the hunt
+(`dsd_trunk_scan_owns_tuner()` or `dsd_channel_scan_owns_tuner()`), so the read ends its pass with
+`DSD_INTERRUPT_SCAN_IDLE`; it is asked only after a read came back empty, never while samples flow, and answers 0 with
+nothing installed.
 `p25_probe_in_flight` tells the SPS hunt that a P25-driven control-channel probe is in flight, so it steps only between
 the P25 profiles (see the startup control-channel hunt below); with nothing installed there is no probe.
 `signal_search_probe` (issue #804) tells it that a Signal search probe is identifying an Auto detection
@@ -5857,8 +5869,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`p25_sm_cold_start_due()`, `dmr_sm_cold_start_due()`; with trunking turned off too, until the tick that lets it go),
   DMR recovery under way, issue #703, or the NXDN control-channel hunt armed, running or due, `nxdn_cc_hunt_due()`), it
   leaves with no sample and sets `dsd_state::input_interrupted`, which `getFrameSync()` checks after each read and
-  returns on at once, with no SPS hunt step and no no-sync hooks. After a carrier boundary or a trunk-scan target switch
-  (`dsd_state_note_carrier_change()`) each protocol's matcher waits until the symbols its frame reads back from before
+  returns on at once, with no SPS hunt step and no no-sync hooks. Failing those, a hunt under a scan (issue #834 B1:
+  `dsd_frame_sync_hook_scan_owns_hunt()`) leaves the same way with `DSD_INTERRUPT_SCAN_IDLE`
+  (`symbol_hunt_idle_ends_pass()`), so the engine loop runs `noCarrier()` and the scan steps or advances on a silent
+  input, one pass per stream pause. The reason ranks between a search's and a yield (it never lowers one that stands)
+  and never stands (`symbol_interruption_stands()` tests YIELD and STREAM_GAP by name): no frame was cut. After a
+  carrier boundary or a trunk-scan target switch (`dsd_state_note_carrier_change()`) each protocol's matcher waits
+  until the symbols its frame reads back from before
   its sync (`k_frame_sync_tries`, then the matched burst's own before the matcher acts on it,
   `frame_sync_burst_settling()`: the sync window; DMR 90, X2-TDMA data 90 and voice 144, TETRA control 57,
   synchronisation 79 and normal bursts 126 with their buffered pre-sync parts) are all the new carrier's

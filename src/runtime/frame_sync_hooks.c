@@ -91,6 +91,11 @@ dsd_frame_sync_hook_decoder_ticks_due(const dsd_opts* opts, const dsd_state* sta
 }
 
 int
+dsd_frame_sync_hook_scan_owns_hunt(const dsd_opts* opts, const dsd_state* state) {
+    return g_frame_sync_hooks.scan_owns_hunt ? g_frame_sync_hooks.scan_owns_hunt(opts, state) : 0;
+}
+
+int
 dsd_frame_sync_hook_tick_guard_enter(void) {
     return g_frame_sync_hooks.tick_guard_enter ? g_frame_sync_hooks.tick_guard_enter() : 0;
 }

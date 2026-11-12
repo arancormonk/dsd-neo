@@ -109,6 +109,13 @@ engine_decoder_ticks_due(const dsd_opts* opts, const dsd_state* state) {
     return due;
 }
 
+/* A scan owns the hunt (issue #834): the trunk-scan coordinator or the -Y scan owns the tuner now. A paused scan owns
+   nothing (the operator holds the tuner). */
+static int
+engine_scan_owns_hunt(const dsd_opts* opts, const dsd_state* state) {
+    return dsd_trunk_scan_owns_tuner(opts, state) || dsd_channel_scan_owns_tuner(opts, state);
+}
+
 /* The probe answer engine_p25_probe_in_flight() last read, which stands while the watchdog holds the tick guard.
    Decoder thread only; every run starts it over (dsd_engine_frame_sync_hooks_install()). */
 static int s_p25_probe_last_answer = 0;
@@ -157,6 +164,7 @@ dsd_engine_frame_sync_hooks_install(void) {
     hooks.analog_call_block = dsd_engine_analog_call_block;
     hooks.p25_sm_try_tick = p25_sm_try_tick;
     hooks.decoder_ticks_due = engine_decoder_ticks_due;
+    hooks.scan_owns_hunt = engine_scan_owns_hunt;
     hooks.p25_probe_in_flight = engine_p25_probe_in_flight;
     hooks.tick_guard_enter = engine_tick_guard_enter;
     hooks.tick_guard_leave = p25_sm_tick_guard_leave;
