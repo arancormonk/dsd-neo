@@ -143,6 +143,10 @@ typedef struct {
     float threshold_db;
     /** A dsd_signal_quiet_floor_estimator value. */
     int floor_estimator;
+    /** A sub-window is invalid (never quiet) when a class's sideband floor stands more than this many dB over the
+     * capture-wide noise reference of the same transforms: neighbours raising the floor on both sides would otherwise
+     * hide a weak channel between them. Finite. */
+    float guard_db;
 } dsd_signal_quiet_params;
 
 typedef struct {
@@ -166,18 +170,27 @@ typedef struct {
     /** DSD_SIGNAL_MEASURE_OK for a complete result. A failed one keeps its request's id and capture and is neither
      * valid nor quiet. */
     dsd_signal_measure_failure failure;
-    /** valid: the channel and its noise sidebands fit the capture in every judged class. quiet: valid, and every
-     * sub-window of every judged class is below the threshold. */
+    /** valid: the channel and its noise sidebands fit the capture in every judged class, and no sub-window's floor
+     * stands over the guard. quiet: valid, and every sub-window of every judged class is below the threshold. */
     uint8_t valid, quiet;
     /** The highest (S+N)/N over every valid sub-window and class, with that measurement's channel power and its noise
      * floor over the same bins (0 when nothing was valid). */
     float max_ratio_db, power_dbfs, floor_dbfs;
+    /** The highest sideband floor over the capture-wide noise reference in any sub-window and class whose geometry
+     * fits, in dB (0 when none fits): above the guard (dsd_signal_quiet_params.guard_db) the result is not valid. */
+    float floor_rise_db;
     /** Monotonic arrival of the capture block that completed (or failed) the request; shared tap only, else 0. */
     uint64_t completed_realtime_ns;
 } dsd_signal_quiet_result;
 
-/** The shipped threshold and floor estimator the shared tap measures with. */
+/** The shipped threshold and floor estimator the shared tap measures with (calibrated: docs/signal-search.md
+ * "Quiet-channel calibration"). */
 dsd_signal_quiet_params dsd_signal_quiet_params_default(void);
+
+/** 1 when an analog class of @p width_hz judged at capture rate @p rate_hz lies inside the domain the calibration
+ * validated (widths DSD_ANALOG_AM_WIDTH_MIN_HZ to DSD_ANALOG_NFM_WIDTH_MAX_HZ at 1.024 to 2.4 Msps), else 0: outside
+ * it a scan visit makes no quiet check. */
+int dsd_signal_quiet_analog_supported(uint32_t width_hz, uint32_t rate_hz);
 
 /** Stand-alone quiet detector, the one the shared tap uses, for calibration and tests. */
 typedef struct dsd_signal_quiet_detector dsd_signal_quiet_detector;

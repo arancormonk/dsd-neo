@@ -7560,17 +7560,25 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   the search owner reserves tagged manual tunes, including against unsolicited UDP tunes.
 - Scan quiet request (`radio/signal_measure.cpp`, `io/signal_measure.h`, issue #834): whether one landed conventional
   channel carries no power above its local floor. `dsd_signal_quiet_detector_*` is the measurement (the shared tap runs
-  one with `dsd_signal_quiet_params_default()`, the shipped `DSD_SIGNAL_QUIET_THRESHOLD_DB` and
-  `DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR`; calibration drives its own with explicit parameters). It judges
+  one with `dsd_signal_quiet_params_default()`, the shipped `DSD_SIGNAL_QUIET_THRESHOLD_DB` (4.2 dB),
+  `DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR` (the trimmed mean) and `DSD_SIGNAL_QUIET_GUARD_DB` (8 dB);
+  `tests/io/signal_quiet_calibrate.cpp`, a manual build-only driver, chose all three and drives its own detectors with
+  explicit parameters; docs/signal-search.md "Quiet-channel calibration"). `dsd_signal_quiet_analog_supported(width, rate)` is the analog domain that calibration validated
+  (5-25 kHz at 1.024-2.4 Msps); outside it the engine makes no check. Changing the measurement, the sub-windows or
+  either constant means re-running that calibration. It judges
   `DSD_SIGNAL_QUIET_WINDOWS` (9) back-to-back sub-windows, each the smallest whole number of transforms of at least
   10 ms, in every requested width class (`DSD_SIGNAL_QUIET_CLASS_12K5`, `_6K25`, `_ANALOG` with the request's analog
   width, AM minimum to NFM maximum). The transform puts at least 8 bins across the narrowest class
   (`dsd_signal_fft_size_for_width()`, which also sizes Signal search's ranges), so a sub-window stays under 13.75 ms
   and one lies inside any 27.5 ms DMR burst; the nine span at least 90 ms. Each sub-window and class goes through the
   same channel measurement as Signal search (`measure_channel()`: geometry, channel bins, the eight sideband blocks),
-  with the floor from either the trimmed mean (Signal search's) or the lowest block. The request is quiet only when
-  every sub-window of every class is valid and its (S+N)/N is below the threshold; the result carries the highest
-  ratio with its power and floor. Clipping (over 1% of pairs so far, checked at each sub-window end), capture changes,
+  with the floor from either the trimmed mean (Signal search's) or the lowest block. Floor guard (`wide_reference()`):
+  each sub-window also takes a capture-wide noise reference from the same transforms (the lower quartile of the bins
+  clear of DC, the band edges and the channel, scaled to the Gaussian mean), and a class whose sideband floor stands
+  more than `guard_db` over it makes the request invalid, so a weak channel between transmitters that raise its floor
+  on both sides is never quiet (such a channel is never skipped). The request is quiet only when every sub-window of
+  every class is valid and its (S+N)/N is below the threshold; the result carries the highest ratio with its power and
+  floor, and the highest floor rise (`floor_rise_db`). Clipping (over 1% of pairs so far, checked at each sub-window end), capture changes,
   drops and non-finite samples fail it as for a search; a channel whose geometry does not fit is measured but never
   valid. Buffers are prepared once per transform size (`NO_MEMORY` only when that fails). Tap owners: the tap holds
   one request, Signal search's or a quiet one. `rtl_signal_quiet_request()` is refused (`UNSUPPORTED`) while a search

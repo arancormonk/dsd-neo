@@ -832,10 +832,12 @@ namespace {
 constexpr uint32_t kQuietChannel = 163012500;
 constexpr double kTwoPi = 6.283185307179586;
 constexpr float kQuietSigma = 0.01f;
-/* The behaviour tests judge with their own threshold, not the shipped one (calibration sets that): 8 dB is clear of
-   every noise-only scene here (at most about 6 dB, at 5 kHz and 2.4 Msps with the lowest block, the estimator that
-   reads noise highest), and every transmitter here is at least 12 dB over its noise. */
-constexpr dsd_signal_quiet_params kQuietTestParams = {8.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK};
+/* The behaviour tests judge with their own threshold, not the shipped one (whose noise-only false-busy rate is up to
+   5% by calibration, too often for a fixed-seed test): 8 dB is clear of every noise-only scene here (at most about
+   6 dB, at 5 kHz and 2.4 Msps with the lowest block, the estimator that reads noise highest), and every transmitter
+   here is at least 12 dB over its noise. The floor guard is out of reach (100 dB) so these scenes judge the ratio
+   alone; test_quiet_floor_guard() covers the guard. */
+constexpr dsd_signal_quiet_params kQuietTestParams = {8.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 100.0f};
 
 /* A request for the channel landed Fs/4 below the tuner centre, as the RTL chain lands it. */
 dsd_signal_quiet_request
@@ -1159,6 +1161,47 @@ test_quiet_classes(dsd_signal_quiet_detector* d) {
     assert(quiet_verdict(d, wide, centred) && !quiet_verdict(d, narrow, centred) && !quiet_verdict(d, both, centred));
 }
 
+/* The floor guard: a weak channel between transmitters that raise its sideband floor on both sides would read quiet
+   on the ratio alone; the floor's rise over the capture-wide noise reference voids it. Noise alone stays valid, and the
+   guard's edge falls exactly at the reported rise. */
+static void
+test_quiet_floor_guard(dsd_signal_quiet_detector* d) {
+    const uint32_t rate = 1536000;
+    const auto wide = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+    const size_t pairs = quiet_request_pairs(wide);
+    const dsd_signal_quiet_params shipped = dsd_signal_quiet_params_default();
+    dsd_signal_quiet_params unguarded = shipped;
+    unguarded.guard_db = 100.0f;
+    // A channel 12 dB over its noise, both sides' sideband blocks raised far above it: quiet on the ratio alone.
+    auto between = quiet_noise(pairs, 91);
+    quiet_add_fm(between, rate, 0, quiet_amplitude(12, rate, 12500), {});
+    add_wide_sideband_carriers(between, rate, quiet_amplitude(12, rate, 6250), 92);
+    assert(quiet_verdict(d, wide, between, unguarded));
+    const auto guarded = quiet_run(d, wide, between, 4096, &shipped);
+    assert(guarded.failure == DSD_SIGNAL_MEASURE_OK && !guarded.valid && !guarded.quiet);
+    assert(guarded.floor_rise_db > shipped.guard_db + 10.0f);
+    // Noise alone stays valid under the shipped guard, in every class at every rate.
+    for (uint32_t r : kQuietRates) {
+        for (uint8_t classes : {(uint8_t)DSD_SIGNAL_QUIET_CLASS_12K5, (uint8_t)DSD_SIGNAL_QUIET_CLASS_6K25}) {
+            const auto q = quiet_request(r, classes);
+            for (unsigned seed = 93; seed < 96; ++seed) {
+                const auto noise = quiet_run(d, q, quiet_noise(quiet_request_pairs(q), seed), 4096, &shipped);
+                assert(noise.valid && noise.floor_rise_db < shipped.guard_db);
+                assert(std::abs(noise.floor_rise_db) < 2.0f);
+            }
+        }
+    }
+    // Just under and just over the guard: valid while the rise stays at or under it, void once it exceeds it.
+    const auto noise = quiet_noise(pairs, 97);
+    const float rise = quiet_run(d, wide, noise, 4096, &unguarded).floor_rise_db;
+    dsd_signal_quiet_params edge = unguarded;
+    edge.guard_db = rise + 0.01f;
+    assert(quiet_run(d, wide, noise, 4096, &edge).valid);
+    edge.guard_db = rise - 0.01f;
+    const auto over = quiet_run(d, wide, noise, 4096, &edge);
+    assert(!over.valid && !over.quiet && std::abs(over.floor_rise_db - rise) < 1e-6f);
+}
+
 /* What a request may ask for: the analog width endpoints (NFM 8 and 25 kHz, AM 5 and 20 kHz), the 6.25 kHz class at
    2048 points at 1.536 Msps (an NFM search range of 6.25 kHz is still refused), and nothing malformed. */
 static void
@@ -1194,20 +1237,34 @@ test_quiet_requests(dsd_signal_quiet_detector* d) {
     assert(dsd_signal_quiet_detector_begin(d, nullptr, nullptr, &failure) == -1);
     assert(dsd_signal_quiet_detector_begin(nullptr, &narrow, nullptr, &failure) == -1);
     for (const dsd_signal_quiet_params& p :
-         {dsd_signal_quiet_params{4.0f, 2}, dsd_signal_quiet_params{4.0f, -1},
-          dsd_signal_quiet_params{std::numeric_limits<float>::quiet_NaN(), DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK},
-          dsd_signal_quiet_params{std::numeric_limits<float>::infinity(), DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK}}) {
+         {dsd_signal_quiet_params{4.0f, 2, 3.0f}, dsd_signal_quiet_params{4.0f, -1, 3.0f},
+          dsd_signal_quiet_params{std::numeric_limits<float>::quiet_NaN(), DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 3.0f},
+          dsd_signal_quiet_params{std::numeric_limits<float>::infinity(), DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 3.0f},
+          dsd_signal_quiet_params{4.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, std::numeric_limits<float>::quiet_NaN()},
+          dsd_signal_quiet_params{4.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, std::numeric_limits<float>::infinity()}}) {
         assert(dsd_signal_quiet_detector_begin(d, &narrow, &p, &failure) == -1);
         assert(failure == DSD_SIGNAL_REQUEST_UNSUPPORTED);
     }
     // A refused request leaves nothing armed: samples finish nothing.
     const auto noise = quiet_noise(quiet_request_pairs(narrow), 52);
     assert(dsd_signal_quiet_detector_feed(d, noise.data(), noise.size() / 2, &narrow.capture) == 0);
-    // The shipped parameters.
+    // The shipped parameters: the calibrated 4.2 dB over the trimmed-mean floor, guarded at 8 dB (docs/signal-search.md).
     const auto shipped = dsd_signal_quiet_params_default();
-    assert(std::isfinite(shipped.threshold_db) && shipped.threshold_db > 0.0f);
-    assert(shipped.floor_estimator == DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN
-           || shipped.floor_estimator == DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK);
+    assert(std::fabs(shipped.threshold_db - 4.2f) < 1e-6f);
+    assert(shipped.floor_estimator == DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN);
+    assert(std::fabs(shipped.guard_db - 8.0f) < 1e-6f);
+    // The analog domain the calibration validated: 5 to 25 kHz at 1.024 to 2.4 Msps, edges included.
+    for (uint32_t width : {5000u, 6000u, 8000u, 12500u, 16000u, 20000u, 25000u}) {
+        for (uint32_t rate : {1024000u, 1536000u, 2048000u, 2400000u}) {
+            assert(dsd_signal_quiet_analog_supported(width, rate) == 1);
+        }
+        for (uint32_t rate : {0u, 960000u, 1023999u, 2400001u, 3200000u}) {
+            assert(dsd_signal_quiet_analog_supported(width, rate) == 0);
+        }
+    }
+    for (uint32_t width : {0u, 4999u, 25001u, 30000u}) {
+        assert(dsd_signal_quiet_analog_supported(width, 1536000u) == 0);
+    }
 }
 
 /* A channel whose sidebands do not fit the capture (at hardware DC, or past 0.45 Fs) is measured but never valid or
@@ -1251,7 +1308,8 @@ test_quiet_failures(dsd_signal_quiet_detector* d) {
         for (size_t i = 0; i < pairs; i += every) {
             iq[2 * i + 1] = -1.0f;
         }
-        const auto result = quiet_run(d, q, iq, 4096, nullptr, every == 200 ? 1 : -1);
+        // The clicks' comb stands in the sideband blocks, so the floor guard would void the result: judge without it.
+        const auto result = quiet_run(d, q, iq, 4096, &kQuietTestParams, every == 200 ? 1 : -1);
         assert(result.failure == (every == 200 ? DSD_SIGNAL_MEASURE_OK : DSD_SIGNAL_MEASURE_CLIPPED));
         assert(every == 200 ? result.valid != 0 : !result.valid && !result.quiet);
     }
@@ -1330,8 +1388,8 @@ static void
 test_quiet_estimators(dsd_signal_quiet_detector* d) {
     const uint32_t rate = 1536000;
     const auto q = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
-    const dsd_signal_quiet_params trimmed{30.0f, DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN};
-    const dsd_signal_quiet_params lowest{30.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK};
+    const dsd_signal_quiet_params trimmed{30.0f, DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN, 100.0f};
+    const dsd_signal_quiet_params lowest{30.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 100.0f};
     for (unsigned seed = 1; seed <= 4; ++seed) {
         auto iq = quiet_noise(quiet_request_pairs(q), 90 + seed);
         for (size_t i = 2; seed % 2 == 0 && i < iq.size(); ++i) {
@@ -1601,6 +1659,7 @@ test_quiet(const dsd_signal_measure_request& r) {
     test_quiet_dmr_bursts(d);
     test_quiet_one_subwindow(d);
     test_quiet_classes(d);
+    test_quiet_floor_guard(d);
     test_quiet_geometry(d);
     test_quiet_failures(d);
     test_quiet_spans(d);

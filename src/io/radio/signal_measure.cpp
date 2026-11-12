@@ -1181,6 +1181,8 @@ sideband_noise(const S& bins, double position, double width_bins, int estimator)
 struct channel_level {
     bool valid;
     double signal, noise;
+    /* The sideband floor per FFT bin, scaled as signal and noise. */
+    double floor;
 };
 
 /* Measure the channel at @p frequency_hz, @p width Hz wide, in the @p n-point spectrum whose prefix sums @p bins reads,
@@ -1191,7 +1193,7 @@ template <typename S>
 channel_level
 measure_channel(const S& bins, const dsd_signal_capture& capture, int n, double frequency_hz, double width, double norm,
                 int estimator) {
-    channel_level out{false, 0, 0};
+    channel_level out{false, 0, 0, 0};
     const double bin_hz = (double)capture.rate_hz / n;
     const double rotation = capture.rotation_hz;
     const double delta = frequency_hz - capture.capture_hz;
@@ -1210,6 +1212,7 @@ measure_channel(const S& bins, const dsd_signal_capture& capture, int n, double 
     out.valid = true;
     out.signal = bins(signal_first, signal_last) * norm;
     out.noise = per_bin * norm * (double)signal_bins;
+    out.floor = per_bin * norm;
     return out;
 }
 
@@ -1384,9 +1387,17 @@ dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, size_t 
         [&](dsd_signal_measure_failure reason) { return fail_request(detector, report, reason); });
 }
 
-/* The shipped quiet threshold and floor estimator (provisional until calibrated). */
-#define DSD_SIGNAL_QUIET_THRESHOLD_DB    4.0f
-#define DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK
+/* The shipped quiet threshold, floor estimator and floor guard, from tests/io/signal_quiet_calibrate.cpp
+   (docs/signal-search.md "Quiet-channel calibration"). The guard is 0.5 dB under the lowest floor rise of any active
+   trial whose ratio would otherwise sit within the threshold's margin (8.55 dB, a weak NFM 8 kHz channel between
+   +30 dB neighbours), rounded down; noise alone rises at most 2.3 dB. With it, the trimmed mean's interval is
+   (2.35, 4.24] dB (the lowest block has none), and the threshold is its top, rounded down. */
+#define DSD_SIGNAL_QUIET_THRESHOLD_DB       4.2f
+#define DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR    DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN
+#define DSD_SIGNAL_QUIET_GUARD_DB           8.0f
+/* The capture rates the calibration validated analog classes at (1.024, 1.536 and 2.4 Msps, every width). */
+#define DSD_SIGNAL_QUIET_ANALOG_RATE_MIN_HZ 1024000u
+#define DSD_SIGNAL_QUIET_ANALOG_RATE_MAX_HZ 2400000u
 
 struct dsd_signal_quiet_detector {
     /* Keep aligned buffers first so records never require interior alignment padding. */
@@ -1395,9 +1406,11 @@ struct dsd_signal_quiet_detector {
     dsd_io::FftSetupCache fft;
     dsd_signal_quiet_request request{};
     dsd_signal_quiet_params params{};
-    /* This sub-window's power, and scratch prefix sums of it (one longer than the spectrum). */
+    /* This sub-window's power, scratch prefix sums of it (one longer than the spectrum), and scratch for the
+       capture-wide noise reference. */
     double power[DSD_SEARCH_MAX_FFT]{};
     double prefix[DSD_SEARCH_MAX_FFT + 1]{};
+    double wide[DSD_SEARCH_MAX_FFT]{};
     /* The judged classes' widths. */
     double widths[3]{};
     int width_count = 0;
@@ -1408,8 +1421,8 @@ struct dsd_signal_quiet_detector {
     bool armed = false;
     /* Over the sub-windows so far: whether every class measured was valid, whether any was, and the highest ratio with
        its power and floor (dB). */
-    bool all_valid = true, any_valid = false;
-    double max_ratio_db = 0, max_power_db = 0, max_floor_db = 0;
+    bool all_valid = true, any_valid = false, any_rise = false;
+    double max_ratio_db = 0, max_power_db = 0, max_floor_db = 0, max_rise_db = 0;
     /* The result of the request last begun once it finished: 1 complete, -1 failed, 0 not yet. */
     dsd_signal_quiet_result result{};
     int finished = 0;
@@ -1420,7 +1433,14 @@ dsd_signal_quiet_params_default(void) {
     dsd_signal_quiet_params params{};
     params.threshold_db = DSD_SIGNAL_QUIET_THRESHOLD_DB;
     params.floor_estimator = DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR;
+    params.guard_db = DSD_SIGNAL_QUIET_GUARD_DB;
     return params;
+}
+
+extern "C" int
+dsd_signal_quiet_analog_supported(uint32_t width_hz, uint32_t rate_hz) {
+    return width_hz >= DSD_ANALOG_AM_WIDTH_MIN_HZ && width_hz <= DSD_ANALOG_NFM_WIDTH_MAX_HZ
+           && rate_hz >= DSD_SIGNAL_QUIET_ANALOG_RATE_MIN_HZ && rate_hz <= DSD_SIGNAL_QUIET_ANALOG_RATE_MAX_HZ;
 }
 
 extern "C" dsd_signal_quiet_detector*
@@ -1467,7 +1487,7 @@ quiet_arm(dsd_signal_quiet_detector* detector, const dsd_signal_quiet_request* r
           const dsd_signal_quiet_params& params) {
     double widths[3] = {0, 0, 0};
     int count = 0;
-    if (!request || !request->request_id || !std::isfinite(params.threshold_db)
+    if (!request || !request->request_id || !std::isfinite(params.threshold_db) || !std::isfinite(params.guard_db)
         || (params.floor_estimator != DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN
             && params.floor_estimator != DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK)
         || !quiet_widths(*request, widths, &count)) {
@@ -1493,8 +1513,8 @@ quiet_arm(dsd_signal_quiet_detector* detector, const dsd_signal_quiet_request* r
     detector->filled = detector->window_samples = detector->total_samples = detector->clipped = 0;
     detector->frames = detector->windows = 0;
     detector->all_valid = true;
-    detector->any_valid = false;
-    detector->max_ratio_db = detector->max_power_db = detector->max_floor_db = 0;
+    detector->any_valid = detector->any_rise = false;
+    detector->max_ratio_db = detector->max_power_db = detector->max_floor_db = detector->max_rise_db = 0;
     DSD_MEMSET(detector->power, 0, (size_t)n * sizeof(detector->power[0]));
     detector->armed = true;
     return DSD_SIGNAL_REQUEST_OK;
@@ -1527,7 +1547,39 @@ quiet_finish(dsd_signal_quiet_detector* detector, dsd_signal_measure_failure rea
     return detector->finished;
 }
 
-/* Measure one sub-window in every judged class, keeping the highest ratio over the request. */
+/* The capture-wide noise reference per FFT bin, in the units of the sub-window's power (summed over its transforms):
+   the 25th percentile of the bins clear of the hardware DC guard, inside 0.45 Fs and outside the channel's widest
+   class, scaled to the mean that percentile implies for Gaussian noise (a chi-square of 2 * frames degrees of freedom,
+   Wilson-Hilferty). A low percentile of the whole span stays on the noise however many transmitters stand in up to
+   three quarters of it. @p scratch takes the copies the selection reorders. Negative when no bin qualifies. */
+static double
+wide_reference(const dsd_signal_quiet_detector* detector, double* scratch) {
+    const dsd_signal_capture& capture = detector->request.capture;
+    const int n = detector->n;
+    const double bin_hz = (double)capture.rate_hz / n;
+    const double dc_guard = std::max(bin_hz * 3, capture.rate_hz / 100.0);
+    const double channel = (double)detector->request.frequency_hz - capture.capture_hz;
+    const double half_width = *std::max_element(detector->widths, detector->widths + detector->width_count) / 2;
+    int count = 0;
+    for (int m = -n / 2; m < n / 2; ++m) {
+        const double delta = m * bin_hz - capture.rotation_hz;
+        if (std::abs(delta) > dc_guard && std::abs(delta) < capture.rate_hz * 0.45
+            && std::abs(delta - channel) > half_width) {
+            scratch[count++] = detector->power[(m + n) % n];
+        }
+    }
+    if (count == 0) {
+        return -1;
+    }
+    double* rank = scratch + count / 4;
+    std::nth_element(scratch, rank, scratch + count);
+    constexpr double kLowerQuartileZ = -0.6744897501960817;
+    const double k = 2.0 * detector->frames, wh = 2.0 / (9.0 * k);
+    return *rank / std::pow(1.0 - wh + kLowerQuartileZ * std::sqrt(wh), 3);
+}
+
+/* Measure one sub-window in every judged class, keeping the highest ratio and floor rise over the request; a floor
+   over the guard leaves the request invalid. */
 static void
 quiet_measure_window(dsd_signal_quiet_detector* detector) {
     const int n = detector->n;
@@ -1536,13 +1588,22 @@ quiet_measure_window(dsd_signal_quiet_detector* detector) {
     auto bins = [&](long long first, long long last) {
         return circular_sum(detector->prefix, n, first, last - first + 1);
     };
+    const double reference = wide_reference(detector, detector->wide);
     for (int c = 0; c < detector->width_count; ++c) {
         const channel_level level =
             measure_channel(bins, detector->request.capture, n, (double)detector->request.frequency_hz,
                             detector->widths[c], norm, detector->params.floor_estimator);
-        if (!level.valid) {
+        if (!level.valid || reference <= 0) {
             detector->all_valid = false;
             continue;
+        }
+        const double rise = power_db(level.floor) - power_db(reference * norm);
+        if (!detector->any_rise || rise > detector->max_rise_db) {
+            detector->max_rise_db = rise;
+        }
+        detector->any_rise = true;
+        if (rise > detector->params.guard_db) {
+            detector->all_valid = false;
         }
         const double power = power_db(level.signal), floor = power_db(level.noise);
         if (!detector->any_valid || power - floor > detector->max_ratio_db) {
@@ -1572,6 +1633,7 @@ quiet_finish_window(dsd_signal_quiet_detector* detector) {
     result.max_ratio_db = (float)detector->max_ratio_db;
     result.power_dbfs = (float)detector->max_power_db;
     result.floor_dbfs = (float)detector->max_floor_db;
+    result.floor_rise_db = (float)detector->max_rise_db;
     result.quiet = result.valid && result.max_ratio_db < detector->params.threshold_db;
     return 1;
 }

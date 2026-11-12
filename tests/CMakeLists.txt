@@ -25622,6 +25622,25 @@ if(DSD_HAS_RADIO)
             ${LIBS}
     )
     add_test(NAME IO_SIGNAL_MEASURE COMMAND dsd-neo_test_io_signal_measure)
+    # Manual only: the scan quiet-threshold calibration (docs/signal-search.md), minutes on every core.
+    add_executable(
+        dsd-neo_test_signal_quiet_calibrate
+        io/signal_quiet_calibrate.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_signal_quiet_calibrate
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_signal_quiet_calibrate
+        PRIVATE
+            dsd-neo_io_radio
+            dsd-neo_core
+            dsd-neo_runtime
+            dsd-neo_platform
+            Threads::Threads
+            ${LIBS}
+    )
     # The shared tap forgets a stopped stream's capture, run on a real I/Q replay stream.
     add_executable(dsd-neo_test_io_rtl_signal_tap io/test_io_rtl_signal_tap.cpp)
     target_include_directories(
