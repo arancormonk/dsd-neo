@@ -806,14 +806,33 @@ frame_sync_p25p1_c4fm_warm_start(const dsd_opts* opts, dsd_state* state) {
         dsd_sync_warm_start_thresholds_outer_only(opts, state, 24) == DSD_WARM_START_OK ? 1U : 0U;
 }
 
-/* A P25p1 sync word accepted within the tolerance at the anchor's expected position (dsd_p25p1_sync_anchor): the
-   anchor's NAC, which the frame's NID must name, and the bits the word was off by. */
+/* Open the span the P25p1 frame a sync opens owns, or close any span still standing, according to which chain carried
+ * the sync. Only CQPSK closes it: there the NID is sliced by the QPSK chain and the NXDN matcher's blend is the wideband
+ * level tracker that chain leans on. GFSK opens it like C4FM does, because a P25p1 sync arriving under rf_mod 2 means
+ * the modulation votes have flapped off a C4FM signal -- which the loose NXDN window is itself what does here -- and
+ * that is precisely when the frame behind the sync most needs the profile to itself (#388). */
+static void
+frame_sync_p25p1_mark_frame_span(dsd_state* state) {
+    if (state->rf_mod == 1) {
+        state->p25_p1_c4fm_frame_valid = 0;
+    } else {
+        state->p25_p1_c4fm_frame_symbolcnt = state->symbolcnt;
+        state->p25_p1_c4fm_frame_valid = 1;
+    }
+}
+
+/* A P25p1 sync word accepted within a tolerance (dsd_p25p1_sync_kind): at the anchor's expected position
+   (dsd_p25p1_sync_anchor), whose NAC the frame's NID must name, or hunt-wide on the C4FM chain (-1 for the NAC); and
+   what the word was off by (bits on the CQPSK chain, signs on the C4FM chain). */
 typedef struct {
+    dsd_p25p1_sync_kind kind;
     int nac;
-    int bit_errors;
+    int errors;
 } frame_sync_p25p1_tolerance;
 
-/* @p tolerance is NULL for an exact (normal, inverted or rotated) match. */
+/* @p tolerance is NULL for an exact (normal, inverted or rotated) match. On the C4FM chain a tolerant try holds what
+   it and this accept write before the NID speaks (frame_sync_p25p1_candidate_hold()), which goes back if the NID
+   fails. */
 static void
 frame_sync_accept_p25p1(frame_sync_match_ctx* ctx, int synctype, const char* label,
                         frame_sync_p25_center_mode_t center_mode, const frame_sync_p25p1_tolerance* tolerance) {
@@ -828,18 +847,7 @@ frame_sync_accept_p25p1(frame_sync_match_ctx* ctx, int synctype, const char* lab
     }
 #endif
     frame_sync_set_basic_lock(ctx);
-    /* Open the span this frame owns, or close any span still standing, according to which chain
-     * carried the sync. Only CQPSK closes it: there the NID is sliced by the QPSK chain and the
-     * NXDN matcher's blend is the wideband level tracker that chain leans on. GFSK opens it like
-     * C4FM does, because a P25p1 sync arriving under rf_mod 2 means the modulation votes have
-     * flapped off a C4FM signal -- which the loose NXDN window is itself what does here -- and
-     * that is precisely when the frame behind the sync most needs the profile to itself (#388). */
-    if (state->rf_mod == 1) {
-        state->p25_p1_c4fm_frame_valid = 0;
-    } else {
-        state->p25_p1_c4fm_frame_symbolcnt = state->symbolcnt;
-        state->p25_p1_c4fm_frame_valid = 1;
-    }
+    frame_sync_p25p1_mark_frame_span(state);
     state->dmrburstR = 17;
     state->payload_algidR = 0;
     state->dmr_stereo = 1;
@@ -863,8 +871,8 @@ frame_sync_accept_p25p1(frame_sync_match_ctx* ctx, int synctype, const char* lab
            (the hunt keeps its starting ones), and those are a guess at the outer level, not the carrier's. */
         frame_sync_p25p1_c4fm_warm_start(opts, state);
     }
-    frame_sync_p25p1_anchor_note_sync(state, synctype, tolerance ? tolerance->nac : -1,
-                                      tolerance ? tolerance->bit_errors : 0);
+    frame_sync_p25p1_anchor_note_sync(state, synctype, tolerance ? (int)tolerance->kind : (int)DSD_P25P1_SYNC_EXACT,
+                                      tolerance ? tolerance->nac : -1, tolerance ? tolerance->errors : 0);
 }
 
 static void
@@ -954,44 +962,67 @@ frame_sync_try_rotated_p25(frame_sync_match_ctx* ctx, const char* symbols, const
 }
 #endif
 
-#ifdef USE_RADIO
 static int frame_sync_window_ends_in_exact_head(const frame_sync_match_ctx* ctx, const char* window, int dibits,
                                                 int span);
 
+/* What the window at the anchor's expected position is off the word by, read the way its chain's hunt reads it, and the
+   most it may be: on the RTL CQPSK 4800/4 path Gray-coded bits under the anchor's dibit map and polarity
+   (DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS), on the C4FM chain signs under its polarity
+   (DSD_P25P1_C4FM_ANCHORED_MAX_SIGN_ERRORS; that hunt slices nothing but the sign). 0 for a chain with no anchored
+   tolerance (GFSK, and CQPSK off the RTL path). */
+static int
+frame_sync_p25p1_anchored_errors(const frame_sync_match_ctx* ctx, uint8_t map_idx, int inverted, int* out_errors,
+                                 int* out_max) {
+    if (ctx->state->rf_mod == 0) {
+        *out_errors = dsd_p25p1_sync_sign_distance(ctx->synctest, inverted);
+        *out_max = DSD_P25P1_C4FM_ANCHORED_MAX_SIGN_ERRORS;
+        return 1;
+    }
+    if (frame_sync_cqpsk_4level_enabled(ctx->opts, ctx->state)) {
+        *out_errors = dsd_p25p1_sync_bit_distance(ctx->synctest, map_idx, inverted);
+        *out_max = DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS;
+        return 1;
+    }
+    return 0;
+}
+
 /* After every exact matcher of every protocol failed at this position (frame_sync_try_protocol_matches()): the window at
- * the anchor's expected position, read under the anchor's dibit map and polarity, within
- * DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS bits of the word (dsd_p25p1_sync_anchor), on the RTL CQPSK 4800/4 path. A
- * window a few bits off the word can hold another protocol's exact word (one 3 bits off can end in an inverted NXDN
- * FSW), which is that protocol's to take. The first window to reach that position spends the anchor, so no other window
- * is scored. The accept skips the acceptance-time centre refit (CENTER_SKIP: a word with symbols off is no reference to
- * refit on, and a candidate writes no centre before it validates; on this path the next symbol read replaces the centre
- * either way) and keeps no control channel alive; whether its frame decodes is the NID's to say, past the dispatcher's
- * strict check. */
+ * the anchor's expected position within the tolerance of the word (dsd_p25p1_sync_anchor,
+ * frame_sync_p25p1_anchored_errors()). A window a few bits off the word can hold another protocol's exact word (one 3
+ * bits off can end in an inverted NXDN FSW), which is that protocol's to take. The first window to reach that position
+ * spends the anchor, so no other window is scored. The accept skips the acceptance-time centre refit (CENTER_SKIP: a
+ * word with symbols off is no reference to refit on, and a candidate writes no centre before it validates; on the CQPSK
+ * path the next symbol read replaces the centre either way, on the C4FM chain the threshold warm start the NID is read
+ * on is held and put back if it fails) and keeps no control channel alive; whether its frame decodes is the NID's to
+ * say, past the dispatcher's strict check. */
 static int
 frame_sync_try_tolerant_p25p1(frame_sync_match_ctx* ctx) {
     dsd_state* state = ctx->state;
     uint8_t map_idx = DSD_P25_CQPSK_DIBIT_MAP_IDENTITY;
     int inverted = 0;
     int nac = 0;
+    int errors = 0;
+    int max_errors = 0;
     if (ctx->opts->frame_p25p1 != 1 || !frame_sync_p25p1_anchor_take(state, &map_idx, &inverted, &nac)
         || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
         || !frame_sync_match_window_ready(ctx, 24) || dsd_state_carrier_settling(state, 24U)
-        || !frame_sync_cqpsk_4level_enabled(ctx->opts, state)) {
+        || !frame_sync_p25p1_anchored_errors(ctx, map_idx, inverted, &errors, &max_errors)) {
         return DSD_SYNC_NONE;
     }
-    const int bit_errors = dsd_p25p1_sync_bit_distance(ctx->synctest, map_idx, inverted);
-    if (bit_errors > DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS
+    if (errors > max_errors
         || frame_sync_window_ends_in_exact_head(ctx, ctx->synctest, 24, DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS)) {
         return DSD_SYNC_NONE;
     }
     const int synctype = inverted ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS;
-    const frame_sync_p25p1_tolerance tolerance = {nac, bit_errors};
+    const frame_sync_p25p1_tolerance tolerance = {DSD_P25P1_SYNC_ANCHORED, nac, errors};
+    if (state->rf_mod == 0) {
+        frame_sync_p25p1_candidate_hold(state, ctx->synctest_pos);
+    }
     frame_sync_set_p25_cqpsk_dibit_map(ctx, map_idx);
     frame_sync_accept_p25p1(ctx, synctype, inverted ? "-P25p1 " : "+P25p1", FRAME_SYNC_P25_CENTER_SKIP, &tolerance);
     state->p25_p1_sync_anchor.tolerant_syncs++;
     return synctype;
 }
-#endif
 
 static int
 frame_sync_try_p25p1(frame_sync_match_ctx* ctx) {
@@ -2670,7 +2701,6 @@ static const struct {
     {frame_sync_try_dstar, 24U}, {frame_sync_try_nxdn, 10U},   {frame_sync_try_provoice_conventional, 32U},
 };
 
-#if defined(USE_RADIO) || defined(DSD_NEO_TEST_HOOKS)
 /* Each matcher's exact sync words, every one it may accept whichever polarity or variant its options pick (a '.' is a
    symbol it does not read). M17's are within a symbol, the rest exact. */
 static const char* const k_frame_sync_p25p1_words[] = {
@@ -2774,9 +2804,7 @@ frame_sync_exact_words_of(size_t index) {
     }
     return -1;
 }
-#endif
 
-#ifdef USE_RADIO
 /* @p raw, a window dibit '0'..'3', as @p reading's @p variant reads it. */
 static int
 frame_sync_read_word_dibit(char raw, frame_sync_words_reading reading, int variant) {
@@ -2837,7 +2865,6 @@ frame_sync_window_ends_in_exact_head(const frame_sync_match_ctx* ctx, const char
     }
     return 0;
 }
-#endif
 
 #ifdef DSD_NEO_TEST_HOOKS
 size_t
@@ -2907,22 +2934,24 @@ frame_sync_try_protocol_matches(frame_sync_match_ctx* ctx) {
     if (sync_type != DSD_SYNC_NONE && frame_sync_match_window_ready(ctx, DSD_SYMBOL_TIMING_TEMPLATE_SYMS)) {
         dsd_symbol_timing_report_sync(ctx->state, sync_type, ctx->synctest8);
     }
-#ifdef USE_RADIO
     /* The P25 anchors' words are tried last, once no matcher of any protocol matched exactly: an exact word never loses
        to a tolerant one. The two anchors score on different profiles (4800/4 and 6000/4), so at most one is live here.
-       A word with symbols off is no timing reference, so the symbol-timing diagnostic does not measure it. */
+       A word with symbols off is no timing reference, so the symbol-timing diagnostic does not measure it. The P25p1
+       anchor scores on the C4FM chain whatever the input (live radio, I/Q replay, discriminator PCM, symbol
+       captures) and in every build; the CQPSK chain and the P25p2 anchor are the RTL path's. */
     if (sync_type == DSD_SYNC_NONE) {
         int tolerant = frame_sync_try_tolerant_p25p1(ctx);
+#ifdef USE_RADIO
         if (tolerant == DSD_SYNC_NONE) {
             tolerant = frame_sync_try_tolerant_p25p2(ctx);
         }
+#endif
         if (tolerant != DSD_SYNC_NONE) {
             frame_sync_p25p1_anchor_note_accept(ctx->state, tolerant);
             frame_sync_p25p2_anchor_note_accept(ctx->state, tolerant);
         }
         return tolerant;
     }
-#endif
     return sync_type;
 }
 
@@ -3753,6 +3782,41 @@ frame_sync_history_keep(const frame_sync_runtime_ctx* rt, dsd_state* state) {
     carry->sps_hunt_idx = rt->history_sps_idx;
     carry->rf_mod = rt->history_rf_mod;
     carry->tune_generation = rt->history_tune_gen;
+    /* The exit ended the pass: the next call starts a new one. */
+    carry->pass_symbols = 0;
+    carry->valid = 1;
+}
+
+void
+frame_sync_history_carry_symbols(dsd_state* state, int symbols, int pass_symbols) {
+    dsd_frame_sync_history_carry* carry = &state->frame_sync_carry;
+    int count = symbols < FRAME_SYNC_HISTORY_CAPACITY ? symbols : FRAME_SYNC_HISTORY_CAPACITY;
+    if (count > dsd_symbol_history_count(state)) {
+        count = dsd_symbol_history_count(state);
+    }
+    if (count <= 0 || dsd_frame_sync_off_thread_tune_pending()) {
+        carry->valid = 0;
+        return;
+    }
+    /* The C4FM hunt's window dibits, oldest first (frame_sync_symbol_to_dibit()): the sign of each symbol as read. */
+    for (int i = 0; i < count; i++) {
+        carry->dibits[i] = dsd_symbol_history_get_back(state, count - 1 - i) > 0.0f ? '1' : '3';
+    }
+    carry->head = count % FRAME_SYNC_HISTORY_CAPACITY;
+    carry->count = count;
+    const int levels = count < DSD_FRAME_SYNC_HISTORY_CARRY_LEVELS ? count : DSD_FRAME_SYNC_HISTORY_CARRY_LEVELS;
+    for (int i = 0; i < levels; i++) {
+        carry->levels[i] = dsd_symbol_history_get_back(state, levels - 1 - i);
+    }
+    carry->level_count = levels;
+    carry->symbol_clock = state->symbol_clock;
+    carry->symbol_clock_epoch = state->symbol_clock_epoch;
+    carry->symbol_clock_input = state->symbol_clock_input;
+    carry->carrier_seq = state->carrier_seq;
+    carry->sps_hunt_idx = state->sps_hunt_idx;
+    carry->rf_mod = state->rf_mod;
+    carry->tune_generation = dsd_trunk_tuning_generation();
+    carry->pass_symbols = pass_symbols;
     carry->valid = 1;
 }
 
@@ -3790,6 +3854,7 @@ frame_sync_history_resume(frame_sync_runtime_ctx* rt, dsd_state* state) {
     rt->history_head = carry->head;
     rt->history_count = carry->count;
     frame_sync_levels_rewrap(rt, carry->levels, carry->level_count);
+    rt->synctest_pos = carry->pass_symbols;
     rt->resumed = 1;
     rt->resume_clock = state->symbol_clock;
     rt->resume_epoch = state->symbol_clock_epoch;

@@ -248,33 +248,41 @@ p25p1_handle_nid_decode_failure(const dsd_opts* opts, dsd_state* state, uint8_t*
     state->debug_header_critical_errors++;
 }
 
-/* How the frame sync accepted the frame's sync word (dsd_frame_sync_p25p1_tolerant_nac()): @c nac is the anchor's NAC
-   when within the tolerance, -1 when exact. */
+/* How the frame sync accepted the frame's sync word (dsd_frame_sync_p25p1_sync_kind()): @c anchor_nac is the anchor's
+   NAC for an anchored word, -1 otherwise; @c errors what the word was off by (bits on CQPSK, signs on C4FM). */
 typedef struct {
-    int nac;
-    unsigned int bit_errors;
+    dsd_p25p1_sync_kind kind;
+    int anchor_nac;
+    unsigned int errors;
 } p25p1_sync_acceptance;
 
-/* The frame behind a sync word the hunt accepted within its tolerance decodes only when its NID passes the strict check
+/* The frame behind a sync word the hunt accepted within a tolerance decodes only when its NID is strict
+   (p25p1_nid_verdict_strict()), and behind an anchored word names the anchor's NAC too
    (p25p1_nid_verdict_passes_tolerant_sync()). One that does not may be no frame at all: it is dropped before anything
    takes its NID's NAC, and counts nowhere, as a sync the exact hunt never accepted would. */
 static int
-p25p1_tolerant_sync_dropped(const dsd_opts* opts, const p25p1_sync_acceptance* sync, const p25p1_nid_verdict* verdict) {
-    if (sync->nac < 0) {
+p25p1_tolerant_sync_dropped(const dsd_opts* opts, const dsd_state* state, const p25p1_sync_acceptance* sync,
+                            const p25p1_nid_verdict* verdict) {
+    if (sync->kind == DSD_P25P1_SYNC_EXACT) {
         return 0;
     }
-    if (!p25p1_nid_verdict_passes_tolerant_sync(verdict, sync->nac)) {
+    const int passes = sync->kind == DSD_P25P1_SYNC_ANCHORED
+                           ? p25p1_nid_verdict_passes_tolerant_sync(verdict, sync->anchor_nac)
+                           : p25p1_nid_verdict_strict(verdict);
+    const char* kind = sync->kind == DSD_P25P1_SYNC_ACQUISITION ? "acquisition" : "tolerant";
+    const char* unit = state->rf_mod == 0 ? "sign" : "bit";
+    if (!passes) {
         if (opts->verbose > 1 && verdict->disposition == P25P1_NID_REJECTED) {
-            DSD_FPRINTF(stderr, " [tolerant sync, %u bit errors, dropped: NID failed]\n", sync->bit_errors);
+            DSD_FPRINTF(stderr, " [%s sync, %u %s errors, dropped: NID failed]\n", kind, sync->errors, unit);
         } else if (opts->verbose > 1) {
-            DSD_FPRINTF(stderr, " [tolerant sync, %u bit errors, dropped: NAC %03X, %d corrections, parity %s%s]\n",
-                        sync->bit_errors, (unsigned int)verdict->nac, verdict->corrections,
+            DSD_FPRINTF(stderr, " [%s sync, %u %s errors, dropped: NAC %03X, %d corrections, parity %s%s]\n", kind,
+                        sync->errors, unit, (unsigned int)verdict->nac, verdict->corrections,
                         verdict->parity_agreed ? "agreed" : "disagreed", verdict->nac_borrowed ? ", borrowed" : "");
         }
         return 1;
     }
     if (opts->verbose > 1) {
-        DSD_FPRINTF(stderr, " [tolerant sync, %u bit errors]", sync->bit_errors);
+        DSD_FPRINTF(stderr, " [%s sync, %u %s errors]", kind, sync->errors, unit);
     }
     return 0;
 }
@@ -313,9 +321,13 @@ p25p1_decode_nid_and_duid(dsd_opts* opts, dsd_state* state, const p25p1_sync_acc
        the next NID. */
     const p25p1_nid_verdict verdict = p25p1_nid_verdict_classify(state, &decoded);
     *out_verdict = verdict;
-    if (p25p1_tolerant_sync_dropped(opts, sync, &verdict)) {
+    if (p25p1_tolerant_sync_dropped(opts, state, sync, &verdict)) {
         *out_dropped = 1;
         return P25P1_DUID_INVALID;
+    }
+    /* processFrame() leaves the received identity to a tolerant word's NID: past the strict check the frame is P25's. */
+    if (sync->kind != DSD_P25P1_SYNC_EXACT) {
+        dsd_rxid_note_sync(state, state->synctype);
     }
     p25p1_nid_verdict_commit(state, &verdict);
     if (verdict.disposition == P25P1_NID_ACCEPTED) {
@@ -572,7 +584,7 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     const uint64_t tune_generation = dsd_trunk_tuning_generation();
     p25_status_accum_reset(state);
     p25p1_sync_acceptance sync;
-    sync.nac = dsd_frame_sync_p25p1_tolerant_nac(state, &sync.bit_errors);
+    sync.kind = dsd_frame_sync_p25p1_sync_kind(state, &sync.anchor_nac, &sync.errors);
     p25p1_nid_verdict verdict;
     DSD_MEMSET(&verdict, 0, sizeof(verdict));
     int dropped = 0;
@@ -584,8 +596,10 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
         return DSD_FRAME_VERDICT_WITHHELD;
     }
     /* A tolerant sync whose NID failed the strict check: no frame, so no evidence about the demodulator or the profile
-       either, not even inside a window of NIDs that decoded, and the hunt resumes past the NID it read. */
+       either, not even inside a window of NIDs that decoded. What its accept changed goes back, and the hunt resumes
+       from the symbols the word and its NID took (on the C4FM chain). */
     if (dropped) {
+        dsd_frame_sync_p25p1_candidate_rejected(state);
         (void)dsd_frame_sync_p25p1_frame_decoded(state, -1, 0U);
         return DSD_FRAME_VERDICT_UNPRODUCTIVE;
     }

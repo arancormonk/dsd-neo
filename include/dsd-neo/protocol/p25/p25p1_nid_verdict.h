@@ -118,9 +118,18 @@ p25p1_nid_duid_defined(uint8_t duid) {
 int p25p1_nid_verdict_validates(const p25p1_nid_verdict* verdict);
 
 /**
- * @brief Whether @p verdict lets the frame behind a tolerant sync word decode: it validates, its parity agrees (NID_OK),
- * it needed at most P25P1_NID_TOLERANT_SYNC_MAX_CORRECTIONS corrections, and it names @p anchor_nac, the NAC of the
- * frame the anchor was taken from. Anything else drops the frame.
+ * @brief Whether @p verdict is a strict NID, the one a frame behind a sync word the hunt accepted within a tolerance must
+ * have: it validates (p25p1_nid_verdict_validates(): accepted, unborrowed, a usable NAC, a defined DUID), its parity
+ * agrees (NID_OK, no parity override), and it needed at most P25P1_NID_TOLERANT_SYNC_MAX_CORRECTIONS corrections, BCH
+ * and soft flips together (so no soft recovery past the BCH radius). A word accepted hunt-wide on the C4FM chain, with no
+ * anchor, needs this alone.
+ */
+int p25p1_nid_verdict_strict(const p25p1_nid_verdict* verdict);
+
+/**
+ * @brief Whether @p verdict lets the frame behind a sync word accepted within the tolerance at the anchor's expected
+ * position decode: a strict NID (p25p1_nid_verdict_strict()) that names @p anchor_nac, the NAC of the frame the anchor
+ * was taken from. Anything else drops the frame.
  */
 int p25p1_nid_verdict_passes_tolerant_sync(const p25p1_nid_verdict* verdict, int anchor_nac);
 

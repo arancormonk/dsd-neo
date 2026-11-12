@@ -252,6 +252,10 @@ typedef struct {
     uint64_t tune_generation; /* dsd_trunk_tuning_generation() when the history began */
     int sps_hunt_idx;
     int rf_mod;
+    /* Where in its matchless pass the next call starts (getFrameSync()'s pass position): 0 after a no-sync exit, which
+       ends a pass; after a dropped P25p1 candidate the pass the candidate interrupted, with its symbols, so the hunt's
+       no-sync timing runs as if the candidate had never been taken. */
+    int pass_symbols;
     /* Bumped by every drop (dsd_state_forget_sync_join_histories()); a call that saw it move keeps nothing. The P25
        Phase 1 carrier NAC (dsd_p25p1_carrier_nac) reads it too, as the same stream boundary. */
     uint32_t drops;
@@ -295,7 +299,8 @@ typedef struct dsd_p25_sync_context {
 /* The P25 Phase 1 sync anchor: where the data unit after the last validated one starts (src/dsp/
  * frame_sync_p25p1_anchor.c). On a continuous outbound carrier every data unit is padded to whole 36-dibit segments
  * and the next one's sync starts where it ends (TIA-102.BAAA-A 8.2), so the hunt, which matches sync words exactly,
- * may there accept one within DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS bit errors, on the RTL CQPSK 4800/4 path only.
+ * may there accept one within DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS bit errors on the RTL CQPSK 4800/4 path, or
+ * DSD_P25P1_C4FM_ANCHORED_MAX_SIGN_ERRORS sign errors on the C4FM chain's 4800/4 hunt.
  * Installed when a frame validates (its NID decoded unborrowed, within the BCH radius, naming a usable NAC and a
  * defined DUID, accepted by the NAC rule), from the sync-time context the frame sync captured when it accepted that
  * frame's sync, and only when the stream is still that one. Spent by the first window the hunt reaches at or past the
@@ -310,15 +315,60 @@ typedef struct {
     uint8_t valid;
     /* The sync of the frame being decoded, as the frame sync accepted it, until its dispatcher reports the frame. */
     dsd_p25_sync_context frame;
-    uint16_t frame_nac;      /* a tolerant sync's: the NAC its frame's NID must name, the anchor's */
-    uint8_t frame_valid;     /* captured, with no off-thread tune pending */
-    uint8_t frame_tolerant;  /* accepted within the tolerance: stands until the frame is reported, whatever else goes */
-    uint8_t sync_bit_errors; /* bits its sync word was off by: 0 for an exact (normal, inverted, rotated) match */
-    /* Diagnostics, never reset: tolerant syncs the frame sync accepted, and those whose NID passed the dispatcher's
-       strict check (counted when the dispatcher reports the frame). */
+    uint16_t frame_nac;  /* an anchored sync's: the NAC its frame's NID must name, the anchor's */
+    uint8_t frame_valid; /* captured, with no off-thread tune pending */
+    /* How the sync was accepted (dsd_p25p1_sync_kind): stands until the frame is reported, whatever else goes. */
+    uint8_t frame_kind;
+    /* What its sync word was off by: bits on the CQPSK chain, signs on the C4FM chain, 0 for an exact match. */
+    uint8_t sync_bit_errors;
+    /* Diagnostics, never reset: tolerant syncs the frame sync accepted (at the anchor, and hunt-wide on C4FM), and
+       those whose NID passed the dispatcher's strict check (counted when the dispatcher reports the frame). */
     uint32_t tolerant_syncs;
     uint32_t tolerant_frames;
+    uint32_t acquisition_syncs;
+    uint32_t acquisition_frames;
+    /* The last P25p1 frame reported was dropped behind a tolerant word (dsd_frame_sync_p25p1_candidate_rejected()),
+       until the next accepted sync of any protocol: it synced nothing the engine may count
+       (dsd_state_p25p1_frame_dropped()). */
+    uint8_t frame_dropped;
 } dsd_p25p1_sync_anchor;
+
+/* What a P25 Phase 1 sync word the C4FM hunt accepted within a tolerance changed before its NID could say whether it
+ * was a word at all, as it stood before the accept (frame_sync_accept_p25p1()): the slicer levels its lock and warm
+ * start rewrote (the NID is read on them, a calibration on trial), whether the warm start set them (which decides
+ * whether the frame holds them) and the crossing it dropped, the carrier flag, offset and lastsynctype, the P25p1 frame
+ * span that stands NXDN96 and M17 down, the DMR slot 2 burst, ALG ID and stereo state and the frame type label the
+ * accept writes, the CQPSK dibit map the try set, and the frame NAC the NID read cleared. Put back when the dispatcher
+ * drops the frame on the stream it was accepted on (dsd_frame_sync_p25p1_candidate_rejected()); a frame that validates
+ * keeps what the accept wrote. The hunt's pass position at the accept goes with it, for the hunt to go on from. Written
+ * and read by the frame sync; decoder-thread private. */
+typedef struct {
+    float max;
+    float min;
+    float center;
+    float umid;
+    float lmid;
+    float maxref;
+    float minref;
+    float maxbuf[1024]; /* dsd_state::maxbuf, minbuf, midx: the windows the warm start fills */
+    float minbuf[1024];
+    int midx;
+    int jitter;
+    int carrier;
+    int offset;
+    int lastsynctype;
+    unsigned int dmrburstR;
+    int payload_algidR;
+    short int dmr_stereo;
+    char ftype[16];
+    uint32_t c4fm_frame_symbolcnt;
+    int pass_symbols; /* the hunt's pass position at the word's last symbol (dsd_frame_sync_history_carry) */
+    uint8_t c4fm_frame_valid;
+    uint8_t c4fm_sync_levels; /* dsd_state::p25_p1_c4fm_sync_levels */
+    uint8_t p25_cqpsk_dibit_map_idx;
+    uint8_t p25_frame_nac_valid;
+    uint8_t valid; /* held for the frame being decoded */
+} dsd_p25p1_sync_candidate;
 
 /* The P25 Phase 2 sync anchor: where the window after the last one a received I-ISCH placed starts (src/dsp/
  * frame_sync_p25p2_anchor.c). processP2() reads four timeslots after each 20-dibit sync, and on a continuous carrier the
@@ -2177,6 +2227,7 @@ struct dsd_state {
     dsd_p25p1_carrier_nac p25_p1_carrier_nac;
     /* Where the P25p1 data unit after the last validated one starts, and the sync of the frame being decoded. */
     dsd_p25p1_sync_anchor p25_p1_sync_anchor;
+    dsd_p25p1_sync_candidate p25_p1_sync_candidate;
     /* Where the P25p2 window after the last one an I-ISCH placed starts, and the sync of the window being decoded. */
     dsd_p25p2_sync_anchor p25_p2_sync_anchor;
     /* The length in dibits of the P25p1 data unit being decoded as its decoder read it, for a TSDU (its block count, by
@@ -3074,6 +3125,15 @@ static inline void
 dsd_state_forget_p25p1_sync_anchor(dsd_state* state) {
     state->p25_p1_sync_anchor.valid = 0U;
     state->p25_p1_sync_anchor.frame_valid = 0U;
+    state->p25_p1_sync_candidate.valid = 0U;
+}
+
+/* Whether the last P25 Phase 1 frame was dropped behind a sync word accepted within a tolerance, until the next
+   accepted sync of any protocol (dsd_p25p1_sync_anchor::frame_dropped): it synced nothing, so a scanner counts no sync
+   for it (the -Y voice gate's first sync on a row). */
+static inline int
+dsd_state_p25p1_frame_dropped(const dsd_state* state) {
+    return state != NULL && state->p25_p1_sync_anchor.frame_dropped != 0U;
 }
 
 /* The P25 Phase 2 sync anchor goes, with the sync context of a window being decoded: the next window's sync is matched

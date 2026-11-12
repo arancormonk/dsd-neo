@@ -1070,8 +1070,15 @@ Notes
   corrections) and names the same NAC; otherwise it is dropped unseen. Every other word, the first after a gap,
   a tune or a lost frame included, must match exactly, as before. The console marks these frames
   `[tolerant sync, n bit errors]` (`[tolerant sync, n bit errors, dropped: ...]` with what the NID was, when it
-  failed the check). C4FM, symbol files and audio inputs
-  are unchanged.
+  failed the check).
+- P25 Phase 1 on C4FM (any input: a radio, `--iq-replay`, audio from a file, Pulse, UDP or TCP, or a symbol file; any
+  build) does the same at the same one place, counted in symbol signs: up to 6 of the word's 24 symbols may come
+  through on the wrong side of zero. The NID check is the same, and so is the console mark, with `sign errors` in
+  place of `bit errors`. A dropped frame leaves nothing behind but its console lines: the slicer levels, the lock, the
+  guard that keeps NXDN96 and M17 from matching inside a P25 frame and the DMR slot 2 state go back to what they were,
+  the system shown for another protocol's carrier stays, and a `-Y` row that scans for voice does not count it as the
+  row's first sync. The search goes on from the symbols that word and its NID took, so a real sync word that starts
+  among them and ends after them (another P25 word, NXDN, YSF, M17; not DMR) is still found.
 - P25 Phase 2 on CQPSK from a radio or `--iq-replay` input does the same for its sync word, with up to 4 of its 40 bits
   wrong, at one place only: right where the next four timeslots must start after four timeslots whose own ISCH said
   where in the superframe they were, on the same carrier, tune and stream. The four timeslots behind such a word decode

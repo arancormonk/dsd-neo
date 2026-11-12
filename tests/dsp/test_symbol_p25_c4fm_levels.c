@@ -311,7 +311,7 @@ run_case(const level_case* c, const stream* s, const char* wav_path, unit_levels
         state->lastsynctype = synctype;
         frame_sync_p25p1_c4fm_warm_start(r.opts, state);
         assert(state->p25_p1_c4fm_sync_levels == (c->warm_start_off ? 0U : 1U));
-        frame_sync_p25p1_anchor_note_sync(state, synctype, -1, 0);
+        frame_sync_p25p1_anchor_note_sync(state, synctype, DSD_P25P1_SYNC_EXACT, -1, 0);
         DSD_MEMSET(&out[u], 0, sizeof(out[u]));
         const float sync_max = state->max;
         for (int m = 24; m < k_units[u]->symbols; m++) {

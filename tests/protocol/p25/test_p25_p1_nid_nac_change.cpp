@@ -756,6 +756,14 @@ dsd_symbol_arm_hunt_sync_anchor(dsd_state* state) {
     (void)state;
 }
 
+/* A dropped C4FM candidate hands the hunt the symbols it took (the real one is the frame sync's). */
+void
+frame_sync_history_carry_symbols(dsd_state* state, int symbols, int pass_symbols) {
+    (void)state;
+    (void)symbols;
+    (void)pass_symbols;
+}
+
 void
 dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype) {
     (void)opts;

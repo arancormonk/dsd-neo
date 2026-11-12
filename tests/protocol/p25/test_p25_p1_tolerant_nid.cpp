@@ -26,6 +26,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include "p25_nid_generator.hpp"
 extern "C" {
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/frame.h>
@@ -50,6 +51,10 @@ extern "C" {
 extern "C" dsd_frame_verdict dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state);
 
 static int g_failures;
+/* The symbols the last dropped C4FM candidate handed the hunt (frame_sync_history_carry_symbols()), -1 for none. */
+static int g_carried_symbols = -1;
+/* The pass position it handed with them. */
+static int g_carried_pass = -1;
 
 #define CHECK(cond)                                                                                                    \
     do {                                                                                                               \
@@ -58,6 +63,13 @@ static int g_failures;
             g_failures++;                                                                                              \
         }                                                                                                              \
     } while (0)
+
+/* The NAC an anchored frame's NID must name, -1 behind any other sync. */
+static int
+anchored_nac(const dsd_state* state, unsigned int* out_errors) {
+    int nac = -1;
+    return dsd_frame_sync_p25p1_sync_kind(state, &nac, out_errors) == DSD_P25P1_SYNC_ANCHORED ? nac : -1;
+}
 
 enum {
     DUID_HDU = 0x0,
@@ -156,7 +168,9 @@ decode_alone(const nid_air* nid, int observed_nac) {
 static dsd_frame_verdict
 dispatch_frame(dsd_opts* opts, dsd_state* state, const nid_air* nid, int anchor_nac) {
     state->symbol_clock = SYNC_AT + 24;
-    frame_sync_p25p1_anchor_note_sync(state, DSD_SYNC_P25P1_POS, anchor_nac, anchor_nac >= 0 ? 3 : 0);
+    frame_sync_p25p1_anchor_note_sync(state, DSD_SYNC_P25P1_POS,
+                                      anchor_nac >= 0 ? DSD_P25P1_SYNC_ANCHORED : DSD_P25P1_SYNC_EXACT, anchor_nac,
+                                      anchor_nac >= 0 ? 3 : 0);
     state->symbol_clock = SYNC_AT + 24 + NID_DIBITS;
     load_nid(nid);
     state->synctype = DSD_SYNC_P25P1_POS;
@@ -214,7 +228,7 @@ test_clean_nid_decodes(void) {
         CHECK(state->p25_p1_nid_evidence_symbolcnt == state->symbolcnt);
         CHECK(state->p25_p1_sync_anchor.valid == 1U);
         CHECK(state->p25_p1_sync_anchor.expected_clock == (uint64_t)SYNC_AT + P25P1_LDU_DIBITS);
-        CHECK(dsd_frame_sync_p25p1_tolerant_nac(state, NULL) == -1);
+        CHECK(anchored_nac(state, NULL) == -1);
         free(state);
         free(opts);
     }
@@ -253,7 +267,7 @@ expect_dropped(dsd_opts* opts, dsd_state* state, const nid_air* nid) {
     CHECK(state->tdma_carrier == 1U);
     CHECK(state->p25_p1_sync_anchor.valid == 0U);
     CHECK(state->p25_p1_sync_anchor.tolerant_frames == 0U);
-    CHECK(dsd_frame_sync_p25p1_tolerant_nac(state, NULL) == -1);
+    CHECK(anchored_nac(state, NULL) == -1);
 }
 
 /* Behind a tolerant word anything short of a clean NID of the anchor's NAC drops the frame: the parity bit disagreeing,
@@ -417,8 +431,66 @@ test_unvalidated_frames_anchor_nothing(void) {
     free(opts);
 }
 
+/* The frame sync accepted the frame's sync word at SYNC_AT within a tolerance on the C4FM chain (@p kind, the anchor's
+   NAC @p anchor_nac for an anchored one), holding what its accept then wrote (frame_sync_p25p1_candidate_hold()): here
+   the lock and lastsynctype over a carrier the hunt had lost. The dispatcher reads its NID. */
+static dsd_frame_verdict
+dispatch_held_candidate(dsd_opts* opts, dsd_state* state, const nid_air* nid, int kind, int anchor_nac) {
+    state->carrier = 0;
+    state->lastsynctype = DSD_SYNC_NONE;
+    state->symbol_clock = SYNC_AT + 24;
+    frame_sync_p25p1_candidate_hold(state, 700);
+    state->carrier = 1;
+    state->lastsynctype = DSD_SYNC_P25P1_POS;
+    frame_sync_p25p1_anchor_note_sync(state, DSD_SYNC_P25P1_POS, kind, anchor_nac, 2);
+    state->symbol_clock = SYNC_AT + 24 + NID_DIBITS;
+    load_nid(nid);
+    state->synctype = DSD_SYNC_P25P1_POS;
+    g_frames = 0;
+    g_ldu1_frames = 0;
+    g_carried_symbols = -1;
+    g_carried_pass = -1;
+    state->sps_hunt_counter = 900;
+    return dsd_dispatch_handle_p25p1(opts, state);
+}
+
+/* A candidate the strict check drops puts back what its accept wrote, and hands the hunt the word's and the NID's
+   symbols to go on from; one whose NID passes keeps it all and hands nothing. */
+static void
+test_dropped_candidate_is_put_back(void) {
+    dsd_opts* opts = new_opts();
+    dsd_state* state = new_state(opts);
+    /* A DMR carrier's identity stands (as under -fa): a candidate that is no P25 frame replaces none of it. */
+    dsd_rxid_note_sync(state, DSD_SYNC_DMR_BS_DATA_POS);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 3U);
+    const nid_air other = nid_with_errors(0x0E1, DUID_LDU1, 0);
+    CHECK(dispatch_held_candidate(opts, state, &other, DSD_P25P1_SYNC_ANCHORED, NAC) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    CHECK(g_frames == 0);
+    CHECK(state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_DMR && state->rx_id.valid == DSD_RXID_ACCESS);
+    CHECK(dsd_state_p25p1_frame_dropped(state));
+    CHECK(state->carrier == 0 && state->lastsynctype == DSD_SYNC_NONE);
+    CHECK(g_carried_symbols == 24 + NID_DIBITS);
+    /* The word's last symbol (which the accept returned on) and the NID's are the hunt's: charged to its dwell, its pass
+       going on past them. */
+    CHECK(g_carried_pass == 701 + NID_DIBITS && state->sps_hunt_counter == 901 + NID_DIBITS);
+    CHECK(state->p25_p1_sync_candidate.valid == 0U);
+
+    const nid_air own = nid_with_errors(NAC, DUID_LDU1, 2);
+    CHECK(dispatch_held_candidate(opts, state, &own, DSD_P25P1_SYNC_ANCHORED, NAC) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    CHECK(g_ldu1_frames == 1);
+    /* Past the strict check the frame is P25's: the dispatcher replaces the identity, and the NID names its NAC. */
+    CHECK(state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_P25 && state->rx_id.access == (uint16_t)NAC);
+    CHECK(!dsd_state_p25p1_frame_dropped(state));
+    CHECK(state->carrier == 1 && state->lastsynctype == DSD_SYNC_P25P1_POS);
+    CHECK(g_carried_symbols == -1 && state->sps_hunt_counter == 900);
+    CHECK(state->p25_p1_sync_candidate.valid == 0U);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
+    test_dropped_candidate_is_put_back();
     test_clean_nid_decodes();
     test_strict_nid_drops();
     test_validated_frames_anchor_at_their_length();
@@ -476,6 +548,14 @@ dsd_symbol_note_p25p1_sync_anchor(dsd_state* state, const char* sync_dibits, int
 void
 dsd_symbol_arm_hunt_sync_anchor(dsd_state* state) {
     (void)state;
+}
+
+/* A dropped C4FM candidate hands the hunt the symbols it took (the real one is the frame sync's): what it was asked. */
+void
+frame_sync_history_carry_symbols(dsd_state* state, int symbols, int pass_symbols) {
+    (void)state;
+    g_carried_symbols = symbols;
+    g_carried_pass = pass_symbols;
 }
 
 void

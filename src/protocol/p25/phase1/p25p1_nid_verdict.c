@@ -101,10 +101,15 @@ p25p1_nid_verdict_validates(const p25p1_nid_verdict* verdict) {
 }
 
 int
-p25p1_nid_verdict_passes_tolerant_sync(const p25p1_nid_verdict* verdict, int anchor_nac) {
+p25p1_nid_verdict_strict(const p25p1_nid_verdict* verdict) {
     /* A tolerant word one symbol off its real position reads a NID one symbol off too, which the BCH can still take for
        a codeword of the carrier's own NAC with its parity bit disagreeing (TIA-102.BAAA-A puts the parity after the
-       BCH word): only a clean decode of the anchor's NAC is the next data unit's. */
+       BCH word): only a clean decode is a data unit's. */
     return p25p1_nid_verdict_validates(verdict) && verdict->parity_agreed
-           && verdict->corrections <= P25P1_NID_TOLERANT_SYNC_MAX_CORRECTIONS && verdict->nac == anchor_nac;
+           && verdict->corrections <= P25P1_NID_TOLERANT_SYNC_MAX_CORRECTIONS;
+}
+
+int
+p25p1_nid_verdict_passes_tolerant_sync(const p25p1_nid_verdict* verdict, int anchor_nac) {
+    return p25p1_nid_verdict_strict(verdict) && verdict->nac == anchor_nac;
 }

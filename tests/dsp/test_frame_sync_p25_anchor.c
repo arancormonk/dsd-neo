@@ -54,6 +54,13 @@ word_with_bit_errors(const char* word, int bits, char out[SYNC_DIBITS + 1]) {
 }
 
 #ifdef USE_RADIO
+/* The NAC an anchored frame's NID must name, -1 behind any other sync. */
+static int
+anchored_nac(const dsd_state* state, unsigned int* out_errors) {
+    int nac = -1;
+    return dsd_frame_sync_p25p1_sync_kind(state, &nac, out_errors) == DSD_P25P1_SYNC_ANCHORED ? nac : -1;
+}
+
 /* The window @p window (24 dibits) as the one the hunt reads when its first dibit is @p start on the symbol clock. */
 static int
 match_at(dsd_opts* opts, dsd_state* state, const char* window, uint64_t start) {
@@ -101,7 +108,7 @@ static void
 validated_frame(dsd_opts* opts, dsd_state* state, uint64_t sync_start, uint32_t unit, uint32_t consumed, int nac) {
     assert(match_at(opts, state, P25P1_SYNC, sync_start) == DSD_SYNC_P25P1_POS);
     unsigned int bit_errors = 99U;
-    assert(dsd_frame_sync_p25p1_tolerant_nac(state, &bit_errors) == -1);
+    assert(anchored_nac(state, &bit_errors) == -1);
     assert(bit_errors == 0U);
     state->symbol_clock = sync_start + consumed;
     dsd_frame_sync_p25p1_frame_decoded(state, nac, unit);
@@ -185,7 +192,7 @@ test_expected_position_threshold(void) {
     state.dmrburstR = 0;
     assert(match_at(&opts, &state, window, EXPECTED) == DSD_SYNC_P25P1_POS);
     unsigned int bit_errors = 0U;
-    assert(dsd_frame_sync_p25p1_tolerant_nac(&state, &bit_errors) == NAC);
+    assert(anchored_nac(&state, &bit_errors) == NAC);
     assert(bit_errors == DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS);
     assert(state.p25_p1_sync_anchor.tolerant_syncs == 1U);
     assert(state.p25_p1_sync_anchor.valid == 0U);
@@ -227,7 +234,7 @@ test_other_positions_exact_only(void) {
         /* Before the expected position the anchor waits for it; at or past it, it is spent. */
         assert(state.p25_p1_sync_anchor.valid == (offsets[i] < 0 ? 1U : 0U));
         assert(match_at(&opts, &state, P25P1_SYNC, (uint64_t)(EXPECTED + offsets[i])) == DSD_SYNC_P25P1_POS);
-        assert(dsd_frame_sync_p25p1_tolerant_nac(&state, NULL) == -1);
+        assert(anchored_nac(&state, NULL) == -1);
         /* Any accepted sync spends it. */
         assert(state.p25_p1_sync_anchor.valid == 0U);
         teardown(&state);
@@ -296,7 +303,7 @@ test_slips_with_real_neighbours(void) {
             } else {
                 assert(found == EXPECTED + slips[s]);
                 assert(sync == DSD_SYNC_P25P1_POS);
-                assert(dsd_frame_sync_p25p1_tolerant_nac(&state, NULL) == -1);
+                assert(anchored_nac(&state, NULL) == -1);
             }
             teardown(&state);
         }
@@ -350,7 +357,7 @@ test_late_exact_word_of_any_map_wins(void) {
                 int sync = DSD_SYNC_NONE;
                 const long found = hunt(&opts, &state, stream, len, (uint64_t)(EXPECTED - LEAD), &sync);
                 assert(state.p25_p1_sync_anchor.tolerant_syncs == 0U);
-                assert(dsd_frame_sync_p25p1_tolerant_nac(&state, NULL) == -1);
+                assert(anchored_nac(&state, NULL) == -1);
                 if (maps[m] == DSD_P25_CQPSK_DIBIT_MAP_IDENTITY || maps[m] == DSD_P25_CQPSK_DIBIT_MAP_X2400) {
                     assert(found == EXPECTED + k);
                     assert(sync == (inverted ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS));
@@ -556,7 +563,7 @@ test_slipped_corrupted_word_one_symbol_early(void) {
     setup(&opts, &state);
     anchored(&opts, &state);
     assert(match_at(&opts, &state, window, EXPECTED) == DSD_SYNC_P25P1_POS);
-    assert(dsd_frame_sync_p25p1_tolerant_nac(&state, NULL) == NAC);
+    assert(anchored_nac(&state, NULL) == NAC);
     teardown(&state);
 }
 
@@ -589,12 +596,12 @@ test_exact_matcher_of_another_protocol_wins(void) {
         if (locked) {
             assert(sync == DSD_SYNC_NXDN_NEG);
             assert(state.p25_p1_sync_anchor.tolerant_syncs == 0U);
-            assert(dsd_frame_sync_p25p1_tolerant_nac(&state, NULL) == -1);
+            assert(anchored_nac(&state, NULL) == -1);
             assert(state.lastsynctype == DSD_SYNC_NXDN_NEG);
         } else {
             assert(sync == DSD_SYNC_P25P1_POS);
             assert(state.p25_p1_sync_anchor.tolerant_syncs == 1U);
-            assert(dsd_frame_sync_p25p1_tolerant_nac(&state, NULL) == OTHER_NAC);
+            assert(anchored_nac(&state, NULL) == OTHER_NAC);
             assert(state.lastsynctype == DSD_SYNC_P25P1_POS);
         }
         teardown(&state);
@@ -805,7 +812,7 @@ test_installation(void) {
     assert(match_at(&opts, &state, window, EXPECTED) == DSD_SYNC_P25P1_POS);
     state.symbol_clock = EXPECTED + 864;
     dsd_frame_sync_p25p1_frame_decoded(&state, NAC, 864);
-    assert(dsd_frame_sync_p25p1_tolerant_nac(&state, NULL) == -1);
+    assert(anchored_nac(&state, NULL) == -1);
     assert(state.p25_p1_sync_anchor.valid == 1U && state.p25_p1_sync_anchor.expected_clock == EXPECTED + 864);
     validated_frame(&opts, &state, EXPECTED + 864, 396, 396, 0x2A1);
     assert(state.p25_p1_sync_anchor.valid == 1U && state.p25_p1_sync_anchor.nac == 0x2A1);
@@ -823,7 +830,7 @@ test_map_and_polarity_follow_the_anchor(void) {
     /* The validated frame's sync was the inverted word under N1200 (the rotated matcher's accept). */
     state.p25_cqpsk_dibit_map_idx = DSD_P25_CQPSK_DIBIT_MAP_N1200;
     state.symbol_clock = ANCHOR_SYNC + SYNC_DIBITS;
-    frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_NEG, -1, 0);
+    frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_NEG, DSD_P25P1_SYNC_EXACT, -1, 0);
     state.symbol_clock = ANCHOR_SYNC + 158;
     dsd_frame_sync_p25p1_frame_decoded(&state, NAC, TSDU_1);
     assert(state.p25_p1_sync_anchor.valid == 1U);
@@ -843,7 +850,7 @@ test_map_and_polarity_follow_the_anchor(void) {
     assert(state.p25_cqpsk_dibit_map_idx == DSD_P25_CQPSK_DIBIT_MAP_N1200);
     assert(state.lastsynctype == DSD_SYNC_P25P1_NEG);
     unsigned int bit_errors = 0U;
-    assert(dsd_frame_sync_p25p1_tolerant_nac(&state, &bit_errors) == NAC);
+    assert(anchored_nac(&state, &bit_errors) == NAC);
     assert(bit_errors == 3U);
     assert(state.p25_p1_sync_anchor.frame.map_idx == DSD_P25_CQPSK_DIBIT_MAP_N1200);
     assert(state.p25_p1_sync_anchor.frame.inverted == 1U);

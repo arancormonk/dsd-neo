@@ -284,7 +284,7 @@ run_case(const grid_case* c, const stream* s, const char* wav_path, int anchored
         state.synctype = synctype;
         state.lastsynctype = synctype;
         if (anchored) {
-            frame_sync_p25p1_anchor_note_sync(&state, synctype, -1, 0);
+            frame_sync_p25p1_anchor_note_sync(&state, synctype, DSD_P25P1_SYNC_EXACT, -1, 0);
         }
         /* The unit's decoders, from the NID on. */
         double sum = 0.0;

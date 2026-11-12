@@ -4,10 +4,13 @@
  */
 
 /* The P25 Phase 1 sync anchor (dsd_p25p1_sync_anchor, <dsd-neo/dsp/p25p1_sync_anchor.h>): its sync-time context, its
- * installation, the position the hunt scores a tolerant word at, and the distance it scores. The matcher that accepts
- * a tolerant word is frame_sync_try_p25p1() in dsd_frame_sync.c. On the C4FM chain the same sync and the same report
- * place the symbol grid on each data unit's sync word (<dsd-neo/dsp/symbol_anchor.h>). */
+ * installation, the position the hunt scores a tolerant word at, and the distances it scores. The matcher that accepts
+ * a tolerant word is frame_sync_try_tolerant_p25p1() in dsd_frame_sync.c. On the C4FM
+ * chain the same sync and the same report place the symbol grid on each data unit's sync word
+ * (<dsd-neo/dsp/symbol_anchor.h>), and a tolerant candidate's accept is held until its NID speaks
+ * (dsd_p25p1_sync_candidate). */
 
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/sync_patterns.h>
@@ -31,6 +34,19 @@ dsd_p25p1_sync_bit_distance(const char* window, uint8_t map_idx, int inverted) {
     return frame_sync_p25_sync_bit_distance(window, inverted ? INV_P25P1_SYNC : P25P1_SYNC, P25P1_SYNC_DIBITS, map_idx);
 }
 
+int
+dsd_p25p1_sync_sign_distance(const char* window, int inverted) {
+    const char* word = inverted ? INV_P25P1_SYNC : P25P1_SYNC;
+    int errors = 0;
+    for (int i = 0; i < P25P1_SYNC_DIBITS; i++) {
+        if (window == NULL || window[i] == '\0') {
+            return P25P1_SYNC_DIBITS;
+        }
+        errors += window[i] != word[i];
+    }
+    return errors;
+}
+
 /* Whether @p ctx still describes the stream (frame_sync_p25_sync_context_holds()) with no off-thread tune awaiting
    reconciling. */
 static int
@@ -39,21 +55,23 @@ p25p1_anchor_context_current(const dsd_state* state, const dsd_p25_sync_context*
 }
 
 void
-frame_sync_p25p1_anchor_note_sync(dsd_state* state, int synctype, int tolerant_nac, int bit_errors) {
+frame_sync_p25p1_anchor_note_sync(dsd_state* state, int synctype, int kind, int anchor_nac, int errors) {
     dsd_p25p1_sync_anchor* rec = &state->p25_p1_sync_anchor;
-    /* Whether the sync was tolerant stands whatever becomes of the context: such a frame decodes only past the strict
-       check, which nothing may skip. */
-    rec->frame_tolerant = tolerant_nac >= 0 ? 1U : 0U;
-    rec->frame_nac = tolerant_nac >= 0 ? (uint16_t)tolerant_nac : 0U;
-    rec->sync_bit_errors = (uint8_t)bit_errors;
+    /* How the sync was accepted stands whatever becomes of the context: a tolerant one's frame decodes only past the
+       strict check, which nothing may skip. */
+    rec->frame_kind = (uint8_t)kind;
+    rec->frame_dropped = 0U;
+    rec->frame_nac = kind == DSD_P25P1_SYNC_ANCHORED && anchor_nac >= 0 ? (uint16_t)anchor_nac : 0U;
+    rec->sync_bit_errors = (uint8_t)errors;
     rec->frame_valid = 0U;
     /* On the C4FM chain the hunt's crossing loop leaves the grid a sample past the word's symbols, where the frame
        behind it would be read (docs/code_map.md, symbol anchor). The previous unit's report armed a recording at its
        end (dsd_frame_sync_p25p1_frame_decoded()), which starts on the word's first symbol, so the word is named from
        its second: the measurement needs a symbol of samples before the first centre it reads. The word that acquires
        a transmission has no recording behind it and is measured on the raw history the matched-filter seam keeps. A
-       word within the tolerance names nothing: until its NID validates it may be no word at all. */
-    if (tolerant_nac < 0 && state->rf_mod == 0) {
+       word within a tolerance names nothing, neither when accepted nor once its NID validates: until then it may be no
+       word at all, and by then the recording has moved past it, onto the NID. */
+    if (kind == DSD_P25P1_SYNC_EXACT && state->rf_mod == 0) {
         const char* word = synctype == DSD_SYNC_P25P1_NEG ? INV_P25P1_SYNC : P25P1_SYNC;
         dsd_symbol_note_p25p1_sync_anchor(state, word + 1, P25P1_SYNC_DIBITS - 1);
     }
@@ -73,8 +91,101 @@ frame_sync_p25p1_anchor_note_accept(dsd_state* state, int synctype) {
     state->p25_p1_sync_anchor.valid = 0U;
     if (!DSD_SYNC_IS_P25P1(synctype)) {
         state->p25_p1_sync_anchor.frame_valid = 0U;
-        state->p25_p1_sync_anchor.frame_tolerant = 0U;
+        state->p25_p1_sync_anchor.frame_kind = (uint8_t)DSD_P25P1_SYNC_EXACT;
+        state->p25_p1_sync_anchor.frame_dropped = 0U;
+        state->p25_p1_sync_candidate.valid = 0U;
     }
+}
+
+void
+frame_sync_p25p1_candidate_hold(dsd_state* state, int pass_symbols) {
+    dsd_p25p1_sync_candidate* held = &state->p25_p1_sync_candidate;
+    held->pass_symbols = pass_symbols;
+    held->max = state->max;
+    held->min = state->min;
+    held->center = state->center;
+    held->umid = state->umid;
+    held->lmid = state->lmid;
+    held->maxref = state->maxref;
+    held->minref = state->minref;
+    DSD_MEMCPY(held->maxbuf, state->maxbuf, sizeof(held->maxbuf));
+    DSD_MEMCPY(held->minbuf, state->minbuf, sizeof(held->minbuf));
+    held->midx = state->midx;
+    held->jitter = state->jitter;
+    held->carrier = state->carrier;
+    held->offset = state->offset;
+    held->lastsynctype = state->lastsynctype;
+    held->dmrburstR = state->dmrburstR;
+    held->payload_algidR = state->payload_algidR;
+    held->dmr_stereo = state->dmr_stereo;
+    DSD_MEMCPY(held->ftype, state->ftype, sizeof(held->ftype));
+    held->c4fm_frame_symbolcnt = state->p25_p1_c4fm_frame_symbolcnt;
+    held->c4fm_frame_valid = state->p25_p1_c4fm_frame_valid;
+    held->c4fm_sync_levels = state->p25_p1_c4fm_sync_levels;
+    held->p25_cqpsk_dibit_map_idx = state->p25_cqpsk_dibit_map_idx;
+    held->p25_frame_nac_valid = state->p25_frame_nac_valid;
+    /* Every other field the accept writes before the NID is read goes here and in p25p1_candidate_restore(), slicer
+       level state above all (docs/code_map.md, the C4FM item). */
+    held->valid = 1U;
+}
+
+/* Put back what the dropped candidate's accept changed (dsd_p25p1_sync_candidate). */
+static void
+p25p1_candidate_restore(dsd_state* state, const dsd_p25p1_sync_candidate* held) {
+    state->max = held->max;
+    state->min = held->min;
+    state->center = held->center;
+    state->umid = held->umid;
+    state->lmid = held->lmid;
+    state->maxref = held->maxref;
+    state->minref = held->minref;
+    DSD_MEMCPY(state->maxbuf, held->maxbuf, sizeof(state->maxbuf));
+    DSD_MEMCPY(state->minbuf, held->minbuf, sizeof(state->minbuf));
+    state->midx = held->midx;
+    dsd_state_invalidate_minmax_sums(state);
+    state->jitter = held->jitter;
+    state->carrier = held->carrier;
+    state->offset = held->offset;
+    state->lastsynctype = held->lastsynctype;
+    state->dmrburstR = held->dmrburstR;
+    state->payload_algidR = held->payload_algidR;
+    state->dmr_stereo = held->dmr_stereo;
+    DSD_MEMCPY(state->ftype, held->ftype, sizeof(state->ftype));
+    state->p25_p1_c4fm_frame_symbolcnt = held->c4fm_frame_symbolcnt;
+    state->p25_p1_c4fm_frame_valid = held->c4fm_frame_valid;
+    state->p25_p1_c4fm_sync_levels = held->c4fm_sync_levels;
+    state->p25_cqpsk_dibit_map_idx = held->p25_cqpsk_dibit_map_idx;
+    state->p25_frame_nac_valid = held->p25_frame_nac_valid;
+}
+
+void
+dsd_frame_sync_p25p1_candidate_rejected(dsd_state* state) {
+    dsd_p25p1_sync_anchor* rec = &state->p25_p1_sync_anchor;
+    dsd_p25p1_sync_candidate* held = &state->p25_p1_sync_candidate;
+    const int holding = held->valid != 0U;
+    held->valid = 0U;
+    /* Whatever chain it was read on, the frame synced nothing (dsd_state_p25p1_frame_dropped()). */
+    rec->frame_dropped = 1U;
+    /* Off the stream the word was accepted on (a tune, a flush, a new input) nothing of the old one is worth putting
+       back, and its symbols are not the next call's to hunt. */
+    if (!holding || rec->frame_kind == (uint8_t)DSD_P25P1_SYNC_EXACT || !rec->frame_valid
+        || !p25p1_anchor_context_current(state, &rec->frame) || state->symbol_clock < rec->frame.sync_clock) {
+        return;
+    }
+    p25p1_candidate_restore(state, held);
+    /* The word and the NID read behind it took symbols the hunt never scored as windows of their own: one where a real
+       sync word ends after the NID (an NXDN96 FSW, an M17 word, the P25 word the candidate's head swallowed) is matched
+       as the hunt goes on. One that ended inside them is lost (docs/code_map.md, the C4FM tolerance's budget). The
+       symbols the hunt did not count (the window's last, which the accept returned on, and the NID's) are charged to it
+       as its own and its pass goes on past them, so the profile's dwell and the no-sync exits fall where they would have
+       without the candidate. */
+    const uint64_t taken64 = state->symbol_clock - rec->frame.sync_clock;
+    const int taken = taken64 > (uint64_t)INT32_MAX ? INT32_MAX : (int)taken64;
+    const int read_after = taken >= P25P1_SYNC_DIBITS ? taken - (P25P1_SYNC_DIBITS - 1) : 0;
+    state->sps_hunt_counter =
+        state->sps_hunt_counter < INT32_MAX - read_after ? state->sps_hunt_counter + read_after : INT32_MAX;
+    frame_sync_history_carry_symbols(
+        state, taken, held->pass_symbols < INT32_MAX - read_after ? held->pass_symbols + read_after : INT32_MAX);
 }
 
 int
@@ -98,13 +209,20 @@ frame_sync_p25p1_anchor_take(dsd_state* state, uint8_t* out_map_idx, int* out_in
     return 1;
 }
 
-int
-dsd_frame_sync_p25p1_tolerant_nac(const dsd_state* state, unsigned int* out_bit_errors) {
+dsd_p25p1_sync_kind
+dsd_frame_sync_p25p1_sync_kind(const dsd_state* state, int* out_anchor_nac, unsigned int* out_errors) {
     const dsd_p25p1_sync_anchor* rec = &state->p25_p1_sync_anchor;
-    if (out_bit_errors != NULL) {
-        *out_bit_errors = rec->sync_bit_errors;
+    const dsd_p25p1_sync_kind kind = rec->frame_kind == (uint8_t)DSD_P25P1_SYNC_ANCHORED ? DSD_P25P1_SYNC_ANCHORED
+                                     : rec->frame_kind == (uint8_t)DSD_P25P1_SYNC_ACQUISITION
+                                         ? DSD_P25P1_SYNC_ACQUISITION
+                                         : DSD_P25P1_SYNC_EXACT;
+    if (out_anchor_nac != NULL) {
+        *out_anchor_nac = kind == DSD_P25P1_SYNC_ANCHORED ? (int)rec->frame_nac : -1;
     }
-    return rec->frame_tolerant ? (int)rec->frame_nac : -1;
+    if (out_errors != NULL) {
+        *out_errors = rec->sync_bit_errors;
+    }
+    return kind;
 }
 
 int
@@ -193,11 +311,15 @@ dsd_frame_sync_p25p1_frame_decoded(dsd_state* state, int nac, uint32_t unit_dibi
     if (grid == DSD_P25P1_GRID_ARMED) {
         dsd_symbol_arm_hunt_sync_anchor(state);
     }
-    if (rec->frame_tolerant && nac >= 0) {
+    if (rec->frame_kind == (uint8_t)DSD_P25P1_SYNC_ANCHORED && nac >= 0) {
         rec->tolerant_frames++;
+    } else if (rec->frame_kind == (uint8_t)DSD_P25P1_SYNC_ACQUISITION && nac >= 0) {
+        rec->acquisition_frames++;
     }
     rec->frame_valid = 0U;
-    rec->frame_tolerant = 0U;
+    rec->frame_kind = (uint8_t)DSD_P25P1_SYNC_EXACT;
+    /* Validated or not, the frame is over: a candidate's accept is kept, or was put back already. */
+    state->p25_p1_sync_candidate.valid = 0U;
     if (!captured || unit_dibits == 0U || nac <= 0x000 || nac >= 0xFFF) {
         return grid;
     }

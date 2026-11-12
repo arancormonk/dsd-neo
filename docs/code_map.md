@@ -6108,7 +6108,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   its own placed, the hunt may accept a sync word a few bits off (6 of 48, 4 of 40) at the one position the next
   frame's or window's sync must take on the RTL CQPSK 4-level path (`frame_sync_cqpsk_4level_enabled()`; 4800/4 for
   Phase 1, 6000/4 for Phase 2), under the dibit map and polarity the anchor's exact sync matched, scored by Gray-coded
-  bit distance (`frame_sync_p25_sync_bit_distance()`). Both share the sync-time context (`dsd_p25_sync_context`:
+  bit distance (`frame_sync_p25_sync_bit_distance()`); Phase 1 also on the C4FM chain's 4800/4 hunt, 6 of 24 signs
+  (`dsd_p25p1_sync_sign_distance()`, every input and build; Protocols, P25 Phase 1, the C4FM item). Both share the sync-time context (`dsd_p25_sync_context`:
   symbol clock and epoch, input generation, carrier count, accepted tuning generation, sync history drops, SPS profile,
   modulation, map, polarity), captured at every accept of their protocol and checked where the word is scored and when
   the frame or window reports itself; a pending off-thread tune is checked by the frame sync where it captures and
@@ -10316,10 +10317,12 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     SPS profile, modulation, dibit map and polarity), its NAC, and the expected position (sync clock plus the unit's
     length). Beside it, the context of the frame being decoded, captured when the frame sync accepted its sync
     (`frame_sync_p25p1_anchor_note_sync()`, from `frame_sync_accept_p25p1()`; none while an off-thread tune is
-    pending), whether that sync was tolerant (`frame_tolerant`, `frame_nac`), its bit errors (`sync_bit_errors`, 0 for
-    exact) and two never-reset diagnostics, `tolerant_syncs` (counted at the accept) and `tolerant_frames` (counted
-    when the dispatcher reports a tolerant frame that passed the strict check). The frame sync owns every field: the
-    dispatcher reads the tolerant NAC and the bit errors through `dsd_frame_sync_p25p1_tolerant_nac()` and reports the
+    pending), how that sync was accepted (`frame_kind`, `dsd_p25p1_sync_kind`: exact, anchored, or acquisition, the
+    C4FM hunt-wide kind below; an anchored one's `frame_nac`), what its word was off by (`sync_bit_errors`: bits on
+    CQPSK, signs on C4FM, 0 for exact) and never-reset diagnostics, `tolerant_syncs` (counted at the accept) and
+    `tolerant_frames` (counted when the dispatcher reports a tolerant frame that passed the strict check). The frame
+    sync owns every field: the dispatcher reads the kind, the anchor's NAC and the errors through
+    `dsd_frame_sync_p25p1_sync_kind()` (the kind is carried as itself, never as a NAC of -1) and reports the
     frame through `dsd_frame_sync_p25p1_frame_decoded()`.
   - Installation: the dispatcher reports every Phase 1 frame (`dsd_frame_sync_p25p1_frame_decoded()`). One that
     validated (`p25p1_nid_verdict_validates()`: accepted by the NAC rule above, unborrowed, at most 11 corrections
@@ -10343,12 +10346,14 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     any matcher that runs there, starting 1-13 symbols after the expected position, is refused
     (`frame_sync_window_ends_in_exact_head()`, `DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS`; DSP above). The bound covers
     that range only; nothing farther is scored.
-  - Strict NID (`p25p1_nid_verdict_passes_tolerant_sync()`, in `p25p1_decode_nid_and_duid()` before
-    `p25p1_nid_verdict_commit()` and `p25p1_handle_nid_decode_success()`): behind a tolerant word the frame decodes
-    only when the NID validates, its parity agrees (NID_OK), it needed at most 4 corrections
-    (`P25P1_NID_TOLERANT_SYNC_MAX_CORRECTIONS`) and it names the anchor's NAC. Anything else drops the frame: nothing
+  - Strict NID (`p25p1_nid_verdict_strict()`, and for an anchored word `p25p1_nid_verdict_passes_tolerant_sync()`, in
+    `p25p1_decode_nid_and_duid()` before `p25p1_nid_verdict_commit()` and `p25p1_handle_nid_decode_success()`): behind
+    a tolerant word the frame decodes only when the NID validates (unborrowed, a usable NAC, a defined DUID), its parity
+    agrees (NID_OK, no parity override), it needed at most 4 corrections, BCH and soft flips together
+    (`P25P1_NID_TOLERANT_SYNC_MAX_CORRECTIONS`, so no soft recovery past the BCH radius), and, behind an anchored word,
+    it names the anchor's NAC. Anything else drops the frame: nothing
     is committed or published (NAC, received identity, seed, counters; `opts->verbose > 1`, the default, prints
-    `[tolerant sync, n bit errors, dropped: ...]` with what the NID was), the dispatcher returns `DSD_FRAME_VERDICT_UNPRODUCTIVE` (no PROFILE_PROVEN, not even inside a NID
+    `[tolerant sync, n bit errors, dropped: ...]`, `sign errors` on C4FM, with what the NID was), the dispatcher returns `DSD_FRAME_VERDICT_UNPRODUCTIVE` (no PROFILE_PROVEN, not even inside a NID
     evidence window, so no SPS-hunt credit), no validated-modulation stamp feeds the chain comparison or the modulation
     hold, and the hunt resumes past the NID it read. A misaligned NID after a slipped word needs this: a word 3 bits
     off one symbol late behind a `1` is 6 bits off at the expected position, and the NID read one symbol off decodes
@@ -10373,12 +10378,56 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     errors is lost as before: its own errors can bring the expected-position window within the tolerance (3 bits off
     one symbol late reads 6 there), and that false candidate then fails the strict check and consumes the word's sync
     and NID; a clean slipped word is never pre-empted (the bound above). A unit missed whole leaves the next one
-    exact-only. Phase 1
-    CQPSK on the RTL path only (C4FM, symbol files and PCM inputs are exact-only). Tests: `FRAME_SYNC_P25_ANCHOR`,
+    exact-only. Tests: `FRAME_SYNC_P25_ANCHOR`,
     `P25_P1_TOLERANT_NID`, `P25_P1_TOLERANT_SYNC` (a real-shaped stream through the real frame sync, dibit chain,
     dispatcher and NID decoder), `P25_P1_TSBK_SEQUENCE` and `P25_P1_MDPU_HELPERS` (lengths), `ENGINE_NO_CARRIER_RESET`,
     `ENGINE_TRUNK_SCAN`, `DECODE_IQ_P25P1_CQPSK_SIMULCAST_NOISY_CC` (a noisy simulcast replay: CRC-passed TSBKs an exact
     match loses) and `DECODE_IQ_P25P1_CQPSK_CC_THEN_NOISE_*` (no P25 sync after the carrier ends).
+  - C4FM: the same anchor scores the expected-position window on the C4FM chain's 4800/4 hunt, by sign distance
+    (`dsd_p25p1_sync_sign_distance()`: that hunt slices nothing but each symbol's sign, and every symbol of the word is
+    an outer one, so a sign error is one bit), within `DSD_P25P1_C4FM_ANCHORED_MAX_SIGN_ERRORS` (6 of 24) under the
+    anchor's polarity; the shifted-word bound and the exact-word guard are the CQPSK ones (the word shifted 1-13 symbols
+    is at least 7 signs off). It runs on every C4FM input (live radio, `--iq-replay`, discriminator PCM from files,
+    Pulse, UDP or TCP, and symbol captures, which the hunt reads as C4FM signs) and in every build: the try is no longer
+    inside `USE_RADIO` (the CQPSK branch still needs the RTL path). The strict NID is the same. A candidate is held
+    (`dsd_p25p1_sync_candidate`, `frame_sync_p25p1_candidate_hold()` in the tolerant tries, before they set the dibit
+    map): the NID is read on the threshold warm start from the word's own 24 symbols, taken as the window ends (a
+    calibration on trial), and the accept writes what it writes for an exact word: `frame_sync_set_basic_lock()`'s
+    levels and offset, the carrier flag, `lastsynctype`, the P25p1 frame span (`p25_p1_c4fm_frame_valid`, which stands
+    NXDN96 and M17 down for 900 symbols), the DMR slot 2 fields (`dmrburstR`, `payload_algidR`, `dmr_stereo`, which
+    under `-fa` a DMR carrier's slot 2 holds), `ftype`, the dibit map, the warm start's `jitter` reset (a pending
+    crossing) and its `p25_p1_c4fm_sync_levels` flag (whether the word set the levels, which under `-f1` decides
+    whether the frames after it hold them). `processFrame()`'s `maxref`/`minref` and the NID read's `p25_frame_nac_valid` clear come after the hold.
+    When the strict check drops the frame, `dsd_frame_sync_p25p1_candidate_rejected()` (before the report) puts every
+    one of them back, level windows included, while the frame's sync-time context still holds; a validated frame keeps
+    them. Two engine effects wait for the NID instead: `processFrame()` notes the received identity's protocol
+    (`dsd_rxid_note_sync()`, which under `-fa` would clear a DMR, NXDN or YSF carrier's identity) only behind an exact
+    word, and the P25p1 dispatcher notes it once a tolerant word's NID passed; and a dropped frame
+    (`dsd_p25p1_sync_anchor::frame_dropped`, `dsd_state_p25p1_frame_dropped()`, until the next accepted sync) starts no
+    `-Y` voice gate qualify window (`scan_voice_gate_sync_m`). So a dropped candidate leaves nothing behind but the
+    symbols it read and its console lines. The hold is where any further slicer state the C4FM accept writes belongs.
+    The word names nothing to the symbol grid (the sync
+    anchor entry in DSP), neither at the accept nor once its NID validates (the recording has moved onto the NID by
+    then); the next exact word places the grid. Steal recovery: a dropped candidate also hands the next `getFrameSync()`
+    the word's and the NID's 57 symbols as a carried history (`frame_sync_history_carry_symbols()`, the C4FM hunt's sign
+    slicing of the soft history, the levels with them), so a real sync word that starts inside them and ends after the
+    NID (a P25p1 word a slip put there, an NXDN96 FSW, a YSF or M17 word) is matched where it ends; before, the hunt
+    started blind and needed 24 symbols of its own. DMR and X2-TDMA match only windows a call read itself
+    (`frame_sync_match_window_own()`: their bursts are decoded back from the rolling payload buffers, which the carried
+    symbols never reach), so their words are not taken from the carry and are lost as before, never decoded from a
+    half-empty buffer. A word that ends inside the NID is lost, as behind any accepted false sync. The symbols the hunt
+    did not count (the window's last, which the accept returned on, and the NID's) are charged to the profile's hunt
+    budget (`sps_hunt_counter`) and the carried history resumes the pass where the candidate interrupted it
+    (`dsd_frame_sync_history_carry::pass_symbols`, 0 after a no-sync exit), so the dwell and the no-sync exits fall on
+    the symbol they would have without the candidate: a candidate on noise moves nothing that a later acquisition
+    depends on (under unlocked `-f1` on RTL input the C4FM/CQPSK probe alternates per dwell). Tests:
+    `FRAME_SYNC_P25P1_C4FM_TOLERANCE` (accept at 6 signs and refuse at 7 both polarities; put back and kept; NXDN96 and
+    M17 matched after a dropped candidate; tolerant words after one- and two-block TSDUs through `getFrameSync()`; later
+    P25p1 and YSF words not swallowed; no-sync exits and the hunt budget unmoved by a dropped candidate),
+    `P25_P1_TOLERANT_NID` (the dispatcher's drop puts back, charges and carries, and leaves a DMR identity),
+    `ENGINE_PROTOCOL_DISPATCH` (no identity note behind a tolerant word), `ENGINE_SCAN_VOICE_GATE` (a dropped frame
+    starts no qualify window). CQPSK keeps its own accept effects (no hold, no carry: on the RTL path the next symbol
+    replaces the levels either way); the identity and voice gate rules hold for it too.
 - A TSDU ends at its last block (`processTSBK()`, `src/protocol/p25/phase1/p25p1_tsbk.c`): a block that passed its CRC
   reads on when its last-block flag is clear and ends the TSDU when it is set. A block that failed its CRC says nothing
   either way, and read on behind its flag a one-block TSDU took the next frame's sync and NID for a second and third

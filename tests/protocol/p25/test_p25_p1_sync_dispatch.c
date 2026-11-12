@@ -119,6 +119,14 @@ dsd_symbol_arm_hunt_sync_anchor(dsd_state* state) {
     g_grid_arms++;
 }
 
+/* A dropped C4FM candidate hands the hunt the symbols it took (the real one is the frame sync's). */
+void
+frame_sync_history_carry_symbols(dsd_state* state, int symbols, int pass_symbols) {
+    (void)state;
+    (void)symbols;
+    (void)pass_symbols;
+}
+
 void
 dsd_symbol_note_p25p1_sync_anchor(dsd_state* state, const char* sync_dibits, int count) {
     (void)state;
@@ -1118,7 +1126,7 @@ dispatch_p25p1_frame(dsd_opts* opts, dsd_state* state, uint8_t duid) {
     state->synctype = DSD_SYNC_P25P1_POS;
     state->rf_mod = 1;
     state->symbol_clock += 1000U;
-    frame_sync_p25p1_anchor_note_sync(state, DSD_SYNC_P25P1_POS, -1, 0);
+    frame_sync_p25p1_anchor_note_sync(state, DSD_SYNC_P25P1_POS, DSD_P25P1_SYNC_EXACT, -1, 0);
     g_test_duid = duid;
     const int before = g_p25_proofs;
     (void)dsd_dispatch_handle_p25p1(opts, state);
@@ -1230,7 +1238,7 @@ dispatch_c4fm_frame(dsd_opts* opts, dsd_state* state, uint8_t duid, uint32_t rea
     state->lastsynctype = DSD_SYNC_P25P1_POS;
     state->rf_mod = 0;
     state->symbol_clock += 2000U;
-    frame_sync_p25p1_anchor_note_sync(state, DSD_SYNC_P25P1_POS, -1, 0);
+    frame_sync_p25p1_anchor_note_sync(state, DSD_SYNC_P25P1_POS, DSD_P25P1_SYNC_EXACT, -1, 0);
     g_sync_clock = state->symbol_clock - 24U;
     g_unit_read = read;
     g_test_duid = duid;
@@ -1250,15 +1258,15 @@ test_p25p1_c4fm_sync_names_the_grid_word(void) {
     state.symbol_clock = 1000U;
 
     state.rf_mod = 0;
-    frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_POS, -1, 0);
+    frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_POS, DSD_P25P1_SYNC_EXACT, -1, 0);
     assert(g_grid_notes == 1 && strcmp(g_grid_note, &P25P1_SYNC[1]) == 0);
-    frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_NEG, -1, 0);
+    frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_NEG, DSD_P25P1_SYNC_EXACT, -1, 0);
     assert(g_grid_notes == 2 && strcmp(g_grid_note, &INV_P25P1_SYNC[1]) == 0);
-    frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_POS, 0x1A6, 3);
+    frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_POS, DSD_P25P1_SYNC_ANCHORED, 0x1A6, 3);
     assert(g_grid_notes == 2);
 
     state.rf_mod = 1;
-    frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_POS, -1, 0);
+    frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_POS, DSD_P25P1_SYNC_EXACT, -1, 0);
     assert(g_grid_notes == 2);
 }
 
@@ -1361,7 +1369,7 @@ test_p25p1_c4fm_frame_arms_the_grid_by_its_rows(void) {
     state.synctype = DSD_SYNC_P25P1_POS;
     state.rf_mod = 1;
     state.symbol_clock = 2000U;
-    frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_POS, -1, 0);
+    frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_POS, DSD_P25P1_SYNC_EXACT, -1, 0);
     g_sync_clock = state.symbol_clock - 24U;
     g_unit_read = 864U;
     g_test_duid = 0x5U;
@@ -1437,7 +1445,7 @@ grid_verdict_for(grid_stream_change_fn change, int capture, uint32_t unit, uint3
     state.rf_mod = 0;
     state.symbol_clock = 2024U;
     if (capture) {
-        frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_POS, -1, 0);
+        frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_POS, DSD_P25P1_SYNC_EXACT, -1, 0);
     }
     change(&state);
     state.symbol_clock = 2000U + read;

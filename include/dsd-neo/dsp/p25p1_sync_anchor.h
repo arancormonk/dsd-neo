@@ -12,8 +12,10 @@
  * simulcast carrier one symbol of the word past a slicer threshold loses the whole frame. On a continuous outbound
  * carrier every data unit ends on a status symbol and the next one's sync starts right after it (TIA-102.BAAA-A 8.2),
  * so after a validated frame the hunt knows where the next sync must start, and on the RTL CQPSK 4800/4 path it accepts
- * a word there within DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS bit errors. That frame then decodes only when its NID
- * passes a stricter check than an exact sync's (the dispatcher's): until then it earns and publishes nothing.
+ * a word there within DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS bit errors. On the C4FM chain, whose hunt reads only
+ * each symbol's sign, it accepts one there within DSD_P25P1_C4FM_ANCHORED_MAX_SIGN_ERRORS sign errors. That frame then
+ * decodes only when its NID passes a stricter check than an exact sync's (the dispatcher's): until then it earns and
+ * publishes nothing, and what its accept changed is put back when it fails (dsd_frame_sync_p25p1_candidate_rejected()).
  */
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_P25P1_SYNC_ANCHOR_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_DSP_P25P1_SYNC_ANCHOR_H_
@@ -48,6 +50,30 @@ extern "C" {
 #define DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS 13
 
 /**
+ * @brief Sign errors (of the word's 24 symbols) a P25p1 sync word at the anchor's expected position may have on the C4FM
+ * chain and be accepted.
+ *
+ * The C4FM hunt slices each symbol by its sign alone (every symbol of the word is an outer one), so the word read there
+ * is 24 signs, not 48 bits. Every symbol of the word being an outer one, a sign error is one bit, so the word's
+ * distance to itself shifted by 1 to 13 symbols is the same 7 or more as on the CQPSK chain even when the symbols
+ * shifted in match: a slipped exact word is matched where it is, and the exact-word guard
+ * (frame_sync_window_ends_in_exact_head()) covers the other polarity and the other protocols' words, as there.
+ */
+#define DSD_P25P1_C4FM_ANCHORED_MAX_SIGN_ERRORS 6
+
+/** How the hunt accepted the sync word of the P25p1 frame being decoded, which says what its NID must pass. */
+typedef enum {
+    /** Matched exactly (normal, inverted, or rotated on the CQPSK chain): the NID's own rules. */
+    DSD_P25P1_SYNC_EXACT = 0,
+    /** Within the tolerance at the anchor's expected position: the strict NID (p25p1_nid_verdict_passes_tolerant_sync()),
+        naming the anchor's NAC. */
+    DSD_P25P1_SYNC_ANCHORED,
+    /** Within one sign error anywhere on the C4FM hunt, with no anchor: the strict NID (p25p1_nid_verdict_strict()),
+        whatever NAC it names. */
+    DSD_P25P1_SYNC_ACQUISITION,
+} dsd_p25p1_sync_kind;
+
+/**
  * @brief Bit errors between the 24-dibit window @p window, read under CQPSK dibit map @p map_idx, and the P25p1 sync
  * word (its inverted form when @p inverted).
  *
@@ -58,13 +84,35 @@ extern "C" {
 int dsd_p25p1_sync_bit_distance(const char* window, uint8_t map_idx, int inverted);
 
 /**
- * @brief The NAC the NID of the frame being decoded must name, when its sync was accepted within the tolerance; -1
- * after an exact sync.
- *
- * @p out_bit_errors (may be NULL) receives the bits that frame's sync word was off by: 0 after an exact (normal,
- * inverted or rotated) match.
+ * @brief Sign errors between the 24-symbol C4FM hunt window @p window ('1' positive, '3' negative) and the P25p1 sync
+ * word (its inverted form when @p inverted). A byte other than the word's counts as an error; 24 when @p window holds
+ * fewer than 24 symbols.
  */
-int dsd_frame_sync_p25p1_tolerant_nac(const dsd_state* state, unsigned int* out_bit_errors);
+int dsd_p25p1_sync_sign_distance(const char* window, int inverted);
+
+/**
+ * @brief How the hunt accepted the sync word of the frame being decoded (DSD_P25P1_SYNC_EXACT once it was reported).
+ *
+ * @p out_anchor_nac (may be NULL) receives the NAC an anchored frame's NID must name, -1 for the other kinds.
+ * @p out_errors (may be NULL) receives what the word was off by: bits on the CQPSK chain, signs on the C4FM chain, 0
+ * after an exact match.
+ */
+dsd_p25p1_sync_kind dsd_frame_sync_p25p1_sync_kind(const dsd_state* state, int* out_anchor_nac,
+                                                   unsigned int* out_errors);
+
+/**
+ * @brief The dispatcher dropped the frame behind a tolerant sync word: its NID failed the strict check.
+ *
+ * On the C4FM chain, while the stream is still the one the word was accepted on, what the accept changed before the
+ * NID could speak goes back as it was (dsd_p25p1_sync_candidate): the slicer levels its warm start and lock wrote (the
+ * NID was read on them) and the crossing the warm start dropped, the carrier flag, offset and lastsynctype, the P25p1
+ * frame span that stands NXDN96 and M17 down, the DMR slot 2 fields and frame label the accept writes, the dibit map
+ * and the frame NAC. The hunt then
+ * starts from the symbols the word and its NID took, so a sync word the candidate swallowed whose end is still to come
+ * is matched where it is (dsd_frame_sync_history_carry). Call before dsd_frame_sync_p25p1_frame_decoded(), which spends
+ * the frame's context.
+ */
+void dsd_frame_sync_p25p1_candidate_rejected(dsd_state* state);
 
 /**
  * @brief Whether the stream the P25p1 frame being decoded was read on is still the one its sync was accepted on: the
@@ -101,7 +149,7 @@ typedef enum {
  * not validate or its length is not known: nothing is installed. Either way the frame's sync context is spent.
  * @p nac is -1 when the frame decoded no NID it may take (an input interruption cut it, or it was dropped behind a
  * tolerant sync); a frame behind a tolerant sync reported with a NAC passed the strict check, and counts in
- * dsd_p25p1_sync_anchor::tolerant_frames.
+ * dsd_p25p1_sync_anchor::tolerant_frames (anchored) or acquisition_frames.
  *
  * On the C4FM chain the same report arms the symbol grid's recording of the next unit's sync word, whatever the NAC,
  * when the frame validated with a known length on the stream its sync was accepted on and its decoder stopped at the

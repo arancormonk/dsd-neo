@@ -16241,6 +16241,39 @@ target_link_libraries(
 )
 add_test(NAME FRAME_SYNC_P25_ANCHOR COMMAND dsd-neo_test_frame_sync_p25_anchor)
 
+# P25 Phase 1 sync words a few symbol signs off on the C4FM chain: anchored and hunt-wide candidates, held until their
+# NID validates, and the hunt going on from the symbols a dropped one took.
+add_executable(
+    dsd-neo_test_frame_sync_p25p1_c4fm_tolerance
+    dsp/test_frame_sync_p25p1_c4fm_tolerance.c
+    test_support/frame_sync_dsp_stubs.c
+    test_support/frame_sync_dibit_stubs.c
+)
+if(DSD_HAS_RADIO)
+    target_compile_definitions(
+        dsd-neo_test_frame_sync_p25p1_c4fm_tolerance
+        PRIVATE USE_RADIO
+    )
+endif()
+target_include_directories(
+    dsd-neo_test_frame_sync_p25p1_c4fm_tolerance
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_frame_sync_p25p1_c4fm_tolerance
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
+        dsd-neo_test_audio_sink
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(
+    NAME FRAME_SYNC_P25P1_C4FM_TOLERANCE
+    COMMAND dsd-neo_test_frame_sync_p25p1_c4fm_tolerance
+)
+
 # The frame sync withdraws the P25 proof the CQPSK timing loop's post-lock gain follows at every acquisition restart,
 # symbol profile change and modulation move, and keeps it while a carrier decodes P25.
 add_executable(
