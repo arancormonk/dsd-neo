@@ -683,6 +683,21 @@ M17_SYNTH = [
     ("m17_lsf_weak", 9.0, 807, 6, 0.2, (0.0, 0.0, 0.0, 0.0)),
     ("m17_lsf_clean", 30.0, 10, 2, 0.2, (0.0, 0.25, 0.5, 0.75, 0.125, 0.375, 0.625, 0.875)),
 ]
+# Clean NXDN and YSF frames from tools/scan_quiet_reception.py's generators (issue #834): each sync word carries inner
+# symbols among its outer ones (NXDN's FSW two, YSF's frame sync seven), and the decoder set its slicer from those words
+# as if they were outer only, then read each frame at the phase the hunt's crossing loop left on the word. nxdn96_synth
+# and nxdn48_synth are 50 RDCH voice frames each (RRC 0.2 x sinc, NXDN TS 1-A), ysf_synth 20 V/D mode 2 frames (RRC
+# 0.2, 2700 Hz as MMDVM's level), all at the standard's outer deviation with no noise. Each NXDN fixture carries the
+# dibits sent in <name>.dibits ('0' +1, '1' +3, '2' -1, '3' -3), which tests/symbol_capture_check.py compares with
+# the decoder's -c symbol capture.
+#
+# name, generator, symbol rate, frames, outer deviation Hz
+SLICER_SYNTH_AMPLITUDE = 0.5  # the carrier's magnitude at full scale 1.0: clear of the RF Level HOT advisory
+SLICER_SYNTH = [
+    ("nxdn96_synth", "nxdn", 4800, 50, 2400.0),
+    ("nxdn48_synth", "nxdn", 2400, 50, 1050.0),
+    ("ysf_synth", "ysf", 4800, 20, 2700.0),
+]
 M17_SYNTH_DST = "N0CALL"
 M17_SYNTH_SRC = "LSF-FIRST"
 M17_SYNTH_TYPE = 0x0005  # stream, voice, no encryption, CAN 0
@@ -1728,6 +1743,31 @@ def build_m17_synth(out_dir):
     total = 0
     for name, snr_db, seed, stream_frames, gap_s, delays in M17_SYNTH:
         written = write_fixture(out_dir, name, m17_synth_samples(snr_db, seed, stream_frames, gap_s, delays))
+        total += written
+        print(f"{name:28s} synth   {written // 1024:6d} KiB")
+    return total
+
+
+def build_slicer_synth(out_dir):
+    """Write the clean NXDN and YSF generator fixtures (issue #834; see SLICER_SYNTH)."""
+    import scan_quiet_reception as sqr  # it imports this module, so not at the top
+
+    level_to_dibit = {level: dibit for dibit, level in DPMR_DIBIT_TO_LEVEL.items()}
+    total = 0
+    for name, generator, symbol_rate, frames, outer_hz in SLICER_SYNTH:
+        if generator == "nxdn":
+            levels = sqr.nxdn_levels(frames)
+            response = sqr.nxdn_response(symbol_rate)
+        else:
+            levels = sqr.ysf_levels(frames)
+            response = sqr.rrc_response(0.2, symbol_rate)
+        samples = SLICER_SYNTH_AMPLITUDE * sqr.fm_from_levels(levels, symbol_rate, response, outer_hz)
+        written = write_fixture(out_dir, name, samples, normalize=False)
+        if generator == "nxdn":
+            dibits = "".join(str(level_to_dibit[float(level)]) for level in levels)
+            with open(os.path.join(out_dir, name + ".dibits"), "w", encoding="ascii", newline="\n") as handle:
+                handle.write(dibits + "\n")
+            written += len(dibits) + 1
         total += written
         print(f"{name:28s} synth   {written // 1024:6d} KiB")
     return total
@@ -2919,6 +2959,7 @@ def derived_fixture_names():
         + [entry[0] for entry in DERIVED_THEN_NOISE]
         + [DPMR_SYNTH_NAME]
         + [entry[0] for entry in M17_SYNTH]
+        + [entry[0] for entry in SLICER_SYNTH]
         + [entry[0] for entry in NFM_SYNTH]
         + [entry[0] for entry in AM_SYNTH]
         + [entry[0] for entry in ANALOG_CTCSS_SYNTH]
@@ -2975,6 +3016,7 @@ def build_all_derived(out_dir, dmr_synth_gen, speech_synth_gen, cache):
     total += build_then_noise(out_dir)
     total += build_dpmr_synth(out_dir)
     total += build_m17_synth(out_dir)
+    total += build_slicer_synth(out_dir)
     total += build_tetra_synth(out_dir)
     total += build_tetra_gap(out_dir)
     total += build_tetra_stress(out_dir)

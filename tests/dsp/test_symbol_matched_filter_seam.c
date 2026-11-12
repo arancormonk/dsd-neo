@@ -274,7 +274,7 @@ window_for(int lastsynctype, int* l, int* r) {
  * over the decision window at the positions the grid should be reading.
  */
 static int
-run_symbols(grid* g, int lastsynctype, dsd_sps_filter_kind kind, int symbols, const char* label) {
+run_symbols_sync(grid* g, int lastsynctype, dsd_sps_filter_kind kind, int symbols, const char* label, int have_sync) {
     g->state->lastsynctype = lastsynctype;
     int l = 0;
     int r = 0;
@@ -282,7 +282,7 @@ run_symbols(grid* g, int lastsynctype, dsd_sps_filter_kind kind, int symbols, co
     const float* ref = g_ref[kind_slot(kind)];
     int mismatches = 0;
     for (int m = 0; m < symbols; m++) {
-        const float got = getSymbol(g->opts, g->state, 1);
+        const float got = getSymbol(g->opts, g->state, have_sync);
         assert(exitflag == 0);
         float want = 0.0f;
         for (int i = CENTER - l; i <= CENTER + r; i++) {
@@ -301,6 +301,11 @@ run_symbols(grid* g, int lastsynctype, dsd_sps_filter_kind kind, int symbols, co
     }
     DSD_FPRINTF(stderr, "%s: %s phase, %d of %d symbols off\n", label, kind_name(kind), mismatches, symbols);
     return mismatches;
+}
+
+static int
+run_symbols(grid* g, int lastsynctype, dsd_sps_filter_kind kind, int symbols, const char* label) {
+    return run_symbols_sync(g, lastsynctype, kind, symbols, label, 1);
 }
 
 static int
@@ -460,6 +465,38 @@ test_m17_filter_switches_at_the_lsf_and_back(const char* wav_path) {
     grid_close(&g);
 }
 
+/* A frame that arms the recording for the word the hunt reads next (dsd_symbol_arm_hunt_sync_anchor(): NXDN, YSF, DMR
+   MS) keeps the hunt's crossing loop off a grid a measured word placed: the hunt reads on at the content position the
+   frame left, until the recording lapses. A recording on a grid no word placed leaves the loop to slip it, as before
+   (issue #834). */
+static void
+test_hunt_recording_holds_a_placed_grid(const char* wav_path) {
+    static dsd_opts opts;
+    static dsd_state state;
+    grid g;
+    grid_open(&g, &opts, &state, wav_path);
+    assert(run_phase(&g, DSD_SYNC_DMR_BS_VOICE_POS, DSD_SPS_FILTER_DMR, "hunt hold") == 0);
+    /* Rails the stimulus crosses inside, so its centre crossings latch the slips the hunt takes (maxref/minref). */
+    state.maxref = 30000.0f;
+    state.minref = -30000.0f;
+    dsd_symbol_anchor_test_place_grid(&state);
+    dsd_symbol_arm_hunt_sync_anchor(&state);
+    /* 64 symbols are recorded before an unnamed recording lapses: every one of them is read in place. */
+    assert(run_symbols_sync(&g, DSD_SYNC_DMR_BS_VOICE_POS, DSD_SPS_FILTER_DMR, 64, "hunt hold", 0) == 0);
+    dsd_state_ext_free_all(&state);
+    grid_close(&g);
+
+    /* The control: unplaced, the crossing loop slips the hunt's reads on this stimulus. */
+    grid_open(&g, &opts, &state, wav_path);
+    assert(run_phase(&g, DSD_SYNC_DMR_BS_VOICE_POS, DSD_SPS_FILTER_DMR, "hunt unheld") == 0);
+    state.maxref = 30000.0f;
+    state.minref = -30000.0f;
+    dsd_symbol_arm_hunt_sync_anchor(&state);
+    assert(run_symbols_sync(&g, DSD_SYNC_DMR_BS_VOICE_POS, DSD_SPS_FILTER_DMR, 64, "hunt unheld", 0) > 0);
+    dsd_state_ext_free_all(&state);
+    grid_close(&g);
+}
+
 typedef struct {
     const char* name;
     void (*run)(const char* wav_path);
@@ -475,6 +512,7 @@ static const seam_case kCases[] = {
     {"fractional-anchor", test_fractional_span_keeps_the_sync_anchor},
     {"anchor-move", test_filter_switch_drops_the_anchor_move},
     {"m17", test_m17_filter_switches_at_the_lsf_and_back},
+    {"hunt-hold", test_hunt_recording_holds_a_placed_grid},
 };
 
 /* An optional argument names one case to run alone, for watching it fail. */

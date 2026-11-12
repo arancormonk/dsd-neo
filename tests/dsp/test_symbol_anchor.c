@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -63,11 +64,12 @@ noise(void) {
 }
 
 /* N_SYMBOLS symbols of raised-cosine 4FSK whose true centres sit @p offset samples after the grid's centre index
-   (k * SPS + SPS/2), the sync word starting at symbol 8, random symbols elsewhere. */
+   (k * SPS + SPS/2), @p word (@p len symbols) starting at symbol 8, random symbols elsewhere. */
 static void
-make_signal(double offset, double polarity, double noise_amp, float* samples, int* centres, char* dibits) {
+make_word_signal(const char* word, int len, double offset, double polarity, double noise_amp, float* samples,
+                 int* centres, char* dibits) {
     for (int k = 0; k < N_SYMBOLS; k++) {
-        dibits[k] = (k >= 8 && k < 8 + SYNC_LEN) ? k_sync[k - 8] : (char)('0' + (int)((noise() + 0.5) * 3.999));
+        dibits[k] = (k >= 8 && k < 8 + len) ? word[k - 8] : (char)('0' + (int)((noise() + 0.5) * 3.999));
     }
     for (int n = 0; n < N_SYMBOLS * SPS; n++) {
         double v = 0.0;
@@ -80,6 +82,12 @@ make_signal(double offset, double polarity, double noise_amp, float* samples, in
     for (int k = 0; k < N_SYMBOLS; k++) {
         centres[k] = k * SPS + SPS / 2;
     }
+}
+
+/* The DMR BS voice sync at symbol 8. */
+static void
+make_signal(double offset, double polarity, double noise_amp, float* samples, int* centres, char* dibits) {
+    make_word_signal(k_sync, SYNC_LEN, offset, polarity, noise_amp, samples, centres, dibits);
 }
 
 static void
@@ -279,6 +287,129 @@ test_switch_without_a_named_word_moves_nothing(void) {
     free(state);
 }
 
+/* The whole samples the grid moves for a measured offset, as symbol_anchor.c moves it: to the nearest, at most two,
+   none within half a sample. */
+static int
+slip_for(double offset) {
+    const double capped = fmax(-2.0, fmin(2.0, offset));
+    return fabs(capped) <= 0.5 ? 0 : (int)lround(capped);
+}
+
+/* NXDN's FSW and YSF's frame sync carry inner symbols, named from their second symbol as nxdn_frame.c and ysf.c name
+   them (issue #834). YSF's 19 symbols move the grid onto its symbols as an outer word does. The FSW's 9, whose
+   crossings are few and whose neighbours reach further into them, leave a grid on its symbols where it is and move one
+   off them the right way, to within a sample: held by the hunt-read recording, that sample is measured again on the
+   next frame's word. */
+static void
+test_words_with_inner_symbols_measure(void) {
+    static const struct {
+        const char* dibits;
+        int slack;
+    } k_words[] = {
+        {"031331121", 1},           /* NXDN FSW from symbol 2 */
+        {"1101301302112031031", 0}, /* YSF frame sync from symbol 2 */
+    };
+
+    static float samples[N_SYMBOLS * SPS];
+    int centres[N_SYMBOLS];
+    char dibits[N_SYMBOLS];
+    const int offsets[] = {-2, -1, 0, 1, 2};
+    for (size_t w = 0; w < sizeof(k_words) / sizeof(k_words[0]); w++) {
+        const int len = (int)strlen(k_words[w].dibits);
+        for (size_t c = 0; c < sizeof(offsets) / sizeof(offsets[0]); c++) {
+            for (int polarity = -1; polarity <= 1; polarity += 2) {
+                make_word_signal(k_words[w].dibits, len, (double)offsets[c], (double)polarity, 0.0, samples, centres,
+                                 dibits);
+                double measured = 99.0;
+                assert(dsd_symbol_anchor_measure_offset(samples, N_SYMBOLS * SPS, &centres[8], &dibits[8], len, SPS,
+                                                        &measured)
+                       == 1);
+                const int left = offsets[c] - slip_for(measured);
+                if (offsets[c] == 0) {
+                    assert(left == 0);
+                } else {
+                    assert(slip_for(measured) != 0 && abs(left) <= k_words[w].slack);
+                }
+            }
+        }
+    }
+}
+
+/* Push @p symbols symbols of @p samples (from symbol @p first) through the anchor, naming the DMR sync at its end when
+   @p name is set. Returns the anchor. */
+static dsd_symbol_anchor*
+feed_symbols(dsd_state* state, const float* samples, int first, int symbols, int name) {
+    dsd_symbol_anchor* anchor = DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR);
+    assert(anchor != NULL);
+    for (int k = first; k < first + symbols; k++) {
+        for (int i = 0; i < SPS; i++) {
+            dsd_symbol_anchor_push_sample(anchor, samples[(k % N_SYMBOLS) * SPS + i], i == SPS / 2);
+        }
+        dsd_symbol_anchor_end_symbol(anchor, SPS);
+        if (name && k == 8 + SYNC_LEN - 1) {
+            dsd_symbol_note_sync_anchor(state, k_sync, SYNC_LEN);
+        }
+    }
+    return anchor;
+}
+
+/* A recording a frame arms for the word the hunt will read next holds the grid (keeps the hunt's crossing loop off it)
+   only once a measured word has placed the grid: the first frame after acquisition, a recording that lapsed or could
+   not be measured, a reset and an M17 preamble's hold all leave the grid to the crossing loop (issue #834). */
+static void
+test_hunt_recording_holds_only_a_placed_grid(void) {
+    static float samples[N_SYMBOLS * SPS];
+    static float flat[N_SYMBOLS * SPS];
+    int centres[N_SYMBOLS];
+    char dibits[N_SYMBOLS];
+    make_signal(0.0, 1.0, 0.0, samples, centres, dibits);
+    DSD_MEMSET(flat, 0, sizeof(flat));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
+
+    dsd_symbol_arm_hunt_sync_anchor(state);
+    dsd_symbol_anchor* anchor = DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR);
+    assert(anchor != NULL);
+    assert(dsd_symbol_anchor_recording(anchor));
+    assert(!dsd_symbol_anchor_holds_grid(anchor)); /* nothing has placed the grid yet */
+    (void)feed_symbols(state, samples, 0, 8 + SYNC_LEN + 1, 1);
+    assert(!dsd_symbol_anchor_recording(anchor)); /* measured */
+    assert(!dsd_symbol_anchor_holds_grid(anchor));
+
+    dsd_symbol_arm_hunt_sync_anchor(state);
+    assert(dsd_symbol_anchor_holds_grid(anchor)); /* the word placed it */
+    dsd_symbol_hold_sync_anchor(state);           /* an M17 preamble's run is the hunt's to time */
+    assert(dsd_symbol_anchor_recording(anchor));
+    assert(!dsd_symbol_anchor_holds_grid(anchor));
+
+    dsd_symbol_arm_hunt_sync_anchor(state);
+    assert(dsd_symbol_anchor_holds_grid(anchor));
+    (void)feed_symbols(state, samples, 0, 65, 0); /* no word came: the recording lapses */
+    assert(!dsd_symbol_anchor_recording(anchor));
+    dsd_symbol_arm_hunt_sync_anchor(state);
+    assert(!dsd_symbol_anchor_holds_grid(anchor));
+
+    (void)feed_symbols(state, samples, 0, 8 + SYNC_LEN + 1, 1); /* placed again */
+    dsd_symbol_arm_hunt_sync_anchor(state);
+    assert(dsd_symbol_anchor_holds_grid(anchor));
+    (void)feed_symbols(state, flat, 0, 8 + SYNC_LEN + 1, 1); /* a word the trace cannot place */
+    dsd_symbol_arm_hunt_sync_anchor(state);
+    assert(!dsd_symbol_anchor_holds_grid(anchor));
+
+    dsd_symbol_arm_sync_anchor(state);
+    (void)feed_symbols(state, samples, 0, 8 + SYNC_LEN + 1, 1);
+    dsd_symbol_arm_sync_anchor(state); /* a frame's own recording (DMR BS) never holds */
+    assert(!dsd_symbol_anchor_holds_grid(anchor));
+    dsd_symbol_arm_hunt_sync_anchor(state);
+    assert(dsd_symbol_anchor_holds_grid(anchor));
+    dsd_symbol_anchor_reset(state); /* the stream ended */
+    dsd_symbol_arm_hunt_sync_anchor(state);
+    assert(!dsd_symbol_anchor_holds_grid(anchor));
+
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
 int
 main(void) {
     test_measures_whole_and_fractional_offsets();
@@ -289,6 +420,8 @@ main(void) {
     test_reset_drops_the_pending_move();
     test_switch_measures_without_a_look_ahead_symbol();
     test_switch_without_a_named_word_moves_nothing();
+    test_words_with_inner_symbols_measure();
+    test_hunt_recording_holds_only_a_placed_grid();
     printf("symbol anchor: OK\n");
     return 0;
 }

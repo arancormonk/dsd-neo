@@ -43,6 +43,8 @@ struct dsd_symbol_anchor {
     int slip;          /* +1: take one sample more at the next symbol; -1: one fewer. */
     int armed;         /* recording: a protocol said a sync word is coming (dsd_symbol_arm_sync_anchor()) */
     int armed_symbols; /* symbols recorded since it was armed */
+    int holds_grid;    /* the hunt reads the word: its crossing loop keeps off the grid while recording */
+    int placed;        /* the last recording measured its word: the grid is where a sync word put it */
 };
 
 /* Symbols an armed anchor records before giving up on a sync word that was not named: a DMR burst's sync field ends
@@ -197,6 +199,8 @@ dsd_symbol_anchor_reset(dsd_state* state) {
     anchor->sync_pending = 0;
     anchor->slip = 0;
     anchor->armed = 0;
+    anchor->holds_grid = 0;
+    anchor->placed = 0;
 }
 
 int
@@ -207,6 +211,11 @@ dsd_symbol_anchor_hot(const dsd_symbol_anchor* anchor) {
 int
 dsd_symbol_anchor_recording(const dsd_symbol_anchor* anchor) {
     return anchor != NULL && anchor->armed != 0;
+}
+
+int
+dsd_symbol_anchor_holds_grid(const dsd_symbol_anchor* anchor) {
+    return dsd_symbol_anchor_recording(anchor) && anchor->holds_grid != 0;
 }
 
 void
@@ -309,7 +318,8 @@ anchor_measure_pending(dsd_symbol_anchor* anchor) {
         return;
     }
     int slip = 0;
-    if (anchor_measure_slip(anchor, margin, margin, &slip)) {
+    anchor->placed = anchor_measure_slip(anchor, margin, margin, &slip);
+    if (anchor->placed) {
         anchor->slip = slip;
     }
 }
@@ -340,7 +350,9 @@ dsd_symbol_anchor_end_symbol(dsd_symbol_anchor* anchor, int samples_per_symbol) 
         anchor_measure_pending(anchor);
         anchor->armed = 0;
     } else if (++anchor->armed_symbols > ANCHOR_ARMED_MAX_SYMBOLS) {
+        /* No word came: the grid is the hunt's again. */
         anchor->armed = 0;
+        anchor->placed = 0;
     }
 }
 
@@ -354,7 +366,9 @@ dsd_symbol_hold_sync_anchor(dsd_state* state) {
         dsd_symbol_arm_sync_anchor(state);
         return;
     }
+    /* The run is the hunt's to time: a recording a frame armed for its next word does not hold the grid across it. */
     anchor->armed_symbols = 0;
+    anchor->holds_grid = 0;
     state->symbol_anchor_hot = 1U;
 }
 
@@ -371,10 +385,32 @@ dsd_symbol_arm_sync_anchor(dsd_state* state) {
     anchor->sync_pending = 0;
     anchor->armed = 1;
     anchor->armed_symbols = 0;
+    anchor->holds_grid = 0;
     state->symbol_anchor_hot = 1U;
 }
 
+void
+dsd_symbol_arm_hunt_sync_anchor(dsd_state* state) {
+    dsd_symbol_arm_sync_anchor(state);
+    dsd_symbol_anchor* anchor =
+        state ? DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR) : NULL;
+    if (anchor != NULL) {
+        /* Only a grid a measured word placed is worth holding: the hunt's acquisition left the first frame wherever
+           the crossings put it, which can be far enough off to miss the next word's signs, and the crossing loop is
+           what brings that one in. */
+        anchor->holds_grid = anchor->placed;
+    }
+}
+
 #ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_symbol_anchor_test_place_grid(dsd_state* state) {
+    dsd_symbol_anchor* anchor = dsd_symbol_anchor_get(state);
+    if (anchor != NULL) {
+        anchor->placed = 1;
+    }
+}
+
 void
 dsd_symbol_anchor_test_queue_slip(dsd_state* state, int slip) {
     dsd_symbol_anchor* anchor = dsd_symbol_anchor_get(state);

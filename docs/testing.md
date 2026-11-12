@@ -807,6 +807,19 @@ second transmission's start, where the stream LSF is sent twice: `DECODE_IQ_M17_
 stream's frame 0 (`FSN: 00000`) and no packet or EOT sync, where before the hunt matched both inside the repeated
 LSF.
 
+`nxdn96_synth` (192 kB), `nxdn48_synth` (384 kB) and `ysf_synth` (192 kB) (`SLICER_SYNTH`, issue #834) are clean
+frames from `tools/scan_quiet_reception.py`'s generators (`nxdn_levels()`, `ysf_levels()`, the same symbols its
+threshold rows send): 50 NXDN RDCH voice frames at each rate (RRC 0.2 x sinc, NXDN TS 1-A, 2400 / 1050 Hz) and 20 YSF
+V/D mode 2 frames (RRC 0.2, 2700 Hz), at half full scale and with no noise. Both sync words carry inner symbols (the
+FSW two, the frame sync seven); the decoder set its slicer from them as if every symbol were outer and read each frame
+at the phase the hunt's crossing loop left on the word. Each NXDN fixture carries the dibits it sent in
+`<name>.dibits` ('0' +1, '1' +3, '2' -1, '3' -3), and `tests/symbol_capture_check.py` compares them with the
+decoder's `-c` symbol capture: `DECODE_IQ_NXDN96_SYNTH_SYMBOLS` and `DECODE_IQ_NXDN48_SYNTH_SYMBOLS` need 99 % of the
+frames after acquisition (the first three) and before the last (whose end the clip cuts out of the filters) clean
+outside the FSW, which the hunt records by sign only. Before the fix 7 (NXDN96) and 33 (NXDN48) of those 46 frames read
+clean, after it all 46. `DECODE_IQ_YSF_SYNTH` needs 19 of the 20 FICHs; 9 passed before the fix, 20 after it. The
+checker needs only the Python standard library and registers when CTest finds Python 3.
+
 `DECODE_IQ_DSTAR_AUTO_HUNT` and `DECODE_IQ_P25P2_CC_AUTO_HUNT` assert on an `SPS hunt:` rotation line rather than a
 decoded payload. The `dstar` (4 s) and `p25p2_cc` (2 s) fixtures are shorter than one full hunt rotation (~6 s at
 48 kHz), so under `-fa` they cannot be expected to decode; what they can prove is that the hunt is not pinned on its
@@ -2005,11 +2018,12 @@ superframe on, with no new header (`--cc-change`), and start the voice at anothe
 so separately generated calls carry different audio. Output is deterministic for a given seed.
 With `--ms` it writes one MS transmission instead (issue #834): the MS sourced voice and data syncs, no CACH, and slot
 1's bursts alone, 27.5 ms on every 60 ms, with the audio at 0 between them. `DMR_SYNTH_MS_CLEAR_VOICE` decodes it
-through the MS path and checks the 24 Golay-protected bits of every frame (`MATCH protected`): across the silent gaps a
-few percent of the frames come out with one unprotected bit wrong, which the continuous BS channel never does. Each such
-error is an inner symbol read as outer in a burst whose grid sits one sample late, and the root-raised-cosine filter's
-narrower eye (issue #834) makes more of them. The checker places an MS frame by the one `VC*` line the MS path prints per
-superframe, then VC1 to VC6 three frames at a time.
+through the MS path and checks all 49 bits of every frame. The hunt re-acquires each voice superframe on its burst A,
+and its crossing loop left the grid one or two samples off that sync, which bursts B to F then kept: 21 of the 540
+frames came out with an unprotected bit wrong (an inner symbol read as outer), which the continuous BS channel, whose
+loop places the grid on every burst's sync (the sync anchor), never did. The MS path now places the grid on each
+burst A's sync the same way (`docs/code_map.md`, sync anchor). The checker places an MS frame by the one `VC*` line
+the MS path prints per superframe, then VC1 to VC6 three frames at a time.
 
 `DMR_SYNTH_RECEIVE_NAMES` (`tests/protocol/dmr/dmr_receive_names_check.py`, issue #637) decodes three repeaters that
 share one frequency and differ only by colour code, named with `--dcc-name`: three calls with silence between them,
@@ -2032,7 +2046,7 @@ a real radio; `tools/replay_ab.sh` on real captures remains the evidence for dec
 | Case | What it pins |
 | --- | --- |
 | `DMR_SYNTH_CLEAR_VOICE` | A clear call decodes exactly, at most the two bursts the voice gate skips at call start missing. |
-| `DMR_SYNTH_MS_CLEAR_VOICE` | An MS transmission (`--ms`) decodes through the MS path: every frame but the bursts the voice gate skips at call start, the 24 Golay-protected bits of each right. |
+| `DMR_SYNTH_MS_CLEAR_VOICE` | An MS transmission (`--ms`) decodes through the MS path: every frame but the bursts the voice gate skips at call start, exactly. |
 | `DMR_SYNTH_AES256_CALL_START`, `DMR_SYNTH_AES128_BOTH_SLOTS` | Every decoded frame of an encrypted call decrypts right from superframe 0 on, on one or both slots. |
 | `DMR_SYNTH_AES256_BURST_LOSS`, `DMR_SYNTH_RC4_BURST_LOSS` | One burst lost at slot 1 superframe 10 VC3: every later frame decrypts right, and every frame from the next superframe's first opened burst on is decoded. |
 | `DMR_SYNTH_AES256_LOSS_NO_LE` | The same with every later late-entry MI undecodable, so the MI chain has to survive on its own. |

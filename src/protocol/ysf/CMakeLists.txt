@@ -13,7 +13,7 @@ target_link_libraries(
     PUBLIC dsd-neo_runtime dsd-neo_fec dsd-neo_crypto dsd-neo_core
 )
 
-target_link_libraries(dsd-neo_proto_ysf PRIVATE dsd-neo_warnings)
+target_link_libraries(dsd-neo_proto_ysf PRIVATE dsd-neo_dsp dsd-neo_warnings)
 
 install(
     TARGETS dsd-neo_proto_ysf

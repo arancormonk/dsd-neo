@@ -20,9 +20,7 @@
 #   DEC_ARGS          extra decoder arguments (keys), shell-quoted
 #   MATCH             all (default): every decoded frame equals its plaintext;
 #                     after_fault: every frame decoded after the first fault
-#                     burst does; protected: every decoded frame's 24
-#                     Golay-protected bits (C0 and C1, the first six hex
-#                     digits) equal its plaintext's; none: no plaintext check
+#                     burst does; none: no plaintext check
 #   MAX_MISSING       per voice slot, decoded frames >= expected - MAX_MISSING
 #   MIN_PERCENT       per voice slot, decoded frames >= MIN_PERCENT% of expected
 #   RECOVER           next_superframe: on the fault slot, the first frame
@@ -317,10 +315,6 @@ foreach(_entry IN LISTS _decoded)
     set(_check 0)
     if(MATCH STREQUAL "all")
         set(_check 1)
-    elseif(MATCH STREQUAL "protected")
-        set(_check 1)
-        string(SUBSTRING "${_hx}" 0 6 _hx)
-        string(SUBSTRING "${_exp_hx}" 0 6 _exp_hx)
     elseif(MATCH STREQUAL "after_fault")
         math(EXPR _burst "${_sf} * 6 + ${_vc} - 1")
         if(_s EQUAL _fault_slot AND _burst GREATER _fault_burst)

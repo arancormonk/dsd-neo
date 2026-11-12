@@ -39,6 +39,10 @@ int dsd_symbol_anchor_hot(const dsd_symbol_anchor* anchor);
 /** Whether the anchor is recording (armed for a sync word); only then do the two calls below apply. */
 int dsd_symbol_anchor_recording(const dsd_symbol_anchor* anchor);
 
+/** Whether the anchor is recording for a word the hunt reads (dsd_symbol_arm_hunt_sync_anchor()): the grid then takes
+    no crossing slip, as inside a frame. */
+int dsd_symbol_anchor_holds_grid(const dsd_symbol_anchor* anchor);
+
 /** One post-filter sample the grid consumed; @p is_centre marks the sample it took as the symbol's centre. */
 void dsd_symbol_anchor_push_sample(dsd_symbol_anchor* anchor, float sample, int is_centre);
 
@@ -51,6 +55,8 @@ int dsd_symbol_anchor_take_slip(dsd_symbol_anchor* anchor);
 #ifdef DSD_NEO_TEST_HOOKS
 /** Tests: queue @p slip as a measurement would, on an armed anchor. */
 void dsd_symbol_anchor_test_queue_slip(dsd_state* state, int slip);
+/** Tests: mark the grid placed, as a measured word does, so the next dsd_symbol_arm_hunt_sync_anchor() holds it. */
+void dsd_symbol_anchor_test_place_grid(dsd_state* state);
 #endif
 
 #ifdef __cplusplus

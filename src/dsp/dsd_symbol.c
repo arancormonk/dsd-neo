@@ -344,6 +344,8 @@ typedef struct {
     /* Whether this symbol's samples are recorded at all: for the timing trace or for the anchor. One test a sample,
        the one the trace alone used to cost. */
     int recording;
+    /* The anchor records a word the hunt reads (dsd_symbol_arm_hunt_sync_anchor()): no crossing slip this symbol. */
+    int anchor_holds_grid;
 } symbol_work_ctx;
 
 #ifdef USE_RADIO
@@ -3389,6 +3391,7 @@ symbol_anchor_begin(dsd_state* state, symbol_work_ctx* work) {
             state->jitter = -1;
         }
         work->anchor = dsd_symbol_anchor_recording(anchor) ? anchor : NULL;
+        work->anchor_holds_grid = dsd_symbol_anchor_holds_grid(anchor);
         if (!dsd_symbol_anchor_hot(anchor)) {
             state->symbol_anchor_hot = 0U;
         }
@@ -3432,7 +3435,7 @@ static int
 symbol_process_live_samples(dsd_opts* opts, dsd_state* state, int have_sync, symbol_work_ctx* work) {
     int i = symbol_anchor_begin(state, work);
     while (i < work->symbol_span) {
-        symbol_adjust_timing_index(state, have_sync, work->symbol_span, &i);
+        symbol_adjust_timing_index(state, have_sync || work->anchor_holds_grid, work->symbol_span, &i);
         if (!symbol_take_sample_into_history(opts, state, work)) {
             return 0;
         }

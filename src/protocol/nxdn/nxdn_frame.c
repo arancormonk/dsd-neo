@@ -33,8 +33,10 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/symbol_anchor.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -747,6 +749,16 @@ nxdn_finish_decoded_frame(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx
     }
 }
 
+/* The FSW the hunt just accepted places the symbol grid for the frame behind it, as in ysf.c: the hunt's crossing loop
+   leaves the grid where the word's crossings put it, which its two inner symbols pull off the symbol boundaries. A frame
+   read whole armed a recording at its end, so the recording starts on the FSW's first sample; the word is named from its
+   second symbol, which leaves the measurement its sample of margin before the first centre. */
+static void
+nxdn_note_fsw_anchor(const dsd_state* state) {
+    const char* fsw = state->synctype == DSD_SYNC_NXDN_NEG ? INV_NXDN_FSW_DIBITS : NXDN_FSW_DIBITS;
+    dsd_symbol_note_sync_anchor(state, fsw + 1, 9);
+}
+
 int
 nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_frame_ctx ctx;
@@ -756,6 +768,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     int frame_proved = 0;
     int frame_read = 0; // the body reached the confirmation gate
 
+    nxdn_note_fsw_anchor(state);
     nxdn_frame_ctx_init(&ctx);
     const uint32_t carrier_seq = state->carrier_seq;
     nxdn_collect_lich(opts, state, &ctx);
@@ -781,6 +794,8 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
         ctx.dbuf[i + 8] = (uint8_t)getDibitSoft(opts, state, &soft);
         ctx.dbuf_reliab[i + 8] = soft.reliability;
     }
+    /* The frame was read whole: the next one's FSW starts at the next symbol (nxdn_note_fsw_anchor()). */
+    dsd_symbol_arm_hunt_sync_anchor(state);
     if (dsd_state_frame_read_lost(state, carrier_seq)) {
         /* The carrier boundary moved the carrier count while the frame was read (issue #575). Everything after the
            LICH decodes only now, so a SACCH segment read whole before the move, possibly the one completing a

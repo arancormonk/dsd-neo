@@ -5948,6 +5948,24 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   The hunt's crossing loop otherwise left the grid up to two samples off the preamble's symbols, which the raw stream
   read through and the M17 filter's narrower eye does not. Only on the switch-on side of the seam (a filter of
   shorter delay before, the unfiltered hunt or DMR's under AUTO, where the preamble passes NXDN96's sync).
+  NXDN, YSF and DMR MS are the hunt-read callers (issue #834). They read a frame or burst and go back to the hunt for
+  the next one's sync word, and the hunt's crossing loop slipped the grid on that word to wherever its crossings put
+  it: the inner symbols in NXDN's FSW and YSF's frame sync (and an MS burst A after the inter-burst gap) left clean
+  frames one or two samples off their symbols, a phase the frame then kept. Where a frame read whole ends
+  (`nxdn_frame()` after its 174 dibits, `processYSF()` after its payload, `dmr_ms_prime_next_payload()` and the end of
+  `dmrMSData()` a dibit ahead of the next burst's sync), `dsd_symbol_arm_hunt_sync_anchor()` arms the recording and,
+  once a measured word has placed the grid (`placed`, set by a measurement, cleared by a lapse, a measurement that
+  cannot place the word, and a reset), holds the grid for it: `symbol_process_live_samples()` takes no crossing slip
+  while such a recording runs (`dsd_symbol_anchor_holds_grid()`), so the word is read and measured on the grid the
+  frame left and the measurement corrects that grid alone, as on a DMR BS call. The first frame after acquisition, and
+  any grid no word placed, stay the crossing loop's: held at the acquisition's phase, a YSF frame sync read inner
+  symbols at the wrong sign and was missed. The decoder names the word the hunt accepted at its frame's entry: NXDN
+  the FSW from its second symbol and YSF the frame sync from its second (the recording starts on the word's first
+  sample, and the measurement needs a sample of margin before the first centre), DMR MS the 24 dibits below
+  `dmr_payload_p`. An M17 preamble's `dsd_symbol_hold_sync_anchor()` lets the crossing loop back on. P25 never arms the
+  anchor. Tests: `DSP_SYMBOL_ANCHOR` (the hold rules, words with inner symbols), `SYMBOL_MATCHED_FILTER_SEAM`
+  (hunt-hold), `NXDN_FRAME_ROUTING`, `DMR_MS_DATA`, `DMR_SYNTH_MS_CLEAR_VOICE`, `DECODE_IQ_YSF_SYNTH`,
+  `DECODE_IQ_NXDN96_SYNTH_SYMBOLS`, `DECODE_IQ_NXDN48_SYNTH_SYMBOLS`.
 - Slicer warm start (`<dsd-neo/dsp/sync_calibration.h>`, `sync_calibration.c`): an accepted sync sets `min`/`max`,
   `center`, `umid`/`lmid` (5/8 of the way to each rail), `maxref`/`minref` and the rolling min/max buffers from the
   word just read. `dsd_sync_warm_start_thresholds_outer_only()` averages the word's positive and negative symbols,

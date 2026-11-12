@@ -16364,13 +16364,13 @@ dsd_neo_add_dmr_synth_test(
     MAX_MISSING 6
 )
 # An MS transmission (issue #834): MS syncs, no CACH, slot 1's bursts alone with nothing between them. dsd-neo's MS
-# path decodes every frame, short of the bursts the voice gate skips at call start, with the Golay-protected bits of
-# each right. The unprotected bits are not checked: across the silent gaps a few percent of the frames come out with
-# one of them wrong, where the continuous BS channel has none.
+# path decodes every frame, short of the bursts the voice gate skips at call start, every one of its 49 bits right.
+# The hunt re-acquires each superframe on its burst A, and its crossing loop left the grid a sample or two late on
+# that sync, which bursts B to F then kept: 21 of the 540 frames came out with an unprotected bit wrong. The burst
+# before each A now arms the sync anchor, which places the grid on A's sync as the BS loop does on every burst's.
 dsd_neo_add_dmr_synth_test(
     DMR_SYNTH_MS_CLEAR_VOICE
     GEN "-t 12 --alg none --ms"
-    MATCH protected
     MAX_MISSING 6
 )
 # A receiver that inverts the discriminator: BS voice syncs read as data syncs until the decoder proves the polarity
@@ -19716,6 +19716,34 @@ if(DSD_HAS_RADIO)
     # decodes 29 RANs here (the matcher before these rules 30, the same over eight sample shifts); held to one bit it
     # decodes 10.
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96_WEAK_0DB nxdn96_weak_0db -fn "RAN 00" "" 25)
+    # Issue #834: clean generated NXDN frames (nxdn96_synth, nxdn48_synth; SLICER_SYNTH in tools/build_iq_fixtures.py),
+    # each frame's symbols outside the FSW checked against the dibits sent (tests/symbol_capture_check.py). The FSW's two
+    # inner symbols were taken for outer ones, which put the slicer's rails at 2.6 of 3, and each frame was read at the
+    # phase the hunt's crossing loop left on the FSW: before the fix 7 (NXDN96) and 33 (NXDN48) of the 46 frames after
+    # acquisition read clean, after it all 46.
+    if(Python3_Interpreter_FOUND)
+        foreach(_nxdn_rate IN ITEMS 96 48)
+            if(_nxdn_rate STREQUAL "96")
+                set(_nxdn_mode -fn)
+            else()
+                set(_nxdn_mode -fi)
+            endif()
+            add_test(
+                NAME DECODE_IQ_NXDN${_nxdn_rate}_SYNTH_SYMBOLS
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/symbol_capture_check.py
+                    $<TARGET_FILE:dsd-neo>
+                    ${_DSD_NEO_IQ_FIXTURE_DIR}/nxdn${_nxdn_rate}_synth.iq.json
+                    --mode=${_nxdn_mode} --frame 192 --sync 10 --skip-frames 3
+                    --min-clean 0.99
+            )
+            set_tests_properties(
+                DECODE_IQ_NXDN${_nxdn_rate}_SYNTH_SYMBOLS
+                PROPERTIES LABELS "iq-decode" TIMEOUT 120
+            )
+        endforeach()
+    endif()
     # A call after a scan retune (issue #572): 7.5 s of noise_floor on one channel, the RETUNE, MUTE,
     # RESET and MUTE a real scan retune records, then all of nxdn48 on the next channel
     # (DERIVED_RETUNE in tools/build_iq_fixtures.py). -fi holds the receiver on NXDN48, so whatever
@@ -20754,6 +20782,11 @@ if(DSD_HAS_RADIO)
         -fy
         "V/D2 RID Mode Repeater CC"
     )
+    # Issue #834: 20 clean generated V/D mode 2 frames (ysf_synth, SLICER_SYNTH in tools/build_iq_fixtures.py): the
+    # frame sync's seven inner symbols, taken for outer ones, put the slicer's centre a quarter of an outer level off,
+    # and each frame was read two samples early, where the hunt's crossing loop left the grid on the sync. 9 FICHs passed
+    # before the fix, 20 after it; at least 19 (95 %) must.
+    dsd_neo_add_iq_decode_test(DECODE_IQ_YSF_SYNTH ysf_synth -fy "FN: [1-8]/8 " "" 19)
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_EDACS
         edacs

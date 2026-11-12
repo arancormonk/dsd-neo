@@ -20,6 +20,7 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
+#include <dsd-neo/dsp/symbol_anchor.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -68,6 +69,12 @@ static size_t g_boundary_at = SIZE_MAX;
 /* The read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the interruption there and
    stands erasures in for every symbol after it; SIZE_MAX for none. */
 static size_t g_interrupt_at = SIZE_MAX;
+/* The sync anchor's calls (issue #834): the stream index each recording was armed at, and the word last named. */
+static int g_hunt_arm_calls;
+static size_t g_hunt_arm_at[8];
+static int g_note_calls;
+static int g_note_count;
+static char g_note_sync[DSD_SYMBOL_ANCHOR_MAX_SYMS + 1];
 
 static void
 reset_fixture(void) {
@@ -99,6 +106,11 @@ reset_fixture(void) {
     g_sm_tick_calls = 0;
     g_qr_ok = 1;
     g_boundary_at = SIZE_MAX;
+    g_hunt_arm_calls = 0;
+    g_note_calls = 0;
+    g_note_count = 0;
+    DSD_MEMSET(g_hunt_arm_at, 0, sizeof(g_hunt_arm_at));
+    DSD_MEMSET(g_note_sync, 0, sizeof(g_note_sync));
     DSD_MEMSET(g_stream, 0, sizeof(g_stream));
     DSD_MEMSET(g_data_sync_payload, 0, sizeof(g_data_sync_payload));
     DSD_MEMSET(g_data_sync_reliability, 0, sizeof(g_data_sync_reliability));
@@ -155,6 +167,27 @@ dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, ch
     (void)format;
     DSD_SNPRINTF(out, out_size, "%s", "00:00:00");
     return 1;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_symbol_arm_hunt_sync_anchor(dsd_state* state) {
+    (void)state;
+    if (g_hunt_arm_calls < (int)(sizeof(g_hunt_arm_at) / sizeof(g_hunt_arm_at[0]))) {
+        g_hunt_arm_at[g_hunt_arm_calls] = g_stream_index;
+    }
+    g_hunt_arm_calls++;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_symbol_note_sync_anchor(const dsd_state* state, const char* sync_dibits, int count) {
+    (void)state;
+    assert(count > 0 && count <= DSD_SYMBOL_ANCHOR_MAX_SYMS);
+    g_note_calls++;
+    g_note_count = count;
+    DSD_MEMCPY(g_note_sync, sync_dibits, (size_t)count);
+    g_note_sync[count] = '\0';
 }
 
 void
@@ -939,6 +972,63 @@ test_ms_bootstrap_and_data_cut_by_an_input_interruption_are_dropped(void) {
     assert(state.dmr_ms_mode == 0);
 }
 
+/* The sync the hunt accepted, as the anchor is told it: the last 24 dibits written below dmr_payload_p, by sign. */
+static void
+expected_hunt_sync(const int payload[90], char out[25]) {
+    for (int i = 0; i < 24; i++) {
+        out[i] = (char)((payload[66 + i] | 1) + '0');
+    }
+    out[24] = '\0';
+}
+
+/* Issue #834: the MS path places the symbol grid on each burst the hunt accepts, as the BS loop does on every burst's
+   sync. The hunt re-acquires each voice superframe on its burst A (and every data burst), and its crossing loop left
+   the grid a sample or two late on that sync, a phase the bursts behind it kept. The bootstrap and the data collector
+   name the sync the hunt just read; the reads that end a superframe or a data burst arm the recording one dibit before
+   the next burst's sync, so the hunt reads that sync on the grid the bursts left. */
+static void
+test_ms_bursts_place_the_grid_on_the_hunts_sync(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int payload[90];
+    char want[25];
+
+    reset_fixture();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_state(&state, payload);
+    state.dmr_payload_buf = payload;
+    load_voice_stream();
+    expected_hunt_sync(payload, want);
+    dmrMSBootstrap(&opts, &state);
+    assert(g_note_calls == 1);
+    assert(g_note_count == 24);
+    assert(strcmp(g_note_sync, want) == 0);
+    /* The voice cycle ends 144 dibits past burst F, then reads the next burst's CACH and first half: armed before the
+       last of them, the dibit ahead of burst A's sync. */
+    assert(g_stream_index == 1704U);
+    assert(g_hunt_arm_calls == 1);
+    assert(g_hunt_arm_at[0] == 1703U);
+
+    reset_fixture();
+    prepare_state(&state, payload);
+    state.dmr_payload_buf = payload;
+    load_live_half();
+    dmrMSData(&opts, &state);
+    assert(g_note_calls == 1);
+    assert(strcmp(g_note_sync, want) == 0);
+    assert(g_stream_index == 264U);
+    assert(g_hunt_arm_calls == 1);
+    assert(g_hunt_arm_at[0] == 263U);
+
+    /* Without the payload buffer's floor there is no read-back to name. */
+    reset_fixture();
+    prepare_state(&state, payload);
+    load_live_half();
+    dmrMSData(&opts, &state);
+    assert(g_note_calls == 0);
+    assert(g_hunt_arm_calls == 1);
+}
+
 int
 main(void) {
     test_ms_data_collects_payload_and_cleans_state();
@@ -958,6 +1048,7 @@ main(void) {
     test_ms_data_split_by_a_carrier_boundary_is_dropped();
     test_ms_voice_superframe_cut_by_an_input_interruption_is_dropped();
     test_ms_bootstrap_and_data_cut_by_an_input_interruption_are_dropped();
+    test_ms_bursts_place_the_grid_on_the_hunts_sync();
     DSD_FPRINTF(stdout, "DMR_MS_DATA: OK\n");
     return 0;
 }

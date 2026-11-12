@@ -667,18 +667,25 @@ def ysf_fich_bits(fn):
     return sent
 
 
-def ysf_source(outer_hz, outer_sync=False):
-    """outer_sync=True (a diagnostic, not a YSF signal) sends the frame sync's symbols at outer levels, as dsd-neo's
-    sign-only sync pattern draws them; the standard frame sync has inner symbols too."""
+def ysf_levels(frames, outer_sync=False):
+    """The symbol levels of the generator's first frames (also the I/Q fixture ysf_synth in
+    tools/build_iq_fixtures.py)."""
     rng = np.random.default_rng(YSF_SEED)
     levels = []
-    for frame in range(round(DURATION_S * YSF_FRAMES_PER_SECOND)):
+    for frame in range(frames):
         sync = bits_to_levels(msb_bits(YSF_FS, 40))
         if outer_sync:
             sync = 3.0 * np.sign(sync)
         rest = ysf_fich_bits(frame % 8) + rng.integers(0, 2, YSF_PAYLOAD_BITS).tolist()
         levels += [sync, bits_to_levels(rest)]
-    samples = fm_from_levels(np.concatenate(levels), 4800, rrc_response(0.2, 4800), outer_hz)[: sample_count()]
+    return np.concatenate(levels)
+
+
+def ysf_source(outer_hz, outer_sync=False):
+    """outer_sync=True (a diagnostic, not a YSF signal) sends the frame sync's symbols at outer levels, as dsd-neo's
+    sign-only sync pattern draws them; the standard frame sync has inner symbols too."""
+    levels = ysf_levels(round(DURATION_S * YSF_FRAMES_PER_SECOND), outer_sync)
+    samples = fm_from_levels(levels, 4800, rrc_response(0.2, 4800), outer_hz)[: sample_count()]
     note = f"YSF V/D mode 2 generator, RRC 0.2, outer {outer_hz:.0f} Hz" + (
         ", sync at outer levels" if outer_sync else ""
     )
@@ -742,21 +749,28 @@ def nxdn_frame_bits(part, rng):
     return bits + interleaved + rng.integers(0, 2, 288).tolist()
 
 
-def nxdn_source(symbol_rate, outer_hz, outer_sync=False):
-    """outer_sync=True (a diagnostic, not an NXDN signal) sends the FSW's two inner symbols at outer levels, as
-    dsd-neo's sign-only sync pattern draws them."""
+def nxdn_levels(frames, outer_sync=False):
+    """The symbol levels of the generator's first frames, 192 a frame at either rate (also the I/Q fixtures
+    nxdn96_synth and nxdn48_synth, tools/build_iq_fixtures.py)."""
     rng = np.random.default_rng(NXDN_SEED)
     signs = nxdn_scrambler_signs()
     levels = []
-    for frame in range(round(DURATION_S * symbol_rate / 192)):
+    for frame in range(frames):
         frame_levels = bits_to_levels(nxdn_frame_bits(frame % 4, rng)) * signs
         if outer_sync:
             frame_levels[:10] = 3.0 * np.sign(frame_levels[:10])
         levels.append(frame_levels)
-    synth = fm_from_levels(np.concatenate(levels), symbol_rate, nxdn_response(symbol_rate), outer_hz)
+    return np.concatenate(levels)
+
+
+def nxdn_source(symbol_rate, outer_hz, outer_sync=False):
+    """outer_sync=True (a diagnostic, not an NXDN signal) sends the FSW's two inner symbols at outer levels, as
+    dsd-neo's sign-only sync pattern draws them."""
+    frames = round(DURATION_S * symbol_rate / 192)
+    synth = fm_from_levels(nxdn_levels(frames, outer_sync), symbol_rate, nxdn_response(symbol_rate), outer_hz)
     note = f"NXDN RDCH voice generator, RRC 0.2 x sinc, outer {outer_hz:.0f} Hz"
     note += ", FSW at outer levels" if outer_sync else ""
-    return Source(repeat_to_length(synth), note=note, sent=len(levels))
+    return Source(repeat_to_length(synth), note=note, sent=frames)
 
 
 # ---------------------------------------------------------------- P25 Phase 1 generator

@@ -21,9 +21,11 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/core/voice_chain.h>
+#include <dsd-neo/dsp/symbol_anchor.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/ysf/ysf.h>
 #include <dsd-neo/runtime/colors.h>
@@ -973,19 +975,46 @@ ysf_end_call_lifecycle(dsd_opts* opts, dsd_state* state, const ysf_fich_info* in
     }
 }
 
-static void
+/* Returns whether a handler read the payload. */
+static bool
 ysf_dispatch_payload(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info) {
+    bool read = false;
     if (info->fi == 1U && info->dt == 0U) {
         ysf_handle_vd_type1(opts, state, info);
+        read = true;
     }
     if (info->fi == 1U && info->dt == 2U) {
         ysf_handle_vd_type2(opts, state, info);
+        read = true;
     }
     if (info->fi == 1U && info->dt == 3U) {
         ysf_handle_full_rate_voice(opts, state, info);
+        read = true;
     }
     if (info->dt == 1U || info->fi == 0U || info->fi == 2U) {
         ysf_handle_full_rate_data(opts, state, info);
+        read = true;
+    }
+    return read;
+}
+
+/* The frame sync the hunt just accepted places the symbol grid for the frame behind it. The hunt's crossing loop leaves
+   the grid where the sync's crossings put it, and the inner symbols among them sit their crossings off the symbol
+   boundaries: clean frames were read two samples early, where the root-raised-cosine eye is half shut. The previous
+   frame armed a recording at its end (ysf_arm_next_sync_anchor()), so its first sample is the sync's first; the word is
+   named from its second symbol, which leaves the measurement its sample of margin before the first centre. */
+static void
+ysf_note_sync_anchor(const dsd_state* state) {
+    const char* sync = state->synctype == DSD_SYNC_YSF_NEG ? INV_FUSION_SYNC_DIBITS : FUSION_SYNC_DIBITS;
+    dsd_symbol_note_sync_anchor(state, sync + 1, 19);
+}
+
+/* A frame whose payload was read ends where the next one's sync begins: record it for ysf_note_sync_anchor(). One whose
+   FICH named no payload leaves the hunt to read through it. */
+static void
+ysf_arm_next_sync_anchor(dsd_state* state, bool payload_read) {
+    if (payload_read) {
+        dsd_symbol_arm_hunt_sync_anchor(state);
     }
 }
 
@@ -995,6 +1024,7 @@ processYSF(dsd_opts* opts, dsd_state* state) {
     static uint8_t last_fi;
     ysf_fich_info info;
 
+    ysf_note_sync_anchor(state);
     info.carrier_seq = state->carrier_seq;
     ysf_parse_fich(opts, state, &info, &last_dt, &last_fi);
     if (dsd_state_frame_read_lost(state, info.carrier_seq)) {
@@ -1016,8 +1046,9 @@ processYSF(dsd_opts* opts, dsd_state* state) {
     }
 
     ysf_update_call_lifecycle(opts, state, &info);
-    ysf_dispatch_payload(opts, state, &info);
+    const bool payload_read = ysf_dispatch_payload(opts, state, &info);
     ysf_end_call_lifecycle(opts, state, &info);
+    ysf_arm_next_sync_anchor(state, payload_read);
 
     DSD_FPRINTF(stderr, "%s", KNRM);
     DSD_FPRINTF(stderr, "\n");

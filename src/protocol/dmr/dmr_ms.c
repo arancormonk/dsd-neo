@@ -24,6 +24,7 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
+#include <dsd-neo/dsp/symbol_anchor.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -302,12 +303,38 @@ dmr_ms_advance_voice_cycle(dsd_opts* opts, dsd_state* state, uint8_t* vc) {
     return 1;
 }
 
+/* The other slot's time, then the next burst's CACH and first half, up to the sync the hunt reads next: the recording
+   for it is armed a dibit ahead of it (dmr_ms_note_hunt_sync_anchor()). */
 static void
 dmr_ms_prime_next_payload(dsd_opts* opts, dsd_state* state) {
     skipDibit(opts, state, 144); // should we have two of these?
     for (int i = 0; i < 66; i++) {
+        if (i == 65) {
+            dsd_symbol_arm_hunt_sync_anchor(state);
+        }
         state->dmr_stereo_payload[i] = dmr_ms_read_dibit(opts, state, 1);
     }
+}
+
+/* The sync the hunt just accepted places the symbol grid for the burst it opens and those behind it. The hunt
+   re-acquires every voice superframe on its burst A (and every data burst), and its crossing loop left the grid a
+   sample or two late on that sync, which bursts B to F, read on without a sync of their own, then kept: an inner
+   symbol read as outer now and then on a clean signal (issue #834). The 24 dibits below dmr_payload_p are the sync,
+   by sign at the polarity received, which is all the anchor reads of them. A recording armed ahead of the sync (the
+   burst before it, dmr_ms_prime_next_payload() or dmr_ms_data_read_to_next_sync()) measures it; without one this
+   names nothing. */
+static void
+dmr_ms_note_hunt_sync_anchor(const dsd_state* state) {
+    if (state->dmr_payload_buf == NULL || state->dmr_payload_p == NULL
+        || state->dmr_payload_p - state->dmr_payload_buf < 24) {
+        return;
+    }
+    char sync[24];
+    const int* dibit_p = state->dmr_payload_p - 24;
+    for (int i = 0; i < 24; i++) {
+        sync[i] = (char)((dibit_p[i] | 1) + '0');
+    }
+    dsd_symbol_note_sync_anchor(state, sync, 24);
 }
 
 static void
@@ -471,6 +498,7 @@ dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
     dmr_ms_voice_frames frames;
     char cachdata[25];
 
+    dmr_ms_note_hunt_sync_anchor(state);
     dmr_ms_reset_ks_counter(state);
     dmr_ms_init_voice_frames(&frames);
 
@@ -520,12 +548,34 @@ dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
     dmrMS(opts, state);          //bootstrap into full TDMA frame
 }
 
+/* After a data burst: the other slot's time and the next burst's CACH and first half, up to its sync, with the
+   recording for that sync armed a dibit ahead of it (dmr_ms_note_hunt_sync_anchor()). */
+static void
+dmr_ms_data_read_to_next_sync(dsd_opts* opts, dsd_state* state) {
+    //should just be loaded in the dmr_payload_buffer instead now
+    //but we want to read dibits so the buffer has actual good values in it
+    for (int i = 0; i < 144; i++) { // 66
+        (void)get_dibit_and_analog_signal(opts, state, NULL);
+        state->dmr_stereo_payload[i] = 1; // set to one so first frame will fail intentionally instead of zero fill
+    }
+    //CACH + First Half Payload = 12 + 54
+    for (int i = 0; i < 66; i++) { // 66
+        if (i == 65) {
+            dsd_symbol_arm_hunt_sync_anchor(state);
+        }
+        (void)get_dibit_and_analog_signal(opts, state, NULL);
+        state->dmr_stereo_payload[i + 66] =
+            1; ////set to one so first frame will fail intentionally instead of zero fill
+    }
+}
+
 //simplied to a simple data collector, and then passed on to dmr_data_sync for the usual processing
 void
 dmrMSData(dsd_opts* opts, dsd_state* state) {
     /* Read before any symbol is: a read-back not all the stream's (dsd_state_sync_readback_invalid()) holds the burst's
        CACH and the first half of its payload and slot type, so nothing of the burst decodes. */
     const unsigned int invalid = dsd_state_sync_readback_invalid(state);
+    dmr_ms_note_hunt_sync_anchor(state);
 
     char timestr[9];
     (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
@@ -594,18 +644,7 @@ dmrMSData(dsd_opts* opts, dsd_state* state) {
     state->dmr_ms_mode = 0;
     state->directmode = 0; //flag off
 
-    //should just be loaded in the dmr_payload_buffer instead now
-    //but we want to read dibits so the buffer has actual good values in it
-    for (i = 0; i < 144; i++) { // 66
-        (void)get_dibit_and_analog_signal(opts, state, NULL);
-        state->dmr_stereo_payload[i] = 1; // set to one so first frame will fail intentionally instead of zero fill
-    }
-    //CACH + First Half Payload = 12 + 54
-    for (i = 0; i < 66; i++) { // 66
-        (void)get_dibit_and_analog_signal(opts, state, NULL);
-        state->dmr_stereo_payload[i + 66] =
-            1; ////set to one so first frame will fail intentionally instead of zero fill
-    }
+    dmr_ms_data_read_to_next_sync(opts, state);
 
     /* stack buffer; no free */
 }
