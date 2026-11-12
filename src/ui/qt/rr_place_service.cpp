@@ -620,12 +620,14 @@ void
 RrPlaceService::finishUpdate(bool namesDone) {
     if (namesDone && !m_systems.isNull()) {
         /* A row with no site counts once this update looked up or applied one of its states: unreachable when any of
-         * them failed, else updated. A row it named nothing for (no state ids, nothing left to name) counts as
-         * neither. */
+         * them failed, its lookup or the save of its names (the row is then as it was), else updated. A row it named
+         * nothing for (no state ids, nothing left to name) counts as neither. */
         for (const QString& uid : m_update.placeUids) {
             const QList<int> stids = place_state_ids(m_systems->getByUid(uid).value(kPlace).toMap());
-            const bool failed =
-                std::any_of(stids.cbegin(), stids.cend(), [this](int stid) { return m_failedStates.contains(stid); });
+            const bool failed = std::any_of(stids.cbegin(), stids.cend(), [this](int stid) {
+                return m_failedStates.contains(stid)
+                       || (m_update.namedStates.contains(stid) && m_unappliedStates.contains(stid));
+            });
             const bool named = std::any_of(stids.cbegin(), stids.cend(),
                                            [this](int stid) { return m_update.namedStates.contains(stid); });
             if (failed) {

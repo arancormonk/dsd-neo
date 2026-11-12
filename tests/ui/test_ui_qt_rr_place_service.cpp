@@ -778,6 +778,41 @@ test_update_failed_save() {
     expect_int("failed save: counted", finished.unreachable, 1);
 }
 
+/* A row with a place and no site (a conventional repeater list) is updated only by naming its place: when the lookup
+ * answers but saving the names fails, the row stays unnamed and its card counts as not updated, never as updated. The
+ * next lookup applies the names it kept. */
+void
+test_update_failed_name_save() {
+    clear_store();
+    Harness h;
+    h.systems.add({{"name", "Repeaters"},
+                   {"sourceType", "usb"},
+                   {"freqMhz", "146.755"},
+                   {"decodeFlag", "-fs -Y"},
+                   {"place", county_place(836, {19})}});
+    Finished finished;
+    record_finished(h.service, &finished);
+    expect("failed name save: store blocked", block_store());
+    expect("failed name save: started", h.service.updateFromRadioReference({h.systems.get(0).value("uid").toString()}));
+    settle(h);
+    expect("failed name save: store unblocked", unblock_store());
+    expect_int("failed name save: the state was looked up", h.fake.count("getStateInfo:19"), 1);
+    expect("failed name save: the row as it was", county_of(place_of(h.systems, 0)).value("name").isNull());
+    expect_int("failed name save: finished once", finished.count, 1);
+    expect_int("failed name save: none updated", finished.updated, 0);
+    expect_int("failed name save: counted", finished.unreachable, 1);
+    expect_str("failed name save: summary", h.service.summaryText(), "Updated 0 systems. 1 could not be reached.");
+    expect_int("failed name save: still unplaced", h.service.unplacedCount(), 1);
+
+    expect("failed name save: started again",
+           h.service.updateFromRadioReference({h.systems.get(0).value("uid").toString()}));
+    settle(h);
+    expect("failed name save: named from what was kept", johnson_iowa(place_of(h.systems, 0)));
+    expect_int("failed name save: Iowa asked once", h.fake.count("getStateInfo:19"), 1);
+    expect_int("failed name save: then updated", finished.updated, 1);
+    expect_int("failed name save: and none unreachable", finished.unreachable, 0);
+}
+
 /* Cancel stops the update between systems: what was saved stays, the rest is untouched, and it ends once. */
 void
 test_cancel_keeps_what_was_saved() {
@@ -1233,6 +1268,7 @@ main(int argc, char** argv) {
     test_update_skips_moved_and_counts_unlisted();
     test_update_partial_success();
     test_update_failed_save();
+    test_update_failed_name_save();
     test_cancel_keeps_what_was_saved();
     test_cancel_from_a_row_signal();
     test_update_place_rows_and_edges();

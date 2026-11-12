@@ -13546,7 +13546,8 @@ Qt Quick frontend (`src/ui/qt`):
   site, keeping the names it already had for unchanged ids; a site RadioReference no longer lists, an unanswered system
   or a failed save leaves its row not updated, a row moved to another system meanwhile counts as neither. Then it looks
   up the states any of the rows' places still lacks names for (a conventional list with a place and no site is not
-  updated when one of its states failed, updated when the step looked up or applied one of them, else neither). Every
+  updated when one of its states failed, or saving the names this step applied failed; updated when the step looked
+  up or applied one of them, else neither). Every
   count is in Listen's cards (`card_key()`: the row's site group, or its uid in none, taken as the update begins):
   `progressText` counts the cards whose system has been read, and a card counts once in the outcome, updated when any
   of its rows was, else unreachable when one of them was not. `updating`, `progressText` ("Updating %1 of %2"),
