@@ -324,6 +324,47 @@ test_slipped_corrupted_word_one_symbol_early(void) {
     teardown(&state);
 }
 
+/* Final review: the tolerant word is tried only after every exact matcher of every enabled protocol failed. A window at
+   the expected position 3 bits off the P25p1 word that ends in an inverted NXDN FSW is NXDN's under a live NXDN96 lock
+   one frame back (-fa runs both on 4800/4): the NXDN matcher takes it, and the anchor is spent unscored. Without the
+   lock the NXDN matcher refuses it and the same window is the tolerant P25p1 word. */
+static void
+test_exact_matcher_of_another_protocol_wins(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static const char window[] = "111113113311331313113313";
+
+    enum { OTHER_NAC = 0x2D1, NOW = 5000 };
+
+    assert(dsd_p25p1_sync_bit_distance(window, DSD_P25_CQPSK_DIBIT_MAP_IDENTITY, 0) == 3);
+    assert(strcmp(window + SYNC_DIBITS - 10, INV_NXDN_FSW) == 0);
+    for (int locked = 0; locked <= 1; locked++) {
+        setup(&opts, &state);
+        opts.frame_nxdn96 = 1;
+        validated_frame(&opts, &state, ANCHOR_SYNC, TSDU_1, 158, OTHER_NAC);
+        assert(state.p25_p1_sync_anchor.valid == 1U && state.p25_p1_sync_anchor.expected_clock == EXPECTED);
+        state.symbolcnt = NOW;
+        if (locked) {
+            state.nxdn96_sync.lock_type = (uint8_t)DSD_SYNC_NXDN_NEG;
+            state.nxdn96_sync.lock_symbolcnt = NOW - DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS;
+        }
+        const int sync = match_at(&opts, &state, window, EXPECTED);
+        assert(state.p25_p1_sync_anchor.valid == 0U);
+        if (locked) {
+            assert(sync == DSD_SYNC_NXDN_NEG);
+            assert(state.p25_p1_sync_anchor.tolerant_syncs == 0U);
+            assert(dsd_frame_sync_p25p1_tolerant_nac(&state, NULL) == -1);
+            assert(state.lastsynctype == DSD_SYNC_NXDN_NEG);
+        } else {
+            assert(sync == DSD_SYNC_P25P1_POS);
+            assert(state.p25_p1_sync_anchor.tolerant_syncs == 1U);
+            assert(dsd_frame_sync_p25p1_tolerant_nac(&state, NULL) == OTHER_NAC);
+            assert(state.lastsynctype == DSD_SYNC_P25P1_POS);
+        }
+        teardown(&state);
+    }
+}
+
 typedef void (*stream_change_fn)(dsd_opts* opts, dsd_state* state);
 
 static void
@@ -701,6 +742,7 @@ main(void) {
     test_other_positions_exact_only();
     test_slips_with_real_neighbours();
     test_slipped_corrupted_word_one_symbol_early();
+    test_exact_matcher_of_another_protocol_wins();
     test_invalidations();
     test_installation();
     test_map_and_polarity_follow_the_anchor();

@@ -5781,10 +5781,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   watchdog tunes under, and the engine withholds a frame while a tune request is unresolved or the tuning generation
   moved since the hunt began, `dsd_trunk_tuning_frame_is_current()`). Any accepted sync spends both anchors
   (`frame_sync_p25p1_anchor_note_accept()`, `frame_sync_p25p2_anchor_note_accept()`), as does the first window at or
-  past the expected position, so one window is scored and the rest of the hunt is exact. The Phase 1 try is the last
-  step of `frame_sync_try_p25p1()`; the Phase 2 try (`frame_sync_try_tolerant_p25p2()`) runs only when every exact
-  matcher of every protocol failed at the position (after `k_frame_sync_tries`, the P2 rotated and inverted ones
-  included), and the symbol-timing diagnostic does not measure it. A tolerant P2 accept writes no modulation and pushes
+  past the expected position, so one window is scored and the rest of the hunt is exact. Both tolerant tries
+  (`frame_sync_try_tolerant_p25p1()`, then `frame_sync_try_tolerant_p25p2()`; they score on different profiles) run
+  only when every exact matcher of every protocol failed at the position (after `k_frame_sync_tries`, the rotated and
+  inverted P25 ones included): a window a few bits off the P25p1 word can hold another protocol's exact word (one 3
+  bits off can end in an inverted NXDN FSW), and the exact matcher takes it. The symbol-timing diagnostic measures
+  neither. A tolerant P2 accept writes no modulation and pushes
   no demodulator profile (the anchor holds `rf_mod` 1), skips the acceptance-time centre refit, and notes no channel
   activity; `printFrameSync()` labels it `+P25p2~`. No pre-emption: the P2 word's distance to itself shifted 1-12
   symbols, the symbols shifted in matching, is at least 5 bits (7, 8, 7, 7, 6 for 1-5), so an exact word a slip put
@@ -9590,9 +9592,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     a CRC-passed last block and `processMPDU()` from a CRC-passed header) installs the anchor, when the sync-time
     context still holds and the decoder did not read past the unit's end. Any validated frame replaces the anchor (an
     exact new-NAC frame included); a frame that does not validate installs nothing.
-  - Matching (`frame_sync_p25p1_anchor_take()`): only after the exact checks failed, on `frame_sync_cqpsk_4level_enabled()`
-    and 4800/4, with a live anchor, for the window whose first dibit is the expected position (an integer compare a
-    window). The window is read under the anchor's map and polarity and scored by Gray-coded bit distance
+  - Matching (`frame_sync_p25p1_anchor_take()`): only after every protocol's exact matcher failed (DSP, the tolerant
+    tries), on `frame_sync_cqpsk_4level_enabled()` and 4800/4, with a live anchor, for the window whose first dibit is
+    the expected position (an integer compare a window). The window is read under the anchor's map and polarity and scored by Gray-coded bit distance
     (`dsd_p25p1_sync_bit_distance()`; `dsd_sync_hamming_distance()` counts dibits and is unchanged); at most
     `DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS` (6 of 48, OP25's dedicated P1 framer) is accepted, with the anchor's map
     and polarity. The first window at or past the expected position spends the anchor whatever it holds, so one window a

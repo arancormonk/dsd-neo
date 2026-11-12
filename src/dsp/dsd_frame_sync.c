@@ -865,20 +865,24 @@ frame_sync_try_rotated_p25(frame_sync_match_ctx* ctx, const char* symbols, const
 #endif
 
 #ifdef USE_RADIO
-/* After the exact matches failed: the window at the anchor's expected position, read under the anchor's dibit map and
- * polarity, within DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS bits of the word (dsd_p25p1_sync_anchor), on the RTL CQPSK
- * 4800/4 path. The first window to reach that position spends the anchor, so no other window is scored. The accept
- * skips the acceptance-time centre refit (CENTER_SKIP: a word with symbols off is no reference to refit on, and a
- * candidate writes no centre before it validates; on this path the next symbol read replaces the centre either way)
- * and keeps no control channel alive; whether its frame decodes is the NID's to say, past the dispatcher's strict
- * check. */
+/* After every exact matcher of every protocol failed at this position (frame_sync_try_protocol_matches()): the window at
+ * the anchor's expected position, read under the anchor's dibit map and polarity, within
+ * DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS bits of the word (dsd_p25p1_sync_anchor), on the RTL CQPSK 4800/4 path. A
+ * window a few bits off the word can hold another protocol's exact word (one 3 bits off can end in an inverted NXDN
+ * FSW), which is that protocol's to take. The first window to reach that position spends the anchor, so no other window
+ * is scored. The accept skips the acceptance-time centre refit (CENTER_SKIP: a word with symbols off is no reference to
+ * refit on, and a candidate writes no centre before it validates; on this path the next symbol read replaces the centre
+ * either way) and keeps no control channel alive; whether its frame decodes is the NID's to say, past the dispatcher's
+ * strict check. */
 static int
 frame_sync_try_tolerant_p25p1(frame_sync_match_ctx* ctx) {
     dsd_state* state = ctx->state;
     uint8_t map_idx = DSD_P25_CQPSK_DIBIT_MAP_IDENTITY;
     int inverted = 0;
     int nac = 0;
-    if (!frame_sync_p25p1_anchor_take(state, &map_idx, &inverted, &nac)
+    if (ctx->opts->frame_p25p1 != 1 || !frame_sync_p25p1_anchor_take(state, &map_idx, &inverted, &nac)
+        || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
+        || !frame_sync_match_window_ready(ctx, 24) || dsd_state_carrier_settling(state, 24U)
         || !frame_sync_cqpsk_4level_enabled(ctx->opts, state)) {
         return DSD_SYNC_NONE;
     }
@@ -915,17 +919,12 @@ frame_sync_try_p25p1(frame_sync_match_ctx* ctx) {
     }
 
 #ifdef USE_RADIO
-    int sync_type =
+    const int sync_type =
         frame_sync_try_rotated_p25(ctx, ctx->synctest, P25P1_SYNC, 24, DSD_SYNC_P25P1_POS, 0, "+P25p1", 0, 0);
     if (sync_type != DSD_SYNC_NONE) {
         return sync_type;
     }
-    sync_type =
-        frame_sync_try_rotated_p25(ctx, ctx->synctest, INV_P25P1_SYNC, 24, DSD_SYNC_P25P1_NEG, 0, "-P25p1 ", 0, 0);
-    if (sync_type != DSD_SYNC_NONE) {
-        return sync_type;
-    }
-    return frame_sync_try_tolerant_p25p1(ctx);
+    return frame_sync_try_rotated_p25(ctx, ctx->synctest, INV_P25P1_SYNC, 24, DSD_SYNC_P25P1_NEG, 0, "-P25p1 ", 0, 0);
 #else
     return DSD_SYNC_NONE;
 #endif
@@ -2527,10 +2526,14 @@ frame_sync_try_protocol_matches(frame_sync_match_ctx* ctx) {
         dsd_symbol_timing_report_sync(ctx->state, sync_type, ctx->synctest8);
     }
 #ifdef USE_RADIO
-    /* The P25p2 anchor's word is tried last, once nothing matched exactly; a word with symbols off is no timing
-       reference, so the symbol-timing diagnostic does not measure it. */
+    /* The P25 anchors' words are tried last, once no matcher of any protocol matched exactly: an exact word never loses
+       to a tolerant one. The two anchors score on different profiles (4800/4 and 6000/4), so at most one is live here.
+       A word with symbols off is no timing reference, so the symbol-timing diagnostic does not measure it. */
     if (sync_type == DSD_SYNC_NONE) {
-        const int tolerant = frame_sync_try_tolerant_p25p2(ctx);
+        int tolerant = frame_sync_try_tolerant_p25p1(ctx);
+        if (tolerant == DSD_SYNC_NONE) {
+            tolerant = frame_sync_try_tolerant_p25p2(ctx);
+        }
         if (tolerant != DSD_SYNC_NONE) {
             frame_sync_p25p1_anchor_note_accept(ctx->state, tolerant);
             frame_sync_p25p2_anchor_note_accept(ctx->state, tolerant);
