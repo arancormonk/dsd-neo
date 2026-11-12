@@ -1406,11 +1406,10 @@ struct dsd_signal_quiet_detector {
     dsd_io::FftSetupCache fft;
     dsd_signal_quiet_request request{};
     dsd_signal_quiet_params params{};
-    /* This sub-window's power, scratch prefix sums of it (one longer than the spectrum), and scratch for the
-       capture-wide noise reference. */
+    /* This sub-window's power, and scratch prefix sums of it (one longer than the spectrum; the capture-wide noise
+       reference uses it first as its own scratch). */
     double power[DSD_SEARCH_MAX_FFT]{};
     double prefix[DSD_SEARCH_MAX_FFT + 1]{};
-    double wide[DSD_SEARCH_MAX_FFT]{};
     /* The judged classes' widths. */
     double widths[3]{};
     int width_count = 0;
@@ -1548,23 +1547,25 @@ quiet_finish(dsd_signal_quiet_detector* detector, dsd_signal_measure_failure rea
 }
 
 /* The capture-wide noise reference per FFT bin, in the units of the sub-window's power (summed over its transforms):
-   the 25th percentile of the bins clear of the hardware DC guard, inside 0.45 Fs and outside the channel's widest
-   class, scaled to the mean that percentile implies for Gaussian noise (a chi-square of 2 * frames degrees of freedom,
-   Wilson-Hilferty). A low percentile of the whole span stays on the noise however many transmitters stand in up to
-   three quarters of it. @p scratch takes the copies the selection reorders. Negative when no bin qualifies. */
+   the 25th percentile of the bins whose hardware offset (the bin's frequency less the ingest rotation, folded into
+   -Fs/2..Fs/2 as measure_channel() reads its bins) clears the hardware DC guard, stays inside 0.45 Fs and lies outside
+   the channel's widest class, scaled to the mean that percentile implies for Gaussian noise (a chi-square of
+   2 * frames degrees of freedom, Wilson-Hilferty). A low percentile of the whole span stays on the noise however many
+   transmitters stand in up to three quarters of it. @p scratch (n doubles) takes the copies the selection reorders.
+   Negative when no bin qualifies. */
 static double
 wide_reference(const dsd_signal_quiet_detector* detector, double* scratch) {
     const dsd_signal_capture& capture = detector->request.capture;
     const int n = detector->n;
-    const double bin_hz = (double)capture.rate_hz / n;
-    const double dc_guard = std::max(bin_hz * 3, capture.rate_hz / 100.0);
+    const double rate = capture.rate_hz, bin_hz = rate / n;
+    const double dc_guard = std::max(bin_hz * 3, rate / 100.0);
     const double channel = (double)detector->request.frequency_hz - capture.capture_hz;
     const double half_width = *std::max_element(detector->widths, detector->widths + detector->width_count) / 2;
     int count = 0;
     for (int m = -n / 2; m < n / 2; ++m) {
-        const double delta = m * bin_hz - capture.rotation_hz;
-        if (std::abs(delta) > dc_guard && std::abs(delta) < capture.rate_hz * 0.45
-            && std::abs(delta - channel) > half_width) {
+        double delta = m * bin_hz - capture.rotation_hz;
+        delta -= rate * std::floor((delta + rate / 2) / rate);
+        if (std::abs(delta) > dc_guard && std::abs(delta) < rate * 0.45 && std::abs(delta - channel) > half_width) {
             scratch[count++] = detector->power[(m + n) % n];
         }
     }
@@ -1584,11 +1585,11 @@ static void
 quiet_measure_window(dsd_signal_quiet_detector* detector) {
     const int n = detector->n;
     const double norm = 1.0 / (n * detector->energy * detector->frames);
+    const double reference = wide_reference(detector, detector->prefix);
     prefix_sums(detector->power, n, detector->prefix);
     auto bins = [&](long long first, long long last) {
         return circular_sum(detector->prefix, n, first, last - first + 1);
     };
-    const double reference = wide_reference(detector, detector->wide);
     for (int c = 0; c < detector->width_count; ++c) {
         const channel_level level =
             measure_channel(bins, detector->request.capture, n, (double)detector->request.frequency_hz,

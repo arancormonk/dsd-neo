@@ -177,7 +177,8 @@ typedef struct {
      * floor over the same bins (0 when nothing was valid). */
     float max_ratio_db, power_dbfs, floor_dbfs;
     /** The highest sideband floor over the capture-wide noise reference in any sub-window and class whose geometry
-     * fits, in dB (0 when none fits): above the guard (dsd_signal_quiet_params.guard_db) the result is not valid. */
+     * fits, in dB: above the guard (dsd_signal_quiet_params.guard_db) the result is not valid. 0 when no class fits or
+     * no bin of the capture qualified for the reference; the result is then not valid either. */
     float floor_rise_db;
     /** Monotonic arrival of the capture block that completed (or failed) the request; shared tap only, else 0. */
     uint64_t completed_realtime_ns;

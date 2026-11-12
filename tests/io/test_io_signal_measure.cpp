@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <thread>
 #include <vector>
+#include "rtl_fft_cache.h"
 #include "rtl_stream_test_support.h"
 
 static std::vector<float>
@@ -1161,6 +1162,37 @@ test_quiet_classes(dsd_signal_quiet_detector* d) {
     assert(quiet_verdict(d, wide, centred) && !quiet_verdict(d, narrow, centred) && !quiet_verdict(d, both, centred));
 }
 
+/* Noise 20 dB over kQuietSigma everywhere except the hardware band +0.15..+0.45 Fs of @p q's capture (a bin's hardware
+   offset is its sample frequency less the rotation, folded into -Fs/2..Fs/2), shaped in the frequency domain. */
+static std::vector<float>
+quiet_low_band_noise(const dsd_signal_quiet_request& q, size_t pairs, unsigned seed) {
+    const int n = (int)pairs;
+    const double rate = q.capture.rate_hz;
+    std::vector<float> iq = quiet_noise(pairs, seed);
+    dsd_io::FftSetupCache fft;
+    auto transform = [&](bool inverse) {
+        for (int i = 0; inverse && i < n; ++i) {
+            iq[2 * (size_t)i + 1] = -iq[2 * (size_t)i + 1];
+        }
+        assert(fft.forward(n, iq.data()));
+        for (int i = 0; inverse && i < n; ++i) {
+            iq[2 * (size_t)i] /= (float)n;
+            iq[2 * (size_t)i + 1] = -iq[2 * (size_t)i + 1] / (float)n;
+        }
+    };
+    transform(false);
+    for (int k = 0; k < n; ++k) {
+        double hardware = (k < n / 2 ? k : k - n) * rate / n - q.capture.rotation_hz;
+        hardware -= rate * std::floor((hardware + rate / 2) / rate);
+        const float gain = (hardware >= 0.15 * rate && hardware < 0.45 * rate) ? 1.0f : 10.0f;
+        iq[2 * (size_t)k] *= gain;
+        iq[2 * (size_t)k + 1] *= gain;
+    }
+    transform(true);
+    fft.release();
+    return iq;
+}
+
 /* The floor guard: a weak channel between transmitters that raise its sideband floor on both sides would read quiet
    on the ratio alone; the floor's rise over the capture-wide noise reference voids it. Noise alone stays valid, and the
    guard's edge falls exactly at the reported rise. */
@@ -1191,6 +1223,11 @@ test_quiet_floor_guard(dsd_signal_quiet_detector* d) {
             }
         }
     }
+    // The reference spans the hardware band the tap sees under the ingest rotation (Fs/4 here, as the RTL tap runs):
+    // a floor 20 dB up everywhere but hardware +0.15..+0.45 Fs, where the lower quartile of the span must come from,
+    // is seen as raised round the channel (at hardware -Fs/4).
+    const auto raised = quiet_run(d, wide, quiet_low_band_noise(wide, pairs, 98), 4096, &shipped);
+    assert(!raised.valid && !raised.quiet && raised.floor_rise_db > 15.0f);
     // Just under and just over the guard: valid while the rise stays at or under it, void once it exceeds it.
     const auto noise = quiet_noise(pairs, 97);
     const float rise = quiet_run(d, wide, noise, 4096, &unguarded).floor_rise_db;
