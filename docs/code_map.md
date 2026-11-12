@@ -11925,8 +11925,12 @@ Qt Quick frontend (`src/ui/qt`):
   `OutlineButton` (no border or fill, cyan label), each at the end of its line or under it when both do not fit, with
   48 dp targets that never meet. `Repeater.onItemRemoved` notes a card that held the keyboard, as does a card row
   that becomes held; a 0 ms timer then moves focus to the search field, or to Add a system when nothing is saved (and
-  waits while a sheet is open); the keyboard also follows Update to Cancel and back. With a screen reader the cards'
-  Repeater rows are positional (the card model's `held` rows, above): a sort, search or location renames each row for
+  waits while a sheet is open). A part with the keyboard that goes, held with a screen reader or hidden without one, is
+  disabled or hidden with it, and Qt drops the keyboard (`onActiveFocusChanged` sees it lost while not `shown`): Play
+  or the site button that the row's card now lacks hands it, through the same timer, to that row's More options, which
+  every card has (else the search field); a control over the cards that goes (the ×, Clear search, a notice's action,
+  e.g. the place notice once nothing is left unplaced) hands it to the search field (`keyboardLeft`). The keyboard
+  also follows Update to Cancel and back. With a screen reader the cards' Repeater rows are positional (the card model's `held` rows, above): a sort, search or location renames each row for
   the card at its place, so the keyboard stays on the pill, the field or the row it was on, which then reads the card
   now there. A held row is drawn at no opacity, its parts leave the tree with empty names (as the Network sheet's held
   rows, "Qt QML editing convention"), it takes no press or keyboard (`parked`, set once the keyboard was handed on),
@@ -11942,12 +11946,17 @@ Qt Quick frontend (`src/ui/qt`):
   after each sort on the emulator. Nothing a positional change raises then tells Android its copy of the tree is
   stale (renames, held rows and held parts raise no show or hide), and TalkBack read a row's last card, and its focus,
   which Qt's bridge carries out as the keyboard focus (`focusAction_helper`), landed on parts that had gone, so Tab
-  skipped controls. So Home notes each such change (a row's `key` or `held`, the shown count, the controls'
-  `partsShown`) and, once the cards' rebuild that settles it has been applied (`SavedSystemCards::rebuilt`), shows or
-  hides `savedSystemsTreeRefresh` once: a transparent, unnamed, unfocusable node under the window's content item, made
+  skipped controls. So Home notes each such change (a row's `key` or `held`, which parts its card shows, the shown
+  count, the controls' `partsShown`, a notice's second line included) and, once the cards' rebuild that settles it
+  has been applied (`SavedSystemCards::rebuilt`), shows or hides `savedSystemsTreeRefresh` once: a transparent, unnamed, unfocusable node under the window's content item, made
   on the first change, as each ModalSheet's refresh node, which has the bridge read the window's tree again at the
-  cost of the window's few children. A sort, a search and a Nearest reorder at 300 cards raise no show or hide in the
-  section and that one event. The Sort sheet hands the keyboard focus, and so TalkBack's, back to the pill:
+  cost of the window's few children. A card gains or loses a part in place too, with no other change to the list (an
+  automatic place-name lookup after an import naming a place in Order added, a site avoided), so each row lists the
+  parts a card can lack (`lackableParts`), each with its own `shown`, which its drawing, gates and holding read, and
+  notes a change to which are shown (`partsShown`): one source, so a part added later cannot be missed
+  (`test_screen_reader_holds_the_parts_a_card_lacks` fails for a held or `shown` part not listed). A change to an
+  already shown part's words only is a rename, which the bridge sends on, and refreshes nothing. A sort, a search and
+  a Nearest reorder at 300 cards raise no show or hide in the section and that one event. The Sort sheet hands the keyboard focus, and so TalkBack's, back to the pill:
   `ChoiceSheet.open()` reads its opener before showing, as `ModalSheet.open()` does (the body a management sheet
   disables holds the pill, which had lost the focus when the sheet read it, and the focus went to Home itself, where
   TalkBack started from the top). A card that leaves under a sheet leaves the sheet no opener, so Home hands the
@@ -11966,8 +11975,9 @@ Qt Quick frontend (`src/ui/qt`):
   `UI_QT_QML_CALL_LISTS` (`tst_home_systems_search_sort.qml`, with `tst_home_tabs`, `tst_home_layout_fixes`,
   `tst_home_pinned`, `tst_site_chooser_sheet`, `tst_wizard_sites`, `tst_listen_tabs_flows`), `UI_QT_QML_BACK_MODALS`
   (Back closes the sort sheet), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_scan_churn.qml`: no show or hide in the section and
-  one tree refresh per sort, search and Nearest reorder at 300 mixed cards, and the Sort sheet's focus back on its pill
-  as TalkBack chooses, History's filter sheet the control; `tst_a11y_text_reach.qml`).
+  one tree refresh per sort, search and Nearest reorder at 300 mixed cards, one for a place named in place and none
+  for its rename (`test_m4_saved_systems_part_shown_in_place_refreshes_the_tree`), and the Sort sheet's focus back on
+  its pill as TalkBack chooses, History's filter sheet the control; `tst_a11y_text_reach.qml`).
 - Pin to Listen (issue #801 D4/D5, B3). Every source offers the same action from `ListenPins::action(kind, uid)`
   (`{pinned, text, accessibleName, enabled, description}`: "Pin to Listen"/"Unpin from Listen", "Pin <label> to Listen";
   not pinned while full, disabled with `Text::FullRefusal` as its description). In `qml/HomeScreen.qml` `pinAction(kind,

@@ -830,6 +830,68 @@ Item {
             }
         }
 
+        // r6 1: a card that gains or loses a part in place, with no other change to the list (an automatic place-name
+        // lookup naming a place in Order added, which keeps the order), holds or shows that part, which raises no show
+        // or hide; Android's bridge would keep its copy without the place line, which TalkBack could then not reach.
+        // So a change to which parts a card shows has Home refresh the tree once, as a reorder does. A change of an
+        // already shown part's words only is a rename, which the bridge sends on, and refreshes nothing.
+        function test_m4_saved_systems_part_shown_in_place_refreshes_the_tree() {
+            testContext.setLifecyclePhase(0);
+            verify(screenReader.active, "this run has a screen reader on");
+            var home = findChild(app, "homeScreen");
+            try {
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+                for (var name of ["Charlie", "Alpha", "Bravo"])
+                    verify(savedSystems.add({name: name, sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5"}));
+                prefs.systemsSort = "added";
+                tryCompare(home, "visible", true);
+                home.showSection("systems");
+                tryCompare(savedSystemCards, "totalCount", 3);
+                waitForRendering(home);
+                wait(50); // the tree refresh the cards' arrival owes
+                var section = findChild(home, "listenSystemsSection");
+                var repeater = findChild(home, "savedSystemCardsRepeater");
+                var entry = repeater.itemAt(1);
+                compare(entry.title, "Alpha");
+                var place = findChild(entry, "savedSystemPlace");
+                verify(place.Accessible.ignored, "no place yet");
+                var placed = function (counties) {
+                    var row = savedSystems.rowForUid(entry.leadUid);
+                    verify(savedSystems.update(row, Object.assign(savedSystems.get(row), {place: {states: [{stid: 19,
+                        name: "Iowa"}], counties: counties, candidateStates: [19]}})));
+                };
+                var step = function (label, change, refreshes) {
+                    testContext.startAccessibilityCount();
+                    change();
+                    wait(50);
+                    var counts = testContext.accessibilityCount();
+                    testContext.stopAccessibilityCount();
+                    compare(repeater.itemAt(1), entry, label + ": the same row");
+                    compare(entry.title, "Alpha", label + ": the same card");
+                    compare(showHide(section), 0, label + ": no show or hide in the list: " + churn(counts));
+                    var refresh = findChild(app, "savedSystemsTreeRefresh");
+                    compare(refresh ? showHide(refresh) : 0, refreshes, label + ": the tree refresh: " + churn(counts));
+                    compare(typed(counts, "ObjectShow") + typed(counts, "ObjectHide"), refreshes,
+                            label + ": shows and hides anywhere: " + churn(counts));
+                };
+                step("a place named", function () {
+                    placed([]);
+                }, 1);
+                verify(!place.Accessible.ignored && place.opacity === 1, "the place line is shown");
+                compare(place.Accessible.name, "Iowa");
+                step("the place renamed", function () {
+                    placed([{ctid: 85, stid: 19, name: "Story"}]);
+                }, 0);
+                compare(place.Accessible.name, "Story, Iowa");
+            } finally {
+                testContext.stopAccessibilityCount();
+                testContext.resetSystemsSort();
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+            }
+        }
+
         // a11y2 B: a choice made in a sheet as TalkBack makes it (Qt's bridge carries TalkBack's focus out as the
         // set-focus action, and its double tap as the press) hands the keyboard focus, which TalkBack's follows, back
         // to the control that opened the sheet: one Focus event, the opener's. Home disables its body while the Sort

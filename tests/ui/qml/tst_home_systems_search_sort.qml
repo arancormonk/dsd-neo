@@ -833,6 +833,113 @@ Item {
             compare(repeater.count, 3);
         }
 
+        // r6 2: a part with the keyboard that the row's next card lacks (Play, the site button) is held, and so
+        // disabled, with a screen reader on; without one the card keeps its row and the part is hidden as the card
+        // loses it. Either way the keyboard goes to that row's More options, which every card has, never nowhere.
+        // A line's action over the cards that goes (the place notice's, once nothing is left unplaced; the no-match
+        // card's Clear search, once a system that matches is added) hands it to the search field.
+        function test_focused_part_the_card_lacks_hands_on_data() {
+            return [{tag: "Play, screen reader", reader: true, part: "savedSystemPlay", row: 0, title: "Alliant Energy"},
+                {tag: "site button, screen reader", reader: true, part: "homeSiteChooserButton", row: 1, title: "Zulu"},
+                {tag: "Play, no screen reader", reader: false, part: "savedSystemPlay", row: 1, title: "Alliant Energy",
+                    avoided: true},
+                {tag: "place notice, screen reader", reader: true, part: "systemsPlaceUpdate"},
+                {tag: "place notice, no screen reader", reader: false, part: "systemsPlaceUpdate"},
+                {tag: "no match, screen reader", reader: true, part: "systemsNoMatchClear"}];
+        }
+        function test_focused_part_the_card_lacks_hands_on(data) {
+            add("Zulu");
+            for (var i = 0; i < 2; ++i)
+                site("Alliant Energy", 7, undefined, undefined, {rrSiteId: 70 + i, siteName: "Site " + i});
+            prefs.systemsSort = data.part === "systemsPlaceUpdate" ? "place" : "added";
+            // One of Alliant's two sites avoided: the other is its Play.
+            var avoidedRow = -1;
+            for (i = 0; i < savedSystems.count; ++i) {
+                if (savedSystems.get(i).rrSiteId === 70)
+                    avoidedRow = i;
+            }
+            if (data.avoided)
+                verify(savedSystems.setAvoidSite(avoidedRow, true));
+            if (data.part === "systemsPlaceUpdate")
+                testContext.setRrPlacesUnplaced(1);
+            if (data.part === "systemsNoMatchClear")
+                search("yankee");
+            settle();
+            savedSystemCards.screenReaderActive = data.reader;
+            settle();
+            var repeater = item("savedSystemCardsRepeater");
+            var part = data.row === undefined ? item(data.part) : findChild(repeater.itemAt(data.row), data.part);
+            verify(part.visible && part.enabled, "the part is shown");
+            part.forceActiveFocus();
+            verify(part.activeFocus);
+            if (data.avoided) {
+                // The card keeps its row and loses Play: both its sites can play again.
+                verify(savedSystems.setAvoidSite(avoidedRow, false));
+            } else if (data.part === "systemsNoMatchClear") {
+                add("Yankee");
+            } else if (data.part === "systemsPlaceUpdate") {
+                testContext.setRrPlacesUnplaced(0);
+            } else {
+                prefs.systemsSort = "name";
+            }
+            settle();
+            if (data.row === undefined) {
+                verify(!part.enabled && part.visible === data.reader, "the control went: held, or hidden without a screen reader");
+                tryVerify(function () {
+                    return field().input.activeFocus;
+                }, 1000, "the search field has the keyboard, not " + home.Window.window.activeFocusItem);
+            } else {
+                var manage = findChild(repeater.itemAt(data.row), "savedSystemManageButton");
+                compare(repeater.itemAt(data.row).title, data.title, "the row's card");
+                verify(data.reader ? part.visible && part.opacity === 0 && !part.enabled : !part.visible, "the part went");
+                tryVerify(function () {
+                    return manage.activeFocus;
+                }, 1000, "the row's More options has the keyboard, not " + home.Window.window.activeFocusItem);
+                if (data.reader)
+                    compare(manage.Accessible.name, "More options for " + data.title);
+            }
+            savedSystemCards.screenReaderActive = false;
+        }
+
+        // r6 1: a part held or shown in place, with the list's order and rows as they were, has Home refresh Android's
+        // copy of the tree once (savedSystemsTreeRefresh, counted by tst_a11y_scan_churn.qml's m4 case with events):
+        // here the location line's second line, which goes once a fix arrives while the one card keeps its row.
+        function refreshToggles(change) {
+            var node = home.systemsTreeRefresh;
+            var before = node ? node.visible : undefined;
+            change();
+            settle();
+            wait(20);
+            node = home.systemsTreeRefresh;
+            if (!node)
+                return 0;
+            return before === undefined || before !== node.visible ? 1 : 0;
+        }
+        function test_line_part_held_in_place_refreshes_the_tree() {
+            testContext.setLocationSupported(true);
+            site("Near", 2, 41.7, -93.6, {place: iowa("Story", 85)});
+            prefs.systemsSort = "nearest";
+            settle();
+            savedSystemCards.screenReaderActive = true;
+            settle();
+            wait(20);
+            var line = item("systemsLocation");
+            compare(line.detail, "Showing names until a location arrives");
+            var entry = entries()[0];
+            compare(refreshToggles(function () {
+                prefs.setLocationFix(41.6, -93.6, savedSystems.realtimeNowMs(), 25);
+            }), 1, "the fix holds the second line: one refresh");
+            compare(line.detail, "");
+            compare(entries()[0], entry, "the card keeps its row");
+            compare(findChild(entry, "savedSystemPlace").text, "6.9 mi · Story, Iowa");
+            // The second line back while the line shows, so the next case finds the line laid out as it left it.
+            prefs.setLocationFix(0, 0, 0, 0);
+            savedSystemCards.screenReaderActive = false;
+            settle();
+            wait(20);
+            compare(line.detail, "Showing names until a location arrives");
+        }
+
         // a11y2 A: with a screen reader the rows are positional, and a part one card has and the row's next card
         // lacks (the section heading, the place and receiver lines, the refresh hint, the site button, Play) is held,
         // never hidden: still visible (a show or hide made Android's bridge fetch the scroll body, with every card
@@ -870,6 +977,22 @@ Item {
                 compare(part.Accessible.name, "", label + ": unnamed");
                 if (pair[1] === "homeSiteChooserButton" || pair[1] === "savedSystemPlay")
                     verify(!part.enabled && !part.activeFocusOnTab, label + ": no press or Tab stop");
+            }
+            // r6 1: every part a card can lack is one of its lackableParts, whose `shown` set Home refreshes the tree
+            // for: each part held here, and each part with a `shown` of its own.
+            for (var entry of entries()) {
+                var listed = entry.lackableParts;
+                for (var listedPart of listed)
+                    verify(typeof listedPart.shown === "boolean", entry.title + ": " + listedPart.objectName + " has a shown");
+                var walk = function (node) {
+                    for (var child of node.children) {
+                        var isPart = typeof child.shown === "boolean" || (data.reader && child.visible && child.opacity === 0);
+                        if (isPart && child.objectName.length > 0)
+                            verify(listed.indexOf(child) >= 0, entry.title + ": " + child.objectName + " is a lackable part");
+                        walk(child);
+                    }
+                };
+                walk(entry);
             }
             var heading = findChild(story, "savedSystemSection");
             verify(data.reader ? heading.visible && heading.opacity === 0 && heading.Accessible.ignored

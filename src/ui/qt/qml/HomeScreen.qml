@@ -472,11 +472,20 @@ Item {
 
     // A card that leaves with the keyboard on it (filtered out, removed) hands
     // it to the search field, or to Add a system with nothing saved; checked
-    // once the cards and a closing sheet's own hand-back have settled.
+    // once the cards and a closing sheet's own hand-back have settled. A part
+    // that goes with it (a card's Play or site button the row's card now
+    // lacks, a line's action over the cards) hands it to its row's More
+    // options, else the same way.
     property bool systemsFocusOwed: false
+    // The row whose More options takes the keyboard; null: none.
+    property Item systemsFocusRow: null
     function noteCardRemoved(item) {
         if (!holdsFocus(item))
             return;
+        noteKeyboardLeft(null);
+    }
+    function noteKeyboardLeft(row) {
+        systemsFocusRow = row;
         systemsFocusOwed = true;
         systemsFocusTimer.restart();
     }
@@ -489,10 +498,14 @@ Item {
         if (!systemsFocusOwed || Navigation.topModal)
             return;
         systemsFocusOwed = false;
+        var row = systemsFocusRow;
+        systemsFocusRow = null;
         var window = screen.Window.window;
         if (!window || !visible || !focusLost(window.activeFocusItem))
             return;
-        if (savedControls.shown)
+        if (row && !row.held && row.moreOptions.enabled && Navigation.presented(row.moreOptions))
+            row.moreOptions.forceActiveFocus();
+        else if (savedControls.shown)
             savedControls.searchInput.forceActiveFocus();
         else
             addSystemButton.forceActiveFocus();
@@ -1070,6 +1083,7 @@ Item {
                     onHeightChanged: listenSystemsSection.place()
                     onOpenRadioReferenceAccount: screen.openRadioReferenceAccount()
                     onPartsShownChanged: screen.noteSystemsChanged()
+                    onKeyboardLeft: screen.noteKeyboardLeft(null)
                     onRevealRequested: screen.revealSystemsTop()
                     // A keyboard on them goes to Add a system.
                     onEmptied: function (hadFocus) {
@@ -1162,6 +1176,27 @@ Item {
                         }
                         // Another card at this row (positional rows).
                         onKeyChanged: screen.noteSystemsChanged()
+                        // The parts one card has and another lacks, each with
+                        // its own `shown`, which its drawing, gates and
+                        // holding read. Which are shown changes in place too
+                        // (a place named after an import, a site avoided), and
+                        // holding or showing one raises no show or hide, so
+                        // Home refreshes Android's tree for it as for a reorder.
+                        readonly property var lackableParts: [sectionHeading, receiverLine, placeLine, refreshHintText, siteButton, play]
+                        readonly property string partsShown: lackableParts.map(function (part) {
+                            return part.shown;
+                        }).join()
+                        onPartsShownChanged: screen.noteSystemsChanged()
+                        // A part with the keyboard that goes (held, or hidden
+                        // without a screen reader) is disabled or hidden with
+                        // it, and Qt drops the keyboard: this row's More
+                        // options, which every card has, takes it. A part
+                        // still shown loses it only to another control.
+                        function notePartGone(part) {
+                            if (!part.shown && !part.activeFocus)
+                                screen.noteKeyboardLeft(entry);
+                        }
+                        readonly property Item moreOptions: manageButton
                         onYChanged: if (listenSystemsSection.rowsHeld) listenSystemsSection.place()
                         onHeightChanged: if (listenSystemsSection.rowsHeld) listenSystemsSection.place()
 
@@ -1319,13 +1354,14 @@ Item {
                             ReadableText {
                                 id: refreshHintText
                                 objectName: "savedSystemRefreshHint"
-                                Accessible.ignored: !navigationAllowed || !visible || !card.refreshHint || entry.held
-                                Accessible.name: navigationAllowed && visible && card.refreshHint && !entry.held ? text : ""
+                                readonly property bool shown: card.refreshHint
+                                Accessible.ignored: !navigationAllowed || !visible || !shown || entry.held
+                                Accessible.name: navigationAllowed && visible && shown && !entry.held ? text : ""
                                 x: Theme.cardPadding
                                 y: card.hintTop
                                 width: parent.width - 2 * Theme.cardPadding
-                                visible: card.refreshHint || entry.positional
-                                opacity: card.refreshHint ? 1 : 0
+                                visible: shown || entry.positional
+                                opacity: shown ? 1 : 0
                                 text: qsTr("Refresh from RadioReference to enable site grouping")
                                 wrapMode: Text.Wrap
                                 color: Theme.textSecondary
@@ -1334,32 +1370,36 @@ Item {
                             OutlineButton {
                                 id: siteButton
                                 objectName: "homeSiteChooserButton"
+                                readonly property bool shown: card.hasSites
                                 // Says its label too ("2 sites"), which a screen reader otherwise never hears.
-                                accessibleName: entry.held || !card.hasSites ? "" : qsTr("Choose sites for %1, %2").arg(card.name).arg(text)
-                                Accessible.focusable: navigationAllowed && visible && card.hasSites && !entry.held
-                                Accessible.ignored: !navigationAllowed || !visible || !card.hasSites || entry.held
+                                accessibleName: entry.held || !shown ? "" : qsTr("Choose sites for %1, %2").arg(card.name).arg(text)
+                                Accessible.focusable: navigationAllowed && visible && shown && !entry.held
+                                Accessible.ignored: !navigationAllowed || !visible || !shown || entry.held
                                 width: implicitWidth
                                 anchors.right: parent.right
                                 anchors.verticalCenter: play.verticalCenter
                                 anchors.rightMargin: card.playShown ? Theme.cardPadding + play.width + 8 : Theme.cardPadding
                                 text: entry.siteCount === 1 ? qsTr("1 site") : qsTr("%1 sites").arg(entry.siteCount)
-                                visible: card.hasSites || entry.positional
-                                enabled: card.hasSites
-                                opacity: card.hasSites ? 1 : 0
+                                visible: shown || entry.positional
+                                enabled: shown
+                                opacity: shown ? 1 : 0
+                                onActiveFocusChanged: entry.notePartGone(siteButton)
                                 onClicked: screen.chooseCardSites(entry.leadUid)
                             }
                             PlayCircle {
                                 id: play
-                                accessibleName: entry.held || !card.playShown ? "" : entry.sourceType === "file" ? qsTr("Play %1").arg(card.name) : qsTr("Listen to %1").arg(card.name)
-                                Accessible.ignored: !navigationAllowed || !visible || !card.playShown || entry.held
+                                readonly property bool shown: card.playShown
+                                accessibleName: entry.held || !shown ? "" : entry.sourceType === "file" ? qsTr("Play %1").arg(card.name) : qsTr("Listen to %1").arg(card.name)
+                                Accessible.ignored: !navigationAllowed || !visible || !shown || entry.held
                                 objectName: "savedSystemPlay"
-                                visible: card.playShown || entry.positional
-                                opacity: !card.playShown ? 0 : enabled ? 1 : 0.5
+                                visible: shown || entry.positional
+                                opacity: !shown ? 0 : enabled ? 1 : 0.5
                                 anchors.right: parent.right
                                 anchors.rightMargin: Theme.cardPadding
                                 anchors.top: parent.top
                                 anchors.topMargin: Theme.minimumTouchSize + 6
-                                enabled: card.playShown && !decoderHost.transitioning
+                                enabled: shown && !decoderHost.transitioning
+                                onActiveFocusChanged: entry.notePartGone(play)
                                 onClicked: screen.playCard(entry.playUid)
                             }
 

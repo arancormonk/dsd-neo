@@ -30,6 +30,9 @@ Column {
     signal revealRequested
     // The last system went: the controls go, and @a hadFocus says whether the keyboard was on them.
     signal emptied(bool hadFocus)
+    // A control here went (held, or hidden without a screen reader) with the
+    // keyboard on it, which Qt drops: Home hands it on (the search field).
+    signal keyboardLeft
 
     readonly property bool shown: savedSystemCards.totalCount >= 1
     // With a screen reader the cards' rows are positional, and a line or
@@ -39,10 +42,11 @@ Column {
     // Tab, with no height. Each show or hide made Android's bridge fetch the
     // scroll body, with every card under it, again.
     readonly property bool holdsParts: savedSystemCards.screenReaderActive
-    // Which of those are up; Home has Android's bridge read its copy of the
-    // tree again when this changes (HomeScreen.noteSystemsChanged()).
-    readonly property string partsShown: [systemsSearchClear.shown, searchCount.shown, locationRow.shown, placeNotice.shown,
-        noMatch.shown, rrStatus.shown].join()
+    // Which of those are up, a notice's second line included; Home has
+    // Android's bridge read its copy of the tree again when this changes
+    // (HomeScreen.noteSystemsChanged()).
+    readonly property string partsShown: [systemsSearchClear.shown, searchCount.shown, searchCount.detailShown, locationRow.shown,
+        locationRow.detailShown, placeNotice.shown, placeNotice.detailShown, noMatch.shown, rrStatus.shown].join()
     // Where a keyboard left without a card lands, and the row that comes into view.
     readonly property Item searchRow: searchBar
     readonly property Item searchInput: systemsSearch.input
@@ -68,8 +72,11 @@ Column {
         property alias actionObjectName: noticeAction.objectName
         property alias actionEnabled: noticeAction.enabled
         readonly property alias actionItem: noticeAction
+        readonly property alias detailShown: noticeDetail.shown
         // @a hadFocus: the action had the keyboard when pressed.
         signal action(bool hadFocus)
+        // The notice went with the keyboard on its action (controls.keyboardLeft).
+        signal keyboardLeft
         readonly property real inset: noticeAction.flatInset
         readonly property bool stacked: Math.max(noticeText.implicitWidth, notice.detail.length > 0 ? noticeDetail.implicitWidth : 0)
             + 8 + noticeAction.implicitWidth - inset > width
@@ -127,6 +134,10 @@ Column {
             x: notice.stacked ? -notice.inset : notice.width - width + notice.inset
             y: notice.stacked ? noticeLines.height + 4 - notice.reach : (notice.height - height) / 2
             width: Math.min(implicitWidth, notice.width + 2 * notice.inset)
+            onActiveFocusChanged: {
+                if (!activeFocus && !notice.shown)
+                    notice.keyboardLeft();
+            }
             onClicked: notice.action(activeFocus)
         }
     }
@@ -416,6 +427,10 @@ Column {
             // Part of the field: a tap while typing leaves the keyboard in it,
             // so typing goes on; from the keyboard the × itself has it.
             finishesEditing: false
+            onActiveFocusChanged: {
+                if (!activeFocus && !shown)
+                    controls.keyboardLeft();
+            }
             onClicked: controls.clearSearch(activeFocus || systemsSearch.input.activeFocus)
         }
         FilterPill {
@@ -445,6 +460,7 @@ Column {
         onAction: function (hadFocus) {
             controls.clearSearch(hadFocus);
         }
+        onKeyboardLeft: controls.keyboardLeft()
     }
 
     // Nearest: where the distances are measured from, and the one way to ask
@@ -461,6 +477,7 @@ Column {
         actionText: controls.hasFix ? qsTr("Update location") : qsTr("Use my location")
         actionEnabled: !controls.locationId
         onAction: controls.requestNearestLocation()
+        onKeyboardLeft: controls.keyboardLeft()
     }
 
     // Place and Nearest order cards by place: the systems an update could
@@ -476,6 +493,7 @@ Column {
         text: rrPlaces.unplacedText
         actionText: qsTr("Update from RadioReference")
         onAction: controls.updateUnplacedFromRadioReference()
+        onKeyboardLeft: controls.keyboardLeft()
     }
 
     // An Update from RadioReference started here: how far it is, with Cancel,
@@ -566,6 +584,10 @@ Column {
                 Accessible.ignored: !navigationAllowed || !visible || !noMatch.shown
                 width: Math.min(implicitWidth, parent.width)
                 text: qsTr("Clear search")
+                onActiveFocusChanged: {
+                    if (!activeFocus && !noMatch.shown)
+                        controls.keyboardLeft();
+                }
                 onClicked: controls.clearSearch(activeFocus)
             }
         }
