@@ -681,8 +681,11 @@ Item {
                             screen.openSpectrum();
                     }
                     Keys.onPressed: function (event) {
-                        if (Navigation.activationPress(event))
+                        if (Navigation.activationPress(event, Window.activeFocusItem))
                             activate();
+                    }
+                    Keys.onReleased: function (event) {
+                        Navigation.activationRelease(event);
                     }
                     FocusFrame {}
                     visible: metrics.radioInput && screen.wideHeaderActions
@@ -740,8 +743,11 @@ Item {
                     Accessible.ignored: !navigationAllowed
                     Accessible.onPressAction: activate()
                     Keys.onPressed: function (event) {
-                        if (Navigation.activationPress(event))
+                        if (Navigation.activationPress(event, Window.activeFocusItem))
                             activate();
+                    }
+                    Keys.onReleased: function (event) {
+                        Navigation.activationRelease(event);
                     }
                     FocusFrame {}
                     width: liveRow.implicitWidth + chromeWidth
@@ -1756,8 +1762,11 @@ Item {
                         keySheet.open();
                 }
                 Keys.onPressed: function (event) {
-                    if (Navigation.activationPress(event))
+                    if (Navigation.activationPress(event, Window.activeFocusItem))
                         activate();
+                }
+                Keys.onReleased: function (event) {
+                    Navigation.activationRelease(event);
                 }
                 FocusFrame {}
                 Text {
@@ -2799,8 +2808,11 @@ Item {
             Accessible.ignored: !navigationAllowed || !visible
             Accessible.onPressAction: activate()
             Keys.onPressed: function (event) {
-                if (Navigation.activationPress(event))
+                if (Navigation.activationPress(event, Window.activeFocusItem))
                     activate();
+            }
+            Keys.onReleased: function (event) {
+                Navigation.activationRelease(event);
             }
             FocusFrame {}
             width: parent.width

@@ -181,7 +181,7 @@ Rectangle {
                 Keys.onLeftPressed: chooseBy(-1)
                 Keys.onRightPressed: chooseBy(1)
                 Keys.onPressed: function (event) {
-                    if (Navigation.activationPress(event)) {
+                    if (Navigation.activationPress(event, Window.activeFocusItem)) {
                         choose();
                     } else if (event.key === Qt.Key_Home) {
                         chooseBy(-tabs.count);
@@ -190,6 +190,9 @@ Rectangle {
                         chooseBy(tabs.count);
                         event.accepted = true;
                     }
+                }
+                Keys.onReleased: function (event) {
+                    Navigation.activationRelease(event);
                 }
                 FocusFrame {}
 

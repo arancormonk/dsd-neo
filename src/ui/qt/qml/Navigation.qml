@@ -52,21 +52,38 @@ QtObject {
             return contains(surface, item);
         });
     }
-    // Space, Return and Enter (the keypad's too) act on the focused control on
-    // the key's first press only, the way every control's Keys.onPressed asks
-    // here. A press the held key repeats acts on nothing: an action that moves
-    // the keyboard while the key is down (a sheet's choice hands it back to
-    // the pill that opened the sheet) would otherwise have the repeats act on
-    // the control it landed on, and open the sheet again. On Android a repeat
-    // can be all the app sees of Alt+Enter when TalkBack took the first press.
-    // The release acts on nothing either: no control acts on a release. True
-    // when @p event should act; an activation key's press, repeat or not, is
-    // taken, so it goes no further.
-    function activationPress(event) {
+    // Space, Return and Enter (the keypad's too) act on the focused control
+    // on the key's press, the way every control's Keys.onPressed asks here
+    // with the item that has the keyboard (@p item). A held key's repeats act
+    // too, but only on the control that took the key's first press: a repeat
+    // that reaches any other control is taken and does nothing. An action
+    // that moves the keyboard while the key is down (a sheet's choice hands
+    // it back to the pill that opened the sheet) otherwise had the repeats
+    // act on the control it landed on, and open the sheet again; on Android a
+    // repeat can be all the app sees of Alt+Enter when TalkBack took the
+    // first press. The first press is noted until that key's release, which
+    // every such control passes to activationRelease(). No control acts on a
+    // release. True when @p event should act; an activation key's press,
+    // repeat or not, is taken, so it goes no further.
+    property var heldActivationItem: null
+    property int heldActivationKey: 0
+    function activationPress(event, item) {
         if (event.key !== Qt.Key_Space && event.key !== Qt.Key_Return && event.key !== Qt.Key_Enter)
             return false;
         event.accepted = true;
-        return !event.isAutoRepeat;
+        if (!event.isAutoRepeat) {
+            heldActivationItem = item;
+            heldActivationKey = event.key;
+            return true;
+        }
+        return item !== null && item !== undefined && item === heldActivationItem && event.key === heldActivationKey;
+    }
+    // A key's release ends what activationPress() noted for its first press.
+    function activationRelease(event) {
+        if (!event.isAutoRepeat && event.key === heldActivationKey) {
+            heldActivationItem = null;
+            heldActivationKey = 0;
+        }
     }
     // Read @p text out once, a repeat included, while @p line is reachable
     // (no gate when null). @p owner speaks it and keeps the last text read and

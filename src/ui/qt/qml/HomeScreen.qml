@@ -645,8 +645,11 @@ Item {
             Accessible.ignored: !navigationAllowed || !visible
             Accessible.onPressAction: activate()
             Keys.onPressed: function (event) {
-                if (Navigation.activationPress(event))
+                if (Navigation.activationPress(event, Window.activeFocusItem))
                     activate();
+            }
+            Keys.onReleased: function (event) {
+                Navigation.activationRelease(event);
             }
             FocusFrame {}
 
@@ -1589,8 +1592,11 @@ Item {
                                 screen.exploreSetup();
                         }
                         Keys.onPressed: function (event) {
-                            if (Navigation.activationPress(event))
+                            if (Navigation.activationPress(event, Window.activeFocusItem))
                                 activate();
+                        }
+                        Keys.onReleased: function (event) {
+                            Navigation.activationRelease(event);
                         }
                         FocusFrame {
                             radius: Theme.radiusPanel + 2

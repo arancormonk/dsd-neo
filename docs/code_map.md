@@ -11966,8 +11966,8 @@ Qt Quick frontend (`src/ui/qt`):
   `ChoiceSheet.open()` reads its opener before showing, as `ModalSheet.open()` does (the body a management sheet
   disables holds the pill, which had lost the focus when the sheet read it, and the focus went to Home itself, where
   TalkBack started from the top). A sort chosen with Enter or Space hands the keyboard back while the key is still
-  down; the pill acts on a key's first press only (`Navigation.activationPress()`), so the held key's repeats and
-  release leave the sheet closed. A card that leaves under a sheet leaves the sheet no opener, so Home hands the
+  down; the pill never took that key's first press, so its repeats (`Navigation.activationPress()`) and release
+  leave the sheet closed. A card that leaves under a sheet leaves the sheet no opener, so Home hands the
   keyboard on after the sheet's own deferred hand-back (`settleSystemsFocusLater()`). A card whose title another shown
   card has names its receiver on a line of its own under the source line, which wraps, so the address is never cut at
   phone width or large text. In Nearest order the place line reads the distance first ("6.9 mi · Johnson,
@@ -16271,13 +16271,17 @@ set in the screen or sheet that holds it at 320 and 360 px and text 1.0, 1.6 and
 A control a keyboard can press takes Return, keypad Enter and Space, each through the control's
 one guarded activation function (`enabled`, `Navigation.allows()` and any gate of its own), as its accessibility press
 does. A key handler never calls the action directly: a control can keep the keyboard focus while a sheet opens over it.
-Every such control has one `Keys.onPressed` that asks `Navigation.activationPress(event)`: the control acts on the key's
-first press only, and takes the key's repeats (`isAutoRepeat`) without acting, so they go no further; no control acts
-on a release. An action that moves the keyboard while the key is down otherwise had the repeats act on the control it
-landed on: a `ChoiceSheet` choice made with Enter or Space hands the keyboard back to the pill that opened the sheet
-(Listen's Sort pill, History's filter pills, on `main` too) and the held key opened the sheet again. On Android a
-repeat can be all the app sees of TalkBack's Alt+Enter, whose first press TalkBack keeps. Tests: `tst_keypad_enter.qml`
-(`heldKeysActOnce()`, every control and screen button there), `tst_home_systems_search_sort.qml`
+Every such control has one `Keys.onPressed` that asks `Navigation.activationPress(event, Window.activeFocusItem)` and
+a `Keys.onReleased` that passes the release to `Navigation.activationRelease(event)` (`PlexTextField` passes its
+releases too). A key's first press acts and is noted, with the item that took it, until that key's release; a held
+key's repeats (`isAutoRepeat`) act only on that same item, so a key held on Spectrum's Tune down keeps stepping as
+before. A repeat that reaches any other control is taken and does nothing; no control acts on a release. An action
+that moves the keyboard while the key is down otherwise had the repeats act on the control it landed on: a
+`ChoiceSheet` choice made with Enter or Space hands the keyboard back to the pill that opened the sheet (Listen's Sort
+pill, History's filter pills, on `main` too) and the held key opened the sheet again. On Android a repeat can be all
+the app sees of TalkBack's Alt+Enter, whose first press TalkBack keeps. Tests: `tst_keypad_enter.qml`
+(`heldKeysActOnce()` on every control and screen button there, `test_a_held_key_repeats_only_where_it_went_down`, the
+held Tune down in `test_spectrum_buttons_take_keypad_enter`), `tst_home_systems_search_sort.qml`
 (`test_keyboard_choice_leaves_the_sheet_closed`) and `tst_call_log_follow.qml`
 (`test_06q_a_keyboard_choice_leaves_the_filter_sheet_closed`), each sending repeats through `testContext.sendKey()`.
 Issue #646 added keypad Enter to `SegmentedControl`, `BottomNav`, `DashedActionButton`, `PlayCircle`, `CallRow`,

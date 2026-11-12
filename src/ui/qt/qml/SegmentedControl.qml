@@ -84,8 +84,11 @@ Rectangle {
                     control.selected(index);
                 }
                 Keys.onPressed: function (event) {
-                    if (Navigation.activationPress(event))
+                    if (Navigation.activationPress(event, Window.activeFocusItem))
                         choose();
+                }
+                Keys.onReleased: function (event) {
+                    Navigation.activationRelease(event);
                 }
                 FocusFrame {}
                 readonly property bool active: control.currentIndex === index

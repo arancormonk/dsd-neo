@@ -354,8 +354,11 @@ Item {
                 actionSheet.visible = true;
             }
             Keys.onPressed: function (event) {
-                if (Navigation.activationPress(event))
+                if (Navigation.activationPress(event, Window.activeFocusItem))
                     activate();
+            }
+            Keys.onReleased: function (event) {
+                Navigation.activationRelease(event);
             }
             // On the card's own edge: the list clips, and a ring drawn outside
             // the card lost its top and sides there.

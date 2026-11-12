@@ -963,8 +963,11 @@ Item {
                             Accessible.name: qsTr("Tune down")
                             Accessible.onPressAction: activate()
                             Keys.onPressed: function (event) {
-                                if (Navigation.activationPress(event))
+                                if (Navigation.activationPress(event, Window.activeFocusItem))
                                     activate();
+                            }
+                            Keys.onReleased: function (event) {
+                                Navigation.activationRelease(event);
                             }
                             FocusFrame {}
                             function activate() {
@@ -1002,8 +1005,11 @@ Item {
                             Accessible.description: sweepLabel.text
                             Accessible.onPressAction: activate()
                             Keys.onPressed: function (event) {
-                                if (Navigation.activationPress(event))
+                                if (Navigation.activationPress(event, Window.activeFocusItem))
                                     activate();
+                            }
+                            Keys.onReleased: function (event) {
+                                Navigation.activationRelease(event);
                             }
                             FocusFrame {}
                             function activate() {
@@ -1084,8 +1090,11 @@ Item {
                             Accessible.name: qsTr("Tune up")
                             Accessible.onPressAction: activate()
                             Keys.onPressed: function (event) {
-                                if (Navigation.activationPress(event))
+                                if (Navigation.activationPress(event, Window.activeFocusItem))
                                     activate();
+                            }
+                            Keys.onReleased: function (event) {
+                                Navigation.activationRelease(event);
                             }
                             FocusFrame {}
                             function activate() {
@@ -1137,8 +1146,11 @@ Item {
                             Accessible.name: qsTr("Previous signal")
                             Accessible.onPressAction: activate()
                             Keys.onPressed: function (event) {
-                                if (Navigation.activationPress(event))
+                                if (Navigation.activationPress(event, Window.activeFocusItem))
                                     activate();
+                            }
+                            Keys.onReleased: function (event) {
+                                Navigation.activationRelease(event);
                             }
                             FocusFrame {}
                             function activate() {
@@ -1186,8 +1198,11 @@ Item {
                             Accessible.name: qsTr("Next signal")
                             Accessible.onPressAction: activate()
                             Keys.onPressed: function (event) {
-                                if (Navigation.activationPress(event))
+                                if (Navigation.activationPress(event, Window.activeFocusItem))
                                     activate();
+                            }
+                            Keys.onReleased: function (event) {
+                                Navigation.activationRelease(event);
                             }
                             FocusFrame {}
                             function activate() {

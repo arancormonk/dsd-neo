@@ -546,8 +546,11 @@ Item {
                                 browseSheet.chosen(modelData);
                         }
                         Keys.onPressed: function (event) {
-                            if (Navigation.activationPress(event))
+                            if (Navigation.activationPress(event, Window.activeFocusItem))
                                 choose();
+                        }
+                        Keys.onReleased: function (event) {
+                            Navigation.activationRelease(event);
                         }
                         FocusFrame {}
                         Text {
@@ -976,8 +979,11 @@ Item {
                 // Held while it has the focus (see OutlineButton).
                 activeFocusOnTab: (Navigation.allows(backToResults) && !radioReference.busy) || activeFocus
                 Keys.onPressed: function (event) {
-                    if (Navigation.activationPress(event))
+                    if (Navigation.activationPress(event, Window.activeFocusItem))
                         goBack();
+                }
+                Keys.onReleased: function (event) {
+                    Navigation.activationRelease(event);
                 }
                 FocusFrame {}
                 function goBack() {
@@ -1223,8 +1229,11 @@ Item {
                                     screen.toggleSite(modelData.index);
                             }
                             Keys.onPressed: function (event) {
-                                if (Navigation.activationPress(event))
+                                if (Navigation.activationPress(event, Window.activeFocusItem))
                                     choose();
+                            }
+                            Keys.onReleased: function (event) {
+                                Navigation.activationRelease(event);
                             }
                             FocusFrame {}
                             Column {

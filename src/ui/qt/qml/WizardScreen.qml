@@ -1636,8 +1636,11 @@ Item {
                         Accessible.ignored: !navigationAllowed || !visible
                         Accessible.onPressAction: toggle()
                         Keys.onPressed: function (event) {
-                            if (Navigation.activationPress(event))
+                            if (Navigation.activationPress(event, Window.activeFocusItem))
                                 toggle();
+                        }
+                        Keys.onReleased: function (event) {
+                            Navigation.activationRelease(event);
                         }
                         function toggle() {
                             if (enabled && Navigation.allows(advHeader))
@@ -2061,8 +2064,11 @@ Item {
                         Accessible.ignored: !navigationAllowed
                         Accessible.onPressAction: choose()
                         Keys.onPressed: function (event) {
-                            if (Navigation.activationPress(event))
+                            if (Navigation.activationPress(event, Window.activeFocusItem))
                                 choose();
+                        }
+                        Keys.onReleased: function (event) {
+                            Navigation.activationRelease(event);
                         }
                         FocusFrame {}
                         function choose() {

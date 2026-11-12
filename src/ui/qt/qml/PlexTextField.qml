@@ -105,6 +105,8 @@ Rectangle {
                 event.accepted = true;
         }
         Keys.onReleased: function (event) {
+            // A key pressed on a control and let go in the field ends its hold.
+            Navigation.activationRelease(event);
             if (control.keepsFocusOnEnter && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter))
                 event.accepted = true;
         }

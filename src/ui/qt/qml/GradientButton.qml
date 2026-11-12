@@ -42,8 +42,11 @@ Item {
             clicked();
     }
     Keys.onPressed: function (event) {
-        if (Navigation.activationPress(event))
+        if (Navigation.activationPress(event, Window.activeFocusItem))
             activate();
+    }
+    Keys.onReleased: function (event) {
+        Navigation.activationRelease(event);
     }
     FocusFrame {}
 

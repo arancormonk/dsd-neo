@@ -884,8 +884,11 @@ Rectangle {
                     Accessible.ignored: !Navigation.allows(advHeader) || !visible
                     Accessible.onPressAction: toggle()
                     Keys.onPressed: function (event) {
-                        if (Navigation.activationPress(event))
+                        if (Navigation.activationPress(event, Window.activeFocusItem))
                             toggle();
+                    }
+                    Keys.onReleased: function (event) {
+                        Navigation.activationRelease(event);
                     }
                     function toggle() {
                         if (enabled && Navigation.allows(advHeader))
