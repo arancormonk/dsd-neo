@@ -6215,6 +6215,21 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (issue #834): their words carry inner symbols, which the outer-only start averaged into the rails (NXDN's at 2.6 of
   3, YSF's centre a quarter of an outer level off) and which then read clean inner symbols as outer. Tests:
   `SYNC_CALIBRATION`, `FRAME_SYNC_INTERNAL_HELPERS`.
+- Slicer levels inside a C4FM frame (`dsd_symbol.c` `symbol_apply_sync_clip()`, `dsd_dibit.c` `use_symbol()`). While a
+  frame is read (`have_sync`) on `rf_mod` 0 every sample is clipped to [`min`, `max`], for every protocol: it shields
+  the levels from one-sided FM disturbances (a transmitter whose frequency a mains-rate pulse pulls one way). Most C4FM
+  protocols read the frame on the levels their sync's warm start set and run no in-frame tracker, so the clip cannot
+  move them. P25 Phase 1 on C4FM runs the tracker (`dsd_simd_extrema_avg2()` of the last `ssize` symbols into an
+  `msize` window) only with the default windows (128 symbols, 1024 levels; the warm start fills all 1024, so `max`
+  barely moves within a unit), or when its sync set no levels (`dsd_state::p25_p1_c4fm_sync_levels` 0: the warm start
+  off or degenerate; `frame_sync_p25p1_c4fm_warm_start()` sets it at every P25p1 accept). With smaller windows (the
+  `-f1` preset's 36/15, which `-fa` keeps when it follows `-f1`) the frame holds its sync's levels. A tracker there
+  feeds on symbols the clip has capped at `max`, so `max` can only fall: a clean unit loses a fifth of its outer level
+  within a few hundred symbols and the HDU that opens a call half, inner symbols read as outer and the HDU fails its
+  FEC. Tests: `DSP_SYMBOL_P25_C4FM_LEVELS` (outer level and inner/outer boundary within an eighth of the levels sent
+  over a 3-block TSDU, an LDU and a long PDU at the `-f1` and the default sizes, both polarities at `-f1`; the warm
+  start off still tracks), `DECODE_IQ_P25P1_C4FM_VOICE_HDU_F1` (the voice fixture under `-f1` prints an HDU and no
+  `HDU FEC ERR`).
 - `dsd_state::symbol_clock`/`symbol_clock_epoch` (issue #729): a 64-bit count of every symbol the grid produced that no
   protocol resets (NXDN resets `symbolcnt`), and an epoch DSP bumps on an RTL stream flush or profile change (any reset
   of the RTL symbol cache, also one the profile refresh meets ahead of a take), a symbol-capture replay starting over
@@ -11032,7 +11047,8 @@ Private per-protocol modules worth knowing about:
   `processMbeFrameSoft()` (issue #588). The confidence is `dsd_two_level_symbol_reliability()`
   (`<dsd-neo/core/dibit.h>`) of the symbol `getDibitAndSoftSymbol()` returned: its distance from `center` over half
   the spacing of `min` and `max`, which for ProVoice are the class means the sync warm start set and stay fixed
-  through the frame (the threshold tracker runs only for `rf_mod` 1 and P25 Phase 1). A legacy symbol capture stores
+  through the frame (the threshold tracker runs only for `rf_mod` 1 and, with the default windows, P25 Phase 1 on
+  C4FM; see the slicer warm start entry). A legacy symbol capture stores
   only the decided bit and replays it as an ideal four-level amplitude, so its symbols get 255, a hard decision's
   weight; the soft capture format replays the measured symbol. The shared two-level slicer stores no soft metric, so
   `getDibitSoft()` does not apply to ProVoice, EDACS or D-STAR symbols. Cells the

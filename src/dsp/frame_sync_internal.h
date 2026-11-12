@@ -170,6 +170,10 @@ void frame_sync_p25_sync_context_now(const dsd_state* state, uint64_t sync_clock
  * (dsd_frame_sync_history_carry), nor a profile or modulation change. A pending off-thread tune is the caller's to
  * check (dsd_frame_sync_off_thread_tune_pending()). */
 int frame_sync_p25_sync_context_holds(const dsd_state* state, const struct dsd_p25_sync_context* ctx);
+/** The slicer warm start of a P25p1 sync the C4FM chain read: the levels from the word's outer symbols, and whether
+ * they were set (dsd_state::p25_p1_c4fm_sync_levels), which decides whether use_symbol() holds them through the
+ * frame. */
+void frame_sync_p25p1_c4fm_warm_start(const dsd_opts* opts, dsd_state* state);
 /* The P25p1 sync anchor's frame-sync side (frame_sync_p25p1_anchor.c, dsd_p25p1_sync_anchor). */
 /** Capture the sync-time context of the P25p1 sync just accepted (@p synctype), the window ending on the latest
  * symbol: @p tolerant_nac is the anchor's NAC for a tolerant accept and -1 for an exact one, @p bit_errors the bits the

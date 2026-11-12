@@ -799,6 +799,12 @@ frame_sync_maybe_force_dmr_gfsk(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
+void
+frame_sync_p25p1_c4fm_warm_start(const dsd_opts* opts, dsd_state* state) {
+    state->p25_p1_c4fm_sync_levels =
+        dsd_sync_warm_start_thresholds_outer_only(opts, state, 24) == DSD_WARM_START_OK ? 1U : 0U;
+}
+
 /* A P25p1 sync word accepted within the tolerance at the anchor's expected position (dsd_p25p1_sync_anchor): the
    anchor's NAC, which the frame's NID must name, and the bits the word was off by. */
 typedef struct {
@@ -846,11 +852,12 @@ frame_sync_accept_p25p1(frame_sync_match_ctx* ctx, int synctype, const char* lab
     if (tolerance == NULL) {
         frame_sync_note_cc_sync(ctx);
     }
+    state->p25_p1_c4fm_sync_levels = 0;
     if (center_mode != FRAME_SYNC_P25_CENTER_SKIP
         && (center_mode == FRAME_SYNC_P25_CENTER_FORCE || state->rf_mod == 1)) {
         dsd_sync_warm_start_center_outer_only(state, 24);
     } else if (state->rf_mod == 0) {
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
+        frame_sync_p25p1_c4fm_warm_start(opts, state);
     }
     frame_sync_p25p1_anchor_note_sync(state, synctype, tolerance ? tolerance->nac : -1,
                                       tolerance ? tolerance->bit_errors : 0);

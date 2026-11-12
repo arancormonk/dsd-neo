@@ -1570,6 +1570,10 @@ struct dsd_state {
      * symbolcnt rollover mid-frame stays exact. */
     uint32_t p25_p1_c4fm_frame_symbolcnt;
     uint8_t p25_p1_c4fm_frame_valid;
+    /* Whether the C4FM P25p1 sync last accepted set the slicer levels from its word (the warm start ran and returned
+     * DSD_WARM_START_OK): with small tracker windows use_symbol() then holds those levels through the frame. Set by
+     * every P25p1 accept (frame_sync_p25p1_c4fm_warm_start()). */
+    uint8_t p25_p1_c4fm_sync_levels;
     /* Which SPS profile a protocol last passed a content check on, when, and whether any has
      * been recorded at all. The two spans above cover a frame another protocol is in the middle
      * of; this one covers the transmission a protocol has been decoding, which is the case

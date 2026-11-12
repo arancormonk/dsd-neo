@@ -195,6 +195,28 @@ print_datascope(const dsd_opts* opts, dsd_state* state, const float* sbuf2, int 
     }
 }
 
+/* Whether a P25 Phase 1 C4FM frame updates its slicer levels symbol by symbol. Inside a frame every sample is clipped
+   to [min, max] (symbol_apply_sync_clip()), so no symbol exceeds max and the two largest of the window can only pull it
+   down. With the -f1 preset's small windows (36 symbols, 15 levels; kept when -fa follows -f1) that ratchet takes a
+   clean unit's outer level down a fifth within a few hundred symbols, and the HDU that opens a call to half: inner
+   symbols read as outer and the HDU fails its FEC. There the frame holds the levels its sync's warm start set, as
+   every other C4FM protocol does. The default windows (128 symbols, 1024 levels, the warm start filling all 1024)
+   barely move inside a unit and keep tracking. A frame whose sync set no levels (the warm start off, or a word too
+   weak to fit) keeps tracking from wherever acquisition left them. */
+#define P25P1_C4FM_TRACK_MIN_SYMBOLS 128
+#define P25P1_C4FM_TRACK_MIN_LEVELS  1024
+
+static int
+p25p1_c4fm_tracks_in_frame(const dsd_opts* opts, const dsd_state* state) {
+    if (!DSD_SYNC_IS_P25P1(state->lastsynctype)) {
+        return 0;
+    }
+    if (opts->ssize >= P25P1_C4FM_TRACK_MIN_SYMBOLS && opts->msize >= P25P1_C4FM_TRACK_MIN_LEVELS) {
+        return 1;
+    }
+    return state->p25_p1_c4fm_sync_levels == 0U;
+}
+
 static void DSD_ATTR_USED
 use_symbol(const dsd_opts* opts, dsd_state* state, float symbol) {
     UNUSED(symbol);
@@ -213,10 +235,8 @@ use_symbol(const dsd_opts* opts, dsd_state* state, float symbol) {
         cap = (int)(sizeof(state->sbuf) / sizeof(state->sbuf[0]));
     }
 
-    // Continuous update of min/max
-    // - QPSK: always (as before)
-    // - C4FM: enable for P25 Phase 1 (+/-) to keep slicer thresholds fresh during calls
-    if (state->rf_mod == 1 || (state->rf_mod == 0 && DSD_SYNC_IS_P25P1(state->lastsynctype))) {
+    // Continuous update of min/max: QPSK always; C4FM for P25 Phase 1 only (p25p1_c4fm_tracks_in_frame()).
+    if (state->rf_mod == 1 || (state->rf_mod == 0 && p25p1_c4fm_tracks_in_frame(opts, state))) {
         dsd_simd_extrema_avg2(state->sbuf, (size_t)cap, &lmin, &lmax);
         dsd_state_push_minmax_window(state, opts->msize, lmin, lmax);
         state->center = ((state->max) + (state->min)) / 2.0f;

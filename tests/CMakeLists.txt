@@ -7984,6 +7984,46 @@ add_test(
     COMMAND dsd-neo_test_symbol_p25_c4fm_grid
 )
 
+# The slicer levels a P25 Phase 1 C4FM unit is read with, through getSymbol(), the synced clip, use_symbol() and the
+# sync warm start: within a bound of the levels sent over a 3-block TSDU, an LDU and a long PDU at the -f1 sizes
+add_executable(
+    dsd-neo_test_symbol_p25_c4fm_levels
+    dsp/test_symbol_p25_c4fm_levels.c
+    ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit.c
+    test_support/frame_sync_dsp_stubs.c
+)
+if(DSD_HAS_RADIO)
+    target_compile_definitions(
+        dsd-neo_test_symbol_p25_c4fm_levels
+        PRIVATE USE_RADIO
+    )
+endif()
+target_include_directories(
+    dsd-neo_test_symbol_p25_c4fm_levels
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${LIBSNDFILE_INCLUDE_DIR}
+)
+target_compile_definitions(
+    dsd-neo_test_symbol_p25_c4fm_levels
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_symbol_p25_c4fm_levels
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
+        dsd-neo_test_audio_sink
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(
+    NAME DSP_SYMBOL_P25_C4FM_LEVELS
+    COMMAND dsd-neo_test_symbol_p25_c4fm_levels
+)
+
 add_executable(dsd-neo_test_dsp_symbol_anchor dsp/test_symbol_anchor.c)
 target_include_directories(
     dsd-neo_test_dsp_symbol_anchor
@@ -19343,6 +19383,20 @@ if(DSD_HAS_RADIO)
         p25p1_c4fm_vc
         -f1
         "Group Voice Channel User"
+    )
+    # The voice capture's HDUs under -f1: an HDU is read and none fails its FEC. With the -f1 windows a P25 Phase 1
+    # C4FM unit is read on the levels its sync set; a tracker there takes max down to about half the outer level across
+    # the HDU that opens a call, every symbol clipped to it. The reject helper only supplies the forbidden pattern.
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_P25P1_C4FM_VOICE_HDU_F1
+        p25p1_c4fm_vc
+        -f1
+        "P25p1.* HDU"
+        "HDU FEC ERR"
+    )
+    set_tests_properties(
+        DECODE_IQ_P25P1_C4FM_VOICE_HDU_F1
+        PROPERTIES LABELS "iq-decode"
     )
     # The CQPSK fixtures run the front end's CQPSK chain throughout only with -mq. A -m lock
     # holds on either side of the preset, so "-f1 -mq" and "-mq -f1" (which ran a C4FM lock
