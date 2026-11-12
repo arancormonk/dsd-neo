@@ -458,7 +458,8 @@ RrPlaceService::updateFromRadioReference(const QStringList& uids) {
         return false;
     }
     if (m_updating) {
-        return true;
+        /* Refused, not merged: the running update keeps its own systems, signal and summary. */
+        return false;
     }
     Update update;
     QSet<QString> seen;

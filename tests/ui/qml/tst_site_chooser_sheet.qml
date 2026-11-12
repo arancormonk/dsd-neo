@@ -371,6 +371,31 @@ Item {
             compare(summary.text, "Updated 2 systems.")
             verify(sheet.visible)
         }
+        // An update started elsewhere (a Home card) runs: Update here is disabled, reads as such, and a call asks the
+        // service nothing, so it neither takes the other update's summary as its own nor sends the user to the
+        // account screen. Once that update ends, Update starts this one.
+        function test_update_refused_while_another_runs() {
+            savedSystems.update(1, {hasSitePos: false})
+            sheet.openFor(0)
+            var update = findChild(sheet, "siteUpdateFromRr")
+            verify(update.visible && update.enabled)
+            verify(rrPlaces.updateFromRadioReference(["elsewhere"]), "an update from a card")
+            verify(!update.enabled, "disabled while it runs")
+            verify(update.Accessible.ignored === false, "still read, as disabled")
+            compare(update.Accessible.name, "Update from RadioReference")
+            verify(findChild(sheet, "siteUpdateProgress").visible, "the progress line says why")
+            sheet.updateFromRadioReference(false)
+            compare(testContext.rrPlacesUpdateCalls(), 1, "the service is not asked")
+            verify(sheet.visible, "the sheet stays")
+            compare(accountOpened.count, 0, "not the account screen")
+            verify(!sheet.rrUpdateStarted, "the running update is not this sheet's")
+            testContext.finishRrPlacesUpdate(1, 0)
+            verify(!findChild(sheet, "siteUpdateSummary").visible, "nor is its summary")
+            verify(update.enabled)
+            update.clicked()
+            compare(testContext.rrPlacesUpdateUids(), [savedSystems.get(0).uid, savedSystems.get(1).uid])
+            verify(sheet.rrUpdateStarted)
+        }
         // Update from the keyboard: it disables while the update runs, so the keyboard goes to the first site. When a
         // saved site reorders the rows (rebuilt, so the focused one goes), it goes to the new first site; Update, once
         // offered again, takes it when nothing here holds it.

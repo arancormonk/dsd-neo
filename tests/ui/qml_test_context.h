@@ -1059,18 +1059,18 @@ class RrPlacesFake : public QObject {
         return unplacedUidList;
     }
 
-    /** @brief As the service: false while signed out; otherwise an update runs until finish(). */
+    /** @brief As the service: false, changing nothing, while an update runs or while signed out; otherwise an update
+     *         runs until finish(). Every call is counted. */
     Q_INVOKABLE bool
     updateFromRadioReference(const QStringList& uids) {
-        if (!signedIn) {
+        ++updateCalls;
+        if (m_updating || !signedIn) {
             return false;
         }
-        if (!m_updating) {
-            updateUids = uids;
-            m_updating = true;
-            Q_EMIT updatingChanged();
-            Q_EMIT progressTextChanged();
-        }
+        updateUids = uids;
+        m_updating = true;
+        Q_EMIT updatingChanged();
+        Q_EMIT progressTextChanged();
         return true;
     }
 
@@ -1119,6 +1119,7 @@ class RrPlacesFake : public QObject {
     QStringList updateUids;
     QVariantList resolveRequests;
     int cancels = 0;
+    int updateCalls = 0;
 
   Q_SIGNALS:
     void updatingChanged();
@@ -5691,6 +5692,7 @@ class Setup : public QObject {
         m_rr_places->updateUids.clear();
         m_rr_places->resolveRequests.clear();
         m_rr_places->cancels = 0;
+        m_rr_places->updateCalls = 0;
         m_rr_places->clearSummary();
     }
 
@@ -5716,6 +5718,12 @@ class Setup : public QObject {
     Q_INVOKABLE QStringList
     rrPlacesUpdateUids() const {
         return m_rr_places->updateUids;
+    }
+
+    /** @brief How many times QML called updateFromRadioReference(), refused calls included. */
+    Q_INVOKABLE int
+    rrPlacesUpdateCalls() const {
+        return m_rr_places->updateCalls;
     }
 
     /** @brief How many running updates QML cancelled. */

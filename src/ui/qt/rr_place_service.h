@@ -88,10 +88,10 @@ class RrPlaceService : public QObject {
      * @brief Update the saved systems @p uids from RadioReference: each saved site's name, position and place ids
      *        (rows still on the site they were read for), then the names of any place left unnamed.
      *
-     * @return false when signed out (the caller opens the account screen) or there are no saved systems; true
-     *         otherwise, and updateFinished() follows exactly once: at once, with no change to `updating` or
-     *         `progressText`, when none of @p uids can be updated; while an update runs, a second call changes nothing
-     *         and the running one's signal is that answer.
+     * @return false, changing nothing, while an update runs (callers offer no Update then; read `updating` to tell
+     *         this from the next case), when signed out (the caller opens the account screen) or when there are no
+     *         saved systems; true otherwise, and updateFinished() follows exactly once: at once, with no change to
+     *         `updating` or `progressText`, when none of @p uids can be updated.
      */
     Q_INVOKABLE bool updateFromRadioReference(const QStringList& uids);
 

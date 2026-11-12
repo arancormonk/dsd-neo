@@ -145,6 +145,9 @@ ModalSheet {
     // @a hadFocus: Update had the keyboard.
     function updateFromRadioReference(hadFocus) {
         userAction();
+        // One update at a time: Update is disabled while one runs.
+        if (rrPlaces.updating)
+            return;
         var uids = rows.map(function (row) {
             return savedSystems.get(row).uid;
         });

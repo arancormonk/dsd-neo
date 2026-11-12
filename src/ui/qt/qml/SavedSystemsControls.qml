@@ -291,12 +291,16 @@ Column {
 
     // Update from RadioReference (a card's menu and the place notice, which
     // updates only the systems it counts): signed out, the account screen
-    // opens instead. Its progress and, once done, its
+    // opens instead. One update at a time: while one runs, every Update is
+    // disabled or hidden and a call here does nothing (the service refuses
+    // it too). Its progress and, once done, its
     // summary show here until Systems is left. The keyboard follows the
     // control that replaces the one pressed: Update → Cancel → Update (or the
     // search field).
     property bool rrSummaryShown: false
     function updateFromRadioReference(uids) {
+        if (rrPlaces.updating)
+            return;
         if (!rrPlaces.updateFromRadioReference(uids)) {
             openRadioReferenceAccount();
             return;

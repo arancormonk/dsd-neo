@@ -540,6 +540,68 @@ Item {
             menu.visible = false;
         }
 
+        // One update at a time. While one runs, a card menu's Update from RadioReference is disabled and says why
+        // (the progress line under Systems says how far), the place notice gives way to that progress, and a call
+        // from either asks the service nothing: no second card is taken as updated, and nobody is sent to the account
+        // screen. When the update ends, the open menu's Update enables in place and runs.
+        function test_update_refused_while_updating() {
+            site("County", 1);
+            site("Other", 2);
+            settle();
+            var county = entryTitled("County");
+            var other = entryTitled("Other");
+            var menu = item("savedSystemManageSheet");
+            home.manageCard(county.leadUid, "County", county.rrLinked);
+            tryCompare(menu, "visible", true);
+            var update = item("updateSavedSystemButton", menu);
+            verify(update.enabled);
+            compare(update.accessibleName, "Update from RadioReference");
+            tap(update);
+            tryCompare(menu, "visible", false);
+            verify(rrPlaces.updating);
+            compare(testContext.rrPlacesUpdateCalls(), 1);
+
+            home.manageCard(other.leadUid, "Other", other.rrLinked);
+            tryCompare(menu, "visible", true);
+            update = item("updateSavedSystemButton", menu);
+            verify(!update.enabled, "disabled while an update runs");
+            compare(update.accessibleName, "Update from RadioReference. Available when the running update ends");
+            var reason = item("actionMenuDescription" + menu.actions.findIndex(function (action) {
+                return action.key === "rrUpdate";
+            }), menu);
+            verify(reason.visible);
+            compare(reason.text, "Available when the running update ends");
+            tap(update);
+            verify(menu.visible, "a disabled row does nothing");
+            compare(testContext.rrPlacesUpdateCalls(), 1, "the service is not asked");
+            compare(testContext.rrPlacesUpdateUids(), [savedSystems.get(0).uid], "still County's update");
+
+            // Called anyway (the notice's path and the menu's): refused here, with no account screen.
+            testContext.setRrPlacesUnplaced(1);
+            testContext.setRrPlacesUnplacedUids([savedSystems.get(1).uid]);
+            prefs.systemsSort = "place";
+            settle();
+            verify(!item("systemsPlaceNotice").visible, "the notice gives way to the progress");
+            verify(item("systemsRrProgress").visible);
+            controls().updateUnplacedFromRadioReference();
+            controls().updateFromRadioReference([savedSystems.get(1).uid]);
+            compare(testContext.rrPlacesUpdateCalls(), 1, "neither asks the service");
+            compare(accountOpened.count, 0, "nor opens the account screen");
+
+            // The update ends with the menu open: its Update enables in place, and runs.
+            testContext.finishRrPlacesUpdate(1, 0);
+            verify(update.enabled, "enabled in place");
+            compare(update.accessibleName, "Update from RadioReference");
+            verify(!reason.visible);
+            tap(update);
+            tryCompare(menu, "visible", false);
+            compare(testContext.rrPlacesUpdateUids(), [savedSystems.get(1).uid], "Other's update");
+            testContext.finishRrPlacesUpdate(1, 0);
+            verify(item("systemsPlaceNotice").visible, "the notice is back");
+            tap(item("systemsPlaceUpdate"));
+            compare(testContext.rrPlacesUpdateCalls(), 3);
+        }
+
         // Without a screen reader a sort moves the cards' delegates: the same object stands for a card after it.
         function test_delegate_survives_sort() {
             add("Charlie");

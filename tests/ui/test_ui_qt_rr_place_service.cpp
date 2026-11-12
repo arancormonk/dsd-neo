@@ -845,6 +845,45 @@ test_cancel_keeps_what_was_saved() {
     expect("cancel: idle", !h.service.updating() && !h.service.busy());
 }
 
+/* A call made while an update runs is refused: it returns false, so no caller takes it as started, and it changes
+ * nothing. The running update reads only its own systems, and its one signal and summary are its own. */
+void
+test_update_while_updating_is_refused() {
+    clear_store();
+    Harness h;
+    h.systems.add(site_row("SARA — Old", 6673, 16863, "Old"));
+    h.systems.add(site_row("Cap+ — Old", 12574, 43552, "Old"));
+    Finished finished;
+    record_finished(h.service, &finished);
+    int updatingChanges = 0;
+    QObject::connect(&h.service, &RrPlaceService::updatingChanged, &h.service,
+                     [&updatingChanges]() { updatingChanges++; });
+    {
+        QMutexLocker lock(&h.fake.mutex);
+        h.fake.holdMethod = QStringLiteral("getTrsDetails");
+    }
+    expect("while updating: first started",
+           h.service.updateFromRadioReference({h.systems.get(0).value("uid").toString()}));
+    expect("while updating: first held", await_hold(h.fake));
+    const QString progress = h.service.progressText();
+    expect("while updating: second refused",
+           !h.service.updateFromRadioReference({h.systems.get(1).value("uid").toString()}));
+    expect("while updating: still the first", h.service.updating());
+    expect_str("while updating: same progress", h.service.progressText(), progress);
+    expect_int("while updating: no second start", updatingChanges, 1);
+    h.fake.proceed.release();
+    settle(h);
+    expect_int("while updating: finished once", finished.count, 1);
+    expect_int("while updating: the first's count", finished.updated, 1);
+    expect_str("while updating: the first's summary", h.service.summaryText(), "Updated 1 system.");
+    expect_int("while updating: the second system never asked", h.fake.count("getTrsDetails:12574"), 0);
+    expect_str("while updating: the second is untouched", h.systems.get(1).value("siteName").toString(), "Old");
+    expect("while updating: accepted again once idle",
+           h.service.updateFromRadioReference({h.systems.get(1).value("uid").toString()}));
+    settle(h);
+    expect_int("while updating: the second ran", finished.count, 2);
+}
+
 /* A cancel from a handler of the saved rows' own signals, while a step is saving: the update ends there, once, and
  * asks for nothing more. */
 void
@@ -1270,6 +1309,7 @@ main(int argc, char** argv) {
     test_update_failed_save();
     test_update_failed_name_save();
     test_cancel_keeps_what_was_saved();
+    test_update_while_updating_is_refused();
     test_cancel_from_a_row_signal();
     test_update_place_rows_and_edges();
     test_unplaced_count();

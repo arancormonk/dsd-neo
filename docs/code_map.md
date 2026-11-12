@@ -11910,7 +11910,12 @@ Qt Quick frontend (`src/ui/qt`):
   RadioReference", which updates only those cards' rows (`rrPlaces.unplacedUids()`); the card menu offers the same for
   a card with RadioReference sites (`rrUpdate`), all of its rows, and the site chooser's no-coordinates note offers it
   too, for the group's rows. Signed out, `updateFromRadioReference()` returns false and Home (or the
-  chooser) emits `openRadioReferenceAccount`, which `Main.qml` answers by opening the account screen. While it runs the
+  chooser) emits `openRadioReferenceAccount`, which `Main.qml` answers by opening the account screen. One update runs
+  at a time: while `rrPlaces.updating` the place notice is hidden, the chooser's button is disabled, and the card
+  menu's `rrUpdate` row is disabled with "Available when the running update ends" as its description (`ActionMenu`
+  also takes `enabled` and `description` as functions, read in the row's bindings, so the open menu enables it in
+  place when the update ends); Home's and the chooser's `updateFromRadioReference()` return without asking the
+  service, which refuses such a call anyway. While it runs the
   update shows `rrPlaces.progressText` ("Updating %1 of %2") with Cancel; its summary ("Updated %1 systems. %1 could
   not be reached.") is announced once and stays until Systems is left. Notice actions use the opt-in `flat` variant of
   `OutlineButton` (no border or fill, cyan label), each at the end of its line or under it when both do not fit, with
@@ -13540,9 +13545,9 @@ Qt Quick frontend (`src/ui/qt`):
   saved systems' `setPlaceNameCache()` fill (`fillPlaceNames()`), so a row saved before or after the names arrive ends
   named. Every place commit (add, update, refresh) first keeps the names and county links the row already had for the
   same ids (an import's place is ids only, so a re-import of the same site never loses them), then runs the fill when
-  its ids changed or it still lacks a name. Any `credentialsChanged` stops every request and drops the cache. `updateFromRadioReference(uids)` (false
-  while signed out: open the account screen, or with no saved systems; otherwise `updateFinished(updated,
-  unreachable)` follows once, at once with no `updating`/`progressText` change when no row can be updated) reads each
+  its ids changed or it still lacks a name. Any `credentialsChanged` stops every request and drops the cache. `updateFromRadioReference(uids)` (false,
+  changing nothing, while an update runs; false while signed out: open the account screen, or with no saved systems;
+  otherwise `updateFinished(updated, unreachable)` follows once, at once with no `updating`/`progressText` change when no row can be updated) reads each
   distinct system of the rows that are sites (`getTrsDetails` for `sState`, then `getTrsSites`) and applies, through
   `SavedSystemsModel::refreshSites()`, the site name, position and place ids to every row still on that system and
   site, keeping the names it already had for unchanged ids; a site RadioReference no longer lists, an unanswered system
@@ -13563,8 +13568,8 @@ Qt Quick frontend (`src/ui/qt`):
   QML fixtures publish `RrPlacesFake` (the same five properties, pinned by `UI_QT_RR_PLACE_SERVICE`, and an
   `unplacedUids()` a case scripts; `missingContextKeys()` checks `rrPlaces` reads). Tests: `UI_QT_RADIO_REFERENCE`
   (place per import shape, the signal), `UI_QT_RR_PLACE_SERVICE` (names, order of names and saves, per-state failure,
-  failed-save retry, sign-out, Update from RadioReference incl. partial success, moved and unlisted rows, counts in
-  cards, the notice's uids, cancels,
+  failed-save retry, sign-out, Update from RadioReference incl. partial success, moved and unlisted rows, a call while
+  one runs refused, counts in cards, the notice's uids, cancels,
   and failed lookups leaving the import screen's lists, busy, system, plan, status and a library refresh alone).
 - `json_store.{h,cpp}` holds the Qt models' JSON-array stores in the app data root (`json_store_root()`): saved
   systems, scan lists, imported files, decryption profiles, call history and its seen map, Signal search ranges. A store
