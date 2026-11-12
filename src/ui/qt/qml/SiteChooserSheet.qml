@@ -66,11 +66,15 @@ ModalSheet {
     }))
     // An update this sheet started, whose summary it then shows.
     property bool rrUpdateStarted: false
-    // Update had the keyboard when pressed. It disables while the update
-    // runs, and the rows are rebuilt as sites are saved and when it ends, so
-    // whenever the keyboard is then left on no control here it goes to
-    // Update (offered again) or else the first site, as Home's notice keeps it.
-    property bool rrKeyboard: false
+    // Where the keyboard is in this sheet, kept as it moves: a site's row (by
+    // uid, and which of its controls) or another control. The rows are
+    // rebuilt whenever a saved site changes (an update started here or
+    // anywhere else saves them), and Update disables while an update runs;
+    // either leaves the keyboard on no control here, and it goes back: to
+    // the same control of that site's row, else that row's first; with the
+    // site gone, or the control no longer offered, the first site's, else
+    // Update.
+    property var keyboardPlace: null
     function orderedRows() {
         var siblings = savedSystems.siblingRows(groupRow);
         if (prefs.lastFixAt <= 0)
@@ -96,7 +100,7 @@ ModalSheet {
         avoidFailedUid = "";
         locationUpdated = false;
         rrUpdateStarted = false;
-        rrKeyboard = false;
+        keyboardPlace = null;
         refresh();
         visible = rows.length > 0;
     }
@@ -142,8 +146,7 @@ ModalSheet {
         else
             listenPins.pin("site", uid);
     }
-    // @a hadFocus: Update had the keyboard.
-    function updateFromRadioReference(hadFocus) {
+    function updateFromRadioReference() {
         userAction();
         // One update at a time: Update is disabled while one runs.
         if (rrPlaces.updating)
@@ -157,20 +160,82 @@ ModalSheet {
             return;
         }
         rrUpdateStarted = true;
-        rrKeyboard = !!hadFocus && rrPlaces.updating;
-        keepKeyboard();
     }
-    function keepKeyboard() {
-        if (!rrKeyboard || !visible)
-            return;
-        rrKeyboard = rrPlaces.updating;
+    function usable(item) {
+        return !!item && item !== sheet && Navigation.contains(sheet, item) && Navigation.presented(item)
+            && item.enabled && item.activeFocusOnTab;
+    }
+    function siteRowOf(item) {
+        for (var at = item; at && at !== sheet; at = at.parent) {
+            if (at.parent && at.parent.isSiteRow === true)
+                return {row: at.parent, control: at};
+        }
+        return null;
+    }
+    // The keyboard's place here, or null when no control here has it.
+    function keyboardMark() {
         var window = sheet.Window.window;
         var focused = window ? window.activeFocusItem : null;
-        if (focused && focused !== sheet && Navigation.contains(sheet, focused))
+        if (!focused || focused === sheet || !Navigation.contains(sheet, focused))
+            return null;
+        var inRow = siteRowOf(focused);
+        if (!inRow)
+            return {item: focused};
+        for (var i = 0; i < inRow.row.children.length; ++i) {
+            if (inRow.row.children[i] === inRow.control)
+                return {uid: inRow.row.siteUid, control: i};
+        }
+        return {uid: inRow.row.siteUid, control: -1};
+    }
+    function keyboardMoved() {
+        if (!visible || !isTopModal)
             return;
-        var target = rrUpdate.visible && rrUpdate.enabled ? rrUpdate : rrUpdate.nextItemInFocusChain(true);
-        if (target && target !== sheet && Navigation.contains(sheet, target))
+        var mark = keyboardMark();
+        if (mark)
+            keyboardPlace = mark;
+        else if (keyboardPlace)
+            Qt.callLater(restoreKeyboard);
+    }
+    function firstUsable(row) {
+        for (var i = 0; row && i < row.children.length; ++i) {
+            if (usable(row.children[i]))
+                return row.children[i];
+        }
+        return null;
+    }
+    function siteRowFor(uid) {
+        for (var i = 0; i < siteRows.count; ++i) {
+            var row = siteRows.itemAt(i);
+            if (row && row.siteUid === uid)
+                return row;
+        }
+        return null;
+    }
+    function keyboardTarget(place) {
+        var row = place.uid !== undefined ? siteRowFor(place.uid) : null;
+        if (row) {
+            var same = place.control >= 0 && place.control < row.children.length ? row.children[place.control] : null;
+            return usable(same) ? same : firstUsable(row);
+        }
+        if (place.uid === undefined && usable(place.item))
+            return place.item;
+        return firstUsable(siteRows.count > 0 ? siteRows.itemAt(0) : null) || (usable(rrUpdate) ? rrUpdate : null);
+    }
+    // Run after the change that moved the keyboard has settled (a rebuild
+    // makes the new rows first): only while it is still on no control here.
+    function restoreKeyboard() {
+        var place = keyboardPlace;
+        if (!place || !visible || !isTopModal || keyboardMark())
+            return;
+        var target = keyboardTarget(place);
+        if (target)
             target.forceActiveFocus();
+    }
+    Connections {
+        target: sheet.Window.window
+        function onActiveFocusItemChanged() {
+            sheet.keyboardMoved();
+        }
     }
     function useLocation() {
         userAction();
@@ -182,6 +247,8 @@ ModalSheet {
         decoderHost.requestSiteLocation(locationId);
     }
     onVisibleChanged: {
+        if (!visible)
+            keyboardPlace = null;
         if (!visible && locationId) {
             decoderHost.cancelLocationRequest(locationId);
             locationId = 0;
@@ -205,8 +272,6 @@ ModalSheet {
         target: savedSystems
         function onSitesChanged() {
             sheet.refresh();
-            if (sheet.rrKeyboard)
-                Qt.callLater(sheet.keepKeyboard);
         }
     }
     // What an update changed (names, positions) shows at once.
@@ -215,8 +280,6 @@ ModalSheet {
         ignoreUnknownSignals: true
         function onUpdateFinished() {
             sheet.refresh();
-            if (sheet.rrKeyboard)
-                Qt.callLater(sheet.keepKeyboard);
         }
     }
     Connections {
@@ -309,7 +372,7 @@ ModalSheet {
         visible: sheet.missingPositions
         enabled: !rrPlaces.updating
         text: qsTr("Update from RadioReference")
-        onClicked: sheet.updateFromRadioReference(activeFocus)
+        onClicked: sheet.updateFromRadioReference()
     }
     // Moves with every system done, so it is paced for a screen reader.
     LiveText {
@@ -333,10 +396,13 @@ ModalSheet {
         color: Theme.textSecondary
     }
     Repeater {
+        id: siteRows
         model: sheet.rows
         Column {
             id: siteRow
             required property var modelData
+            readonly property bool isSiteRow: true
+            readonly property string siteUid: site.uid || ""
             width: parent.width
             spacing: 6
             property var site: (sheet.revision, savedSystems.get(modelData))

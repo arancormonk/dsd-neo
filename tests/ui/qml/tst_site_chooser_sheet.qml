@@ -384,7 +384,7 @@ Item {
             verify(update.Accessible.ignored === false, "still read, as disabled")
             compare(update.Accessible.name, "Update from RadioReference")
             verify(findChild(sheet, "siteUpdateProgress").visible, "the progress line says why")
-            sheet.updateFromRadioReference(false)
+            sheet.updateFromRadioReference()
             compare(testContext.rrPlacesUpdateCalls(), 1, "the service is not asked")
             verify(sheet.visible, "the sheet stays")
             compare(accountOpened.count, 0, "not the account screen")
@@ -396,9 +396,44 @@ Item {
             compare(testContext.rrPlacesUpdateUids(), [savedSystems.get(0).uid, savedSystems.get(1).uid])
             verify(sheet.rrUpdateStarted)
         }
+        // An update started elsewhere (a Home card) saves this group's sites while the keyboard is on one of them
+        // here: each save rebuilds the rows, and the keyboard stays on the same control of that site's row, wherever
+        // the row moves. A site that goes leaves it on the first site.
+        function test_refresh_from_elsewhere_keeps_the_keyboard() {
+            prefs.setLocationFix(41, -91, Date.now(), 10)
+            sheet.openFor(0)
+            compare(sheet.rows, [1, 0], "South is nearer")
+            var southUid = savedSystems.get(1).uid
+            var avoid = findChild(sheet, "siteAvoid1")
+            avoid.forceActiveFocus()
+            verify(avoid.activeFocus)
+            verify(rrPlaces.updateFromRadioReference(["elsewhere"]), "an update from a card")
+
+            // A save moves North nearer: the rows are rebuilt and reordered.
+            savedSystems.update(0, {siteLat: 41, siteLon: -91})
+            compare(sheet.rows, [0, 1])
+            tryVerify(function () { return findChild(sheet, "siteAvoid1").activeFocus }, 1000,
+                      "South's Avoid keeps the keyboard")
+            verify(findChild(sheet, "siteAvoid1") !== avoid, "a rebuilt row")
+
+            var pin = findChild(sheet, "sitePin1")
+            pin.forceActiveFocus()
+            savedSystems.update(1, {siteName: "South Renamed"})
+            testContext.finishRrPlacesUpdate(2, 0)
+            tryVerify(function () { return findChild(sheet, "sitePin1").activeFocus }, 1000,
+                      "two rebuilds in one turn: South's Pin keeps it")
+            compare(savedSystems.get(1).uid, southUid)
+
+            // South leaves the group: the first site takes the keyboard.
+            savedSystems.remove(1)
+            compare(sheet.rows, [0])
+            tryVerify(function () { return findChild(sheet, "siteChoice0").activeFocus }, 1000,
+                      "the first site has it")
+            verify(sheet.visible)
+        }
         // Update from the keyboard: it disables while the update runs, so the keyboard goes to the first site. When a
-        // saved site reorders the rows (rebuilt, so the focused one goes), it goes to the new first site; Update, once
-        // offered again, takes it when nothing here holds it.
+        // saved site reorders the rows (rebuilt, so the focused row goes), it stays with that site, wherever its row
+        // lands, through rebuilds and the update's end in one turn.
         function test_update_keeps_the_keyboard() {
             prefs.setLocationFix(41, -91, Date.now(), 10)
             savedSystems.update(1, {hasSitePos: false})
@@ -422,21 +457,26 @@ Item {
             savedSystems.update(1, {hasSitePos: true, siteLat: 41, siteLon: -91})
             compare(sheet.rows, [1, 0])
             verify(!update.visible)
-            tryVerify(function () { return firstSite().activeFocus }, 1000, "the new first site has it")
+            var north = function () { return findChild(sheet, "siteChoice0") }
+            tryVerify(function () { return north().activeFocus }, 1000, "North keeps it, now second")
             testContext.finishRrPlacesUpdate(1, 0)
-            verify(firstSite().activeFocus)
+            verify(north().activeFocus)
 
             // The rows rebuild and the update ends in one turn (no event in between): the keyboard, lost with the
-            // focused site, goes to Update, offered again.
+            // focused row, goes back to that site's row.
             savedSystems.update(0, {hasSitePos: false})
             update.forceActiveFocus()
             keyClick(Qt.Key_Space)
             tryVerify(function () { return firstSite().activeFocus }, 1000)
             compare(sheet.rows, [1, 0])
+            var south = findChild(sheet, "siteChoice1")
+            verify(south.activeFocus)
             savedSystems.update(1, {hasSitePos: false})
-            compare(sheet.rows, [0, 1], "rebuilt: the focused site went")
+            compare(sheet.rows, [0, 1], "rebuilt: the focused row went")
             testContext.finishRrPlacesUpdate(0, 1)
-            tryVerify(function () { return update.activeFocus && update.enabled }, 1000, "Update has it again")
+            tryVerify(function () { return findChild(sheet, "siteChoice1").activeFocus }, 1000, "South has it again")
+            verify(findChild(sheet, "siteChoice1") !== south)
+            verify(update.enabled)
             verify(sheet.visible)
         }
         function test_avoid_toggle() {

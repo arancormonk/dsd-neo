@@ -11923,9 +11923,11 @@ Qt Quick frontend (`src/ui/qt`):
   focus to the search field, or to Add a system when nothing is saved (and waits while a sheet is open); the
   keyboard also follows Update to Cancel and back. `revealSystemsTop()` scrolls up to the search row after a sort or a
   search that lands, only while Home is visible on Systems. `SiteChooserSheet.qml`'s note reads "No coordinates. Use
-  Update from RadioReference to check for new location data." beside its own button; the keyboard on that button
-  follows it to the first site while it is disabled and back to it once it is offered again, whenever the rows'
-  rebuild leaves the keyboard on nothing (`keepKeyboard()`). The site button's accessible name now includes its site
+  Update from RadioReference to check for new location data." beside its own button. The sheet keeps the keyboard's
+  place as it moves (`keyboardPlace`: a site's row by uid and which of its controls, or another control); when a rows'
+  rebuild (any saved-site change, whoever started the update) or a control that disables or hides leaves it on no
+  control here, `restoreKeyboard()` puts it back on the same control of that site's row, else that row's first, else
+  (the site gone, or Update disabled) the first site's, else Update. The site button's accessible name now includes its site
   count. `ChoiceSheet.open()` takes an optional fourth `current` argument. Tests:
   `UI_QT_QML_CALL_LISTS` (`tst_home_systems_search_sort.qml`, with `tst_home_tabs`, `tst_home_layout_fixes`,
   `tst_home_pinned`, `tst_site_chooser_sheet`, `tst_wizard_sites`, `tst_listen_tabs_flows`), `UI_QT_QML_BACK_MODALS`
