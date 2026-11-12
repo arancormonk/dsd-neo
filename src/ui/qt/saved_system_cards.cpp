@@ -370,9 +370,15 @@ SavedSystemCards::SavedSystemCards(SavedSystemsModel* systems, AppPrefs* prefs, 
            (markLocationRequested()) is a user-asked change; an expiry or a fix another screen took is not. */
         connect(m_prefs, &AppPrefs::locationChanged, this, [this]() {
             m_cardsDirty = true;
-            // The mark is spent by this change whatever else is pending, so a later expiry is never taken for it.
-            const bool requested = std::exchange(m_locationRequested, false);
-            m_userAsked = m_userAsked || requested;
+            /* Only a change that brings a fix newer than the one at the mark answers it, whatever else is pending; an
+               expiry (no fix) while the request runs leaves the mark for the answer. */
+            if (m_locationRequested) {
+                const qint64 at = m_prefs->lastFixAt();
+                if (at > 0 && at > m_markedFixAt) {
+                    m_locationRequested = false;
+                    m_userAsked = true;
+                }
+            }
             scheduleRebuild();
         });
     }
@@ -486,6 +492,7 @@ SavedSystemCards::setLocationSupported(bool supported) {
 void
 SavedSystemCards::markLocationRequested() {
     m_locationRequested = true;
+    m_markedFixAt = m_prefs != nullptr ? m_prefs->lastFixAt() : 0;
 }
 
 void

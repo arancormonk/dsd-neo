@@ -855,13 +855,14 @@ test_location_request_mark() {
     f.cards->setScreenReaderActive(true);
     f.cards->setHoldReorders(true);
     Recorder recorder(*f.cards);
-    set_fix(f.prefs, 41.6, -93.6);
+    const qint64 now = dsd_qt::realtimeMSecsSinceEpoch();
+    f.prefs.setLocationFix(41.6, -93.6, now - 60000, 10);
     settle();
     check("a fix nobody asked for here is held on screen",
           recorder.resets == 0 && recorder.moves == 0
               && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Alpha"));
     f.cards->markLocationRequested();
-    set_fix(f.prefs, 41.6, -93.6);
+    f.prefs.setLocationFix(41.6, -93.6, now, 10); // newer than the fix at the mark
     settle();
     check("the fix the user asked for applies as a reset",
           recorder.resets == 1 && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Charlie"));
@@ -956,6 +957,51 @@ test_location_request_cleared() {
     set_fix(f.prefs, 41.6, -93.6);
     settle();
     check("a fix after a cleared request is held",
+          recorder.resets == 0 && recorder.moves == 0
+              && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Alpha"));
+}
+
+/* An old fix that lapses while the user's request is pending is no answer to it: the expiry (here AppPrefs' lazy one,
+   at a read, and then the explicit clear) stays a background change, held, and the mark waits for the fix the request
+   brings, which applies as a reset. */
+void
+test_location_mark_survives_an_expiry() {
+    Fixture f;
+    add_distance_rows(f);
+    f.cards->setLocationSupported(true);
+    f.prefs.setSystemsSort(QStringLiteral("nearest"));
+    const qint64 now = dsd_qt::realtimeMSecsSinceEpoch();
+    f.prefs.setLocationFix(41.6, -93.6, now - 60000, 10);
+    settle();
+    check("mark survives an expiry: measured from the old fix",
+          f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Charlie"));
+    f.cards->setScreenReaderActive(true);
+    f.cards->setHoldReorders(true);
+    Recorder recorder(*f.cards);
+    f.cards->markLocationRequested();
+    QSettings(QSettings::IniFormat, QSettings::UserScope, AppPrefs::settingsOrganization(),
+              AppPrefs::settingsApplication())
+        .setValue(QStringLiteral("location/lastFixAt"), now - 25LL * 60 * 60 * 1000);
+    check("mark survives an expiry: the read drops the fix", f.prefs.lastFixAt() == 0);
+    settle(); // the queued locationChanged of the lazy expiry
+    check("mark survives an expiry: the lazy expiry is held",
+          recorder.resets == 0 && recorder.moves == 0
+              && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Charlie"));
+    f.prefs.setLocationFix(0, 0, 0);
+    settle();
+    check("mark survives an expiry: and so is a cleared fix", recorder.resets == 0 && recorder.moves == 0);
+    recorder.clear();
+    f.prefs.setLocationFix(43.6, -93.6, now, 10); // the answer to the request
+    settle();
+    check("mark survives an expiry: the answer applies as a reset",
+          recorder.resets == 1 && f.cards->effectiveSort() == QStringLiteral("nearest")
+              && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Alpha")
+              && f.at(0, SavedSystemCards::DistanceKmRole).toDouble() >= 0
+              && f.at(0, SavedSystemCards::DistanceKmRole).toDouble() < 1.0);
+    recorder.clear();
+    f.prefs.setLocationFix(41.6, -93.6, now + 1000, 10);
+    settle();
+    check("mark survives an expiry: spent by the answer, a later fix is held",
           recorder.resets == 0 && recorder.moves == 0
               && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Alpha"));
 }
@@ -1164,6 +1210,7 @@ main(int argc, char** argv) {
     test_location_request_mark();
     test_location_mark_spent_with_other_changes();
     test_location_request_cleared();
+    test_location_mark_survives_an_expiry();
     test_lapsed_fix_is_dropped_at_the_next_rebuild();
     test_reader_off_and_unheld_background();
     test_coalescing();

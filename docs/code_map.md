@@ -13807,7 +13807,8 @@ Qt Quick frontend (`src/ui/qt`):
   pass; a query change only refilters and a sort change only re-sorts. The diff against the old list emits removes,
   one-row moves (the longest increasing run stays), inserts and one `dataChanged` per card with the roles that
   changed, so a delegate survives a sort and keeps the keyboard. With `screenReaderActive`, a reorder the user asked
-  for (query, sort, a fix after `markLocationRequested()`) is one reset, and any other reorder is held while
+  for (query, sort, the first fix newer than the stored one after `markLocationRequested()`; an expiry meanwhile
+  keeps the mark) is one reset, and any other reorder is held while
   `holdReorders` is set (Home visible on Systems) and released as a reset, so TalkBack's swipe order always matches
   the screen; the count is read once. A held order can show a section in two runs (a new card goes after its new-order
   predecessor), so `sectionStart` marks only a section's first card in the shown order. `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, B1, B2,

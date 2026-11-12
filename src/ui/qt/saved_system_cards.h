@@ -153,8 +153,9 @@ class SavedSystemCards : public QAbstractListModel {
 
     /**
      * @brief The next location change is the user's own (Nearest's Use or Update location): call right before asking
-     *        for a fix. That change then counts as user-asked (a reorder resets under a screen reader); any other
-     *        (a 24 h expiry, a fix another screen took) is a background change.
+     *        for a fix. The first location change that brings a fix newer than the stored one then counts as
+     *        user-asked (a reorder resets under a screen reader); any other (a 24 h expiry, which keeps the mark for
+     *        the answer, or a fix another screen took) is a background change.
      */
     Q_INVOKABLE void markLocationRequested();
 
@@ -312,7 +313,8 @@ class SavedSystemCards : public QAbstractListModel {
     bool m_orderDirty = true;
     bool m_userAsked = false;
     bool m_reorderHeld = false;
-    bool m_locationRequested = false; // markLocationRequested() until the next location change
+    bool m_locationRequested = false; // markLocationRequested() until a location change brings a newer fix
+    qint64 m_markedFixAt = 0;         // the stored fix's stamp when markLocationRequested() ran, or 0
 };
 
 } // namespace dsd_qt
