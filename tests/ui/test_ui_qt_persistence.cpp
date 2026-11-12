@@ -1539,6 +1539,35 @@ test_foundation_persistence() {
                                                 && !stored.contains("location/lastAccuracyM"));
 }
 
+/* A fix that lapses with no expiry timer (it runs on the monotonic clock, which stops while a phone sleeps) is dropped
+ * at the first read 24 wall-clock hours on. That read tells every reader once, queued: never inside the read itself
+ * (a reader in the middle of a rebuild), never again for the reads after it, and never for a read with no fix. */
+void
+test_location_lazy_expiry_notifies() {
+    AppPrefs prefs;
+    int changes = 0;
+    QObject::connect(&prefs, &AppPrefs::locationChanged, &prefs, [&changes]() { ++changes; });
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    prefs.setLocationFix(42.5, -87.5, now, 25);
+    QCoreApplication::processEvents();
+    changes = 0;
+    QSettings(QSettings::IniFormat, QSettings::UserScope, AppPrefs::settingsOrganization(),
+              AppPrefs::settingsApplication())
+        .setValue(QStringLiteral("location/lastFixAt"), now - 25LL * 60 * 60 * 1000);
+    expect("lazy expiry: the read finds no fix", prefs.lastFixAt() == 0);
+    expect("lazy expiry: not inside the read", changes == 0);
+    expect("lazy expiry: later reads find none either", std::abs(prefs.lastLat()) < 1e-9 && prefs.lastFixAt() == 0);
+    QCoreApplication::processEvents();
+    if (changes != 1) {
+        DSD_FPRINTF(stderr, "lazy expiry: %d location changes\n", changes);
+    }
+    expect("lazy expiry: one location change, after the read", changes == 1);
+    changes = 0;
+    expect("lazy expiry: no fix to drop", prefs.lastFixAt() == 0 && std::abs(prefs.lastLon()) < 1e-9);
+    QCoreApplication::processEvents();
+    expect("lazy expiry: no change without a fix", changes == 0);
+}
+
 void
 test_key_persistence() {
     SavedSystemsModel model;
@@ -3726,6 +3755,7 @@ main(int argc, char** argv) {
     test_units_preference();
     test_migration_write_failure();
     test_foundation_persistence();
+    test_location_lazy_expiry_notifies();
     // WP-S2: opting out preserves the last successful target, including scan lists.
     {
         AppPrefs prefs;

@@ -519,7 +519,8 @@ SavedSystemCards::rebuild() {
     const int totalBefore = m_totalCount;
     const Fix fix = readFix();
     /* Not only locationChanged: AppPrefs drops a fix 24 wall-clock hours on at the first read, before its expiry timer
-     * (monotonic, stopped while a phone sleeps) says so. */
+     * (monotonic, stopped while a phone sleeps) says so. When this read is that one, its locationChanged follows,
+     * queued, after this rebuild. */
     if (fix.valid != m_fix.valid || fix.at != m_fix.at || !same_position(fix.lat, fix.lon, m_fix.lat, m_fix.lon)) {
         m_cardsDirty = true; // the distances were measured from another fix, or none
     }

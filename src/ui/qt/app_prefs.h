@@ -396,7 +396,10 @@ class AppPrefs : public QObject {
     void analogPrerollMsChanged();
 
   private:
-    void expireLocation() const;
+    /** Drop a fix 24 h old (or from the future); true when one was stored. Tells no one: callers do. */
+    bool expireLocation() const;
+    /** A read's expireLocation(): a fix it drops queues one locationChanged (after the read, never inside it). */
+    void expireLocationOnRead() const;
     void armLocationExpiry();
 
     /** @brief The app's settings file; the single place its scope and names are spelled. */

@@ -13797,7 +13797,8 @@ Qt Quick frontend (`src/ui/qt`):
   needs `setLocationSupported(true)` and an unexpired fix; without them `effectiveSort` is `name` and the stored
   preference is untouched. Every rebuild compares the fix with the one the distances were measured from, because
   AppPrefs drops a fix 24 wall-clock hours on at its first read, before its monotonic expiry timer sends
-  `locationChanged` (the timer stops while a phone sleeps). Search (`system_search_query.{h,cpp}`): the text is split into terms that must all match (a
+  `locationChanged` (the timer stops while a phone sleeps); that read then queues one `locationChanged` for every
+  other reader (the location line, the site chooser), never inside the read itself. Search (`system_search_query.{h,cpp}`): the text is split into terms that must all match (a
   number and a following MHz/kHz is one term); a term matches a folded substring of the card's text (members' names
   and site names, place state and county names, and the protocol label, supplied by `protocolLabels` from `Util.js`)
   or a frequency of any member (a bare number of three digits or more reads as MHz). A row whose frequency or place an

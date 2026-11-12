@@ -276,9 +276,18 @@ Column {
             return qsTr("%1 min ago").arg(minutes);
         return qsTr("%1 h ago").arg(Math.floor(minutes / 60));
     }
-    readonly property string locationText: locationId ? qsTr("Finding your location…") : locationNotice.length > 0 ? locationNotice
-        : hasFix ? qsTr("Using your location from %1").arg((heardTick, fixAgeText(prefsStore.lastFixAt, savedSystems.realtimeNowMs())))
-        : qsTr("Nearest needs your location")
+    // The fix is read once here: that read can be the one that drops a lapsed
+    // fix (hasFix follows when AppPrefs says so, queued), and a fix that is
+    // gone has no age to show.
+    function locationLine() {
+        if (locationId)
+            return qsTr("Finding your location…");
+        if (locationNotice.length > 0)
+            return locationNotice;
+        var fixAt = hasFix ? prefsStore.lastFixAt : 0;
+        return fixAt > 0 ? qsTr("Using your location from %1").arg(fixAgeText(fixAt, savedSystems.realtimeNowMs())) : qsTr("Nearest needs your location");
+    }
+    readonly property string locationText: (heardTick, locationLine())
 
     // Update from RadioReference (a card's menu and the place notice, which
     // updates only the systems it counts): signed out, the account screen

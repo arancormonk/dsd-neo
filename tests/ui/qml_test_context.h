@@ -117,6 +117,7 @@
 #include "qml_backup_recorder.h"
 #include "qml_gc_policy.h"
 #include "qml_spectrum_stub.h"
+#include "realtime_clock.h"
 #include "saved_system_cards.h"
 #include "saved_systems_model.h"
 #include "scan_avoid_list_model.h"
@@ -5647,6 +5648,15 @@ class Setup : public QObject {
         if (m_app_prefs != nullptr) {
             m_app_prefs->setSystemsSort(QStringLiteral("added"));
         }
+    }
+
+    /** @brief Age the stored location fix past its 24 h behind AppPrefs, with no signal: as a phone that slept through
+     *         the expiry timer finds it, dropped only at the next read. */
+    Q_INVOKABLE void
+    lapseLocationFix() {
+        QSettings(QSettings::IniFormat, QSettings::UserScope, dsd_qt::AppPrefs::settingsOrganization(),
+                  dsd_qt::AppPrefs::settingsApplication())
+            .setValue(QStringLiteral("location/lastFixAt"), dsd_qt::realtimeMSecsSinceEpoch() - 25LL * 60 * 60 * 1000);
     }
 
     /** @brief The saved-system cards as a fresh Home finds them: no search, no screen reader, nothing held. Location

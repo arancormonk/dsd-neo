@@ -14,6 +14,7 @@
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
+#include <QMetaObject>
 #include <QMetaType>
 #include <QSet>
 #include <QStringList>
@@ -23,6 +24,7 @@
 #include <algorithm>
 #include <cmath>
 #include <dsd-neo/core/opts.h>
+#include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <iterator>
 #include <utility>
 #include "realtime_clock.h"
@@ -457,7 +459,7 @@ AppPrefs::replacePortable(const QVariantMap& values) {
 void
 AppPrefs::armLocationExpiry() {
     m_locationExpiry.stop();
-    expireLocation();
+    (void)expireLocation();
     const qint64 at = m_settings.value(key_name(kLastFixAt), 0).toLongLong();
     if (at > 0) {
         const qint64 remaining = 24LL * 60 * 60 * 1000 - (realtimeMSecsSinceEpoch() - at);
@@ -467,17 +469,37 @@ AppPrefs::armLocationExpiry() {
 
 // Location is a short-lived private hint. Delete the whole fix on expiry so
 // stale coordinates cannot silently be reused or survive in a settings export.
-void
+bool
 AppPrefs::expireLocation() const {
     const qint64 at = m_settings.value(key_name(kLastFixAt), 0).toLongLong();
     const qint64 now = realtimeMSecsSinceEpoch();
     if (at > 0 && at <= now && now - at < 24LL * 60 * 60 * 1000) {
+        return false;
+    }
+    bool held = false;
+    for (const Key key : {kLastLat, kLastLon, kLastFixAt, kLastAccuracyM}) {
+        held = held || m_settings.contains(key_name(key));
+        m_settings.remove(key_name(key));
+    }
+    return held;
+}
+
+// The expiry timer runs on the monotonic clock, which stops while a phone
+// sleeps, so a fix can lapse first at a read. Every reader hears of it once,
+// queued: a reader in the middle of its own rebuild is never re-entered.
+void
+AppPrefs::expireLocationOnRead() const {
+    if (!expireLocation()) {
         return;
     }
-    m_settings.remove(key_name(kLastLat));
-    m_settings.remove(key_name(kLastLon));
-    m_settings.remove(key_name(kLastFixAt));
-    m_settings.remove(key_name(kLastAccuracyM));
+    auto* self = const_cast<AppPrefs*>(this);
+    QMetaObject::invokeMethod(
+        self,
+        [self]() {
+            self->armLocationExpiry();
+            Q_EMIT self->locationChanged();
+        },
+        Qt::QueuedConnection);
 }
 
 int
@@ -1181,7 +1203,7 @@ AppPrefs::forgetScanCompanions() {
 
 double
 AppPrefs::lastLat() const {
-    expireLocation();
+    expireLocationOnRead();
     return m_settings.value(key_name(kLastLat), 0.0).toDouble();
 }
 
@@ -1196,7 +1218,7 @@ AppPrefs::setLastLat(double value) {
 
 double
 AppPrefs::lastLon() const {
-    expireLocation();
+    expireLocationOnRead();
     return m_settings.value(key_name(kLastLon), 0.0).toDouble();
 }
 
@@ -1221,13 +1243,13 @@ AppPrefs::setLocationFix(double lat, double lon, qint64 fixAtMs, double accuracy
 
 double
 AppPrefs::lastAccuracyM() const {
-    expireLocation();
+    expireLocationOnRead();
     return m_settings.value(key_name(kLastAccuracyM), 0.0).toDouble();
 }
 
 qint64
 AppPrefs::lastFixAt() const {
-    expireLocation();
+    expireLocationOnRead();
     return m_settings.value(key_name(kLastFixAt), 0).toLongLong();
 }
 

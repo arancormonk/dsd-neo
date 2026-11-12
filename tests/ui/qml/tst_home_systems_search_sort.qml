@@ -386,6 +386,42 @@ Item {
             verify(button.enabled);
         }
 
+        // A fix that lapses while the phone sleeps is dropped at the next read, with no expiry timer. When the cards'
+        // rebuild is that read, the line follows them to names; when the minute tick is, it never shows the age of
+        // a fix that is gone.
+        function test_lapsed_fix_leaves_the_location_line() {
+            testContext.setLocationSupported(true);
+            site("Far", 1, 43.6, -93.6);
+            site("Near", 2, 41.7, -93.6);
+            prefs.systemsSort = "nearest";
+            prefs.setLocationFix(41.6, -93.6, savedSystems.realtimeNowMs(), 25);
+            settle();
+            var line = item("systemsLocation");
+            compare(titles(), ["Near", "Far"]);
+            compare(item("systemsLocationText").text, "Using your location from a moment ago");
+
+            testContext.lapseLocationFix();
+            search("a");
+            compare(titles(), ["Far", "Near"], "the cards fall back to names");
+            compare(item("systemsLocationText").text, "Nearest needs your location");
+            compare(line.detail, "Showing names until a location arrives");
+            compare(item("systemsLocationButton").text, "Use my location");
+
+            search("");
+            prefs.setLocationFix(41.6, -93.6, savedSystems.realtimeNowMs(), 25);
+            settle();
+            compare(titles(), ["Near", "Far"]);
+            compare(item("systemsLocationText").text, "Using your location from a moment ago");
+            testContext.lapseLocationFix();
+            home.heardTick++;
+            compare(item("systemsLocationText").text, "Nearest needs your location", "no age for a fix that is gone");
+            tryCompare(savedSystemCards, "effectiveSort", "name", 2000, "the queued change reaches the cards");
+            settle();
+            compare(item("systemsLocationText").text, "Nearest needs your location");
+            compare(line.detail, "Showing names until a location arrives");
+            compare(titles(), ["Far", "Near"]);
+        }
+
         // Issue #646 B1: hidden, the location line keeps its height (its second line counts by its words, not by
         // whether it is drawn), so the body's range does not move.
         function test_location_line_height_held_while_hidden() {
