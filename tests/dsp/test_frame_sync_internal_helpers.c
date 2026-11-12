@@ -1855,6 +1855,65 @@ test_nxdn_and_ysf_syncs_set_the_slicer_on_the_true_rails(void) {
     }
 }
 
+/* NXDN48's accept takes two hits at any distance, and says whether the hit it took had one of its polarity one frame
+   (192 symbols, within one) before it, as a transmission's frame sync words do: the frame's checks rest on that
+   (nxdn_confirm_note_frame_start()). */
+static void
+test_nxdn48_accept_says_whether_its_hit_ran_on(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    static const struct {
+        uint32_t since;
+        int other_polarity;
+        int corroborated;
+    } k_cases[] = {
+        {192U, 0, 1}, {191U, 0, 1}, {193U, 0, 1}, {190U, 0, 0}, {194U, 0, 0}, {500U, 0, 0}, {192U, 1, 0},
+    };
+
+    for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        reset(&opts, &state);
+        opts.frame_nxdn48 = 1;
+        state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+        state.min = -3.0f;
+        state.max = 3.0f;
+        state.symbolcnt = 4000U;
+        assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state,
+                                                        k_cases[i].other_polarity ? INV_NXDN_FSW : NXDN_FSW, 10)
+               == DSD_SYNC_NONE);
+        state.symbolcnt = 4000U + k_cases[i].since;
+        if (k_cases[i].other_polarity) {
+            state.lastsynctype = DSD_SYNC_NXDN_POS; // an accept of its own polarity, the hit before of the other
+        }
+        assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+        if (state.nxdn48_accept_corroborated != k_cases[i].corroborated) {
+            DSD_FPRINTF(stderr, "NXDN48 hit %u symbols on (other polarity %d): corroborated %u, want %d\n",
+                        (unsigned)k_cases[i].since, k_cases[i].other_polarity, state.nxdn48_accept_corroborated,
+                        k_cases[i].corroborated);
+        }
+        assert(state.nxdn48_accept_corroborated == k_cases[i].corroborated);
+    }
+
+    /* A hit is the carrier's: a carrier change, a trunk retune or the CAC failure's count reset between two hits a
+       frame apart breaks the pairing (dsd_state_forget_sync_join_histories()), and the hit after it pairs with
+       nothing. */
+    reset(&opts, &state);
+    opts.frame_nxdn48 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.symbolcnt = 4000U;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    dsd_state_forget_sync_join_histories(&state); // what a carrier change, a trunk retune and the CAC reset run
+    state.lastsynctype = DSD_SYNC_NXDN_POS;       // an accept, the hit before it the carrier left's
+    state.symbolcnt = 4192U;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+    assert(state.nxdn48_accept_corroborated == 0U);
+    state.nxdn48_accept_corroborated = 1U;
+    dsd_state_forget_sync_join_histories(&state);
+    assert(state.nxdn48_accept_corroborated == 0U);
+}
+
 /* The suppression is dPMR's frame, not a mute switch: NXDN96 lives on 4800/4 where dPMR cannot
  * match at all, and a build with dPMR disabled must behave exactly as it did before. */
 static void
@@ -5683,6 +5742,7 @@ main(void) {
     test_an_nxdn_sync_accept_leaves_the_sync_clock();
     test_a_dpmr_frame_is_not_reopened_by_the_nxdn_matcher();
     test_nxdn_and_ysf_syncs_set_the_slicer_on_the_true_rails();
+    test_nxdn48_accept_says_whether_its_hit_ran_on();
     test_the_dpmr_frame_suppression_is_scoped_to_its_own_profile();
     test_a_p25p1_frame_is_not_reopened_by_the_nxdn96_matcher();
     test_a_suppressed_nxdn96_window_still_blends_levels();

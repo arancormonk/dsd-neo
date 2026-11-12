@@ -1546,6 +1546,13 @@ struct dsd_state {
      * by S1 wrong LICHs in a row, and at a carrier boundary inside an NXDN frame. The decoder thread's: a retune made
      * off it leaves the clear to the frame sync (dsd_frame_sync_apply_off_thread_tunes()). */
     dsd_nxdn96_sync nxdn96_sync;
+    /* NXDN48's accept (two sign hits at any distance, src/dsp/dsd_frame_sync.c): where its last hit was
+     * (dsd_state::symbolcnt) and of which polarity (the sync type, 0 none), and whether the hit an accept took had one
+     * of its polarity one frame before it, as a transmission's frames do: the frame's checks may then confirm it at
+     * once (nxdn_confirm_note_frame_start()). */
+    uint32_t nxdn48_hit_symbol;
+    int nxdn48_hit_type;
+    uint8_t nxdn48_accept_corroborated;
     /* The same idea one profile up, where 4800/4 carries P25p1, DMR, NXDN96, YSF and M17 at once.
      * P25p1's sync is one of two exact 24-symbol patterns, so it fires on noise about once per
      * 8.4 million windows; NXDN96's takes five variants per polarity over ten sign-sliced symbols
@@ -1701,12 +1708,26 @@ struct dsd_state {
      * nxdn_confirm_scch_streak: consecutive frames carrying a CRC-good SCCH, whatever else they carried; the Type-D
      * site test of the control-channel hunt reads it (nxdn_confirm_note_scch()).
      * nxdn_confirm_frame_scch: this frame carried one.
-     * nxdn_confirm_scch_generation: the trunk tuning generation the run counts in; a completed tune restarts it. */
+     * nxdn_confirm_scch_generation: the trunk tuning generation the run counts in; a completed tune restarts it.
+     * nxdn_confirm_frame_isolated: this frame does not run on from a frame read one frame before it
+     * (nxdn_confirm_note_frame_start()), so it starts the streaks over.
+     * nxdn_confirm_strong_waits: nor did its sync word follow another one frame before it, so its strong check waits,
+     * unless another check of the frame passed too (nxdn_confirm_frame_checks counts them).
+     * nxdn_confirm_strong_pending: the last frame read, an isolated one, passed a strong check, which confirms the
+     * transmission if the next frame runs on from it.
+     * nxdn_confirm_last_frame_valid / nxdn_confirm_last_frame_symbol: where the last frame read began
+     * (dsd_state::symbolcnt), the run's measure. */
     uint8_t nxdn_confirmed;
     uint8_t nxdn_confirm_weak_streak;
     uint8_t nxdn_confirm_frame_evidence;
     uint8_t nxdn_confirm_scch_streak;
     uint8_t nxdn_confirm_frame_scch;
+    uint8_t nxdn_confirm_frame_isolated;
+    uint8_t nxdn_confirm_strong_waits;
+    uint8_t nxdn_confirm_frame_checks;
+    uint8_t nxdn_confirm_strong_pending;
+    uint8_t nxdn_confirm_last_frame_valid;
+    uint32_t nxdn_confirm_last_frame_symbol;
     uint64_t nxdn_confirm_scch_generation;
 
     NxdnElementsContent_t NxdnElementsContent;
@@ -3041,12 +3062,14 @@ dsd_state_raise_input_interrupt(dsd_state* state, int reason) {
 /* The receiver leaves a carrier: symbols read from here on are the next carrier's. A change between symbol reads (an
    input switch, a menu tune) leaves every later symbol whole; one that runs while getSymbol() reads a symbol's samples
    (an I/Q replay retune) splits that symbol, which counts as the carrier left's. The sync join histories are the
-   carrier left's evidence too: an NXDN96 lock or FSW, or an M17 word, does not pair with the next carrier's
-   (dsd_state_forget_sync_join_histories(), which a trunk retune runs too). */
+   carrier left's evidence too: an NXDN96 lock or FSW, an NXDN48 hit, or an M17 word, does not pair with the next
+   carrier's (dsd_state_forget_sync_join_histories(), which a trunk retune runs too). */
 static inline void
 dsd_state_forget_sync_join_histories(dsd_state* state) {
     dsd_nxdn96_sync_clear(&state->nxdn96_sync);
     dsd_sync_hit_history_clear(&state->m17_join_hits);
+    state->nxdn48_hit_type = 0;
+    state->nxdn48_accept_corroborated = 0U;
     /* The frame sync's own history from its last no-sync exit is the carrier left's too, and so is the history of a
        call in progress, which may not be kept when that call ends (dsd_frame_sync_history_carry::drops). */
     state->frame_sync_carry.valid = 0U;

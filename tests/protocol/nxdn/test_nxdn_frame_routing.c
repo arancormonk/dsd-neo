@@ -718,6 +718,80 @@ test_short_crc_confirms_only_when_repeated(void) {
     return rc;
 }
 
+/* An NXDN48 frame beginning at symbol @p at (dsd_state::symbolcnt; frames of a transmission begin 192 apart), its
+   channels reporting what the stubs say. */
+static int
+route_nxdn48_frame_at(uint8_t lich, uint32_t at) {
+    g_active_nxdn_variant = DSD_NXDN_VARIANT_48;
+    g_state.symbolcnt = at;
+    return route_frame(lich);
+}
+
+/*
+ * NXDN48's accept takes two sync hits at any distance, so under Auto noise and other protocols' carriers hand it frames
+ * by the thousand an hour; their checks prove a transmission only when its frames run, each read one frame (192
+ * symbols) after the last. Two short CRCs frames apart, or one CRC-12 in a frame on its own, confirmed transmissions of
+ * receiver noise and played them. A strong check in an isolated frame confirms once the next frame runs on from it.
+ */
+static int
+test_nxdn48_checks_confirm_only_frames_that_run(void) {
+    int rc = 0;
+
+    reset_state();
+    g_stub_facch_ok = 0;
+    g_stub_sacch_ok = 1;
+    rc |= expect_int("weak frame routed", route_nxdn48_frame_at(0x32U, 10000U), 1);
+    rc |= expect_int("weak frame two frames on routed", route_nxdn48_frame_at(0x32U, 10384U), 1);
+    rc |= expect_int("weak checks frames apart confirm nothing", nxdn_confirm_is_confirmed(&g_state), 0);
+    rc |= expect_int("weak checks frames apart play nothing", g_voice_calls, 0);
+    rc |= expect_int("weak frame one frame on routed", route_nxdn48_frame_at(0x32U, 10576U), 1);
+    rc |= expect_int("weak checks of frames that run confirm", nxdn_confirm_is_confirmed(&g_state), 1);
+    rc |= expect_int("and play", g_voice_calls, 1);
+
+    reset_state();
+    g_stub_facch_ok = 1;
+    rc |= expect_int("isolated strong frame routed", route_nxdn48_frame_at(0x32U, 20000U), 1);
+    rc |= expect_int("an isolated strong check waits", nxdn_confirm_is_confirmed(&g_state), 0);
+    rc |= expect_int("an isolated strong check plays nothing", g_voice_calls, 0);
+    g_stub_facch_ok = 0;
+    rc |= expect_int("next frame routed", route_nxdn48_frame_at(0x32U, 20193U), 1);
+    rc |= expect_int("the next frame running on confirms it", nxdn_confirm_is_confirmed(&g_state), 1);
+    rc |= expect_int("and plays", g_voice_calls, 1);
+
+    reset_state();
+    g_stub_facch_ok = 1;
+    rc |= expect_int("lone strong frame routed", route_nxdn48_frame_at(0x32U, 30000U), 1);
+    g_stub_facch_ok = 0;
+    rc |= expect_int("frame two frames on routed", route_nxdn48_frame_at(0x32U, 30384U), 1);
+    rc |= expect_int("a lone strong check confirms nothing", nxdn_confirm_is_confirmed(&g_state), 0);
+    rc |= expect_int("a lone strong check plays nothing", g_voice_calls, 0);
+
+    /* A strong check beside another of the same frame (a header frame's SACCH and its FACCH1 VCALL) holds at once. */
+    reset_state();
+    g_stub_facch_ok = 1;
+    g_stub_sacch_ok = 1;
+    rc |= expect_int("strong frame with a second check routed", route_nxdn48_frame_at(0x32U, 33000U), 1);
+    rc |= expect_int("two checks of one frame confirm at once", nxdn_confirm_is_confirmed(&g_state), 1);
+    rc |= expect_int("and play", g_voice_calls, 1);
+
+    /* An accept whose sync word followed another one frame before it (a call's first frame read): its strong check, the
+       header VCALL the call opens on, holds at once. */
+    reset_state();
+    g_stub_facch_ok = 1;
+    g_state.nxdn48_accept_corroborated = 1U;
+    rc |= expect_int("corroborated strong frame routed", route_nxdn48_frame_at(0x32U, 35000U), 1);
+    rc |= expect_int("a corroborated strong check confirms at once", nxdn_confirm_is_confirmed(&g_state), 1);
+    rc |= expect_int("and plays", g_voice_calls, 1);
+
+    /* NXDN96's accept needs a hit one frame before: its strong checks confirm at once, as before. */
+    reset_state();
+    g_active_nxdn_variant = DSD_NXDN_VARIANT_96;
+    g_state.symbolcnt = 40000U;
+    rc |= expect_int("nxdn96 strong frame routed", route_frame(0x32U), 1);
+    rc |= expect_int("an nxdn96 strong check confirms at once", nxdn_confirm_is_confirmed(&g_state), 1);
+    return rc;
+}
+
 /* Issue #575: the carrier boundary moved the carrier count while the frame was read (a replay read adopting a recorded
    retune). Everything after the LICH decodes only once all 174 dibits are in, so a SACCH segment read whole before the
    move, possibly the one completing a superframe, would decode after the boundary ended that carrier's calls: the frame
@@ -1020,6 +1094,7 @@ main(void) {
     rc |= test_lfsr_and_scanner_state();
     rc |= test_unconfirmed_frame_is_inert();
     rc |= test_short_crc_confirms_only_when_repeated();
+    rc |= test_nxdn48_checks_confirm_only_frames_that_run();
     rc |= test_frame_split_by_a_carrier_boundary_is_dropped();
     rc |= test_frame_cut_by_an_input_interruption_is_dropped();
     rc |= test_frame_channel_follows_the_lich();

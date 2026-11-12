@@ -7231,7 +7231,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   four-level reading takes the window's level ring, which a symbol capture fills with its dibits' levels
   (`dsd_symbol_level_from_dibit()`), so it applies there too; only a window holding fewer than ten levels (the unit
   tests' sign-only windows) skips it, and the sign match then counts as clear. A LICH failure prints its sync under
-  `-Z`. NXDN48 on 2400/4 keeps two hits at any distance. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
+  `-Z`. NXDN48 on 2400/4 keeps two hits at any distance; whether the accepting hit had one of its polarity a frame
+  before it (`dsd_state::nxdn48_accept_corroborated`, which the NXDN confirm gate reads) is dropped with the join
+  histories. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
   (`test_nxdn96_follows_the_receiver_sync_rules`, `test_nxdn96_lock_follows_the_lich`,
   `test_nxdn96_acquires_on_the_four_level_fsw`), `FRAME_SYNC_DMR_WAV_RATE`, `DECODE_IQ_NOISE_FLOOR_NXDN96_NO_SYNC`,
   `DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_NXDN96_SYNC`, `DECODE_IQ_NXDN96_MID_FRAME_JOIN` (`nxdn96_after_retune`) and its
@@ -10939,9 +10941,22 @@ Private per-protocol modules worth knowing about:
   slot 0 only when it is an NXDN call, and NXDN crypto updates only an NXDN call (`nxdn_end_live_call()`,
   `nxdn_live_call_is_nxdn()`): an NXDN sync read on another protocol's carrier (a false IDAS sync on a P25 carrier
   under `-fa`) never ends or encrypts that protocol's call (`NXDN_ELEMENT_BOUNDS`, `NXDN_GRANT_TUNE_MATRIX` and its
-  real-call-state twin, `NXDN_CRC32_BITS`, `NXDN_DEPERM_PRIMITIVES`, `NXDN_FRAME_ROUTING`). Evidence confirms at once, before the RAN and call it unlocks are published; a signal
-  search hears a frame's confirmation once, from `nxdn_confirm_end_frame()`, after they are (`NXDN_CONFIRM`,
-  `NXDN_DEPERM_PRIMITIVES`), which also stamps `dsd_state::nxdn_confirm_lock_m` for the NXDN control-channel hunt.
+  real-call-state twin, `NXDN_CRC32_BITS`, `NXDN_DEPERM_PRIMITIVES`, `NXDN_FRAME_ROUTING`). "Frames running" is
+  measured where the frame sync cannot vouch for it (`nxdn_confirm_note_frame_start()`, from `nxdn_frame()`): NXDN48's
+  accept takes two sign hits at any distance, so under `-fa` noise and other protocols' carriers hand 2400/4 thousands
+  of frame bodies an hour, and two short checks frames apart, or one FACCH1 CRC-12 (it decodes twice, about one noise
+  frame in 2000), confirmed transmissions of receiver noise, played them and published NXDN "TGT 0 SRC 0" calls (12 in
+  8 x 30 min of `-fa` noise on c1bd84c1e). An NXDN48 frame runs on only from a frame read
+  `NXDN_CONFIRM_FRAME_SYMBOLS` (192, within one) before it; an isolated one starts the weak and SCCH streaks over, and
+  its strong check holds at once only when its sync word followed another of its polarity one frame before it
+  (`dsd_state::nxdn48_accept_corroborated`, `frame_sync_nxdn48_note_hit()`) or another check of the frame passed too
+  (a header frame's SACCH beside its FACCH1 VCALL), else it confirms when the next frame runs on from it. NXDN96, whose
+  accept needs a hit one frame before, runs on as before. On the four real NXDN/DMR scan captures under `-fa` and
+  `-fi` the logs and event files are unchanged, and the 8-seed noise set publishes nothing (`NXDN_CONFIRM`,
+  `NXDN_FRAME_ROUTING`, `FRAME_SYNC_INTERNAL_HELPERS`). Evidence confirms at once, before the RAN and call it unlocks
+  are published; a signal search hears a frame's confirmation once, from `nxdn_confirm_end_frame()`, after they are
+  (`NXDN_CONFIRM`, `NXDN_DEPERM_PRIMITIVES`), which also stamps `dsd_state::nxdn_confirm_lock_m` for the NXDN
+  control-channel hunt.
 - `src/protocol/m17/m17_confirm.{c,h}` — the same module for M17, whose sync chain opens on a preamble that is only an
   alternating symbol run. Frame handlers report `(own check || confirmed)`, `dispatch_m17.c` reports it on an EOT, and
   `dsd_frame_sync.c` reads the raw state to decide whether to keep extending a candidate chain. The EOT also puts the

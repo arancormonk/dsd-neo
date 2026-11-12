@@ -2478,6 +2478,20 @@ frame_sync_warm_start_nxdn(const dsd_opts* opts, dsd_state* state, int synctype)
     (void)dsd_sync_warm_start_thresholds_from_dibits(opts, state, fsw, 10);
 }
 
+/* An NXDN48 sign hit of @p synctype at the window's end: whether the hit before it, of its polarity, was one frame
+ * (DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS, within DSD_FRAME_SYNC_NXDN96_TIMING_TOLERANCE) before it, as a transmission's
+ * frame sync words are, is what an accept on it says about the frame (dsd_state::nxdn48_accept_corroborated). */
+static void
+frame_sync_nxdn48_note_hit(dsd_state* state, int synctype) {
+    const uint32_t since = (uint32_t)state->symbolcnt - state->nxdn48_hit_symbol;
+    const uint32_t frame = (uint32_t)DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS;
+    const uint32_t slip = (uint32_t)DSD_FRAME_SYNC_NXDN96_TIMING_TOLERANCE;
+    state->nxdn48_accept_corroborated =
+        (uint8_t)(state->nxdn48_hit_type == synctype && since + slip >= frame && since <= frame + slip);
+    state->nxdn48_hit_symbol = (uint32_t)state->symbolcnt;
+    state->nxdn48_hit_type = synctype;
+}
+
 static int
 frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
@@ -2517,8 +2531,11 @@ frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
     state->offset = ctx->synctest_pos;
     /* NXDN48 on 2400/4 keeps two hits at any distance; NXDN96 follows the receiver rules
      * (frame_sync_nxdn96_accepts()). */
-    const int accepts =
-        frame_sync_nxdn96_window(ctx) ? frame_sync_nxdn96_accepts(ctx, synctype) : state->lastsynctype == synctype;
+    const int nxdn96 = frame_sync_nxdn96_window(ctx);
+    const int accepts = nxdn96 ? frame_sync_nxdn96_accepts(ctx, synctype) : state->lastsynctype == synctype;
+    if (!nxdn96) {
+        frame_sync_nxdn48_note_hit(state, synctype);
+    }
     /* An NXDN96 accept does not need lastsynctype to match, so it sets it: the frame's notices and
      * nxdn_finalize_sync_reject() read the protocol from it, and a payload hit or a reset may have left another. */
     state->lastsynctype = synctype;

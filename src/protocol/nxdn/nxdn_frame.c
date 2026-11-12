@@ -774,6 +774,17 @@ nxdn_note_fsw_anchor(const dsd_state* state) {
     dsd_symbol_note_sync_anchor(state, fsw + 1, 9);
 }
 
+/* Open the frame's evidence accounting for a frame that began at @p frame_symbol. NXDN96's accept needs a hit one
+   frame before; NXDN48's takes two at any distance, so an NXDN48 frame runs on only from a frame read one frame
+   before it, and its strong checks hold at once only when its sync word followed another one frame before it
+   (nxdn_confirm_note_frame_start()). */
+static void
+nxdn_frame_begin_evidence(const dsd_opts* opts, dsd_state* state, uint32_t frame_symbol) {
+    const int nxdn48 = dsd_frame_sync_active_nxdn_variant(opts, state) == DSD_NXDN_VARIANT_48;
+    nxdn_confirm_note_frame_start(state, frame_symbol, !nxdn48, nxdn48 && state->nxdn48_accept_corroborated);
+    nxdn_confirm_begin_frame(state);
+}
+
 int
 nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_frame_ctx ctx;
@@ -786,6 +797,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_note_fsw_anchor(state);
     nxdn_frame_ctx_init(&ctx);
     const uint32_t carrier_seq = state->carrier_seq;
+    const uint32_t frame_symbol = (uint32_t)state->symbolcnt;
     nxdn_collect_lich(opts, state, &ctx);
 
     nxdn_prepare_lich_parity(&ctx);
@@ -834,7 +846,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_print_rf_channel_type(&ctx);
     nxdn_apply_limazulu_voice_tweak(opts, state, &ctx);
 
-    nxdn_confirm_begin_frame(state);
+    nxdn_frame_begin_evidence(opts, state, frame_symbol);
     nxdn_print_voice_or_data_and_sync_lfsr(state, &ctx);
     nxdn_update_sacch_mode(state, ctx.lich);
     state->nxdn_frame_channel = nxdn_frame_channel_of(&ctx);
