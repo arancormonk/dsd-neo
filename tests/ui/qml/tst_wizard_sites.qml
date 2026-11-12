@@ -424,6 +424,44 @@ Item {
             compare(Object.keys(savedSystems.get(0).place).length, 0, "the old site's place stayed");
         }
 
+        // An edit-mode re-import keeps its fresh RadioReference details only
+        // while every field the model's provenance rule watches still matches:
+        // the bandplan, source and key files change the site as much as the
+        // frequency does.
+        function test_edit_reimport_unrelated_field_edit_data() {
+            return [
+                {tag: "unchanged", field: "", keeps: true},
+                {tag: "bandplan", field: "p25BandplanCsvPath", value: "/tmp/other-bandplan.csv", keeps: false},
+                {tag: "source", field: "srcCsvPath", value: "/tmp/other-src.csv", keeps: false},
+                {tag: "key file", field: "keyCsvPath", value: "/tmp/other-keys.csv", keeps: false},
+                {tag: "key hex", field: "keyCsvHex", value: true, keeps: false}
+            ];
+        }
+        function test_edit_reimport_unrelated_field_edit(data) {
+            verify(savedSystems.add(placedSite(16863, "851")));
+            loader.item.openForEdit(0);
+            var fresh = placedSite(48391, "851");
+            fresh.ok = true;
+            loader.item.applyRadioReference(fresh);
+            if (data.field.length > 0)
+                loader.item[data.field] = data.value;
+            loader.item.commit();
+            compare(savedSystems.count, 1);
+            var row = savedSystems.get(0);
+            if (data.keeps) {
+                compare(row.rrSiteId, 48391);
+                compare(row.siteName, "Site 48391");
+                verify(row.hasSitePos);
+                compare(placeCounty(0), 48391);
+            } else {
+                compare(row.rrSid, 0);
+                compare(row.rrSiteId, 0);
+                compare(row.siteName, "");
+                verify(!row.hasSitePos);
+                compare(Object.keys(row.place).length, 0);
+            }
+        }
+
         // An edit opened before Update from RadioReference renamed the site
         // (and the generated name with it) saves without touching the name:
         // the refreshed name stays, not the one the editor opened with. A

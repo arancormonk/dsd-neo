@@ -627,9 +627,23 @@ Item {
     }
 
     // Whether @a sys still tunes what the import answered (@a imported): only
-    // then do the import's site, position and place describe it.
+    // then do the import's site, position and place describe it. It checks
+    // exactly the fields SavedSystemsModel::update() treats as ending an
+    // import's provenance. A field the import answers is compared with the
+    // import; one it does not (keys, bandplan, source) with the system being
+    // edited, which is what update() compares with.
     function keepsImportedTuning(sys, imported) {
-        return sys.freqMhz === imported.freqMhz && sys.decodeFlag === imported.decodeFlag && sys.chanCsvPath === (imported.chanCsvPath || "") && sys.groupCsvPath === (imported.groupCsvPath || "");
+        var stored = editRow >= 0 ? savedSystems.get(editRow) : null;
+        for (var field of savedSystems.tuningProvenanceFields()) {
+            var base = imported[field];
+            if (base === undefined && (field === "chanCsvPath" || field === "groupCsvPath"))
+                base = "";
+            if (base === undefined && stored)
+                base = stored[field];
+            if (base !== undefined && (sys[field] || "") !== (base || ""))
+                return false;
+        }
+        return true;
     }
 
     // A per-site batch: every site receives the source/tuner answers, its

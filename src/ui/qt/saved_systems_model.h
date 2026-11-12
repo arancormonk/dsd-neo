@@ -193,6 +193,8 @@ class SavedSystemsModel : public QAbstractListModel {
      */
     Q_INVOKABLE bool remove(int row);
 
+    /** @brief The field names whose change in update() clears a row's RadioReference provenance. */
+    Q_INVOKABLE QStringList tuningProvenanceFields() const;
     /** @brief One system as a field map, for the wizard's edit path and argv building. */
     Q_INVOKABLE QVariantMap get(int row) const;
     /** @brief Row @p row's site group key (site_group_key(): its RadioReference system on its receiver), read from

@@ -348,11 +348,14 @@ apply_place_names(QVariantMap& place, int stid, const QString& stateName, const 
 constexpr const char* kFreshProvenanceKeys[] = {"rrSid",   "rrSiteId",   "siteName", "siteLat",
                                                 "siteLon", "hasSitePos", "place"};
 
+/** The fields whose change ends a row's RadioReference provenance; the wizard's re-import guard reads this list. */
+constexpr const char* kTuningProvenanceKeys[] = {"freqMhz",    "decodeFlag", "chanCsvPath",        "groupCsvPath",
+                                                 "keyCsvPath", "keyCsvHex",  "p25BandplanCsvPath", "srcCsvPath"};
+
 /** Whether @p system changes a field that decides what the row's imported site is. */
 bool
 changes_site_tuning(const QVariantMap& previous, const QVariantMap& system) {
-    for (const char* key : {"freqMhz", "decodeFlag", "chanCsvPath", "groupCsvPath", "keyCsvPath", "keyCsvHex",
-                            "p25BandplanCsvPath", "srcCsvPath"}) {
+    for (const char* key : kTuningProvenanceKeys) {
         const QString name = QLatin1String(key);
         if (system.contains(name) && system.value(name) != previous.value(name)) {
             return true;
@@ -931,6 +934,15 @@ SavedSystemsModel::remove(int row) {
     Q_EMIT countChanged();
     releaseReplayIfUnused(file);
     return true;
+}
+
+QStringList
+SavedSystemsModel::tuningProvenanceFields() const {
+    QStringList fields;
+    for (const char* key : kTuningProvenanceKeys) {
+        fields.append(QLatin1String(key));
+    }
+    return fields;
 }
 
 QVariantMap
