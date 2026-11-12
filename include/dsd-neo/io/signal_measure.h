@@ -188,9 +188,14 @@ typedef struct {
  * "Quiet-channel calibration"). */
 dsd_signal_quiet_params dsd_signal_quiet_params_default(void);
 
-/** 1 when an analog class of @p width_hz judged at capture rate @p rate_hz lies inside the domain the calibration
- * validated (widths DSD_ANALOG_AM_WIDTH_MIN_HZ to DSD_ANALOG_NFM_WIDTH_MAX_HZ at 1.024 to 2.4 Msps), else 0: outside
- * it a scan visit makes no quiet check. */
+/** 1 when the calibration rendered and validated capture rate @p rate_hz (exactly; every class was judged at it), else
+ * 0: at any other rate a scan visit makes no quiet check. The rates are those the capture paths run: the RTL rate
+ * planner's, an Airspy's, and the common RTL-SDR rates a SoapySDR device may be given. */
+int dsd_signal_quiet_rate_supported(uint32_t rate_hz);
+
+/** 1 when an analog class of @p width_hz at capture rate @p rate_hz was rendered and validated (exactly: the Radio
+ * sheet's NFM and AM width steps, at a dsd_signal_quiet_rate_supported() rate), else 0: any other width gets no quiet
+ * check. */
 int dsd_signal_quiet_analog_supported(uint32_t width_hz, uint32_t rate_hz);
 
 /** Stand-alone quiet detector, the one the shared tap uses, for calibration and tests. */

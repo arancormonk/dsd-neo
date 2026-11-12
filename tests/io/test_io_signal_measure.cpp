@@ -1285,22 +1285,28 @@ test_quiet_requests(dsd_signal_quiet_detector* d) {
     // A refused request leaves nothing armed: samples finish nothing.
     const auto noise = quiet_noise(quiet_request_pairs(narrow), 52);
     assert(dsd_signal_quiet_detector_feed(d, noise.data(), noise.size() / 2, &narrow.capture) == 0);
-    // The shipped parameters: the calibrated 4.2 dB over the trimmed-mean floor, guarded at 8 dB (docs/signal-search.md).
+    // The shipped parameters: the calibrated 4.1 dB over the trimmed-mean floor, guarded at 8.7 dB
+    // (docs/signal-search.md).
     const auto shipped = dsd_signal_quiet_params_default();
-    assert(std::fabs(shipped.threshold_db - 4.2f) < 1e-6f);
+    assert(std::fabs(shipped.threshold_db - 4.1f) < 1e-6f);
     assert(shipped.floor_estimator == DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN);
-    assert(std::fabs(shipped.guard_db - 8.0f) < 1e-6f);
-    // The analog domain the calibration validated: 5 to 25 kHz at 1.024 to 2.4 Msps, edges included.
-    for (uint32_t width : {5000u, 6000u, 8000u, 12500u, 16000u, 20000u, 25000u}) {
-        for (uint32_t rate : {1024000u, 1536000u, 2048000u, 2400000u}) {
+    assert(std::fabs(shipped.guard_db - 8.7f) < 1e-6f);
+    // The domain is exactly the rendered cells: every rendered rate, every Radio-sheet width at each; nothing between.
+    const uint32_t rendered_rates[] = {960000u,  1024000u, 1152000u, 1200000u, 1280000u, 1440000u, 1536000u, 1600000u,
+                                       1800000u, 1920000u, 2048000u, 2400000u, 2500000u, 3000000u, 6000000u, 10000000u};
+    const uint32_t rendered_widths[] = {5000u, 6000u, 8000u, 10000u, 11250u, 12500u, 15000u, 16000u, 20000u, 25000u};
+    for (uint32_t rate : rendered_rates) {
+        assert(dsd_signal_quiet_rate_supported(rate) == 1);
+        for (uint32_t width : rendered_widths) {
             assert(dsd_signal_quiet_analog_supported(width, rate) == 1);
         }
-        for (uint32_t rate : {0u, 960000u, 1023999u, 2400001u, 3200000u}) {
+        for (uint32_t width : {0u, 4999u, 7000u, 9000u, 12000u, 14000u, 18000u, 24999u, 25001u}) {
             assert(dsd_signal_quiet_analog_supported(width, rate) == 0);
         }
     }
-    for (uint32_t width : {0u, 4999u, 25001u, 30000u}) {
-        assert(dsd_signal_quiet_analog_supported(width, 1536000u) == 0);
+    for (uint32_t rate : {0u, 250000u, 1000000u, 1023999u, 1024001u, 1400000u, 2000000u, 2560000u, 3200000u}) {
+        assert(dsd_signal_quiet_rate_supported(rate) == 0);
+        assert(dsd_signal_quiet_analog_supported(12500u, rate) == 0);
     }
 }
 

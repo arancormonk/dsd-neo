@@ -7,22 +7,26 @@
  * the stand-alone quiet detector, the one the shared tap runs, over hundreds of rendered conditions and thousands of
  * trials each, minutes on every core. docs/signal-search.md "Quiet-channel calibration" gives the method and results.
  *
- *   dsd-neo_test_signal_quiet_calibrate --sources DIR --phase select|validate|snr --out FILE [--trials N] [--jobs N]
- *       [--threshold DB --estimator trimmed|lowest] [--guard DB] [--filter TEXT] [--dump FILE]
+ *   dsd-neo_test_signal_quiet_calibrate --phase select|validate|snr|cost --out FILE [--sources DIR] [--trials N]
+ *       [--jobs N] [--threshold DB --estimator trimmed|lowest] [--guard DB] [--filter TEXT] [--dump FILE]
  *
  * DIR holds the clean 48 kHz sources tools/scan_quiet_reception.py --export-sources writes, from the same generators
  * that measured each mode's reception threshold. Each is interpolated to the capture rate in the frequency domain, so
- * its spectrum (and the power band_power() gave inside its class width) is unchanged, then placed at the channel. The
+ * its spectrum (and the power band_power() gave inside its class width) is unchanged, then placed at the channel in the
+ * RTL tap's geometry (tuned Fs/4 above it, the ingest rotation bringing it to the samples' 0 Hz). Every phase but cost
+ * needs DIR. The
  * S/N is the tool's: the signal's power inside the mode's class width (for a burst train, during its bursts) over the
  * noise power inside the same width around the signal.
  *
  * select    every condition, both floor estimators on the same samples: per condition the lowest, percentiles and
- *           highest max-of-9 ratio over its valid trials, and the floor's rise over the capture-wide reference
- *           (--guard, default off; --dump writes every trial's ratio and rise)
+ *           highest max-of-9 ratio over its valid trials (a noise-only condition's invalid trials count as busy, at
+ *           +999 dB), and the floor's rise over the capture-wide reference (--guard, default off; --dump writes every
+ *           trial's ratio and rise)
  * validate  every condition at one threshold, estimator and guard, fresh seeds: quiet and busy verdicts (an invalid
  *           result is busy)
  * snr       the rendered S/N of each wanted signal measured back from the samples, against the target
  * cost      CPU per quiet request on noise (shipped parameters), and per request of the floor guard's reference alone
+ *           (the same bin selection and quartile, nine times)
  *
  * Every trial's samples come from its own seed (the condition's name, the phase and the trial number), so results do
  * not depend on --jobs. */
@@ -54,13 +58,17 @@ namespace {
 using cf = std::complex<float>;
 constexpr double kPi = 3.14159265358979323846;
 constexpr uint32_t kSourceRate = 48000;
-constexpr uint32_t kCaptureHz = 450000000;
-constexpr uint32_t kRates[] = {1024000, 1536000, 2400000};
+constexpr uint32_t kChannelHz = 450000000;
+/* Every capture rate a quiet request can arrive at and the check admits (dsd_signal_quiet_rate_supported()): the RTL
+ * rate planner's 1.024, 1.152 and 1.536 Msps, an Airspy's 2.5, 3, 6 and 10 MS/s, and the common RTL-SDR rates a
+ * SoapySDR device may be given. */
+constexpr uint32_t kRates[] = {960000,  1024000, 1152000, 1200000, 1280000, 1440000, 1536000, 1600000,
+                               1800000, 1920000, 2048000, 2400000, 2500000, 3000000, 6000000, 10000000};
 constexpr uint32_t kSceneRate = 1536000;    /* neighbour, slope and broad-interferer scenes */
 constexpr double kNoiseSigma = 1e-3;        /* per component; keeps a +50 dB neighbour far below the clip level */
 constexpr double kMarginDb = 1.0;           /* active trials sit this far below each mode's reception threshold */
 constexpr int kBlockIn = 9600;              /* interpolation block at 48 kHz: 200 ms, its middle half kept */
-constexpr double kTrialSeconds = 0.125;     /* coloured-noise transform: longer than any nine sub-windows */
+constexpr double kTrialSeconds = 0.128;     /* coloured-noise transform: longer than any nine sub-windows */
 constexpr double kBurstGapSeconds = 0.0325; /* DMR MS: 60 ms frame less the 27.5 ms symbol transmission period */
 
 /* ------------------------------------------------------------------------------------------------ modes */
@@ -75,8 +83,9 @@ struct Mode {
 };
 
 /* Reception thresholds: 834/evidence/reception-final/thresholds.json "kept" (digital and the four analog widths it
- * holds) and 834/evidence/calibration/reception-analog (NFM 8 and 16 kHz, AM 5 and 10 kHz), the same tool and method.
- * X2-TDMA and ProVoice are unsourced: no check, so not calibrated. */
+ * holds), 834/evidence/calibration/reception-analog (NFM 8 and 16 kHz, AM 5 and 10 kHz) and
+ * 834/evidence/calibration/r1/reception-analog (NFM 11.25 and 20 kHz, AM 8 and 15 kHz), the same tool and method:
+ * every NFM and AM width the Radio sheet offers. X2-TDMA and ProVoice are unsourced: no check, so not calibrated. */
 const Mode kModes[] = {
     {"p25p1", "p25p1", 8.0, 12500, DSD_SIGNAL_QUIET_CLASS_12K5, false},
     {"p25p2", "p25p2_harmonized", 9.5, 12500, DSD_SIGNAL_QUIET_CLASS_12K5, false},
@@ -89,12 +98,16 @@ const Mode kModes[] = {
     {"dpmr", "dpmr", 8.0, 6250, DSD_SIGNAL_QUIET_CLASS_6K25, false},
     {"dstar", "dstar_bt0.5", 12.0, 6250, DSD_SIGNAL_QUIET_CLASS_6K25, false},
     {"nfm_8k", "nfm_8k", 10.5, 8000, DSD_SIGNAL_QUIET_CLASS_ANALOG, true},
+    {"nfm_11k25", "nfm_11k25_wide", 6.5, 11250, DSD_SIGNAL_QUIET_CLASS_ANALOG, true},
     {"nfm_12k5", "nfm_12k5", 9.5, 12500, DSD_SIGNAL_QUIET_CLASS_ANALOG, true},
     {"nfm_16k", "nfm_16k_wide", 6.0, 16000, DSD_SIGNAL_QUIET_CLASS_ANALOG, true},
+    {"nfm_20k", "nfm_20k_wide", 6.0, 20000, DSD_SIGNAL_QUIET_CLASS_ANALOG, true},
     {"nfm_25k", "nfm_25k", 6.0, 25000, DSD_SIGNAL_QUIET_CLASS_ANALOG, true},
     {"am_5k", "am_5k", 23.0, 5000, DSD_SIGNAL_QUIET_CLASS_ANALOG, true},
     {"am_6k", "am_6k", 22.5, 6000, DSD_SIGNAL_QUIET_CLASS_ANALOG, true},
+    {"am_8k", "am_8k", 21.5, 8000, DSD_SIGNAL_QUIET_CLASS_ANALOG, true},
     {"am_10k", "am_10k", 21.0, 10000, DSD_SIGNAL_QUIET_CLASS_ANALOG, true},
+    {"am_15k", "am_15k", 19.0, 15000, DSD_SIGNAL_QUIET_CLASS_ANALOG, true},
     {"am_20k", "am_20k", 18.0, 20000, DSD_SIGNAL_QUIET_CLASS_ANALOG, true},
 };
 constexpr const char* kNeighbourRow = "p25p1"; /* a C4FM transmitter on the adjacent channel */
@@ -236,8 +249,8 @@ struct AlignedBuffer {
  * The 48 kHz spectrum and so each band's power are kept; nothing appears above 24 kHz. */
 Placed
 place_source(const Source& s, uint32_t rate) {
-    const int ratio_num = (int)(rate / 16000), ratio_den = 3; /* rate / 48000 = ratio_num / ratio_den */
-    const int n_in = kBlockIn, n_out = kBlockIn * ratio_num / ratio_den, hop_in = n_in / 2, hop_out = n_out / 2;
+    const int n_in = kBlockIn, n_out = (int)((int64_t)kBlockIn * rate / kSourceRate), hop_in = n_in / 2;
+    const int hop_out = n_out / 2;
     const long long total_in = (long long)s.base.size();
     Placed p;
     p.x.assign((size_t)(total_in / hop_in) * (size_t)hop_out, cf(0, 0));
@@ -274,7 +287,7 @@ place_source(const Source& s, uint32_t rate) {
         while (j < s.on.size() && s.on[j]) {
             ++j;
         }
-        p.bursts.emplace_back((int64_t)i * ratio_num / ratio_den, (int64_t)j * ratio_num / ratio_den);
+        p.bursts.emplace_back((int64_t)i * rate / kSourceRate, (int64_t)j * rate / kSourceRate);
         i = j;
     }
     return p;
@@ -331,7 +344,7 @@ floor_shape(const Condition& c, double from_channel_hz) {
 
 double
 channel_hz(const Condition& c) {
-    return c.rate / 4.0 + c.grid_shift_hz;
+    return c.grid_shift_hz;
 }
 
 int
@@ -803,10 +816,14 @@ dsd_signal_quiet_request
 request_for(const Condition& c, long trial) {
     dsd_signal_quiet_request r{};
     r.request_id = (uint64_t)trial + 1;
+    /* The RTL tap's geometry: tuned Fs/4 above the channel, the ingest rotation moving the channel to the samples'
+     * 0 Hz (src/io/radio/rtl_sdr_fm.cpp demod_feed_signal_search()). */
     r.capture.rate_hz = c.rate;
-    r.capture.capture_hz = kCaptureHz;
+    r.capture.capture_hz = kChannelHz + c.rate / 4;
+    r.capture.rotation_hz = (int32_t)(c.rate / 4);
+    r.capture.capture_offset_hz = c.rate / 4;
     r.capture.generation = 1;
-    r.frequency_hz = kCaptureHz + (uint32_t)std::lround(channel_hz(c));
+    r.frequency_hz = kChannelHz + (uint32_t)c.grid_shift_hz;
     r.classes = c.classes;
     r.analog_width_hz = c.analog_width;
     return r;
@@ -845,7 +862,8 @@ judge(const Condition& c, long trial, dsd_signal_quiet_detector* d, const dsd_si
 
 /* ------------------------------------------------------------------------------------------------ runs */
 
-constexpr double kGuardOff = 1000; /* a guard no floor reaches: the raw ratios and rises */
+constexpr double kGuardOff = 1000;       /* a guard no floor reaches: the raw ratios and rises */
+constexpr float kInvalidBusyDb = 999.0f; /* a noise-only trial the guard voided, in the select quantiles */
 
 struct Options {
     std::string sources, phase, out, filter, dump;
@@ -975,13 +993,20 @@ write_row(FILE* f, const Condition& c, const Outcome& out, int e, const Options&
         invalid += t.valid ? 0 : 1;
         quiet += t.quiet;
     }
-    DSD_FPRINTF(f, "%s,%s,%s,%u,%s,%u,%d,%.2f,%d,%zu,%s,%.0f,%ld,", c.name.c_str(), c.group.c_str(), kind_text(c.kind),
+    DSD_FPRINTF(f, "%s,%s,%s,%u,%s,%u,%d,%.2f,%d,%zu,%s,%.2f,%ld,", c.name.c_str(), c.group.c_str(), kind_text(c.kind),
                 c.rate, class_text(c.classes), c.analog_width, c.grid_shift_hz, c.kind == ACTIVE ? c.snr_db : 0.0,
                 c.span, trials.size(), e == DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN ? "trimmed" : "lowest", o.guard,
                 invalid);
     const auto valid = [](const Verdict& t) { return t.valid != 0; };
     const auto done = [](const Verdict& t) { return t.done != 0; };
-    if (o.phase == "select") {
+    if (o.phase == "select" && c.kind != ACTIVE) {
+        /* noise only: an invalid (guarded) trial is busy, so it ranks above every ratio */
+        std::vector<Verdict> busy = trials;
+        for (Verdict& t : busy) {
+            t.ratio = t.valid ? t.ratio : kInvalidBusyDb;
+        }
+        print_quantiles(f, busy, false, done, {0, 0.001, 0.01, 0.05, 0.5, 0.95, 0.99, 1}, ',');
+    } else if (o.phase == "select") {
         print_quantiles(f, trials, false, valid, {0, 0.001, 0.01, 0.05, 0.5, 0.95, 0.99, 1}, ',');
     } else {
         /* busy: every verdict that is not quiet, an invalid (guarded) result included */
@@ -1130,16 +1155,32 @@ run_snr(const Options& o, const std::vector<Source>& sources, const std::vector<
     return 0;
 }
 
-/* The floor guard's capture-wide reference as the detector computes it, nine times (once per sub-window): the usable
- * bins' copies and their lower quartile. Returns the selected value so the work is not optimised away. */
+/* The floor guard's capture-wide reference as the detector computes it (wide_reference() in
+ * src/io/radio/signal_measure.cpp, the same bin selection over the request's geometry and the same quartile), nine
+ * times, once per sub-window. Returns the selected values' sum so the work is not optimised away. */
 double
-reference_work(const std::vector<double>& power, std::vector<double>& scratch) {
+reference_work(const Condition& c, const std::vector<double>& power, std::vector<double>& scratch) {
+    const dsd_signal_quiet_request r = request_for(c, 0);
+    const int n = (int)power.size();
+    const double rate = c.rate, bin_hz = rate / n;
+    const double dc_guard = std::max(bin_hz * 3, rate / 100.0);
+    const double channel = (double)r.frequency_hz - r.capture.capture_hz;
+    double widest = c.analog_width;
+    if (c.classes & DSD_SIGNAL_QUIET_CLASS_6K25) {
+        widest = std::max(widest, (double)DSD_SIGNAL_QUIET_CLASS_6K25_HZ);
+    }
+    if (c.classes & DSD_SIGNAL_QUIET_CLASS_12K5) {
+        widest = std::max(widest, (double)DSD_SIGNAL_QUIET_CLASS_12K5_HZ);
+    }
+    const double half_width = widest / 2;
     double sum = 0;
     for (int w = 0; w < DSD_SIGNAL_QUIET_WINDOWS; ++w) {
         size_t count = 0;
-        for (size_t k = 0; k < power.size(); ++k) {
-            if (k % 64 != 0) { /* stands for the DC, edge and channel exclusions */
-                scratch[count++] = power[k];
+        for (int m = -n / 2; m < n / 2; ++m) {
+            double delta = m * bin_hz - r.capture.rotation_hz;
+            delta -= rate * std::floor((delta + rate / 2) / rate);
+            if (std::abs(delta) > dc_guard && std::abs(delta) < rate * 0.45 && std::abs(delta - channel) > half_width) {
+                scratch[count++] = power[(size_t)((m + n) % n)];
             }
         }
         std::nth_element(scratch.begin(), scratch.begin() + (long)(count / 4), scratch.begin() + (long)count);
@@ -1192,7 +1233,7 @@ run_cost(const Options& o) {
             }
             start = dsd_realtime_mono_ns();
             for (long t = 0; t < o.trials; ++t) {
-                g_cost_sink = g_cost_sink + reference_work(power, scratch);
+                g_cost_sink = g_cost_sink + reference_work(c, power, scratch);
             }
             const double reference_us = (double)(dsd_realtime_mono_ns() - start) / 1000.0 / (double)o.trials;
             DSD_FPRINTF(f, "%u,%s,%u,%d,%.1f,%.1f\n", rate, class_text(q.classes), q.width, bins, request_us,
@@ -1238,7 +1279,7 @@ finish_options(Options* o) {
     }
     const bool phase_ok = o->phase == "select" || o->phase == "snr" || o->phase == "cost"
                           || (o->phase == "validate" && o->estimator >= 0);
-    return !o->sources.empty() && !o->out.empty() && phase_ok;
+    return (o->phase == "cost" || !o->sources.empty()) && !o->out.empty() && phase_ok;
 }
 
 bool
@@ -1267,10 +1308,13 @@ main(int argc, char** argv) {
     Options o;
     if (!parse_options(argc, argv, &o)) {
         DSD_FPRINTF(stderr,
-                    "usage: %s --sources DIR --phase select|validate|snr --out FILE [--trials N] [--jobs N] "
+                    "usage: %s --phase select|validate|snr|cost --out FILE [--sources DIR] [--trials N] [--jobs N] "
                     "[--threshold DB --estimator trimmed|lowest] [--guard DB] [--filter TEXT] [--dump FILE]\n",
                     argv[0]);
         return 2;
+    }
+    if (o.phase == "cost") {
+        return run_cost(o);
     }
     std::vector<Source> sources;
     if (!load_sources(o.sources, &sources)) {
@@ -1295,9 +1339,6 @@ main(int argc, char** argv) {
     DSD_FPRINTF(stderr, "%zu of %zu conditions, %ld trials each\n", chosen.size(), all.size(), o.trials);
     if (o.phase == "snr") {
         return run_snr(o, sources, all);
-    }
-    if (o.phase == "cost") {
-        return run_cost(o);
     }
     return run_trials(o, sources, all, chosen);
 }
