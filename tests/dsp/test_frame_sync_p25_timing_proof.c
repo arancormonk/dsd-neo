@@ -7,8 +7,9 @@
  * The frame sync's side of the P25 proof the CQPSK timing loop's post-lock gain follows
  * (dsd_rtl_stream_metrics_hook_forget_p25_proof()): every acquisition the frame sync starts over withdraws it (a tune's
  * or a scan step's modulation reset, an acquisition reset, a symbol profile change), and so does every move of the
- * decoder's modulation (a vote's switch, a P25p1 chain step, a TETRA profile's CQPSK). A sync on the chain the decoder
- * already runs withdraws nothing, so a carrier decoding P25 keeps its proof from frame to frame.
+ * decoder's modulation (a vote's switch, a P25p1 chain step, a TETRA profile's CQPSK), and every other protocol's sync
+ * the hunt accepts. A P25 sync on the chain the decoder already runs withdraws nothing, so a carrier decoding P25 keeps
+ * its proof from frame to frame.
  */
 
 #include <assert.h>
@@ -152,12 +153,66 @@ test_sync_on_the_running_chain_keeps_it(void) {
     teardown(&state);
 }
 
+/* Final review: another protocol's sync withdraws it, also when its accept moves neither the modulation nor the profile.
+   Under -fa -mq a continuous carrier that goes from a proven P25 control channel to X2-TDMA (also 4800/4 on the locked
+   CQPSK chain) kept the proof, and the locked X2-TDMA blocks ran the P25-only gain. So do DMR and NXDN96 there, which
+   the locked modulation keeps on CQPSK too. The P25p1 and P25p2 syncs keep it (test_sync_on_the_running_chain_keeps_it()
+   and below): a change between the phases is a profile step, which withdraws it (test_profile_change_withdraws()). */
+static void
+test_other_protocol_sync_withdraws(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    static const struct {
+        const char* window;
+        int frame;
+        int sync;
+    } k_syncs[] = {
+        {X2TDMA_BS_DATA_SYNC, 0, DSD_SYNC_X2TDMA_DATA_POS},
+        {DMR_BS_DATA_SYNC, 1, DSD_SYNC_DMR_BS_DATA_POS},
+        {"11111111111111" INV_NXDN_FSW, 2, DSD_SYNC_NXDN_NEG},
+    };
+
+    for (size_t i = 0; i < sizeof(k_syncs) / sizeof(k_syncs[0]); i++) {
+        setup(&opts, &state);
+        opts.mod_cli_lock = 1;
+        opts.mod_qpsk = 1;
+        opts.frame_x2tdma = k_syncs[i].frame == 0;
+        opts.frame_dmr = k_syncs[i].frame == 1;
+        opts.frame_nxdn96 = k_syncs[i].frame == 2;
+        state.symbol_clock = 1000U;
+        state.symbolcnt = 5000;
+        state.nxdn96_sync.lock_type = (uint8_t)DSD_SYNC_NXDN_NEG;
+        state.nxdn96_sync.lock_symbolcnt = 5000U - DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS;
+        assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P1_SYNC, 24) == DSD_SYNC_P25P1_POS);
+        proven();
+        state.symbol_clock = 2000U;
+        assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, k_syncs[i].window, 24) == k_syncs[i].sync);
+        assert(state.rf_mod == 1 && state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+        assert(withdrawn());
+        teardown(&state);
+    }
+
+    /* An exact P25p2 sync on the 6000/4 chain it already runs keeps a proof given there. */
+    setup(&opts, &state);
+    opts.frame_p25p1 = 0;
+    opts.frame_p25p2 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+    proven();
+    state.symbol_clock = 1000U;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P2_SYNC, 20) == DSD_SYNC_P25P2_POS);
+    assert(state.rf_mod == 1);
+    assert(g_proof_calls == 0);
+    teardown(&state);
+}
+
 int
 main(void) {
     test_acquisition_restarts_withdraw();
     test_profile_change_withdraws();
     test_modulation_moves_withdraw();
     test_sync_on_the_running_chain_keeps_it();
+    test_other_protocol_sync_withdraws();
     DSD_FPRINTF(stderr, "FRAME_SYNC_P25_TIMING_PROOF: OK\n");
     return 0;
 }

@@ -2506,6 +2506,13 @@ frame_sync_try_protocol_matches_inner(frame_sync_match_ctx* ctx) {
         if (sync_type != DSD_SYNC_NONE) {
             frame_sync_p25p1_anchor_note_accept(ctx->state, sync_type);
             frame_sync_p25p2_anchor_note_accept(ctx->state, sync_type);
+            /* Another protocol took the hunt: the P25 proof is not its own, also where the accept moved neither the
+               modulation nor the profile (X2-TDMA on a P25 control channel's 4800/4 CQPSK chain under -fa -mq). A P25
+               sync keeps it: on the CQPSK chain Phase 1 and Phase 2 run on profiles of their own, and the step between
+               them withdraws it (frame_sync_apply_sps_hunt_profile()). */
+            if (!DSD_SYNC_IS_P25(sync_type)) {
+                dsd_rtl_stream_metrics_hook_forget_p25_proof();
+            }
             return sync_type;
         }
     }

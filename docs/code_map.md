@@ -3452,6 +3452,10 @@ suite runs under this compiler.
       reset of a scan row or target, an input boundary or a decode-mode command, the frame sync's symbol profile change.
     - Every move of `rf_mod` in the frame sync (`frame_sync_move_rf_mod()`): a vote's switch, a P25p1 chain step or
       CQPSK probe, a P25p2 or DMR accept, the TETRA profile.
+    - Every sync the hunt accepts for another protocol (`frame_sync_try_protocol_matches_inner()`), also when the
+      accept moves neither `rf_mod` nor the profile: X2-TDMA, DMR or NXDN96 taking a proven P25 carrier's 4800/4
+      CQPSK chain under `-fa -mq`. A P25p1 or P25p2 sync keeps it; on the CQPSK chain the two phases run on profiles of
+      their own (4800/4, 6000/4), so a change between them is the profile step, which withdraws it.
     - Every chain change made outside it (`dsd_frame_sync_note_chain_change()`), a change that restates the chain
       keeping it: `rf_mod`, `sps_hunt_idx` and the CQPSK state the RTL front end was last asked for
       (`rtl_stream_requested_cqpsk()`) compared across each command in `apply_cmd()` (the modulation controls, the DSP
