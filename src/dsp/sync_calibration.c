@@ -12,9 +12,11 @@
  */
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/symbol_levels.h>
 #include <dsd-neo/dsp/sync_calibration.h>
+#include <dsd-neo/platform/fp_opaque.h>
 #include <dsd-neo/runtime/config.h>
 #include <math.h>
 #include <stdint.h>
@@ -246,8 +248,19 @@ dsd_sync_warm_start_thresholds_outer_only(const dsd_opts* opts, dsd_state* state
     return DSD_WARM_START_OK;
 }
 
+/* Whether a value the fit computed is finite, in a form the release builds' fast-math cannot fold away: through a
+   volatile round trip (fp_opaque.h), then a test of the exponent bits as an integer. Once per sync. */
+static int
+dsd_sync_fit_value_is_finite(double value) {
+    const double opaque = dsd_fp_opaque_d(value);
+    uint64_t bits = 0;
+    DSD_MEMCPY(&bits, &opaque, sizeof(bits));
+    return (bits & 0x7FF0000000000000ULL) != 0x7FF0000000000000ULL;
+}
+
 /* The outer levels of the last @p sync_len symbols, fitted by least squares to the word's own levels (symbol = centre +
-   gain * level). Returns -1 for a character outside '0'..'3' or a word of a single level, which places no gain. */
+   gain * level). Returns -1 for a character outside '0'..'3', a word of a single level, which places no gain, or a fit
+   that is not finite (an Inf or NaN among the symbols: a float symbol replay passes what the file holds). */
 static int
 dsd_sync_fit_outer_levels(const dsd_state* state, const char* sync_dibits, int sync_len, float* mean_neg,
                           float* mean_pos) {
@@ -275,6 +288,9 @@ dsd_sync_fit_outer_levels(const dsd_state* state, const char* sync_dibits, int s
     }
     const double gain = ((n * sum_xy) - (sum_x * sum_y)) / spread;
     const double centre = (sum_y - (gain * sum_x)) / n;
+    if (!dsd_sync_fit_value_is_finite(gain) || !dsd_sync_fit_value_is_finite(centre)) {
+        return -1;
+    }
     *mean_pos = (float)(centre + (3.0 * gain));
     *mean_neg = (float)(centre - (3.0 * gain));
     return 0;
@@ -302,7 +318,7 @@ dsd_sync_warm_start_thresholds_from_dibits(const dsd_opts* opts, dsd_state* stat
         return DSD_WARM_START_DEGENERATE;
     }
     /* The word gives the polarity, so outer levels the wrong way round are no fit either. */
-    if (mean_pos - mean_neg < DSD_WARM_START_MIN_SPAN) {
+    if (!(mean_pos - mean_neg >= DSD_WARM_START_MIN_SPAN)) {
         return DSD_WARM_START_DEGENERATE;
     }
 

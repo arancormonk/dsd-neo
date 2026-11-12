@@ -310,6 +310,9 @@ dmr_ms_prime_next_payload(dsd_opts* opts, dsd_state* state) {
     skipDibit(opts, state, 144); // should we have two of these?
     for (int i = 0; i < 66; i++) {
         if (i == 65) {
+            /* Every exit from dmrMS() lands here, a polarity flip or a cut burst's break too. Arming is harmless on
+               all of them: the recording is named only by a burst the hunt accepts next as MS, and one that sees no
+               such sync lapses after 64 symbols, taking any hold with it. */
             dsd_symbol_arm_hunt_sync_anchor(state);
         }
         state->dmr_stereo_payload[i] = dmr_ms_read_dibit(opts, state, 1);

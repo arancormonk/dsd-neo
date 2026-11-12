@@ -5955,9 +5955,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`nxdn_frame()` after its 174 dibits, `processYSF()` after its payload, `dmr_ms_prime_next_payload()` and the end of
   `dmrMSData()` a dibit ahead of the next burst's sync), `dsd_symbol_arm_hunt_sync_anchor()` arms the recording and,
   once a measured word has placed the grid (`placed`, set by a measurement, cleared by a lapse, a measurement that
-  cannot place the word, and a reset), holds the grid for it: `symbol_process_live_samples()` takes no crossing slip
-  while such a recording runs (`dsd_symbol_anchor_holds_grid()`), so the word is read and measured on the grid the
-  frame left and the measurement corrects that grid alone, as on a DMR BS call. The first frame after acquisition, and
+  cannot place the word, a word named with no recording armed (read on a grid the hunt timed) and a reset), holds the
+  grid for it: `symbol_process_live_samples()` takes no crossing slip while such a recording runs
+  (`dsd_symbol_anchor_holds_grid()`), so the word is read and measured on the grid the frame left and the measurement
+  corrects that grid alone, as on a DMR BS call. The hold belongs to the protocol whose frame armed it (NXDN, YSF or
+  DMR, from `lastsynctype` at the arm): once `lastsynctype` names any other (the hunt accepted another protocol's sync,
+  P25's included, or noCarrier forgot the last), it ends for the rest of the recording, so no other protocol's frame
+  is read on a held grid. The first frame after acquisition, and
   any grid no word placed, stay the crossing loop's: held at the acquisition's phase, a YSF frame sync read inner
   symbols at the wrong sign and was missed. The decoder names the word the hunt accepted at its frame's entry: NXDN
   the FSW from its second symbol and YSF the frame sync from its second (the recording starts on the word's first

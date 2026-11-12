@@ -736,6 +736,22 @@ test_warm_start_from_dibits_refuses(void) {
     check_int("span under the floor", DSD_WARM_START_DEGENERATE,
               dsd_sync_warm_start_thresholds_from_dibits(&opts, &state, NXDN_FSW_DIBITS, 10));
 
+    /* A NaN or an infinity among the symbols (a float symbol replay passes what the file holds) fits nothing, and the
+       thresholds stay as they were. */
+    const float bad_values[2] = {NAN, INFINITY};
+    for (int b = 0; b < 2; b++) {
+        DSD_MEMSET(&state, 0, sizeof(state));
+        attach_history_fixture(&state, history, 64);
+        push_word_levels(&state, NXDN_FSW_DIBITS, 1000.0f, 0.0f);
+        history[(state.symbol_history_head + 63) % 64] = bad_values[b]; /* the word's last symbol */
+        state.max = 7.0f;
+        state.min = -7.0f;
+        check_int(b == 0 ? "NaN symbol" : "infinite symbol", DSD_WARM_START_DEGENERATE,
+                  dsd_sync_warm_start_thresholds_from_dibits(&opts, &state, NXDN_FSW_DIBITS, 10));
+        check_float("max untouched by a non-finite symbol", 7.0f, state.max, FLOAT_TOL);
+        check_float("min untouched by a non-finite symbol", -7.0f, state.min, FLOAT_TOL);
+    }
+
     printf("test_warm_start_from_dibits_refuses: passed\n\n");
 }
 

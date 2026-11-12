@@ -15,6 +15,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/symbol_anchor.h>
 #include <dsd-neo/dsp/symbol_timing_debug.h>
 #include "dsd-neo/core/state_fwd.h"
@@ -45,6 +46,7 @@ struct dsd_symbol_anchor {
     int armed_symbols; /* symbols recorded since it was armed */
     int holds_grid;    /* the hunt reads the word: its crossing loop keeps off the grid while recording */
     int placed;        /* the last recording measured its word: the grid is where a sync word put it */
+    int hold_family;   /* the protocol whose frame armed the hold (anchor_sync_family()); 0 none */
 };
 
 /* Symbols an armed anchor records before giving up on a sync word that was not named: a DMR burst's sync field ends
@@ -201,6 +203,7 @@ dsd_symbol_anchor_reset(dsd_state* state) {
     anchor->armed = 0;
     anchor->holds_grid = 0;
     anchor->placed = 0;
+    anchor->hold_family = 0;
 }
 
 int
@@ -213,9 +216,33 @@ dsd_symbol_anchor_recording(const dsd_symbol_anchor* anchor) {
     return anchor != NULL && anchor->armed != 0;
 }
 
+/* The protocols whose frames arm a hunt-read recording, one family each (DMR BS and MS one); 0 for every other. */
+static int
+anchor_sync_family(int synctype) {
+    if (DSD_SYNC_IS_NXDN(synctype)) {
+        return 1;
+    }
+    if (DSD_SYNC_IS_YSF(synctype)) {
+        return 2;
+    }
+    if (DSD_SYNC_IS_DMR(synctype)) {
+        return 3;
+    }
+    return 0;
+}
+
 int
-dsd_symbol_anchor_holds_grid(const dsd_symbol_anchor* anchor) {
-    return dsd_symbol_anchor_recording(anchor) && anchor->holds_grid != 0;
+dsd_symbol_anchor_holds_grid(dsd_symbol_anchor* anchor, int lastsynctype) {
+    if (!dsd_symbol_anchor_recording(anchor) || anchor->holds_grid == 0) {
+        return 0;
+    }
+    /* The hunt accepted another protocol's sync (or noCarrier forgot the last one): the grid is that frame's to time,
+       P25's included, and the hold ends there for the rest of the recording. */
+    if (anchor_sync_family(lastsynctype) != anchor->hold_family) {
+        anchor->holds_grid = 0;
+        return 0;
+    }
+    return 1;
 }
 
 void
@@ -315,6 +342,7 @@ anchor_measure_pending(dsd_symbol_anchor* anchor) {
     const uint64_t margin = (uint64_t)anchor->samples_per_symbol;
     if (anchor->symbol_total < (uint64_t)anchor->sync_count + 1U) {
         anchor->sync_pending = 0;
+        anchor->placed = 0;
         return;
     }
     int slip = 0;
@@ -398,7 +426,8 @@ dsd_symbol_arm_hunt_sync_anchor(dsd_state* state) {
         /* Only a grid a measured word placed is worth holding: the hunt's acquisition left the first frame wherever
            the crossings put it, which can be far enough off to miss the next word's signs, and the crossing loop is
            what brings that one in. */
-        anchor->holds_grid = anchor->placed;
+        anchor->hold_family = anchor_sync_family(state->lastsynctype);
+        anchor->holds_grid = anchor->placed && anchor->hold_family != 0;
     }
 }
 
@@ -438,7 +467,12 @@ dsd_symbol_note_sync_anchor(const dsd_state* state, const char* sync_dibits, int
     }
     /* Only a recording armed ahead of the sync word holds its samples. */
     dsd_symbol_anchor* anchor = DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR);
-    if (anchor == NULL || !anchor->armed || anchor->symbol_total < (uint64_t)count) {
+    if (anchor == NULL) {
+        return;
+    }
+    if (!anchor->armed || anchor->symbol_total < (uint64_t)count) {
+        /* The word was read on a grid the hunt timed, not on one a measured word placed. */
+        anchor->placed = 0;
         return;
     }
     DSD_MEMCPY(anchor->sync, sync_dibits, (size_t)count);

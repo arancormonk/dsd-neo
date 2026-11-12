@@ -11,6 +11,7 @@
 #include <assert.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/symbol_anchor.h>
 #include <math.h>
 #include <stdint.h>
@@ -366,48 +367,111 @@ test_hunt_recording_holds_only_a_placed_grid(void) {
     DSD_MEMSET(flat, 0, sizeof(flat));
     dsd_state* state = calloc(1, sizeof(*state));
     assert(state != NULL);
+    state->lastsynctype = DSD_SYNC_DMR_MS_VOICE; /* an MS burst arms the holds below */
 
     dsd_symbol_arm_hunt_sync_anchor(state);
     dsd_symbol_anchor* anchor = DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR);
     assert(anchor != NULL);
     assert(dsd_symbol_anchor_recording(anchor));
-    assert(!dsd_symbol_anchor_holds_grid(anchor)); /* nothing has placed the grid yet */
+    assert(!dsd_symbol_anchor_holds_grid(anchor, state->lastsynctype)); /* nothing has placed the grid yet */
     (void)feed_symbols(state, samples, 0, 8 + SYNC_LEN + 1, 1);
     assert(!dsd_symbol_anchor_recording(anchor)); /* measured */
-    assert(!dsd_symbol_anchor_holds_grid(anchor));
+    assert(!dsd_symbol_anchor_holds_grid(anchor, state->lastsynctype));
 
     dsd_symbol_arm_hunt_sync_anchor(state);
-    assert(dsd_symbol_anchor_holds_grid(anchor)); /* the word placed it */
-    dsd_symbol_hold_sync_anchor(state);           /* an M17 preamble's run is the hunt's to time */
+    assert(dsd_symbol_anchor_holds_grid(anchor, state->lastsynctype)); /* the word placed it */
+    dsd_symbol_hold_sync_anchor(state);                                /* an M17 preamble's run is the hunt's to time */
     assert(dsd_symbol_anchor_recording(anchor));
-    assert(!dsd_symbol_anchor_holds_grid(anchor));
+    assert(!dsd_symbol_anchor_holds_grid(anchor, state->lastsynctype));
 
     dsd_symbol_arm_hunt_sync_anchor(state);
-    assert(dsd_symbol_anchor_holds_grid(anchor));
+    assert(dsd_symbol_anchor_holds_grid(anchor, state->lastsynctype));
     (void)feed_symbols(state, samples, 0, 65, 0); /* no word came: the recording lapses */
     assert(!dsd_symbol_anchor_recording(anchor));
     dsd_symbol_arm_hunt_sync_anchor(state);
-    assert(!dsd_symbol_anchor_holds_grid(anchor));
+    assert(!dsd_symbol_anchor_holds_grid(anchor, state->lastsynctype));
 
     (void)feed_symbols(state, samples, 0, 8 + SYNC_LEN + 1, 1); /* placed again */
     dsd_symbol_arm_hunt_sync_anchor(state);
-    assert(dsd_symbol_anchor_holds_grid(anchor));
+    assert(dsd_symbol_anchor_holds_grid(anchor, state->lastsynctype));
     (void)feed_symbols(state, flat, 0, 8 + SYNC_LEN + 1, 1); /* a word the trace cannot place */
     dsd_symbol_arm_hunt_sync_anchor(state);
-    assert(!dsd_symbol_anchor_holds_grid(anchor));
+    assert(!dsd_symbol_anchor_holds_grid(anchor, state->lastsynctype));
 
     dsd_symbol_arm_sync_anchor(state);
     (void)feed_symbols(state, samples, 0, 8 + SYNC_LEN + 1, 1);
     dsd_symbol_arm_sync_anchor(state); /* a frame's own recording (DMR BS) never holds */
-    assert(!dsd_symbol_anchor_holds_grid(anchor));
+    assert(!dsd_symbol_anchor_holds_grid(anchor, state->lastsynctype));
     dsd_symbol_arm_hunt_sync_anchor(state);
-    assert(dsd_symbol_anchor_holds_grid(anchor));
+    assert(dsd_symbol_anchor_holds_grid(anchor, state->lastsynctype));
     dsd_symbol_anchor_reset(state); /* the stream ended */
     dsd_symbol_arm_hunt_sync_anchor(state);
-    assert(!dsd_symbol_anchor_holds_grid(anchor));
+    assert(!dsd_symbol_anchor_holds_grid(anchor, state->lastsynctype));
 
     dsd_state_ext_free_all(state);
     free(state);
+}
+
+/* A word accepted with no recording armed was read on a grid the hunt timed: a frame whose LICH or FICH was refused
+   armed nothing, the hunt's crossing loop moved the grid, and the next frame's word lands unrecorded. The grid is no
+   longer where a measured word put it, so the next hunt-read recording does not hold it (issue #834). */
+static void
+test_unrecorded_word_unplaces_the_grid(void) {
+    static float samples[N_SYMBOLS * SPS];
+    int centres[N_SYMBOLS];
+    char dibits[N_SYMBOLS];
+    make_signal(0.0, 1.0, 0.0, samples, centres, dibits);
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
+    state->lastsynctype = DSD_SYNC_NXDN_POS;
+
+    dsd_symbol_arm_hunt_sync_anchor(state);
+    dsd_symbol_anchor* anchor = feed_symbols(state, samples, 0, 8 + SYNC_LEN + 1, 1); /* measured: placed */
+    assert(!dsd_symbol_anchor_recording(anchor));
+    dsd_symbol_note_sync_anchor(state, k_sync, SYNC_LEN); /* the next frame's word, with nothing armed */
+    dsd_symbol_arm_hunt_sync_anchor(state);
+    assert(dsd_symbol_anchor_recording(anchor));
+    assert(!dsd_symbol_anchor_holds_grid(anchor, state->lastsynctype));
+
+    /* The control: the same sequence with the word recorded holds. */
+    (void)feed_symbols(state, samples, 0, 8 + SYNC_LEN + 1, 1);
+    dsd_symbol_arm_hunt_sync_anchor(state);
+    assert(dsd_symbol_anchor_holds_grid(anchor, state->lastsynctype));
+
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+/* A hold belongs to the protocol whose frame armed it. Once the hunt accepts another protocol's sync (lastsynctype
+   names it), P25's included, the hold ends for the rest of the recording, so that frame is read on the grid the hunt
+   times; a recording armed after any other protocol's frame never holds (issue #834). */
+static void
+test_hold_ends_at_another_protocols_sync(void) {
+    static float samples[N_SYMBOLS * SPS];
+    int centres[N_SYMBOLS];
+    char dibits[N_SYMBOLS];
+    make_signal(0.0, 1.0, 0.0, samples, centres, dibits);
+    static const int k_others[] = {DSD_SYNC_P25P1_POS,        DSD_SYNC_P25P2_POS,   DSD_SYNC_YSF_POS,
+                                   DSD_SYNC_DMR_BS_VOICE_POS, DSD_SYNC_M17_LSF_POS, DSD_SYNC_NONE};
+    for (size_t o = 0; o < sizeof(k_others) / sizeof(k_others[0]); o++) {
+        dsd_state* state = calloc(1, sizeof(*state));
+        assert(state != NULL);
+        state->lastsynctype = DSD_SYNC_NXDN_NEG;
+        dsd_symbol_arm_sync_anchor(state);
+        dsd_symbol_anchor* anchor = feed_symbols(state, samples, 0, 8 + SYNC_LEN + 1, 1); /* placed */
+        dsd_symbol_arm_hunt_sync_anchor(state);
+        assert(dsd_symbol_anchor_holds_grid(anchor, DSD_SYNC_NXDN_POS)); /* the same protocol, either polarity */
+        assert(!dsd_symbol_anchor_holds_grid(anchor, k_others[o]));
+        assert(!dsd_symbol_anchor_holds_grid(anchor, DSD_SYNC_NXDN_NEG)); /* released for good */
+        assert(dsd_symbol_anchor_recording(anchor));
+
+        (void)feed_symbols(state, samples, 0, 8 + SYNC_LEN + 1, 1); /* placed again */
+        state->lastsynctype = DSD_SYNC_P25P1_POS;                   /* a P25 frame ends where the arm runs */
+        dsd_symbol_arm_hunt_sync_anchor(state);
+        assert(!dsd_symbol_anchor_holds_grid(anchor, DSD_SYNC_P25P1_POS));
+        dsd_state_ext_free_all(state);
+        free(state);
+    }
 }
 
 int
@@ -422,6 +486,8 @@ main(void) {
     test_switch_without_a_named_word_moves_nothing();
     test_words_with_inner_symbols_measure();
     test_hunt_recording_holds_only_a_placed_grid();
+    test_unrecorded_word_unplaces_the_grid();
+    test_hold_ends_at_another_protocols_sync();
     printf("symbol anchor: OK\n");
     return 0;
 }

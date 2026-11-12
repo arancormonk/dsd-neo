@@ -3391,7 +3391,7 @@ symbol_anchor_begin(dsd_state* state, symbol_work_ctx* work) {
             state->jitter = -1;
         }
         work->anchor = dsd_symbol_anchor_recording(anchor) ? anchor : NULL;
-        work->anchor_holds_grid = dsd_symbol_anchor_holds_grid(anchor);
+        work->anchor_holds_grid = dsd_symbol_anchor_holds_grid(anchor, state->lastsynctype);
         if (!dsd_symbol_anchor_hot(anchor)) {
             state->symbol_anchor_hot = 0U;
         }

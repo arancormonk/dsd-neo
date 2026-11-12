@@ -170,7 +170,6 @@ dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, ch
 }
 
 void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_symbol_arm_hunt_sync_anchor(dsd_state* state) {
     (void)state;
     if (g_hunt_arm_calls < (int)(sizeof(g_hunt_arm_at) / sizeof(g_hunt_arm_at[0]))) {
@@ -180,7 +179,6 @@ dsd_symbol_arm_hunt_sync_anchor(dsd_state* state) {
 }
 
 void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_symbol_note_sync_anchor(const dsd_state* state, const char* sync_dibits, int count) {
     (void)state;
     assert(count > 0 && count <= DSD_SYMBOL_ANCHOR_MAX_SYMS);

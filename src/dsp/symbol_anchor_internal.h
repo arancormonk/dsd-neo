@@ -40,8 +40,9 @@ int dsd_symbol_anchor_hot(const dsd_symbol_anchor* anchor);
 int dsd_symbol_anchor_recording(const dsd_symbol_anchor* anchor);
 
 /** Whether the anchor is recording for a word the hunt reads (dsd_symbol_arm_hunt_sync_anchor()): the grid then takes
-    no crossing slip, as inside a frame. */
-int dsd_symbol_anchor_holds_grid(const dsd_symbol_anchor* anchor);
+    no crossing slip, as inside a frame. A @p lastsynctype of another protocol than the one whose frame armed the hold
+    (the hunt accepted its sync, or noCarrier forgot the last) ends the hold for the rest of the recording. */
+int dsd_symbol_anchor_holds_grid(dsd_symbol_anchor* anchor, int lastsynctype);
 
 /** One post-filter sample the grid consumed; @p is_centre marks the sample it took as the symbol's centre. */
 void dsd_symbol_anchor_push_sample(dsd_symbol_anchor* anchor, float sample, int is_centre);
