@@ -12,7 +12,7 @@
  * rebuild sends: moves rather than resets without a screen reader, positional rows with one (renamed in place, held
  * past the end, never reset, moved or removed), held background reorders, and one coalesced rebuild per turn.
  *
- * B1, B2 and B13 lived in HomeScreen.qml's bindings, which read the lead row (`card.lastHeard`, `card.freqMhz`) and
+ * The card's last-heard time, frequency and key-configured flag used to be read in HomeScreen.qml's bindings, which read the lead row (`card.lastHeard`, `card.freqMhz`) and
  * only `encKeyType`/`keyCsvPath`. Each of those cases first reads what that binding read from the same rows, to show
  * the old value, then asserts the card's.
  */
@@ -330,7 +330,7 @@ test_one_card_per_group() {
           f.at(0, SavedSystemCards::PlayUidRole).toString().isEmpty());
 }
 
-/* B1: HomeScreen's card read `lastHeard` from its delegate's row, the lead, so listening on any other site of the
+/* HomeScreen's card read `lastHeard` from its delegate's row, the lead, so listening on any other site of the
    group never moved "Last listened". */
 void
 test_b1_group_last_heard() {
@@ -341,14 +341,13 @@ test_b1_group_last_heard() {
     settle();
     const qint64 heard = f.systems->get(1).value(QStringLiteral("lastHeard")).toLongLong();
     const qint64 homeShowed = f.systems->data(f.systems->index(0), SavedSystemsModel::LastHeardRole).toLongLong();
-    DSD_FPRINTF(stderr, "B1: HomeScreen's card read the lead's lastHeard=%lld; the site listened has %lld\n",
+    DSD_FPRINTF(stderr, "HomeScreen's card read the lead's lastHeard=%lld; the site listened has %lld\n",
                 static_cast<long long>(homeShowed), static_cast<long long>(heard));
     check("the old binding read the lead's never-listened stamp", homeShowed == 0 && heard > 0);
-    check("B1: the card's lastHeard is the group's latest",
-          f.at(0, SavedSystemCards::LastHeardRole).toLongLong() == heard);
+    check("the card's lastHeard is the group's latest", f.at(0, SavedSystemCards::LastHeardRole).toLongLong() == heard);
 }
 
-/* B2: with the lead avoided, Play started the other site while the card still printed the lead's frequency. */
+/* With the lead avoided, Play started the other site while the card still printed the lead's frequency. */
 void
 test_b2_display_row() {
     Fixture f;
@@ -357,13 +356,13 @@ test_b2_display_row() {
     check("avoid the lead", f.systems->setAvoidSite(0, true));
     settle();
     const QString homeShowed = f.systems->get(0).value(QStringLiteral("freqMhz")).toString();
-    DSD_FPRINTF(stderr, "B2: HomeScreen's card printed the lead's freqMhz=%s; Play starts the site at 852.5000\n",
+    DSD_FPRINTF(stderr, "HomeScreen's card printed the lead's freqMhz=%s; Play starts the site at 852.5000\n",
                 qPrintable(homeShowed));
     check("the old binding read the avoided lead's frequency", homeShowed == QStringLiteral("851.0125"));
-    check("B2: the card's frequency is the site Play starts",
+    check("the card's frequency is the site Play starts",
           f.at(0, SavedSystemCards::FreqMhzRole).toString() == QStringLiteral("852.5000"));
-    check("B2: Play starts that site", f.at(0, SavedSystemCards::PlayUidRole) == f.uidOf(1));
-    check("B2: the card's name is that site's", f.at(0, SavedSystemCards::NameRole) == QStringLiteral("Metro — South"));
+    check("Play starts that site", f.at(0, SavedSystemCards::PlayUidRole) == f.uidOf(1));
+    check("the card's name is that site's", f.at(0, SavedSystemCards::NameRole) == QStringLiteral("Metro — South"));
     check("the lead is still the lead", f.at(0, SavedSystemCards::LeadUidRole) == f.uidOf(0));
     check("the title stays the group's", f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("Metro"));
     check("avoid both: no single site to play", f.systems->setAvoidSite(1, true));
@@ -373,7 +372,7 @@ test_b2_display_row() {
               && f.at(0, SavedSystemCards::FreqMhzRole) == QStringLiteral("851.0125"));
 }
 
-/* B13: picking a decryption profile clears encKeyType and keyCsvPath, which were all HomeScreen checked. */
+/* Picking a decryption profile clears encKeyType and keyCsvPath, which were all HomeScreen checked. */
 void
 test_b13_profile_key_configured() {
     Fixture f;
@@ -385,9 +384,9 @@ test_b13_profile_key_configured() {
     const QVariantMap stored = f.systems->get(0);
     const bool homeShowed = !stored.value(QStringLiteral("encKeyType")).toString().isEmpty()
                             || !stored.value(QStringLiteral("keyCsvPath")).toString().isEmpty();
-    DSD_FPRINTF(stderr, "B13: HomeScreen's key check for a profile-only row read %s\n", homeShowed ? "true" : "false");
+    DSD_FPRINTF(stderr, "HomeScreen's key check for a profile-only row read %s\n", homeShowed ? "true" : "false");
     check("the old binding missed the profile", !homeShowed);
-    check("B13: a profile-only system has a key configured", f.at(0, SavedSystemCards::KeyConfiguredRole).toBool());
+    check("a profile-only system has a key configured", f.at(0, SavedSystemCards::KeyConfiguredRole).toBool());
     check("a key file is a key configured", f.at(1, SavedSystemCards::KeyConfiguredRole).toBool());
     check("no key, no profile: none configured", !f.at(2, SavedSystemCards::KeyConfiguredRole).toBool());
 }
@@ -711,7 +710,7 @@ test_sort_signals() {
               && !f.at(11, SavedSystemCards::HeldRole).toBool());
 }
 
-/* R28: with a screen reader the rows are positional. A filter keeps the rows past its cards, held (each keeps the card
+/* With a screen reader the rows are positional. A filter keeps the rows past its cards, held (each keeps the card
    it last showed and says it is held), and a longer list takes them back before a row is added; rows are added only
    past the most there ever were. rowForKey() never finds a held row. With the screen reader off the held rows go and
    the rows follow their cards again. */
@@ -779,7 +778,7 @@ test_positional_rows() {
           recorder.removes > 0 && f.cards->rowCount() == 1 && recorder.followed());
 }
 
-/* R29: one system saved on two receivers is two cards with one title; each then names its receiver (the dongle, an
+/* One system saved on two receivers is two cards with one title; each then names its receiver (the dongle, an
    RTL-TCP server's address, an Airspy's serial), and a card whose title no other shown card has names none. A
    TCP or UDP source's meta already says its address, so it names none either. */
 void
@@ -856,7 +855,7 @@ test_metadata_edit_and_hold() {
           recorder.inPlace() && recorder.followed() && f.at(0, SavedSystemCards::TitleRole) == QStringLiteral("A"));
 }
 
-/* R24: a held order (screen reader, background reorder) never starts a section twice. Xray moves from Iowa to Missouri
+/* A held order (screen reader, background reorder) never starts a section twice. Xray moves from Iowa to Missouri
    and is held where it was; Alpha, new in Kansas, goes first (it has no card before it in the new order), so Kansas
    shows above and below Missouri: only its first card starts the section. */
 void
@@ -967,7 +966,7 @@ add_distance_rows(Fixture& f) {
                       -93.6)});
 }
 
-/* R15: only the fix the user asked for is a user-asked change. */
+/* Only the fix the user asked for is a user-asked change. */
 void
 test_location_request_mark() {
     Fixture f;
@@ -1066,7 +1065,7 @@ test_lapsed_fix_is_dropped_at_the_next_rebuild() {
     check("no card keeps a distance from it", !measured);
 }
 
-/* R17: a location request that ends without a fix (failed, cancelled, superseded) gives its mark back, so a later
+/* A location request that ends without a fix (failed, cancelled, superseded) gives its mark back, so a later
    fix nobody asked for here is a background change, held on screen. */
 void
 test_location_request_cleared() {

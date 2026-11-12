@@ -166,7 +166,7 @@ wire_decryption_profiles(QQmlApplicationEngine& engine, DecoderHost* host, Saved
     return decryptionProfiles;
 }
 
-// B11: a library file replaced with the user's own bytes no longer describes the RadioReference site the saved
+// A library file replaced with the user's own bytes no longer describes the RadioReference site the saved
 // systems naming it came from; they let go of that before the bytes are installed.
 static void
 wire_library_replace(ImportedFilesModel* files, SavedSystemsModel* systems) {

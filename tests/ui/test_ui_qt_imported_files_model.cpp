@@ -1264,7 +1264,7 @@ test_failed_update_leaves_the_file(bool viaRefresh) {
     model.remove(model.rowForPath(path));
 }
 
-/* B11: a RadioReference library file updated with the user's own bytes no longer describes the site the saved systems
+/* A RadioReference library file updated with the user's own bytes no longer describes the site the saved systems
  * naming it came from. They let go of it first, as a removal clears references before the file goes: when that save
  * fails the update is refused (`save`) with the file and the rows as they were; when the install fails after it, the
  * rows stay cleared over the file's old bytes. A RadioReference refresh keeps them, and so does an update of a file that

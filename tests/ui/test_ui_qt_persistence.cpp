@@ -2053,7 +2053,7 @@ test_place_malformed_dropped() {
 }
 
 /* An edit of the tuning or a CSV field no longer describes the imported site: its group, avoid, site name, position
- * and place all go, in memory and on disk (B11). A conventional multi-repeater row has a place and no ids; it loses
+ * and place all go, in memory and on disk. A conventional multi-repeater row has a place and no ids; it loses
  * the place the same way. */
 void
 test_update_clears_geography() {
@@ -2088,7 +2088,7 @@ test_update_clears_geography() {
 }
 
 /* An edit-mode re-import changes a CSV path and carries the import's own provenance: that fresh identity, position and
- * place are kept, never cleared with the stale ones (B11: update() used to zero rrSid/rrSiteId whatever came in). The
+ * place are kept, never cleared with the stale ones (update() used to zero rrSid/rrSiteId whatever came in). The
  * old avoid still goes. */
 void
 test_update_keeps_fresh_import() {
@@ -2173,7 +2173,7 @@ test_update_renames_generated_name() {
     empty_systems(model);
 }
 
-/* Clearing a removed file's references signals once for all the rows it changed (B14: one dataChanged per row, each
+/* Clearing a removed file's references signals once for all the rows it changed (one dataChanged per row, each
  * re-running every pin's bookkeeping), and takes their geography with their group. */
 void
 test_clear_csv_path_one_signal() {
@@ -2250,7 +2250,7 @@ test_load_drops_orphan_position() {
 }
 
 /* Replacing a library file with the user's own bytes clears the provenance and geography of the rows naming it, and
- * keeps the path (B11). Saved first: a failure leaves every row as it was and signals nothing. */
+ * keeps the path. Saved first: a failure leaves every row as it was and signals nothing. */
 void
 test_invalidate_path_provenance() {
     const QString path = QStringLiteral("/data/imports/county.csv");
@@ -2543,7 +2543,7 @@ rows_are_sites(const SavedSystemsModel& model, int first, const QList<int>& site
     return true;
 }
 
-/* B6: a per-site import saves every site in one save or none. A failed save adds no row and signals nothing; the
+/* A per-site import saves every site in one save or none. A failed save adds no row and signals nothing; the
  * retry adds each site once. */
 void
 test_add_all_atomic_on_save_failure() {
@@ -3490,7 +3490,7 @@ test_system_pin_follows_group_when_row_leaves() {
            entry_for(pins, "system:" + lone).value("label") == "Lone" && pins.isPinned("system", lone));
 }
 
-/* B4: a system saved for two receivers is two cards, so a system pin never crosses to the other receiver's: not when
+/* A system saved for two receivers is two cards, so a system pin never crosses to the other receiver's: not when
  * the pinned site leaves its group, not when it is removed, and the other card never shows as pinned. */
 void
 test_system_pin_stays_on_its_receiver() {
@@ -3534,7 +3534,7 @@ test_system_pin_through_sequential_invalidations() {
            reread.pinned().size() == 1 && reread.pinned().first().toMap().value("uid").toString() == b);
 }
 
-/* B5: a group is named once, as its card is: the lead's name without the " — site" an import generated, and a removal
+/* A group is named once, as its card is: the lead's name without the " — site" an import generated, and a removal
  * of the lead keeps that name. A site pin is that same group name, then the site. A custom name stays. */
 void
 test_group_title_labels() {

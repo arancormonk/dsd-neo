@@ -229,7 +229,7 @@ Item {
             compare(starts.count, 1)
             compare(savedSystems.get(starts.signalArguments[0][0]).uid, uid)
         }
-        // B4: the same system saved for another receiver is another group: the chooser lists this receiver's sites
+        // The same system saved for another receiver is another group: the chooser lists this receiver's sites
         // once, and its nearest is one of them.
         function test_other_receiver_is_another_group() {
             savedSystems.add({name:"North", rrSid:12, rrSiteId:16863, siteName:"North", siteLat:41.1, siteLon:-91, hasSitePos:true, sourceType:"rtltcp", host:"127.0.0.1", port:1234})
@@ -338,7 +338,7 @@ Item {
             sheet.sessionState = 2
             verify(pin.visible && pin.enabled, "offered while a session runs")
         }
-        // B12: a site with no coordinates points at Update from RadioReference (the menu's, and a button here), not at
+        // A site with no coordinates points at Update from RadioReference (the menu's, and a button here), not at
         // a re-import that would add a second copy of the site.
         function test_no_coordinates_offers_update() {
             verify(!findChild(sheet, "siteUpdateFromRr").visible, "every site placed: nothing to offer")

@@ -7,15 +7,16 @@
 
 #include <QChar>
 #include <QList>
+#include <QtGlobal>
 
 namespace dsd_qt {
 
 namespace {
 
-using Ucs4 = QList<uint>;
+using Ucs4 = QList<unsigned>;
 
 bool
-is_digit(uint c) {
+is_digit(unsigned c) {
     return QChar::isDigit(c);
 }
 
@@ -114,7 +115,7 @@ text_fold(const QString& s) {
     const QString decomposed = s.normalized(QString::NormalizationForm_KD);
     /* Code points, not UTF-16 units: a mark outside the BMP is a surrogate pair. */
     QList<char32_t> kept;
-    for (const uint cp : decomposed.toUcs4()) {
+    for (const unsigned cp : decomposed.toUcs4()) {
         if (QChar::category(cp) != QChar::Mark_NonSpacing) {
             kept.append(static_cast<char32_t>(cp));
         }

@@ -586,7 +586,7 @@ Item {
                     + JSON.stringify(counts.chains));
         }
 
-        // Listen's saved systems with a screen reader on (R28): the rows are positional. A reorder nobody asked for
+        // Listen's saved systems with a screen reader on: the rows are positional. A reorder nobody asked for
         // (a system just listened to, in Last listened order) waits while the cards are on screen and raises nothing;
         // the order the user picks renames each row for the card now at its place, with no delegate made or
         // destroyed and no show or hide (Qt 6.11.3's Android bridge walks the list again for each delegate made or
@@ -672,7 +672,7 @@ Item {
             }
         }
 
-        // R28 at 300 cards of mixed shapes: site groups of two (a site button, no Play), single sites (a site button
+        // At 300 cards of mixed shapes: site groups of two (a site button, no Play), single sites (a site button
         // and Play), rows outside a group (Play alone), placed and not, trunked rows from a RadioReference import that
         // named no site (the refresh hint) and one system on two receivers (a receiver line). A sort (Name, Order
         // added, Place with its section headings), a search to 5 and back, a sort to Nearest, a Nearest reorder from a

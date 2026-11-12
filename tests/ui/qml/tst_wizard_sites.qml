@@ -256,7 +256,7 @@ Item {
             return counties.length === 1 ? counties[0].ctid : 0;
         }
 
-        // B6: a per-site import saves every site or none. A site the model
+        // A per-site import saves every site or none. A site the model
         // refused part way used to leave the sites before it saved, and a
         // second Save then added those again.
         function test_batch_refused_site_saves_nothing() {

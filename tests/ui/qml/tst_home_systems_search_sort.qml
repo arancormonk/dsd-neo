@@ -554,7 +554,7 @@ Item {
             compare(accountOpened.count, 1, "signed out: the account screen");
             testContext.setRrPlacesSignedIn(true);
 
-            // R23: the systems the notice counts, not every saved one.
+            // The systems the notice counts, not every saved one.
             testContext.setRrPlacesUnplacedUids([savedSystems.get(0).uid]);
             tap(item("systemsPlaceUpdate"));
             compare(testContext.rrPlacesUpdateUids(), [savedSystems.get(0).uid], "only the systems it counts");
@@ -670,7 +670,7 @@ Item {
             verify(entryTitled("Charlie") === charlie, "and through a search");
         }
 
-        // With a screen reader the rows are positional (R28): the sort renames each row for the card now at its
+        // With a screen reader the rows are positional: the sort renames each row for the card now at its
         // place, and the keyboard stays on the pill.
         function test_screen_reader_sort_renames_rows_focus_on_pill() {
             add("Charlie");
@@ -721,7 +721,7 @@ Item {
             return String(n).padStart(3, "0");
         }
 
-        // R28: with a screen reader on, 300 cards keep their 300 delegates (none made or destroyed) through a sort, a
+        // With a screen reader on, 300 cards keep their 300 delegates (none made or destroyed) through a sort, a
         // search that narrows them to 5 and back, and a Nearest reorder that a location the user asked for brings. A
         // row past the 5 is held: transparent, out of the tree and unnamed, below the section's end; a shown row reads
         // the card now at its place. The keyboard stays on the pill, the field, and the card row it was on. Timings
@@ -846,7 +846,7 @@ Item {
             }
         }
 
-        // R28: a card filtered out from under the keyboard with a screen reader on is held, not removed: the keyboard
+        // A card filtered out from under the keyboard with a screen reader on is held, not removed: the keyboard
         // goes to the search field, as for a card that leaves.
         function test_screen_reader_held_card_hands_the_keyboard_on() {
             addThree();
@@ -1070,7 +1070,7 @@ Item {
             savedSystemCards.screenReaderActive = false;
         }
 
-        // R29: Nearest puts the distance before the place, so a long place elides and the distance stays.
+        // Nearest puts the distance before the place, so a long place elides and the distance stays.
         function test_nearest_distance_before_place() {
             testContext.setLocationSupported(true);
             site("Near", 2, 41.7, -93.6, {place: iowa("Johnson", 1)});
@@ -1084,7 +1084,7 @@ Item {
             compare(findChild(entryTitled("Near"), "savedSystemPlace").text, "Johnson, Iowa", "no distance off Nearest");
         }
 
-        // R29: one system saved on two receivers is two cards of one title; each card then names its receiver, on a
+        // One system saved on two receivers is two cards of one title; each card then names its receiver, on a
         // line of its own under the source line (a11y2 D: in the source line it was cut short at phone width and gone
         // at 1.3x text). The line wraps, so at 320 px and 1.3x the whole receiver is drawn and read. A title no other
         // shown card has has no receiver line, and its source line is unchanged.
@@ -1129,7 +1129,7 @@ Item {
             compare(source(entries()[0]).indexOf("192.168.100.250"), -1);
         }
 
-        // R29: keypad Enter (and Return) in the search field hides the keyboard and leaves the field with the focus.
+        // Keypad Enter (and Return) in the search field hides the keyboard and leaves the field with the focus.
         function test_enter_keeps_the_search_field() {
             addThree();
             var input = field().input;

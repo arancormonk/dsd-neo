@@ -1106,7 +1106,7 @@ test_unplaced_count() {
     expect("unplaced: none, no notice", h.service.unplacedCount() == 0 && h.service.unplacedText().isEmpty());
 }
 
-/* R22: every count is in cards, as Listen shows them. Three sites of one system on one receiver are one card, and the
+/* Every count is in cards, as Listen shows them. Three sites of one system on one receiver are one card, and the
  * same system on a second receiver is a second: the notice counts two, and an update of the first card's three sites
  * reads one system, shows "1 of 1" and updated one. */
 void
@@ -1151,7 +1151,7 @@ test_counts_are_cards() {
     expect_int("cards: one read for both", h.fake.count("getTrsSites:6673"), 2);
 }
 
-/* R23: the uids of every row of a card the notice counts, in row order: a card with any unplaced row brings all of its
+/* The uids of every row of a card the notice counts, in row order: a card with any unplaced row brings all of its
  * rows; a placed card, and a row an update cannot place, bring none. */
 void
 test_unplaced_uids() {

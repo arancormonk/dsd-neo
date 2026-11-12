@@ -876,7 +876,7 @@ Item {
             testContext.setRadioReference("sites", rows)
         }
 
-        // B7: the repeater list is ordered by the ICU-free helper, not localeCompare (code-point order on Android):
+        // The repeater list is ordered by the ICU-free helper, not localeCompare (code-point order on Android):
         // numbers by value, accents folded, equal names in record order.
         function test_04b_the_repeater_list_orders_names_the_same_everywhere() {
             conventionalSystemWith(["beta", "Alpha", "\u00C9b\u00E8ne", "alpha 10", "alpha 2"])
@@ -890,7 +890,7 @@ Item {
             compare(order.join(","), "0,1,2", "equal names left record order")
         }
 
-        // B8: searching is accent-blind on both the site list and the browse sheets.
+        // Searching is accent-blind on both the site list and the browse sheets.
         function test_04c_searches_ignore_accents_and_case() {
             conventionalSystemWith(["Alpha", "\u00C9b\u00E8ne"])
             tc.screen.siteSearch = "eben"

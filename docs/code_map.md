@@ -13802,16 +13802,16 @@ Qt Quick frontend (`src/ui/qt`):
   the next rows, save them, and only then change the model and signal. A failed save changes nothing in memory, sends no
   signal and returns false (`touch` stays `void`: recency is advisory, and an unsaved stamp stays out of memory too).
   `clearCsvPath`, `invalidatePathProvenance` and `applyPlaceNames` return true when nothing needs changing, and signal
-  one `dataChanged` spanning the rows they changed (B14: one per row re-ran every pin's bookkeeping each time). So
+  one `dataChanged` spanning the rows they changed (one per row re-ran every pin's bookkeeping each time). So
   `rowsAboutToBeRemoved`/`rowsRemoved` (then `sitesChanged`, `countChanged`) mean the removal is on disk, and whatever
   follows rows out of the model can prune on them. A site is grouped while `rrSid > 0` and `rrSiteId > 0`, by
   `site_group_key()` (`site_groups.cpp`): `"<rrSid>|<receiver>"`, the receiver being `receiver_identity()` (the source,
   then an Airspy's serial, an rtl_tcp or TCP host without case or blanks and its port, a UDP port or a file path;
-  `session_args.cpp` joins scan lists on the same identity), so a system saved for two receivers is two groups (B4).
+  `session_args.cpp` joins scan lists on the same identity), so a system saved for two receivers is two groups.
   `SavedSystemsModel::groupKey(row)` reads that key from the row's fields (no field map built); `siblingRows()`,
   `nearestRow()`, `siteCount()`, the site chooser and `ListenPins` all group by it. A group's title is
   `site_group_title()` of its lead: the name without an exact trailing " — " + its `siteName` (the name a per-site
-  import generated), else the name; a custom name lives on the lead row and moves with it (B5). A row's `place` (role
+  import generated), else the name; a custom name lives on the lead row and moves with it. A row's `place` (role
   `place`) is the RadioReference geography an import captured: `{states: [{stid, name?}], counties: [{ctid, stid?,
   name?}], candidateStates: [stid]}`, held to `SavedSystemsModel::validPlace()` (ids whole numbers, not text, in
   1..INT32_MAX; names text of at most 128 characters; at most 64 states or candidate states and 512 counties; repeats of
@@ -13824,10 +13824,10 @@ Qt Quick frontend (`src/ui/qt`):
   RadioReference's metadata-only write: by uid, only to a row still on the refresh's `rrSid`/`rrSiteId`, the site name
   (renaming a generated name as `update` does), position and place; one save, one `dataChanged` span and
   `sitesChanged`, the count of rows still on their site, or -1 with nothing changed. `addAll(rows, keySourceUid)`
-  saves a per-site import (B6): every row is checked first (as `add`, and with a key source as `addWithKeyFrom`, which
+  saves a per-site import: every row is checked first (as `add`, and with a key source as `addWithKeyFrom`, which
   `add` and `addWithKeyFrom` call), takes a fresh UID, has its replay copy adopted, then one save and one `rowsInserted`
   range; it returns the first new row or -1 with nothing inserted and no signal (a copy adopted before a failed save
-  stays kept, as for `add`). One rule clears stale provenance (B11): `rr_provenance_cleared()` (`site_groups.cpp`)
+  stays kept, as for `add`). One rule clears stale provenance: `rr_provenance_cleared()` (`site_groups.cpp`)
   zeroes `rrSid`, `rrSiteId`, `avoidSite` (only the group's `SiteChooserSheet` can lift an avoid), `siteName`,
   `siteLat`, `siteLon`, `hasSitePos` and `place`. `update` applies it when the edit changes the frequency, decode flag
   or a CSV field, then applies what the edit carries of its own of `rrSid`, `rrSiteId`, `siteName`, the position and
@@ -13852,10 +13852,10 @@ Qt Quick frontend (`src/ui/qt`):
   `sourceType`, `host`, `port`, `freqMhz`, `decodeFlag`, `trunking`, `filePath`, `keyConfigured`, `lastHeard`,
   `refreshHint`, `placeLabel`, `distanceKm`, `distanceState`, `section`, `sectionStart`, `rrLinked`, `receiverLabel`,
   `held`. The card shows the
-  one non-avoided site when exactly one is left, else the lead (B2); `playUid` is that site (the row itself outside a
+  one non-avoided site when exactly one is left, else the lead; `playUid` is that site (the row itself outside a
   group), empty when a group has none or several to play; `siteCount` is the group size, 0 outside a group;
-  `lastHeard` is the group's latest (B1); `keyConfigured` reads the computed `SavedSystemsModel::KeyConfiguredRole`
-  (key type, key CSV or decryption profile on the displayed row, B13); `title` is `site_group_title()` of the lead,
+  `lastHeard` is the group's latest; `keyConfigured` reads the computed `SavedSystemsModel::KeyConfiguredRole`
+  (key type, key CSV or decryption profile on the displayed row); `title` is `site_group_title()` of the lead,
   the same text a Listen pin shows; `refreshHint` is the "Refresh from RadioReference" test, re-run on
   `importedFiles.entriesChanged`. Place labels: "Johnson, Iowa" (one state, one county), "Iowa · 5 counties", "Iowa",
   "Illinois, Iowa, South Dakota" (several states, names sorted; their Place section reads "Several states"). A card
@@ -13893,8 +13893,8 @@ Qt Quick frontend (`src/ui/qt`):
   whose title another shown card has (one system on two receivers), else empty; TCP, UDP and file cards name their
   source in the meta already and get none. Home shows it on a line of its own under the source line, which then leaves
   RTL-TCP's marker out. `rebuilt()` follows every rebuild, changed or not, after its row signals and
-  `shownCountChanged`: Home answers the changes it noted there (one tree refresh for Android's bridge). `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, B1, B2,
-  B13, titles against a real pin, each order and its ties, place and distance labels, search, signals, screen-reader
+  `shownCountChanged`: Home answers the changes it noted there (one tree refresh for Android's bridge). `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, the card's last-heard, frequency and key-configured reads,
+  titles against a real pin, each order and its ties, place and distance labels, search, signals, screen-reader
   holds and the location mark, one section start in a held order, a fix that lapses with no signal, coalescing, a random-edit mirror check, positional rows held and taken back, receiver labels for shared titles, `rebuilt()` after
   the rows, and a 500-row timing check with and without a screen reader).
 - `text_order.{h,cpp}` (`TextOrder`, the `textOrder` context object) is the one place that decides how names sort and
@@ -13967,7 +13967,7 @@ Qt Quick frontend (`src/ui/qt`):
   move puts the old index back. Before an update (never a refresh) of a file with RadioReference provenance (`origin`
   "radioreference" or an `rrSid`) touches the index, `setBeforeUserReplace()`'s hook runs with the stored path:
   `qt_ui.cpp`'s `wire_library_replace()` points it at `SavedSystemsModel::invalidatePathProvenance()`, since the user's
-  own bytes no longer describe the RadioReference site the systems naming the file came from (B11). A file the user
+  own bytes no longer describe the RadioReference site the systems naming the file came from. A file the user
   picked (a key list, say) never described the site, so its update asks nothing of them. Dependency first, as a removal
   clears references before the file goes: a failed save there refuses the update with `save` and nothing changes; an
   index save or move that fails after it leaves those rows cleared over the file's old bytes, which is safe

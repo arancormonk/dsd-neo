@@ -4887,7 +4887,7 @@ class Setup : public QObject {
 
     /**
      * @brief Block the saved systems store (blockPath()) from inside the @p call-th place fill savedSystems runs while
-     * it builds new rows, so a save fails part way through a batch whose rows carry a place (B6); 0 removes the fill.
+     * it builds new rows, so a save fails part way through a batch whose rows carry a place; 0 removes the fill.
      * Unblock with blockPath(storePath("saved_systems.json"), false).
      */
     Q_INVOKABLE void
@@ -6739,7 +6739,7 @@ class Setup : public QObject {
             const int row = imported_files->rowForPath(path);
             return row >= 0 && imported_files->get(row).value("type") == "trunkTargets";
         });
-        // B11: as qt_ui.cpp's wire_library_replace(), an update lets the saved systems naming the file go of their site.
+        // As qt_ui.cpp's wire_library_replace(), an update lets the saved systems naming the file go of their site.
         imported_files->setBeforeUserReplace(
             [saved_systems](const QString& path) { return saved_systems->invalidatePathProvenance(path); });
         starter->setDecryptionProfiles(profiles);
@@ -6760,7 +6760,7 @@ class Setup : public QObject {
         ctx->setContextProperty(QStringLiteral("rrPlaces"), m_rr_places);
         // Issue #718: the production composing-text commit, on its fallback path here.
         ctx->setContextProperty(QStringLiteral("inputCommit"), new dsd_qt::InputCommit(engine));
-        // B7/B8: the production name order and fold (ICU-free), as the RadioReference lists use it.
+        // The production name order and fold (ICU-free), as the RadioReference lists use it.
         ctx->setContextProperty(QStringLiteral("textOrder"), new dsd_qt::TextOrder(engine));
         // Issue #828: the production list, which outlives every engine here as it does in the app.
         ctx->setContextProperty(QStringLiteral("storeNotices"), dsd_qt::StoreNotices::instance());

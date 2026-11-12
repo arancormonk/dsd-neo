@@ -60,7 +60,7 @@ ModalSheet {
     // closes and Main opens it.
     signal openRadioReferenceAccount
     // A site with no coordinates: Update from RadioReference reads the sites
-    // again (B12: re-importing one added a second copy of it).
+    // again (re-importing one used to add a second copy of it).
     readonly property bool missingPositions: (revision, rows.some(function (row) {
         return !savedSystems.get(row).hasSitePos;
     }))

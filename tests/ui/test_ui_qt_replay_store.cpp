@@ -603,7 +603,7 @@ test_failed_save_after_adopt_keeps_the_copy() {
     CHECK(QFileInfo::exists(c), "a kept copy nobody names survives");
 }
 
-/* B6: addAll() adopts every copy its rows name before its one save. A copy it cannot adopt adds no row at all; copies
+/* addAll() adopts every copy its rows name before its one save. A copy it cannot adopt adds no row at all; copies
    adopted before a save that then fails stay kept and unreferenced, never deleted, as add()'s do. */
 void
 test_add_all_adopts_before_its_save() {

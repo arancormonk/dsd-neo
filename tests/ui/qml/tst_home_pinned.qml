@@ -651,7 +651,7 @@ Item {
             verify(!listenPins.isPinned("scan", other));
         }
 
-        // B4: one system saved for USB and for rtl_tcp is two cards of two sites each, and a pin through one card's
+        // One system saved for USB and for rtl_tcp is two cards of two sites each, and a pin through one card's
         // menu pins only that card.
         function test_receivers_are_separate_cards() {
             var usb = addGroup("usb");

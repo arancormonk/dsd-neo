@@ -868,7 +868,7 @@ SavedSystemsModel::update(int row, const QVariantMap& system) {
     if (row < 0 || row >= m_rows.size() || !radio_settings_valid(system.value(QStringLiteral("radioSettings")))) {
         return false;
     }
-    // WP-D4, B11: changed tuning/CSV content no longer describes the imported site; only what this edit carries of
+    // WP-D4: changed tuning/CSV content no longer describes the imported site; only what this edit carries of
     // its own (a re-import's fresh provenance) describes it now.
     const auto previous = get(row);
     QVariantMap fields = changes_site_tuning(previous, system) ? reimport_fields(system) : system;

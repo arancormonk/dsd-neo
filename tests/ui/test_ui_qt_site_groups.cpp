@@ -28,7 +28,7 @@ check(bool ok, const char* label) {
     }
 }
 
-/* B4: one RadioReference system saved for several receivers is one group per receiver, as a scan list tells its
+/* One RadioReference system saved for several receivers is one group per receiver, as a scan list tells its
  * receivers apart: a USB dongle, an rtl_tcp server by host (any case, blanks trimmed) and port, an Airspy by serial. */
 void
 check_receiver_groups() {

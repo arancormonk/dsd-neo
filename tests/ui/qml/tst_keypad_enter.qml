@@ -312,7 +312,7 @@ Item {
             }
         }
 
-        // R30: a held key repeats on the control that took its first press, as
+        // A held key repeats on the control that took its first press, as
         // it always did. Moved while the key is still down, the keyboard lands
         // on a control that never saw the key go down: the repeats press
         // nothing there, and the key's next first press does.
@@ -601,7 +601,7 @@ Item {
                 return testContext.manualTuneCalls();
             };
             enterActsOnce("Tune down", item(screen, "spectrumStepDown"), tunes);
-            // R30: held on Tune down from its first press, Enter or Space
+            // Held on Tune down from its first press, Enter or Space
             // keeps stepping.
             heldKeyRepeats("Tune down held", item(screen, "spectrumStepDown"), tunes, Qt.Key_Return, Qt.NoModifier);
             heldKeyRepeats("Tune down held", item(screen, "spectrumStepDown"), tunes, Qt.Key_Space, Qt.NoModifier);

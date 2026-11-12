@@ -728,7 +728,7 @@ Item {
             testContext.setAttachedDeviceSource("");
         }
 
-        // B5: a group's pin reads as its card, the name an import generated without its site, and keeps that name
+        // A group's pin reads as its card, the name an import generated without its site, and keeps that name
         // when the lead goes; a site pin names its site once.
         function test_strip_group_title() {
             var lead = addSystem("SARA — Johnson Simulcast", {siteName: "Johnson Simulcast", rrSid: 9, rrSiteId: 1});
