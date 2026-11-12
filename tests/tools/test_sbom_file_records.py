@@ -363,6 +363,28 @@ class FileRecordTests(unittest.TestCase):
         self.assertEqual([path.name for path in document.parent.iterdir()], [document.name])
         self.assertEqual([path.name for path in link.parent.iterdir()], [link.name])
 
+    def test_failure_after_the_temporary_file_is_gone_raises_the_original_error(self):
+        # The swap fails after the temporary file has already gone: cleanup must not turn that into a
+        # FileNotFoundError, and the original document must survive.
+        module = tool_module()
+        asset = self.make_zip([("bin/a.dll", b"dll\n")])
+        sbom = self.write_document([record(RUNNER_ROOT + "bin/a.dll")])
+        before = sbom.read_bytes()
+
+        class SwapFailed(OSError):
+            pass
+
+        def failing_replace(source, destination):
+            os.unlink(source)
+            raise SwapFailed(errno.EXDEV, "swap failed (test)")
+
+        argv = ["sbom_file_records.py", "--spdx", str(sbom), "--asset", str(asset)]
+        with patch.object(sys, "argv", argv), patch.object(module.os, "replace", failing_replace):
+            with self.assertRaises(SwapFailed):
+                module.main()
+        self.assertEqual(sbom.read_bytes(), before)
+        self.assertEqual(sorted(path.name for path in self.work.iterdir()), sorted([asset.name, sbom.name]))
+
     @unittest.skipUnless(os.name == "posix", "file-size limits (RLIMIT_FSIZE) exist only on POSIX systems")
     def test_file_size_limit_leaves_the_document_and_no_temporary_file(self):
         import resource

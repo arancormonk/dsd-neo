@@ -148,10 +148,7 @@ def replace_document(path, document):
         os.chmod(temporary, mode)
         os.replace(temporary, path)
     except BaseException:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
+        Path(temporary).unlink(missing_ok=True)
         raise
 
 
