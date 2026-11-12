@@ -1392,17 +1392,20 @@ dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, size_t 
    (docs/signal-search.md "Quiet-channel calibration"). The guard is 0.5 dB under the lowest floor rise of any active
    trial whose ratio would otherwise sit within the threshold's margin (9.23 dB, a weak NFM 8 kHz channel between
    +30 dB neighbours), rounded down; noise alone rises at most 2.4 dB. With it, the trimmed mean's interval is
-   (2.40, 4.11] dB (the lowest block's widest is 0.09 dB), and the threshold is its top, rounded down. */
+   (2.40, 4.11] dB (the lowest block's widest, at any guard, is 0.34 dB at 0.3 dB), and the threshold is its top,
+   rounded down. */
 #define DSD_SIGNAL_QUIET_THRESHOLD_DB    4.1f
 #define DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN
 #define DSD_SIGNAL_QUIET_GUARD_DB        8.7f
 /* The capture rates and analog widths the calibration rendered and validated; nothing between them is admitted. Rates:
    the RTL rate planner's (1.024, 1.152, 1.536 Msps for every selectable DSP bandwidth, rtl_sdr_fm.cpp
    rtl_downsample_passes_for_rate_in()), an Airspy's (2.5, 3, 6, 10 MS/s), and the common RTL-SDR rates a SoapySDR device
-   may be given. Widths: the Radio sheet's NFM and AM steps (src/ui/qt/qml/Util.js), both kinds at 8 and 20 kHz. */
+   may be given. Widths, per kind: the Radio sheet's NFM steps and its AM steps (src/ui/qt/qml/Util.js), each rendered
+   as that kind only. */
 static const uint32_t kQuietRatesHz[] = {960000,  1024000, 1152000, 1200000, 1280000, 1440000, 1536000, 1600000,
                                          1800000, 1920000, 2048000, 2400000, 2500000, 3000000, 6000000, 10000000};
-static const uint32_t kQuietAnalogWidthsHz[] = {5000, 6000, 8000, 10000, 11250, 12500, 15000, 16000, 20000, 25000};
+static const uint32_t kQuietNfmWidthsHz[] = {8000, 11250, 12500, 16000, 20000, 25000};
+static const uint32_t kQuietAmWidthsHz[] = {5000, 6000, 8000, 10000, 15000, 20000};
 
 struct dsd_signal_quiet_detector {
     /* Keep aligned buffers first so records never require interior alignment padding. */
@@ -1447,10 +1450,19 @@ dsd_signal_quiet_rate_supported(uint32_t rate_hz) {
 }
 
 extern "C" int
-dsd_signal_quiet_analog_supported(uint32_t width_hz, uint32_t rate_hz) {
-    return dsd_signal_quiet_rate_supported(rate_hz)
-           && std::find(std::begin(kQuietAnalogWidthsHz), std::end(kQuietAnalogWidthsHz), width_hz)
-                  != std::end(kQuietAnalogWidthsHz);
+dsd_signal_quiet_analog_supported(int kind, uint32_t width_hz, uint32_t rate_hz) {
+    if (!dsd_signal_quiet_rate_supported(rate_hz)) {
+        return 0;
+    }
+    if (kind == DSD_ANALOG_DEMOD_FM) {
+        return std::find(std::begin(kQuietNfmWidthsHz), std::end(kQuietNfmWidthsHz), width_hz)
+               != std::end(kQuietNfmWidthsHz);
+    }
+    if (kind == DSD_ANALOG_DEMOD_AM) {
+        return std::find(std::begin(kQuietAmWidthsHz), std::end(kQuietAmWidthsHz), width_hz)
+               != std::end(kQuietAmWidthsHz);
+    }
+    return 0;
 }
 
 extern "C" dsd_signal_quiet_detector*

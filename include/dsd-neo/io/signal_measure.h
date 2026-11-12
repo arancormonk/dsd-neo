@@ -184,8 +184,8 @@ typedef struct {
     uint64_t completed_realtime_ns;
 } dsd_signal_quiet_result;
 
-/** The shipped threshold and floor estimator the shared tap measures with (calibrated: docs/signal-search.md
- * "Quiet-channel calibration"). */
+/** The shipped threshold, floor estimator and floor guard the shared tap measures with (calibrated:
+ * docs/signal-search.md "Quiet-channel calibration"). */
 dsd_signal_quiet_params dsd_signal_quiet_params_default(void);
 
 /** 1 when the calibration rendered and validated capture rate @p rate_hz (exactly; every class was judged at it), else
@@ -193,10 +193,11 @@ dsd_signal_quiet_params dsd_signal_quiet_params_default(void);
  * planner's, an Airspy's, and the common RTL-SDR rates a SoapySDR device may be given. */
 int dsd_signal_quiet_rate_supported(uint32_t rate_hz);
 
-/** 1 when an analog class of @p width_hz at capture rate @p rate_hz was rendered and validated (exactly: the Radio
- * sheet's NFM and AM width steps, at a dsd_signal_quiet_rate_supported() rate), else 0: any other width gets no quiet
- * check. */
-int dsd_signal_quiet_analog_supported(uint32_t width_hz, uint32_t rate_hz);
+/** 1 when an analog class of @p width_hz for analog @p kind (dsd_analog_demod: DSD_ANALOG_DEMOD_FM or
+ * DSD_ANALOG_DEMOD_AM, as dsd_opts.analog_demod carries it) at capture rate @p rate_hz was rendered and validated as
+ * that kind (exactly: the Radio sheet's NFM width steps for FM, its AM steps for AM, at a
+ * dsd_signal_quiet_rate_supported() rate), else 0: any other kind or width gets no quiet check. */
+int dsd_signal_quiet_analog_supported(int kind, uint32_t width_hz, uint32_t rate_hz);
 
 /** Stand-alone quiet detector, the one the shared tap uses, for calibration and tests. */
 typedef struct dsd_signal_quiet_detector dsd_signal_quiet_detector;

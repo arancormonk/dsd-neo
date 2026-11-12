@@ -1007,10 +1007,12 @@ The check runs only where the calibration rendered and validated it, matched exa
   give only these three, and an RTL-SDR or rtl_tcp stream runs the request as asked), an Airspy's 2.5, 3, 6 and
   10 MS/s, and the common RTL-SDR rates a SoapySDR device may be given, which picks its own nearest rate: 0.96, 1.2,
   1.28, 1.44, 1.6, 1.8, 1.92, 2.048 and 2.4 Msps. A SoapySDR device that runs any other rate gets no check.
-- Analog widths (`dsd_signal_quiet_analog_supported()`): the Radio sheet's NFM steps 8, 11.25, 12.5, 16, 20 and
-  25 kHz and AM steps 5, 6, 8, 10, 15 and 20 kHz (`src/ui/qt/qml/Util.js`), at every admitted rate. The engine takes any
-  whole Hz from 8000 to 25000 (NFM) or 5000 to 20000 (AM) from the terminal, the CLI and the config; a width off those
-  steps gets no check.
+- Analog widths (`dsd_signal_quiet_analog_supported()`, given the kind as `dsd_opts.analog_demod` carries it): the
+  Radio sheet's NFM steps 8, 11.25, 12.5, 16, 20 and 25 kHz for NFM and its AM steps 5, 6, 8, 10, 15 and 20 kHz for AM
+  (`src/ui/qt/qml/Util.js`), each rendered as that kind, at every admitted rate. The engine takes any whole Hz from
+  8000 to 25000 (NFM) or 5000 to 20000 (AM) from the terminal, the CLI and the config; a width off its kind's steps
+  gets no check, including NFM at 10 or 15 kHz and AM at 11.25, 12.5 or 16 kHz, which were rendered only as the other
+  kind.
 
 ### Driver and conditions
 
@@ -1054,8 +1056,9 @@ transmitters fill up to three quarters of it, and the scaling makes noise alone 
 width. When a class's sideband floor stands more than `DSD_SIGNAL_QUIET_GUARD_DB` (8.7 dB) over that reference, the
 request is invalid, so the channel is never skipped. The reference runs only while a quiet request is armed, nothing
 on the decode path. On one core (the driver's `--phase cost`, on a host loaded by other work, so high) it takes 10 to
-110 µs of a 0.17 to 0.9 ms request at the RTL and SoapySDR rates, and up to 0.41 ms of a 4.1 ms request at 10 MS/s:
-the same bin selection and quartile timed alone, nine times per request.
+110 µs of a 0.17 to 0.9 ms request at the RTL and SoapySDR rates, up to 0.18 ms of a 1.25 ms request at 3 MS/s, and
+up to 0.41 ms of a 2.7 to 4.1 ms request at 6 and 10 MS/s: the same bin selection and quartile timed alone, nine
+times per request.
 
 Highest floor rise (trimmed mean) over every trial at 2,000 per condition, the guard off: noise alone 2.39 dB, every
 signal scene without a contaminating neighbour 2.18 dB, a neighbour on one side 4.05 dB. The active trials the guard
@@ -1092,8 +1095,9 @@ noise-only trial counting as busy (none was). A threshold `T` in `(N95, A − 0.
 | Trimmed mean | 4.61 dB | M17, +50 dB neighbour 25 kHz below, 1.536 Msps | 2.40 dB | noise, AM 5 kHz, 1.6 Msps | (2.40, 4.11] dB |
 | Lowest block | −1.07 dB | DMR MS, +50 dB neighbours 25 kHz either side | 5.48 dB | noise, mixed with AM 5 kHz, 1.6 Msps | empty |
 
-The lowest block reads a contaminated floor too low for the guard to see; its widest interval at any guard is
-0.09 dB (at 1 dB), against the trimmed mean's 1.71 dB. The check ships with the trimmed-mean floor and T = 4.1 dB
+The lowest block reads a contaminated floor too low for the guard to see; its widest interval at any guard (scanned in
+0.1 dB steps from 0 to 8.7 dB) is 0.34 dB, at a 0.3 dB guard that already voids 1.25% of a noise-only condition,
+against the trimmed mean's 1.71 dB. The check ships with the trimmed-mean floor and T = 4.1 dB
 (A − 0.5 dB, rounded down). Lowest valid active ratio per condition group (trimmed mean, guard 8.7 dB):
 
 | Group | Conditions with a valid trial | Lowest ratio | At |

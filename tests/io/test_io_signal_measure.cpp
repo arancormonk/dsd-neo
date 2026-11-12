@@ -14,6 +14,7 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/signal_measure.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <limits>
 #include <random>
@@ -1291,22 +1292,38 @@ test_quiet_requests(dsd_signal_quiet_detector* d) {
     assert(std::fabs(shipped.threshold_db - 4.1f) < 1e-6f);
     assert(shipped.floor_estimator == DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN);
     assert(std::fabs(shipped.guard_db - 8.7f) < 1e-6f);
-    // The domain is exactly the rendered cells: every rendered rate, every Radio-sheet width at each; nothing between.
+    // The domain is exactly the rendered cells: every rendered rate, and at each the Radio sheet's widths of each kind,
+    // rendered as that kind only; nothing between, no other kind.
     const uint32_t rendered_rates[] = {960000u,  1024000u, 1152000u, 1200000u, 1280000u, 1440000u, 1536000u, 1600000u,
                                        1800000u, 1920000u, 2048000u, 2400000u, 2500000u, 3000000u, 6000000u, 10000000u};
-    const uint32_t rendered_widths[] = {5000u, 6000u, 8000u, 10000u, 11250u, 12500u, 15000u, 16000u, 20000u, 25000u};
+    const uint32_t nfm_widths[] = {8000u, 11250u, 12500u, 16000u, 20000u, 25000u};
+    const uint32_t am_widths[] = {5000u, 6000u, 8000u, 10000u, 15000u, 20000u};
     for (uint32_t rate : rendered_rates) {
         assert(dsd_signal_quiet_rate_supported(rate) == 1);
-        for (uint32_t width : rendered_widths) {
-            assert(dsd_signal_quiet_analog_supported(width, rate) == 1);
+        for (uint32_t width : nfm_widths) {
+            assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_FM, width, rate) == 1);
+        }
+        for (uint32_t width : am_widths) {
+            assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_AM, width, rate) == 1);
+        }
+        // Widths rendered only as the other kind: NFM 10 and 15 kHz, AM 11.25, 12.5 and 16 kHz.
+        for (uint32_t width : {10000u, 15000u}) {
+            assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_FM, width, rate) == 0);
+        }
+        for (uint32_t width : {11250u, 12500u, 16000u}) {
+            assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_AM, width, rate) == 0);
         }
         for (uint32_t width : {0u, 4999u, 7000u, 9000u, 12000u, 14000u, 18000u, 24999u, 25001u}) {
-            assert(dsd_signal_quiet_analog_supported(width, rate) == 0);
+            assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_FM, width, rate) == 0);
+            assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_AM, width, rate) == 0);
         }
+        assert(dsd_signal_quiet_analog_supported(2, 12500u, rate) == 0);
+        assert(dsd_signal_quiet_analog_supported(-1, 12500u, rate) == 0);
     }
     for (uint32_t rate : {0u, 250000u, 1000000u, 1023999u, 1024001u, 1400000u, 2000000u, 2560000u, 3200000u}) {
         assert(dsd_signal_quiet_rate_supported(rate) == 0);
-        assert(dsd_signal_quiet_analog_supported(12500u, rate) == 0);
+        assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_FM, 12500u, rate) == 0);
+        assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_AM, 6000u, rate) == 0);
     }
 }
 

@@ -7564,8 +7564,9 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   `DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR` (the trimmed mean) and `DSD_SIGNAL_QUIET_GUARD_DB` (8.7 dB);
   `tests/io/signal_quiet_calibrate.cpp`, a manual build-only driver, chose all three and drives its own detectors with
   explicit parameters; docs/signal-search.md "Quiet-channel calibration"). The domain is exactly the rendered cells:
-  `dsd_signal_quiet_rate_supported(rate)` (every class) and `dsd_signal_quiet_analog_supported(width, rate)` match the
-  calibrated capture rates and the Radio sheet's analog widths exactly; elsewhere the engine makes no check. Changing
+  `dsd_signal_quiet_rate_supported(rate)` (every class) and `dsd_signal_quiet_analog_supported(kind, width, rate)`
+  (`kind` a `dsd_analog_demod`) match the calibrated capture rates and the Radio sheet's widths of that kind exactly;
+  elsewhere the engine makes no check. Changing
   the measurement, the sub-windows, either list or a constant means re-running that calibration. It judges
   `DSD_SIGNAL_QUIET_WINDOWS` (9) back-to-back sub-windows, each the smallest whole number of transforms of at least
   10 ms, in every requested width class (`DSD_SIGNAL_QUIET_CLASS_12K5`, `_6K25`, `_ANALOG` with the request's analog
