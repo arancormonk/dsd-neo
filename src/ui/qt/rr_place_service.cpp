@@ -248,18 +248,19 @@ RrPlaceService::submit(Fetch kind, int key) {
         DSD_SECURE_ZERO(&auth, sizeof(auth));
         return false;
     }
+    /* The callback owns it once the request is sent; one that was not sent is taken back. */
+    Request* const handed = request.release();
     quint64 id = 0;
     switch (kind) {
-        case FetchState: id = dsd_rr_fetch_state_info(m_client, &auth, key, &onFetchDone, request.get()); break;
-        case FetchDetails: id = dsd_rr_fetch_trs_details(m_client, &auth, key, &onFetchDone, request.get()); break;
-        case FetchSites: id = dsd_rr_fetch_trs_sites(m_client, &auth, key, &onFetchDone, request.get()); break;
+        case FetchState: id = dsd_rr_fetch_state_info(m_client, &auth, key, &onFetchDone, handed); break;
+        case FetchDetails: id = dsd_rr_fetch_trs_details(m_client, &auth, key, &onFetchDone, handed); break;
+        case FetchSites: id = dsd_rr_fetch_trs_sites(m_client, &auth, key, &onFetchDone, handed); break;
     }
     DSD_SECURE_ZERO(&auth, sizeof(auth));
     if (id == 0U) {
+        request.reset(handed);
         return false;
     }
-    /* The callback owns it now. */
-    [[maybe_unused]] Request* handedOff = request.release();
     m_inFlight = id;
     m_inFlightKind = kind;
     m_inFlightKey = key;
