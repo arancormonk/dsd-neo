@@ -240,8 +240,10 @@ typedef struct {
     double visit_since_m;
     int visit_rearm_pending;
     double idle_since_m;
-    /* The idle dwell start dsd_engine_trunk_scan_dwell_due() last asked the hunt to yield for: one yield per dwell. */
-    double dwell_yield_from_m;
+    /* The due dwell start, and the stay reason, a tick under the coordinator's guard last decided (advance, re-arm or
+       stay): dsd_engine_trunk_scan_dwell_due() hands back again only once either differs (issue #834 B3). */
+    double dwell_serviced_start_m;
+    dsd_scan_stay_reason dwell_serviced_stay;
     double retry_until_m;
     double last_allowed_activity_m;
     uint64_t tune_request_id;
@@ -3250,7 +3252,7 @@ trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd
         /* Nothing is parked yet: the first switch anchors the visit when its retune lands. */
         rt->visit_since_m = -1.0;
         rt->idle_since_m = now_m;
-        rt->dwell_yield_from_m = -1.0;
+        rt->dwell_serviced_start_m = -1.0;
     }
     return 0;
 }
@@ -5102,7 +5104,7 @@ trunk_scan_tick_targets_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
    completion (trunk_scan_arm_idle_at_landing()). -1 while nothing is armed, the park is in flight, or its dwell was
    disarmed (the tick that notices the landing arms it afresh then). */
 static double
-trunk_scan_idle_dwell_start(const dsd_trunk_scan_target_runtime* rt) {
+trunk_scan_idle_dwell_start(const dsd_trunk_scan_target_runtime* rt, double now_m) {
     if (!rt->tune_pending || rt->idle_since_m < 0.0) {
         return rt->idle_since_m;
     }
@@ -5110,8 +5112,15 @@ trunk_scan_idle_dwell_start(const dsd_trunk_scan_target_runtime* rt) {
     if (dsd_trunk_tuning_request_status(rt->tune_request_id, &completed_m) != DSD_TRUNK_TUNE_RESULT_OK) {
         return -1.0;
     }
-    const double now_m = trunk_scan_now_m();
     return (completed_m > 0.0 && completed_m <= now_m) ? completed_m : now_m;
+}
+
+/* The start of the idle dwell of the target on air when it has run out by @p now_m, else -1. */
+static double
+trunk_scan_due_dwell_start(const dsd_opts* opts, const dsd_trunk_scan_target_runtime* rt, double now_m) {
+    const double start_m = trunk_scan_idle_dwell_start(rt, now_m);
+    const double dwell_s = (double)trunk_scan_target_dwell_ms(opts, rt) / 1000.0;
+    return (start_m >= 0.0 && (now_m - start_m) >= dwell_s) ? start_m : -1.0;
 }
 
 int
@@ -5120,23 +5129,42 @@ dsd_engine_trunk_scan_dwell_due(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !coord || coord->paused || coord->hold_active || coord->count < 2 || coord->active >= coord->count) {
         return 0;
     }
-    dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
     /* A failed forced eviction recovers its park before any idle dwell (trunk_scan_tick_targets_locked()). */
     if (rt->retry_released_park) {
         return 0;
     }
-    const double start_m = trunk_scan_idle_dwell_start(rt);
-    if (start_m < 0.0 || fabs(start_m - rt->dwell_yield_from_m) < 1e-9) {
+    const double now_m = trunk_scan_now_m();
+    const double start_m = trunk_scan_due_dwell_start(opts, rt, now_m);
+    if (start_m < 0.0) {
         return 0;
     }
-    const double dwell_s = (double)trunk_scan_target_dwell_ms(opts, rt) / 1000.0;
-    if ((trunk_scan_now_m() - start_m) < dwell_s) {
-        return 0;
+    /* Due until a tick under the coordinator's guard decides it (trunk_scan_note_dwell_serviced()): a tick that lost
+       the guard decided nothing, so the next point asks again (issue #834 B3). One that kept the target for a reason
+       of its own (a tone check, nowhere else to go) is not asked again while that reason stands, so a stay never makes
+       the hunt hand back every 300 symbols, and is asked again once it changes. */
+    const int serviced =
+        fabs(start_m - rt->dwell_serviced_start_m) < 1e-9
+        && trunk_scan_active_stay_reason(opts, state, coord, now_m, NULL, NULL, NULL) == rt->dwell_serviced_stay;
+    return serviced ? 0 : 1;
+}
+
+/* A tick under the coordinator's guard ran: whatever it decided for the dwell of the target now on air that has run
+   out (an advance whose walk re-armed or rolled back, a stay) is that dwell start's decision for the stay reason it
+   left standing (dsd_engine_trunk_scan_dwell_due()). */
+static void
+trunk_scan_note_dwell_serviced(const dsd_opts* opts, const dsd_state* state, dsd_trunk_scan_coord* coord,
+                               double now_m) {
+    dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    if (rt->tune_pending || rt->retry_released_park) {
+        return;
     }
-    /* Once per dwell: a tick that keeps the target (activity, a hold, nowhere else to go) re-arms the dwell before
-       another yield, so a refusal never makes the hunt hand back every 300 symbols. */
-    rt->dwell_yield_from_m = start_m;
-    return 1;
+    const double start_m = trunk_scan_due_dwell_start(opts, rt, now_m);
+    if (start_m < 0.0) {
+        return;
+    }
+    rt->dwell_serviced_start_m = start_m;
+    rt->dwell_serviced_stay = trunk_scan_active_stay_reason(opts, state, coord, now_m, NULL, NULL, NULL);
 }
 
 /* The body above has a dozen early returns and can rotate; publishing here, once, means the
@@ -5148,6 +5176,7 @@ trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
     if (!trunk_scan_service_departure(opts, state, coord, now_m)) {
         trunk_scan_tick_targets_locked(opts, state, coord, now_m);
     }
+    trunk_scan_note_dwell_serviced(opts, state, coord, now_m);
     trunk_scan_publish_timing(opts, state, coord, now_m);
 }
 

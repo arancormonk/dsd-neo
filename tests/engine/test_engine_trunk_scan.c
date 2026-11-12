@@ -8129,9 +8129,9 @@ set_decode_now_s(double now_s) {
 
 /*
  * Discussion #717: the frame-sync hunt asks dsd_trunk_scan_hook_dwell_due() every 300 symbols and hands back early, so
- * an idle dwell ends on time on dead air rather than at the end of an 1800-symbol pass. The answer is due once per
- * dwell (a tick that keeps the target re-arms it first), and a park still in flight counts from its landing, as the
- * tick that notices the landing now arms it: that tick may come a whole pass later.
+ * an idle dwell ends on time on dead air rather than at the end of an 1800-symbol pass. The answer stays due until a
+ * tick under the coordinator's guard decides it (issue #834 B3), and a park still in flight counts from its landing, as
+ * the tick that notices the landing now arms it: that tick may come a whole pass later.
  */
 /* Two 250 ms-dwell targets on the TEST decode clock, target a parked synchronously at 100.0 s. */
 static int
@@ -8183,7 +8183,8 @@ test_idle_dwell_due_yields_once_and_counts_from_the_landing(void) {
     test_rc |= expect_control_rc("dwell not due at 200 ms", dsd_trunk_scan_hook_dwell_due(&opts, &state), 0);
     set_decode_now_s(100.26);
     test_rc |= expect_control_rc("dwell due at 260 ms", dsd_trunk_scan_hook_dwell_due(&opts, &state), 1);
-    test_rc |= expect_control_rc("one yield per dwell", dsd_trunk_scan_hook_dwell_due(&opts, &state), 0);
+    /* No tick has decided it yet, so the next point asks again (issue #834 B3). */
+    test_rc |= expect_control_rc("due until a tick decides it", dsd_trunk_scan_hook_dwell_due(&opts, &state), 1);
 
     /* The tick the yield hands back to rotates; the park to b stays in flight. */
     g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
@@ -8284,6 +8285,35 @@ test_hold_release_before_a_noticed_landing_grants_a_fresh_dwell(void) {
     test_rc |= expect_control_rc("the fresh dwell ends", dsd_trunk_scan_hook_dwell_due(&opts, &state), 1);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "the fresh dwell's end", 0U);
+    dwell_scan_done(&opts, &state, dir, target_path);
+    return test_rc;
+}
+
+/*
+ * Issue #834 B3: a dwell hand-back is serviced only by a tick that ran under the coordinator's guard. A tick that found
+ * the guard held (the P25 watchdog's tick, a control) decided nothing, so the next 300-symbol point answers again
+ * instead of leaving the rotation to the pass end (up to 375 ms late at 4800 symbols/s).
+ */
+static int
+test_dwell_due_answers_again_after_a_tick_that_lost_the_guard(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (dwell_scan_init(&opts, &state, dir, target_path) != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    set_decode_now_s(100.26);
+    test_rc |= expect_control_rc("a's dwell due", dsd_trunk_scan_hook_dwell_due(&opts, &state), 1);
+    g_p25_tick_guard_available = 0;
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    g_p25_tick_guard_available = 1;
+    test_rc |= expect_active_target(&state, "a tick that lost the guard", 0U);
+    set_decode_now_s(100.32);
+    test_rc |= expect_control_rc("the next point after a lost guard", dsd_trunk_scan_hook_dwell_due(&opts, &state), 1);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the tick that took the guard", 1U);
     dwell_scan_done(&opts, &state, dir, target_path);
     return test_rc;
 }
@@ -13758,6 +13788,46 @@ test_nfm_target_tone_check_leaves_no_hold(void) {
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "a fresh dwell after the tail", 0U);
     test_rc |= expect_scan_timing(&state, "a fresh dwell", DSD_SCAN_STAY_IDLE_DWELL, 3.35, 1000U, 2000U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    DSD_MEMSET(&state.analog_rx, 0, sizeof(state.analog_rx));
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #834 B3: a tick that keeps the target for a reason of its own services the dwell start for that reason. A tone
+ * check (issue #527) holds an analog target with its dwell still running: once the tick has stayed for it, the hunt does
+ * not hand back again while the check lasts, and does at the next point once it ends, so the spent dwell advances
+ * then rather than at the pass end. */
+static int
+test_dwell_due_after_a_tone_check_stay(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (nfm_targets_init("fire,nfm-conventional,154430000,,250,2000,,--tone-allow 100.0\n"
+                         "dmr,dmr-conventional,461000000,,250,250,\n",
+                         &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_PENDING);
+    trunk_scan_test_set_now(0.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    trunk_scan_test_set_now(0.26);
+    test_rc |= expect_control_rc("the dwell ran out under a check", dsd_trunk_scan_hook_dwell_due(&opts, &state), 1);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the tick stays for the check", 0U);
+    trunk_scan_test_set_now(0.32);
+    test_rc |= expect_control_rc("a serviced check stay", dsd_trunk_scan_hook_dwell_due(&opts, &state), 0);
+    trunk_scan_test_set_now(0.38);
+    test_rc |= expect_control_rc("a serviced check stay, later", dsd_trunk_scan_hook_dwell_due(&opts, &state), 0);
+    publish_tone_check_ended(&state);
+    trunk_scan_test_set_now(0.44);
+    test_rc |= expect_control_rc("the check ended", dsd_trunk_scan_hook_dwell_due(&opts, &state), 1);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the spent dwell after the check", 1U);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     DSD_MEMSET(&state.analog_rx, 0, sizeof(state.analog_rx));
     trunk_scan_test_clear_now();
@@ -22094,6 +22164,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_idle_dwell_due_yields_once_and_counts_from_the_landing);
     rc |= run_with_default_tune_hook(test_idle_dwell_counts_from_a_blocking_tunes_landing);
     rc |= run_with_default_tune_hook(test_hold_release_before_a_noticed_landing_grants_a_fresh_dwell);
+    rc |= run_with_default_tune_hook(test_dwell_due_answers_again_after_a_tick_that_lost_the_guard);
+    rc |= run_with_default_tune_hook(test_dwell_due_after_a_tone_check_stay);
     rc |= run_with_default_tune_hook(test_scan_advance_moves_now_and_keeps_hold);
     rc |= run_with_default_tune_hook(test_scan_retreat_moves_back_and_keeps_hold);
     rc |= run_with_default_tune_hook(test_scan_retreat_on_two_targets);

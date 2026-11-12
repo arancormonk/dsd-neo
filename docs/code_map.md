@@ -3957,9 +3957,13 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   return marked, no input interruption), so the engine's next pass ticks the rotation under the coordinator's guard
   and runs its no-carrier pass as after any no-sync return; a tick that keeps the target leaves a sync straddling the
   hand-back to the next call, and one that rotates resets acquisition, which forgets the history (issue #834). Without
-  it a silent target's dwell was seen only at the 1800-symbol pass end. It answers 1 once per
-  dwell start (`dwell_yield_from_m`), so a tick that keeps the target never makes the hunt hand back every 300
-  symbols, and counts a park still in flight from its landing. Every park's idle dwell runs from its landing
+  it a silent target's dwell was seen only at the 1800-symbol pass end. The answer stays 1 until a tick that ran under
+  the guard decides that dwell start: `trunk_scan_note_dwell_serviced()`, at the end of every guarded tick, records
+  the due dwell start and the stay reason the tick left standing (`dwell_serviced_start_m`/`dwell_serviced_stay`),
+  and the hook answers 0 while both still match. So a tick that lost the guard (the P25 watchdog's, a control) is
+  asked again at the next 300-symbol point, a stay (a tone check, nowhere else to go, a rolled-back walk) never makes
+  the hunt hand back every 300 symbols, and a stay reason that changes (a tone check ending) is asked again at once
+  (issue #834 B3). It counts a park still in flight from its landing. Every park's idle dwell runs from its landing
   (`trunk_scan_arm_idle_at_landing()`): a synchronous one's completion (a blocking rigctl tune's latency is not
   listening time) and a pending one's when `trunk_scan_resolve_pending_retune()` notices it, instead of the first tick
   after it. A dwell disarmed in between (a hold toggled, activity) stays disarmed, so a release still gets a fresh dwell
