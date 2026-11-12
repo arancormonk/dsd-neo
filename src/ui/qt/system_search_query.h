@@ -10,7 +10,8 @@
  * History's frequency_query reads a bare number as an ID, because talkgroups collide with MHz values there. A saved
  * system has no IDs to search, so this adapter also reads a bare number of three or more digits as whole MHz ("851"
  * finds 851.0125) and a kHz term as MHz ("460000 kHz" is 460.000 MHz), then matches with frequency_query_matches().
- * History is unchanged.
+ * A saved frequency itself is read as the tuner reads it, so every spelling that tunes is found. History is
+ * unchanged.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_SYSTEM_SEARCH_QUERY_H_
@@ -33,7 +34,10 @@ QStringList system_search_terms(const QString& query);
 /** @brief @p term read as a frequency: a bare number of 3+ digits or a decimal is MHz, "N kHz" is N / 1000 MHz. */
 FrequencyQuery system_search_frequency(const QString& term);
 
-/** @brief A saved system's freqMhz text ("851.0125") in Hz, or 0 when it is none. */
+/**
+ * @brief A saved system's freqMhz text in Hz as the tuner reads it (session_args_freq_hz()), or 0 when it does not
+ *        tune. Only query terms use the stricter search grammar above.
+ */
 qint64 system_search_hz(const QString& freqMhz);
 
 /** @brief Whether @p term, read as a frequency, finds any of @p freqsMhz (saved freqMhz texts). */

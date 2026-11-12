@@ -21,6 +21,7 @@
 #include <QString>
 #include <QStringList>
 #include <QVariantMap>
+#include <QtGlobal>
 
 #include <dsd-neo/core/opts.h>
 Q_MOC_INCLUDE("decoder_host.h")
@@ -212,6 +213,13 @@ QString session_args_error_text(SessionArgsError error);
  */
 bool session_args_profile_compatible(const QVariantMap& system);
 bool session_args_freq_valid(const QString& freqMhz);
+/**
+ * @brief The Hz a saved system's frequency field tunes, or 0 when session_args_freq_valid() refuses it.
+ *
+ * The start path's own reading: the trimmed text as "<text>M" through dsd_parse_freq_hz, so "+851.0125",
+ * "8.510125e2" and "851.0125004" are all 851012500.
+ */
+quint32 session_args_freq_hz(const QString& freqMhz);
 
 /**
  * @brief The DSP bandwidth, in kHz, a radio of @p sourceType runs at when asked for @p requestedKhz: the bandwidth its

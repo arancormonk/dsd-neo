@@ -54,6 +54,7 @@
 #include "saved_system_cards.h"
 #include "saved_systems_model.h"
 #include "scan_lists_model.h"
+#include "session_args.h"
 #include "system_search_query.h"
 
 using dsd_qt::AppPrefs;
@@ -624,6 +625,40 @@ test_search_adapter() {
                               && dsd_qt::system_search_hz(QString()) == 0);
 }
 
+/* A saved frequency the tuner reads (session_args_freq_valid) is searchable as the tuner reads it: a sign, an exponent
+ * or digits past the Hz all tune 851.0125 MHz, so "851" and "851.0125" find them. */
+void
+test_search_stored_frequency_spellings() {
+    Fixture f;
+    f.add({plain(QStringLiteral("Signed"), QStringLiteral("+851.0125")),
+           plain(QStringLiteral("Exponent"), QStringLiteral("8.510125e2")),
+           plain(QStringLiteral("Past the Hz"), QStringLiteral("851.0125004")),
+           plain(QStringLiteral("Other"), QStringLiteral("460.0"))});
+    const QStringList all{QStringLiteral("Exponent"), QStringLiteral("Past the Hz"), QStringLiteral("Signed")};
+    const auto shown = [&f](const QString& query) {
+        f.cards->setQuery(query);
+        settle();
+        QStringList titles = f.column(SavedSystemCards::TitleRole);
+        titles.sort();
+        return titles;
+    };
+    check("stored spellings: whole MHz finds them", shown(QStringLiteral("851")) == all);
+    check("stored spellings: the decimal finds them", shown(QStringLiteral("851.0125")) == all);
+    for (const QString& freq :
+         {QStringLiteral("+851.0125"), QStringLiteral("8.510125e2"), QStringLiteral("851.0125004")}) {
+        if (dsd_qt::system_search_hz(freq) != 851012500) {
+            DSD_FPRINTF(stderr, "stored spellings: %s reads as %lld Hz\n", qPrintable(freq),
+                        static_cast<long long>(dsd_qt::system_search_hz(freq)));
+        }
+        check("stored spellings: the tuner's Hz", dsd_qt::system_search_hz(freq) == 851012500);
+    }
+    for (const QString& freq : {QStringLiteral(" 851 "), QStringLiteral("851.0125 MHz"), QStringLiteral("0"),
+                                QStringLiteral("-851"), QStringLiteral("nan"), QStringLiteral("5000"), QString()}) {
+        check("stored spellings: the tuner's reading, refusals included",
+              dsd_qt::system_search_hz(freq) == static_cast<qint64>(dsd_qt::session_args_freq_hz(freq)));
+    }
+}
+
 void
 test_sort_signals() {
     Fixture f;
@@ -1120,6 +1155,7 @@ main(int argc, char** argv) {
     test_edited_row_unplaced();
     test_search();
     test_search_adapter();
+    test_search_stored_frequency_spellings();
     test_sort_signals();
     test_metadata_edit_and_hold();
     test_held_order_starts_each_section_once();

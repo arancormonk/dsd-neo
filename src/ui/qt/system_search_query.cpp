@@ -6,12 +6,13 @@
 #include "system_search_query.h"
 
 #include <QChar>
-#include <QLatin1Char>
 #include <QLatin1String>
 #include <QList>
+#include <Qt>
 #include <algorithm>
 
 #include "frequency_query.h"
+#include "session_args.h"
 #include "text_order.h"
 
 namespace dsd_qt {
@@ -20,7 +21,6 @@ namespace {
 
 constexpr int kMinBareMhzDigits = 3;
 constexpr int kKhzPerMhzDigits = 3;
-constexpr int kHzFractionDigits = 6;
 
 bool
 ascii_digits(const QString& text) {
@@ -91,15 +91,7 @@ system_search_frequency(const QString& term) {
 
 qint64
 system_search_hz(const QString& freqMhz) {
-    const QString text = freqMhz.trimmed();
-    const bool spelled = text.contains(QLatin1Char('.')) || text.endsWith(QLatin1String("mhz"), Qt::CaseInsensitive);
-    const FrequencyQuery parsed = frequency_query_parse(spelled ? text : text + QLatin1String(" MHz"));
-    if (!parsed.valid) {
-        return 0;
-    }
-    bool ok = false;
-    const qint64 fraction = parsed.fraction.leftJustified(kHzFractionDigits, QLatin1Char('0')).toLongLong(&ok);
-    return ok ? parsed.mhz * 1000000 + fraction : 0;
+    return static_cast<qint64>(session_args_freq_hz(freqMhz));
 }
 
 bool

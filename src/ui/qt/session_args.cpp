@@ -637,16 +637,22 @@ session_args_with_scan_hold(const QStringList& args, const QString& targetId) {
     return held;
 }
 
-bool
-session_args_freq_valid(const QString& freqMhz) {
+quint32
+session_args_freq_hz(const QString& freqMhz) {
+    const QString text = freqMhz.trimmed();
     bool ok = false;
-    const double mhz = freqMhz.trimmed().toDouble(&ok);
+    const double mhz = text.toDouble(&ok);
     if (!ok || !std::isfinite(mhz) || mhz <= 0.0) {
-        return false;
+        return 0U;
     }
     /* The start path splices "<text>M" into the rtl spec; use the runtime's own exact rounding and 1..UINT32_MAX range. */
-    const QByteArray spec = freqMhz.trimmed().toLatin1() + 'M';
-    return dsd_parse_freq_hz(spec.constData()) != 0U;
+    const QByteArray spec = text.toLatin1() + 'M';
+    return dsd_parse_freq_hz(spec.constData());
+}
+
+bool
+session_args_freq_valid(const QString& freqMhz) {
+    return session_args_freq_hz(freqMhz) != 0U;
 }
 
 /* The -i spec type a radio source's session opens, which the engine's rate policy classifies; nullptr for a source

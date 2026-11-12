@@ -13801,7 +13801,8 @@ Qt Quick frontend (`src/ui/qt`):
   other reader (the location line, the site chooser), never inside the read itself. Search (`system_search_query.{h,cpp}`): the text is split into terms that must all match (a
   number and a following MHz/kHz is one term); a term matches a folded substring of the card's text (members' names
   and site names, place state and county names, and the protocol label, supplied by `protocolLabels` from `Util.js`)
-  or a frequency of any member (a bare number of three digits or more reads as MHz). A row whose frequency or place an
+  or a frequency of any member (a bare number of three digits or more reads as MHz; a member's own `freqMhz` is read
+  by `session_args_freq_hz()`, the tuner's reading, so every spelling that tunes is found). A row whose frequency or place an
   edit cleared ranks as unplaced and without coordinates. Rebuilds are coalesced into one `QTimer::singleShot(0)`
   pass; a query change only refilters and a sort change only re-sorts. The diff against the old list emits removes,
   one-row moves (the longest increasing run stays), inserts and one `dataChanged` per card with the roles that

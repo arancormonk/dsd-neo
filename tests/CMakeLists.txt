@@ -5629,6 +5629,8 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_saved_system_cards.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_system_cards.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/system_search_query.cpp
+        # The search reads a saved frequency as the tuner does.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/text_order.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
