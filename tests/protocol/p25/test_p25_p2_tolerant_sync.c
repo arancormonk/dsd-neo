@@ -18,6 +18,7 @@
  */
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_cqpsk_dibit.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -70,6 +71,8 @@ static size_t g_read_index;
 static uint32_t g_noise_seed;
 /* What the fake radio adds to every symbol level: a DC offset. */
 static float g_level_offset;
+/* The CQPSK dibit map the dibits pushed from now on come through under (the receiver reads them back under it). */
+static uint8_t g_push_map;
 
 /* The MAC PDUs that reached the VPDU decoder. */
 static int g_vpdu_calls;
@@ -111,7 +114,7 @@ level_for_dibit(int dibit) {
 static void
 push_dibit(int dibit) {
     if (g_stream_len < STREAM_CAP) {
-        g_stream[g_stream_len++] = dibit;
+        g_stream[g_stream_len++] = dsd_p25_cqpsk_raw_dibit_for_corrected(g_push_map, (uint8_t)dibit);
     }
 }
 
@@ -167,6 +170,7 @@ reset_stream(void) {
     g_read_index = 0;
     g_noise_seed = 0xC0FFEEU;
     g_level_offset = 0.0f;
+    g_push_map = DSD_P25_CQPSK_DIBIT_MAP_IDENTITY;
     g_vpdu_calls = 0;
     uint32_t lead = 0x1234567U;
     for (int i = 0; i < LEAD_DIBITS; i++) {
@@ -361,11 +365,40 @@ test_slips(void) {
     }
 }
 
+/* After a placed window, 11 symbols slip in that read as the word's own first 11, and from there the carrier's dibits
+   come through a quarter turn round (the P1200 map). The window at the expected position is then 3 bits off the word
+   under the anchor's map. Taken, it opened a window that failed its verdict, and the exact rotated word 11 symbols on,
+   which the exact hunt matches, went with it: 12 MAC PDUs of 16. A word a few bits off is not taken where it ends in
+   the head of an exact word of any map or polarity that a slip within the no-steal span would put there: every window
+   decodes, as hunting exactly does. */
+static void
+test_slip_into_rotated_map(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static const char slipped[] = "11131131111";
+    reset_stream();
+    push_window(2, 0, 0, 0);
+    for (size_t i = 0; slipped[i] != '\0'; i++) {
+        push_dibit(slipped[i] - '0');
+    }
+    g_push_map = DSD_P25_CQPSK_DIBIT_MAP_P1200;
+    push_window(6, 0, 0, 1);
+    push_window(10, 0, 0, 2);
+    push_window(2, 0, 0, 3);
+    start(&opts, &state);
+    run(&opts, &state, TAIL_DIBITS);
+    CHECK(g_vpdu_calls == 16);
+    CHECK(state.p25_p2_sync_anchor.tolerant_syncs == 0U);
+    CHECK(state.p25_cqpsk_dibit_map_idx == DSD_P25_CQPSK_DIBIT_MAP_P1200);
+    stop(&state);
+}
+
 int
 main(void) {
     test_corrupted_syncs_decode();
     test_clean_and_all_tolerant();
     test_slips();
+    test_slip_into_rotated_map();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d check(s) failed\n", g_failures);
         return 1;

@@ -309,6 +309,72 @@ test_late_exact_word_wins(void) {
     }
 }
 
+/* The same under every other map and polarity the exact matchers take: the word's head under the P1200 map or inverted,
+   shifted 10 to 12 symbols, lies within the tolerance of the word under the anchor's map when the symbols before it
+   match. Such a window is not taken; the exact word is matched where it is (the N1200 and P1200 matchers also fit the
+   window's levels, which this hunt over symbols alone has none of, so those words are only seen not pre-empted). */
+static void
+test_late_exact_word_of_any_map_wins(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint8_t maps[] = {
+        DSD_P25_CQPSK_DIBIT_MAP_IDENTITY,
+        DSD_P25_CQPSK_DIBIT_MAP_X2400,
+        DSD_P25_CQPSK_DIBIT_MAP_N1200,
+        DSD_P25_CQPSK_DIBIT_MAP_P1200,
+    };
+
+    enum { LEAD = 30 };
+
+    int within_tolerance = 0;
+    for (size_t m = 0; m < sizeof(maps) / sizeof(maps[0]); m++) {
+        for (int inverted = 0; inverted <= 1; inverted++) {
+            const char* word = inverted ? INV_P25P2_SYNC : P25P2_SYNC;
+            for (int k = 1; k <= DSD_P25P2_TOLERANT_SYNC_NO_STEAL_SHIFTS; k++) {
+                char stream[LEAD + DSD_P25P2_TOLERANT_SYNC_NO_STEAL_SHIFTS + SYNC_DIBITS + 1];
+                uint32_t seed = 0x3B3BU + (uint32_t)k;
+                for (int i = 0; i < LEAD; i++) {
+                    seed = (seed * 1103515245U) + 12345U;
+                    stream[i] = (char)('0' + ((seed >> 16) & 3U));
+                }
+                /* The anchor's word's own first k symbols, then the word under this map and polarity. */
+                for (int i = 0; i < k; i++) {
+                    stream[LEAD + i] = P25P2_SYNC[i];
+                }
+                for (int i = 0; i < SYNC_DIBITS; i++) {
+                    stream[LEAD + k + i] =
+                        (char)('0' + dsd_p25_cqpsk_raw_dibit_for_corrected(maps[m], (uint8_t)(word[i] - '0')));
+                }
+                const int len = LEAD + k + SYNC_DIBITS;
+                stream[len] = '\0';
+                char expected_window[SYNC_DIBITS + 1];
+                DSD_MEMCPY(expected_window, stream + LEAD, SYNC_DIBITS);
+                expected_window[SYNC_DIBITS] = '\0';
+                within_tolerance += dsd_p25p2_sync_bit_distance(expected_window, DSD_P25_CQPSK_DIBIT_MAP_IDENTITY, 0)
+                                            <= DSD_P25P2_TOLERANT_SYNC_MAX_BIT_ERRORS
+                                        ? 1
+                                        : 0;
+                setup(&opts, &state);
+                anchored(&opts, &state);
+                int sync = DSD_SYNC_NONE;
+                const long found = hunt(&opts, &state, stream, len, (uint64_t)(EXPECTED - LEAD), &sync);
+                assert(state.p25_p2_sync_anchor.tolerant_syncs == 0U);
+                assert(dsd_frame_sync_p25p2_tolerant_start(&state, NULL) == -1);
+                if (maps[m] == DSD_P25_CQPSK_DIBIT_MAP_IDENTITY || maps[m] == DSD_P25_CQPSK_DIBIT_MAP_X2400) {
+                    assert(found == EXPECTED + k);
+                    assert(sync == (inverted ? DSD_SYNC_P25P2_NEG : DSD_SYNC_P25P2_POS));
+                } else {
+                    assert(found != EXPECTED);
+                }
+                teardown(&state);
+            }
+        }
+    }
+    /* The case is real: windows within the tolerance at the expected position (inverted at 10, 11 and 12 symbols, P1200
+       at 10, 11 and 12). */
+    assert(within_tolerance == 6);
+}
+
 /* An exact word at the expected position, inverted or under a rotated map: the exact matchers take it. */
 static void
 test_exact_words_take_the_exact_path(void) {
@@ -707,6 +773,7 @@ main(void) {
     test_expected_position_threshold();
     test_other_positions_exact_only();
     test_late_exact_word_wins();
+    test_late_exact_word_of_any_map_wins();
     test_exact_words_take_the_exact_path();
     test_map_and_polarity_follow_the_anchor();
     test_invalidations();

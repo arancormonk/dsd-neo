@@ -28,6 +28,7 @@ extern "C" {
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/frame.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_cqpsk_dibit.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
@@ -431,11 +432,42 @@ test_slips(void) {
     }
 }
 
+/* After a validated LDU, 12 symbols slip in that read as the word's own first 12, and from there the carrier's dibits
+   come through a quarter turn round (the P1200 map). The window at the expected position is then 5 bits off the word
+   under the anchor's map. Taken, its NID failed the strict check and the hunt resumed past it, and the exact rotated
+   word 12 symbols on, which the exact hunt matches, went with it: the LDU2 behind it was lost. A word a few bits off is
+   not taken where it ends in the head of an exact word of any map or polarity that a slip within the no-steal span
+   would put there: every LDU decodes, as hunting exactly does. */
+static void
+test_slip_into_rotated_map(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_stream();
+    append_unit(DUID_LDU1, LDU_DIBITS, 0);
+    for (int i = 0; i < 12; i++) {
+        g_stream.push_back(P25P1_SYNC[i] - '0');
+    }
+    const size_t rotated_from = g_stream.size();
+    append_unit(DUID_LDU2, LDU_DIBITS, 0);
+    append_unit(DUID_LDU1, LDU_DIBITS, 0);
+    for (size_t i = rotated_from; i < g_stream.size(); i++) {
+        g_stream[i] = dsd_p25_cqpsk_raw_dibit_for_corrected(DSD_P25_CQPSK_DIBIT_MAP_P1200, (uint8_t)g_stream[i]);
+    }
+    start(&opts, &state);
+    run(&opts, &state, 4000);
+    CHECK(g_ldu1 == 2);
+    CHECK(g_ldu2 == 1);
+    CHECK(g_hdu == 0 && g_tdu == 0 && g_tsdu == 0 && g_other == 0);
+    CHECK(state.p25_p1_sync_anchor.tolerant_syncs == 0U);
+    stop(&state);
+}
+
 int
 main(void) {
     test_corrupted_syncs_decode();
     test_slipped_word_misaligned_nid_dropped();
     test_slips();
+    test_slip_into_rotated_map();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d check(s) failed\n", g_failures);
         return 1;

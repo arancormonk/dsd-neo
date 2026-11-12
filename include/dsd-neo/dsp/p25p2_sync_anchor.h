@@ -30,12 +30,22 @@ extern "C" {
 /**
  * @brief Bit errors (of the word's 40) a P25p2 sync word at the anchor's expected position may have and be accepted.
  *
- * OP25's Phase 2 framer and sdrtrunk's hunting detector accept 4. Exact syncs a slip of 1 to 12 symbols put after the
- * expected position are not pre-empted: the word's distance to itself shifted by 1 to 12 symbols is at least 5 bits
- * (7, 8, 7, 7, 6 for 1 to 5) even when the symbols shifted in match, so the expected-position window then lies more than
- * 4 bits off and the exact word is matched where it is.
+ * OP25's Phase 2 framer and sdrtrunk's hunting detector accept 4. Exact syncs a slip of 1 to
+ * DSD_P25P2_TOLERANT_SYNC_NO_STEAL_SHIFTS symbols put after the expected position are not pre-empted.
  */
-#define DSD_P25P2_TOLERANT_SYNC_MAX_BIT_ERRORS 4
+#define DSD_P25P2_TOLERANT_SYNC_MAX_BIT_ERRORS  4
+
+/**
+ * @brief The slips (in symbols) after the expected position an exact P25p2 sync word is never pre-empted over.
+ *
+ * Under the anchor's map and polarity, the word's distance to itself shifted by 1 to 12 symbols is at least 5 bits (7,
+ * 8, 7, 7, 6 for 1 to 5) even when the symbols shifted in match, so the expected-position window then lies more than 4
+ * bits off and the exact word is matched where it is. Under another map or the other polarity it is not: shifted 10 to
+ * 12 symbols, the word's head under the P1200 map or inverted lies 1 to 4 bits from the word's tail, and the symbols
+ * before it may match. So a window within the tolerance is refused too when it ends in the head of a word, under any map
+ * and polarity the exact matchers take, slipped 1 to 12 symbols (frame_sync_p25_sync_head_ends_window()).
+ */
+#define DSD_P25P2_TOLERANT_SYNC_NO_STEAL_SHIFTS 12
 
 /**
  * @brief Bit errors between the 20-dibit window @p window, read under CQPSK dibit map @p map_idx, and the P25p2 sync

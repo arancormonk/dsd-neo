@@ -887,7 +887,9 @@ frame_sync_try_tolerant_p25p1(frame_sync_match_ctx* ctx) {
         return DSD_SYNC_NONE;
     }
     const int bit_errors = dsd_p25p1_sync_bit_distance(ctx->synctest, map_idx, inverted);
-    if (bit_errors > DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS) {
+    if (bit_errors > DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS
+        || frame_sync_p25_sync_head_ends_window(ctx->synctest, P25P1_SYNC, INV_P25P1_SYNC, 24,
+                                                DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS)) {
         return DSD_SYNC_NONE;
     }
     const int synctype = inverted ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS;
@@ -1063,7 +1065,9 @@ frame_sync_try_tolerant_p25p2(frame_sync_match_ctx* ctx) {
         return DSD_SYNC_NONE;
     }
     const int bit_errors = dsd_p25p2_sync_bit_distance(ctx->synctest20, map_idx, inverted);
-    if (bit_errors > DSD_P25P2_TOLERANT_SYNC_MAX_BIT_ERRORS) {
+    if (bit_errors > DSD_P25P2_TOLERANT_SYNC_MAX_BIT_ERRORS
+        || frame_sync_p25_sync_head_ends_window(ctx->synctest20, P25P2_SYNC, INV_P25P2_SYNC, 20,
+                                                DSD_P25P2_TOLERANT_SYNC_NO_STEAL_SHIFTS)) {
         return DSD_SYNC_NONE;
     }
     const int synctype = inverted ? DSD_SYNC_P25P2_NEG : DSD_SYNC_P25P2_POS;

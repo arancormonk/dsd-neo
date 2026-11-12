@@ -303,6 +303,69 @@ test_slips_with_real_neighbours(void) {
     }
 }
 
+/* An exact word 1 to 13 symbols late, under every map and polarity the exact matchers take, the symbols before it the
+   anchor's word's own (the best case for a false match at the expected position). Under the anchor's map the shifted
+   word stays at least 7 bits off; inverted, or under the P1200 map, shifted 11 to 13 symbols it comes within the
+   tolerance. Such a window is not taken; the exact word is matched where it is (the N1200 and P1200 matchers also fit
+   the window's levels, which this hunt over symbols alone has none of, so those words are only seen not pre-empted). */
+static void
+test_late_exact_word_of_any_map_wins(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint8_t maps[] = {
+        DSD_P25_CQPSK_DIBIT_MAP_IDENTITY,
+        DSD_P25_CQPSK_DIBIT_MAP_X2400,
+        DSD_P25_CQPSK_DIBIT_MAP_N1200,
+        DSD_P25_CQPSK_DIBIT_MAP_P1200,
+    };
+
+    enum { LEAD = 40 };
+
+    int within_tolerance = 0;
+    for (size_t m = 0; m < sizeof(maps) / sizeof(maps[0]); m++) {
+        for (int inverted = 0; inverted <= 1; inverted++) {
+            const char* word = inverted ? INV_P25P1_SYNC : P25P1_SYNC;
+            for (int k = 1; k <= DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS; k++) {
+                char stream[LEAD + DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS + SYNC_DIBITS + 1];
+                uint32_t seed = 0x6C6CU + (uint32_t)k;
+                data_dibits(stream, LEAD, &seed);
+                for (int i = 0; i < k; i++) {
+                    stream[LEAD + i] = P25P1_SYNC[i];
+                }
+                for (int i = 0; i < SYNC_DIBITS; i++) {
+                    stream[LEAD + k + i] =
+                        (char)('0' + dsd_p25_cqpsk_raw_dibit_for_corrected(maps[m], (uint8_t)(word[i] - '0')));
+                }
+                const int len = LEAD + k + SYNC_DIBITS;
+                stream[len] = '\0';
+                char expected_window[SYNC_DIBITS + 1];
+                DSD_MEMCPY(expected_window, stream + LEAD, SYNC_DIBITS);
+                expected_window[SYNC_DIBITS] = '\0';
+                within_tolerance += dsd_p25p1_sync_bit_distance(expected_window, DSD_P25_CQPSK_DIBIT_MAP_IDENTITY, 0)
+                                            <= DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS
+                                        ? 1
+                                        : 0;
+                setup(&opts, &state);
+                anchored(&opts, &state);
+                int sync = DSD_SYNC_NONE;
+                const long found = hunt(&opts, &state, stream, len, (uint64_t)(EXPECTED - LEAD), &sync);
+                assert(state.p25_p1_sync_anchor.tolerant_syncs == 0U);
+                assert(dsd_frame_sync_p25p1_tolerant_nac(&state, NULL) == -1);
+                if (maps[m] == DSD_P25_CQPSK_DIBIT_MAP_IDENTITY || maps[m] == DSD_P25_CQPSK_DIBIT_MAP_X2400) {
+                    assert(found == EXPECTED + k);
+                    assert(sync == (inverted ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS));
+                } else {
+                    assert(found != EXPECTED);
+                }
+                teardown(&state);
+            }
+        }
+    }
+    /* The case is real: windows within the tolerance at the expected position (inverted at 11, 12 and 13 symbols, P1200
+       at 12 and 13). */
+    assert(within_tolerance == 5);
+}
+
 /* r1 review #3: a word with three bit errors one symbol late, behind a '1': the window one symbol early, which is the
    expected position, is 6 bits off and is accepted there. The NID it reads is then one symbol off; the dispatcher's
    strict check is what drops it (P25_P1_TOLERANT_SYNC, the NAC 555 case). */
@@ -741,6 +804,7 @@ main(void) {
     test_expected_position_threshold();
     test_other_positions_exact_only();
     test_slips_with_real_neighbours();
+    test_late_exact_word_of_any_map_wins();
     test_slipped_corrupted_word_one_symbol_early();
     test_exact_matcher_of_another_protocol_wins();
     test_invalidations();

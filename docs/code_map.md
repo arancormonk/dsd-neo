@@ -5797,8 +5797,17 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   neither. A tolerant P2 accept writes no modulation and pushes
   no demodulator profile (the anchor holds `rf_mod` 1), skips the acceptance-time centre refit, and notes no channel
   activity; `printFrameSync()` labels it `+P25p2~`. No pre-emption: the P2 word's distance to itself shifted 1-12
-  symbols, the symbols shifted in matching, is at least 5 bits (7, 8, 7, 7, 6 for 1-5), so an exact word a slip put
-  after the expected position is matched where it is. The Phase 1 anchor and its validation are in Protocols (P25
+  symbols, the symbols shifted in matching, is at least 5 bits (7, 8, 7, 7, 6 for 1-5; the P1 word's shifted 1-13 at
+  least 7), so an exact word a slip put after the expected position is matched where it is. That bound holds under
+  the anchor's map and polarity only: the word inverted or under the P1200 map, shifted 10-12 symbols (P1 11-13), lies
+  within the tolerance when the symbols before it match. So either try also refuses a window that ends in the head of
+  an exact word, under any map and polarity the exact matchers take, slipped 1 to the bound's span
+  (`frame_sync_p25_sync_head_ends_window()`, `DSD_P25P2_TOLERANT_SYNC_NO_STEAL_SHIFTS` 12,
+  `DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS` 13): taken, the window behind it fails its verdict (the NID its strict
+  check) and the exact word inside it goes with it. Its cost: a real word whose bit errors fall exactly on such a head
+  is refused, as if exact-only (P2: one error, a -3 read as +3 at dibit 17, makes the tail the inverted word's head
+  11 symbols on; every other case needs 3 or more). A slip past the span is not covered (the same map's own shift
+  comes within the tolerance there). The Phase 1 anchor and its validation are in Protocols (P25
   Phase 1); the Phase 2 window verdict in Protocols (P25 Phase 2 voice dispatch). Diagnostics, never reset:
   `tolerant_syncs`, `tolerant_frames` (P1) and `tolerant_windows` (P2, windows whose verdict passed). Tests:
   `FRAME_SYNC_P25_ANCHOR`, `FRAME_SYNC_P25P2_ANCHOR` (distance and shifted bound, the expected position only,
@@ -9607,10 +9616,13 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     `DSD_P25P1_TOLERANT_SYNC_MAX_BIT_ERRORS` (6 of 48, OP25's dedicated P1 framer) is accepted, with the anchor's map
     and polarity. The first window at or past the expected position spends the anchor whatever it holds, so one window a
     frame is scored and the rest of the hunt is exact, later grid slots included.
-  - No pre-emption bound: the word's distance to itself shifted by 1-5 symbols is 9, 10, 9, 8 and 9 bits even when the
-    symbols shifted in match, so an exact word a slip of 1-5 symbols put near the expected position is never beaten
-    there: the expected-position window is then more than 6 bits off and the exact word is matched where it is. The
-    bound covers that range only; nothing farther is scored.
+  - No pre-emption bound: the word's distance to itself shifted by 1-13 symbols is at least 7 bits (9, 10, 9, 8 and 9
+    for 1-5) even when the symbols shifted in match, so an exact word a slip of 1-13 symbols put after the expected
+    position is never beaten there: the expected-position window is then more than 6 bits off and the exact word is
+    matched where it is. Under another map or the other polarity the bound does not hold (inverted or P1200, shifted
+    11-13 symbols, 3-5 bits), so a window that ends in the head of an exact word of any map and polarity slipped 1-13
+    symbols is refused (`frame_sync_p25_sync_head_ends_window()`, `DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS`; DSP
+    above). The bound covers that range only; nothing farther is scored.
   - Strict NID (`p25p1_nid_verdict_passes_tolerant_sync()`, in `p25p1_decode_nid_and_duid()` before
     `p25p1_nid_verdict_commit()` and `p25p1_handle_nid_decode_success()`): behind a tolerant word the frame decodes
     only when the NID validates, its parity agrees (NID_OK), it needed at most 4 corrections
