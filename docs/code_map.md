@@ -3441,8 +3441,12 @@ suite runs under this compiler.
     (`processTSBK()` returns that, through `p25p1_dispatch_by_duid()`), never by a P25p1 voice or data frame (HDU,
     LDU1/2, TDU, TDULC, PDU), so a conventional or voice-channel Phase 1 carrier keeps the gains of before (why: DSP,
     "CQPSK Gardner"); and by a P25p2 window with a MAC PDU whose CRC passed or a tolerant window whose verdict passed
-    (`p25p2_window_done()`, not when the window retuned); both pass the generation read before the frame's handlers ran,
-    so a frame whose grant tuned away leaves a stale proof. X2-TDMA, DMR and NXDN under `-mq`, Auto's CQPSK trial
+    (`p25p2_window_done()`, not when the window retuned). Both pass the generation read before the frame's handlers
+    ran, and only while the stream is still the one the frame's sync was accepted on
+    (`dsd_frame_sync_p25p1_frame_context_holds()`, `dsd_frame_sync_p25p2_window_context_holds()`: the same carrier
+    count, clock epoch, input, tuning generation, sync history drops, SPS profile and modulation), so a frame read
+    across a carrier boundary that moves no tuning generation (an I/Q replay's recorded retune inside a TSDU, after a
+    block that passed), a stream flush or its grant's tune proves nothing. X2-TDMA, DMR and NXDN under `-mq`, Auto's CQPSK trial
     before P25 content proves the carrier, Phase 1 voice and TETRA never set it. Withdrawn by:
     - `dsd_frame_sync_reset_mod_state()`: every accepted trunk-tuning or scanner tune, a CC change, the acquisition
       reset of a scan row or target, an input boundary or a decode-mode command, the frame sync's symbol profile change.

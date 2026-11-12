@@ -92,6 +92,12 @@ dsd_frame_sync_p25p1_tolerant_nac(const dsd_state* state, unsigned int* out_bit_
     return rec->frame_tolerant ? (int)rec->frame_nac : -1;
 }
 
+int
+dsd_frame_sync_p25p1_frame_context_holds(const dsd_state* state) {
+    const dsd_p25p1_sync_anchor* rec = &state->p25_p1_sync_anchor;
+    return rec->frame_valid && p25p1_anchor_context_current(state, &rec->frame);
+}
+
 void
 dsd_frame_sync_p25p1_frame_decoded(dsd_state* state, int nac, uint32_t unit_dibits) {
     dsd_p25p1_sync_anchor* rec = &state->p25_p1_sync_anchor;

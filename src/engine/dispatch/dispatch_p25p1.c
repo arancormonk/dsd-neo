@@ -529,9 +529,10 @@ p25p1_decoded_unit_dibits(const dsd_state* state, uint8_t duid) {
 /* Tell the frame sync what the frame was: one that validated (p25p1_nid_verdict_validates()) and was read whole
    anchors the next data unit's sync where it ends (dsd_p25p1_sync_anchor). When it was also a TSDU with a TSBK that
    passed its CRC (@p tsbk_crc_passed), it proves the carrier P25 to the CQPSK timing loop for @p tune_generation, the
-   tune it was synced on (dsd_rtl_stream_metrics_hook_note_p25_proven()). Voice and data frames never do: on a simulcast
-   voice dwell the loop's slower post-lock gain lags the timing swing of the sites' beat, and a dwell is too short for
-   the symbol slips it saves on a control channel to pay for that (docs/code_map.md, the Gardner gain rule). */
+   tune it was synced on (dsd_rtl_stream_metrics_hook_note_p25_proven()), while the stream is still the one its sync
+   was found on. Voice and data frames never do: on a simulcast voice dwell the loop's slower post-lock gain lags the
+   timing swing of the sites' beat, and a dwell is too short for the symbol slips it saves on a control channel to pay
+   for that (docs/code_map.md, the Gardner gain rule). */
 static void
 p25p1_note_frame_decoded(dsd_state* state, uint8_t duid, const p25p1_nid_verdict* verdict, uint64_t tune_generation,
                          int tsbk_crc_passed) {
@@ -539,8 +540,12 @@ p25p1_note_frame_decoded(dsd_state* state, uint8_t duid, const p25p1_nid_verdict
        context check. */
     const int validated =
         duid != P25P1_DUID_INVALID && p25p1_nid_verdict_validates(verdict) && !state->input_interrupted;
+    /* A carrier boundary inside the TSDU (a replay read adopting a recorded retune) moves no tuning generation, so a
+       proof given for a block read before it would look current on the carrier reached; nor does a flush. The proof
+       stands only on the stream the frame's sync was accepted on, read before the report spends that context. */
+    const int stream_held = dsd_frame_sync_p25p1_frame_context_holds(state);
     dsd_frame_sync_p25p1_frame_decoded(state, verdict->nac, validated ? p25p1_decoded_unit_dibits(state, duid) : 0U);
-    if (validated && tsbk_crc_passed) {
+    if (validated && tsbk_crc_passed && stream_held) {
         dsd_rtl_stream_metrics_hook_note_p25_proven(tune_generation);
     }
 }

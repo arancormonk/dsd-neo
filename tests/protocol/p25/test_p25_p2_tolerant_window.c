@@ -82,6 +82,9 @@ static int g_feed_pos = -1;
 /* The window dibit at which the stand-in reader adopts a new carrier (a replay read crossing a recorded retune); -1
    none. */
 static int g_carrier_cut_at = -1;
+/* The window dibit at which the stand-in reader meets a stream flush (an RTL read whose stream generation moved: the
+   clock's epoch moves, the carrier count and the tuning generation do not); -1 none. */
+static int g_flush_at = -1;
 
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
@@ -92,6 +95,9 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     if (g_feed_pos >= 0 && g_feed_pos < WINDOW_DIBITS) {
         if (state && g_feed_pos == g_carrier_cut_at) {
             state->carrier_seq++;
+        }
+        if (state && g_feed_pos == g_flush_at) {
+            state->symbol_clock_epoch++;
         }
         const int bit = g_feed_pos * 2;
         dibit = (g_bits[bit] << 1) | g_bits[bit + 1];
@@ -899,7 +905,8 @@ capture_p25_proof(uint64_t proof) {
 /* A window proves the carrier P25 to the CQPSK timing loop, once, when it is done: one with a MAC PDU that passed its
    CRC, or one a tolerant sync opened whose verdict passed, on the tuning generation it was dispatched on. A window of
    voice alone behind an exact sync proves nothing, nor does one whose MAC PDUs failed their CRC, a window whose verdict
-   failed, or one a burst of which tuned away. */
+   failed, one a burst of which tuned away, or one read on a stream that is no longer the one its sync was accepted on
+   (a flush between the sync and the window or inside it, which moves no tuning generation). */
 static int
 test_window_proves_p25(void) {
     dsd_rtl_stream_metrics_hooks hooks;
@@ -958,6 +965,28 @@ test_window_proves_p25(void) {
     g_vpdu_retunes = 1;
     rc |= expect("retuning window dispatches", feed() == P25P2_WINDOW_DISPATCHED);
     rc |= expect("a window that tuned away proves nothing", g_p25_proofs == 0);
+
+    for (int inside = 0; inside <= 1; inside++) {
+        fresh_decoder();
+        g_p25_proofs = 0;
+        build(2, 0);
+        sync_exact();
+        const uint64_t generation = dsd_trunk_tuning_generation();
+        if (inside) {
+            g_flush_at = 350;
+        } else {
+            g_state->symbol_clock_epoch++;
+        }
+        rc |= expect("flushed MAC window dispatches", feed() == P25P2_WINDOW_DISPATCHED);
+        g_flush_at = -1;
+        rc |= expect("the flush moved no tuning generation", dsd_trunk_tuning_generation() == generation);
+        rc |= expect("a window read across a flush proves nothing", g_p25_proofs == 0);
+        /* The next window, its sync accepted after the flush, proves again. */
+        build(2, 0);
+        sync_exact();
+        rc |= expect("next MAC window dispatches", feed() == P25P2_WINDOW_DISPATCHED);
+        rc |= expect("the next window proves P25", g_p25_proofs == 1 && g_p25_proof == generation + 1U);
+    }
 
     dsd_rtl_stream_metrics_hooks_set(NULL);
     return rc;

@@ -2086,6 +2086,9 @@ p25p2_admit_window(dsd_opts* opts, dsd_state* state, uint32_t entry_symbol, int 
 static void
 p25p2_window_done(dsd_state* state, uint32_t entry_symbol, const p25p2_retune_token* window_token, int anchor_start) {
     const int retuned = p25p2_retune_token_changed(window_token);
+    /* Read before the report spends the window's sync context: a proof stands only on the stream the window's sync was
+       accepted on, so a flush while it was collected, which moves no tuning generation, proves nothing either. */
+    const int stream_held = dsd_frame_sync_p25p2_window_context_holds(state);
     s_prev_window.valid = s_window_proven && !retuned;
     s_prev_window.carrier_seq = state->carrier_seq;
     s_prev_window.token = *window_token;
@@ -2095,7 +2098,7 @@ p25p2_window_done(dsd_state* state, uint32_t entry_symbol, const p25p2_retune_to
     p25p2_window_set_slot_unproven(0);
     dsd_frame_sync_p25p2_window_decoded(state, 1, retuned ? -1 : anchor_start);
     /* A window that tuned away (a grant) proves nothing about the carrier reached. */
-    if (s_window_proves_p25 && !retuned) {
+    if (s_window_proves_p25 && !retuned && stream_held) {
         dsd_rtl_stream_metrics_hook_note_p25_proven(window_token->tune_generation);
     }
 }

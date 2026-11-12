@@ -31,6 +31,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "frame_sync_internal.h"
 #include "p25_search_site.h"
 
 int dsd_dispatch_matches_p25p1(int synctype);
@@ -62,6 +63,10 @@ static int g_p25_proofs;
 static uint64_t g_p25_proof_generation;
 /* processTSBK() completes a tune (a grant's) when set, as a handler that follows a grant does. */
 static int g_tsbk_tunes;
+/* processTSBK() reads past its first block across a carrier boundary when set to 1 (a replay read adopting a recorded
+   retune: the carrier count moves, the tuning generation does not), or across a stream flush when set to 2 (the clock's
+   epoch moves). */
+static int g_tsbk_stream_moves;
 /* What processTSBK() reports: whether a TSBK of the TSDU passed its CRC. */
 static int g_tsbk_crc_passed = 1;
 
@@ -85,6 +90,7 @@ reset_stub_state(void) {
     g_p25_proofs = 0;
     g_p25_proof_generation = 0U;
     g_tsbk_tunes = 0;
+    g_tsbk_stream_moves = 0;
     g_tsbk_crc_passed = 1;
 }
 
@@ -271,6 +277,11 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
     p25_search_note_p1_network_code(state, 0xBEE00U, 0x1A3U);
     if (g_tsbk_tunes) {
         dsd_trunk_tuning_generation_advance();
+    }
+    if (g_tsbk_stream_moves == 1) {
+        state->carrier_seq++;
+    } else if (g_tsbk_stream_moves == 2) {
+        state->symbol_clock_epoch++;
     }
     return g_tsbk_crc_passed;
 }
@@ -1044,12 +1055,15 @@ test_p25p1_nid_is_no_phase2_proof(void) {
     assert(dsd_access_code_current(&state, DSD_SYNC_P25P2_POS, 0U, 0U, NULL, &value) == 0);
 }
 
-/* Dispatch one P25p1 frame with DUID @p duid on @p state, whose NID decodes as the stub's defaults say, and return the
-   P25 proofs the CQPSK timing loop was given. */
+/* Dispatch one P25p1 frame with DUID @p duid on @p state, whose NID decodes as the stub's defaults say, its sync
+   accepted exactly just before as the frame sync accepts it (frame_sync_p25p1_anchor_note_sync()), and return the P25
+   proofs the CQPSK timing loop was given. */
 static int
 dispatch_p25p1_frame(dsd_opts* opts, dsd_state* state, uint8_t duid) {
     state->synctype = DSD_SYNC_P25P1_POS;
     state->rf_mod = 1;
+    state->symbol_clock += 1000U;
+    frame_sync_p25p1_anchor_note_sync(state, DSD_SYNC_P25P1_POS, -1, 0);
     g_test_duid = duid;
     const int before = g_p25_proofs;
     (void)dsd_dispatch_handle_p25p1(opts, state);
@@ -1060,8 +1074,10 @@ dispatch_p25p1_frame(dsd_opts* opts, dsd_state* state, uint8_t duid) {
    P25 to the CQPSK timing loop, on the tune it was synced on, so the Gardner may step to its P25 post-lock gain. A voice
    dwell never does, however many of its frames validate: on a simulcast voice carrier the slower gain lags the timing
    swing of the sites' beat and has no symbol slips to save in so short a dwell. Neither does a data unit, a TSDU whose
-   TSBKs all failed their CRC, or a TSDU whose NID failed, was borrowed, named NAC FFF or was cut. A handler that tunes
-   away (a grant) leaves the proof with the generation the frame was synced on, stale on the channel reached. */
+   TSBKs all failed their CRC, or a TSDU whose NID failed, was borrowed, named NAC FFF or was cut, nor one read on a
+   stream that is no longer the one its sync was accepted on: a handler that tunes away (a grant), a carrier boundary
+   inside the TSDU after a block that passed (a replay read adopting a recorded retune, which moves no tuning
+   generation), a flush. */
 static void
 test_p25p1_tsbk_crc_proves_p25(void) {
     static dsd_opts opts;
@@ -1116,14 +1132,38 @@ test_p25p1_tsbk_crc_proves_p25(void) {
     g_interrupt_at_dibit = 15;
     assert(dispatch_p25p1_frame(&opts, &state, 0x7U) == 0);
 
-    /* A TSDU whose grant tuned away proves the tune it was synced on. */
+    /* A TSDU whose grant tuned away proves nothing: a proof of the tune it was synced on would be stale on the channel
+       reached. (This used to give that stale proof; none is given now.) */
     DSD_MEMSET(&state, 0, sizeof(state));
     reset_stub_state();
     g_tsbk_tunes = 1;
     const uint64_t synced_on = dsd_trunk_tuning_generation();
-    assert(dispatch_p25p1_frame(&opts, &state, 0x7U) == 1);
+    assert(dispatch_p25p1_frame(&opts, &state, 0x7U) == 0);
     assert(dsd_trunk_tuning_generation() == synced_on + 1U);
-    assert(g_p25_proof_generation == synced_on);
+
+    /* A carrier boundary inside the TSDU after a block that passed, or a flush there: the tuning generation stands, so
+       a proof would look current on the stream reached. None is given; the next TSDU read whole proves again. */
+    for (int moves = 1; moves <= 2; moves++) {
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_stub_state();
+        g_tsbk_stream_moves = moves;
+        const uint64_t generation_before = dsd_trunk_tuning_generation();
+        assert(dispatch_p25p1_frame(&opts, &state, 0x7U) == 0);
+        assert(dsd_trunk_tuning_generation() == generation_before);
+        g_tsbk_stream_moves = 0;
+        assert(dispatch_p25p1_frame(&opts, &state, 0x7U) == 1);
+        assert(g_p25_proof_generation == generation_before);
+    }
+
+    /* No sync context captured (an off-thread tune was pending at the sync): nothing says which stream the frame was
+       read on, so it proves nothing. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.rf_mod = 1;
+    g_test_duid = 0x7U;
+    (void)dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(g_p25_proofs == 0);
 }
 
 int

@@ -55,6 +55,14 @@ int dsd_p25p1_sync_bit_distance(const char* window, uint8_t map_idx, int inverte
 int dsd_frame_sync_p25p1_tolerant_nac(const dsd_state* state, unsigned int* out_bit_errors);
 
 /**
+ * @brief Whether the stream the P25p1 frame being decoded was read on is still the one its sync was accepted on: the
+ * same clock epoch, input, carrier, tuning generation, sync history drops, SPS profile and modulation, no off-thread
+ * tune pending. 0 when no sync-time context was captured, and once the frame was reported
+ * (dsd_frame_sync_p25p1_frame_decoded()).
+ */
+int dsd_frame_sync_p25p1_frame_context_holds(const dsd_state* state);
+
+/**
  * @brief Tell the frame sync what the P25p1 frame its last sync opened was, once decoded.
  *
  * When the frame validated, @p nac is the NAC its NID named and @p unit_dibits its length on air (sync word and status

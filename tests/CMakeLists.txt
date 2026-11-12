@@ -10975,6 +10975,7 @@ target_include_directories(
     PRIVATE
         ${PROJECT_SOURCE_DIR}/tests/protocol/p25
         ${PROJECT_SOURCE_DIR}/src/protocol/p25
+        ${PROJECT_SOURCE_DIR}/src/dsp
         ${PROJECT_SOURCE_DIR}/include
 )
 target_include_directories(

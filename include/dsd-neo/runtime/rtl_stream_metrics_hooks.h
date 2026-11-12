@@ -294,10 +294,11 @@ void dsd_rtl_stream_metrics_hook_p25p2_err_update(int slot, int facch_ok, int fa
  * The decoder thread calls it when a P25 Phase 1 TSDU validates (its NID passed the rules a sync anchor needs,
  * p25p1_nid_verdict_validates()) with a TSBK that passed its CRC (never a voice or data frame), or a Phase 2 window
  * passes a MAC PDU's CRC or, opened by a tolerant sync, its verdict, with the dsd_trunk_tuning_generation() the frame
- * was synced on: a frame read across a completed tune (its handler's grant, say) proves nothing about the carrier
- * reached, and its proof is stale from the start. While the proof holds, the Gardner's gain steps to its P25 post-lock
- * value once locked at 4800 and 6000 sym/s (op25_gardner_cc()); a tune completed since leaves it stale, which counts as
- * none. A no-op until the engine installs the hook.
+ * was synced on, and only while the stream is still the one the frame's sync was accepted on: a frame read across a
+ * completed tune (its handler's grant, say), a carrier boundary or a stream flush proves nothing about the carrier
+ * reached, and gives no proof. While the proof holds, the Gardner's gain steps to its P25 post-lock value once locked
+ * at 4800 and 6000 sym/s (op25_gardner_cc()); a tune completed since leaves it stale, which counts as none. A no-op
+ * until the engine installs the hook.
  */
 void dsd_rtl_stream_metrics_hook_note_p25_proven(uint64_t tune_generation);
 /**
