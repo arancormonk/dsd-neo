@@ -90,6 +90,8 @@ dsd_engine_scan_landing_install(dsd_engine_scan_owner* owner, dsd_engine_scan_la
     landing.epoch = ++owner->landing_epoch;
     landing.generation_before_tune = owner->tune_generation_before;
     landing.landed_realtime_ms = dsd_realtime_mono_ms();
+    landing.sync_seq = owner->sync_seq;
+    landing.landed_decode_m = dsd_decode_now_mono_s();
     owner->landing = landing;
 }
 

@@ -590,6 +590,14 @@ quiet_visit_baseline(const dsd_engine_scan_owner* owner, scan_quiet_check* c, co
     }
     c->visit_set = 1;
     c->visit_key = *key;
+    const dsd_engine_scan_landing* landing = &owner->landing;
+    if (key->epoch != 0U && landing->by == quiet_landing_by(key->owner) && landing->epoch == key->epoch) {
+        /* A landed visit counts from its landing's note. */
+        c->sync_seq = landing->sync_seq;
+        c->visit_decode_m = landing->landed_decode_m;
+        return;
+    }
+    /* A park still in flight counts from its first publication. */
     c->sync_seq = owner->sync_seq;
     c->visit_decode_m = dsd_decode_now_mono_s();
 }
@@ -635,6 +643,10 @@ scan_quiet_publish_eligibility(const dsd_opts* opts, dsd_state* state, int owner
     if (!quiet_publication_eligible(opts, owner, owner_kind, e)) {
         quiet_end(c, SCAN_QUIET_SUSPENDED);
         c->key = e->key;
+        /* What a park in flight is adopted by at its landing, so the visit keeps its baseline even when no check of
+           it ever started. */
+        c->epoch_counter = owner->landing_epoch;
+        c->frequency_hz = e->frequency_hz;
         return;
     }
     if (c->phase == SCAN_QUIET_SUSPENDED || !quiet_published_as_measured(c, e)) {

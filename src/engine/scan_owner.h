@@ -30,6 +30,10 @@ typedef struct {
     /** dsd_realtime_mono_ms() when the landing was noted: where a quiet check's wait for its capture is bounded
         from. */
     uint64_t landed_realtime_ms;
+    /** The owner's sync sequence and the decode-mono time when the landing was noted: a quiet check's activity baseline
+        for the visit, so a sync or carrier heard on the landed channel before the check is first published counts. */
+    uint64_t sync_seq;
+    double landed_decode_m;
 } dsd_engine_scan_landing;
 
 /** The -Y row or trunk-scan target a frequency typed by hand went to, whose confirmed landing holds the scan there

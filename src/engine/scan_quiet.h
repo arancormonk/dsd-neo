@@ -24,11 +24,12 @@
  *   until the visit changes.
  *
  * A visit is (owner, landing epoch, tune request). A sync or a carrier (dsd_engine_scan_quiet_note_sync()) anywhere in
- * the visit, from its first publication on, ends its check, suspended or not, so no check is made for it again; a
- * changed visit, or any counter its revision snapshot holds, suspends it. The frame-sync hunt runs the check through dsd_frame_sync_hook_scan_quiet_service()
- * (dsd_engine_scan_quiet_service()), and engine service through scan_quiet_publish_eligibility(). RF power is never
- * activity: nothing here touches holds, activity stamps, history or events. Radio-off builds compile it as a no-op
- * service.
+ * the visit ends its check, suspended or not, so no check is made for it again: a landed visit counts from its
+ * landing's note, a park still in flight from its first publication (and keeps that when its landing adopts it). A
+ * changed visit, or any counter its revision snapshot holds, suspends it. The frame-sync hunt runs the check through
+ * dsd_frame_sync_hook_scan_quiet_service() (dsd_engine_scan_quiet_service()), and engine service through
+ * scan_quiet_publish_eligibility(). RF power is never activity: nothing here touches holds, activity stamps, history
+ * or events. Radio-off builds compile it as a no-op service.
  */
 #ifndef DSD_NEO_ENGINE_SCAN_QUIET_H
 #define DSD_NEO_ENGINE_SCAN_QUIET_H
@@ -138,18 +139,22 @@ int scan_quiet_session_supported(const dsd_opts* opts);
 int scan_quiet_wants_eligibility(const dsd_opts* opts, const dsd_state* state, int owner);
 
 /** Publish the visit on air @p e for @p owner_kind (@p e->key.owner), then run one service step (start, collect,
- * expire). An ineligible visit is SUSPENDED; a new visit, or one republished after a suspension, starts again; a DONE
- * visit stays DONE. No-op with the setting off or in a radio-off build. */
+ * expire). It reconciles the check first, adopting a park measured or suspended in flight once its landing is noted. A
+ * DONE visit stays DONE. A sync or a carrier heard since the visit's activity baseline (its landing's note, or a park's
+ * first publication in flight) ends the visit DONE at once, eligible or not, with nothing requested. Otherwise an
+ * ineligible visit is SUSPENDED (keeping what its landing adopts it by); a new visit, one republished after a
+ * suspension, or one published with other facts than were measured starts again. No-op with the setting off or in a
+ * radio-off build. */
 void scan_quiet_publish_eligibility(const dsd_opts* opts, dsd_state* state, int owner_kind,
                                     const scan_quiet_eligibility* e);
 
-/** The skip decision's quiet half: 1 when @p owner_kind's READY result is still the visit's, its
- * revisions unchanged and @p current (the classes, analog kind and width, and DSP rate in force now, as engine service
- * works them out for its eligibility) equal to what was measured, its capture and output generation unchanged with no
- * tune pending, at most 250 ms old, with no sync in the visit, no analog carrier heard and (trunk scan) no allowed
- * activity in the visit; the result is consumed (DONE: one skip per visit). Any other READY result is declined (DONE), a
- * NULL @p current among them, and 0 returned; 0 too with no READY result, or one whose trunk-scan park has not been
- * noted as landed yet. */
+/** The skip decision's quiet half: 1 when @p owner_kind's READY result is still the visit's, its revisions unchanged
+ * and @p current (the classes, analog kind and width, and DSP rate in force now, as engine service works them out for
+ * its eligibility) equal to what was measured, its capture and output generation unchanged with no tune pending, at
+ * most 250 ms old, with no sync in the visit, no analog carrier heard and (trunk scan) no allowed activity in the
+ * visit; the result is consumed (DONE: one skip per visit). Any other READY result is declined (DONE), a NULL
+ * @p current among them, and 0 returned; 0 too with no READY result, or one whose trunk-scan park has not been noted
+ * as landed yet. */
 int scan_quiet_apply(const dsd_opts* opts, dsd_state* state, int owner_kind, const scan_quiet_eligibility* current);
 
 /** The engine saw @p owner_kind's READY result and will not apply it: declined (DONE), unless @p guard_lost (the tick

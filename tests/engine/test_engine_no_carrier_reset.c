@@ -12273,6 +12273,40 @@ test_y_quiet_skips_a_landed_row(int typed, int on) {
     return rc;
 }
 
+/* -Y: a row landed mid-transmission counts its syncs from its landing's note. Synced frames after the landing and
+   before the first noCarrier() pass publishes the row end its check: the tap is never asked and the row keeps its
+   hangtime. With no frames the row is measured and steps on its quiet result. */
+static int
+test_y_quiet_counts_from_the_landing(int heard) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
+    const long int base_hz = 481012500L + (heard ? 0L : 4000000L);
+    int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, 0, 1, base_hz) == 0);
+    if (heard) {
+        g_frame_sync_type = DSD_SYNC_DMR_BS_VOICE_POS;
+        run_synced_frames(opts, state, 2, -1);
+        g_frame_sync_type = DSD_SYNC_NXDN_POS;
+    }
+    noCarrier(opts, state);
+    noCarrier(opts, state);
+    if (heard) {
+        rc |= expect_true("frames after the landing: no request, no step",
+                          g_yq.requests == 0 && g_rtl_tune_calls == 0 && g_yq.notices == 0);
+    } else {
+        rc |= expect_true("no frames: measured and stepped", g_yq.requests == 1 && g_rtl_tune_calls == 1);
+    }
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y counts from the landing, heard %d\n", heard);
+    }
+    return rc;
+}
+
 /* -Y: a sync heard while a landed row's check was suspended (here a live-loop YSF sync after an invalidation) ends the
    row's check when it is published again: nothing more is requested and the row keeps its hangtime. With nothing heard
    the restarted check measures and the row steps on its quiet result. */
@@ -12602,6 +12636,8 @@ test_scan_quiet_decisions(void) {
     rc |= test_y_quiet_open_analog_carrier_stays();
     rc |= test_y_quiet_sync_while_suspended_ends_the_check(1);
     rc |= test_y_quiet_sync_while_suspended_ends_the_check(0);
+    rc |= test_y_quiet_counts_from_the_landing(1);
+    rc |= test_y_quiet_counts_from_the_landing(0);
     rc |= test_live_y_skips_a_quiet_row(1);
     rc |= test_live_y_skips_a_quiet_row(0);
     rc |= test_live_trunk_scan_skips_a_quiet_target(1);
