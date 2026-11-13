@@ -61,6 +61,29 @@ extern "C" {
  */
 #define DSD_P25P1_C4FM_ANCHORED_MAX_SIGN_ERRORS 6
 
+/**
+ * @brief Sign errors (of 24) a P25p1 sync word may have anywhere on the C4FM chain's 4800/4 hunt, with no anchor, and be
+ * accepted as an acquisition candidate, either polarity.
+ *
+ * On receiver noise a window lies within one sign of either polarity's word once in about 336,000 (25 of 2^24 each), so
+ * the hunt meets such a window about 51 times an hour on the 4800/4 profile; the strict NID behind it is what keeps
+ * those from decoding (the budget in docs/code_map.md).
+ */
+#define DSD_P25P1_ACQUISITION_MAX_SIGN_ERRORS   1
+
+/**
+ * @brief The slips (in symbols) after an acquisition candidate's first symbol a P25p1 sync word of its own polarity is
+ * never pre-empted over: every one that overlaps it.
+ *
+ * Anywhere on the hunt nothing says where the word must start, so a window one sign off can be a real word's head with
+ * the symbols before it: the window's last 1 to 23 symbols are then that word's first. Past the 13 the exact-word guard
+ * covers (DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS), the window's tail is the word's head for 1 to 10 symbols, which the
+ * word's own tail is 1 to 5 signs from, so within one sign of the word it is only for one tail symbol: a word whose one
+ * sign error is its last symbol is refused, and a real word starting 14 to 23 symbols on is never swallowed by the
+ * candidate's NID read.
+ */
+#define DSD_P25P1_ACQUISITION_NO_STEAL_SHIFTS   23
+
 /** How the hunt accepted the sync word of the P25p1 frame being decoded, which says what its NID must pass. */
 typedef enum {
     /** Matched exactly (normal, inverted, or rotated on the CQPSK chain): the NID's own rules. */

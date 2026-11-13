@@ -1248,8 +1248,8 @@ dispatch_c4fm_frame(dsd_opts* opts, dsd_state* state, uint8_t duid, uint32_t rea
 }
 
 /* On the C4FM chain the frame sync names each exact P25p1 word to the symbol grid's anchor from its second symbol (the
-   recording starts on the first, and the measurement needs a symbol of margin), either polarity. A word within the
-   tolerance names nothing before its NID validates, and the CQPSK chain's grid takes one sample a symbol. */
+   recording starts on the first, and the measurement needs a symbol of margin), either polarity. A word within a
+   tolerance (anchored or hunt-wide) names nothing, and the CQPSK chain's grid takes one sample a symbol. */
 static void
 test_p25p1_c4fm_sync_names_the_grid_word(void) {
     static dsd_state state;
@@ -1263,6 +1263,8 @@ test_p25p1_c4fm_sync_names_the_grid_word(void) {
     frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_NEG, DSD_P25P1_SYNC_EXACT, -1, 0);
     assert(g_grid_notes == 2 && strcmp(g_grid_note, &INV_P25P1_SYNC[1]) == 0);
     frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_POS, DSD_P25P1_SYNC_ANCHORED, 0x1A6, 3);
+    assert(g_grid_notes == 2);
+    frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_NEG, DSD_P25P1_SYNC_ACQUISITION, -1, 1);
     assert(g_grid_notes == 2);
 
     state.rf_mod = 1;

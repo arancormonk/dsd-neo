@@ -1078,7 +1078,11 @@ Notes
   guard that keeps NXDN96 and M17 from matching inside a P25 frame and the DMR slot 2 state go back to what they were,
   the system shown for another protocol's carrier stays, and a `-Y` row that scans for voice does not count it as the
   row's first sync. The search goes on from the symbols that word and its NID took, so a real sync word that starts
-  among them and ends after them (another P25 word, NXDN, YSF, M17; not DMR) is still found.
+  among them and ends after them (another P25 word, NXDN, YSF, M17; not DMR) is still found. Anywhere else, with no
+  frame decoded yet (a carrier's first frame, or the first after a fade or a lost frame), a word with 1 of its 24
+  symbols on the wrong side of zero is tried too, with the same NID check, whatever NAC it names (the console mark
+  reads `acquisition sync`). On receiver noise such a word turns up about 25 times an hour under `-f1` and its NID
+  check failed every time in 8 hours of measured noise; nothing is published from it.
 - P25 Phase 2 on CQPSK from a radio or `--iq-replay` input does the same for its sync word, with up to 4 of its 40 bits
   wrong, at one place only: right where the next four timeslots must start after four timeslots whose own ISCH said
   where in the superframe they were, on the same carrier, tune and stream. The four timeslots behind such a word decode

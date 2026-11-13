@@ -6030,8 +6030,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   as on C4FM (`frame_sync_accept_p25p1()`), since nothing else sets levels there. The analog audio chain takes 3 kHz
   deviation (15000) as the RTL FSK source's reference (`dsd_analog_audio_source_gain()`). Tests: `DSP_FSK_MODEM` (counts
   per hertz at 24-96 kHz, past the PCM range unclipped, a level independent of loud noise or a reset before it),
-  `DECODE_IQ_P25P1_C4FM_NO_HDU_F1` / `_FA` (two generated no-HDU calls after the carrier was off: all IMBE frames read,
-  none with more than two corrections).
+  `DECODE_IQ_P25P1_C4FM_NO_HDU_F1` / `_FA` (two generated no-HDU calls after the carrier was off: all IMBE frames read;
+  under `-f1` every frame outside the calls' first LDUs with no correction, under `-fa` none with more than two).
 - Sample statistics in `<dsd-neo/dsp/simd_stats.h>` dispatch to AVX2, SSE2, NEON or scalar implementations.
   `dsd_simd_extrema_avg2()` supplies the two-lowest/two-highest averages for the core symbol slicer's window,
   counting duplicate samples. Non-finite values and signed-zero ties use the original ordered comparisons.
@@ -6109,7 +6109,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   frame's or window's sync must take on the RTL CQPSK 4-level path (`frame_sync_cqpsk_4level_enabled()`; 4800/4 for
   Phase 1, 6000/4 for Phase 2), under the dibit map and polarity the anchor's exact sync matched, scored by Gray-coded
   bit distance (`frame_sync_p25_sync_bit_distance()`); Phase 1 also on the C4FM chain's 4800/4 hunt, 6 of 24 signs
-  (`dsd_p25p1_sync_sign_distance()`, every input and build; Protocols, P25 Phase 1, the C4FM item). Both share the sync-time context (`dsd_p25_sync_context`:
+  (`dsd_p25p1_sync_sign_distance()`, every input and build), and there anywhere with no anchor 1 of 24
+  (`frame_sync_try_acquisition_p25p1()`; Protocols, P25 Phase 1, the C4FM items). Both share the sync-time context (`dsd_p25_sync_context`:
   symbol clock and epoch, input generation, carrier count, accepted tuning generation, sync history drops, SPS profile,
   modulation, map, polarity), captured at every accept of their protocol and checked where the word is scored and when
   the frame or window reports itself; a pending off-thread tune is checked by the frame sync where it captures and
@@ -10428,6 +10429,36 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     `ENGINE_PROTOCOL_DISPATCH` (no identity note behind a tolerant word), `ENGINE_SCAN_VOICE_GATE` (a dropped frame
     starts no qualify window). CQPSK keeps its own accept effects (no hold, no carry: on the RTL path the next symbol
     replaces the levels either way); the identity and voice gate rules hold for it too.
+  - C4FM hunt-wide (`frame_sync_try_acquisition_p25p1()`, after the anchor's try): with no anchor waiting (a waiting one
+    scores its own position and its first window spends it), anywhere on the C4FM chain's 4800/4 hunt, a window within
+    `DSD_P25P1_ACQUISITION_MAX_SIGN_ERRORS` (1 of 24) sign of either polarity's word is an acquisition candidate
+    (`DSD_P25P1_SYNC_ACQUISITION`): a carrier's first frame, or the first after a fade or a lost frame. It passes the
+    exact-word guard (1-13 symbols) and, for its own polarity's word, every later overlap
+    (`DSD_P25P1_ACQUISITION_NO_STEAL_SHIFTS` 23: the window's last 1-10 symbols must not be the word's first; the word's
+    own tail is 1-5 signs from its head, so only a word whose one sign error is its last symbol is refused), so
+    `P25P1_SYNC[:23] + P25P1_SYNC` is refused and the real word 23 symbols on is matched. Its frame decodes only behind
+    a strict NID (`p25p1_nid_verdict_strict()`, whatever usable NAC it names: no anchor names one), and it is held, put
+    back, charged and carried as an anchored candidate is. Diagnostics `acquisition_syncs`, `acquisition_frames`; the
+    console marks `[acquisition sync, n sign errors]`. Cost: one pass over the window per 4800/4 C4FM hunt symbol no
+    exact matcher took, which stops once both polarities are 2 signs off (a few symbols on noise). False-sync budget,
+    fixed before it was measured: 8 seeds of 30 min of filtered receiver noise under `-f1` and under `-fa` (8 h), 1 h of
+    generated traffic then noise, and a mixed-protocol stream, one realization each. Limits and results: candidates at
+    most 1.5 times the independent-sign model (25 of 2^24 windows a polarity, 51/h on a 4800/4 hunt; limit 77/h): 25.5/h
+    under `-f1` (102 in 4 h), 1.75/h under `-fa` (7 in 4 h, which spends little of its hunt on 4800/4 C4FM); strict-NID
+    passes on noise 0 in 8 h (109 candidates; 95 % upper bound 0.37/h); false publications 0 (event logs unchanged on
+    noise, traffic and the mixed stream); real frames displaced against the anchored-only build 0, on the committed C4FM
+    fixtures, their noisy derivatives, synthetic streams and the public recordings (4 realizations each, `-f1` and
+    `-fa`), and on the traffic under `-f1` (truth frames whose sync was accepted: 5 more, none fewer). Under `-fa` the
+    traffic read 48 frames more, though the start of one control channel segment (38 frames) was met later: the hunt
+    stayed on the segment before it longer and its profile rotation came back later, which any decoding gain under `-fa`
+    can do (a decided limit). On the committed DMR, NXDN, YSF, dPMR and M17 fixtures under `-fa` (another protocol's
+    word 14-23 symbols behind a candidate, which no guard covers) the hunt-wide build reads the same frames as the
+    anchored-only one (25 fixtures, 4 realizations each: decode logs identical). Not claimed past that: a candidate on
+    noise whose NID lands within 4 corrections of a codeword with clean parity, a usable NAC and a defined DUID (about 1
+    in 10^9 random NIDs) would decode, and its payload's own FEC/CRC would judge it. Tests:
+    `FRAME_SYNC_P25P1_C4FM_TOLERANCE` (one sign accepted at every position but the last and two refused, both
+    polarities, C4FM 4800/4 with Phase 1 only; the 23-symbol steal; cold acquisition from uncalibrated levels kept and
+    put back), `P25_P1_TOLERANT_NID` (the strict NID behind it).
 - A TSDU ends at its last block (`processTSBK()`, `src/protocol/p25/phase1/p25p1_tsbk.c`): a block that passed its CRC
   reads on when its last-block flag is clear and ends the TSDU when it is set. A block that failed its CRC says nothing
   either way, and read on behind its flag a one-block TSDU took the next frame's sync and NID for a second and third

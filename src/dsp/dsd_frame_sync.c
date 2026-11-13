@@ -1024,6 +1024,75 @@ frame_sync_try_tolerant_p25p1(frame_sync_match_ctx* ctx) {
     return synctype;
 }
 
+/* Whether the last 1 to @p span - DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS symbols of the 24-symbol C4FM window
+   @p window are the first of the P25p1 word of its polarity (@p inverted): a word starting 14 to @p span symbols after
+   the window's first would overlap it (DSD_P25P1_ACQUISITION_NO_STEAL_SHIFTS). The guard covers the shorter shifts. */
+static int
+frame_sync_window_ends_in_own_word_head(const char* window, int inverted, int span) {
+    const char* word = inverted ? INV_P25P1_SYNC : P25P1_SYNC;
+    for (int head = 1; head <= span - DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS && head < 24; head++) {
+        if (memcmp(window + 24 - head, word, (size_t)head) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The sign errors between the C4FM window and the P25p1 word of the polarity it is nearer (*@p out_inverted), once it
+   lies within DSD_P25P1_ACQUISITION_MAX_SIGN_ERRORS of one; -1 as soon as it cannot (both counts past it, which a
+   window of noise reaches within a few symbols). Every symbol counts against exactly one polarity's word. */
+static int
+frame_sync_p25p1_acquisition_errors(const char* window, int* out_inverted) {
+    int off_normal = 0;
+    int off_inverted = 0;
+    for (int i = 0; i < 24; i++) {
+        if (window[i] == P25P1_SYNC[i]) {
+            off_inverted++;
+        } else if (window[i] == INV_P25P1_SYNC[i]) {
+            off_normal++;
+        } else {
+            return -1;
+        }
+        if (off_normal > DSD_P25P1_ACQUISITION_MAX_SIGN_ERRORS
+            && off_inverted > DSD_P25P1_ACQUISITION_MAX_SIGN_ERRORS) {
+            return -1;
+        }
+    }
+    *out_inverted = off_normal > DSD_P25P1_ACQUISITION_MAX_SIGN_ERRORS;
+    return *out_inverted ? off_inverted : off_normal;
+}
+
+/* After every exact matcher of every protocol and the anchor's try failed at this position: on the C4FM chain's 4800/4
+ * hunt, anywhere, with no anchor waiting (one that waits scores its own position, and its first window spends it), a
+ * window within DSD_P25P1_ACQUISITION_MAX_SIGN_ERRORS sign of either polarity's word
+ * (an acquisition candidate, DSD_P25P1_SYNC_ACQUISITION): a carrier's first frame, or the first after a fade, whose
+ * word came through a symbol off. Neither the head of another exact word a slip of 1 to 13 symbols would put there
+ * (frame_sync_window_ends_in_exact_head()), nor the head of its own polarity's word any later overlap would
+ * (DSD_P25P1_ACQUISITION_NO_STEAL_SHIFTS). Accepted as the anchored try accepts (CENTER_SKIP, the accept held until the
+ * NID speaks); its frame decodes only behind a strict NID, whatever NAC it names. */
+static int
+frame_sync_try_acquisition_p25p1(frame_sync_match_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    int inverted = 0;
+    if (state->rf_mod != 0 || state->p25_p1_sync_anchor.valid || !frame_sync_p25p1_enabled(ctx)
+        || !frame_sync_match_window_ready(ctx, 24) || dsd_state_carrier_settling(state, 24U)) {
+        return DSD_SYNC_NONE;
+    }
+    const int errors = frame_sync_p25p1_acquisition_errors(ctx->synctest, &inverted);
+    if (errors < 0
+        || frame_sync_window_ends_in_exact_head(ctx, ctx->synctest, 24, DSD_P25P1_TOLERANT_SYNC_NO_STEAL_SHIFTS)
+        || frame_sync_window_ends_in_own_word_head(ctx->synctest, inverted, DSD_P25P1_ACQUISITION_NO_STEAL_SHIFTS)) {
+        return DSD_SYNC_NONE;
+    }
+    const int synctype = inverted ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS;
+    const frame_sync_p25p1_tolerance tolerance = {DSD_P25P1_SYNC_ACQUISITION, -1, errors};
+    frame_sync_p25p1_candidate_hold(state, ctx->synctest_pos);
+    frame_sync_set_p25_cqpsk_dibit_map(ctx, DSD_P25_CQPSK_DIBIT_MAP_IDENTITY);
+    frame_sync_accept_p25p1(ctx, synctype, inverted ? "-P25p1 " : "+P25p1", FRAME_SYNC_P25_CENTER_SKIP, &tolerance);
+    state->p25_p1_sync_anchor.acquisition_syncs++;
+    return synctype;
+}
+
 static int
 frame_sync_try_p25p1(frame_sync_match_ctx* ctx) {
     if (!frame_sync_p25p1_enabled(ctx) || !frame_sync_match_window_ready(ctx, 24)) {
@@ -2937,10 +3006,13 @@ frame_sync_try_protocol_matches(frame_sync_match_ctx* ctx) {
     /* The P25 anchors' words are tried last, once no matcher of any protocol matched exactly: an exact word never loses
        to a tolerant one. The two anchors score on different profiles (4800/4 and 6000/4), so at most one is live here.
        A word with symbols off is no timing reference, so the symbol-timing diagnostic does not measure it. The P25p1
-       anchor scores on the C4FM chain whatever the input (live radio, I/Q replay, discriminator PCM, symbol
-       captures) and in every build; the CQPSK chain and the P25p2 anchor are the RTL path's. */
+       anchor, and after it the C4FM hunt-wide try, score on the C4FM chain whatever the input (live radio, I/Q replay,
+       discriminator PCM, symbol captures) and in every build; the CQPSK chain and the P25p2 anchor are the RTL path's. */
     if (sync_type == DSD_SYNC_NONE) {
         int tolerant = frame_sync_try_tolerant_p25p1(ctx);
+        if (tolerant == DSD_SYNC_NONE) {
+            tolerant = frame_sync_try_acquisition_p25p1(ctx);
+        }
 #ifdef USE_RADIO
         if (tolerant == DSD_SYNC_NONE) {
             tolerant = frame_sync_try_tolerant_p25p2(ctx);

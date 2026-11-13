@@ -226,8 +226,8 @@ test_anchored_accepts_at_t_refuses_past_it(void) {
         assert(match_at(&opts, &state, window, 1000U + TSDU_1) == DSD_SYNC_NONE);
         assert(state.p25_p1_sync_anchor.valid == 0U);
         assert(state.p25_p1_sync_anchor.tolerant_syncs == 0U);
-        /* Spent: the same word one sign off a symbol later is not scored. */
-        word_with_sign_errors(word, 1, window);
+        /* Spent: the same word two signs off (past the hunt-wide tolerance) a symbol later is not scored. */
+        word_with_sign_errors(word, 2, window);
         assert(match_at(&opts, &state, window, 1000U + TSDU_1 + 1U) == DSD_SYNC_NONE);
         teardown(&state);
     }
@@ -237,9 +237,9 @@ test_anchored_accepts_at_t_refuses_past_it(void) {
     assert(match_at(&opts, &state, INV_P25P1_SYNC, 1000U + TSDU_1) == DSD_SYNC_P25P1_NEG);
     assert(dsd_frame_sync_p25p1_sync_kind(&state, NULL, NULL) == DSD_P25P1_SYNC_EXACT);
     teardown(&state);
-    /* No anchor, no tolerance: one sign off is lost, as before. */
+    /* No anchor: two signs off are lost, as before. */
     setup(&opts, &state);
-    word_with_sign_errors(P25P1_SYNC, 1, window);
+    word_with_sign_errors(P25P1_SYNC, 2, window);
     assert(match_at(&opts, &state, window, 1000U) == DSD_SYNC_NONE);
     teardown(&state);
 }
@@ -556,6 +556,134 @@ test_rejected_candidate_does_not_swallow_a_later_word(void) {
     }
 }
 
+/* With no anchor, anywhere on the hunt: a word one sign off is an acquisition candidate, of either polarity, wherever
+   the error falls but on its last symbol (which makes its tail the head of a word starting 23 symbols on); two signs off
+   is not. Only on the C4FM chain's 4800/4 hunt with Phase 1 on. */
+static void
+test_acquisition_accepts_one_sign_refuses_two(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    char window[SYNC + 1];
+    for (int inverted = 0; inverted <= 1; inverted++) {
+        const char* word = inverted ? INV_P25P1_SYNC : P25P1_SYNC;
+        const int want = inverted ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS;
+        for (int at = 0; at < SYNC; at++) {
+            setup(&opts, &state);
+            DSD_MEMCPY(window, word, sizeof(window));
+            window[at] = window[at] == '1' ? '3' : '1';
+            const int sync = match_at(&opts, &state, window, 2000U);
+            if (at == SYNC - 1) {
+                assert(sync == DSD_SYNC_NONE);
+                assert(state.p25_p1_sync_anchor.acquisition_syncs == 0U);
+            } else {
+                assert(sync == want);
+                int nac = 0;
+                unsigned int errors = 0U;
+                assert(dsd_frame_sync_p25p1_sync_kind(&state, &nac, &errors) == DSD_P25P1_SYNC_ACQUISITION);
+                assert(nac == -1 && errors == 1U);
+                assert(state.p25_p1_sync_anchor.acquisition_syncs == 1U);
+                assert(state.p25_p1_sync_anchor.frame.sync_clock == 2000U);
+                assert(state.p25_p1_sync_candidate.valid == 1U);
+            }
+            teardown(&state);
+        }
+        setup(&opts, &state);
+        word_with_sign_errors(word, 2, window);
+        assert(match_at(&opts, &state, window, 2000U) == DSD_SYNC_NONE);
+        teardown(&state);
+    }
+    /* Not on the CQPSK or GFSK chain, not on another profile, not with Phase 1 off. */
+    word_with_sign_errors(P25P1_SYNC, 1, window);
+    for (int c = 0; c < 4; c++) {
+        setup(&opts, &state);
+        if (c == 0) {
+            state.rf_mod = 1;
+        } else if (c == 1) {
+            state.rf_mod = 2;
+        } else if (c == 2) {
+            state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+        } else {
+            opts.frame_p25p1 = 0;
+        }
+        assert(match_at(&opts, &state, window, 2000U) == DSD_SYNC_NONE);
+        teardown(&state);
+    }
+}
+
+/* A steal by overlap: the word's first 23 symbols, then the word. The first window is the word one sign off (its
+   last symbol is the real word's first): taken, its NID read would swallow the real word, which ends inside it. It is
+   refused, and the real word is matched exactly where it is, either polarity. */
+static void
+test_acquisition_does_not_steal_an_overlapping_word(void) {
+    for (int inverted = 0; inverted <= 1; inverted++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        const char* word = inverted ? INV_P25P1_SYNC : P25P1_SYNC;
+        char head[SYNC];
+        DSD_MEMCPY(head, word, SYNC - 1);
+        head[SYNC - 1] = '\0';
+        setup(&opts, &state);
+        stream_reset(0x5EA1U);
+        append_data(200);
+        append_signs(head, NULL);
+        const int real = g_len;
+        append_signs(word, NULL);
+        append_data(400);
+        assert(next_sync(&opts, &state, 0) == (inverted ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS));
+        assert(sync_start(&state) == real);
+        assert(dsd_frame_sync_p25p1_sync_kind(&state, NULL, NULL) == DSD_P25P1_SYNC_EXACT);
+        assert(state.p25_p1_sync_anchor.acquisition_syncs == 0U);
+        teardown(&state);
+    }
+}
+
+/* A carrier's first word comes through one sign off (cold: no anchor, no levels calibrated yet). It is an acquisition
+   candidate: its NID is read on the warm start from its own symbols. A strict NID keeps that and counts the frame; a
+   failed one puts the hunt's levels and lock back and the hunt goes on from the candidate's symbols, finding the next
+   word exactly. */
+static void
+test_cold_acquisition(void) {
+    for (int nid_ok = 0; nid_ok <= 1; nid_ok++) {
+        for (int inverted = 0; inverted <= 1; inverted++) {
+            static dsd_opts opts;
+            static dsd_state state;
+            const char* word = inverted ? INV_P25P1_SYNC : P25P1_SYNC;
+            const int want = inverted ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS;
+            static const int flip[] = {9, -1};
+            setup(&opts, &state);
+            /* Cold: the levels an acquisition reset leaves, nothing calibrated yet. */
+            dsd_frame_sync_reset_acquisition(&opts, &state, 1);
+            assert(fabsf(state.max - 15000.0f) < 1e-3f && fabsf(state.min + 15000.0f) < 1e-3f);
+            stream_reset(0xC01DU + (uint32_t)inverted);
+            append_data(500);
+            const int first = g_len;
+            append_signs(word, flip);
+            append_data(TSDU_1 - SYNC);
+            append_signs(word, NULL);
+            append_data(400);
+            assert(next_sync(&opts, &state, 0) == want && sync_start(&state) == first);
+            unsigned int errors = 0U;
+            assert(dsd_frame_sync_p25p1_sync_kind(&state, NULL, &errors) == DSD_P25P1_SYNC_ACQUISITION && errors == 1U);
+            assert(fabsf(state.max - k_word_level) < 1e-4f && fabsf(state.min + k_word_level) < 1e-4f);
+            assert(state.carrier == 1 && state.lastsynctype == want);
+            dispatch(&state, nid_ok, TSDU_1, TSDU_1 - PAD);
+            if (nid_ok) {
+                assert(state.p25_p1_sync_anchor.acquisition_frames == 1U);
+                assert(fabsf(state.max - k_word_level) < 1e-4f);
+            } else {
+                assert(state.p25_p1_sync_anchor.acquisition_frames == 0U);
+                assert(state.carrier == 0 && state.lastsynctype == DSD_SYNC_NONE);
+                /* Uncalibrated again, as before the candidate. */
+                assert(fabsf(state.max - 15000.0f) < 1e-3f && fabsf(state.min + 15000.0f) < 1e-3f);
+                assert(fabsf(state.umid - 9375.0f) < 1e-3f && fabsf(state.lmid + 9375.0f) < 1e-3f);
+            }
+            assert(next_sync(&opts, &state, 0) == want && sync_start(&state) == first + TSDU_1);
+            assert(dsd_frame_sync_p25p1_sync_kind(&state, NULL, NULL) == DSD_P25P1_SYNC_EXACT);
+            teardown(&state);
+        }
+    }
+}
+
 /* Where each getFrameSync() call over the rest of the stream ends without a sync (the symbol it ended on), and the
    profile's hunt budget then, after a validated TSDU whose successor's word comes through @p errors signs off. */
 static void
@@ -612,6 +740,9 @@ main(void) {
     test_tolerant_sync_after_tsdus();
     test_rejected_candidate_does_not_swallow_a_later_word();
     test_dropped_candidate_keeps_the_hunt_timing();
+    test_acquisition_accepts_one_sign_refuses_two();
+    test_acquisition_does_not_steal_an_overlapping_word();
+    test_cold_acquisition();
     DSD_FPRINTF(stderr, "P25 P1 C4FM tolerance: OK\n");
     return 0;
 }

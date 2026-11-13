@@ -827,9 +827,14 @@ LSF.
 `tools/scan_quiet_reception.py`'s LDU generator (`p25_ldu_bits()`), each six LDUs whose voice frames are IMBE frames of
 all-zero parameters (`p25_imbe_silent_bits()`: every codeword known, interleaved as `p25p1_const.h` reads them), keyed
 for 1 ms either side and with the carrier off for 0.3 s before, between and after them. `DECODE_IQ_P25P1_C4FM_NO_HDU_F1`
-needs all 108 IMBE frames and none with more than two corrections, `_FA` 99 (the AUTO hunt's rotation misses the first
-call's first LDU1). Before the FSK discriminator's fixed scale the first LDU of each call needed up to 13 corrections a
-frame (`-f1`) and 9 (`-fa`).
+needs all 108 IMBE frames, at least the 90 outside the two calls' first LDUs with no correction at all, and none with
+more than five. A call's first LDU reads without correction too when the hunt matched its sync word exactly, since the
+grid is then placed on that word; the word just after the key-up ramp can come out one sign off by rounding alone (the
+optimized builds read the first call's that way: 99 frames without correction, against 108 in Debug), and the
+hunt-wide tolerance then accepts it on the grid the hunt left, a sample late, at up to five corrections a frame. `_FA`
+needs 99 frames (the AUTO hunt's rotation can miss the first call's first LDU1) and none with more than two
+corrections. Before the FSK discriminator's fixed scale the first LDU of each call needed up to 13 corrections a frame
+(`-f1`) and 9 (`-fa`).
 
 `nxdn96_synth` (192 kB), `nxdn48_synth` (384 kB) and `ysf_synth` (192 kB) (`SLICER_SYNTH`, issue #834) are clean
 frames from `tools/scan_quiet_reception.py`'s generators (`nxdn_levels()`, `ysf_levels()`, the same symbols its

@@ -488,9 +488,73 @@ test_dropped_candidate_is_put_back(void) {
     free(opts);
 }
 
+/* Behind a word accepted hunt-wide on C4FM (no anchor) a strict NID decodes the frame whatever usable NAC it names,
+   another than the carrier's included, at up to four corrections; it is counted, and anchors the next unit. Anything
+   short of a strict NID drops the frame as behind an anchored word: parity disagreeing, five corrections, a borrowed
+   NAC, 0x000 or 0xFFF, a soft decode past the BCH radius. */
+static void
+test_acquisition_needs_a_strict_nid(void) {
+    static const int counts[] = {0, 4};
+    for (size_t c = 0; c < sizeof(counts) / sizeof(counts[0]); c++) {
+        dsd_opts* opts = new_opts();
+        dsd_state* state = new_state(opts);
+        const nid_air other = nid_with_errors(0x0E1, DUID_LDU1, counts[c]);
+        CHECK(dispatch_held_candidate(opts, state, &other, DSD_P25P1_SYNC_ACQUISITION, -1)
+              == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+        CHECK(g_ldu1_frames == 1);
+        CHECK(state->nac == 0x0E1);
+        CHECK(state->p25_p1_sync_anchor.acquisition_frames == 1U);
+        CHECK(state->p25_p1_sync_anchor.tolerant_frames == 0U);
+        CHECK(state->p25_p1_sync_anchor.valid == 1U);
+        CHECK(g_carried_symbols == -1);
+        free(state);
+        free(opts);
+    }
+
+    nid_air cases[6];
+    cases[0] = nid_with_errors(NAC, DUID_LDU1, 0);
+    cases[0].bits[NID_PARITY_BIT] ^= 1;
+    cases[1] = nid_with_errors(NAC, DUID_LDU1, 5);
+    cases[2] = nid_with_errors(0x000, DUID_LDU1, 0);
+    cases[3] = nid_with_errors(0xFFF, DUID_LDU1, 2);
+    static const int nac_field_errors[] = {0, 2, 4, 6, 8, 10};
+    static const int other_errors[] = {14, 19, 27, 33, 39, 45, 52};
+    make_nid(NAC, DUID_LDU1, &cases[4]);
+    for (int i = 0; i < 6; i++) {
+        cases[4].bits[nac_field_errors[i]] ^= 1;
+    }
+    for (int i = 0; i < 7; i++) {
+        cases[4].bits[other_errors[i]] ^= 1;
+    }
+    cases[5] = nid_with_errors(NAC, DUID_LDU1, 13);
+    cases[5].rel[k_error_bits[11]] = REL_DOUBTFUL;
+    cases[5].rel[k_error_bits[12]] = REL_DOUBTFUL;
+    CHECK(decode_alone(&cases[4], NAC).nac_borrowed == 1);
+    CHECK(decode_alone(&cases[5], NAC).error_count > P25P1_NID_BCH_RADIUS);
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        dsd_opts* opts = new_opts();
+        dsd_state* state = new_state(opts);
+        const unsigned int failures = state->nid_failures_total;
+        CHECK(dispatch_held_candidate(opts, state, &cases[i], DSD_P25P1_SYNC_ACQUISITION, -1)
+              == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+        CHECK(g_frames == 0);
+        CHECK(state->nid_failures_total == failures);
+        CHECK(state->nac == NAC && p25p1_carrier_nac_established(state) == NAC);
+        CHECK(state->p25_p1_sync_anchor.acquisition_frames == 0U);
+        CHECK(state->carrier == 0 && state->lastsynctype == DSD_SYNC_NONE);
+        CHECK(g_carried_symbols == 24 + NID_DIBITS);
+        if (g_failures != 0) {
+            DSD_FPRINTF(stderr, "  (acquisition case %zu)\n", i);
+        }
+        free(state);
+        free(opts);
+    }
+}
+
 int
 main(void) {
     test_dropped_candidate_is_put_back();
+    test_acquisition_needs_a_strict_nid();
     test_clean_nid_decodes();
     test_strict_nid_drops();
     test_validated_frames_anchor_at_their_length();

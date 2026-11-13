@@ -4,8 +4,8 @@
  */
 
 /* The P25 Phase 1 sync anchor (dsd_p25p1_sync_anchor, <dsd-neo/dsp/p25p1_sync_anchor.h>): its sync-time context, its
- * installation, the position the hunt scores a tolerant word at, and the distances it scores. The matcher that accepts
- * a tolerant word is frame_sync_try_tolerant_p25p1() in dsd_frame_sync.c. On the C4FM
+ * installation, the position the hunt scores a tolerant word at, and the distances it scores. The matchers that accept
+ * a tolerant word are frame_sync_try_tolerant_p25p1() and frame_sync_try_acquisition_p25p1() in dsd_frame_sync.c. On the C4FM
  * chain the same sync and the same report place the symbol grid on each data unit's sync word
  * (<dsd-neo/dsp/symbol_anchor.h>), and a tolerant candidate's accept is held until its NID speaks
  * (dsd_p25p1_sync_candidate). */
