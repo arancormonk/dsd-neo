@@ -45,6 +45,14 @@
 
 /* The owner a protocol's own decoder passes for a frame decoded under this synctype. A test of a borrowed decoder
    (YSF, scrambled dPMR) passes the borrower's protocol instead. */
+
+/* The 16-bit sample the voice outputs stage for an int16-scale float: clamped, then rounded to nearest (issue #861). */
+static short
+voice_pcm16(float v) {
+    v = v > 32767.0f ? 32767.0f : (v < -32768.0f ? -32768.0f : v);
+    return (short)lrintf(v);
+}
+
 static dsd_voice_protocol
 owner_of(int synctype) {
     if (DSD_SYNC_IS_DMR(synctype)) {
@@ -1391,7 +1399,7 @@ test_process_mbe_frame_float_output_runs_the_gain_stage(void) {
             for (int i = 0; i < 160; i++) {
                 float want = 2.0f * expected_audio[i];
                 want = want > 32767.0f ? 32767.0f : (want < -32768.0f ? -32768.0f : want);
-                const short want_s = (short)want;
+                const short want_s = voice_pcm16(want);
                 gained &= state.s_l[i] == want_s;
             }
             DSD_SNPRINTF(tag, sizeof(tag), "%s %s: short frame staged through the gain stage", path ? "dmr" : "p25p1",
@@ -2171,7 +2179,7 @@ test_process_mbe_frame_dstar_header_voice_decodes_as_ambe2400(void) {
             // The gain stage (unity here) stages the frame's short samples in either output format (issue #652).
             int staged = 1;
             for (int i = 0; i < 160; i++) {
-                const short want_s = (short)ref_audio[f][i];
+                const short want_s = voice_pcm16(ref_audio[f][i]);
                 staged &= state.s_l[i] == want_s;
             }
             DSD_SNPRINTF(label, sizeof(label), "dstar-route synctype %d frame %d staged left", sequences[s][f], f);
@@ -2580,7 +2588,7 @@ test_process_mbe_frame_trunked_mono_bs_fallback_gates_to_granted_slot(void) {
     {
         int staged = 1;
         for (int i = 0; i < 160; i++) {
-            const short want_s = (short)expected_audio[i];
+            const short want_s = voice_pcm16(expected_audio[i]);
             staged &= state.s_r[i] == want_s;
         }
         // Float output (-y) stages the slot's short frame through the gain stage too (issue #652).
@@ -2922,7 +2930,7 @@ test_process_mbe_frame_mixed_clear_and_bp(void) {
             const short* staged = slot ? state->s_r : state->s_l;
             for (int sample = 0; sample < 160; sample++) {
                 float difference = actual[sample] - expected_audio[sample];
-                const short want_s = (short)expected_audio[sample];
+                const short want_s = voice_pcm16(expected_audio[sample]);
                 if (!(difference >= -0.000001f && difference <= 0.000001f) || staged[sample] != want_s) {
                     rc = 1;
                 }
@@ -6231,7 +6239,7 @@ x2_sequence_check(int floating_point, int channels, int per_call, int slot1_on, 
         for (int i = 0; i < 160; i++) {
             float v = state->audio_out_temp_buf[i];
             v = v > 32767.0f ? 32767.0f : (v < -32768.0f ? -32768.0f : v);
-            expected[f][i] = (short)v;
+            expected[f][i] = voice_pcm16(v);
             nonzero |= expected[f][i] != 0;
         }
         g_mono_mix_blocks = 0;
