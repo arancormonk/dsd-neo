@@ -10444,7 +10444,15 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     started blind and needed 24 symbols of its own. DMR and X2-TDMA match only windows a call read itself
     (`frame_sync_match_window_own()`: their bursts are decoded back from the rolling payload buffers, which the carried
     symbols never reach), so their words are not taken from the carry and are lost as before, never decoded from a
-    half-empty buffer. A word that ends inside the NID is lost, as behind any accepted false sync. The symbols the hunt
+    half-empty buffer. Decided limits: a dropped candidate's symbols are not read again, so these real words are lost,
+    as behind any accepted false sync: (1) one whose head is the candidate's own tail, the other polarity's P25p1 word
+    included (its first five symbols are the word's last five, so the first 19 symbols of a word one sign off followed
+    by the inverted word is a candidate no guard can tell from a real word one sign off; with that symbol right the
+    exact matcher takes the same window); (2) one that starts after the candidate's window and ends inside the 33
+    symbols its NID read; (3) another protocol's word, or the other polarity's, starting 14-23 symbols into the window,
+    whose head the exact-word guard does not read (`frame_sync_window_ends_in_exact_head()` reads heads of words
+    starting 1-13 symbols on; reading every overlap refused a quarter of real one-sign-off words under `-fa`); and on
+    Phase 2, the exact word inside a rejected tolerant window's 700 dibits (the P2 tolerance's decided limits). The symbols the hunt
     did not count (the window's last, which the accept returned on, and the NID's) are charged to the profile's hunt
     budget (`sps_hunt_counter`) and the carried history resumes the pass where the candidate interrupted it
     (`dsd_frame_sync_history_carry::pass_symbols`, 0 after a no-sync exit), so the dwell and the no-sync exits fall on
@@ -10452,7 +10460,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     depends on (under unlocked `-f1` on RTL input the C4FM/CQPSK probe alternates per dwell). Tests:
     `FRAME_SYNC_P25P1_C4FM_TOLERANCE` (accept at 6 signs and refuse at 7 both polarities; put back and kept; NXDN96 and
     M17 matched after a dropped candidate; tolerant words after one- and two-block TSDUs through `getFrameSync()`; later
-    P25p1 and YSF words not swallowed; no-sync exits and the hunt budget unmoved by a dropped candidate),
+    P25p1 and YSF words not swallowed; the limits (1) and (2) as expected losses, both kinds, both polarities; no-sync
+    exits and the hunt budget unmoved by a dropped candidate),
     `P25_P1_TOLERANT_NID` (the dispatcher's drop puts back, charges and carries, and leaves a DMR identity),
     `ENGINE_PROTOCOL_DISPATCH` (no identity note behind a tolerant word), `ENGINE_SCAN_VOICE_GATE` (a dropped frame
     starts no qualify window). The CQPSK chain's tolerant word is held and put back the same way (on the RTL path the

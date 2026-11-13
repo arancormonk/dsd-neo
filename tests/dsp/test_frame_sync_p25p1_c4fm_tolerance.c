@@ -703,6 +703,83 @@ test_acquisition_does_not_steal_an_overlapping_word(void) {
     }
 }
 
+/* The documented limit of a dropped candidate: a real P25p1 word whose window ends inside the 33 symbols the candidate's
+   NID read is lost, as behind any accepted false sync. Two shapes reach it. One overlaps the candidate's window with a
+   head that is the candidate's own tail: the first 19 symbols of a word one sign off (symbol 9), then the other
+   polarity's word, whose first five symbols are the first word's last five. That window is a word one sign off, which no
+   guard can tell from a real one, and with symbol 9 right it is the word exactly, which the exact matcher takes there
+   too. The other starts behind the candidate's window and ends inside its NID. Both kinds of candidate, both
+   polarities: the candidate is taken and dropped, and the hunt finds nothing after it. */
+static void
+test_dropped_candidate_loses_a_word_ending_inside_its_nid(void) {
+    static const int flip9[] = {9, -1};
+    for (int inverted = 0; inverted <= 1; inverted++) {
+        const char* own = inverted ? INV_P25P1_SYNC : P25P1_SYNC;
+        const char* other = inverted ? P25P1_SYNC : INV_P25P1_SYNC;
+        const int want_own = inverted ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS;
+
+        /* {the candidate's head length, the gap, the real word's polarity, symbol 9 flipped}: the overlap of the other
+           polarity (and the same stream with symbol 9 right), and a word of each polarity inside the NID. */
+        const struct {
+            int head_len;
+            int gap;
+            int other_polarity;
+            int flip;
+        } cases[] = {{19, 0, 1, 1}, {19, 0, 1, 0}, {SYNC, 4, 1, 1}, {SYNC, 9, 0, 1}};
+
+        for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+            static dsd_opts opts;
+            static dsd_state state;
+            char head[SYNC + 1];
+            DSD_MEMCPY(head, own, (size_t)cases[c].head_len);
+            head[cases[c].head_len] = '\0';
+            setup(&opts, &state);
+            stream_reset(0x5EA1U + (uint32_t)c);
+            append_data(200);
+            append_signs(head, cases[c].flip ? flip9 : NULL);
+            append_data(cases[c].gap);
+            append_signs(cases[c].other_polarity ? other : own, NULL);
+            append_data(600);
+            assert(next_sync(&opts, &state, 0) == want_own && sync_start(&state) == 200);
+            if (!cases[c].flip) {
+                /* The exact word: the exact matcher takes the window and its frame reads the later word as its NID. */
+                assert(dsd_frame_sync_p25p1_sync_kind(&state, NULL, NULL) == DSD_P25P1_SYNC_EXACT);
+                teardown(&state);
+                continue;
+            }
+            assert(dsd_frame_sync_p25p1_sync_kind(&state, NULL, NULL) == DSD_P25P1_SYNC_ACQUISITION);
+            /* The real word ends among the symbols the NID reads. */
+            assert(200 + cases[c].head_len + cases[c].gap + SYNC <= 200 + HEAD);
+            dispatch(&state, 0, 0U, 0U);
+            assert(g_pos == 200 + HEAD);
+            assert(next_sync(&opts, &state, 0) == DSD_SYNC_NONE);
+            teardown(&state);
+        }
+
+        /* Anchored: after a validated TSDU, the word at the expected position five signs off, and the other polarity's
+           word starting five symbols behind its window. */
+        static dsd_opts opts;
+        static dsd_state state;
+        setup(&opts, &state);
+        stream_reset(0xA5C4U + (uint32_t)inverted);
+        append_data(300);
+        append_signs(own, NULL);
+        append_data(TSDU_1 - SYNC);
+        const int expected = g_len;
+        append_signs(own, k_flips[5]);
+        append_data(5);
+        append_signs(other, NULL);
+        append_data(600);
+        assert(next_sync(&opts, &state, 0) == want_own && sync_start(&state) == 300);
+        dispatch(&state, 1, TSDU_1, TSDU_1 - PAD);
+        assert(next_sync(&opts, &state, 0) == want_own && sync_start(&state) == expected);
+        assert(dsd_frame_sync_p25p1_sync_kind(&state, NULL, NULL) == DSD_P25P1_SYNC_ANCHORED);
+        dispatch(&state, 0, 0U, 0U);
+        assert(next_sync(&opts, &state, 0) == DSD_SYNC_NONE);
+        teardown(&state);
+    }
+}
+
 /* A carrier's first word comes through one sign off (cold: no anchor, no levels calibrated yet). It is an acquisition
    candidate: its NID is read on the warm start from its own symbols. A strict NID keeps that and counts the frame; a
    failed one puts the hunt's levels and lock back and the hunt goes on from the candidate's symbols, finding the next
@@ -819,6 +896,7 @@ main(void) {
     test_dropped_candidate_keeps_the_hunt_timing();
     test_acquisition_accepts_one_sign_refuses_two();
     test_acquisition_does_not_steal_an_overlapping_word();
+    test_dropped_candidate_loses_a_word_ending_inside_its_nid();
     test_cold_acquisition();
     DSD_FPRINTF(stderr, "P25 P1 C4FM tolerance: OK\n");
     return 0;
