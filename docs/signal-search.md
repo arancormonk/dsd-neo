@@ -1087,8 +1087,8 @@ signal scene without a neighbour, slope or broad interferer 2.18 dB, a neighbour
 The reference runs only while a quiet request is armed, nothing on the decode path. On one core (the driver's
 `--phase cost`, on a host loaded by other work, so high) a whole request takes 0.16 to 0.76 ms at the RTL and SoapySDR
 rates, up to 1.2 ms at 2.5 and 3 MS/s and 1.2 to 3.7 ms at 6 and 10 MS/s; the reference alone (the same bin selection
-and quartile, nine times per request) is 9 to 91 µs of it at the RTL and SoapySDR rates, up to 0.18 ms at 2.5 and 3 MS/s
-and up to 0.4 ms at 6 and 10 MS/s. Judging the ratio against the reference instead of the sideband floor costs nothing
+and quartile, nine times per request) is 9 to 94 µs of it at the RTL and SoapySDR rates, up to 0.18 ms at 2.5 and 3 MS/s
+and up to 0.41 ms at 6 and 10 MS/s. Judging the ratio against the reference instead of the sideband floor costs nothing
 measurable: run against the earlier detector under the same load, the request time differs by a median of 0.4% (−1.6% to
 +5.0% over the 80 rate and class cells).
 

@@ -2294,8 +2294,10 @@ is delayed.
   Silent-channel skip: `--scan-skip-silent` (`--no-scan-skip-silent` turns it off, also over a config file value;
   config `[trunking] scan_skip_silent`) steps on from a row as soon as a quick signal check finds it silent, instead of
   waiting out the `-t` hangtime. The check reads the channel's power against the receiver's noise for about 100 ms,
-  once per visit; a row with anything on it, a held row, an open analog carrier and a row whose voice the voice gate
-  has heard keep their normal timing. It is off by default and is one setting for the session, never a row option.
+  and a row is skipped at most once a visit. A row carrying a signal DSD-neo can receive normally reads busy and keeps
+  its normal timing, and so do a held row, an open analog carrier and a row whose voice the voice gate has heard; weak
+  or very short transmissions can be missed. It is off by default and is one setting for the session, never a row
+  option.
   Some receivers, widths, sample rates and decoder sets get no check (an untyped row under Auto among them); the list,
   the log line and the limits are in [Skipping silent channels](trunk-scan.md#skipping-silent-channels).
   Per-visit ceiling: `--scan-max-visit-ms <ms>` (also `--scan-max-visit-ms=<ms>`; `0` disables, otherwise

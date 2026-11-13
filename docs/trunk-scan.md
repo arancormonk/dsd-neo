@@ -978,8 +978,9 @@ no symbol profile is applied over the monitor. Everything below applies to both 
 Skip-silent lets a scan leave a silent conventional channel early (issue #834). When the receiver lands on a
 conventional trunk-scan target or a `-Y` row, DSD-neo takes one quick reading of the radio signal on that channel. If
 the reading finds nothing there, the scan moves on at once instead of waiting out the target's idle dwell or the `-Y`
-hangtime (`-t`). A channel with anything on it keeps its normal timing. It is off by default, and with it off no scan
-timing changes.
+hangtime (`-t`). A channel that is carrying a signal DSD-neo can receive normally reads busy and keeps its normal
+timing; the [limits](#limits) below list what can be missed. It is off by default, and with it off no scan timing
+changes.
 
 Turn it on with `--scan-skip-silent` (`--no-scan-skip-silent` turns it off, also over a config file value), with
 `[trunking] scan_skip_silent = true`, with the terminal's Trunking > Follow > `Silent channel skip`, which applies at
@@ -1003,21 +1004,20 @@ turned it on).
   NXDN48, dPMR and D-STAR; the channel width an `nfm` or `am` row or target runs. A typed row or target is judged in
   its mode's width. An untyped `-Y` row is judged in every width of the decoders the session runs, and is silent only
   if it is silent in all of them; with the analog monitor on beside digital decoders (`-8`) the monitor's width is
-  judged too. Judging more widths can only mean fewer skips, never a wrong one.
+  judged too. Judging more widths can only mean fewer skips, never an extra one.
 - An ongoing DMR transmission from a single radio sends a 27.5 ms burst every 60 ms. A reading of 90 ms or more always
-  holds a whole slice inside one of those bursts, so such a channel, at a strength DSD-neo can decode, reads busy.
+  holds a whole slice inside one of those bursts, so the burst timing alone never makes such a channel read silent.
 - The threshold and the rest of the measurement come from a calibration against DSD-neo's own reception: a signal
   1 dB weaker than the weakest one DSD-neo still receives was never read as silent in testing, in any mode, width or
-  supported sample rate, with or without busy neighbours (4,198 signal conditions), while noise alone never read busy
-  in testing (880 noise conditions), so a truly silent channel on a flat noise floor reads silent. The method and
-  figures are in
+  supported sample rate, with or without busy neighbours (4,198 signal conditions). Noise alone on a flat noise floor
+  read silent in every test (880 noise conditions, 2.64 million trials). The method and figures are in
   [Quiet-channel calibration](signal-search.md#quiet-channel-calibration).
 
 ### What a skip costs and logs
 
-- A check runs once per visit. It waits for the first samples from the new frequency (up to 1 second after the tune
-  lands), then needs about 100 ms of them and up to 400 ms for its answer. The scan acts on the answer at its next
-  check: on a silent channel that comes every 300 symbols of the sync search (62.5 ms at 4800 symbols/s, 125 ms at
+- A visit is skipped at most once. The check waits for the first samples from the new frequency (up to 1 second after
+  the tune lands), then needs about 100 ms of them and up to 400 ms for its answer. The scan acts on the answer at its
+  next check: on a silent channel that comes every 300 symbols of the sync search (62.5 ms at 4800 symbols/s, 125 ms at
   2400 symbols/s). So a skipped visit lasts about as long as the tune and the reading take, not a whole dwell or
   hangtime.
 - A check that cannot finish (no samples in time, no answer in time, clipped samples) changes nothing: the visit runs
@@ -1037,14 +1037,16 @@ turned it on).
 - Trunked targets: they are never checked.
 - A held target or row (`Y`, or a target or row you typed the frequency of), a conventional activity hold, a target
   whose tone check is still running, and an open analog carrier, whatever its tone or code.
-- A `-Y` row that has heard voice under `--scan-voice-only`: the voice gate decides when it steps. A row the voice gate
-  is still qualifying (no voice heard yet) can be skipped.
+- A `-Y` row under `--scan-voice-only` that has synced or heard voice: the sync ends the check (below), and the voice
+  gate decides when it steps. A row that has not synced yet can be skipped as under any other setting.
 - A list with nowhere else to go: one target or row, or every other one avoided, cooling down after a failed retune,
   or skipped at every visit for its width.
 - A row whose step, walk or entry tune is still pending.
-- Anything that happens after the reading cancels that visit's skip: a sync or a carrier, a hold, an edit to the list
-  or channel map, a width change, an input switch, a pause, a loaded config, a Signal search start, or the setting
-  turned off. The visit then runs its normal dwell, hangtime or hold.
+- A visit with a sync or a carrier at any point, counted from the moment the scan lands on the channel: that ends the
+  visit's check, and the visit runs its normal dwell, hangtime or hold.
+- A hold, an edit to the list or channel map, a width change, an input switch, a pause or a loaded config throws the
+  reading away. Once nothing keeps the channel any more, the check can run again on the same visit.
+- A Signal search start, or turning the setting off, ends the check.
 - A channel whose neighbours on both sides raise the noise beside it by more than 8.7 dB over the receiver's own
   noise: the check gives up on it. A steeply sloping noise floor or a broad interferer usually makes it give up too.
   That costs speed, never a missed signal.
@@ -1053,12 +1055,13 @@ turned it on).
 
 On these the scan keeps its normal timing, as if the setting were off:
 
-- A native Airspy input (`-i airspy`): libairspy delivers centred I/Q, which the measurement cannot use. An Airspy
-  through SoapySDR is checked at 2.5, 3, 6 and 10 MS/s.
-- An RTL-SDR whose tuner takes offset tuning (an E4000, for example), which DSD-neo turns on by default over USB.
+- A native Airspy input (`-i airspy`): its samples lack the frequency shift the measurement needs. An Airspy through
+  SoapySDR is checked at 2.5, 3, 6 and 10 MS/s.
+- An RTL-SDR whose tuner takes offset tuning (an E4000, for example), which DSD-neo turns on by default over USB and
+  which also removes that shift.
   Setting `DSD_NEO_RTL_OFFSET_TUNING=0` gives it the check. The common R820T and R828D tuners refuse offset tuning
   and are checked, and so is rtl_tcp unless `DSD_NEO_RTL_OFFSET_TUNING=1` turns offset tuning on there.
-- `DSD_NEO_DISABLE_FS4_SHIFT=1`, which turns off the quarter-rate shift the measurement relies on.
+- `DSD_NEO_DISABLE_FS4_SHIFT=1`, which turns that shift off.
 - A sample rate the calibration did not cover. Checked rates are 0.96, 1.024, 1.152, 1.2, 1.28, 1.44, 1.536, 1.6, 1.8,
   1.92, 2.048 and 2.4 Msps, and an Airspy's 2.5, 3, 6 and 10 MS/s, exactly. An RTL-SDR or rtl_tcp stream runs 1.024,
   1.152 or 1.536 Msps at every DSP bandwidth; a SoapySDR device picks its own rate and gets no check at any other.
@@ -1081,24 +1084,26 @@ Turning the setting on accepts these:
 - A single short burst outside the reading is missed: a DMR wake-up burst, a short data or status burst.
 - A channel that drops its carrier between transmissions can be checked in a gap and skipped: a DMR repeater after its
   hang time, or dPMR Mode 2 replies sent without a hang period.
-- A signal weaker than the calibrated threshold can read silent, so a weak transmission can be skipped.
+- A signal more than about 1 dB weaker than the weakest one DSD-neo still receives can read silent, so a weak
+  transmission can be skipped.
 - An always-keyed channel (a control channel, a repeater that never drops) is never skipped, so the setting saves
   nothing there.
-- Busy neighbours do not make a weak transmission read quieter: the check compares the channel with the receiver's
-  noise across the band, not the noise beside it. The calibration tested a neighbour 12.5 or 25 kHz away, on one side
-  and on both, from 5 to 50 dB stronger than the wanted signal, and never read such a signal as silent. Those tests
-  used a P25 neighbour at 1.536 Msps only; other sample rates were not tested with neighbours.
+- Busy neighbours were tested 12.5 or 25 kHz away, on one side and on both, from 5 to 50 dB stronger than the wanted
+  signal, and never made a signal DSD-neo can receive read silent. Those tests used a P25 Phase 1 neighbour at
+  1.536 Msps only; other sample rates and other kinds of neighbour were not tested.
 - An AM carrier outside the configured channel width is not seen: on a wide offset-carrier AM system set a width that
   takes in every carrier.
 - Every receiver, input, width, rate and decoder set listed above runs without the check.
-- The check assumes the receiver's own noise is about flat across the band it takes in. Real RTL-SDR noise recordings
-  at 1.152 and 1.536 Msps bear that out; no real 2.4 Msps or Airspy recording was available, so at those rates the
-  check was tested on computed noise only. A receiver whose noise dips at the channel reads it quieter by as much as
-  the dip.
+- The check assumes the receiver's noise floor is about level across the band it takes in. A floor that sits lower
+  right at the channel than across the rest of the band makes a weak signal there read quieter. Real RTL-SDR noise
+  recordings at 1.152 and 1.536 Msps were level enough; no real 2.4 Msps or Airspy noise recording was available, so
+  at those rates the check was tested on computed noise only.
+- The calibration's own limits, with their figures, are under [Limits](signal-search.md#limits) in the Signal search
+  guide.
 
-While a trunk scan or `-Y` runs, a sync search that gets no samples at all (a stalled rtl_tcp server, a silent audio
-input) gives up its read after 100 ms on a radio input and 500 ms on audio input. The scan's own timers (dwell, visit
-cap, hangtime, departures) then run as on a silent channel, whether or not skip-silent is on.
+While a trunk scan or `-Y` runs, a sync search that gets no samples at all (a stalled rtl_tcp server, an audio input
+that stops sending) gives up its read after 100 ms on a radio input and 500 ms on audio input. The scan's own timers
+(dwell, visit cap, hangtime, departures) then run as on a silent channel, whether or not skip-silent is on.
 
 ## Limitations
 
