@@ -130,7 +130,8 @@ enum {
 /** Sub-windows per quiet request. */
 #define DSD_SIGNAL_QUIET_WINDOWS 9
 
-/** How a quiet measurement estimates the local noise floor from the eight sideband blocks beside the channel. */
+/** How a quiet measurement estimates the local noise floor from the eight sideband blocks beside the channel, the
+ * floor the guard compares with the capture-wide noise reference. */
 typedef enum {
     /** Signal search's estimate: the mean of the blocks within 6 dB of the third lowest. */
     DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN = 0,
@@ -139,13 +140,15 @@ typedef enum {
 } dsd_signal_quiet_floor_estimator;
 
 typedef struct {
-    /** A sub-window is below when its channel power over the floor, (S+N)/N in dB, is less than this. */
+    /** A sub-window is below when its channel power over the capture-wide noise reference across the same bins,
+     * (S+N)/N in dB, is less than this. */
     float threshold_db;
     /** A dsd_signal_quiet_floor_estimator value. */
     int floor_estimator;
     /** A sub-window is invalid (never quiet) when a class's sideband floor stands more than this many dB over the
-     * capture-wide noise reference of the same transforms: neighbours raising the floor on both sides would otherwise
-     * hide a weak channel between them. Finite. */
+     * capture-wide noise reference of the same transforms: the reference then does not stand for the noise round the
+     * channel (a front-end floor that is far from flat across the capture, or strong transmitters crowding the
+     * sidebands). Finite. */
     float guard_db;
 } dsd_signal_quiet_params;
 
@@ -173,8 +176,8 @@ typedef struct {
     /** valid: the channel and its noise sidebands fit the capture in every judged class, and no sub-window's floor
      * stands over the guard. quiet: valid, and every sub-window of every judged class is below the threshold. */
     uint8_t valid, quiet;
-    /** The highest (S+N)/N over every valid sub-window and class, with that measurement's channel power and its noise
-     * floor over the same bins (0 when nothing was valid). */
+    /** The highest (S+N)/N over every valid sub-window and class, with that measurement's channel power and the
+     * capture-wide noise reference over the same bins it was judged against (0 when nothing was valid). */
     float max_ratio_db, power_dbfs, floor_dbfs;
     /** The highest sideband floor over the capture-wide noise reference in any sub-window and class whose geometry
      * fits, in dB: above the guard (dsd_signal_quiet_params.guard_db) the result is not valid. 0 when no class fits or

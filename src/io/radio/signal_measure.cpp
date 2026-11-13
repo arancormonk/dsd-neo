@@ -1182,8 +1182,8 @@ sideband_noise(const S& bins, double position, double width_bins, int estimator)
 struct channel_level {
     bool valid;
     double signal, noise;
-    /* The sideband floor per FFT bin, scaled as signal and noise. */
-    double floor;
+    /* The sideband floor per FFT bin, scaled as signal and noise, and the channel's bin count. */
+    double floor, bins;
 };
 
 /* Measure the channel at @p frequency_hz, @p width Hz wide, in the @p n-point spectrum whose prefix sums @p bins reads,
@@ -1198,7 +1198,7 @@ template <typename S>
 channel_level
 measure_channel(const S& bins, const dsd_signal_capture& capture, int n, double frequency_hz, double width, double norm,
                 int estimator) {
-    channel_level out{false, 0, 0, 0};
+    channel_level out{false, 0, 0, 0, 0};
     const double bin_hz = (double)capture.rate_hz / n;
     const double rotation = capture.rotation_hz;
     const double delta = frequency_hz - capture.capture_hz;
@@ -1218,6 +1218,7 @@ measure_channel(const S& bins, const dsd_signal_capture& capture, int n, double 
     out.signal = bins(signal_first, signal_last) * norm;
     out.noise = per_bin * norm * (double)signal_bins;
     out.floor = per_bin * norm;
+    out.bins = (double)signal_bins;
     return out;
 }
 
@@ -1393,12 +1394,13 @@ dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, size_t 
 }
 
 /* The shipped quiet threshold, floor estimator and floor guard, from tests/io/signal_quiet_calibrate.cpp
-   (docs/signal-search.md "Quiet-channel calibration"). The guard is 0.5 dB under the lowest floor rise of any active
-   trial whose ratio would otherwise sit within the threshold's margin (9.23 dB, a weak NFM 8 kHz channel between
-   +30 dB neighbours), rounded down; noise alone rises at most 2.4 dB. With it, the trimmed mean's interval is
-   (2.40, 4.11] dB (the lowest block's widest, at any guard, is 0.34 dB at 0.3 dB), and the threshold is its top,
-   rounded down. */
-#define DSD_SIGNAL_QUIET_THRESHOLD_DB    4.1f
+   (docs/signal-search.md "Quiet-channel calibration"). The ratio is judged against the capture-wide noise reference,
+   so the estimator sets only the floor the guard compares. The guard is 0.5 dB under the lowest floor rise of any
+   active trial whose ratio sat within the threshold's margin when the ratio was judged against the sideband floor
+   (9.23 dB, a weak NFM 8 kHz channel between +30 dB neighbours), rounded down; noise alone rises at most 2.4 dB.
+   Judged against the reference, the threshold's interval is (2.02, 5.08] dB and the threshold is its top, rounded
+   down. */
+#define DSD_SIGNAL_QUIET_THRESHOLD_DB    5.0f
 #define DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN
 #define DSD_SIGNAL_QUIET_GUARD_DB        8.7f
 /* The capture rates and analog widths the calibration rendered and validated; nothing between them is admitted. Rates:
@@ -1606,8 +1608,10 @@ wide_reference(const dsd_signal_quiet_detector* detector, double* scratch) {
     return *rank / std::pow(1.0 - wh + kLowerQuartileZ * std::sqrt(wh), 3);
 }
 
-/* Measure one sub-window in every judged class, keeping the highest ratio and floor rise over the request; a floor
-   over the guard leaves the request invalid. */
+/* Measure one sub-window in every judged class, keeping the highest ratio and floor rise over the request. The ratio
+   is the channel's power over the capture-wide noise reference across the same bins, so transmitters beside the
+   channel that lift its sideband floor do not lower it; the sideband floor serves only the guard, and a floor over the
+   guard leaves the request invalid. */
 static void
 quiet_measure_window(dsd_signal_quiet_detector* detector) {
     const int n = detector->n;
@@ -1633,7 +1637,7 @@ quiet_measure_window(dsd_signal_quiet_detector* detector) {
         if (rise > detector->params.guard_db) {
             detector->all_valid = false;
         }
-        const double power = power_db(level.signal), floor = power_db(level.noise);
+        const double power = power_db(level.signal), floor = power_db(reference * norm * level.bins);
         if (!detector->any_valid || power - floor > detector->max_ratio_db) {
             detector->max_ratio_db = power - floor;
             detector->max_power_db = power;
