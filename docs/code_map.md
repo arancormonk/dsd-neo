@@ -10485,7 +10485,7 @@ the message passed its own check, with that message's values, an unchanged repea
   parity kept (`p25p2_note_seed_proven()`). The control channel at
   `p25_sm_note_validated_cc()` (a CRC-passed TSBK, outbound MBT or LCCH MAC), once the record names a SYSID.
 - DMR: the colour code at the confidence lock and relock, BS and MS voice alike (`dmr_confidence_note_evidence()`,
-  before the burst is dispatched), and the MS slot type's Golay(20,8) accept (`dmr_data.c`); the Tier III
+  before the burst is dispatched), an MS data burst's slot type only once the lock takes it (`dmr_data.c`); the Tier III
   system code and site (raw network, site and model, and the text) at `dmr_tiii_note_search_site()` (C_ALOHA with a
   genuine CRC, Capacity Max's FID 0x10 one included, C/P_SYS_PARMS short LCs), which notes the record whether or not a
   search runs; the control channel at C_ALOHA and C_SYS_PARMS. Connect Plus site (its 12-bit network, short LC bits
@@ -10855,9 +10855,15 @@ Private per-protocol modules worth knowing about:
   (TS 102 361-1 Table B.1), and about one noise word in four decodes to some colour code, so an EMB's code is the
   carrier's only through the lock, and slot 1's voice gate holds the superframe (no audio, recording, embedded LC or
   late-entry MI) until it opens; on a closed gate a burst whose EMB gives nothing ends the voice cycle. Burst A has no
-  EMB: an MS call plays from its first EMB that agrees with an earlier code (its voice LC header's slot type, which an
-  MS data burst feeds to the lock without being held by it, or B's EMB). Once open, an EMB naming another code is
-  ignored and the burst decodes; four in a row relock. Tests: `DMR_MS_DATA`, `DMR_SYNTH_MS_TAIL`.
+  EMB, so it is always held at a call's start. After exactly one decoded data burst (a voice LC header: an MS data
+  burst feeds the lock without being held by it) B's agreeing EMB locks the code and opens the gate; with no decoded
+  header, or after two or more data bursts (PI header and voice LC header, as every encrypted call sends, or a repeated
+  header), the code is locked by B and the gate opens at C, so B is held too: at most two bursts, as on BS. Once
+  open, an EMB that does not decode or names another code is an EMB miss whose burst still decodes; a second in a row
+  ends the voice cycle and closes the slot's gate (as BS, issue #729), so the noise after a carrier drop plays at most
+  one burst into the call and a noise voice sync after it finds the gate closed. Four EMBs in a row naming another
+  code relock. An MS data burst's slot type colour code (Golay(20,8), no checksum) is published only when the lock
+  takes it. Tests: `DMR_MS_DATA`, `DMR_DATA_SYNC`, `DMR_SYNTH_MS_TAIL`.
 - `src/protocol/dmr/dmr_ras.c` — RAS on the carrier (`<dsd-neo/protocol/dmr/dmr.h>`). The burst handler notes every
   burst with the RAS signature, with or without `-F`, before it dispatches (`dmr_ras_note_signature()`; a retune its
   handler makes then resets the carrier left's evidence); a frame read across a carrier boundary or cut by an input

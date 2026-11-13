@@ -2024,8 +2024,8 @@ frames came out with an unprotected bit wrong (an inner symbol read as outer), w
 loop places the grid on every burst's sync (the sync anchor), never did. The MS path now places the grid on each
 burst A's sync the same way (`docs/code_map.md`, sync anchor). The checker places an MS frame by the one `VC*` line
 the MS path prints per superframe, then VC1 to VC6 three frames at a time; the superframe's first decoded burst is the
-one of A to F whose expected frames it matches, since the voice gate holds the bursts before the colour code repeats
-(burst A, and B too without a decoded header).
+one of A to C whose expected frames it matches, since the voice gate holds the bursts before the colour code repeats
+(burst A, and B too unless exactly one header decoded).
 `DMR_SYNTH_MS_TAIL` (`tests/protocol/dmr/dmr_ms_tail_check.py`, issue #834) cuts an MS call without a terminator at
 each burst of its last superframes, adds discriminator noise and decodes with per-call recordings and the recording
 journal: the only recording published is the call's, under colour code 2, talkgroup 100 and source 1001. Before the MS

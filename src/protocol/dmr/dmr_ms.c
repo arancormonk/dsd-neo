@@ -301,12 +301,21 @@ typedef enum {
 /* MS voice is held until the voice gate opens, as BS voice is: its colour code locked and then repeated (two EMBs that
    agree, or one after a data burst with the same code), so a sync that noise passed plays, records and publishes
    nothing (AGENTS.md "CRC/FEC provenance"; issue #834). Before it opens, a burst without a usable EMB ends the cycle,
-   as a BS burst's does on a closed gate, and the hunt looks for the next sync. Once it is open, the call's bursts
-   decode whatever their EMB says: one that names another colour code is far likelier noise or a miscorrection than
-   another system, and only the gate's re-lock moves the code. */
+   as a BS burst's does on a closed gate, and the hunt looks for the next sync. Once it is open, an EMB that does not
+   decode or names another colour code is an EMB miss, as on BS (issue #729): one is far likelier a noisy burst or a
+   miscorrection than another system, and its burst still decodes; a second in a row ends the cycle and closes the
+   gate, so the noise after a carrier drop plays at most one burst into the call, and a sync noise passes after it
+   finds the gate closed (TS 102 361-1 Annex G.1.1: an MS leaves My_System once the colour code can no longer be
+   decoded). Only an EMB the gate accepted ends a miss streak; burst A, the superframe's sync, starts a new one. */
 static dmr_ms_burst_verdict
 dmr_ms_gate_burst(dsd_state* state, dmr_confidence_result emb) {
-    if (dmr_confidence_voice_slot_open(state, 0U)) {
+    uint8_t* miss = &state->dmr_emb_err[0];
+    if (emb != DMR_CONFIDENCE_REJECT) {
+        *miss = 0U;
+    } else if (*miss < 0xFFU) {
+        (*miss)++;
+    }
+    if (dmr_confidence_voice_slot_open(state, 0U) && *miss < 2U) {
         return DMR_MS_BURST_DECODE;
     }
     if (emb == DMR_CONFIDENCE_REJECT) {
@@ -598,6 +607,7 @@ dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
 
     /* Burst A carries the sync, no EMB: it decodes only on a gate a call already opened (dmr_ms_gate_burst()). */
     dmr_confidence_note_voice_sync(state, 0U);
+    state->dmr_emb_err[0] = 0U;
     if (dmr_confidence_voice_slot_open(state, 0U)) {
         dmr_ms_decode_bootstrap_frames(opts, state, &frames, invalid);
     }

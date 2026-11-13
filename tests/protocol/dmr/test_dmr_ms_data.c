@@ -1130,7 +1130,9 @@ test_ms_noise_sync_plays_and_names_nothing(void) {
 
 /* Issue #834: a call on colour code 2 whose carrier dropped inside a superframe, so the bursts after the drop are noise.
    Their EMBs that decode name random colour codes: none of them becomes the carrier's code or its received access code,
-   which would end the call there and publish the noise as a recording of another one. The call keeps its bursts. */
+   which would end the call there and publish the noise as a recording of another one. As on BS (issue #729), the first
+   such EMB is a miss whose burst still plays into the call, and the second in a row ends the voice cycle and closes the
+   slot's voice gate: at most one noise burst reaches the call. */
 static void
 test_ms_noise_after_a_carrier_drop_keeps_the_calls_colour_code(void) {
     static const uint8_t noise[5] = {8U, 0U, 15U, 16U, 10U};
@@ -1153,8 +1155,93 @@ test_ms_noise_after_a_carrier_drop_keeps_the_calls_colour_code(void) {
     assert(state.dmr_confidence_color_code == 2U);
     assert((state.rx_id.valid & DSD_RXID_ACCESS) != 0U && state.rx_id.access == 2U);
     assert(state.rx_id.epoch == epoch);
+    assert(g_process_mbe_calls == 3);
+    assert(g_play_ss3_calls == 1);
+    assert(g_qr_script_next == 2U);
+    assert(state.dmr_confidence_voice_open[0] == 0U);
+}
+
+/* One EMB of a call that fails its decode, or names another colour code, between ones that agree is a single miss: the
+   call's voice cycle goes on and every burst plays. */
+static void
+test_ms_call_survives_a_single_emb_miss(void) {
+    static const uint8_t one_bad[5] = {11U, 16U, 11U, 4U, 11U};
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_fixture();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    load_voice_stream();
+    opts.pulse_digi_out_channels = 1;
+    open_voice_gate(&state, 11U);
+    script_embs(one_bad, 5U);
+
+    dmrMS(&opts, &state);
+
     assert(g_process_mbe_calls == 15);
-    assert(g_play_ss3_calls == 5);
+    assert(g_data_burst_calls == 1);
+    assert(state.dmr_confidence_voice_open[0] == 1U);
+    assert(state.dmr_color_code == 11);
+}
+
+/* Issue #834: a carrier drop closes the gate (two noise EMBs in a row) while the colour code stays locked on the
+   call's, and a voice sync that noise passes next plays nothing: burst A waits for the gate, and noise EMBs do not open
+   it, even one that happens to name the locked colour code. */
+static void
+test_ms_noise_sync_after_the_gate_closed_plays_nothing(void) {
+    static const uint8_t noise[7] = {8U, 0U, 2U, 8U, 13U, 3U, 0U};
+    static dsd_opts opts;
+    static dsd_state state;
+    static int payload[90];
+    reset_fixture();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_state(&state, payload);
+    load_voice_stream();
+    opts.pulse_digi_out_channels = 1;
+    open_voice_gate(&state, 2U);
+    state.dmr_color_code = 2;
+    script_embs(noise, 7U);
+
+    dmrMS(&opts, &state);
+    assert(g_process_mbe_calls == 3);
+    assert(state.dmr_confidence_voice_open[0] == 0U);
+
+    dmrMSBootstrap(&opts, &state);
+
+    assert(g_process_mbe_calls == 3);
+    assert(g_play_ss3_calls == 1);
+    assert(g_late_entry_calls == 1);
+    assert(g_data_burst_calls == 0);
+    assert(state.dmr_confidence_voice_open[0] == 0U);
+    assert(state.dmr_color_code == 2);
+}
+
+/* A voice LC header's slot type counts toward the colour-code lock (dmr_data.c): after one, burst A waits (it has no
+   EMB) and B's EMB, agreeing with the header, opens the gate, so the call plays from B. After two data bursts (a PI
+   header and a voice LC header, or a repeated header) the code is already locked at B, and the voice gate wants two of
+   the call's own EMBs: B waits and C opens it. dmrMSBootstrap() reads colour code 1 in this stream's EMBs. */
+static void
+test_ms_headers_open_the_gate(void) {
+    static const int frames[2] = {15, 12};
+    for (int headers = 1; headers <= 2; headers++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        static int payload[90];
+        reset_fixture();
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        prepare_state(&state, payload);
+        load_voice_stream();
+        opts.pulse_digi_out_channels = 1;
+        for (int h = 0; h < headers; h++) {
+            (void)dmr_confidence_note_data_burst(&state, 1U);
+        }
+
+        dmrMSBootstrap(&opts, &state);
+
+        assert(g_process_mbe_calls == frames[headers - 1]);
+        assert(state.dmr_confidence_voice_open[0] == 1U);
+        assert(state.dmr_color_code == 1);
+    }
 }
 
 /* A call joined at a superframe with no header before it: burst A has no EMB and B's is the first colour code, so the
@@ -1205,6 +1292,9 @@ main(void) {
     test_ms_bursts_place_the_grid_on_the_hunts_sync();
     test_ms_noise_sync_plays_and_names_nothing();
     test_ms_noise_after_a_carrier_drop_keeps_the_calls_colour_code();
+    test_ms_call_survives_a_single_emb_miss();
+    test_ms_noise_sync_after_the_gate_closed_plays_nothing();
+    test_ms_headers_open_the_gate();
     test_ms_call_plays_from_its_second_agreeing_emb();
     DSD_FPRINTF(stdout, "DMR_MS_DATA: OK\n");
     return 0;

@@ -281,14 +281,17 @@ dmr_data_collect_slot_type_suffix(dmr_data_sync_ctx* ctx) {
             ctx->confidence_pending = 1;
         }
     } else {
-        /* An MS data burst is not held for the colour-code gate: the slot type's checked colour code is the carrier's.
-           It counts toward the gate's lock all the same, so a voice LC header opens the voice gate on the call's first
-           EMB that agrees with it (dmr_ms.c, issue #834). */
-        (void)dmr_confidence_note_data_burst(ctx->state, ctx->state->color_code);
-        dmr_ras_note_color_code(ctx->state, ctx->state->color_code);
-        ctx->state->dmr_color_code = ctx->state->color_code;
-        dsd_rxid_note_access(ctx->state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE,
-                             (uint16_t)ctx->state->color_code);
+        /* An MS data burst is not held for the colour-code gate, but its colour code is the carrier's only once the
+           gate locked on it (issue #834): the slot type has Golay(20,8) and no checksum (TS 102 361-1 Table B.1), and
+           about one random word in three decodes, so one data sync that noise passed would publish a random code and
+           end the call on the carrier. It counts toward the lock, so a voice LC header opens the voice gate on the
+           call's first EMB that agrees with it (dmr_ms.c). */
+        if (dmr_confidence_note_data_burst(ctx->state, ctx->state->color_code) == DMR_CONFIDENCE_LOCKED) {
+            dmr_ras_note_color_code(ctx->state, ctx->state->color_code);
+            ctx->state->dmr_color_code = ctx->state->color_code;
+            dsd_rxid_note_access(ctx->state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE,
+                                 (uint16_t)ctx->state->color_code);
+        }
     }
 
     if (ctx->state->currentslot == 0) {

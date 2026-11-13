@@ -19,12 +19,15 @@ burst off correlates near zero. A separate call's recording is as long as that c
 colour-code-change recordings are pieces, in order, of the same call decoded with no colour-code change, and each
 matches the piece of it at its place: the first by its audio, the later ones by their loudness, frame by frame
 (ENVELOPE_CORRELATION), since the vocoder synthesizes a frame after a gap differently. They are not compared sample by
-sample: the vocoder's synthesis depends on the frames before it, which differ at each new call. The single-slot decoder takes an EMB's colour code only through the
-colour-code gate (issue #834): the EMB has no checksum, and noise decodes to a random code. Burst A carries no colour
-code (its centre is the sync word), and the gate takes a new code only when four EMBs in a row name it (B to E), so a
-piece runs up to four bursts (A to D) past its colour code's last superframe. The relock closes the voice gate until
-the new code repeats on the next superframe, so up to four bursts (E, F, A, B) between two pieces play under neither,
-and the call itself plays from its first EMB that agrees with an earlier code (at most two bursts held at its start).
+sample: the vocoder's synthesis depends on the frames before it, which differ at each new call.
+
+The single-slot decoder takes an EMB's colour code only through the colour-code gate (issue #834): the EMB has no
+checksum, and noise decodes to a random code. Burst A carries no colour code (its centre is the sync word). At a change,
+B's EMB names another code than the locked one, a miss whose burst still plays under the old code, and C's is a second
+miss in a row, which ends the voice cycle and closes the gate, as on BS: a piece runs up to two bursts (A, B) past its
+colour code's last superframe. The other slot's idle bursts relock the new code, and the gate opens again on the
+next superframe's C, so up to six bursts (C to F, then A and B) between two pieces play under neither name, as on BS.
+The call itself plays from its first EMB that agrees with an earlier code (at most two bursts held at its start).
 """
 import argparse
 import math
@@ -116,7 +119,8 @@ def envelope(pcm):
 
 def envelope_matches(pcm, reference):
     """Whether two equal-length recordings get louder and quieter together, frame by frame, past the first two frames
-    (the vocoder's synthesis settling after a gap): the correlation of their envelopes. One frame off falls well below."""
+    (the vocoder's synthesis settling after a gap): the correlation of their envelopes. One frame off falls well
+    below."""
     a, b = envelope(pcm)[2:], envelope(reference)[2:]
     if len(a) != len(b) or len(a) < 2:
         return False
@@ -195,10 +199,10 @@ def colour_code_change(runner):
     for name, end in zip(("Mall", "Hospital", "Municipality"), ends):
         path, pcm = recordings[name]
         count = len(pcm) // 2
-        offset = place(pcm, reference, start, start + 4 * BURST)
-        assert offset is not None, f"{path} is not the call's audio within four bursts of sample {start}"
+        offset = place(pcm, reference, start, start + 6 * BURST)
+        assert offset is not None, f"{path} is not the call's audio within six bursts of sample {start}"
         assert start != 0 or (offset == 0 and matches(pcm, reference[:2 * count])), f"{path} is not the call's start"
-        assert end <= offset + count <= end + 4 * BURST, \
+        assert end <= offset + count <= end + 2 * BURST, \
             f"{path} ends at sample {offset + count}, its colour code at {end}"
         start = offset + count
     assert start == len(reference) // 2, f"the pieces end at {start} of {len(reference) // 2} samples"
@@ -247,9 +251,9 @@ def slot_change(runner):
             for tg, (path, pcm) in recordings.items():
                 assert matches(pcm, references[tg]), f"{case}: {path} is not TG {tg}'s own audio"
         # Only TS2 passes the filter: one row, and its audio whole. The Checking burst a single voice header leaves
-        # unproven at its start (the bootstrap burst) is burst A, which the single-slot decoder's voice gate holds in the
-        # call decoded alone too (A has no EMB to corroborate the colour code; issue #834); a repeated header proves the
-        # slot before it.
+        # unproven at its start (the bootstrap burst) is burst A, which the single-slot decoder's voice gate holds in
+        # the call decoded alone too (A has no EMB to corroborate the colour code; issue #834); a repeated header
+        # proves the slot before it.
         for case, second, withheld in (("slot-allow-2", generated[1], 0), ("slot-allow-2-repeat", repeated, 0)):
             case = f"{case}-{tag}"
             _, alone, _ = runner.decode(case + "-alone", params, second, names, key, decoder)

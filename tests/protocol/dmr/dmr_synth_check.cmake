@@ -232,13 +232,14 @@ endmacro()
 
 # The first burst an MS superframe decodes after its burst A line (issue #834): burst A, or a later one when the voice
 # gate held the bursts before it (an MS call plays from its first EMB that agrees with an earlier colour code, so from
-# B or C at call start). It is the burst of A to F whose expected frames the pending ones match best, at least two; the
-# earliest on a tie.
+# B or C at call start; the gate holds at most A and B). It is the burst of A to C whose expected frames the pending
+# ones match best, at least two; the earliest on a tie. A decoder that started a superframe at a later burst, or
+# placed frames at the wrong one, is still caught: no candidate past C is tried.
 macro(_dmr_synth_ms_anchor)
     set(_s ${_cur_slot})
     set(_ms_best_vc ${_cur_vc})
     set(_ms_best_m -1)
-    foreach(_ms_v RANGE 1 6)
+    foreach(_ms_v RANGE 1 3)
         set(_cur_vc ${_ms_v})
         _dmr_synth_place()
         if(_bestm GREATER _ms_best_m)
