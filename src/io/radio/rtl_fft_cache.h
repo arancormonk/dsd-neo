@@ -70,14 +70,6 @@ class FftSetupCache {
     }
 
     /**
-     * @brief Forward complex transform of @p n points, in place.
-     *
-     * @param n Transform size in complex points.
-     * @param inout 2*n interleaved floats, 16-byte aligned; overwritten with the
-     *              ordered spectrum. Untouched when the size is rejected.
-     * @return false when pffft has no setup for @p n.
-     */
-    /**
      * @brief Build the setup and work buffer for @p n points now, so a later
      * forward() at that size allocates nothing.
      *
@@ -88,6 +80,14 @@ class FftSetupCache {
         return get(n) != nullptr;
     }
 
+    /**
+     * @brief Forward complex transform of @p n points, in place.
+     *
+     * @param n Transform size in complex points.
+     * @param inout 2*n interleaved floats, 16-byte aligned; overwritten with the
+     *              ordered spectrum. Untouched when the size is rejected.
+     * @return false when pffft has no setup for @p n.
+     */
     bool
     forward(int n, float* inout) {
         const PFFFT_Setup* setup = get(n);

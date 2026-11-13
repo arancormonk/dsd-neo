@@ -181,9 +181,9 @@ set(_ms_first 0) # the MS superframe's first decoded burst is still to be placed
 set(_pending)
 set(_decoded) # entries "slot|sf|vc|frame|hex|line"
 
-# The superframe of the pending frames on slot _s at burst _cur_vc: the next position whose VC number matches, re-anchored
-# on content when a run of bursts went missing unseen. Sets _est, and _bestm to the most pending frames any candidate
-# superframe's expected frames matched.
+# The superframe of the pending frames on slot _s at burst _cur_vc: the next position whose VC number matches,
+# re-anchored on content when a run of bursts went missing unseen. Sets _est, and _bestm to the most pending frames any
+# candidate superframe's expected frames matched.
 macro(_dmr_synth_place)
     math(EXPR _min_pos "${_last_pos_${_s}} + 1 + ${_skipped_${_s}}")
     if(_dropped_${_s} AND _have_${_s})

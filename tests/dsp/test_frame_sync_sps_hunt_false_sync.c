@@ -931,9 +931,9 @@ test_budget_exit_runs_the_no_sync_hooks(void) {
 }
 
 /* Issue #834: a scan quiet check's in-hunt service, faked as the engine's. It answers 1 (hand back) from the first
-   300-symbol point at or after g_quiet_ready_at symbols, but only while the scan-owner sync sequence the engine bumps at
-   every returned sync (g_quiet_sync_seq) has not moved since its request (g_quiet_sync_at_request): the engine's rule
-   (scan_quiet.c, ENGINE_TRUNK_SCAN). */
+   300-symbol point at or after g_quiet_ready_at symbols, but only while the scan-owner sync sequence the engine bumps
+   at every returned sync (g_quiet_sync_seq) has not moved since its request (g_quiet_sync_at_request): the engine's
+   rule (scan_quiet.c, ENGINE_TRUNK_SCAN). */
 static long g_quiet_ready_at = 0;
 static long g_quiet_asks = 0;
 static long g_quiet_handbacks = 0;

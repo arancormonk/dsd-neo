@@ -92,8 +92,8 @@ reads_sample(float got, uint64_t want) {
     return fabsf(got - (float)want) < 0.25f;
 }
 
-/* reads_sample() where a symbol is one sample (the CQPSK and monitor outputs); on the FSK discriminator's, whose symbols
-   the timing loop takes from ten samples each, any symbol passes. */
+/* reads_sample() where a symbol is one sample (the CQPSK and monitor outputs); on the FSK discriminator's, whose
+   symbols the timing loop takes from ten samples each, any symbol passes. */
 static int
 reads_sample_on(int output_kind, float got, uint64_t want) {
     return output_kind == RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR || reads_sample(got, want);

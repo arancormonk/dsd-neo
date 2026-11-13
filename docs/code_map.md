@@ -4117,7 +4117,8 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   changes (a tone check ending, an alternate's cooldown ending under a receive keep) is asked again at once (issue
   #834 B3). The visit cap needs no key: with nowhere to go it re-arms and does not spend the tick
   (`trunk_scan_visit_expired()`), so the dwell is weighed in that tick, and a rotation with nowhere to go re-arms the
-  dwell, which moves its start. It counts a park still in flight from its landing. Every park's idle dwell runs from its landing
+  dwell, which moves its start. It counts a park still in flight from its landing.
+  Every park's idle dwell runs from its landing
   (`trunk_scan_arm_idle_at_landing()`): a synchronous one's completion (a blocking rigctl tune's latency is not
   listening time) and a pending one's when `trunk_scan_resolve_pending_retune()` notices it, instead of the first tick
   after it. A dwell disarmed in between stays disarmed, and every disarm records its cause
@@ -7815,13 +7816,13 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   one request, Signal search's or a quiet one. `rtl_signal_quiet_request()` is refused (`UNSUPPORTED`) while a search
   owns the tuner or holds a request or an unread report; a search request (even a refused one) supersedes a quiet one,
   and `rtl_signal_measure_cancel()` never touches it. Ticket and status word: one lock-free `std::atomic<uint32_t>`
-  holds `ticket << 2 | quiet owner << 1 | done`; the 30-bit ticket moves at every request (search or quiet), quiet
-  cancel and reset (search cancels too, unless a quiet request owns the tap), never to 0. Writes happen only under
-  `tap_mutex`, the done bit with release after the result; `rtl_signal_quiet_status()` reads it with acquire and no
-  lock, so a superseded, cancelled, reset or taken ticket reads lost (-1) at once, with no further samples.
-  `rtl_signal_quiet_take()` (under `tap_mutex` only) consumes the result or reports `SUPERSEDED`;
-  `rtl_signal_quiet_cancel()` and `take()` act only on a matching ticket, so a stale call never touches a newer
-  request. Request, quiet cancel and reset keep the lock order (`feed_mutex`, then `tap_mutex`).
+  holds `ticket << 2 | quiet owner << 1 | done`; the 30-bit ticket moves at every search request, every quiet request
+  not refused for Signal search, quiet cancel and reset (search cancels too, unless a quiet request owns the tap), never
+  to 0. Writes happen only under `tap_mutex`, the done bit with release after the result; `rtl_signal_quiet_status()`
+  reads it with acquire and no lock, so a superseded, cancelled, reset or taken ticket reads lost (-1) at once, with no
+  further samples. `rtl_signal_quiet_take()` (under `tap_mutex` only) consumes the result or reports `SUPERSEDED`;
+  `rtl_signal_quiet_cancel()` and `take()` act only on a matching ticket, so a stale call never touches a newer request.
+  Request, quiet cancel and reset keep the lock order (`feed_mutex`, then `tap_mutex`).
 - Tagged retune ownership (issue #671): a queued tagged retune defers a tune of another owner, but a manual tune's tag
   (`RTL_STREAM_TUNE_ID_MANUAL_BIT`) only asks for its completion. It owns nothing, so a second frequency entry or an
   owner tune coalesces into a queued manual request as into an untagged one. The tag it takes over never runs, so the

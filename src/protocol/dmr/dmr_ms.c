@@ -533,8 +533,8 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
         dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr2, 90, 18, 18);
         dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr3, 108, 36, 0);
         /* The EMB decodes only once the burst is read whole: one an input interruption cut is erasures, and all-zero
-           bits are a valid QR(16,7,6) codeword, so it would publish colour code 0; one the carrier boundary split is half
-           another carrier's, and its colour code would be noted as the new carrier's. */
+           bits are a valid QR(16,7,6) codeword, so it would publish colour code 0; one the carrier boundary split is
+           half another carrier's, and its colour code would be noted as the new carrier's. */
         if (dsd_state_frame_read_lost(state, carrier_seq)) {
             break;
         }

@@ -1092,10 +1092,10 @@ test_ms_bursts_place_the_grid_on_the_hunts_sync(void) {
     assert(g_hunt_arm_calls == 1);
 }
 
-/* Issue #834: an MS voice sync that noise passed, followed by noise. Its EMBs decode now and then, each to another colour
-   code (QR(16,7,6) corrects two bit errors and has no checksum, so about one random word in four decodes): none of them
-   is the carrier's code, and the superframe neither plays nor records, which would open a call whose recording names
-   a random colour code and no one. EMBs that do not decode at all end the voice cycle at the first one. */
+/* Issue #834: an MS voice sync that noise passed, followed by noise. Its EMBs decode now and then, each to another
+   colour code (QR(16,7,6) corrects two bit errors and has no checksum, so about one random word in four decodes): none
+   of them is the carrier's code, and the superframe neither plays nor records, which would open a call whose recording
+   names a random colour code and no one. EMBs that do not decode at all end the voice cycle at the first one. */
 static void
 test_ms_noise_sync_plays_and_names_nothing(void) {
     static const uint8_t noise[5] = {8U, 3U, 13U, 0U, 15U};
@@ -1128,11 +1128,11 @@ test_ms_noise_sync_plays_and_names_nothing(void) {
     }
 }
 
-/* Issue #834: a call on colour code 2 whose carrier dropped inside a superframe, so the bursts after the drop are noise.
-   Their EMBs that decode name random colour codes: none of them becomes the carrier's code or its received access code,
-   which would end the call there and publish the noise as a recording of another one. As on BS (issue #729), the first
-   such EMB is a miss whose burst still plays into the call, and the second in a row ends the voice cycle and closes the
-   slot's voice gate: at most one noise burst reaches the call. */
+/* Issue #834: a call on colour code 2 whose carrier dropped inside a superframe, so the bursts after the drop are
+   noise. Their EMBs that decode name random colour codes: none of them becomes the carrier's code or its received
+   access code, which would end the call there and publish the noise as a recording of another one. As on BS (issue
+   #729), the first such EMB is a miss whose burst still plays into the call, and the second in a row ends the voice
+   cycle and closes the slot's voice gate: at most one noise burst reaches the call. */
 static void
 test_ms_noise_after_a_carrier_drop_keeps_the_calls_colour_code(void) {
     static const uint8_t noise[5] = {8U, 0U, 15U, 16U, 10U};

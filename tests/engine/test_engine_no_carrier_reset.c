@@ -2793,9 +2793,9 @@ frame_was(const char* tag, int frame, const char* label, unsigned long long rkey
     return 0;
 }
 
-/* Issue #834: every sync the live loop's hunt returns moves the scan owner's sync sequence while skip-silent is on, so a
-   scan quiet check requested before it sees activity: YSF and D-STAR syncs too, which stamp no last_cc_sync_time_m.
-   With the setting off the sequence stays (one load). */
+/* Issue #834: every sync the live loop's hunt returns moves the scan owner's sync sequence while skip-silent is on, so
+   a scan quiet check sees activity since its visit's landing: YSF and D-STAR syncs too, which stamp no
+   last_cc_sync_time_m. With the setting off the sequence stays (one load). */
 static int
 test_live_loop_syncs_move_the_quiet_sync_sequence(void) {
     dsd_opts* opts = NULL;
@@ -12014,10 +12014,10 @@ test_live_scan_over_silent_inputs(void) {
 }
 
 /*
- * Issue #834: the -Y step's skip decision through the real noCarrier(), and the end-to-end skip through the
- * live loop, over a fake signal tap (the rtl_signal_* calls the scan quiet check makes, link-wrapped). The tap's capture
- * follows the tuner: centred where the fake RTL tune last went, on a stream generation that moves with every tune, as the
- * real stream's does. A request is answered at once: quiet, or busy.
+ * Issue #834: the -Y step's skip decision through the real noCarrier(), and the end-to-end skip through the live loop,
+ * over a fake signal tap (the rtl_signal_* calls the scan quiet check makes, link-wrapped). The tap's capture follows
+ * the tuner: centred where the fake RTL tune last went, on a stream generation that moves with every tune, as the real
+ * stream's does. A request is answered at once: quiet, or busy.
  */
 static struct {
     int active;
@@ -12191,8 +12191,8 @@ yq_dmr_only(dsd_opts* opts) {
     opts->monitor_input_audio = 0;
 }
 
-/* A -Y list of @p rows rows on RTL input, 10 s hangtime, skip-silent @p on, typed DMR rows when @p typed; the first step
-   is taken (the hangtime long run out) and lands row 0. Returns 0 when it did. */
+/* A -Y list of @p rows rows on RTL input, 10 s hangtime, skip-silent @p on, typed DMR rows when @p typed; the first
+   step is taken (the hangtime long run out) and lands row 0. Returns 0 when it did. */
 static int
 yq_list(dsd_opts* opts, dsd_state* state, int rows, int typed, int on, long int base_hz) {
     reset_rtl_profile_fakes();
@@ -12589,8 +12589,8 @@ yq_tuned_once(const dsd_opts* opts, const dsd_state* state) {
     return g_rtl_tune_calls >= 1;
 }
 
-/* End to end through the live loop (the real hunt over a flowing RTL stream, its 300-symbol quiet service, the
-   real interruption routing and noCarrier()): a -Y row whose channel is quiet is left within a few passes of its landing,
+/* End to end through the live loop (the real hunt over a flowing RTL stream, its 300-symbol quiet service, the real
+   interruption routing and noCarrier()): a -Y row whose channel is quiet is left within a few passes of its landing,
    long before its hangtime; with skip-silent off it waits the hangtime out. */
 static int
 test_live_y_skips_a_quiet_row(int on) {

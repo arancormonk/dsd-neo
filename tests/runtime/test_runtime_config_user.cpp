@@ -3916,8 +3916,8 @@ test_scan_voice_gate_roundtrip(void) {
     return rc;
 }
 
-/* The session-wide skip-silent setting (#834): INI -> cfg -> opts -> snapshot -> render, off written explicitly, an
- * omitted key resetting a live value to off when the config is applied, and not taken from a scan row's view. */
+/* The session-wide skip-silent setting (#834): INI -> cfg -> opts -> snapshot -> render, off written explicitly, and an
+ * omitted key resetting a live value to off when the config is applied. */
 static int
 test_scan_skip_silent_roundtrip(void) {
     int rc = 0;

@@ -70,10 +70,11 @@ typedef struct {
     dsd_engine_scan_entry_intent entry;
     dsd_engine_scan_entry_failure entry_failed;
     /* Issue #834. landing_epoch: moved by every landing note and forget (scan_landing.h). tune_generation_before: the
-       RTL output generation at the last scan tune request, carried to the landing it notes. sync_seq: moved whenever
-       the frame sync returns a sync and whenever the analog carrier opens, so a quiet check sees activity since its
-       request. quiet_inv_seq: moved where a quiet check's facts change and no counter of their own says so (a hold, a
-       pause, a resume, a tune in flight, a stop, the setting, a config apply, a Signal search start). */
+       RTL output generation at the last scan tune request, carried to the landing it notes. sync_seq: moved, only while
+       skip-silent is on, whenever the frame sync returns a sync and whenever the analog carrier opens, so a quiet check
+       sees activity since its visit's landing. quiet_inv_seq: moved where a quiet check's facts change and no counter
+       of their own says so (a hold, a pause, a resume, a tune in flight, a stop, the setting, a config apply, a Signal
+       search start). */
     uint64_t landing_epoch;
     uint32_t tune_generation_before;
     uint64_t sync_seq;
@@ -130,8 +131,9 @@ dsd_engine_scan_owner_get(dsd_state* state) {
                : NULL;
 }
 
-/** A sync was returned or the analog carrier opened (issue #834): a quiet check requested before it sees activity. A
- * state with no scan owner has no check, and gets no owner made for it. */
+/** A sync was returned or the analog carrier opened (issue #834), and is noted only while skip-silent is on: a quiet
+ * check sees activity since its visit's landing. A state with no scan owner has no check, and gets no owner made for
+ * it. */
 static inline void
 dsd_engine_scan_quiet_note_sync(dsd_state* state) {
     dsd_engine_scan_owner* p = dsd_engine_scan_owner_get(state);

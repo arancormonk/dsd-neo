@@ -750,9 +750,9 @@ nxdn_finish_decoded_frame(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx
 }
 
 /* The FSW the hunt just accepted places the symbol grid for the frame behind it, as in ysf.c: the hunt's crossing loop
-   leaves the grid where the word's crossings put it, which its two inner symbols pull off the symbol boundaries. A frame
-   read whole armed a recording at its end, so the recording starts on the FSW's first sample; the word is named from its
-   second symbol, which leaves the measurement its sample of margin before the first centre. */
+   leaves the grid where the word's crossings put it, which its two inner symbols pull off the symbol boundaries. A
+   frame read whole armed a recording at its end, so the recording starts on the FSW's first sample; the word is named
+   from its second symbol, which leaves the measurement its sample of margin before the first centre. */
 static void
 nxdn_note_fsw_anchor(const dsd_state* state) {
     const char* fsw = state->synctype == DSD_SYNC_NXDN_NEG ? INV_NXDN_FSW_DIBITS : NXDN_FSW_DIBITS;

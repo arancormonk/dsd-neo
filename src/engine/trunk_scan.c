@@ -229,8 +229,8 @@ typedef enum {
     /* A stay whose end the coordinator does not know (a trunked call or control-channel acquisition, a retune in
        flight, a tone rejection, a pause): a fresh full dwell from the tick that arms it. */
     TRUNK_SCAN_DWELL_DISARM_OTHER = 0,
-    /* A conventional activity hold: the dwell runs from the hold's end, last_allowed_activity_m plus the effective hold,
-       the deadline trunk_scan_activity_hold_running() measures. */
+    /* A conventional activity hold: the dwell runs from the hold's end, last_allowed_activity_m plus the effective
+       hold, the deadline trunk_scan_activity_hold_running() measures. */
     TRUNK_SCAN_DWELL_DISARM_ACTIVITY_HOLD,
     /* The operator's hold (`Y`, an entry or start hold): its release is a fresh full dwell. */
     TRUNK_SCAN_DWELL_DISARM_OPERATOR,
@@ -4321,10 +4321,10 @@ trunk_scan_disarm_dwell(dsd_trunk_scan_target_runtime* rt, trunk_scan_dwell_disa
     rt->dwell_disarm = cause;
 }
 
-/* Where a disarmed idle dwell starts (issue #834 B4): at its activity hold's end once the hold is over, so dead air after
- * it counts toward the dwell whenever a tick first sees it, clamped to @p now_m; -1 while the hold runs, and for a stay
- * whose end the coordinator does not know (an operator's hold, a recovery, a trunked call, a rejection), whose dwell
- * starts afresh at the tick that arms it. */
+/* Where a disarmed idle dwell starts (issue #834 B4): at its activity hold's end once the hold is over, so dead air
+ * after it counts toward the dwell whenever a tick first sees it, clamped to @p now_m; -1 while the hold runs, and for
+ * a stay whose end the coordinator does not know (an operator's hold, a recovery, a trunked call, a rejection), whose
+ * dwell starts afresh at the tick that arms it. */
 static double
 trunk_scan_disarmed_dwell_start(const dsd_opts* opts, const dsd_trunk_scan_target_runtime* rt, double now_m) {
     if (rt->dwell_disarm != TRUNK_SCAN_DWELL_DISARM_ACTIVITY_HOLD || rt->last_allowed_activity_m <= 0.0
@@ -4335,8 +4335,8 @@ trunk_scan_disarmed_dwell_start(const dsd_opts* opts, const dsd_trunk_scan_targe
     return end_m < now_m ? end_m : now_m;
 }
 
-/* Arm a disarmed idle dwell at this tick: from where trunk_scan_disarmed_dwell_start() says it started, else afresh from
- * @p now_m. Returns 1 when it started earlier, so the tick weighs what has already run of it. */
+/* Arm a disarmed idle dwell at this tick: from where trunk_scan_disarmed_dwell_start() says it started, else afresh
+ * from @p now_m. Returns 1 when it started earlier, so the tick weighs what has already run of it. */
 static int
 trunk_scan_rearm_dwell(const dsd_opts* opts, dsd_trunk_scan_target_runtime* rt, double now_m) {
     const double start_m = trunk_scan_disarmed_dwell_start(opts, rt, now_m);

@@ -19755,10 +19755,10 @@ if(DSD_HAS_RADIO)
     # decodes 10.
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96_WEAK_0DB nxdn96_weak_0db -fn "RAN 00" "" 25)
     # Issue #834: clean generated NXDN frames (nxdn96_synth, nxdn48_synth; SLICER_SYNTH in tools/build_iq_fixtures.py),
-    # each frame's symbols outside the FSW checked against the dibits sent (tests/symbol_capture_check.py). The FSW's two
-    # inner symbols were taken for outer ones, which put the slicer's rails at 2.6 of 3, and each frame was read at the
-    # phase the hunt's crossing loop left on the FSW: before the fix 7 (NXDN96) and 33 (NXDN48) of the 46 frames after
-    # acquisition read clean, after it all 46.
+    # each frame's symbols outside the FSW checked against the dibits sent (tests/symbol_capture_check.py). The FSW's
+    # two inner symbols were taken for outer ones, which put the slicer's rails at 2.6 of 3, and each frame was read at
+    # the phase the hunt's crossing loop left on the FSW: before the fix 7 (NXDN96) and 33 (NXDN48) of the 46 frames
+    # after acquisition read clean, after it all 46.
     if(Python3_Interpreter_FOUND)
         foreach(_nxdn_rate IN ITEMS 96 48)
             if(_nxdn_rate STREQUAL "96")
@@ -20822,8 +20822,8 @@ if(DSD_HAS_RADIO)
     )
     # Issue #834: 20 clean generated V/D mode 2 frames (ysf_synth, SLICER_SYNTH in tools/build_iq_fixtures.py): the
     # frame sync's seven inner symbols, taken for outer ones, put the slicer's centre a quarter of an outer level off,
-    # and each frame was read two samples early, where the hunt's crossing loop left the grid on the sync. 9 FICHs passed
-    # before the fix, 20 after it; at least 19 (95 %) must.
+    # and each frame was read two samples early, where the hunt's crossing loop left the grid on the sync. 9 FICHs
+    # passed before the fix, 20 after it; at least 19 (95 %) must.
     dsd_neo_add_iq_decode_test(DECODE_IQ_YSF_SYNTH ysf_synth -fy "FN: [1-8]/8 " "" 19)
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_EDACS

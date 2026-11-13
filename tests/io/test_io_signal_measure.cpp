@@ -861,10 +861,10 @@ double
 quiet_narrowest(const dsd_signal_quiet_request& q) {
     double width = 1e9;
     if (q.classes & DSD_SIGNAL_QUIET_CLASS_12K5) {
-        width = std::min(width, (double)DSD_SIGNAL_QUIET_CLASS_12K5_HZ);
+        width = std::min(width, (double)DSD_SIGNAL_QUIET_WIDTH_12K5_HZ);
     }
     if (q.classes & DSD_SIGNAL_QUIET_CLASS_6K25) {
-        width = std::min(width, (double)DSD_SIGNAL_QUIET_CLASS_6K25_HZ);
+        width = std::min(width, (double)DSD_SIGNAL_QUIET_WIDTH_6K25_HZ);
     }
     if (q.classes & DSD_SIGNAL_QUIET_CLASS_ANALOG) {
         width = std::min(width, (double)q.analog_width_hz);
@@ -1057,7 +1057,8 @@ test_quiet_signals(dsd_signal_quiet_detector* d) {
 
 /* A DMR mobile's single-slot burst train (27.5 ms symbol interval every 60 ms, 1.5 ms ramps outside it) is never quiet,
    at any phase: sample-level steps across the 60 ms and phases that start or end a burst on a transform or sub-window
-   boundary. */
+   boundary. Its bursts stand 15 dB over the noise, so a sub-window a burst only partly fills reads busy too: what pins
+   the bound that one whole sub-window always falls inside a burst is test_quiet_spans(). */
 static void
 test_quiet_dmr_bursts(dsd_signal_quiet_detector* d) {
     for (uint32_t rate : kQuietRates) {

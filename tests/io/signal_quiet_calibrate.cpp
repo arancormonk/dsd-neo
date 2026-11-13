@@ -88,10 +88,9 @@ struct Mode {
     bool analog;
 };
 
-/* Reception thresholds: 834/evidence/reception-final/thresholds.json "kept" (digital and the four analog widths it
- * holds), 834/evidence/calibration/reception-analog (NFM 8 and 16 kHz, AM 5 and 10 kHz) and
- * 834/evidence/calibration/r1/reception-analog (NFM 11.25 and 20 kHz, AM 8 and 15 kHz), the same tool and method:
- * every NFM and AM width the Radio sheet offers. X2-TDMA and ProVoice are unsourced: no check, so not calibrated. */
+/* Reception thresholds: the "kept" thresholds tools/scan_quiet_reception.py writes to its thresholds.json, one run per
+ * mode and per NFM and AM width the Radio sheet offers, as the reception table in docs/signal-search.md ("Reception
+ * thresholds") lists them. X2-TDMA and ProVoice are unsourced: no check, so not calibrated. */
 const Mode kModes[] = {
     {"p25p1", "p25p1", 8.0, 12500, DSD_SIGNAL_QUIET_CLASS_12K5, false},
     {"p25p2", "p25p2_harmonized", 9.5, 12500, DSD_SIGNAL_QUIET_CLASS_12K5, false},
@@ -363,10 +362,10 @@ int
 fft_points(const Condition& c) {
     double narrowest = c.analog_width ? c.analog_width : 1e9;
     if (c.classes & DSD_SIGNAL_QUIET_CLASS_12K5) {
-        narrowest = std::min(narrowest, (double)DSD_SIGNAL_QUIET_CLASS_12K5_HZ);
+        narrowest = std::min(narrowest, (double)DSD_SIGNAL_QUIET_WIDTH_12K5_HZ);
     }
     if (c.classes & DSD_SIGNAL_QUIET_CLASS_6K25) {
-        narrowest = std::min(narrowest, (double)DSD_SIGNAL_QUIET_CLASS_6K25_HZ);
+        narrowest = std::min(narrowest, (double)DSD_SIGNAL_QUIET_WIDTH_6K25_HZ);
     }
     return dsd_signal_fft_size_for_width(c.rate, narrowest);
 }
@@ -1178,10 +1177,10 @@ reference_work(const Condition& c, const std::vector<double>& power, std::vector
     const double channel = (double)r.frequency_hz - r.capture.capture_hz;
     double widest = c.analog_width;
     if (c.classes & DSD_SIGNAL_QUIET_CLASS_6K25) {
-        widest = std::max(widest, (double)DSD_SIGNAL_QUIET_CLASS_6K25_HZ);
+        widest = std::max(widest, (double)DSD_SIGNAL_QUIET_WIDTH_6K25_HZ);
     }
     if (c.classes & DSD_SIGNAL_QUIET_CLASS_12K5) {
-        widest = std::max(widest, (double)DSD_SIGNAL_QUIET_CLASS_12K5_HZ);
+        widest = std::max(widest, (double)DSD_SIGNAL_QUIET_WIDTH_12K5_HZ);
     }
     const double half_width = widest / 2;
     double sum = 0;

@@ -11206,7 +11206,8 @@ test_scan_timing_conventional_activity_hold_restarts(void) {
     test_rc |= expect_scan_timing(&state, "refreshed hold", DSD_SCAN_STAY_ACTIVITY_HOLD, 0.55, 250U, 250U);
     test_rc |= expect_scan_timing_window(&state, "refreshed hold", 0.30, 250U);
 
-    /* The hold lapses at 0.55; the first tick past it re-arms the dwell in place, from the hold's end (issue #834 B4). */
+    /* The hold lapses at 0.55; the first tick past it re-arms the dwell in place, from the hold's end
+       (issue #834 B4). */
     trunk_scan_test_set_now(0.56);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "hold expiry", 0U);
@@ -13978,8 +13979,8 @@ test_nfm_target_tone_check_leaves_no_hold(void) {
 }
 
 /* Issue #834 B3: a tick that keeps the target for a reason of its own services the dwell start for that reason. A tone
- * check (issue #527) holds an analog target with its dwell still running: once the tick has stayed for it, the hunt does
- * not hand back again while the check lasts, and does at the next point once it ends, so the spent dwell advances
+ * check (issue #527) holds an analog target with its dwell still running: once the tick has stayed for it, the hunt
+ * does not hand back again while the check lasts, and does at the next point once it ends, so the spent dwell advances
  * then rather than at the pass end. */
 static int
 test_dwell_due_after_a_tone_check_stay(void) {
@@ -14166,8 +14167,8 @@ test_nfm_target_tone_check_arms_a_disarmed_dwell(void) {
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |=
         expect_scan_timing(&state, "the allowed traffic's hold", DSD_SCAN_STAY_ACTIVITY_HOLD, 2.30, 1000U, 2000U);
-    /* A check from 2.20 to 3.00 spans the hold's end: its tick at 2.40, the first past the hold, arms the dwell from the
-       hold's end at 2.30, as a quiet tick would (issue #834 B4). */
+    /* A check from 2.20 to 3.00 spans the hold's end: its tick at 2.40, the first past the hold, arms the dwell from
+       the hold's end at 2.30, as a quiet tick would (issue #834 B4). */
     for (int tick = 0; tick < 5; tick++) {
         publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_PENDING);
         trunk_scan_test_set_now(2.20 + (0.20 * tick));

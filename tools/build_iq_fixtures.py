@@ -630,12 +630,12 @@ DPMR_SYNTH_NAME = "dpmr_synth"
 # A clear DMR BS voice call on slot 1, slot 2 idle (a repeater's usual traffic), written by the test generator tests/protocol/dmr/dmr_synth.c (issue #729): the
 # two sigidwiki DMR recordings are control channels received at inverted polarity, not voice, so the voice and audio
 # chain cases need a call that really is one. The generator writes discriminator audio (raised-cosine 4FSK under
-# --pulse rc, which this fixture has kept since #729), its +/-3 symbol level at DMR_SYNTH_OUTER_LEVEL in s16 units. remodulate() maps that known level to
-# DMR_VOICE_SYNTH_OUTER_HZ, the +/-1944 Hz of ETSI TS 102 361-1 section 10.2.2.1 (Table 10.3), with nothing removed:
-# a 99.5th-percentile mapping put the outer symbols near 1300 Hz (the raised-cosine overshoot sits about 1.6 times
-# above the level), and removing the audio's mean left them at +1880 / -2008 Hz. check_dmr_outer_deviation()
-# measures each outer level in the written baseband. It needs the built generator (--dmr-synth-gen),
-# which links mbelib-neo's AMBE encoder.
+# --pulse rc, which this fixture has kept since #729), its +/-3 symbol level at DMR_SYNTH_OUTER_LEVEL in s16 units.
+# remodulate() maps that known level to DMR_VOICE_SYNTH_OUTER_HZ, the +/-1944 Hz of ETSI TS 102 361-1 section 10.2.2.1
+# (Table 10.3), with nothing removed: a 99.5th-percentile mapping put the outer symbols near 1300 Hz (the raised-cosine
+# overshoot sits about 1.6 times above the level), and removing the audio's mean left them at +1880 / -2008 Hz.
+# check_dmr_outer_deviation() measures each outer level in the written baseband. It needs the built generator
+# (--dmr-synth-gen), which links mbelib-neo's AMBE encoder.
 DMR_VOICE_SYNTH_NAME = "dmr_voice_synth"
 DMR_VOICE_SYNTH_ARGS = ["-t", "4", "--cc", "2", "--s1", "voice", "--s2", "idle", "--snr", "40", "--seed", "7",
                         "--lead", "0.3", "--tail", "0.2", "--pulse", "rc"]

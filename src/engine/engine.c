@@ -1580,8 +1580,8 @@ untyped_install_row(dsd_state* state, int row, time_t now, uint64_t request) {
 
 static int no_carrier_scan_tune_awaited(const dsd_state* state);
 
-/* The facts of the -Y row @p row for a scan quiet check (issue #834): a typed row's mode, or the decoder set in force for
-   an untyped row or a typed one inheriting it; an analog row's kind at the width the stream runs it (its own width,
+/* The facts of the -Y row @p row for a scan quiet check (issue #834): a typed row's mode, or the decoder set in force
+   for an untyped row or a typed one inheriting it; an analog row's kind at the width the stream runs it (its own width,
    else the configured one). */
 static void
 no_carrier_quiet_row_classes(const dsd_opts* opts, const dsd_state* state, int row, scan_quiet_eligibility* e) {
@@ -2910,8 +2910,8 @@ dsd_engine_forget_carrier_code_values(dsd_state* state) {
         return;
     }
     /* The colour code is read as this carrier's (issue #575), so it goes back to "not decoded" (16, as initState()
-     * leaves it) with the lock. Only the gate's lock writes it again, and an MS data burst is dispatched before the gate
-     * locks, so until then the previous carrier's code would label what the new carrier sends. Here rather than in
+     * leaves it) with the lock. Only the gate's lock writes it again, and an MS data burst is dispatched before the
+     * gate locks, so until then the previous carrier's code would label what the new carrier sends. Here rather than in
      * dmr_confidence_reset(), whose BS burst-error callers stay on the same carrier. */
     state->dmr_color_code = 16U;
     /* So is the slot the single-slot DMR decoder proved (issue #637): the next carrier proves its own. */

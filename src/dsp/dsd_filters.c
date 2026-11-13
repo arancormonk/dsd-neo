@@ -259,8 +259,8 @@ static const float dmr_rrc_taps[81] = {
  * sinc (IO.cpp). The overall response is the Nyquist raised cosine. This is that receive filter at 48 kHz for 2400
  * symbol/s (sps 20, NXDN48 and dPMR), four symbols either side (three or 3.35 symbols either side lost frames on an
  * off-air NXDN96 recording), from the inverse Fourier transform of H(f) D(f); NXDN96 at 4800 symbol/s and other rates
- * read the same pulse scaled in symbols. The tables it replaces were RRC 0.2 pulses for 16 (NXDN) and about 14.5 (dPMR) samples per symbol, a
- * quarter or more too wide in frequency and without the inverse sinc, and NXDN96 ran DMR's.
+ * read the same pulse scaled in symbols. The tables it replaces were RRC 0.2 pulses for 16 (NXDN) and about 14.5 (dPMR)
+ * samples per symbol, a quarter or more too wide in frequency and without the inverse sinc, and NXDN96 ran DMR's.
  */
 static const float nxdn_dpmr_rx_taps[161] = {
     0.0437529310f,  0.0404354274f,  0.0355881155f,  0.0292797519f,  0.0216296211f,  0.0128062578f,  0.0030245643f,

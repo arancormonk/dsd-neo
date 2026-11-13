@@ -123,8 +123,12 @@ enum {
     DSD_SIGNAL_QUIET_CLASS_12K5 = 1,
     DSD_SIGNAL_QUIET_CLASS_6K25 = 2,
     DSD_SIGNAL_QUIET_CLASS_ANALOG = 4,
-    DSD_SIGNAL_QUIET_CLASS_12K5_HZ = 12500,
-    DSD_SIGNAL_QUIET_CLASS_6K25_HZ = 6250,
+};
+
+/** The widths of the two digital classes, in Hz. */
+enum {
+    DSD_SIGNAL_QUIET_WIDTH_12K5_HZ = 12500,
+    DSD_SIGNAL_QUIET_WIDTH_6K25_HZ = 6250,
 };
 
 /** Sub-windows per quiet request. */
@@ -223,8 +227,8 @@ int dsd_signal_quiet_detector_result(const dsd_signal_quiet_detector* detector, 
 /** Shared radio tap quiet request. The tap holds one request at a time and records its owner: a quiet request is
  * refused (UNSUPPORTED) while Signal search owns the tuner or holds a request or an unread report, and a Signal search
  * request supersedes a quiet one. Returns 0 and the request's ticket in @p ticket, or -1 with the reason in
- * @p out_failure (optional). Every request (search or quiet), quiet cancel and reset moves the tap's ticket, so an
- * earlier ticket reads lost at once, with no further samples. */
+ * @p out_failure (optional). Every search request, every quiet request not refused for Signal search, a quiet cancel
+ * and a reset move the tap's ticket, so an earlier ticket reads lost at once, with no further samples. */
 int rtl_signal_quiet_request(const dsd_signal_quiet_request* request, uint32_t* ticket,
                              dsd_signal_request_failure* out_failure);
 /** Non-consuming and lock-free: 1 done (a result or failure waiting), 0 pending, -1 lost (superseded, cancelled,
