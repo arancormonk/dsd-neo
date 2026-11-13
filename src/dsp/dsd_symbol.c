@@ -31,6 +31,7 @@
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/analog_sink.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/fsk_modem.h>
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/symbol_levels.h>
@@ -2246,10 +2247,18 @@ symbol_process_analog_capture(dsd_opts* opts, dsd_state* state, const symbol_wor
     /* A block that starts filling notes the reception it begins in for the audio chain, so a block that runs across a
        retune is told from one wholly after it (dsd_analog_audio_process_f()), and the rate it runs at (issue #633). */
     symbol_analog_block_collect(opts, state, rtl_generation);
+    float sample = work->sample;
+#ifdef USE_RADIO
+    /* The FSK discriminator output is not clipped (fsk_modem.h): noise reaches several times the PCM range. The block
+       is audio, int16 in the -6 raw WAV, so it takes those samples saturated there, as EDACS's analog voice does. */
+    if (work->rtl_fsk_discriminator_output) {
+        sample = fminf(fmaxf(sample, -32768.0f), 32767.0f);
+    }
+#endif
     if (have_sync == 0) {
-        symbol_process_unsynced_analog(opts, state, work->analog_out_cap, work->sample, work->sample_flag);
+        symbol_process_unsynced_analog(opts, state, work->analog_out_cap, sample, work->sample_flag);
     } else if (have_sync == 1) {
-        symbol_process_synced_analog(opts, state, work->analog_out_cap, work->sample);
+        symbol_process_synced_analog(opts, state, work->analog_out_cap, sample);
     }
 }
 
@@ -2484,19 +2493,27 @@ symbol_rtl_fsk_symbol_rate_hz(const symbol_work_ctx* work) {
     return work->rtl_symbol_rate_hz > 0 ? work->rtl_symbol_rate_hz : 4800;
 }
 
+/* A new FSK discriminator stream's slicer levels, which hold until a sync word sets the protocol's own: the outer level
+   at the discriminator's reference deviation (6 kHz on its fixed scale, fsk_modem.h), above any FSK protocol's peaks on
+   this path, the inner/outer boundaries at two thirds of it and the references at four fifths. The hunt's timing loop
+   takes no zero crossing whose sample lies above the outer level (symbol_jitter_above_center()): started at 3 kHz, a
+   P25 call at 10 dB S/N lost its first HDU and LDU1 to crossings that noise had lifted past it. */
+#define SYMBOL_RTL_FSK_START_OUTER_HZ DSD_FSK_DISCRIMINATOR_REFERENCE_HZ
+
 static inline void
 symbol_reset_rtl_fsk_discriminator_slicer(dsd_state* state) {
     if (!state) {
         return;
     }
 
+    const float outer = SYMBOL_RTL_FSK_START_OUTER_HZ * DSD_FSK_DISCRIMINATOR_COUNTS_PER_HZ;
     state->center = 0.0f;
-    state->min = -30000.0f;
-    state->max = 30000.0f;
-    state->lmid = -20000.0f;
-    state->umid = 20000.0f;
-    state->minref = -24000.0f;
-    state->maxref = 24000.0f;
+    state->min = -outer;
+    state->max = outer;
+    state->lmid = -outer * (2.0f / 3.0f);
+    state->umid = outer * (2.0f / 3.0f);
+    state->minref = -outer * 0.8f;
+    state->maxref = outer * 0.8f;
     int minmax_cap = (int)(sizeof(state->minbuf) / sizeof(state->minbuf[0]));
     for (int i = 0; i < minmax_cap; i++) {
         state->minbuf[i] = state->min;

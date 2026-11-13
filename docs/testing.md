@@ -823,6 +823,14 @@ second transmission's start, where the stream LSF is sent twice: `DECODE_IQ_M17_
 stream's frame 0 (`FSN: 00000`) and no packet or EOT sync, where before the hunt matched both inside the repeated
 LSF.
 
+`p25p1_c4fm_no_hdu_synth` (287 kB, `P25_NO_HDU_SYNTH_NAME`) is two clean P25 Phase 1 C4FM calls with no HDU from
+`tools/scan_quiet_reception.py`'s LDU generator (`p25_ldu_bits()`), each six LDUs whose voice frames are IMBE frames of
+all-zero parameters (`p25_imbe_silent_bits()`: every codeword known, interleaved as `p25p1_const.h` reads them), keyed
+for 1 ms either side and with the carrier off for 0.3 s before, between and after them. `DECODE_IQ_P25P1_C4FM_NO_HDU_F1`
+needs all 108 IMBE frames and none with more than two corrections, `_FA` 99 (the AUTO hunt's rotation misses the first
+call's first LDU1). Before the FSK discriminator's fixed scale the first LDU of each call needed up to 13 corrections a
+frame (`-f1`) and 9 (`-fa`).
+
 `nxdn96_synth` (192 kB), `nxdn48_synth` (384 kB) and `ysf_synth` (192 kB) (`SLICER_SYNTH`, issue #834) are clean
 frames from `tools/scan_quiet_reception.py`'s generators (`nxdn_levels()`, `ysf_levels()`, the same symbols its
 threshold rows send): 50 NXDN RDCH voice frames at each rate (RRC 0.2 x sinc, NXDN TS 1-A, 2400 / 1050 Hz) and 20 YSF

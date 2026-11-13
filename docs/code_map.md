@@ -6013,6 +6013,25 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   recovery, CQPSK helpers
   (matched/RRC), and SIMD helpers; exposes runtime-tunable parameters consumed by the UI
 - Build files: `src/dsp/CMakeLists.txt`
+- FSK discriminator output (`<dsd-neo/dsp/fsk_modem.h>`, `fsk_modem.c`): every FSK protocol on an RTL-family, Soapy,
+  Airspy or I/Q replay input reads the discriminator's instantaneous frequency off the carrier, slowly centred, on a
+  fixed scale of `DSD_FSK_DISCRIMINATOR_COUNTS_PER_HZ` (5) counts a hertz at any complex rate; the PCM range (+/-32767)
+  holds +/-6553 Hz, which every protocol's peaks clear (M17's root raised cosine and YSF's 2.7 kHz under 5 kHz, EDACS
+  voice at most 5 kHz), and the output is not clipped there: railed at it, noise read as runs of outer symbols, and the
+  AUTO hunt lost noisy P25 voice frames and the P25 chain comparison read a CQPSK control channel through the
+  discriminator with ten times the TSBK failures. The int16 consumers (EDACS analog voice, the -8 source monitor, the -6
+  raw WAV) saturate as they convert. P25's outer level reads 9000. There is no gain stage: a peak normaliser to +/-30000
+  used to restart at every carrier (the modem resets across a squelched stretch) and climb back over about 0.4 s after
+  noise, so the sync word that opens a transmission read at up to twice its frame's level, or a fraction of it, and the
+  warm start set the slicer there. The slicer's starting levels on a new FSK stream (`dsd_symbol.c`
+  `symbol_reset_rtl_fsk_discriminator_slicer()`) put the outer level at the 6 kHz reference, above every protocol's
+  peaks: the hunt's timing loop takes no crossing whose sample lies above it, and at 3 kHz a P25 call at 10 dB lost its
+  first HDU and LDU1 to crossings noise had lifted past it; a P25p1 word the hunt accepts on GFSK warm-starts its frame
+  as on C4FM (`frame_sync_accept_p25p1()`), since nothing else sets levels there. The analog audio chain takes 3 kHz
+  deviation (15000) as the RTL FSK source's reference (`dsd_analog_audio_source_gain()`). Tests: `DSP_FSK_MODEM` (counts
+  per hertz at 24-96 kHz, past the PCM range unclipped, a level independent of loud noise or a reset before it),
+  `DECODE_IQ_P25P1_C4FM_NO_HDU_F1` / `_FA` (two generated no-HDU calls after the carrier was off: all IMBE frames read,
+  none with more than two corrections).
 - Sample statistics in `<dsd-neo/dsp/simd_stats.h>` dispatch to AVX2, SSE2, NEON or scalar implementations.
   `dsd_simd_extrema_avg2()` supplies the two-lowest/two-highest averages for the core symbol slicer's window,
   counting duplicate samples. Non-finite values and signed-zero ties use the original ordered comparisons.
@@ -6857,8 +6876,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   on auto logs that once per rate. The source gain takes
   each source's reference signal to -12 dBFS peak: RTL monitor audio after the `vol` trim (0.25 at the default 2:
   1 kHz at 3 kHz deviation after the 1/pi output scale, or AM at 50%) by 32924, the RTL FSK discriminator output
-  (+/-30000: the -8 source monitor under digital decoding, told by `rtl_symbol_cache_output_kind`, which, like the
-  symbol path, reads it with no `vol` trim) by 8231/30000, PCM by 1. EDACS analog voice on RTL is RTL monitor audio:
+  (3 kHz deviation at 15000 on its fixed scale: the -8 source monitor under digital decoding, told by `rtl_symbol_cache_output_kind`, which, like the
+  symbol path, reads it with no `vol` trim) by 8231/15000, PCM by 1. EDACS analog voice on RTL is RTL monitor audio:
   the stream's FSK voice lane after the `vol` trim (IO, "The FSK voice lane"). The chain's gain is the source
   gain, and on RTL monitor audio from an RTL input times the stream's de-emphasis gain
   (`dsd_rtl_stream_metrics_hook_monitor_deemph_gain()`, issue #518 B8/B9: the FM de-emphasis takes the 1 kHz reference
@@ -7090,7 +7109,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   and `squelch_noise_run()` flags each output right after `dsd_fm_demod()`, before the post-decimator, de-emphasis and
   audio filters, which then carry the flags as the tracker's. On an AM channel, one with no plan (8 and 10 kHz NFM,
   low DSP rates, an unfiltered channel at 16 kHz or less), or the 9600 bit/s FSK path EDACS reads (its discriminator's
-  output is peak-normalised, not radians), `squelch_auto_wanted()` runs the tracker instead, N as its margin. Its plan follows the same `dsd_demod_squelch_plan_key` as the tracker's, which carries the cascade's pass
+  output is slowly centred on the carrier and scaled to counts, not the radians the plan is calibrated on), `squelch_auto_wanted()` runs the tracker instead, N as its margin. Its plan follows the same `dsd_demod_squelch_plan_key` as the tracker's, which carries the cascade's pass
   count (designed only when NOISE needs it), and it keeps its own context record (`demod_state::noise_context`), so a
   spell under NOISE never stores the tracker's floor under another channel; a new context or
   `dsd_demod_reset_filter_state()` starts it over, closed. The IO layer's status adds which squelch ran and its quieting

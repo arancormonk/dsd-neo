@@ -1371,8 +1371,8 @@ their sensitivity in.
   input itself ([below](#noise-squelch-on-audio-input)).
 - The M17 encoder's monitor runs it as the FM monitor does, or as auto where its channel has no band.
 - EDACS analog voice runs it as auto, and the engine says so (`EDACS analog voice runs the noise squelch as
-  auto+NdB`): the FSK discriminator EDACS reads puts out peak-normalised levels, not the radians the noise squelch is
-  calibrated on.
+  auto+NdB`): the FSK discriminator EDACS reads is slowly centred on the carrier and scaled to counts, not the radians
+  the noise squelch is calibrated on.
 - On audio input neither runs it: the PCM noise squelch below serves the FM monitor only.
 - What it shows: `SQL: noise +10 dB (quieting 23 dB)`, `(starting)` before its first window, `(as auto: floor
   -78.3 dB)` where the auto squelch stands in, and the same `off` readings as auto; the startup banner
@@ -2660,8 +2660,8 @@ does.
 - RTL USB, RTL-TCP, SoapySDR, and IQ replay digital decode run in the symbol domain. The digital decoder receives one
   normalized float per FSK or CQPSK symbol decision; discriminator audio is not used for digital decode.
 - The trailing `vol` field and `rtl_volume` config key are monitor/non-symbol gain only. They do not scale RTL-family
-  digital symbols, nor the FSK discriminator output that EDACS analog voice and the `-8` source monitor play (it
-  already peaks near full scale). `-8` enables the separate source monitor tap.
+  digital symbols, nor the FSK discriminator output that EDACS analog voice and the `-8` source monitor play (it is
+  on a fixed scale already, 3 kHz deviation at 15000). `-8` enables the separate source monitor tap.
 - Examples:
   - `-i rtl:0:851.375M:22:-2:24:0:2`
   - `-i rtltcp:192.168.1.10:1234:851.375M:22:-2:24:0:2`

@@ -857,7 +857,10 @@ frame_sync_accept_p25p1(frame_sync_match_ctx* ctx, int synctype, const char* lab
     if (center_mode != FRAME_SYNC_P25_CENTER_SKIP
         && (center_mode == FRAME_SYNC_P25_CENTER_FORCE || state->rf_mod == 1)) {
         dsd_sync_warm_start_center_outer_only(state, 24);
-    } else if (state->rf_mod == 0) {
+    } else if (state->rf_mod != 1) {
+        /* GFSK reads the same FSK discriminator output as C4FM, and a P25p1 word under it is a C4FM signal the votes
+           flapped off: the frame is read on the levels its word sets, as on C4FM. Nothing else sets levels there
+           (the hunt keeps its starting ones), and those are a guess at the outer level, not the carrier's. */
         frame_sync_p25p1_c4fm_warm_start(opts, state);
     }
     frame_sync_p25p1_anchor_note_sync(state, synctype, tolerance ? tolerance->nac : -1,

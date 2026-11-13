@@ -269,7 +269,8 @@ static void
 test_source_gains(void) {
     CHECK(fabs(dsd_analog_audio_source_gain(DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR) - 32924.0) < 1e-6, "RTL monitor %g",
           dsd_analog_audio_source_gain(DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR));
-    CHECK(fabs(dsd_analog_audio_source_gain(DSD_ANALOG_AUDIO_SOURCE_RTL_FSK) - (8231.0 / 30000.0)) < 1e-9, "RTL FSK %g",
+    /* 3 kHz deviation on the FSK discriminator's fixed scale, 5 counts a hertz, reads 15000. */
+    CHECK(fabs(dsd_analog_audio_source_gain(DSD_ANALOG_AUDIO_SOURCE_RTL_FSK) - (8231.0 / 15000.0)) < 1e-9, "RTL FSK %g",
           dsd_analog_audio_source_gain(DSD_ANALOG_AUDIO_SOURCE_RTL_FSK));
     CHECK(fabs(dsd_analog_audio_source_gain(DSD_ANALOG_AUDIO_SOURCE_PCM16) - 1.0) < 1e-12, "PCM %g",
           dsd_analog_audio_source_gain(DSD_ANALOG_AUDIO_SOURCE_PCM16));
@@ -310,7 +311,7 @@ test_fixed_gain(void) {
         float in;
     } refs[] = {
         {DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR, 0.25f},
-        {DSD_ANALOG_AUDIO_SOURCE_RTL_FSK, 30000.0f},
+        {DSD_ANALOG_AUDIO_SOURCE_RTL_FSK, 15000.0f},
         {DSD_ANALOG_AUDIO_SOURCE_PCM16, 8231.0f},
     };
 

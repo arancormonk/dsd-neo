@@ -19453,6 +19453,29 @@ if(DSD_HAS_RADIO)
     endfunction()
     dsd_neo_add_gt_c4fm_cc_tests(S9 p25p1_c4fm_cc_gt_s9 28 9 6)
     dsd_neo_add_gt_c4fm_cc_tests(CITY p25p1_c4fm_cc_gt_city 43 15 14)
+    # Two clean P25 Phase 1 C4FM calls with no HDU, each after the carrier was off (p25p1_c4fm_no_hdu_synth): every
+    # IMBE frame of all twelve LDUs is read and none needs more than two corrections. The FSK discriminator's level
+    # normaliser restarted at each carrier and put the call's first symbols at up to twice the frame's level; the
+    # sync word's levels then read the first LDU's outer symbols as inner, up to 13 corrections a frame. Its grid can
+    # still land a sample late (DSP_SYMBOL_P25_C4FM_GRID), which leaves a few single-bit corrections in the first LDU.
+    # Under -fa the hunt's rotation misses the first call's first LDU1, so 99 frames; a P25 word the hunt accepted on
+    # GFSK set no levels, and that frame was read on the hunt's starting ones.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_P25P1_C4FM_NO_HDU_F1
+        p25p1_c4fm_no_hdu_synth
+        "-f1 -Z"
+        "IMBE [0-9A-F]+ err = "
+        "err = \\[[0-9A-F]+\\] \\[([3-9A-F]|[0-9A-F][0-9A-F]+)\\]"
+        108
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_P25P1_C4FM_NO_HDU_FA
+        p25p1_c4fm_no_hdu_synth
+        "-fa -Z"
+        "IMBE [0-9A-F]+ err = "
+        "err = \\[[0-9A-F]+\\] \\[([3-9A-F]|[0-9A-F][0-9A-F]+)\\]"
+        99
+    )
     # The CQPSK fixtures run the front end's CQPSK chain throughout only with -mq. A -m lock
     # holds on either side of the preset, so "-f1 -mq" and "-mq -f1" (which ran a C4FM lock
     # until the presets learned to keep an earlier lock) each read about 9,590 CQPSK symbols
@@ -23364,15 +23387,18 @@ if(DSD_HAS_RADIO)
         "${_analog_off_path}"
     )
     # The -8 source monitor under digital decoding plays the FSK discriminator output,
-    # which is normalised to +/-30000. The fixed gain used to scale it as RTL monitor
-    # audio (12000x at -n 50) and clipped every sample (141440 clipped, -0.03 dBFS RMS);
-    # with the gain of its own source it plays at -23.4 dBFS RMS and -9.9 dBFS peak,
-    # unclipped and audible throughout, held to +/-3 dB so a gain that drops it out of
-    # hearing fails too.
+    # on its fixed scale (3 kHz deviation at 15000). The fixed gain used to scale it as RTL
+    # monitor audio (12000x at -n 50) and clipped every sample (141440 clipped, -0.03 dBFS
+    # RMS); with the gain of its own source it plays unclipped and audible throughout. The
+    # capture opens with a second of noise, which the discriminator now passes at its own
+    # level, above the C4FM carrier's, as an FM receiver's open squelch does (the peak
+    # normaliser it replaced pulled noise down to the signal's peak: -23.4 dBFS RMS, -9.9
+    # dBFS peak): -14.9 dBFS RMS and -0.9 dBFS peak, held to +/-3 dB RMS so a gain that
+    # drops it out of hearing fails too.
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_SOURCE_MONITOR_FIXED
         p25p1_c4fm_vc
-        "-fs -8 -n 50 --analog-min-captured-ms 2900 --analog-min-audible-ms 2900 --analog-min-rms-dbfs -26 --analog-max-rms-dbfs -20 --analog-max-peak-dbfs -6 --analog-max-clip 0"
+        "-fs -8 -n 50 --analog-min-captured-ms 2900 --analog-min-audible-ms 2900 --analog-min-rms-dbfs -18 --analog-max-rms-dbfs -12 --analog-max-peak-dbfs -0.5 --analog-max-clip 0"
     )
     # A carrier within a few hertz of 0 Hz votes for CQPSK, and the modulation
     # auto-switch used to follow that vote under -fA and move the front end to the

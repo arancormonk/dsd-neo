@@ -634,6 +634,21 @@ P25_NID_PARITY_ROWS = (
 )
 # Where each 40-bit Hamming-coded group of the link control or encryption sync goes (MMDVM encodeLDU1()/encodeLDU2())
 P25_LDU_HEX_SPANS = ((410, 452), (600, 640), (788, 830), (978, 1020), (1168, 1208), (1356, 1398))
+# Where each of the nine 144-bit IMBE frames goes (MMDVM CP25Audio::encode())
+P25_LDU_IMBE_SPANS = (
+    (114, 262),
+    (262, 410),
+    (452, 600),
+    (640, 788),
+    (830, 978),
+    (1020, 1168),
+    (1208, 1356),
+    (1398, 1546),
+    (1578, 1726),
+)
+# The IMBE frame's interleave as dsd-neo's reader takes it: four 72-entry tables, w/x for each dibit's first bit and y/z
+# for its second (row, column of the 8 x 23 frame).
+P25_IMBE_INTERLEAVE_HEADER = os.path.join(ROOT, "include", "dsd-neo", "protocol", "p25", "p25p1_const.h")
 
 
 def gf64_mul(a, b):
@@ -700,7 +715,46 @@ def p25_nid_bits(duid):
     return msb_bits(packed, 63) + [1]
 
 
-def p25_ldu_bits(duid, hexbits, rng):
+def p25_imbe_interleave():
+    """The four interleave tables (w, x, y, z) from dsd-neo's p25p1_const.h."""
+    with open(P25_IMBE_INTERLEAVE_HEADER, encoding="ascii") as handle:
+        text = handle.read()
+    tables = []
+    for axis in "wxyz":
+        match = re.search(r"p25p1_imbe_interleave_" + axis + r"\[72\]\s*=\s*\{([^}]*)\}", text)
+        if not match:
+            raise SystemExit(f"{P25_IMBE_INTERLEAVE_HEADER}: no p25p1_imbe_interleave_{axis}")
+        values = [int(v) for v in match.group(1).replace("\n", " ").split(",") if v.strip()]
+        if len(values) != 72:
+            raise SystemExit(f"p25p1_imbe_interleave_{axis}: {len(values)} entries, not 72")
+        tables.append(values)
+    return tables
+
+
+def p25_imbe_silent_bits():
+    """The 144 bits of an IMBE frame whose eight parameter vectors are all zero (TIA-102.BABA): its Golay and Hamming
+    codewords are zero, so the frame is the pseudo-random modulation of c1..c6 alone, the generator seeded with
+    16 u0 = 0 (p(n) = 173 p(n-1) + 13849 mod 65536, its top bit modulating; mbelib
+    mbe_demodulateImbe7200x4400Data()), each row from its last column down, interleaved as dsd-neo reads it."""
+    frame = [[0] * 23 for _ in range(8)]
+    pr = [0]
+    for _ in range(114):
+        pr.append((173 * pr[-1] + 13849) % 65536)
+    k = 1
+    for row, width in ((1, 23), (2, 23), (3, 23), (4, 15), (5, 15), (6, 15)):
+        for column in range(width - 1, -1, -1):
+            frame[row][column] = pr[k] // 32768
+            k += 1
+    w, x, y, z = p25_imbe_interleave()
+    bits = []
+    for j in range(72):
+        bits += [frame[w[j]][x[j]], frame[y[j]][z[j]]]
+    return bits
+
+
+def p25_ldu_bits(duid, hexbits, rng, imbe=None):
+    """An LDU: frame sync, NID, the link control or encryption sync, and random bits elsewhere, or with imbe the nine
+    voice frames set to those 144 bits."""
     frame = rng.integers(0, 2, P25_LDU_BITS).tolist()
     p25_place(frame, msb_bits(P25_FS, 48), 0, 48)
     p25_place(frame, p25_nid_bits(duid), 48, 114)
@@ -709,6 +763,9 @@ def p25_ldu_bits(duid, hexbits, rng):
         words = bits[24 * group : 24 * group + 24]
         coded = [b for k in range(4) for b in p25_hamming_10_6_3(words[6 * k : 6 * k + 6])]
         p25_place(frame, coded, start, stop)
+    if imbe is not None:
+        for start, stop in P25_LDU_IMBE_SPANS:
+            p25_place(frame, imbe, start, stop)
     return frame
 
 
@@ -718,12 +775,17 @@ def p25_hexbits(data):
     return [int("".join(map(str, bits[i : i + 6])), 2) for i in range(0, len(bits), 6)]
 
 
-def p25p1_source():
-    """LDU1 (group voice, group 1, source 1) and LDU2 (clear: ALGID 0x80, key 0, MI 0) in turn, C4FM."""
+def p25_ldu_hexbits():
+    """The RS-coded hexbits of LDU1's link control (group voice, group 1, source 1) and LDU2's encryption sync (clear:
+    ALGID 0x80, key 0, MI 0)."""
     lc = bytes([0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01])  # LCF, MFID, service, group, source
     es = bytes(9) + bytes([0x80, 0x00, 0x00])  # MI, ALGID, KID
-    ldu1 = rs64_encode(p25_hexbits(lc), 12)
-    ldu2 = rs64_encode(p25_hexbits(es), 8)
+    return rs64_encode(p25_hexbits(lc), 12), rs64_encode(p25_hexbits(es), 8)
+
+
+def p25p1_source():
+    """LDU1 (group voice, group 1, source 1) and LDU2 (clear: ALGID 0x80, key 0, MI 0) in turn, C4FM."""
+    ldu1, ldu2 = p25_ldu_hexbits()
     rng = np.random.default_rng(P25_SEED)
     count = math.ceil(sample_count() / (P25_LDU_BITS // 2 * (RATE_HZ // 4800)))
     bits = []

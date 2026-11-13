@@ -14,6 +14,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/dsp/analog_voice.h>
+#include <dsd-neo/dsp/fsk_modem.h>
 #include <dsd-neo/dsp/speech_agc.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -27,9 +28,10 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
-/* The FSK discriminator output's normalised peak (fsk_modem.c). The RTL monitor audio's reference is public
-   (DSD_ANALOG_AUDIO_RTL_MONITOR_REFERENCE): the -6 raw WAV's scale uses it too. */
-#define ANALOG_AUDIO_RTL_FSK_REFERENCE 30000.0
+/* The reference signal's peak in the FSK discriminator output: 3 kHz deviation on its fixed scale (fsk_modem.h), the
+   deviation DSD_ANALOG_AUDIO_RTL_MONITOR_REFERENCE takes for the monitor audio (which the -6 raw WAV's scale uses
+   too). */
+#define ANALOG_AUDIO_RTL_FSK_REFERENCE (3000.0 * (double)DSD_FSK_DISCRIMINATOR_COUNTS_PER_HZ)
 /* `-n` at which the fixed gain is the source gain. */
 #define ANALOG_AUDIO_UNITY_SETTING     50.0
 

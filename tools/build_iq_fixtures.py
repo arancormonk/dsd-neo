@@ -716,6 +716,21 @@ M17_SYNTH = [
 # dibits sent in <name>.dibits ('0' +1, '1' +3, '2' -1, '3' -3), which tests/symbol_capture_check.py compares with
 # the decoder's -c symbol capture.
 #
+# Two clean P25 Phase 1 C4FM voice calls with no HDU, from tools/scan_quiet_reception.py's LDU generator: each a
+# carrier keyed for 1 ms (an unmodulated lead of five symbols, ramped in) then six LDUs (LDU1 first) whose voice frames
+# are IMBE frames of all-zero parameters, so every codeword they carry is known, then 1 ms down; the carrier is off for
+# 0.3 s before, between and after the calls (exact zeros, which the replay's level squelch closes on). C4FM's raised
+# cosine times inverse sinc at the 1800 Hz outer deviation, half full scale, no noise. The FSK discriminator's level
+# normaliser restarted at each carrier and put the first symbols of a call at up to twice the frame's level, the sync
+# word's warm start set the slicer there and the first LDU of each call read a fifth of its outer symbols as inner.
+P25_NO_HDU_SYNTH_NAME = "p25p1_c4fm_no_hdu_synth"
+P25_NO_HDU_SYNTH_CALLS = 2
+P25_NO_HDU_SYNTH_LDUS = 6
+P25_NO_HDU_SYNTH_GAP_S = 0.3
+P25_NO_HDU_SYNTH_LEAD_SYMBOLS = 5
+P25_NO_HDU_SYNTH_RAMP_S = 0.001
+P25_NO_HDU_SYNTH_SEED = 3801
+
 # name, generator, symbol rate, frames, outer deviation Hz
 SLICER_SYNTH_AMPLITUDE = 0.5  # the carrier's magnitude at full scale 1.0: clear of the RF Level HOT advisory
 SLICER_SYNTH = [
@@ -1984,6 +1999,37 @@ def nxdn_levels(frames, outer_sync=False):
     return np.concatenate(levels)
 
 
+def p25_no_hdu_synth_samples():
+    """The P25_NO_HDU_SYNTH_NAME calls on their carrier (see P25_NO_HDU_SYNTH_NAME)."""
+    import scan_quiet_reception as sqr  # it imports this module, so not at the top
+
+    ldu1, ldu2 = sqr.p25_ldu_hexbits()
+    imbe = sqr.p25_imbe_silent_bits()
+    rng = np.random.default_rng(P25_NO_HDU_SYNTH_SEED)
+    lead = np.zeros(P25_NO_HDU_SYNTH_LEAD_SYMBOLS)
+    ramp = int(round(P25_NO_HDU_SYNTH_RAMP_S * SAMPLE_RATE_HZ))
+    gap = np.zeros(int(round(P25_NO_HDU_SYNTH_GAP_S * SAMPLE_RATE_HZ)), dtype=complex)
+    pieces = [gap]
+    for _ in range(P25_NO_HDU_SYNTH_CALLS):
+        bits = []
+        for k in range(P25_NO_HDU_SYNTH_LDUS):
+            bits += sqr.p25_ldu_bits(0x5, ldu1, rng, imbe) if k % 2 == 0 else sqr.p25_ldu_bits(0xA, ldu2, rng, imbe)
+        levels = np.concatenate([lead, sqr.bits_to_levels(bits), lead])
+        call = sqr.fm_from_levels(levels, 4800, sqr.c4fm_response, 1800.0)
+        envelope = np.ones(len(call))
+        envelope[:ramp] = np.arange(ramp) / ramp
+        envelope[-ramp:] = np.arange(ramp)[::-1] / ramp
+        pieces += [call * envelope, gap]
+    return SLICER_SYNTH_AMPLITUDE * np.concatenate(pieces)
+
+
+def build_p25_no_hdu_synth(out_dir):
+    """Write the two no-HDU P25 Phase 1 C4FM calls (see P25_NO_HDU_SYNTH_NAME)."""
+    written = write_fixture(out_dir, P25_NO_HDU_SYNTH_NAME, p25_no_hdu_synth_samples(), normalize=False)
+    print(f"{P25_NO_HDU_SYNTH_NAME:28s} synth   {written // 1024:6d} KiB")
+    return written
+
+
 def build_slicer_synth(out_dir):
     """Write the clean NXDN and YSF generator fixtures (issue #834; see SLICER_SYNTH)."""
     level_to_dibit = {level: dibit for dibit, level in DPMR_DIBIT_TO_LEVEL.items()}
@@ -3205,6 +3251,7 @@ def derived_fixture_names():
         + [DPMR_SYNTH_NAME]
         + [entry[0] for entry in M17_SYNTH]
         + [entry[0] for entry in SLICER_SYNTH]
+        + [P25_NO_HDU_SYNTH_NAME]
         + [entry[0] for entry in NFM_SYNTH]
         + [entry[0] for entry in AM_SYNTH]
         + [entry[0] for entry in ANALOG_CTCSS_SYNTH]
@@ -3263,6 +3310,7 @@ def build_all_derived(out_dir, dmr_synth_gen, speech_synth_gen, cache):
     total += build_dpmr_synth(out_dir)
     total += build_m17_synth(out_dir)
     total += build_slicer_synth(out_dir)
+    total += build_p25_no_hdu_synth(out_dir)
     total += build_tetra_synth(out_dir)
     total += build_tetra_gap(out_dir)
     total += build_tetra_stress(out_dir)
