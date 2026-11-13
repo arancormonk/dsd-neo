@@ -85,7 +85,8 @@ int dsd_frame_sync_p25p2_window_context_holds(const dsd_state* state);
 void dsd_frame_sync_p25p2_window_decoded(dsd_state* state, int dispatched, int anchor_start);
 
 /**
- * @brief The window a tolerant sync opened failed its verdict: what the accept changed goes back.
+ * @brief The window a tolerant sync opened failed its verdict, or a carrier boundary or an input interruption cut it
+ * before its verdict: what the accept changed goes back.
  *
  * processP2() calls it before it reports the window (dsd_frame_sync_p25p2_window_decoded()). On the stream the sync was
  * accepted on (dsd_frame_sync_p25p2_window_context_holds()), what the accept wrote before the verdict could say whether

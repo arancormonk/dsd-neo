@@ -178,8 +178,10 @@ dsd_frame_sync_p25p1_candidate_validated(dsd_state* state) {
     (void)dsd_symbol_note_p25p1_marked_sync_anchor(state, &mark, word + 1, P25P1_SYNC_DIBITS - 1);
 }
 
-void
-dsd_frame_sync_p25p1_candidate_rejected(dsd_state* state) {
+/* Drop the frame behind a tolerant word: marked dropped, and its accept put back on the stream it was accepted on. 0
+   when nothing of that stream remains to go on from. */
+static int
+p25p1_candidate_drop(dsd_state* state) {
     dsd_p25p1_sync_anchor* rec = &state->p25_p1_sync_anchor;
     dsd_p25p1_sync_candidate* held = &state->p25_p1_sync_candidate;
     const int holding = held->valid != 0U;
@@ -192,9 +194,23 @@ dsd_frame_sync_p25p1_candidate_rejected(dsd_state* state) {
        back, and its symbols are not the next call's to hunt. */
     if (!holding || rec->frame_kind == (uint8_t)DSD_P25P1_SYNC_EXACT || !rec->frame_valid
         || !p25p1_anchor_context_current(state, &rec->frame) || state->symbol_clock < rec->frame.sync_clock) {
-        return;
+        return 0;
     }
     p25p1_candidate_restore(state, held);
+    return 1;
+}
+
+void
+dsd_frame_sync_p25p1_candidate_cut(dsd_state* state) {
+    (void)p25p1_candidate_drop(state);
+}
+
+void
+dsd_frame_sync_p25p1_candidate_rejected(dsd_state* state) {
+    const dsd_p25p1_sync_anchor* rec = &state->p25_p1_sync_anchor;
+    if (!p25p1_candidate_drop(state)) {
+        return;
+    }
     /* The C4FM chain's hunt goes on from the word's and the NID's symbols: one where a real sync word ends after the NID
        (an NXDN96 FSW, an M17 word, the P25 word the candidate's head swallowed) is matched as the hunt goes on. One that
        ended inside them is lost (docs/code_map.md, the C4FM tolerance's budget). The carry rebuilds a sign history,
@@ -202,6 +218,7 @@ dsd_frame_sync_p25p1_candidate_rejected(dsd_state* state) {
     if (state->rf_mod != 0) {
         return;
     }
+    const dsd_p25p1_sync_candidate* held = &state->p25_p1_sync_candidate;
     /* The symbols the hunt did not count (the window's last, which the accept returned on, and the NID's) are charged
        to it as its own and its pass goes on past them, so the profile's dwell and the no-sync exits fall where they
        would have without the candidate. */

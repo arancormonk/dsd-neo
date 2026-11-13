@@ -137,6 +137,17 @@ dsd_p25p1_sync_kind dsd_frame_sync_p25p1_sync_kind(const dsd_state* state, int* 
 void dsd_frame_sync_p25p1_candidate_rejected(dsd_state* state);
 
 /**
+ * @brief An input interruption cut the NID behind a tolerant sync word (a command yield, a Signal search, a stream gap,
+ * the input's end): the strict check never spoke, so the frame synced nothing.
+ *
+ * As dsd_frame_sync_p25p1_candidate_rejected(), the frame marked dropped and what the accept changed put back while the
+ * stream is the one the word was accepted on, except that the hunt does not go on from the NID's symbols: what the read
+ * handed out after the cut stood in for symbols the input did not deliver. Call before
+ * dsd_frame_sync_p25p1_frame_decoded().
+ */
+void dsd_frame_sync_p25p1_candidate_cut(dsd_state* state);
+
+/**
  * @brief The dispatcher keeps the frame behind a tolerant sync word: its NID passed the strict check.
  *
  * On the C4FM chain a word read with no recording armed (the word that acquires a transmission, or the first after a

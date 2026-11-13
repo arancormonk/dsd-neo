@@ -2047,6 +2047,7 @@ p25p2_collect_window(dsd_opts* opts, dsd_state* state) {
     if (state->carrier_seq != carrier_seq) {
         p25p2_frame_forget_carrier(state);
         state->dmr_stereo = 0;
+        dsd_frame_sync_p25p2_window_dropped(opts, state);
         dsd_frame_sync_p25p2_window_decoded(state, 0, -1);
         DSD_FPRINTF(stderr, "\n");
         return 0;
@@ -2057,6 +2058,7 @@ p25p2_collect_window(dsd_opts* opts, dsd_state* state) {
        window finds this one missing from its continuity. */
     if (state->input_interrupted) {
         state->dmr_stereo = 0;
+        dsd_frame_sync_p25p2_window_dropped(opts, state);
         dsd_frame_sync_p25p2_window_decoded(state, 0, -1);
         DSD_FPRINTF(stderr, "\n");
         return 0;

@@ -118,6 +118,8 @@ static int g_frames;
 static int g_ldu1_frames;
 static uint32_t g_reported_unit;
 static int g_interrupt_in_handler;
+/* The NID read raises an input interruption (a queued command's yield) at this read, -1 for none. */
+static int g_interrupt_at_nid_read = -1;
 
 static void
 make_nid(int nac, int duid, nid_air* out) {
@@ -755,6 +757,43 @@ test_rejected_candidate_leaves_the_state_as_it_was(void) {
     }
 }
 
+/* A queued command's yield cuts the NID behind a tolerant word, of either kind on either chain: the strict check never
+   spoke, so the frame synced nothing (the voice gate starts no qualify window on it), its verdict is withheld, what its
+   accept changed goes back, and the hunt does not go on from the NID's symbols. */
+static void
+test_cut_candidate_leaves_the_state_as_it_was(void) {
+    for (int rf_mod = 0; rf_mod <= 1; rf_mod++) {
+        for (int kind = 0; kind < 2; kind++) {
+            dsd_opts* opts = new_opts();
+            dsd_state* state = new_state(opts);
+            state->rf_mod = rf_mod;
+            const int sync_kind = kind == 0 ? DSD_P25P1_SYNC_ANCHORED : DSD_P25P1_SYNC_ACQUISITION;
+            mark_published_state(state);
+            state->carrier = 0;
+            state->lastsynctype = DSD_SYNC_NONE;
+            const provisional_view before = provisional_view_of(state);
+            const nid_air clean = nid_with_errors(NAC, DUID_LDU1, 0);
+            g_interrupt_at_nid_read = 12;
+            CHECK(dispatch_held_candidate(opts, state, &clean, sync_kind, kind == 0 ? NAC : -1)
+                  == DSD_FRAME_VERDICT_WITHHELD);
+            g_interrupt_at_nid_read = -1;
+            /* The read after the cut handed out stand-ins: the hunt does not go on from them. */
+            CHECK(g_frames == 0 && g_carried_symbols == -1 && state->sps_hunt_counter == 900);
+            CHECK(dsd_state_p25p1_frame_dropped(state));
+            const provisional_view after = provisional_view_of(state);
+            if (!provisional_view_equal(&before, &after)) {
+                DSD_FPRINTF(stderr, "  (rf_mod %d, kind %d: the cut left the state moved)\n", rf_mod, sync_kind);
+            }
+            CHECK(provisional_view_equal(&before, &after));
+            CHECK(state->p25_p1_sync_candidate.valid == 0U);
+            state->input_interrupted = 0;
+            state->input_interrupt_reason = DSD_INTERRUPT_NONE;
+            free(state);
+            free(opts);
+        }
+    }
+}
+
 int
 main(void) {
     test_dropped_candidate_is_put_back();
@@ -764,6 +803,7 @@ main(void) {
     test_validated_frames_anchor_at_their_length();
     test_unvalidated_frames_anchor_nothing();
     test_rejected_candidate_leaves_the_state_as_it_was();
+    test_cut_candidate_leaves_the_state_as_it_was();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d check(s) failed\n", g_failures);
         return 1;
@@ -780,6 +820,10 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
     if (state->p25_afc_gate_valid != g_gate_valid_seen || state->p25_afc_gate_allow != g_gate_allow_seen) {
         g_gate_moved_in_read = 1;
+    }
+    if (g_dibit_reads == g_interrupt_at_nid_read) {
+        state->input_interrupted = 1;
+        state->input_interrupt_reason = DSD_INTERRUPT_YIELD;
     }
     const int d = g_dibit_reads < NID_DIBITS ? g_dibit_reads : NID_DIBITS - 1;
     g_dibit_reads++;

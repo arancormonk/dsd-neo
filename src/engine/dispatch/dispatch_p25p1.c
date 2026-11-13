@@ -624,6 +624,11 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     /* A NID an input interruption cut decoded nothing: no data unit follows it, and it is no evidence about the
        demodulator or the profile (processFrame() withholds the verdict). */
     if (state->input_interrupted) {
+        /* Behind a tolerant word the strict check never spoke: the frame synced nothing, and what its accept changed
+           goes back (a command yield, a Signal search, a stream gap or the input's end all cut it). */
+        if (sync.kind != DSD_P25P1_SYNC_EXACT) {
+            dsd_frame_sync_p25p1_candidate_cut(state);
+        }
         (void)dsd_frame_sync_p25p1_frame_decoded(state, -1, 0U);
         return DSD_FRAME_VERDICT_WITHHELD;
     }
