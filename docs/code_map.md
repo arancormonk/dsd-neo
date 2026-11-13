@@ -11195,7 +11195,11 @@ Private per-protocol modules worth knowing about:
   `NXDN_CONFIRM_FRAME_SYMBOLS` (192, within one) before it; an isolated one starts the weak and SCCH streaks over, and
   its strong check holds at once only when its sync word followed another of its polarity one frame before it
   (`dsd_state::nxdn48_accept_corroborated`, `frame_sync_nxdn48_note_hit()`) or another check of the frame passed too
-  (a header frame's SACCH beside its FACCH1 VCALL), else it confirms when the next frame runs on from it. NXDN96, whose
+  (a header frame's SACCH beside its FACCH1 VCALL), else it confirms when the next frame runs on from it. A frame's
+  second FACCH1 copy, which repeats the first, is decoded again only when it is the check that confirms the
+  transmission after the first copy's content was decoded unconfirmed (`nxdn_deperm_facch_soft()`): that copy's call
+  then publishes, where the repeat suppression lost the call setup of an isolated frame whose SACCH failed; a repeat
+  of a copy decoded confirmed is not decoded again (`NXDN_DEPERM_PRIMITIVES`). NXDN96, whose
   accept needs a hit one frame before, runs on as before. On the four real NXDN/DMR scan captures under `-fa` and
   `-fi` the logs and event files are unchanged, and the 8-seed noise set publishes nothing (`NXDN_CONFIRM`,
   `NXDN_FRAME_ROUTING`, `FRAME_SYNC_INTERNAL_HELPERS`). Evidence confirms at once, before the RAN and call it unlocks

@@ -1187,6 +1187,9 @@ nxdn_message_type_resets_call(uint8_t message_type) {
 void
 nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144], uint8_t frame) {
     static uint8_t facch1_storage[12];
+    /* Whether the transmission was confirmed when the first copy's content was decoded: a copy decoded before then had
+       its publication withheld (nxdn_confirm.c), so the second copy is no repeat of what was published. */
+    static int facch1_confirmed;
     uint8_t deperm[144];
     uint8_t deperm_rel[144];
     uint8_t depunc[192];
@@ -1222,17 +1225,24 @@ nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], cons
         check = nxdn_facch_crc12_check_from_trellis(trellis_buf);
     }
 
-    const int duplicate = frame == 2U && memcmp(facch1_storage, m_data, sizeof(facch1_storage)) == 0;
-    DSD_MEMSET(facch1_storage, 0, sizeof(facch1_storage));
-    if (frame == 1U) {
-        DSD_MEMCPY(facch1_storage, m_data, sizeof(facch1_storage));
-    }
-
     state->data_header_format[0] = 3;
     if (crc == check) {
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
     }
+    /* The second FACCH1 copy repeats the first: decoded once. Unless the first was decoded before the transmission was
+       confirmed, which withheld what it would publish, and this copy confirmed it (an isolated frame's second check):
+       then this copy's content is the one that publishes. */
+    const int repeat = frame == 2U && memcmp(facch1_storage, m_data, sizeof(facch1_storage)) == 0;
+    const int duplicate = repeat && (facch1_confirmed || !nxdn_confirm_is_confirmed(state));
+    DSD_MEMSET(facch1_storage, 0, sizeof(facch1_storage));
+    facch1_confirmed = 0;
+    if (frame == 1U) {
+        DSD_MEMCPY(facch1_storage, m_data, sizeof(facch1_storage));
+    }
     if (crc == check && !duplicate) {
+        if (frame == 1U) {
+            facch1_confirmed = nxdn_confirm_is_confirmed(state);
+        }
         NXDN_Elements_Content_decode(opts, state, trellis_buf, sizeof(trellis_buf));
     }
 
