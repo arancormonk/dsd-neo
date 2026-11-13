@@ -35,6 +35,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -110,6 +111,14 @@ uint8_t scan_quiet_mode_classes(dsd_scan_mode mode);
  * an unset NFM width, which keeps the historical filter rule and WIDE fallback and so has no definite channel. Typed
  * analog rows and targets resolve their width with it, as the decoder set does. Radio-off: @p explicit_width_hz. */
 uint32_t scan_quiet_analog_width_hz(int kind, int explicit_width_hz);
+
+/** An analog row's or target's kind @p kind (dsd_analog_demod) and the width the stream runs it at, into
+ * @p e->analog_kind and @p e->analog_width_hz: its own width (@p values with DSD_SCAN_OPT_BANDWIDTH; may be NULL), else
+ * the configured one of its kind (dsd_scan_mode_configured_analog_width()), resolved by scan_quiet_analog_width_hz().
+ * The one rule the trunk scan's targets and the -Y scan's typed rows share, so what is published, measured and compared
+ * at the decision cannot drift apart. */
+void scan_quiet_analog_facts(const dsd_opts* opts, const dsd_state* state, int kind,
+                             const dsd_scan_option_values* values, scan_quiet_eligibility* e);
 
 /** The width classes of the decoder set in force (an untyped row, or a typed row inheriting it): every class an enabled
  * mode has, or the analog class for an analog session; 0 when any enabled mode has none (X2-TDMA, ProVoice, TETRA).

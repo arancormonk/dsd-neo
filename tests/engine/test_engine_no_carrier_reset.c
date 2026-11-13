@@ -12275,8 +12275,49 @@ test_y_quiet_skips_a_landed_row(int typed, int on) {
 
 /* Spec §8, -Y keep timing: a busy row, an operator hold, a single-row list, and heard voice under the voice gate never
    skip; a row the voice gate is still qualifying skips on a quiet result, and with the check busy its qualification
-   expiry still steps. Each case runs a few passes after the landing. */
-enum { YQ_BUSY = 0, YQ_HOLD, YQ_SINGLE_ROW, YQ_VOICE_HEARD, YQ_QUALIFYING, YQ_QUALIFYING_BUSY };
+   expiry still steps. The rules a step would stay for are part of the row's conditions, so none is measured and no
+   skip is logged that the step would not take: an avoided row whose paced departure is not due, a walk the scan owns
+   still waiting on its tune, and a typed step still in flight (which also leaves no landing). Each case runs a few
+   passes after the landing. */
+enum {
+    YQ_BUSY = 0,
+    YQ_HOLD,
+    YQ_SINGLE_ROW,
+    YQ_VOICE_HEARD,
+    YQ_QUALIFYING,
+    YQ_QUALIFYING_BUSY,
+    YQ_AVOIDED,
+    YQ_WALK_AWAITED,
+    YQ_STEP_IN_FLIGHT,
+};
+
+/* The keep cases a step would stay for: set up after the landing. */
+static void
+yq_keep_stay(dsd_opts* opts, dsd_state* state, int which, long int base_hz, double now_m) {
+    if (which == YQ_AVOIDED) {
+        (void)dsd_state_trunk_lcn_avoid_set(state, 0U, 1);
+        state->lcn_avoid_depart_m = now_m + 100.0;
+    } else if (which == YQ_WALK_AWAITED) {
+        dsd_engine_manual_tune_note_lcn_cycle(state, 4243U, (uint32_t)(base_hz + 1000000L), (uint32_t)base_hz, 1, 1, 1);
+    } else if (which == YQ_STEP_IN_FLIGHT) {
+        g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+        state->last_cc_sync_time = time(NULL) - 11;
+        noCarrier(opts, state);
+        g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+        g_rtl_tune_calls = 0;
+        g_yq.requests = 0; /* the landed row's own measurement, made before this pass's step */
+    }
+}
+
+static void
+yq_keep_stay_clear(dsd_state* state, int which) {
+    if (which == YQ_AVOIDED) {
+        (void)dsd_state_trunk_lcn_avoid_set(state, 0U, 0);
+    } else if (which == YQ_WALK_AWAITED) {
+        dsd_engine_manual_tune_supersede(state);
+        while (dsd_engine_manual_tune_poll(NULL, NULL) != DSD_MANUAL_TUNE_NONE) {}
+    }
+}
 
 static int
 yq_keep_case(int which) {
@@ -12287,9 +12328,11 @@ yq_keep_case(int which) {
     }
     yq_start(which != YQ_BUSY && which != YQ_QUALIFYING_BUSY);
     const long int base_hz = 481012500L + (long int)which * 4000000L;
-    int rc = expect_true("the first step lands row 0",
-                         yq_list(opts, state, which == YQ_SINGLE_ROW ? 1 : 3, 0, 1, base_hz) == 0);
+    int rc =
+        expect_true("the first step lands row 0",
+                    yq_list(opts, state, which == YQ_SINGLE_ROW ? 1 : 3, which == YQ_STEP_IN_FLIGHT, 1, base_hz) == 0);
     const double now_m = dsd_decode_now_mono_s();
+    yq_keep_stay(opts, state, which, base_hz, now_m);
     if (which == YQ_HOLD) {
         state->lcn_scan_hold = 1;
     }
@@ -12319,6 +12362,12 @@ yq_keep_case(int which) {
                                   && dsd_engine_scan_quiet_service(opts, state) == 0);
             break;
         case YQ_QUALIFYING: rc |= expect_true("qualifying: a quiet result steps", skipped && g_yq.notices == 1); break;
+        case YQ_AVOIDED:
+        case YQ_WALK_AWAITED:
+        case YQ_STEP_IN_FLIGHT:
+            rc |= expect_true("a row a step would stay on is never measured, and no skip is logged",
+                              !skipped && requested == 0 && g_yq.notices == 0);
+            break;
         default:
             rc |= expect_true("qualifying, busy: no step before the expiry", !skipped && requested == 1);
             state->scan_voice_gate_sync_m = now_m - 2.0;
@@ -12328,6 +12377,7 @@ yq_keep_case(int which) {
     }
     opts->scan_voice_only = 0;
     state->lcn_scan_hold = 0;
+    yq_keep_stay_clear(state, which);
     yq_finish(opts, state);
     if (rc) {
         DSD_FPRINTF(stderr, "FAIL #834: -Y keep case %d\n", which);
@@ -12507,7 +12557,7 @@ test_scan_quiet_decisions(void) {
         rc |= test_y_quiet_skips_a_landed_row(typed, 1);
         rc |= test_y_quiet_skips_a_landed_row(typed, 0);
     }
-    for (int which = YQ_BUSY; which <= YQ_QUALIFYING_BUSY; which++) {
+    for (int which = YQ_BUSY; which <= YQ_STEP_IN_FLIGHT; which++) {
         rc |= yq_keep_case(which);
     }
     rc |= test_y_quiet_open_analog_carrier_stays();

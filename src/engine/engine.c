@@ -1597,12 +1597,7 @@ no_carrier_quiet_row_classes(const dsd_opts* opts, const dsd_state* state, int r
         return;
     }
     dsd_scan_option_values scratch;
-    const dsd_scan_option_values* values = dsd_engine_channel_scan_row_values(state, row, &scratch);
-    const int explicit_hz = (values && (values->present & DSD_SCAN_OPT_BANDWIDTH))
-                                ? values->channel_bw_hz
-                                : dsd_scan_mode_configured_analog_width(opts, state, kind);
-    e->analog_kind = kind;
-    e->analog_width_hz = scan_quiet_analog_width_hz(kind, explicit_hz);
+    scan_quiet_analog_facts(opts, state, kind, dsd_engine_channel_scan_row_values(state, row, &scratch), e);
 }
 
 /* The -Y scan's conditions for checking the landed row @p row (spec 3.2): the row on air from a landing in this
@@ -1720,7 +1715,8 @@ no_carrier_scanner_step_is_due(const dsd_opts* opts, dsd_state* state, time_t no
     }
     if (dsd_scan_voice_gate_owns_step(opts, state)) {
         return dsd_scan_voice_gate_should_step(opts, state, dsd_decode_now_mono_s())
-               || (dsd_scan_voice_gate_qualifying(opts, state) && no_carrier_quiet_skip(opts, state));
+               || (opts->scan_skip_silent && dsd_scan_voice_gate_qualifying(opts, state)
+                   && no_carrier_quiet_skip(opts, state));
     }
     return (now - state->last_cc_sync_time) > opts->trunk_hangtime || no_carrier_quiet_skip(opts, state);
 }

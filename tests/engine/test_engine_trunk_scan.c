@@ -23138,7 +23138,8 @@ test_scan_quiet_adopts_a_park_measured_in_flight(void) {
                (Task 10): the target skips, and the visit's check is consumed. */
             dsd_engine_trunk_scan_tick(&opts, &state);
             rc |= qt_expect("adopted on a matching tune_request and applied by the tick",
-                            scan_quiet_key_get(&state).epoch != 0U && scan_quiet_phase_get(&state) == SCAN_QUIET_DONE
+                            scan_quiet_key_get(&state).epoch != 0U && scan_quiet_key_get(&state).tune_request == park
+                                && scan_quiet_phase_get(&state) == SCAN_QUIET_DONE
                                 && dsd_engine_trunk_scan_active_index(&state) == 0U && g_tap.requests == 1);
         } else {
             dsd_engine_scan_landing_note_target(&state, 1, e.key.session, k_qt_hz_b, park + 1000U);
@@ -23888,6 +23889,94 @@ test_scan_quiet_tick_ineligible_visits_request_nothing(void) {
         }
         quiet_rig_finish(&opts, &state, dir, path);
     }
+    /* A held park in flight: the hold is the only term that keeps it out (no dwell is armed for a park, so no stay
+       reason is weighed). Its completion published, the hunt still measures nothing for it. */
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (quiet_rig_start_body(&opts, &state, dir, sizeof dir, path, sizeof path, k_qt_dwell_targets) != 0) {
+        return 1;
+    }
+    g_scan_tune_to_freq_pending = 1;
+    (void)dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+    const uint64_t park = g_scan_tune_pending_request;
+    qt_mut_hold_toggle(&opts, &state);
+    g_quiet_stream_gen = QT_GEN + 3;
+    quiet_tap_capture(k_qt_hz_b, QT_GEN + 3);
+    int handed_back = 0;
+    for (int pass = 0; pass < 4; pass++) {
+        qt_decode_at(10U + 100U * (uint64_t)pass);
+        qt_pass(&opts, &state);
+        if (pass == 1) {
+            dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_OK);
+        }
+        handed_back |= quiet_service_after(&opts, &state, 60U);
+    }
+    if (park == 0U || g_tap.requests != 0 || handed_back || scan_quiet_phase_get(&state) != SCAN_QUIET_SUSPENDED) {
+        DSD_FPRINTF(stderr,
+                    "FAIL #834 scan quiet: a held park in flight: park %llu, requests %d, handed back %d, phase %d\n",
+                    (unsigned long long)park, g_tap.requests, handed_back, (int)scan_quiet_phase_get(&state));
+        rc = 1;
+    }
+    quiet_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
+/* Spec §8 keep timing for the stays and releases the tick weighs before its idle decision, each from a READY result:
+   a tone check still running on an analog target (TONE_PENDING) keeps it, and the per-visit cap releases it to the
+   next target as the cap does, with no skip logged. The result is declined either way (DONE, no hand-back). */
+static int
+test_scan_quiet_tick_stays_and_releases_come_first(void) {
+    static const char k_tone_targets[] =
+        "f,nfm-conventional,452000000,,2000,1000,,--tone-allow 100.0 --nfm-bandwidth-hz 12500\n"
+        "b,dmr-conventional,453000000,,2000,1000,,\n";
+    int rc = 0;
+    for (int which = 0; which <= 1; which++) {
+        char dir[DSD_TEST_PATH_MAX];
+        char path[DSD_TEST_PATH_MAX];
+        static dsd_opts opts;
+        static dsd_state state;
+        const int tone = which == 0;
+        if (tone) {
+            if (make_temp_dir(dir, sizeof dir) != 0
+                || write_targets_file_with_header(dir, k_squelch_targets_header, k_tone_targets, path, sizeof path) != 0
+                || quiet_rig_init(&opts, &state, path) != 0) {
+                return 1;
+            }
+        } else if (quiet_rig_start_body(&opts, &state, dir, sizeof dir, path, sizeof path, k_qt_dwell_targets) != 0) {
+            return 1;
+        }
+        qt_notices_watch(1);
+        qt_decode_at(10U);
+        rc |= qt_pass_to_ready(&opts, &state);
+        if (tone) {
+            rc |= qt_expect("the nfm target is measured in the analog class at its own width",
+                            g_tap.last_request.classes == DSD_SIGNAL_QUIET_CLASS_ANALOG
+                                && g_tap.last_request.analog_width_hz == 12500U);
+            publish_tone_gate(&state, DSD_ANALOG_TONE_GATE_PENDING);
+            qt_decode_at(20U);
+        } else {
+            opts.scan_max_visit_ms = 1000;
+            qt_decode_at(1500U);
+        }
+        qt_pass(&opts, &state);
+        const size_t want_active = tone ? 0U : 1U;
+        const int handed_back = quiet_service_after(&opts, &state, 5U);
+        if (dsd_engine_trunk_scan_active_index(&state) != want_active || g_qt_notices != 0 || handed_back
+            || (tone && scan_quiet_phase_get(&state) != SCAN_QUIET_DONE)) {
+            DSD_FPRINTF(stderr, "FAIL #834 scan quiet: %s: active %zu, notices %d, handed back %d, phase %d\n",
+                        tone ? "a tone check (TONE_PENDING)" : "the per-visit cap",
+                        dsd_engine_trunk_scan_active_index(&state), g_qt_notices, handed_back,
+                        (int)scan_quiet_phase_get(&state));
+            rc = 1;
+        }
+        state.analog_rx.carrier_open = 0;
+        state.analog_rx.gate = DSD_ANALOG_TONE_GATE_OFF;
+        opts.scan_max_visit_ms = 0;
+        qt_notices_watch(0);
+        quiet_rig_finish(&opts, &state, dir, path);
+    }
     return rc;
 }
 
@@ -24127,6 +24216,7 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_guard_lost_answers_again);
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_keeps_timing);
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_ineligible_visits_request_nothing);
+    rc |= run_with_default_tune_hook(test_scan_quiet_tick_stays_and_releases_come_first);
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_setting_off_keeps_timing);
     rc |= run_with_default_tune_hook(test_scan_quiet_y_ready_declines_at_its_own_sites);
 #endif

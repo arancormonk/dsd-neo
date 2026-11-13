@@ -5159,12 +5159,7 @@ trunk_scan_quiet_classes(const dsd_opts* opts, const dsd_state* state, const dsd
         return;
     }
     dsd_scan_option_values scratch;
-    const dsd_scan_option_values* values = trunk_scan_target_values(rt, &scratch);
-    const int explicit_hz = (values && (values->present & DSD_SCAN_OPT_BANDWIDTH))
-                                ? values->channel_bw_hz
-                                : dsd_scan_mode_configured_analog_width(opts, state, kind);
-    e->analog_kind = kind;
-    e->analog_width_hz = scan_quiet_analog_width_hz(kind, explicit_hz);
+    scan_quiet_analog_facts(opts, state, kind, trunk_scan_target_values(rt, &scratch), e);
 }
 
 /* The visit of the target on air: its landing in this session, or its park still in flight. 0 for neither. */
@@ -5249,11 +5244,11 @@ trunk_scan_quiet_skip(const dsd_opts* opts, dsd_state* state, const dsd_trunk_sc
    the outer loop's pass, the visit on air is published (spec 3.2), after any landing or advance this tick made. */
 static void
 trunk_scan_quiet_tick_end(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, double now_m) {
+    if (!opts->scan_skip_silent) {
+        return; /* one load: no pass is ever owed with the setting off */
+    }
     const int pass = coord->quiet_pass_owed;
     coord->quiet_pass_owed = 0;
-    if (!opts->scan_skip_silent) {
-        return;
-    }
     scan_quiet_reconcile_declined(opts, state, SCAN_QUIET_OWNER_TRUNK, 0);
     if (!pass || !scan_quiet_wants_eligibility(opts, state, SCAN_QUIET_OWNER_TRUNK)) {
         return;

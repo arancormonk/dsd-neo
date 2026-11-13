@@ -15,6 +15,7 @@
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -107,6 +108,19 @@ scan_quiet_analog_width_hz(int kind, int explicit_width_hz) {
     const int width_hz = explicit_width_hz; /* no stream: no default to resolve, and no check is ever made */
 #endif
     return width_hz > 0 ? (uint32_t)width_hz : 0U;
+}
+
+void
+scan_quiet_analog_facts(const dsd_opts* opts, const dsd_state* state, int kind, const dsd_scan_option_values* values,
+                        scan_quiet_eligibility* e) {
+    if (!e) {
+        return;
+    }
+    const int explicit_hz = (values && (values->present & DSD_SCAN_OPT_BANDWIDTH))
+                                ? values->channel_bw_hz
+                                : dsd_scan_mode_configured_analog_width(opts, state, kind);
+    e->analog_kind = kind;
+    e->analog_width_hz = scan_quiet_analog_width_hz(kind, explicit_hz);
 }
 
 /* The analog class's kind and the width the stream runs it at (scan_quiet_analog_width_hz() of the configured width),
