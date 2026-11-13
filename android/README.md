@@ -604,6 +604,13 @@ names the option, when Extra decoder arguments contain:
 
 A `-P` in Extra decoder arguments with Record calls off still records, into the session's own folder.
 
+A scan list also owns its scan settings, so a scan list's start is refused when Extra decoder arguments contain one of
+them: input, decoder and modulation options (`-i`, `-f`, `-m`), trunking and scan modes (`-T`, `-Y`, `-C`,
+`--trunk-scan`, `--p25-bandplan`, `--iq-replay`), and the switches of the list's **Voice only** and **Skip silent
+channels** checkboxes: `--scan-voice-only`, `--no-scan-voice-only`, `--scan-skip-silent` and `--no-scan-skip-silent`.
+This refusal says only that a prohibited option is present. A saved system's own Extra decoder arguments still take
+the four scan switches, since a saved conventional system can run `-Y`.
+
 ### Record and Listening
 
 A talkgroup that is not tuned (**Listening** off) records nothing, and its talkgroup list file cannot keep a Record
@@ -2526,6 +2533,13 @@ Scan lists use the app's voice hang time; per-system hang-time overrides do not 
 targets. The list editor can select imported group/source CSVs from the existing library.
 It has no field for the per-visit cap; add `--scan-max-visit-ms <ms>` to Extra decoder
 arguments to cap every target in the session.
+The editor's Advanced section has **Voice only** and **Skip silent channels**. Skip silent
+channels moves on from a conventional target as soon as a quick signal check finds it silent,
+instead of after its idle dwell; weak or very short transmissions can be missed, and trunked
+systems, an open squelch, holds and receivers that cannot measure the channel (a native Airspy
+among them) keep normal timing. Both checkboxes are saved with the list but apply to the whole
+session at its next start: lists that differ cannot scan together ("Different skip-silent
+setting"). See [Skipping silent channels](../docs/trunk-scan.md#skipping-silent-channels).
 Per-target squelch is CSV-only: import a target CSV whose `options` carry
 `--squelch-db <dB>` (whole dB from -100 to 0, 0 = off, omitted = inherit). It is not a
 decoder argument, so Extra decoder arguments cannot set it. The target preview lists each

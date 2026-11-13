@@ -196,6 +196,7 @@ Main Menu
 │   │   ├── Talkgroup hold... [none]             k/l
 │   │   ├── Hangtime... [1.0 s]
 │   │   ├── Voice-only scan [Off]
+│   │   ├── Silent channel skip [Off]
 │   │   ├── Voice qualify... [1000 ms]
 │   │   ├── Voice hold... [2000 ms]
 │   │   ├── Reverse mute [Off]

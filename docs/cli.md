@@ -13,7 +13,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Modes: `-fa | -ft | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fT | -fA | -fM` (Auto, `-fa`, is the default)
 - Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); `--squelch auto[+N]` (open N dB over each analog channel's learned noise floor, radio inputs); `--squelch noise[+N]` (open an FM channel at N dB of quieting, as a radio's squelch does; on audio input from a reference it learns); see [Analog reception](#analog-reception--fa--fm), [Tone filter](#tone-filter-ctcssdcs-receive-policy), [Auto squelch](#auto-squelch---squelch-auto) and [Noise squelch](#noise-squelch---squelch-noise)
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
-- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (repeatable; `--trunk-scan-off targets.csv` adds a list that starts off; `--trunk-scan-hold <target-id>` starts held on one target; P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`
+- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (repeatable; `--trunk-scan-off targets.csv` adds a list that starts off; `--trunk-scan-hold <target-id>` starts held on one target; P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`, `--scan-skip-silent`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
 - Soapy selection: `-i soapy`, `-i soapy:driver=airspy[,serial=...]`, or `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` (discover args with `SoapySDRUtil --find`)
 - RTL retune control: `--rtl-udp-control <port>` binds to loopback by default; use
@@ -2291,6 +2291,13 @@ is delayed.
   scanner's next tick. The voice gate never applies to an analog row, where there is no decoded voice to wait for:
   an `nfm` or `am` row, and every row of an untyped list scanned under `-fA` or `-fM`, holds on its carrier under `-t`
   instead, so `--scan-voice-only` never blocks one.
+  Silent-channel skip: `--scan-skip-silent` (`--no-scan-skip-silent` turns it off, also over a config file value;
+  config `[trunking] scan_skip_silent`) steps on from a row as soon as a quick signal check finds it silent, instead of
+  waiting out the `-t` hangtime. The check reads the channel's power against the noise beside it for about 100 ms,
+  once per visit; a row with anything on it, a held row, an open analog carrier and a row whose voice the voice gate
+  has heard keep their normal timing. It is off by default and is one setting for the session, never a row option.
+  Some receivers, widths, sample rates and decoder sets get no check (an untyped row under Auto among them); the list,
+  the log line and the limits are in [Skipping silent channels](trunk-scan.md#skipping-silent-channels).
   Per-visit ceiling: `--scan-max-visit-ms <ms>` (also `--scan-max-visit-ms=<ms>`; `0` disables, otherwise
   `1000..3600000`; default `0`) is the longest one visit to a row may last, with or without `--scan-voice-only`. It is a
   ceiling, not a reason to stay, so it can cut an ongoing call short: that is the point on an open microphone, and why
@@ -2423,6 +2430,10 @@ is delayed.
     dwell) and show no `Voice:` marker on the status line, and an `nfm-conventional` or `am-conventional` target keeps
     holding on its carrier. A conventional target shows `VOICE` while its call is active and `TAIL` after the call ends
     while the hold remains.
+  - Silent-channel skip (`--scan-skip-silent`, `--no-scan-skip-silent`; config `[trunking] scan_skip_silent`): a
+    conventional target that a quick signal check finds silent is left at once instead of after its idle dwell.
+    Trunked targets are never checked. Off by default. Details and limits:
+    [Skipping silent channels](trunk-scan.md#skipping-silent-channels).
   - Cannot be combined with conventional `-Y` scan mode or IQ replay.
   - Single-tuner limitation: systems not currently parked can be missed while another target is being monitored.
 - Channel map CSV: `-C <file>` (e.g., `connect_plus_chan.csv`). The channel column takes decimal, `0x2A46` hex, or
@@ -2504,7 +2515,9 @@ is delayed.
   - This is not the idle dwell between `--trunk-scan` targets. DMR control/rest-channel acquisition has its own
     two-second window; use target `dwell_ms` to budget each visit. See [trunk-scan timing](trunk-scan.md).
   - Hangtime and dwell decide when a quiet channel is done; `--scan-max-visit-ms` ends a visit that is not done, so
-    neither substitutes for the other.
+    neither substitutes for the other. In `--trunk-scan`, `-t` never shortens a conventional target's idle dwell;
+    `--scan-skip-silent` leaves a silent conventional target or `-Y` row early
+    ([Skipping silent channels](trunk-scan.md#skipping-silent-channels)).
   - Under `-Y` without `--scan-voice-only`, the terminal's `Scan Timing` row counts down to the first whole-second
     tick when the time since the last sync exceeds `-t`. The `Scan Mode` row shows the configured `-t` value;
     the countdown total is `floor(-t) + 1` seconds. For example, `-t 6` shows `Hangtime: 6.00 sec` above a
@@ -2974,7 +2987,8 @@ Out-of-range decimal keys are rejected without changing the installed key.
 - Conflicting outer force switches emit one warning describing the final selection. Existing precedence is retained:
   long-option ALGID settings are applied before short options, and the last `-4`/`-0` wins. Use per-row settings for
   mixed scans. `--no-force-key` explicitly disables forcing after those settings; `--strict-crc` similarly disables
-  `-F`. `--no-scan-voice-only` is the inverse of `--scan-voice-only` (the last of these long switches wins).
+  `-F`. `--no-scan-voice-only` is the inverse of `--scan-voice-only`, and `--no-scan-skip-silent` of
+  `--scan-skip-silent` (the last of these long switches wins).
 - Channel maps and trunk-target lists can combine mode/type with a restricted `options` column, including direct
   `-1` RC4/DES and `-R` scrambler keys, group files, force settings, CRC policy and conventional voice-gate intervals.
   See [scoped row options](csv-formats.md#scoped-row-options) for the supported switches and inheritance rules.

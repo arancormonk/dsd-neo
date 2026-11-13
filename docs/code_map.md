@@ -512,7 +512,7 @@ Generated (do not edit/commit):
       `iq_replay_active`, `iq_replay_requested`, the input spec or the REPLAY decode clock), and so is a class to
       judge (`scan_quiet_mode_classes()` for a typed row or target, `scan_quiet_decoder_classes()` for the decoder
       set: X2-TDMA, ProVoice and TETRA are in no class, so a set holding one gets no check; with the -8 analog monitor
-      on beside a digital set the set is mixed (D4) and the analog class is judged too, at the configured kind and
+      on beside a digital set the set is mixed and the analog class is judged too, at the configured kind and
       width, which `scan_quiet_decoder_classes()` hands back with the classes). An analog width resolves as the stream
       requests it (`scan_quiet_analog_width_hz()`, through `rtl_demod_analog_requested_width_hz()`): an explicit width
       as typed, the AM default (6 kHz, calibrated) when unset, and no check for an unset NFM width, which keeps the
@@ -524,8 +524,9 @@ Generated (do not edit/commit):
       `demod_feed_signal_search()`) newer than the one read at the tune request
       (`dsd_engine_scan_landing::generation_before_tune`), centred on the visit (`capture_hz - capture_offset_hz`); read
       at most every 50 ms, for 1000 ms (realtime) from the landing's note (`landed_realtime_ms`) or the in-flight park's
-      completion read. Known unsupported is DONE, never an error: no Fs/4 rotation (centred I/Q: Airspy, offset-tuned
-      E4000, the shift off), a rate or analog width the calibration did not validate
+      completion read. Known unsupported is DONE, never an error: no Fs/4 rotation (centred I/Q: a native Airspy, whose
+      libairspy I/Q is centred, though one through SoapySDR rotates; an RTL-SDR with offset tuning on, as an E4000 runs
+      by default over USB; the shift off), a rate or analog width the calibration did not validate
       (`dsd_signal_quiet_rate_supported()`, `dsd_signal_quiet_analog_supported()` with the analog kind), a refused
       request.
     - REQUESTED: 400 ms (realtime), then cancelled and DONE; a lost, capture-changed or dropped request waits for the
@@ -536,7 +537,7 @@ Generated (do not edit/commit):
       `rtl_stream_receive_request_seq()`, the configured NFM and AM widths, `quiet_inv_seq`) cancels and suspends; a
       sync since the visit's first request (`sync_seq`, kept across its retries) cancels and ends it; a READY result
       older than 250 ms ends it.
-    - Decision (`scan_quiet_apply()`, spec §3.4 (1)-(4)): the visit and revisions unchanged; the classes, analog kind
+    - Decision (`scan_quiet_apply()`): the visit and revisions unchanged; the classes, analog kind
       and width and DSP rate in force, which the caller passes as this pass's `scan_quiet_eligibility`, equal to those
       measured (a NULL one declines); the tap's capture still the result's and the live output generation still its
       generation (a reacquire bump before the next block reaches the tap), no tune in flight or failed-gated in the
@@ -572,7 +573,7 @@ Generated (do not edit/commit):
       `scan_quiet_analog_facts()`, the rule the trunk scan's targets share; `no_carrier_quiet_row_eligible()`: the row
       on air from a landing in this session, no operator hold, not avoided, no step, walk or entry waiting on a tune, no
       analog carrier heard whatever its tone verdict, another row a step can land on), decides, then declines a READY
-      result it did not apply. The decision runs in the order of spec §3.8: the forced leaves
+      result it did not apply. The decision runs in this order: the forced leaves
       (`no_carrier_step_forced()`: visit cap, avoided-row departure, receive-policy leave, tone rejection and its end),
       the tone stays (PENDING, ALLOWED), then the voice gate: a visit still qualifying
       (`dsd_scan_voice_gate_qualifying()`, no voice heard, asked only with the setting on) steps at its qualification
@@ -4057,11 +4058,11 @@ measurement work (start, collect, expire) inside the call and answers 1 only for
 so the hunt never hands back for a sync in progress (any sync since the request ended the check). With
 `opts->scan_skip_silent` off the runtime wrapper returns 0 after that one load, never calling the engine. With it on, a
 SUSPENDED or DONE check (or none) costs the scan-owner extension lookup and a phase load. A check under way
-(WAIT_CAPTURE, REQUESTED, READY) is reconciled at every call, as plan §3.3 asks: the revision snapshot is read again
+(WAIT_CAPTURE, REQUESTED, READY) is reconciled at every call: the revision snapshot is read again
 (about 13 loads: the state counters, two extension lookups for the trunk-scan and -Y edit counters, and the
 receive-request atomic), then one realtime read, then the phase's own step (WAIT_CAPTURE: a tap capture read at most
-every 50 ms; REQUESTED: the status word's atomic load; READY: a capture read and the ledger's frame gate). That is above
-plan §4.1's per-state figures, and it is paid only with the setting on, once per 300 symbols. 0 with nothing installed.
+every 50 ms; REQUESTED: the status word's atomic load; READY: a capture read and the ledger's frame gate). It is paid
+only with the setting on, once per 300 symbols. 0 with nothing installed.
 `analog_call_block` hands the engine's NFM call every processed conventional monitor block as a `dsd_analog_call_block`
 descriptor (issues #756, #668; see `dsd_symbol.c` in the DSP section), borrowed for the synchronous call.
 
@@ -6635,7 +6636,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   session); else under a scan the pass ends with `DSD_INTERRUPT_SCAN_IDLE`; else the read reads again. An idle analog
   monitor's empty hunt read under a scan ends the pass the same way (`symbol_rtl_monitor_idle()`). The reason does not
   stand ("Silent inputs" above) and nothing of the stream is lost. An I/Q replay's reads never come back idle. Unlike
-  the silent PCM wait, the RTL mapping does not ask `dsd_frame_sync_hook_decoder_ticks_due()` (spec §4.2 lists only a
+  the silent PCM wait, the RTL mapping does not ask `dsd_frame_sync_hook_decoder_ticks_due()` (its order is only a
   command or publication, then a scan, then a re-read): in a session with no scan on a connected stream that stopped
   delivering, a due startup control-channel hunt or DMR recovery tick waits for samples or the receive-timeout
   reconnect, as before, since a retune of a peer that sends nothing gains little. A paused scan owns nothing, so its

@@ -551,6 +551,16 @@ Explore sources. PCM, rigctl-only inputs and production I/Q replay cannot search
 Conventional scanning and trunk following must stop first. CLI controls, public
 TCP API commands and simultaneous analog/digital reception are not provided.
 
+The measurement tap is shared with the scan skip-silent check
+([Skipping silent channels](trunk-scan.md#skipping-silent-channels)). It holds one
+request at a time and knows whose it is: Signal search's, or a scan's quiet request
+for one landed channel. A quiet request is refused while a search owns the tuner or
+has a request or an unread report outstanding, and any search request replaces a
+quiet one at once; cancelling a search never touches a quiet request. Scanning and
+searching cannot run together anyway, so in practice this only orders the hand-over
+when a search starts. The quiet request's measurement is described under
+[Quiet-channel calibration](#quiet-channel-calibration).
+
 A stalled radio input (an rtl_tcp stall, for example) does not hold a visit or
 end the session: after 100 ms without samples the decoder leaves the frame it was
 reading and returns to the coordinator, so controls and visit deadlines still take
@@ -1006,7 +1016,10 @@ The check runs only where the calibration rendered and validated it, matched exa
   `rtl_downsample_passes_for_rate_in()` in `src/io/radio/rtl_sdr_fm.cpp`; the selectable DSP bandwidths 4 to 72 kHz
   give only these three, and an RTL-SDR or rtl_tcp stream runs the request as asked), an Airspy's 2.5, 3, 6 and
   10 MS/s, and the common RTL-SDR rates a SoapySDR device may be given, which picks its own nearest rate: 0.96, 1.2,
-  1.28, 1.44, 1.6, 1.8, 1.92, 2.048 and 2.4 Msps. A SoapySDR device that runs any other rate gets no check.
+  1.28, 1.44, 1.6, 1.8, 1.92, 2.048 and 2.4 Msps. A SoapySDR device that runs any other rate gets no check. The
+  Airspy rates apply to an Airspy through SoapySDR: a native Airspy input delivers centred I/Q with no quarter-rate
+  shift, which the measurement's geometry needs, so it gets no check at any rate; neither does an RTL-SDR with offset
+  tuning on, or any capture with the shift turned off.
 - Analog widths (`dsd_signal_quiet_analog_supported()`, given the kind as `dsd_opts.analog_demod` carries it): the
   Radio sheet's NFM steps 8, 11.25, 12.5, 16, 20 and 25 kHz for NFM and its AM steps 5, 6, 8, 10, 15 and 20 kHz for AM
   (`src/ui/qt/qml/Util.js`), each rendered as that kind, at every admitted rate. The engine takes any whole Hz from
@@ -1131,7 +1144,7 @@ most 1 busy verdict in 3,000 (0.03%) in any of the 880 noise-only conditions, ag
 - The guard's reference assumes the receiver's own noise floor is roughly flat across the capture inside 0.45 of the
   rate. Two real RTL-SDR noise captures (1.152 Msps at 38.6 dB gain and 1.536 Msps at 29.7 dB gain) varied by at most
   about ±1.6 dB out to 0.45 of the rate, and their lower quartile moved by at most 0.3 dB; no real 2.4 Msps or Airspy
-  capture was available. A front end whose floor varies by more than about 8.7 dB across the span voids requests on
-  its high parts.
+  noise capture was available, so those rates were validated on rendered noise only. A front end whose floor varies
+  by more than about 8.7 dB across the span voids requests on its high parts.
 - The DMR bound covers an ongoing burst train; a transmission starting late in the measurement, isolated single
   bursts and short data bursts are not covered.
