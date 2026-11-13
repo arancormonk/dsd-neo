@@ -118,6 +118,7 @@ frame_sync_p25p2_candidate_hold(const dsd_opts* opts, dsd_state* state) {
     held->carrier = state->carrier;
     held->offset = state->offset;
     held->lastsynctype = state->lastsynctype;
+    held->synctype = state->synctype;
     held->inverted_p2 = opts->inverted_p2;
     held->p25_cqpsk_dibit_map_idx = state->p25_cqpsk_dibit_map_idx;
     held->valid = 1U;
@@ -141,6 +142,7 @@ dsd_frame_sync_p25p2_window_dropped(dsd_opts* opts, dsd_state* state) {
     state->carrier = held->carrier;
     state->offset = held->offset;
     state->lastsynctype = held->lastsynctype;
+    state->synctype = held->synctype;
     opts->inverted_p2 = held->inverted_p2;
     state->p25_cqpsk_dibit_map_idx = held->p25_cqpsk_dibit_map_idx;
 }

@@ -603,13 +603,14 @@ test_acquisition_needs_a_strict_nid(void) {
 }
 
 /* What a tolerant accept and the NID read behind it may write before the strict check speaks, as one value: the lock,
-   the slicer levels, the frame label and slot 2 fields, the frame span, the map, the frame NAC, the identity and the
-   carrier's NAC, the NID counters, and the status accumulator with the advisory AFC gate it publishes. */
+   the slicer levels, the frame label and slot 2 fields, the sync type the engine records, the frame span, the map, the
+   frame NAC, the identity and the carrier's NAC, the NID counters, and the status accumulator with the advisory AFC
+   gate it publishes. */
 namespace {
 
 struct provisional_view {
     float levels[7];
-    int carrier, offset, jitter, lastsynctype, payload_algidR, nac;
+    int carrier, offset, jitter, lastsynctype, synctype, payload_algidR, nac;
     unsigned int dmrburstR, nid_failures, nid_corrections, header_errors;
     short int dmr_stereo;
     char ftype[16];
@@ -635,6 +636,7 @@ provisional_view_of(const dsd_state* state) {
     v.offset = state->offset;
     v.jitter = state->jitter;
     v.lastsynctype = state->lastsynctype;
+    v.synctype = state->synctype;
     v.payload_algidR = state->payload_algidR;
     v.nac = state->nac;
     v.dmrburstR = state->dmrburstR;
@@ -670,8 +672,8 @@ provisional_view_equal(const provisional_view* a, const provisional_view* b) {
         }
     }
     return a->carrier == b->carrier && a->offset == b->offset && a->jitter == b->jitter
-           && a->lastsynctype == b->lastsynctype && a->payload_algidR == b->payload_algidR && a->nac == b->nac
-           && a->dmrburstR == b->dmrburstR && a->nid_failures == b->nid_failures
+           && a->lastsynctype == b->lastsynctype && a->synctype == b->synctype && a->payload_algidR == b->payload_algidR
+           && a->nac == b->nac && a->dmrburstR == b->dmrburstR && a->nid_failures == b->nid_failures
            && a->nid_corrections == b->nid_corrections && a->header_errors == b->header_errors
            && a->dmr_stereo == b->dmr_stereo && std::memcmp(a->ftype, b->ftype, sizeof(a->ftype)) == 0
            && a->c4fm_frame_symbolcnt == b->c4fm_frame_symbolcnt && a->c4fm_frame_valid == b->c4fm_frame_valid
@@ -700,6 +702,8 @@ mark_published_state(dsd_state* state) {
     state->payload_algidR = 0x84;
     state->dmr_stereo = 0;
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "%s", "DMR");
+    /* The engine's last sync, which it overwrites with the candidate's (dispatch_held_candidate()). */
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
     state->p25_p1_c4fm_frame_valid = 1;
     state->p25_p1_c4fm_frame_symbolcnt = 4242U;
     state->p25_cqpsk_dibit_map_idx = 2U;

@@ -122,6 +122,7 @@ frame_sync_p25p1_candidate_hold(dsd_state* state, int pass_symbols) {
     held->carrier = state->carrier;
     held->offset = state->offset;
     held->lastsynctype = state->lastsynctype;
+    held->synctype = state->synctype;
     held->dmrburstR = state->dmrburstR;
     held->payload_algidR = state->payload_algidR;
     held->dmr_stereo = state->dmr_stereo;
@@ -154,6 +155,7 @@ p25p1_candidate_restore(dsd_state* state, const dsd_p25p1_sync_candidate* held) 
     state->carrier = held->carrier;
     state->offset = held->offset;
     state->lastsynctype = held->lastsynctype;
+    state->synctype = held->synctype;
     state->dmrburstR = held->dmrburstR;
     state->payload_algidR = held->payload_algidR;
     state->dmr_stereo = held->dmr_stereo;

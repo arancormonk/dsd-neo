@@ -353,10 +353,11 @@ typedef struct {
  * and warm start rewrote (the NID is read on them, a calibration on trial), whether the warm start set them (which
  * decides whether the frame holds them) and the crossing it dropped, the carrier flag, offset and lastsynctype, the
  * P25p1 frame span that stands NXDN96 and M17 down, the DMR slot 2 burst, ALG ID and stereo state and the frame type
- * label the accept writes, the CQPSK dibit map the try set, and the frame NAC the NID read cleared. Put back when the
- * dispatcher drops the frame on the stream it was accepted on (dsd_frame_sync_p25p1_candidate_rejected()); a frame that
- * validates keeps what the accept wrote. The hunt's pass position at the accept goes with it, for the hunt to go on
- * from. Written and read by the frame sync; decoder-thread private. */
+ * label the accept writes, the CQPSK dibit map the try set, the frame NAC the NID read cleared, and the sync type the
+ * engine then records (dsd_state::synctype, which the symbol reader's C4FM window and the dibit slicer read). Put back
+ * when the dispatcher drops the frame on the stream it was accepted on (dsd_frame_sync_p25p1_candidate_rejected()); a
+ * frame that validates keeps what the accept wrote. The hunt's pass position at the accept goes with it, for the hunt
+ * to go on from. Written and read by the frame sync; decoder-thread private. */
 typedef struct {
     float max;
     float min;
@@ -372,6 +373,7 @@ typedef struct {
     int carrier;
     int offset;
     int lastsynctype;
+    int synctype; /* dsd_state::synctype: the engine's last sync, which it overwrites with the candidate's */
     unsigned int dmrburstR;
     int payload_algidR;
     short int dmr_stereo;
@@ -388,9 +390,10 @@ typedef struct {
 /* What a P25 Phase 2 sync word the hunt accepted within a tolerance changed before the window's verdict could say
  * whether it was a window at all, as it stood before the accept (frame_sync_accept_p25p2()): the lock's carrier flag,
  * offset and slicer extremes, the references processFrame() derives from them, lastsynctype, the polarity it wrote
- * (dsd_opts::inverted_p2) and the CQPSK dibit map the try set. Put back when processP2() rejects the window on the
- * stream it was accepted on (dsd_frame_sync_p25p2_window_dropped()); a window that passes keeps what the accept
- * wrote. Written and read by the frame sync; decoder-thread private. */
+ * (dsd_opts::inverted_p2), the CQPSK dibit map the try set and the sync type the engine then records
+ * (dsd_state::synctype). Put back when processP2() rejects the window on the stream it was accepted on
+ * (dsd_frame_sync_p25p2_window_dropped()); a window that passes keeps what the accept wrote. Written and read by the
+ * frame sync; decoder-thread private. */
 typedef struct {
     float max;
     float min;
@@ -399,6 +402,7 @@ typedef struct {
     int carrier;
     int offset;
     int lastsynctype;
+    int synctype; /* dsd_state::synctype: the engine's last sync, which it overwrites with the window's */
     int inverted_p2;
     uint8_t p25_cqpsk_dibit_map_idx;
     uint8_t valid;

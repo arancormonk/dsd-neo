@@ -376,11 +376,16 @@ anchored_candidate(dsd_opts* opts, dsd_state* state, int extra_protocol) {
     state->carrier = 0;
     state->offset = 77;
     state->lastsynctype = DSD_SYNC_NONE;
+    /* The engine's last sync, a YSF carrier's: the symbol reader's C4FM window reads it (YSF's left edge is a sample
+       nearer the centre than P25's). */
+    state->synctype = DSD_SYNC_YSF_POS;
     mark_slot_fields(state);
     state->symbolcnt = 5000U + TSDU_1;
     word_with_sign_errors(P25P1_SYNC, 4, window);
     push_window_levels(state, window);
     assert(match_at(opts, state, window, 1000U + TSDU_1) == DSD_SYNC_P25P1_POS);
+    /* The engine records the sync it is handed. */
+    state->synctype = DSD_SYNC_P25P1_POS;
     /* The NID is read on the word's warm start, in the word's frame span. */
     assert(fabsf(state->max - k_word_level) < 1e-4f && fabsf(state->min + k_word_level) < 1e-4f);
     assert(state->carrier == 1 && state->lastsynctype == DSD_SYNC_P25P1_POS);
@@ -423,6 +428,8 @@ test_rejected_candidate_puts_back_what_it_changed(void) {
     assert(grid.exists && grid.recording && grid.hot && grid.slip == 0);
     assert(levels_marked(&state));
     assert(state.carrier == 0 && state.offset == 77 && state.lastsynctype == DSD_SYNC_NONE);
+    /* The sync the engine recorded goes back too, so the hunt reads the YSF carrier on YSF's window again. */
+    assert(state.synctype == DSD_SYNC_YSF_POS);
     assert(slot_fields_marked(&state));
     assert(state.p25_p1_c4fm_frame_valid == 1 && state.p25_p1_c4fm_frame_symbolcnt == 5000U);
     assert(state.p25_p1_sync_candidate.valid == 0U);
@@ -442,7 +449,7 @@ test_rejected_candidate_puts_back_what_it_changed(void) {
     anchored_candidate(&opts, &state, 0);
     (void)dsd_frame_sync_p25p1_frame_decoded(&state, NAC, TSDU_1);
     assert(fabsf(state.max - k_word_level) < 1e-4f && state.p25_p1_c4fm_sync_levels == 1U);
-    assert(state.carrier == 1 && state.lastsynctype == DSD_SYNC_P25P1_POS);
+    assert(state.carrier == 1 && state.lastsynctype == DSD_SYNC_P25P1_POS && state.synctype == DSD_SYNC_P25P1_POS);
     assert(state.p25_p1_c4fm_frame_symbolcnt == 5000U + TSDU_1);
     assert(state.p25_p1_sync_candidate.valid == 0U);
     assert(state.p25_p1_sync_anchor.tolerant_frames == 1U);

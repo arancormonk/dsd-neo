@@ -9920,7 +9920,8 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   ` P25p2 ~sync rejected` (`opts->verbose > 1`, the default, adds the bit errors and the verdict). What the tolerant
   accept changed goes back (`dsd_frame_sync_p25p2_window_dropped()`, before the report, on the stream the sync was
   accepted on; `dsd_p25p2_sync_candidate`: the lock's carrier flag, offset and slicer extremes, the references
-  processFrame() derives, `lastsynctype`, `dsd_opts::inverted_p2`, the CQPSK map; `FRAME_SYNC_P25P2_ANCHOR`), and so
+  processFrame() derives, `lastsynctype`, the `synctype` the engine recorded, `dsd_opts::inverted_p2`, the CQPSK map;
+  `FRAME_SYNC_P25P2_ANCHOR`), and so
   does it when a carrier boundary or an input interruption cuts the window before its verdict; its identity note
   changes nothing (the anchor needs a placed P2 window on the stream, whose sync named the P25 family
   already, and any other protocol's accept spends it). `processP2()` returns `P25P2_WINDOW_REJECTED`
@@ -10479,7 +10480,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     voice gate qualify window starts on it, and its accept put back on the stream it was accepted on
     (`dsd_frame_sync_p25p1_candidate_cut()`), with no carried history (what the read handed out after the cut stood in
     for symbols the input did not deliver; `P25_P1_TOLERANT_NID`). What else runs between a tolerant accept and its verdict is put back, waits for the
-    pass, or changes nothing: the processFrame() references (held), the rolling dibit buffers and the soft history (they
+    pass, or changes nothing: the processFrame() references (held), the `synctype` the engine records from the
+    hunt's return (held: the symbol reader's C4FM window and the dibit slicer read it, so a stale P25 one would read a
+    YSF carrier on P25's wider left edge, and noCarrier() and the trunk return logic would take the carrier for P25), the rolling dibit buffers and the soft history (they
     keep the NID read's symbols, which the C4FM hunt goes on from as a history and DMR and X2-TDMA never match on), the
     identity note (deferred to the pass), the anchors spent by the accept (by design: one window an anchor), the
     diagnostics `tolerant_syncs`/`acquisition_syncs` (counted at the accept by design), the engine's slicer-threshold
