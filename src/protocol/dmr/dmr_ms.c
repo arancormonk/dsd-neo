@@ -11,14 +11,12 @@
  * 2022-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/time_format.h>
@@ -36,6 +34,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "dmr_cach.h"
+#include "dmr_confidence.h"
 #include "dmr_mono_slot.h"
 #include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -167,21 +166,27 @@ dmr_ms_sync_is_voice(const uint8_t syncdata[48]) {
     return strcmp(sync, DMR_MS_VOICE_SYNC) == 0;
 }
 
-static uint8_t
-dmr_ms_decode_embedded_color_code(dsd_state* state, const uint8_t syncdata[48], uint8_t emb_pdu[16]) {
-    uint8_t power = 9; // power and pre-emption indicator
+/* The burst's EMB (ETSI TS 102 361-1 clause 9.1.2) through the colour-code gate, as a BS voice burst's is
+   (dmr_confidence.c): its power and pre-emption indicator in @p power (9 when the EMB did not decode). The EMB has no
+   checksum, only QR(16,7,6) (Table B.1), whose decoder corrects two bit errors: about one random 16-bit word in four
+   decodes, to any colour code. So one decode is not the carrier's colour code: only the gate's lock publishes it
+   (dmr_color_code, the received access code), and a locked gate rejects another code unless it repeats. Taken from
+   every decode, the noise after a carrier drop named the call's last bursts with a random colour code, which split the
+   call and published their audio as a recording of no one (issue #834). REJECT for an EMB that did not decode. */
+static dmr_confidence_result
+dmr_ms_decode_embedded_color_code(dsd_state* state, const uint8_t syncdata[48], uint8_t emb_pdu[16], uint8_t* power) {
+    *power = 9;
     for (int i = 0; i < 8; i++) {
         emb_pdu[i] = syncdata[i];
         emb_pdu[i + 8] = syncdata[i + 40];
     }
-    if (QR_16_7_6_decode(emb_pdu)) {
-        uint8_t cc = (uint8_t)((emb_pdu[0] << 3) + (emb_pdu[1] << 2) + (emb_pdu[2] << 1) + emb_pdu[3]);
-        power = emb_pdu[4];
-        dmr_ras_note_color_code(state, cc);
-        state->dmr_color_code = state->color_code = cc;
-        dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, cc);
+    if (!QR_16_7_6_decode(emb_pdu)) {
+        return DMR_CONFIDENCE_REJECT;
     }
-    return power;
+    const uint8_t cc = (uint8_t)((emb_pdu[0] << 3) + (emb_pdu[1] << 2) + (emb_pdu[2] << 1) + emb_pdu[3]);
+    *power = emb_pdu[4];
+    state->color_code = cc;
+    return dmr_confidence_note_voice_burst(state, 0U, cc);
 }
 
 static void
@@ -283,6 +288,47 @@ dmr_ms_handle_vc6_ops(dsd_opts* opts, dsd_state* state, uint8_t power, uint8_t d
     dmr_sbrc(opts, state, power);
     DSD_FPRINTF(stderr, "\n");
     dmr_alg_refresh(opts, state);
+}
+
+/* What the voice cycle does with a burst read whole, by the voice gate (dmr_confidence.c) and its EMB's verdict @p emb
+   (dmr_ms_decode_embedded_color_code()). */
+typedef enum {
+    DMR_MS_BURST_DECODE = 0, /* the gate is open: the burst is the call's */
+    DMR_MS_BURST_HOLD,       /* the gate is closed and the EMB may still open it: nothing of the burst decodes */
+    DMR_MS_BURST_END,        /* the gate is closed and the EMB gave it nothing: the cycle ends */
+} dmr_ms_burst_verdict;
+
+/* MS voice is held until the voice gate opens, as BS voice is: its colour code locked and then repeated (two EMBs that
+   agree, or one after a data burst with the same code), so a sync that noise passed plays, records and publishes
+   nothing (AGENTS.md "CRC/FEC provenance"; issue #834). Before it opens, a burst without a usable EMB ends the cycle,
+   as a BS burst's does on a closed gate, and the hunt looks for the next sync. Once it is open, the call's bursts
+   decode whatever their EMB says: one that names another colour code is far likelier noise or a miscorrection than
+   another system, and only the gate's re-lock moves the code. */
+static dmr_ms_burst_verdict
+dmr_ms_gate_burst(dsd_state* state, dmr_confidence_result emb) {
+    if (dmr_confidence_voice_slot_open(state, 0U)) {
+        return DMR_MS_BURST_DECODE;
+    }
+    if (emb == DMR_CONFIDENCE_REJECT) {
+        dmr_confidence_reset_slot(state, 0U);
+        return DMR_MS_BURST_END;
+    }
+    return DMR_MS_BURST_HOLD;
+}
+
+/* A burst B to F of the call (the voice gate open): its frames, and at F the embedded LC and the reverse channel. */
+static void
+dmr_ms_decode_voice_burst(dsd_opts* opts, dsd_state* state, dmr_ms_voice_frames* frames, uint8_t vc, uint8_t power,
+                          uint8_t dummy_bits[196]) {
+    dmr_ms_copy_frames_for_late_entry(frames);
+    dmr_ms_apply_keystream(state, frames);
+    dmr_ms_process_audio_frames(opts, state, frames, vc);
+    dmr_ms_play_voice(opts, state);
+
+    if (vc == 6) {
+        dmr_ms_handle_vc6_ops(opts, state, power, dummy_bits);
+    }
+    dmr_late_entry_mi_fragment(opts, state, vc, frames->m1, frames->m2, frames->m3);
 }
 
 static int
@@ -402,6 +448,24 @@ dmr_ms_print_bootstrap_sync(const dsd_opts* opts, dsd_state* state, const char t
     }
 }
 
+/* Burst A's frames, read back with @p invalid dibits not the stream's (dmr_ms_process_audio_frames_after()). */
+static void
+dmr_ms_decode_bootstrap_frames(dsd_opts* opts, dsd_state* state, dmr_ms_voice_frames* frames, unsigned int invalid) {
+    dmr_ms_copy_frames_for_late_entry(frames);
+    dmr_ms_apply_keystream(state, frames);
+    if (invalid == 0U) {
+        dmr_ms_process_audio_frames(opts, state, frames, 1U);
+    } else {
+        dmr_ms_process_audio_frames_after(opts, state, frames, invalid);
+    }
+    dmr_ms_play_voice(opts, state);
+
+    /* The late-entry fragments are the three frames': none when one was not read back. */
+    if (invalid <= 12U) {
+        dmr_late_entry_mi_fragment(opts, state, 1, frames->m1, frames->m2, frames->m3);
+    }
+}
+
 void
 dmrMS(dsd_opts* opts, dsd_state* state) {
     char timestr[9];
@@ -445,9 +509,6 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
         dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr, 12, 36, 0);
         dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr2, 48, 18, 0);
         dmr_ms_collect_sync_bits(opts, state, syncdata, vc, internalslot);
-        /* The EMB decodes as soon as it is read, before the check below: one an input interruption cut is erasures,
-           and all-zero bits are a valid QR(16,7,6) codeword, so it would publish colour code 0; one the carrier boundary
-           split is half another carrier's, and its colour code would be noted as the new carrier's. */
         if (dsd_state_frame_read_lost(state, carrier_seq)) {
             break;
         }
@@ -460,25 +521,27 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
                 timestr, KYEL, opts->inverted_dmr ? "inverted" : "normal", KNRM);
             break;
         }
-        uint8_t power = dmr_ms_decode_embedded_color_code(state, syncdata, emb_pdu);
         dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr2, 90, 18, 18);
         dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr3, 108, 36, 0);
+        /* The EMB decodes only once the burst is read whole: one an input interruption cut is erasures, and all-zero
+           bits are a valid QR(16,7,6) codeword, so it would publish colour code 0; one the carrier boundary split is half
+           another carrier's, and its colour code would be noted as the new carrier's. */
         if (dsd_state_frame_read_lost(state, carrier_seq)) {
             break;
         }
+        uint8_t power = 9;
+        const dmr_confidence_result emb = dmr_ms_decode_embedded_color_code(state, syncdata, emb_pdu, &power);
         dmr_debug_dump_burst(opts, state, state->currentslot, 0x10);
         dmr_ms_dump_dsp_output(opts, state);
 
         state->dmr_ms_mode = 1;
-        dmr_ms_copy_frames_for_late_entry(&frames);
-        dmr_ms_apply_keystream(state, &frames);
-        dmr_ms_process_audio_frames(opts, state, &frames, vc);
-        dmr_ms_play_voice(opts, state);
-
-        if (vc == 6) {
-            dmr_ms_handle_vc6_ops(opts, state, power, dummy_bits);
+        const dmr_ms_burst_verdict verdict = dmr_ms_gate_burst(state, emb);
+        if (verdict == DMR_MS_BURST_END) {
+            break;
         }
-        dmr_late_entry_mi_fragment(opts, state, vc, frames.m1, frames.m2, frames.m3);
+        if (verdict == DMR_MS_BURST_DECODE) {
+            dmr_ms_decode_voice_burst(opts, state, &frames, vc, power, dummy_bits);
+        }
         if (vc == 6) {
             dmr_vcrypt_superframe_end(state, 0U);
         }
@@ -533,18 +596,10 @@ dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
     }
     dmr_ms_print_bootstrap_sync(opts, state, timestr);
 
-    dmr_ms_copy_frames_for_late_entry(&frames);
-    dmr_ms_apply_keystream(state, &frames);
-    if (invalid == 0U) {
-        dmr_ms_process_audio_frames(opts, state, &frames, 1U);
-    } else {
-        dmr_ms_process_audio_frames_after(opts, state, &frames, invalid);
-    }
-    dmr_ms_play_voice(opts, state);
-
-    /* The late-entry fragments are the three frames': none when one was not read back. */
-    if (invalid <= 12U) {
-        dmr_late_entry_mi_fragment(opts, state, 1, frames.m1, frames.m2, frames.m3);
+    /* Burst A carries the sync, no EMB: it decodes only on a gate a call already opened (dmr_ms_gate_burst()). */
+    dmr_confidence_note_voice_sync(state, 0U);
+    if (dmr_confidence_voice_slot_open(state, 0U)) {
+        dmr_ms_decode_bootstrap_frames(opts, state, &frames, invalid);
     }
 
     skipDibit(opts, state, 144); //skip to next TDMA slot

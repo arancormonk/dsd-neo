@@ -95,8 +95,11 @@ def main():
             # unknown (issue #667): "ANALOG NFM;", "ANALOG AM;", "ANALOG;".
             return ANALOG_ROW if mode == "-fA" else re.compile(" " + mode_word(mode) + " ")
 
+        # dmr_voice_synth is a clear call on colour code 2. The sigidwiki dmr_voice capture is a control channel at
+        # inverted polarity: the single-slot decoder once played its data bursts as voice under a colour code a noisy
+        # EMB named, which the colour-code gate now holds (issue #834).
         for fixture, mode, option, value in [
-            ("dmr_voice", "-fr", "dcc", "2"),
+            ("dmr_voice_synth", "-fr", "dcc", "2"),
             ("nxdn48", "-fi", "ran", "1"),
             ("p25p1_c4fm_vc", "-f1", "nac", "293"),
         ]:
@@ -108,11 +111,13 @@ def main():
             assert baseline == disabled, option + ": the disabled policy changes decoded PCM"
             replay(option + "-blocked", fixture, mode,
                    ["--" + option + "-allow", value, "--" + option + "-block", value], denied=True)
-        replay("slot-block", "dmr_voice", "-fr", ["--slot-block", "1/2"], denied=True)
-        # The fixture's voice is on TS2. The single-slot decoder runs it on its one lane, so the slot filter must judge
-        # the slot the CACH names, not the lane: blocking TS2 mutes it, blocking TS1 does not.
-        replay("mono-slot-2-blocked", "dmr_voice", "-fr", ["--slot-block", "2"], denied=True)
-        replay("mono-slot-1-blocked", "dmr_voice", "-fr", ["--slot-block", "1"])
+        replay("slot-block", "dmr_voice_synth", "-fr", ["--slot-block", "1/2"], denied=True)
+        # The fixture's voice is on TS1, which the single-slot decoder runs on its one lane: blocking TS1 mutes it,
+        # blocking TS2 does not. A TS2 call on that lane, judged by the slot its CACH names rather than the lane, is
+        # DMR_SYNTH_RECEIVE_NAMES's slot-allow case (dmr_voice's "voice" on TS2 was its control channel's data bursts
+        # read as voice, which the colour-code gate now holds; issue #834).
+        replay("mono-slot-1-blocked", "dmr_voice_synth", "-fr", ["--slot-block", "1"], denied=True)
+        replay("mono-slot-2-blocked", "dmr_voice_synth", "-fr", ["--slot-block", "2"])
         replay("fdma-no-slot", "p25p1_c4fm_vc", "-f1", ["--slot-block", "1/2"])
         replay("nxdn-name", "nxdn48", "-fi", ["--ran-name", "1=Hospital / Dispatch"],
                service="Hospital / Dispatch")

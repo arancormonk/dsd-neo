@@ -2023,12 +2023,21 @@ and its crossing loop left the grid one or two samples off that sync, which burs
 frames came out with an unprotected bit wrong (an inner symbol read as outer), which the continuous BS channel, whose
 loop places the grid on every burst's sync (the sync anchor), never did. The MS path now places the grid on each
 burst A's sync the same way (`docs/code_map.md`, sync anchor). The checker places an MS frame by the one `VC*` line
-the MS path prints per superframe, then VC1 to VC6 three frames at a time.
+the MS path prints per superframe, then VC1 to VC6 three frames at a time; the superframe's first decoded burst is the
+one of A to F whose expected frames it matches, since the voice gate holds the bursts before the colour code repeats
+(burst A, and B too without a decoded header).
+`DMR_SYNTH_MS_TAIL` (`tests/protocol/dmr/dmr_ms_tail_check.py`, issue #834) cuts an MS call without a terminator at
+each burst of its last superframes, adds discriminator noise and decodes with per-call recordings and the recording
+journal: the only recording published is the call's, under colour code 2, talkgroup 100 and source 1001. Before the MS
+path took its EMB colour code through the colour-code gate, a noise EMB that QR(16,7,6) decoded named a random colour
+code, which ended the call and published the noise as `DMR_CC_<n>__TGT_0_SRC_0`.
 
 `DMR_SYNTH_RECEIVE_NAMES` (`tests/protocol/dmr/dmr_receive_names_check.py`, issue #637) decodes three repeaters that
 share one frequency and differ only by colour code, named with `--dcc-name`: three calls with silence between them,
 the same calls back to back, and one call whose colour code changes twice. Every call must carry its own name, and each
-per-call recording must hold its own audio (normalised correlation with the expected audio).
+per-call recording must hold its own audio (normalised correlation with the expected audio; for a colour-code piece
+after the first, its frame-by-frame loudness, since the bursts the voice gate holds at the change change the vocoder's
+synthesis after them).
 
 The expectation file gives, for every transmitted voice frame, the 49 bits a correct decoder prints: the plaintext
 (for an encrypted call the plaintext that decrypts from the ciphertext actually sent, whose four late-entry bits carry
@@ -2047,6 +2056,7 @@ a real radio; `tools/replay_ab.sh` on real captures remains the evidence for dec
 | --- | --- |
 | `DMR_SYNTH_CLEAR_VOICE` | A clear call decodes exactly, at most the two bursts the voice gate skips at call start missing. |
 | `DMR_SYNTH_MS_CLEAR_VOICE` | An MS transmission (`--ms`) decodes through the MS path: every frame but the bursts the voice gate skips at call start, exactly. |
+| `DMR_SYNTH_MS_TAIL` | An MS call cut inside a superframe and followed by noise publishes one recording, the call's, under its own colour code and identity. |
 | `DMR_SYNTH_AES256_CALL_START`, `DMR_SYNTH_AES128_BOTH_SLOTS` | Every decoded frame of an encrypted call decrypts right from superframe 0 on, on one or both slots. |
 | `DMR_SYNTH_AES256_BURST_LOSS`, `DMR_SYNTH_RC4_BURST_LOSS` | One burst lost at slot 1 superframe 10 VC3: every later frame decrypts right, and every frame from the next superframe's first opened burst on is decoded. |
 | `DMR_SYNTH_AES256_LOSS_NO_LE` | The same with every later late-entry MI undecodable, so the MI chain has to survive on its own. |

@@ -2910,10 +2910,9 @@ dsd_engine_forget_carrier_code_values(dsd_state* state) {
         return;
     }
     /* The colour code is read as this carrier's (issue #575), so it goes back to "not decoded" (16, as initState()
-     * leaves it) with the lock. BS mode rewrites it when the gate relocks, before any burst is dispatched, but MS mode
-     * has no lock: a call opens before its embedded code decodes, and a failed QR(16,7,6) decode writes nothing, so the
-     * previous carrier's code would label it. Here rather than in dmr_confidence_reset(), whose BS burst-error callers
-     * stay on the same carrier. */
+     * leaves it) with the lock. The gate rewrites it when it relocks, before any voice is dispatched, but an MS data
+     * burst is dispatched with no lock, and nothing rewrites the code before one, so the previous carrier's code would
+     * label it. Here rather than in dmr_confidence_reset(), whose BS burst-error callers stay on the same carrier. */
     state->dmr_color_code = 16U;
     /* So is the slot the single-slot DMR decoder proved (issue #637): the next carrier proves its own. */
     state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_NONE;

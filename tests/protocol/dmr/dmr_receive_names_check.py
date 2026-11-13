@@ -16,11 +16,15 @@ The calls come from dsd-neo_test_dmr_synth_gen, each with its own talkgroup, sou
 
 Audio oracle: each recording correlates (at least MIN_CORRELATION) with the audio it must hold, and a recording one
 burst off correlates near zero. A separate call's recording is as long as that call decoded alone and matches it. The
-colour-code-change recordings are consecutive pieces of the same call decoded with no colour-code change, together
-covering all of it, and each matches the piece at its place. They are not compared sample by sample: the vocoder's
-synthesis depends on the frames before it, which differ at each new call. Burst A of a voice superframe carries no
-colour code (its centre is the sync word), so the first burst after a change still plays under the previous code: a
-piece may run one burst (BURST samples) past its colour code's last superframe.
+colour-code-change recordings are pieces, in order, of the same call decoded with no colour-code change, and each
+matches the piece of it at its place: the first by its audio, the later ones by their loudness, frame by frame
+(ENVELOPE_CORRELATION), since the vocoder synthesizes a frame after a gap differently. They are not compared sample by
+sample: the vocoder's synthesis depends on the frames before it, which differ at each new call. The single-slot decoder takes an EMB's colour code only through the
+colour-code gate (issue #834): the EMB has no checksum, and noise decodes to a random code. Burst A carries no colour
+code (its centre is the sync word), and the gate takes a new code only when four EMBs in a row name it (B to E), so a
+piece runs up to four bursts (A to D) past its colour code's last superframe. The relock closes the voice gate until
+the new code repeats on the next superframe, so up to four bursts (E, F, A, B) between two pieces play under neither,
+and the call itself plays from its first EMB that agrees with an earlier code (at most two bursts held at its start).
 """
 import argparse
 import math
@@ -35,6 +39,8 @@ RATE = 8000
 SUPERFRAME = 6 * 3 * 160  # six bursts of three 20 ms vocoder frames at 8 kHz
 BURST = 3 * 160
 MIN_CORRELATION = 0.9
+FRAME = 160  # one 20 ms vocoder frame at 8 kHz
+ENVELOPE_CORRELATION = 0.95
 NAMES = ["--dcc-name", "2=Mall", "--dcc-name", "7=Hospital", "--dcc-name", "14=Municipality"]
 # name, colour code, talkgroup, source, generator duration (s), voice offset (s)
 CALLS = [
@@ -54,6 +60,8 @@ class Runner:
         result = subprocess.run([self.generator, "-o", name, *options], cwd=directory, capture_output=True,
                                 text=True, timeout=60, check=False)
         assert result.returncode == 0, result.stdout + result.stderr
+        match = re.search(r"(\d+) superframes per voice slot", result.stdout + result.stderr)
+        self.superframes = int(match.group(1)) if match else None
         with wave.open(str(directory / name)) as source:
             return source.getparams(), source.readframes(source.getnframes())
 
@@ -97,6 +105,35 @@ def matches(pcm, reference):
         return False
     energy = math.sqrt(sum(x * x for x in a) * sum(y * y for y in b))
     return energy > 0 and sum(x * y for x, y in zip(a, b)) / energy >= MIN_CORRELATION
+
+
+def envelope(pcm):
+    """The log loudness of each 20 ms frame (its RMS, plus one so silence has a logarithm)."""
+    s = samples(pcm)
+    return [math.log(1.0 + math.sqrt(sum(x * x for x in s[i:i + FRAME]) / FRAME))
+            for i in range(0, len(s) - FRAME + 1, FRAME)]
+
+
+def envelope_matches(pcm, reference):
+    """Whether two equal-length recordings get louder and quieter together, frame by frame, past the first two frames
+    (the vocoder's synthesis settling after a gap): the correlation of their envelopes. One frame off falls well below."""
+    a, b = envelope(pcm)[2:], envelope(reference)[2:]
+    if len(a) != len(b) or len(a) < 2:
+        return False
+    ma, mb = sum(a) / len(a), sum(b) / len(b)
+    da, db = [x - ma for x in a], [y - mb for y in b]
+    energy = math.sqrt(sum(x * x for x in da) * sum(y * y for y in db))
+    return energy > 0 and sum(x * y for x, y in zip(da, db)) / energy >= ENVELOPE_CORRELATION
+
+
+def place(pcm, reference, first, last):
+    """The offset, a whole number of frames from @p first to @p last, where @p pcm's envelope matches @p reference's, or
+    None."""
+    count = len(pcm) // 2
+    for offset in range(first, last + 1, FRAME):
+        if envelope_matches(pcm, reference[2 * offset:2 * (offset + count)]):
+            return offset
+    return None
 
 
 def check_labels(case, calls, history, expected):
@@ -144,6 +181,9 @@ def colour_code_change(runner):
     _, whole, _ = runner.decode("unchanged", params, unchanged)
     assert list(whole) == ["Mall"], f"unchanged: {list(whole)}"
     reference = whole["Mall"][1]
+    # The bursts the voice gate held at the call's start: the reference's sample 0 is this far into the call.
+    lead = runner.superframes * SUPERFRAME - len(reference) // 2
+    assert lead in (0, BURST, 2 * BURST), f"the call lost {lead} samples at its start"
     calls, recordings, history = runner.decode("colour-code-change", params, changing)
     check_labels("colour-code-change", calls, history,
                  [(2, "[Mall] DMR TGT: 00000100; SRC: 00001001; CC: 02;"),
@@ -151,21 +191,24 @@ def colour_code_change(runner):
                   (14, "[Municipality] DMR TGT: 00000100; SRC: 00001001; CC: 14;")])
     assert sorted(recordings) == ["Hospital", "Mall", "Municipality"], [r[0] for r in recordings.values()]
     start = 0
-    ends = [sf * SUPERFRAME for sf, _ in CHANGES] + [len(reference) // 2]
+    ends = [sf * SUPERFRAME - lead for sf, _ in CHANGES] + [len(reference) // 2]
     for name, end in zip(("Mall", "Hospital", "Municipality"), ends):
         path, pcm = recordings[name]
         count = len(pcm) // 2
-        assert matches(pcm, reference[2 * start:2 * (start + count)]), \
-            f"{path} is not the call's audio from sample {start}"
-        assert end <= start + count <= end + BURST, f"{path} ends at sample {start + count}, its colour code at {end}"
-        start += count
-    assert start == len(reference) // 2, f"the pieces cover {start} of {len(reference) // 2} samples"
+        offset = place(pcm, reference, start, start + 4 * BURST)
+        assert offset is not None, f"{path} is not the call's audio within four bursts of sample {start}"
+        assert start != 0 or (offset == 0 and matches(pcm, reference[:2 * count])), f"{path} is not the call's start"
+        assert end <= offset + count <= end + 4 * BURST, \
+            f"{path} ends at sample {offset + count}, its colour code at {end}"
+        start = offset + count
+    assert start == len(reference) // 2, f"the pieces end at {start} of {len(reference) // 2} samples"
 
 
 def slot_change(runner):
     """TS1, TS2 and TS1 calls in a row on the single-slot decoder (-fr, and -nm under the two-slot preset): each is one
     named row on its own slot, and one recording of its own audio. Under a slot filter the TS2 call is Checking until two
-    bursts prove its slot: after one voice header the first voice burst is withheld, after a repeated header none is."""
+    bursts prove its slot: after one voice header the first voice burst is withheld (the voice gate holds it anyway),
+    after a repeated header none is."""
     directory = runner.root / "slots"
     directory.mkdir()
     names = ["--slot-name", "1=SlotOne", "--slot-name", "2=SlotTwo"]
@@ -203,9 +246,11 @@ def slot_change(runner):
             assert sorted(recordings) == sorted(references), f"{case}: {[r[0] for r in recordings.values()]}"
             for tg, (path, pcm) in recordings.items():
                 assert matches(pcm, references[tg]), f"{case}: {path} is not TG {tg}'s own audio"
-        # Only TS2 passes the filter: one row, its audio less the Checking burst at its start (the bootstrap burst a
-        # single voice header leaves unproven), and nothing at all once a repeated header has proven the slot.
-        for case, second, withheld in (("slot-allow-2", generated[1], BURST), ("slot-allow-2-repeat", repeated, 0)):
+        # Only TS2 passes the filter: one row, and its audio whole. The Checking burst a single voice header leaves
+        # unproven at its start (the bootstrap burst) is burst A, which the single-slot decoder's voice gate holds in the
+        # call decoded alone too (A has no EMB to corroborate the colour code; issue #834); a repeated header proves the
+        # slot before it.
+        for case, second, withheld in (("slot-allow-2", generated[1], 0), ("slot-allow-2-repeat", repeated, 0)):
             case = f"{case}-{tag}"
             _, alone, _ = runner.decode(case + "-alone", params, second, names, key, decoder)
             reference = alone["201"][1]

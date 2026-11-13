@@ -326,6 +326,8 @@ test_ms_data_sync_bypasses_confidence_and_cach(void) {
     assert(g_handler_calls == 1);
     assert(g_reset_calls == 0);
     assert(g_cach_calls == 0);
+    /* Its colour code counts toward the MS voice gate's lock (issue #834), but the gate's verdict holds no data burst. */
+    assert(g_confidence_calls == 1);
     assert(state.dmr_color_code == 5);
     /* The slot type's checked colour code is the carrier's before the burst it heads is dispatched. */
     assert(g_handler_rxid.family == (uint8_t)DSD_RXID_FAMILY_DMR && g_handler_rxid.valid == DSD_RXID_ACCESS);

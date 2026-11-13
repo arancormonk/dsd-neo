@@ -3249,8 +3249,9 @@ suite runs under this compiler.
   `processFrame()`'s apply before the frame, the apply after the synced-frame trunking ticks, and the trunk-scan
   advance, so a watchdog retune resets it when the decoder thread applies the drop, never on the watchdog's thread;
   `trunk_scan_switch_to()` (which also covers the forced release's own apply) and its rollback, which restores the
-  record without the evidence and so drops the part; a colour-code change on the carrier (the BS confidence relock,
-  the MS/direct slot type and embedded colour code, `dmr_ras_note_color_code()`); the DMR reset command; a user move
+  record without the evidence and so drops the part; a colour-code change on the carrier (the confidence lock onto
+  another code and its relock, BS and MS voice alike; the MS/direct slot type, `dmr_ras_note_color_code()`); the DMR
+  reset command; a user move
   (`ui_user_move_forgets_identity()`); and the guarded no-carrier step (`dsd_engine_no_carrier_identity_stale()`), so
   the next transmission proves RAS again. A frame
   of another family drops the part with the record and keeps the evidence (the same carrier): the next signature notes
@@ -10483,8 +10484,8 @@ the message passed its own check, with that message's values, an unchanged repea
   put in); the Phase 2 seed's WACN, SYSID and NAC once a burst descrambled with the whole seed passed RS with its
   parity kept (`p25p2_note_seed_proven()`). The control channel at
   `p25_sm_note_validated_cc()` (a CRC-passed TSBK, outbound MBT or LCCH MAC), once the record names a SYSID.
-- DMR: the colour code at the BS confidence lock and relock (`dmr_confidence_note_evidence()`, before the burst is
-  dispatched) and the MS slot type's Golay(20,8) / embedded QR(16,7,6) accepts (`dmr_data.c`, `dmr_ms.c`); the Tier III
+- DMR: the colour code at the confidence lock and relock, BS and MS voice alike (`dmr_confidence_note_evidence()`,
+  before the burst is dispatched), and the MS slot type's Golay(20,8) accept (`dmr_data.c`); the Tier III
   system code and site (raw network, site and model, and the text) at `dmr_tiii_note_search_site()` (C_ALOHA with a
   genuine CRC, Capacity Max's FID 0x10 one included, C/P_SYS_PARMS short LCs), which notes the record whether or not a
   search runs; the control channel at C_ALOHA and C_SYS_PARMS. Connect Plus site (its 12-bit network, short LC bits
@@ -10850,6 +10851,13 @@ Private per-protocol modules worth knowing about:
   before DMR decodes or unmutes it. Every evidence point also stamps `dsd_state::dmr_confidence_lock_m` with the
   decode time (never cleared, not even by `dmr_confidence_reset()`), which a startup control-channel hunt reads as
   validated content (issue #703). A relock onto another colour code resets the RAS evidence (`dmr_ras_reset()`).
+  MS/direct voice (`dmr_ms.c`) goes through it as BS voice does (issue #834): the EMB has QR(16,7,6) and no checksum
+  (TS 102 361-1 Table B.1), and about one noise word in four decodes to some colour code, so an EMB's code is the
+  carrier's only through the lock, and slot 1's voice gate holds the superframe (no audio, recording, embedded LC or
+  late-entry MI) until it opens; on a closed gate a burst whose EMB gives nothing ends the voice cycle. Burst A has no
+  EMB: an MS call plays from its first EMB that agrees with an earlier code (its voice LC header's slot type, which an
+  MS data burst feeds to the lock without being held by it, or B's EMB). Once open, an EMB naming another code is
+  ignored and the burst decodes; four in a row relock. Tests: `DMR_MS_DATA`, `DMR_SYNTH_MS_TAIL`.
 - `src/protocol/dmr/dmr_ras.c` — RAS on the carrier (`<dsd-neo/protocol/dmr/dmr.h>`). The burst handler notes every
   burst with the RAS signature, with or without `-F`, before it dispatches (`dmr_ras_note_signature()`; a retune its
   handler makes then resets the carrier left's evidence); a frame read across a carrier boundary or cut by an input
