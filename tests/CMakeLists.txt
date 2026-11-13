@@ -19582,8 +19582,8 @@ if(DSD_HAS_RADIO)
     # Issue #834: DMR's matched filter is the receive half of its root-raised-cosine pulse (roll-off 0.2). The same
     # generator's call, 5 s of it, at the standard's pulse in noise at 8 dB S/N in 12.5 kHz (dmr_bs_weak in
     # tools/build_iq_fixtures.py): about 160 bursts, each line printing the colour code from a slot type or EMB that
-    # decoded. Behind the legacy filter, a low-pass flat to 3 kHz, 132 did under -fs and -fa; behind the RRC 0.2,
-    # 158 and 160. 146 sits halfway.
+    # decoded. Behind the legacy filter, a low-pass flat to 3 kHz, 132 did under -fs and 134 under -fa; behind the RRC
+    # 0.2, 156 and 158. 146 sits halfway.
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_DMR_BS_WEAK
         dmr_bs_weak
@@ -21676,11 +21676,11 @@ if(DSD_HAS_RADIO)
     )
 
     # Off-air digital speech at the default auto gain (issue #518). The excerpts are too short for established speech
-    # (0.3-2.6 s of it), so each case holds the whole output's P.56 level to a window of +/-1 dB around what the speech
+    # (0.3-3.05 s of it), so each case holds the whole output's P.56 level to a window of +/-1 dB around what the speech
     # AGC measures there, and requires it to have moved from the -g 1 (DVSI reference) level toward -20 dBFS, or to have
     # stayed within 3 dB of it, and to be within 10 dB of it (speech_level_check.cmake). docs/testing.md lists each
-    # excerpt's speech. Measured (auto, at -g 1): dstar -17.63 (-18.14), ysf -18.05 (-38.82), m17 -17.82 (-21.63),
-    # tetra_call_real_air_72k -23.39 (-28.53), nxdn96 -18.64 (-40.88), provoice -17.55 (-39.30), p25p1_c4fm_vc -22.73
+    # excerpt's speech. Measured (auto, at -g 1): dstar -17.63 (-18.14), ysf -21.12 (-39.47), m17 -17.82 (-21.63),
+    # tetra_call_real_air_72k -23.39 (-28.53), nxdn96 -18.68 (-40.91), provoice -17.55 (-39.30), p25p1_c4fm_vc -22.73
     # (-32.03; 0.8 s of speech, which the gain climbs through at its startup rate) and p25p1_cqpsk_vc -17.31 (-22.44;
     # 0.3 s of speech, whose first gain steps overshoot).
     function(
@@ -21714,7 +21714,7 @@ if(DSD_HAS_RADIO)
         )
     endfunction()
     dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_DSTAR dstar -fd 1 -18.63 -16.63 "-g 1")
-    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_YSF ysf -fy 1 -19.05 -17.05 "-g 1")
+    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_YSF ysf -fy 1 -22.12 -20.12 "-g 1")
     # M17 voice is Codec2: the case needs it built in, as DECODE_IQ_M17_VOICE_OUTPUT does.
     if(DSD_HAS_CODEC2)
         dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_M17 m17 -fz 1 -18.82 -16.82 "-g 1")
@@ -21728,7 +21728,7 @@ if(DSD_HAS_RADIO)
         -22.39
         "-g 1"
     )
-    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_NXDN96 nxdn96 -fn 1 -19.64 -17.64 "-g 1")
+    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_NXDN96 nxdn96 -fn 1 -19.68 -17.68 "-g 1")
     dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_PROVOICE provoice -fp 1 -18.55 -16.55 "-g 1")
     dsd_neo_add_iq_speech_level_test(
         DECODE_IQ_SPEECH_LEVEL_P25P1_C4FM

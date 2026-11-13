@@ -2098,7 +2098,7 @@ The script reads the levels at the symbol centres, sends them through ETSI TS 10
 row does, and adds complex Gaussian noise at 8 dB S/N inside 12.5 kHz (seed 7). `DECODE_IQ_DMR_BS_WEAK` (`-fs`) and
 `_AUTO` (`-fa`) need at least 146 lines printing `Color Code=02 |`, each a burst whose slot type or EMB decoded, of
 about 160. Until issue #834 the DMR matched filter was a low-pass flat to 3 kHz rather than the receive half of that
-pulse, and 132 decoded under either preset; behind the root raised cosine, 158 and 160.
+pulse, and 132 decoded under `-fs` and 134 under `-fa`; behind the root raised cosine, 156 and 158.
 
 ### MBE capture checks (issue #661)
 
@@ -2261,10 +2261,10 @@ decoded output; a digital output holds only the voice that played.
 | Fixture | Mode | Speech (s) | Speech intervals (s) | Reference gain (dBFS P.56) | Auto (dBFS P.56) | Case |
 | --- | --- | --- | --- | --- | --- | --- |
 | `dstar` | `-fd` | 2.3 | 0.20-2.50 | -18.14 (`-g 1`) | -17.63 | `DECODE_IQ_SPEECH_LEVEL_DSTAR` |
-| `ysf` | `-fy` | 2.55 | 0.0-0.25, 1.05-3.35 | -38.82 | -18.05 | `DECODE_IQ_SPEECH_LEVEL_YSF` |
+| `ysf` | `-fy` | 3.05 | 0.05-0.50, 1.25-3.85 | -39.47 | -21.12 | `DECODE_IQ_SPEECH_LEVEL_YSF` |
 | `m17` | `-fz` | 1.9 | 0.0-1.45, 2.0-2.47 | -21.63 | -17.82 | `DECODE_IQ_SPEECH_LEVEL_M17` (Codec2 builds) |
 | `tetra_call_real_air_72k` | `-fT` | 2.06 | 0.0-1.10 (first talker), 2.0-2.96 (the next, 10.8 dB louder) | -28.53 | -23.39 | `DECODE_IQ_SPEECH_LEVEL_TETRA` |
-| `nxdn96` | `-fn` | 1.25 | 0.20-1.45 | -40.88 | -18.64 | `DECODE_IQ_SPEECH_LEVEL_NXDN96` |
+| `nxdn96` | `-fn` | 1.25 | 0.20-1.45 | -40.91 | -18.68 | `DECODE_IQ_SPEECH_LEVEL_NXDN96` |
 | `provoice` | `-fp` | 1.35 | 0.0-0.25, 1.40-1.90, 2.10-2.70 | -39.30 | -17.55 | `DECODE_IQ_SPEECH_LEVEL_PROVOICE` |
 | `p25p1_c4fm_vc` | `-f1` | 0.8 | 0.60-1.42 | -32.03 | -22.73 | `DECODE_IQ_SPEECH_LEVEL_P25P1_C4FM` |
 | `p25p1_cqpsk_vc` | `-f1 -mq` | 0.3 | 0.70-1.00 | -22.44 | -17.31 | `DECODE_IQ_SPEECH_LEVEL_P25P1_CQPSK` |
@@ -2273,8 +2273,12 @@ decoded output; a digital output holds only the voice that played.
 | `nfm_squelch_real_a` | `-fA` | 2.7 | 0.40-3.10 | -29.31 | -21.96 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_A_SMOKE`, `DECODE_IQ_ANALOG_PARITY_NFM_SQUELCH_A` |
 | `nfm_squelch_real_b` | `-fA` | 3.3 | 0.0-3.30 | -26.71 | -18.22 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE`, `DECODE_IQ_ANALOG_PARITY_NFM_SQUELCH_B` |
 
-A few notes. `nxdn96`'s 1.25 s of speech sits 21 dB under the target at `-g 1`; the start gain and the 2 dB startup
-steps bring it within 1.5 dB of the target over the excerpt (it played 12 dB under at 1 dB steps from 0 dB).
+A few notes. `ysf` was measured again once issue #834's YSF receive filter and slicer fixes cleared most of its FICH and
+DCH CRC errors: more of the call plays (4.6 s of output, was 4.0 s), 0.65 dB quieter at `-g 1`, and the auto level reads
+3.07 dB lower. The NXDN filter and slicer fixes of the same issue change `nxdn96`'s decoded voice slightly (and decode
+two more SACCH fragments): 0.03 dB quieter at `-g 1`, 0.04 dB at auto. `nxdn96`'s 1.25 s of speech sits 21 dB under
+the target at `-g 1`; the start gain and the 2 dB startup steps bring it within 1.5 dB of the target over the excerpt
+(it played 12 dB under at 1 dB steps from 0 dB).
 `p25p1_cqpsk_vc`'s 0.3 s of speech commits a few times, and those first steps toward a level read from the rising edge
 of the speech overshoot, so its level moves 0.25 dB away from -20 dBFS while staying within 3 dB of it. The analog
 gap noise between words is 11-17 dB under the speech, so P.56 counts it as active.
