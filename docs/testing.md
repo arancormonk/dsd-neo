@@ -3055,7 +3055,8 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   (`AccessibilityCounter`), which Qt calls for every event whether or not accessibility is active, and hands each event
   on as Qt would; `stopAccessibilityCount()` puts the previous handler back. `accessibilityCount()` returns the counts
   since the start: by event type (`types`), by the nearest named object, the emitter included (`owners`), and by the
-  named chain up from it (`chains`, for failure messages). `accessibilityCountWithin(scope, type)` counts what anything
+  named chain up from it (`chains`, for failure messages), and the chains in the order raised (`sequence`, the first
+  2000, for a case that asserts on an order, such as which control a sheet's close focuses). `accessibilityCountWithin(scope, type)` counts what anything
   inside `scope` raised, named or not. It is keyed by address, so ask it only about objects that outlive the count, such
   as a sheet. ObjectCreated arrives before the new item has a parent, so it cannot be scoped: count a view's delegates
   through the view (`count`, `itemAdded`) instead. The walk up reads only `objectName`, the parent item and the parent,

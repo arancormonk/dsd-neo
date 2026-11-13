@@ -9,15 +9,28 @@ ModalSheet {
     property string title: ""
     // Each action has text and optional destructive, enabled, description,
     // accessibleName (what a screen reader says for text) and objectName
-    // fields. Callers may carry a key for routing conditional rows.
+    // fields. Callers may carry a key for routing conditional rows. enabled
+    // and description may also be functions: the row reads them in its
+    // bindings, so what they read keeps the row current while the menu is
+    // open (a state that ends meanwhile enables it in place).
     property var actions: []
     signal triggered(int index)
     signal cancelled
     accessibleName: title
     dismissHandler: cancel
 
+    function actionField(index, field) {
+        var value = index >= 0 && index < actions.length ? actions[index][field] : undefined;
+        return typeof value === "function" ? value() : value;
+    }
+    function actionEnabled(index) {
+        return index >= 0 && index < actions.length && actionField(index, "enabled") !== false;
+    }
+    function actionDescription(index) {
+        return actionField(index, "description") || "";
+    }
     function activate(index) {
-        if (!visible || index < 0 || index >= actions.length || actions[index].enabled === false)
+        if (!visible || !actionEnabled(index))
             return;
         visible = false;
         triggered(index);
@@ -53,9 +66,10 @@ ModalSheet {
                 width: parent.width
                 text: row.modelData.text
                 textColor: row.modelData.destructive ? Theme.magenta : Theme.buttonSecondaryText
-                enabled: row.modelData.enabled !== false
+                enabled: menu.actionEnabled(row.index)
+                readonly property string descriptionText: menu.actionDescription(row.index)
                 accessibleName: (row.modelData.accessibleName || text)
-                    + (row.modelData.description ? ". " + row.modelData.description : "")
+                    + (descriptionText ? ". " + descriptionText : "")
                 onClicked: menu.activate(row.index)
             }
             // Read in the action's own name above (issue #782).
@@ -64,7 +78,7 @@ ModalSheet {
                 width: parent.width
                 Accessible.ignored: true
                 visible: text.length > 0
-                text: row.modelData.description || ""
+                text: menu.actionDescription(row.index)
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 color: Theme.textSecondary

@@ -20,9 +20,11 @@
 #include <QUuid>
 #include <QVariant>
 #include <QVariantMap>
+#include <Qt>
 #include <algorithm>
 #include <cmath>
 #include <dsd-neo/core/opts.h>
+#include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <iterator>
 #include <utility>
 #include "realtime_clock.h"
@@ -119,6 +121,9 @@ enum Key {
     // Issue #830: DSD-neo's file browser before Android's picker. Device-local: whether this device's picker works is
     // the device's, not something a backup should carry to another one.
     kChooseFilesInApp,
+    // The order the saved-systems list is shown in. Device-local: it follows how this device's screen was arranged,
+    // like kListenSection.
+    kSystemsSort,
     kKeyCount
 };
 
@@ -171,6 +176,7 @@ constexpr AppPrefs::KeySpec kKeyTable[] = {
     {"listen/pinned", true},
     {"listen/section", false},
     {"ui/chooseFilesInApp", false},
+    {"listen/systemsSort", false},
 };
 static_assert(sizeof(kKeyTable) / sizeof(kKeyTable[0]) == kKeyCount, "key table and Key enum must stay in step");
 
@@ -258,6 +264,20 @@ QString
 sane_listen_section(const QVariant& raw) {
     const QString section = raw.metaType().id() == QMetaType::QString ? raw.toString() : QString();
     return is_listen_section(section) ? section : QStringLiteral("systems");
+}
+
+/** @brief Whether @p sort names a saved-systems order. The ids are persisted: never rename one. */
+bool
+is_systems_sort(const QString& sort) {
+    return sort == QLatin1String("name") || sort == QLatin1String("place") || sort == QLatin1String("nearest")
+           || sort == QLatin1String("recent") || sort == QLatin1String("added");
+}
+
+/** @brief The order @p raw names, else the order added: text QSettings did not write as one string included. */
+QString
+sane_systems_sort(const QVariant& raw) {
+    const QString sort = raw.metaType().id() == QMetaType::QString ? raw.toString() : QString();
+    return is_systems_sort(sort) ? sort : QStringLiteral("added");
 }
 
 /** @brief @p port if it is a usable TCP port, else the rtl_tcp default. */
@@ -439,7 +459,7 @@ AppPrefs::replacePortable(const QVariantMap& values) {
 void
 AppPrefs::armLocationExpiry() {
     m_locationExpiry.stop();
-    expireLocation();
+    (void)expireLocation();
     const qint64 at = m_settings.value(key_name(kLastFixAt), 0).toLongLong();
     if (at > 0) {
         const qint64 remaining = 24LL * 60 * 60 * 1000 - (realtimeMSecsSinceEpoch() - at);
@@ -449,17 +469,37 @@ AppPrefs::armLocationExpiry() {
 
 // Location is a short-lived private hint. Delete the whole fix on expiry so
 // stale coordinates cannot silently be reused or survive in a settings export.
-void
+bool
 AppPrefs::expireLocation() const {
     const qint64 at = m_settings.value(key_name(kLastFixAt), 0).toLongLong();
     const qint64 now = realtimeMSecsSinceEpoch();
     if (at > 0 && at <= now && now - at < 24LL * 60 * 60 * 1000) {
+        return false;
+    }
+    bool held = false;
+    for (const Key key : {kLastLat, kLastLon, kLastFixAt, kLastAccuracyM}) {
+        held = held || m_settings.contains(key_name(key));
+        m_settings.remove(key_name(key));
+    }
+    return held;
+}
+
+// The expiry timer runs on the monotonic clock, which stops while a phone
+// sleeps, so a fix can lapse first at a read. Every reader hears of it once,
+// queued: a reader in the middle of its own rebuild is never re-entered.
+void
+AppPrefs::expireLocationOnRead() const {
+    if (!expireLocation()) {
         return;
     }
-    m_settings.remove(key_name(kLastLat));
-    m_settings.remove(key_name(kLastLon));
-    m_settings.remove(key_name(kLastFixAt));
-    m_settings.remove(key_name(kLastAccuracyM));
+    auto* self = const_cast<AppPrefs*>(this);
+    QMetaObject::invokeMethod(
+        self,
+        [self]() {
+            self->armLocationExpiry();
+            Q_EMIT self->locationChanged();
+        },
+        Qt::QueuedConnection);
 }
 
 int
@@ -906,6 +946,26 @@ AppPrefs::setListenSection(const QString& section) {
     Q_EMIT listenSectionChanged();
 }
 
+QString
+AppPrefs::systemsSort() const {
+    return sane_systems_sort(m_settings.value(key_name(kSystemsSort)));
+}
+
+void
+AppPrefs::setSystemsSort(const QString& sort) {
+    if (!is_systems_sort(sort)) {
+        return;
+    }
+    // Compared with the raw stored value (absent counts as the order added), so choosing it over a value that only
+    // reads as that still lands.
+    const QVariant stored = m_settings.value(key_name(kSystemsSort), QStringLiteral("added"));
+    if (stored.metaType().id() == QMetaType::QString && stored.toString() == sort) {
+        return;
+    }
+    m_settings.setValue(key_name(kSystemsSort), sort);
+    Q_EMIT systemsSortChanged();
+}
+
 bool
 AppPrefs::autoStartOnAttach() const {
     return m_settings.value(key_name(kAutoStartOnAttach), false).toBool();
@@ -1143,7 +1203,7 @@ AppPrefs::forgetScanCompanions() {
 
 double
 AppPrefs::lastLat() const {
-    expireLocation();
+    expireLocationOnRead();
     return m_settings.value(key_name(kLastLat), 0.0).toDouble();
 }
 
@@ -1158,7 +1218,7 @@ AppPrefs::setLastLat(double value) {
 
 double
 AppPrefs::lastLon() const {
-    expireLocation();
+    expireLocationOnRead();
     return m_settings.value(key_name(kLastLon), 0.0).toDouble();
 }
 
@@ -1183,13 +1243,13 @@ AppPrefs::setLocationFix(double lat, double lon, qint64 fixAtMs, double accuracy
 
 double
 AppPrefs::lastAccuracyM() const {
-    expireLocation();
+    expireLocationOnRead();
     return m_settings.value(key_name(kLastAccuracyM), 0.0).toDouble();
 }
 
 qint64
 AppPrefs::lastFixAt() const {
-    expireLocation();
+    expireLocationOnRead();
     return m_settings.value(key_name(kLastFixAt), 0).toLongLong();
 }
 

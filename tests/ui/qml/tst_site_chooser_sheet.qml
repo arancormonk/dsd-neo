@@ -9,10 +9,12 @@ Item {
     Ui.SiteChooserSheet { id: sheet }
     SignalSpy { id: starts; target: sheet; signalName: "startSite" }
     SignalSpy { id: switches; target: sheet; signalName: "restartSite" }
+    SignalSpy { id: accountOpened; target: sheet; signalName: "openRadioReferenceAccount" }
     TestCase {
         name: "SiteChooserSheet"
         when: windowShown
         function init() {
+            testContext.setRadioReference("available", true)
             testContext.useLifecycleHost(true)
             testContext.resetPins()
             prefs.metricUnits = false
@@ -26,7 +28,10 @@ Item {
             starts.clear(); switches.clear()
         }
         function cleanup() {
+            testContext.setRadioReference("available", false)
             sheet.visible = false
+            testContext.resetRrPlaces()
+            accountOpened.clear()
             prefs.metricUnits = false
             prefs.setLocationFix(0, 0, 0)
             testContext.useLifecycleHost(false)
@@ -226,6 +231,18 @@ Item {
             compare(starts.count, 1)
             compare(savedSystems.get(starts.signalArguments[0][0]).uid, uid)
         }
+        // The same system saved for another receiver is another group: the chooser lists this receiver's sites
+        // once, and its nearest is one of them.
+        function test_other_receiver_is_another_group() {
+            savedSystems.add({name:"North", rrSid:12, rrSiteId:16863, siteName:"North", siteLat:41.1, siteLon:-91, hasSitePos:true, sourceType:"rtltcp", host:"127.0.0.1", port:1234})
+            sheet.refresh()
+            compare(sheet.rows, [0, 1])
+            prefs.setLocationFix(41.1, -91, Date.now(), 100)
+            compare(sheet.nearest, 1)
+            sheet.openFor(2)
+            compare(sheet.rows, [2])
+            compare(sheet.nearest, 2)
+        }
         function test_idle_starts() { sheet.choose(1); compare(starts.count, 1); compare(switches.count, 0) }
         function test_running_requires_restart() {
             sheet.sessionState = 2; sheet.choose(1)
@@ -322,6 +339,162 @@ Item {
             compare(pin.text, "Pin to Listen")
             sheet.sessionState = 2
             verify(pin.visible && pin.enabled, "offered while a session runs")
+        }
+        // Without RadioReference in this build there is no update to offer: no button (so no Tab stop), and the
+        // note does not send the user to one.
+        function test_no_coordinates_without_radioreference() {
+            testContext.setRadioReference("available", false)
+            savedSystems.update(1, {hasSitePos: false})
+            sheet.openFor(0)
+            var note = findChild(sheet, "sitePositionNotice1")
+            verify(note.visible)
+            compare(note.text, "No coordinates.")
+            var update = findChild(sheet, "siteUpdateFromRr")
+            verify(!update.visible, "no Update button")
+            testContext.setRadioReference("available", true)
+            verify(update.visible, "offered again where RadioReference is built in")
+            compare(note.text, "No coordinates. Use Update from RadioReference to check for new location data.")
+        }
+        // A site with no coordinates points at Update from RadioReference (the menu's, and a button here), not at
+        // a re-import that would add a second copy of the site.
+        function test_no_coordinates_offers_update() {
+            verify(!findChild(sheet, "siteUpdateFromRr").visible, "every site placed: nothing to offer")
+            savedSystems.update(1, {hasSitePos: false})
+            sheet.openFor(0)
+            var note = findChild(sheet, "sitePositionNotice1")
+            verify(note.visible)
+            compare(note.text, "No coordinates. Use Update from RadioReference to check for new location data.")
+            var update = findChild(sheet, "siteUpdateFromRr")
+            verify(update.visible && update.enabled)
+            compare(update.text, "Update from RadioReference")
+
+            testContext.setRrPlacesSignedIn(false)
+            update.clicked()
+            verify(!sheet.visible, "signed out: the sheet makes way for the account screen")
+            compare(accountOpened.count, 1)
+            testContext.setRrPlacesSignedIn(true)
+
+            sheet.openFor(0)
+            update.clicked()
+            compare(testContext.rrPlacesUpdateUids(), [savedSystems.get(0).uid, savedSystems.get(1).uid])
+            verify(!update.enabled, "one update at a time")
+            var progress = findChild(sheet, "siteUpdateProgress")
+            verify(progress.visible)
+            compare(progress.text, "Updating 1 of 2")
+            testContext.finishRrPlacesUpdate(2, 0)
+            verify(!progress.visible)
+            var summary = findChild(sheet, "siteUpdateSummary")
+            verify(summary.visible)
+            compare(summary.text, "Updated 2 systems.")
+            verify(sheet.visible)
+        }
+        // An update started elsewhere (a Home card) runs: Update here is disabled, reads as such, and a call asks the
+        // service nothing, so it neither takes the other update's summary as its own nor sends the user to the
+        // account screen. Once that update ends, Update starts this one.
+        function test_update_refused_while_another_runs() {
+            savedSystems.update(1, {hasSitePos: false})
+            sheet.openFor(0)
+            var update = findChild(sheet, "siteUpdateFromRr")
+            verify(update.visible && update.enabled)
+            verify(rrPlaces.updateFromRadioReference(["elsewhere"]), "an update from a card")
+            verify(!update.enabled, "disabled while it runs")
+            verify(update.Accessible.ignored === false, "still read, as disabled")
+            compare(update.Accessible.name, "Update from RadioReference")
+            verify(findChild(sheet, "siteUpdateProgress").visible, "the progress line says why")
+            sheet.updateFromRadioReference()
+            compare(testContext.rrPlacesUpdateCalls(), 1, "the service is not asked")
+            verify(sheet.visible, "the sheet stays")
+            compare(accountOpened.count, 0, "not the account screen")
+            verify(!sheet.rrUpdateStarted, "the running update is not this sheet's")
+            testContext.finishRrPlacesUpdate(1, 0)
+            verify(!findChild(sheet, "siteUpdateSummary").visible, "nor is its summary")
+            verify(update.enabled)
+            update.clicked()
+            compare(testContext.rrPlacesUpdateUids(), [savedSystems.get(0).uid, savedSystems.get(1).uid])
+            verify(sheet.rrUpdateStarted)
+        }
+        // An update started elsewhere (a Home card) saves this group's sites while the keyboard is on one of them
+        // here: each save rebuilds the rows, and the keyboard stays on the same control of that site's row, wherever
+        // the row moves. A site that goes leaves it on the first site.
+        function test_refresh_from_elsewhere_keeps_the_keyboard() {
+            prefs.setLocationFix(41, -91, Date.now(), 10)
+            sheet.openFor(0)
+            compare(sheet.rows, [1, 0], "South is nearer")
+            var southUid = savedSystems.get(1).uid
+            var avoid = findChild(sheet, "siteAvoid1")
+            avoid.forceActiveFocus()
+            verify(avoid.activeFocus)
+            verify(rrPlaces.updateFromRadioReference(["elsewhere"]), "an update from a card")
+
+            // A save moves North nearer: the rows are rebuilt and reordered.
+            savedSystems.update(0, {siteLat: 41, siteLon: -91})
+            compare(sheet.rows, [0, 1])
+            tryVerify(function () { return findChild(sheet, "siteAvoid1").activeFocus }, 1000,
+                      "South's Avoid keeps the keyboard")
+            verify(findChild(sheet, "siteAvoid1") !== avoid, "a rebuilt row")
+
+            var pin = findChild(sheet, "sitePin1")
+            pin.forceActiveFocus()
+            savedSystems.update(1, {siteName: "South Renamed"})
+            testContext.finishRrPlacesUpdate(2, 0)
+            tryVerify(function () { return findChild(sheet, "sitePin1").activeFocus }, 1000,
+                      "two rebuilds in one turn: South's Pin keeps it")
+            compare(savedSystems.get(1).uid, southUid)
+
+            // South leaves the group: the first site takes the keyboard.
+            savedSystems.remove(1)
+            compare(sheet.rows, [0])
+            tryVerify(function () { return findChild(sheet, "siteChoice0").activeFocus }, 1000,
+                      "the first site has it")
+            verify(sheet.visible)
+        }
+        // Update from the keyboard: it disables while the update runs, so the keyboard goes to the first site. When a
+        // saved site reorders the rows (rebuilt, so the focused row goes), it stays with that site, wherever its row
+        // lands, through rebuilds and the update's end in one turn.
+        function test_update_keeps_the_keyboard() {
+            prefs.setLocationFix(41, -91, Date.now(), 10)
+            savedSystems.update(1, {hasSitePos: false})
+            sheet.openFor(0)
+            var update = findChild(sheet, "siteUpdateFromRr")
+            var firstSite = function () { return findChild(sheet, "siteChoice" + sheet.rows[0]) }
+            compare(sheet.rows, [0, 1])
+            update.forceActiveFocus()
+            verify(update.activeFocus)
+            keyClick(Qt.Key_Space)
+            verify(rrPlaces.updating)
+            tryVerify(function () { return firstSite().activeFocus }, 1000, "the first site has the keyboard")
+            testContext.finishRrPlacesUpdate(0, 1)
+            verify(update.enabled)
+            verify(firstSite().activeFocus, "a site that stays keeps it")
+
+            update.forceActiveFocus()
+            keyClick(Qt.Key_Space)
+            tryVerify(function () { return firstSite().activeFocus }, 1000)
+            // South gains a position nearer than North: the rows reorder, and Update is no longer offered.
+            savedSystems.update(1, {hasSitePos: true, siteLat: 41, siteLon: -91})
+            compare(sheet.rows, [1, 0])
+            verify(!update.visible)
+            var north = function () { return findChild(sheet, "siteChoice0") }
+            tryVerify(function () { return north().activeFocus }, 1000, "North keeps it, now second")
+            testContext.finishRrPlacesUpdate(1, 0)
+            verify(north().activeFocus)
+
+            // The rows rebuild and the update ends in one turn (no event in between): the keyboard, lost with the
+            // focused row, goes back to that site's row.
+            savedSystems.update(0, {hasSitePos: false})
+            update.forceActiveFocus()
+            keyClick(Qt.Key_Space)
+            tryVerify(function () { return firstSite().activeFocus }, 1000)
+            compare(sheet.rows, [1, 0])
+            var south = findChild(sheet, "siteChoice1")
+            verify(south.activeFocus)
+            savedSystems.update(1, {hasSitePos: false})
+            compare(sheet.rows, [0, 1], "rebuilt: the focused row went")
+            testContext.finishRrPlacesUpdate(0, 1)
+            tryVerify(function () { return findChild(sheet, "siteChoice1").activeFocus }, 1000, "South has it again")
+            verify(findChild(sheet, "siteChoice1") !== south)
+            verify(update.enabled)
+            verify(sheet.visible)
         }
         function test_avoid_toggle() {
             sheet.setAvoid(1, true)

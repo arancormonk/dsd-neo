@@ -23,8 +23,10 @@ Item {
             return result;
         }
         // Issue #646: each add action heads its own Listen tab's section.
-        readonly property var actions: [{tab: "systems", button: "addSystemButton", card: "savedSystemTitle"},
-            {tab: "scanLists", button: "addScanListButton", card: "scanListCard"}]
+        // Systems' search field and Sort come between its action and its cards.
+        readonly property var actions: [{tab: "systems", button: "addSystemButton", card: "savedSystemTitle",
+                between: ["systemsSearch", "systemsSortPill"]},
+            {tab: "scanLists", button: "addScanListButton", card: "scanListCard", between: []}]
         function show(tab) {
             home.showSection(tab);
             settle();
@@ -204,8 +206,8 @@ Item {
                 }
             }
         }
-        // Issue #646: Tab goes from the current tab to its section's action, then to the section's first card;
-        // Backtab returns; Return, Enter and Space each activate it.
+        // Issue #646: Tab goes from the current tab to its section's action, then (on Systems past the search field
+        // and Sort) to the section's first card; Backtab returns; Return, Enter and Space each activate it.
         function test_keyboard_order_and_activation() {
             populate(1);
             for (var scale of [1, 1.6]) {
@@ -218,9 +220,14 @@ Item {
                     keyClick(Qt.Key_Tab);
                     verify(button.activeFocus, "Tab from the tab reaches " + action.button);
                     keyClick(Qt.Key_Tab);
+                    for (var stop of action.between) {
+                        verify(Ui.Navigation.contains(item(stop), root.Window.window.activeFocusItem), "then " + stop);
+                        keyClick(Qt.Key_Tab);
+                    }
                     var next = root.Window.window.activeFocusItem;
                     verify(Ui.Navigation.contains(firstCard(action), next), "then the first card: " + next);
-                    keyClick(Qt.Key_Backtab);
+                    for (var back = 0; back <= action.between.length; ++back)
+                        keyClick(Qt.Key_Backtab);
                     verify(button.activeFocus);
                     for (var key of [Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space])
                         keyClick(key);

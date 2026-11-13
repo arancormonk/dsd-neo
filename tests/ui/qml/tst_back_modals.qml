@@ -128,10 +128,15 @@ Item {
             cancelled.target = null;
         }
         function openManage() {
-            var opener = visualChild(item("homeScreen"), function (entry) {
-                return entry.icon === "more" && entry.accessibleName === "More options for County radio" && entry.visible;
-            });
-            verify(opener !== null);
+            // The cards follow a change to the saved systems on the next turn.
+            wait(0);
+            var opener = null;
+            tryVerify(function () {
+                opener = visualChild(item("homeScreen"), function (entry) {
+                    return entry.icon === "more" && entry.accessibleName === "More options for County radio" && entry.visible;
+                });
+                return opener !== null;
+            }, 1000, "County radio's More");
             opener.forceActiveFocus();
             tap(opener);
             var sheet = visualChild(item("homeScreen"), function (entry) {
@@ -247,6 +252,22 @@ Item {
         function test_home_back(data) {
             dismiss(openManage(), data.method);
             compare(savedSystems.count, 1);
+        }
+        // Listen's Sort sheet goes with Back like every Home sheet, the keyboard back on the pill.
+        function test_home_sort_back_data() {
+            return test_home_back_data();
+        }
+        function test_home_sort_back(data) {
+            var home = item("homeScreen");
+            tryCompare(savedSystemCards, "totalCount", 1);
+            var pill = item("systemsSortPill", home);
+            pill.forceActiveFocus();
+            tap(pill);
+            var sheet = item("systemsSortSheet", home);
+            tryCompare(sheet, "visible", true);
+            verify(home.managementSheetOpen, "Home stays inert under it");
+            dismiss({sheet: sheet, opener: pill}, data.method);
+            compare(prefs.systemsSort, "added", "nothing chosen");
         }
         function test_home_edit_data() {
             return [{tag: "unchanged", change: "none"},
@@ -654,6 +675,7 @@ Item {
             verify(!notice.visible);
         }
         function test_grouped_menu_sites() {
+            testContext.setRadioReference("available", true);
             var keys = function (menu) {
                 return menu.actions.map(function (action) { return action.key; }).join();
             };
@@ -664,7 +686,8 @@ Item {
             savedSystems.add({name: "County radio", sourceType: "usb", freqMhz: "852.5",
                 rrSid: 12, rrSiteId: 101});
             menu = openManage().sheet;
-            compare(keys(menu), "edit,sites,pin,remove");
+            // A RadioReference site group also offers Update from RadioReference.
+            compare(keys(menu), "edit,sites,pin,rrUpdate,remove");
             tap(item("sitesSavedSystemButton", menu));
             verify(!menu.visible);
             tryCompare(item("siteChooserSheet"), "visible", true);

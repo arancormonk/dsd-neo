@@ -363,6 +363,11 @@ ImportedFilesModel::setReplaceFile(ReplaceFile replaceFile) {
     m_replaceFile = std::move(replaceFile);
 }
 
+void
+ImportedFilesModel::setBeforeUserReplace(BeforeUserReplace hook) {
+    m_beforeUserReplace = std::move(hook);
+}
+
 /*
  * The app's service is destroyed before the models, so this reaches only a service that outlives the model (or is its
  * child, not yet destroyed): no probe goes on reading for a model that is gone. Their commits find no model and
@@ -1023,6 +1028,16 @@ ImportedFilesModel::reclaimRevisions(const QList<BundleRevisions>& bundles) {
 
 QVariantMap
 ImportedFilesModel::replaceRowFile(int row, const QVariantMap& staged, bool refresh, const QStringList& created) {
+    // A RadioReference file replaced with the user's own bytes no longer describes the site the rows naming it came
+    // from (a file the user picked never did, so its update asks nothing of them). Those rows let go of it first, as a
+    // removal clears references before the file goes: a failure here changes nothing, and one after leaves the rows
+    // cleared over the file's old bytes, which is safe.
+    const Row& current = m_rows[row];
+    const bool fromRadioReference = current.origin == QLatin1String("radioreference") || current.rrSid > 0;
+    if (!refresh && fromRadioReference && m_beforeUserReplace && !m_beforeUserReplace(current.path)) {
+        discard_created(created);
+        return failure(QStringLiteral("save"));
+    }
     auto next = m_rows;
     Row& stored = next[row];
     stored.importedAt = realtimeSecsSinceEpoch();

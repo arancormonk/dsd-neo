@@ -18,6 +18,15 @@ Rectangle {
     property string error: ""
     property string unit: ""
     property var nextField: null
+    // Enter with no next field hides the keyboard; by default the field also
+    // lets go of the keyboard focus. A field whose results show as you type (a
+    // search) keeps it, so the keyboard user stays in the field.
+    property bool keepsFocusOnEnter: false
+    // The action the on-screen keyboard's Enter key shows and reports
+    // (EnterKey.type; Android's imeOptions). The default leaves it to Qt; a
+    // search sets Qt.EnterKeySearch, so the keyboard never offers Next, which
+    // Qt turns into a Tab to the next control.
+    property int enterKeyType: Qt.EnterKeyDefault
     property alias echoMode: input.echoMode
     signal accepted
     Accessible.ignored: true
@@ -64,6 +73,7 @@ Rectangle {
         selectionColor: Qt.alpha(Theme.cyan, 0.35)
         selectedTextColor: Theme.textPrimary
         clip: true
+        EnterKey.type: control.enterKeyType
         // Held while it has the focus (see OutlineButton).
         activeFocusOnTab: (Navigation.allows(control) && control.enabled) || activeFocus
         Accessible.role: Accessible.EditableText
@@ -83,12 +93,30 @@ Rectangle {
         Accessible.passwordEdit: echoMode === TextInput.Password
         readonly property bool navigationAllowed: Navigation.allows(control)
         Accessible.ignored: !navigationAllowed || !visible
+        // A field that keeps the focus takes Enter and Return (the keyboard's
+        // action key, a hardware keyboard's Enter or its keypad's), pressed
+        // and released: TextInput lets both through after `accepted`, and on
+        // Android a hardware Enter that went on moved the keyboard focus to
+        // the next control, where the next letter typed was lost. After the
+        // item, so `accepted` still comes from TextInput itself.
+        Keys.priority: Keys.AfterItem
+        Keys.onPressed: function (event) {
+            if (control.keepsFocusOnEnter && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter))
+                event.accepted = true;
+        }
+        Keys.onReleased: function (event) {
+            // A key pressed on a control and let go in the field ends its hold.
+            Navigation.activationRelease(event);
+            if (control.keepsFocusOnEnter && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter))
+                event.accepted = true;
+        }
         onAccepted: {
             control.accepted();
             if (control.nextField)
                 control.nextField.input.forceActiveFocus();
             else {
-                focus = false;
+                if (!control.keepsFocusOnEnter)
+                    focus = false;
                 Qt.inputMethod.hide();
             }
         }

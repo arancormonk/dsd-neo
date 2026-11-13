@@ -3705,6 +3705,12 @@ suite runs under this compiler.
     `src/runtime/curl_common.h`, alongside `rdio_export.c`'s use of it.
     `dsd_rr_site::has_position` validates latitude/longitude independently of the optional coverage radius;
     `(0,0)` is a missing-position placeholder. Invalid coverage becomes zero and never erases valid coordinates.
+    Places: `dsd_rr_trs_details` keeps the system's `Trs.sState` and `Trs.sCounty` ids (`state_ids`, `county_ids`;
+    strict positive whole numbers, at most 64 and 512 kept, only arrays directly under the result) and
+    `dsd_rr_site::county_id` the site's `siteCtid` (0 when absent, nil or not positive). `getStateInfo` returns a
+    `dsd_rr_state_info` (the state's id and name, kept even when it lists no counties, and its counties with the state
+    copied down) through `dsd_rr_get_state_info()`/`dsd_rr_fetch_state_info()`. Fixtures and their provenance are in
+    `tests/fixtures/radioreference/NOTES.md`; tests are in `RUNTIME_RR_SOAP`.
     Each importable kind is one row of `k_protocols[]` in `radioreference/rr_generate.c` (trunked or
     conventional, channel-map need, decode flags, sidecar token, short name, talkgroup-ID ceiling `id_max`, read
     through `dsd_rr_protocol_id_max()`, 0 = none), mirrored by `k_decode_modes[]` in `rr_import.c`. New kinds go
@@ -12146,7 +12152,8 @@ Qt Quick frontend (`src/ui/qt`):
   the strip, the section restore, then plain focus reveal (none starts while a restore is owed). `resetScrollMemory()`
   forgets the places and anything owed, for tests that reuse one Home. The body holds the status cards (backup result,
   USB details, failure, replay completion) on every tab, then three section Columns, `listenSystemsSection` (Add a
-  system and hint, saved-system cards), `listenScanListsSection` (Add a scan list, `scanListsEmptyHint`, scan-list cards) and
+  system and hint, the search and sort controls, saved-system cards), `listenScanListsSection` (Add a scan list,
+  `scanListsEmptyHint`, scan-list cards) and
   `listenExploreSection` (the Signal search row, then `exploreCard`). Each is `visible` and `enabled` only while its
   tab is current, and its height is `shown ? implicitHeight : 0`, keyed on the tab, never on `visible` (B1). Disabled,
   a hidden section's controls take no focus, key or press (Qt keeps focus and key delivery on an item that only goes
@@ -12223,15 +12230,18 @@ Qt Quick frontend (`src/ui/qt`):
   `tst_home_pinned.qml` through Main), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_text_reach.qml` reaches every pin, More, the
   title once and each sheet row; `tst_a11y_scan_churn.qml` changes pinned targets behind the wizard with no event from
   the strip or the closed sheet).
-- Listen body layout (issue #646 B1, B8, B3). In `qml/HomeScreen.qml` a saved-system card is shown on its own condition,
-  `readonly property bool shown` (no sites, or the first of its group), and its height is `shown ? fullHeight : 0`,
-  never keyed on `visible`, which also goes false while Main hides Home: a collapsing card would cut the body's range
-  and Flickable would clamp the scroll position. `fullHeight` follows the content: the label column is centred 10 px
+- Listen body layout (issue #646 B1, B8, B3). In `qml/HomeScreen.qml` one saved-system card is built for each row of
+  `savedSystemCards` (see "Saved-system cards" below), which already holds one row per group, so a card has no
+  condition of its own to be shown or collapsed: its height is `fullHeight`, and a row that leaves the model goes with
+  its delegate. The section stays keyed on its tab, never on `visible`, which also goes false while Main hides Home:
+  a collapsing section would cut the body's range and Flickable would clamp the scroll position. `fullHeight` follows
+  the content: the label column is centred 10 px
   above the middle of the actions' box, `[0, actionsBottom + cardPadding]` (More at the top, Play at
   `minimumTouchSize + 6`, the site button centred on Play; 122 px at normal text), never above the top padding; the
   refresh hint takes the full width 8 px below the lower of labels and actions; the card ends `cardPadding` below the
   lowest. A card without the hint is 122 px at normal text, as before, and grows at large text. The site button lines up
-  against Play's own condition (`playShown`), not Play's `visible`, so a hidden card's site button stays clear of Play.
+  against Play's own condition (`playShown`, the card's `playUid` being set), not Play's `visible`, so a hidden card's
+  site button stays clear of Play.
   Keyboard focus moving onto a control in the body restarts the owned `revealFocusTimer`, which reveals
   `activeFocusItem` through `Theme.revealFocus(scrollBody, scrollBody.contentItem, item)`; the timer lets a stronger
   scroll writer cancel a pending reveal (the precedence is under Listen tabs, above). `Theme.revealFocus` maps the
@@ -12242,6 +12252,107 @@ Qt Quick frontend (`src/ui/qt`):
   640 wide at 1.6 with the tabs in the body (where they are body stops kept in view), the
   helper with an offset column, the site button held while hidden; the scroll-across-tabs cases in
   `tst_home_dongle_status.qml` and `tst_home_pinned_strip.qml` also check after a layout while hidden).
+- Listen Systems search and sort (`qml/SavedSystemsControls.qml`, `objectName` `savedSystemsControls`; inside
+  `listenSystemsSection` of `HomeScreen.qml`). The controls show while at least one system is saved. They hold the
+  search row (a `PlexTextField` "Search saved systems", `Accessible.searchEdit`, 250 ms debounce, a "Clear search text"
+  `IconButton` over its right end with `finishesEditing: false`, so a tap while typing clears the text and leaves the
+  keyboard in the field, and the keyboard's Enter on the × itself hands it to the field), the Sort pill (`FilterPill` "Sort: %1", accessible name "Sort systems, %1", opening a
+  `ChoiceSheet` that marks the current choice; Nearest is offered only when `decoderHost.locationSupported`), and the
+  notices under them: the count line ("%1 of %2 systems", with Clear search), the no-match card ("No saved systems match
+  “%1”", with Clear search), the location line, the place notice and the update status. Stack rule: the field and pill
+  share a row only while the pill takes at most 40% of it and the field keeps 180 px, else the pill goes under the
+  field; heights are keyed on each part's own `shown`, never on `visible` (#646 B1). A stored `nearest` on a build or
+  phone without a location shows as Name and the preference is left alone. Each search that lands is announced once
+  (`Navigation.announce`, from the card model's first `rebuilt` after the query is set, which is the rebuild that
+  applied it, with its counts; never from a `Qt.callLater`, which joins any batch already queued and so can run
+  before that rebuild; skipped while Home is hidden, a sheet covers it or another tab is current, and never repeated
+  for the same text). Nearest without a fix says "Nearest needs your
+  location" and "Showing names until a location arrives" with a flat "Use my location" action; with a fix it says
+  "Using your location from %1" with "Update location". Both go through the site chooser's request contract
+  (`radioReference.nextLocationRequestId()`, `decoderHost.requestSiteLocation`; a newer request elsewhere supersedes
+  it, hiding Home or leaving Systems cancels it, a late or retired answer is ignored), and call
+  `savedSystemCards.markLocationRequested()` right before a request and `clearLocationRequest()` when it fails, is
+  cancelled or answered, so only a fix the user asked for here reorders a screen reader's cards. Enter in the field
+  hides the keyboard and leaves the focus in it (`PlexTextField.keepsFocusOnEnter`: the field also takes Return and
+  Enter, pressed and released, after TextInput's own `accepted`, which lets both through; on Android a hardware
+  keyboard's Enter that went on moved the focus to the × and the next letter was lost). The field declares its
+  keyboard action as Search (`PlexTextField.enterKeyType`, the input's `EnterKey.type`, default `Qt.EnterKeyDefault`
+  for every other field), so Android's keyboard shows a search key (`IME_ACTION_SEARCH`), never Next, whose Enter Qt's
+  input connection turns into a Tab to the ×. In Place or Nearest
+  order the place notice shows `rrPlaces.unplacedText` ("%1 saved systems have no place yet") with "Update from
+  RadioReference", which updates only those cards' rows (`rrPlaces.unplacedUids()`); the card menu offers the same for
+  a card with RadioReference sites (`rrUpdate`), all of its rows, and the site chooser's no-coordinates note offers it
+  too, for the group's rows. All of these (and the notice line) are hidden when `radioReference.available` is false (a
+  build without libcurl or Expat); the chooser's note then drops its pointer to Update. Signed out, `updateFromRadioReference()` returns false and Home (or the
+  chooser) emits `openRadioReferenceAccount`, which `Main.qml` answers by opening the account screen. One update runs
+  at a time: while `rrPlaces.updating` the place notice is hidden, the chooser's button is disabled, and the card
+  menu's `rrUpdate` row is disabled with "Available when the running update ends" as its description (`ActionMenu`
+  also takes `enabled` and `description` as functions, read in the row's bindings, so the open menu enables it in
+  place when the update ends); Home's and the chooser's `updateFromRadioReference()` return without asking the
+  service, which refuses such a call anyway. While it runs the
+  update shows `rrPlaces.progressText` ("Updating %1 of %2") with Cancel; its summary ("Updated %1 systems. %1 could
+  not be reached.") is announced once and stays until Systems is left. Notice actions use the opt-in `flat` variant of
+  `OutlineButton` (no border or fill, cyan label), each at the end of its line or under it when both do not fit, with
+  48 dp targets that never meet. `Repeater.onItemRemoved` notes a card that held the keyboard, as does a card row
+  that becomes held; a 0 ms timer then moves focus to the search field, or to Add a system when nothing is saved (and
+  waits while a sheet is open). A part with the keyboard that goes, held with a screen reader or hidden without one, is
+  disabled or hidden with it, and Qt drops the keyboard (`onActiveFocusChanged` sees it lost while not `shown`): Play
+  or the site button that the row's card now lacks hands it, through the same timer, to that row's More options, which
+  every card has (else the search field); a control over the cards that goes (the ×, Clear search, a notice's action,
+  e.g. the place notice once nothing is left unplaced) hands it to the search field (`keyboardLeft`), as does a notice
+  action disabled with the keyboard on it ("Use my location" or "Update location" while its request runs; the keyboard
+  stays in the field when the answer comes). The keyboard also follows Update to Cancel and back. With a screen reader the cards' Repeater rows are positional (the card model's `held` rows, above): a sort, search or location renames each row for
+  the card at its place, so the keyboard stays on the pill, the field or the row it was on, which then reads the card
+  now there. A held row is drawn at no opacity, its parts leave the tree with empty names (as the Network sheet's held
+  rows, "Qt QML editing convention"), it takes no press or keyboard (`parked`, set once the keyboard was handed on),
+  and `listenSystemsSection` ends at the bottom of the last card shown (`shownBottom`), so held rows take no scroll
+  room and holding one moves nothing. A part one card has and another lacks (the section heading, the place and
+  receiver lines, the refresh hint, the site button, Play; over the cards the ×, the count, location and place lines
+  and the no-match card) is shown or hidden with `visible` without a screen reader. With one (`entry.positional`,
+  `SavedSystemsControls.holdsParts`) it stays visible and is held instead, part by part as a held row is: transparent,
+  out of the tree and unnamed, disabled (no Tab stop, and a tap reaches what is under it: the field under the ×), and
+  with no height where a column lays it out (a plain slot `Item` takes the height, so the text keeps its own and no
+  binding loop forms). A row's next card showed or hid ~140 such parts per sort at 300 cards, each a show or hide that
+  had Qt 6.11.3's Android bridge fetch the scroll body, with every card under it, again: TalkBack was silent 73-109 s
+  after each sort on the emulator. Nothing a positional change raises then tells Android its copy of the tree is
+  stale (renames, held rows and held parts raise no show or hide), and TalkBack read a row's last card, and its focus,
+  which Qt's bridge carries out as the keyboard focus (`focusAction_helper`), landed on parts that had gone, so Tab
+  skipped controls. So Home notes each such change (a row's `key` or `held`, which parts its card shows, the shown
+  count, the controls' `partsShown`, a notice's second line included) and, once the cards' rebuild that settles it
+  has been applied (`SavedSystemCards::rebuilt`), shows or hides `savedSystemsTreeRefresh` once: a transparent, unnamed, unfocusable node under the window's content item, made
+  on the first change, as each ModalSheet's refresh node, which has the bridge read the window's tree again at the
+  cost of the window's few children. A card gains or loses a part in place too, with no other change to the list (an
+  automatic place-name lookup after an import naming a place in Order added, a site avoided), so each row lists the
+  parts a card can lack (`lackableParts`), each with its own `shown`, which its drawing, gates and holding read, and
+  notes a change to which are shown (`partsShown`): one source, so a part added later cannot be missed
+  (`test_screen_reader_holds_the_parts_a_card_lacks` fails for a held or `shown` part not listed). A change to an
+  already shown part's words only is a rename, which the bridge sends on, and refreshes nothing. A sort, a search and
+  a Nearest reorder at 300 cards raise no show or hide in the section and that one event. The Sort sheet hands the keyboard focus, and so TalkBack's, back to the pill:
+  `ChoiceSheet.open()` reads its opener before showing, as `ModalSheet.open()` does (the body a management sheet
+  disables holds the pill, which had lost the focus when the sheet read it, and the focus went to Home itself, where
+  TalkBack started from the top). A sort chosen with Enter or Space hands the keyboard back while the key is still
+  down; the pill never took that key's first press, so its repeats (`Navigation.activationPress()`) and release
+  leave the sheet closed. A sort chosen with TalkBack's Alt+Enter is TalkBack's click; the same Alt+Enter that Android
+  passes on late reaches the pill and is taken without acting (screen reader on), so the sheet stays closed. A card that leaves under a sheet leaves the sheet no opener, so Home hands the
+  keyboard on after the sheet's own deferred hand-back (`settleSystemsFocusLater()`). A card whose title another shown
+  card has names its receiver on a line of its own under the source line, which wraps, so the address is never cut at
+  phone width or large text. In Nearest order the place line reads the distance first ("6.9 mi · Johnson,
+  Iowa"), so a long place elides and the distance stays. `revealSystemsTop()` scrolls up to the search row after a sort or a
+  search that lands, only while Home is visible on Systems. `SiteChooserSheet.qml`'s note reads "No coordinates. Use
+  Update from RadioReference to check for new location data." beside its own button. The sheet keeps the keyboard's
+  place as it moves (`keyboardPlace`: a site's row by uid and which of its controls, or another control); when a rows'
+  rebuild (any saved-site change, whoever started the update) or a control that disables or hides leaves it on no
+  control here, `restoreKeyboard()` puts it back on the same control of that site's row, else that row's first, else
+  (the site gone, or Update disabled) the first site's, else Update. The site button's accessible name now includes its site
+  count. `ChoiceSheet.open()` takes an optional fourth `current` argument, and reads the opener before the sheet shows
+  (an open sheet just takes the new choices). Tests:
+  `UI_QT_QML_CALL_LISTS` (`tst_home_systems_search_sort.qml`, with `tst_home_tabs`, `tst_home_layout_fixes`,
+  `tst_home_pinned`, `tst_site_chooser_sheet`, `tst_wizard_sites`, `tst_listen_tabs_flows`), `UI_QT_QML_BACK_MODALS`
+  (Back closes the sort sheet), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_scan_churn.qml`: no show or hide in the section and
+  one tree refresh per sort, search and Nearest reorder at 300 mixed cards, one for a place named in place and none
+  for its rename (`test_m4_saved_systems_part_shown_in_place_refreshes_the_tree`), and the Sort sheet's focus back on
+  its pill as TalkBack chooses, History's filter sheet the control; the late Alt+Enter after a choice or Cancel,
+  `test_m5_late_screen_reader_keys_leave_the_sort_sheet_closed`; `tst_a11y_text_reach.qml`).
 - Pin to Listen (issue #801 D4/D5, B3). Every source offers the same action from `ListenPins::action(kind, uid)`
   (`{pinned, text, accessibleName, enabled, description}`: "Pin to Listen"/"Unpin from Listen", "Pin <label> to Listen";
   not pinned while full, disabled with `Text::FullRefusal` as its description). In `qml/HomeScreen.qml` `pinAction(kind,
@@ -13556,8 +13667,8 @@ Qt Quick frontend (`src/ui/qt`):
   `preeditText` as a commit and resets the input method. Callers: `activate()` of `OutlineButton`, `GradientButton`,
   `IconButton`, `DashedActionButton` and `BottomNav` (commit and finish editing: focus leaves the text field so
   `editingFinished` drafts, such as the profile editor's fallback algorithm, update before the action reads them; an
-  `OutlineButton` with `finishesEditing: false` only commits the word, as the RadioReference password's Show and "Check
-  account" do) and of `DecodeChip`, `FilterPill`, `SegmentedControl` segments and `DisclosureRow` (commit only);
+  `OutlineButton` or `IconButton` with `finishesEditing: false` only commits the word, as the RadioReference
+  password's Show and "Check account" and the Systems search field's × do) and of `DecodeChip`, `FilterPill`, `SegmentedControl` segments and `DisclosureRow` (commit only);
   `ModalSheet.requestDismiss()`; `Navigation.back()` before its focus clear; `Navigation.clearInput()` before it takes
   the focus away (#831), so a sheet or layer that opens or closes by itself, as the incoming-file sheet does when a file
   arrives while a field holds a composing word, never leaves a field that saves on `editingFinished` to save it without
@@ -13902,7 +14013,11 @@ Qt Quick frontend (`src/ui/qt`):
   plan. `WizardScreen.applyRadioReference()` answers both CSV rows from the import: a supplied file replaces the row,
   and an absent one clears a file an earlier import generated (`chanCsvGenerated`/`groupCsvGenerated`, seeded on an
   edit from the library row's `radioreference` origin), keeping a hand-picked file only while editing that saved
-  system; a per-site batch's rows carry their own (possibly empty) paths. `tetraRateError()` holds the wizard's tune
+  system; a per-site batch's rows carry their own (possibly empty) paths. `commit()` saves a per-site batch with one
+  `savedSystems.addAll()` (all sites or none) and reports its first row; a draft site whose frequency, decode flag or
+  channel/group file was edited drops the keys `rr_provenance_cleared()` clears, and a single import's RadioReference
+  ids, position and `place` are copied only while those fields still match the import (`place` without a site id for
+  a conventional multi-repeater import). `tetraRateError()` holds the wizard's tune
   step for `-fT` on an Airspy or off 72 kHz, and a source switch to an Airspy keeps `-fT` (issue #803;
   `tst_wizard_sites.qml`, `tst_wizard_decode_chip.qml`, `tst_radioreference_screen.qml`). See
   `docs/radioreference-import.md`. Nearby import uses `DecoderHost` request IDs and
@@ -13923,6 +14038,53 @@ Qt Quick frontend (`src/ui/qt`):
   the same saved UID restart as a manual site switch; Main waits for Idle and resolves the UID again. Location
   completion itself never starts a session. Tests: `ANDROID_LOCATION_JVM`, `RUNTIME_RR_SOAP`,
   `UI_QT_RADIO_REFERENCE`, `UI_QT_QML_CALL_LISTS` (`tst_site_chooser_sheet.qml`, `tst_site_restart.qml`).
+  Places: the model keeps the system's `Trs.sState`/`Trs.sCounty` ids in `systemDetails` (`stateIds`, `countyIds`) and
+  each site's `TrsSite.siteCtid`; every importable plan, a per-site batch's plans and `performImport()`'s result (and
+  its batch rows) carry `place` = `rr_site_place()`: the counties of the sites the plan took (matched by site id; a
+  conventional list's chosen repeaters only), the system's states as `candidateStates`, and the state outright when
+  there is exactly one; no names. With no county or state from RadioReference the `place` is present and empty, so an
+  edit-mode re-import of another site at the same tuning clears the old site's place (`update` takes a present empty
+  `place` as clear, an absent one as keep). A completed load sends `systemPlaceIdsReady(stids)` (never `systemChanged`).
+  `rr_place_service.{h,cpp}` (`RrPlaceService`, the `rrPlaces` context object, built in `qt_ui.cpp` over the model and
+  `savedSystems`) names them, isolated from the import screen: its own client and transport
+  (`setTransportForTests()`), one request in flight, replies marshalled to the GUI thread with a generation that every
+  stop bumps, and only the account borrowed (`RadioReferenceModel::fillAuth()`, public but not invokable, filled into
+  a stack `dsd_rr_auth` that is zeroed right after the client copies it; nothing logged). `resolveStates(stids)` (queued from `systemPlaceIdsReady`; the first 8 positive ids) applies a known state
+  from its process cache and looks up the others with `getStateInfo`, applying each answer with
+  `SavedSystemsModel::applyPlaceNames()`; a failure is recorded per state (`stateFailed()`) and asked again only by a
+  later call, and a save that failed is retried at the next resolve from the cache. It installs its cache as the
+  saved systems' `setPlaceNameCache()` fill (`fillPlaceNames()`), so a row saved before or after the names arrive ends
+  named. Every place commit (add, update, refresh) first keeps the names and county links the row already had for the
+  same ids (an import's place is ids only, so a re-import of the same site never loses them), then runs the fill when
+  its ids changed or it still lacks a name. Any `credentialsChanged` stops every request and drops the cache. `updateFromRadioReference(uids)` (false,
+  changing nothing, while an update runs; false while signed out: open the account screen, or with no saved systems;
+  otherwise `updateFinished(updated, unreachable)` follows once, at once with no `updating`/`progressText` change when no row can be updated) reads each
+  distinct system of the rows that are sites (`getTrsDetails` for `sState`, then `getTrsSites`) and applies, through
+  `SavedSystemsModel::refreshSites()`, the site name, position and place ids to every row still on that system and
+  site, keeping the names it already had for unchanged ids; a site RadioReference no longer lists, an unanswered system
+  or a failed save leaves its row not updated. Each row's (rrSid, rrSiteId) is taken as the update begins
+  (`Update::siteOf`), and a row that no longer has that exact pair (removed, edited onto another system, re-imported
+  as another site of the same one) is no longer the update's (`stillTarget()`): it is not refreshed, not looked up by
+  the names step and counts as neither, whether its request succeeds or fails. Then it looks
+  up the states any of the rows' places still lacks names for (a conventional list with a place and no site is not
+  updated when one of its states failed, or saving the names this step applied failed; updated when the step looked
+  up or applied one of them, else neither). Every
+  count is in Listen's cards (`card_key()`: the row's site group, or its uid in none, taken as the update begins):
+  `progressText` counts the cards whose system has been read, and a card counts once in the outcome, updated when any
+  of its rows was, else unreachable when one of them was not. `updating`, `progressText` ("Updating %1 of %2"),
+  `summaryText` ("Updated 1 system." / "Updated %1 systems.", then " %1 could not be reached."), `unplacedCount` (cards
+  with a row that is a site or has a place and shows no named state; recounted on row inserts, removals, resets and a
+  `dataChanged` whose roles are empty or include place, the RadioReference ids or the file path) and `unplacedText`
+  ("1 saved system has no place yet" / "%1 saved systems have no place yet", empty at 0) are its properties;
+  `unplacedUids()` lists every row of those cards, in row order, for the place notice; `cancelUpdate()` stops only the update's own
+  requests (its system reads and the states no `resolveStates()` call also asked for), so a load's lookups carry on,
+  and ends the update with what was saved. A step that saves rows checks that its update survived the rows' signals.
+  QML fixtures publish `RrPlacesFake` (the same five properties, pinned by `UI_QT_RR_PLACE_SERVICE`, and an
+  `unplacedUids()` a case scripts; `missingContextKeys()` checks `rrPlaces` reads). Tests: `UI_QT_RADIO_REFERENCE`
+  (place per import shape, the signal), `UI_QT_RR_PLACE_SERVICE` (names, order of names and saves, per-state failure,
+  failed-save retry, sign-out, Update from RadioReference incl. partial success, moved, re-imported, removed and unlisted rows, a call while
+  one runs refused, counts in cards, the notice's uids, cancels,
+  and failed lookups leaving the import screen's lists, busy, system, plan, status and a library refresh alone).
 - `json_store.{h,cpp}` holds the Qt models' JSON-array stores in the app data root (`json_store_root()`): saved
   systems, scan lists, imported files, decryption profiles, call history and its seen map, Signal search ranges. A store
   that could not be read whole is never written over (issue #828):
@@ -14088,19 +14250,112 @@ Qt Quick frontend (`src/ui/qt`):
   names, the Signal search files, a scratch and an in-memory settings file), `tst_home_store_notices.qml` (labels per
   store, kept name after the move, dismissal and announcements across a rebuilt Home, gating, both scratch-settings and
   both default-settings sentences, 360 px at the largest text).
-- `saved_systems_model.{h,cpp}` (`savedSystems`, `saved_systems.json`) writes save-first (issue #801): `add`,
-  `update`, `remove`, `setAvoidSite`, `clearCsvPath` and `touch` build the next rows, save them, and only then change
-  the model and signal. A failed save changes nothing in memory, sends no signal and returns false (`touch` stays
-  `void`: recency is advisory, and an unsaved stamp stays out of memory too). `clearCsvPath` returns true when nothing
-  names the path. So `rowsAboutToBeRemoved`/`rowsRemoved` (then `sitesChanged`, `countChanged`,
-  `mostRecentRowChanged`) mean the removal is on disk, and whatever follows rows out of the model can prune on them.
-  A site is grouped while `rrSid > 0` and `rrSiteId > 0` (`site_groups.cpp`). An edit of its frequency, decode flag or
-  a CSV field, or the removal of a library file it names, zeroes both and also clears `avoidSite`, because only the
-  group's `SiteChooserSheet` can lift an avoid. Load clears `avoidSite` on any row outside a group and saves that with
-  the UID repair (one warning when that save fails; the clear repeats at the next load). A lone RadioReference site
-  keeps its avoid: its "1 site" chooser lifts it. A replay copy in `replays/` a row gains is adopted before the save
-  and one no row names after a saved edit or remove is released (`replay_store.{h,cpp}`). Tests: `UI_QT_PERSISTENCE`,
-  `UI_QT_REPLAY_STORE`.
+- `saved_systems_model.{h,cpp}` (`savedSystems`, `saved_systems.json`) writes save-first (issue #801): `add`, `addAll`,
+  `update`, `remove`, `setAvoidSite`, `clearCsvPath`, `invalidatePathProvenance`, `applyPlaceNames` and `touch` build
+  the next rows, save them, and only then change the model and signal. A failed save changes nothing in memory, sends no
+  signal and returns false (`touch` stays `void`: recency is advisory, and an unsaved stamp stays out of memory too).
+  `clearCsvPath`, `invalidatePathProvenance` and `applyPlaceNames` return true when nothing needs changing, and signal
+  one `dataChanged` spanning the rows they changed (one per row re-ran every pin's bookkeeping each time). So
+  `rowsAboutToBeRemoved`/`rowsRemoved` (then `sitesChanged`, `countChanged`) mean the removal is on disk, and whatever
+  follows rows out of the model can prune on them. A site is grouped while `rrSid > 0` and `rrSiteId > 0`, by
+  `site_group_key()` (`site_groups.cpp`): `"<rrSid>|<receiver>"`, the receiver being `receiver_identity()` (the source,
+  then an Airspy's serial, an rtl_tcp or TCP host without case or blanks and its port, a UDP port or a file path;
+  `session_args.cpp` joins scan lists on the same identity), so a system saved for two receivers is two groups.
+  `SavedSystemsModel::groupKey(row)` reads that key from the row's fields (no field map built); `siblingRows()`,
+  `nearestRow()`, `siteCount()`, the site chooser and `ListenPins` all group by it. A group's title is
+  `site_group_title()` of its lead: the name without an exact trailing " — " + its `siteName` (the name a per-site
+  import generated), else the name; a custom name lives on the lead row and moves with it. A row's `place` (role
+  `place`) is the RadioReference geography an import captured: `{states: [{stid, name?}], counties: [{ctid, stid?,
+  name?}], candidateStates: [stid]}`, held to `SavedSystemsModel::validPlace()` (ids whole numbers, not text, in
+  1..INT32_MAX; names text of at most 128 characters; at most 64 states or candidate states and 512 counties; repeats of
+  an id merged into the first). A place that breaks it anywhere is dropped whole wherever it arrives (load, `add`,
+  `update`, a restored backup at its first load); the row keeps everything else. `applyPlaceNames(stid, stateName,
+  countyNames)` (metadata only) names the state and the listed counties in every row whose place names them, links those
+  counties to the state and adds the state to a row whose county now links to it (`namePlace()`, the same rule on one
+  place). `setPlaceNameCache()` installs a fill (`RrPlaceService`'s cache) that `add`, `addAll`, `update` and
+  `refreshSites` run, before their save, on a place whose ids are new. `refreshSites(refreshes)` is Update from
+  RadioReference's metadata-only write: by uid, only to a row still on the refresh's `rrSid`/`rrSiteId`, the site name
+  (renaming a generated name as `update` does), position and place; one save, one `dataChanged` span and
+  `sitesChanged`, the count of rows still on their site, or -1 with nothing changed. `addAll(rows, keySourceUid)`
+  saves a per-site import: every row is checked first (as `add`, and with a key source as `addWithKeyFrom`, which
+  `add` and `addWithKeyFrom` call), takes a fresh UID, has its replay copy adopted, then one save and one `rowsInserted`
+  range; it returns the first new row or -1 with nothing inserted and no signal (a copy adopted before a failed save
+  stays kept, as for `add`). One rule clears stale provenance: `rr_provenance_cleared()` (`site_groups.cpp`)
+  zeroes `rrSid`, `rrSiteId`, `avoidSite` (only the group's `SiteChooserSheet` can lift an avoid), `siteName`,
+  `siteLat`, `siteLon`, `hasSitePos` and `place`. `update` applies it when the edit changes the frequency, decode flag
+  or a CSV field, then applies what the edit carries of its own of `rrSid`, `rrSiteId`, `siteName`, the position and
+  `place` (validated): an ordinary edit carries none and ends cleared, an edit-mode re-import keeps its fresh identity.
+  Any edit carrying a changed `siteName` and the row's own `rrSiteId` renames a generated `base — oldSite` name
+  (`site_generated_name()`), with or without a tuning change; an edit with no `name` keeps the stored one (the wizard
+  sends `name` only when its field no longer reads as it opened, so an editor opened before an Update from
+  RadioReference does not undo that rename). `clearCsvPath` (a library file removed) and
+  `invalidatePathProvenance` (a library file replaced with the user's own bytes, keeping the path; see "Replacing a
+  library file in place") apply it to every row naming the path. Load drops what a row outside a group cannot use: its
+  `avoidSite` (a lone RadioReference site keeps its avoid: its "1 site" chooser lifts it), and the `siteName` and
+  position older edits left when they cleared only the ids; its `place` stays (a conventional multi-repeater row has one
+  and no ids). Load saves that with the UID repair (one warning when that save fails; the clear repeats at the next
+  load). A replay copy in `replays/` a row gains is adopted before the save and one no row names after a saved edit or
+  remove is released (`replay_store.{h,cpp}`). Tests: `UI_QT_PERSISTENCE`, `UI_QT_SITE_GROUPS`, `UI_QT_REPLAY_STORE`,
+  `UI_QT_BACKUP_ARCHIVE` and `UI_QT_BACKUP_APPLY` (`place` through a backup and its restore).
+- `saved_system_cards.{h,cpp}` (`savedSystemCards`, `SavedSystemCards : QAbstractListModel`) is what Listen's Systems
+  list shows: one card per `site_group_key()` group (a system saved for two receivers is two cards), or one per row
+  outside a group (key = the row's UID); the lead is the lowest row. It reads `SavedSystemsModel`, `AppPrefs` and
+  `ImportedFilesModel` and never changes them; `m_rows` order is untouched, and every QML action carries a UID that
+  the screen resolves to a row at click time. Roles: `key`, `leadUid`, `playUid`, `title`, `siteCount`, `name`,
+  `sourceType`, `host`, `port`, `freqMhz`, `decodeFlag`, `trunking`, `filePath`, `keyConfigured`, `lastHeard`,
+  `refreshHint`, `placeLabel`, `distanceKm`, `distanceState`, `section`, `sectionStart`, `rrLinked`, `receiverLabel`,
+  `held`. The card shows the
+  one non-avoided site when exactly one is left, else the lead; `playUid` is that site (the row itself outside a
+  group), empty when a group has none or several to play; `siteCount` is the group size, 0 outside a group;
+  `lastHeard` is the group's latest; `keyConfigured` reads the computed `SavedSystemsModel::KeyConfiguredRole`
+  (key type, key CSV or decryption profile on the displayed row); `title` is `site_group_title()` of the lead,
+  the same text a Listen pin shows; `refreshHint` is the "Refresh from RadioReference" test, re-run on
+  `importedFiles.entriesChanged`. Place labels: "Johnson, Iowa" (one state, one county), "Iowa · 5 counties", "Iowa",
+  "Illinois, Iowa, South Dakota" (several states, names sorted; their Place section reads "Several states"). A card
+  with no named state has an empty label, and Place order puts it under a "No place" section. Orders (`sortId` mirrors
+  `AppPrefs::systemsSort`; `effectiveSort` is the one applied): `name` (natural order from `text_order`), `recent`
+  (latest `lastHeard` first, never-listened after by name), `added` (lead row's position, the default), `place`
+  (sections: single states by state name, "Several states", "No place"; within a state one county by county name, then
+  several counties, then none, then name) and `nearest` (haversine distance to the nearest non-avoided site that has
+  coordinates, then "All sites avoided", then "No coordinates", each by name). Every order ends on `key`. `nearest`
+  needs `setLocationSupported(true)` and an unexpired fix; without them `effectiveSort` is `name` and the stored
+  preference is untouched. Every rebuild compares the fix with the one the distances were measured from, because
+  AppPrefs drops a fix 24 wall-clock hours on at its first read, before its monotonic expiry timer sends
+  `locationChanged` (the timer stops while a phone sleeps); that read then queues one `locationChanged` for every
+  other reader (the location line, the site chooser), never inside the read itself. Search (`system_search_query.{h,cpp}`): the text is split into terms that must all match (a
+  number and a following MHz/kHz is one term); a term matches a folded substring of the card's text (members' names
+  and site names, place state and county names, and the protocol label, supplied by `protocolLabels` from `Util.js`)
+  or a frequency of any member (a bare number of three digits or more reads as MHz; a member's own `freqMhz` is read
+  by `session_args_freq_hz()`, the tuner's reading, so every spelling that tunes is found). A row whose frequency or place an
+  edit cleared ranks as unplaced and without coordinates. Rebuilds are coalesced into one `QTimer::singleShot(0)`
+  pass; a query change only refilters and a sort change only re-sorts. Without a screen reader the diff against the
+  old list emits removes, one-row moves (the longest increasing run stays), inserts and one `dataChanged` per card with
+  the roles that changed, so a delegate survives a sort and keeps the keyboard. With `screenReaderActive` the rows are
+  positional (`applyPositional()`): row i shows the i-th card, so a reorder or a filter is one `dataChanged` per row
+  whose card changed (its roles), never a reset, a move or a remove. A shorter list keeps the rows past its end, held:
+  `rowCount()` is `shownCount` plus the held rows, each keeping the card it last showed, `held` true (only that role
+  changes as a row is held); a longer list takes them back first, and a row is inserted only past the most rows there
+  ever were. Under Qt 6.11.3's Android bridge each delegate made or destroyed made Android's main thread walk the list
+  again (`childIdListForAccessibleObject`), so the reset this replaced hung the app for minutes at 300 cards. Turning
+  the screen reader off removes the held rows. A reorder nobody asked for is held while `holdReorders` is set (Home
+  visible on Systems): the cards shown keep their rows and a new one goes after its new-order predecessor, until the
+  hold ends or the user asks for a change (query, sort, the first fix newer than the stored one after
+  `markLocationRequested()`; an expiry meanwhile keeps the mark), so TalkBack's swipe order always matches the screen;
+  the count is read once. A held order can show a section in two runs, so `sectionStart` marks only a section's first
+  card in the shown order. `receiverLabel` is the receiver ("USB", "RTL-TCP host:port", "Airspy SERIAL") of a card
+  whose title another shown card has (one system on two receivers), else empty; TCP, UDP and file cards name their
+  source in the meta already and get none. Home shows it on a line of its own under the source line, which then leaves
+  RTL-TCP's marker out. `rebuilt()` follows every rebuild, changed or not, after its row signals and
+  `shownCountChanged`: Home answers the changes it noted there (one tree refresh for Android's bridge). `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, the card's last-heard, frequency and key-configured reads,
+  titles against a real pin, each order and its ties, place and distance labels, search, signals, screen-reader
+  holds and the location mark, one section start in a held order, a fix that lapses with no signal, coalescing, a random-edit mirror check, positional rows held and taken back, receiver labels for shared titles, `rebuilt()` after
+  the rows, and a 500-row timing check with and without a screen reader).
+- `text_order.{h,cpp}` (`TextOrder`, the `textOrder` context object) is the one place that decides how names sort and
+  match: `text_fold()` (case and accents folded, by code point), `text_compare_names()` (natural order: leading
+  punctuation skipped, digit runs by value, a shorter digit run first on a tie, then the raw text, so different
+  strings never compare equal) and `text_fold_contains()`. `text_compare_folded_names()` takes names already folded,
+  so a sort folds each once. The RadioReference screen's lists and filters and `SavedSystemCards` both use it; `ß`,
+  `Ø`, `Æ` and `Ł` are not decomposed (a documented limit). Tests: `UI_QT_TEXT_ORDER`, `tst_radioreference_screen.qml`.
 - `listen_pins.{h,cpp}` (`listenPins`, issue #801) resolves the shortcuts pinned to Listen. They are stored in
   `AppPrefs::pinned` (`listen/pinned`, portable): a JSON array in one string, each `{kind, uid}` with kind `system` (a
   saved row's UID, standing for its Home card), `site` (one saved row), `scan` (a scan list's UID), `search` or
@@ -14112,23 +14367,25 @@ Qt Quick frontend (`src/ui/qt`):
   over `AppPrefs`, `SavedSystemsModel` and `ScanListsModel` after both load and before `prune_missing_csv_paths()`, so a
   `system` pin whose row that startup cleanup takes out of its group follows the group as below. `entries` holds every
   stored pin in order as `{key, kind, uid, label, accessibleName, found}` (`key` = `kind:uid`); a system is named by its
-  group's lead and its accessible name says whether a tap starts it or chooses a site (no site, or several, it can
-  play), a site is "system · site". `revision` moves on every entries change and on every row, data, sites or reset
-  signal of either model, because `isPinned()` follows groups: a system pin matches its group's card through any of its
-  sites, and a row in no group also matches a site pin of itself (a site edited out of its group keeps its pin). `pin()`
-  refuses a full row ("Pinned is full (6). Unpin one first.") or a target not saved, and never writes `lastStarted*`;
-  `unpin()` removes what `isPinned()` matched and `unpinKey()` one entry. Pins are never pruned at load, at a model
-  reset or when pinning: a store that cannot be read loads as `[]`, and its pins stay, `found` false, still counting
-  toward the cap, until it loads again. Only `rowsAboutToBeRemoved`, which both models signal only for a removal they
-  saved, prunes: a `site` or `scan` pin goes with its row, and a `system` pin moves to a remaining site of its group
-  (`siblingRows()` before the removal), else goes. The kept list is worked out there and stored at `rowsRemoved`, so no
-  `listenPins` signal lands inside the model's removal. A `system` pin is the system, not its row: `refresh()` remembers
-  each row's group by UID, and when the pinned row leaves its group (an edit of its frequency, decode flag or a CSV
-  field, or a library file's removal) while the group still has sites, the next `dataChanged`/`sitesChanged` moves the
-  pin to the group's lead and stores it; a group's last site keeps its pin (also at startup, see `load_listen_pins()`
-  above; `UI_QT_BACKUP_ARCHIVE`). `action()` is every source's Pin to Listen (see "Pin to Listen" above). User text
-  lives in `ListenPins::text()`. The QML fixture publishes it over the real `AppPrefs`, clears pins for each test file,
-  and `testContext.resetPins()` clears them between cases. Tests: `UI_QT_PERSISTENCE`.
+  group's title (`site_group_title()` of the lead, as its card) and its accessible name says whether a tap starts it or
+  chooses a site (no site, or several, it can play), a site is "title · site" (its group's title, then its own site
+  name). `revision` moves on every entries change and on every row, data, sites or reset signal of either model, because
+  `isPinned()` follows groups: a system pin matches its group's card through any of its sites, and a row in no group
+  also matches a site pin of itself (a site edited out of its group keeps its pin). `pin()` refuses a full row ("Pinned
+  is full (6). Unpin one first.") or a target not saved, and never writes `lastStarted*`; `unpin()` removes what
+  `isPinned()` matched and `unpinKey()` one entry. Pins are never pruned at load, at a model reset or when pinning: a
+  store that cannot be read loads as `[]`, and its pins stay, `found` false, still counting toward the cap, until it
+  loads again. Only `rowsAboutToBeRemoved`, which both models signal only for a removal they saved, prunes: a `site` or
+  `scan` pin goes with its row, and a `system` pin moves to a remaining site of its group (`siblingRows()` before the
+  removal), else goes. The kept list is worked out there and stored at `rowsRemoved`, so no `listenPins` signal lands
+  inside the model's removal. A `system` pin is the system, not its row: `refresh()` remembers each row's group key
+  (`site_group_key()`) by UID, and when the pinned row leaves its group (an edit of its frequency, decode flag, a CSV
+  field or its receiver, or a library file's removal or update) while the group still has sites, the next
+  `dataChanged`/`sitesChanged` moves the pin to the group's lead and stores it, synchronously, so several changes in one
+  turn (startup's missing-file clears) move it one step at a time; a group's last site keeps its pin (also at startup,
+  see `load_listen_pins()` above; `UI_QT_BACKUP_ARCHIVE`). `action()` is every source's Pin to Listen (see "Pin to
+  Listen" above). User text lives in `ListenPins::text()`. The QML fixture publishes it over the real `AppPrefs`, clears
+  pins for each test file, and `testContext.resetPins()` clears them between cases. Tests: `UI_QT_PERSISTENCE`.
 - Removing a library file (issue #801) runs in this order: `ImportsScreen.qml`'s Remove file clears the path from saved
   systems (`SavedSystemsModel::clearCsvPath`), then from scan lists (`ScanListsModel::clearCsvPath`), then calls
   `ImportedFilesModel::remove()`, which deletes the file (one already gone counts as deleted) and its bundle folder
@@ -14160,7 +14417,15 @@ Qt Quick frontend (`src/ui/qt`):
   decoder's rewrite check and its replace never straddle a Qt install. The lock covers the one rename, never the copy,
   and marks `DSD_MANAGED_FILE_STEP_INSTALLED` once the file is in place. The move is the last step, so nothing is ever
   rolled back over the file: a failure before it (the index cannot be saved) leaves the file as it was, and a failed
-  move puts the old index back. Bundle replaces (channel maps, target lists) take the same path. `ImportsScreen.qml` then calls `reloadIfInUse()` for a `group` or `chan` row whenever a session runs,
+  move puts the old index back. Before an update (never a refresh) of a file with RadioReference provenance (`origin`
+  "radioreference" or an `rrSid`) touches the index, `setBeforeUserReplace()`'s hook runs with the stored path:
+  `qt_ui.cpp`'s `wire_library_replace()` points it at `SavedSystemsModel::invalidatePathProvenance()`, since the user's
+  own bytes no longer describe the RadioReference site the systems naming the file came from. A file the user
+  picked (a key list, say) never described the site, so its update asks nothing of them. Dependency first, as a removal
+  clears references before the file goes: a failed save there refuses the update with `save` and nothing changes; an
+  index save or move that fails after it leaves those rows cleared over the file's old bytes, which is safe
+  (`test_user_replace_lets_go_first`). Bundle replaces (channel maps, target lists) take the same path.
+  `ImportsScreen.qml` then calls `reloadIfInUse()` for a `group` or `chan` row whenever a session runs,
   after an update (not a new import, a cancel or an unusable file) and after a refresh: it posts
   `CommandBridge::reloadGroupList(path)` / `reloadChannelMap(path)`, and the decoder reloads the file only if it is
   the one it uses at that moment. The screen no longer takes `sessionSystem` (the saved system a session started
@@ -14539,6 +14804,12 @@ Qt Quick frontend (`src/ui/qt`):
     stored value, so choosing `systems` over damage lands. Device-local: kept out of backups and kept on restore. The QML
     fixture's `prefs` map carries it as `systems`; the real key is set back to `systems` for each test file, and
     `testContext.resetListenSection()` does that between cases (a Home already built keeps its tab).
+  - `AppPrefs::systemsSort` (`listen/systemsSort`) is the order of Listen's saved systems, a string id (`name`, `place`,
+    `nearest`, `recent`, `added`; never rename one), default `added`. Anything else stored reads as `added` and is not
+    rewritten; the setter refuses unknown ids and compares with the raw stored value. Device-local like `listenSection`:
+    kept out of backups and kept on restore. A stored `nearest` where Nearest is not offered (desktop, no location) is
+    shown as Name and the preference is left as it was. The QML fixture seeds it and `testContext.resetSystemsSort()`
+    resets it. Tests: `UI_QT_PERSISTENCE`, `UI_QT_BACKUP_ARCHIVE`.
   - The voice hang time (`decode/hangtimeSec`, a double) reads stored text that is no number as the 2 s default, and
     its setter counts such text as different from every value, so choosing 0 s over it lands (`toDouble()` would read
     it as 0 s and drop the write).
@@ -16453,9 +16724,33 @@ never per frame. A control sizes from the label's `height`.
 Tests: `tst_whole_word_label.qml`, and `tst_segmented_whole_words.qml`, which measures every `SegmentedControl` label
 set in the screen or sheet that holds it at 320 and 360 px and text 1.0, 1.6 and 2.0.
 
-A control a keyboard can press takes Return, keypad Enter (`Keys.onEnterPressed`) and Space, each through the control's
+A control a keyboard can press takes Return, keypad Enter and Space, each through the control's
 one guarded activation function (`enabled`, `Navigation.allows()` and any gate of its own), as its accessibility press
 does. A key handler never calls the action directly: a control can keep the keyboard focus while a sheet opens over it.
+Every such control has one `Keys.onPressed` that asks `Navigation.activationPress(event, Window.activeFocusItem)` and
+a `Keys.onReleased` that passes the release to `Navigation.activationRelease(event)` (`PlexTextField` passes its
+releases too). A key's first press acts and is noted, with the item that took it, until that key's release; a held
+key's repeats (`isAutoRepeat`) act only on that same item, so a key held on Spectrum's Tune down keeps stepping as
+before. A repeat that reaches any other control is taken and does nothing; no control acts on a release. An action
+that moves the keyboard while the key is down otherwise had the repeats act on the control it landed on: a
+`ChoiceSheet` choice made with Enter or Space hands the keyboard back to the pill that opened the sheet (Listen's Sort
+pill, History's filter pills, on `main` too) and the held key opened the sheet again. With a screen reader on
+(`screenReader.active`), Space, Return or Enter held with Alt is the screen reader's command and no control acts on it
+(taken, repeats included): TalkBack's Alt+Enter clicks the item it has focused (Alt+Shift+Enter long-presses it) and
+TalkBack makes that click itself, but Android also hands the app a key an accessibility service has not answered within
+500 ms. On the emulator a Sort choice's click held TalkBack 860 ms while Home re-sorted 300 cards, and the same press
+(not a repeat) reached the app after the sheet had closed and given the keyboard back to the pill, which opened the
+sheet again (Cancel and History's filter choices the same); a busy TalkBack passes the key on before its click
+instead. The click is the one action. Without a screen reader Alt changes nothing. Not covered: a field's `accepted` on
+Enter (TextInput's own handling) and TalkBack's Search-key keymap, whose commands carry no modifier the app can see.
+Tests: `tst_keypad_enter.qml`
+(`heldKeysActOnce()` on every control and screen button there, `test_a_held_key_repeats_only_where_it_went_down`, the
+held Tune down in `test_spectrum_buttons_take_keypad_enter`), `tst_home_systems_search_sort.qml`
+(`test_keyboard_choice_leaves_the_sheet_closed`) and `tst_call_log_follow.qml`
+(`test_06q_a_keyboard_choice_leaves_the_filter_sheet_closed`), each sending repeats through `testContext.sendKey()`;
+`tst_keypad_enter.qml` `test_alt_keys_press_without_a_screen_reader`, and `UI_QT_QML_A11Y_CHURN`
+(`tst_a11y_scan_churn.qml` `test_m5_late_screen_reader_keys_leave_the_sort_sheet_closed` and its History filter twin:
+the click on a choice or Cancel, then the late Alt+Enter on the pill, and the key first then the click on a choice).
 Issue #646 added keypad Enter to `SegmentedControl`, `BottomNav`, `DashedActionButton`, `PlayCircle`, `CallRow`,
 `DisclosureRow`, `PlexSwitch` and `ToggleRow` and to the Spectrum, Monitor, RadioReference and wizard buttons and rows
 that took Return alone, and moved the Monitor's Spectrum button's keys behind its gate. A control a hidden section can
@@ -16732,7 +17027,9 @@ the top: a move raises a LocationChanged for each row that shifts and nothing el
 the entry it shows. With a screen reader on (`screenReader.active`), each section is in a fixed order of those keys
 (`NetworkSheet.readingOrder()`): Qt's bridge sends Android no event for a row that moves, and TalkBack swiped a
 reordering section in an order it had left, skipping, repeating and looping (the N-rotate check). Its rows are not
-paced. With `holdRows` (the Network sheet) the rows past the end of a shorter or empty list stay, held (`live` is the
+paced. With `holdRows` (the Network sheet; Listen's Systems cards hold rows, and in each row the parts its card lacks,
+the same way through their card model's
+`held` role, positional with a screen reader on) the rows past the end of a shorter or empty list stay, held (`live` is the
 rows holding an entry): they leave the tree (`Accessible.ignored`, which raises ObjectDestroyed, not sent on by
 Android's bridge), are transparent and unnamed, and keep their size below the last row drawn, where the column's height
 ends (`shownBottom`), so holding one moves nothing; a longer list later reuses them. A hop between P25 targets of 100
@@ -16744,7 +17041,10 @@ Unnaming is a NameChanged per row, one call into Java that returns at once unles
 section's "(none announced)" stays in the tree while hidden, so its show as the section empties refreshes Android's copy
 and a swipe reaches it, and its hide does so as the rows come back. A hop to a target with no P25 network therefore
 costs, in main-thread work on Android, one show or hide per section that empties or fills and the sheet's layout,
-whatever the number of rows. Hidden or removed instead, each row would raise a hide (and a show coming back).
+whatever the number of rows. Hidden or removed instead, each row would raise a hide (and a show coming back). Listen's
+cards have no such line in the list: after a change they show or hide one node under the window instead
+(`savedSystemsTreeRefresh`, "Listen Systems search and sort"), whose parent, the window, has few children, so the
+bridge's refresh costs little; a show or hide inside the list makes it fetch the scroll body with every card.
 P25NetworkModel keeps the engine's last-seen times, which order its rows but are not shown, out of them. A scan hop
 publishes the new target's network in one replacement (`P25NetworkModel::replaceForTarget()`, cleared instead while the
 sheet is closed or the session is not live), never an empty list first. The Diagnostics log's lines are read only while

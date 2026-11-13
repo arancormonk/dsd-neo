@@ -178,19 +178,21 @@ Rectangle {
                     if (next)
                         next.choose();
                 }
-                Keys.onSpacePressed: choose()
-                Keys.onReturnPressed: choose()
-                Keys.onEnterPressed: choose()
                 Keys.onLeftPressed: chooseBy(-1)
                 Keys.onRightPressed: chooseBy(1)
                 Keys.onPressed: function (event) {
-                    if (event.key === Qt.Key_Home) {
+                    if (Navigation.activationPress(event, Window.activeFocusItem)) {
+                        choose();
+                    } else if (event.key === Qt.Key_Home) {
                         chooseBy(-tabs.count);
                         event.accepted = true;
                     } else if (event.key === Qt.Key_End) {
                         chooseBy(tabs.count);
                         event.accepted = true;
                     }
+                }
+                Keys.onReleased: function (event) {
+                    Navigation.activationRelease(event);
                 }
                 FocusFrame {}
 

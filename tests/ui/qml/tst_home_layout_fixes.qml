@@ -84,13 +84,15 @@ Item {
         function addSystem(name, fields) {
             verify(savedSystems.add(Object.assign({name: name, sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
                 freqMhz: "851.5"}, fields || {})), "could not add " + name);
+            // The cards follow on the next turn.
+            wait(0);
         }
         function addList(name) {
             verify(scanLists.add({name: name, sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
                 entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5", enabled: true}]}));
         }
         // A trunked system whose talkgroups came from a RadioReference import that named no site: its card asks
-        // for a refresh (HomeScreen.needsSiteRefresh).
+        // for a refresh (savedSystemCards' refreshHint).
         function addRefreshHintSystem(name) {
             var path = testContext.writeFixtureCsv("layout-provenance.csv", "Decimal,Mode,Alpha Tag\n123,A,Dispatch\n");
             var result = importedFiles.importGeneratedFile(path, "Layout provenance.csv", "group",
@@ -106,8 +108,8 @@ Item {
             var out = [];
             // Issue #646: on the Systems tab's section.
             for (var child of findChild(home, "listenSystemsSection").children) {
-                if (child.hasOwnProperty("refreshHint") && child.hasOwnProperty("siblings"))
-                    out.push(child);
+                if (child.objectName === "savedSystemEntry")
+                    out.push(findChild(child, "savedSystemCard"));
             }
             return out;
         }
@@ -208,7 +210,9 @@ Item {
             verify(spy.signalArguments[0][1].ok, "the replace committed");
             compare(importedFiles.count, count, "the replace keeps the library's size");
             compare(importedFiles.get(importedFiles.rowForPath(libraryPath)).origin, "", "the file is the user's now");
-            verify(!card.refreshHint, "the card no longer offers the refresh");
+            tryVerify(function () {
+                return !card.refreshHint;
+            }, 1000, "the card no longer offers the refresh");
             spy.destroy();
         }
 
@@ -222,7 +226,6 @@ Item {
             root.width = 320;
             Ui.Theme.fontScale = data.scale;
             addRefreshHintSystem("County trunked system");
-            verify(home.needsSiteRefresh(0));
             verify(waitForPolish(home));
             waitForRendering(home);
             var card = cardNamed("County trunked system");

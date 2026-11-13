@@ -586,6 +586,569 @@ Item {
                     + JSON.stringify(counts.chains));
         }
 
+        // Listen's saved systems with a screen reader on: the rows are positional. A reorder nobody asked for
+        // (a system just listened to, in Last listened order) waits while the cards are on screen and raises nothing;
+        // the order the user picks renames each row for the card now at its place, with no delegate made or
+        // destroyed and no show or hide (Qt 6.11.3's Android bridge walks the list again for each delegate made or
+        // destroyed, and refetches a parent for each show or hide), and the keyboard stays on the Sort pill.
+        function test_m_saved_systems_reorder_waits_then_renames_in_place() {
+            testContext.setLifecyclePhase(0);
+            verify(!app.monitorMode);
+            verify(screenReader.active, "this run has a screen reader on");
+            var home = findChild(app, "homeScreen");
+            var shownTitles = function () {
+                var section = findChild(home, "listenSystemsSection");
+                section.forceLayout();
+                var entries = [];
+                for (var child of section.children) {
+                    if (child.objectName === "savedSystemEntry" && child.visible && !child.held)
+                        entries.push(child);
+                }
+                entries.sort(function (a, b) {
+                    return a.y - b.y;
+                });
+                return entries.map(function (entry) {
+                    return entry.title;
+                }).join("|");
+            };
+            var repeater = null;
+            var made = 0;
+            var gone = 0;
+            var onMade = function () {
+                ++made;
+            };
+            var onGone = function () {
+                ++gone;
+            };
+            try {
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+                var heard = {Charlie: 300, Alpha: 200, Bravo: 100};
+                for (var name of ["Charlie", "Alpha", "Bravo"])
+                    verify(savedSystems.add({name: name, sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5",
+                        lastHeard: heard[name]}));
+                prefs.systemsSort = "recent";
+                tryCompare(home, "visible", true);
+                home.showSection("systems");
+                tryCompare(savedSystemCards, "totalCount", 3);
+                waitForRendering(home);
+                verify(savedSystemCards.screenReaderActive && savedSystemCards.holdReorders);
+                compare(shownTitles(), "Charlie|Alpha|Bravo");
+                var section = findChild(home, "listenSystemsSection");
+                repeater = findChild(home, "savedSystemCardsRepeater");
+                repeater.itemAdded.connect(onMade);
+                repeater.itemRemoved.connect(onGone);
+
+                testContext.startAccessibilityCount();
+                verify(savedSystems.update(2, {lastHeard: 5000}));
+                wait(50);
+                var counts = testContext.accessibilityCount();
+                testContext.stopAccessibilityCount();
+                compare(showHide(section) + testContext.accessibilityCountWithin(section, "LocationChanged"), 0,
+                        "a reorder nobody asked for raised events: " + JSON.stringify(counts.chains));
+                compare(shownTitles(), "Charlie|Alpha|Bravo", "held while on screen");
+
+                var pill = findChild(home, "systemsSortPill");
+                pill.forceActiveFocus();
+                testContext.startAccessibilityCount();
+                findChild(home, "savedSystemsControls").chooseSort("name");
+                wait(50);
+                counts = testContext.accessibilityCount();
+                testContext.stopAccessibilityCount();
+                compare(shownTitles(), "Alpha|Bravo|Charlie");
+                compare(made + gone, 0, "no delegate made or destroyed");
+                compare(showHide(section), 0, "the chosen order shows or hides nothing: " + churn(counts));
+                verify(testContext.accessibilityCountWithin(section, "NameChanged") > 0, "its rows are renamed");
+                verify(pill.activeFocus, "the keyboard stays on the pill");
+            } finally {
+                testContext.stopAccessibilityCount();
+                if (repeater) {
+                    repeater.itemAdded.disconnect(onMade);
+                    repeater.itemRemoved.disconnect(onGone);
+                }
+                testContext.resetSystemsSort();
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+            }
+        }
+
+        // At 300 cards of mixed shapes: site groups of two (a site button, no Play), single sites (a site button
+        // and Play), rows outside a group (Play alone), placed and not, trunked rows from a RadioReference import that
+        // named no site (the refresh hint) and one system on two receivers (a receiver line). A sort (Name, Order
+        // added, Place with its section headings), a search to 5 and back, a sort to Nearest, a Nearest reorder from a
+        // location the user asked for, and back to Name make and destroy no delegate and raise no show or hide in the
+        // section, the lines over the cards included: a part one card has and the row's next card lacks is held
+        // (transparent, unnamed, out of the tree), never hidden. On Android each show or hide made the bridge fetch the
+        // scroll body, with every card under it, again: ~140 a sort at 300 cards left TalkBack silent for over a
+        // minute. Each change instead raises one show or hide, of Home's tree refresh node under the window, which has
+        // the bridge read its copy of the window again. Counts and timings are printed.
+        function test_m2_saved_systems_300_rows_stay() {
+            // Nearest needs the cards' location support; setting it re-sets decoderHost to the plain map, so the
+            // lifecycle host Main runs on is put back after it.
+            testContext.setLocationSupported(true);
+            testContext.useLifecycleHost(true);
+            testContext.setLifecyclePhase(0);
+            verify(screenReader.active, "this run has a screen reader on");
+            var home = findChild(app, "homeScreen");
+            var repeater = null;
+            var made = 0;
+            var gone = 0;
+            var onMade = function () {
+                ++made;
+            };
+            var onGone = function () {
+                ++gone;
+            };
+            var report = [];
+            var imported = null;
+            try {
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+                var csv = testContext.writeFixtureCsv("churn-provenance.csv", "Decimal,Mode,Alpha Tag\n123,A,Dispatch\n");
+                imported = importedFiles.importGeneratedFile(csv, "Churn provenance.csv", "group",
+                    {origin: "radioreference", rrSid: 12, rrSiteIds: "16863", rrKind: "group"});
+                verify(imported.ok, "the RadioReference import for the refresh hint");
+                var rows = [];
+                var names = [];
+                for (var i = 0; i < 300; ++i) {
+                    // Card i + 1 of every 30th pair is card i's system on a USB dongle: two cards of one title.
+                    var twin = i % 30 === 7;
+                    var name = twin ? names[i - 1] : (i % 60 === 0 ? "Harbor " : "Bench ") + String(299 - i).padStart(3, "0");
+                    names.push(name);
+                    var row = {name: name, sourceType: twin ? "usb" : "rtltcp", host: "127.0.0.1", port: 1234,
+                        freqMhz: "851.5"};
+                    if (i % 4 === 0)
+                        row.place = {states: [{stid: 19, name: "Iowa"}], counties: [], candidateStates: [19]};
+                    var kind = i % 6;
+                    if (kind === 1 || kind === 2 || kind === 4 || kind === 5)
+                        Object.assign(row, {rrSid: 1000 + i, rrSiteId: 1, siteName: "S", siteLat: 41 + i / 100,
+                            siteLon: -93.6, hasSitePos: true});
+                    else if (kind === 3)
+                        Object.assign(row, {trunking: true, groupCsvPath: imported.path});
+                    rows.push(row);
+                    // A second site of the same system: one card of two sites, nothing to play alone.
+                    if (kind === 5)
+                        rows.push(Object.assign({}, row, {rrSiteId: 2, siteName: "T", siteLat: 41.005 + i / 100}));
+                }
+                verify(savedSystems.addAll(rows, "") >= 0);
+                prefs.systemsSort = "added";
+                tryCompare(home, "visible", true);
+                home.showSection("systems");
+                tryCompare(savedSystemCards, "totalCount", 300);
+                waitForRendering(home);
+                var section = findChild(home, "listenSystemsSection");
+                repeater = findChild(home, "savedSystemCardsRepeater");
+                compare(repeater.count, 300);
+                // Every shape the rows trade is there.
+                var shapes = {play: 0, noPlay: 0, sites: 0, noSites: 0, hint: 0, receiver: 0, place: 0, noPlace: 0};
+                for (i = 0; i < 300; ++i) {
+                    var entry = repeater.itemAt(i);
+                    ++shapes[entry.playUid.length > 0 ? "play" : "noPlay"];
+                    ++shapes[entry.siteCount > 0 ? "sites" : "noSites"];
+                    shapes.hint += entry.refreshHint ? 1 : 0;
+                    shapes.receiver += entry.receiverLabel.length > 0 ? 1 : 0;
+                    ++shapes[entry.placeLabel.length > 0 ? "place" : "noPlace"];
+                }
+                for (var shape in shapes)
+                    verify(shapes[shape] > 0, "a card with " + shape + ": " + JSON.stringify(shapes));
+                wait(50); // the tree refresh the cards' arrival owes
+                repeater.itemAdded.connect(onMade);
+                repeater.itemRemoved.connect(onGone);
+                var controls = findChild(home, "savedSystemsControls");
+                var step = function (label, change) {
+                    testContext.startAccessibilityCount();
+                    var started = Date.now();
+                    change();
+                    wait(0);
+                    section.forceLayout();
+                    var ms = Date.now() - started;
+                    wait(50);
+                    var counts = testContext.accessibilityCount();
+                    testContext.stopAccessibilityCount();
+                    verify(home.visible && home.section === "systems", label + ": Home shows Systems");
+                    compare(made + gone, 0, label + ": no delegate made or destroyed");
+                    compare(repeater.count, 300, label + ": 300 rows");
+                    var shows = testContext.accessibilityCountWithin(section, "ObjectShow");
+                    var hides = testContext.accessibilityCountWithin(section, "ObjectHide");
+                    var refresh = findChild(app, "savedSystemsTreeRefresh");
+                    var refreshed = refresh ? showHide(refresh) : 0;
+                    var anywhere = typed(counts, "ObjectShow") + typed(counts, "ObjectHide");
+                    report.push(label + " " + ms + " ms, " + shows + " shows, " + hides + " hides, " + refreshed
+                        + " tree refresh");
+                    compare(shows + hides, 0, label + ": " + shows + " shows, " + hides + " hides: " + churn(counts));
+                    // Then one show or hide under the window has Android read its copy again, and nothing else.
+                    compare(refreshed, 1, label + ": the tree refresh");
+                    compare(anywhere, 1, label + ": shows and hides anywhere: " + churn(counts));
+                };
+                step("sort Name", function () {
+                    controls.chooseSort("name");
+                });
+                step("sort Order added", function () {
+                    controls.chooseSort("added");
+                });
+                step("sort Place", function () {
+                    controls.chooseSort("place");
+                });
+                verify(findChild(repeater.itemAt(0), "savedSystemSection").opacity === 1, "Place order heads its sections");
+                step("search 300 to 5", function () {
+                    savedSystemCards.query = "harbor";
+                });
+                compare(savedSystemCards.shownCount, 5);
+                step("search cleared", function () {
+                    savedSystemCards.query = "";
+                });
+                prefs.setLocationFix(41.0, -93.6, savedSystems.realtimeNowMs() - 60000, 25);
+                step("sort Nearest", function () {
+                    controls.chooseSort("nearest");
+                });
+                compare(savedSystemCards.effectiveSort, "nearest");
+                var nearestFirst = repeater.itemAt(0).title;
+                step("Nearest, a location asked for", function () {
+                    savedSystemCards.markLocationRequested();
+                    prefs.setLocationFix(44.0, -93.6, savedSystems.realtimeNowMs(), 25);
+                });
+                verify(repeater.itemAt(0).title !== nearestFirst, "the location reordered the rows");
+                // Leaving Nearest takes its location line and the distances down.
+                step("sort Name, from Nearest", function () {
+                    controls.chooseSort("name");
+                });
+                console.log("a11y counts with a screen reader, 300 cards: " + report.join("; "));
+            } finally {
+                testContext.stopAccessibilityCount();
+                if (repeater) {
+                    repeater.itemAdded.disconnect(onMade);
+                    repeater.itemRemoved.disconnect(onGone);
+                }
+                testContext.setLocationSupported(false);
+                prefs.setLocationFix(0, 0, 0, 0);
+                testContext.resetSystemsSort();
+                savedSystemCards.query = "";
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+                if (imported && imported.ok)
+                    importedFiles.remove(importedFiles.rowForPath(imported.path));
+            }
+        }
+
+        // r6 1: a card that gains or loses a part in place, with no other change to the list (an automatic place-name
+        // lookup naming a place in Order added, which keeps the order), holds or shows that part, which raises no show
+        // or hide; Android's bridge would keep its copy without the place line, which TalkBack could then not reach.
+        // So a change to which parts a card shows has Home refresh the tree once, as a reorder does. A change of an
+        // already shown part's words only is a rename, which the bridge sends on, and refreshes nothing.
+        function test_m4_saved_systems_part_shown_in_place_refreshes_the_tree() {
+            testContext.setLifecyclePhase(0);
+            verify(screenReader.active, "this run has a screen reader on");
+            var home = findChild(app, "homeScreen");
+            try {
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+                for (var name of ["Charlie", "Alpha", "Bravo"])
+                    verify(savedSystems.add({name: name, sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5"}));
+                prefs.systemsSort = "added";
+                tryCompare(home, "visible", true);
+                home.showSection("systems");
+                tryCompare(savedSystemCards, "totalCount", 3);
+                waitForRendering(home);
+                wait(50); // the tree refresh the cards' arrival owes
+                var section = findChild(home, "listenSystemsSection");
+                var repeater = findChild(home, "savedSystemCardsRepeater");
+                var entry = repeater.itemAt(1);
+                compare(entry.title, "Alpha");
+                var place = findChild(entry, "savedSystemPlace");
+                verify(place.Accessible.ignored, "no place yet");
+                var placed = function (counties) {
+                    var row = savedSystems.rowForUid(entry.leadUid);
+                    verify(savedSystems.update(row, Object.assign(savedSystems.get(row), {place: {states: [{stid: 19,
+                        name: "Iowa"}], counties: counties, candidateStates: [19]}})));
+                };
+                var step = function (label, change, refreshes) {
+                    testContext.startAccessibilityCount();
+                    change();
+                    wait(50);
+                    var counts = testContext.accessibilityCount();
+                    testContext.stopAccessibilityCount();
+                    compare(repeater.itemAt(1), entry, label + ": the same row");
+                    compare(entry.title, "Alpha", label + ": the same card");
+                    compare(showHide(section), 0, label + ": no show or hide in the list: " + churn(counts));
+                    var refresh = findChild(app, "savedSystemsTreeRefresh");
+                    compare(refresh ? showHide(refresh) : 0, refreshes, label + ": the tree refresh: " + churn(counts));
+                    compare(typed(counts, "ObjectShow") + typed(counts, "ObjectHide"), refreshes,
+                            label + ": shows and hides anywhere: " + churn(counts));
+                };
+                step("a place named", function () {
+                    placed([]);
+                }, 1);
+                verify(!place.Accessible.ignored && place.opacity === 1, "the place line is shown");
+                compare(place.Accessible.name, "Iowa");
+                step("the place renamed", function () {
+                    placed([{ctid: 85, stid: 19, name: "Story"}]);
+                }, 0);
+                compare(place.Accessible.name, "Story, Iowa");
+            } finally {
+                testContext.stopAccessibilityCount();
+                testContext.resetSystemsSort();
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+            }
+        }
+
+        // a11y2 B: a choice made in a sheet as TalkBack makes it (Qt's bridge carries TalkBack's focus out as the
+        // set-focus action, and its double tap as the press) hands the keyboard focus, which TalkBack's follows, back
+        // to the control that opened the sheet: one Focus event, the opener's. Home disables its body while the Sort
+        // sheet shows, the Sort pill with it, so the pill had lost the focus when the sheet read its opener, and the
+        // focus went back to Home itself: TalkBack started again from the top ("Listen"). History's filter sheet, whose
+        // pill stays enabled, is the control.
+        function focusEvents(counts) {
+            return counts.sequence.filter(function (event) {
+                return /^Focus /.test(event);
+            });
+        }
+        function chooseAsTalkBack(pill, sheetName, choiceText) {
+            verify(testContext.focusAccessible(pill), "the pill takes the set-focus action");
+            tryVerify(function () {
+                return pill.activeFocus;
+            });
+            verify(testContext.pressAccessible(pill), "and the press");
+            var sheet = null;
+            tryVerify(function () {
+                sheet = Ui.Navigation.topModal;
+                return sheet !== null && sheet.visible;
+            }, 2000, sheetName + " opens");
+            waitForRendering(sheet);
+            var choice = textControl(sheet, choiceText);
+            verify(choice !== null, choiceText + " is offered");
+            verify(testContext.focusAccessible(choice));
+            tryVerify(function () {
+                return choice.activeFocus;
+            });
+            testContext.startAccessibilityCount();
+            verify(testContext.pressAccessible(choice));
+            tryVerify(function () {
+                return !sheet.visible;
+            });
+            wait(100);
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            return counts;
+        }
+        function textControl(root, text) {
+            if (!root)
+                return null;
+            if (root.text === text && root.activate !== undefined)
+                return root;
+            for (var child of root.children || []) {
+                var hit = textControl(child, text);
+                if (hit)
+                    return hit;
+            }
+            return null;
+        }
+        function test_m3_sort_sheet_gives_the_focus_back_to_its_pill() {
+            testContext.setLifecyclePhase(0);
+            var home = findChild(app, "homeScreen");
+            try {
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+                for (var name of ["Charlie", "Alpha", "Bravo"])
+                    verify(savedSystems.add({name: name, sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5"}));
+                prefs.systemsSort = "added";
+                tryCompare(home, "visible", true);
+                home.showSection("systems");
+                tryCompare(savedSystemCards, "totalCount", 3);
+                waitForRendering(home);
+                var pill = findChild(home, "systemsSortPill");
+                var counts = chooseAsTalkBack(pill, "the Sort sheet", "Name");
+                compare(savedSystemCards.effectiveSort, "name");
+                verify(pill.activeFocus, "the keyboard is back on the pill, not on " + app.activeFocusItem);
+                var focused = focusEvents(counts);
+                compare(focused.length, 1, "one Focus event: " + JSON.stringify(focused));
+                verify(/^Focus systemsSortPill /.test(focused[0]), "the pill's: " + focused[0]);
+            } finally {
+                testContext.stopAccessibilityCount();
+                testContext.resetSystemsSort();
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+            }
+        }
+        function test_m3_history_filter_sheet_gives_the_focus_back_to_its_pill() {
+            testContext.setLifecyclePhase(0);
+            app.currentTab = 1;
+            var history = findChild(app, "idleHistoryScreen");
+            var pill = null;
+            try {
+                tryCompare(history, "visible", true);
+                waitForRendering(history);
+                pill = textControl(history, "All activity");
+                verify(pill !== null, "the activity pill");
+                var counts = chooseAsTalkBack(pill, "the activity sheet", "Encrypted");
+                verify(pill.activeFocus, "the keyboard is back on the pill, not on " + app.activeFocusItem);
+                var focused = focusEvents(counts);
+                compare(focused.length, 1, "one Focus event: " + JSON.stringify(focused));
+            } finally {
+                testContext.stopAccessibilityCount();
+                if (pill && pill.text !== "All activity") {
+                    pill.activate();
+                    var sheet = Ui.Navigation.topModal;
+                    if (sheet) {
+                        var all = textControl(sheet, "All activity");
+                        if (all)
+                            all.activate();
+                    }
+                }
+                app.currentTab = 0;
+            }
+        }
+
+        // TalkBack's keyboard commands hold Alt: Alt+Enter clicks the item TalkBack has focused, Alt+Shift+Enter
+        // long-presses it. TalkBack takes the key and makes the click itself, but Android hands the app a key that an
+        // accessibility service has not answered within 500 ms as well. On the emulator (300 cards) the click on a
+        // Sort choice blocked TalkBack for 860 ms while Home re-sorted, and the same Alt+Enter press (not a repeat)
+        // reached the app after the click had closed the sheet and handed the keyboard back to the pill, and opened
+        // the sheet again; a slow TalkBack passes the key on before its click instead. With a screen reader on, a
+        // control takes Space, Return or Enter held with Alt and does nothing: the screen reader's click is the one
+        // action. The press, a repeat and the release, as Android delivered them.
+        function screenReaderCommandKeys(item, key, modifiers) {
+            var taken = testContext.sendKey(item, key, modifiers, true, false);
+            taken = testContext.sendKey(item, key, modifiers, true, true) && taken;
+            testContext.sendKey(item, key, modifiers, false, false);
+            return taken;
+        }
+        function openAsTalkBack(pill, what) {
+            verify(testContext.pressAccessible(pill), "TalkBack's click on " + what);
+            var sheet = null;
+            tryVerify(function () {
+                sheet = Ui.Navigation.topModal;
+                return sheet !== null && sheet.visible;
+            }, 2000, what + " opens its sheet");
+            waitForRendering(sheet);
+            return sheet;
+        }
+        function lateKeysLeaveTheSheetClosed(pill, data, what) {
+            verify(pill.activeFocus, "the keyboard is back on " + what + ", not on " + app.activeFocusItem);
+            var taken = screenReaderCommandKeys(pill, data.key, data.modifiers);
+            wait(50);
+            compare(Ui.Navigation.topModal, null, "the sheet stays closed after " + what + "'s late " + data.tag);
+            verify(taken, "the late keys are taken");
+            verify(pill.activeFocus, "the keyboard stays on " + what);
+        }
+        // Then the click on another choice: the key, passed on first, did nothing on it.
+        function keyFirstThenClick(sheet, choiceText, data) {
+            var choice = textControl(sheet, choiceText);
+            verify(choice !== null, choiceText + " is offered");
+            verify(testContext.focusAccessible(choice));
+            tryVerify(function () {
+                return choice.activeFocus;
+            });
+            var taken = screenReaderCommandKeys(choice, data.key, data.modifiers);
+            wait(50);
+            verify(sheet.visible, "the early " + data.tag + " chose nothing");
+            verify(taken, "the early keys are taken");
+            verify(testContext.pressAccessible(choice));
+            tryVerify(function () {
+                return !sheet.visible;
+            });
+        }
+        function cancelAsTalkBack(sheet) {
+            var cancel = textControl(sheet, "Cancel");
+            verify(cancel !== null, "the sheet has its Cancel");
+            verify(testContext.focusAccessible(cancel));
+            tryVerify(function () {
+                return cancel.activeFocus;
+            });
+            verify(testContext.pressAccessible(cancel));
+            tryVerify(function () {
+                return !sheet.visible;
+            });
+        }
+        function test_m5_late_screen_reader_keys_leave_the_sort_sheet_closed_data() {
+            return [{tag: "Alt+Return", key: Qt.Key_Return, modifiers: Qt.AltModifier},
+                {tag: "Alt+keypad Enter", key: Qt.Key_Enter, modifiers: Qt.AltModifier | Qt.KeypadModifier},
+                {tag: "Alt+Shift+Return", key: Qt.Key_Return, modifiers: Qt.AltModifier | Qt.ShiftModifier}];
+        }
+        function test_m5_late_screen_reader_keys_leave_the_sort_sheet_closed(data) {
+            verify(screenReader.active, "this run has a screen reader on");
+            testContext.setLifecyclePhase(0);
+            var home = findChild(app, "homeScreen");
+            try {
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+                for (var name of ["Charlie", "Alpha", "Bravo"])
+                    verify(savedSystems.add({name: name, sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5"}));
+                prefs.systemsSort = "added";
+                tryCompare(home, "visible", true);
+                home.showSection("systems");
+                tryCompare(savedSystemCards, "totalCount", 3);
+                waitForRendering(home);
+                var pill = findChild(home, "systemsSortPill");
+                chooseAsTalkBack(pill, "the Sort sheet", "Name");
+                compare(savedSystemCards.effectiveSort, "name");
+                lateKeysLeaveTheSheetClosed(pill, data, "the Sort pill");
+                compare(savedSystemCards.effectiveSort, "name");
+
+                cancelAsTalkBack(openAsTalkBack(pill, "the Sort pill"));
+                lateKeysLeaveTheSheetClosed(pill, data, "the Sort pill, after Cancel");
+
+                keyFirstThenClick(openAsTalkBack(pill, "the Sort pill"), "Order added", data);
+                tryCompare(savedSystemCards, "effectiveSort", "added");
+                lateKeysLeaveTheSheetClosed(pill, data, "the Sort pill, after the click");
+
+                // TalkBack passes a plain Return on: it still presses the pill.
+                testContext.sendKey(pill, Qt.Key_Return, Qt.NoModifier, true, false);
+                testContext.sendKey(pill, Qt.Key_Return, Qt.NoModifier, false, false);
+                tryVerify(function () {
+                    return Ui.Navigation.topModal !== null && Ui.Navigation.topModal.visible;
+                }, 2000, "a plain Return opens the sheet");
+                cancelAsTalkBack(Ui.Navigation.topModal);
+            } finally {
+                testContext.stopAccessibilityCount();
+                if (Ui.Navigation.topModal)
+                    Ui.Navigation.topModal.visible = false;
+                testContext.resetSystemsSort();
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+            }
+        }
+        function test_m5_late_screen_reader_keys_leave_the_history_filter_sheet_closed_data() {
+            return test_m5_late_screen_reader_keys_leave_the_sort_sheet_closed_data();
+        }
+        function test_m5_late_screen_reader_keys_leave_the_history_filter_sheet_closed(data) {
+            verify(screenReader.active, "this run has a screen reader on");
+            testContext.setLifecyclePhase(0);
+            app.currentTab = 1;
+            var history = findChild(app, "idleHistoryScreen");
+            var pill = null;
+            try {
+                tryCompare(history, "visible", true);
+                waitForRendering(history);
+                pill = textControl(history, "All activity");
+                verify(pill !== null, "the activity pill");
+                chooseAsTalkBack(pill, "the activity sheet", "Encrypted");
+                compare(pill.text, "Encrypted");
+                lateKeysLeaveTheSheetClosed(pill, data, "the activity pill");
+
+                cancelAsTalkBack(openAsTalkBack(pill, "the activity pill"));
+                lateKeysLeaveTheSheetClosed(pill, data, "the activity pill, after Cancel");
+
+                keyFirstThenClick(openAsTalkBack(pill, "the activity pill"), "All activity", data);
+                compare(pill.text, "All activity");
+                lateKeysLeaveTheSheetClosed(pill, data, "the activity pill, after the click");
+            } finally {
+                testContext.stopAccessibilityCount();
+                if (Ui.Navigation.topModal)
+                    Ui.Navigation.topModal.visible = false;
+                if (pill && pill.text !== "All activity") {
+                    pill.activate();
+                    var sheet = Ui.Navigation.topModal;
+                    if (sheet) {
+                        var all = textControl(sheet, "All activity");
+                        if (all)
+                            all.activate();
+                    }
+                }
+                app.currentTab = 0;
+            }
+        }
+
         // Issue #801 B3: Explore's face carries its frequency in its name. Edited in Explore's setup, Home hidden under
         // it, the face renames nothing; shown again, it reads the new frequency.
         function test_l_hidden_explore_face_stays_silent() {

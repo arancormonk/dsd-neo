@@ -680,9 +680,13 @@ Item {
                         if (enabled && Navigation.allows(spectrumPill) && visible)
                             screen.openSpectrum();
                     }
-                    Keys.onReturnPressed: activate()
-                    Keys.onEnterPressed: activate()
-                    Keys.onSpacePressed: activate()
+                    Keys.onPressed: function (event) {
+                        if (Navigation.activationPress(event, Window.activeFocusItem))
+                            activate();
+                    }
+                    Keys.onReleased: function (event) {
+                        Navigation.activationRelease(event);
+                    }
                     FocusFrame {}
                     visible: metrics.radioInput && screen.wideHeaderActions
                     width: spectrumLabel.implicitWidth + 22
@@ -738,9 +742,13 @@ Item {
                     Accessible.description: acts ? qsTr("Shows the receiver") : ""
                     Accessible.ignored: !navigationAllowed
                     Accessible.onPressAction: activate()
-                    Keys.onReturnPressed: activate()
-                    Keys.onEnterPressed: activate()
-                    Keys.onSpacePressed: activate()
+                    Keys.onPressed: function (event) {
+                        if (Navigation.activationPress(event, Window.activeFocusItem))
+                            activate();
+                    }
+                    Keys.onReleased: function (event) {
+                        Navigation.activationRelease(event);
+                    }
                     FocusFrame {}
                     width: liveRow.implicitWidth + chromeWidth
                     height: screen.pillHeight
@@ -1754,9 +1762,13 @@ Item {
                     if (enabled && Navigation.allows(decryptionRow))
                         keySheet.open();
                 }
-                Keys.onReturnPressed: activate()
-                Keys.onEnterPressed: activate()
-                Keys.onSpacePressed: activate()
+                Keys.onPressed: function (event) {
+                    if (Navigation.activationPress(event, Window.activeFocusItem))
+                        activate();
+                }
+                Keys.onReleased: function (event) {
+                    Navigation.activationRelease(event);
+                }
                 FocusFrame {}
                 Text {
                     id: decryptionLabel
@@ -2796,9 +2808,13 @@ Item {
             Accessible.description: qsTr("The session is finishing")
             Accessible.ignored: !navigationAllowed || !visible
             Accessible.onPressAction: activate()
-            Keys.onReturnPressed: activate()
-            Keys.onEnterPressed: activate()
-            Keys.onSpacePressed: activate()
+            Keys.onPressed: function (event) {
+                if (Navigation.activationPress(event, Window.activeFocusItem))
+                    activate();
+            }
+            Keys.onReleased: function (event) {
+                Navigation.activationRelease(event);
+            }
             FocusFrame {}
             width: parent.width
             height: Math.max(screen.pillHeight, lostLineLabel.implicitHeight + 16)

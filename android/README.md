@@ -209,7 +209,7 @@ remaining requests; API 29–30 uses the network provider. Fix acquisition and w
 reverse geocoding each have a separate 20-second timeout. Request IDs and
 separate fix/geocode status preserve a usable fix when geocoding fails and prevent
 late responses from replacing a newer search. Activity teardown cancels the request.
-The Sites chooser uses a separate coordinate-only request: at most 30-second-old fixes,
+The Sites chooser and Listen's Nearest order use a separate coordinate-only request: at most 30-second-old fixes,
 an accurate recent cache or fresh provider updates, and no reverse-geocoding wait. It offers
 fine and coarse foreground permission together when permission is first needed, respects
 existing approximate access, and adds GPS when fine permission is granted. A coarse result
@@ -630,8 +630,8 @@ profiles with their keys, Signal search ranges and permanent avoids, and your se
 decoder arguments and the RadioReference username and application-key override.
 
 It does not carry: call history, call recordings, replay recordings (the files replay systems play), Signal search's
-detection history, diagnostics, the last location fix, the Listen tab the phone opens on (each phone remembers its
-own, and a restore keeps it) and first-run state. The RadioReference password is never saved,
+detection history, diagnostics, the last location fix, the Listen tab the phone opens on and the order Listen sorts
+saved systems in (each phone remembers its own, and a restore keeps them) and first-run state. The RadioReference password is never saved,
 so it is never in a backup.
 Generated scan-list CSVs and compiled decryption files are not carried either; the restoring phone makes them again,
 and neither are temporary files an import left behind in a bundle folder (only when nothing uses them). An imported
@@ -2562,7 +2562,7 @@ under the title (and the Pinned row) while the list scrolls. On a short screen, 
 leave the list less than half of Listen (a phone held sideways at a large text size, say), the tabs are the first
 thing in the list instead and scroll away with it; this follows rotation and text size as they change:
 
-- **Systems**: **+ Add a system**, then the saved systems.
+- **Systems**: **+ Add a system**, then the saved systems, with search and sort (see below).
 - **Scan lists**: **+ Add a scan list**, a line saying what a scan list is for while there is none, then the lists.
 - **Explore**: **Signal search**, then **Explore the band**.
 
@@ -2585,6 +2585,40 @@ From a keyboard the tabs are one Tab stop, the current tab: Left and Right move 
 End go to the first and last, and Enter or Space shows the focused one. When the tabs are in the list, a tab chosen from
 the keyboard stays in view, so the list stops short of the tab's place if it has to. TalkBack reads each tab as a radio
 button, "checked" on the current one, because Qt's Android bridge has no tab role.
+
+### Searching and sorting saved systems
+
+Once you have a saved system, **Systems** shows a **Search saved systems** box and a **Sort** button above the
+cards. Search matches a system's name, its site names, its state and county, its protocol (P25, DMR and so on) and
+its frequencies. Type several words and a system must match all of them; type a frequency such as `851.0125`,
+`851` or `460000 kHz` to find the system that uses it. A line under the box says how many it shows, such as
+"3 of 40 systems", while a search is on, and **Clear search** empties it. When nothing matches, Listen says so and offers **Clear search**.
+TalkBack reads the result count once after you stop typing.
+
+**Sort** offers:
+
+- **Order added** (the default): the order you saved them in, so nothing moves when you update a system.
+- **Name**: alphabetical, with numbers in numeric order ("System 2" before "System 10").
+- **Place**: grouped under the state's name, then by county. Systems with several states come next, then
+  systems with no place.
+- **Nearest** (phones with location only): closest first, by the nearest of a system's sites that you have not
+  avoided and that has coordinates; those with every site avoided or no coordinates follow. Nearest asks for your
+  location with **Use my location**, and reads "Showing names until a location arrives" until it has one. Once
+  it has a location, a line says where it came from and offers **Update location**. A location older than 24
+  hours is not used, and the list falls back to name order until you update it.
+- **Last listened**: the most recently heard first; a system you have not listened to follows, by name.
+
+Each phone remembers its sort; it is not in backups, and a restore keeps it. Sorting never changes your saved
+list, only how it is shown. A system saved for two receivers appears as two cards, and a system with several
+sites is one card with a site button. With TalkBack, a sort or search reorders the list in one step, so swiping
+follows what is on the screen.
+
+Place and Nearest need to know where each system is. A system you imported from RadioReference carries its places;
+for the rest, **Update from RadioReference** (offered under the sort button in Place or Nearest order when systems
+have no place yet, as "12 saved systems have no place yet", and in a card's **More** menu) fetches them for your
+RadioReference-linked systems. The line's update covers only the systems it counts. It needs your RadioReference
+sign-in and only changes names, positions and places. See [RadioReference
+import](../docs/radioreference-import.md#places-and-update-from-radioreference).
 
 ### Pinned shortcuts
 

@@ -18,6 +18,7 @@
 #include <utility>
 #include "saved_systems_model.h"
 #include "scan_lists_model.h"
+#include "site_groups.h"
 
 namespace dsd_qt {
 
@@ -53,19 +54,11 @@ remaining_sibling(const SavedSystemsModel& systems, int row, const QSet<int>& re
     return heir != siblings.cend() ? systems.get(heir->toInt()).value(QStringLiteral("uid")).toString() : QString();
 }
 
-/* The RadioReference system @p row is grouped under, as site_groups.cpp groups sites, or 0 for a row in no group. */
-int
-group_of(const SavedSystemsModel& systems, int row) {
-    const QModelIndex at = systems.index(row);
-    const int sid = systems.data(at, SavedSystemsModel::RrSidRole).toInt();
-    return sid > 0 && systems.data(at, SavedSystemsModel::RrSiteIdRole).toInt() > 0 ? sid : 0;
-}
-
-/* The UID of the first site grouped under @p sid, the one its Home card stands on, or empty when none is. */
+/* The UID of the first site of group @p key, the one its Home card stands on, or empty when none is. */
 QString
-group_lead(const SavedSystemsModel& systems, int sid) {
+group_lead(const SavedSystemsModel& systems, const QString& key) {
     for (int row = 0; row < systems.count(); ++row) {
-        if (group_of(systems, row) == sid) {
+        if (systems.groupKey(row) == key) {
             return systems.data(systems.index(row), SavedSystemsModel::UidRole).toString();
         }
     }
@@ -191,7 +184,7 @@ ListenPins::rememberGroups() {
     m_groupOf.clear();
     for (int row = 0; m_systems != nullptr && row < m_systems->count(); ++row) {
         m_groupOf.insert(m_systems->data(m_systems->index(row), SavedSystemsModel::UidRole).toString(),
-                         group_of(*m_systems, row));
+                         m_systems->groupKey(row));
     }
 }
 
@@ -202,8 +195,9 @@ ListenPins::modelChanged() {
 }
 
 /* A system pin is the system, not the row it names. When that row leaves its group (an edit of its frequency, decode
-   flag or a CSV field, or the removal of a library file it names) and the group still has sites, the pin moves to the
-   group's lead, as a removal moves it; with none left it stays with the row. */
+   flag, a CSV field or its receiver, or the removal of a library file it names) and the group still has sites, the pin
+   moves to the group's lead, as a removal moves it; with none left it stays with the row. Each change is followed as it
+   lands, so several in one turn (startup's missing-file clears) move the pin one step at a time. */
 void
 ListenPins::followLeavers() {
     if (m_prefs == nullptr || m_systems == nullptr) {
@@ -214,10 +208,10 @@ ListenPins::followLeavers() {
     for (QVariant& value : pins) {
         QVariantMap stored = value.toMap();
         const QString uid = stored.value(QStringLiteral("uid")).toString();
-        const int was = m_groupOf.value(uid, 0);
+        const QString was = m_groupOf.value(uid);
         const int row = m_systems->rowForUid(uid);
-        if (stored.value(QStringLiteral("kind")).toString() != kSystem || was <= 0 || row < 0
-            || group_of(*m_systems, row) == was) {
+        if (stored.value(QStringLiteral("kind")).toString() != kSystem || was.isEmpty() || row < 0
+            || m_systems->groupKey(row) == was) {
             continue;
         }
         const QString lead = group_lead(*m_systems, was);
@@ -260,29 +254,28 @@ ListenPins::resolveTarget(const QString& kind, const QString& uid) const {
                               : resolveSaved(kind, uid);
 }
 
-/* A system is named by its group's lead, the row its Home card stands on, and starts as that card does: the one site
-   it can play, else the site chooser. A site is its system's name and its own. Empty when the row is not saved. */
+/* A system is named as its Home card is, by its group's title (site_group_title() of the lead, the row the card stands
+   on), and starts as that card does: the one site it can play, else the site chooser. A site is that same title, then
+   its own site name. Empty when the row is not saved. */
 QVariantMap
 ListenPins::resolveSaved(const QString& kind, const QString& uid) const {
     const int row = m_systems != nullptr ? m_systems->rowForUid(uid) : -1;
     if (row < 0) {
         return {};
     }
-    if (kind == kSite) {
-        const QVariantMap site = m_systems->get(row);
-        const QString name = site.value(QStringLiteral("name")).toString();
-        const QString siteName = site.value(QStringLiteral("siteName")).toString();
-        const QString label = siteName.isEmpty() ? name : text(Text::SiteLabel, name, siteName);
-        return named(label, text(Text::StartName, label));
-    }
     const QVariantList siblings = m_systems->siblingRows(row);
     const int lead = siblings.isEmpty() ? row : siblings.first().toInt();
-    const QString label = m_systems->get(lead).value(QStringLiteral("name")).toString();
+    const QString title = site_group_title(m_systems->get(lead));
+    if (kind == kSite) {
+        const QString siteName = m_systems->get(row).value(QStringLiteral("siteName")).toString();
+        const QString label = siteName.isEmpty() ? title : text(Text::SiteLabel, title, siteName);
+        return named(label, text(Text::StartName, label));
+    }
     const auto playable = std::count_if(siblings.cbegin(), siblings.cend(), [this](const QVariant& sibling) {
         return !m_systems->get(sibling.toInt()).value(QStringLiteral("avoidSite")).toBool();
     });
     const bool chooses = !siblings.isEmpty() && playable != 1;
-    return named(label, text(chooses ? Text::ChooseSiteName : Text::StartName, label));
+    return named(title, text(chooses ? Text::ChooseSiteName : Text::StartName, title));
 }
 
 QVariantMap

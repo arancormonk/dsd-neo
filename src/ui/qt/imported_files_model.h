@@ -81,6 +81,16 @@ class ImportedFilesModel : public QAbstractListModel {
     /** @brief Replace how a replace moves its file (tests: a move that fails, or does something first). */
     void setReplaceFile(ReplaceFile replaceFile);
 
+    /** What must let go of a library file's old meaning before the user's own bytes replace it; false refuses. */
+    using BeforeUserReplace = std::function<bool(const QString& path)>;
+    /**
+     * @brief Run @p hook with the stored path before an update (Update from file) of a RadioReference file installs
+     * the user's bytes; never for a refresh, nor for a file without RadioReference provenance. False refuses the
+     * update with `save` before the index or the file changes; a later failure leaves what the hook did. qt_ui.cpp
+     * points it at SavedSystemsModel::invalidatePathProvenance().
+     */
+    void setBeforeUserReplace(BeforeUserReplace hook);
+
     /** @brief Every library row type the model can validate; a row of any other type cannot be used. */
     static QStringList knownTypes();
 
@@ -394,6 +404,7 @@ class ImportedFilesModel : public QAbstractListModel {
     DecoderHost* m_host = nullptr;
     QPointer<ImportService> m_imports;
     ReplaceFile m_replaceFile;
+    BeforeUserReplace m_beforeUserReplace;
     QList<Row> m_rows;
     QStringList m_pruned_paths;
     /* The library revision: every change takes the next one. */

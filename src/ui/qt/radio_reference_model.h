@@ -47,6 +47,16 @@ namespace dsd_qt {
 
 QString rr_zip_from_postal(const QString& postalCode, const QString& countryCode);
 
+/**
+ * @brief The place a saved site or repeater list starts with, from ids RadioReference already sent: @p countyIds
+ *        (the chosen sites' TrsSite.siteCtid) as counties, @p systemStateIds (Trs.sState) as candidate states, and the
+ *        state itself when the system lists exactly one.
+ *
+ * Ids that are not positive are skipped and repeats kept once. No names: those come from the place name lookups. An
+ * empty map when there is no id at all.
+ */
+QVariantMap rr_site_place(const QList<int>& countyIds, const QVariantList& systemStateIds);
+
 class AppPrefs;
 class DecoderHost;
 class ImportedFilesModel;
@@ -374,6 +384,15 @@ class RadioReferenceModel : public QObject {
      */
     void setVerifiedSink(VerifiedSink sink);
 
+    /**
+     * @brief Fill @p auth from prefs and the held password; false (and @p auth zeroed) when the credentials are not
+     *        ready or do not fit. The caller scrubs it.
+     *
+     * Public for RrPlaceService, which sends its own requests with the same account and key choice. Not Q_INVOKABLE:
+     * the struct carries the password, which QML must never see.
+     */
+    bool fillAuth(dsd_rr_auth* auth) const;
+
   Q_SIGNALS:
     void locationRequestAllocated(qint64 requestId);
     void credentialsChanged();
@@ -382,6 +401,13 @@ class RadioReferenceModel : public QObject {
     void statusChanged();
     void listsChanged();
     void systemChanged();
+    /**
+     * @brief A loaded system's states (Trs.sState stids, in RadioReference's order), once its load completes.
+     *
+     * Its own signal, never systemChanged(): what follows it (the place name lookups) must not look like the loaded
+     * system changing. Not sent for a system that lists no state.
+     */
+    void systemPlaceIdsReady(const QVariantList& stids);
     /** @brief One refreshRow() outcome; @p result has ImportedFilesModel::refreshGeneratedFile()'s shape. */
     void refreshFinished(int row, const QVariantMap& result);
 
@@ -472,9 +498,6 @@ class RadioReferenceModel : public QObject {
     /** @brief Account for a submitted request; frees the context if it failed. */
     void endFetch(quint64 id, Request* request);
 
-    /** @brief Fill @p auth from prefs and the held password. Caller scrubs it. */
-    bool fillAuth(dsd_rr_auth* auth) const;
-
     void setStatus(const QString& status);
     void setError(int kind, const QString& text);
     void clearSystem();
@@ -497,6 +520,8 @@ class RadioReferenceModel : public QObject {
      * nothing references and nothing prunes.
      */
     QVariantMap buildSiteImportPlans(const QVariantList& siteIndexes, const QVariantMap& options);
+    /** @brief rr_site_place() for the loaded system's sites @p siteIds (comma-joined TrsSite.siteId). */
+    QVariantMap planPlace(const QString& siteIds) const;
     QVariantMap performSiteImports(const QVariantMap& plan, const QString& systemName);
     void unwindImport(const QStringList& paths);
 

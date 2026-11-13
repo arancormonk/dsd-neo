@@ -62,6 +62,10 @@ Item {
     property int step: 0
     // -1 appends a new system; >= 0 edits in place.
     property int editRow: -1
+    // The edited system's name as the edit opened: a save sends the name only
+    // when the field no longer says this, so an update that renamed the system
+    // meanwhile (a generated name following its site) is not undone.
+    property string editOpenedName: ""
     property string decryptionProfileUid: ""
 
     // Step 1 state
@@ -467,6 +471,7 @@ Item {
         biasTee = sys.biasTee;
         extraField.text = sys.extraArgs;
         nameField.text = sys.name;
+        editOpenedName = sys.name;
         chanCsvPath = sys.chanCsvPath;
         groupCsvPath = sys.groupCsvPath;
         chanCsvGenerated = generatedByRadioReference(chanCsvPath);
@@ -621,6 +626,50 @@ Item {
         return hangtimeValid() && encryptionValid && nameText.trim().length > 0;
     }
 
+    // Whether @a sys still tunes what the import answered (@a imported): only
+    // then do the import's site, position and place describe it. It checks
+    // exactly the fields SavedSystemsModel::update() treats as ending an
+    // import's provenance. A field the import answers is compared with the
+    // import; one it does not (keys, bandplan, source) with the system being
+    // edited, which is what update() compares with.
+    function keepsImportedTuning(sys, imported) {
+        var stored = editRow >= 0 ? savedSystems.get(editRow) : null;
+        for (var field of savedSystems.tuningProvenanceFields()) {
+            var base = imported[field];
+            if (base === undefined && (field === "chanCsvPath" || field === "groupCsvPath"))
+                base = "";
+            if (base === undefined && stored)
+                base = stored[field];
+            if (base !== undefined && (sys[field] || "") !== (base || ""))
+                return false;
+        }
+        return true;
+    }
+
+    // A per-site batch: every site receives the source/tuner answers, its
+    // protocol and CSVs stay site-specific, and one save adds every site or
+    // none of them. An edited site keeps none of its import's RadioReference
+    // details (the keys SavedSystemsModel clears for an edit).
+    function commitSites(sys) {
+        var sites = importedSites.map(function (imported, i) {
+            var site = i === 0 ? Object.assign({}, imported, sys) : Object.assign({}, sys, imported);
+            if (!keepsImportedTuning(site, imported)) {
+                for (var key of ["rrSid", "rrSiteId", "avoidSite", "siteName", "siteLat", "siteLon", "hasSitePos", "place"])
+                    delete site[key];
+            }
+            return site;
+        });
+        var keySource = encryptionEditor.keepingKey ? retainedKeySourceUid : "";
+        var keyGone = encryptionEditor.keepingKey && savedSystems.rowForUid(keySource) < 0;
+        var first = keyGone ? -1 : savedSystems.addAll(sites, keySource);
+        if (first < 0) {
+            csvNotice = keyGone ? qsTr("The retained key is unavailable. Choose Replace or Clear before saving.") : qsTr("Could not save this imported system.");
+            csvNoticeIsProblem = true;
+            return;
+        }
+        wizard.saved(first);
+    }
+
     function commit() {
         if (!hangtimeValid() || !encryptionValid || replayPending)
             return;
@@ -653,35 +702,22 @@ Item {
         if (!encryptionEditor.keepingKey)
             sys.encKeyValue = encryptionEditor.clearingKey ? "" : encKeyValue;
         if (importedSites.length > 0) {
-            // Every site receives the source/tuner answers; its protocol and CSVs stay site-specific.
-            for (var i = 0; i < importedSites.length; ++i) {
-                var site = i === 0 ? Object.assign({}, importedSites[i], sys) : Object.assign({}, sys, importedSites[i]);
-                if (site.freqMhz !== importedSites[i].freqMhz || site.decodeFlag !== importedSites[i].decodeFlag || site.chanCsvPath !== (importedSites[i].chanCsvPath || "") || site.groupCsvPath !== (importedSites[i].groupCsvPath || "")) {
-                    site.rrSid = 0;
-                    site.rrSiteId = 0;
-                }
-                if (encryptionEditor.keepingKey) {
-                    if (!savedSystems.addWithKeyFrom(retainedKeySourceUid, site)) {
-                        csvNotice = qsTr("The retained key is unavailable. Choose Replace or Clear before saving.");
-                        csvNoticeIsProblem = true;
-                        return;
-                    }
-                } else {
-                    if (!savedSystems.add(site)) {
-                        csvNotice = qsTr("Could not save this imported system.");
-                        csvNoticeIsProblem = true;
-                        return;
-                    }
-                }
-            }
-            wizard.saved(savedSystems.count - importedSites.length);
+            commitSites(sys);
             return;
         }
-        if (importedSite && importedSite.rrSiteId > 0 && sys.freqMhz === importedSite.freqMhz && sys.decodeFlag === importedSite.decodeFlag && sys.chanCsvPath === (importedSite.chanCsvPath || "") && sys.groupCsvPath === (importedSite.groupCsvPath || "")) {
-            for (var key of ["rrSid", "rrSiteId", "siteName", "siteLat", "siteLon", "hasSitePos"])
+        if (importedSite && keepsImportedTuning(sys, importedSite)) {
+            var copied = importedSite.rrSiteId > 0 ? ["rrSid", "rrSiteId", "siteName", "siteLat", "siteLon", "hasSitePos"] : [];
+            // A conventional multi-repeater import has a place and no site. A
+            // RadioReference import always answers one, empty when it sent no
+            // county or state: saved as such, it clears the old site's place.
+            if (importedSite.place !== undefined)
+                copied.push("place");
+            for (var key of copied)
                 sys[key] = importedSite[key];
         }
         if (editRow >= 0) {
+            if (sys.name === editOpenedName.trim())
+                delete sys.name;
             if (!savedSystems.update(editRow, sys)) {
                 csvNotice = qsTr("Could not save the system.");
                 csvNoticeIsProblem = true;
@@ -1604,9 +1640,13 @@ Item {
                         readonly property bool navigationAllowed: Navigation.allows(advHeader)
                         Accessible.ignored: !navigationAllowed || !visible
                         Accessible.onPressAction: toggle()
-                        Keys.onSpacePressed: toggle()
-                        Keys.onReturnPressed: toggle()
-                        Keys.onEnterPressed: toggle()
+                        Keys.onPressed: function (event) {
+                            if (Navigation.activationPress(event, Window.activeFocusItem))
+                                toggle();
+                        }
+                        Keys.onReleased: function (event) {
+                            Navigation.activationRelease(event);
+                        }
                         function toggle() {
                             if (enabled && Navigation.allows(advHeader))
                                 wizard.advancedOpen = !wizard.advancedOpen;
@@ -2028,9 +2068,13 @@ Item {
                         readonly property bool navigationAllowed: Navigation.allows(csvChoice)
                         Accessible.ignored: !navigationAllowed
                         Accessible.onPressAction: choose()
-                        Keys.onReturnPressed: choose()
-                        Keys.onEnterPressed: choose()
-                        Keys.onSpacePressed: choose()
+                        Keys.onPressed: function (event) {
+                            if (Navigation.activationPress(event, Window.activeFocusItem))
+                                choose();
+                        }
+                        Keys.onReleased: function (event) {
+                            Navigation.activationRelease(event);
+                        }
                         FocusFrame {}
                         function choose() {
                             if (!Navigation.allows(csvChoice))

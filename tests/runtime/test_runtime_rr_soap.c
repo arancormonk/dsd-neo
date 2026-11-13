@@ -373,6 +373,241 @@ test_county_list_inherits_state(void) {
     dsd_rr_county_list_free(&counties);
 }
 
+static int
+has_id(const int* ids, size_t n, int want) {
+    for (size_t i = 0; i < n; i++) {
+        if (ids[i] == want) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/** Parse a hand-built getTrsDetails body whose sState/sCounty rows are `inner`. */
+static int
+parse_details_geo(const char* inner, dsd_rr_trs_details* out) {
+    char body[2048];
+    dsd_rr_error err;
+    DSD_MEMSET(&err, 0, sizeof(err));
+    DSD_MEMSET(out, 0, sizeof(*out));
+    const int n = DSD_SNPRINTF(body, sizeof(body),
+                               "<?xml version=\"1.0\"?><Envelope><Body><getTrsDetailsResponse><return>"
+                               "<sName>X</sName>%s</return></getTrsDetailsResponse></Body></Envelope>",
+                               inner);
+    if (n <= 0 || (size_t)n >= sizeof(body)) {
+        return -1;
+    }
+    return rr_soap_parse(body, (size_t)n, RR_SHAPE_TRS_DETAILS, out, &err, NULL);
+}
+
+static void
+test_details_keep_states_and_counties(void) {
+    dsd_rr_error err;
+    dsd_rr_trs_details multi;
+    DSD_MEMSET(&err, 0, sizeof(err));
+    DSD_MEMSET(&multi, 0, sizeof(multi));
+    if (parse_fixture("trs_details_multistate.xml", RR_SHAPE_TRS_DETAILS, &multi, &err) == 0) {
+        expect_ll("multistate state count", (long long)multi.state_count, 3);
+        if (multi.state_count == 3U) {
+            expect_ll("state 0", multi.state_ids[0], 19);
+            expect_ll("state 1", multi.state_ids[1], 17);
+            expect_ll("state 2", multi.state_ids[2], 46);
+        }
+        expect_ll("multistate county count", (long long)multi.county_count, 23);
+        if (multi.county_count == 23U) {
+            expect_ll("first county", multi.county_ids[0], 836);
+            expect_ll("last county", multi.county_ids[22], 2426);
+        }
+        expect_ll("sysids still parse", (long long)multi.sysid_count, 9);
+    }
+    dsd_rr_trs_details_free(&multi);
+    expect("details free clears state ids", multi.state_ids == NULL && multi.state_count == 0U);
+    expect("details free clears county ids", multi.county_ids == NULL && multi.county_count == 0U);
+
+    dsd_rr_trs_details statewide;
+    DSD_MEMSET(&err, 0, sizeof(err));
+    DSD_MEMSET(&statewide, 0, sizeof(statewide));
+    if (parse_fixture("trs_details_statewide.xml", RR_SHAPE_TRS_DETAILS, &statewide, &err) == 0) {
+        expect("statewide pseudo-county 3329 kept", has_id(statewide.county_ids, statewide.county_count, 3329));
+        expect_ll("statewide state count", (long long)statewide.state_count, 3);
+    }
+    dsd_rr_trs_details_free(&statewide);
+    dsd_rr_trs_details_free(&statewide);
+
+    /* The real-air TETRA capture names one state (785) and two counties. */
+    dsd_rr_trs_details tetra;
+    DSD_MEMSET(&err, 0, sizeof(err));
+    DSD_MEMSET(&tetra, 0, sizeof(tetra));
+    expect("tetra details parse", parse_fixture("trs_details_tetra.xml", RR_SHAPE_TRS_DETAILS, &tetra, &err) == 0);
+    expect_ll("tetra state count", (long long)tetra.state_count, 1);
+    if (tetra.state_count == 1U) {
+        expect_ll("tetra state", tetra.state_ids[0], 785);
+    }
+    expect_ll("tetra county count", (long long)tetra.county_count, 2);
+    if (tetra.county_count == 2U) {
+        expect_ll("tetra first county", tetra.county_ids[0], 5893);
+        expect_ll("tetra second county", tetra.county_ids[1], 5894);
+    }
+    dsd_rr_trs_details_free(&tetra);
+    dsd_rr_trs_details_free(NULL);
+}
+
+static void
+test_details_ids_are_strict_and_bounded(void) {
+    dsd_rr_trs_details d;
+    const int rc = parse_details_geo("<sState><item><stid>0</stid></item><item><stid>-3</stid></item>"
+                                     "<item><stid>12x</stid></item><item><stid>2147483648</stid></item>"
+                                     "<item><stid>4294967297</stid></item><item><stid> 7 </stid></item>"
+                                     "<item><stid>2147483647</stid></item></sState>"
+                                     "<sCounty><item><ctid>0</ctid></item><item><ctid>abc</ctid></item>"
+                                     "<item><ctid>9</ctid></item></sCounty>",
+                                     &d);
+    expect("hostile id rows parse", rc == 0);
+    expect_ll("only positive int ids kept (states)", (long long)d.state_count, 2);
+    if (d.state_count == 2U) {
+        expect_ll("space-padded id", d.state_ids[0], 7);
+        expect_ll("INT32_MAX kept", d.state_ids[1], 2147483647);
+    }
+    expect_ll("only positive int ids kept (counties)", (long long)d.county_count, 1);
+    dsd_rr_trs_details_free(&d);
+
+    /* Lookalike ids outside the two arrays, or nested deeper, are not collected. */
+    const int rc2 = parse_details_geo("<other><item><stid>5</stid></item></other>"
+                                      "<sState><item><x><stid>6</stid></x></item></sState>",
+                                      &d);
+    expect("lookalike ids parse", rc2 == 0);
+    expect_ll("lookalike states ignored", (long long)d.state_count, 0);
+    dsd_rr_trs_details_free(&d);
+
+    /* More than the cap: extras are ignored, not an error. */
+    char* inner = (char*)malloc(32768);
+    char* body = (char*)malloc(65536);
+    if (inner == NULL || body == NULL) {
+        expect("capped body alloc", 0);
+        free(inner);
+        free(body);
+        return;
+    }
+    size_t off = 0;
+    off += (size_t)DSD_SNPRINTF(inner + off, 32768 - off, "<sState>");
+    for (int i = 1; i <= 70; i++) {
+        off += (size_t)DSD_SNPRINTF(inner + off, 32768 - off, "<item><stid>%d</stid></item>", i);
+    }
+    off += (size_t)DSD_SNPRINTF(inner + off, 32768 - off, "</sState><sCounty>");
+    for (int i = 1; i <= 520; i++) {
+        off += (size_t)DSD_SNPRINTF(inner + off, 32768 - off, "<item><ctid>%d</ctid></item>", i);
+    }
+    (void)DSD_SNPRINTF(inner + off, 32768 - off, "</sCounty>");
+    dsd_rr_error err;
+    DSD_MEMSET(&err, 0, sizeof(err));
+    DSD_MEMSET(&d, 0, sizeof(d));
+    const int n = DSD_SNPRINTF(body, 65536,
+                               "<?xml version=\"1.0\"?><Envelope><Body><getTrsDetailsResponse><return>%s"
+                               "</return></getTrsDetailsResponse></Body></Envelope>",
+                               inner);
+    expect("capped body fits", n > 0 && n < 65536);
+    expect("capped body parses", rr_soap_parse(body, (size_t)n, RR_SHAPE_TRS_DETAILS, &d, &err, NULL) == 0);
+    expect_ll("state cap", (long long)d.state_count, 64);
+    expect_ll("county cap", (long long)d.county_count, 512);
+    dsd_rr_trs_details_free(&d);
+    free(body);
+    free(inner);
+}
+
+static void
+test_site_county_id(void) {
+    dsd_rr_error err;
+    dsd_rr_site_list sites;
+    DSD_MEMSET(&err, 0, sizeof(err));
+    DSD_MEMSET(&sites, 0, sizeof(sites));
+    if (parse_fixture("trs_sites_ctid.xml", RR_SHAPE_SITE_LIST, &sites, &err) == 0) {
+        expect_ll("ctid site count", (long long)sites.count, 3);
+        if (sites.count == 3U) {
+            expect_ll("site 0 county", sites.items[0].county_id, 836);
+            expect_ll("site 1 county", sites.items[1].county_id, 841);
+            expect_ll("nil siteCtid is 0", sites.items[2].county_id, 0);
+        }
+    }
+    dsd_rr_site_list_free(&sites);
+
+    /* A non-positive or non-numeric siteCtid is absent, and never leaks to the next site. */
+    static const char k_body[] = "<?xml version=\"1.0\"?><Envelope><Body><getTrsSitesResponse><return>"
+                                 "<item><siteId>1</siteId><siteCtid>-5</siteCtid></item>"
+                                 "<item><siteId>2</siteId><siteCtid>7</siteCtid></item>"
+                                 "<item><siteId>3</siteId><siteCtid>x9</siteCtid></item>"
+                                 "<item><siteId>4</siteId><siteCtid>2147483648</siteCtid></item>"
+                                 "</return></getTrsSitesResponse></Body></Envelope>";
+    DSD_MEMSET(&err, 0, sizeof(err));
+    DSD_MEMSET(&sites, 0, sizeof(sites));
+    const int rc = rr_soap_parse(k_body, sizeof(k_body) - 1U, RR_SHAPE_SITE_LIST, &sites, &err, NULL);
+    expect("hostile siteCtid parses", rc == 0);
+    if (rc == 0 && sites.count == 4U) {
+        expect_ll("negative siteCtid is 0", sites.items[0].county_id, 0);
+        expect_ll("positive siteCtid kept", sites.items[1].county_id, 7);
+        expect_ll("non-numeric siteCtid is 0", sites.items[2].county_id, 0);
+        expect_ll("overflow siteCtid is 0", sites.items[3].county_id, 0);
+    } else {
+        expect("four hostile sites", 0);
+    }
+    dsd_rr_site_list_free(&sites);
+}
+
+static void
+test_state_info(void) {
+    dsd_rr_error err;
+    dsd_rr_state_info info;
+    DSD_MEMSET(&err, 0, sizeof(err));
+    DSD_MEMSET(&info, 0, sizeof(info));
+    if (parse_fixture("state_info_19.xml", RR_SHAPE_STATE_INFO, &info, &err) == 0) {
+        expect_ll("state info stid", info.stid, 19);
+        expect_str("state info name", info.state_name, "Iowa");
+        expect_ll("state info county count", (long long)info.counties.count, 102);
+        int tagged = 1;
+        for (size_t i = 0; i < info.counties.count; i++) {
+            if (info.counties.items[i].stid != 19 || strcmp(info.counties.items[i].state_name, "Iowa") != 0) {
+                tagged = 0;
+            }
+        }
+        expect("every county carries stid and name", tagged);
+    }
+    dsd_rr_state_info_free(&info);
+    expect("state info free clears counties", info.counties.items == NULL && info.counties.count == 0U);
+    expect_ll("state info free clears stid", info.stid, 0);
+    expect_str("state info free clears name", info.state_name, "");
+
+    DSD_MEMSET(&err, 0, sizeof(err));
+    DSD_MEMSET(&info, 0, sizeof(info));
+    if (parse_fixture("state_info_empty_counties.xml", RR_SHAPE_STATE_INFO, &info, &err) == 0) {
+        expect_ll("empty-county stid kept", info.stid, 11);
+        expect_str("empty-county name kept", info.state_name, "District of Columbia");
+        expect_ll("empty-county list is empty", (long long)info.counties.count, 0);
+    } else {
+        expect("empty-county state info parses", 0);
+    }
+    dsd_rr_state_info_free(&info);
+    dsd_rr_state_info_free(NULL);
+
+    /* A stid that is not a positive int is dropped, not wrapped. */
+    static const char* const k_bad[] = {"0", "-4", "2147483648", "4294967297", "x"};
+    for (size_t i = 0; i < sizeof(k_bad) / sizeof(k_bad[0]); i++) {
+        char body[512];
+        const int n = DSD_SNPRINTF(body, sizeof(body),
+                                   "<?xml version=\"1.0\"?><Envelope><Body><getStateInfoResponse><return>"
+                                   "<stid>%s</stid><stateName>Nowhere</stateName><countyList>"
+                                   "<item><ctid>5</ctid><countyName>Edge</countyName></item>"
+                                   "</countyList></return></getStateInfoResponse></Body></Envelope>",
+                                   k_bad[i]);
+        DSD_MEMSET(&err, 0, sizeof(err));
+        DSD_MEMSET(&info, 0, sizeof(info));
+        const int rc = rr_soap_parse(body, (size_t)n, RR_SHAPE_STATE_INFO, &info, &err, NULL);
+        expect("bad stid parses", rc == 0);
+        expect_ll("bad stid is 0", info.stid, 0);
+        expect_ll("bad stid keeps the county row", (long long)info.counties.count, 1);
+        expect_ll("county stid follows", info.counties.count == 1U ? info.counties.items[0].stid : -1, 0);
+        dsd_rr_state_info_free(&info);
+    }
+}
+
 static void
 test_trs_lists(void) {
     dsd_rr_error err;
@@ -1237,7 +1472,11 @@ main(void) {
     test_user_info_and_zip();
     test_country_and_state_lists();
     test_county_list_inherits_state();
+    test_state_info();
     test_trs_lists();
+    test_details_keep_states_and_counties();
+    test_details_ids_are_strict_and_bounded();
+    test_site_county_id();
     test_support_maps();
     test_trs_details();
     test_p25_sites();

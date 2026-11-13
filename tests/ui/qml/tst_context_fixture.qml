@@ -156,13 +156,31 @@ TestCase {
         compare(recordings.recordingCountForDetection("17:9"), 0);
     }
 
+    // Listen's saved-system cards are the production model; the harness resets what a case may leave on it, and
+    // setLocationSupported() sets the host's reading and the cards' together, as qt_ui.cpp does.
+    function test_saved_system_cards_registered_and_reset() {
+        verify(savedSystemCards !== undefined && savedSystemCards !== null);
+        compare(savedSystemCards.sortId, "added");
+        savedSystemCards.query = "metro";
+        savedSystemCards.holdReorders = true;
+        savedSystemCards.screenReaderActive = true;
+        testContext.setLocationSupported(true);
+        testContext.resetSavedSystemCards();
+        compare(savedSystemCards.query, "");
+        compare(savedSystemCards.holdReorders, false);
+        compare(savedSystemCards.screenReaderActive, false);
+        compare(decoderHost.locationSupported, true, "a reset leaves location support to setLocationSupported()");
+        testContext.setLocationSupported(false);
+        compare(decoderHost.locationSupported, false);
+    }
+
     function test_01_the_fixture_carries_every_reading_the_screens_read() {
         // The screens the other cases load, plus Theme.qml: the screens pull it
         // in as a singleton and it reads prefs itself.
         var missing = testContext.missingContextKeys(
             ["HistoryScreen.qml", "HistoryDetailSheet.qml", "CallRecordingPlayer.qml", "CallRecordingsScreen.qml", "CallRow.qml", "MonitorScreen.qml", "SpectrumScreen.qml", "ExploreSetupScreen.qml", "RadioSheet.qml",
              "ImportsScreen.qml", "WizardScreen.qml", "HomeScreen.qml", "SettingsScreen.qml", "RadioReferenceAccountEditor.qml", "RadioReferenceAccountScreen.qml", "LicensesScreen.qml", "Main.qml",
-             "SiteChooserSheet.qml", "ScanListScreen.qml", "ScanListCard.qml", "ScanEntryRow.qml", "DiagnosticsScreen.qml", "RadioReferenceScreen.qml", "TalkgroupsScreen.qml", "TalkgroupCard.qml", "TalkgroupEditSheet.qml", "TalkgroupSaveFlow.qml", "ToneFilterSheet.qml", "ReceivePolicySheet.qml", "SquelchSheet.qml", "PassbandSheet.qml", "ScanAvoidSheet.qml", "ScanListsSheet.qml", "ScanTogetherSheet.qml", "PinButton.qml", "PinnedSheet.qml", "BackupFlow.qml", "BackupResultCard.qml", "DocumentPicker.qml", "FileBrowser.qml", "FileBrowserScreen.qml", "FileBrowserLocations.qml", "FileBrowserFolder.qml", "StoreNoticeCard.qml", "SignalSearchScreen.qml", "ExportMessage.qml", "DetectionRecordingsSheet.qml", "Theme.qml"])
+             "SiteChooserSheet.qml", "SavedSystemsControls.qml", "ScanListScreen.qml", "ScanListCard.qml", "ScanEntryRow.qml", "DiagnosticsScreen.qml", "RadioReferenceScreen.qml", "TalkgroupsScreen.qml", "TalkgroupCard.qml", "TalkgroupEditSheet.qml", "TalkgroupSaveFlow.qml", "ToneFilterSheet.qml", "ReceivePolicySheet.qml", "SquelchSheet.qml", "PassbandSheet.qml", "ScanAvoidSheet.qml", "ScanListsSheet.qml", "ScanTogetherSheet.qml", "PinButton.qml", "PinnedSheet.qml", "BackupFlow.qml", "BackupResultCard.qml", "DocumentPicker.qml", "FileBrowser.qml", "FileBrowserScreen.qml", "FileBrowserLocations.qml", "FileBrowserFolder.qml", "StoreNoticeCard.qml", "SignalSearchScreen.qml", "ExportMessage.qml", "DetectionRecordingsSheet.qml", "Theme.qml"])
 
         compare(missing.length, 0,
                 "read by the screens, missing from the fixture: " + missing.join(", "))
