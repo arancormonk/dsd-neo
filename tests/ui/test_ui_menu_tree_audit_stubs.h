@@ -90,6 +90,7 @@
     X(act_scan_avoid_list)                                                                                             \
     X(act_scan_hold_toggle)                                                                                            \
     X(act_scan_lists)                                                                                                  \
+    X(act_scan_skip_silent)                                                                                            \
     X(act_scan_voice_hold)                                                                                             \
     X(act_scan_voice_only)                                                                                             \
     X(act_scan_voice_qualify)                                                                                          \
@@ -300,6 +301,7 @@
     X(lbl_scan_avoid_list)                                                                                             \
     X(lbl_scan_hold)                                                                                                   \
     X(lbl_scan_lists)                                                                                                  \
+    X(lbl_scan_skip_silent)                                                                                            \
     X(lbl_scan_voice_hold)                                                                                             \
     X(lbl_scan_voice_only)                                                                                             \
     X(lbl_scan_voice_qualify)                                                                                          \

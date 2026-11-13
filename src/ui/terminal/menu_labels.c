@@ -672,6 +672,14 @@ lbl_scan_voice_hold(const void* v, char* b, size_t n) {
     return b;
 }
 
+/* Session-wide (#834): the live setting, never an entered row's configured view, which does not hold it. */
+const char*
+lbl_scan_skip_silent(const void* v, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)v;
+    DSD_SNPRINTF(b, n, "Silent channel skip [%s]", onoff(c && c->opts && c->opts->scan_skip_silent));
+    return b;
+}
+
 const char*
 lbl_rev_mute(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;

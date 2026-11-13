@@ -274,6 +274,7 @@ main(int argc, char** argv) {
     prefs.hangtimeSec = 4.5;
     prefs.autoPpm = true;
     list["voiceOnly"] = true;
+    list["skipSilent"] = true;
     list["defaultDwellMs"] = 250;
     list["defaultHoldMs"] = 1500;
     list["sourceType"] = "rtltcp";
@@ -293,9 +294,10 @@ main(int argc, char** argv) {
           && extraArgs.value(extraArgs.lastIndexOf("-t") + 1) == "9");
     prefs.extraArgs = "-F";
     check(error.isEmpty() && args.contains("rtltcp:localhost:1234:851.5M:38:4:24:0:2:bias")
-          && args.contains("--trunk-scan") && args.contains("--scan-voice-only") && args.contains("--src-csv")
-          && args.contains("--trunk-scan-dwell-ms") && args.contains("--trunk-scan-activity-hold-ms")
-          && args.contains("--enc-lockout") && args.contains("--auto-ppm"));
+          && args.contains("--trunk-scan") && args.contains("--scan-voice-only") && args.contains("--scan-skip-silent")
+          && args.contains("--src-csv") && args.contains("--trunk-scan-dwell-ms")
+          && args.contains("--trunk-scan-activity-hold-ms") && args.contains("--enc-lockout")
+          && args.contains("--auto-ppm"));
     for (const auto& field : {"gainDb", "bandwidthKhz", "biasTee"}) {
         const auto prior = list.value(field);
         list[field] = "invalid";
@@ -314,7 +316,8 @@ main(int argc, char** argv) {
     list["entries"] = QVariantList{entry};
     check(!build().ok);
     for (const auto& token : QStringList{"-Cfoo", "-Y", "-T", "-i", "--trunk-scan=x", "--p25-bandplan", "--iq-replay",
-                                         "--scan-voice-only", "--no-scan-voice-only", "--show-keys", "-ft", "-mq"}) {
+                                         "--scan-voice-only", "--no-scan-voice-only", "--scan-skip-silent",
+                                         "--no-scan-skip-silent", "--show-keys", "-ft", "-mq"}) {
         check(!session_args_scan_extra_safe(token));
     }
     check(session_args_scan_extra_safe("--enc-lockout"));

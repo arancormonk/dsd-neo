@@ -2428,7 +2428,27 @@ test_scan_voice_gate_actions(void) {
     rc |= expect_int("voice qualify configured initial", g_prompt.initial_int, 1800);
     act_scan_voice_hold(&ctx);
     rc |= expect_int("voice hold configured initial", g_prompt.initial_int, 2800);
+    /* Session-wide (#834): the toggle reads the live value, never an entered row's configured view. */
+    opts.scan_skip_silent = 1;
+    reset_capture();
+    act_scan_skip_silent(&ctx);
+    rc |= expect_int("skip-silent ignores the configured view", cmd_i32(), 0);
     dsd_test_scan_labels_configured(NULL);
+
+    opts.scan_skip_silent = 0;
+    reset_capture();
+    act_scan_skip_silent(&ctx);
+    rc |= expect_int("skip-silent command", g_cmd.id, DSD_APP_CMD_SCAN_SKIP_SILENT_SET);
+    rc |= expect_int("skip-silent toggles on", cmd_i32(), 1);
+    rc |= expect_int("skip-silent posts once", g_cmd.calls, 1);
+    opts.scan_skip_silent = 1;
+    reset_capture();
+    act_scan_skip_silent(&ctx);
+    rc |= expect_int("skip-silent off command", g_cmd.id, DSD_APP_CMD_SCAN_SKIP_SILENT_SET);
+    rc |= expect_int("skip-silent toggles off", cmd_i32(), 0);
+    reset_capture();
+    act_scan_skip_silent(NULL);
+    rc |= expect_int("skip-silent without a context toggles on", cmd_i32(), 1);
 
     return rc;
 }

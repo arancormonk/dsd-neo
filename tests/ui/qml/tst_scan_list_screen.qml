@@ -1516,6 +1516,87 @@ Item {
             }
         }
 
+        // Issue #834: the session-wide Skip silent channels switch, its help read through it, and saved with the list.
+        readonly property string skipSilentHelpText: "Moves on early when a quick signal check finds a conventional channel quiet. Weak or very short transmissions can be missed. Trunked systems, open squelch and holds keep normal timing, and so do receivers that can't measure the channel."
+
+        function skipSilentHelp() {
+            var help = visualChild(screen, function (item) {
+                return item.text === skipSilentHelpText;
+            });
+            verify(help !== null, "skip-silent help");
+            return help;
+        }
+
+        function test_skip_silent_switch_round_trip() {
+            edit("scanListName", "Quiet skip");
+            control("scanAdvancedToggle").Accessible.pressAction();
+            var box = control("scanSkipSilent");
+            compare(box.text, "Skip silent channels");
+            verify(box.visible && !box.checked);
+            verify(!screen.draft.skipSilent);
+            compare(box.Accessible.description, skipSilentHelpText);
+            var help = skipSilentHelp();
+            verify(help.visible);
+            verify(help.Accessible.ignored, "the help is read through the switch, not as a second stop");
+            // A click as the control takes it: QtTest's synthesized press and release could miss under a loaded CPU.
+            box.click();
+            verify(box.checked);
+            compare(screen.draft.skipSilent, true);
+            box.forceActiveFocus();
+            keyClick(Qt.Key_Space);
+            verify(!box.checked);
+            compare(screen.draft.skipSilent, false);
+            keyClick(Qt.Key_Space);
+            compare(screen.draft.skipSilent, true);
+            screen.saveDraft();
+            compare(scanLists.get(0).skipSilent, true);
+            compare(scanLists.get(0).voiceOnly, false);
+            // On and off again is no change to discard, in a new list and a saved one.
+            for (var row of [-1, 0]) {
+                screen.openFor(row);
+                control("scanAdvancedToggle").Accessible.pressAction();
+                var again = control("scanSkipSilent");
+                compare(again.checked, row === 0);
+                var before = screen.fingerprint();
+                again.forceActiveFocus();
+                keyClick(Qt.Key_Space);
+                verify(screen.fingerprint() !== before);
+                keyClick(Qt.Key_Space);
+                compare(screen.fingerprint(), before);
+            }
+        }
+
+        function test_skip_silent_help_wraps_at_large_text_data() {
+            return [{tag: "phone", width: 360, scale: 2}, {tag: "desktop", width: 900, scale: 2}];
+        }
+
+        function test_skip_silent_help_wraps_at_large_text(data) {
+            var width = screen.width;
+            screen.anchors.fill = undefined;
+            screen.width = data.width;
+            Ui.Theme.fontScale = data.scale;
+            try {
+                control("scanAdvancedToggle").Accessible.pressAction();
+                var box = control("scanSkipSilent");
+                var help = skipSilentHelp();
+                tryVerify(function () {
+                    return help.lineCount > 1;
+                });
+                compare(help.width, box.width);
+                compare(help.leftPadding, box.leftPadding + box.indicator.width + box.spacing, "the help hangs under the label");
+                verify(help.contentWidth <= help.width + 0.5);
+                var pos = help.mapToItem(screen, 0, 0);
+                verify(pos.x >= 0 && pos.x + help.width <= data.width + 0.5);
+                tryVerify(function () {
+                    return help.y >= box.y + box.height;
+                }, 1000, "the help sits under the switch");
+            } finally {
+                Ui.Theme.resetFontScale();
+                screen.width = width;
+                screen.anchors.fill = screen.parent;
+            }
+        }
+
         function test_remove_list_requires_confirmation() {
             edit("scanListName", "Remove me");
             screen.saveDraft();

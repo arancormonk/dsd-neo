@@ -12397,6 +12397,11 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     (`ui_menu_pop_emptied_frames()`, `menu_core.c`). Tests: `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_TREE_AUDIT`
     (+ `_NO_RADIO`: the submenu's rows, order and handlers, Trunking at 12), `UI_NCURSES_PRINTER_HELPERS`,
     `UI_MENU_NAVIGATION` (an emptied submenu).
+  - Silent channel skip (issue #834): Trunking > Follow > `Silent channel skip [On|Off]` (`follow.skip_silent`, after
+    Voice-only scan; Follow at the fifteen-row limit) toggles the session-wide `opts->scan_skip_silent` through
+    `DSD_APP_CMD_SCAN_SKIP_SILENT_SET`. `lbl_scan_skip_silent()` and `act_scan_skip_silent()` read the live option,
+    never `dsd_scan_mode_configured_view()`: an entered row's settings never hold it, unlike Voice-only scan. Tests:
+    `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`).
   - Group list reload (discussion #748): Trunking > Channels & groups > Reload group list (`lists.group_reload`,
     right after `lists.group`, no hotkey since a reload clears temporary TG avoids and call skips) posts
     `DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD` with no path (`act_group_list_reload()`); the decoder resolves the file
@@ -17635,7 +17640,17 @@ checks imported paths, atomically writes the private CSV, validates through
 `app_control/trunk_scan_validate.h` (`dsd_app_trunk_scan_validate_target_lists()` is the several-file form, errors
 named by display name; issue #697), and delegates argv assembly to
 `session_args.cpp`. `Main.qml` shares the existing USB permission gate and extends
-the single `sessionInitialized` recency handler. `metrics_model` copies target
+the single `sessionInitialized` recency handler.
+
+A list's session switches sit in the editor's Advanced section (`ScanListScreen.qml`): Voice only (`voiceOnly`,
+`--scan-voice-only`) and, under it, Skip silent channels (`skipSilent`, `--scan-skip-silent`, issue #834), a
+`PlexCheckBox` whose help hangs under its label and is read as its `Accessible.description` (the help `Text` is
+`Accessible.ignored`). `normalize()` (`scan_lists_model.cpp`) copies both and defaults a missing one to off, so a list
+saved before a switch existed starts with it off and writes it at its next save; a backup carries `scan_lists.json`
+whole. `appendScanOptions()` sends each flag once per session, from the first list. The scan-list Extra decoder
+arguments gate (`session_args_scan_extra_safe()`) refuses both forms of both flags, since the checkboxes own them; a
+saved system's own or the app's extra options still pass them (`session_args_extra_safe()`), so a RadioReference
+conventional system that runs `-Y` can turn skip-silent on. `metrics_model` copies target
 identity from the tick's held snapshot; no extra snapshot reader is introduced.
 
 Several lists in one session (issue #697):
@@ -17660,13 +17675,13 @@ Several lists in one session (issue #697):
 - Who can join: `session_args_scan_join_conflict()` (`session_args.cpp`; QML asks `ScanListStarter::joinConflict()`)
   compares the primary list with another after the app defaults and path resolution and names the first setting that
   differs, in this order (`Different radio source`, `Different gain`, `Different PPM correction`, `Different bandwidth`,
-  `Different bias tee`, `Different Airspy settings`, `Different voice-only setting`, `Different default dwell`,
-  `Different default hold`, `Different fallback talkgroups`, `Different source aliases`; empty when it can join). The
-  radio source is the source type and device (Airspy serial, rtl_tcp/TCP host and port, UDP port, file path); bandwidth
-  is compared as the radio runs it and only on RTL and Airspy sources; gain, PPM and bias tee only on RTL sources (a
-  setting the source's argv leaves out, `append_input_args()`, is no setting); Airspy values are read with the engine's
-  aliases (`scan_join_airspy_value()`); dwell and hold 0 are the engine's defaults
-  (`SessionArgsScan{Dwell,Hold}DefaultMs`, pinned against `DSD_TRUNK_SCAN_*_DEFAULT_MS` in the test).
+  `Different bias tee`, `Different Airspy settings`, `Different voice-only setting`, `Different skip-silent setting`
+  (issue #834), `Different default dwell`, `Different default hold`, `Different fallback talkgroups`, `Different source
+  aliases`; empty when it can join). The radio source is the source type and device (Airspy serial, rtl_tcp/TCP host
+  and port, UDP port, file path); bandwidth is compared as the radio runs it and only on RTL and Airspy sources; gain,
+  PPM and bias tee only on RTL sources (a setting the source's argv leaves out, `append_input_args()`, is no setting);
+  Airspy values are read with the engine's aliases (`scan_join_airspy_value()`); dwell and hold 0 are the engine's
+  defaults (`SessionArgsScan{Dwell,Hold}DefaultMs`, pinned against `DSD_TRUNK_SCAN_*_DEFAULT_MS` in the test).
 - Start: `ScanListStarter::startLists()` takes at most `maxLists()` (`DSD_TRUNK_SCAN_MAX_LISTS`), runs each list's own
   checks (`prepare(list, false)`, a refusal naming the list) and the join rule against the first
   (`“Louder” can't scan with “Security”: different gain.`), writes every list's CSV, then checks them together with

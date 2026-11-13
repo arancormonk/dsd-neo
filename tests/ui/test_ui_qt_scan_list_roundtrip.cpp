@@ -6,6 +6,9 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QIODevice>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
@@ -680,6 +683,39 @@ checkFallbackPathsClear() {
     check(model.remove(row));
 }
 
+/* The list's session switches, Voice only and Skip silent channels (issue #834), are saved with it and read back; a
+ * list saved before a switch existed reads it as off, and its next save writes it out. */
+static void
+checkSessionSwitchesRoundTrip() {
+    const QVariantList entries{QVariantMap{{"kind", "freq"}, {"protocol", "nfm"}, {"freqMhz", "462.5625"}}};
+    ScanListsModel model;
+    check(model.add({{"name", "Switches"}, {"voiceOnly", true}, {"skipSilent", true}, {"entries", entries}}));
+    const int row = model.count() - 1;
+    {
+        const ScanListsModel reloaded;
+        check(reloaded.get(row).value("voiceOnly").toBool() && reloaded.get(row).value("skipSilent").toBool());
+    }
+    check(model.update(row, {{"voiceOnly", false}, {"skipSilent", false}}));
+    {
+        const ScanListsModel reloaded;
+        check(reloaded.get(row).contains("voiceOnly") && !reloaded.get(row).value("voiceOnly").toBool()
+              && reloaded.get(row).contains("skipSilent") && !reloaded.get(row).value("skipSilent").toBool());
+    }
+    QJsonArray stored = json_store_load_array("scan_lists.json");
+    QJsonObject older = stored.at(row).toObject();
+    older.remove("voiceOnly");
+    older.remove("skipSilent");
+    stored.replace(row, older);
+    check(json_store_save_array("scan_lists.json", stored));
+    ScanListsModel loaded;
+    check(loaded.get(row).value("skipSilent") == QVariant(false)
+          && loaded.get(row).value("voiceOnly") == QVariant(false));
+    check(loaded.update(row, {{"name", "Switches saved"}}));
+    const QJsonObject saved = json_store_load_array("scan_lists.json").at(row).toObject();
+    check(saved.value("skipSilent") == QJsonValue(false) && saved.value("voiceOnly") == QJsonValue(false));
+    check(loaded.remove(row));
+}
+
 int
 main(int argc, char** argv) {
     QTemporaryDir dir;
@@ -857,6 +893,7 @@ main(int argc, char** argv) {
     checkAnalogEntriesIgnoreHiddenDecryption();
     checkAnalogRateDiagnostic(dir);
     checkFallbackPathsClear();
+    checkSessionSwitchesRoundTrip();
     QDir(dataDir).removeRecursively();
     return failures ? 1 : 0;
 }

@@ -1145,6 +1145,34 @@ Rectangle {
                         checked: screen.draft.voiceOnly || false
                         onToggled: screen.draft.voiceOnly = checked
                     }
+                    // The switch and its help as one group: the help hangs under the label, closer to it than to the
+                    // next field.
+                    Column {
+                        width: parent.width
+                        PlexCheckBox {
+                            id: skipSilentBox
+                            objectName: "scanSkipSilent"
+                            width: parent.width
+                            text: qsTr("Skip silent channels")
+                            checked: screen.draft.skipSilent || false
+                            onToggled: screen.draft.skipSilent = checked
+                            Accessible.description: skipSilentHelp.text
+                        }
+                        // Read through the checkbox's Accessible.description, so the help is not a second stop for a screen reader.
+                        Text {
+                            id: skipSilentHelp
+                            width: parent.width
+                            leftPadding: skipSilentBox.leftPadding + skipSilentBox.indicator.width + skipSilentBox.spacing
+                            bottomPadding: 6
+                            Accessible.ignored: true
+                            text: qsTr("Moves on early when a quick signal check finds a conventional channel quiet. Weak or very short transmissions can be missed. Trunked systems, open squelch and holds keep normal timing, and so do receivers that can't measure the channel.")
+                            wrapMode: Text.Wrap
+                            textFormat: Text.PlainText
+                            font.family: Theme.sans
+                            font.pixelSize: Theme.fontSize(12)
+                            color: Theme.textSecondary
+                        }
+                    }
                     Repeater {
                         id: timingFields
                         model: [

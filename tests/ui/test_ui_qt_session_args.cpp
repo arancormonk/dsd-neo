@@ -1851,9 +1851,9 @@ test_grouped_hex_keys() {
    list, in order, and nothing else of the others; the extra options still may not add a list of their own. */
 static void
 test_scan_lists_argv(void) {
-    QVariantMap list{
-        {"sourceType", "rtltcp"}, {"host", "10.0.2.2"},      {"port", 1234}, {"gainDb", 20}, {"voiceOnly", true},
-        {"defaultDwellMs", 2500}, {"groupCsvPath", "/g.csv"}};
+    QVariantMap list{{"sourceType", "rtltcp"}, {"host", "10.0.2.2"},      {"port", 1234},
+                     {"gainDb", 20},           {"voiceOnly", true},       {"skipSilent", true},
+                     {"defaultDwellMs", 2500}, {"groupCsvPath", "/g.csv"}};
     SessionArgPrefs prefs;
     prefs.extraArgs = QStringLiteral("-N");
     QString error;
@@ -1877,8 +1877,17 @@ test_scan_lists_argv(void) {
     expect("the receiver and options appear once", three.count(QStringLiteral("-i")) == 1
                                                        && three.count(QStringLiteral("-G")) == 1
                                                        && three.count(QStringLiteral("--trunk-scan-dwell-ms")) == 1
-                                                       && three.count(QStringLiteral("--scan-voice-only")) == 1);
+                                                       && three.count(QStringLiteral("--scan-voice-only")) == 1
+                                                       && three.count(QStringLiteral("--scan-skip-silent")) == 1);
     expect("the extra options come last", three.constLast() == QStringLiteral("-N"));
+    /* Issue #834: skip-silent is off unless the list turns it on, and a list saved before it existed reads as off. */
+    QVariantMap quiet = list;
+    quiet["skipSilent"] = false;
+    expect("a list with skip-silent off sends no flag",
+           !dsd_qt::session_args_scan_build(quiet, "851.375", "/a.csv", prefs, &error).contains("--scan-skip-silent"));
+    quiet.remove("skipSilent");
+    expect("a list without the setting sends no flag",
+           !dsd_qt::session_args_scan_build(quiet, "851.375", "/a.csv", prefs, &error).contains("--scan-skip-silent"));
     QStringList nine;
     for (int i = 0; i < 9; ++i) {
         nine << QStringLiteral("/%1.csv").arg(i);
@@ -1911,8 +1920,8 @@ test_scan_join_conflict(void) {
     prefs.bandwidthKhz = 24;
     prefs.biasTee = false;
     const QVariantMap base{{"sourceType", "usb"}, {"gainDb", -1},       {"ppm", ""},           {"bandwidthKhz", -1},
-                           {"biasTee", -1},       {"voiceOnly", false}, {"defaultDwellMs", 0}, {"defaultHoldMs", 0},
-                           {"groupCsvPath", ""},  {"srcCsvPath", ""}};
+                           {"biasTee", -1},       {"voiceOnly", false}, {"skipSilent", false}, {"defaultDwellMs", 0},
+                           {"defaultHoldMs", 0},  {"groupCsvPath", ""}, {"srcCsvPath", ""}};
     expect("a list joins itself", session_args_scan_join_conflict(base, base, prefs).isEmpty());
     const auto with = [&base](const QVariantMap& changes) {
         QVariantMap list = base;
@@ -1933,6 +1942,9 @@ test_scan_join_conflict(void) {
     expect("default bias tee vs explicit off", conflict(base, with({{"biasTee", 0}})).isEmpty());
     expect("default dwell vs the engine's", conflict(base, with({{"defaultDwellMs", 3000}})).isEmpty());
     expect("default hold vs the engine's", conflict(base, with({{"defaultHoldMs", 1200}})).isEmpty());
+    QVariantMap unset = base;
+    unset.remove("skipSilent");
+    expect("a list saved before skip-silent existed joins one with it off", conflict(base, unset).isEmpty());
 
     /* Every setting, each alone. */
     const struct {
@@ -1959,6 +1971,8 @@ test_scan_join_conflict(void) {
          with({{"sourceType", "airspy"}, {"airspy", QVariantMap{{"serial", "A1"}, {"bias_tee", 1}}}}),
          "Different Airspy settings"},
         {base, with({{"voiceOnly", true}}), "Different voice-only setting"},
+        {base, with({{"skipSilent", true}}), "Different skip-silent setting"},
+        {with({{"skipSilent", true}}), base, "Different skip-silent setting"},
         {base, with({{"defaultDwellMs", 2000}}), "Different default dwell"},
         {base, with({{"defaultHoldMs", 900}}), "Different default hold"},
         {base, with({{"groupCsvPath", "/lists/groups.csv"}}), "Different fallback talkgroups"},
@@ -2054,9 +2068,44 @@ test_scan_join_conflict(void) {
     expect("the first difference wins",
            conflict(base, with({{"gainDb", 31}, {"voiceOnly", true}, {"srcCsvPath", "/x"}}))
                == QStringLiteral("Different gain"));
+    expect("voice-only is named before skip-silent", conflict(base, with({{"voiceOnly", true}, {"skipSilent", true}}))
+                                                         == QStringLiteral("Different voice-only setting"));
+    expect("skip-silent is named before the default dwell",
+           conflict(base, with({{"skipSilent", true}, {"defaultDwellMs", 2000}}))
+               == QStringLiteral("Different skip-silent setting"));
     /* An app default changes what an unset field means for both lists alike. */
     prefs.gainDb = 31;
     expect("an unset gain follows the app default", conflict(base, with({{"gainDb", 31}})).isEmpty());
+}
+
+/* Issue #834: a saved system runs -Y when its decode flag says so (a RadioReference conventional system), so its own
+   or the app's extra options may turn skip-silent on or off; only a scan list, which has its own checkbox, refuses
+   them. */
+static void
+test_saved_system_skip_silent_extra(void) {
+    for (const auto& token : {QStringLiteral("--scan-skip-silent"), QStringLiteral("--no-scan-skip-silent")}) {
+        expect("the shared gate takes a skip-silent option", dsd_qt::session_args_extra_safe(token));
+        expect("the scan gate refuses it", !dsd_qt::session_args_scan_extra_safe(token));
+        auto sys = usb_system();
+        sys.insert(QStringLiteral("decodeFlag"), QStringLiteral("-ft -Y"));
+        sys.insert(QStringLiteral("extraArgs"), token);
+        SessionArgsError error = SessionArgsError::None;
+        const QStringList own = session_args_build(sys, SessionArgPrefs(), &error);
+        expect("a -Y system's own skip-silent option is passed",
+               error == SessionArgsError::None && own.contains(token) && own.contains(QStringLiteral("-Y")));
+        sys.remove(QStringLiteral("extraArgs"));
+        SessionArgPrefs prefs;
+        prefs.extraArgs = token;
+        const QStringList app = session_args_build(sys, prefs, &error);
+        expect("the app's skip-silent option is passed to a -Y system",
+               error == SessionArgsError::None && app.contains(token));
+        QString why;
+        expect("a scan list's session refuses it",
+               dsd_qt::session_args_scan_build(usb_system(), QStringLiteral("851.012500"), QStringLiteral("/t/a.csv"),
+                                               prefs, &why)
+                       .isEmpty()
+                   && why == dsd_qt::session_args_error_text(SessionArgsError::UnsafeOption));
+    }
 }
 
 /* Issue #644: a scan list starts held on one of its rows only through session_args_with_scan_hold(), which the
@@ -2130,6 +2179,7 @@ main(int argc, char** argv) {
     test_keys();
     test_extra_short_options();
     test_scan_hold_option();
+    test_saved_system_skip_silent_extra();
     for (const auto& token : {QStringLiteral("--show-keys"), QStringLiteral("--show-keys=1")}) {
         expect("shared scan token gate refuses key display", !dsd_qt::session_args_extra_safe(token));
         auto sys = usb_system();

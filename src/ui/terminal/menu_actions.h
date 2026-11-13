@@ -65,6 +65,7 @@ void act_hangtime(void* v);
 void act_scan_voice_only(void* v);
 void act_scan_voice_qualify(void* v);
 void act_scan_voice_hold(void* v);
+void act_scan_skip_silent(void* v);
 void act_rr_import(void* v);
 void act_rr_library(void* v);
 void act_rr_account_user(void* v);
