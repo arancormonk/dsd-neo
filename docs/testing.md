@@ -631,11 +631,11 @@ capture parameters, beside the upstream license text `p25p1_c4fm_cc_gt.APACHE-2.
 `DECODE_IQ_P25P1_C4FM_CC_GT_S9` and `_CITY` replay them under `-f1`, and the `_AUTO` cases under `-fa`. Each requires
 floors on the TSBK messages whose CRC passes (each prints its title on a line of its own, one space in), on
 `NAC/CC: 164` and on the site identity `WACN: BEE00; SYS: 164`, and no `HDU` or `LDU` on the control channel. The
-floors sit about 20% under what the build that added them decodes (s9: 41 messages, 14 NACs, 8 identities under
-`-f1`, 35, 12 and 8 under `-fa`; city: 57, 20 and 18, and 54, 19 and 18), the same for both modes. With ±45 counts
-of added noise (three seeds) every run stays above them, and under `-fs`, `-fn` or `-fy` neither fixture prints the
-NAC or the identity. They are floors rather than counts because C4FM level work is expected to raise them; raise
-the floors when it does.
+floors sit about 10% under what the current build decodes (s9: 41 messages, 14 NACs, 8 identities under both
+modes; city: 57, 20 and 18 under `-f1`, 54, 19 and 18 under `-fa`), the same for both modes. With ±45 counts of
+added noise (three seeds) every run decodes as much as the clean fixture, and under `-fs`, `-fn` or `-fy` neither
+fixture prints the NAC or the identity. They are floors rather than counts: a block or two of these short captures
+decodes only just, so a change elsewhere in the chain may move it either way.
 
 Both TETRA captures above are control channels. `tetra_call_real_air_72k` is the real-air traffic: 6.5 seconds of the
 Signal Identification Wiki's `TETRA_IQ.zip`, a 48 kHz recording of one downlink carrier of another network (MCC 228, MNC

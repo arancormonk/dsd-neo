@@ -19449,9 +19449,9 @@ if(DSD_HAS_RADIO)
     # tools/build_iq_fixtures.py), whose eye is asymmetric: the outer levels sit about 3.3 and 2.8 times the inner ones
     # instead of 3. Every TSBK that passes its CRC prints its message's title on a line of its own, one space in; the
     # site identity comes from those blocks and the NAC from each frame's NID. A control channel carries no voice, so a
-    # header or voice frame would be noise taken for one. The floors sit about 20% under what this build decodes, the
-    # same under -f1 and -fa: s9 41 titles, 14 NACs and the identity 8 times under -f1 (35, 12 and 8 under -fa); city
-    # 57, 20 and 18 (54, 19 and 18). They are floors, not counts, because the C4FM level work is meant to raise them.
+    # header or voice frame would be noise taken for one. The floors sit about 10% under what this build decodes, the
+    # same under -f1 and -fa: s9 41 titles, 14 NACs and the identity 8 times under either; city 57, 20 and 18 under -f1
+    # (54, 19 and 18 under -fa). They are floors, not counts: a block or two of these short captures decodes only just.
     function(
         dsd_neo_add_gt_c4fm_cc_tests
         suffix
@@ -19484,8 +19484,8 @@ if(DSD_HAS_RADIO)
             )
         endforeach()
     endfunction()
-    dsd_neo_add_gt_c4fm_cc_tests(S9 p25p1_c4fm_cc_gt_s9 28 9 6)
-    dsd_neo_add_gt_c4fm_cc_tests(CITY p25p1_c4fm_cc_gt_city 43 15 14)
+    dsd_neo_add_gt_c4fm_cc_tests(S9 p25p1_c4fm_cc_gt_s9 37 12 7)
+    dsd_neo_add_gt_c4fm_cc_tests(CITY p25p1_c4fm_cc_gt_city 48 17 16)
     # Two clean P25 Phase 1 C4FM calls with no HDU, each after the carrier was off (p25p1_c4fm_no_hdu_synth). Under -f1
     # every IMBE frame of all twelve LDUs is read, and every frame outside the two calls' first LDUs needs no correction
     # at all. A call's first LDU is read without correction too when the hunt matched its sync word exactly (the grid
