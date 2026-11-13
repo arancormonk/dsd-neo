@@ -287,6 +287,16 @@ dsd_rr_county_list_free(dsd_rr_county_list* list) {
 }
 
 void
+dsd_rr_state_info_free(dsd_rr_state_info* info) {
+    if (info == NULL) {
+        return;
+    }
+    dsd_rr_county_list_free(&info->counties);
+    info->stid = 0;
+    info->state_name[0] = '\0';
+}
+
+void
 dsd_rr_trs_list_free(dsd_rr_trs_list* list) {
     if (list == NULL) {
         return;
@@ -359,4 +369,10 @@ dsd_rr_trs_details_free(dsd_rr_trs_details* details) {
     free(details->sysids);
     details->sysids = NULL;
     details->sysid_count = 0;
+    free(details->state_ids);
+    details->state_ids = NULL;
+    details->state_count = 0;
+    free(details->county_ids);
+    details->county_ids = NULL;
+    details->county_count = 0;
 }

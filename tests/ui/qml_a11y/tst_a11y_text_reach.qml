@@ -541,6 +541,55 @@ Item {
             compare(problems.length, 0, report(problems));
         }
 
+        // Listen's saved systems in each state their search and sort put above the cards: the count line, the
+        // no-match card, Nearest's location line, the place notice and an update's progress. Every line is reached.
+        function test_2c_home_systems_states_data() {
+            return [{tag: "a search", query: "county", sort: "added"},
+                {tag: "no match", query: "zzz", sort: "added"},
+                {tag: "Nearest without a fix", query: "", sort: "nearest"},
+                {tag: "Place with unplaced systems", query: "", sort: "place", unplaced: 3},
+                {tag: "an update running", query: "", sort: "place", unplaced: 3, update: true},
+                {tag: "an update's summary", query: "", sort: "place", unplaced: 3, update: true, finish: true}];
+        }
+        function test_2c_home_systems_states(data) {
+            testContext.useAppPrefs(true);
+            testContext.setLocationSupported(true);
+            var item = null;
+            try {
+                verify(savedSystems.add({name: "County P25", sourceType: "rtltcp", freqMhz: "851.0125", rrSid: 9,
+                    rrSiteId: 90, siteName: "North"}));
+                verify(savedSystems.add({name: "City DMR", sourceType: "rtltcp", freqMhz: "452.5"}));
+                prefs.systemsSort = data.sort;
+                testContext.setRrPlacesUnplaced(data.unplaced || 0);
+                item = build({file: "HomeScreen"});
+                open(item, {});
+                item.showSection("systems");
+                savedSystemCards.query = data.query;
+                if (data.update)
+                    findChild(item, "savedSystemsControls").updateUnplacedFromRadioReference();
+                if (data.finish)
+                    testContext.finishRrPlacesUpdate(1, 1);
+                waitForRendering(host);
+                wait(20);
+                var shown = {"a search": "systemsSearchCount", "no match": "systemsNoMatch",
+                    "Nearest without a fix": "systemsLocation", "Place with unplaced systems": "systemsPlaceNotice",
+                    "an update running": "systemsRrStatus", "an update's summary": "systemsRrSummary"}[data.tag];
+                verify(findChild(item, shown).visible, shown + " is part of the walk");
+                var problems = unexplained(item, [], "HomeScreen, " + data.tag);
+                compare(problems.length, 0, report(problems));
+            } finally {
+                if (item !== null)
+                    dispose(item);
+                testContext.resetSavedSystemCards();
+                testContext.resetSystemsSort();
+                testContext.resetRrPlaces();
+                testContext.setLocationSupported(false);
+                testContext.useAppPrefs(false);
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+            }
+        }
+
         // Each screen and sheet with every branch shown at once; each sheet inside it on its own, as the top layer.
         function test_3_every_branch_shown_data() {
             return components_data();

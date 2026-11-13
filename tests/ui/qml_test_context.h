@@ -51,6 +51,7 @@
 #include <QHash>
 #include <QIODevice>
 #include <QInputMethodEvent>
+#include <QKeyEvent>
 #include <QList>
 #include <QMetaEnum>
 #include <QMetaObject>
@@ -117,6 +118,8 @@
 #include "qml_backup_recorder.h"
 #include "qml_gc_policy.h"
 #include "qml_spectrum_stub.h"
+#include "realtime_clock.h"
+#include "saved_system_cards.h"
 #include "saved_systems_model.h"
 #include "scan_avoid_list_model.h"
 #include "scan_list_starter.h"
@@ -130,6 +133,7 @@
 #include "store_notices.h"
 #include "talkgroup_filter_model.h"
 #include "talkgroup_list_model.h"
+#include "text_order.h"
 
 using dsd_qt::CallHistoryFilterModel;
 using dsd_qt::CallHistoryModel;
@@ -998,6 +1002,137 @@ class RestartCloserFake : public QObject {
     }
 
     bool m_active = false;
+};
+
+/**
+ * @brief The `rrPlaces` service (RrPlaceService): its QML surface, recorded rather than run.
+ *
+ * The properties are exactly the real service's (UI_QT_RR_PLACE_SERVICE pins that list), so missingContextKeys() holds
+ * a screen's reads to what production publishes. A case scripts it through the C++ members.
+ */
+class RrPlacesFake : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(bool updating READ updating NOTIFY updatingChanged)
+    Q_PROPERTY(QString progressText READ progressText NOTIFY progressTextChanged)
+    Q_PROPERTY(QString summaryText READ summaryText NOTIFY summaryTextChanged)
+    Q_PROPERTY(int unplacedCount READ unplacedCount NOTIFY unplacedCountChanged)
+    Q_PROPERTY(QString unplacedText READ unplacedText NOTIFY unplacedCountChanged)
+  public:
+    using QObject::QObject;
+
+    bool
+    updating() const {
+        return m_updating;
+    }
+
+    QString
+    progressText() const {
+        return m_updating ? QStringLiteral("Updating 1 of %1").arg(updateUids.size()) : QString();
+    }
+
+    QString
+    summaryText() const {
+        return m_summary;
+    }
+
+    int
+    unplacedCount() const {
+        return m_unplaced;
+    }
+
+    QString
+    unplacedText() const {
+        if (m_unplaced <= 0) {
+            return QString();
+        }
+        return m_unplaced == 1 ? QStringLiteral("1 saved system has no place yet")
+                               : QStringLiteral("%1 saved systems have no place yet").arg(m_unplaced);
+    }
+
+    Q_INVOKABLE void
+    resolveStates(const QVariantList& stids) {
+        resolveRequests.append(QVariant(stids));
+    }
+
+    /** @brief As the service: the rows of the cards unplacedCount counts; here, what the case scripted. */
+    Q_INVOKABLE QStringList
+    unplacedUids() const {
+        return unplacedUidList;
+    }
+
+    /** @brief As the service: false, changing nothing, while an update runs or while signed out; otherwise an update
+     *         runs until finish(). Every call is counted. */
+    Q_INVOKABLE bool
+    updateFromRadioReference(const QStringList& uids) {
+        ++updateCalls;
+        if (m_updating || !signedIn) {
+            return false;
+        }
+        updateUids = uids;
+        m_updating = true;
+        Q_EMIT updatingChanged();
+        Q_EMIT progressTextChanged();
+        return true;
+    }
+
+    Q_INVOKABLE void
+    cancelUpdate() {
+        if (m_updating) {
+            ++cancels;
+            finish(0, 0);
+        }
+    }
+
+    /** @brief End the running update with the service's summary and signal. */
+    void
+    finish(int updated, int unreachable) {
+        m_updating = false;
+        m_summary =
+            updated == 1 ? QStringLiteral("Updated 1 system.") : QStringLiteral("Updated %1 systems.").arg(updated);
+        if (unreachable > 0) {
+            m_summary += QStringLiteral(" %1 could not be reached.").arg(unreachable);
+        }
+        Q_EMIT updatingChanged();
+        Q_EMIT progressTextChanged();
+        Q_EMIT summaryTextChanged();
+        Q_EMIT updateFinished(updated, unreachable);
+    }
+
+    /** @brief No summary, as before any update. */
+    void
+    clearSummary() {
+        if (!m_summary.isEmpty()) {
+            m_summary.clear();
+            Q_EMIT summaryTextChanged();
+        }
+    }
+
+    void
+    setUnplacedCount(int count) {
+        if (m_unplaced != count) {
+            m_unplaced = count;
+            Q_EMIT unplacedCountChanged();
+        }
+    }
+
+    bool signedIn = true;
+    QStringList unplacedUidList;
+    QStringList updateUids;
+    QVariantList resolveRequests;
+    int cancels = 0;
+    int updateCalls = 0;
+
+  Q_SIGNALS:
+    void updatingChanged();
+    void progressTextChanged();
+    void summaryTextChanged();
+    void unplacedCountChanged();
+    void updateFinished(int updated, int unreachable);
+
+  private:
+    bool m_updating = false;
+    QString m_summary;
+    int m_unplaced = 0;
 };
 
 class TestUiController : public QObject {
@@ -2968,6 +3103,18 @@ class ReadingMap : public QQmlPropertyMap {
         return shareAccepted;
     }
 
+    /* Listen's Nearest order: a location request only records itself, {name, id}; a case answers it with the map's
+     * own locationResult() or locationCancelled(), as a platform host would later. */
+    Q_INVOKABLE void
+    requestSiteLocation(qint64 requestId) {
+        noteCall(QStringLiteral("requestSiteLocation"), {{QStringLiteral("id"), requestId}});
+    }
+
+    Q_INVOKABLE void
+    cancelLocationRequest(qint64 requestId) {
+        noteCall(QStringLiteral("cancelLocationRequest"), {{QStringLiteral("id"), requestId}});
+    }
+
     /* Issue #829: the document picker. A request only records itself and returns a new id; a case answers it through
      * testContext (answerDocumentPicked() and the like), as a platform host would later. Calls are kept in `calls`
      * with the rest; the `documentPickerSupported` reading is in the map. */
@@ -3566,6 +3713,7 @@ class AccessibilityCounter {
         r.owners.clear();
         r.scopes.clear();
         r.chains.clear();
+        r.sequence.clear();
     }
 
     /** @brief Put the handler that was installed before start() back. The counts stay readable. */
@@ -3582,8 +3730,9 @@ class AccessibilityCounter {
 
     /**
      * @brief The counts since start(): {total, types: {Type: n}, owners: {name: {Type: n}},
-     * chains: {"Type name < named ancestor < ...": n}}. Emitters with no named object on their chain count under
-     * "<unnamed>".
+     * chains: {"Type name < named ancestor < ...": n}, sequence: ["Type name < ...", ...]}: the sequence is the
+     * events in the order raised (the first kMaxSequence), for a case that asserts on an order. Emitters with no
+     * named object on their chain count under "<unnamed>".
      */
     static QVariantMap
     counts() {
@@ -3593,6 +3742,7 @@ class AccessibilityCounter {
         out.insert(QStringLiteral("types"), toMap(r.types));
         out.insert(QStringLiteral("owners"), nested(r.owners));
         out.insert(QStringLiteral("chains"), toMap(r.chains));
+        out.insert(QStringLiteral("sequence"), r.sequence);
         return out;
     }
 
@@ -3613,10 +3763,13 @@ class AccessibilityCounter {
         QHash<QString, QHash<QString, qint64>> owners;
         QHash<const QObject*, QHash<QString, qint64>> scopes;
         QHash<QString, qint64> chains;
+        QStringList sequence;
     };
 
     /* Distinct chains kept for failure messages; the totals above are never capped. */
     static constexpr int kMaxChains = 2000;
+    /* Events kept in order; the totals above are never capped. */
+    static constexpr int kMaxSequence = 2000;
     /* Far deeper than any screen nests; it only bounds the walk. */
     static constexpr int kMaxDepth = 256;
 
@@ -3683,6 +3836,9 @@ class AccessibilityCounter {
                               + (names.isEmpty() ? QStringLiteral("<unnamed>") : names.join(QStringLiteral(" < ")));
         if (r.chains.contains(chain) || r.chains.size() < kMaxChains) {
             ++r.chains[chain];
+        }
+        if (r.sequence.size() < kMaxSequence) {
+            r.sequence.append(chain);
         }
         forward(event);
     }
@@ -4434,6 +4590,30 @@ class Setup : public QObject {
     }
 
     /**
+     * @brief A key event, pressed (@p press) or released, for the active focus item of @p item's window, as the
+     * platform sends one: @p autoRepeat marks a press the key repeats while held (QKeyEvent::isAutoRepeat()), which
+     * QtTest's keyPress() cannot send. On Android it is also what reaches the app when the first press went elsewhere
+     * (TalkBack took Alt+Enter). Returns whether the window accepted it.
+     */
+    Q_INVOKABLE bool
+    sendKey(QObject* item, int key, int modifiers, bool press, bool autoRepeat) const {
+        auto* quick = qobject_cast<QQuickItem*>(item);
+        if (quick == nullptr || quick->window() == nullptr) {
+            return false;
+        }
+        QString text;
+        if (key == Qt::Key_Space) {
+            text = QStringLiteral(" ");
+        } else if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+            text = QStringLiteral("\r");
+        }
+        QKeyEvent event(press ? QEvent::KeyPress : QEvent::KeyRelease, key, Qt::KeyboardModifiers(modifiers), text,
+                        autoRepeat);
+        QCoreApplication::sendEvent(quick->window(), &event);
+        return event.isAccepted();
+    }
+
+    /**
      * @brief Issue #782: focus @p item as TalkBack does: Qt's Android bridge carries out ACTION_ACCESSIBILITY_FOCUS with
      * the node's set-focus action (androidjniaccessibility.cpp focusAction_helper). Returns false when the node has
      * none.
@@ -4811,6 +4991,27 @@ class Setup : public QObject {
     }
 
     /**
+     * @brief Block the saved systems store (blockPath()) from inside the @p call-th place fill savedSystems runs while
+     * it builds new rows, so a save fails part way through a batch whose rows carry a place; 0 removes the fill.
+     * Unblock with blockPath(storePath("saved_systems.json"), false).
+     */
+    Q_INVOKABLE void
+    blockSystemsStoreAtPlaceFill(int call) {
+        if (call <= 0) {
+            m_saved_systems->setPlaceNameCache({});
+            return;
+        }
+        auto fills = std::make_shared<int>(0);
+        const QString store = storePath(QStringLiteral("saved_systems.json"));
+        // A case checks the store is blocked with fileExists(), false once a folder stands there.
+        m_saved_systems->setPlaceNameCache([this, fills, call, store](QVariantMap&) {
+            if (++*fills == call) {
+                blockPath(store, true);
+            }
+        });
+    }
+
+    /**
      * @brief Import @p path as @p type through the library's own async import, and answer its result once it is in
      * (#832); a fixture's one-line import. The stored copy takes the file's own name.
      */
@@ -5107,6 +5308,9 @@ class Setup : public QObject {
     setLocationSupported(bool supported) {
         m_host[QStringLiteral("locationSupported")] = supported;
         m_host_readings->insert(QStringLiteral("locationSupported"), supported);
+        if (m_saved_system_cards != nullptr) {
+            m_saved_system_cards->setLocationSupported(supported); // as qt_ui.cpp sets it from the host
+        }
         m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
     }
 
@@ -5578,6 +5782,101 @@ class Setup : public QObject {
         }
     }
 
+    /** @brief The saved-systems order back on its default, through the real AppPrefs. */
+    Q_INVOKABLE void
+    resetSystemsSort() {
+        if (m_app_prefs != nullptr) {
+            m_app_prefs->setSystemsSort(QStringLiteral("added"));
+        }
+    }
+
+    /** @brief Age the stored location fix past its 24 h behind AppPrefs, with no signal: as a phone that slept through
+     *         the expiry timer finds it, dropped only at the next read. */
+    Q_INVOKABLE void
+    lapseLocationFix() {
+        QSettings(QSettings::IniFormat, QSettings::UserScope, dsd_qt::AppPrefs::settingsOrganization(),
+                  dsd_qt::AppPrefs::settingsApplication())
+            .setValue(QStringLiteral("location/lastFixAt"), dsd_qt::realtimeMSecsSinceEpoch() - 25LL * 60 * 60 * 1000);
+    }
+
+    /** @brief The saved-system cards as a fresh Home finds them: no search, no screen reader, nothing held. Location
+     *         support is left as setLocationSupported() last set it on the host and the cards together. */
+    Q_INVOKABLE void
+    resetSavedSystemCards() {
+        if (m_saved_system_cards != nullptr) {
+            m_saved_system_cards->setQuery(QString());
+            m_saved_system_cards->setScreenReaderActive(false);
+            m_saved_system_cards->setHoldReorders(false);
+        }
+    }
+
+    /** @brief `prefs` as the real AppPrefs (true) or the plain map (false), the `decoderHost` left as it is: a case
+     *         that needs both the map's host readings and the production preferences (Listen's sort and location). */
+    Q_INVOKABLE void
+    useAppPrefs(bool on) {
+        m_engine->rootContext()->setContextProperty(
+            QStringLiteral("prefs"), on ? QVariant::fromValue<QObject*>(m_app_prefs) : QVariant(m_prefs));
+    }
+
+    /** @brief The `rrPlaces` fake as a fresh run has it: signed in, nothing unplaced, no update, nothing recorded. */
+    Q_INVOKABLE void
+    resetRrPlaces() {
+        if (m_rr_places == nullptr) {
+            return;
+        }
+        m_rr_places->cancelUpdate();
+        m_rr_places->signedIn = true;
+        m_rr_places->setUnplacedCount(0);
+        m_rr_places->unplacedUidList.clear();
+        m_rr_places->updateUids.clear();
+        m_rr_places->resolveRequests.clear();
+        m_rr_places->cancels = 0;
+        m_rr_places->updateCalls = 0;
+        m_rr_places->clearSummary();
+    }
+
+    /** @brief Whether the `rrPlaces` fake answers as signed in to RadioReference. */
+    Q_INVOKABLE void
+    setRrPlacesSignedIn(bool signedIn) {
+        m_rr_places->signedIn = signedIn;
+    }
+
+    /** @brief How many saved systems the `rrPlaces` fake reports without a place (its unplacedText follows). */
+    Q_INVOKABLE void
+    setRrPlacesUnplaced(int count) {
+        m_rr_places->setUnplacedCount(count);
+    }
+
+    /** @brief The saved systems' uids the `rrPlaces` fake answers unplacedUids() with. */
+    Q_INVOKABLE void
+    setRrPlacesUnplacedUids(const QStringList& uids) {
+        m_rr_places->unplacedUidList = uids;
+    }
+
+    /** @brief The uids the running (or last) Update from RadioReference was asked for. */
+    Q_INVOKABLE QStringList
+    rrPlacesUpdateUids() const {
+        return m_rr_places->updateUids;
+    }
+
+    /** @brief How many times QML called updateFromRadioReference(), refused calls included. */
+    Q_INVOKABLE int
+    rrPlacesUpdateCalls() const {
+        return m_rr_places->updateCalls;
+    }
+
+    /** @brief How many running updates QML cancelled. */
+    Q_INVOKABLE int
+    rrPlacesCancels() const {
+        return m_rr_places->cancels;
+    }
+
+    /** @brief End the running Update from RadioReference with the service's summary. */
+    Q_INVOKABLE void
+    finishRrPlacesUpdate(int updated, int unreachable) {
+        m_rr_places->finish(updated, unreachable);
+    }
+
     /** @brief Issue #646: store @p value under the settings key @p key as it is, past AppPrefs' checks, as a damaged
      *         file or another build would leave it. The real AppPrefs reads the same file. */
     Q_INVOKABLE void
@@ -5793,24 +6092,31 @@ class Setup : public QObject {
 
     Q_INVOKABLE QStringList
     missingContextKeys(const QStringList& qmlFiles) const {
-        /* `backup` is a QObject, whose properties answer an unknown name with `undefined` just as a map does; its
-         * keys are the properties the fake publishes. */
-        QVariantMap backupKeys;
-        const QMetaObject& backupMeta = BackupRecorder::staticMetaObject;
-        for (int i = backupMeta.propertyOffset(); i < backupMeta.propertyCount(); ++i) {
-            backupKeys.insert(QString::fromLatin1(backupMeta.property(i).name()), true);
-        }
-        const QHash<QString, QVariantMap> maps = {{QStringLiteral("metrics"), m_metrics},
-                                                  {QStringLiteral("prefs"), m_prefs},
-                                                  {QStringLiteral("decoderHost"), m_host},
-                                                  {QStringLiteral("radioReference"), m_radio_reference},
-                                                  {QStringLiteral("backup"), backupKeys},
-                                                  {QStringLiteral("recordings"), RecordingsFake::rest()},
-                                                  {QStringLiteral("recordingStatus"), m_recording_status}};
+        /* `backup`, `rrPlaces` and `savedSystemCards` are QObjects, whose properties answer an unknown name with
+         * `undefined` just as a map does; their keys are the properties the fakes (or the real cards model) publish. */
+        const auto propertyKeys = [](const QMetaObject& meta) {
+            QVariantMap keys;
+            for (int i = meta.propertyOffset(); i < meta.propertyCount(); ++i) {
+                keys.insert(QString::fromLatin1(meta.property(i).name()), true);
+            }
+            return keys;
+        };
+        const QVariantMap backupKeys = propertyKeys(BackupRecorder::staticMetaObject);
+        const QHash<QString, QVariantMap> maps = {
+            {QStringLiteral("metrics"), m_metrics},
+            {QStringLiteral("prefs"), m_prefs},
+            {QStringLiteral("decoderHost"), m_host},
+            {QStringLiteral("radioReference"), m_radio_reference},
+            {QStringLiteral("backup"), backupKeys},
+            {QStringLiteral("rrPlaces"), propertyKeys(RrPlacesFake::staticMetaObject)},
+            {QStringLiteral("savedSystemCards"), propertyKeys(dsd_qt::SavedSystemCards::staticMetaObject)},
+            {QStringLiteral("recordings"), RecordingsFake::rest()},
+            {QStringLiteral("recordingStatus"), m_recording_status}};
         /* Group 3 captures the "(" that marks a call rather than a read. The name must not follow a "." or a word
          * character: `model.recordings.length` is a role's length, not a read of the `recordings` store. */
         static const QRegularExpression read(
-            QStringLiteral("(?<![.\\w])(metrics|prefs|decoderHost|radioReference|backup|recordings|recordingStatus)"
+            QStringLiteral("(?<![.\\w])(metrics|prefs|decoderHost|radioReference|backup|rrPlaces|savedSystemCards|"
+                           "recordings|recordingStatus)"
                            "\\.([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()?"));
 
         QStringList missing;
@@ -5959,6 +6265,7 @@ class Setup : public QObject {
         prefs[QStringLiteral("monitorDetailsExpanded")] = false;
         /* Issue #646: Listen opens on Systems, as on a fresh install. */
         prefs[QStringLiteral("listenSection")] = QStringLiteral("systems");
+        prefs[QStringLiteral("systemsSort")] = QStringLiteral("added");
         /* Issue #830: Android's picker first, as on a fresh install. */
         prefs[QStringLiteral("chooseFilesInApp")] = false;
         /* RadioReference account: empty on purpose, so the screen's first state
@@ -6471,6 +6778,7 @@ class Setup : public QObject {
         m_lifecycle_host = m_import_host;
         auto* imported_files = new dsd_qt::ImportedFilesModel(m_import_host, engine);
         auto* saved_systems = new dsd_qt::SavedSystemsModel(engine);
+        m_saved_systems = saved_systems;
         auto* app_prefs = new dsd_qt::AppPrefs(engine);
         m_app_prefs = app_prefs;
         auto* session_args = new dsd_qt::SessionArgsBuilder(app_prefs, engine);
@@ -6520,8 +6828,13 @@ class Setup : public QObject {
         app_prefs->setPinned({});
         /* Issue #646: the Listen tab too, on the same shared file; resetListenSection() between cases. */
         app_prefs->setListenSection(QStringLiteral("systems"));
+        app_prefs->setSystemsSort(QStringLiteral("added"));
         ctx->setContextProperty(QStringLiteral("listenPins"),
                                 new dsd_qt::ListenPins(app_prefs, saved_systems, scan_lists, engine));
+        /* Listen's saved-system cards, the production model over the same stores; resetSavedSystemCards() between
+         * cases. Nearest follows setLocationSupported(), off as the host map starts. */
+        m_saved_system_cards = new dsd_qt::SavedSystemCards(saved_systems, app_prefs, imported_files, engine);
+        ctx->setContextProperty(QStringLiteral("savedSystemCards"), m_saved_system_cards);
         auto* profiles = new dsd_qt::DecryptionProfilesModel(engine);
         profiles->setReferences(saved_systems, scan_lists);
         auto* starter = new dsd_qt::ScanListStarter(app_prefs, saved_systems, engine);
@@ -6533,6 +6846,9 @@ class Setup : public QObject {
             const int row = imported_files->rowForPath(path);
             return row >= 0 && imported_files->get(row).value("type") == "trunkTargets";
         });
+        // As qt_ui.cpp's wire_library_replace(), an update lets the saved systems naming the file go of their site.
+        imported_files->setBeforeUserReplace(
+            [saved_systems](const QString& path) { return saved_systems->invalidatePathProvenance(path); });
         starter->setDecryptionProfiles(profiles);
         session_args->setDecryptionProfiles(profiles);
         ctx->setContextProperty(QStringLiteral("decryptionProfiles"), profiles);
@@ -6546,8 +6862,13 @@ class Setup : public QObject {
         // Issue #830: the close before a restart, scripted (setCloseRefused(), finishClose()).
         m_restart_closer = new RestartCloserFake(engine);
         ctx->setContextProperty(QStringLiteral("restartCloser"), m_restart_closer);
+        // RadioReference place names and Update from RadioReference, recorded (RrPlacesFake).
+        m_rr_places = new RrPlacesFake(engine);
+        ctx->setContextProperty(QStringLiteral("rrPlaces"), m_rr_places);
         // Issue #718: the production composing-text commit, on its fallback path here.
         ctx->setContextProperty(QStringLiteral("inputCommit"), new dsd_qt::InputCommit(engine));
+        // The production name order and fold (ICU-free), as the RadioReference lists use it.
+        ctx->setContextProperty(QStringLiteral("textOrder"), new dsd_qt::TextOrder(engine));
         // Issue #828: the production list, which outlives every engine here as it does in the app.
         ctx->setContextProperty(QStringLiteral("storeNotices"), dsd_qt::StoreNotices::instance());
     }
@@ -6578,6 +6899,7 @@ class Setup : public QObject {
     RadioReferenceRecorder* m_radio_reference_recorder = nullptr;
     BackupRecorder* m_backup = nullptr;
     RestartCloserFake* m_restart_closer = nullptr;
+    RrPlacesFake* m_rr_places = nullptr;
     QQmlEngine* m_engine = nullptr;
     dsd_qt::SpectrumModel* m_spectrum = nullptr;
     /* Issue #672: the Monitor's avoid list, the production model, filled by setScanAvoids(). */
@@ -6619,6 +6941,8 @@ class Setup : public QObject {
     CommandRecorder* m_commands = nullptr;
     ImportOnlyHost* m_import_host = nullptr;
     dsd_qt::ImportedFilesModel* m_imported_files = nullptr;
+    dsd_qt::SavedSystemsModel* m_saved_systems = nullptr;
+    dsd_qt::SavedSystemCards* m_saved_system_cards = nullptr;
     ReplayFilesFake* m_replay_files = nullptr;
     ImportOnlyHost* m_initializing_host = nullptr;
     ImportOnlyHost* m_lifecycle_host = nullptr;

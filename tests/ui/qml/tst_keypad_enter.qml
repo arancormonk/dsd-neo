@@ -114,6 +114,9 @@ Item {
     SignalSpy {
         id: spy
     }
+    SignalSpy {
+        id: otherSpy
+    }
 
     Loader {
         id: screenLoader
@@ -149,6 +152,9 @@ Item {
             // name looks it up on the next target and logs that it is missing.
             spy.target = null;
             spy.signalName = "";
+            otherSpy.clear();
+            otherSpy.target = null;
+            otherSpy.signalName = "";
             screenLoader.active = false;
             screenLoader.source = "";
             // After the screen is gone, so a case that failed half way leaks
@@ -190,6 +196,34 @@ Item {
             Ui.Navigation.addModal(blocker);
         }
 
+        // A repeat whose first press the control never took (a sheet's choice
+        // handed the keyboard back while the key was down, and the repeats
+        // opened the sheet again): a held Enter, keypad Enter, Return or Space
+        // presses nothing there and goes no further than the control.
+        function heldKeysActOnce(tag, target) {
+            target.forceActiveFocus();
+            for (var key of [[Qt.Key_Enter, Qt.KeypadModifier], [Qt.Key_Enter, Qt.NoModifier], [Qt.Key_Return, Qt.NoModifier], [Qt.Key_Space, Qt.NoModifier]]) {
+                for (var i = 0; i < 2; ++i)
+                    verify(testContext.sendKey(target, key[0], key[1], true, true), tag + ": a repeat of " + key[0] + " is taken");
+                keyRelease(key[0], key[1]);
+            }
+        }
+
+        // A key held on @p target from its first press repeats the action
+        // there, as before (`effect` counts it): the press and two repeats act
+        // three times.
+        function heldKeyRepeats(tag, target, effect, key, modifiers) {
+            target.forceActiveFocus();
+            verify(target.activeFocus, tag + " takes focus");
+            var before = effect();
+            keyPress(key, modifiers);
+            compare(effect(), before + 1, tag + ": the first press acts");
+            for (var i = 0; i < 2; ++i)
+                verify(testContext.sendKey(target, key, modifiers, true, true), tag + ": repeat " + i + " is taken");
+            compare(effect(), before + 3, tag + ": a held key repeats where it went down");
+            keyRelease(key, modifiers);
+        }
+
         // Enter, Return and Space each press the focused control once; under a
         // sheet or disabled, none of them does anything.
         function pressAndBlock(tag, target, control) {
@@ -201,6 +235,8 @@ Item {
             compare(spy.count, 2, tag + ": Return presses it");
             keyClick(Qt.Key_Space);
             compare(spy.count, 3, tag + ": Space presses it");
+            heldKeysActOnce(tag, target);
+            compare(spy.count, 3, tag + ": a held key's repeats press nothing");
 
             cover();
             verify(target.activeFocus, tag + " keeps its focus under the sheet");
@@ -274,6 +310,52 @@ Item {
                 for (var args of spy.signalArguments)
                     compare(args[0], data.choice, data.tag + " chose the focused one");
             }
+        }
+
+        // A held key repeats on the control that took its first press, as
+        // it always did. Moved while the key is still down, the keyboard lands
+        // on a control that never saw the key go down: the repeats press
+        // nothing there, and the key's next first press does.
+        function test_a_held_key_repeats_only_where_it_went_down_data() {
+            return [{tag: "Return", key: Qt.Key_Return, modifiers: Qt.NoModifier},
+                {tag: "Enter", key: Qt.Key_Enter, modifiers: Qt.NoModifier},
+                {tag: "keypad Enter", key: Qt.Key_Enter, modifiers: Qt.KeypadModifier},
+                {tag: "Space", key: Qt.Key_Space, modifiers: Qt.NoModifier}];
+        }
+        function test_a_held_key_repeats_only_where_it_went_down(data) {
+            spy.signalName = "clicked";
+            spy.target = dashed;
+            heldKeyRepeats(data.tag, dashed, function () {
+                return spy.count;
+            }, data.key, data.modifiers);
+            compare(spy.count, 3);
+            otherSpy.signalName = "clicked";
+            otherSpy.target = play;
+            dashed.forceActiveFocus();
+            keyPress(data.key, data.modifiers);
+            compare(spy.count, 4, "the first press acts");
+            play.forceActiveFocus();
+            for (var i = 0; i < 2; ++i)
+                verify(testContext.sendKey(play, data.key, data.modifiers, true, true), "repeat " + i + " is taken");
+            compare(otherSpy.count, 0, "a repeat whose first press went elsewhere presses nothing");
+            compare(spy.count, 4, "nor the control the key went down on");
+            keyRelease(data.key, data.modifiers);
+            keyClick(data.key, data.modifiers);
+            compare(otherSpy.count, 1, "the next first press acts");
+        }
+
+        // Alt held with an activation key is a screen reader's command only
+        // while one is on (tst_a11y_scan_churn.qml, test_m5_*): without one,
+        // Alt+Return and Alt+Space press the focused control as before.
+        function test_alt_keys_press_without_a_screen_reader() {
+            verify(!screenReader.active, "this run has no screen reader");
+            spy.signalName = "clicked";
+            spy.target = dashed;
+            dashed.forceActiveFocus();
+            keyClick(Qt.Key_Return, Qt.AltModifier);
+            compare(spy.count, 1, "Alt+Return presses it");
+            keyClick(Qt.Key_Space, Qt.AltModifier);
+            compare(spy.count, 2, "Alt+Space presses it");
         }
 
         // A control covered by a sheet while it has the focus keeps its Tab stop
@@ -489,7 +571,7 @@ Item {
             return found;
         }
         // Each screen button that takes Return: under a sheet no key presses it,
-        // then keypad Enter does, once. `effect` reads how many times it has
+        // nor does a held key's repeat, then keypad Enter does, once. `effect` reads how many times it has
         // acted. Covered first, since a press can close what holds the button.
         function enterActsOnce(tag, target, effect) {
             target.forceActiveFocus();
@@ -501,6 +583,9 @@ Item {
             keyClick(Qt.Key_Return);
             compare(effect(), before, tag + ": under a sheet no key presses it");
             Ui.Navigation.removeModal(blocker);
+            // Before it acts, as acting can take it away.
+            heldKeysActOnce(tag, target);
+            compare(effect(), before, tag + ": a held key's repeats press nothing");
             keyClick(Qt.Key_Enter, Qt.KeypadModifier);
             compare(effect(), before + 1, tag + ": keypad Enter presses it");
         }
@@ -516,6 +601,10 @@ Item {
                 return testContext.manualTuneCalls();
             };
             enterActsOnce("Tune down", item(screen, "spectrumStepDown"), tunes);
+            // Held on Tune down from its first press, Enter or Space
+            // keeps stepping.
+            heldKeyRepeats("Tune down held", item(screen, "spectrumStepDown"), tunes, Qt.Key_Return, Qt.NoModifier);
+            heldKeyRepeats("Tune down held", item(screen, "spectrumStepDown"), tunes, Qt.Key_Space, Qt.NoModifier);
             enterActsOnce("Tune up", item(screen, "spectrumStepUp"), tunes);
             var toward = testContext.spectrumPeakHz() > spectrum.centerFreqHz ? "spectrumSignalUp" : "spectrumSignalDown";
             enterActsOnce("Signal hop", item(screen, toward), tunes);

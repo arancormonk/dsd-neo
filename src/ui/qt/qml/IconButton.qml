@@ -5,6 +5,11 @@ Item {
     id: control
     property string icon: "back"
     property string accessibleName: icon === "back" ? qsTr("Back") : icon === "close" ? qsTr("Close") : qsTr("More options")
+    // Whether a press also finishes the field's editing (focus leaves it)
+    // before the action, as OutlineButton's. False keeps the field in use and
+    // finishes only the keyboard's word: a control inside a field that acts on
+    // it, such as a search field's ×.
+    property bool finishesEditing: true
     signal clicked
     implicitWidth: Theme.minimumTouchSize
     implicitHeight: Theme.minimumTouchSize
@@ -20,12 +25,16 @@ Item {
             return;
         // Issue #718: finish the keyboard's word and the field's editing before
         // the action reads the form.
-        Navigation.commitComposing(true);
+        Navigation.commitComposing(control.finishesEditing);
         clicked();
     }
-    Keys.onSpacePressed: activate()
-    Keys.onReturnPressed: activate()
-    Keys.onEnterPressed: activate()
+    Keys.onPressed: function (event) {
+        if (Navigation.activationPress(event, Window.activeFocusItem))
+            activate();
+    }
+    Keys.onReleased: function (event) {
+        Navigation.activationRelease(event);
+    }
     FocusFrame {}
     Rectangle {
         anchors.fill: parent

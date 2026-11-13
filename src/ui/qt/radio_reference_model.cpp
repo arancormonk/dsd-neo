@@ -349,6 +349,17 @@ take_details(void* result, dsd_rr_client* client, const dsd_rr_auth* auth) {
         map.insert(QStringLiteral("sysid"), field(details->sysids[0].sysid));
         map.insert(QStringLiteral("wacn"), field(details->sysids[0].wacn));
     }
+    /* The system's geography (Trs.sState, Trs.sCounty), kept for the saved systems' places. */
+    QVariantList stateIds;
+    for (size_t i = 0; i < details->state_count; i++) {
+        stateIds.append(details->state_ids[i]);
+    }
+    QVariantList countyIds;
+    for (size_t i = 0; i < details->county_count; i++) {
+        countyIds.append(details->county_ids[i]);
+    }
+    map.insert(QStringLiteral("stateIds"), stateIds);
+    map.insert(QStringLiteral("countyIds"), countyIds);
 
     dsd_rr_system_info info;
     DSD_MEMSET(&info, 0, sizeof(info));
@@ -860,6 +871,39 @@ RadioReferenceModel::checkAccount() {
     }
 }
 
+QVariantMap
+rr_site_place(const QList<int>& countyIds, const QVariantList& systemStateIds) {
+    QVariantList counties;
+    QSet<int> seen;
+    for (const int ctid : countyIds) {
+        if (ctid > 0 && !seen.contains(ctid)) {
+            seen.insert(ctid);
+            counties.append(QVariantMap{{QStringLiteral("ctid"), ctid}});
+        }
+    }
+    QVariantList candidates;
+    seen.clear();
+    for (const QVariant& value : systemStateIds) {
+        bool ok = false;
+        const int stid = value.toInt(&ok);
+        if (ok && stid > 0 && !seen.contains(stid)) {
+            seen.insert(stid);
+            candidates.append(stid);
+        }
+    }
+    if (counties.isEmpty() && candidates.isEmpty()) {
+        return QVariantMap();
+    }
+    /* One state is the place's state outright; with several, which one a county is in is only known once a name
+     * lookup links it. */
+    const QVariantList states = candidates.size() == 1
+                                    ? QVariantList{QVariantMap{{QStringLiteral("stid"), candidates.first()}}}
+                                    : QVariantList();
+    return {{QStringLiteral("states"), states},
+            {QStringLiteral("counties"), counties},
+            {QStringLiteral("candidateStates"), candidates}};
+}
+
 QString
 rr_zip_from_postal(const QString& postalCode, const QString& countryCode) {
     if (countryCode != QStringLiteral("US") || postalCode.size() != 5) {
@@ -1296,6 +1340,10 @@ RadioReferenceModel::finishSystemLoad() {
 
     setStatus(QString());
     Q_EMIT systemChanged();
+    const QVariantList stateIds = m_systemDetails.value(QStringLiteral("stateIds")).toList();
+    if (!stateIds.isEmpty()) {
+        Q_EMIT systemPlaceIdsReady(stateIds);
+    }
 
     if (m_refreshRow >= 0) {
         completeRefresh();
@@ -1413,6 +1461,21 @@ selected_indexes(const QVariantList& siteIndexes) {
     return out;
 }
 
+/** @brief Comma-joined site ids (an import's `site_ids`, a library row's `rrSiteIds`), blanks and repeats dropped. */
+QList<int>
+site_ids_in(const QString& joined) {
+    QList<int> out;
+    const QStringList parts = joined.split(QLatin1Char(','), Qt::SkipEmptyParts);
+    for (const QString& part : parts) {
+        bool ok = false;
+        const int value = part.trimmed().toInt(&ok);
+        if (ok && !out.contains(value)) {
+            out.append(value);
+        }
+    }
+    return out;
+}
+
 /** @brief The keys buildImportPlan() has inserted before it looks at anything. */
 QVariantMap
 plan_base_map(dsd_rr_protocol protocol, const QVariantMap& systemDetails) {
@@ -1478,6 +1541,22 @@ plan_into_map(const dsd_rr_import_plan& plan, QVariantMap* map) {
 } // namespace
 
 QVariantMap
+RadioReferenceModel::planPlace(const QString& siteIds) const {
+    /* The counties of the sites the plan really took (a conventional list's chosen repeaters, never every county the
+     * system lists), matched by site id: an index could name another tower. */
+    QList<int> countyIds;
+    for (const int siteId : site_ids_in(siteIds)) {
+        for (size_t i = 0; i < m_siteData.count; i++) {
+            if (m_siteData.items[i].site_db_id == siteId) {
+                countyIds.append(m_siteData.items[i].county_id);
+                break;
+            }
+        }
+    }
+    return rr_site_place(countyIds, m_systemDetails.value(QStringLiteral("stateIds")).toList());
+}
+
+QVariantMap
 RadioReferenceModel::buildSiteImportPlans(const QVariantList& siteIndexes, const QVariantMap& options) {
     QVariantList plans;
     QVariantMap singleOptions = options;
@@ -1538,6 +1617,10 @@ RadioReferenceModel::buildImportPlan(const QVariantList& siteIndexes, const QVar
         return map;
     }
     plan_into_map(plan, &map);
+    /* Always present, empty when RadioReference sent no county or state for the sites taken: saving the import onto
+     * a row of another site then clears that site's place instead of keeping it (SavedSystemsModel::update()). */
+    const bool placed = plan.protocol != DSD_RR_PROTO_UNSUPPORTED && plan.site_count > 0;
+    map.insert(QStringLiteral("place"), placed ? planPlace(field(plan.site_ids)) : QVariantMap());
     if (plan.site_count == 1 && !selected.empty() && selected[0] < m_siteData.count) {
         const auto& site = m_siteData.items[selected[0]];
         map.insert("rrSid", m_sid);
@@ -1688,7 +1771,7 @@ RadioReferenceModel::performImport(const QVariantMap& plan, const QString& syste
     result.insert(QStringLiteral("decodeFlag"), plan.value(QStringLiteral("decodeFlag")));
     result.insert(QStringLiteral("trunking"), plan.value(QStringLiteral("trunking")));
     result.insert(QStringLiteral("savedRow"), savedRow);
-    for (const char* key : {"rrSid", "rrSiteId", "siteName", "siteLat", "siteLon", "hasSitePos"}) {
+    for (const char* key : {"rrSid", "rrSiteId", "siteName", "siteLat", "siteLon", "hasSitePos", "place"}) {
         if (plan.contains(key)) {
             result.insert(key, plan.value(key));
         }
@@ -1713,17 +1796,7 @@ namespace {
  */
 QList<int>
 site_ids_of(const QVariantMap& entry) {
-    QList<int> out;
-    const QStringList parts =
-        entry.value(QStringLiteral("rrSiteIds")).toString().split(QLatin1Char(','), Qt::SkipEmptyParts);
-    for (const QString& part : parts) {
-        bool ok = false;
-        const int value = part.trimmed().toInt(&ok);
-        if (ok && !out.contains(value)) {
-            out.append(value);
-        }
-    }
-    return out;
+    return site_ids_in(entry.value(QStringLiteral("rrSiteIds")).toString());
 }
 
 } // namespace

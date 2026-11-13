@@ -61,9 +61,13 @@ Rectangle {
                     Navigation.commitComposing(true);
                     nav.selected(index);
                 }
-                Keys.onSpacePressed: choose()
-                Keys.onReturnPressed: choose()
-                Keys.onEnterPressed: choose()
+                Keys.onPressed: function (event) {
+                    if (Navigation.activationPress(event, Window.activeFocusItem))
+                        choose();
+                }
+                Keys.onReleased: function (event) {
+                    Navigation.activationRelease(event);
+                }
                 FocusFrame {}
                 readonly property bool active: nav.currentIndex === index
                 readonly property color tone: active ? Theme.cyan : Theme.textSubdued

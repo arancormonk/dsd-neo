@@ -13,6 +13,7 @@
 #include <QFontDatabase>
 #include <QLatin1String>
 #include <QObject>
+#include <QPointer>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
@@ -49,6 +50,8 @@
 #include "recording_store.h"
 #include "replay_store.h"
 #include "restart_closer.h"
+#include "rr_place_service.h"
+#include "saved_system_cards.h"
 #include "saved_systems_model.h"
 #include "scan_list_starter.h"
 #include "scan_lists_model.h"
@@ -63,6 +66,7 @@
 #include "store_notices.h"
 #include "talkgroup_filter_model.h"
 #include "talkgroup_list_model.h"
+#include "text_order.h"
 #include "ui_controller.h"
 
 namespace dsd_qt {
@@ -161,6 +165,15 @@ wire_decryption_profiles(QQmlApplicationEngine& engine, DecoderHost* host, Saved
         }
     });
     return decryptionProfiles;
+}
+
+// A library file replaced with the user's own bytes no longer describes the RadioReference site the saved
+// systems naming it came from; they let go of that before the bytes are installed.
+static void
+wire_library_replace(ImportedFilesModel* files, SavedSystemsModel* systems) {
+    const QPointer<SavedSystemsModel> guarded(systems);
+    files->setBeforeUserReplace(
+        [guarded](const QString& path) { return guarded.isNull() || guarded->invalidatePathProvenance(path); });
 }
 
 static void
@@ -311,6 +324,7 @@ static void
 publish_input_context(QQmlContext* context, DecoderHost* host, RadioReferenceModel* radioReference, AppPrefs* prefs,
                       QObject* owner) {
     context->setContextProperty(QStringLiteral("inputCommit"), new InputCommit(owner));
+    context->setContextProperty(QStringLiteral("textOrder"), new TextOrder(owner));
     context->setContextProperty(QStringLiteral("screenReader"), new ScreenReaderState(owner));
     context->setContextProperty(QStringLiteral("signInAutofill"),
                                 new SignInAutofill(host, radioReference, prefs, owner));
@@ -325,6 +339,26 @@ publish_app_context(QQmlContext* context, DecoderHost* host, RadioReferenceModel
     context->setContextProperty(QStringLiteral("appVersionText"), QString::fromUtf8(GIT_TAG));
     publish_input_context(context, host, radioReference, prefs, owner);
     context->setContextProperty(QStringLiteral("storeNotices"), StoreNotices::instance());
+}
+
+/* The RadioReference import, and the service that names the saved systems' places from the same account (created after
+   both, which it follows). */
+static void
+publish_radio_reference(QQmlContext* context, RadioReferenceModel* radioReference, SavedSystemsModel* systems,
+                        QObject* owner) {
+    context->setContextProperty(QStringLiteral("radioReference"), radioReference);
+    context->setContextProperty(QStringLiteral("rrPlaces"), new RrPlaceService(radioReference, systems, owner));
+}
+
+/* Listen's shortcuts, and its saved-system cards (one per site group, searched and sorted), Nearest offered where the
+   platform can take a location fix. */
+static void
+publish_listen(QQmlContext* context, ListenPins* pins, SavedSystemsModel* systems, AppPrefs* prefs,
+               ImportedFilesModel* importedFiles, const DecoderHost* host, QObject* owner) {
+    context->setContextProperty(QStringLiteral("listenPins"), pins);
+    auto* cards = new SavedSystemCards(systems, prefs, importedFiles, owner);
+    cards->setLocationSupported(host->locationSupported());
+    context->setContextProperty(QStringLiteral("savedSystemCards"), cards);
 }
 
 ListenPins*
@@ -400,6 +434,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* scanListStarter = new ScanListStarter(prefs, systems, &engine);
     auto* importedFiles = new ImportedFilesModel(host, imports, &engine);
     wire_target_files(scanListStarter, scanLists, importedFiles);
+    wire_library_replace(importedFiles, systems);
     auto* decryptionProfiles =
         wire_decryption_profiles(engine, host, systems, scanLists, sessionArgs, scanListStarter, commands, metrics);
     auto* history = make_history(engine);
@@ -456,14 +491,14 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("scanListStarter"), scanListStarter);
     context->setContextProperty(QStringLiteral("importedFiles"), importedFiles);
     context->setContextProperty(QStringLiteral("replayFiles"), replays);
-    context->setContextProperty(QStringLiteral("radioReference"), radioReference);
+    publish_radio_reference(context, radioReference, systems, &engine);
     publish_history_context(context, history, historyView, monitorView, historyExport);
     publish_recording_context(context, recordings, recordingStatus);
     context->setContextProperty(QStringLiteral("talkgroups"), talkgroups);
     context->setContextProperty(QStringLiteral("talkgroupView"), talkgroupView);
     context->setContextProperty(QStringLiteral("spectrum"), spectrum);
     context->setContextProperty(QStringLiteral("knownFrequencies"), knownFrequencies);
-    context->setContextProperty(QStringLiteral("listenPins"), listenPins);
+    publish_listen(context, listenPins, systems, prefs, importedFiles, host, &engine);
     context->setContextProperty(QStringLiteral("signalSearch"), signalSearch);
     publish_app_context(context, host, radioReference, prefs, &engine);
 

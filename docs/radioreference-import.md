@@ -159,11 +159,14 @@ and the browse picks do not carry over. A finished import clears the query.
 
 ## Saved sites in Qt and Android
 
-For trunked systems, enable **Import each selected site as its own system**, select the sites, and import.
-The setup wizard saves one row per site with its own frequency and CSV files, using the source and tuner
-settings you choose. Frequency, protocol and channel/group CSV edits in that wizard apply to the first
-site; the other sites retain their individual import settings. A single-site import records the same
-site identity. Identity uses RadioReference's database site ID, not the RF site number.
+For trunked systems, enable **Import each selected site as its own system**, select the sites, and
+import. The setup wizard saves one row per site with its own frequency and CSV files, using the source
+and tuner settings you choose. Frequency, protocol and channel/group CSV edits in that wizard apply to
+the first site; the other sites retain their individual import settings. The sites are saved together:
+if the save fails, none of them is added and Save can be tried again without making copies. A site whose
+frequency, protocol or channel/group CSV you edited is saved without its RadioReference site, position
+and place. A single-site import records the same site identity. Identity uses RadioReference's database
+site ID, not the RF site number.
 
 An import fills the wizard's **Channel map** and **Talkgroups** rows with the files it generated. When it
 generates none for a row (a TETRA system that lists no talkgroups, a single conventional repeater), that
@@ -172,7 +175,10 @@ files. A file you picked yourself stays only while you are editing that saved sy
 each site of a per-site import keep only the files their own import generated. A bandwidth that cannot
 decode TETRA is emptied too, so a TETRA import runs at 72 kHz.
 
-Home groups sibling sites under one card with an **n sites ›** chooser. **Use my location** requests a
+Home groups sibling sites under one card with an **n sites ›** chooser. Sites group by RadioReference
+system and by receiver: a system saved for two receivers (two dongles, or a dongle and an rtl_tcp host) is
+two cards, each with its own sites. A card for several sites takes its name from the system, without the
+" — Site" a per-site import added. **Use my location** requests a
 foreground fix, names the nearest eligible saved site in this system, and orders the available sites by
 distance. Avoided sites appear last; sites without coordinates are explained and cannot be ranked.
 Distances appear in miles by default. Enable **Settings → Units → Use metric units** to display kilometers.
@@ -196,11 +202,44 @@ If approximate access was already granted, it is respected; precise location can
 app permission settings. GPS participates when precise access is granted. No background location is requested.
 During a lookup the nearest-site action is disabled. A failed refresh labels any saved location still in use.
 
-Editing a saved site's frequency, decode flag or CSV selections clears its RadioReference grouping IDs.
-Renaming or avoiding a site preserves them. Older imports with provenance only on the library file show
-**Refresh from RadioReference to enable site grouping** and stay ungrouped; re-import the site to create
-the saved-row identity. Refreshing only a library CSV cannot infer which saved row represents which site.
-Manual rows never group.
+Editing a saved site's frequency, decode flag or CSV selections clears what it kept from RadioReference:
+its grouping IDs, avoid, site name, location and place. So does removing a library file it uses, or
+replacing a file RadioReference made with your own (**Update from file**); **Refresh from
+RadioReference** keeps them, and so does updating a file you picked yourself, such as a key list. An
+edit that re-imports the site keeps the new import's details, and a name made from the site ("System —
+Site") follows a renamed site. Renaming or avoiding a site preserves them. Older imports with provenance
+only on the library file show **Refresh from RadioReference to enable site grouping** and stay
+ungrouped; re-import the site to create the saved-row identity. Refreshing only a library CSV cannot
+infer which saved row represents which site. Manual rows never group.
+
+### Places and Update from RadioReference
+
+An import also keeps where the system is: the states and the counties of the sites you imported (for a
+conventional list, of the repeaters you chose). RadioReference sends these as numbers. After a system loads,
+the app asks RadioReference for the state names, using your signed-in account, and fills them in on the
+saved systems; no other detail about you is sent. The place shows on the saved system's card on Listen
+("Johnson, Iowa", "Iowa · 5 counties", "Iowa") and drives Listen's **Place** order and search. A system saved
+before this, or one whose names have not arrived, shows no place on its card, and in **Place** order it falls
+under a **No place** heading until they arrive.
+
+**Update from RadioReference** brings an existing saved system up to date. It is in the card's **More** menu
+for a system with RadioReference sites, in the site chooser when a site has no coordinates, and under Listen's
+**Place** and **Nearest** order as a line such as "12 saved systems have no place yet", where it updates only
+those systems. For each saved RadioReference site it re-reads the site's name, position and place, and it fills in
+missing place names. It changes nothing else: frequencies, files, keys, avoids and the order you added systems in
+stay as they are, and a name that was made from the site (the "System — Site" form) follows a renamed site. It
+counts systems as Listen shows them: a system with several sites is one, so updating a 35-site system reads
+"Updating 1 of 1" and "Updated 1 system." A site RadioReference no longer lists is left alone; a system it did not
+answer for, or none of whose sites it could update, is counted as "could not be reached". It needs
+your RadioReference account: signed out, it opens the account screen instead. **Cancel** stops it and keeps what
+it had saved. A site you edited (frequency, decode flag or a CSV file) no longer links to RadioReference, so the
+update skips it.
+
+The site chooser's note for a site without coordinates reads "No coordinates. Use Update from RadioReference to
+check for new location data."
+
+A build without RadioReference support (no libcurl or Expat) hides every one of these: the card's menu item, the
+"no place yet" line with its action, and the chooser's button. The chooser's note then reads just "No coordinates."
 
 ## Terminal UI
 

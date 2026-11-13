@@ -504,6 +504,7 @@ populate(TestHost& host) {
                                                                          {"search/port", 1235}}));
     // Issue #646: the Listen tab this device last showed, which stays on it.
     dsd_qt::AppPrefs().setListenSection("explore");
+    dsd_qt::AppPrefs().setSystemsSort("nearest");
     return f;
 }
 
@@ -721,6 +722,8 @@ test_round_trip(const Fixture& f) {
                                              && !snapshot.prefs.contains("ui/onboardingDone"));
     expect("the Listen tab stays on the device",
            dsd_qt::AppPrefs().listenSection() == "explore" && !snapshot.prefs.contains("listen/section"));
+    expect("the saved-systems sort stays on the device",
+           dsd_qt::AppPrefs().systemsSort() == "nearest" && !snapshot.prefs.contains("listen/systemsSort"));
     expect("snapshot avoids come from the in-memory list", snapshot.avoids == QList<quint32>({156800000U, 162550000U}));
     expect("snapshot app tag and time",
            snapshot.app == QString::fromUtf8(GIT_TAG) && snapshot.createdAt > 1700000000LL);
@@ -776,11 +779,15 @@ test_round_trip(const Fixture& f) {
 }
 
 /* Issue #803: a saved TETRA system, as a RadioReference import saves one - -fT, trunking, the system and site it came
- * from, and no files of its own (TETRA needs no channel map, and an import may list no talkgroups) - survives a backup
- * and its restore unchanged, and counts as no extra options. The row is removed again so the later cases see the
- * fixture's two systems. */
+ * from, its place, and no files of its own (TETRA needs no channel map, and an import may list no talkgroups) -
+ * survives a backup and its restore unchanged, and counts as no extra options. The row is removed again so the later
+ * cases see the fixture's two systems. */
 void
 test_saved_tetra_system_round_trip() {
+    const QVariantMap tetra_place{
+        {"states", QVariantList{QVariantMap{{"stid", 1001}, {"name", "Auckland"}}}},
+        {"counties", QVariantList{QVariantMap{{"ctid", 4101}, {"stid", 1001}, {"name", "Auckland City"}}}},
+        {"candidateStates", QVariantList{1001}}};
     dsd_qt::SavedSystemsModel systems;
     const int row = systems.rowCount();
     expect("add a saved TETRA system", systems.add({{"name", "Kordia KorKor"},
@@ -790,7 +797,8 @@ test_saved_tetra_system_round_trip() {
                                                     {"trunking", true},
                                                     {"rrSid", 10880},
                                                     {"rrSiteId", 81234},
-                                                    {"siteName", "Auckland"}}));
+                                                    {"siteName", "Auckland"},
+                                                    {"place", tetra_place}}));
     const QString uid = systems.get(row).value("uid").toString();
 
     const auto snapshot = dsd_qt::backup::backup_take_snapshot();
@@ -818,6 +826,8 @@ test_saved_tetra_system_round_trip() {
     expect("tetra backup: it still names the RadioReference system and site",
            restored.value("rrSid").toInt() == 10880 && restored.value("rrSiteId").toInt() == 81234
                && restored.value("siteName").toString() == "Auckland");
+    expect("tetra backup: it keeps its place",
+           dsd_qt::SavedSystemsModel::validPlace(restored.value("place").toObject().toVariantMap()) == tetra_place);
     expect("tetra backup: it gained no files",
            restored.value("chanCsvPath").toString().isEmpty() && restored.value("groupCsvPath").toString().isEmpty());
     expect("tetra backup: restore summary counts it with no extra options",

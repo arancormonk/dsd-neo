@@ -34,6 +34,7 @@ Item {
         }
 
         function init() {
+            testContext.setRadioReference("available", true);
             testContext.useLifecycleHost(true);
             testContext.resetPins();
             testContext.setScanTestUsb(false, false);
@@ -63,6 +64,7 @@ Item {
         }
 
         function cleanup() {
+            testContext.setRadioReference("available", false);
             for (var modal of Ui.Navigation.modals.slice())
                 modal.visible = false;
             findChild(app, "siteChooserSheet").visible = false;
@@ -622,7 +624,7 @@ Item {
             verify(findChild(app, "pinnedStrip").shown, "the strip shows the pin");
 
             menu = openMenu(cardMore("County"), "savedSystemManageSheet");
-            compare(keys(menu), "edit,sites,pin,remove");
+            compare(keys(menu), "edit,sites,pin,rrUpdate,remove");
             tapPin(menu, "pinSavedSystemButton", "Pin to Listen", "Pin County to Listen");
             comparePinned("system:" + solo + ",system:" + sites[0], "the group's card pins its lead");
             verify(listenPins.isPinned("system", sites[1]), "every site of the group shows the card pinned");
@@ -651,6 +653,37 @@ Item {
             verify(!listenPins.isPinned("scan", other));
         }
 
+        // One system saved for USB and for rtl_tcp is two cards of two sites each, and a pin through one card's
+        // menu pins only that card.
+        function test_receivers_are_separate_cards() {
+            var usb = addGroup("usb");
+            var tcp = addGroup("rtltcp");
+            var home = showHome();
+            var cardOf = function (uid) {
+                return visualChild(home, function (entry) {
+                    // The card's entry names the group by its lead site.
+                    return entry.objectName === "savedSystemManageButton" && entry.visible
+                        && entry.parent.parent.leadUid === uid;
+                });
+            };
+            var siteButtons = [];
+            visualChild(home, function (entry) {
+                if (entry.objectName === "homeSiteChooserButton" && entry.visible)
+                    siteButtons.push(entry.text);
+                return false;
+            });
+            compare(siteButtons, ["2 sites", "2 sites"], "a card per receiver, each with its own sites");
+            verify(cardOf(usb[0]) !== null && cardOf(tcp[0]) !== null, "both receivers' cards");
+            var menu = openMenu(cardOf(tcp[0]), "savedSystemManageSheet");
+            tapPin(menu, "pinSavedSystemButton", "Pin to Listen", "Pin County to Listen");
+            comparePinned("system:" + tcp[0]);
+            verify(listenPins.isPinned("system", tcp[1]), "the rtl_tcp card is pinned through either site");
+            verify(!listenPins.isPinned("system", usb[0]) && !listenPins.isPinned("system", usb[1]),
+                "the USB card is not");
+            menu = openMenu(cardOf(usb[0]), "savedSystemManageSheet");
+            compare(findChild(menu, "pinSavedSystemButton").text, "Pin to Listen", "the USB card offers its own pin");
+        }
+
         // Review focus 2: a pinned site edited out of its group is its own card, whose menu unpins it.
         function test_standalone_site_card_unpins() {
             var sites = addGroup("rtltcp");
@@ -660,7 +693,7 @@ Item {
             showHome();
             var more = visualChild(findChild(app, "homeScreen"), function (entry) {
                 return entry.objectName === "savedSystemManageButton" && entry.visible
-                    && entry.parent.index === savedSystems.rowForUid(sites[1]);
+                    && entry.parent.parent.leadUid === sites[1];
             });
             verify(more !== null, "the standalone card's More");
             var menu = openMenu(more, "savedSystemManageSheet");

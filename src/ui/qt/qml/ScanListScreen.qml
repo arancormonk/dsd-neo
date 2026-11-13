@@ -883,9 +883,13 @@ Rectangle {
                     Accessible.description: advSubtitle.text + ". " + (screen.advancedOpen ? qsTr("Expanded") : qsTr("Collapsed"))
                     Accessible.ignored: !Navigation.allows(advHeader) || !visible
                     Accessible.onPressAction: toggle()
-                    Keys.onSpacePressed: toggle()
-                    Keys.onReturnPressed: toggle()
-                    Keys.onEnterPressed: toggle()
+                    Keys.onPressed: function (event) {
+                        if (Navigation.activationPress(event, Window.activeFocusItem))
+                            toggle();
+                    }
+                    Keys.onReleased: function (event) {
+                        Navigation.activationRelease(event);
+                    }
                     function toggle() {
                         if (enabled && Navigation.allows(advHeader))
                             screen.advancedOpen = !screen.advancedOpen;

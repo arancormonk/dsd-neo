@@ -24,9 +24,13 @@ Item {
     Accessible.ignored: !Navigation.allows(control) || !visible || !interactive
     Accessible.onPressAction: activate()
     Accessible.onToggleAction: activate()
-    Keys.onSpacePressed: activate()
-    Keys.onReturnPressed: activate()
-    Keys.onEnterPressed: activate()
+    Keys.onPressed: function (event) {
+        if (Navigation.activationPress(event, Window.activeFocusItem))
+            activate();
+    }
+    Keys.onReleased: function (event) {
+        Navigation.activationRelease(event);
+    }
     FocusFrame {}
 
     implicitWidth: Theme.minimumTouchSize

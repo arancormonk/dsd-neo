@@ -289,10 +289,12 @@ rr_soap_build_request(const char* method, const rr_soap_param* params, size_t n,
 
 #ifdef USE_EXPAT
 
-#define RR_MAX_DEPTH  32
-#define RR_MAX_NAME   64
-#define RR_LEAF_MAX   4096
-#define RR_DETAIL_MAX 256
+#define RR_MAX_DEPTH      32
+#define RR_MAX_NAME       64
+#define RR_LEAF_MAX       4096
+#define RR_DETAIL_MAX     256
+#define RR_MAX_STATE_IDS  64
+#define RR_MAX_COUNTY_IDS 512
 
 typedef enum { RR_F_INT, RR_F_ID, RR_F_STR, RR_F_MHZ, RR_F_DEC } rr_field_kind;
 
@@ -323,6 +325,11 @@ static const rr_field_def k_state_fields[] = {
     RR_STR(dsd_rr_state, code, "stateCode"),
 };
 
+static const rr_field_def k_state_info_fields[] = {
+    RR_INT(dsd_rr_state_info, stid, "stid"),
+    RR_STR(dsd_rr_state_info, state_name, "stateName"),
+};
+
 static const rr_field_def k_county_fields[] = {
     RR_INT(dsd_rr_county, ctid, "ctid"),
     RR_STR(dsd_rr_county, county_name, "countyName"),
@@ -349,6 +356,7 @@ static const rr_field_def k_sysid_fields[] = {
 
 static const rr_field_def k_site_fields[] = {
     RR_INT(dsd_rr_site, site_db_id, "siteId"),
+    RR_INT(dsd_rr_site, county_id, "siteCtid"),
     RR_INT(dsd_rr_site, site_number, "siteNumber"),
     RR_STR(dsd_rr_site, descr, "siteDescr"),
     RR_INT(dsd_rr_site, zone_number, "zoneNumber"),
@@ -463,6 +471,8 @@ typedef struct {
     dsd_rr_talkgroup_cat talkgroup_cat;
     dsd_rr_support_entry support;
     size_t sysid_cap;
+    size_t state_id_cap;
+    size_t county_id_cap;
 
     /* getStateInfo carries stid/stateName once, above the county rows. */
     int enclosing_stid;
@@ -512,6 +522,15 @@ static const rr_shape_desc k_shapes[] = {
     [RR_SHAPE_COUNTRY_LIST] = RR_SHAPE_LIST("return", country, k_country_fields, dsd_rr_country_list, dsd_rr_country),
     [RR_SHAPE_STATE_LIST] = RR_SHAPE_LIST("stateList", state, k_state_fields, dsd_rr_state_list, dsd_rr_state),
     [RR_SHAPE_COUNTY_LIST] = RR_SHAPE_LIST("countyList", county, k_county_fields, dsd_rr_county_list, dsd_rr_county),
+    [RR_SHAPE_STATE_INFO] = {.record_parent = "countyList",
+                             .root_fields = k_state_info_fields,
+                             .root_field_count = RR_COUNTOF(k_state_info_fields),
+                             .record_fields = k_county_fields,
+                             .record_field_count = RR_COUNTOF(k_county_fields),
+                             .scratch_offset = offsetof(rr_parse_ctx, county),
+                             .record_size = sizeof(dsd_rr_county),
+                             .items_offset = offsetof(dsd_rr_state_info, counties.items),
+                             .count_offset = offsetof(dsd_rr_state_info, counties.count)},
     [RR_SHAPE_TRS_LIST] =
         RR_SHAPE_LIST("trsList", trs_summary, k_trs_summary_fields, dsd_rr_trs_list, dsd_rr_trs_summary),
     [RR_SHAPE_TRS_DETAILS] = {.sub_parent = "sysid",
@@ -682,6 +701,9 @@ rr_finish_site_position(dsd_rr_site* site) {
     }
     if (!range_ok) {
         site->range_mi = 0;
+    }
+    if (site->county_id < 0) {
+        site->county_id = 0;
     }
 }
 
@@ -872,6 +894,67 @@ rr_apply_root_leaf(rr_parse_ctx* ctx, const char* name) {
 }
 
 /**
+ * @brief Append one positive id to a bounded array.
+ *
+ * Values that are not positive, or that overflow int, are dropped (the strict
+ * parse refuses them); past `max` entries the rest are ignored.
+ *
+ * @param text  Leaf text.
+ * @param ids   Address of the array pointer.
+ * @param count Address of the element count.
+ * @param cap   Address of the array capacity.
+ * @param max   Most entries kept.
+ * @return 0 on success or when the value is skipped, -1 on allocation failure.
+ */
+static int
+rr_append_id(const char* text, int** ids, size_t* count, size_t* cap, size_t max) {
+    int value = 0;
+    if (rr_parse_int_field(text, &value) != 0 || value <= 0 || *count >= max) {
+        return 0;
+    }
+    if (rr_array_reserve((void**)ids, cap, *count + 1U, sizeof(int)) != 0) {
+        return -1;
+    }
+    (*ids)[*count] = value;
+    (*count)++;
+    return 0;
+}
+
+/**
+ * @brief Collect a Trs.sState / Trs.sCounty member id.
+ *
+ * The id sits two levels under its array: `<sState><item><stid>`. Only arrays
+ * directly under `<return>` count, so nested lookalikes are ignored.
+ *
+ * @param ctx   Parse context.
+ * @param name  Local element name.
+ * @param depth 1-based depth of the leaf element.
+ * @return 1 when the leaf was one of these ids, 0 when it is something else.
+ */
+static int
+rr_apply_id_leaf(rr_parse_ctx* ctx, const char* name, int depth) {
+    if (depth < 3 || ctx->return_depth < 0 || depth - 2 != ctx->return_depth + 1) {
+        return 0;
+    }
+    dsd_rr_trs_details* details = (dsd_rr_trs_details*)ctx->sink;
+    const char* container = ctx->names[depth - 3];
+    int rc = 0;
+    if (strcmp(container, "sState") == 0 && strcmp(name, "stid") == 0) {
+        rc = rr_append_id(ctx->text, &details->state_ids, &details->state_count, &ctx->state_id_cap, RR_MAX_STATE_IDS);
+    } else if (strcmp(container, "sCounty") == 0 && strcmp(name, "ctid") == 0) {
+        rc = rr_append_id(ctx->text, &details->county_ids, &details->county_count, &ctx->county_id_cap,
+                          RR_MAX_COUNTY_IDS);
+    } else {
+        return 0;
+    }
+    if (rc != 0) {
+        rr_fail(ctx, DSD_RR_ERR_NOMEM, "out of memory decoding response");
+        XML_StopParser(ctx->parser, XML_FALSE);
+    }
+    return 1;
+}
+
+/**
  * @brief Route one leaf to the record, sub-record or root it belongs to.
  *
  * @param ctx   Parse context.
@@ -882,6 +965,10 @@ static void
 rr_apply_leaf(rr_parse_ctx* ctx, const char* name, int depth) {
     const rr_shape_desc* desc = &k_shapes[ctx->shape];
     const int parent_depth = depth - 1;
+
+    if (ctx->shape == RR_SHAPE_TRS_DETAILS && rr_apply_id_leaf(ctx, name, depth)) {
+        return;
+    }
 
     if (ctx->sub_depth >= 0 && parent_depth == ctx->sub_depth) {
         if (desc->sub_fields != NULL) {
@@ -1249,6 +1336,25 @@ rr_finish_county_list(rr_parse_ctx* ctx) {
 }
 
 /**
+ * @brief Keep a getStateInfo identity usable and copy it onto every county row.
+ *
+ * A stid that is not positive is dropped to 0, like every other id here.
+ *
+ * @param ctx Parse context.
+ */
+static void
+rr_finish_state_info(rr_parse_ctx* ctx) {
+    dsd_rr_state_info* info = (dsd_rr_state_info*)ctx->sink;
+    if (info->stid < 0) {
+        info->stid = 0;
+    }
+    for (size_t i = 0; i < info->counties.count; i++) {
+        info->counties.items[i].stid = info->stid;
+        rr_copy_field(info->counties.items[i].state_name, sizeof(info->counties.items[i].state_name), info->state_name);
+    }
+}
+
+/**
  * @brief Configure an expat parser with the handlers and the hardening.
  *
  * @param parser Parser to configure.
@@ -1306,6 +1412,8 @@ rr_parse_finish(rr_parse_ctx* ctx, int xml_ok, rr_shape shape, dsd_rr_error* err
 
     if (shape == RR_SHAPE_COUNTY_LIST) {
         rr_finish_county_list(ctx);
+    } else if (shape == RR_SHAPE_STATE_INFO) {
+        rr_finish_state_info(ctx);
     }
     if (outcome != NULL) {
         *outcome = RR_PARSE_OK;

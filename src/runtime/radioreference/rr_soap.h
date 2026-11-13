@@ -38,6 +38,7 @@ typedef enum {
     RR_SHAPE_COUNTRY_LIST,       /**< sink: dsd_rr_country_list */
     RR_SHAPE_STATE_LIST,         /**< getCountryInfo.stateList; sink: dsd_rr_state_list */
     RR_SHAPE_COUNTY_LIST,        /**< getStateInfo.countyList; sink: dsd_rr_county_list */
+    RR_SHAPE_STATE_INFO,         /**< getStateInfo whole; sink: dsd_rr_state_info */
     RR_SHAPE_TRS_LIST,           /**< getStateInfo/getCountyInfo trsList; sink: dsd_rr_trs_list */
     RR_SHAPE_TRS_DETAILS,        /**< sink: dsd_rr_trs_details */
     RR_SHAPE_SITE_LIST,          /**< sink: dsd_rr_site_list */

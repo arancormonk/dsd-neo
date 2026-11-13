@@ -332,18 +332,26 @@ Item {
             savedRow = savedSystems.count - 1;
             homeLoader.active = true;
             tryCompare(homeLoader, "status", Loader.Ready);
-            var meta = findChild(homeLoader.item, "savedSystemMeta");
-            verify(meta !== null);
+            // The card follows the saved systems on the next turn.
+            var meta = null;
+            tryVerify(function () {
+                meta = findChild(homeLoader.item, "savedSystemMeta");
+                return meta !== null;
+            }, 1000, "the card's meta line");
             verify(meta.text.indexOf("key configured") === 0);
             savedSystems.update(savedRow, {
                 encKeyType: "",
                 encKeyValue: ""
             });
-            verify(meta.text.indexOf("key configured") < 0);
+            tryVerify(function () {
+                return meta.text.indexOf("key configured") < 0;
+            }, 1000, "no key, no marker");
             savedSystems.update(savedRow, {
                 keyCsvPath: "/imports/keys.csv"
             });
-            verify(meta.text.indexOf("key configured") === 0);
+            tryVerify(function () {
+                return meta.text.indexOf("key configured") === 0;
+            }, 1000, "a key file is a key");
         }
         function test_mask_and_eye() {
             var editor = findChild(wizard, "wizardEncryptionEditor");

@@ -33,9 +33,13 @@ Item {
         Navigation.commitComposing(true);
         clicked();
     }
-    Keys.onReturnPressed: activate()
-    Keys.onEnterPressed: activate()
-    Keys.onSpacePressed: activate()
+    Keys.onPressed: function (event) {
+        if (Navigation.activationPress(event, Window.activeFocusItem))
+            activate();
+    }
+    Keys.onReleased: function (event) {
+        Navigation.activationRelease(event);
+    }
     FocusFrame {}
     implicitWidth: Math.max(Theme.minimumTouchSize, Math.ceil(label.implicitWidth) + 24)
     implicitHeight: Math.max(54, label.implicitHeight + 24)
