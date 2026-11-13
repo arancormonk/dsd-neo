@@ -12346,6 +12346,64 @@ test_y_quiet_sync_while_suspended_ends_the_check(int heard) {
     return rc;
 }
 
+/* -Y: a check that starts again 2 s after its row's landing (here after an invalidation, as a hold released, an edit or
+   a config apply makes) measures the landed capture, and the row steps on its quiet result. */
+static int
+test_y_quiet_restart_late_in_the_visit_measures(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    /* A frequency unique to this case: engine.c caches its last tune in file statics. */
+    const long int base_hz = 521012500L;
+    int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, 0, 1, base_hz) == 0);
+    noCarrier(opts, state);
+    rc |= expect_true("the landed row is measured", g_yq.requests == 1 && g_rtl_tune_calls == 0);
+    dsd_engine_scan_quiet_note_change(state);
+    g_live_realtime_ms += 2000U;
+    noCarrier(opts, state);
+    noCarrier(opts, state);
+    rc |= expect_true("restarted 2 s after the landing: measured again and stepped",
+                      g_yq.requests == 2 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y check restarted late in the visit\n");
+    }
+    return rc;
+}
+
+/* -Y: turning the setting on while a row is on air (from the menu, the API or a config apply) does not check that row:
+   a call it heard while the setting was off moved nothing, so the setting applies from the next visit. The row keeps
+   its hangtime. */
+static int
+test_y_quiet_turned_on_mid_visit_keeps_the_row(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    /* A frequency unique to this case: engine.c caches its last tune in file statics. */
+    const long int base_hz = 525012500L;
+    int rc =
+        expect_true("the first step lands row 0 with the setting off", yq_list(opts, state, 3, 0, 0, base_hz) == 0);
+    noCarrier(opts, state);
+    opts->scan_skip_silent = 1;
+    dsd_engine_scan_quiet_setting_changed(state, 1);
+    noCarrier(opts, state);
+    noCarrier(opts, state);
+    rc |= expect_true("on mid-visit: the row is not measured and keeps its hangtime",
+                      g_yq.requests == 0 && g_rtl_tune_calls == 0 && g_yq.notices == 0
+                          && scan_quiet_phase_get(state) == SCAN_QUIET_DONE);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y setting turned on mid-visit\n");
+    }
+    return rc;
+}
+
 /* -Y keep timing: a busy row, an operator hold, a single-row list, and heard voice under the voice gate never
    skip; a row the voice gate is still qualifying skips on a quiet result, and with the check busy its qualification
    expiry still steps. The rules a step would stay for are part of the row's conditions, so none is measured and no
@@ -12636,6 +12694,8 @@ test_scan_quiet_decisions(void) {
     rc |= test_y_quiet_open_analog_carrier_stays();
     rc |= test_y_quiet_sync_while_suspended_ends_the_check(1);
     rc |= test_y_quiet_sync_while_suspended_ends_the_check(0);
+    rc |= test_y_quiet_restart_late_in_the_visit_measures();
+    rc |= test_y_quiet_turned_on_mid_visit_keeps_the_row();
     rc |= test_y_quiet_counts_from_the_landing(1);
     rc |= test_y_quiet_counts_from_the_landing(0);
     rc |= test_live_y_skips_a_quiet_row(1);

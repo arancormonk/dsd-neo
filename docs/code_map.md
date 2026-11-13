@@ -518,17 +518,20 @@ Generated (do not edit/commit):
       as typed, the AM default (6 kHz, calibrated) when unset, and no check for an unset NFM width, which keeps the
       historical filter rule and WIDE fallback and so has no definite channel; typed analog rows and targets resolve
       theirs the same way. An ineligible visit is SUSPENDED: the hook does nothing for it until the next publication. A
-      published visit whose classes, width, rate, frequency or revisions differ from what was measured starts over.
+      published visit whose classes, width, rate, frequency or revisions differ from what was measured starts over, and
+      so does a suspended one published again (once nothing keeps it, it measures again on the same visit).
     - WAIT_CAPTURE: a capture of the stream's live output generation (`dsd_rtl_stream_metrics_hook_stream_generation()`,
       which the engine installs as `rtl_stream_output_generation()`, the counter the demod stamps on every tap capture,
       `demod_feed_signal_search()`) newer than the one read at the tune request
       (`dsd_engine_scan_landing::generation_before_tune`), centred on the visit (`capture_hz - capture_offset_hz`); read
       at most every 50 ms, for 1000 ms (realtime) from the landing's note (`landed_realtime_ms`) or the in-flight park's
-      completion read. Known unsupported is DONE, never an error: no Fs/4 rotation (centred I/Q: a native Airspy, whose
-      libairspy I/Q is centred, though one through SoapySDR rotates; an RTL-SDR with offset tuning on, as an E4000 runs
-      by default over USB; the shift off), a rate or analog width the calibration did not validate
-      (`dsd_signal_quiet_rate_supported()`, `dsd_signal_quiet_analog_supported()` with the analog kind), a refused
-      request.
+      completion read; a check that starts again on a visit it already published (after a suspension, eligible only
+      later, or with other facts) waits 1000 ms from that restart, since a receive-profile or width change moves the
+      output generation and its capture comes only then. Known unsupported is DONE, never an error: no Fs/4 rotation
+      (centred I/Q: a native Airspy, whose libairspy I/Q is centred, though one through SoapySDR rotates; an RTL-SDR
+      with offset tuning on, as an E4000 runs by default over USB; the shift off), a rate or analog width the
+      calibration did not validate (`dsd_signal_quiet_rate_supported()`, `dsd_signal_quiet_analog_supported()` with the
+      analog kind), a refused request.
     - REQUESTED: 400 ms (realtime), then cancelled and DONE; a lost, capture-changed or dropped request waits for the
       capture again, at most 3 times a visit; clipped, non-finite, failed and busy results are DONE.
     - Reconcile, at every hook call and engine service: a changed visit or revision snapshot (`scan_quiet_revisions`:
@@ -609,10 +612,13 @@ Generated (do not edit/commit):
       replaced or released, `Y` (through `dsd_engine_channel_scan_entry_cancel()`) and a start's hold let go; a Signal
       search start (the tap lets the search's first request supersede the quiet one meanwhile); the setting and every
       config apply (`dsd_scan_quiet_setting_changed()`, installed engine-wide as
-      `dsd_engine_scan_quiet_setting_changed()`, which also cancels and suspends at once). Both bumps are one load while
-      skip-silent is off. A mutation site only moves the counter; the request is cancelled, ticket-matched, at the next
-      reconcile, which runs before every outward answer (hook, apply, decline, publication), so no stale result is ever
-      handed back or applied, and a Signal search request supersedes a quiet one at the tap meanwhile.
+      `dsd_engine_scan_quiet_setting_changed()`, which also cancels and suspends at once; when the change turned the
+      setting on, from off, it marks the landed visit DONE: syncs heard while off moved no `sync_seq`, so the setting
+      applies from the next visit, and a park still in flight, which has heard nothing yet, is checked). Both bumps are
+      one load while skip-silent is off. A mutation site only moves the counter; the request is cancelled,
+      ticket-matched, at the next reconcile, which runs before every outward answer (hook, apply, decline, publication),
+      so no stale result is ever handed back or applied, and a Signal search request supersedes a quiet one at the tap
+      meanwhile.
     - RF power is never activity: the check writes no hold, activity stamp, `idle_since_m`, `last_cc_sync_time`,
       history, event or location output, and reports nothing to the trunk scan. Radio-off builds compile it as a no-op
       service. Tests: `ENGINE_TRUNK_SCAN` (`test_scan_quiet_*`: a fake tap, link fakes of `rtl_signal_quiet_*`,
@@ -4054,9 +4060,10 @@ the P25 profiles (see the startup control-channel hunt below); with nothing inst
 (`tests/engine/search_schedule_replay.c`).
 `scan_quiet_setting_changed` (`dsd_scan_quiet_setting_changed()`, #834) tells the engine that the session-wide
 `opts->scan_skip_silent` was written, so it can drop the quiet checks it already made; app-control's
-`DSD_APP_CMD_SCAN_SKIP_SILENT_SET` handler calls it on the decoder thread. It lives in this table, not the trunk-scan
-one, because this table outlives any trunk-scan coordinator and the setting serves `-Y` too. A no-op with nothing
-installed.
+`DSD_APP_CMD_SCAN_SKIP_SILENT_SET` handler and every config apply call it on the decoder thread, with `turned_on` set
+when the write turned the setting on from off (the landed visit is then not checked). It lives in this table, not the
+trunk-scan one, because this table outlives any trunk-scan coordinator and the setting serves `-Y` too. A no-op with
+nothing installed.
 `scan_quiet_service` (`dsd_frame_sync_hook_scan_quiet_service()`, #834) is the scan quiet check's in-hunt service
 (`dsd_engine_scan_quiet_service()`, engine-wide like the setting slot): `getFrameSync()` asks it at the same 300-symbol
 point as the trunk-scan dwell (`dwell_due || scan_quiet_service`, so a dwell hand-back is asked first and the service

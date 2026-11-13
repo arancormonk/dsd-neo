@@ -2686,8 +2686,9 @@ static int
 ui_cmd_handle_scan_skip_silent_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t on = 0;
     if (opts && state && ui_cmd_parse_i32_payload(c, &on)) {
+        const int was_on = opts->scan_skip_silent != 0;
         svc_set_scan_skip_silent(opts, on);
-        dsd_scan_quiet_setting_changed(state);
+        dsd_scan_quiet_setting_changed(state, !was_on && opts->scan_skip_silent);
         ui_set_toast(state, 3, "Applied: Silent channel skip -> %s", opts->scan_skip_silent ? "On" : "Off");
     }
     return 1;
@@ -10160,9 +10161,10 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         dsd_snapshot_opts_to_user_config(opts, state, &saves[0]);
     }
     int kept = 0;
+    const int skip_silent_was_on = opts->scan_skip_silent != 0;
     const int rc = cfg_apply(opts, state, c, &kept);
     /* An apply may write the skip-silent setting and whatever else a scan quiet check was measured under (#834). */
-    dsd_scan_quiet_setting_changed(state);
+    dsd_scan_quiet_setting_changed(state, !skip_silent_was_on && opts->scan_skip_silent);
     if (!kept) {
         DSD_MEMCPY(&opts->next_start, next_before, sizeof opts->next_start);
     }

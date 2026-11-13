@@ -22938,12 +22938,20 @@ qt_mut_hold_twice(dsd_opts* opts, dsd_state* state) {
     qt_mut_hold_toggle(opts, state);
 }
 
+/* The setting turned off and on again: on mid-visit, so the visit on air gets no check. */
 static void
 qt_mut_setting_off_on(dsd_opts* opts, dsd_state* state) {
     opts->scan_skip_silent = 0;
-    dsd_engine_scan_quiet_setting_changed(state);
+    dsd_engine_scan_quiet_setting_changed(state, 0);
     opts->scan_skip_silent = 1;
-    dsd_engine_scan_quiet_setting_changed(state);
+    dsd_engine_scan_quiet_setting_changed(state, 1);
+}
+
+/* The setting written while on, as a config apply that leaves it on does. */
+static void
+qt_mut_setting_reapplied(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    dsd_engine_scan_quiet_setting_changed(state, 0);
 }
 
 static void
@@ -22954,7 +22962,7 @@ qt_mut_y_entry_cancel(dsd_opts* opts, dsd_state* state) {
 
 /* Every counter the revision snapshot holds, and every mutation site that has none (quiet_inv_seq), cancels
    a request under way and suspends the check; republished, the visit measures afresh. Mutations that undo themselves
-   in one pump (a hold and its release, the setting off and on) still count. */
+   in one pump (a hold and its release) still count, and so does the setting written while it stays on. */
 static int
 test_scan_quiet_revisions_suspend_the_check(void) {
     static const struct {
@@ -22975,7 +22983,7 @@ test_scan_quiet_revisions_suspend_the_check(void) {
         {"edit of a target not on air", qt_mut_inactive_target_edit},
         {"hold", qt_mut_hold_toggle},
         {"hold and release in one pump", qt_mut_hold_twice},
-        {"setting off and on in one pump", qt_mut_setting_off_on},
+        {"setting re-applied while on", qt_mut_setting_reapplied},
         {"-Y entry cancel (`Y`)", qt_mut_y_entry_cancel},
     };
 
@@ -23056,7 +23064,7 @@ test_scan_quiet_mutation_sites_move_the_counters(void) {
     (void)dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
     QT_MOVED("a park in flight (tune_pending set)");
     g_scan_tune_to_freq_pending = 0;
-    dsd_engine_scan_quiet_setting_changed(&state);
+    dsd_engine_scan_quiet_setting_changed(&state, 0);
     QT_MOVED("the setting");
     dsd_engine_scan_entry_hold_now(&state);
     QT_MOVED("-Y entry hold set");
@@ -23373,6 +23381,135 @@ test_scan_quiet_suspended_visit_keeps_its_sync_baseline(void) {
     rc |= qt_expect("activity while suspended: no hand-back", quiet_service_after(&opts, &state, 5U) == 0);
     rc |= qt_expect("activity while suspended: declined", quiet_apply(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 0
                                                               && scan_quiet_phase_get(&state) == SCAN_QUIET_DONE);
+    quiet_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
+/* A check that starts again late in its visit measures: suspended (a hold released, an edit, an avoid, a
+   receive-profile request, a config apply) and republished 2 s after the landing, or eligible only 2 s after it, the
+   check waits for its capture from the restart, not from the landing, so the landed capture is measured and the visit
+   can skip. A restart with no capture yet waits 1000 ms from the restart. A visit's first check keeps the landing's
+   bound (test_scan_quiet_waits_for_the_landed_capture()). */
+static int
+test_scan_quiet_restart_late_in_the_visit_measures(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (quiet_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    quiet_land_again(&state, k_qt_hz_a);
+    quiet_publish(&opts, &state);
+    int rc = qt_expect("late restart: measured", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+    dsd_engine_scan_quiet_note_change(&state);
+    (void)quiet_service_after(&opts, &state, 5U);
+    rc |= qt_expect("late restart: suspended", scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED);
+    g_quiet_rt_ms += 2000U;
+    int requests = g_tap.requests;
+    quiet_publish(&opts, &state);
+    rc |= qt_expect("republished 2 s after the landing: measured again",
+                    scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == requests + 1);
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    rc |= qt_expect("late restart: READY", quiet_service_after(&opts, &state, 5U) == 1);
+    rc |= qt_expect("late restart: skipped", quiet_apply(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 1);
+
+    /* Eligible only 2 s after the landing: published ineligible first. */
+    quiet_land_again(&state, k_qt_hz_a);
+    scan_quiet_eligibility e = quiet_elig(&opts, &state);
+    e.eligible = 0;
+    scan_quiet_publish_eligibility(&opts, &state, SCAN_QUIET_OWNER_TRUNK, &e);
+    rc |= qt_expect("ineligible at the landing: suspended", scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED);
+    g_quiet_rt_ms += 2000U;
+    requests = g_tap.requests;
+    quiet_publish(&opts, &state);
+    rc |= qt_expect("eligible 2 s after the landing: measured",
+                    scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == requests + 1);
+
+    /* A late restart with no capture yet: 1000 ms from the restart. */
+    quiet_land_again(&state, k_qt_hz_a);
+    quiet_publish(&opts, &state);
+    dsd_engine_scan_quiet_note_change(&state);
+    (void)quiet_service_after(&opts, &state, 5U);
+    g_tap.have_capture = 0;
+    g_quiet_rt_ms += 2000U;
+    const uint64_t restarted = g_quiet_rt_ms;
+    requests = g_tap.requests;
+    quiet_publish(&opts, &state);
+    rc |= qt_expect("no capture at the late restart: waits", scan_quiet_phase_get(&state) == SCAN_QUIET_WAIT_CAPTURE);
+    g_quiet_rt_ms = restarted + 999U;
+    (void)dsd_engine_scan_quiet_service(&opts, &state);
+    rc |= qt_expect("999 ms after the restart still waits", scan_quiet_phase_get(&state) == SCAN_QUIET_WAIT_CAPTURE);
+    g_quiet_rt_ms = restarted + 1000U;
+    (void)dsd_engine_scan_quiet_service(&opts, &state);
+    rc |= qt_expect("1000 ms after the restart: DONE, nothing requested",
+                    scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.requests == requests);
+    quiet_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
+/* Turning the setting on mid-visit does not check that visit, whether it landed while the setting was off or its
+   check was under way when the setting went off and on again: syncs heard while it was off moved nothing, so the
+   setting applies from the next visit. The next visit is checked, and so is a park still in flight when the setting
+   turns on, which has heard nothing of its channel yet. */
+static int
+test_scan_quiet_turned_on_mid_visit_applies_from_the_next_visit(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (quiet_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    opts.scan_skip_silent = 0;
+    dsd_engine_scan_quiet_setting_changed(&state, 0);
+    quiet_land_again(&state, k_qt_hz_a);
+    g_quiet_rt_ms += 100U;
+    opts.scan_skip_silent = 1;
+    dsd_engine_scan_quiet_setting_changed(&state, 1);
+    int requests = g_tap.requests;
+    int rc = qt_expect("on mid-visit: the visit wants no eligibility",
+                       scan_quiet_wants_eligibility(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 0);
+    quiet_publish(&opts, &state);
+    rc |= qt_expect("on mid-visit: DONE, nothing requested",
+                    scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.requests == requests);
+    rc |= qt_expect("on mid-visit: no hand-back, no skip",
+                    quiet_service_after(&opts, &state, 5U) == 0
+                        && quiet_apply(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 0);
+
+    /* Off and on again while the visit's check is under way. */
+    quiet_land_again(&state, k_qt_hz_a);
+    quiet_publish(&opts, &state);
+    rc |= qt_expect("measured before the setting went off", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+    const uint32_t ticket = g_tap.ticket;
+    qt_mut_setting_off_on(&opts, &state);
+    requests = g_tap.requests;
+    quiet_publish(&opts, &state);
+    rc |= qt_expect("off and on mid-visit: cancelled and DONE, nothing requested",
+                    g_tap.last_cancel == ticket && scan_quiet_phase_get(&state) == SCAN_QUIET_DONE
+                        && g_tap.requests == requests);
+
+    quiet_land_again(&state, k_qt_hz_a);
+    quiet_publish(&opts, &state);
+    rc |= qt_expect("the next visit is checked",
+                    scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == requests + 1);
+
+    /* A park in flight when the setting turns on. */
+    opts.scan_skip_silent = 0;
+    dsd_engine_scan_quiet_setting_changed(&state, 0);
+    const uint32_t session = dsd_engine_scan_landing_get(&state)->session;
+    g_scan_tune_to_freq_pending = 1;
+    (void)dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+    opts.scan_skip_silent = 1;
+    dsd_engine_scan_quiet_setting_changed(&state, 1);
+    scan_quiet_eligibility e = quiet_elig(&opts, &state);
+    e.key.index = 1;
+    e.key.session = session;
+    e.key.tune_request = g_scan_tune_pending_request;
+    e.frequency_hz = k_qt_hz_b;
+    scan_quiet_publish_eligibility(&opts, &state, SCAN_QUIET_OWNER_TRUNK, &e);
+    rc |= qt_expect("a park in flight when the setting turns on is checked",
+                    scan_quiet_phase_get(&state) == SCAN_QUIET_WAIT_CAPTURE);
     quiet_rig_finish(&opts, &state, dir, path);
     return rc;
 }
@@ -23857,8 +23994,8 @@ qt_mut_activity(dsd_opts* opts, dsd_state* state) {
 
 /* Keep timing, each from a READY result between the hunt's return and the pass's tick: the target stays, the
    result is not applied, the hunt is not handed back again, and no NOTICE is logged. A visit still eligible is
-   republished by the same pass and measured afresh; a held one stays SUSPENDED, and one that saw activity stays DONE
-   (no new request for the visit), whatever later passes do. */
+   republished by the same pass and measured afresh; a held one stays SUSPENDED, and one that saw activity, or whose
+   setting was turned on again, stays DONE (no new request for the visit), whatever later passes do. */
 static int
 test_scan_quiet_tick_keeps_timing(void) {
     enum { QT_AFRESH = 0, QT_SUSPENDED = 1, QT_DONE = 2 };
@@ -23874,7 +24011,8 @@ test_scan_quiet_tick_keeps_timing(void) {
         {"analog width change between collection and application", qt_mut_nfm_width, QT_AFRESH},
         {"receive-profile request in flight", qt_mut_receive_request, QT_AFRESH},
         {"input switch", qt_mut_input, QT_AFRESH},
-        {"setting off and on", qt_mut_setting_off_on, QT_AFRESH},
+        {"setting re-applied while on", qt_mut_setting_reapplied, QT_AFRESH},
+        {"setting off and on: on mid-visit", qt_mut_setting_off_on, QT_DONE},
         {"hold and release in one pump", qt_mut_hold_twice, QT_AFRESH},
         {"operator hold", qt_mut_hold_toggle, QT_SUSPENDED},
         {"activity", qt_mut_activity, QT_DONE},
@@ -24377,6 +24515,8 @@ test_scan_quiet_all(void) {
     rc |= test_scan_quiet_hook_off_is_one_load();
     rc |= run_with_default_tune_hook(test_scan_quiet_decline_ends_it_unless_the_guard_was_lost);
     rc |= run_with_default_tune_hook(test_scan_quiet_suspended_visit_keeps_its_sync_baseline);
+    rc |= run_with_default_tune_hook(test_scan_quiet_restart_late_in_the_visit_measures);
+    rc |= run_with_default_tune_hook(test_scan_quiet_turned_on_mid_visit_applies_from_the_next_visit);
     rc |= run_with_default_tune_hook(test_scan_quiet_apply_checks_the_facts_in_force);
     rc |= run_with_default_tune_hook(test_scan_quiet_mixed_set_judges_the_analog_class);
     rc |= run_with_default_tune_hook(test_scan_quiet_adopted_park_is_bounded_from_its_landing);

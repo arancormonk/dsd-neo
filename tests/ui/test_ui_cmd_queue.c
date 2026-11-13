@@ -8320,11 +8320,13 @@ test_scoped_mode_commands_and_config(void) {
 }
 
 static int g_quiet_setting_calls;
+static int g_quiet_setting_turned_on;
 
 static void
-count_quiet_setting_changed(dsd_state* state) {
+count_quiet_setting_changed(dsd_state* state, int turned_on) {
     (void)state;
     g_quiet_setting_calls++;
+    g_quiet_setting_turned_on = turned_on;
 }
 
 /* Session-wide skip-silent (#834): a plain int32 setter that tells the engine through the runtime hook, never
@@ -8351,6 +8353,7 @@ test_scan_skip_silent_command(void) {
     rc |= expect_int("skip-silent drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("skip-silent applied", opts.scan_skip_silent, 1);
     rc |= expect_int("skip-silent told the engine", g_quiet_setting_calls, 1);
+    rc |= expect_int("skip-silent off to on: turned on", g_quiet_setting_turned_on, 1);
     rc |= expect_contains("skip-silent toast", state.ui_msg, "Silent channel skip -> On");
 
     /* A scan-mode row enter and leave neither captures nor restores it. */
@@ -8361,6 +8364,7 @@ test_scan_skip_silent_command(void) {
     rc |= expect_int("skip-silent off queued", post_i32(DSD_APP_CMD_SCAN_SKIP_SILENT_SET, 0),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("skip-silent off drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("skip-silent on to off: not turned on", g_quiet_setting_turned_on, 0);
     dsd_scan_mode_leave(&opts, &state);
     rc |= expect_int("row leave does not restore skip-silent", opts.scan_skip_silent, 0);
     rc |= expect_contains("skip-silent off toast", state.ui_msg, "Silent channel skip -> Off");
@@ -8379,6 +8383,7 @@ test_scan_skip_silent_command(void) {
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("skip-silent pair drained", dsd_app_drain_cmds(&opts, &state), 2);
     rc |= expect_int("skip-silent nonzero means on", opts.scan_skip_silent, 1);
+    rc |= expect_int("skip-silent on to on: not turned on", g_quiet_setting_turned_on, 0);
 
     /* The table outlives the trunk-scan coordinator: installing and clearing the coordinator's hooks (what its init
      * and teardown do) leaves the slot in place. */
@@ -8401,6 +8406,13 @@ test_scan_skip_silent_command(void) {
                          DSD_APP_COMMAND_SUBMIT_QUEUED);
         rc |= expect_int("config apply drained", dsd_app_drain_cmds(&opts, &state), 1);
         rc |= expect_int("config apply told the engine", g_quiet_setting_calls, 1);
+        rc |= expect_int("config apply off to on: turned on", g_quiet_setting_turned_on, 1);
+        rc |=
+            expect_int("config apply again queued", dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg),
+                       DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("config apply again drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("config apply on to on: told, not turned on",
+                         g_quiet_setting_calls == 2 && g_quiet_setting_turned_on == 0, 1);
     }
 
     dsd_frame_sync_hooks_set(NULL);

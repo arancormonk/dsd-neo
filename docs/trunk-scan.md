@@ -983,10 +983,11 @@ timing; the [limits](#limits) below list what can be missed. It is off by defaul
 changes.
 
 Turn it on with `--scan-skip-silent` (`--no-scan-skip-silent` turns it off, also over a config file value), with
-`[trunking] scan_skip_silent = true`, with the terminal's Trunking > Follow > `Silent channel skip`, which applies at
-once, or with a Qt/Android scan list's **Skip silent channels** checkbox, which applies at the next start. It is one
-setting for the whole session: it covers every conventional target and every `-Y` row, and it is never a row or
-target option (an `options` cell refuses it). Without `-Y` or `--trunk-scan` it does nothing, and the start warns
+`[trunking] scan_skip_silent = true`, with the terminal's Trunking > Follow > `Silent channel skip`, which applies from
+the next visit (the channel on air when you turn it on is not checked), or with a Qt/Android scan list's **Skip silent
+channels** checkbox, which applies at the next start. It is one setting for the whole session: it covers every
+conventional target and every `-Y` row, and it is never a row or target option (an `options` cell refuses it). Without
+`-Y` or `--trunk-scan` it does nothing, and the start warns
 `--scan-skip-silent has no effect without -Y or --trunk-scan` (naming `[trunking] scan_skip_silent` when the config
 turned it on).
 
@@ -1016,10 +1017,10 @@ turned it on).
 ### What a skip costs and logs
 
 - A visit is skipped at most once. The check waits for the first samples from the new frequency (up to 1 second after
-  the tune lands), then needs about 100 ms of them and up to 400 ms for its answer. The scan acts on the answer at its
-  next check: on a silent channel that comes every 300 symbols of the sync search (62.5 ms at 4800 symbols/s, 125 ms at
-  2400 symbols/s). So a skipped visit lasts about as long as the tune and the reading take, not a whole dwell or
-  hangtime.
+  the tune lands, or after the check starts again later in the visit), then needs about 100 ms of them and up to
+  400 ms for its answer. The scan acts on the answer at its next check: on a silent channel that comes every 300
+  symbols of the sync search (62.5 ms at 4800 symbols/s, 125 ms at 2400 symbols/s). So a skipped visit lasts about as
+  long as the tune and the reading take, not a whole dwell or hangtime.
 - Measured on a synthetic test scene (`tools/bench_scan_skip_silent.py`: 12 silent channels and three that each call
   for 4 s about every 20 s, over a local rtl_tcp stream), a silent channel's visit took 0.33 s instead of 3.0 s (about
   0.56 s on real channels with a USB RTL dongle), the scan caught 54 to 69 % of the calls instead of 13 to 17 % (for an
@@ -1051,7 +1052,9 @@ turned it on).
   visit's check, and the visit runs its normal dwell, hangtime or hold.
 - A hold, an edit to the list or channel map, a width change, an input switch, a pause or a loaded config throws the
   reading away. Once nothing keeps the channel any more, the check can run again on the same visit.
-- A Signal search start, or turning the setting off, ends the check.
+- A Signal search start, or turning the setting off, ends the check. Turning the setting on (from the terminal, the API
+  or a loaded config) leaves the channel on air unchecked: calls it carried while the setting was off were not
+  counted, so the setting applies from the next visit.
 - A channel whose neighbours on both sides raise the noise beside it by more than 8.7 dB over the receiver's own
   noise: the check gives up on it. A steeply sloping noise floor or a broad interferer usually makes it give up too.
   That costs speed, never a missed signal.

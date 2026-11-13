@@ -27,8 +27,8 @@ typedef struct {
     /** The RTL stream output generation read when that tune was requested, before it was issued (0 with no stream):
         only a capture of a newer generation can be the landed one. */
     uint32_t generation_before_tune;
-    /** dsd_realtime_mono_ms() when the landing was noted: where a quiet check's wait for its capture is bounded
-        from. */
+    /** dsd_realtime_mono_ms() when the landing was noted: where the visit's first quiet check's wait for its capture
+        is bounded from (one that starts again later in the visit waits from its restart). */
     uint64_t landed_realtime_ms;
     /** The owner's sync sequence and the decode-mono time when the landing was noted: a quiet check's activity baseline
         for the visit, so a sync or carrier heard on the landed channel before the check is first published counts. */

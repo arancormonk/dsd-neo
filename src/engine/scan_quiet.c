@@ -564,7 +564,12 @@ quiet_measured_as_current(const scan_quiet_check* c, const scan_quiet_eligibilit
 }
 
 static void
-quiet_start(const dsd_engine_scan_owner* owner, scan_quiet_check* c, const scan_quiet_eligibility* e) {
+quiet_start(const dsd_engine_scan_owner* owner, scan_quiet_check* c, const scan_quiet_eligibility* e, uint64_t now_ms) {
+    const int landed = e->key.epoch != 0U;
+    /* A landed visit's first check waits for its capture from the landing's note. One that starts again on a visit
+       already published (after a suspension, eligible only now, or with other facts) waits from now: the stream may
+       only now make the capture it needs (a receive-profile or width change moves the output generation). */
+    const int restart = landed && quiet_key_equal(&c->key, &e->key);
     quiet_end(c, SCAN_QUIET_WAIT_CAPTURE);
     c->key = e->key;
     c->epoch_counter = owner->landing_epoch;
@@ -574,10 +579,9 @@ quiet_start(const dsd_engine_scan_owner* owner, scan_quiet_check* c, const scan_
     c->dsp_rate_hz = e->dsp_rate_hz;
     c->frequency_hz = e->frequency_hz;
     c->revisions = e->revisions;
-    const int landed = e->key.epoch != 0U;
     c->generation_before = landed ? owner->landing.generation_before_tune : owner->tune_generation_before;
     c->origin_set = landed;
-    c->origin_ms = landed ? owner->landing.landed_realtime_ms : 0U;
+    c->origin_ms = restart ? now_ms : (landed ? owner->landing.landed_realtime_ms : 0U);
     c->next_capture_check_ms = 0U;
     c->retries = 0;
 }
@@ -651,7 +655,7 @@ scan_quiet_publish_eligibility(const dsd_opts* opts, dsd_state* state, int owner
         return;
     }
     if (c->phase == SCAN_QUIET_SUSPENDED || !quiet_published_as_measured(c, e)) {
-        quiet_start(owner, c, e);
+        quiet_start(owner, c, e, now_ms);
     }
     quiet_step(c, now_ms);
 }
@@ -831,14 +835,45 @@ scan_quiet_key_get(const dsd_state* state) {
 
 #endif
 
+#ifdef USE_RADIO
+/* The setting turned on mid-visit: the visit landed now gets no check, since the syncs it heard while the setting was
+   off moved no sync sequence. The setting applies from the next visit. A park still in flight has heard nothing of its
+   channel yet, and is checked. */
+static void
+quiet_skip_landed_visit(dsd_engine_scan_owner* owner) {
+    const dsd_engine_scan_landing* landing = &owner->landing;
+    if (landing->by != DSD_ENGINE_SCAN_LANDING_ROW && landing->by != DSD_ENGINE_SCAN_LANDING_TARGET) {
+        return;
+    }
+    scan_quiet_check* c = quiet_check_ensure(owner);
+    if (!c) {
+        return;
+    }
+    quiet_end(c, SCAN_QUIET_DONE);
+    c->key.owner = landing->by == DSD_ENGINE_SCAN_LANDING_ROW ? SCAN_QUIET_OWNER_Y : SCAN_QUIET_OWNER_TRUNK;
+    c->key.index = landing->index;
+    c->key.session = landing->session;
+    c->key.epoch = landing->epoch;
+    c->key.tune_request = landing->tune_request;
+    c->epoch_counter = owner->landing_epoch;
+    c->frequency_hz = landing->hz;
+}
+#endif
+
 void
-dsd_engine_scan_quiet_setting_changed(dsd_state* state) {
+dsd_engine_scan_quiet_setting_changed(dsd_state* state, int turned_on) {
     dsd_engine_scan_quiet_invalidate(state);
 #ifdef USE_RADIO
+    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
     /* The setting turned: the visit takes a fresh activity baseline at its next publication. */
-    scan_quiet_check* c = quiet_check_get(dsd_engine_scan_owner_get(state));
+    scan_quiet_check* c = quiet_check_get(owner);
     if (c) {
         c->visit_set = 0;
     }
+    if (turned_on && owner) {
+        quiet_skip_landed_visit(owner);
+    }
+#else
+    (void)turned_on;
 #endif
 }

@@ -16,7 +16,8 @@
  * - WAIT_CAPTURE: waits for the tap's capture of the landed channel: a capture of the stream's live output generation,
  *   newer than the one read at the tune request, centred where the visit landed. Looked at no more often than every
  *   50 ms, for no longer than 1000 ms (realtime) after the landing was noted (a trunk-scan park still in flight: after
- *   the tuning ledger published its completion, which the hunt reads lock-free).
+ *   the tuning ledger published its completion, which the hunt reads lock-free), or after the check started again on a
+ *   visit it already published.
  * - REQUESTED: the tap measures; 400 ms (realtime) to answer. A lost, capture-changed or dropped request waits for the
  *   capture again, at most 3 times a visit; clipping, a non-finite sample, a failed transform or the deadline end it.
  * - READY: a quiet result the scan may skip on, for 250 ms.
@@ -185,8 +186,9 @@ int dsd_engine_scan_quiet_service(const dsd_opts* opts, dsd_state* state);
 /** Something a check depends on changed (dsd_engine_scan_quiet_note_change(), now): a check under way is cancelled
  * (its request ticket-matched) and SUSPENDED until republished. A DONE check stays DONE for its visit. */
 void dsd_engine_scan_quiet_invalidate(dsd_state* state);
-/** The setting changed (dsd_scan_quiet_setting_changed()): as dsd_engine_scan_quiet_invalidate(). */
-void dsd_engine_scan_quiet_setting_changed(dsd_state* state);
+/** The setting changed (dsd_scan_quiet_setting_changed()): as dsd_engine_scan_quiet_invalidate(). With @p turned_on
+ * (off before, on now) the visit landed now is DONE: the setting applies from the next visit. */
+void dsd_engine_scan_quiet_setting_changed(dsd_state* state, int turned_on);
 
 /* Facts the scans own, read by the check. */
 /** The trunk-scan coordinator's session-edit counter (0 with none). trunk_scan.c. */

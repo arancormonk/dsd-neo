@@ -110,16 +110,16 @@ dsd_frame_sync_hook_tick_guard_enter(void) {
 }
 
 void
-dsd_scan_quiet_setting_changed(dsd_state* state) {
-    if (g_frame_sync_hooks.scan_quiet_setting_changed) {
-        g_frame_sync_hooks.scan_quiet_setting_changed(state);
+dsd_frame_sync_hook_tick_guard_leave(int taken) {
+    if (taken && g_frame_sync_hooks.tick_guard_leave) {
+        g_frame_sync_hooks.tick_guard_leave();
     }
 }
 
 void
-dsd_frame_sync_hook_tick_guard_leave(int taken) {
-    if (taken && g_frame_sync_hooks.tick_guard_leave) {
-        g_frame_sync_hooks.tick_guard_leave();
+dsd_scan_quiet_setting_changed(dsd_state* state, int turned_on) {
+    if (g_frame_sync_hooks.scan_quiet_setting_changed) {
+        g_frame_sync_hooks.scan_quiet_setting_changed(state, turned_on);
     }
 }
 

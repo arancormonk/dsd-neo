@@ -93,7 +93,7 @@ typedef struct {
     int (*signal_search_probe)(const dsd_opts* opts, const dsd_state* state);
     int (*tick_guard_enter)(void);
     void (*tick_guard_leave)(void);
-    void (*scan_quiet_setting_changed)(dsd_state* state);
+    void (*scan_quiet_setting_changed)(dsd_state* state, int turned_on);
     int (*scan_quiet_service)(const dsd_opts* opts, dsd_state* state);
 } dsd_frame_sync_hooks;
 
@@ -140,11 +140,12 @@ void dsd_frame_sync_hook_tick_guard_leave(int taken);
 
 /**
  * The session-wide scan skip-silent setting (dsd_opts::scan_skip_silent, #834) was written. The app-control handler
- * calls it on the decoder thread after storing the value; the engine drops the quiet checks it already made. This
+ * calls it on the decoder thread after storing the value; the engine drops the quiet checks it already made. With
+ * @p turned_on (off before, on now) the visit on air gets no check: the setting applies from the next visit. This
  * table lives for the whole engine run, not a trunk-scan coordinator's, so it serves -Y too. A no-op when nothing is
  * installed (headless runs, tests).
  */
-void dsd_scan_quiet_setting_changed(dsd_state* state);
+void dsd_scan_quiet_setting_changed(dsd_state* state, int turned_on);
 
 /**
  * The scan quiet check's in-hunt service (issue #834), asked at the frame-sync hunt's 300-symbol point beside the
