@@ -865,7 +865,9 @@ dsd_engine_scan_quiet_setting_changed(dsd_state* state, int turned_on) {
     dsd_engine_scan_quiet_invalidate(state);
 #ifdef USE_RADIO
     dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
-    /* The setting turned: the visit takes a fresh activity baseline at its next publication. */
+    /* The setting turned: the visit's activity baseline is set again at its next publication (a landed visit's from
+       its landing note, a park in flight's from then). Turned on, a landed visit is not checked: the setting applies
+       from the next visit. */
     scan_quiet_check* c = quiet_check_get(owner);
     if (c) {
         c->visit_set = 0;
