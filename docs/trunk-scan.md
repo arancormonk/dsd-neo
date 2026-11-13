@@ -1021,9 +1021,10 @@ turned it on).
   2400 symbols/s). So a skipped visit lasts about as long as the tune and the reading take, not a whole dwell or
   hangtime.
 - Measured on a synthetic test scene (`tools/bench_scan_skip_silent.py`: 12 silent channels and three that each call
-  for 4 s about every 20 s, over a local rtl_tcp stream), a silent channel's visit took 0.33 s instead of 3.0 s, the
-  scan caught 54 to 69 % of the calls instead of 13 to 17 %, and CPU use did not rise (1.2 to 1.9 % of one core
-  either way).
+  for 4 s about every 20 s, over a local rtl_tcp stream), a silent channel's visit took 0.33 s instead of 3.0 s (about
+  0.56 s on real channels with a USB RTL dongle), the scan caught 54 to 69 % of the calls instead of 13 to 17 % (for an
+  untyped list, which cannot hear analog, the share is of the digital calls), and CPU use did not rise (1.2 to 1.9 % of
+  one core either way).
 - A check that cannot finish (no samples in time, no answer in time, clipped samples) changes nothing: the visit runs
   its normal timing.
 - Each skip logs one line, for example

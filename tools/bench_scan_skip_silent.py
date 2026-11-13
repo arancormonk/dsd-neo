@@ -104,12 +104,12 @@ class Channel:
         self.index = index
         self.kind = kind  # "silent", "nfm", "dmr" or "p25"
         self.frequency = BASE_HZ + index * SPACING_HZ
-        self.starts = None  # call start times, scene time s
-        self.snr_db = None
-        self.baseband = None  # one call at 48 kHz, scaled to its S/N over unit noise in the class width
-        self.frames = []  # (start_s, end_s) of each frame inside a call
-        self.expected = None  # DMR: the AMBE frames a call sends
-        self.cache = {}  # stream rate -> the call at that rate
+        self.starts: np.ndarray | None = None  # call start times, scene time s
+        self.snr_db: float | None = None
+        self.baseband: np.ndarray | None = None  # one call at 48 kHz, scaled to its S/N over unit noise in 12.5 kHz
+        self.frames: list[tuple[float, float]] = []  # (start_s, end_s) of each frame inside a call
+        self.expected: list[str] | None = None  # DMR: the AMBE frames a call sends
+        self.cache: dict[int, np.ndarray] = {}  # stream rate -> the call at that rate
 
     @property
     def name(self):
@@ -187,6 +187,12 @@ def build_scene(silent, level, seed, jitter_s, work_dir):
             channel.frames = [(f * P25_LDU_S, (f + 1) * P25_LDU_S) for f in range(int(CALL_S / P25_LDU_S))]
         channel.baseband = samples[:n] / math.sqrt(power) * 10.0 ** (channel.snr_db / 20.0)
     return channels
+
+
+def scene_channels(silent, level, seed, jitter_s):
+    """build_scene with the DMR generator's work files in a temporary folder that is removed afterwards."""
+    with tempfile.TemporaryDirectory(prefix="scene-") as work_dir:
+        return build_scene(silent, level, seed, jitter_s, work_dir)
 
 
 class Scene(tcp_bench.Source):
@@ -324,9 +330,7 @@ def process_cpu_s(pid):
 def run(args):
     out_dir = os.path.abspath(args.out)
     os.makedirs(out_dir, exist_ok=True)
-    channels = build_scene(
-        args.silent, args.level, args.seed, args.jitter, tempfile.mkdtemp(prefix="scene-", dir=out_dir)
-    )
+    channels = scene_channels(args.silent, args.level, args.seed, args.jitter)
     lists = write_lists(channels, out_dir)
     scene = Scene(channels, args.seed)
     scene.thread.start()
@@ -487,9 +491,14 @@ def score_call(channel, start, on_channel, decoded, in_seconds):
 
 def score(record, channels, out_dir):
     started = record["scene_started"]
+    if started is None:
+        raise SystemExit(f"dsd-neo never connected to the scene, so there is nothing to score (see {out_dir}/dsd.log)")
     lines = read_log(os.path.join(out_dir, "dsd.log"), started)
     all_visits = visits(record, channels)
-    scored = all_visits[2:-1]  # the connect tune and the start-up visit before the first scan retune; the cut-off last
+    # Left out: the tunes off the scene before it (the source's own centre, when the stream started before dsd-neo's
+    # first tune), the start-up visit before the first scan retune, and the last visit, which the run cut off.
+    lead = next((i for i, (c, _v0, _v1) in enumerate(all_visits) if c is not None), len(all_visits))
+    scored = all_visits[lead + 1 : -1]
     first_s = scored[0][1] if scored else record["end_s"]
     idle = [v1 - v0 for c, v0, v1 in scored if c is not None and c.kind == "silent"]
     journal = os.path.join(out_dir, "calls.jsonl")
@@ -548,7 +557,7 @@ def skips_on_air(skips, visit_list):
     for t, frequency in skips:
         landings = [v0 for c, v0, _v1 in visit_list if c is not None and c.frequency == round(frequency) and v0 <= t]
         channel = next((c for c, _v0, _v1 in visit_list if c is not None and c.frequency == round(frequency)), None)
-        if not landings or channel.kind == "silent":
+        if channel is None or not landings or channel.kind == "silent":
             continue
         landed = landings[-1]
         for start in channel.calls(t + CALL_S):
@@ -623,9 +632,7 @@ def serve(args):
     second; --analyze scores it afterwards."""
     out_dir = os.path.abspath(args.out)
     os.makedirs(out_dir, exist_ok=True)
-    channels = build_scene(
-        args.silent, args.level, args.seed, args.jitter, tempfile.mkdtemp(prefix="scene-", dir=out_dir)
-    )
+    channels = scene_channels(args.silent, args.level, args.seed, args.jitter)
     write_lists(channels, out_dir)
     scene = Scene(channels, args.seed, port=args.serve, keep_serving=True)
     scene.thread.start()
@@ -721,8 +728,7 @@ def main():
     if args.rescore or args.analyze:
         with open(os.path.join(args.out, "run.json"), encoding="utf-8") as handle:
             record = json.load(handle)
-        work_dir = tempfile.mkdtemp(prefix="scene-", dir=args.out)
-        channels = build_scene(record["silent"], record["level"], record["seed"], record["jitter_s"], work_dir)
+        channels = scene_channels(record["silent"], record["level"], record["seed"], record["jitter_s"])
         if args.analyze:
             analyze(args, record, channels)
         else:
