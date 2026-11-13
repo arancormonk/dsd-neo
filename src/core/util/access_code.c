@@ -12,6 +12,7 @@
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/p25/p25p1_nid_verdict.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -35,13 +36,6 @@ dsd_access_code_kind_for_protocol(int synctype) {
     return DSD_ACCESS_CODE_NONE;
 }
 
-/* A P25 NAC as the NID and the Phase 2 network status carry it: twelve bits. dsd-neo takes no NAC 0x000 or 0xFFF, which
- * a dead or stuck input decodes as, so a carrier set to either shows no NAC. */
-static int
-access_code_valid_nac(unsigned long long nac) {
-    return nac >= 0x001ULL && nac <= 0xFFEULL;
-}
-
 /* Each reader below gives the code the decoder holds for its protocol now, or 0 when it holds none it can vouch for. */
 
 static int
@@ -58,7 +52,8 @@ access_code_read_dmr(const dsd_state* state, uint16_t* value) {
 static int
 access_code_read_p25(const dsd_state* state, int protocol, uint16_t* value) {
     if (DSD_SYNC_IS_P25P1(protocol)) {
-        if (state->nac < 0 || !access_code_valid_nac((unsigned long long)state->nac)) {
+        /* dsd-neo takes no NAC 0x000 or 0xFFF (p25p1_nid_nac_usable()), so a carrier set to either shows no NAC. */
+        if (!p25p1_nid_nac_usable(state->nac)) {
             return 0;
         }
         *value = (uint16_t)state->nac;
@@ -67,7 +62,7 @@ access_code_read_p25(const dsd_state* state, int protocol, uint16_t* value) {
     /* The NAC the latest checked proof on this carrier named: the seed a burst descrambled with, or a network status
      * broadcast's NAC, whatever seed is configured. Never p2_cc unproven, nor rx_id, which outlives the carrier and
      * which a Phase 1 NID writes too. */
-    if (state->p2_proven_nac < 0 || !access_code_valid_nac((unsigned long long)state->p2_proven_nac)) {
+    if (!p25p1_nid_nac_usable(state->p2_proven_nac)) {
         return 0;
     }
     *value = (uint16_t)state->p2_proven_nac;

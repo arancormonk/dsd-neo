@@ -523,6 +523,51 @@ a call on average, mostly at 2 dB, and let receiver noise acquire on LowVHF, faN
 decodes 29 with the two-bit gate and 30 with the matcher before these rules, the same over eight sample shifts, and 10
 with the gate held to one bit.
 
+`p25p1_cqpsk_cc_simulcast_noisy` and `p25p2_cc_noisy` (`DERIVED_AWGN`, 192 kB each) pin the tolerant P25 CQPSK sync
+(`docs/code_map.md`, DSP "P25 sync anchors" and P25 Phase 2 "Tolerant sync and the window verdict"): where the last
+frame ends, or the window after a decoded one starts, a sync word a few bits off is accepted and the frame's own
+checks decide. They are the simulcast control channel with noise at 4 dB wideband SNR (seed 4) and `p25p2_cc` at 3 dB
+(seed 1). Level and seed come from a sweep of seeds 1-5 at 2-6 dB against e902f9b77, which matched sync words
+exactly: at 4 dB the simulcast channel's 52 CRC-passed TSBKs fell to 37-40 there and stayed at 43-52 with the
+tolerance, and at 3 dB `p25p2_cc`'s 10 SACCH MAC PDUs fell to 2-6 and stayed at 6-7.
+
+- `DECODE_IQ_P25P1_CQPSK_SIMULCAST_NOISY_CC` (`-f1 -mq`) counts CRC-passed TSBKs by their message titles: every
+  TSBK that passes its CRC prints its message's title on a line of its own, one space in, and nothing else on this
+  capture does (the count equals the TSBK CRC passes a debugger counts at `p25_sm_note_validated_cc()`). It needs at
+  least 46: 52 here, 39 on e902f9b77. At least 6 `[tolerant sync, n bit errors]` lines (16 here) show the frames came
+  through the tolerance; the console prints one for each frame a tolerant sync opened whose NID then passed the strict
+  check.
+  A control channel carries no voice, so ` HDU` or ` LDU1`/` LDU2` fails the case.
+- `DECODE_IQ_P25P2_CC_NOISY` (`-f2 -X BEE00164161`) gives the scrambling code, so every SACCH whose window is found can
+  decode rather than waiting on the code's recovery. It needs at least 5 `P25p2 SACCH  MAC_IDLE` lines (printed only
+  for a MAC PDU that passed its CRC): 7 here, 2 on e902f9b77, 10 on both without the noise. At least 4 `+P25p2~` syncs
+  (11 here) show the tolerance accepted windows, and `DUID ERR 10` fails it as in `DECODE_IQ_P25P2_CC`.
+
+`p25p1_cqpsk_cc_then_noise` (`DERIVED_THEN_NOISE`, 384 kB) is the clean `p25p1_cqpsk_cc` (2 s), then the first second
+of `noise_floor`, then the first second of `dmr_t3_cc`, joined byte for byte with no event between them. Each frame the
+CQPSK chain decodes leaves the tolerance scoring where the next frame would start, so the first window after the
+carrier ends is scored against the P25 sync word with bit errors allowed. The sidecar starts the capture at second 58,
+so the console's `HH:MM:SS` stamps read `:58` and `:59` for the control channel and `:00` and `:01` after it, at any
+UTC offset in whole minutes. `DECODE_IQ_P25P1_CQPSK_CC_THEN_NOISE_AUTO_CQPSK` (`-fa -mq`) and `_AUTO` (`-fa`) forbid a
+P25 sync stamped `:00`-`:09` (a sync the tolerance accepted prints before its NID is judged, so a dropped one fails the
+case too), ` HDU`, ` LDU1`/` LDU2`, ` TDU`, `ALG ID` and ` ENC`, and need at least 36 site identity lines (42). With the
+P25 Phase 1 tolerance widened to all 48 bits, `_AUTO_CQPSK` fails on a sync stamped `:00`. Plain `-fa` reads this
+capture on the FSK chain, where no sync is tolerated; that case also needs at least 10 DMR CSBKs (14) after the noise,
+which the CQPSK chain cannot decode. Both pass on e902f9b77 too: they guard the tolerance, not a fix.
+
+`p25p1_cqpsk_cc_then_long_noise` (`DERIVED_THEN_NOISE`, 288 kB) is the first second of `p25p1_cqpsk_cc`, then two
+seconds of `noise_floor` from 0.5 s, stamped from second 58 as above. One second of noise is too short for the Auto hunt
+to reach 2400 baud; two are not, and there the ten-symbol NXDN48 and IDAS words open frames on the noise, as they do on
+`noise_floor` alone. `DECODE_IQ_P25P1_CQPSK_CC_THEN_LONG_NOISE_AUTO` (`-fa -Z`) needs at least 3 of those syncs (8 here,
+`-Z` also printing the ones whose LICH fails; one LICH that passes claims voice) and at least 12 site identity lines
+(16) from the control channel before them, and pins that nothing of the noise frames is published: no `RAN`, `Src=`,
+`Location Information` or `Alias`, `Total audio errors: 0`, and an event history (`-J`) of its two startup rows only.
+Every channel of those frames fails its CRC, and the NXDN confirmation gate (`nxdn_confirm.{c,h}`) holds the RAN, the
+call, the voice and the scan hold until one passes; with the voice gate removed, the case fails on its audio errors.
+It passes on e902f9b77 too: it pins that gate, not a fix. The noise offset was chosen so the frames open on this
+fixture: the hunt's phase moves with timing changes (see above), so if a later change stops them opening the case
+fails on its sync count rather than passing on nothing, and a new offset is needed.
+
 `p25p1_c4fm_adjacent_72k` and `p25p1_cqpsk_adjacent_72k` (`DERIVED_ADJACENT`, 288 kB each) are the two P25 control
 channels at the 72 kHz RTL-SDR DSP bandwidth, next to an equal-level copy of themselves, reversed in time, 12.5 kHz up
 (issue #806). Above about 51.4 kHz every non-TETRA digital channel profile used to run a 63-tap fallback filter cut at
@@ -693,6 +738,20 @@ file (`dsd-neo_test_symbol_capture_to_float`) and replays that with `-i symbols.
 the I/Q replay, at least 90 of the 100 (all of them here), which a float symbol file scaled into the PCM sample domain
 loses (TETRA's frame-sync slicer has fixed thresholds in the symbol domain). These are deterministic regression
 boundaries, not receiver-sensitivity claims.
+
+`DECODE_P25P2_FLOAT_SYMBOL_AMBE_ERRORS` (`tests/p25p2_float_symbol_ambe_check.cmake`) needs no I/Q fixture: the
+generator `dsd-neo_test_p25p2_voice_symbol_file` builds eight superframes of a P25 Phase 2 voice channel with the test
+burst builder (`tests/protocol/p25/p25p2_burst_builder.c`; 4V and 2V bursts of random voice bits, SACCHs, ISCHs,
+scrambled for `-X BEE00164161`) and writes the same dibits twice, as a float symbol file at the nominal levels with a
+little noise and as a soft symbol capture at full confidence. Replayed with a frame log, both must decode the same
+AMBE frames, at least 200, and the float replay must count errors in exactly the frames the full-confidence replay does
+(random voice bits leave Golay something to correct in nearly every frame); a `-c` capture of the float replay must
+replay to the same frames and counts. Measured against the fixed CQPSK levels, as they were before reliabilities followed
+the slicer, a float symbol file's reliabilities read 0 and every count with them. Error counts are
+reliability-weighted, so the float replay's are not the full-confidence replay's numbers, only nonzero in the same
+frames. That frame-for-frame match is a strict pin: it holds while the weighting never rounds a corrected frame's count
+down to 0. If a later change to the weighting makes it fail, check whether the differing frames are such roundings
+before treating it as a coordinates regression.
 
 `provoice` is the sigidwiki ProVoice clip, one 3.5 s transmission (issue #588). Unlike the other audio sources it was
 recorded from a receiver's de-emphasized audio rather than from its discriminator: its 9600 baud clock line is there,
@@ -3883,6 +3942,34 @@ tree: on `fiNXDN` it was worth about 0.18 errors per voice frame, but the anchor
 it measures its phase against had to differ per protocol to work at all -- the
 window centroid for NXDN48, the span edge for DMR, each breaking the other -- so
 it replaced one fragile constant with two.
+
+### P25 CQPSK sync and timing A/B
+
+Changes to P25 CQPSK sync acceptance, the NID rules or the CQPSK timing loop (the simulcast work: tolerant sync on
+Phase 1 and 2, the NID NAC-change rule, the post-lock timing gain, reliabilities by slicer) are judged on paired
+replays of the same realizations, baseline and change, with each part alone and all together where they can be
+separated, so every effect is attributable. The voice metric above is one column; the rest are counted from the
+logs `replay_ab.sh` keeps in `--out` (`<build>__r<repeat>.log`). The captures that work was measured on are not in the
+repository: "site A" and "site B" in `docs/code_map.md` are off-air recordings of two Harris CQPSK simulcast systems.
+
+- **Phase 1**: CRC-passed TSBKs and MBTs; LDUs, IMBE frames, and intervals with an LDU missing.
+- **Phase 2**: MAC PDUs that passed their CRC, 4V and 2V bursts, AMBE frames, R-S and DUID errors.
+- **False events**: frames naming another NAC, voice DUIDs on a control channel, HDU or encryption headers outside a
+  call, and changes of identity or NAC. Removing garbage frames is a gain; a raw count that rises with frames failing
+  these checks is a loss.
+- **Acquisition latency** after a retune, on a rig replay with `-T` (outside the determinism guarantee, so judged over
+  several runs).
+- **Payload agreement**: align the frames both builds decode by position and compare them bit for bit, and list every
+  frame only one build decodes as FEC-clean, corrected or failed, so a gain is shown to be real frames.
+- **Controls**: the baseline against a copy of itself reads zero difference in every metric.
+
+Inputs: full captures as realizations (not dwells cut out of them) under `-f1 -mq`, Auto (`-fa`, unlocked, so the
+modulation vote and the Phase 1 chain comparison run) and `-f2 -m2 -X <WACN SYS NAC>`; other P25 captures, the
+committed CQPSK fixtures, a C4FM capture, and DMR, NXDN and TETRA fixtures, which the P25 changes must leave as they
+were. Stress: the same captures with seeded noise at two levels, resampled by +/-100 ppm, at 24 and 72 kHz rate
+plans, with an inserted fade, and P25 followed by noise, data or DMR/NXDN under `-fa` (the anchor's false-sync guard,
+`p25p1_cqpsk_cc_then_noise` above). A change that loses frames on some realizations while gaining on average is
+reported with both numbers.
 
 ### Analog A/B
 

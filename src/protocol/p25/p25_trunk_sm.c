@@ -29,10 +29,8 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
-#include <dsd-neo/runtime/signal_search_hooks.h>
-#ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
-#endif
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -2323,6 +2321,11 @@ p25_grant_try_tune_vc(const p25_sm_ctx_t* ctx, const p25_sm_event_t* ev, dsd_opt
     if (reused_carrier) {
         if (state && vc_is_tdma) {
             state->p25_p2_active_slot = slot;
+            /* No tune withdraws the P25 proof here: a chain the frame sync had moved off CQPSK is another chain on the
+               front end, which the proof given on it does not speak for. */
+            if (state->rf_mod != 1) {
+                dsd_rtl_stream_metrics_hook_forget_p25_proof();
+            }
             state->rf_mod = 1;
         }
         if (out_ted_sps) {

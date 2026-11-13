@@ -8690,6 +8690,36 @@ add_test(
     COMMAND dsd-neo_test_engine_lifecycle_finalize
 )
 
+# A no-carrier exit and every carrier boundary withdraw the P25 proof the CQPSK timing loop's post-lock gain follows,
+# a stream gap included, and so does a return to the control channel whose timing moves the chain. Where GNU ld --wrap
+# replaces the rigctl client, the real trunk tunes are driven to the withdrawal as well.
+add_executable(
+    dsd-neo_test_engine_p25_timing_proof
+    engine/test_engine_p25_timing_proof.c
+)
+target_include_directories(
+    dsd-neo_test_engine_p25_timing_proof
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_engine_p25_timing_proof
+    PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
+)
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_engine_p25_timing_proof
+        PRIVATE DSD_NEO_TEST_RIGCTL_TUNE_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_engine_p25_timing_proof
+        PRIVATE "LINKER:--wrap=SetFreq" "LINKER:--wrap=SetModulationKind"
+    )
+endif()
+add_test(
+    NAME ENGINE_P25_TIMING_PROOF
+    COMMAND dsd-neo_test_engine_p25_timing_proof
+)
+
 add_executable(
     dsd-neo_test_engine_trunk_retune_regression
     engine/test_engine_trunk_retune_regression.c
@@ -10720,6 +10750,103 @@ else()
 endif()
 add_test(NAME P25_P2_ACCH_VERDICT COMMAND dsd-neo_test_p25_p2_acch_verdict)
 
+# P25 P2 window verdict: what a window's own ISCHs and DUIDs say about its start, and the verdict on a window a tolerant
+# sync opened
+add_executable(
+    dsd-neo_test_p25_p2_window_verdict
+    protocol/p25/test_p25_p2_window_verdict.c
+    protocol/p25/p25p2_burst_builder.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_window_verdict
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2
+        ${_PUBLIC_INCLUDES}
+)
+# Real frame processing reaches the core vocoder, which reaches the DMR and NXDN ciphers.
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_p25_p2_window_verdict
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_proto_nxdn
+            dsd-neo_core
+            "-Wl,--end-group"
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_p25_p2_window_verdict
+        PRIVATE
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_proto_nxdn
+            dsd-neo_core
+    )
+endif()
+add_test(NAME P25_P2_WINDOW_VERDICT COMMAND dsd-neo_test_p25_p2_window_verdict)
+
+# P25 P2 windows a tolerant sync opened, through processP2(), the real burst handlers and the P25p2 dispatcher: the
+# verdict judges the whole window before anything of it takes effect
+add_executable(
+    dsd-neo_test_p25_p2_tolerant_window
+    protocol/p25/test_p25_p2_tolerant_window.c
+    protocol/p25/p25p2_burst_builder.c
+    ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p2.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_tolerant_window
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${PROJECT_SOURCE_DIR}/src/engine/dispatch
+        ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_p25_p2_tolerant_window
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(
+    NAME P25_P2_TOLERANT_WINDOW
+    COMMAND dsd-neo_test_p25_p2_tolerant_window
+)
+
+# A P25 Phase 2 voice channel replayed from a float symbol file counts its AMBE errors: the reliabilities are measured
+# on the adaptive thresholds its symbols were sliced on, not the RTL CQPSK phase levels (tests/
+# p25p2_float_symbol_ambe_check.cmake).
+add_executable(
+    dsd-neo_test_p25p2_voice_symbol_file
+    protocol/p25/p25p2_voice_symbol_file.c
+    protocol/p25/p25p2_burst_builder.c
+)
+target_include_directories(
+    dsd-neo_test_p25p2_voice_symbol_file
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2
+        ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_p25p2_voice_symbol_file
+    PRIVATE dsd-neo_proto_p25 dsd-neo_fec dsd-neo_platform
+)
+add_test(
+    NAME DECODE_P25P2_FLOAT_SYMBOL_AMBE_ERRORS
+    COMMAND
+        ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+        "-DCONVERT_BIN=$<TARGET_FILE:dsd-neo_test_p25p2_voice_symbol_file>"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/float_symbol_replay/DECODE_P25P2_FLOAT_SYMBOL_AMBE_ERRORS"
+        "-DMIN_FRAMES=200" -P
+        "${CMAKE_CURRENT_SOURCE_DIR}/p25p2_float_symbol_ambe_check.cmake"
+)
+set_tests_properties(
+    DECODE_P25P2_FLOAT_SYMBOL_AMBE_ERRORS
+    PROPERTIES TIMEOUT 240
+)
+
 # P25 P2 scrambling code recovery from a carrier's own FACCH/SACCH, through processP2() and the real RS, CRC and XCCH
 # handlers (issue #804)
 add_executable(
@@ -10830,15 +10957,25 @@ add_executable(
     dsd-neo_test_p25_p1_sync_dispatch
     protocol/p25/test_p25_p1_sync_dispatch.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p1.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25_sync_context.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_anchor.c
     ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_nid_verdict.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/trunk_tuning_hooks.c
+)
+target_link_libraries(
+    dsd-neo_test_p25_p1_sync_dispatch
+    PRIVATE dsd-neo_platform
 )
 target_include_directories(
     dsd-neo_test_p25_p1_sync_dispatch
     PRIVATE
         ${PROJECT_SOURCE_DIR}/tests/protocol/p25
         ${PROJECT_SOURCE_DIR}/src/protocol/p25
+        ${PROJECT_SOURCE_DIR}/src/dsp
         ${PROJECT_SOURCE_DIR}/include
 )
 target_include_directories(
@@ -10850,6 +10987,74 @@ target_include_directories(
 # CORE_AUDIO2_HELPERS for why that needs MBE_STATIC.
 target_compile_definitions(dsd-neo_test_p25_p1_sync_dispatch PRIVATE MBE_STATIC)
 add_test(NAME P25_P1_SYNC_DISPATCH COMMAND dsd-neo_test_p25_p1_sync_dispatch)
+
+# P25 P1 NID naming another NAC: a costly NAC change waits for the next NID (real dispatcher and BCH/soft NID decoder)
+add_executable(
+    dsd-neo_test_p25_p1_nid_nac_change
+    protocol/p25/test_p25_p1_nid_nac_change.cpp
+    ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p1.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25_sync_context.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_anchor.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_check_nid.cpp
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_nid_verdict.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_soft.cpp
+)
+target_include_directories(
+    dsd-neo_test_p25_p1_nid_nac_change
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_include_directories(
+    dsd-neo_test_p25_p1_nid_nac_change
+    SYSTEM
+    PRIVATE ${_MBE_TARGET_INCLUDE_DIRS}
+)
+# The test stubs mbe_initMbeParms() instead of linking mbe-neo; see
+# CORE_AUDIO2_HELPERS for why that needs MBE_STATIC.
+target_compile_definitions(
+    dsd-neo_test_p25_p1_nid_nac_change
+    PRIVATE MBE_STATIC
+)
+target_link_libraries(
+    dsd-neo_test_p25_p1_nid_nac_change
+    PRIVATE dsd-neo_fec dsd-neo_runtime dsd-neo_test_support
+)
+add_test(NAME P25_P1_NID_NAC_CHANGE COMMAND dsd-neo_test_p25_p1_nid_nac_change)
+
+# P25 P1 NID behind a sync word accepted within the tolerance, and the anchor each frame leaves (real dispatcher, BCH/soft
+# NID decoder and anchor)
+add_executable(
+    dsd-neo_test_p25_p1_tolerant_nid
+    protocol/p25/test_p25_p1_tolerant_nid.cpp
+    ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p1.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25_sync_context.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_anchor.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_check_nid.cpp
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_nid_verdict.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_soft.cpp
+)
+target_include_directories(
+    dsd-neo_test_p25_p1_tolerant_nid
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_include_directories(
+    dsd-neo_test_p25_p1_tolerant_nid
+    SYSTEM
+    PRIVATE ${_MBE_TARGET_INCLUDE_DIRS}
+)
+# The test stubs mbe_initMbeParms() instead of linking mbe-neo; see
+# CORE_AUDIO2_HELPERS for why that needs MBE_STATIC.
+target_compile_definitions(dsd-neo_test_p25_p1_tolerant_nid PRIVATE MBE_STATIC)
+target_link_libraries(
+    dsd-neo_test_p25_p1_tolerant_nid
+    PRIVATE dsd-neo_fec dsd-neo_runtime dsd-neo_test_support
+)
+add_test(NAME P25_P1_TOLERANT_NID COMMAND dsd-neo_test_p25_p1_tolerant_nid)
 
 # P25 P1 TSBK -> vPDU bridge (Group Voice Channel Grant)
 add_executable(
@@ -12912,6 +13117,101 @@ if(DSD_HAS_RADIO)
     add_test(
         NAME FRAME_SYNC_P25P2_RTL
         COMMAND dsd-neo_test_frame_sync_p25p2_rtl
+    )
+
+    # P25 Phase 1 CQPSK sync words a few symbols off, after a validated frame: a real-shaped stream through the real
+    # frame sync, symbol and dibit chain on the RTL path, the real dispatcher and the real NID decoder.
+    add_executable(
+        dsd-neo_test_p25_p1_tolerant_sync
+        protocol/p25/test_p25_p1_tolerant_sync.cpp
+        test_support/frame_sync_dsp_stubs.c
+        ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit.c
+        ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p1.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_check_nid.cpp
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_nid_verdict.c
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_soft.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_p25_p1_tolerant_sync
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_include_directories(
+        dsd-neo_test_p25_p1_tolerant_sync
+        SYSTEM
+        PRIVATE ${_MBE_TARGET_INCLUDE_DIRS}
+    )
+    # The test stubs mbe_initMbeParms() instead of linking mbe-neo; see
+    # CORE_AUDIO2_HELPERS for why that needs MBE_STATIC.
+    target_compile_definitions(
+        dsd-neo_test_p25_p1_tolerant_sync
+        PRIVATE MBE_STATIC
+    )
+    dsd_neo_link_dsp_test(dsd-neo_test_p25_p1_tolerant_sync
+      dsd-neo_fec
+      dsd-neo_test_call_state_support
+      dsd-neo_test_support
+      ${DSD_NEO_TEST_MATH_LIB}
+      ${LIBSNDFILE_LIBRARIES}
+    )
+    add_test(
+        NAME P25_P1_TOLERANT_SYNC
+        COMMAND dsd-neo_test_p25_p1_tolerant_sync
+    )
+
+    # P25 Phase 2 CQPSK windows whose syncs come through a few bits off, end to end: the real frame sync, symbol
+    # reader and dibit slicer on the RTL CQPSK path, the P25p2 dispatcher and processP2() with the real burst handling.
+    add_executable(
+        dsd-neo_test_p25_p2_tolerant_sync
+        protocol/p25/test_p25_p2_tolerant_sync.c
+        protocol/p25/p25p2_burst_builder.c
+        ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p2.c
+    )
+    target_include_directories(
+        dsd-neo_test_p25_p2_tolerant_sync
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2
+            ${PROJECT_SOURCE_DIR}/src/engine/dispatch
+    )
+    # The real frame sync, processP2() and what they reach in core, which reach back into each other.
+    set(_dsd_neo_p25p2_tolerant_sync_libs
+        dsd-neo_dsp
+        dsd-neo_proto_p25
+        dsd-neo_proto_dmr
+        dsd-neo_proto_nxdn
+        dsd-neo_proto_tetra
+        dsd-neo_core
+        dsd-neo_runtime
+        dsd-neo_io_iq
+        dsd-neo_platform
+    )
+    if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+        target_link_libraries(
+            dsd-neo_test_p25_p2_tolerant_sync
+            PRIVATE
+                "-Wl,--start-group"
+                ${_dsd_neo_p25p2_tolerant_sync_libs}
+                "-Wl,--end-group"
+        )
+    else()
+        target_link_libraries(
+            dsd-neo_test_p25_p2_tolerant_sync
+            PRIVATE ${_dsd_neo_p25p2_tolerant_sync_libs}
+        )
+    endif()
+    target_link_libraries(
+        dsd-neo_test_p25_p2_tolerant_sync
+        PRIVATE
+            dsd-neo_test_support
+            ${DSD_NEO_TEST_MATH_LIB}
+            ${LIBSNDFILE_LIBRARIES}
+    )
+    add_test(
+        NAME P25_P2_TOLERANT_SYNC
+        COMMAND dsd-neo_test_p25_p2_tolerant_sync
     )
 
     # Real frame-sync + symbol + dibit chain on the RTL sample path: the payload
@@ -15158,6 +15458,39 @@ add_test(
     COMMAND dsd-neo_test_dibit_tetra_quadrant_slicer
 )
 
+# A dibit's reliability is measured in the coordinates of the slicer that cut it, through digitize(), the frame sync
+# hunt's payload store and the DMR CACH re-read: the RTL CQPSK phase domain's fixed levels, TETRA's quadrant levels
+# about 0, or the adaptive thresholds in the input's own units (a QPSK session's float symbol file or PCM audio).
+add_executable(
+    dsd-neo_test_dibit_reliability_slicer
+    core/test_dibit_reliability_slicer.c
+    ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit.c
+    test_support/frame_sync_dsp_stubs.c
+)
+if(DSD_HAS_RADIO)
+    target_compile_definitions(
+        dsd-neo_test_dibit_reliability_slicer
+        PRIVATE USE_RADIO
+    )
+endif()
+target_include_directories(
+    dsd-neo_test_dibit_reliability_slicer
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_dibit_reliability_slicer
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
+        dsd-neo_test_audio_sink
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(
+    NAME DIBIT_RELIABILITY_SLICER
+    COMMAND dsd-neo_test_dibit_reliability_slicer
+)
+
 # These standalone slicer tests supply their own clock/config/radio stubs.
 # Pull only the statistics objects from the DSP archive without adding the
 # full DSP test support or inheriting its radio feature definitions.
@@ -15339,6 +15672,102 @@ add_test(
     COMMAND dsd-neo_test_frame_sync_history_carry
 )
 set_tests_properties(FRAME_SYNC_HISTORY_CARRY PROPERTIES LABELS "tetra")
+
+# The P25 Phase 1 sync anchor: a sync word within the tolerance at the position a validated frame ends, and only there,
+# on the stream that frame was read on.
+add_executable(
+    dsd-neo_test_frame_sync_p25_anchor
+    dsp/test_frame_sync_p25_anchor.c
+    test_support/frame_sync_dsp_stubs.c
+    test_support/frame_sync_dibit_stubs.c
+)
+if(DSD_HAS_RADIO)
+    target_compile_definitions(
+        dsd-neo_test_frame_sync_p25_anchor
+        PRIVATE USE_RADIO
+    )
+endif()
+target_include_directories(
+    dsd-neo_test_frame_sync_p25_anchor
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_frame_sync_p25_anchor
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
+        dsd-neo_test_audio_sink
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(NAME FRAME_SYNC_P25_ANCHOR COMMAND dsd-neo_test_frame_sync_p25_anchor)
+
+# The frame sync withdraws the P25 proof the CQPSK timing loop's post-lock gain follows at every acquisition restart,
+# symbol profile change and modulation move, and keeps it while a carrier decodes P25.
+add_executable(
+    dsd-neo_test_frame_sync_p25_timing_proof
+    dsp/test_frame_sync_p25_timing_proof.c
+    test_support/frame_sync_dsp_stubs.c
+    test_support/frame_sync_dibit_stubs.c
+)
+if(DSD_HAS_RADIO)
+    target_compile_definitions(
+        dsd-neo_test_frame_sync_p25_timing_proof
+        PRIVATE USE_RADIO
+    )
+endif()
+target_include_directories(
+    dsd-neo_test_frame_sync_p25_timing_proof
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_frame_sync_p25_timing_proof
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
+        dsd-neo_test_audio_sink
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(
+    NAME FRAME_SYNC_P25_TIMING_PROOF
+    COMMAND dsd-neo_test_frame_sync_p25_timing_proof
+)
+
+# The P25 Phase 2 sync anchor: after a window its own I-ISCH placed, the hunt accepts a sync word within a few bit
+# errors where the next window's sync must be, and only there.
+add_executable(
+    dsd-neo_test_frame_sync_p25p2_anchor
+    dsp/test_frame_sync_p25p2_anchor.c
+    test_support/frame_sync_dsp_stubs.c
+    test_support/frame_sync_dibit_stubs.c
+)
+if(DSD_HAS_RADIO)
+    target_compile_definitions(
+        dsd-neo_test_frame_sync_p25p2_anchor
+        PRIVATE USE_RADIO
+    )
+endif()
+target_include_directories(
+    dsd-neo_test_frame_sync_p25p2_anchor
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_frame_sync_p25p2_anchor
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
+        dsd-neo_test_audio_sink
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(
+    NAME FRAME_SYNC_P25P2_ANCHOR
+    COMMAND dsd-neo_test_frame_sync_p25p2_anchor
+)
 
 # Frame sync level-window estimator parity with the established sync scanner.
 add_executable(
@@ -16534,6 +16963,33 @@ if(DSD_HAS_RADIO)
         )
     endif()
     add_test(NAME IO_RTL_DEMOD_CONFIG COMMAND dsd-neo_test_io_rtl_demod_config)
+
+    # The DSD_NEO_DEBUG_CQPSK EVM/SNR line on the CQPSK SNR meter's scale, on synthetic CQPSK at known SNRs.
+    add_executable(
+        dsd-neo_test_io_rtl_cqpsk_debug_snr
+        io/test_io_rtl_cqpsk_debug_snr.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_cqpsk_debug_snr
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_cqpsk_debug_snr
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_core
+            dsd-neo_test_support
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_cqpsk_debug_snr
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_CQPSK_DEBUG_SNR
+        COMMAND dsd-neo_test_io_rtl_cqpsk_debug_snr
+    )
 
     # Issue #806: the complex rate beside rate_out, X10 (FSK/CQPSK under a replay's post-demod decimation) and X11 (the
     # TED a symbol profile lands on).
@@ -18460,6 +18916,83 @@ if(DSD_HAS_RADIO)
         ""
         6
     )
+    # The simulcast control channel with noise at 4 dB wideband SNR (DERIVED_AWGN). Several sync words then come in a few
+    # bits off where the last frame ends; an exact match loses those frames, the tolerant sync accepts them and the
+    # strict NID check behind it decides (docs/code_map.md, P25 sync anchors). Every TSBK that passes its CRC prints its
+    # message's title on a line of its own, one space in: 52 here, 39 on e902f9b77, which matched sync words exactly
+    # (52 on both builds without the noise). The console prints "[tolerant sync, n bit errors]" for each frame a tolerant sync
+    # opened and its NID then passed (16 here), so the case shows where the frames came from. A control channel carries
+    # no voice: a header or voice frame on it would be noise taken for one.
+    add_test(
+        NAME DECODE_IQ_P25P1_CQPSK_SIMULCAST_NOISY_CC
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" "-DMODE=-f1 -mq"
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/p25p1_cqpsk_cc_simulcast_noisy.iq.json"
+            "-DEXPECTED=\n [A-Z]" -DMIN_MATCHES=46
+            "-DEXPECTED2=\\[tolerant sync, [0-9]+ bit errors\\]"
+            -DMIN_MATCHES2=6 "-DEXPECTED3=WACN: 92065; SYS: 0D5"
+            "-DNOT_EXPECTED= HDU| LDU[12]" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_P25P1_CQPSK_SIMULCAST_NOISY_CC
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
+    )
+    # The clean CQPSK control channel, then receiver noise, then a DMR control channel (DERIVED_THEN_NOISE), under Auto
+    # on the CQPSK chain and under Auto alone. On the CQPSK chain each frame the control channel decodes leaves the
+    # tolerant sync scoring the place the next frame would start; after the carrier ends that place holds noise, and no
+    # P25 sync may be accepted there or anywhere after it (the capture starts at second 58, so a P25 sync stamped :00 to
+    # :09 is past the end), nor may a header, voice frame or encryption parameters appear. With the tolerance widened to
+    # every bit of the word, the _AUTO_CQPSK case fails on a sync stamped :00. Auto alone reads this capture on the FSK
+    # chain, where no sync is tolerated: it pins the same output there and that the DMR control channel after the noise
+    # still decodes (14 CSBKs), which the CQPSK chain cannot. The P25 control channel decodes either way (42 site
+    # identities).
+    foreach(_suffix AUTO AUTO_CQPSK)
+        set(_mode -fa)
+        set(_dmr_args "-DEXPECTED2=Color Code=01 \\| CSBK" -DMIN_MATCHES2=10)
+        if(_suffix STREQUAL "AUTO_CQPSK")
+            set(_mode "-fa -mq")
+            set(_dmr_args)
+        endif()
+        add_test(
+            NAME DECODE_IQ_P25P1_CQPSK_CC_THEN_NOISE_${_suffix}
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DMODE=${_mode}"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/p25p1_cqpsk_cc_then_noise.iq.json"
+                "-DEXPECTED=WACN: 92065; SYS: 0D5" -DMIN_MATCHES=36 ${_dmr_args}
+                "-DNOT_EXPECTED=:0[0-9] Sync: [+-]P25| HDU| LDU[12]| TDU|ALG ID| ENC"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+        )
+        set_tests_properties(
+            DECODE_IQ_P25P1_CQPSK_CC_THEN_NOISE_${_suffix}
+            PROPERTIES LABELS "iq-decode" TIMEOUT 120
+        )
+    endforeach()
+    # A second of the control channel, then two of receiver noise (DERIVED_THEN_NOISE), under Auto: the hunt reaches
+    # 2400 baud inside the noise, where the ten-symbol NXDN48 and IDAS words open frames on it (8 syncs with -Z, which
+    # also prints those whose LICH fails; at least 3 here). Nothing of them may be published: no RAN, unit, location or
+    # alias, no vocoder frame, and no event row but the two startup ones. -Z prints each frame's channels and their CRC
+    # verdicts, all failed.
+    add_test(
+        NAME DECODE_IQ_P25P1_CQPSK_CC_THEN_LONG_NOISE_AUTO
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" "-DMODE=-fa -Z"
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/p25p1_cqpsk_cc_then_long_noise.iq.json"
+            "-DEXPECTED=WACN: 92065; SYS: 0D5" -DMIN_MATCHES=12
+            "-DEXPECTED2=Sync: (NXDN48|IDAS D|JPN DCR)" -DMIN_MATCHES2=3
+            "-DEXPECTED3=Total audio errors: 0"
+            "-DNOT_EXPECTED=RAN [0-9]|Src=[0-9]|Location Information|Alias"
+            "-DEVENT_EXPECTED=Event History Initialized"
+            "-DEVENT_COUNT_REGEX=[0-9][0-9]:[0-9][0-9]:[0-9][0-9] "
+            -DEVENT_COUNT=2
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/iq_decode_events/DECODE_IQ_P25P1_CQPSK_CC_THEN_LONG_NOISE_AUTO"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_P25P1_CQPSK_CC_THEN_LONG_NOISE_AUTO
+        PROPERTIES LABELS "iq-decode;iq-reject" TIMEOUT 120
+    )
     # Every burst of this capture but its SACCHs is a scrambled data channel burst (DUID 10), a known kind: none is a
     # DUID error, which would abort its window before the SACCHs that follow it (issue #804). Nothing in the capture
     # names the site's scrambling code: it is recovered from the SACCHs themselves (the first SACCH window gives it, a
@@ -18478,6 +19011,27 @@ if(DSD_HAS_RADIO)
     )
     set_tests_properties(
         DECODE_IQ_P25P2_CC
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
+    )
+    # The same capture with noise at 3 dB wideband SNR (DERIVED_AWGN), with the site's scrambling code given so every
+    # SACCH whose window is found can decode. Several windows' sync words then come in a few bits off where the window
+    # after a decoded one starts; an exact match loses those windows, the tolerant sync accepts them when the window's
+    # ISCHs and DUIDs agree (docs/code_map.md, P25 Phase 2). 7 of the 10 SACCH MAC PDUs pass their CRC here, 2 on
+    # e902f9b77, which matched sync words exactly (10 on both builds without the noise). "+P25p2~" marks a sync the
+    # tolerance accepted (11 here).
+    add_test(
+        NAME DECODE_IQ_P25P2_CC_NOISY
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+            "-DMODE=-f2 -X BEE00164161"
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/p25p2_cc_noisy.iq.json"
+            "-DEXPECTED=P25p2 SACCH  MAC_IDLE" -DMIN_MATCHES=5
+            "-DEXPECTED2=Sync: [+-]P25p2~" -DMIN_MATCHES2=4
+            "-DNOT_EXPECTED=DUID ERR 10" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_P25P2_CC_NOISY
         PROPERTIES LABELS "iq-decode" TIMEOUT 120
     )
     # A clear BS voice call on slot 1 (slot 2 idle) from the DMR test generator (issue #729).

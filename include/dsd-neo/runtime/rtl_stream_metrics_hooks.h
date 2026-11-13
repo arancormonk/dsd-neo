@@ -68,6 +68,9 @@ typedef struct {
     double (*snr_qpsk_const_db)(void);
     void (*p25p1_ber_update)(int ok_delta, int err_delta);
     void (*p25p2_err_update)(int slot, int facch_ok, int facch_err, int sacch_ok, int sacch_err, int voice_err);
+    /* The decoder's proof that the carrier is P25, for the CQPSK timing loop: a tuning generation plus 1, or 0 for none
+       (dsd_rtl_stream_metrics_hook_note_p25_proven(), dsd_rtl_stream_metrics_hook_forget_p25_proof()). */
+    void (*p25_timing_proof)(uint64_t proof);
     int (*stream_active)(void);
     int (*input_level)(dsd_input_level_snapshot* out);
     int (*apply_demod_profile)(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps);
@@ -285,6 +288,25 @@ double dsd_rtl_stream_metrics_hook_snr_qpsk_const_db(void);
 void dsd_rtl_stream_metrics_hook_p25p1_ber_update(int ok_delta, int err_delta);
 void dsd_rtl_stream_metrics_hook_p25p2_err_update(int slot, int facch_ok, int facch_err, int sacch_ok, int sacch_err,
                                                   int voice_err);
+/**
+ * @brief Tell the CQPSK timing loop the carrier is proven P25 on tuning generation @p tune_generation.
+ *
+ * The decoder thread calls it when a P25 Phase 1 TSDU validates (its NID passed the rules a sync anchor needs,
+ * p25p1_nid_verdict_validates()) with a TSBK that passed its CRC (never a voice or data frame), or a Phase 2 window
+ * passes a MAC PDU's CRC or, opened by a tolerant sync, its verdict, with the dsd_trunk_tuning_generation() the frame
+ * was synced on, and only while the stream is still the one the frame's sync was accepted on: a frame read across a
+ * completed tune (its handler's grant, say), a carrier boundary or a stream flush proves nothing about the carrier
+ * reached, and gives no proof. While the proof holds, the Gardner's gain steps to its P25 post-lock value once locked
+ * at 4800 and 6000 sym/s (op25_gardner_cc()); a tune completed since leaves it stale, which counts as none. A no-op
+ * until the engine installs the hook.
+ */
+void dsd_rtl_stream_metrics_hook_note_p25_proven(uint64_t tune_generation);
+/**
+ * @brief Withdraw the P25 proof dsd_rtl_stream_metrics_hook_note_p25_proven() gave: the decoder calls it at a tune,
+ * a no-carrier exit, a symbol profile or modulation change and a decode-mode switch, so the timing loop keeps its
+ * acquisition-era gains until P25 content proves the carrier again. A no-op until the engine installs the hook.
+ */
+void dsd_rtl_stream_metrics_hook_forget_p25_proof(void);
 int dsd_rtl_stream_metrics_hook_symbol_cache_pending(void);
 void dsd_rtl_stream_metrics_hook_symbol_cache_pending_delta(int delta);
 void dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset(void);

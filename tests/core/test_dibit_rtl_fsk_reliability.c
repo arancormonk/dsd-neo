@@ -143,7 +143,7 @@ main(void) {
     state.lmid = -20000.0f;
     state.umid = 20000.0f;
 
-    uint8_t reliability = dmr_compute_reliability(&state, 30000.0f);
+    uint8_t reliability = dmr_compute_reliability(&state, 30000.0f, DSD_DIBIT_SLICER_ADAPTIVE);
 
     if (reliability < 200U) {
         DSD_FPRINTF(stderr, "RTL FSK discriminator reliability clipped to %u\n", reliability);
@@ -153,7 +153,7 @@ main(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     state.rf_mod = 1;
     for (size_t i = 0; i < sizeof(cqpsk_cases) / sizeof(cqpsk_cases[0]); i++) {
-        reliability = dmr_compute_reliability(&state, cqpsk_cases[i].symbol);
+        reliability = dmr_compute_reliability(&state, cqpsk_cases[i].symbol, DSD_DIBIT_SLICER_CQPSK_PHASE);
         if (reliability < cqpsk_cases[i].expected_min || reliability > cqpsk_cases[i].expected_max) {
             DSD_FPRINTF(stderr, "CQPSK reliability %s: got %u, expected [%u,%u]\n", cqpsk_cases[i].description,
                         reliability, cqpsk_cases[i].expected_min, cqpsk_cases[i].expected_max);

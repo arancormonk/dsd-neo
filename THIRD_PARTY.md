@@ -125,6 +125,14 @@ not a finding that every component is cleared for redistribution.
     from `noise_floor`; its recorded portion carries the `nxdn96` fixture's terms.
   - The `nxdn96_weak` and `nxdn96_weak_0db` fixtures are the `nxdn96` fixture with seeded complex Gaussian noise added
     by `tools/build_iq_fixtures.py` (no recorded material of its own); they carry the `nxdn96` fixture's terms.
+  - The `p25p1_cqpsk_cc_simulcast_noisy` and `p25p2_cc_noisy` fixtures are the `p25p1_cqpsk_cc_simulcast` (the
+    `p25p1_cqpsk_cc` fixture with a delayed copy of itself added) and `p25p2_cc` fixtures with seeded complex Gaussian
+    noise added by `tools/build_iq_fixtures.py` (no recorded material of their own); they carry their source fixtures'
+    terms. The `p25p1_cqpsk_cc_then_noise` fixture is the `p25p1_cqpsk_cc` fixture, a second of the seeded
+    `noise_floor` fixture and a second of the `dmr_t3_cc` fixture, joined byte for byte by that script; its recorded
+    portions carry their source fixtures' terms. The `p25p1_cqpsk_cc_then_long_noise` fixture is a second of the
+    `p25p1_cqpsk_cc` fixture and two seconds of `noise_floor`, joined the same way; its recorded portion carries the
+    `p25p1_cqpsk_cc` fixture's terms.
   - The `p25p1_c4fm_adjacent_72k` and `p25p1_cqpsk_adjacent_72k` fixtures are the `p25p1_c4fm_cc` and `p25p1_cqpsk_cc`
     fixtures resampled to 72 kHz with a time-reversed copy of themselves added 12.5 kHz up, by
     `tools/build_iq_fixtures.py` (no recorded material of their own); they carry their source fixtures' terms. The

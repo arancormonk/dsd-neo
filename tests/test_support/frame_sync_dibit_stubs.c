@@ -20,8 +20,9 @@ write_symbol_capture_record(dsd_opts* opts, dsd_state* state, int dibit, float s
 }
 
 uint8_t
-dmr_compute_reliability(const dsd_state* st, float sym) {
+dmr_compute_reliability(const dsd_state* st, float sym, dsd_dibit_slicer slicer) {
     (void)st;
     (void)sym;
+    (void)slicer;
     return 255;
 }

@@ -36,6 +36,20 @@ enum DSD_ATTR_PACKED {
 #define DSD_SYMBOL_CAPTURE_SOFT_HEADER_SIZE 16
 #define DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE 10
 
+/**
+ * \brief The slicer that cut a four-level dibit, whose coordinates its reliability is measured in.
+ */
+typedef enum {
+    /* The adaptive thresholds (min, lmid, center, umid, max), in the input's own units: C4FM and GFSK, any modulation
+       from a float symbol file or PCM audio (a P25 rf_mod 1 session included), DMR CACH resampling. */
+    DSD_DIBIT_SLICER_ADAPTIVE = 0,
+    /* The RTL CQPSK phase domain, arg * 4/pi: the fixed levels +-1 and +-3 about state->center, as P25's CQPSK slicers
+       cut them. */
+    DSD_DIBIT_SLICER_CQPSK_PHASE = 1,
+    /* TETRA's quadrant levels (dsd_tetra_quadrant_levels()): the fixed levels +-1 and +-3 about 0. */
+    DSD_DIBIT_SLICER_TETRA_QUADRANT = 2,
+} dsd_dibit_slicer;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -45,7 +59,13 @@ int getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft);
 int getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol);
 void write_symbol_capture_record(dsd_opts* opts, dsd_state* state, int dibit, float symbol,
                                  const dsd_dibit_soft_t* soft);
-uint8_t dmr_compute_reliability(const dsd_state* st, float sym);
+/**
+ * \brief Confidence (0 = none, 255 = full) in the dibit @p slicer cut from @p sym, measured in that slicer's
+ * coordinates: the distance to its decision boundary, weighted by the demodulator's SNR on a radio build. The fixed
+ * CQPSK levels apply only to a symbol that is arg * 4/pi of the differential phasor; any other symbol (a float symbol
+ * file, PCM audio) reads 0 against them, so its caller passes DSD_DIBIT_SLICER_ADAPTIVE whatever rf_mod is.
+ */
+uint8_t dmr_compute_reliability(const dsd_state* st, float sym, dsd_dibit_slicer slicer);
 void soft_symbol_frame_begin(dsd_state* state);
 uint16_t soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state, int bit_position);
 /**
