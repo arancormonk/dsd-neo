@@ -5148,14 +5148,20 @@ trunk_scan_idle_dwell_ran_out(const dsd_opts* opts, dsd_trunk_scan_target_runtim
 }
 
 /* The width classes a conventional target is judged in by the scan quiet check (issue #834): its mode's, and for an
-   analog target the kind its type runs at the width the stream runs it (its own width, else the configured one). */
+   analog target the kind its type runs at the width the stream runs it (its own width, else the configured one). A
+   digital target's decoder runs with the -8 analog monitor beside it when the session has one, judged in its class
+   too. */
 static void
 trunk_scan_quiet_classes(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target_runtime* rt,
                          scan_quiet_eligibility* e) {
     const dsd_scan_mode mode = trunk_scan_target_mode(rt->target.type);
     e->classes = trunk_scan_type_is_conventional(rt->target.type) ? scan_quiet_mode_classes(mode) : 0U;
     const int kind = dsd_scan_mode_analog_kind(mode);
-    if (kind < 0 || e->classes == 0U) {
+    if (kind < 0) {
+        e->classes = scan_quiet_monitor_classes(opts, e->classes, &e->analog_kind, &e->analog_width_hz);
+        return;
+    }
+    if (e->classes == 0U) {
         return;
     }
     dsd_scan_option_values scratch;

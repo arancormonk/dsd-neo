@@ -12172,6 +12172,9 @@ yq_stop(void) {
     g_yq.active = 0;
 }
 
+/* The -8 analog monitor yq_dmr_only() leaves on beside DMR, at this configured NFM width; -1 for none. */
+static int g_yq_monitor_nfm_hz = -1;
+
 /* Only DMR decoded: an untyped row is judged in the 12.5 kHz class. */
 static void
 yq_dmr_only(dsd_opts* opts) {
@@ -12188,7 +12191,11 @@ yq_dmr_only(dsd_opts* opts) {
     opts->frame_m17 = 0;
     opts->frame_tetra = 0;
     opts->analog_only = 0;
-    opts->monitor_input_audio = 0;
+    opts->monitor_input_audio = g_yq_monitor_nfm_hz >= 0 ? 1 : 0;
+    if (g_yq_monitor_nfm_hz >= 0) {
+        opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+        opts->analog_nfm_bandwidth_hz = g_yq_monitor_nfm_hz;
+    }
 }
 
 /* A -Y list of @p rows rows on RTL input, 10 s hangtime, skip-silent @p on, typed DMR rows when @p typed; the first
@@ -12269,6 +12276,39 @@ test_y_quiet_skips_a_landed_row(int typed, int on) {
     yq_finish(opts, state);
     if (rc) {
         DSD_FPRINTF(stderr, "FAIL #834: %s\n", label);
+    }
+    return rc;
+}
+
+/* -Y: the -8 analog monitor plays beside a typed digital row's decoder, so the row is judged in the monitor's class too,
+   at the configured width; an unset NFM width (no definite channel) gets the row no check, as for an untyped row. */
+static int
+test_y_quiet_typed_row_judges_the_monitor(int nfm_hz) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    g_yq_monitor_nfm_hz = nfm_hz;
+    /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
+    const long int base_hz = 489012500L + (nfm_hz ? 0L : 4000000L);
+    int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, base_hz) == 0);
+    rc |= expect_true("the monitor plays on the typed row", opts->monitor_input_audio == 1 && opts->frame_dmr == 1);
+    noCarrier(opts, state);
+    if (nfm_hz) {
+        rc |= expect_true("the typed row is judged in both classes at the configured width",
+                          g_yq.requests == 1
+                              && g_yq.last.classes == (DSD_SIGNAL_QUIET_CLASS_12K5 | DSD_SIGNAL_QUIET_CLASS_ANALOG)
+                              && g_yq.last.analog_width_hz == (uint32_t)nfm_hz);
+    } else {
+        noCarrier(opts, state);
+        rc |= expect_true("an unset NFM width: no check", g_yq.requests == 0 && g_rtl_tune_calls == 0);
+    }
+    g_yq_monitor_nfm_hz = -1;
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y typed row with the monitor, NFM width %d\n", nfm_hz);
     }
     return rc;
 }
@@ -12692,6 +12732,8 @@ test_scan_quiet_decisions(void) {
         rc |= yq_keep_case(which);
     }
     rc |= test_y_quiet_open_analog_carrier_stays();
+    rc |= test_y_quiet_typed_row_judges_the_monitor(12500);
+    rc |= test_y_quiet_typed_row_judges_the_monitor(0);
     rc |= test_y_quiet_sync_while_suspended_ends_the_check(1);
     rc |= test_y_quiet_sync_while_suspended_ends_the_check(0);
     rc |= test_y_quiet_restart_late_in_the_visit_measures();

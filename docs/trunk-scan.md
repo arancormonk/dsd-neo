@@ -1004,8 +1004,10 @@ turned it on).
 - The width it looks at is the channel's own: 12.5 kHz for P25 (both phases), DMR, NXDN96, YSF and M17; 6.25 kHz for
   NXDN48, dPMR and D-STAR; the channel width an `nfm` or `am` row or target runs. A typed row or target is judged in
   its mode's width. An untyped `-Y` row is judged in every width of the decoders the session runs, and is silent only
-  if it is silent in all of them; with the analog monitor on beside digital decoders (`-8`) the monitor's width is
-  judged too. Judging more widths can only mean fewer skips, never an extra one.
+  if it is silent in all of them. With the analog monitor on beside digital decoders (`-8`) the monitor's width is
+  judged too, on an untyped row and on a typed digital row or target alike, since the monitor plays there as well; an
+  `-8` monitor with no NFM width set gets those rows and targets no check. Judging more widths can only mean fewer
+  skips, never an extra one.
 - An ongoing DMR transmission from a single radio sends a 27.5 ms burst every 60 ms. A reading of 90 ms or more always
   holds a whole slice inside one of those bursts, so the burst timing alone never makes such a channel read silent.
 - The threshold and the rest of the measurement come from a calibration against DSD-neo's own reception: a signal

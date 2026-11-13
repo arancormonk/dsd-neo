@@ -22377,9 +22377,18 @@ quiet_tap_finish(int quiet, dsd_signal_measure_failure failure) {
 
 /* Two DMR conventional targets, the first landed by a synchronous retune at QT_T0 on stream generation QT_GEN; the
    stream then runs generation QT_GEN + 1 and the tap has its capture of target a. */
+/* The -8 analog monitor quiet_rig_init() turns on beside the targets' decoders, at this configured NFM width; -1 for
+   none. */
+static int g_qt_monitor_nfm_hz = -1;
+
 static int
 quiet_rig_init(dsd_opts* opts, dsd_state* state, const char* path) {
     reset_scan_opts_state(opts, state);
+    if (g_qt_monitor_nfm_hz >= 0) {
+        opts->monitor_input_audio = 1;
+        opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+        opts->analog_nfm_bandwidth_hz = g_qt_monitor_nfm_hz;
+    }
     DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
     opts->trunk_scan_list_count = 1;
     opts->scan_skip_silent = 1;
@@ -23908,6 +23917,41 @@ qt_pass_to_ready(dsd_opts* opts, dsd_state* state) {
                      quiet_service_after(opts, state, 10U) == 1 && scan_quiet_phase_get(state) == SCAN_QUIET_READY);
 }
 
+/* The -8 analog monitor plays beside a typed digital target's decoder, so the target is judged in the monitor's class
+   too, at the configured width; an unset NFM width (no definite channel) gets the target no check. */
+static int
+test_scan_quiet_typed_target_judges_the_monitor(void) {
+    int rc = 0;
+    for (int nfm_hz = 12500; nfm_hz >= 0; nfm_hz -= 12500) {
+        char dir[DSD_TEST_PATH_MAX];
+        char path[DSD_TEST_PATH_MAX];
+        static dsd_opts opts;
+        static dsd_state state;
+        g_qt_monitor_nfm_hz = nfm_hz;
+        const int failed = quiet_rig_start_body(&opts, &state, dir, sizeof dir, path, sizeof path, k_qt_dwell_targets);
+        g_qt_monitor_nfm_hz = -1;
+        if (failed != 0) {
+            return 1;
+        }
+        rc |= qt_expect("the monitor plays on the typed target", opts.monitor_input_audio == 1 && opts.frame_dmr == 1);
+        qt_decode_at(10U);
+        qt_pass(&opts, &state);
+        if (nfm_hz) {
+            rc |= qt_expect("the typed target is judged in both classes at the configured width",
+                            scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED
+                                && g_tap.last_request.classes
+                                       == (DSD_SIGNAL_QUIET_CLASS_12K5 | DSD_SIGNAL_QUIET_CLASS_ANALOG)
+                                && g_tap.last_request.analog_width_hz == 12500U);
+        } else {
+            (void)quiet_service_after(&opts, &state, 10U);
+            rc |= qt_expect("an unset NFM width: no check",
+                            g_tap.requests == 0 && scan_quiet_phase_get(&state) != SCAN_QUIET_REQUESTED);
+        }
+        quiet_rig_finish(&opts, &state, dir, path);
+    }
+    return rc;
+}
+
 /* Skip at landing + measurement, through the pass and its tick. The pass publishes the landed target, the hunt
    collects the quiet result, and the next pass's tick skips the target long before its dwell, once, with one NOTICE
    line. Publishing, measuring and the READY result write neither the idle dwell (the published deadline stays the
@@ -24524,6 +24568,7 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_more_mutation_sites_decline_a_ready_result);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_goto_and_resume_sites);
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_skips_a_quiet_target);
+    rc |= run_with_default_tune_hook(test_scan_quiet_typed_target_judges_the_monitor);
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_guard_lost_answers_again);
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_keeps_timing);
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_counts_from_the_landing);

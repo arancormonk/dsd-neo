@@ -513,7 +513,9 @@ Generated (do not edit/commit):
       judge (`scan_quiet_mode_classes()` for a typed row or target, `scan_quiet_decoder_classes()` for the decoder
       set: X2-TDMA, ProVoice and TETRA are in no class, so a set holding one gets no check; with the -8 analog monitor
       on beside a digital set the set is mixed and the analog class is judged too, at the configured kind and
-      width, which `scan_quiet_decoder_classes()` hands back with the classes). An analog width resolves as the stream
+      width, which `scan_quiet_decoder_classes()` hands back with the classes; a typed digital row or target, whose
+      decoder runs with the session's -8 monitor beside it too, adds the monitor's class by the same rule,
+      `scan_quiet_monitor_classes()`). An analog width resolves as the stream
       requests it (`scan_quiet_analog_width_hz()`, through `rtl_demod_analog_requested_width_hz()`): an explicit width
       as typed, the AM default (6 kHz, calibrated) when unset, and no check for an unset NFM width, which keeps the
       historical filter rule and WIDE fallback and so has no definite channel; typed analog rows and targets resolve

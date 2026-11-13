@@ -161,7 +161,12 @@ scan_quiet_decoder_classes(const dsd_opts* opts, int* analog_kind, uint32_t* ana
     }
     const uint8_t digital = (uint8_t)((quiet_decoder_wide(opts) ? QUIET_CLASS_12K5 : 0U)
                                       | (quiet_decoder_narrow(opts) ? QUIET_CLASS_6K25 : 0U));
-    if (opts->monitor_input_audio != 1 || digital == 0U) {
+    return scan_quiet_monitor_classes(opts, digital, analog_kind, analog_width_hz);
+}
+
+uint8_t
+scan_quiet_monitor_classes(const dsd_opts* opts, uint8_t digital, int* analog_kind, uint32_t* analog_width_hz) {
+    if (!opts || opts->monitor_input_audio != 1 || digital == 0U) {
         return digital;
     }
     /* The analog monitor runs beside the digital decoders (-8): a mixed set, judged in the analog class too; a

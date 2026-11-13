@@ -1582,7 +1582,8 @@ static int no_carrier_scan_tune_awaited(const dsd_state* state);
 
 /* The facts of the -Y row @p row for a scan quiet check (issue #834): a typed row's mode, or the decoder set in force
    for an untyped row or a typed one inheriting it; an analog row's kind at the width the stream runs it (its own width,
-   else the configured one). */
+   else the configured one). A typed digital row's decoder runs with the -8 analog monitor beside it when the session
+   has one, judged in its class too. */
 static void
 no_carrier_quiet_row_classes(const dsd_opts* opts, const dsd_state* state, int row, scan_quiet_eligibility* e) {
     const dsd_scan_mode mode =
@@ -1594,6 +1595,7 @@ no_carrier_quiet_row_classes(const dsd_opts* opts, const dsd_state* state, int r
     e->classes = scan_quiet_mode_classes(mode);
     const int kind = dsd_scan_mode_analog_kind(mode);
     if (kind < 0) {
+        e->classes = scan_quiet_monitor_classes(opts, e->classes, &e->analog_kind, &e->analog_width_hz);
         return;
     }
     dsd_scan_option_values scratch;

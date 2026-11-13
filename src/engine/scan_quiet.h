@@ -131,6 +131,12 @@ void scan_quiet_analog_facts(const dsd_opts* opts, const dsd_state* state, int k
  * visit ends DONE at its capture. */
 uint8_t scan_quiet_decoder_classes(const dsd_opts* opts, int* analog_kind, uint32_t* analog_width_hz);
 
+/** The @p digital classes a digital decoder runs in, with the analog monitor's when it plays beside them (-8): the
+ * mixed set's rule of scan_quiet_decoder_classes(), for a typed digital row or target as for the decoder set. The
+ * analog class comes with the configured kind and width in @p analog_kind and @p analog_width_hz (either may be NULL;
+ * left as they are without it); a monitor at no definite width (an unset NFM width) makes the set 0, no check. */
+uint8_t scan_quiet_monitor_classes(const dsd_opts* opts, uint8_t digital, int* analog_kind, uint32_t* analog_width_hz);
+
 /** Whether the session can make a check at all: the setting on, a radio build, an RTL-family input that is no I/Q
  * replay (neither the stream nor the decode clock). */
 int scan_quiet_session_supported(const dsd_opts* opts);
