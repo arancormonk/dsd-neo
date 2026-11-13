@@ -110,8 +110,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         DurationSecsRole, // -1 when unknown
         SystemNameRole,
         SystemUidRole,
-        DayLabelRole,   // "TODAY" / "YESTERDAY" / "MON 3 AUG" — drives list sections
-        TimeTextRole,   // "12:04"
+        DayLabelRole,   // "TODAY" / "YESTERDAY" / "MON 3 AUG", "TIME UNKNOWN" with no start — drives list sections
+        TimeTextRole,   // "12:04", empty with no start
         KindRole,       // RowKind: voice call or data/control notice
         DetailRole,     // notice payload: decoded text message or GPS string
         ChannelRole,    // scan channel the row was heard on (-Y row name or trunk-scan target id), else empty
@@ -254,6 +254,41 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      * uid reads it again when the row changes, so a fragment folded in after it opened shows.
      */
     Q_INVOKABLE QVariantMap recordFor(const QString& uid) const;
+
+    /**
+     * @brief One row as a History export writes it: plain values, each read through the role History shows it by
+     *        (data()), so the file says what the screen says.
+     */
+    struct ExportRow {
+        qint64 when = 0;       // WhenRole: the start in seconds, 0 when not known
+        int durationSecs = -1; // DurationSecsRole: -1 when not known
+        int kind = KindVoice;  // KindRole
+        QString name;          // NameRole: a channel id shown by its name
+        qulonglong tg = 0;
+        qulonglong src = 0;
+        QString sourceName;
+        QString systemName;
+        QString channel; // ChannelRole: the channel's display name
+        qint64 freqHz = 0;
+        QString accessCode;   // AccessCodeRole: "NAC 293"
+        QString receivedTone; // ReceivedToneRole
+        QString siteText;     // SiteTextRole
+        bool analog = false;
+        QString analogMode; // AnalogModeRole: "NFM", "AM", or empty when not known or not analog
+        bool enc = false;
+        bool emergency = false;
+        QString detail;             // DetailRole
+        QStringList recordingNames; // CallRecordingProvider::recordingEntryNames()
+    };
+
+    /**
+     * @brief The rows at @p sourceRows (this model's rows, in the order given; a row out of range is skipped) as an
+     *        export writes them.
+     *
+     * Every row's recording names come from one recordingEntryNames() call to the provider (none without one), so an
+     * export takes the recording store's lock once, not once per row.
+     */
+    QList<ExportRow> exportRows(const QList<int>& sourceRows) const;
 
     bool
     saveFailing() const {
@@ -438,6 +473,11 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         bool emergency = false;
         bool enc = false;
         int durationSecs = -1;
+        /* When the call ended, in seconds; 0 when not known. Kept only with a start stamp it is measured from, and
+           persisted (`end`), so a span past the plausible cap still reads unknown after a fold, an update or a reload.
+           A row chains from this stored end only while its duration is known; a row past the cap chains from its
+           start (row_merge_end_secs()). Notices keep none. */
+        qint64 end = 0;
         QString systemName;
         QString systemUid;
         int kind = KindVoice;

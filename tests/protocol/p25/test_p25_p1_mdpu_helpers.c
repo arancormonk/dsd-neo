@@ -839,6 +839,8 @@ test_process_mpdu_zero_block_header_orchestration(void) {
     rc |= expect_int("process fec ok", (int)state.p25_p1_fec_ok, 1);
     rc |= expect_active_voice_call("process MPDU preserves voice", &state, 77U, 88U);
     rc |= expect_int("process classifies status", g_status_classify_calls, 1);
+    /* The PDU's length on air from its CRC-checked header: the header alone, one block, 180 dibits. */
+    rc |= expect_int("process header-only pdu length", (int)state.p25_p1_unit_dibits, 180);
 
     p25_mpdu_context_init(&probe);
     DSD_MEMCPY(probe.tsbk_byte, header, sizeof(header));
@@ -848,6 +850,31 @@ test_process_mpdu_zero_block_header_orchestration(void) {
     rc |= expect_u8("stored header rep byte", probe.hdr_rep_bytes[0][3], header[3]);
     p25_mpdu_store_header_rep(&probe, P25_MPDU_HEADER_REPS);
     rc |= expect_int("out-of-range header rep ignored", probe.hdr_rep_crc[0], 0);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* The PDU's length on air comes from its CRC-checked header (TIA-102.BAAA-A 8.2.4): a header announcing 17 data blocks
+   makes 18 blocks behind the sync and NID, 1872 dibits. */
+static int
+test_process_mpdu_length_from_its_header(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(g_soft_candidates, 0, sizeof(g_soft_candidates));
+    DSD_MEMCPY(g_soft_candidates[0].bytes, k_crc16_header_a, sizeof(k_crc16_header_a));
+    g_soft_candidate_count = 1;
+    g_r12_fallback_calls = 0;
+    g_mbf34_candidate_count = 0;
+    g_mbf34_fallback_calls = 0;
+    g_get_dibit_soft_calls = 0;
+    g_status_add_calls = 0;
+    reset_dispatch_counters();
+    processMPDU(&opts, &state);
+    rc |= expect_int("17-block pdu header passes", (int)state.p25_p1_fec_ok, 1);
+    rc |= expect_int("17-block pdu length", (int)state.p25_p1_unit_dibits, 1872);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -891,8 +918,12 @@ test_process_mpdu_split_by_a_carrier_boundary_publishes_nothing(void) {
             rc |= expect_int("split mpdu decodes no header", g_pdu_header_calls, 0);
             rc |= expect_int("split mpdu decodes no data", g_pdu_data_calls + g_pdu_trunking_calls, 0);
             rc |= expect_int("split mpdu checks no header", (int)(state.p25_p1_fec_ok + state.p25_p1_fec_err), 0);
+            rc |= expect_int("split mpdu has no length", (int)state.p25_p1_unit_dibits, 0);
         } else {
             rc |= expect_int("whole mpdu decodes its header", g_pdu_header_calls, 1);
+            /* Its header failed its CRC (the test vector's CRC is the zero-block header's): no length. */
+            rc |= expect_int("pdu whose header failed has no length",
+                             state.p25_p1_fec_err == 1U && state.p25_p1_unit_dibits == 0U, 1);
         }
     }
     g_boundary_at = -1;
@@ -1031,6 +1062,7 @@ main(void) {
     rc |= test_rate34_dispatch_reconstructs_payload_and_preserves_active_call();
     rc |= test_trunking_payload_crc_dispatch();
     rc |= test_process_mpdu_zero_block_header_orchestration();
+    rc |= test_process_mpdu_length_from_its_header();
     rc |= test_process_mpdu_split_by_a_carrier_boundary_publishes_nothing();
     rc |= test_packet_integrity_scope();
     rc |= test_confirmed_crc9_failure_with_valid_packet_crc();

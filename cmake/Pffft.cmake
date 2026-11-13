@@ -62,6 +62,7 @@ set(_pffft_notice_sources
     src/pffft.c
     src/pffft_priv_impl.h
     src/pffft_passes_impl.h
+    src/pffft_pass_config.h
     src/pffft_cplx_impl.h
     src/pffft_real_impl.h
     src/pffft_internal.h

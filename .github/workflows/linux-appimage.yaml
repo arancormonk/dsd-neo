@@ -585,15 +585,18 @@ jobs:
         shell: bash
         env:
           SBOM_PATH: ${{ steps.names.outputs.OUT }}.spdx.json
+          ASSET_PATH: ${{ steps.names.outputs.OUT }}
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             python tools/pffft_metadata.py --spdx "$SBOM_PATH"
             python tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
             python tools/legal_inventory.py --spdx "$SBOM_PATH" --platform linux
+            python tools/sbom_file_records.py --spdx "$SBOM_PATH" --asset "$ASSET_PATH"
           else
             python3 tools/pffft_metadata.py --spdx "$SBOM_PATH"
             python3 tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
             python3 tools/legal_inventory.py --spdx "$SBOM_PATH" --platform linux
+            python3 tools/sbom_file_records.py --spdx "$SBOM_PATH" --asset "$ASSET_PATH"
           fi
 
       - name: Upload enriched SBOM

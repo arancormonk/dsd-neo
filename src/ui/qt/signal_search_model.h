@@ -21,9 +21,8 @@
 
 namespace dsd_qt {
 class DecoderHost;
-class DocumentExportWriter;
-class DocumentSaveTransport;
 class KnownFrequencyIndex;
+class PendingExport;
 
 class SignalSearchModel : public QObject {
     Q_OBJECT
@@ -171,12 +170,9 @@ class SignalSearchModel : public QObject {
     QByteArray detectionsExport(int* count) const;
     QByteArray avoidsExport(int* count) const;
 
-    /* The export's save: the host's transport, kept for a refused save's Download row, and the writer that stages and
-       saves an accepted one. Both live as long as the model, which lives as long as the QML engine. */
-    std::shared_ptr<DocumentSaveTransport> m_saveTransport;
-    std::unique_ptr<DocumentExportWriter> m_exportWriter;
-    QByteArray m_exportBytes;
-    int m_exportToken = 0, m_lastExportToken = 0;
+    /* The pending export and the writer behind it. It lives as long as the model, which lives as long as the QML
+       engine. */
+    std::unique_ptr<PendingExport> m_export;
 };
 } // namespace dsd_qt
 #endif

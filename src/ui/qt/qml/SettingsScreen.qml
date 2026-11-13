@@ -318,7 +318,7 @@ Item {
 
             Repeater {
                 model: noticeList.notices
-                Text {
+                ReadableText {
                     required property var modelData
                     width: parent.width
                     text: modelData.text
@@ -328,7 +328,6 @@ Item {
                     font.pixelSize: Theme.fontSize(12)
                     color: modelData.problem ? Theme.alert : Theme.textSecondary
                     Accessible.role: modelData.problem ? Accessible.AlertMessage : Accessible.StaticText
-                    Accessible.name: text
                 }
             }
         }
@@ -1080,7 +1079,8 @@ Item {
                         visible: screen.backupNoticeAction !== "export" && backupNotice.text.length > 0
 
                         // The flow's last result, in the slot of the action it reports on.
-                        Text {
+                        // Under the passphrase sheet it leaves the tree (ReadableText).
+                        ReadableText {
                             id: backupNotice
                             objectName: "settingsBackupNotice"
                             parent: screen.backupNoticeAction === "export" ? exportNoticeSlot : restoreNoticeSlot
@@ -1095,11 +1095,6 @@ Item {
                             font.pixelSize: Theme.fontSize(13)
                             color: screen.backupNoticeProblem ? Theme.alert : Theme.textSecondary
                             Accessible.role: screen.backupNoticeProblem ? Accessible.AlertMessage : Accessible.StaticText
-                            // Gated as every node a screen reader reaches is: under
-                            // the passphrase sheet it leaves the tree, and holds no name.
-                            readonly property bool navigationAllowed: Navigation.allows(backupNotice)
-                            Accessible.ignored: !navigationAllowed || !visible
-                            Accessible.name: !navigationAllowed || !visible ? "" : text
                         }
                     }
 
@@ -1111,7 +1106,7 @@ Item {
                         spacing: 10
 
                         // Once its apply has started, only the next start can finish it.
-                        Text {
+                        ReadableText {
                             objectName: "settingsBackupPendingNotice"
                             width: parent.width
                             text: backup.restoreCancellable ? qsTr("Restore is ready. Close DSD-neo and open it again to finish.") : Util.restorePartWayText()
@@ -1120,7 +1115,6 @@ Item {
                             font.pixelSize: Theme.fontSize(13)
                             color: Theme.alert
                             Accessible.role: Accessible.AlertMessage
-                            Accessible.name: text
                         }
 
                         OutlineButton {

@@ -72,8 +72,11 @@ target_sources(
         spectrum_model.cpp
         system_search_query.cpp
         text_order.cpp
+        call_history_export.cpp
+        call_history_exporter.cpp
         csv_text.cpp
         document_export_writer.cpp
+        pending_export.cpp
         signal_search_export.cpp
         signal_search_model.cpp
         known_frequency_index.cpp
@@ -174,6 +177,7 @@ qt_add_resources(
         qml/LogoMark.qml
         qml/MicroLabel.qml
         qml/ReadableText.qml
+        qml/ExportMessage.qml
         qml/SpeechPacer.qml
         qml/LiveText.qml
         qml/ListenTabs.qml

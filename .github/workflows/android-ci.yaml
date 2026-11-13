@@ -380,6 +380,7 @@ jobs:
             dsd-neo_test_ui_qt_spectrum_trace_geometry \
             dsd-neo_test_ui_qt_spectrum_model \
             dsd-neo_test_ui_qt_signal_search \
+            dsd-neo_test_ui_qt_call_history_export \
             dsd-neo_test_ui_qt_metrics_model \
             dsd-neo_test_ui_qt_talkgroup_list_model \
             dsd-neo_test_ui_qt_radio_reference_model \
@@ -1006,15 +1007,18 @@ jobs:
         shell: bash
         env:
           SBOM_PATH: ${{ steps.names.outputs.APK_PATH }}.spdx.json
+          ASSET_PATH: ${{ steps.names.outputs.APK_PATH }}
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             python tools/pffft_metadata.py --spdx "$SBOM_PATH"
             python tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
             python tools/legal_inventory.py --spdx "$SBOM_PATH" --platform android
+            python tools/sbom_file_records.py --spdx "$SBOM_PATH" --asset "$ASSET_PATH"
           else
             python3 tools/pffft_metadata.py --spdx "$SBOM_PATH"
             python3 tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
             python3 tools/legal_inventory.py --spdx "$SBOM_PATH" --platform android
+            python3 tools/sbom_file_records.py --spdx "$SBOM_PATH" --asset "$ASSET_PATH"
           fi
 
       - name: Upload enriched SBOM
@@ -1231,15 +1235,18 @@ jobs:
         shell: bash
         env:
           SBOM_PATH: ${{ steps.aab.outputs.AAB_PATH }}.spdx.json
+          ASSET_PATH: ${{ steps.aab.outputs.AAB_PATH }}
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             python tools/pffft_metadata.py --spdx "$SBOM_PATH"
             python tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
             python tools/legal_inventory.py --spdx "$SBOM_PATH" --platform android
+            python tools/sbom_file_records.py --spdx "$SBOM_PATH" --asset "$ASSET_PATH"
           else
             python3 tools/pffft_metadata.py --spdx "$SBOM_PATH"
             python3 tools/tetra_crypto_metadata.py --spdx "$SBOM_PATH"
             python3 tools/legal_inventory.py --spdx "$SBOM_PATH" --platform android
+            python3 tools/sbom_file_records.py --spdx "$SBOM_PATH" --asset "$ASSET_PATH"
           fi
 
       - name: Upload enriched SBOM

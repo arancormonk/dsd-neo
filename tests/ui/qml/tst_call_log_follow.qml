@@ -727,6 +727,45 @@ Item {
             verify(row.metaText.indexOf("<b>851.0125</b>") >= 0, row.metaText)
         }
 
+        // A message can hold line breaks, and so can a name the air
+        // delivered. The row draws each on one line, a space for each break,
+        // clear of the time; the row keeps the text as received (the details
+        // and the export read it from the model).
+        function test_06q_line_breaks_stay_on_one_line() {
+            var name = callHistory.pushTunedNotice(4006, 7006, "first line\nsecond line\r\nthird line", "", 0, "", "")
+            var row = tc.rowNamed(name)
+            verify(callHistory.updateRow(callHistory.newestUid(), {name: "Unit\nNorth"}))
+            tryCompare(row, "name", "Unit\nNorth")
+            waitForRendering(row)
+            verify(row.metaText.indexOf("first line\nsecond line\r\nthird line") >= 0, "the row keeps the text: " + row.metaText)
+            var meta = findChild(row, "callRowMeta")
+            var title = findChild(row, "callRowName")
+            var time = findChild(row, "callRowTime")
+            var timeLeft = time.mapToItem(row, 0, 0).x
+            for (var text of [meta, title]) {
+                compare(text.lineCount, 1, text.objectName + " is one line")
+                var at = text.mapToItem(row, 0, 0)
+                verify(at.x + Math.max(text.width, text.contentWidth) <= timeLeft,
+                       text.objectName + " clear of the time: " + (at.x + text.contentWidth) + " > " + timeLeft)
+                verify(at.y >= 0 && at.y + text.contentHeight <= row.height, text.objectName + " inside its row")
+            }
+            compare(meta.text, "TG 4006 · SRC 7006 · first line second line third line")
+            compare(title.text, "Unit North")
+        }
+
+        // A row with no start time (the details leave its time out, the export
+        // its time cells empty) shows no made-up time, and its name reads
+        // without one.
+        function test_06r_a_row_without_a_start_time_shows_no_time() {
+            var name = callHistory.push("TODAY")
+            verify(callHistory.updateRow(callHistory.newestUid(), {when: 0, dayLabel: "TIME UNKNOWN", timeText: ""}))
+            var row = tc.rowNamed(name)
+            tryCompare(row, "rightText", "")
+            compare(findChild(row, "callRowTime").text, "")
+            compare(row.accessibleName, name, "no time in the name")
+            compare(row.Accessible.description.indexOf(", ,"), -1, row.Accessible.description)
+        }
+
         function test_07_a_filter_that_hides_nothing_is_still_answered_from_the_top() {
             tc.scrollBack()
 

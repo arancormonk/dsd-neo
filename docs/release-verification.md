@@ -102,6 +102,28 @@ the packaged `legal/` and `licenses/mbelib-neo/` records. `filesAnalyzed: false`
 on these supplemental components means they are review records, not a claim
 that the scanner identified every embedded file or all runtime dependencies.
 
+Each entry in the SBOM's `files` list names a file the asset ships: its
+`fileName` is the path inside the asset (such as `bin/dsd-neo.exe` in the
+Windows ZIP), or the asset's own file name for a file the scanner records whole
+(the AppImage). Its `checksums` are the SHA1 and SHA256 of that file's bytes.
+The packaging job checks every record against the asset before it uploads or
+attests the SBOM, and fails instead of publishing a record it cannot tie to the
+asset. The macOS DMG and Android APK SBOMs currently list no file records. To
+check a shipped file against its record:
+
+```sh
+unzip -p dsd-neo-msvc-x86_64-native-<version>.zip bin/dsd-neo.exe | sha256sum
+jq -r '.files[] | select(.fileName == "bin/dsd-neo.exe") | .checksums[] |
+  select(.algorithm == "SHA256") | .checksumValue' dsd-neo-msvc-x86_64-native-<version>.zip.spdx.json
+```
+
+For the AppImage, compare `sha256sum` of the AppImage with the SHA256 of its one
+file record. SBOMs published up to and including v2.12.1 keep the scanner's
+placeholders: their file records carry an all-zero SHA1, and the Windows ZIP's
+records name the build machine's temporary unpack folder instead of the path in
+the ZIP. Published assets are never rewritten, so check files from those
+releases against the asset's attestation or SHA256 digest instead.
+
 Workflow concurrency distinguishes push, PR and dispatch events. Jobs following
 the PR-only classifier explicitly require successful builds and `!cancelled()`
 so tag runs are not skipped merely because that classifier did not run. DSD has

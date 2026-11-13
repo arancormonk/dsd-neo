@@ -13,6 +13,8 @@
 extern "C" {
 #endif
 
+struct demod_state;
+
 /* Install only while the stream is stopped. NULL restores platform creation. */
 void rtl_stream_test_set_thread_create(int (*create)(dsd_thread_t*, dsd_thread_fn, void*));
 int rtl_stream_test_has_resources(void);
@@ -212,6 +214,9 @@ int rtl_stream_test_fsk_cfo_snapshot(double dc_rad_per_sample, int rate_out_hz, 
 int rtl_stream_test_fsk_snr_sps(int rate_out_hz, int symbol_rate_hz, int stale_ted_sps);
 int rtl_stream_test_snr_publish(double c4fm_snr_db, double qpsk_ratio, int* out_c4fm_published,
                                 int* out_qpsk_published);
+/* The demod thread's SNR update for one demodulated block, the estimators started over first when @p reset is set:
+   the CQPSK meter's reading (rtl_stream_get_snr_cqpsk()) after it. */
+int rtl_stream_test_snr_update_block(const struct demod_state* d, int reset, double* out_cqpsk_db);
 int rtl_stream_test_direct_output_rate_after_open_update(int output_kind, int rate_out_hz, int resamp_target_hz,
                                                          unsigned int* out_rate_hz, int* out_resamp_enabled);
 

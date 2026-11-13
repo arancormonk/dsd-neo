@@ -500,11 +500,15 @@ apply_c4fm_snr_weight(int rel, int rtl_fsk_context, int rtl_fsk_levels) {
 }
 #endif
 
+/* The fixed CQPSK levels hold for arg * 4/pi only, when a CQPSK slicer cut the dibit: P25's about the adaptive centre,
+   TETRA's about 0. Anything else (C4FM and GFSK, a float symbol file or PCM audio of any modulation, which are in their
+   own units, DMR's CACH re-read) was cut on the adaptive thresholds and is measured against them; against the fixed
+   levels a scaled symbol reads 0 and zeroes both LLRs. */
 uint8_t
-dmr_compute_reliability(const dsd_state* st, float sym) {
-    if (st->rf_mod == 1) {
-        float sym_c = sym - st->center;
-        int rel = cqpsk_reliability_raw(sym_c);
+dmr_compute_reliability(const dsd_state* st, float sym, dsd_dibit_slicer slicer) {
+    if (slicer == DSD_DIBIT_SLICER_CQPSK_PHASE || slicer == DSD_DIBIT_SLICER_TETRA_QUADRANT) {
+        const float center = slicer == DSD_DIBIT_SLICER_CQPSK_PHASE ? st->center : 0.0f;
+        int rel = cqpsk_reliability_raw(sym - center);
 #ifdef USE_RADIO
         rel = apply_cqpsk_snr_weight(rel);
 #endif
@@ -515,8 +519,6 @@ dmr_compute_reliability(const dsd_state* st, float sym) {
 #ifdef USE_RADIO
     int rtl_fsk_levels = 4;
     int rtl_fsk_context = rtl_fsk_discriminator_metric_context(&rtl_fsk_levels);
-#endif
-#ifdef USE_RADIO
     rel = apply_c4fm_snr_weight(rel, rtl_fsk_context, rtl_fsk_levels);
 #endif
     return (uint8_t)rel;
@@ -641,7 +643,7 @@ build_cqpsk_dibit_ideals(const dsd_state* state, int inverted, float ideal[4]) {
 }
 
 static void DSD_ATTR_USED
-compute_dibit_soft_metric(const dsd_state* state, float symbol, int dibit, int inverted, int cqpsk_aligned,
+compute_dibit_soft_metric(const dsd_state* state, float symbol, int dibit, int inverted, dsd_dibit_slicer slicer,
                           dsd_dibit_soft_t* out) {
     if (!state || !out || dibit < 0 || dibit > 3) {
         fallback_soft_from_dibit(dibit & 3, 255, out);
@@ -649,7 +651,7 @@ compute_dibit_soft_metric(const dsd_state* state, float symbol, int dibit, int i
     }
 
     float ideal[4];
-    if (cqpsk_aligned) {
+    if (slicer == DSD_DIBIT_SLICER_CQPSK_PHASE) {
         build_cqpsk_dibit_ideals(state, inverted, ideal);
     } else {
         build_standard_dibit_ideals(state, inverted, ideal);
@@ -658,7 +660,7 @@ compute_dibit_soft_metric(const dsd_state* state, float symbol, int dibit, int i
     int mag0 = soft_metric_for_bit(symbol, ideal, 0);
     int mag1 = soft_metric_for_bit(symbol, ideal, 1);
 
-    uint8_t rel = dmr_compute_reliability(state, symbol);
+    uint8_t rel = dmr_compute_reliability(state, symbol, slicer);
     int min_mag = mag0 < mag1 ? mag0 : mag1;
     if (min_mag > 0 && rel < min_mag) {
         mag0 = (mag0 * (int)rel) / min_mag;
@@ -935,12 +937,12 @@ slice_dibit_from_symbol_regions(const dsd_state* state, float symbol, int is_neg
     return is_negative ? 0 : 2;
 }
 
+/* Slices a four-level symbol and names the slicer that cut it in @p slicer, whose coordinates its reliability is
+   measured in (dmr_compute_reliability()). */
 static int DSD_ATTR_USED
 select_four_level_dibit(const dsd_opts* opts, const dsd_state* state, float symbol, int is_negative,
-                        int* used_cqpsk_slice) {
-    if (used_cqpsk_slice) {
-        *used_cqpsk_slice = 0;
-    }
+                        dsd_dibit_slicer* slicer) {
+    *slicer = DSD_DIBIT_SLICER_ADAPTIVE;
 
     /* TETRA's symbols, from the CQPSK demodulator or a capture of them, are arg(z) * 4/pi of the differential phasor:
        the levels are +-1 and +-3 and the maximum-likelihood boundaries the quadrant edges, 0 and +-2. The adaptive
@@ -948,6 +950,7 @@ select_four_level_dibit(const dsd_opts* opts, const dsd_state* state, float symb
        decoder undoes the burst's polarity itself. Only on QPSK, as the hunt slices them
        (dsd_tetra_quadrant_levels()). */
     if (DSD_SYNC_IS_TETRA(state->synctype) && dsd_tetra_quadrant_levels(state)) {
+        *slicer = DSD_DIBIT_SLICER_TETRA_QUADRANT;
         return cqpsk_slice(symbol);
     }
 
@@ -961,9 +964,7 @@ select_four_level_dibit(const dsd_opts* opts, const dsd_state* state, float symb
                 dibit = 0;
             }
         }
-        if (used_cqpsk_slice) {
-            *used_cqpsk_slice = 1;
-        }
+        *slicer = DSD_DIBIT_SLICER_CQPSK_PHASE;
         debug_log_cqpsk_slice(dibit, symbol, state);
         return dibit;
     }
@@ -998,15 +999,15 @@ digitize(const dsd_opts* opts, dsd_state* state, float symbol) {
     }
 
     int is_negative = is_four_level_neg_synctype(state->synctype);
-    int used_cqpsk_slice = 0;
-    int dibit = select_four_level_dibit(opts, state, symbol, is_negative, &used_cqpsk_slice);
+    dsd_dibit_slicer slicer = DSD_DIBIT_SLICER_ADAPTIVE;
+    int dibit = select_four_level_dibit(opts, state, symbol, is_negative, &slicer);
     int stored_dibit = is_negative ? invert_dibit(dibit) : dibit;
 
     dsd_dibit_soft_t soft;
-    /* A TETRA dibit's sign comes from the fixed slicer and its magnitude from the adaptive ideals here; the TETRA
-       decoder never reads these LLRs (it takes cqpsk_soft_symbol_to_viterbi_cost() of the symbol), only a -c capture
-       records them. */
-    compute_dibit_soft_metric(state, symbol, dibit, is_negative, used_cqpsk_slice, &soft);
+    /* A TETRA dibit's sign comes from the fixed slicer, its reliability from the quadrant levels about 0 and its
+       magnitude from the adaptive ideals here; the TETRA decoder never reads these LLRs (it takes
+       cqpsk_soft_symbol_to_viterbi_cost() of the symbol), only a -c capture records them. */
+    compute_dibit_soft_metric(state, symbol, dibit, is_negative, slicer, &soft);
     state->last_dibit = dibit;
     store_dibit_with_soft(state, stored_dibit, &soft);
     return dibit;

@@ -337,7 +337,7 @@ Item {
                 wrapMode: Text.Wrap
             }
 
-            Text {
+            ReadableText {
                 objectName: "callRecordingsAway"
                 width: parent.width
                 visible: !recordings.available
@@ -347,7 +347,6 @@ Item {
                 font.pixelSize: Theme.fontSize(13)
                 color: Theme.alert
                 Accessible.role: Accessible.AlertMessage
-                Accessible.name: text
             }
 
             // The export running, with its progress and a way out.
@@ -377,12 +376,17 @@ Item {
                     }
 
                     Rectangle {
+                        id: exportProgressBar
                         width: parent.width
                         height: 4
                         radius: 2
                         color: Theme.toggleOffTrack
                         Accessible.role: Accessible.ProgressBar
                         Accessible.name: qsTr("Export progress")
+                        // Gate first: see OutlineButton. The folder menu can open
+                        // over a running export.
+                        readonly property bool navigationAllowed: Navigation.allows(exportProgressBar)
+                        Accessible.ignored: !navigationAllowed || !visible
                         // Read when asked (Android polls it); a plain Item's value raises no
                         // ValueChanged, so it stays live (issue #782).
                         readonly property real value: decoderHost.recordingTransferBytes
@@ -406,7 +410,7 @@ Item {
                 }
             }
 
-            Text {
+            ReadableText {
                 id: noticeText
                 objectName: "callRecordingsNotice"
                 width: parent.width
@@ -419,7 +423,6 @@ Item {
                 font.pixelSize: Theme.fontSize(13)
                 color: screen.noticeProblem ? Theme.alert : Theme.textSecondary
                 Accessible.role: screen.noticeProblem ? Accessible.AlertMessage : Accessible.StaticText
-                Accessible.name: text
             }
 
             // What the limit removed and the deletes the store could not do, since this
@@ -436,7 +439,7 @@ Item {
                 color: Theme.textSecondary
             }
 
-            Text {
+            ReadableText {
                 objectName: "callRecordingsDeleteFailures"
                 width: parent.width
                 visible: screen.failuresShown > 0
@@ -447,7 +450,6 @@ Item {
                 font.pixelSize: Theme.fontSize(13)
                 color: Theme.alert
                 Accessible.role: Accessible.AlertMessage
-                Accessible.name: text
             }
 
             ReadableText {

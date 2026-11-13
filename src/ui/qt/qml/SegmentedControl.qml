@@ -12,6 +12,17 @@ Rectangle {
     property int currentIndex: 0
     signal selected(int index)
 
+    // A name for the choice as a whole (the Scan list's "Gain"), which makes
+    // the control a node above its segments. Unnamed, it is no node: the
+    // segments are the choice. Named, it has its own gate, as every node a
+    // screen reader reaches does: Qt lifts a part with none over its covered
+    // parent, and it stayed in the tree under a sheet.
+    property string accessibleName: ""
+    Accessible.name: accessibleName
+    readonly property bool navigationAllowed: Navigation.allows(control)
+    // Gate first: see OutlineButton.
+    Accessible.ignored: !navigationAllowed || !visible || accessibleName.length === 0
+
     property real labelHeight: 0
     // Issue #646: every label at one size, the smallest any of them needs for
     // its words to fit (WholeWordLabel), so a shrunk label never sits beside

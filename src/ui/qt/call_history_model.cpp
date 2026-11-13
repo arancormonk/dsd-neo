@@ -21,6 +21,7 @@
 #include <QJsonValue>
 #include <QLatin1String>
 #include <QLocale>
+#include <QMap>
 #include <QPair>
 #include <QStringView>
 #include <QVariant>
@@ -37,9 +38,11 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/received_identity_site.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <iterator>
 #include <limits>
+#include <stddef.h>
 #include <stdint.h>
 #include <utility>
 
@@ -124,10 +127,24 @@ analog_fallback_name(uint8_t mode) {
                                             : QStringLiteral("Analog");
 }
 
-/** @brief End of a logged row on the shared timeline; unknown durations count as 0. */
+/** @brief End of a logged row on the shared timeline: its end when known, else its start. */
 qint64
 row_end_secs(const CallHistoryModel::Row& row) {
-    return row.when + qMax(row.durationSecs, 0);
+    return row.end > 0 ? row.end : row.when;
+}
+
+/**
+ * @brief The end a merge matches a row by: its end while its span is plausible (a known duration), else its start.
+ *
+ * A span past the cap is a clock-shifted row or a chain of fragments longer than an hour. Matching by its stored end
+ * would let a clock-shifted row absorb every later call of its talkgroup and source inside a span of hours, so it
+ * matches from its start, as a row of unknown duration always has. A real chain longer than an hour therefore
+ * continues in a new row once it crosses the cap. foldRow() still takes the real end (row_end_secs()), so the
+ * row's duration stays unknown and the stored end stays real.
+ */
+qint64
+row_merge_end_secs(const CallHistoryModel::Row& row) {
+    return row.durationSecs >= 0 ? row_end_secs(row) : row.when;
 }
 
 /**
@@ -158,7 +175,7 @@ seen_key(int slot, qulonglong seq, qint64 when, qulonglong tg, int kind) {
 }
 
 /**
- * @brief "TODAY" / "YESTERDAY" / "MON 3 AUG" for the list's day sections.
+ * @brief "TODAY" / "YESTERDAY" / "MON 3 AUG" for the list's day sections; "TIME UNKNOWN" for a row with no start.
  *
  * A deliberate real-time exception to the rule that decoded stamps are compared on the decode
  * clock. The log spans sessions, and its sections name the viewer's calendar day, retired by the
@@ -167,6 +184,10 @@ seen_key(int slot, qulonglong seq, qint64 when, qulonglong tg, int kind) {
  */
 QString
 day_label(qint64 when) {
+    if (when <= 0) {
+        // No start stamp: the detail sheet and the export leave its time out, so the list makes up no date.
+        return QStringLiteral("TIME UNKNOWN");
+    }
     const QDate day = QDateTime::fromSecsSinceEpoch(when).date();
     const QDate today = realtimeCurrentDate();
     if (day == today) {
@@ -176,6 +197,12 @@ day_label(qint64 when) {
         return QStringLiteral("YESTERDAY");
     }
     return QLocale().toString(day, QStringLiteral("ddd d MMM")).toUpper();
+}
+
+/** @brief "12:04" for a row's time in the list; empty for a row with no start, as day_label() names no day. */
+QString
+time_text(qint64 when) {
+    return when > 0 ? QDateTime::fromSecsSinceEpoch(when).toString(QStringLiteral("HH:mm")) : QString();
 }
 
 /** @brief The wait before the next debounced save, once the last save wrote @p bytes. */
@@ -384,8 +411,7 @@ row_role_value(const CallHistoryModel::Row& row, int role) {
         case CallHistoryModel::WhenRole: return row.when;
         case CallHistoryModel::DurationSecsRole: return row.durationSecs;
         case CallHistoryModel::DayLabelRole: return day_label(row.when);
-        case CallHistoryModel::TimeTextRole:
-            return QDateTime::fromSecsSinceEpoch(row.when).toString(QStringLiteral("HH:mm"));
+        case CallHistoryModel::TimeTextRole: return time_text(row.when);
         case CallHistoryModel::KindRole: return row.kind;
         case CallHistoryModel::DetailRole: return row.detail;
         case CallHistoryModel::ChannelRole: return row.channel;
@@ -491,6 +517,62 @@ CallHistoryModel::recordFor(const QString& uid) const {
         record.insert(QLatin1String(entry.key), data(idx, entry.role));
     }
     return record;
+}
+
+namespace {
+
+/** @brief The row at @p idx as an export writes it, every value through data(), recordings left to the caller. */
+CallHistoryModel::ExportRow
+export_row_at(const CallHistoryModel& model, const QModelIndex& idx) {
+    const auto text = [&model, &idx](int role) { return model.data(idx, role).toString(); };
+    CallHistoryModel::ExportRow row;
+    row.when = model.data(idx, CallHistoryModel::WhenRole).toLongLong();
+    row.durationSecs = model.data(idx, CallHistoryModel::DurationSecsRole).toInt();
+    row.kind = model.data(idx, CallHistoryModel::KindRole).toInt();
+    row.name = text(CallHistoryModel::NameRole);
+    row.tg = model.data(idx, CallHistoryModel::TgRole).toULongLong();
+    row.src = model.data(idx, CallHistoryModel::SrcRole).toULongLong();
+    row.sourceName = text(CallHistoryModel::SourceNameRole);
+    row.systemName = text(CallHistoryModel::SystemNameRole);
+    row.channel = text(CallHistoryModel::ChannelRole);
+    row.freqHz = model.data(idx, CallHistoryModel::FreqHzRole).toLongLong();
+    row.accessCode = text(CallHistoryModel::AccessCodeRole);
+    row.receivedTone = text(CallHistoryModel::ReceivedToneRole);
+    row.siteText = text(CallHistoryModel::SiteTextRole);
+    row.analog = model.data(idx, CallHistoryModel::AnalogRole).toBool();
+    row.analogMode = text(CallHistoryModel::AnalogModeRole);
+    row.enc = model.data(idx, CallHistoryModel::EncRole).toBool();
+    row.emergency = model.data(idx, CallHistoryModel::EmergencyRole).toBool();
+    row.detail = text(CallHistoryModel::DetailRole);
+    return row;
+}
+
+} // namespace
+
+QList<CallHistoryModel::ExportRow>
+CallHistoryModel::exportRows(const QList<int>& sourceRows) const {
+    QList<ExportRow> rows;
+    QList<QStringList> fragments;
+    rows.reserve(sourceRows.size());
+    fragments.reserve(sourceRows.size());
+    for (const int source : sourceRows) {
+        if (source < 0 || source >= m_rows.size()) {
+            continue;
+        }
+        rows.append(export_row_at(*this, index(source)));
+        fragments.append(m_rows.at(source).fragments);
+    }
+    if (m_recordings == nullptr) {
+        return rows;
+    }
+    // One read for every row: the store takes its lock once. An answer that does not cover every row names none.
+    const QList<QStringList> names = m_recordings->recordingEntryNames(fragments);
+    if (names.size() == rows.size()) {
+        for (qsizetype i = 0; i < rows.size(); i++) {
+            rows[i].recordingNames = names.at(i);
+        }
+    }
+    return rows;
 }
 
 void
@@ -1004,6 +1086,9 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
     row_take_site(row, item);
     if (row.kind == CallHistoryModel::KindVoice) {
         row.durationSecs = call_history_duration_secs(start, end);
+        /* The end only with the start it is measured from: a row with no start stamp (--playfiles) takes event_time
+         * as its start, and an end kept there would turn its unknown duration into 0 at the next update. */
+        row.end = (start > 0 && end >= start) ? end : 0;
     }
     return row;
 }
@@ -1305,8 +1390,8 @@ rows_mergeable(const CallHistoryModel::Row& existing, const CallHistoryModel::Ro
     // the tight one, or two distinct back-to-back calls on a busy talkgroup
     // collapse into one row (the wildcard above cannot tell units apart).
     const bool srcKnownMatch = existing.src != 0 && existing.src == row.src;
-    return call_history_merge_within_window(existing.when, row_end_secs(existing), row.when, row_end_secs(row),
-                                            srcKnownMatch);
+    return call_history_merge_within_window(existing.when, row_merge_end_secs(existing), row.when,
+                                            row_merge_end_secs(row), srcKnownMatch);
 }
 
 /**
@@ -1366,7 +1451,7 @@ same_reception_row(const QList<CallHistoryModel::Row>& rows, const CallHistoryMo
         if (!rows_same_reception(existing, row) || row_holds_ring_of(existing, row)) {
             continue;
         }
-        if (row_end_secs(existing) == row_end_secs(row)) {
+        if (row_merge_end_secs(existing) == row_merge_end_secs(row)) {
             return i;
         }
         if (first < 0) {
@@ -1535,11 +1620,17 @@ CallHistoryModel::foldRow(Row& existing, const Row& row) {
     if (existing.analog && dsd_analog_mode_known(existing.analogMode) == 0) {
         existing.analogMode = row.analogMode;
     }
+    // The row keeps its end, so one plausibility rule decides on every fold and update: a span past the cap reads
+    // unknown, and a later update of an earlier fragment cannot rebuild a duration from that fragment alone. With
+    // neither end known the duration stays unknown; a side whose end is unknown still counts from its start, so both
+    // ends are read before the start moves (a start-less row's end is its start).
     const qint64 start = qMin(existing.when, row.when);
-    const qint64 span = qMax(row_end_secs(existing), row_end_secs(row)) - start;
+    const qint64 end = qMax(row_end_secs(existing), row_end_secs(row));
+    const bool endKnown = existing.end > 0 || row.end > 0;
     existing.when = start;
-    if ((existing.durationSecs >= 0 || row.durationSecs >= 0) && span <= kCallHistoryMaxPlausibleDurationSecs) {
-        existing.durationSecs = static_cast<int>(span);
+    if (endKnown) {
+        existing.end = end;
+        existing.durationSecs = call_history_duration_secs(start, end);
     }
     existing.enc = existing.enc || row.enc;
     existing.emergency = existing.emergency || row.emergency;
@@ -2260,6 +2351,17 @@ row_analog_from_json(CallHistoryModel::Row& row, const QJsonObject& obj) {
     }
 }
 
+/**
+ * @brief A stored voice row's end (B1): `end` when stored; a row an older build stored, which kept none, ends where its
+ * known duration says, else not known. An end before the row's start is not known, and a notice keeps none.
+ */
+void
+row_end_from_json(CallHistoryModel::Row& row, const QJsonObject& obj) {
+    const qint64 derived = row.durationSecs >= 0 ? row.when + row.durationSecs : 0;
+    const qint64 end = json_i64_or(obj, "end", derived);
+    row.end = row.kind == CallHistoryModel::KindVoice && row.when > 0 && end >= row.when ? end : 0;
+}
+
 /** @brief One stored row. */
 CallHistoryModel::Row
 row_from_json(const QJsonObject& obj) {
@@ -2275,6 +2377,7 @@ row_from_json(const QJsonObject& obj) {
     row.systemName = obj.value(QLatin1String("systemName")).toString();
     row.systemUid = obj.value(QLatin1String("systemUid")).toString();
     row.kind = obj.value(QLatin1String("kind")).toInt(CallHistoryModel::KindVoice);
+    row_end_from_json(row, obj);
     row.detail = obj.value(QLatin1String("detail")).toString();
     row.channel = obj.value(QLatin1String("channel")).toString();
     row.channelName = obj.value(QLatin1String("channelName")).toString();
@@ -2347,6 +2450,9 @@ row_to_json(const CallHistoryModel::Row& row) {
         obj.insert(QLatin1String("em"), true);
     }
     obj.insert(QLatin1String("durationSecs"), row.durationSecs);
+    if (row.end > 0) {
+        obj.insert(QLatin1String("end"), row.end);
+    }
     obj.insert(QLatin1String("systemName"), row.systemName);
     obj.insert(QLatin1String("systemUid"), row.systemUid);
     obj.insert(QLatin1String("kind"), row.kind);
@@ -2421,7 +2527,7 @@ CallHistoryModel::load() {
         // evicted or lost is logged again as new rows, one per fragment.
         // The seed's site text digest is the text the row shows, as a ring walk reads it: a relaunch re-reads nothing.
         m_seen.insert(keyFor(*it), SeenState{it->when,
-                                             it->when + qMax(it->durationSecs, 0),
+                                             row_end_secs(*it),
                                              it->src,
                                              it->emergency,
                                              it->enc,

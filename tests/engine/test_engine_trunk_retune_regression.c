@@ -257,6 +257,13 @@ dsd_frame_sync_reset_mod_state(void) {
     g_frame_sync_reset_calls++;
 }
 
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_frame_sync_note_chain_change(dsd_frame_sync_chain before, dsd_frame_sync_chain after) {
+    (void)before;
+    (void)after;
+}
+
 /* dsd_frame_sync_p25p1_mod_compare_end_for_tune() is the real one (src/dsp/frame_sync_p25p1_compare.c); the CQPSK
  * dwell it arms lives in frame sync. */
 void

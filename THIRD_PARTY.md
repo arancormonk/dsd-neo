@@ -10,13 +10,13 @@ not a finding that every component is cleared for redistribution.
 
 ## Vendored Libraries
 
-- **mbelib-neo** (linked vocoder; pinned release 2.6.8, GPL-2.0-or-later project
+- **mbelib-neo** (linked vocoder; pinned release 2.6.9, GPL-2.0-or-later project
   contributions with ISC/PFFFT components and unresolved ETSI table terms) —
   <https://github.com/arancormonk/mbelib-neo>. Its full installed notices and
   legal records accompany packages in `licenses/mbelib-neo/`. TETRA table
   permission/GPL compatibility and patent questions remain open; do not label
   the entire dependency as cleared GPL code. See its pinned
-  [status](https://github.com/arancormonk/mbelib-neo/blob/v2.6.8/legal/status.md).
+  [status](https://github.com/arancormonk/mbelib-neo/blob/v2.6.9/legal/status.md).
 
 - **ezpwd Reed-Solomon** (`src/third_party/ezpwd`, target `dsd-neo_ezpwd`; Hard Consulting Corporation; vendored from https://github.com/arancormonk/ezpwd-reed-solomon) - GPL-3.0-or-later; `rs_base` is LGPL-2.1-or-later (per upstream notice). LGPL text: `src/third_party/ezpwd/lesser.txt` (installed as `share/doc/dsd-neo/licenses/ezpwd-LGPL-2.1-or-later.txt`).
 - **PFFFT** (target `dsd-neo_pffft`; Julien Pommier and contributors, based on FFTPACKv4 by Dr Paul Swarztrauber/NCAR) — downloaded from <https://github.com/arancormonk/pffft> at the immutable revision and SHA-256 in `tools/ci-dependency-pins.env`. The BSD-like license and compiled backend notices are installed as `share/doc/dsd-neo/licenses/pffft-LICENSE.txt` and `pffft-NOTICES.txt`. See `docs/dependencies.md` for offline builds and updates.
@@ -125,6 +125,14 @@ not a finding that every component is cleared for redistribution.
     from `noise_floor`; its recorded portion carries the `nxdn96` fixture's terms.
   - The `nxdn96_weak` and `nxdn96_weak_0db` fixtures are the `nxdn96` fixture with seeded complex Gaussian noise added
     by `tools/build_iq_fixtures.py` (no recorded material of its own); they carry the `nxdn96` fixture's terms.
+  - The `p25p1_cqpsk_cc_simulcast_noisy` and `p25p2_cc_noisy` fixtures are the `p25p1_cqpsk_cc_simulcast` (the
+    `p25p1_cqpsk_cc` fixture with a delayed copy of itself added) and `p25p2_cc` fixtures with seeded complex Gaussian
+    noise added by `tools/build_iq_fixtures.py` (no recorded material of their own); they carry their source fixtures'
+    terms. The `p25p1_cqpsk_cc_then_noise` fixture is the `p25p1_cqpsk_cc` fixture, a second of the seeded
+    `noise_floor` fixture and a second of the `dmr_t3_cc` fixture, joined byte for byte by that script; its recorded
+    portions carry their source fixtures' terms. The `p25p1_cqpsk_cc_then_long_noise` fixture is a second of the
+    `p25p1_cqpsk_cc` fixture and two seconds of `noise_floor`, joined the same way; its recorded portion carries the
+    `p25p1_cqpsk_cc` fixture's terms.
   - The `p25p1_c4fm_adjacent_72k` and `p25p1_cqpsk_adjacent_72k` fixtures are the `p25p1_c4fm_cc` and `p25p1_cqpsk_cc`
     fixtures resampled to 72 kHz with a time-reversed copy of themselves added 12.5 kHz up, by
     `tools/build_iq_fixtures.py` (no recorded material of their own); they carry their source fixtures' terms. The

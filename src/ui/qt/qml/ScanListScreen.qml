@@ -556,7 +556,7 @@ Rectangle {
             SegmentedControl {
                 objectName: "scanTargetMode"
                 width: parent.width
-                Accessible.name: qsTr("Scan targets")
+                accessibleName: qsTr("Scan targets")
                 model: [qsTr("Saved systems & frequencies"), qsTr("Target CSV")]
                 currentIndex: screen.csvMode ? 1 : 0
                 onSelected: function (index) {
@@ -971,7 +971,7 @@ Rectangle {
                         }
                         SegmentedControl {
                             objectName: "scanGainMode"
-                            Accessible.name: qsTr("Gain")
+                            accessibleName: qsTr("Gain")
                             width: parent.width
                             model: [qsTr("App default"), qsTr("Automatic"), qsTr("Set")]
                             currentIndex: screen.gainMode
@@ -1022,7 +1022,7 @@ Rectangle {
                         }
                         SegmentedControl {
                             objectName: "scanPpmMode"
-                            Accessible.name: qsTr("Frequency correction")
+                            accessibleName: qsTr("Frequency correction")
                             width: parent.width
                             model: [qsTr("App default"), qsTr("Set")]
                             currentIndex: screen.ppmSet ? 1 : 0
@@ -1072,7 +1072,7 @@ Rectangle {
                         }
                         SegmentedControl {
                             objectName: "scanBandwidthMode"
-                            Accessible.name: qsTr("Bandwidth")
+                            accessibleName: qsTr("Bandwidth")
                             width: parent.width
                             model: [qsTr("App default"), qsTr("Set")]
                             currentIndex: screen.bandwidthSet ? 1 : 0
@@ -1120,7 +1120,7 @@ Rectangle {
                     }
                     SegmentedControl {
                         objectName: "scanBiasTee"
-                        Accessible.name: qsTr("Bias tee")
+                        accessibleName: qsTr("Bias tee")
                         width: parent.width
                         visible: screen.draft.sourceType !== "airspy"
                         model: [qsTr("App default"), qsTr("On"), qsTr("Off")]

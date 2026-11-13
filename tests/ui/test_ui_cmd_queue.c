@@ -4575,6 +4575,142 @@ test_config_apply_mode_change_clears_received_tone(void) {
     return rc;
 }
 
+/* What the decoder handed the CQPSK timing loop as its P25 proof: the calls, and the last value (0 = withdrawn). */
+static int g_p25_proof_calls;
+static uint64_t g_p25_proof_last = 1U;
+
+static void
+capture_p25_proof(uint64_t proof) {
+    g_p25_proof_calls++;
+    g_p25_proof_last = proof;
+}
+
+static void
+arm_p25_proof_capture(void) {
+    g_p25_proof_calls = 0;
+    g_p25_proof_last = 1U;
+}
+
+/* A decode-mode switch withdraws the proof that the carrier is P25, which the CQPSK timing loop's post-lock gain
+   follows: the command's acquisition reset does, and so does a config apply that changes the mode. One that restates the
+   mode in force keeps it. */
+static int
+test_decode_mode_switch_withdraws_p25_proof(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_rtl_stream_metrics_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.p25_timing_proof = capture_p25_proof;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("p25 proof: P25 set up",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_P25P1, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+    arm_p25_proof_capture();
+    rc |= expect_int("p25 proof: mode change queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("p25 proof: mode change drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("p25 proof: the mode command withdraws it", g_p25_proof_calls > 0 && g_p25_proof_last == 0U);
+    freeState(&state);
+
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("p25 proof: P25 set up for the config",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_P25P1, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+    arm_p25_proof_capture();
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_P25P1, "p25 proof: config restating P25");
+    rc |= expect_int("p25 proof: a config restating the mode keeps it", g_p25_proof_calls, 0);
+    rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_DMR, "p25 proof: config to dmr");
+    rc |= expect_true("p25 proof: a config changing the mode withdraws it",
+                      g_p25_proof_calls > 0 && g_p25_proof_last == 0U);
+    freeState(&state);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    return rc;
+}
+
+/* Whether the last command drained withdrew the P25 proof (@p withdraws) or left it alone. */
+static int
+expect_p25_proof_after(const char* label, int withdraws) {
+    if (withdraws) {
+        return expect_true(label, g_p25_proof_calls > 0 && g_p25_proof_last == 0U);
+    }
+    return expect_int(label, g_p25_proof_calls, 0);
+}
+
+/* Drain one queued modulation command and check what it did to the P25 proof. */
+static int
+drain_mod_command(dsd_opts* opts, dsd_state* state, int queued, const char* label, int withdraws) {
+    arm_p25_proof_capture();
+    int rc = expect_int(label, queued, DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc | expect_p25_proof_after(label, withdraws);
+}
+
+/* A config apply restating P25p1 with the [demod] path @p demod. */
+static int
+submit_config_demod(dsd_opts* opts, dsd_state* state, dsdneoUserDemodPath demod, const char* label, int withdraws) {
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_mode = 1;
+    cfg.decode_mode = DSDCFG_MODE_P25P1;
+    cfg.has_demod = 1;
+    cfg.demod_path = demod;
+    return drain_mod_command(opts, state, dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg), label,
+                             withdraws);
+}
+
+/* A modulation or symbol profile change made outside the frame sync withdraws the P25 proof as the frame sync's own
+   moves do: it puts another chain on the front end, which the proof given on the old one does not speak for. The
+   modulation controls, the P25p2 helper toggle and a config's [demod] each make one; a command that restates the
+   modulation and profile in force keeps the proof. */
+static int
+test_modulation_change_withdraws_p25_proof(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_rtl_stream_metrics_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.p25_timing_proof = capture_p25_proof;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("p25 proof mod: P25 set up",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_P25P1, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+    rc |= expect_int("p25 proof mod: on C4FM", state.rf_mod, 0);
+    rc |= drain_mod_command(&opts, &state, dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 0),
+                            "p25 proof mod: restating C4FM keeps it", 0);
+    rc |= drain_mod_command(&opts, &state, dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 1),
+                            "p25 proof mod: C4FM to QPSK withdraws it", 1);
+    rc |= expect_int("p25 proof mod: on QPSK", state.rf_mod, 1);
+    rc |= drain_mod_command(&opts, &state, dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 1),
+                            "p25 proof mod: restating QPSK keeps it", 0);
+    rc |= drain_mod_command(&opts, &state, dsd_app_command_action(DSD_APP_CMD_MOD_TOGGLE),
+                            "p25 proof mod: the toggle withdraws it", 1);
+    rc |= expect_int("p25 proof mod: toggled to C4FM", state.rf_mod, 0);
+    rc |= drain_mod_command(&opts, &state, dsd_app_command_action(DSD_APP_CMD_MOD_P2_TOGGLE),
+                            "p25 proof mod: the P25p2 helper withdraws it", 1);
+    rc |=
+        expect_int("p25 proof mod: the helper runs 6000 sym/s", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    /* The helper's second press keeps the 6000 sym/s profile and moves the modulation alone. */
+    rc |= drain_mod_command(&opts, &state, dsd_app_command_action(DSD_APP_CMD_MOD_P2_TOGGLE),
+                            "p25 proof mod: the helper's modulation flip withdraws it", 1);
+    rc |=
+        expect_int("p25 proof mod: the helper kept 6000 sym/s", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    freeState(&state);
+
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("p25 proof demod: P25 set up",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_P25P1, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+    rc |= submit_config_demod(&opts, &state, DSDCFG_DEMOD_C4FM, "p25 proof demod: a config restating C4FM keeps it", 0);
+    rc |= submit_config_demod(&opts, &state, DSDCFG_DEMOD_QPSK, "p25 proof demod: a config's QPSK withdraws it", 1);
+    rc |= expect_int("p25 proof demod: on QPSK", state.rf_mod, 1);
+    rc |= submit_config_demod(&opts, &state, DSDCFG_DEMOD_QPSK, "p25 proof demod: a config restating QPSK keeps it", 0);
+    freeState(&state);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    return rc;
+}
+
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /*
  * Connecting TCP audio -- from the settings form with a host and port, or the menu's
@@ -7540,6 +7676,39 @@ test_return_cc_keeps_the_dmr_decode_gate(void) {
     g_dmr_burst_handler_armed = 0;
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     freeState(&state);
+    return rc;
+}
+
+/* A manual tune through io_control (a return to a control channel whose type gives no P25 symbol rate, here) moves the
+   receiver without a trunk-tuning request, so no tuning generation stales the P25 proof and no carrier boundary runs
+   under trunking: the tune withdraws it, as every other tune does. A tune the front end refuses moves nothing and
+   keeps it. */
+static int
+test_manual_io_tune_withdraws_p25_proof(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_rtl_stream_metrics_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.p25_timing_proof = capture_p25_proof;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    init_radio_context(&opts, &state, "rtl:0");
+    opts.trunk_enable = 1;
+    state.trunk_cc_freq = 851000000L;
+    opts.rtlsdr_center_freq = 852000000U;
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_FAILED);
+    rc |= drain_mod_command(&opts, &state, dsd_app_command_action(DSD_APP_CMD_RETURN_CC),
+                            "p25 proof io tune: a refused return keeps it", 0);
+    rc |= expect_int("p25 proof io tune: the refused return reached io_control", g_io_control_tune_calls, 1);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= drain_mod_command(&opts, &state, dsd_app_command_action(DSD_APP_CMD_RETURN_CC),
+                            "p25 proof io tune: the return withdraws it", 1);
+    rc |= expect_int("p25 proof io tune: the return went through io_control", g_io_control_tune_calls, 1);
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    freeState(&state);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
     return rc;
 }
 
@@ -15245,6 +15414,44 @@ submit_cqpsk_toggle(void) {
     dsd_app_dsp_payload dsp = {0};
     dsp.op = DSD_APP_DSP_OP_TOGGLE_CQ;
     (void)dsd_app_command_dsp_op(&dsp);
+}
+
+/* The DSP menu's CQPSK toggle moves the front end between the FSK discriminator and the CQPSK chain and leaves the
+   decoder's modulation and symbol profile as they were: the P25 proof the CQPSK timing loop follows is withdrawn both
+   ways, as at every other chain change. A command that leaves the front end's chain alone keeps it. */
+static int
+test_cqpsk_toggle_withdraws_p25_proof(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("p25 proof cq: P25 set up",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_P25P1, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state), 0);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:48");
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    reset_rx_family_wrap();
+    g_fake_cqpsk = 0;
+    dsd_rtl_stream_metrics_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.p25_timing_proof = capture_p25_proof;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+
+    submit_cqpsk_toggle();
+    rc |= drain_mod_command(&opts, &state, DSD_APP_COMMAND_SUBMIT_QUEUED, "p25 proof cq: CQPSK on withdraws it", 1);
+    rc |= expect_int("p25 proof cq: CQPSK requested on", __wrap_rtl_stream_requested_cqpsk(), 1);
+    rc |= expect_int("p25 proof cq: the decoder's modulation stays", state.rf_mod, 0);
+    submit_cqpsk_toggle();
+    rc |= drain_mod_command(&opts, &state, DSD_APP_COMMAND_SUBMIT_QUEUED, "p25 proof cq: CQPSK off withdraws it", 1);
+    rc |= expect_int("p25 proof cq: CQPSK requested off", __wrap_rtl_stream_requested_cqpsk(), 0);
+    rc |= drain_mod_command(&opts, &state, dsd_app_command_action(DSD_APP_CMD_INVERT_TOGGLE),
+                            "p25 proof cq: a command leaving the chain alone keeps it", 0);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    reset_rx_family_wrap();
+    freeState(&state);
+    return rc;
 }
 
 /*
@@ -29913,6 +30120,7 @@ main(void) {
     rc |= test_input_switch_to_pcm_leaves_am();
     rc |= test_tcp_switch_leaves_am_with_unfit_nfm_width();
     rc |= test_nfm_bandwidth_set_applies_live_and_refuses();
+    rc |= test_cqpsk_toggle_withdraws_p25_proof();
     rc |= test_nfm_bandwidth_set_replaces_a_queued_switch();
     rc |= test_nfm_bandwidth_set_after_a_queued_cqpsk_toggle();
     rc |= test_cqpsk_off_under_am_refused_keeps_cqpsk();
@@ -30119,6 +30327,8 @@ main(void) {
     rc |= test_config_reopen_failures_keep_the_input();
     rc |= test_config_apply_input_change_clears_received_tone();
     rc |= test_config_apply_mode_change_clears_received_tone();
+    rc |= test_decode_mode_switch_withdraws_p25_proof();
+    rc |= test_modulation_change_withdraws_p25_proof();
     rc |= test_failed_config_reopen_stages_no_file_rate();
     rc |= test_config_without_decode_keeps_file_timing();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
@@ -30240,6 +30450,7 @@ main(void) {
     rc |= test_trunked_tune_away_flushes_the_followed_tail_first();
 #endif
     rc |= test_return_cc_keeps_the_dmr_decode_gate();
+    rc |= test_manual_io_tune_withdraws_p25_proof();
     rc |= test_manual_moves_hand_a_dmr_follow_over();
     rc |= test_return_cc_and_mode_change_hand_tetra_over();
     rc |= test_manual_tunes_hand_a_tetra_return_over();
