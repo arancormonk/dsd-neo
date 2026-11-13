@@ -991,10 +991,14 @@ turned it on).
 
 ### What the check measures
 
-- The receiver measures the power inside the channel and compares it with the noise just beside it, on both sides.
-  It reads nine back-to-back slices of at least 10 ms each, so the reading covers at least 90 ms (90 to 96 ms at the
-  RTL-SDR's default 1.536 Msps, depending on the channel width). The channel is silent only when every slice reads
-  less than 4.1 dB above that noise. One busy slice is enough to keep the channel.
+- The receiver measures the power inside the channel and compares it with the receiver's own noise, read across the
+  whole band it takes in. It takes a low reading of that band (the level three quarters of it stand above), so other
+  transmitters in the band, busy neighbours included, do not raise it. It reads nine back-to-back slices of at least
+  10 ms each, so the reading covers at least 90 ms (90 to 96 ms at the RTL-SDR's default 1.536 Msps, depending on the
+  channel width). The channel is silent only when every slice reads less than 5.0 dB above that noise. One busy slice
+  is enough to keep the channel.
+- It also reads the noise just beside the channel, on both sides. If that stands more than 8.7 dB over the band's
+  noise, the band's noise does not stand for the noise at the channel, and the check gives up (below).
 - The width it looks at is the channel's own: 12.5 kHz for P25 (both phases), DMR, NXDN96, YSF and M17; 6.25 kHz for
   NXDN48, dPMR and D-STAR; the channel width an `nfm` or `am` row or target runs. A typed row or target is judged in
   its mode's width. An untyped `-Y` row is judged in every width of the decoders the session runs, and is silent only
@@ -1004,8 +1008,9 @@ turned it on).
   holds a whole slice inside one of those bursts, so such a channel, at a strength DSD-neo can decode, reads busy.
 - The threshold and the rest of the measurement come from a calibration against DSD-neo's own reception: a signal
   1 dB weaker than the weakest one DSD-neo still receives was never read as silent in testing, in any mode, width or
-  supported sample rate (2,482 signal conditions), while noise alone read busy at most 0.03% of the time (880 noise
-  conditions), so a truly silent channel almost always reads silent. The method and figures are in
+  supported sample rate, with or without busy neighbours (4,198 signal conditions), while noise alone never read busy
+  in testing (880 noise conditions), so a truly silent channel on a flat noise floor reads silent. The method and
+  figures are in
   [Quiet-channel calibration](signal-search.md#quiet-channel-calibration).
 
 ### What a skip costs and logs
@@ -1020,9 +1025,9 @@ turned it on).
 - Each skip logs one line, for example
   `NOTICE: scan: skipped quiet County Fire 154.000000 MHz: -97.2 dBFS, floor -98.8 dBFS (1.6 dB)` for a target (its
   label, or its id when it has none) or `NOTICE: scan: skipped quiet row 3 154.000000 MHz: ...` for a `-Y` row
-  (counted from 1). It gives the channel's power, the noise beside it and how far apart they are. The line is written
-  when the scan decides to skip, just before it moves. If the tuner then refuses the tune, the line is in the log but
-  the receiver stays where it was.
+  (counted from 1). It gives the channel's power, the receiver's noise it was compared with and how far apart they
+  are. The line is written when the scan decides to skip, just before it moves. If the tuner then refuses the tune,
+  the line is in the log but the receiver stays where it was.
 - The signal reading is never activity. It never holds a channel, never counts as a decode, never extends a dwell or
   hold, and nothing it measures goes to call history, event or location files, or counts as activity for trunk scan.
   It can only make a visit shorter.
@@ -1079,15 +1084,17 @@ Turning the setting on accepts these:
 - A signal weaker than the calibrated threshold can read silent, so a weak transmission can be skipped.
 - An always-keyed channel (a control channel, a repeater that never drops) is never skipped, so the setting saves
   nothing there.
-- Busy channels on both sides raise the noise the check compares with. A large rise makes the check give up (above),
-  but a smaller one makes the channel read quieter than it is, so a weak transmission between two busy neighbours can
-  be skipped. The calibration tested neighbours 30 and 50 dB stronger than the wanted signal.
+- Busy neighbours do not make a weak transmission read quieter: the check compares the channel with the receiver's
+  noise across the band, not the noise beside it. The calibration tested a neighbour 12.5 or 25 kHz away, on one side
+  and on both, from 5 to 50 dB stronger than the wanted signal, and never read such a signal as silent. Those tests
+  used a P25 neighbour at 1.536 Msps only; other sample rates were not tested with neighbours.
 - An AM carrier outside the configured channel width is not seen: on a wide offset-carrier AM system set a width that
   takes in every carrier.
 - Every receiver, input, width, rate and decoder set listed above runs without the check.
 - The check assumes the receiver's own noise is about flat across the band it takes in. Real RTL-SDR noise recordings
   at 1.152 and 1.536 Msps bear that out; no real 2.4 Msps or Airspy recording was available, so at those rates the
-  check was tested on computed noise only.
+  check was tested on computed noise only. A receiver whose noise dips at the channel reads it quieter by as much as
+  the dip.
 
 While a trunk scan or `-Y` runs, a sync search that gets no samples at all (a stalled rtl_tcp server, a silent audio
 input) gives up its read after 100 ms on a radio input and 500 ms on audio input. The scan's own timers (dwell, visit

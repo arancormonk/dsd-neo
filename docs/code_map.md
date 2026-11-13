@@ -7776,8 +7776,8 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   `rtl_stream_tune_poll()` reuse the controller's completion ledger and settling gates;
   the search owner reserves tagged manual tunes, including against unsolicited UDP tunes.
 - Scan quiet request (`radio/signal_measure.cpp`, `io/signal_measure.h`, issue #834): whether one landed conventional
-  channel carries no power above its local floor. `dsd_signal_quiet_detector_*` is the measurement (the shared tap runs
-  one with `dsd_signal_quiet_params_default()`, the shipped `DSD_SIGNAL_QUIET_THRESHOLD_DB` (4.1 dB),
+  channel carries no power above the capture's noise. `dsd_signal_quiet_detector_*` is the measurement (the shared
+  tap runs one with `dsd_signal_quiet_params_default()`, the shipped `DSD_SIGNAL_QUIET_THRESHOLD_DB` (5.0 dB),
   `DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR` (the trimmed mean) and `DSD_SIGNAL_QUIET_GUARD_DB` (8.7 dB);
   `tests/io/signal_quiet_calibrate.cpp`, a manual build-only driver, chose all three and drives its own detectors with
   explicit parameters; docs/signal-search.md "Quiet-channel calibration"). The domain is exactly the rendered cells:
@@ -7791,17 +7791,19 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   (`dsd_signal_fft_size_for_width()`, which also sizes Signal search's ranges), so a sub-window stays under 13.75 ms
   and one lies inside any 27.5 ms DMR burst; the nine span at least 90 ms. Each sub-window and class goes through the
   same channel measurement as Signal search (`measure_channel()`: geometry, channel bins, the eight sideband blocks),
-  with the floor from either the trimmed mean (Signal search's) or the lowest block. Floor guard (`wide_reference()`):
-  each sub-window also takes a capture-wide noise reference from the same transforms (the lower quartile of the bins
+  with the sideband floor from either the trimmed mean (Signal search's) or the lowest block. Each sub-window also
+  takes a capture-wide noise reference from the same transforms (`wide_reference()`: the lower quartile of the bins
   whose hardware offset, folded as `measure_channel()` folds it under the ingest rotation, clears DC, the band edges
-  and the channel; scaled to the Gaussian mean; computed in `prefix` before the prefix sums), and a class whose
-  sideband floor stands more than `guard_db` over it makes the request invalid, so a weak channel between
-  transmitters that raise its floor on both sides is never quiet (such a channel is never skipped). The request is
-  quiet only when every sub-window of every class is valid and its (S+N)/N is below the threshold; the result carries
-  the highest ratio with its power and floor, and the highest floor rise (`floor_rise_db`). Clipping (over 1% of pairs
-  so far, checked at each sub-window end), capture changes, drops and non-finite samples fail it as for a search; a
-  channel whose geometry does not fit is measured but never valid. Buffers are prepared once per transform size
-  (`NO_MEMORY` only when that fails). Tap owners: the tap holds
+  and the channel; scaled to the Gaussian mean; computed in `prefix` before the prefix sums). The ratio, (S+N)/N, is
+  the channel's power over that reference across the channel's bins, so transmitters beside the channel that lift
+  its sideband floor do not lower it. The sideband floor serves only the floor guard: a class whose floor stands more
+  than `guard_db` over the reference makes the request invalid (never quiet), because the reference then does not
+  stand for the noise round the channel. The request is quiet only when every sub-window of every class is valid and
+  its ratio is below the threshold; the result carries the highest ratio with its power and the reference it was
+  judged against (`floor_dbfs`, the noise the skip NOTICE prints), and the highest floor rise (`floor_rise_db`).
+  Clipping (over 1% of pairs so far, checked at each sub-window end), capture changes, drops and non-finite samples
+  fail it as for a search; a channel whose geometry does not fit is measured but never valid. Buffers are prepared
+  once per transform size (`NO_MEMORY` only when that fails). Tap owners: the tap holds
   one request, Signal search's or a quiet one. `rtl_signal_quiet_request()` is refused (`UNSUPPORTED`) while a search
   owns the tuner or holds a request or an unread report; a search request (even a refused one) supersedes a quiet one,
   and `rtl_signal_measure_cancel()` never touches it. Ticket and status word: one lock-free `std::atomic<uint32_t>`
