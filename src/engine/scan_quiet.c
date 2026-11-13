@@ -220,11 +220,13 @@ typedef struct {
     uint64_t request_seq;
     uint32_t ticket;
     uint64_t deadline_ms;
-    /* The sync sequence and decode time at the visit's first request, kept across its retries: activity since then
-       ends the check. requested 0 before it. */
-    int requested;
+    /* The visit's activity baseline: the sync sequence and the decode time at the first publication of visit_key, kept
+       for that visit across its suspensions, restarts and retries. A sync, a carrier or allowed activity since then
+       ends the visit's check, whatever phase the check was in. visit_set 0 before the first publication. */
+    int visit_set;
+    scan_quiet_visit_key visit_key;
     uint64_t sync_seq;
-    double requested_decode_m;
+    double visit_decode_m;
     uint64_t ready_ms;
     dsd_signal_quiet_result result;
 } scan_quiet_check;
@@ -302,6 +304,9 @@ quiet_visit_current(const dsd_engine_scan_owner* owner, scan_quiet_check* c, int
         return 0;
     }
     if (adopt) {
+        if (c->visit_set && quiet_key_equal(&c->visit_key, &c->key)) {
+            c->visit_key.epoch = landing->epoch; /* the park's landing is the same visit */
+        }
         c->key.epoch = landing->epoch;
         if (!c->origin_set) {
             /* The hunt never read the park's completion (another landing succeeded first): the wait is bounded from
@@ -318,8 +323,14 @@ quiet_age_ms(uint64_t now_ms, uint64_t since_ms) {
     return now_ms >= since_ms ? now_ms - since_ms : 0U;
 }
 
-/* Reconcile: a changed visit or revision suspends the check; a sync since its request, or a READY result
-   past its age, ends it. */
+/* Whether a sync or a carrier was heard since the visit's activity baseline. */
+static int
+quiet_visit_heard_sync(const dsd_engine_scan_owner* owner, const scan_quiet_check* c) {
+    return c->visit_set && quiet_key_equal(&c->visit_key, &c->key) && owner->sync_seq != c->sync_seq;
+}
+
+/* Reconcile: a changed visit or revision suspends the check; a sync since the visit's activity baseline, or a READY
+   result past its age, ends it. */
 static void
 quiet_reconcile(const dsd_opts* opts, const dsd_state* state, const dsd_engine_scan_owner* owner, scan_quiet_check* c,
                 uint64_t now_ms) {
@@ -332,7 +343,7 @@ quiet_reconcile(const dsd_opts* opts, const dsd_state* state, const dsd_engine_s
         quiet_end(c, SCAN_QUIET_SUSPENDED);
         return;
     }
-    if (c->requested && owner->sync_seq != c->sync_seq) {
+    if (quiet_visit_heard_sync(owner, c)) {
         quiet_end(c, SCAN_QUIET_DONE);
         return;
     }
@@ -365,7 +376,7 @@ quiet_geometry_supported(const scan_quiet_check* c, const dsd_signal_capture* ca
 }
 
 static void
-quiet_request(const dsd_engine_scan_owner* owner, scan_quiet_check* c, const dsd_signal_capture* cap, uint64_t now_ms) {
+quiet_request(scan_quiet_check* c, const dsd_signal_capture* cap, uint64_t now_ms) {
     dsd_signal_quiet_request request;
     DSD_MEMSET(&request, 0, sizeof request);
     request.request_id = ++c->request_seq;
@@ -381,16 +392,11 @@ quiet_request(const dsd_engine_scan_owner* owner, scan_quiet_check* c, const dsd
     }
     c->ticket = ticket;
     c->deadline_ms = now_ms + SCAN_QUIET_REQUEST_DEADLINE_MS;
-    if (!c->requested) {
-        c->requested = 1;
-        c->sync_seq = owner->sync_seq;
-        c->requested_decode_m = dsd_decode_now_mono_s();
-    }
     c->phase = SCAN_QUIET_REQUESTED;
 }
 
 static void
-quiet_wait_capture(const dsd_engine_scan_owner* owner, scan_quiet_check* c, uint64_t now_ms) {
+quiet_wait_capture(scan_quiet_check* c, uint64_t now_ms) {
     if (!c->origin_set) {
         /* A park still in flight: its wait starts once the tuning ledger published its completion. */
         if (!dsd_trunk_tuning_request_landed(c->key.tune_request)) {
@@ -415,7 +421,7 @@ quiet_wait_capture(const dsd_engine_scan_owner* owner, scan_quiet_check* c, uint
         c->phase = SCAN_QUIET_DONE;
         return;
     }
-    quiet_request(owner, c, &cap, now_ms);
+    quiet_request(c, &cap, now_ms);
 }
 
 static int
@@ -461,9 +467,9 @@ quiet_collect(scan_quiet_check* c, uint64_t now_ms) {
 
 /* Start, collect or expire, by phase. */
 static void
-quiet_step(const dsd_engine_scan_owner* owner, scan_quiet_check* c, uint64_t now_ms) {
+quiet_step(scan_quiet_check* c, uint64_t now_ms) {
     if (c->phase == SCAN_QUIET_WAIT_CAPTURE) {
-        quiet_wait_capture(owner, c, now_ms);
+        quiet_wait_capture(c, now_ms);
     } else if (c->phase == SCAN_QUIET_REQUESTED) {
         quiet_collect(c, now_ms);
     }
@@ -478,7 +484,7 @@ quiet_capture_equal(const dsd_signal_capture* a, const dsd_signal_capture* b) {
 
 /* For a reconciled READY result past the class and revision checks: the tap's capture and the live output
    generation are still the result's, no tune is pending, no analog carrier is heard and, under trunk scan, no allowed
-   activity came since the request. */
+   activity came since the visit's activity baseline. */
 static int
 quiet_ready_passes(const dsd_opts* opts, const dsd_state* state, const scan_quiet_check* c) {
     dsd_signal_capture cap;
@@ -496,7 +502,7 @@ quiet_ready_passes(const dsd_opts* opts, const dsd_state* state, const scan_quie
         return 0;
     }
     return c->key.owner != SCAN_QUIET_OWNER_TRUNK
-           || !dsd_engine_trunk_scan_quiet_activity_since(state, c->requested_decode_m);
+           || !dsd_engine_trunk_scan_quiet_activity_since(state, c->visit_decode_m);
 }
 
 int
@@ -573,8 +579,42 @@ quiet_start(const dsd_engine_scan_owner* owner, scan_quiet_check* c, const scan_
     c->origin_ms = landed ? owner->landing.landed_realtime_ms : 0U;
     c->next_capture_check_ms = 0U;
     c->retries = 0;
-    c->requested = 0;
-    c->requested_decode_m = 0.0;
+}
+
+/* The visit's activity baseline, taken at the first publication of @p key; a later publication of the same visit keeps
+   it, so what was heard while its check was suspended still counts. */
+static void
+quiet_visit_baseline(const dsd_engine_scan_owner* owner, scan_quiet_check* c, const scan_quiet_visit_key* key) {
+    if (c->visit_set && quiet_key_equal(&c->visit_key, key)) {
+        return;
+    }
+    c->visit_set = 1;
+    c->visit_key = *key;
+    c->sync_seq = owner->sync_seq;
+    c->visit_decode_m = dsd_decode_now_mono_s();
+}
+
+/* A publication's reconcile, and whether @p e's visit has its check ended already: DONE for the visit, or a sync or a
+   carrier heard in it since its activity baseline, its check suspended or not (then DONE now: none is made for it
+   again). */
+static int
+quiet_publication_ends_visit(const dsd_opts* opts, const dsd_state* state, const dsd_engine_scan_owner* owner,
+                             scan_quiet_check* c, const scan_quiet_eligibility* e, uint64_t now_ms) {
+    quiet_reconcile(opts, state, owner, c, now_ms);
+    if ((c->phase == SCAN_QUIET_DONE || c->phase == SCAN_QUIET_SUSPENDED) && c->key.epoch == 0U) {
+        /* A park measured or suspended in flight whose landing has been noted: the landing is still its visit. */
+        (void)quiet_visit_current(owner, c, 1);
+    }
+    if (c->phase == SCAN_QUIET_DONE && quiet_key_equal(&c->key, &e->key)) {
+        return 1; /* terminal for the visit */
+    }
+    quiet_visit_baseline(owner, c, &e->key);
+    if (owner->sync_seq == c->sync_seq) {
+        return 0;
+    }
+    quiet_end(c, SCAN_QUIET_DONE);
+    c->key = e->key;
+    return 1;
 }
 
 void
@@ -589,13 +629,8 @@ scan_quiet_publish_eligibility(const dsd_opts* opts, dsd_state* state, int owner
         return;
     }
     const uint64_t now_ms = dsd_realtime_mono_ms();
-    quiet_reconcile(opts, state, owner, c, now_ms);
-    if (c->phase == SCAN_QUIET_DONE && c->key.epoch == 0U) {
-        /* A park measured in flight that ended before its landing was noted: the landing is still its visit. */
-        (void)quiet_visit_current(owner, c, 1);
-    }
-    if (c->phase == SCAN_QUIET_DONE && quiet_key_equal(&c->key, &e->key)) {
-        return; /* terminal for the visit */
+    if (quiet_publication_ends_visit(opts, state, owner, c, e, now_ms)) {
+        return;
     }
     if (!quiet_publication_eligible(opts, owner, owner_kind, e)) {
         quiet_end(c, SCAN_QUIET_SUSPENDED);
@@ -605,7 +640,7 @@ scan_quiet_publish_eligibility(const dsd_opts* opts, dsd_state* state, int owner
     if (c->phase == SCAN_QUIET_SUSPENDED || !quiet_published_as_measured(c, e)) {
         quiet_start(owner, c, e);
     }
-    quiet_step(owner, c, now_ms);
+    quiet_step(c, now_ms);
 }
 
 int
@@ -617,7 +652,7 @@ dsd_engine_scan_quiet_service(const dsd_opts* opts, dsd_state* state) {
     }
     const uint64_t now_ms = dsd_realtime_mono_ms();
     quiet_reconcile(opts, state, owner, c, now_ms);
-    quiet_step(owner, c, now_ms);
+    quiet_step(c, now_ms);
     return c->phase == SCAN_QUIET_READY && quiet_ready_passes(opts, state, c);
 }
 
@@ -677,10 +712,10 @@ scan_quiet_log_skip(const dsd_state* state, const char* name, int row) {
 }
 
 double
-scan_quiet_requested_decode_m(const dsd_state* state) {
+scan_quiet_visit_decode_m(const dsd_state* state) {
     const dsd_engine_scan_owner* owner = quiet_owner_const(state);
     const scan_quiet_check* c = owner ? (const scan_quiet_check*)owner->quiet : NULL;
-    return c ? c->requested_decode_m : 0.0;
+    return c ? c->visit_decode_m : 0.0;
 }
 
 scan_quiet_phase
@@ -763,7 +798,7 @@ scan_quiet_log_skip(const dsd_state* state, const char* name, int row) {
 }
 
 double
-scan_quiet_requested_decode_m(const dsd_state* state) {
+scan_quiet_visit_decode_m(const dsd_state* state) {
     (void)state;
     return 0.0;
 }
@@ -786,4 +821,11 @@ scan_quiet_key_get(const dsd_state* state) {
 void
 dsd_engine_scan_quiet_setting_changed(dsd_state* state) {
     dsd_engine_scan_quiet_invalidate(state);
+#ifdef USE_RADIO
+    /* The setting turned: the visit takes a fresh activity baseline at its next publication. */
+    scan_quiet_check* c = quiet_check_get(dsd_engine_scan_owner_get(state));
+    if (c) {
+        c->visit_set = 0;
+    }
+#endif
 }

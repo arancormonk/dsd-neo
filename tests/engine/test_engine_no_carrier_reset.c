@@ -12273,6 +12273,45 @@ test_y_quiet_skips_a_landed_row(int typed, int on) {
     return rc;
 }
 
+/* -Y: a sync heard while a landed row's check was suspended (here a live-loop YSF sync after an invalidation) ends the
+   row's check when it is published again: nothing more is requested and the row keeps its hangtime. With nothing heard
+   the restarted check measures and the row steps on its quiet result. */
+static int
+test_y_quiet_sync_while_suspended_ends_the_check(int heard) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
+    const long int base_hz = 471012500L + (heard ? 0L : 4000000L);
+    int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, 0, 1, base_hz) == 0);
+    noCarrier(opts, state);
+    rc |= expect_true("the landed row is measured", g_yq.requests == 1 && g_rtl_tune_calls == 0);
+    dsd_engine_scan_quiet_note_change(state);
+    if (heard) {
+        g_frame_sync_type = DSD_SYNC_YSF_POS;
+        run_synced_frames(opts, state, 1, -1);
+        g_frame_sync_type = DSD_SYNC_NXDN_POS;
+    }
+    noCarrier(opts, state);
+    noCarrier(opts, state);
+    if (heard) {
+        rc |= expect_true("a sync while suspended: no new request, no step",
+                          g_yq.requests == 1 && g_rtl_tune_calls == 0 && g_yq.notices == 0
+                              && scan_quiet_phase_get(state) == SCAN_QUIET_DONE);
+    } else {
+        rc |= expect_true("nothing heard while suspended: measured again and stepped",
+                          g_yq.requests == 2 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
+    }
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y sync while suspended, heard %d\n", heard);
+    }
+    return rc;
+}
+
 /* -Y keep timing: a busy row, an operator hold, a single-row list, and heard voice under the voice gate never
    skip; a row the voice gate is still qualifying skips on a quiet result, and with the check busy its qualification
    expiry still steps. The rules a step would stay for are part of the row's conditions, so none is measured and no
@@ -12561,6 +12600,8 @@ test_scan_quiet_decisions(void) {
         rc |= yq_keep_case(which);
     }
     rc |= test_y_quiet_open_analog_carrier_stays();
+    rc |= test_y_quiet_sync_while_suspended_ends_the_check(1);
+    rc |= test_y_quiet_sync_while_suspended_ends_the_check(0);
     rc |= test_live_y_skips_a_quiet_row(1);
     rc |= test_live_y_skips_a_quiet_row(0);
     rc |= test_live_trunk_scan_skips_a_quiet_target(1);

@@ -22773,17 +22773,30 @@ test_scan_quiet_activity_since_the_request_ends_the_check(void) {
     if (quiet_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
         return 1;
     }
+    /* The visit's activity baseline is its first publication: a sync before it does not count. */
     g_tap.have_capture = 0;
-    quiet_publish(&opts, &state);
     dsd_engine_scan_quiet_note_sync(&state);
+    quiet_publish(&opts, &state);
     quiet_tap_capture(k_qt_hz_a, QT_GEN + 1);
     (void)quiet_service_after(&opts, &state, 50U);
-    int rc = qt_expect("a sync before the request: measured", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+    int rc = qt_expect("a sync before the visit's first publication: measured",
+                       scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
     const uint32_t ticket = g_tap.ticket;
     dsd_engine_scan_quiet_note_sync(&state);
     (void)quiet_service_after(&opts, &state, 5U);
     rc |= qt_expect("a sync after the request: cancelled, DONE",
                     scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.last_cancel == ticket);
+
+    /* A sync after the publication, while the check still waits for its capture, ends it before any request. */
+    quiet_land_again(&state, k_qt_hz_a);
+    g_tap.have_capture = 0;
+    quiet_publish(&opts, &state);
+    int requests = g_tap.requests;
+    dsd_engine_scan_quiet_note_sync(&state);
+    quiet_tap_capture(k_qt_hz_a, g_quiet_stream_gen);
+    (void)quiet_service_after(&opts, &state, 50U);
+    rc |= qt_expect("a sync while waiting for the capture: DONE, nothing requested",
+                    scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.requests == requests);
 
     /* A retry asks again, but activity still counts from the visit's first request. */
     quiet_land_again(&state, k_qt_hz_a);
@@ -23287,6 +23300,70 @@ test_scan_quiet_decline_ends_it_unless_the_guard_was_lost(void) {
     scan_quiet_reconcile_declined(&opts, &state, SCAN_QUIET_OWNER_TRUNK, 0);
     rc |= qt_expect("declined: DONE, no repeated hand-backs",
                     scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && quiet_service_after(&opts, &state, 5U) == 0);
+    quiet_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
+/* A sync or a carrier anywhere in a visit ends its check, suspended or not: the visit keeps its activity baseline
+   from its first publication across a suspension, so a sync heard while its check was suspended (an edit, a hold, a
+   pause) still ends it when it is published again, with nothing requested and no skip. Allowed trunk-scan activity
+   during the suspension declines the restarted check's result the same way. With nothing heard the restarted check
+   measures and can skip. */
+static int
+test_scan_quiet_suspended_visit_keeps_its_sync_baseline(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (quiet_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    for (int heard = 1; heard >= 0; heard--) {
+        quiet_land_again(&state, k_qt_hz_a);
+        quiet_publish(&opts, &state);
+        rc |= qt_expect("measured", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+        dsd_engine_scan_quiet_note_change(&state);
+        (void)quiet_service_after(&opts, &state, 5U);
+        rc |= qt_expect("suspended", scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED);
+        if (heard) {
+            dsd_engine_scan_quiet_note_sync(&state);
+        }
+        const int requests = g_tap.requests;
+        quiet_publish(&opts, &state);
+        if (heard) {
+            rc |= qt_expect("a sync while suspended: DONE at the republication, nothing requested",
+                            scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.requests == requests);
+            rc |= qt_expect("a sync while suspended: no hand-back, no skip",
+                            quiet_service_after(&opts, &state, 5U) == 0
+                                && quiet_apply(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 0);
+            quiet_publish(&opts, &state);
+            rc |= qt_expect("a sync while suspended: the visit stays DONE",
+                            scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.requests == requests);
+        } else {
+            rc |= qt_expect("nothing heard while suspended: measured again",
+                            scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == requests + 1);
+            quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+            rc |= qt_expect("nothing heard while suspended: READY", quiet_service_after(&opts, &state, 5U) == 1);
+            rc |= qt_expect("nothing heard while suspended: skipped",
+                            quiet_apply(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 1);
+        }
+    }
+
+    /* Allowed activity while suspended, the decode clock moved on before the republication. */
+    dsd_decode_clock_test_set_ns(1002000000000ULL);
+    quiet_land_again(&state, k_qt_hz_a);
+    quiet_publish(&opts, &state);
+    dsd_engine_scan_quiet_note_change(&state);
+    (void)quiet_service_after(&opts, &state, 5U);
+    dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 100U, 200U, 0, 0, 0);
+    dsd_decode_clock_test_set_ns(1003000000000ULL);
+    quiet_publish(&opts, &state);
+    rc |= qt_expect("restarted after the activity", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    rc |= qt_expect("activity while suspended: no hand-back", quiet_service_after(&opts, &state, 5U) == 0);
+    rc |= qt_expect("activity while suspended: declined", quiet_apply(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 0
+                                                              && scan_quiet_phase_get(&state) == SCAN_QUIET_DONE);
     quiet_rig_finish(&opts, &state, dir, path);
     return rc;
 }
@@ -24207,6 +24284,7 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_suspended_visit_requests_nothing);
     rc |= test_scan_quiet_hook_off_is_one_load();
     rc |= run_with_default_tune_hook(test_scan_quiet_decline_ends_it_unless_the_guard_was_lost);
+    rc |= run_with_default_tune_hook(test_scan_quiet_suspended_visit_keeps_its_sync_baseline);
     rc |= run_with_default_tune_hook(test_scan_quiet_apply_checks_the_facts_in_force);
     rc |= run_with_default_tune_hook(test_scan_quiet_mixed_set_judges_the_analog_class);
     rc |= run_with_default_tune_hook(test_scan_quiet_adopted_park_is_bounded_from_its_landing);

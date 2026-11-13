@@ -23,9 +23,9 @@
  * - DONE: terminal for the visit (busy, failed, timed out, unsupported, activity, declined, applied): no new request
  *   until the visit changes.
  *
- * A visit is (owner, landing epoch, tune request). A sync (dsd_engine_scan_quiet_note_sync()) since the visit's first
- * request (kept across its retries) ends the check; a changed visit, or any counter its revision snapshot holds,
- * suspends it. The frame-sync hunt runs the check through dsd_frame_sync_hook_scan_quiet_service()
+ * A visit is (owner, landing epoch, tune request). A sync or a carrier (dsd_engine_scan_quiet_note_sync()) anywhere in
+ * the visit, from its first publication on, ends its check, suspended or not, so no check is made for it again; a
+ * changed visit, or any counter its revision snapshot holds, suspends it. The frame-sync hunt runs the check through dsd_frame_sync_hook_scan_quiet_service()
  * (dsd_engine_scan_quiet_service()), and engine service through scan_quiet_publish_eligibility(). RF power is never
  * activity: nothing here touches holds, activity stamps, history or events. Radio-off builds compile it as a no-op
  * service.
@@ -146,8 +146,8 @@ void scan_quiet_publish_eligibility(const dsd_opts* opts, dsd_state* state, int 
 /** The skip decision's quiet half: 1 when @p owner_kind's READY result is still the visit's, its
  * revisions unchanged and @p current (the classes, analog kind and width, and DSP rate in force now, as engine service
  * works them out for its eligibility) equal to what was measured, its capture and output generation unchanged with no
- * tune pending, at most 250 ms old, with no sync since the request, no analog carrier heard and (trunk scan) no allowed
- * activity since; the result is consumed (DONE: one skip per visit). Any other READY result is declined (DONE), a
+ * tune pending, at most 250 ms old, with no sync in the visit, no analog carrier heard and (trunk scan) no allowed
+ * activity in the visit; the result is consumed (DONE: one skip per visit). Any other READY result is declined (DONE), a
  * NULL @p current among them, and 0 returned; 0 too with no READY result, or one whose trunk-scan park has not been
  * noted as landed yet. */
 int scan_quiet_apply(const dsd_opts* opts, dsd_state* state, int owner_kind, const scan_quiet_eligibility* current);
@@ -165,9 +165,9 @@ int scan_quiet_format_skip(char* out, size_t out_size, const char* name, int row
 /** Log the NOTICE line for the result scan_quiet_apply() just consumed. */
 void scan_quiet_log_skip(const dsd_state* state, const char* name, int row);
 
-/** The decode-mono time the check's request was made (trunk scan: allowed activity at or after it declines); 0 with
- * none. */
-double scan_quiet_requested_decode_m(const dsd_state* state);
+/** The decode-mono time of the visit's activity baseline, its first publication (trunk scan: allowed activity at or
+ * after it declines); 0 with none. */
+double scan_quiet_visit_decode_m(const dsd_state* state);
 /** The check's phase (SUSPENDED with none). */
 scan_quiet_phase scan_quiet_phase_get(const dsd_state* state);
 /** The check's visit key (all 0 with none). */
