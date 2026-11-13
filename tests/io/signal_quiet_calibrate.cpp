@@ -9,6 +9,7 @@
  *
  *   dsd-neo_test_signal_quiet_calibrate --phase select|validate|snr|cost --out FILE [--sources DIR] [--trials N]
  *       [--jobs N] [--threshold DB --estimator trimmed|lowest] [--guard DB] [--filter TEXT] [--dump FILE]
+ *       [--neighbour-levels DB,DB,...]
  *
  * DIR holds the clean 48 kHz sources tools/scan_quiet_reception.py --export-sources writes, from the same generators
  * that measured each mode's reception threshold. Each is interpolated to the capture rate in the frequency domain, so
@@ -20,13 +21,18 @@
  *
  * select    every condition, both floor estimators on the same samples: per condition the lowest, percentiles and
  *           highest max-of-9 ratio over its valid trials (a noise-only condition's invalid trials count as busy, at
- *           +999 dB), and the floor's rise over the capture-wide reference (--guard, default off; --dump writes every
- *           trial's ratio and rise)
+ *           +999 dB), and the sideband floor's rise over the capture-wide reference (--guard, default off; --dump
+ *           writes every trial's ratio and rise). The ratio is judged against that reference, so both estimators read
+ *           the same ratio; the estimator sets only the floor the guard compares.
  * validate  every condition at one threshold, estimator and guard, fresh seeds: quiet and busy verdicts (an invalid
  *           result is busy)
  * snr       the rendered S/N of each wanted signal measured back from the samples, against the target
  * cost      CPU per quiet request on noise (shipped parameters), and per request of the floor guard's reference alone
  *           (the same bin selection and quartile, nine times)
+ *
+ * --neighbour-levels sets the adjacent-channel transmitters' levels over the wanted signal (default 30,50, the levels
+ * the first calibration used; the shipped calibration ran 5 to 30 dB in 2.5 dB steps, then 35 to 50 dB in 5 dB
+ * steps). A level's condition names, and so its seeds, do not depend on the other levels in the list.
  *
  * Every trial's samples come from its own seed (the condition's name, the phase and the trial number), so results do
  * not depend on --jobs. */
@@ -422,6 +428,7 @@ signed_text(double value, int decimals) {
 
 struct Builder {
     const std::vector<Source>& sources;
+    const std::vector<double>& neighbour_levels;
     std::vector<Condition> out;
 
     Condition
@@ -522,7 +529,7 @@ struct Builder {
     neighbours(const Mode& m) {
         const int nb = find_source(sources, kNeighbourRow);
         for (double spacing : {12500.0, 25000.0}) {
-            for (double level : {30.0, 50.0}) {
+            for (double level : neighbour_levels) {
                 for (int side : {1, -1, 0}) {
                     Condition c = base("neighbour", m, kSceneRate);
                     for (int s : {1, -1}) {
@@ -532,7 +539,10 @@ struct Builder {
                         }
                     }
                     const char* where = side > 0 ? "upper" : side < 0 ? "lower" : "both";
-                    add(c, signed_text(spacing / 1000, 1).substr(1) + "k/" + signed_text(level, 0) + "dB/" + where);
+                    /* whole levels keep the first calibration's names (and so its seeds): "+30dB"; others "+7.5dB" */
+                    const int decimals = std::fabs(level - std::round(level)) < 1e-9 ? 0 : 1;
+                    add(c,
+                        signed_text(spacing / 1000, 1).substr(1) + "k/" + signed_text(level, decimals) + "dB/" + where);
                 }
             }
         }
@@ -610,8 +620,8 @@ struct Builder {
 };
 
 std::vector<Condition>
-build_conditions(const std::vector<Source>& sources) {
-    Builder b{sources, {}};
+build_conditions(const std::vector<Source>& sources, const std::vector<double>& neighbour_levels) {
+    Builder b{sources, neighbour_levels, {}};
     for (const Mode& m : kModes) {
         if (m.analog) {
             b.analog(m);
@@ -870,6 +880,7 @@ struct Options {
     long trials = 0, jobs = 0;
     double threshold = 0, guard = kGuardOff;
     int estimator = -1;
+    std::vector<double> neighbour_levels{30.0, 50.0};
 };
 
 struct Outcome {
@@ -1244,6 +1255,27 @@ run_cost(const Options& o) {
     return 0;
 }
 
+/* A comma-separated list of neighbour levels (dB over the wanted signal, 0 to 60, in 0.1 dB steps so each names its
+ * conditions exactly); false when any does not parse. */
+bool
+parse_levels(const std::string& text, std::vector<double>* out) {
+    std::vector<double> levels;
+    std::istringstream fields(text);
+    std::string field;
+    while (std::getline(fields, field, ',')) {
+        double v = 0;
+        if (!parse_double(field, &v) || v < 0 || v > 60 || std::fabs(v * 10 - std::round(v * 10)) > 1e-6) {
+            return false;
+        }
+        levels.push_back(v);
+    }
+    if (levels.empty()) {
+        return false;
+    }
+    *out = std::move(levels);
+    return true;
+}
+
 /* One numeric option's value into @p o; false when it does not parse. */
 bool
 parse_number(const std::string& key, const char* value, Options* o) {
@@ -1258,6 +1290,9 @@ parse_number(const std::string& key, const char* value, Options* o) {
     }
     if (key == "--guard") {
         return parse_double(value, &o->guard);
+    }
+    if (key == "--neighbour-levels") {
+        return parse_levels(value, &o->neighbour_levels);
     }
     if (key == "--estimator") {
         o->estimator = std::strcmp(value, "trimmed") == 0  ? DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN
@@ -1309,7 +1344,8 @@ main(int argc, char** argv) {
     if (!parse_options(argc, argv, &o)) {
         DSD_FPRINTF(stderr,
                     "usage: %s --phase select|validate|snr|cost --out FILE [--sources DIR] [--trials N] [--jobs N] "
-                    "[--threshold DB --estimator trimmed|lowest] [--guard DB] [--filter TEXT] [--dump FILE]\n",
+                    "[--threshold DB --estimator trimmed|lowest] [--guard DB] [--filter TEXT] [--dump FILE] "
+                    "[--neighbour-levels DB,DB,...]\n",
                     argv[0]);
         return 2;
     }
@@ -1320,7 +1356,7 @@ main(int argc, char** argv) {
     if (!load_sources(o.sources, &sources)) {
         return 1;
     }
-    std::vector<Condition> all = build_conditions(sources);
+    std::vector<Condition> all = build_conditions(sources, o.neighbour_levels);
     std::vector<size_t> chosen;
     for (size_t i = 0; i < all.size(); ++i) {
         const Condition& c = all[i];
