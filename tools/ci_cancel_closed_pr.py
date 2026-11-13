@@ -46,6 +46,15 @@ def belongs_to_pr(run, pr, repository_id):
     )
 
 
+class CancelFailed(RuntimeError):
+    """Runs that stayed active after their cancel request failed."""
+
+    def __init__(self, run_ids):
+        self.run_ids = list(run_ids)
+        listed = ", ".join(str(run_id) for run_id in self.run_ids)
+        super().__init__(f"could not cancel active run(s): {listed}")
+
+
 def api(path, *, paginate=False, method="GET"):
     args = ["gh", "api", "--method", method, path]
     if paginate:
@@ -87,6 +96,7 @@ def cancel_closed_pr(repository, number, request=api):
                 if belongs_to_pr(run, pr, repository_id):
                     candidates[run["id"]] = run
     canceled = []
+    failed = []
     for run_id in candidates:
         # A close event can wait for a slot while somebody reopens the PR.
         current = request(f"{prefix}/pulls/{number}")
@@ -95,14 +105,21 @@ def cancel_closed_pr(repository, number, request=api):
             break
         try:
             request(f"{prefix}/actions/runs/{run_id}/cancel", method="POST")
-        except subprocess.CalledProcessError:
+        except subprocess.CalledProcessError as error:
             # Finishing between the listing and cancel request is harmless;
             # authentication/server failures while still active must stay red.
             if request(f"{prefix}/actions/runs/{run_id}")["status"] != "completed":
-                raise
+                # Keep going: one run GitHub will not cancel (a run stuck in
+                # "queued" that the cancel endpoint calls completed) must not
+                # leave the PR's other runs going. The job still fails below.
+                detail = (error.stderr or "").strip() or str(error)
+                print(f"Could not cancel PR #{number} run {run_id}: {detail}")
+                failed.append(run_id)
         else:
             canceled.append(run_id)
             print(f"Canceled obsolete PR #{number} run {run_id}")
+    if failed:
+        raise CancelFailed(failed)
     return canceled
 
 

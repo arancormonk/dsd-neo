@@ -255,6 +255,7 @@ class FakeAPI:
         self.cancel_error = False
         self.completed = False
         self.reopen_after_listing = False
+        self.stuck = set()
 
     def __call__(self, path, *, paginate=False, method="GET"):
         self.calls.append((path, method, paginate))
@@ -270,11 +271,14 @@ class FakeAPI:
             return [{"workflow_runs": []}, {"workflow_runs": copy.deepcopy(self.runs)}]
         if path.endswith("/cancel"):
             assert method == "POST"
-            if self.cancel_error:
-                raise subprocess.CalledProcessError(1, ["gh", "api"])
+            run_id = int(path.rsplit("/", 2)[-2])
+            if self.cancel_error or run_id in self.stuck:
+                raise subprocess.CalledProcessError(1, ["gh", "api"], stderr="HTTP 409")
             return None
         if path.endswith("/actions/runs/34"):
             return {"status": "completed" if self.completed else "in_progress"}
+        if path.rsplit("/", 1)[-1].isdigit() and int(path.rsplit("/", 1)[-1]) in self.stuck:
+            return {"status": "queued"}
         raise AssertionError(f"Unexpected request {path}")
 
     def cancellations(self):
@@ -350,8 +354,28 @@ class CleanupTests(unittest.TestCase):
         api.completed = True
         self.assertEqual(cleanup.cancel_closed_pr("owner/repo", 12, api), [])
         api.completed = False
-        with self.assertRaises(subprocess.CalledProcessError):
+        with self.assertRaises(cleanup.CancelFailed) as raised:
             cleanup.cancel_closed_pr("owner/repo", 12, api)
+        self.assertEqual(raised.exception.run_ids, [34])
+
+    def test_stuck_run_does_not_stop_the_other_cancellations(self):
+        # A run GitHub keeps "queued" but will not cancel, listed first, must not
+        # leave the PR's later runs going; the job still fails, naming it.
+        api = FakeAPI()
+        api.runs = [{**RUN, "id": 33, "status": "queued"}, *api.runs]
+        api.runs.append({**RUN, "id": 35, "status": "pending"})
+        api.stuck = {33}
+        with self.assertRaises(cleanup.CancelFailed) as raised:
+            cleanup.cancel_closed_pr("owner/repo", 12, api)
+        self.assertEqual(raised.exception.run_ids, [33])
+        self.assertEqual(
+            api.cancellations(),
+            [
+                "repos/owner/repo/actions/runs/33/cancel",
+                "repos/owner/repo/actions/runs/34/cancel",
+                "repos/owner/repo/actions/runs/35/cancel",
+            ],
+        )
 
 
 if __name__ == "__main__":
