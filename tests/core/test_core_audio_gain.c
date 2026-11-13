@@ -624,6 +624,117 @@ test_process_audio_upsampled_right_clamps_and_tracks_output(void) {
     return rc;
 }
 
+/* Issue #861: every 16-bit voice output rounds the int16-scale float to nearest, as mbelib-neo's own D-STAR and AMBE+2
+ * short output does, instead of truncating toward zero. A truncating cast would turn sub-step mute noise into digital
+ * silence and bias every sample toward zero. */
+static const float k_round_in[5] = {0.6f, -0.6f, 1.4f, -1.6f, 0.4f};
+static const short k_round_want[5] = {1, -1, 1, -2, 0};
+
+static void
+seed_round_frame(float* frame) {
+    DSD_MEMSET(frame, 0, 160U * sizeof(float));
+    for (size_t i = 0; i < 5U; i++) {
+        frame[i] = k_round_in[i];
+    }
+}
+
+static int
+expect_rounded(const char* label, const short* got, size_t stride) {
+    int rc = 0;
+    for (size_t i = 0; i < 5U; i++) {
+        if (got[i * stride] != k_round_want[i]) {
+            DSD_FPRINTF(stderr, "FAIL: %s sample %zu: got %d want %d\n", label, i, got[i * stride], k_round_want[i]);
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
+static int
+test_voice_outputs_round_to_nearest(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static short out[1000];
+    static float out_float[1000];
+    static short outR[1000];
+    static float out_floatR[1000];
+    int rc = 0;
+
+    for (int rate = 8000; rate <= 48000; rate += 40000) {
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        DSD_MEMSET(out, 0, sizeof out);
+        DSD_MEMSET(out_float, 0, sizeof out_float);
+        DSD_MEMSET(outR, 0, sizeof outR);
+        DSD_MEMSET(out_floatR, 0, sizeof out_floatR);
+        // A gain setting below 0 passes the frame at unity, so the samples reach staging as given.
+        opts.audio_gain = -1.0f;
+        opts.audio_gainR = -1.0f;
+        opts.pulse_digi_rate_out = rate;
+        state.audio_out_buf = out;
+        state.audio_out_float_buf = out_float;
+        state.audio_out_buf_p = out;
+        state.audio_out_float_buf_p = out_float;
+        state.audio_out_bufR = outR;
+        state.audio_out_float_bufR = out_floatR;
+        state.audio_out_buf_pR = outR;
+        state.audio_out_float_buf_pR = out_floatR;
+        seed_round_frame(state.audio_out_temp_buf);
+        seed_round_frame(state.audio_out_temp_bufR);
+
+        chain_and_stage_left(&opts, &state);
+        // upsample() picks its buffer from the current slot on a two-slot decode.
+        state.dmr_stereo = 1;
+        state.currentslot = 1;
+        chain_and_stage_right(&opts, &state);
+
+        const size_t stride = rate > 8000 ? 6U : 1U;
+        rc |= expect_rounded(rate > 8000 ? "upsampled left" : "native left", out, stride);
+        rc |= expect_rounded(rate > 8000 ? "upsampled right" : "native right", outR, stride);
+        rc |= expect_rounded(rate > 8000 ? "upsampled left mirror" : "native left mirror",
+                             rate > 8000 ? state.s_lu : state.s_l, stride);
+        rc |= expect_rounded(rate > 8000 ? "upsampled right mirror" : "native right mirror",
+                             rate > 8000 ? state.s_ru : state.s_r, stride);
+        dsd_state_ext_free_all(&state);
+    }
+
+    char path[DSD_AUDIO_TEST_PATH_MAX] = {0};
+    short samples[320] = {0};
+    for (int writer = 0; writer < 3; writer++) {
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        if (create_temp_wav_path("dsdneo_audio_round", path, sizeof path) != 0) {
+            return 1;
+        }
+        SNDFILE* file = open_temp_wav_writer(path, writer == 2 ? 2 : 1);
+        if (!file) {
+            DSD_FPRINTF(stderr, "FAIL: sf_open write failed for %s: %s\n", path, sf_strerror(NULL));
+            (void)remove(path);
+            return 1;
+        }
+        seed_round_frame(state.audio_out_temp_buf);
+        seed_round_frame(state.audio_out_temp_bufR);
+        if (writer == 1) {
+            opts.wav_out_fR = file;
+            writeSynthesizedVoiceR(&opts, &state);
+        } else {
+            opts.wav_out_f = file;
+            if (writer == 0) {
+                writeSynthesizedVoice(&opts, &state);
+            } else {
+                writeSynthesizedVoiceMS(&opts, &state);
+            }
+        }
+        sf_close(file);
+        DSD_MEMSET(samples, 0, sizeof samples);
+        rc |= read_wav_samples(path, writer == 2 ? 2 : 1, samples, writer == 2 ? 320U : 160U);
+        static const char* const k_labels[3] = {"wav left", "wav right", "wav mono-to-stereo"};
+        rc |= expect_rounded(k_labels[writer], samples, writer == 2 ? 2U : 1U);
+        (void)remove(path);
+    }
+    return rc;
+}
+
 static int
 test_play_synthesized_voice_slot_off_clears_pending_output(void) {
     static dsd_opts opts = {0};
@@ -1346,6 +1457,7 @@ main(void) {
     rc |= test_process_audio_right_auto_gain_starts_at_unity();
     rc |= test_stage_short_left_upsampled_clamps_and_tracks_output();
     rc |= test_process_audio_upsampled_right_clamps_and_tracks_output();
+    rc |= test_voice_outputs_round_to_nearest();
     rc |= test_play_synthesized_voice_slot_off_clears_pending_output();
     rc |= test_play_synthesized_voice_fd_writes_pending_pcm_and_resets_index();
     rc |= test_play_synthesized_voice_float_output_writes_f32();

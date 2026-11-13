@@ -270,6 +270,15 @@ rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, i
     g_last_p25p2_voice_err = voice_err_delta;
 }
 
+static int g_p25_timing_proof_calls;
+static uint64_t g_last_p25_timing_proof;
+
+void
+rtl_stream_set_p25_timing_proof(uint64_t proof) {
+    ++g_p25_timing_proof_calls;
+    g_last_p25_timing_proof = proof;
+}
+
 int
 rtl_stream_is_active(void) {
     ++g_stream_active_calls;
@@ -371,6 +380,10 @@ test_replay_batch_hook(void) {
 int
 main(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
+    /* Headless and test builds run without the hook: the P25 proof goes nowhere. */
+    dsd_rtl_stream_metrics_hook_note_p25_proven(7U);
+    dsd_rtl_stream_metrics_hook_forget_p25_proof();
+    assert(g_p25_timing_proof_calls == 0);
     dsd_engine_rtl_stream_metrics_hooks_install();
 
     assert(dsd_rtl_stream_metrics_hook_output_rate_hz() == 48000U);
@@ -489,6 +502,14 @@ main(void) {
     assert(g_last_p25p2_sacch_ok == 4);
     assert(g_last_p25p2_sacch_err == 5);
     assert(g_last_p25p2_voice_err == 6);
+    /* The decoder's P25 proof reaches the demod's setter as the generation it was decoded on plus 1, its withdrawal as
+       0. */
+    dsd_rtl_stream_metrics_hook_note_p25_proven(41U);
+    assert(g_p25_timing_proof_calls == 1);
+    assert(g_last_p25_timing_proof == 42U);
+    dsd_rtl_stream_metrics_hook_forget_p25_proof();
+    assert(g_p25_timing_proof_calls == 2);
+    assert(g_last_p25_timing_proof == 0U);
 
     assert(dsd_rtl_stream_metrics_hook_stream_active() == 1);
     assert(g_stream_active_calls == 1);

@@ -1348,14 +1348,15 @@ standard scoped key set. See [decryption profiles](decryption-profiles.md).
 ## Files dsd-neo writes (not read back)
 
 The Signal search screen in the Qt and Android app saves two CSV files with **Export detections…** and **Export
-avoids…** (see [Signal search](signal-search.md#exporting-detections-and-avoids)). They are for spreadsheets and
-scripts. DSD-neo does not import them, and the rules in the sections above do not apply to them.
+avoids…** (see [Signal search](signal-search.md#exporting-detections-and-avoids)). The History screen saves a third
+with **Export…** (see [History file](#history-file)). They are for spreadsheets and scripts. DSD-neo does not import
+them, and the rules in the sections above do not apply to them.
 
-Both files:
+All three files:
 
 - are UTF-8 and start with a byte order mark (BOM). Excel needs it to read non-English text correctly;
-- have one header line, then one record per line, with a comma between fields and a CRLF line ending after every
-  record, including the last;
+- have one header line, then one record per row, with a comma between fields and a CRLF line ending after every
+  record, including the last. A quoted field can hold line breaks, so a record can span more than one line;
 - write numbers with a period as the decimal point, whatever the device language is;
 - put a field in double quotes when it holds a comma, a double quote or a line break, and double any quote inside it.
   Spaces and line breaks inside a field are kept as they are;
@@ -1389,6 +1390,44 @@ Header: `frequency_hz,frequency_mhz,list`
 `list` is `permanent` or `session`. Permanent avoids come first, in their saved order, then the session avoids of the
 search on screen.
 
+### History file
+
+Header: `started_local,utc_offset,started_utc,duration_s,type,name,talkgroup,radio_id,radio_name,system,channel,frequency_hz,access_code,tone,site,analog_mode,encrypted,emergency,message,recordings`
+
+One row per entry the History list shows, newest first. The search box and the filters apply, so the file holds what
+you see. An empty cell means there is no value.
+
+| Column | Value |
+| --- | --- |
+| `started_local` | The start in the phone's current time zone, at that moment, as `2026-11-07 09:03:22` (no `T`, no zone). Empty when the entry has no start time. |
+| `utc_offset` | That moment's offset from UTC, such as `UTC+05:30`, `UTC-05:00` or `UTC+00:00`. It is worked out for each row, so a daylight saving change is right. Empty when `started_local` is. |
+| `started_utc` | The start in UTC to the second, such as `2026-11-07T14:03:22Z`. Use this one in scripts. Empty when the entry has no start time. |
+| `duration_s` | The length in whole seconds. Empty when it is not known: a message, a span over an hour, or a call with no known end. |
+| `type` | `call` (a digital or analog voice call) or `message` (SMS, GPS, data and control notices; History's Messages). |
+| `name` | The row's title as History shows it, such as the talkgroup name or service. A notice keeps its `[CRC ERR] ` or `[RAS] ` marker. |
+| `talkgroup`, `radio_id` | The number in decimal. Empty when there is none. |
+| `radio_name` | The name of the source radio, when DSD-neo has one. |
+| `system` | The saved system the session ran on (`Exploring` when you held the tuner on a frequency). |
+| `channel` | The name of the scan channel. |
+| `frequency_hz` | The frequency in whole hertz. Empty when not known. |
+| `access_code` | Short text with a letter first: `CC 1`, `NAC 293` (the NAC is in hex), `RAN 5` or `CAN 0`. |
+| `tone` | The received tone or code, such as `CTCSS 100.0 Hz` or `DCS D023N / D047I`. |
+| `site` | The site line, such as `DMR · Con+ · Net 3 · Site 5`. |
+| `analog_mode` | `NFM` or `AM` for an analog call, `analog` when the mode is not known (audio input), and empty for digital. |
+| `encrypted`, `emergency` | `1` or `0`. |
+| `message` | The text of an SMS or GPS notice, or other notice detail. Line breaks inside it are kept in the quoted field. |
+| `recordings` | The row's call recordings, oldest first, each as the entry name that **Export as zip** gives it on Call recordings (`<folder name>/<file>`; when two recordings share a name the zip calls the second `… (2)`, and the CSV keeps the stored name), joined with ` | ` (space, pipe, space). Inside a name, each backslash is written as two backslashes and each pipe as a backslash and a pipe, so the list splits without a doubt: split on a pipe that has a space on both sides and is not preceded by a backslash, then undo the escapes. Empty when there is none. |
+
+Limits:
+
+- There is no protocol column. History does not record one, but the `site` text starts with the protocol when a site is
+  known.
+- Voice rows carry no CRC state.
+- Values are never cut. A value longer than a spreadsheet's cell limit (Excel's is 32,767 characters) is up to the
+  spreadsheet to handle.
+- `started_local` uses the phone's time zone at the moment you export. After the phone moves to a new time zone, old
+  calls show in the new zone; `utc_offset` says which offset each row has, and `started_utc` does not change.
+
 ### Opening them in a spreadsheet
 
 - Excel: on a computer that uses a decimal comma (much of Europe), a double-click can open the file in one column or
@@ -1397,10 +1436,19 @@ search on screen.
   States), so `451.250000` stays a number.
 - LibreOffice Calc: open the file, and in the Text Import dialog set the separator to Comma and the **Language** to
   English (USA).
+- History `started_local` is written as `yyyy-MM-dd HH:mm:ss` so that Excel, Google Sheets and Numbers can read it as a
+  date and time (the evidence for Sheets and Numbers is weaker than for Excel). LibreOffice Calc keeps it as text unless
+  you tick **Detect special numbers** in the Text Import dialog or set the column type to **Date (YMD)**.
+- Excel, History file: to keep a message with line breaks in one cell, use **Data > From Text/CSV**, choose
+  **Transform Data**, open the Source step's settings and set **Line breaks** to **Ignore quoted line breaks**.
+  **File > Open** and Excel's older Text Import Wizard can split such a message across rows. A narrow column can show
+  `frequency_hz` as `8.51E+08` until you widen it; the value in the cell is exact.
 - Python: open the file with `encoding="utf-8-sig"`, so the BOM does not become part of the first column name.
   pandas' `read_csv` already handles it.
 
-Times are written as `2026-11-07T14:03:22.418Z` text, which spreadsheets may keep as text rather than a date.
+The Signal search times are written as `2026-11-07T14:03:22.418Z` text, which spreadsheets may keep as text rather than
+a date. In the History file, `utc_offset` and `started_utc` are for scripts; `started_local` is the one for reading in a
+spreadsheet.
 
 ### Spreadsheet formulas
 

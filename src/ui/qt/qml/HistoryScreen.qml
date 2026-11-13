@@ -19,8 +19,178 @@ Item {
         searchDebounce.stop();
         historyView.filterText = search.text;
     }
-    onVisibleChanged: if (!visible) flushPendingSearch()
+    onVisibleChanged: {
+        if (!visible) {
+            flushPendingSearch();
+            // A picker still out ends with the screen, as a cancel; a file
+            // already being written finishes.
+            exportPicker.cancel();
+            return;
+        }
+        forgetHeardExportMessage();
+        announceExportLater.restart();
+    }
     onEnabledChanged: if (!enabled) flushPendingSearch()
+
+    // ---- Export…: the rows the list shows, as a CSV file ----
+    // Both History screens share historyView and the one `historyExport`, so
+    // each keeps its own export: pending from the press until the picker backs
+    // out or the file is written. The exporter holds the file it built at the
+    // press under `exportToken`.
+    property int exportToken: 0
+    property int exportCount: 0
+    property int exportTotal: 0
+    property string exportReference: ""
+    readonly property bool exportPending: exportToken > 0
+    // What the last export said, under the buttons: {text, error, heard}.
+    // `heard` once read out; a heard message is gone on the next visit, an
+    // unheard one waits to be read.
+    property var exportMessage: ({ text: "", error: false, heard: false })
+    // Main's savedSystems, whose clock dates an export's suggested name.
+    property var systems: typeof savedSystems !== "undefined" ? savedSystems : null
+    // Navigation.announce()'s record of what was read out.
+    property string announced: ""
+    property int announcements: 0
+    function beginExport() {
+        if (exportPending || historyExport.busy)
+            return;
+        // Text typed less than the debounce ago is part of what the list shows.
+        flushPendingSearch();
+        setExportMessage("", false);
+        // Read before the exporter holds a file: a failure here leaves nothing pending.
+        var stamp = Qt.formatDate(new Date(screen.systems.realtimeNowMs()), "yyyy-MM-dd");
+        // The exporter builds the whole file now; a list that changes later does not change it.
+        var prepared = historyExport.prepare(historyView) || {};
+        var token = Number(prepared.token) || 0;
+        if (token <= 0) {
+            if ((Number(prepared.count) || 0) === 0)
+                setExportMessage(qsTr("No entries to export."), false);
+            else
+                setExportMessage(qsTr("The export couldn't be written. Try another location."), true);
+            return;
+        }
+        exportToken = token;
+        exportCount = Number(prepared.count) || 0;
+        exportTotal = Number(prepared.total) || 0;
+        exportReference = "";
+        // Always a lowercase .csv: Android's save picker adds the type's own
+        // extension to a name whose extension differs in case.
+        exportPicker.suggestedName = qsTr("Call history %1").arg(stamp) + ".csv";
+        exportPicker.open();
+    }
+    function exportPicked(reference) {
+        if (!exportPending) {
+            // Not wanted any more: nothing will write a Download-folder row.
+            if (exportPicker.savedToDownloads)
+                decoderHost.discardPendingDownload(reference);
+            return;
+        }
+        var token = exportToken;
+        exportReference = reference;
+        if (historyExport.save(token, reference))
+            return;
+        // Refused (a stale token, a write still running): the exporter has let
+        // the Download-folder row go, and no result will follow.
+        releaseExport(token);
+        setExportMessage(qsTr("The export couldn't be written. Try another location."), true);
+    }
+    function exportPickCancelled() {
+        if (!exportPending)
+            return;
+        var token = exportToken;
+        historyExport.discard(token);
+        releaseExport(token);
+    }
+    function exportPickUnavailable(message) {
+        if (!exportPending)
+            return;
+        exportPickCancelled();
+        setExportMessage(message, true);
+    }
+    // Let go of export @p token, only while it is still the one held.
+    function releaseExport(token) {
+        if (token !== exportToken)
+            return;
+        exportToken = 0;
+        exportCount = 0;
+        exportTotal = 0;
+        exportReference = "";
+    }
+    // CallHistoryExporter::finished(): a result for an export this screen does
+    // not hold (an older one, the other History screen's) changes nothing.
+    function exportFinished(token, ok) {
+        if (token <= 0 || token !== exportToken)
+            return;
+        var count = exportCount, total = exportTotal;
+        // The Download folder's name for a save no picker took ("" otherwise).
+        var saved = ok && exportPicker.savedToDownloads ? decoderHost.savedDocumentName(exportReference) : "";
+        releaseExport(token);
+        setExportMessage(ok ? exportedText(count, total, saved) : qsTr("The export couldn't be written. Try another location."), !ok);
+    }
+    // The name goes in last, so a % in it is never read as a place marker.
+    function exportedText(count, total, saved) {
+        var shown = Util.countText(count);
+        if (count < total) {
+            if (saved.length > 0)
+                return qsTr("Exported %1 of %2 entries to Download/DSD-neo as %3.").arg(shown).arg(Util.countText(total)).arg(saved);
+            return qsTr("Exported %1 of %2 entries. The search and filters left out the rest.").arg(shown).arg(Util.countText(total));
+        }
+        if (saved.length > 0)
+            return count === 1 ? qsTr("Exported 1 entry to Download/DSD-neo as %1.").arg(saved)
+                : qsTr("Exported %1 entries to Download/DSD-neo as %2.").arg(shown).arg(saved);
+        return count === 1 ? qsTr("Exported 1 entry.") : qsTr("Exported %1 entries.").arg(shown);
+    }
+    function setExportMessage(text, error) {
+        exportMessage = { text: text, error: error === true, heard: false };
+        announceExportLater.restart();
+        if (text.length > 0)
+            revealExportLater.restart();
+    }
+    function forgetHeardExportMessage() {
+        if (exportMessage.heard)
+            setExportMessage("", false);
+    }
+    // Read out once, as Signal search reads its export lines: only while the
+    // line is on the visible screen with nothing over it (a detail sheet, the
+    // Clear confirmation, the filter choices). One that arrives while the
+    // screen is hidden or covered is read when the line can be reached.
+    function announceExport() {
+        var message = exportMessage;
+        if (message.heard || !message.text.length || !visible || !Navigation.allows(exportLine) || !exportLine.visible)
+            return;
+        if (Navigation.announce(screen, exportLine, message.text))
+            exportMessage = Object.assign({}, message, { heard: true });
+    }
+    readonly property bool exportLineReachable: Navigation.allows(screen)
+    onExportLineReachableChanged: announceExportLater.restart()
+    // Once every binding has the new message; a Timer, which dies with the
+    // screen, rather than Qt.callLater.
+    Timer {
+        id: announceExportLater
+        interval: 0
+        onTriggered: screen.announceExport()
+    }
+    Connections {
+        target: historyExport
+        function onFinished(token, ok) {
+            screen.exportFinished(token, ok);
+        }
+    }
+    DocumentPicker {
+        id: exportPicker
+        objectName: "historyExportPicker"
+        mode: "save"
+        mimeType: "text/csv"
+        nameFilters: [qsTr("CSV files") + " (*.csv)"]
+        defaultSuffix: "csv"
+        onAccepted: function (reference, displayName) {
+            screen.exportPicked(reference);
+        }
+        onRejected: screen.exportPickCancelled()
+        onUnavailable: function (reason, message) {
+            screen.exportPickUnavailable(message);
+        }
+    }
 
     // The field's pending text goes too: the filter ignores a search it already
     // has, so clearing only the model would leave typed text that the debounce
@@ -42,123 +212,233 @@ Item {
         color: Theme.bg
     }
 
-    Column {
-        id: chrome
+    // The list keeps at least this share of the screen. The header above it
+    // takes its own height up to the rest, and scrolls inside that room when it
+    // is taller: at a large text size with the export's result or the save
+    // warning shown it is taller than a phone screen, and as one fixed column it
+    // pushed the list off the bottom and its last controls out of reach. A
+    // header that fits does not move.
+    readonly property real listMinHeight: Math.ceil(height * 0.4)
+
+    PlexFlickable {
+        id: headerScroll
+        objectName: "historyHeaderScroll"
+        accessibleName: qsTr("History search and filters")
 
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.margins: Theme.screenPadding
-        spacing: Theme.gap
+        height: Math.min(contentHeight, Math.max(0, screen.height - screen.listMinHeight - logList.anchors.topMargin))
+        contentWidth: width
+        // A few pixels under the filters for their focus ring, which the clip
+        // would otherwise cut; the list's top margin gives them back.
+        contentHeight: chrome.y + chrome.height + 4
+        clip: true
+        interactive: contentHeight > height
+        boundsBehavior: Flickable.StopAtBounds
+        // A smaller room (the keyboard up, a larger text size) keeps the
+        // focused control in view.
+        onHeightChanged: revealFocusLater.restart()
         // TapHandlers never take exclusive grabs, so with the confirm sheet up a
         // tap on the dimmed search field would still pop the keyboard, a dimmed
         // pill would cycle its filter, and the dimmed Clear label would re-open
         // the sheet — same class of tap-through the list below guards against.
+        // Nor does the header scroll under the sheet.
         enabled: !confirmClear.visible
 
-        Item {
-            width: parent.width
-            height: Math.max(screen.showTitle ? Math.max(48, Theme.fontSize(24) + 20) : 0,
-                             callHistory.count > 0 ? clearHistory.implicitHeight : 0)
-            visible: height > 0
+        Column {
+            id: chrome
 
-            ReadableText {
-                heading: true
-                visible: screen.showTitle
-                anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
-                text: qsTr("History")
-                font.family: Theme.sans
-                font.pixelSize: Theme.fontSize(24)
-                font.weight: Font.Bold
-                font.letterSpacing: -0.24
-                color: Theme.textPrimary
-            }
+            x: Theme.screenPadding
+            y: Theme.screenPadding
+            width: headerScroll.width - 2 * Theme.screenPadding
+            spacing: Theme.gap
 
-            OutlineButton {
-                id: clearHistory
-                objectName: "clearHistoryButton"
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                visible: callHistory.count > 0
-                text: qsTr("Clear")
-                onClicked: confirmClear.open()
-            }
-        }
+            // Title on the left, Export… and Clear on the right, on one line when
+            // they fit. When they do not (a narrow phone, a large text size), the
+            // buttons take their own line under the title, still on the right,
+            // rather than running over it.
+            Item {
+                id: header
 
-        PlexTextField {
-            id: search
-            objectName: "historySearch"
-            Binding {
-                target: search
-                property: "text"
-                value: historyView.filterText
-            }
+                readonly property real titleHeight: screen.showTitle ? Math.max(48, Theme.fontSize(24) + 20) : 0
+                readonly property bool buttonsShown: callHistory.count > 0
+                readonly property bool stacked: screen.showTitle && buttonsShown
+                                                 && historyTitle.implicitWidth + Theme.gap + headerButtons.implicitWidth > width
 
-            width: parent.width
-            label: qsTr("Search talkgroup, unit or frequency")
-            // The rule a bare number cannot meet: 851 is a talkgroup search, so a
-            // frequency is told apart by its decimal point (frequency_query.h).
-            // Helper text rather than a placeholder, which hides on focus and is
-            // not announced.
-            hint: qsTr("Frequencies need a decimal point: 851.0125")
-            inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
-            // Debounced: every keystroke otherwise re-evaluates the filter over
-            // the full log, and on a phone that stutters the keyboard.
-            onTextChanged: {
-                if (text !== historyView.filterText)
-                    searchDebounce.restart();
-                else
-                    searchDebounce.stop();
-            }
+                width: parent.width
+                height: stacked ? titleHeight + headerButtons.implicitHeight
+                                : Math.max(titleHeight, buttonsShown ? headerButtons.implicitHeight : 0)
+                visible: height > 0
 
-            Timer {
-                id: searchDebounce
-                interval: 250
-                onTriggered: historyView.filterText = search.text
-            }
-        }
+                ReadableText {
+                    id: historyTitle
+                    objectName: "historyTitle"
+                    heading: true
+                    visible: screen.showTitle
+                    anchors.left: parent.left
+                    y: ((header.stacked ? header.titleHeight : header.height) - height) / 2
+                    text: qsTr("History")
+                    font.family: Theme.sans
+                    font.pixelSize: Theme.fontSize(24)
+                    font.weight: Font.Bold
+                    font.letterSpacing: -0.24
+                    color: Theme.textPrimary
+                }
 
-        // Issue #708 (B6): a save that cannot reach the disk is retried on its own;
-        // until one lands, the reader is told the log is not safe yet.
-        Text {
-            objectName: "historySaveFailing"
-            width: parent.width
-            visible: callHistory.saveFailing === true
-            text: qsTr("History isn't being saved right now. It keeps trying, but calls since the last save are lost if DSD-neo closes. Free up space if the phone is full.")
-            wrapMode: Text.Wrap
-            font.family: Theme.sans
-            font.pixelSize: Theme.fontSize(13)
-            color: Theme.alert
-            Accessible.role: Accessible.AlertMessage
-            Accessible.name: text
-        }
+                Row {
+                    id: headerButtons
 
-        Flow {
-            width: parent.width
-            spacing: 10
+                    anchors.right: parent.right
+                    y: header.stacked ? header.titleHeight : (header.height - height) / 2
+                    spacing: 10
+                    visible: header.buttonsShown
 
-            // Keyed on the filter string itself, never an index: the label array
-            // reorders as calls land, and a frozen index would let the pill show
-            // one system while the model filters another.
-            FilterPill {
-                text: historyView.filterSystem.length === 0 ? qsTr("All systems") : historyView.filterSystem
-                active: historyView.filterSystem.length > 0
-                onClicked: {
-                    var labels = [qsTr("All systems")].concat(callHistory.systemLabels);
-                    filterChoices.open(qsTr("System"), labels, function (index) {
-                        historyView.filterSystem = index === 0 ? "" : labels[index];
-                    });
+                    OutlineButton {
+                        objectName: "historyExportButton"
+                        text: qsTr("Export…")
+                        accessibleName: qsTr("Export history as a CSV file")
+                        // Held while this screen's picker is out, while either
+                        // History screen's file is being written, and while the
+                        // list shows no row (its empty state says why).
+                        enabled: !screen.exportPending && !historyExport.busy && historyView.count > 0
+                        onClicked: screen.beginExport()
+                    }
+
+                    OutlineButton {
+                        id: clearHistory
+                        objectName: "clearHistoryButton"
+                        text: qsTr("Clear")
+                        onClicked: confirmClear.open()
+                    }
                 }
             }
 
-            FilterPill {
-                text: screen.kindLabels[historyView.filterKind]
-                active: historyView.filterKind !== 0
-                onClicked: filterChoices.open(qsTr("Activity type"), screen.kindLabels, function (index) {
-                    historyView.filterKind = index;
-                })
+            // The last export's result, under the buttons that started it. In the
+            // header rather than the list, which holds no rows while hidden.
+            ExportMessage {
+                id: exportLine
+                objectName: "historyExportMessage"
+                message: screen.exportMessage
             }
+
+            PlexTextField {
+                id: search
+                objectName: "historySearch"
+                Binding {
+                    target: search
+                    property: "text"
+                    value: historyView.filterText
+                }
+
+                width: parent.width
+                label: qsTr("Search talkgroup, unit or frequency")
+                // The rule a bare number cannot meet: 851 is a talkgroup search, so a
+                // frequency is told apart by its decimal point (frequency_query.h).
+                // Helper text rather than a placeholder, which hides on focus and is
+                // not announced.
+                hint: qsTr("Frequencies need a decimal point: 851.0125")
+                inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
+                // Debounced: every keystroke otherwise re-evaluates the filter over
+                // the full log, and on a phone that stutters the keyboard.
+                onTextChanged: {
+                    if (text !== historyView.filterText)
+                        searchDebounce.restart();
+                    else
+                        searchDebounce.stop();
+                }
+
+                Timer {
+                    id: searchDebounce
+                    interval: 250
+                    onTriggered: historyView.filterText = search.text
+                }
+            }
+
+            // Issue #708 (B6): a save that cannot reach the disk is retried on its own;
+            // until one lands, the reader is told the log is not safe yet.
+            ReadableText {
+                objectName: "historySaveFailing"
+                width: parent.width
+                visible: callHistory.saveFailing === true
+                text: qsTr("History isn't being saved right now. It keeps trying, but calls since the last save are lost if DSD-neo closes. Free up space if the phone is full.")
+                wrapMode: Text.Wrap
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(13)
+                color: Theme.alert
+                Accessible.role: Accessible.AlertMessage
+            }
+
+            Flow {
+                width: parent.width
+                spacing: 10
+
+                // Keyed on the filter string itself, never an index: the label array
+                // reorders as calls land, and a frozen index would let the pill show
+                // one system while the model filters another.
+                FilterPill {
+                    objectName: "historySystemFilter"
+                    text: historyView.filterSystem.length === 0 ? qsTr("All systems") : historyView.filterSystem
+                    active: historyView.filterSystem.length > 0
+                    onClicked: {
+                        var labels = [qsTr("All systems")].concat(callHistory.systemLabels);
+                        filterChoices.open(qsTr("System"), labels, function (index) {
+                            historyView.filterSystem = index === 0 ? "" : labels[index];
+                        });
+                    }
+                }
+
+                FilterPill {
+                    objectName: "historyActivityFilter"
+                    text: screen.kindLabels[historyView.filterKind]
+                    active: historyView.filterKind !== 0
+                    onClicked: filterChoices.open(qsTr("Activity type"), screen.kindLabels, function (index) {
+                        historyView.filterKind = index;
+                    })
+                }
+            }
+        }
+    }
+
+    // A header that scrolls ends on a hairline, so a line it cuts reads as
+    // cut by the edge rather than run into the list.
+    Rectangle {
+        anchors.top: headerScroll.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.leftMargin: Theme.screenPadding
+        anchors.rightMargin: Theme.screenPadding
+        height: 1
+        visible: headerScroll.interactive
+        color: Theme.divider
+    }
+
+    // The control that takes the focus (Tab, a screen reader's step) scrolls
+    // into the header's view, as it does on the other scrolling screens.
+    function revealHeaderFocus() {
+        var window = screen.Window.window;
+        if (window && visible)
+            Theme.revealFocus(headerScroll, chrome, window.activeFocusItem);
+    }
+    Connections {
+        target: screen.Window.window
+        function onActiveFocusItemChanged() {
+            if (screen.visible)
+                revealFocusLater.restart();
+        }
+    }
+    Timer {
+        id: revealFocusLater
+        interval: 0
+        onTriggered: screen.revealHeaderFocus()
+    }
+    // A new result scrolls into the header's view, once laid out.
+    Timer {
+        id: revealExportLater
+        interval: 0
+        onTriggered: {
+            if (screen.visible && exportLine.visible)
+                Theme.revealFocus(headerScroll, chrome, exportLine);
         }
     }
 
@@ -168,8 +448,8 @@ Item {
         // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
         objectName: "callLogList"
 
-        anchors.top: chrome.bottom
-        anchors.topMargin: 8
+        anchors.top: headerScroll.bottom
+        anchors.topMargin: 4
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
@@ -272,14 +552,16 @@ Item {
             emergency: model.emergency
             hasRecording: model.hasRecording
             // The frequency a search found is not added: the meta line, read as
-            // the row's description, already leads with it.
-            accessibleName: model.name + ", " + model.timeText
+            // the row's description, already leads with it. A row with no start
+            // time has no time to read.
+            accessibleName: model.timeText.length > 0 ? model.name + ", " + model.timeText : model.name
             onActivated: detailSheet.open(callHistory.recordFor(model.uid))
         }
     }
 
     ChoiceSheet {
         id: filterChoices
+        objectName: "historyFilterChoices"
     }
     HistoryDetailSheet {
         id: detailSheet

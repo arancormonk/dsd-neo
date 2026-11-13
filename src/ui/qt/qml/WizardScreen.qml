@@ -1153,6 +1153,7 @@ Item {
                             // Only for a known size: a bar with no end would be
                             // invented progress.
                             Rectangle {
+                                id: replayProgressBar
                                 objectName: "wizardReplayProgressBar"
                                 width: parent.width
                                 height: 4
@@ -1161,6 +1162,10 @@ Item {
                                 color: Theme.toggleOffTrack
                                 Accessible.role: Accessible.ProgressBar
                                 Accessible.name: qsTr("Copy progress")
+                                // Gate first: see OutlineButton. File details and
+                                // the discard question can open over a copy.
+                                readonly property bool navigationAllowed: Navigation.allows(replayProgressBar)
+                                Accessible.ignored: !navigationAllowed || !visible
                                 Accessible.description: replayAmount.text
                                 // How far, as the bar shows it.
                                 readonly property real fraction: replayFiles.copyTotal > 0 ? Math.min(1, replayFiles.copyBytes / replayFiles.copyTotal) : 0

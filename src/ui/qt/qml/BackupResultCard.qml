@@ -129,7 +129,7 @@ UiPanel {
             font.pixelSize: Theme.fontSize(13)
             color: Theme.textSecondary
         }
-        Text {
+        ReadableText {
             objectName: "backupResultError"
             width: parent.width
             visible: text.length > 0
@@ -140,7 +140,6 @@ UiPanel {
             font.pixelSize: Theme.fontSize(13)
             color: Theme.alert
             Accessible.role: Accessible.AlertMessage
-            Accessible.name: text
         }
         Flow {
             width: parent.width

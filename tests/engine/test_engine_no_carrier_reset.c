@@ -7419,9 +7419,13 @@ test_received_identity_lifetime(void) {
     state->m17_join_hits.kind[0] = 1U;
     state->p25_frame_nac = 0x293U;
     state->p25_frame_nac_valid = 1U;
+    state->p25_p1_carrier_nac.valid = 1U;
+    state->p25_p1_carrier_nac.candidate_valid = 1U;
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
     /* Issue #804: so is the last Phase 1 frame's NAC, which a network status is paired with. */
     rc |= expect_true("rx-id: the boundary forgets the Phase 1 frame NAC", state->p25_frame_nac_valid == 0U);
+    rc |= expect_true("rx-id: the boundary forgets the NAC the Phase 1 NIDs established",
+                      state->p25_p1_carrier_nac.valid == 0U && state->p25_p1_carrier_nac.candidate_valid == 0U);
     /* The sync join histories are the carrier left's evidence: no NXDN96 lock or hit, nor M17 word, pairs across it. */
     rc |= expect_true("rx-id: the boundary forgets the sync join histories",
                       state->nxdn96_sync.lock_type == 0U && state->nxdn96_sync.hits.kind[0] == 0U
@@ -7633,7 +7637,11 @@ test_carrier_boundary_forgets_the_access_codes(void) {
     state->p2_proven_nac = 0x293;
     state->p25_frame_nac = 0x293U;
     state->p25_frame_nac_valid = 1U;
+    state->p25_p1_carrier_nac.valid = 1U;
+    state->p25_p1_carrier_nac.candidate_valid = 1U;
     dsd_engine_forget_carrier_codes(state);
+    rc |= expect_true("access-codes: the forget drops the NAC the Phase 1 NIDs established",
+                      state->p25_p1_carrier_nac.valid == 0U && state->p25_p1_carrier_nac.candidate_valid == 0U);
     /* Issue #804: the NAC of the last Phase 1 frame is the carrier's too, so a network status on the next carrier is
        never paired with it. */
     rc |= expect_true("access-codes: the forget drops the Phase 1 frame NAC", state->p25_frame_nac_valid == 0U);
@@ -7662,7 +7670,11 @@ test_carrier_boundary_forgets_the_access_codes(void) {
     state->p2_proven_nac = 0x293;
     state->p25_frame_nac = 0x293U;
     state->p25_frame_nac_valid = 1U;
+    state->p25_p1_carrier_nac.valid = 1U;
+    state->p25_p1_carrier_nac.candidate_valid = 1U;
     dsd_engine_forget_carrier_code_values(state);
+    rc |= expect_true("access-codes: the value forget drops the NAC the Phase 1 NIDs established",
+                      state->p25_p1_carrier_nac.valid == 0U && state->p25_p1_carrier_nac.candidate_valid == 0U);
     rc |= expect_true("access-codes: the value forget drops the Phase 1 frame NAC", state->p25_frame_nac_valid == 0U);
     rc |= expect_true("access-codes: the value forget drops the colour code and keeps its lock",
                       state->dmr_color_code == 16U && state->dmr_confidence_locked == 1
@@ -12315,6 +12327,12 @@ main(void) {
     state->p25_p1_validated_rf_mod = 1;
     state->p25_p1_nid_evidence = 1;
     state->p25_p1_nid_evidence_symbolcnt = 4321U;
+    state->p25_p1_carrier_nac.nac = 0x293U;
+    state->p25_p1_carrier_nac.valid = 1U;
+    state->p25_p1_carrier_nac.candidate_nac = 0x00EU;
+    state->p25_p1_carrier_nac.candidate_valid = 1U;
+    state->p25_p1_sync_anchor.valid = 1U;
+    state->p25_p1_sync_anchor.frame_valid = 1U;
     /* Issue #651: a Phase 2 frame still queued as the carrier drops, both slots switched off by the user. The frame
        drains first, under the user's switches, and the return to the control channel below leaves them as set (issue
        #657: it used to turn both slots back on). */
@@ -12335,6 +12353,13 @@ main(void) {
      * outlast the carrier -- the next one proves itself again. */
     rc |= expect_true("p25-rtl-nocarrier-clears-nid-evidence",
                       state->p25_p1_nid_evidence == 0 && state->p25_p1_nid_evidence_symbolcnt == 0U);
+    /* So is the NAC the carrier's NIDs established, with the NAC change held for corroboration: the next carrier's
+       first NID names its own at once. */
+    rc |= expect_true("p25-rtl-nocarrier-forgets-carrier-nac",
+                      state->p25_p1_carrier_nac.valid == 0U && state->p25_p1_carrier_nac.candidate_valid == 0U);
+    /* And where the carrier's next Phase 1 data unit would have started: the next sync is matched exactly. */
+    rc |= expect_true("p25-rtl-nocarrier-forgets-sync-anchor",
+                      state->p25_p1_sync_anchor.valid == 0U && state->p25_p1_sync_anchor.frame_valid == 0U);
     rc |= expect_true("p25-rtl-nocarrier-syncs-selected-cc",
                       state->p25_cc_freq == 769868750 && state->trunk_cc_freq == 769868750);
     rc |= expect_true("p25-rtl-nocarrier-cc-profile-rate", g_rtl_symbol_rate_hz == 4800);

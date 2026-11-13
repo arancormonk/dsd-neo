@@ -336,6 +336,7 @@ demod_init_common_defaults(struct demod_state* s, int rtl_dsp_bw_hz, struct outp
     s->ted_gain = 0.0f;
     s->ted_gain_is_set = 0;
     s->ted_effective_gain = 0.0f;
+    s->p25_timing_proof.store(0U, std::memory_order_relaxed);
     s->ted_sps = 0;
     s->ted_sps_override = 0;
     s->costas_reset_pending = 0;

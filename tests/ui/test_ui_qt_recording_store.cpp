@@ -2822,10 +2822,14 @@ test_queries_between_rebuild_slices(void) {
     s.pass();
     const QStringList listed = ids_of(s.store.recordingsForDetection(key));
     expect("between slices: the detection's two recordings", listed == QStringList{keyedId, pendingId});
-    const auto whole = [&s, &key, &listed, &pendingId, &keyedId]() {
+    // A History export's batched read of names sees the same recordings, in the same order.
+    const QList<QStringList> names{{QStringLiteral("Explore/p.wav"), QStringLiteral("Explore/k.wav")},
+                                   {QStringLiteral("Explore/k.wav")}};
+    const auto whole = [&s, &key, &listed, &pendingId, &keyedId, &names]() {
         return ids_of(s.store.recordingsForDetection(key)) == listed && s.store.recordingCountForDetection(key) == 2
                && s.store.hasRecordingForFragments({fragment(1)}) && s.store.hasRecordingForFragments({fragment(2)})
-               && ids_of(s.store.recordingsForFragments({fragment(1), fragment(2)})) == QStringList{pendingId, keyedId};
+               && ids_of(s.store.recordingsForFragments({fragment(1), fragment(2)})) == QStringList{pendingId, keyedId}
+               && s.store.recordingEntryNames({{fragment(1), fragment(2)}, {fragment(1)}}) == names;
     };
     expect("between slices: indexed whole", whole());
 
@@ -2854,6 +2858,111 @@ test_queries_between_rebuild_slices(void) {
     expect("between slices: every query read the folder whole", partial == 0);
     expect("between slices: the listed recording could be played", unplayable == 0);
     expect("between slices: read again, whole", whole());
+}
+
+/* --- History CSV export: every row's recording names in one read. --- */
+
+/* The names a selection of @p ids gives a zip, its hold released at once. */
+QStringList
+zip_names_of(RecordingStore& store, const QStringList& ids) {
+    const QVariantMap selection = store.selectRecordings(ids);
+    store.releaseSelection(selection.value(QStringLiteral("selection")).toInt());
+    return selection.value(QStringLiteral("names")).toStringList();
+}
+
+/* A provider that implements only what History's rows read: the batched names keep their default. */
+class RolesOnlyProvider : public dsd_qt::CallRecordingProvider {
+  public:
+    QVariantList
+    recordingsForFragments(const QStringList&) const override {
+        return {};
+    }
+
+    bool
+    hasRecordingForFragments(const QStringList&) const override {
+        return false;
+    }
+};
+
+/* Each row's names are the entry names Export as zip gives the same recordings (`<folder name>/<file>`, a nested file
+ * keeping its sub-folder), in the order recordingsForFragments() lists them (start, then publish order); a recording
+ * reached twice is named once, and a row with no recordings, or no fragments, has none. */
+void
+test_entry_names_match_zip_selection(void) {
+    expect("names: the helper", dsd_qt::recording_entry_name(QStringLiteral("/r/Call recordings/County (1a2b3c4d)"),
+                                                             QStringLiteral("sub/a.wav"))
+                                    == QStringLiteral("County (1a2b3c4d)/sub/a.wav"));
+    const RolesOnlyProvider rolesOnly;
+    expect("names: a provider without them gives one empty list per row",
+           rolesOnly.recordingEntryNames({{fragment(1)}, {}, {fragment(2)}}) == QList<QStringList>(3)
+               && rolesOnly.recordingEntryNames({}).isEmpty());
+
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    expect("names: a sub-folder", QDir().mkpath(folder + QStringLiteral("/sub")));
+    record(folder, QStringLiteral("0000000000000096-1"), QStringLiteral("b.wav"), 1754725200, 1);
+    record(folder, QStringLiteral("0000000000000096-2"), QStringLiteral("sub/a.wav"), 1754725100, 1);
+    record(folder, QStringLiteral("0000000000000096-3"), QStringLiteral("d.wav"), 1754725300, 2);
+    record(folder, QStringLiteral("0000000000000096-4"), QStringLiteral("c.wav"), 1754725300, 2);
+    s.pass();
+    const QString base = QStringLiteral("County (1a2b3c4d)/");
+    const QStringList merged{fragment(2), fragment(1), fragment(2)};
+    const QList<QStringList> rows{merged, {fragment(1)}, {fragment(3)}, {}};
+    const QList<QStringList> names = s.store.recordingEntryNames(rows);
+    expect("names: one list per row", names.size() == rows.size());
+    expect("names: start, then publish order; nested kept; each once",
+           names.value(0)
+               == QStringList{base + QStringLiteral("sub/a.wav"), base + QStringLiteral("b.wav"),
+                              base + QStringLiteral("d.wav"), base + QStringLiteral("c.wav")});
+    expect("names: a row with none, and one without fragments", names.value(2).isEmpty() && names.value(3).isEmpty());
+    for (int i = 0; i < rows.size(); i++) {
+        const QVariantList maps = s.store.recordingsForFragments(rows.value(i));
+        expect("names: the zip's names for the row's recordings, in its list's order",
+               names.value(i) == zip_names_of(s.store, ids_of(maps)) && names.value(i).size() == maps.size());
+    }
+    const QVariantMap every = s.store.selectForExport(kUidA, QStringLiteral("all"));
+    s.store.releaseSelection(every.value(QStringLiteral("selection")).toInt());
+    expect("names: the owner's Export as zip names them the same",
+           every.value(QStringLiteral("names")).toStringList() == names.value(0));
+    expect("names: no rows, no lists", s.store.recordingEntryNames({}).isEmpty());
+}
+
+/* An export reads up to 1,000 rows, each with many fragments, in one call: every row still gets exactly its own
+ * recordings' names. */
+void
+test_entry_names_batch(void) {
+    constexpr int kRows = 1000;
+    constexpr int kFragments = 6;
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("explore"), QString(), QStringLiteral("Exploring"));
+    s.store.endSession();
+    QByteArray journal;
+    QList<QStringList> rows;
+    QList<QStringList> want;
+    for (int row = 0; row < kRows; row++) {
+        QStringList fragments;
+        QStringList names;
+        for (int part = 0; part < kFragments; part++) {
+            const qint64 stamp = qint64{row} * kFragments + part + 1;
+            fragments.append(fragment(stamp));
+            if (part % 2 == 0) {
+                const QString file = QStringLiteral("r%1-%2.wav").arg(row).arg(part);
+                make_file(folder + QLatin1Char('/') + file, 10);
+                journal.append(
+                    publish_line(QStringLiteral("0000000000000097-%1").arg(stamp), file, 1754726000 + stamp, stamp));
+                names.append(QStringLiteral("Explore/") + file);
+            }
+        }
+        rows.append(fragments);
+        want.append(names);
+    }
+    append(journal_of(folder), journal);
+    s.pass();
+    expect("one read: every recording indexed", s.store.recordingCount() == kRows * kFragments / 2);
+    expect("one read: each row its own names, in order", s.store.recordingEntryNames(rows) == want);
 }
 
 /* The revision moves on every change a detection list can see, carried through coalesced deliveries: membership that
@@ -3052,6 +3161,8 @@ main(int argc, char** argv) {
     test_detection_root_away_keeps_membership();
     test_detection_order_newest_first();
     test_queries_between_rebuild_slices();
+    test_entry_names_match_zip_selection();
+    test_entry_names_batch();
     test_revision_coalesced_passes();
     test_detection_from_c_writer();
     test_platform_path_names_the_qt_file();

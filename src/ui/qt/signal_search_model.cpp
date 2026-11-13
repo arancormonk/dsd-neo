@@ -26,16 +26,15 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <iterator>
-#include <limits>
 #include <map>
 #include <stddef.h>
 #include <utility>
 #include <vector>
 #include "decoder_host.h"
-#include "document_export_writer.h"
 #include "document_save_transport.h"
 #include "json_store.h"
 #include "known_frequency_index.h"
+#include "pending_export.h"
 #include "signal_search_export.h"
 #include "signal_search_model.h"
 #include "store_notices.h"
@@ -245,9 +244,8 @@ SignalSearchModel::SignalSearchModel(DecoderHost* host, KnownFrequencyIndex* ind
     }
     /* The model lives as long as the QML engine, so its writer never goes before the app's teardown: a writer destroyed
        with a save running aborts its transport, which on Android stops every document copy in the process. */
-    m_saveTransport = m_host ? m_host->saveTransport() : std::make_shared<DocumentSaveTransport>();
-    m_exportWriter = std::make_unique<DocumentExportWriter>(
-        m_saveTransport,
+    m_export = std::make_unique<PendingExport>(
+        m_host ? m_host->saveTransport() : std::make_shared<DocumentSaveTransport>(),
         QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/signal-search-export"), this,
         [this](int token, bool ok) { Q_EMIT exportFinished(token, ok); });
     if (m_host) {
@@ -311,7 +309,7 @@ SignalSearchModel::disarm() {
 SignalSearchModel::~SignalSearchModel() {
     const TeardownStage stage("~SignalSearchModel");
     /* Here, inside the timed stage: a save still running is aborted and waited for (DocumentExportWriter). */
-    m_exportWriter.reset();
+    m_export.reset();
     dsd_app_signal_search_store_flush();
 }
 
@@ -898,7 +896,7 @@ SignalSearchModel::avoidsExport(int* count) const {
 
 QVariantMap
 SignalSearchModel::prepareExport(const QString& kind) {
-    discardExport(m_exportToken);
+    m_export->reset();
     int count = -1;
     QByteArray file;
     if (kind == QLatin1String("detections")) {
@@ -909,30 +907,17 @@ SignalSearchModel::prepareExport(const QString& kind) {
     if (count <= 0) {
         return {{QStringLiteral("token"), 0}, {QStringLiteral("count"), count}};
     }
-    // Tokens are unique for the writer, which names the staged file after them, and never 0.
-    m_lastExportToken = m_lastExportToken == std::numeric_limits<int>::max() ? 1 : m_lastExportToken + 1;
-    m_exportToken = m_lastExportToken;
-    m_exportBytes = file;
-    return {{QStringLiteral("token"), m_exportToken}, {QStringLiteral("count"), count}};
+    const int token = m_export->hold(file);
+    return {{QStringLiteral("token"), token}, {QStringLiteral("count"), count}};
 }
 
 bool
 SignalSearchModel::saveExport(int token, const QString& reference) {
-    if (token == 0 || token != m_exportToken) {
-        m_saveTransport->discardPendingDownload(reference);
-        return false;
-    }
-    const QByteArray file = m_exportBytes;
-    discardExport(token);
-    // A running save refuses it, and the writer lets go of the reference's Download-folder row.
-    return m_exportWriter->submit(token, file, reference);
+    return m_export->save(token, reference);
 }
 
 void
 SignalSearchModel::discardExport(int token) {
-    if (token != 0 && token == m_exportToken) {
-        m_exportToken = 0;
-        m_exportBytes.clear();
-    }
+    m_export->discard(token);
 }
 } // namespace dsd_qt

@@ -28,6 +28,7 @@
 #include <dsd-neo/dsp/tetra_uplink_timing.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/mem.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <vector>
@@ -1158,12 +1159,15 @@ test_partition_invariance(void) {
  * gear at the end. */
 int
 run_chain(int rate, int passes, const std::vector<float>& iq, const std::vector<int>& cuts, std::vector<float>* out,
-          double* total_hz, int* track) {
+          double* total_hz, int* track, bool p25_proof = false) {
     demod_state* s = new_demod();
     if (!s) {
         return fail("alloc");
     }
     configure_tetra(s, rate);
+    if (p25_proof) {
+        s->p25_timing_proof.store(dsd_trunk_tuning_generation() + 1U);
+    }
     s->rate_in = rate << passes;
     s->downsample_passes = passes;
     size_t pos = 0;
@@ -1369,13 +1373,16 @@ make_uplink_stream(int rate, int* pairs_out) {
  * @p out, and the bursts the burst timing aligned and the carrier loop took. */
 int
 run_uplink(int rate, const std::vector<float>& iq, const std::vector<int>& cuts, std::vector<float>* out,
-           uint64_t* aligned, uint64_t* taken) {
+           uint64_t* aligned, uint64_t* taken, bool p25_proof = false) {
     demod_state* s = new_demod();
     if (!s) {
         return fail("alloc");
     }
     configure_tetra(s, rate);
     s->tetra_uplink = 1;
+    if (p25_proof) {
+        s->p25_timing_proof.store(dsd_trunk_tuning_generation() + 1U);
+    }
     size_t pos = 0;
     out->clear();
     for (int n : cuts) {
@@ -1446,6 +1453,39 @@ uplink_partitions_at(int rate) {
     DSD_FPRINTF(stdout,
                 "TETRA uplink block partitions at %d Hz: %d symbols, %d bursts aligned, worst difference %.3g\n", rate,
                 (int)ref.size(), (int)ref_aligned, worst_all);
+    return rc;
+}
+
+/* A P25 proof on the demod (TETRA never gives one, but one left over from P25 on the tune must not reach it) changes no
+ * TETRA symbol: the chain's Gardner keeps its own gain, an uplink session decides its own, and both give the same output
+ * bit for bit with the proof as without. */
+int
+test_p25_proof_changes_no_tetra_symbol(void) {
+    int rc = 0;
+    const int rate = 72000;
+    const int total = rate / 2;
+    const int sub = DSD_TETRA_SUBBLOCK_SYMBOLS * (rate / 18000);
+    const std::vector<float> iq = make_tetra_stream(rate, 3500.0, total, 0.3f, 0x2468u);
+    std::vector<float> ref;
+    std::vector<float> got;
+    double hz = 0.0;
+    int track = -1;
+    rc |= run_chain(rate, 0, iq, cuts_of(total, sub), &ref, &hz, &track);
+    rc |= run_chain(rate, 0, iq, cuts_of(total, sub), &got, &hz, &track, true);
+    rc |= expect_int("P25 proof on the TETRA chain: symbols", (int)got.size(), (int)ref.size());
+    if (ref.size() < 1000U || got != ref) {
+        rc |= fail("P25 proof on the TETRA chain: the symbols changed");
+    }
+    int ul_total = 0;
+    const std::vector<float> ul_iq = make_uplink_stream(rate, &ul_total);
+    uint64_t aligned = 0;
+    uint64_t taken = 0;
+    rc |= run_uplink(rate, ul_iq, cuts_of(ul_total, 1001), &ref, &aligned, &taken);
+    rc |= run_uplink(rate, ul_iq, cuts_of(ul_total, 1001), &got, &aligned, &taken, true);
+    rc |= expect_int("P25 proof on an uplink session: symbols", (int)got.size(), (int)ref.size());
+    if (ref.empty() || got != ref) {
+        rc |= fail("P25 proof on an uplink session: the symbols changed");
+    }
     return rc;
 }
 
@@ -1966,6 +2006,7 @@ main(void) {
     rc |= test_partition_invariance();
     rc |= test_block_partitions();
     rc |= test_uplink_block_partitions();
+    rc |= test_p25_proof_changes_no_tetra_symbol();
     rc |= test_uplink_squelch_tail();
     rc |= test_uplink_restart_forgets_ted_delay();
     rc |= test_block_in_workbuf();

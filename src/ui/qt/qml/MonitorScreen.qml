@@ -886,9 +886,10 @@ Item {
                         width: parent.width - (heroCompactDuration.visible ? heroCompactDuration.width + 12 : 0)
                         height: parent.height
                         visible: screen.heroSlot !== 0
-                        // Painted text has no text of its own for a screen reader.
-                        Accessible.role: Accessible.StaticText
-                        Accessible.name: screen.heroHeadline
+                        // Read by the hero, whose name leads with this headline
+                        // while it shows (heroSpeech): a node of its own would read
+                        // it twice, and stayed in the tree under every sheet.
+                        Accessible.ignored: true
 
                         onPaint: {
                             var ctx = getContext("2d");

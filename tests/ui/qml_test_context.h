@@ -2744,6 +2744,9 @@ class CallLogStore : public QAbstractListModel {
             case CallHistoryModel::ReceivedToneRole: row.receivedTone = value.toString(); return true;
             case CallHistoryModel::SiteTextRole: row.siteText = value.toString(); return true;
             case CallHistoryModel::AnalogModeRole: row.analogMode = value.toString(); return true;
+            case CallHistoryModel::WhenRole: row.when = value.toLongLong(); return true;
+            case CallHistoryModel::DayLabelRole: row.dayLabel = value.toString(); return true;
+            case CallHistoryModel::TimeTextRole: row.timeText = value.toString(); return true;
             default: return false;
         }
     }
@@ -2781,6 +2784,94 @@ class CallLogStore : public QAbstractListModel {
     bool m_saveFailing = false;
     /* Fixed, ascending stamps: nothing here should depend on the wall clock. */
     qint64 m_clock = 1'700'000'000;
+};
+
+/**
+ * @brief The `historyExport` (CallHistoryExporter) both History screens share, scripted by the case.
+ *
+ * prepare() answers `prepared` and records the view it was given with that view's search text and row count at the
+ * call, so a case can tell which search the file would hold. save() answers `saveAccepted`; an accepted save turns
+ * busy, as the real exporter's does, until finish() ends it: busy clears first, then finished(), as there. discard()
+ * only records. reset() puts it back to {token 7, count 2, total 2}, saves accepted, idle and no calls.
+ */
+class HistoryExportFake : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
+    Q_PROPERTY(QVariantMap prepared MEMBER prepared)
+    Q_PROPERTY(bool saveAccepted MEMBER saveAccepted)
+    /* Oldest first: ["prepare", view, searchText, rowCount], ["save", token, reference], ["discard", token]. */
+    Q_PROPERTY(QVariantList calls READ calls)
+  public:
+    explicit HistoryExportFake(QObject* parent) : QObject(parent) { reset(); }
+
+    bool
+    busy() const {
+        return m_busy;
+    }
+
+    QVariantList
+    calls() const {
+        return m_calls;
+    }
+
+    Q_INVOKABLE QVariantMap
+    prepare(QObject* view) {
+        m_calls.append(QVariant(QVariantList{QStringLiteral("prepare"), QVariant::fromValue(view),
+                                             view != nullptr ? view->property("filterText") : QVariant(),
+                                             view != nullptr ? view->property("count") : QVariant()}));
+        return prepared;
+    }
+
+    Q_INVOKABLE bool
+    save(int token, const QString& reference) {
+        m_calls.append(QVariant(QVariantList{QStringLiteral("save"), token, reference}));
+        if (!saveAccepted) {
+            return false;
+        }
+        setBusy(true);
+        return true;
+    }
+
+    Q_INVOKABLE void
+    discard(int token) {
+        m_calls.append(QVariant(QVariantList{QStringLiteral("discard"), token}));
+    }
+
+    /** @brief A save running (from the other History screen, say) or not. */
+    Q_INVOKABLE void
+    setBusy(bool on) {
+        if (on != m_busy) {
+            m_busy = on;
+            Q_EMIT busyChanged();
+        }
+    }
+
+    /** @brief End the save of @p token, written whole (@p ok) or not. */
+    Q_INVOKABLE void
+    finish(int token, bool ok) {
+        setBusy(false);
+        Q_EMIT finished(token, ok);
+    }
+
+    Q_INVOKABLE void
+    reset() {
+        prepared =
+            QVariantMap{{QStringLiteral("token"), 7}, {QStringLiteral("count"), 2}, {QStringLiteral("total"), 2}};
+        saveAccepted = true;
+        m_calls.clear();
+        setBusy(false);
+    }
+
+    QVariantMap prepared;
+    bool saveAccepted = true;
+
+  Q_SIGNALS:
+    void busyChanged();
+    void finished(int token, bool ok);
+
+  private:
+    QVariantList m_calls;
+    bool m_busy = false;
 };
 
 // WP-D3: keep the fixture readings and record the nearby button's actual invocation.
@@ -4246,24 +4337,36 @@ class Setup : public QObject {
     }
 
     /**
-     * @brief Issue #782: the headings under @p root that TalkBack cannot move to: each visible item whose accessible
-     * node is in the tree with the Heading role and is not focusable. Qt reports a Heading node focusable only when the
-     * item takes Tab focus or sets `Accessible.focusable` (QAccessibleQuickItem::state(): text roles are focusable,
-     * Heading is not one), the Android bridge passes that on (setFocusable), and TalkBack's linear navigation skips a
-     * text node that is neither focusable nor clickable. Disabled items are left out. Each entry gives the item, its name
-     * and the declaring file.
+     * @brief Issue #782: the text nodes under @p root that TalkBack cannot move to: each visible item whose accessible
+     * node is in the tree, is not focusable, and is a heading, or a text item (`Text`, `ReadableText`) with any role
+     * but StaticText or EditableText (an AlertMessage line). Qt reports such a node focusable only when the item takes
+     * Tab focus or sets `Accessible.focusable` (QAccessibleQuickItem::state(): only StaticText and EditableText are
+     * text roles, focusable by themselves), the Android bridge passes that on (setFocusable), and TalkBack's linear
+     * navigation skips a text node that is neither focusable nor clickable: a heading's section, or the line that
+     * reports a problem, would be heard without it. Disabled items are left out. Each entry gives the item, its name,
+     * role, objectName and the declaring file.
      */
     Q_INVOKABLE QVariantList
-    unfocusableHeadings(QObject* root) const {
+    unfocusableTextNodes(QObject* root) const {
         QVariantList out;
         if (auto* item = qobject_cast<QQuickItem*>(root)) {
-            collectUnfocusableHeadings(item, out);
+            collectUnfocusableTextNodes(item, out);
         }
         return out;
     }
 
+    /** @brief Whether @p iface on @p item is a heading, or a text item reported in a role that is not a text role. */
+    static bool
+    nonTextRoleOnText(const QQuickItem* item, QAccessibleInterface* iface) {
+        const QAccessible::Role role = iface->role();
+        if (role == QAccessible::Heading) {
+            return true;
+        }
+        return item->inherits("QQuickText") && role != QAccessible::StaticText && role != QAccessible::EditableText;
+    }
+
     static void
-    collectUnfocusableHeadings(QQuickItem* item, QVariantList& out) {
+    collectUnfocusableTextNodes(QQuickItem* item, QVariantList& out) {
         if (!item->isVisible()) {
             return;
         }
@@ -4271,17 +4374,19 @@ class Setup : public QObject {
         // A disabled item is never focusable (QAccessibleQuickItem::state()); the screens disable themselves under an
         // open sheet, where the navigation gate takes them out of the tree on a phone.
         if (iface != nullptr && iface->isValid() && iface->object() == item && item->isEnabled()
-            && iface->role() == QAccessible::Heading && accessibleInTree(iface) && !iface->state().focusable) {
+            && nonTextRoleOnText(item, iface) && accessibleInTree(iface) && !iface->state().focusable) {
             const QQmlContext* context = qmlContext(item);
             out.append(QVariantMap{
                 {QStringLiteral("item"), QVariant::fromValue(static_cast<QObject*>(item))},
                 {QStringLiteral("name"), iface->text(QAccessible::Name)},
+                {QStringLiteral("role"), static_cast<int>(iface->role())},
+                {QStringLiteral("objectName"), item->objectName()},
                 {QStringLiteral("file"), context != nullptr ? context->baseUrl().fileName() : QString()},
             });
         }
         const QList<QQuickItem*> children = item->childItems();
         for (QQuickItem* child : children) {
-            collectUnfocusableHeadings(child, out);
+            collectUnfocusableTextNodes(child, out);
         }
     }
 
@@ -5808,6 +5913,8 @@ class Setup : public QObject {
         ctx->setContextProperty(QStringLiteral("callHistory"), store);
         ctx->setContextProperty(QStringLiteral("historyView"), historyView);
         ctx->setContextProperty(QStringLiteral("monitorView"), monitorView);
+        // History's Export… (CallHistoryExporter), scripted by the case: one for both History screens, as in the app.
+        ctx->setContextProperty(QStringLiteral("historyExport"), new HistoryExportFake(engine));
         ctx->setContextProperty(QStringLiteral("talkgroups"), m_talkgroups);
         ctx->setContextProperty(QStringLiteral("talkgroupView"), talkgroupView);
         ctx->setContextProperty(QStringLiteral("sansFontFamily"), QStringLiteral("IBM Plex Sans"));

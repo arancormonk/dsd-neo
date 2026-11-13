@@ -2992,11 +2992,26 @@ test_p25_nac_state_isolated_per_target(void) {
     state.p2_proven_nac = 0x2A1; /* Issue #802: and the NAC that proof named. */
     state.p25_frame_nac = 0x2A1U;
     state.p25_frame_nac_valid = 1U;
+    state.p25_p1_carrier_nac.nac = 0x2A1U;
+    state.p25_p1_carrier_nac.valid = 1U;
+    state.p25_p1_carrier_nac.candidate_nac = 0x00EU;
+    state.p25_p1_carrier_nac.candidate_valid = 1U;
+    state.p25_p1_sync_anchor.valid = 1U;
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     /* Issue #804: nor the NAC of its last Phase 1 frame, which a network status would be paired with. */
     if (state.p25_frame_nac_valid != 0U) {
         DSD_FPRINTF(stderr, "fresh P25 scan target inherited the first target's Phase 1 frame NAC\n");
+        test_rc = 1;
+    }
+    /* Nor the NAC the first target's Phase 1 NIDs established: the next target's first NID names its own at once. */
+    if (state.p25_p1_carrier_nac.valid != 0U || state.p25_p1_carrier_nac.candidate_valid != 0U) {
+        DSD_FPRINTF(stderr, "fresh P25 scan target inherited the first target's established Phase 1 NAC\n");
+        test_rc = 1;
+    }
+    /* Nor where the first target's next Phase 1 data unit would have started. */
+    if (state.p25_p1_sync_anchor.valid != 0U) {
+        DSD_FPRINTF(stderr, "fresh P25 scan target inherited the first target's Phase 1 sync anchor\n");
         test_rc = 1;
     }
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.nac != 0) {

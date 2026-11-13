@@ -15,8 +15,8 @@
  *  - a pending scan tune, which makes noCarrier() return early, does not skip the reset.
  * A live read that gives way to a queued command while the device has no stream (issue #518 D4: DSD_RTL_READ_YIELD)
  * reaches the engine loop the same way, as the yield interruption: the loop applies the command at its next pump with
- * no carrier boundary and no shutdown, and the next read resumes at the next sample
- * (yield_reaches_engine_and_command_applies).
+ * no carrier boundary and no shutdown, forgets the NAC the carrier's Phase 1 NIDs established (with a NAC change held
+ * for corroboration), and the next read resumes at the next sample (yield_reaches_engine_and_command_applies).
  * The boundary itself, called directly: it forgets the evidence and the multi-frame assemblies, the seeded P25 Phase 2
  * ESS state and the DMR confirmation (candidate, lock, voice gate), and moves the carrier count, but keeps the
  * carrier's codes, its received identity and the voice channel a trunking session follows. A stream start takes up the
@@ -51,6 +51,7 @@
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -444,6 +445,14 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
             g_command_queued = 1;
             g_seq_before = state->carrier_seq;
             g_reads_before_yield = g_reads;
+            /* The NAC this carrier's Phase 1 NIDs established, with a NAC change held for corroboration. */
+            state->p25_p1_carrier_nac.nac = 0x293U;
+            state->p25_p1_carrier_nac.carrier_seq = state->carrier_seq;
+            state->p25_p1_carrier_nac.sync_history_drops = state->frame_sync_carry.drops;
+            state->p25_p1_carrier_nac.tune_generation = dsd_trunk_tuning_generation();
+            state->p25_p1_carrier_nac.valid = 1U;
+            state->p25_p1_carrier_nac.candidate_nac = 0x0E1U;
+            state->p25_p1_carrier_nac.candidate_valid = 1U;
             expect("yield: the hunt read yields to the queued command",
                    reads_sample(read_symbols(opts, state, 1, 0), 0) && state->input_interrupted == 1
                        && state->input_interrupt_reason == DSD_INTERRUPT_YIELD && g_yields == 1);
@@ -454,6 +463,8 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
             expect("yield: the interruption is consumed",
                    state->input_interrupted == 0 && state->input_interrupt_reason == DSD_INTERRUPT_NONE);
             expect("yield: a yield is no carrier boundary", state->carrier_seq == g_seq_before && g_resets == 3);
+            expect("yield: the loop that took up the interruption forgot the NAC the Phase 1 NIDs established",
+                   state->p25_p1_carrier_nac.valid == 0U && state->p25_p1_carrier_nac.candidate_valid == 0U);
             expect("yield: a yield asks for no shutdown", dsd_exitflag_load() == 0);
             expect("yield: the read yielded once", g_yields == 1 && g_reads == g_reads_before_yield);
             expect("yield: reading resumes at the next sample", reads_sample(read_symbols(opts, state, 1, 0), 33));

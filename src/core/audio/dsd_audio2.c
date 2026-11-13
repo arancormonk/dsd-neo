@@ -65,7 +65,7 @@ dsd_write_float_audio_device(dsd_opts* opts, const float* buf, size_t frames, in
         }
         const float* src = buf + (done * (size_t)channels);
         const size_t chunk_samples = chunk_frames * (size_t)channels;
-        /* Convert float [-1.0, 1.0] to int16 with clipping */
+        /* Convert float [-1.0, 1.0] to int16 with clipping, rounded to nearest as the short output is (issue #861) */
         for (size_t i = 0; i < chunk_samples; i++) {
             float v = src[i] * 32767.0f;
             if (v > 32767.0f) {
@@ -73,7 +73,7 @@ dsd_write_float_audio_device(dsd_opts* opts, const float* buf, size_t frames, in
             } else if (v < -32768.0f) {
                 v = -32768.0f;
             }
-            tmp[i] = (int16_t)v;
+            tmp[i] = (int16_t)lrintf(v);
         }
         if (dsd_audio_sink_write_device(DSD_AUDIO_SINK_DIGITAL, opts->audio_out_stream, tmp, chunk_frames) < 0) {
             /* The device is down: the rest of the block would fail too. */

@@ -18,6 +18,7 @@
 #define DSD_NEO_SRC_UI_QT_CALL_RECORDING_PROVIDER_H_
 
 #include <QChar>
+#include <QList>
 #include <QString>
 #include <QStringList>
 #include <QVariantList>
@@ -51,6 +52,18 @@ class CallRecordingProvider {
 
     /** @brief Whether any of @p fragments has a recording; what recordingsForFragments() reports, without the list. */
     virtual bool hasRecordingForFragments(const QStringList& fragments) const = 0;
+
+    /**
+     * @brief For each row's fragments in @p fragmentsPerRow, the names its recordings take in an Export as zip
+     * (`<folder name>/<file>`), in recordingsForFragments()' order, each recording once; one list per row, in order.
+     *
+     * One read for every row, so a History export takes the provider's lock once. A provider without recordings names
+     * none: one empty list per row.
+     */
+    virtual QList<QStringList>
+    recordingEntryNames(const QList<QStringList>& fragmentsPerRow) const {
+        return QList<QStringList>(fragmentsPerRow.size());
+    }
 
   protected:
     CallRecordingProvider() = default;

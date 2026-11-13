@@ -323,7 +323,7 @@ dsd_cli_usage_section_decode(void) {
     printf("                               rate (e.g. 20000 needs a 24 or 48 kHz DSP bandwidth). On PCM input it\n");
     printf("                               filters nothing; with rigctl (-U) it is the AM passband the peer is\n");
     printf("                               asked for.\n");
-    printf("  -ft           TDMA Trunking P25p1 Control and Voice, P25p2 Trunked Channels, and DMR\n");
+    printf("  -ft           Decode only DMR, P25 Phase 1 and P25 Phase 2; add -T to follow a trunked system\n");
     printf("  -fs           DMR TDMA BS and MS Simplex\n");
     printf("  -fr           DMR TDMA BS and MS Simplex using the single-slot mono decoder\n");
     printf("  -f1           Decode only P25 Phase 1\n");

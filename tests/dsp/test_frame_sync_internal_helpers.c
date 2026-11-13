@@ -2365,6 +2365,36 @@ nxdn96_fsw(dsd_opts* opts, dsd_state* state, int polarity, int swapped, dsd_nxdn
     return sync;
 }
 
+/* An NXDN sync is a ten-symbol word that receiver noise clears (#398): its accept leaves the sync clock a -Y scan holds
+ * on and the trunking state machines read where it was, NXDN48 and NXDN96 alike. Only a frame the transmission's CRCs
+ * confirmed moves it (nxdn_mark_carrier_sync_active(), NXDN_FRAME_ROUTING). */
+static void
+test_an_nxdn_sync_accept_leaves_the_sync_clock(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset(&opts, &state);
+    opts.frame_nxdn48 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.last_cc_sync_time = 1000;
+    state.last_cc_sync_time_m = 7.0;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+    assert(state.last_cc_sync_time == 1000);
+    assert(fabs(state.last_cc_sync_time_m - 7.0) < 1e-9);
+
+    nxdn96_sync_setup(&opts, &state);
+    state.last_cc_sync_time = 1000;
+    state.last_cc_sync_time_m = 7.0;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, DSD_NXDN96_LICH_GOOD) == DSD_SYNC_NONE);
+    state.symbolcnt += 192;
+    assert(nxdn96_fsw(&opts, &state, 1, 0, DSD_NXDN96_LICH_GOOD) == DSD_SYNC_NXDN_POS);
+    assert(state.last_cc_sync_time == 1000);
+    assert(fabs(state.last_cc_sync_time_m - 7.0) < 1e-9);
+}
+
 static void
 test_nxdn96_follows_the_receiver_sync_rules(void) {
     static dsd_opts opts;
@@ -4148,6 +4178,121 @@ compare_into_trial(dsd_opts* opts, dsd_state* state, int incumbent_rf_mod) {
     assert(state->rf_mod == !incumbent_rf_mod);
 }
 
+/* The other chain's pass from its start: @p settle symbols searched with nothing validated, then @p frames one-block
+ * TSDUs @p gap symbols of search apart, then the rest of the pass idle. */
+static void
+compare_trial_after_settling(dsd_opts* opts, dsd_state* state, uint32_t settle, int frames, uint32_t gap) {
+    uint32_t used = 0;
+    for (int i = 0; i < frames; i++) {
+        const uint32_t search = i == 0 ? settle : gap;
+        compare_frame(opts, state, search, 134U);
+        used += search + 134U;
+    }
+    if (used < (uint32_t)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS) {
+        compare_idle(opts, state, (uint32_t)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS - used);
+    }
+}
+
+/* A CQPSK incumbent's pass that reads every TSBK but one (the fifth slot's): most of the pass, one frame missed, so the
+ * C4FM chain gets a pass of its own. As on s72 under -fa: 1206 symbols in 8 frames after the opening one. */
+static void
+compare_cqpsk_into_trial_missing_one(dsd_opts* opts, dsd_state* state) {
+    const uint32_t pass = (uint32_t)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    compare_setup(opts, state, 1);
+    compare_frame(opts, state, 0U, 134U);
+    uint32_t used = 134U;
+    for (int slot = 1; slot < 10; slot++) {
+        if (slot == 4) {
+            continue;
+        }
+        const uint32_t search = slot == 5 ? 46U + 180U : 46U;
+        compare_frame(opts, state, search, 134U);
+        used += search + 134U;
+    }
+    compare_idle(opts, state, pass - used);
+    assert(state->p25_p1_mod_compare.phase == 2 && state->p25_p1_mod_compare.incumbent_read == 1206U);
+    assert(state->rf_mod == 0);
+}
+
+/*
+ * The other chain's pass starts cold. On the s72 LSM simulcast capture the CQPSK chain synced every slot of its pass
+ * from the start, but the NIDs of the first five failed while its loops settled; it then read every TSBK to the pass's
+ * end, which came to the four TSBKs C4FM had read in its pass while missing one in two or three. The tie kept C4FM,
+ * and the C4FM verdict held the profile on a chain reading a quarter of the carrier for the whole capture. A CQPSK
+ * pass is now judged as the incumbent's is, from its own first frame: read whole from there, it takes the profile
+ * whatever the totals say. The C4FM chain settles within a slot, so a C4FM pass gets no such excuse: one whose first
+ * frame comes late is reading part of the carrier, and takes the profile only by reading more.
+ */
+static void
+test_p25p1_settled_trial_that_reads_whole_wins(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_rtl_stream_metrics_hooks hooks = {
+        .output_rate_hz = fake_output_rate_hz,
+        .apply_demod_profile = fake_apply_demod_profile,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    const uint32_t pass = (uint32_t)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+
+    /* C4FM reads one TSBK in three (402 symbols); CQPSK settles, then reads three back to back to the pass's end
+     * (402 symbols): a tie on the totals, which the CQPSK chain takes. */
+    compare_into_trial(&opts, &state, 0);
+    compare_trial_after_settling(&opts, &state, pass - 3U * 134U - 2U * 46U, 3, 46U);
+    assert(state.p25_p1_mod_compare.phase == 0);
+    assert(state.rf_mod == 1 && g_profile_cqpsk == 1);
+    assert(state.p25_p1_validated_rf_mod == 1);
+    assert(state.p25_p1_mod_compare.verdict_valid == 1 && state.p25_p1_mod_compare.verdict_rf_mod == 1);
+    assert(state.p25_p1_mod_probe_active == 0);
+
+    /* Not the other way round: a C4FM pass whose first frame lands in the last two slots, read whole from there to
+     * the end, against a CQPSK incumbent that read most of its pass and missed one frame. The CQPSK chain keeps the
+     * profile; C4FM caught two frames of a carrier it reads part of. */
+    compare_cqpsk_into_trial_missing_one(&opts, &state);
+    compare_trial_after_settling(&opts, &state, pass - 2U * 134U - 46U, 2, 46U);
+    assert(state.p25_p1_mod_compare.phase == 0);
+    assert(state.rf_mod == 1 && g_profile_cqpsk == 1 && state.p25_p1_validated_rf_mod == 1);
+    assert(state.p25_p1_mod_compare.verdict_valid == 1 && state.p25_p1_mod_compare.verdict_rf_mod == 1);
+
+    /* Nor against one that read one TSBK in three: two late C4FM frames (268 symbols) read less than its 402. */
+    compare_into_trial(&opts, &state, 1);
+    compare_trial_after_settling(&opts, &state, pass - 2U * 134U - 46U, 2, 46U);
+    assert(state.rf_mod == 1 && state.p25_p1_validated_rf_mod == 1);
+    assert(state.p25_p1_mod_compare.verdict_valid == 1 && state.p25_p1_mod_compare.verdict_rf_mod == 1);
+
+    /* A C4FM pass still wins on its total: from its first slot it reads nine TSBKs against the one in three. */
+    compare_into_trial(&opts, &state, 1);
+    compare_trial_after_settling(&opts, &state, 46U, 9, 46U);
+    assert(state.rf_mod == 0 && g_profile_cqpsk == 0 && state.p25_p1_validated_rf_mod == 0);
+    assert(state.p25_p1_mod_compare.verdict_valid == 1 && state.p25_p1_mod_compare.verdict_rf_mod == 0);
+
+    /* One frame is no run of frames: a single TSDU at the pass's end reads less, and the incumbent keeps the
+     * profile. */
+    compare_into_trial(&opts, &state, 0);
+    compare_trial_after_settling(&opts, &state, pass - 134U, 1, 46U);
+    assert(state.rf_mod == 0 && state.p25_p1_validated_rf_mod == 0);
+    assert(state.p25_p1_mod_compare.verdict_valid == 1 && state.p25_p1_mod_compare.verdict_rf_mod == 0);
+
+    /* A frame missed after the first is a frame gone by, as in the incumbent's pass: the totals decide, and a tie
+     * keeps the incumbent. */
+    compare_into_trial(&opts, &state, 0);
+    compare_trial_after_settling(&opts, &state, 946U, 1, 46U);
+    compare_frame(&opts, &state, 46U, 134U);
+    compare_frame(&opts, &state, 46U + 180U, 134U);
+    compare_idle(&opts, &state, pass - 946U - 3U * 134U - 46U - 226U);
+    assert(state.p25_p1_mod_compare.phase == 0);
+    assert(state.rf_mod == 0 && state.p25_p1_validated_rf_mod == 0);
+    assert(state.p25_p1_mod_compare.verdict_rf_mod == 0);
+
+    /* So is a pass that stops reading a frame's length or more before its end: the totals decide. */
+    compare_into_trial(&opts, &state, 0);
+    compare_trial_after_settling(&opts, &state, 0U, 3, 46U);
+    assert(state.p25_p1_mod_compare.phase == 0);
+    assert(state.rf_mod == 0 && state.p25_p1_validated_rf_mod == 0);
+    assert(state.p25_p1_mod_compare.verdict_rf_mod == 0);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
 /*
  * How a comparison ends when its passes are cut short or read nothing, and what it leaves behind.
  */
@@ -5467,6 +5612,7 @@ main(void) {
     test_m17_candidate_expires_without_a_following_sync();
     test_short_m17_window_estimates_levels_without_warm_start_history();
     test_m17_alternating_runs_alone_are_never_a_sync();
+    test_an_nxdn_sync_accept_leaves_the_sync_clock();
     test_a_dpmr_frame_is_not_reopened_by_the_nxdn_matcher();
     test_the_dpmr_frame_suppression_is_scoped_to_its_own_profile();
     test_a_p25p1_frame_is_not_reopened_by_the_nxdn96_matcher();
@@ -5498,6 +5644,7 @@ main(void) {
     test_validated_p25p1_modulation_outranks_the_heuristics();
     test_validated_cqpsk_survives_rotation_but_not_disproof();
     test_p25p1_partial_chain_loses_the_comparison();
+    test_p25p1_settled_trial_that_reads_whole_wins();
     test_p25p1_comparison_ends_cleanly();
     test_p25p1_chain_steps_serialize_with_watchdog_tunes();
     test_p25p1_stale_validation_opens_no_comparison();

@@ -418,7 +418,7 @@ clamp_float_to_short(float value) {
     if (value < -32768.0f) {
         return -32768;
     }
-    return (short)value;
+    return (short)lrintf(value);
 }
 
 // HPF short path

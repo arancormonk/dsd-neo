@@ -707,6 +707,10 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
         return;
     }
     p25_mpdu_finalize_header(state, &ctx);
+    /* The PDU's length on air, when its header passed its CRC: the header and the data blocks it announces. */
+    if (ctx.err[0] == 0) {
+        state->p25_p1_unit_dibits = p25p1_block_unit_dibits(1 + (ctx.mpdu_byte[6] & 0x7F));
+    }
     p25_mpdu_decode_header_if_usable(opts, state, &ctx);
     p25_mpdu_log_header_crc_error(&ctx);
     p25_mpdu_dispatch_payload(opts, state, &ctx);

@@ -368,6 +368,20 @@ dsd_rtl_stream_metrics_hook_p25p2_err_update(int slot, int facch_ok, int facch_e
     }
 }
 
+void
+dsd_rtl_stream_metrics_hook_note_p25_proven(uint64_t tune_generation) {
+    if (g_rtl_stream_metrics_hooks.p25_timing_proof) {
+        g_rtl_stream_metrics_hooks.p25_timing_proof(tune_generation + 1U);
+    }
+}
+
+void
+dsd_rtl_stream_metrics_hook_forget_p25_proof(void) {
+    if (g_rtl_stream_metrics_hooks.p25_timing_proof) {
+        g_rtl_stream_metrics_hooks.p25_timing_proof(0U);
+    }
+}
+
 int
 dsd_rtl_stream_metrics_hook_symbol_cache_pending(void) {
     int pending = atomic_load(&g_rtl_symbol_cache_pending);

@@ -64,11 +64,12 @@ Item {
 
         // Plain text: names and meta lines carry what the air delivered (aliases,
         // SMS bodies), and Qt's automatic rich-text detection would render a tag
-        // in them as markup instead of the characters received.
+        // in them as markup instead of the characters received. One line each:
+        // a line break in that text is drawn as a space.
         Text {
             objectName: "callRowName"
             width: parent.width
-            text: row.name
+            text: Util.oneLine(row.name)
             textFormat: Text.PlainText
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(16)
@@ -80,7 +81,7 @@ Item {
         Text {
             objectName: "callRowMeta"
             width: parent.width
-            text: row.metaText
+            text: Util.oneLine(row.metaText)
             textFormat: Text.PlainText
             font.family: Theme.mono
             font.pixelSize: Theme.fontSize(12)

@@ -53,15 +53,19 @@ QtObject {
         });
     }
     // Read @p text out once, a repeat included, while @p line is reachable
-    // (no gate when null). @p owner speaks it and keeps the last text read and
-    // how many have been (`announced`, `announcements`) for tests. True when read.
+    // (no gate when null). @p line speaks it, @p owner when there is none:
+    // speaking makes the speaker an accessible node, and an owner (a screen)
+    // has no gate of its own, so it would stay in the tree under a sheet.
+    // @p owner keeps the last text read and how many have been (`announced`,
+    // `announcements`) for tests. True when read.
     function announce(owner, line, text) {
         if (!text.length || (line && !allows(line)))
             return false;
         owner.announced = text;
         owner.announcements++;
-        if (typeof owner.Accessible.announce === "function")
-            owner.Accessible.announce(text);
+        var speaker = line || owner;
+        if (typeof speaker.Accessible.announce === "function")
+            speaker.Accessible.announce(text);
         return true;
     }
     function presented(item) {

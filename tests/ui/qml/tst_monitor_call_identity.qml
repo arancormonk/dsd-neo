@@ -171,13 +171,19 @@ Item {
             compare(item("monitorLiveLabel").textFormat, Text.PlainText, "the live pill is plain text");
         }
 
-        // The painted headline names the call to a screen reader.
+        // The painted headline names the call to a screen reader through the
+        // hero, whose name leads with it; the canvas is no node of its own, so
+        // it is not read twice.
         function test_headline_has_an_accessible_name() {
             setCall(1, {kind: kindPrivate, name: "Dispatcher 7", tg: "2001234", id: 2001234, tgLabel: "Dispatcher 7", src: "100702", protocol: "TETRA"});
             testContext.setMetric("leadSlot", 1);
             var headline = item("heroHeadlineText");
-            compare(headline.Accessible.name, "Dispatcher 7");
-            compare(headline.Accessible.role, Accessible.StaticText);
+            verify(headline.visible);
+            verify(headline.Accessible.ignored, "the hero reads the headline");
+            var hero = item("monitorHero");
+            tryVerify(function () {
+                return hero.Accessible.name.indexOf("Dispatcher 7") === 0;
+            }, 1000, "the hero's name leads with the headline: " + hero.Accessible.name);
         }
 
         // A private call's target is a radio: Hold holds calls with that radio (the decoder's hold matches either party),

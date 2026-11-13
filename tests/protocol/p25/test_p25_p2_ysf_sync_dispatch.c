@@ -24,13 +24,16 @@ dsd_frame_verdict dsd_dispatch_handle_ysf(dsd_opts* opts, dsd_state* state);
 
 static int g_process_p2_calls;
 static int g_process_ysf_calls;
+/* What the stubbed processP2() reports for the window. */
+static p25p2_window_outcome g_process_p2_outcome = P25P2_WINDOW_DISPATCHED;
 
-void
+p25p2_window_outcome
 processP2(dsd_opts* opts, dsd_state* state) {
     assert(opts != NULL);
     assert(state != NULL);
     g_process_p2_calls++;
     state->lastp25type = 2;
+    return g_process_p2_outcome;
 }
 
 /* The stubbed FICH verdict dsd_dispatch_handle_ysf() must pass through. */
@@ -57,9 +60,23 @@ test_p25p2_match_and_dispatch(void) {
     assert(!dsd_dispatch_matches_p25p2(DSD_SYNC_P25P1_POS));
     assert(!dsd_dispatch_matches_p25p2(DSD_SYNC_YSF_POS));
 
-    dsd_dispatch_handle_p25p2(&opts, &state);
+    assert(dsd_dispatch_handle_p25p2(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
     assert(g_process_p2_calls == 1);
     assert(state.lastp25type == 2);
+}
+
+/* A window a tolerant sync opened whose verdict failed dispatched nothing and validated nothing: the SPS hunt pays for
+   it as for a missed sync (UNPRODUCTIVE). It is no engine policy decline (WITHHELD). */
+static void
+test_p25p2_rejected_window_reports_unproductive(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    g_process_p2_outcome = P25P2_WINDOW_REJECTED;
+    assert(dsd_dispatch_handle_p25p2(&opts, &state) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    g_process_p2_outcome = P25P2_WINDOW_DISPATCHED;
 }
 
 static void
@@ -102,6 +119,7 @@ test_ysf_failed_fich_reports_unproductive(void) {
 int
 main(void) {
     test_p25p2_match_and_dispatch();
+    test_p25p2_rejected_window_reports_unproductive();
     test_ysf_match_and_dispatch();
     test_ysf_failed_fich_reports_unproductive();
     printf("P25_P2_YSF_SYNC_DISPATCH: OK\n");

@@ -10,7 +10,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Record/Logs/Debug: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `--wav-journal calls.jsonl`, `--record-unknown-only`, `--analog-record-max-gap-ms 2000`, `--analog-record-preroll-ms 200`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `--p25-sm-log p25-sm.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`, `--dmr-debug-burst`, `--dmr-debug-unsynced`
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
 - Levels/Audio: `-g 0|0.001..50`, `-n 0|1..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0x1`
-- Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fA | -fM` (Auto, `-fa`, is the default)
+- Modes: `-fa | -ft | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fT | -fA | -fM` (Auto, `-fa`, is the default)
 - Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); `--squelch auto[+N]` (open N dB over each analog channel's learned noise floor, radio inputs); `--squelch noise[+N]` (open an FM channel at N dB of quieting, as a radio's squelch does; on audio input from a reference it learns); see [Analog reception](#analog-reception--fa--fm), [Tone filter](#tone-filter-ctcssdcs-receive-policy), [Auto squelch](#auto-squelch---squelch-auto) and [Noise squelch](#noise-squelch---squelch-noise)
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
 - Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (repeatable; `--trunk-scan-off targets.csv` adds a list that starts off; `--trunk-scan-hold <target-id>` starts held on one target; P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`
@@ -73,6 +73,20 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
   replayable at the configured rate. Remove that mislabeled-file fallback after those captures are migrated or their
   support window ends; explicitly raw stream and file inputs remain supported independently.
 - OP25/FME capture BIN: `-i file.bin`.
+- Symbol files: `-i capture.bin` replays a `-c` symbol capture with the soft metrics it recorded; `-i file.raw` or
+  `.sym` reads a float symbol file, one native-order 32-bit float per symbol at the nominal levels (outer ±3, inner
+  ±1). A float symbol file is sliced as PCM audio is, on the adaptive thresholds in its own units, whatever the
+  modulation but TETRA (a P25 Phase 2 or `-mq` session included), and its soft-decision reliabilities (voice error
+  counts and soft FEC: AMBE/IMBE, P25 Phase 2 DUID, ESS, FACCH and SACCH) are measured against the same thresholds, so
+  they are real but on another scale than a radio input's. TETRA, from any input, is sliced and measured at its
+  quadrant levels about 0. Of the rest, only the CQPSK demodulator of a radio or `--iq-replay` input slices and
+  measures P25 symbols at the fixed π/4-DQPSK levels.
+  A float symbol file of a CQPSK capture therefore decodes close to, not exactly as, the radio input it came from:
+  the adaptive inner/outer edge sits at 5/8 of the averaged outer level, about 2.1 levels on a noisy simulcast
+  against the CQPSK slicer's fixed 2, so noisy outer symbols near that edge can slice the other way (0.6% of the
+  decoded dibits on a simulcast P25 Phase 2 call), and the thresholds settle over the first thousand or so symbols.
+  A `-c` capture made while replaying one records the sync search's dibits on two levels (their sign), where a radio
+  input's CQPSK search records four; that difference is in the capture only, not in what decodes.
 - RTL‑SDR (USB): `-i rtl` or advanced string:
   - `rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]`
   - Examples: `rtl:0:851.375M:22:-2:24:0:2`, `rtl:1:450M:0:0:12:0:2`
@@ -681,7 +695,9 @@ Android session whose saved extra arguments carry one refuses to start the same 
   the hunt table below)
 - Passive analog monitor: `-fA` (NFM on a radio input; see [Analog reception](#analog-reception--fa--fm) below)
 - Native AM receiver: `-fM` (I/Q radio inputs only; see [Native AM](#native-am--fm) below)
-- Trunking helper: `-ft` (P25p1 CC + P25p1/p2/DMR voice)
+- DMR and P25: `-ft` decodes DMR, P25 Phase 1 and P25 Phase 2 and turns every other decoder off (X2-TDMA, NXDN48,
+  NXDN96, YSF, M17, dPMR, ProVoice/EDACS, D-STAR and TETRA). Name it when you want DMR and P25 without the rest of
+  Auto's set. It does not start trunk following on its own; `-T` does that.
 - DMR simplex (BS/MS): `-fs` uses the dual-slot decoder; `-fr` uses the single-slot mono decoder
 - P25 Phase 1 only: `-f1`
 - P25 Phase 2 only (6000 sps): `-f2`
@@ -817,7 +833,7 @@ Android session whose saved extra arguments carry one refuses to start the same 
   After a call the decoder goes back to the control channel it left. TETRA cells reuse frequencies, so a traffic channel
   can carry another cell's bursts too, and while the decoder follows a call it does not take them on there: another
   cell's SYNC (another network or colour code), its SYSINFO (another main carrier or location area) and direct mode
-  bursts are ignored (`-v 1` logs `another cell on the followed carrier; not taken on`, `...; not applied` or
+  bursts are ignored (the log says `another cell on the followed carrier; not taken on`, `...; not applied` or
   `direct mode on the followed carrier; not taken on`), the control channel stays the one the call left, and Return to
   CC, skip and lockout go back to it. Turning trunking off and on during a call returns to it at once, since what was
   heard meanwhile cannot be trusted. Known limits: a cell with the same network and colour code on the same frequency
@@ -1009,7 +1025,8 @@ Notes
 - All three Auto entry points install the complete matrix above: CLI `-fa`, config `decode = "auto"`, and the
   interactive Auto choice select the same decoder set. Only `-fa` also resets the demodulator to C4FM and the audio
   layout to stereo; the config path leaves those to its `demod` and `dmr_mono` keys, and the interactive path to the
-  wizard's own answers. To scan a deliberately narrowed set, name the narrower preset rather than Auto.
+  wizard's own answers. To scan a deliberately narrowed set, name the narrower preset rather than Auto (`-ft` for DMR
+  and P25).
 - Auto is also the default. A session that names no `-f` (as the Qt and Android Auto choice does) starts on the same
   decoder set, C4FM demodulator and stereo audio layout as `-fa`, a config whose `[mode]` has no `decode` key keeps
   that set, and such a session autosaves `decode = "auto"`. A modulation flag alone keeps it too: `-mq` (which a
@@ -1034,6 +1051,30 @@ Notes
   console diagnostics are suppressed.
 - P25p2 on a single frequency without trunking recovers the scrambling code from the channel's own scrambled
   FACCH/SACCH; `-X` (below) sets it by hand.
+- A P25 Phase 1 NID that names another NAC than the carrier's earlier NIDs did (000 and FFF included) is taken at
+  once only when it needed at most 4 bit corrections. A costlier one (5 or more, as a corrupted control channel frame
+  read as voice of another NAC can need) is held: that frame is not decoded and the NAC shown, the received identity
+  and the Phase 2 seed stay as they were (the console prints `[NID NAC xxx held, n corrections]`). The next NID settles it:
+  naming the same new NAC confirms the change and decodes, naming the old NAC drops it. NAC 000 and FFF are never
+  shown or taken as the carrier's NAC. The first NID after a tune, a carrier loss or any other
+  carrier change is taken at once whatever it needed, so a real NAC change on one carrier costs at most its first
+  frame. This applies to C4FM and CQPSK alike.
+- P25 Phase 1 on CQPSK from a radio or `--iq-replay` input (`-mq`, or the CQPSK chain the hunt chose) accepts a frame
+  sync word with up to 6 of its 48 bits wrong at one place only: right where the last frame it decoded ends, on the
+  same carrier, tune and stream. A simulcast site's words often come through with a symbol or two off, which used to
+  lose the whole frame. Such a frame decodes only when its NID decodes cleanly (parity agreeing, at most 4 bit
+  corrections) and names the same NAC; otherwise it is dropped unseen. Every other word, the first after a gap,
+  a tune or a lost frame included, must match exactly, as before. The console marks these frames
+  `[tolerant sync, n bit errors]` (`[tolerant sync, n bit errors, dropped: ...]` with what the NID was, when it
+  failed the check). C4FM, symbol files and audio inputs
+  are unchanged.
+- P25 Phase 2 on CQPSK from a radio or `--iq-replay` input does the same for its sync word, with up to 4 of its 40 bits
+  wrong, at one place only: right where the next four timeslots must start after four timeslots whose own ISCH said
+  where in the superframe they were, on the same carrier, tune and stream. The four timeslots behind such a word decode
+  only when their own ISCHs agree with where they must be (one matches, none points elsewhere) and at most one of them
+  carries an unreadable burst type; otherwise nothing of them is decoded, shown or counted, and the line reads
+  `P25p2 ~sync rejected` (with the word's bit errors and the verdict's code). The sync shows as `+P25p2~`. Every other
+  word must match exactly, as before; C4FM (`-m3`), symbol files and audio inputs are unchanged.
 
 ## Analog reception (`-fA`, `-fM`)
 
@@ -2167,7 +2208,8 @@ setting, shown apart from what is received, and it is off by default: then the o
   first moments before its C_ALOHA arrives, read as standard. Sites are told apart by the values sent, never by this
   text. Capacity Plus and Connect Plus numbers are shown as sent.
 - Env (CQPSK timing):
-  - `DSD_NEO_TED_GAIN=<float>` overrides the CQPSK/OP25 Gardner timing loop gain.
+  - `DSD_NEO_TED_GAIN=<float>` overrides the CQPSK/OP25 Gardner timing loop gain, including the lower gains it steps to
+    once locked ("CQPSK timing" below).
   - When using RTL CQPSK input, the symbol sampler may gently nudge `symbolCenter` based on the smoothed CQPSK Gardner residual.
   - If you are debugging symbol-center drift, consider freezing windows (`DSD_NEO_WINDOW_FREEZE=1`) while testing.
 
@@ -2874,7 +2916,7 @@ Out-of-range decimal keys are rejected without changing the installed key.
     D-OTAR key provide of trunked mode keys, which names those keys' algorithm (`TMO downlink · encrypted (TEA2)`).
     On an encrypted network these messages are usually encrypted too, and rare.
   - With the key: load the 80-bit key without a TEA. Once repeated encrypted signalling proves one of TEA1-TEA3,
-    `-v 2` logs `[TETRA AIR] ... proved by a repeat under TEA1` and the TETRA row names it; that needs signalling the
+    the log says `[TETRA AIR] ... proved by a repeat under TEA1` and the TETRA row names it; that needs signalling the
     network repeats under that key, so loading the right key alone does not guarantee it. The Security row's
     `TEA1 key` is the key and algorithm that apply to the carrier, not that proof.
   - A clue from the uplink: a radio's U-LOCATION UPDATE DEMAND names the algorithm it proposes, which the network
@@ -2998,9 +3040,27 @@ from the active SPS hunt profile rather than from the front end's published symb
 Gardner/Costas/FLL-band-edge symbol chain.
 
 - `DSD_NEO_TED_GAIN=<float>` — CQPSK/OP25 Gardner timing loop gain override, 0.01 to 0.5 (the menu's range; a value
-  outside it is taken as the nearest end, and one that is not a number is ignored). Without it the gain is OP25's
-  0.025, and the TETRA receive chain's own 0.07 while that chain runs (`-fT`). The terminal's CQPSK timing gain menu
-  row and the DSP panel's `g:` show the gain set, or 0.025 when none is, also while the TETRA chain runs 0.07
+  outside it is taken as the nearest end, and one that is not a number is ignored). A set gain holds throughout.
+  Without it the gain is OP25's 0.025 while the loop acquires, and the TETRA receive chain's own 0.07 while that chain
+  runs (`-fT`). Once the loop has locked (240 symbols whose lock measure averages 0.05 or more, counted since it last
+  started over, so a fade later is judged against that history), the gain steps lower:
+  - to 0.01 at 4800 and 6000 sym/s while dsd-neo has proven the carrier P25 since the last tune: a Phase 1 control
+    channel message (TSBK) that passed its CRC, or a Phase 2 MAC PDU that passed its CRC (or a Phase 2 window a
+    near-miss sync opened that passed its checks). The slower gain holds the timing the lock found instead of
+    following a simulcast site's echoes from symbol to symbol. A tune, a lost carrier, a symbol rate or modulation
+    change (the hunt's, or one made with the modulation controls, the DSP menu's CQPSK toggle, the P25 Phase 2 helper
+    or a config's `[demod]`) and a decode-mode switch withdraw the proof, and the gain goes back to 0.025 until P25
+    proves the carrier again.
+    Phase 1 voice never proves it: on a simulcast voice channel the signal fades and its timing sways a few times a
+    second as the sites' signals beat, the slower gain follows that sway too late, and a call is too short to win
+    anything back, so voice frames came out with more errors. On a noisy Phase 2 simulcast channel the slower gain
+    is not always better either: on one noisy test capture about half the runs lost up to 6 of about 235 voice bursts,
+    and on a clean capture of another simulcast system the same voice frames came out with slightly more bit errors
+    (0.021 per frame against 0.016).
+  - otherwise (Phase 1 voice and conventional channels, X2-TDMA, Auto's CQPSK trial before P25 is proven, DMR and
+    NXDN through `-mq`), to 0.018 at 5500 sym/s and above, and not at all below.
+  The terminal's CQPSK timing gain menu row and the DSP panel's `g:` show the gain set, or 0.025 when none is, also
+  while the loop runs a post-lock gain or the TETRA chain runs 0.07
 - `DSD_NEO_IQ_DC_BLOCK=1` — enable DC blocker
 - `DSD_NEO_IQ_DC_SHIFT=<k>` — DC shift coefficient
 
@@ -3126,7 +3186,8 @@ DMR Tier III (env helpers for `--calc-lcn`)
 Debug (verbose/developer)
 
 - `DSD_NEO_DEBUG_SYNC=1` — verbose sync detection output
-- `DSD_NEO_DEBUG_CQPSK=1` — verbose CQPSK Gardner/Costas/FLL-band-edge state output
+- `DSD_NEO_DEBUG_CQPSK=1` — verbose CQPSK Gardner/Costas/FLL-band-edge state output, symbol histogram and EVM/SNR line
+  ([CQPSK SNR](#cqpsk-snr-dsd_neo_debug_cqpsk))
 - `DSD_NEO_DEBUG_SYMBOL_TIMING=1|2` — symbol-timing diagnostics on the decoder's symbol grid
 - `DSD_NEO_SYNC_WARMSTART=0` — disable sync warm-start calibration
 
@@ -3150,6 +3211,31 @@ SYMTIMING: sync=29 win=13113313 sps=20 jitter=-1 off=0 accum=0
 Collect the `off` distribution over a call to see the phase the grid settled on, and compare runs to see whether it
 is stable. Level `2` additionally enables the per-sample `+ - O X` trace and the per-symbol jitter line; that is tens
 of thousands of characters per second, so prefer level `1` unless you need the within-symbol detail.
+
+### CQPSK SNR (`DSD_NEO_DEBUG_CQPSK`)
+
+The SNR meter for CQPSK (P25 LSM/simulcast and Phase 2) measures how far the received points sit from the four
+ideal points. The CQPSK chain's AGC runs ahead of the timing loop and evens out the signal's strength sample by
+sample, so the beat between simulcast transmitters (the envelope rising and falling) does not reach the meter. What
+is left is phase error. On a simulcast site that error is real: the same symbol arrives from several towers tens of
+microseconds apart, and the overlap smears each symbol into its neighbours. So a simulcast site reads lower than its
+signal strength suggests, and past some point a stronger signal does not raise the reading. A low reading there comes
+from the site, not from a weak signal.
+
+With `DSD_NEO_DEBUG_CQPSK=1`, every 25 blocks the CQPSK chain also prints a symbol histogram and an EVM line:
+
+```text
+[SYM] +3:25.1% +1:24.9% -1:25.0% -3:25.0% (n=4800)
+[CQPSK] EVM:12.00% SNR:14.8 dB bias:3.6 dB ref_rms:2.24 n:4800
+```
+
+`EVM` is the RMS distance of the sliced differential-phase symbols from their levels (±1, ±3), on the meter's scale:
+as a share of 4/π, the level-unit size of an error as large as the received point itself. `SNR` comes from the same
+symbols with the meter's estimator bias (`bias`) taken off, so it agrees with the meter within a few tenths of a dB,
+on simulcast as on a single tower, and `SNR = -20*log10(EVM/100) - bias` on every line (`EVM` has no bias taken off).
+`ref_rms` is the RMS of the levels the symbols were sliced to, about 2.24 when the four are equally common. Earlier
+builds measured both `EVM` and `SNR` against `ref_rms` (the `SNR` about 5 dB above the meter on any signal), and
+printed no `bias`.
 
 ## Handy Examples
 

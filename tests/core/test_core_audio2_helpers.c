@@ -495,8 +495,9 @@ test_output_helpers_dispatch_to_configured_sinks(void) {
     rc |= expect_size("float-output-audio-frames", g_audio_write_frames, 2);
     rc |= expect_int("float-output-clip-high", g_audio_write_samples[0], 32767);
     rc |= expect_int("float-output-clip-low", g_audio_write_samples[1], -32768);
-    rc |= expect_int("float-output-half-positive", g_audio_write_samples[2], 16383);
-    rc |= expect_int("float-output-half-negative", g_audio_write_samples[3], -16383);
+    /* 0.5 * 32767 = 16383.5: a tie, rounded to nearest even (issue #861). */
+    rc |= expect_int("float-output-half-positive", g_audio_write_samples[2], 16384);
+    rc |= expect_int("float-output-half-negative", g_audio_write_samples[3], -16384);
 
     reset_sink_capture();
     opts.audio_out_type = 8;
@@ -669,8 +670,9 @@ test_float_device_write_converts_in_bounded_chunks(void) {
     rc |= expect_int("float-chunks-calls", g_audio_write_calls, 2);
     rc |= expect_size("float-chunks-first", g_audio_write_frame_log[0], 320);
     rc |= expect_size("float-chunks-second", g_audio_write_frame_log[1], 80);
-    /* The last chunk starts at frame 320 (sample 640): 640 % 100 = 40 -> 0.040 * 32767. */
-    rc |= expect_int("float-chunks-second-first-sample", g_audio_write_samples[0], (int)(0.040f * 32767.0f));
+    /* The last chunk starts at frame 320 (sample 640): 640 % 100 = 40 -> 0.040 * 32767 = 1310.68, rounded to nearest
+       (issue #861). */
+    rc |= expect_int("float-chunks-second-first-sample", g_audio_write_samples[0], 1311);
 
     reset_sink_capture();
     dsd_write_float_audio_device(&opts, block, 160, 1);
@@ -683,6 +685,32 @@ test_float_device_write_converts_in_bounded_chunks(void) {
     opts.audio_out_stream = NULL;
     dsd_write_float_audio_device(&opts, block, 400, 2);
     rc |= expect_int("float-chunks-no-stream", g_audio_write_calls, 0);
+    return rc;
+}
+
+/* Issue #861: the float output's device conversion rounds to nearest, as the short output does, so sub-step samples
+   are not truncated toward zero. */
+static int
+test_float_device_write_rounds_to_nearest(void) {
+    static dsd_opts opts;
+    static const float k_in[5] = {0.6f, -0.6f, 1.4f, -1.6f, 0.4f};
+    static const int k_want[5] = {1, -1, 1, -2, 0};
+    float block[5];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.audio_out_stream = (dsd_audio_stream*)&opts;
+    for (size_t i = 0; i < 5U; i++) {
+        block[i] = k_in[i] / 32767.0f;
+    }
+
+    int rc = 0;
+    reset_sink_capture();
+    g_audio_write_channels = 1;
+    dsd_write_float_audio_device(&opts, block, 5, 1);
+    rc |= expect_int("float-round-calls", g_audio_write_calls, 1);
+    for (size_t i = 0; i < 5U; i++) {
+        rc |= expect_int("float-round-sample", g_audio_write_samples[i], k_want[i]);
+    }
+    opts.audio_out_stream = NULL;
     return rc;
 }
 
@@ -2607,6 +2635,7 @@ main(void) {
     rc |= test_output_helpers_dispatch_to_configured_sinks();
     rc |= test_float_output_writes_the_s16_block_as_f32();
     rc |= test_float_device_write_converts_in_bounded_chunks();
+    rc |= test_float_device_write_rounds_to_nearest();
     rc |= test_output_block_helpers_skip_silent_trailing_blocks();
     rc |= test_output_ring_reset_helpers_preserve_below_threshold_and_clear_at_limit();
     rc |= test_fdma_crypto_verdict_formats();

@@ -11,6 +11,7 @@ target_sources(
         trellis34.c
         hamming_10_6_3.cpp
         ez.cpp
+        p25p2_isch.c
 )
 
 target_include_directories(

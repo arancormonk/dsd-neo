@@ -1049,6 +1049,16 @@ int rtl_stream_request_fsk_reacquire(void);
 int rtl_stream_request_cqpsk_reacquire(void);
 
 /**
+ * @brief Hand the CQPSK timing loop the decoder's proof that the carrier is P25.
+ *
+ * @p proof is the tuning generation (dsd_trunk_tuning_generation()) the proving P25 content (a Phase 1 TSBK or a Phase 2
+ * MAC PDU that passed its CRC) was decoded on, plus 1, or 0 to withdraw it. While it holds for the current generation
+ * the Gardner's gain steps lower once locked (op25_gardner_cc()). The decoder thread calls it; the demod thread reads
+ * the value once per block.
+ */
+void rtl_stream_set_p25_timing_proof(uint64_t proof);
+
+/**
  * @brief Return mean power approximation (RMS^2 proxy) for soft squelch.
  * The computation uses a small fixed sample window and matches the reference implementation.
  * @param ctx Stream context (unused).

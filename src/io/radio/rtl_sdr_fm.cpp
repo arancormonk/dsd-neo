@@ -11322,6 +11322,12 @@ rtl_stream_request_cqpsk_reacquire(void) {
     return 1;
 }
 
+extern "C" void
+rtl_stream_set_p25_timing_proof(uint64_t proof) {
+    /* An atomic the demod thread reads at its next Gardner block: no queue, as nothing else changes with it. */
+    demod.p25_timing_proof.store(proof, std::memory_order_release);
+}
+
 /* A TED change on CQPSK installs the CQPSK channel profile for the symbol rate @p sps gives at the demod rate (the
    stream's own symbol rate before a rate is known): TETRA's at 18000 sym/s, the P25 CQPSK one otherwise
    (rtl_demod_cqpsk_channel_profile()). Off CQPSK the profile is left alone. */
@@ -15044,6 +15050,23 @@ rtl_stream_test_fsk_snr_sps(int rate_out_hz, int symbol_rate_hz, int stale_ted_s
     d.symbol_rate_hz = symbol_rate_hz;
     d.ted_sps = stale_ted_sps;
     return demod_snr_output_samples_per_symbol(&d);
+}
+
+/* The demod thread's SNR update for one demodulated block of @p d, the estimators started over first when @p reset is
+ * set: the CQPSK meter's reading after it (rtl_stream_get_snr_cqpsk()). */
+extern "C" int
+rtl_stream_test_snr_update_block(const struct demod_state* d, int reset, double* out_cqpsk_db) {
+    static DemodMetricsState st;
+    if (!d || !out_cqpsk_db) {
+        return -1;
+    }
+    if (reset) {
+        DSD_MEMSET(&st, 0, sizeof(st));
+        snr_ema_reset();
+    }
+    demod_metrics_update_snr(d, &st);
+    *out_cqpsk_db = rtl_stream_get_snr_cqpsk();
+    return 0;
 }
 
 /* Publish one C4FM SNR figure and one QPSK error ratio, report which of them reached the SNR atomics, and restore

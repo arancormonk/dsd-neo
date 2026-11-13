@@ -46,6 +46,7 @@
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <errno.h>
+#include <math.h>
 #include <mbelib-neo/mbelib.h>
 #include <sndfile.h>
 #include <stdint.h>
@@ -579,6 +580,14 @@ dsd_audio_clamp_pcm16_f32(float sample) {
     return sample;
 }
 
+/* A voice sample on the int16 scale to 16-bit PCM, rounded to nearest after the clamp. mbelib-neo's own int16 output
+   rounds for D-STAR and AMBE+2 as DVSI's decoders do (issue #861); a truncating cast would also turn the sub-step mute
+   noise of those codecs into digital silence. */
+static short
+dsd_audio_pcm16_from_f32(float sample) {
+    return (short)lrintf(dsd_audio_clamp_pcm16_f32(sample));
+}
+
 /* The reception the slot's frame belongs to: its active call's transmission, which a fade the call state heals keeps
    (a new raw epoch does not cut it), and the protocol family. */
 static dsd_voice_reception
@@ -680,9 +689,10 @@ dsd_audio_emit_upsampled_left(const dsd_opts* opts, dsd_state* state) {
 
     state->audio_out_float_buf_p -= (960 + opts->playoffset);
     for (n = 0; n < 960; n++) {
+        const short pcm = dsd_audio_pcm16_from_f32(*state->audio_out_float_buf_p);
         *state->audio_out_float_buf_p = dsd_audio_clamp_pcm16_f32(*state->audio_out_float_buf_p);
-        *state->audio_out_buf_p = (short)*state->audio_out_float_buf_p;
-        state->s_lu[n] = (short)*state->audio_out_float_buf_p;
+        *state->audio_out_buf_p = pcm;
+        state->s_lu[n] = pcm;
         state->audio_out_buf_p++;
         state->audio_out_float_buf_p++;
     }
@@ -695,9 +705,10 @@ dsd_audio_emit_native_left(dsd_state* state) {
 
     state->audio_out_temp_buf_p = state->audio_out_temp_buf;
     for (n = 0; n < 160; n++) {
+        const short pcm = dsd_audio_pcm16_from_f32(*state->audio_out_temp_buf_p);
         *state->audio_out_temp_buf_p = dsd_audio_clamp_pcm16_f32(*state->audio_out_temp_buf_p);
-        *state->audio_out_buf_p = (short)*state->audio_out_temp_buf_p;
-        state->s_l[n] = (short)*state->audio_out_temp_buf_p;
+        *state->audio_out_buf_p = pcm;
+        state->s_l[n] = pcm;
         state->audio_out_buf_p++;
         state->audio_out_temp_buf_p++;
         state->audio_out_idx++;
@@ -731,9 +742,10 @@ dsd_audio_emit_upsampled_right(const dsd_opts* opts, dsd_state* state) {
 
     state->audio_out_float_buf_pR -= (960 + opts->playoffsetR);
     for (n = 0; n < 960; n++) {
+        const short pcm = dsd_audio_pcm16_from_f32(*state->audio_out_float_buf_pR);
         *state->audio_out_float_buf_pR = dsd_audio_clamp_pcm16_f32(*state->audio_out_float_buf_pR);
-        *state->audio_out_buf_pR = (short)*state->audio_out_float_buf_pR;
-        state->s_ru[n] = (short)*state->audio_out_float_buf_pR;
+        *state->audio_out_buf_pR = pcm;
+        state->s_ru[n] = pcm;
         state->audio_out_buf_pR++;
         state->audio_out_float_buf_pR++;
     }
@@ -746,9 +758,10 @@ dsd_audio_emit_native_right(dsd_state* state) {
 
     state->audio_out_temp_buf_pR = state->audio_out_temp_bufR;
     for (n = 0; n < 160; n++) {
+        const short pcm = dsd_audio_pcm16_from_f32(*state->audio_out_temp_buf_pR);
         *state->audio_out_temp_buf_pR = dsd_audio_clamp_pcm16_f32(*state->audio_out_temp_buf_pR);
-        *state->audio_out_buf_pR = (short)*state->audio_out_temp_buf_pR;
-        state->s_r[n] = (short)*state->audio_out_temp_buf_pR;
+        *state->audio_out_buf_pR = pcm;
+        state->s_r[n] = pcm;
         state->audio_out_buf_pR++;
         state->audio_out_temp_buf_pR++;
         state->audio_out_idxR++;
@@ -776,12 +789,8 @@ dsd_audio_write_mono_frame_wav(SNDFILE* file, dsd_state* state, const char* cont
     state->audio_out_temp_buf_p = state->audio_out_temp_buf;
 
     for (n = 0; n < 160; n++) {
-        if (*state->audio_out_temp_buf_p > (float)32767) {
-            *state->audio_out_temp_buf_p = (float)32767;
-        } else if (*state->audio_out_temp_buf_p < (float)-32768) {
-            *state->audio_out_temp_buf_p = (float)-32768;
-        }
-        *aout_buf_p = (short)*state->audio_out_temp_buf_p;
+        *aout_buf_p = dsd_audio_pcm16_from_f32(*state->audio_out_temp_buf_p);
+        *state->audio_out_temp_buf_p = dsd_audio_clamp_pcm16_f32(*state->audio_out_temp_buf_p);
         aout_buf_p++;
         state->audio_out_temp_buf_p++;
     }
@@ -825,12 +834,8 @@ writeSynthesizedVoiceR(dsd_opts* opts, dsd_state* state) {
     state->audio_out_temp_buf_pR = state->audio_out_temp_bufR;
 
     for (n = 0; n < 160; n++) {
-        if (*state->audio_out_temp_buf_pR > (float)32767) {
-            *state->audio_out_temp_buf_pR = (float)32767;
-        } else if (*state->audio_out_temp_buf_pR < (float)-32768) {
-            *state->audio_out_temp_buf_pR = (float)-32768;
-        }
-        *aout_buf_p = (short)*state->audio_out_temp_buf_pR;
+        *aout_buf_p = dsd_audio_pcm16_from_f32(*state->audio_out_temp_buf_pR);
+        *state->audio_out_temp_buf_pR = dsd_audio_clamp_pcm16_f32(*state->audio_out_temp_buf_pR);
         aout_buf_p++;
         state->audio_out_temp_buf_pR++;
     }
@@ -852,12 +857,8 @@ writeSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
     state->audio_out_temp_buf_p = state->audio_out_temp_buf;
 
     for (n = 0; n < 160; n++) {
-        if (*state->audio_out_temp_buf_p > (float)32767) {
-            *state->audio_out_temp_buf_p = (float)32767;
-        } else if (*state->audio_out_temp_buf_p < (float)-32768) {
-            *state->audio_out_temp_buf_p = (float)-32768;
-        }
-        *aout_buf_p = (short)*state->audio_out_temp_buf_p;
+        *aout_buf_p = dsd_audio_pcm16_from_f32(*state->audio_out_temp_buf_p);
+        *state->audio_out_temp_buf_p = dsd_audio_clamp_pcm16_f32(*state->audio_out_temp_buf_p);
         aout_buf_p++;
         state->audio_out_temp_buf_p++;
     }
