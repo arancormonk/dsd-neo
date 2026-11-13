@@ -220,9 +220,10 @@ typedef struct {
     uint64_t request_seq;
     uint32_t ticket;
     uint64_t deadline_ms;
-    /* The visit's activity baseline: the sync sequence and the decode time at the first publication of visit_key, kept
-       for that visit across its suspensions, restarts and retries. A sync, a carrier or allowed activity since then
-       ends the visit's check, whatever phase the check was in. visit_set 0 before the first publication. */
+    /* The visit's activity baseline: the sync sequence and the decode time at its landing's note (a park still in
+       flight: at its first publication, kept when its landing adopts it), kept for that visit across its suspensions,
+       restarts and retries. A sync, a carrier or allowed activity since then ends the visit's check, whatever phase the
+       check was in. visit_set 0 before the visit's first publication. */
     int visit_set;
     scan_quiet_visit_key visit_key;
     uint64_t sync_seq;
@@ -581,8 +582,8 @@ quiet_start(const dsd_engine_scan_owner* owner, scan_quiet_check* c, const scan_
     c->retries = 0;
 }
 
-/* The visit's activity baseline, taken at the first publication of @p key; a later publication of the same visit keeps
-   it, so what was heard while its check was suspended still counts. */
+/* The visit's activity baseline for @p key: its landing's note, or a park still in flight's first publication. A later
+   publication of the same visit keeps it, so what was heard while its check was suspended still counts. */
 static void
 quiet_visit_baseline(const dsd_engine_scan_owner* owner, scan_quiet_check* c, const scan_quiet_visit_key* key) {
     if (c->visit_set && quiet_key_equal(&c->visit_key, key)) {

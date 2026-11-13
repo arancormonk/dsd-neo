@@ -22808,7 +22808,7 @@ test_scan_quiet_activity_in_the_visit_ends_the_check(void) {
     rc |= qt_expect("a sync while waiting for the capture: DONE, nothing requested",
                     scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.requests == requests);
 
-    /* A retry asks again, but activity still counts from the visit's first request. */
+    /* A retry asks again, but activity still counts from the visit's landing. */
     quiet_land_again(&state, k_qt_hz_a);
     quiet_publish(&opts, &state);
     quiet_tap_finish(0, DSD_SIGNAL_MEASURE_CAPTURE_CHANGED);
@@ -22832,7 +22832,7 @@ test_scan_quiet_activity_in_the_visit_ends_the_check(void) {
     rc |= qt_expect("allowed activity in the visit: declined", quiet_apply(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 0
                                                                    && scan_quiet_phase_get(&state) == SCAN_QUIET_DONE);
 
-    /* Activity before the next request does not decline it. */
+    /* Activity before the next landing does not decline it. */
     dsd_decode_clock_test_set_ns(1001000000000ULL);
     quiet_land_again(&state, k_qt_hz_a);
     rc |= quiet_to_ready(&opts, &state);
@@ -23314,7 +23314,7 @@ test_scan_quiet_decline_ends_it_unless_the_guard_was_lost(void) {
 }
 
 /* A sync or a carrier anywhere in a visit ends its check, suspended or not: the visit keeps its activity baseline
-   from its first publication across a suspension, so a sync heard while its check was suspended (an edit, a hold, a
+   from its landing across a suspension, so a sync heard while its check was suspended (an edit, a hold, a
    pause) still ends it when it is published again, with nothing requested and no skip. Allowed trunk-scan activity
    during the suspension declines the restarted check's result the same way. With nothing heard the restarted check
    measures and can skip. */

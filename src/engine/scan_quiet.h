@@ -170,8 +170,8 @@ int scan_quiet_format_skip(char* out, size_t out_size, const char* name, int row
 /** Log the NOTICE line for the result scan_quiet_apply() just consumed. */
 void scan_quiet_log_skip(const dsd_state* state, const char* name, int row);
 
-/** The decode-mono time of the visit's activity baseline, its first publication (trunk scan: allowed activity at or
- * after it declines); 0 with none. */
+/** The decode-mono time of the visit's activity baseline, its landing's note or a park in flight's first publication
+ * (trunk scan: allowed activity at or after it declines); 0 with none. */
 double scan_quiet_visit_decode_m(const dsd_state* state);
 /** The check's phase (SUSPENDED with none). */
 scan_quiet_phase scan_quiet_phase_get(const dsd_state* state);
