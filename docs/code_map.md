@@ -2785,7 +2785,11 @@ suite runs under this compiler.
   WAV writers expect, so every caller of an
   `mbe_process*f` API scales the frame it gets with `dsd_mbe_float_to_pcm16_scale()`: `store_process_result()` in
   `dsd_mbe.c` for the vocoder's own paths, SDRTrunk JSON playback in `dsd_file.c` and YSF V/D2 in `ysf.c`. A new
-  call site does the same. Silence from `mbe_synthesizeSilencef()` is zero and needs none.
+  call site does the same. Silence from `mbe_synthesizeSilencef()` is zero and needs none. Every 16-bit voice
+  output (the short staging, the WAV writers in `dsd_audio.c`, the float output's device conversion in
+  `dsd_audio2.c` and `hpf_dL()`/`hpf_dR()`) rounds each clamped sample to nearest with `lrintf()` (issue #861), as
+  mbelib-neo's own D-STAR and AMBE+2 short output does; a truncating cast would bias samples toward zero and turn the
+  sub-step mute noise of those codecs into digital silence.
 - Invariant (digital voice chain, `<dsd-neo/core/voice_chain.h>`, issue #653): every decoded 8 kHz voice frame goes
   through its slot's chain exactly once, in place, before anything reads it: the digital high-pass (`use_hpf_d`, `-v
   0x8`; a 2nd-order Butterworth at 300 Hz, unity in the voice band, `dsd_voice_hpf_*()` in `dsd_misc.c`), then the
