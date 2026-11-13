@@ -19487,24 +19487,25 @@ if(DSD_HAS_RADIO)
     dsd_neo_add_gt_c4fm_cc_tests(S9 p25p1_c4fm_cc_gt_s9 37 12 7)
     dsd_neo_add_gt_c4fm_cc_tests(CITY p25p1_c4fm_cc_gt_city 48 17 16)
     # Two clean P25 Phase 1 C4FM calls with no HDU, each after the carrier was off (p25p1_c4fm_no_hdu_synth). Under -f1
-    # every IMBE frame of all twelve LDUs is read, and every frame outside the two calls' first LDUs needs no correction
-    # at all. A call's first LDU is read without correction too when the hunt matched its sync word exactly (the grid
-    # is then placed on that word, DSP_SYMBOL_P25_C4FM_GRID); the word just after the key-up ramp can come out one sign
-    # off, by rounding alone (the optimized builds read the first call's that way), and the hunt-wide tolerance then
-    # accepts it with the grid the hunt left, a sample late, which costs that LDU up to five corrections a frame. The
-    # FSK discriminator's level normaliser restarted at each carrier and put the call's first symbols at up to twice
-    # the frame's level; the sync word's levels then read the first LDU's outer symbols as inner, up to 13 corrections a
-    # frame. Under -fa the hunt's rotation can miss the first call's first LDU1, so at least 99 frames, none with more
-    # than two corrections; a P25 word the hunt accepted on GFSK set no levels, and that frame was read on the hunt's
-    # starting ones.
+    # every IMBE frame of all twelve LDUs is read without a correction, the calls' first LDUs too: the grid is placed on
+    # the word that acquires each call (DSP_SYMBOL_P25_C4FM_GRID). The word just after the key-up ramp can come out one
+    # sign off by rounding alone (the optimized builds read the first call's that way, Debug builds exactly); the
+    # hunt-wide tolerance accepts it, and once its NID passed it is measured on the same samples an exact word is, so
+    # every build reads the same. Read on the grid the hunt left, a sample late, that LDU took up to five corrections a
+    # frame. The FSK discriminator's level normaliser restarted at each carrier and put the call's first symbols at up to
+    # twice the frame's level; the sync word's levels then read the first LDU's outer symbols as inner, up to 13
+    # corrections a frame. Under -fa the hunt's rotation can miss the first call's first LDU1 (Debug builds do), so at
+    # least 99 frames, none with more than two corrections (five take one in every build); a P25 word the hunt accepted
+    # on GFSK set no levels, and that frame was read on the hunt's starting ones.
     add_test(
         NAME DECODE_IQ_P25P1_C4FM_NO_HDU_F1
         COMMAND
             ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" "-DMODE=-f1 -Z"
             "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/p25p1_c4fm_no_hdu_synth.iq.json"
             "-DEXPECTED=IMBE [0-9A-F]+ err = " -DMIN_MATCHES=108
-            "-DEXPECTED2=IMBE [0-9A-F]+ err = \\[0\\] \\[0\\]" -DMIN_MATCHES2=90
-            "-DNOT_EXPECTED=err = \\[[0-9A-F]+\\] \\[([6-9A-F]|[0-9A-F][0-9A-F]+)\\]"
+            "-DEXPECTED2=IMBE [0-9A-F]+ err = \\[0\\] \\[0\\]"
+            -DMIN_MATCHES2=108
+            "-DNOT_EXPECTED=err = \\[[0-9A-F]+\\] \\[([1-9A-F]|[0-9A-F][0-9A-F]+)\\]"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
     )
     set_tests_properties(

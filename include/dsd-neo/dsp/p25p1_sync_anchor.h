@@ -138,6 +138,18 @@ dsd_p25p1_sync_kind dsd_frame_sync_p25p1_sync_kind(const dsd_state* state, int* 
 void dsd_frame_sync_p25p1_candidate_rejected(dsd_state* state);
 
 /**
+ * @brief The dispatcher keeps the frame behind a tolerant sync word: its NID passed the strict check.
+ *
+ * On the C4FM chain a word read with no recording armed (the word that acquires a transmission, or the first after a
+ * lapse or a reset) is measured now against the grid on the matched-filter seam's raw history, as an exact one is when
+ * it is accepted (dsd_symbol_note_p25p1_marked_sync_anchor()), and the grid moves at the next symbol: the frame's data
+ * after the NID is read on the word's symbols. Until here the word may be no word at all, so the accept measured
+ * nothing, and a frame dropped behind it leaves the grid as the hunt left it. Call once the NID is read, before
+ * dsd_frame_sync_p25p1_frame_decoded(), which spends the frame's context; nothing for an exact word.
+ */
+void dsd_frame_sync_p25p1_candidate_validated(dsd_state* state);
+
+/**
  * @brief Whether the stream the P25p1 frame being decoded was read on is still the one its sync was accepted on: the
  * same clock epoch, input, carrier, tuning generation, sync history drops, SPS profile and modulation, no off-thread
  * tune pending. 0 when no sync-time context was captured, and once the frame was reported

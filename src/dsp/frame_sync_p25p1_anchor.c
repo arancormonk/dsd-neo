@@ -69,11 +69,17 @@ frame_sync_p25p1_anchor_note_sync(dsd_state* state, int synctype, int kind, int 
        end (dsd_frame_sync_p25p1_frame_decoded()), which starts on the word's first symbol, so the word is named from
        its second: the measurement needs a symbol of samples before the first centre it reads. The word that acquires
        a transmission has no recording behind it and is measured on the raw history the matched-filter seam keeps. A
-       word within a tolerance names nothing, neither when accepted nor once its NID validates: until then it may be no
-       word at all, and by then the recording has moved past it, onto the NID. */
-    if (kind == DSD_P25P1_SYNC_EXACT && state->rf_mod == 0) {
-        const char* word = synctype == DSD_SYNC_P25P1_NEG ? INV_P25P1_SYNC : P25P1_SYNC;
-        dsd_symbol_note_p25p1_sync_anchor(state, word + 1, P25P1_SYNC_DIBITS - 1);
+       word within a tolerance may be no word at all until its NID passes: it is measured then, on that raw history,
+       when it was read with no recording armed (dsd_frame_sync_p25p1_candidate_validated()); one read into a
+       recording names nothing, as the recording has moved past it by then, onto the NID. */
+    rec->frame_word.valid = 0U;
+    if (state->rf_mod == 0) {
+        if (kind == DSD_P25P1_SYNC_EXACT) {
+            const char* word = synctype == DSD_SYNC_P25P1_NEG ? INV_P25P1_SYNC : P25P1_SYNC;
+            dsd_symbol_note_p25p1_sync_anchor(state, word + 1, P25P1_SYNC_DIBITS - 1);
+        } else {
+            dsd_symbol_mark_p25p1_sync_anchor(state, P25P1_SYNC_DIBITS - 1, &rec->frame_word);
+        }
     }
     /* The window that matched ends on the latest symbol. */
     if (state->symbol_clock < (uint64_t)P25P1_SYNC_DIBITS || dsd_frame_sync_off_thread_tune_pending()) {
@@ -93,6 +99,7 @@ frame_sync_p25p1_anchor_note_accept(dsd_state* state, int synctype) {
         state->p25_p1_sync_anchor.frame_valid = 0U;
         state->p25_p1_sync_anchor.frame_kind = (uint8_t)DSD_P25P1_SYNC_EXACT;
         state->p25_p1_sync_anchor.frame_dropped = 0U;
+        state->p25_p1_sync_anchor.frame_word.valid = 0U;
         state->p25_p1_sync_candidate.valid = 0U;
     }
 }
@@ -159,11 +166,26 @@ p25p1_candidate_restore(dsd_state* state, const dsd_p25p1_sync_candidate* held) 
 }
 
 void
+dsd_frame_sync_p25p1_candidate_validated(dsd_state* state) {
+    dsd_p25p1_sync_anchor* rec = &state->p25_p1_sync_anchor;
+    const dsd_matched_filter_seam_mark mark = rec->frame_word;
+    rec->frame_word.valid = 0U;
+    if (!mark.valid || rec->frame_kind == (uint8_t)DSD_P25P1_SYNC_EXACT || state->rf_mod != 0 || !rec->frame_valid
+        || !p25p1_anchor_context_current(state, &rec->frame)) {
+        return;
+    }
+    const char* word = rec->frame.inverted ? INV_P25P1_SYNC : P25P1_SYNC;
+    (void)dsd_symbol_note_p25p1_marked_sync_anchor(state, &mark, word + 1, P25P1_SYNC_DIBITS - 1);
+}
+
+void
 dsd_frame_sync_p25p1_candidate_rejected(dsd_state* state) {
     dsd_p25p1_sync_anchor* rec = &state->p25_p1_sync_anchor;
     dsd_p25p1_sync_candidate* held = &state->p25_p1_sync_candidate;
     const int holding = held->valid != 0U;
     held->valid = 0U;
+    /* The word is not measured: the grid stays where the hunt left it. */
+    rec->frame_word.valid = 0U;
     /* Whatever chain it was read on, the frame synced nothing (dsd_state_p25p1_frame_dropped()). */
     rec->frame_dropped = 1U;
     /* Off the stream the word was accepted on (a tune, a flush, a new input) nothing of the old one is worth putting
@@ -318,6 +340,7 @@ dsd_frame_sync_p25p1_frame_decoded(dsd_state* state, int nac, uint32_t unit_dibi
     }
     rec->frame_valid = 0U;
     rec->frame_kind = (uint8_t)DSD_P25P1_SYNC_EXACT;
+    rec->frame_word.valid = 0U;
     /* Validated or not, the frame is over: a candidate's accept is kept, or was put back already. */
     state->p25_p1_sync_candidate.valid = 0U;
     if (!captured || unit_dibits == 0U || nac <= 0x000 || nac >= 0xFFF) {

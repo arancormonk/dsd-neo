@@ -903,6 +903,122 @@ test_p25_hunt_word_declines(void) {
     free(state);
 }
 
+/* The NID's read behind a word, as the frame behind it takes it at have_sync (nothing moves the grid): @p symbols
+   symbols of @p sps samples each, live, into the seam. */
+static void
+seam_take_symbols(dsd_state* state, int symbols, int sps) {
+    dsd_matched_filter_seam* seam = &state->matched_filter;
+    for (int n = 0; n < symbols * sps; n++) {
+        seam->raw[seam->raw_head] = (float)(noise() < 0.0 ? -3.0 : 3.0);
+        seam->raw_head = (seam->raw_head + 1) % DSD_MATCHED_FILTER_HISTORY;
+        seam->raw_count += seam->raw_count < DSD_MATCHED_FILTER_HISTORY;
+    }
+    state->symbol_clock += (uint64_t)symbols;
+}
+
+#define NID_SYMBOLS 33 /* the NID's 32 dibits and the status symbol */
+
+/* Measures the word @p mark noted, as the frame sync does once its NID passed, and returns the move it queued, 0 for
+   none; @p out_measured (may be NULL) receives what the measurement returned, @p out_from_raw (may be NULL) whether the
+   move was the seam's. */
+static int
+marked_word_move(dsd_state* state, const hunt_word_case* c, const dsd_matched_filter_seam_mark* mark, int* out_measured,
+                 int* out_from_raw) {
+    const char* word = c->polarity < 0.0 ? INV_P25P1_SYNC : P25P1_SYNC;
+    const int measured = dsd_symbol_note_p25p1_marked_sync_anchor(state, mark, word + 1, P25_WORD - 1);
+    if (out_measured != NULL) {
+        *out_measured = measured;
+    }
+    dsd_symbol_anchor* anchor = DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR);
+    if (out_from_raw != NULL) {
+        *out_from_raw = dsd_symbol_anchor_slip_from_raw(anchor);
+    }
+    return anchor != NULL ? dsd_symbol_anchor_take_slip(anchor) : 0;
+}
+
+/* A word the hunt accepted within a tolerance is marked where it ends and measured only once its NID passed: the mark
+   moves nothing and allocates nothing, and the measurement behind the NID's samples queues the move an exact word's
+   would have at its accept, at 24, 48 and 96 kHz, either polarity, unfiltered or through the P25 filter, on noise. */
+static void
+test_p25_marked_word_moves_the_grid_once_confirmed(void) {
+    static const struct {
+        int sps;
+        int reach;
+        int delay;
+    } k_rates[] = {{10, 3, 0}, {10, 3, 45}, {5, 1, 0}, {5, 1, 22}, {20, 3, 0}};
+
+    for (size_t r = 0; r < sizeof(k_rates) / sizeof(k_rates[0]); r++) {
+        for (int offset = -k_rates[r].reach; offset <= k_rates[r].reach; offset++) {
+            for (int polarity = -1; polarity <= 1; polarity += 2) {
+                const hunt_word_case c = {k_rates[r].sps, (double)offset, (double)polarity, k_rates[r].delay, 1.0};
+                dsd_state* state = hunt_word_state(&c);
+                dsd_matched_filter_seam_mark mark;
+                DSD_MEMSET(&mark, 0, sizeof(mark));
+                dsd_symbol_mark_p25p1_sync_anchor(state, P25_WORD - 1, &mark);
+                assert(mark.valid == 1U);
+                assert(DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR) == NULL);
+                assert(state->symbol_anchor_hot == 0U);
+                seam_take_symbols(state, NID_SYMBOLS, c.sps);
+                int measured = 0;
+                int from_raw = 0;
+                const int slip = marked_word_move(state, &c, &mark, &measured, &from_raw);
+                const int want = offset > 2 ? 2 : (offset < -2 ? -2 : offset);
+                if (slip != want) {
+                    DSD_FPRINTF(stderr, "P25 marked word, %d sps, delay %d, offset %d, polarity %d: moved %d\n", c.sps,
+                                c.delay, offset, polarity, slip);
+                }
+                assert(measured == 1 && slip == want);
+                assert(from_raw == (want != 0));
+                dsd_state_ext_free_all(state);
+                free(state);
+            }
+        }
+    }
+}
+
+/* A marked word is measured only while the seam still holds it as it was marked: not once the samples since have
+   overwritten it, nor after the seam was forgotten (a stream flush), nor at another span, nor with a recording armed
+   (at the mark, which then marks nothing, or at the measurement). A measured word places no grid for a hold, as an
+   exact word read with no recording armed does not. */
+static void
+test_p25_marked_word_declines(void) {
+    const hunt_word_case c = {10, 1.0, 1.0, 0, 0.0};
+    for (int k = 0; k < 6; k++) {
+        dsd_state* state = hunt_word_state(&c);
+        dsd_matched_filter_seam_mark mark;
+        DSD_MEMSET(&mark, 0, sizeof(mark));
+        if (k == 0) {
+            dsd_symbol_arm_sync_anchor(state);
+        }
+        dsd_symbol_mark_p25p1_sync_anchor(state, P25_WORD - 1, &mark);
+        assert(mark.valid == (k == 0 ? 0U : 1U));
+        if (k == 1) {
+            seam_take_symbols(state, (DSD_MATCHED_FILTER_HISTORY / c.sps) + 1, c.sps); /* overwritten */
+        } else if (k == 2) {
+            state->matched_filter.raw_head = 0; /* forgotten, then the NID's samples */
+            state->matched_filter.raw_count = 0;
+            seam_take_symbols(state, NID_SYMBOLS, c.sps);
+        } else if (k == 3) {
+            seam_take_symbols(state, NID_SYMBOLS, c.sps);
+            state->samplesPerSymbol = 11;
+        } else if (k == 4) {
+            seam_take_symbols(state, NID_SYMBOLS, c.sps);
+            dsd_symbol_arm_sync_anchor(state);
+        } else {
+            seam_take_symbols(state, NID_SYMBOLS, c.sps);
+            dsd_symbol_anchor_test_place_grid(state);
+        }
+        int measured = -1;
+        const int slip = marked_word_move(state, &c, &mark, &measured, NULL);
+        assert(measured == (k == 5) && slip == (k == 5));
+        if (k == 5) {
+            assert(!dsd_symbol_anchor_test_placed(state));
+        }
+        dsd_state_ext_free_all(state);
+        free(state);
+    }
+}
+
 int
 main(void) {
     test_measures_whole_and_fractional_offsets();
@@ -925,6 +1041,8 @@ main(void) {
     test_p25_hunt_word_dead_zone();
     test_hunt_word_is_p25s_own();
     test_p25_hunt_word_declines();
+    test_p25_marked_word_moves_the_grid_once_confirmed();
+    test_p25_marked_word_declines();
     printf("symbol anchor: OK\n");
     return 0;
 }

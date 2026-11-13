@@ -78,9 +78,10 @@ static uint64_t g_sync_clock;
 /* The length a stand-in TSDU or PDU decoder reports (dsd_state::p25_p1_unit_dibits); 0 for none. */
 static uint32_t g_unit_reported;
 /* The symbol grid's side (src/dsp/symbol_anchor.c): the recordings the dispatcher's report armed for the next data
-   unit's sync word, and the words the frame sync named to it. */
+   unit's sync word, the words the frame sync named to it, and the tolerant ones it marked in the seam's history. */
 static int g_grid_arms;
 static int g_grid_notes;
+static int g_grid_marks;
 static char g_grid_note[DSD_SYMBOL_ANCHOR_MAX_SYMS + 1];
 
 static void
@@ -110,6 +111,7 @@ reset_stub_state(void) {
     g_unit_reported = 0U;
     g_grid_arms = 0;
     g_grid_notes = 0;
+    g_grid_marks = 0;
     g_grid_note[0] = '\0';
 }
 
@@ -134,6 +136,24 @@ dsd_symbol_note_p25p1_sync_anchor(dsd_state* state, const char* sync_dibits, int
     g_grid_notes++;
     DSD_MEMCPY(g_grid_note, sync_dibits, (size_t)count);
     g_grid_note[count] = '\0';
+}
+
+void
+dsd_symbol_mark_p25p1_sync_anchor(const dsd_state* state, int count, dsd_matched_filter_seam_mark* out) {
+    (void)state;
+    assert(count == 23 && out != NULL);
+    g_grid_marks++;
+    out->valid = 0U;
+}
+
+int
+dsd_symbol_note_p25p1_marked_sync_anchor(dsd_state* state, const dsd_matched_filter_seam_mark* mark,
+                                         const char* sync_dibits, int count) {
+    (void)state;
+    (void)mark;
+    (void)sync_dibits;
+    (void)count;
+    return 0;
 }
 
 /* A stand-in decoder past the NID read its unit up to g_unit_read dibits from the sync. */
@@ -1249,7 +1269,8 @@ dispatch_c4fm_frame(dsd_opts* opts, dsd_state* state, uint8_t duid, uint32_t rea
 
 /* On the C4FM chain the frame sync names each exact P25p1 word to the symbol grid's anchor from its second symbol (the
    recording starts on the first, and the measurement needs a symbol of margin), either polarity. A word within a
-   tolerance (anchored or hunt-wide) names nothing, and the CQPSK chain's grid takes one sample a symbol. */
+   tolerance (anchored or hunt-wide) names nothing: it is only marked where it lies in the seam's history, for a
+   measurement once its NID passed. The CQPSK chain's grid takes one sample a symbol. */
 static void
 test_p25p1_c4fm_sync_names_the_grid_word(void) {
     static dsd_state state;
@@ -1262,14 +1283,16 @@ test_p25p1_c4fm_sync_names_the_grid_word(void) {
     assert(g_grid_notes == 1 && strcmp(g_grid_note, &P25P1_SYNC[1]) == 0);
     frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_NEG, DSD_P25P1_SYNC_EXACT, -1, 0);
     assert(g_grid_notes == 2 && strcmp(g_grid_note, &INV_P25P1_SYNC[1]) == 0);
+    assert(g_grid_marks == 0);
     frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_POS, DSD_P25P1_SYNC_ANCHORED, 0x1A6, 3);
-    assert(g_grid_notes == 2);
+    assert(g_grid_notes == 2 && g_grid_marks == 1);
     frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_NEG, DSD_P25P1_SYNC_ACQUISITION, -1, 1);
-    assert(g_grid_notes == 2);
+    assert(g_grid_notes == 2 && g_grid_marks == 2);
 
     state.rf_mod = 1;
     frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_POS, DSD_P25P1_SYNC_EXACT, -1, 0);
-    assert(g_grid_notes == 2);
+    frame_sync_p25p1_anchor_note_sync(&state, DSD_SYNC_P25P1_POS, DSD_P25P1_SYNC_ANCHORED, 0x1A6, 3);
+    assert(g_grid_notes == 2 && g_grid_marks == 2);
 }
 
 /* The arming rows (plan C1): a C4FM frame that validated, whose length on air is known, read on the stream its sync was

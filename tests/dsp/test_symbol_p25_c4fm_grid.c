@@ -10,7 +10,9 @@
  * (about a sample late on a clean signal). The frame sync now names each exact word to the sync anchor as it accepts it
  * (frame_sync_p25p1_anchor_note_sync()), and the report of a unit read whole arms the recording of the next one's word
  * (dsd_frame_sync_p25p1_frame_decoded()): from the second unit after acquisition on, every unit is read with the grid
- * on its symbols, at whole and fractional rates, either polarity, with the transmitter's clock off ours.
+ * on its symbols, at whole and fractional rates, either polarity, with the transmitter's clock off ours. The word that
+ * acquires the transmission may come through a sign off (the hunt-wide tolerance): it is measured once its NID passed,
+ * on the same samples, and a frame dropped behind it leaves the grid where the hunt left it.
  *
  * The stream is generated: raised-cosine 4FSK (roll-off 0.2) at the decoder's input after its filter, the units laid
  * end to end as on a continuous carrier, a TSDU's null pad left to the hunt as its decoder leaves it. The test plays
@@ -266,13 +268,23 @@ typedef struct {
     int measured[MAX_UNITS]; /* the unit's word was measured (dsd_symbol_anchor_test_placed()) */
 } grid_trace;
 
+/* How the frame sync accepted the word that acquires the transmission: exactly, or one sign off (hunt-wide) with its
+   strict NID passing or failing; and the control, with the anchor off. */
+typedef enum {
+    FIRST_EXACT,
+    FIRST_TOLERANT_KEPT,
+    FIRST_TOLERANT_DROPPED,
+    NO_ANCHOR,
+} first_word;
+
 static void
-run_case(const grid_case* c, const stream* s, const char* wav_path, int anchored, grid_trace* out) {
+run_case(const grid_case* c, const stream* s, const char* wav_path, first_word first, grid_trace* out) {
     static dsd_opts opts;
     static dsd_state state;
     reader r;
     reader_open(&r, &opts, &state, c, s, wav_path);
     const int synctype = c->polarity < 0.0 ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS;
+    const int anchored = first != NO_ANCHOR;
     int k = -1;
     for (int u = 0; u < c->unit_count; u++) {
         /* The hunt, up to the word's last symbol. */
@@ -283,10 +295,13 @@ run_case(const grid_case* c, const stream* s, const char* wav_path, int anchored
         assert(k == word_end);
         state.synctype = synctype;
         state.lastsynctype = synctype;
+        const int tolerant = u == 0 && (first == FIRST_TOLERANT_KEPT || first == FIRST_TOLERANT_DROPPED);
         if (anchored) {
-            frame_sync_p25p1_anchor_note_sync(&state, synctype, DSD_P25P1_SYNC_EXACT, -1, 0);
+            frame_sync_p25p1_anchor_note_sync(
+                &state, synctype, tolerant ? DSD_P25P1_SYNC_ACQUISITION : DSD_P25P1_SYNC_EXACT, -1, tolerant ? 1 : 0);
         }
-        /* The unit's decoders, from the NID on. */
+        /* The unit's decoders, from the NID on; behind a tolerant word the dispatcher's verdict on the NID comes once
+           it is read. */
         double sum = 0.0;
         int count = 0;
         for (int m = 24; m < c->units[u]->read; m++) {
@@ -294,12 +309,23 @@ run_case(const grid_case* c, const stream* s, const char* wav_path, int anchored
             if (m == 25) {
                 out->measured[u] = dsd_symbol_anchor_test_placed(&state);
             }
+            if (tolerant && m == 56) {
+                if (first == FIRST_TOLERANT_KEPT) {
+                    dsd_frame_sync_p25p1_candidate_validated(&state);
+                } else {
+                    dsd_frame_sync_p25p1_candidate_rejected(&state);
+                }
+            }
             if (m >= 57 && m < 57 + HEAD_SYMBOLS) { /* past the NID: the move the word asked for is in */
                 sum += r.last_centre - (s->start + ((double)k * s->period));
                 count++;
             }
         }
         out->offset[u] = count > 0 ? sum / (double)count : 0.0;
+        if (tolerant && first == FIRST_TOLERANT_DROPPED) {
+            /* The frame was dropped: what its unit would have been read on is all there is to see. */
+            break;
+        }
         if (anchored) {
             assert(dsd_frame_sync_p25p1_frame_decoded(&state, NAC, (uint32_t)c->units[u]->symbols)
                    == DSD_P25P1_GRID_ARMED);
@@ -318,7 +344,8 @@ run_case(const grid_case* c, const stream* s, const char* wav_path, int anchored
    so the unit after it is read on its symbols too, with the filter switching on behind the word or not; nearer, and at
    a fractional rate, whose spans alternate, that unit is the hunt's, where it was before. Without the anchor, the
    crossing loop leaves the units off the symbols on these streams; at 48 and 24 kHz it leaves every one a sample past
-   them. */
+   them. The same acquiring word taken a sign off reads every unit where the exact word does once its NID passed (the
+   move then comes behind the NID, before the unit's data), and where the hunt left it when the NID failed. */
 static void
 check_case(const grid_case* c) {
     static stream s;
@@ -328,10 +355,16 @@ check_case(const grid_case* c) {
 
     grid_trace anchored;
     grid_trace control;
+    grid_trace kept;
+    grid_trace dropped;
     DSD_MEMSET(&anchored, 0, sizeof(anchored));
     DSD_MEMSET(&control, 0, sizeof(control));
-    run_case(c, &s, wav_path, 1, &anchored);
-    run_case(c, &s, wav_path, 0, &control);
+    DSD_MEMSET(&kept, 0, sizeof(kept));
+    DSD_MEMSET(&dropped, 0, sizeof(dropped));
+    run_case(c, &s, wav_path, FIRST_EXACT, &anchored);
+    run_case(c, &s, wav_path, NO_ANCHOR, &control);
+    run_case(c, &s, wav_path, FIRST_TOLERANT_KEPT, &kept);
+    run_case(c, &s, wav_path, FIRST_TOLERANT_DROPPED, &dropped);
 
     int late = 0;
     for (int u = 0; u < c->unit_count; u++) {
@@ -352,6 +385,13 @@ check_case(const grid_case* c) {
     assert((c->den == 0 && fabs(control.offset[0]) >= 0.7) || fabs(anchored.offset[0] - control.offset[0]) < 1e-9);
     /* The control: the hunt's crossing loop leaves the units off the symbols, so the anchor moved the grid. */
     assert(!c->control_late || late == c->unit_count);
+    /* The acquiring word one sign off: once its strict NID passed it is measured on the same samples as the exact word
+       and moves the grid the same, so every unit is read where the exact word's run reads it. A frame dropped behind
+       it leaves the grid where the hunt left it. */
+    for (int u = 0; u < c->unit_count; u++) {
+        assert(fabs(kept.offset[u] - anchored.offset[u]) < 1e-9 && kept.measured[u] == anchored.measured[u]);
+    }
+    assert(fabs(dropped.offset[0] - control.offset[0]) < 1e-9);
     remove(wav_path);
 }
 

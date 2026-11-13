@@ -542,10 +542,27 @@ anchor_seam_raw_at(const dsd_matched_filter_seam* seam, int back) {
 typedef struct {
     int sps;
     int half;       /* samples either side the smoothing averages over */
+    int last_back;  /* the last measured centre */
     int first_back; /* the first measured centre */
     int span;       /* samples the measurement reads, from half a symbol before the first centre */
+    int read_back;  /* the oldest sample the smoothing reads */
     int count;      /* symbols measured */
 } anchor_hunt_word;
+
+/* The word of @p count symbols at @p sps whose last symbol but one has its centre @p last_back samples behind the
+   newest: the P25 word ends in five symbols of one level, so its last symbol holds no crossing and is left out, and the
+   samples past the last measured centre that the smoothing reads are then all there. */
+static void
+anchor_hunt_word_place(int sps, int last_back, int count, anchor_hunt_word* out) {
+    const int margin = sps / 2;
+    out->sps = sps;
+    out->half = sps / 2;
+    out->count = count - 1;
+    out->last_back = last_back;
+    out->first_back = last_back + ((out->count - 1) * sps);
+    out->span = out->first_back - last_back + (2 * margin) + 1;
+    out->read_back = out->first_back + margin + out->half;
+}
 
 /*
  * The word as the grid read it: its last symbol's centre sits symbolCenter samples into the span, counted back from the
@@ -554,8 +571,7 @@ typedef struct {
  * (anchor_nominal_centres()): its centres a span apart. That holds only on samples the grid took live, one each, at one
  * span, since before the word's first symbol (dsd_matched_filter_seam::steady_clock); a fractional rate alternates its
  * span, and declines. A filter switch inside the word does not matter: the seam keeps the content position, and the
- * current group delay maps the grid onto the raw stream. The P25 word ends in five symbols of one level, so its last symbol holds no
- * crossing and is left out: the samples past the last measured centre that the smoothing reads are then all there.
+ * current group delay maps the grid onto the raw stream.
  */
 static int
 anchor_hunt_word_locate(const dsd_state* state, int count, anchor_hunt_word* out) {
@@ -565,18 +581,11 @@ anchor_hunt_word_locate(const dsd_state* state, int count, anchor_hunt_word* out
         || state->symbolCenter < 0 || state->symbolCenter >= sps) {
         return 0;
     }
-    out->sps = sps;
-    out->half = sps / 2;
-    out->count = count - 1;
-    const int margin = sps / 2;
-    const int last_back = (2 * sps) - state->symbolCenter + seam->delay;
-    out->first_back = last_back + ((out->count - 1) * sps);
-    out->span = out->first_back - last_back + (2 * margin) + 1;
-    const int read_back = out->first_back + margin + out->half; /* the oldest sample the smoothing reads */
+    anchor_hunt_word_place(sps, (2 * sps) - state->symbolCenter + seam->delay, count, out);
     /* Every symbol the oldest sample may lie in, and one more for the slips the word was read with, came after the
        last change. */
-    const uint64_t symbols_back = (uint64_t)((read_back + sps - 1) / sps) + 1U;
-    return last_back - margin - out->half >= 1 && read_back <= seam->raw_count
+    const uint64_t symbols_back = (uint64_t)((out->read_back + sps - 1) / sps) + 1U;
+    return out->last_back - (sps / 2) - out->half >= 1 && out->read_back <= seam->raw_count
            && state->symbol_clock > seam->steady_clock + symbols_back;
 }
 
@@ -590,30 +599,26 @@ anchor_hunt_word_locate(const dsd_state* state, int count, anchor_hunt_word* out
  * the share of measurements more than half a sample off from about half to under a tenth.
  */
 static int
-anchor_measure_hunt_word(const dsd_state* state, const char* dibits, int count, double* out_offset) {
-    anchor_hunt_word word;
-    if (!anchor_hunt_word_locate(state, count, &word)) {
-        return 0;
-    }
-    const dsd_matched_filter_seam* seam = &state->matched_filter;
-    const int window_first_back = word.first_back + (word.sps / 2);
+anchor_measure_hunt_word(const dsd_matched_filter_seam* seam, const anchor_hunt_word* word, const char* dibits,
+                         double* out_offset) {
+    const int window_first_back = word->first_back + (word->sps / 2);
     double sum = 0.0;
-    for (int back = window_first_back + word.half; back >= window_first_back - word.half; back--) {
+    for (int back = window_first_back + word->half; back >= window_first_back - word->half; back--) {
         sum += (double)anchor_seam_raw_at(seam, back);
     }
-    const double width = (double)((2 * word.half) + 1);
+    const double width = (double)((2 * word->half) + 1);
     float window[DSD_MATCHED_FILTER_HISTORY];
     window[0] = (float)(sum / width);
-    for (int n = 1; n < word.span; n++) {
-        sum += (double)anchor_seam_raw_at(seam, window_first_back - n - word.half)
-               - (double)anchor_seam_raw_at(seam, window_first_back - n + 1 + word.half);
+    for (int n = 1; n < word->span; n++) {
+        sum += (double)anchor_seam_raw_at(seam, window_first_back - n - word->half)
+               - (double)anchor_seam_raw_at(seam, window_first_back - n + 1 + word->half);
         window[n] = (float)(sum / width);
     }
     int centres[DSD_SYMBOL_ANCHOR_MAX_SYMS];
-    for (int k = 0; k < word.count; k++) {
-        centres[k] = (word.sps / 2) + (k * word.sps);
+    for (int k = 0; k < word->count; k++) {
+        centres[k] = (word->sps / 2) + (k * word->sps);
     }
-    return dsd_symbol_anchor_measure_offset(window, word.span, centres, dibits, word.count, word.sps, out_offset);
+    return dsd_symbol_anchor_measure_offset(window, word->span, centres, dibits, word->count, word->sps, out_offset);
 }
 
 /* The dead zone of a word the hunt read: the grid moves only when the word sits this far off it or more. It is an
@@ -627,20 +632,24 @@ anchor_measure_hunt_word(const dsd_state* state, const char* dibits, int count, 
    was measured on the raw stream, so the matched filter that switches on behind the word does not discard it: the
    seam keeps the content position across the switch (dsd_symbol.c). The grid is not placed for a hold: the frame
    behind the word arms the next word's recording as before, and that word is read on the crossing loop's grid. */
-static void
-anchor_note_hunt_word(dsd_state* state, const char* sync_dibits, int count) {
+static int
+anchor_note_hunt_word(dsd_state* state, const anchor_hunt_word* word, const char* sync_dibits) {
     double offset = 0.0;
-    if (!anchor_measure_hunt_word(state, sync_dibits, count, &offset) || fabs(offset) < ANCHOR_HUNT_DEAD_ZONE) {
-        return;
+    if (!anchor_measure_hunt_word(&state->matched_filter, word, sync_dibits, &offset)) {
+        return 0;
+    }
+    if (fabs(offset) < ANCHOR_HUNT_DEAD_ZONE) {
+        return 1;
     }
     const int slip = anchor_slip_for(offset);
     dsd_symbol_anchor* anchor = dsd_symbol_anchor_get(state);
     if (anchor == NULL) {
-        return;
+        return 1;
     }
     anchor->slip = slip;
     anchor->slip_from_raw = 1;
     state->symbol_anchor_hot = 1U;
+    return 1;
 }
 
 /* Names the word for a measurement; @p nominal measures it on the grid without the slips it was read on. */
@@ -677,8 +686,82 @@ dsd_symbol_note_p25p1_sync_anchor(dsd_state* state, const char* sync_dibits, int
         return;
     }
     const dsd_symbol_anchor* anchor = DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR);
-    if (anchor == NULL || !anchor->armed) {
-        anchor_note_hunt_word(state, sync_dibits, count);
+    anchor_hunt_word word;
+    if ((anchor == NULL || !anchor->armed) && anchor_hunt_word_locate(state, count, &word)) {
+        (void)anchor_note_hunt_word(state, &word, sync_dibits);
     }
     anchor_note_sync(state, sync_dibits, count, 1);
+}
+
+void
+dsd_symbol_mark_p25p1_sync_anchor(const dsd_state* state, int count, dsd_matched_filter_seam_mark* out) {
+    if (out == NULL) {
+        return;
+    }
+    out->valid = 0U;
+    if (state == NULL || count <= 0 || count > DSD_SYMBOL_ANCHOR_MAX_SYMS) {
+        return;
+    }
+    const dsd_symbol_anchor* anchor = DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR);
+    anchor_hunt_word word;
+    if ((anchor != NULL && anchor->armed) || !anchor_hunt_word_locate(state, count, &word)) {
+        return;
+    }
+    out->symbol_clock = state->symbol_clock;
+    out->raw_head = state->matched_filter.raw_head;
+    out->raw_count = state->matched_filter.raw_count;
+    out->last_back = word.last_back;
+    out->sps = word.sps;
+    out->valid = 1U;
+}
+
+/*
+ * The marked word, behind every sample the seam took since the mark. The write index's move is that count while it is
+ * under the ring's size: a symbol takes at most its span and two (the crossing loop's slip, a queued move) and a filter
+ * switching on its group delay more, and the frame being read on the stream the word was accepted on makes no other
+ * switch. The count held then grew by the same, short of the ring's size: a seam forgotten since (a stream flush)
+ * holds fewer, and the word is gone with it.
+ */
+static int
+anchor_hunt_word_find_marked(const dsd_state* state, const dsd_matched_filter_seam_mark* mark, int count,
+                             anchor_hunt_word* out) {
+    const dsd_matched_filter_seam* seam = &state->matched_filter;
+    if (!mark->valid || mark->sps != state->samplesPerSymbol || state->symbol_clock < mark->symbol_clock) {
+        return 0;
+    }
+    anchor_hunt_word then;
+    anchor_hunt_word_place(mark->sps, mark->last_back, count, &then);
+    const uint64_t symbols = state->symbol_clock - mark->symbol_clock;
+    const uint64_t most = (uint64_t)then.read_back + (uint64_t)seam->delay;
+    if (symbols > (uint64_t)DSD_MATCHED_FILTER_HISTORY
+        || most + (symbols * (uint64_t)(mark->sps + 2)) >= (uint64_t)DSD_MATCHED_FILTER_HISTORY) {
+        return 0;
+    }
+    const int taken = (seam->raw_head - mark->raw_head + DSD_MATCHED_FILTER_HISTORY) % DSD_MATCHED_FILTER_HISTORY;
+    const int held =
+        mark->raw_count + taken < DSD_MATCHED_FILTER_HISTORY ? mark->raw_count + taken : DSD_MATCHED_FILTER_HISTORY;
+    anchor_hunt_word_place(mark->sps, mark->last_back + taken, count, out);
+    return seam->raw_count == held && out->read_back <= seam->raw_count;
+}
+
+int
+dsd_symbol_note_p25p1_marked_sync_anchor(dsd_state* state, const dsd_matched_filter_seam_mark* mark,
+                                         const char* sync_dibits, int count) {
+    if (state == NULL || mark == NULL || sync_dibits == NULL || count <= 0 || count > DSD_SYMBOL_ANCHOR_MAX_SYMS) {
+        return 0;
+    }
+    dsd_symbol_anchor* anchor = DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR);
+    if (anchor != NULL && anchor->armed) {
+        return 0;
+    }
+    anchor_hunt_word word;
+    const int measured =
+        anchor_hunt_word_find_marked(state, mark, count, &word) && anchor_note_hunt_word(state, &word, sync_dibits);
+    /* As for an exact word read with no recording armed (anchor_note_sync()): the grid is the hunt's, placed by no
+       recorded word. */
+    anchor = DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR);
+    if (anchor != NULL) {
+        anchor->placed = 0;
+    }
+    return measured;
 }

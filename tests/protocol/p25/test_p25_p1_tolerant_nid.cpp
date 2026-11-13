@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include "p25_nid_generator.hpp"
@@ -34,6 +35,7 @@ extern "C" {
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/p25p1_sync_anchor.h>
@@ -55,6 +57,9 @@ static int g_failures;
 static int g_carried_symbols = -1;
 /* The pass position it handed with them. */
 static int g_carried_pass = -1;
+/* The tolerant C4FM words the frame sync marked in the seam's history at their accept, and those it measured. */
+static int g_grid_marks;
+static int g_grid_measures;
 
 #define CHECK(cond)                                                                                                    \
     do {                                                                                                               \
@@ -436,6 +441,8 @@ test_unvalidated_frames_anchor_nothing(void) {
    the lock and lastsynctype over a carrier the hunt had lost. The dispatcher reads its NID. */
 static dsd_frame_verdict
 dispatch_held_candidate(dsd_opts* opts, dsd_state* state, const nid_air* nid, int kind, int anchor_nac) {
+    g_grid_marks = 0;
+    g_grid_measures = 0;
     state->carrier = 0;
     state->lastsynctype = DSD_SYNC_NONE;
     state->symbol_clock = SYNC_AT + 24;
@@ -474,6 +481,8 @@ test_dropped_candidate_is_put_back(void) {
        going on past them. */
     CHECK(g_carried_pass == 701 + NID_DIBITS && state->sps_hunt_counter == 901 + NID_DIBITS);
     CHECK(state->p25_p1_sync_candidate.valid == 0U);
+    /* Marked at the accept, never measured: the grid stays where the hunt left it. */
+    CHECK(g_grid_marks == 1 && g_grid_measures == 0);
 
     const nid_air own = nid_with_errors(NAC, DUID_LDU1, 2);
     CHECK(dispatch_held_candidate(opts, state, &own, DSD_P25P1_SYNC_ANCHORED, NAC) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
@@ -484,6 +493,13 @@ test_dropped_candidate_is_put_back(void) {
     CHECK(state->carrier == 1 && state->lastsynctype == DSD_SYNC_P25P1_POS);
     CHECK(g_carried_symbols == -1 && state->sps_hunt_counter == 900);
     CHECK(state->p25_p1_sync_candidate.valid == 0U);
+    /* The word is measured against the grid once the NID passed, and the mark spent with the frame's report. */
+    CHECK(g_grid_marks == 1 && g_grid_measures == 1);
+    CHECK(state->p25_p1_sync_anchor.frame_word.valid == 0U);
+    /* On the CQPSK chain the grid takes a sample a symbol: nothing is marked. */
+    state->rf_mod = 1;
+    CHECK(dispatch_held_candidate(opts, state, &own, DSD_P25P1_SYNC_ANCHORED, NAC) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    CHECK(g_grid_marks == 0 && g_grid_measures == 0);
     free(state);
     free(opts);
 }
@@ -507,6 +523,7 @@ test_acquisition_needs_a_strict_nid(void) {
         CHECK(state->p25_p1_sync_anchor.tolerant_frames == 0U);
         CHECK(state->p25_p1_sync_anchor.valid == 1U);
         CHECK(g_carried_symbols == -1);
+        CHECK(g_grid_marks == 1 && g_grid_measures == 1);
         free(state);
         free(opts);
     }
@@ -543,6 +560,7 @@ test_acquisition_needs_a_strict_nid(void) {
         CHECK(state->p25_p1_sync_anchor.acquisition_frames == 0U);
         CHECK(state->carrier == 0 && state->lastsynctype == DSD_SYNC_NONE);
         CHECK(g_carried_symbols == 24 + NID_DIBITS);
+        CHECK(g_grid_marks == 1 && g_grid_measures == 0);
         if (g_failures != 0) {
             DSD_FPRINTF(stderr, "  (acquisition case %zu)\n", i);
         }
@@ -600,13 +618,32 @@ dsd_frame_sync_off_thread_tune_pending(void) {
     return 0;
 }
 
-/* The real P25p1 sync anchor names a C4FM sync word to the symbol grid and arms its recording; these frames are read on
-   no grid. */
+/* The real P25p1 sync anchor names a C4FM sync word to the symbol grid (a tolerant one once its NID passed) and arms
+   its recording; these frames are read on no grid. */
 void
 dsd_symbol_note_p25p1_sync_anchor(dsd_state* state, const char* sync_dibits, int count) {
     (void)state;
     (void)sync_dibits;
     (void)count;
+}
+
+/* A tolerant word is marked where it lies in the seam's history at its accept, and measured once its NID passed: what
+   was asked, and of which word. */
+void
+dsd_symbol_mark_p25p1_sync_anchor(const dsd_state* state, int count, dsd_matched_filter_seam_mark* out) {
+    (void)state;
+    CHECK(count == 23);
+    g_grid_marks++;
+    out->valid = 1U;
+}
+
+int
+dsd_symbol_note_p25p1_marked_sync_anchor(dsd_state* state, const dsd_matched_filter_seam_mark* mark,
+                                         const char* sync_dibits, int count) {
+    (void)state;
+    CHECK(mark->valid == 1U && count == 23 && std::strncmp(sync_dibits, &P25P1_SYNC[1], 23) == 0);
+    g_grid_measures++;
+    return 1;
 }
 
 void

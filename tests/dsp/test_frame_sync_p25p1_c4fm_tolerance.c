@@ -36,10 +36,12 @@
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_ext.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "frame_sync_internal.h"
 #include "frame_sync_state_buffers.h"
 #include "frame_sync_test_support.h"
+#include "symbol_anchor_internal.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -73,12 +75,38 @@ data_level(void) {
     return levels[(g_seed >> 16) & 3U];
 }
 
+/* When set, the read also leaves the raw samples the grid took in the matched-filter seam's history: each symbol's span
+   of the state's samples a symbol, the waveform running straight between the symbols' levels, each symbol's own
+   g_raw_offset samples after the grid's centre (symbolCenter into the span). */
+static int g_raw_on;
+static double g_raw_offset;
+static float g_raw_last;
+
+static void
+raw_take_symbol(dsd_state* state, float symbol, float next) {
+    dsd_matched_filter_seam* seam = &state->matched_filter;
+    const int sps = state->samplesPerSymbol;
+    seam->sps = sps;
+    for (int i = 0; i < sps; i++) {
+        const double d = ((double)i - (double)state->symbolCenter - g_raw_offset) / (double)sps;
+        const double v = d >= 0.0 ? (double)symbol + ((double)(next - symbol) * d)
+                                  : (double)symbol + ((double)(symbol - g_raw_last) * d);
+        seam->raw[seam->raw_head] = (float)v;
+        seam->raw_head = (seam->raw_head + 1) % DSD_MATCHED_FILTER_HISTORY;
+        seam->raw_count += seam->raw_count < DSD_MATCHED_FILTER_HISTORY;
+    }
+    g_raw_last = symbol;
+}
+
 /* What dsd_symbol.c's read leaves behind: the soft history, the symbol count and the stream's symbol clock. */
 float
 getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)have_sync;
     const float symbol = g_pos < g_len ? g_levels[g_pos] : data_level();
+    if (g_raw_on) {
+        raw_take_symbol(state, symbol, g_pos + 1 < g_len ? g_levels[g_pos + 1] : symbol);
+    }
     g_pos++;
     dsd_symbol_history_push(state, symbol);
     state->symbolcnt++;
@@ -91,6 +119,7 @@ stream_reset(uint32_t seed) {
     g_len = 0;
     g_pos = 0;
     g_seed = seed;
+    g_raw_last = 0.0f;
 }
 
 static void
@@ -171,7 +200,31 @@ setup(dsd_opts* opts, dsd_state* state) {
 
 static void
 teardown(dsd_state* state) {
+    dsd_state_ext_free_all(state);
     free_state_buffers(state);
+    g_raw_on = 0;
+}
+
+/* What the symbol grid's sync anchor holds: whether it exists, records, has the grid flagged hot, and what move it has
+   queued (taken, so read it last). */
+typedef struct {
+    int exists;
+    int recording;
+    int hot;
+    int slip;
+    int slip_from_raw;
+} grid_anchor_view;
+
+static grid_anchor_view
+grid_anchor_take(dsd_state* state) {
+    grid_anchor_view view;
+    dsd_symbol_anchor* anchor = DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR);
+    view.exists = anchor != NULL;
+    view.recording = dsd_symbol_anchor_recording(anchor);
+    view.hot = state->symbol_anchor_hot != 0U;
+    view.slip_from_raw = dsd_symbol_anchor_slip_from_raw(anchor);
+    view.slip = dsd_symbol_anchor_take_slip(anchor);
+    return view;
 }
 
 /* The window @p window as the one the hunt reads when its first symbol is @p start on the symbol clock. */
@@ -358,7 +411,16 @@ test_rejected_candidate_puts_back_what_it_changed(void) {
     static dsd_state state;
 
     anchored_candidate(&opts, &state, 0);
+    /* The anchor's frame armed the recording of the next word, which the candidate is read into: nothing is named to it,
+       and the drop leaves it as the accept found it, the seam's history untouched. */
+    const dsd_matched_filter_seam* seam = &state.matched_filter;
+    const int seam_before[] = {seam->kind, seam->sps, seam->delay, seam->raw_head, seam->raw_count, seam->replay};
+    const uint64_t steady_before = seam->steady_clock;
     dispatcher_drops(&state);
+    const int seam_after[] = {seam->kind, seam->sps, seam->delay, seam->raw_head, seam->raw_count, seam->replay};
+    assert(memcmp(seam_before, seam_after, sizeof(seam_before)) == 0 && seam->steady_clock == steady_before);
+    const grid_anchor_view grid = grid_anchor_take(&state);
+    assert(grid.exists && grid.recording && grid.hot && grid.slip == 0);
     assert(levels_marked(&state));
     assert(state.carrier == 0 && state.offset == 77 && state.lastsynctype == DSD_SYNC_NONE);
     assert(slot_fields_marked(&state));
@@ -424,7 +486,8 @@ test_rejected_candidate_lets_nxdn96_and_m17_in(void) {
 }
 
 /* The engine's turn at a sync, as dsd_dispatch_handle_p25p1() takes it: the NID's symbols read; when @p nid_ok, the
-   frame validated, its decoder having read @p consumed of its @p unit dibits; else (behind a tolerant word) dropped.
+   frame validated (behind a tolerant word, the frame sync told so first), its decoder having read @p consumed of its
+   @p unit dibits; else (behind a tolerant word) dropped.
    The verdict goes where processFrame() leaves it for the hunt's accounting. */
 static void
 dispatch(dsd_state* state, int nid_ok, uint32_t unit, uint32_t consumed) {
@@ -439,6 +502,9 @@ dispatch(dsd_state* state, int nid_ok, uint32_t unit, uint32_t consumed) {
         (void)dsd_frame_sync_p25p1_frame_decoded(state, -1, 0U);
         state->sps_hunt_last_frame_verdict = (int)DSD_FRAME_VERDICT_UNPRODUCTIVE;
         return;
+    }
+    if (kind != DSD_P25P1_SYNC_EXACT) {
+        dsd_frame_sync_p25p1_candidate_validated(state);
     }
     for (uint32_t i = HEAD; i < consumed; i++) {
         (void)getSymbol(&reader, state, 1);
@@ -640,7 +706,9 @@ test_acquisition_does_not_steal_an_overlapping_word(void) {
 /* A carrier's first word comes through one sign off (cold: no anchor, no levels calibrated yet). It is an acquisition
    candidate: its NID is read on the warm start from its own symbols. A strict NID keeps that and counts the frame; a
    failed one puts the hunt's levels and lock back and the hunt goes on from the candidate's symbols, finding the next
-   word exactly. */
+   word exactly. The symbols sit a sample after the grid, and nothing is recording: the word is measured on the seam's
+   raw history once its NID passed, and the grid moves a sample on (the seam's move); a failed NID leaves the grid and
+   the anchor alone, and the seam's history as the grid took it. */
 static void
 test_cold_acquisition(void) {
     for (int nid_ok = 0; nid_ok <= 1; nid_ok++) {
@@ -651,6 +719,8 @@ test_cold_acquisition(void) {
             const int want = inverted ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS;
             static const int flip[] = {9, -1};
             setup(&opts, &state);
+            g_raw_on = 1;
+            g_raw_offset = 1.0;
             /* Cold: the levels an acquisition reset leaves, nothing calibrated yet. */
             dsd_frame_sync_reset_acquisition(&opts, &state, 1);
             assert(fabsf(state.max - 15000.0f) < 1e-3f && fabsf(state.min + 15000.0f) < 1e-3f);
@@ -666,11 +736,18 @@ test_cold_acquisition(void) {
             assert(dsd_frame_sync_p25p1_sync_kind(&state, NULL, &errors) == DSD_P25P1_SYNC_ACQUISITION && errors == 1U);
             assert(fabsf(state.max - k_word_level) < 1e-4f && fabsf(state.min + k_word_level) < 1e-4f);
             assert(state.carrier == 1 && state.lastsynctype == want);
+            /* The accept measured nothing and allocated nothing. */
+            assert(DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, &state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR) == NULL);
+            assert(state.symbol_anchor_hot == 0U);
             dispatch(&state, nid_ok, TSDU_1, TSDU_1 - PAD);
+            const grid_anchor_view grid = grid_anchor_take(&state);
             if (nid_ok) {
+                assert(grid.exists && grid.slip == 1 && grid.slip_from_raw);
                 assert(state.p25_p1_sync_anchor.acquisition_frames == 1U);
                 assert(fabsf(state.max - k_word_level) < 1e-4f);
             } else {
+                assert(!grid.exists && !grid.hot);
+                assert(state.matched_filter.raw_count == DSD_MATCHED_FILTER_HISTORY);
                 assert(state.p25_p1_sync_anchor.acquisition_frames == 0U);
                 assert(state.carrier == 0 && state.lastsynctype == DSD_SYNC_NONE);
                 /* Uncalibrated again, as before the candidate. */

@@ -100,6 +100,34 @@ void dsd_symbol_note_sync_anchor(const struct dsd_state* state, const char* sync
  */
 void dsd_symbol_note_p25p1_sync_anchor(struct dsd_state* state, const char* sync_dibits, int count);
 
+struct dsd_matched_filter_seam_mark;
+
+/**
+ * @brief Note where a P25 Phase 1 word the grid just read lies in the matched-filter seam's raw history, without
+ * measuring it (C4FM).
+ *
+ * For a word that may be no word at all (one the hunt accepted within a tolerance, which its NID has yet to confirm):
+ * nothing about the grid or the anchor changes, and @p out (the word's last @p count symbols) is all that is written.
+ * dsd_symbol_note_p25p1_marked_sync_anchor() measures it later. @p out is left invalid when a recording is armed (the
+ * word is the recording's, which a tolerant word is not named to) or when dsd_symbol_note_p25p1_sync_anchor() could not
+ * have measured the word on the seam now.
+ */
+void dsd_symbol_mark_p25p1_sync_anchor(const struct dsd_state* state, int count,
+                                       struct dsd_matched_filter_seam_mark* out);
+
+/**
+ * @brief Measure the P25 Phase 1 word @p mark noted, now that it is known to be one, as
+ * dsd_symbol_note_p25p1_sync_anchor() measures a word read with no recording armed (C4FM).
+ *
+ * The grid read the samples since the mark at have_sync, where nothing moves it, so the word's offset is the frame
+ * grid's still: the move it asks for is queued for the next symbol, with the same dead zone, and the grid is not
+ * placed for a hold. The word is found again behind the samples the seam took since the mark; it measures nothing when
+ * the seam has lost it (overwritten, or forgotten across a stream seam), when the grid's span changed, or when a
+ * recording is armed. Returns 1 when the word was measured (moved or not).
+ */
+int dsd_symbol_note_p25p1_marked_sync_anchor(struct dsd_state* state, const struct dsd_matched_filter_seam_mark* mark,
+                                             const char* sync_dibits, int count);
+
 /**
  * @brief Where a known run of symbols sits against the grid that decided it.
  *

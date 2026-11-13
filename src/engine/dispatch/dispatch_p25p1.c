@@ -325,9 +325,11 @@ p25p1_decode_nid_and_duid(dsd_opts* opts, dsd_state* state, const p25p1_sync_acc
         *out_dropped = 1;
         return P25P1_DUID_INVALID;
     }
-    /* processFrame() leaves the received identity to a tolerant word's NID: past the strict check the frame is P25's. */
+    /* processFrame() leaves the received identity to a tolerant word's NID: past the strict check the frame is P25's.
+       So does the frame sync its measurement of the word against the symbol grid (C4FM). */
     if (sync->kind != DSD_P25P1_SYNC_EXACT) {
         dsd_rxid_note_sync(state, state->synctype);
+        dsd_frame_sync_p25p1_candidate_validated(state);
     }
     p25p1_nid_verdict_commit(state, &verdict);
     if (verdict.disposition == P25P1_NID_ACCEPTED) {

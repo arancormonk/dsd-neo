@@ -296,6 +296,18 @@ typedef struct dsd_p25_sync_context {
     uint8_t inverted; /* 1 for the inverted word (DSD_SYNC_P25P1_NEG, DSD_SYNC_P25P2_NEG) */
 } dsd_p25_sync_context;
 
+/* Where a sync word the hunt read lies in the matched-filter seam's raw history (dsd_matched_filter_seam::raw), taken
+ * as the word was accepted so that it can be measured once more samples have come in (dsd_symbol_mark_p25p1_sync_anchor()
+ * in <dsd-neo/dsp/symbol_anchor.h>). Decoder-thread private. */
+typedef struct dsd_matched_filter_seam_mark {
+    uint64_t symbol_clock; /* dsd_state::symbol_clock as the word's window ended */
+    int raw_head;          /* dsd_matched_filter_seam::raw_head and raw_count then */
+    int raw_count;
+    int last_back; /* samples behind the newest then of the word's last measured centre, a filter's group delay in */
+    int sps;       /* the span the grid read the word at */
+    uint8_t valid;
+} dsd_matched_filter_seam_mark;
+
 /* The P25 Phase 1 sync anchor: where the data unit after the last validated one starts (src/dsp/
  * frame_sync_p25p1_anchor.c). On a continuous outbound carrier every data unit is padded to whole 36-dibit segments
  * and the next one's sync starts where it ends (TIA-102.BAAA-A 8.2), so the hunt, which matches sync words exactly,
@@ -321,6 +333,9 @@ typedef struct {
     uint8_t frame_kind;
     /* What its sync word was off by: bits on the CQPSK chain, signs on the C4FM chain, 0 for an exact match. */
     uint8_t sync_bit_errors;
+    /* A word within a tolerance on the C4FM chain, read with no recording armed: where it lies in the seam's raw
+       history, measured only once its NID passed (dsd_frame_sync_p25p1_candidate_validated()). */
+    dsd_matched_filter_seam_mark frame_word;
     /* Diagnostics, never reset: tolerant syncs the frame sync accepted (at the anchor, and hunt-wide on C4FM), and
        those whose NID passed the dispatcher's strict check (counted when the dispatcher reports the frame). */
     uint32_t tolerant_syncs;

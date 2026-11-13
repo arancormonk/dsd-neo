@@ -6215,8 +6215,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   off-thread tune) and its decoders stopped at the unit's end or inside its null pad (at most 35 dibits short, as a
   TSDU leaves its pad to the hunt). A TSDU the trailing-null rule or a failed block ended, a PDU whose reader stopped
   short of or past what its header names, a failed, held or borrowed NID and a cut read arm nothing, and the crossing
-  loop keeps the grid as before; a terminator followed by silence lapses after 64 symbols. A word within the tolerance
-  (CQPSK only today) names nothing until its NID validates. P25's word may be the first one measured after
+  loop keeps the grid as before; a terminator followed by silence lapses after 64 symbols. A word within a tolerance
+  (anchored, or hunt-wide on C4FM) names nothing to a recording, and changes nothing about the grid until its NID
+  passes the strict check: read with no recording armed, it is then measured on the seam's raw history (below). P25's
+  word may be the first one measured after
   acquisition, a lapse or a reset, read while the crossing loop still walks the grid: it is measured against the grid
   without those slips (each symbol's shift, the samples it took against its span, is recorded), ending at its last
   centre, where the frame's grid goes on; the spans a fractional rate alternates stay as they were. Only the P25 frame
@@ -6238,14 +6240,31 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   some grids the wrong way, and the fit's residual and correlation did not tell those apart). The move is queued for the next symbol and marked as measured on
   raw samples (`dsd_symbol_anchor_slip_from_raw()`): the P25 matched filter switching on behind the word does not take
   it back as it does a move measured on the anchor's own samples, since the seam keeps the content position. It places
-  no grid for a hold, so the second unit's word is read on the crossing loop's grid as before. Only the P25 note reads
-  the seam; the other callers' words named with no recording armed still measure nothing. The first unit of a
-  transmission is then read within half a sample of its symbols at 24, 48, 72 and 96 kHz when the acquiring word sat
-  three quarters of a sample off or more, and on the hunt's grid otherwise and at a fractional rate; from the second
+  no grid for a hold, so the second unit's word is read on the crossing loop's grid as before. A word the hunt accepted
+  within a tolerance (a hunt-wide one-sign word above all, which is how a transmission is often acquired: the word just
+  after a key-up ramp can come out a sign off, by rounding alone in optimized builds) may be no word at all, so the
+  accept only notes where it lies (`dsd_symbol_mark_p25p1_sync_anchor()` into `dsd_p25p1_sync_anchor::frame_word`, a
+  `dsd_matched_filter_seam_mark`: the seam's write index and count, the symbol clock, the word's last centre and span;
+  nothing else is written), under the same conditions as the exact word's measurement. Only when the dispatcher keeps
+  the frame (`dsd_frame_sync_p25p1_candidate_validated()`, once the strict NID passed, on the stream the word was
+  accepted on) is the word measured (`dsd_symbol_note_p25p1_marked_sync_anchor()`), on the same samples and so with the
+  same result as an exact word's, behind the samples the seam took since: the NID is read at have_sync, where nothing
+  moves the grid, so the offset still stands, and the move lands after the NID, before the unit's data. It measures
+  nothing when the seam may no longer hold the word as it was marked: when the word's samples, a span and two for each
+  symbol since and a filter's delay would not fit in the ring's 2048 samples (behind the 33-symbol NID they fit at
+  96 kHz with room to spare), when the count held did not grow with the write index (a seam forgotten at a stream
+  flush), at another span, or with a recording armed. A dropped frame never measures it, so the rollback leaves the
+  grid and the anchor as the hunt left them. Only the P25 note reads the seam; the other callers' words named with no
+  recording armed still measure nothing. The first unit of a transmission is then read within half a sample of its
+  symbols at 24, 48, 72 and 96 kHz when the acquiring word sat three quarters of a sample off or more, and on the
+  hunt's grid otherwise and at a fractional rate; from the second
   unit the grid sits within half a sample at 24, 48, 50, 72 and 96 kHz. Tests: `DSP_SYMBOL_ANCHOR` (P25's own hold, the measurement at
   whole and fractional rates and with clock drift, the second-symbol naming, the walking grid, the hunt word on the
-  seam, its gate and declines), `DSP_SYMBOL_P25_C4FM_GRID` (through `getSymbol()` and the real crossing loop, with and
-  without the matched filter), `P25_P1_SYNC_DISPATCH` (the naming and every arming row).
+  seam, its gate and declines, the marked word measured behind the NID and its declines), `DSP_SYMBOL_P25_C4FM_GRID`
+  (through `getSymbol()` and the real crossing loop, with and without the matched filter; an acquiring word a sign off
+  kept reads every unit as the exact one, dropped as the hunt left it), `P25_P1_SYNC_DISPATCH` (the naming, the marking
+  and every arming row), `P25_P1_TOLERANT_NID` (measured only past the strict NID), `FRAME_SYNC_P25P1_C4FM_TOLERANCE`
+  (a dropped candidate leaves the anchor and the seam as they were).
 - Slicer warm start (`<dsd-neo/dsp/sync_calibration.h>`, `sync_calibration.c`): an accepted sync sets `min`/`max`,
   `center`, `umid`/`lmid` (5/8 of the way to each rail), `maxref`/`minref` and the rolling min/max buffers from the
   word just read. `dsd_sync_warm_start_thresholds_outer_only()` averages the word's positive and negative symbols,
@@ -10407,11 +10426,14 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     (`dsd_p25p1_sync_anchor::frame_dropped`, `dsd_state_p25p1_frame_dropped()`, until the next accepted sync) starts no
     `-Y` voice gate qualify window (`scan_voice_gate_sync_m`). So a dropped candidate leaves nothing behind but the
     symbols it read and its console lines. The hold is where any further slicer state the C4FM accept writes belongs.
-    The word names nothing to the symbol grid (the sync
-    anchor entry in DSP), neither at the accept nor once its NID validates (the recording has moved onto the NID by
-    then); the next exact word places the grid. Steal recovery: a dropped candidate also hands the next `getFrameSync()`
-    the word's and the NID's 57 symbols as a carried history (`frame_sync_history_carry_symbols()`, the C4FM hunt's sign
-    slicing of the soft history, the levels with them), so a real sync word that starts inside them and ends after the
+    The word changes nothing about the symbol grid at the accept (the sync anchor entry in DSP): it is only marked in
+    the matched-filter seam's raw history, and measured there once its NID passed, when it was read with no recording
+    armed (the word that acquires a transmission, the first after a lapse), so the frame behind it is read on its
+    symbols as behind an exact word; one read into a recording names nothing to it (the recording has moved onto the
+    NID by then), and the next exact word places the grid. A dropped candidate is never measured. Steal recovery: a
+    dropped candidate also hands the next `getFrameSync()` the word's and the NID's 57 symbols as a carried history
+    (`frame_sync_history_carry_symbols()`, the C4FM hunt's sign slicing of the soft history, the levels with them),
+    so a real sync word that starts inside them and ends after the
     NID (a P25p1 word a slip put there, an NXDN96 FSW, a YSF or M17 word) is matched where it ends; before, the hunt
     started blind and needed 24 symbols of its own. DMR and X2-TDMA match only windows a call read itself
     (`frame_sync_match_window_own()`: their bursts are decoded back from the rolling payload buffers, which the carried
