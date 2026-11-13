@@ -10871,7 +10871,9 @@ Private per-protocol modules worth knowing about:
   ends the voice cycle and closes the slot's gate (as BS, issue #729), so the noise after a carrier drop plays at most
   one burst into the call and a noise voice sync after it finds the gate closed. Four EMBs in a row naming another
   code relock. An MS data burst's slot type colour code (Golay(20,8), no checksum) is published only when the lock
-  takes it. Tests: `DMR_MS_DATA`, `DMR_DATA_SYNC`, `DMR_SYNTH_MS_TAIL`.
+  takes it, and one that conflicts with the locked code is dropped undecoded, as on BS, until the gate relocks: a call on
+  another code right behind the last, with no carrier drop, publishes nothing under the old code. Tests:
+  `DMR_MS_DATA`, `DMR_DATA_SYNC`, `DMR_SYNTH_MS_TAIL`.
 - `src/protocol/dmr/dmr_ras.c` — RAS on the carrier (`<dsd-neo/protocol/dmr/dmr.h>`). The burst handler notes every
   burst with the RAS signature, with or without `-F`, before it dispatches (`dmr_ras_note_signature()`; a retune its
   handler makes then resets the carrier left's evidence); a frame read across a carrier boundary or cut by an input

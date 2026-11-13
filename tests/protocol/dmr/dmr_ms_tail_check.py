@@ -9,6 +9,11 @@ named DMR_CC_<random>__TGT_0_SRC_0.
 
 Each case cuts the call at another point of a superframe, adds noise and decodes with per-call recordings and the
 recording journal. The only recording published must be the call's, under its own colour code, talkgroup and source.
+
+Back to back: the call on colour code 2 is cut the same way and a call on colour code 7 (another talkgroup) follows at
+once, with no carrier drop between them. The colour-code gate rejects the second call's data bursts, its voice LC header
+among them, until it relocks on 7; dispatched, that header published the second call's talkgroup under colour code 2.
+Each call must be published only under its own colour code, and with only colour code 2 allowed, the second not at all.
 """
 import argparse
 import json
@@ -29,12 +34,12 @@ SEEDS = [1, 2]
 CALL = {"system": "DMR_CC_2", "target": "100", "source": "1001"}
 
 
-def generate(generator, directory):
+def generate(generator, directory, name="call.wav", options=("--cc", "2", "--lead", "0.3")):
     result = subprocess.run(
-        [generator, "-o", "call.wav", "-t", "4", "--ms", "--no-term", "--cc", "2", "--lead", "0.3", "--tail", "0"],
+        [generator, "-o", name, "-t", "4", "--ms", "--no-term", *options, "--tail", "0"],
         cwd=directory, capture_output=True, text=True, timeout=60, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
-    with wave.open(str(directory / "call.wav")) as source:
+    with wave.open(str(directory / name)) as source:
         assert source.getframerate() == RATE and source.getnchannels() == 1 and source.getsampwidth() == 2
         return source.getparams(), source.readframes(source.getnframes())
 
@@ -45,7 +50,7 @@ def noise(seed):
     return struct.pack(f"<{count}h", *(max(-32767, min(32767, round(rng.gauss(0.0, NOISE_RMS)))) for _ in range(count)))
 
 
-def decode(binary, directory, params, signal):
+def decode(binary, directory, params, signal, extra=()):
     directory.mkdir()
     with wave.open(str(directory / "input.wav"), "wb") as joined:
         joined.setparams(params)
@@ -53,7 +58,7 @@ def decode(binary, directory, params, signal):
     (directory / "calls").mkdir()
     result = subprocess.run(
         [binary, "--frontend", "none", "-i", "input.wav", "-o", "null", "-P", "-7", "calls", "--wav-journal",
-         "calls.jsonl"],
+         "calls.jsonl", *extra],
         cwd=directory, capture_output=True, text=True, timeout=120, check=False)
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
@@ -61,6 +66,21 @@ def decode(binary, directory, params, signal):
     journal = directory / "calls.jsonl"
     records = [json.loads(line) for line in journal.read_text().splitlines()] if journal.exists() else []
     return [r for r in records if r.get("type") == "publish"], sorted(p.name for p in (directory / "calls").iterdir())
+
+
+def back_to_back(binary, generator, root, params, call):
+    """The call on colour code 2, then one on colour code 7 at once: each published under its own code alone."""
+    _, other = generate(generator, root, "other.wav", ("--cc", "7", "--tg", "700", "--lead", "0"))
+    # Cut inside a superframe, as the tail cases are, and joined part way into the other call's first superframe.
+    signal = call[: 2 * int(2.36 * RATE)] + other[2 * int(0.2 * RATE):]
+    failures = []
+    for case, extra, expected in (("back-to-back", (), [("DMR_CC_2", "100"), ("DMR_CC_7", "700")]),
+                                  ("back-to-back-allow-2", ("--dcc-allow", "2"), [("DMR_CC_2", "100")])):
+        published, files = decode(binary, root / case, params, signal, extra)
+        names = [(r["system"], r["target"]) for r in published]
+        if names != expected or any(r["source"] != "1001" for r in published):
+            failures.append(f"{case}: published {names}, expected {expected}, files {files}")
+    return failures
 
 
 def main():
@@ -84,6 +104,7 @@ def main():
                     failures.append(f"{case}: published {names}, files {files}")
                 elif published[0]["duration_ms"] < 2000:
                     failures.append(f"{case}: the call's recording holds {published[0]['duration_ms']} ms")
+        failures += back_to_back(binary, generator, root, params, call)
         assert not failures, "\n".join(failures)
 
 

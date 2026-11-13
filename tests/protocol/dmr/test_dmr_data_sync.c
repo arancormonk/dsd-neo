@@ -308,11 +308,12 @@ test_data_sync_dispatches_burst_and_reliability(void) {
     assert(g_cach_calls == 1);
 }
 
-/* An MS data burst is dispatched whatever the colour-code gate says, and its colour code counts toward the gate's lock,
-   but only a lock publishes it (issue #834): one data sync that noise passed, whose slot type Golay(20,8) decoded to a
-   random code, must neither name the carrier nor change its received identity. */
+/* An MS data burst is dispatched while the colour-code gate has no lock, and its colour code counts toward the gate's
+   lock, but only a lock publishes it (issue #834): one data sync that noise passed, whose slot type Golay(20,8) decoded
+   to a random code, must neither name the carrier nor change its received identity. One whose code conflicts with the
+   locked one (REJECT) is dropped, as on BS. */
 static void
-test_ms_data_sync_bypasses_confidence_and_cach(void) {
+test_ms_data_sync_skips_cach_and_drops_a_conflicting_code(void) {
     static dsd_opts opts;
     static dsd_state state;
     static int payload[90];
@@ -330,8 +331,9 @@ test_ms_data_sync_bypasses_confidence_and_cach(void) {
         g_confidence_result = verdicts[v];
         dmr_data_sync(&opts, &state);
 
-        assert(g_handler_calls == 1);
-        assert(g_reset_calls == 0);
+        const int dispatched = verdicts[v] != DMR_CONFIDENCE_REJECT;
+        assert(g_handler_calls == dispatched);
+        assert(g_reset_calls == !dispatched);
         assert(g_cach_calls == 0);
         assert(g_confidence_calls == 1);
         if (verdicts[v] == DMR_CONFIDENCE_LOCKED) {
@@ -353,6 +355,41 @@ test_ms_data_sync_bypasses_confidence_and_cach(void) {
     g_golay_ok = 0;
     dmr_data_sync(&opts, &state);
     assert(state.rx_id.valid == 0U);
+}
+
+/* A direct mode call on another colour code right behind a locked one, with no carrier drop between them (issue #834):
+   until the gate relocks on the new code, its data bursts (the voice LC header naming its talkgroup) are dropped, so
+   nothing of the new call is published under the old code; the burst that relocks it is dispatched under the new one. */
+static void
+test_ms_back_to_back_colour_codes(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int payload[90];
+    static dsd_dibit_soft_t reliab[90];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_state(&state, payload, reliab);
+    reset_fixture();
+    state.dmr_ms_mode = 1;
+    g_decoded_color = 2;
+    dmr_data_sync(&opts, &state); /* the locked call's header */
+    assert(g_handler_calls == 1 && state.dmr_color_code == 2 && g_handler_rxid.access == 2U);
+
+    g_decoded_color = 7;
+    g_decoded_burst = 1; /* voice LC header */
+    g_confidence_result = DMR_CONFIDENCE_REJECT;
+    for (int burst = 0; burst < 3; burst++) {
+        g_live_dibit_index = 0;
+        dmr_data_sync(&opts, &state);
+        assert(g_handler_calls == 1);
+        assert(state.dmr_color_code == 2 && state.rx_id.access == 2U);
+    }
+    assert(g_reset_calls == 3);
+
+    g_confidence_result = DMR_CONFIDENCE_LOCKED; /* the gate relocked on 7 */
+    g_live_dibit_index = 0;
+    dmr_data_sync(&opts, &state);
+    assert(g_handler_calls == 2 && g_handler_burst == 1U);
+    assert(state.dmr_color_code == 7 && g_handler_rxid.access == 7U);
 }
 
 /* MS/direct mode's slot type colour code, once the gate locked on it, is the carrier's: another one than a decoded one
@@ -964,7 +1001,8 @@ test_connect_plus_idle_bursts_clear_tuned_sync_times(void) {
 int
 main(void) {
     test_data_sync_dispatches_burst_and_reliability();
-    test_ms_data_sync_bypasses_confidence_and_cach();
+    test_ms_data_sync_skips_cach_and_drops_a_conflicting_code();
+    test_ms_back_to_back_colour_codes();
     test_ms_colour_change_resets_ras();
     test_data_burst_receive_slot();
     test_mono_option_keeps_bs_confidence_and_cach();

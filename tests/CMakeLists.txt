@@ -16334,7 +16334,8 @@ if(Python3_Interpreter_FOUND)
         PROPERTIES LABELS "dmr-synth" TIMEOUT 180
     )
     # An MS call cut inside a superframe and followed by noise (issue #834): the only recording published is the call's,
-    # under its own colour code and identity, never the noise's under a colour code an unchecked EMB named
+    # under its own colour code and identity, never the noise's under a colour code an unchecked EMB named. Followed at
+    # once by a call on another colour code, each call is published under its own code only
     # (protocol/dmr/dmr_ms_tail_check.py).
     add_test(
         NAME DMR_SYNTH_MS_TAIL
