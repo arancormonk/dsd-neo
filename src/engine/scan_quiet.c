@@ -438,24 +438,28 @@ quiet_failure_retries(dsd_signal_measure_failure failure) {
 
 static void
 quiet_collect(scan_quiet_check* c, uint64_t now_ms) {
-    const int status = rtl_signal_quiet_status(c->ticket);
-    if (status == 0) {
+    dsd_signal_quiet_result result;
+    DSD_MEMSET(&result, 0, sizeof result);
+    const int taken = rtl_signal_quiet_status(c->ticket) == 0 ? 0 : rtl_signal_quiet_take(c->ticket, &result);
+    if (taken == 0) {
         if (now_ms >= c->deadline_ms) {
             quiet_end(c, SCAN_QUIET_DONE);
         }
         return;
     }
-    dsd_signal_quiet_result result;
-    DSD_MEMSET(&result, 0, sizeof result);
-    const int taken = rtl_signal_quiet_take(c->ticket, &result);
-    if (taken == 0) {
+    c->ticket = 0U;
+    /* The answer bound holds for an answer too: one that completed past the deadline (on the realtime clock the
+       deadline is on; the poll that finds it when it carries no completion time) is no answer in time, whatever it
+       says, and ends the visit as the timeout does, with no retry. */
+    const uint64_t completed_ms = result.completed_realtime_ns != 0U ? result.completed_realtime_ns / 1000000U : now_ms;
+    if (completed_ms >= c->deadline_ms) {
+        c->phase = SCAN_QUIET_DONE;
         return;
     }
-    c->ticket = 0U;
     if (taken > 0) {
         if (result.request_id == c->request_seq && result.valid && result.quiet) {
             c->result = result;
-            c->ready_ms = result.completed_realtime_ns != 0U ? result.completed_realtime_ns / 1000000U : now_ms;
+            c->ready_ms = completed_ms;
             c->phase = SCAN_QUIET_READY;
         } else {
             c->phase = SCAN_QUIET_DONE; /* busy, or not measurable */

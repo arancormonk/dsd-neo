@@ -535,7 +535,9 @@ Generated (do not edit/commit):
       calibration did not validate (`dsd_signal_quiet_rate_supported()`, `dsd_signal_quiet_analog_supported()` with the
       analog kind), a refused request.
     - REQUESTED: 400 ms (realtime), then cancelled and DONE; a lost, capture-changed or dropped request waits for the
-      capture again, at most 3 times a visit; clipped, non-finite, failed and busy results are DONE.
+      capture again, at most 3 times a visit; clipped, non-finite, failed and busy results are DONE. An answer that
+      completed at or past the deadline (`dsd_signal_quiet_result::completed_realtime_ns`, else the poll that finds it)
+      is DONE as the timeout is, whatever it says: no READY, no retry.
     - Reconcile, at every hook call and engine service: a changed visit or revision snapshot (`scan_quiet_revisions`:
       `trunk_chan_map_seq`, `lcn_list_rev`, `lcn_scan_session`, `trunk_scan_lists_seq`, the coordinator's `edit_seq`, -Y
       `edits_epoch`, `lcn_avoid_rev`, `trunk_scan_avoid_rev`, `pcm_input_generation`,

@@ -22729,6 +22729,53 @@ test_scan_quiet_request_deadline_and_retries(void) {
     return rc;
 }
 
+/* The 400 ms answer bound holds for a result too, by when it completed on the realtime clock the deadline uses: one
+   completed past the deadline and found at a later poll ends the visit as a timeout does, whatever it says (a quiet
+   result is not READY, a failure that retries is not retried). One completed in time is taken even when the poll that
+   finds it comes later; a result with no completion time is judged by the poll that finds it. */
+static int
+test_scan_quiet_late_result_is_a_timeout(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (quiet_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    /* case 0: quiet, completed at 450 ms; 1: the same with no completion time; 2: a retried failure at 450 ms. */
+    for (int which = 0; which < 3; which++) {
+        if (which > 0) {
+            quiet_land_again(&state, k_qt_hz_a);
+        }
+        quiet_publish(&opts, &state);
+        const int requests = g_tap.requests;
+        (void)quiet_service_after(&opts, &state, 399U);
+        rc |= qt_expect("399 ms: still REQUESTED", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+        g_quiet_rt_ms += 51U;
+        quiet_tap_finish(which != 2, which == 2 ? DSD_SIGNAL_MEASURE_DROPPED : DSD_SIGNAL_MEASURE_OK);
+        if (which == 1) {
+            g_tap.result.completed_realtime_ns = 0U;
+        }
+        const int handed_back = quiet_service_after(&opts, &state, 1U);
+        (void)quiet_service_after(&opts, &state, 60U);
+        if (handed_back || scan_quiet_phase_get(&state) != SCAN_QUIET_DONE || g_tap.requests != requests) {
+            DSD_FPRINTF(stderr,
+                        "FAIL #834 scan quiet: a late result (case %d): handed back %d, phase %d, requests %d\n", which,
+                        handed_back, (int)scan_quiet_phase_get(&state), g_tap.requests - requests);
+            rc = 1;
+        }
+    }
+    quiet_land_again(&state, k_qt_hz_a);
+    quiet_publish(&opts, &state);
+    g_quiet_rt_ms += 399U;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    rc |= qt_expect("completed at 399 ms, found at 450 ms: READY",
+                    quiet_service_after(&opts, &state, 51U) == 1 && scan_quiet_phase_get(&state) == SCAN_QUIET_READY);
+    quiet_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
 /* A READY result is the visit's only while the tap's capture is still the result's (a reacquire, a gain change, a
    drop), the stream's output generation is still its generation (a bump before the next block reaches the tap), no
    tune is pending, and it is at most 250 ms old. A hand-back declined after any of them is DONE. */
@@ -24569,6 +24616,7 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_goto_and_resume_sites);
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_skips_a_quiet_target);
     rc |= run_with_default_tune_hook(test_scan_quiet_typed_target_judges_the_monitor);
+    rc |= run_with_default_tune_hook(test_scan_quiet_late_result_is_a_timeout);
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_guard_lost_answers_again);
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_keeps_timing);
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_counts_from_the_landing);
