@@ -3194,6 +3194,19 @@ dsd_state_raise_input_interrupt(dsd_state* state, int reason) {
     }
 }
 
+/* The input ended while a frame was read: the session is stopping (@p exit_requested, which every input that ends with
+   the run asks for: a symbol capture, a PCM or WAV file, stdin, UDP, an I/Q replay or an RTL read that failed), or a
+   file, TCP or symbol input ended and the session goes on with Pulse (input_fallback_pending). Past the end the reader
+   stood in silence or erasures, which a strict FEC check can take for a codeword, so the read counts as cut, as an
+   interruption cuts it (DSD_INTERRUPT_NONE, which the engine loop clears at its next pass). For a decoder that judges
+   what it read before anything of it takes effect: the P25 Phase 1 NID, a P25 Phase 2 window. */
+static inline void
+dsd_state_note_input_end(dsd_state* state, int exit_requested) {
+    if (exit_requested || state->input_fallback_pending) {
+        dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_NONE);
+    }
+}
+
 /* The receiver leaves a carrier: symbols read from here on are the next carrier's. A change between symbol reads (an
    input switch, a menu tune) leaves every later symbol whole; one that runs while getSymbol() reads a symbol's samples
    (an I/Q replay retune) splits that symbol, which counts as the carrier left's. The sync join histories are the

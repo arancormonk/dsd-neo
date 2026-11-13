@@ -47,6 +47,7 @@ extern "C" {
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
 #include <dsd-neo/protocol/p25/p25p1_nid_verdict.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <mbelib-neo/mbelib.h>
 #include "frame_sync_internal.h"
 }
@@ -120,6 +121,11 @@ static uint32_t g_reported_unit;
 static int g_interrupt_in_handler;
 /* The NID read raises an input interruption (a queued command's yield) at this read, -1 for none. */
 static int g_interrupt_at_nid_read = -1;
+/* The input ends at this NID read, -1 for none: the session stops (a symbol capture, a file without a frontend), or with
+   g_end_falls_back set the input falls back to Pulse. The reader goes on handing out the NID's own dibits, as stand-ins
+   a strict check can take for the NID. */
+static int g_end_at_nid_read = -1;
+static int g_end_falls_back;
 
 static void
 make_nid(int nac, int duid, nid_air* out) {
@@ -798,6 +804,56 @@ test_cut_candidate_leaves_the_state_as_it_was(void) {
     }
 }
 
+/* The input ends two dibits before the NID's end (a C4FM symbol capture that runs out, or a file that falls back to
+   Pulse), and what the reader hands out then completes a strict NID (NAC 0x293, a TDU): behind a tolerant word of
+   either kind on either chain the frame is dropped as a cut one, its accept put back and its verdict withheld; behind
+   an exact word nothing of the NID decodes either, and its NAC is not published. */
+static void
+test_input_end_cuts_the_nid(void) {
+    static const int end_nac = 0x293;
+    for (int falls_back = 0; falls_back <= 1; falls_back++) {
+        for (int rf_mod = 0; rf_mod <= 1; rf_mod++) {
+            for (int kind = 0; kind < 3; kind++) {
+                dsd_opts* opts = new_opts();
+                dsd_state* state = new_state(opts);
+                state->rf_mod = rf_mod;
+                const int sync_kind = kind == 0   ? DSD_P25P1_SYNC_ACQUISITION
+                                      : kind == 1 ? DSD_P25P1_SYNC_ANCHORED
+                                                  : DSD_P25P1_SYNC_EXACT;
+                mark_published_state(state);
+                state->carrier = 0;
+                state->lastsynctype = DSD_SYNC_NONE;
+                state->nac = 0x0E1;
+                const provisional_view before = provisional_view_of(state);
+                const nid_air clean = nid_with_errors(end_nac, DUID_TDU, 0);
+                g_end_falls_back = falls_back;
+                g_end_at_nid_read = NID_DIBITS - 2;
+                CHECK(dispatch_held_candidate(opts, state, &clean, sync_kind, kind == 1 ? end_nac : -1)
+                      == DSD_FRAME_VERDICT_WITHHELD);
+                g_end_at_nid_read = -1;
+                CHECK(g_frames == 0);
+                CHECK(state->nac != end_nac);
+                if (sync_kind != DSD_P25P1_SYNC_EXACT) {
+                    CHECK(dsd_state_p25p1_frame_dropped(state));
+                    const provisional_view after = provisional_view_of(state);
+                    if (!provisional_view_equal(&before, &after)) {
+                        DSD_FPRINTF(stderr, "  (rf_mod %d, kind %d, fallback %d: the end left the state moved)\n",
+                                    rf_mod, sync_kind, falls_back);
+                    }
+                    CHECK(provisional_view_equal(&before, &after));
+                    CHECK(g_carried_symbols == -1 && state->sps_hunt_counter == 900);
+                }
+                dsd_exitflag_store(0);
+                state->input_fallback_pending = 0;
+                state->input_interrupted = 0;
+                state->input_interrupt_reason = DSD_INTERRUPT_NONE;
+                free(state);
+                free(opts);
+            }
+        }
+    }
+}
+
 int
 main(void) {
     test_dropped_candidate_is_put_back();
@@ -808,6 +864,7 @@ main(void) {
     test_unvalidated_frames_anchor_nothing();
     test_rejected_candidate_leaves_the_state_as_it_was();
     test_cut_candidate_leaves_the_state_as_it_was();
+    test_input_end_cuts_the_nid();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d check(s) failed\n", g_failures);
         return 1;
@@ -828,6 +885,13 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     if (g_dibit_reads == g_interrupt_at_nid_read) {
         state->input_interrupted = 1;
         state->input_interrupt_reason = DSD_INTERRUPT_YIELD;
+    }
+    if (g_dibit_reads == g_end_at_nid_read) {
+        if (g_end_falls_back) {
+            state->input_fallback_pending = 1;
+        } else {
+            dsd_exitflag_store(1);
+        }
     }
     const int d = g_dibit_reads < NID_DIBITS ? g_dibit_reads : NID_DIBITS - 1;
     g_dibit_reads++;

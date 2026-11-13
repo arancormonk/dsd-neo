@@ -21,6 +21,7 @@
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
 #include <dsd-neo/protocol/p25/p25p1_nid_verdict.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <mbelib-neo/mbelib.h>
@@ -307,9 +308,12 @@ p25p1_decode_nid_and_duid(dsd_opts* opts, dsd_state* state, const p25p1_sync_acc
     /* The previous frame's NAC is not this one's: only this frame's NID, once decoded, names it. */
     state->p25_frame_nac_valid = 0U;
     p25p1_read_nid_fields(opts, state, &duid, bch_code, bch_reliab, &parity, &parity_reliab);
-    /* An input interruption cut the NID (a Signal search left the frame): the rest of it is erasures the reader stood
-       in, which the BCH can take for the all-zero codeword (NAC 0, an HDU). Nothing of it decodes, and the NAC the
-       carrier's NIDs established says nothing of what follows the cut. */
+    /* An input that ended while the NID was read cut it as an interruption does. */
+    dsd_state_note_input_end(state, dsd_exitflag_load() == 1);
+    /* An input interruption cut the NID (a Signal search left the frame, the input ended): the rest of it is erasures
+       the reader stood in, which the BCH can take for the all-zero codeword (NAC 0, an HDU) or, a few dibits short,
+       for the NID that was being sent. Nothing of it decodes, and the NAC the carrier's NIDs established says nothing
+       of what follows the cut. */
     if (state->input_interrupted) {
         dsd_state_forget_p25p1_carrier_nac(state);
         return P25P1_DUID_INVALID;

@@ -9922,7 +9922,9 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   accepted on; `dsd_p25p2_sync_candidate`: the lock's carrier flag, offset and slicer extremes, the references
   processFrame() derives, `lastsynctype`, the `synctype` the engine recorded, `dsd_opts::inverted_p2`, the CQPSK map;
   `FRAME_SYNC_P25P2_ANCHOR`), and so
-  does it when a carrier boundary or an input interruption cuts the window before its verdict; its identity note
+  does it when a carrier boundary or an input interruption cuts the window before its verdict (the input's end counts
+  as one behind a tolerant sync, `dsd_state_note_input_end()`: the verdict would judge the reader's stand-ins; an exact
+  window's bursts read before the end still decode, each past its own FEC); its identity note
   changes nothing (the anchor needs a placed P2 window on the stream, whose sync named the P25 family
   already, and any other protocol's accept spends it). `processP2()` returns `P25P2_WINDOW_REJECTED`
   for it; `dsd_dispatch_handle_p25p2()` maps that to `DSD_FRAME_VERDICT_UNPRODUCTIVE` (the SPS hunt pays for it as for
@@ -10476,7 +10478,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     (`p25_status_accum_withdraw_gate()`, as an exact unit's start does) and puts everything back when the NID fails or
     is cut (`p25_status_accum_restore()`), so auto-PPM never trains on a subscriber the gate excludes because a word
     that was no frame was read. An input interruption that cuts the NID (a queued command's yield, a Signal search, a
-    stream gap, the input's end) drops the frame as a failed NID does, its verdict withheld: marked dropped, so no `-Y`
+    stream gap, the input's end: a stop, every input that ends the run and a file, TCP or symbol input that falls back
+    to Pulse count as cut once the NID is read, `dsd_state_note_input_end()`, since the stand-ins past the end can pass
+    the strict BCH a few dibits short) drops the frame as a failed NID does, behind an exact word too, its verdict
+    withheld: marked dropped, so no `-Y`
     voice gate qualify window starts on it, and its accept put back on the stream it was accepted on
     (`dsd_frame_sync_p25p1_candidate_cut()`), with no carried history (what the read handed out after the cut stood in
     for symbols the input did not deliver; `P25_P1_TOLERANT_NID`). What else runs between a tolerant accept and its verdict is put back, waits for the

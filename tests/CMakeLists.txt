@@ -11459,6 +11459,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_nid_verdict.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/exitflag.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_tuning_hooks.c
 )
 target_link_libraries(
