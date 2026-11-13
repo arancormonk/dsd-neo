@@ -71,6 +71,12 @@ QString recording_folder_base_name(const QString& kind, const QString& uid, cons
 bool recording_export_range(const QString& preset, const QDate& today, qint64* from, qint64* to);
 
 /**
+ * @brief The name a recording's zip entry takes, and a History export lists: the base name of its @p folder, a slash,
+ * and its @p file as the journal named it (a nested file keeps its sub-folders).
+ */
+QString recording_entry_name(const QString& folder, const QString& file);
+
+/**
  * @brief Whether the journal open in @p file holds nothing past @p offset that the store has not read: at most a line a
  * crash tore. False when the bytes past @p offset cannot all be read, so a compaction never drops records it never saw.
  */
@@ -171,6 +177,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
 
     QVariantList recordingsForFragments(const QStringList& fragments) const override;
     bool hasRecordingForFragments(const QStringList& fragments) const override;
+    /** @brief Every row's names under one hold of the store's lock (a History export), each named by
+     * recording_entry_name() as selectForExport() names it. */
+    QList<QStringList> recordingEntryNames(const QList<QStringList>& fragmentsPerRow) const override;
 
     /** @brief How many recordings were heard on the Signal search detection @p key (`<session>:<hit>`, the journal's
      * `search`), those on storage that is away included. */
@@ -484,6 +493,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     const Entry* readerEntryLocked(const QString& id) const;
     QString readerIdForPathLocked(const QString& path) const;
     QList<const Entry*> readerEntriesLocked(const QString& key, bool bySearch) const;
+    /* The recordings of a History row's @p fragments, as the GUI reads them: each once (by a set), oldest first (start,
+     * then publish order). */
+    QList<const Entry*> fragmentEntriesLocked(const QStringList& fragments) const;
     bool folderAvailableLocked(const QString& folder) const;
     QString folderUidLocked(const QString& folder) const;
     bool liveTemp(const QString& path) const;

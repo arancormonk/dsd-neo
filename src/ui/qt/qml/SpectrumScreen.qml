@@ -960,6 +960,9 @@ Item {
                             // Held while it has the focus (see OutlineButton).
                             activeFocusOnTab: (Navigation.allows(spectrumStepDownAction) && spectrum.hasData) || activeFocus
                             Accessible.role: Accessible.Button
+                            // Gate first: see OutlineButton. Out of the tree under a sheet.
+                            readonly property bool navigationAllowed: Navigation.allows(spectrumStepDownAction)
+                            Accessible.ignored: !navigationAllowed || !visible
                             Accessible.name: qsTr("Tune down")
                             Accessible.onPressAction: activate()
                             Keys.onReturnPressed: activate()
@@ -996,6 +999,9 @@ Item {
                             // Held while it has the focus (see OutlineButton).
                             activeFocusOnTab: (Navigation.allows(spectrumSweepToggleAction) && spectrum.hasData) || activeFocus
                             Accessible.role: Accessible.Button
+                            // Gate first: see OutlineButton. Out of the tree under a sheet.
+                            readonly property bool navigationAllowed: Navigation.allows(spectrumSweepToggleAction)
+                            Accessible.ignored: !navigationAllowed || !visible
                             Accessible.name: qsTr("Start or stop frequency sweep")
                             // The step it sweeps by, which its label shows.
                             Accessible.description: sweepLabel.text
@@ -1079,6 +1085,9 @@ Item {
                             // Held while it has the focus (see OutlineButton).
                             activeFocusOnTab: (Navigation.allows(spectrumStepUpAction) && spectrum.hasData) || activeFocus
                             Accessible.role: Accessible.Button
+                            // Gate first: see OutlineButton. Out of the tree under a sheet.
+                            readonly property bool navigationAllowed: Navigation.allows(spectrumStepUpAction)
+                            Accessible.ignored: !navigationAllowed || !visible
                             Accessible.name: qsTr("Tune up")
                             Accessible.onPressAction: activate()
                             Keys.onReturnPressed: activate()
@@ -1131,6 +1140,9 @@ Item {
                             // Held while it has the focus (see OutlineButton).
                             activeFocusOnTab: (Navigation.allows(spectrumSignalDownAction) && spectrum.hasData) || activeFocus
                             Accessible.role: Accessible.Button
+                            // Gate first: see OutlineButton. Out of the tree under a sheet.
+                            readonly property bool navigationAllowed: Navigation.allows(spectrumSignalDownAction)
+                            Accessible.ignored: !navigationAllowed || !visible
                             Accessible.name: qsTr("Previous signal")
                             Accessible.onPressAction: activate()
                             Keys.onReturnPressed: activate()
@@ -1179,6 +1191,9 @@ Item {
                             // Held while it has the focus (see OutlineButton).
                             activeFocusOnTab: (Navigation.allows(spectrumSignalUpAction) && spectrum.hasData) || activeFocus
                             Accessible.role: Accessible.Button
+                            // Gate first: see OutlineButton. Out of the tree under a sheet.
+                            readonly property bool navigationAllowed: Navigation.allows(spectrumSignalUpAction)
+                            Accessible.ignored: !navigationAllowed || !visible
                             Accessible.name: qsTr("Next signal")
                             Accessible.onPressAction: activate()
                             Keys.onReturnPressed: activate()

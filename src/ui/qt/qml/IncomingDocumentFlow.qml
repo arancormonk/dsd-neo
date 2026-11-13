@@ -217,7 +217,7 @@ Item {
             color: Theme.textSecondary
         }
 
-        Text {
+        ReadableText {
             id: problemLine
             objectName: "incomingDocumentProblem"
             width: parent.width
@@ -229,8 +229,6 @@ Item {
             font.pixelSize: Theme.fontSize(13)
             color: Theme.alert
             Accessible.role: Accessible.AlertMessage
-            Accessible.name: text
-            Accessible.ignored: !Navigation.allows(problemLine) || !visible
         }
 
         // Anything that is no backup: what it holds decides where it goes.

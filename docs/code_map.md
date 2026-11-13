@@ -11662,42 +11662,44 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   shown session's list, read as one consistent pair (revision, permanent get, session get, revision, again until the
   two revisions are equal, at most `kAvoidReadTries` = 32 times), a frequency in both written once, as `permanent`. It
   returns `{token, count}`: a token above 0 with the row count, `{0, 0}` for no rows, `{0, -1}` for an unknown kind or
-  avoid lists that kept changing. `saveExport(token, reference)` hands the pending file to the model's
-  `DocumentExportWriter` and forgets it; a token that is not the pending one, or a save while one runs, is refused and
-  the reference's Download-folder row let go of (through the save transport). `discardExport(token)` drops only that
-  token's file, and `exportFinished(token, ok)` reports an accepted save on the GUI thread. The model owns the writer,
-  made in its constructor from `host->saveTransport()` (a base transport without a host) under
-  `<CacheLocation>/signal-search-export`, and destroys it inside its own teardown stage; the model lives as long as the
-  QML engine, so a writer's abort (process-wide on Android) only ever happens at teardown. The files are built by
-  `signal_search_export.{h,cpp}` (pure builders the tests feed records to): the detections file's columns are
+  avoid lists that kept changing. `saveExport(token, reference)` hands the pending file to the model's `PendingExport`
+  (`pending_export.{h,cpp}`: the token, the pending bytes and the `DocumentExportWriter`, shared with other CSV
+  exports; `reset()` first in every prepare) and forgets it; a token that is not the pending one, or a save while one
+  runs, is refused and the reference's Download-folder row let go of (through the save transport).
+  `discardExport(token)` drops only that token's file, and `exportFinished(token, ok)` reports an accepted save on the
+  GUI thread. The model owns the helper, made in its constructor from `host->saveTransport()` (a base transport
+  without a host) under `<CacheLocation>/signal-search-export`, and destroys it (and so the writer) inside its own
+  teardown stage; the model lives as long as the QML engine, so a writer's abort (process-wide on Android) only ever
+  happens at teardown. The files are built by `signal_search_export.{h,cpp}` (pure builders the tests feed records
+  to): the detections file's columns are
   `started_utc,ended_utc,ended,frequency_hz,frequency_mhz,listen_mode,identification,protocol,access,tone,site,slot,`
   `target,source,encryption,power_dbfs,noise_dbfs,range,bandwidth_hz,saved_names` (UTC times with milliseconds, empty
   for a 0 time; `identification` `confirmed`, `unresolved` or `rf-only`; a party's received text, else its non-zero
-  number; levels to 0.1 dB, empty when not finite), and leave out the input spec, PPM, bias tee, gain, Airspy
-  settings and ids. `saved_names` is hitMap()'s `knownLabel`: both call `knownMatches()` at the detection's match
-  width (bandwidth, or the step when narrower), the export once per frequency and width. `csv_text.{h,cpp}` writes
-  each record: UTF-8 with a byte order mark, CRLF after every record, `.` decimals, RFC 4180 quoting, and a leading
-  `'` on a text column that starts like a formula. Test: `UI_QT_SIGNAL_SEARCH` (exact rows, locale, avoid reads
-  retried, tokens, a 1,000-row export over a heavy index).
-  The screen's side (#826): **Export detections…**, a full-width `OutlineButton` ending Recent detections after Show
-  more (inside `recentDetections`, shown while the history has rows), and **Export avoids…** after the Permanent avoids
-  list (shown while either list the screen shows has an entry, `avoidsExportShown`) both call `beginExport(kind)`,
-  which takes the rows through `prepareExport()` at the press. A count of 0 says "No detections to export." / "No
-  avoids to export." and any other 0 token "The avoid lists were changing. Try again.", with no picker; otherwise one
-  screen-level `DocumentPicker` (`searchExportPicker`: save, `text/csv`, "CSV files (*.csv)", suffix `csv`) asks
-  under "Signal search detections yyyy-MM-dd.csv" / "Signal search avoids yyyy-MM-dd.csv" (the local date from
-  `savedSystems.realtimeNowMs()`; always a lowercase `.csv`, since Android's save picker appends the type's extension
-  to `x.CSV`). Both buttons are disabled while an export is pending (`exportToken`, from the press until the pick backs
-  out or the file is written). An accepted pick goes to `saveExport(token, reference)`; a refusal (false) has already
-  let the Download-folder row go in C++, so the screen releases that token (only while it still holds it) and shows the
-  failure at once. A cancelled pick calls `discardExport(token)` and says nothing; an unavailable one discards and shows
-  the picker's message; hiding the screen calls `picker.cancel()`, and a write already running finishes. An
-  `exportFinished(token, ok)` for a token the screen no longer holds is ignored, so a late result never clears a newer
-  export; otherwise the line says "Exported N detections." / "Exported N avoids." (`Util.countText`, the singular for
-  1), "… to Download/DSD-neo as <name>." for a Download-folder save (`savedToDownloads`,
-  `decoderHost.savedDocumentName()`, the name last) or "The export couldn't be written. Try another location." Each
-  entry point has its own result line (`ExportMessage`: plain text, `Accessible.AlertMessage`, gated as `searchMessage`
-  is, the alert colour for a failure) directly under its button and apart from `searchMessage`, so neither hides the
+  number; levels to 0.1 dB, empty when not finite), and leave out the input spec, PPM, bias tee, gain, Airspy settings
+  and ids. `saved_names` is hitMap()'s `knownLabel`: both call `knownMatches()` at the detection's match width
+  (bandwidth, or the step when narrower), the export once per frequency and width. `csv_text.{h,cpp}` writes each
+  record: UTF-8 with a byte order mark, CRLF after every record, `.` decimals, RFC 4180 quoting, and a leading `'` on
+  a text column that starts like a formula. Test: `UI_QT_SIGNAL_SEARCH` (exact rows, locale, avoid reads retried,
+  tokens, a 1,000-row export over a heavy index). The screen's side (#826): **Export detections…**, a full-width
+  `OutlineButton` ending Recent detections after Show more (inside `recentDetections`, shown while the history has
+  rows), and **Export avoids…** after the Permanent avoids list (shown while either list the screen shows has an
+  entry, `avoidsExportShown`) both call `beginExport(kind)`, which takes the rows through `prepareExport()` at the
+  press. A count of 0 says "No detections to export." / "No avoids to export." and any other 0 token "The avoid lists
+  were changing. Try again.", with no picker; otherwise one screen-level `DocumentPicker` (`searchExportPicker`: save,
+  `text/csv`, "CSV files (*.csv)", suffix `csv`) asks under "Signal search detections yyyy-MM-dd.csv" / "Signal search
+  avoids yyyy-MM-dd.csv" (the local date from `savedSystems.realtimeNowMs()`; always a lowercase `.csv`, since
+  Android's save picker appends the type's extension to `x.CSV`). Both buttons are disabled while an export is pending
+  (`exportToken`, from the press until the pick backs out or the file is written). An accepted pick goes to
+  `saveExport(token, reference)`; a refusal (false) has already let the Download-folder row go in C++, so the screen
+  releases that token (only while it still holds it) and shows the failure at once. A cancelled pick calls
+  `discardExport(token)` and says nothing; an unavailable one discards and shows the picker's message; hiding the
+  screen calls `picker.cancel()`, and a write already running finishes. An `exportFinished(token, ok)` for a token the
+  screen no longer holds is ignored, so a late result never clears a newer export; otherwise the line says "Exported N
+  detections." / "Exported N avoids." (`Util.countText`, the singular for 1), "… to Download/DSD-neo as <name>." for a
+  Download-folder save (`savedToDownloads`, `decoderHost.savedDocumentName()`, the name last) or "The export couldn't
+  be written. Try another location." Each entry point has its own result line (`qml/ExportMessage.qml`, a
+  `ReadableText`: plain text, `Accessible.AlertMessage`, named from its own gate and a swipe stop while in the tree,
+  the alert colour for a failure) directly under its button and apart from `searchMessage`, so neither hides the
   other; its visibility depends on its message only, so an avoid result stays when the lists empty. The detections
   line lives in `recentDetections` and reads the screen's state, so the Loader swap at a session's start or stop keeps
   it. Each message is `{text, error, heard}`, and a new export clears both. `announceExport()`, as
@@ -12504,6 +12506,23 @@ Qt Quick frontend (`src/ui/qt`):
     merged call whose seen entries were evicted or lost is logged again as new rows, one per fragment. A state an
     embedding host reuses for another run keeps its ring and identity, and the rows the earlier run left there stay that
     session's.
+  - Duration and end: a voice row keeps its end (`Row::end`, seconds, 0 when not known) beside `durationSecs`. The
+    ring's `event_time` becomes the end only when the raw `event_start_time` is set and not after it
+    (`row_from_item()`); a row with no start stamp (`--playfiles`) takes `event_time` as its start and keeps no end, so
+    an update never turns its unknown duration into 0. `row_end_secs()` is the end when known, else the start; `load()`
+    seeds each row's seen entry with it. `foldRow()` (every merge, update and spill fold) takes the later of the two
+    `row_end_secs()` whenever either side knew its end, and sets the duration from `call_history_duration_secs()`, the
+    one plausibility rule a fresh row also gets: a merged span past 3,600 s reads unknown (-1) and stays so when an
+    earlier fragment updates. It reads both ends before it moves the start: a start-less row's end is its start, and a
+    backlog (read newest first) folds an earlier fragment into it, so reading after the move would end the row at the
+    earlier fragment. With neither end known the duration stays unknown. Matching (the merge window in
+    `rows_mergeable()`, the same-end preference in `same_reception_row()`) uses `row_merge_end_secs()`: the end only
+    while the duration is known, else the start. So a clock-shifted row (a span of hours) absorbs no later call of its
+    talkgroup and source inside that span, and a real chain longer than an hour continues in a new row once it crosses
+    the cap; the row past the cap keeps its real end. An update still reaches it by its fragment. The end is stored as
+    `end` (omitted when not known) in the rows store and the spill. A row an older build stored has no `end`: it ends at
+    `when + durationSecs` when the duration is known, else not known. Notices keep no end. Tests:
+    `UI_QT_CALL_HISTORY_MODEL`.
   - Persistence: `call_history.json` (rows) and `call_history_seen.json` (seen map, newest 2048 in retention order);
     `call_history_spill.jsonl` holds what the background capture found until a save covers it (below).
     Both are rewritten whole, so the debounce follows their size (issue #745):
@@ -12546,7 +12565,66 @@ Qt Quick frontend (`src/ui/qt`):
     `hasRecording` roles ask a `CallRecordingProvider` (the call recording store; none, and so no recordings, until one
     is set with `setRecordingProvider()`) by the row's fragments; the provider names the fragments whose recordings
     changed through `recordingFragmentsChanged()`, and the rows holding them re-read the two roles. A recording the
-    store knows before its row exists shows when the row arrives.
+    store knows before its row exists shows when the row arrives. The provider also names many rows' recordings in one
+    read (`recordingEntryNames()`, the recording store below), for a History export.
+  - Export rows and file (History CSV export; `call_history_export.{h,cpp}`): `exportRows(sourceRows)` turns this
+    model's rows, in the order given (a row out of range is skipped), into `ExportRow`s of plain values, each read
+    through the role History shows it by (`data()`: a channel id by its `setChannelNames()` name, the access code,
+    tone, site and analog mode texts), and every row's recording names from one `recordingEntryNames()` call (none
+    without a provider, or when its answer does not cover every row), so an export takes the store's lock once. The
+    row's `end` and the other internal fields stay out. `call_history_export::file(rows, zone)` is the pure builder:
+    BOM, CRLF, `csv_text` quoting and formula guard on the text columns (name, radio_name, system, channel,
+    access_code, tone, site, message, recordings), header
+    `started_local,utc_offset,started_utc,duration_s,type,name,talkgroup,radio_id,radio_name,system,channel,`
+    `frequency_hz,access_code,tone,site,analog_mode,encrypted,emergency,message,recordings`. The start is written in
+    the zone given at that instant (`yyyy-MM-dd HH:mm:ss`), that instant's offset (`UTC+05:30`) and ISO UTC (`...Z`),
+    all three empty for no start; durations, talkgroups, radio ids and frequencies that are not known are empty;
+    `type` is `call` or `message`; `analog_mode` is `NFM`, `AM`, `analog` (mode unknown) or empty; flags `1`/`0`. The
+    recordings cell joins the names with ` | `, each `\` written `\\` and each `|` written `\|`
+    (`joinRecordingNames()`; `splitRecordingNames()` reads it back). No clock or locale is read. Tests:
+    `UI_QT_CALL_HISTORY_EXPORT`. The file's columns and rules for readers are in `docs/csv-formats.md` "History file".
+  - Exporter (`call_history_exporter.{h,cpp}`, `CallHistoryExporter`, context property `historyExport`): what
+    History's **Export…** calls. `prepare(view)` drops any pending file first (`PendingExport::reset()`), then takes
+    only a `CallHistoryFilterModel` whose source is its own model (anything else: `{token 0, count -1}`), maps every
+    row the view shows to its source row in the view's order (the model's; the proxy never sorts), reads them with one
+    `exportRows()` call (so the recording store's lock is taken once) and builds the file with
+    `call_history_export::file()` in `QTimeZone::systemTimeZone()`, read once per prepare. No row shown:
+    `{token 0, count 0}`; else it holds the file and returns `{token, count, total}`, `total` being every row the
+    model holds (the screen's "37 of 214"). `save(token, reference)`, `discard(token)`, `busy` (`busyChanged()`) and
+    `finished(token, ok)` are `PendingExport`'s, on the GUI thread; both History screens share the one exporter, so a
+    second prepare replaces the first's file and the first's save is refused. A second constructor takes the save
+    transport, cache root and zone directly (the tests' seam; the app's constructor passes `host->saveTransport()`,
+    `<CacheLocation>/history-export` and the system zone). `ui_load()` makes it a child of the QML engine right after
+    History and the recording store, so it is destroyed after both (children go in creation order); its destructor
+    destroys the `PendingExport` first, which aborts a running save and waits at most
+    `DocumentExportWriter::kStopWaitMs`. The writer's job holds only the file's bytes, never the model or the store.
+    Decided limit: a press during a recording-store folder replacement waits for that step, as History's list does.
+    Tests: `UI_QT_CALL_HISTORY_EXPORT` (filtered rows, refused views, tokens, busy, teardown, and an end-to-end
+    export whose recordings cells equal the store's zip selection names).
+  - Export…, the screen's side (`qml/HistoryScreen.qml`; `tst_history_export.qml`): an **Export…** button beside
+    **Clear** (accessible name **Export history as a CSV file**), disabled while this screen's export is pending,
+    while `historyExport.busy` (so both History screens are disabled while either writes) and while the list shows no
+    row. `beginExport()` first calls `flushPendingSearch()`, so a search typed in the last 250 ms is in the file, then
+    `historyExport.prepare(historyView)`. A count of 0 says "No entries to export." and a token of 0 otherwise "The
+    export couldn't be written. Try another location."; neither opens the picker. Otherwise a screen-level
+    `DocumentPicker` (`exportPicker`: save, `text/csv`, suffix `csv`) asks under "Call history yyyy-MM-dd.csv" (local
+    date from `savedSystems.realtimeNowMs()`). `exportPicked()` calls `historyExport.save()`; a refusal releases the
+    token and shows the failure at once; a cancelled pick calls `discard()`; hiding the screen cancels the picker.
+    `exportFinished(token, ok)` ignores a token the screen does not hold, so the other History screen's result never
+    clears or replaces this one's message. The line is an `ExportMessage` ({text, error, heard}) read once through
+    `Navigation.announce()` only while the screen is visible and `Navigation.allows()` it, as Signal search does.
+    Messages (`Util.countText`, the saved name last): "Exported N entries." / "Exported 1 entry." / "Exported N of M
+    entries. The search and filters left out the rest." and, for a Download-folder save, "Exported N entries to
+    Download/DSD-neo as <name>." / "Exported 1 entry to Download/DSD-neo as <name>." / "Exported N of M entries to
+    Download/DSD-neo as <name>.".
+  - Header and list room (`qml/HistoryScreen.qml`; `tst_history_export.qml`): the header (title, Export… and Clear,
+    the export's result line, search, the save warning, the filter pills) sits in `historyHeaderScroll`, a
+    `PlexFlickable`; the list (`callLogList`) keeps at least 40% of the screen (`listMinHeight`) and the header takes
+    its own height up to the rest. A header that fits does not move; a taller one (2x text with the result line or the
+    save warning on a 360x640 phone) scrolls inside its room and ends on a `Theme.divider` hairline, where a fixed
+    column pushed the list off the screen. The focused control (`Theme.revealFocus()` on
+    the window's `activeFocusItem`, and again when the header's room changes) and a new result line scroll into its
+    view. The list keeps its `KeepPlace` model handling (issue #782) unchanged.
   - Background capture (issue #708, B1; `call_history_tap.{h,cpp}`): Qt pauses the GUI thread on Android in the
     background, the UI tick was the ring's only reader, and the ring keeps 254 committed rows a slot, so a busy system
     overwrote calls History never saw. When the application turns Suspended or Hidden, after `saveNow()`, the model
@@ -12842,10 +12920,16 @@ Qt Quick frontend (`src/ui/qt`):
     when nothing but a torn line lies past the cursor; the rewrite's owner-only mode is best-effort (FUSE-backed storage
     may refuse it). History reads (`CallRecordingProvider`) take the store's lock; the worker lets a waiting History
     read in before each slice of 128 records of a whole-folder read, each recheck and each delete, and sums (usage,
-    limit, compaction) are taken on shared copies outside the lock. A folder read again (storage back, a journal
-    replaced) drops its entries and rebuilds them slice by slice, so the GUI's reads (`recordingsForFragments()`,
-    `hasRecordingForFragments()`, the detection reads, `selectRecordings()`, `selectPath()`, `isIndexedPath()`) take it
-    from a copy made as the read began (`m_committed`, `holdCommittedFolderLocked()`) until the read is complete
+    limit, compaction) are taken on shared copies outside the lock. A History export reads every row's recording names
+    at once (`recordingEntryNames()`, one list per row): one hold of the lock for the whole batch, each row's recordings
+    found as `recordingsForFragments()` finds them (`fragmentEntriesLocked()`: each once, by a set; start, then publish
+    order), each named by `recording_entry_name()` (`<folder name>/<file>`, a nested file keeping its sub-folders), the
+    helper `selectLocked()` names a zip's entries with, so the two never differ. The provider's default (no store) gives
+    one empty list per row. Decided limit: an export pressed while a folder is replaced waits for that step, as
+    History's list does. A folder read again (storage back, a journal replaced) drops its entries and rebuilds them
+    slice by slice, so the GUI's reads (`recordingsForFragments()`, `hasRecordingForFragments()`,
+    `recordingEntryNames()`, the detection reads, `selectRecordings()`, `selectPath()`, `isIndexedPath()`) take it from
+    a copy made as the read began (`m_committed`, `holdCommittedFolderLocked()`) until the read is complete
     (`commitFolderLocked()`, which moves the revision): a delivery the GUI handles between two slices never finds a
     History row's or a detection's recordings gone (an open detection list closed itself). Changes reach the GUI as one
     queued delivery at a time (`changed()`, `recordingFragmentsChanged()`, `revisionChanged()`, `limitReached()`), so a
@@ -12865,7 +12949,8 @@ Qt Quick frontend (`src/ui/qt`):
     follows the totals, can stay quiet while `revision` moves (one recording replaced by another of the same size and
     start). Tests: `UI_QT_RECORDING_STORE` (`test_search_key_parse_and_compaction`, `test_detection_index`,
     `test_detection_root_away_keeps_membership`, `test_detection_order_newest_first`,
-    `test_queries_between_rebuild_slices` (every read between slices of a rebuild, through the slice hook),
+    `test_queries_between_rebuild_slices` (every read between slices of a rebuild, through the slice hook, the
+    batched History names included), `test_entry_names_match_zip_selection`, `test_entry_names_batch`,
     `test_revision_coalesced_passes`, `test_detection_from_c_writer`).
   - Deletion: only indexed entries, by id (`deleteRecordings()`, `deleteFolder(uid)`, `deleteUnfinished()`,
     `deleteAll()`), on the worker. Waits while `dsd_rdio_upload_holds()` (asked outside the store's lock), the player
@@ -12966,7 +13051,11 @@ Qt Quick frontend (`src/ui/qt`):
     detail; the monitor's notice rows keep their detail (or "data message") first, then the code, then the frequency.
     The exception is a History row its search found by frequency (next bullet), which leads with it. `CallRow` renders
     its name and meta line as plain text: aliases and SMS bodies are what the air delivered, and Qt's automatic
-    rich-text detection would draw a tag in them as markup.
+    rich-text detection would draw a tag in them as markup. Each is one line: `Util.oneLine()` draws a line break in
+    that text (an SMS body's) as a space, since a second line ran over the time beside it; the row's properties, the
+    details sheet and the export keep the text as received. A History row with no start time (`when` 0, which `load()`
+    keeps) is listed under a "TIME UNKNOWN" section (`day_label()`) with no time (`TimeTextRole` empty) and an
+    accessible name without one, as the details sheet leaves its time out and the export its time cells empty.
   - History search (`CallHistoryFilterModel`, `frequency_query.{h,cpp}`): the trimmed text matches the name, the
     talkgroup and unit when above 0 (0 is "none decoded", which no row prints), the source label, a notice's detail,
     the channel, and the frequency. The frequency is searched only when the text has a decimal point or the MHz unit
@@ -13240,9 +13329,10 @@ Qt Quick frontend (`src/ui/qt`):
   radio); a call no party named (no target text or id, no source, a `slotNProtocolLabel`) by `<protocol> call`, TETRA
   alone adding "identity not decoded" (`heroIdentityNote`). The hero's channel shows whenever it differs from the
   headline. The Android notification applies the same rules (`SlotCall.headline`). The painted hero headline
-  (`heroHeadlineText`, a Canvas) carries it as its accessible name. On a private call the actions name the radio:
-  **Hold** (the strip menu's **Hold radio n**) holds it, as the decoder's hold matches either party of a private call,
-  and **Avoid TG**/**Lock out** are disabled, since the decoder refuses a lockout whose target is a radio (below).
+  (`heroHeadlineText`, a Canvas, out of the tree) is read by the hero, whose accessible name leads with it. On a
+  private call the actions name the radio: **Hold** (the strip menu's **Hold radio n**) holds it, as the decoder's hold
+  matches either party of a private call, and **Avoid TG**/**Lock out** are disabled, since the decoder refuses a
+  lockout whose target is a radio (below).
   Tests: `tst_monitor_call_identity.qml`, `tst_monitor_other_slot.qml`, `UI_QT_METRICS_MODEL`
   (`test_slot_kind_and_labels()`). The panel sits in a plain `Item` (`otherSlotHost`) that holds its place: during a
   scan rotation that has visited a two-slot carrier (`rotationReservesStrip`, latched by handlers on
@@ -14668,9 +14758,10 @@ Qt Quick frontend (`src/ui/qt`):
   to `discardPendingDownload`, never one another picker waits for. `savedToDownloads` says the last accepted save
   went to the Download folder; it is set before `accepted`, so a save owner that no longer wants an accepted pick
   (`BackupFlow.savePicked()`, `CallRecordingPlayer.savePicked()`, `CallRecordingsScreen.exportPicked()`,
-  `SignalSearchScreen.exportPicked()`) discards a Download-folder row itself. On the desktop path an open clears the
-  dialog's selection (`currentFiles = []`: `selectedFiles` is read-only and `selectedFile = ""` is refused), so an
-  accept with no new choice answers `noResult`, never the previous file; a dialog that cannot open answers `failed`.
+  `SignalSearchScreen.exportPicked()`, `HistoryScreen.exportPicked()`) discards a Download-folder row itself. On the
+  desktop path an open clears the dialog's selection (`currentFiles = []`: `selectedFiles` is read-only and
+  `selectedFile = ""` is refused), so an accept with no new choice answers `noResult`, never the previous file; a
+  dialog that cannot open answers `failed`.
   Issue #830: an open picker with a `browseKind` ("csv", "backup" or "replay"; empty never browses) can be served by
   DSD-neo's file browser through the `FileBrowser` singleton (`qml/FileBrowser.qml`, one browse request app-wide:
   `request` is null or `{token, kind, title, allowOtherApp}`; `open(kind, title, allowOtherApp)` returns a token > 0,
@@ -16462,7 +16553,11 @@ that carries meaning reaches a screen reader one of these ways:
 
 - `qml/ReadableText.qml`: static text named by its own words (`heading: true` for a screen, sheet or section title).
   It leaves the tree while hidden or behind the top layer, as `MicroLabel` does, and holds an empty name there, so a
-  value that changes under a closed sheet renames nothing. Plain text only; a styled text sets its own name.
+  value that changes under a closed sheet renames nothing. Plain text only; a styled text sets its own name. A line
+  that reports a problem (a save that fails, an export's error, a refused import) is a `ReadableText` with the
+  `AlertMessage` role, always or while it reports one, never a plain `Text` naming itself: it is focusable whenever
+  it is in the tree, whatever its role (below). `qml/ExportMessage.qml`, the line under an export button (Signal
+  search, History), is one.
 - A group: one accessible parent named by what its plain `Text` children show, `Util.shownText(item)` (each visible
   child's text; a child with its own `accessibleName` is read on its own and adds nothing). For a label and its value
   or a strip of live readings: the Monitor's hero and reading groups, the Spectrum status line, SiteSheet's field
@@ -16477,11 +16572,14 @@ that carries meaning reaches a screen reader one of these ways:
 - Decorative text (a scale's ends, a sizing probe, an overflow count, a glyph) stays plain.
 
 A heading (`MicroLabel`, a `ReadableText` with `heading: true`, the signal search's paused ranges row) sets
-`Accessible.focusable`. Qt reports a node focusable only when its item takes Tab focus or has a text role
-(`QAccessibleQuickItem::state()`), and Heading is not one; the Android bridge passes that on (`setFocusable`), and
-TalkBack's linear navigation skips a text node that is neither focusable nor clickable, so without it every section and
-screen heading was skipped and a section's lines (the Network sheet's "(none announced)") were heard without it. The
-text walk reports any enabled heading in the tree that is not focusable. A heading is a swipe stop and Qt's bridge reads
+`Accessible.focusable`, and so does an alert line (every `ReadableText` while in the tree, the Signal search's paced
+`searchMessage`). Qt reports a node focusable only when its item takes Tab focus or has a text role
+(`QAccessibleQuickItem::state()`: StaticText and EditableText), and Heading and AlertMessage are not; the Android
+bridge passes that on (`setFocusable`), and TalkBack's linear navigation skips a text node that is neither focusable
+nor clickable, so without it every section and screen heading was skipped and a section's lines (the Network sheet's
+"(none announced)") were heard without it, and the lines that report a problem were skipped. The text walk reports any
+enabled heading, and any text item in another role than StaticText or EditableText, in the tree that is not focusable
+(`testContext.unfocusableTextNodes()`). A heading is a swipe stop and Qt's bridge reads
 out each rename of the one TalkBack is on, so no heading follows a reading a scan moves on every hop: the Spectrum's
 scale ticks are plain text out of the tree (a scale, like BandRail's rail ends), its Go to caption is read in its
 field's name ("Go to frequency in MHz"), and the headings that do name a moving reading are paced (above).
@@ -16532,6 +16630,11 @@ it shows.
 A sheet out of sight or under another leaves the tree through its parts' gates, and every part of a sheet that a
 screen reader reaches has its own navigation gate (`Accessible.ignored: !Navigation.allows(…) || …`): Qt lifts an
 ungated part over its ignored panel, and it stayed reachable under the top sheet (the text walk's covered-sheet case).
+A screen or card is no different: each of its named parts (a notice line, a progress bar, a named `SegmentedControl`,
+whose root takes its name through `accessibleName` and is gated only then, the Spectrum's tune buttons, the Licenses
+text) carries its own gate, and a text its parent already reads is out of the tree (`Accessible.ignored: true`, the
+Monitor's painted headline, which the hero reads); the text walk's covered-screen case covers each screen and card
+with a sheet, every branch shown, finds nothing of it in the tree, and every node back once the sheet closes.
 Leaving the tree raises only ObjectDestroyed, which Android's bridge does not pass on, and a sheet opening raises no
 show (its parts are still out of the tree as they become visible), so each `ModalSheet` has a refresh node under the
 window's content item, never out of the tree, that shows and hides with the sheet's turn on top; the bridge passes that
@@ -16556,11 +16659,15 @@ Test: `tst_readable_text_gate.qml`.
 A notice that is read out when it is set (a picker failure, an import problem, a Download-folder save's location;
 issue #829) goes through `Navigation.announce(owner, line, text)`: it does nothing for an empty text or while
 `Navigation.allows(line)` is false (`line` null: no gate, as for the backup card's notices, which live on Settings),
-records `announced`/`announcements` on `owner` for tests, and calls `owner.Accessible.announce(text)` when the Qt in
-use has it. Each failure is read once, and a repeat is read again. Used by `BackupFlow`, `WizardScreen` (`csvNotice`,
-`replayNotice`), `CallRecordingsScreen`, `CallRecordingPlayer`, `CsvImportFlow` (the companion sheet's notice),
-`ImportsScreen` (an import problem, `noticeLine`), `ScanListScreen` (a target CSV import problem,
-`validationMessage`) and `SignalSearchScreen` (an export's result, once its line can be reached: `announceExport()`).
+records `announced`/`announcements` on `owner` for tests, and calls `Accessible.announce(text)` on `line` (on `owner`
+when `line` is null) when the Qt in use has it. Speaking makes the speaker an accessible node: a line is a gated
+`ReadableText`, but an owner screen has no gate, and it would stay in the tree under a sheet
+(`test_3d_covered_screen_leaves_the_tree` with an export result set). Each failure is read once, and a repeat is read
+again. Used by `BackupFlow`, `WizardScreen` (`csvNotice`, `replayNotice`), `CallRecordingsScreen`,
+`CallRecordingPlayer`, `CsvImportFlow` (the companion sheet's notice), `ImportsScreen` (an import problem,
+`noticeLine`), `ScanListScreen` (a target CSV import problem, `validationMessage`), `FileBrowserScreen`,
+`IncomingDocumentFlow`, `SignalSearchScreen` (an export's result, once its line can be reached:
+`announceExport()`) and `HistoryScreen` (its export's result, the same way).
 
 Building a screen raises a hide for each accessible item created hidden: Qt makes an item accessible as its
 `Accessible` properties are set, before its gate is evaluated. The bridge answers each hide on a large new subtree with

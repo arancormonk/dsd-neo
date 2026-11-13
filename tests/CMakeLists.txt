@@ -24837,6 +24837,36 @@ if(DSD_ENABLE_QT_UI)
             PRIVATE "LINKER:--as-needed"
         )
     endif()
+
+    # History's CSV export: the file builder (columns, time zones, formula guard, the recordings cell) and the model's
+    # export rows (display values, recording names in one provider call). Linked as the Signal search export test is.
+    add_executable(
+        dsd-neo_test_ui_qt_call_history_export
+        ui/test_ui_qt_call_history_export.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_call_history_export
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_call_history_export
+        PRIVATE
+            dsd-neo_ui_qt
+            dsd-neo_feature_rtlsdr
+            dsd-neo_feature_codec2
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            ${LIBS}
+    )
+    add_test(
+        NAME UI_QT_CALL_HISTORY_EXPORT
+        COMMAND dsd-neo_test_ui_qt_call_history_export
+    )
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_options(
+            dsd-neo_test_ui_qt_call_history_export
+            PRIVATE "LINKER:--as-needed"
+        )
+    endif()
 endif()
 
 # dsd-neo_ui_terminal takes the curses include directories as system

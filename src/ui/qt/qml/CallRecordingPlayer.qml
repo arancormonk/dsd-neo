@@ -573,7 +573,7 @@ Column {
         }
     }
 
-    Text {
+    ReadableText {
         id: recordingProblemText
         objectName: "recordingProblem"
         width: parent.width
@@ -584,8 +584,6 @@ Column {
         font.pixelSize: Theme.fontSize(13)
         color: player.playState === 4 || player.storageAway ? Theme.alert : Theme.textSecondary
         Accessible.role: player.playState === 4 || player.storageAway ? Accessible.AlertMessage : Accessible.StaticText
-        Accessible.name: text
-        Accessible.ignored: !Navigation.allows(recordingProblemText) || !visible
     }
 
     // A call heard in pieces: a chip per part, the one shown checked, and Play all
@@ -648,7 +646,7 @@ Column {
         onClicked: player.askDelete()
     }
 
-    Text {
+    ReadableText {
         id: recordingNoticeText
         objectName: "recordingNotice"
         width: parent.width
@@ -661,8 +659,6 @@ Column {
         font.pixelSize: Theme.fontSize(13)
         color: player.noticeProblem ? Theme.alert : Theme.textSecondary
         Accessible.role: player.noticeProblem ? Accessible.AlertMessage : Accessible.StaticText
-        Accessible.name: text
-        Accessible.ignored: !Navigation.allows(recordingNoticeText) || !visible
     }
 
     DocumentPicker {

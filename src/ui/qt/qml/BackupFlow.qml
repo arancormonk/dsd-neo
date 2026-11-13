@@ -686,7 +686,7 @@ Item {
             text: qsTr("Show passphrases")
             enabled: flow.step === "exportPassphrase"
         }
-        Text {
+        ReadableText {
             id: exportError
             objectName: "backupExportError"
             width: parent.width
@@ -697,8 +697,6 @@ Item {
             font.pixelSize: Theme.fontSize(13)
             color: Theme.alert
             Accessible.role: Accessible.AlertMessage
-            Accessible.name: text
-            Accessible.ignored: !Navigation.allows(exportError) || !visible
         }
         GradientButton {
             objectName: "backupEncryptButton"
@@ -794,7 +792,7 @@ Item {
             text: qsTr("Show passphrase")
             enabled: flow.step === "unlock" && !flow.fileProblem
         }
-        Text {
+        ReadableText {
             id: unlockError
             objectName: "backupUnlockError"
             width: parent.width
@@ -805,8 +803,6 @@ Item {
             font.pixelSize: Theme.fontSize(13)
             color: Theme.alert
             Accessible.role: Accessible.AlertMessage
-            Accessible.name: text
-            Accessible.ignored: !Navigation.allows(unlockError) || !visible
         }
         // The primary action: Unlock, or another file once this one is the problem.
         GradientButton {

@@ -37,6 +37,18 @@ Item {
             text: "A line on its own"
         }
 
+        Ui.ReadableText {
+            id: alertLine
+            text: "The file couldn't be saved."
+            Accessible.role: Accessible.AlertMessage
+        }
+
+        // The line under an export button (Signal search, History).
+        Ui.ExportMessage {
+            id: exportLine
+            message: ({text: "Exported 3 rows.", error: false, heard: false})
+        }
+
         ListView {
             id: list
 
@@ -90,6 +102,42 @@ Item {
             compare(lone.Accessible.name, "");
             Ui.Navigation.modals = [];
             compare(lone.Accessible.name, "A line on its own");
+        }
+
+        // An alert line is a swipe stop while in the tree: Qt makes only a
+        // text role focusable by itself, and TalkBack's swipes skip a text
+        // node that is not focusable. Covered, it is neither.
+        function test_alert_line_is_focusable_only_in_the_tree() {
+            compare(alertLine.Accessible.role, Accessible.AlertMessage);
+            verify(alertLine.Accessible.focusable);
+            Ui.Navigation.modals = [cover];
+            verify(!alertLine.Accessible.focusable);
+            verify(alertLine.Accessible.ignored);
+            compare(alertLine.Accessible.name, "");
+            Ui.Navigation.modals = [];
+            verify(alertLine.Accessible.focusable);
+            compare(alertLine.Accessible.name, "The file couldn't be saved.");
+        }
+
+        // An export's result: an alert in the error colour for a failure,
+        // named from its own gate, and a swipe stop only while in the tree.
+        function test_export_message() {
+            compare(exportLine.Accessible.role, Accessible.AlertMessage);
+            compare(exportLine.textFormat, Text.PlainText);
+            compare(exportLine.color, Ui.Theme.textSecondary);
+            compare(exportLine.Accessible.name, "Exported 3 rows.");
+            verify(exportLine.Accessible.focusable);
+            Ui.Navigation.modals = [cover];
+            compare(exportLine.Accessible.name, "");
+            verify(!exportLine.Accessible.focusable);
+            Ui.Navigation.modals = [];
+            exportLine.message = {text: "The export couldn't be written.", error: true, heard: false};
+            compare(exportLine.color, Ui.Theme.alert);
+            compare(exportLine.Accessible.name, "The export couldn't be written.");
+            exportLine.message = {text: "", error: false, heard: false};
+            verify(!exportLine.visible, "no result, no line");
+            verify(!exportLine.Accessible.focusable);
+            exportLine.message = {text: "Exported 3 rows.", error: false, heard: false};
         }
 
         // Rows made while a sheet covers the list, then laid out again: once
