@@ -48,7 +48,7 @@ lower threshold for the mode, the safe direction for the skip calibration: YSF's
 2290 Hz, OP25 dv_tx.py's 0.42/0.33 of it; 2700 Hz, MMDVM's YSF_LEVELA_HI 1893 against DMR_LEVELA 1362 for 1944 Hz
 through the same filter), P25 Phase 2's transmit filter and D-STAR's Gaussian BT.
 
-Signal sources (sources per parameter in the issue #834 Task 4 report). Each FM transmit filter is applied to symbol
+Signal sources. Each FM transmit filter is applied to symbol
 impulses at unity DC gain, so a held level 3 is the outer deviation:
 
   p25p1    this tool's LDU1/LDU2 generator (p25_*() below, TIA-102.BAAA as MMDVMHost lays it out): frame sync, NID

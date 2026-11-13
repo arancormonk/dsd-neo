@@ -1600,7 +1600,7 @@ no_carrier_quiet_row_classes(const dsd_opts* opts, const dsd_state* state, int r
     scan_quiet_analog_facts(opts, state, kind, dsd_engine_channel_scan_row_values(state, row, &scratch), e);
 }
 
-/* The -Y scan's conditions for checking the landed row @p row (spec 3.2): the row on air from a landing in this
+/* The -Y scan's conditions for checking the landed row @p row: the row on air from a landing in this
    session, no operator hold, not avoided, no step, walk or entry waiting on a tune, no analog carrier heard (whatever
    the tone verdict), and another row a step can land on. */
 static int
@@ -1637,7 +1637,7 @@ no_carrier_quiet_facts(const dsd_opts* opts, const dsd_state* state, scan_quiet_
     e->eligible = no_carrier_quiet_row_eligible(opts, state, row);
 }
 
-/* Whether the -Y row on air steps for its quiet result (spec 3.4, 3.8): asked only where no rule that beats a skip
+/* Whether the -Y row on air steps for its quiet result: asked only where no rule that beats a skip
    keeps the row, so a result consumed here always steps (the operator hold, an awaited tune and an avoided row are in
    the row's conditions). RF power is no activity: nothing here touches the hangtime anchor or the voice gate. */
 static int
@@ -1654,7 +1654,7 @@ no_carrier_quiet_skip(const dsd_opts* opts, dsd_state* state) {
     return 1;
 }
 
-/* The leaves of the timed -Y step that outrank every reason to stay (spec 3.8 (1)). Returns 1 when one decides the
+/* The leaves of the timed -Y step that outrank every reason to stay. Returns 1 when one decides the
    pass, with its answer in @p due. */
 static int
 no_carrier_step_forced(const dsd_opts* opts, dsd_state* state, int tone_gate, int* due) {
@@ -1691,7 +1691,7 @@ no_carrier_step_forced(const dsd_opts* opts, dsd_state* state, int tone_gate, in
     return 0;
 }
 
-/* The timed -Y step's decision (spec 3.8): the forced leaves, then the stays, then the voice gate, then the hangtime
+/* The timed -Y step's decision: the forced leaves, then the stays, then the voice gate, then the hangtime
    rule, with a quiet result (issue #834) stepping a row the voice gate still qualifies, or one the hangtime rule
    decides, before its time. Heard voice is the voice gate's alone. */
 static int

@@ -70,7 +70,7 @@ typedef struct {
     uint64_t tune_request; /**< the landing's (or the park's) trunk-tuning request; 0 for a synchronous -Y tune */
 } scan_quiet_visit_key;
 
-/** The monotonic counters a check snapshots and compares at every reconcile and at the decision (spec §3.5). */
+/** The monotonic counters a check snapshots and compares at every reconcile and at the decision. */
 typedef struct {
     uint64_t chan_map_seq;
     uint64_t lcn_list_rev;
@@ -87,7 +87,7 @@ typedef struct {
     int am_width_hz;
 } scan_quiet_revisions;
 
-/** What engine service publishes for the visit on air (spec §3.2). */
+/** What engine service publishes for the visit on air. */
 typedef struct {
     scan_quiet_visit_key key;
     /** The owner's own conditions hold (landed or a park in flight, no hold or stay, an eligible alternate). The
@@ -122,7 +122,7 @@ void scan_quiet_analog_facts(const dsd_opts* opts, const dsd_state* state, int k
 
 /** The width classes of the decoder set in force (an untyped row, or a typed row inheriting it): every class an enabled
  * mode has, or the analog class for an analog session; 0 when any enabled mode has none (X2-TDMA, ProVoice, TETRA).
- * With the analog monitor on beside a digital set (-8) the set is mixed (D4): the analog class is judged too. The
+ * With the analog monitor on beside a digital set (-8) the set is mixed: the analog class is judged too. The
  * analog class comes with the configured kind (dsd_opts::analog_demod) and the width the stream runs it at
  * (scan_quiet_analog_width_hz() of dsd_opts_analog_width_hz()) in @p analog_kind and @p analog_width_hz (either may be
  * NULL; 0 without it); no definite width (an unset NFM width) is no check. Outside the calibrated analog domain the
@@ -143,7 +143,7 @@ int scan_quiet_wants_eligibility(const dsd_opts* opts, const dsd_state* state, i
 void scan_quiet_publish_eligibility(const dsd_opts* opts, dsd_state* state, int owner_kind,
                                     const scan_quiet_eligibility* e);
 
-/** The skip decision's quiet half (spec §3.4 (1)-(4)): 1 when @p owner_kind's READY result is still the visit's, its
+/** The skip decision's quiet half: 1 when @p owner_kind's READY result is still the visit's, its
  * revisions unchanged and @p current (the classes, analog kind and width, and DSP rate in force now, as engine service
  * works them out for its eligibility) equal to what was measured, its capture and output generation unchanged with no
  * tune pending, at most 250 ms old, with no sync since the request, no analog carrier heard and (trunk scan) no allowed
@@ -157,7 +157,7 @@ int scan_quiet_apply(const dsd_opts* opts, dsd_state* state, int owner_kind, con
  * way. */
 void scan_quiet_reconcile_declined(const dsd_opts* opts, dsd_state* state, int owner_kind, int guard_lost);
 
-/** Format the skip's NOTICE line (spec §3.4) into @p out: "NOTICE: scan: skipped quiet <name | row N> <freq> MHz:
+/** Format the skip's NOTICE line into @p out: "NOTICE: scan: skipped quiet <name | row N> <freq> MHz:
  * <power> dBFS, floor <floor> dBFS (<ratio> dB)\n". @p name NULL or empty names -Y row @p row (0-based). Returns the
  * snprintf result. */
 int scan_quiet_format_skip(char* out, size_t out_size, const char* name, int row, uint32_t hz, float power_dbfs,
@@ -193,7 +193,7 @@ uint32_t dsd_engine_channel_scan_quiet_edits_epoch(const dsd_state* state);
 
 /* Engine service. */
 /** The outer loop's pass owes the trunk scan's quiet check its engine service: the next coordinator tick under the
- * guard publishes the visit on air (spec 3.2), so the per-frame ticks of a carrier never walk for it. Called by the live
+ * guard publishes the visit on air, so the per-frame ticks of a carrier never walk for it. Called by the live
  * loop before its pass's tick, with skip-silent on. trunk_scan.c. */
 void dsd_engine_trunk_scan_quiet_service_pass(const dsd_state* state);
 

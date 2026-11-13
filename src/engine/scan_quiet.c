@@ -164,7 +164,7 @@ scan_quiet_decoder_classes(const dsd_opts* opts, int* analog_kind, uint32_t* ana
     if (opts->monitor_input_audio != 1 || digital == 0U) {
         return digital;
     }
-    /* The analog monitor runs beside the digital decoders (-8): a mixed set, judged in the analog class too (D4); a
+    /* The analog monitor runs beside the digital decoders (-8): a mixed set, judged in the analog class too; a
        monitor the stream runs at no definite width (an unset NFM width) gets no check. */
     const uint8_t analog = quiet_decoder_analog(opts, analog_kind, analog_width_hz);
     return analog ? (uint8_t)(digital | analog) : 0U;
@@ -318,7 +318,7 @@ quiet_age_ms(uint64_t now_ms, uint64_t since_ms) {
     return now_ms >= since_ms ? now_ms - since_ms : 0U;
 }
 
-/* Spec §3.3 reconcile: a changed visit or revision suspends the check; a sync since its request, or a READY result
+/* Reconcile: a changed visit or revision suspends the check; a sync since its request, or a READY result
    past its age, ends it. */
 static void
 quiet_reconcile(const dsd_opts* opts, const dsd_state* state, const dsd_engine_scan_owner* owner, scan_quiet_check* c,
@@ -476,9 +476,9 @@ quiet_capture_equal(const dsd_signal_capture* a, const dsd_signal_capture* b) {
            && a->drops == b->drops;
 }
 
-/* Spec §3.4 (2) and (4) for a reconciled READY result, which (1) and (3) already passed: the tap's capture and the live
-   output generation are still the result's, no tune is pending, no analog carrier is heard and, under trunk scan, no
-   allowed activity came since the request. */
+/* For a reconciled READY result past the class and revision checks: the tap's capture and the live output
+   generation are still the result's, no tune is pending, no analog carrier is heard and, under trunk scan, no allowed
+   activity came since the request. */
 static int
 quiet_ready_passes(const dsd_opts* opts, const dsd_state* state, const scan_quiet_check* c) {
     dsd_signal_capture cap;
@@ -545,7 +545,7 @@ quiet_published_as_measured(const scan_quiet_check* c, const scan_quiet_eligibil
            && c->frequency_hz == e->frequency_hz && quiet_revisions_equal(&c->revisions, &e->revisions);
 }
 
-/* Spec §3.4 (1): the effective classes, the analog kind and width (with the analog class) and the DSP rate in force
+/* The effective classes, the analog kind and width (with the analog class) and the DSP rate in force
    (@p current, this pass's facts) are still the ones measured. */
 static int
 quiet_measured_as_current(const scan_quiet_check* c, const scan_quiet_eligibility* current) {

@@ -5179,7 +5179,7 @@ trunk_scan_quiet_key(const dsd_state* state, const dsd_trunk_scan_coord* coord, 
     return 1;
 }
 
-/* The coordinator's conditions for checking the conventional target on air (spec 3.2): a park in flight, or a landed
+/* The coordinator's conditions for checking the conventional target on air: a park in flight, or a landed
    visit whose idle dwell is armed with nothing keeping it (no stay reason), no operator hold, no forced eviction to
    recover, and an eligible alternate to skip to. */
 static int
@@ -5219,7 +5219,7 @@ trunk_scan_quiet_facts(const dsd_opts* opts, const dsd_state* state, const dsd_t
                   && trunk_scan_quiet_visit_eligible(opts, state, coord, rt, now_m);
 }
 
-/* Whether the idle decision skips the target on air for its quiet result (spec 3.4, 3.7): only once every earlier step
+/* Whether the idle decision skips the target on air for its quiet result: only once every earlier step
    of the tick let it be, with an eligible alternate (the walk repeated here) and the facts it was measured under still
    in force. The result is consumed either way; one the tick saw but never applied is declined at its end
    (trunk_scan_quiet_tick_end()). RF power is no activity: nothing here touches a hold, the dwell or an activity
@@ -5241,7 +5241,7 @@ trunk_scan_quiet_skip(const dsd_opts* opts, dsd_state* state, const dsd_trunk_sc
 
 /* The tail of a tick under the coordinator's guard, for the scan quiet check (issue #834): a READY result the tick saw
    and did not apply is declined (a stay, a hold, a release or any other step that spent the tick came first), then, on
-   the outer loop's pass, the visit on air is published (spec 3.2), after any landing or advance this tick made. */
+   the outer loop's pass, the visit on air is published, after any landing or advance this tick made. */
 static void
 trunk_scan_quiet_tick_end(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, double now_m) {
     if (!opts->scan_skip_silent) {
@@ -5266,7 +5266,7 @@ dsd_engine_trunk_scan_quiet_service_pass(const dsd_state* state) {
     }
 }
 
-/* The tail of the tick (spec 3.7): with nothing earlier spending it, the operator hold suspends the idle dwell, and
+/* The tail of the tick: with nothing earlier spending it, the operator hold suspends the idle dwell, and
    otherwise the target leaves once its dwell runs out, or once the quiet check found its channel quiet. */
 static void
 trunk_scan_tick_idle_decision(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,

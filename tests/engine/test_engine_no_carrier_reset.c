@@ -12014,7 +12014,7 @@ test_live_scan_over_silent_inputs(void) {
 }
 
 /*
- * Issue #834 (Task 10): the -Y step's skip decision through the real noCarrier(), and the end-to-end skip through the
+ * Issue #834: the -Y step's skip decision through the real noCarrier(), and the end-to-end skip through the
  * live loop, over a fake signal tap (the rtl_signal_* calls the scan quiet check makes, link-wrapped). The tap's capture
  * follows the tuner: centred where the fake RTL tune last went, on a stream generation that moves with every tune, as the
  * real stream's does. A request is answered at once: quiet, or busy.
@@ -12231,7 +12231,7 @@ yq_finish(dsd_opts* opts, dsd_state* state) {
     dsd_trunk_tuning_requests_reset();
 }
 
-/* Spec §8, -Y: a landed row is measured at the next pass, and the pass after steps off it for its quiet result, long
+/* -Y: a landed row is measured at the next pass, and the pass after steps off it for its quiet result, long
    before its 10 s hangtime, with one NOTICE line naming the row; typed and untyped. The measurement writes no hangtime
    anchor. With the setting off nothing is asked and nothing steps. */
 static int
@@ -12273,7 +12273,7 @@ test_y_quiet_skips_a_landed_row(int typed, int on) {
     return rc;
 }
 
-/* Spec §8, -Y keep timing: a busy row, an operator hold, a single-row list, and heard voice under the voice gate never
+/* -Y keep timing: a busy row, an operator hold, a single-row list, and heard voice under the voice gate never
    skip; a row the voice gate is still qualifying skips on a quiet result, and with the check busy its qualification
    expiry still steps. The rules a step would stay for are part of the row's conditions, so none is measured and no
    skip is logged that the step would not take: an avoided row whose paced departure is not due, a walk the scan owns
@@ -12385,7 +12385,7 @@ yq_keep_case(int which) {
     return rc;
 }
 
-/* Spec §8, -Y: an analog row whose carrier opened (the tone gate off) after its quiet result came stays: the result is
+/* -Y: an analog row whose carrier opened (the tone gate off) after its quiet result came stays: the result is
    declined, nothing steps, and the visit asks no more. */
 static int
 test_y_quiet_open_analog_carrier_stays(void) {
@@ -12458,7 +12458,7 @@ yq_tuned_once(const dsd_opts* opts, const dsd_state* state) {
     return g_rtl_tune_calls >= 1;
 }
 
-/* Spec §8 end to end through the live loop (the real hunt over a flowing RTL stream, its 300-symbol quiet service, the
+/* End to end through the live loop (the real hunt over a flowing RTL stream, its 300-symbol quiet service, the
    real interruption routing and noCarrier()): a -Y row whose channel is quiet is left within a few passes of its landing,
    long before its hangtime; with skip-silent off it waits the hangtime out. */
 static int

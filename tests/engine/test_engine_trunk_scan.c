@@ -22930,7 +22930,7 @@ qt_mut_y_entry_cancel(dsd_opts* opts, dsd_state* state) {
     dsd_engine_channel_scan_entry_cancel(state);
 }
 
-/* Spec §3.5: every counter the revision snapshot holds, and every mutation site that has none (quiet_inv_seq), cancels
+/* Every counter the revision snapshot holds, and every mutation site that has none (quiet_inv_seq), cancels
    a request under way and suspends the check; republished, the visit measures afresh. Mutations that undo themselves
    in one pump (a hold and its release, the setting off and on) still count. */
 static int
@@ -22998,7 +22998,7 @@ test_scan_quiet_revisions_suspend_the_check(void) {
     return rc;
 }
 
-/* The mutation sites with no counter of their own bump quiet_inv_seq (spec §3.5): the trunk scan's hold, pause and
+/* The mutation sites with no counter of their own bump quiet_inv_seq: the trunk scan's hold, pause and
    resume, a park in flight, its stop; the -Y entry hold set and released; the setting. The landing epoch moves at
    every note and forget. */
 static int
@@ -23134,8 +23134,8 @@ test_scan_quiet_adopts_a_park_measured_in_flight(void) {
                         quiet_apply(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 0
                             && scan_quiet_phase_get(&state) == SCAN_QUIET_READY);
         if (adopt) {
-            /* The tick notes the park's landing first, which adopts the result, then its idle decision applies it
-               (Task 10): the target skips, and the visit's check is consumed. */
+            /* The tick notes the park's landing first, which adopts the result, then its idle decision applies it:
+               the target skips, and the visit's check is consumed. */
             dsd_engine_trunk_scan_tick(&opts, &state);
             rc |= qt_expect("adopted on a matching tune_request and applied by the tick",
                             scan_quiet_key_get(&state).epoch != 0U && scan_quiet_key_get(&state).tune_request == park
@@ -23291,7 +23291,7 @@ test_scan_quiet_decline_ends_it_unless_the_guard_was_lost(void) {
     return rc;
 }
 
-/* Spec §3.4 (1) at the decision itself: the classes, the analog kind and width, and the DSP rate in force when the tick
+/* At the decision itself: the classes, the analog kind and width, and the DSP rate in force when the tick
    applies (this pass's facts, given to scan_quiet_apply()) must be the ones measured. A class change, an analog width
    change and a DSP rate change between the measurement and the apply each decline (DONE); unchanged facts apply. */
 static int
@@ -23336,7 +23336,7 @@ test_scan_quiet_apply_checks_the_facts_in_force(void) {
     return rc;
 }
 
-/* D4 mixed sets: a digital decoder set with the -8 analog monitor on is judged in the analog class too, at the
+/* Mixed sets: a digital decoder set with the -8 analog monitor on is judged in the analog class too, at the
    configured kind and width; outside the calibrated analog domain the visit gets no check (DONE, nothing requested). */
 static int
 test_scan_quiet_mixed_set_judges_the_analog_class(void) {
@@ -23506,7 +23506,7 @@ qt_site_trunk_goto_on_air(dsd_opts* opts, dsd_state* state) {
     return goto_target(opts, state, 0, NULL) != DSD_SCAN_GOTO_HOLDING;
 }
 
-/* Spec §3.5 mutation sites with no counter of their own, each from a READY result: the site moves quiet_inv_seq and
+/* The mutation sites with no counter of their own, each from a READY result: the site moves quiet_inv_seq and
    the held READY result is declined, not applied. */
 static int
 test_scan_quiet_more_mutation_sites_decline_a_ready_result(void) {
@@ -23620,7 +23620,7 @@ test_scan_quiet_trunk_goto_and_resume_sites(void) {
     return rc;
 }
 
-/* --- Issue #834 Task 10: the skip decision in the coordinator's tick (trunk_scan_tick_idle_decision()), driven pass by
+/* --- Issue #834: the skip decision in the coordinator's tick (trunk_scan_tick_idle_decision()), driven pass by
  * pass as the live loop does: the pass's engine service owed (dsd_engine_trunk_scan_quiet_service_pass()), then the
  * tick. A 2 s dwell, so a skip shows by when it happened. The decode clock is the TEST one, the realtime clock the fake
  * one. --- */
@@ -23684,7 +23684,7 @@ qt_pass_to_ready(dsd_opts* opts, dsd_state* state) {
                      quiet_service_after(opts, state, 10U) == 1 && scan_quiet_phase_get(state) == SCAN_QUIET_READY);
 }
 
-/* Spec §8: skip at landing + measurement, through the pass and its tick. The pass publishes the landed target, the hunt
+/* Skip at landing + measurement, through the pass and its tick. The pass publishes the landed target, the hunt
    collects the quiet result, and the next pass's tick skips the target long before its dwell, once, with one NOTICE
    line. Publishing, measuring and the READY result write neither the idle dwell (the published deadline stays the
    landing's) nor a sync stamp. */
@@ -23739,7 +23739,7 @@ test_scan_quiet_tick_skips_a_quiet_target(void) {
     return rc;
 }
 
-/* A tick that lost the coordinator's guard decided nothing (spec §3.4): the READY result stays, the hunt hands back
+/* A tick that lost the coordinator's guard decided nothing: the READY result stays, the hunt hands back
    again, and the next tick under the guard skips. */
 static int
 test_scan_quiet_tick_guard_lost_answers_again(void) {
@@ -23769,7 +23769,7 @@ qt_mut_activity(dsd_opts* opts, dsd_state* state) {
     dsd_engine_trunk_scan_dmr_conventional_activity(opts, state, 1001, 2002, 0, 0, 0);
 }
 
-/* Spec §8 keep timing, each from a READY result between the hunt's return and the pass's tick: the target stays, the
+/* Keep timing, each from a READY result between the hunt's return and the pass's tick: the target stays, the
    result is not applied, the hunt is not handed back again, and no NOTICE is logged. A visit still eligible is
    republished by the same pass and measured afresh; a held one stays SUSPENDED, and one that saw activity stays DONE
    (no new request for the visit), whatever later passes do. */
@@ -23844,7 +23844,7 @@ test_scan_quiet_tick_keeps_timing(void) {
     return rc;
 }
 
-/* Spec §8: held and no-alternate visits stay SUSPENDED (no request, the hunt never handed back), and a trunked target
+/* Held and no-alternate visits stay SUSPENDED (no request, the hunt never handed back), and a trunked target
    is never checked: pass after pass, the tap is never asked. */
 static int
 test_scan_quiet_tick_ineligible_visits_request_nothing(void) {
@@ -23923,7 +23923,7 @@ test_scan_quiet_tick_ineligible_visits_request_nothing(void) {
     return rc;
 }
 
-/* Spec §8 keep timing for the stays and releases the tick weighs before its idle decision, each from a READY result:
+/* Keep timing for the stays and releases the tick weighs before its idle decision, each from a READY result:
    a tone check still running on an analog target (TONE_PENDING) keeps it, and the per-visit cap releases it to the
    next target as the cap does, with no skip logged. The result is declined either way (DONE, no hand-back). */
 static int
@@ -23997,7 +23997,7 @@ qt_first_advance_ms(dsd_opts* opts, dsd_state* state, int busy) {
     return -1;
 }
 
-/* Spec §8: the setting off is the dwell as before, and the tap is never asked; on, with a busy channel (energy), the
+/* The setting off is the dwell as before, and the tap is never asked; on, with a busy channel (energy), the
    advance comes at the very same pass. */
 static int
 test_scan_quiet_tick_setting_off_keeps_timing(void) {
@@ -24034,7 +24034,7 @@ qt_site_y_entry_hold(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
-/* The Task 9 re-review case: a -Y-owned READY result that sees its own -Y mutation sites (a leave, a pause, an entry hold
+/* A -Y-owned READY result that sees its own -Y mutation sites (a leave, a pause, an entry hold
    taken) is declined, not applied. */
 static int
 test_scan_quiet_y_ready_declines_at_its_own_sites(void) {
@@ -24083,7 +24083,7 @@ test_scan_quiet_y_ready_declines_at_its_own_sites(void) {
 
 #endif
 
-/* The NOTICE line (spec §3.4 format) and the width classes (spec §2.2). */
+/* The NOTICE line and the width classes. */
 static int
 test_scan_quiet_notice_and_classes(void) {
     char line[192];
@@ -24117,7 +24117,7 @@ test_scan_quiet_notice_and_classes(void) {
     opts.frame_dstar = 1;
     rc |= scan_quiet_decoder_classes(&opts, NULL, NULL) != 3U;
     /* The -8 analog monitor beside a digital set: a mixed set, the analog class judged at the configured kind and
-       width (D4). */
+       width. */
     opts.monitor_input_audio = 1;
     rc |= scan_quiet_decoder_classes(&opts, &kind, &width) != 7U || kind != DSD_ANALOG_DEMOD_FM || width != 12500U;
     opts.analog_demod = DSD_ANALOG_DEMOD_AM;
