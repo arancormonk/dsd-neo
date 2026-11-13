@@ -1547,7 +1547,11 @@ test_quiet_estimators(dsd_signal_quiet_detector* d) {
     dsd_signal_detector_destroy(searcher);
     assert(report.candidates[0].valid);
     assert(std::abs(report.candidates[0].power_dbfs - quiet_side.power_dbfs) < 1e-4f);
-    assert(report.candidates[0].noise_dbfs - quiet_side.floor_dbfs < quiet_side.floor_rise_db + 1e-4f);
+    // Search's noise is the trimmed-mean floor: at most the quiet side's highest rise over the reference, and on this
+    // white floor within a dB of the reference.
+    const float search_rise_db = report.candidates[0].noise_dbfs - quiet_side.floor_dbfs;
+    assert(search_rise_db < quiet_side.floor_rise_db + 1e-4f);
+    assert(search_rise_db > -1.0f);
 }
 
 /* The transform sizes Signal search measures with are unchanged by the helper it shares with quiet requests. */
