@@ -23536,6 +23536,12 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_release_sbom_filenames.py
     )
     add_test(
+        NAME TOOLS_SBOM_FILE_RECORDS
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_sbom_file_records.py
+    )
+    add_test(
         NAME ANDROID_R8
         COMMAND
             ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/android/test_r8.py

@@ -308,6 +308,10 @@ typedef struct {
     atomic_int started;
     atomic_int done;
     int created; /* written by the hook on the saving thread, read after the save returns */
+    /* Whether the refresh had finished when the hook's wait ended, sampled in the hook while the saving thread still
+       holds the lock. Read after the save returns: by then the lock is released and the refresh may finish at any
+       moment, so reading done itself there would race. */
+    int done_inside_lock;
     int rc;
     dsd_thread_t thread;
 } refresh_race;
@@ -324,7 +328,8 @@ refresh_race_run(void* arg) {
 }
 
 /* At the decoder's "file checked, about to replace" point (inside the managed-file lock): start the refresh, and wait,
-   two seconds at most, until it is blocked on the lock, or has finished because nothing held it back. */
+   two seconds at most, until it is blocked on the lock, or has finished because nothing held it back. Then record,
+   still inside the lock, whether the refresh finished: it must not have, because it needs the lock the save holds. */
 static void
 refresh_race_at_checked(dsd_managed_file_step step) {
     refresh_race* race = &s_refresh_race;
@@ -339,6 +344,7 @@ refresh_race_at_checked(dsd_managed_file_step step) {
     for (int i = 0; i < 2000 && dsd_managed_file_test_waiters() < 1 && !atomic_load(&race->done); i++) {
         dsd_sleep_ms(1);
     }
+    race->done_inside_lock = atomic_load(&race->done);
 }
 
 /* Discussion #748 follow-up R4: the terminal RadioReference refresh replaces a stored group list under the
@@ -373,7 +379,7 @@ test_refresh_waits_for_decoder_rewrite(const char* dir) {
     rc |= expect_int("race: decoder save", dsd_tg_policy_write_group_file(opts, st), 0);
     dsd_managed_file_test_set_hook(NULL);
     rc |= expect_int("race: refresh started at the checked point", atomic_load(&race->started), 1);
-    rc |= expect_int("race: refresh waited for the save", atomic_load(&race->done), 0);
+    rc |= expect_int("race: refresh had not finished while the save held the lock", race->done_inside_lock, 0);
     if (race->created) {
         (void)dsd_thread_join(race->thread);
     }

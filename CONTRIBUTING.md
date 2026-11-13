@@ -120,6 +120,8 @@ Additional focused checks:
 - Dependency input changes: `tools/osv_scan.sh`
 - License, provenance or packaging changes: `python3 tools/legal_inventory.py`
   and `python3 tests/tools/test_legal_inventory.py`; review `legal/status.md`.
+- Release SBOM step changes: `python3 tests/tools/test_release_sbom_filenames.py`
+  and `python3 tests/tools/test_sbom_file_records.py`.
 - Security-sensitive workflow/release changes: `tools/check_secret_redaction.sh`,
   `tools/check_workflow_git_pins.sh`, and
   `tools/check_workflow_download_pins.sh`

@@ -25,6 +25,23 @@ and exercises tagged-release upload commands with a fake GitHub CLI. It creates
 no Git tags and performs no uploads. Signature/OIDC attestation still runs in
 the actual trusted tag workflows.
 
+### Release SBOM file records
+
+After the enrichment tools, each SBOM step runs
+`tools/sbom_file_records.py --spdx <package>.spdx.json --asset <package>`.
+It renames each file record to its path inside the package (or the package's
+own file name) and sets its checksums to the SHA1 and SHA256 of the shipped
+bytes, replacing the all-zero SHA1 the scanner writes when it has no digest.
+A record it cannot tie to exactly one shipped file, a record whose real digest
+disagrees with the shipped bytes, or any other checksum algorithm fails the
+step and leaves the SBOM unmodified, so the packaging job fails before it
+uploads or attests the SBOM. The Android App Bundle's SBOM steps keep going on
+failure, like its other steps, and the AAB status job fails instead.
+`python3 tests/tools/test_sbom_file_records.py` (also registered as
+`TOOLS_SBOM_FILE_RECORDS` in CTest) covers the tool and checks that every
+`anchore/sbom-action` step in the workflows is followed by it, on that step's
+output file and package, before the SBOM is uploaded or attested.
+
 ## Pinned CI Source Checkouts
 
 `tools/ci-dependency-pins.env` is the checked-in source of truth for CI-only GitHub source dependencies such as OpenSSL, `mbelib-neo`, `codec2`, `rtl-sdr`, SoapySDR, `include-what-you-use`, AppImage helper projects, CI container digests, vcpkg overlay archive SHA512 values, and installer SHA256 values.
