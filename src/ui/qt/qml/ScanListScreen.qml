@@ -1158,7 +1158,8 @@ Rectangle {
                             onToggled: screen.draft.skipSilent = checked
                             Accessible.description: skipSilentHelp.text
                         }
-                        // Read through the checkbox's Accessible.description, so the help is not a second stop for a screen reader.
+                        // Read through the checkbox's Accessible.description, so the help is not a second stop for a
+                        // screen reader.
                         Text {
                             id: skipSilentHelp
                             width: parent.width

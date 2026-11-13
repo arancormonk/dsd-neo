@@ -1538,7 +1538,7 @@ Item {
             var help = skipSilentHelp();
             verify(help.visible);
             verify(help.Accessible.ignored, "the help is read through the switch, not as a second stop");
-            // A click as the control takes it: QtTest's synthesized press and release could miss under a loaded CPU.
+            // The control's own click; test_skip_silent_pointer_click presses it once the Advanced panel is open.
             box.click();
             verify(box.checked);
             compare(screen.draft.skipSilent, true);
@@ -1566,6 +1566,39 @@ Item {
             }
         }
 
+        // Whether a press at the middle of @p item reaches it: inside every clipping ancestor (the Advanced panel clips
+        // while its height animates open, the scroll view clips to its viewport), at the same place as at the last ask.
+        property var lastPointerPlace: null
+        function settledForPointer(item) {
+            for (var at = item.parent; at; at = at.parent) {
+                if (!at.clip)
+                    continue;
+                var rect = item.mapToItem(at, 0, 0, item.width, item.height);
+                if (rect.y < 0 || rect.x < 0 || rect.y + rect.height > at.height || rect.x + rect.width > at.width)
+                    return false;
+            }
+            var place = item.mapToItem(null, 0, 0);
+            var same = lastPointerPlace !== null && lastPointerPlace.x === place.x && lastPointerPlace.y === place.y;
+            lastPointerPlace = place;
+            return same;
+        }
+
+        function test_skip_silent_pointer_click() {
+            edit("scanListName", "Pointer");
+            control("scanAdvancedToggle").Accessible.pressAction();
+            var box = control("scanSkipSilent");
+            box.forceActiveFocus();
+            for (var want of [true, false]) {
+                lastPointerPlace = null;
+                tryVerify(function () {
+                    return settledForPointer(box);
+                }, 2000, "the checkbox is open, in view and still");
+                mouseClick(box);
+                compare(box.checked, want);
+                compare(screen.draft.skipSilent, want);
+            }
+        }
+
         function test_skip_silent_help_wraps_at_large_text_data() {
             return [{tag: "phone", width: 360, scale: 2}, {tag: "desktop", width: 900, scale: 2}];
         }
@@ -1583,8 +1616,8 @@ Item {
                     return help.lineCount > 1;
                 });
                 compare(help.width, box.width);
+                verify(help.leftPadding + help.contentWidth <= help.width + 0.5, "the help's lines fit beside its indent");
                 compare(help.leftPadding, box.leftPadding + box.indicator.width + box.spacing, "the help hangs under the label");
-                verify(help.contentWidth <= help.width + 0.5);
                 var pos = help.mapToItem(screen, 0, 0);
                 verify(pos.x >= 0 && pos.x + help.width <= data.width + 0.5);
                 tryVerify(function () {
