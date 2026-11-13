@@ -1995,10 +1995,11 @@ p25p2_judge_tolerant_window(const dsd_state* state, uint32_t entry_symbol, int s
    of it takes effect (no ISCH, position, playout, descrambling, burst or continuity), as when the exact hunt misses a
    sync: the next window's continuity retires its timeslots as lost. */
 static void
-p25p2_reject_tolerant_window(const dsd_opts* opts, dsd_state* state, p25p2_window_verdict verdict, int entry_stereo) {
+p25p2_reject_tolerant_window(dsd_opts* opts, dsd_state* state, p25p2_window_verdict verdict, int entry_stereo) {
     state->dmr_stereo = entry_stereo;
     unsigned int bit_errors = 0U;
     (void)dsd_frame_sync_p25p2_tolerant_start(state, &bit_errors);
+    dsd_frame_sync_p25p2_window_dropped(opts, state);
     dsd_frame_sync_p25p2_window_decoded(state, 0, -1);
     DSD_FPRINTF(stderr, " P25p2 ~sync rejected");
     if (opts->verbose > 1) {

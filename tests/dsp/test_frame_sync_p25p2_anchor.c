@@ -234,6 +234,51 @@ test_expected_position_threshold(void) {
     teardown(&state);
 }
 
+/* A window a tolerant word opened that fails its verdict leaves the decoder as the accept found it: the lock, the slicer
+   extremes and the references processFrame() derives from them, lastsynctype, the polarity it wrote and the CQPSK map.
+   One that passes keeps what the accept wrote. */
+static void
+test_rejected_window_puts_back_what_its_accept_changed(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    char window[SYNC_DIBITS + 1];
+    for (int passes = 0; passes <= 1; passes++) {
+        setup(&opts, &state);
+        anchored(&opts, &state);
+        state.carrier = 0;
+        state.offset = 77;
+        state.max = 7.0f;
+        state.min = -7.0f;
+        state.maxref = 5.6f;
+        state.minref = -5.6f;
+        state.lastsynctype = DSD_SYNC_NONE;
+        opts.inverted_p2 = 1;
+        state.p25_cqpsk_dibit_map_idx = 2U;
+        word_with_bit_errors(P25P2_SYNC, 2, window);
+        assert(match_at(&opts, &state, window, EXPECTED) == DSD_SYNC_P25P2_POS);
+        assert(dsd_frame_sync_p25p2_tolerant_start(&state, NULL) == NEXT_START);
+        assert(state.carrier == 1 && state.lastsynctype == DSD_SYNC_P25P2_POS && opts.inverted_p2 == 0);
+        /* processFrame() and the window read. */
+        state.maxref = state.max;
+        state.minref = state.min;
+        state.symbol_clock = EXPECTED + SYNC_DIBITS + WINDOW_DIBITS;
+        if (passes) {
+            dsd_frame_sync_p25p2_window_decoded(&state, 1, NEXT_START);
+            assert(state.carrier == 1 && state.lastsynctype == DSD_SYNC_P25P2_POS && opts.inverted_p2 == 0);
+            assert(state.p25_p2_sync_candidate.valid == 0U);
+        } else {
+            dsd_frame_sync_p25p2_window_dropped(&opts, &state);
+            dsd_frame_sync_p25p2_window_decoded(&state, 0, -1);
+            assert(state.carrier == 0 && state.offset == 77);
+            assert(fabsf(state.max - 7.0f) < 1e-6f && fabsf(state.min + 7.0f) < 1e-6f);
+            assert(fabsf(state.maxref - 5.6f) < 1e-6f && fabsf(state.minref + 5.6f) < 1e-6f);
+            assert(state.lastsynctype == DSD_SYNC_NONE && opts.inverted_p2 == 1);
+            assert(state.p25_cqpsk_dibit_map_idx == 2U);
+        }
+        teardown(&state);
+    }
+}
+
 /* Every other position is exact-only: a symbol either side, and the later S-ISCH positions (+180 when the window
    starts on slot 0's timeslot, +540 a missed window on). No anchor at all: exact words only. */
 static void
@@ -836,6 +881,7 @@ main(void) {
     test_bit_distance();
 #ifdef USE_RADIO
     test_expected_position_threshold();
+    test_rejected_window_puts_back_what_its_accept_changed();
     test_other_positions_exact_only();
     test_late_exact_word_wins();
     test_late_exact_word_of_any_map_wins();

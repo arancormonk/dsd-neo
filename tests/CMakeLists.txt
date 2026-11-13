@@ -11524,6 +11524,7 @@ add_executable(
     dsd-neo_test_p25_p1_tolerant_nid
     protocol/p25/test_p25_p1_tolerant_nid.cpp
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_p25p1.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25_status_symbol.c
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25_sync_context.c
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_anchor.c
     ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c

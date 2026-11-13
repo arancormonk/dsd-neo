@@ -279,6 +279,28 @@ p25_status_accum_reset(dsd_state* state) {
 }
 
 void
+p25_status_accum_reset_provisional(dsd_state* state) {
+    (void)state;
+}
+
+void
+p25_status_accum_withdraw_gate(dsd_state* state) {
+    (void)state;
+}
+
+void
+p25_status_accum_save(const dsd_state* state, p25_status_accum_snapshot* out) {
+    (void)state;
+    (void)out;
+}
+
+void
+p25_status_accum_restore(dsd_state* state, const p25_status_accum_snapshot* saved) {
+    (void)state;
+    (void)saved;
+}
+
+void
 p25_status_accum_add(dsd_state* state, int dibit_value) {
     (void)state;
     (void)dibit_value;

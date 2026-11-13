@@ -19,6 +19,7 @@
  * C++ for the NID codewords, which come from the test-only generator header.
  */
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -57,6 +58,11 @@ static int g_failures;
 static int g_carried_symbols = -1;
 /* The pass position it handed with them. */
 static int g_carried_pass = -1;
+/* The advisory AFC gate every NID read is expected to find published (auto-PPM reads it on the radio thread), and
+   whether one found another. */
+static uint8_t g_gate_valid_seen;
+static uint8_t g_gate_allow_seen;
+static int g_gate_moved_in_read;
 /* The tolerant C4FM words the frame sync marked in the seam's history at their accept, and those it measured. */
 static int g_grid_marks;
 static int g_grid_measures;
@@ -447,7 +453,25 @@ dispatch_held_candidate(dsd_opts* opts, dsd_state* state, const nid_air* nid, in
     state->lastsynctype = DSD_SYNC_NONE;
     state->symbol_clock = SYNC_AT + 24;
     frame_sync_p25p1_candidate_hold(state, 700);
+    /* What frame_sync_accept_p25p1() writes, and processFrame() after it. */
     state->carrier = 1;
+    state->offset = 23;
+    state->max = 2.5f;
+    state->min = -2.5f;
+    state->center = 0.0f;
+    state->umid = 1.5f;
+    state->lmid = -1.5f;
+    state->maxref = 2.0f;
+    state->minref = -2.0f;
+    state->jitter = -1;
+    state->dmrburstR = 17U;
+    state->payload_algidR = 0;
+    state->dmr_stereo = 1;
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "%s", "P25 Phase 1");
+    state->p25_p1_c4fm_frame_valid = state->rf_mod == 1 ? 0U : 1U;
+    state->p25_p1_c4fm_frame_symbolcnt = state->symbolcnt;
+    state->p25_p1_c4fm_sync_levels = state->rf_mod == 1 ? 0U : 1U;
+    state->p25_cqpsk_dibit_map_idx = 0U;
     state->lastsynctype = DSD_SYNC_P25P1_POS;
     frame_sync_p25p1_anchor_note_sync(state, DSD_SYNC_P25P1_POS, kind, anchor_nac, 2);
     state->symbol_clock = SYNC_AT + 24 + NID_DIBITS;
@@ -483,6 +507,13 @@ test_dropped_candidate_is_put_back(void) {
     CHECK(state->p25_p1_sync_candidate.valid == 0U);
     /* Marked at the accept, never measured: the grid stays where the hunt left it. */
     CHECK(g_grid_marks == 1 && g_grid_measures == 0);
+    /* On the CQPSK chain the accept is put back too; the carry is the C4FM hunt's sign history, so nothing is carried
+       and nothing charged. */
+    state->rf_mod = 1;
+    CHECK(dispatch_held_candidate(opts, state, &other, DSD_P25P1_SYNC_ANCHORED, NAC) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    CHECK(state->carrier == 0 && state->lastsynctype == DSD_SYNC_NONE);
+    CHECK(g_carried_symbols == -1 && state->sps_hunt_counter == 900);
+    state->rf_mod = 0;
 
     const nid_air own = nid_with_errors(NAC, DUID_LDU1, 2);
     CHECK(dispatch_held_candidate(opts, state, &own, DSD_P25P1_SYNC_ANCHORED, NAC) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
@@ -569,6 +600,161 @@ test_acquisition_needs_a_strict_nid(void) {
     }
 }
 
+/* What a tolerant accept and the NID read behind it may write before the strict check speaks, as one value: the lock,
+   the slicer levels, the frame label and slot 2 fields, the frame span, the map, the frame NAC, the identity and the
+   carrier's NAC, the NID counters, and the status accumulator with the advisory AFC gate it publishes. */
+namespace {
+
+struct provisional_view {
+    float levels[7];
+    int carrier, offset, jitter, lastsynctype, payload_algidR, nac;
+    unsigned int dmrburstR, nid_failures, nid_corrections, header_errors;
+    short int dmr_stereo;
+    char ftype[16];
+    uint32_t c4fm_frame_symbolcnt;
+    uint8_t c4fm_frame_valid, map_idx, frame_nac_valid, sync_levels, rx_family;
+    uint16_t rx_access;
+    uint8_t ss_buf[P25_STATUS_ACCUM_MAX];
+    uint8_t ss_count, ss_active, ss_class, gate_allow, gate_valid;
+    unsigned int afc_allowed, afc_suppressed;
+};
+
+} // namespace
+
+static provisional_view
+provisional_view_of(const dsd_state* state) {
+    provisional_view v;
+    std::memset(&v, 0, sizeof(v));
+    const float levels[7] = {
+        state->max, state->min, state->center, state->umid, state->lmid, state->maxref, state->minref,
+    };
+    std::memcpy(v.levels, levels, sizeof(levels));
+    v.carrier = state->carrier;
+    v.offset = state->offset;
+    v.jitter = state->jitter;
+    v.lastsynctype = state->lastsynctype;
+    v.payload_algidR = state->payload_algidR;
+    v.nac = state->nac;
+    v.dmrburstR = state->dmrburstR;
+    v.nid_failures = state->nid_failures_total;
+    v.nid_corrections = state->nid_corrections_total;
+    v.header_errors = state->debug_header_errors;
+    v.dmr_stereo = state->dmr_stereo;
+    std::memcpy(v.ftype, state->ftype, sizeof(v.ftype));
+    v.c4fm_frame_symbolcnt = state->p25_p1_c4fm_frame_symbolcnt;
+    v.c4fm_frame_valid = state->p25_p1_c4fm_frame_valid;
+    v.map_idx = state->p25_cqpsk_dibit_map_idx;
+    v.frame_nac_valid = state->p25_frame_nac_valid;
+    v.sync_levels = state->p25_p1_c4fm_sync_levels;
+    v.rx_family = state->rx_id.family;
+    v.rx_access = state->rx_id.access;
+    std::memcpy(v.ss_buf, state->p25_ss_buf, sizeof(v.ss_buf));
+    v.ss_count = state->p25_ss_count;
+    v.ss_active = state->p25_ss_frame_active;
+    v.ss_class = state->p25_ss_classification;
+    v.gate_allow = state->p25_afc_gate_allow;
+    v.gate_valid = state->p25_afc_gate_valid;
+    v.afc_allowed = state->p25_afc_allowed_count;
+    v.afc_suppressed = state->p25_afc_suppressed_count;
+    return v;
+}
+
+/* Whether two views are the same: the levels within a tolerance, everything else exactly. */
+static int
+provisional_view_equal(const provisional_view* a, const provisional_view* b) {
+    for (int i = 0; i < 7; i++) {
+        if (std::fabs(a->levels[i] - b->levels[i]) > 1e-6f) {
+            return 0;
+        }
+    }
+    return a->carrier == b->carrier && a->offset == b->offset && a->jitter == b->jitter
+           && a->lastsynctype == b->lastsynctype && a->payload_algidR == b->payload_algidR && a->nac == b->nac
+           && a->dmrburstR == b->dmrburstR && a->nid_failures == b->nid_failures
+           && a->nid_corrections == b->nid_corrections && a->header_errors == b->header_errors
+           && a->dmr_stereo == b->dmr_stereo && std::memcmp(a->ftype, b->ftype, sizeof(a->ftype)) == 0
+           && a->c4fm_frame_symbolcnt == b->c4fm_frame_symbolcnt && a->c4fm_frame_valid == b->c4fm_frame_valid
+           && a->map_idx == b->map_idx && a->frame_nac_valid == b->frame_nac_valid && a->sync_levels == b->sync_levels
+           && a->rx_family == b->rx_family && a->rx_access == b->rx_access
+           && std::memcmp(a->ss_buf, b->ss_buf, sizeof(a->ss_buf)) == 0 && a->ss_count == b->ss_count
+           && a->ss_active == b->ss_active && a->ss_class == b->ss_class && a->gate_allow == b->gate_allow
+           && a->gate_valid == b->gate_valid && a->afc_allowed == b->afc_allowed
+           && a->afc_suppressed == b->afc_suppressed;
+}
+
+/* The decoder as a subscriber's data unit left it (opt-in AFC gate: valid, not allowing), with its own levels and
+   frame fields, set apart from what an accept writes. */
+static void
+mark_published_state(dsd_state* state) {
+    state->max = 7.0f;
+    state->min = -7.0f;
+    state->center = 0.25f;
+    state->umid = 4.0f;
+    state->lmid = -4.0f;
+    state->maxref = 5.6f;
+    state->minref = -5.6f;
+    state->offset = 77;
+    state->jitter = 3;
+    state->dmrburstR = 9U;
+    state->payload_algidR = 0x84;
+    state->dmr_stereo = 0;
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "%s", "DMR");
+    state->p25_p1_c4fm_frame_valid = 1;
+    state->p25_p1_c4fm_frame_symbolcnt = 4242U;
+    state->p25_cqpsk_dibit_map_idx = 2U;
+    state->p25_frame_nac_valid = 1U;
+    state->p25_p1_c4fm_sync_levels = 0U;
+    p25_status_accum_reset(state);
+    p25_status_accum_add(state, 0);
+    p25_status_accum_add(state, 2);
+    p25_status_accum_add(state, 0);
+    p25_status_accum_classify(state);
+    CHECK(state->p25_afc_gate_valid == 1U && state->p25_afc_gate_allow == 0U);
+    CHECK(state->p25_ss_classification == (uint8_t)P25_SS_CLASS_SUBSCRIBER);
+    g_gate_valid_seen = state->p25_afc_gate_valid;
+    g_gate_allow_seen = state->p25_afc_gate_allow;
+    g_gate_moved_in_read = 0;
+}
+
+/* Whatever chain and kind, a candidate whose NID fails leaves the decoder exactly as it found it, the advisory AFC gate
+   included: the gate the last data unit published stands through the NID read too (auto-PPM must not train on the
+   subscriber the gate excludes while the NID is provisional). A candidate whose NID passes withdraws the gate as an
+   exact data unit's start does, once it passed; behind an exact word the read finds it withdrawn, as before. */
+static void
+test_rejected_candidate_leaves_the_state_as_it_was(void) {
+    for (int rf_mod = 0; rf_mod <= 1; rf_mod++) {
+        for (int kind = 0; kind < 2; kind++) {
+            dsd_opts* opts = new_opts();
+            dsd_state* state = new_state(opts);
+            state->rf_mod = rf_mod;
+            const int sync_kind = kind == 0 ? DSD_P25P1_SYNC_ANCHORED : DSD_P25P1_SYNC_ACQUISITION;
+            const int anchor_nac = kind == 0 ? NAC : -1;
+            mark_published_state(state);
+            state->carrier = 0;
+            state->lastsynctype = DSD_SYNC_NONE;
+            const provisional_view before = provisional_view_of(state);
+            const nid_air noise = nid_with_errors(NAC, DUID_LDU1, 13);
+            CHECK(dispatch_held_candidate(opts, state, &noise, sync_kind, anchor_nac)
+                  == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+            CHECK(g_frames == 0);
+            CHECK(g_gate_moved_in_read == 0);
+            const provisional_view after = provisional_view_of(state);
+            if (!provisional_view_equal(&before, &after)) {
+                DSD_FPRINTF(stderr, "  (rf_mod %d, kind %d: the state moved)\n", rf_mod, sync_kind);
+            }
+            CHECK(provisional_view_equal(&before, &after));
+
+            mark_published_state(state);
+            const nid_air clean = nid_with_errors(NAC, DUID_LDU1, 0);
+            CHECK(dispatch_held_candidate(opts, state, &clean, sync_kind, anchor_nac)
+                  == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+            CHECK(g_gate_moved_in_read == 0);
+            CHECK(state->p25_afc_gate_valid == 0U && state->p25_afc_gate_allow == 0U);
+            free(state);
+            free(opts);
+        }
+    }
+}
+
 int
 main(void) {
     test_dropped_candidate_is_put_back();
@@ -577,6 +763,7 @@ main(void) {
     test_strict_nid_drops();
     test_validated_frames_anchor_at_their_length();
     test_unvalidated_frames_anchor_nothing();
+    test_rejected_candidate_leaves_the_state_as_it_was();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d check(s) failed\n", g_failures);
         return 1;
@@ -591,7 +778,9 @@ extern "C" {
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
-    (void)state;
+    if (state->p25_afc_gate_valid != g_gate_valid_seen || state->p25_afc_gate_allow != g_gate_allow_seen) {
+        g_gate_moved_in_read = 1;
+    }
     const int d = g_dibit_reads < NID_DIBITS ? g_dibit_reads : NID_DIBITS - 1;
     g_dibit_reads++;
     if (out_soft != NULL) {
@@ -678,22 +867,6 @@ mbe_initMbeParms(mbe_parms* cur_mp, mbe_parms* prev_mp, mbe_parms* prev_mp_enhan
     (void)cur_mp;
     (void)prev_mp;
     (void)prev_mp_enhanced;
-}
-
-void
-p25_status_accum_reset(dsd_state* state) {
-    (void)state;
-}
-
-void
-p25_status_accum_add(dsd_state* state, int dibit_value) {
-    (void)state;
-    (void)dibit_value;
-}
-
-void
-p25_status_accum_classify(dsd_state* state) {
-    (void)state;
 }
 
 /* Every data unit's stand-in: counted, and an interruption raised in it when asked. */

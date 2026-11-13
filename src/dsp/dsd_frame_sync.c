@@ -1015,9 +1015,7 @@ frame_sync_try_tolerant_p25p1(frame_sync_match_ctx* ctx) {
     }
     const int synctype = inverted ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS;
     const frame_sync_p25p1_tolerance tolerance = {DSD_P25P1_SYNC_ANCHORED, nac, errors};
-    if (state->rf_mod == 0) {
-        frame_sync_p25p1_candidate_hold(state, ctx->synctest_pos);
-    }
+    frame_sync_p25p1_candidate_hold(state, ctx->synctest_pos);
     frame_sync_set_p25_cqpsk_dibit_map(ctx, map_idx);
     frame_sync_accept_p25p1(ctx, synctype, inverted ? "-P25p1 " : "+P25p1", FRAME_SYNC_P25_CENTER_SKIP, &tolerance);
     state->p25_p1_sync_anchor.tolerant_syncs++;
@@ -1259,6 +1257,7 @@ frame_sync_try_tolerant_p25p2(frame_sync_match_ctx* ctx) {
     }
     const int synctype = inverted ? DSD_SYNC_P25P2_NEG : DSD_SYNC_P25P2_POS;
     const frame_sync_p25p2_tolerance tolerance = {start, bit_errors};
+    frame_sync_p25p2_candidate_hold(ctx->opts, state);
     frame_sync_set_p25_cqpsk_dibit_map(ctx, map_idx);
     frame_sync_accept_p25p2(ctx, synctype, inverted, inverted ? "-P25p2~" : "+P25p2~", !inverted,
                             FRAME_SYNC_P25_CENTER_SKIP, &tolerance);

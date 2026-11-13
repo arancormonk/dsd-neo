@@ -348,15 +348,15 @@ typedef struct {
     uint8_t frame_dropped;
 } dsd_p25p1_sync_anchor;
 
-/* What a P25 Phase 1 sync word the C4FM hunt accepted within a tolerance changed before its NID could say whether it
- * was a word at all, as it stood before the accept (frame_sync_accept_p25p1()): the slicer levels its lock and warm
- * start rewrote (the NID is read on them, a calibration on trial), whether the warm start set them (which decides
- * whether the frame holds them) and the crossing it dropped, the carrier flag, offset and lastsynctype, the P25p1 frame
- * span that stands NXDN96 and M17 down, the DMR slot 2 burst, ALG ID and stereo state and the frame type label the
- * accept writes, the CQPSK dibit map the try set, and the frame NAC the NID read cleared. Put back when the dispatcher
- * drops the frame on the stream it was accepted on (dsd_frame_sync_p25p1_candidate_rejected()); a frame that validates
- * keeps what the accept wrote. The hunt's pass position at the accept goes with it, for the hunt to go on from. Written
- * and read by the frame sync; decoder-thread private. */
+/* What a P25 Phase 1 sync word the hunt accepted within a tolerance (on either chain) changed before its NID could say
+ * whether it was a word at all, as it stood before the accept (frame_sync_accept_p25p1()): the slicer levels its lock
+ * and warm start rewrote (the NID is read on them, a calibration on trial), whether the warm start set them (which
+ * decides whether the frame holds them) and the crossing it dropped, the carrier flag, offset and lastsynctype, the
+ * P25p1 frame span that stands NXDN96 and M17 down, the DMR slot 2 burst, ALG ID and stereo state and the frame type
+ * label the accept writes, the CQPSK dibit map the try set, and the frame NAC the NID read cleared. Put back when the
+ * dispatcher drops the frame on the stream it was accepted on (dsd_frame_sync_p25p1_candidate_rejected()); a frame that
+ * validates keeps what the accept wrote. The hunt's pass position at the accept goes with it, for the hunt to go on
+ * from. Written and read by the frame sync; decoder-thread private. */
 typedef struct {
     float max;
     float min;
@@ -384,6 +384,25 @@ typedef struct {
     uint8_t p25_frame_nac_valid;
     uint8_t valid; /* held for the frame being decoded */
 } dsd_p25p1_sync_candidate;
+
+/* What a P25 Phase 2 sync word the hunt accepted within a tolerance changed before the window's verdict could say
+ * whether it was a window at all, as it stood before the accept (frame_sync_accept_p25p2()): the lock's carrier flag,
+ * offset and slicer extremes, the references processFrame() derives from them, lastsynctype, the polarity it wrote
+ * (dsd_opts::inverted_p2) and the CQPSK dibit map the try set. Put back when processP2() rejects the window on the
+ * stream it was accepted on (dsd_frame_sync_p25p2_window_dropped()); a window that passes keeps what the accept
+ * wrote. Written and read by the frame sync; decoder-thread private. */
+typedef struct {
+    float max;
+    float min;
+    float maxref;
+    float minref;
+    int carrier;
+    int offset;
+    int lastsynctype;
+    int inverted_p2;
+    uint8_t p25_cqpsk_dibit_map_idx;
+    uint8_t valid;
+} dsd_p25p2_sync_candidate;
 
 /* The P25 Phase 2 sync anchor: where the window after the last one a received I-ISCH placed starts (src/dsp/
  * frame_sync_p25p2_anchor.c). processP2() reads four timeslots after each 20-dibit sync, and on a continuous carrier the
@@ -2243,6 +2262,8 @@ struct dsd_state {
     /* Where the P25p1 data unit after the last validated one starts, and the sync of the frame being decoded. */
     dsd_p25p1_sync_anchor p25_p1_sync_anchor;
     dsd_p25p1_sync_candidate p25_p1_sync_candidate;
+    /* What a tolerant P25p2 accept changed, held until the window's verdict (dsd_p25p2_sync_candidate). */
+    dsd_p25p2_sync_candidate p25_p2_sync_candidate;
     /* Where the P25p2 window after the last one an I-ISCH placed starts, and the sync of the window being decoded. */
     dsd_p25p2_sync_anchor p25_p2_sync_anchor;
     /* The length in dibits of the P25p1 data unit being decoded as its decoder read it, for a TSDU (its block count, by

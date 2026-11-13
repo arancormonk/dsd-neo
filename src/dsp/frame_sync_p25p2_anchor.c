@@ -109,9 +109,48 @@ dsd_frame_sync_p25p2_window_context_holds(const dsd_state* state) {
 }
 
 void
+frame_sync_p25p2_candidate_hold(const dsd_opts* opts, dsd_state* state) {
+    dsd_p25p2_sync_candidate* held = &state->p25_p2_sync_candidate;
+    held->max = state->max;
+    held->min = state->min;
+    held->maxref = state->maxref;
+    held->minref = state->minref;
+    held->carrier = state->carrier;
+    held->offset = state->offset;
+    held->lastsynctype = state->lastsynctype;
+    held->inverted_p2 = opts->inverted_p2;
+    held->p25_cqpsk_dibit_map_idx = state->p25_cqpsk_dibit_map_idx;
+    held->valid = 1U;
+}
+
+void
+dsd_frame_sync_p25p2_window_dropped(dsd_opts* opts, dsd_state* state) {
+    const dsd_p25p2_sync_anchor* rec = &state->p25_p2_sync_anchor;
+    dsd_p25p2_sync_candidate* held = &state->p25_p2_sync_candidate;
+    const int holding = held->valid != 0U;
+    held->valid = 0U;
+    /* Off the stream the word was accepted on nothing of the old one is worth putting back. */
+    if (!holding || !rec->frame_tolerant || !dsd_frame_sync_p25p2_window_context_holds(state)
+        || state->symbol_clock < rec->frame.sync_clock) {
+        return;
+    }
+    state->max = held->max;
+    state->min = held->min;
+    state->maxref = held->maxref;
+    state->minref = held->minref;
+    state->carrier = held->carrier;
+    state->offset = held->offset;
+    state->lastsynctype = held->lastsynctype;
+    opts->inverted_p2 = held->inverted_p2;
+    state->p25_cqpsk_dibit_map_idx = held->p25_cqpsk_dibit_map_idx;
+}
+
+void
 dsd_frame_sync_p25p2_window_decoded(dsd_state* state, int dispatched, int anchor_start) {
     dsd_p25p2_sync_anchor* rec = &state->p25_p2_sync_anchor;
     const int captured = rec->frame_valid != 0U;
+    /* The window is over: what its tolerant sync's accept held is spent. */
+    state->p25_p2_sync_candidate.valid = 0U;
     if (rec->frame_tolerant && dispatched) {
         rec->tolerant_windows++;
     }

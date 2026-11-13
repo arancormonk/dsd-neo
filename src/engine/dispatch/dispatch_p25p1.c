@@ -580,17 +580,47 @@ p25p1_note_frame_decoded(dsd_state* state, uint8_t duid, const p25p1_nid_verdict
     }
 }
 
+/* The status accumulator at the data unit's start. Behind a tolerant word the unit is provisional until its NID passes
+   the strict check: the advisory AFC gate the last unit published (which auto-PPM reads on the radio thread) stands
+   meanwhile, and what stood is saved in @p out_before for p25p1_status_settle(). */
+static void
+p25p1_status_begin(dsd_state* state, const p25p1_sync_acceptance* sync, p25_status_accum_snapshot* out_before) {
+    if (sync->kind == DSD_P25P1_SYNC_EXACT) {
+        p25_status_accum_reset(state);
+        return;
+    }
+    p25_status_accum_save(state, out_before);
+    p25_status_accum_reset_provisional(state);
+}
+
+/* A provisional unit's NID spoke: a drop (or a cut, @p lost) puts the accumulator and the gate back as they were; a
+   pass withdraws the gate as an exact unit's start does. */
+static void
+p25p1_status_settle(dsd_state* state, const p25p1_sync_acceptance* sync, int lost,
+                    const p25_status_accum_snapshot* before) {
+    if (sync->kind == DSD_P25P1_SYNC_EXACT) {
+        return;
+    }
+    if (lost) {
+        p25_status_accum_restore(state, before);
+    } else {
+        p25_status_accum_withdraw_gate(state);
+    }
+}
+
 dsd_frame_verdict
 dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     /* The tune the frame was synced on: its handler may tune away (a grant) before the frame is reported. */
     const uint64_t tune_generation = dsd_trunk_tuning_generation();
-    p25_status_accum_reset(state);
     p25p1_sync_acceptance sync;
     sync.kind = dsd_frame_sync_p25p1_sync_kind(state, &sync.anchor_nac, &sync.errors);
+    p25_status_accum_snapshot status_before;
+    p25p1_status_begin(state, &sync, &status_before);
     p25p1_nid_verdict verdict;
     DSD_MEMSET(&verdict, 0, sizeof(verdict));
     int dropped = 0;
     uint8_t duid = p25p1_decode_nid_and_duid(opts, state, &sync, &verdict, &dropped);
+    p25p1_status_settle(state, &sync, dropped || state->input_interrupted, &status_before);
     /* A NID an input interruption cut decoded nothing: no data unit follows it, and it is no evidence about the
        demodulator or the profile (processFrame() withholds the verdict). */
     if (state->input_interrupted) {

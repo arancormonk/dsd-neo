@@ -180,7 +180,7 @@ void frame_sync_p25p1_c4fm_warm_start(const dsd_opts* opts, dsd_state* state);
  * otherwise), @p errors what the word was off by (bits on the CQPSK chain, signs on the C4FM chain). No context is
  * captured while an off-thread tune is pending. */
 void frame_sync_p25p1_anchor_note_sync(dsd_state* state, int synctype, int kind, int anchor_nac, int errors);
-/** Hold what the accept of a tolerant P25p1 sync word on the C4FM chain is about to change (dsd_p25p1_sync_candidate),
+/** Hold what the accept of a tolerant P25p1 sync word, on either chain, is about to change (dsd_p25p1_sync_candidate),
  * for dsd_frame_sync_p25p1_candidate_rejected() to put back if its NID fails, with the hunt's pass position
  * @p pass_symbols at the word's last symbol. */
 void frame_sync_p25p1_candidate_hold(dsd_state* state, int pass_symbols);
@@ -203,6 +203,9 @@ int frame_sync_p25p1_anchor_take(dsd_state* state, uint8_t* out_map_idx, int* ou
  * (@p tune_pending). */
 void frame_sync_p25p2_anchor_note_sync(dsd_state* state, int synctype, int tolerant_start, int bit_errors,
                                        int tune_pending);
+/** Hold what the accept of a tolerant P25p2 sync word is about to change (dsd_p25p2_sync_candidate), for
+ * dsd_frame_sync_p25p2_window_dropped() to put back if the window fails its verdict. */
+void frame_sync_p25p2_candidate_hold(const dsd_opts* opts, dsd_state* state);
 /** A sync of any protocol was accepted (@p synctype): the anchor is spent, and another protocol's leaves no P25p2
  * window context. */
 void frame_sync_p25p2_anchor_note_accept(dsd_state* state, int synctype);

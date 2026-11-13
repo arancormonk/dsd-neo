@@ -126,14 +126,13 @@ dsd_p25p1_sync_kind dsd_frame_sync_p25p1_sync_kind(const dsd_state* state, int* 
 /**
  * @brief The dispatcher dropped the frame behind a tolerant sync word: its NID failed the strict check.
  *
- * On the C4FM chain, while the stream is still the one the word was accepted on, what the accept changed before the
- * NID could speak goes back as it was (dsd_p25p1_sync_candidate): the slicer levels its warm start and lock wrote (the
- * NID was read on them) and the crossing the warm start dropped, the carrier flag, offset and lastsynctype, the P25p1
- * frame span that stands NXDN96 and M17 down, the DMR slot 2 fields and frame label the accept writes, the dibit map
- * and the frame NAC. The hunt then
- * starts from the symbols the word and its NID took, so a sync word the candidate swallowed whose end is still to come
- * is matched where it is (dsd_frame_sync_history_carry). Call before dsd_frame_sync_p25p1_frame_decoded(), which spends
- * the frame's context.
+ * On either chain, while the stream is still the one the word was accepted on, what the accept changed before the NID
+ * could speak goes back as it was (dsd_p25p1_sync_candidate): the slicer levels its warm start and lock wrote (the NID
+ * was read on them) and the crossing the warm start dropped, the carrier flag, offset and lastsynctype, the P25p1 frame
+ * span that stands NXDN96 and M17 down, the DMR slot 2 fields and frame label the accept writes, the dibit map and the
+ * frame NAC. On the C4FM chain the hunt then starts from the symbols the word and its NID took, so a sync word the
+ * candidate swallowed whose end is still to come is matched where it is (dsd_frame_sync_history_carry). Call before
+ * dsd_frame_sync_p25p1_frame_decoded(), which spends the frame's context.
  */
 void dsd_frame_sync_p25p1_candidate_rejected(dsd_state* state);
 

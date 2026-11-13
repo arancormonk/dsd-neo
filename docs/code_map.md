@@ -9917,7 +9917,12 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   one has no effect at all: no ISCH, position, playout break or retirement, seed recovery, descrambling, dispatch, MAC
   fragment wipe or channel activity, `s_prev_window` untouched (so the next exact window retires its four timeslots as
   lost, as after a missed sync), `dmr_stereo` back as it was, the anchor and the window context spent, one stderr line
-  ` P25p2 ~sync rejected` (`opts->verbose > 1`, the default, adds the bit errors and the verdict). `processP2()` returns `P25P2_WINDOW_REJECTED`
+  ` P25p2 ~sync rejected` (`opts->verbose > 1`, the default, adds the bit errors and the verdict). What the tolerant
+  accept changed goes back (`dsd_frame_sync_p25p2_window_dropped()`, before the report, on the stream the sync was
+  accepted on; `dsd_p25p2_sync_candidate`: the lock's carrier flag, offset and slicer extremes, the references
+  processFrame() derives, `lastsynctype`, `dsd_opts::inverted_p2`, the CQPSK map; `FRAME_SYNC_P25P2_ANCHOR`); its
+  identity note changes nothing (the anchor needs a placed P2 window on the stream, whose sync named the P25 family
+  already, and any other protocol's accept spends it). `processP2()` returns `P25P2_WINDOW_REJECTED`
   for it; `dsd_dispatch_handle_p25p2()` maps that to `DSD_FRAME_VERDICT_UNPRODUCTIVE` (the SPS hunt pays for it as for
   a missed sync: the handler ran and validated nothing, which is not WITHHELD's engine policy decline) and every other
   window to PRODUCTIVE, as before. A window a carrier boundary or an input interruption cut while it was collected never
@@ -10449,8 +10454,33 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     P25p1 and YSF words not swallowed; no-sync exits and the hunt budget unmoved by a dropped candidate),
     `P25_P1_TOLERANT_NID` (the dispatcher's drop puts back, charges and carries, and leaves a DMR identity),
     `ENGINE_PROTOCOL_DISPATCH` (no identity note behind a tolerant word), `ENGINE_SCAN_VOICE_GATE` (a dropped frame
-    starts no qualify window). CQPSK keeps its own accept effects (no hold, no carry: on the RTL path the next symbol
-    replaces the levels either way); the identity and voice gate rules hold for it too.
+    starts no qualify window). The CQPSK chain's tolerant word is held and put back the same way (on the RTL path the
+    next symbol replaces the levels anyway; the lock, `lastsynctype`, the frame span the CQPSK accept closes, the slot 2
+    fields, `ftype`, the map and the frame NAC are what the hold keeps there); its hunt starts over behind a dropped
+    word, as behind any frame (the carry is the C4FM hunt's sign history). The identity and voice gate rules hold for it
+    too. The status accumulator and the advisory AFC gate it publishes (`p25_ss_*`, `p25_afc_gate_valid`/`_allow`, which
+    auto-PPM reads on the radio thread under `p25_afc_status_gate_enable`) stand through a provisional NID on either
+    chain: `dsd_dispatch_handle_p25p1()` saves them (`p25_status_accum_save()`), starts the unit's accumulator without
+    withdrawing the gate (`p25_status_accum_reset_provisional()`), withdraws it once the NID passes
+    (`p25_status_accum_withdraw_gate()`, as an exact unit's start does) and puts everything back when the NID fails or
+    is cut (`p25_status_accum_restore()`), so auto-PPM never trains on a subscriber the gate excludes because a word
+    that was no frame was read. What else runs between a tolerant accept and its verdict is put back, waits for the
+    pass, or changes nothing: the processFrame() references (held), the rolling dibit buffers and the soft history (they
+    keep the NID read's symbols, which the C4FM hunt goes on from as a history and DMR and X2-TDMA never match on), the
+    identity note (deferred to the pass), the anchors spent by the accept (by design: one window an anchor), the
+    diagnostics `tolerant_syncs`/`acquisition_syncs` (counted at the accept by design), the engine's slicer-threshold
+    refresh (it re-derives centre and mid thresholds from the extremes with the formula the hold restores them under),
+    `last_dibit`, `sbuf` (display and a level ring the hunt refills), the NID verdict (classified pure, committed only
+    past the drop). Decided limit: the NID is read as a frame is (`have_sync`: the C4FM synced clip, no crossing move, no
+    auto-centre, and the matched filter `lastsynctype` selects, the P25 one); the samples are read once, so the history
+    the hunt goes on from carries that read. The hold puts back the pending crossing and `lastsynctype`, so the next
+    read goes back to the hunt's filter (the seam keeps the content position across both switches); a filter switch
+    resets the symbol anchor's recording, so a recording another protocol's frame armed for its next word (DMR, NXDN,
+    YSF, M17 under `-fa`) is lost to a dropped P25 word between them, and that protocol's next frame arms it again.
+    Reading the NID on the hunt's filter instead would read a real acquisition word's NID unfiltered. Tests:
+    `P25_P1_TOLERANT_NID` (a rejected candidate of either kind on either chain leaves the decoder's lock, levels, frame
+    fields, identity, NAC, NID counters, status accumulator and AFC gate exactly as before, and the gate the NID reads
+    find is the one published before; a passing NID withdraws it).
   - C4FM hunt-wide (`frame_sync_try_acquisition_p25p1()`, after the anchor's try): with no anchor waiting (a waiting one
     scores its own position and its first window spends it), anywhere on the C4FM chain's 4800/4 hunt, a window within
     `DSD_P25P1_ACQUISITION_MAX_SIGN_ERRORS` (1 of 24) sign of either polarity's word is an acquisition candidate

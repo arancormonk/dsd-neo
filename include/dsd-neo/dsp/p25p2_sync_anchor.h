@@ -85,6 +85,16 @@ int dsd_frame_sync_p25p2_window_context_holds(const dsd_state* state);
 void dsd_frame_sync_p25p2_window_decoded(dsd_state* state, int dispatched, int anchor_start);
 
 /**
+ * @brief The window a tolerant sync opened failed its verdict: what the accept changed goes back.
+ *
+ * processP2() calls it before it reports the window (dsd_frame_sync_p25p2_window_decoded()). On the stream the sync was
+ * accepted on (dsd_frame_sync_p25p2_window_context_holds()), what the accept wrote before the verdict could say whether
+ * the window was one at all goes back as it was (dsd_p25p2_sync_candidate: the lock, the slicer extremes and the
+ * references derived from them, lastsynctype, dsd_opts::inverted_p2, the CQPSK dibit map). No-op behind an exact sync.
+ */
+void dsd_frame_sync_p25p2_window_dropped(dsd_opts* opts, dsd_state* state);
+
+/**
  * @brief What an accepted P25p2 sync says about the channel: on a followed voice channel the trunk state machine's
  * VC-sync hook, otherwise the control channel's last sync time. The frame sync notes it when it accepts an exact sync;
  * processP2() notes it for a tolerant one once the window's verdict passes.

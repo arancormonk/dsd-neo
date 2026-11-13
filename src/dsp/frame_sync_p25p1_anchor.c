@@ -195,12 +195,16 @@ dsd_frame_sync_p25p1_candidate_rejected(dsd_state* state) {
         return;
     }
     p25p1_candidate_restore(state, held);
-    /* The word and the NID read behind it took symbols the hunt never scored as windows of their own: one where a real
-       sync word ends after the NID (an NXDN96 FSW, an M17 word, the P25 word the candidate's head swallowed) is matched
-       as the hunt goes on. One that ended inside them is lost (docs/code_map.md, the C4FM tolerance's budget). The
-       symbols the hunt did not count (the window's last, which the accept returned on, and the NID's) are charged to it
-       as its own and its pass goes on past them, so the profile's dwell and the no-sync exits fall where they would have
-       without the candidate. */
+    /* The C4FM chain's hunt goes on from the word's and the NID's symbols: one where a real sync word ends after the NID
+       (an NXDN96 FSW, an M17 word, the P25 word the candidate's head swallowed) is matched as the hunt goes on. One that
+       ended inside them is lost (docs/code_map.md, the C4FM tolerance's budget). The carry rebuilds a sign history,
+       which only the C4FM hunt reads: on the CQPSK chain the hunt starts over, as behind any other frame. */
+    if (state->rf_mod != 0) {
+        return;
+    }
+    /* The symbols the hunt did not count (the window's last, which the accept returned on, and the NID's) are charged
+       to it as its own and its pass goes on past them, so the profile's dwell and the no-sync exits fall where they
+       would have without the candidate. */
     const uint64_t taken64 = state->symbol_clock - rec->frame.sync_clock;
     const int taken = taken64 > (uint64_t)INT32_MAX ? INT32_MAX : (int)taken64;
     const int read_after = taken >= P25P1_SYNC_DIBITS ? taken - (P25P1_SYNC_DIBITS - 1) : 0;
