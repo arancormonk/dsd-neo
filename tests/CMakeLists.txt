@@ -8446,6 +8446,14 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_session_generation"
             "-Wl,--wrap=dsd_realtime_mono_ms"
             "-Wl,--wrap=dsd_sleep_ms"
+            # The scan quiet check's signal tap (issue #834).
+            "-Wl,--wrap=rtl_signal_capture_get"
+            "-Wl,--wrap=rtl_signal_quiet_request"
+            "-Wl,--wrap=rtl_signal_quiet_status"
+            "-Wl,--wrap=rtl_signal_quiet_take"
+            "-Wl,--wrap=rtl_signal_quiet_cancel"
+            "-Wl,--wrap=dsd_signal_quiet_rate_supported"
+            "-Wl,--wrap=dsd_signal_quiet_analog_supported"
             ${LIBS}
             dsd-neo_feature_radio
             dsd-neo_test_support

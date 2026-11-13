@@ -546,7 +546,46 @@ Generated (do not edit/commit):
       decline is DONE, except a lost tick guard (`scan_quiet_reconcile_declined()` with `guard_lost`), which leaves
       READY so the next hunt point hands back again. A park measured in flight is applied only after its landing is
       noted. `scan_quiet_log_skip()` writes the NOTICE line (`scan_quiet_format_skip()`). The skip decisions themselves
-      are the trunk scan's and -Y's.
+      are the trunk scan's and -Y's (below).
+    - Trunk-scan skip (`trunk_scan.c`): engine service is the outer loop's pass, whose tick
+      (`dsd_engine_trunk_scan_quiet_service_pass()` before `dsd_trunk_scan_hook_tick()`, one load with the setting
+      off) publishes the target on air at the tick's tail, after any landing or advance the tick made
+      (`trunk_scan_quiet_tick_end()`; the per-frame ticks of a carrier publish nothing): its landing in this session, or
+      its park still in flight (epoch 0, its request), with `trunk_scan_quiet_facts()` (the target type's mode classes,
+      an analog target's kind at its own width else the configured one, the DSP rate, its frequency) and the
+      coordinator's conditions (`trunk_scan_quiet_visit_eligible()`: conventional, no operator hold, not paused, no
+      forced eviction to recover, a park in flight or a landed visit with its dwell armed and no stay reason, and an
+      eligible alternate). A trunked target is in no class and never requests. The idle decision
+      (`trunk_scan_tick_idle_decision()`, the tick's tail after the departure, the pending or failed tune, the retry,
+      the receive leave, the visit cap, the tone rejection, every stay reason and the operator hold) advances through
+      `trunk_scan_advance()` when the dwell ran out or `trunk_scan_quiet_skip()` applies the READY result under this
+      tick's facts (the walk repeated), logging the NOTICE line with the target's label or id. A READY result the tick
+      saw and did not apply is declined at its tail (`scan_quiet_reconcile_declined()`), so a stay, a hold or a release
+      ends the visit's check with no repeated hand-backs; a tick that lost the guard only reconciles (`guard_lost`), and
+      the hunt hands back again. The decline sits at the tail, not the head, because the head would decline the result
+      before the idle decision could apply it.
+    - -Y skip (`engine.c`, `no_carrier_scanner_step_decided()` around `no_carrier_scanner_step_is_due()`, one load with
+      the setting off): the step evaluation publishes the landed row (`no_carrier_quiet_facts()`: a typed row's mode
+      classes, or the decoder set for an untyped row or one inheriting it, an analog row's kind at its own width else
+      the configured one; `no_carrier_quiet_row_eligible()`: the row on air from a landing in this session, no operator
+      hold, not avoided, no step, walk or entry waiting on a tune, no analog carrier heard whatever its tone verdict,
+      another row a step can land on), decides, then declines a READY result it did not apply. The decision runs in
+      the order of spec §3.8: the forced leaves (`no_carrier_step_forced()`: visit cap, avoided-row departure,
+      receive-policy leave, tone rejection and its end), the tone stays (PENDING, ALLOWED), then the voice gate: a visit
+      still qualifying (`dsd_scan_voice_gate_qualifying()`, no voice heard) steps at its qualification expiry or on its
+      quiet result (`no_carrier_quiet_skip()`), heard voice (VOICE, TAIL) is the gate's alone; otherwise the hangtime
+      rule, or the quiet result. A result is applied only where no stay can follow (the hold, an awaited tune and an
+      avoided row are in the row's conditions), so a result consumed always steps, through
+      `no_carrier_step_scanner_mode_if_needed()` (typed and untyped). An open analog carrier never skips: it makes the
+      row ineligible, and the base rules keep deciding it, so the setting off times every row exactly as before. The
+      NOTICE names the row (`row N`, 1-based). Tests: `ENGINE_TRUNK_SCAN` (`test_scan_quiet_tick_*`: the skip through
+      the pass and its tick with the exact NOTICE, a lost guard, keep timing from a READY result for each mutation, a
+      hold and activity, the dwell on the same tick, held, no-alternate and trunked visits that request nothing, the
+      setting off and a busy channel advancing at the same pass; `test_scan_quiet_y_ready_declines_at_its_own_sites`),
+      `ENGINE_NO_CARRIER_RESET` (`test_scan_quiet_decisions()`: typed and untyped -Y skips through `noCarrier()` over a
+      link-wrapped tap, busy, held, single-row, heard-voice, qualifying and qualifying-busy rows, an open analog
+      carrier, and the end-to-end skip through `dsd_engine_test_live_scanner_run()` for -Y and trunk scan, each against
+      the setting off).
     - `sync_seq` moves whenever the live loop's frame sync returns a sync (`live_scanner_frame_sync()`, YSF and D-STAR
       included, which stamp no `last_cc_sync_time_m`) and whenever a monitor block found the carrier itself
       (`dsd_engine_analog_call_block()`, `qualified_carrier`); `quiet_inv_seq` moves where a check's facts change with

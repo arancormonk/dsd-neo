@@ -115,6 +115,11 @@ void dsd_scan_voice_gate_tick(const dsd_opts* opts, dsd_state* state, int synced
  * own (dsd_state_trunk_lcn_user_list_present()), as channels learned over the air are no list to step through. */
 int dsd_scan_voice_gate_owns_step(const dsd_opts* opts, const dsd_state* state);
 
+/** Non-zero while the gate owns the step (dsd_scan_voice_gate_owns_step()) on a visit that has heard no voice yet: it
+ * is still qualifying the row, so a scan quiet check's result may step it before its qualification expires (issue
+ * #834). A visit that heard voice (VOICE or TAIL) is the gate's alone. */
+int dsd_scan_voice_gate_qualifying(const dsd_opts* opts, const dsd_state* state);
+
 /** Non-zero when the gate says the -Y visit is over and the scan should step. */
 int dsd_scan_voice_gate_should_step(const dsd_opts* opts, const dsd_state* state, double now_m);
 

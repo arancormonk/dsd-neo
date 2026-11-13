@@ -182,4 +182,10 @@ int dsd_engine_trunk_scan_quiet_activity_since(const dsd_state* state, double si
 /** The -Y scan's row-edit counter (0 with none). channel_scan.c. */
 uint32_t dsd_engine_channel_scan_quiet_edits_epoch(const dsd_state* state);
 
+/* Engine service. */
+/** The outer loop's pass owes the trunk scan's quiet check its engine service: the next coordinator tick under the
+ * guard publishes the visit on air (spec 3.2), so the per-frame ticks of a carrier never walk for it. Called by the live
+ * loop before its pass's tick, with skip-silent on. trunk_scan.c. */
+void dsd_engine_trunk_scan_quiet_service_pass(const dsd_state* state);
+
 #endif

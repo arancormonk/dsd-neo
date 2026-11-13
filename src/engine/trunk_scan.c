@@ -423,6 +423,10 @@ typedef struct {
     uint64_t entry_avoid_rev;
     uint32_t entry_edit_seq;
     double entry_recheck_s;
+    /* The outer loop's pass owes the scan quiet check its engine service (issue #834,
+       dsd_engine_trunk_scan_quiet_service_pass()): the next tick under the guard publishes the visit on air, so the
+       per-frame ticks of a carrier never walk for it. */
+    int quiet_pass_owed;
 } dsd_trunk_scan_coord;
 
 static dsd_trunk_scan_coord* g_trunk_scan_coord;
@@ -5143,6 +5147,147 @@ trunk_scan_idle_dwell_ran_out(const dsd_opts* opts, dsd_trunk_scan_target_runtim
     return (now_m - rt->idle_since_m) >= dwell_s;
 }
 
+/* The width classes a conventional target is judged in by the scan quiet check (issue #834): its mode's, and for an
+   analog target the kind its type runs at the width the stream runs it (its own width, else the configured one). */
+static void
+trunk_scan_quiet_classes(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target_runtime* rt,
+                         scan_quiet_eligibility* e) {
+    const dsd_scan_mode mode = trunk_scan_target_mode(rt->target.type);
+    e->classes = trunk_scan_type_is_conventional(rt->target.type) ? scan_quiet_mode_classes(mode) : 0U;
+    const int kind = dsd_scan_mode_analog_kind(mode);
+    if (kind < 0 || e->classes == 0U) {
+        return;
+    }
+    dsd_scan_option_values scratch;
+    const dsd_scan_option_values* values = trunk_scan_target_values(rt, &scratch);
+    const int explicit_hz = (values && (values->present & DSD_SCAN_OPT_BANDWIDTH))
+                                ? values->channel_bw_hz
+                                : dsd_scan_mode_configured_analog_width(opts, state, kind);
+    e->analog_kind = kind;
+    e->analog_width_hz = scan_quiet_analog_width_hz(kind, explicit_hz);
+}
+
+/* The visit of the target on air: its landing in this session, or its park still in flight. 0 for neither. */
+static int
+trunk_scan_quiet_key(const dsd_state* state, const dsd_trunk_scan_coord* coord, const dsd_trunk_scan_target_runtime* rt,
+                     scan_quiet_visit_key* key) {
+    if (rt->tune_pending) {
+        key->tune_request = rt->tune_request_id;
+        return rt->tune_request_id != 0U;
+    }
+    if (!dsd_engine_scan_landing_is_target(state, (int)coord->active, coord->session)) {
+        return 0;
+    }
+    const dsd_engine_scan_landing* landing = dsd_engine_scan_landing_get(state);
+    key->epoch = landing->epoch;
+    key->tune_request = landing->tune_request;
+    return 1;
+}
+
+/* The coordinator's conditions for checking the conventional target on air (spec 3.2): a park in flight, or a landed
+   visit whose idle dwell is armed with nothing keeping it (no stay reason), no operator hold, no forced eviction to
+   recover, and an eligible alternate to skip to. */
+static int
+trunk_scan_quiet_visit_eligible(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
+                                const dsd_trunk_scan_target_runtime* rt, double now_m) {
+    if (!trunk_scan_type_is_conventional(rt->target.type) || coord->hold_active || coord->paused
+        || rt->retry_released_park) {
+        return 0;
+    }
+    if (!rt->tune_pending
+        && (rt->idle_since_m < 0.0
+            || trunk_scan_active_stay_reason(opts, state, coord, now_m, NULL, NULL, NULL) != DSD_SCAN_STAY_NONE)) {
+        return 0;
+    }
+    return trunk_scan_visit_alternate_is_eligible(opts, state, coord, now_m);
+}
+
+/* The facts engine service publishes for the target on air, and the skip decision compares with what was measured. */
+static void
+trunk_scan_quiet_facts(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord, double now_m,
+                       scan_quiet_eligibility* e) {
+    DSD_MEMSET(e, 0, sizeof *e);
+    e->key.owner = SCAN_QUIET_OWNER_TRUNK;
+    e->key.index = -1;
+    if (coord->active >= coord->count) {
+        return;
+    }
+    const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    e->key.index = (int)coord->active;
+    e->key.session = coord->session;
+    e->frequency_hz = rt->target.frequency_hz;
+    const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    e->dsp_rate_hz = rate_hz > 0 ? (uint32_t)rate_hz : 0U;
+    trunk_scan_quiet_classes(opts, state, rt, e);
+    scan_quiet_revisions_read(opts, state, &e->revisions);
+    e->eligible = trunk_scan_quiet_key(state, coord, rt, &e->key)
+                  && trunk_scan_quiet_visit_eligible(opts, state, coord, rt, now_m);
+}
+
+/* Whether the idle decision skips the target on air for its quiet result (spec 3.4, 3.7): only once every earlier step
+   of the tick let it be, with an eligible alternate (the walk repeated here) and the facts it was measured under still
+   in force. The result is consumed either way; one the tick saw but never applied is declined at its end
+   (trunk_scan_quiet_tick_end()). RF power is no activity: nothing here touches a hold, the dwell or an activity
+   stamp. */
+static int
+trunk_scan_quiet_skip(const dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_coord* coord, double now_m) {
+    if (!opts->scan_skip_silent || scan_quiet_phase_get(state) != SCAN_QUIET_READY) {
+        return 0;
+    }
+    scan_quiet_eligibility facts;
+    trunk_scan_quiet_facts(opts, state, coord, now_m, &facts);
+    if (!facts.eligible || !scan_quiet_apply(opts, state, SCAN_QUIET_OWNER_TRUNK, &facts)) {
+        return 0;
+    }
+    const dsd_trunk_scan_target* target = &coord->targets[coord->active].target;
+    scan_quiet_log_skip(state, target->label[0] != '\0' ? target->label : target->id, (int)coord->active);
+    return 1;
+}
+
+/* The tail of a tick under the coordinator's guard, for the scan quiet check (issue #834): a READY result the tick saw
+   and did not apply is declined (a stay, a hold, a release or any other step that spent the tick came first), then, on
+   the outer loop's pass, the visit on air is published (spec 3.2), after any landing or advance this tick made. */
+static void
+trunk_scan_quiet_tick_end(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, double now_m) {
+    const int pass = coord->quiet_pass_owed;
+    coord->quiet_pass_owed = 0;
+    if (!opts->scan_skip_silent) {
+        return;
+    }
+    scan_quiet_reconcile_declined(opts, state, SCAN_QUIET_OWNER_TRUNK, 0);
+    if (!pass || !scan_quiet_wants_eligibility(opts, state, SCAN_QUIET_OWNER_TRUNK)) {
+        return;
+    }
+    scan_quiet_eligibility e;
+    trunk_scan_quiet_facts(opts, state, coord, now_m, &e);
+    scan_quiet_publish_eligibility(opts, state, SCAN_QUIET_OWNER_TRUNK, &e);
+}
+
+void
+dsd_engine_trunk_scan_quiet_service_pass(const dsd_state* state) {
+    dsd_trunk_scan_coord* coord = state ? trunk_scan_get(state) : NULL;
+    if (coord) {
+        coord->quiet_pass_owed = 1;
+    }
+}
+
+/* The tail of the tick (spec 3.7): with nothing earlier spending it, the operator hold suspends the idle dwell, and
+   otherwise the target leaves once its dwell runs out, or once the quiet check found its channel quiet. */
+static void
+trunk_scan_tick_idle_decision(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
+                              dsd_trunk_scan_target_runtime* rt, double now_m) {
+    /* The operator hold only suspends the idle dwell: the state machine keeps following calls on the held system.
+     * Disarming the dwell here means a release re-arms it on the next tick and the target gets a full dwell before
+     * rotation. */
+    if (coord->hold_active) {
+        trunk_scan_disarm_dwell(rt, TRUNK_SCAN_DWELL_DISARM_OPERATOR);
+        return;
+    }
+    if (trunk_scan_idle_dwell_ran_out(opts, rt, now_m) || trunk_scan_quiet_skip(opts, state, coord, now_m)) {
+        trunk_scan_advance(opts, state, coord);
+    }
+}
+
 static void
 trunk_scan_tick_targets_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, double now_m) {
     trunk_scan_end_entry_waiting_on_nothing(state, coord);
@@ -5176,16 +5321,7 @@ trunk_scan_tick_targets_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
         || trunk_scan_service_hold(opts, state, coord, now_m)) {
         return;
     }
-    /* The operator hold only suspends the idle dwell: the state machine above keeps
-     * following calls on the held system. Disarming the dwell here means a release
-     * re-arms it on the next tick and the target gets a full dwell before rotation. */
-    if (coord->hold_active) {
-        trunk_scan_disarm_dwell(rt, TRUNK_SCAN_DWELL_DISARM_OPERATOR);
-        return;
-    }
-    if (trunk_scan_idle_dwell_ran_out(opts, rt, now_m)) {
-        trunk_scan_advance(opts, state, coord);
-    }
+    trunk_scan_tick_idle_decision(opts, state, coord, rt, now_m);
 }
 
 /* When the idle dwell of the target on air started, or would start once a tick notices its landing: the park's
@@ -5273,6 +5409,7 @@ trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
         trunk_scan_tick_targets_locked(opts, state, coord, now_m);
     }
     trunk_scan_note_dwell_serviced(opts, state, coord, now_m);
+    trunk_scan_quiet_tick_end(opts, state, coord, now_m);
     trunk_scan_publish_timing(opts, state, coord, now_m);
 }
 
@@ -5297,6 +5434,11 @@ dsd_engine_trunk_scan_tick(dsd_opts* opts, dsd_state* state) {
         return;
     }
     if (!p25_sm_tick_guard_try_enter()) {
+        /* A tick that lost the guard decided nothing: a quiet result it would have seen stays READY, so the next hunt
+           point hands back again (issue #834). */
+        if (opts->scan_skip_silent) {
+            scan_quiet_reconcile_declined(opts, state, SCAN_QUIET_OWNER_TRUNK, 1);
+        }
         return;
     }
     trunk_scan_tick_locked(opts, state, coord);

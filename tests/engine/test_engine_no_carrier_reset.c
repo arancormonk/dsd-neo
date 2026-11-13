@@ -100,7 +100,9 @@
 #include <dsd-neo/app_control/scan_avoid_view.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/io/control.h>
+#include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include "../../src/app_control/commands_internal.h"
@@ -109,6 +111,7 @@
 #include "manual_tune_pending.h"
 #include "scan_landing.h"
 #include "scan_owner.h"
+#include "scan_quiet.h"
 #include "scan_step_untyped.h"
 #endif
 
@@ -11743,7 +11746,11 @@ live_y_stepped(const dsd_opts* opts, const dsd_state* state) {
     return live_tunes() > 0;
 }
 
-/* A trunk scan of two digital conventional targets at the shortest dwell over the input; the first is on air. */
+/* The dwell live_trunk_scan() writes for its targets. */
+static int g_live_trunk_dwell_ms = 250;
+
+/* A trunk scan of two digital conventional targets at the shortest dwell (g_live_trunk_dwell_ms) over the input; the
+   first is on air. */
 static int
 live_trunk_scan(dsd_opts* opts, dsd_state* state, char* path, size_t path_size, long int base_hz) {
     const int fd = dsd_test_mkstemp(path, path_size, "live-trunk-scan-");
@@ -11757,9 +11764,9 @@ live_trunk_scan(dsd_opts* opts, dsd_state* state, char* path, size_t path_size, 
     }
     DSD_FPRINTF(fp,
                 "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
-                "first,dmr-conventional,%ld,,250,250,\n"
-                "second,dmr-conventional,%ld,,250,250,\n",
-                base_hz, base_hz + 1000000L);
+                "first,dmr-conventional,%ld,,%d,250,\n"
+                "second,dmr-conventional,%ld,,%d,250,\n",
+                base_hz, g_live_trunk_dwell_ms, base_hz + 1000000L, g_live_trunk_dwell_ms);
     (void)fclose(fp);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
                                                         .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
@@ -12003,6 +12010,511 @@ test_live_scan_over_silent_inputs(void) {
     rc |= test_live_paused_scan_keeps_waiting(LIVE_UDP, "UDP input", 1);
     rc |= test_live_paused_scan_keeps_waiting(RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR, "RTL stream", 0);
     rc |= test_live_paused_scan_keeps_waiting(RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR, "RTL stream", 1);
+    return rc;
+}
+
+/*
+ * Issue #834 (Task 10): the -Y step's skip decision through the real noCarrier(), and the end-to-end skip through the
+ * live loop, over a fake signal tap (the rtl_signal_* calls the scan quiet check makes, link-wrapped). The tap's capture
+ * follows the tuner: centred where the fake RTL tune last went, on a stream generation that moves with every tune, as the
+ * real stream's does. A request is answered at once: quiet, or busy.
+ */
+static struct {
+    int active;
+    int quiet;         /* the answer: quiet (1) or busy (0) */
+    uint32_t gen_base; /* the stream generation is gen_base + the tunes made */
+    int requests;
+    uint32_t ticket;
+    uint32_t next_ticket;
+    dsd_signal_quiet_request last;
+    int notices;
+    char notice[192];
+} g_yq;
+
+// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+int __real_rtl_signal_capture_get(dsd_signal_capture* capture);
+int __wrap_rtl_signal_capture_get(dsd_signal_capture* capture);
+int __real_rtl_signal_quiet_request(const dsd_signal_quiet_request* request, uint32_t* ticket,
+                                    dsd_signal_request_failure* out_failure);
+int __wrap_rtl_signal_quiet_request(const dsd_signal_quiet_request* request, uint32_t* ticket,
+                                    dsd_signal_request_failure* out_failure);
+int __real_rtl_signal_quiet_status(uint32_t ticket);
+int __wrap_rtl_signal_quiet_status(uint32_t ticket);
+int __real_rtl_signal_quiet_take(uint32_t ticket, dsd_signal_quiet_result* result);
+int __wrap_rtl_signal_quiet_take(uint32_t ticket, dsd_signal_quiet_result* result);
+void __real_rtl_signal_quiet_cancel(uint32_t ticket);
+void __wrap_rtl_signal_quiet_cancel(uint32_t ticket);
+int __real_dsd_signal_quiet_rate_supported(uint32_t rate_hz);
+int __wrap_dsd_signal_quiet_rate_supported(uint32_t rate_hz);
+int __real_dsd_signal_quiet_analog_supported(int kind, uint32_t width_hz, uint32_t rate_hz);
+int __wrap_dsd_signal_quiet_analog_supported(int kind, uint32_t width_hz, uint32_t rate_hz);
+
+static uint32_t
+yq_stream_gen(void) {
+    return g_yq.gen_base + (uint32_t)g_rtl_tune_calls;
+}
+
+int
+__wrap_rtl_signal_capture_get(dsd_signal_capture* capture) {
+    if (!g_yq.active) {
+        return __real_rtl_signal_capture_get(capture);
+    }
+    if (!capture || g_rtl_tune_freq == 0U) {
+        return 0;
+    }
+    DSD_MEMSET(capture, 0, sizeof *capture);
+    capture->generation = yq_stream_gen();
+    capture->rate_hz = 1536000U;
+    capture->capture_hz = g_rtl_tune_freq;
+    capture->rotation_hz = 384000;
+    capture->gain = 20;
+    return 1;
+}
+
+int
+__wrap_rtl_signal_quiet_request(const dsd_signal_quiet_request* request, uint32_t* ticket,
+                                dsd_signal_request_failure* out_failure) {
+    if (!g_yq.active) {
+        return __real_rtl_signal_quiet_request(request, ticket, out_failure);
+    }
+    g_yq.requests++;
+    g_yq.last = *request;
+    g_yq.ticket = ++g_yq.next_ticket;
+    *ticket = g_yq.ticket;
+    return 0;
+}
+
+int
+__wrap_rtl_signal_quiet_status(uint32_t ticket) {
+    if (!g_yq.active) {
+        return __real_rtl_signal_quiet_status(ticket);
+    }
+    return (ticket != 0U && ticket == g_yq.ticket) ? 1 : -1;
+}
+
+int
+__wrap_rtl_signal_quiet_take(uint32_t ticket, dsd_signal_quiet_result* result) {
+    if (!g_yq.active) {
+        return __real_rtl_signal_quiet_take(ticket, result);
+    }
+    DSD_MEMSET(result, 0, sizeof *result);
+    if (ticket == 0U || ticket != g_yq.ticket) {
+        result->failure = DSD_SIGNAL_MEASURE_SUPERSEDED;
+        return -1;
+    }
+    g_yq.ticket = 0U;
+    result->request_id = g_yq.last.request_id;
+    result->capture = g_yq.last.capture;
+    result->failure = DSD_SIGNAL_MEASURE_OK;
+    result->valid = 1U;
+    result->quiet = g_yq.quiet ? 1U : 0U;
+    result->power_dbfs = -97.25f;
+    result->floor_dbfs = -98.75f;
+    result->max_ratio_db = 1.5f;
+    return 1;
+}
+
+void
+__wrap_rtl_signal_quiet_cancel(uint32_t ticket) {
+    if (!g_yq.active) {
+        __real_rtl_signal_quiet_cancel(ticket);
+        return;
+    }
+    if (ticket == g_yq.ticket) {
+        g_yq.ticket = 0U;
+    }
+}
+
+int
+__wrap_dsd_signal_quiet_rate_supported(uint32_t rate_hz) {
+    return g_yq.active ? rate_hz != 0U : __real_dsd_signal_quiet_rate_supported(rate_hz);
+}
+
+int
+__wrap_dsd_signal_quiet_analog_supported(int kind, uint32_t width_hz, uint32_t rate_hz) {
+    if (!g_yq.active) {
+        return __real_dsd_signal_quiet_analog_supported(kind, width_hz, rate_hz);
+    }
+    return width_hz != 0U && rate_hz != 0U;
+}
+
+// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+
+static void
+yq_count_notice(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)level;
+    (void)ctx;
+    if (text && strncmp(text, "NOTICE: scan: skipped quiet", 27) == 0) {
+        g_yq.notices++;
+        DSD_SNPRINTF(g_yq.notice, sizeof g_yq.notice, "%s", text);
+    }
+}
+
+/* The fake tap on (answering @p quiet), its stream generation hook, a fixed fake realtime clock and the NOTICE tap. */
+static void
+yq_start(int quiet) {
+    DSD_MEMSET(&g_yq, 0, sizeof g_yq);
+    g_yq.active = 1;
+    g_yq.quiet = quiet;
+    g_yq.gen_base = 1U;
+    static const dsd_rtl_stream_metrics_hooks hooks = {.stream_generation = yq_stream_gen};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_live_realtime_ms = 5000000U;
+    g_live_fake_realtime = 1;
+    dsd_neo_log_set_tap(yq_count_notice, NULL);
+}
+
+static void
+yq_stop(void) {
+    dsd_neo_log_set_tap(NULL, NULL);
+    g_live_fake_realtime = 0;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    g_yq.active = 0;
+}
+
+/* Only DMR decoded: an untyped row is judged in the 12.5 kHz class. */
+static void
+yq_dmr_only(dsd_opts* opts) {
+    opts->frame_p25p1 = 0;
+    opts->frame_p25p2 = 0;
+    opts->frame_dmr = 1;
+    opts->frame_nxdn48 = 0;
+    opts->frame_nxdn96 = 0;
+    opts->frame_dstar = 0;
+    opts->frame_dpmr = 0;
+    opts->frame_provoice = 0;
+    opts->frame_x2tdma = 0;
+    opts->frame_ysf = 0;
+    opts->frame_m17 = 0;
+    opts->frame_tetra = 0;
+    opts->analog_only = 0;
+    opts->monitor_input_audio = 0;
+}
+
+/* A -Y list of @p rows rows on RTL input, 10 s hangtime, skip-silent @p on, typed DMR rows when @p typed; the first step
+   is taken (the hangtime long run out) and lands row 0. Returns 0 when it did. */
+static int
+yq_list(dsd_opts* opts, dsd_state* state, int rows, int typed, int on, long int base_hz) {
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
+    opts->trunk_hangtime = 10;
+    opts->scan_skip_silent = on;
+    yq_dmr_only(opts);
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = rows;
+    for (int row = 0; row < rows; row++) {
+        state->trunk_lcn_freq[row] = base_hz + (long int)row * 1000000L;
+        if (typed && dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_DMR) != 0) {
+            return 1;
+        }
+    }
+    state->lcn_freq_roll = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    /* The stream generation stays where the landing's tune left it while the tune count starts again from 0. */
+    g_yq.gen_base += (uint32_t)g_rtl_tune_calls;
+    g_rtl_tune_calls = 0;
+    return (dsd_engine_scan_landing_is_row(state, 0) && g_rtl_tune_freq == (uint32_t)base_hz) ? 0 : 1;
+}
+
+static void
+yq_finish(dsd_opts* opts, dsd_state* state) {
+    yq_stop();
+    opts->scan_skip_silent = 0;
+    dsd_engine_channel_scan_leave(opts, state);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+}
+
+/* Spec §8, -Y: a landed row is measured at the next pass, and the pass after steps off it for its quiet result, long
+   before its 10 s hangtime, with one NOTICE line naming the row; typed and untyped. The measurement writes no hangtime
+   anchor. With the setting off nothing is asked and nothing steps. */
+static int
+test_y_quiet_skips_a_landed_row(int typed, int on) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
+    const long int base_hz = 461012500L + (typed ? 4000000L : 0L) + (on ? 0L : 8000000L);
+    char label[96];
+    DSD_SNPRINTF(label, sizeof label, "%s -Y, skip-silent %s", typed ? "typed" : "untyped", on ? "on" : "off");
+    int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, typed, on, base_hz) == 0);
+    const time_t anchor = state->last_cc_sync_time;
+    noCarrier(opts, state);
+    rc |= expect_true(label, g_yq.requests == (on ? 1 : 0) && g_rtl_tune_calls == 0);
+    rc |= expect_true("the measurement writes no hangtime anchor", state->last_cc_sync_time == anchor);
+    if (on) {
+        rc |= expect_true("the request names the row", g_yq.last.frequency_hz == (uint32_t)base_hz
+                                                           && g_yq.last.classes == DSD_SIGNAL_QUIET_CLASS_12K5);
+    }
+    noCarrier(opts, state);
+    if (on) {
+        rc |= expect_true("a quiet row steps at once", g_rtl_tune_calls == 1
+                                                           && g_rtl_tune_freq == (uint32_t)(base_hz + 1000000L)
+                                                           && state->lcn_freq_roll == 2);
+        char want[192];
+        (void)scan_quiet_format_skip(want, sizeof want, NULL, 0, (uint32_t)base_hz, -97.25f, -98.75f, 1.5f);
+        rc |= expect_true("one NOTICE line naming the row", g_yq.notices == 1 && strcmp(g_yq.notice, want) == 0);
+    } else {
+        rc |= expect_true("off: nothing steps before the hangtime", g_rtl_tune_calls == 0 && g_yq.notices == 0);
+    }
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: %s\n", label);
+    }
+    return rc;
+}
+
+/* Spec §8, -Y keep timing: a busy row, an operator hold, a single-row list, and heard voice under the voice gate never
+   skip; a row the voice gate is still qualifying skips on a quiet result, and with the check busy its qualification
+   expiry still steps. Each case runs a few passes after the landing. */
+enum { YQ_BUSY = 0, YQ_HOLD, YQ_SINGLE_ROW, YQ_VOICE_HEARD, YQ_QUALIFYING, YQ_QUALIFYING_BUSY };
+
+static int
+yq_keep_case(int which) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(which != YQ_BUSY && which != YQ_QUALIFYING_BUSY);
+    const long int base_hz = 481012500L + (long int)which * 4000000L;
+    int rc = expect_true("the first step lands row 0",
+                         yq_list(opts, state, which == YQ_SINGLE_ROW ? 1 : 3, 0, 1, base_hz) == 0);
+    const double now_m = dsd_decode_now_mono_s();
+    if (which == YQ_HOLD) {
+        state->lcn_scan_hold = 1;
+    }
+    if (which >= YQ_VOICE_HEARD) {
+        opts->scan_voice_only = 1;
+        opts->scan_voice_qualify_ms = 1000;
+        opts->scan_voice_hold_ms = 2000;
+        seed_visit_anchor(state, now_m);
+        state->scan_voice_gate_sync_m = now_m; /* a sync at the landing, before any request */
+        if (which == YQ_VOICE_HEARD) {
+            state->scan_voice_gate_voice_m = now_m;
+        }
+    }
+    for (int pass = 0; pass < 3; pass++) {
+        noCarrier(opts, state);
+    }
+    const int skipped = g_rtl_tune_calls != 0;
+    const int requested = g_yq.requests;
+    switch (which) {
+        case YQ_BUSY: rc |= expect_true("a busy row stays", !skipped && requested == 1); break;
+        case YQ_HOLD: rc |= expect_true("a held row is never measured", !skipped && requested == 0); break;
+        case YQ_SINGLE_ROW: rc |= expect_true("a single-row list never measures", !skipped && requested == 0); break;
+        case YQ_VOICE_HEARD:
+            rc |= expect_true("heard voice: the quiet result is never used, and declined",
+                              !skipped && requested == 1 && g_yq.notices == 0
+                                  && scan_quiet_phase_get(state) == SCAN_QUIET_DONE
+                                  && dsd_engine_scan_quiet_service(opts, state) == 0);
+            break;
+        case YQ_QUALIFYING: rc |= expect_true("qualifying: a quiet result steps", skipped && g_yq.notices == 1); break;
+        default:
+            rc |= expect_true("qualifying, busy: no step before the expiry", !skipped && requested == 1);
+            state->scan_voice_gate_sync_m = now_m - 2.0;
+            noCarrier(opts, state);
+            rc |= expect_true("qualifying, busy: the expiry still steps", g_rtl_tune_calls == 1 && g_yq.notices == 0);
+            break;
+    }
+    opts->scan_voice_only = 0;
+    state->lcn_scan_hold = 0;
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y keep case %d\n", which);
+    }
+    return rc;
+}
+
+/* Spec §8, -Y: an analog row whose carrier opened (the tone gate off) after its quiet result came stays: the result is
+   declined, nothing steps, and the visit asks no more. */
+static int
+test_y_quiet_open_analog_carrier_stays(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
+    opts->trunk_hangtime = 30;
+    opts->scan_skip_silent = 1;
+    opts->analog_nfm_bandwidth_hz = 12500;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 154655000L;
+    state->trunk_lcn_freq[1] = 154665000L;
+    int rc = expect_true("nfm row 0", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_NFM) == 0);
+    rc |= expect_true("nfm row 1", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NFM) == 0);
+    state->last_cc_sync_time = time(NULL) - 40;
+    noCarrier(opts, state);
+    g_yq.gen_base += (uint32_t)g_rtl_tune_calls;
+    g_rtl_tune_calls = 0;
+    rc |= expect_true("the nfm row on air", state->lcn_freq_roll == 1 && opts->analog_only == 1);
+    noCarrier(opts, state);
+    rc |= expect_true("the nfm row is measured in the analog class",
+                      g_yq.requests == 1 && g_yq.last.classes == DSD_SIGNAL_QUIET_CLASS_ANALOG
+                          && g_yq.last.analog_width_hz == 12500U);
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.gate = DSD_ANALOG_TONE_GATE_OFF;
+    noCarrier(opts, state);
+    noCarrier(opts, state);
+    rc |= expect_true("an open carrier stays",
+                      g_rtl_tune_calls == 0 && state->lcn_freq_roll == 1 && g_yq.notices == 0 && g_yq.requests == 1);
+    state->analog_rx.carrier_open = 0;
+    yq_finish(opts, state);
+    return rc;
+}
+
+/* live_run_until() with a decode-time limit of its own, @p limit_ms after LIVE_T0_NS: the cases here run on a flowing
+   stream, which live_run_until() gives up on 2 s after. */
+static int64_t
+yq_live_run_until(dsd_opts* opts, dsd_state* state, int (*moved)(const dsd_opts* opts, const dsd_state* state),
+                  uint64_t limit_ms) {
+    g_live.watch = moved;
+    g_live.seen_ms = -1;
+    for (int pass = 0; pass < 400 && g_live.seen_ms < 0 && live_elapsed_ms() <= limit_ms; pass++) {
+        dsd_engine_test_live_scanner_run(opts, state, 1);
+        live_watch();
+    }
+    g_live.watch = NULL;
+    return g_live.seen_ms;
+}
+
+static int
+yq_tuned_twice(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_rtl_tune_calls >= 2;
+}
+
+static int
+yq_tuned_once(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_rtl_tune_calls >= 1;
+}
+
+/* Spec §8 end to end through the live loop (the real hunt over a flowing RTL stream, its 300-symbol quiet service, the
+   real interruption routing and noCarrier()): a -Y row whose channel is quiet is left within a few passes of its landing,
+   long before its hangtime; with skip-silent off it waits the hangtime out. */
+static int
+test_live_y_skips_a_quiet_row(int on) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    live_session_start(opts, state, RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR, 0U);
+    yq_start(1);
+    g_live_fake_realtime = 0; /* the live RTL path runs on the real realtime clock */
+    static const dsd_rtl_stream_metrics_hooks metrics = {
+        .output_rate_hz = live_output_rate_hz,
+        .output_kind = live_output_kind,
+        .symbol_profile = live_symbol_profile,
+        .stream_generation = yq_stream_gen,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&metrics);
+    live_y_list(opts, state, on ? 474012500L : 484012500L);
+    opts->trunk_hangtime = 2;
+    state->last_cc_sync_time = dsd_decode_time() - 10; /* the first step at once */
+    opts->scan_skip_silent = on;
+    yq_dmr_only(opts);
+    const int64_t landed_ms = yq_live_run_until(opts, state, yq_tuned_once, 2000U);
+    const int64_t left_ms = yq_live_run_until(opts, state, yq_tuned_twice, 6000U);
+    int rc = expect_true("live -Y: the first row lands", landed_ms >= 0);
+    if (on) {
+        rc |= live_expect_between("live -Y: a quiet row is left soon after its landing", left_ms - landed_ms, 0, 600);
+        rc |= expect_true("live -Y: one skip, one NOTICE", g_yq.requests >= 1 && g_yq.notices == 1);
+    } else {
+        rc |= live_expect_between("live -Y off: the row waits its hangtime out", left_ms - landed_ms, 2000, 4000);
+        rc |= expect_true("live -Y off: nothing asked", g_yq.requests == 0 && g_yq.notices == 0);
+    }
+    yq_stop();
+    live_session_stop(opts, state);
+    return rc;
+}
+
+static int
+live_trunk_quiet_left(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_rtl_tune_calls > 0 && g_rtl_tune_freq == (uint32_t)g_live_second_hz;
+}
+
+/* The same through the live loop for a trunk scan: its pass's tick publishes the target on air, the hunt collects the
+   quiet result, and the next pass's tick skips the target long before its 3 s dwell. */
+static int
+test_live_trunk_scan_skips_a_quiet_target(int on) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    live_session_start(opts, state, RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR, 0U);
+    yq_start(1);
+    g_live_fake_realtime = 0;
+    static const dsd_rtl_stream_metrics_hooks metrics = {
+        .output_rate_hz = live_output_rate_hz,
+        .output_kind = live_output_kind,
+        .symbol_profile = live_symbol_profile,
+        .stream_generation = yq_stream_gen,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&metrics);
+    char path[DSD_TEST_PATH_MAX];
+    const long int base_hz = on ? 476012500L : 478012500L;
+    g_live_second_hz = base_hz + 1000000L;
+    g_live_trunk_dwell_ms = 3000;
+    yq_dmr_only(opts);
+    opts->scan_skip_silent = on;
+    int rc = expect_true("live quiet trunk scan set up", live_trunk_scan(opts, state, path, sizeof path, base_hz) == 0);
+    g_live_trunk_dwell_ms = 250;
+    g_yq.gen_base = 100U; /* the landing's capture is newer than the generation read at its tune */
+    if (rc == 0) {
+        const int64_t left_ms = yq_live_run_until(opts, state, live_trunk_quiet_left, 5000U);
+        if (on) {
+            rc |= live_expect_between("live trunk scan: a quiet target is left at once", left_ms, 0, 600);
+            rc |= expect_true("live trunk scan: one skip, one NOTICE", g_yq.requests >= 1 && g_yq.notices == 1);
+        } else {
+            rc |= live_expect_between("live trunk scan off: the dwell runs", left_ms, 3000, 4000);
+            rc |= expect_true("live trunk scan off: nothing asked", g_yq.requests == 0);
+        }
+        dsd_engine_trunk_scan_shutdown(opts, state);
+    }
+    (void)remove(path);
+    yq_stop();
+    live_session_stop(opts, state);
+    return rc;
+}
+
+static int
+test_scan_quiet_decisions(void) {
+    int rc = 0;
+    for (int typed = 0; typed <= 1; typed++) {
+        rc |= test_y_quiet_skips_a_landed_row(typed, 1);
+        rc |= test_y_quiet_skips_a_landed_row(typed, 0);
+    }
+    for (int which = YQ_BUSY; which <= YQ_QUALIFYING_BUSY; which++) {
+        rc |= yq_keep_case(which);
+    }
+    rc |= test_y_quiet_open_analog_carrier_stays();
+    rc |= test_live_y_skips_a_quiet_row(1);
+    rc |= test_live_y_skips_a_quiet_row(0);
+    rc |= test_live_trunk_scan_skips_a_quiet_target(1);
+    rc |= test_live_trunk_scan_skips_a_quiet_target(0);
     return rc;
 }
 #endif
@@ -13863,6 +14375,7 @@ main(void) {
     rc |= test_fsk_reacquire_watchdog_runs_on_the_decode_clock();
     rc |= test_fsk_reacquire_cooldown_runs_across_a_replay_leave();
     rc |= test_live_scan_over_silent_inputs();
+    rc |= test_scan_quiet_decisions();
 #endif
 
     if (rc == 0) {

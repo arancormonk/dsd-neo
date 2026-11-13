@@ -61,6 +61,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -75,6 +76,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <unistd.h>
 #endif
@@ -22385,6 +22387,8 @@ quiet_rig_init(dsd_opts* opts, dsd_state* state, const char* path) {
     g_tap.analog_ok = 1;
     g_quiet_fake_rt = 1;
     g_quiet_rt_ms = QT_T0;
+    g_scan_dsp_rate_hz = 48000;        /* the rate quiet_elig() publishes */
+    dsd_trunk_tuning_requests_reset(); /* no park a previous case left in flight gates this one's frames */
     trunk_scan_test_clear_now();
     dsd_decode_clock_use_test(1000000000000ULL);
     static const dsd_rtl_stream_metrics_hooks hooks = {.stream_generation = quiet_stream_gen};
@@ -22432,6 +22436,7 @@ quiet_rig_finish(dsd_opts* opts, dsd_state* state, const char* dir, const char* 
     dsd_decode_clock_use_system();
     g_quiet_fake_rt = 0;
     g_scan_tune_to_freq_pending = 0;
+    g_scan_dsp_rate_hz = 0;
     cleanup_paths(dir, path, NULL);
 }
 
@@ -23129,15 +23134,12 @@ test_scan_quiet_adopts_a_park_measured_in_flight(void) {
                         quiet_apply(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 0
                             && scan_quiet_phase_get(&state) == SCAN_QUIET_READY);
         if (adopt) {
+            /* The tick notes the park's landing first, which adopts the result, then its idle decision applies it
+               (Task 10): the target skips, and the visit's check is consumed. */
             dsd_engine_trunk_scan_tick(&opts, &state);
-            const uint64_t epoch = dsd_engine_scan_landing_epoch(&state);
-            rc |= qt_expect("the tick noted the park's landing", epoch != 0U);
-            rc |=
-                qt_expect("adopted on a matching tune_request", quiet_apply(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 1
-                                                                    && scan_quiet_key_get(&state).epoch == epoch);
-            quiet_publish(&opts, &state);
-            rc |= qt_expect("the adopted visit stays DONE",
-                            scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.requests == 1);
+            rc |= qt_expect("adopted on a matching tune_request and applied by the tick",
+                            scan_quiet_key_get(&state).epoch != 0U && scan_quiet_phase_get(&state) == SCAN_QUIET_DONE
+                                && dsd_engine_trunk_scan_active_index(&state) == 0U && g_tap.requests == 1);
         } else {
             dsd_engine_scan_landing_note_target(&state, 1, e.key.session, k_qt_hz_b, park + 1000U);
             rc |= qt_expect("discarded on another tune_request",
@@ -23617,6 +23619,379 @@ test_scan_quiet_trunk_goto_and_resume_sites(void) {
     return rc;
 }
 
+/* --- Issue #834 Task 10: the skip decision in the coordinator's tick (trunk_scan_tick_idle_decision()), driven pass by
+ * pass as the live loop does: the pass's engine service owed (dsd_engine_trunk_scan_quiet_service_pass()), then the
+ * tick. A 2 s dwell, so a skip shows by when it happened. The decode clock is the TEST one, the realtime clock the fake
+ * one. --- */
+
+static const char k_qt_dwell_targets[] = "a,dmr-conventional,452000000,,2000,1000,\n"
+                                         "b,dmr-conventional,453000000,,2000,1000,\n";
+
+/* The rig's decode clock at @p ms after its landing (dsd_decode_clock_use_test() in quiet_rig_init()). */
+static void
+qt_decode_at(uint64_t ms) {
+    dsd_decode_clock_test_set_ns(1000000000000ULL + ms * 1000000ULL);
+}
+
+static int
+quiet_rig_start_body(dsd_opts* opts, dsd_state* state, char* dir, size_t dir_sz, char* path, size_t path_sz,
+                     const char* body) {
+    if (make_runtime_targets(body, path, path_sz, dir, dir_sz) != 0) {
+        return 1;
+    }
+    return quiet_rig_init(opts, state, path);
+}
+
+/* One outer-loop pass of the coordinator. */
+static void
+qt_pass(dsd_opts* opts, dsd_state* state) {
+    dsd_engine_trunk_scan_quiet_service_pass(state);
+    dsd_engine_trunk_scan_tick(opts, state);
+}
+
+static int g_qt_notices = 0;
+static char g_qt_notice[192];
+
+static void
+qt_count_notice(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)level;
+    (void)ctx;
+    if (text && strncmp(text, "NOTICE: scan: skipped quiet", 27) == 0) {
+        g_qt_notices++;
+        DSD_SNPRINTF(g_qt_notice, sizeof g_qt_notice, "%s", text);
+    }
+}
+
+static void
+qt_notices_watch(int on) {
+    g_qt_notices = 0;
+    g_qt_notice[0] = '\0';
+    dsd_neo_log_set_tap(on ? qt_count_notice : NULL, NULL);
+}
+
+/* A pass that publishes the target on air measures it, and the tap finds it quiet: READY, handed back. */
+static int
+qt_pass_to_ready(dsd_opts* opts, dsd_state* state) {
+    qt_pass(opts, state);
+    if (scan_quiet_phase_get(state) != SCAN_QUIET_REQUESTED) {
+        DSD_FPRINTF(stderr, "FAIL #834 scan quiet: the pass left phase %d (want REQUESTED)\n",
+                    (int)scan_quiet_phase_get(state));
+        return 1;
+    }
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    return qt_expect("a quiet result is READY and the hunt hands back",
+                     quiet_service_after(opts, state, 10U) == 1 && scan_quiet_phase_get(state) == SCAN_QUIET_READY);
+}
+
+/* Spec §8: skip at landing + measurement, through the pass and its tick. The pass publishes the landed target, the hunt
+   collects the quiet result, and the next pass's tick skips the target long before its dwell, once, with one NOTICE
+   line. Publishing, measuring and the READY result write neither the idle dwell (the published deadline stays the
+   landing's) nor a sync stamp. */
+static int
+test_scan_quiet_tick_skips_a_quiet_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (quiet_rig_start_body(&opts, &state, dir, sizeof dir, path, sizeof path, k_qt_dwell_targets) != 0) {
+        return 1;
+    }
+    qt_notices_watch(1);
+    const time_t cc_sync = state.last_cc_sync_time;
+    const double cc_sync_m = state.last_cc_sync_time_m;
+    qt_decode_at(5U);
+    /* A tick with no pass owed (a per-frame tick of a carrier) publishes nothing: no eligibility walk, no request. */
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    int rc = qt_expect("a per-frame tick publishes nothing",
+                       g_tap.requests == 0 && scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED);
+    qt_decode_at(10U);
+    rc |= qt_pass_to_ready(&opts, &state);
+    rc |= qt_expect("one request, for the landed target",
+                    g_tap.requests == 1 && g_tap.last_request.frequency_hz == k_qt_hz_a);
+    rc |= expect_scan_timing(&state, "a quiet check under way", DSD_SCAN_STAY_IDLE_DWELL, 1002.0, 2000U, 1000U);
+    rc |= qt_expect("RF power writes no sync stamp",
+                    state.last_cc_sync_time == cc_sync && fabs(state.last_cc_sync_time_m - cc_sync_m) < 1e-9);
+    qt_decode_at(60U);
+    qt_pass(&opts, &state);
+    rc |= expect_active_target(&state, "a quiet target skipped 60 ms into a 2 s dwell", 1U);
+    rc |= qt_expect("one NOTICE line", g_qt_notices == 1);
+    char want[192];
+    (void)scan_quiet_format_skip(want, sizeof want, "a", 0, k_qt_hz_a, -97.25f, -98.75f, 1.5f);
+    if (strcmp(g_qt_notice, want) != 0) {
+        DSD_FPRINTF(stderr, "FAIL #834 scan quiet: NOTICE '%s', want '%s'\n", g_qt_notice, want);
+        rc = 1;
+    }
+    rc |= qt_expect("the pass published the target it skipped to",
+                    scan_quiet_key_get(&state).index == 1 && g_tap.requests == 1);
+    /* The target skipped to measures afresh once its own capture comes; nothing else moves on its own. */
+    g_quiet_stream_gen++;
+    quiet_tap_capture(k_qt_hz_b, g_quiet_stream_gen);
+    qt_decode_at(70U);
+    g_quiet_rt_ms += SCAN_QUIET_CAPTURE_RECHECK_MS;
+    qt_pass(&opts, &state);
+    rc |= qt_expect("the next target measures afresh",
+                    g_tap.requests == 2 && g_tap.last_request.frequency_hz == k_qt_hz_b);
+    rc |= expect_active_target(&state, "no second skip without a result", 1U);
+    rc |= qt_expect("still one NOTICE line", g_qt_notices == 1);
+    qt_notices_watch(0);
+    quiet_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
+/* A tick that lost the coordinator's guard decided nothing (spec §3.4): the READY result stays, the hunt hands back
+   again, and the next tick under the guard skips. */
+static int
+test_scan_quiet_tick_guard_lost_answers_again(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (quiet_rig_start_body(&opts, &state, dir, sizeof dir, path, sizeof path, k_qt_dwell_targets) != 0) {
+        return 1;
+    }
+    qt_decode_at(10U);
+    int rc = qt_pass_to_ready(&opts, &state);
+    g_p25_tick_guard_available = 0;
+    qt_pass(&opts, &state);
+    g_p25_tick_guard_available = 1;
+    rc |= expect_active_target(&state, "a tick without the guard", 0U);
+    rc |= qt_expect("READY kept: the hunt hands back again",
+                    scan_quiet_phase_get(&state) == SCAN_QUIET_READY && quiet_service_after(&opts, &state, 5U) == 1);
+    qt_pass(&opts, &state);
+    rc |= expect_active_target(&state, "the next tick under the guard skips", 1U);
+    quiet_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
+static void
+qt_mut_activity(dsd_opts* opts, dsd_state* state) {
+    dsd_engine_trunk_scan_dmr_conventional_activity(opts, state, 1001, 2002, 0, 0, 0);
+}
+
+/* Spec §8 keep timing, each from a READY result between the hunt's return and the pass's tick: the target stays, the
+   result is not applied, the hunt is not handed back again, and no NOTICE is logged. A visit still eligible is
+   republished by the same pass and measured afresh; a held one stays SUSPENDED, and one that saw activity stays DONE
+   (no new request for the visit), whatever later passes do. */
+static int
+test_scan_quiet_tick_keeps_timing(void) {
+    enum { QT_AFRESH = 0, QT_SUSPENDED = 1, QT_DONE = 2 };
+
+    static const struct {
+        const char* name;
+        quiet_mutation_fn fn;
+        int after;
+    } k_cases[] = {
+        {"list toggle", qt_mut_lists, QT_AFRESH},
+        {"channel map change", qt_mut_map, QT_AFRESH},
+        {"edit of a target not on air", qt_mut_inactive_target_edit, QT_AFRESH},
+        {"analog width change between collection and application", qt_mut_nfm_width, QT_AFRESH},
+        {"receive-profile request in flight", qt_mut_receive_request, QT_AFRESH},
+        {"input switch", qt_mut_input, QT_AFRESH},
+        {"setting off and on", qt_mut_setting_off_on, QT_AFRESH},
+        {"hold and release in one pump", qt_mut_hold_twice, QT_AFRESH},
+        {"operator hold", qt_mut_hold_toggle, QT_SUSPENDED},
+        {"activity", qt_mut_activity, QT_DONE},
+    };
+
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (quiet_rig_start_body(&opts, &state, dir, sizeof dir, path, sizeof path, k_qt_dwell_targets) != 0) {
+        return 1;
+    }
+    qt_notices_watch(1);
+    int rc = 0;
+    for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
+        qt_decode_at(10U);
+        quiet_land_again(&state, k_qt_hz_a);
+        rc |= qt_pass_to_ready(&opts, &state);
+        const int requests = g_tap.requests;
+        k_cases[i].fn(&opts, &state);
+        qt_pass(&opts, &state);
+        const scan_quiet_phase phase = scan_quiet_phase_get(&state);
+        const int want_requests = requests + (k_cases[i].after == QT_AFRESH ? 1 : 0);
+        const scan_quiet_phase want_phase = k_cases[i].after == QT_AFRESH      ? SCAN_QUIET_REQUESTED
+                                            : k_cases[i].after == QT_SUSPENDED ? SCAN_QUIET_SUSPENDED
+                                                                               : SCAN_QUIET_DONE;
+        const int handed_back = quiet_service_after(&opts, &state, 5U);
+        qt_pass(&opts, &state);
+        qt_pass(&opts, &state);
+        if (dsd_engine_trunk_scan_active_index(&state) != 0U || g_qt_notices != 0 || handed_back != 0
+            || phase != want_phase || g_tap.requests != want_requests) {
+            DSD_FPRINTF(stderr,
+                        "FAIL #834 scan quiet: keep timing (%s): active %zu, notices %d, handed back %d, phase %d "
+                        "(want %d), requests %d (want %d)\n",
+                        k_cases[i].name, dsd_engine_trunk_scan_active_index(&state), g_qt_notices, handed_back,
+                        (int)phase, (int)want_phase, g_tap.requests - requests, want_requests - requests);
+            rc = 1;
+        }
+        if (k_cases[i].fn == qt_mut_hold_toggle) {
+            qt_mut_hold_toggle(&opts, &state);
+        }
+    }
+    /* The dwell running out on the tick that sees a READY result: one advance, the dwell's, with no NOTICE. */
+    quiet_land_again(&state, k_qt_hz_a);
+    qt_decode_at(1500U);
+    rc |= qt_pass_to_ready(&opts, &state);
+    qt_decode_at(5000U);
+    qt_pass(&opts, &state);
+    rc |= expect_active_target(&state, "the dwell's advance", 1U);
+    rc |= qt_expect("the dwell's advance logs no skip", g_qt_notices == 0);
+    qt_notices_watch(0);
+    quiet_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
+/* Spec §8: held and no-alternate visits stay SUSPENDED (no request, the hunt never handed back), and a trunked target
+   is never checked: pass after pass, the tap is never asked. */
+static int
+test_scan_quiet_tick_ineligible_visits_request_nothing(void) {
+    static const struct {
+        const char* name;
+        const char* body;
+        int hold;
+    } k_cases[] = {
+        {"a held target", "a,dmr-conventional,452000000,,2000,1000,\nb,dmr-conventional,453000000,,2000,1000,\n", 1},
+        {"a target with no alternate", "a,dmr-conventional,452000000,,2000,1000,\n", 0},
+        {"a trunked target on air", "t,p25-trunk,452000000,,2000,,\nb,dmr-conventional,453000000,,2000,1000,\n", 0},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
+        char dir[DSD_TEST_PATH_MAX];
+        char path[DSD_TEST_PATH_MAX];
+        static dsd_opts opts;
+        static dsd_state state;
+        if (quiet_rig_start_body(&opts, &state, dir, sizeof dir, path, sizeof path, k_cases[i].body) != 0) {
+            return 1;
+        }
+        if (k_cases[i].hold) {
+            qt_mut_hold_toggle(&opts, &state);
+        }
+        const int reads = g_tap.capture_reads;
+        int handed_back = 0;
+        for (int pass = 0; pass < 4; pass++) {
+            qt_decode_at(10U + 100U * (uint64_t)pass);
+            qt_pass(&opts, &state);
+            handed_back |= quiet_service_after(&opts, &state, 50U);
+        }
+        if (g_tap.requests != 0 || g_tap.capture_reads != reads || handed_back
+            || scan_quiet_phase_get(&state) != SCAN_QUIET_SUSPENDED
+            || dsd_engine_trunk_scan_active_index(&state) != 0U) {
+            DSD_FPRINTF(
+                stderr,
+                "FAIL #834 scan quiet: %s: requests %d, capture reads %d, handed back %d, phase %d, active %zu\n",
+                k_cases[i].name, g_tap.requests, g_tap.capture_reads - reads, handed_back,
+                (int)scan_quiet_phase_get(&state), dsd_engine_trunk_scan_active_index(&state));
+            rc = 1;
+        }
+        quiet_rig_finish(&opts, &state, dir, path);
+    }
+    return rc;
+}
+
+/* The decode time (ms after the landing) the rig's first advance happens at, a pass every 50 ms, or -1. */
+static int64_t
+qt_first_advance_ms(dsd_opts* opts, dsd_state* state, int busy) {
+    for (uint64_t ms = 10U; ms <= 4000U; ms += 50U) {
+        qt_decode_at(ms);
+        qt_pass(opts, state);
+        if (busy && g_tap.ticket != 0U) {
+            quiet_tap_finish(0, DSD_SIGNAL_MEASURE_OK);
+            (void)quiet_service_after(opts, state, 5U);
+        }
+        if (dsd_engine_trunk_scan_active_index(state) != 0U) {
+            return (int64_t)ms;
+        }
+    }
+    return -1;
+}
+
+/* Spec §8: the setting off is the dwell as before, and the tap is never asked; on, with a busy channel (energy), the
+   advance comes at the very same pass. */
+static int
+test_scan_quiet_tick_setting_off_keeps_timing(void) {
+    int64_t at[2] = {-1, -1};
+    int requests[2] = {0, 0};
+    for (int on = 0; on <= 1; on++) {
+        char dir[DSD_TEST_PATH_MAX];
+        char path[DSD_TEST_PATH_MAX];
+        static dsd_opts opts;
+        static dsd_state state;
+        if (quiet_rig_start_body(&opts, &state, dir, sizeof dir, path, sizeof path, k_qt_dwell_targets) != 0) {
+            return 1;
+        }
+        opts.scan_skip_silent = on;
+        at[on] = qt_first_advance_ms(&opts, &state, on);
+        requests[on] = g_tap.requests;
+        quiet_rig_finish(&opts, &state, dir, path);
+    }
+    int rc =
+        qt_expect("off: the advance at the dwell (2 s), nothing asked of the tap", at[0] == 2010 && requests[0] == 0);
+    rc |= qt_expect("on, busy: the same pass, after one measurement", at[1] == at[0] && requests[1] == 1);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834 scan quiet: advance off %lld ms (%d requests), on busy %lld ms (%d requests)\n",
+                    (long long)at[0], requests[0], (long long)at[1], requests[1]);
+    }
+    return rc;
+}
+
+/* A -Y go-to whose row is on air takes the entry hold at once. */
+static int
+qt_site_y_entry_hold(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    dsd_engine_scan_entry_hold_now(state);
+    return 0;
+}
+
+/* The Task 9 re-review case: a -Y-owned READY result that sees its own -Y mutation sites (a leave, a pause, an entry hold
+   taken) is declined, not applied. */
+static int
+test_scan_quiet_y_ready_declines_at_its_own_sites(void) {
+    static const struct {
+        const char* name;
+        quiet_site_fn fn;
+    } k_sites[] = {
+        {"-Y leave", qt_site_y_leave},
+        {"-Y pause", qt_site_y_pause},
+        {"-Y entry hold", qt_site_y_entry_hold},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof k_sites / sizeof k_sites[0]; i++) {
+        char dir[DSD_TEST_PATH_MAX];
+        char path[DSD_TEST_PATH_MAX];
+        static dsd_opts opts;
+        static dsd_state state;
+        if (quiet_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+            return 1;
+        }
+        /* A -Y landing of row 0 on its own capture. */
+        dsd_engine_scan_landing_note_tune(&state);
+        g_quiet_stream_gen++;
+        quiet_tap_capture(k_qt_hz_a, g_quiet_stream_gen);
+        dsd_engine_scan_landing_note_row(&state, 0, (long)k_qt_hz_a, 0U);
+        scan_quiet_eligibility e = quiet_elig(&opts, &state);
+        e.key.owner = SCAN_QUIET_OWNER_Y;
+        scan_quiet_publish_eligibility(&opts, &state, SCAN_QUIET_OWNER_Y, &e);
+        quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+        rc |= qt_expect("a -Y READY result", quiet_service_after(&opts, &state, 5U) == 1);
+        const dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(&state);
+        const uint64_t inv = owner->quiet_inv_seq;
+        (void)k_sites[i].fn(&opts, &state);
+        const int moved = owner->quiet_inv_seq != inv;
+        const int applied = scan_quiet_apply(&opts, &state, SCAN_QUIET_OWNER_Y, &e);
+        if (!moved || applied || scan_quiet_phase_get(&state) == SCAN_QUIET_READY) {
+            DSD_FPRINTF(stderr, "FAIL #834 scan quiet: a -Y READY result at %s: moved %d, applied %d, phase %d\n",
+                        k_sites[i].name, moved, applied, (int)scan_quiet_phase_get(&state));
+            rc = 1;
+        }
+        quiet_rig_finish(&opts, &state, dir, path);
+    }
+    return rc;
+}
+
 #endif
 
 /* The NOTICE line (spec §3.4 format) and the width classes (spec §2.2). */
@@ -23748,6 +24123,12 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_adopted_park_is_bounded_from_its_landing);
     rc |= run_with_default_tune_hook(test_scan_quiet_more_mutation_sites_decline_a_ready_result);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_goto_and_resume_sites);
+    rc |= run_with_default_tune_hook(test_scan_quiet_tick_skips_a_quiet_target);
+    rc |= run_with_default_tune_hook(test_scan_quiet_tick_guard_lost_answers_again);
+    rc |= run_with_default_tune_hook(test_scan_quiet_tick_keeps_timing);
+    rc |= run_with_default_tune_hook(test_scan_quiet_tick_ineligible_visits_request_nothing);
+    rc |= run_with_default_tune_hook(test_scan_quiet_tick_setting_off_keeps_timing);
+    rc |= run_with_default_tune_hook(test_scan_quiet_y_ready_declines_at_its_own_sites);
 #endif
 #ifndef USE_RADIO
     rc |= test_scan_quiet_radio_off_is_a_no_op();
