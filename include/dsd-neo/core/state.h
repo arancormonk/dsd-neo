@@ -710,6 +710,12 @@ typedef struct {
     int raw_head;                          /**< Next write index into `raw`. */
     int raw_count;                         /**< Samples held, saturating at the ring size. */
     int replay;                            /**< Samples still to be re-read from `raw` before live input. */
+    /** dsd_state::symbol_clock of the symbol in which the grid last changed how it reads `raw`: a change of `sps`, or
+        the end of a hand-back. Every symbol after it took its samples from `raw` live, one each, in order, at one
+        span, which is what lets the sync anchor measure a word the hunt read there (src/dsp/symbol_anchor.c). A switch
+        of `kind` alone does not count: the samples the switch-on consumes are recorded, and the seam keeps the content
+        position, so the grid stays one span a symbol in content and `delay` maps it onto `raw`. */
+    uint64_t steady_clock;
 } dsd_matched_filter_seam;
 
 typedef struct {

@@ -340,7 +340,8 @@ typedef struct {
     /* The sync anchor, once a protocol has named a sync word (symbol_anchor.c); NULL until then. */
     dsd_symbol_anchor* anchor;
     /* The move the anchor made at this symbol's start: a seam later in the same symbol that discards the anchor's
-       samples (symbol_sync_matched_filter_seam()) discards the move measured on them too. */
+       samples (symbol_sync_matched_filter_seam()) discards the move measured on them too. A move measured on the raw
+       history the seam keeps (dsd_symbol_anchor_slip_from_raw()) holds across it, and is not counted here. */
     int anchor_applied;
     /* Whether this symbol's samples are recorded at all: for the timing trace or for the anchor. One test a sample,
        the one the trace alone used to cost. */
@@ -3131,6 +3132,9 @@ symbol_take_sample(dsd_opts* opts, dsd_state* state, symbol_work_ctx* work) {
         work->sample = seam_raw_at(seam, seam->replay);
         seam->replay--;
         work->sample_replayed = 1;
+        if (seam->replay == 0) {
+            seam->steady_clock = state->symbol_clock;
+        }
         return 1;
     }
     work->sample_replayed = 0;
@@ -3452,6 +3456,11 @@ symbol_sync_matched_filter_seam(dsd_opts* opts, dsd_state* state, int have_sync,
     const int previous_delay = seam->delay;
     const int previous_kind = seam->kind;
     const int delay = dsd_sps_filter_group_delay(kind, sps);
+    /* A new span changes how many samples a symbol takes from `raw`; a new filter alone does not, since the seam keeps
+       the content position (a hand-back, which does, stamps where it ends: symbol_take_sample()). */
+    if (sps != seam->sps) {
+        seam->steady_clock = state->symbol_clock;
+    }
     seam->kind = (int)kind;
     seam->sps = sps;
     seam->delay = delay;
@@ -3513,13 +3522,15 @@ symbol_anchor_begin(dsd_state* state, symbol_work_ctx* work) {
                                     ? DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR)
                                     : NULL;
     if (anchor != NULL) {
-        /* A sync word read inside the frame placed the grid: move it the samples it asked for, a positive measurement
-           (the symbols sit later than the grid) by consuming more samples. The crossing pending from the previous
-           symbol is not acted on as well. */
+        /* A sync word placed the grid (one read inside the frame, or a P25 word the hunt read with nothing recorded,
+           measured on the seam's raw history): move it the samples it asked for, a positive measurement (the symbols
+           sit later than the grid) by consuming more samples. The crossing pending from the previous symbol is not
+           acted on as well. */
+        const int from_raw = dsd_symbol_anchor_slip_from_raw(anchor);
         const int slip = dsd_symbol_anchor_take_slip(anchor);
         if (slip != 0 && work->symbol_span > 1) {
             i = -slip;
-            work->anchor_applied = slip;
+            work->anchor_applied = from_raw ? 0 : slip;
             state->jitter = -1;
         }
         work->anchor = dsd_symbol_anchor_recording(anchor) ? anchor : NULL;

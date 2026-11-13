@@ -70,6 +70,7 @@ typedef struct {
     int whole; /* the grid's span: whole + rem / den samples a symbol, as the RTL FSK timing alternates them */
     int rem;
     int den;
+    int filtered;    /* the decoder's P25 matched filter switches on behind the first word */
     double ppm;      /* the transmitter's symbol clock against ours */
     double polarity; /* -1: the inverted word */
     double start;    /* where the first symbol's centre sits, in samples */
@@ -201,7 +202,8 @@ reader_open(reader* r, dsd_opts* opts, dsd_state* state, const grid_case* c, con
     opts->audio_out_type = 1;
     opts->input_volume_multiplier = 1;
     opts->wav_sample_rate = 48000;
-    opts->use_cosine_filter = 0; /* the stream is what the decoder's filter would hand on */
+    /* The stream is what the decoder's filter would hand on; a symmetric filter on it moves no centre. */
+    opts->use_cosine_filter = c->filtered;
     DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "%s", wav_path);
 
     state->rf_mod = 0;
@@ -249,8 +251,9 @@ read_symbol(reader* r, int have_sync) {
     const long consumed = (long)sf_seek(r->opts->audio_in_file, 0, SEEK_CUR);
     assert(consumed > r->consumed);
     /* The span index started where the crossing loop or the anchor put it, and ran to the span's end: the decision
-       centre is symbolCenter samples into the span, counted back from the last sample taken. */
-    r->last_centre = (double)(consumed - span + r->state->symbolCenter);
+       centre is symbolCenter samples into the span, counted back from the last sample taken, and through the matched
+       filter its group delay before that. */
+    r->last_centre = (double)(consumed - span + r->state->symbolCenter - r->state->matched_filter.delay);
     r->consumed = consumed;
     return (int)lround((r->last_centre - r->s->start) / r->s->period);
 }
@@ -310,9 +313,12 @@ run_case(const grid_case* c, const stream* s, const char* wav_path, int anchored
    measured against the grid without the loop's slips. The grid moves in whole samples and stands within half a sample
    of the word: at a fractional rate its whole-sample centres sit up to half a sample either side of the symbols' own,
    and with the clocks apart the symbols walk on, so a word's 23 and a unit's head average that a little differently: a
-   tenth of a sample more is allowed there. The unit after acquisition is the hunt's, nothing having been
-   recorded. Without the anchor, the crossing loop leaves the units off the symbols on these streams; at 48 and 24 kHz
-   it leaves every one a sample past them. */
+   tenth of a sample more is allowed there. The word that acquires the transmission is measured on the raw samples the
+   matched-filter seam keeps, at a whole rate, and moves the grid when it sits three quarters of a sample off or more,
+   so the unit after it is read on its symbols too, with the filter switching on behind the word or not; nearer, and at
+   a fractional rate, whose spans alternate, that unit is the hunt's, where it was before. Without the anchor, the
+   crossing loop leaves the units off the symbols on these streams; at 48 and 24 kHz it leaves every one a sample past
+   them. */
 static void
 check_case(const grid_case* c) {
     static stream s;
@@ -336,21 +342,24 @@ check_case(const grid_case* c) {
         if (u >= 1) {
             assert(anchored.measured[u]);
         }
-        if (u >= 2) {
+        if (u >= 2 || (u == 0 && c->den == 0 && fabs(control.offset[0]) >= 0.8)) {
             assert(fabs(anchored.offset[u]) <= ((c->den > 0 || fabs(c->ppm) > 0.0) ? 0.6 : 0.5));
         }
         late += control.offset[u] > 0.5;
     }
+    /* The hunt word's move places no grid for a hold: the second unit's word is read on the crossing loop's grid. */
     assert(!anchored.measured[0]);
+    assert((c->den == 0 && fabs(control.offset[0]) >= 0.7) || fabs(anchored.offset[0] - control.offset[0]) < 1e-9);
     /* The control: the hunt's crossing loop leaves the units off the symbols, so the anchor moved the grid. */
     assert(!c->control_late || late == c->unit_count);
     remove(wav_path);
 }
 
 static const grid_case k_cases[] = {
-    {"48 kHz voice", 10, 0, 0, 0.0, 1.0, 4.0, {&k_hdu, &k_ldu, &k_ldu, &k_ldu, &k_ldu, &k_tdu}, 6, 1},
+    {"48 kHz voice", 10, 0, 0, 0, 0.0, 1.0, 4.0, {&k_hdu, &k_ldu, &k_ldu, &k_ldu, &k_ldu, &k_tdu}, 6, 1},
     {"48 kHz control channel, inverted",
      10,
+     0,
      0,
      0,
      0.0,
@@ -359,15 +368,32 @@ static const grid_case k_cases[] = {
      {&k_tsdu3, &k_tsdu3, &k_tsdu1, &k_tsdu3, &k_tsdu1, &k_tsdu1, &k_tsdu3},
      7,
      1},
-    {"24 kHz control channel", 5, 0, 0, 0.0, 1.0, 2.0, {&k_tsdu3, &k_tsdu1, &k_tsdu3, &k_tsdu3, &k_tsdu1}, 5, 1},
-    {"96 kHz voice, inverted", 20, 0, 0, 0.0, -1.0, 9.0, {&k_ldu, &k_ldu, &k_ldu, &k_tdu}, 4, 0},
-    {"72 kHz voice", 15, 0, 0, 0.0, 1.0, 7.0, {&k_ldu, &k_ldu, &k_ldu, &k_tdu}, 4, 0},
-    {"50 kHz voice", 10, 2000, 4800, 0.0, 1.0, 4.5, {&k_ldu, &k_ldu, &k_ldu, &k_ldu}, 4, 0},
-    {"50 kHz voice, a quarter sample on", 10, 2000, 4800, 0.0, 1.0, 4.75, {&k_ldu, &k_ldu, &k_ldu, &k_ldu}, 4, 0},
+    {"24 kHz control channel", 5, 0, 0, 0, 0.0, 1.0, 2.0, {&k_tsdu3, &k_tsdu1, &k_tsdu3, &k_tsdu3, &k_tsdu1}, 5, 1},
+    {"24 kHz voice, inverted", 5, 0, 0, 0, 0.0, -1.0, 2.0, {&k_hdu, &k_ldu, &k_ldu, &k_tdu}, 4, 1},
+    {"48 kHz voice, inverted", 10, 0, 0, 0, 0.0, -1.0, 4.0, {&k_hdu, &k_ldu, &k_ldu, &k_tdu}, 4, 1},
+    {"48 kHz voice, matched filter", 10, 0, 0, 1, 0.0, 1.0, 4.0, {&k_hdu, &k_ldu, &k_ldu, &k_tdu}, 4, 1},
+    {"48 kHz voice, inverted, matched filter", 10, 0, 0, 1, 0.0, -1.0, 4.0, {&k_ldu, &k_ldu, &k_ldu, &k_tdu}, 4, 1},
+    {"24 kHz voice, matched filter", 5, 0, 0, 1, 0.0, 1.0, 2.0, {&k_ldu, &k_ldu, &k_ldu, &k_tdu}, 4, 1},
+    {"24 kHz control channel, inverted, matched filter",
+     5,
+     0,
+     0,
+     1,
+     0.0,
+     -1.0,
+     2.0,
+     {&k_tsdu3, &k_tsdu1, &k_tsdu3, &k_tsdu3},
+     4,
+     1},
+    {"96 kHz voice, inverted", 20, 0, 0, 0, 0.0, -1.0, 9.0, {&k_ldu, &k_ldu, &k_ldu, &k_tdu}, 4, 0},
+    {"72 kHz voice", 15, 0, 0, 0, 0.0, 1.0, 7.0, {&k_ldu, &k_ldu, &k_ldu, &k_tdu}, 4, 0},
+    {"50 kHz voice", 10, 2000, 4800, 0, 0.0, 1.0, 4.5, {&k_ldu, &k_ldu, &k_ldu, &k_ldu}, 4, 0},
+    {"50 kHz voice, a quarter sample on", 10, 2000, 4800, 0, 0.0, 1.0, 4.75, {&k_ldu, &k_ldu, &k_ldu, &k_ldu}, 4, 0},
     {"50 kHz control channel, inverted",
      10,
      2000,
      4800,
+     0,
      0.0,
      -1.0,
      5.0,
@@ -378,6 +404,7 @@ static const grid_case k_cases[] = {
      10,
      0,
      0,
+     0,
      -20.0,
      1.0,
      4.0,
@@ -386,6 +413,7 @@ static const grid_case k_cases[] = {
      0},
     {"48 kHz voice, transmitter 20 ppm slow",
      10,
+     0,
      0,
      0,
      20.0,

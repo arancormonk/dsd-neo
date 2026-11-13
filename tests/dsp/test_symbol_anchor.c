@@ -13,6 +13,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol_anchor.h>
 #include <math.h>
 #include <stdint.h>
@@ -738,6 +739,170 @@ test_p25_word_read_on_a_walking_grid(void) {
     assert(differs > 0);
 }
 
+/* A P25 word the hunt read with no recording armed (the first of a transmission): the grid recorded nothing, and the
+   word is measured on the raw stream the matched-filter seam keeps. The stream is @c HUNT_LEAD symbols, the P25 word and
+   the symbols after it whose pulses reach back, up to the word's last sample; the grid's centre is (sps - 1) / 2 into
+   each span, and when the hunt read through a filter of @c delay, the raw stream runs that far ahead of it. */
+typedef struct {
+    int sps;
+    double offset; /* the symbols' centres after the grid's, in samples */
+    double polarity;
+    int delay;
+    double noise_amp;
+} hunt_word_case;
+
+#define HUNT_LEAD  30
+#define HUNT_AFTER 6
+
+/* The seam as the grid left it after reading the word's last symbol, with the clock on the symbol after. */
+static dsd_state*
+hunt_word_state(const hunt_word_case* c) {
+    const int sps = c->sps;
+    const int centre = (sps - 1) / 2;
+    const int total = HUNT_LEAD + P25_WORD + HUNT_AFTER;
+    char dibits[HUNT_LEAD + P25_WORD + HUNT_AFTER];
+    for (int k = 0; k < total; k++) {
+        const int w = k - HUNT_LEAD;
+        dibits[k] = (w >= 0 && w < P25_WORD) ? P25P1_SYNC[w] : (char)('0' + (int)((noise() + 0.5) * 3.999));
+    }
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
+    state->samplesPerSymbol = sps;
+    state->symbolCenter = centre;
+    state->lastsynctype = c->polarity < 0.0 ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS;
+    state->symbol_clock = (uint64_t)(HUNT_LEAD + P25_WORD);
+    dsd_matched_filter_seam* seam = &state->matched_filter;
+    seam->kind = c->delay > 0 ? (int)DSD_SPS_FILTER_P25 : (int)DSD_SPS_FILTER_NONE;
+    seam->sps = sps;
+    seam->delay = c->delay;
+    const int samples = (HUNT_LEAD + P25_WORD) * sps;
+    for (int n = 0; n < samples; n++) {
+        double v = 0.0;
+        for (int k = 0; k < total; k++) {
+            const double at = (double)(k * sps + centre - c->delay) + c->offset;
+            v += level_for(dibits[k]) * rc_pulse(((double)n - at) / (double)sps);
+        }
+        seam->raw[seam->raw_head] = (float)((c->polarity * v) + (c->noise_amp * noise()));
+        seam->raw_head = (seam->raw_head + 1) % DSD_MATCHED_FILTER_HISTORY;
+        seam->raw_count += seam->raw_count < DSD_MATCHED_FILTER_HISTORY;
+    }
+    return state;
+}
+
+/* Names the word as the frame sync names a P25 word (or, with @p plain, as every other caller names its own) and
+   returns the move it queued for the grid, 0 for none; @p out_from_raw (may be NULL) says the move was the seam's. */
+static int
+hunt_word_move(dsd_state* state, const hunt_word_case* c, int plain, int* out_from_raw) {
+    const char* word = c->polarity < 0.0 ? INV_P25P1_SYNC : P25P1_SYNC;
+    if (plain) {
+        dsd_symbol_note_sync_anchor(state, word + 1, P25_WORD - 1);
+    } else {
+        dsd_symbol_note_p25p1_sync_anchor(state, word + 1, P25_WORD - 1);
+    }
+    dsd_symbol_anchor* anchor = DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR);
+    if (out_from_raw != NULL) {
+        *out_from_raw = dsd_symbol_anchor_slip_from_raw(anchor);
+    }
+    const int slip = dsd_symbol_anchor_take_slip(anchor);
+    assert(slip == 0 || state->symbol_anchor_hot != 0U);
+    return slip;
+}
+
+static int
+run_hunt_word(const hunt_word_case* c, int plain, int* out_from_raw) {
+    dsd_state* state = hunt_word_state(c);
+    const int slip = hunt_word_move(state, c, plain, out_from_raw);
+    dsd_state_ext_free_all(state);
+    free(state);
+    return slip;
+}
+
+/* The word moves the grid toward its symbols, at most two samples, at 24, 48 and 96 kHz, either polarity, read
+   unfiltered or through the P25 filter (whose group delay the raw stream runs ahead by), on noise of about a sixth of
+   an outer level; the move is the seam's, which a filter switch keeps. A centred grid does not move. */
+static void
+test_p25_hunt_word_moves_the_grid(void) {
+    static const struct {
+        int sps;
+        int reach;
+        int delay;
+    } k_rates[] = {{10, 3, 0}, {10, 3, 45}, {5, 1, 0}, {5, 1, 22}, {20, 3, 0}};
+
+    for (size_t r = 0; r < sizeof(k_rates) / sizeof(k_rates[0]); r++) {
+        for (int offset = -k_rates[r].reach; offset <= k_rates[r].reach; offset++) {
+            for (int polarity = -1; polarity <= 1; polarity += 2) {
+                const hunt_word_case c = {k_rates[r].sps, (double)offset, (double)polarity, k_rates[r].delay, 1.0};
+                int from_raw = 0;
+                const int slip = run_hunt_word(&c, 0, &from_raw);
+                const int want = offset > 2 ? 2 : (offset < -2 ? -2 : offset);
+                if (slip != want) {
+                    DSD_FPRINTF(stderr, "P25 hunt word, %d sps, delay %d, offset %d, polarity %d: moved %d\n",
+                                k_rates[r].sps, k_rates[r].delay, offset, polarity, slip);
+                }
+                assert(slip == want);
+                assert(from_raw == (want != 0));
+            }
+        }
+    }
+}
+
+/* The dead zone: measured on the raw stream on a grid the crossing loop just walked, a word moves the grid only when it
+   sits three quarters of a sample off or more; nearer, the measurement cannot tell well enough which side of the
+   half-sample line the grid is on. A recorded word moves the grid at more than half a sample
+   (test_ring_queues_the_move_toward_the_symbols). */
+static void
+test_p25_hunt_word_dead_zone(void) {
+    for (int polarity = -1; polarity <= 1; polarity += 2) {
+        for (int sign = -1; sign <= 1; sign += 2) {
+            const hunt_word_case near = {10, 0.6 * sign, (double)polarity, 0, 0.0};
+            assert(run_hunt_word(&near, 0, NULL) == 0);
+            const hunt_word_case far = {10, 0.9 * sign, (double)polarity, 0, 0.0};
+            assert(run_hunt_word(&far, 0, NULL) == sign);
+        }
+    }
+}
+
+/* Only the P25 frame sync's word is measured on the seam: NXDN, YSF, DMR and M17 name theirs from a recording they
+   armed, so the same word named by them with none armed moves nothing, and allocates nothing. */
+static void
+test_hunt_word_is_p25s_own(void) {
+    const hunt_word_case c = {10, 1.0, 1.0, 0, 0.0};
+    dsd_state* state = hunt_word_state(&c);
+    dsd_symbol_note_sync_anchor(state, &P25P1_SYNC[1], P25_WORD - 1);
+    assert(DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR) == NULL);
+    assert(state->symbol_anchor_hot == 0U);
+    assert(hunt_word_move(state, &c, 0, NULL) == 1); /* the P25 frame sync's own word, on the same seam */
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+/* The seam places the word only when the grid took every sample of it live, one each, at one span: a change of span
+   or a hand-back inside it (steady_clock; a fractional rate alternates its span every few symbols), a hand-back still
+   being read, a stream flush that left less history than the word, a span the grid no longer reads at. A recording a
+   protocol armed measures its own word, not the seam's. */
+static void
+test_p25_hunt_word_declines(void) {
+    const hunt_word_case c = {10, 1.0, 1.0, 0, 0.0};
+    dsd_state* state = hunt_word_state(&c);
+    state->matched_filter.steady_clock = (uint64_t)(HUNT_LEAD + 2);
+    assert(hunt_word_move(state, &c, 0, NULL) == 0);
+    state->matched_filter.steady_clock = (uint64_t)(HUNT_LEAD - 4);
+    assert(hunt_word_move(state, &c, 0, NULL) == 1); /* the change came before the word */
+    state->matched_filter.replay = 3;
+    assert(hunt_word_move(state, &c, 0, NULL) == 0);
+    state->matched_filter.replay = 0;
+    state->matched_filter.raw_count = 20 * c.sps;
+    assert(hunt_word_move(state, &c, 0, NULL) == 0);
+    state->matched_filter.raw_count = DSD_MATCHED_FILTER_HISTORY;
+    state->samplesPerSymbol = 11;
+    assert(hunt_word_move(state, &c, 0, NULL) == 0);
+    state->samplesPerSymbol = c.sps;
+    dsd_symbol_arm_sync_anchor(state); /* a recording armed: nothing recorded in it, so nothing measured */
+    assert(hunt_word_move(state, &c, 0, NULL) == 0);
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
 int
 main(void) {
     test_measures_whole_and_fractional_offsets();
@@ -756,6 +921,10 @@ main(void) {
     test_p25_word_measures_the_frame_grid();
     test_p25_word_named_from_its_second_symbol();
     test_p25_word_read_on_a_walking_grid();
+    test_p25_hunt_word_moves_the_grid();
+    test_p25_hunt_word_dead_zone();
+    test_hunt_word_is_p25s_own();
+    test_p25_hunt_word_declines();
     printf("symbol anchor: OK\n");
     return 0;
 }

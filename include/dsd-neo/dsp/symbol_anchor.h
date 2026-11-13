@@ -92,8 +92,13 @@ void dsd_symbol_note_sync_anchor(const struct dsd_state* state, const char* sync
  * while reading it, ending at its last centre: the first word after acquisition, a lapse or a reset is read on a grid
  * nothing holds, and the frame behind it goes on from that last centre. Only the P25 Phase 1 frame sync calls it; every
  * other caller's word is measured on the centres it was read on, whatever dsd_state::lastsynctype says.
+ *
+ * With no recording armed (the word that acquires a transmission, or the first after a lapse or a reset), the word is
+ * measured on the raw samples the matched-filter seam keeps (dsd_matched_filter_seam), at a whole number of samples a
+ * symbol, and the grid moves at the next symbol when the word sits at least three quarters of a sample off it (a dead
+ * zone on the offset).
  */
-void dsd_symbol_note_p25p1_sync_anchor(const struct dsd_state* state, const char* sync_dibits, int count);
+void dsd_symbol_note_p25p1_sync_anchor(struct dsd_state* state, const char* sync_dibits, int count);
 
 /**
  * @brief Where a known run of symbols sits against the grid that decided it.

@@ -745,7 +745,7 @@ dsd_frame_sync_off_thread_tune_pending(void) {
 /* The real P25p1 sync anchor names a C4FM sync word to the symbol grid and arms its recording; these frames are read on
    no grid. */
 void
-dsd_symbol_note_p25p1_sync_anchor(const dsd_state* state, const char* sync_dibits, int count) {
+dsd_symbol_note_p25p1_sync_anchor(dsd_state* state, const char* sync_dibits, int count) {
     (void)state;
     (void)sync_dibits;
     (void)count;

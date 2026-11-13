@@ -6219,11 +6219,31 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   without those slips (each symbol's shift, the samples it took against its span, is recorded), ending at its last
   centre, where the frame's grid goes on; the spans a fractional rate alternates stay as they were. Only the P25 frame
   sync asks for that (`dsd_symbol_note_p25p1_sync_anchor()`); NXDN's, YSF's, DMR's and M17's words
-  (`dsd_symbol_note_sync_anchor()`) keep their recorded centres, whatever `lastsynctype` a P25 frame left. The first unit of a transmission is read on the hunt's grid (nothing
-  records before acquisition); from the second the grid sits within half a sample of the symbols at 24, 48, 50, 72 and
-  96 kHz. Tests: `DSP_SYMBOL_ANCHOR` (P25's own hold, the measurement at whole and fractional rates and with clock
-  drift, the second-symbol naming, the walking grid), `DSP_SYMBOL_P25_C4FM_GRID` (through `getSymbol()` and the real
-  crossing loop), `P25_P1_SYNC_DISPATCH` (the naming and every arming row).
+  (`dsd_symbol_note_sync_anchor()`) keep their recorded centres, whatever `lastsynctype` a P25 frame left.
+  The word that acquires a transmission (and the first after a lapse or a reset) is read with no recording armed, so
+  `dsd_symbol_note_p25p1_sync_anchor()` measures it on the matched-filter seam's raw history instead
+  (`dsd_matched_filter_seam::raw`, which keeps every raw sample the grid took): the hunt records nothing and pays
+  nothing for it (noise-only `-f1` replay: no measurable instruction change). The word's last centre sits
+  `symbolCenter` samples into its span, and a filter's group delay further back in the raw stream when the hunt read
+  through one; the word is measured on the nominal grid ending there, from its second symbol to its next-to-last (the
+  last, the fifth of a run of one level, holds no crossing, and leaving it out leaves the samples past the last centre
+  that the smoothing reads), through a boxcar a symbol wide, odd and symmetric so it moves no centre: the raw stream
+  carries the discriminator's noise up to half the sample rate. It needs the grid to have taken every sample of the word
+  live, one each, at one span (`dsd_matched_filter_seam::steady_clock`, the symbol clock of the last change of span or
+  end of a hand-back; a filter switch alone keeps the content position and does not count; a fractional rate
+  alternates its span and declines), and the move needs the word at least three quarters of a sample off
+  (`ANCHOR_HUNT_DEAD_ZONE`, an offset dead zone, not a fit check: at half a sample, noisy 48 kHz acquisitions moved
+  some grids the wrong way, and the fit's residual and correlation did not tell those apart). The move is queued for the next symbol and marked as measured on
+  raw samples (`dsd_symbol_anchor_slip_from_raw()`): the P25 matched filter switching on behind the word does not take
+  it back as it does a move measured on the anchor's own samples, since the seam keeps the content position. It places
+  no grid for a hold, so the second unit's word is read on the crossing loop's grid as before. Only the P25 note reads
+  the seam; the other callers' words named with no recording armed still measure nothing. The first unit of a
+  transmission is then read within half a sample of its symbols at 24, 48, 72 and 96 kHz when the acquiring word sat
+  three quarters of a sample off or more, and on the hunt's grid otherwise and at a fractional rate; from the second
+  unit the grid sits within half a sample at 24, 48, 50, 72 and 96 kHz. Tests: `DSP_SYMBOL_ANCHOR` (P25's own hold, the measurement at
+  whole and fractional rates and with clock drift, the second-symbol naming, the walking grid, the hunt word on the
+  seam, its gate and declines), `DSP_SYMBOL_P25_C4FM_GRID` (through `getSymbol()` and the real crossing loop, with and
+  without the matched filter), `P25_P1_SYNC_DISPATCH` (the naming and every arming row).
 - Slicer warm start (`<dsd-neo/dsp/sync_calibration.h>`, `sync_calibration.c`): an accepted sync sets `min`/`max`,
   `center`, `umid`/`lmid` (5/8 of the way to each rail), `maxref`/`minref` and the rolling min/max buffers from the
   word just read. `dsd_sync_warm_start_thresholds_outer_only()` averages the word's positive and negative symbols,

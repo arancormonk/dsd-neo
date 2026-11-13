@@ -50,8 +50,9 @@ frame_sync_p25p1_anchor_note_sync(dsd_state* state, int synctype, int tolerant_n
     /* On the C4FM chain the hunt's crossing loop leaves the grid a sample past the word's symbols, where the frame
        behind it would be read (docs/code_map.md, symbol anchor). The previous unit's report armed a recording at its
        end (dsd_frame_sync_p25p1_frame_decoded()), which starts on the word's first symbol, so the word is named from
-       its second: the measurement needs a symbol of samples before the first centre it reads. A word within the
-       tolerance names nothing: until its NID validates it may be no word at all. */
+       its second: the measurement needs a symbol of samples before the first centre it reads. The word that acquires
+       a transmission has no recording behind it and is measured on the raw history the matched-filter seam keeps. A
+       word within the tolerance names nothing: until its NID validates it may be no word at all. */
     if (tolerant_nac < 0 && state->rf_mod == 0) {
         const char* word = synctype == DSD_SYNC_P25P1_NEG ? INV_P25P1_SYNC : P25P1_SYNC;
         dsd_symbol_note_p25p1_sync_anchor(state, word + 1, P25P1_SYNC_DIBITS - 1);

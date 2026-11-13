@@ -120,7 +120,7 @@ dsd_symbol_arm_hunt_sync_anchor(dsd_state* state) {
 }
 
 void
-dsd_symbol_note_p25p1_sync_anchor(const dsd_state* state, const char* sync_dibits, int count) {
+dsd_symbol_note_p25p1_sync_anchor(dsd_state* state, const char* sync_dibits, int count) {
     (void)state;
     assert(count > 0 && count <= DSD_SYMBOL_ANCHOR_MAX_SYMS);
     g_grid_notes++;
