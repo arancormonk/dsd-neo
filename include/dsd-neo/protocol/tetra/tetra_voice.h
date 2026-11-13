@@ -69,7 +69,8 @@ void tetra_voice_half_slot(dsd_opts* opts, dsd_state* state, const uint8_t* type
 
 /**
  * @brief Forget the speech in progress: the speech decoder's state, the stream's integrity and the PCM not yet played.
- * The engine calls this at carrier boundaries.
+ * The next speech is another transmission's. A BSCH of another cell and the end of the heard speech call this; a
+ * carrier boundary forgets the speech through tetra_forget_carrier() (<dsd-neo/protocol/tetra/tetra.h>).
  */
 void tetra_voice_reset(dsd_state* state);
 

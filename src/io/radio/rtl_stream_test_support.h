@@ -1715,6 +1715,45 @@ typedef struct rtl_stream_test_output_scale_result {
 int rtl_stream_test_monitor_output_scale(const dsd_opts* opts, int rate_hz, int forced_rate_out_hz,
                                          rtl_stream_test_output_scale_result* out);
 
+/* A stretch of rtl_stream_test_monitor_tone(): the analog kind the monitor runs (dsd_analog_demod) and how many
+ * 10 ms blocks of the reference signal it demodulates. */
+typedef struct rtl_stream_test_tone_segment {
+    int kind;
+    int blocks;
+} rtl_stream_test_tone_segment;
+
+/* What one block put in the output ring, as the decoder reads it back. */
+typedef struct rtl_stream_test_tone_block {
+    int segment;          /* index of its segment */
+    const float* samples; /* the monitor audio (valid during the sink call only) */
+    int count;
+    int rate_hz; /* the output rate */
+} rtl_stream_test_tone_block;
+
+typedef struct rtl_stream_test_tone_result {
+    int complex_rate_hz;
+    int rate_out_hz; /* the rate the de-emphasis runs at, after the post-demod decimator */
+    int output_rate_hz;
+    int deemph_tau_us; /* the de-emphasis at the end, 0 for none */
+    int blocks;        /* blocks handed to the sink */
+} rtl_stream_test_tone_result;
+
+/* Open @p opts at @p rate_hz (with @p forced_rate_out_hz > 0 on a device that settles on that rate instead; with
+ * @p replay_post > 0 as an I/Q replay of a capture at @p rate_hz x @p replay_post that decimates by @p replay_post
+ * after the demodulator), then run @p segments: the reference signal (1 kHz at 3 kHz deviation under FM, at 50% under
+ * AM) as I/Q at the input rate through full_demod() and demod_write_output_block() into the output ring, each block
+ * read back and handed to @p sink(block, @p ctx). A segment of another kind than the last lands first as a live FM <->
+ * AM request does. The de-emphasis is the runtime config's (DSD_NEO_DEEMPH). The stream's state comes back afterwards.
+ * Returns 0, or negative when the open failed or a stream or device is open. */
+int rtl_stream_test_monitor_tone(const dsd_opts* opts, int rate_hz, int forced_rate_out_hz, uint32_t replay_post,
+                                 const rtl_stream_test_tone_segment* segments, int count,
+                                 void (*sink)(const rtl_stream_test_tone_block* block, void* ctx), void* ctx,
+                                 rtl_stream_test_tone_result* out);
+
+/* The session boundary a stream open and a stream stop both move (rtl_stream_advance_session_generation()), with no
+ * stream: the session generation advances and the published de-emphasis gain goes back to 1.0. */
+void rtl_stream_test_session_boundary(void);
+
 /* The auto squelch's plumbing in the IO layer (issue #518 follow-up). Returns 0, or the number of the first check that
  * failed:
  *   1-4  the setting: AUTO with its margin (clamped) reaches demod_state with the level gate off, LEVEL puts the level

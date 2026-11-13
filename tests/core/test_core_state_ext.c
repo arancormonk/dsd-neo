@@ -19,6 +19,8 @@ _Static_assert(DSD_STATE_EXT_DSP_ANALOG_AUDIO == 10, "DSP analog audio owns stat
 _Static_assert((int)DSD_STATE_EXT_DSP_ANALOG_AUDIO < (int)DSD_STATE_EXT_MAX, "slot 10 is inside the table");
 _Static_assert(DSD_STATE_EXT_DSP_ANALOG_SINK == 11, "DSP analog sinks own state_ext slot 11 (issue #633)");
 _Static_assert((int)DSD_STATE_EXT_DSP_ANALOG_SINK < (int)DSD_STATE_EXT_MAX, "slot 11 is inside the table");
+_Static_assert(DSD_STATE_EXT_CORE_VOICE_LEVEL == 13, "the digital voice chain's speech level owns state_ext slot 13");
+_Static_assert((int)DSD_STATE_EXT_CORE_VOICE_LEVEL < (int)DSD_STATE_EXT_MAX, "slot 13 is inside the table");
 _Static_assert(DSD_STATE_EXT_APP_SCAN_ENTRY == 16, "app-control's waiting entry owns state_ext slot 16 (issue #644)");
 
 static void

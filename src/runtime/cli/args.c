@@ -9,6 +9,7 @@
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/frontend_types.h>
+#include <dsd-neo/core/gain_setting.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/lrrp_ports.h>
@@ -738,6 +739,48 @@ cli_parse_double_option(const char* option_name, const char* in, double* out, in
     LOG_ERROR("Invalid %s value \"%s\"\n", option_name, in ? in : "");
     cli_set_exit_rc(out_exit_rc, 1);
     return 0;
+}
+
+/* -g: 0 is auto, otherwise a fixed multiplier in DSD_DIGITAL_GAIN_MIN..MAX. Checked in double before it narrows to
+   the float setting, so 1e-50 is refused instead of rounding to 0 (auto); nan and inf are refused too, which needs this
+   file's IEEE semantics (src/runtime/CMakeLists.txt). Out-of-range values are refused, never clamped. */
+static int
+cli_apply_digital_gain(const char* in, dsd_opts* opts, int* out_exit_rc) {
+    double g = 0.0;
+    if (!cli_parse_double_strict(in, &g) || !dsd_digital_gain_setting(g, &g)) {
+        LOG_ERROR("Invalid -g value \"%s\" (expected 0 for auto, or %g..%g)\n", in ? in : "", DSD_DIGITAL_GAIN_MIN,
+                  DSD_DIGITAL_GAIN_MAX);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    opts->audio_gain = (float)g;
+    opts->audio_gainR = (float)g;
+    if (g > 0.0) {
+        LOG_INFO("NOTICE: Setting audio out gain to %g\n", g);
+    } else {
+        LOG_INFO("NOTICE: Enabling audio out auto-gain\n");
+    }
+    return 1;
+}
+
+/* -n: anything under 1 (0 included) is auto, the analog AGC; 1..100 is a fixed gain, 50 the reference level. NaN,
+   infinities and values above 100 are refused, never clamped. */
+static int
+cli_apply_analog_gain(const char* in, dsd_opts* opts, int* out_exit_rc) {
+    double g = 0.0;
+    if (!cli_parse_double_strict(in, &g) || !dsd_analog_gain_setting(g, &g)) {
+        LOG_ERROR("Invalid -n value \"%s\" (expected under %g (0) for auto, %g..%g, or m)\n", in ? in : "",
+                  DSD_ANALOG_GAIN_MIN, DSD_ANALOG_GAIN_MIN, DSD_ANALOG_GAIN_MAX);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    opts->audio_gainA = (float)g;
+    if (g > 0.0) {
+        LOG_INFO("NOTICE: Analog Audio Out Gain set to %g;\n", g);
+    } else {
+        LOG_INFO("NOTICE: Analog Audio Out Gain set to auto;\n");
+    }
+    return 1;
 }
 
 /* A whole number in @p min_value..@p max_value: refused, never clamped, with a message naming the range. */
@@ -3331,60 +3374,22 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             openSymbolOutFile(opts, state);                                                                            \
             LOG_INFO("NOTICE: Saving symbol capture to %s\n", opts->symbol_out_file);                                  \
             break;                                                                                                     \
-        case 'g': {                                                                                                    \
-            /* Digital output gain follows the established CLI semantics. \
-                   0 = auto gain; >0 fixes gain in the 0..50 range. */                                            \
-            double parsed_g = 0.0;                                                                                     \
-            if (!cli_parse_double_option("-g", optarg, &parsed_g, out_exit_rc)) {                                      \
+        case 'g':                                                                                                      \
+            if (!cli_apply_digital_gain(optarg, opts, out_exit_rc)) {                                                  \
                 return DSD_PARSE_ERROR;                                                                                \
-            }                                                                                                          \
-            float g = (float)parsed_g;                                                                                 \
-            if (g < 0.0f) {                                                                                            \
-                LOG_ERROR("-g must be between 0 and 50\n");                                                            \
-                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
-                return DSD_PARSE_ERROR;                                                                                \
-            } else if (g == 0.0f) {                                                                                    \
-                opts->audio_gain = 0.0f;                                                                               \
-                opts->audio_gainR = 0.0f;                                                                              \
-                LOG_INFO("NOTICE: Enabling audio out auto-gain\n");                                                    \
-            } else {                                                                                                   \
-                if (g > 50.0f) {                                                                                       \
-                    g = 50.0f;                                                                                         \
-                }                                                                                                      \
-                opts->audio_gain = g;                                                                                  \
-                opts->audio_gainR = g;                                                                                 \
-                state->aout_gain = g;                                                                                  \
-                state->aout_gainR = g;                                                                                 \
-                LOG_INFO("NOTICE: Setting audio out gain to %.1f\n", g);                                               \
             }                                                                                                          \
             break;                                                                                                     \
-        }                                                                                                              \
-        case 'n': {                                                                                                    \
+        case 'n':                                                                                                      \
             if (optarg[0] == 'm' && optarg[1] == '\0') {                                                               \
                 cli_dmr_mono_override_seen = 1;                                                                        \
                 opts->dmr_mono = 1;                                                                                    \
                 LOG_INFO("NOTICE: DMR single-slot mono decoder enabled.\n");                                           \
                 break;                                                                                                 \
             }                                                                                                          \
-            double parsed_ga = 0.0;                                                                                    \
-            if (!cli_parse_double_option("-n", optarg, &parsed_ga, out_exit_rc)) {                                     \
+            if (!cli_apply_analog_gain(optarg, opts, out_exit_rc)) {                                                   \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            float ga = (float)parsed_ga;                                                                               \
-            /* 0 (anything under 1) is auto, the analog AGC; 1..100 is a fixed gain, 50 the reference level. */        \
-            if (!(ga >= 1.0f)) {                                                                                       \
-                ga = 0.0f;                                                                                             \
-            } else if (ga > 100.0f) {                                                                                  \
-                ga = 100.0f;                                                                                           \
-            }                                                                                                          \
-            opts->audio_gainA = ga;                                                                                    \
-            if (ga > 0.0f) {                                                                                           \
-                LOG_INFO("NOTICE: Analog Audio Out Gain set to %.1f;\n", ga);                                          \
-            } else {                                                                                                   \
-                LOG_INFO("NOTICE: Analog Audio Out Gain set to auto;\n");                                              \
-            }                                                                                                          \
             break;                                                                                                     \
-        }                                                                                                              \
         case 'w':                                                                                                      \
             if (cli_wav_mode == CLI_WAV_MODE_PER_CALL) {                                                     \
                 LOG_ERROR("-w cannot be used with -P (per-call WAV saving)\n");                                        \
@@ -3457,9 +3462,12 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             dsd_key_apply_mute_policy(opts, state);                                                                    \
             break;                                                                                                     \
         case 'v': {                                                                                                    \
-            /* Filtering bitmap: 1 voice band-pass, 2 LPF 960 Hz, 4 HPF 960 Hz, 8 digital HPF -- hex or dec */         \
-            unsigned long bm = 0;                                                                                      \
-            if (!cli_parse_ulong_option("-v", optarg, 0, &bm, out_exit_rc)) {                                          \
+            /* Filtering bitmap: 1 voice band-pass, 2 LPF 960 Hz, 4 HPF 960 Hz, 8 digital HPF; decimal or 0x hex,      \
+               0..0xF */                                                                                               \
+            uint32_t bm = 0;                                                                                           \
+            if (dsd_parse_uint_dec_or_hex_strict(optarg, 0xF, &bm) != 0) {                                             \
+                LOG_ERROR("Invalid -v value \"%s\" (expected decimal or 0x hex, 0..0xF)\n", optarg);                   \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             opts->use_pbf = (bm & 0x1) ? 1 : 0;                                                                        \

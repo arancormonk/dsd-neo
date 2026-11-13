@@ -15,6 +15,7 @@
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/config.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -246,6 +247,64 @@ repeat_char(char c, size_t n) {
  * Cases
  *============================================================================*/
 
+/* B5/B6/B15 (issue #518 voice level): gain_set and again_set take a JSON number, whole or fractional, sent as a double
+   with its fraction. gain_set refuses anything but 0 (auto) or 0.001..50; again_set sends anything under 1 as 0 (auto)
+   and refuses values above 100. Nothing is clamped. */
+static void
+expect_gain_sent(const char* request, int cmd_id, double want) {
+    if (!ok(request) || g_last_id != cmd_id || g_last_n != sizeof(double)) {
+        DSD_FPRINTF(stderr, "gain request not sent as a double: %s\n", request);
+        assert(0);
+    }
+    double v = -1.0;
+    DSD_MEMCPY(&v, g_last, sizeof v);
+    /* No gain setting is negative, so a -0 request is sent as +0 (auto). */
+    if (!(fabs(v - want) < 1e-12) || signbit(v)) {
+        DSD_FPRINTF(stderr, "%s sent %.12g, want %.12g\n", request, v, want);
+        assert(0);
+    }
+}
+
+static void
+test_gain_values(void) {
+    char request[160];
+
+    const struct {
+        const char* value;
+        double want;
+    } dig_ok[] = {{"0", 0.0},   {"0.0", 0.0},  {"-0", 0.0},  {"-0.0", 0.0}, {"0.001", 0.001}, {"0.0011", 0.0011},
+                  {"0.5", 0.5}, {"5e-1", 0.5}, {"20", 20.0}, {"50", 50.0},  {"50.0", 50.0}};
+
+    for (size_t i = 0; i < sizeof dig_ok / sizeof dig_ok[0]; i++) {
+        DSD_SNPRINTF(request, sizeof request, "{\"cmd\":\"gain_set\",\"params\":{\"value\":%s}}", dig_ok[i].value);
+        expect_gain_sent(request, DSD_APP_CMD_GAIN_SET, dig_ok[i].want);
+    }
+    const char* const dig_bad[] = {"0.0004", "0.000999",    "1e-50",      "50.0001", "51",      "-1",   "-0.5",
+                                   "1e39",   "-2147483648", "2147483648", "true",    "\"0.5\"", "null", "{}"};
+    for (size_t i = 0; i < sizeof dig_bad / sizeof dig_bad[0]; i++) {
+        DSD_SNPRINTF(request, sizeof request, "{\"cmd\":\"gain_set\",\"params\":{\"value\":%s}}", dig_bad[i]);
+        refused(request);
+    }
+    refused("{\"cmd\":\"gain_set\",\"params\":{\"gain\":1}}");
+    refused("{\"cmd\":\"gain_set\"}");
+
+    const struct {
+        const char* value;
+        double want;
+    } ana_ok[] = {{"0", 0.0},  {"-0.0", 0.0}, {"0.5", 0.0}, {"0.999", 0.0}, {"1e-50", 0.0},
+                  {"-9", 0.0}, {"1", 1.0},    {"1.5", 1.5}, {"37.5", 37.5}, {"100", 100.0}};
+
+    for (size_t i = 0; i < sizeof ana_ok / sizeof ana_ok[0]; i++) {
+        DSD_SNPRINTF(request, sizeof request, "{\"cmd\":\"again_set\",\"params\":{\"value\":%s}}", ana_ok[i].value);
+        expect_gain_sent(request, DSD_APP_CMD_AGAIN_SET, ana_ok[i].want);
+    }
+    const char* const ana_bad[] = {"100.5", "150", "1e39", "false", "\"1\""};
+    for (size_t i = 0; i < sizeof ana_bad / sizeof ana_bad[0]; i++) {
+        DSD_SNPRINTF(request, sizeof request, "{\"cmd\":\"again_set\",\"params\":{\"value\":%s}}", ana_bad[i]);
+        refused(request);
+    }
+}
+
 static void
 test_scalars(void) {
     assert(ok("{\"cmd\":\"manual_tune\",\"params\":{\"value\":851375000}}"));
@@ -261,12 +320,7 @@ test_scalars(void) {
     refused("{\"cmd\":\"manual_tune\",\"params\":{\"hz\":851375000}}");
     refused("{\"cmd\":\"manual_tune\"}");
 
-    assert(ok("{\"cmd\":\"gain_set\",\"params\":{\"value\":-2147483648}}"));
     int32_t i32 = 0;
-    DSD_MEMCPY(&i32, g_last, sizeof i32);
-    assert(g_last_id == DSD_APP_CMD_GAIN_SET && i32 == INT32_MIN);
-    refused("{\"cmd\":\"gain_set\",\"params\":{\"value\":2147483648}}");
-    refused("{\"cmd\":\"gain_set\",\"params\":{\"value\":true}}");
 
     assert(ok("{\"cmd\":\"lockout_slot\",\"params\":{\"value\":1}}"));
     assert(g_last_id == DSD_APP_CMD_LOCKOUT_SLOT && g_last_n == 1U && g_last[0] == 1U);
@@ -763,6 +817,7 @@ test_response_framing(void) {
 int
 main(void) {
     test_scalars();
+    test_gain_values();
     test_strings();
     test_talkgroup_edits();
     test_talkgroup_row_tokens();

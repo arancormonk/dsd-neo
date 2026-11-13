@@ -26,6 +26,7 @@
 #include <dsd-neo/dsp/fsk_modem.h>
 #include <dsd-neo/dsp/live_iq_step.h>
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
+#include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/squelch_floor.h>
 #include <dsd-neo/dsp/squelch_step_model.h>
 #include <dsd-neo/dsp/ted.h>
@@ -156,6 +157,15 @@ struct demod_state {
        their sizes cannot decide where its SIMD loads fall (one more int there moved it off a 64-byte boundary and
        slowed the CQPSK chain by about 5 %). */
     alignas(DSD_DEMOD_BUF_ALIGN) float hb_workbuf[DSD_DEMOD_ALIGNED_FLOATS(DSD_DEMOD_WORKBUF_LENGTH)];
+    /* The voice lane EDACS plays analog calls from (issue #518): the FSK discriminator's centred output, as the modem
+       computes it ahead of its peak normaliser, at the FM monitor's output scale and through a de-emphasis of its
+       own, parallel to result (at the complex rate) and to voice_resamp_outbuf (resampled as resamp_outbuf is). Valid
+       only while voice_lane_active. They sit after hb_workbuf so they move none of the buffers before them. */
+    alignas(DSD_DEMOD_BUF_ALIGN) float voice_result[DSD_DEMOD_ALIGNED_FLOATS(MAXIMUM_BUF_LENGTH)];
+    alignas(DSD_DEMOD_BUF_ALIGN) float voice_resamp_outbuf[DSD_DEMOD_ALIGNED_FLOATS(MAXIMUM_BUF_LENGTH * 4)];
+    /* The output resampler's mirrored history for the voice lane; its taps, ratio and phase are the main lane's. */
+    alignas(
+        DSD_DEMOD_BUF_ALIGN) float voice_resamp_hist[DSD_DEMOD_ALIGNED_FLOATS(2 * DSD_RESAMPLER_MAX_TAPS_PER_PHASE)];
 
     /* Pointers and 64-bit items next */
     dsd_thread_t thread;
@@ -360,6 +370,19 @@ struct demod_state {
     dsd_costas_loop_state_t costas_state;          /* Symbol-rate Costas loop */
     dsd_fll_band_edge_state_t fll_band_edge_state; /* Sample-rate FLL band-edge */
     dsd_fsk_modem_state fsk_modem_state;           /* FSK discriminator state */
+    /* The voice lane (voice_result): whether the stream asks for it this block, and whether this block made it; the
+       de-emphasis time constant it runs in us (DSD_NEO_DEEMPH, whatever the monitor's own runs; 0 none), the
+       coefficient and the rate and constant it was made for, and the filter's state; the voice resampler history's
+       next write index and the taps per phase it was laid out for. Its discriminator runs from the modem's state. */
+    int voice_lane_enabled;
+    int voice_lane_active;
+    int voice_lane_tau_us;
+    int voice_lane_coef_rate_hz;
+    int voice_lane_coef_tau_us;
+    float voice_lane_deemph_a;
+    float voice_lane_deemph_avg;
+    int voice_resamp_hist_head;
+    int voice_resamp_hist_k;
 
     /* Timing error detector (Gardner) - native float */
     int ted_enabled;
@@ -499,6 +522,12 @@ static_assert(sizeof(demod_state::resamp_outflags) % DSD_DEMOD_BUF_ALIGN == 0,
               "resamp_outflags must fill whole alignment blocks");
 static_assert(sizeof(demod_state::hb_workbuf) % DSD_DEMOD_BUF_ALIGN == 0,
               "hb_workbuf must fill whole alignment blocks");
+static_assert(sizeof(demod_state::voice_result) % DSD_DEMOD_BUF_ALIGN == 0,
+              "voice_result must fill whole alignment blocks");
+static_assert(sizeof(demod_state::voice_resamp_outbuf) % DSD_DEMOD_BUF_ALIGN == 0,
+              "voice_resamp_outbuf must fill whole alignment blocks");
+static_assert(sizeof(demod_state::voice_resamp_hist) % DSD_DEMOD_BUF_ALIGN == 0,
+              "voice_resamp_hist must fill whole alignment blocks");
 
 /*
  * Whether the analog family's monitor audio, on the analog channel, is what the demodulator produces. The width-driven

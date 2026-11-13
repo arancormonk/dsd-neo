@@ -82,6 +82,7 @@ tsbk_prepare_frame_state(dsd_state* state) {
     // Reset counters and buffers to avoid carryover from voice paths.
     DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
     DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
+    DSD_MEMSET(state->s4_fresh, 0, sizeof(state->s4_fresh));
 
     // Ensure slot index is sane when swapping protocols.
     state->currentslot = 0;

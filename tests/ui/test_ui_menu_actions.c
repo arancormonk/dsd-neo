@@ -2042,13 +2042,20 @@ test_additional_prompt_and_toggle_actions(void) {
     io_toggle_cc_candidates(NULL);
     rc |= expect_int("cc candidates command", g_cmd.id, DSD_APP_CMD_P25_CC_CAND_TOGGLE);
 
+    /* The prompts offer the setting as it is, fractions included (B6, issue #518 voice level). */
     reset_capture();
+    opts.audio_gain = 0.0011f;
     io_set_gain_dig(&ctx);
-    rc |= expect_str("digital gain prompt", g_prompt.title, "Digital output gain (0=auto; 1..50)");
+    rc |= expect_str("digital gain prompt", g_prompt.title, "Digital output gain (0 = auto, 0.001..50)");
+    rc |= expect_int("digital gain prompt offers a fraction", fabs(g_prompt.initial_double - 0.0011) < 1e-7, 1);
+    opts.audio_gain = 0.0f;
 
     reset_capture();
+    opts.audio_gainA = 37.5f;
     io_set_gain_ana(&ctx);
     rc |= expect_str("analog gain prompt", g_prompt.title, "Analog output gain (0 = auto, 1..100)");
+    rc |= expect_int("analog gain prompt offers a fraction", fabs(g_prompt.initial_double - 37.5) < 1e-9, 1);
+    opts.audio_gainA = 0.0f;
 
     reset_capture();
     io_toggle_monitor(NULL);

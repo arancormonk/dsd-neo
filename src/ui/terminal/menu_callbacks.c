@@ -12,6 +12,7 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/config_files.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
+#include <dsd-neo/core/gain_setting.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
@@ -952,37 +953,41 @@ cb_switch_to_symbol(void* v, const char* path) {
 
 // ---- Gain callbacks ----
 
+/* The gain prompts send the value as typed, fractions kept, under the gain's rule (<dsd-neo/core/gain_setting.h>): a
+   value it refuses is reported with the range and sends nothing, never clamped; an analog value under 1 is auto. */
 void
 cb_gain_dig(void* u, int ok, double g) {
     const UiCtx* c = mutable_ui_ctx_from_callback(u);
-    if (!c) {
+    if (!c || !ok) {
         return;
     }
-    if (ok) {
-        int adjusted = 0;
-        g = clamp_double_with_notice("Digital gain", g, 0.0, 50.0, &adjusted);
-        int32_t v = (int32_t)g;
-        (void)dsd_app_command_set_i32(DSD_APP_CMD_GAIN_SET, v);
-        if (!adjusted) {
-            ui_statusf("Applying digital gain: %.1f", g);
-        }
+    if (!dsd_digital_gain_setting(g, &g)) {
+        ui_statusf("Digital gain must be 0 (auto) or %g..%g", DSD_DIGITAL_GAIN_MIN, DSD_DIGITAL_GAIN_MAX);
+        return;
+    }
+    (void)dsd_app_command_set_double(DSD_APP_CMD_GAIN_SET, g);
+    if (g > 0.0) {
+        ui_statusf("Applying digital gain: %.4g", g);
+    } else {
+        ui_statusf("Applying digital gain: auto");
     }
 }
 
 void
 cb_gain_ana(void* u, int ok, double g) {
     const UiCtx* c = mutable_ui_ctx_from_callback(u);
-    if (!c) {
+    if (!c || !ok) {
         return;
     }
-    if (ok) {
-        int adjusted = 0;
-        g = clamp_double_with_notice("Analog gain", g, 0.0, 100.0, &adjusted);
-        int32_t v = (int32_t)g;
-        (void)dsd_app_command_set_i32(DSD_APP_CMD_AGAIN_SET, v);
-        if (!adjusted) {
-            ui_statusf("Applying analog gain: %.1f", g);
-        }
+    if (!dsd_analog_gain_setting(g, &g)) {
+        ui_statusf("Analog gain must be 0 (auto) or %g..%g", DSD_ANALOG_GAIN_MIN, DSD_ANALOG_GAIN_MAX);
+        return;
+    }
+    (void)dsd_app_command_set_double(DSD_APP_CMD_AGAIN_SET, g);
+    if (g > 0.0) {
+        ui_statusf("Applying analog gain: %.4g", g);
+    } else {
+        ui_statusf("Applying analog gain: auto");
     }
 }
 

@@ -38,6 +38,8 @@ struct StubState {
     uint32_t last_tune_hz;
     uint64_t last_tune_request_id;
     size_t last_read_count;
+    float* last_voice;
+    uint8_t* last_flags;
 };
 
 static StubState g_stub;
@@ -99,12 +101,13 @@ dsd_rtl_stream_open(dsd_opts* opts) {
 }
 
 extern "C" int
-dsd_rtl_stream_read_ex(float* out, uint8_t* flags, size_t count, dsd_opts* opts, const dsd_opts* live_opts,
-                       const dsd_state* state, int want_no_stream) {
+dsd_rtl_stream_read_ex(float* out, float* voice, uint8_t* flags, size_t count, dsd_opts* opts,
+                       const dsd_opts* live_opts, const dsd_state* state, int want_no_stream) {
     (void)out;
-    (void)flags;
     (void)state;
     g_stub.read_calls++;
+    g_stub.last_voice = voice;
+    g_stub.last_flags = flags;
     g_stub.last_want_no_stream = want_no_stream;
     g_stub.last_open_opts = opts;
     g_stub.last_live_opts = live_opts;
@@ -299,6 +302,17 @@ test_read_carries_yield_and_no_stream(void) {
 
     g_stub.read_rc = -1;
     rc |= expect_int_eq("a failure stays -1 for the asking reader", stream.read(samples, flags, 4U, got, 1), -1);
+
+    /* Issue #518: the voice lane's read passes its voice buffer, flags and ask down; the plain reads pass none. */
+    float voice[4] = {};
+    g_stub.read_rc = 2;
+    rc |= expect_int_eq("the voice-lane read succeeds", stream.read(samples, voice, flags, 4U, got, 1), 0);
+    rc |= expect_ptr_eq("the voice-lane read passes the voice buffer", g_stub.last_voice, voice);
+    rc |= expect_ptr_eq("the voice-lane read passes the flags", g_stub.last_flags, flags);
+    rc |= expect_int_eq("the voice-lane read passes the ask", g_stub.last_want_no_stream, 1);
+    rc |= expect_int_eq("the voice-lane read returns got count", got, 2);
+    rc |= expect_int_eq("a flagged read succeeds", stream.read(samples, flags, 4U, got, 0), 0);
+    rc |= expect_ptr_eq("a flagged read passes no voice buffer", g_stub.last_voice, (float*)nullptr);
     return rc;
 }
 

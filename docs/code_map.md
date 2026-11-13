@@ -2234,12 +2234,14 @@ suite runs under this compiler.
   direction the export uses. Every core CSV importer shares its token helpers through the module-private
   `src/core/file/csv_parse_internal.h`; the channel map's key column accepts decimal, `0x` hex and `<iden>-<chan>`
   spellings there.
-- State extension slots (`<dsd-neo/core/state_ext.h>`): engine owns 0, 1, 3 and 7; core 2, 4, 5 and 8; runtime 6;
-  DSP 9, 10 and 11 (taken from the core range as runtime took 6 from the engine's): 9 is `DSD_STATE_EXT_DSP_ANALOG_RX`,
-  the analog receive working state, 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, the analog monitor's audio chains, and 11
+- State extension slots (`<dsd-neo/core/state_ext.h>`): engine owns 0, 1, 3 and 7; core 2, 4, 5 and 8, and 13 (taken
+  from the io range): `DSD_STATE_EXT_CORE_VOICE_LEVEL`, the digital voice chain's per-slot speech AGC and the reception
+  it runs for, and the DMR superframe mixer's one-channel limiter (issue #518); runtime 6; DSP 9, 10 and 11 (taken
+  from the core range as runtime took 6 from the engine's): 9 is `DSD_STATE_EXT_DSP_ANALOG_RX`, the analog receive
+  working state, 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, the analog monitor's audio chains, and 11
   `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate; app-control owns 16, from the ui
   range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still waits on its tune (issue #644).
-  `CORE_STATE_EXT` pins these four.
+  `CORE_STATE_EXT` pins these five.
 - API note: `dsd_state::analog_rx` (`dsd_analog_rx_publication` in `<dsd-neo/core/state.h>`, issues #522 and #523) is
   the received-tone publication every frontend reads: int-only (`carrier_open`, `tone_kind`, `tone_state`,
   `ctcss_tenths_hz`, `ctcss_off_value` (1 while the locked CTCSS tone rests on transmitter tone error alone, issue #643:
@@ -2547,8 +2549,10 @@ suite runs under this compiler.
   `p25_crypto_audio_output_permitted()` in `<dsd-neo/protocol/p25/p25_crypto.h>`, shared with the record gate.
   Per-call WAV writers use `dsd_audio_record_gate_mono()` (the vocoder's verdict on the slot's frame and policy), or
   `dsd_audio_record_policy_gate_slot()` (policy alone, on the slot the protocol publishes) where the decode path
-  settles crypto itself: X2-TDMA, D-STAR, YSF V/D2, EDACS analog and SDRTrunk JSON
-  playback (YSF EHR and full-rate frames go through the vocoder's full record gate). Every MBE capture save point (`mbe_capture_frame()` in `src/core/vocoder/dsd_mbe.c`, YSF V/D2 in `ysf.c`, JSON
+  settles crypto itself: D-STAR, YSF V/D2, EDACS analog and SDRTrunk JSON
+  playback (YSF EHR and full-rate frames go through the vocoder's full record gate). X2-TDMA's per-call WAV takes the
+  frame's verdict on its timeslot and that policy. Every MBE capture save point (`mbe_capture_frame()` in
+  `src/core/vocoder/dsd_mbe.c`, YSF V/D2 in `ysf.c`, JSON
   playback in `dsd_file.c`) applies the same policy gate; the vocoder's save points also apply the frame's verdict
   (below), which for P25 is the P25 speaker rule. The static WAV writes only recordable slots: the mono paths ask about the slot being played (X2-TDMA may
   play slot 1), and the stereo mixes write silent any channel whose routed source slot, as the output policy
@@ -2556,7 +2560,8 @@ suite runs under this compiler.
   WAV block; YSF writes only its V/D2 frames, which decode straight through mbelib. X2-TDMA stages either timeslot
   in the mono (left) buffer: the vocoder writes only its per-call WAV, into the frame's own timeslot's file from that
   buffer (`dsd_write_mono_voice_to_slot_wav()`), and leaves the static WAV to the mono mixer's stereo block (issue
-  #654). The mono mixers (SS and MS) read the switch of the timeslot they play (`dsd_mono_source_slot_on()`:
+  #654). A frame its timeslot's verdict mutes stages nothing there (silence in `s_l`). The mono mixers (SS and MS)
+  read the switch of the timeslot they play (`dsd_mono_source_slot_on()`:
   `slot2_on` for an X2 slot-2 frame, `slot1_on` otherwise) as their last gate, after the talkgroup gate, so a hold
   never plays a switched-off timeslot. Every mono mixer call carries a frame the vocoder just synthesized: X2 mixes
   nothing for a data or idle timeslot, and P25 Phase 1 mixes nothing for a frame `process_IMBE()` did not dispatch (a
@@ -2578,6 +2583,23 @@ suite runs under this compiler.
   preference is applied as a tie-break in both formats: with both slots audible, the preferred slot fills both
   channels while it carries voice (DMR: `dsd_dmr_preferred_slot_fills_both()`, the slot a hold names standing in for
   the preference; P25 Phase 2: a decoded frame of the preferred slot, never fill).
+- Invariant (one-channel mix of two slots, `audio_mix_mono_sum_s16()` in `src/core/audio/mix.c`, issue #518): SS3 and
+  the P25 Phase 2 playout sum the slots that are audible and carry fresh decoded audio of their own; they no longer
+  average them, which played a talker 6 dB down beside a silent companion. SS3 reads frame k of a slot as fresh from
+  `dsd_state::s4_fresh` (set by `dsd_dmr_mix_store_frame()` from `mbe_short_silenced` as the BS and MS voice bursts
+  store each frame, and cleared wherever `s_l4`/`s_r4` are), and the channel a copy filled (the preference, the burst
+  hint, a muted or switched-off companion, DMR mono) is never a second talker: a plain sum would double the copied
+  one. The playout reads its entries' `fresh`, so a fill beside a talker is no second talker. One talker plays at its
+  own level. Two are summed through the mixer's own `dsd_peak_limiter` (-1 dBFS ceiling, instant attack, 50 dB/s
+  release): two independent talkers at equal level play about 3 dB RMS above one, and colliding peaks are limited, so
+  neither keeps its exact level while both talk. Every block goes through the limiter, so its gain releases on time
+  whichever slots play. SS3's limiter sits in `DSD_STATE_EXT_CORE_VOICE_LEVEL` (`dsd_voice_level_dmr_mix_limiter()`,
+  decoder thread) and goes back to unity at `dsd_voice_level_reset()` of both slots (the carrier boundaries). The
+  playout's is `dsd_p25p2_playout::mono_limiter`, owned like its queues (the watchdog's release emits under the tick
+  guard, and nothing here takes it), and goes back to unity when both queues reset (`dsd_p25p2_playout_reset()` of
+  both slots: after the carrier boundary's drain, a discard, a call teardown), so queued audio drains through the old
+  state first. Stereo routing and the static WAV are unchanged. Tests: `CORE_MONO_MIX`, `CORE_P25P2_PLAYOUT`,
+  `P25_P2_VOICE_OUTPUT`, `CORE_AUDIO2_HELPERS`, `CORE_AUDIO_GAIN`.
 - Invariant (encrypted-audio verdict, `src/core/audio/voice_crypto.c`, `<dsd-neo/core/audio.h>`, issue #655): each
   vocoder frame gets one verdict after its keystream: `mbe_frame_slot_muted()` switches on the explicit
   `mbe_frame_ctx_t::protocol` (`dsd_voice_protocol`) its caller supplied. The borrowed codec synctype never selects
@@ -2594,8 +2616,17 @@ suite runs under this compiler.
   settles its decryptability in the frame classification; no mixer applies a forced-privacy unmute override.
   P25 Phase 1 and Phase 2 use `p25_crypto_audio_output_permitted()`; Phase 2 also needs its decode gate. NXDN and
   dPMR use `nxdn_cipher_type` and the key the vocoder applies
-  (`dsd_nxdn_voice_crypto_class()`; the dPMR bridge sets the cipher per half). YSF, D-STAR, X2-TDMA and ProVoice
-  classify no encryption. The user's class rule (`dsd_voice_crypto_class_audible()`) applies reverse mute (`-q`)
+  (`dsd_nxdn_voice_crypto_class()`; the dPMR bridge sets the cipher per half). X2-TDMA is judged per timeslot and
+  superframe: `processX2TDMAvoice()` sets `dsd_state::x2tdma_slot_crypto[slot]` before each burst's frames from the
+  superframe's EEEI/AIEI (encrypted is undecryptable: X2 has no decryption), with the call's transmission
+  (`dsd_call_snapshot_transmission()`) it was read in. The indicators arrive in the second burst, after the first
+  burst's three frames: those take the previous superframe's value of the same transmission (a fade the call state
+  heals keeps it), and are unknown in a transmission's first superframe. An unknown frame is never decodable, and it
+  plays, records and is captured only where clear and encrypted frames both would (`mbe_x2_frame_audible()`: the
+  encrypted-audio mute off and reverse mute off). A clear <-> encrypted change inside a call applies from the second
+  burst (at most three frames, 60 ms, once per change). The mixers read X2's verdict from `mbe_slot_muted`, as DMR's
+  (test: `X2TDMA_VOICE_CRYPTO`). YSF, D-STAR and ProVoice classify no encryption. The
+  user's class rule (`dsd_voice_crypto_class_audible()`) applies reverse mute (`-q`)
   to the encrypted transmission, whether a key decrypts it or not, and mutes clear frames; otherwise an
   undecryptable frame plays only while the slot's encrypted-audio mute (`dmr_mute_encL/R`, slot 0's for NXDN and
   dPMR) is off. Protocols that classify no encryption and SDRTrunk JSON playback, which checks crypto itself, do
@@ -2613,21 +2644,22 @@ suite runs under this compiler.
   classification there for lockout. P25 Phase 2 playout snapshots the P25 rule and actual staged-media provenance
   per frame, so a queued muted frame remains silent.
 - Invariant (digital voice output formats, issue #652): integer and float (`-y`) output are one chain, not two. The
-  vocoder runs the filter and gain once with `dsd_voice_chain_run()` (the fixed `-g`
-  gain, or the auto gain: per slot, peaks toward 30000, `aout_gain`/`aout_gainR` carried from call to call, its peak
-  history cleared by the no-carrier reset), and stages each frame's 16-bit samples (`s_l`/`s_r`, and
+  vocoder runs the filter and gain once with `dsd_voice_chain_run()` (the fixed `-g` gain, or the slot's speech AGC,
+  issue #518: see the voice chain invariant below), and stages each frame's 16-bit samples (`s_l`/`s_r`, and
   `mbe_short_silenced`) the same way in both formats, as do the vocoder bypasses (SDRTrunk JSON playback, YSF V/D2, M17 Codec2).
   Every protocol plays through the same mixers (MS, SS, SS3, the P25 Phase 2 playout), so routing, muting, the digital
   high-pass, the audible-audio stamp and the static and per-call WAVs are the same in both. The one place the format
   shows is `dsd_output_s16_block()` (`dsd_audio2.c`, the writer every mixer and the legacy short output use): under
   `-y` the raw fd (`-o -`) and UDP take each block as f32, s16 / 32768 (exact), in whole frames of at most 1920
   samples per write (one write and one datagram per block for every size a mixer writes), while the local device
-  stream is 16-bit in either format and takes the block unchanged. Nothing resets the gain at call boundaries in
-  either format. The beeper also uses the shared s16 sink conversion. Outside the chain: EDACS analog voice (no raw-fd output under `-y`). Tests: `DECODE_IQ_FLOAT_OUTPUT_*` (both formats
+  stream is 16-bit in either format and takes the block unchanged. The speech AGC starts over at the same reception
+  boundaries in either format (see the voice chain invariant). The beeper also uses the shared s16 sink conversion.
+  Outside the chain: EDACS analog voice (no raw-fd output under `-y`). Tests: `DECODE_IQ_FLOAT_OUTPUT_*` (both formats
   replayed and compared), `CORE_AUDIO2_HELPERS`, `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_P25P2_PLAYOUT`.
 - API note (decoded PCM voice, `dsd_audio_play_decoded_pcm16()` in `<dsd-neo/core/audio.h>`, `dsd_audio2.c`, issue
   #658): a decoder that synthesizes its own 8 kHz mono int16 voice (M17's Codec2) settles its own gates before calling.
-  Each whole 160-sample frame is copied to `audio_out_temp_buf`, runs `dsd_voice_chain_run()` on slot 0 once, then
+  Each whole 160-sample frame is copied to `audio_out_temp_buf`, runs `dsd_voice_chain_run()` on slot 0 once with the
+  caller's `dsd_voice_frame_info` (one info for every frame of the call; TETRA calls once per output frame), then
   `dsd_voice_stage_short_left()`. The per-call WAV takes the same chained frame (`writeSynthesizedVoice()`). MS or SS
   routes it according to `pulse_digi_out_channels`, with a settled verdict that skips talkgroup policy, FDMA crypto
   rules and the static WAV's record policy; the slot 1 switch, output mute and audible-audio stamp still apply.
@@ -2700,7 +2732,8 @@ suite runs under this compiler.
     (`dsd_p25p2_playout_entry::live`). The slot switches are read at emission and never written: a switched-off slot
     stays silent, a hold included (issue #657).
   - Output. Routing comes from content: two audible slots play as stereo, one plays in both ears; one-channel output
-    averages two (`audio_mix_mono_from_slots_s16()`) and plays one alone. With a slot preference set, a block in
+    sums the audible slots whose frame is `fresh` (never fill) through the playout's limiter (see the one-channel mix
+    invariant). With a slot preference set, a block in
     which both slots are audible and the preferred slot's frame is decoded media (`fresh`, never fill) plays that
     slot alone, in both ears; the static WAV follows. The playout filters nothing: the vocoder's voice chain
     high-passed and gained each frame on its slot before it was queued; the static WAV records each played stereo block,
@@ -2798,7 +2831,7 @@ suite runs under this compiler.
   `docs/testing.md`).
 - Invariant (vocoder PCM scale, `<dsd-neo/core/vocoder.h>`): mbelib-neo's float PCM is int16 / 7
   (`mbe_floattoshort()` multiplies by 7), and from 2.3 it synthesizes speech at that reference level. The voice
-  buffers (`audio_out_temp_buf`/`R`) hold int16-scale samples, which the voice chain's fixed and auto gain and the
+  buffers (`audio_out_temp_buf`/`R`) hold int16-scale samples, which the voice chain's fixed gain and speech AGC and the
   WAV writers expect, so every caller of an
   `mbe_process*f` API scales the frame it gets with `dsd_mbe_float_to_pcm16_scale()`: `store_process_result()` in
   `dsd_mbe.c` for the vocoder's own paths, SDRTrunk JSON playback in `dsd_file.c` and YSF V/D2 in `ysf.c`. A new
@@ -2808,31 +2841,80 @@ suite runs under this compiler.
   mbelib-neo's own D-STAR and AMBE+2 short output does; a truncating cast would bias samples toward zero and turn the
   sub-step mute noise of those codecs into digital silence.
 - Invariant (digital voice chain, `<dsd-neo/core/voice_chain.h>`, issue #653): every decoded 8 kHz voice frame goes
-  through its slot's chain exactly once, in place, before anything reads it: the digital high-pass (`use_hpf_d`, `-v
-  0x8`; a 2nd-order Butterworth at 300 Hz, unity in the voice band, `dsd_voice_hpf_*()` in `dsd_misc.c`), then the
-  slot's gain (the fixed `-g` multiplier `audio_gain`/`audio_gainR`, unity below 0, or the auto peak normalizer on
-  `aout_gain`/`aout_max_buf` and their `R` twins), then saturation to the int16 range (`dsd_voice_chain_run()` in
-  `dsd_audio.c`). It runs whatever the output format, output type, mute or preset say, before consumer gates, and
-  never decides who hears a frame; the gates still do. Producers: the vocoder at the top of its post stage
-  (`mbe_post_audio_and_recording()`, on the buffer and slot `processMbeFrameInternal()` names for the decode: the right
-  buffer for the slot path's slot 2, the left one otherwise, with X2-TDMA's timeslot as the slot), MBE file playback
-  (`play_mbe_output_frame()`), SDRTrunk JSON playback (`sdrtrunk_chain_frame()`, as each frame is synthesized and
-  before its decrypt-or-mute decision), YSF V/D2 (`ysf_emit_audio_from_temp()`), and M17 Codec2
-  (`dsd_audio_play_decoded_pcm16()`, after M17's CAN and decryptability gates). Consumers take the chained frame
-  as it is: the per-call WAV writers and the shared short staging (`dsd_voice_stage_short_left/right()`: `s_l`/`s_r`,
-  the output ring and the 48 kHz upsample). No mixer filters or gains. The same staged samples feed every mixer in
-  both formats, and float serialization happens only at the sink. The per-call and static WAVs therefore agree
-  across output formats. `processAudio()`/`processAudioR()` remain as chain plus
-  short staging for out-of-tree callers. Each slot keeps its own filter state (`dsd_state::voice_hpf[2]`), cleared
-  when the slot's frames move to a new call (one nonzero epoch to another) or protocol family (the dispatched synctype,
-  `frame_dispatch_synctype`, so a borrowed decoder does not count), while the high-pass is off, at each MBE playback
-  file, at the carrier boundary and in the no-carrier pass's guarded playout drain, in `dsd_mbe_purge_slot_audio()` and
-  in `init_audio_filters()` (startup, rate change, input switch). These resets forget the reception too, so a call
-  learned partway through the frames after one does not restart the filter. The gain level carries across calls (the
-  no-carrier pass clears only its peak history), so no protocol code writes `aout_gain`; the engine seeds 15 in auto
-  mode and clamps `-g` for both formats.
-  `beeper()` builds its tone once on the int16 scale and plays the same samples in both formats. Tests:
-  `CORE_VOICE_CHAIN`, `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_AUDIO_GAIN`, `DECODE_IQ_VOICE_CHAIN_*`.
+  through its slot's chain exactly once, in place, before anything reads it: the digital high-pass (`use_hpf_d`,
+  `-v 0x8`, off by default since issue #518 D1; a 2nd-order Butterworth at 300 Hz, unity in the voice band,
+  `dsd_voice_hpf_*()` in `dsd_misc.c`), then the slot's speech level (issue #518, `src/core/audio/voice_level.c`: the
+  slot's `dsd_speech_agc` at 8 kHz, start gain 0 dB, target -24 dBFS, ceiling -1 dBFS; a fixed `-g` multiplier
+  `audio_gain`/`audio_gainR` through its limiter, unity below 0 with no AGC at all), then saturation to the int16 range
+  (`dsd_voice_chain_run()` in `dsd_audio.c`). It runs whatever the output format, output type, mute or preset say,
+  before consumer gates, and never decides who hears a frame; the gates still do. Producers: the vocoder at the top of
+  its post stage (`mbe_post_audio_and_recording()`, on the buffer and slot `processMbeFrameInternal()` names for the
+  decode: the right buffer for the slot path's slot 2, the left one otherwise, with X2-TDMA's timeslot as the slot), MBE
+  file playback (`play_mbe_output_frame()`), SDRTrunk JSON playback (`sdrtrunk_chain_frame()`, as each frame is
+  synthesized and before its decrypt-or-mute decision), YSF V/D2 (`ysf_emit_audio_from_temp()`), M17 Codec2
+  (`dsd_audio_play_decoded_pcm16()`, after M17's CAN and decryptability gates) and TETRA speech (`voice_play()`, per
+  160-sample output frame). Each producer tells the chain what it knows about the frame (`dsd_voice_frame_info`):
+  `media` (none, concealment, speech or tone: `dsd_voice_media_of_mbe()` of the synthesis result for mbelib-neo's
+  decoders, so a decode failure or a P25 tail erasure is none; a TETRA bad frame is concealment), `decodable` (the
+  frame's encryption class only, never a user mute rule, talkgroup or receive policy: DMR's slot class, P25 Phase 1 and
+  2 `p25_crypto_audio_permitted(NULL, ...)`, NXDN/dPMR's cipher class, SDRTrunk JSON's own encryption flag and
+  keystream, TETRA's speech class, X2-TDMA's timeslot class, 0 while unknown; YSF, D-STAR, ProVoice and files 1),
+  `admitted` (`dsd_receive_current_allows()` on the slot the verdict judges; files, JSON and M17 1) and `talkspurt`
+  (TETRA's transmission count, 0 elsewhere). `dsd_voice_frame_may_learn()` is the one rule over it: decodable, admitted
+  speech. The vocoder keeps its synthesis's media in `mbe_frame_ctx_t` and builds the info just before the chain, which
+  does not move. A caller with nothing to say passes NULL. M17's encoder monitor (its own transmission decoded back)
+  passes `DSD_VOICE_MEDIA_TX_MONITOR` (issue #518 B17): its frames skip the slot's AGC, its tracker and `-g`, and play
+  at unity through a fixed-gain speech AGC of their own in the same extension (`tx_monitor`, the -1 dBFS limiter only),
+  so the monitor plays the level the encoder sends and leaves the receive slot as it was; the high-pass still applies.
+  The speech AGC learns only from frames `dsd_voice_frame_may_learn()` takes (B3: no ciphertext, no repeat, mute noise,
+  comfort noise, silence, failed decode or tone frame teaches it, and a muted but decodable, admitted frame does, so
+  recordings do not depend on output toggles); a tone frame plays at no more than the start gain (D12); an undecodable
+  frame only stops it learning, and the slot's first decodable frame after one resets its limiter and pitch history;
+  NULL counts as decodable, never as speech. Tests: `CORE_VOICE_CHAIN` (the helpers), `CORE_MBE_TRANSFORM_CONTEXT` (real
+  decodes per owner), `CORE_MBE_FILE_IO` (files, JSON), `YSF_DCH_DECODE`, `M17_STATE_DISPATCH`, `TETRA_VOICE_PIPELINE`,
+  `CORE_VOICE_LEVEL` (`test_tx_monitor_plays_at_unity`), `M17_ENCODER_CODEC2`. Consumers take the chained frame as it
+  is: the per-call WAV writers and the shared short staging (`dsd_voice_stage_short_left/right()`: `s_l`/`s_r`, the
+  output ring and the 48 kHz upsample). No mixer filters or gains. The same staged samples feed every mixer in both
+  formats, and float serialization happens only at the sink. The per-call and static WAVs therefore agree across output
+  formats. Each slot keeps its own filter state (`dsd_state::voice_hpf[2]`), cleared when the slot's frames move to a
+  new transmission (`dsd_call_snapshot_transmission()` of the active call, one nonzero value to another: a fade the call
+  state heals keeps it, B18) or protocol family (the dispatched synctype, `frame_dispatch_synctype`, so a borrowed
+  decoder does not count), while the high-pass is off, at each MBE playback file, at the carrier boundary and in the
+  no-carrier pass's guarded playout drain, in `dsd_mbe_purge_slot_audio()` and in `init_audio_filters()` (startup, rate
+  change, input switch). These resets forget the reception too, so a call learned partway through the frames after one
+  does not restart the filter. Each slot's speech AGC (`DSD_STATE_EXT_CORE_VOICE_LEVEL`, allocated at the slot pair's
+  first frame; unity if that fails) follows its own tracker of {transmission, protocol family, talkspurt}: a change
+  between two nonzero values starts it over, and a frame that names none keeps it. `dsd_voice_level_reset()` starts it
+  over where the receiver leaves the carrier: `dsd_engine_carrier_boundary()` for every kind but STREAM_GAP (after that
+  kind's early return, not inside `dsd_engine_forget_carrier_decoding()`, which a stream gap runs too), the trunk-scan
+  target switch (`trunk_scan_leave_carrier()`), a manual P25 control-channel selection
+  (`p25_sm_select_control_channel()`), and each MBE playback file (`mbe_file_end_replayed_call()`). It is kept across a
+  stream gap, the no-carrier pass, fade and terminator heals, late-entry identity, crypto purges and
+  `init_audio_filters()`; fixed and auto keep its estimate (back to auto it starts from the fixed gain within its
+  range, but only within the reception that fixed gain was set in: after a reset auto starts at the start gain). All
+  of these run on the decoder thread; the no-carrier pass touches no AGC state. Nothing seeds the auto level
+  on any entry path (B4): every slot starts at the start gain. `aout_gain`/`aout_gainR` are display readouts only, the
+  gain each slot's last frame got in dB (the terminal's "G: Auto (+x.x dB)"), and ride the snapshot's
+  `config_autosave_enabled..last_dibit` range with `aout_gainA`; the AGC state stays decoder-owned. No protocol code
+  writes them; the engine clamps `-g` for both formats. Tests: `CORE_VOICE_LEVEL` (learning, start level, tracker,
+  resets kept and taken, fixed and auto, tones, decodability per slot), `ENGINE_NO_CARRIER_RESET` (carrier boundaries,
+  stream gap, no-carrier, a TETRA stream gap against a new talker), `ENGINE_TRUNK_SCAN`, `APP_P25_CC_SELECTION`,
+  `CORE_MBE_FILE_IO` (file start), `APP_CONTROL_SNAPSHOT_EVENT_HISTORY` (the render range, field by field). `beeper()`
+  builds its tone once on the int16 scale and plays the same samples in both formats, at `DSD_ALERT_TONE_RMS_DBFS` (-24
+  dBFS RMS, where digital speech plays; issue #518): the voice alerts (ID 40, 1250 Hz) and the data alert (ID 80, 2500
+  Hz) alike. Before, they played at -4.9 and -17.6 dBFS RMS. A deferred P25 Phase 2 alert keeps its ID and length.
+  Tests: `CORE_VOICE_CHAIN`, `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_AUDIO_GAIN`, `DECODE_IQ_VOICE_CHAIN_*`.
+- API note (gain settings, `<dsd-neo/core/gain_setting.h>`, issue #518 voice level): a digital gain (`-g`,
+  `audio_gain`/`audio_gainR`) is 0 (auto) or 0.001..50; `dsd_digital_gain_setting()` keeps those (a typed -0 as +0) and
+  refuses NaN, infinities, negative values, values above 50 and positive values under 0.001 (1e-50 would round to 0,
+  auto). An analog gain (`-n`, `audio_gainA`) keeps `-n`'s rule: `dsd_analog_gain_setting()` maps anything under 1 to 0
+  (auto), keeps 1..100 and refuses NaN, infinities and values above 100. Both check the value in double before it
+  narrows to the float setting; nothing is clamped. Every surface applies them and is built with IEEE semantics: the CLI
+  (`args.c`), the `GAIN_SET`/`AGAIN_SET` handlers (double payloads, `actions_audio.c`), the menu prompts
+  (`menu_callbacks.c`) and the API (`api_commands.c`). `dsd_gain_setting_step()` is the `GAIN_DELTA`/`AGAIN_DELTA` rule:
+  whole steps on the float setting, counting from 0 (digital: `+` lands on 1) or from 50 (analog) when auto, back to
+  auto below the minimum, stopping at the top. Tests: `RUNTIME_CLI_PARSE`, `APP_CONTROL_ACTIONS`,
+  `API_COMMAND_PAYLOADS`, `UI_MENU_CALLBACKS`, `UI_MENU_LABELS`.
 - API note (analog receive options, `<dsd-neo/core/opts.h>`): `analog_demod` (`dsd_analog_demod`) is set by the
   decode presets (and restored with the scan-settings snapshot when a typed row is left); no width, CLI or menu code
   writes it directly. The analog preset selects FM, the AM preset (`DSDCFG_MODE_AM`, `-fM`, issue #524) selects AM,
@@ -3427,7 +3509,10 @@ suite runs under this compiler.
     the batch was captured on, issue #575, and the stream gaps recorded before it, `boundary_seq`, issue #518; decoder
     thread only, while the stream is open; issue #572), and the stream's discontinuity count (`discontinuity_seq`,
     `rtl_stream_discontinuity_seq()`, issue #518; `dsd_rtl_stream_metrics_hook_read_discontinuity_seq()` gives the count
-    the last read's samples carry: the batch's under a replay, the stream's read after the read live); the engine
+    the last read's samples carry: the batch's under a replay, the stream's read after the read live), and the gain that
+    makes up the monitor audio's de-emphasis at 1 kHz (`monitor_deemph_gain`, `rtl_stream_monitor_deemph_gain()`,
+    issue #518 B8/B9; 1.0 with no hook or a gain that is not positive, so PCM input, tests and radio-off builds keep
+    their level; read before the generation it is never a new gain with the old generation); the engine
     installs `rtl_stream_request_analog_profile()`, `rtl_stream_request_digital_family_landing()`,
     `rtl_stream_get_analog_profile()`, `rtl_stream_analog_family_active()`, `rtl_stream_family_landing_after_pending()`,
     `rtl_stream_output_rate_for_family()` and `rtl_stream_get_replay_batch()` behind them. It also hands the
@@ -5891,7 +5976,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `symbol_process_unsynced_analog()` offers the tap the block after every sample it adds, the one that completes the
   block included (`dsd_analog_rx_tap_partial()`), and the tap reads what is waiting once `DSD_ANALOG_RX_TAP_READ_MS` (20
   ms) of input, at the input's current rate, has built up; `symbol_finalize_unsynced_analog_block()` hands it the rest
-  after the raw WAV write and before the audio chain (`symbol_process_unsynced_audio()`), whose in-place voice band-pass
+  after the raw WAV write and before the audio chain (`symbol_run_unsynced_chain()`), whose in-place voice band-pass
   takes every CTCSS tone 40 dB down. It then hands the processed block to the engine's analog call through the
   `analog_call_block` frame-sync hook, as a block descriptor (`dsd_analog_call_block`, `runtime/frame_sync_hooks.h`,
   issue #668) whose input is one of four (`DSD_ANALOG_CALL_*`, issue #756; `symbol_analog_call_input()`): RECEPTION, the
@@ -5931,8 +6016,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   dropped or skipped read finds nothing itself, so a carrier that opens inside a dropped read's own samples and closes
   before the next read ends (at most about 40 ms, just after a stall) begins no call: the drop refuses those samples by
   design (decided limit). The finalizer splits a block that ends under a passing gate at that point where the chain's
-  runs are chosen (`symbol_process_unsynced_audio()` and `symbol_process_unsynced_audio_runs()`): the start is a run
-  that does not play, so the AGC neither adapts to nor plays it, and it is silence in `analog_out_f` before every sink
+  learn flags are set (`symbol_run_unsynced_chain()`): the start is a run that does not learn, so the AGC neither
+  learns from it nor plays it, and it is silence in `analog_out_f` before every sink
   and the hook; the sink gate ramps in from silence after it. The level path, which has no sink gate, ramps the rest in
   the same way (`symbol_apply_level_ramp()`, 5 ms, the gain in `dsd_state::analog_level_gain` while `analog_level_ramp`
   is set, carried into the next block when the verdict came in the block's last 5 ms and ended by a block that neither
@@ -6304,7 +6389,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   A/B'd on real captures and measured worse, so change it only with `tools/replay_ab.sh` evidence
   (`docs/testing.md`). The CQPSK path does not use any of this: it has a real timing loop in `costas.cpp`.
 - The analog monitor's audible output leaves `dsd_symbol.c` in `symbol_output_unsynced_analog()`, after the audio
-  chain (`symbol_process_unsynced_audio()`, below) and only while the gate is open; for `audio_out_type == 8` it goes
+  chain (`symbol_run_unsynced_chain()`, below) and only while the gate is open; for `audio_out_type == 8` it goes
   through `dsd_udp_audio_hook_blast_analog()` with a byte count of int16 mono samples.
 - Analog output at the sink rate (issue #633). Every analog sink runs at `dsd_opts_analog_sink_rate_hz()` (48 kHz):
   the local raw stream, the UDP analog socket and the `-6` raw WAV (`openWavOutFileRaw()`). The monitor runs at its own
@@ -6429,53 +6514,131 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   signal shaped below 300 Hz, as transmitters send it, about 32 dB, since its skirt reaches past 254 Hz), AM: a
   Butterworth high-pass at 200 Hz; both a 3400 Hz Butterworth low-pass; `tools/design_voice_filters.py` derives the
   prototype and every bound `DSP_ANALOG_VOICE` holds), the legacy 960 Hz one-pole low-pass and high-pass (`-v 0x2`,
-  `0x4`; the chain's own copies at its rate, not `dsd_state`'s `RCFilter`/`HRCFilter`), then the gain stage: `-n N` is
-  the source gain x N / 50, `-n 0` (the default) the AGC, a causal per-sample peak-envelope recurrence with no added
-  latency whose output depends only on the sample and playing-flag sequence (500 ms hold, 20 dB/s or 3 dB/s release by
-  where the input level sits, at most 18 dB over the reference gain, frozen under -36 dB of the reference and while not
-  playing, rolled back 250 ms when the gate closes). The source gain takes each source's reference signal to -12 dBFS
-  peak: RTL monitor audio after the `vol` trim (0.25 at the default 2: 1 kHz at 3 kHz deviation after the 1/pi output
-  scale, or AM at 50%) by 32924, the RTL FSK discriminator output (+/-30000: the -8 source monitor under digital
-  decoding, told by `rtl_symbol_cache_output_kind`, and EDACS on RTL, which, like the symbol path, reads it with no
-  `vol` trim) by 8231/30000, PCM by 1. Each chain (monitor, EDACS) keeps its band-pass and AGC in
-  `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, allocated on first use (the fixed gain alone if that fails), and starts over on
+  `0x4`; the chain's own copies at its rate, not `dsd_state`'s `RCFilter`/`HRCFilter`), then the gain stage: the
+  chain's gain (the `-n 50` level), then the speech AGC (`dsd_speech_agc`, below, with its coloured-noise veto on) at
+  the chain's rate over it, fixed at N / 50 for `-n N` (`dsd_speech_agc_set_fixed()`, its -1 dBFS limiter still
+  running) or automatic on `-n 0` (the default). On automatic a reception starts at the band's start gain over `-n 50`
+  (`analog_audio_start_gain_db()`, issue #518 D6/D7): FM narrowband (`--nfm-bandwidth-hz` up to 16000, the default)
+  +4.537 dB, FM wideband -1.482 dB, AM -2.553 dB, on RTL monitor audio less the `vol` trim over its default 2; a
+  setting change applies from the next reset (`dsd_speech_agc_set_start_gain_db()`). At a rate the AGC refuses (under
+  8 kHz: PCM input at its own rate) the chain plays the fixed gain, `-n 50` on auto, through a `dsd_peak_limiter`, and
+  on auto logs that once per rate. The source gain takes
+  each source's reference signal to -12 dBFS peak: RTL monitor audio after the `vol` trim (0.25 at the default 2:
+  1 kHz at 3 kHz deviation after the 1/pi output scale, or AM at 50%) by 32924, the RTL FSK discriminator output
+  (+/-30000: the -8 source monitor under digital decoding, told by `rtl_symbol_cache_output_kind`, which, like the
+  symbol path, reads it with no `vol` trim) by 8231/30000, PCM by 1. EDACS analog voice on RTL is RTL monitor audio:
+  the stream's FSK voice lane after the `vol` trim (IO, "The FSK voice lane"). The chain's gain is the source
+  gain, and on RTL monitor audio from an RTL input times the stream's de-emphasis gain
+  (`dsd_rtl_stream_metrics_hook_monitor_deemph_gain()`, issue #518 B8/B9: the FM de-emphasis takes the 1 kHz reference
+  down 0.87 dB at 75 us, 13.65 dB at 750 us, and this makes it up, so `-n 50` and the AGC's start hold whatever
+  `DSD_NEO_DEEMPH` selects; on the FSK discriminator the voice lane's while it runs; 1.0 under AM, FSK without the lane,
+  PCM and with no stream). It sits at the gain stage, not the monitor's
+  output scale, so the monitor samples, the `-6` raw WAV and the M17 encoder's RTL input
+  (`dsd_analog_audio_source_gain()` alone) keep their level. Each chain (monitor, EDACS) keeps its band-pass and AGC
+  in `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, allocated on first use (the fixed gain alone if that fails), and starts over on
   `DSD_ANALOG_AUDIO_RESET` and on a change of source, rate or band. A block that
-  fills across a new reception -- a new RTL stream generation (RTL input), trunk-tuning generation or a boundary
+  fills across a new reception -- a new RTL stream generation or de-emphasis gain (RTL input, the gain read before the
+  generation), trunk-tuning generation or a boundary
   `dsd_analog_rx_reset()` announces (`dsd_analog_audio_note_reception()`: a scan row commit, a reconnect, the legacy
   `-Y` rigctl retune, which moves neither generation) -- is partly the channel before it: the caller notes when a block
-  starts filling (`dsd_analog_audio_block_begin()`; EDACS once for its three blocks), and the chain drops a block whose
+  starts filling (`dsd_analog_audio_block_begin()`; EDACS once for its triplet), and the chain drops a block whose
   reception moved since, silence out, whichever path collected it (the -8 source monitor's block too, where no tap
   tracks the boundary), and starts over on the next one, which a block collected wholly after the boundary does at once.
   The monitor chain runs the AM band whenever the monitor runs AM, a receiver ahead of PCM input (an AM scan row on
-  rigctl) included; EDACS and the FSK output always run FM. `symbol_finalize_unsynced_analog_block()` takes the block's
-  gate decision once, after the tap (`symbol_unsynced_audio_allowed()`, which has no side effects), and hands it to the
-  chain as the playing flag and to the sink, so the AGC adapts to exactly the audio that plays; a block that straddles a
-  retune or reset (`dsd_analog_rx_block_straddles_boundary()`), partly the old channel's and never played, goes in with
+  rigctl) included; EDACS and the FSK output always run FM. The AGC learns from qualified reception, not from what plays
+  (issue #518 B1/B2): `symbol_finalize_unsynced_analog_block()` takes the block's gate decision once, after the tap
+  (`symbol_unsynced_audio_allowed()`, which has no side effects), for the sink, and the learn decision
+  (`symbol_unsynced_block_learns()`: one rate, no boundary straddled, the squelch level open, no digital carrier, no
+  retune unresolved, the tone policy passing; never the monitor switch, `audio_out`, a mute or `-P`), and runs the
+  chain once over the block with a learn flag per sample (`symbol_run_unsynced_chain()`,
+  `dsd_analog_audio_process_runs_f()`): 0 over the tone policy's ineligible prefix (issue #668) and, under the auto or
+  PCM noise squelch, wherever the sample's own gate is closed. The AGC's `process_runs` turns a 1 -> 0 edge into a
+  complete rollback of what the reception's tail taught and a 0 -> 1 edge into an opening checkpoint; the chain adds
+  the new-reception rule: before a sample that learns, a gap of 1 s or more since the last one that learned
+  (`DSD_ANALOG_AUDIO_NEW_RECEPTION_GAP_NS`), counted in processed samples at the chain rate or on the decode clock
+  (`dsd_decode_now_mono_ns()` read once per call as its last sample's time, earlier samples placed by their distance
+  before it, so a source that stops sending counts too and the partition does not), resets the AGC. With the default
+  open squelch on a continuous stream neither an edge nor a gap occurs; the AGC's own detector and attenuator keep hiss
+  out. Decided behaviour: the clock cannot tell a decoder that stalled from an input that stopped, so a decoder-thread
+  stall of about a second inside a continuous transmission (a slow `-6` raw WAV write or sync, which the finalizer
+  already notes can hold the decoder, or the host pausing the process) restarts the AGC at the start gain when the
+  backlog is processed, as a new reception would. A block that straddles a retune or reset
+  (`dsd_analog_rx_block_straddles_boundary()`), partly the old channel's and never played, goes in with
   `DSD_ANALOG_AUDIO_DISCARD`: the chain neither filters it nor counts it, turns it into silence, and starts over with
-  the next block, so the old channel leaves nothing in the new one's filters. EDACS runs the EDACS chain with the
-  talkgroup gate as its playing flag and a reset per call, after the symbol register is read from the raw block; under
-  a dynamic squelch it runs the chain per run of heard and unheard samples and silences the closed ones
-  (`edacs_process_analog_block_runs()`, issue #625). The M17
-  encoder keeps its own band-pass, 960 Hz one-poles (`dsd_voice_onepole`) and AGC at 8 kHz in its stream context
-  (`m17_voice_chain`) and runs them over the whole codec2 frame, 160 samples at 3200 bit/s and 320 at 1600
-  (`m17_voice_chain_process()`; an explicit `-n` keeps `analog_gain()`). Its input reader low-passes at 3400 Hz
+  the next block, so the old channel leaves nothing in the new one's filters. EDACS runs the EDACS chain once per
+  triplet (`edacs_process_analog_triplet()`) over the triplet's voice (issue #518 B10: on RTL the stream's voice lane,
+  or its FSK samples when the stream has no lane; on audio input the samples), after the symbol register is read from
+  the normalised samples, with a reset per call and a learn flag per sample from the squelch the call runs: the dynamic
+  squelch's own gate per sample (closed samples then play silence, issue #625), the level squelch's power test for the
+  triplet, every sample with none. The talkgroup gate, the output switches and the record policy have no say, so a call
+  the talkgroup mutes but the record policy keeps records at the AGC's level; one call per triplet reads the decode
+  clock once, so the new-reception rule places each sample exactly. The played and recorded blocks are the chain's
+  output. The M17 encoder keeps its own band-pass, 960 Hz one-poles (`dsd_voice_onepole`) and `dsd_voice_agc` (used
+  there alone) at 8 kHz in its stream context (`m17_voice_chain`) and runs them over the whole codec2 frame, 160 samples
+  at 3200 bit/s and 320 at 1600 (`m17_voice_chain_process()`; an explicit `-n` keeps `analog_gain()`). The transmit
+  contract (issue #518 B17): the AGC learns only from reads that are transmitted and holds through the rest with
+  `dsd_voice_agc_process_held()` (no attack, no release, output limited to the target, and none of the receive AGC's 250
+  ms rollback, which would undo a short transmission), so the gain one transmission learned carries to the next and room
+  noise between them moves nothing; it starts over only with the stream context (`m17_str_init()`: encoder start, which
+  an input switch needs too). The read's key state is decided once, before the chain, from what the VOX already reads
+  (the read's squelch flags, or the input level it published before any filter or gain): `m17_str_decide_key()` advances
+  the VOX count (`sql_hit`) once per read, and the frame built after it reuses that decision
+  (`m17_str_update_vox_and_eot()`), so the VOX keys and unkeys on the same reads as before; without VOX the TX toggle
+  (`m17encoder_tx`) is the key state (`m17_str_read_keyed()`). Its input reader low-passes at 3400 Hz
   (`DSD_VOICE_BAND_LOWPASS`, at the input rate) before keeping one sample in `m17_rate / 8000`, and scales RTL monitor
-  audio by the RTL monitor gain after the `vol` trim (`m17_encoder_read_block()`), so it reaches codec2 at PCM scale.
-  On RTL it reads each sample's squelch flag (`read_ex`); while the stream's gate runs
+  audio by the RTL monitor gain after the `vol` trim (`m17_encoder_read_block()`), so it reaches codec2 at PCM scale. On
+  RTL it reads each sample's squelch flag (`read_ex`); while the stream's gate runs
   (`dsd_squelch_stream_gate_running()`, asked once a block's first sample is in) a closed sample fades to silence before
   the low-pass, and the read records whether any sample was heard (`m17_encoder_input::squelch_heard`). A stream's end
   (`m17_str_end_stream()`, and the packet encoder's) drains a local output after the EOT marker, before its dead air,
   and `m17_str_finalize()` drains again at shutdown, whatever ended the last stream: an asynchronous output drops its
   oldest samples when full, and the engine closes it without a drain. A stream that ends while keyed (a shutdown, or a
   manual unkey while VOX hears a carrier) resets as the idle path's end does, so the next key-up sends a new LSF; a
-  monitored stream (`-8`) ends its call there, so the next one begins its own.
-  The analog_voice and analog_audio sources keep IEEE semantics under fast-math, which would fold away their
-  non-finite-sample guards. The published `dsd_state::aout_gainA` is the gain applied, in dB over the `-n 50` gain,
-  which the terminal shows as `G: Auto (+x dB)`. Tests: `DSP_ANALOG_VOICE`, `DSP_ANALOG_AUDIO`, `DSP_SYMBOL_REPLAY`
-  (`test_chain_playing_follows_the_sink`), `RTL_SYMBOL_CACHE_GENERATION` (source routing), `M17_STATE_DISPATCH`
-  (`test_stream_voice_chain_covers_the_whole_frame`, `test_stream_voice_chain_onepoles_run_at_8k`,
-  `test_encoder_rtl_input_reaches_pcm_scale`), `EDACS_GRANT_TUNE_MATRIX` (`rtl-unclipped`), the `DECODE_IQ_ANALOG_*`
-  level, parity and fixed-gain cases.
+  monitored stream (`-8`) ends its call there, so the next one begins its own. The analog_voice and analog_audio sources
+  keep IEEE semantics under fast-math, which would fold away their non-finite-sample guards. The published
+  `dsd_state::aout_gainA` is the gain applied (AGC and limiter), in dB over the `-n 50` gain, which the terminal shows
+  as `G: Auto (+x dB)`. Tests: `DSP_ANALOG_VOICE`, `DSP_ANALOG_AUDIO` (start gains, hiss in pauses, open-squelch noise,
+  the transmission after it, rollback at a close, the new-reception rule across partitions, pauses and rates, the
+  limiter in fixed mode), `DSP_SYMBOL_REPLAY` (`test_chain_learns_from_reception_not_output`,
+  `test_call_audio_level_ignores_the_output`, `test_tone_rejected_start_leaves_the_agc_alone`),
+  `RTL_SYMBOL_CACHE_GENERATION` (source routing), `IO_RTL_MONITOR_DEEMPH` (the reference through the real demodulator,
+  ring and chain under every de-emphasis), `M17_STATE_DISPATCH` (`test_stream_voice_chain_covers_the_whole_frame`,
+  `test_stream_voice_chain_onepoles_run_at_8k`, `test_encoder_rtl_input_reaches_pcm_scale`,
+  `test_stream_encoder_mic_holds_while_unkeyed`, `test_stream_encoder_mic_keeps_gain_across_key_ups`,
+  `test_stream_encoder_mic_starts_over_at_encoder_start`, `test_stream_encoder_vox_keys_on_the_same_reads`),
+  `M17_ENCODER_CODEC2`, `DSP_ANALOG_VOICE` (`test_agc_held`), `EDACS_GRANT_TUNE_MATRIX` (`rtl-unclipped`), the
+  `DECODE_IQ_ANALOG_*` level, speech-level (P.56), noise and fixed-gain cases.
+- The speech level AGC is `src/dsp/speech_agc.c` (`<dsd-neo/dsp/speech_agc.h>`), one module for digital and analog
+  voice that aims every talker at one active speech level (P.56 -24 dBFS): the digital voice chain runs one per slot
+  (`src/core/audio/voice_level.c`) and the analog audio chain one per chain (`src/dsp/analog_audio.c`). Pure and
+  caller-owned: the state is sized at compile time for 8-192 kHz (init refuses other rates) and nothing is allocated.
+  It analyses 20 ms frames: a frame is speech when it stands 9 dB over a tracked noise floor (which restarts when the
+  noise drops 10 dB under it or the floor goes stale under voiced audio) and its autocorrelation, on the frame
+  decimated to about 8 kHz, has a strict interior pitch peak of at least 0.5 between 2.5 and 15 ms. Six speech frames
+  in a row commit; a run whose last 12 frames hold one level and pitch is a steady tone and lifts the floor instead.
+  Committed frames feed a power-domain level estimate, and each committing frame steps the gain toward the target
+  (1 dB for the first 20 steps, then +0.12 / -0.20 dB), within -12/+15 dB of the start gain. A separate attenuator
+  eases long non-speech (open-squelch hiss) down at 6 dB/s, to -24 dB at most, while the output stays over -36 dBFS
+  and no frame has committed in the last second (so from a reception's first frame until its first commit), and lets
+  go within a frame on a frame passing both cues or on quieting; it never touches the estimate. The gain ramps over the
+  next frame (no added latency), then a peak limiter holds every sample at -1 dBFS. The coloured-noise veto
+  (`dsd_speech_agc_set_noise_veto()`, off after init, kept by a reset) also asks a frame that passes the pitch cue for a
+  strict interior peak of at least 0.4 in a pre-emphasised copy (x[n] - 0.9 x[n-1]), taken from the same lag products
+  without a second correlation: FM hiss after 750 us de-emphasis passes the pitch cue on a few percent of frames, which
+  would keep the attenuator from easing it. Only the analog chain turns it on. Digital voice carries no receiver hiss,
+  the frame target is calibrated on digital speech, and the digital output stays the same bits. Flags: `learn` and
+  `decodable` per call, `tone` caps a decoder's tone frames at the start gain; `dsd_speech_agc_process_runs()` takes a
+  learn flag per sample and turns its edges into `dsd_speech_agc_gate_closed()` (a complete rollback to the oldest of 13
+  per-frame checkpoints, dropping any pending run) and `dsd_speech_agc_gate_opened()`. The output is bit-identical for
+  any partition. `dsd_peak_limiter` is the same limiter on its own, for mixers. The source and its test keep IEEE
+  semantics under fast-math. Tests: `DSP_SPEECH_AGC` (synthetic talkers, the gain law, startup, vowels, tones, hum,
+  pitch edges, noise, attenuator, tone cap, decodability, rollback against a control, partitions, cross-rate, ceiling,
+  reset, non-finite, fixed mode, the limiter, the veto on de-emphasised hiss), `DSP_SPEECH_AGC_LONG` (the floor after
+  60-120 s of hiss, with and without the veto); the `dsd-neo_bench_speech_agc` micro-benchmark. End to end,
+  `DECODE_MBE_SPEECH_LEVEL` and `DECODE_IQ_SPEECH_PARITY` hold one synthetic talker's established speech within 3 dB of
+  -24 dBFS from IMBE, AMBE+2 and AMBE 2400 files (`-r`) and from narrowband FM, wideband FM and AM fixtures, all within
+  1.5 dB of each other (`tests/core/speech_parity_tool.c`), and the `DECODE_IQ_SPEECH_LEVEL_*` and
+  `DECODE_IQ_ANALOG_PARITY_*` cases pin the off-air excerpts (`docs/testing.md` "Speech level parity").
 - The auto squelch's core (issue #518 follow-up) is `src/dsp/squelch_floor.c` (`<dsd-neo/dsp/squelch_floor.h>`), pure
   and on the channel-filtered I/Q at the channel rate (before any post-decimation). A plan
   (`dsd_squelch_floor_plan_design()`) turns the channel taps and the half-band stage ahead of them into the
@@ -6518,8 +6681,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   the per-channel cache in `demod_state`. On the decoder side (`dsd_symbol.c`) the monitor reads each RTL sample with
   its flag (`dsd_rtl_stream_io_hook_read_ex()`) into `dsd_state::analog_out_flags`, beside `analog_out_f`. Under the
   auto squelch (`dsd_squelch_dynamic_in_force()`: an AUTO setting on an RTL-family input) the block gate's level
-  comparison is off, the audio chain runs each run of heard and unheard samples with its own playing flag
-  (`symbol_process_unsynced_audio_runs()`: the AGC adapts to exactly what is heard and rolls back at the close), and
+  comparison is off, each sample's gate joins its learn flag in the audio chain (`symbol_run_unsynced_chain()`: the
+  AGC learns from exactly the qualified samples and rolls back at the close), and
   the sink ramps each sample in over 5 ms and out over 10 ms after every filter (`symbol_apply_sink_gate()`), so a
   closed stretch is exact silence and a block with nothing heard is not written. A block the block gate rejects (a
   muted output, digital sync, a retune still landing, the tone policy) plays nothing, not even a fade, and the next
@@ -8232,6 +8395,18 @@ Notes:
     `IO_RTL_ANALOG_OPEN` (a 78,125 Hz capture).
   - De-emphasis and audio-LPF settings are stored in `demod_state` (`deemph_tau_us`, `audio_lpf_cutoff_hz`) and their
     coefficients recomputed every time the rate chain is finalized (`rtl_demod_refresh_audio_coefficients()`).
+    `dsd_demod_deemph_compensation()` is the inverse of the de-emphasis magnitude at 1 kHz from the quantised
+    coefficient and the rate it runs at (`rate_out`, after the post-demod decimator; 1.0 where `full_demod()` runs none:
+    off, AM, FSK, CQPSK, the raw pass-through). `demod_finish_output_block()` publishes it for every block before the
+    block reaches the ring (`g_pub_monitor_deemph_gain`, `rtl_stream_monitor_deemph_gain()`, issue #518 B8/B9). A kind,
+    family, retune or rate change that moves it clears the ring and moves the generation first, and the new gain comes
+    with the next block (an FM <-> AM switch publishes it at once, its state final). So a gain read before the
+    generation is never a new gain with the old generation, but can be the old gain with the new one until that block;
+    a block noted in that window is dropped as straddling the change. A stream open or stop (a new session,
+    `rtl_stream_advance_session_generation()`) puts it back to 1.0. The analog chain applies it at its gain stage; the
+    output scale ignores it. Tests: `DSP_DEMOD_MISC` (the gain against `deemph_filter()`'s own 1 kHz response at 8 to
+    78.125 kHz), `IO_RTL_MONITOR_DEEMPH` (`rtl_stream_test_monitor_tone()`, and the reset across two sessions via
+    `rtl_stream_test_session_boundary()`), `IO_RTL_ANALOG_FAMILY_SWITCH` (the scale unchanged under `nfm` and `off`).
   - A retune on `AUDIO_MONITOR` (the M17 encoder's monitor stream included) returns the de-emphasis, DC, audio-LPF
     and squelch-envelope state and the channel, half-band and resampler histories to fresh-open values. A retune that
     leaves the stream on another demod rate resolves the analog channel again for that rate
@@ -8504,6 +8679,38 @@ Notes:
     copy them under the same cursors. `dsd_rtl_stream_read_ex()` / `rtl_stream_read_ex()` and the runtime hook
     `dsd_rtl_stream_io_hook_read_ex()` hand them to the decoder; a host that installs only `read` gets them all open.
     Tests: `IO_RTL_SQUELCH_PLUMBING`, `ENGINE_IO_HOOKS_INSTALL`.
+  - The FSK voice lane (issue #518 B10). EDACS plays analog calls on the 9600 bit/s FSK discriminator, whose output the
+    modem normalises to a +/-30000 peak (the release register needs it), which throws the voice's level away. While
+    the decoder asks for it (`rtl_stream_set_voice_lane()`, through the runtime hook `set_voice_lane`: EDACS before an
+    analog call's tune, off when the call ends or its tune is refused; process-wide, `g_voice_lane_requested`, taken
+    by the demod thread before each block in `demod_take_voice_lane_setting()`, which starts the lane's de-emphasis
+    and resampler history from silence when it turns on), an FSK block also makes a calibrated lane
+    (`full_demod_handle_fsk_output()`): the centred discriminator output as the modem computes it ahead of its
+    normaliser, run beside the modem from the modem's own state before the block (`voice_lane_run()`: its previous
+    sample and carrier centring, so a reset, a new configuration or a mid-stream lane-on leave the lane equal to the
+    modem; the modem's loop, which every FSK digital decode runs, is untouched), at the FM monitor's output scale for
+    the complex rate (`DSD_DEMOD_MONITOR_OUTPUT_SCALE`, `DSD_DEMOD_MONITOR_SCALE_REFERENCE_HZ`), through its own
+    one-pole de-emphasis at the complex rate (`voice_lane_tau_us` from `DSD_NEO_DEEMPH`, whatever the monitor's own;
+    the coefficient made again when the rate moves, `dsd_demod_deemph_alpha()`, the monitor's quantisation), into
+    `demod_state::voice_result` (a squelched block: silence, the de-emphasis starting over with the modem).
+    `dsd_demod_deemph_compensation()` is then the lane's, so the published de-emphasis gain
+    (`g_pub_monitor_deemph_gain`) makes it up as it does the monitor's; the lane switching moves that gain with the
+    next block and moves no generation (a reader of the lane notes it as a new reception).
+    `demod_finish_output_block()` resamples the lane with the main lane's taps, ratio and starting phase over its own
+    history (`resamp_process_voice_lane()`, `voice_resamp_hist`, cleared with the main lane's:
+    `rtl_demod_reset_resampler_state()`, `resamp_design()`), so it makes exactly the main lane's samples at the same
+    places, and marks each such sample's flag with `DSD_RING_FLAG_VOICE`. The ring keeps the lane in
+    `output_state::voice` (allocated with the ring, untouched until a lane runs) at the samples' positions; the reads
+    hand the flags back without that bit, so the samples and flags are bit for bit the same with the lane on or off, and
+    `rtl_stream_read_lanes()` (`RtlSdrOrchestrator::read()` with a voice buffer, `dsd_rtl_stream_read_ex()`, the hook's
+    `read_lanes`) gives each sample's lane value, 0 where the lane did not run for it. The lane buffer is allocated with
+    the ring, and a device short of memory runs without it (a warning); `rtl_stream_voice_lane_available()` (the hook's
+    `voice_lane_available`) says whether the open stream has it, so EDACS plays the FSK output instead of a silent lane.
+    Off, the lane costs nothing but a load per block (the FSK demod block costs what it did before the lane); on, it
+    adds about 25-41% to the FSK demod block, only during EDACS analog calls on an RTL input. Tests: `IO_RTL_VOICE_LANE`
+    (replayed captures through the real stream, read API, resampler and ring: the lane switched on and off, a gap, a
+    retune, three rates, flag and sample identity, level, positions, the lane available while the stream runs),
+    `DSP_FSK_VOICE_LANE`, `ENGINE_IO_HOOKS_INSTALL`, `IO_RTL_STREAM_ORCHESTRATOR`.
   - The squelch setting reaches the demod thread through `g_squelch_auto_word` (mode and margin) beside the existing
     `channel_squelch_level`, which the level gate reads under a LEVEL word only. A switch to AUTO stores the word
     alone and leaves the level, so a block that took the old LEVEL word still gates on it; a switch to LEVEL stores the
@@ -8924,8 +9131,10 @@ Notes:
     is outside talkgroup policy) and hands the decoder's real output, 160 samples per 3200 frame and 320 per 1600
     frame, to `dsd_audio_play_decoded_pcm16()` (see the Core audio API note). So the mute, the slot 1 switch, the
     digital gain (`-g` and its live controls), the high-pass, the stream's channel count and sample format (`-y`),
-    the WAVs and the audible-audio stamp follow the shared chain and mixers. Tests: `M17_STATE_DISPATCH`, `CORE_AUDIO2_HELPERS`,
-    `DECODE_IQ_M17_VOICE_OUTPUT`.
+    the WAVs and the audible-audio stamp follow the shared chain and mixers. The stream encoder's own monitor is the
+    exception to the gain: it plays at the level sent (`DSD_VOICE_MEDIA_TX_MONITOR`, see the voice chain invariant).
+    Tests: `M17_STATE_DISPATCH`, `CORE_AUDIO2_HELPERS`, `DECODE_IQ_M17_VOICE_OUTPUT`, `M17_ENCODER_CODEC2` (real
+    Codec2 at 3200 and 1600: the encoder's input level, the raw decoded output and the monitor, through key-ups).
 
 - M17 IP dispatch validates the received length before reading a stream or control frame or changing its state.
   MPKT header conversion reads only its 34-byte prefix, since a valid packet can be shorter than a 54-byte stream
@@ -8965,16 +9174,25 @@ disowns it and touches nothing else. Only otherwise does EDACS own the recovery:
 tuned state, disowns the failure and retunes, the rollback or the retry, when `dsd_trunk_tuning_hook_tuner_free()`
 answers free (no manual tune, trunk scan or `-Y` scan owns the tuner); its own control-channel tune makes the tuner
 frequency agree with the radio. The converter starts over at every retune, during a
-triplet or between two, and the PCM staging held from before the call is dropped when it ends. A triplet plays
+triplet or between two, and the PCM staging held from before the call is dropped when it ends. On an RTL input an
+analog call plays the stream's FSK voice lane (issue #518 B10; IO, "The FSK voice lane"), not the normalised samples
+the release register reads: EDACS asks for it before the call's tune and stops it when the call ends or the tune is
+refused (`edacs_voice_lane_set()`), reads it beside each sample with its flag (`dsd_rtl_stream_io_hook_read_lanes()`),
+scales it by the `vol` trim as the monitor's audio is, and converts it beside the samples through a second converter
+configured and cleared with the first (`dsd_rate_converter_fill_pair()`), so each converted voice sample is made from
+the same input samples as its normalised one. A stream that cannot carry the lane (no lane buffer, or no `read_lanes`
+hook: `dsd_rtl_stream_io_hook_voice_lane_available()`) is not asked for it, and the call plays its FSK samples through
+the chain as FSK audio, as before the lane, with a warning once (`edacs_analog_voice_source()`). A triplet plays
 (`edacs_emit_analog_audio()`) only past the talkgroup gate, and only while the output is unmuted (`audio_out` 1) and
 slot 1 is on, on the local stream, UDP and the raw fd alike (`edacs_analog_output_enabled()`, the mixers' rule); it
 notes the audible-audio stamp only when one of them receives it (the shared output rule: the raw fd takes 16-bit output
 only, and the null output or a local stream that is not open receives nothing) and the squelch the call runs opened on
-it (see Core). Tests:
-`EDACS_GRANT_TUNE_MATRIX` (the `analog-633` cases, with golden hashes of a 48 kHz call's audio, WAVs and stdout; the
-emitter's outputs and stamp under each gate, squelch, output type and sample format; the `analog-717` and `digital-717`
-failed-tune rollbacks), `ENGINE_EDACS_FAILED_GRANT_STALL` (a control channel that keeps syncing after a failed grant
-tune is decoded again).
+it (see Core). Tests: `EDACS_GRANT_TUNE_MATRIX` (the `analog-633` cases, with golden hashes of a 48 kHz call's audio,
+WAVs and stdout; the `analog-b10` cases: the voice lane asked for and stopped around a call, never for audio input, the
+FSK samples played at the FSK source's level when the stream has no lane, and a call the talkgroup gate mutes recording
+what the heard call records at the AGC's level; the emitter's outputs and stamp under each gate, squelch, output type
+and sample format; the `analog-717` and `digital-717` failed-tune rollbacks), `ENGINE_EDACS_FAILED_GRANT_STALL` (a
+control channel that keeps syncing after a failed grant tune is decoded again).
 
 P25 manual control-channel selection lives in `src/protocol/p25/p25_cc_selection.c`. The Frequency command routes
 active single-system P25 sessions here; the module holds the watchdog guard through the runtime CC tuning hook,
@@ -10894,7 +11112,8 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
 - The carrier. The receiver's carrier changes when a tune completes, not when it is asked for: then
   `tetra_forget_carrier()` (`tetra.c`) drops the carrier's CRC evidence, the partial TM-SDUs
   (`tetra_mac_forget_fragments()`), the TDMA clock (`tetra_tdma_stop()`), which counts symbols a retune may have
-  dropped, the speech in progress (`tetra_voice_reset()`), and the direct mode call on the channel with its DM colour
+  dropped, the speech in progress (`tetra_voice_forget_carrier()`, which keeps the transmission it belonged to), and the
+  direct mode call on the channel with its DM colour
   code, seed and protection (`tetra_dmo_forget_carrier()`, `tetra_calls_forget_carrier()`), so the next carrier's normal
   bursts are not descrambled with them and its calls and speech are not classified by them, and direct mode itself: the
   next carrier is trunked until its own DSB says otherwise, since no DNB decodes before that DSB gives its colour code
@@ -11223,13 +11442,24 @@ single "current call".
   concealed with another call's, timeslot's or talker's codec state; the call identifier and the timeslot tell two
   transmissions apart at the second's first burst, which publishes nothing when its CRC fails. The kind tells direct
   mode from trunked mode; downlink or uplink is the session's (`--tetra-uplink`). A D-INFO or D-CALL RESTORE renaming the call keeps
-  its speech (`tetra_voice_call_renamed()`).
+  its speech (`tetra_voice_call_renamed()`). Each start of a new transmission by these rules advances the speech's
+  transmission count (`tetra_voice_t::agc_tx_seq`, never 0 once one started), which the speech output passes as every
+  frame's talkspurt (`dsd_voice_frame_info`). A carrier boundary (`tetra_forget_carrier()`, a stream gap included)
+  forgets the speech in progress but keeps a copy of the transmission it belonged to (`tetra_voice_forget_carrier()`:
+  its kind, call identifier, timeslot, target, party, call-end count and last good burst); the next speech is judged
+  against that copy by the same rules, so speech of the same transmission after a short gap starts a new decoder but
+  keeps the count. A rename and a grant after D-TX CEASED apply to the copy as to a bound transmission; any other reset
+  (`tetra_voice_reset()`: a BSCH of another cell, the end of the heard speech) drops it.
 - Speech decoding. mbelib-neo's TETRA decoder (`mbe_tetraDecodeFrame()`, mbe-neo 2.6+) turns each 137-bit speech frame
   into 240 samples at 8 kHz; a CRC-failed or stolen frame goes to it as a bad frame, which it conceals. `tetra_voice.c`
   makes one decoder (`tetra_voice_t::codec`) at the first frame that plays, resets it (`mbe_tetraDecoderReset()`) when
   the speech in progress starts over and frees it with the TETRA state. A decoder that cannot be made or a decode that
   fails drops that frame with one logged error per session; decoding carries on. Tests swap in a stand-in decoder
-  through `tetra_voice_set_codec_for_test()` (`tetra_voice_state.h`).
+  through `tetra_voice_set_codec_for_test()` (`tetra_voice_state.h`). The output takes 160-sample frames, so every
+  other codec frame's last 80 samples wait for the next (`tetra_voice_t::carry`); each output frame tells the chain it
+  is concealment when any codec frame it takes samples from was a bad frame (`carry_bad`), and decodable only when every
+  one of them was clear or decrypted speech, judged from its encryption class, not the mute settings
+  (`tetra_voice_crypto_class()`, `carry_undecodable`). Tests: `TETRA_VOICE_PIPELINE`.
 - Canonical calls. Slot 0, the TETRA synctype as protocol. The followed call publishes from its CRC-passed signalling
   once the carrier is proven and its tune settled, until its transmission ceased: a group call's called group as
   target and its talker as source; an individual call's talker (the calling party while none is named) as source and
@@ -11380,7 +11610,7 @@ What each decoded event does:
 | SYSINFO of another location area | as a BSCH of another cell, and the call records | the new area |
 | On the carrier of a guarded follow (Trunking, "Another cell on the followed carrier"): a CRC-passed BSCH of another network or colour code, a DSB, a SYSINFO of another main carrier or location area | direct mode, before a BSCH is parsed (`tetra_dmo_leave()`); nothing else | nothing; a BSCH runs the clock to its slot |
 | A PDU whose channel allocation has its cell change flag set | nothing | nothing; decoded and printed only |
-| Carrier boundary (`tetra_forget_carrier()`) | the carrier evidence, the partial TM-SDUs, the clock, the speech in progress, the timeslot speech context, direct mode with its colour code, protection and call, and with the evidence's epoch the event labels assigned on the carrier | trunked mode, block 1 behind AACH half 1 |
+| Carrier boundary (`tetra_forget_carrier()`) | the carrier evidence, the partial TM-SDUs, the clock, the speech in progress (not its transmission), the timeslot speech context, direct mode with its colour code, protection and call, and with the evidence's epoch the event labels assigned on the carrier | trunked mode, block 1 behind AACH half 1 |
 | Decode-mode change off TETRA (committed) | the whole TETRA state with its tune in flight disowned, the frame sync capture and the publication (`dsd_decode_mode_leave_tetra()`) | nothing |
 
 A DSB whose SCH/S fails is not told from noise on its training sequence and changes nothing; sealing at every such

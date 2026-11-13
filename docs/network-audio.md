@@ -71,8 +71,8 @@ The primary UDP output carries decoded digital voice:
   - Default: **`s16le`** (signed 16-bit little-endian)
   - With `-y`: **`f32le`** (32-bit float little-endian): the same samples as the default, each the `s16le` value /
     32768, so always within ±1. Each block the default sends as one datagram goes out as one `f32le` datagram, twice the
-    size. Two writers keep their own format: M17 voice is still sent as `s16le`, and the alert tones are synthesized as
-    float directly (a different waveform from their `s16le` form).
+    size. M17 voice keeps its own format and is still sent as `s16le`. The alert tones are the same samples as their
+    `s16le` form, at -24 dBFS RMS like digital speech.
 
 ### Analog/source monitor (UDP port + 2)
 

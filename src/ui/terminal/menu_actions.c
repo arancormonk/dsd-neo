@@ -1550,7 +1550,7 @@ io_tcp_direct_link(void* vctx) {
 void
 io_set_gain_dig(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
-    ui_prompt_open_double_async("Digital output gain (0=auto; 1..50)", c->opts->audio_gain, cb_gain_dig, c);
+    ui_prompt_open_double_async("Digital output gain (0 = auto, 0.001..50)", c->opts->audio_gain, cb_gain_dig, c);
 }
 
 void

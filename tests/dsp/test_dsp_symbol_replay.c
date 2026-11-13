@@ -21,10 +21,10 @@
 #include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/analog_sink.h>
-#include <dsd-neo/dsp/analog_voice.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/rate_converter.h>
 #include <dsd-neo/dsp/resampler.h>
+#include <dsd-neo/dsp/speech_agc.h>
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/symbol_levels.h>
@@ -64,6 +64,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "pcm_tap_synth.h"
+#include "speech_synth.h"
 #include "symbol_test_support.h"
 #include "test_support.h"
 
@@ -132,30 +133,61 @@ static float g_chain_seen[960];
 static int g_chain_seen_len = 0;
 static int g_chain_removes_tone = 0;
 static int g_chain_calls = 0;
+/* The last call's flags, with DSD_ANALOG_AUDIO_LEARN when any of its samples learned. */
 static unsigned int g_chain_last_flags = 0U;
-/* Every call's length and flags since the last clear, for the auto squelch's runs. */
+/* Every run of samples that learn, or do not, since the last clear: its length and flags (DSD_ANALOG_AUDIO_LEARN for a
+   run that learns). */
 static size_t g_chain_run_len[64];
 static unsigned int g_chain_run_flags[64];
 static int g_chain_runs = 0;
 static int g_chain_last_source = -1;
 static int g_chain_last_rate_hz = 0;
-/* When set, the real AGC runs over each call's samples with its playing flag, as the gain stage does (issue #668). */
-static dsd_voice_agc* g_chain_agc = NULL;
+/* When set, the real speech AGC runs over each call's samples with their learn flags, as the gain stage does (issues
+   #518, #668). */
+static dsd_speech_agc* g_chain_agc = NULL;
+
+static void
+chain_stub_note_run(size_t len, unsigned int flags) {
+    if (g_chain_runs < 64) {
+        g_chain_run_len[g_chain_runs] = len;
+        g_chain_run_flags[g_chain_runs] = flags;
+        g_chain_runs++;
+    }
+}
+
+/* The runs of @p learn (NULL: one run of @p flags), each noted with its own DSD_ANALOG_AUDIO_LEARN. */
+static unsigned int
+chain_stub_note_runs(size_t n, unsigned int flags, const uint8_t* learn) {
+    if (!learn) {
+        chain_stub_note_run(n, flags);
+        return flags;
+    }
+    const unsigned int base = flags & ~DSD_ANALOG_AUDIO_LEARN;
+    unsigned int any = 0U;
+    size_t start = 0;
+    while (start < n) {
+        const int on = learn[start] != 0U;
+        size_t end = start + 1U;
+        while (end < n && (learn[end] != 0U) == on) {
+            end++;
+        }
+        chain_stub_note_run(end - start, base | (on ? DSD_ANALOG_AUDIO_LEARN : 0U));
+        any |= on ? DSD_ANALOG_AUDIO_LEARN : 0U;
+        start = end;
+    }
+    return base | any;
+}
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_analog_audio_process_f(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain, float* buf, size_t n,
-                           dsd_analog_audio_source source, int rate_hz, unsigned int flags) {
+dsd_analog_audio_process_runs_f(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain, float* buf,
+                                size_t n, dsd_analog_audio_source source, int rate_hz, unsigned int flags,
+                                const uint8_t* learn) {
     (void)opts;
     (void)state;
     (void)chain;
     g_chain_calls++;
-    g_chain_last_flags = flags;
-    if (g_chain_runs < 64) {
-        g_chain_run_len[g_chain_runs] = n;
-        g_chain_run_flags[g_chain_runs] = flags;
-        g_chain_runs++;
-    }
+    g_chain_last_flags = chain_stub_note_runs(n, flags, learn);
     g_chain_last_source = (int)source;
     g_chain_last_rate_hz = rate_hz;
     g_chain_seen_len = 0;
@@ -170,9 +202,20 @@ dsd_analog_audio_process_f(const dsd_opts* opts, dsd_state* state, dsd_analog_au
         DSD_MEMSET(buf, 0, n * sizeof(float));
     }
     if (g_chain_agc && (flags & DSD_ANALOG_AUDIO_DISCARD) == 0U) {
-        dsd_voice_agc_process(g_chain_agc, buf, n, (flags & DSD_ANALOG_AUDIO_PLAYING) ? 1 : 0);
+        if (learn) {
+            dsd_speech_agc_process_runs(g_chain_agc, buf, n, learn);
+        } else {
+            dsd_speech_agc_process(g_chain_agc, buf, n, (flags & DSD_ANALOG_AUDIO_LEARN) != 0U, 1, 0);
+        }
     }
     return 0;
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_analog_audio_process_f(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain, float* buf, size_t n,
+                           dsd_analog_audio_source source, int rate_hz, unsigned int flags) {
+    return dsd_analog_audio_process_runs_f(opts, state, chain, buf, n, source, rate_hz, flags, NULL);
 }
 
 void
@@ -3938,29 +3981,32 @@ test_tone_policy_check_is_no_scan_activity(void) {
     dsd_state_ext_free_all(&state);
 }
 
-/* One 20 ms block through the unsynced finalize step: whether the sink played it must be exactly whether the monitor's
-   audio chain got it with DSD_ANALOG_AUDIO_PLAYING, and @p want_discard whether it got DSD_ANALOG_AUDIO_DISCARD (the
-   sink never asks for DSD_ANALOG_AUDIO_RESET: the chain starts over at a new reception by itself). */
+/* One 20 ms block through the unsynced finalize step: whether the sink played it (@p want_played), whether the monitor's
+   audio chain got it as reception to learn from (DSD_ANALOG_AUDIO_LEARN, @p want_learn), and whether it got
+   DSD_ANALOG_AUDIO_DISCARD (@p want_discard; the sink never asks for DSD_ANALOG_AUDIO_RESET: the chain starts over at
+   a new reception by itself). */
 static void
-expect_chain_block(dsd_opts* opts, dsd_state* state, int want_played, int want_discard) {
+expect_chain_block(dsd_opts* opts, dsd_state* state, int want_played, int want_learn, int want_discard) {
     const int played_before = g_monitor_blocks;
     const int calls_before = g_chain_calls;
     feed_tone_blocks(opts, state, 1);
     const int played = g_monitor_blocks > played_before;
     assert(g_chain_calls == calls_before + 1);
     assert(played == want_played);
-    assert(((g_chain_last_flags & DSD_ANALOG_AUDIO_PLAYING) != 0U) == want_played);
+    assert(((g_chain_last_flags & DSD_ANALOG_AUDIO_LEARN) != 0U) == want_learn);
     assert(((g_chain_last_flags & DSD_ANALOG_AUDIO_DISCARD) != 0U) == want_discard);
     assert((g_chain_last_flags & DSD_ANALOG_AUDIO_RESET) == 0U);
 }
 
-/* Issue #518: the monitor's gain stage adapts to exactly the audio that plays. The chain gets the PLAYING flag for a
-   block the sink plays and not for one it holds back -- the squelch closed, the output off, a retune unresolved, the
-   tone policy still checking -- and DISCARD for a block that straddles a retune, whose samples are partly the old
-   channel's. It always gets the raw block (the tap reads it first, test_rx_tone_tap_reads_raw_block_before_voice_filters)
-   with its source and rate. */
+/* Issue #518: the monitor's gain stage learns from the qualified reception, not from what plays. The chain gets the
+   LEARN flag for a block on an open squelch with no digital carrier, no retune unresolved and the tone policy passing,
+   and not for one the squelch, a retune or the tone policy holds back. The output switches -- audio out (-o null or a
+   muted UI), the monitor switch and -P -- play or record the block or not, but never change what the AGC learns, so a
+   recording plays at the same level whatever they say (B1/B2). The chain gets DISCARD for a block that straddles a
+   retune, whose samples are partly the old channel's. It always gets the raw block (the tap reads it first,
+   test_rx_tone_tap_reads_raw_block_before_voice_filters) with its source and rate. */
 static void
-test_chain_playing_follows_the_sink(void) {
+test_chain_learns_from_reception_not_output(void) {
     static dsd_opts opts;
     static dsd_state state;
     install_fake_rtl_hooks(1);
@@ -3969,7 +4015,7 @@ test_chain_playing_follows_the_sink(void) {
     start_monitor_capture(&opts);
     dsd_trunk_tuning_requests_reset();
 
-    expect_chain_block(&opts, &state, 1, 0);
+    expect_chain_block(&opts, &state, 1, 1, 0);
     assert(g_chain_last_rate_hz == 48000);
 #ifdef USE_RADIO
     /* (A build without radio support has no RTL input, and treats every input as PCM.) */
@@ -3977,23 +4023,35 @@ test_chain_playing_follows_the_sink(void) {
 #endif
     /* The squelch closed over the block (the RTL path reads its power with the sample: held at 1.0 here). */
     opts.rtl_squelch_level = 2.0;
-    expect_chain_block(&opts, &state, 0, 0);
+    expect_chain_block(&opts, &state, 0, 0, 0);
     opts.rtl_squelch_level = 0.0;
-    expect_chain_block(&opts, &state, 1, 0);
-    /* Output off (-o null or a muted UI): nothing plays, so nothing adapts. */
+    expect_chain_block(&opts, &state, 1, 1, 0);
+    /* Output off (-o null or a muted UI), with and without -P, and the monitor switch off: nothing plays, and the AGC
+       learns all the same. */
     opts.audio_out = 0;
-    expect_chain_block(&opts, &state, 0, 0);
+    expect_chain_block(&opts, &state, 0, 1, 0);
+    opts.dmr_stereo_wav = 1;
+    expect_chain_block(&opts, &state, 0, 1, 0);
+    opts.dmr_stereo_wav = 0;
     opts.audio_out = 1;
+    opts.monitor_input_audio = 0;
+    expect_chain_block(&opts, &state, 0, 1, 0);
+    opts.monitor_input_audio = 1;
+    /* Digital sync flagged: no reception to learn from. */
+    state.carrier = 1;
+    expect_chain_block(&opts, &state, 0, 0, 0);
+    state.carrier = 0;
+    expect_chain_block(&opts, &state, 1, 1, 0);
     /* A retune in flight, then landed: the block that straddles its completion is dropped from the chain. */
     const uint64_t request = dsd_trunk_tuning_request_begin();
-    expect_chain_block(&opts, &state, 0, 0);
+    expect_chain_block(&opts, &state, 0, 0, 0);
     dsd_trunk_tuning_request_complete(request, DSD_TRUNK_TUNE_RESULT_OK);
-    expect_chain_block(&opts, &state, 0, 1);
-    expect_chain_block(&opts, &state, 1, 0);
+    expect_chain_block(&opts, &state, 0, 0, 1);
+    expect_chain_block(&opts, &state, 1, 1, 0);
     /* A retune nobody announced (a new stream generation): the same. */
     g_fake_rtl_generation++;
-    expect_chain_block(&opts, &state, 0, 1);
-    expect_chain_block(&opts, &state, 1, 0);
+    expect_chain_block(&opts, &state, 0, 0, 1);
+    expect_chain_block(&opts, &state, 1, 1, 0);
     dsd_trunk_tuning_requests_reset();
 
     /* PCM input: the PCM source at the input's rate; the tone policy still checking holds the AGC too. */
@@ -4001,11 +4059,11 @@ test_chain_playing_follows_the_sink(void) {
     opts.audio_in_type = AUDIO_IN_WAV;
     opts.wav_sample_rate = 48000;
     /* The switch of input is a boundary the tap reads as a new reception: that block is dropped from the chain too. */
-    expect_chain_block(&opts, &state, 0, 1);
-    expect_chain_block(&opts, &state, 1, 0);
+    expect_chain_block(&opts, &state, 0, 0, 1);
+    expect_chain_block(&opts, &state, 1, 1, 0);
     assert(g_chain_last_source == DSD_ANALOG_AUDIO_SOURCE_PCM16 && g_chain_last_rate_hz == 48000);
     set_tone_policy(&opts, DSD_TONE_FILTER_ALLOW, "100.0");
-    expect_chain_block(&opts, &state, 0, 0);
+    expect_chain_block(&opts, &state, 0, 0, 0);
     assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_PENDING);
     opts.analog_tone_filter = DSD_TONE_FILTER_OFF;
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
@@ -4050,9 +4108,9 @@ test_auto_squelch_gates_each_sample(void) {
     feed_flagged_block(&opts, &state, 1000.0f, 200U, 900U);
     assert(g_monitor_blocks == 1 && g_played_len == 960U * sizeof(short));
     assert(g_chain_runs == 3);
-    assert(g_chain_run_len[0] == 200U && g_chain_run_flags[0] == DSD_ANALOG_AUDIO_PLAYING);
+    assert(g_chain_run_len[0] == 200U && g_chain_run_flags[0] == DSD_ANALOG_AUDIO_LEARN);
     assert(g_chain_run_len[1] == 700U && g_chain_run_flags[1] == 0U);
-    assert(g_chain_run_len[2] == 60U && g_chain_run_flags[2] == DSD_ANALOG_AUDIO_PLAYING);
+    assert(g_chain_run_len[2] == 60U && g_chain_run_flags[2] == DSD_ANALOG_AUDIO_LEARN);
     short out[960];
     DSD_MEMCPY(out, g_played, sizeof out);
     /* 5 ms up: 240 samples at 48 kHz; 10 ms down: 480. */
@@ -4080,7 +4138,7 @@ test_auto_squelch_gates_each_sample(void) {
     assert(dsd_symbol_test_finalize_unsynced_analog_block_flags(&opts, &state, block, flags, 960U) == 960U);
     assert(g_chain_runs == 10);
     for (int r = 0; r < 10; r++) {
-        assert(g_chain_run_flags[r] == ((r % 2) ? 0U : DSD_ANALOG_AUDIO_PLAYING));
+        assert(g_chain_run_flags[r] == ((r % 2) ? 0U : DSD_ANALOG_AUDIO_LEARN));
     }
 
     /* Through the sample path the symbol reader takes: each sample's flag goes into the block with it. */
@@ -4089,7 +4147,7 @@ test_auto_squelch_gates_each_sample(void) {
         dsd_symbol_test_push_unsynced_analog_sample_flag(&opts, &state, 700.0f,
                                                          i < 480U ? (uint8_t)0U : (uint8_t)DSD_SQUELCH_FLAG_CLOSED);
     }
-    assert(g_chain_runs == 2 && g_chain_run_len[0] == 480U && g_chain_run_flags[0] == DSD_ANALOG_AUDIO_PLAYING);
+    assert(g_chain_runs == 2 && g_chain_run_len[0] == 480U && g_chain_run_flags[0] == DSD_ANALOG_AUDIO_LEARN);
     assert(g_chain_run_len[1] == 480U && g_chain_run_flags[1] == 0U);
 
     /* The block gate wins over the per-sample one: a block it rejects (digital sync here; a muted output, a retune
@@ -4134,7 +4192,7 @@ test_auto_squelch_gates_each_sample(void) {
     assert(state.analog_rx.carrier_open == 0);
     const int blocks = g_monitor_blocks;
     feed_flagged_block(&opts, &state, 1000.0f, 0U, 960U);
-    assert(g_monitor_blocks == blocks + 1 && g_chain_runs == 1 && g_chain_run_flags[0] == DSD_ANALOG_AUDIO_PLAYING);
+    assert(g_monitor_blocks == blocks + 1 && g_chain_runs == 1 && g_chain_run_flags[0] == DSD_ANALOG_AUDIO_LEARN);
 
     /* AUTO on PCM input resolves to off: no per-sample gate, and the level comparison is off too. */
     opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
@@ -5976,28 +6034,23 @@ test_tone_verdict_inside_a_block_splits_the_chain_runs(void) {
         const call_block_seen* seen = push_scripted_block(&opts, &state, gates, loud, flagged);
         assert(g_chain_runs == 2);
         assert(g_chain_run_len[0] == prefix && g_chain_run_flags[0] == 0U);
-        assert(g_chain_run_len[1] == 960U - prefix && g_chain_run_flags[1] == DSD_ANALOG_AUDIO_PLAYING);
+        assert(g_chain_run_len[1] == 960U - prefix && g_chain_run_flags[1] == DSD_ANALOG_AUDIO_LEARN);
         assert(seen->input == DSD_ANALOG_CALL_RECEPTION && call_block_silent_before(seen, prefix));
         if (flagged) {
             /* The sink gate ramps in from silence at the eligible point (5 ms), not from the gain before it. */
             assert(fabsf(seen->samples[prefix]) < 100.0f && fabsf(seen->samples[prefix + 41U]) > 0.0f);
         }
 
-        /* Muted, -P recording: the same runs. Muted with nothing recording: nothing plays, one run, and the start is
-           still silence for the call. */
+        /* Muted, -P recording or not: the same runs, since what the AGC learns does not depend on the output (issue
+           #518), and the start is still silence for the call. */
         opts.audio_out = 0;
-        opts.dmr_stereo_wav = 1;
-        (void)push_gated_block(&opts, &state, P, 3000.0, flagged);
-        g_chain_runs = 0;
-        seen = push_scripted_block(&opts, &state, gates, loud, flagged);
-        assert(g_chain_runs == 2 && g_chain_run_len[0] == prefix && g_chain_run_flags[0] == 0U);
-        assert(g_chain_run_flags[1] == DSD_ANALOG_AUDIO_PLAYING && call_block_silent_before(seen, prefix));
-        opts.dmr_stereo_wav = 0;
-        (void)push_gated_block(&opts, &state, P, 3000.0, flagged);
-        g_chain_runs = 0;
-        seen = push_scripted_block(&opts, &state, gates, loud, flagged);
-        for (int r = 0; r < g_chain_runs; r++) {
-            assert(g_chain_run_flags[r] == 0U);
+        for (int recording = 1; recording >= 0; recording--) {
+            opts.dmr_stereo_wav = recording;
+            (void)push_gated_block(&opts, &state, P, 3000.0, flagged);
+            g_chain_runs = 0;
+            seen = push_scripted_block(&opts, &state, gates, loud, flagged);
+            assert(g_chain_runs == 2 && g_chain_run_len[0] == prefix && g_chain_run_flags[0] == 0U);
+            assert(g_chain_run_flags[1] == DSD_ANALOG_AUDIO_LEARN && call_block_silent_before(seen, prefix));
         }
         assert(seen->input == DSD_ANALOG_CALL_RECEPTION && call_block_silent_before(seen, prefix));
         assert(sample_near(seen->samples[959], b6_sample(959, 3000.0)));
@@ -6017,9 +6070,23 @@ level_ramp_in(float* x, size_t from, size_t end) {
     }
 }
 
-/* B6 at the gain stage, through the real AGC: a loud start the tone policy rejected, then quiet speech it allowed, in
-   one block. The AGC holds over the rejected start, so the speech comes out exactly as from an AGC that was never handed
-   the loud start as playing audio -- not pulled down by it. */
+/* Whether two speech AGCs stand at the same point: what they learned and the frame they are in the middle of (the
+   samples of it that learn and their power). */
+static int
+agc_states_match(const dsd_speech_agc* a, const dsd_speech_agc* b) {
+    const float sumsq_tol = 1e-6f * fmaxf(1.0f, fmaxf(a->frame_sumsq, b->frame_sumsq));
+    return a->frames == b->frames && a->frame_pos == b->frame_pos && a->frame_learn == b->frame_learn
+           && fabsf(a->frame_sumsq - b->frame_sumsq) <= sumsq_tol && a->learned.run_len == b->learned.run_len
+           && a->learned.commits == b->learned.commits && a->learned.steps == b->learned.steps
+           && fabsf(a->learned.gain_db - b->learned.gain_db) <= 1e-6f
+           && fabsf(a->learned.noise_floor_db - b->learned.noise_floor_db) <= 1e-6f
+           && fabsf(a->learned.atten_db - b->learned.atten_db) <= 1e-6f;
+}
+
+/* B6 at the gain stage, through the real speech AGC: a loud start the tone policy rejected, then quiet speech it
+   allowed, in one block. The AGC learns nothing from the rejected start: its whole state, and the speech it plays, are
+   exactly those of an AGC handed the same samples with the start not learning, and not those of one the start taught
+   (which the comparison would tell apart: the partial frame's level counts the start). */
 static void
 test_tone_rejected_start_leaves_the_agc_alone(void) {
     enum { R = DSD_ANALOG_TONE_GATE_REJECTED, A = DSD_ANALOG_TONE_GATE_ALLOWED };
@@ -6029,9 +6096,14 @@ test_tone_rejected_start_leaves_the_agc_alone(void) {
     const size_t prefix = B6_AT_READ3;
     static dsd_opts opts;
     static dsd_state state;
-    static dsd_voice_agc agc;
-    static dsd_voice_agc reference;
-    assert(dsd_voice_agc_init(&agc, B6_RATE, 1.0) == 0 && dsd_voice_agc_init(&reference, B6_RATE, 1.0) == 0);
+    static dsd_speech_agc agc;
+    static dsd_speech_agc reference;
+    static dsd_speech_agc taught;
+    dsd_speech_agc* const agcs[] = {&agc, &reference, &taught};
+    for (size_t k = 0; k < sizeof agcs / sizeof agcs[0]; k++) {
+        assert(dsd_speech_agc_init(agcs[k], B6_RATE, 0.0f, DSD_SPEECH_AGC_TARGET_DBFS, DSD_SPEECH_AGC_CEILING_DBFS)
+               == 0);
+    }
     start_b6_case(&opts, &state);
     start_monitor_capture(&opts);
     g_chain_agc = &agc;
@@ -6039,15 +6111,24 @@ test_tone_rejected_start_leaves_the_agc_alone(void) {
     const call_block_seen* seen = push_scripted_block(&opts, &state, gates, amps, 0);
     assert(seen->input == DSD_ANALOG_CALL_RECEPTION && seen->eligible_from == prefix);
 
-    /* The reference: the same input, the rejected block and start held, the allowed speech playing. */
+    /* The reference: the same input, the rejected block and start not learning, the allowed speech learning. */
     static float ref[960];
+    static float other[960];
+    static uint8_t learn[960];
     DSD_MEMSET(ref, 0, sizeof(ref));
-    dsd_voice_agc_process(&reference, ref, 960U, 0);
+    DSD_MEMSET(other, 0, sizeof(other));
+    dsd_speech_agc_process_runs(&reference, ref, 960U, NULL);
+    dsd_speech_agc_process_runs(&taught, other, 960U, NULL);
     for (int i = 0; i < 960; i++) {
         ref[i] = b6_sample(i, amps[i / B6_READ]);
+        other[i] = ref[i];
+        learn[i] = (size_t)i >= prefix ? 1U : 0U;
     }
-    dsd_voice_agc_process(&reference, ref, prefix, 0);
-    dsd_voice_agc_process(&reference, ref + prefix, 960U - prefix, 1);
+    dsd_speech_agc_process_runs(&reference, ref, 960U, learn);
+    DSD_MEMSET(learn, 1, sizeof(learn));
+    dsd_speech_agc_process_runs(&taught, other, 960U, learn);
+    assert(agc_states_match(&agc, &reference));
+    assert(!agc_states_match(&agc, &taught));
     /* After the gain stage the speech ramps in from silence over 5 ms (issue #668), as under the auto squelch. */
     level_ramp_in(ref, prefix, 960U);
     for (size_t i = prefix; i < 960U; i++) {
@@ -6059,6 +6140,70 @@ test_tone_rejected_start_leaves_the_agc_alone(void) {
     }
     assert(call_block_silent_before(seen, prefix));
     finish_b6_case(&opts, &state);
+}
+
+enum { LEVEL_CASE_BLOCKS = 100 };
+
+/* What the chain hands the NFM call (and the speaker) for 2 s of a quiet talker on PCM input, through the real speech
+   AGC, with the output switches @p audio_out, @p monitor and -P (@p recording). Writes the AGC's learned gain to
+   @p gain_db. */
+static void
+call_audio_through_agc(int audio_out, int monitor, int recording, float* out, float* gain_db) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsd_speech_agc agc;
+    static float speech[960 * LEVEL_CASE_BLOCKS];
+    dsd_test_speech_params p;
+    dsd_test_speech_defaults(&p, 91U);
+    p.level_dbfs = -40.0;
+    assert(dsd_test_synth_speech(speech, sizeof speech / sizeof speech[0], 48000, &p) == 0);
+    assert(dsd_speech_agc_init(&agc, 48000, 0.0f, DSD_SPEECH_AGC_TARGET_DBFS, DSD_SPEECH_AGC_CEILING_DBFS) == 0);
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    g_chain_removes_tone = 0;
+    g_chain_agc = &agc;
+    start_call_capture();
+    opts.audio_out = audio_out;
+    opts.monitor_input_audio = monitor;
+    opts.dmr_stereo_wav = recording;
+    for (int b = 0; b < LEVEL_CASE_BLOCKS; b++) {
+        for (unsigned int i = 0; i < 960U; i++) {
+            dsd_symbol_test_push_unsynced_analog_sample(&opts, &state, speech[(size_t)b * 960U + i]);
+        }
+        DSD_MEMCPY(out + (size_t)b * 960U, last_call_block()->samples, 960U * sizeof(float));
+    }
+    *gain_db = agc.learned.gain_db;
+    stop_call_capture();
+    g_chain_agc = NULL;
+    g_chain_removes_tone = 1;
+    dsd_state_ext_free_all(&state);
+}
+
+/* Issue #518: what the AGC learns, and so the level a per-call recording and the speaker get, does not depend on the
+   output switches. A quiet talker through the real speech AGC comes out the same, sample for sample, with audio out
+   on, with -o null or a muted UI (with and without -P) and with the monitor switch off; the AGC did move the gain, so
+   the comparison is not between untouched copies. Before, a muted output without -P froze the AGC. */
+static void
+test_call_audio_level_ignores_the_output(void) {
+    static float want[960 * LEVEL_CASE_BLOCKS];
+    static float got[960 * LEVEL_CASE_BLOCKS];
+    float want_gain = 0.0f;
+    float got_gain = 0.0f;
+    call_audio_through_agc(1, 1, 0, want, &want_gain);
+    assert(want_gain > 5.0f);
+    const int cases[][3] = {{0, 1, 1}, {0, 1, 0}, {1, 0, 0}, {1, 1, 1}};
+    for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        call_audio_through_agc(cases[c][0], cases[c][1], cases[c][2], got, &got_gain);
+        int same = fabsf(got_gain - want_gain) <= 1e-6f;
+        for (size_t i = 0; same && i < sizeof want / sizeof want[0]; i++) {
+            same = sample_near(got[i], want[i]);
+        }
+        if (!same) {
+            DSD_FPRINTF(stderr, "FAIL: audio_out %d monitor %d -P %d: the call audio differs (gain %.2f, want %.2f)\n",
+                        cases[c][0], cases[c][1], cases[c][2], (double)got_gain, (double)want_gain);
+            assert(0);
+        }
+    }
 }
 
 /* How many samples a ramp-in at @p up per sample that stands at @p gain still takes to reach full level: the sink gate's
@@ -6848,7 +6993,7 @@ main(void) {
     test_tone_policy_no_tone_rejection_names_a_later_tone();
     test_tone_policy_rejection_outlives_its_carrier();
     test_tone_policy_check_is_no_scan_activity();
-    test_chain_playing_follows_the_sink();
+    test_chain_learns_from_reception_not_output();
     test_auto_squelch_gates_each_sample();
     test_speaker_ramps_in_after_recording_only_blocks();
     test_monitor_stamps_analog_reception();
@@ -6875,6 +7020,7 @@ main(void) {
     test_tone_verdict_inside_a_block_cuts_its_ineligible_start();
     test_tone_verdict_inside_a_block_splits_the_chain_runs();
     test_tone_rejected_start_leaves_the_agc_alone();
+    test_call_audio_level_ignores_the_output();
     test_sink_gate_ramp_end_follows_the_ramp();
     test_level_path_ramps_in_after_a_mid_block_verdict();
     test_level_path_ramp_runs_on_into_the_next_block();

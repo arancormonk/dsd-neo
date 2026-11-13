@@ -157,7 +157,7 @@ Main Menu
 │   │   ├── Low-pass filter (960 Hz) [Off]       V
 │   │   ├── High-pass filter (960 Hz) [Off]      B
 │   │   ├── Voice band-pass [On]                 N
-│   │   ├── Digital high-pass filter [On]        H
+│   │   ├── Digital high-pass filter [Off]       H
 │   │   └── Cosine filter [On]
 │   ├── Per-protocol inversion
 │   │   ├── Invert X2-TDMA [Off]
@@ -853,7 +853,7 @@ expires independently of **Save user TG lockouts**. See [Skip lifetimes](cli.md#
 |---|---|
 | `1` / `2` | Toggle synth/playback for slot 1 / slot 2 |
 | `3` | Cycle TDMA slot preference (slot 1 / slot 2 / auto) |
-| `+` / `-` | Digital gain up/down |
+| `+` / `-` | Digital gain up/down (by 1, up to 50; from auto `+` goes to 1, and below 0.001 is auto again) |
 | `*` / `/` | Analog gain up/down (1–100; from auto they start at 50, and below 1 is auto again) |
 | `v` | Cycle the input volume multiplier (non-RTL inputs) or the RTL monitor gain (RTL input) |
 | `4` | Toggle force privacy key over identifiers |

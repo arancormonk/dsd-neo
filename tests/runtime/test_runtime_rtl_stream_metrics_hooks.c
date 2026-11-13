@@ -252,6 +252,31 @@ test_analog_profile_outputs(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
+static double g_deemph_gain_result = 0.0;
+
+static double
+fake_deemph_gain(void) {
+    return g_deemph_gain_result;
+}
+
+/* The monitor audio's de-emphasis gain (issue #518): none (1.0) with no stream installed, as on PCM input, in tests and
+   in radio-off builds; the stream's own gain when it is positive, none when it is not. */
+static void
+test_monitor_deemph_gain(void) {
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    assert(fabs(dsd_rtl_stream_metrics_hook_monitor_deemph_gain() - 1.0) < 1e-12);
+    dsd_rtl_stream_metrics_hooks hooks = {0};
+    hooks.monitor_deemph_gain = fake_deemph_gain;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_deemph_gain_result = 4.8123;
+    assert(fabs(dsd_rtl_stream_metrics_hook_monitor_deemph_gain() - 4.8123) < 1e-12);
+    g_deemph_gain_result = 0.0;
+    assert(fabs(dsd_rtl_stream_metrics_hook_monitor_deemph_gain() - 1.0) < 1e-12);
+    g_deemph_gain_result = -1.1;
+    assert(fabs(dsd_rtl_stream_metrics_hook_monitor_deemph_gain() - 1.0) < 1e-12);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
 static int g_family_active_result = 0;
 static int g_rate_for_family_family = -1;
 static int g_rate_for_family_cqpsk = -1;
@@ -542,6 +567,7 @@ main(void) {
      */
 
     test_analog_profile_outputs();
+    test_monitor_deemph_gain();
     test_family_hooks();
     test_family_landing_after_pending_hook();
     test_digital_family_landing_hook();

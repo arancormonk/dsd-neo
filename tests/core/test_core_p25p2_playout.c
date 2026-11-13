@@ -29,6 +29,7 @@
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "../test_support/radio_policy_test.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -43,6 +44,7 @@ typedef struct {
     int left;     /* first left (or mono) sample: the tag */
     int right;
     int peak_left; /* largest left (or mono) sample magnitude in the block */
+    int crossings; /* sign changes of the left (or mono) channel: a tone's frequency */
     int is_float;  /* written as f32 (-y): left, right and peak_left are the 16-bit samples it carries */
 } captured_block;
 
@@ -55,7 +57,8 @@ static int g_capture_float = 0;
    one then), and what dsd_p25p2_playout_defer_alert() answered. */
 static int g_raise_at_block = -1;
 static int g_raise_taken = -1;
-/* A quieter alert raised through beeper() from the output hook while block g_beep_at_block is being written. */
+/* The data alert (ID 80, twice the voice alert's frequency) raised through beeper() from the output hook while block
+   g_beep_at_block is being written. */
 static int g_beep_at_block = -1;
 
 static void
@@ -70,6 +73,7 @@ capture_blast(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* d
     // Float output (-y) writes the same 16-bit blocks as f32, s16 / 32768 (issue #652): read them back as samples.
     const size_t width = g_capture_float ? sizeof(float) : sizeof(short);
     b->channels = (nsam == width * 160U * 2U) ? 2 : 1;
+    int prev_left = 0;
     for (int i = 0; i < 160 * b->channels; i++) {
         int v;
         if (g_capture_float) {
@@ -90,16 +94,20 @@ capture_blast(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* d
             if (mag > b->peak_left) {
                 b->peak_left = mag;
             }
+            if (v != 0 && prev_left != 0 && (v < 0) != (prev_left < 0)) {
+                b->crossings++;
+            }
+            prev_left = (v != 0) ? v : prev_left;
         }
     }
     (void)opts;
     if (g_block_count == g_raise_at_block) {
         g_raise_at_block = -1;
-        g_raise_taken = dsd_p25p2_playout_defer_alert(&g_opts, state, 0, 40, 86, 3);
+        g_raise_taken = dsd_p25p2_playout_defer_alert(&g_opts, state, 0, 40, 3);
     }
     if (g_block_count == g_beep_at_block) {
         g_beep_at_block = -1;
-        beeper(&g_opts, state, 0, 40, 20, 1);
+        beeper(&g_opts, state, 0, 80, 1);
     }
 }
 
@@ -411,7 +419,7 @@ test_provisional_correction_repays_debt(void) {
     return rc;
 }
 
-/* One-channel output: 160-sample blocks, a lone call at full level, two calls averaged. */
+/* One-channel output: 160-sample blocks, a lone call at full level, two calls summed (issue #518). */
 static int
 test_mono_output(void) {
     int rc = 0;
@@ -432,7 +440,77 @@ test_mono_output(void) {
     burst(1, 0, DSD_P25P2_BURST_4V, 3000);
     dsd_p25p2_playout_pair_done(&g_opts, &g_state);
     rc |= expect_int("mono two calls blocks", g_block_count, 4);
-    rc |= expect_int("mono two calls averaged", g_blocks[0].left, 2000);
+    rc |= expect_int("mono two calls summed", g_blocks[0].left, 4000);
+    return rc;
+}
+
+/* One-channel output sums the slots whose frame is decoded audio (issue #518): a fill an open stream queued for a lost
+   burst is no second talker, so the companion plays at its own level beside it (it was averaged with the fill's
+   silence, -6 dB), and two talkers sum. */
+static int
+test_mono_fill_beside_a_talker(void) {
+    int rc = 0;
+    setup(0, 1);
+    seed_call(&g_state, 0U, 100U, 1000U);
+    seed_call(&g_state, 1U, 200U, 2000U);
+    int tag0 = 1000;
+    int tag1 = 2000;
+    superframe(4, 4, &tag0, &tag1, -1); /* proves both 2V pairs */
+    superframe(4, 4, &tag0, &tag1, 2);  /* slot 1's 4V at pair 2 is lost: its blocks 26..29 are fill */
+    rc |= expect_int("fill beside a talker blocks", g_block_count, 36);
+    for (int i = 0; i < g_block_count && i < 36; i++) {
+        const int fill = i >= 26 && i < 30;
+        char tag[64];
+        DSD_SNPRINTF(tag, sizeof tag, "fill beside a talker block %d", i);
+        rc |= expect_int(tag, g_blocks[i].left, fill ? 2000 + i : (1000 + i) + (2000 + i));
+    }
+    return rc;
+}
+
+/* The one-channel mix's limiter: two hot talkers play at its -1 dBFS ceiling, louder than either and never above it;
+   its gain carries into the next blocks, and it goes back to unity when the queues start over after the release hook's
+   drain (the carrier boundary's), which plays what was queued through it first. */
+static int
+test_mono_limits_two_hot_talkers(void) {
+    int rc = 0;
+    setup(0, 1);
+    seed_call(&g_state, 0U, 100U, 1000U);
+    seed_call(&g_state, 1U, 200U, 2000U);
+    burst(0, 0, DSD_P25P2_BURST_4V, 20000);
+    burst(1, 0, DSD_P25P2_BURST_4V, 20000);
+    dsd_p25p2_playout_pair_done(&g_opts, &g_state);
+    rc |= expect_int("hot talkers blocks", g_block_count, 4);
+    for (int b = 0; b < g_block_count && b < 4; b++) {
+        rc |= expect_int("hot talkers at the ceiling", g_blocks[b].peak_left, 29204);
+        rc |= expect_int("hot talkers limited from the first sample", g_blocks[b].left, 29204);
+    }
+    g_state.p25_p2_audio_allowed[1] = 0;
+    burst(0, 1, DSD_P25P2_BURST_4V, 29000);
+    burst(1, 1, DSD_P25P2_BURST_OTHER, 0);
+    dsd_p25p2_playout_pair_done(&g_opts, &g_state);
+    rc |= expect_int("one talker after them blocks", g_block_count, 8);
+    if (g_block_count >= 5) {
+        rc |= expect_int("the gain carries into the next block", g_blocks[4].left < 29000 - 3000, 1);
+    }
+
+    setup(0, 1);
+    seed_call(&g_state, 0U, 100U, 1000U);
+    seed_call(&g_state, 1U, 200U, 2000U);
+    burst(0, 0, DSD_P25P2_BURST_4V, 20000);
+    burst(1, 0, DSD_P25P2_BURST_4V, 20000);
+    dsd_p25p2_flush_partial_audio(&g_opts, &g_state);
+    rc |= expect_int("the drain plays the hot talkers", g_block_count, 4);
+    for (int b = 0; b < g_block_count && b < 4; b++) {
+        rc |= expect_int("drained through the limiter", g_blocks[b].peak_left, 29204);
+    }
+    g_state.p25_p2_audio_allowed[1] = 0;
+    burst(0, 0, DSD_P25P2_BURST_4V, 29000);
+    burst(1, 0, DSD_P25P2_BURST_OTHER, 0);
+    dsd_p25p2_playout_pair_done(&g_opts, &g_state);
+    rc |= expect_int("the next carrier's talker blocks", g_block_count, 8);
+    if (g_block_count >= 5) {
+        rc |= expect_int("the next carrier's talker at its own level", g_blocks[4].left, 29000);
+    }
     return rc;
 }
 
@@ -550,7 +628,8 @@ test_slot_preference(void) {
                         want_left = right;
                     }
                     if (channels == 1) {
-                        const int want = wins ? want_left : (left + right) / 2;
+                        // Without a winner the talkers are summed, and a fill (zeros) is no second talker.
+                        const int want = wins ? want_left : left + right;
                         DSD_SNPRINTF(tag, sizeof tag, "preference %d mono block %d", pref, i);
                         rc |= expect_int(tag, g_blocks[i].left, want);
                     } else {
@@ -733,7 +812,7 @@ test_switched_off_slot_beside_muted_companion(void) {
     return rc;
 }
 
-/* One-channel float output: a lone call at full level, two calls averaged, as in 16-bit output. */
+/* One-channel float output: a lone call at full level, two calls summed, as in 16-bit output. */
 static int
 test_float_mono_output(void) {
     int rc = 0;
@@ -754,7 +833,7 @@ test_float_mono_output(void) {
     burst(1, 0, DSD_P25P2_BURST_4V, 2000);
     dsd_p25p2_playout_pair_done(&g_opts, &g_state);
     rc |= expect_int("float mono two calls blocks", g_block_count, 4);
-    rc |= expect_int("float mono two calls averaged", g_blocks[0].left, 1500);
+    rc |= expect_int("float mono two calls summed", g_blocks[0].left, 3000);
     return rc;
 }
 
@@ -1089,7 +1168,7 @@ test_alert_fence_survives_reclaim(void) {
     dsd_p25p2_playout_slot* s = &g_state.p25p2_playout.slot[0];
     const dsd_p25p2_playout_entry model = s->q[s->head];
     (void)fill_queue(s, &model, 10, 0, 1000);
-    beeper(&g_opts, &g_state, 0, 40, 86, 1);
+    beeper(&g_opts, &g_state, 0, 40, 1);
     const int tag = fill_queue(s, &model, DSD_P25P2_PLAYOUT_CAP, 0, 1000);
     for (int i = 10; i < 14; i++) {
         s->q[i].kind = DSD_P25P2_PLAYOUT_ENTRY_SKIP;
@@ -1602,7 +1681,7 @@ test_alert_waits_for_queued_audio(void) {
     setup(0, 2);
     seed_call(&g_state, 0U, 100U, 1000U);
     burst(0, 0, DSD_P25P2_BURST_4V, 1000);
-    beeper(&g_opts, &g_state, 0, 40, 86, 3);
+    beeper(&g_opts, &g_state, 0, 40, 3);
     rc |= expect_int("the alert waits behind the call's frames", g_block_count, 0);
     dsd_p25p2_playout_pair_done(&g_opts, &g_state);
     rc |= expect_int("the frames, then the alert", g_block_count, 4 + 6);
@@ -1612,10 +1691,10 @@ test_alert_waits_for_queued_audio(void) {
     for (int b = 4; b < 10 && b < g_block_count; b++) {
         rc |= expect_int("then the alert", g_blocks[b].right, 0);
     }
-    beeper(&g_opts, &g_state, 0, 40, 86, 3);
+    beeper(&g_opts, &g_state, 0, 40, 3);
     rc |= expect_int("with nothing queued it sounds at once", g_block_count, 16);
     burst(0, 1, DSD_P25P2_BURST_4V, 1004);
-    beeper(&g_opts, &g_state, 0, 40, 86, 3);
+    beeper(&g_opts, &g_state, 0, 40, 3);
     rc |= expect_int("queued again, it waits", g_block_count, 16);
     dsd_p25p2_playout_discard(&g_opts, &g_state);
     rc |= expect_int("a discard sounds it without the frames", g_block_count, 22);
@@ -1629,7 +1708,7 @@ test_alert_waits_for_queued_audio(void) {
     seed_call(&g_state, 1U, 200U, 2000U);
     burst(0, 0, DSD_P25P2_BURST_2V, 1000);
     burst(1, 0, DSD_P25P2_BURST_4V, 2000);
-    beeper(&g_opts, &g_state, 0, 40, 86, 3);
+    beeper(&g_opts, &g_state, 0, 40, 3);
     dsd_p25p2_playout_drain(&g_opts, &g_state);
     rc |= expect_int("both slots, the alert, slot 2 alone", g_block_count, 2 + 6 + 2);
     for (int b = 0; b < 2 && b < g_block_count; b++) {
@@ -1653,9 +1732,9 @@ test_raising_an_alert_sounds_none(void) {
     setup(0, 2);
     seed_call(&g_state, 0U, 100U, 1000U);
     burst(0, 0, DSD_P25P2_BURST_4V, 1000);
-    beeper(&g_opts, &g_state, 0, 40, 86, 3);
+    beeper(&g_opts, &g_state, 0, 40, 3);
     dsd_p25p2_playout_reset(&g_state, -1);
-    beeper(&g_opts, &g_state, 0, 40, 86, 3);
+    beeper(&g_opts, &g_state, 0, 40, 3);
     rc |= expect_int("raising an alert sounds none", g_block_count, 0);
     dsd_p25p2_playout_pair_done(&g_opts, &g_state);
     rc |= expect_int("the next step sounds both", g_block_count, 12);
@@ -1674,7 +1753,9 @@ test_raising_an_alert_sounds_none(void) {
 }
 
 /* An alert raised through beeper() while a deferred alert's tone is going out, its slot's queue now empty: it waits
-   for that tone to finish rather than sounding into it, so the two tones play whole, one after the other. */
+   for that tone to finish rather than sounding into it, so the two tones play whole, one after the other. Both play at
+   one level (issue #518), so the tones are told apart by frequency: the voice alert's 1250 Hz, then the data alert's
+   2500 Hz. */
 static int
 test_alert_raised_during_a_tone_waits(void) {
     int rc = 0;
@@ -1682,17 +1763,18 @@ test_alert_raised_during_a_tone_waits(void) {
     seed_call(&g_state, 0U, 100U, 1000U);
     g_state.p25_p2_audio_allowed[1] = 0;
     burst(0, 0, DSD_P25P2_BURST_4V, 1000);
-    beeper(&g_opts, &g_state, 0, 40, 86, 1);
+    beeper(&g_opts, &g_state, 0, 40, 1);
     g_beep_at_block = 5;
     dsd_p25p2_playout_pair_done(&g_opts, &g_state);
     g_beep_at_block = -1;
     rc |= expect_int("the frames and both tones", g_block_count, 4 + 2 + 2);
     if (g_block_count >= 8) {
-        const int loud = g_blocks[4].peak_left;
-        const int quiet = g_blocks[7].peak_left;
-        rc |= expect_int("the first tone louder", loud > quiet && quiet > 0, 1);
-        rc |= expect_int("the first tone whole", g_blocks[5].peak_left, loud);
-        rc |= expect_int("then the second", g_blocks[6].peak_left, quiet);
+        // 20 ms of 1250 Hz cross zero 50 times, of 2500 Hz 100 times (one of them may fall on the block's edge).
+        rc |= expect_int("the first tone is the voice alert", abs(g_blocks[4].crossings - 50) <= 1, 1);
+        rc |= expect_int("the first tone whole", abs(g_blocks[5].crossings - 50) <= 1, 1);
+        rc |= expect_int("then the data alert", abs(g_blocks[6].crossings - 100) <= 1, 1);
+        rc |= expect_int("the data alert whole", abs(g_blocks[7].crossings - 100) <= 1, 1);
+        rc |= expect_int("both at one level", g_blocks[7].peak_left, g_blocks[4].peak_left);
     }
     return rc;
 }
@@ -1716,7 +1798,7 @@ test_alert_after_trailing_removed_entries(void) {
         dsd_p25p2_playout_pair_done(&g_opts, &g_state);
     }
     dsd_p25p2_playout_close(&g_state, 0);
-    beeper(&g_opts, &g_state, 0, 40, 86, 3);
+    beeper(&g_opts, &g_state, 0, 40, 3);
     const int before = g_block_count;
     dsd_p25p2_playout_drain(&g_opts, &g_state);
     rc |= expect_int("the superframe's 18 blocks, then the alert", g_block_count, 18 + 6);
@@ -1733,7 +1815,7 @@ test_alert_overflow_keeps_order(void) {
     seed_call(&g_state, 0U, 100U, 1000U);
     burst(0, 0, DSD_P25P2_BURST_4V, 1000);
     for (int i = 0; i < DSD_P25P2_PLAYOUT_ALERTS + 2; i++) {
-        beeper(&g_opts, &g_state, 0, 40, 86, 1);
+        beeper(&g_opts, &g_state, 0, 40, 1);
     }
     rc |= expect_int("no alert sounds ahead of the audio", g_block_count, 0);
     dsd_p25p2_playout_drain(&g_opts, &g_state);
@@ -1833,7 +1915,7 @@ static DSD_THREAD_RETURN_TYPE
 raise_alerts(void* arg) {
     (void)arg;
     for (int i = 0; i < RAISED_ALERTS; i++) {
-        if (!dsd_p25p2_playout_defer_alert(&g_opts, &g_state, i & 1, 40, 86, 1)) {
+        if (!dsd_p25p2_playout_defer_alert(&g_opts, &g_state, i & 1, 40, 1)) {
             dsd_thread_yield();
         }
     }
@@ -2021,6 +2103,8 @@ main(void) {
     rc |= test_repeated_unknown_phase_loss();
     rc |= test_provisional_correction_repays_debt();
     rc |= test_mono_output();
+    rc |= test_mono_fill_beside_a_talker();
+    rc |= test_mono_limits_two_hot_talkers();
     rc |= test_close_keeps_tail();
     rc |= test_verdicts();
     rc |= test_slot_preference();

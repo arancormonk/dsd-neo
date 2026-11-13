@@ -6,9 +6,9 @@
 /* UI command actions — audio domain */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/gain_setting.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -39,49 +39,36 @@ ui_handle_toggle_mute(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
     return 1;
 }
 
-static inline void
-apply_gain_delta(dsd_opts* opts, dsd_state* state, int d) {
-    /* In 64 bits: a delta can be any int32 (the control API sends what its client asked for). */
-    int64_t g = (int64_t)opts->audio_gain + d;
-    if (g < 0) {
-        g = 0;
-    }
-    if (g > 50) {
-        g = 50;
-    }
-    opts->audio_gain = (int)g;
-    state->aout_gain = opts->audio_gain;
-    state->aout_gainR = opts->audio_gain;
+/* The digital gain setting, mirrored to both slots. The voice chain takes it at the next frame: a fixed gain at once,
+   auto from what the speech AGC learned, starting at the fixed gain it leaves (issue #518). */
+static void
+store_digital_gain(dsd_opts* opts, double g) {
+    opts->audio_gain = (float)g;
     opts->audio_gainR = opts->audio_gain;
-    if (opts->audio_gain == 0) {
-        state->aout_gain = 25;
-        state->aout_gainR = 25;
+}
+
+/* A double payload of a full double, or 0 when it is shorter (the queue refuses those before dispatch). */
+static int
+read_double_payload(const struct dsd_app_command* c, double* out) {
+    if (c->n < (int)sizeof(double)) {
+        return 0;
     }
+    DSD_MEMCPY(out, c->data, sizeof *out);
+    return 1;
 }
 
 static int
 ui_handle_gain_delta(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    int delta = 0;
+    (void)state;
+    int32_t d = 0;
     if (c->n >= (int)sizeof(int32_t)) {
-        int32_t d = 0;
         DSD_MEMCPY(&d, c->data, sizeof(int32_t));
-        delta = d;
     }
-    apply_gain_delta(opts, state, delta);
+    if (d != 0) {
+        store_digital_gain(opts, dsd_gain_setting_step(opts->audio_gain, d, DSD_DIGITAL_GAIN_MIN, DSD_DIGITAL_GAIN_MAX,
+                                                       DSD_DIGITAL_GAIN_STEP_FROM_AUTO));
+    }
     return 1;
-}
-
-/* Analog output gain (-n, the menu prompt and the * and / keys alike): 0 is auto (the AGC), 1..100 a fixed gain, 50
-   the reference level. Anything under 1 is auto. */
-static float
-clamp_analog_gain(float g) {
-    if (!(g >= 1.0f)) {
-        return 0.0f;
-    }
-    if (g > 100.0f) {
-        return 100.0f;
-    }
-    return g;
 }
 
 static int
@@ -91,32 +78,21 @@ ui_handle_again_delta(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
     if (c->n >= (int)sizeof(int32_t)) {
         DSD_MEMCPY(&d, c->data, sizeof(int32_t));
     }
-    /* From auto a step starts at the reference setting; a step below 1 goes back to auto. In float, so a fractional
-       -n value moves by the step instead of being truncated first. */
-    const float from = dsd_analog_gain_is_auto(opts->audio_gainA) ? 50.0f : opts->audio_gainA;
-    opts->audio_gainA = clamp_analog_gain(from + (float)d);
+    opts->audio_gainA = (float)dsd_gain_setting_step(opts->audio_gainA, d, DSD_ANALOG_GAIN_MIN, DSD_ANALOG_GAIN_MAX,
+                                                     DSD_ANALOG_GAIN_STEP_FROM_AUTO);
     return 1;
 }
 
+/* GAIN_SET and AGAIN_SET carry a double, checked here before it narrows to the float setting (this file keeps IEEE
+   semantics, src/app_control/CMakeLists.txt): a value the gain's rule refuses leaves the setting as it was, never
+   clamped; an analog value under 1 is auto. Every sender checks it first and says why; this is the decoder's own
+   guard. */
 static int
 ui_handle_gain_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    int32_t g = 0;
-    if (c->n >= (int)sizeof(int32_t)) {
-        DSD_MEMCPY(&g, c->data, sizeof g);
-    }
-    if (g < 0) {
-        g = 0;
-    }
-    if (g > 50) {
-        g = 50;
-    }
-    opts->audio_gain = g;
-    state->aout_gain = opts->audio_gain;
-    state->aout_gainR = opts->audio_gain;
-    opts->audio_gainR = opts->audio_gain;
-    if (opts->audio_gain == 0) {
-        state->aout_gain = 25;
-        state->aout_gainR = 25;
+    (void)state;
+    double g = 0.0;
+    if (read_double_payload(c, &g) && dsd_digital_gain_setting(g, &g)) {
+        store_digital_gain(opts, g);
     }
     return 1;
 }
@@ -124,11 +100,10 @@ ui_handle_gain_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_comman
 static int
 ui_handle_again_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
-    int32_t g = 0;
-    if (c->n >= (int)sizeof(int32_t)) {
-        DSD_MEMCPY(&g, c->data, sizeof g);
+    double g = 0.0;
+    if (read_double_payload(c, &g) && dsd_analog_gain_setting(g, &g)) {
+        opts->audio_gainA = (float)g;
     }
-    opts->audio_gainA = clamp_analog_gain((float)g);
     return 1;
 }
 

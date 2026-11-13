@@ -93,7 +93,9 @@ dsd_voice_crypto_audible(const dsd_opts* opts, const dsd_state* state, int slot)
     if (!state->frame_dispatch_active && state->mbe_file_type == 3) {
         return 1;
     }
-    if (DSD_SYNC_IS_DMR(owner)) {
+    // X2-TDMA's encryption is known per superframe (processX2TDMAvoice()): the frame's verdict is the vocoder's, as
+    // DMR's is.
+    if (DSD_SYNC_IS_DMR(owner) || DSD_SYNC_IS_X2TDMA(owner)) {
         return state->mbe_slot_muted[slot] == 0 ? 1 : 0;
     }
     // These live protocols always pass through the vocoder, which may reject a frame despite a loaded key (for

@@ -815,6 +815,74 @@ test_agc_rollback(void) {
           db(dsd_voice_agc_gain(&agc) / before));
 }
 
+/* Feed @p seconds of @p level_db tone held (dsd_voice_agc_process_held()); returns the output peak. */
+static double
+agc_feed_held(dsd_voice_agc* agc, int fs, double level_db, double seconds, double* phase) {
+    const double amp = (k_ref_peak / k_ref_gain) * pow(10.0, level_db / 20.0);
+    const int total = (int)(seconds * (double)fs);
+    double peak = 0.0;
+    float x[160];
+    for (int n = 0; n < total;) {
+        const int len = (total - n) < 160 ? (total - n) : 160;
+        for (int i = 0; i < len; i++) {
+            x[i] = (float)(amp * sin(*phase));
+            *phase += 2.0 * M_PI * 1000.0 / (double)fs;
+        }
+        dsd_voice_agc_process_held(agc, x, (size_t)len);
+        for (int i = 0; i < len; i++) {
+            peak = fabs((double)x[i]) > peak ? fabs((double)x[i]) : peak;
+        }
+        n += len;
+    }
+    return peak;
+}
+
+/* Issue #518 B17: the M17 microphone's hold. Held samples neither attack nor release the gain, whatever their level,
+   and stay limited to the target; leaving playing for the hold rolls nothing back, so what a transmission shorter or
+   longer than DSD_VOICE_AGC_ROLLBACK_MS taught stays; and the next playing samples go on from the held state. */
+static void
+test_agc_held(void) {
+    const int rates[] = {8000, 48000};
+    for (size_t r = 0; r < 2; r++) {
+        const int fs = rates[r];
+        dsd_voice_agc agc;
+        double phase = 0.0;
+        (void)dsd_voice_agc_init(&agc, fs, k_ref_gain);
+        agc_feed(&agc, fs, 0.0, 2.0, 1, &phase);
+        const double settled = dsd_voice_agc_gain(&agc);
+
+        /* A transmission shorter than the rollback span, 20 dB up: the hold keeps what it taught. */
+        agc_feed(&agc, fs, 20.0, 0.1, 1, &phase);
+        const double taught = dsd_voice_agc_gain(&agc);
+        CHECK(db(taught / settled) < -19.0, "%d Hz: the short transmission did not pull the gain down", fs);
+        double peak = agc_feed_held(&agc, fs, 30.0, 1.0, &phase);
+        peak = fmax(peak, agc_feed_held(&agc, fs, -10.0, 2.0, &phase));
+        CHECK(fabs(db(dsd_voice_agc_gain(&agc) / taught)) < 1e-9, "%d Hz: the hold moved the gain %.3f dB", fs,
+              db(dsd_voice_agc_gain(&agc) / taught));
+        CHECK(peak <= (double)DSD_VOICE_AGC_TARGET_PEAK * 1.0001, "%d Hz: held output peak %.1f above the target", fs,
+              peak);
+
+        /* Playing again goes on from the held envelope: the rest of its hold first, then the release. */
+        agc_feed(&agc, fs, 10.0, 0.3, 1, &phase);
+        CHECK(fabs(db(dsd_voice_agc_gain(&agc) / taught)) < 1e-9, "%d Hz: the gain left its hold early (%.3f dB)", fs,
+              db(dsd_voice_agc_gain(&agc) / taught));
+
+        /* A transmission longer than the rollback span whose gain rose over its last 250 ms (the release after the
+           hold): the hold keeps the risen gain. */
+        (void)dsd_voice_agc_init(&agc, fs, k_ref_gain);
+        agc_feed(&agc, fs, 0.0, 2.0, 1, &phase);
+        agc_feed(&agc, fs, 20.0, 0.1, 1, &phase);
+        const double low = dsd_voice_agc_gain(&agc);
+        agc_feed(&agc, fs, 10.0, 0.9, 1, &phase);
+        const double risen = dsd_voice_agc_gain(&agc);
+        CHECK(db(risen / low) > 6.0, "%d Hz: the gain did not rise (%.2f dB)", fs, db(risen / low));
+        (void)agc_feed_held(&agc, fs, 25.0, 0.5, &phase);
+        CHECK(fabs(db(dsd_voice_agc_gain(&agc) / risen)) < 1e-9,
+              "%d Hz: the hold after a long transmission kept %.3f dB", fs, db(dsd_voice_agc_gain(&agc) / risen));
+    }
+    dsd_voice_agc_process_held(NULL, NULL, 1);
+}
+
 /* After the hold, the gain rises at 3 dB/s while the input sits more than 20 dB under the envelope (a pause full of
    hiss), and at 20 dB/s while it stays within 20 dB (speech getting quieter). */
 static void
@@ -899,6 +967,7 @@ main(void) {
     test_agc_partition_invariance();
     test_agc_floor_freeze_and_gmax();
     test_agc_rollback();
+    test_agc_held();
     test_agc_release_rates();
     test_agc_nonfinite();
     if (g_failures) {

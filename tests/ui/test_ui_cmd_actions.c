@@ -290,6 +290,210 @@ cmd_path(int id, const char* path) {
 }
 
 static int
+expect_gain(const char* tag, double got, double want) {
+    if (!(fabs(got - want) < 1e-6)) {
+        DSD_FPRINTF(stderr, "%s: got %.9g want %.9g\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+/* What the applied gain readouts hold before any action: the actions never write them (issue #518). */
+#define DIGITAL_GAIN_READOUT_DB 7.25f
+
+/* The digital setting and the right slot's mirror. The applied gains are the voice chain's readouts, which it sets at
+   the next frame: an action leaves them alone, so switching to auto seeds no starting level (issue #518 B4). */
+static int
+expect_digital_gain(const char* tag, const dsd_opts* opts, const dsd_state* state, double want) {
+    int rc = expect_gain(tag, opts->audio_gain, want);
+    rc |= expect_gain(tag, opts->audio_gainR, want);
+    /* No setting is negative, so the stored sign never is either: a -0 payload is auto stored as +0. */
+    if (signbit(opts->audio_gain) || signbit(opts->audio_gainR)) {
+        DSD_FPRINTF(stderr, "%s: the digital gain setting is stored as negative zero\n", tag);
+        rc = 1;
+    }
+    rc |= expect_gain(tag, state->aout_gain, DIGITAL_GAIN_READOUT_DB);
+    rc |= expect_gain(tag, state->aout_gainR, DIGITAL_GAIN_READOUT_DB);
+    return rc;
+}
+
+/* B5/B6 (issue #518 voice level): GAIN_SET carries a double, kept with its fraction, and refuses anything but 0 (auto)
+   or 0.001..50 (the setting kept); GAIN_DELTA steps whole units on the float setting, counting from 0 when auto (so +1
+   lands on 1, as before), back to auto below 0.001, clamped at 50. */
+static int
+test_digital_gain_actions(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    struct dsd_app_command cmd;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.aout_gain = DIGITAL_GAIN_READOUT_DB;
+    state.aout_gainR = DIGITAL_GAIN_READOUT_DB;
+
+    const double accepted[] = {0.001, 0.0011, 0.5, 2.5, 50.0, 0.0, 2.5, -0.0};
+    for (size_t i = 0; i < sizeof accepted / sizeof accepted[0]; i++) {
+        cmd = cmd_double(DSD_APP_CMD_GAIN_SET, accepted[i]);
+        rc |= expect_int("gain set dispatch", dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd), 1);
+        rc |= expect_digital_gain("gain set keeps the value", &opts, &state, accepted[i]);
+    }
+
+    /* Refused values leave the setting as it was: nothing is clamped, and nothing positive becomes auto. */
+    cmd = cmd_double(DSD_APP_CMD_GAIN_SET, 2.5);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    const double refused[] = {NAN, -NAN, INFINITY, -INFINITY, 1e39, 1e-50, 0.0004, 0.000999, 50.0001, 60.0, -4.0};
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        cmd = cmd_double(DSD_APP_CMD_GAIN_SET, refused[i]);
+        rc |= expect_int("refused gain set dispatch", dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd), 1);
+        rc |= expect_digital_gain("refused gain set keeps the setting", &opts, &state, 2.5);
+    }
+    /* A payload shorter than a double (the old int32 form) is refused too, never read as 0 (auto). */
+    cmd = cmd_i32(DSD_APP_CMD_GAIN_SET, 5);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_digital_gain("short gain set payload keeps the setting", &opts, &state, 2.5);
+    cmd.n = 0;
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_digital_gain("empty gain set payload keeps the setting", &opts, &state, 2.5);
+
+    /* Steps keep the fraction. */
+    cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, 1);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_digital_gain("gain step keeps a fraction", &opts, &state, 3.5);
+    cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, 0);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_digital_gain("a zero gain step changes nothing", &opts, &state, 3.5);
+    opts.audio_gain = 1.5f;
+    cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, -1);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_digital_gain("gain step down stays fixed above the minimum", &opts, &state, 0.5);
+    /* A fractional setting stepped across the minimum: 1.0011 - 1 stays fixed, 1.0005 - 1 and 0.5 - 1 are auto. */
+    opts.audio_gain = 1.0011f;
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_digital_gain("gain step down to just above the minimum", &opts, &state, (double)1.0011f - 1.0);
+    opts.audio_gain = 1.0005f;
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_digital_gain("gain step below the minimum is auto", &opts, &state, 0.0);
+    opts.audio_gain = 0.5f;
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_digital_gain("gain step from a fraction below the minimum is auto", &opts, &state, 0.0);
+
+    /* From auto a step counts from 0: +1 lands on 1, the reference, and +3 on 3. */
+    cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, 1);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_digital_gain("gain step up from auto lands on 1", &opts, &state, 1.0);
+    cmd = cmd_double(DSD_APP_CMD_GAIN_SET, 0.0);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, 3);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_digital_gain("gain step of 3 from auto lands on 3", &opts, &state, 3.0);
+    cmd = cmd_double(DSD_APP_CMD_GAIN_SET, 0.0);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, -1);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_digital_gain("gain step down from auto stays auto", &opts, &state, 0.0);
+    cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, 0);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_digital_gain("a zero gain step keeps auto", &opts, &state, 0.0);
+
+    /* The top clamps; the control API can send any int32 as a step. */
+    opts.audio_gain = 49.0f;
+    cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, 5);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_digital_gain("gain step clamps at the top", &opts, &state, 50.0);
+    opts.audio_gain = 49.5f;
+    cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, 1);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_digital_gain("fractional gain step clamps at the top", &opts, &state, 50.0);
+    cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, INT32_MAX);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_digital_gain("gain step INT32_MAX clamps at the top", &opts, &state, 50.0);
+    cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, INT32_MIN);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_digital_gain("gain step INT32_MIN is auto", &opts, &state, 0.0);
+    opts.audio_gain = 10.0f;
+    cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, -80);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_digital_gain("large gain step down is auto", &opts, &state, 0.0);
+    return rc;
+}
+
+/* Analog gain is 1..100, with anything under 1 auto, everywhere (-n, the menu prompt, the * and / keys, the API).
+   AGAIN_SET carries a double; NaN, infinities and values above 100 are refused (the setting kept). AGAIN_DELTA steps
+   from 50 when auto, back to auto below 1, clamped at 100. */
+static int
+test_analog_gain_actions(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    struct dsd_app_command cmd;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    const struct {
+        double value;
+        double want;
+    } accepted[] = {{1.0, 1.0}, {1.5, 1.5},   {37.5, 37.5}, {100.0, 100.0}, {0.0, 0.0},
+                    {0.5, 0.0}, {0.999, 0.0}, {1e-50, 0.0}, {-9.0, 0.0},    {80.0, 80.0}};
+
+    for (size_t i = 0; i < sizeof accepted / sizeof accepted[0]; i++) {
+        cmd = cmd_double(DSD_APP_CMD_AGAIN_SET, accepted[i].value);
+        rc |= expect_int("analog gain set dispatch", dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd), 1);
+        rc |= expect_gain("analog gain set (under 1 is auto)", opts.audio_gainA, accepted[i].want);
+    }
+    const double refused[] = {NAN, INFINITY, -INFINITY, 1e39, 100.5, 150.0};
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        cmd = cmd_double(DSD_APP_CMD_AGAIN_SET, refused[i]);
+        dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+        rc |= expect_gain("refused analog gain set keeps the setting", opts.audio_gainA, 80.0);
+    }
+    cmd = cmd_i32(DSD_APP_CMD_AGAIN_SET, 0);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_gain("short analog gain set payload keeps the setting", opts.audio_gainA, 80.0);
+
+    /* A keypress from -n 100 used to land on 50 (issue #518 follow-up). */
+    opts.audio_gainA = 100.0f;
+    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, 1);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_gain("analog gain delta keeps 100 at the top", opts.audio_gainA, 100.0);
+    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, -1);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_gain("analog gain delta steps down from 100", opts.audio_gainA, 99.0);
+    opts.audio_gainA = 97.0f;
+    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, 7);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_gain("analog gain delta clamps high", opts.audio_gainA, 100.0);
+    opts.audio_gainA = 37.5f;
+    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, 1);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_gain("analog gain delta keeps a fractional -n", opts.audio_gainA, 38.5);
+    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, -90);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_gain("analog gain delta below 1 goes to auto", opts.audio_gainA, 0.0);
+    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, 0);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_gain("a zero analog gain step keeps auto", opts.audio_gainA, 0.0);
+    /* 0 is auto (the AGC): a step from it starts at the reference setting, 50. */
+    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, 1);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_gain("analog gain step up from auto starts at 50", opts.audio_gainA, 51.0);
+    opts.audio_gainA = 0.0f;
+    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, -1);
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_gain("analog gain step down from auto starts at 50", opts.audio_gainA, 49.0);
+    opts.audio_gainA = 1.0f;
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_gain("analog gain step down from 1 goes to auto", opts.audio_gainA, 0.0);
+    /* A fractional setting stepped across the minimum. */
+    opts.audio_gainA = 1.5f;
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_gain("analog gain step down from 1.5 goes to auto", opts.audio_gainA, 0.0);
+    opts.audio_gainA = 2.25f;
+    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
+    rc |= expect_gain("analog gain step down from 2.25 stays fixed", opts.audio_gainA, 1.25);
+    return rc;
+}
+
+static int
 test_audio_actions(void) {
     int rc = 0;
     static dsd_opts opts;
@@ -298,79 +502,8 @@ test_audio_actions(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
-    cmd = cmd_i32(DSD_APP_CMD_GAIN_SET, 60);
-    rc |= expect_int("gain set dispatch", dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd), 1);
-    rc |= expect_int("gain set clamps opts", opts.audio_gain, 50);
-    rc |= expect_int("gain set mirrors right", opts.audio_gainR, 50);
-    rc |= expect_int("gain set mirrors state", state.aout_gain, 50);
-    cmd = cmd_i32(DSD_APP_CMD_GAIN_SET, -4);
-    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_int("gain set clamps low opts", opts.audio_gain, 0);
-    rc |= expect_int("gain set low keeps playback default", state.aout_gain, 25);
-    opts.audio_gain = 49;
-    cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, 5);
-    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_int("gain delta clamps high", opts.audio_gain, 50);
-
-    /* The control API can send any int32 as a delta: no overflow on the way to the clamp. */
-    cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, INT32_MAX);
-    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_int("gain delta INT32_MAX clamps high", opts.audio_gain, 50);
-    cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, INT32_MIN);
-    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_int("gain delta INT32_MIN clamps low", opts.audio_gain, 0);
-    opts.audio_gain = 10;
-
-    cmd = cmd_i32(DSD_APP_CMD_GAIN_DELTA, -80);
-    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_int("gain delta clamps opts", opts.audio_gain, 0);
-    rc |= expect_int("zero gain keeps playback gain default left", state.aout_gain, 25);
-    rc |= expect_int("zero gain keeps playback gain default right", state.aout_gainR, 25);
-
-    /* Analog gain is 0..100 everywhere (-n, the menu prompt, the * and / keys): a keypress from -n 100 used to land
-       on 50 (issue #518 follow-up). */
-    opts.audio_gainA = 100.0f;
-    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, 1);
-    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_true("analog gain delta keeps 100 at the top", fabsf(opts.audio_gainA - 100.0f) < 1e-6f);
-    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, -1);
-    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_true("analog gain delta steps down from 100", fabsf(opts.audio_gainA - 99.0f) < 1e-6f);
-    opts.audio_gainA = 97.0f;
-    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, 7);
-    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_true("analog gain delta clamps high", fabsf(opts.audio_gainA - 100.0f) < 1e-6f);
-    opts.audio_gainA = 37.5f;
-    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, 1);
-    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_true("analog gain delta keeps a fractional -n", fabsf(opts.audio_gainA - 38.5f) < 1e-6f);
-    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, -90);
-    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_true("analog gain delta below 1 goes to auto", fabsf(opts.audio_gainA) < 1e-6f);
-    /* 0 is auto (the AGC): a step from it starts at the reference setting, 50. */
-    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, 1);
-    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_true("analog gain step up from auto starts at 50", fabsf(opts.audio_gainA - 51.0f) < 1e-6f);
-    opts.audio_gainA = 0.0f;
-    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, -1);
-    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_true("analog gain step down from auto starts at 50", fabsf(opts.audio_gainA - 49.0f) < 1e-6f);
-    opts.audio_gainA = 1.0f;
-    cmd = cmd_i32(DSD_APP_CMD_AGAIN_DELTA, -1);
-    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_true("analog gain step down from 1 goes to auto", fabsf(opts.audio_gainA) < 1e-6f);
-    cmd = cmd_i32(DSD_APP_CMD_AGAIN_SET, 0);
-    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_true("analog gain set 0 is auto", fabsf(opts.audio_gainA) < 1e-6f);
-    cmd = cmd_i32(DSD_APP_CMD_AGAIN_SET, -9);
-    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_true("analog gain set clamps low", fabsf(opts.audio_gainA) < 1e-6f);
-    cmd = cmd_i32(DSD_APP_CMD_AGAIN_SET, 80);
-    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_true("analog gain set accepts 80", fabsf(opts.audio_gainA - 80.0f) < 1e-6f);
-    cmd = cmd_i32(DSD_APP_CMD_AGAIN_SET, 150);
-    dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);
-    rc |= expect_true("analog gain set clamps high", fabsf(opts.audio_gainA - 100.0f) < 1e-6f);
+    rc |= test_digital_gain_actions();
+    rc |= test_analog_gain_actions();
 
     cmd = cmd_double(DSD_APP_CMD_INPUT_WARN_DB_SET, 12.5);
     dispatch_one(dsd_app_actions_audio, &opts, &state, &cmd);

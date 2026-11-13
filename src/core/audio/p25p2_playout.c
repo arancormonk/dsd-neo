@@ -41,6 +41,8 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/voice_chain.h>
+#include <dsd-neo/dsp/speech_agc.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
@@ -660,7 +662,8 @@ write_static_wav(const dsd_opts* opts, const short* stereo, dsd_p25p2_playout_en
 }
 
 // Routing: two audible slots play as stereo; one plays in both ears. The same block goes to the output in either format
-// and to the static WAV.
+// and to the static WAV. One-channel output sums the audible slots whose frame is decoded audio (issue #518): a fill
+// beside a talker is no second talker.
 static void
 emit_block(const dsd_opts* opts, dsd_state* state, dsd_p25p2_playout_entry* e[2], const int audible[2]) {
     short left[BLOCK_FRAMES] = {0};
@@ -675,7 +678,9 @@ emit_block(const dsd_opts* opts, dsd_state* state, dsd_p25p2_playout_entry* e[2]
     audio_mix_interleave_stereo_s16(audible[0] ? left : right, audible[1] ? right : left, BLOCK_FRAMES, 0, 0, stereo);
     if (opts->pulse_digi_out_channels == 1) {
         short out[BLOCK_FRAMES];
-        audio_mix_mono_from_slots_s16(left, right, BLOCK_FRAMES, audible[0], audible[1], out);
+        const int l_real = audible[0] && e[0] && e[0]->fresh;
+        const int r_real = audible[1] && e[1] && e[1]->fresh;
+        audio_mix_mono_sum_s16(left, right, BLOCK_FRAMES, l_real, r_real, &state->p25p2_playout.mono_limiter, out);
         dsd_output_s16_block(opts, state, out, BLOCK_FRAMES, 1);
     } else {
         dsd_output_s16_block(opts, state, stereo, BLOCK_FRAMES, 2);
@@ -817,7 +822,7 @@ fire_alerts(const dsd_opts* opts, dsd_state* state) {
             }
             // The alert stays queued until its tone is out: one raised meanwhile, on any thread, waits behind it rather
             // than sounding into it. Only the thread that plays the queues takes alerts off.
-            dsd_beeper_emit(opts, state, slot, a.id, a.ad, a.len);
+            dsd_beeper_emit(opts, state, slot, a.id, a.len);
             alert_lock();
             for (int i = 1; i < p->alert_count[slot]; i++) {
                 p->alerts[slot][i - 1] = p->alerts[slot][i];
@@ -1235,6 +1240,16 @@ dsd_p25p2_playout_note_policy(const dsd_opts* opts, dsd_state* state) {
     take_live_verdict(opts, state, 1);
 }
 
+// The one-channel mix's limiter starts over at unity with the queues: what plays next is another carrier's, or another
+// call's after a teardown. The playout plays at 8 kHz only. A limiter the constants could not set up leaves the mix
+// its int16 clamp.
+static void
+playout_mono_limiter_reset(dsd_p25p2_playout* p) {
+    if (dsd_peak_limiter_init(&p->mono_limiter, (int)DSD_VOICE_HPF_RATE_HZ, DSD_SPEECH_AGC_CEILING_DBFS) != 0) {
+        DSD_MEMSET(&p->mono_limiter, 0, sizeof(p->mono_limiter));
+    }
+}
+
 void
 dsd_p25p2_playout_reset(dsd_state* state, int slot) {
     if (!state) {
@@ -1255,6 +1270,9 @@ dsd_p25p2_playout_reset(dsd_state* state, int slot) {
         s->cur_pair = -1;
         s->phase_2v = -1;
         s->provisional = -1;
+    }
+    if (slot < 0) {
+        playout_mono_limiter_reset(&state->p25p2_playout);
     }
 }
 
@@ -1283,7 +1301,7 @@ dsd_p25p2_playout_holds_audio(dsd_state* state) {
 }
 
 int
-dsd_p25p2_playout_defer_alert(const dsd_opts* opts, dsd_state* state, int slot, int id, int ad, int len) {
+dsd_p25p2_playout_defer_alert(const dsd_opts* opts, dsd_state* state, int slot, int id, int len) {
     if (!opts || !state || slot < 0 || slot > 1) {
         return 0;
     }
@@ -1299,7 +1317,6 @@ dsd_p25p2_playout_defer_alert(const dsd_opts* opts, dsd_state* state, int slot, 
             dsd_p25p2_playout_alert* a = &p->alerts[slot][p->alert_count[slot]++];
             a->after = s->pushed;
             a->id = id;
-            a->ad = ad;
             a->len = len;
         }
         taken = 1;

@@ -26,8 +26,10 @@
 #include <string.h>
 
 #include <dsd-neo/core/voice_chain.h>
+#include <dsd-neo/dsp/speech_agc.h>
 #include "core/audio/dsd_audio2_internal.h"
 #include "core/audio/dsd_audio_internal.h"
+#include "core/audio/voice_chain_internal.h"
 #include "dsd-neo/core/audio.h"
 #include "dsd-neo/core/file_io.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -86,6 +88,9 @@ static unsigned long g_gate_mono_tg;
 
 static int g_voice_chain_calls;
 static int g_voice_chain_slot;
+/* What the last chain run was told about its frame, and how many runs were told something else than the first. */
+static const dsd_voice_frame_info* g_voice_chain_info;
+static int g_voice_chain_info_changes;
 static int g_stage_short_calls;
 static int g_write_voice_calls;
 static short g_write_voice_sample;
@@ -93,11 +98,15 @@ static short g_write_voice_sample;
 /* A distinguishable chained value verifies that staging, devices and both WAV paths consume the chain once. The
    M17 dispatch tests link the real chain and cover its gain and filter behavior. */
 void
-dsd_voice_chain_run(const dsd_opts* opts, dsd_state* state, int slot, float* frame) {
+dsd_voice_chain_run(const dsd_opts* opts, dsd_state* state, int slot, float* frame, const dsd_voice_frame_info* info) {
     (void)opts;
     (void)state;
+    if (g_voice_chain_calls > 0 && info != g_voice_chain_info) {
+        g_voice_chain_info_changes++;
+    }
     g_voice_chain_calls++;
     g_voice_chain_slot = slot;
+    g_voice_chain_info = info;
     for (size_t i = 0; i < 160U; i++) {
         frame[i] *= 2.0f;
     }
@@ -146,22 +155,30 @@ audio_mix_interleave_stereo_s16(const short* left, const short* right, size_t n,
     }
 }
 
+// The mono mixer as mix.c sums its slots, without the limiter this target does not link (no case here nears its
+// ceiling).
 void
-audio_mix_mono_from_slots_s16(const short* left, const short* right, size_t n, int l_on, int r_on, short* out) {
-    if (out == NULL) {
+audio_mix_mono_sum_s16(const short* left, const short* right, size_t n, int l_real, int r_real,
+                       dsd_peak_limiter* limiter, short* out) {
+    (void)limiter;
+    if (out == NULL || left == NULL || right == NULL) {
         return;
     }
     for (size_t i = 0; i < n; i++) {
-        if (l_on && r_on && left && right) {
-            out[i] = (short)(((int)left[i] + (int)right[i]) / 2);
-        } else if (l_on && left) {
-            out[i] = left[i];
-        } else if (r_on && right) {
-            out[i] = right[i];
-        } else {
-            out[i] = 0;
+        int sum = (l_real ? left[i] : 0) + (r_real ? right[i] : 0);
+        if (sum > 32767) {
+            sum = 32767;
+        } else if (sum < -32768) {
+            sum = -32768;
         }
+        out[i] = (short)sum;
     }
+}
+
+dsd_peak_limiter*
+dsd_voice_level_dmr_mix_limiter(dsd_state* state) {
+    (void)state;
+    return NULL;
 }
 
 // The P25 Phase 2 flush entry points in dsd_audio2.c hand over to the playout, which this target does not link.
@@ -191,12 +208,11 @@ dsd_p25p2_playout_discard(dsd_opts* opts, dsd_state* state) {
 
 // No queued P25 Phase 2 audio here: beeper() sounds every alert at once.
 int
-dsd_p25p2_playout_defer_alert(const dsd_opts* opts, dsd_state* state, int slot, int id, int ad, int len) {
+dsd_p25p2_playout_defer_alert(const dsd_opts* opts, dsd_state* state, int slot, int id, int len) {
     (void)opts;
     (void)state;
     (void)slot;
     (void)id;
-    (void)ad;
     (void)len;
     return 0;
 }
@@ -1179,6 +1195,8 @@ test_short_dmr_mono_honors_slot_controls_and_one_channel_output(void) {
     state.dmr_mono_slot = 0;
     state.s_l4[2][0] = 333;
     state.s_r4[2][0] = 999;
+    state.s4_fresh[0][2] = 1U;
+    state.s4_fresh[1][2] = 1U;
     reset_sink_capture();
     playSynthesizedVoiceSS3(&opts, &state);
     rc |= expect_int("ss3 mono one-channel output calls", g_udp_blast_calls, 3);
@@ -1267,11 +1285,14 @@ test_dmr_slot_preference_in_both_formats(void) {
                         state.s_l4[block][i] = 1000;
                         state.s_r4[block][i] = 2000;
                     }
+                    state.s4_fresh[0][block] = 1U;
+                    state.s4_fresh[1][block] = 1U;
                 }
                 playSynthesizedVoiceSS3(&opts, &state);
                 const int left = pref == 1 ? 2000 : 1000;
                 const int right = pref == 0 ? 1000 : 2000;
-                const int first = channels == 1 ? (left + right) / 2 : left;
+                // One channel: the preferred slot alone (its copy is no second talker), Auto both talkers summed.
+                const int first = (channels == 1 && pref == 2) ? left + right : left;
                 rc |= expect_int("preferred DMR mix writes three blocks", g_udp_blast_calls, 3);
                 for (int channel = 0; channel < channels; channel++) {
                     const int want = channel == 0 ? first : right;
@@ -1395,6 +1416,7 @@ test_float_output_plays_the_short_mixers(void) {
         state.dmrburstR = 16;
         for (int k = 0; k < 3; k++) {
             fill_s16_frame(state.s_r4[k], (short)(8192 * (k + 1)), (short)(-4096 * (k + 1)));
+            state.s4_fresh[1][k] = 1U;
         }
         reset_sink_capture();
         playSynthesizedVoiceSS3(&opts, &state);
@@ -2372,7 +2394,6 @@ run_decoded_pcm16_case(dsd_opts* opts, dsd_state* state, const short* pcm, int f
     opts->audio_out = audio_out;
     g_audio_write_channels = channels;
     state->audio_out_buf_p = history + 100;
-    state->aout_max_buf_p = state->aout_max_buf;
     // A frame another path staged and never mixed: not this one's.
     state->audio_out_idx = 160;
     reset_sink_capture();
@@ -2383,9 +2404,13 @@ run_decoded_pcm16_case(dsd_opts* opts, dsd_state* state, const short* pcm, int f
     g_voice_chain_calls = 0;
     g_stage_short_calls = 0;
     g_voice_chain_slot = -1;
+    g_voice_chain_info = NULL;
+    g_voice_chain_info_changes = 0;
     g_write_voice_calls = 0;
+    // The decoder's word on its frames reaches the chain with every frame, whatever plays.
+    static const dsd_voice_frame_info info = {(uint8_t)DSD_VOICE_MEDIA_SPEECH, 1U, 1U, 7U};
 
-    dsd_audio_play_decoded_pcm16(opts, state, pcm, DECODED_PCM_SAMPLES);
+    dsd_audio_play_decoded_pcm16(opts, state, pcm, DECODED_PCM_SAMPLES, &info);
 
     const int plays = slot1_on && audio_out;
     const int writes = g_audio_write_calls + g_dsd_write_calls + g_udp_blast_calls;
@@ -2394,6 +2419,8 @@ run_decoded_pcm16_case(dsd_opts* opts, dsd_state* state, const short* pcm, int f
     rc |= expect_int(label, writes, plays ? 2 : 0);
     rc |= expect_int("decoded pcm chain once per frame", g_voice_chain_calls, 2);
     rc |= expect_int("decoded pcm chain uses slot 0", g_voice_chain_slot, 0);
+    rc |= expect_int("decoded pcm chain told the frames' info", g_voice_chain_info == &info, 1);
+    rc |= expect_int("decoded pcm every frame told the same info", g_voice_chain_info_changes, 0);
     rc |= expect_int("decoded pcm short stage once per frame", g_stage_short_calls, 2);
     const int records = slot1_on && opts->static_wav_file == 1;
     rc |= expect_int(label, g_sf_write_short_calls, records ? 2 : 0);
@@ -2488,7 +2515,7 @@ test_decoded_pcm16_plays_settled_frames(void) {
     g_stage_short_calls = 0;
     g_voice_chain_slot = -1;
     state->audio_out_buf_p = NULL;
-    dsd_audio_play_decoded_pcm16(opts, state, pcm, DECODED_PCM_SAMPLES);
+    dsd_audio_play_decoded_pcm16(opts, state, pcm, DECODED_PCM_SAMPLES, NULL);
     rc |= expect_int(
         "decoded pcm without output history writes nothing",
         g_audio_write_calls + g_dsd_write_calls + g_udp_blast_calls + g_voice_chain_calls + g_stage_short_calls, 0);
@@ -2501,7 +2528,7 @@ test_decoded_pcm16_plays_settled_frames(void) {
     g_stage_short_calls = 0;
     state->audio_out_buf_p = cut_history;
     state->input_interrupted = 1;
-    dsd_audio_play_decoded_pcm16(opts, state, pcm, DECODED_PCM_SAMPLES);
+    dsd_audio_play_decoded_pcm16(opts, state, pcm, DECODED_PCM_SAMPLES, NULL);
     state->input_interrupted = 0;
     rc |= expect_int(
         "decoded pcm from a cut frame writes nothing",
@@ -2517,10 +2544,10 @@ test_decoded_pcm16_plays_settled_frames(void) {
     state->audio_out_buf_p = shape_history;
     for (int channels = 0; channels <= 3; channels += 3) {
         opts->pulse_digi_out_channels = channels;
-        dsd_audio_play_decoded_pcm16(opts, state, pcm, DECODED_PCM_SAMPLES);
+        dsd_audio_play_decoded_pcm16(opts, state, pcm, DECODED_PCM_SAMPLES, NULL);
     }
     opts->pulse_digi_out_channels = 1;
-    dsd_audio_play_decoded_pcm16(opts, state, pcm, 159U);
+    dsd_audio_play_decoded_pcm16(opts, state, pcm, 159U, NULL);
     rc |= expect_int("decoded pcm rejects incomplete frames and invalid channels",
                      g_voice_chain_calls + g_stage_short_calls, 0);
     rc |= expect_int("decoded pcm invalid input retains output pointer", state->audio_out_buf_p == shape_history, 1);
@@ -2573,13 +2600,19 @@ test_decoded_pcm16_unrecorded_frames_play_without_recording(void) {
         opts->dmr_stereo_wav = per_call ? 1 : 0;
         for (int record = 0; record <= 1; record++) {
             state->audio_out_buf_p = history + 100;
-            state->aout_max_buf_p = state->aout_max_buf;
             state->audio_out_idx = 160;
             reset_sink_capture();
             reset_gate_capture();
             g_write_voice_calls = 0;
-            dsd_audio_play_decoded_pcm16_record(opts, state, pcm, DECODED_PCM_SAMPLES, record);
+            g_voice_chain_calls = 0;
+            g_voice_chain_info = NULL;
+            g_voice_chain_info_changes = 0;
+            const dsd_voice_frame_info info = {(uint8_t)DSD_VOICE_MEDIA_CONCEALED, 0U, 1U, 3U};
+            dsd_audio_play_decoded_pcm16_record(opts, state, pcm, DECODED_PCM_SAMPLES, record, &info);
             rc |= expect_int("unrecorded decoded pcm still plays", g_udp_blast_calls, 2);
+            rc |= expect_int("decoded pcm record tells the chain the frames' info",
+                             g_voice_chain_calls == 2 && g_voice_chain_info == &info && g_voice_chain_info_changes == 0,
+                             1);
             rc |= expect_int("static wav takes recorded frames only", g_sf_write_short_calls,
                              (!per_call && record) ? 2 : 0);
             rc |= expect_int("per-call wav takes recorded frames only", g_write_voice_calls,

@@ -61,17 +61,17 @@ endif()
 # checks fold away, so the tests' own sources keep IEEE semantics; the
 # production code they exercise keeps the build's flags. The decode-clock test
 # is here because its bounds must round like decode_clock.c, which divides
-# ns / 1e9 exactly where fast-math would multiply by an inexact 1e-9, and the
-# audio2 test because its mono-mixer stub divides by a slot count, which Clang
-# turns into an approximate reciprocal under fast-math. Production sources that
-# src/runtime builds with IEEE semantics keep them when a test compiles them
-# directly: a source property set there does not reach targets in this
-# directory.
+# ns / 1e9 exactly where fast-math would multiply by an inexact 1e-9.
+# Production sources that src/runtime, src/app_control and src/ui/terminal
+# build with IEEE semantics keep them when a test compiles them directly: a
+# source property set there does not reach targets in this directory.
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     set_source_files_properties(
-        core/test_core_audio2_helpers.c
+        core/speech_parity_tool.c
         core/test_core_audio_gain.c
         core/test_core_init_state.c
+        core/test_core_p56.c
+        core/test_core_speech_synth.c
         dsp/test_dsp_am_demod.cpp
         dsp/test_dsp_analog_ctcss.c
         dsp/test_dsp_analog_audio.c
@@ -84,6 +84,7 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         dsp/test_dsp_simd_widen.cpp
         dsp/test_dsp_snr_estimator.cpp
         dsp/test_dsp_simd_stats.cpp
+        dsp/test_dsp_speech_agc.c
         dsp/test_dsp_squelch_floor.c
         dsp/test_dsp_tetra_chain.cpp
         dsp/test_dsp_nfm_noise_squelch.c
@@ -94,22 +95,33 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         io/test_io_rtl_replay_eof_and_cf32.cpp
         io/test_io_signal_measure.cpp
         protocol/m17/test_m17_state_dispatch.c
+        runtime/test_runtime_cli_parse.c
         runtime/test_runtime_decode_clock.c
         runtime/test_runtime_freq_parse.c
         runtime/test_runtime_number_text.c
         runtime/test_runtime_squelch.c
+        test_support/p56.c
+        test_support/speech_synth.c
+        ui/test_ui_cmd_actions.c
+        ui/test_ui_menu_callbacks.c
+        ui/test_ui_menu_labels.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_audio.c
         ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
         ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/input_level.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_callbacks.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
         ${PROJECT_SOURCE_DIR}/android/presentation_scale.cpp
         PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
     )
 elseif(MSVC)
     set_source_files_properties(
-        core/test_core_audio2_helpers.c
+        core/speech_parity_tool.c
         core/test_core_audio_gain.c
         core/test_core_init_state.c
+        core/test_core_p56.c
+        core/test_core_speech_synth.c
         dsp/test_dsp_am_demod.cpp
         dsp/test_dsp_analog_ctcss.c
         dsp/test_dsp_analog_audio.c
@@ -122,6 +134,7 @@ elseif(MSVC)
         dsp/test_dsp_simd_widen.cpp
         dsp/test_dsp_snr_estimator.cpp
         dsp/test_dsp_simd_stats.cpp
+        dsp/test_dsp_speech_agc.c
         dsp/test_dsp_squelch_floor.c
         dsp/test_dsp_tetra_chain.cpp
         dsp/test_dsp_nfm_noise_squelch.c
@@ -132,16 +145,42 @@ elseif(MSVC)
         io/test_io_rtl_replay_eof_and_cf32.cpp
         io/test_io_signal_measure.cpp
         protocol/m17/test_m17_state_dispatch.c
+        runtime/test_runtime_cli_parse.c
         runtime/test_runtime_decode_clock.c
         runtime/test_runtime_freq_parse.c
         runtime/test_runtime_number_text.c
         runtime/test_runtime_squelch.c
+        test_support/p56.c
+        test_support/speech_synth.c
+        ui/test_ui_cmd_actions.c
+        ui/test_ui_menu_callbacks.c
+        ui/test_ui_menu_labels.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_audio.c
         ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
         ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/input_level.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_callbacks.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
         ${PROJECT_SOURCE_DIR}/android/presentation_scale.cpp
         PROPERTIES COMPILE_OPTIONS "/fp:precise"
+    )
+endif()
+# The speech AGC's float output is meant to be the same bits on every compiler and
+# architecture with one libm (issue #518), so neither it nor the tests that build its
+# input and read its output let the compiler fuse a multiply and an add: Clang on
+# arm64 and GCC with FMA would otherwise round them differently. MSVC's /fp:precise
+# above does not contract.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    set_property(
+        SOURCE
+            core/speech_parity_tool.c
+            dsp/test_dsp_speech_agc.c
+            dsp/test_dsp_analog_audio.c
+            test_support/p56.c
+            test_support/speech_synth.c
+        APPEND
+        PROPERTY COMPILE_OPTIONS "-ffp-contract=off"
     )
 endif()
 
@@ -395,6 +434,31 @@ target_include_directories(
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${_PUBLIC_INCLUDES}
 )
 target_link_libraries(dsd-neo_test_p25_shims PUBLIC dsd-neo_proto_p25)
+
+# Voice level test material: the P.56 active speech level meter and the deterministic speech-like and non-speech
+# generators (test_support/p56.h, test_support/speech_synth.h); CORE_P56 and CORE_SPEECH_SYNTH test them.
+add_library(
+    dsd-neo_test_speech_level
+    STATIC
+    test_support/p56.c
+    test_support/speech_synth.c
+)
+target_include_directories(
+    dsd-neo_test_speech_level
+    PUBLIC ${PROJECT_SOURCE_DIR}/tests/test_support
+)
+target_link_libraries(dsd-neo_test_speech_level PUBLIC ${DSD_NEO_TEST_MATH_LIB})
+
+add_executable(dsd-neo_test_core_p56 core/test_core_p56.c)
+target_link_libraries(dsd-neo_test_core_p56 PRIVATE dsd-neo_test_speech_level)
+add_test(NAME CORE_P56 COMMAND dsd-neo_test_core_p56)
+
+add_executable(dsd-neo_test_core_speech_synth core/test_core_speech_synth.c)
+target_link_libraries(
+    dsd-neo_test_core_speech_synth
+    PRIVATE dsd-neo_test_speech_level
+)
+add_test(NAME CORE_SPEECH_SYNTH COMMAND dsd-neo_test_core_speech_synth)
 
 if(DSD_ENABLE_FUZZING)
     add_subdirectory(fuzz)
@@ -1381,6 +1445,12 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_speech_agc
+  HEADERS_PUBLIC_DSP_SPEECH_AGC
+  dsd-neo/dsp/speech_agc.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_dsp_squelch_floor
   HEADERS_PUBLIC_DSP_SQUELCH_FLOOR
   dsd-neo/dsp/squelch_floor.h
@@ -2101,6 +2171,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         dsd-neo_test_ysf_dch_decode
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src
             ${PROJECT_SOURCE_DIR}/src/protocol/ysf
     )
     target_link_libraries(
@@ -2135,6 +2206,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         dsd-neo_test_ysf_mbe_capture
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src
             ${PROJECT_SOURCE_DIR}/src/protocol/ysf
     )
     target_link_libraries(
@@ -2223,6 +2295,37 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/protocol/x2tdma
 )
 add_test(NAME X2TDMA_VOICE_HELPERS COMMAND dsd-neo_test_x2tdma_voice_helpers)
+
+# X2-TDMA voice superframes signalling encryption, through the real vocoder and mixers: encrypted voice reaches no
+# output, and a superframe's opening frames take the previous superframe's verdict. The decoder reads its dibits
+# through GNU ld --wrap seams, like the YSF vocoder tests.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_x2tdma_voice_crypto
+        protocol/x2tdma/test_x2tdma_voice_crypto.c
+    )
+    target_include_directories(
+        dsd-neo_test_x2tdma_voice_crypto
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
+    )
+    target_link_libraries(
+        dsd-neo_test_x2tdma_voice_crypto
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_x2tdma
+            dsd-neo_core
+            dsd-neo_proto_nxdn
+            dsd-neo_proto_dmr
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    target_link_options(
+        dsd-neo_test_x2tdma_voice_crypto
+        PRIVATE -Wl,--wrap=get_dibit_and_analog_signal -Wl,--wrap=skipDibit
+    )
+    add_test(NAME X2TDMA_VOICE_CRYPTO COMMAND dsd-neo_test_x2tdma_voice_crypto)
+endif()
 
 add_executable(
     dsd-neo_test_nxdn_trunk_diag
@@ -7228,9 +7331,28 @@ target_link_libraries(
 )
 add_test(NAME DSP_ANALOG_VOICE COMMAND dsd-neo_test_dsp_analog_voice)
 
-# The analog monitor's audio chain (issue #518): source gains, fixed gain and AGC,
-# band choice, legacy filter flags, resets and the state-extension slot; and the -6
-# raw WAV's int16 scale (issue #643).
+# The speech level AGC and the peak limiter: synthetic speech, vowels, tones and noise, read with the P.56 meter.
+add_executable(dsd-neo_test_dsp_speech_agc dsp/test_dsp_speech_agc.c)
+target_link_libraries(
+    dsd-neo_test_dsp_speech_agc
+    PRIVATE dsd-neo_dsp dsd-neo_test_speech_level ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME DSP_SPEECH_AGC COMMAND dsd-neo_test_dsp_speech_agc)
+# The floor's recovery after 60-120 s of open-squelch hiss, on its own so the cases above stay quick.
+add_test(NAME DSP_SPEECH_AGC_LONG COMMAND dsd-neo_test_dsp_speech_agc --long)
+set_tests_properties(DSP_SPEECH_AGC_LONG PROPERTIES LABELS "long")
+
+# Opt-in micro-benchmark of the speech AGC (ns per sample at 8, 22.05 and 48 kHz); not a test.
+add_executable(dsd-neo_bench_speech_agc EXCLUDE_FROM_ALL dsp/bench_speech_agc.c)
+target_link_libraries(
+    dsd-neo_bench_speech_agc
+    PRIVATE dsd-neo_dsp dsd-neo_test_speech_level ${DSD_NEO_TEST_MATH_LIB}
+)
+
+# The analog monitor's audio chain (issue #518): source gains, fixed gain and the
+# speech AGC (start gains, learning, the new-reception rule, the limiter), band
+# choice, legacy filter flags, resets and the state-extension slot; and the -6 raw
+# WAV's int16 scale (issue #643).
 add_executable(dsd-neo_test_dsp_analog_audio dsp/test_dsp_analog_audio.c)
 target_include_directories(
     dsd-neo_test_dsp_analog_audio
@@ -7238,7 +7360,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dsp_analog_audio
-    PRIVATE dsd-neo_core ${DSD_NEO_TEST_MATH_LIB}
+    PRIVATE dsd-neo_core dsd-neo_test_speech_level ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(NAME DSP_ANALOG_AUDIO COMMAND dsd-neo_test_dsp_analog_audio)
 
@@ -7253,6 +7375,19 @@ target_include_directories(
 add_test(
     NAME CORE_PARSE_BOOL_STRICT
     COMMAND dsd-neo_test_core_parse_bool_strict
+)
+
+add_executable(
+    dsd-neo_test_core_parse_uint_dec_or_hex_strict
+    core/test_core_parse_uint_dec_or_hex_strict.c
+)
+target_include_directories(
+    dsd-neo_test_core_parse_uint_dec_or_hex_strict
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(
+    NAME CORE_PARSE_UINT_DEC_OR_HEX_STRICT
+    COMMAND dsd-neo_test_core_parse_uint_dec_or_hex_strict
 )
 
 add_executable(dsd-neo_test_core_csv_validate core/test_core_csv_validate.c)
@@ -7550,6 +7685,16 @@ add_test(
     COMMAND dsd-neo_test_core_audio_input_switch
 )
 
+# The one-channel mix of two slots (issue #518): fresh talkers summed through the mixer's limiter, and the DMR
+# superframe mix's sources.
+add_executable(dsd-neo_test_core_mono_mix core/test_core_mono_mix.c)
+target_include_directories(
+    dsd-neo_test_core_mono_mix
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_core_mono_mix PRIVATE dsd-neo_core)
+add_test(NAME CORE_MONO_MIX COMMAND dsd-neo_test_core_mono_mix)
+
 add_executable(dsd-neo_test_core_audio_gain core/test_core_audio_gain.c)
 target_include_directories(
     dsd-neo_test_core_audio_gain
@@ -7679,13 +7824,30 @@ add_test(NAME CORE_AUDIO2_HELPERS COMMAND dsd-neo_test_core_audio2_helpers)
 add_executable(dsd-neo_test_core_voice_chain core/test_core_voice_chain.c)
 target_include_directories(
     dsd-neo_test_core_voice_chain
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
 )
 target_link_libraries(
     dsd-neo_test_core_voice_chain
     PRIVATE dsd-neo_core ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(NAME CORE_VOICE_CHAIN COMMAND dsd-neo_test_core_voice_chain)
+
+# The voice chain's speech level (issue #518): what teaches each slot's speech AGC, where it starts, and the reception
+# boundaries that start it over, on the deterministic speech-like material.
+add_executable(dsd-neo_test_core_voice_level core/test_core_voice_level.c)
+target_include_directories(
+    dsd-neo_test_core_voice_level
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(
+    dsd-neo_test_core_voice_level
+    PRIVATE
+        dsd-neo_core
+        dsd-neo_test_speech_level
+        ${LIBS}
+        ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME CORE_VOICE_LEVEL COMMAND dsd-neo_test_core_voice_level)
 
 # The audio sinks' write path: device failure and recovery reports, the -o - descriptor's failure and drops (issue
 # #659). The platform writes and the log are stubbed.
@@ -7832,6 +7994,7 @@ target_link_libraries(
         dsd-neo_dsp_private_test_support
         dsd-neo_test_audio_activity
         dsd-neo_test_audio_sink
+        dsd-neo_test_speech_level
         dsd-neo_test_support
         ${DSD_NEO_TEST_MATH_LIB}
         ${LIBSNDFILE_LIBRARIES}
@@ -7868,6 +8031,7 @@ target_include_directories(
     dsd-neo_test_core_mbe_transform_context
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src
         ${PROJECT_SOURCE_DIR}/src/core
         ${_PUBLIC_INCLUDES}
 )
@@ -8030,6 +8194,7 @@ target_include_directories(
     dsd-neo_test_core_mbe_file_io
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src
         ${PROJECT_SOURCE_DIR}/tests/test_support
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
@@ -8042,6 +8207,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             ${LIBS}
             dsd-neo_fec
             dsd-neo_test_support
+            dsd-neo_test_speech_level
     )
 else()
     target_link_libraries(
@@ -8051,9 +8217,57 @@ else()
             ${LIBS}
             dsd-neo_fec
             dsd-neo_test_support
+            dsd-neo_test_speech_level
     )
 endif()
 add_test(NAME CORE_MBE_FILE_IO COMMAND dsd-neo_test_core_mbe_file_io)
+
+# Speech level parity (issue #518): one deterministic talker (test_support/speech_synth.h) played as digital voice and
+# as analog FM and AM comes out at the speech AGC's -24 dBFS active speech level (P.56), digital and analog alike. The
+# tool writes the talker, encodes it with mbelib-neo's IMBE 4400, AMBE+2 2450 and AMBE 2400 encoders into the .imb,
+# .amb and .dmb files -r plays, and measures what the decoder played (speech_parity_check.cmake). The analog renditions
+# are the committed speech_*_synth I/Q fixtures, which tools/build_iq_fixtures.py makes from the same talker.
+add_executable(dsd-neo_test_speech_parity_tool core/speech_parity_tool.c)
+target_include_directories(
+    dsd-neo_test_speech_parity_tool
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${_MBE_TARGET_INCLUDE_DIRS}
+)
+target_link_libraries(
+    dsd-neo_test_speech_parity_tool
+    PRIVATE
+        dsd-neo_platform
+        ${MBE_LINK_TARGET}
+        dsd-neo_dsp
+        dsd-neo_test_speech_level
+        ${DSD_NEO_TEST_MATH_LIB}
+)
+# Digital only: -r needs no radio support. Established speech from each codec within 3 dB of -24 dBFS, the three within
+# 1.5 dB of each other.
+add_test(
+    NAME DECODE_MBE_SPEECH_LEVEL
+    COMMAND
+        ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+        "-DTOOL_BIN=$<TARGET_FILE:dsd-neo_test_speech_parity_tool>"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/speech_parity/DECODE_MBE_SPEECH_LEVEL"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/speech_parity_check.cmake"
+)
+set_tests_properties(
+    DECODE_MBE_SPEECH_LEVEL
+    PROPERTIES LABELS "voice-chain" TIMEOUT 120
+)
+# The tool opens only its own work file names: a path on the command line is refused before anything is opened.
+add_test(
+    NAME SPEECH_PARITY_TOOL_WORK_FILES
+    COMMAND
+        dsd-neo_test_speech_parity_tool encode imbe
+        "${CMAKE_CURRENT_BINARY_DIR}/speech_parity/talker.imb"
+)
+set_tests_properties(
+    SPEECH_PARITY_TOOL_WORK_FILES
+    PROPERTIES
+        LABELS "voice-chain"
+        PASS_REGULAR_EXPRESSION "is not one of the tool's work file names"
+)
 
 # Issue #661: capture and per-call WAV names never land on a taken one. GNU ld --wrap pins the nonce and the decode time
 # so the colliding names are known in advance, as the other wrap tests do.
@@ -8183,7 +8397,10 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_engine_no_carrier_reset
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/engine
+        ${PROJECT_SOURCE_DIR}/src/protocol/tetra
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     target_compile_definitions(
@@ -8230,6 +8447,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             ${LIBS}
             dsd-neo_feature_radio
             dsd-neo_test_support
+            dsd-neo_test_speech_level
     )
 else()
     target_link_libraries(
@@ -8239,6 +8457,7 @@ else()
             ${LIBS}
             dsd-neo_feature_radio
             dsd-neo_test_support
+            dsd-neo_test_speech_level
     )
 endif()
 add_test(
@@ -9949,7 +10168,11 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_app_p25_cc_selection
-    PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
+    PRIVATE
+        ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+        ${LIBS}
+        dsd-neo_test_support
+        dsd-neo_test_speech_level
 )
 add_test(NAME APP_P25_CC_SELECTION COMMAND dsd-neo_test_app_p25_cc_selection)
 
@@ -12122,7 +12345,10 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_m17_state_dispatch
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/m17
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src
+        ${PROJECT_SOURCE_DIR}/src/protocol/m17
 )
 target_link_libraries(
     dsd-neo_test_m17_state_dispatch
@@ -12144,6 +12370,32 @@ if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
 endif()
 add_test(NAME M17_STATE_DISPATCH COMMAND dsd-neo_test_m17_state_dispatch)
+
+# Issue #518 B17: the stream encoder's microphone level through real Codec2 at 3200 and 1600 bit/s, end to end:
+# what it sends, decoded raw, and what its monitor plays. Only a Codec2 build encodes voice.
+if(DSD_HAS_CODEC2)
+    add_executable(
+        dsd-neo_test_m17_encoder_codec2
+        protocol/m17/test_m17_encoder_codec2.c
+    )
+    target_include_directories(
+        dsd-neo_test_m17_encoder_codec2
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/protocol/m17
+    )
+    target_link_libraries(
+        dsd-neo_test_m17_encoder_codec2
+        PRIVATE
+            dsd-neo_proto_m17
+            dsd-neo_proto_nxdn
+            dsd-neo_feature_codec2
+            ${CODEC2_LIBRARIES}
+            dsd-neo_test_speech_level
+            dsd-neo_test_support
+    )
+    add_test(NAME M17_ENCODER_CODEC2 COMMAND dsd-neo_test_m17_encoder_codec2)
+endif()
 
 add_executable(
     dsd-neo_test_m17_confirm
@@ -13086,6 +13338,16 @@ target_include_directories(
 )
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_am_demod ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_AM_DEMOD COMMAND dsd-neo_test_dsp_am_demod)
+
+# The FSK discriminator's voice lane EDACS plays analog calls from (issue #518 B10): level, de-emphasis, the
+# normalised lane unchanged, squelch, and the output resampler keeping the lane in step.
+add_executable(dsd-neo_test_dsp_fsk_voice_lane dsp/test_dsp_fsk_voice_lane.cpp)
+target_include_directories(
+    dsd-neo_test_dsp_fsk_voice_lane
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_fsk_voice_lane ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_FSK_VOICE_LANE COMMAND dsd-neo_test_dsp_fsk_voice_lane)
 
 add_executable(dsd-neo_test_dsp_demod_misc dsp/test_dsp_demod_misc.cpp)
 target_include_directories(
@@ -15381,6 +15643,7 @@ foreach(_dsd_tetra_voice_test IN ITEMS voice_pipeline voice_codec)
         "${_dsd_tetra_target}"
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src
             ${PROJECT_SOURCE_DIR}/src/protocol/tetra
     )
     # initState() and the audio output reach the codecs and sinks ${LIBS} carries; dsd-neo_core goes ahead of them so
@@ -15441,6 +15704,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     add_executable(
         dsd-neo_test_edacs_grant_tune_matrix
         protocol/edacs/test_edacs_grant_tune_matrix.c
+        test_support/speech_synth.c
     )
     target_include_directories(
         dsd-neo_test_edacs_grant_tune_matrix
@@ -15468,7 +15732,8 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=open_wav_file"
             "-Wl,--wrap=dsd_audio_write"
             "-Wl,--wrap=dsd_audio_output_health_get"
-            "-Wl,--wrap=dsd_analog_audio_process_s"
+            "-Wl,--wrap=dsd_analog_audio_process_runs_f"
+            "-Wl,--wrap=dsd_audio_group_gate_mono"
             "-Wl,--wrap=dsd_rate_converter_clear"
     )
     add_test(
@@ -16004,6 +16269,17 @@ target_link_libraries(
         ${MBE_LINK_TARGET}
         dsd-neo_test_support
         ${DSD_NEO_TEST_MATH_LIB}
+)
+
+# The generator's voice source (issue #518): every harmonic keeps h times the pitch contour's frequency for the whole
+# call, and the samples stay inside the encoder's nominal range.
+add_test(
+    NAME DMR_SYNTH_VOICE_SOURCE
+    COMMAND dsd-neo_test_dmr_synth_gen --voice-selftest
+)
+set_tests_properties(
+    DMR_SYNTH_VOICE_SOURCE
+    PROPERTIES LABELS "dmr-synth" TIMEOUT 60
 )
 
 add_test(
@@ -17464,6 +17740,32 @@ if(DSD_HAS_RADIO)
         COMMAND dsd-neo_test_io_rtl_analog_family_switch
     )
 
+    # Issue #518 B8/B9: -n 50 plays the reference tone at -15 dBFS RMS whatever the
+    # de-emphasis, through the real demodulator, output ring and analog chain, live,
+    # forced-rate and replayed, across an FM -> AM -> FM switch.
+    add_executable(
+        dsd-neo_test_io_rtl_monitor_deemph
+        io/test_io_rtl_monitor_deemph.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_monitor_deemph
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_monitor_deemph
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_monitor_deemph
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_MONITOR_DEEMPH
+        COMMAND dsd-neo_test_io_rtl_monitor_deemph
+    )
+
     add_executable(
         dsd-neo_test_io_rtl_analog_open
         io/test_io_rtl_analog_open.cpp
@@ -17722,6 +18024,36 @@ if(DSD_HAS_RADIO)
         COMMAND dsd-neo_test_io_rtl_stream_input_gap
     )
     set_tests_properties(IO_RTL_STREAM_INPUT_GAP PROPERTIES TIMEOUT 120)
+
+    # Issue #518 B10: the FSK voice lane EDACS plays analog calls from, through the real stream creation, read API,
+    # demodulator, output resampler and ring: the normalised samples and flags unchanged, the lane's level and
+    # positions, with the lane switched on and off, a gap, a retune and three rates.
+    add_executable(dsd-neo_test_io_rtl_voice_lane io/test_io_rtl_voice_lane.cpp)
+    target_include_directories(
+        dsd-neo_test_io_rtl_voice_lane
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/io/radio
+            ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_voice_lane
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_io_iq
+            dsd-neo_dsp
+            dsd-neo_core
+            dsd-neo_platform
+            dsd-neo_test_support
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_voice_lane
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(NAME IO_RTL_VOICE_LANE COMMAND dsd-neo_test_io_rtl_voice_lane)
+    set_tests_properties(IO_RTL_VOICE_LANE PROPERTIES TIMEOUT 120)
 
     # Issue #701: a run-time re-plan reopens an I/Q replay where the stopped stream left it. The checkpoint after a
     # MUTE, a RETUNE and a completed --iq-loop pass names the event to apply next and the media time so far, and the
@@ -21146,6 +21478,150 @@ if(DSD_HAS_RADIO)
         NULL_SINK
     )
 
+    # Speech level parity (issue #518): the talker DECODE_MBE_SPEECH_LEVEL plays from IMBE, AMBE+2 and AMBE 2400 files,
+    # and the same talker on narrowband FM (2.5 kHz rated deviation, default channel), wideband FM (5 kHz, a 25 kHz
+    # channel) and AM (80%), all at the default auto gain: established speech within 3 dB of -24 dBFS in every one, and
+    # all six within 1.5 dB of each other, digital and analog alike (speech_parity_check.cmake).
+    add_test(
+        NAME DECODE_IQ_SPEECH_PARITY
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+            "-DTOOL_BIN=$<TARGET_FILE:dsd-neo_test_speech_parity_tool>"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/speech_parity/DECODE_IQ_SPEECH_PARITY"
+            "-DFIXTURE_DIR=${_DSD_NEO_IQ_FIXTURE_DIR}" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/speech_parity_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_SPEECH_PARITY
+        PROPERTIES LABELS "iq-decode;voice-chain;analog" TIMEOUT 240
+    )
+
+    # Off-air digital speech at the default auto gain (issue #518). The excerpts are too short for established speech
+    # (0.3-2.6 s of it), so each case holds the whole output's P.56 level to a window of +/-1 dB around what the speech
+    # AGC measures there, and requires it to have moved from the -g 1 (DVSI reference) level toward -24 dBFS, or to have
+    # stayed within 3 dB of it, and to be within 10 dB of it (speech_level_check.cmake). docs/testing.md lists each
+    # excerpt's speech. Measured (auto, at -g 1): dstar -20.67 (-18.14), ysf -25.37 (-38.79), m17 -21.81 (-21.63),
+    # tetra_call_real_air_72k -27.41 (-28.53), nxdn96 -32.32 (-40.89; 1.25 s of speech 17 dB under the target, which
+    # the gain climbs toward at its startup rate), provoice -25.42 (-39.30), p25p1_c4fm_vc -29.79 (-32.04; 0.8 s of
+    # speech) and p25p1_cqpsk_vc -21.53 (-22.44; 0.3 s of speech, whose first gain step overshoots).
+    function(
+        dsd_neo_add_iq_speech_level_test
+        test_name
+        fixture
+        mode
+        channels
+        min
+        max
+    )
+        set(_reference_arg)
+        if(ARGC GREATER 6)
+            set(_reference_arg "-DREFERENCE=${ARGV6}")
+        endif()
+        add_test(
+            NAME ${test_name}
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DTOOL_BIN=$<TARGET_FILE:dsd-neo_test_speech_parity_tool>"
+                "-DMODE=${mode}"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json"
+                "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/speech_level/${test_name}"
+                "-DCHANNELS=${channels}" "-DMIN=${min}" "-DMAX=${max}"
+                ${_reference_arg} -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/speech_level_check.cmake"
+        )
+        set_tests_properties(
+            ${test_name}
+            PROPERTIES LABELS "iq-decode;voice-chain" TIMEOUT 240
+        )
+    endfunction()
+    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_DSTAR dstar -fd 1 -21.67 -19.67 "-g 1")
+    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_YSF ysf -fy 1 -26.37 -24.37 "-g 1")
+    # M17 voice is Codec2: the case needs it built in, as DECODE_IQ_M17_VOICE_OUTPUT does.
+    if(DSD_HAS_CODEC2)
+        dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_M17 m17 -fz 1 -22.81 -20.81 "-g 1")
+    endif()
+    dsd_neo_add_iq_speech_level_test(
+        DECODE_IQ_SPEECH_LEVEL_TETRA
+        tetra_call_real_air_72k
+        -fT
+        1
+        -28.41
+        -26.41
+        "-g 1"
+    )
+    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_NXDN96 nxdn96 -fn 1 -33.32 -31.32 "-g 1")
+    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_PROVOICE provoice -fp 1 -26.42 -24.42 "-g 1")
+    dsd_neo_add_iq_speech_level_test(
+        DECODE_IQ_SPEECH_LEVEL_P25P1_C4FM
+        p25p1_c4fm_vc
+        -f1
+        1
+        -30.79
+        -28.79
+        "-g 1"
+    )
+    dsd_neo_add_iq_speech_level_test(
+        DECODE_IQ_SPEECH_LEVEL_P25P1_CQPSK
+        p25p1_cqpsk_vc
+        "-f1 -mq"
+        1
+        -22.53
+        -20.53
+        "-g 1"
+    )
+    # dmr_voice_synth's test voice at -g 1 (issue #518): -27.08 dBFS P.56 with peaks at -7.5 dBFS since its generator
+    # keeps the source inside the encoder's range (DMR_SYNTH_VOICE_SOURCE). The fixture used to decode at -13.27 dBFS,
+    # its peaks held at -1 dBFS by the limiter. It is a buzz under a 3 Hz envelope, not speech, so it has no auto case.
+    dsd_neo_add_iq_speech_level_test(
+        DECODE_IQ_SPEECH_LEVEL_DMR_SYNTH_FIXED
+        dmr_voice_synth
+        "-fs -g 1"
+        2
+        -28.08
+        -26.08
+    )
+
+    # The syllable-gated noise fixtures carry band-limited noise with no pitch, not speech (issue #518): on narrowband
+    # FM at the default auto gain the speech AGC must learn nothing from them. Each case replays the fixture at auto and
+    # at -n 50 and runs the -n 50 audio through a speech AGC set up as the monitor's (`gated-nfm`), which must give the
+    # decoder's own output to within 4 LSB, so the state it reads is the decoder's: no frame committed and the learned
+    # gain at the +4.54 dB start gain throughout (measured: 0 commits, exactly +4.54 dB on all nine). What the output
+    # does lose is the attenuator's: it eases the non-speech from the first frame at 6 dB/s and lets go in each
+    # syllable gap (the level falls 14 dB, read as quieting), so the output runs 0-5 dB under the start gain (the
+    # attenuator reaches -2.6 to -5.3 dB). The case holds the attenuator to that rate and to 0 dB or less, and the
+    # limiter idle.
+    foreach(
+        _gated
+        nfm_notone_synth
+        nfm_ctcss_synth_1000
+        nfm_ctcss_synth_670
+        nfm_ctcss_synth_1506
+        nfm_ctcss_synth_drop
+        nfm_dcs_synth_023n
+        nfm_dcs_synth_023i
+        nfm_dcs_synth_noisy
+        nfm_dcs_synth_drop
+    )
+        string(TOUPPER "${_gated}" _gated_name)
+        string(REPLACE "NFM_" "" _gated_name "${_gated_name}")
+        string(REPLACE "_SYNTH" "" _gated_name "${_gated_name}")
+        add_test(
+            NAME DECODE_IQ_ANALOG_GATED_NOISE_${_gated_name}
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DTOOL_BIN=$<TARGET_FILE:dsd-neo_test_speech_parity_tool>"
+                -DMODE=-fA
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${_gated}.iq.json"
+                "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/speech_level/GATED_${_gated_name}"
+                -DGATED=ON -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/speech_level_check.cmake"
+        )
+        set_tests_properties(
+            DECODE_IQ_ANALOG_GATED_NOISE_${_gated_name}
+            PROPERTIES LABELS "iq-decode;analog" TIMEOUT 240
+        )
+    endforeach()
+
     # Restart safety: bootstrap + engine lifecycle twice inside one process, the
     # shape an embedding host (Android service, GUI shell) uses. Lives here
     # because it replays an I/Q fixture and therefore needs the radio pipeline.
@@ -21646,6 +22122,7 @@ target_link_libraries(
     PRIVATE
         dsd-neo_engine
         dsd-neo_feature_radio
+        dsd-neo_test_speech_level
         ${LIBS}
         ${DSD_NEO_TEST_MATH_LIB}
 )
@@ -22218,12 +22695,18 @@ if(DSD_HAS_RADIO)
     set(_analog_off_path "CQPSK symbols instead of monitor samples")
 
     # The monitor's default chain since issue #518 is the voice band-pass (300-3400 Hz,
-    # -v 0x9) and the analog AGC (-n 0), which brings a steady tone's peaks to -10 dBFS
-    # whatever its level and source. FM and AM tones share one RMS window under it, so
-    # the two monitors play the reference tone alike (-13.2 and -13.5 dBFS measured),
-    # and the peak bound pins the AGC's limiting.
-    set(_analog_auto_tone_level
-        "--analog-min-rms-dbfs -14.5 --analog-max-rms-dbfs -12 --analog-max-peak-dbfs -9.5 --analog-max-clip 0"
+    # -v 0x1) and the speech AGC (-n 0). A steady tone is no speech: it starts at the
+    # band's start gain (FM narrowband +4.54 dB, AM -2.55 dB over -n 50), the AGC's first
+    # commits move it toward the speech target until it is turned away as a tone (within
+    # 240 ms), and after a second with nothing learned the attenuator eases it toward
+    # -36 dBFS. Over the 1.5 s fixtures the reference tone measures -15.36 dBFS RMS
+    # (-7.01 peak) on FM and -20.04 (-14.11 peak) on AM, each held to +/-1 dB; the old
+    # AGC brought both to -10 dBFS peak (-13.2 and -13.5 RMS).
+    set(_analog_auto_tone_level_fm
+        "--analog-min-rms-dbfs -16.4 --analog-max-rms-dbfs -14.4 --analog-max-peak-dbfs -6.5 --analog-max-clip 0"
+    )
+    set(_analog_auto_tone_level_am
+        "--analog-min-rms-dbfs -21 --analog-max-rms-dbfs -19 --analog-max-peak-dbfs -13.5 --analog-max-clip 0"
     )
     # Cases that measure the channel itself (its width, a neighbour) run with the voice
     # filters off and the fixed reference gain: the band-pass's 3.4 kHz low-pass takes
@@ -22231,28 +22714,91 @@ if(DSD_HAS_RADIO)
     # the levels the width bounds hold.
     set(_analog_channel "-v 0 -n 50")
 
-    # 1 kHz at 3 kHz deviation through the default chain: 37.5 dB tone SNR, 52.3 dB
-    # in-band ratio, -13.2 dBFS RMS at the -10 dBFS peak the AGC holds it to, audible
-    # from the first block, no clipping. The probe on the tone itself must agree with
-    # the fit (0.00 dBc measured), which shows the probe reads a real line at its level.
+    # 1 kHz at 3 kHz deviation through the default chain: 30.4 dB tone SNR (the speech
+    # AGC's gain moves while it turns the tone away; 37.5 dB at a fixed gain), 52.3 dB
+    # in-band ratio, -15.36 dBFS RMS, audible from the first block, no clipping. The
+    # probe on the tone itself must agree with the fit (0.01 dBc measured), which shows
+    # the probe reads a real line at its level.
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_TONE
         nfm_tone_synth
-        "-fA --analog-expect-tone-hz 1000 --analog-min-snr-db 30 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-max-first-audible-ms 100 --analog-min-inband-db 45 ${_analog_auto_tone_level} --analog-probe-min-dbc 1000:-1 --analog-probe-max-dbc 1000:1"
+        "-fA --analog-expect-tone-hz 1000 --analog-min-snr-db 30 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-max-first-audible-ms 100 --analog-min-inband-db 45 ${_analog_auto_tone_level_fm} --analog-probe-min-dbc 1000:-1 --analog-probe-max-dbc 1000:1"
         ""
         "${_analog_off_path}"
     )
     # The fixed gain's calibration (issue #518): at -n 50 the reference signal, 1 kHz
     # at 3 kHz deviation or AM at 50%, plays at -12 dBFS peak and -15 dBFS RMS, live
-    # and in replay alike. Through the band-pass nfm_tone_synth measures -15.9 dBFS RMS
-    # and am_tone_synth -15.0 dBFS (DECODE_IQ_ANALOG_AM_TONE_FIXED50), each held to
-    # +/-1 dB.
+    # and in replay alike. The FM monitor's de-emphasis takes 1 kHz down (0.87 dB at
+    # the default 75 us, 13.65 dB at 750 us), and the gain stage makes that up (B8/B9),
+    # so nfm_tone_synth measures -15.06 dBFS RMS under every DSD_NEO_DEEMPH setting,
+    # held to +/-0.2 dB: before, -15.92 at 75 us, -15.46 at 50 us and -28.70 at 750 us.
+    # am_tone_synth measures -15.0 dBFS (DECODE_IQ_ANALOG_AM_TONE_FIXED50).
+    set(_analog_nfm_tone_fixed50
+        "-fA -n 50 --analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-min-rms-dbfs -15.2 --analog-max-rms-dbfs -14.8 --analog-max-clip 0"
+    )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_TONE_FIXED50
         nfm_tone_synth
-        "-fA -n 50 --analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-min-rms-dbfs -16.9 --analog-max-rms-dbfs -14.9 --analog-max-clip 0"
+        "${_analog_nfm_tone_fixed50}"
         ""
         "${_analog_off_path}"
+    )
+    foreach(_deemph off 50 nfm)
+        string(TOUPPER "${_deemph}" _deemph_name)
+        dsd_neo_add_analog_replay_test(
+            DECODE_IQ_ANALOG_NFM_TONE_FIXED50_DEEMPH_${_deemph_name}
+            nfm_tone_synth
+            "${_analog_nfm_tone_fixed50}"
+            ""
+            "${_analog_off_path}"
+        )
+        set_tests_properties(
+            DECODE_IQ_ANALOG_NFM_TONE_FIXED50_DEEMPH_${_deemph_name}
+            PROPERTIES ENVIRONMENT "DSD_NEO_DEEMPH=${_deemph}"
+        )
+    endforeach()
+    # A fixed -n keeps the speech AGC's limiter (issue #518): open-squelch receiver noise
+    # (noise_floor) at -n 50 with the 750 us de-emphasis made up (+13.65 dB at 1 kHz)
+    # measures -10.92 dBFS RMS with its peaks held at -1.00 dBFS, none clipped; the fixed
+    # gain alone took them past full scale.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_NOISE_FIXED50_DEEMPH_NFM
+        noise_floor
+        "-fA -n 50 --analog-min-captured-ms 9800 --analog-max-peak-dbfs -0.9 --analog-max-clip 0"
+        ""
+        "${_analog_off_path}"
+    )
+    set_tests_properties(
+        DECODE_IQ_ANALOG_NOISE_FIXED50_DEEMPH_NFM
+        PROPERTIES ENVIRONMENT "DSD_NEO_DEEMPH=nfm"
+    )
+    # B2 (issue #518): on the default open squelch, receiver noise alone is no speech, and
+    # the AGC's attenuator eases it from the start gain (-7.4 dBFS RMS) toward -36 dBFS at
+    # 6 dB/s once a second passes with nothing learned: every 20 ms block after 3.48 s reads
+    # under -28 dBFS (-31.4 dBFS RMS from 4.5 s on). The old AGC held the noise at its
+    # -10 dBFS peak target (-21.1 dBFS RMS) for the whole 10 s.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_NOISE_FLOOR_EASED
+        noise_floor
+        "-fA --analog-audible-dbfs -28 --analog-min-captured-ms 9800 --analog-min-last-audible-ms 2000 --analog-max-last-audible-ms 4500 --analog-max-clip 0"
+        ""
+        "${_analog_off_path}"
+    )
+    # The same under the heaviest de-emphasis (DSD_NEO_DEEMPH=nfm, 750 us): the noise is so
+    # coloured that a few percent of its frames pass the AGC's pitch cue, which held it at
+    # -10.0 dBFS RMS for the whole 10 s. The analog AGC's coloured-noise veto turns those
+    # frames away, so it eases as above: 2 dB louder (the de-emphasis made up), every block
+    # after 3.48 s reads under -26 dBFS.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_NOISE_FLOOR_EASED_DEEMPH_NFM
+        noise_floor
+        "-fA --analog-audible-dbfs -26 --analog-min-captured-ms 9800 --analog-min-last-audible-ms 2000 --analog-max-last-audible-ms 4500 --analog-max-clip 0"
+        ""
+        "${_analog_off_path}"
+    )
+    set_tests_properties(
+        DECODE_IQ_ANALOG_NOISE_FLOOR_EASED_DEEMPH_NFM
+        PROPERTIES ENVIRONMENT "DSD_NEO_DEEMPH=nfm"
     )
     # The same tone with an unmodulated carrier 12.5 kHz up at -6 dB. The default
     # 16 kHz channel filter rejects it: the 12.5 kHz probe reads -76.6 dBc, close to
@@ -22268,8 +22814,8 @@ if(DSD_HAS_RADIO)
     # Issue #525: --nfm-bandwidth-hz changes the channel filter a listener hears
     # through. The same 1 kHz tone through an 8 kHz, an explicit 16 kHz and a 25 kHz
     # channel (voice filters off, fixed gain), each held to its own SNR and in-band
-    # floors and to the tone's absolute level: -15.9 dBFS at every width, bounded to
-    # -17.5..-14.5 dBFS, so a width that costs the tone 1.5 dB fails. The 1 kHz probe's
+    # floors and to the tone's absolute level: -15.0 dBFS at every width, bounded to
+    # -16.5..-13.5 dBFS, so a width that costs the tone 1.5 dB fails. The 1 kHz probe's
     # +/-1 dBc is NFM_TONE's self-check of the probe (it is measured against the fit of
     # the same tone, so it reads 0.00 dBc at any level), not a level bound. 8 kHz trims
     # the 3 kHz-deviation signal's outer sidebands (tone SNR 28.0 dB, in-band 40.8 dB),
@@ -22281,7 +22827,7 @@ if(DSD_HAS_RADIO)
     # at 8 kHz and -60.6 dBc at 25 kHz, against -78.4 dBc at the default. Each bound is
     # one the default fails, so a run that dropped the width would not pass.
     set(_analog_tone_bounds
-        "--analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-max-first-audible-ms 100 --analog-min-rms-dbfs -22 --analog-max-rms-dbfs -10 --analog-max-clip 0 --analog-probe-min-dbc 1000:-1 --analog-probe-max-dbc 1000:1 --analog-probe-min-dbfs 1000:-17.5 --analog-probe-max-dbfs 1000:-14.5"
+        "--analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-max-first-audible-ms 100 --analog-min-rms-dbfs -22 --analog-max-rms-dbfs -10 --analog-max-clip 0 --analog-probe-min-dbc 1000:-1 --analog-probe-max-dbc 1000:1 --analog-probe-min-dbfs 1000:-16.5 --analog-probe-max-dbfs 1000:-13.5"
     )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_TONE_8K
@@ -22309,7 +22855,7 @@ if(DSD_HAS_RADIO)
     # -76.6) and the tone keeps a 28.0 dB SNR; at 25 kHz the neighbour sits inside the
     # passband and reads -19.9 dBc, so each case's neighbour bound is one the default
     # width and the other case break. At 25 kHz the beat counts against the tone SNR
-    # (8.2 dB), so that case pins the tone's level instead: -15.9 dBFS, the same as at
+    # (8.2 dB), so that case pins the tone's level instead: -15.0 dBFS, the same as at
     # every other width.
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_BW_8K
@@ -22321,7 +22867,7 @@ if(DSD_HAS_RADIO)
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_BW_25K
         nfm_adjacent_synth
-        "-fA ${_analog_channel} --nfm-bandwidth-hz 25000 --analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-probe-min-dbc 12500:-30 --analog-probe-min-dbfs 1000:-18 --analog-probe-max-dbfs 1000:-14"
+        "-fA ${_analog_channel} --nfm-bandwidth-hz 25000 --analog-expect-tone-hz 1000 --analog-min-captured-ms 1400 --analog-probe-min-dbc 12500:-30 --analog-probe-min-dbfs 1000:-17 --analog-probe-max-dbfs 1000:-13"
         ""
         "${_analog_off_path}"
     )
@@ -22359,48 +22905,91 @@ if(DSD_HAS_RADIO)
     # speech stands clear of the quiet carrier between words. On nfm_ctcss_real the
     # in-band ratio is close to receiver noise's (18.4 dB against 14.6 dB; small speech
     # deviation), so that case tells the two apart by FM quieting instead: the channel
-    # measures -32.8 dBFS RMS, open-squelch noise (noise_floor) -12.8 dBFS.
+    # measures -31.9 dBFS RMS, open-squelch noise (noise_floor) -12.0 dBFS. Each also
+    # pins the excerpt's P.56 level at -n 50 to +/-1 dB (nfm_ctcss_real -31.90,
+    # nfm_squelch_real_a -29.31, nfm_squelch_real_b -26.71 dBFS): the level the speech
+    # AGC's cases below move toward -24 dBFS from.
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_REAL_CTCSS_SMOKE
         nfm_ctcss_real
-        "-fA -n 50 --analog-audible-dbfs -40 --analog-min-captured-ms 5800 --analog-min-audible-ms 3500 --analog-min-inband-db 14 --analog-max-rms-dbfs -25"
+        "-fA -n 50 --analog-audible-dbfs -40 --analog-min-captured-ms 5800 --analog-min-audible-ms 3500 --analog-min-inband-db 14 --analog-max-rms-dbfs -25 --analog-min-p56-dbfs -32.90 --analog-max-p56-dbfs -30.90"
         ""
         "${_analog_off_path}"
     )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_A_SMOKE
         nfm_squelch_real_a
-        "-fA -n 50 --analog-audible-dbfs -40 --analog-min-captured-ms 3900 --analog-min-audible-ms 1200 --analog-min-first-audible-ms 250 --analog-max-first-audible-ms 1000 --analog-min-inband-db 18"
+        "-fA -n 50 --analog-audible-dbfs -40 --analog-min-captured-ms 3900 --analog-min-audible-ms 1200 --analog-min-first-audible-ms 250 --analog-max-first-audible-ms 1000 --analog-min-inband-db 18 --analog-min-p56-dbfs -30.31 --analog-max-p56-dbfs -28.31"
         ""
         "${_analog_off_path}"
     )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE
         nfm_squelch_real_b
-        "-fA -n 50 --analog-audible-dbfs -40 --analog-min-captured-ms 3900 --analog-min-audible-ms 2500 --analog-min-inband-db 20"
+        "-fA -n 50 --analog-audible-dbfs -40 --analog-min-captured-ms 3900 --analog-min-audible-ms 2500 --analog-min-inband-db 20 --analog-min-p56-dbfs -27.71 --analog-max-p56-dbfs -26.31"
         ""
         "${_analog_off_path}"
     )
-    # Speech parity (issue #518): under the default chain the AGC brings real NFM and AM
-    # speech to the level digital voice plays at: -24.9 dBFS RMS, the level the DMR path played dmr_voice at (a control
-    # channel at inverted polarity it then decoded as voice, issue #729; kept as the speech-level target);
-    # nfm_ctcss_real (-fA) and am_airband_real (-fM) measure -23.9 dBFS each, and both
-    # are held to that digital level +/-3 dB. DECODE_IQ_ANALOG_NEG_PARITY_FIXED shows the
-    # fixed gain alone misses the window on the NFM excerpt.
-    set(_analog_speech_parity
-        "--analog-min-rms-dbfs -27.9 --analog-max-rms-dbfs -21.9 --analog-max-clip 0"
+    # Speech level (issue #518): under the default chain the speech AGC brings real NFM and
+    # AM speech toward its -24 dBFS active speech target (ITU-T P.56, test_support/p56.h).
+    # The excerpts are too short for established speech (2.7-6.6 s of it, docs/testing.md),
+    # so each case holds the whole stream's P.56 level to +/-1 dB of what it measures,
+    # unclipped, and every level that window allows lies nearer -24 dBFS than every level
+    # the excerpt's -n 50 window allows (the smoke cases above and DECODE_IQ_ANALOG_AM_REAL
+    # pin those): nfm_ctcss_real -22.98 dBFS (-31.90 at -n 50: quiet speech, hiss about
+    # 15-20 dB under it, which P.56 counts as active), nfm_squelch_real_a -26.04 (-29.31),
+    # nfm_squelch_real_b -22.15 (-26.71) and am_airband_real -22.39 (-18.12).
+    # nfm_squelch_real_b's two levels are only 0.86 dB apart in distance from -24 dBFS, so
+    # its windows stop short on the sides that face each other: -23.15 to -21.70 at auto
+    # (2.30 dB from -24 at most) and -27.71 to -26.31 at -n 50 (2.31 dB at least). Established
+    # speech against digital voice is DECODE_IQ_SPEECH_PARITY's. The old cases held whole-stream
+    # RMS to -24.9 dBFS, a level a control channel decoded as voice played at (issue #729), not
+    # digital speech.
+    # DECODE_IQ_ANALOG_NEG_PARITY_FIXED shows the fixed gain alone misses the NFM window.
+    set(_analog_speech_level_nfm
+        "--analog-min-p56-dbfs -23.98 --analog-max-p56-dbfs -21.98 --analog-max-clip 0"
+    )
+    set(_analog_speech_level_am
+        "--analog-min-p56-dbfs -23.39 --analog-max-p56-dbfs -21.39 --analog-max-clip 0"
     )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_PARITY_NFM_REAL
         nfm_ctcss_real
-        "-fA --analog-min-captured-ms 5800 ${_analog_speech_parity}"
+        "-fA --analog-min-captured-ms 5800 ${_analog_speech_level_nfm}"
         ""
         "${_analog_off_path}"
     )
     dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_PARITY_NFM_SQUELCH_A
+        nfm_squelch_real_a
+        "-fA --analog-min-captured-ms 3900 --analog-min-p56-dbfs -27.04 --analog-max-p56-dbfs -25.04 --analog-max-clip 0"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_PARITY_NFM_SQUELCH_B
+        nfm_squelch_real_b
+        "-fA --analog-min-captured-ms 3900 --analog-min-p56-dbfs -23.15 --analog-max-p56-dbfs -21.70 --analog-max-clip 0"
+        ""
+        "${_analog_off_path}"
+    )
+    # The veto leaves real speech levelled under the heaviest de-emphasis too:
+    # nfm_ctcss_real under DSD_NEO_DEEMPH=nfm measures -23.70 dBFS, held to +/-1 dB.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_PARITY_NFM_REAL_DEEMPH_NFM
+        nfm_ctcss_real
+        "-fA --analog-min-captured-ms 5800 --analog-min-p56-dbfs -24.70 --analog-max-p56-dbfs -22.70 --analog-max-clip 0"
+        ""
+        "${_analog_off_path}"
+    )
+    set_tests_properties(
+        DECODE_IQ_ANALOG_PARITY_NFM_REAL_DEEMPH_NFM
+        PROPERTIES ENVIRONMENT "DSD_NEO_DEEMPH=nfm"
+    )
+    dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_PARITY_AM_REAL
         am_airband_real
-        "-fM --analog-min-captured-ms 7800 ${_analog_speech_parity}"
+        "-fM --analog-min-captured-ms 7800 ${_analog_speech_level_am}"
         ""
         "${_analog_off_path}"
     )
@@ -22566,14 +23155,14 @@ if(DSD_HAS_RADIO)
 
     # Native AM (issue #524). am_tone_synth is a 1 kHz tone at 50% depth on a 0 Hz
     # carrier with noise 30 dB down across the band: through -fM's default chain it
-    # measures 31.7 dB tone SNR, 50.4 dB in-band ratio and -13.5 dBFS RMS (the AGC holds
-    # the peak at -10 dBFS, as for FM), audible from the first block, unclipped; the
+    # measures 30.3 dB tone SNR, 50.4 dB in-band ratio and -20.04 dBFS RMS (the speech
+    # AGC turns the tone away, as for FM), audible from the first block, unclipped; the
     # probe on the tone agrees with the fit. The FM monitor finds no tone on it (see the
     # negative control below), so the level comes from the AM detector.
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_AM_TONE
         am_tone_synth
-        "-fM --analog-expect-tone-hz 1000 --analog-min-snr-db 25 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-max-first-audible-ms 100 --analog-min-inband-db 40 ${_analog_auto_tone_level} --analog-probe-min-dbc 1000:-1 --analog-probe-max-dbc 1000:1"
+        "-fM --analog-expect-tone-hz 1000 --analog-min-snr-db 25 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-max-first-audible-ms 100 --analog-min-inband-db 40 ${_analog_auto_tone_level_am} --analog-probe-min-dbc 1000:-1 --analog-probe-max-dbc 1000:1"
         ""
         "${_analog_off_path}"
     )
@@ -22608,8 +23197,9 @@ if(DSD_HAS_RADIO)
     )
     # AM airband voice (the excerpt DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH plays through
     # the FM monitor) through the AM detector at the fixed reference gain: the whole
-    # excerpt delivered, 5720 ms audible from -40 dBFS, -18.6 dBFS RMS, unclipped, and
-    # speech-shaped (34.4 dB in-band ratio). The excerpt carries no sub-audible tone or
+    # excerpt delivered, 5720 ms audible from -40 dBFS, -18.6 dBFS RMS (-18.12 dBFS P.56,
+    # held to +/-1 dB: the level DECODE_IQ_ANALOG_PARITY_AM_REAL moves toward -24 dBFS
+    # from), unclipped, and speech-shaped (34.4 dB in-band ratio). The excerpt carries no sub-audible tone or
     # code, so the "Received tone:" forbid only guards against a false report; the
     # FM-only detection gate is proven by DSP_SYMBOL_REPLAY, which feeds the same
     # CTCSS-bearing and DCS-bearing monitor audio through the tap on FM (locks) and AM
@@ -22617,14 +23207,14 @@ if(DSD_HAS_RADIO)
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_AM_REAL
         am_airband_real
-        "-fM -n 50 --analog-audible-dbfs -40 --analog-min-captured-ms 7800 --analog-min-audible-ms 4500 --analog-min-inband-db 28 --analog-min-rms-dbfs -24 --analog-max-rms-dbfs -13 --analog-max-clip 0"
+        "-fM -n 50 --analog-audible-dbfs -40 --analog-min-captured-ms 7800 --analog-min-audible-ms 4500 --analog-min-inband-db 28 --analog-min-rms-dbfs -24 --analog-max-rms-dbfs -13 --analog-min-p56-dbfs -19.12 --analog-max-p56-dbfs -17.12 --analog-max-clip 0"
         ""
         "Received tone:|${_analog_off_path}"
     )
     # Issue #526: -Y map rows declaring am on a digital (-fa) session. The host enters
     # the row the way the scanner commits it, so the replay's front end opens the AM
     # monitor at the row's width. Row 0 (--am-bandwidth-hz 8333) on am_tone_synth
-    # measures 31.6 dB tone SNR, 43.0 dB in-band ratio and -13.5 dBFS RMS, unclipped,
+    # measures 30.3 dB tone SNR, 43.1 dB in-band ratio and -20.04 dBFS RMS, unclipped,
     # through the default chain: the FM monitor finds no tone there, so the tone comes
     # from the AM detector the row selects (the wider channel lets in more of the
     # fixture's noise than AM_TONE's default 6 kHz, which reads 50.4 dB in-band). Row 1
@@ -22640,7 +23230,7 @@ if(DSD_HAS_RADIO)
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_SCAN_AM_TONE
         am_tone_synth
-        "-fa -C ${_scan_am_csv} --analog-scan-row 0 --analog-expect-tone-hz 1000 --analog-min-snr-db 25 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-min-inband-db 36 ${_analog_auto_tone_level}"
+        "-fa -C ${_scan_am_csv} --analog-scan-row 0 --analog-expect-tone-hz 1000 --analog-min-snr-db 25 --analog-min-captured-ms 1400 --analog-min-audible-ms 1400 --analog-min-inband-db 36 ${_analog_auto_tone_level_am}"
         "Scan row applied: 0 am; width 8.333 kHz \\(row\\).*ANALOG AUDIO OK"
         "${_analog_off_path}"
     )
@@ -22812,7 +23402,7 @@ if(DSD_HAS_RADIO)
     # A carrier is never learned as the floor: the real excerpts hold their carrier
     # throughout, and auto plays them whole after its first 40 ms window (5940 of the
     # 6000 ms of nfm_ctcss_real, 7940 of am_airband_real's 8000), within 60 ms of the
-    # audible time with the squelch off (4200 and 5720 ms at -40 dBFS).
+    # audible time with the squelch off (4360 and 5720 ms at -40 dBFS).
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_SQL_AUTO_NFM_REAL_CARRIER
         nfm_ctcss_real
@@ -22855,9 +23445,11 @@ if(DSD_HAS_RADIO)
     # 280 ms (the block whose end opened, 1.3 ms ahead of the carrier as the channel filter
     # sees it), the last ends at 540 ms (the 540-560 ms block ends closed and is dropped),
     # and 260 ms is audible, the whole span, so no block inside it is missing. The bounds
-    # pin those blocks. A -Y row's own --squelch-db gates the same way.
+    # pin those blocks. A -Y row's own --squelch-db gates the same way. Audible counts from
+    # -45 dBFS: the AM block that opens holds 1.3 ms of carrier and reads between -42 and
+    # -40 dBFS at the AM start gain (-2.55 dB, issue #518).
     set(_sql_level_burst_bounds
-        "--analog-audible-dbfs -40 --analog-min-total-ms 700 --analog-max-total-ms 800 --analog-min-first-audible-ms 270 --analog-max-first-audible-ms 290 --analog-min-last-audible-ms 530 --analog-max-last-audible-ms 550 --analog-min-audible-ms 250 --analog-max-audible-ms 270 --analog-max-clip 0"
+        "--analog-audible-dbfs -45 --analog-min-total-ms 700 --analog-max-total-ms 800 --analog-min-first-audible-ms 270 --analog-max-first-audible-ms 290 --analog-min-last-audible-ms 530 --analog-max-last-audible-ms 550 --analog-min-audible-ms 250 --analog-max-audible-ms 270 --analog-max-clip 0"
     )
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_SQL_LEVEL_NFM_BURST
@@ -22954,8 +23546,8 @@ if(DSD_HAS_RADIO)
         ""
         "${_analog_off_path}"
     )
-    # A real transmission plays whole after the first window: 4160 of nfm_ctcss_real's
-    # 4200 audible ms with the squelch off.
+    # A real transmission plays whole after the first window: 4320 of nfm_ctcss_real's
+    # 4360 audible ms with the squelch off.
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_SQL_NOISE_NFM_REAL_CARRIER
         nfm_ctcss_real
@@ -23084,7 +23676,7 @@ if(DSD_HAS_RADIO)
         ""
         "ANALOG AUDIO FAIL: total ms"
     )
-    # A lower bound above what the tone measures (37.5 dB).
+    # A lower bound above what the tone measures (30.4 dB through the default chain).
     dsd_neo_add_analog_replay_fail_test(
         DECODE_IQ_ANALOG_NEG_TONE_SNR
         nfm_tone_synth
@@ -23122,14 +23714,14 @@ if(DSD_HAS_RADIO)
         "-fA --analog-expect-tone-hz 1000 --analog-min-snr-db 25"
         "ANALOG AUDIO FAIL: tone SNR dB -?[0-9]+[.][0-9]+ [(]limit 25[.]00[)]"
     )
-    # The speech parity window (DECODE_IQ_ANALOG_PARITY_NFM_REAL) at the fixed gain:
-    # nfm_ctcss_real's small speech deviation plays 9 dB under digital voice there
-    # (-32.8 dBFS RMS), so the window holds only with the AGC.
+    # The speech level window (DECODE_IQ_ANALOG_PARITY_NFM_REAL) at the fixed gain:
+    # nfm_ctcss_real's small speech deviation plays well under the speech target there
+    # (-31.90 dBFS P.56), so the window holds only with the AGC.
     dsd_neo_add_analog_replay_fail_test(
         DECODE_IQ_ANALOG_NEG_PARITY_FIXED
         nfm_ctcss_real
-        "-fA -n 50 ${_analog_speech_parity}"
-        "ANALOG AUDIO FAIL: RMS dBFS -[0-9]+[.][0-9]+ [(]limit -27[.]90[)]"
+        "-fA -n 50 ${_analog_speech_level_nfm}"
+        "ANALOG AUDIO FAIL: P[.]56 dBFS -[0-9]+[.][0-9]+ [(]limit -23[.]98[)]"
     )
     # The raw WAV bound (issue #643) above what nfm_ctcss_real records (-28.9 dBFS RMS)
     # fails on the level read back from a -6 WAV that holds frames; "not measured" does

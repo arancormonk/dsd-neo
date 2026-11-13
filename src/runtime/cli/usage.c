@@ -116,7 +116,7 @@ dsd_cli_usage_section_io(void) {
     printf("  -d <dir>      Create mbe data files, use this directory (TDMA version is experimental)\n");
     printf("  -r <files>    Read/Play saved mbe data from file(s)\n");
     printf("  -g <float>    Audio Digital Output Gain  (Default: 0 = Auto;        )\n");
-    printf("                                           (Manual:  1 = 2%%; 50 = 100%%)\n");
+    printf("                                           (Manual:  0.001-50; 1 = reference level)\n");
     printf("  -n <float>    Audio Analog  Output Gain  (Default: 0 = Auto;        )\n");
     printf("                                           (Manual:  1-100; 50 = reference level)\n");
     printf("  -nm           Enable the DMR single-slot mono decoder\n");
@@ -159,7 +159,7 @@ dsd_cli_usage_section_io(void) {
     printf("  -V <num>      TDMA Voice Synthesis: 0=Off, 1=Slot1, 2=Slot2, 3=Both; Default is 3\n");
     printf("  -z <num>      TDMA slot preference: 0=Slot1, 1=Slot2, 2=Auto; default is 2\n");
     printf("  -y            Write decoded digital voice to stdout (-o -) and UDP as 32-bit float\n");
-    printf("  -v <hex>      Set Filtering Bitmap Options (Advanced Option; Default: 0x9)\n");
+    printf("  -v <hex>      Set Filtering Bitmap Options (Advanced Option; Default: 0x1)\n");
     printf("                0x1 analog voice band-pass, 0x2 analog low-pass (960 Hz),\n");
     printf("                0x4 analog high-pass (960 Hz), 0x8 digital high-pass\n");
     printf("\n");

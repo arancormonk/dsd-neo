@@ -254,6 +254,42 @@ dsd_parse_ascii_word_equals(const char* text, const char* word) {
 }
 
 /**
+ * @brief Parse a non-negative whole number written in decimal or as `0x`/`0X` hex, up to @p max_value.
+ *
+ * No sign, no spaces, no `0b`, and no octal: a leading zero is still decimal (`010` is ten), so `-v 010` cannot
+ * silently turn into 8. `0x` needs at least one hex digit after it.
+ *
+ * @return 0 with `*out` set; -1 when @p text is anything else or above @p max_value (`*out` unchanged).
+ */
+static inline int
+dsd_parse_uint_dec_or_hex_strict(const char* text, uint32_t max_value, uint32_t* out) {
+    if (!text || !out || text[0] == '\0') {
+        return -1;
+    }
+    int base = 10;
+    const char* digits = text;
+    if (text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+        base = 16;
+        digits = text + 2;
+    }
+    if (digits[0] == '\0') {
+        return -1;
+    }
+    for (const char* p = digits; *p != '\0'; p++) {
+        int v = dsd_hex_nibble_value((unsigned char)*p);
+        if (v < 0 || v >= base) {
+            return -1;
+        }
+    }
+    uint64_t parsed = 0;
+    if (dsd_parse_uint64_strict(digits, base, (uint64_t)max_value, &parsed) != 0) {
+        return -1;
+    }
+    *out = (uint32_t)parsed;
+    return 0;
+}
+
+/**
  * @brief Parse a whole boolean word, ignoring ASCII case.
  *
  * Accepts `1`/`0`, `true`/`false`, `yes`/`no` and `on`/`off`, and nothing else: no surrounding spaces, no prefixes

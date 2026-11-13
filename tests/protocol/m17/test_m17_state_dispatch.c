@@ -21,6 +21,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/pcm_stream.h>
@@ -43,10 +44,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+#include "core/audio/voice_chain_internal.h"
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/analog_voice.h"
+#include "dsd-neo/dsp/speech_agc.h"
 #include "dsd-neo/platform/audio.h"
 #include "dsd-neo/platform/sockets.h"
 #include "dsd-neo/protocol/m17/m17_parse.h"
@@ -144,30 +147,40 @@ codec2_decode(struct CODEC2* codec2_state, short speech[], const unsigned char* 
     }
 }
 
-/* The peak of each 160-sample frame the stream encoder hands codec2, in order (issue #625: closed samples reach it as
-   silence). */
-static int g_codec2_encode_count = 0;
-static int g_codec2_encode_peaks[256];
-
-void
-codec2_encode(struct CODEC2* codec2_state, unsigned char* bits, short speech[]) {
-    (void)codec2_state;
-    (void)bits;
-    int peak = 0;
-    for (size_t i = 0U; speech != NULL && i < 160U; i++) {
-        const int v = speech[i] < 0 ? -(int)speech[i] : (int)speech[i];
-        peak = v > peak ? v : peak;
-    }
-    if (g_codec2_encode_count < (int)(sizeof(g_codec2_encode_peaks) / sizeof(g_codec2_encode_peaks[0]))) {
-        g_codec2_encode_peaks[g_codec2_encode_count] = peak;
-    }
-    g_codec2_encode_count++;
-}
+/* The fake codec2 1600 a test may hand the encoder (dsd_state::codec2_1600): its frames take 320 samples, as the real
+   one's do; any other codec2 state takes 160. */
+static int g_codec2_1600_token;
+#define TEST_CODEC2_1600 ((struct CODEC2*)&g_codec2_1600_token)
 
 int
 codec2_samples_per_frame(struct CODEC2* codec2_state) {
-    (void)codec2_state;
-    return 160;
+    return codec2_state == TEST_CODEC2_1600 ? 320 : 160;
+}
+
+/* The peak and the RMS of each frame the stream encoder hands codec2, in order (issue #625: closed samples reach it as
+   silence). */
+enum { TEST_CODEC2_ENCODE_LOG = 512 };
+
+static int g_codec2_encode_count = 0;
+static int g_codec2_encode_peaks[TEST_CODEC2_ENCODE_LOG];
+static double g_codec2_encode_rms[TEST_CODEC2_ENCODE_LOG];
+
+void
+codec2_encode(struct CODEC2* codec2_state, unsigned char* bits, short speech[]) {
+    (void)bits;
+    const size_t nsam = (size_t)codec2_samples_per_frame(codec2_state);
+    int peak = 0;
+    double acc = 0.0;
+    for (size_t i = 0U; speech != NULL && i < nsam; i++) {
+        const int v = speech[i] < 0 ? -(int)speech[i] : (int)speech[i];
+        peak = v > peak ? v : peak;
+        acc += (double)v * (double)v;
+    }
+    if (g_codec2_encode_count < TEST_CODEC2_ENCODE_LOG) {
+        g_codec2_encode_peaks[g_codec2_encode_count] = peak;
+        g_codec2_encode_rms[g_codec2_encode_count] = sqrt(acc / (double)nsam);
+    }
+    g_codec2_encode_count++;
 }
 #endif
 
@@ -265,8 +278,6 @@ prepare_voice_output(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(g_voice_history, 0, sizeof(g_voice_history));
     state->audio_out_buf = g_voice_history;
     state->audio_out_buf_p = g_voice_history + 100;
-    state->aout_max_buf_p = state->aout_max_buf;
-    state->aout_gain = 1.0f;
     opts->audio_gain = 1.0f;
     opts->pulse_digi_out_channels = 1;
     opts->pulse_digi_rate_out = 8000;
@@ -2613,7 +2624,7 @@ voice_chain_settled_peaks(size_t nsam, double* first_half, double* second_half) 
             voice[i] = (short)lrint(823.1 * sin(phase));
             phase += 2.0 * 3.14159265358979323846 * 1000.0 / 8000.0;
         }
-        m17_voice_chain_process(&opts, &state, &chain, voice, nsam);
+        m17_voice_chain_process(&opts, &state, &chain, voice, nsam, 1);
     }
     *first_half = 0.0;
     *second_half = 0.0;
@@ -2676,7 +2687,7 @@ voice_chain_tone_db(int use_lpf, int use_hpf, double hz) {
             voice[i] = (short)lrint(8000.0 * sin(phase));
             phase += 2.0 * 3.14159265358979323846 * hz / 8000.0;
         }
-        m17_voice_chain_process(&opts, &state, &chain, voice, 160U);
+        m17_voice_chain_process(&opts, &state, &chain, voice, 160U, 1);
     }
     return amplitude_db(voice, 160U, 8000.0);
 }
@@ -3464,7 +3475,6 @@ run_voice_format_case(uint8_t dt, int floating, int channels, int out_type, floa
     opts->floating_point = floating;
     opts->pulse_digi_out_channels = channels;
     opts->audio_gain = gain;
-    state->aout_gain = gain;
     state->m17_str_dt = dt;
     state->m17_can_en = -1;
     m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
@@ -3524,6 +3534,430 @@ run_voice_format_case(uint8_t dt, int floating, int channels, int out_type, floa
 #endif
     reset_audio_fakes();
     dsd_state_ext_free_all(state);
+    return err;
+}
+
+/* What M17's Codec2 voice tells the voice chain: received voice, which reaches playback only confirmed, decrypted and
+   CAN-allowed, is decodable, admitted speech; the encoder's own transmission, decoded back for its monitor, is the
+   monitor's (DSD_VOICE_MEDIA_TX_MONITOR), so it never passes for received speech. */
+static int g_m17_info_frames;
+static int g_m17_info_received;
+static int g_m17_info_tx_monitor;
+
+static void
+m17_info_observe(void* ctx, int slot, const float* frame, const dsd_voice_frame_info* info) {
+    (void)ctx;
+    (void)frame;
+    g_m17_info_frames++;
+    if (!info) {
+        return;
+    }
+    if (slot == 0 && info->media == DSD_VOICE_MEDIA_TX_MONITOR && info->talkspurt == 0U) {
+        g_m17_info_tx_monitor++;
+    } else if (slot == 0 && info->media == DSD_VOICE_MEDIA_SPEECH && info->decodable == 1U && info->admitted == 1U
+               && info->talkspurt == 0U) {
+        g_m17_info_received++;
+    }
+}
+
+static void
+m17_info_reset(void) {
+    g_m17_info_frames = 0;
+    g_m17_info_tx_monitor = 0;
+    g_m17_info_received = 0;
+}
+
+static int
+test_stream_voice_tells_the_chain_received_speech(void) {
+    int err = 0;
+    m17_info_reset();
+    dsd_voice_chain_set_observer_for_test(m17_info_observe, NULL);
+    err |= run_voice_format_case(2U, 0, 1, 8, 1.0f, NULL, NULL);
+    err |= run_voice_format_case(3U, 0, 1, 8, 1.0f, NULL, NULL);
+    dsd_voice_chain_set_observer_for_test(NULL, NULL);
+    err |= expect_int("m17 received voice: two frames per payload, each received speech",
+                      g_m17_info_frames == 4 && g_m17_info_received == 4, 1);
+    return err;
+}
+
+/* The stream encoder (-fZ) with its decoded monitor: the voice it decodes back from its own transmission runs the
+   chain as the monitor's (DSD_VOICE_MEDIA_TX_MONITOR) and plays at the level codec2 decoded it at, under a fixed -g 3 as
+   under auto (issue #518 B17); the receive slot's speech AGC is left exactly as it started. */
+/* Whether @p a and @p b hold the same bits, read as 32-bit words. An untouched AGC is one whose values are still the
+   very bits init set, so this is the claim, with no float compare. The AGC's learned block and its gains are 4-byte
+   fields only, so the words are their values' bits, with no padding between them. */
+static int
+same_words(const void* a, const void* b, size_t size) {
+    uint32_t wa[128] = {0};
+    uint32_t wb[128] = {0};
+    if (size % sizeof(uint32_t) != 0U || size > sizeof wa) {
+        return 0;
+    }
+    DSD_MEMCPY(wa, a, size);
+    DSD_MEMCPY(wb, b, size);
+    for (size_t i = 0U; i < size / sizeof(uint32_t); i++) {
+        if (wa[i] != wb[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
+monitor_run(float gain) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int16_t samples[160U * 24U];
+    /* Room for every frame the monitor stages: the encoder's frames and the trailing ones it flushes. */
+    static short history[100U + (160U * 256U)];
+    char path[DSD_TEST_PATH_MAX] = {0};
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    for (size_t i = 0; i < sizeof(samples) / sizeof(samples[0]); i++) {
+        samples[i] = (int16_t)(8000.0 * sin(2.0 * 3.14159265358979 * 440.0 * (double)i / 8000.0));
+    }
+    FILE* file =
+        open_m17_stdin_input(path, sizeof(path), samples, sizeof(samples) / sizeof(samples[0]), &opts.audio_in_stdin);
+    if (file == NULL) {
+        DSD_FPRINTF(stderr, "failed to create M17 stdin fixture\n");
+        return 1;
+    }
+    reset_audio_fakes();
+    install_fake_udp_audio();
+    prepare_voice_output(&opts, &state);
+    state.audio_out_buf = history;
+    state.audio_out_buf_p = history + 100;
+    opts.audio_gain = gain;
+    opts.audio_in_type = AUDIO_IN_STDIN;
+    opts.input_volume_multiplier = 1;
+    opts.monitor_input_audio = 0;
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    opts.slot1_on = 1;
+    state.m17_can_en = -1;
+    state.m17_rate = 8000;
+    state.m17encoder_tx = 1;
+    exitflag = 0;
+    m17_info_reset();
+    dsd_voice_chain_set_observer_for_test(m17_info_observe, NULL);
+    (void)encodeM17STR(&opts, &state);
+    dsd_voice_chain_set_observer_for_test(NULL, NULL);
+    int err = expect_int("m17 encoder monitor: decoded voice ran the chain", g_m17_info_frames > 0, 1);
+    err |= expect_int("m17 encoder monitor: within the staging room",
+                      state.audio_out_buf_p <= history + (sizeof(history) / sizeof(history[0])), 1);
+    err |= expect_int("m17 encoder monitor: every frame the monitor's", g_m17_info_tx_monitor, g_m17_info_frames);
+    /* The last block played is the last frame the fake decoded: 1000 + its call count + i, as decoded. */
+    err |= expect_int("m17 encoder monitor: the last block is one frame", (int)g_udp_audio_last_nsam,
+                      (int)(160U * sizeof(short)));
+    int unity = 1;
+    for (size_t i = 0U; i < 160U; i++) {
+        short sample = 0;
+        DSD_MEMCPY(&sample, g_udp_audio_last_data + (i * sizeof(short)), sizeof(sample));
+        unity &= sample == (short)(1000 + g_codec2_decode_calls + (int)i);
+    }
+    err |= expect_int("m17 encoder monitor: plays the decoded level whatever -g says", unity, 1);
+    dsd_speech_agc fresh;
+    DSD_MEMSET(&fresh, 0, sizeof fresh);
+    (void)dsd_speech_agc_init(&fresh, 8000, 0.0f, DSD_SPEECH_AGC_TARGET_DBFS, DSD_SPEECH_AGC_CEILING_DBFS);
+    const dsd_speech_agc* slot0 = dsd_voice_level_agc(&state, 0);
+    /* Untouched: no sample run, and the learned state, the gain and the limiter bit for bit what init set. */
+    const int untouched = slot0 == NULL
+                          || (slot0->frames == 0U && slot0->frame_pos == 0
+                              && same_words(&slot0->learned, &fresh.learned, sizeof fresh.learned)
+                              && same_words(&slot0->g_cur, &fresh.g_cur, sizeof fresh.g_cur)
+                              && same_words(&slot0->g_lim, &fresh.g_lim, sizeof fresh.g_lim));
+    err |= expect_int("m17 encoder monitor: the receive slot's AGC untouched", untouched, 1);
+    dsd_pcm_stream_close(opts.audio_in_stdin);
+    opts.audio_in_stdin = NULL;
+    exitflag = 0;
+    (void)fclose(file);
+    (void)remove(path);
+    reset_audio_fakes();
+    dsd_state_ext_free_all(&state);
+    return err;
+}
+
+static int
+test_stream_encoder_monitor_plays_what_it_sends(void) {
+    return monitor_run(3.0f) | monitor_run(0.0f);
+}
+
+/* Issue #518 B17: the stream encoder's microphone through its key-ups, end to end. A script of 40 ms reads (320
+   samples: two codec2 frames at 3200 bit/s, one at 1600) feeds the UDP input a 1 kHz tone and noise, and works the TX
+   toggle as its command does between reads, or leaves keying to the VOX; the fake codec2 logs the level of every frame
+   the encoder hands it. */
+enum { MIC_ITER_SAMPLES = 320, MIC_MAX_ITERS = 160 };
+
+typedef struct {
+    int iters;    /* 40 ms reads */
+    int ptt;      /* 1 keyed, 0 unkeyed (the TX toggle), -1 left to the VOX */
+    double tone;  /* 1 kHz tone amplitude, int16 units */
+    double noise; /* uniform noise amplitude, int16 units */
+} mic_segment;
+
+static const mic_segment* g_mic_script;
+static size_t g_mic_script_len;
+static long g_mic_reads;
+static dsd_state* g_mic_state;
+static double g_mic_phase;
+static uint64_t g_mic_noise;
+/* As each read starts: m17encoder_tx (what the last frame decided) and the number of codec2 frames before it. */
+static int g_mic_tx[MIC_MAX_ITERS];
+static int g_mic_frame_at[MIC_MAX_ITERS + 1];
+static long g_mic_iters;
+
+static const mic_segment*
+mic_segment_at(long iter) {
+    for (size_t s = 0U; s < g_mic_script_len; s++) {
+        if (iter < g_mic_script[s].iters) {
+            return &g_mic_script[s];
+        }
+        iter -= g_mic_script[s].iters;
+    }
+    return NULL;
+}
+
+static double
+mic_noise_sample(void) {
+    g_mic_noise ^= g_mic_noise >> 12;
+    g_mic_noise ^= g_mic_noise << 25;
+    g_mic_noise ^= g_mic_noise >> 27;
+    const uint64_t r = g_mic_noise * 2685821657736338717ULL;
+    return ((double)(r >> 11) / 4503599627370496.0) - 1.0;
+}
+
+/* What the TX toggle command does (apply_cmd_m17_tx_toggle()), before the read it applies to. */
+static void
+mic_apply_ptt(int ptt) {
+    if (ptt < 0) {
+        return;
+    }
+    if (ptt == 0 && g_mic_state->m17encoder_tx == 1) {
+        g_mic_state->m17encoder_eot = 1;
+    }
+    g_mic_state->m17encoder_tx = ptt;
+}
+
+static int
+fake_udp_mic_read(dsd_opts* opts, int16_t* out) {
+    (void)opts;
+    const long iter = g_mic_reads / MIC_ITER_SAMPLES;
+    const mic_segment* seg = mic_segment_at(iter);
+    if (seg == NULL || out == NULL || iter >= MIC_MAX_ITERS) {
+        return 0;
+    }
+    if ((g_mic_reads % MIC_ITER_SAMPLES) == 0) {
+        g_mic_tx[iter] = g_mic_state->m17encoder_tx;
+        g_mic_frame_at[iter] = g_codec2_encode_count;
+        g_mic_iters = iter + 1;
+        mic_apply_ptt(seg->ptt);
+    }
+    g_mic_reads++;
+    const double v = (seg->tone * sin(g_mic_phase)) + (seg->noise * mic_noise_sample());
+    g_mic_phase += 2.0 * 3.14159265358979323846 * 1000.0 / 8000.0;
+    *out = (int16_t)lrint(v);
+    return 1;
+}
+
+/* A fresh encoder setup at 3200 (@p dt 2) or 1600 bit/s (3), on auto gain with no filters, keyed by the script's PTT or,
+   with @p vox, by the VOX on a level squelch at -40 dBFS. */
+static void
+mic_prepare(dsd_opts* opts, dsd_state* state, uint8_t dt, int vox) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_UDP;
+    opts->input_volume_multiplier = 1;
+    opts->monitor_input_audio = 1;
+    opts->audio_out = 1;
+    opts->audio_out_type = 8;
+    opts->audio_gainA = 0.0f;
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    opts->rtl_squelch_level = dB_to_pwr(-40.0);
+    state->m17_rate = 8000;
+    state->m17_can_en = -1;
+    state->m17_vox = vox;
+    state->m17_str_dt = dt;
+    state->codec2_1600 = dt == 3U ? TEST_CODEC2_1600 : NULL;
+}
+
+/* One stream encoder session (encodeM17STR()) over @p script on @p opts / @p state as they stand. */
+static void
+mic_encode(dsd_opts* opts, dsd_state* state, const mic_segment* script, size_t len) {
+    g_mic_script = script;
+    g_mic_script_len = len;
+    g_mic_reads = 0;
+    g_mic_state = state;
+    g_mic_phase = 0.0;
+    g_mic_noise = 0x9E3779B97F4A7C15ULL;
+    g_mic_iters = 0;
+    DSD_MEMSET(g_mic_tx, 0xFF, sizeof g_mic_tx);
+    DSD_MEMSET(g_mic_frame_at, 0, sizeof g_mic_frame_at);
+    g_codec2_encode_count = 0;
+    DSD_MEMSET(g_codec2_encode_peaks, 0, sizeof g_codec2_encode_peaks);
+    DSD_MEMSET(g_codec2_encode_rms, 0, sizeof g_codec2_encode_rms);
+    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){.udp_read_sample = fake_udp_mic_read});
+    exitflag = 0;
+    (void)encodeM17STR(opts, state);
+    exitflag = 0;
+    g_mic_frame_at[g_mic_iters] = g_codec2_encode_count;
+    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    g_mic_state = NULL;
+}
+
+/* Run the stream encoder once over @p script on a fresh setup (mic_prepare()). */
+static void
+mic_run(const mic_segment* script, size_t len, uint8_t dt, int vox) {
+    static dsd_opts opts;
+    static dsd_state state;
+    mic_prepare(&opts, &state, dt, vox);
+    mic_encode(&opts, &state, script, len);
+    dsd_state_ext_free_all(&state);
+}
+
+/* The RMS level, in dB re full scale, of the codec2 frames read @p iter handed the encoder (all of them, or with
+   @p first_only the first); -999 when it has none logged. */
+static double
+mic_iter_db(long iter, int first_only) {
+    if (iter < 0 || iter >= g_mic_iters) {
+        return -999.0;
+    }
+    const int from = g_mic_frame_at[iter];
+    int to = first_only ? from + 1 : g_mic_frame_at[iter + 1];
+    to = to < TEST_CODEC2_ENCODE_LOG ? to : TEST_CODEC2_ENCODE_LOG;
+    double acc = 0.0;
+    for (int f = from; f < to; f++) {
+        acc += g_codec2_encode_rms[f] * g_codec2_encode_rms[f];
+    }
+    return to > from ? 10.0 * log10(acc / (double)(to - from)) - (20.0 * log10(32768.0)) : -999.0;
+}
+
+/* The peak of every codec2 frame from read @p first_iter to the end. */
+static int
+mic_peak_from(long first_iter) {
+    int peak = 0;
+    for (int f = g_mic_frame_at[first_iter]; f < g_codec2_encode_count && f < TEST_CODEC2_ENCODE_LOG; f++) {
+        peak = g_codec2_encode_peaks[f] > peak ? g_codec2_encode_peaks[f] : peak;
+    }
+    return peak;
+}
+
+static int
+expect_db_near(const char* label, double got, double want, double tol) {
+    if (!(fabs(got - want) <= tol)) {
+        DSD_FPRINTF(stderr, "%s: %.2f dB, want %.2f +- %.2f\n", label, got, want, tol);
+        return 1;
+    }
+    return 0;
+}
+
+static const uint8_t k_mic_rates[2] = {2U, 3U};
+
+/* Loud room noise while unkeyed does not move the gain: the next transmission starts at the level the last one ended
+   on. (It used to pull the gain down more than 10 dB, which the next transmission then played at.) Held, the noise
+   reaches codec2 limited to the AGC's target. */
+static int
+test_stream_encoder_mic_holds_while_unkeyed(void) {
+    static const mic_segment script[] = {
+        {50, 1, 3000.0, 0.0},
+        {25, 0, 0.0, 12000.0},
+        {10, 1, 3000.0, 0.0},
+    };
+    int err = 0;
+    for (size_t r = 0U; r < 2U; r++) {
+        mic_run(script, sizeof script / sizeof script[0], k_mic_rates[r], 0);
+        const double before = mic_iter_db(49, 0);
+        err |= expect_db_near("mic: a settled tone reaches codec2 at the AGC's target (-10 dBFS peak)", before,
+                              20.0 * log10((double)DSD_VOICE_AGC_TARGET_PEAK / 32768.0) - 3.01, 0.1);
+        err |= expect_db_near("mic: the first frame after unkeyed room noise", mic_iter_db(75, 1), before, 0.1);
+        err |= expect_db_near("mic: the transmission after unkeyed room noise", mic_iter_db(80, 0), before, 0.1);
+        err |= expect_int("mic: everything codec2 got stayed within the target",
+                          mic_peak_from(0) <= (int)DSD_VOICE_AGC_TARGET_PEAK + 1, 1);
+    }
+    return err;
+}
+
+/* What a transmission taught stays for the next, however short it was. A 120 ms transmission 12 dB louder leaves the
+   gain 12 dB lower (the next transmission's tone plays 12 dB under it, inside the envelope's hold); a long one whose
+   gain rose over its last 250 ms leaves the risen gain (the next goes on where it ended: one more read's release, 0.8
+   dB at 20 dB/s). A rollback at each key-up, as a receiver's squelch close does, would undo both. */
+static int
+test_stream_encoder_mic_keeps_gain_across_key_ups(void) {
+    static const mic_segment short_tx[] = {
+        {50, 1, 2000.0, 0.0}, {10, 0, 0.0, 0.0}, {3, 1, 8000.0, 0.0}, {10, 0, 0.0, 0.0}, {5, 1, 2000.0, 0.0},
+    };
+    static const mic_segment long_tx[] = {
+        {50, 1, 2000.0, 0.0}, {5, 1, 8000.0, 0.0}, {20, 1, 2000.0, 0.0}, {10, 0, 0.0, 0.0}, {5, 1, 2000.0, 0.0},
+    };
+    int err = 0;
+    for (size_t r = 0U; r < 2U; r++) {
+        mic_run(short_tx, sizeof short_tx / sizeof short_tx[0], k_mic_rates[r], 0);
+        const double taught = mic_iter_db(61, 0);
+        err |= expect_db_near("mic: the next transmission after a 120 ms one", mic_iter_db(73, 0),
+                              taught + (20.0 * log10(2000.0 / 8000.0)), 0.05);
+        mic_run(long_tx, sizeof long_tx / sizeof long_tx[0], k_mic_rates[r], 0);
+        const double ended = mic_iter_db(74, 0);
+        const double next = mic_iter_db(85, 0);
+        err |=
+            expect_db_near("mic: the gain rose over the long transmission's end", ended - mic_iter_db(66, 0), 5.6, 0.2);
+        err |= expect_db_near("mic: the next transmission after a long one", next - ended, 0.8, 0.1);
+    }
+    return err;
+}
+
+/* The gain starts over when the encoder starts: a second session on the same decoder state opens at the reference gain,
+   as the first did, not at the gain the first learned (a quiet tone the first lifted 18 dB). */
+static int
+test_stream_encoder_mic_starts_over_at_encoder_start(void) {
+    static const mic_segment script[] = {
+        {50, 1, 1000.0, 0.0},
+        {5, 0, 0.0, 0.0},
+    };
+    static dsd_opts opts;
+    static dsd_state state;
+    int err = 0;
+    for (size_t r = 0U; r < 2U; r++) {
+        mic_prepare(&opts, &state, k_mic_rates[r], 0);
+        mic_encode(&opts, &state, script, sizeof script / sizeof script[0]);
+        const double first_open = mic_iter_db(0, 1);
+        const double first_learned = mic_iter_db(49, 0);
+        mic_encode(&opts, &state, script, sizeof script / sizeof script[0]);
+        err |= expect_db_near("mic: the first session learned a boost", first_learned - first_open, 18.0, 0.1);
+        err |= expect_db_near("mic: a second session opens where the first did", mic_iter_db(0, 1), first_open, 0.01);
+        dsd_state_ext_free_all(&state);
+    }
+    return err;
+}
+
+/* The VOX keys and unkeys on exactly the reads it always did (the sequence below is what the encoder did before the
+   microphone learned its key state), and the read that keys it adapts the gain from its first frame: a tone 7 dB over
+   the envelope the last transmission left plays at the target, not limited sample by sample (+1.8 dB). */
+static int
+test_stream_encoder_vox_keys_on_the_same_reads(void) {
+    static const mic_segment script[] = {
+        {30, -1, 1500.0, 0.0}, {8, -1, 0.0, 30.0},  {4, -1, 1500.0, 0.0}, {20, -1, 0.0, 30.0},
+        {3, -1, 3000.0, 0.0},  {15, -1, 0.0, 30.0}, {2, -1, 3000.0, 0.0}, {14, -1, 0.0, 30.0},
+    };
+    /* m17encoder_tx as each read starts, the same at both rates (the VOX decides once per 40 ms read). */
+    static const char want[] = "1111111111111111111111111111111111111111111111111111111"
+                               "00000000"
+                               "111111111111111111111111111111"
+                               "000";
+    int err = 0;
+    for (size_t r = 0U; r < 2U; r++) {
+        mic_run(script, sizeof script / sizeof script[0], k_mic_rates[r], 1);
+        char got[MIC_MAX_ITERS + 1];
+        for (long i = 0; i < g_mic_iters; i++) {
+            got[i] = g_mic_tx[i] == 1 ? '1' : (g_mic_tx[i] == 0 ? '0' : '?');
+        }
+        got[g_mic_iters] = '\0';
+        if (strcmp(got, want) != 0) {
+            DSD_FPRINTF(stderr, "vox keying (%s): got  %s\n                    want %s\n", r == 0U ? "3200" : "1600",
+                        got, want);
+            err = 1;
+        }
+        err |= expect_db_near("vox: the read that keys plays its tone at the target", mic_iter_db(62, 1),
+                              20.0 * log10((double)DSD_VOICE_AGC_TARGET_PEAK / 32768.0) - 3.01, 0.1);
+    }
     return err;
 }
 
@@ -4290,6 +4724,12 @@ main(void) {
     err |= test_stream_voice_audio_stamps_what_it_plays();
     err |= test_stream_voice_audio_stamps_nothing_no_output_takes();
     err |= test_stream_voice_audio_follows_output_format();
+    err |= test_stream_voice_tells_the_chain_received_speech();
+    err |= test_stream_encoder_monitor_plays_what_it_sends();
+    err |= test_stream_encoder_mic_holds_while_unkeyed();
+    err |= test_stream_encoder_mic_keeps_gain_across_key_ups();
+    err |= test_stream_encoder_mic_starts_over_at_encoder_start();
+    err |= test_stream_encoder_vox_keys_on_the_same_reads();
 #endif
     err |= test_bert_payload_locks_from_default_state_and_continues();
     err |= test_bert_payload_resyncs_after_error_threshold();

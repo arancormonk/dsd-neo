@@ -39,6 +39,7 @@ dsd_mbe_purge_slot_audio(dsd_state* state, int slot) {
         DSD_MEMSET(state->audio_out_temp_buf, 0, sizeof(state->audio_out_temp_buf));
         DSD_MEMSET(state->s_l, 0, sizeof(state->s_l));
         DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
+        DSD_MEMSET(state->s4_fresh[0], 0, sizeof(state->s4_fresh[0]));
         DSD_MEMSET(state->s_lu, 0, sizeof(state->s_lu));
         DSD_MEMSET(state->s_l4u, 0, sizeof(state->s_l4u));
         state->audio_out_temp_buf_p = state->audio_out_temp_buf;
@@ -58,6 +59,7 @@ dsd_mbe_purge_slot_audio(dsd_state* state, int slot) {
     DSD_MEMSET(state->audio_out_temp_bufR, 0, sizeof(state->audio_out_temp_bufR));
     DSD_MEMSET(state->s_r, 0, sizeof(state->s_r));
     DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
+    DSD_MEMSET(state->s4_fresh[1], 0, sizeof(state->s4_fresh[1]));
     DSD_MEMSET(state->s_ru, 0, sizeof(state->s_ru));
     DSD_MEMSET(state->s_r4u, 0, sizeof(state->s_r4u));
     state->audio_out_temp_buf_pR = state->audio_out_temp_bufR;

@@ -20,6 +20,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/core/utf16.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
@@ -3813,11 +3814,13 @@ trunk_scan_call_active(const dsd_state* state) {
    half-built assemblies such as an NXDN SACCH superframe) is in none of them, and the incoming carrier's pieces would
    complete it, so it goes. So does the identity it received: the incoming target's carrier names its own. And the
    dibits the frame sync and the decoders hold buffered from the outgoing carrier head no frame of the incoming one. Nor
-   does the DMR RAS evidence (no target snapshot holds it). */
+   does the DMR RAS evidence (no target snapshot holds it). The digital voice level starts the incoming carrier's
+   reception at its start gain (issue #518). */
 static void
 trunk_scan_leave_carrier(dsd_opts* opts, dsd_state* state) {
     dsd_event_flush_orphan_recordings(opts, state);
     dsd_engine_forget_carrier_decoding(opts, state);
+    dsd_voice_level_reset(state, -1);
     dsd_rxid_reset(state);
     dmr_ras_reset(state);
     dsd_state_note_carrier_change(state);

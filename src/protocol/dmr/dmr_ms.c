@@ -229,8 +229,7 @@ dmr_ms_apply_keystream(dsd_state* state, dmr_ms_voice_frames* frames) {
 static void
 dmr_ms_process_single_mbe(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], size_t frame_idx) {
     processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_DMR, NULL, ambe_fr, NULL);
-    DSD_MEMCPY(state->s_l4[frame_idx], state->s_l, sizeof(state->s_l));
-    DSD_MEMCPY(state->s_l4u[frame_idx], state->s_lu, sizeof(state->s_lu));
+    dsd_dmr_mix_store_frame(state, 0, (int)frame_idx);
 }
 
 /* Each frame decodes at its position in the superframe (burst @p vc), where its keystream lies (issue #729). */
@@ -257,6 +256,7 @@ dmr_ms_process_audio_frames_after(dsd_opts* opts, dsd_state* state, dmr_ms_voice
         if (invalid > first_dibit[i]) {
             DSD_MEMSET(state->s_l4[i], 0, sizeof(state->s_l4[i]));
             DSD_MEMSET(state->s_l4u[i], 0, sizeof(state->s_l4u[i]));
+            state->s4_fresh[0][i] = 0U;
             continue;
         }
         dmr_vcrypt_set_frame(state, 0U, 1U, i);

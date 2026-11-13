@@ -22,15 +22,21 @@ if(NOT WIN32)
 endif()
 
 # The JSON writer turns a NaN or infinite telemetry value into null, and the
-# parser refuses a number that overflows to infinity; both checks must survive
-# the release presets' fast-math. Neither is on a per-sample path.
+# parser refuses a number that overflows to infinity; the command decoder
+# refuses an out-of-range gain_set/again_set value. These checks must survive
+# the release presets' fast-math. None is on a per-sample path.
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     set_source_files_properties(
+        api_commands.c
         json.c
         PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
     )
 elseif(MSVC)
-    set_source_files_properties(json.c PROPERTIES COMPILE_OPTIONS "/fp:precise")
+    set_source_files_properties(
+        api_commands.c
+        json.c
+        PROPERTIES COMPILE_OPTIONS "/fp:precise"
+    )
 endif()
 
 install(

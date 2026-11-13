@@ -66,6 +66,8 @@
  *   --tail SEC         idle bursts after the calls (default 0.4)
  *   --invert           write the discriminator audio at the other polarity (a receiver that inverts it)
  *
+ * dsd-neo_test_dmr_synth_gen --voice-selftest checks the voice source alone (its pitch and its range) and writes nothing.
+ *
  * Decoder keys: aes256 -> -H '<16hex> <16hex> <16hex> <16hex>', aes128 -> -H '<16hex> <16hex>', rc4 -> -1 <10hex>.
  */
 #include <dsd-neo/core/ambe_interleave.h>
@@ -87,8 +89,9 @@
 #define MAX_FAULTS       64
 #define SYMBOLS_PER_SLOT 144 /* 12 CACH + 132 burst dibits, 30 ms */
 
-static const uint8_t k_cach_interleave[24] = {0, 7,  8, 9,  1,  10, 11, 12, 2,  13, 14, 15,
-                                              3, 16, 4, 17, 18, 19, 5,  20, 21, 22, 6,  23};
+static const uint8_t k_cach_interleave[24] = {
+    0, 7, 8, 9, 1, 10, 11, 12, 2, 13, 14, 15, 3, 16, 4, 17, 18, 19, 5, 20, 21, 22, 6, 23,
+};
 static const char k_voice_sync[] = "131111333113313313113313";
 static const char k_data_sync[] = "313333111331131131331131";
 /* Dibit offsets (from the burst start) the decoder's redundant-carrier check compares between consecutive bursts. */
@@ -427,36 +430,89 @@ is_le_bit(int b) {
 }
 
 /* ---------------------------------------------------------------- voice source */
+/* A vowel-like buzz: the harmonics of a pitch that glides between 80 and 160 Hz at 0.7 Hz, weighted by three formants,
+ * under a 3 Hz syllable envelope. Every harmonic's phase is h times the integral of the pitch, so each one sits at h
+ * times the pitch of the moment however long the call runs (issue #518: a phase of f0(t) t made the frequencies swing
+ * ever wider as t grew). Peaks stay near -6 dBFS, inside the encoder's nominal +-1. */
+#define VOICE_F0_HZ       120.0
+#define VOICE_F0_SWING_HZ 40.0
+#define VOICE_F0_RATE_HZ  0.7
+#define VOICE_ENV_RATE_HZ 3.0
+#define VOICE_TOP_HZ      3500.0
+#define VOICE_SCALE       0.05
+
 typedef struct {
     mbe_ambe2450_encoder* enc;
     mbe_parms cur, prev, prev_e;
     double t;
 } voice_src;
 
+static double
+voice_f0(double t) {
+    return VOICE_F0_HZ + VOICE_F0_SWING_HZ * sin(2.0 * SYNTH_PI * VOICE_F0_RATE_HZ * t);
+}
+
+/* 2 pi times the integral of voice_f0() from 0 to t, up to a constant. */
+static double
+voice_phase(double t) {
+    const double w = 2.0 * SYNTH_PI * VOICE_F0_RATE_HZ;
+    return 2.0 * SYNTH_PI * (VOICE_F0_HZ * t - (VOICE_F0_SWING_HZ / w) * cos(w * t));
+}
+
+static double
+voice_sample(double t) {
+    const double f0 = voice_f0(t);
+    const double phase = voice_phase(t);
+    const double env = 0.5 + 0.5 * sin(2.0 * SYNTH_PI * VOICE_ENV_RATE_HZ * t);
+    double s = 0.0;
+    for (int h = 1; h < 25; h++) {
+        double fh = f0 * h;
+        if (fh > VOICE_TOP_HZ) {
+            break;
+        }
+        double form = exp(-pow((fh - 700.0) / 300.0, 2.0)) + 0.6 * exp(-pow((fh - 1200.0) / 400.0, 2.0))
+                      + 0.3 * exp(-pow((fh - 2500.0) / 500.0, 2.0));
+        s += form * sin(h * phase + h);
+    }
+    return VOICE_SCALE * env * s;
+}
+
 static void
 voice_params(voice_src* v, char* d49) {
     float pcm[160];
     for (int n = 0; n < 160; n++) {
-        double tt = v->t + n / 8000.0;
-        double f0 = 120.0 + 40.0 * sin(2.0 * SYNTH_PI * 0.7 * tt);
-        double env = 0.5 + 0.5 * sin(2.0 * SYNTH_PI * 3.0 * tt);
-        double s = 0.0;
-        for (int h = 1; h < 25; h++) {
-            double fh = f0 * h;
-            if (fh > 3500.0) {
-                break;
-            }
-            double form = exp(-pow((fh - 700.0) / 300.0, 2.0)) + 0.6 * exp(-pow((fh - 1200.0) / 400.0, 2.0))
-                          + 0.3 * exp(-pow((fh - 2500.0) / 500.0, 2.0));
-            s += form * sin(2.0 * SYNTH_PI * fh * tt + h);
-        }
-        pcm[n] = (float)(0.25 * env * s);
+        pcm[n] = (float)voice_sample(v->t + n / 8000.0);
     }
     v->t += 0.02;
     if (mbe_encodeAmbe2450Parms(v->enc, pcm, d49, &v->cur, &v->prev) < 0) {
         die("ambe encode");
     }
     mbe_moveMbeParms(&v->cur, &v->prev);
+}
+
+/* --voice-selftest (DMR_SYNTH_VOICE_SOURCE): over the first 60 s of the source, which covers every call the tests
+ * generate, the pitch the harmonics carry (the phase's rate of change) stays within 0.1% of the contour's, and every
+ * sample stays within -3 dBFS of the encoder's nominal full scale. */
+static int
+voice_selftest(void) {
+    const double dt = 1e-4;
+    double worst = 0.0;
+    double worst_t = 0.0;
+    double peak = 0.0;
+    for (long n = 0; n < 60L * 8000L; n++) {
+        const double t = (double)n / 8000.0;
+        const double carried = (voice_phase(t + dt) - voice_phase(t - dt)) / (2.0 * dt * 2.0 * SYNTH_PI);
+        const double err = fabs(carried - voice_f0(t)) / voice_f0(t);
+        if (err > worst) {
+            worst = err;
+            worst_t = t;
+        }
+        peak = fmax(peak, fabs(voice_sample(t)));
+    }
+    const double peak_dbfs = 20.0 * log10(peak);
+    DSD_FPRINTF(stderr, "dmr_synth: voice pitch error at most %.4f%% (at %.3f s), peak %.2f dBFS\n", worst * 100.0,
+                worst_t, peak_dbfs);
+    return (worst <= 0.001 && peak_dbfs <= -3.0) ? 0 : 1;
 }
 
 /* The decoder leaves a frame undecrypted when its received 49 bits are the default silence word or have bits 24..43
@@ -1352,6 +1408,9 @@ main(int argc, char** argv) {
     cfg.seed = 1;
     int have_key = 0;
 
+    if (argc == 2 && strcmp(argv[1], "--voice-selftest") == 0) {
+        return voice_selftest();
+    }
     parse_args(argc, argv, &have_key);
     if (!cfg.out) {
         usage();
@@ -1364,11 +1423,17 @@ main(int argc, char** argv) {
     }
 
     if (!have_key) {
-        static const uint8_t k_test_key[32] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0xFE, 0xDC, 0xBA,
-                                               0x98, 0x76, 0x54, 0x32, 0x10, 0x0F, 0x1E, 0x2D, 0x3C, 0x4B, 0x5A,
-                                               0x69, 0x78, 0x87, 0x96, 0xA5, 0xB4, 0xC3, 0xD2, 0xE1, 0xF0};
+        static const uint8_t k_test_key[32] = {
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10,
+            0x0F, 0x1E, 0x2D, 0x3C, 0x4B, 0x5A, 0x69, 0x78, 0x87, 0x96, 0xA5, 0xB4, 0xC3, 0xD2, 0xE1, 0xF0,
+        };
         DSD_MEMCPY(cfg.key, k_test_key, 32);
-        cfg.keylen = cfg.alg == ALG_AES256 ? 32 : cfg.alg == ALG_AES128 ? 16 : 5;
+        cfg.keylen = 5;
+        if (cfg.alg == ALG_AES256) {
+            cfg.keylen = 32;
+        } else if (cfg.alg == ALG_AES128) {
+            cfg.keylen = 16;
+        }
     }
     if ((cfg.alg == ALG_AES256 && cfg.keylen != 32) || (cfg.alg == ALG_AES128 && cfg.keylen != 16)
         || (cfg.alg == ALG_RC4 && cfg.keylen != 5)) {

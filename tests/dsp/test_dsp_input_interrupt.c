@@ -90,6 +90,16 @@ dsd_analog_audio_process_f(const dsd_opts* opts, dsd_state* state, dsd_analog_au
     return 0;
 }
 
+/* The chain with a learn flag per sample: the same stub, the flags aside. */
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_analog_audio_process_runs_f(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain, float* buf,
+                                size_t n, dsd_analog_audio_source source, int rate_hz, unsigned int flags,
+                                const uint8_t* learn) {
+    (void)learn;
+    return dsd_analog_audio_process_f(opts, state, chain, buf, n, source, rate_hz, flags);
+}
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_analog_audio_block_begin(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain) {

@@ -693,15 +693,41 @@ ui_render_input_sources_block(dsd_opts* opts, dsd_state* state) {
     ui_render_input_level_status(opts, state);
 }
 
-/* A digital output's gains (0..100 %) in three places, then its mode word. */
+/* One applied gain in dB, signed, one decimal, saturated as ui_num() does at five characters, with no padding: the
+   field's own span holds the column. */
+static const char*
+ui_gain_db(char* buf, size_t size, double db) {
+    const char* text = ui_num(buf, size, db, 5, 1, DSD_NUMBER_TEXT_PLUS);
+    while (*text == ' ') {
+        text++;
+    }
+    return text;
+}
+
+/* A digital output's gain: auto with what the voice chain applies over the decoder's level (`-g 1`), one value per
+   channel, or the fixed `-g` multiplier. Both forms are padded after the text to the room the widest auto form takes,
+   so the flags after them hold their columns when the mode or the value changes (issue #518). */
 static void
 ui_row_digital_gain_fields(ui_row* row, const dsd_opts* opts, const dsd_state* state, const char* keys) {
-    char gain[16];
-    ui_row_field(row, " G: %s%%", ui_num(gain, sizeof gain, (double)state->aout_gain * 2.0, 3, 0, 0));
-    if (opts->pulse_digi_out_channels == 2) {
-        ui_row_field(row, " G: %s%%", ui_num(gain, sizeof gain, (double)state->aout_gainR * 2.0, 3, 0, 0));
+    static const char k_auto_span_1[] = "G: Auto (+18.0 dB) (+|-)";
+    static const char k_auto_span_2[] = "G: Auto (+18.0 / +18.0 dB) (+|-)";
+    const int stereo = opts->pulse_digi_out_channels == 2;
+    char text[64];
+    if (!(opts->audio_gain > 0.0f)) {
+        char left[16];
+        const char* left_db = ui_gain_db(left, sizeof left, state ? (double)state->aout_gain : 0.0);
+        if (stereo) {
+            char right[16];
+            const char* right_db = ui_gain_db(right, sizeof right, state ? (double)state->aout_gainR : 0.0);
+            DSD_SNPRINTF(text, sizeof text, "G: Auto (%s / %s dB) (%s)", left_db, right_db, keys);
+        } else {
+            DSD_SNPRINTF(text, sizeof text, "G: Auto (%s dB) (%s)", left_db, keys);
+        }
+    } else {
+        DSD_SNPRINTF(text, sizeof text, "G: x%.4g (%s) Manual", (double)opts->audio_gain, keys);
     }
-    ui_row_field(row, " (%s) %s", keys, opts->audio_gain == 0 ? "Auto  " : "Manual");
+    const int span = (int)(stereo ? sizeof k_auto_span_2 : sizeof k_auto_span_1) - 1;
+    ui_row_field(row, " %-*s", span, text);
     if (opts->use_hpf_d == 1) {
         ui_row_field(row, " HPF");
     }
@@ -732,8 +758,9 @@ ui_row_analog_filters_field(ui_row* row, const dsd_opts* opts) {
                  opts->use_pbf == 1 ? "VB" : "  ");
 }
 
-/* The analog monitor's gain: auto with what the AGC applies over the reference level, or the fixed -n setting, both in
-   the room the auto form takes so the readings after it hold their columns when the mode changes. */
+/* The analog monitor's gain: auto with what the AGC applies over the reference level, or the fixed -n setting with its
+   fraction as the menu shows it, both in the room the auto form takes so the readings after it hold their columns when
+   the mode changes. */
 static void
 ui_row_analog_gain_field(ui_row* row, const dsd_opts* opts, const dsd_state* state) {
     static const char k_auto_span[] = "G: Auto (+18.0 dB) (/|*)";
@@ -743,8 +770,7 @@ ui_row_analog_gain_field(ui_row* row, const dsd_opts* opts, const dsd_state* sta
         DSD_SNPRINTF(text, sizeof text, "G: Auto (%s dB) (/|*)",
                      ui_num(value, sizeof value, state ? (double)state->aout_gainA : 0.0, 5, 1, DSD_NUMBER_TEXT_PLUS));
     } else {
-        DSD_SNPRINTF(text, sizeof text, "G: %s%% (/|*) Manual",
-                     ui_num(value, sizeof value, (double)opts->audio_gainA, 3, 0, 0));
+        DSD_SNPRINTF(text, sizeof text, "G: %.4g%% (/|*) Manual", (double)opts->audio_gainA);
     }
     ui_row_field(row, " %-*s", (int)(sizeof k_auto_span - 1U), text);
 }
@@ -782,7 +808,7 @@ ui_render_udp_output(const dsd_opts* opts, const dsd_state* state) {
         ui_io_row_begin(&row);
         ui_row_field(&row, "| UDP Digital Output: %s:%d;", opts->udp_hostname, opts->udp_portno);
         ui_row_field(&row, " %d kHz %d Ch;", opts->pulse_digi_rate_out / 1000, opts->pulse_digi_out_channels);
-        ui_row_digital_gain_fields(&row, opts, state, "+/-");
+        ui_row_digital_gain_fields(&row, opts, state, "+|-");
         ui_row_end(&row);
         /* Analog output on the UDP port + 2, when its socket is open: unset is DSD_INVALID_SOCKET (-1 on POSIX), and 0
            is a valid descriptor. */
@@ -834,12 +860,14 @@ ui_render_m17_encoder_status(const dsd_opts* opts, const dsd_state* state) {
             ui_row_field(&row, " SQL: %s : %s;%*s", ui_num(pwr, sizeof pwr, pwr_to_dB(opts->rtl_pwr), 6, 1, 0), vox_sql,
                          pad, "");
         }
+        /* The fixed setting keeps its fraction as the menu shows it ("37.25%" at the widest), and auto takes the same
+           room, so the filters after it hold their column. */
         if (dsd_analog_gain_is_auto(opts->audio_gainA)) {
-            ui_row_field(&row, " Input Gain (/|*): Auto");
+            ui_row_field(&row, " Input Gain (/|*): %-6s", "Auto");
         } else {
             char gain[16];
-            ui_row_field(&row, " Input Gain (/|*): %s%%",
-                         ui_num(gain, sizeof gain, (double)opts->audio_gainA, 3, 0, 0));
+            DSD_SNPRINTF(gain, sizeof gain, "%.4g%%", (double)opts->audio_gainA);
+            ui_row_field(&row, " Input Gain (/|*): %6s", gain);
         }
         ui_row_analog_filters_field(&row, opts);
         ui_row_end(&row);

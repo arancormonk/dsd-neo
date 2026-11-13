@@ -136,6 +136,35 @@ void qpsk_differential_demod(struct demod_state* fm);
  */
 void deemph_filter(struct demod_state* fm);
 
+/** The FM monitor's output scale, which takes discriminator radians into roughly [-1, 1] at the reference rate below:
+    1 kHz at 3 kHz deviation reads 0.125 peak. */
+#define DSD_DEMOD_MONITOR_OUTPUT_SCALE       (1.0 / 3.14159265358979323846)
+/** The discriminator rate the monitor's output scale is calibrated at. Its output is the phase step per sample, so the
+    scale grows with the rate it runs at: a given deviation reads the same at any rate. */
+#define DSD_DEMOD_MONITOR_SCALE_REFERENCE_HZ 48000.0
+
+/**
+ * The one-pole de-emphasis coefficient for @p tau_us at @p rate_hz, quantised to Q15 as the filters apply it: the
+ * monitor's (deemph_filter(), at `rate_out`) and the FSK voice lane's (at `complex_rate`).
+ *
+ * @return The coefficient in (0, 1), or 0 for no de-emphasis (@p tau_us 0 or less).
+ */
+float dsd_demod_deemph_alpha(int rate_hz, int tau_us);
+
+/**
+ * The gain that makes up for the de-emphasis the next block's output runs through, at 1 kHz (issue #518): the inverse
+ * of the filter's magnitude there, from the quantised coefficient it applies at the rate it runs at: the monitor's
+ * (`deemph_a` at `rate_out`, after the post-demod decimator), or on the FSK discriminator the voice lane's while it
+ * runs (`voice_lane_deemph_a` at `complex_rate`). The monitor's reference tone, 1 kHz at 3 kHz deviation, then reads
+ * the same whatever `DSD_NEO_DEEMPH` selects: about 1.105 (+0.865 dB) at the default 75 us and 48 kHz, 4.81
+ * (+13.65 dB) at 750 us.
+ *
+ * @param d Demodulator state; NULL reads as none.
+ * @return The gain, or 1.0 when the block runs no de-emphasis: off, AM, the FSK discriminator without its voice lane,
+ *         CQPSK symbols and the raw pass-through.
+ */
+double dsd_demod_deemph_compensation(const struct demod_state* d);
+
 /**
  * Apply a simple DC blocking (leaky integrator high-pass) filter to audio.
  *

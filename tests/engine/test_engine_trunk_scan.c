@@ -30,6 +30,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
@@ -101,6 +102,7 @@ dsd_analog_rx_rejection_ended_now(const dsd_opts* opts, const dsd_state* state) 
  * link. The stubs record which sink each row commit asked for. --- */
 static int g_ensure_analog_calls;
 static int g_forget_carrier_decoding_calls;
+static int g_voice_level_resets;
 static int g_orphan_flush_calls;
 static int g_ensure_digital_calls;
 static int g_scan_dsp_rate_hz;
@@ -3085,12 +3087,18 @@ test_p25_conventional_grant_frequency_isolated_per_target(void) {
     state.p25_conventional_grant_target[0] = state.p25_conventional_grant_target[1] = 0x4567U;
     state.nxdn_part_of_frame = 2;
     g_forget_carrier_decoding_calls = 0;
+    g_voice_level_resets = 0;
     g_orphan_flush_calls = 0;
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (g_forget_carrier_decoding_calls != 1 || state.nxdn_part_of_frame != 0) {
         DSD_FPRINTF(stderr, "a target switch kept what the decoders gathered on the carrier left calls=%d part=%d\n",
                     g_forget_carrier_decoding_calls, state.nxdn_part_of_frame);
+        test_rc = 1;
+    }
+    /* Issue #518: the incoming carrier's digital voice starts at the start gain, on both slots. */
+    if (g_voice_level_resets != 1) {
+        DSD_FPRINTF(stderr, "a target switch started the voice level over %d times\n", g_voice_level_resets);
         test_rc = 1;
     }
     if (g_orphan_flush_calls != 1) {
@@ -22305,6 +22313,16 @@ dsd_event_flush_orphan_recordings(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     g_orphan_flush_calls++;
+}
+
+/* The digital voice level, which a target switch starts over for the incoming carrier (issue #518): counted, both
+   slots at once. */
+void
+dsd_voice_level_reset(dsd_state* state, int slot) {
+    (void)state;
+    if (slot < 0) {
+        g_voice_level_resets++;
+    }
 }
 
 /* What the decoders gathered on a carrier, which a target switch forgets (issue #575): counted, with a stand-in

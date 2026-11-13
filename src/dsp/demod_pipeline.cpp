@@ -1796,6 +1796,50 @@ deemph_filter(struct demod_state* fm) {
     fm->deemph_avg = avg; /* write back state */
 }
 
+float
+dsd_demod_deemph_alpha(int rate_hz, int tau_us) {
+    if (tau_us <= 0) {
+        return 0.0f;
+    }
+    const double fs = rate_hz >= 1 ? (double)rate_hz : 1.0;
+    const double tau_s = (double)tau_us / 1000000.0;
+    const double alpha = 1.0 - exp(-1.0 / (fs * tau_s));
+    int coef_q15 = (int)lrint(alpha * (double)(1 << 15));
+    if (coef_q15 < 1) {
+        coef_q15 = 1;
+    } else if (coef_q15 > ((1 << 15) - 1)) {
+        coef_q15 = ((1 << 15) - 1);
+    }
+    return (float)((double)coef_q15 / (double)(1 << 15));
+}
+
+/* The inverse of the one-pole de-emphasis's magnitude at 1 kHz: H(z) = a / (1 - (1 - a) z^-1), so the gain is
+   |1 - (1 - a) e^-jw| / a at w = 2 pi 1000 / rate. The filters clamp the coefficient to 1. */
+static double
+deemph_gain_at_1khz(float alpha, int rate_hz) {
+    const double a = alpha < 1.0f ? (double)alpha : 1.0;
+    const double pole = 1.0 - a;
+    const double w = 2.0 * M_PI * 1000.0 / (double)rate_hz;
+    return sqrt(1.0 - (2.0 * pole * cos(w)) + (pole * pole)) / a;
+}
+
+/* The conditions full_demod() runs deemph_filter() under: monitor output (the FSK discriminator returns before it),
+   no CQPSK, not the raw pass-through, de-emphasis on with a coefficient. On the FSK discriminator, the voice lane's
+   de-emphasis while it runs (full_demod_handle_fsk_output()). */
+double
+dsd_demod_deemph_compensation(const struct demod_state* d) {
+    if (d && d->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
+        return (d->voice_lane_enabled && d->voice_lane_deemph_a > 0.0f && d->complex_rate > 0)
+                   ? deemph_gain_at_1khz(d->voice_lane_deemph_a, d->complex_rate)
+                   : 1.0;
+    }
+    if (!d || d->output_kind != DSD_DEMOD_OUTPUT_AUDIO_MONITOR || d->cqpsk_enable || d->mode_demod == &raw_demod
+        || !d->deemph || !(d->deemph_a > 0.0f) || d->rate_out <= 0) {
+        return 1.0;
+    }
+    return deemph_gain_at_1khz(d->deemph_a, d->rate_out);
+}
+
 /**
  * @brief Apply a simple DC blocking (leaky integrator high-pass) filter to audio.
  *
@@ -2714,10 +2758,74 @@ full_demod_apply_iq_balance(struct demod_state* d) {
     }
 }
 
+/* The voice lane's de-emphasis coefficient for the rate the discriminator runs at and the time constant asked for,
+   made again only when either moved. */
+static void
+voice_lane_track_coefficient(struct demod_state* d) {
+    if (d->voice_lane_coef_rate_hz == d->complex_rate && d->voice_lane_coef_tau_us == d->voice_lane_tau_us) {
+        return;
+    }
+    d->voice_lane_deemph_a = dsd_demod_deemph_alpha(d->complex_rate, d->voice_lane_tau_us);
+    d->voice_lane_coef_rate_hz = d->complex_rate;
+    d->voice_lane_coef_tau_us = d->voice_lane_tau_us;
+}
+
+/* The voice lane's discriminator over the block's samples into voice_result (issue #518): the phase step per sample
+   less the slow carrier centring, the modem's own computation ahead of its peak normaliser, from where the modem stood
+   before this block (@p modem, its state then), so the lane is the modem's centred output in every case: a reset, a new
+   configuration or the lane turning on mid-stream. Then the FM monitor's output scale for the rate the discriminator
+   runs at (DSD_DEMOD_MONITOR_OUTPUT_SCALE) and the lane's de-emphasis. So EDACS analog voice reads at the monitor
+   audio's level, with the level information the normaliser throws away, and its de-emphasis is the one
+   dsd_demod_deemph_compensation() makes up. It runs beside the modem, never inside it, so the modem's loop, which every
+   FSK digital decode runs, stays as it was. */
+static void
+voice_lane_run(struct demod_state* d, const dsd_fsk_modem_state* modem) {
+    const int rate_hz = d->complex_rate > 0 ? d->complex_rate : 48000;
+    const float scale =
+        (float)(DSD_DEMOD_MONITOR_OUTPUT_SCALE * ((double)rate_hz / DSD_DEMOD_MONITOR_SCALE_REFERENCE_HZ));
+    const float alpha = d->voice_lane_deemph_a < 1.0f ? d->voice_lane_deemph_a : 1.0f;
+    const int deemph = alpha > 0.0f;
+    const float* iq = d->lowpassed;
+    float* v = d->voice_result;
+    int have_prev = modem->have_prev;
+    float prev_i = modem->prev_i;
+    float prev_q = modem->prev_q;
+    float dc = modem->dc_est;
+    float avg = d->voice_lane_deemph_avg;
+    for (int n = 0; n < d->result_len; n++) {
+        const float cur_i = iq[(size_t)(n << 1) + 0];
+        const float cur_q = iq[(size_t)(n << 1) + 1];
+        float centred = 0.0f;
+        if (have_prev) {
+            const float re = cur_i * prev_i + cur_q * prev_q;
+            const float im = cur_q * prev_i - cur_i * prev_q;
+            const float freq = phase_delta_small_angle_or_atan2(im, re);
+            dc += 0.00025f * (freq - dc);
+            centred = freq - dc;
+        }
+        have_prev = 1;
+        prev_i = cur_i;
+        prev_q = cur_q;
+        const float x = centred * scale;
+        if (deemph) {
+            avg += (x - avg) * alpha;
+            v[n] = avg;
+        } else {
+            v[n] = x;
+        }
+    }
+    d->voice_lane_deemph_avg = avg;
+}
+
 static int
 full_demod_handle_fsk_output(struct demod_state* d) {
     if (d->output_kind != DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
         return 0;
+    }
+    d->voice_lane_active = d->voice_lane_enabled ? 1 : 0;
+    if (d->voice_lane_active) {
+        /* On a squelched block too: the compensation the block publishes is the coefficient's at this rate. */
+        voice_lane_track_coefficient(d);
     }
     int in_pairs = d->lp_len >> 1;
     if (d->channel_squelched) {
@@ -2726,6 +2834,17 @@ full_demod_handle_fsk_output(struct demod_state* d) {
         for (int i = 0; i < d->result_len; i++) {
             d->result[i] = 0.0f;
         }
+        if (d->voice_lane_active) {
+            /* Silence, and the lane's de-emphasis starts over with the modem. */
+            DSD_MEMSET(d->voice_result, 0, (size_t)d->result_len * sizeof(float));
+            d->voice_lane_deemph_avg = 0.0f;
+        }
+    } else if (d->voice_lane_active) {
+        /* Where the modem stands before the block: the lane runs its discriminator on from there. */
+        const dsd_fsk_modem_state modem = d->fsk_modem_state;
+        d->result_len = dsd_fsk_modem_discriminator_process(&d->fsk_modem_state, d->lowpassed, d->lp_len, d->result,
+                                                            MAXIMUM_BUF_LENGTH);
+        voice_lane_run(d, &modem);
     } else {
         d->result_len = dsd_fsk_modem_discriminator_process(&d->fsk_modem_state, d->lowpassed, d->lp_len, d->result,
                                                             MAXIMUM_BUF_LENGTH);
@@ -2975,6 +3094,8 @@ full_demod_apply_squelch_envelope(struct demod_state* d) {
  */
 void
 full_demod(struct demod_state* d) {
+    /* Only an FSK discriminator block with the lane asked for makes it (full_demod_handle_fsk_output()). */
+    d->voice_lane_active = 0;
     full_demod_apply_halfband_decimation(d);
     full_demod_apply_live_step(d);
     full_demod_test_post_step_tap(d);

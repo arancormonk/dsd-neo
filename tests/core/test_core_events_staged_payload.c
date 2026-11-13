@@ -22,12 +22,11 @@
 
 void
 // NOLINTNEXTLINE(bugprone-reserved-identifier,misc-use-internal-linkage)
-__wrap_beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
+__wrap_beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int len) {
     (void)opts;
     (void)state;
     (void)lr;
     (void)id;
-    (void)ad;
     (void)len;
 }
 

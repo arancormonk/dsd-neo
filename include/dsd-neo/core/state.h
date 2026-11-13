@@ -651,11 +651,13 @@ typedef struct {
 
 /* One slot's digital voice high-pass (`-v 0x8`, issue #653): the transposed direct form II state of the 2nd-order
    Butterworth section dsd_voice_hpf_process() runs on 8 kHz vocoder frames, and the reception it last ran for, so a new
-   call or protocol on the slot starts from clear state (<dsd-neo/core/voice_chain.h>). */
+   transmission or protocol on the slot starts from clear state (<dsd-neo/core/voice_chain.h>). */
 typedef struct {
     double s1;
     double s2;
-    uint64_t call_epoch; /* The last nonzero call epoch the slot's frames belonged to; 0 before the first. */
+    /* The last nonzero transmission (dsd_call_snapshot_transmission()) the slot's frames belonged to; 0 before the
+       first. A fade the call state heals keeps it. */
+    uint64_t transmission;
     int protocol_family; /* dsd_call_state_protocol_family() of the last frame; 0 before the first. */
 } dsd_voice_hpf_state;
 
@@ -965,6 +967,11 @@ typedef enum {
 /* dsd_state::dmr_mono_rx_slot (issue #637). */
 enum { DSD_DMR_MONO_RX_NONE = 0, DSD_DMR_MONO_RX_PENDING = 1, DSD_DMR_MONO_RX_TS1 = 2, DSD_DMR_MONO_RX_TS2 = 3 };
 
+/* dsd_state::x2tdma_slot_crypto: what the timeslot's X2-TDMA voice frames are known to be. X2-TDMA has no decryption,
+   so an encrypted frame is undecryptable; an UNKNOWN one is never decodable, and plays only where clear and encrypted
+   audio both would. */
+enum { DSD_X2TDMA_CRYPTO_UNKNOWN = 0, DSD_X2TDMA_CRYPTO_CLEAR = 1, DSD_X2TDMA_CRYPTO_ENCRYPTED = 2 };
+
 /** Where received-tone detection stands (issue #522).
  * INACTIVE: nothing has been processed since the last reset (a retune, row or target change,
  * input switch, mode change or stop), or detection is not running at all. It does not by
@@ -1092,8 +1099,6 @@ struct dsd_state {
     float* audio_out_float_buf_p;
     float* audio_out_float_bufR;
     float* audio_out_float_buf_pR;
-    float* aout_max_buf_p;
-    float* aout_max_buf_pR;
     struct mbe_parameters* cur_mp;
     struct mbe_parameters* prev_mp;
     struct mbe_parameters* prev_mp_enhanced;
@@ -1333,6 +1338,10 @@ struct dsd_state {
     uint8_t mbe_slot_muted[2];
     short s_l4[18][160]; //quad sample for up to a P25p2 4V
     short s_r4[18][160]; //quad sample for up to a P25p2 4V
+    /* Per slot, per frame of the DMR superframe mix (s_l4/s_r4 rows 0-2): 1 when the row holds the slot's own audio the
+       vocoder staged this burst, 0 for silence, a frame it left out, or nothing yet. The two-slot mono mix sums only
+       fresh rows, so a silent or duplicated slot never counts as a second talker (issue #518). */
+    uint8_t s4_fresh[2][3];
     //new stereo short sample storage tapped from 48_k internal upsampling
     short s_lu[160 * 6];     //single sample left
     short s_ru[160 * 6];     //single sample right
@@ -1599,13 +1608,12 @@ struct dsd_state {
     int numtdulc;
     int firstframe;
     char slot0light[8];
+    /* Display only: the gain the digital voice chain last applied on slot 1 and slot 2, in dB over the decoder's level
+       (`-g 1`), set by every chained frame (<dsd-neo/core/voice_chain.h>); and the analog monitor's, in dB over `-n
+       50`. Their adaptation state stays with the decoder (state extensions). */
     float aout_gain;
     float aout_gainR;
     float aout_gainA;
-    float aout_max_buf[200];
-    float aout_max_bufR[200];
-    int aout_max_buf_idx;
-    int aout_max_buf_idxR;
     int samplesPerSymbol;
     int symbolCenter;
     char algid[9];
@@ -2410,6 +2418,13 @@ struct dsd_state {
     uint8_t x2tdma_superframe_valid;
     uint32_t x2tdma_superframe_carrier_seq;
     uint32_t x2tdma_superframe_end_symbol;
+    /* Per timeslot: the encryption the timeslot's X2-TDMA voice frames are judged by (DSD_X2TDMA_CRYPTO_*), set by
+       processX2TDMAvoice() before each burst's frames, and the call's transmission (dsd_call_snapshot_transmission())
+       it was read in. A superframe signals its encryption in its second burst, after the first burst's three frames:
+       those take the previous superframe's value of the same transmission, and are UNKNOWN in its first superframe.
+       The vocoder mutes, records, captures and learns from the frames by it (mbe_frame_judge()). */
+    uint8_t x2tdma_slot_crypto[2];
+    uint64_t x2tdma_slot_crypto_transmission[2];
     int input_fallback_pending;
 
     //dmr trunking stuff

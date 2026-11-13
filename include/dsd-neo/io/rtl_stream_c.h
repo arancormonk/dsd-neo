@@ -271,6 +271,33 @@ int rtl_stream_read_ex(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t co
  * that found nothing for one wait slice while the device has no stream returns it, and never DSD_RTL_READ_YIELD.
  */
 int rtl_stream_read_ex2(RtlSdrContext* ctx, float* out, uint8_t* flags, size_t count, int* out_got, int want_no_stream);
+/**
+ * @brief rtl_stream_read_ex2() with the FSK voice lane (issue #518): into @p voice (as many as @p out, or NULL) each
+ * sample's voice-lane sample, made from the same discriminator output, resampled the same way and read at the same
+ * place, flags included. It is FM monitor audio, not the peak-normalised FSK output: 1 kHz at 3 kHz deviation reads
+ * 0.125 peak before its de-emphasis, which rtl_stream_monitor_deemph_gain() makes up while the lane runs. A sample the
+ * lane did not run for (rtl_stream_set_voice_lane() off when the demod made it, a stream not on the FSK discriminator)
+ * reads 0. @p out and @p flags come out exactly as rtl_stream_read_ex2() writes them, the lane on or off.
+ */
+int rtl_stream_read_lanes(RtlSdrContext* ctx, float* out, float* voice, uint8_t* flags, size_t count, int* out_got,
+                          int want_no_stream);
+
+/**
+ * @brief Ask for the FSK voice lane (issue #518), or stop it: EDACS asks for the length of an analog call, which it
+ * reads with rtl_stream_read_lanes(). The demod runs it from its next block while the stream's output is the FSK
+ * discriminator; it costs nothing while off. Process-wide: it outlives a stream restart.
+ */
+void rtl_stream_set_voice_lane(int enable);
+
+/** @brief Whether the FSK voice lane is asked for (rtl_stream_set_voice_lane()). */
+int rtl_stream_voice_lane_requested(void);
+
+/**
+ * @brief Whether the open stream can carry the FSK voice lane: 0 with no stream, or when its output ring's lane buffer
+ * could not be allocated (it is allocated with the ring, so a device short of memory may run without it). Without it
+ * every voice-lane sample reads 0, so a reader plays the FSK output instead.
+ */
+int rtl_stream_voice_lane_available(void);
 
 /** @brief Start of the last NO_STREAM wait slice on this reader thread, in real monotonic milliseconds.
  * Read only after DSD_RTL_READ_NO_STREAM; 0 if no slice has been recorded. */
@@ -290,6 +317,23 @@ uint32_t rtl_stream_output_rate(const RtlSdrContext* ctx);
  * explicit output clear.
  */
 uint32_t rtl_stream_output_generation(void);
+
+/**
+ * @brief Return the gain that makes up for the de-emphasis the monitor audio in the output ring ran through, at 1 kHz
+ * (issue #518): dsd_demod_deemph_compensation() of the last block the demod wrote, 1.0 for a block without
+ * de-emphasis (AM, the FSK discriminator without its voice lane, CQPSK symbols, `DSD_NEO_DEEMPH=off`) and before a
+ * session's first block (a stream open or stop resets it). On the FSK discriminator it is the voice lane's while the
+ * lane runs (rtl_stream_read_lanes()).
+ *
+ * The demod stores it with each block before the block reaches the ring, so samples read from the ring are never older
+ * than the gain read after them. Whatever else changes it moves the output generation first, then publishes the new
+ * gain (an FM <-> AM switch at once, anything else with the next block). Read it before rtl_stream_output_generation():
+ * a new gain is never read with the old generation, but the old gain can be read with the new generation until that
+ * block, so a reader that notes a block in that window drops it as straddling the change. The voice lane starting or
+ * stopping changes it with the next block and moves no generation: a reader of the lane notes that block as a new
+ * reception (EDACS starts each call's chain over anyway).
+ */
+double rtl_stream_monitor_deemph_gain(void);
 
 /**
  * @brief Return the stream session generation (issue #671).

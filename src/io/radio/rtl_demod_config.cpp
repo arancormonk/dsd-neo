@@ -1250,6 +1250,8 @@ rtl_demod_apply_audio_filters_from_config(struct demod_state* demod) {
         return 0;
     }
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    /* The FSK voice lane runs the configured de-emphasis whatever the monitor's own (none on a digital open). */
+    demod->voice_lane_tau_us = demod_deemph_tau_us_from_config(cfg);
     demod->deemph_tau_us = 0;
     if (demod->deemph) {
         demod->deemph_tau_us = demod_deemph_tau_us_from_config(cfg);
@@ -1279,16 +1281,7 @@ rtl_demod_refresh_audio_coefficients(struct demod_state* demod) {
         fs = 1.0;
     }
     if (demod->deemph && demod->deemph_tau_us > 0) {
-        const double tau_s = (double)demod->deemph_tau_us / 1000000.0;
-        const double a = exp(-1.0 / (fs * tau_s));
-        const double alpha = 1.0 - a;
-        int coef_q15 = (int)lrint(alpha * (double)(1 << 15));
-        if (coef_q15 < 1) {
-            coef_q15 = 1;
-        } else if (coef_q15 > ((1 << 15) - 1)) {
-            coef_q15 = ((1 << 15) - 1);
-        }
-        demod->deemph_a = (float)((double)coef_q15 / (double)(1 << 15));
+        demod->deemph_a = dsd_demod_deemph_alpha((int)fs, demod->deemph_tau_us);
     }
     if (demod->audio_lpf_enable && demod->audio_lpf_cutoff_hz > 0) {
         double a = 1.0 - exp(-2.0 * kAudioFilterPi * (double)demod->audio_lpf_cutoff_hz / fs);
@@ -1308,6 +1301,7 @@ rtl_demod_reset_audio_monitor_state(struct demod_state* demod) {
         return;
     }
     demod->deemph_avg = 0.0f;
+    demod->voice_lane_deemph_avg = 0.0f;
     demod->dc_avg = 0.0f;
     demod->audio_lpf_state = 0.0f;
     /* Cold, so the AM detector warm-starts from the new channel's own level rather than dividing it by the last one's
@@ -1342,6 +1336,7 @@ rtl_demod_reset_resampler_state(struct demod_state* demod) {
     /* Its outputs' flags start over with it, closed until real inputs reach the filter's centre. */
     DSD_MEMSET(demod->resamp_flag_hist, DSD_SQUELCH_FLAG_CLOSED, sizeof(demod->resamp_flag_hist));
     demod->resamp_flag_head = 0;
+    resamp_clear_voice_lane(demod);
 }
 
 /* A fresh open starts the carrier and timing loops from nothing: Costas and the band-edge FLL (and the TETRA mixer

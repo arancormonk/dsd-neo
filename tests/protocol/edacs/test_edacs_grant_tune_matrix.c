@@ -59,6 +59,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "edacs_internal.h"
+#include "speech_synth.h"
 #include "test_support.h"
 
 typedef struct {
@@ -104,7 +105,12 @@ static size_t g_udp_blast_bytes[3];
 static short g_udp_blast_first[3];
 
 /* Issue #633: what the fake TCP input carries, and the events it fires at given samples. */
-enum { EDACS_TCP_RAMP = 0, EDACS_TCP_DOTTING = 1, EDACS_TCP_TONE = 2 };
+enum { EDACS_TCP_RAMP = 0, EDACS_TCP_DOTTING = 1, EDACS_TCP_TONE = 2, EDACS_TCP_SPEECH = 3 };
+
+/* With EDACS_TCP_SPEECH: running speech (speech_synth.h) at 48 kHz, as many samples as it holds, silence after. */
+enum { EDACS_SPEECH_SAMPLES = 60 * 2880 };
+
+static float g_tcp_speech[EDACS_SPEECH_SAMPLES];
 
 static int g_tcp_signal = EDACS_TCP_RAMP;
 static int g_tcp_signal_rate_hz = 48000;
@@ -166,14 +172,38 @@ int __real_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_outpu
 int __wrap_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out);
 
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
-int __real_dsd_analog_audio_process_s(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain, short* buf,
-                                      size_t n, dsd_analog_audio_source source, int rate_hz, unsigned int flags);
+int __real_dsd_analog_audio_process_runs_f(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain,
+                                           float* buf, size_t n, dsd_analog_audio_source source, int rate_hz,
+                                           unsigned int flags, const uint8_t* learn);
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
-int __wrap_dsd_analog_audio_process_s(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain, short* buf,
-                                      size_t n, dsd_analog_audio_source source, int rate_hz, unsigned int flags);
+int __wrap_dsd_analog_audio_process_runs_f(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain,
+                                           float* buf, size_t n, dsd_analog_audio_source source, int rate_hz,
+                                           unsigned int flags, const uint8_t* learn);
 
-/* Issue #518 D5: the analog chain's blocks while g_process_watch is set, in order: whether each started the chain over,
-   and whether it held any sound. */
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __real_dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsigned long tg, int enc_in,
+                                     int* enc_out);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __wrap_dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsigned long tg, int enc_in,
+                                     int* enc_out);
+
+/* Issue #518 B10: while set, the talkgroup gate mutes every call, whatever the record gate (which this leaves alone)
+   says: the two are separate verdicts (edacs_analog_call_muted(), edacs_write_analog_wav()). */
+static int g_force_tg_mute = 0;
+
+int
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsigned long tg, int enc_in,
+                                 int* enc_out) {
+    const int rc = __real_dsd_audio_group_gate_mono(opts, state, tg, enc_in, enc_out);
+    if (g_force_tg_mute && enc_out != NULL) {
+        *enc_out = 1;
+    }
+    return rc;
+}
+
+/* Issue #518 D5: the analog chain's triplets while g_process_watch is set, in order: whether each started the chain
+   over, and whether it held any sound. */
 enum { EDACS_PROCESS_LOG_CAP = 64 };
 
 static int g_process_watch = 0;
@@ -203,21 +233,25 @@ __wrap_dsd_rate_converter_clear(dsd_rate_converter* converter) {
 
 static unsigned char g_process_reset[EDACS_PROCESS_LOG_CAP];
 static unsigned char g_process_loud[EDACS_PROCESS_LOG_CAP];
+/* Issue #518 B10: the source the chain last ran (-1: none since it was cleared). */
+static int g_process_last_source = -1;
 
 int
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
-__wrap_dsd_analog_audio_process_s(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain, short* buf,
-                                  size_t n, dsd_analog_audio_source source, int rate_hz, unsigned int flags) {
+__wrap_dsd_analog_audio_process_runs_f(const dsd_opts* opts, dsd_state* state, dsd_analog_audio_chain chain, float* buf,
+                                       size_t n, dsd_analog_audio_source source, int rate_hz, unsigned int flags,
+                                       const uint8_t* learn) {
+    g_process_last_source = (int)source;
     if (g_process_watch && g_process_count < EDACS_PROCESS_LOG_CAP) {
         int loud = 0;
         for (size_t i = 0; i < n && buf != NULL; i++) {
-            loud |= buf[i] != 0;
+            loud |= fabsf(buf[i]) > 0.0f;
         }
         g_process_reset[g_process_count] = (flags & DSD_ANALOG_AUDIO_RESET) != 0U;
         g_process_loud[g_process_count] = (unsigned char)loud;
         g_process_count++;
     }
-    return __real_dsd_analog_audio_process_s(opts, state, chain, buf, n, source, rate_hz, flags);
+    return __real_dsd_analog_audio_process_runs_f(opts, state, chain, buf, n, source, rate_hz, flags, learn);
 }
 
 /* Issue #574: the blocks written to the local output while g_audio_write_capture is set. */
@@ -399,6 +433,13 @@ edacs_fake_tcp_read_sample(tcp_input_ctx* ctx, int16_t* out, unsigned int timeou
             } else {
                 *out = (int16_t)lround(
                     8000.0 * sin(2.0 * 3.14159265358979323846 * 700.0 * (double)index / (double)g_tcp_signal_rate_hz));
+            }
+            break;
+        case EDACS_TCP_SPEECH:
+            if (g_tcp_dotting_from >= 0 && index >= g_tcp_dotting_from) {
+                *out = edacs_dotting_sample(index, g_tcp_signal_rate_hz);
+            } else {
+                *out = index < EDACS_SPEECH_SAMPLES ? (int16_t)lrintf(g_tcp_speech[index]) : 0;
             }
             break;
         default: *out = (int16_t)(1000 + index); break;
@@ -2234,10 +2275,13 @@ edacs_run_analog_sql_helper_cases(void) {
     return rc;
 }
 
-/* The hashes of a 48 kHz call's outputs, from the code before issue #633 (edacs_golden_call()). */
-#define EDACS_GOLDEN_UDP_WAV    0xA172D3D3E27E68FBULL
-#define EDACS_GOLDEN_STATIC_WAV 0x9CD69F783969D5FEULL
-#define EDACS_GOLDEN_FD         0xDEF38AC945E89533ULL
+/* The hashes of a 48 kHz call's outputs (edacs_golden_call()). First taken from the code before issue #633; since the
+   analog chain moved to the speech AGC (issue #518) they are a snapshot of the same 48 kHz path at the AGC's level,
+   taken from that code itself: they hold the path to what it did then, not to independent code. Linux (glibc) only,
+   like the test. */
+#define EDACS_GOLDEN_UDP_WAV    0x2E84BDF647C507FFULL
+#define EDACS_GOLDEN_STATIC_WAV 0x73378B303D178529ULL
+#define EDACS_GOLDEN_FD         0x77A90F2F1AD7DEACULL
 
 /* --- Issue #633: EDACS analog voice runs at 48 kHz, whatever rate it is read at --- */
 
@@ -2986,6 +3030,64 @@ edacs_call_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
     return edacs_call_read_ex(rtl_ctx, out, NULL, count, out_got);
 }
 
+/* Issue #518 B10: while set, the stream's lanes carry unrelated signals: the voice lane the reference signal, 1 kHz at
+   3 kHz deviation at the monitor's scale (0.125 peak, before the `vol` trim), the normalised samples a 1.7 kHz tone at
+   20000 peak. */
+static int g_call_reference = 0;
+
+/* Issue #518: a stream that cannot carry the voice lane. Under g_call_no_read_lanes no read_lanes hook is installed;
+   under g_call_lane_unavailable the stream says it has no lane buffer (the ring's allocation failed), and its voice
+   lane reads 0 as the real ring's does then. */
+static int g_call_no_read_lanes = 0;
+static int g_call_lane_unavailable = 0;
+
+static int
+edacs_call_voice_lane_available(void) {
+    return g_call_lane_unavailable ? 0 : 1;
+}
+
+/* The stream's voice lane beside it (issue #518): the same signal at the RTL monitor's scale, where the 8000 peak tone
+   reads 0.25; or, under g_call_reference, the reference beside an unrelated normalised signal. */
+static int
+edacs_call_read_lanes(void* rtl_ctx, float* out, float* voice, uint8_t* flags, size_t count, int* out_got,
+                      int want_no_stream) {
+    (void)want_no_stream;
+    const int rc = edacs_call_read_ex(rtl_ctx, out, flags, count, out_got);
+    if (rc != 0) {
+        return rc;
+    }
+    const double t = (double)(g_rtl_read_count - 1) / (double)g_call_rate_hz;
+    if (g_call_reference) {
+        out[0] = (float)(20000.0 * sin(2.0 * 3.14159265358979323846 * 1700.0 * t));
+    }
+    if (voice != NULL) {
+        voice[0] =
+            g_call_reference ? (float)(0.125 * sin(2.0 * 3.14159265358979323846 * 1000.0 * t)) : out[0] / 32000.0f;
+        if (g_call_lane_unavailable) {
+            voice[0] = 0.0f;
+        }
+    }
+    return rc;
+}
+
+/* Issue #518 B10: each voice-lane request (1 on, 0 off) and the stream reads made by then; a call whose tune is
+   refused at once; the call's RTL `vol` trim and analog gain (`-n`, 0 auto). */
+static int g_call_tune_refused = 0;
+static int g_call_volume = 2;
+static float g_call_gain_a = 0.0f;
+static int g_lane_requests[8];
+static long g_lane_request_reads[8];
+static int g_lane_request_count = 0;
+
+static void
+edacs_call_set_voice_lane(int enable) {
+    if (g_lane_request_count < 8) {
+        g_lane_requests[g_lane_request_count] = enable;
+        g_lane_request_reads[g_lane_request_count] = (long)g_rtl_read_count;
+    }
+    g_lane_request_count++;
+}
+
 static double
 edacs_call_return_pwr(const void* rtl_ctx) {
     (void)rtl_ctx;
@@ -3009,12 +3111,22 @@ edacs_call_output_rate_hz(void) {
 /* The UDP analog output: each 960-sample block in order, whether it played anything after the gate closed, and
    whether the call before the drop played at all. The output runs at 48 kHz whatever rate the stream is read at (issue
    #633), so output sample @p at is input time at * rate / 48000. */
+/* Issue #518 B10: what the UDP output played after its first triplet: sum of squares, count and peak. */
+static double g_call_played_sum_sq = 0.0;
+static long g_call_played_count = 0;
+static int g_call_played_peak = 0;
+
 static void
 edacs_call_blast_analog(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
     (void)opts;
     (void)state;
     const short* block = (const short*)data;
     const long count = (long)(nsam / sizeof(short));
+    for (long k = 0; k < count && block != NULL && g_call_blasted >= (long)EDACS_ANALOG_TRIPLET_SAMPLES; k++) {
+        g_call_played_sum_sq += (double)block[k] * (double)block[k];
+        g_call_played_peak = abs(block[k]) > g_call_played_peak ? abs(block[k]) : g_call_played_peak;
+        g_call_played_count++;
+    }
     for (long k = 0; k < count && block != NULL; k++) {
         const int64_t at = (int64_t)(g_call_blasted + k) * (int64_t)g_call_rate_hz;
         const int loud = block[k] != 0;
@@ -3042,8 +3154,14 @@ edacs_run_analog_call(int mode) {
     static int rtl_ctx_token;
     edacs_reset_audio_hook_state();
     edacs_setup_state_fixture(0);
+    if (g_call_tune_refused) {
+        g_vc_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
     g_opts.trunk_tune_group_calls = 1;
     g_opts.audio_in_type = AUDIO_IN_RTL;
+    /* The monitor's default trim, which the voice lane runs under as the monitor's audio does (issue #518). */
+    g_opts.rtl_volume_multiplier = g_call_volume;
+    g_opts.audio_gainA = g_call_gain_a;
     g_opts.audio_out = 1;
     g_opts.audio_out_type = 8;
     g_opts.slot1_on = 1;
@@ -3061,7 +3179,11 @@ edacs_run_analog_call(int mode) {
         .return_pwr = edacs_call_return_pwr,
         .read_ex = edacs_call_read_ex,
         .squelch_status = edacs_call_squelch_status,
+        .read_lanes = g_call_no_read_lanes ? NULL : edacs_call_read_lanes,
+        .set_voice_lane = edacs_call_set_voice_lane,
+        .voice_lane_available = edacs_call_voice_lane_available,
     });
+    g_lane_request_count = 0;
     dsd_rtl_stream_metrics_hooks rates;
     DSD_MEMSET(&rates, 0, sizeof(rates));
     rates.output_rate_hz = edacs_call_output_rate_hz;
@@ -3071,6 +3193,10 @@ edacs_run_analog_call(int mode) {
     g_call_blasted = 0;
     g_call_loud_after_close = 0;
     g_call_loud_before_drop = 0;
+    g_call_played_sum_sq = 0.0;
+    g_call_played_count = 0;
+    g_call_played_peak = 0;
+    g_process_last_source = -1;
 
     edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_group_msg1(0, 4, 321, 1234),
                               edacs_standard_group_msg2(1234));
@@ -3116,6 +3242,127 @@ edacs_call_defaults(long drop, unsigned int rate_hz) {
     g_call_status_active = 1;
     g_call_rate_hz = rate_hz;
     g_call_unmodulated = 0;
+}
+
+/* Issue #518 B10: an analog call on an RTL input asks for the stream's voice lane before its tune, so every sample of
+   the voice channel carries it, and stops it when the call ends; a tune refused at once stops it again; a digital
+   call, or one on audio input, never asks for it. */
+static int
+edacs_run_voice_lane_request_cases(void) {
+    int rc = 0;
+    edacs_call_defaults(4L * edacs_triplet_reads(48000U), 48000U);
+    const edacs_call_result call = edacs_run_analog_call(DSD_SQUELCH_MODE_LEVEL);
+    rc |= edacs_expect(
+        call.released && g_lane_request_count == 2 && g_lane_requests[0] == 1 && g_lane_request_reads[0] == 0
+            && g_lane_requests[1] == 0 && g_lane_request_reads[1] == call.reads,
+        "analog-b10", "voice-lane", "the call asks for the lane before it reads and stops it at its end");
+
+    edacs_call_defaults(4L * edacs_triplet_reads(48000U), 48000U);
+    g_call_tune_refused = 1;
+    const edacs_call_result refused = edacs_run_analog_call(DSD_SQUELCH_MODE_LEVEL);
+    g_call_tune_refused = 0;
+    rc |= edacs_expect(refused.reads == 0 && g_lane_request_count == 2 && g_lane_requests[0] == 1
+                           && g_lane_requests[1] == 0,
+                       "analog-b10", "voice-lane", "a refused tune stops the lane it asked for");
+
+    edacs_reset_audio_hook_state();
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){.set_voice_lane = edacs_call_set_voice_lane});
+    g_lane_request_count = 0;
+    g_tcp_signal = EDACS_TCP_DOTTING;
+    g_tcp_fail_at = 2880;
+    edacs_run_tcp_analog_call(48000, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= edacs_expect(g_lane_request_count == 0, "analog-b10", "voice-lane", "a call on audio input never asks");
+    dsd_state_ext_free_all(&g_state);
+    edacs_reset_audio_hook_state();
+    return rc;
+}
+
+/* Issue #518 B10: on an RTL input an analog call plays the stream's voice lane at the RTL monitor's calibration, never
+   the normalised samples the release register reads. At a fixed `-n 50` the reference signal on the lane (0.125 peak,
+   at the default `vol` 2) plays at -12 dBFS peak and -15 dBFS RMS, whatever the normalised samples carry (here an
+   unrelated tone at another level), 6 dB lower at `vol` 1, at 48 kHz and on a 24 kHz stream EDACS converts, through
+   the chain's RTL monitor source. The fake publishes no de-emphasis gain, so the chain's is 1. */
+static int
+edacs_run_voice_lane_level_cases(void) {
+    static const unsigned int rates[2] = {48000U, 24000U};
+    static const int volumes[2] = {2, 1};
+    int rc = 0;
+    for (int r = 0; r < 2; r++) {
+        for (int v = 0; v < 2; v++) {
+            const long reads = 10L * edacs_triplet_reads(rates[r]);
+            edacs_call_defaults(reads, rates[r]);
+            g_call_cap = reads;
+            g_call_reference = 1;
+            g_call_volume = volumes[v];
+            g_call_gain_a = 50.0f;
+            (void)edacs_run_analog_call(DSD_SQUELCH_MODE_LEVEL);
+            g_call_reference = 0;
+            g_call_volume = 2;
+            g_call_gain_a = 0.0f;
+            const double rms_db =
+                g_call_played_count > 0
+                    ? 10.0 * log10(g_call_played_sum_sq / (double)g_call_played_count / (32768.0 * 32768.0))
+                    : -200.0;
+            const double peak_db = 20.0 * log10(((double)g_call_played_peak + 1e-9) / 32768.0);
+            const double want_drop = v == 0 ? 0.0 : 6.0206;
+            const int ok = g_call_played_count > 2L * EDACS_ANALOG_TRIPLET_SAMPLES
+                           && fabs(rms_db - (-15.0 - want_drop)) < 0.2 && fabs(peak_db - (-12.0 - want_drop)) < 0.2;
+            if (!ok) {
+                DSD_FPRINTF(stderr, "  %u Hz, vol %d: played %.2f dBFS RMS, %.2f dBFS peak over %ld samples\n",
+                            rates[r], volumes[v], rms_db, peak_db, g_call_played_count);
+            }
+            rc |=
+                edacs_expect(ok, "analog-b10", "voice-lane-level",
+                             "the lane's reference plays at -n 50's level, -12 dBFS peak at vol 2, 6 dB down at vol 1");
+            rc |= edacs_expect(g_process_last_source == (int)DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR, "analog-b10",
+                               "voice-lane-level", "the chain runs the lane as RTL monitor audio");
+        }
+    }
+    return rc;
+}
+
+/* Issue #518: where the stream cannot carry the voice lane (no read_lanes hook, or a lane buffer that was not
+   allocated) an analog call plays the FSK samples it read before the lane, through the chain as FSK audio, never the
+   silence the missing lane reads. At a fixed `-n 50` the stream's 1 kHz tone at 8000 peak plays at the FSK source's
+   level, 48 kHz in and out; and the lane is not asked for, since its work would go nowhere. */
+static int
+edacs_run_voice_lane_fallback_cases(void) {
+    int rc = 0;
+    for (int c = 0; c < 2; c++) {
+        const long reads = 10L * edacs_triplet_reads(48000U);
+        edacs_call_defaults(reads, 48000U);
+        g_call_cap = reads;
+        g_call_no_read_lanes = c == 0;
+        g_call_lane_unavailable = c == 1;
+        g_call_gain_a = 50.0f;
+        (void)edacs_run_analog_call(DSD_SQUELCH_MODE_LEVEL);
+        g_call_no_read_lanes = 0;
+        g_call_lane_unavailable = 0;
+        g_call_gain_a = 0.0f;
+        const char* why = c == 0 ? "no read_lanes hook" : "no lane buffer";
+        const double rms_db =
+            g_call_played_count > 0
+                ? 10.0 * log10((g_call_played_sum_sq / (double)g_call_played_count) / (32768.0 * 32768.0))
+                : -200.0;
+        const double want_db =
+            20.0
+            * log10((8000.0 * dsd_analog_audio_source_gain(DSD_ANALOG_AUDIO_SOURCE_RTL_FSK)) / (sqrt(2.0) * 32768.0));
+        const int ok = g_call_played_count > 2L * EDACS_ANALOG_TRIPLET_SAMPLES && fabs(rms_db - want_db) < 0.5;
+        if (!ok) {
+            DSD_FPRINTF(stderr, "  %s: played %.2f dBFS RMS over %ld samples, want %.2f\n", why, rms_db,
+                        g_call_played_count, want_db);
+        }
+        rc |= edacs_expect(ok, "analog-b10", "voice-lane-fallback",
+                           "without a voice lane the call plays its FSK samples at the FSK source's level");
+        rc |= edacs_expect(g_process_last_source == (int)DSD_ANALOG_AUDIO_SOURCE_RTL_FSK, "analog-b10",
+                           "voice-lane-fallback", "the chain runs the FSK samples as FSK audio");
+        int asked = 0;
+        for (int i = 0; i < g_lane_request_count && i < 8; i++) {
+            asked |= g_lane_requests[i];
+        }
+        rc |= edacs_expect(asked == 0, "analog-b10", "voice-lane-fallback", "a stream without the lane is not asked");
+    }
+    return rc;
 }
 
 /* Under AUTO and NOISE an analog call ends on the gate within the level squelch's time of its carrier dropping, at
@@ -3400,6 +3647,8 @@ edacs_run_analog_gap_case(unsigned int rate_hz) {
     g_call_gap_at = edacs_triplet_reads(rate_hz) + 1000L;
     g_opts.trunk_tune_group_calls = 1;
     g_opts.audio_in_type = AUDIO_IN_RTL;
+    /* The monitor's default trim, which the voice lane runs under as the monitor's audio does (issue #518). */
+    g_opts.rtl_volume_multiplier = 2;
     g_opts.audio_out = 1;
     g_opts.audio_out_type = 8;
     g_opts.slot1_on = 1;
@@ -3417,6 +3666,7 @@ edacs_run_analog_gap_case(unsigned int rate_hz) {
         .return_pwr = edacs_call_return_pwr,
         .read_ex = edacs_call_read_ex,
         .squelch_status = edacs_call_squelch_status,
+        .read_lanes = edacs_call_read_lanes,
     });
     dsd_rtl_stream_metrics_hooks hooks;
     DSD_MEMSET(&hooks, 0, sizeof(hooks));
@@ -3437,22 +3687,24 @@ edacs_run_analog_gap_case(unsigned int rate_hz) {
     g_process_watch = 0;
     int resets = 0;
     int first_loud_after = -1;
+    /* One chain call per triplet: the first, the gap's (silent), then the first after the gap. */
     for (int i = 0; i < g_process_count; i++) {
         resets += g_process_reset[i];
-        if (i >= 3 && first_loud_after < 0 && g_process_loud[i]) {
+        if (i >= 1 && first_loud_after < 0 && g_process_loud[i]) {
             first_loud_after = i;
         }
     }
     int rc = 0;
     if (rate_hz != EDACS_ANALOG_RATE_HZ) {
-        rc |= edacs_expect(g_gap_converter_clears == 1 && g_gap_converter_clean == 1, "analog-gap", "converter",
+        /* Both lanes' converters: the samples' and the voice lane's (issue #518). */
+        rc |= edacs_expect(g_gap_converter_clears == 2 && g_gap_converter_clean == 2, "analog-gap", "converter",
                            "the gap clears carried outputs, filter history and phase before sound resumes");
     }
     rc |= edacs_expect(g_state.rtl_stream_gap_seq == 1U && g_state.input_interrupted == 0, "analog-gap", "taken-up",
                        "the call loop takes the gap up itself, leaving no interruption for the symbol reader");
     rc |= edacs_expect((long)g_rtl_read_count == g_call_cap, "analog-gap", "call-goes-on",
                        "the gap ends no call: it reads on to the end of the stream");
-    rc |= edacs_expect(first_loud_after >= 3 && g_process_reset[first_loud_after], "analog-gap", "silence-then-reset",
+    rc |= edacs_expect(first_loud_after >= 2 && g_process_reset[first_loud_after], "analog-gap", "silence-then-reset",
                        "the triplet the gap cut plays no sound, and the first sound after it starts the chain over");
     rc |=
         edacs_expect(resets == 2, "analog-gap", "resets", "the chain starts over at the call's start and the gap only");
@@ -3543,6 +3795,8 @@ edacs_run_no_stream_case(unsigned int rate_hz, int mode, const char* name) {
     edacs_call_defaults(edacs_triplet_reads(rate_hz) * 4L, rate_hz);
     g_opts.trunk_tune_group_calls = 1;
     g_opts.audio_in_type = AUDIO_IN_RTL;
+    /* The monitor's default trim, which the voice lane runs under as the monitor's audio does (issue #518). */
+    g_opts.rtl_volume_multiplier = 2;
     g_opts.audio_out = 1;
     g_opts.audio_out_type = 8;
     g_opts.slot1_on = 1;
@@ -3699,8 +3953,8 @@ edacs_golden_call(int out) {
     return h;
 }
 
-/* At 48 kHz nothing changes: the audio, the per-call and static WAVs and the stdout stream of a whole call are
-   byte-for-byte what they were before issue #633 (hashes taken from the code before it). */
+/* At 48 kHz nothing changes: the audio, the per-call and static WAVs and the stdout stream of a whole call are byte for
+   byte the snapshot above (the path issue #633 kept unchanged, at the speech AGC's level). */
 static int
 edacs_run_golden_48k_cases(void) {
     static const uint64_t want[3] = {EDACS_GOLDEN_UDP_WAV, EDACS_GOLDEN_STATIC_WAV, EDACS_GOLDEN_FD};
@@ -3711,6 +3965,83 @@ edacs_run_golden_48k_cases(void) {
             DSD_FPRINTF(stderr, "golden %d: got 0x%016llXULL\n", out, (unsigned long long)got);
         }
         rc |= edacs_expect(got == want[out], "analog-633", "golden-48k", "a 48 kHz call is byte-identical");
+    }
+    return rc;
+}
+
+/* Issue #518 B10: one call of a quiet talker (P.56 near -45 dBFS) on 48 kHz TCP input, recorded to the per-call WAV
+   and played on UDP, ended by dotting once the speech is over; @p tg_muted has the talkgroup gate mute it, which leaves
+   the record gate alone. What it recorded, how many blocks it played and the gain the AGC left. */
+typedef struct {
+    uint64_t wav_hash;
+    int blasts;
+    float gain_db;
+    int ok;
+} edacs_speech_call_result;
+
+static edacs_speech_call_result
+edacs_speech_call(int tg_muted) {
+    edacs_speech_call_result r = {0ULL, 0, 0.0f, 0};
+    edacs_reset_audio_hook_state();
+    dsd_test_speech_params speech;
+    dsd_test_speech_defaults(&speech, 0x518B10ULL);
+    speech.level_dbfs = -45.0;
+    if (dsd_test_synth_speech(g_tcp_speech, EDACS_SPEECH_SAMPLES, 48000, &speech) != 0) {
+        return r;
+    }
+    g_tcp_signal = EDACS_TCP_SPEECH;
+    g_tcp_dotting_from = EDACS_SPEECH_SAMPLES;
+    g_tcp_fail_at = EDACS_SPEECH_SAMPLES + (4 * 2880);
+    const edacs_grant_case* call = edacs_prepare_tcp_analog_call(48000, DSD_TRUNK_TUNE_RESULT_OK);
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof(path), "dsdneo_edacs_b10");
+    if (fd < 0) {
+        return r;
+    }
+    (void)dsd_close(fd);
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    info.samplerate = 48000;
+    info.channels = 1;
+    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+    g_opts.wav_out_f = sf_open(path, SFM_WRITE, &info);
+    g_opts.dmr_stereo_wav = 1;
+    g_force_tg_mute = tg_muted;
+    edacs_start_tcp_analog_call(call);
+    g_force_tg_mute = 0;
+    if (g_opts.wav_out_f != NULL) {
+        sf_close(g_opts.wav_out_f);
+        g_opts.wav_out_f = NULL;
+        r.ok = 1;
+    }
+    r.wav_hash = edacs_fnv1a_file(1469598103934665603ULL, path);
+    (void)remove(path);
+    r.blasts = g_udp_blast_count;
+    r.gain_db = g_state.aout_gainA;
+    dsd_state_ext_free_all(&g_state);
+    edacs_reset_audio_hook_state();
+    return r;
+}
+
+/* A call the talkgroup gate mutes but the record policy keeps records at the level the AGC takes it to: what the AGC
+   learns follows the reception, never the mute or the outputs. The muted call plays nothing and records byte for byte
+   what the heard call records, and the quiet talker moved the gain well up from its start. Before, the muted call
+   never taught the AGC and recorded at the start gain. */
+static int
+edacs_run_muted_recorded_case(void) {
+    const edacs_speech_call_result heard = edacs_speech_call(0);
+    const edacs_speech_call_result muted = edacs_speech_call(1);
+    int rc = 0;
+    rc |= edacs_expect(heard.ok && muted.ok, "analog-b10", "muted-recorded", "both calls recorded a WAV");
+    rc |= edacs_expect(heard.blasts > 0 && muted.blasts == 0, "analog-b10", "muted-recorded",
+                       "the heard call plays and the muted one does not");
+    rc |= edacs_expect(heard.gain_db > DSD_ANALOG_AUDIO_START_GAIN_FM_NARROW_DB + 3.0f, "analog-b10", "muted-recorded",
+                       "the quiet talker moved the gain up from its start");
+    rc |= edacs_expect(fabsf(muted.gain_db - heard.gain_db) < 1e-6f && muted.wav_hash == heard.wav_hash, "analog-b10",
+                       "muted-recorded", "the muted call records at the level the AGC takes the heard one to");
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "  heard: gain %.2f dB, %d blocks played; muted: gain %.2f dB, %d blocks played\n",
+                    (double)heard.gain_db, heard.blasts, (double)muted.gain_db, muted.blasts);
     }
     return rc;
 }
@@ -3857,6 +4188,7 @@ main(void) {
     rc |= edacs_run_cc_return_failure_cases();
     rc |= edacs_run_handed_over_recovery_cases();
     rc |= edacs_run_golden_48k_cases();
+    rc |= edacs_run_muted_recorded_case();
 #ifdef USE_RADIO
     rc |= edacs_run_analog_call_release_cases();
     rc |= edacs_run_analog_call_disturbance_cases();
@@ -3864,6 +4196,9 @@ main(void) {
     rc |= edacs_run_analog_call_real_tracker_cases();
     rc |= edacs_run_rtl_rate_switch_case();
     rc |= edacs_run_tune_completion_race_case();
+    rc |= edacs_run_voice_lane_request_cases();
+    rc |= edacs_run_voice_lane_level_cases();
+    rc |= edacs_run_voice_lane_fallback_cases();
     rc |= edacs_run_analog_gap_case(48000U);
     rc |= edacs_run_analog_gap_case(24000U);
     rc |= edacs_run_no_stream_cases();

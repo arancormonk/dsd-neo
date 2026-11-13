@@ -20,6 +20,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/voice_chain.h>
+#include <dsd-neo/dsp/speech_agc.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <limits.h>
 #include <math.h>
@@ -30,6 +31,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd_audio2_internal.h"
 #include "dsd_audio_internal.h"
+#include "voice_chain_internal.h"
 
 static unsigned long
 dsd_audio_call_target(const dsd_state* state, uint8_t slot) {
@@ -135,6 +137,7 @@ dsd_audio_reset_short_stereo_working_state(dsd_state* state) {
     state->audio_out_idxR = 0;
     DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
     DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
+    DSD_MEMSET(state->s4_fresh, 0, sizeof(state->s4_fresh));
     dsd_audio_maybe_reset_output_ring_left(state);
     dsd_audio_maybe_reset_output_ring_right(state);
 }
@@ -685,18 +688,20 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
 }
 
 void
-dsd_audio_play_decoded_pcm16(const dsd_opts* opts, dsd_state* state, const short* pcm, size_t count) {
-    dsd_audio_play_decoded_pcm16_record(opts, state, pcm, count, 1);
+dsd_audio_play_decoded_pcm16(const dsd_opts* opts, dsd_state* state, const short* pcm, size_t count,
+                             const dsd_voice_frame_info* info) {
+    dsd_audio_play_decoded_pcm16_record(opts, state, pcm, count, 1, info);
 }
 
 /* One DSD_VOICE_FRAME_SAMPLES frame of decoded PCM through the voice chain to the outputs, and to the recordings when
    @p record. */
 static void
-dsd_audio_play_decoded_frame(const dsd_opts* opts, dsd_state* state, const short* frame, int record) {
+dsd_audio_play_decoded_frame(const dsd_opts* opts, dsd_state* state, const short* frame, int record,
+                             const dsd_voice_frame_info* info) {
     for (size_t i = 0; i < DSD_VOICE_FRAME_SAMPLES; i++) {
         state->audio_out_temp_buf[i] = (float)frame[i];
     }
-    dsd_voice_chain_run(opts, state, 0, state->audio_out_temp_buf);
+    dsd_voice_chain_run(opts, state, 0, state->audio_out_temp_buf, info);
     dsd_voice_stage_short_left(opts, state);
     if (record && opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
         writeSynthesizedVoice(opts, state);
@@ -709,11 +714,19 @@ dsd_audio_play_decoded_frame(const dsd_opts* opts, dsd_state* state, const short
     }
 }
 
+/* The left staging (dsd_voice_stage_short_left()) writes the output ring, and above 8 kHz the upsampled float ring
+   too: both must exist. */
+static int
+dsd_audio_left_staging_ready(const dsd_opts* opts, const dsd_state* state) {
+    return state->audio_out_buf_p != NULL
+           && (opts->pulse_digi_rate_out <= 8000 || state->audio_out_float_buf_p != NULL);
+}
+
 void
-dsd_audio_play_decoded_pcm16_record(const dsd_opts* opts, dsd_state* state, const short* pcm, size_t count,
-                                    int record) {
-    if (!opts || !state || !pcm || !state->audio_out_buf_p || !state->aout_max_buf_p
-        || opts->pulse_digi_out_channels < 1 || opts->pulse_digi_out_channels > 2) {
+dsd_audio_play_decoded_pcm16_record(const dsd_opts* opts, dsd_state* state, const short* pcm, size_t count, int record,
+                                    const dsd_voice_frame_info* info) {
+    if (!opts || !state || !pcm || !dsd_audio_left_staging_ready(opts, state) || opts->pulse_digi_out_channels < 1
+        || opts->pulse_digi_out_channels > 2) {
         return;
     }
     /* Voice decoded while an input interruption stands comes from a frame it cut (a Signal search left the frame, or a
@@ -722,7 +735,36 @@ dsd_audio_play_decoded_pcm16_record(const dsd_opts* opts, dsd_state* state, cons
         return;
     }
     for (size_t offset = 0; count - offset >= DSD_VOICE_FRAME_SAMPLES; offset += DSD_VOICE_FRAME_SAMPLES) {
-        dsd_audio_play_decoded_frame(opts, state, pcm + offset, record);
+        dsd_audio_play_decoded_frame(opts, state, pcm + offset, record, info);
+    }
+}
+
+void
+dsd_dmr_mix_store_frame(dsd_state* state, int slot, int frame) {
+    if (!state || slot < 0 || slot > 1 || frame < 0 || frame > 2) {
+        return;
+    }
+    if (slot == 0) {
+        DSD_MEMCPY(state->s_l4[frame], state->s_l, sizeof(state->s_l));
+        DSD_MEMCPY(state->s_l4u[frame], state->s_lu, sizeof(state->s_lu));
+    } else {
+        DSD_MEMCPY(state->s_r4[frame], state->s_r, sizeof(state->s_r));
+        DSD_MEMCPY(state->s_r4u[frame], state->s_ru, sizeof(state->s_ru));
+    }
+    state->s4_fresh[slot][frame] = state->mbe_short_silenced[slot] ? 0U : 1U;
+}
+
+// The one-channel mix of the superframe's three frames (issue #518). A slot is a talker in frame k when it is audible
+// and the vocoder staged its own audio there this burst (dsd_state::s4_fresh); the channel a copy filled
+// (@p copied: right to left, left to right) carries its companion's audio, never a second talker. Talkers are summed
+// through the mixer's limiter, which the voice level keeps and resets at a carrier boundary.
+static void
+dsd_ss3_mix_mono(dsd_state* state, int encL, int encR, const int copied[2], short mono[3][160]) {
+    dsd_peak_limiter* limiter = dsd_voice_level_dmr_mix_limiter(state);
+    for (int k = 0; k < 3; k++) {
+        const int l_real = !encL && !copied[0] && state->s4_fresh[0][k];
+        const int r_real = !encR && !copied[1] && state->s4_fresh[1][k];
+        audio_mix_mono_sum_s16(state->s_l4[k], state->s_r4[k], 160, l_real, r_real, limiter, mono[k]);
     }
 }
 
@@ -776,13 +818,10 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     audio_mix_interleave_stereo_s16(state->s_l4[2], state->s_r4[2], 160, 0, 0, stereo_samp3);
 
     if (opts->pulse_digi_out_channels == 1) {
-        short mono1[160], mono2[160], mono3[160];
-        int l_on = !encL;
-        int r_on = !encR;
-        audio_mix_mono_from_slots_s16(state->s_l4[0], state->s_r4[0], 160, l_on, r_on, mono1);
-        audio_mix_mono_from_slots_s16(state->s_l4[1], state->s_r4[1], 160, l_on, r_on, mono2);
-        audio_mix_mono_from_slots_s16(state->s_l4[2], state->s_r4[2], 160, l_on, r_on, mono3);
-        const short* mono_blocks[] = {mono1, mono2, mono3};
+        short mono[3][160];
+        const int copied[2] = {copy_right_to_left, copy_left_to_right};
+        dsd_ss3_mix_mono(state, encL, encR, copied, mono);
+        const short* mono_blocks[] = {mono[0], mono[1], mono[2]};
         dsd_output_s16_blocks(opts, state, mono_blocks, 3, 160, 1, 0);
     } else {
         const short* stereo_blocks[] = {stereo_samp1, stereo_samp2, stereo_samp3};
@@ -800,22 +839,16 @@ SS3_END:
 }
 
 // One 20 ms block of the alert tone, largely borrowed from Boatbod OP25 (simplified single tone ID version): a sine at
-// 31.25 Hz x ID with a peak of AD x 75 / 8000 of full scale, from sample @p n of the tone on. It is built once on the
-// int16 scale (issue #653): the short output plays these samples and the float output the same samples / 32768, so an
-// alert sounds the same in both formats.
+// 31.25 Hz x ID at DSD_ALERT_TONE_RMS_DBFS (issue #518: every alert sounds where digital speech plays), from sample
+// @p n of the tone on. It is built once on the int16 scale (issue #653): the short output plays these samples and the
+// float output the same samples / 32768, so an alert sounds the same in both formats.
 static void
-dsd_beeper_tone_block(short* samp, int n, int id, int ad) {
+dsd_beeper_tone_block(short* samp, int n, int id) {
     const double pi = 3.14159265358979323846;
     const double step = 2.0 * pi * (31.25 * (double)id) / 8000.0;
-    const double amplitude = ((double)ad * 75.0) / 8000.0;
+    const double peak = 32768.0 * pow(10.0, DSD_ALERT_TONE_RMS_DBFS / 20.0) * sqrt(2.0);
     for (int i = 0; i < 160; i++) {
-        double v = amplitude * sin((double)(n + i) * step) * 32767.0;
-        if (v > 32767.0) {
-            v = 32767.0;
-        } else if (v < -32767.0) {
-            v = -32767.0;
-        }
-        samp[i] = (short)lrint(v);
+        samp[i] = (short)lrint(peak * sin((double)(n + i) * step));
     }
 }
 
@@ -830,16 +863,16 @@ dsd_beeper_output_samples(const dsd_opts* opts, dsd_state* state, const short* s
 
 void
 // cppcheck-suppress constParameterPointer -- signature fixed by dsd-neo/core/audio.h
-beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
+beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int len) {
     // An alert for a P25 Phase 2 slot whose playout still holds audio sounds after that audio (issue #651).
-    if (dsd_p25p2_playout_defer_alert(opts, state, lr, id, ad, len)) {
+    if (dsd_p25p2_playout_defer_alert(opts, state, lr, id, len)) {
         return;
     }
-    dsd_beeper_emit(opts, state, lr, id, ad, len);
+    dsd_beeper_emit(opts, state, lr, id, len);
 }
 
 void
-dsd_beeper_emit(const dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
+dsd_beeper_emit(const dsd_opts* opts, dsd_state* state, int lr, int id, int len) {
     //use lr as left or right channel designation in stereo config
     short samp_s[160];  //mono short sample
     short samp_ss[320]; //stereo short sample
@@ -855,7 +888,7 @@ dsd_beeper_emit(const dsd_opts* opts, dsd_state* state, int lr, int id, int ad, 
     //each j increment is 20 ms at 160 samples / 8 kHz; the tone runs on across blocks
     for (int j = 0; j < len; j++) {
         DSD_MEMSET(samp_ss, 0, sizeof(samp_ss));
-        dsd_beeper_tone_block(samp_s, j * 160, id, ad);
+        dsd_beeper_tone_block(samp_s, j * 160, id);
         for (int i = 0; i < 160; i++) {
             samp_ss[(i * 2) + ch] = samp_s[i];
         }

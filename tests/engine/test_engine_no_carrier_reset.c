@@ -26,9 +26,11 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/core/wav_journal.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/speech_agc.h>
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
@@ -46,6 +48,9 @@
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/tetra/tetra_dmo.h>
+#include <dsd-neo/protocol/tetra/tetra_fec.h>
+#include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/channel_scan_hooks.h>
@@ -79,8 +84,11 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
+#include "speech_synth.h"
 #include "test_env.h"
 #include "test_support.h"
+#include "tetra_state.h"
+#include "tetra_voice_state.h"
 
 #ifdef DSD_NEO_TEST_RTL_WRAP
 #include <dsd-neo/core/channel_label.h>
@@ -7079,11 +7087,89 @@ test_no_carrier_reset_discards_the_dmr_mix_media(void) {
     return rc;
 }
 
+/* Quiet speech through both slots' voice chains, as decoded speech: enough for each slot's speech AGC to commit and
+   lift its gain. */
+static int
+teach_voice_level(const dsd_opts* opts, dsd_state* state) {
+    enum { TEACH = 3 * 8000 };
+
+    static float speech[TEACH];
+    dsd_test_speech_params sp;
+    dsd_test_speech_defaults(&sp, 41U);
+    sp.level_dbfs = -45.0;
+    if (dsd_test_synth_speech(speech, TEACH, 8000, &sp) != 0) {
+        return 1;
+    }
+    const dsd_voice_frame_info learn = {(uint8_t)DSD_VOICE_MEDIA_SPEECH, 1U, 1U, 0U};
+    float frame[DSD_VOICE_FRAME_SAMPLES];
+    for (int slot = 0; slot < 2; slot++) {
+        for (int off = 0; off + DSD_VOICE_FRAME_SAMPLES <= TEACH; off += DSD_VOICE_FRAME_SAMPLES) {
+            DSD_MEMCPY(frame, speech + off, sizeof frame);
+            dsd_voice_chain_run(opts, state, slot, frame, &learn);
+        }
+    }
+    return 0;
+}
+
+/* Both slots' speech AGCs hold what @p before held (a copy taken with snapshot_voice_level()). */
+static int
+voice_level_kept(const dsd_state* state, const dsd_speech_agc_learned before[2]) {
+    for (int slot = 0; slot < 2; slot++) {
+        const dsd_speech_agc* agc = dsd_voice_level_agc(state, slot);
+        /* The clocks a frame moves aside, the learned state is what it was. */
+        if (!agc || agc->learned.commits != before[slot].commits || agc->learned.steps != before[slot].steps
+            || agc->learned.run_len != before[slot].run_len
+            || fabsf(agc->learned.gain_db - before[slot].gain_db) > 1e-6f
+            || fabsf(agc->learned.atten_db - before[slot].atten_db) > 1e-6f
+            || fabsf(agc->learned.power - before[slot].power) > 1e-12f
+            || fabsf(agc->learned.noise_floor_db - before[slot].noise_floor_db) > 1e-6f) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void
+snapshot_voice_level(const dsd_state* state, dsd_speech_agc_learned out[2]) {
+    for (int slot = 0; slot < 2; slot++) {
+        const dsd_speech_agc* agc = dsd_voice_level_agc(state, slot);
+        if (agc) {
+            out[slot] = agc->learned;
+        } else {
+            DSD_MEMSET(&out[slot], 0, sizeof out[slot]);
+        }
+    }
+}
+
+/* Both slots' speech AGCs are back at the start gain with nothing learned. */
+static int
+voice_level_started_over(const dsd_state* state) {
+    for (int slot = 0; slot < 2; slot++) {
+        const dsd_speech_agc* agc = dsd_voice_level_agc(state, slot);
+        if (!agc || agc->learned.commits != 0 || fabsf(agc->learned.gain_db) > 1e-6f) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* One DC frame of @p level through @p slot's chain as concealment (nothing learns from it): its last sample. */
+static float
+voice_level_probe(const dsd_opts* opts, dsd_state* state, int slot, float level) {
+    float frame[DSD_VOICE_FRAME_SAMPLES];
+    for (int n = 0; n < DSD_VOICE_FRAME_SAMPLES; n++) {
+        frame[n] = level;
+    }
+    const dsd_voice_frame_info info = {(uint8_t)DSD_VOICE_MEDIA_CONCEALED, 1U, 1U, 0U};
+    dsd_voice_chain_run(opts, state, slot, frame, &info);
+    return frame[DSD_VOICE_FRAME_SAMPLES - 1];
+}
+
 /*
- * Issue #652: the no-carrier pass reset the digital output gain in float output (-y) only, to the -g setting: the auto
- * gain (-g 0) restarted every call at its quietest, and -g 50 divided by zero in the old float gain stage. One gain
- * stage serves both formats now: the auto gain's level carries over the pass in either format, its peak history goes,
- * and a fixed gain stays the -g multiplier.
+ * Issue #652: the no-carrier pass reset the digital output gain in float output (-y) only, to the -g setting. One gain
+ * stage serves both formats now (issue #653), and its speech level (issue #518) is the slot's reception's: the
+ * no-carrier pass, a fade, keeps what both slots' speech AGCs learned in either format (the next frames' transmission
+ * decides), and a fixed gain playing when the carrier fades is the -g multiplier on both slots before and after it.
  */
 static int
 test_no_carrier_keeps_the_digital_gain_in_either_format(void) {
@@ -7096,25 +7182,209 @@ test_no_carrier_keeps_the_digital_gain_in_either_format(void) {
                 return 1;
             }
             opts->floating_point = floating_point;
-            opts->audio_gain = fixed ? 50.0f : 0.0f;
-            opts->audio_gainR = opts->audio_gain;
-            state->aout_gain = fixed ? 50.0f : 37.5f;
-            state->aout_gainR = fixed ? 50.0f : 12.25f;
-            state->aout_max_buf[3] = 900.0f;
-            state->aout_max_bufR[7] = 450.0f;
+            opts->use_hpf_d = 0;
+            opts->audio_gain = 0.0f;
+            opts->audio_gainR = 0.0f;
+            rc |= expect_true("no carrier: the speech material", teach_voice_level(opts, state) == 0);
+            char tag[128];
+            if (fixed) {
+                opts->audio_gain = 50.0f;
+                opts->audio_gainR = 50.0f;
+                for (int slot = 0; slot < 2; slot++) {
+                    DSD_SNPRINTF(tag, sizeof(tag), "no carrier: %s fixed: slot %d plays x50 before the pass",
+                                 floating_point ? "-y" : "s16", slot + 1);
+                    rc |= expect_true(tag, fabsf(voice_level_probe(opts, state, slot, 100.0f) - 5000.0f) < 1e-3f);
+                }
+            }
+            dsd_speech_agc_learned before[2];
+            snapshot_voice_level(state, before);
 
             noCarrier(opts, state);
 
-            char tag[128];
-            DSD_SNPRINTF(tag, sizeof(tag), "no carrier: %s %s gain keeps its level", floating_point ? "-y" : "s16",
-                         fixed ? "fixed" : "auto");
-            rc |= expect_true(tag, fabsf(state->aout_gain - (fixed ? 50.0f : 37.5f)) < 1e-6f
-                                       && fabsf(state->aout_gainR - (fixed ? 50.0f : 12.25f)) < 1e-6f);
-            DSD_SNPRINTF(tag, sizeof(tag), "no carrier: %s %s gain drops its peak history",
+            DSD_SNPRINTF(tag, sizeof(tag), "no carrier: %s %s: the speech level keeps what it learned",
                          floating_point ? "-y" : "s16", fixed ? "fixed" : "auto");
-            rc |= expect_true(tag, fabsf(state->aout_max_buf[3]) < 1e-6f && fabsf(state->aout_max_bufR[7]) < 1e-6f);
+            rc |= expect_true(tag, before[0].commits > 0 && before[1].commits > 0 && voice_level_kept(state, before));
+            DSD_SNPRINTF(tag, sizeof(tag), "no carrier: %s %s: the setting stays", floating_point ? "-y" : "s16",
+                         fixed ? "fixed" : "auto");
+            rc |= expect_true(tag, fabsf(opts->audio_gain - (fixed ? 50.0f : 0.0f)) < 1e-6f
+                                       && fabsf(opts->audio_gainR - (fixed ? 50.0f : 0.0f)) < 1e-6f);
+            if (fixed) {
+                for (int slot = 0; slot < 2; slot++) {
+                    DSD_SNPRINTF(tag, sizeof(tag), "no carrier: %s fixed: slot %d plays x50 after the pass",
+                                 floating_point ? "-y" : "s16", slot + 1);
+                    rc |= expect_true(tag, fabsf(voice_level_probe(opts, state, slot, 100.0f) - 5000.0f) < 1e-3f);
+                }
+            } else {
+                /* The next frame plays at the gain the slot learned, not at the start gain. */
+                const dsd_speech_agc* agc = dsd_voice_level_agc(state, 0);
+                const float want =
+                    agc ? 100.0f * powf(10.0f, (agc->learned.gain_db + agc->learned.atten_db) / 20.0f) : 0.0f;
+                DSD_SNPRINTF(tag, sizeof(tag), "no carrier: %s auto: the next frame plays at the learned gain",
+                             floating_point ? "-y" : "s16");
+                rc |=
+                    expect_true(tag, want > 140.0f && fabsf(voice_level_probe(opts, state, 0, 100.0f) - want) < 0.05f);
+            }
             free_test_runtime(opts, state);
         }
+    }
+    return rc;
+}
+
+/* Issue #518: the digital voice level is the carrier's reception. Every carrier boundary that leaves the carrier (a
+   tune, a source or input change, a scan step, a replay retune) starts both slots' speech AGCs over at the start gain;
+   a stream gap stays on the carrier and keeps them, so a resumed transmission plays on at its level. */
+static int
+test_carrier_boundaries_start_the_voice_level_over(void) {
+    static const dsd_carrier_boundary_kind k_leaving[] = {
+        DSD_CARRIER_BOUNDARY_TUNE,      DSD_CARRIER_BOUNDARY_SOURCE,        DSD_CARRIER_BOUNDARY_INPUT_SWITCH,
+        DSD_CARRIER_BOUNDARY_SCAN_STEP, DSD_CARRIER_BOUNDARY_REPLAY_RETUNE,
+    };
+    int rc = 0;
+    for (size_t i = 0; i <= sizeof(k_leaving) / sizeof(k_leaving[0]); i++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        opts->use_hpf_d = 0;
+        opts->audio_gain = 0.0f;
+        opts->audio_gainR = 0.0f;
+        rc |= expect_true("voice level boundary: the speech material", teach_voice_level(opts, state) == 0);
+        dsd_speech_agc_learned before[2];
+        snapshot_voice_level(state, before);
+        rc |= expect_true("voice level boundary: both slots learned", before[0].commits > 0 && before[1].commits > 0);
+        char tag[128];
+        if (i < sizeof(k_leaving) / sizeof(k_leaving[0])) {
+            dsd_engine_carrier_boundary(opts, state, k_leaving[i], 0);
+            DSD_SNPRINTF(tag, sizeof(tag), "voice level boundary kind %d: both slots start over", (int)k_leaving[i]);
+            rc |= expect_true(tag, voice_level_started_over(state));
+        } else {
+            dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
+            rc |= expect_true("voice level boundary: a stream gap keeps both slots", voice_level_kept(state, before));
+        }
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* A TETRA speech decoder that plays quiet running speech, 240 samples per frame, whatever the bits say: the voice chain
+   learns from it as from a talker. */
+enum { TETRA_SPEECH_SAMPLES = 4 * 8000 };
+
+static float g_tetra_speech[TETRA_SPEECH_SAMPLES];
+static size_t g_tetra_speech_at;
+
+static void*
+tetra_speech_alloc(void) {
+    return &g_tetra_speech_at;
+}
+
+static void
+tetra_speech_reset(void* decoder) {
+    (void)decoder;
+}
+
+static void
+tetra_speech_release(void* decoder) {
+    (void)decoder;
+}
+
+static int
+tetra_speech_decode(void* decoder, const uint8_t* bits, int bad_frame, int16_t* pcm) {
+    (void)decoder;
+    (void)bits;
+    (void)bad_frame;
+    for (int i = 0; i < TETRA_VOICE_FRAME_SAMPLES; i++) {
+        pcm[i] = (int16_t)lrintf(g_tetra_speech[g_tetra_speech_at]);
+        g_tetra_speech_at = (g_tetra_speech_at + 1U) % TETRA_SPEECH_SAMPLES;
+    }
+    return 0;
+}
+
+/* Direct-mode speech from @p source to 1234 on the carrier: @p bursts full slots, two speech frames each. */
+static void
+tetra_dmo_speech(dsd_opts* opts, dsd_state* state, uint32_t source, int bursts) {
+    tetra_state_t* ts = tetra_st(state);
+    ts->tdma_valid = 1; /* the clock a BSCH set */
+    ts->tn = 1;
+    ts->dmo = 1;
+    ts->dmo_crypt = TETRA_DMO_CRYPT_CLEAR;
+    ts->calls.dmo.active = 1;
+    ts->calls.dmo.dst = 1234;
+    ts->calls.dmo.src = source;
+    uint8_t full[TETRA_SPEECH_FULL_BITS];
+    for (int i = 0; i < TETRA_SPEECH_FULL_BITS; i++) {
+        full[i] = (uint8_t)((i * 5) & 1);
+    }
+    for (int b = 0; b < bursts; b++) {
+        tetra_voice_full_slot(opts, state, full, 1);
+    }
+}
+
+/* Issue #518, end to end through the engine: a TETRA stream gap (the engine's STREAM_GAP boundary) inside one
+   transmission keeps the speech level the slot learned, because TETRA counts it the same transmission; speech from
+   another party after the next gap is a new transmission, which starts the level over. */
+static int
+test_tetra_stream_gap_keeps_the_voice_level_a_new_party_starts_it_over(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    dsd_test_speech_params sp;
+    dsd_test_speech_defaults(&sp, 71U);
+    sp.level_dbfs = -45.0;
+    rc |= expect_true("tetra level: the speech material",
+                      dsd_test_synth_speech(g_tetra_speech, TETRA_SPEECH_SAMPLES, 8000, &sp) == 0);
+    g_tetra_speech_at = 0U;
+    static const tetra_voice_codec k_speech_codec = {tetra_speech_alloc, tetra_speech_reset, tetra_speech_release,
+                                                     tetra_speech_decode};
+    tetra_voice_set_codec_for_test(&k_speech_codec);
+    char out_path[DSD_TEST_PATH_MAX];
+    const int out_fd = dsd_test_mkstemp(out_path, sizeof out_path, "tetra_level_out");
+    rc |= expect_true("tetra level: the output file", out_fd >= 0);
+    opts->audio_out = 1;
+    opts->audio_out_type = 1;
+    opts->audio_out_fd = out_fd;
+    opts->pulse_digi_rate_out = 8000;
+    opts->pulse_digi_out_channels = 1;
+    opts->floating_point = 0;
+    opts->audio_gain = 0.0f;
+    opts->use_hpf_d = 0;
+    opts->slot1_on = 1;
+    opts->dmr_mute_encL = 1;
+    dsd_decode_clock_use_test(1000000000000ULL);
+
+    tetra_dmo_speech(opts, state, 0x10U, 34); /* about 2 s */
+    const dsd_speech_agc* agc = dsd_voice_level_agc(state, 0);
+    rc |= expect_true("tetra level: the talker's speech taught the slot",
+                      agc != NULL && agc->learned.commits > 0 && agc->learned.gain_db > 3.0f);
+    const dsd_speech_agc_learned before = agc ? agc->learned : (dsd_speech_agc_learned){0};
+    const uint32_t seq = tetra_st(state)->voice.agc_tx_seq;
+
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
+    tetra_dmo_speech(opts, state, 0x10U, 1);
+    agc = dsd_voice_level_agc(state, 0);
+    rc |= expect_true("tetra level: the gap left the same transmission", tetra_st(state)->voice.agc_tx_seq == seq);
+    /* Its speech goes on from the learned level (and may go on learning): nothing started over. */
+    rc |= expect_true("tetra level: the same talker after a stream gap plays on at the learned level",
+                      agc != NULL && agc->learned.commits >= before.commits && agc->learned.steps >= before.steps
+                          && fabsf(agc->learned.gain_db - before.gain_db) <= 1.0f);
+
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
+    tetra_dmo_speech(opts, state, 0x11U, 1);
+    agc = dsd_voice_level_agc(state, 0);
+    rc |= expect_true("tetra level: another talker is the next transmission", tetra_st(state)->voice.agc_tx_seq != seq);
+    rc |= expect_true("tetra level: another talker starts the level over",
+                      agc != NULL && agc->learned.commits == 0 && fabsf(agc->learned.gain_db) < 1e-6f);
+
+    dsd_decode_clock_use_system();
+    tetra_voice_set_codec_for_test(NULL);
+    free_test_runtime(opts, state);
+    if (out_fd >= 0) {
+        (void)dsd_close(out_fd);
+        (void)remove(out_path);
     }
     return rc;
 }
@@ -12879,6 +13149,8 @@ main(void) {
     rc |= test_carrier_boundary_discards_partial_assemblies();
     rc |= test_no_carrier_reset_discards_the_dmr_mix_media();
     rc |= test_no_carrier_keeps_the_digital_gain_in_either_format();
+    rc |= test_carrier_boundaries_start_the_voice_level_over();
+    rc |= test_tetra_stream_gap_keeps_the_voice_level_a_new_party_starts_it_over();
 #ifdef DSD_NEO_TEST_RTL_WRAP
     rc |= test_rx_tone_rigctl_scan_step();
     rc |= test_rigctl_reconnect_forgets_the_legacy_tune_cache();

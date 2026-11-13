@@ -996,6 +996,87 @@ test_network_and_io_callbacks_pack_payloads(void) {
     return rc;
 }
 
+/* B6 (issue #518 voice level): the gain prompts send the value as typed, a double with its fraction (the digital one
+   used to send (int32_t)g, so 0.5 applied auto). B5: a value the gain's rule refuses is reported with the range and
+   sends nothing, never clamped (the digital gain refuses 0 < g < 0.001; the analog gain takes anything under 1 as
+   auto). The prompt itself refuses nan/inf text before this. */
+static int
+expect_gain_sent(const char* tag, int want_id, double want) {
+    int rc = expect_int(tag, g_cmd.calls, 1);
+    rc |= expect_int(tag, g_cmd.id, want_id);
+    rc |= expect_int(tag, (int)g_cmd.n, (int)sizeof(double));
+    /* No gain setting is negative, so a typed -0 is sent as +0 (auto). */
+    if (g_cmd.calls == 1 && g_cmd.n >= sizeof(double)
+        && (!(fabs(cmd_double() - want) < 1e-12) || signbit(cmd_double()))) {
+        DSD_FPRINTF(stderr, "%s: sent %.12g want %.12g\n", tag, cmd_double(), want);
+        rc = 1;
+    }
+    return rc;
+}
+
+static int
+expect_gain_refused(const char* tag, const char* want_status) {
+    int rc = expect_int(tag, g_cmd.calls, 0);
+    rc |= expect_str(tag, g_status, want_status);
+    return rc;
+}
+
+static int
+test_gain_prompt_callbacks(UiCtx* ctx) {
+    int rc = 0;
+    const double dig_ok[] = {0.001, 0.0011, 0.5, 2.5, 50.0};
+    for (size_t i = 0; i < sizeof dig_ok / sizeof dig_ok[0]; i++) {
+        reset_capture();
+        cb_gain_dig(ctx, 1, dig_ok[i]);
+        rc |= expect_gain_sent("digital gain sent as typed", DSD_APP_CMD_GAIN_SET, dig_ok[i]);
+    }
+    reset_capture();
+    cb_gain_dig(ctx, 1, 0.5);
+    rc |= expect_str("digital gain status keeps the fraction", g_status, "Applying digital gain: 0.5");
+    reset_capture();
+    cb_gain_dig(ctx, 1, 0.0);
+    rc |= expect_gain_sent("digital gain 0 is auto", DSD_APP_CMD_GAIN_SET, 0.0);
+    rc |= expect_str("digital gain auto status", g_status, "Applying digital gain: auto");
+    reset_capture();
+    cb_gain_dig(ctx, 1, -0.0);
+    rc |= expect_gain_sent("digital gain -0 is auto", DSD_APP_CMD_GAIN_SET, 0.0);
+    rc |= expect_str("digital gain -0 status", g_status, "Applying digital gain: auto");
+    const double dig_bad[] = {0.0004, 1e-50, 50.0001, 70.0, -1.0, 1e39, NAN, INFINITY, -INFINITY};
+    for (size_t i = 0; i < sizeof dig_bad / sizeof dig_bad[0]; i++) {
+        reset_capture();
+        cb_gain_dig(ctx, 1, dig_bad[i]);
+        rc |= expect_gain_refused("digital gain refused", "Digital gain must be 0 (auto) or 0.001..50");
+    }
+    reset_capture();
+    cb_gain_dig(ctx, 0, 0.0);
+    rc |= expect_int("digital gain prompt cancelled sends nothing", g_cmd.calls, 0);
+
+    /* The analog gain keeps -n's rule: anything under 1 is auto, sent as 0. */
+    const struct {
+        double value;
+        double want;
+    } ana_ok[] = {{1.0, 1.0}, {1.5, 1.5}, {37.5, 37.5}, {100.0, 100.0}, {0.0, 0.0}, {0.5, 0.0}, {-3.0, 0.0}};
+
+    for (size_t i = 0; i < sizeof ana_ok / sizeof ana_ok[0]; i++) {
+        reset_capture();
+        cb_gain_ana(ctx, 1, ana_ok[i].value);
+        rc |= expect_gain_sent("analog gain sent (under 1 is auto)", DSD_APP_CMD_AGAIN_SET, ana_ok[i].want);
+    }
+    reset_capture();
+    cb_gain_ana(ctx, 1, 0.5);
+    rc |= expect_str("analog gain under 1 status", g_status, "Applying analog gain: auto");
+    reset_capture();
+    cb_gain_ana(ctx, 1, 37.5);
+    rc |= expect_str("analog gain status keeps the fraction", g_status, "Applying analog gain: 37.5");
+    const double ana_bad[] = {100.5, 150.0, 1e39, NAN, INFINITY, -INFINITY};
+    for (size_t i = 0; i < sizeof ana_bad / sizeof ana_bad[0]; i++) {
+        reset_capture();
+        cb_gain_ana(ctx, 1, ana_bad[i]);
+        rc |= expect_gain_refused("analog gain refused", "Analog gain must be 0 (auto) or 1..100");
+    }
+    return rc;
+}
+
 static int
 test_gain_rtl_and_env_callbacks(void) {
     int rc = 0;
@@ -1006,16 +1087,7 @@ test_gain_rtl_and_env_callbacks(void) {
     static UiCtx ctx;
     ctx = make_ctx(&opts, &state);
 
-    reset_capture();
-    cb_gain_dig(&ctx, 1, 70.0);
-    rc |= expect_int("digital gain command", g_cmd.id, DSD_APP_CMD_GAIN_SET);
-    rc |= expect_int("digital gain clamped", cmd_i32(), 50);
-
-    reset_capture();
-    cb_gain_ana(&ctx, 1, -3.0);
-    rc |= expect_int("analog gain command", g_cmd.id, DSD_APP_CMD_AGAIN_SET);
-    rc |= expect_int("analog gain lower clamp", cmd_i32(), 0);
-    rc |= expect_int("analog gain adjusted status", strstr(g_status, "adjusted") != NULL, 1);
+    rc |= test_gain_prompt_callbacks(&ctx);
 
     reset_capture();
     cb_input_vol(&ctx, 1, 99);

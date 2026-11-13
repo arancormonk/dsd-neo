@@ -368,14 +368,15 @@ edacs_no_stream_pay(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
-/* One sample of the RTL stream, with its squelch flag into @p flag (or NULL); 0 when it ended, which asks for
-   shutdown. While the device has no stream (DSD_RTL_READ_NO_STREAM), the time that passes comes out as silent samples
-   with the squelch closed (edacs_no_stream_pay()), never as an end: the triplet that holds any has no RF power either
-   (edacs_rtl_triplet_pwr()), so the level squelch closes whatever the stream last measured, and the call ends on
-   its own hang timer whatever the squelch mode. */
+/* One sample of the RTL stream, with its squelch flag into @p flag (or NULL) and its voice-lane sample into @p voice (or
+   NULL); 0 when it ended, which asks for shutdown. While the device has no stream (DSD_RTL_READ_NO_STREAM), the time
+   that passes comes out as silent samples with the squelch closed (edacs_no_stream_pay()), never as an end: the triplet
+   that holds any has no RF power either (edacs_rtl_triplet_pwr()), so the level squelch closes whatever the stream last
+   measured, and the call ends on its own hang timer whatever the squelch mode. */
 static inline int
-edacs_read_sample_rtl(dsd_opts* opts, dsd_state* state, short* out, uint8_t* flag) {
+edacs_read_sample_rtl(dsd_opts* opts, dsd_state* state, short* out, float* voice, uint8_t* flag) {
     float rtl_sample = 0.0f;
+    float voice_sample = 0.0f;
     if (!state->rtl_ctx) {
         dsd_request_shutdown(opts, state);
         return 0;
@@ -385,13 +386,18 @@ edacs_read_sample_rtl(dsd_opts* opts, dsd_state* state, short* out, uint8_t* fla
             state->edacs_no_stream_owed--;
             state->edacs_no_stream_seen = 1U;
             *out = 0;
+            if (voice) {
+                *voice = 0.0f;
+            }
             if (flag) {
                 *flag = DSD_SQUELCH_FLAG_CLOSED;
             }
             return 1;
         }
         int got = 0;
-        const int read_rc = dsd_rtl_stream_io_hook_read_ex2(state, &rtl_sample, flag, 1, &got, 1);
+        const int read_rc = voice
+                                ? dsd_rtl_stream_io_hook_read_lanes(state, &rtl_sample, &voice_sample, flag, 1, &got, 1)
+                                : dsd_rtl_stream_io_hook_read_ex2(state, &rtl_sample, flag, 1, &got, 1);
         if (read_rc == DSD_RTL_READ_NO_STREAM) {
             edacs_no_stream_pay(opts, state);
             continue;
@@ -417,18 +423,24 @@ edacs_read_sample_rtl(dsd_opts* opts, dsd_state* state, short* out, uint8_t* fla
     (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(&replay_center_hz);
     dsd_frame_sync_note_replay_center(opts, state, replay_center_hz);
     /* EDACS keeps the stream on the digital family, so this is the FSK discriminator output, which the modem
-       scales to a +/-30000 peak: it fits int16 as it is. The monitor's volume trim is not applied (nor is it to
-       any FSK direct output, symbol_read_sample_rtl()): doubled, the upper half of the waveform clipped before the
-       analog audio chain could filter and gain it (issue #616). The chain's RTL FSK source gain sets the level. */
+       scales to a +/-30000 peak: it fits int16 as it is, and the release register reads it. The monitor's volume trim
+       is not applied to it (nor to any FSK direct output, symbol_read_sample_rtl()): doubled, the upper half of the
+       waveform would clip. */
     *out = clip_float_to_short(rtl_sample);
+    /* The voice lane is the RTL monitor's audio (issue #518): float, so the trim scales it as it scales the monitor's
+       (symbol_read_sample_rtl()), with nothing to clip, and the chain's RTL monitor source gain sets the level. */
+    if (voice) {
+        *voice = voice_sample * (float)opts->rtl_volume_multiplier;
+    }
     return 1;
 }
 
-/* One block of the RTL stream, with each sample's squelch flag into @p flags (960 of them, or NULL). */
+/* One block of the RTL stream, with each sample's squelch flag into @p flags and its voice-lane sample into @p voice
+   (960 of each, or NULL). */
 static int
-edacs_fill_analog_block_rtl(dsd_opts* opts, dsd_state* state, short* block, uint8_t* flags) {
+edacs_fill_analog_block_rtl(dsd_opts* opts, dsd_state* state, short* block, float* voice, uint8_t* flags) {
     for (int i = 0; i < 960; i++) {
-        if (!edacs_read_sample_rtl(opts, state, &block[i], flags ? &flags[i] : NULL)) {
+        if (!edacs_read_sample_rtl(opts, state, &block[i], voice ? &voice[i] : NULL, flags ? &flags[i] : NULL)) {
             return 0;
         }
     }
@@ -459,7 +471,7 @@ edacs_read_converted_sample(void* ctx, float* sample, uint8_t* tag) {
             ok = 1;
             break;
 #ifdef USE_RADIO
-        case AUDIO_IN_RTL: ok = edacs_read_sample_rtl(reader->opts, reader->state, &s, tag); break;
+        case AUDIO_IN_RTL: ok = edacs_read_sample_rtl(reader->opts, reader->state, &s, NULL, tag); break;
 #endif
         default: ok = 0; break;
     }
@@ -467,17 +479,46 @@ edacs_read_converted_sample(void* ctx, float* sample, uint8_t* tag) {
     return ok;
 }
 
+#ifdef USE_RADIO
+/* edacs_read_converted_sample() on the RTL stream with its voice lane: the sample into @p sample, its voice-lane
+   sample into @p voice. */
+static int
+edacs_read_converted_rtl_pair(void* ctx, float* sample, float* voice, uint8_t* tag) {
+    edacs_analog_reader* reader = (edacs_analog_reader*)ctx;
+    short s = 0;
+    const int ok = edacs_read_sample_rtl(reader->opts, reader->state, &s, voice, tag);
+    *sample = (float)s;
+    return ok;
+}
+#endif
+
 /* A block of 960 samples at EDACS_ANALOG_RATE_HZ from an input at another rate, through @p conv: the symbol register,
    the audio chain, the sinks and the WAVs all count 48 kHz (issue #633). Each sample's squelch flag goes into @p flags
-   (960, or NULL): the flag of the newest input sample it was made from. */
+   (960, or NULL): the flag of the newest input sample it was made from. With @p voice (960, or NULL; RTL input only),
+   the voice lane goes through @p voice_conv beside it, made from the same input samples. */
 static int
-edacs_fill_analog_block_converted(dsd_opts* opts, dsd_state* state, dsd_rate_converter* conv, short* block,
-                                  uint8_t* flags) {
+edacs_fill_analog_block_converted(dsd_opts* opts, dsd_state* state, dsd_rate_converter* conv,
+                                  dsd_rate_converter* voice_conv, short* block, float* voice, uint8_t* flags) {
     float out[960];
     edacs_analog_reader reader = {opts, state};
+#ifdef USE_RADIO
+    if (voice) {
+        if (voice_conv == NULL
+            || dsd_rate_converter_fill_pair(conv, voice_conv, out, voice, flags, 960U, edacs_read_converted_rtl_pair,
+                                            &reader)
+                   != 960) {
+            return 0;
+        }
+    } else if (dsd_rate_converter_fill(conv, out, flags, 960U, edacs_read_converted_sample, &reader) != 960) {
+        return 0;
+    }
+#else
+    (void)voice_conv;
+    (void)voice;
     if (dsd_rate_converter_fill(conv, out, flags, 960U, edacs_read_converted_sample, &reader) != 960) {
         return 0;
     }
+#endif
     for (int i = 0; i < 960; i++) {
         block[i] = clip_float_to_short(out[i]);
     }
@@ -493,15 +534,26 @@ edacs_rtl_triplet_pwr(const dsd_state* state) {
 }
 #endif
 
+/* The part of a triplet-long buffer (@p buf, or NULL) block @p i of a triplet fills. */
+static uint8_t*
+edacs_block_flags(uint8_t* buf, int i) {
+    return buf ? buf + ((size_t)i * EDACS_ANALOG_BLOCK_SAMPLES) : NULL;
+}
+
+static float*
+edacs_block_voice(float* buf, int i) {
+    return buf ? buf + ((size_t)i * EDACS_ANALOG_BLOCK_SAMPLES) : NULL;
+}
+
 static int
-edacs_collect_converted_triplet(dsd_opts* opts, dsd_state* state, dsd_rate_converter* conv, short* analog1,
-                                short* analog2, short* analog3, uint8_t* flags, double* pwr) {
-    if (!edacs_fill_analog_block_converted(opts, state, conv, analog1, flags)
-        || !edacs_fill_analog_block_converted(opts, state, conv, analog2,
-                                              flags ? flags + EDACS_ANALOG_BLOCK_SAMPLES : NULL)
-        || !edacs_fill_analog_block_converted(opts, state, conv, analog3,
-                                              flags ? flags + ((size_t)2U * EDACS_ANALOG_BLOCK_SAMPLES) : NULL)) {
-        return 0;
+edacs_collect_converted_triplet(dsd_opts* opts, dsd_state* state, dsd_rate_converter* conv,
+                                dsd_rate_converter* voice_conv, short* const analog[3], float* voice, uint8_t* flags,
+                                double* pwr) {
+    for (int i = 0; i < 3; i++) {
+        if (!edacs_fill_analog_block_converted(opts, state, conv, voice_conv, analog[i], edacs_block_voice(voice, i),
+                                               edacs_block_flags(flags, i))) {
+            return 0;
+        }
     }
 #ifdef USE_RADIO
     if (opts->audio_in_type == AUDIO_IN_RTL) {
@@ -509,7 +561,7 @@ edacs_collect_converted_triplet(dsd_opts* opts, dsd_state* state, dsd_rate_conve
         return 1;
     }
 #endif
-    *pwr = raw_pwr(analog3, 960, 1);
+    *pwr = raw_pwr(analog[2], 960, 1);
     return 1;
 }
 
@@ -556,17 +608,13 @@ edacs_collect_tcp_triplet(dsd_opts* opts, dsd_state* state, short* analog1, shor
 
 #ifdef USE_RADIO
 static int
-edacs_collect_rtl_triplet(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2, short* analog3,
-                          uint8_t* flags, double* pwr) {
-    if (!edacs_fill_analog_block_rtl(opts, state, analog1, flags)) {
-        return 0;
-    }
-    if (!edacs_fill_analog_block_rtl(opts, state, analog2, flags ? flags + EDACS_ANALOG_BLOCK_SAMPLES : NULL)) {
-        return 0;
-    }
-    if (!edacs_fill_analog_block_rtl(opts, state, analog3,
-                                     flags ? flags + ((size_t)2U * EDACS_ANALOG_BLOCK_SAMPLES) : NULL)) {
-        return 0;
+edacs_collect_rtl_triplet(dsd_opts* opts, dsd_state* state, short* const analog[3], float* voice, uint8_t* flags,
+                          double* pwr) {
+    for (int i = 0; i < 3; i++) {
+        if (!edacs_fill_analog_block_rtl(opts, state, analog[i], edacs_block_voice(voice, i),
+                                         edacs_block_flags(flags, i))) {
+            return 0;
+        }
     }
     *pwr = edacs_rtl_triplet_pwr(state);
     return 1;
@@ -588,9 +636,45 @@ edacs_analog_input_readable(dsd_audio_in_type audio_in_type) {
     }
 }
 
+/* The triplet from the input, its RTL voice lane into @p rtl_voice (2880, or NULL; RTL input only). */
+static int
+edacs_collect_input_triplet(dsd_opts* opts, dsd_state* state, dsd_rate_converter* conv, dsd_rate_converter* voice_conv,
+                            short* const analog[3], float* rtl_voice, uint8_t* flags, double* pwr) {
+    if (conv != NULL && conv->mode == DSD_RATE_CONVERTER_CONVERTING) {
+        return edacs_analog_input_readable(opts->audio_in_type)
+                   ? edacs_collect_converted_triplet(opts, state, conv, voice_conv, analog, rtl_voice, flags, pwr)
+                   : 0;
+    }
+    switch (opts->audio_in_type) {
+        case AUDIO_IN_PULSE: edacs_collect_pulse_triplet(opts, analog[0], analog[1], analog[2], pwr); return 1;
+        case AUDIO_IN_TCP: return edacs_collect_tcp_triplet(opts, state, analog[0], analog[1], analog[2], pwr);
+        case AUDIO_IN_UDP: return edacs_collect_udp_triplet(opts, state, analog[0], analog[1], analog[2], pwr);
+        case AUDIO_IN_RTL:
+#ifdef USE_RADIO
+            return edacs_collect_rtl_triplet(opts, state, analog, rtl_voice, flags, pwr);
+#else
+            return 0;
+#endif
+        default: return 0;
+    }
+}
+
+/* The triplet's samples as its voice: audio input's, or an RTL stream's FSK output where the stream carries no voice
+   lane (edacs_analog_voice_source()). */
+static void
+edacs_samples_as_voice(short* const analog[3], float* voice) {
+    for (int b = 0; b < 3; b++) {
+        float* block_voice = edacs_block_voice(voice, b);
+        for (int i = 0; i < EDACS_ANALOG_BLOCK_SAMPLES; i++) {
+            block_voice[i] = (float)analog[b][i];
+        }
+    }
+}
+
 int
-edacs_collect_analog_triplet_flags(dsd_opts* opts, dsd_state* state, dsd_rate_converter* conv, short* analog1,
-                                   short* analog2, short* analog3, uint8_t* flags, double* pwr) {
+edacs_collect_analog_triplet_lanes(dsd_opts* opts, dsd_state* state, dsd_rate_converter* conv,
+                                   dsd_rate_converter* voice_conv, short* analog1, short* analog2, short* analog3,
+                                   float* voice, uint8_t* flags, double* pwr) {
     if (!edacs_analog_triplet_args_valid(opts, state, analog1, analog2, analog3) || pwr == NULL) {
         return 0;
     }
@@ -601,25 +685,22 @@ edacs_collect_analog_triplet_flags(dsd_opts* opts, dsd_state* state, dsd_rate_co
 #ifdef USE_RADIO
     state->edacs_no_stream_seen = 0U;
 #endif
-
-    if (conv != NULL && conv->mode == DSD_RATE_CONVERTER_CONVERTING) {
-        return edacs_analog_input_readable(opts->audio_in_type)
-                   ? edacs_collect_converted_triplet(opts, state, conv, analog1, analog2, analog3, flags, pwr)
-                   : 0;
+    short* const analog[3] = {analog1, analog2, analog3};
+    const int rtl = opts->audio_in_type == AUDIO_IN_RTL;
+    if (!edacs_collect_input_triplet(opts, state, conv, voice_conv, analog, rtl ? voice : NULL, flags, pwr)) {
+        return 0;
     }
-
-    switch (opts->audio_in_type) {
-        case AUDIO_IN_PULSE: edacs_collect_pulse_triplet(opts, analog1, analog2, analog3, pwr); return 1;
-        case AUDIO_IN_TCP: return edacs_collect_tcp_triplet(opts, state, analog1, analog2, analog3, pwr);
-        case AUDIO_IN_UDP: return edacs_collect_udp_triplet(opts, state, analog1, analog2, analog3, pwr);
-        case AUDIO_IN_RTL:
-#ifdef USE_RADIO
-            return edacs_collect_rtl_triplet(opts, state, analog1, analog2, analog3, flags, pwr);
-#else
-            return 0;
-#endif
-        default: return 0;
+    /* Audio input is its own voice: the samples as they are. */
+    if (voice && !rtl) {
+        edacs_samples_as_voice(analog, voice);
     }
+    return 1;
+}
+
+int
+edacs_collect_analog_triplet_flags(dsd_opts* opts, dsd_state* state, dsd_rate_converter* conv, short* analog1,
+                                   short* analog2, short* analog3, uint8_t* flags, double* pwr) {
+    return edacs_collect_analog_triplet_lanes(opts, state, conv, NULL, analog1, analog2, analog3, NULL, flags, pwr);
 }
 
 int
@@ -702,8 +783,6 @@ edacs_reset_digitize_overflow(dsd_state* state) {
     }
 }
 
-static int edacs_analog_call_muted(const dsd_opts* opts, const dsd_state* state);
-
 /* The rate EDACS analog voice is read at (issue #633): the RTL stream's output rate, the raw PCM rate of TCP and UDP
    input (read here directly, ahead of the input staging that brings 8-24 kHz up to 48 kHz for the decoder), or
    Pulse's. */
@@ -726,62 +805,52 @@ edacs_analog_input_rate_hz(const dsd_opts* opts) {
     }
 }
 
-/* One block through the chain under the dynamic squelch (issue #625): each run of samples the gate heard, or did not,
-   goes through with its own playing flag, so the AGC adapts to exactly the samples heard and holds while the gate is
-   closed (as the monitor's symbol_process_unsynced_audio_runs() does); then the closed samples are silenced, as the
-   level squelch's zeroed I/Q silences a closed block. Returns 1 when the gate heard any sample of the block. */
+/* The analog voice chain (voice band-pass, legacy filters, then a fixed gain or the AGC) over a triplet's voice, in
+   place, in one call, so the AGC places each sample's time exactly for its new-reception rule (issue #518). On an RTL
+   input the voice is the stream's voice lane, FM monitor audio at the monitor's scale (rtl_stream_read_lanes()), never
+   the peak-normalised FSK output the release register reads; on audio input it is the samples themselves.
+
+   Each sample learns as the squelch the call runs heard it: with @p sql_flags (2880, the dynamic squelch's) by its own
+   gate, else by @p heard (the level squelch's power test, 1 with no squelch). What plays or records the call, its
+   talkgroup mute included, has no say in what the AGC learns, so a call the mute silences but the record policy keeps
+   records at the level the AGC takes it to. @p first_of_call starts the chain over for another channel's call. The
+   samples @p sql_flags closes then play silence, as the level squelch's zeroed I/Q silences a closed block. @p source
+   is where the voice came from (edacs_analog_voice_source()). Returns 1 when any sample plays: one the dynamic squelch
+   heard, or any at all without @p sql_flags. */
 static int
-edacs_process_analog_block_runs(const dsd_opts* opts, dsd_state* state, short* block, const uint8_t* sql_flags,
-                                dsd_analog_audio_source source, int rate_hz, unsigned int playing, unsigned int reset) {
+edacs_process_analog_triplet(const dsd_opts* opts, dsd_state* state, float* voice, dsd_analog_audio_source source,
+                             const uint8_t* sql_flags, int heard, int first_of_call, int rate_hz) {
+    uint8_t learn[EDACS_ANALOG_TRIPLET_SAMPLES];
     int any_heard = 0;
-    unsigned int start = 0U;
-    while (start < (unsigned int)EDACS_ANALOG_BLOCK_SAMPLES) {
-        const int heard = (sql_flags[start] & DSD_SQUELCH_FLAG_CLOSED) == 0;
-        unsigned int end = start + 1U;
-        while (end < (unsigned int)EDACS_ANALOG_BLOCK_SAMPLES
-               && ((sql_flags[end] & DSD_SQUELCH_FLAG_CLOSED) == 0) == heard) {
-            end++;
-        }
-        (void)dsd_analog_audio_process_s(opts, state, DSD_ANALOG_AUDIO_CHAIN_EDACS, block + start, end - start, source,
-                                         rate_hz, (heard ? playing : 0U) | reset);
-        any_heard |= heard;
-        reset = 0U;
-        start = end;
+    for (int i = 0; i < EDACS_ANALOG_TRIPLET_SAMPLES; i++) {
+        learn[i] = sql_flags ? (uint8_t)((sql_flags[i] & DSD_SQUELCH_FLAG_CLOSED) == 0U) : (uint8_t)(heard != 0);
+        any_heard |= learn[i];
     }
-    for (int i = 0; i < EDACS_ANALOG_BLOCK_SAMPLES; i++) {
-        if (sql_flags[i] & DSD_SQUELCH_FLAG_CLOSED) {
-            block[i] = 0;
+    (void)dsd_analog_audio_process_runs_f(opts, state, DSD_ANALOG_AUDIO_CHAIN_EDACS, voice,
+                                          (size_t)EDACS_ANALOG_TRIPLET_SAMPLES, source, rate_hz,
+                                          first_of_call ? DSD_ANALOG_AUDIO_RESET : 0U, learn);
+    if (!sql_flags) {
+        return 1;
+    }
+    for (int i = 0; i < EDACS_ANALOG_TRIPLET_SAMPLES; i++) {
+        if (!learn[i]) {
+            voice[i] = 0.0f;
         }
     }
     return any_heard;
 }
 
-/* The analog voice chain (voice band-pass, legacy filters, then a fixed gain or the AGC) over the three blocks in
-   order. The symbol register is built from the raw first block before this, so decoding never sees the filters. On an
-   RTL input EDACS reads the FSK discriminator output; a call the talkgroup gate mutes does not move the AGC, and
-   @p first_of_call starts the chain over for another channel's call. With @p sql_flags (2880, the dynamic squelch's)
-   the closed samples hold the AGC and play silence; NULL plays every sample. Returns 1 when any sample plays: one the
-   dynamic squelch heard, or any at all without @p sql_flags. */
-static int
-edacs_process_analog_triplet(const dsd_opts* opts, dsd_state* state, short* analog1, short* analog2, short* analog3,
-                             const uint8_t* sql_flags, int first_of_call, int rate_hz) {
-    const dsd_analog_audio_source source =
-        opts->audio_in_type == AUDIO_IN_RTL ? DSD_ANALOG_AUDIO_SOURCE_RTL_FSK : DSD_ANALOG_AUDIO_SOURCE_PCM16;
-    const unsigned int flags = edacs_analog_call_muted(opts, state) ? 0U : DSD_ANALOG_AUDIO_PLAYING;
-    short* blocks[3] = {analog1, analog2, analog3};
-    int any_heard = sql_flags == NULL;
-    for (int i = 0; i < 3; i++) {
-        const unsigned int reset = (first_of_call && i == 0) ? DSD_ANALOG_AUDIO_RESET : 0U;
-        if (sql_flags) {
-            any_heard |= edacs_process_analog_block_runs(opts, state, blocks[i],
-                                                         sql_flags + ((size_t)i * EDACS_ANALOG_BLOCK_SAMPLES), source,
-                                                         rate_hz, flags, reset);
-            continue;
+/* The triplet's played voice into the three int16 blocks the outputs take, saturating (the AGC's limiter keeps it
+   under). */
+static void
+edacs_voice_to_blocks(const float* voice, short* analog1, short* analog2, short* analog3) {
+    short* const blocks[3] = {analog1, analog2, analog3};
+    for (int b = 0; b < 3; b++) {
+        const float* block_voice = voice + ((size_t)b * EDACS_ANALOG_BLOCK_SAMPLES);
+        for (int i = 0; i < EDACS_ANALOG_BLOCK_SAMPLES; i++) {
+            blocks[b][i] = clip_float_to_short(block_voice[i]);
         }
-        (void)dsd_analog_audio_process_s(opts, state, DSD_ANALOG_AUDIO_CHAIN_EDACS, blocks[i], 960U, source, rate_hz,
-                                         flags | reset);
     }
-    return any_heard;
 }
 
 // The mixers write to no output type while muted (audio_out 0) or with slot 1 switched off, so neither do these.
@@ -1268,6 +1337,23 @@ edacs_publish_voice_grant(dsd_state* state, int lcn, int is_digital, uint64_t ta
     }
 }
 
+/* An analog call on an RTL input plays the stream's voice lane (issue #518): asked for before its tune, so the voice
+   channel's samples all carry it, and stopped when the call ends or its tune is refused. A stream that cannot carry
+   it is not asked, since the lane's work would go nowhere (edacs_analog_voice_source()). */
+static void
+edacs_voice_lane_set(const dsd_opts* opts, int is_digital, int enable) {
+#ifdef USE_RADIO
+    if (is_digital == 0 && opts->audio_in_type == AUDIO_IN_RTL
+        && (enable == 0 || dsd_rtl_stream_io_hook_voice_lane_available())) {
+        dsd_rtl_stream_io_hook_set_voice_lane(enable);
+    }
+#else
+    (void)opts;
+    (void)is_digital;
+    (void)enable;
+#endif
+}
+
 static void
 edacs_try_tune_voice_call(dsd_opts* opts, dsd_state* state, int lcn, int is_digital, int call_target, int call_source,
                           uint16_t call_flags, int tune_allowed) {
@@ -1284,7 +1370,9 @@ edacs_try_tune_voice_call(dsd_opts* opts, dsd_state* state, int lcn, int is_digi
     }
 
     uint64_t tune_request = 0U;
+    edacs_voice_lane_set(opts, is_digital, 1);
     if (!edacs_tune_to_lcn(opts, state, lcn, &tune_request)) {
+        edacs_voice_lane_set(opts, is_digital, 0);
         return;
     }
     if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0) {
@@ -1294,6 +1382,7 @@ edacs_try_tune_voice_call(dsd_opts* opts, dsd_state* state, int lcn, int is_digi
     if (is_digital == 0) {
         edacs_analog(opts, state, call_target, (unsigned char)lcn, tune_request);
     }
+    edacs_voice_lane_set(opts, is_digital, 0);
 }
 
 static void
@@ -1397,15 +1486,29 @@ typedef struct {
     size_t gate_closed_run;
     double no_sql_watchdog_s;
     time_t start;
-    /* The input converted to EDACS_ANALOG_RATE_HZ where it runs at another rate, and the rate it is set for. */
+    /* The input converted to EDACS_ANALOG_RATE_HZ where it runs at another rate, its RTL voice lane beside it (the two
+       converters are configured and cleared together, so they stay in step), and the rate they are set for. */
     dsd_rate_converter conv;
+    dsd_rate_converter voice_conv;
     int conv_in_hz;
     edacs_analog_reception last_reception;
     int have_reception;
     int discarding;
     time_t discard_since;
     int first_of_call;
+    /* Where the call's voice comes from, decided at its start (edacs_analog_voice_source()), and the triplet's voice
+       (issue #518): the RTL stream's voice lane, its FSK output where it carries no lane, or the audio input's
+       samples. */
+    dsd_analog_audio_source voice_source;
+    float voice[EDACS_ANALOG_TRIPLET_SAMPLES];
 } edacs_analog_ctx;
+
+/* Both converters drop what they hold: the samples and their voice lane start over together. */
+static void
+edacs_analog_clear_converters(edacs_analog_ctx* call) {
+    dsd_rate_converter_clear(&call->conv);
+    dsd_rate_converter_clear(&call->voice_conv);
+}
 
 /* Sets the call's converter for the rate the input is read at now; 0 when that rate cannot be converted. */
 static int
@@ -1420,6 +1523,12 @@ edacs_analog_track_rate(const dsd_opts* opts, edacs_analog_ctx* call) {
                   EDACS_ANALOG_RATE_HZ);
         return 0;
     }
+    /* On an RTL input the voice lane converts beside the samples, alike; audio input is its own voice. */
+    if (opts->audio_in_type == AUDIO_IN_RTL
+        && dsd_rate_converter_configure(&call->voice_conv, in_hz, EDACS_ANALOG_RATE_HZ) != mode) {
+        LOG_ERROR("edacs_analog: no memory to convert the voice lane from %d Hz; leaving the call.\n", in_hz);
+        return 0;
+    }
     call->conv_in_hz = in_hz;
     return 1;
 }
@@ -1432,7 +1541,7 @@ edacs_analog_note_reception(const dsd_opts* opts, edacs_analog_ctx* call, const 
     const edacs_analog_reception after = edacs_analog_reception_now(opts);
     const int moved = !edacs_analog_reception_equal(before, &after);
     if (moved) {
-        dsd_rate_converter_clear(&call->conv);
+        edacs_analog_clear_converters(call);
     }
     call->last_reception = after;
     call->have_reception = 1;
@@ -1493,9 +1602,10 @@ edacs_analog_gap_triplet(edacs_analog_ctx* call, short* analog1, short* analog2,
     DSD_MEMSET(analog1, 0, (size_t)EDACS_ANALOG_BLOCK_SAMPLES * sizeof(short));
     DSD_MEMSET(analog2, 0, (size_t)EDACS_ANALOG_BLOCK_SAMPLES * sizeof(short));
     DSD_MEMSET(analog3, 0, (size_t)EDACS_ANALOG_BLOCK_SAMPLES * sizeof(short));
+    DSD_MEMSET(call->voice, 0, sizeof(call->voice));
     DSD_MEMSET(sql_flags, DSD_SQUELCH_FLAG_CLOSED, (size_t)EDACS_ANALOG_TRIPLET_SAMPLES);
     *pwr = 0.0;
-    dsd_rate_converter_clear(&call->conv);
+    edacs_analog_clear_converters(call);
 }
 
 /* A triplet of the call: decoded for the release marker, played, recorded and counted. Returns the squelch count. */
@@ -1507,12 +1617,15 @@ edacs_analog_play_triplet(dsd_opts* opts, dsd_state* state, edacs_analog_ctx* ca
     const int rate_hz = dsd_rate_converter_output_hz(&call->conv);
 
     edacs_reset_digitize_overflow(state);
-    const int heard = edacs_process_analog_triplet(opts, state, analog1, analog2, analog3,
+    const int level_open = call->sql_kind == EDACS_ANALOG_SQL_LEVEL ? pwr > call->sql : 1;
+    const int heard = edacs_process_analog_triplet(opts, state, call->voice, call->voice_source,
                                                    call->sql_kind == EDACS_ANALOG_SQL_GATE ? sql_flags : NULL,
-                                                   call->first_of_call, rate_hz);
+                                                   level_open, call->first_of_call, rate_hz);
     call->first_of_call = 0;
+    /* The blocks played and recorded from here on are the voice; the release register above read the samples. */
+    edacs_voice_to_blocks(call->voice, analog1, analog2, analog3);
     edacs_emit_analog_audio(opts, state, analog1, analog2, analog3,
-                            call->sql_kind == EDACS_ANALOG_SQL_LEVEL ? pwr > call->sql : heard);
+                            call->sql_kind == EDACS_ANALOG_SQL_LEVEL ? level_open : heard);
     (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
 
     opts->rtl_pwr = pwr;
@@ -1534,6 +1647,45 @@ edacs_analog_play_triplet(dsd_opts* opts, dsd_state* state, edacs_analog_ctx* ca
     return count;
 }
 
+/* Where an analog call's voice comes from (issue #518): on an RTL input the stream's voice lane, at the RTL monitor's
+   calibration. A stream that cannot carry the lane (its buffer was not allocated on a device short of memory, or no
+   reader of it is installed) would give silence, so the call plays the FSK output it read before the lane, as FSK
+   audio, and the log says so once. On audio input, the samples. */
+static dsd_analog_audio_source
+edacs_analog_voice_source(const dsd_opts* opts) {
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        return DSD_ANALOG_AUDIO_SOURCE_PCM16;
+    }
+#ifdef USE_RADIO
+    if (dsd_rtl_stream_io_hook_voice_lane_available()) {
+        return DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR;
+    }
+    static int s_fsk_voice_logged = 0;
+    if (!s_fsk_voice_logged) {
+        s_fsk_voice_logged = 1;
+        LOG_WARN("EDACS: the RTL stream has no separate voice audio (low memory?); analog calls play the FSK audio "
+                 "instead, at a less steady level.\n");
+    }
+#endif
+    return DSD_ANALOG_AUDIO_SOURCE_RTL_FSK;
+}
+
+/* A triplet of the call with its voice (edacs_collect_analog_triplet_lanes()): from the stream's voice lane, or, where
+   the call plays the FSK output (edacs_analog_voice_source()), the samples themselves. */
+static int
+edacs_analog_collect(dsd_opts* opts, dsd_state* state, edacs_analog_ctx* call, short* const analog[3],
+                     uint8_t* sql_flags, double* pwr) {
+    const int fsk_voice = call->voice_source == DSD_ANALOG_AUDIO_SOURCE_RTL_FSK;
+    if (!edacs_collect_analog_triplet_lanes(opts, state, &call->conv, &call->voice_conv, analog[0], analog[1],
+                                            analog[2], fsk_voice ? NULL : call->voice, sql_flags, pwr)) {
+        return 0;
+    }
+    if (fsk_voice) {
+        edacs_samples_as_voice(analog, call->voice);
+    }
+    return 1;
+}
+
 //listening to and playing back analog audio
 static void
 edacs_analog_call(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn, uint64_t tune_request) {
@@ -1543,6 +1695,7 @@ edacs_analog_call(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn, 
     short analog1[960];
     short analog2[960];
     short analog3[960];
+    short* const analog[3] = {analog1, analog2, analog3};
     uint8_t sql_flags[EDACS_ANALOG_TRIPLET_SAMPLES];
 
     state->last_cc_sync_time = now;
@@ -1565,7 +1718,9 @@ edacs_analog_call(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn, 
     call.no_sql_watchdog_s = edacs_no_sql_watchdog_window(opts->trunk_hangtime);
     call.start = now;
     call.first_of_call = 1;
+    call.voice_source = edacs_analog_voice_source(opts);
     dsd_rate_converter_init(&call.conv);
+    dsd_rate_converter_init(&call.voice_conv);
     edacs_no_stream_reset(state);
     double pwr = call.sql + 1e-3; // small offset for initial loop phase
 
@@ -1579,13 +1734,13 @@ edacs_analog_call(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn, 
             break;
         }
         if (call.have_reception && !edacs_analog_reception_equal(&before, &call.last_reception)) {
-            dsd_rate_converter_clear(&call.conv);
+            edacs_analog_clear_converters(&call);
         }
         /* The audio chain notes the reception the triplet begins in, so a retune landing while it is collected drops
            all three blocks rather than play the old channel's samples (dsd_analog_audio_process_f()). */
         dsd_analog_audio_block_begin(opts, state, DSD_ANALOG_AUDIO_CHAIN_EDACS);
         const uint64_t gap_seq = state->rtl_stream_gap_seq;
-        if (!edacs_collect_analog_triplet_flags(opts, state, &call.conv, analog1, analog2, analog3, sql_flags, &pwr)) {
+        if (!edacs_analog_collect(opts, state, &call, analog, sql_flags, &pwr)) {
             break;
         }
         const int gap = state->rtl_stream_gap_seq != gap_seq;
@@ -1612,6 +1767,7 @@ edacs_analog_call(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn, 
         }
     }
     dsd_rate_converter_free(&call.conv);
+    dsd_rate_converter_free(&call.voice_conv);
     edacs_analog_leave_input_staging(opts);
 }
 

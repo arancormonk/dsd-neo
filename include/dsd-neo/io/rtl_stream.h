@@ -86,6 +86,11 @@ class RtlSdrOrchestrator {
      */
     int read(float* out, uint8_t* flags, size_t count, int& out_got, int want_no_stream);
 
+    /**
+     * @brief read() with the FSK voice lane into @p voice (as many as @p out, or nullptr; rtl_stream_read_lanes()).
+     */
+    int read(float* out, float* voice, uint8_t* flags, size_t count, int& out_got, int want_no_stream);
+
   private:
     // Non-copyable to avoid accidental shared lifecycle
     RtlSdrOrchestrator(const RtlSdrOrchestrator&) = delete;

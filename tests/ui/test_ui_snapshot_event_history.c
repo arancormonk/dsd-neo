@@ -26,6 +26,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -581,6 +582,96 @@ test_history_copy_keys_on_the_ring_instance(void) {
     free_session_state(st);
 }
 
+/* One field of the config_autosave_enabled..last_dibit copy range: where it sits, its size and its type's alignment. */
+typedef struct {
+    const char* name;
+    size_t offset;
+    size_t size;
+    size_t align;
+} render_range_field;
+
+#define RENDER_RANGE_FIELD(field, type)                                                                                \
+    {#field, offsetof(dsd_state, field), sizeof(((dsd_state*)0)->field), _Alignof(type)}
+
+/* Issue #518: the gain history between the readouts and samplesPerSymbol is gone, so one range copies from
+ * config_autosave_enabled to last_dibit. This table names every field in it, in order: each must sit where its
+ * alignment puts it after the one before, the first at the range's start and the last at its end, so a field added to
+ * or removed from the range (or a member moved out of it) without this table fails here. Every field must reach the
+ * published snapshot byte for byte, the applied-gain readouts the terminal renders among them. */
+static void
+test_render_range_carries_every_field(void) {
+    static const render_range_field fields[] = {
+        RENDER_RANGE_FIELD(config_autosave_enabled, int),
+        RENDER_RANGE_FIELD(config_autosave_path, char),
+        RENDER_RANGE_FIELD(numtdulc, int),
+        RENDER_RANGE_FIELD(firstframe, int),
+        RENDER_RANGE_FIELD(slot0light, char),
+        RENDER_RANGE_FIELD(aout_gain, float),
+        RENDER_RANGE_FIELD(aout_gainR, float),
+        RENDER_RANGE_FIELD(aout_gainA, float),
+        RENDER_RANGE_FIELD(samplesPerSymbol, int),
+        RENDER_RANGE_FIELD(symbolCenter, int),
+        RENDER_RANGE_FIELD(algid, char),
+        RENDER_RANGE_FIELD(keyid, char),
+        RENDER_RANGE_FIELD(currentslot, int),
+        RENDER_RANGE_FIELD(hardslot, int),
+        RENDER_RANGE_FIELD(p25kid, int),
+        RENDER_RANGE_FIELD(payload_algid, int),
+        RENDER_RANGE_FIELD(payload_algidR, int),
+        RENDER_RANGE_FIELD(payload_keyid, int),
+        RENDER_RANGE_FIELD(payload_keyidR, int),
+        RENDER_RANGE_FIELD(payload_mfid, int),
+        RENDER_RANGE_FIELD(payload_mfidR, int),
+        RENDER_RANGE_FIELD(p25vc, int),
+        RENDER_RANGE_FIELD(M, int),
+        RENDER_RANGE_FIELD(aes_key_loaded, int),
+        RENDER_RANGE_FIELD(aes_key_segments, uint8_t),
+        RENDER_RANGE_FIELD(xl_is_hdu, int),
+        RENDER_RANGE_FIELD(debug_audio_errors, unsigned int),
+        RENDER_RANGE_FIELD(debug_audio_errorsR, unsigned int),
+        RENDER_RANGE_FIELD(debug_header_errors, unsigned int),
+        RENDER_RANGE_FIELD(debug_header_critical_errors, unsigned int),
+        RENDER_RANGE_FIELD(nid_corrections_total, unsigned int),
+        RENDER_RANGE_FIELD(nid_failures_total, unsigned int),
+        RENDER_RANGE_FIELD(nid_parity_overrides, unsigned int),
+        RENDER_RANGE_FIELD(debug_mode, int),
+        RENDER_RANGE_FIELD(last_dibit, int),
+    };
+    const size_t count = sizeof fields / sizeof fields[0];
+    assert(fields[0].offset == offsetof(dsd_state, config_autosave_enabled));
+    size_t end = fields[0].offset;
+    for (size_t i = 0; i < count; i++) {
+        const size_t placed = (end + fields[i].align - 1U) / fields[i].align * fields[i].align;
+        if (fields[i].offset != placed) {
+            DSD_FPRINTF(stderr, "render range: %s at %zu, want %zu: the table and state.h differ\n", fields[i].name,
+                        fields[i].offset, placed);
+            assert(0);
+        }
+        end = fields[i].offset + fields[i].size;
+    }
+    assert(end == offsetof(dsd_state, last_dibit) + sizeof(((dsd_state*)0)->last_dibit));
+
+    dsd_state* st = new_session_state();
+    for (size_t i = 0; i < count; i++) {
+        unsigned char* at = (unsigned char*)st + fields[i].offset;
+        for (size_t b = 0; b < fields[i].size; b++) {
+            at[b] = (unsigned char)(0x11U + (i * 7U) + b);
+        }
+    }
+    dsd_app_telemetry_publish_snapshot(st);
+    const dsd_state* snap = dsd_app_get_latest_snapshot();
+    assert(snap != NULL);
+    for (size_t i = 0; i < count; i++) {
+        if (memcmp((const unsigned char*)snap + fields[i].offset, (const unsigned char*)st + fields[i].offset,
+                   fields[i].size)
+            != 0) {
+            DSD_FPRINTF(stderr, "render range: %s did not reach the snapshot\n", fields[i].name);
+            assert(0);
+        }
+    }
+    free_session_state(st);
+}
+
 int
 main(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -952,6 +1043,7 @@ main(void) {
     test_trunk_scan_entry_reasons_gated_copy();
     test_chan_map_gate_keys_on_the_session();
     test_history_copy_keys_on_the_ring_instance();
+    test_render_range_carries_every_field();
 
     puts("UI_SNAPSHOT_EVENT_HISTORY: OK");
     dsd_state_ext_free_all(state);

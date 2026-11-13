@@ -45,6 +45,7 @@ target_sources(
         analog_tone_policy.c
         analog_voice.c
         analog_audio.c
+        speech_agc.c
         squelch_floor.c
         noise_squelch_bank.c
         nfm_noise_squelch.c
@@ -201,13 +202,16 @@ endif()
 # same promise for its band-pass and window sums, on the band-pass bank it
 # shares with the PCM noise squelch, which promises it for its learner too. The
 # replay's I/Q resampler promises the same bits however a capture is cut into
-# blocks, which a vectoriser's alignment peeling could otherwise break.
+# blocks, which a vectoriser's alignment peeling could otherwise break. The
+# speech AGC makes the same promise for its frame sums and its autocorrelation,
+# and drops non-finite samples before they reach them.
 set(_dsd_neo_dsp_ieee_c_sources
     rate_converter.c
     iq_resampler.c
     analog_sink.c
     analog_voice.c
     analog_audio.c
+    speech_agc.c
     squelch_floor.c
     noise_squelch_bank.c
     nfm_noise_squelch.c
@@ -218,6 +222,15 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     set_source_files_properties(
         ${_dsd_neo_dsp_ieee_c_sources}
         PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-fno-math-errno"
+    )
+    # The speech AGC's output is meant to be the same bits on every compiler and
+    # architecture with one libm: no fused multiply-adds, which Clang on arm64 and
+    # GCC with FMA would otherwise form and round differently (MSVC's /fp:precise
+    # does not contract).
+    set_property(
+        SOURCE speech_agc.c
+        APPEND
+        PROPERTY COMPILE_OPTIONS "-ffp-contract=off"
     )
 elseif(MSVC)
     set_source_files_properties(

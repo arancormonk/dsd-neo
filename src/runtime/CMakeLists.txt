@@ -101,13 +101,17 @@ endif()
 
 # The one-shot DMR Tier III calculator reads frequencies from a user file and
 # must reject "+nan" and "+inf" before rounding them; it runs once per command.
+# The argument parser refuses a NaN, infinite or out-of-range -g/-n gain before
+# it narrows to the float setting (<dsd-neo/core/gain_setting.h>); it runs once.
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     set_source_files_properties(
+        cli/args.c
         cli/oneshot_dmr_t3.c
         PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
     )
 elseif(MSVC)
     set_source_files_properties(
+        cli/args.c
         cli/oneshot_dmr_t3.c
         PROPERTIES COMPILE_OPTIONS "/fp:precise"
     )

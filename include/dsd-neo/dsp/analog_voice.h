@@ -5,7 +5,8 @@
 
 /**
  * @file
- * @brief Voice band-pass, legacy one-pole filters and AGC for the analog monitor (issue #518).
+ * @brief Voice band-pass and legacy one-pole filters for the analog audio chain, and the peak AGC the M17 encoder's
+ * microphone runs (issue #518; received audio is levelled by <dsd-neo/dsp/speech_agc.h>).
  *
  * Pure signal processing with no global state: the caller owns each instance and feeds it samples at the rate it was
  * designed for. Every core is a causal per-sample recurrence, so its output depends only on the sample sequence (and,
@@ -179,6 +180,16 @@ void dsd_voice_agc_reset(dsd_voice_agc* agc);
  * DSD_VOICE_AGC_ROLLBACK_MS. A non-finite input sample comes out as 0 and leaves the state alone.
  */
 void dsd_voice_agc_process(dsd_voice_agc* agc, float* buf, size_t n, int playing);
+
+/**
+ * @brief Apply the AGC to @p n samples of @p buf in place, held: the gain neither attacks nor releases and the output
+ * stays limited to the target, as while not playing, but nothing rolls back.
+ *
+ * For a transmitter's microphone between transmissions: what a transmission taught stays for the next one, however
+ * short it was, and nothing heard in between moves it. The next dsd_voice_agc_process() that plays goes on from the
+ * held state, its hold time included. A non-finite input sample comes out as 0.
+ */
+void dsd_voice_agc_process_held(dsd_voice_agc* agc, float* buf, size_t n);
 
 /** The gain the next sample would get. */
 double dsd_voice_agc_gain(const dsd_voice_agc* agc);

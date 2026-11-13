@@ -656,6 +656,21 @@ test_monitor_output_scale(void) {
     rc |= expect_output_gain_at("FM on a forced 78125 Hz is scaled to the 48 kHz level", &fm, 48000, 78125, 0,
                                 live * (78125.0f / 48000.0f));
     rc |= expect_output_gain("DMR discriminator is not scaled", &dmr, 48000, 0, 1.0f);
+    /* The scale ignores the de-emphasis (issue #518 B8/B9): the analog chain's gain stage makes up what the de-emphasis
+       takes off the reference tone, so the samples the ring holds, which the -6 raw WAV and the M17 encoder read too,
+       stay where they were under 750 us and with none. */
+    const char* const deemph[] = {"nfm", "off"};
+    for (const char* d : deemph) {
+        (void)dsd_test_setenv("DSD_NEO_DEEMPH", d, 1);
+        dsd_neo_config_init();
+        char name[96];
+        DSD_SNPRINTF(name, sizeof name, "FM @48k under DSD_NEO_DEEMPH=%s keeps the scale", d);
+        rc |= expect_output_gain(name, &fm, 48000, 0, live);
+        DSD_SNPRINTF(name, sizeof name, "FM @24k under DSD_NEO_DEEMPH=%s keeps the scale", d);
+        rc |= expect_output_gain(name, &fm, 24000, 0, live * 0.5f);
+    }
+    (void)dsd_test_unsetenv("DSD_NEO_DEEMPH");
+    dsd_neo_config_init();
     return rc;
 }
 

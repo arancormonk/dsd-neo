@@ -503,10 +503,92 @@ test_tetra_network_options(void) {
     return test_rc;
 }
 
-/* Issue #518: the analog monitor defaults to the AGC (-n 0) and the voice band-pass plus the digital high-pass
-   (-v 0x9); -n takes 1..100 as a fixed gain and anything under 1 as auto. */
+/* -g / -n with one value. Returns the parse rc (0 parsed, -1 refused); the out values are the settings afterwards:
+   *gain is audio_gain for -g and audio_gainA for -n, *gain_r the -g mirror (audio_gainR), *aout the applied-gain
+   readout (aout_gain). */
 static int
-parse_analog_gain(const char* value, float* out) {
+parse_gain_option(const char* option, const char* value, float* gain, float* gain_r, float* aout) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return -2;
+    }
+    initOpts(opts);
+    initState(state);
+    char arg0[] = "dsd-neo";
+    char arg1[8];
+    char arg2[64];
+    DSD_SNPRINTF(arg1, sizeof arg1, "%s", option);
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", value);
+    char* argv[] = {arg0, arg1, arg2, NULL};
+    int argc_effective = 0;
+    int exit_rc = 0;
+    const int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    const int digital = strcmp(option, "-g") == 0;
+    *gain = digital ? opts->audio_gain : opts->audio_gainA;
+    *gain_r = opts->audio_gainR;
+    *aout = state->aout_gain;
+    freeState(state);
+    free(opts);
+    free(state);
+    if (rc == DSD_PARSE_CONTINUE) {
+        return 0;
+    }
+    return (rc == DSD_PARSE_ERROR && exit_rc == 1) ? -1 : -2;
+}
+
+/* B5/B6 (issue #518 voice level): -g is 0 (auto) or a fixed multiplier 0.001..50, checked in double before it narrows
+   to the float setting; NaN, infinities, values above 50 and positive values below 0.001 (1e-50 would round to the
+   float 0, auto) are refused, never clamped or played as auto. Fractions are kept. */
+static int
+test_digital_gain_option(void) {
+    const struct {
+        const char* value;
+        float want; /* the setting, or -1 when the value must be refused */
+    } cases[] = {{"0", 0.0f},         {"0.0", 0.0f},       {"-0", 0.0f},        {"-0.0", 0.0f},     {"0.001", 0.001f},
+                 {"0.0011", 0.0011f}, {"0.5", 0.5f},       {"1", 1.0f},         {"2.5", 2.5f},      {"50", 50.0f},
+                 {"0.0004", -1.0f},   {"0.000999", -1.0f}, {"1e-50", -1.0f},    {"50.0001", -1.0f}, {"51", -1.0f},
+                 {"1e39", -1.0f},     {"1e400", -1.0f},    {"nan", -1.0f},      {"-nan", -1.0f},    {"NAN", -1.0f},
+                 {"inf", -1.0f},      {"-inf", -1.0f},     {"infinity", -1.0f}, {"-1", -1.0f},      {"3junk", -1.0f},
+                 {"", -1.0f}};
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        float g = -2.0f;
+        float g_r = -2.0f;
+        float aout = -2.0f;
+        const int rc = parse_gain_option("-g", cases[i].value, &g, &g_r, &aout);
+        const int refused = cases[i].want < 0.0f;
+        int bad = refused ? rc != -1 : rc != 0;
+        if (!bad && !refused) {
+            bad = !(fabsf(g - cases[i].want) < 1e-7f) || !(fabsf(g_r - cases[i].want) < 1e-7f);
+            /* A typed -0 is auto stored as +0: no setting carries a negative sign. */
+            if (signbit(g) || signbit(g_r)) {
+                bad = 1;
+            }
+            /* The applied-gain readout is the voice chain's, in dB, and starts at 0 dB (the start gain): the option
+               seeds no level, fixed or auto (issue #518). */
+            if (!(fabsf(aout) < 1e-7f)) {
+                bad = 1;
+            }
+        }
+        if (!bad && refused && !(fabsf(g) < 1e-7f)) {
+            bad = 1; /* a refused value leaves the default, auto */
+        }
+        if (bad) {
+            DSD_FPRINTF(stderr, "-g \"%s\": rc=%d gain=%g right=%g applied=%g, want %g\n", cases[i].value, rc,
+                        (double)g, (double)g_r, (double)aout, (double)cases[i].want);
+            test_rc = 1;
+        }
+    }
+    return test_rc;
+}
+
+/* -v: decimal or 0x hex, bits 0..3 only. Returns the parse rc; *out is the four filter flags as a bitmap. */
+static int
+parse_filter_bitmap(const char* value, int* out) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
     if (!opts || !state) {
@@ -517,20 +599,45 @@ parse_analog_gain(const char* value, float* out) {
     initOpts(opts);
     initState(state);
     char arg0[] = "dsd-neo";
-    char arg1[] = "-n";
+    char arg1[] = "-v";
     char arg2[32];
     DSD_SNPRINTF(arg2, sizeof arg2, "%s", value);
     char* argv[] = {arg0, arg1, arg2, NULL};
     int argc_effective = 0;
     int exit_rc = 0;
     const int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
-    *out = opts->audio_gainA;
+    *out = (opts->use_pbf ? 1 : 0) | (opts->use_lpf ? 2 : 0) | (opts->use_hpf ? 4 : 0) | (opts->use_hpf_d ? 8 : 0);
     freeState(state);
     free(opts);
     free(state);
     return rc == DSD_PARSE_CONTINUE ? 0 : -1;
 }
 
+static int
+test_filter_bitmap_parser(void) {
+    const struct {
+        const char* value;
+        int want; /* bitmap, or -1 when the value must be refused */
+    } cases[] = {{"0", 0},     {"1", 1},    {"9", 9},    {"15", 15},  {"0x9", 9},  {"0X9", 9},
+                 {"0xF", 15},  {"0xf", 15}, {"010", 10}, {"00", 0},   {"16", -1},  {"0x10", -1},
+                 {"0xFF", -1}, {"-1", -1},  {"+1", -1},  {"0b1", -1}, {"0x", -1},  {"", -1},
+                 {" 1", -1},   {"1 ", -1},  {"1x", -1},  {"08", 8},   {"0xG", -1}, {"99999999999999999999", -1}};
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        int got = -2;
+        const int rc = parse_filter_bitmap(cases[i].value, &got);
+        if (cases[i].want < 0 ? rc == 0 : (rc != 0 || got != cases[i].want)) {
+            DSD_FPRINTF(stderr, "-v \"%s\": rc=%d bitmap=%d, want %d\n", cases[i].value, rc, got, cases[i].want);
+            test_rc = 1;
+        }
+    }
+    return test_rc;
+}
+
+/* Issue #518: the analog monitor defaults to the AGC (-n 0) and the voice band-pass (-v 0x1). -n takes 1..100 as a
+   fixed gain, fractions kept, and anything under 1 (0, a fraction, a negative value, 1e-50) as auto. NaN, infinities
+   and values above 100 are refused (above 100 used to clamp to 100; NaN used to read as auto). */
 static int
 test_analog_monitor_defaults_and_gain(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -540,8 +647,8 @@ test_analog_monitor_defaults_and_gain(void) {
     initOpts(opts);
     int test_rc = 0;
     if (!(fabsf(opts->audio_gainA) < 1e-6f) || opts->use_pbf != 1 || opts->use_lpf != 0 || opts->use_hpf != 0
-        || opts->use_hpf_d != 1) {
-        DSD_FPRINTF(stderr, "analog defaults: gain=%.1f pbf=%d lpf=%d hpf=%d hpfd=%d, want auto and -v 0x9\n",
+        || opts->use_hpf_d != 0) {
+        DSD_FPRINTF(stderr, "analog defaults: gain=%.1f pbf=%d lpf=%d hpf=%d hpfd=%d, want auto and -v 0x1\n",
                     (double)opts->audio_gainA, opts->use_pbf, opts->use_lpf, opts->use_hpf, opts->use_hpf_d);
         test_rc = 1;
     }
@@ -549,14 +656,23 @@ test_analog_monitor_defaults_and_gain(void) {
 
     const struct {
         const char* value;
-        float want;
-    } cases[] = {{"0", 0.0f},     {"0.5", 0.0f}, {"-4", 0.0f},   {"1", 1.0f},
-                 {"37.5", 37.5f}, {"50", 50.0f}, {"150", 100.0f}};
+        float want; /* the setting, or -1 when the value must be refused */
+    } cases[] = {{"0", 0.0f},     {"0.5", 0.0f},    {"0.999", 0.0f}, {"1e-50", 0.0f},  {"-4", 0.0f},
+                 {"-0.5", 0.0f},  {"1", 1.0f},      {"1.5", 1.5f},   {"37.5", 37.5f},  {"50", 50.0f},
+                 {"100", 100.0f}, {"100.5", -1.0f}, {"150", -1.0f},  {"1e39", -1.0f},  {"nan", -1.0f},
+                 {"-nan", -1.0f}, {"inf", -1.0f},   {"-inf", -1.0f}, {"12junk", -1.0f}};
 
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-        float got = -1.0f;
-        if (parse_analog_gain(cases[i].value, &got) != 0 || !(fabsf(got - cases[i].want) < 1e-6f)) {
-            DSD_FPRINTF(stderr, "-n %s: gain %.2f, want %.2f\n", cases[i].value, (double)got, (double)cases[i].want);
+        float got = -2.0f;
+        float unused_r = 0.0f;
+        float unused_aout = 0.0f;
+        const int rc = parse_gain_option("-n", cases[i].value, &got, &unused_r, &unused_aout);
+        const int refused = cases[i].want < 0.0f;
+        const int bad =
+            refused ? (rc != -1 || !(fabsf(got) < 1e-7f)) : (rc != 0 || !(fabsf(got - cases[i].want) < 1e-6f));
+        if (bad) {
+            DSD_FPRINTF(stderr, "-n \"%s\": rc=%d gain %g, want %g\n", cases[i].value, rc, (double)got,
+                        (double)cases[i].want);
             test_rc = 1;
         }
     }
@@ -12343,6 +12459,8 @@ main(void) {
     rc |= test_frontend_terminal_option_sets_terminal_kind();
     rc |= test_tetra_network_options();
     rc |= test_analog_monitor_defaults_and_gain();
+    rc |= test_digital_gain_option();
+    rc |= test_filter_bitmap_parser();
     rc |= test_N_short_option_enables_terminal_frontend();
     rc |= test_frontend_native_alias_selects_equivalent_headless_frontend();
     rc |= test_compatibility_short_options_use_current_facilities();

@@ -298,10 +298,12 @@ update_p25_p1_voice_err_hist(dsd_state* state) {
     }
 }
 
-// One frame of -r playback, through the voice chain and the shared mono mixer in either output format.
+// One frame of -r playback, through the voice chain and the shared mono mixer in either output format. A file's frames
+// are clear and admitted: @p media alone tells what the frame is.
 static void
-play_mbe_output_frame(dsd_opts* opts, dsd_state* state, int want_static_wav) {
-    dsd_voice_chain_run(opts, state, 0, state->audio_out_temp_buf);
+play_mbe_output_frame(dsd_opts* opts, dsd_state* state, int want_static_wav, dsd_voice_media media) {
+    const dsd_voice_frame_info info = {(uint8_t)media, 1U, 1U, 0U};
+    dsd_voice_chain_run(opts, state, 0, state->audio_out_temp_buf, &info);
     if (opts->audio_out == 1 || want_static_wav) {
         dsd_voice_stage_short_left(opts, state);
     }
@@ -337,7 +339,7 @@ play_imbe_file_frame(dsd_opts* opts, dsd_state* state, char imbe_d[88], char fil
     if (DSD_SYNC_IS_P25P1(state->synctype)) {
         update_p25_p1_voice_err_hist(state);
     }
-    play_mbe_output_frame(opts, state, want_static_wav);
+    play_mbe_output_frame(opts, state, want_static_wav, dsd_voice_media_of_mbe(ret, result.flags));
     return 0;
 }
 
@@ -349,7 +351,8 @@ decrypt_ambe_with_pr_key(const dsd_state* state, char ambe_d[49]) {
     (void)dmr_basic_privacy_apply_frame49(state->K, ambe_d);
 }
 
-static void
+/* Decode and synthesize one .amb/.dmb record into audio_out_temp_buf; returns what the synthesis made. */
+static dsd_voice_media
 decode_ambe_file_frame(dsd_state* state, char ambe_d[49], char file_err_str[260]) {
     mbe_process_result result;
     init_mbe_file_result(&result, state->errs2);
@@ -377,6 +380,7 @@ decode_ambe_file_frame(dsd_state* state, char ambe_d[49], char file_err_str[260]
                                sizeof(state->err_str), &result);
     DSD_STRNCPY(state->err_str, file_err_str, sizeof(state->err_str) - 1);
     state->err_str[sizeof(state->err_str) - 1] = '\0';
+    return dsd_voice_media_of_mbe(ret, result.flags);
 }
 
 static int
@@ -388,8 +392,8 @@ play_ambe_file_frame(dsd_opts* opts, dsd_state* state, char ambe_d[49], char fil
     if (state->mbe_file_type == 1) {
         decrypt_ambe_with_pr_key(state, ambe_d);
     }
-    decode_ambe_file_frame(state, ambe_d, file_err_str);
-    play_mbe_output_frame(opts, state, want_static_wav);
+    const dsd_voice_media media = decode_ambe_file_frame(state, ambe_d, file_err_str);
+    play_mbe_output_frame(opts, state, want_static_wav, media);
     return 0;
 }
 
@@ -429,6 +433,9 @@ typedef struct {
     /* The buffer the decode synthesized this frame into (NULL: none) and the slot whose voice chain runs on it. */
     float* synth;
     int synth_slot;
+    /* What the synthesis made (dsd_voice_media_of_mbe() of its result), for the voice chain: NONE until a decode site
+       synthesizes the frame, so a decode failure and a P25 tail erasure stay NONE. */
+    dsd_voice_media media;
 } mbe_frame_ctx_t;
 
 /* Key selection by the signalled ALG ID / KEY ID belongs to the protocols that signal them to the vocoder. NXDN voice
@@ -474,6 +481,7 @@ mbe_prepare_frame_state(dsd_state* state, mbe_frame_ctx_t* frame_ctx, const dsd_
     frame_ctx->crypto_muted = 0;
     frame_ctx->synth = NULL;
     frame_ctx->synth_slot = 0;
+    frame_ctx->media = DSD_VOICE_MEDIA_NONE;
 
     if (protocol == DSD_VOICE_PROTOCOL_DMR) {
         (void)dsd_dmr_apply_forced_algid(state);
@@ -487,6 +495,12 @@ mbe_prepare_frame_state(dsd_state* state, mbe_frame_ctx_t* frame_ctx, const dsd_
 
     DSD_MEMSET(frame_ctx->imbe_d, 0, sizeof(frame_ctx->imbe_d));
     DSD_MEMSET(frame_ctx->ambe_d, 0, sizeof(frame_ctx->ambe_d));
+}
+
+/* Keep what the frame's synthesis (@p ret and @p result of an mbe_process*Dataf() call) made, for the voice chain. */
+static void
+mbe_note_synthesis(mbe_frame_ctx_t* frame_ctx, int ret, const mbe_process_result* result) {
+    frame_ctx->media = dsd_voice_media_of_mbe(ret, result->flags);
 }
 
 static void
@@ -912,6 +926,7 @@ mbe_process_p25p1(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], dsd_voc
                                                state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
     (void)store_process_result(process_ret, state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                                sizeof(state->err_str), &imbe_result);
+    mbe_note_synthesis(frame_ctx, process_ret, &imbe_result);
     mbe_p25p1_record_accepted_frame(state, decoded_corrections, imbe_result.flags);
     update_p25_p1_voice_err_hist(state);
 
@@ -950,6 +965,7 @@ mbe_process_provoice(dsd_opts* opts, dsd_state* state, char imbe7100_fr[7][24],
                                                state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
     (void)store_process_result(process_ret, state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                                sizeof(state->err_str), &imbe_result);
+    mbe_note_synthesis(frame_ctx, process_ret, &imbe_result);
     if (DSD_SYNC_IS_P25P1(state->synctype)) {
         update_p25_p1_voice_err_hist(state);
     }
@@ -972,6 +988,7 @@ mbe_process_dstar(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voc
                                        state->prev_mp, state->prev_mp_enhanced);
     (void)store_process_result(ret, state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                                sizeof(state->err_str), &result);
+    mbe_note_synthesis(frame_ctx, ret, &result);
     if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, frame_ctx->ambe_d);
     }
@@ -1026,6 +1043,7 @@ mbe_process_x2(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_vocode
                                                prev_mp, prev_mp_enhanced);
     (void)store_process_result(process_ret, state->audio_out_temp_buf, errs, errs2, err_str, sizeof(state->err_str),
                                &ambe_result);
+    mbe_note_synthesis(frame_ctx, process_ret, &ambe_result);
 
     if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, frame_ctx->ambe_d);
@@ -1191,11 +1209,13 @@ mbe_dmr_output_slot_enabled(const dsd_opts* opts, const dsd_state* state, int sl
 }
 
 static void
-mbe_finalize_slot_left(dsd_opts* opts, dsd_state* state, char ambe_d[49], mbe_process_result* ambe_result) {
+mbe_finalize_slot_left(dsd_opts* opts, dsd_state* state, mbe_frame_ctx_t* frame_ctx, mbe_process_result* ambe_result) {
+    char* const ambe_d = frame_ctx->ambe_d;
     int ret = mbe_processAmbe2450Dataf(state->audio_out_temp_buf, ambe_result, ambe_d, state->cur_mp, state->prev_mp,
                                        state->prev_mp_enhanced);
     (void)store_process_result(ret, state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                                sizeof(state->err_str), ambe_result);
+    mbe_note_synthesis(frame_ctx, ret, ambe_result);
     p25p2_record_voice_err(state, state->errs2);
     if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, ambe_d);
@@ -1203,11 +1223,13 @@ mbe_finalize_slot_left(dsd_opts* opts, dsd_state* state, char ambe_d[49], mbe_pr
 }
 
 static void
-mbe_finalize_slot_right(dsd_opts* opts, dsd_state* state, char ambe_d[49], mbe_process_result* ambe_result) {
+mbe_finalize_slot_right(dsd_opts* opts, dsd_state* state, mbe_frame_ctx_t* frame_ctx, mbe_process_result* ambe_result) {
+    char* const ambe_d = frame_ctx->ambe_d;
     int ret = mbe_processAmbe2450Dataf(state->audio_out_temp_bufR, ambe_result, ambe_d, state->cur_mp2, state->prev_mp2,
                                        state->prev_mp_enhanced2);
     (void)store_process_result(ret, state->audio_out_temp_bufR, &state->errsR, &state->errs2R, state->err_strR,
                                sizeof(state->err_strR), ambe_result);
+    mbe_note_synthesis(frame_ctx, ret, ambe_result);
     p25p2_record_voice_err(state, state->errs2R);
     if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, ambe_d);
@@ -1250,6 +1272,7 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
                                                state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
     (void)store_process_result(process_ret, state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                                sizeof(state->err_str), &ambe_result);
+    mbe_note_synthesis(frame_ctx, process_ret, &ambe_result);
     p25p2_record_voice_err(state, state->errs2);
 
     if (dsd_frame_detail_enabled(opts)) {
@@ -1944,7 +1967,7 @@ mbeslot_process_left(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_
         frame_ctx->slot_keyed[0] = 1;
         frame_ctx->straight_ks[0] = 1;
     }
-    mbe_finalize_slot_left(opts, state, frame_ctx->ambe_d, &ambe_result);
+    mbe_finalize_slot_left(opts, state, frame_ctx, &ambe_result);
     frame_ctx->capture = MBE_CAPTURE_SLOT_LEFT;
 }
 
@@ -1984,7 +2007,7 @@ mbeslot_process_right(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd
         frame_ctx->slot_keyed[1] = 1;
         frame_ctx->straight_ks[1] = 1;
     }
-    mbe_finalize_slot_right(opts, state, frame_ctx->ambe_d, &ambe_result);
+    mbe_finalize_slot_right(opts, state, frame_ctx, &ambe_result);
     frame_ctx->capture = MBE_CAPTURE_SLOT_RIGHT;
 }
 
@@ -2055,22 +2078,92 @@ mbe_dmr_slot_crypto_class(const dsd_state* state, int slot, const mbe_frame_ctx_
     return decryptable ? DSD_VOICE_CRYPTO_DECRYPTABLE : DSD_VOICE_CRYPTO_UNDECRYPTABLE;
 }
 
-// The explicit frame owner decides the verdict as well as the transforms, even when YSF or dPMR borrows another
-// protocol's decoder outside processFrame(). An exhausted keystream cannot be overridden by a key, -q or a user mute.
+// The frame's receive admission and its owner's encryption class, judged once per frame on the slot it was received
+// on: the voice chain's frame info and the frame's verdict both take them. The chain writes nothing they read, so
+// judging them before it gives the verdict the values it would find after it.
+typedef struct {
+    int admitted;               // dsd_receive_current_allows()
+    dsd_voice_crypto_class cls; // DMR's slot class, NXDN's and dPMR's cipher class, X2-TDMA's; CLEAR for the others
+    int crypto_unknown;         // the owner has not said yet (an X2-TDMA call's opening frames): not decodable
+} mbe_frame_judgement;
+
+// X2-TDMA's encryption on the slot, as processX2TDMAvoice() set it for the burst being decoded. X2 has no
+// decryption: an encrypted frame is undecryptable.
+static void
+mbe_x2_slot_judge(const dsd_state* state, int slot, mbe_frame_judgement* j) {
+    const uint8_t crypto = state->x2tdma_slot_crypto[slot];
+    j->crypto_unknown = crypto != DSD_X2TDMA_CRYPTO_CLEAR && crypto != DSD_X2TDMA_CRYPTO_ENCRYPTED;
+    j->cls = crypto == DSD_X2TDMA_CRYPTO_ENCRYPTED ? DSD_VOICE_CRYPTO_UNDECRYPTABLE : DSD_VOICE_CRYPTO_CLEAR;
+}
+
+// Whether an X2-TDMA frame plays under the user's options. One whose encryption is not known yet plays only where it
+// would play either way, clear or encrypted: with the encrypted-audio mute off and reverse mute off.
 static int
-mbe_frame_slot_muted(const dsd_opts* opts, const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx) {
-    if (frame_ctx->crypto_muted || !dsd_receive_current_allows(opts, state, slot)) {
-        return 1;
+mbe_x2_frame_audible(const dsd_opts* opts, int slot, const mbe_frame_judgement* j) {
+    if (j->crypto_unknown) {
+        return dsd_voice_crypto_class_audible(opts, slot, DSD_VOICE_CRYPTO_CLEAR)
+               && dsd_voice_crypto_class_audible(opts, slot, DSD_VOICE_CRYPTO_UNDECRYPTABLE);
+    }
+    return dsd_voice_crypto_class_audible(opts, slot, j->cls);
+}
+
+static mbe_frame_judgement
+mbe_frame_judge(const dsd_opts* opts, const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx) {
+    mbe_frame_judgement j = {dsd_receive_current_allows(opts, state, slot) != 0, DSD_VOICE_CRYPTO_CLEAR, 0};
+    switch (frame_ctx->protocol) {
+        case DSD_VOICE_PROTOCOL_DMR: j.cls = mbe_dmr_slot_crypto_class(state, slot, frame_ctx); break;
+        case DSD_VOICE_PROTOCOL_NXDN:
+        case DSD_VOICE_PROTOCOL_DPMR: j.cls = dsd_nxdn_voice_crypto_class(state); break;
+        case DSD_VOICE_PROTOCOL_X2TDMA: mbe_x2_slot_judge(state, slot, &j); break;
+        default: break;
+    }
+    return j;
+}
+
+// The frame's media is clear or decrypted: the encryption class its owner judges it by, never a user mute rule or an
+// override (no opts reach the P25 predicate), never talkgroup or receive policy. An exhausted keystream decoded
+// nothing.
+static int
+mbe_frame_decodable(const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx, const mbe_frame_judgement* j) {
+    if (frame_ctx->crypto_muted || j->crypto_unknown) {
+        return 0;
     }
     switch (frame_ctx->protocol) {
         case DSD_VOICE_PROTOCOL_DMR:
-            return !dsd_voice_crypto_class_audible(opts, slot, mbe_dmr_slot_crypto_class(state, slot, frame_ctx));
+        case DSD_VOICE_PROTOCOL_NXDN:
+        case DSD_VOICE_PROTOCOL_DPMR:
+        case DSD_VOICE_PROTOCOL_X2TDMA: return j->cls != DSD_VOICE_CRYPTO_UNDECRYPTABLE;
+        case DSD_VOICE_PROTOCOL_P25P1: return p25_crypto_audio_permitted(NULL, state, 0);
+        case DSD_VOICE_PROTOCOL_P25P2: return p25_crypto_audio_permitted(NULL, state, slot);
+        default: return 1;
+    }
+}
+
+// What the voice chain is told about the frame, whichever slot's chain runs on it.
+static dsd_voice_frame_info
+mbe_frame_info(const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx, const mbe_frame_judgement* j) {
+    dsd_voice_frame_info info = {(uint8_t)frame_ctx->media, 0U, 0U, 0U};
+    info.decodable = (uint8_t)(mbe_frame_decodable(state, slot, frame_ctx, j) != 0);
+    info.admitted = (uint8_t)(j->admitted != 0);
+    return info;
+}
+
+// The explicit frame owner decides the verdict as well as the transforms, even when YSF or dPMR borrows another
+// protocol's decoder outside processFrame(). An exhausted keystream cannot be overridden by a key, -q or a user mute.
+static int
+mbe_frame_slot_muted(const dsd_opts* opts, const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx,
+                     const mbe_frame_judgement* j) {
+    if (frame_ctx->crypto_muted || !j->admitted) {
+        return 1;
+    }
+    switch (frame_ctx->protocol) {
+        case DSD_VOICE_PROTOCOL_DMR: return !dsd_voice_crypto_class_audible(opts, slot, j->cls);
+        case DSD_VOICE_PROTOCOL_X2TDMA: return !mbe_x2_frame_audible(opts, slot, j);
         case DSD_VOICE_PROTOCOL_P25P1: return !p25_crypto_audio_output_permitted(opts, state, 0);
         case DSD_VOICE_PROTOCOL_P25P2:
             return state->p25_p2_audio_allowed[slot] == 0 || !p25_crypto_audio_output_permitted(opts, state, slot);
         case DSD_VOICE_PROTOCOL_NXDN:
-        case DSD_VOICE_PROTOCOL_DPMR:
-            return !dsd_voice_crypto_class_audible(opts, 0, dsd_nxdn_voice_crypto_class(state));
+        case DSD_VOICE_PROTOCOL_DPMR: return !dsd_voice_crypto_class_audible(opts, 0, j->cls);
         default: return 0;
     }
 }
@@ -2210,11 +2303,15 @@ mbe_post_uses_mono_left_staging(const dsd_state* state) {
 
 static void
 mbe_post_mono_left_audio(const dsd_opts* opts, dsd_state* state) {
-    int frame_errors = state->errs2;
-    if (DSD_SYNC_IS_X2TDMA(state->synctype) && state->currentslot == 1) {
-        frame_errors = state->errs2R;
+    const int x2 = DSD_SYNC_IS_X2TDMA(state->synctype);
+    const int slot = (x2 && state->currentslot == 1) ? 1 : 0;
+    state->debug_audio_errors += slot == 1 ? state->errs2R : state->errs2;
+    // An X2-TDMA frame its slot's verdict mutes (encrypted, or not known yet) stages no samples for the mono
+    // mixer and silence for the stereo one.
+    if (x2 && state->mbe_slot_muted[slot] != 0) {
+        DSD_MEMSET(state->s_l, 0, sizeof(state->s_l));
+        return;
     }
-    state->debug_audio_errors += frame_errors;
     dsd_voice_stage_short_left(opts, state);
 }
 
@@ -2259,8 +2356,8 @@ mbe_post_allow_stereo_slot_wav(const dsd_opts* opts, const dsd_state* state, int
     return (dsd_audio_record_gate_mono(opts, state, &allow_wav) == 0 && allow_wav) ? 1 : 0;
 }
 
-// X2-TDMA and D-STAR classify no encryption, so their WAV (mbe_post_wav_outputs()) answers to the talkgroup policy
-// alone.
+// D-STAR classifies no encryption, so its WAV (mbe_post_wav_outputs()) answers to the talkgroup policy alone; X2-TDMA's
+// also to the frame's verdict on its timeslot.
 // The mono post path's per-call WAV: slot 2's for DMR mono playing slot 2, and for a P25 Phase 2 slot-2 frame whatever
 // opts->dmr_stereo says (issue #651).
 static void
@@ -2281,7 +2378,7 @@ mbe_post_wav_outputs(dsd_opts* opts, dsd_state* state) {
         // (issue #654).
         const int slot = state->currentslot == 1 ? 1 : 0;
         if (opts->dmr_stereo_wav == 1 && (slot == 1 ? opts->wav_out_fR : opts->wav_out_f) != NULL
-            && mbe_record_policy_allows(opts, state, slot)) {
+            && state->mbe_slot_muted[slot] == 0 && mbe_record_policy_allows(opts, state, slot)) {
             dsd_write_mono_voice_to_slot_wav(opts, state, slot);
         }
         return;
@@ -2363,7 +2460,7 @@ mbe_capture_frame(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame
         case MBE_CAPTURE_PROVOICE:
         case MBE_CAPTURE_DSTAR: mbe_capture_fdma_frame(opts, state, frame_ctx); break;
         case MBE_CAPTURE_X2:
-            if (dsd_mbe_out_enabled(opts, 0)
+            if (dsd_mbe_out_enabled(opts, 0) && mbe_capture_slot_verdict_allows(state, state->currentslot)
                 && mbe_record_policy_allows(opts, state, state->currentslot == 1 ? 1 : 0)) {
                 mbe_save_x2_frame(opts, state, frame_ctx->ambe_d);
             }
@@ -2379,18 +2476,20 @@ mbe_capture_frame(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame
 static void
 mbe_post_audio_and_recording(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
     const int slot = state->currentslot == 1 ? 1 : 0;
+    const mbe_frame_judgement judgement = mbe_frame_judge(opts, state, slot, frame_ctx);
     // The frame goes through its slot's voice chain once, before anything reads it (issue #653): the shared short
     // staging and the per-call WAV take the same filtered, gained samples, whatever the output format, the output
     // type or the mute. An exhausted keystream produced no decoded media: keep that silence out of the HPF so its
     // history cannot revive it. The gates below still decide who receives it.
     if (frame_ctx->synth && !frame_ctx->crypto_muted) {
-        dsd_voice_chain_run(opts, state, frame_ctx->synth_slot, frame_ctx->synth);
+        const dsd_voice_frame_info info = mbe_frame_info(state, slot, frame_ctx, &judgement);
+        dsd_voice_chain_run(opts, state, frame_ctx->synth_slot, frame_ctx->synth, &info);
     }
     // Until a branch below stages this frame's short samples, the current slot's short frame is not this frame's.
     state->mbe_short_silenced[slot] = 1U;
     // The frame's one verdict (issue #655), after its keystream and before anything reads it: capture, short staging,
     // the per-call WAV, and the mixers that play it.
-    state->mbe_slot_muted[slot] = (uint8_t)mbe_frame_slot_muted(opts, state, slot, frame_ctx);
+    state->mbe_slot_muted[slot] = (uint8_t)mbe_frame_slot_muted(opts, state, slot, frame_ctx, &judgement);
     // A frame that stages no samples must not leave a previous frame for the mono mixer (issue #654).
     state->audio_out_idx = 0;
     if (mbe_post_uses_mono_left_staging(state)) {
@@ -2425,8 +2524,10 @@ mbe_file_end_replayed_call(dsd_opts* opts, dsd_state* state) {
     }
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;
-    // A file is a reception of its own: its first frame starts from clear high-pass state (issue #653).
+    // A file is a reception of its own: its first frame starts from clear high-pass state (issue #653) and the start
+    // gain (issue #518).
     dsd_voice_hpf_reset(state, -1);
+    dsd_voice_level_reset(state, -1);
 }
 
 void

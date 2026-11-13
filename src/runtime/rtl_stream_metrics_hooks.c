@@ -70,6 +70,17 @@ dsd_rtl_stream_metrics_hook_stream_generation(void) {
     return 0;
 }
 
+double
+dsd_rtl_stream_metrics_hook_monitor_deemph_gain(void) {
+    if (g_rtl_stream_metrics_hooks.monitor_deemph_gain) {
+        const double gain = g_rtl_stream_metrics_hooks.monitor_deemph_gain();
+        if (gain > 0.0) {
+            return gain;
+        }
+    }
+    return 1.0;
+}
+
 int
 dsd_rtl_stream_metrics_hook_stream_active(void) {
     if (g_rtl_stream_metrics_hooks.stream_active) {

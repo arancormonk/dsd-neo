@@ -345,11 +345,10 @@ dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, ch
 
 void
 // NOLINTNEXTLINE(bugprone-reserved-identifier,misc-use-internal-linkage)
-__wrap_beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len) {
+__wrap_beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int len) {
     UNUSED(opts);
     UNUSED(state);
     UNUSED(lr);
-    UNUSED(ad);
     UNUSED(len);
     g_beeper_count++;
     g_last_beeper_id = id;
