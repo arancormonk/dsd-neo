@@ -11815,7 +11815,9 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_p25_p2_mac_regroup
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/protocol/p25
 )
 target_link_libraries(
     dsd-neo_test_p25_p2_mac_regroup

@@ -634,6 +634,19 @@ p25p2_vpdu_network_table_writable(const p25p2_vpdu_ctx* ctx, const char* what) {
     return 0;
 }
 
+/* A regroup grant or update names its supergroups (@p sg2 0 when it names one): each row stays, as on a supergroup
+   voice message, and its members do not. SG 0 names none. */
+static void
+p25p2_vpdu_note_regroup_grant(const p25p2_vpdu_ctx* ctx, int sg1, int sg2) {
+    if ((sg1 == 0 && sg2 == 0) || !p25p2_vpdu_network_table_writable(ctx, "patch")) {
+        return;
+    }
+    p25_patch_update(ctx->state, sg1, /*is_patch*/ 1, /*active*/ 1);
+    if (sg2 != 0 && sg2 != sg1) {
+        p25_patch_update(ctx->state, sg2, /*is_patch*/ 1, /*active*/ 1);
+    }
+}
+
 static void
 p25p2_vpdu_emit_json(const p25p2_vpdu_ctx* ctx) {
     uint8_t mfid = (uint8_t)ctx->mac[2];
@@ -1259,6 +1272,7 @@ p25p2_vpdu_iter_block_01(p25p2_vpdu_ctx* ctx) {
         // Only for the group of a call active on this carrier, like every other trunking-off writer: a conventional
         // call takes p25_vc_freq as its own frequency (issue #575).
         p25p2_vpdu_update_playback_if_match(opts, state, sgroup, freq);
+        p25p2_vpdu_note_regroup_grant(ctx, sgroup, 0);
     }
 
     if (len_b < 0) {
@@ -1318,6 +1332,7 @@ p25p2_vpdu_iter_block_02(p25p2_vpdu_ctx* ctx) {
         //might only want to do these on a grant update, and not a grant by itself?
         // Only for the group of a call active on this carrier, as for the implicit grant (issue #575).
         p25p2_vpdu_update_playback_if_match(opts, state, sgroup, freq);
+        p25p2_vpdu_note_regroup_grant(ctx, sgroup, 0);
     }
 
     if (len_b < 0) {
@@ -1355,7 +1370,8 @@ p25p2_vpdu_iter_block_03(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n MFID90 Group Regroup Channel Grant Update");
         DSD_FPRINTF(stderr, "\n  Channel 1 [%04X] Group 1 [%d][%04X]", channel1, group1, group1);
         freq1 = process_channel_to_freq(opts, state, channel1);
-        if (channel2 != channel1 && p25p2_vpdu_channel_is_valid(channel2)) {
+        const int names_second = channel2 != channel1 && p25p2_vpdu_channel_is_valid(channel2);
+        if (names_second) {
             DSD_FPRINTF(stderr, "\n  Channel 2 [%04X] Group 2 [%d][%04X]", channel2, group2, group2);
             freq2 = process_channel_to_freq(opts, state, channel2);
         }
@@ -1364,14 +1380,15 @@ p25p2_vpdu_iter_block_03(p25p2_vpdu_ctx* ctx) {
 
         if (opts->trunk_tune_group_calls == 0) {
             ctx->skip_rest = 1;
-            goto BLOCK_END;
+        } else {
+            const int loop = (channel1 == channel2) ? 1 : 2;
+            const p25p2_vpdu_group_candidate candidates[2] = {{channel1, group1, freq1, P25_SM_SVC_UNKNOWN},
+                                                              {channel2, group2, freq2, P25_SM_SVC_UNKNOWN}};
+            const p25p2_vpdu_candidate_policy policy = {1};
+            (void)p25p2_vpdu_try_group_candidates(opts, state, candidates, loop, &policy);
         }
-
-        const int loop = (channel1 == channel2) ? 1 : 2;
-        const p25p2_vpdu_group_candidate candidates[2] = {{channel1, group1, freq1, P25_SM_SVC_UNKNOWN},
-                                                          {channel2, group2, freq2, P25_SM_SVC_UNKNOWN}};
-        const p25p2_vpdu_candidate_policy policy = {1};
-        (void)p25p2_vpdu_try_group_candidates(opts, state, candidates, loop, &policy);
+        // Group 2 is named only with a second channel of its own, as printed above.
+        p25p2_vpdu_note_regroup_grant(ctx, group1, names_second ? group2 : 0);
     }
 
     if (len_b < 0) {
@@ -2169,6 +2186,7 @@ p25p2_vpdu_iter_block_17(p25p2_vpdu_ctx* ctx) {
             p25_sm_event_t ev = p25_sm_ev_group_grant_update(channel, 0, sg, /*source*/ 0, svc);
             p25p2_vpdu_dispatch_grant_event(opts, state, &ev, dispatch);
         }
+        p25p2_vpdu_note_regroup_grant(ctx, sg, 0);
     }
 
     if (len_b < 0) {

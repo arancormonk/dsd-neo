@@ -17,12 +17,14 @@
  */
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <errno.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,6 +33,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25_patch_test_clock.h"
 #include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
@@ -418,6 +421,69 @@ build_failed_std_voice(unsigned char mac[24]) {
     mac[7] = 0x22;
 }
 
+/* Motorola regroup grants that name the supergroup: Channel Grant Implicit (0xA3: SVC, CHAN, SG, SRC), Explicit (0xA4:
+   SVC, CHAN-T, CHAN-R, SG, SRC), Grant Update (0xA5: CH1, SG1, CH2, SG2) and Voice Channel Update (0x83: SVC, SG,
+   CHAN). */
+static void
+put_moto_grant_implicit(unsigned char mac[24], int sg) {
+    mac[1] = 0xA3;
+    mac[2] = 0x90;
+    mac[3] = 11;
+    put16(mac, 5, 0x2001);
+    put16(mac, 7, sg);
+    mac[11] = 0x22;
+}
+
+static void
+put_moto_grant_explicit(unsigned char mac[24], int sg) {
+    mac[1] = 0xA4;
+    mac[2] = 0x90;
+    mac[3] = 13;
+    put16(mac, 5, 0x2001);
+    put16(mac, 7, 0x2002);
+    put16(mac, 9, sg);
+    mac[13] = 0x22;
+}
+
+static void
+put_moto_grant_update(unsigned char mac[24], int ch1, int sg1, int ch2, int sg2) {
+    mac[1] = 0xA5;
+    mac[2] = 0x90;
+    mac[3] = 11;
+    put16(mac, 4, ch1);
+    put16(mac, 6, sg1);
+    put16(mac, 8, ch2);
+    put16(mac, 10, sg2);
+}
+
+static void
+put_moto_vch_update(unsigned char mac[24], int sg) {
+    mac[1] = 0x83;
+    mac[2] = 0x90;
+    put16(mac, 4, sg);
+    put16(mac, 6, 0x2001);
+}
+
+static void
+build_failed_grant_implicit(unsigned char mac[24]) {
+    put_moto_grant_implicit(mac, SG_A);
+}
+
+static void
+build_failed_grant_explicit(unsigned char mac[24]) {
+    put_moto_grant_explicit(mac, SG_A);
+}
+
+static void
+build_failed_grant_update(unsigned char mac[24]) {
+    put_moto_grant_update(mac, 0x2001, SG_A, 0x2002, SG_C);
+}
+
+static void
+build_failed_vch_update(unsigned char mac[24]) {
+    put_moto_vch_update(mac, SG_A);
+}
+
 /* SG_A patched to WG 1401 and 1402, inactive and five seconds old, so a refresh, an add, a delete, KEY context or a
    cancel each shows. */
 static dsd_state*
@@ -492,6 +558,119 @@ test_failed_crc_changes_no_patch(void) {
     rc |= check_failed_crc_case("moto sg voice", build_failed_moto_voice, 0);
     rc |= check_failed_crc_case("moto sg voice extended", build_failed_moto_voice_ext, 0x22);
     rc |= check_failed_crc_case("standard sg voice", build_failed_std_voice, 0);
+    rc |= check_failed_crc_case("moto regroup grant implicit", build_failed_grant_implicit, 0);
+    rc |= check_failed_crc_case("moto regroup grant explicit", build_failed_grant_explicit, 0);
+    rc |= check_failed_crc_case("moto regroup grant update", build_failed_grant_update, 0);
+    rc |= check_failed_crc_case("moto regroup voice channel update", build_failed_vch_update, 0);
+    return rc;
+}
+
+static int
+expect_stamp(const char* tag, double got, double want) {
+    if (fabs(got - want) > 1e-6) {
+        DSD_FPRINTF(stderr, "%s: got %.6f want %.6f\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+/* SG_A patched to WG 1401 by a CRC-good Add, then 10 s of listening: a message naming SG_A shows on its stamps. */
+static dsd_state*
+grant_seed(double* members_at_add) {
+    dsd_state* state = new_state();
+    if (!state) {
+        return NULL;
+    }
+    unsigned char add[24] = {0};
+    put_moto_regroup(add, 1, 0x81, 7, SG_A);
+    put16(add, 6, WG(1));
+    p25_patch_test_listen_for(state, 1.0);
+    run_pdu(state, XCH_LCCH, P25_MAC_PDU_SIGNAL, add, 1);
+    const int idx = find_sg(state, SG_A);
+    *members_at_add = (idx >= 0) ? state->p25_patch_members_listen_s[idx] : -1.0;
+    p25_patch_test_listen_for(state, 10.0);
+    return state;
+}
+
+/* A CRC-good Motorola regroup grant or update refreshes the seen stamp of each supergroup it names on the listening
+   clock and never the members stamp, as the supergroup voice messages do. */
+static int
+check_grant_refreshes_seen(const char* name, mac_builder build) {
+    int rc = 0;
+    char tag[128];
+    double members_at_add = -1.0;
+    dsd_state* state = grant_seed(&members_at_add);
+    const int idx = state ? find_sg(state, SG_A) : -1;
+    if (idx < 0) {
+        DSD_FPRINTF(stderr, "%s: seed created no patch\n", name);
+        free_state(state);
+        return 1;
+    }
+    unsigned char mac[24] = {0};
+    build(mac);
+    run_pdu(state, XCH_LCCH, P25_MAC_PDU_SIGNAL, mac, 1);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: refreshes the seen stamp", name);
+    rc |= expect_stamp(tag, state->p25_patch_seen_listen_s[idx], state->p25_patch_listen_s);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: leaves the members stamp", name);
+    rc |= expect_stamp(tag, state->p25_patch_members_listen_s[idx], members_at_add);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: members still current", name);
+    rc |= expect_int(tag, dsd_p25_patch_has_current_wgid(state, idx, WG(1)), 1);
+    free_state(state);
+    return rc;
+}
+
+/* The update names SG2 only with a second channel of its own (not CH1, not 0 or 0xFFFF); a new SG2 gets a seen stamp
+   and no current members. SG 0 in any of the four messages creates no entry. */
+static int
+test_grants_refresh_seen_only(void) {
+    int rc = 0;
+    rc |= check_grant_refreshes_seen("grant implicit", build_failed_grant_implicit);
+    rc |= check_grant_refreshes_seen("grant explicit", build_failed_grant_explicit);
+    rc |= check_grant_refreshes_seen("grant update", build_failed_grant_update);
+    rc |= check_grant_refreshes_seen("voice channel update", build_failed_vch_update);
+
+    dsd_state* state = new_state();
+    if (!state) {
+        return 1;
+    }
+    p25_patch_test_listen_for(state, 5.0);
+    unsigned char mac[24] = {0};
+    put_moto_grant_update(mac, 0x2001, SG_A, 0x2002, SG_C);
+    run_pdu(state, XCH_LCCH, P25_MAC_PDU_SIGNAL, mac, 1);
+    const int idx_c = find_sg(state, SG_C);
+    rc |= expect_int("grant update names SG2", idx_c >= 0, 1);
+    if (idx_c >= 0) {
+        rc |= expect_stamp("grant update stamps SG2 seen", state->p25_patch_seen_listen_s[idx_c],
+                           state->p25_patch_listen_s);
+        rc |= expect_int("grant update gives SG2 no current members", dsd_p25_patch_members_current(state, idx_c), 0);
+    }
+    static const int no_second[] = {0x2001, 0x0000, 0xFFFF};
+    for (size_t k = 0; k < sizeof no_second / sizeof no_second[0]; k++) {
+        DSD_MEMSET(mac, 0, sizeof mac);
+        put_moto_grant_update(mac, 0x2001, SG_A, no_second[k], SG_B);
+        run_pdu(state, XCH_LCCH, P25_MAC_PDU_SIGNAL, mac, 1);
+        rc |= expect_int("grant update without a second channel names no SG2", find_sg(state, SG_B), -1);
+    }
+    free_state(state);
+
+    state = new_state();
+    if (!state) {
+        return 1;
+    }
+    DSD_MEMSET(mac, 0, sizeof mac);
+    put_moto_grant_implicit(mac, 0);
+    run_pdu(state, XCH_LCCH, P25_MAC_PDU_SIGNAL, mac, 1);
+    DSD_MEMSET(mac, 0, sizeof mac);
+    put_moto_grant_explicit(mac, 0);
+    run_pdu(state, XCH_LCCH, P25_MAC_PDU_SIGNAL, mac, 1);
+    DSD_MEMSET(mac, 0, sizeof mac);
+    put_moto_grant_update(mac, 0x2001, 0, 0x2002, 0);
+    run_pdu(state, XCH_LCCH, P25_MAC_PDU_SIGNAL, mac, 1);
+    DSD_MEMSET(mac, 0, sizeof mac);
+    put_moto_vch_update(mac, 0);
+    run_pdu(state, XCH_LCCH, P25_MAC_PDU_SIGNAL, mac, 1);
+    rc |= expect_int("SG 0 grants create no entry", state->p25_patch_count, 0);
+    free_state(state);
     return rc;
 }
 
@@ -643,6 +822,7 @@ run_cases(void) {
     rc |= test_adjacent_add_delete();
     rc |= test_delete_short();
     rc |= test_failed_crc_changes_no_patch();
+    rc |= test_grants_refresh_seen_only();
     rc |= test_failed_crc_changes_no_unit_table();
     return rc;
 }

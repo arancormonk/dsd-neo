@@ -3217,14 +3217,15 @@ suite runs under this compiler.
   CRC-good control-channel PDUs only when it is at most 0.25 s (`DSD_P25_PATCH_LISTEN_GAP_S`: a control channel sends
   one every few tens of ms, and any departure takes longer), and `dsd_p25_patch_listen_break()` makes the next note
   start afresh. Each entry carries two stamps on that clock, each current for `DSD_P25_PATCH_TTL_SECONDS` (20 s) of
-  listening. The seen stamp (`p25_patch_seen_listen_s`: any message that names the supergroup, such as an Add,
-  LCGRGR, the Phase 1 MFID90 regroup grants TSBK 0x02 and MBT 0x02 and grant update TSBK 0x03 (its second supergroup
-  only with a second channel), the Phase 2 supergroup voice messages MFID90 0x80/0xA0 and standard 0x90, or a regroup
-  command) keeps the row; the members stamp (`p25_patch_members_listen_s`: only a membership message, a regroup Add on
-  TSBK 0x00, MAC 0x81 or LC 0x03, an Extended Function create with its radio, a Harris regroup member or KEY/ALG/SSN
-  command) keeps its member lists and KEY/ALG/SSN context usable. A message that only names the supergroup says nothing
-  about who is in the patch, so `p25_patch_update()` refreshes the seen stamp alone and an expired member list or KEY=0
-  never becomes current again from it. Readers take a const state and never mutate it; the writers
+  listening. The seen stamp (`p25_patch_seen_listen_s`: any message that names the supergroup, such as an Add, LCGRGR,
+  the Phase 1 MFID90 regroup grants TSBK 0x02 and MBT 0x02 and grant update TSBK 0x03, the Phase 2 MFID90 regroup grants
+  0xA3/0xA4, grant update 0xA5 and voice channel update 0x83 (an update's second supergroup only with a second channel
+  of its own), the Phase 2 supergroup voice messages MFID90 0x80/0xA0 and standard 0x90, or a regroup command) keeps the
+  row; the members stamp (`p25_patch_members_listen_s`: only a membership message, a regroup Add on TSBK 0x00, MAC 0x81
+  or LC 0x03, an Extended Function create with its radio, a Harris regroup member or KEY/ALG/SSN command) keeps its
+  member lists and KEY/ALG/SSN context usable. A message that only names the supergroup says nothing about who is in the
+  patch, so `p25_patch_update()` refreshes the seen stamp alone and an expired member list or KEY=0 never becomes
+  current again from it. Readers take a const state and never mutate it; the writers
   (`src/protocol/p25/p25_patch.c`) expire members that are not current (groups, radios and KEY context) before they
   change an entry. Every accepted Add, a duplicate included, refreshes both stamps and reactivates the entry; an Add
   of the supergroup as its own member is ignored, and a Delete that lists it ends the patch; the last member's Delete
@@ -10225,14 +10226,14 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   (0x78), the time and date announcement (0x75) and the protection parameters (bridged 0x7F); so it proves no NAC
   either. Nor does it change the unit and group tables (`p25p2_vpdu_network_table_writable()`): no patch (the Motorola
   regroup Add/Delete 0x81/0x89 and Extended Function create/cancel 0x84, the Harris regroup with its KEY context 0xB0,
-  the supergroup voice refreshes MFID90 0x80/0xA0 and standard 0x90), no radio registration or deregistration (unit
-  and location registration responses 0xEC/0x6C/0x6B, deregistration acknowledgement 0x6F/0xEF) and no group
-  affiliation (group affiliation responses 0x68/0xE8, group voice service request 0x41, MFID90 0xA0); each still
-  prints. The one table write such a PDU still makes is an allowed grant's source-to-talkgroup affiliation
-  (`p25_grant_track_src_tg()`, decided: `-F` acts on the grant on purpose and its call publishes that source and
-  talkgroup anyway; gating it would need a CRC flag in `p25_sm_event_t` at every Phase 2 grant site). The TSBK path
-  (`tsbk_dispatch_message()`) and the MBT trunking path (`p25_mpdu_handle_trunking()`), which carry the Phase 1
-  registration and affiliation responses, need their CRCs under `-F` too. A seed set by hand (`-X`,
+  the supergroup voice and regroup grant refreshes MFID90 0x80/0xA0/0xA3/0xA4/0xA5/0x83 and standard 0x90), no radio
+  registration or deregistration (unit and location registration responses 0xEC/0x6C/0x6B, deregistration
+  acknowledgement 0x6F/0xEF) and no group affiliation (group affiliation responses 0x68/0xE8, group voice service
+  request 0x41, MFID90 0xA0); each still prints. The one table write such a PDU still makes is an allowed grant's
+  source-to-talkgroup affiliation (`p25_grant_track_src_tg()`, decided: `-F` acts on the grant on purpose and its call
+  publishes that source and talkgroup anyway; gating it would need a CRC flag in `p25_sm_event_t` at every Phase 2 grant
+  site). The TSBK path (`tsbk_dispatch_message()`) and the MBT trunking path (`p25_mpdu_handle_trunking()`), which carry
+  the Phase 1 registration and affiliation responses, need their CRCs under `-F` too. A seed set by hand (`-X`,
   or `svc_set_p2_params()` for the menu, Qt and API) with all
   three parts nonzero sets `p2_hardset`: no NID or network status rewrites it, and neither a CC selection
   (`p25_sm_forget_selected_site()`) nor the no-carrier cleanup after generic trunk activity
