@@ -30183,6 +30183,7 @@ if(DSD_HAS_RADIO)
     add_executable(
         dsd-neo_test_signal_quiet_calibrate
         io/signal_quiet_calibrate.cpp
+        io/signal_quiet_scene.cpp
     )
     target_include_directories(
         dsd-neo_test_signal_quiet_calibrate
@@ -30214,6 +30215,24 @@ if(DSD_HAS_RADIO)
             PROPERTIES TIMEOUT 120
         )
     endif()
+    # The calibration's receiver responses and capture coordinates, against fixtures of their own.
+    add_executable(
+        dsd-neo_test_io_signal_quiet_scene
+        io/test_io_signal_quiet_scene.cpp
+        io/signal_quiet_scene.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_signal_quiet_scene
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_signal_quiet_scene
+        PRIVATE dsd-neo_io_radio dsd-neo_core ${LIBS}
+    )
+    add_test(
+        NAME IO_SIGNAL_QUIET_SCENE
+        COMMAND dsd-neo_test_io_signal_quiet_scene
+    )
     # The shared tap forgets a stopped stream's capture, run on a real I/Q replay stream.
     add_executable(dsd-neo_test_io_rtl_signal_tap io/test_io_rtl_signal_tap.cpp)
     target_include_directories(
