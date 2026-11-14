@@ -621,14 +621,15 @@ p25p2_vpdu_system_tables_writable(const p25p2_vpdu_ctx* ctx) {
     return 0;
 }
 
-/* Nor do its regroup commands and supergroup voice change any patch: no member added or deleted, no KEY context, no
- * create, cancel or supergroup refresh. They still print. */
+/* Nor does it change the network tables kept about units and groups: a patch (no member added or deleted, no KEY
+ * context, no create, cancel or supergroup refresh), a radio's registration or deregistration, or a group
+ * affiliation. Each message still prints, with " (CRC failed; <what> not applied)". */
 static int
-p25p2_vpdu_patch_writable(const p25p2_vpdu_ctx* ctx) {
+p25p2_vpdu_network_table_writable(const p25p2_vpdu_ctx* ctx, const char* what) {
     if (ctx->crc_ok) {
         return 1;
     }
-    DSD_FPRINTF(stderr, " (CRC failed; patch not applied)");
+    DSD_FPRINTF(stderr, " (CRC failed; %s not applied)", what);
     return 0;
 }
 
@@ -2105,7 +2106,7 @@ p25p2_vpdu_handle_moto_regroup_add_delete(const p25p2_vpdu_ctx* ctx, int is_add)
     }
     const int sg = p25p2_vpdu_u16(ctx->mac, 4 + len_a);
     DSD_FPRINTF(stderr, "  SG: %d", sg);
-    const int apply = p25p2_vpdu_patch_writable(ctx);
+    const int apply = p25p2_vpdu_network_table_writable(ctx, "patch");
 
     const int pairs = (len - 5) / 2;
     int members = 0;
@@ -3120,7 +3121,7 @@ p25p2_vpdu_iter_block_35(p25p2_vpdu_ctx* ctx) {
             p25p2_vpdu_store_slot_svc(state, slot, svc);
         }
         // Treat observed Super Group activity as an active patch (vendor-specific signaling may differ)
-        if (p25p2_vpdu_patch_writable(ctx)) {
+        if (p25p2_vpdu_network_table_writable(ctx, "patch")) {
             p25_patch_update(state, gr, /*is_patch*/ 1, /*active*/ 1);
         }
 
@@ -3168,7 +3169,7 @@ p25p2_vpdu_iter_block_36(p25p2_vpdu_ctx* ctx) {
         if (tracked_voice) {
             p25p2_vpdu_store_slot_svc(state, slot, svc);
         }
-        if (p25p2_vpdu_patch_writable(ctx)) {
+        if (p25p2_vpdu_network_table_writable(ctx, "patch")) {
             p25_patch_update(state, gr, /*is_patch*/ 1, /*active*/ 1);
         }
 
@@ -3177,7 +3178,7 @@ p25p2_vpdu_iter_block_36(p25p2_vpdu_ctx* ctx) {
         uint16_t mfid90_sys = (uint16_t)(((MAC[12 + len_a] & 0x0F) << 8) | MAC[13 + len_a]);
         DSD_FPRINTF(stderr, " EXT - FQSUID: %05X:%03X.%d", mfid90_wacn, mfid90_sys, src);
 
-        // A failed-CRC PDU (-F) records no affiliation either.
+        // A failed-CRC PDU (-F) records no affiliation either; the patch note above already said so.
         if (ctx->crc_ok && src != 0 && gr != 0) {
             p25_ga_add(state, (uint32_t)src, (uint16_t)gr);
         }
@@ -3295,7 +3296,7 @@ p25p2_vpdu_handle_harris_a4_grg(const p25p2_vpdu_ctx* ctx) {
     };
 
     p25p2_vpdu_print_harris_a4_options(tga, ssn);
-    grg.apply = p25p2_vpdu_patch_writable(ctx);
+    grg.apply = p25p2_vpdu_network_table_writable(ctx, "patch");
     if ((tga & 0x2) == 2) {
         p25p2_vpdu_handle_harris_a4_wgid(state, mac, len_a, msg_len, &grg);
     } else {
@@ -3356,7 +3357,9 @@ p25p2_vpdu_iter_block_38(p25p2_vpdu_ctx* ctx) {
         if (RV == 0) {
             DSD_FPRINTF(stderr, " REG_ACCEPT;");
             // Track affiliated RID
-            p25_aff_register(state, (uint32_t)src);
+            if (p25p2_vpdu_network_table_writable(ctx, "registration")) {
+                p25_aff_register(state, (uint32_t)src);
+            }
         }
         if (RV == 1) {
             DSD_FPRINTF(stderr, " REG_FAIL;"); //RFSS was unable to verify
@@ -3381,7 +3384,10 @@ BLOCK_END:
 }
 
 static void
-p25p2_vpdu_handle_location_registration_response(dsd_state* state, const unsigned long long int* MAC, int len_a) {
+p25p2_vpdu_handle_location_registration_response(const p25p2_vpdu_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    const unsigned long long int* MAC = ctx->mac;
+    const int len_a = ctx->len_a;
     int k = 1; // vPDU offset
     if (MAC[len_a] == 0x07) {
         k = 0; // TSBK offset
@@ -3403,8 +3409,10 @@ p25p2_vpdu_handle_location_registration_response(dsd_state* state, const unsigne
     switch (rv) {
         case 0:
             DSD_FPRINTF(stderr, " REG_ACCEPT;");
-            p25_aff_register(state, (uint32_t)target);
-            p25_ga_add(state, (uint32_t)target, (uint16_t)group);
+            if (p25p2_vpdu_network_table_writable(ctx, "registration")) {
+                p25_aff_register(state, (uint32_t)target);
+                p25_ga_add(state, (uint32_t)target, (uint16_t)group);
+            }
             break;
         case 1: DSD_FPRINTF(stderr, " REG_FAIL;"); break;
         case 2: DSD_FPRINTF(stderr, " REG_DENY;"); break;
@@ -3427,7 +3435,7 @@ p25p2_vpdu_iter_block_39(p25p2_vpdu_ctx* ctx) {
     UNUSED4(type, mac_res, len_c, slot);
 
     if (MAC[1 + len_a] == 0x6B) {
-        p25p2_vpdu_handle_location_registration_response(state, MAC, len_a);
+        p25p2_vpdu_handle_location_registration_response(ctx);
     }
 
     if (MAC[1 + len_a] == 0x6C) {
@@ -3453,7 +3461,9 @@ p25p2_vpdu_iter_block_39(p25p2_vpdu_ctx* ctx) {
         if (RV == 0) {
             DSD_FPRINTF(stderr, " REG_ACCEPT;");
             // Track affiliated RID
-            p25_aff_register(state, (uint32_t)src);
+            if (p25p2_vpdu_network_table_writable(ctx, "registration")) {
+                p25_aff_register(state, (uint32_t)src);
+            }
         }
         if (RV == 1) {
             DSD_FPRINTF(stderr, " REG_FAIL;"); //RFSS was unable to verify
@@ -3530,7 +3540,9 @@ p25p2_vpdu_iter_block_41(p25p2_vpdu_ctx* ctx) {
             DSD_FPRINTF(stderr, " - Extended;");
         }
         // Remove RID from affiliation table
-        p25_aff_deregister(state, (uint32_t)src);
+        if (p25p2_vpdu_network_table_writable(ctx, "registration")) {
+            p25_aff_deregister(state, (uint32_t)src);
+        }
     }
 
     if (len_b < 0) {
@@ -4165,7 +4177,7 @@ p25p2_vpdu_iter_block_52(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n Group Affiliation Response");
         DSD_FPRINTF(stderr, "\n  LG: %d GAV: %d AGA: %d GA: %d TA: %d", lg, gav, aga, ga, ta);
         // Track RID affiliation (TA is the target address / unit ID)
-        if (gav == 0) { // Accepted
+        if (gav == 0 && p25p2_vpdu_network_table_writable(ctx, "affiliation")) { // Accepted
             p25_aff_register(state, (uint32_t)ta);
             // Also track group affiliation (RID -> TG mapping)
             p25_ga_add(state, (uint32_t)ta, (uint32_t)ga);
@@ -4517,7 +4529,7 @@ p25p2_vpdu_handle_group_voice_service_request(p25p2_vpdu_ctx* ctx) {
     DSD_FPRINTF(stderr, "\n  SVC [%02X] Group [%d][%04X] Source [%d]", svc, group, group, source);
     p25p2_vpdu_print_svc_no_state(ctx->opts, svc);
     p25p2_vpdu_print_target_label(ctx->state, DSD_CALL_KIND_GROUP_VOICE, (uint32_t)group);
-    if (source != 0 && group != 0) {
+    if (source != 0 && group != 0 && p25p2_vpdu_network_table_writable(ctx, "affiliation")) {
         p25_ga_add(ctx->state, (uint32_t)source, (uint16_t)group);
     }
 }
@@ -4895,7 +4907,7 @@ p25p2_vpdu_handle_group_affiliation_response_extended(p25p2_vpdu_ctx* ctx) {
                                  "AFF-X Target: %d GA: %d AGA: %d Response: %d; ", target, group, announcement_group,
                                  response);
 
-    if (response == 0) {
+    if (response == 0 && p25p2_vpdu_network_table_writable(ctx, "affiliation")) {
         p25_aff_register(state, (uint32_t)target);
         p25_ga_add(state, (uint32_t)target, (uint16_t)group);
     }
@@ -5033,7 +5045,7 @@ p25p2_vpdu_handle_motorola_regroup_extended_function(const p25p2_vpdu_ctx* ctx) 
     } else if (class_id == 0x02 && operand == 0x00) {
         int sg = argument & 0xFFFF;
         DSD_FPRINTF(stderr, " Create Supergroup");
-        if (sg != 0 && p25p2_vpdu_patch_writable(ctx)) {
+        if (sg != 0 && p25p2_vpdu_network_table_writable(ctx, "patch")) {
             p25_patch_prepare_grg_update(ctx->state, sg, /*is_patch*/ 1, /*active*/ 1, /*ssn*/ -1);
             if (target != 0) {
                 p25_patch_add_wuid(ctx->state, sg, (uint32_t)target);
@@ -5042,7 +5054,7 @@ p25p2_vpdu_handle_motorola_regroup_extended_function(const p25p2_vpdu_ctx* ctx) 
     } else if (class_id == 0x02 && operand == 0x01) {
         int sg = argument & 0xFFFF;
         DSD_FPRINTF(stderr, " Cancel Supergroup");
-        if (sg != 0 && p25p2_vpdu_patch_writable(ctx)) {
+        if (sg != 0 && p25p2_vpdu_network_table_writable(ctx, "patch")) {
             p25_patch_clear_sg(ctx->state, sg);
         }
     }
@@ -5249,7 +5261,7 @@ p25p2_vpdu_handle_standard_group_regroup_voice_user_abbreviated(p25p2_vpdu_ctx* 
     DSD_FPRINTF(stderr, "\n VCH %d - Super Group %d SRC %d Standard Group Regroup Voice", slot + 1, supergroup, source);
 
     if (supergroup != 0) {
-        if (p25p2_vpdu_patch_writable(ctx)) {
+        if (p25p2_vpdu_network_table_writable(ctx, "patch")) {
             p25_patch_update(state, supergroup, /*is_patch*/ 1, /*active*/ 1);
         }
         if (p25p2_vpdu_observe_voice(ctx->opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)supergroup,

@@ -12,7 +12,8 @@
  * the LCCH's NAC). Bytes past the span here are nonzero so a parser that reads them stores a member.
  *
  * Under -F a MAC_SIGNAL that failed its CRC still reaches the VPDU decoder (process_MAC_VPDU_crc() with crc_ok 0).
- * It prints, but changes no patch: no member, KEY context, cancel or supergroup refresh.
+ * It prints, but changes no patch (no member, KEY context, cancel or supergroup refresh) and no unit table: no radio
+ * registered or deregistered, no group affiliation recorded.
  */
 
 #include <dsd-neo/core/opts.h>
@@ -26,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -493,6 +495,142 @@ test_failed_crc_changes_no_patch(void) {
     return rc;
 }
 
+/* The unit tables: registered radios (p25_aff_*) and group affiliations (p25_ga_*). */
+static int
+unit_tables_unchanged(const dsd_state* a, const dsd_state* b) {
+    return a->p25_aff_count == b->p25_aff_count && a->p25_ga_count == b->p25_ga_count
+           && memcmp(a->p25_aff_rid, b->p25_aff_rid, sizeof a->p25_aff_rid) == 0
+           && memcmp(a->p25_aff_last_seen, b->p25_aff_last_seen, sizeof a->p25_aff_last_seen) == 0
+           && memcmp(a->p25_ga_rid, b->p25_ga_rid, sizeof a->p25_ga_rid) == 0
+           && memcmp(a->p25_ga_tg, b->p25_ga_tg, sizeof a->p25_ga_tg) == 0
+           && memcmp(a->p25_ga_last_seen, b->p25_ga_last_seen, sizeof a->p25_ga_last_seen) == 0;
+}
+
+#define SEED_RID 0x000100u /* low octet 0: a message reading it past its length runs into null fill */
+
+/* SEED_RID registered and affiliated to SG_A five seconds ago, so a refresh, a new entry or a deregistration shows. */
+static dsd_state*
+unit_seed(void) {
+    dsd_state* state = new_state();
+    if (!state) {
+        return NULL;
+    }
+    p25_aff_register(state, SEED_RID);
+    p25_ga_add(state, SEED_RID, SG_A);
+    const time_t old = dsd_decode_time() - 5;
+    for (size_t i = 0; i < sizeof state->p25_aff_rid / sizeof state->p25_aff_rid[0]; i++) {
+        if (state->p25_aff_rid[i] == SEED_RID) {
+            state->p25_aff_last_seen[i] = old;
+        }
+    }
+    for (size_t i = 0; i < sizeof state->p25_ga_rid / sizeof state->p25_ga_rid[0]; i++) {
+        if (state->p25_ga_rid[i] == SEED_RID) {
+            state->p25_ga_last_seen[i] = old;
+        }
+    }
+    return state;
+}
+
+static void
+put24(unsigned char* mac, int pos, uint32_t value) {
+    mac[pos] = (unsigned char)((value >> 16) & 0xFF);
+    mac[pos + 1] = (unsigned char)((value >> 8) & 0xFF);
+    mac[pos + 2] = (unsigned char)(value & 0xFF);
+}
+
+/* Unit Registration Response, extended (0xEC): accepted, SRC at octets 8-10. */
+static void
+build_failed_unit_reg_ext(unsigned char mac[24]) {
+    mac[1] = 0xEC;
+    put24(mac, 8, 0x000202);
+}
+
+/* Location Registration Response (0x6B): accepted, GROUP at 4-5, TARGET at 8-10. */
+static void
+build_failed_location_reg(unsigned char mac[24]) {
+    mac[1] = 0x6B;
+    put16(mac, 4, SG_C);
+    put24(mac, 8, 0x000303);
+}
+
+/* Unit Registration Response (0x6C): accepted, SRC at 8-10. */
+static void
+build_failed_unit_reg(unsigned char mac[24]) {
+    mac[1] = 0x6C;
+    put24(mac, 8, 0x000404);
+}
+
+/* Unit Deregistration Acknowledgement (0x6F) of SEED_RID, SRC at octets 7-9. */
+static void
+build_failed_unit_dereg(unsigned char mac[24]) {
+    mac[1] = 0x6F;
+    put24(mac, 7, SEED_RID);
+}
+
+/* Group Affiliation Response (0x68): accepted, GA at 6-7, TA at 8-10. */
+static void
+build_failed_group_aff(unsigned char mac[24]) {
+    mac[1] = 0x68;
+    put16(mac, 6, SG_C);
+    put24(mac, 8, 0x000505);
+}
+
+/* Group Voice Service Request (0x41): GROUP at 3-4, SOURCE at 5-7. */
+static void
+build_failed_group_voice_request(unsigned char mac[24]) {
+    mac[1] = 0x41;
+    put16(mac, 3, SG_C);
+    put24(mac, 5, 0x000606);
+}
+
+/* Group Affiliation Response, extended (0xE8): accepted, GA at 6-7, TARGET at 14-16. */
+static void
+build_failed_group_aff_ext(unsigned char mac[24]) {
+    mac[1] = 0xE8;
+    put16(mac, 6, SG_C);
+    put24(mac, 14, 0x000707);
+}
+
+static int
+check_failed_crc_unit_case(const char* name, mac_builder build) {
+    int rc = 0;
+    char tag[96];
+    unsigned char mac[24] = {0};
+    build(mac);
+
+    for (int crc_ok = 0; crc_ok <= 1; crc_ok++) {
+        dsd_state* state = unit_seed();
+        dsd_state* before = new_state();
+        if (!state || !before) {
+            free_state(state);
+            free(before);
+            return 1;
+        }
+        DSD_MEMCPY(before, state, sizeof(*state));
+        run_pdu(state, XCH_LCCH, P25_MAC_PDU_SIGNAL, mac, crc_ok);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: %s", name,
+                     crc_ok ? "CRC-good PDU writes the unit tables (control)" : "failed CRC changes no unit table");
+        rc |= expect_int(tag, unit_tables_unchanged(before, state), crc_ok ? 0 : 1);
+        free(before);
+        free_state(state);
+    }
+    return rc;
+}
+
+static int
+test_failed_crc_changes_no_unit_table(void) {
+    int rc = 0;
+    rc |= check_failed_crc_unit_case("unit registration response ext", build_failed_unit_reg_ext);
+    rc |= check_failed_crc_unit_case("location registration response", build_failed_location_reg);
+    rc |= check_failed_crc_unit_case("unit registration response", build_failed_unit_reg);
+    rc |= check_failed_crc_unit_case("unit deregistration ack", build_failed_unit_dereg);
+    rc |= check_failed_crc_unit_case("group affiliation response", build_failed_group_aff);
+    rc |= check_failed_crc_unit_case("group voice service request", build_failed_group_voice_request);
+    rc |= check_failed_crc_unit_case("group affiliation response ext", build_failed_group_aff_ext);
+    rc |= check_failed_crc_unit_case("moto sg voice extended", build_failed_moto_voice_ext);
+    return rc;
+}
+
 static int
 run_cases(void) {
     int rc = 0;
@@ -505,6 +643,7 @@ run_cases(void) {
     rc |= test_adjacent_add_delete();
     rc |= test_delete_short();
     rc |= test_failed_crc_changes_no_patch();
+    rc |= test_failed_crc_changes_no_unit_table();
     return rc;
 }
 
@@ -549,6 +688,8 @@ main(void) {
     }
     rc |= expect_file_contains("failed CRC add still prints", cap.path, "Group Regroup Add Command");
     rc |= expect_file_contains("failed CRC note", cap.path, "(CRC failed; patch not applied)");
+    rc |= expect_file_contains("failed CRC unit note", cap.path, "(CRC failed; registration not applied)");
+    rc |= expect_file_contains("failed CRC affiliation note", cap.path, "(CRC failed; affiliation not applied)");
     (void)remove(cap.path);
     return rc;
 }

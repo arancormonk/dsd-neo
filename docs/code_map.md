@@ -10141,11 +10141,14 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   pending announcements they resolve, the secondary control channel broadcasts (0xE9/0x79/0x69: site fill-in,
   candidates, pending announcements, scan-list fallback), the adjacent-status neighbours, the system service broadcast
   (0x78), the time and date announcement (0x75) and the protection parameters (bridged 0x7F); so it proves no NAC
-  either. Nor does it change a patch (`p25p2_vpdu_patch_writable()`): the Motorola regroup Add/Delete (0x81/0x89) and
-  Extended Function create/cancel (0x84), the Harris regroup with its KEY context (0xB0) and the supergroup voice
-  refreshes (MFID90 0x80/0xA0, standard 0x90) print but apply nothing, and the 0xA0 records no group affiliation. The
-  TSBK path (`tsbk_dispatch_message()`) and the MBT trunking path (`p25_mpdu_handle_trunking()`) need their CRCs under
-  `-F` too. A seed set by hand (`-X`, or `svc_set_p2_params()` for the menu, Qt and API) with all
+  either. Nor does it change the unit and group tables (`p25p2_vpdu_network_table_writable()`): no patch (the Motorola
+  regroup Add/Delete 0x81/0x89 and Extended Function create/cancel 0x84, the Harris regroup with its KEY context 0xB0,
+  the supergroup voice refreshes MFID90 0x80/0xA0 and standard 0x90), no radio registration or deregistration (unit
+  and location registration responses 0xEC/0x6C/0x6B, deregistration acknowledgement 0x6F/0xEF) and no group
+  affiliation (group affiliation responses 0x68/0xE8, group voice service request 0x41, MFID90 0xA0); each still
+  prints. The TSBK path (`tsbk_dispatch_message()`) and the MBT trunking path (`p25_mpdu_handle_trunking()`), which
+  carry the Phase 1 registration and affiliation responses, need their CRCs under `-F` too. A seed set by hand (`-X`,
+  or `svc_set_p2_params()` for the menu, Qt and API) with all
   three parts nonzero sets `p2_hardset`: no NID or network status rewrites it, and neither a CC selection
   (`p25_sm_forget_selected_site()`) nor the no-carrier cleanup after generic trunk activity
   (`no_carrier_clear_stale_p25_return_hints_after_generic_activity()`) clears it; both still drop its proof. Every other
