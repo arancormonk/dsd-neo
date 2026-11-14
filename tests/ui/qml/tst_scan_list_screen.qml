@@ -910,7 +910,7 @@ Item {
                 {field: "scanPort", key: "port", fallback: 1234, valid: "1234"},
                 {field: "scanEntryDwell", key: "dwellMs", fallback: 0, valid: "1000", entry: true},
                 {field: "scanEntryHold", key: "holdMs", fallback: 0, valid: "2000", entry: true},
-                // A refused set gain stores nothing new: the entry keeps its 25.
+                // A refused set gain keeps the last valid one: the entry keeps its 25.
                 {field: "scanEntryGain", key: "gainDb", fallback: 25, valid: "26", entry: true},
                 {field: "scanEntryFrequency", key: "freqMhz", fallback: "", valid: "851.5", entry: true}
             ];
@@ -1006,7 +1006,7 @@ Item {
             choose("scanEntryGainMode", 2);
             verify(control("scanEntryGain").visible);
             compare(control("scanEntryGain").error, "Enter a gain from 1 to 49 dB.");
-            compare(screen.entries[0].gainDb, 0, "an empty Set stores nothing new");
+            compare(screen.entries[0].gainDb, 0, "an empty Set keeps the last valid value");
             edit("scanEntryGain", "12");
             compare(control("scanEntryGain").error, "");
             compare(screen.entries[0].gainDb, 12);
@@ -1026,9 +1026,9 @@ Item {
                     {tag: "range", value: "50", stored: 5}];
         }
 
-        // An emptied or refused Set stays Set with its error and stores nothing
-        // new (the last valid gain stays); before, an emptied field turned the
-        // entry to inherit.
+        // An emptied or refused Set stays Set with its error and holds Save,
+        // while the entry keeps the last valid gain typed; before, an emptied
+        // field turned the entry to inherit.
         function test_entry_gain_refused_set_stays_set(data) {
             verify(scanLists.add({
                 name: "Entry gain kept", isDraft: true,
@@ -1037,7 +1037,7 @@ Item {
             var before = JSON.stringify(scanLists.get(0));
             screen.openFor(0);
             edit("scanEntryGain", data.value);
-            compare(screen.entries[0].gainDb, data.stored, "a refused gain stores nothing new");
+            compare(screen.entries[0].gainDb, data.stored, "a refused gain keeps the last valid one");
             compare(control("scanEntryGainMode").currentIndex, 2);
             verify(control("scanEntryGain").visible);
             compare(control("scanEntryGain").error, "Enter a gain from 1 to 49 dB.");
@@ -1112,6 +1112,66 @@ Item {
             compare(scanLists.get(0).entries.map(function (entry) {
                 return entry.gainDb;
             }), [-1, 0, 25]);
+        }
+
+        // Removing an entry drops only its own gain draft: the others keep
+        // their choice, text, error and stored value.
+        function test_entry_gain_draft_survives_removal() {
+            edit("scanListName", "Remove entry gain");
+            screen.addFrequency("First", "p25", "851.5");
+            screen.addFrequency("Second", "dmr", "461");
+            screen.addFrequency("Third", "nfm", "154.43");
+            choose("scanEntryGainMode", 2, entryRow(0));
+            edit("scanEntryGain", "50", entryRow(0));
+            choose("scanEntryGainMode", 1, entryRow(1));
+            control("scanEntryGainMode", entryRow(2)).activated(2);
+            control("scanEntryRemove", entryRow(1)).Accessible.pressAction();
+            compare(screen.entries.map(function (entry) {
+                return entry.name;
+            }), ["First", "Third"]);
+            compare(screen.entries.map(function (entry) {
+                return entry.gainDb;
+            }), [5, -1]);
+            compare(control("scanEntryGainMode", entryRow(0)).currentIndex, 2);
+            compare(control("scanEntryGain", entryRow(0)).text, "50");
+            verify(control("scanEntryGain", entryRow(0)).error.length > 0);
+            compare(control("scanEntryGainMode", entryRow(1)).currentIndex, 2);
+            compare(control("scanEntryGain", entryRow(1)).text, "");
+            verify(control("scanEntryGain", entryRow(1)).error.length > 0);
+            compare(Object.keys(screen.entryInputText).length, 2);
+        }
+
+        // RTL gain means nothing on an Airspy list: the entry's gain hides with
+        // the list's, a refused Set behind it never holds Save, and the stored
+        // gain is left as it was.
+        function test_entry_gain_hidden_on_airspy() {
+            verify(scanLists.add({
+                name: "Airspy entry gain", isDraft: true,
+                entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5", gainDb: 25}]
+            }));
+            screen.openFor(0);
+            edit("scanEntryGain", "");
+            verify(control("scanEntryGain").error.length > 0);
+            control("scanSource_airspy").clicked();
+            compare(screen.draft.sourceType, "airspy");
+            verify(screen.validateEntrySettings(), "a hidden refused Set holds nothing: " + screen.validationText);
+            verify(!control("scanEntryGainMode").visible, "no entry gain on an Airspy list");
+            verify(!control("scanEntryGainHint").visible);
+            verify(!control("scanEntryGain").visible);
+            compare(control("scanEntryGain").error, "");
+            screen.addFrequency("Second", "dmr", "461");
+            verify(!control("scanEntryGainMode", entryRow(1)).visible);
+            verify(!control("scanEntryGainHint", entryRow(1)).visible);
+            control("scanSaveDraft").Accessible.pressAction();
+            compare(closedSpy.count, 1, screen.validationText);
+            compare(scanLists.get(0).entries.map(function (entry) {
+                return entry.gainDb;
+            }), [25, -1]);
+            screen.openFor(0);
+            control("scanSource_usb").clicked();
+            verify(control("scanEntryGainMode").visible);
+            compare(control("scanEntryGainMode").currentIndex, 2);
+            compare(control("scanEntryGain").text, "25");
         }
 
         // B4: Inherit says where the gain comes from, by the entry's kind.

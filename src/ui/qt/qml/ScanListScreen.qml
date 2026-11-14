@@ -290,7 +290,7 @@ Rectangle {
 
     // The gain choice (0 Inherit, 1 Automatic, 2 Set) and the Set text stay in
     // the entry's draft. The entry stores -1, 0 or a valid 1-49 dB; a refused
-    // Set stores nothing new and its error holds Save.
+    // Set keeps the last valid value and its error holds Save.
     function setEntryGain(row, mode, text) {
         recordEntryInput(row, {
             gainMode: mode,
@@ -603,6 +603,7 @@ Rectangle {
                         label: screen.entryLabel(entryData)
                         canMoveUp: index > 0
                         canMoveDown: index < screen.entries.length - 1
+                        gainOffered: screen.draft.sourceType !== "airspy"
                         onChanged: function (field, value) {
                             screen.setEntry(index, field, value);
                         }

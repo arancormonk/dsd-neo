@@ -12673,13 +12673,16 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     Modulation (`scanEntryGainMode`, "Entry gain": Inherit, Automatic, Set, stored -1 / 0 / n), with the 1-49 dB field
     (`scanEntryGain`) shown and checked only under Set. The editor's per-entry draft (`entryInputText[uid]`: `gainMode`
     and the Set text, `setEntryGain()`) keeps the choice apart from the stored value, so an emptied or refused Set stays
-    Set with its error, stores nothing new and holds Save, and the draft follows its entry through a reorder. A refused
-    Set left for Inherit or Automatic hides and holds nothing. Under Inherit a line (`scanEntryGainHint`) says where the
-    gain comes from: "Uses the saved system's gain, else the list's" for a saved system, "Uses the list's gain" for a
-    frequency. The Radio sheet's RTL gain steppers are live only and are never saved to a system. The line under them
-    (`radioGainSessionNote`, "Gain changes here last until you stop listening.") says so. It is hidden for an Airspy and
-    under "This channel", which has its own scope note. Tests: `tst_gain_editor.qml`, `tst_settings_tuner_gain.qml`,
-    `tst_wizard_gain.qml`, `tst_radio_gain_override.qml`, `tst_scan_row_edits.qml`, `tst_scan_list_screen.qml`,
+    Set with its error and holds Save, while the entry keeps the last valid gain typed: nothing refused reaches disk.
+    The draft follows its entry through a reorder or another entry's removal. A refused Set left for Inherit or
+    Automatic hides and holds nothing. Under Inherit a line (`scanEntryGainHint`) says where the gain comes from: "Uses
+    the saved system's gain, else the list's" for a saved system, "Uses the list's gain" for a frequency. On an Airspy
+    list the entry's gain hides with the list's (`gainOffered`; the engine applies RTL gain only to RTL-family input),
+    holds nothing and keeps its stored value. The Radio sheet's RTL gain steppers are live only and are never saved to a
+    system. The line under them (`radioGainSessionNote`, "Gain changes here last until you stop listening.") says so. It
+    is hidden for an Airspy and under "This channel", which has its own scope note. Tests: `tst_gain_editor.qml`,
+    `tst_settings_tuner_gain.qml`, `tst_wizard_gain.qml`, `tst_radio_gain_override.qml`, `tst_scan_row_edits.qml`,
+    `tst_scan_list_screen.qml`,
     `tst_segmented_whole_words.qml`, `tst_a11y_text_reach.qml`.
   - Qt/Android receiver defaults (PPM and bandwidth): every place that edits them (Settings' Radio defaults, the system
     editor, the scan list editor) runs what it shows. PPM takes a whole number from -200 to 200, the engine's own clamp,
