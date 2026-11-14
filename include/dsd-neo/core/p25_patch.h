@@ -21,6 +21,9 @@
  * `p25_patch_seq[i]` (from `p25_patch_seq_counter`) orders entries by recency for display and eviction;
  * `p25_patch_last_update[i]` stays the decode-time display stamp.
  *
+ * The table belongs to one system (`p25_patch_owner_*`, dsd_p25_patch_note_system()); carrier boundaries that leave the
+ * system empty it, and trunk scan and Signal search keep a system's table aside in a dsd_p25_patch_snapshot.
+ *
  * This header is included by state.h for the capacities, so it only needs the forward declaration.
  */
 
@@ -30,6 +33,7 @@
 #include <dsd-neo/core/state_fwd.h>
 
 #include <stdint.h>
+#include <time.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -124,6 +128,60 @@ int dsd_p25_patch_expire_stale_members(dsd_state* state, int idx);
  * @brief Empty the whole table, its owner, sequence counter and listening clock.
  */
 void dsd_p25_patch_clear_all(dsd_state* state);
+
+/**
+ * @brief Note a P25 system identity (WACN, SYSID) decoded from content that passed its CRC/FEC check.
+ *
+ * The table belongs to one system. An unknown owner adopts the first identity and keeps the table; the owner's own
+ * identity changes nothing; another system's empties the table (dsd_p25_patch_clear_all()) and becomes the owner.
+ * A zero identity (WACN 0 and SYSID 0) names no system and is ignored. Called wherever WACN/SYSID are decoded from the
+ * air, whatever the descrambler seed is (a hand-set one included), and by p25_update_system_identity().
+ *
+ * @return 1 when it emptied the table, 0 otherwise.
+ */
+int dsd_p25_patch_note_system(dsd_state* state, uint32_t wacn, uint16_t sysid);
+
+/**
+ * @brief The whole patch table of one system, kept while the receiver is elsewhere.
+ *
+ * Every entry with its members, KEY context, stamps and recency, the sequence counter, the listening clock's reading
+ * and the owner. The previous clock reading is not kept: a restore breaks continuity.
+ */
+typedef struct dsd_p25_patch_snapshot {
+    double listen_s;
+    double seen_listen_s[DSD_P25_PATCH_MAX];
+    double members_listen_s[DSD_P25_PATCH_MAX];
+    time_t last_update[DSD_P25_PATCH_MAX];
+    int count;
+    uint32_t wuid[DSD_P25_PATCH_MAX][DSD_P25_PATCH_RADIO_MAX];
+    uint32_t seq[DSD_P25_PATCH_MAX];
+    uint32_t seq_counter;
+    uint32_t owner_wacn;
+    uint16_t sgid[DSD_P25_PATCH_MAX];
+    uint16_t key[DSD_P25_PATCH_MAX];
+    uint16_t wgid[DSD_P25_PATCH_MAX][DSD_P25_PATCH_GROUP_MAX];
+    uint16_t owner_sysid;
+    uint8_t is_patch[DSD_P25_PATCH_MAX];
+    uint8_t active[DSD_P25_PATCH_MAX];
+    uint8_t wgid_count[DSD_P25_PATCH_MAX];
+    uint8_t wuid_count[DSD_P25_PATCH_MAX];
+    uint8_t alg[DSD_P25_PATCH_MAX];
+    uint8_t ssn[DSD_P25_PATCH_MAX];
+    uint8_t key_valid[DSD_P25_PATCH_MAX];
+    uint8_t owner_known;
+} dsd_p25_patch_snapshot;
+
+/**
+ * @brief Copy @p state's patch table into @p snapshot. NULL arguments do nothing.
+ */
+void dsd_p25_patch_snapshot_save(const dsd_state* state, dsd_p25_patch_snapshot* snapshot);
+
+/**
+ * @brief Put @p snapshot's patch table back on @p state, replacing the table there, and break listening continuity.
+ *
+ * NULL arguments do nothing.
+ */
+void dsd_p25_patch_snapshot_restore(dsd_state* state, const dsd_p25_patch_snapshot* snapshot);
 
 #ifdef __cplusplus
 }

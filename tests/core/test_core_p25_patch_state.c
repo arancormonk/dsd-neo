@@ -237,6 +237,117 @@ test_clear_all(void) {
     free(st);
 }
 
+/* One live entry (SG 1400, WG 1401) on a clock that has run 30 s. */
+static void
+seed_one_patch(dsd_state* st) {
+    st->p25_patch_count = 1;
+    st->p25_patch_sgid[0] = 1400;
+    st->p25_patch_active[0] = 1;
+    st->p25_patch_wgid_count[0] = 1;
+    st->p25_patch_wgid[0][0] = 1401;
+    st->p25_patch_listen_s = 30.0;
+    st->p25_patch_seen_listen_s[0] = 29.0;
+    st->p25_patch_members_listen_s[0] = 29.0;
+}
+
+static void
+test_note_system(void) {
+    dsd_state* st = fresh_state();
+    seed_one_patch(st);
+
+    // An unknown owner adopts the first identity and keeps what the table holds.
+    check(dsd_p25_patch_note_system(st, 0xA1001U, 0x101U) == 0, "first identity clears nothing");
+    check(st->p25_patch_owner_known == 1 && st->p25_patch_owner_wacn == 0xA1001U && st->p25_patch_owner_sysid == 0x101U,
+          "first identity becomes the owner");
+    check(st->p25_patch_count == 1 && st->p25_patch_wgid_count[0] == 1, "first identity keeps the table");
+
+    // The same identity again keeps everything.
+    check(dsd_p25_patch_note_system(st, 0xA1001U, 0x101U) == 0, "same identity clears nothing");
+    check(st->p25_patch_count == 1 && near(st->p25_patch_listen_s, 30.0), "same identity keeps the table and clock");
+
+    // A zero identity names no system.
+    check(dsd_p25_patch_note_system(st, 0U, 0U) == 0, "zero identity clears nothing");
+    check(st->p25_patch_owner_wacn == 0xA1001U && st->p25_patch_count == 1, "zero identity changes nothing");
+
+    // Another system (WACN or SYSID differs) empties the table and becomes the owner.
+    check(dsd_p25_patch_note_system(st, 0xA1001U, 0x102U) == 1, "another sysid clears");
+    check(st->p25_patch_count == 0 && st->p25_patch_active[0] == 0 && st->p25_patch_wgid_count[0] == 0,
+          "another system empties the table");
+    check(near(st->p25_patch_listen_s, 0.0), "another system starts its own clock");
+    check(st->p25_patch_owner_known == 1 && st->p25_patch_owner_wacn == 0xA1001U && st->p25_patch_owner_sysid == 0x102U,
+          "another system becomes the owner");
+    seed_one_patch(st);
+    check(dsd_p25_patch_note_system(st, 0xB2002U, 0x102U) == 1 && st->p25_patch_count == 0, "another wacn clears");
+
+    check(dsd_p25_patch_note_system(NULL, 1U, 1U) == 0, "null state");
+    free(st);
+}
+
+static void
+test_snapshot_round_trip(void) {
+    dsd_state* st = fresh_state();
+    seed_one_patch(st);
+    st->p25_patch_wuid_count[0] = 1;
+    st->p25_patch_wuid[0][0] = 7001;
+    st->p25_patch_key[0] = 0x0004;
+    st->p25_patch_alg[0] = 0x84;
+    st->p25_patch_ssn[0] = 3;
+    st->p25_patch_key_valid[0] = 1;
+    st->p25_patch_is_patch[0] = 1;
+    st->p25_patch_last_update[0] = 1234;
+    st->p25_patch_seq[0] = 5U;
+    st->p25_patch_seq_counter = 6U;
+    st->p25_patch_owner_known = 1;
+    st->p25_patch_owner_wacn = 0xA1001U;
+    st->p25_patch_owner_sysid = 0x101U;
+    st->p25_patch_listen_last_m = 77.0;
+
+    dsd_p25_patch_snapshot* snap = (dsd_p25_patch_snapshot*)calloc(1, sizeof(*snap));
+    check(snap != NULL, "snapshot allocation");
+    if (!snap) {
+        free(st);
+        return;
+    }
+    dsd_p25_patch_snapshot_save(st, snap);
+
+    // Another system's table replaces it in the state, then the snapshot comes back whole.
+    dsd_p25_patch_clear_all(st);
+    st->p25_patch_count = 1;
+    st->p25_patch_sgid[0] = 1400;
+    st->p25_patch_active[0] = 1;
+    st->p25_patch_owner_known = 1;
+    st->p25_patch_owner_wacn = 0xB2002U;
+    st->p25_patch_listen_s = 3.0;
+    st->p25_patch_listen_last_m = 88.0;
+    dsd_p25_patch_snapshot_restore(st, snap);
+
+    check(st->p25_patch_count == 1 && st->p25_patch_sgid[0] == 1400 && st->p25_patch_active[0] == 1,
+          "restore brings the entry back");
+    check(st->p25_patch_wgid_count[0] == 1 && st->p25_patch_wgid[0][0] == 1401 && st->p25_patch_wuid_count[0] == 1
+              && st->p25_patch_wuid[0][0] == 7001,
+          "restore brings the members back");
+    check(st->p25_patch_key[0] == 0x0004 && st->p25_patch_alg[0] == 0x84 && st->p25_patch_ssn[0] == 3
+              && st->p25_patch_key_valid[0] == 1 && st->p25_patch_is_patch[0] == 1,
+          "restore brings the key context back");
+    check(st->p25_patch_last_update[0] == 1234 && st->p25_patch_seq[0] == 5U && st->p25_patch_seq_counter == 6U,
+          "restore brings the recency back");
+    check(near(st->p25_patch_listen_s, 30.0) && near(st->p25_patch_seen_listen_s[0], 29.0)
+              && near(st->p25_patch_members_listen_s[0], 29.0),
+          "restore brings the clock and stamps back");
+    check(st->p25_patch_owner_known == 1 && st->p25_patch_owner_wacn == 0xA1001U && st->p25_patch_owner_sysid == 0x101U,
+          "restore brings the owner back");
+    // The previous reading belonged to the carrier the receiver was on, so the restore breaks continuity.
+    check(near(st->p25_patch_listen_last_m, 0.0), "restore breaks continuity");
+
+    dsd_p25_patch_snapshot_save(NULL, snap);
+    dsd_p25_patch_snapshot_restore(NULL, snap);
+    dsd_p25_patch_snapshot_save(st, NULL);
+    dsd_p25_patch_snapshot_restore(st, NULL);
+    check(st->p25_patch_count == 1, "null arguments change nothing");
+    free(snap);
+    free(st);
+}
+
 int
 main(void) {
     test_clock_gap_rule();
@@ -245,6 +356,8 @@ main(void) {
     test_expire_members();
     test_seq_age_wraps();
     test_clear_all();
+    test_note_system();
+    test_snapshot_round_trip();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;
