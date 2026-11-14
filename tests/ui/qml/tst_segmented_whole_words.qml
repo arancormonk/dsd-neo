@@ -158,9 +158,11 @@ Item {
             control.currentIndex = kept;
         }
 
-        // The 20 SegmentedControls the app has, by the file that holds them
-        // (the 21st use is the QtTest fixture in tst_input_commit.qml, a "One /
-        // Two" pair checked below).
+        // The 21 SegmentedControls the app shows, by the screen or sheet that
+        // holds them; a GainEditor's counts in each screen that uses it, in the
+        // layout that screen shows (the scan list's [App default | Automatic |
+        // Set], Settings' [Automatic | Set]). The 22nd use is the QtTest
+        // fixture in tst_input_commit.qml, a "One / Two" pair checked below.
         function test_every_label_set_keeps_whole_words_data() {
             return [
                 {
@@ -196,7 +198,7 @@ Item {
                 {
                     tag: "SettingsScreen",
                     file: "SettingsScreen.qml",
-                    count: 1
+                    count: 2
                 },
                 {
                     tag: "RadioReferenceScreen",

@@ -376,8 +376,8 @@ Rectangle {
     function validateTunerSettings() {
         var field = null;
         if (draft.sourceType !== "airspy") {
-            if (gainMode === 2 && gainField.error.length)
-                field = gainField;
+            if (gainMode === 2 && gainEditor.field.error.length)
+                field = gainEditor.field;
             else if (ppmSet && ppmField.error.length)
                 field = ppmField;
         }
@@ -962,54 +962,26 @@ Rectangle {
                         wrapMode: Text.Wrap
                     }
 
-                    Column {
+                    GainEditor {
+                        id: gainEditor
                         width: parent.width
-                        spacing: 6
                         visible: screen.draft.sourceType !== "airspy"
-                        MicroLabel {
-                            text: qsTr("Gain")
+                        title: qsTr("Gain")
+                        inheritable: true
+                        inheritNote: qsTr("App default · %1").arg(prefs.gainDb === 0 ? qsTr("Automatic") : qsTr("%1 dB").arg(prefs.gainDb))
+                        mode: screen.gainMode
+                        manualText: screen.gainText
+                        modeObjectName: "scanGainMode"
+                        fieldObjectName: "scanTuner_gainDb"
+                        onModeSelected: function (mode) {
+                            var typed = gainEditor.parseGain(gainEditor.field.text);
+                            screen.gainMode = mode;
+                            screen.setDraft("gainDb", mode === 0 ? -1 : mode === 1 ? 0 : isNaN(typed) ? -1 : typed);
                         }
-                        SegmentedControl {
-                            objectName: "scanGainMode"
-                            accessibleName: qsTr("Gain")
-                            width: parent.width
-                            model: [qsTr("App default"), qsTr("Automatic"), qsTr("Set")]
-                            currentIndex: screen.gainMode
-                            onSelected: function (index) {
-                                screen.gainMode = index;
-                                screen.setDraft("gainDb", index === 0 ? -1 : index === 1 ? 0 : isNaN(gainField.parsedValue()) ? -1 : gainField.parsedValue());
-                            }
-                        }
-                        ReadableText {
-                            width: parent.width
-                            visible: screen.gainMode === 0
-                            text: qsTr("App default · %1").arg(prefs.gainDb === 0 ? qsTr("Automatic") : qsTr("%1 dB").arg(prefs.gainDb))
-                            wrapMode: Text.Wrap
-                            font.family: Theme.sans
-                            font.pixelSize: Theme.fontSize(12)
-                            color: Theme.textSecondary
-                        }
-                        PlexTextField {
-                            id: gainField
-                            function parsedValue() {
-                                return screen.parseIntStrict(text, 1, 49);
-                            }
-                            objectName: "scanTuner_gainDb"
-                            width: parent.width
-                            visible: screen.gainMode === 2
-                            label: qsTr("Gain")
-                            unit: qsTr("dB")
-                            mono: true
-                            text: screen.gainText
-                            inputMethodHints: Qt.ImhDigitsOnly
-                            input.validator: RegularExpressionValidator {
-                                regularExpression: /^-?[0-9]*$/
-                            }
-                            error: isNaN(parsedValue()) ? qsTr("Enter a gain from 1 to 49 dB.") : ""
-                            input.onTextEdited: {
-                                screen.gainText = text;
-                                screen.draft.gainDb = isNaN(parsedValue()) ? -1 : parsedValue();
-                            }
+                        onDraftEdited: function (text) {
+                            var typed = gainEditor.parseGain(text);
+                            screen.gainText = text;
+                            screen.draft.gainDb = isNaN(typed) ? -1 : typed;
                         }
                     }
 

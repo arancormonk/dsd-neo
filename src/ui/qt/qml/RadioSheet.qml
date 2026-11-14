@@ -714,6 +714,17 @@ ModalSheet {
                 onClicked: sheet.stepGain(1)
             }
         }
+        // The steps above are this session's only (the saved system keeps its
+        // gain); "This channel" says what it edits in its own note.
+        ReadableText {
+            objectName: "radioGainSessionNote"
+            visible: !sheet.rowScope
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: qsTr("Gain changes here last until you stop listening.")
+            color: Theme.textSecondary
+            font.pixelSize: Theme.fontSize(12)
+        }
         // "This channel": follow the default, offered when the list sets the
         // gain, or go back to the list's value, offered while the row runs an edit.
         Row {

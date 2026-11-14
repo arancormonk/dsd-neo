@@ -74,6 +74,22 @@ Item {
             compare(findChild(sheet, "radioGainDefault").text, "default 21 dB");
         }
 
+        // Gain steps here are live only: the line under the RTL gain row says so. An Airspy shows its own
+        // controls instead of that row, and so no line.
+        function test_session_note_under_the_rtl_gain() {
+            var note = findChild(sheet, "radioGainSessionNote");
+            verify(note !== null);
+            verify(note.visible);
+            compare(note.text, "Gain changes here last until you stop listening.");
+            compare(note.Accessible.name, note.text, "the note reads by itself");
+            testContext.setMetric("airspy", {"gain_mode": "sensitivity", "sensitivity_gain": 10});
+            tryVerify(function () { return sheet.airspyActive });
+            verify(!note.visible, "no RTL gain row, no note");
+            testContext.setMetric("airspy", {});
+            tryVerify(function () { return !sheet.airspyActive });
+            verify(note.visible);
+        }
+
         function test_agc_on_either_side_reads_as_auto() {
             targetOverride(0, 18);
             compare(findChild(sheet, "radioGainValue").text, "auto");
