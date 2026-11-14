@@ -303,12 +303,17 @@ dsd_audio_hold_overrides_policy(const dsd_tg_policy_decision* decision) {
            && !(decision->block_reasons & (DSD_TG_POLICY_BLOCK_SESSION_AVOID | DSD_TG_POLICY_BLOCK_CALL_SKIP));
 }
 
+int
+dsd_audio_policy_tg_allows_audio(const dsd_tg_policy_decision* decision) {
+    return decision
+           && (dsd_audio_hold_overrides_policy(decision)
+               || (decision->tg_audio_allowed && (decision->block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) == 0u));
+}
+
 // The media verdicts: (Hold override || talkgroup part) && radio part. The allow list is a talkgroup reason.
 static int
 dsd_audio_policy_allows_audio(const dsd_tg_policy_decision* decision) {
-    const int tg = dsd_audio_hold_overrides_policy(decision)
-                   || (decision->tg_audio_allowed && (decision->block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) == 0u);
-    return tg && decision->radio_audio_allowed;
+    return dsd_audio_policy_tg_allows_audio(decision) && decision->radio_audio_allowed;
 }
 
 static int

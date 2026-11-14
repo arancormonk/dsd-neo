@@ -1493,6 +1493,12 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_p25_patch_policy
+  HEADERS_PUBLIC_CORE_P25_PATCH_POLICY
+  dsd-neo/core/p25_patch_policy.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_utf16
   HEADERS_PUBLIC_CORE_UTF16
   dsd-neo/core/utf16.h
@@ -7236,6 +7242,18 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_core_p25_patch_state PRIVATE dsd-neo_core)
 add_test(NAME CORE_P25_PATCH_STATE COMMAND dsd-neo_test_core_p25_patch_state)
+
+# P25 patch policy resolver: SG and current members, final reasons, ADMIT/MEDIA eligibility and ranking, keep-or-resolve.
+add_executable(
+    dsd-neo_test_core_p25_patch_policy
+    core/test_core_p25_patch_policy.c
+)
+target_include_directories(
+    dsd-neo_test_core_p25_patch_policy
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_core_p25_patch_policy PRIVATE dsd-neo_core)
+add_test(NAME CORE_P25_PATCH_POLICY COMMAND dsd-neo_test_core_p25_patch_policy)
 
 # UTF-16 decoding / UTF-8 encoding for radio-sourced text (header-only)
 add_executable(dsd-neo_test_core_utf16 core/test_core_utf16.c)

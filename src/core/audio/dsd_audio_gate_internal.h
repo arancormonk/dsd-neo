@@ -9,8 +9,17 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 
 #include <stdint.h>
+
+/*
+ * The talkgroup part of the media gates' audio verdict on @p decision: a matching Hold that overrides the talkgroup
+ * policy (never a session avoid or call skip), or the talkgroup part's audio without an allow-list denial. The gates
+ * play a call when this and the radio part (`radio_audio_allowed`) allow it; the P25 patch resolver
+ * (<dsd-neo/core/p25_patch_policy.h>) ranks and admits members for media on it. 0 for NULL.
+ */
+int dsd_audio_policy_tg_allows_audio(const dsd_tg_policy_decision* decision);
 
 /*
  * The rdio-scanner export verdict for the recording of @p call (issue #773 D7): 1 when the talkgroup and radio policy
