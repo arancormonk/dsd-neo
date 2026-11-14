@@ -90,9 +90,9 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - RTL‑SDR (USB): `-i rtl` or advanced string:
   - `rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]`
   - Examples: `rtl:0:851.375M:22:-2:24:0:2`, `rtl:1:450M:0:0:12:0:2`
-  - `gain` `0` is automatic gain (the tuner's AGC and the RTL2832U's digital AGC); `1`–`49` is a manual gain in dB,
-    run at the nearest step the tuner has. The first example runs a manual 22 dB, the second automatic gain. See
-    RTL‑SDR details below.
+  - `gain` `0` is automatic gain (the tuner's automatic gain and the RTL2832U's digital AGC); `1`–`49` is a manual
+    gain in dB, run at the nearest step the tuner has. The first example asks for a manual 22 dB, the second for
+    automatic gain. See RTL‑SDR details below.
   - `sql` is a power squelch in dB and is **off** when set to `0`, which is what the examples above use. The startup
     banner and the terminal input line say so (`SQ=off`, `SQL: off`). Give a negative value (`-60`) to gate on power,
     `auto` / `auto+N` for the [auto squelch](#auto-squelch---squelch-auto), which opens N dB over each analog
@@ -2643,13 +2643,14 @@ does.
   it is on. 72 kHz is TETRA's bandwidth: it gives `-fT` a whole 4 samples per symbol at 18 ksym/s. The other modes run
   best at the 48 kHz default: at 72 kHz their channel filter would need more taps than it has, and runs its wider fixed
   prototype instead.
-- `gain` `0` is automatic gain: the tuner's own AGC, plus the RTL2832U's digital AGC unless `DSD_NEO_RTL_AGC=0`. A
-  negative value is automatic too. `1`–`49` is a manual gain in dB, and the dongle runs the nearest step its tuner has
-  (an R820T asked for 30 runs 29.7 dB). A manual 0 dB cannot be asked for, since `0` is automatic.
+- `gain` `0` is automatic gain: the tuner sets its own gain (where it can; librtlsdr gives FC0012 and FC2580 tuners
+  no automatic gain), and the RTL2832U's digital AGC is on unless `DSD_NEO_RTL_AGC=0`. A negative value is automatic
+  too. `1`–`49` is a manual gain in dB, and the dongle runs the nearest step its tuner has (an R820T asked for 30 runs
+  29.7 dB). A manual 0 dB cannot be asked for, since `0` is automatic.
 - Over rtl_tcp a manual gain runs at the nearest step of the server's tuner, from librtlsdr's gain tables for the
-  tuner type the server's header names. When the header names a tuner type librtlsdr has no table for, or a gain count
-  that does not match the table, the gain is sent as asked and the server's tuner settles it. rtl_tcp sends no
-  acknowledgement, so the gain shown is the step DSD-neo sent, not one read back from the server.
+  tuner type the server's header names. When the header names a tuner type other than the six librtlsdr lists gains
+  for, or a gain count that does not match the table, the gain is sent as asked and the server's tuner settles it.
+  rtl_tcp sends no acknowledgement, so the gain shown is what DSD-neo sent, not one read back from the server.
 - A `gain` too large to set (above 214748364, whose tenths of a dB would not fit) is ignored with a warning, and the
   gain set before stays, as with a `gain` that is not a number.
 - A `sql` value that is neither a number, `auto[+N]` nor `noise[+N]` leaves the squelch as it was rather than switching

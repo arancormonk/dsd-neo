@@ -8136,17 +8136,11 @@ controller_cleanup(struct controller_state* s) {
     dsd_mutex_destroy(&s->retune_done_m);
 }
 
-/* The tenths of a dB a manual gain in whole dB asks the tuner for, held at INT_MAX (the tuner's top step) past what int
-   tenths hold, and at INT_MIN below. */
+/* The tenths of a dB a manual gain (@p gain_db above 0, in whole dB) asks the tuner for, held at INT_MAX (the tuner's
+   top step) past what int tenths hold. */
 static int
 stream_gain_tenth_db_from_db(int gain_db) {
-    if (gain_db > INT_MAX / 10) {
-        return INT_MAX;
-    }
-    if (gain_db < INT_MIN / 10) {
-        return INT_MIN;
-    }
-    return gain_db * 10;
+    return gain_db > INT_MAX / 10 ? INT_MAX : gain_db * 10;
 }
 
 /**
