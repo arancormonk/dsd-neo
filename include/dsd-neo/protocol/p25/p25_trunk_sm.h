@@ -1289,20 +1289,6 @@ int p25_patch_tg_key_is_clear(const dsd_state* state, int tg);
  */
 int p25_patch_sg_key_is_clear(const dsd_state* state, int sgid);
 
-/**
- * @brief Collect the current WGID members of a supergroup.
- *
- * Inactive and non-existent supergroups, a supergroup not named within the TTL on the
- * listening clock and one whose members are not current return 0, as does a NULL @p out.
- *
- * @param state Decoder state (read-only).
- * @param sgid Super Group ID.
- * @param out WGID destination array.
- * @param cap Capacity of destination array (DSD_P25_PATCH_GROUP_MAX holds every member).
- * @return Number of members written to @p out, at most @p cap.
- */
-int p25_patch_collect_active_wgids(const dsd_state* state, int sgid, uint16_t* out, size_t cap);
-
 /* ============================================================================
  * Affiliation (RID) tracking
  * ============================================================================ */

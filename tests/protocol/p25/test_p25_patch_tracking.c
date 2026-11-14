@@ -13,6 +13,7 @@
  */
 
 #include <dsd-neo/core/p25_patch.h>
+#include <dsd-neo/core/p25_patch_policy.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -182,12 +183,9 @@ test_guard_replacement_and_policy_edges(void) {
     idx500 = find_idx(&st, 500);
     rc |= expect_true("prepare changed ssn keeps sg", idx500 >= 0);
     if (idx500 >= 0) {
-        uint16_t members[DSD_P25_PATCH_GROUP_MAX] = {0};
         rc |= expect_eq_int("prepare changed ssn clears old", st.p25_patch_wgid_count[idx500], 1);
         rc |= expect_eq_int("prepare changed ssn new member", st.p25_patch_wgid[idx500][0], 102);
-        rc |= expect_eq_int("collect active count",
-                            p25_patch_collect_active_wgids(&st, 500, members, DSD_P25_PATCH_GROUP_MAX), 1);
-        rc |= expect_eq_int("collect active member", members[0], 102);
+        rc |= expect_eq_int("new member current", dsd_p25_patch_is_current_member(&st, 500, 102), 1);
     }
     rc |= expect_eq_int("prepare inactive suppresses members", p25_patch_prepare_grg_update(&st, 500, 1, 0, 4), 0);
     idx500 = find_idx(&st, 500);
@@ -234,18 +232,8 @@ test_caps(void) {
     rc |= expect_eq_int("caps 16 radios stored", st.p25_patch_wuid_count[0], DSD_P25_PATCH_RADIO_MAX);
     rc |= expect_eq_int("caps last radio", (int)st.p25_patch_wuid[0][DSD_P25_PATCH_RADIO_MAX - 1],
                         70000 + DSD_P25_PATCH_RADIO_MAX);
-
-    uint16_t members[DSD_P25_PATCH_GROUP_MAX + 1];
-    for (int k = 0; k < DSD_P25_PATCH_GROUP_MAX + 1; k++) {
-        members[k] = 0xFFFF;
-    }
-    rc |= expect_eq_int("collect bounded by cap", p25_patch_collect_active_wgids(&st, 1400, members, 8), 8);
-    rc |= expect_eq_int("collect leaves the rest", members[8], 0xFFFF);
-    rc |=
-        expect_eq_int("collect all 32", p25_patch_collect_active_wgids(&st, 1400, members, DSD_P25_PATCH_GROUP_MAX + 1),
-                      DSD_P25_PATCH_GROUP_MAX);
-    rc |= expect_eq_int("collect 32nd member", members[DSD_P25_PATCH_GROUP_MAX - 1], 2000 + DSD_P25_PATCH_GROUP_MAX);
-    rc |= expect_eq_int("collect null out", p25_patch_collect_active_wgids(&st, 1400, NULL, 8), 0);
+    rc |= expect_eq_int("caps 32nd member current",
+                        dsd_p25_patch_is_current_member(&st, 1400, 2000 + DSD_P25_PATCH_GROUP_MAX), 1);
     return rc;
 }
 
@@ -282,7 +270,6 @@ test_two_stamps_and_expiry(void) {
     int rc = 0;
     static dsd_state st;
     char out[256];
-    uint16_t members[DSD_P25_PATCH_GROUP_MAX];
     DSD_MEMSET(&st, 0, sizeof st);
     p25_patch_add_wgid(&st, 1400, 1401);
     p25_patch_set_kas(&st, 1400, 0, 0x84, 3);
@@ -291,7 +278,7 @@ test_two_stamps_and_expiry(void) {
     p25_patch_test_listen_for(&st, 15.0);
     p25_patch_update(&st, 1400, 1, 1); // a grant naming the SG
     p25_patch_test_listen_for(&st, 10.0);
-    rc |= expect_eq_int("sg-only keeps no members", p25_patch_collect_active_wgids(&st, 1400, members, 32), 0);
+    rc |= expect_eq_int("sg-only keeps no members", dsd_p25_patch_is_current_member(&st, 1400, 1401), 0);
     rc |= expect_eq_int("stale KEY not clear (tg)", p25_patch_tg_key_is_clear(&st, 1401), 0);
     rc |= expect_eq_int("stale KEY not clear (sg)", p25_patch_sg_key_is_clear(&st, 1400), 0);
     (void)p25_patch_compose_details(&st, out, sizeof out);
@@ -314,7 +301,6 @@ static int
 test_add_refresh_and_last_delete(void) {
     int rc = 0;
     static dsd_state st;
-    uint16_t members[DSD_P25_PATCH_GROUP_MAX];
     DSD_MEMSET(&st, 0, sizeof st);
     p25_patch_add_wgid(&st, 1400, 1401);
     const uint32_t seq_before = st.p25_patch_seq[0];
@@ -322,15 +308,13 @@ test_add_refresh_and_last_delete(void) {
     p25_patch_add_wgid(&st, 1400, 1401); // duplicate Add
     rc |= expect_true("duplicate add takes a new sequence", st.p25_patch_seq[0] != seq_before);
     p25_patch_test_listen_for(&st, 10.0);
-    rc |=
-        expect_eq_int("duplicate add keeps members current", p25_patch_collect_active_wgids(&st, 1400, members, 32), 1);
+    rc |= expect_eq_int("duplicate add keeps members current", dsd_p25_patch_is_current_member(&st, 1400, 1401), 1);
 
     p25_patch_clear_sg(&st, 1400);
     rc |= expect_eq_int("cancel deactivates", st.p25_patch_active[0], 0);
     p25_patch_add_wgid(&st, 1400, 1402);
     rc |= expect_eq_int("add reactivates an inactive entry", st.p25_patch_active[0], 1);
-    rc |= expect_eq_int("reactivated member", p25_patch_collect_active_wgids(&st, 1400, members, 32), 1);
-    rc |= expect_eq_int("reactivated member id", members[0], 1402);
+    rc |= expect_eq_int("reactivated member", dsd_p25_patch_is_current_member(&st, 1400, 1402), 1);
 
     p25_patch_set_kas(&st, 1400, 0, 0x84, 3);
     rc |= expect_eq_int("KEY clear before the last delete", p25_patch_sg_key_is_clear(&st, 1400), 1);

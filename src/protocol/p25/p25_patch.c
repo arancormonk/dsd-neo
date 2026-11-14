@@ -433,30 +433,3 @@ p25_patch_sg_key_is_clear(const dsd_state* state, int sgid) {
     }
     return 0;
 }
-
-int
-p25_patch_collect_active_wgids(const dsd_state* state, int sgid, uint16_t* out, size_t cap) {
-    if (!state || sgid <= 0 || sgid > 0xFFFF) {
-        return 0;
-    }
-
-    int idx = find_patch_idx(state, (uint16_t)sgid);
-    if (idx < 0 || !p25_patch_entry_members_live(state, idx)) {
-        return 0;
-    }
-
-    int count = state->p25_patch_wgid_count[idx];
-    if (count > DSD_P25_PATCH_GROUP_MAX) {
-        count = DSD_P25_PATCH_GROUP_MAX;
-    }
-    if (!out) {
-        return 0;
-    }
-    if ((size_t)count > cap) {
-        count = (int)cap;
-    }
-    for (int i = 0; i < count; i++) {
-        out[i] = state->p25_patch_wgid[idx][i];
-    }
-    return count;
-}

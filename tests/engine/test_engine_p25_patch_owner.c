@@ -21,6 +21,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/p25_patch.h>
+#include <dsd-neo/core/p25_patch_policy.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -304,9 +305,8 @@ test_replay_retune_new_system(void) {
     const int idx = patch_idx(state, 1400);
     expect("replay: B's SG is a row", idx >= 0);
     expect("replay: B's SG has no members", idx >= 0 && !dsd_p25_patch_has_current_wgid(state, idx, 1401));
-    uint16_t members[DSD_P25_PATCH_GROUP_MAX];
-    expect("replay: no member reaches the grant path",
-           p25_patch_collect_active_wgids(state, 1400, members, DSD_P25_PATCH_GROUP_MAX) == 0);
+    expect("replay: no member reaches the grant path", dsd_p25_patch_media_target(opts, state, 1400, 1401, 0) == 1400U
+                                                           && !dsd_p25_patch_is_current_member(state, 1400, 1401));
     session_free(opts, state);
 }
 
