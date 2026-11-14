@@ -330,11 +330,16 @@ test_expired_members_are_not_candidates(void) {
     dsd_p25_patch_resolution res;
     rc |= expect_true("ttl current",
                       resolve(&f, 1900, 2900, DSD_P25_PATCH_RESOLVE_ADMIT, &res) == 0 && res.policy_target == 1901U);
+    rc |= expect_true("ttl live supergroup", dsd_p25_patch_sg_live(f.st, 1900) == 1);
+    rc |= expect_true("ttl a member is no supergroup", dsd_p25_patch_sg_live(f.st, 1901) == 0);
+    rc |=
+        expect_true("ttl null and zero", dsd_p25_patch_sg_live(NULL, 1900) == 0 && dsd_p25_patch_sg_live(f.st, 0) == 0);
     f.st->p25_patch_listen_s += (double)DSD_P25_PATCH_TTL_SECONDS + 1.0;
     rc |= expect_true("ttl expired", resolve(&f, 1900, 2900, DSD_P25_PATCH_RESOLVE_ADMIT, &res) == 0
                                          && res.policy_target == 1900U && !res.eligible);
     rc |= expect_true("ttl expired media target", dsd_p25_patch_media_target(f.opts, f.st, 1900, 1901, 2900) == 1900U);
     rc |= expect_true("ttl not a current member", dsd_p25_patch_is_current_member(f.st, 1900, 1901) == 0);
+    rc |= expect_true("ttl expired supergroup is not live", dsd_p25_patch_sg_live(f.st, 1900) == 0);
     fixture_close(&f);
     return rc;
 }

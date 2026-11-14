@@ -103,6 +103,15 @@ uint32_t dsd_p25_patch_media_target(const dsd_opts* opts, const dsd_state* state
 /** @brief Whether @p decision passes the talkgroup part of the media gates' audio verdict (MEDIA eligibility). */
 int dsd_p25_patch_media_eligible(const dsd_tg_policy_decision* decision);
 
+/**
+ * @brief Whether @p sg is the supergroup of a live patch: an active entry, named and with members current, that lists
+ * at least one member.
+ *
+ * A group call on any other talkgroup is judged on its own decision: consumers that judge a stored policy target
+ * outside the resolver keep doing so for it (no evaluation is spent on a non-patched call). 0 for NULL or 0.
+ */
+int dsd_p25_patch_sg_live(const dsd_state* state, uint32_t sg);
+
 /** @brief Whether @p wg is a current member of a live patch on supergroup @p sg (@p wg != @p sg, both non-zero). */
 int dsd_p25_patch_is_current_member(const dsd_state* state, uint32_t sg, uint32_t wg);
 

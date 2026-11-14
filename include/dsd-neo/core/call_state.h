@@ -615,6 +615,16 @@ int dsd_call_context_restore_snapshot(dsd_state* state, const dsd_call_context_s
 int dsd_call_state_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const char* source_text,
                                const char* target_text, const char* route0_text, const char* route1_text,
                                double observed_m);
+/**
+ * @brief Re-point the ACTIVE epoch @p epoch on @p slot at policy target @p policy_target, in place.
+ *
+ * For a patched P25 call whose resolution re-selected the member it is judged on: no boundary, and the over-the-air
+ * identity, received service options and priority stay as received. Not an observation (updated_m is kept).
+ *
+ * @return 1 changed, 0 when the slot holds no ACTIVE epoch @p epoch or already names @p policy_target, -1 invalid
+ *         arguments (NULL state, a slot out of range, epoch or target 0).
+ */
+int dsd_call_state_update_policy_target(dsd_state* state, uint8_t slot, uint64_t epoch, uint64_t policy_target);
 
 int dsd_recent_activity_publish(dsd_state* state, uint8_t index, const dsd_call_observation* observation,
                                 const char* notice, uint64_t observed_m_ms);

@@ -741,6 +741,22 @@ test_64bit_text_and_protocol_family_continuity(void) {
     assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
     assert(strcmp(snapshot.source_text, "SRC CALL") == 0);
 
+    /* A patched call re-judged on another member: the policy target moves in place, nothing else does. */
+    const uint64_t revision = snapshot.revision;
+    const double updated_m = snapshot.updated_m;
+    assert(dsd_call_state_update_policy_target(state, 0U, snapshot.epoch, 89U) == 1);
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.epoch == 1U && snapshot.policy_target_id == 89U);
+    assert(snapshot.ota_target_id == UINT64_C(0xFFFFFFFFFFFF) && snapshot.revision != revision);
+    assert(fabs(snapshot.updated_m - updated_m) < 1e-12);
+    assert(dsd_call_state_update_policy_target(state, 0U, snapshot.epoch, 89U) == 0);
+    assert(dsd_call_state_update_policy_target(state, 0U, snapshot.epoch + 1U, 90U) == 0);
+    assert(dsd_call_state_update_policy_target(state, 0U, snapshot.epoch, 0U) == -1);
+    assert(dsd_call_state_update_policy_target(state, 0U, 0U, 90U) == -1);
+    assert(dsd_call_state_update_policy_target(NULL, 0U, snapshot.epoch, 90U) == -1);
+    assert(dsd_call_state_update_policy_target(state, DSD_CALL_STATE_SLOT_COUNT, snapshot.epoch, 90U) == -1);
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1 && snapshot.policy_target_id == 89U);
+
     observation = group_call(0U, 100U, 200U, 3.0);
     observation.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);

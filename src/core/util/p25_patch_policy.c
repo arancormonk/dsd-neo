@@ -43,8 +43,11 @@ p25_patch_policy_entry_live(const dsd_state* state, int idx, uint32_t sg) {
            && dsd_p25_patch_entry_seen_current(state, idx) && dsd_p25_patch_members_current(state, idx);
 }
 
-static int
-p25_patch_policy_sg_live(const dsd_state* state, uint32_t sg) {
+int
+dsd_p25_patch_sg_live(const dsd_state* state, uint32_t sg) {
+    if (!state || sg == 0U) {
+        return 0;
+    }
     const int count = p25_patch_policy_entry_count(state);
     for (int i = 0; i < count; i++) {
         if (p25_patch_policy_entry_live(state, i, sg) && state->p25_patch_wgid_count[i] > 0U) {
@@ -211,7 +214,7 @@ dsd_p25_patch_media_resolve(const dsd_opts* opts, const dsd_state* state, uint32
     out->policy_target = sg;
     out->sg_final_reasons = 0U;
     out->eligible = 0;
-    if (!p25_patch_policy_sg_live(state, sg)) {
+    if (!dsd_p25_patch_sg_live(state, sg)) {
         return 0;
     }
     const p25_patch_resolve_args args = {opts, state, src, 0, 0, DSD_P25_PATCH_RESOLVE_MEDIA, NULL, NULL};
