@@ -3934,7 +3934,9 @@ frame_sync_history_resume(frame_sync_runtime_ctx* rt, dsd_state* state) {
 
 /* The first symbol a call that took up a history reads: it must follow the history on the same stream (one symbol on
  * the clock, the same epoch and carrier count, no tune completed or noted off the decoder thread, nothing dropped), or
- * the history goes and the call starts from this symbol. */
+ * the history goes and the call starts from this symbol, with all the history brought: the levels and the pass
+ * position (a dropped P25p1 candidate's carry goes on with the pass it interrupted), so the call hunts a whole pass of
+ * the new stream, as one that began after the break would. */
 static void
 frame_sync_history_confirm(frame_sync_runtime_ctx* rt, const dsd_state* state) {
     if (!rt->resumed) {
@@ -3950,6 +3952,7 @@ frame_sync_history_confirm(frame_sync_runtime_ctx* rt, const dsd_state* state) {
         rt->history_count = 0;
         rt->lidx = 0;
         rt->level_count = 0;
+        rt->synctest_pos = 0;
     }
 }
 

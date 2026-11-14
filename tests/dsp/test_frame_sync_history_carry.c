@@ -767,6 +767,38 @@ test_x2tdma_voice_sync_notes_what_it_cannot_read_back(void) {
     free_state_buffers(&state);
 }
 
+/* A carried history resumes the pass it came from (dsd_frame_sync_history_carry::pass_symbols): a dropped P25p1
+   candidate's carry goes on with the pass the candidate interrupted, here one symbol before its end, so the next call
+   ends that pass after its first symbol. When that first read finds the stream broken (an RTL flush, which the reader
+   notes only when it reads), the history goes and so does the pass position it carried: the call starts a pass of its
+   own on the new stream, its whole DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS long, as it would had the break come before the
+   call. */
+static void
+test_flush_at_first_read_restarts_the_carried_pass(void) {
+    for (int flush = 0; flush <= 1; flush++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        init_sign_session(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0);
+        for (int i = 0; i < 100; i++) {
+            (void)getSymbol(&opts, &state, 1);
+        }
+        frame_sync_history_carry_symbols(&state, 57, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS - 1);
+        assert(state.frame_sync_carry.valid == 1);
+        const int start = g_pos;
+        g_flush_on_next_read = flush;
+        assert(getFrameSync(&opts, &state) == -1);
+        const int read = g_pos - start;
+        const int want = flush ? DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS : 1;
+        if (read != want) {
+            DSD_FPRINTF(stderr, "FAIL: a carried pass with flush %d ended after %d symbols (want %d)\n", flush, read,
+                        want);
+        }
+        assert(read == want);
+        dsd_frame_sync_hooks_set(NULL);
+        free_state_buffers(&state);
+    }
+}
+
 int
 main(void) {
     test_burst_across_the_exit_locks();
@@ -782,6 +814,7 @@ main(void) {
     test_completed_tune_between_calls_starts_blind();
     test_flush_at_first_read_starts_blind();
     test_off_thread_tune_during_first_read_starts_blind();
+    test_flush_at_first_read_restarts_the_carried_pass();
     test_new_modulation_starts_blind();
     test_profile_step_keeps_the_read_profile();
     test_nxdn96_sign_only_fsw_across_the_exit_does_not_acquire();

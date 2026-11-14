@@ -254,7 +254,8 @@ typedef struct {
     int rf_mod;
     /* Where in its matchless pass the next call starts (getFrameSync()'s pass position): 0 after a no-sync exit, which
        ends a pass; after a dropped P25p1 candidate the pass the candidate interrupted, with its symbols, so the hunt's
-       no-sync timing runs as if the candidate had never been taken. */
+       no-sync timing runs as if the candidate had never been taken. A break the next call's first read finds drops it
+       with the history: that call starts a pass of its own. */
     int pass_symbols;
     /* Bumped by every drop (dsd_state_forget_sync_join_histories()); a call that saw it move keeps nothing. The P25
        Phase 1 carrier NAC (dsd_p25p1_carrier_nac) reads it too, as the same stream boundary. */

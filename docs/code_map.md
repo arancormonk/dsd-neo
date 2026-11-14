@@ -1342,7 +1342,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   scanner row that moved the receiver yet ends unlanded is one, `channel_scan_note_unlanded_move()`) and every
   acquisition reset; so a P25 release's retune, or a direct return, in the exit's own no-sync hooks keeps nothing. Its
   first read checks the clock, epoch, carrier count, generation, drops and pending off-thread tunes again, for a flush
-  an RTL reader finds only when it reads; a failed check drops the levels with the dibits. A matcher that reads only its
+  an RTL reader finds only when it reads; a failed check drops the levels with the dibits, and the pass position a
+  dropped P25p1 candidate's carry brought, so the call hunts a whole pass of the new stream. A matcher that reads only its
   window or reads its frame forward from the sync (TETRA, P25, NXDN, YSF, dPMR, D-STAR, M17, ProVoice, EDACS) then
   matches a frame that straddles the exit; before, a TETRA control uplink burst that began fewer than 20 symbols before
   it was lost. An NXDN96 FSW straddling the exit is read on its carried levels, so it counts as clear only when its 20
@@ -1372,7 +1373,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   noCarrier resets (the NXDN96 hits and lock, the M17 preamble run, candidate, polarity and join hits, `lastsynctype`,
   the ProVoice and M17 confirms), after which a matcher needs more evidence, not less. A sync, an input interruption, a
   signal-search yield and shutdown drop it too. Test: `FRAME_SYNC_HISTORY_CARRY` (NXDN96 FSWs, a DMR and an X2-TDMA sync
-  straddling the exit, and DMR and X2-TDMA syncs short of their read-back after a clear, among them).
+  straddling the exit, DMR and X2-TDMA syncs short of their read-back after a clear, and a carried pass a first-read
+  flush restarts whole, among them).
 - DSP `dsd_frame_sync_reset_acquisition()` drops outgoing profile proof, modulation votes, symbol history, hunt budgets,
   the two-slot TDMA verdict (`tdma_carrier`) and slicer windows at committed row boundaries, and at an input boundary
   (issue #634). Conventional rows also discard learned P25 modulation; trunk targets retain their own learned
@@ -10467,7 +10469,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     Phase 2, the exact word inside a rejected tolerant window's 700 dibits (the P2 tolerance's decided limits). The symbols the hunt
     did not count (the window's last, which the accept returned on, and the NID's) are charged to the profile's hunt
     budget (`sps_hunt_counter`) and the carried history resumes the pass where the candidate interrupted it
-    (`dsd_frame_sync_history_carry::pass_symbols`, 0 after a no-sync exit), so the dwell and the no-sync exits fall on
+    (`dsd_frame_sync_history_carry::pass_symbols`, 0 after a no-sync exit; a break the next call's first read finds
+    drops it with the history, and that call hunts a whole pass), so the dwell and the no-sync exits fall on
     the symbol they would have without the candidate: a candidate on noise moves nothing that a later acquisition
     depends on (under unlocked `-f1` on RTL input the C4FM/CQPSK probe alternates per dwell). Tests:
     `FRAME_SYNC_P25P1_C4FM_TOLERANCE` (accept at 6 signs and refuse at 7 both polarities; put back and kept; NXDN96 and
