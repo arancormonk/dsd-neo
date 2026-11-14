@@ -6915,15 +6915,31 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   strict interior peak of at least 0.4 in a pre-emphasised copy (x[n] - 0.9 x[n-1]), taken from the same lag products
   without a second correlation: FM hiss after 750 us de-emphasis passes the pitch cue on a few percent of frames, which
   would keep the attenuator from easing it. Only the analog chain turns it on. Digital voice carries no receiver hiss,
-  the frame target is calibrated on digital speech, and the digital output stays the same bits. Flags: `learn` and
+  the frame target is calibrated on digital speech, and the digital output stays the same bits. The acquisition stage
+  (`dsd_speech_agc_set_acquisition()`, off after init, kept by a reset) is for the digital voice chain's per-slot
+  instances, which restart every transmission, many of them shorter than the 2 dB startup steps; the analog chain
+  leaves it off and keeps today's law bit for bit. Until the estimate is established (20 committed frames) it changes
+  three things: a step aims at P + (W - P) n^2 / (n^2 + 24) (P the gain the reception's first step found, W the
+  settled aim clamp(T - S), n the committed frames), straight there for the first 20 steps; a frame that would play
+  over -12 dBFS takes the gain to where it plays at -12 dBFS, and no startup aim plays the loudest frame louder (the
+  loud-frame guard); and once a burst has completed (three frames within 6 dB of the reception's third loudest frame at
+  or over -70 dBFS, then one 12 dB under it) the gain rises 1 dB a frame until that frame plays at -17 dBFS, never past
+  the guard's limit, and startup aims stay over that floor (the burst fallback, for far-field talkers whose speech
+  never completes a voiced run; it lifts sounds before speech too). Its state lives in the learned block, so a reset
+  forgets it and a rollback restores it. `dsd_speech_agc_open_at()` opens the reception in progress at a given gain
+  (clamped into the controller's range, at once or over one frame, only before its first commit; a new opening
+  checkpoint; the start gain, tone cap and absolute floor stay), and `dsd_speech_agc_settled_gain_db()` reports the
+  settled aim once the estimate is established, for a caller that remembers talkers. Flags: `learn` and
   `decodable` per call, `tone` caps a decoder's tone frames at the start gain; `dsd_speech_agc_process_runs()` takes a
   learn flag per sample and turns its edges into `dsd_speech_agc_gate_closed()` (a complete rollback to the oldest of 13
   per-frame checkpoints, dropping any pending run) and `dsd_speech_agc_gate_opened()`. The output is bit-identical for
   any partition. `dsd_peak_limiter` is the same limiter on its own, for mixers. The source and its test keep IEEE
   semantics under fast-math. Tests: `DSP_SPEECH_AGC` (synthetic talkers, the gain law, startup, vowels, tones, hum,
   pitch edges, noise, attenuator, tone cap, decodability, rollback against a control, partitions, cross-rate, ceiling,
-  reset, non-finite, fixed mode, the limiter, the veto on de-emphasised hiss), `DSP_SPEECH_AGC_LONG` (the floor after
-  60-120 s of hiss, with and without the veto); the `dsd-neo_bench_speech_agc` micro-benchmark. End to end,
+  reset, non-finite, fixed mode, the limiter, the veto on de-emphasised hiss; `open_at` and the settled gain; the
+  acquisition stage's law bit for bit on every frame, its startup, guard and burst fallback, and the stage off against
+  today's law), `DSP_SPEECH_AGC_LONG` (the floor after 60-120 s of hiss, with and without the veto); the
+  `dsd-neo_bench_speech_agc` micro-benchmark (with an acquisition case at 8 kHz). End to end,
   `DECODE_MBE_SPEECH_LEVEL` and `DECODE_IQ_SPEECH_PARITY` hold one synthetic talker's established speech within 3 dB of
   -20 dBFS from IMBE, AMBE+2 and AMBE 2400 files (`-r`) and from narrowband FM, wideband FM and AM fixtures, all within
   1.5 dB of each other (`tests/core/speech_parity_tool.c`), and the `DECODE_IQ_SPEECH_LEVEL_*` and
