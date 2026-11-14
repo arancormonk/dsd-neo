@@ -757,6 +757,122 @@ test_mfid90_regroup_tsbk(void) {
     return rc;
 }
 
+/* One MFID90 TSBK of @p opcode with @p payload in octets 2..9 (last block, CRC sealed), read through processTSBK() on
+   @p state as it stands: @p corrupt breaks the block's CRC after sealing. */
+static int
+run_mfid90_payload_tsbk(dsd_opts* opts, dsd_state* state, uint8_t opcode, const uint8_t payload[8], int corrupt) {
+    uint8_t bytes[12] = {0};
+    bytes[0] = (uint8_t)(0x80U | (opcode & 0x3FU));
+    bytes[1] = 0x90;
+    DSD_MEMCPY(bytes + 2, payload, 8);
+    if (!seal_tsbk_crc(bytes)) {
+        return -1;
+    }
+    uint8_t dibits[98];
+    encode_tsbk_dibits(bytes, dibits);
+    build_stream_of(dibits);
+    if (corrupt) {
+        for (int i = 20; i < 80; i++) {
+            g_stream[i] = (uint8_t)(3 - g_stream[i]);
+        }
+    }
+    reset_decode_counters();
+    return processTSBK(opts, state);
+}
+
+/* MFID90 Group Regroup Channel Grant (0x02): SVC, CHAN, SG, SRC. */
+static int
+run_mfid90_regroup_grant(dsd_opts* opts, dsd_state* state, int sg, int corrupt) {
+    const uint8_t payload[8] = {0x00, 0x00, 0x01, (uint8_t)((sg >> 8) & 0xFF), (uint8_t)(sg & 0xFF), 0x00, 0x01, 0x02};
+    return run_mfid90_payload_tsbk(opts, state, 0x02, payload, corrupt);
+}
+
+/* MFID90 Group Regroup Channel Grant Update (0x03): CH1, SG1, CH2, SG2. */
+static int
+run_mfid90_regroup_grant_update(dsd_opts* opts, dsd_state* state, int ch1, int sg1, int ch2, int sg2) {
+    const uint8_t payload[8] = {
+        (uint8_t)((ch1 >> 8) & 0xFF), (uint8_t)(ch1 & 0xFF), (uint8_t)((sg1 >> 8) & 0xFF), (uint8_t)(sg1 & 0xFF),
+        (uint8_t)((ch2 >> 8) & 0xFF), (uint8_t)(ch2 & 0xFF), (uint8_t)((sg2 >> 8) & 0xFF), (uint8_t)(sg2 & 0xFF)};
+    return run_mfid90_payload_tsbk(opts, state, 0x03, payload, 0);
+}
+
+static int
+expect_near(const char* tag, double got, double want) {
+    if (fabs(got - want) > 1e-6) {
+        DSD_FPRINTF(stderr, "%s: got %.9f want %.9f\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+/* A Phase 1 MFID90 regroup grant (0x02) and grant update (0x03) name the supergroup, as the Phase 2 supergroup voice
+   messages do: each refreshes its seen stamp on the listening clock and never its members stamp. The update names the
+   second supergroup only with a second channel. SG 0 creates no entry. */
+static int
+test_mfid90_regroup_grants_refresh_seen(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    dsd_opts_set_relaxed_crc(&opts, 1); // -F: the grant paths still need their CRC
+
+    rc |= expect_eq_int("grant test add crc", run_mfid90_tsbk(&opts, &state, 0x00, 1400, 1401, 0, 0), 1);
+    const int idx = tsbk_patch_idx(&state, 1400);
+    if (idx < 0) {
+        DSD_FPRINTF(stderr, "grant test: add created no patch\n");
+        return 1;
+    }
+    const double members_at_add = state.p25_patch_members_listen_s[idx];
+
+    p25_patch_test_listen_for(&state, 10.0);
+    rc |= expect_eq_int("regroup grant crc", run_mfid90_regroup_grant(&opts, &state, 1400, 0), 1);
+    rc |= expect_near("regroup grant refreshes the seen stamp", state.p25_patch_seen_listen_s[idx],
+                      state.p25_patch_listen_s);
+    rc |= expect_near("regroup grant leaves the members stamp", state.p25_patch_members_listen_s[idx], members_at_add);
+
+    p25_patch_test_listen_for(&state, 5.0);
+    rc |=
+        expect_eq_int("regroup grant update crc", run_mfid90_regroup_grant_update(&opts, &state, 1, 1400, 2, 1410), 1);
+    rc |= expect_near("grant update refreshes SG1's seen stamp", state.p25_patch_seen_listen_s[idx],
+                      state.p25_patch_listen_s);
+    rc |= expect_near("grant update leaves SG1's members stamp", state.p25_patch_members_listen_s[idx], members_at_add);
+    const int idx2 = tsbk_patch_idx(&state, 1410);
+    rc |= expect_eq_int("grant update names SG2", idx2 >= 0, 1);
+    if (idx2 >= 0) {
+        rc |=
+            expect_near("grant update stamps SG2 seen", state.p25_patch_seen_listen_s[idx2], state.p25_patch_listen_s);
+        rc |=
+            expect_eq_int("grant update gives SG2 no current members", dsd_p25_patch_members_current(&state, idx2), 0);
+    }
+
+    const int count = state.p25_patch_count;
+    rc |= expect_eq_int("grant update without CH2 crc",
+                        run_mfid90_regroup_grant_update(&opts, &state, 1, 1400, 0, 1420), 1);
+    rc |= expect_eq_int("grant update without CH2 names no SG2", tsbk_patch_idx(&state, 1420), -1);
+    rc |= expect_eq_int("SG 0 grant crc", run_mfid90_regroup_grant(&opts, &state, 0, 0), 1);
+    rc |= expect_eq_int("SG 0 grant update crc", run_mfid90_regroup_grant_update(&opts, &state, 1, 0, 2, 0), 1);
+    rc |= expect_eq_int("SG 0 creates no entry", state.p25_patch_count, count);
+    rc |= expect_eq_int("SG 0 leaves no zero entry", tsbk_patch_idx(&state, 0), -1);
+    return rc;
+}
+
+/* Preservation: under -F a regroup grant whose CRC failed is never dispatched (tsbk_dispatch_message() needs the CRC
+   whatever the option), so it names no supergroup. */
+static int
+test_mfid90_failed_regroup_grant_writes_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    dsd_opts_set_relaxed_crc(&opts, 1);
+    rc |= expect_eq_int("broken regroup grant fails its crc", run_mfid90_regroup_grant(&opts, &state, 1430, 1), 0);
+    rc |= expect_eq_int("broken regroup grant creates no entry", state.p25_patch_count, 0);
+    rc |= expect_eq_int("broken regroup grant names no SG", tsbk_patch_idx(&state, 1430), -1);
+    return rc;
+}
+
 /* One standard Network Status Broadcast TSBK naming @p wacn / @p sysid (last block, CRC sealed), read through
    processTSBK() on @p state as it stands. */
 static int
@@ -779,15 +895,6 @@ run_network_status_tsbk(dsd_opts* opts, dsd_state* state, uint32_t wacn, uint16_
     reset_decode_counters();
     g_channel_freq = 0;
     return processTSBK(opts, state);
-}
-
-static int
-expect_near(const char* tag, double got, double want) {
-    if (fabs(got - want) > 1e-6) {
-        DSD_FPRINTF(stderr, "%s: got %.9f want %.9f\n", tag, got, want);
-        return 1;
-    }
-    return 0;
 }
 
 /* A CRC-good TSBK is control-channel listening: each one advances the patch listening clock by its gap on the decode
@@ -1066,6 +1173,8 @@ main(void) {
     }
     g_interrupt_at = -1;
     rc |= test_mfid90_regroup_tsbk();
+    rc |= test_mfid90_regroup_grants_refresh_seen();
+    rc |= test_mfid90_failed_regroup_grant_writes_nothing();
     rc |= test_failed_block_trailing_nulls();
     rc |= test_network_status_code();
     rc |= test_cc_tsbk_advances_listening();

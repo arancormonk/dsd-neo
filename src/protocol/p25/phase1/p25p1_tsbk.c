@@ -294,6 +294,8 @@ tsbk_handle_mfid90_grant(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_by
         p25_sm_event_t ev = p25_sm_ev_group_grant(channel, 0, sg, source_address, service_options);
         p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
+    // The grant names the supergroup (a CRC-good block: tsbk_dispatch_message()): its row stays, its members do not.
+    p25_patch_update(state, sg, /*is_patch*/ 1, /*active*/ 1);
 }
 
 static void
@@ -322,6 +324,11 @@ tsbk_handle_mfid90_grant_update(dsd_opts* opts, dsd_state* state, const uint8_t 
         p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
         p25_sm_event_t ev = p25_sm_ev_group_grant_update(ch2, 0, sg2, /*src*/ 0, P25_SM_SVC_UNKNOWN);
         p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
+    }
+    // Each supergroup the update names keeps its row (a CRC-good block); the second only with its own channel.
+    p25_patch_update(state, sg1, /*is_patch*/ 1, /*active*/ 1);
+    if (ch2 != 0) {
+        p25_patch_update(state, sg2, /*is_patch*/ 1, /*active*/ 1);
     }
 }
 

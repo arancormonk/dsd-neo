@@ -192,22 +192,6 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pd
     (void)MAC;
 }
 
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_patch_tg_key_is_clear(const dsd_state* state, int group) {
-    (void)state;
-    (void)group;
-    return 0;
-}
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_patch_sg_key_is_clear(const dsd_state* state, int group) {
-    (void)state;
-    (void)group;
-    return 0;
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_emit_enc_lockout_once_typed(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg, int svc_bits, int is_group,

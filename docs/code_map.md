@@ -3218,12 +3218,13 @@ suite runs under this compiler.
   one every few tens of ms, and any departure takes longer), and `dsd_p25_patch_listen_break()` makes the next note
   start afresh. Each entry carries two stamps on that clock, each current for `DSD_P25_PATCH_TTL_SECONDS` (20 s) of
   listening. The seen stamp (`p25_patch_seen_listen_s`: any message that names the supergroup, such as an Add,
-  LCGRGR, the Phase 2 supergroup voice messages MFID90 0x80/0xA0 and standard 0x90, or a regroup command) keeps the
-  row; the members stamp (`p25_patch_members_listen_s`: only a membership message, a regroup Add on TSBK 0x00, MAC
-  0x81 or LC 0x03, an Extended Function create with its radio, a Harris regroup member or KEY/ALG/SSN command) keeps
-  its member lists and KEY/ALG/SSN context usable. A message that only names the supergroup says nothing about who is
-  in the patch, so `p25_patch_update()` refreshes the seen stamp alone and an expired member list or KEY=0 never
-  becomes current again from it. Readers take a const state and never mutate it; the writers
+  LCGRGR, the Phase 1 MFID90 regroup grants TSBK 0x02 and MBT 0x02 and grant update TSBK 0x03 (its second supergroup
+  only with a second channel), the Phase 2 supergroup voice messages MFID90 0x80/0xA0 and standard 0x90, or a regroup
+  command) keeps the row; the members stamp (`p25_patch_members_listen_s`: only a membership message, a regroup Add on
+  TSBK 0x00, MAC 0x81 or LC 0x03, an Extended Function create with its radio, a Harris regroup member or KEY/ALG/SSN
+  command) keeps its member lists and KEY/ALG/SSN context usable. A message that only names the supergroup says nothing
+  about who is in the patch, so `p25_patch_update()` refreshes the seen stamp alone and an expired member list or KEY=0
+  never becomes current again from it. Readers take a const state and never mutate it; the writers
   (`src/protocol/p25/p25_patch.c`) expire members that are not current (groups, radios and KEY context) before they
   change an entry. Every accepted Add, a duplicate included, refreshes both stamps and reactivates the entry; an Add
   of the supergroup as its own member is ignored, and a Delete that lists it ends the patch; the last member's Delete
@@ -3253,8 +3254,8 @@ suite runs under this compiler.
   system's whole table aside (owner, clock and sequence counter with it; a restore breaks continuity): each trunk-scan
   target carries one, and Signal search keeps the session's. `dsd_app_p25_patches()` lists the active entries named
   within the TTL, most recent first, with member lists only while they are current. Tests: `CORE_P25_PATCH_STATE`,
-  `P25_PATCH_TRACKING`, `P25_MFID90_GRG`, `P25_P1_TSBK_SEQUENCE`, `P25_P2_XCCH_HELPERS`, `P25_GRANT_POLICY`,
-  `ENGINE_P25_PATCH_OWNER`, `APP_CONTROL_P25_NETWORK`.
+  `P25_PATCH_TRACKING`, `P25_MFID90_GRG`, `P25_P1_TSBK_SEQUENCE`, `P25_MBT_DECODE`, `P25_P1_MDPU_HELPERS`,
+  `P25_P2_XCCH_HELPERS`, `P25_GRANT_POLICY`, `ENGINE_P25_PATCH_OWNER`, `APP_CONTROL_P25_NETWORK`.
 - Received identity record (`dsd_state::rx_id`, `<dsd-neo/core/received_identity.h>`,
   `src/core/util/received_identity.c`): the system identity the carrier being decoded sent, kept apart from the decoder
   state that decoding needs (the Phase 2 seed, control channel anchors and return hints, a `--tetra-net` preset, values

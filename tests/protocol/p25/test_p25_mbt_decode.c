@@ -10,18 +10,21 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25_patch_test_clock.h"
 #include "p25_test_shim.h"
 #include "test_support.h"
 
@@ -402,6 +405,48 @@ capture_mbt_output(const char* name, const uint8_t* mbt, size_t mbt_len, char* o
     dsd_test_capture_stderr_end(&cap);
 
     int rc = dsd_test_capture_stderr_read(&cap, out, out_sz);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* An MFID90 Group Regroup Channel Grant MBT names its supergroup, as the Phase 2 supergroup voice messages do: it
+   refreshes the entry's seen stamp on the listening clock and never its members stamp. SG 0 creates no entry. */
+static int
+test_mfid90_regroup_grant_refreshes_seen(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t grant[48];
+    int rc = 0;
+    init_private_trunking(&opts, &state);
+    dsd_opts_set_relaxed_crc(&opts, 1);
+    seed_fdma_iden(&state, 1);
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+
+    p25_patch_test_listen_for(&state, 1.0);
+    p25_patch_add_wgid(&state, 1400, 1401);
+    int idx = -1;
+    for (int i = 0; i < state.p25_patch_count && i < DSD_P25_PATCH_MAX; i++) {
+        if (state.p25_patch_sgid[i] == 1400U) {
+            idx = i;
+        }
+    }
+    if (idx < 0) {
+        DSD_FPRINTF(stderr, "mbt regroup seen: add created no patch\n");
+        return 1;
+    }
+    const double members_at_add = state.p25_patch_members_listen_s[idx];
+    p25_patch_test_listen_for(&state, 10.0);
+    build_ambtc_mfid90_group_regroup(grant, 0x00, 0x100A, 0x100B, 1400, 0x010204);
+    (void)p25_decode_pdu_trunking(&opts, &state, grant, sizeof grant);
+    rc |= expect_eq_int("mbt regroup grant refreshes the seen stamp",
+                        fabs(state.p25_patch_seen_listen_s[idx] - state.p25_patch_listen_s) <= 1e-6, 1);
+    rc |= expect_eq_int("mbt regroup grant leaves the members stamp",
+                        fabs(state.p25_patch_members_listen_s[idx] - members_at_add) <= 1e-6, 1);
+
+    const int count = state.p25_patch_count;
+    build_ambtc_mfid90_group_regroup(grant, 0x00, 0x100A, 0x100B, 0, 0x010204);
+    (void)p25_decode_pdu_trunking(&opts, &state, grant, sizeof grant);
+    rc |= expect_eq_int("mbt SG 0 regroup grant creates no entry", state.p25_patch_count, count);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -1075,6 +1120,7 @@ main(void) {
         rc |= expect_eq_long("untrunked block establishes no CC", state.p25_cc_freq, 0L);
     }
 
+    rc |= test_mfid90_regroup_grant_refreshes_seen();
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;
 }

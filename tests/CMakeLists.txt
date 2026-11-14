@@ -10864,6 +10864,7 @@ target_include_directories(
     dsd-neo_test_p25_mbt_decode
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/protocol/p25
         ${PROJECT_SOURCE_DIR}/tests/test_support
 )
 target_link_libraries(
@@ -15430,6 +15431,8 @@ add_executable(
     protocol/p25/test_p25_p1_pdu_private_allowlist.c
     # The network status names the patch table's owner; a validated control block advances its listening clock.
     ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
+    # The real patch table: an MFID90 regroup grant names its supergroup there.
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_patch.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_pdu_trunking.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
