@@ -12661,8 +12661,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     word App default with `Util.gainDefaultNote(prefs.gainDb)` ("App default · Automatic" / "App default · 30 dB"). The
     system editor (`WizardScreen`) gives it its own full-width row with App default (`systemGainMode`,
     `systemGainField`; draft `gainMode`/`gainText`, the text counted in the draft fingerprint only under Set), above the
-    PPM field and the bandwidth choice, each full width and named by its own label (no captions over them).
-    `openForAdd()` (App default), `openForEdit()` and `openForFound()` (a detection's 0 Automatic, n Set, -1 App
+    PPM field (named by its own label, no caption) and the bandwidth choice (captioned like every combo), each full
+    width. `openForAdd()` (App default), `openForEdit()` and `openForFound()` (a detection's 0 Automatic, n Set, -1 App
     default; the Explore handoff App default) set the mode before the clean fingerprint is taken, and
     `applyRadioReference()` leaves the gain draft and that baseline alone. `gainValid()` and `ppmValid()` (empty or a
     whole number from -200 to 200, "Enter a correction from -200 to 200 ppm.") count only on `usb` and `rtltcp`, where

@@ -32,9 +32,17 @@ Column {
     property int oddKhz: 0
     readonly property bool inherited: inheritable && value <= 0
     readonly property bool odd: !inherited && widths.indexOf(value) < 0
-    readonly property PlexComboBox combo: widthCombo
+    // Set while this reports its own pick, so the value that comes back from
+    // the caller does not reload the list.
+    property bool picking: false
 
     signal chosen(int khz)
+
+    onValueChanged: {
+        if (!picking)
+            reload();
+    }
+    Component.onCompleted: reload()
 
     // Whether @a khz is shown as an entry of its own.
     function isOdd(khz) {
@@ -56,13 +64,6 @@ Column {
         var list = entries();
         return inheritable && khz <= 0 ? 0 : list.indexOf(khz);
     }
-
-    property bool picking: false
-    onValueChanged: {
-        if (!picking)
-            reload();
-    }
-    Component.onCompleted: reload()
 
     spacing: 6
 

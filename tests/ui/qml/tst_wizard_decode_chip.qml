@@ -119,14 +119,15 @@ Item {
         // capture rate is stepped to its DSP bandwidth, so it decodes TETRA at
         // 72 kHz like a USB or rtl_tcp radio. The chip is offered there, an
         // imported TETRA system keeps -fT and passes step 1 when its source
-        // moves to an Airspy, and the bandwidth field (shown on an Airspy now)
-        // holds the step off 72 kHz with the same fix a USB radio gets.
+        // moves to an Airspy, and the bandwidth choice (shown on an Airspy
+        // now) holds the step off 72 kHz with the same fix a USB radio gets.
+        // App default runs it at 72 kHz.
         function test_01d_tetra_runs_on_an_airspy() {
             var chip = tc.chipFor("TETRA")
             var rate = findChild(tc.wizard, "wizardDecodeTetraRateNote")
             var iq = findChild(tc.wizard, "wizardDecodeIqNote")
             var bw = findChild(tc.wizard, "systemBandwidthField")
-            verify(rate !== null && bw !== null, "the wizard has no TETRA rate note or bandwidth field")
+            verify(rate !== null && bw !== null, "the wizard has no TETRA rate note or bandwidth choice")
             tc.wizard.applyRadioReference({ "name": "KorKor", "freqMhz": "390.0125", "decodeFlag": "-fT",
                                             "trunking": true, "rrSid": 10880, "rrSiteId": 1 })
             compare(tc.wizard.step, 1)
@@ -137,12 +138,12 @@ Item {
             compare(tc.wizard.decodeFlag, "-fT", "switching to an Airspy dropped the imported TETRA flag")
             verify(chip.enabled, "the TETRA chip is greyed out on an Airspy")
             verify(tc.wizard.decodeFlagRunsHere("-fT"))
-            verify(tc.wizard.stepValid(), "TETRA on an Airspy at an empty bandwidth is held")
+            verify(tc.wizard.stepValid(), "TETRA on an Airspy at App default is held")
             verify(!rate.visible, "TETRA on an Airspy at 72 kHz is explained as a refusal: " + rate.text)
             verify(!iq.visible, "a radio source shows the I/Q note")
 
             tc.wizard.advancedOpen = true
-            verify(bw.visible, "the bandwidth field is hidden on an Airspy")
+            verify(bw.visible, "the bandwidth choice is hidden on an Airspy")
             compare(bw.displayText, "App default")
             compare(findChild(tc.wizard, "systemBandwidthNote").text, "App default · 72 kHz",
                     "App default on an Airspy does not run TETRA at 72 kHz")
@@ -166,13 +167,13 @@ Item {
         }
 
         // Regression (#803 D-B2/D-B3): TETRA decodes only at a 72 kHz
-        // bandwidth, and an empty field runs at 72 for it. The placeholder
-        // showed the app default instead, and a bandwidth that cannot decode
-        // TETRA passed step 1.
+        // bandwidth, and App default runs at 72 for it. The bandwidth's hint
+        // (now the App default note) showed the app default instead, and a
+        // bandwidth that cannot decode TETRA passed step 1.
         function test_01e_tetra_bandwidth_on_usb_and_rtl_tcp() {
             var rate = findChild(tc.wizard, "wizardDecodeTetraRateNote")
             var bw = findChild(tc.wizard, "systemBandwidthField")
-            verify(bw !== null, "the bandwidth field has no name to find it by")
+            verify(bw !== null, "the bandwidth choice has no name to find it by")
             tc.wizard.step = 1
             tc.wizard.pickDecodeFlag("-fT")
             compare(bw.displayText, "App default")
@@ -186,7 +187,7 @@ Item {
                 tc.wizard.bwText = "72"
                 verify(tc.wizard.stepValid(), source + ": TETRA at 72 kHz is held")
                 tc.wizard.bwText = ""
-                verify(tc.wizard.stepValid(), source + ": TETRA at an empty bandwidth is held")
+                verify(tc.wizard.stepValid(), source + ": TETRA at App default is held")
                 verify(!rate.visible)
             }
             tc.wizard.sourceType = "usb"
@@ -324,7 +325,7 @@ Item {
         // Issue #524: the engine refuses an AM channel the radio's DSP bandwidth
         // cannot filter, and at 4 or 6 kHz none fits. Step 1 waits for a wider
         // bandwidth, with the reason and the fix under the chips; 8 kHz takes
-        // the 6 kHz default, an empty field follows the 48 kHz app default, and
+        // the 6 kHz default, App default follows the 48 kHz app default, and
         // a digital pick is not held. Issue #806: an Airspy runs at its DSP
         // bandwidth too, so it is held the same way (it was let through).
         function test_12_am_waits_for_a_bandwidth_that_fits() {
@@ -362,7 +363,7 @@ Item {
             verify(!note.visible)
             tc.wizard.sourceType = "usb"
             tc.wizard.bwText = ""
-            verify(tc.wizard.stepValid(), "an empty bandwidth does not follow the 48 kHz app default")
+            verify(tc.wizard.stepValid(), "App default does not follow the 48 kHz app default")
             tc.wizard.step = 0
         }
 
