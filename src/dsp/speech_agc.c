@@ -82,10 +82,11 @@
    fixed start (sd 7 dB): 0.60 at the first commit, 0.81 at 10, 0.94 at 20. The guard pulls the gain down after the
    first frame that plays over the cap, so an opening gain that was too high plays loud for a frame or two. A burst is
    AGC_ACQ_HIGH_FRAMES frames in a row within AGC_ACQ_HIGH_DB of the third loudest frame at or over
-   AGC_ACQ_PEAK_ABS_DBFS, completed by a frame AGC_ACQ_LOW_DB under it. Syllables rise and fall like that; steady
-   noise, tones and a step out of silence do not, and reading the third loudest frame ignores two stray ones. Once a
-   burst has completed, the gain rises AGC_ACQ_RISE_DB a frame until that frame plays at the burst floor, which brought
-   the far-field talkers that never complete a voiced run up to their level. The loudest frame the cap reads is held
+   AGC_ACQ_PEAK_ABS_DBFS, completed by a frame AGC_ACQ_LOW_DB under it or by digital silence (a frame under the
+   absolute floor). Syllables rise and fall like that; steady noise, tones and a step out of silence do not, and
+   reading the third loudest frame ignores two stray ones. Once a burst has completed, the gain rises AGC_ACQ_RISE_DB
+   a frame until that frame plays at the burst floor, which brought the far-field talkers that never complete a voiced
+   run up to their level. The loudest frame the cap reads is held
    while frames come within AGC_ACQ_HIGH_DB of it and for AGC_ACQ_HOLD_FRAMES frames of sound after the last one, then
    eases AGC_ACQ_RISE_DB a frame, and until the first commit the gain returns AGC_ACQ_RISE_DB a frame to the gain the
    reception opened at: a pop or a bump early in a transmission is not the talker's level, and a loudest frame kept for
@@ -753,10 +754,11 @@ agc_acq_peak_insert(dsd_speech_agc_learned* d, float level_db) {
     }
 }
 
-/* The burst watch for one frame: high frames stand within AGC_ACQ_HIGH_DB of the third loudest level, low ones
-   AGC_ACQ_LOW_DB or more under it (frames under AGC_ACQ_PEAK_ABS_DBFS among them). A run of high frames arms a burst
-   and a low frame completes it; a frame between the two breaks the run only while no burst is armed. Returns 0 while
-   fewer than three levels are held. */
+/* The burst watch for one frame at or above the absolute floor: high frames stand within AGC_ACQ_HIGH_DB of the third
+   loudest level, low ones AGC_ACQ_LOW_DB or more under it. A frame under AGC_ACQ_PEAK_ABS_DBFS never enters the three
+   loudest but is judged against the third loudest like any other; a frame under the absolute floor is always low
+   (agc_acq_burst_silence()). A run of high frames arms a burst and a low frame completes it; a frame between the two
+   breaks the run only while no burst is armed. Returns 0 while fewer than three levels are held. */
 static int
 agc_acq_burst_watch(dsd_speech_agc_learned* d, float level_db) {
     if (level_db >= AGC_ACQ_PEAK_ABS_DBFS) {
@@ -786,6 +788,27 @@ agc_acq_burst_watch(dsd_speech_agc_learned* d, float level_db) {
         d->high_run = 0;
     }
     return 1;
+}
+
+/* The burst watch for an eligible frame under the absolute floor (digital silence): once three levels are held it is a
+   low frame, and nothing else. It completes an armed burst, so a burst that ends in silence completes as one that ends
+   in quiet noise does, and it ends a run of high frames, so blips between silences never add up to one. It enters no
+   loudest level, leaves the held loudest frame and its age alone (silence keeps the hold) and moves no gain: the
+   fallback's rise waits for a frame of sound. Only silence is always low: taking every frame under
+   AGC_ACQ_PEAK_ABS_DBFS as low would, with a third loudest level near it, complete bursts on near-silent material
+   and lift it by up to 30 dB. */
+static void
+agc_acq_burst_silence(dsd_speech_agc_learned* d) {
+    if (d->peaks < DSD_SPEECH_AGC_PEAKS) {
+        return;
+    }
+    if (d->burst_armed) {
+        d->burst_armed = 0;
+        if (d->bursts < AGC_COUNT_MAX) {
+            d->bursts++;
+        }
+    }
+    d->high_run = 0;
 }
 
 /* The held loudest frame for one frame: a frame within AGC_ACQ_HIGH_DB of it renews the hold; more than
@@ -879,6 +902,23 @@ agc_attenuate(dsd_speech_agc* agc, float level_db, int speech) {
     }
 }
 
+/* The gain ramp at a frame boundary. A boundary that changes the target, or finds no ramp pending, starts a ramp from
+   the current gain to the target over the next frame. A ramp dsd_speech_agc_open_at() started partway through the
+   frame just finished keeps its step and runs to its own end; every other ramp started at a boundary and is used up by
+   exactly one frame. */
+static void
+agc_boundary_ramp(dsd_speech_agc* agc) {
+    if (agc->gain_dirty) {
+        agc->g_target = agc_db2lin(agc->learned.gain_db + agc->learned.atten_db);
+        agc->gain_dirty = 0;
+        agc->ramp_left = 0; /* a new target: ramp to it over this frame */
+    }
+    if (agc->ramp_left == 0) {
+        agc->g_step = (agc->g_target - agc->g_cur) / (float)agc->frame_len;
+        agc->ramp_left = agc->frame_len;
+    }
+}
+
 /* The analysis frame is complete: classify it, learn from it, and set the gain ramp for the next frame. */
 static void
 agc_frame_done(dsd_speech_agc* agc) {
@@ -902,6 +942,9 @@ agc_frame_done(dsd_speech_agc* agc) {
         }
     } else {
         d->stale_frames = 0; /* silence or closed audio breaks a stale-floor run */
+        if (elig && agc->acquisition) {
+            agc_acq_burst_silence(d);
+        }
     }
     if (!speech) {
         d->run_len = 0;
@@ -912,12 +955,7 @@ agc_frame_done(dsd_speech_agc* agc) {
     if (elig) {
         agc_attenuate(agc, level_db, speech);
     }
-    if (agc->gain_dirty) {
-        agc->g_target = agc_db2lin(d->gain_db + d->atten_db);
-        agc->gain_dirty = 0;
-    }
-    agc->g_step = (agc->g_target - agc->g_cur) / (float)agc->frame_len;
-    agc->ramp_left = agc->frame_len;
+    agc_boundary_ramp(agc);
     DSD_MEMMOVE(agc->history, agc->history + agc->decim_pos, sizeof(float) * (size_t)agc->lag_hi);
     agc->decim_pos = 0;
     agc->frame_pos = 0;

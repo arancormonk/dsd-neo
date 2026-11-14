@@ -6947,10 +6947,14 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (the loud-frame guard); and once a burst has completed (three frames within 6 dB of the reception's third loudest
   frame at or over -70 dBFS, then one 12 dB under it) the gain rises 1 dB a frame until that frame plays at -17 dBFS,
   never past the guard's limit, and startup aims stay over that floor (the burst fallback, for far-field talkers whose
-  speech never completes a voiced run; it lifts sounds before speech too). The guard's loudest frame is a held peak:
-  the cut holds while loud frames keep coming and for 200 ms of sound (10 frames at or over the absolute floor; silence
-  does not count) after the last frame within 6 dB of it, then the held level eases 1 dB a frame and comes to rest
-  within 6 dB over the sound that follows; a louder frame takes it at once. Before the first commit the gain also
+  speech never completes a voiced run; it lifts sounds before speech too). A frame under -70 dBFS is judged against the
+  third loudest like any other, and digital silence (an eligible frame under the absolute floor) is always that fall:
+  it completes an armed burst and ends a run of high frames (`agc_acq_burst_silence()`), and does nothing else (no
+  loudest level, no hold, no gain move: the rise comes on frames of sound). A frame that does not learn counts as
+  neither. The guard's loudest frame is a held peak: the cut holds while loud frames keep coming and for 200 ms of
+  sound (10 frames at or over the absolute floor; silence does not count) after the last frame within 6 dB of it, then
+  the held level eases 1 dB a frame and comes to rest within 6 dB over the sound that follows; a louder frame takes it
+  at once. Before the first commit the gain also
   returns 1 dB a frame to the gain the reception opened at (`open_db`: the reset's start gain, `open_at()`'s gain, or
   the gain on leaving fixed mode), within the held level's cap; inside `agc_acquire()` the order is held peak, return,
   guard, burst watch, fallback rise. A pop or bump early in a transmission is not the talker's level, and a loudest
@@ -6959,9 +6963,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   onset plays loud for a frame again. The burst fallback's three loudest levels never ease (a pop then steady noise
   must not raise its floor). Its state lives in the learned block, so a reset forgets it and a rollback restores it.
   `dsd_speech_agc_open_at()` opens the reception in progress at a given gain (clamped into the controller's range, at
-  once or over one frame, only before its first commit; a new opening checkpoint; the start gain, tone cap and
-  absolute floor stay), and `dsd_speech_agc_settled_gain_db()` reports the settled aim once the estimate is
-  established, for a caller that remembers talkers. Flags: `learn` and `decodable` per call, `tone` caps a decoder's
+  once or over one frame's worth of samples, only before its first commit; a new opening checkpoint; the start gain,
+  tone cap and absolute floor stay). Called partway through a frame, its ramp runs to its own end across the boundary
+  (`agc_boundary_ramp()` keeps a pending ramp whose target that frame did not change; every other ramp starts at a
+  boundary and ends with the next frame, so those outputs stay the same bits). `dsd_speech_agc_settled_gain_db()`
+  reports the settled aim once the estimate is established, for a caller that remembers talkers. Flags: `learn` and `decodable` per call, `tone` caps a decoder's
   tone frames at the start gain; `dsd_speech_agc_process_runs()` takes a learn flag per sample and turns its edges
   into `dsd_speech_agc_gate_closed()` (a complete rollback to the oldest of 13 per-frame checkpoints, dropping any
   pending run) and `dsd_speech_agc_gate_opened()`. The output is bit-identical for
@@ -6970,8 +6976,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   pitch edges, noise, attenuator, tone cap, decodability, rollback against a control, partitions, cross-rate, ceiling,
   reset, non-finite, fixed mode, the limiter, the veto on de-emphasised hiss; `open_at` and the settled gain; the
   acquisition stage's law bit for bit on every frame, its startup, guard, held peak, return to the opening gain and
-  burst fallback, and the stage off against the unchanged law), `DSP_SPEECH_AGC_LONG` (the floor after 60-120 s of
-  hiss, with and without the veto); the
+  burst fallback, silence and frames that do not learn in the burst watch, `open_at` partway through a frame, and the
+  stage off against the unchanged law), `DSP_SPEECH_AGC_LONG` (the floor after 60-120 s of hiss, with and without the
+  veto); the
   `dsd-neo_bench_speech_agc` micro-benchmark (with an acquisition case at 8 kHz). End to end,
   `DECODE_MBE_SPEECH_LEVEL` and `DECODE_IQ_SPEECH_PARITY` hold one synthetic talker's established speech within 3 dB of
   -20 dBFS from IMBE, AMBE+2 and AMBE 2400 files (`-r`) and from narrowband FM, wideband FM and AM fixtures, all within

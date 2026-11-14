@@ -223,11 +223,14 @@ void dsd_speech_agc_set_noise_veto(dsd_speech_agc* agc, int on);
  *   opening gain, so its next onset plays loud for a frame again.
  * - Burst fallback. Far-field and low-level talkers decode mostly unvoiced, so their speech may never complete a run
  *   and never move the gain. Once a burst of sound has risen and fallen (three frames in a row within 6 dB of the
- *   reception's third loudest frame at or over -70 dBFS, then one 12 dB under it), the gain rises 1 dB a frame until
- *   that third loudest frame plays at -17 dBFS (never past the guard's limit on the held loudest frame), and startup
- *   aims stay over that floor. It cannot tell such a talker from sounds before speech (a breath, a bump), which it
- *   lifts too until the speech arrives. Steady noise, a tone and a step out of silence never complete a burst. The
- *   three loudest levels never ease, so a pop followed by steady noise cannot raise the floor with no new burst.
+ *   reception's third loudest frame at or over -70 dBFS, then one 12 dB under it), the gain rises 1 dB a frame of
+ *   sound until that third loudest frame plays at -17 dBFS (never past the guard's limit on the held loudest frame),
+ *   and startup aims stay over that floor. A frame under -70 dBFS is judged against the third loudest like any other;
+ *   digital silence (a learning frame under the absolute floor) always counts as the fall: it completes a burst and
+ *   ends a run of high frames, and does nothing else. Frames that do not learn count as neither. It cannot tell such a
+ *   talker from sounds before speech (a breath, a bump), which it lifts too until the speech arrives. Steady noise, a
+ *   tone and a step out of silence never complete a burst. The three loudest levels never ease, so a pop followed by
+ *   steady noise cannot raise the floor with no new burst.
  * Analog receptions leave it off and keep the 2 dB startup steps.
  */
 void dsd_speech_agc_set_acquisition(dsd_speech_agc* agc, int on);
@@ -285,7 +288,9 @@ void dsd_speech_agc_gate_opened(dsd_speech_agc* agc);
  * For a caller that knows better than the start gain where a reception should open, such as the gain the same talker
  * settled at before. The controller gain takes @p gain_db, clamped into the controller's range (-12/+30 dB around the
  * start gain): at once when @p ramp is 0 (as a reset leaves it, for a reception's first sample), or over the next
- * frame's worth of samples, linearly, when it is nonzero. It is a new opening checkpoint, so a gate close never
+ * frame's worth of samples, linearly, when it is nonzero, also when called partway through an analysis frame (a frame
+ * boundary within the ramp keeps it, unless that frame's decision moves the gain: then a new one-frame ramp starts
+ * there, from where the gain stands). It is a new opening checkpoint, so a gate close never
  * restores the gain from before it, and the gain the acquisition stage returns to before the first commit after a
  * loud frame's cut. The start gain, the range, the tone cap and the absolute floor stay where the start gain put them.
  * No effect once the reception has committed a frame, when @p gain_db is not finite, or before init. A reset returns
