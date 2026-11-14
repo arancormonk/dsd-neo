@@ -596,18 +596,24 @@ Notes
 ## Levels & Audio
 
 - `-g <num>` Digital output gain, the same in integer and `-y` float output and in the WAVs. `0` = auto (the default):
-  each slot's speech is brought to one level, -20 dBFS active speech, starting each transmission 4 dB over the
-  decoder's own level (`-g 1`, where speech at the vocoders' reference level plays at about -24 dBFS); the gain moves
-  only on decoded speech, never on encrypted audio it cannot decrypt, silence, noise or tones, holds through pauses,
-  stays within 12 dB below and 30 dB above that start level, and never lets a peak past -1 dBFS. Tone frames (DTMF and
-  other call tones) play no louder than the start level. A new transmission, a new channel or a new file starts at the
-  start level again; a short fade inside one transmission does not. `0.001`–`50` is a fixed multiplier on the vocoder's reference level (`1`; `0.5` is 6 dB quieter), with peaks
-  held at -1 dBFS. The terminal shows the auto gain in dB (`G: Auto (+3.5 dB)`, one value per channel on stereo output)
-  and a fixed one as its multiplier (`G: x2 (+|-) Manual`). Any other value (negative, above `50`, between `0` and
-  `0.001`, NaN or infinity) is refused with an error; it is never clamped or played as auto. The menu's Digital gain...
-  prompt takes the same values, fractions included, and the `+` / `-` keys step by 1: from auto `+` goes to `1`,
-  stepping below `0.001` goes back to auto, and they stop at `50`. Since issue #653 `-g N` under `-y` is this fixed
-  multiplier too, where it used to scale a float auto gain that kept adapting.
+  each slot's speech is brought to one level, -20 dBFS active speech. A transmission opens 8 dB over the decoder's own
+  level (`-g 1`, where speech at the vocoders' reference level plays at about -24 dBFS), or, when its radio ID has
+  talked long enough before in this run for its level to settle, at the gain that radio's speech settled at (a P25
+  Phase 1 radio ID arrives about 0.2 s into a transmission, and its remembered gain eases in there over 20 ms).
+  Within the talker's first voiced frames the gain goes most of the way to the talker's level, and until 20 voiced
+  frames are in no frame plays louder than -12 dBFS: a louder one brings the gain down at once. The gain moves only on
+  decoded speech, never on encrypted audio it cannot decrypt, silence, noise or tones, holds through pauses, stays
+  within 12 dB below and 30 dB above its start level (4 dB over `-g 1`, the middle of its range), and never lets a
+  peak past -1 dBFS. Tone frames (DTMF and other call tones) play no louder than that start level. A new transmission,
+  a new channel or a new file starts the gain over at its opening; a short fade inside one transmission does not. The
+  remembered gains belong to the 64 radios heard most recently, per protocol family, and last until `dsd-neo` exits.
+  `0.001`–`50` is a fixed multiplier on the vocoder's reference level (`1`; `0.5` is 6 dB quieter), with peaks held at
+  -1 dBFS. The terminal shows the auto gain in dB (`G: Auto (+3.5 dB)`, one value per channel on stereo output) and a
+  fixed one as its multiplier (`G: x2 (+|-) Manual`). Any other value (negative, above `50`, between `0` and `0.001`,
+  NaN or infinity) is refused with an error; it is never clamped or played as auto. The menu's Digital gain... prompt
+  takes the same values, fractions included, and the `+` / `-` keys step by 1: from auto `+` goes to `1`, stepping
+  below `0.001` goes back to auto, and they stop at `50`. Since issue #653 `-g N` under `-y` is this fixed multiplier
+  too, where it used to scale a float auto gain that kept adapting.
 - `-n <num>` Analog output gain. `0` (the default; anything under `1` too) is auto: each transmission's speech is
   brought to -20 dBFS active speech, the level `-g 0` aims digital voice at, FM and AM alike. It starts from a level
   set for the band, where a typical talker at full deviation or modulation already plays near that level: narrowband
@@ -631,25 +637,43 @@ Notes
   infinity is refused with an error, at the prompt too (a value above `100` used to be clamped to `100`). Since
   issue #518 a fixed `-n` plays RTL monitor audio about 9 dB louder than before, and up to 18 dB more where the old
   default filter (see `-v`) cut it.
-- What the automatic gains (`-g 0`, `-n 0`) cannot do. These limits were measured on real and synthetic speech
-  (`docs/testing.md` "The speech AGC's calibration and acceptance"):
+- What the automatic gains (`-g 0`, `-n 0`) cannot do. These limits were measured on real and synthetic speech, and
+  for digital voice also on 45 minutes of live P25 Phase 1 and Phase 2 trunked traffic (`docs/testing.md` "The
+  speech AGC's calibration and acceptance" and "Digital voice on live traffic"):
   - Accuracy. Once a transmission has had about 2 s of speech, every talker measured plays within 3 dB of -20 dBFS,
     95% within 2 dB and 90% within 1.5 dB. Two calls can still differ by about 4 dB, and over one call the gain can
     move by up to 8-9 dB for some talkers.
-  - Speed. The gain first moves 120 ms into speech (six 20 ms frames of it in a row), then by at most 2 dB per 20 ms,
-    and usually settles within 2 s of speech. A transmission whose first syllables are much quieter than the rest can
-    play up to about 12 dB loud for its first second while the gain catches up. Pauses do not count, nor, on analog, speech too noisy to be recognised,
-    so a weak FM signal takes longer, and an open squelch with several talkers can take tens of seconds. A
-    transmission with less than 120 ms of speech plays at the start level, and one that is a single held sound of
-    300-500 ms ends before the gain settles.
-  - Range. A talker more than 30 dB under the target at the start level stays quiet; one more than 12 dB over it is
-    held down by the -1 dBFS limiter.
+  - Speed. The gain first moves 120 ms into speech (six 20 ms frames of it in a row). On digital voice that first
+    step goes 60% of the way to the level the speech measures, each further voiced frame goes further (81% at 10
+    frames, 94% at 20), and after 20 such steps the gain follows slowly. On analog it moves by at most 2 dB per 20 ms.
+    Either usually settles within 2 s of speech. A transmission whose first syllables are much quieter than the rest
+    can play up to about 12 dB loud for its first second while the gain catches up. Pauses do not count, nor, on
+    analog, speech too noisy to be recognised, so a weak FM signal takes longer, and an open squelch with several
+    talkers can take tens of seconds. A transmission that is a single held sound of 300-500 ms ends before the gain
+    settles.
+  - Short transmissions. A transmission with less than 120 ms of speech in a row plays at the start level on analog.
+    On digital voice a talker whose speech never forms six voiced frames in a row (far from the microphone, a noisy
+    room) is lifted another way: bursts of sound that rise and fall raise the gain by 1 dB a frame until they play at
+    about -17 dBFS. Steady noise, a tone or a step out of silence does not count as a burst. A digital transmission
+    with less than 120 ms of voiced speech in a row and no such bursts plays at its opening gain.
+  - The digital opening. A talker heard for the first time opens at +8 dB. A loud one plays up to about 7 dB loud
+    until his first loud frame brings the gain down, 20-40 ms, with peaks held at -1 dBFS. A transmission that starts
+    with a second or so of near-silence holds its opening gain through it, so the same happens when the talker starts.
+    The burst rule cannot tell a far-field talker from sounds before the speech (a breath, a bump, a keyboard): it
+    lifts those toward -17 dBFS too, and the first one or two frames of the speech then play loud before the gain
+    comes down.
+  - The digital memory. A remembered gain belongs to a radio ID within a protocol family, not to a person. A console
+    several people share, or a radio in another hand, opens at the last talker's level, and two systems that use the
+    same ID number in one run share it; the first voiced frames correct it. It is not saved between runs.
+  - Range. A talker more than 30 dB under the target at the start level (on digital voice 4 dB over `-g 1`, not the
+    +8 dB opening) stays quiet; one more than 12 dB over it is held down by the -1 dBFS limiter.
   - Tones. A sound that holds one pitch and level for 240 ms or more is taken for a tone and teaches nothing, a long,
-    perfectly steady vowel included. At the start of a transmission a tone the decoder does not mark as one (any
-    analog tone, a P25 tone) can lift the gain by up to about 14 dB over its first 0.24 s before it is turned away.
-    Tones shorter than 240 ms (analog DTMF digits) and P25 Phase 1 DTMF, which the P25 vocoder does not mark as a
-    tone, are taken for speech (twelve DTMF digits moved the gain 0.6 dB), and a long sliding tone (a siren) plays
-    about 4 dB loud. A voice whose pitch sits right at 67 Hz is partly missed.
+    perfectly steady vowel included. At the start of a transmission a tone the decoder does not mark as one can move
+    the gain before it is turned away: on analog (any analog tone) by up to about 14 dB over its first 0.24 s; on
+    digital voice (a P25 tone), whose first steps go most of the way at once, until it plays near the speech level,
+    though never over -12 dBFS. Tones shorter than 240 ms (analog DTMF digits) and P25 Phase 1 DTMF, which the P25
+    vocoder does not mark as a tone, are taken for speech (twelve DTMF digits moved the gain 0.6 dB), and a long
+    sliding tone (a siren) plays about 4 dB loud. A voice whose pitch sits right at 67 Hz is partly missed.
   - The -1 dBFS ceiling holds per sample before the output's rate conversion: 8 kHz voice converted for a 48 kHz
     output can peak up to about 0.3 dB over it.
   - Muting, the output switches and recording never change what the gain learns, but frames that a talkgroup or

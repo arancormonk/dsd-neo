@@ -3074,7 +3074,9 @@ suite runs under this compiler.
   families, least recently used, explicit resets, shared slots, the active call's source), `ENGINE_NO_CARRIER_RESET`
   (carrier boundaries, stream gap, no-carrier, a TETRA stream gap against a new talker), `ENGINE_TRUNK_SCAN`,
   `APP_P25_CC_SELECTION`, `CORE_MBE_FILE_IO` (file start), `APP_CONTROL_SNAPSHOT_EVENT_HISTORY` (the render range, field
-  by field). `beeper()` builds its tone once on the int16 scale and plays the same samples in both formats, at
+  by field); end to end, `DECODE_MBE_SPEECH_LEVEL_QUIET` (a quiet talker's short transmission played with `-r`) and the
+  `DECODE_IQ_SPEECH_LEVEL_*` off-air excerpts.
+  `beeper()` builds its tone once on the int16 scale and plays the same samples in both formats, at
   `DSD_ALERT_TONE_RMS_DBFS` (-20 dBFS RMS, where digital speech plays; issue #518): the voice alerts (ID 40, 1250 Hz)
   and the data alert (ID 80, 2500 Hz) alike. Before, they played at -4.9 and -17.6 dBFS RMS. A deferred P25 Phase 2
   alert keeps its ID and length. Tests: `CORE_VOICE_CHAIN`, `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_AUDIO_GAIN`,
@@ -6938,7 +6940,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   the frame target is calibrated on digital speech, and the digital output stays the same bits. The acquisition stage
   (`dsd_speech_agc_set_acquisition()`, off after init, kept by a reset) is on for the digital voice chain's per-slot
   instances, which restart every transmission, many of them shorter than the 2 dB startup steps; the analog chain
-  leaves it off and keeps today's law bit for bit. Until the estimate is established (20 committed frames) it changes
+  leaves it off and keeps its 2 dB steps bit for bit. Until the estimate is established (20 committed frames) it changes
   three things: a step aims at P + (W - P) n^2 / (n^2 + 24) (P the gain the reception's first step found, W the
   settled aim clamp(T - S), n the committed frames), straight there for the first 20 steps; a frame that would play
   over -12 dBFS takes the gain to where it plays at -12 dBFS, and no startup aim plays the loudest frame louder (the
@@ -6962,8 +6964,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `dsd-neo_bench_speech_agc` micro-benchmark (with an acquisition case at 8 kHz). End to end,
   `DECODE_MBE_SPEECH_LEVEL` and `DECODE_IQ_SPEECH_PARITY` hold one synthetic talker's established speech within 3 dB of
   -20 dBFS from IMBE, AMBE+2 and AMBE 2400 files (`-r`) and from narrowband FM, wideband FM and AM fixtures, all within
-  1.5 dB of each other (`tests/core/speech_parity_tool.c`), and the `DECODE_IQ_SPEECH_LEVEL_*` and
-  `DECODE_IQ_ANALOG_PARITY_*` cases pin the off-air excerpts (`docs/testing.md` "Speech level parity").
+  1.5 dB of each other (`tests/core/speech_parity_tool.c`), `DECODE_MBE_SPEECH_LEVEL_QUIET` holds a quiet, rough-voiced
+  talker's 2.5 s transmission within 4 dB of -20 dBFS from 0.5 s after its first speech on the same three codecs (the
+  acquisition stage end to end), and the `DECODE_IQ_SPEECH_LEVEL_*` and `DECODE_IQ_ANALOG_PARITY_*` cases pin the
+  off-air excerpts (`docs/testing.md` "Speech level parity").
 - The auto squelch's core (issue #518 follow-up) is `src/dsp/squelch_floor.c` (`<dsd-neo/dsp/squelch_floor.h>`), pure
   and on the channel-filtered I/Q at the channel rate (before any post-decimation). A plan
   (`dsd_squelch_floor_plan_design()`) turns the channel taps and the half-band stage ahead of them into the
