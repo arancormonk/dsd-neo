@@ -2292,6 +2292,7 @@ test_metadata_auto_roundtrip(void) {
         char err[256] = {0};
         rc |= expect_int(label, dsd_iq_replay_read_metadata(metadata_path, &cfg, err, sizeof(err)), DSD_IQ_OK);
         rc |= expect_gain_fields(label, &cfg, k_cases[i].want_auto, k_cases[i].want_unknown, k_cases[i].want_tenths);
+        rc |= expect_int(label, cfg.tuner_gain_mode_known, 1);
         dsd_iq_replay_config_clear(&cfg);
     }
     return rc;
@@ -2325,6 +2326,7 @@ test_metadata_old_reader_view_of_auto(void) {
     rc |= expect_int("old reader view: parses", dsd_iq_replay_read_metadata(metadata_path, &cfg, err, sizeof(err)),
                      DSD_IQ_OK);
     rc |= expect_gain_fields("old reader view", &cfg, 0, 1, 0);
+    rc |= expect_int("old reader view: mode not stated", cfg.tuner_gain_mode_known, 0);
     dsd_iq_replay_config_clear(&cfg);
     return rc;
 }
@@ -2355,6 +2357,7 @@ test_metadata_legacy_without_auto_key(void) {
     char err[256] = {0};
     rc |= expect_int("legacy: parses", dsd_iq_replay_read_metadata(metadata_path, &cfg, err, sizeof(err)), DSD_IQ_OK);
     rc |= expect_gain_fields("legacy", &cfg, 0, 0, 270);
+    rc |= expect_int("legacy: mode not stated", cfg.tuner_gain_mode_known, 0);
     dsd_iq_replay_config_clear(&cfg);
 
     /* A legacy rtl_tcp capture under automatic gain recorded its getter's 0 as a known gain: still that. */
@@ -2366,6 +2369,8 @@ test_metadata_legacy_without_auto_key(void) {
     rc |=
         expect_int("legacy tcp: parses", dsd_iq_replay_read_metadata(metadata_path, &cfg, err, sizeof(err)), DSD_IQ_OK);
     rc |= expect_gain_fields("legacy tcp", &cfg, 0, 0, 0);
+    rc |= expect_int("legacy tcp: mode not stated", cfg.tuner_gain_mode_known, 0);
+    rc |= expect_int("legacy tcp: keeps the configured gain", dsd_iq_replay_configured_gain_db(&cfg, 0), 0);
     dsd_iq_replay_config_clear(&cfg);
 
     /* Not a bool: refused, naming the key. */
@@ -2386,48 +2391,62 @@ test_metadata_legacy_without_auto_key(void) {
 }
 
 /* B7: the whole-dB gain a replay configures. Automatic is 0; a manual gain is its nearest whole dB held to 1..49, so
-   0.9 dB is 1 dB (truncated, it was 0: automatic) and a gain at or below 0 dB is 1; no reading keeps the gain
-   configured. */
+   0.9 dB is 1 dB (truncated, it was 0: automatic). A gain at or below 0 dB is 1 dB where the metadata states its mode,
+   and keeps the configured gain in legacy metadata, where it may be an rtl_tcp automatic capture's 0. No reading keeps
+   the gain configured. */
 static int
 test_configured_gain_helper(void) {
     static const struct {
+        int mode_known;
         int auto_gain;
         int unknown;
         int tenths;
         int current;
         int want;
     } k_cases[] = {
-        {1, 1, 0, 30, 0},
-        {1, 1, 297, 30, 0},
-        {0, 0, 9, 30, 1},
-        {0, 0, 297, 0, 30},
-        {0, 0, 496, 0, 49},
-        {0, 0, -10, 0, 1},
-        {0, 0, 0, 12, 1},
-        {0, 0, -99, 0, 1},
-        {0, 0, 4, 0, 1},
-        {0, 0, 5, 0, 1},
-        {0, 0, 15, 0, 2},
-        {0, 0, 14, 0, 1},
-        {0, 0, 484, 0, 48},
-        {0, 0, 485, 0, 49},
-        {0, 0, 495, 0, 49},
-        {0, 0, 2147483647, 0, 49},
-        {0, 0, -2147483647 - 1, 0, 1},
-        {0, 1, 0, 17, 17},
-        {0, 1, 297, 17, 17},
+        /* Metadata that states its mode. */
+        {1, 1, 1, 0, 30, 0},
+        {1, 1, 1, 297, 30, 0},
+        {1, 0, 0, 9, 30, 1},
+        {1, 0, 0, 297, 0, 30},
+        {1, 0, 0, 496, 0, 49},
+        {1, 0, 0, 0, 12, 1},
+        {1, 0, 0, -10, 0, 1},
+        {1, 0, 0, -99, 0, 1},
+        {1, 0, 0, 4, 0, 1},
+        {1, 0, 0, 5, 0, 1},
+        {1, 0, 0, 14, 0, 1},
+        {1, 0, 0, 15, 0, 2},
+        {1, 0, 0, 484, 0, 48},
+        {1, 0, 0, 485, 0, 49},
+        {1, 0, 0, 495, 0, 49},
+        {1, 0, 0, 2147483647, 0, 49},
+        {1, 0, 0, -2147483647 - 1, 0, 1},
+        {1, 0, 1, 0, 17, 17},
+        /* Legacy metadata: no mode key. */
+        {0, 0, 0, 0, 12, 12},
+        {0, 0, 0, 0, 0, 0},
+        {0, 0, 0, -10, 12, 12},
+        {0, 0, 0, -99, 0, 0},
+        {0, 0, 0, -2147483647 - 1, 7, 7},
+        {0, 0, 0, 9, 0, 1},
+        {0, 0, 0, 297, 0, 30},
+        {0, 0, 0, 2147483647, 0, 49},
+        {0, 0, 1, 297, 17, 17},
     };
 
     int rc = 0;
     for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
         dsd_iq_replay_config cfg;
         DSD_MEMSET(&cfg, 0, sizeof(cfg));
+        cfg.tuner_gain_mode_known = k_cases[i].mode_known;
         cfg.tuner_gain_auto = k_cases[i].auto_gain;
         cfg.tuner_gain_unknown = k_cases[i].unknown;
         cfg.tuner_gain_tenth_db = k_cases[i].tenths;
-        char label[128];
-        DSD_SNPRINTF(label, sizeof(label), "configured gain (auto %d, unknown %d, %d tenths, current %d)",
-                     k_cases[i].auto_gain, k_cases[i].unknown, k_cases[i].tenths, k_cases[i].current);
+        char label[160];
+        DSD_SNPRINTF(
+            label, sizeof(label), "configured gain (mode known %d, auto %d, unknown %d, %d tenths, current %d)",
+            k_cases[i].mode_known, k_cases[i].auto_gain, k_cases[i].unknown, k_cases[i].tenths, k_cases[i].current);
         rc |= expect_int(label, dsd_iq_replay_configured_gain_db(&cfg, k_cases[i].current), k_cases[i].want);
     }
     rc |= expect_int("configured gain: no config keeps the current", dsd_iq_replay_configured_gain_db(NULL, 23), 23);

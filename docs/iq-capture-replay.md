@@ -114,7 +114,10 @@ The writer records:
   an unknown gain leaves the configured gain as it was.
 
   Compatibility: metadata written by older builds has no `tuner_gain_auto` and reads as it always did, so an automatic
-  capture made by an older build cannot be told from a manual one and replays as manual at the gain it recorded. Those
+  capture made by an older build cannot be told from a manual one and replays as manual at the gain it recorded. For
+  such a capture the configured gain follows the older rule for gains at or below 0 dB: a recorded gain above 0 dB sets
+  its nearest whole dB held to 1-49 (0.9 dB is 1 dB), and one at or below 0 dB leaves the configured gain as it was,
+  since an older build recorded an rtl_tcp capture under automatic gain as a known 0 dB. Those
   builds also have no `tuner_gain_known`; an Airspy capture among them recorded an error code as its gain and replays
   without one, and any other reads as known. An older build reading a newer automatic capture skips `tuner_gain_auto`,
   as it skips any field it does not know, and reads the capture as unknown gain.

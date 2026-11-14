@@ -5218,8 +5218,9 @@ test_rewrite_iq_fixture_gain(const char* metadata_path, const char* gain_lines) 
 }
 
 /* B7, B8: --iq-replay configures the whole-dB gain from the capture's: automatic for an automatic capture, whatever was
- * configured; a manual 0.9 dB as 1 dB (truncated, it was 0: automatic) and 49.6 dB as 49 dB; a capture with no gain
- * reading keeps the gain configured. */
+ * configured; a manual 0.9 dB as 1 dB (truncated, it was 0: automatic) and 49.6 dB as 49 dB; a manual gain at or below
+ * 0 dB as 1 dB where the sidecar states its mode. A legacy sidecar's gain at or below 0 dB (an rtl_tcp automatic
+ * capture recorded 0) and a capture with no gain reading keep the gain configured. */
 static int
 test_iq_replay_configures_recorded_gain(void) {
 #ifdef USE_RADIO
@@ -5233,8 +5234,14 @@ test_iq_replay_configures_recorded_gain(void) {
          30, 0},
         {"0.9 dB", "  \"tuner_gain_tenth_db\": 9,\n  \"tuner_gain_known\": true,\n  \"tuner_gain_auto\": false,\n", 30,
          1},
-        {"49.6 dB", "  \"tuner_gain_tenth_db\": 496,\n", 0, 49},
-        {"-1.0 dB", "  \"tuner_gain_tenth_db\": -10,\n", 0, 1},
+        {"legacy 0.9 dB", "  \"tuner_gain_tenth_db\": 9,\n", 30, 1},
+        {"legacy 49.6 dB", "  \"tuner_gain_tenth_db\": 496,\n", 0, 49},
+        {"legacy 0 dB", "  \"tuner_gain_tenth_db\": 0,\n  \"tuner_gain_known\": true,\n", 30, 30},
+        {"legacy -1.0 dB", "  \"tuner_gain_tenth_db\": -10,\n", 30, 30},
+        {"manual 0 dB", "  \"tuner_gain_tenth_db\": 0,\n  \"tuner_gain_known\": true,\n  \"tuner_gain_auto\": false,\n",
+         30, 1},
+        {"manual -1.0 dB",
+         "  \"tuner_gain_tenth_db\": -10,\n  \"tuner_gain_known\": true,\n  \"tuner_gain_auto\": false,\n", 30, 1},
         {"unknown", "  \"tuner_gain_tenth_db\": 0,\n  \"tuner_gain_known\": false,\n", 30, 30},
     };
 

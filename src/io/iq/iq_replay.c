@@ -1548,6 +1548,7 @@ metadata_parse_field_group_b1(metadata_parse_state* st, const char* key, const j
         int automatic = 0;
         rc = token_to_bool(val_tok, &automatic, err_buf, err_buf_size, "tuner_gain_auto");
         st->cfg.tuner_gain_auto = automatic ? 1 : 0;
+        st->cfg.tuner_gain_mode_known = 1;
         *handled = 1;
     } else if (strcmp(key, "rtl_dsp_bw_khz") == 0) {
         rc = metadata_expect_integer(val_tok, "rtl_dsp_bw_khz", err_buf, err_buf_size);
@@ -2306,10 +2307,11 @@ dsd_iq_replay_configured_gain_db(const dsd_iq_replay_config* cfg, int current_ga
         return current_gain_db;
     }
     /* The nearest whole dB (a half rounds up), held to the manual range 1..49 before it is computed, so no gain the
-       capture recorded overflows here. 0 is automatic: a manual gain never configures it. */
+       capture recorded overflows here. 0 is automatic: a manual gain never configures it. Legacy metadata recorded an
+       rtl_tcp automatic capture as a known 0, so there a gain at or below 0 dB keeps the configured gain, as it did. */
     const int tenths = cfg->tuner_gain_tenth_db;
     if (tenths <= 0) {
-        return 1;
+        return cfg->tuner_gain_mode_known ? 1 : current_gain_db;
     }
     if (tenths >= 485) {
         return 49;

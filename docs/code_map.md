@@ -8620,7 +8620,9 @@ Key public headers:
     gives no value), so its no-op gain setters cannot clear it, and `rtl_stream_publish_tuner_gain()` carries it to the
     frontends' `tuner_gain_is_auto`. `dsd_iq_replay_configured_gain_db()` is the one rule for the whole-dB configured
     gain (`args.c` for `--iq-replay`, the stream open for its copy): automatic 0, known manual the nearest dB held to
-    1..49, unknown the current value. `--iq-info` prints `automatic`. Tests: `IO_IQ_METADATA`, `IO_IQ_CAPTURE_WRITER`,
+    1..49, unknown the current value. A manual gain at or below 0 dB is 1 only where the sidecar states its mode
+    (`dsd_iq_replay_config::tuner_gain_mode_known`, set when the key is present); legacy metadata keeps the current
+    value there, as before, since it recorded an rtl_tcp automatic capture as a known 0. `--iq-info` prints `automatic`. Tests: `IO_IQ_METADATA`, `IO_IQ_CAPTURE_WRITER`,
     `IO_RTL_CAPTURE_WRITES` (`capture_records_gain_mode`, USB plus the replay device's setters),
     `IO_RTL_TCP_RECONNECT` (`capture_records_automatic_gain`), `IO_RTL_FRONTEND_TELEMETRY`, `RUNTIME_CLI_PARSE`.
   - WAV I/Q recordings (issue #701, `src/io/iq/iq_wav.c`): 2-channel RIFF/RF64/BW64 WAVs of u8, s16, s24, s32, f32

@@ -114,6 +114,9 @@ typedef struct {
      * capture made before it cannot be told from a manual one. A replay reports this mode, whatever its gain setters
      * are asked. */
     int tuner_gain_auto;
+    /* 1 when the metadata states the gain mode ("tuner_gain_auto" present, as every capture since it writes it), 0
+     * for legacy metadata, whose tuner_gain_known gain at or below 0 dB may have been an automatic capture. */
+    int tuner_gain_mode_known;
     int rtl_dsp_bw_khz;
     uint32_t base_decimation;
     uint32_t post_downsample;
@@ -295,9 +298,10 @@ uint32_t dsd_iq_replay_dsp_input_rate_hz(const dsd_iq_replay_config* cfg);
 /**
  * @brief The whole-dB tuner gain a replay configures (dsd_opts::rtl_gain_value) from its capture's gain.
  *
- * An automatic capture gives 0 (automatic). A known manual gain gives its nearest whole dB held to 1..49, so a manual
- * gain at or below 0 dB gives 1, never automatic. A capture with no gain reading, or a NULL @p cfg, leaves
- * @p current_gain_db as it is.
+ * An automatic capture gives 0 (automatic). A known manual gain above 0 dB gives its nearest whole dB held to 1..49.
+ * A manual gain at or below 0 dB gives 1, never automatic, when the metadata states the mode (tuner_gain_mode_known);
+ * in legacy metadata it may be an automatic capture's reading, so it leaves @p current_gain_db as it is, as before.
+ * A capture with no gain reading, or a NULL @p cfg, leaves @p current_gain_db as it is.
  */
 int dsd_iq_replay_configured_gain_db(const dsd_iq_replay_config* cfg, int current_gain_db);
 
