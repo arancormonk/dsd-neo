@@ -51,7 +51,7 @@ through the same filter), P25 Phase 2's transmit filter and D-STAR's Gaussian BT
 Signal sources. Each FM transmit filter is applied to symbol
 impulses at unity DC gain, so a held level 3 is the outer deviation:
 
-  p25p1    this tool's LDU1/LDU2 generator (p25_*() below, TIA-102.BAAA as MMDVMHost lays it out): frame sync, NID
+  p25p1    the LDU1/LDU2 generator (build_iq_fixtures' p25_*(), TIA-102.BAAA as MMDVMHost lays it out): frame sync, NID
            (BCH (63,16) from tests/test_support/p25_nid_generator.hpp), link control (RS (24,12,13)) or encryption
            sync (RS (24,16,9)) in Hamming (10,6,3) words, status symbols, random voice; C4FM: raised cosine
            (alpha 0.2) times inverse sinc, outer 1800 Hz
@@ -133,18 +133,6 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import build_iq_fixtures as bif
-from build_iq_fixtures import (
-    bits_to_levels,
-    fm_from_levels,
-    msb_bits,
-    nxdn_levels,
-    nxdn_response,
-    raised_cosine,
-    rrc_response,
-    sinc_response,
-    spectrum_taps,
-    ysf_levels,
-)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURE_DIR = os.path.join(ROOT, "tests", "fixtures", "iq")
@@ -350,11 +338,6 @@ def symbol_levels(dibits, floats, sync_levels):
     return levels
 
 
-def c4fm_response(freqs):
-    """TIA-102.BAAA C4FM: Nyquist raised cosine (alpha 0.2) times the inverse-sinc shaping filter, 0 above 2880 Hz."""
-    return raised_cosine(freqs, 0.2, 4800) / sinc_response(np.minimum(freqs, 2880.0), 4800)
-
-
 def harmonized_response(freqs):
     """The H-DQPSK filter as the Viavi/Aeroflex P25 Phase 2 note gives it: a raised cosine of roll-off 1 whose
     bandwidth (the 1/2T point) is 3600 Hz, so its response falls to 0 at 7200 Hz."""
@@ -373,7 +356,7 @@ def hdqpsk_from_levels(levels, response):
     sps = RATE_HZ // 6000
     impulses = np.zeros(len(levels) * sps, dtype=np.complex128)
     impulses[::sps] = np.exp(1j * np.cumsum(levels) * math.pi / 4.0)
-    return np.convolve(impulses, spectrum_taps(response, 6000), mode="same")
+    return np.convolve(impulses, bif.spectrum_taps(response, 6000), mode="same")
 
 
 def regenerated_source(name, args, symbol_rate, synth, note, work_dir, sync_levels=None):
@@ -415,7 +398,7 @@ def dmr_levels(audio):
 def dmr_baseband(levels):
     """ETSI TS 102 361-1 section 10.2.2.2: impulses through the square root raised cosine (alpha 0.2), the outer
     level at +/-1944 Hz (section 10.2.2.1)."""
-    return fm_from_levels(levels, 4800, rrc_response(0.2, 4800), DMR_OUTER_HZ)[: sample_count()]
+    return bif.fm_from_levels(levels, 4800, bif.rrc_response(0.2, 4800), DMR_OUTER_HZ)[: sample_count()]
 
 
 def dmr_bs_source(work_dir):
@@ -583,8 +566,8 @@ YSF_FRAMES_PER_SECOND = 10
 def ysf_source(outer_hz, outer_sync=False):
     """outer_sync=True (a diagnostic, not a YSF signal) sends the frame sync's symbols at outer levels, as dsd-neo's
     sign-only sync pattern draws them; the standard frame sync has inner symbols too."""
-    levels = ysf_levels(round(DURATION_S * YSF_FRAMES_PER_SECOND), outer_sync)
-    samples = fm_from_levels(levels, 4800, rrc_response(0.2, 4800), outer_hz)[: sample_count()]
+    levels = bif.ysf_levels(round(DURATION_S * YSF_FRAMES_PER_SECOND), outer_sync)
+    samples = bif.fm_from_levels(levels, 4800, bif.rrc_response(0.2, 4800), outer_hz)[: sample_count()]
     note = f"YSF V/D mode 2 generator, RRC 0.2, outer {outer_hz:.0f} Hz" + (
         ", sync at outer levels" if outer_sync else ""
     )
@@ -595,142 +578,28 @@ def nxdn_source(symbol_rate, outer_hz, outer_sync=False):
     """outer_sync=True (a diagnostic, not an NXDN signal) sends the FSW's two inner symbols at outer levels, as
     dsd-neo's sign-only sync pattern draws them."""
     frames = round(DURATION_S * symbol_rate / 192)
-    synth = fm_from_levels(nxdn_levels(frames, outer_sync), symbol_rate, nxdn_response(symbol_rate), outer_hz)
+    levels = bif.nxdn_levels(frames, outer_sync)
+    synth = bif.fm_from_levels(levels, symbol_rate, bif.nxdn_response(symbol_rate), outer_hz)
     note = f"NXDN RDCH voice generator, RRC 0.2 x sinc, outer {outer_hz:.0f} Hz"
     note += ", FSW at outer levels" if outer_sync else ""
     return Source(repeat_to_length(synth), note=note, sent=frames)
 
 
-# ---------------------------------------------------------------- P25 Phase 1 generator
+# ---------------------------------------------------------------- P25 Phase 1 source
 #
-# Voice LDU1/LDU2 frames after TIA-102.BAAA (frame sync, NID, link control and encryption sync words, status symbols),
-# laid out as MMDVMHost writes them (P25Data.cpp encodeLDU1()/encodeLDU2(), P25Utils.cpp encode(), P25NID.cpp,
-# RS634717.cpp, Hamming.cpp encode1063()), with the NID's BCH parity from the repository's own
-# tests/test_support/p25_nid_generator.hpp. The IMBE voice and low speed data bits are seeded random: the verdict reads
-# only the link control (LDU1) and encryption sync (LDU2). An LDU is 1728 bits (864 symbols, 180 ms at 4800 symbol/s).
-
-P25_FS = 0x5575F5FF77FF  # MMDVM P25_SYNC_BYTES; TIA-102.BAAA frame sync
-P25_NAC = 0x293
-P25_LDU_BITS = 1728
-P25_SEED = 834
-P25_STATUS_FIRST = 70  # MMDVM P25_SS0_START: a status symbol after every 70 bits, 72 bits apart
-P25_NID_PARITY_ROWS = (
-    0xCD930BDD3B2A,
-    0xAB5A8E33A6BE,
-    0x983E4CC4E874,
-    0x4C1F2662743A,
-    0xEB9C98EC0136,
-    0xB85D47AB3BB0,
-    0x5C2EA3D59DD8,
-    0x2E1751EACEEC,
-    0x170BA8F56776,
-    0xC616DFA78890,
-    0x630B6FD3C448,
-    0x3185B7E9E224,
-    0x18C2DBF4F112,
-    0xC1F2662743A2,
-    0xAD6A38CE9AFB,
-    0x9B2617BA7657,
-)
-# Where each 40-bit Hamming-coded group of the link control or encryption sync goes (MMDVM encodeLDU1()/encodeLDU2())
-P25_LDU_HEX_SPANS = ((410, 452), (600, 640), (788, 830), (978, 1020), (1168, 1208), (1356, 1398))
-
-
-def gf64_mul(a, b):
-    """GF(2^6) product, x^6 + x + 1 (MMDVM RS634717.cpp gf6Mult())."""
-    product = 0
-    for _ in range(6):
-        if b & 1:
-            product ^= a
-        a <<= 1
-        if a & 0x40:
-            a ^= 0x43
-        b >>= 1
-    return product
-
-
-def rs64_encode(data, parity):
-    """Systematic Reed-Solomon over GF(64) with generator roots alpha^1..alpha^parity: the P25 (24,12,13) and
-    (24,16,9) codes (equal to MMDVM's ENCODE_MATRIX_241213 and ENCODE_MATRIX_24169 products)."""
-    generator = [1]
-    root = 1
-    for _ in range(parity):
-        root = gf64_mul(root, 2)
-        generator = [gf64_mul(a, root) ^ b for a, b in zip(generator + [0], [0] + generator)]
-    generator = generator[::-1]
-    remainder = list(data) + [0] * parity
-    for i in range(len(data)):
-        factor = remainder[i]
-        if factor:
-            for j in range(1, len(generator)):
-                remainder[i + j] ^= gf64_mul(generator[j], factor)
-    return list(data) + remainder[len(data) :]
-
-
-def p25_hamming_10_6_3(d):
-    """P25's Hamming (10,6,3) (MMDVM encode1063(); dsd-neo hamming_encode_parity())."""
-    return d + [
-        d[0] ^ d[1] ^ d[2] ^ d[5],
-        d[0] ^ d[1] ^ d[3] ^ d[5],
-        d[0] ^ d[2] ^ d[3] ^ d[4],
-        d[1] ^ d[2] ^ d[3] ^ d[4],
-    ]
-
-
-def p25_place(frame, bits, start, stop):
-    """Write bits into frame[start:stop], skipping the status symbol positions (MMDVM P25Utils encode())."""
-    n = 0
-    for position in range(start, stop):
-        if position >= P25_STATUS_FIRST and (position - P25_STATUS_FIRST) % 72 < 2:
-            continue
-        frame[position] = bits[n]
-        n += 1
-    if n != len(bits):
-        raise SystemExit(f"P25 span {start}-{stop} holds {n} bits, not {len(bits)}")
-
-
-def p25_nid_bits(duid):
-    """NAC and DUID, BCH (63,16) parity (tests/test_support/p25_nid_generator.hpp), then the parity bit LDUs set."""
-    info = msb_bits(P25_NAC, 12) + msb_bits(duid, 4)
-    packed = 0
-    for bit, row in zip(info, P25_NID_PARITY_ROWS):
-        if bit:
-            packed ^= row >> 1
-    packed |= int("".join(map(str, info)), 2) << 47
-    return msb_bits(packed, 63) + [1]
-
-
-def p25_ldu_bits(duid, hexbits, rng):
-    frame = rng.integers(0, 2, P25_LDU_BITS).tolist()
-    p25_place(frame, msb_bits(P25_FS, 48), 0, 48)
-    p25_place(frame, p25_nid_bits(duid), 48, 114)
-    bits = [b for h in hexbits for b in msb_bits(h, 6)]
-    for group, (start, stop) in enumerate(P25_LDU_HEX_SPANS):
-        words = bits[24 * group : 24 * group + 24]
-        coded = [b for k in range(4) for b in p25_hamming_10_6_3(words[6 * k : 6 * k + 6])]
-        p25_place(frame, coded, start, stop)
-    return frame
-
-
-def p25_hexbits(data):
-    """Bytes as 6-bit symbols, most significant first (MMDVM bin2Hex())."""
-    bits = [b for byte in data for b in msb_bits(byte, 8)]
-    return [int("".join(map(str, bits[i : i + 6])), 2) for i in range(0, len(bits), 6)]
+# The LDU1/LDU2 generator is build_iq_fixtures' (p25_ldu_bits(), p25_ldu_hexbits()).
 
 
 def p25p1_source():
     """LDU1 (group voice, group 1, source 1) and LDU2 (clear: ALGID 0x80, key 0, MI 0) in turn, C4FM."""
-    lc = bytes([0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01])  # LCF, MFID, service, group, source
-    es = bytes(9) + bytes([0x80, 0x00, 0x00])  # MI, ALGID, KID
-    ldu1 = rs64_encode(p25_hexbits(lc), 12)
-    ldu2 = rs64_encode(p25_hexbits(es), 8)
-    rng = np.random.default_rng(P25_SEED)
-    count = math.ceil(sample_count() / (P25_LDU_BITS // 2 * (RATE_HZ // 4800)))
+    ldu1, ldu2 = bif.p25_ldu_hexbits()
+    rng = np.random.default_rng(bif.P25_SEED)
+    count = math.ceil(sample_count() / (bif.P25_LDU_BITS // 2 * (RATE_HZ // 4800)))
     bits = []
     for k in range(count):
-        bits += p25_ldu_bits(0x5, ldu1, rng) if k % 2 == 0 else p25_ldu_bits(0xA, ldu2, rng)
-    samples = fm_from_levels(bits_to_levels(bits), 4800, c4fm_response, 1800.0)[: sample_count()]
-    sent = sample_count() // (P25_LDU_BITS // 2 * (RATE_HZ // 4800))
+        bits += bif.p25_ldu_bits(0x5, ldu1, rng) if k % 2 == 0 else bif.p25_ldu_bits(0xA, ldu2, rng)
+    samples = bif.fm_from_levels(bif.bits_to_levels(bits), 4800, bif.c4fm_response, 1800.0)[: sample_count()]
+    sent = sample_count() // (bif.P25_LDU_BITS // 2 * (RATE_HZ // 4800))
     return Source(samples, note="P25 Phase 1 LDU1/LDU2 generator, C4FM, outer 1800 Hz", sent=sent)
 
 
@@ -769,7 +638,7 @@ def m17_source(work_dir):
     levels = levels[:symbols]
     starts = range(0, symbols - 191, 192)
     sent = sum(1 for k in starts if tuple(levels[k : k + 8]) == M17_STREAM_SYNC)
-    samples = fm_from_levels(levels, 4800, rrc_response(0.5, 4800), 2400.0)[: sample_count()]
+    samples = bif.fm_from_levels(levels, 4800, bif.rrc_response(0.5, 4800), 2400.0)[: sample_count()]
     return Source(samples, note="dsd-neo's M17 stream encoder symbols, RRC 0.5, outer 2400 Hz", sent=sent)
 
 
@@ -786,7 +655,8 @@ def dpmr_source():
     frame_symbols = len(stream) // bif.DPMR_SYNTH_FRAME_REPEATS
     symbols = round(DURATION_S * bif.DPMR_SYNTH_SYMBOL_RATE)
     levels = np.array([bif.DPMR_DIBIT_TO_LEVEL[d] for d in stream * math.ceil(symbols / len(stream))])[:symbols]
-    samples = fm_from_levels(levels, 2400, nxdn_response(2400), bif.DPMR_SYNTH_OUTER_DEVIATION_HZ)[: sample_count()]
+    outer_hz = bif.DPMR_SYNTH_OUTER_DEVIATION_HZ
+    samples = bif.fm_from_levels(levels, 2400, bif.nxdn_response(2400), outer_hz)[: sample_count()]
     note = "dPMR CCH reference frames, SRRC 0.2 x sinc, outer 1050 Hz"
     return Source(samples, note=note, sent=2 * (symbols // frame_symbols))
 
@@ -868,7 +738,7 @@ def digital_rows():
             ["-f1"],
             "p25p1_c4fm_vc",
             4800,
-            lambda lv: fm_from_levels(lv, 4800, c4fm_response, 1800.0),
+            lambda lv: bif.fm_from_levels(lv, 4800, bif.c4fm_response, 1800.0),
             "C4FM, outer 1800 Hz",
             P25P1_PASS,
             r"Sync: [+-]P25p1 .*LDU[12]",
@@ -887,7 +757,7 @@ def digital_rows():
     ]
     for tag, response, text in (
         ("harmonized", harmonized_response, "H-DQPSK, harmonized raised cosine (alpha 1, 3600 Hz)"),
-        ("rrc", rrc_response(0.2, 6000), "H-DQPSK, root raised cosine (alpha 0.2)"),
+        ("rrc", bif.rrc_response(0.2, 6000), "H-DQPSK, root raised cosine (alpha 0.2)"),
     ):
         rows.append(
             regen_row(
@@ -957,7 +827,7 @@ def digital_rows():
                 args,
                 key,
                 rate,
-                lambda lv, r=rate, o=outer: fm_from_levels(lv, r, nxdn_response(r), o),
+                lambda lv, r=rate, o=outer: bif.fm_from_levels(lv, r, bif.nxdn_response(r), o),
                 f"RRC 0.2 x sinc, outer {outer:.0f} Hz",
                 pass_re,
                 unit_re,
@@ -1020,7 +890,7 @@ def digital_rows():
             ["-fy"],
             "ysf",
             4800,
-            lambda lv: fm_from_levels(lv, 4800, rrc_response(0.2, 4800), 2290.0),
+            lambda lv: bif.fm_from_levels(lv, 4800, bif.rrc_response(0.2, 4800), 2290.0),
             "RRC 0.2, outer 2290 Hz",
             YSF_PASS,
             r"Sync: [+-]YSF ",
@@ -1040,7 +910,7 @@ def digital_rows():
             ["-fz"],
             "m17",
             4800,
-            lambda lv: fm_from_levels(lv, 4800, rrc_response(0.5, 4800), 2400.0),
+            lambda lv: bif.fm_from_levels(lv, 4800, bif.rrc_response(0.5, 4800), 2400.0),
             "RRC 0.5, outer 2400 Hz",
             m17_pass,
             m17_unit,

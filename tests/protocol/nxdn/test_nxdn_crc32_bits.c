@@ -185,6 +185,7 @@ seed_call_state(dsd_opts* opts, dsd_state* state) {
     state->R = 42;
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 0, sizeof(state->nxdn_sacch_frame_segcrc));
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 0, sizeof(state->nxdn_sacch_frame_segment));
+    state->nxdn_confirmed = 1; // the release arrives on a confirmed transmission
 }
 
 static int
@@ -260,6 +261,45 @@ test_message_type_reset_contract(void) {
     return rc;
 }
 
+/* A release a non-superframe SACCH carried (6-bit CRC) on a transmission not yet confirmed ends nothing and resets
+ * nothing; on a confirmed one it ends an NXDN call only, never another protocol's call on slot 0. */
+static int
+test_message_type_reset_needs_confirmation_and_an_nxdn_call(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_call_snapshot call;
+
+    seed_call_state(&opts, &state);
+    state.nxdn_confirmed = 0;
+    g_alias_reset_calls = 0;
+    nxdn_message_type(&opts, &state, 0x08U);
+    rc |= expect_int("unconfirmed-tx-rel-no-alias-reset", g_alias_reset_calls, 0);
+    rc |= expect_int("unconfirmed-tx-rel-call-present", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("unconfirmed-tx-rel-call-active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_int("unconfirmed-tx-rel-cipher-kept", state.nxdn_cipher_type, 1);
+    rc |= expect_int("unconfirmed-tx-rel-r-kept", state.R, 42);
+    rc |= expect_int("unconfirmed-tx-rel-sacch-kept", all_sacch_segments_are(0U, &state), 1);
+
+    seed_call_state(&opts, &state);
+    const dsd_call_observation p25 = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 101U,
+        .policy_target_id = 101U,
+        .ota_source_id = 3840U,
+    };
+    (void)dsd_call_state_observe(&state, &p25, DSD_CALL_BOUNDARY_BEGIN);
+    nxdn_message_type(&opts, &state, 0x11U);
+    rc |= expect_int("p25-call-present", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("p25-call-is-p25", DSD_SYNC_IS_P25P1(call.protocol), 1);
+    rc |= expect_int("p25-call-stays-active", call.phase, DSD_CALL_PHASE_ACTIVE);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -293,6 +333,7 @@ main(void) {
     rc |= expect_label("label-dcr-idle-silent", 0x90U, "");
     rc |= expect_label("label-unknown", 0xFEU, NULL);
     rc |= test_message_type_reset_contract();
+    rc |= test_message_type_reset_needs_confirmation_and_an_nxdn_call();
 
     return rc;
 }

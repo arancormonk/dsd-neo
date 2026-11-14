@@ -2865,6 +2865,8 @@ no_carrier_reset_decode_state(dsd_state* state, int preserve_scan_state) {
     /* Same rule for ProVoice: a frame proves nothing on its own, so the streak that does
      * cannot span the dead channel that brought us here (issue #421). */
     provoice_confirm_reset(state);
+    /* And for X2-TDMA, whose voice plays once a superframe of the transmission proved itself. */
+    state->x2tdma_corroborated = 0U;
     /* And for TETRA: the CRC evidence for the carrier, the partial TM-SDUs, the TDMA clock (which counts symbols the
      * dead channel did not send) and the speech in progress. */
     tetra_forget_carrier(state);
@@ -3557,6 +3559,7 @@ carrier_boundary_forget_evidence(dsd_state* state) {
     state->p25_p1_nid_evidence_symbolcnt = 0;
     // Whether the carrier is two-slot TDMA is the carrier's too: the next one proves its own with a decoded frame.
     state->tdma_carrier = 0U;
+    state->x2tdma_corroborated = 0U;
     // The calls end at the boundary, and a vendor late-entry mode is its call's (issue #657), as is a PI held for the
     // call its lost voice LC header would have opened.
     dmr_le_vendor_reset(state, 0);
@@ -4115,7 +4118,14 @@ live_scanner_dispatch_synced_frame_locked(dsd_opts* opts, dsd_state* state, cons
     const int frame_dispatchable = dsd_trunk_tuning_frame_is_current(dispatch_generation);
     if (!frame_tune_generation || frame_dispatchable) {
         processFrame(opts, state);
+        /* A provisional P25 sync is activity to a scan quiet check only once its frame's verdict passed (issue #834). */
+        if (opts->scan_skip_silent) {
+            dsd_engine_scan_quiet_settle_sync(state);
+        }
     } else {
+        if (opts->scan_skip_silent) {
+            dsd_engine_scan_quiet_drop_sync(state);
+        }
         /* A real sync the retune generation says is stale. Nothing consumes it, so
          * without saying so the SPS hunt is charged for the search that found it and
          * credited nothing -- and rotates the profile off the channel the retune was
@@ -4171,12 +4181,14 @@ live_scanner_receive_should_yield(const dsd_opts* opts, dsd_state* state) {
 }
 
 /* The frame sync's answer. Any sync it returns, YSF and D-STAR's among them, is activity to a scan quiet check
-   (issue #834): one load while skip-silent is off. */
+   (issue #834), a provisional P25 one only once its frame's verdict passed (dsd_engine_scan_quiet_note_frame_sync(),
+   settled after processFrame()): one load while skip-silent is off. */
 static int
 live_scanner_frame_sync(dsd_opts* opts, dsd_state* state) {
+    const uint64_t accepts_before = dsd_engine_scan_quiet_sync_accepts(state);
     const int synctype = getFrameSync(opts, state);
     if (synctype > DSD_SYNC_NONE && opts->scan_skip_silent) {
-        dsd_engine_scan_quiet_note_sync(state);
+        dsd_engine_scan_quiet_note_frame_sync(state, accepts_before);
     }
     return synctype;
 }
@@ -4256,6 +4268,11 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
         }
         state->synctype = live_scanner_frame_sync(opts, state);
         (void)dsd_engine_slicer_thresholds_refresh(state, threshold_cache);
+    }
+    /* Every dispatched frame settled its sync: one still deferred here was never dispatched (a manual tune settled, a
+       scan row commit), and gave no verdict. */
+    if (opts->scan_skip_silent) {
+        dsd_engine_scan_quiet_drop_sync(state);
     }
 }
 

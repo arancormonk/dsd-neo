@@ -18,6 +18,7 @@
 #include <dsd-neo/protocol/nxdn/nxdn_const.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -568,6 +569,9 @@ test_sacch2_state_update(void) {
     dsd_call_snapshot unconfirmed_call;
     rc |= expect_int("sacch2-unconfirmed-last-ran", (int)state.nxdn_last_ran, 0);
     rc |= expect_int("sacch2-unconfirmed-canonical", dsd_call_state_get(&state, 0U, &unconfirmed_call), 0);
+    /* Nor its scrambler: a single-frame message's 7-bit CRC passes noise one time in 128. */
+    rc |= expect_int("sacch2-unconfirmed-cipher", state.nxdn_cipher_type, 0);
+    rc |= expect_int("sacch2-unconfirmed-enc-lockout", state.dmr_encL, 0);
 
     nxdn_confirm_begin_frame(&state);
     nxdn_handle_sacch2(&opts, &state, trellis, m_data, 0x2AU, 0x2AU);
@@ -649,6 +653,38 @@ test_sacch2_state_update(void) {
     rc |= expect_int("sacch2-bad-crc-seed-clear", (int)state.payload_miN, 0);
     rc |= expect_int("sacch2-bad-crc-no-call", dsd_call_state_get(&state, 0U, &call), 0);
     rc |= expect_str("sacch2-bad-crc-no-alias", state.generic_talker_alias[0], "");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* A confirmed DCR release ends an NXDN call only: another protocol's call on slot 0 stays. */
+static int
+test_sacch2_release_ends_an_nxdn_call_only(void) {
+    static const uint8_t m_data[5] = {0};
+    static Event_History_I histories[2];
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t trellis[32];
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    init_sacch2_state(&state, histories);
+    const dsd_call_observation p25 = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1U,
+        .policy_target_id = 1U,
+        .ota_source_id = 3840U,
+    };
+    (void)dsd_call_state_observe(&state, &p25, DSD_CALL_BOUNDARY_BEGIN);
+    state.nxdn_confirmed = 1;
+    make_sacch2_trellis(trellis, 1U, 2U, 0x1EU);
+    nxdn_handle_sacch2(&opts, &state, trellis, m_data, 0x15U, 0x15U);
+
+    dsd_call_snapshot call;
+    rc |= expect_int("sacch2-release-p25-call", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("sacch2-release-p25-call-active", call.phase, DSD_CALL_PHASE_ACTIVE);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -907,6 +943,71 @@ test_facch1_crc_gates_element_decode(void) {
     return rc;
 }
 
+/* The VCALLs the decoder published (the conventional-activity hook fires with the publication, once confirmed). */
+static int g_vcall_publications;
+
+static void
+count_vcall_publication(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source, int is_private,
+                        int encrypted, int data_call) {
+    (void)opts;
+    (void)state;
+    (void)target;
+    (void)source;
+    (void)is_private;
+    (void)encrypted;
+    (void)data_call;
+    g_vcall_publications++;
+}
+
+/* A frame's two FACCH1 copies, the same VCALL with its CRC passing in both. On a frame that runs on from the last, the
+   first copy confirms the transmission and publishes the call, and the second, a repeat, is not decoded again. On an
+   isolated NXDN48 frame whose SACCH failed, the first copy's check waits for a second check and its call is withheld;
+   the second copy is that check and confirms the transmission, so its content publishes the call: the setup is not
+   lost to the repeat. Nothing publishes before the confirmation. */
+static int
+test_facch1_copy_that_confirms_publishes(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t payload[80];
+    uint8_t bits[144];
+    uint8_t reliab[144];
+    int rc = 0;
+    const dsd_trunk_scan_hooks hooks = {.nxdn_conventional_activity = count_vcall_publication};
+    dsd_trunk_scan_hooks_set(&hooks);
+    DSD_MEMSET(payload, 0, sizeof(payload));
+    DSD_MEMSET(reliab, 255, sizeof(reliab));
+    write_bits_msb(payload, 2U, 6U, 0x01U); /* VCALL */
+    make_facch1_soft_bits(bits, payload, 0);
+
+    for (int isolated = 0; isolated <= 1; isolated++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        state.synctype = DSD_SYNC_NXDN_POS;
+        nxdn_confirm_reset(&state);
+        if (!isolated) {
+            nxdn_confirm_note_frame_start(&state, 1000U, 1, 1);
+            state.nxdn_confirmed = 1;
+        }
+        nxdn_confirm_note_frame_start(&state, isolated ? 5000U : 1192U, 0, 0);
+        nxdn_confirm_begin_frame(&state);
+        g_vcall_publications = 0;
+        nxdn_deperm_facch_soft(&opts, &state, bits, reliab, 1U);
+        rc |= expect_int(isolated ? "isolated-first-copy-withheld" : "running-first-copy-publishes",
+                         g_vcall_publications, isolated ? 0 : 1);
+        rc |= expect_int(isolated ? "isolated-first-copy-unconfirmed" : "running-first-copy-confirmed",
+                         nxdn_confirm_is_confirmed(&state), isolated ? 0 : 1);
+        nxdn_deperm_facch_soft(&opts, &state, bits, reliab, 2U);
+        rc |= expect_int(isolated ? "isolated-second-copy-confirms" : "running-second-copy-confirmed",
+                         nxdn_confirm_is_confirmed(&state), 1);
+        rc |= expect_int(isolated ? "isolated-second-copy-publishes" : "running-repeat-not-decoded-again",
+                         g_vcall_publications, 1);
+        nxdn_confirm_end_frame(&state);
+        dsd_state_ext_free_all(&state);
+    }
+    dsd_trunk_scan_hooks_set(NULL);
+    return rc;
+}
+
 static int
 test_facch2_udch_crc_state_update(void) {
     static const uint8_t m_data[26] = {0};
@@ -1147,10 +1248,12 @@ main(void) {
     rc |= test_bit_window_and_state_helpers();
     rc |= test_sacch_state_update();
     rc |= test_sacch2_state_update();
+    rc |= test_sacch2_release_ends_an_nxdn_call_only();
     rc |= test_ran_after_dcr_stand_in_is_an_access_code();
     rc |= test_cac_crc_failure_reset();
     rc |= test_pich_tch_dcr_csm_alias_state();
     rc |= test_facch1_crc_gates_element_decode();
+    rc |= test_facch1_copy_that_confirms_publishes();
     rc |= test_facch2_udch_crc_state_update();
     rc |= test_confirming_frame_reports_its_ran_to_search();
     rc |= test_facch3_udch2_crc_state_update();

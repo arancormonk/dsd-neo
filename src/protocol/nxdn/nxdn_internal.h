@@ -7,8 +7,11 @@
 #ifndef DSD_NEO_SRC_PROTOCOL_NXDN_NXDN_INTERNAL_H_
 #define DSD_NEO_SRC_PROTOCOL_NXDN_NXDN_INTERNAL_H_
 
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -33,6 +36,25 @@ void nxdn_reset_payload_seed_if_forced(dsd_state* state);
 /* Forget a data call's header, packet assembly, crypto and LRRP identities (nxdn_data_call.c). */
 void nxdn_reset_data_call_state(dsd_state* state);
 void nxdn_prepare_sacch_payload_seed(dsd_state* state, int part_of_frame);
+
+/* Whether the canonical call on slot 0 is an NXDN call: the only one an NXDN message may end or give crypto. Another
+   protocol's call there is not NXDN's to touch, whatever an NXDN sync read on its carrier says. */
+static inline int
+nxdn_live_call_is_nxdn(const dsd_state* state) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, 0U, &call) > 0 && DSD_SYNC_IS_NXDN(call.protocol);
+}
+
+/* End the canonical call on slot 0 for NXDN end signalling, an NXDN call only, and sync its event row; returns whether
+   a call ended. */
+static inline int
+nxdn_end_live_call(const dsd_opts* opts, dsd_state* state, dsd_call_end_reason reason) {
+    if (!nxdn_live_call_is_nxdn(state) || dsd_call_state_end_ex(state, 0U, 0.0, reason) <= 0) {
+        return 0;
+    }
+    dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+    return 1;
+}
 
 void nxdn_handle_sacch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data, uint8_t crc,
                        uint8_t check);

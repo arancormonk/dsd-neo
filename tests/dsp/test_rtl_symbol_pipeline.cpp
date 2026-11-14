@@ -116,7 +116,11 @@ check_fsk_discriminator_output_contract(demod_state* s) {
         }
     }
     mean /= (double)(s->result_len - stable_start);
-    if (checked < 1000 || ok < (checked * 95) / 100 || peak < 25000.0f || std::fabs(mean) > 1500.0) {
+    /* The fixed scale (fsk_modem.h): the outer symbols' 3 x 0.026 rad a sample is 596 Hz at 48 kHz, 2980 counts. */
+    const double outer_counts =
+        3.0 * 0.026 * (double)cfg.sample_rate_hz / (2.0 * (double)kPi) * (double)DSD_FSK_DISCRIMINATOR_COUNTS_PER_HZ;
+    if (checked < 1000 || ok < (checked * 95) / 100 || std::fabs((double)peak - outer_counts) > 0.05 * outer_counts
+        || std::fabs(mean) > 0.05 * outer_counts) {
         DSD_FPRINTF(stderr, "FSK discriminator sign=%d/%d peak=%.1f mean=%.1f\n", ok, checked, peak, mean);
         return 1;
     }

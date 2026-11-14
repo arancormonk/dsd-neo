@@ -389,7 +389,9 @@ nxdn_element_handle_dst_info(dsd_opts* opts, dsd_state* state, const uint8_t* el
     DSD_FPRINTF(stderr, "\n Station Identification Information - %s ID: %s ", nxdn_dst_info_segment_label(start, end),
                 station_id_string);
 
-    if (start != 0U && end != 0U) {
+    /* Published only from a confirmed transmission: a non-superframe SACCH reaches here with one character behind a
+       6-bit CRC. */
+    if (start != 0U && end != 0U && nxdn_confirm_is_confirmed(state)) {
         char event_string[55];
         DSD_SNPRINTF(event_string, sizeof(event_string), "NXDN Digital Station ID: %s", station_id_string);
         const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, 0U, 65520U, 0U);
@@ -408,6 +410,12 @@ static void
 nxdn_element_mark_control_sync(const dsd_opts* opts, dsd_state* state) {
     if (state->nxdn_frame_foreign) {
         return; // another control channel's broadcast: this one's sync is not refreshed by it
+    }
+    /* A non-superframe SACCH's 6-bit CRC hands over a message type and little else, and passes noise one time in 64:
+       the sync clock and the control channel anchor wait for the transmission's confirmation (issue #398), as the
+       carrier's own sync clock does. */
+    if (!nxdn_confirm_is_confirmed(state)) {
+        return;
     }
     state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     nxdn_anchor_control_channel_from_current_tuner(opts, state, 1);
@@ -3038,6 +3046,9 @@ nxdn_vcall_has_key(const dsd_state* state, uint8_t cipher_type) {
 static void
 nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t cipher_type, uint8_t key_id, uint8_t received,
                           uint8_t contradicted, uint8_t enc_observed) {
+    if (!nxdn_live_call_is_nxdn(state)) {
+        return; // another protocol's call on slot 0 takes no NXDN cipher
+    }
     const int has_key = nxdn_vcall_has_key(state, cipher_type);
     const dsd_call_crypto_update update = {
         .classification = cipher_type == 0U ? DSD_CALL_CRYPTO_CLEAR
@@ -3216,9 +3227,7 @@ nxdn_vcall_process(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
         // retune and drops the row.
         const dsd_call_end_reason reason =
             nxdn_vcall_message_type_is_release(info->message_type) ? DSD_CALL_END_TERMINATOR : DSD_CALL_END_EXPLICIT;
-        if (dsd_call_state_end_ex(state, 0U, 0.0, reason) > 0) {
-            dsd_event_sync_slot(opts, state, 0U);
-        }
+        (void)nxdn_end_live_call(opts, state, reason);
         nxdn_call_identity_end(opts, state);
     }
     nxdn_vcall_print_summary(state, info);
@@ -3296,6 +3305,12 @@ NXDN_decode_VCALL_IV(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
 
 struct nxdn_scch_info {
     time_t now;
+    /* Whether the transmission is confirmed (nxdn_confirm_is_confirmed()): an SCCH's 7-bit CRC passes noise one time in
+       128, so an SCCH of an unconfirmed transmission is printed and acts on nothing -- no recent activity, call end,
+       cipher, key, crypto publication, tune or control channel -- until one of the next frame's checks confirms it
+       (they repeat every frame). Its IV parts are the decoder's own working state, kept either way (the call takes
+       the IV only through a confirmed publication), so a part sent before the confirmation is not lost. */
+    int acts;
     uint8_t direction;
     uint8_t sf;
     uint8_t opcode;
@@ -3360,8 +3375,10 @@ nxdn_scch_print_payload_label(const dsd_opts* opts, const struct nxdn_scch_info*
 
 static void
 nxdn_scch_prepare_type_d(const dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
+    /* The layout the frame's other channels read (a FACCH1 VCALL's 11-bit IDs): set for this frame whatever its
+       confirmation, and kept past it only once the transmission is confirmed (nxdn_frame()). */
     DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "Type-D");
-    if (!nxdn_confirm_is_confirmed(state)) {
+    if (!info->acts) {
         /* SCCH carries a 7-bit CRC, which noise clears often enough that a RAN and a scan
          * hold cannot rest on one (issue #398). */
         return;
@@ -3516,8 +3533,11 @@ nxdn_scch_apply_busy_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_sc
         return;
     }
 
-    nxdn_scch_update_control_channel_from_map(state, info);
     nxdn_print_target_label(state, DSD_CALL_KIND_GROUP_VOICE, info->id);
+    if (!info->acts) {
+        return;
+    }
+    nxdn_scch_update_control_channel_from_map(state, info);
 
     const long int freq = nxdn_channel_to_frequency(opts, state, info->rep1);
     if (freq == 0) {
@@ -3541,7 +3561,7 @@ nxdn_scch_apply_busy_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_sc
 }
 
 static void
-nxdn_scch_update_busy_display(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
+nxdn_scch_update_busy_display(const dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
     if (info->rep1 == 31U) {
         DSD_FPRINTF(stderr, "\n%s ", KRED);
     } else {
@@ -3552,10 +3572,13 @@ nxdn_scch_update_busy_display(dsd_opts* opts, dsd_state* state, const struct nxd
     DSD_FPRINTF(stderr, "%s ", info->gu == 0U ? "Group Call" : "Private Call");
     if (info->rep1 == 31U) {
         DSD_FPRINTF(stderr, "Termination ");
-        // Channel-update termination signaling: positive over-the-air end evidence.
-        if (dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
-            dsd_event_sync_slot(opts, state, 0U);
-        }
+    }
+    if (!info->acts) {
+        return;
+    }
+    if (info->rep1 == 31U) {
+        // Channel-update termination signaling: positive over-the-air end evidence, for an NXDN call.
+        (void)nxdn_end_live_call(opts, state, DSD_CALL_END_TERMINATOR);
         nxdn_call_identity_end(opts, state);
     } else if (info->rep1 != 0U) {
         const dsd_call_observation observation = {
@@ -3649,7 +3672,7 @@ nxdn_scch_handle_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_i
     nxdn_scch_update_busy_display(opts, state, info);
     /* The live call takes the message's target only when the go-to repeater is the receiver's own: a busy message for
      * another repeater is another call. */
-    if (info->rep1 != 31U && info->now - state->last_vc_sync_time < 1
+    if (info->acts && info->rep1 != 31U && info->now - state->last_vc_sync_time < 1
         && nxdn_idas_assoc(opts, state, info->rep1) == NXDN_IDAS_MATCH) {
         // The message's G/U bit classifies its target, for the canonical call as for the held one.
         nxdn_scch_enrich_identity(state, 0U, info->id,
@@ -3668,8 +3691,10 @@ nxdn_scch_handle_repeater_status(dsd_state* state, const struct nxdn_scch_info* 
         DSD_FPRINTF(stderr, "Area: %d; ", info->area);
         DSD_FPRINTF(stderr, "Repeater 1: %d; ", info->rep1);
         DSD_FPRINTF(stderr, "Repeater 2: %d; ", info->rep2);
-        (void)dsd_recent_activity_clear(state, info->rep1);
-        (void)dsd_recent_activity_clear(state, info->rep2);
+        if (info->acts) {
+            (void)dsd_recent_activity_clear(state, info->rep1);
+            (void)dsd_recent_activity_clear(state, info->rep2);
+        }
     } else if (info->id == 2045U) {
         DSD_FPRINTF(stderr, "Halt Repeater Message - ");
         DSD_FPRINTF(stderr, "Area: %d; ", info->area);
@@ -3690,7 +3715,9 @@ nxdn_scch_handle_repeater_status(dsd_state* state, const struct nxdn_scch_info* 
 
 static void
 nxdn_scch_handle_info4(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
-    (void)dsd_recent_activity_expire(state, 0U, DSD_RECENT_ACTIVITY_TTL_MS);
+    if (info->acts) {
+        (void)dsd_recent_activity_expire(state, 0U, DSD_RECENT_ACTIVITY_TTL_MS);
+    }
 
     if (!nxdn_scch_handle_repeater_status(state, info)) {
         nxdn_scch_handle_busy(opts, state, info);
@@ -3735,7 +3762,7 @@ nxdn_scch_handle_info3(dsd_state* state, const struct nxdn_scch_info* info) {
         DSD_FPRINTF(stderr, "\n%s ", KGRN);
         DSD_FPRINTF(stderr, " Source Update - Prefix CH: %d SRC: %d - (%d-%d) ", info->rep2, info->id, info->rep2,
                     info->id);
-        if (info->now - state->last_vc_sync_time < 1) {
+        if (info->acts && info->now - state->last_vc_sync_time < 1) {
             const uint64_t before = nxdn_live_call_transmission(state);
             nxdn_scch_enrich_identity(state, info->id, 0U, DSD_CALL_KIND_UNKNOWN);
             nxdn_call_identity_follow_source_update(state, before);
@@ -3763,7 +3790,8 @@ nxdn_scch_handle_info2(const dsd_opts* opts, dsd_state* state, const struct nxdn
         DSD_FPRINTF(stderr, " Target Update - Prefix CH: %d SRC: %d - (%d-%d) ", info->rep2, info->id, info->rep2,
                     info->id);
         /* As a busy repeater message's (nxdn_scch_handle_busy()): only for the receiver's own go-to repeater. */
-        if (info->now - state->last_vc_sync_time < 1 && nxdn_idas_assoc(opts, state, info->rep1) == NXDN_IDAS_MATCH) {
+        if (info->acts && info->now - state->last_vc_sync_time < 1
+            && nxdn_idas_assoc(opts, state, info->rep1) == NXDN_IDAS_MATCH) {
             nxdn_scch_enrich_identity(state, 0U, info->id, DSD_CALL_KIND_UNKNOWN);
             nxdn_call_identity_reconcile(opts, state, -1, 1);
         }
@@ -3786,6 +3814,9 @@ nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
             DSD_FPRINTF(stderr, "- %s - ", NXDN_Cipher_Type_To_Str(info->cipher));
             DSD_FPRINTF(stderr, "Key ID: %d; ", info->key_id);
         }
+        if (!info->acts) {
+            return;
+        }
         // One SCCH observation must not flip the classification the VCALLs established -- in
         // either direction: a corrupt call option could mute a clear call, or silently unmute
         // an encrypted one mid-stream. The hysteresis holds it until it repeats.
@@ -3797,9 +3828,11 @@ nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
         DSD_FPRINTF(stderr, "\n%s ", KYEL);
         DSD_FPRINTF(stderr, "Call IV B: %04llX; ", info->iv_b);
         DSD_FPRINTF(stderr, "Call IV C: %04llX; ", info->iv_c);
-        state->payload_miN = state->payload_miN | (info->iv_c << 6);
-        state->payload_miN = state->payload_miN | info->iv_b;
+        state->payload_miN = state->payload_miN | (info->iv_c << 6) | info->iv_b;
         DSD_FPRINTF(stderr, "Completed IV: %016llX", state->payload_miN);
+        if (!info->acts) {
+            return;
+        }
         nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, (uint8_t)state->nxdn_key, 0U, 0U,
                                   DSD_CALL_ENC_OBSERVED_NONE);
     }
@@ -3812,6 +3845,7 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8
     const time_t now = dsd_decode_time();
     struct nxdn_scch_info info;
     nxdn_scch_parse(Message, direction, now, &info);
+    info.acts = nxdn_confirm_is_confirmed(state);
 
     DSD_FPRINTF(stderr, "\n "); //initial line break
     nxdn_scch_print_payload_label(opts, &info);

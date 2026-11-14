@@ -921,6 +921,8 @@ init_state_dpmr_confirmation(dsd_state* state) {
     state->dpmr_confirmed = 0;
     state->dpmr_confirm_weak_streak = 0;
     state->dpmr_confirm_frame_evidence = 0;
+    state->dpmr_confirm_last_frame_valid = 0;
+    state->dpmr_confirm_last_frame_symbol = 0;
     state->dpmr_scrambled = 0;
     state->dpmr_cch_evidence = 0;
     state->dpmr_cch_evidence_symbolcnt = 0;
@@ -1093,6 +1095,8 @@ init_state_protocol_defaults_b(dsd_state* state) {
     state->provoice_confirmed = 0;
     state->provoice_confirm_weak_streak = 0;
     state->provoice_confirm_frame_evidence = 0;
+    state->provoice_confirm_last_frame_valid = 0;
+    state->provoice_confirm_last_frame_symbol = 0;
 
     state->p25vc = 0;
     state->payload_miP = 0;

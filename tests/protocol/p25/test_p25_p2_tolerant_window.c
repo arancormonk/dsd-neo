@@ -31,6 +31,7 @@
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -85,6 +86,10 @@ static int g_carrier_cut_at = -1;
 /* The window dibit at which the stand-in reader meets a stream flush (an RTL read whose stream generation moved: the
    clock's epoch moves, the carrier count and the tuning generation do not); -1 none. */
 static int g_flush_at = -1;
+/* The window dibit at which the input ends, -1 none: the session stops, or with g_end_falls_back set the input falls
+   back to Pulse. The reader goes on handing out the window's own dibits, as stand-ins a verdict can take for them. */
+static int g_end_at = -1;
+static int g_end_falls_back;
 
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
@@ -98,6 +103,13 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
         }
         if (state && g_feed_pos == g_flush_at) {
             state->symbol_clock_epoch++;
+        }
+        if (state && g_feed_pos == g_end_at) {
+            if (g_end_falls_back) {
+                state->input_fallback_pending = 1;
+            } else {
+                dsd_exitflag_store(1);
+            }
         }
         const int bit = g_feed_pos * 2;
         dibit = (g_bits[bit] << 1) | g_bits[bit + 1];
@@ -892,6 +904,44 @@ test_cut_window_charged_as_exact(void) {
     return rc;
 }
 
+/* The input ends two dibits before a window's end (a capture that runs out, a file that falls back to Pulse), and what
+   the reader hands out then completes a window whose verdict passes: behind a tolerant sync it is charged as a cut
+   window (test_cut_window_charged_as_exact()), none of its bursts dispatches, it anchors nothing and no tolerant window
+   is counted. Behind an exact sync the bursts read before the end decode, as before. */
+static int
+test_input_end_cuts_the_window(void) {
+    int rc = 0;
+    for (int falls_back = 0; falls_back <= 1; falls_back++) {
+        for (int tolerant = 0; tolerant <= 1; tolerant++) {
+            fresh_decoder();
+            rc |= anchored_by_exact_window();
+            const int vpdu_before = g_vpdu_calls;
+            if (tolerant) {
+                rc |= expect("tolerant sync", sync_tolerant(1) == 6);
+            } else {
+                sync_exact();
+            }
+            build(6, 0);
+            g_end_falls_back = falls_back;
+            g_end_at = WINDOW_DIBITS - 2;
+            (void)feed();
+            g_end_at = -1;
+            dsd_exitflag_store(0);
+            g_state->input_fallback_pending = 0;
+            g_state->input_interrupted = 0;
+            g_state->input_interrupt_reason = DSD_INTERRUPT_NONE;
+            if (!tolerant) {
+                rc |= expect("ended exact window decodes", g_vpdu_calls > vpdu_before);
+                continue;
+            }
+            rc |= expect("ended window dispatches no burst", g_vpdu_calls == vpdu_before);
+            rc |= expect("ended window anchors nothing", g_state->p25_p2_sync_anchor.valid == 0U);
+            rc |= expect("ended window not counted", g_state->p25_p2_sync_anchor.tolerant_windows == 0U);
+        }
+    }
+    return rc;
+}
+
 /* What the windows handed the CQPSK timing loop as their P25 proof: the calls, and the generation of the last. */
 static int g_p25_proofs;
 static uint64_t g_p25_proof;
@@ -1034,6 +1084,7 @@ main(void) {
     rc |= test_installation();
     rc |= test_context_fails_verdict();
     rc |= test_cut_window_charged_as_exact();
+    rc |= test_input_end_cuts_the_window();
     rc |= test_fourth_isch_ignored();
     rc |= test_window_proves_p25();
     dsd_frame_sync_hooks_set(&saved_hooks);

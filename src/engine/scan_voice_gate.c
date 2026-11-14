@@ -277,7 +277,8 @@ dsd_scan_voice_gate_tick(const dsd_opts* opts, dsd_state* state, int synced, dou
     if (state->scan_voice_gate_arrive_m < 0.0) {
         state->scan_voice_gate_arrive_m = now_m;
     }
-    if (state->scan_voice_gate_sync_m < 0.0 && synced) {
+    /* A P25p1 frame dropped behind a tolerant sync word synced nothing: the first sync waits for a real one. */
+    if (state->scan_voice_gate_sync_m < 0.0 && synced && !dsd_state_p25p1_frame_dropped(state)) {
         state->scan_voice_gate_sync_m = now_m;
     }
     dsd_scan_voice_probe_result media;

@@ -19,13 +19,16 @@
  * C++ for the NID codewords, which come from the test-only generator header.
  */
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include "p25_nid_generator.hpp"
 extern "C" {
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/frame.h>
@@ -33,15 +36,18 @@ extern "C" {
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/p25p1_sync_anchor.h>
+#include <dsd-neo/dsp/symbol_anchor.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
 #include <dsd-neo/protocol/p25/p25p1_nid_verdict.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <mbelib-neo/mbelib.h>
 #include "frame_sync_internal.h"
 }
@@ -49,6 +55,18 @@ extern "C" {
 extern "C" dsd_frame_verdict dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state);
 
 static int g_failures;
+/* The symbols the last dropped C4FM candidate handed the hunt (frame_sync_history_carry_symbols()), -1 for none. */
+static int g_carried_symbols = -1;
+/* The pass position it handed with them. */
+static int g_carried_pass = -1;
+/* The advisory AFC gate every NID read is expected to find published (auto-PPM reads it on the radio thread), and
+   whether one found another. */
+static uint8_t g_gate_valid_seen;
+static uint8_t g_gate_allow_seen;
+static int g_gate_moved_in_read;
+/* The tolerant C4FM words the frame sync marked in the seam's history at their accept, and those it measured. */
+static int g_grid_marks;
+static int g_grid_measures;
 
 #define CHECK(cond)                                                                                                    \
     do {                                                                                                               \
@@ -57,6 +75,13 @@ static int g_failures;
             g_failures++;                                                                                              \
         }                                                                                                              \
     } while (0)
+
+/* The NAC an anchored frame's NID must name, -1 behind any other sync. */
+static int
+anchored_nac(const dsd_state* state, unsigned int* out_errors) {
+    int nac = -1;
+    return dsd_frame_sync_p25p1_sync_kind(state, &nac, out_errors) == DSD_P25P1_SYNC_ANCHORED ? nac : -1;
+}
 
 enum {
     DUID_HDU = 0x0,
@@ -94,6 +119,13 @@ static int g_frames;
 static int g_ldu1_frames;
 static uint32_t g_reported_unit;
 static int g_interrupt_in_handler;
+/* The NID read raises an input interruption (a queued command's yield) at this read, -1 for none. */
+static int g_interrupt_at_nid_read = -1;
+/* The input ends at this NID read, -1 for none: the session stops (a symbol capture, a file without a frontend), or with
+   g_end_falls_back set the input falls back to Pulse. The reader goes on handing out the NID's own dibits, as stand-ins
+   a strict check can take for the NID. */
+static int g_end_at_nid_read = -1;
+static int g_end_falls_back;
 
 static void
 make_nid(int nac, int duid, nid_air* out) {
@@ -155,7 +187,9 @@ decode_alone(const nid_air* nid, int observed_nac) {
 static dsd_frame_verdict
 dispatch_frame(dsd_opts* opts, dsd_state* state, const nid_air* nid, int anchor_nac) {
     state->symbol_clock = SYNC_AT + 24;
-    frame_sync_p25p1_anchor_note_sync(state, DSD_SYNC_P25P1_POS, anchor_nac, anchor_nac >= 0 ? 3 : 0);
+    frame_sync_p25p1_anchor_note_sync(state, DSD_SYNC_P25P1_POS,
+                                      anchor_nac >= 0 ? DSD_P25P1_SYNC_ANCHORED : DSD_P25P1_SYNC_EXACT, anchor_nac,
+                                      anchor_nac >= 0 ? 3 : 0);
     state->symbol_clock = SYNC_AT + 24 + NID_DIBITS;
     load_nid(nid);
     state->synctype = DSD_SYNC_P25P1_POS;
@@ -213,7 +247,7 @@ test_clean_nid_decodes(void) {
         CHECK(state->p25_p1_nid_evidence_symbolcnt == state->symbolcnt);
         CHECK(state->p25_p1_sync_anchor.valid == 1U);
         CHECK(state->p25_p1_sync_anchor.expected_clock == (uint64_t)SYNC_AT + P25P1_LDU_DIBITS);
-        CHECK(dsd_frame_sync_p25p1_tolerant_nac(state, NULL) == -1);
+        CHECK(anchored_nac(state, NULL) == -1);
         free(state);
         free(opts);
     }
@@ -252,7 +286,7 @@ expect_dropped(dsd_opts* opts, dsd_state* state, const nid_air* nid) {
     CHECK(state->tdma_carrier == 1U);
     CHECK(state->p25_p1_sync_anchor.valid == 0U);
     CHECK(state->p25_p1_sync_anchor.tolerant_frames == 0U);
-    CHECK(dsd_frame_sync_p25p1_tolerant_nac(state, NULL) == -1);
+    CHECK(anchored_nac(state, NULL) == -1);
 }
 
 /* Behind a tolerant word anything short of a clean NID of the anchor's NAC drops the frame: the parity bit disagreeing,
@@ -416,12 +450,421 @@ test_unvalidated_frames_anchor_nothing(void) {
     free(opts);
 }
 
+/* The frame sync accepted the frame's sync word at SYNC_AT within a tolerance on the C4FM chain (@p kind, the anchor's
+   NAC @p anchor_nac for an anchored one), holding what its accept then wrote (frame_sync_p25p1_candidate_hold()): here
+   the lock and lastsynctype over a carrier the hunt had lost. The dispatcher reads its NID. */
+static dsd_frame_verdict
+dispatch_held_candidate(dsd_opts* opts, dsd_state* state, const nid_air* nid, int kind, int anchor_nac) {
+    g_grid_marks = 0;
+    g_grid_measures = 0;
+    state->carrier = 0;
+    state->lastsynctype = DSD_SYNC_NONE;
+    state->symbol_clock = SYNC_AT + 24;
+    frame_sync_p25p1_candidate_hold(state, 700);
+    /* What frame_sync_accept_p25p1() writes, and processFrame() after it. */
+    state->carrier = 1;
+    state->offset = 23;
+    state->max = 2.5f;
+    state->min = -2.5f;
+    state->center = 0.0f;
+    state->umid = 1.5f;
+    state->lmid = -1.5f;
+    state->maxref = 2.0f;
+    state->minref = -2.0f;
+    state->jitter = -1;
+    state->dmrburstR = 17U;
+    state->payload_algidR = 0;
+    state->dmr_stereo = 1;
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "%s", "P25 Phase 1");
+    state->p25_p1_c4fm_frame_valid = state->rf_mod == 1 ? 0U : 1U;
+    state->p25_p1_c4fm_frame_symbolcnt = state->symbolcnt;
+    state->p25_p1_c4fm_sync_levels = state->rf_mod == 1 ? 0U : 1U;
+    state->p25_cqpsk_dibit_map_idx = 0U;
+    state->lastsynctype = DSD_SYNC_P25P1_POS;
+    frame_sync_p25p1_anchor_note_sync(state, DSD_SYNC_P25P1_POS, kind, anchor_nac, 2);
+    state->symbol_clock = SYNC_AT + 24 + NID_DIBITS;
+    load_nid(nid);
+    state->synctype = DSD_SYNC_P25P1_POS;
+    g_frames = 0;
+    g_ldu1_frames = 0;
+    g_carried_symbols = -1;
+    g_carried_pass = -1;
+    state->sps_hunt_counter = 900;
+    return dsd_dispatch_handle_p25p1(opts, state);
+}
+
+/* A candidate the strict check drops puts back what its accept wrote, and hands the hunt the word's and the NID's
+   symbols to go on from; one whose NID passes keeps it all and hands nothing. */
+static void
+test_dropped_candidate_is_put_back(void) {
+    dsd_opts* opts = new_opts();
+    dsd_state* state = new_state(opts);
+    /* A DMR carrier's identity stands (as under -fa): a candidate that is no P25 frame replaces none of it. */
+    dsd_rxid_note_sync(state, DSD_SYNC_DMR_BS_DATA_POS);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 3U);
+    const nid_air other = nid_with_errors(0x0E1, DUID_LDU1, 0);
+    CHECK(dispatch_held_candidate(opts, state, &other, DSD_P25P1_SYNC_ANCHORED, NAC) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    CHECK(g_frames == 0);
+    CHECK(state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_DMR && state->rx_id.valid == DSD_RXID_ACCESS);
+    CHECK(dsd_state_p25p1_frame_dropped(state));
+    CHECK(state->carrier == 0 && state->lastsynctype == DSD_SYNC_NONE);
+    CHECK(g_carried_symbols == 24 + NID_DIBITS);
+    /* The word's last symbol (which the accept returned on) and the NID's are the hunt's: charged to its dwell, its pass
+       going on past them. */
+    CHECK(g_carried_pass == 701 + NID_DIBITS && state->sps_hunt_counter == 901 + NID_DIBITS);
+    CHECK(state->p25_p1_sync_candidate.valid == 0U);
+    /* Marked at the accept, never measured: the grid stays where the hunt left it. */
+    CHECK(g_grid_marks == 1 && g_grid_measures == 0);
+    /* On the CQPSK chain the accept is put back too; the carry is the C4FM hunt's sign history, so nothing is carried
+       and nothing charged. */
+    state->rf_mod = 1;
+    CHECK(dispatch_held_candidate(opts, state, &other, DSD_P25P1_SYNC_ANCHORED, NAC) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    CHECK(state->carrier == 0 && state->lastsynctype == DSD_SYNC_NONE);
+    CHECK(g_carried_symbols == -1 && state->sps_hunt_counter == 900);
+    state->rf_mod = 0;
+
+    const nid_air own = nid_with_errors(NAC, DUID_LDU1, 2);
+    CHECK(dispatch_held_candidate(opts, state, &own, DSD_P25P1_SYNC_ANCHORED, NAC) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    CHECK(g_ldu1_frames == 1);
+    /* Past the strict check the frame is P25's: the dispatcher replaces the identity, and the NID names its NAC. */
+    CHECK(state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_P25 && state->rx_id.access == (uint16_t)NAC);
+    CHECK(!dsd_state_p25p1_frame_dropped(state));
+    CHECK(state->carrier == 1 && state->lastsynctype == DSD_SYNC_P25P1_POS);
+    CHECK(g_carried_symbols == -1 && state->sps_hunt_counter == 900);
+    CHECK(state->p25_p1_sync_candidate.valid == 0U);
+    /* The word is measured against the grid once the NID passed, and the mark spent with the frame's report. */
+    CHECK(g_grid_marks == 1 && g_grid_measures == 1);
+    CHECK(state->p25_p1_sync_anchor.frame_word.valid == 0U);
+    /* On the CQPSK chain the grid takes a sample a symbol: nothing is marked. */
+    state->rf_mod = 1;
+    CHECK(dispatch_held_candidate(opts, state, &own, DSD_P25P1_SYNC_ANCHORED, NAC) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    CHECK(g_grid_marks == 0 && g_grid_measures == 0);
+    free(state);
+    free(opts);
+}
+
+/* Behind a word accepted hunt-wide on C4FM (no anchor) a strict NID decodes the frame whatever usable NAC it names,
+   another than the carrier's included, at up to four corrections; it is counted, and anchors the next unit. Anything
+   short of a strict NID drops the frame as behind an anchored word: parity disagreeing, five corrections, a borrowed
+   NAC, 0x000 or 0xFFF, a soft decode past the BCH radius. */
+static void
+test_acquisition_needs_a_strict_nid(void) {
+    static const int counts[] = {0, 4};
+    for (size_t c = 0; c < sizeof(counts) / sizeof(counts[0]); c++) {
+        dsd_opts* opts = new_opts();
+        dsd_state* state = new_state(opts);
+        const nid_air other = nid_with_errors(0x0E1, DUID_LDU1, counts[c]);
+        CHECK(dispatch_held_candidate(opts, state, &other, DSD_P25P1_SYNC_ACQUISITION, -1)
+              == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+        CHECK(g_ldu1_frames == 1);
+        CHECK(state->nac == 0x0E1);
+        CHECK(state->p25_p1_sync_anchor.acquisition_frames == 1U);
+        CHECK(state->p25_p1_sync_anchor.tolerant_frames == 0U);
+        CHECK(state->p25_p1_sync_anchor.valid == 1U);
+        CHECK(g_carried_symbols == -1);
+        CHECK(g_grid_marks == 1 && g_grid_measures == 1);
+        free(state);
+        free(opts);
+    }
+
+    nid_air cases[6];
+    cases[0] = nid_with_errors(NAC, DUID_LDU1, 0);
+    cases[0].bits[NID_PARITY_BIT] ^= 1;
+    cases[1] = nid_with_errors(NAC, DUID_LDU1, 5);
+    cases[2] = nid_with_errors(0x000, DUID_LDU1, 0);
+    cases[3] = nid_with_errors(0xFFF, DUID_LDU1, 2);
+    static const int nac_field_errors[] = {0, 2, 4, 6, 8, 10};
+    static const int other_errors[] = {14, 19, 27, 33, 39, 45, 52};
+    make_nid(NAC, DUID_LDU1, &cases[4]);
+    for (int i = 0; i < 6; i++) {
+        cases[4].bits[nac_field_errors[i]] ^= 1;
+    }
+    for (int i = 0; i < 7; i++) {
+        cases[4].bits[other_errors[i]] ^= 1;
+    }
+    cases[5] = nid_with_errors(NAC, DUID_LDU1, 13);
+    cases[5].rel[k_error_bits[11]] = REL_DOUBTFUL;
+    cases[5].rel[k_error_bits[12]] = REL_DOUBTFUL;
+    CHECK(decode_alone(&cases[4], NAC).nac_borrowed == 1);
+    CHECK(decode_alone(&cases[5], NAC).error_count > P25P1_NID_BCH_RADIUS);
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        dsd_opts* opts = new_opts();
+        dsd_state* state = new_state(opts);
+        const unsigned int failures = state->nid_failures_total;
+        CHECK(dispatch_held_candidate(opts, state, &cases[i], DSD_P25P1_SYNC_ACQUISITION, -1)
+              == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+        CHECK(g_frames == 0);
+        CHECK(state->nid_failures_total == failures);
+        CHECK(state->nac == NAC && p25p1_carrier_nac_established(state) == NAC);
+        CHECK(state->p25_p1_sync_anchor.acquisition_frames == 0U);
+        CHECK(state->carrier == 0 && state->lastsynctype == DSD_SYNC_NONE);
+        CHECK(g_carried_symbols == 24 + NID_DIBITS);
+        CHECK(g_grid_marks == 1 && g_grid_measures == 0);
+        if (g_failures != 0) {
+            DSD_FPRINTF(stderr, "  (acquisition case %zu)\n", i);
+        }
+        free(state);
+        free(opts);
+    }
+}
+
+/* What a tolerant accept and the NID read behind it may write before the strict check speaks, as one value: the lock,
+   the slicer levels, the frame label and slot 2 fields, the sync type the engine records, the frame span, the map, the
+   frame NAC, the identity and the carrier's NAC, the NID counters, and the status accumulator with the advisory AFC
+   gate it publishes. */
+namespace {
+
+struct provisional_view {
+    float levels[7];
+    int carrier, offset, jitter, lastsynctype, synctype, payload_algidR, nac;
+    unsigned int dmrburstR, nid_failures, nid_corrections, header_errors;
+    short int dmr_stereo;
+    char ftype[16];
+    uint32_t c4fm_frame_symbolcnt;
+    uint8_t c4fm_frame_valid, map_idx, frame_nac_valid, sync_levels, rx_family;
+    uint16_t rx_access;
+    uint8_t ss_buf[P25_STATUS_ACCUM_MAX];
+    uint8_t ss_count, ss_active, ss_class, gate_allow, gate_valid;
+    unsigned int afc_allowed, afc_suppressed;
+};
+
+} // namespace
+
+static provisional_view
+provisional_view_of(const dsd_state* state) {
+    provisional_view v;
+    std::memset(&v, 0, sizeof(v));
+    const float levels[7] = {
+        state->max, state->min, state->center, state->umid, state->lmid, state->maxref, state->minref,
+    };
+    std::memcpy(v.levels, levels, sizeof(levels));
+    v.carrier = state->carrier;
+    v.offset = state->offset;
+    v.jitter = state->jitter;
+    v.lastsynctype = state->lastsynctype;
+    v.synctype = state->synctype;
+    v.payload_algidR = state->payload_algidR;
+    v.nac = state->nac;
+    v.dmrburstR = state->dmrburstR;
+    v.nid_failures = state->nid_failures_total;
+    v.nid_corrections = state->nid_corrections_total;
+    v.header_errors = state->debug_header_errors;
+    v.dmr_stereo = state->dmr_stereo;
+    std::memcpy(v.ftype, state->ftype, sizeof(v.ftype));
+    v.c4fm_frame_symbolcnt = state->p25_p1_c4fm_frame_symbolcnt;
+    v.c4fm_frame_valid = state->p25_p1_c4fm_frame_valid;
+    v.map_idx = state->p25_cqpsk_dibit_map_idx;
+    v.frame_nac_valid = state->p25_frame_nac_valid;
+    v.sync_levels = state->p25_p1_c4fm_sync_levels;
+    v.rx_family = state->rx_id.family;
+    v.rx_access = state->rx_id.access;
+    std::memcpy(v.ss_buf, state->p25_ss_buf, sizeof(v.ss_buf));
+    v.ss_count = state->p25_ss_count;
+    v.ss_active = state->p25_ss_frame_active;
+    v.ss_class = state->p25_ss_classification;
+    v.gate_allow = state->p25_afc_gate_allow;
+    v.gate_valid = state->p25_afc_gate_valid;
+    v.afc_allowed = state->p25_afc_allowed_count;
+    v.afc_suppressed = state->p25_afc_suppressed_count;
+    return v;
+}
+
+/* Whether two views are the same: the levels within a tolerance, everything else exactly. */
+static int
+provisional_view_equal(const provisional_view* a, const provisional_view* b) {
+    for (int i = 0; i < 7; i++) {
+        if (std::fabs(a->levels[i] - b->levels[i]) > 1e-6f) {
+            return 0;
+        }
+    }
+    return a->carrier == b->carrier && a->offset == b->offset && a->jitter == b->jitter
+           && a->lastsynctype == b->lastsynctype && a->synctype == b->synctype && a->payload_algidR == b->payload_algidR
+           && a->nac == b->nac && a->dmrburstR == b->dmrburstR && a->nid_failures == b->nid_failures
+           && a->nid_corrections == b->nid_corrections && a->header_errors == b->header_errors
+           && a->dmr_stereo == b->dmr_stereo && std::memcmp(a->ftype, b->ftype, sizeof(a->ftype)) == 0
+           && a->c4fm_frame_symbolcnt == b->c4fm_frame_symbolcnt && a->c4fm_frame_valid == b->c4fm_frame_valid
+           && a->map_idx == b->map_idx && a->frame_nac_valid == b->frame_nac_valid && a->sync_levels == b->sync_levels
+           && a->rx_family == b->rx_family && a->rx_access == b->rx_access
+           && std::memcmp(a->ss_buf, b->ss_buf, sizeof(a->ss_buf)) == 0 && a->ss_count == b->ss_count
+           && a->ss_active == b->ss_active && a->ss_class == b->ss_class && a->gate_allow == b->gate_allow
+           && a->gate_valid == b->gate_valid && a->afc_allowed == b->afc_allowed
+           && a->afc_suppressed == b->afc_suppressed;
+}
+
+/* The decoder as a subscriber's data unit left it (opt-in AFC gate: valid, not allowing), with its own levels and
+   frame fields, set apart from what an accept writes. */
+static void
+mark_published_state(dsd_state* state) {
+    state->max = 7.0f;
+    state->min = -7.0f;
+    state->center = 0.25f;
+    state->umid = 4.0f;
+    state->lmid = -4.0f;
+    state->maxref = 5.6f;
+    state->minref = -5.6f;
+    state->offset = 77;
+    state->jitter = 3;
+    state->dmrburstR = 9U;
+    state->payload_algidR = 0x84;
+    state->dmr_stereo = 0;
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "%s", "DMR");
+    /* The engine's last sync, which it overwrites with the candidate's (dispatch_held_candidate()). */
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state->p25_p1_c4fm_frame_valid = 1;
+    state->p25_p1_c4fm_frame_symbolcnt = 4242U;
+    state->p25_cqpsk_dibit_map_idx = 2U;
+    state->p25_frame_nac_valid = 1U;
+    state->p25_p1_c4fm_sync_levels = 0U;
+    p25_status_accum_reset(state);
+    p25_status_accum_add(state, 0);
+    p25_status_accum_add(state, 2);
+    p25_status_accum_add(state, 0);
+    p25_status_accum_classify(state);
+    CHECK(state->p25_afc_gate_valid == 1U && state->p25_afc_gate_allow == 0U);
+    CHECK(state->p25_ss_classification == (uint8_t)P25_SS_CLASS_SUBSCRIBER);
+    g_gate_valid_seen = state->p25_afc_gate_valid;
+    g_gate_allow_seen = state->p25_afc_gate_allow;
+    g_gate_moved_in_read = 0;
+}
+
+/* Whatever chain and kind, a candidate whose NID fails leaves the decoder exactly as it found it, the advisory AFC gate
+   included: the gate the last data unit published stands through the NID read too (auto-PPM must not train on the
+   subscriber the gate excludes while the NID is provisional). A candidate whose NID passes withdraws the gate as an
+   exact data unit's start does, once it passed; behind an exact word the read finds it withdrawn, as before. */
+static void
+test_rejected_candidate_leaves_the_state_as_it_was(void) {
+    for (int rf_mod = 0; rf_mod <= 1; rf_mod++) {
+        for (int kind = 0; kind < 2; kind++) {
+            dsd_opts* opts = new_opts();
+            dsd_state* state = new_state(opts);
+            state->rf_mod = rf_mod;
+            const int sync_kind = kind == 0 ? DSD_P25P1_SYNC_ANCHORED : DSD_P25P1_SYNC_ACQUISITION;
+            const int anchor_nac = kind == 0 ? NAC : -1;
+            mark_published_state(state);
+            state->carrier = 0;
+            state->lastsynctype = DSD_SYNC_NONE;
+            const provisional_view before = provisional_view_of(state);
+            const nid_air noise = nid_with_errors(NAC, DUID_LDU1, 13);
+            CHECK(dispatch_held_candidate(opts, state, &noise, sync_kind, anchor_nac)
+                  == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+            CHECK(g_frames == 0);
+            CHECK(g_gate_moved_in_read == 0);
+            const provisional_view after = provisional_view_of(state);
+            if (!provisional_view_equal(&before, &after)) {
+                DSD_FPRINTF(stderr, "  (rf_mod %d, kind %d: the state moved)\n", rf_mod, sync_kind);
+            }
+            CHECK(provisional_view_equal(&before, &after));
+
+            mark_published_state(state);
+            const nid_air clean = nid_with_errors(NAC, DUID_LDU1, 0);
+            CHECK(dispatch_held_candidate(opts, state, &clean, sync_kind, anchor_nac)
+                  == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+            CHECK(g_gate_moved_in_read == 0);
+            CHECK(state->p25_afc_gate_valid == 0U && state->p25_afc_gate_allow == 0U);
+            free(state);
+            free(opts);
+        }
+    }
+}
+
+/* A queued command's yield cuts the NID behind a tolerant word, of either kind on either chain: the strict check never
+   spoke, so the frame synced nothing (the voice gate starts no qualify window on it), its verdict is withheld, what its
+   accept changed goes back, and the hunt does not go on from the NID's symbols. */
+static void
+test_cut_candidate_leaves_the_state_as_it_was(void) {
+    for (int rf_mod = 0; rf_mod <= 1; rf_mod++) {
+        for (int kind = 0; kind < 2; kind++) {
+            dsd_opts* opts = new_opts();
+            dsd_state* state = new_state(opts);
+            state->rf_mod = rf_mod;
+            const int sync_kind = kind == 0 ? DSD_P25P1_SYNC_ANCHORED : DSD_P25P1_SYNC_ACQUISITION;
+            mark_published_state(state);
+            state->carrier = 0;
+            state->lastsynctype = DSD_SYNC_NONE;
+            const provisional_view before = provisional_view_of(state);
+            const nid_air clean = nid_with_errors(NAC, DUID_LDU1, 0);
+            g_interrupt_at_nid_read = 12;
+            CHECK(dispatch_held_candidate(opts, state, &clean, sync_kind, kind == 0 ? NAC : -1)
+                  == DSD_FRAME_VERDICT_WITHHELD);
+            g_interrupt_at_nid_read = -1;
+            /* The read after the cut handed out stand-ins: the hunt does not go on from them. */
+            CHECK(g_frames == 0 && g_carried_symbols == -1 && state->sps_hunt_counter == 900);
+            CHECK(dsd_state_p25p1_frame_dropped(state));
+            const provisional_view after = provisional_view_of(state);
+            if (!provisional_view_equal(&before, &after)) {
+                DSD_FPRINTF(stderr, "  (rf_mod %d, kind %d: the cut left the state moved)\n", rf_mod, sync_kind);
+            }
+            CHECK(provisional_view_equal(&before, &after));
+            CHECK(state->p25_p1_sync_candidate.valid == 0U);
+            state->input_interrupted = 0;
+            state->input_interrupt_reason = DSD_INTERRUPT_NONE;
+            free(state);
+            free(opts);
+        }
+    }
+}
+
+/* The input ends two dibits before the NID's end (a C4FM symbol capture that runs out, or a file that falls back to
+   Pulse), and what the reader hands out then completes a strict NID (NAC 0x293, a TDU): behind a tolerant word of
+   either kind on either chain the frame is dropped as a cut one, its accept put back and its verdict withheld; behind
+   an exact word nothing of the NID decodes either, and its NAC is not published. */
+static void
+test_input_end_cuts_the_nid(void) {
+    static const int end_nac = 0x293;
+    for (int falls_back = 0; falls_back <= 1; falls_back++) {
+        for (int rf_mod = 0; rf_mod <= 1; rf_mod++) {
+            for (int kind = 0; kind < 3; kind++) {
+                dsd_opts* opts = new_opts();
+                dsd_state* state = new_state(opts);
+                state->rf_mod = rf_mod;
+                const int sync_kind = kind == 0   ? DSD_P25P1_SYNC_ACQUISITION
+                                      : kind == 1 ? DSD_P25P1_SYNC_ANCHORED
+                                                  : DSD_P25P1_SYNC_EXACT;
+                mark_published_state(state);
+                state->carrier = 0;
+                state->lastsynctype = DSD_SYNC_NONE;
+                state->nac = 0x0E1;
+                const provisional_view before = provisional_view_of(state);
+                const nid_air clean = nid_with_errors(end_nac, DUID_TDU, 0);
+                g_end_falls_back = falls_back;
+                g_end_at_nid_read = NID_DIBITS - 2;
+                CHECK(dispatch_held_candidate(opts, state, &clean, sync_kind, kind == 1 ? end_nac : -1)
+                      == DSD_FRAME_VERDICT_WITHHELD);
+                g_end_at_nid_read = -1;
+                CHECK(g_frames == 0);
+                CHECK(state->nac != end_nac);
+                if (sync_kind != DSD_P25P1_SYNC_EXACT) {
+                    CHECK(dsd_state_p25p1_frame_dropped(state));
+                    const provisional_view after = provisional_view_of(state);
+                    if (!provisional_view_equal(&before, &after)) {
+                        DSD_FPRINTF(stderr, "  (rf_mod %d, kind %d, fallback %d: the end left the state moved)\n",
+                                    rf_mod, sync_kind, falls_back);
+                    }
+                    CHECK(provisional_view_equal(&before, &after));
+                    CHECK(g_carried_symbols == -1 && state->sps_hunt_counter == 900);
+                }
+                dsd_exitflag_store(0);
+                state->input_fallback_pending = 0;
+                state->input_interrupted = 0;
+                state->input_interrupt_reason = DSD_INTERRUPT_NONE;
+                free(state);
+                free(opts);
+            }
+        }
+    }
+}
+
 int
 main(void) {
+    test_dropped_candidate_is_put_back();
+    test_acquisition_needs_a_strict_nid();
     test_clean_nid_decodes();
     test_strict_nid_drops();
     test_validated_frames_anchor_at_their_length();
     test_unvalidated_frames_anchor_nothing();
+    test_rejected_candidate_leaves_the_state_as_it_was();
+    test_cut_candidate_leaves_the_state_as_it_was();
+    test_input_end_cuts_the_nid();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d check(s) failed\n", g_failures);
         return 1;
@@ -436,7 +879,20 @@ extern "C" {
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
-    (void)state;
+    if (state->p25_afc_gate_valid != g_gate_valid_seen || state->p25_afc_gate_allow != g_gate_allow_seen) {
+        g_gate_moved_in_read = 1;
+    }
+    if (g_dibit_reads == g_interrupt_at_nid_read) {
+        state->input_interrupted = 1;
+        state->input_interrupt_reason = DSD_INTERRUPT_YIELD;
+    }
+    if (g_dibit_reads == g_end_at_nid_read) {
+        if (g_end_falls_back) {
+            state->input_fallback_pending = 1;
+        } else {
+            dsd_exitflag_store(1);
+        }
+    }
     const int d = g_dibit_reads < NID_DIBITS ? g_dibit_reads : NID_DIBITS - 1;
     g_dibit_reads++;
     if (out_soft != NULL) {
@@ -463,6 +919,47 @@ dsd_frame_sync_off_thread_tune_pending(void) {
     return 0;
 }
 
+/* The real P25p1 sync anchor names a C4FM sync word to the symbol grid (a tolerant one once its NID passed) and arms
+   its recording; these frames are read on no grid. */
+void
+dsd_symbol_note_p25p1_sync_anchor(dsd_state* state, const char* sync_dibits, int count) {
+    (void)state;
+    (void)sync_dibits;
+    (void)count;
+}
+
+/* A tolerant word is marked where it lies in the seam's history at its accept, and measured once its NID passed: what
+   was asked, and of which word. */
+void
+dsd_symbol_mark_p25p1_sync_anchor(const dsd_state* state, int count, dsd_matched_filter_seam_mark* out) {
+    (void)state;
+    CHECK(count == 23);
+    g_grid_marks++;
+    out->valid = 1U;
+}
+
+int
+dsd_symbol_note_p25p1_marked_sync_anchor(dsd_state* state, const dsd_matched_filter_seam_mark* mark,
+                                         const char* sync_dibits, int count) {
+    (void)state;
+    CHECK(mark->valid == 1U && count == 23 && std::strncmp(sync_dibits, &P25P1_SYNC[1], 23) == 0);
+    g_grid_measures++;
+    return 1;
+}
+
+void
+dsd_symbol_arm_hunt_sync_anchor(dsd_state* state) {
+    (void)state;
+}
+
+/* A dropped C4FM candidate hands the hunt the symbols it took (the real one is the frame sync's): what it was asked. */
+void
+frame_sync_history_carry_symbols(dsd_state* state, int symbols, int pass_symbols) {
+    (void)state;
+    g_carried_symbols = symbols;
+    g_carried_pass = pass_symbols;
+}
+
 void
 dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype) {
     (void)opts;
@@ -482,22 +979,6 @@ mbe_initMbeParms(mbe_parms* cur_mp, mbe_parms* prev_mp, mbe_parms* prev_mp_enhan
     (void)cur_mp;
     (void)prev_mp;
     (void)prev_mp_enhanced;
-}
-
-void
-p25_status_accum_reset(dsd_state* state) {
-    (void)state;
-}
-
-void
-p25_status_accum_add(dsd_state* state, int dibit_value) {
-    (void)state;
-    (void)dibit_value;
-}
-
-void
-p25_status_accum_classify(dsd_state* state) {
-    (void)state;
 }
 
 /* Every data unit's stand-in: counted, and an interruption raised in it when asked. */

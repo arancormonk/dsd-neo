@@ -5,6 +5,8 @@
 
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/p25p1_sync_anchor.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -55,8 +57,12 @@ processFrame(dsd_opts* opts, dsd_state* state) {
     const dsd_protocol_handler* handler = dsd_find_protocol_handler(state->synctype);
     if (handler != NULL && handler->handle_frame != NULL) {
         /* A frame of another protocol family replaces the identity the last one left, also when the new protocol
-           sends none: what this frame's decoder notes is the carrier's from here. */
-        dsd_rxid_note_sync(state, state->synctype);
+           sends none: what this frame's decoder notes is the carrier's from here. Behind a P25p1 word accepted within a
+           tolerance, which may be no word at all, the P25p1 dispatcher notes it once the frame's NID passes. */
+        if (!DSD_SYNC_IS_P25P1(state->synctype)
+            || dsd_frame_sync_p25p1_sync_kind(state, NULL, NULL) == DSD_P25P1_SYNC_EXACT) {
+            dsd_rxid_note_sync(state, state->synctype);
+        }
         const uint32_t carrier_seq = state->carrier_seq;
         /* The frame's protocol and carrier, for the decoders' MBE capture: a decoder that borrows another protocol's
            vocoder changes state->synctype, not this, and a frame read across a carrier boundary is captured nowhere

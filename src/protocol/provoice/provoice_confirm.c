@@ -20,6 +20,24 @@ provoice_confirm_reset(dsd_state* state) {
     state->provoice_confirmed = 0;
     state->provoice_confirm_weak_streak = 0;
     state->provoice_confirm_frame_evidence = 0;
+    state->provoice_confirm_last_frame_valid = 0;
+    state->provoice_confirm_last_frame_symbol = 0;
+}
+
+void
+provoice_confirm_note_frame_start(dsd_state* state, uint32_t frame_symbol) {
+    if (!state) {
+        return;
+    }
+    const uint32_t since = frame_symbol - state->provoice_confirm_last_frame_symbol;
+    const int runs_on = state->provoice_confirm_last_frame_valid
+                        && since + PROVOICE_CONFIRM_FRAME_SYMBOLS_SLIP >= PROVOICE_CONFIRM_FRAME_SYMBOLS
+                        && since <= PROVOICE_CONFIRM_FRAME_SYMBOLS + PROVOICE_CONFIRM_FRAME_SYMBOLS_SLIP;
+    state->provoice_confirm_last_frame_symbol = frame_symbol;
+    state->provoice_confirm_last_frame_valid = 1;
+    if (!runs_on) {
+        state->provoice_confirm_weak_streak = 0;
+    }
 }
 
 void

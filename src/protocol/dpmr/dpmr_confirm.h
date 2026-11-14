@@ -23,9 +23,14 @@
  * the two blocks the old predicate looked at. One half passing is one chance in 128 --
  * enough to be worth something, not enough to stand alone -- so it counts as weak and
  * has to repeat, two frames running, which a real transmission does continuously and
- * noise does not. Both halves of one frame passing is one in 16384 and confirms at once.
- * At the noise sync rate that is a false confirmation roughly once an hour, against the
- * 44% of superframes that used to publish.
+ * noise does not. "Running" means the second frame's FS2 follows the first's by one frame
+ * (dpmr_confirm_note_frame_start()): the streak once counted any two dPMR frames with no
+ * carrier reset between them, and under Auto, where noise hands 2400/4 hundreds of FS2
+ * matches an hour between other protocols' syncs, two weak halves seconds apart confirmed
+ * a transmission of noise, published a call and decoded its voice. Both halves of one
+ * frame passing is one in 16384 and confirms at once. At the noise sync rate that is a
+ * false confirmation roughly once an hour, against the 44% of superframes that used to
+ * publish.
  *
  * The Hamming flags contribute no evidence at any strength. The CRC is computed over the
  * bits they produced, so it already subsumes them.
@@ -42,6 +47,7 @@
 #define DSD_NEO_PROTOCOL_DPMR_DPMR_CONFIRM_H
 
 #include <dsd-neo/core/state_fwd.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -54,10 +60,25 @@ typedef enum {
 } dpmr_evidence;
 
 /** @brief Frames of weak evidence in a row that together confirm a transmission. */
-#define DPMR_CONFIRM_WEAK_OBSERVES 2U
+#define DPMR_CONFIRM_WEAK_OBSERVES      2U
+
+/** @brief Symbols from one FS2 frame's start to the next's in a transmission (a 160 ms superframe part at 2400 sym/s),
+ * and the slip either way a run allows. */
+#define DPMR_CONFIRM_FRAME_SYMBOLS      384U
+#define DPMR_CONFIRM_FRAME_SYMBOLS_SLIP 1U
 
 /** @brief Forget everything learned about the current transmission. */
 void dpmr_confirm_reset(dsd_state* state);
+
+/**
+ * @brief Say where an FS2 frame whose CCH is about to be read begins, before dpmr_confirm_begin_frame().
+ *
+ * @p frame_symbol is dsd_state::symbolcnt at the same point of every frame. A frame runs on only from one read
+ * DPMR_CONFIRM_FRAME_SYMBOLS (within the slip) before it; one that does not starts the weak streak over, so two weak
+ * frames confirm only when the second follows the first. Without this call a frame runs on (the unit tests' frames,
+ * one after another).
+ */
+void dpmr_confirm_note_frame_start(dsd_state* state, uint32_t frame_symbol);
 
 /** @brief Start a frame's evidence accounting; call once before decoding its CCH halves. */
 void dpmr_confirm_begin_frame(dsd_state* state);

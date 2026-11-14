@@ -53,11 +53,18 @@ void dsd_symbol_anchor_end_symbol(dsd_symbol_anchor* anchor, int samples_per_sym
 /** The slip a measurement queued for the next symbol (+1 one sample more, -1 one fewer, 0 none), consumed. */
 int dsd_symbol_anchor_take_slip(dsd_symbol_anchor* anchor);
 
+/** Whether the slip queued now was measured on the matched-filter seam's raw history (a P25 Phase 1 word the hunt read
+    with no recording armed, dsd_symbol_note_p25p1_sync_anchor()): a filter switch keeps it, as the seam keeps the
+    content position, where it discards a slip measured on the anchor's own samples. */
+int dsd_symbol_anchor_slip_from_raw(const dsd_symbol_anchor* anchor);
+
 #ifdef DSD_NEO_TEST_HOOKS
 /** Tests: queue @p slip as a measurement would, on an armed anchor. */
 void dsd_symbol_anchor_test_queue_slip(dsd_state* state, int slip);
 /** Tests: mark the grid placed, as a measured word does, so the next dsd_symbol_arm_hunt_sync_anchor() holds it. */
 void dsd_symbol_anchor_test_place_grid(dsd_state* state);
+/** Tests: whether the last named word was measured (the grid is where a sync word put it). */
+int dsd_symbol_anchor_test_placed(const dsd_state* state);
 #endif
 
 #ifdef __cplusplus

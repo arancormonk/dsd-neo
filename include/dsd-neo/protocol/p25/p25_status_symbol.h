@@ -31,6 +31,7 @@
 #include <dsd-neo/platform/platform.h>
 
 #include <dsd-neo/core/state_fwd.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -62,6 +63,44 @@ typedef enum DSD_ATTR_PACKED {
  *              If NULL, the function is a no-op.
  */
 void p25_status_accum_reset(dsd_state* state);
+
+/**
+ * @brief The accumulator and the advisory gate it publishes, as they stand.
+ */
+typedef struct {
+    uint8_t buf[P25_STATUS_ACCUM_MAX];
+    uint8_t count;
+    uint8_t frame_active;
+    uint8_t classification;
+    uint8_t gate_allow;
+    uint8_t gate_valid;
+} p25_status_accum_snapshot;
+
+/**
+ * @brief Save the accumulator and the published gate (@p out), for p25_status_accum_restore().
+ */
+void p25_status_accum_save(const dsd_state* state, p25_status_accum_snapshot* out);
+
+/**
+ * @brief Put back what p25_status_accum_save() saved.
+ */
+void p25_status_accum_restore(dsd_state* state, const p25_status_accum_snapshot* saved);
+
+/**
+ * @brief Start the accumulator for a data unit whose NID is provisional: behind a sync word the hunt accepted within a
+ * tolerance, which may be no word at all (dsd_p25p1_sync_kind).
+ *
+ * As p25_status_accum_reset(), except that the advisory gate the last data unit published (p25_afc_gate_valid,
+ * p25_afc_gate_allow, which auto-PPM reads on another thread) stands until the NID validates: the dispatcher then
+ * withdraws it as p25_status_accum_reset() does (p25_status_accum_withdraw_gate()), or puts back everything it saved
+ * when the NID fails (p25_status_accum_restore()).
+ */
+void p25_status_accum_reset_provisional(dsd_state* state);
+
+/**
+ * @brief Withdraw the published advisory gate, as a data unit's start does: none until the unit classifies.
+ */
+void p25_status_accum_withdraw_gate(dsd_state* state);
 
 /**
  * @brief Start a status-symbol accumulator only when one is not already active.

@@ -23,7 +23,7 @@
 #include "dsd-neo/core/state_fwd.h"
 
 void
-p25_status_accum_reset(dsd_state* state) {
+p25_status_accum_reset_provisional(dsd_state* state) {
     if (!state) {
         return;
     }
@@ -33,8 +33,47 @@ p25_status_accum_reset(dsd_state* state) {
     state->p25_ss_count = 0;
     state->p25_ss_frame_active = 1;
     state->p25_ss_classification = (uint8_t)P25_SS_CLASS_UNKNOWN;
+}
+
+void
+p25_status_accum_withdraw_gate(dsd_state* state) {
+    if (!state) {
+        return;
+    }
     state->p25_afc_gate_allow = 0;
     state->p25_afc_gate_valid = 0;
+}
+
+void
+p25_status_accum_reset(dsd_state* state) {
+    p25_status_accum_reset_provisional(state);
+    p25_status_accum_withdraw_gate(state);
+}
+
+void
+p25_status_accum_save(const dsd_state* state, p25_status_accum_snapshot* out) {
+    if (!state || !out) {
+        return;
+    }
+    DSD_MEMCPY(out->buf, state->p25_ss_buf, sizeof(out->buf));
+    out->count = state->p25_ss_count;
+    out->frame_active = state->p25_ss_frame_active;
+    out->classification = state->p25_ss_classification;
+    out->gate_allow = state->p25_afc_gate_allow;
+    out->gate_valid = state->p25_afc_gate_valid;
+}
+
+void
+p25_status_accum_restore(dsd_state* state, const p25_status_accum_snapshot* saved) {
+    if (!state || !saved) {
+        return;
+    }
+    DSD_MEMCPY(state->p25_ss_buf, saved->buf, sizeof(state->p25_ss_buf));
+    state->p25_ss_count = saved->count;
+    state->p25_ss_frame_active = saved->frame_active;
+    state->p25_ss_classification = saved->classification;
+    state->p25_afc_gate_allow = saved->gate_allow;
+    state->p25_afc_gate_valid = saved->gate_valid;
 }
 
 void

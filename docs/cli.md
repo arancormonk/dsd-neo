@@ -897,8 +897,11 @@ Notes
 - The hunt dwells on each candidate profile for a bounded budget of symbols searched for sync, so a full rotation over
   the five profiles takes roughly six seconds at 48 kHz. A transmission that starts mid-rotation and lasts less than one
   rotation can therefore be missed entirely even though the same capture decodes under its native preset -- Auto
-  converges on signals that persist, such as a control channel or a call of a few seconds, not on isolated short
-  bursts. Name the narrower preset when you already know the mode and cannot afford the search.
+  converges on signals that persist, such as a control channel or a call of a few seconds, not on isolated short bursts.
+  Name the narrower preset when you already know the mode and cannot afford the search. One shortcut: a P25 Phase 1 C4FM
+  carrier seen while the hunt is on the 4800/2 or 9600/2 profile (its sync word read there exactly, twice within a
+  frame) moves the hunt straight to 4800/4 rather than through the rest of the rotation; a `-m` modulation lock, a
+  trunked voice channel, a Signal search or a trunk scan keeps its own order.
 - What holds a profile is decoded frames, not detected syncs. The dwell is a net budget: symbols spent searching for a
   sync count against it, and symbols a frame handler consumes are credited back. A profile carrying real traffic sits at
   zero, because a decoded frame costs hundreds of symbols and the next sync follows within a few. Credit is counted per
@@ -1067,8 +1070,20 @@ Notes
   corrections) and names the same NAC; otherwise it is dropped unseen. Every other word, the first after a gap,
   a tune or a lost frame included, must match exactly, as before. The console marks these frames
   `[tolerant sync, n bit errors]` (`[tolerant sync, n bit errors, dropped: ...]` with what the NID was, when it
-  failed the check). C4FM, symbol files and audio inputs
-  are unchanged.
+  failed the check).
+- P25 Phase 1 on C4FM (any input: a radio, `--iq-replay`, audio from a file, Pulse, UDP or TCP, or a symbol file; any
+  build) does the same at the same one place, counted in symbol signs: up to 6 of the word's 24 symbols may come
+  through on the wrong side of zero. The NID check is the same, and so is the console mark, with `sign errors` in
+  place of `bit errors`. A dropped frame leaves nothing behind but its console lines: the slicer levels, the lock, the
+  guard that keeps NXDN96 and M17 from matching inside a P25 frame and the DMR slot 2 state go back to what they were,
+  the system shown for another protocol's carrier stays, and a `-Y` row that scans for voice does not count it as the
+  row's first sync. The search goes on from the symbols that word and its NID took, so a real sync word that starts
+  among them and ends after them (another P25 word, NXDN, YSF, M17; not DMR) is still found; one that ends among them
+  is lost, as behind any false sync word. Anywhere else, with no
+  frame decoded yet (a carrier's first frame, or the first after a fade or a lost frame), a word with 1 of its 24
+  symbols on the wrong side of zero is tried too, with the same NID check, whatever NAC it names (the console mark
+  reads `acquisition sync`). On receiver noise such a word turns up about 25 times an hour under `-f1` and its NID
+  check failed every time in 8 hours of measured noise; nothing is published from it.
 - P25 Phase 2 on CQPSK from a radio or `--iq-replay` input does the same for its sync word, with up to 4 of its 40 bits
   wrong, at one place only: right where the next four timeslots must start after four timeslots whose own ISCH said
   where in the superframe they were, on the same carrier, tune and stream. The four timeslots behind such a word decode
@@ -1368,8 +1383,8 @@ their sensitivity in.
   input itself ([below](#noise-squelch-on-audio-input)).
 - The M17 encoder's monitor runs it as the FM monitor does, or as auto where its channel has no band.
 - EDACS analog voice runs it as auto, and the engine says so (`EDACS analog voice runs the noise squelch as
-  auto+NdB`): the FSK discriminator EDACS reads puts out peak-normalised levels, not the radians the noise squelch is
-  calibrated on.
+  auto+NdB`): the FSK discriminator EDACS reads is slowly centred on the carrier and scaled to counts, not the radians
+  the noise squelch is calibrated on.
 - On audio input neither runs it: the PCM noise squelch below serves the FM monitor only.
 - What it shows: `SQL: noise +10 dB (quieting 23 dB)`, `(starting)` before its first window, `(as auto: floor
   -78.3 dB)` where the auto squelch stands in, and the same `off` readings as auto; the startup banner
@@ -2657,8 +2672,8 @@ does.
 - RTL USB, RTL-TCP, SoapySDR, and IQ replay digital decode run in the symbol domain. The digital decoder receives one
   normalized float per FSK or CQPSK symbol decision; discriminator audio is not used for digital decode.
 - The trailing `vol` field and `rtl_volume` config key are monitor/non-symbol gain only. They do not scale RTL-family
-  digital symbols, nor the FSK discriminator output that EDACS analog voice and the `-8` source monitor play (it
-  already peaks near full scale). `-8` enables the separate source monitor tap.
+  digital symbols, nor the FSK discriminator output that EDACS analog voice and the `-8` source monitor play (it is
+  on a fixed scale already, 3 kHz deviation at 15000). `-8` enables the separate source monitor tap.
 - Examples:
   - `-i rtl:0:851.375M:22:-2:24:0:2`
   - `-i rtltcp:192.168.1.10:1234:851.375M:22:-2:24:0:2`

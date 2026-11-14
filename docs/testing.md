@@ -459,12 +459,12 @@ holding one square bracket of a pair (`AACH 2/1/9]` from a TETRA payload line) a
 one holding a semicolon. The
 `DECODE_IQ_*_AUTO_HUNT` cases are the documented exception, described below. I/Q
 replay defaults to `--iq-replay-rate fast`, so run one after another in
-`dev-debug` the 122 digital cases take about 79 seconds and the 110 analog ones (see
-[Analog monitor audio checks](#analog-monitor-audio-checks)) about 70. The 14
+`dev-debug` the 258 digital cases take about 240 seconds and the 147 analog ones (see
+[Analog monitor audio checks](#analog-monitor-audio-checks)) about 185. The 18
 `iq-determinism` cases (see [Replay determinism](#replay-determinism-issue-572))
-add 92 seconds, two realtime cases of 15.2 seconds among them; under
+add about 100 seconds, two realtime cases of 15.3 seconds among them; under
 `ctest -j 16` they run beside the suite's longest tests, and the full suite
-takes 85 to 110 seconds.
+takes about 155 seconds.
 
 Covered: P25 Phase 1 C4FM (control and voice), P25 Phase 1 CQPSK/LSM (control and
 voice, plus a two-ray simulcast-impaired control channel), P25 Phase 2, DMR
@@ -621,7 +621,23 @@ requires at least 15. `tools/tetra/prepare_real_air_fixture.py` verifies the raw
 SCBS, resampled, marginal, and inverted hashes; the adjacent provenance file
 records the source commits, transforms, and parameters.
 
-Both of those captures are control channels. `tetra_call_real_air_72k` is the real-air traffic: 6.5 seconds of the
+The same upstream repository supplies two short real-air P25 Phase 1 C4FM control channels, Apache-2.0:
+`p25p1_c4fm_cc_gt_s9` (1.09 s) and `p25p1_c4fm_cc_gt_city` (1.5 s), two sites of one system (NAC 0x164, WACN BEE00,
+SYS 164). Upstream publishes them as 48 kHz float32 I/Q; `tools/build_iq_fixtures.py` (`CF32_CAPTURES`) downloads
+them from the pinned commit, checks their SHA-256 and only requantizes them to cu8, so their carrier offsets (about
+-51 Hz and -9 Hz) and their asymmetric eye (outer to inner deviation about 3.3 and 2.8 against the nominal 3) stay
+as recorded. `tests/fixtures/iq/p25p1_c4fm_cc_gt.PROVENANCE.md` records the source commits, hashes and published
+capture parameters, beside the upstream license text `p25p1_c4fm_cc_gt.APACHE-2.0.txt`.
+`DECODE_IQ_P25P1_C4FM_CC_GT_S9` and `_CITY` replay them under `-f1`, and the `_AUTO` cases under `-fa`. Each requires
+floors on the TSBK messages whose CRC passes (each prints its title on a line of its own, one space in), on
+`NAC/CC: 164` and on the site identity `WACN: BEE00; SYS: 164`, and no `HDU` or `LDU` on the control channel. The
+floors sit about 10% under what the current build decodes (s9: 41 messages, 14 NACs, 8 identities under both
+modes; city: 57, 20 and 18 under `-f1`, 54, 19 and 18 under `-fa`), the same for both modes. With ±45 counts of
+added noise (three seeds) every run decodes as much as the clean fixture, and under `-fs`, `-fn` or `-fy` neither
+fixture prints the NAC or the identity. They are floors rather than counts: a block or two of these short captures
+decodes only just, so a change elsewhere in the chain may move it either way.
+
+Both TETRA captures above are control channels. `tetra_call_real_air_72k` is the real-air traffic: 6.5 seconds of the
 Signal Identification Wiki's `TETRA_IQ.zip`, a 48 kHz recording of one downlink carrier of another network (MCC 228, MNC
 8889, colour code 1, main carrier 1068 at 426.7 MHz) with a cleartext group call on timeslot 2.
 `tools/build_iq_fixtures.py` (`TETRA_EXCERPTS`) cuts it where the floor passes from one talker to the next and resamples
@@ -806,6 +822,19 @@ marker skewed. `DECODE_IQ_M17_LSF_CLEAN` and `_AUTO` need all eight LSFs and eig
 second transmission's start, where the stream LSF is sent twice: `DECODE_IQ_M17_LSF_OFFAIR` and `_AUTO` need the
 stream's frame 0 (`FSN: 00000`) and no packet or EOT sync, where before the hunt matched both inside the repeated
 LSF.
+
+`p25p1_c4fm_no_hdu_synth` (287 kB, `P25_NO_HDU_SYNTH_NAME`) is two clean P25 Phase 1 C4FM calls with no HDU from
+`tools/scan_quiet_reception.py`'s LDU generator (`p25_ldu_bits()`), each six LDUs whose voice frames are IMBE frames of
+all-zero parameters (`p25_imbe_silent_bits()`: every codeword known, interleaved as `p25p1_const.h` reads them), keyed
+for 1 ms either side and with the carrier off for 0.3 s before, between and after them. `DECODE_IQ_P25P1_C4FM_NO_HDU_F1`
+needs all 108 IMBE frames, at least the 90 outside the two calls' first LDUs with no correction at all, and none with
+more than five. A call's first LDU reads without correction too when the hunt matched its sync word exactly, since the
+grid is then placed on that word; the word just after the key-up ramp can come out one sign off by rounding alone (the
+optimized builds read the first call's that way: 99 frames without correction, against 108 in Debug), and the
+hunt-wide tolerance then accepts it on the grid the hunt left, a sample late, at up to five corrections a frame. `_FA`
+needs 99 frames (the AUTO hunt's rotation can miss the first call's first LDU1) and none with more than two
+corrections. Before the FSK discriminator's fixed scale the first LDU of each call needed up to 13 corrections a frame
+(`-f1`) and 9 (`-fa`).
 
 `nxdn96_synth` (192 kB), `nxdn48_synth` (384 kB) and `ysf_synth` (192 kB) (`SLICER_SYNTH`, issue #834) are clean
 frames from `tools/scan_quiet_reception.py`'s generators (`nxdn_levels()`, `ysf_levels()`, the same symbols its
@@ -2254,19 +2283,19 @@ of what the speech AGC measures there, and on FM the excerpt at its fixed refere
 The digital cases, `DECODE_IQ_SPEECH_LEVEL_*` (`tests/speech_level_check.cmake`), replay the fixture twice, at the
 default auto gain and at `-g 1`, and require the auto level to have moved toward -20 dBFS from the `-g 1` one, or to
 lie within 3 dB of it (a few frames of speech can step the gain past the target), and to lie within 10 dB of it (the
-startup bound at 1 s). The analog ones pin both levels in the analog replay host: the `-n 50` level in the smoke cases
+startup bound at 1 s); `dstar` pins its auto level alone (below). The analog ones pin both levels in the analog replay host: the `-n 50` level in the smoke cases
 and `DECODE_IQ_ANALOG_AM_REAL`, the auto level in `DECODE_IQ_ANALOG_PARITY_*`. Speech intervals are seconds into the
 decoded output; a digital output holds only the voice that played.
 
 | Fixture | Mode | Speech (s) | Speech intervals (s) | Reference gain (dBFS P.56) | Auto (dBFS P.56) | Case |
 | --- | --- | --- | --- | --- | --- | --- |
-| `dstar` | `-fd` | 2.3 | 0.20-2.50 | -18.14 (`-g 1`) | -17.63 | `DECODE_IQ_SPEECH_LEVEL_DSTAR` |
-| `ysf` | `-fy` | 3.05 | 0.05-0.50, 1.25-3.85 | -39.47 | -21.12 | `DECODE_IQ_SPEECH_LEVEL_YSF` |
+| `dstar` | `-fd` | 1.66 | 0.0-1.66 | -17.28 (`-g 1`, not compared) | -16.27 | `DECODE_IQ_SPEECH_LEVEL_DSTAR` |
+| `ysf` | `-fy` | 3.25 | 0.05-0.50, 1.25-4.05 | -38.23 | -19.27 | `DECODE_IQ_SPEECH_LEVEL_YSF` |
 | `m17` | `-fz` | 1.9 | 0.0-1.45, 2.0-2.47 | -21.63 | -17.82 | `DECODE_IQ_SPEECH_LEVEL_M17` (Codec2 builds) |
 | `tetra_call_real_air_72k` | `-fT` | 2.06 | 0.0-1.10 (first talker), 2.0-2.96 (the next, 10.8 dB louder) | -28.53 | -23.39 | `DECODE_IQ_SPEECH_LEVEL_TETRA` |
 | `nxdn96` | `-fn` | 1.25 | 0.20-1.45 | -40.91 | -18.68 | `DECODE_IQ_SPEECH_LEVEL_NXDN96` |
-| `provoice` | `-fp` | 1.35 | 0.0-0.25, 1.40-1.90, 2.10-2.70 | -39.30 | -17.55 | `DECODE_IQ_SPEECH_LEVEL_PROVOICE` |
-| `p25p1_c4fm_vc` | `-f1` | 0.8 | 0.60-1.42 | -32.03 | -22.73 | `DECODE_IQ_SPEECH_LEVEL_P25P1_C4FM` |
+| `provoice` | `-fp` | 1.27 | 0.0-0.17, 1.32-1.82, 2.02-2.62 | -39.34 | -20.24 | `DECODE_IQ_SPEECH_LEVEL_PROVOICE` |
+| `p25p1_c4fm_vc` | `-f1` | 0.8 | 0.96-1.78 | -32.02 | -28.11 | `DECODE_IQ_SPEECH_LEVEL_P25P1_C4FM` |
 | `p25p1_cqpsk_vc` | `-f1 -mq` | 0.3 | 0.70-1.00 | -22.44 | -17.31 | `DECODE_IQ_SPEECH_LEVEL_P25P1_CQPSK` |
 | `am_airband_real` | `-fM` | 6.55 | 0.05-0.25, 0.55-2.3, 2.6-5.0, 5.5-6.5, 6.78-7.98 | -18.12 (`-n 50`) | -18.42 | `DECODE_IQ_ANALOG_AM_REAL`, `DECODE_IQ_ANALOG_PARITY_AM_REAL` |
 | `nfm_ctcss_real` | `-fA` | 5.2 | 0.0-3.6, 4.4-5.98 | -31.90 | -19.01 | `DECODE_IQ_ANALOG_NFM_REAL_CTCSS_SMOKE`, `DECODE_IQ_ANALOG_PARITY_NFM_REAL` |
@@ -2282,6 +2311,18 @@ the target at `-g 1`; the start gain and the 2 dB startup steps bring it within 
 `p25p1_cqpsk_vc`'s 0.3 s of speech commits a few times, and those first steps toward a level read from the rising edge
 of the speech overshoot, so its level moves 0.25 dB away from -20 dBFS while staying within 3 dB of it. The analog
 gap noise between words is 11-17 dB under the speech, so P.56 counts it as active.
+
+Four digital cases were measured again once the frame-sync and confirmation work of the P25 Phase 1 C4FM symbol chain
+changed what they decode. `ysf` plays 0.2 s more of the call (4.8 s of output) and reads 1.85 dB louder at auto.
+`provoice` holds its first 80 ms until the transmission is confirmed and reads 2.69 dB quieter at auto, 0.24 dB from the
+target. `p25p1_c4fm_vc` now decodes its HDU and plays 0.36 s more of the call ahead of the speech, with 25 audio
+errors where it had 127; its 0.8 s of speech never holds the six voiced frames in a row a commit needs, so the AGC stays
+at its +4 dB start gain and the level reads 5.38 dB lower (the `-g 1` level is unchanged): one frame in the earlier
+decode completed a run. `dstar` no longer plays the two superframes behind its two headers that fail their CRC (0.84
+s of audio with 59 errors, where the call now has none): the output opens on the talker's first word, at +2.72 dB over
+the target at `-g 1`, and the AGC spends about 0.6 s at its start gain before its steps bring it down. Over the 1.66 s
+left, that reads +3.73 dB over the target, past the 3 dB the toward rule allows, so the case pins the auto level alone
+and does not compare it with `-g 1`.
 
 The fixtures with no speech keep their own assertions: the tone calibration (`-n 50` 1 kHz windows), `noise_floor`
 (the attenuator), and the control channels and filler (no audio). The syllable-gated noise fixtures
@@ -2615,13 +2656,13 @@ same bits as before the veto, and with the veto off every output is. The 750 us 
 kHz audio follows 48 kHz within 0.216 dB at the 95th percentile (0.113 dB without it). The veto adds about 0.25 ns per
 sample at 48 kHz on speech (6.02 to 6.26 ns) and nothing measurable on hiss; the digital chain pays nothing.
 
-EDACS analog voice on an RTL input plays the FSK voice lane (issue #518 B10), not the peak-normalised discriminator
-output the release register reads, which hides the voice's level. `IO_RTL_VOICE_LANE` replays synthetic 9600 bit/s
+EDACS analog voice on an RTL input plays the FSK voice lane (issue #518 B10), not the discriminator output the release
+register reads, at the FSK scale with no de-emphasis. `IO_RTL_VOICE_LANE` replays synthetic 9600 bit/s
 captures (48 kHz, 60 kHz resampled to 48 kHz, 24 kHz) through the real stream, read API, resampler and ring with the
-auto squelch on, the lane switched on and off part-way, across a driver overflow and a retune. The normalised samples
+auto squelch on, the lane switched on and off part-way, across a driver overflow and a retune. The FSK samples
 and flags stay bit for bit the same with the lane on, off or switched; a batch made with the lane off reads silence on
 it; the lane reads the 1 kHz reference at 0.125 peak once the published gain makes up its de-emphasis, and a tone 20 dB
-down reads 20 dB down; with no de-emphasis it sits at the normalised samples' positions, not one sample either side.
+down reads 20 dB down; with no de-emphasis it sits at the FSK samples' positions, not one sample either side.
 Each replay uses its own centre frequency: the auto squelch keeps a channel's floor for the process, so a second
 replay on the same centre would start from it and set other flags. `DSP_FSK_VOICE_LANE` covers the lane in the demod
 (level at 24, 48 and 72 kHz under none, 50, 75 and 750 us; the compensation the monitor's; a squelched block; the

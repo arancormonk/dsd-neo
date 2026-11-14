@@ -906,6 +906,12 @@ static dsd_trunk_tune_result g_frame_land_result = DSD_TRUNK_TUNE_RESULT_OK; /* 
 /* What happens at g_frame_land_at instead of the landing, when set (issue #803: another tune, a stream stop). */
 static void (*g_frame_land_action)(dsd_opts* opts, dsd_state* state) = NULL;
 static int g_frame_count = 0;
+/* A provisional P25 sync the scripted hunt finds after the first frame (0 none, 1 a P25p1 anchored candidate, 2 a P25p1
+   acquisition one, 3 a P25p2 tolerant window), held as the frame sync holds it; whether the frame decoded behind each
+   passes its NID or window verdict (by frame, counted as the frame sync counts it); and frames decoded behind one. */
+static int g_frame_candidate = 0;
+static int g_frame_candidate_passes[FAKE_FRAMES_MAX];
+static int g_frame_candidate_frames = 0;
 static int g_frame_roll[FAKE_FRAMES_MAX];
 static unsigned long long g_frame_rkey[FAKE_FRAMES_MAX];
 static char g_frame_label[FAKE_FRAMES_MAX][DSD_CHANNEL_LABEL_SIZE];
@@ -923,6 +929,16 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
         return DSD_SYNC_NONE;
     }
     g_frame_syncs_left--;
+    if (g_frame_candidate == 3) {
+        state->p25_p2_sync_candidate.valid = 1U;
+        state->p25_p2_sync_anchor.tolerant_syncs++;
+    } else if (g_frame_candidate == 2) {
+        state->p25_p1_sync_candidate.valid = 1U;
+        state->p25_p1_sync_anchor.acquisition_syncs++;
+    } else if (g_frame_candidate != 0) {
+        state->p25_p1_sync_candidate.valid = 1U;
+        state->p25_p1_sync_anchor.tolerant_syncs++;
+    }
     return g_frame_sync_type;
 }
 
@@ -931,6 +947,21 @@ __wrap_processFrame(dsd_opts* opts, dsd_state* state) {
     if (!g_frame_script) {
         __real_processFrame(opts, state);
         return;
+    }
+    if (state->p25_p1_sync_candidate.valid || state->p25_p2_sync_candidate.valid) {
+        g_frame_candidate_frames++;
+        if (g_frame_count < FAKE_FRAMES_MAX && g_frame_candidate_passes[g_frame_count]) {
+            if (g_frame_candidate == 1) {
+                state->p25_p1_sync_anchor.tolerant_frames++;
+            } else if (g_frame_candidate == 2) {
+                state->p25_p1_sync_anchor.acquisition_frames++;
+            } else {
+                state->p25_p2_sync_anchor.tolerant_windows++;
+            }
+        }
+        /* The verdict is given: what the accept held is spent or put back. */
+        state->p25_p1_sync_candidate.valid = 0U;
+        state->p25_p2_sync_candidate.valid = 0U;
     }
     if (g_frame_count < FAKE_FRAMES_MAX) {
         g_frame_roll[g_frame_count] = state->lcn_freq_roll;
@@ -2821,6 +2852,103 @@ test_live_loop_syncs_move_the_quiet_sync_sequence(void) {
     }
     g_frame_sync_type = DSD_SYNC_NXDN_POS;
     opts->scan_skip_silent = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Issue #834: a provisional P25 sync (a tolerant word, held until its NID or window verdict) is activity to a scan quiet
+   check only once that verdict passed. A noise near-miss whose verdict fails is put back everywhere else, and must not
+   end a silent channel's quiet check: frames 1 and 3 fail, frame 2 passes, so the sequence moves once with skip-silent
+   on, for every kind of candidate. With the setting off it stays. */
+static int
+test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_ensure(state);
+    int rc = expect_true("a scan owner", owner != NULL);
+
+    static const struct {
+        int candidate;
+        int sync_type;
+    } k_kinds[] = {{1, DSD_SYNC_P25P1_POS}, {2, DSD_SYNC_P25P1_NEG}, {3, DSD_SYNC_P25P2_POS}};
+
+    for (size_t i = 0; owner && i < sizeof k_kinds / sizeof k_kinds[0]; i++) {
+        for (int on = 0; on <= 1; on++) {
+            opts->scan_skip_silent = on;
+            g_frame_candidate = k_kinds[i].candidate;
+            g_frame_sync_type = k_kinds[i].sync_type;
+            DSD_MEMSET(g_frame_candidate_passes, 0, sizeof g_frame_candidate_passes);
+            g_frame_candidate_passes[2] = 1;
+            g_frame_candidate_frames = 0;
+            const uint64_t before = owner->sync_seq;
+            run_synced_frames(opts, state, 3, -1);
+            if (g_frame_candidate_frames != 3 || owner->sync_seq != before + (on ? 1U : 0U) || owner->sync_deferred) {
+                DSD_FPRINTF(
+                    stderr,
+                    "FAIL #834: candidate kind %d with skip-silent %d: %d provisional frames moved the sequence "
+                    "by %llu (deferral left %u)\n",
+                    k_kinds[i].candidate, on, g_frame_candidate_frames, (unsigned long long)(owner->sync_seq - before),
+                    (unsigned)owner->sync_deferred);
+                rc = 1;
+            }
+        }
+    }
+    g_frame_candidate = 0;
+    DSD_MEMSET(g_frame_candidate_passes, 0, sizeof g_frame_candidate_passes);
+    g_frame_sync_type = DSD_SYNC_NXDN_POS;
+    opts->scan_skip_silent = 0;
+
+    /* The helpers alone: an exact sync is noted at once; a provisional one (this call accepted a candidate) waits for its
+       verdict, which a frame withheld or never dispatched does not give (dropped unnoted), and a passed verdict counter
+       notes it at the settle. A candidate an earlier call accepted, whose frame was withheld so that it still reads as
+       held, defers nothing after it: the next exact sync is noted at once. */
+    if (owner) {
+        const uint64_t before = owner->sync_seq;
+        dsd_engine_scan_quiet_note_frame_sync(state, dsd_engine_scan_quiet_sync_accepts(state));
+        rc |= expect_true("an exact sync noted at once", owner->sync_seq == before + 1U && !owner->sync_deferred);
+        uint64_t accepts = dsd_engine_scan_quiet_sync_accepts(state);
+        state->p25_p1_sync_candidate.valid = 1U;
+        state->p25_p1_sync_anchor.tolerant_syncs++;
+        dsd_engine_scan_quiet_note_frame_sync(state, accepts);
+        rc |= expect_true("a provisional sync deferred", owner->sync_seq == before + 1U && owner->sync_deferred);
+        dsd_engine_scan_quiet_drop_sync(state);
+        state->p25_p1_sync_candidate.valid = 0U;
+        state->p25_p1_sync_anchor.tolerant_frames++;
+        dsd_engine_scan_quiet_settle_sync(state);
+        rc |= expect_true("a dropped deferral never noted", owner->sync_seq == before + 1U && !owner->sync_deferred);
+        accepts = dsd_engine_scan_quiet_sync_accepts(state);
+        state->p25_p2_sync_candidate.valid = 1U;
+        state->p25_p2_sync_anchor.tolerant_syncs++;
+        dsd_engine_scan_quiet_note_frame_sync(state, accepts);
+        state->p25_p2_sync_candidate.valid = 0U;
+        dsd_engine_scan_quiet_settle_sync(state);
+        rc |= expect_true("a failed verdict not noted", owner->sync_seq == before + 1U && !owner->sync_deferred);
+        accepts = dsd_engine_scan_quiet_sync_accepts(state);
+        state->p25_p2_sync_candidate.valid = 1U;
+        state->p25_p2_sync_anchor.tolerant_syncs++;
+        dsd_engine_scan_quiet_note_frame_sync(state, accepts);
+        state->p25_p2_sync_candidate.valid = 0U;
+        state->p25_p2_sync_anchor.tolerant_windows++;
+        dsd_engine_scan_quiet_settle_sync(state);
+        rc |= expect_true("a passed verdict noted", owner->sync_seq == before + 2U && !owner->sync_deferred);
+        /* A Phase 2 candidate whose window was withheld still reads as held; the exact syncs after it are noted. */
+        accepts = dsd_engine_scan_quiet_sync_accepts(state);
+        state->p25_p2_sync_candidate.valid = 1U;
+        state->p25_p2_sync_anchor.tolerant_syncs++;
+        dsd_engine_scan_quiet_note_frame_sync(state, accepts);
+        dsd_engine_scan_quiet_drop_sync(state);
+        for (int k = 0; k < 2; k++) {
+            accepts = dsd_engine_scan_quiet_sync_accepts(state);
+            dsd_engine_scan_quiet_note_frame_sync(state, accepts);
+            dsd_engine_scan_quiet_settle_sync(state);
+        }
+        rc |= expect_true("exact syncs after an abandoned candidate noted",
+                          owner->sync_seq == before + 4U && !owner->sync_deferred);
+        state->p25_p2_sync_candidate.valid = 0U;
+    }
     free_test_runtime(opts, state);
     return rc;
 }
@@ -6794,6 +6922,7 @@ test_carrier_boundary_restarts_the_evidence(void) {
     state->p25_p1_nid_evidence = 1;
     state->p25_p1_nid_evidence_symbolcnt = 99U;
     state->tdma_carrier = 1U;
+    state->x2tdma_corroborated = 1U;
     const uint32_t carrier_seq = state->carrier_seq;
 
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
@@ -6807,6 +6936,8 @@ test_carrier_boundary_restarts_the_evidence(void) {
     rc |= expect_true("evidence: the boundary restarts the M17 gate", state->m17_confirmed == 0);
     rc |= expect_true("evidence: the boundary restarts the ProVoice gate", state->provoice_confirmed == 0);
     rc |= expect_true("evidence: the boundary restarts the YSF FICH verdict", state->ysf_fich_confirmed == 0);
+    rc |= expect_true("evidence: the boundary forgets the X2-TDMA transmission's corroboration",
+                      state->x2tdma_corroborated == 0U);
     rc |= expect_true("evidence: the boundary drops the Phase 1 NID's evidence",
                       state->p25_p1_nid_evidence == 0 && state->p25_p1_nid_evidence_symbolcnt == 0U);
     rc |= expect_true("evidence: the boundary moves the carrier count", state->carrier_seq == carrier_seq + 1U);
@@ -12935,6 +13066,8 @@ main(void) {
     // Whether the carrier is two-slot TDMA is the carrier's, not one transmission's: a sync loss between the other
     // slot's calls keeps the Monitor's strip in place.
     state->tdma_carrier = 1U;
+    // An X2-TDMA transmission's corroboration is the transmission's: the next one proves itself again.
+    state->x2tdma_corroborated = 1U;
 
     noCarrier(opts, state);
 
@@ -12942,6 +13075,7 @@ main(void) {
                                                      && state->nxdn_confirm_frame_evidence == 0);
     rc |= expect_true("ysf-fich-confirmation-reset", state->ysf_fich_confirmed == 0U);
     rc |= expect_true("no-carrier keeps the two-slot TDMA verdict", state->tdma_carrier == 1U);
+    rc |= expect_true("x2tdma-corroboration-reset", state->x2tdma_corroborated == 0U);
     rc |= expect_true("dstar-confirmation-reset", state->dstar_confirmed == 0 && state->dstar_confirm_weak_streak == 0
                                                       && state->dstar_confirm_frame_evidence == 0);
     rc |= expect_true("provoice-confirmation-reset", state->provoice_confirmed == 0
@@ -14626,6 +14760,7 @@ main(void) {
     rc |= test_untyped_row_confirmed_only_by_its_landing();
     rc |= test_legacy_step_landing_ends_the_reception_on_it();
     rc |= test_live_loop_syncs_move_the_quiet_sync_sequence();
+    rc |= test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict();
     rc |= test_legacy_step_landing_after_a_rigctl_move_and_under_a_hold();
     rc |= test_legacy_step_with_no_row_reopens_its_windows();
     rc |= test_untyped_resume_waits_for_its_row();

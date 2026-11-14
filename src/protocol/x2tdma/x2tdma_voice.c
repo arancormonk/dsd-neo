@@ -60,6 +60,14 @@ typedef struct {
        and this timeslot's later ones. Nothing else in a superframe can fail a check, so they are what tells it from
        noise that passed one sync word (dsd_state::tdma_carrier). */
     int corroborating_syncs;
+    /* The superframe follows a whole one on this carrier with no hunt gap (dsd_state::x2tdma_superframe_*): how direct
+       mode, whose other timeslot carries no sync word, corroborates. */
+    int follows_superframe;
+    /* A superframe before it in this transmission proved itself (dsd_state::x2tdma_corroborated). */
+    int transmission_corroborated;
+    /* The timeslots whose encryption this superframe learned with no call open
+       (dsd_state::x2tdma_superframe_pre_call_crypto, once the superframe is whole). */
+    uint8_t pre_call_crypto;
 } x2tdma_voice_ctx;
 
 /* The symbols between the end of a whole voice superframe and the end of the next one's sync word when that sync
@@ -74,6 +82,23 @@ typedef struct {
 static int
 x2tdma_carrier_left(const x2tdma_voice_ctx* ctx, const dsd_state* state) {
     return dsd_state_frame_read_lost(state, ctx->carrier_seq);
+}
+
+/* Whether anything beyond the sync word that started the superframe says it is X2-TDMA: a later sync word in its place
+   (the other timeslot's, read after each burst), or a whole superframe before it with no hunt gap. */
+static int
+x2tdma_superframe_proves_itself(const x2tdma_voice_ctx* ctx) {
+    return ctx->corroborating_syncs > 0 || ctx->follows_superframe;
+}
+
+/* Voice plays, and a voice call is observed, only from a corroborated transmission: this superframe proves itself
+   (x2tdma_superframe_proves_itself()), or one before it on the carrier did, with no sync loss, acquisition reset or
+   carrier boundary since (dsd_state::x2tdma_corroborated). One sync word is no call: matched once on noise, it played
+   the superframe behind it and opened a call with no identity. A transmission's first burst (three frames, 60 ms) is
+   read past, and in direct mode its whole first superframe (360 ms); a hunt gap later in the call costs nothing. */
+static int
+x2tdma_superframe_corroborated(const x2tdma_voice_ctx* ctx) {
+    return ctx->transmission_corroborated || x2tdma_superframe_proves_itself(ctx);
 }
 
 static void
@@ -227,7 +252,7 @@ x2tdma_update_call_transition(dsd_opts* opts, const x2tdma_voice_ctx* ctx, dsd_s
             && DSD_SYNC_IS_X2TDMA(call.protocol) && dsd_call_state_end(state, slot, 0.0) > 0) {
             dsd_event_sync_slot(opts, state, slot);
         }
-    } else if (dsd_x2tdma_sync_is_voice(ctx->sync)) {
+    } else if (dsd_x2tdma_sync_is_voice(ctx->sync) && x2tdma_superframe_corroborated(ctx)) {
         const dsd_call_observation observation = {
             .protocol = state->synctype,
             .slot = slot,
@@ -465,9 +490,12 @@ x2tdma_decode_signaling(int j, x2tdma_voice_ctx* ctx, dsd_state* state) {
    indicators arrive in the second burst (x2tdma_decode_signal_j1()), so the first burst's frames keep what the previous
    superframe of the same transmission said, and are unknown in its first superframe: a clear <-> encrypted change
    inside a call applies from the second burst. The transmission, not the call epoch: a fade the call state heals is
-   the same transmission. */
+   the same transmission. So is the superframe a call opens on when it follows, with no hunt gap, one read on the same
+   timeslot before any call was open (direct mode, whose first superframe nothing corroborates): its first burst keeps
+   the verdict that superframe learned there under no call. A verdict another timeslot learned, or one left from before
+   the last superframe, is not this one's. */
 static void
-x2tdma_note_slot_crypto(const x2tdma_voice_ctx* ctx, dsd_state* state, int j) {
+x2tdma_note_slot_crypto(x2tdma_voice_ctx* ctx, dsd_state* state, int j) {
     const int slot = state->currentslot == 1 ? 1 : 0;
     dsd_call_snapshot call;
     uint64_t transmission = 0U;
@@ -475,10 +503,17 @@ x2tdma_note_slot_crypto(const x2tdma_voice_ctx* ctx, dsd_state* state, int j) {
         && DSD_SYNC_IS_X2TDMA(call.protocol)) {
         transmission = dsd_call_snapshot_transmission(&call);
     }
+    const unsigned int slot_bit = 1U << (unsigned int)slot;
     if (j > 0) {
         state->x2tdma_slot_crypto[slot] =
             (ctx->eeei != 0 || ctx->aiei != 0) ? DSD_X2TDMA_CRYPTO_ENCRYPTED : DSD_X2TDMA_CRYPTO_CLEAR;
-    } else if (transmission == 0U || state->x2tdma_slot_crypto_transmission[slot] != transmission) {
+        if (transmission == 0U) {
+            ctx->pre_call_crypto |= (uint8_t)slot_bit;
+        }
+    } else if (transmission == 0U
+               || (state->x2tdma_slot_crypto_transmission[slot] != transmission
+                   && !(state->x2tdma_slot_crypto_transmission[slot] == 0U && ctx->follows_superframe
+                        && (state->x2tdma_superframe_pre_call_crypto & slot_bit) != 0U))) {
         state->x2tdma_slot_crypto[slot] = DSD_X2TDMA_CRYPTO_UNKNOWN;
     }
     state->x2tdma_slot_crypto_transmission[slot] = transmission;
@@ -491,11 +526,12 @@ x2tdma_process_voice_frames(dsd_opts* opts, dsd_state* state, x2tdma_voice_ctx* 
         return;
     }
 
+    const int plays = ctx->mutecurrentslot == 0 && x2tdma_superframe_corroborated(ctx);
     if (ctx->mutecurrentslot == 0) {
         if (state->firstframe == 1) {
             // We don't know if anything before first sync after no carrier is valid.
             state->firstframe = 0;
-        } else {
+        } else if (plays) {
             x2tdma_process_voice_frame(opts, state, ctx->ambe_fr);
             x2tdma_process_voice_frame(opts, state, ctx->ambe_fr2);
         }
@@ -507,7 +543,7 @@ x2tdma_process_voice_frames(dsd_opts* opts, dsd_state* state, x2tdma_voice_ctx* 
     }
     /* A data or idle timeslot mixes nothing: every voice frame of either timeslot was mixed right after it was
        decoded, so nothing is pending (issue #654). */
-    if (ctx->mutecurrentslot == 0) {
+    if (plays) {
         x2tdma_process_voice_frame(opts, state, ctx->ambe_fr3);
     }
 }
@@ -675,9 +711,11 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
     ctx.carrier_seq = state->carrier_seq;
     /* The superframe's sync word was the last thing read: a superframe that ended exactly one sync word before it, on
        this carrier, is the one this follows with no hunt gap. */
-    const int follows_superframe =
+    ctx.follows_superframe =
         state->x2tdma_superframe_valid != 0U && state->x2tdma_superframe_carrier_seq == ctx.carrier_seq
         && (uint32_t)(state->symbolcnt - state->x2tdma_superframe_end_symbol) == (uint32_t)X2TDMA_SUPERFRAME_CHAIN_GAP;
+    ctx.transmission_corroborated =
+        state->x2tdma_corroborated != 0U && state->x2tdma_corroborated_carrier_seq == ctx.carrier_seq;
 
     /* Read before any symbol is: how much of the 144 read back is not the stream's. */
     ctx.readback_invalid = dsd_state_sync_readback_invalid(state);
@@ -695,12 +733,15 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
         x2tdma_update_call_crypto(opts, state, &ctx);
         /* A whole superframe on one carrier whose later sync words agree, or that follows another whole one with no
            hunt gap (direct mode, whose other timeslot carries no sync word): the carrier is X2-TDMA, two-slot TDMA. */
-        if (ctx.corroborating_syncs > 0 || follows_superframe) {
+        if (x2tdma_superframe_proves_itself(&ctx)) {
             state->tdma_carrier = 1U;
+            state->x2tdma_corroborated = 1U;
+            state->x2tdma_corroborated_carrier_seq = ctx.carrier_seq;
         }
         state->x2tdma_superframe_valid = 1U;
         state->x2tdma_superframe_carrier_seq = ctx.carrier_seq;
         state->x2tdma_superframe_end_symbol = state->symbolcnt;
+        state->x2tdma_superframe_pre_call_crypto = ctx.pre_call_crypto;
     } else {
         state->x2tdma_superframe_valid = 0U;
     }

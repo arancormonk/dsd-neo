@@ -41,9 +41,10 @@ recordings. Existing tracked recordings therefore also occur in automatic Git
 source archives. Excluding a future test corpus from a custom archive would
 not remove it from Git history or establish rights for earlier distributions.
 
-The GopherTrunk TETRA fixtures have an adjacent Apache notice and provenance
-record; telive and M17 samples identify upstream project licenses, which still
-need asset-specific confirmation when recordings may have separate rights.
+The GopherTrunk TETRA and P25 C4FM fixtures have adjacent Apache notices and
+provenance records; telive and M17 samples identify upstream project licenses,
+which still need asset-specific confirmation when recordings may have separate
+rights.
 The issue #348 contribution records an intended regression-test use without a
 separate, retained general redistribution grant. Synthetic fixtures should be
 distinguished from recordings, and missing permission should remain unknown.

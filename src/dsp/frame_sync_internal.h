@@ -170,11 +170,25 @@ void frame_sync_p25_sync_context_now(const dsd_state* state, uint64_t sync_clock
  * (dsd_frame_sync_history_carry), nor a profile or modulation change. A pending off-thread tune is the caller's to
  * check (dsd_frame_sync_off_thread_tune_pending()). */
 int frame_sync_p25_sync_context_holds(const dsd_state* state, const struct dsd_p25_sync_context* ctx);
+/** The slicer warm start of a P25p1 sync the C4FM chain read: the levels from the word's outer symbols, and whether
+ * they were set (dsd_state::p25_p1_c4fm_sync_levels), which decides whether use_symbol() holds them through the
+ * frame. */
+void frame_sync_p25p1_c4fm_warm_start(const dsd_opts* opts, dsd_state* state);
 /* The P25p1 sync anchor's frame-sync side (frame_sync_p25p1_anchor.c, dsd_p25p1_sync_anchor). */
 /** Capture the sync-time context of the P25p1 sync just accepted (@p synctype), the window ending on the latest
- * symbol: @p tolerant_nac is the anchor's NAC for a tolerant accept and -1 for an exact one, @p bit_errors the bits the
- * word was off by. No context is captured while an off-thread tune is pending. */
-void frame_sync_p25p1_anchor_note_sync(dsd_state* state, int synctype, int tolerant_nac, int bit_errors);
+ * symbol: @p kind how it was accepted (dsd_p25p1_sync_kind), @p anchor_nac the anchor's NAC for an anchored accept (-1
+ * otherwise), @p errors what the word was off by (bits on the CQPSK chain, signs on the C4FM chain). No context is
+ * captured while an off-thread tune is pending. */
+void frame_sync_p25p1_anchor_note_sync(dsd_state* state, int synctype, int kind, int anchor_nac, int errors);
+/** Hold what the accept of a tolerant P25p1 sync word, on either chain, is about to change (dsd_p25p1_sync_candidate),
+ * for dsd_frame_sync_p25p1_candidate_rejected() to put back if its NID fails, with the hunt's pass position
+ * @p pass_symbols at the word's last symbol. */
+void frame_sync_p25p1_candidate_hold(dsd_state* state, int pass_symbols);
+/** Start the hunt after a dropped tolerant P25p1 candidate from the last @p symbols symbols the word and its NID took
+ * (the C4FM hunt's sign slicing of dsd_symbol_history_get_back()), as a history a no-sync exit carries
+ * (dsd_frame_sync_history_carry), at pass position @p pass_symbols: the next getFrameSync() call resumes it when
+ * nothing came between. */
+void frame_sync_history_carry_symbols(dsd_state* state, int symbols, int pass_symbols);
 /** A sync of any protocol was accepted (@p synctype): the anchor is spent, and another protocol's leaves no P25p1
  * frame context. */
 void frame_sync_p25p1_anchor_note_accept(dsd_state* state, int synctype);
@@ -189,6 +203,9 @@ int frame_sync_p25p1_anchor_take(dsd_state* state, uint8_t* out_map_idx, int* ou
  * (@p tune_pending). */
 void frame_sync_p25p2_anchor_note_sync(dsd_state* state, int synctype, int tolerant_start, int bit_errors,
                                        int tune_pending);
+/** Hold what the accept of a tolerant P25p2 sync word is about to change (dsd_p25p2_sync_candidate), for
+ * dsd_frame_sync_p25p2_window_dropped() to put back if the window fails its verdict. */
+void frame_sync_p25p2_candidate_hold(const dsd_opts* opts, dsd_state* state);
 /** A sync of any protocol was accepted (@p synctype): the anchor is spent, and another protocol's leaves no P25p2
  * window context. */
 void frame_sync_p25p2_anchor_note_accept(dsd_state* state, int synctype);
