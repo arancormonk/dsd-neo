@@ -883,6 +883,11 @@ rtl_device_signal_rotation_hz(const struct rtl_device* dev, int fs4_shift_active
     return fs4_shift_active ? (int32_t)(rate_hz / 4U) : 0;
 }
 
+int
+rtl_device_signal_geometry(const struct rtl_device* dev) {
+    return dev && dev->backend == RTL_BACKEND_AIRSPY ? DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED : DSD_SIGNAL_GEOMETRY_DEFAULT;
+}
+
 /* Persisted IQ metadata and the live transform policy may select the two-pass
  * CU8 transform. New captures use the combined bias-127.5 transform by default. */
 static inline void
@@ -3286,6 +3291,16 @@ rtl_device_test_rate_queries(int backend, uint32_t device_rate_hz, uint32_t requ
         return -1;
     }
     return rtl_device_rate_written_for(&dev, requested_hz, out_written_hz);
+}
+
+extern "C" int
+rtl_device_test_signal_geometry(const rtl_device_test_conversion* conversion) {
+    if (!conversion) {
+        return rtl_device_signal_geometry(NULL);
+    }
+    rtl_device dev{};
+    rtl_device_test_conversion_apply(conversion, &dev);
+    return rtl_device_signal_geometry(&dev);
 }
 
 extern "C" int

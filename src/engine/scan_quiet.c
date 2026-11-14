@@ -941,18 +941,38 @@ quiet_landed_capture(scan_quiet_check* c, dsd_signal_capture* cap) {
     return c->capture_qualified;
 }
 
-/* What the calibration refuses of the capture (dsd_scan_quiet_reason): TUNER for one with no Fs/4 rotation (centred
-   I/Q, an offset-tuned E4000 or the shift off put the channel on DC), RATE for a rate it did not validate, WIDTH for an
-   analog width it did not validate for its kind there; NONE when it covers all three. The receiver's part is kept as
-   the session's verdict, with the input it was read on. */
+/* The receiver's part of what the calibration refuses of the capture: exactly one of its two geometry policies is
+   covered, the default one with the Fs/4 shift (rotation a quarter of the rate, the channel that far from the hardware
+   centre) or a native Airspy's centred capture (tuned on the channel: no rotation, no offset). Anything else (centred
+   I/Q under the default policy, an offset-tuned E4000, the shift off, any other rotation or an unknown policy) is
+   TUNER; a covered geometry at a rate its policy did not validate is RATE. */
+static uint8_t
+quiet_capture_receiver_reason(const dsd_signal_capture* cap) {
+    if (cap->geometry == DSD_SIGNAL_GEOMETRY_DEFAULT) {
+        if (cap->rate_hz == 0U || cap->rotation_hz != (int32_t)(cap->rate_hz / 4U)
+            || cap->capture_offset_hz != cap->rotation_hz) {
+            return (uint8_t)DSD_SCAN_QUIET_REASON_TUNER;
+        }
+        return dsd_signal_quiet_rate_supported(cap->rate_hz) ? (uint8_t)DSD_SCAN_QUIET_REASON_NONE
+                                                             : (uint8_t)DSD_SCAN_QUIET_REASON_RATE;
+    }
+    if (cap->geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED) {
+        if (cap->rotation_hz != 0 || cap->capture_offset_hz != 0) {
+            return (uint8_t)DSD_SCAN_QUIET_REASON_TUNER;
+        }
+        return dsd_signal_quiet_airspy_centred_rate_supported(cap->rate_hz) ? (uint8_t)DSD_SCAN_QUIET_REASON_NONE
+                                                                            : (uint8_t)DSD_SCAN_QUIET_REASON_RATE;
+    }
+    return (uint8_t)DSD_SCAN_QUIET_REASON_TUNER;
+}
+
+/* What the calibration refuses of the capture (dsd_scan_quiet_reason): the receiver's part
+   (quiet_capture_receiver_reason(): TUNER for a geometry it does not cover, RATE for a rate it did not validate under
+   the capture's policy), then WIDTH for an analog width it did not validate for its kind there; NONE when it covers
+   all three. The receiver's part is kept as the session's verdict, with the input it was read on. */
 static uint8_t
 quiet_capture_refusal(const dsd_opts* opts, scan_quiet_check* c, const dsd_signal_capture* cap) {
-    uint8_t receiver = (uint8_t)DSD_SCAN_QUIET_REASON_NONE;
-    if (cap->rotation_hz == 0) {
-        receiver = (uint8_t)DSD_SCAN_QUIET_REASON_TUNER;
-    } else if (!dsd_signal_quiet_rate_supported(cap->rate_hz)) {
-        receiver = (uint8_t)DSD_SCAN_QUIET_REASON_RATE;
-    }
+    const uint8_t receiver = quiet_capture_receiver_reason(cap);
     c->receiver_reason = receiver;
     c->receiver_input = opts->audio_in_type;
     c->receiver_device = quiet_device_hash(opts);
@@ -1222,7 +1242,7 @@ static int
 quiet_capture_equal(const dsd_signal_capture* a, const dsd_signal_capture* b) {
     return a->generation == b->generation && a->rate_hz == b->rate_hz && a->capture_hz == b->capture_hz
            && a->capture_offset_hz == b->capture_offset_hz && a->rotation_hz == b->rotation_hz && a->gain == b->gain
-           && a->drops == b->drops;
+           && a->drops == b->drops && a->geometry == b->geometry;
 }
 
 /* For a reconciled READY result past the class and revision checks: the tap's capture and the live output

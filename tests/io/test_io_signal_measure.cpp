@@ -830,6 +830,59 @@ test_clip_levels(dsd_signal_detector* d, const dsd_signal_measure_request& r) {
     }
 }
 
+/* Each backend's measurement geometry policy: a native Airspy is centred on the channel with no hardware-DC artifact;
+   every other source, and no device, keeps the default. */
+static void
+test_signal_geometries() {
+    using conversion = rtl_device_test_conversion;
+    const conversion usb{RTL_DEVICE_TEST_BACKEND_USB, 1, 0, 0, 0};
+    const conversion tcp{RTL_DEVICE_TEST_BACKEND_TCP, 1, 0, 0, 0};
+    const conversion soapy{RTL_DEVICE_TEST_BACKEND_SOAPY, 1, 0, 0, 0};
+    const conversion replay_cf32{RTL_DEVICE_TEST_BACKEND_IQ_REPLAY, 1, DSD_IQ_FORMAT_CF32, 0, 0};
+    const conversion replay_cu8{RTL_DEVICE_TEST_BACKEND_IQ_REPLAY, 1, DSD_IQ_FORMAT_CU8, 1, 0};
+    const conversion airspy{RTL_DEVICE_TEST_BACKEND_AIRSPY, 1, 0, 0, 0};
+    assert(rtl_device_test_signal_geometry(&airspy) == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED);
+    for (const conversion* c : {&usb, &tcp, &soapy, &replay_cf32, &replay_cu8, (const conversion*)nullptr}) {
+        assert(rtl_device_test_signal_geometry(c) == DSD_SIGNAL_GEOMETRY_DEFAULT);
+    }
+}
+
+/* Signal search on a native Airspy capture, tuned on the channel: the channel at the capture centre measures (the live
+   level of a landed visit), with no hardware-DC guard; under the default policy the same capture refuses it. A change
+   of policy is a capture change: mid-request it fails the request, and a completed report waiting to be read fails
+   too. */
+static void
+test_centred_search(dsd_signal_detector* d) {
+    const uint32_t channel = 163012500;
+    for (uint32_t rate : {2500000U, 3000000U, 6000000U, 10000000U}) {
+        dsd_signal_measure_request live = grid_request(rate, 0, channel, 12500, 12500, channel, 1);
+        live.capture.geometry = DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED;
+        auto iq = samples(live, channel, 0.0, 4 * request_samples(live));
+        add_nfm(iq, live, channel, 0.1, 2500, 1000);
+        const auto centred = run(d, live, iq, 4096);
+        assert(centred.failure == DSD_SIGNAL_MEASURE_OK && centred.candidates[0].valid);
+        assert(centred.candidates[0].detected && std::abs(centred.candidates[0].power_dbfs + 20) < 0.5);
+        dsd_signal_measure_request shifted_policy = live;
+        shifted_policy.capture.geometry = DSD_SIGNAL_GEOMETRY_DEFAULT;
+        assert(!run(d, shifted_policy, iq, 4096).candidates[0].valid);
+
+        // During collection.
+        dsd_signal_measure_report report{};
+        assert(dsd_signal_detector_begin(d, &live) == 0);
+        assert(dsd_signal_detector_feed(d, iq.data(), 1024, &live.capture, &report) == 0);
+        assert(dsd_signal_detector_feed(d, iq.data(), 1024, &shifted_policy.capture, &report) == -1);
+        assert_failure(report, live, DSD_SIGNAL_MEASURE_CAPTURE_CHANGED);
+        // Completed, waiting to be read.
+        rtl_signal_measure_feed(iq.data(), 1, &live.capture);
+        assert(rtl_signal_measure_request(&live, nullptr) == 0);
+        rtl_signal_measure_feed(iq.data(), iq.size() / 2, &live.capture);
+        rtl_signal_measure_feed(iq.data(), 1, &shifted_policy.capture);
+        assert(rtl_signal_measure_get(&report) == -1);
+        assert_failure(report, live, DSD_SIGNAL_MEASURE_CAPTURE_CHANGED);
+        rtl_signal_measure_cancel();
+    }
+}
+
 /* Scan quiet measurement: one landed channel, nine sub-windows, judged in each requested width class. */
 namespace {
 constexpr uint32_t kQuietChannel = 163012500;
@@ -1425,6 +1478,174 @@ test_quiet_geometry(dsd_signal_quiet_detector* d) {
     assert(!spoiled.valid && !spoiled.quiet);
 }
 
+namespace {
+/* The native Airspy rates the centred policy admits. */
+const uint32_t kCentredRates[] = {2500000, 3000000, 6000000, 10000000};
+
+/* A request for the channel at the centre of a native Airspy capture: tuned on it, no rotation, no offset. */
+dsd_signal_quiet_request
+quiet_centred_request(uint32_t rate, uint8_t classes, uint32_t analog_width = 0) {
+    dsd_signal_quiet_request q = quiet_request(rate, classes, analog_width);
+    q.capture.rotation_hz = 0;
+    q.capture.capture_offset_hz = 0;
+    q.capture.capture_hz = kQuietChannel;
+    q.capture.geometry = DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED;
+    return q;
+}
+
+/* Complex Gaussian noise (kQuietSigma) whose power at each sample frequency f (Hz, -Fs/2..Fs/2) is scaled by
+   @p gain_db(f), shaped in the frequency domain over a power-of-two record and cut to @p pairs. */
+template <typename Gain>
+std::vector<float>
+quiet_banded_noise(uint32_t rate, size_t pairs, unsigned seed, Gain gain_db) {
+    int n = 16;
+    while ((size_t)n < pairs) {
+        n *= 2;
+    }
+    std::vector<float> iq = quiet_noise((size_t)n, seed);
+    dsd_io::FftSetupCache fft;
+    assert(fft.forward(n, iq.data()));
+    for (int k = 0; k < n; ++k) {
+        const double f = (double)(k < n / 2 ? k : k - n) * rate / n;
+        const float scale = (float)std::pow(10.0, gain_db(f) / 20.0);
+        iq[2 * (size_t)k] *= scale;
+        iq[2 * (size_t)k + 1] *= scale;
+    }
+    /* The inverse as a forward transform of the conjugate. */
+    for (int k = 0; k < n; ++k) {
+        iq[2 * (size_t)k + 1] = -iq[2 * (size_t)k + 1];
+    }
+    assert(fft.forward(n, iq.data()));
+    for (int k = 0; k < n; ++k) {
+        iq[2 * (size_t)k] /= (float)n;
+        iq[2 * (size_t)k + 1] = -iq[2 * (size_t)k + 1] / (float)n;
+    }
+    fft.release();
+    iq.resize(2 * pairs);
+    return iq;
+}
+} // namespace
+
+/* A native Airspy's channel at the capture centre (AIRSPY_CENTRED): measured with no hardware-DC guard at every
+   admitted rate and in every class, quiet on flat noise, busy with a weak transmitter at 6 dB over its noise; its
+   floor stays the noise it was judged against (power_dbfs - floor_dbfs is max_ratio_db) and its floor rise stays
+   small. The same capture under the default policy is never valid there. */
+static void
+test_quiet_airspy_centred(dsd_signal_quiet_detector* d) {
+    const struct {
+        uint8_t classes;
+        uint32_t analog;
+    } sets[] = {{DSD_SIGNAL_QUIET_CLASS_12K5, 0},
+                {DSD_SIGNAL_QUIET_CLASS_6K25, 0},
+                {DSD_SIGNAL_QUIET_CLASS_ANALOG, 5000},
+                {DSD_SIGNAL_QUIET_CLASS_ANALOG, 25000},
+                {DSD_SIGNAL_QUIET_CLASS_12K5 | DSD_SIGNAL_QUIET_CLASS_6K25 | DSD_SIGNAL_QUIET_CLASS_ANALOG, 12500}};
+
+    const dsd_signal_quiet_params shipped = dsd_signal_quiet_params_default();
+    const std::vector<double> c4fm = {-1800, -600, 600, 1800};
+    for (uint32_t rate : kCentredRates) {
+        for (const auto& set : sets) {
+            const auto q = quiet_centred_request(rate, set.classes, set.analog);
+            const auto iq = quiet_noise(quiet_request_pairs(q), 121);
+            assert(quiet_verdict(d, q, iq));
+            const auto guarded = quiet_run(d, q, iq, 4096, &shipped);
+            assert(guarded.failure == DSD_SIGNAL_MEASURE_OK && guarded.valid);
+            assert(std::abs(guarded.floor_rise_db) < 2.0f);
+            assert(std::abs(guarded.power_dbfs - guarded.floor_dbfs - guarded.max_ratio_db) < 1e-3f);
+            dsd_signal_quiet_request default_policy = q;
+            default_policy.capture.geometry = DSD_SIGNAL_GEOMETRY_DEFAULT;
+            const auto refused = quiet_run(d, default_policy, iq, 4096, &shipped);
+            assert(refused.failure == DSD_SIGNAL_MEASURE_OK && !refused.valid && !refused.quiet);
+        }
+        const auto wide = quiet_centred_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+        const size_t pairs = quiet_request_pairs(wide);
+        for (unsigned seed = 131; seed <= 133; ++seed) {
+            auto iq = quiet_noise(pairs, seed);
+            quiet_add_fm(iq, rate, 0, quiet_amplitude(6, rate, 12500),
+                         fsk_deviation(pairs, rate, 4800, c4fm, 2400, seed + 10));
+            const auto busy = quiet_run(d, wide, iq, 4096, &shipped);
+            assert(busy.failure == DSD_SIGNAL_MEASURE_OK && busy.valid && !busy.quiet);
+            assert(busy.max_ratio_db > shipped.threshold_db + 1.5f);
+            assert(std::abs(busy.power_dbfs - busy.floor_dbfs - busy.max_ratio_db) < 1e-3f);
+        }
+    }
+}
+
+/* A floor 2 dB lower round the channel than over the rest of the capture (the channel and its sidebands, out to 3.5
+   widths a side), with a carrier 6 dB over that local floor. Judged against the capture-wide reference alone (the
+   default policy, on the same samples at the Fs/4 shift) the channel reads about 4 dB, under the shipped threshold:
+   quiet. The centred policy judges it against the lower of the reference and the sideband floor, reads about 6 dB (the
+   highest of nine sub-windows over a floor estimated from the sidebands reads somewhat higher) and finds it busy. Its
+   floor is the sideband floor it chose, about 2 dB under the default's, and its floor rise stays measured against the
+   reference: negative, the sidebands standing under it. */
+static void
+test_quiet_centred_depressed_floor(dsd_signal_quiet_detector* d) {
+    const dsd_signal_quiet_params shipped = dsd_signal_quiet_params_default();
+    const double width = DSD_SIGNAL_QUIET_WIDTH_12K5_HZ, depth_db = 2.0;
+    for (uint32_t rate : {2500000U, 6000000U}) {
+        const auto centred = quiet_centred_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+        const auto shifted = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+        const size_t pairs = quiet_request_pairs(centred);
+        assert(pairs == quiet_request_pairs(shifted));
+        for (unsigned seed = 141; seed <= 143; ++seed) {
+            auto iq = quiet_banded_noise(rate, pairs, seed,
+                                         [&](double f) { return std::abs(f) < 3.5 * width ? -depth_db : 0.0; });
+            /* (S + N_local) / N_local = 6 dB: S = (10^0.6 - 1) N_local, with N_local 2 dB under kQuietSigma's. */
+            const double snr_local_db = 10 * std::log10(std::pow(10.0, 0.6) - 1);
+            quiet_add_fm(iq, rate, 0, quiet_amplitude(snr_local_db - depth_db, rate, width), {});
+            const auto reference_rule = quiet_run(d, shifted, iq, 4096, &shipped);
+            assert(reference_rule.failure == DSD_SIGNAL_MEASURE_OK && reference_rule.valid && reference_rule.quiet);
+            assert(std::abs(reference_rule.max_ratio_db - 4.0f) < 1.0f);
+            const auto local_rule = quiet_run(d, centred, iq, 4096, &shipped);
+            assert(local_rule.failure == DSD_SIGNAL_MEASURE_OK && local_rule.valid && !local_rule.quiet);
+            assert(local_rule.max_ratio_db > shipped.threshold_db + 0.5f && local_rule.max_ratio_db < 8.0f);
+            assert(std::abs(local_rule.power_dbfs - local_rule.floor_dbfs - local_rule.max_ratio_db) < 1e-3f);
+            assert(local_rule.floor_dbfs < reference_rule.floor_dbfs - 1.0f);
+            assert(local_rule.floor_rise_db > -depth_db - 1.0f && local_rule.floor_rise_db < -0.5f);
+        }
+    }
+}
+
+/* What the centred policy admits: exactly the native Airspy rates, refused at any other rate (a request there, or a
+   rate between them), and no policy but the two known ones. A policy change mid-request fails it as a capture
+   change. */
+static void
+test_quiet_centred_requests(dsd_signal_quiet_detector* d) {
+    for (uint32_t rate : kCentredRates) {
+        assert(dsd_signal_quiet_airspy_centred_rate_supported(rate) == 1);
+        assert(dsd_signal_quiet_rate_supported(rate) == 1);
+    }
+    dsd_signal_request_failure failure = DSD_SIGNAL_REQUEST_OK;
+    for (uint32_t rate : {0u, 960000u, 1024000u, 1536000u, 2400000u, 2499999u, 2500001u, 5000000u, 8000000u}) {
+        assert(dsd_signal_quiet_airspy_centred_rate_supported(rate) == 0);
+        const auto q = quiet_centred_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+        failure = DSD_SIGNAL_REQUEST_OK;
+        assert(dsd_signal_quiet_detector_begin(d, &q, nullptr, &failure) == -1);
+        assert(failure == DSD_SIGNAL_REQUEST_UNSUPPORTED);
+    }
+    auto unknown = quiet_centred_request(2500000, DSD_SIGNAL_QUIET_CLASS_12K5);
+    unknown.capture.geometry = 2;
+    assert(dsd_signal_quiet_detector_begin(d, &unknown, nullptr, &failure) == -1);
+    assert(failure == DSD_SIGNAL_REQUEST_UNSUPPORTED);
+    auto shifted_unknown = quiet_request(1536000, DSD_SIGNAL_QUIET_CLASS_12K5);
+    shifted_unknown.capture.geometry = 2;
+    failure = DSD_SIGNAL_REQUEST_OK;
+    assert(dsd_signal_quiet_detector_begin(d, &shifted_unknown, nullptr, &failure) == -1);
+    assert(failure == DSD_SIGNAL_REQUEST_UNSUPPORTED);
+    // During collection: the policy moves.
+    const auto q = quiet_centred_request(3000000, DSD_SIGNAL_QUIET_CLASS_12K5);
+    const auto noise = quiet_noise(4096, 151);
+    auto moved = q.capture;
+    moved.geometry = DSD_SIGNAL_GEOMETRY_DEFAULT;
+    assert(dsd_signal_quiet_detector_begin(d, &q, nullptr, nullptr) == 0);
+    assert(dsd_signal_quiet_detector_feed(d, noise.data(), 2048, &q.capture) == 0);
+    assert(dsd_signal_quiet_detector_feed(d, noise.data(), 2048, &moved) == -1);
+    dsd_signal_quiet_result result{};
+    assert(dsd_signal_quiet_detector_result(d, &result) == -1);
+    assert(result.failure == DSD_SIGNAL_MEASURE_CAPTURE_CHANGED && !result.valid && !result.quiet);
+    assert(result.capture.geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED);
+}
+
 /* More than 1% of the pairs clipped fails the request CLIPPED; fewer still measure. Every other failure keeps its
    reason, the request's id and its capture. */
 static void
@@ -2004,6 +2225,9 @@ test_quiet(const dsd_signal_measure_request& r) {
     test_quiet_floor_guard_rotation(d);
     test_quiet_moderate_neighbours(d);
     test_quiet_geometry(d);
+    test_quiet_airspy_centred(d);
+    test_quiet_centred_depressed_floor(d);
+    test_quiet_centred_requests(d);
     test_quiet_failures(d);
     test_quiet_spans(d);
     test_quiet_estimators(d);
@@ -2191,6 +2415,8 @@ main() {
     test_request_failures(r);
     test_failure_reasons(d, r);
     test_clip_levels(d, r);
+    test_signal_geometries();
+    test_centred_search(d);
     test_quiet(r);
     // A burst shorter than the first 10 ms cannot pass two windows.
     for (size_t i = size_t{5000} * 2; i < iq.size(); ++i) {

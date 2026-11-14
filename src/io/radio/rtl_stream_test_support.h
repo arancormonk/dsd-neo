@@ -65,6 +65,8 @@ float rtl_device_test_signal_clip_level(const rtl_device_test_conversion* conver
  * (rtl_device_rate_written_for()) in @p out_written_hz. Returns 0 when both queries answer. */
 int rtl_device_test_rate_queries(int backend, uint32_t device_rate_hz, uint32_t requested_hz, uint32_t* out_planned_hz,
                                  uint32_t* out_written_hz);
+/* rtl_device_signal_geometry() of a device converting as @p conversion says (NULL: no device). */
+int rtl_device_test_signal_geometry(const rtl_device_test_conversion* conversion);
 /* The floats that device's cu8 conversion makes of @p len (even, at most 64) bytes, starting at Fs/4 phase 0: 0, or -1
    on bad arguments. */
 int rtl_device_test_widen_cu8(const rtl_device_test_conversion* conversion, int fs4_shift_active,

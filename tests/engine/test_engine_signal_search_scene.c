@@ -11,7 +11,9 @@
    the in-frame yield check alone), the live strength follows the transmitter's level, and a level the tap stops
    refreshing (drops or clipping) is withdrawn within a bound, then returns once measurements succeed again. A
    transmitter that overloads the receiver has its span skipped with the overload warning on every pass, never failing
-   the search, until its level is back in range: it is then visited, and the warning clears. */
+   the search, until its level is back in range: it is then visited, and the warning clears. On a native Airspy's
+   centred capture (tuned on the channel, the centred measurement policy) the landed visit sits at the capture centre,
+   and its live strength is measured there too. */
 
 #include <assert.h>
 #include <dsd-neo/core/airspy_config.h>
@@ -48,7 +50,27 @@ uint64_t dsd_realtime_mono_ms(void);
 
 enum { RATE = 1536000, BLOCK = 8192, TRANSMITTER = 163012500 };
 
-static dsd_signal_capture capture = {RATE, 0, 1, RATE / 4, RATE / 4, 0, 0, DSD_SIGNAL_CLIP_LEVEL_DEFAULT};
+static dsd_signal_capture capture = {.rate_hz = RATE,
+                                     .generation = 1,
+                                     .rotation_hz = RATE / 4,
+                                     .capture_offset_hz = RATE / 4,
+                                     .clip_level = DSD_SIGNAL_CLIP_LEVEL_DEFAULT};
+
+/* The capture of a tune to @p hz: Fs/4 above it, as the RTL chain lands it, or on it for a native Airspy's centred
+   capture (capture_centred()). */
+static uint32_t
+capture_for(uint32_t hz) {
+    return hz + (uint32_t)capture.capture_offset_hz;
+}
+
+/* From now on the receiver is a native Airspy, tuned on the channel: no rotation, no offset, the centred policy. */
+static void
+capture_centred(void) {
+    capture.rotation_hz = 0;
+    capture.capture_offset_hz = 0;
+    capture.geometry = DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED;
+}
+
 static dsd_signal_search_status status;
 static uint32_t ticket, target, generation = 1;
 static int tune_pending, gain_value = 123, gain_auto, autogain = 1;
@@ -334,7 +356,7 @@ search_start(dsd_opts* o, dsd_state* s, uint64_t session, uint32_t start) {
 static void
 search_before_first_block(dsd_opts* o, dsd_state* s, uint32_t start) {
     DSD_MEMSET(&status, 0, sizeof(status));
-    capture.capture_hz = start + RATE / 4;
+    capture.capture_hz = capture_for(start);
     feed(); /* the previous stream's last block */
     rtl_signal_measure_reset();
     dsd_signal_capture none;
@@ -358,7 +380,7 @@ search_from(dsd_opts* o, dsd_state* s, uint64_t session, uint32_t start) {
     visits = 0;
     last_hit = 0;
     DSD_MEMSET(&status, 0, sizeof(status));
-    capture.capture_hz = start + RATE / 4;
+    capture.capture_hz = capture_for(start);
     feed();
     search_start(o, s, session, start);
     for (int step = 0; step < 20000 && status.pass < 4; ++step) {
@@ -368,7 +390,7 @@ search_from(dsd_opts* o, dsd_state* s, uint64_t session, uint32_t start) {
             tune_pending = 0;
             ++generation;
             capture.generation = generation;
-            capture.capture_hz = target + RATE / 4;
+            capture.capture_hz = capture_for(target);
         }
         feed();
         now_ms += 5;
@@ -392,7 +414,7 @@ scene_step(int drops) {
         tune_pending = 0;
         ++generation;
         capture.generation = generation;
-        capture.capture_hz = target + RATE / 4;
+        capture.capture_hz = capture_for(target);
     }
     capture.drops += (uint64_t)drops;
     feed();
@@ -450,7 +472,7 @@ live_strength_scene(dsd_opts* o, dsd_state* s, uint64_t session, int yield_path,
     DSD_MEMSET(&status, 0, sizeof(status));
     scene_clock_start();
     carrier_open = !yield_path;
-    capture.capture_hz = start + RATE / 4;
+    capture.capture_hz = capture_for(start);
     feed();
     search_start_range(o, s, session, start, yield_path ? 1 : 0);
     for (int step = 0;
@@ -527,7 +549,7 @@ overload_scene(dsd_opts* o, dsd_state* s, uint64_t session) {
     carrier_open = 0;
     DSD_MEMSET(&status, 0, sizeof(status));
     scene_clock_start();
-    capture.capture_hz = start + RATE / 4;
+    capture.capture_hz = capture_for(start);
     feed();
     search_start(o, s, session, start);
     /* Three passes of a one-span range, each skipped a second after its first clipped measurement, plus its tune. */
@@ -586,6 +608,9 @@ main(void) {
     live_strength_scene(o, s, 51, 1, 1);
     live_strength_scene(o, s, 52, 0, 1);
     overload_scene(o, s, 53);
+    /* A native Airspy's centred capture: the landed visit sits at the capture centre, where its live level measures. */
+    capture_centred();
+    live_strength_scene(o, s, 54, 0, 0);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

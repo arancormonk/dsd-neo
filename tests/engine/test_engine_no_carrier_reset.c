@@ -16548,9 +16548,11 @@ __wrap_rtl_signal_capture_get(dsd_signal_capture* capture) {
     }
     DSD_MEMSET(capture, 0, sizeof *capture);
     capture->generation = yq_stream_gen();
+    /* The RTL chain's: tuned Fs/4 above the channel and rotated back. */
     capture->rate_hz = 1536000U;
-    capture->capture_hz = g_rtl_tune_freq;
+    capture->capture_hz = g_rtl_tune_freq + (g_yq.centred ? 0U : 384000U);
     capture->rotation_hz = g_yq.centred ? 0 : 384000;
+    capture->capture_offset_hz = g_yq.centred ? 0 : 384000;
     capture->gain = 20;
     return 1;
 }

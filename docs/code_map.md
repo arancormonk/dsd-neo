@@ -693,10 +693,16 @@ Generated (do not edit/commit):
       completion read; a check that starts again on a visit it already published (after a suspension, eligible only
       later, or with other facts) waits 1000 ms from that restart, since a receive-profile or width change moves the
       output generation and its capture comes only then. A capture the calibration refuses is never an error and
-      never DONE (`quiet_capture_refusal()`): no Fs/4 rotation (TUNER: centred I/Q, a native Airspy, whose libairspy
-      I/Q is centred, though one through SoapySDR rotates; an RTL-SDR with offset tuning on, as an E4000 runs by default
-      over USB; the shift off), a rate (RATE) or analog width (WIDTH) the calibration did not validate
-      (`dsd_signal_quiet_rate_supported()`, `dsd_signal_quiet_analog_supported()` with the analog kind). The visit is
+      never DONE (`quiet_capture_refusal()`). Its geometry must be one of the two policies the calibration covers,
+      exactly (`quiet_capture_receiver_reason()`), or the reason is TUNER: `DSD_SIGNAL_GEOMETRY_DEFAULT` with the Fs/4
+      shift (`rotation_hz == rate_hz / 4` and `capture_offset_hz == rotation_hz`; centred I/Q under it, as an RTL-SDR
+      with offset tuning on, an E4000 by default over USB, or the shift off, and any other rotation are not covered),
+      or `DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED` (a native Airspy, tuned on the channel: rotation 0, offset 0; a SoapySDR
+      Airspy rotates and runs the default policy). A rate the policy's table did not validate is RATE
+      (`dsd_signal_quiet_rate_supported()`, `dsd_signal_quiet_airspy_centred_rate_supported()`: 2.5, 3, 6, 10 MS/s),
+      an analog width it did not validate there is WIDTH (`dsd_signal_quiet_analog_supported()` with the analog kind).
+      The READY recheck compares the whole capture, the policy included (`quiet_capture_equal()`), so a policy change
+      after the tap finished or after the take declines the result. The visit is
       SUSPENDED with that reason (`quiet_refuse()`), so an edit restarts it on the same visit, and the refusal is cached
       (issue #834 R10, `scan_quiet_check::refused`): a publication of the same visit with the same facts and revisions
       while the stream keeps the output generation it refused (any change of rate, shift or receive profile moves it;
@@ -11083,10 +11089,22 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   the Fs/4 shift, or a cu8 replay recorded with it) → 0.992 (byte 1 after the byte-domain
   rotation counts with byte 0; the rotation's 255 - x mirrors raw 1 and 254 on phases 1-3,
   so which raw near-rail code counts depends on phase and component; both rails always
-  do); Airspy, SoapySDR and CF32/CS16 replay → 0.999. Airspy overload is not detectable:
-  libairspy's real-to-I/Q conversion halves the amplitude and filters one branch, so ADC
-  rails arrive near 0.5 (a documented limit, issue #828; the input-level meter cannot see
-  it either). The level is a property of the conversion, so `same_capture()` ignores it.
+  do); Airspy, SoapySDR and CF32/CS16 replay → 0.999. On an Airspy (native or through
+  SoapySDR) the clip level is not a reliable indication of ADC overload: libairspy's
+  real-to-I/Q conversion halves the amplitude and filters one branch, so an in-band signal
+  at the ADC rails arrives near 0.5 (derived from its code; a documented limit, issue
+  #828; the input-level meter cannot see it either). The level is a property of the
+  conversion, so `same_capture()` ignores it.
+  The geometry policy (`dsd_signal_capture.geometry`, from `rtl_device_signal_geometry()`, set
+  by `demod_feed_signal_search()`) is `DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED` for a native Airspy
+  (`RTL_BACKEND_AIRSPY`) and `DSD_SIGNAL_GEOMETRY_DEFAULT` (0) for every other source. It means
+  only that the hardware centre carries no DC artifact (libairspy removes the ADC's DC and its
+  real-to-I/Q conversion moves the IF's DC to the band edge), so `measure_channel()` drops the
+  hardware-DC guard there and a channel the Airspy is tuned on measures (Signal search's live
+  level of a landed visit included); it claims nothing about spurs or overload. Unlike the clip
+  level it is a capture field: `same_capture()` compares it, so a policy change fails a request
+  in collection and a completed report waiting to be read, as any capture change does. It is
+  the last field, so positional initialisers of the ones before it keep their meaning.
   The rotation (`dsd_signal_capture.rotation_hz`, from `rtl_device_signal_rotation_hz()`) is
   the Fs/4 shift the fed samples carry: a live capture's rate / 4 while the shift is active;
   an I/Q replay's own, whatever the live flags say: 0 for a recording made without the
@@ -11138,7 +11156,9 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   `dsd_signal_quiet_rate_supported(rate)` (every class) and `dsd_signal_quiet_analog_supported(kind, width, rate)`
   (`kind` a `dsd_analog_demod`) match the calibrated capture rates and widths of that kind exactly
   (`kQuietNfmWidthsHz`: the Radio sheet's NFM steps plus 10, 12 and 15 kHz; `kQuietAmWidthsHz`: its AM steps plus
-  8333 Hz; issue #834 R11, each NFM width validated with both transmitters); elsewhere the engine makes no check.
+  8333 Hz; issue #834 R11, each NFM width validated with both transmitters), and
+  `dsd_signal_quiet_airspy_centred_rate_supported(rate)` the rates of a native Airspy's centred captures; elsewhere
+  the engine makes no check.
   Changing the measurement, the sub-windows, either list or a constant means re-running that calibration. It judges
   `DSD_SIGNAL_QUIET_WINDOWS` (9) back-to-back sub-windows, each the smallest whole number of transforms of at least
   10 ms, in every requested width class (`DSD_SIGNAL_QUIET_CLASS_12K5`, `_6K25`, `_ANALOG` with the request's analog
@@ -11148,14 +11168,25 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   same channel measurement as Signal search (`measure_channel()`: geometry, channel bins, the eight sideband blocks),
   with the sideband floor from either the trimmed mean (Signal search's) or the lowest block. Each sub-window also
   takes a capture-wide noise reference from the same transforms (`wide_reference()`: the lower quartile of the bins
-  whose hardware offset, folded as `measure_channel()` folds it under the ingest rotation, clears DC, the band edges
-  and the channel; scaled to the Gaussian mean; computed in `prefix` before the prefix sums). The ratio, (S+N)/N, is
-  the channel's power over that reference across the channel's bins, so transmitters beside the channel that lift
-  its sideband floor do not lower it. The sideband floor serves only the floor guard: a class whose floor stands more
-  than `guard_db` over the reference makes the request invalid (never quiet), because the reference then does not
-  stand for the noise round the channel. The request is quiet only when every sub-window of every class is valid and
-  its ratio is below the threshold; the result carries the highest ratio with its power and the reference it was
-  judged against (`floor_dbfs`, the noise the skip NOTICE prints), and the highest floor rise (`floor_rise_db`).
+  whose hardware offset, folded as `measure_channel()` folds it under the ingest rotation, clears DC, stays inside the
+  policy's span and lies outside the channel; scaled to the Gaussian mean; computed in `prefix` before the prefix
+  sums). Under the default policy the span is ±0.45 Fs (`kQuietReferenceSpan`) at any rate. Under
+  `DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED` there is no DC exclusion and the span is the rate's in
+  `kQuietAirspyCentredSpans`, the one table of the centred policy's admitted rates (2.5 and 3 MS/s ±0.25 Fs, 6 and
+  10 MS/s ±0.375 Fs; an Airspy's passband is not flat to 0.45 Fs); a centred request at any other rate, or a policy
+  the detector does not know, is refused `UNSUPPORTED` (`quiet_arm()`). The ratio, (S+N)/N, is the channel's power over
+  the noise it is judged against across the channel's bins (`quiet_judged_noise()`): the reference, so transmitters
+  beside the channel that lift its sideband floor do not lower it; on a centred capture the lower of the reference
+  and the sideband floor, which can only raise the ratio (it never adds a quiet verdict) and keeps a floor lower round
+  the channel than over the span (the passband's roll-off, ripple or tilt) from hiding a weak channel. That rule is a
+  conservative estimator bounded by the calibration's validated domain, not a proof: both noises can stand over the
+  channel's own, and a depression narrower than the sidebands is not seen. The sideband floor serves the floor guard
+  under both policies, against the reference: a class whose floor stands more than `guard_db` over the reference makes
+  the request invalid (never quiet), because the reference then does not stand for the noise round the channel. The
+  request is quiet only when every sub-window of every class is valid and its ratio is below the threshold; the result
+  carries the highest ratio with its power and the noise it was judged against (`floor_dbfs`, the noise the skip
+  NOTICE prints, so `power_dbfs - floor_dbfs` is `max_ratio_db`), and the highest floor rise (`floor_rise_db`, always
+  over the reference).
   Clipping (over 1% of pairs so far, checked at each sub-window end), capture changes, drops and non-finite samples
   fail it as for a search; a channel whose geometry does not fit is measured but never valid. Buffers are prepared
   once per transform size (`NO_MEMORY` only when that fails). Tap owners: the tap holds

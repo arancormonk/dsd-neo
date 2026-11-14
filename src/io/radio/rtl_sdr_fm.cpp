@@ -5772,6 +5772,7 @@ demod_feed_signal_search(const demod_state* d, const struct rtl_device* device) 
     const int fs4_shift = capture_fs4_shift_active();
     search_capture.rotation_hz = rtl_device_signal_rotation_hz(device, fs4_shift, search_capture.rate_hz);
     search_capture.clip_level = rtl_device_signal_clip_level(device, fs4_shift);
+    search_capture.geometry = (uint8_t)rtl_device_signal_geometry(device);
     search_capture.capture_offset_hz =
         (int64_t)search_capture.capture_hz - controller.last_applied_freq_hz.load(std::memory_order_acquire);
     search_capture.drops = input_ring.producer_drops.load(std::memory_order_acquire);

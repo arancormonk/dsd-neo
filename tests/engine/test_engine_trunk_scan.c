@@ -26002,6 +26002,7 @@ typedef struct {
     uint32_t receive_seq;
     uint32_t change_seq; /* rtl_stream_receive_change_seq(): the requests that may change the receive chain */
     int rate_ok;
+    int centred_rate_ok;
     int analog_ok;
     uint32_t refused_rate_hz; /* one capture rate the calibration did not validate, 0 for none */
     uint32_t session;         /* rtl_stream_session_generation(): the stream opens and stops */
@@ -26129,6 +26130,11 @@ rtl_stream_session_generation(void) {
     return g_tap.session;
 }
 
+int
+dsd_signal_quiet_airspy_centred_rate_supported(uint32_t rate_hz) {
+    return g_tap.centred_rate_ok && rate_hz != 0U;
+}
+
 /* The stream's width rule (io/radio/rtl_demod_config.cpp, which this fixture does not link), as it is: an explicit
    width as typed, else none for NFM and the kind's default for AM. */
 int
@@ -26171,16 +26177,28 @@ qt_expect(const char* stage, int ok) {
     return 0;
 }
 
-/* A capture of @p hz on output generation @p gen, Fs/4 shifted at 1.536 Msps. */
+/* While set, quiet_tap_capture() describes a native Airspy's capture instead. */
+static int g_qt_centred = 0;
+
+/* A capture of the channel @p hz on output generation @p gen: Fs/4 shifted at 1.536 Msps as the RTL chain lands it
+   (tuned Fs/4 above the channel, rotated back), or with g_qt_centred a native Airspy's at 2.5 MS/s (tuned on the
+   channel, no rotation, the centred policy). */
 static void
 quiet_tap_capture(uint32_t hz, uint32_t gen) {
     g_tap.have_capture = 1;
     DSD_MEMSET(&g_tap.capture, 0, sizeof g_tap.capture);
-    g_tap.capture.rate_hz = 1536000U;
-    g_tap.capture.capture_hz = hz;
     g_tap.capture.generation = gen;
-    g_tap.capture.rotation_hz = 384000;
     g_tap.capture.gain = 20;
+    if (g_qt_centred) {
+        g_tap.capture.rate_hz = 2500000U;
+        g_tap.capture.capture_hz = hz;
+        g_tap.capture.geometry = DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED;
+        return;
+    }
+    g_tap.capture.rate_hz = 1536000U;
+    g_tap.capture.capture_hz = hz + 384000U;
+    g_tap.capture.rotation_hz = 384000;
+    g_tap.capture.capture_offset_hz = 384000;
 }
 
 /* The tap answers the request outstanding: quiet or busy, or a failure. */
@@ -26227,6 +26245,7 @@ quiet_rig_init(dsd_opts* opts, dsd_state* state, const char* path) {
     opts->scan_skip_silent = 1;
     DSD_MEMSET(&g_tap, 0, sizeof g_tap);
     g_tap.rate_ok = 1;
+    g_tap.centred_rate_ok = 1;
     g_tap.analog_ok = 1;
     g_quiet_fake_rt = !g_qt_real_clock;
     g_quiet_rt_ms = QT_T0;
@@ -27492,7 +27511,11 @@ test_scan_quiet_short_warn_once_per_setting_and_rate(void) {
         if (i > 0) {
             quiet_land_again(state_p, k_qt_hz_a);
         }
+        /* The capture at this rate with its Fs/4 shift exact, which the default policy needs. */
         g_tap.capture.rate_hz = steps[i].rate_hz;
+        g_tap.capture.rotation_hz = (int32_t)(steps[i].rate_hz / 4U);
+        g_tap.capture.capture_offset_hz = g_tap.capture.rotation_hz;
+        g_tap.capture.capture_hz = k_qt_hz_a + steps[i].rate_hz / 4U;
         g_quiet_rt_ms = qt_landed_ms(state_p) + 10U;
         quiet_publish(opts, state_p);
         rc |= qt_expect("one WARN line per setting and rate", g_qt_short_warns == steps[i].want);
@@ -28027,8 +28050,9 @@ test_scan_quiet_waits_for_the_landed_capture(void) {
     return rc;
 }
 
-/* A capture the calibration refuses (issue #834 R6, R10): centred I/Q (no Fs/4 rotation: Airspy, offset tuning, the
-   shift off), a rate it did not validate, an analog width or kind it did not. Nothing is requested and the visit is
+/* A capture the calibration refuses (issue #834 R6, R10): centred I/Q under the default policy (no Fs/4 rotation:
+   offset tuning, the shift off; a native Airspy's centred policy is test_scan_quiet_capture_policies()), a rate it did
+   not validate, an analog width or kind it did not. Nothing is requested and the visit is
    SUSPENDED with its reason, not DONE, so it stays restartable; while the facts, revisions and stream generation stay
    the ones refused a publication starts nothing and reads no capture (one compare), and the hunt hands nothing back. A
    request the tap refuses is DONE. Never an error. */
@@ -28147,6 +28171,140 @@ test_scan_quiet_capture_refusals_are_cached(void) {
     rc |= qt_expect("a refused request: DONE",
                     scan_quiet_phase_get(state_p) == SCAN_QUIET_DONE && g_tap.requests == before + 1);
     quiet_rig_finish(&opts, state_p, dir, path);
+    return rc;
+}
+
+/* One visit's capture @p cap, published: whether it was measured (REQUESTED, one more request) rather than refused
+   (SUSPENDED with nothing requested, issue #834 R10). */
+static int
+quiet_measures_capture(dsd_opts* opts, dsd_state* state, const dsd_signal_capture* cap) {
+    quiet_land_again(state, k_qt_hz_a);
+    const uint32_t generation = g_tap.capture.generation; /* the landing's */
+    g_tap.capture = *cap;
+    g_tap.capture.generation = generation;
+    const int before = g_tap.requests;
+    quiet_publish(opts, state);
+    if (scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED && g_tap.requests == before + 1) {
+        return 1;
+    }
+    return scan_quiet_phase_get(state) == SCAN_QUIET_SUSPENDED && g_tap.requests == before ? 0 : -1;
+}
+
+/* The two capture policies the calibration covers, exactly. The default policy: the Fs/4 shift (rotation a quarter of
+   the rate, the channel that far from the hardware centre), at a rate the default calibration validated. A native
+   Airspy's (AIRSPY_CENTRED): no rotation and no offset (tuned on the channel), at a rate its own table validated.
+   Anything else is refused (SUSPENDED) with nothing requested: another rotation or offset under either policy, the
+   centred policy at a rate only the default one validated, an unknown policy. */
+static int
+test_scan_quiet_capture_policies(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (quiet_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsd_signal_capture shifted = g_tap.capture;
+    int rc = qt_expect("the Fs/4 shift is measured", quiet_measures_capture(&opts, &state, &shifted) == 1);
+    dsd_signal_capture c = shifted;
+    c.rotation_hz = (int32_t)(c.rate_hz / 8U);
+    c.capture_offset_hz = c.rotation_hz;
+    c.capture_hz = k_qt_hz_a + c.rate_hz / 8U;
+    rc |= qt_expect("default policy, rotation Fs/8: refused", quiet_measures_capture(&opts, &state, &c) == 0);
+    c = shifted;
+    c.capture_offset_hz = 0;
+    c.capture_hz = k_qt_hz_a;
+    rc |= qt_expect("default policy, rotation Fs/4 without the offset: refused",
+                    quiet_measures_capture(&opts, &state, &c) == 0);
+    c = shifted;
+    c.geometry = 2;
+    rc |= qt_expect("an unknown policy: refused", quiet_measures_capture(&opts, &state, &c) == 0);
+
+    dsd_signal_capture centred;
+    DSD_MEMSET(&centred, 0, sizeof centred);
+    centred.rate_hz = 2500000U;
+    centred.capture_hz = k_qt_hz_a;
+    centred.gain = 20;
+    centred.geometry = DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED;
+    rc |= qt_expect("a native Airspy's centred capture is measured",
+                    quiet_measures_capture(&opts, &state, &centred) == 1);
+    rc |= qt_expect("its request carries the policy",
+                    g_tap.last_request.capture.geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED
+                        && g_tap.last_request.capture.rotation_hz == 0 && g_tap.last_request.frequency_hz == k_qt_hz_a);
+    g_tap.centred_rate_ok = 0;
+    rc |= qt_expect("centred, at a rate its table did not validate: refused",
+                    quiet_measures_capture(&opts, &state, &centred) == 0);
+    rc |= qt_expect("the default policy does not read the centred table",
+                    quiet_measures_capture(&opts, &state, &shifted) == 1);
+    g_tap.centred_rate_ok = 1;
+    g_tap.rate_ok = 0;
+    rc |= qt_expect("nor the centred policy the default table", quiet_measures_capture(&opts, &state, &centred) == 1);
+    g_tap.rate_ok = 1;
+    c = centred;
+    c.rotation_hz = (int32_t)(c.rate_hz / 4U);
+    c.capture_offset_hz = c.rotation_hz;
+    c.capture_hz = k_qt_hz_a + c.rate_hz / 4U;
+    rc |= qt_expect("centred policy with the Fs/4 shift: refused", quiet_measures_capture(&opts, &state, &c) == 0);
+    c = centred;
+    c.capture_offset_hz = 100000;
+    c.capture_hz = k_qt_hz_a + 100000U;
+    rc |= qt_expect("centred policy off the channel: refused", quiet_measures_capture(&opts, &state, &c) == 0);
+    quiet_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
+/* A change of capture policy is a capture change at each stage a result can meet it: after the tap completed it but
+   before the scan took it, and after it was taken (READY) before it was applied. Either way the hand-back is declined
+   and the visit is DONE, as for a gain change; under the same policy the result applies. */
+static int
+test_scan_quiet_policy_change_declines(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    g_qt_centred = 1;
+    const int started = quiet_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path);
+    g_qt_centred = 0;
+    if (started != 0) {
+        return 1;
+    }
+    quiet_publish(&opts, &state);
+    int rc = qt_expect("centred: requested", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    g_tap.capture.geometry = DSD_SIGNAL_GEOMETRY_DEFAULT;
+    rc |= qt_expect("policy changed before the take: no hand-back",
+                    quiet_service_after(&opts, &state, 5U) != DSD_SCAN_QUIET_HAND_BACK);
+    rc |= qt_expect("policy changed before the take: declined, DONE",
+                    quiet_apply(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 0
+                        && scan_quiet_phase_get(&state) == SCAN_QUIET_DONE);
+
+    g_qt_centred = 1;
+    quiet_land_again(&state, k_qt_hz_a);
+    rc |= quiet_to_ready(&opts, &state);
+    g_tap.capture.geometry = DSD_SIGNAL_GEOMETRY_DEFAULT;
+    rc |= qt_expect("policy changed after the take: no hand-back",
+                    quiet_service_after(&opts, &state, 5U) != DSD_SCAN_QUIET_HAND_BACK);
+    rc |= qt_expect("policy changed after the take: declined, DONE",
+                    quiet_apply(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 0
+                        && scan_quiet_phase_get(&state) == SCAN_QUIET_DONE);
+
+    quiet_land_again(&state, k_qt_hz_a);
+    rc |= quiet_to_ready(&opts, &state);
+    rc |= qt_expect("the same policy: applied", quiet_apply(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 1);
+    g_qt_centred = 0;
+    quiet_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
+/* The tick's skip on a native Airspy's centred capture: test_scan_quiet_tick_skips_a_quiet_target() with every capture
+   the tap holds centred. */
+static int test_scan_quiet_tick_skips_a_quiet_target(void);
+
+static int
+test_scan_quiet_tick_skips_on_a_centred_capture(void) {
+    g_qt_centred = 1;
+    const int rc = test_scan_quiet_tick_skips_a_quiet_target();
+    g_qt_centred = 0;
     return rc;
 }
 
@@ -30611,8 +30769,10 @@ test_scan_quiet_width_ahead_keeps_rate_precedence(void) {
     g_scan_dsp_rate_hz = 24000;
     g_tap.refused_rate_hz = 2400000U;
     const int reads = g_tap.capture_reads;
-    qt_next_target(&opts, state_p, k_qt_hz_b, 384000);
-    g_tap.capture.rate_hz = 2400000U;
+    qt_next_target(&opts, state_p, k_qt_hz_b, 600000);
+    g_tap.capture.rate_hz = 2400000U; /* the Fs/4 shift at that rate, which the default policy needs exactly */
+    g_tap.capture.capture_offset_hz = 600000;
+    g_tap.capture.capture_hz = k_qt_hz_b + 600000U;
     qt_decode_at(20U);
     qt_pass(&opts, state_p);
     rc |= qt_expect_quiet(state_p, "list 2's width target at an uncalibrated rate", DSD_SCAN_QUIET_STATUS_NO_CHECK,
@@ -30852,6 +31012,8 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_measures_a_landed_target_once);
     rc |= run_with_default_tune_hook(test_scan_quiet_waits_for_the_landed_capture);
     rc |= run_with_default_tune_hook(test_scan_quiet_capture_refusals_are_cached);
+    rc |= run_with_default_tune_hook(test_scan_quiet_capture_policies);
+    rc |= run_with_default_tune_hook(test_scan_quiet_policy_change_declines);
     rc |= run_with_default_tune_hook(test_scan_quiet_request_deadline_and_retries);
     rc |= run_with_default_tune_hook(test_scan_quiet_ready_rechecks_capture_generation_and_age);
     rc |= run_with_default_tune_hook(test_scan_quiet_activity_in_the_visit_ends_the_check);
@@ -30875,6 +31037,7 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_more_mutation_sites_decline_a_ready_result);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_goto_and_resume_sites);
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_skips_a_quiet_target);
+    rc |= run_with_default_tune_hook(test_scan_quiet_tick_skips_on_a_centred_capture);
     rc |= run_with_default_tune_hook(test_scan_quiet_typed_target_judges_the_monitor);
     rc |= run_with_default_tune_hook(test_scan_quiet_late_result_is_a_timeout);
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_guard_lost_answers_again);
