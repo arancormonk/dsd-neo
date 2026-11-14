@@ -3225,25 +3225,28 @@ test_acq_off_is_off(void) {
     free(y);
     stream_free(&s);
     /* A pop, quieter sound, then a talker, opened 8 dB over the start gain: no cut, no hold, no return. */
-    const size_t F = (size_t)frame_len(8000);
-    const size_t nv = secs(8000, 3.0);
-    float* x = alloc_f(42 * F + nv);
-    const size_t np = synth_pop(x, 8000, 2, -10.0, 0, 40, -40.0, 340);
-    speech_into(x + np, nv, 8000, 341, -30.0, 140.0, 0.0);
-    agc = new_agc(8000, 4.0f);
-    dsd_speech_agc_open_at(agc, 12.0f, 0);
-    trace_t t;
-    trace_init(&t, (np + nv) / F);
-    run_traced(agc, x, np + nv, NULL, k_learn, &t);
-    const int bad = check_off_law(agc, &t);
-    SAY("acquisition off, a pop then a talker: G %+.2f dB after the pop, %d commits, %d frames off today's law\n",
-        (double)t.f[1].after.gain_db, agc->learned.commits, bad);
-    assert(bad == 0 && agc->learned.commits > 20 && same_bits(&t.f[41].after.gain_db, &(float){12.0f}, sizeof(float)));
-    acq_off_state(12.0f, &zero);
-    assert(acq_state_equal(&agc->learned, &zero));
-    trace_free(&t);
-    free(agc);
-    free(x);
+    {
+        const size_t F = (size_t)frame_len(8000);
+        const size_t nv = secs(8000, 3.0);
+        float* x = alloc_f(42 * F + nv);
+        const size_t np = synth_pop(x, 8000, 2, -10.0, 0, 40, -40.0, 340);
+        speech_into(x + np, nv, 8000, 341, -30.0, 140.0, 0.0);
+        dsd_speech_agc* opened = new_agc(8000, 4.0f);
+        dsd_speech_agc_open_at(opened, 12.0f, 0);
+        trace_t t;
+        trace_init(&t, (np + nv) / F);
+        run_traced(opened, x, np + nv, NULL, k_learn, &t);
+        const int bad = check_off_law(opened, &t);
+        SAY("acquisition off, a pop then a talker: G %+.2f dB after the pop, %d commits, %d frames off today's law\n",
+            (double)t.f[1].after.gain_db, opened->learned.commits, bad);
+        assert(bad == 0 && opened->learned.commits > 20
+               && same_bits(&t.f[41].after.gain_db, &(float){12.0f}, sizeof(float)));
+        acq_off_state(12.0f, &zero);
+        assert(acq_state_equal(&opened->learned, &zero));
+        trace_free(&t);
+        free(opened);
+        free(x);
+    }
 }
 
 /* A non-finite (or absurdly large) sample comes out as 0 and leaves the state alone: the output around it is what the
