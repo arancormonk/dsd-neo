@@ -10406,9 +10406,12 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   With the received identity the P25 patch table goes too (`dsd_p25_patch_clear_all()`: entries, owner, listening
   clock): a manual tune, a new source or input, a scan step or a replay retune names no system, so the next carrier
   never inherits another system's members or KEY=0 (with trunking off a replay loses patch membership at each recorded
-  retune; the next Add restores it). A manual move that runs no boundary (a return to the control channel, a channel or
-  candidate cycle or a control channel selection under trunking: `ui_user_move_forgets_identity()`) empties it too;
-  trunk moves within a system keep it and only break its clock's continuity (`dsd_engine_tune_leaves_carrier()`).
+  retune; the next Add restores it). A manual move under trunking runs no boundary and follows
+  `ui_manual_move_patches()`: one to the control channel of the table's own P25 system (`p25_cc_freq`, read before the
+  move: the Return-to-CC, the Lockout and Skip returns, a control channel selection of that frequency) is a same-system
+  move that keeps the table and only breaks its clock's continuity; one to any other carrier (a channel or candidate
+  cycle, a selection of another control channel, a return to a control channel that is not the P25 system's) empties
+  it. Trunk moves within a system keep it and only break its clock's continuity (`dsd_engine_tune_leaves_carrier()`).
 
   A stream gap (`DSD_CARRIER_BOUNDARY_STREAM_GAP`, issue #518 D5: a USB recovery, an rtl_tcp reconnect, or one a
   capture recorded) leaves no carrier and runs only what the gap cut (`carrier_boundary_stream_gap()`): the Phase 2

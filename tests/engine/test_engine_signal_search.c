@@ -353,7 +353,8 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     state->dmr_color_code = 16;
     state->nac = 0;
     dsd_state_forget_p2_proof(state);
-    /* The engine's boundary for every kind but a stream gap: the carrier left's P25 patches go with it. */
+    /* The engine's boundary for every kind but a stream gap: the carrier left's P25 patches go with it. This stub
+       does the clear; ENGINE_P25_PATCH_OWNER proves the production boundary's. */
     if (reason != DSD_CARRIER_BOUNDARY_STREAM_GAP) {
         dsd_p25_patch_clear_all(state);
     }

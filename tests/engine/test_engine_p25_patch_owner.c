@@ -10,7 +10,8 @@
  *    however short it is;
  *  - a stream gap breaks continuity and keeps the members; the no-carrier reset breaks continuity;
  *  - every other carrier boundary (a user tune, a new source, an input switch, a scan step, a replay retune) empties
- *    the table and forgets its owner, and so does a manual return to the control channel, which runs no boundary;
+ *    the table and forgets its owner; a manual return to the control channel, which runs no boundary, keeps it when
+ *    the control channel is the P25 system's own and empties it otherwise;
  *  - a trunking-off replay retune from system A's control channel to system B's voice channel naming the same
  *    supergroup starts B with no members.
  */
@@ -215,6 +216,7 @@ test_trunk_excursion(uint64_t away_ms) {
     const double before = state->p25_patch_listen_s;
     expect("excursion: the follow is tuned",
            dsd_engine_trunk_tune_to_freq_request(opts, state, kVcHz, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    expect("excursion: the voice channel tune breaks continuity", near(state->p25_patch_listen_last_m, 0.0));
     clock_step_ms(away_ms);
     expect("excursion: the return is tuned",
            dsd_engine_trunk_tune_to_cc_request(opts, state, kCcHz, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
@@ -308,9 +310,12 @@ test_replay_retune_new_system(void) {
     session_free(opts, state);
 }
 
-/* A manual return to the control channel under trunking runs no carrier boundary, and clears as a user tune does. */
+/* A manual return to the control channel under trunking runs no carrier boundary. To the control channel of the P25
+   system the table belongs to, it is a same-system move: the table and its owner stay, and only the clock's continuity
+   breaks. To another control channel (here a trunk control channel that is not the P25 system's), it names no system
+   and empties the table as a user tune does. */
 static void
-test_manual_return_clears(void) {
+test_manual_return(int same_system) {
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (session_new(&opts, &state, 1) != 0) {
@@ -318,11 +323,23 @@ test_manual_return_clears(void) {
         return;
     }
     seed_system_a(opts, state);
+    if (!same_system) {
+        state->trunk_cc_freq = kVcHz;
+    }
     dsd_app_command_session_set_open(1);
     expect("manual return: applied", dsd_app_command_action(DSD_APP_CMD_RETURN_CC) == DSD_APP_COMMAND_SUBMIT_QUEUED
                                          && dsd_app_drain_cmds(opts, state) == 1);
     dsd_app_command_session_set_open(0);
-    expect("manual return: empties the table and forgets its owner", table_empty_unowned(state));
+    if (same_system) {
+        const int idx = patch_idx(state, 1400);
+        expect("same-system return: keeps the members", idx >= 0 && dsd_p25_patch_has_current_wgid(state, idx, 1401));
+        expect("same-system return: keeps the owner",
+               state->p25_patch_owner_known == 1 && state->p25_patch_owner_wacn == (uint32_t)kSystemAWacn);
+        expect("same-system return: breaks continuity", near(state->p25_patch_listen_last_m, 0.0));
+    } else {
+        expect("return to another control channel: empties the table and forgets its owner",
+               table_empty_unowned(state));
+    }
     session_free(opts, state);
 }
 
@@ -340,7 +357,8 @@ main(void) {
     test_boundary_clears(DSD_CARRIER_BOUNDARY_SCAN_STEP, "scan step");
     test_boundary_clears(DSD_CARRIER_BOUNDARY_REPLAY_RETUNE, "replay retune");
     test_replay_retune_new_system();
-    test_manual_return_clears();
+    test_manual_return(1);
+    test_manual_return(0);
     if (g_failures == 0) {
         printf("ENGINE_P25_PATCH_OWNER: OK\n");
     }
