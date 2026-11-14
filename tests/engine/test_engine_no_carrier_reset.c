@@ -12510,9 +12510,10 @@ yq_finish(dsd_opts* opts, dsd_state* state) {
     dsd_trunk_tuning_requests_reset();
 }
 
-/* -Y: a landed row is measured at the next pass, and the pass after steps off it for its quiet result, long
-   before its 10 s hangtime, with one NOTICE line naming the row; typed and untyped. The measurement writes no hangtime
-   anchor. With the setting off nothing is asked and nothing steps. */
+/* -Y: a landed row is measured as it lands (issue #834 B6): the noCarrier() whose step landed it leaves its check
+   REQUESTED, with no further noCarrier(), and the next pass steps off it for its quiet result, long before its 10 s
+   hangtime, with one NOTICE line naming the row; typed and untyped. Collecting the result writes no hangtime anchor.
+   With the setting off nothing is asked and nothing steps. */
 static int
 test_y_quiet_skips_a_landed_row(int typed, int on) {
     dsd_opts* opts = NULL;
@@ -12527,13 +12528,15 @@ test_y_quiet_skips_a_landed_row(int typed, int on) {
     DSD_SNPRINTF(label, sizeof label, "%s -Y, skip-silent %s", typed ? "typed" : "untyped", on ? "on" : "off");
     int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, typed, on, base_hz) == 0);
     const time_t anchor = state->last_cc_sync_time;
-    noCarrier(opts, state);
-    rc |= expect_true(label, g_yq.requests == (on ? 1 : 0) && g_rtl_tune_calls == 0);
-    rc |= expect_true("the measurement writes no hangtime anchor", state->last_cc_sync_time == anchor);
+    rc |= expect_true(label, g_yq.requests == (on ? 1 : 0) && g_rtl_tune_calls == 0
+                                 && scan_quiet_phase_get(state) == (on ? SCAN_QUIET_REQUESTED : SCAN_QUIET_SUSPENDED));
     if (on) {
         rc |= expect_true("the request names the row", g_yq.last.frequency_hz == (uint32_t)base_hz
                                                            && g_yq.last.classes == DSD_SIGNAL_QUIET_CLASS_12K5);
+        rc |= expect_true("the hunt collects the quiet result",
+                          dsd_engine_scan_quiet_service(opts, state) == DSD_SCAN_QUIET_HAND_BACK);
     }
+    rc |= expect_true("the measurement writes no hangtime anchor", state->last_cc_sync_time == anchor);
     noCarrier(opts, state);
     if (on) {
         rc |= expect_true("a quiet row steps at once", g_rtl_tune_calls == 1
@@ -12548,6 +12551,99 @@ test_y_quiet_skips_a_landed_row(int typed, int on) {
     yq_finish(opts, state);
     if (rc) {
         DSD_FPRINTF(stderr, "FAIL #834: %s\n", label);
+    }
+    return rc;
+}
+
+/* issue #834 B6: every committed -Y landing publishes its row at once, so its check is REQUESTED with one request and
+   no further noCarrier(); a landing that failed or was superseded arms nothing. Each case lands row 0 first (the
+   timed step, measured as it lands), then takes row 1 another way. */
+enum {
+    YQ_LAND_TYPED_LATE = 0, /* a typed step whose tune timed out, completed by dsd_engine_channel_scan_pending() */
+    YQ_LAND_TYPED_LATE_FAILED,
+    YQ_LAND_TYPED_LATE_STALE, /* completed OK after the list was replaced under it */
+    YQ_LAND_UNTYPED_LATE,     /* an untyped step whose RTL tune timed out, landed by dsd_engine_scan_untyped_poll() */
+    YQ_LAND_UNTYPED_LATE_FAILED,
+    YQ_LAND_UNTYPED_LATE_DROPPED, /* superseded by another tune */
+    YQ_LAND_WALK,                 /* a Next the scan owns, landed within its call */
+    YQ_LAND_WALK_LATE,            /* a Next the scan owns whose RTL tune timed out, landed late */
+    YQ_LAND_WALK_REFUSED,
+    YQ_LAND_TYPED_MANUAL, /* a typed Next */
+    YQ_LAND_RESUME,       /* an untyped resume of the paused scan */
+};
+
+/* Row 1's tune for @p which: started (timed out, for the late ones) and settled. */
+static void
+yq_land_row_1(dsd_opts* opts, dsd_state* state, int which) {
+    const int late = which <= YQ_LAND_UNTYPED_LATE_DROPPED || which == YQ_LAND_WALK_LATE;
+    g_rtl_timeout_outstanding = late && which > YQ_LAND_TYPED_LATE_STALE;
+    g_rtl_tune_result =
+        late ? RTL_STREAM_TUNE_TIMEOUT : (which == YQ_LAND_WALK_REFUSED ? RTL_STREAM_TUNE_FAILED : RTL_STREAM_TUNE_OK);
+    g_yq.requests = 0; /* what row 1's own landing asks from here */
+    if (which <= YQ_LAND_UNTYPED_LATE_DROPPED) {
+        noCarrier(opts, state); /* row 0's quiet result steps it */
+    } else if (which == YQ_LAND_WALK || which == YQ_LAND_WALK_LATE || which == YQ_LAND_WALK_REFUSED) {
+        (void)dsd_engine_channel_scan_walk_row(opts, state, 1, 1);
+    } else if (which == YQ_LAND_TYPED_MANUAL) {
+        (void)dsd_engine_channel_scan_step_manual(opts, state);
+    } else {
+        (void)dsd_engine_channel_scan_pause(opts, state, 0);
+        (void)dsd_engine_channel_scan_resume(opts, state);
+    }
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    if (which <= YQ_LAND_TYPED_LATE_STALE) {
+        const uint64_t request = dsd_trunk_tuning_pending_request();
+        if (which == YQ_LAND_TYPED_LATE_STALE) {
+            dsd_state_trunk_lcn_replace_begin(state);
+        }
+        dsd_trunk_tuning_request_publish(request, which == YQ_LAND_TYPED_LATE_FAILED ? DSD_TRUNK_TUNE_RESULT_FAILED
+                                                                                     : DSD_TRUNK_TUNE_RESULT_OK);
+        (void)dsd_engine_channel_scan_pending(opts, state);
+    } else if (late) {
+        if (which == YQ_LAND_UNTYPED_LATE_DROPPED) {
+            dsd_engine_manual_tune_supersede(state);
+        } else {
+            land_outstanding_tune(&g_retune_in_flight, which == YQ_LAND_UNTYPED_LATE_FAILED
+                                                           ? DSD_TRUNK_TUNE_RESULT_FAILED
+                                                           : DSD_TRUNK_TUNE_RESULT_OK);
+        }
+        (void)dsd_engine_scan_untyped_poll(opts, state);
+    }
+}
+
+static int
+yq_landing_case(int which) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
+    const long int base_hz = 1101012500L + (long int)which * 10000000L;
+    const int typed = which <= YQ_LAND_TYPED_LATE_STALE || which == YQ_LAND_TYPED_MANUAL;
+    int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, typed, 1, base_hz) == 0);
+    rc |= expect_true("row 0 is measured as it lands",
+                      g_yq.requests == 1 && scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED);
+    yq_land_row_1(opts, state, which);
+    const int lands = which != YQ_LAND_TYPED_LATE_FAILED && which != YQ_LAND_TYPED_LATE_STALE
+                      && which != YQ_LAND_UNTYPED_LATE_FAILED && which != YQ_LAND_UNTYPED_LATE_DROPPED
+                      && which != YQ_LAND_WALK_REFUSED;
+    if (lands) {
+        rc |= expect_true("row 1 landed", dsd_engine_scan_landing_is_row(state, 1));
+        rc |= expect_true("row 1 is measured as it lands, once",
+                          g_yq.requests == 1 && scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED
+                              && g_yq.last.frequency_hz == (uint32_t)(base_hz + 1000000L));
+    } else {
+        rc |= expect_true("no row 1 landing", !dsd_engine_scan_landing_is_row(state, 1));
+        rc |= expect_true("a landing that failed or was superseded arms nothing",
+                          g_yq.requests == 0 && dsd_engine_scan_quiet_service(opts, state) == DSD_SCAN_QUIET_NONE
+                              && g_yq.requests == 0);
+    }
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y landing case %d\n", which);
     }
     return rc;
 }
@@ -12567,13 +12663,13 @@ test_y_quiet_typed_row_judges_the_monitor(int nfm_hz) {
     const long int base_hz = 489012500L + (nfm_hz ? 0L : 4000000L);
     int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, base_hz) == 0);
     rc |= expect_true("the monitor plays on the typed row", opts->monitor_input_audio == 1 && opts->frame_dmr == 1);
-    noCarrier(opts, state);
     if (nfm_hz) {
         rc |= expect_true("the typed row is judged in both classes at the configured width",
                           g_yq.requests == 1
                               && g_yq.last.classes == (DSD_SIGNAL_QUIET_CLASS_12K5 | DSD_SIGNAL_QUIET_CLASS_ANALOG)
                               && g_yq.last.analog_width_hz == (uint32_t)nfm_hz);
     } else {
+        noCarrier(opts, state);
         noCarrier(opts, state);
         rc |= expect_true("an unset NFM width: no check", g_yq.requests == 0 && g_rtl_tune_calls == 0);
     }
@@ -12585,9 +12681,9 @@ test_y_quiet_typed_row_judges_the_monitor(int nfm_hz) {
     return rc;
 }
 
-/* -Y: a row landed mid-transmission counts its syncs from its landing's note. Synced frames after the landing and
-   before the first noCarrier() pass publishes the row end its check: the tap is never asked and the row keeps its
-   hangtime. With no frames the row is measured and steps on its quiet result. */
+/* -Y: a row landed mid-transmission counts its checked content from its tune's issue. The row is measured as it
+   lands (issue #834 B6); checked frames after the landing end its check: the row keeps its hangtime. With no frames
+   the next pass steps on its quiet result, and the row it lands on is measured as it lands. */
 static int
 test_y_quiet_counts_from_the_landing(int heard) {
     dsd_opts* opts = NULL;
@@ -12599,18 +12695,20 @@ test_y_quiet_counts_from_the_landing(int heard) {
     /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
     const long int base_hz = 481012500L + (heard ? 0L : 4000000L);
     int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, 0, 1, base_hz) == 0);
+    rc |= expect_true("measured as it lands", g_yq.requests == 1);
     if (heard) {
         g_frame_sync_type = DSD_SYNC_DMR_BS_VOICE_POS;
         run_synced_frames_noting(opts, state, 2, -1, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
         g_frame_sync_type = DSD_SYNC_NXDN_POS;
-    }
-    noCarrier(opts, state);
-    noCarrier(opts, state);
-    if (heard) {
-        rc |= expect_true("frames after the landing: no request, no step",
-                          g_yq.requests == 0 && g_rtl_tune_calls == 0 && g_yq.notices == 0);
+        noCarrier(opts, state);
+        noCarrier(opts, state);
+        rc |= expect_true("frames after the landing: no further request, no step",
+                          g_yq.requests == 1 && g_rtl_tune_calls == 0 && g_yq.notices == 0
+                              && scan_quiet_phase_get(state) == SCAN_QUIET_DONE);
     } else {
-        rc |= expect_true("no frames: measured and stepped", g_yq.requests == 1 && g_rtl_tune_calls == 1);
+        noCarrier(opts, state);
+        rc |= expect_true("no frames: stepped, and the next row measured as it lands",
+                          g_yq.requests == 2 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
     }
     yq_finish(opts, state);
     if (rc) {
@@ -12635,8 +12733,7 @@ test_y_quiet_noise_syncs_still_step(int typed) {
     /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
     const long int base_hz = 1820012500L + (typed ? 40000000L : 0L);
     int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, typed, 1, base_hz) == 0);
-    noCarrier(opts, state);
-    rc |= expect_true("the landed row is measured", g_yq.requests == 1 && g_rtl_tune_calls == 0);
+    rc |= expect_true("the landed row is measured as it lands", g_yq.requests == 1 && g_rtl_tune_calls == 0);
     run_synced_frames(opts, state, 5, -1);
     rc |= expect_true("the loop yields at the first rejected frame's boundary", g_frame_count == 1);
     noCarrier(opts, state);
@@ -12649,7 +12746,6 @@ test_y_quiet_noise_syncs_still_step(int typed) {
     }
     yq_start(1);
     rc |= expect_true("the first step lands row 0", yq_list(opts, state, 3, typed, 1, base_hz + 20000000L) == 0);
-    noCarrier(opts, state);
     /* The longest hold, on the system decode clock: the steps below run well inside it. Three frames, each one's
        verdict PARTIAL: with no yield the loop decodes all three (a yield would leave after the first). */
     run_synced_frames_noting(opts, state, 2, -1, DSD_CONTENT_EVIDENCE_PARTIAL, SCAN_QUIET_PENDING_MAX_MS);
@@ -12668,9 +12764,10 @@ test_y_quiet_noise_syncs_still_step(int typed) {
     return rc;
 }
 
-/* -Y: a row counts its syncs from its tune's issue. A Next whose RTL tune timed out lands while a frame decodes, and the
-   sync the new channel returns comes before the outer pass notes the landing: that sync ends the row's check, so the
-   tap is never asked and the row keeps its hangtime. With nothing heard the landed row is measured and steps. */
+/* -Y: a row counts its checked content from its tune's issue. A Next whose RTL tune timed out lands while a frame
+   decodes, and the checked frame the new channel carries comes before the outer pass notes the landing: it ends the
+   row's check at its landing's publication, so the tap is never asked for the row and it keeps its hangtime. With
+   nothing heard the row is measured as its landing is noted (issue #834 B6) and the next pass steps. */
 static int
 test_y_quiet_counts_from_the_walk_tune(int heard) {
     dsd_opts* opts = NULL;
@@ -12696,18 +12793,22 @@ test_y_quiet_counts_from_the_walk_tune(int heard) {
     } else {
         land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
     }
+    g_yq.requests = 0; /* row 0's measurement, made as it landed */
     rc |= expect_true("the walk lands", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED
                                             && dsd_engine_scan_landing_is_row(state, 1));
     g_yq.gen_base += (uint32_t)g_rtl_tune_calls;
     g_rtl_tune_calls = 0;
-    noCarrier(opts, state);
-    noCarrier(opts, state);
     if (heard) {
-        rc |= expect_true("a sync between the walk's tune and its landing's note: no request, no step",
+        noCarrier(opts, state);
+        noCarrier(opts, state);
+        rc |= expect_true("checked content between the walk's tune and its landing's note: no request, no step",
                           g_yq.requests == 0 && g_rtl_tune_calls == 0 && g_yq.notices == 0);
     } else {
-        rc |= expect_true("nothing heard since the walk's tune: measured and stepped",
-                          g_yq.requests == 1 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
+        rc |= expect_true("nothing heard since the walk's tune: measured as its landing is noted",
+                          g_yq.requests == 1 && scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED);
+        noCarrier(opts, state);
+        rc |= expect_true("nothing heard since the walk's tune: stepped, the next row measured as it lands",
+                          g_yq.requests == 2 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
     }
     yq_finish(opts, state);
     if (rc) {
@@ -12730,8 +12831,7 @@ test_y_quiet_sync_while_suspended_ends_the_check(int heard) {
     /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
     const long int base_hz = 471012500L + (heard ? 0L : 4000000L);
     int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, 0, 1, base_hz) == 0);
-    noCarrier(opts, state);
-    rc |= expect_true("the landed row is measured", g_yq.requests == 1 && g_rtl_tune_calls == 0);
+    rc |= expect_true("the landed row is measured as it lands", g_yq.requests == 1 && g_rtl_tune_calls == 0);
     dsd_engine_scan_quiet_note_change(state);
     if (heard) {
         g_frame_sync_type = DSD_SYNC_YSF_POS;
@@ -12745,8 +12845,9 @@ test_y_quiet_sync_while_suspended_ends_the_check(int heard) {
                           g_yq.requests == 1 && g_rtl_tune_calls == 0 && g_yq.notices == 0
                               && scan_quiet_phase_get(state) == SCAN_QUIET_DONE);
     } else {
-        rc |= expect_true("nothing heard while suspended: measured again and stepped",
-                          g_yq.requests == 2 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
+        rc |=
+            expect_true("nothing heard while suspended: measured again and stepped, the next row measured as it lands",
+                        g_yq.requests == 3 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
     }
     yq_finish(opts, state);
     if (rc) {
@@ -12768,14 +12869,13 @@ test_y_quiet_restart_late_in_the_visit_measures(void) {
     /* A frequency unique to this case: engine.c caches its last tune in file statics. */
     const long int base_hz = 521012500L;
     int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, 0, 1, base_hz) == 0);
-    noCarrier(opts, state);
-    rc |= expect_true("the landed row is measured", g_yq.requests == 1 && g_rtl_tune_calls == 0);
+    rc |= expect_true("the landed row is measured as it lands", g_yq.requests == 1 && g_rtl_tune_calls == 0);
     dsd_engine_scan_quiet_note_change(state);
     g_live_realtime_ms += 2000U;
     noCarrier(opts, state);
     noCarrier(opts, state);
-    rc |= expect_true("restarted 2 s after the landing: measured again and stepped",
-                      g_yq.requests == 2 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
+    rc |= expect_true("restarted 2 s after the landing: measured again and stepped, the next row measured as it lands",
+                      g_yq.requests == 3 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
     yq_finish(opts, state);
     if (rc) {
         DSD_FPRINTF(stderr, "FAIL #834: -Y check restarted late in the visit\n");
@@ -12853,10 +12953,11 @@ test_y_quiet_turned_on_after_the_walk_tune(void) {
                           && dsd_engine_scan_landing_is_row(state, 2));
     g_yq.gen_base += (uint32_t)g_rtl_tune_calls;
     g_rtl_tune_calls = 0;
+    rc |= expect_true("the next tune's row is measured as it lands",
+                      g_yq.requests == 1 && scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED);
     noCarrier(opts, state);
-    noCarrier(opts, state);
-    rc |= expect_true("the next tune's row is measured and steps",
-                      g_yq.requests == 1 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
+    rc |= expect_true("the next tune's row steps, and the row it lands on is measured",
+                      g_yq.requests == 2 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
     yq_finish(opts, state);
     if (rc) {
         DSD_FPRINTF(stderr, "FAIL #834: -Y setting turned on after the walk's tune\n");
@@ -12869,7 +12970,7 @@ test_y_quiet_turned_on_after_the_walk_tune(void) {
    expiry still steps. The rules a step would stay for are part of the row's conditions, so none is measured and no
    skip is logged that the step would not take: an avoided row whose paced departure is not due, a walk the scan owns
    still waiting on its tune, and a typed step still in flight (which also leaves no landing). Each case runs a few
-   passes after the landing. */
+   passes after the landing, up to its first step. */
 enum {
     YQ_BUSY = 0,
     YQ_HOLD,
@@ -12882,10 +12983,16 @@ enum {
     YQ_STEP_IN_FLIGHT,
 };
 
-/* The keep cases a step would stay for: set up after the landing. */
+/* The keep cases a step would stay for: set up after the landing, which measured the row as it landed (issue #834 B6),
+   so only the requests made once they are in force count. */
 static void
 yq_keep_stay(dsd_opts* opts, dsd_state* state, int which, long int base_hz, double now_m) {
-    if (which == YQ_AVOIDED) {
+    if (which == YQ_HOLD || which == YQ_AVOIDED || which == YQ_WALK_AWAITED) {
+        g_yq.requests = 0;
+    }
+    if (which == YQ_HOLD) {
+        state->lcn_scan_hold = 1;
+    } else if (which == YQ_AVOIDED) {
         (void)dsd_state_trunk_lcn_avoid_set(state, 0U, 1);
         state->lcn_avoid_depart_m = now_m + 100.0;
     } else if (which == YQ_WALK_AWAITED) {
@@ -12896,7 +13003,7 @@ yq_keep_stay(dsd_opts* opts, dsd_state* state, int which, long int base_hz, doub
         noCarrier(opts, state);
         g_rtl_tune_result = RTL_STREAM_TUNE_OK;
         g_rtl_tune_calls = 0;
-        g_yq.requests = 0; /* the landed row's own measurement, made before this pass's step */
+        g_yq.requests = 0; /* the landed row's own measurement, made as it landed */
     }
 }
 
@@ -12924,9 +13031,6 @@ yq_keep_case(int which) {
                     yq_list(opts, state, which == YQ_SINGLE_ROW ? 1 : 3, which == YQ_STEP_IN_FLIGHT, 1, base_hz) == 0);
     const double now_m = dsd_decode_now_mono_s();
     yq_keep_stay(opts, state, which, base_hz, now_m);
-    if (which == YQ_HOLD) {
-        state->lcn_scan_hold = 1;
-    }
     if (which >= YQ_VOICE_HEARD) {
         opts->scan_voice_only = 1;
         opts->scan_voice_qualify_ms = 1000;
@@ -12937,7 +13041,8 @@ yq_keep_case(int which) {
             state->scan_voice_gate_voice_m = now_m;
         }
     }
-    for (int pass = 0; pass < 3; pass++) {
+    /* Up to the first step: the row a step lands on is measured as it lands (issue #834 B6), and would skip too. */
+    for (int pass = 0; pass < 3 && g_rtl_tune_calls == 0; pass++) {
         noCarrier(opts, state);
     }
     const int skipped = g_rtl_tune_calls != 0;
@@ -13005,8 +13110,7 @@ test_y_quiet_open_analog_carrier_stays(void) {
     g_yq.gen_base += (uint32_t)g_rtl_tune_calls;
     g_rtl_tune_calls = 0;
     rc |= expect_true("the nfm row on air", state->lcn_freq_roll == 1 && opts->analog_only == 1);
-    noCarrier(opts, state);
-    rc |= expect_true("the nfm row is measured in the analog class",
+    rc |= expect_true("the nfm row is measured in the analog class as it lands",
                       g_yq.requests == 1 && g_yq.last.classes == DSD_SIGNAL_QUIET_CLASS_ANALOG
                           && g_yq.last.analog_width_hz == 12500U);
     state->analog_rx.carrier_open = 1;
@@ -13150,6 +13254,9 @@ test_scan_quiet_decisions(void) {
     }
     for (int which = YQ_BUSY; which <= YQ_STEP_IN_FLIGHT; which++) {
         rc |= yq_keep_case(which);
+    }
+    for (int which = YQ_LAND_TYPED_LATE; which <= YQ_LAND_RESUME; which++) {
+        rc |= yq_landing_case(which);
     }
     rc |= test_y_quiet_open_analog_carrier_stays();
     rc |= test_y_quiet_typed_row_judges_the_monitor(12500);

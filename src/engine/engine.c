@@ -1602,10 +1602,10 @@ untyped_tune_row(dsd_opts* opts, dsd_state* state, int row, long int freq, int w
  * frequency an analog call on audio input is heard on (issue #667 D9), and fresh scan clocks. A placeholder (0 Hz) row
  * parks where the receiver is: only the cursor and the clocks, so the row heard stays the one the receiver is still
  * on. An entry waiting on the row's tune @p request (0: a landing within its caller's own call, which names none) holds
- * the row there (issue #644). Runs after the carrier boundary has ended the calls of the row left, under its keys and
- * its name. */
+ * the row there (issue #644). A landed row's quiet check is published at once (issue #834). Runs after the carrier
+ * boundary has ended the calls of the row left, under its keys and its name. */
 static void
-untyped_install_row(dsd_state* state, int row, time_t now, uint64_t request) {
+untyped_install_row(const dsd_opts* opts, dsd_state* state, int row, time_t now, uint64_t request) {
     state->lcn_freq_roll = row + 1;
     const long int freq = *dsd_state_trunk_lcn_slot(state, row);
     if (freq != 0) {
@@ -1622,6 +1622,9 @@ untyped_install_row(dsd_state* state, int row, time_t now, uint64_t request) {
     state->last_cc_sync_time = now;
     state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     dsd_scan_voice_gate_note_retune(state, state->last_cc_sync_time_m);
+    if (freq != 0) {
+        dsd_engine_scan_quiet_publish_row(opts, state);
+    }
 }
 
 static int no_carrier_scan_tune_awaited(const dsd_state* state);
@@ -1683,6 +1686,28 @@ no_carrier_quiet_facts(const dsd_opts* opts, const dsd_state* state, scan_quiet_
     }
     scan_quiet_revisions_read(opts, state, &e->revisions);
     e->eligible = no_carrier_quiet_row_eligible(opts, state, row);
+}
+
+/* Publish the -Y row on air for its quiet check (issue #834), unless its visit's check is DONE already. */
+static void
+no_carrier_quiet_publish(const dsd_opts* opts, dsd_state* state) {
+    if (scan_quiet_wants_eligibility(opts, state, SCAN_QUIET_OWNER_Y)) {
+        scan_quiet_eligibility e;
+        no_carrier_quiet_facts(opts, state, &e);
+        scan_quiet_publish_eligibility(opts, state, SCAN_QUIET_OWNER_Y, &e);
+    }
+}
+
+void
+dsd_engine_scan_quiet_publish_row(const dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || !opts->scan_skip_silent || opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1
+        || state->lcn_scan_resume_pending) {
+        return;
+    }
+    const dsd_engine_scan_landing* landing = dsd_engine_scan_landing_get(state);
+    if (landing && landing->by == DSD_ENGINE_SCAN_LANDING_ROW) {
+        no_carrier_quiet_publish(opts, state);
+    }
 }
 
 /* Whether the -Y row on air steps for its quiet result: asked only where no rule that beats a skip
@@ -1777,11 +1802,7 @@ no_carrier_scanner_step_decided(const dsd_opts* opts, dsd_state* state, time_t n
     if (!opts->scan_skip_silent) {
         return no_carrier_scanner_step_is_due(opts, state, now);
     }
-    if (scan_quiet_wants_eligibility(opts, state, SCAN_QUIET_OWNER_Y)) {
-        scan_quiet_eligibility e;
-        no_carrier_quiet_facts(opts, state, &e);
-        scan_quiet_publish_eligibility(opts, state, SCAN_QUIET_OWNER_Y, &e);
-    }
+    no_carrier_quiet_publish(opts, state);
     const int due = no_carrier_scanner_step_is_due(opts, state, now);
     scan_quiet_reconcile_declined(opts, state, SCAN_QUIET_OWNER_Y, 0);
     return due;
@@ -1835,7 +1856,7 @@ untyped_enter_tuned_row(dsd_opts* opts, dsd_state* state, int row, int walk_dir,
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, 0);
     }
     if (result == DSD_UNTYPED_STEP_OK) {
-        untyped_install_row(state, row, now, 0U);
+        untyped_install_row(opts, state, row, now, 0U);
     } else if (moved) {
         dsd_analog_rx_reset(state);
     }
@@ -1856,7 +1877,7 @@ dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row, dou
        and a tune that fails or is still pending lands nothing (issue #667 D9). */
     dsd_engine_scan_landing_forget(state);
     if (*dsd_state_trunk_lcn_slot(state, row) == 0) {
-        untyped_install_row(state, row, now_s, 0U);
+        untyped_install_row(opts, state, row, now_s, 0U);
         return DSD_UNTYPED_STEP_OK;
     }
     const int result = untyped_enter_tuned_row(opts, state, row, 0, now_s, NULL);
@@ -2066,7 +2087,7 @@ untyped_settle_walk(dsd_opts* opts, dsd_state* state, const dsd_manual_tune_sett
     }
     if (landed) {
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, 0);
-        untyped_install_row(state, settled->row, dsd_decode_time(), settled->id);
+        untyped_install_row(opts, state, settled->row, dsd_decode_time(), settled->id);
         return;
     }
     dsd_engine_channel_walk_note_outcome(state, settled->row, settled->dir, 0);
@@ -2127,7 +2148,7 @@ dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state) {
         /* A resume's landing ends the manual session's calls under no row's name, then publishes the scan (issue
            #671). */
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, 0);
-        untyped_install_row(state, settled.row, now, settled.id);
+        untyped_install_row(opts, state, settled.row, now, settled.id);
         dsd_engine_channel_scan_resume_landed(opts, state);
     } else if (state->lcn_scan_resume_pending) {
         /* Failed, or dropped (a newer tune, a stream reopen): the row never lands, so the resume never does. */
@@ -2264,7 +2285,7 @@ no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t 
     const long int freq = *dsd_state_trunk_lcn_slot(state, row);
     if (freq == 0) {
         // A zero entry parks on the current frequency rather than retuning, so it is not a hop.
-        untyped_install_row(state, row, now, 0U);
+        untyped_install_row(opts, state, row, now, 0U);
         return 0;
     }
     // Tracks whether the receiver has physically moved yet, so a later leg failing cannot retract a
@@ -4021,7 +4042,7 @@ no_carrier_run(dsd_opts* opts, dsd_state* state, int guard_held) {
     }
     if (scanner_row >= 0) {
         /* The row it landed on commits once the calls of the row left have ended under its keys (issue #671). */
-        untyped_install_row(state, scanner_row, now, 0U);
+        untyped_install_row(opts, state, scanner_row, now, 0U);
     }
     no_carrier_finalize_canonical_calls(opts, state, scanner_retuned);
     dsd_engine_reset_no_carrier_state(opts, state);

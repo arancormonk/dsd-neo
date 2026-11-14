@@ -432,6 +432,8 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
        entry waiting on it holds it (issue #644). */
     dsd_engine_scan_landing_note_row(state, scan->row, *dsd_state_trunk_lcn_slot(state, scan->row), landed_request);
     dsd_engine_scan_entry_landed(state, scan->row, scan->attempt);
+    /* Its quiet check starts now, not at the next noCarrier() (issue #834). */
+    dsd_engine_scan_quiet_publish_row(opts, state);
     return 1;
 }
 
@@ -1832,6 +1834,9 @@ dsd_engine_channel_scan_resume_landed(dsd_opts* opts, dsd_state* state) {
     state->lcn_scan_resume_pending = 0U;
     state->operator_tuned = 0U;
     dsd_engine_scan_quiet_note_change(state);
+    /* An untyped row installed before the resume was published: its quiet check starts now (issue #834). A typed row
+       notes its landing after this, and publishes it then. */
+    dsd_engine_scan_quiet_publish_row(opts, state);
 }
 
 void

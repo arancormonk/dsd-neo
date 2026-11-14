@@ -26170,6 +26170,13 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     (void)guard_held;
 }
 
+/* The -Y landing's quiet-check publication (engine.c, issue #834), which ENGINE_NO_CARRIER_RESET drives. */
+void
+dsd_engine_scan_quiet_publish_row(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
 /* The -Y resume's untyped pieces (engine.c, issue #671), which no trunk-scan case reaches: ENGINE_NO_CARRIER_RESET
    drives them. */
 int

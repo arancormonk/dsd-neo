@@ -243,6 +243,15 @@ int dsd_engine_trunk_scan_quiet_activity_since(const dsd_state* state, double si
 uint32_t dsd_engine_channel_scan_quiet_edits_epoch(const dsd_state* state);
 
 /* Engine service. */
+/** A -Y row landed and committed (issue #834): the row is published for its check at once, as the trunk scan publishes
+ * a target at its tick's tail after an advance, so its capture wait and request run from the hunt that follows rather
+ * than from the next noCarrier(). Every committed landing calls it: a typed row's commit (the timed step, a tune that
+ * completed late, a manual step, a go-to, a resume) and an untyped row's install (the timed step, a tune that landed
+ * late, a walk the scan owns, a go-to, a resume once it is published). The visit's activity baseline stays its tune's
+ * issue, which the landing carries. A tune that failed or was superseded lands nothing, so it arms nothing. No-op with
+ * skip-silent off, outside a running -Y scan (a resume still pending publishes its row when it lands) or with no row
+ * landed. engine.c. */
+void dsd_engine_scan_quiet_publish_row(const dsd_opts* opts, dsd_state* state);
 /** The outer loop's pass owes the trunk scan's quiet check its engine service: the next coordinator tick under the
  * guard publishes the visit on air, so the per-frame ticks of a carrier never walk for it. Called by the live
  * loop before its pass's tick, with skip-silent on. trunk_scan.c. */

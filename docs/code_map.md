@@ -597,7 +597,15 @@ Generated (do not edit/commit):
       (`guard_lost`), and the hunt hands back again. The decline sits at the tail, not the head, because the head would
       decline the result before the idle decision could apply it.
     - -Y skip (`engine.c`, `no_carrier_scanner_step_decided()` around `no_carrier_scanner_step_is_due()`, one load with
-      the setting off): the step evaluation publishes the landed row (`no_carrier_quiet_facts()`: a typed row's mode
+      the setting off): every committed landing publishes its row at once (`dsd_engine_scan_quiet_publish_row()`, as
+      the trunk scan publishes at its tick's tail after an advance; defect B6, which left a row unmeasured until the
+      next `noCarrier()`): a typed row's commit (`channel_scan_commit()`: the timed step, a tune completed late in
+      `dsd_engine_channel_scan_pending()`, a manual step, a go-to, a resume), an untyped row's install
+      (`untyped_install_row()`: the timed step, a tune landed late in `dsd_engine_scan_untyped_poll()`, a walk the scan
+      owns, a go-to) and a resume once it is published (`dsd_engine_channel_scan_resume_landed()`; a resume still
+      pending publishes nothing). The visit's baseline stays its tune's issue, which the landing carries; a tune that
+      failed or was superseded lands nothing and arms nothing. The step evaluation publishes the landed row too
+      (`no_carrier_quiet_facts()`: a typed row's mode
       classes, or the decoder set for an untyped row or one inheriting it, an analog row's kind and width through
       `scan_quiet_analog_facts()`, the rule the trunk scan's targets share; `no_carrier_quiet_row_eligible()`: the row
       on air from a landing in this session, no operator hold, not avoided, no step, walk or entry waiting on a tune, no
@@ -622,7 +630,8 @@ Generated (do not edit/commit):
       (TONE_PENDING) and the per-visit cap ahead of the idle decision, held, held-in-flight, no-alternate and trunked
       visits that request nothing, the setting off and a busy channel advancing at the same pass;
       `test_scan_quiet_y_ready_declines_at_its_own_sites`), `ENGINE_NO_CARRIER_RESET` (`test_scan_quiet_decisions()`:
-      typed and untyped -Y skips through `noCarrier()` over a link-wrapped tap, busy, held, single-row, heard-voice,
+      typed and untyped -Y skips through `noCarrier()` over a link-wrapped tap, every landing path measured as it lands
+      and its failures and supersessions arming nothing (`yq_landing_case()`), busy, held, single-row, heard-voice,
       qualifying and qualifying-busy rows, an avoided row, a walk waiting on its tune, a typed step in flight, an open
       analog carrier, and the end-to-end skip through `dsd_engine_test_live_scanner_run()` for -Y and trunk scan, each
       against the setting off).
