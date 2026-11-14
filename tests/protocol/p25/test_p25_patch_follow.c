@@ -29,12 +29,13 @@
 #include "test_env.h"
 #include "test_support.h"
 
-#define CH_HELD   0x100A /* slot 0 on a TDMA plan */
-#define CH_HELD_1 0x100B /* slot 1 of the same TDMA carrier */
-#define CH_PRIO   0x100C
-#define CH_THIRD  0x100D
-#define FREQ_HELD 851125000L
-#define FREQ_PRIO 851150000L
+#define CH_HELD    0x100A /* slot 0 on a TDMA plan */
+#define CH_HELD_1  0x100B /* slot 1 of the same TDMA carrier */
+#define CH_PRIO    0x100C
+#define CH_THIRD   0x100D
+#define FREQ_HELD  851125000L
+#define FREQ_PRIO  851150000L
+#define FREQ_THIRD 851162500L
 
 static dsd_trunk_tune_result
 test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
@@ -269,7 +270,7 @@ test_held_deleted_member(dsd_opts* opts, dsd_state* st) {
     rc |= expect_true("deleted: the high member protects the patch", following_freq(FREQ_HELD));
     p25_patch_remove_wgid(st, 1510, 1511);
     offer_update(opts, st, 250, CH_THIRD);
-    rc |= expect_true("deleted: once deleted it protects nothing", following_freq(851162500L));
+    rc |= expect_true("deleted: once deleted it protects nothing", following_freq(FREQ_THIRD));
     return rc;
 }
 
@@ -293,7 +294,7 @@ test_held_same_second_rejudge(dsd_opts* opts, dsd_state* st) {
     rc |= expect_true("rejudge: a radio block keeps the protection", following_freq(FREQ_HELD));
     rc |= expect_true("rejudge: skip armed", dsd_tg_policy_call_skip_arm(st, 1520, 0, 0, dsd_decode_now_mono_s()) == 0);
     offer_update(opts, st, 250, CH_THIRD);
-    rc |= expect_true("rejudge: a skipped supergroup is preemptible in the same second", following_freq(851162500L));
+    rc |= expect_true("rejudge: a skipped supergroup is preemptible in the same second", following_freq(FREQ_THIRD));
     return rc;
 }
 
@@ -310,7 +311,28 @@ test_held_sg_final_block(dsd_opts* opts, dsd_state* st) {
     set_clock_s(142.0);
     rc |= expect_true("final: avoid", dsd_tg_policy_session_avoid_add(st, 1530) == 0);
     offer_update(opts, st, 250, CH_THIRD);
-    rc |= expect_true("final: an avoided supergroup is preemptible", following_freq(851162500L));
+    rc |= expect_true("final: an avoided supergroup is preemptible", following_freq(FREQ_THIRD));
+    return rc;
+}
+
+/* A Hold armed on a lower-priority member during the call is judged at the same decode-clock reading: the next tick
+ * re-selects the held member. */
+static int
+test_hold_rejudged_same_reading(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    fresh_site(opts, st, 0);
+    set_dwell_cooldown_ms("750", "1000");
+    rc |= expect_true("hold: seed members", seed_row(st, 1581, 90, 0) == 0 && seed_row(st, 1582, 10, 0) == 0);
+    p25_patch_add_wgid(st, 1580, 1581);
+    p25_patch_add_wgid(st, 1580, 1582);
+    set_clock_s(190.0);
+    follow(opts, st, 1580, CH_HELD, 0x00);
+    rc |= expect_true("hold: judged on the high member", call_policy_target(st, 0) == 1581U);
+    st->tg_hold = 1582;
+    p25_sm_tick_ctx(p25_sm_get_ctx(), opts, st);
+    rc |= expect_true("hold: the same-reading tick re-selects the held member",
+                      call_policy_target(st, 0) == 1582U && p25_sm_get_ctx()->slots[0].target_id == 1582);
+    st->tg_hold = 0;
     return rc;
 }
 
@@ -442,6 +464,7 @@ main(void) {
     rc |= test_held_same_second_rejudge(&opts, &st);
     rc |= test_held_sg_final_block(&opts, &st);
     rc |= test_held_keeps_other_member_priority(&opts, &st);
+    rc |= test_hold_rejudged_same_reading(&opts, &st);
     rc |= test_service_priority_vs_ledger(&opts, &st);
     rc |= test_slot_move_with_reselection(&opts, &st);
     rc |= test_conventional_lcgrgr_member(&opts, &st);

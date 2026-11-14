@@ -1757,7 +1757,8 @@ p25_grant_candidate_displaces_active(const p25_sm_ctx_t* ctx, const dsd_state* s
 }
 
 /* Tell the policy what the SM holds on its carrier right before asking whether a candidate may displace it: every
- * assigned slot, by its policy target, with the time the SM began following that call. A transmission's end clears
+ * assigned slot, by its over-the-air target with the decision it is held by now (a patched call re-resolved), with the
+ * time the SM began following that call. A transmission's end clears
  * its record while hangtime keeps the carrier, and a group list reload may have replaced the records; without this a
  * held conversation could never be outranked, or would restart its dwell. */
 static int p25_voice_slot_epoch_active(const p25_sm_slot_ctx_t* slot_ctx);
@@ -7451,16 +7452,23 @@ p25_sm_note_conventional_activity(const dsd_opts* opts, const dsd_state* state, 
                                                   call.kind == DSD_CALL_KIND_PRIVATE_VOICE, encrypted, 0);
 }
 
-/* The talkgroup a conventional call is judged on. No grant chose a member here, so a group call on a live patch's
- * supergroup takes the patch's media resolution (a member Hold, or a member listed under the allow-list, plays it);
- * every other call is its own target, evaluating nothing. */
+/* The talkgroup a conventional call on @p slot is judged on. No grant chose a member here, so a group call on a live
+ * patch's supergroup takes the patch's keep-or-resolve media target (a member Hold, or a member listed under the
+ * allow-list, plays it), keeping the target the slot's ACTIVE call of the same supergroup already names while it may
+ * play; every other call is its own target, evaluating nothing. */
 static uint32_t
-p25_sm_conventional_policy_target(const dsd_opts* opts, const dsd_state* state,
+p25_sm_conventional_policy_target(const dsd_opts* opts, const dsd_state* state, int slot,
                                   const p25_sm_conventional_call_t* call) {
     if (!call->is_group) {
         return call->target;
     }
-    return dsd_p25_patch_media_target(opts, state, call->target, 0U, call->source);
+    uint32_t stored = 0U;
+    dsd_call_snapshot current;
+    if (dsd_call_state_get(state, (uint8_t)slot, &current) > 0 && current.phase == DSD_CALL_PHASE_ACTIVE
+        && current.ota_target_id == (uint64_t)call->target && current.policy_target_id <= UINT32_MAX) {
+        stored = (uint32_t)current.policy_target_id;
+    }
+    return dsd_p25_patch_media_target(opts, state, call->target, stored, call->source);
 }
 
 static int
@@ -7480,7 +7488,7 @@ p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm
         .slot = (uint8_t)slot,
         .kind = call.is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE,
         .ota_target_id = call.target,
-        .policy_target_id = p25_sm_conventional_policy_target(opts, state, &call),
+        .policy_target_id = p25_sm_conventional_policy_target(opts, state, slot, &call),
         .ota_source_id = call.source,
         .frequency_hz = call.frequency_hz,
         .service_options = (uint16_t)service_options,
