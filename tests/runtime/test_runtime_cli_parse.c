@@ -5188,6 +5188,7 @@ out:
     return test_rc;
 }
 
+#ifdef USE_RADIO
 /* The test IQ fixture's sidecar with its gain line replaced by @p gain_lines (whole lines, each ending ",\n"). */
 static int
 test_rewrite_iq_fixture_gain(const char* metadata_path, const char* gain_lines) {
@@ -5216,6 +5217,7 @@ test_rewrite_iq_fixture_gain(const char* metadata_path, const char* gain_lines) 
     fclose(fp);
     return wrote == len ? 0 : -1;
 }
+#endif
 
 /* B7, B8: --iq-replay configures the whole-dB gain from the capture's: automatic for an automatic capture, whatever was
  * configured; a manual 0.9 dB as 1 dB (truncated, it was 0: automatic) and 49.6 dB as 49 dB; a manual gain at or below
