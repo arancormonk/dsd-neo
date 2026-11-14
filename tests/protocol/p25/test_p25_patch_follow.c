@@ -8,6 +8,7 @@
  * over-the-air identity, re-resolves on voice identity events and ticks, and describes the held call to preemption by
  * the current resolution (no protection once nothing in the patch may be followed). */
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -392,6 +393,38 @@ test_slot_move_with_reselection(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Trunking off (a conventional voice channel): a Motorola LCGRGR's voice user names the supergroup, and the call is
+ * published on the member its media resolution picks, so a member Hold, or the member listed under the allow-list, plays it. */
+static int
+test_conventional_lcgrgr_member(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    for (int allow_list = 0; allow_list < 2; allow_list++) {
+        const char* tag = allow_list ? "conventional allow-list" : "conventional hold";
+        char what[96];
+        fresh_site(opts, st, 0);
+        opts->trunk_enable = 0;
+        opts->trunk_use_allow_list = allow_list;
+        rc |= expect_true("conventional: seed member", seed_row(st, 1571, 0, 0) == 0);
+        p25_patch_add_wgid(st, 1570, 1571);
+        p25_patch_add_wgid(st, 1570, 1572);
+        if (!allow_list) {
+            st->tg_hold = 1571;
+        }
+        p25_sm_init_ctx(p25_sm_get_ctx(), opts, st);
+        set_clock_s(180.0 + allow_list);
+        // The voice start an LCGRGR (or a standard group voice user) on the supergroup makes (p25_lcw.c).
+        rc |=
+            expect_true("conventional: voice start", p25_sm_emit_active_call(opts, st, 0, 1570, 0, 0x0A0B0C, 1, 0x00));
+        DSD_SNPRINTF(what, sizeof what, "%s: published on the member", tag);
+        rc |= expect_true(what, call_policy_target(st, 0) == 1571U);
+        int muted = -1;
+        DSD_SNPRINTF(what, sizeof what, "%s: audible", tag);
+        rc |= expect_true(what, dsd_audio_group_gate_mono(opts, st, 1570, 0, &muted) == 0 && muted == 0);
+        st->tg_hold = 0;
+    }
+    return rc;
+}
+
 int
 main(void) {
     static dsd_opts opts;
@@ -411,6 +444,7 @@ main(void) {
     rc |= test_held_keeps_other_member_priority(&opts, &st);
     rc |= test_service_priority_vs_ledger(&opts, &st);
     rc |= test_slot_move_with_reselection(&opts, &st);
+    rc |= test_conventional_lcgrgr_member(&opts, &st);
     dsd_state_ext_free_all(&st);
     dsd_decode_clock_use_system();
     if (rc == 0) {

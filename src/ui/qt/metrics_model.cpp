@@ -47,6 +47,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch_policy.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -719,6 +720,19 @@ direct_keys_present(const dsd_state* state) {
            || dsd_key_hytera_present(state) || state->aes_key_loaded[0] || state->aes_key_loaded[1];
 }
 
+/* The talkgroup a group call's block label judges: the one its audio follows. A P25 call on a patch's supergroup takes
+   the patch's keep-or-resolve media target (dsd_p25_patch_media_target(), as the audio gate does), so the label never
+   reads blocked while a listened member plays; any other call its stored policy target. */
+uint32_t
+block_label_group_target(const dsd_call_snapshot& call, const dsd_opts* opts, const dsd_state* state) {
+    const auto stored = static_cast<uint32_t>(call.policy_target_id);
+    if (!DSD_SYNC_IS_P25(call.protocol) || call.ota_target_id == 0U || call.ota_target_id > UINT32_MAX) {
+        return stored;
+    }
+    return dsd_p25_patch_media_target(opts, state, static_cast<uint32_t>(call.ota_target_id), stored,
+                                      static_cast<uint32_t>(call.ota_source_id));
+}
+
 struct DecryptionView {
     const dsd_call_snapshot& call;
     const dsd_call_key_selection& selected;
@@ -786,13 +800,14 @@ struct DecryptionView {
                                                     static_cast<uint32_t>(call.policy_target_id), needs_key, 0,
                                                     &policy);
             } else {
-                dsd_tg_policy_evaluate_group_call(opts, state, static_cast<uint32_t>(call.policy_target_id),
-                                                  static_cast<uint32_t>(call.ota_source_id), needs_key, 0, &policy);
+                const uint32_t target = block_label_group_target(call, opts, state);
+                dsd_tg_policy_evaluate_group_call(opts, state, target, static_cast<uint32_t>(call.ota_source_id),
+                                                  needs_key, 0, &policy);
                 if (call.ota_target_id <= UINT32_MAX) {
                     // A patched call also carries its supergroup's own final blocks.
                     (void)dsd_tg_policy_apply_ota_final_blocks(opts, state, static_cast<uint32_t>(call.ota_target_id),
-                                                               static_cast<uint32_t>(call.policy_target_id),
-                                                               static_cast<uint32_t>(call.ota_source_id), &policy);
+                                                               target, static_cast<uint32_t>(call.ota_source_id),
+                                                               &policy);
                 }
             }
             if (policy.block_reasons) {

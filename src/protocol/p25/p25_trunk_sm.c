@@ -7451,6 +7451,18 @@ p25_sm_note_conventional_activity(const dsd_opts* opts, const dsd_state* state, 
                                                   call.kind == DSD_CALL_KIND_PRIVATE_VOICE, encrypted, 0);
 }
 
+/* The talkgroup a conventional call is judged on. No grant chose a member here, so a group call on a live patch's
+ * supergroup takes the patch's media resolution (a member Hold, or a member listed under the allow-list, plays it);
+ * every other call is its own target, evaluating nothing. */
+static uint32_t
+p25_sm_conventional_policy_target(const dsd_opts* opts, const dsd_state* state,
+                                  const p25_sm_conventional_call_t* call) {
+    if (!call->is_group) {
+        return call->target;
+    }
+    return dsd_p25_patch_media_target(opts, state, call->target, 0U, call->source);
+}
+
 static int
 p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, int ptt_retransmit) {
     if (!state || !ev) {
@@ -7468,7 +7480,7 @@ p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm
         .slot = (uint8_t)slot,
         .kind = call.is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE,
         .ota_target_id = call.target,
-        .policy_target_id = call.target,
+        .policy_target_id = p25_sm_conventional_policy_target(opts, state, &call),
         .ota_source_id = call.source,
         .frequency_hz = call.frequency_hz,
         .service_options = (uint16_t)service_options,
