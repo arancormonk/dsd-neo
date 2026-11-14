@@ -11,14 +11,19 @@
  *   dsd-neo_test_speech_parity_tool source RATE OUT.wav
  *       The talker as a 16-bit mono WAV at RATE. tools/build_iq_fixtures.py (--speech-synth-gen) modulates it into the
  *       speech_*_synth I/Q fixtures.
- *   dsd-neo_test_speech_parity_tool encode imbe|ambe2450|ambe2400 OUT
- *       The talker encoded by mbelib-neo's IMBE 4400, AMBE+2 2450 or AMBE 2400 encoder into the .imb, .amb or .dmb
- *       file -r plays (src/core/file/dsd_file.c: a four-byte cookie, then one record per 20 ms frame).
+ *   dsd-neo_test_speech_parity_tool encode [--quiet] imbe|ambe2450|ambe2400 OUT
+ *       The talker (with --quiet, the quiet talker) encoded by mbelib-neo's IMBE 4400, AMBE+2 2450 or AMBE 2400 encoder
+ *       into the .imb, .amb or .dmb file -r plays (src/core/file/dsd_file.c: a four-byte cookie, then one record per
+ *       20 ms frame).
  *   dsd-neo_test_speech_parity_tool established [--max-error-db DB] [--max-spread-db DB] NAME:FILE:RATE:CH:LEAD_S...
  *       Each FILE is a decoder's raw 16-bit output (RATE Hz, CH interleaved channels, the louder channel is measured)
  *       in which the talker starts LEAD_S seconds in. Its established speech, from the end of the talker's first 2 s of
  *       speech to the end of the talker, must read within DB (default 3) of -20 dBFS, and every rendition within the
  *       spread (default 1.5 dB) of every other.
+ *   dsd-neo_test_speech_parity_tool quiet [--max-error-db DB] NAME:FILE:RATE:CH:LEAD_S...
+ *       The same for the quiet talker: a 2.5 s transmission 20 dB under the talker in a rough voice whose runs of voiced
+ *       frames are short, as a quiet radio's short call. From 0.5 s after its first speech to its end it must read
+ *       within DB (default 4) of -20 dBFS: the gain has to reach the talker within the transmission's first syllables.
  *   dsd-neo_test_speech_parity_tool level [--min-dbfs DB] [--max-dbfs DB] [--toward FILE] FILE RATE CH
  *       The whole output's P.56 level, inside [min, max]. With --toward, FILE is the same capture decoded at the fixed
  *       reference gain (-g 1): the level must be nearer -20 dBFS than that one, or lie no more than 3 dB under and no
@@ -63,6 +68,20 @@
 #define TALKER_SECONDS        9.0
 #define TALKER_LEVEL_DBFS     (-26.0)
 #define TALKER_F0_HZ          115.0
+/* The generator's default cycle-to-cycle pitch jitter. */
+#define TALKER_JITTER         0.01
+/* The quiet talker: a short transmission 20 dB under the talker, so the default auto gain has to raise it about 20 dB
+   more than the talker's, and has to do it within the transmission. Its voice is rough (7% pitch jitter), so only
+   part of its frames pass the AGC's pitch cue and its runs of voiced frames are short, as a quiet or far-field
+   talker's are on the air. With the talker's clean voice, runs of voiced frames are long enough that even a gain that
+   moves 2 dB per frame after six of them reaches it within 0.7 s. */
+#define QUIET_SEED            0x1111ULL
+#define QUIET_SECONDS         2.5
+#define QUIET_LEVEL_DBFS      (TALKER_LEVEL_DBFS - 20.0)
+#define QUIET_JITTER          0.07
+/* The quiet talker is measured from this long after its first speech frame to its end. */
+#define QUIET_AFTER_S         0.5
+#define QUIET_BOUND_DB        4.0
 /* Established speech starts after this much of the talker's speech (spec: 2 s of committed speech). */
 #define ESTABLISHED_AFTER_S   2.0
 /* A 20 ms frame counts as speech when it is no more than this far under the talker's nominal level: vowels, not the
@@ -80,38 +99,65 @@
 #define MBE_FRAME             160
 #define MAX_RENDITIONS        6
 
+/* One synthetic talker (test_support/speech_synth.h): its seed, length, nominal level, pitch, pitch jitter and level
+   steps. */
+typedef struct {
+    uint64_t seed;
+    double seconds;
+    double level_dbfs;
+    double f0_hz;
+    double jitter;
+    const dsd_test_level_step* steps;
+    size_t step_count;
+} talker_def;
+
 static const dsd_test_level_step k_talker_steps[] = {
     {2.2, TALKER_LEVEL_DBFS - 4.0},
     {6.0, TALKER_LEVEL_DBFS - 1.0},
 };
 
+static const talker_def k_talker = {
+    TALKER_SEED,
+    TALKER_SECONDS,
+    TALKER_LEVEL_DBFS,
+    TALKER_F0_HZ,
+    TALKER_JITTER,
+    k_talker_steps,
+    sizeof k_talker_steps / sizeof k_talker_steps[0],
+};
+
+static const talker_def k_quiet = {
+    QUIET_SEED, QUIET_SECONDS, QUIET_LEVEL_DBFS, TALKER_F0_HZ, QUIET_JITTER, NULL, 0U,
+};
+
 static void
-talker_params(dsd_test_speech_params* p) {
-    dsd_test_speech_defaults(p, TALKER_SEED);
-    p->level_dbfs = TALKER_LEVEL_DBFS;
-    p->f0_hz = TALKER_F0_HZ;
-    p->steps = k_talker_steps;
-    p->step_count = sizeof k_talker_steps / sizeof k_talker_steps[0];
+talker_params(const talker_def* t, dsd_test_speech_params* p) {
+    dsd_test_speech_defaults(p, t->seed);
+    p->level_dbfs = t->level_dbfs;
+    p->f0_hz = t->f0_hz;
+    p->jitter = t->jitter;
+    p->steps = t->steps;
+    p->step_count = t->step_count;
 }
 
 static double
-talker_level_at(double t) {
-    double level = TALKER_LEVEL_DBFS;
-    for (size_t i = 0; i < sizeof k_talker_steps / sizeof k_talker_steps[0]; i++) {
-        if (t >= k_talker_steps[i].start_s) {
-            level = k_talker_steps[i].level_dbfs;
+talker_level_at(const talker_def* t, double at_s) {
+    double level = t->level_dbfs;
+    for (size_t i = 0; i < t->step_count; i++) {
+        if (at_s >= t->steps[i].start_s) {
+            level = t->steps[i].level_dbfs;
         }
     }
     return level;
 }
 
-/* The talker at @p rate, in int16 units; NULL when out of memory. */
+/* Talker @p t at @p rate, in int16 units; NULL when out of memory. */
 static float*
-talker_samples(int rate, size_t* n_out) {
-    const size_t n = (size_t)lround(TALKER_SECONDS * (double)rate);
+talker_samples(const talker_def* t, int rate, size_t* n_out) {
+    const size_t n = (size_t)lround(t->seconds * (double)rate);
     float* x = (float*)calloc(n, sizeof(float));
     dsd_test_speech_params p;
-    talker_params(&p);
+    talker_params(t, &p);
     if (x == NULL || dsd_test_synth_speech(x, n, rate, &p) != 0) {
         free(x);
         return NULL;
@@ -120,36 +166,57 @@ talker_samples(int rate, size_t* n_out) {
     return x;
 }
 
-/* Where established speech starts in the talker: the end of the frame that completes its first 2 s of speech frames. */
+/* The index of talker @p t's 20 ms frame that completes its first @p want speech frames, in @p frame. */
 static int
-established_from_s(double* from_s) {
+nth_speech_frame(const talker_def* t, size_t want, size_t* frame) {
     size_t n = 0;
-    float* x = talker_samples(MBE_RATE_HZ, &n);
+    float* x = talker_samples(t, MBE_RATE_HZ, &n);
     if (x == NULL) {
         return -1;
     }
-    const size_t want = (size_t)lround(ESTABLISHED_AFTER_S * MBE_RATE_HZ / MBE_FRAME);
     size_t speech = 0;
-    *from_s = -1.0;
-    for (size_t f = 0; (f + 1U) * MBE_FRAME <= n; f++) {
+    int rc = -1;
+    for (size_t f = 0; rc != 0 && (f + 1U) * MBE_FRAME <= n; f++) {
         double sum = 0.0;
         for (size_t i = 0; i < MBE_FRAME; i++) {
             const double v = (double)x[(f * MBE_FRAME) + i];
             sum += v * v;
         }
         const double rms_dbfs = 10.0 * log10((sum / MBE_FRAME / (FULL_SCALE * FULL_SCALE)) + 1e-30);
-        const double t = (double)f * MBE_FRAME / MBE_RATE_HZ;
-        if (rms_dbfs < talker_level_at(t) - SPEECH_FRAME_UNDER_DB) {
+        const double at_s = (double)f * MBE_FRAME / MBE_RATE_HZ;
+        if (rms_dbfs < talker_level_at(t, at_s) - SPEECH_FRAME_UNDER_DB) {
             continue;
         }
         speech++;
         if (speech == want) {
-            *from_s = (double)(f + 1U) * MBE_FRAME / MBE_RATE_HZ;
-            break;
+            *frame = f;
+            rc = 0;
         }
     }
     free(x);
-    return *from_s > 0.0 ? 0 : -1;
+    return rc;
+}
+
+/* Where established speech starts in the talker: the end of the frame that completes its first 2 s of speech frames. */
+static int
+established_from_s(double* from_s) {
+    size_t f = 0;
+    if (nth_speech_frame(&k_talker, (size_t)lround(ESTABLISHED_AFTER_S * MBE_RATE_HZ / MBE_FRAME), &f) != 0) {
+        return -1;
+    }
+    *from_s = (double)(f + 1U) * MBE_FRAME / MBE_RATE_HZ;
+    return 0;
+}
+
+/* Where the quiet talker is measured from: 0.5 s after the start of its first speech frame. */
+static int
+quiet_from_s(double* from_s) {
+    size_t f = 0;
+    if (nth_speech_frame(&k_quiet, 1U, &f) != 0) {
+        return -1;
+    }
+    *from_s = ((double)f * MBE_FRAME / MBE_RATE_HZ) + QUIET_AFTER_S;
+    return 0;
 }
 
 /* ------------------------------------------------------------------------------------------------- files */
@@ -223,7 +290,7 @@ to_s16(float v) {
 static int
 cmd_source(int rate, const char* name) {
     size_t n = 0;
-    float* x = talker_samples(rate, &n);
+    float* x = talker_samples(&k_talker, rate, &n);
     if (x == NULL) {
         DSD_FPRINTF(stderr, "speech parity: cannot make the talker at %d Hz\n", rate);
         return 1;
@@ -335,9 +402,9 @@ encode_frame(encoder* e, const float* pcm, FILE* f) {
 }
 
 static int
-encode_talker(encoder* e, FILE* f) {
+encode_talker(encoder* e, const talker_def* t, FILE* f) {
     size_t n = 0;
-    float* x = talker_samples(MBE_RATE_HZ, &n);
+    float* x = talker_samples(t, MBE_RATE_HZ, &n);
     if (x == NULL) {
         return -1;
     }
@@ -355,7 +422,7 @@ encode_talker(encoder* e, FILE* f) {
 }
 
 static int
-cmd_encode(const char* codec, const char* name) {
+cmd_encode(const talker_def* t, const char* codec, const char* name) {
     codec_kind kind = CODEC_IMBE;
     const char* cookie = ".imb";
     if (strcmp(codec, "ambe2450") == 0) {
@@ -377,11 +444,24 @@ cmd_encode(const char* codec, const char* name) {
     FILE* f = create_output(name);
     int rc = f == NULL;
     if (f != NULL) {
-        rc = fwrite(cookie, 1, 4, f) != 4U || encode_talker(&e, f) != 0;
+        rc = fwrite(cookie, 1, 4, f) != 4U || encode_talker(&e, t, f) != 0;
         rc |= close_output(f, name);
     }
     encoder_close(&e);
     return rc;
+}
+
+/* encode [--quiet] CODEC OUT */
+static int
+cmd_encode_args(int argc, char** argv) {
+    if (argc == 3 && strcmp(argv[0], "--quiet") == 0) {
+        return cmd_encode(&k_quiet, argv[1], argv[2]);
+    }
+    if (argc == 2) {
+        return cmd_encode(&k_talker, argv[0], argv[1]);
+    }
+    DSD_FPRINTF(stderr, "speech parity: encode [--quiet] imbe|ambe2450|ambe2400 OUT\n");
+    return 2;
 }
 
 /* ------------------------------------------------------------------------------------------------- measure */
@@ -511,14 +591,15 @@ parse_rendition(const char* text, rendition* r) {
                : 0;
 }
 
+/* The P.56 level of @p r from @p from_s into the talker to its end at @p to_s. */
 static int
-measure_established(rendition* r, double from_s) {
+measure_span(rendition* r, double from_s, double to_s) {
     audio a;
     if (read_audio(r->file, r->rate, r->channels, &a) != 0) {
         return -1;
     }
     const size_t from = (size_t)lround((from_s + r->lead_s) * (double)r->rate);
-    const size_t to = (size_t)lround((TALKER_SECONDS + r->lead_s) * (double)r->rate);
+    const size_t to = (size_t)lround((to_s + r->lead_s) * (double)r->rate);
     int rc = 0;
     /* The output must hold the whole talker: a decoder that dropped its end must not pass on what is left. */
     if (a.n < to || to < from + (size_t)r->rate) {
@@ -545,17 +626,18 @@ parse_db_option(int argc, char** argv, int* i, const char* opt, double lo, doubl
     return 1;
 }
 
+/* The renditions and options of `established` and `quiet`; @p max_spread NULL takes no --max-spread-db. Returns the
+   number of renditions, or -1 after printing why the arguments are bad. */
 static int
-cmd_established(int argc, char** argv) {
-    double max_error = ESTABLISHED_BOUND_DB;
-    double max_spread = 1.5;
-    rendition r[MAX_RENDITIONS];
+parse_renditions(int argc, char** argv, rendition* r, double* max_error, double* max_spread) {
     int count = 0;
     for (int i = 0; i < argc;) {
-        const int e = parse_db_option(argc, argv, &i, "--max-error-db", 0.0, 40.0, &max_error);
-        const int s = e != 0 ? e : parse_db_option(argc, argv, &i, "--max-spread-db", 0.0, 40.0, &max_spread);
+        const int e = parse_db_option(argc, argv, &i, "--max-error-db", 0.0, 40.0, max_error);
+        const int s = (e != 0 || max_spread == NULL)
+                          ? e
+                          : parse_db_option(argc, argv, &i, "--max-spread-db", 0.0, 40.0, max_spread);
         if (s < 0) {
-            return 2;
+            return -1;
         }
         if (s > 0) {
             continue;
@@ -563,10 +645,46 @@ cmd_established(int argc, char** argv) {
         if (count == MAX_RENDITIONS || parse_rendition(argv[i], &r[count]) != 0) {
             DSD_FPRINTF(stderr, "speech parity: bad rendition %s (NAME:FILE:RATE:CH:LEAD_S, at most %d)\n", argv[i],
                         MAX_RENDITIONS);
-            return 2;
+            return -1;
         }
         count++;
         i++;
+    }
+    return count;
+}
+
+/* Measures every rendition from @p from_s to @p to_s and holds each within @p max_error of -20 dBFS; the lowest and
+   highest level in @p lo and @p hi. Returns 1 when any rendition fails. */
+static int
+check_renditions(rendition* r, int count, double from_s, double to_s, double max_error, const char* what, double* lo,
+                 double* hi) {
+    int fail = 0;
+    *lo = INFINITY;
+    *hi = -INFINITY;
+    for (int k = 0; k < count; k++) {
+        if (measure_span(&r[k], from_s, to_s) != 0) {
+            fail = 1;
+            continue;
+        }
+        const double err = r[k].level - TARGET_DBFS;
+        const int ok = isfinite(r[k].level) && fabs(err) <= max_error;
+        DSD_FPRINTF(stderr, "speech parity: %-12s %s P.56 %7.2f dBFS (%+.2f dB)%s\n", r[k].name, what, r[k].level, err,
+                    ok ? "" : "  FAIL: outside the target window");
+        fail |= !ok;
+        *lo = fmin(*lo, r[k].level);
+        *hi = fmax(*hi, r[k].level);
+    }
+    return fail;
+}
+
+static int
+cmd_established(int argc, char** argv) {
+    double max_error = ESTABLISHED_BOUND_DB;
+    double max_spread = 1.5;
+    rendition r[MAX_RENDITIONS];
+    const int count = parse_renditions(argc, argv, r, &max_error, &max_spread);
+    if (count < 0) {
+        return 2;
     }
     double from_s = 0.0;
     if (count == 0 || established_from_s(&from_s) != 0) {
@@ -574,23 +692,10 @@ cmd_established(int argc, char** argv) {
         return 2;
     }
     DSD_FPRINTF(stderr, "speech parity: established speech from %.2f s of the talker to its end (%.2f s)\n", from_s,
-                TALKER_SECONDS);
-    int fail = 0;
-    double lo = INFINITY;
-    double hi = -INFINITY;
-    for (int k = 0; k < count; k++) {
-        if (measure_established(&r[k], from_s) != 0) {
-            fail = 1;
-            continue;
-        }
-        const double err = r[k].level - TARGET_DBFS;
-        const int ok = isfinite(r[k].level) && fabs(err) <= max_error;
-        DSD_FPRINTF(stderr, "speech parity: %-12s established P.56 %7.2f dBFS (%+.2f dB)%s\n", r[k].name, r[k].level,
-                    err, ok ? "" : "  FAIL: outside the target window");
-        fail |= !ok;
-        lo = fmin(lo, r[k].level);
-        hi = fmax(hi, r[k].level);
-    }
+                k_talker.seconds);
+    double lo = 0.0;
+    double hi = 0.0;
+    const int fail = check_renditions(r, count, from_s, k_talker.seconds, max_error, "established", &lo, &hi);
     const int spread_ok = !fail && hi - lo <= max_spread;
     if (!fail) {
         DSD_FPRINTF(stderr, "speech parity: spread %.2f dB (limit %.2f)%s\n", hi - lo, max_spread,
@@ -600,6 +705,29 @@ cmd_established(int argc, char** argv) {
         return 1;
     }
     DSD_FPRINTF(stderr, "SPEECH PARITY OK\n");
+    return 0;
+}
+
+static int
+cmd_quiet(int argc, char** argv) {
+    double max_error = QUIET_BOUND_DB;
+    rendition r[MAX_RENDITIONS];
+    const int count = parse_renditions(argc, argv, r, &max_error, NULL);
+    if (count < 0) {
+        return 2;
+    }
+    double from_s = 0.0;
+    if (count == 0 || quiet_from_s(&from_s) != 0) {
+        DSD_FPRINTF(stderr, "speech parity: no renditions, or the quiet talker has no speech\n");
+        return 2;
+    }
+    DSD_FPRINTF(stderr, "speech parity: the quiet talker from %.2f s to its end (%.2f s)\n", from_s, k_quiet.seconds);
+    double lo = 0.0;
+    double hi = 0.0;
+    if (check_renditions(r, count, from_s, k_quiet.seconds, max_error, "quiet", &lo, &hi) != 0) {
+        return 1;
+    }
+    DSD_FPRINTF(stderr, "QUIET TALKER OK\n");
     return 0;
 }
 
@@ -789,11 +917,14 @@ main(int argc, char** argv) {
         }
         return cmd_source(rate, argv[3]);
     }
-    if (argc == 4 && strcmp(argv[1], "encode") == 0) {
-        return cmd_encode(argv[2], argv[3]);
+    if ((argc == 4 || argc == 5) && strcmp(argv[1], "encode") == 0) {
+        return cmd_encode_args(argc - 2, argv + 2);
     }
     if (argc >= 3 && strcmp(argv[1], "established") == 0) {
         return cmd_established(argc - 2, argv + 2);
+    }
+    if (argc >= 3 && strcmp(argv[1], "quiet") == 0) {
+        return cmd_quiet(argc - 2, argv + 2);
     }
     if (argc == 4 && strcmp(argv[1], "gated-nfm") == 0) {
         return cmd_gated_nfm(argv[2], argv[3]);
@@ -802,8 +933,8 @@ main(int argc, char** argv) {
         return cmd_level(argc - 2, argv + 2);
     }
     DSD_FPRINTF(stderr,
-                "usage: %s source RATE OUT.wav | encode imbe|ambe2450|ambe2400 OUT | established ... | level ... | "
-                "gated-nfm FIXED AUTO\n",
+                "usage: %s source RATE OUT.wav | encode [--quiet] imbe|ambe2450|ambe2400 OUT | established ... | "
+                "quiet ... | level ... | gated-nfm FIXED AUTO\n",
                 argv[0]);
     return 2;
 }

@@ -8255,6 +8255,23 @@ set_tests_properties(
     DECODE_MBE_SPEECH_LEVEL
     PROPERTIES LABELS "voice-chain" TIMEOUT 120
 )
+# A quiet talker's short transmission reaches its level (digital only, -r): 2.5 s, 20 dB under the talker above, in a
+# rough voice whose runs of voiced frames are short. From 0.5 s after its first speech to its end each codec's output
+# must read within 4 dB of -20 dBFS. Measured (IMBE, AMBE+2, AMBE 2400): -19.00, -21.51, -21.23 dBFS, where opening
+# at +4 dB and stepping 2 dB a committing frame (e79c7b574) played -31.00, -37.11 and -31.29: its few voiced runs left
+# the gain 9-15 dB short of the talker's 1.5 s in.
+add_test(
+    NAME DECODE_MBE_SPEECH_LEVEL_QUIET
+    COMMAND
+        ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+        "-DTOOL_BIN=$<TARGET_FILE:dsd-neo_test_speech_parity_tool>"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/speech_parity/DECODE_MBE_SPEECH_LEVEL_QUIET"
+        -DQUIET=ON -P "${CMAKE_CURRENT_SOURCE_DIR}/speech_parity_check.cmake"
+)
+set_tests_properties(
+    DECODE_MBE_SPEECH_LEVEL_QUIET
+    PROPERTIES LABELS "voice-chain" TIMEOUT 120
+)
 # The tool opens only its own work file names: a path on the command line is refused before anything is opened.
 add_test(
     NAME SPEECH_PARITY_TOOL_WORK_FILES
