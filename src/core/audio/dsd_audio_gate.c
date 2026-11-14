@@ -39,19 +39,42 @@ dsd_audio_state_is_p25(const dsd_state* state) {
     return (state && (DSD_SYNC_IS_P25(state->synctype) || DSD_SYNC_IS_P25(state->lastsynctype))) ? 1 : 0;
 }
 
-// The talkgroup an active P25 group call on @p ota_target is judged on, from one snapshot of the call: its stored policy
-// target while that is a current patch member that may play, else the patch resolver's answer for media
-// (dsd_p25_patch_media_target()), which is @p ota_target when it is no current patch's supergroup.
-static uint32_t
-dsd_audio_p25_policy_target_of_call(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
-                                    uint32_t ota_target) {
+// What a call is judged on: the talkgroup, and the decision when the P25 patch resolver already made it (evaluated for
+// `source`, unencrypted, not a data call: as the gates evaluate a call), so the gates need not evaluate it again.
+typedef struct {
+    uint32_t target;
+    uint32_t source;
+    int decided;
+    dsd_tg_policy_decision decision;
+} dsd_audio_judged_call;
+
+static void
+dsd_audio_judged_init(dsd_audio_judged_call* judged, uint32_t target) {
+    judged->target = target;
+    judged->source = 0U;
+    judged->decided = 0;
+}
+
+// How an active P25 group call on @p ota_target is judged, from one snapshot of the call: its stored policy target while
+// that may play (the supergroup on its own decision, or a current patch member), else the patch resolver's answer for
+// media (dsd_p25_patch_media_resolve()). @p ota_target, undecided, when it is no current patch's supergroup.
+static void
+dsd_audio_p25_judge_call(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
+                         uint32_t ota_target, dsd_audio_judged_call* judged) {
+    dsd_audio_judged_init(judged, ota_target);
     if (call->phase != DSD_CALL_PHASE_ACTIVE || !DSD_SYNC_IS_P25(call->protocol)
         || call->kind == DSD_CALL_KIND_PRIVATE_VOICE || call->ota_target_id != ota_target) {
-        return ota_target;
+        return;
     }
     const uint32_t stored = call->policy_target_id <= UINT32_MAX ? (uint32_t)call->policy_target_id : 0U;
     const uint32_t source = call->ota_source_id <= UINT32_MAX ? (uint32_t)call->ota_source_id : 0U;
-    return dsd_p25_patch_media_target(opts, state, ota_target, stored, source);
+    dsd_p25_patch_resolution resolution;
+    if (dsd_p25_patch_media_resolve(opts, state, ota_target, stored, source, &resolution) == 1) {
+        judged->target = resolution.policy_target;
+        judged->source = source;
+        judged->decided = 1;
+        judged->decision = resolution.decision;
+    }
 }
 
 static int
@@ -70,27 +93,33 @@ dsd_audio_call_for_target(const dsd_state* state, int slot, uint32_t ota_target,
     return 0;
 }
 
-static uint32_t
-dsd_audio_p25_policy_target_for_slot(const dsd_opts* opts, const dsd_state* state, int slot, uint32_t ota_target) {
+static void
+dsd_audio_p25_judge_slot(const dsd_opts* opts, const dsd_state* state, int slot, uint32_t ota_target,
+                         dsd_audio_judged_call* judged) {
     dsd_call_snapshot call;
     if (!state || slot < 0 || slot > 1 || dsd_call_state_get(state, (uint8_t)slot, &call) <= 0) {
-        return ota_target;
+        dsd_audio_judged_init(judged, ota_target);
+        return;
     }
-    return dsd_audio_p25_policy_target_of_call(opts, state, &call, ota_target);
+    dsd_audio_p25_judge_call(opts, state, &call, ota_target, judged);
 }
 
-static uint32_t
-dsd_audio_p25_policy_target_for_group(const dsd_opts* opts, const dsd_state* state, uint32_t ota_target) {
+// A mono gate's group: the first slot judged on another talkgroup than @p ota_target, else @p ota_target.
+static void
+dsd_audio_p25_judge_group(const dsd_opts* opts, const dsd_state* state, uint32_t ota_target,
+                          dsd_audio_judged_call* judged) {
+    dsd_audio_judged_init(judged, ota_target);
     if (!dsd_audio_state_is_p25(state)) {
-        return ota_target;
+        return;
     }
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        uint32_t policy_target = dsd_audio_p25_policy_target_for_slot(opts, state, slot, ota_target);
-        if (policy_target != ota_target) {
-            return policy_target;
+        dsd_audio_judged_call slot_judged;
+        dsd_audio_p25_judge_slot(opts, state, slot, ota_target, &slot_judged);
+        if (slot_judged.target != ota_target) {
+            *judged = slot_judged;
+            return;
         }
     }
-    return ota_target;
 }
 
 dsd_key_material_need
@@ -340,7 +369,7 @@ dsd_p25p2_slot_active_call(const dsd_state* state, int slot, dsd_call_snapshot* 
 // of range read 0.
 static void
 dsd_p25p2_call_policy_key(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
-                          dsd_p25p2_policy_key* key) {
+                          dsd_p25p2_policy_key* key, dsd_audio_judged_call* judged) {
     DSD_MEMSET(key, 0, sizeof(*key));
     dsd_tg_policy_table_version(state, &key->table_context, &key->table_generation);
     key->second = (int64_t)dsd_decode_time();
@@ -351,17 +380,21 @@ dsd_p25p2_call_policy_key(const dsd_opts* opts, const dsd_state* state, const ds
     key->ota_target = (call->ota_target_id <= UINT32_MAX) ? (uint32_t)call->ota_target_id : 0U;
     key->source = (call->ota_source_id <= UINT32_MAX) ? (uint32_t)call->ota_source_id : 0U;
     key->kind = (uint8_t)call->kind;
-    key->policy_target = (call->kind == DSD_CALL_KIND_PRIVATE_VOICE || call->ota_target_id > UINT32_MAX)
-                             ? key->ota_target
-                             : dsd_audio_p25_policy_target_of_call(opts, state, call, key->ota_target);
+    dsd_audio_judged_init(judged, key->ota_target);
+    if (call->kind != DSD_CALL_KIND_PRIVATE_VOICE && call->ota_target_id <= UINT32_MAX) {
+        dsd_audio_p25_judge_call(opts, state, call, key->ota_target, judged);
+    }
+    key->policy_target = judged->target;
 }
 
 // The decision on an active call, private or group, as the decode gate evaluates it, all from this one snapshot of the
-// call and judged on the policy target @p key holds (taken first, from the same snapshot), so neither a call that ends
-// meanwhile nor a patch going stale can leave the decision and its key telling two stories. 0 when it evaluated one.
+// call and judged on the policy target @p key holds (taken first, from the same snapshot, with @p judged), so neither a
+// call that ends meanwhile nor a patch going stale can leave the decision and its key telling two stories: a decision
+// the patch resolver made with the key is used as it is. 0 when it has one.
 static int
 dsd_p25p2_call_policy_decision(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
-                               const dsd_p25p2_policy_key* key, dsd_tg_policy_decision* decision) {
+                               const dsd_p25p2_policy_key* key, const dsd_audio_judged_call* judged,
+                               dsd_tg_policy_decision* decision) {
     if (call->ota_target_id > UINT32_MAX || call->ota_source_id > UINT32_MAX) {
         return -1;
     }
@@ -369,6 +402,10 @@ dsd_p25p2_call_policy_decision(const dsd_opts* opts, const dsd_state* state, con
     const uint32_t source = (uint32_t)call->ota_source_id;
     if (call->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
         return dsd_tg_policy_evaluate_private_call(opts, state, source, target, 0, 0, decision) == 0 ? 0 : -1;
+    }
+    if (judged->decided) {
+        *decision = judged->decision;
+        return 0;
     }
     const uint32_t policy_target = key->policy_target;
     if (dsd_tg_policy_evaluate_group_call(opts, state, policy_target, source, 0, 0, decision) != 0) {
@@ -397,8 +434,9 @@ dsd_p25p2_decode_policy_verdict(const dsd_opts* opts, const dsd_state* state, in
     if (!dsd_p25p2_slot_active_call(state, slot, &call)) {
         return 0;
     }
-    dsd_p25p2_call_policy_key(opts, state, &call, &key);
-    if (dsd_p25p2_call_policy_decision(opts, state, &call, &key, &decision) != 0) {
+    dsd_audio_judged_call judged;
+    dsd_p25p2_call_policy_key(opts, state, &call, &key, &judged);
+    if (dsd_p25p2_call_policy_decision(opts, state, &call, &key, &judged, &decision) != 0) {
         return 0;
     }
     if (burst) {
@@ -449,11 +487,12 @@ dsd_p25p2_playout_policy_verdict(const dsd_opts* opts, const dsd_state* state, i
     if (call_epoch) {
         *call_epoch = call.epoch;
     }
-    dsd_p25p2_call_policy_key(opts, state, &call, &judged);
+    dsd_audio_judged_call judged_call;
+    dsd_p25p2_call_policy_key(opts, state, &call, &judged, &judged_call);
     if (key) {
         *key = judged;
     }
-    if (dsd_p25p2_call_policy_decision(opts, state, &call, &judged, &decision) == 0) {
+    if (dsd_p25p2_call_policy_decision(opts, state, &call, &judged, &judged_call, &decision) == 0) {
         dsd_p25p2_verdict_from_decision(&decision, out);
         if (!dsd_receive_allows(opts, state, DSD_SYNC_P25P2_POS, slot)) {
             /* A hard gate (issue #637): no talkgroup hold plays traffic the receive policy rejects or is checking. */
@@ -476,20 +515,28 @@ dsd_p25p2_playout_policy_key(const dsd_opts* opts, const dsd_state* state, int s
         *call_epoch = call.epoch;
     }
     if (key) {
-        dsd_p25p2_call_policy_key(opts, state, &call, key);
+        dsd_audio_judged_call judged;
+        dsd_p25p2_call_policy_key(opts, state, &call, key, &judged);
     }
     return 1;
 }
 
 // A private call is judged on its endpoints; a group call on its policy target
-// plus the over-the-air supergroup's final blocks.
+// plus the over-the-air supergroup's final blocks. @p judged (may be NULL) is how the gate chose the policy target: its
+// decision stands when it was made for this call's over-the-air target and source.
 static int
 dsd_audio_group_gate_decision(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
-                              uint32_t ota_tg, uint32_t policy_tg, dsd_tg_policy_decision* decision) {
+                              uint32_t ota_tg, uint32_t policy_tg, const dsd_audio_judged_call* judged,
+                              dsd_tg_policy_decision* decision) {
     const uint32_t source_id = call ? (uint32_t)call->ota_source_id : 0;
     if (call && call->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
         return dsd_tg_policy_evaluate_private_call(opts, state, source_id, (uint32_t)call->ota_target_id, 0, 0,
                                                    decision);
+    }
+    if (judged && judged->decided && judged->target == policy_tg && judged->source == source_id && call
+        && call->ota_target_id == ota_tg) {
+        *decision = judged->decision;
+        return 0;
     }
     const int rc = dsd_tg_policy_evaluate_group_call(opts, state, policy_tg, source_id, 0, 0, decision);
     if (rc == 0) {
@@ -504,9 +551,9 @@ dsd_audio_group_gate_decision(const dsd_opts* opts, const dsd_state* state, cons
 // (issue #655): a matching hold passes the policy.
 static int
 dsd_audio_group_gate_mutes(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call, uint32_t ota_tg,
-                           uint32_t policy_tg) {
+                           uint32_t policy_tg, const dsd_audio_judged_call* judged) {
     dsd_tg_policy_decision decision;
-    if (dsd_audio_group_gate_decision(opts, state, call, ota_tg, policy_tg, &decision) != 0) {
+    if (dsd_audio_group_gate_decision(opts, state, call, ota_tg, policy_tg, judged, &decision) != 0) {
         return 0;
     }
     return !dsd_audio_policy_allows_audio(&decision);
@@ -516,7 +563,6 @@ static int
 dsd_audio_group_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot, unsigned long tg, int enc_in,
                           int* enc_out) {
     uint32_t ota_tg = (uint32_t)tg;
-    uint32_t policy_tg = 0;
 
     if (!opts || !state || !enc_out) {
         return -1;
@@ -524,15 +570,17 @@ dsd_audio_group_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot
 
     // The slot keeps the mute @p enc_in brought in; the policy only adds one.
     int enc = (enc_in != 0 || !dsd_receive_current_allows(opts, state, slot < 0 ? state->currentslot : slot)) ? 1 : 0;
+    dsd_audio_judged_call judged;
     if (slot >= 0 && slot <= 1) {
-        policy_tg = dsd_audio_p25_policy_target_for_slot(opts, state, slot, ota_tg);
+        dsd_audio_p25_judge_slot(opts, state, slot, ota_tg, &judged);
     } else {
-        policy_tg = dsd_audio_p25_policy_target_for_group(opts, state, ota_tg);
+        dsd_audio_p25_judge_group(opts, state, ota_tg, &judged);
     }
+    const uint32_t policy_tg = judged.target;
 
     dsd_call_snapshot call;
     const int have_call = dsd_audio_call_for_target(state, slot, ota_tg, policy_tg, &call);
-    if (dsd_audio_group_gate_mutes(opts, state, have_call ? &call : NULL, ota_tg, policy_tg)) {
+    if (dsd_audio_group_gate_mutes(opts, state, have_call ? &call : NULL, ota_tg, policy_tg, &judged)) {
         enc = 1;
     }
 
@@ -553,7 +601,7 @@ dsd_audio_group_gate_call(const dsd_opts* opts, const dsd_state* state, int priv
     call.ota_target_id = target;
     call.policy_target_id = target;
     call.ota_source_id = source;
-    *enc_out = (enc_in != 0 || dsd_audio_group_gate_mutes(opts, state, &call, target, target)) ? 1 : 0;
+    *enc_out = (enc_in != 0 || dsd_audio_group_gate_mutes(opts, state, &call, target, target, NULL)) ? 1 : 0;
     return 0;
 }
 
@@ -584,12 +632,17 @@ dsd_audio_record_slot_allows_audio(const dsd_opts* opts, const dsd_state* state,
     return state->mbe_slot_muted[slot] == 0 && dsd_receive_current_allows(opts, state, slot);
 }
 
+// @p judged (may be NULL): how the policy target was chosen; a decision the patch resolver made stands.
 static int
 dsd_audio_record_policy_evaluate(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
                                  uint32_t ota_target, uint32_t policy_target, uint32_t source_id,
-                                 dsd_tg_policy_decision* decision) {
+                                 const dsd_audio_judged_call* judged, dsd_tg_policy_decision* decision) {
     if (call->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
         return dsd_tg_policy_evaluate_private_call(opts, state, source_id, ota_target, 0, 0, decision);
+    }
+    if (judged && judged->decided && judged->target == policy_target && judged->source == source_id) {
+        *decision = judged->decision;
+        return 0;
     }
     const int rc = dsd_tg_policy_evaluate_group_call(opts, state, policy_target, source_id, 0, 0, decision);
     if (rc == 0) {
@@ -598,18 +651,18 @@ dsd_audio_record_policy_evaluate(const dsd_opts* opts, const dsd_state* state, c
     return rc;
 }
 
-// The talkgroup the record gate and the export verdict judge a group call on, from this snapshot of it: a P25 call's
-// keep-or-resolve target (dsd_audio_p25_policy_target_of_call()), else its policy target, else @p ota_target.
-static uint32_t
+// How the record gate and the export verdict judge a group call, from this snapshot of it: a P25 call's keep-or-resolve
+// (dsd_audio_p25_judge_call()), else on its policy target, else on @p ota_target.
+static void
 dsd_audio_record_policy_target(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
-                               uint32_t ota_target) {
+                               uint32_t ota_target, dsd_audio_judged_call* judged) {
     if (DSD_SYNC_IS_P25(call->protocol)) {
-        return dsd_audio_p25_policy_target_of_call(opts, state, call, ota_target);
+        dsd_audio_p25_judge_call(opts, state, call, ota_target, judged);
+        return;
     }
-    if (call->policy_target_id != 0U && call->policy_target_id <= UINT32_MAX) {
-        return (uint32_t)call->policy_target_id;
-    }
-    return ota_target;
+    dsd_audio_judged_init(judged, (call->policy_target_id != 0U && call->policy_target_id <= UINT32_MAX)
+                                      ? (uint32_t)call->policy_target_id
+                                      : ota_target);
 }
 
 static int
@@ -626,9 +679,11 @@ dsd_audio_record_policy_blocks(const dsd_opts* opts, const dsd_state* state, int
         return 0;
     }
     const uint32_t ota_target = (uint32_t)call.ota_target_id;
-    const uint32_t policy_target = dsd_audio_record_policy_target(opts, state, &call, ota_target);
+    dsd_audio_judged_call judged;
+    dsd_audio_record_policy_target(opts, state, &call, ota_target, &judged);
     const uint32_t source_id = (uint32_t)call.ota_source_id;
-    int rc = dsd_audio_record_policy_evaluate(opts, state, &call, ota_target, policy_target, source_id, &decision);
+    int rc =
+        dsd_audio_record_policy_evaluate(opts, state, &call, ota_target, judged.target, source_id, &judged, &decision);
     if (rc != 0) {
         return 0;
     }
@@ -648,12 +703,18 @@ dsd_audio_stream_export_allowed(const dsd_opts* opts, const dsd_state* state, co
     }
     const uint32_t ota_target = (uint32_t)call->ota_target_id;
     const uint32_t source_id = (uint32_t)call->ota_source_id;
-    uint32_t target = ota_target;
+    dsd_audio_judged_call judged;
+    dsd_audio_judged_init(&judged, ota_target);
     if (call->kind != DSD_CALL_KIND_PRIVATE_VOICE) {
-        target = policy_target != 0U ? policy_target : dsd_audio_record_policy_target(opts, state, call, ota_target);
+        if (policy_target != 0U) {
+            judged.target = policy_target;
+        } else {
+            dsd_audio_record_policy_target(opts, state, call, ota_target, &judged);
+        }
     }
+    const uint32_t target = judged.target;
     dsd_tg_policy_decision decision;
-    if (dsd_audio_record_policy_evaluate(opts, state, call, ota_target, target, source_id, &decision) != 0) {
+    if (dsd_audio_record_policy_evaluate(opts, state, call, ota_target, target, source_id, &judged, &decision) != 0) {
         return 1;
     }
     if (judged_target) {

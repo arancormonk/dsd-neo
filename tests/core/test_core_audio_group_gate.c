@@ -753,6 +753,11 @@ typedef enum {
     PATCH_MEDIA_LOCKED_SG,
     PATCH_MEDIA_LOCKED_MEMBER,
     PATCH_MEDIA_EXPLICIT_SG_BLOCK,
+    PATCH_MEDIA_HOLD_MEMBER_SG_BLOCK,
+    PATCH_MEDIA_HOLD_MEMBER_SG_BLOCK_STORED_SG,
+    PATCH_MEDIA_HOLD_MEMBER_SG_SKIP,
+    PATCH_MEDIA_HOLD_MEMBER_SG_AVOID,
+    PATCH_MEDIA_STORED_SG_KEPT,
     PATCH_MEDIA_COUNT,
 } patch_media_case;
 
@@ -766,7 +771,19 @@ static const char* const k_patch_media_names[PATCH_MEDIA_COUNT] = {
     "retained SG lockout, unlisted SG, stored supergroup",
     "retained SG lockout, unlisted SG, stored member (preservation)",
     "explicit SG row B (preservation)",
+    "held member, explicit SG row B (base behaviour)",
+    "held member, explicit SG row B, stored supergroup",
+    "held member, SG call skip",
+    "held member, SG session avoid",
+    "listened supergroup kept over a higher-priority member",
 };
+
+/* Whether scenario @p c plays. */
+static int
+patch_media_audible(patch_media_case c) {
+    return c != PATCH_MEDIA_EXPLICIT_SG_BLOCK && c != PATCH_MEDIA_HOLD_MEMBER_SG_SKIP
+           && c != PATCH_MEDIA_HOLD_MEMBER_SG_AVOID;
+}
 
 /* A live patch 9700 = {9701, 9702} on the listening clock; @p count members. */
 static void
@@ -822,6 +839,30 @@ patch_media_setup(dsd_opts* opts, dsd_state* st, patch_media_case c, int slot, i
         case PATCH_MEDIA_EXPLICIT_SG_BLOCK:
             *rc |= expect_eq("patch media SG row", seed_policy_group(st, 9700U, "B", "SG"), 0);
             return 9701U;
+        case PATCH_MEDIA_HOLD_MEMBER_SG_BLOCK:
+        case PATCH_MEDIA_HOLD_MEMBER_SG_BLOCK_STORED_SG:
+            st->tg_hold = 9701U;
+            *rc |= expect_eq("patch media held SG row", seed_policy_group(st, 9700U, "B", "SG"), 0);
+            return c == PATCH_MEDIA_HOLD_MEMBER_SG_BLOCK ? 9701U : 9700U;
+        case PATCH_MEDIA_HOLD_MEMBER_SG_SKIP:
+            st->tg_hold = 9701U;
+            *rc |= expect_eq("patch media SG skip",
+                             dsd_tg_policy_call_skip_arm(st, 9700U, 4567U, 0, dsd_decode_now_mono_s()), 0);
+            return 9701U;
+        case PATCH_MEDIA_HOLD_MEMBER_SG_AVOID:
+            st->tg_hold = 9701U;
+            *rc |= expect_eq("patch media SG avoid", dsd_tg_policy_session_avoid_add(st, 9700U), 0);
+            return 9701U;
+        case PATCH_MEDIA_STORED_SG_KEPT: {
+            opts->trunk_use_allow_list = 0;
+            dsd_tg_policy_entry high;
+            *rc |=
+                expect_eq("patch media high-priority member",
+                          dsd_tg_policy_make_exact_entry(9702U, "A", "HIGH", DSD_TG_POLICY_SOURCE_IMPORTED, &high), 0);
+            high.priority = 50;
+            *rc |= expect_eq("patch media high-priority row", dsd_tg_policy_append_exact(st, &high), 0);
+            return 9700U;
+        }
         case PATCH_MEDIA_COUNT:
         default: break;
     }
@@ -892,8 +933,14 @@ test_patch_media_keep_or_resolve(dsd_opts* opts, dsd_state* st) {
                     expect_eq("patch media call",
                               seed_call(st, (uint8_t)slot, synctype, DSD_CALL_KIND_GROUP_VOICE, 9700, stored, 4567), 1);
                 patch_media_after_start(st, (patch_media_case)c, &now_ns);
-                const int audible = c != PATCH_MEDIA_EXPLICIT_SG_BLOCK;
+                const int audible = patch_media_audible((patch_media_case)c);
                 rc |= patch_media_expect(k_patch_media_names[c], opts, st, phase2, slot, audible);
+                if (phase2 && c == PATCH_MEDIA_STORED_SG_KEPT) {
+                    // A listened supergroup is kept as stored: the verdict key does not move to the member.
+                    dsd_p25p2_policy_key key;
+                    rc |= expect_eq("stored SG kept key", dsd_p25p2_playout_policy_key(opts, st, slot, NULL, &key), 1);
+                    rc |= expect_eq("stored SG kept target", (int)key.policy_target, 9700);
+                }
                 dsd_decode_clock_use_system();
             }
         }

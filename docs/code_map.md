@@ -2220,7 +2220,7 @@ suite runs under this compiler.
   `audio`. The verdict is recording-owned: `watchdog_event_current_load_labels()` (`dsd_events.c`) judges the call on
   every render through `dsd_audio_stream_export_allowed()` (module-private, `src/core/audio/dsd_audio_gate_internal.h`),
   which evaluates it as the record gate does (a private call on both parties; a group call on its policy target -- a
-  patched P25 call's keep-or-resolve target (`dsd_p25_patch_media_target()`) -- then
+  patched P25 call's keep-or-resolve target (`dsd_p25_patch_media_resolve()`) -- then
   `dsd_tg_policy_apply_ota_final_blocks()` on the over-the-air target, then the radio part), and stores
   `Event_History::stream_blocked` and `policy_target_id` on the staged row. A Hold lifts what it lifts for recording
   (the allow-list miss, and a stream flag derived off by a
@@ -2683,11 +2683,14 @@ suite runs under this compiler.
   (`dsd_audio_policy_tg_allows_audio()`) and ranks Hold, then priority; the supergroup wins a full tie. The
   supergroup's final reasons (`dsd_tg_policy_ota_final_reasons()`: call skip, encryption lockout, session avoid, and
   mode B/DE only from a row that knows the supergroup -- a `*` catch-all's B/DE is not final, so a listened member
-  admits the patch) end resolution with the supergroup's decision, except that for media the encryption lockout only
-  denies tuning. The media consumers (audio and record gates, the export verdict, the P25 Phase 2 verdict key)
-  keep-or-resolve through `dsd_p25_patch_media_target()`: the stored target is kept while it is a current member that
-  may play, else the resolver answers, judged at every read. `dsd_tg_policy_apply_ota_final_blocks()` merges the same
-  final reasons; the media gates, the row-edit release in app-control and the Qt block label call it with the
+  admits the patch) end ADMIT with the supergroup's decision. For media only a call skip or session avoid ends it; an
+  explicit mode B/DE and the encryption lockout are merged into each member's decision, so the lockout only denies
+  tuning and a mode block leaves a member playable only through a matching Hold (as a Hold plays a plain call's mode
+  block). The media consumers (audio and record gates, the export verdict, the P25 Phase 2 verdict and its key)
+  keep-or-resolve through `dsd_p25_patch_media_resolve()`: the stored target is kept while it may play (the supergroup
+  on its own decision, or a current member), else the resolver answers, judged at every read, and the gates use the
+  decision it returns instead of evaluating again. `dsd_tg_policy_apply_ota_final_blocks()` merges the same final
+  reasons; the gates' other paths, the row-edit release in app-control and the Qt block label call it with the
   over-the-air target. Tests: `CORE_P25_PATCH_POLICY`, `CORE_TALKGROUP_POLICY`, `P25_GRANT_POLICY`,
   `CORE_AUDIO_GROUP_GATE`, `CORE_P25P2_PLAYOUT`, `CORE_CALL_ALERT_HISTORY`. User blocks (Lock out, Avoid TG, Skip) are
   written against the over-the-air target. A private call has no

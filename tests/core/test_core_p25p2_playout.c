@@ -1633,15 +1633,18 @@ __wrap_dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* 
 
 // NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 
-/* The patch through whose allow-listed member a call is heard goes stale while the decode gate evaluates the call's
-   burst: the decision and its key come from the same look, so they agree. The key's keep-or-resolve evaluates the
-   supergroup and then the member, and the decision evaluates the member again. Stale after the first evaluation, the
-   key and the decision are the supergroup's (refused); stale after the third, both are the member's (allowed), and the
-   emission notices the patch gone and mutes the burst's frames. */
+/* The patch through whose allow-listed member a call is heard goes stale while the decode gate judges the call's burst,
+   after each of its group evaluations in turn, or only after it. Whenever it happens, the decision and its key come
+   from the same look: the gate allows the call exactly when the key names the member (else the key is the supergroup
+   it judged), and the frames of an allowed burst are muted at emission once the patch is gone. The keep-or-resolve
+   evaluates the supergroup before it reads the membership, so going stale after that first evaluation is judged on the
+   supergroup (refused); going stale after the look keeps the member (allowed). */
 static int
 test_gate_key_matches_its_decision(void) {
     int rc = 0;
-    for (int after = 1; after <= 3; after += 2) {
+    int refused = 0;
+    int allowed = 0;
+    for (int after = 1; after <= 4; after++) {
         setup(0, 2);
         g_opts.trunk_use_allow_list = 1;
         g_state.synctype = g_state.lastsynctype = DSD_SYNC_P25P2_POS;
@@ -1665,16 +1668,22 @@ test_gate_key_matches_its_decision(void) {
         dsd_p25p2_burst_decision decision;
         int decision_valid = 0;
         g_stale_patch_after_evaluation = after;
-        const int member_judged = after == 3;
-        rc |= expect_int(member_judged ? "the gate allows the patched call" : "the gate refuses the stale patch",
-                         dsd_p25p2_decode_audio_allowed_verdict(&g_opts, &g_state, 0, 0x80, &decision, &decision_valid),
-                         member_judged);
-        rc |= expect_int("the patch went stale during it", g_stale_patch_after_evaluation, 0);
-        rc |= expect_int("its key is what it judged", (int)decision.key.policy_target, member_judged ? 0x0200 : 0x0100);
-        if (!member_judged) {
+        const int allows =
+            dsd_p25p2_decode_audio_allowed_verdict(&g_opts, &g_state, 0, 0x80, &decision, &decision_valid);
+        if (g_stale_patch_after_evaluation != 0) {
             g_stale_patch_after_evaluation = 0;
+            g_state.p25_patch_listen_s += 60.0; // the patch goes stale right after the gate's look
+        }
+        rc |= expect_int("the gate hands back its decision", decision_valid, 1);
+        rc |= expect_int("its key is what it judged", (int)decision.key.policy_target, allows ? 0x0200 : 0x0100);
+        if (after == 1) {
+            rc |= expect_int("stale after the supergroup's evaluation: judged on the supergroup", allows, 0);
+        }
+        if (!allows) {
+            refused++;
             continue;
         }
+        allowed++;
         g_serial++;
         for (int f = 0; f < 4; f++) {
             for (int i = 0; i < 160; i++) {
@@ -1687,6 +1696,8 @@ test_gate_key_matches_its_decision(void) {
         dsd_p25p2_playout_pair_done(&g_opts, &g_state);
         rc |= expect_int("the stale patch mutes the frames", g_block_count, 0);
     }
+    rc |= expect_int("some looks judged the supergroup", refused > 0, 1);
+    rc |= expect_int("some looks judged the member", allowed > 0, 1);
     return rc;
 }
 

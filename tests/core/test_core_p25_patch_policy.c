@@ -360,10 +360,73 @@ test_media_keep_or_resolve(void) {
     rc |= expect_true("keep row off", dsd_tg_policy_set_mode(f.st, 2001, 2001, "B") == 0);
     rc |= expect_true("stored member muted re-selects",
                       dsd_p25_patch_media_target(f.opts, f.st, 2000, 2001, 3000) == 2002U);
-    // The stored member leaves the patch.
-    f.st->p25_patch_wgid[0][0] = 2003U;
-    rc |= expect_true("deleted member re-selects", dsd_p25_patch_media_target(f.opts, f.st, 2000, 2003, 3000) == 2002U);
+    // The stored member, listened to again, leaves the patch.
+    rc |= expect_true("keep row on", dsd_tg_policy_set_mode(f.st, 2001, 2001, "A") == 0);
+    rc |= expect_true("relistened member kept", dsd_p25_patch_media_target(f.opts, f.st, 2000, 2001, 3000) == 2001U);
+    f.st->p25_patch_wgid[0][0] = 2002U;
+    f.st->p25_patch_wgid_count[0] = 1U;
+    rc |= expect_true("deleted member not current", dsd_p25_patch_is_current_member(f.st, 2000, 2001) == 0);
+    rc |= expect_true("deleted member re-selects", dsd_p25_patch_media_target(f.opts, f.st, 2000, 2001, 3000) == 2002U);
     rc |= expect_true("no patch keeps the target", dsd_p25_patch_media_target(f.opts, f.st, 2100, 2101, 3000) == 2100U);
+    fixture_close(&f);
+    return rc;
+}
+
+/* Keep-or-resolve keeps a stored supergroup while its own decision may play, without judging members: media only needs
+   some eligible candidate. A higher-priority listened member would win a resolution. */
+static int
+test_media_keeps_a_listened_supergroup(void) {
+    fixture f;
+    if (fixture_open(&f) != 0) {
+        return 1;
+    }
+    int rc = expect_true("sg keep high member", row(f.st, 2201, "A", 70, 0, 1) == 0);
+    const uint16_t members[] = {2201};
+    seed_patch(f.st, 2200, members, 1);
+    dsd_p25_patch_resolution res;
+    rc |= expect_true("sg keep resolves", resolve(&f, 2200, 3200, DSD_P25_PATCH_RESOLVE_MEDIA, &res) == 0);
+    rc |= expect_true("a resolution picks the higher-priority member", res.policy_target == 2201U);
+    rc |= expect_true("sg keep media", dsd_p25_patch_media_resolve(f.opts, f.st, 2200, 2200, 3200, &res) == 1);
+    rc |= expect_true("the stored supergroup is kept", res.policy_target == 2200U && res.eligible
+                                                           && res.decision.target_id == 2200U
+                                                           && dsd_p25_patch_media_eligible(&res.decision));
+    rc |= expect_true("no patch: nothing evaluated",
+                      dsd_p25_patch_media_resolve(f.opts, f.st, 2400, 2400, 3200, &res) == 0
+                          && res.policy_target == 2400U && !res.eligible);
+    fixture_close(&f);
+    return rc;
+}
+
+/* MEDIA: a Hold-matched member plays through an explicit mode B/DE on the SG, as a Hold plays a plain call's mode block;
+   a call skip or session avoid on the SG still ends media resolution; ADMIT keeps the SG's mode block final. */
+static int
+test_media_hold_member_through_sg_mode(void) {
+    fixture f;
+    if (fixture_open(&f) != 0) {
+        return 1;
+    }
+    int rc = expect_true("hold SG B", row(f.st, 2300, "B", 0, 0, 1) == 0);
+    const uint16_t members[] = {2301, 2302};
+    seed_patch(f.st, 2300, members, 2);
+    dsd_p25_patch_resolution res;
+    rc |= expect_true("no hold: nothing plays", resolve(&f, 2300, 3300, DSD_P25_PATCH_RESOLVE_MEDIA, &res) == 0
+                                                    && res.policy_target == 2300U && !res.eligible);
+    f.st->tg_hold = 2302;
+    rc |= expect_true("hold media resolves", resolve(&f, 2300, 3300, DSD_P25_PATCH_RESOLVE_MEDIA, &res) == 0);
+    rc |= expect_true("the held member plays through the SG mode block",
+                      res.policy_target == 2302U && res.eligible && res.decision.tg_hold_match
+                          && (res.decision.block_reasons & DSD_TG_POLICY_BLOCK_MODE) && !res.decision.tune_allowed
+                          && dsd_p25_patch_media_eligible(&res.decision));
+    rc |= expect_true("the held member is kept", dsd_p25_patch_media_target(f.opts, f.st, 2300, 2302, 3300) == 2302U);
+    rc |= expect_true("hold admit resolves", resolve(&f, 2300, 3300, DSD_P25_PATCH_RESOLVE_ADMIT, &res) == 0);
+    rc |= expect_true("ADMIT keeps the SG mode block final", res.policy_target == 2300U && !res.eligible);
+    rc |= expect_true("hold skip", dsd_tg_policy_call_skip_arm(f.st, 2300, 3300, 0, dsd_decode_now_mono_s()) == 0);
+    rc |= expect_true("a call skip ends media despite the Hold",
+                      dsd_p25_patch_media_target(f.opts, f.st, 2300, 2302, 3300) == 2300U);
+    dsd_tg_policy_call_skip_clear(f.st);
+    rc |= expect_true("hold avoid", dsd_tg_policy_session_avoid_add(f.st, 2300) == 0);
+    rc |= expect_true("a session avoid ends media despite the Hold",
+                      dsd_p25_patch_media_target(f.opts, f.st, 2300, 2302, 3300) == 2300U);
     fixture_close(&f);
     return rc;
 }
@@ -378,6 +441,8 @@ main(void) {
     rc |= test_media_without_group_tuning();
     rc |= test_expired_members_are_not_candidates();
     rc |= test_media_keep_or_resolve();
+    rc |= test_media_keeps_a_listened_supergroup();
+    rc |= test_media_hold_member_through_sg_mode();
     if (rc == 0) {
         printf("CORE_P25_PATCH_POLICY: OK\n");
     }

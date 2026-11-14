@@ -13,8 +13,10 @@
  * each member whose membership is current (dsd_p25_patch_members_current()).
  *
  * The SG's final reasons (dsd_tg_policy_ota_final_reasons(): call skip, encryption lockout, session avoid, a mode B/DE
- * row that knows the SG, never the `*` catch-all) end resolution with the SG's decision, except that for media the
- * encryption lockout only denies tuning: members are still judged and the lockout is merged into the winner.
+ * row that knows the SG, never the `*` catch-all) end resolution with the SG's decision for admission. For media only a
+ * call skip or a session avoid ends it; the other final reasons are merged into each member's decision as
+ * dsd_tg_policy_apply_ota_final_blocks() merges them, so the encryption lockout only denies tuning and an explicit mode
+ * B/DE leaves a member playable only through a matching Hold (as a Hold plays a plain call's mode block).
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_P25_PATCH_POLICY_H_H
@@ -66,10 +68,10 @@ typedef struct {
  * @brief Resolve the talkgroup policy of a group call on supergroup @p sg.
  *
  * Every candidate is evaluated with dsd_tg_policy_evaluate_group_call() (@p src, @p encrypted, @p data_call) and then
- * passed to @p adjust (may be NULL). With final reasons on the SG, ADMIT ends with the SG decision; MEDIA ends with it
- * too unless the encryption lockout is the only final reason, which is merged into the winner as a tuning denial (its
- * media verdict stands). When no candidate is eligible the SG decision stands. A talkgroup that is no current patch's
- * SG resolves to itself.
+ * passed to @p adjust (may be NULL). With final reasons on the SG, ADMIT ends with the SG decision. MEDIA ends with it
+ * on a call skip or session avoid; otherwise each member's decision carries the SG's final reasons merged in (see the
+ * file comment). When no candidate is eligible the SG decision stands. A talkgroup that is no current patch's SG
+ * resolves to itself.
  *
  * @return 0 resolved, -1 for NULL @p out.
  */
@@ -78,13 +80,23 @@ int dsd_p25_patch_resolve(const dsd_opts* opts, const dsd_state* state, uint32_t
                           const void* adjust_ctx, dsd_p25_patch_resolution* out);
 
 /**
- * @brief The talkgroup a media consumer judges a live group call on supergroup @p sg by (keep-or-resolve).
+ * @brief How a media consumer judges a live group call on supergroup @p sg (keep-or-resolve).
  *
- * @p stored is the call's stored policy target. It is kept while it is a current member of @p sg, the SG has no final
- * reason that ends media resolution, and its decision passes dsd_p25_patch_media_eligible(); otherwise the answer is
- * dsd_p25_patch_resolve() for media (evaluated unencrypted, not a data call, without adjustment). Judged on current
- * state at every call, so expiry and edits need no mutation. @p sg itself when it is no current patch's SG.
+ * @p stored is the call's stored policy target. Unless a call skip or session avoid on the SG ends media resolution, it
+ * is kept while its decision passes dsd_p25_patch_media_eligible(): the SG itself on the SG's own decision, or a current
+ * member of @p sg on its decision with the SG's final reasons merged. Otherwise the answer is dsd_p25_patch_resolve()
+ * for media. Everything is evaluated unencrypted, not as a data call and without adjustment, as the media gates judge a
+ * call; @p out->decision is the decision the call is judged by. Judged on current state at every call, so expiry and
+ * edits need no mutation. Cost in group evaluations: none when @p sg is no current patch's SG, one when a stored SG is
+ * kept, two when a stored member is kept, else one plus the stored member when current plus every current member.
+ *
+ * @return 1 when @p out holds the answer; 0 when @p sg is no current patch's SG (@p out->policy_target is @p sg and
+ *         its decision was not evaluated); -1 for NULL @p out.
  */
+int dsd_p25_patch_media_resolve(const dsd_opts* opts, const dsd_state* state, uint32_t sg, uint32_t stored,
+                                uint32_t src, dsd_p25_patch_resolution* out);
+
+/** @brief The policy target of dsd_p25_patch_media_resolve() (@p sg when it is no current patch's SG). */
 uint32_t dsd_p25_patch_media_target(const dsd_opts* opts, const dsd_state* state, uint32_t sg, uint32_t stored,
                                     uint32_t src);
 

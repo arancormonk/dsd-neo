@@ -2299,6 +2299,15 @@ dsd_tg_policy_apply_ota_final_blocks(const dsd_opts* opts, const dsd_state* stat
     if (final == 0U) {
         return 0;
     }
+    dsd_tg_policy_merge_ota_final(decision, final);
+    return 1;
+}
+
+void
+dsd_tg_policy_merge_ota_final(dsd_tg_policy_decision* decision, uint32_t final) {
+    if (!decision || final == 0U) {
+        return;
+    }
     decision->block_reasons |= final;
     decision->tune_allowed = 0;
     decision->tg_tune_allowed = 0;
@@ -2310,7 +2319,6 @@ dsd_tg_policy_apply_ota_final_blocks(const dsd_opts* opts, const dsd_state* stat
         decision->tg_record_allowed = 0;
         decision->tg_stream_allowed = 0;
     }
-    return 1;
 }
 
 /* Whether a private call counts as known for record-unknown-only (issue #708). Either endpoint known makes the call

@@ -31,7 +31,7 @@ int dsd_audio_policy_tg_allows_audio(const dsd_tg_policy_decision* decision);
  * allow-list miss, and a stream flag only derived off (a B/DE or audio=off row) -- but never an explicit stream=off on
  * an audible talkgroup row, nor a radio row's stream=off. @p policy_target, when non-zero, is the talkgroup a group
  * call is judged on; 0 resolves it as the gates do: an active P25 call's keep-or-resolve target
- * (dsd_p25_patch_media_target(): its stored member while current and media-eligible, else the patch resolver's answer
+ * (dsd_p25_patch_media_resolve(): its stored target while it may play, else the patch resolver's answer
  * for media), else the call's policy target, else its over-the-air target. @p judged_target receives the
  * talkgroup the call was judged on (a private call's over-the-air target), 0 when it was not judged.
  *
