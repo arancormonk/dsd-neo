@@ -2160,11 +2160,14 @@ differently); a reception that never settled (fewer than 20 committed frames), s
 nothing; a source that first arrives a few frames in eases its gain in over one frame, and one named after the first
 commit changes nothing; a remembered radio is kept per protocol family, shared by the two slots and stored at every
 kind of reset, the 64 entries give way least recently used first, and only the active call's source counts. A radio
-that moves to the other slot while its last reception there has settled and not yet been stored opens at that settled
-gain, at once or eased in later (`test_memory_other_slot_settled`); when the radio is remembered already it opens half
-way from its memory, and that reception is still stored only once, at its own slot's reset
-(`test_memory_other_slot_moves_half_way`); another radio, the same ID in another family, or an unsettled reception
-there is not used (`test_memory_other_slot_not_used`).
+that moves to the other slot while its last reception there has settled and not yet been stored has that reception
+stored at the recall, once, and opens from it, at once or eased in later (`test_memory_other_slot_settled`); when the
+radio is remembered already it opens half way from its memory, and the first slot's reset stores nothing more
+(`test_memory_other_slot_moves_half_way`). Later receptions on the new slot open from the newer ones and converge on
+its level (`test_memory_other_slot_stored_once`), and the half step is taken once however often the radio opens there
+(`test_memory_other_slot_half_step_once`). Another radio, the same ID in another family, or an unsettled reception
+there is not used or stored at the recall, and its own reset stores what it ended at
+(`test_memory_other_slot_not_used`, `test_memory_other_slot_stores_only_what_counts`).
 `ENGINE_NO_CARRIER_RESET` checks the engine's side: every carrier boundary but a stream gap starts both slots over,
 the stream gap and the no-carrier pass keep them, and a TETRA stream gap inside one transmission keeps the level while
 the next talker starts it over at the opening gain (a TETRA codec seam plays the speech).
@@ -2496,12 +2499,13 @@ until the reception's estimate is established, 20 committed frames):
   or applied one replaced first, for the run only. A reception whose estimate was established stores its settled
   gain; a radio heard before moves half way to it. The first frame that names a remembered radio before anything has
   committed opens the reception at its gain: at once on the reception's first frame, over one frame later (a P25
-  Phase 1 source arrives about 180 ms in). When the other slot still holds the same radio's last reception, settled
-  and not yet stored (two-slot TDMA, nothing reset between), the lookup reads that slot's settled gain as the store
-  will, so the radio is recalled when it moves slots; the store still happens once, when that slot starts over. On
-  the recording 20 of the 150 transmissions started that way: two had no entry and would have opened at +8 dB where
-  the radio needed +1.4 and +26.8 dB, and 18 would have opened from an entry one transmission out of date (0.1-2.0 dB
-  off). The same radio's last gain predicted its next transmission to 4.3 dB rms, a fixed start to 9.4 dB.
+  Phase 1 source arrives about 180 ms in). A radio is not on both slots at once, so when the recall finds the other
+  slot holding the same radio's last reception, settled and not yet stored (two-slot TDMA, nothing reset between),
+  that reception is over: it is stored then, once, before the lookup, and its slot stores nothing more when it starts
+  over. On the recording nine receptions were stored this way (nine times a radio's transmission ended on one slot
+  and its next began on the other with nothing reset between); two of those radios had no entry yet and would have
+  opened at +8 dB where they needed +1.4 and +26.8 dB. The same radio's last gain predicted its next transmission to
+  4.3 dB rms, a fixed start to 9.4 dB.
 
 The decoder's frames were recorded before the AGC and replayed through the old and the new code (150 transmissions of
 0.6 s or more, the recording's radio IDs included, so with the talker memory; each transmission's level is the P.56
@@ -2540,9 +2544,10 @@ talker whose cut stays, the return stopping at the first commit, a pop eased bef
 held level coming to rest within 6 dB, the burst fallback after a pop, leaving fixed mode, a pop with the stage off,
 bursts that end in digital silence (`test_acq_silence_completes_bursts`), two-frame blips between silences that never
 add up to a burst, with the pauses as silence and as frames that do not learn (`test_acq_silence_ends_high_run`), and
-an `open_at()` ramp started partway through a frame, which runs one frame's length from the call instead of starting
-over at the next frame boundary (`test_open_at_mid_frame`; the digital chain opens between frames, so nothing it
-plays changed). `CORE_VOICE_LEVEL` holds the
+an `open_at()` ramp started partway through a frame, which runs one frame's length from the call unless that frame's
+decision moves the gain's target: a voiced frame or noise that moves nothing keeps it, a guard cut or a first step at
+a commit starts a new ramp (`test_open_at_mid_frame`, `test_open_at_mid_frame_learning`; the digital chain opens
+between frames, so nothing it plays changed). `CORE_VOICE_LEVEL` holds the
 opening gain and the talker memory, `DECODE_MBE_SPEECH_LEVEL_QUIET` a quiet, rough-voiced talker end to end, and the
 `DECODE_IQ_SPEECH_LEVEL_*` cases the off-air excerpts ("Speech level parity" above).
 

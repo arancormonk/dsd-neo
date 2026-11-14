@@ -645,20 +645,21 @@ Notes
   - Accuracy. Once a transmission has had about 2 s of speech, every talker measured plays within 3 dB of -20 dBFS,
     95% within 2 dB and 90% within 1.5 dB. Two calls can still differ by about 4 dB, and over one call the gain can
     move by up to 8-9 dB for some talkers.
-  - Speed. The gain first moves 120 ms into speech (six 20 ms frames of it in a row). On digital voice that first
-    step goes 60% of the way to the level the speech measures, each further voiced frame goes further (81% at 10
-    frames, 94% at 20), and after 20 such steps the gain follows slowly. On analog it moves by at most 2 dB per 20 ms.
-    Either usually settles within 2 s of speech. A transmission whose first syllables are much quieter than the rest
-    can play up to about 12 dB loud for its first second while the gain catches up. Pauses do not count, nor, on
-    analog, speech too noisy to be recognised, so a weak FM signal takes longer, and an open squelch with several
-    talkers can take tens of seconds. A transmission that is a single held sound of 300-500 ms ends before the gain
-    settles.
+  - Speed. On analog the gain first moves 120 ms into speech (six 20 ms frames of it in a row), then by at most
+    2 dB per 20 ms. On digital voice the first step that follows the speech's measured level comes at the same point
+    and goes 60% of the way to that level, each further voiced frame goes further (81% at 10 frames, 94% at 20), and
+    after 20 such steps the gain follows slowly; the loud-frame cut (see `-g`) and the burst rule (below) can move
+    the gain before that first step. Either usually settles within 2 s of speech. A transmission whose first
+    syllables are much quieter than the rest can play up to about 12 dB loud for its first second while the gain
+    catches up. Pauses do not count, nor, on analog, speech too noisy to be recognised, so a weak FM signal takes
+    longer, and an open squelch with several talkers can take tens of seconds. A transmission that is a single held
+    sound of 300-500 ms ends before the gain settles.
   - Short transmissions. A transmission with less than 120 ms of speech in a row plays at the start level on analog.
     On digital voice a talker whose speech never forms six voiced frames in a row (far from the microphone, a noisy
     room) is lifted another way: bursts of sound that rise and then fall, or stop into silence, raise the gain by 1 dB
     on each frame of sound until they play at about -17 dBFS. Steady noise, a tone, a step out of silence or short
     blips between silences do not count as a burst. A digital transmission with less than 120 ms of voiced speech in a
-    row and no such bursts plays at its opening gain.
+    row and no such bursts plays at its opening gain, or under it where a loud frame brought the gain down.
   - The digital opening. A talker heard for the first time opens at +8 dB. A loud one plays up to about 7 dB loud
     until the talker's first loud frame brings the gain down, 20-40 ms, with peaks held at -1 dBFS. A transmission
     that starts with a second or so of near-silence holds its opening gain through it, so the same happens when the
@@ -671,7 +672,7 @@ Notes
     several people share, or a radio in another hand, opens at the last talker's level, and two systems that use the
     same ID number in one run share it; the first voiced frames correct it. It is not saved between runs. On a
     two-slot carrier a radio that moves to the other slot opens at the gain its last transmission settled at on the
-    first slot, even before that slot has started over and stored it.
+    first slot: that transmission is remembered then, once, though the first slot has not started over.
   - Range. A talker more than 30 dB under the target at the start level (on digital voice 4 dB over `-g 1`, not the
     +8 dB opening) stays quiet; one more than 12 dB over it is held down by the -1 dBFS limiter.
   - Tones. A sound that holds one pitch and level for 240 ms or more is taken for a tone and teaches nothing, a long,
