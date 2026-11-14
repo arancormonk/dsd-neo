@@ -33,6 +33,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/received_identity.h>
@@ -8825,6 +8826,102 @@ test_patched_call_user_blocks_target_supergroup(void) {
     free(state);
     free(opts);
     remove(path);
+    return rc;
+}
+
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+/* A live patch on @p sg carrying @p count members, heard now. */
+static void
+seed_live_patch(dsd_state* state, uint16_t sg, const uint16_t* members, int count) {
+    const int idx = state->p25_patch_count++;
+    state->p25_patch_sgid[idx] = sg;
+    state->p25_patch_is_patch[idx] = 1U;
+    state->p25_patch_active[idx] = 1U;
+    state->p25_patch_wgid_count[idx] = (uint8_t)count;
+    for (int k = 0; k < count; k++) {
+        state->p25_patch_wgid[idx][k] = members[k];
+    }
+    dsd_p25_patch_touch_members(state, idx);
+}
+
+static int
+patched_call_kept(const char* tag, const dsd_opts* opts, const dsd_state* state, uint16_t sg, uint64_t epoch) {
+    char what[128];
+    dsd_call_snapshot call;
+    int muted = -1;
+    DSD_SNPRINTF(what, sizeof what, "%s: carrier kept", tag);
+    int rc = expect_int(what, g_cc_tune_calls, 0);
+    DSD_SNPRINTF(what, sizeof what, "%s: epoch kept", tag);
+    rc |= expect_true(what, dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                                && call.epoch == epoch);
+    DSD_SNPRINTF(what, sizeof what, "%s: audio kept", tag);
+    rc |= expect_true(what, dsd_audio_group_gate_mono(opts, state, sg, 0, &muted) == 0 && muted == 0);
+    return rc;
+}
+#endif
+
+/* A row edit judges a patched call through the patch resolver: turning the member the call was judged on off keeps a
+ * patch another listened member still carries (carrier, epoch and audio), and so does removing that member's row
+ * under the allow-list. */
+static int
+test_row_edit_keeps_a_patch_another_member_carries(void) {
+    int rc = 0;
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+    opts->trunk_use_allow_list = 1;
+    dsd_tg_policy_entry e;
+    rc |= expect_int("member row",
+                     dsd_tg_policy_make_exact_entry(2001, "A", "Member", DSD_TG_POLICY_SOURCE_IMPORTED, &e), 0);
+    rc |= expect_int("member row appended", dsd_tg_policy_append_exact(state, &e), 0);
+    rc |= expect_int("other row",
+                     dsd_tg_policy_make_exact_entry(2002, "A", "Other member", DSD_TG_POLICY_SOURCE_IMPORTED, &e), 0);
+    rc |= expect_int("other row appended", dsd_tg_policy_append_exact(state, &e), 0);
+    seed_active_p25_patched_voice(opts, state, 851000000L, 852000000L, 1101, 2001);
+    const uint16_t members[] = {2001, 2002};
+    seed_live_patch(state, 1101, members, 2);
+    dsd_call_snapshot call;
+    rc |= expect_true("patched call seeded", dsd_call_state_get(state, 0U, &call) > 0);
+    const uint64_t epoch = call.epoch;
+
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_app_tg_row_payload off = {
+        .id_start = 2001, .id_end = 2001, .fields = DSD_APP_TG_FIELD_LISTEN, .listen = 0, .table_index = -1};
+    dsd_tg_policy_table_version(state, &off.policy_context, &off.policy_generation);
+    rc |= expect_int("member off queued", dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &off, sizeof off),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("member off drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= patched_call_kept("member off", opts, state, 1101, epoch);
+
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_app_tg_range_payload rem = {.id_start = 2001, .id_end = 2001, .table_index = -1};
+    dsd_tg_policy_table_version(state, &rem.policy_context, &rem.policy_generation);
+    rc |= expect_int("member row remove queued", dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &rem, sizeof rem),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("member row remove drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_true("member row removed", dsd_tg_policy_entry_count(state) == 1U);
+    rc |= patched_call_kept("member row removed", opts, state, 1101, epoch);
+
+    // Preservation: once no listened member carries it, the edit releases the patch.
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_app_tg_row_payload last_off = {
+        .id_start = 2002, .id_end = 2002, .fields = DSD_APP_TG_FIELD_LISTEN, .listen = 0, .table_index = -1};
+    dsd_tg_policy_table_version(state, &last_off.policy_context, &last_off.policy_generation);
+    rc |=
+        expect_int("last member off queued", dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &last_off, sizeof last_off),
+                   DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("last member off drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("last member off releases the patch", g_cc_tune_calls, 1);
+    freeState(state);
+    free(state);
+    free(opts);
+#endif
     return rc;
 }
 
@@ -30365,6 +30462,7 @@ main(void) {
     rc |= test_foundation_commands();
     rc |= test_talkgroup_list_commands();
     rc |= test_patched_call_user_blocks_target_supergroup();
+    rc |= test_row_edit_keeps_a_patch_another_member_carries();
     rc |= test_config_group_path_reloads_before_persist(0);
     rc |= test_config_group_path_reloads_before_persist(1);
     rc |= test_group_import_refuses_unusable_files();

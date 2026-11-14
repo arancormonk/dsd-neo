@@ -37,6 +37,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/p25_patch.h>
+#include <dsd-neo/core/p25_patch_policy.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive_types.h>
@@ -7472,10 +7473,47 @@ tg_listen_evaluate_call(const dsd_opts* opts, const dsd_state* state, const dsd_
     return dsd_tg_policy_evaluate_group_call(opts, state, target, 0, 0, 0, decision);
 }
 
-/* Only mode/allow-list denial can change as a result of a row edit. A patched
- * P25 call is judged on the member WG its grant matched, plus the supergroup's
- * own final blocks (a mode row on the supergroup releases it; an allow-list miss
- * there does not, since a listed member is how patch-aware following admits it). */
+/* Whether @p call is a P25 group call on a live patch's supergroup, judged through the patch resolver. */
+static int
+tg_listen_call_is_patched(const dsd_state* state, const dsd_call_snapshot* call) {
+    return DSD_SYNC_IS_P25(call->protocol) && call->kind != DSD_CALL_KIND_PRIVATE_VOICE && call->ota_target_id != 0U
+           && call->ota_target_id <= UINT32_MAX && dsd_p25_patch_sg_live(state, (uint32_t)call->ota_target_id);
+}
+
+/* An active group call judged as admission judges it now. A P25 call on a live patch's supergroup goes through the
+ * patch resolver (the supergroup, then each current member), so a patch another listened member carries is kept;
+ * a final block on the supergroup ends that resolution with the supergroup's decision. Any other call is judged on its
+ * stored policy target (the member a past resolution chose) plus the supergroup's final blocks. */
+static int
+tg_listen_judge_call(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
+                     dsd_tg_policy_decision* decision) {
+    if (tg_listen_call_is_patched(state, call)) {
+        dsd_p25_patch_resolution resolution;
+        if (dsd_p25_patch_resolve(opts, state, (uint32_t)call->ota_target_id, 0, 0, 0, DSD_P25_PATCH_RESOLVE_ADMIT,
+                                  NULL, NULL, &resolution)
+            != 0) {
+            return -1;
+        }
+        *decision = resolution.decision;
+        return 0;
+    }
+    const uint64_t target = call->policy_target_id ? call->policy_target_id : call->ota_target_id;
+    if (target == 0U || target > UINT32_MAX) {
+        return -1;
+    }
+    if (tg_listen_evaluate_call(opts, state, call, (uint32_t)target, decision) != 0) {
+        return -1;
+    }
+    if (call->ota_target_id <= UINT32_MAX) {
+        (void)dsd_tg_policy_apply_ota_final_blocks(opts, state, (uint32_t)call->ota_target_id, (uint32_t)target, 0,
+                                                   decision);
+    }
+    return 0;
+}
+
+/* Only mode/allow-list denial can change as a result of a row edit. A mode row on a patch's supergroup releases it;
+ * an allow-list miss there does not while a listed member carries the patch, since that is how patch-aware following
+ * admits it. */
 static unsigned int
 tg_listen_blocked_slots(const dsd_opts* opts, const dsd_state* state) {
     unsigned int blocked = 0;
@@ -7485,17 +7523,9 @@ tg_listen_blocked_slots(const dsd_opts* opts, const dsd_state* state) {
             || call.kind == DSD_CALL_KIND_PRIVATE_VOICE) {
             continue;
         }
-        const uint64_t target = call.policy_target_id ? call.policy_target_id : call.ota_target_id;
-        if (target == 0U || target > UINT32_MAX) {
-            continue;
-        }
         dsd_tg_policy_decision decision;
-        if (tg_listen_evaluate_call(opts, state, &call, (uint32_t)target, &decision) != 0) {
+        if (tg_listen_judge_call(opts, state, &call, &decision) != 0) {
             continue;
-        }
-        if (call.ota_target_id <= UINT32_MAX) {
-            (void)dsd_tg_policy_apply_ota_final_blocks(opts, state, (uint32_t)call.ota_target_id, (uint32_t)target, 0,
-                                                       &decision);
         }
         if (decision.block_reasons & (DSD_TG_POLICY_BLOCK_MODE | DSD_TG_POLICY_BLOCK_ALLOWLIST)) {
             blocked |= 1U << slot;
