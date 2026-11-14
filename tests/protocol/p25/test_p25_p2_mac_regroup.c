@@ -26,7 +26,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -435,7 +434,18 @@ failed_crc_seed(void) {
 }
 
 static int
-check_failed_crc_case(const char* name, mac_builder build) {
+ga_recorded(const dsd_state* state, uint32_t rid, uint16_t tg) {
+    for (size_t i = 0; i < sizeof(state->p25_ga_rid) / sizeof(state->p25_ga_rid[0]); i++) {
+        if (state->p25_ga_rid[i] == rid && state->p25_ga_tg[i] == tg) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* ga_src > 0: the PDU names that source on SG_A, a group affiliation a CRC-good PDU records and a failed one must not. */
+static int
+check_failed_crc_case(const char* name, mac_builder build, uint32_t ga_src) {
     int rc = 0;
     char tag[96];
     unsigned char mac[24] = {0};
@@ -458,6 +468,11 @@ check_failed_crc_case(const char* name, mac_builder build) {
             DSD_SNPRINTF(tag, sizeof tag, "%s: CRC-good PDU applies (control)", name);
             rc |= expect_int(tag, patch_unchanged(before, state), 0);
         }
+        if (ga_src > 0) {
+            DSD_SNPRINTF(tag, sizeof tag, "%s: affiliation %s", name,
+                         crc_ok ? "recorded (control)" : "not recorded on failed CRC");
+            rc |= expect_int(tag, ga_recorded(state, ga_src, SG_A), crc_ok);
+        }
         free(before);
         free_state(state);
     }
@@ -467,14 +482,14 @@ check_failed_crc_case(const char* name, mac_builder build) {
 static int
 test_failed_crc_changes_no_patch(void) {
     int rc = 0;
-    rc |= check_failed_crc_case("moto add", build_failed_add);
-    rc |= check_failed_crc_case("moto delete", build_failed_delete);
-    rc |= check_failed_crc_case("harris kas", build_failed_kas);
-    rc |= check_failed_crc_case("moto cancel supergroup", build_failed_cancel);
-    rc |= check_failed_crc_case("moto create supergroup", build_failed_create);
-    rc |= check_failed_crc_case("moto sg voice", build_failed_moto_voice);
-    rc |= check_failed_crc_case("moto sg voice extended", build_failed_moto_voice_ext);
-    rc |= check_failed_crc_case("standard sg voice", build_failed_std_voice);
+    rc |= check_failed_crc_case("moto add", build_failed_add, 0);
+    rc |= check_failed_crc_case("moto delete", build_failed_delete, 0);
+    rc |= check_failed_crc_case("harris kas", build_failed_kas, 0);
+    rc |= check_failed_crc_case("moto cancel supergroup", build_failed_cancel, 0);
+    rc |= check_failed_crc_case("moto create supergroup", build_failed_create, 0);
+    rc |= check_failed_crc_case("moto sg voice", build_failed_moto_voice, 0);
+    rc |= check_failed_crc_case("moto sg voice extended", build_failed_moto_voice_ext, 0x22);
+    rc |= check_failed_crc_case("standard sg voice", build_failed_std_voice, 0);
     return rc;
 }
 
