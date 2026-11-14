@@ -128,9 +128,21 @@ ComboBox {
         }
         Component.onDestruction: Navigation.removeModal(popupLayer)
     }
+    // Issue #718: the word composing in a field is committed before the combo
+    // takes the focus on a press (a field that saves on editingFinished would
+    // save it without that word), and before the list opens by any other way
+    // (a screen reader's press, the keyboard). A pointer handler sees the press
+    // before the combo does, and never takes it.
+    PointHandler {
+        onActiveChanged: {
+            if (active)
+                Navigation.commitComposing(false);
+        }
+    }
     Connections {
         target: control.popup
         function onAboutToShow() {
+            Navigation.commitComposing(false);
             Navigation.addModal(popupLayer);
         }
         function onAboutToHide() {

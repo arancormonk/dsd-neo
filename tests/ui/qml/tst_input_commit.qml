@@ -74,6 +74,41 @@ Item {
             title: "More"
             onTapped: root.seenOnClick = field.text
         }
+        Ui.PlexCheckBox {
+            id: checkBox
+            text: "Voice only"
+            onToggled: root.seenOnClick = field.text
+        }
+        Ui.PlexToggle {
+            id: qtToggle
+            text: "Listen"
+            onToggled: root.seenOnClick = field.text
+        }
+        Ui.PlexSwitch {
+            id: plainSwitch
+            accessibleName: "Trunking"
+            onToggled: function (state) {
+                checked = state;
+                root.seenOnClick = field.text;
+            }
+        }
+        Ui.ToggleRow {
+            id: toggleRow
+            title: "Bias tee"
+            onToggled: function (state) {
+                checked = state;
+                root.seenOnClick = field.text;
+            }
+        }
+        Ui.PlexComboBox {
+            id: combo
+            width: parent.width
+            model: ["One", "Two"]
+            onActiveFocusChanged: {
+                if (activeFocus)
+                    root.seenOnClick = field.text;
+            }
+        }
     }
 
     TestCase {
@@ -167,6 +202,54 @@ Item {
             compare(field.input.preeditText, "We", "the keyboard keeps its word");
             compare(field.text, "");
             verify(field.input.activeFocus);
+        }
+        // A combo takes the focus, and opens its list, on the press: the word
+        // composing in the field is committed first, so a field that saves on
+        // editingFinished saves it whole (the scan entry gain, 33 not 3).
+        function test_combo_press_commits_the_word() {
+            field.text = "3";
+            field.input.cursorPosition = 1;
+            compose("3");
+            tap(combo);
+            compare(root.seenOnClick, "33", "the field held the whole word when the combo took the focus");
+            compare(field.text, "33");
+            compare(field.input.preeditText, "");
+            compare(root.finished, 1, "editingFinished saw the whole word once");
+            tryCompare(combo.popup, "opened", true);
+            combo.popup.close();
+            tryCompare(combo.popup, "visible", false);
+        }
+        // Opened without a press (TalkBack's double tap, a desktop reader's
+        // press), the list still commits the word first.
+        function test_combo_opened_without_a_press_commits_the_word() {
+            compose("Wee");
+            combo.popup.open();
+            compare(field.text, "Wee");
+            compare(field.input.preeditText, "");
+            tryCompare(combo.popup, "opened", true);
+            combo.popup.close();
+            tryCompare(combo.popup, "visible", false);
+        }
+        // Every choice control commits the word before it acts and before it
+        // takes the focus, so a field that saves on editingFinished or as it
+        // is typed keeps the whole word, as SegmentedControl does.
+        function test_choice_controls_commit_the_word_data() {
+            return [{tag: "PlexCheckBox"}, {tag: "PlexToggle"}, {tag: "PlexSwitch"}, {tag: "ToggleRow"},
+                    {tag: "PlexSwitch accessibility press", press: true},
+                    {tag: "ToggleRow accessibility press", press: true}];
+        }
+        function test_choice_controls_commit_the_word(data) {
+            var control = {PlexCheckBox: checkBox, PlexToggle: qtToggle, PlexSwitch: plainSwitch, ToggleRow: toggleRow}[data.tag.split(" ")[0]];
+            field.text = "Wee";
+            field.input.cursorPosition = 3;
+            compose("k");
+            if (data.press)
+                control.Accessible.pressAction();
+            else
+                tap(control);
+            compare(root.seenOnClick, "Week", "the control acted on the whole word");
+            compare(field.text, "Week");
+            compare(field.input.preeditText, "");
         }
         function test_back_commits_first() {
             compose("Weekend");

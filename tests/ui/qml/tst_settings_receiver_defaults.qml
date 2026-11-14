@@ -100,6 +100,25 @@ Item {
             compare(prefs.ppm, data.value);
         }
 
+        // Folding Radio defaults hides the field being typed in: the word is
+        // committed first, so the row saves it whole.
+        function test_folding_keeps_a_composing_ppm_word() {
+            var input = control("settingsPpm").input;
+            input.forceActiveFocus();
+            input.selectAll();
+            keyClick(Qt.Key_Backspace);
+            keyClick("1");
+            verify(testContext.composeText("2"));
+            var header = control("settingsRadioDefaultsHeader").parent;
+            var scroll = control("settingsScroll");
+            scroll.contentY = Math.max(0, header.mapToItem(scroll.contentItem, 0, 0).y - 20);
+            waitForRendering(screenLoader.item);
+            verify(input.activeFocus);
+            mouseClick(header, 10, header.height / 2);
+            verify(!screenLoader.item.advancedOpen);
+            compare(prefs.ppm, 12);
+        }
+
         // The ppm row names itself and its unit.
         function test_settingsPpmLabel() {
             compare(control("settingsPpm").label, "PPM correction");

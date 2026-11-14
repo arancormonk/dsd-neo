@@ -911,8 +911,13 @@ Rectangle {
                         Navigation.activationRelease(event);
                     }
                     function toggle() {
-                        if (enabled && Navigation.allows(advHeader))
-                            screen.advancedOpen = !screen.advancedOpen;
+                        if (!enabled || !Navigation.allows(advHeader))
+                            return;
+                        // Issue #718: folding hides the field being typed in,
+                        // which would drop its composing word; the word is
+                        // committed and the edit finished first, as a button does.
+                        Navigation.commitComposing(true);
+                        screen.advancedOpen = !screen.advancedOpen;
                     }
                     FocusFrame {}
 
@@ -1034,9 +1039,11 @@ Rectangle {
                         }
                         PlexTextField {
                             id: ppmField
-                            // What the engine runs: it holds the correction to +-200.
+                            // What the engine runs: it holds the correction to
+                            // +-200. A leading plus is the number too (an older
+                            // build took one); the text is kept as typed.
                             function parsedValue() {
-                                return screen.parseIntStrict(text, -200, 200);
+                                return screen.parseIntStrict(/^\+[0-9]/.test(text) ? text.substring(1) : text, -200, 200);
                             }
                             objectName: "scanTuner_ppm"
                             width: parent.width
@@ -1047,7 +1054,7 @@ Rectangle {
                             text: screen.ppmText
                             inputMethodHints: Qt.ImhFormattedNumbersOnly
                             input.validator: RegularExpressionValidator {
-                                regularExpression: /^-?[0-9]*$/
+                                regularExpression: /^[-+]?[0-9]*$/
                             }
                             error: isNaN(parsedValue()) ? qsTr("Enter a correction from -200 to 200 ppm.") : ""
                             input.onTextEdited: {

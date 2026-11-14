@@ -918,7 +918,13 @@ Item {
                     }
 
                     GatedTapHandler {
-                        onAllowedTap: screen.advancedOpen = !screen.advancedOpen
+                        // Issue #718: folding hides the field being typed in;
+                        // its composing word is committed and the edit
+                        // finished first, so the row saves the whole value.
+                        onAllowedTap: {
+                            Navigation.commitComposing(true);
+                            screen.advancedOpen = !screen.advancedOpen;
+                        }
                     }
                 }
 

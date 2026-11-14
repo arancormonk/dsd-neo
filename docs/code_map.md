@@ -12735,25 +12735,27 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `tst_wizard_gain.qml`, `tst_radio_gain_override.qml`, `tst_scan_row_edits.qml`, `tst_scan_list_screen.qml`,
     `tst_segmented_whole_words.qml`, `tst_a11y_text_reach.qml`.
   - Qt/Android receiver defaults (PPM and bandwidth): every place that edits them (Settings' Radio defaults, the system
-    editor, the scan list editor) runs what it shows. PPM takes a whole number from -200 to 200, the engine's own clamp,
-    with "Enter a correction from -200 to 200 ppm." outside it: Settings (`settingsPpm`, a `ValueRow` with `minimum`,
-    `maximum` and `rangeError`) writes only a value in range; the system editor's empty field and the scan list's App
-    default stay valid, and out-of-range text holds the step and the save. The bandwidth is `qml/BandwidthChoice.qml`, a
-    `PlexComboBox` of the eight widths both an RTL and an Airspy run (4, 6, 8, 12, 16, 24, 48, 72 kHz), with App default
-    first when `inheritable` (the caller's `value` 0 or less, reported as -1). The caller owns `value` and takes
-    `chosen(khz)`. Under App default it shows the caller's `inheritNote`: the system editor's says what App default runs
-    for its decode mode and source (`sessionArgs.effectiveBandwidthKhz(decodeFlag, sourceType, -1)`: 72 for TETRA,
-    issue #803), the scan list's what the app default runs on its source (`effectiveBandwidthKhz("", sourceType,
-    prefs.bandwidthKhz)`). A stored value that is not one of the eight (an older build took any number) is shown as its
-    own entry ("25 kHz"), after the widths, with "Runs at X kHz on an RTL-SDR, Y kHz on an Airspy."
-    (`effectiveBandwidthKhz("", "usb"|"airspy", value)`); nothing rewrites it until the user picks another width. That
-    entry stays offered after such a pick, so the combo's model does not change under the reader (a new model resets the
-    index and rebuilds every row, see "No changing text in a `ComboBox` model"); `reload()` takes the stored value
-    afresh, and each caller calls it where it loads another value (`openForAdd`/`openForFound`/`openForEdit`, the scan
-    list's `openFor`). A value changed from elsewhere (a Settings restore, a RadioReference import clearing a width
-    TETRA cannot use) reloads by itself. App default stays -1: opening or saving never turns it into a number. Names:
-    Settings `settingsBandwidth` (note `settingsBandwidthNote`), the system editor `systemBandwidthField` (draft
-    `bwText`, empty for App default; note `systemBandwidthNote`), the scan list `scanTuner_bandwidthKhz` (draft
+    editor, the scan list editor) runs what it shows. PPM takes a whole number from -200 to 200, the engine's own clamp
+    (in the system and scan list editors a leading plus too, which an older build's IntValidator took and the start path
+    drops, `normalized_ppm()`; the text is kept as stored), with "Enter a correction from -200 to 200 ppm." outside it:
+    Settings (`settingsPpm`, a `ValueRow` with `minimum`, `maximum` and `rangeError`) writes only a value in range; the
+    system editor's empty field and the scan list's App default stay valid, and out-of-range text holds the step and the
+    save. The bandwidth is `qml/BandwidthChoice.qml`, a `PlexComboBox` of the eight widths both an RTL and an Airspy run
+    (4, 6, 8, 12, 16, 24, 48, 72 kHz), with App default first when `inheritable` (the caller's `value` 0 or less,
+    reported as -1). The caller owns `value` and takes `chosen(khz)`. Under App default it shows the caller's
+    `inheritNote`: the system editor's says what App default runs for its decode mode and source
+    (`sessionArgs.effectiveBandwidthKhz(decodeFlag, sourceType, -1)`: 72 for TETRA, issue #803), the scan list's what
+    the app default runs on its source (`effectiveBandwidthKhz("", sourceType, prefs.bandwidthKhz)`). A stored value
+    that is not one of the eight (an older build took any number) is shown as its own entry ("25 kHz"), after the
+    widths, with "Runs at X kHz on an RTL-SDR, Y kHz on an Airspy." (`effectiveBandwidthKhz("", "usb"|"airspy",
+    value)`); nothing rewrites it until the user picks another width. That entry stays offered after such a pick, so the
+    combo's model does not change under the reader (a new model resets the index and rebuilds every row, see "No
+    changing text in a `ComboBox` model"); `reload()` takes the stored value afresh, and each caller calls it where it
+    loads another value (`openForAdd`/`openForFound`/`openForEdit`, the scan list's `openFor`). A value changed from
+    elsewhere (a Settings restore, a RadioReference import clearing a width TETRA cannot use) reloads by itself. App
+    default stays -1: opening or saving never turns it into a number. Names: Settings `settingsBandwidth` (note
+    `settingsBandwidthNote`), the system editor `systemBandwidthField` (draft `bwText`, empty for App default; note
+    `systemBandwidthNote`), the scan list `scanTuner_bandwidthKhz` (draft
     `bandwidthSet`/`bandwidthText`/`draft.bandwidthKhz`; note `scanBandwidthNote`). Tests:
     `tst_settings_receiver_defaults.qml`, `tst_wizard_bandwidth.qml`, `tst_wizard_gain.qml` (PPM),
     `tst_scan_list_screen.qml`, `tst_wizard_decode_chip.qml`, `tst_airspy_source_ui.qml`, `tst_a11y_text_reach.qml`.
@@ -14407,22 +14409,29 @@ Qt Quick frontend (`src/ui/qt`):
   `preeditText` as a commit and resets the input method. Callers: `activate()` of `OutlineButton`, `GradientButton`,
   `IconButton`, `DashedActionButton` and `BottomNav` (commit and finish editing: focus leaves the text field so
   `editingFinished` drafts, such as the profile editor's fallback algorithm, update before the action reads them; an
-  `OutlineButton` or `IconButton` with `finishesEditing: false` only commits the word, as the RadioReference
-  password's Show and "Check account" and the Systems search field's × do) and of `DecodeChip`, `FilterPill`, `SegmentedControl` segments and `DisclosureRow` (commit only);
-  `ModalSheet.requestDismiss()`; `Navigation.back()` before its focus clear; `Navigation.clearInput()` before it takes
-  the focus away (#831), so a sheet or layer that opens or closes by itself, as the incoming-file sheet does when a file
-  arrives while a field holds a composing word, never leaves a field that saves on `editingFinished` to save it without
-  that word (`tst_incoming_document.qml`). A button gated on a field's committed text puts that term in `inputValid`
-  (visuals dim on it) rather than `enabled`: its default `enabled` is `inputValid || Navigation.composing`, so it is
-  live while a word is composing, and a tap commits first and calls `clicked()` only if `inputValid` then holds;
-  otherwise it is disabled as before (accessibility and keyboard included), and a real guard (busy, permission) stays in
-  `enabled`. Callers: the profile editor's "Use this key" and "Use override", `KeySheet`'s apply, Scan list "Add
-  frequency", RadioReference Find/Open, the wizard's Continue/Save, Tone filter Apply and Explore's Start. Tests:
-  `UI_QT_INPUT_COMMIT`, `UI_QT_QML_CALL_LISTS` (`tst_input_commit.qml`, `tst_modal_sheet_outside_tap.qml`,
-  `tst_signal_search.qml`, `tst_settings_backup.qml`, `tst_csv_import_flow.qml`, `tst_talkgroup_edit_sheet.qml`,
-  `tst_modal_input.qml`, `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`, `tst_tone_filter_sheet.qml`,
-  `tst_scan_row_edits.qml`, `tst_spectrum_screen.qml`, `tst_scan_list_screen.qml`, `tst_radioreference_screen.qml`,
-  `tst_back_modals.qml`, `tst_wizard_encryption.qml`, `tst_main_overlay_layering.qml`, `tst_receiver_choice.qml`).
+  `OutlineButton` or `IconButton` with `finishesEditing: false` only commits the word, as the RadioReference password's
+  Show and "Check account" and the Systems search field's × do) and of `DecodeChip`, `FilterPill`, `SegmentedControl`
+  segments, `DisclosureRow`, `PlexSwitch` and `ToggleRow` (commit only); the press of `PlexComboBox`, `PlexCheckBox` and
+  `PlexToggle`, Qt Controls that take the focus on the press, so the commit runs in a `PointHandler`, which sees the
+  press first and never takes it (commit only; a field that saves as it is typed, as a scan entry's gain does, saved "3"
+  of "33" when a combo took the focus), and `PlexComboBox`'s list as it opens by any other way (a screen reader's
+  press); the Advanced headers of Settings' Radio defaults, the system editor and the scan list editor before they fold
+  (commit and finish editing: folding hides the field being typed in, and a hidden field loses the focus without
+  `editingFinished`); `ModalSheet.requestDismiss()`; `Navigation.back()` before its focus clear;
+  `Navigation.clearInput()` before it takes the focus away (#831), so a sheet or layer that opens or closes by itself,
+  as the incoming-file sheet does when a file arrives while a field holds a composing word, never leaves a field that
+  saves on `editingFinished` to save it without that word (`tst_incoming_document.qml`). A button gated on a field's
+  committed text puts that term in `inputValid` (visuals dim on it) rather than `enabled`: its default `enabled` is
+  `inputValid || Navigation.composing`, so it is live while a word is composing, and a tap commits first and calls
+  `clicked()` only if `inputValid` then holds; otherwise it is disabled as before (accessibility and keyboard included),
+  and a real guard (busy, permission) stays in `enabled`. Callers: the profile editor's "Use this key" and "Use
+  override", `KeySheet`'s apply, Scan list "Add frequency", RadioReference Find/Open, the wizard's Continue/Save, Tone
+  filter Apply and Explore's Start. Tests: `UI_QT_INPUT_COMMIT`, `UI_QT_QML_CALL_LISTS` (`tst_input_commit.qml`,
+  `tst_modal_sheet_outside_tap.qml`, `tst_signal_search.qml`, `tst_settings_backup.qml`, `tst_csv_import_flow.qml`,
+  `tst_talkgroup_edit_sheet.qml`, `tst_modal_input.qml`, `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`,
+  `tst_tone_filter_sheet.qml`, `tst_scan_row_edits.qml`, `tst_spectrum_screen.qml`, `tst_scan_list_screen.qml`,
+  `tst_radioreference_screen.qml`, `tst_back_modals.qml`, `tst_wizard_encryption.qml`, `tst_main_overlay_layering.qml`,
+  `tst_receiver_choice.qml`, `tst_settings_receiver_defaults.qml`, `tst_wizard_bandwidth.qml`).
 - QML plus C++ view-models (metrics, call history + per-view filters, saved systems, imported CSV files, app
   preferences, command bridge) that poll app-control on a timer; used by the Android app today and intended as the
   shared basis for a desktop GUI. `imported_files_model.{h,cpp}` is the library behind the CSV pickers: it copies

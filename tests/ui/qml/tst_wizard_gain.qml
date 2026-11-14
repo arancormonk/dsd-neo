@@ -228,7 +228,14 @@ Item {
                 {tag: "above", ppm: "201", valid: false},
                 {tag: "below", ppm: "-201", valid: false},
                 {tag: "old ceiling", ppm: "999", valid: false},
-                {tag: "sign only", ppm: "-", valid: false}
+                {tag: "sign only", ppm: "-", valid: false},
+                // An older build's IntValidator took a leading plus, and the
+                // engine reads it as the number (normalized_ppm()).
+                {tag: "plus", ppm: "+5", valid: true},
+                {tag: "plus highest", ppm: "+200", valid: true},
+                {tag: "plus above", ppm: "+201", valid: false},
+                {tag: "plus only", ppm: "+", valid: false},
+                {tag: "two signs", ppm: "+-5", valid: false}
             ];
         }
 
@@ -386,6 +393,21 @@ Item {
         // A saved value this editor refuses (an older build took PPM up to
         // +-999) shows its error at once rather than holding Continue behind a
         // closed pane.
+        // A system saved with "+5" (an older build's IntValidator took the
+        // sign) opens valid and folded, and saves its text as it was.
+        function test_saved_plus_ppm_opens_valid_and_is_kept() {
+            tc.wizard.openForEdit(addSystem(-1, "+5"));
+            verify(!tc.wizard.advancedOpen, "a valid system opens folded");
+            verify(tc.wizard.ppmValid());
+            tc.wizard.step = 1;
+            verify(tc.wizard.stepValid(), "+5 holds the tune step");
+            tc.wizard.advancedOpen = true;
+            compare(control("systemPpmField").error, "");
+            compare(tc.wizard.draftFingerprint(), tc.wizard.initialDraft);
+            tc.wizard.step = 2;
+            compare(save().ppm, "+5", "the stored text was rewritten");
+        }
+
         function test_refused_saved_value_opens_advanced() {
             tc.wizard.openForEdit(addSystem(-1, "500"));
             verify(tc.wizard.advancedOpen, "the refused PPM is shown");

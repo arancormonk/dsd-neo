@@ -26,6 +26,17 @@ Switch {
     readonly property bool navigationAllowed: Navigation.allows(control)
     Accessible.ignored: !navigationAllowed || !visible
     FocusFrame {}
+    // Issue #718: the word composing in a field is committed before this
+    // takes the focus on a press, as a choice made mid-word keeps the word
+    // (a field that saves on editingFinished would save it without it). A
+    // pointer handler sees the press before the control does, and never
+    // takes it.
+    PointHandler {
+        onActiveChanged: {
+            if (active)
+                Navigation.commitComposing(false);
+        }
+    }
     contentItem: Text {
         text: control.text
         font: control.font

@@ -108,6 +108,19 @@ Item {
             return savedSystems.get(row);
         }
 
+        // Folding Advanced hides the PPM field being typed in: the word is
+        // committed first, not dropped with the focus.
+        function test_folding_advanced_keeps_a_composing_ppm_word() {
+            openAdvanced();
+            var input = control("systemPpmField").input;
+            input.forceActiveFocus();
+            keyClick("1");
+            verify(testContext.composeText("2"));
+            control("wizardAdvancedHeader").Accessible.pressAction();
+            verify(!tc.wizard.advancedOpen);
+            compare(tc.wizard.ppmText, "12");
+        }
+
         // D6: App default and the eight widths, nothing to type.
         function test_offers_app_default_and_eight_widths() {
             openAdvanced();

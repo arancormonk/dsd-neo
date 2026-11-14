@@ -633,8 +633,11 @@ Item {
         return !rtlTuner || gainEditor.valid;
     }
 
+    // Empty, or a whole number from -200 to 200. A leading plus is the number
+    // too: an older build's IntValidator took one, and the start path reads
+    // it (normalized_ppm()); the stored text is kept as it is.
     function ppmInRange() {
-        return ppmText.length === 0 || (/^-?[0-9]+$/.test(ppmText) && Math.abs(Number(ppmText)) <= 200);
+        return ppmText.length === 0 || (/^[-+]?[0-9]+$/.test(ppmText) && Math.abs(Number(ppmText)) <= 200);
     }
 
     function ppmValid() {
@@ -1696,8 +1699,14 @@ Item {
                             Navigation.activationRelease(event);
                         }
                         function toggle() {
-                            if (enabled && Navigation.allows(advHeader))
-                                wizard.advancedOpen = !wizard.advancedOpen;
+                            if (!enabled || !Navigation.allows(advHeader))
+                                return;
+                            // Issue #718: folding hides the field being typed
+                            // in, which would drop its composing word; the word
+                            // is committed and the edit finished first, as a
+                            // button does.
+                            Navigation.commitComposing(true);
+                            wizard.advancedOpen = !wizard.advancedOpen;
                         }
                         FocusFrame {}
 
@@ -1809,14 +1818,15 @@ Item {
                             visible: wizard.rtlTuner
                             mono: true
                             placeholderText: String(prefs.ppm)
-                            // Signed whole numbers only: this string is
-                            // spliced verbatim into the rtl input spec, and a
-                            // hint alone does not constrain hardware
-                            // keyboards. ASCII digits, as a locale-aware
-                            // validator lets through text Number cannot read.
+                            // Signed whole numbers only (a leading plus too, see
+                            // ppmInRange()): this string goes into the rtl
+                            // input spec, and a hint alone does not constrain
+                            // hardware keyboards. ASCII digits, as a
+                            // locale-aware validator lets through text Number
+                            // cannot read.
                             inputMethodHints: Qt.ImhFormattedNumbersOnly
                             input.validator: RegularExpressionValidator {
-                                regularExpression: /^-?[0-9]*$/
+                                regularExpression: /^[-+]?[0-9]*$/
                             }
                             // What the engine runs: it clamps to +-200.
                             error: wizard.ppmInRange() ? "" : qsTr("Enter a correction from -200 to 200 ppm.")

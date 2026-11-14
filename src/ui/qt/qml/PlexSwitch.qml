@@ -12,8 +12,11 @@ Item {
     property bool interactive: true
     signal toggled(bool checked)
     function activate() {
-        if (enabled && interactive && Navigation.allows(control))
+        if (enabled && interactive && Navigation.allows(control)) {
+            // Issue #718: a choice made mid-word keeps the word.
+            Navigation.commitComposing(false);
             toggled(!checked);
+        }
     }
     // Held while it has the focus (see OutlineButton).
     activeFocusOnTab: (Navigation.allows(control) && enabled && interactive) || activeFocus

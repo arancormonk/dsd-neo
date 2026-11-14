@@ -1885,6 +1885,87 @@ Item {
             return same;
         }
 
+        // Issue #718 class: a combo tapped while a field holds a composing
+        // word commits the word first. The field saves as it is typed, so a
+        // gain of "3" composing "3" saved 3 dB, not 33, when the combo took
+        // the focus and the keyboard's word was dropped.
+        function tapComboWhileComposing(fieldName, typed, word, comboName) {
+            edit(fieldName, typed);
+            var field = control(fieldName);
+            var combo = control(comboName);
+            var scroll = control("scanListScroll");
+            var top = Math.min(field.mapToItem(scroll.contentItem, 0, 0).y, combo.mapToItem(scroll.contentItem, 0, 0).y);
+            scroll.contentY = Math.max(0, top - 40);
+            lastPointerPlace = null;
+            tryVerify(function () {
+                return settledForPointer(combo);
+            }, 2000, "the combo is in view and still");
+            verify(field.input.activeFocus);
+            verify(testContext.composeText(word), "the field holds the word as composing text");
+            compare(field.text, typed);
+            mouseClick(combo);
+            compare(field.input.preeditText, "");
+            compare(field.text, typed + word, "the composing word was dropped");
+            tryCompare(combo.popup, "opened", true);
+            combo.popup.close();
+            tryCompare(combo.popup, "visible", false);
+        }
+
+        function test_entry_gain_combo_keeps_a_composing_word() {
+            edit("scanListName", "Composing gain");
+            screen.addFrequency("Simplex", "p25", "851.5");
+            choose("scanEntryGainMode", 2);
+            tapComboWhileComposing("scanEntryGain", "3", "3", "scanEntryGainMode");
+            compare(screen.entries[0].gainDb, 33);
+            compare(control("scanEntryGainMode").currentIndex, 2);
+        }
+
+        // Folding Advanced hides the field being typed in: the word is
+        // committed first, not dropped with the focus.
+        // A list saved with "+5" (an older build took the sign) opens valid,
+        // saves its text as it was, and "+201" is still refused.
+        function test_plus_ppm_is_a_correction() {
+            verify(scanLists.add({name: "Plus PPM", isDraft: true, ppm: "+5", entries: []}));
+            screen.openFor(0);
+            control("scanAdvancedToggle").Accessible.pressAction();
+            compare(control("scanPpmMode").currentIndex, 1);
+            compare(control("scanTuner_ppm").text, "+5");
+            compare(control("scanTuner_ppm").error, "");
+            compare(screen.fingerprint(), screen.initialDraft);
+            control("scanSaveDraft").Accessible.pressAction();
+            compare(closedSpy.count, 1, screen.validationText);
+            compare(scanLists.get(0).ppm, "+5");
+            screen.openFor(0);
+            screen.advancedOpen = true;
+            edit("scanTuner_ppm", "+201");
+            compare(control("scanTuner_ppm").error, "Enter a correction from -200 to 200 ppm.");
+            compare(screen.draft.ppm, "");
+            edit("scanTuner_ppm", "+12");
+            compare(control("scanTuner_ppm").error, "");
+            compare(screen.draft.ppm, "+12");
+        }
+
+        function test_folding_advanced_keeps_a_composing_ppm_word() {
+            edit("scanListName", "Fold composing");
+            control("scanAdvancedToggle").Accessible.pressAction();
+            control("scanPpmMode").selected(1);
+            edit("scanTuner_ppm", "1");
+            verify(testContext.composeText("2"));
+            control("scanAdvancedToggle").Accessible.pressAction();
+            verify(!screen.advancedOpen);
+            compare(screen.ppmText, "12");
+            compare(screen.draft.ppm, "12");
+        }
+
+        function test_bandwidth_combo_keeps_a_composing_ppm_word() {
+            edit("scanListName", "Composing PPM");
+            control("scanAdvancedToggle").Accessible.pressAction();
+            control("scanPpmMode").selected(1);
+            tapComboWhileComposing("scanTuner_ppm", "1", "2", "scanTuner_bandwidthKhz");
+            compare(screen.draft.ppm, "12");
+            compare(screen.ppmText, "12");
+        }
+
         function test_skip_silent_pointer_click() {
             edit("scanListName", "Pointer");
             control("scanAdvancedToggle").Accessible.pressAction();
