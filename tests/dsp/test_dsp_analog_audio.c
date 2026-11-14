@@ -17,6 +17,7 @@
 #include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/analog_voice.h>
+#include <dsd-neo/dsp/speech_agc.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -88,9 +89,9 @@ fixture_free(fixture* f) {
 }
 
 /* The start gains over -n 50 (spec D6), dB. */
-static const double k_fm_narrow_db = 4.537;
-static const double k_fm_wide_db = -1.482;
-static const double k_am_db = -2.553;
+static const double k_fm_narrow_db = 8.537;
+static const double k_fm_wide_db = 2.518;
+static const double k_am_db = 1.447;
 
 /* The decode clock as a replay runs it: each call reads the time of its last sample, from the samples fed since
    clock_start() and the pauses since. Frozen, samples go by with no time passing (input read faster than real time). */
@@ -350,8 +351,8 @@ test_fixed_gain_through_bandpass(void) {
 }
 
 /* On auto a steady tone is no speech (issue #518, D9): the AGC turns it away as a tone within 12 frames (240 ms),
-   having moved at most the 7 dB its first commits allow from the start gain; then, with nothing committed for a second,
-   the attenuator eases it down to -36 dBFS and holds it there, whatever the tone's level. The old AGC normalised any
+   having moved at most the 14 dB its first commits allow from the start gain; then, with nothing committed for a second,
+   the attenuator eases it down to -32 dBFS and holds it there, whatever the tone's level. The old AGC normalised any
    tone to -10 dBFS peak (-13 dBFS RMS), a quiet one with +18 dB. */
 static void
 test_auto_tone_turned_away(void) {
@@ -368,14 +369,14 @@ test_auto_tone_turned_away(void) {
         double phase = 0.0;
         (void)run_tone(&f, DSD_ANALOG_AUDIO_CHAIN_MONITOR, DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR, 1000.0, amps[a], 0.3,
                        DSD_ANALOG_AUDIO_LEARN, &phase);
-        CHECK(fabs((double)f.state->aout_gainA - k_fm_narrow_db) <= 7.0, "tone %.3f moved the gain to %.2f dB", amps[a],
-              (double)f.state->aout_gainA);
+        CHECK(fabs((double)f.state->aout_gainA - k_fm_narrow_db) <= 14.0, "tone %.3f moved the gain to %.2f dB",
+              amps[a], (double)f.state->aout_gainA);
         const double peak = run_tone(&f, DSD_ANALOG_AUDIO_CHAIN_MONITOR, DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR, 1000.0,
                                      amps[a], 6.0, DSD_ANALOG_AUDIO_LEARN, &phase);
         const float settled = f.state->aout_gainA;
         /* RMS from the last half second's peak: a sine's crest is 3.01 dB. */
         const double rms = db(peak / 32768.0) - 3.0103;
-        CHECK(rms > -37.0 && rms < -35.0, "tone %.3f eased to %.2f dBFS RMS", amps[a], rms);
+        CHECK(rms > -33.0 && rms < -31.0, "tone %.3f eased to %.2f dBFS RMS", amps[a], rms);
         (void)run_tone(&f, DSD_ANALOG_AUDIO_CHAIN_MONITOR, DSD_ANALOG_AUDIO_SOURCE_RTL_MONITOR, 1000.0, amps[a], 2.0,
                        DSD_ANALOG_AUDIO_LEARN, &phase);
         CHECK(fabsf(f.state->aout_gainA - settled) < 1e-4f, "tone %.3f kept moving the gain: %.3f -> %.3f dB", amps[a],
@@ -384,7 +385,7 @@ test_auto_tone_turned_away(void) {
     fixture_free(&f);
 }
 
-/* On auto, established speech plays at the AGC's -24 dBFS speech target (P.56, within 3 dB), from a quiet talker and
+/* On auto, established speech plays at the AGC's -20 dBFS speech target (P.56, within 3 dB), from a quiet talker and
    from a hot one, and the published gain says how far above -n 50. */
 static void
 test_auto_levels_speech(void) {
@@ -400,7 +401,8 @@ test_auto_levels_speech(void) {
         chain_feed(&f, DSD_ANALOG_AUDIO_SOURCE_PCM16, rate, x, n, 960U, NULL, DSD_ANALOG_AUDIO_LEARN, NULL);
         const size_t from = secs(rate, 5.0);
         const double out = dsd_test_p56_level_dbfs(x + from, n - from, rate, NULL);
-        CHECK(fabs(out + 24.0) <= 3.0, "talker at %.0f dBFS plays at %.2f dBFS P.56", levels[l], out);
+        CHECK(fabs(out - (double)DSD_SPEECH_AGC_TARGET_DBFS) <= 3.0, "talker at %.0f dBFS plays at %.2f dBFS P.56",
+              levels[l], out);
         CHECK(peak_of(x, n) <= 29204.0, "talker at %.0f dBFS peaks at %.1f", levels[l], peak_of(x, n));
         const double applied = out - dsd_test_p56_level_dbfs(in + from, n - from, rate, NULL);
         CHECK(fabs((double)f.state->aout_gainA - applied) < 3.0, "published %.2f dB, applied about %.2f dB",
@@ -1009,6 +1011,31 @@ open_squelch_noise(int rate, size_t n, double rms_dbfs, uint64_t seed) {
     return x;
 }
 
+/* Open-squelch hiss after a very quiet talker: the talker teaches the gain up near the top of its range (start + 30 dB),
+   and then 15 s of hot receiver hiss with no speech in it must still ease down to -30 dBFS or less. The attenuator's
+   reach covers the whole range, so the limiter is not left holding the hiss at the ceiling. */
+static void
+test_open_squelch_noise_after_quiet_talker_eased_down(void) {
+    fixture f = fixture_new();
+    f.opts->use_pbf = 1;
+    const int rate = 48000;
+    const size_t n_speech = secs(rate, 12.0);
+    const size_t n_hiss = secs(rate, 15.0);
+    float* x = alloc_f(n_speech + n_hiss);
+    float* speech = talker(rate, n_speech, -50.0, 43U);
+    DSD_MEMCPY(x, speech, n_speech * sizeof(float));
+    float* hiss = open_squelch_noise(rate, n_hiss, -13.0, 44U);
+    DSD_MEMCPY(x + n_speech, hiss, n_hiss * sizeof(float));
+    chain_feed(&f, DSD_ANALOG_AUDIO_SOURCE_PCM16, rate, x, n_speech + n_hiss, 960U, NULL, DSD_ANALOG_AUDIO_LEARN, NULL);
+    const size_t last = secs(rate, 2.0);
+    const double got = rms_dbfs(x + n_speech + n_hiss - last, last);
+    CHECK(got <= -30.0, "hiss after a quiet talker plays at %.2f dBFS RMS", got);
+    free(hiss);
+    free(speech);
+    free(x);
+    fixture_free(&f);
+}
+
 /* B2 (issue #518): open-squelch noise is not normalised to speech level. 10 s of hot receiver noise (noise_floor reads
    -12.8 dBFS RMS at -n 50) on the default open squelch: no speech in it, so the AGC's attenuator eases it down to
    -30 dBFS or less. The old AGC brought it to its -10 dBFS peak target (-21 dBFS RMS), louder than speech. */
@@ -1421,6 +1448,7 @@ main(void) {
     test_short_rounds_and_limits();
     test_hiss_in_pauses_not_lifted();
     test_open_squelch_noise_eased_down();
+    test_open_squelch_noise_after_quiet_talker_eased_down();
     test_heavy_deemph_noise_eased_down();
     test_next_transmission_after_noise();
     test_rollback_at_close();

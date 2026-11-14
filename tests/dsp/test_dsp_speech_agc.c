@@ -492,7 +492,7 @@ static const talker_t k_talkers[] = {
     {8000, 0.0f, 215.0, -19.0, 10},    {8000, 0.0f, 230.0, -36.0, 11},    {8000, 0.0f, 245.0, -29.0, 12},
     {8000, 0.0f, 260.0, -22.0, 13},    {8000, 0.0f, 280.0, -31.0, 14},    {8000, 0.0f, 110.0, -24.0, 15},
     {8000, 0.0f, 210.0, -35.0, 16},    {22050, 0.0f, 130.0, -28.0, 17},   {22050, 0.0f, 220.0, -21.0, 18},
-    {48000, 4.537f, 120.0, -32.0, 19}, {48000, 4.537f, 200.0, -38.0, 20},
+    {48000, 8.537f, 120.0, -32.0, 19}, {48000, 8.537f, 200.0, -38.0, 20},
 };
 
 typedef struct {
@@ -508,7 +508,7 @@ typedef struct {
 } talker_result;
 
 /* The gain law on every frame: a committing frame steps G by clamp(want - G, -dn, +up), want = clamp(T - S, G0 - 12,
-   G0 + 15), up = dn = 1 dB for the first 20 steps, then +0.12 / -0.20; every other frame leaves G alone. */
+   G0 + 30), up = dn = 2 dB for the first 20 steps, then +0.12 / -0.20; every other frame leaves G alone. */
 static void
 check_gain_law(const dsd_speech_agc* agc, const trace_t* t, talker_result* r) {
     for (size_t i = 0; i < t->count; i++) {
@@ -520,11 +520,11 @@ check_gain_law(const dsd_speech_agc* agc, const trace_t* t, talker_result* r) {
         }
         r->steps++;
         float want = agc->target_db - f->s;
-        const float lo = agc->start_gain_db - 12.0f;
-        const float hi = agc->start_gain_db + 15.0f;
+        const float lo = agc->start_gain_db - DSD_SPEECH_AGC_MAX_CUT_DB;
+        const float hi = agc->start_gain_db + DSD_SPEECH_AGC_MAX_BOOST_DB;
         want = clampf(want, lo, hi);
-        const float up = prev_steps < 20 ? 1.0f : 0.12f;
-        const float dn = prev_steps < 20 ? 1.0f : 0.20f;
+        const float up = prev_steps < 20 ? 2.0f : 0.12f;
+        const float dn = prev_steps < 20 ? 2.0f : 0.20f;
         const float dg = clampf(want - f->g_before, -dn, up);
         r->law_bad += fabsf((f->g - f->g_before) - dg) > 2e-4f || f->steps != prev_steps + 1;
     }
@@ -628,7 +628,7 @@ test_first_commit_ramp(void) {
     const float before = agc->g_last;
     assert(fabsf(log10f(before)) < 1e-6f); /* the start gain through the committing frame */
     const float want = agc->learned.gain_db + agc->learned.atten_db;
-    assert(fabsf(want - 1.0f) < 1e-5f); /* one start-up step up */
+    assert(fabsf(want - 2.0f) < 1e-5f); /* one start-up step up */
     float prev = before;
     for (size_t i = 0; i < F; i++) {
         dsd_speech_agc_process(agc, in + p + i, 1, 1, 1, 0);
@@ -825,8 +825,8 @@ test_steady_sounds_rejected(void) {
                 /* A speech run may carry into the sound mid-call; either way nothing commits after its 12th frame. */
                 assert(steps <= DSD_SPEECH_AGC_STATIONARY_FRAMES);
                 assert(last < 0 || last - first <= DSD_SPEECH_AGC_STATIONARY_FRAMES - 1);
-                /* At most the run of six and six single commits, one start-up step (1 dB) each. */
-                assert(fabsf(dg) <= 7.0f);
+                /* At most the run of six and six single commits, one start-up step (2 dB) each. */
+                assert(fabsf(dg) <= 14.0f);
                 trace_free(&t);
                 free(x);
             }
@@ -986,7 +986,7 @@ run_hiss(dsd_speech_agc* agc, int rate, dsd_test_noise_kind kind, double db, dou
 static void
 test_floor_recovery_after_long_hiss(void) {
     const int rate = 48000;
-    const float g0 = 4.537f;
+    const float g0 = 8.537f;
 
     static const struct {
         dsd_test_noise_kind kind;
@@ -1050,7 +1050,7 @@ test_floor_recovery_after_long_hiss(void) {
 static void
 test_veto_floor_recovery_after_long_hiss(void) {
     const int rate = 48000;
-    const float g0 = 4.537f;
+    const float g0 = 8.537f;
     const size_t n = secs(rate, 60.0);
     const size_t tail = secs(rate, 5.0);
     float* x = alloc_f(n);
@@ -1173,7 +1173,7 @@ test_noise_after_speech_and_snr(void) {
         for (size_t j = 0; j < n; j++) {
             y[j] = clean[j] * g[j];
         }
-        const double err = p56(y + from, n - from, rate) + 24.0;
+        const double err = p56(y + from, n - from, rate) - (double)DSD_SPEECH_AGC_TARGET_DBFS;
         if (i == 0) {
             clean_err = err;
             /* Pause hold: across every pause of at least 0.5 s the gain moves by at most 0.5 dB. */
@@ -1227,7 +1227,7 @@ static void
 test_attenuator_hiss_and_quieting(void) {
     const int rate = 48000;
     const size_t F = (size_t)frame_len(rate);
-    dsd_speech_agc* agc = new_agc(rate, 4.537f);
+    dsd_speech_agc* agc = new_agc(rate, 8.537f);
     learn_talker(agc, rate, 5.0, 100, -30.0, 125.0);
     const dsd_speech_agc_learned before = agc->learned;
     const size_t nh = secs(rate, 10.0);
@@ -1267,7 +1267,7 @@ static void
 test_attenuator_release_on_speech(void) {
     const int rate = 48000;
     const size_t F = (size_t)frame_len(rate);
-    dsd_speech_agc* agc = new_agc(rate, 4.537f);
+    dsd_speech_agc* agc = new_agc(rate, 8.537f);
     learn_talker(agc, rate, 6.0, 103, -38.0, 180.0);
     const float g = agc->learned.gain_db;
     const size_t n = secs(rate, 9.0);
@@ -1309,7 +1309,7 @@ typedef struct {
 static hiss_run
 run_open_squelch(const float* x, float* y, size_t n, int veto) {
     const int rate = 48000;
-    dsd_speech_agc* agc = veto ? new_analog_agc(rate, 4.537f) : new_agc(rate, 4.537f);
+    dsd_speech_agc* agc = veto ? new_analog_agc(rate, 8.537f) : new_agc(rate, 8.537f);
     DSD_MEMCPY(y, x, n * sizeof(float));
     trace_t t;
     trace_init(&t, n / (size_t)agc->frame_len);
@@ -1357,7 +1357,7 @@ test_noise_veto_hiss(void) {
             }
         }
     }
-    dsd_speech_agc* agc = new_agc(rate, 4.537f);
+    dsd_speech_agc* agc = new_agc(rate, 8.537f);
     assert(agc->noise_veto == 0);
     dsd_speech_agc_set_noise_veto(agc, 7);
     dsd_speech_agc_reset(agc);
@@ -1524,7 +1524,7 @@ run_traced_switch(dsd_speech_agc* agc, float* buf, size_t n, size_t at, flags_t 
 static void
 test_rollback_matches_control(void) {
     const int rate = 48000;
-    const float g0 = 4.537f;
+    const float g0 = 8.537f;
     const size_t F = (size_t)frame_len(rate);
     static const size_t gaps[] = {1, 100, 480, 2880, 48000}; /* the last two: 3 frames and 1 s */
     for (int k = 1; k <= 5; k++) {
@@ -1657,17 +1657,17 @@ test_fixed_to_auto_then_close(void) {
     const int rate = 8000;
     const size_t F = (size_t)frame_len(rate);
     dsd_speech_agc* agc = new_agc(rate, 0.0f);
-    learn_talker(agc, rate, 4.0, 220, -24.0, 140.0); /* auto settles near 0 dB */
+    learn_talker(agc, rate, 4.0, 220, -20.0, 140.0); /* auto settles near 0 dB */
     const float g_auto = agc->learned.gain_db;
     dsd_speech_agc_set_fixed(agc, 4.0f); /* +12.04 dB */
-    learn_talker(agc, rate, 1.0, 221, -24.0, 140.0);
+    learn_talker(agc, rate, 1.0, 221, -20.0, 140.0);
     dsd_speech_agc_set_fixed(agc, 0.0f);
     const float g_switch = agc->learned.gain_db;
     assert(fabsf(g_switch - 12.0412f) < 1e-3f && fabsf(g_auto - g_switch) > 6.0f);
     const size_t n = 4 * F;
     float* x = alloc_f(n);
     uint8_t* learn = alloc_u8(n);
-    speech_into(x, n, rate, 222, -24.0, 140.0, 0.0);
+    speech_into(x, n, rate, 222, -20.0, 140.0, 0.0);
     DSD_MEMSET(learn, 1, 3 * F);
     dsd_speech_agc_process_runs(agc, x, n, learn); /* 3 frames, then the close */
     SAY("fixed -> auto: auto %+.2f dB, switch %+.2f dB, after a close 3 frames later %+.2f dB\n", (double)g_auto,
@@ -1884,7 +1884,7 @@ test_partition_identity(void) {
         for (int mode = 0; mode < 3; mode++) {
             const int veto = mode == 2;
             const int runs = mode != 0;
-            const float g0 = runs ? 4.537f : 0.0f;
+            const float g0 = runs ? 8.537f : 0.0f;
             s.x = veto ? hissy : plain;
             float* yref = alloc_f(s.n);
             dsd_speech_agc* ref = drive_fresh(&s, rate, g0, veto, runs, yref, s.n);
@@ -2150,21 +2150,21 @@ test_fixed_mode_and_start_gain(void) {
     }
     assert(agc->learned.commits == learned.commits && agc->learned.steps == learned.steps);
     assert(same_bits(&agc->learned.level_db, &learned.level_db, sizeof(float)));
-    /* Leaving fixed mode: x100 (40 dB) clamps to the start gain + 15 dB. */
+    /* Leaving fixed mode: x100 (40 dB) clamps to the start gain + 30 dB. */
     dsd_speech_agc_set_fixed(agc, 100.0f);
     dsd_speech_agc_set_fixed(agc, 0.0f);
-    assert(fabsf(agc->learned.gain_db - 15.0f) < 1e-5f && agc->learned.atten_db == 0.0f);
+    assert(fabsf(agc->learned.gain_db - DSD_SPEECH_AGC_MAX_BOOST_DB) < 1e-5f && agc->learned.atten_db == 0.0f);
     assert(agc->learned.commits == learned.commits);
-    assert(fabsf(20.0f * log10f(agc->g_cur) - 15.0f) < 1e-4f);
+    assert(fabsf(20.0f * log10f(agc->g_cur) - DSD_SPEECH_AGC_MAX_BOOST_DB) < 1e-4f);
     dsd_speech_agc_set_fixed(agc, 0.5f);
     dsd_speech_agc_set_fixed(agc, -1.0f); /* anything not positive is auto */
     assert(!agc->fixed && fabsf(agc->learned.gain_db + 6.0206f) < 1e-3f);
     /* The start gain applies from the next reset. */
-    dsd_speech_agc_set_start_gain_db(agc, 4.537f);
+    dsd_speech_agc_set_start_gain_db(agc, 8.537f);
     assert(fabsf(agc->start_gain_db) < 1e-6f);
     dsd_speech_agc_reset(agc);
-    assert(fabsf(agc->learned.gain_db - 4.537f) < 1e-6f && fabsf(dsd_speech_agc_gain_db(agc) - 4.537f) < 1e-4f);
-    assert(fabsf(agc->abs_floor_db - (-24.0f - 4.537f - 60.0f)) < 1e-4f);
+    assert(fabsf(agc->learned.gain_db - 8.537f) < 1e-6f && fabsf(dsd_speech_agc_gain_db(agc) - 8.537f) < 1e-4f);
+    assert(fabsf(agc->abs_floor_db - (-20.0f - 8.537f - 60.0f)) < 1e-4f);
     assert(fabsf(agc->learned.noise_floor_db - agc->abs_floor_db) < 1e-6f);
     free(agc);
     free(y);

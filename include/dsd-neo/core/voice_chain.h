@@ -32,11 +32,15 @@ extern "C" {
 #endif
 
 /** The digital voice high-pass (`-v 0x8`): a 2nd-order Butterworth high-pass at this corner on 8 kHz frames. */
-#define DSD_VOICE_HPF_CORNER_HZ 300.0
+#define DSD_VOICE_HPF_CORNER_HZ       300.0
 /** The rate the digital voice frames, and so the high-pass, run at. */
-#define DSD_VOICE_HPF_RATE_HZ   8000.0
+#define DSD_VOICE_HPF_RATE_HZ         8000.0
 /** Samples per voice frame. */
-#define DSD_VOICE_FRAME_SAMPLES 160
+#define DSD_VOICE_FRAME_SAMPLES       160
+/** The gain, dB over the decoder's own level (the `-g 1` reference, which DVSI's decoder plays at about -24 dBFS P.56),
+    that each slot's speech AGC starts a reception at, so speech at the reference level starts at the -20 dBFS target.
+    Tone frames play at no more than it. */
+#define DSD_VOICE_LEVEL_START_GAIN_DB 4.0f
 
 /** What a synthesized voice frame carries, as its decoder knows it. */
 typedef enum {
@@ -78,7 +82,8 @@ int dsd_voice_frame_may_learn(const dsd_voice_frame_info* info);
  *
  * @p slot picks the filter and AGC state, whatever buffer holds @p frame (X2-TDMA synthesizes both timeslots into the
  * left buffer). With `-g 0` (`audio_gain`, slot 2 `audio_gainR`) the AGC aims the slot's speech at
- * DSD_SPEECH_AGC_TARGET_DBFS from the start gain, 0 dB (the `-g 1` level, the decoder's own), learning only from frames
+ * DSD_SPEECH_AGC_TARGET_DBFS from the start gain, DSD_VOICE_LEVEL_START_GAIN_DB over the `-g 1` level (the decoder's
+ * own), learning only from frames
  * dsd_voice_frame_may_learn() takes; a tone frame plays at no more than the start gain; an undecodable one never
  * teaches, and when the slot's frames turn decodable again its limiter starts over. A `-g` above 0 is a fixed multiplier
  * through the AGC's limiter (DSD_SPEECH_AGC_CEILING_DBFS); switching back to auto keeps what the AGC learned and starts

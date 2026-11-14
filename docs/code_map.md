@@ -2844,9 +2844,9 @@ suite runs under this compiler.
   through its slot's chain exactly once, in place, before anything reads it: the digital high-pass (`use_hpf_d`,
   `-v 0x8`, off by default since issue #518 D1; a 2nd-order Butterworth at 300 Hz, unity in the voice band,
   `dsd_voice_hpf_*()` in `dsd_misc.c`), then the slot's speech level (issue #518, `src/core/audio/voice_level.c`: the
-  slot's `dsd_speech_agc` at 8 kHz, start gain 0 dB, target -24 dBFS, ceiling -1 dBFS; a fixed `-g` multiplier
-  `audio_gain`/`audio_gainR` through its limiter, unity below 0 with no AGC at all), then saturation to the int16 range
-  (`dsd_voice_chain_run()` in `dsd_audio.c`). It runs whatever the output format, output type, mute or preset say,
+  slot's `dsd_speech_agc` at 8 kHz, start gain `DSD_VOICE_LEVEL_START_GAIN_DB` (+4 dB), target -20 dBFS, ceiling
+  -1 dBFS; a fixed `-g` multiplier `audio_gain`/`audio_gainR` through its limiter, unity below 0 with no AGC at all),
+  then saturation to the int16 range (`dsd_voice_chain_run()` in `dsd_audio.c`). It runs whatever the output format, output type, mute or preset say,
   before consumer gates, and never decides who hears a frame; the gates still do. Producers: the vocoder at the top of
   its post stage (`mbe_post_audio_and_recording()`, on the buffer and slot `processMbeFrameInternal()` names for the
   decode: the right buffer for the slot path's slot 2, the left one otherwise, with X2-TDMA's timeslot as the slot), MBE
@@ -2900,7 +2900,7 @@ suite runs under this compiler.
   resets kept and taken, fixed and auto, tones, decodability per slot), `ENGINE_NO_CARRIER_RESET` (carrier boundaries,
   stream gap, no-carrier, a TETRA stream gap against a new talker), `ENGINE_TRUNK_SCAN`, `APP_P25_CC_SELECTION`,
   `CORE_MBE_FILE_IO` (file start), `APP_CONTROL_SNAPSHOT_EVENT_HISTORY` (the render range, field by field). `beeper()`
-  builds its tone once on the int16 scale and plays the same samples in both formats, at `DSD_ALERT_TONE_RMS_DBFS` (-24
+  builds its tone once on the int16 scale and plays the same samples in both formats, at `DSD_ALERT_TONE_RMS_DBFS` (-20
   dBFS RMS, where digital speech plays; issue #518): the voice alerts (ID 40, 1250 Hz) and the data alert (ID 80, 2500
   Hz) alike. Before, they played at -4.9 and -17.6 dBFS RMS. A deferred P25 Phase 2 alert keeps its ID and length.
   Tests: `CORE_VOICE_CHAIN`, `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_AUDIO_GAIN`, `DECODE_IQ_VOICE_CHAIN_*`.
@@ -6519,7 +6519,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   the chain's rate over it, fixed at N / 50 for `-n N` (`dsd_speech_agc_set_fixed()`, its -1 dBFS limiter still
   running) or automatic on `-n 0` (the default). On automatic a reception starts at the band's start gain over `-n 50`
   (`analog_audio_start_gain_db()`, issue #518 D6/D7): FM narrowband (`--nfm-bandwidth-hz` up to 16000, the default)
-  +4.537 dB, FM wideband -1.482 dB, AM -2.553 dB, on RTL monitor audio less the `vol` trim over its default 2; a
+  +8.537 dB, FM wideband +2.518 dB, AM +1.447 dB, on RTL monitor audio less the `vol` trim over its default 2; a
   setting change applies from the next reset (`dsd_speech_agc_set_start_gain_db()`). At a rate the AGC refuses (under
   8 kHz: PCM input at its own rate) the chain plays the fixed gain, `-n 50` on auto, through a `dsd_peak_limiter`, and
   on auto logs that once per rate. The source gain takes
@@ -6609,7 +6609,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `M17_ENCODER_CODEC2`, `DSP_ANALOG_VOICE` (`test_agc_held`), `EDACS_GRANT_TUNE_MATRIX` (`rtl-unclipped`), the
   `DECODE_IQ_ANALOG_*` level, speech-level (P.56), noise and fixed-gain cases.
 - The speech level AGC is `src/dsp/speech_agc.c` (`<dsd-neo/dsp/speech_agc.h>`), one module for digital and analog
-  voice that aims every talker at one active speech level (P.56 -24 dBFS): the digital voice chain runs one per slot
+  voice that aims every talker at one active speech level (P.56 -20 dBFS): the digital voice chain runs one per slot
   (`src/core/audio/voice_level.c`) and the analog audio chain one per chain (`src/dsp/analog_audio.c`). Pure and
   caller-owned: the state is sized at compile time for 8-192 kHz (init refuses other rates) and nothing is allocated.
   It analyses 20 ms frames: a frame is speech when it stands 9 dB over a tracked noise floor (which restarts when the
@@ -6617,8 +6617,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   decimated to about 8 kHz, has a strict interior pitch peak of at least 0.5 between 2.5 and 15 ms. Six speech frames
   in a row commit; a run whose last 12 frames hold one level and pitch is a steady tone and lifts the floor instead.
   Committed frames feed a power-domain level estimate, and each committing frame steps the gain toward the target
-  (1 dB for the first 20 steps, then +0.12 / -0.20 dB), within -12/+15 dB of the start gain. A separate attenuator
-  eases long non-speech (open-squelch hiss) down at 6 dB/s, to -24 dB at most, while the output stays over -36 dBFS
+  (2 dB for the first 20 steps, then +0.12 / -0.20 dB), within -12/+30 dB of the start gain. A separate attenuator
+  eases long non-speech (open-squelch hiss) down at 6 dB/s, to -60 dB at most, while the output stays over -32 dBFS
   and no frame has committed in the last second (so from a reception's first frame until its first commit), and lets
   go within a frame on a frame passing both cues or on quieting; it never touches the estimate. The gain ramps over the
   next frame (no added latency), then a peak limiter holds every sample at -1 dBFS. The coloured-noise veto
@@ -6636,7 +6636,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   reset, non-finite, fixed mode, the limiter, the veto on de-emphasised hiss), `DSP_SPEECH_AGC_LONG` (the floor after
   60-120 s of hiss, with and without the veto); the `dsd-neo_bench_speech_agc` micro-benchmark. End to end,
   `DECODE_MBE_SPEECH_LEVEL` and `DECODE_IQ_SPEECH_PARITY` hold one synthetic talker's established speech within 3 dB of
-  -24 dBFS from IMBE, AMBE+2 and AMBE 2400 files (`-r`) and from narrowband FM, wideband FM and AM fixtures, all within
+  -20 dBFS from IMBE, AMBE+2 and AMBE 2400 files (`-r`) and from narrowband FM, wideband FM and AM fixtures, all within
   1.5 dB of each other (`tests/core/speech_parity_tool.c`), and the `DECODE_IQ_SPEECH_LEVEL_*` and
   `DECODE_IQ_ANALOG_PARITY_*` cases pin the off-air excerpts (`docs/testing.md` "Speech level parity").
 - The auto squelch's core (issue #518 follow-up) is `src/dsp/squelch_floor.c` (`<dsd-neo/dsp/squelch_floor.h>`), pure

@@ -448,7 +448,7 @@ int dsd_dmr_voice_slot_can_decrypt(const dsd_state* state, int slot, int algid, 
 
 /** The level of every alert tone (issue #518): the RMS of its sine, in dB re int16 full scale (32768), where digital
     speech plays. */
-#define DSD_ALERT_TONE_RMS_DBFS (-24.0)
+#define DSD_ALERT_TONE_RMS_DBFS (-20.0)
 
 /**
  * @brief Terminal call-alert and event beeper: a sine of 31.25 Hz x @p id at DSD_ALERT_TONE_RMS_DBFS for @p len 20 ms

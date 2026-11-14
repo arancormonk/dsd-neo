@@ -2,7 +2,7 @@
 #
 # Speech level parity (issue #518): plays one deterministic talker through dsd-neo as digital voice and, when FIXTURE_DIR
 # is given, as analog FM and AM, and hands every output to tests/core/speech_parity_tool.c. Established speech must
-# play within 3 dB of the speech AGC's -24 dBFS active speech level in every rendition, and all renditions within 1.5 dB
+# play within 3 dB of the speech AGC's -20 dBFS active speech level in every rendition, and all renditions within 1.5 dB
 # of each other.
 #
 # Digital: the tool encodes the talker with mbelib-neo's IMBE 4400, AMBE+2 2450 and AMBE 2400 encoders, and `-r` plays

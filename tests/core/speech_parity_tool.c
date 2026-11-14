@@ -5,7 +5,7 @@
 
 /*
  * Speech level parity (issue #518): one deterministic talker played as digital voice and as analog FM and AM must come
- * out at the speech AGC's active speech level, -24 dBFS (ITU-T P.56, test_support/p56.h), and the digital and analog
+ * out at the speech AGC's active speech level, -20 dBFS (ITU-T P.56, test_support/p56.h), and the digital and analog
  * renditions at the same level.
  *
  *   dsd-neo_test_speech_parity_tool source RATE OUT.wav
@@ -17,13 +17,13 @@
  *   dsd-neo_test_speech_parity_tool established [--max-error-db DB] [--max-spread-db DB] NAME:FILE:RATE:CH:LEAD_S...
  *       Each FILE is a decoder's raw 16-bit output (RATE Hz, CH interleaved channels, the louder channel is measured)
  *       in which the talker starts LEAD_S seconds in. Its established speech, from the end of the talker's first 2 s of
- *       speech to the end of the talker, must read within DB (default 3) of -24 dBFS, and every rendition within the
+ *       speech to the end of the talker, must read within DB (default 3) of -20 dBFS, and every rendition within the
  *       spread (default 1.5 dB) of every other.
  *   dsd-neo_test_speech_parity_tool level [--min-dbfs DB] [--max-dbfs DB] [--toward FILE] FILE RATE CH
  *       The whole output's P.56 level, inside [min, max]. With --toward, FILE is the same capture decoded at the fixed
- *       reference gain (-g 1): the AGC must have moved the level toward -24 dBFS from there, or kept it within 3 dB of
+ *       reference gain (-g 1): the AGC must have moved the level toward -20 dBFS from there, or kept it within 3 dB of
  *       it (a few frames of speech can step the gain past the target, which the established bound allows), and left it
- *       within 10 dB of -24 dBFS, the startup bound at 1 s.
+ *       within 10 dB of -20 dBFS, the startup bound at 1 s.
  *   dsd-neo_test_speech_parity_tool gated-nfm FIXED AUTO
  *       A capture with no speech in it (syllable-gated band-limited noise) replayed on narrowband FM: FIXED at -n 50,
  *       AUTO at the default auto gain, both 48 kHz mono. The tool runs FIXED, which is what the monitor's speech AGC
@@ -31,7 +31,7 @@
  *       veto) and requires its output to be AUTO's, so the AGC state it reads is the decoder's. That state must show no
  *       speech learned: no frame committed and the learned gain within 1 dB of the start gain throughout. The
  *       attenuator, which eases non-speech, may only move down at its 6 dB/s and stay at or under 0 dB, and the
- *       limiter must never act.
+ *       limiter may catch only the loudest few frames (the start gain plays the noise's bursts near the ceiling).
  *
  * Every FILE and OUT is one of the work file names the parity checks use (k_work_files: talker.wav, talker.imb,
  * talker.amb, talker.dmb, and the decoder outputs imbe.raw, ambe2450.raw, ambe2400.raw, fm_nb.raw, fm_wb.raw, am.raw,
@@ -66,7 +66,7 @@
 /* A 20 ms frame counts as speech when it is no more than this far under the talker's nominal level: vowels, not the
    pauses, syllable edges and quiet fricatives the AGC does not learn from. */
 #define SPEECH_FRAME_UNDER_DB 10.0
-#define TARGET_DBFS           (-24.0)
+#define TARGET_DBFS           ((double)DSD_SPEECH_AGC_TARGET_DBFS)
 /* The established bound, and the startup bound one second in (spec T2: every file within 10 dB). */
 #define ESTABLISHED_BOUND_DB  3.0
 #define STARTUP_BOUND_DB      10.0
@@ -653,7 +653,7 @@ cmd_level(int argc, char** argv) {
             (err <= fabs(ref - TARGET_DBFS) || err <= ESTABLISHED_BOUND_DB) && err <= STARTUP_BOUND_DB;
         DSD_FPRINTF(stderr, "speech parity: %s at the reference gain: P.56 %.2f dBFS (%+.2f dB), now %+.2f dB%s\n",
                     toward, ref, ref - TARGET_DBFS, level - TARGET_DBFS,
-                    toward_ok ? "" : "  FAIL: not moved toward -24 dBFS");
+                    toward_ok ? "" : "  FAIL: not moved toward the target");
         fail |= !toward_ok;
     }
     if (fail) {
@@ -672,6 +672,8 @@ cmd_level(int argc, char** argv) {
 #define GATED_MAX_GAIN_MOVE_DB 1.0
 /* The replica reads the -n 50 output rounded to int16, the decoder the float samples: a few LSB apart. */
 #define GATED_MAX_DIFF_LSB     4.0
+/* Frames in which the limiter acts on any sample (measured 7-15 of 99-124 on the nine fixtures). */
+#define GATED_MAX_LIMITED      20
 
 typedef struct {
     size_t frames;
@@ -689,8 +691,12 @@ gated_frame(dsd_speech_agc* agc, const audio* fixed, const audio* auto_out, size
     float buf[GATED_FRAME];
     const float atten_before = agc->learned.atten_db;
     DSD_MEMCPY(buf, fixed->x + at, sizeof buf);
-    dsd_speech_agc_process(agc, buf, GATED_FRAME, 1, 1, 0);
+    /* One sample per call (the output is the same for any split), so a limiter that acts and releases within the
+       frame still counts. */
+    int limited = 0;
     for (size_t i = 0; i < GATED_FRAME; i++) {
+        dsd_speech_agc_process(agc, buf + i, 1U, 1, 1, 0);
+        limited |= agc->g_lim < 1.0f;
         r->max_diff = fmax(r->max_diff, fabs((double)buf[i] - (double)auto_out->x[at + i]));
     }
     const double g = (double)agc->learned.gain_db;
@@ -698,7 +704,7 @@ gated_frame(dsd_speech_agc* agc, const audio* fixed, const audio* auto_out, size
     r->gain_hi = fmax(r->gain_hi, g);
     r->atten_min = fmin(r->atten_min, (double)agc->learned.atten_db);
     r->atten_fast += (double)agc->learned.atten_db < (double)atten_before - GATED_ATT_STEP_DB;
-    r->limited += agc->g_lim < 1.0f;
+    r->limited += limited;
     r->frames++;
 }
 
@@ -728,7 +734,7 @@ cmd_gated_nfm(const char* fixed_name, const char* auto_name) {
         const int same = r.max_diff <= GATED_MAX_DIFF_LSB;
         const int learned_none = r.commits == 0 && r.gain_lo >= (double)start - GATED_MAX_GAIN_MOVE_DB
                                  && r.gain_hi <= (double)start + GATED_MAX_GAIN_MOVE_DB;
-        const int eased_ok = r.atten_min <= 0.0 && r.atten_fast == 0 && r.limited == 0;
+        const int eased_ok = r.atten_min <= 0.0 && r.atten_fast == 0 && r.limited <= GATED_MAX_LIMITED;
         DSD_FPRINTF(stderr,
                     "speech parity: gated noise, %zu frames: output %s the decoder's (max %.1f LSB apart); %d commits, "
                     "learned gain %+.2f..%+.2f dB (start %+.2f); attenuator down to %.2f dB, %d frames faster than "
