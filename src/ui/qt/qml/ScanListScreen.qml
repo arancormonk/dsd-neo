@@ -968,7 +968,7 @@ Rectangle {
                         visible: screen.draft.sourceType !== "airspy"
                         title: qsTr("Gain")
                         inheritable: true
-                        inheritNote: qsTr("App default · %1").arg(prefs.gainDb === 0 ? qsTr("Automatic") : qsTr("%1 dB").arg(prefs.gainDb))
+                        inheritNote: Util.gainDefaultNote(prefs.gainDb)
                         mode: screen.gainMode
                         manualText: screen.gainText
                         modeObjectName: "scanGainMode"

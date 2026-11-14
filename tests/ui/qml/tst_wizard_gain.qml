@@ -359,10 +359,89 @@ Item {
         function test_refused_saved_value_opens_advanced() {
             tc.wizard.openForEdit(addSystem(-1, "500"));
             verify(tc.wizard.advancedOpen, "the refused PPM is shown");
+            compare(control("systemPpmField").error, "Enter a correction from -200 to 200 ppm.");
             compare(tc.wizard.draftFingerprint(), tc.wizard.initialDraft);
             verify(savedSystems.update(tc.savedRow, {"ppm": "-3"}));
             tc.wizard.openForEdit(tc.savedRow);
             verify(!tc.wizard.advancedOpen, "a valid system opens folded");
+        }
+
+        // A stored gain above 49 (the editor took up to 99 before) opens under
+        // Set with its error and holds the tune step. When the saved systems
+        // model maps a stored gain above 49 to 49 as it loads, a stored 50
+        // reaches the editor as 49 and opens folded: this case changes with it.
+        function test_refused_saved_gain_opens_advanced() {
+            var row = addSystem(-1, "");
+            verify(savedSystems.update(row, {"gainDb": 50}));
+            compare(savedSystems.get(row).gainDb, 50);
+            tc.wizard.openForEdit(row);
+            verify(tc.wizard.advancedOpen, "the refused gain is shown");
+            compare(shownMode(), "Set");
+            compare(control("systemGainField").text, "50");
+            compare(control("systemGainField").error, "Enter a gain from 1 to 49 dB.");
+            compare(tc.wizard.draftFingerprint(), tc.wizard.initialDraft);
+            tc.wizard.step = 1;
+            verify(!tc.wizard.stepValid());
+        }
+
+        // A refused value hidden at load (an Airspy system's old PPM) comes into
+        // view when the source changes to an RTL: reaching the tune step opens
+        // Advanced on its error, so Continue is never held with nothing shown.
+        function test_source_change_reveals_refused_ppm() {
+            var row = addSystem(-1, "500");
+            verify(savedSystems.update(row, {"sourceType": "airspy"}));
+            tc.wizard.openForEdit(row);
+            compare(tc.wizard.sourceType, "airspy");
+            verify(!tc.wizard.advancedOpen, "hidden on an Airspy, the PPM holds nothing");
+            tc.wizard.sourceType = "usb";
+            tc.wizard.step = 1;
+            verify(tc.wizard.advancedOpen, "the tune step opens on the refused PPM");
+            verify(control("systemPpmField").visible);
+            compare(control("systemPpmField").error, "Enter a correction from -200 to 200 ppm.");
+            verify(!control("wizardContinue").inputValid);
+            // Folded after a refused Set gain, the pane opens again on the way back.
+            tc.wizard.ppmText = "";
+            choose("Set");
+            type("50");
+            tc.wizard.advancedOpen = false;
+            tc.wizard.step = 2;
+            tc.wizard.step = 1;
+            verify(tc.wizard.advancedOpen, "the refused gain is shown again");
+        }
+
+        // At phone width every line of the Advanced pane fits inside it: a
+        // line wraps (or elides by design) rather than running past the card,
+        // and the header's second line wraps to say "defaults work" in full.
+        function test_advanced_text_fits_data() {
+            return [
+                {tag: "usb", source: "usb", subtitleLines: 2},
+                {tag: "airspy", source: "airspy", subtitleLines: 1}
+            ];
+        }
+
+        function test_advanced_text_fits(data) {
+            tc.wizard.sourceType = data.source;
+            openAdvanced();
+            var header = control("wizardAdvancedHeader");
+            var body = header.parent;
+            var over = [];
+            (function walk(node) {
+                for (var child of node.children) {
+                    if (!child.visible)
+                        continue;
+                    if (child.lineCount !== undefined && child.text.length > 0) {
+                        var left = child.mapToItem(body, 0, 0).x;
+                        var right = left + Math.max(child.width, child.contentWidth);
+                        if (left < -0.5 || right > body.width + 0.5)
+                            over.push(JSON.stringify(child.text) + " ends at " + Math.round(right) + " of " + body.width);
+                    }
+                    walk(child);
+                }
+            })(body);
+            compare(over.join("; "), "", "text runs past the Advanced card");
+            var subtitle = control("wizardAdvancedSubtitle");
+            verify(!subtitle.truncated, "the Advanced subtitle is cut short");
+            compare(subtitle.lineCount, data.subtitleLines, "the subtitle's lines at 360");
         }
     }
 }

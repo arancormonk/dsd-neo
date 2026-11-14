@@ -12657,20 +12657,22 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     commit writes nothing outside Set. A change of the preference from elsewhere (a restore) resyncs the mode and the
     text at once, except while Set's field has the focus: then it waits until the field lets go, after the field's own
     commit, so a valid edit made meanwhile wins as the user's latest. The scan list editor keeps
-    `scanGainMode`/`scanTuner_gainDb` and its draft (`gainMode`, `gainText`, `draft.gainDb`). The system editor
-    (`WizardScreen`) gives it its own full-width row with App default (`systemGainMode`, `systemGainField`; draft
-    `gainMode`/`gainText`, the text counted in the draft fingerprint only under Set), above PPM and bandwidth.
-    `openForAdd()` (App default), `openForEdit()` and `openForFound()` (a detection's 0 Automatic, n Set, -1 App
-    default; the Explore handoff App default) set the mode before the clean fingerprint is taken, and
-    `applyRadioReference()` leaves the gain draft and that baseline alone. `gainValid()` and `ppmValid()` (empty or a
-    whole number from -200 to 200, "Enter a correction from -200 to 200 ppm.") count only on `usb` and `rtltcp`, where
-    the two show, and hold the tune and name steps and `commit()`. On any other source they hold nothing, and a refused
-    hidden value is saved as App default (-1, empty PPM). An edit or detection that loads a refused value opens Advanced
-    on its error. Save writes -1 / 0 / n. The Radio sheet's RTL gain steppers are live only and are never saved to a
-    system. The line under them (`radioGainSessionNote`, "Gain changes here last until you stop listening.") says so. It
-    is hidden for an Airspy and under "This channel", which has its own scope note. Tests: `tst_gain_editor.qml`,
-    `tst_settings_tuner_gain.qml`, `tst_wizard_gain.qml`, `tst_radio_gain_override.qml`, `tst_scan_row_edits.qml`,
-    `tst_segmented_whole_words.qml`, `tst_a11y_text_reach.qml`.
+    `scanGainMode`/`scanTuner_gainDb` and its draft (`gainMode`, `gainText`, `draft.gainDb`). Both inheriting editors
+    word App default with `Util.gainDefaultNote(prefs.gainDb)` ("App default · Automatic" / "App default · 30 dB"). The
+    system editor (`WizardScreen`) gives it its own full-width row with App default (`systemGainMode`,
+    `systemGainField`; draft `gainMode`/`gainText`, the text counted in the draft fingerprint only under Set), above PPM
+    and bandwidth, which share a row and name themselves in their own labels (no captions over them). `openForAdd()`
+    (App default), `openForEdit()` and `openForFound()` (a detection's 0 Automatic, n Set, -1 App default; the Explore
+    handoff App default) set the mode before the clean fingerprint is taken, and `applyRadioReference()` leaves the gain
+    draft and that baseline alone. `gainValid()` and `ppmValid()` (empty or a whole number from -200 to 200, "Enter a
+    correction from -200 to 200 ppm.") count only on `usb` and `rtltcp`, where the two show, and hold the tune and name
+    steps and `commit()`. On any other source they hold nothing, and a refused hidden value is saved as App default (-1,
+    empty PPM). A refused value opens Advanced on its error when an edit or detection loads it and when the tune step is
+    reached (a source changed to an RTL brings a hidden one into view). Save writes -1 / 0 / n. The Radio sheet's RTL
+    gain steppers are live only and are never saved to a system. The line under them (`radioGainSessionNote`, "Gain
+    changes here last until you stop listening.") says so. It is hidden for an Airspy and under "This channel", which
+    has its own scope note. Tests: `tst_gain_editor.qml`, `tst_settings_tuner_gain.qml`, `tst_wizard_gain.qml`,
+    `tst_radio_gain_override.qml`, `tst_scan_row_edits.qml`, `tst_segmented_whole_words.qml`, `tst_a11y_text_reach.qml`.
   - Analog channel width (issue #525): the Input menu's `input.nfm_bw` row, right after `input.sql` (`NFM bandwidth...
     [12.5 kHz]`, or `[default]`, on a radio input while the configured -fA preset runs FM or an explicit width is set
     under another preset, `is_nfm_width_editable()`), prompts for Hz and submits `DSD_APP_CMD_NFM_BANDWIDTH_SET` as

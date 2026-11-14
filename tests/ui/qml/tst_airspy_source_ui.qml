@@ -43,9 +43,9 @@ Item {
 
         // Issue #806: on an Airspy the Advanced pane names only what it shows
         // (its own gain controls and bias tee, no PPM), and the bandwidth field,
-        // alone in its row, takes the row and its own label without the
-        // caption the PPM and bandwidth columns share. An RTL's gain has its
-        // own row above them.
+        // alone in its row, takes the row. On an RTL it shares the row with the
+        // PPM field, level with it; each field names itself in its own label,
+        // with no caption over it. An RTL's gain has its own row above them.
         function test_wizard_airspy_advanced_pane() {
             screenLoader.source = uiDir + "/WizardScreen.qml";
             var wizard = screenLoader.item;
@@ -54,19 +54,22 @@ Item {
             wizard.step = 1;
             wizard.advancedOpen = true;
             var subtitle = findChild(wizard, "wizardAdvancedSubtitle");
-            var caption = findChild(wizard, "wizardBandwidthCaption");
             var bw = findChild(wizard, "systemBandwidthField");
-            verify(subtitle !== null && caption !== null && bw !== null);
+            var ppm = findChild(wizard, "systemPpmField");
+            verify(subtitle !== null && bw !== null && ppm !== null);
+            compare(findChild(wizard, "wizardBandwidthCaption"), null, "no caption repeats the field's label");
+            compare(findChild(wizard, "wizardPpmCaption"), null, "no caption repeats the field's label");
             var row = bw.parent.parent;
             for (var source of ["airspy", "usb", "rtltcp", "airspy"]) {
                 wizard.sourceType = source;
                 var airspy = source === "airspy";
                 compare(subtitle.text, airspy ? "Gain, bandwidth, bias tee — defaults work" : "Gain, PPM, bandwidth, bias tee — defaults work", source);
-                compare(caption.visible, !airspy, source + ": caption");
-                if (airspy)
+                if (airspy) {
                     compare(bw.width, row.width, source + ": full row");
-                else
+                } else {
                     compare(bw.width, (row.width - row.spacing) / 2, source + ": half the row, beside the PPM");
+                    compare(bw.mapToItem(row, 0, 0).y, ppm.mapToItem(row, 0, 0).y, source + ": level with the PPM");
+                }
             }
         }
 

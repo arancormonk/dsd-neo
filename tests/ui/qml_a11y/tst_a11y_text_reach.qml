@@ -313,8 +313,8 @@ Item {
                         && listen.checked === (text.text === "Listening");
                 },
                 reason: "\"Listening\" or \"Not tuned\" beside the listening switch, whose on or off state says it; reading the words as well would say it twice."},
-            {file: "WizardScreen.qml", name: /^wizard(Frequency|Ppm)Caption$/, readBy: fieldBelow,
-                reason: "The field below carries the same words in its name (\"Frequency in MHz\", \"PPM correction\")."},
+            {file: "WizardScreen.qml", name: "wizardFrequencyCaption", readBy: fieldBelow,
+                reason: "The field below carries the same words in its name (\"Frequency in MHz\")."},
             {file: "OutlineButton.qml", name: "label", texts: ["Hold TG", "Prev", "Use default", "List value", "Use the default width"],
                 reason: "A short label for a button whose name spells the action out (\"Hold this talkgroup\", \"Previous scan channel\", \"This Channel Uses the Default Squelch\")."},
             {file: "SpectrumScreen.qml", name: "spectrumScaleLabel",

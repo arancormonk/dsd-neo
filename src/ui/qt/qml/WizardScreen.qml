@@ -59,7 +59,13 @@ Item {
         id: discardDialog
         objectName: "wizardDiscardDialog"
     }
-    onStepChanged: Navigation.clearInput(wizard.Window.window)
+    // Reaching the tune step shows a refused gain or PPM that a source change
+    // brought into view (see revealRefusedTuning()).
+    onStepChanged: {
+        Navigation.clearInput(wizard.Window.window);
+        if (step === 1)
+            revealRefusedTuning();
+    }
     property int step: 0
     // -1 appends a new system; >= 0 edits in place.
     property int editRow: -1
@@ -631,8 +637,9 @@ Item {
         return !rtlTuner || ppmInRange();
     }
 
-    // A loaded value the editor refuses (an older build took PPM up to
-    // +-999): the Advanced pane opens on its error rather than holding
+    // A value the editor refuses (an older build took PPM up to +-999), loaded
+    // or brought into view by a source change: the Advanced pane opens on its
+    // error at load and on reaching the tune step, rather than holding
     // Continue with nothing shown.
     function revealRefusedTuning() {
         if (!gainValid() || !ppmValid())
@@ -1665,7 +1672,7 @@ Item {
 
                         objectName: "wizardAdvancedHeader"
                         width: parent.width
-                        height: 66
+                        height: Math.max(66, advHeading.implicitHeight + 24)
                         // A button a screen reader can press (issue #782), as the scan list's
                         // Advanced header is: its title is the name, its second line and
                         // whether it is open the description.
@@ -1691,6 +1698,7 @@ Item {
                         FocusFrame {}
 
                         Column {
+                            id: advHeading
                             anchors.left: parent.left
                             anchors.right: chevron.left
                             anchors.leftMargin: Theme.cardPadding
@@ -1719,7 +1727,8 @@ Item {
                                 font.family: Theme.sans
                                 font.pixelSize: Theme.fontSize(13)
                                 color: Theme.textSubdued
-                                elide: Text.ElideRight
+                                // Wrapped, not elided: "defaults work" is the point.
+                                wrapMode: Text.Wrap
                             }
                         }
 
@@ -1775,7 +1784,7 @@ Item {
                             visible: wizard.rtlTuner
                             title: qsTr("Gain")
                             inheritable: true
-                            inheritNote: qsTr("App default · %1").arg(prefs.gainDb === 0 ? qsTr("Automatic") : qsTr("%1 dB").arg(prefs.gainDb))
+                            inheritNote: Util.gainDefaultNote(prefs.gainDb)
                             mode: wizard.gainMode
                             manualText: wizard.gainText
                             modeObjectName: "systemGainMode"
@@ -1797,16 +1806,6 @@ Item {
                                 width: (parent.width - 10) / 2
                                 visible: wizard.rtlTuner
                                 spacing: 6
-
-                                // Read in the field below, which carries the same words (issue #782).
-                                Text {
-                                    objectName: "wizardPpmCaption"
-                                    Accessible.ignored: true
-                                    text: qsTr("PPM")
-                                    font.family: Theme.sans
-                                    font.pixelSize: Theme.fontSize(12)
-                                    color: Theme.textSecondary
-                                }
 
                                 PlexTextField {
                                     id: ppmField
@@ -1830,21 +1829,11 @@ Item {
                                 }
                             }
 
-                            // Alone on an Airspy, the field takes the row and
-                            // its own label, without the caption the two
-                            // columns share.
+                            // Alone on an Airspy, the field takes the row. Each
+                            // field names itself in its own label.
                             Column {
                                 width: wizard.sourceType === "airspy" ? parent.width : (parent.width - 10) / 2
                                 spacing: 6
-
-                                ReadableText {
-                                    objectName: "wizardBandwidthCaption"
-                                    visible: wizard.sourceType !== "airspy"
-                                    text: qsTr("BW kHz")
-                                    font.family: Theme.sans
-                                    font.pixelSize: Theme.fontSize(12)
-                                    color: Theme.textSecondary
-                                }
 
                                 PlexTextField {
                                     id: bwField
@@ -1892,14 +1881,18 @@ Item {
                             visible: wizard.radioSource && wizard.sourceType !== "airspy"
 
                             ReadableText {
+                                width: parent.width
                                 text: qsTr("Bias tee")
+                                wrapMode: Text.Wrap
                                 font.family: Theme.sans
                                 font.pixelSize: Theme.fontSize(14)
                                 color: Theme.textPrimary
                             }
 
                             ReadableText {
+                                width: parent.width
                                 text: qsTr("Powers an external LNA. Off wins over the app-wide setting.")
+                                wrapMode: Text.Wrap
                                 font.family: Theme.sans
                                 font.pixelSize: Theme.fontSize(12)
                                 color: Theme.textSubdued
@@ -1920,7 +1913,9 @@ Item {
                             spacing: 6
 
                             ReadableText {
+                                width: parent.width
                                 text: qsTr("Extra CLI flags")
+                                wrapMode: Text.Wrap
                                 font.family: Theme.sans
                                 font.pixelSize: Theme.fontSize(12)
                                 color: Theme.textSecondary
