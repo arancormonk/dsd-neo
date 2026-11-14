@@ -50,6 +50,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1999,12 +2000,204 @@ def nxdn_levels(frames, outer_sync=False):
     return np.concatenate(levels)
 
 
+# ---------------------------------------------------------------- P25 Phase 1 generator
+#
+# Voice LDU1/LDU2 frames after TIA-102.BAAA (frame sync, NID, link control and encryption sync words, status symbols),
+# laid out as MMDVMHost writes them (P25Data.cpp encodeLDU1()/encodeLDU2(), P25Utils.cpp encode(), P25NID.cpp,
+# RS634717.cpp, Hamming.cpp encode1063()), with the NID's BCH parity from the repository's own
+# tests/test_support/p25_nid_generator.hpp. The IMBE voice and low speed data bits are seeded random: the verdict reads
+# only the link control (LDU1) and encryption sync (LDU2). An LDU is 1728 bits (864 symbols, 180 ms at 4800 symbol/s).
+
+P25_FS = 0x5575F5FF77FF  # MMDVM P25_SYNC_BYTES; TIA-102.BAAA frame sync
+P25_NAC = 0x293
+P25_LDU_BITS = 1728
+P25_SEED = 834
+P25_STATUS_FIRST = 70  # MMDVM P25_SS0_START: a status symbol after every 70 bits, 72 bits apart
+P25_NID_PARITY_ROWS = (
+    0xCD930BDD3B2A,
+    0xAB5A8E33A6BE,
+    0x983E4CC4E874,
+    0x4C1F2662743A,
+    0xEB9C98EC0136,
+    0xB85D47AB3BB0,
+    0x5C2EA3D59DD8,
+    0x2E1751EACEEC,
+    0x170BA8F56776,
+    0xC616DFA78890,
+    0x630B6FD3C448,
+    0x3185B7E9E224,
+    0x18C2DBF4F112,
+    0xC1F2662743A2,
+    0xAD6A38CE9AFB,
+    0x9B2617BA7657,
+)
+# Where each 40-bit Hamming-coded group of the link control or encryption sync goes (MMDVM encodeLDU1()/encodeLDU2())
+P25_LDU_HEX_SPANS = ((410, 452), (600, 640), (788, 830), (978, 1020), (1168, 1208), (1356, 1398))
+# Where each of the nine 144-bit IMBE frames goes (MMDVM CP25Audio::encode())
+P25_LDU_IMBE_SPANS = (
+    (114, 262),
+    (262, 410),
+    (452, 600),
+    (640, 788),
+    (830, 978),
+    (1020, 1168),
+    (1208, 1356),
+    (1398, 1546),
+    (1578, 1726),
+)
+# The IMBE frame's interleave as dsd-neo's reader takes it: four 72-entry tables, w/x for each dibit's first bit and y/z
+# for its second (row, column of the 8 x 23 frame).
+P25_IMBE_INTERLEAVE_HEADER = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "include",
+    "dsd-neo",
+    "protocol",
+    "p25",
+    "p25p1_const.h",
+)
+
+
+def gf64_mul(a, b):
+    """GF(2^6) product, x^6 + x + 1 (MMDVM RS634717.cpp gf6Mult())."""
+    product = 0
+    for _ in range(6):
+        if b & 1:
+            product ^= a
+        a <<= 1
+        if a & 0x40:
+            a ^= 0x43
+        b >>= 1
+    return product
+
+
+def rs64_encode(data, parity):
+    """Systematic Reed-Solomon over GF(64) with generator roots alpha^1..alpha^parity: the P25 (24,12,13) and
+    (24,16,9) codes (equal to MMDVM's ENCODE_MATRIX_241213 and ENCODE_MATRIX_24169 products)."""
+    generator = [1]
+    root = 1
+    for _ in range(parity):
+        root = gf64_mul(root, 2)
+        generator = [gf64_mul(a, root) ^ b for a, b in zip(generator + [0], [0] + generator)]
+    generator = generator[::-1]
+    remainder = list(data) + [0] * parity
+    for i in range(len(data)):
+        factor = remainder[i]
+        if factor:
+            for j in range(1, len(generator)):
+                remainder[i + j] ^= gf64_mul(generator[j], factor)
+    return list(data) + remainder[len(data) :]
+
+
+def p25_hamming_10_6_3(d):
+    """P25's Hamming (10,6,3) (MMDVM encode1063(); dsd-neo hamming_encode_parity())."""
+    return d + [
+        d[0] ^ d[1] ^ d[2] ^ d[5],
+        d[0] ^ d[1] ^ d[3] ^ d[5],
+        d[0] ^ d[2] ^ d[3] ^ d[4],
+        d[1] ^ d[2] ^ d[3] ^ d[4],
+    ]
+
+
+def p25_place(frame, bits, start, stop):
+    """Write bits into frame[start:stop], skipping the status symbol positions (MMDVM P25Utils encode())."""
+    n = 0
+    for position in range(start, stop):
+        if position >= P25_STATUS_FIRST and (position - P25_STATUS_FIRST) % 72 < 2:
+            continue
+        frame[position] = bits[n]
+        n += 1
+    if n != len(bits):
+        raise SystemExit(f"P25 span {start}-{stop} holds {n} bits, not {len(bits)}")
+
+
+def p25_nid_bits(duid):
+    """NAC and DUID, BCH (63,16) parity (tests/test_support/p25_nid_generator.hpp), then the parity bit LDUs set."""
+    info = msb_bits(P25_NAC, 12) + msb_bits(duid, 4)
+    packed = 0
+    for bit, row in zip(info, P25_NID_PARITY_ROWS):
+        if bit:
+            packed ^= row >> 1
+    packed |= int("".join(map(str, info)), 2) << 47
+    return msb_bits(packed, 63) + [1]
+
+
+def p25_imbe_interleave():
+    """The four interleave tables (w, x, y, z) from dsd-neo's p25p1_const.h."""
+    with open(P25_IMBE_INTERLEAVE_HEADER, encoding="ascii") as handle:
+        text = handle.read()
+    tables = []
+    for axis in "wxyz":
+        match = re.search(r"p25p1_imbe_interleave_" + axis + r"\[72\]\s*=\s*\{([^}]*)\}", text)
+        if not match:
+            raise SystemExit(f"{P25_IMBE_INTERLEAVE_HEADER}: no p25p1_imbe_interleave_{axis}")
+        values = [int(v) for v in match.group(1).replace("\n", " ").split(",") if v.strip()]
+        if len(values) != 72:
+            raise SystemExit(f"p25p1_imbe_interleave_{axis}: {len(values)} entries, not 72")
+        tables.append(values)
+    return tables
+
+
+def p25_imbe_silent_bits():
+    """The 144 bits of an IMBE frame whose eight parameter vectors are all zero (TIA-102.BABA): its Golay and Hamming
+    codewords are zero, so the frame is the pseudo-random modulation of c1..c6 alone, the generator seeded with
+    16 u0 = 0 (p(n) = 173 p(n-1) + 13849 mod 65536, its top bit modulating; mbelib
+    mbe_demodulateImbe7200x4400Data()), each row from its last column down, interleaved as dsd-neo reads it."""
+    frame = [[0] * 23 for _ in range(8)]
+    pr = [0]
+    for _ in range(114):
+        pr.append((173 * pr[-1] + 13849) % 65536)
+    k = 1
+    for row, width in ((1, 23), (2, 23), (3, 23), (4, 15), (5, 15), (6, 15)):
+        for column in range(width - 1, -1, -1):
+            frame[row][column] = pr[k] // 32768
+            k += 1
+    w, x, y, z = p25_imbe_interleave()
+    bits = []
+    for j in range(72):
+        bits += [frame[w[j]][x[j]], frame[y[j]][z[j]]]
+    return bits
+
+
+def p25_ldu_bits(duid, hexbits, rng, imbe=None):
+    """An LDU: frame sync, NID, the link control or encryption sync, and random bits elsewhere, or with imbe the nine
+    voice frames set to those 144 bits."""
+    frame = rng.integers(0, 2, P25_LDU_BITS).tolist()
+    p25_place(frame, msb_bits(P25_FS, 48), 0, 48)
+    p25_place(frame, p25_nid_bits(duid), 48, 114)
+    bits = [b for h in hexbits for b in msb_bits(h, 6)]
+    for group, (start, stop) in enumerate(P25_LDU_HEX_SPANS):
+        words = bits[24 * group : 24 * group + 24]
+        coded = [b for k in range(4) for b in p25_hamming_10_6_3(words[6 * k : 6 * k + 6])]
+        p25_place(frame, coded, start, stop)
+    if imbe is not None:
+        for start, stop in P25_LDU_IMBE_SPANS:
+            p25_place(frame, imbe, start, stop)
+    return frame
+
+
+def p25_hexbits(data):
+    """Bytes as 6-bit symbols, most significant first (MMDVM bin2Hex())."""
+    bits = [b for byte in data for b in msb_bits(byte, 8)]
+    return [int("".join(map(str, bits[i : i + 6])), 2) for i in range(0, len(bits), 6)]
+
+
+def p25_ldu_hexbits():
+    """The RS-coded hexbits of LDU1's link control (group voice, group 1, source 1) and LDU2's encryption sync (clear:
+    ALGID 0x80, key 0, MI 0)."""
+    lc = bytes([0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01])  # LCF, MFID, service, group, source
+    es = bytes(9) + bytes([0x80, 0x00, 0x00])  # MI, ALGID, KID
+    return rs64_encode(p25_hexbits(lc), 12), rs64_encode(p25_hexbits(es), 8)
+
+
+def c4fm_response(freqs):
+    """TIA-102.BAAA C4FM: Nyquist raised cosine (alpha 0.2) times the inverse-sinc shaping filter, 0 above 2880 Hz."""
+    return raised_cosine(freqs, 0.2, 4800) / sinc_response(np.minimum(freqs, 2880.0), 4800)
+
+
 def p25_no_hdu_synth_samples():
     """The P25_NO_HDU_SYNTH_NAME calls on their carrier (see P25_NO_HDU_SYNTH_NAME)."""
-    import scan_quiet_reception as sqr  # it imports this module, so not at the top
-
-    ldu1, ldu2 = sqr.p25_ldu_hexbits()
-    imbe = sqr.p25_imbe_silent_bits()
+    ldu1, ldu2 = p25_ldu_hexbits()
+    imbe = p25_imbe_silent_bits()
     rng = np.random.default_rng(P25_NO_HDU_SYNTH_SEED)
     lead = np.zeros(P25_NO_HDU_SYNTH_LEAD_SYMBOLS)
     ramp = int(round(P25_NO_HDU_SYNTH_RAMP_S * SAMPLE_RATE_HZ))
@@ -2013,9 +2206,9 @@ def p25_no_hdu_synth_samples():
     for _ in range(P25_NO_HDU_SYNTH_CALLS):
         bits = []
         for k in range(P25_NO_HDU_SYNTH_LDUS):
-            bits += sqr.p25_ldu_bits(0x5, ldu1, rng, imbe) if k % 2 == 0 else sqr.p25_ldu_bits(0xA, ldu2, rng, imbe)
-        levels = np.concatenate([lead, sqr.bits_to_levels(bits), lead])
-        call = sqr.fm_from_levels(levels, 4800, sqr.c4fm_response, 1800.0)
+            bits += p25_ldu_bits(0x5, ldu1, rng, imbe) if k % 2 == 0 else p25_ldu_bits(0xA, ldu2, rng, imbe)
+        levels = np.concatenate([lead, bits_to_levels(bits), lead])
+        call = fm_from_levels(levels, 4800, c4fm_response, 1800.0)
         envelope = np.ones(len(call))
         envelope[:ramp] = np.arange(ramp) / ramp
         envelope[-ramp:] = np.arange(ramp)[::-1] / ramp
