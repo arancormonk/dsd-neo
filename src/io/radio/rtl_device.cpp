@@ -10727,6 +10727,7 @@ static int
 rtl_device_set_gain_soapy(struct rtl_device* dev, int gain, bool nearest, int* out_applied_gain) {
     int selected = gain;
     int automatic = 0;
+    int manual_mode_took = 0;
     const int rc = soapy_call_locked(dev, "setGain", [&]() -> int {
         if (rtl_device_soapy_named_gain_override_active(dev)) {
             const double actual = dev->soapy_dev->getGain(SOAPY_SDR_RX, 0);
@@ -10752,6 +10753,7 @@ rtl_device_set_gain_soapy(struct rtl_device* dev, int gain, bool nearest, int* o
         }
         if (dev->soapy_dev->hasGainMode(SOAPY_SDR_RX, 0)) {
             dev->soapy_dev->setGainMode(SOAPY_SDR_RX, 0, false);
+            manual_mode_took = 1;
         }
         dev->soapy_dev->setGain(SOAPY_SDR_RX, 0, gain_db);
         /* Drivers may quantize aggregate gain; named stages may preserve a different value entirely. */
@@ -10762,8 +10764,9 @@ rtl_device_set_gain_soapy(struct rtl_device* dev, int gain, bool nearest, int* o
         dev->agc_mode = automatic;
         dev->gain = selected;
         *out_applied_gain = selected;
-    } else if (!nearest && gain == RTL_AUTO_GAIN) {
-        /* Automatic gain refused (no gain mode, or the driver threw): the device keeps a manual gain, and says so. */
+    } else if (manual_mode_took) {
+        /* The gain write failed after the device left automatic gain: it runs manual now. Any other failure leaves
+           the mode it had. */
         dev->agc_mode = 0;
     }
     return rc;

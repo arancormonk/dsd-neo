@@ -1405,6 +1405,42 @@ test_soapy_capture_records_gain_mode(void) {
     assert(dsd_test_remove_temp_dir(dir, kFiles) == 0);
 }
 
+/* A manual gain request on a SoapySDR device leaves automatic gain before it writes the gain. When that write then
+ * fails, the device runs manual, and its mode reads manual; a failed automatic request leaves the mode it had. */
+void
+test_soapy_failed_manual_gain_reads_manual(void) {
+    rtl_device_test_soapy_gain_fake fake{};
+    fake.driver_key = "generic";
+    fake.gain_db = 19.7;
+    fake.selected_db = 29.7;
+    rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+    if (dev == nullptr) {
+        printf("IO_RTL_CAPTURE_WRITES: no SoapySDR in this build; Soapy failed gain case skipped\n");
+        return;
+    }
+    assert(rtl_device_set_gain(dev, -100) == 0);
+    assert(rtl_device_is_auto_gain(dev) == 1);
+    fake.refuse = 1;
+    assert(rtl_device_set_gain(dev, 300) != 0);
+    assert(rtl_device_is_auto_gain(dev) == 0);
+    /* The nearest-gain setter takes the same path. */
+    fake.refuse = 0;
+    assert(rtl_device_set_gain(dev, -100) == 0);
+    assert(rtl_device_is_auto_gain(dev) == 1);
+    fake.refuse = 1;
+    int selected = -999;
+    assert(rtl_device_set_gain_nearest(dev, 300, &selected) != 0);
+    assert(rtl_device_is_auto_gain(dev) == 0 && selected == -999);
+    /* A failed request that changed no mode leaves the mode it had: here automatic, refused once the driver reports
+     * no gain mode. */
+    fake.refuse = 0;
+    assert(rtl_device_set_gain(dev, -100) == 0);
+    fake.no_gain_mode = 1;
+    assert(rtl_device_set_gain(dev, -100) != 0);
+    assert(rtl_device_is_auto_gain(dev) == 1);
+    rtl_device_test_soapy_gain_device_free(dev);
+}
+
 } // namespace
 
 int
@@ -1456,6 +1492,7 @@ main(int argc, char** argv) {
         {"rate_change_seals_capture", test_rate_change_seals_capture},
         {"capture_records_gain_mode", test_capture_records_gain_mode},
         {"soapy_capture_records_gain_mode", test_soapy_capture_records_gain_mode},
+        {"soapy_failed_manual_gain_reads_manual", test_soapy_failed_manual_gain_reads_manual},
     };
 
     /* An argument runs that case alone. */

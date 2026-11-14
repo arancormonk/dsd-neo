@@ -8623,12 +8623,13 @@ Key public headers:
     the stream open for its copy): automatic 0, known manual the nearest dB held to 1..49, unknown the current value. A
     manual gain at or below 0 dB is 1 only where the sidecar states its mode
     (`dsd_iq_replay_config::tuner_gain_mode_known`, set when the key is present); legacy metadata keeps the current
-    value there, as before, since it recorded an rtl_tcp automatic capture as a known 0. A SoapySDR device reads
-    automatic only once an automatic request took: its base starts manual, and `rtl_device_set_gain_soapy()` records
-    manual when the driver has no gain mode or refuses it. `--iq-info` prints `automatic`. Tests: `IO_IQ_METADATA`,
-    `IO_IQ_CAPTURE_WRITER`, `IO_RTL_CAPTURE_WRITES` (`capture_records_gain_mode`, USB plus the replay device's setters;
-    `soapy_capture_records_gain_mode`, a Soapy fake with and without a gain mode or gain range), `IO_RTL_TCP_RECONNECT`
-    (`capture_records_automatic_gain`), `IO_RTL_FRONTEND_TELEMETRY`, `RUNTIME_CLI_PARSE`.
+    value there, as before, since it recorded an rtl_tcp automatic capture as a known 0. A SoapySDR device's base starts
+    manual and reads automatic only once an automatic request took (`rtl_device_set_gain_soapy()`); a failed request
+    leaves the mode it had, except that a manual request whose mode change took reads manual. `--iq-info` prints
+    `automatic`. Tests: `IO_IQ_METADATA`, `IO_IQ_CAPTURE_WRITER`, `IO_RTL_CAPTURE_WRITES` (`capture_records_gain_mode`,
+    USB plus the replay device's setters; `soapy_capture_records_gain_mode`, a Soapy fake with and without a gain mode
+    or gain range; `soapy_failed_manual_gain_reads_manual`), `IO_RTL_TCP_RECONNECT` (`capture_records_automatic_gain`),
+    `IO_RTL_FRONTEND_TELEMETRY`, `RUNTIME_CLI_PARSE`.
   - WAV I/Q recordings (issue #701, `src/io/iq/iq_wav.c`): 2-channel RIFF/RF64/BW64 WAVs of u8, s16, s24, s32, f32
     or f64 (plain or EXTENSIBLE fmt). `dsd_iq_replay_read_metadata()` sniffs a non-`.json` path before it looks for a
     sidecar, and pre-reads only `data_file` from a sidecar, so a WAV is recognised before any sidecar field is
