@@ -2391,12 +2391,12 @@ suite runs under this compiler.
   spellings there.
 - State extension slots (`<dsd-neo/core/state_ext.h>`): engine owns 0, 1, 3 and 7; core 2, 4, 5 and 8, and 13 (taken
   from the io range): `DSD_STATE_EXT_CORE_VOICE_LEVEL`, the digital voice chain's per-slot speech AGC and the reception
-  it runs for, and the DMR superframe mixer's one-channel limiter (issue #518); runtime 6; DSP 9, 10 and 11 (taken
-  from the core range as runtime took 6 from the engine's): 9 is `DSD_STATE_EXT_DSP_ANALOG_RX`, the analog receive
-  working state, 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, the analog monitor's audio chains, and 11
-  `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate; app-control owns 16, from the ui
-  range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still waits on its tune (issue #644).
-  `CORE_STATE_EXT` pins these five.
+  it runs for, the talkers both slots remember, and the DMR superframe mixer's one-channel limiter (issue #518);
+  runtime 6; DSP 9, 10 and 11 (taken from the core range as runtime took 6 from the engine's): 9 is
+  `DSD_STATE_EXT_DSP_ANALOG_RX`, the analog receive working state, 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, the analog
+  monitor's audio chains, and 11 `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate;
+  app-control owns 16, from the ui range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still waits on
+  its tune (issue #644). `CORE_STATE_EXT` pins these five.
 - API note: `dsd_state::analog_rx` (`dsd_analog_rx_publication` in `<dsd-neo/core/state.h>`, issues #522 and #523) is
   the received-tone publication every frontend reads: int-only (`carrier_open`, `tone_kind`, `tone_state`,
   `ctcss_tenths_hz`, `ctcss_off_value` (1 while the locked CTCSS tone rests on transmitter tone error alone, issue #643:
@@ -2999,8 +2999,10 @@ suite runs under this compiler.
   through its slot's chain exactly once, in place, before anything reads it: the digital high-pass (`use_hpf_d`,
   `-v 0x8`, off by default since issue #518 D1; a 2nd-order Butterworth at 300 Hz, unity in the voice band,
   `dsd_voice_hpf_*()` in `dsd_misc.c`), then the slot's speech level (issue #518, `src/core/audio/voice_level.c`: the
-  slot's `dsd_speech_agc` at 8 kHz, start gain `DSD_VOICE_LEVEL_START_GAIN_DB` (+4 dB), target -20 dBFS, ceiling
-  -1 dBFS; a fixed `-g` multiplier `audio_gain`/`audio_gainR` through its limiter, unity below 0 with no AGC at all),
+  slot's `dsd_speech_agc` at 8 kHz with its acquisition stage on, start gain `DSD_VOICE_LEVEL_START_GAIN_DB` (+4 dB:
+  the centre of its range and the tone cap), each reception opening at `DSD_VOICE_LEVEL_OPEN_GAIN_DB` (+8 dB) or at its
+  talker's remembered gain, target -20 dBFS, ceiling -1 dBFS; a fixed `-g` multiplier `audio_gain`/`audio_gainR`
+  through its limiter, unity below 0 with no AGC at all),
   then saturation to the int16 range (`dsd_voice_chain_run()` in `dsd_audio.c`). It runs whatever the output format, output type, mute or preset say,
   before consumer gates, and never decides who hears a frame; the gates still do. Producers: the vocoder at the top of
   its post stage (`mbe_post_audio_and_recording()`, on the buffer and slot `processMbeFrameInternal()` names for the
@@ -3046,19 +3048,37 @@ suite runs under this compiler.
   (`p25_sm_select_control_channel()`), and each MBE playback file (`mbe_file_end_replayed_call()`). It is kept across a
   stream gap, the no-carrier pass, fade and terminator heals, late-entry identity, crypto purges and
   `init_audio_filters()`; fixed and auto keep its estimate (back to auto it starts from the fixed gain within its
-  range, but only within the reception that fixed gain was set in: after a reset auto starts at the start gain). All
-  of these run on the decoder thread; the no-carrier pass touches no AGC state. Nothing seeds the auto level
-  on any entry path (B4): every slot starts at the start gain. `aout_gain`/`aout_gainR` are display readouts only, the
+  range, but only within the reception that fixed gain was set in: after a reset auto opens at the opening gain). All
+  of these run on the decoder thread; the no-carrier pass touches no AGC state. Opening gain and talker memory
+  (`voice_level.c`): the slot's first frame after its AGC was initialised or reset opens the reception at
+  `DSD_VOICE_LEVEL_OPEN_GAIN_DB` (+8 dB over `-g 1`, where talkers on live traffic needed about +10 dB on average) from
+  its first sample, before the frame is processed; the start gain stays the centre of the AGC's range and the tone cap,
+  and the readout a reset leaves shows the opening gain. The chain's reception carries its source radio
+  (`dsd_voice_reception::source`, the active call's `ota_source_id`, 0 with no active call), and the slot keeps the
+  last nonzero one a frame named. The extension holds 64 talkers {protocol family, source, gain, recency}, shared by
+  both slots and kept across carrier boundaries (only the slots reset). Store: before a slot's AGC is reset for any
+  reason (the tracker's three or `dsd_voice_level_reset()`), when the slot knows its source and
+  `dsd_speech_agc_settled_gain_db()` reports W (20 committed frames), a new talker takes W and a known one moves half
+  way to it (`gain += 0.5 (W - gain)`); a new talker takes a free entry, else the least recently stored or applied one.
+  Apply: in `dsd_voice_level_run()`, after the tracker and the opening, when a frame first names the reception's
+  source and nothing has committed yet, a remembered (family, source) opens the reception at its gain
+  (`dsd_speech_agc_open_at()`): at once on the reception's first frame, else over one frame (a P25 Phase 1 source
+  arrives with the first link control, about 180 ms in). Source 0 never stores or applies, and a fixed `-g` commits
+  nothing, so it stores nothing. The table is not kept across runs; it lives in the extension, so nothing is allocated
+  per frame. Nothing else seeds the auto level on any entry path (B4): every slot opens at the opening gain or a
+  remembered talker's. `aout_gain`/`aout_gainR` are display readouts only, the
   gain each slot's last frame got in dB (the terminal's "G: Auto (+x.x dB)"), and ride the snapshot's
   `config_autosave_enabled..last_dibit` range with `aout_gainA`; the AGC state stays decoder-owned. No protocol code
-  writes them; the engine clamps `-g` for both formats. Tests: `CORE_VOICE_LEVEL` (learning, start level, tracker,
-  resets kept and taken, fixed and auto, tones, decodability per slot), `ENGINE_NO_CARRIER_RESET` (carrier boundaries,
-  stream gap, no-carrier, a TETRA stream gap against a new talker), `ENGINE_TRUNK_SCAN`, `APP_P25_CC_SELECTION`,
-  `CORE_MBE_FILE_IO` (file start), `APP_CONTROL_SNAPSHOT_EVENT_HISTORY` (the render range, field by field). `beeper()`
-  builds its tone once on the int16 scale and plays the same samples in both formats, at `DSD_ALERT_TONE_RMS_DBFS` (-20
-  dBFS RMS, where digital speech plays; issue #518): the voice alerts (ID 40, 1250 Hz) and the data alert (ID 80, 2500
-  Hz) alike. Before, they played at -4.9 and -17.6 dBFS RMS. A deferred P25 Phase 2 alert keeps its ID and length.
-  Tests: `CORE_VOICE_CHAIN`, `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_AUDIO_GAIN`, `DECODE_IQ_VOICE_CHAIN_*`.
+  writes them; the engine clamps `-g` for both formats. Tests: `CORE_VOICE_LEVEL` (learning, opening gain, tracker,
+  resets kept and taken, fixed and auto, tones, decodability per slot, talker memory: store, apply, late source,
+  families, least recently used, explicit resets, shared slots, the active call's source), `ENGINE_NO_CARRIER_RESET`
+  (carrier boundaries, stream gap, no-carrier, a TETRA stream gap against a new talker), `ENGINE_TRUNK_SCAN`,
+  `APP_P25_CC_SELECTION`, `CORE_MBE_FILE_IO` (file start), `APP_CONTROL_SNAPSHOT_EVENT_HISTORY` (the render range, field
+  by field). `beeper()` builds its tone once on the int16 scale and plays the same samples in both formats, at
+  `DSD_ALERT_TONE_RMS_DBFS` (-20 dBFS RMS, where digital speech plays; issue #518): the voice alerts (ID 40, 1250 Hz)
+  and the data alert (ID 80, 2500 Hz) alike. Before, they played at -4.9 and -17.6 dBFS RMS. A deferred P25 Phase 2
+  alert keeps its ID and length. Tests: `CORE_VOICE_CHAIN`, `CORE_MBE_TRANSFORM_CONTEXT`, `CORE_AUDIO_GAIN`,
+  `DECODE_IQ_VOICE_CHAIN_*`.
 - API note (gain settings, `<dsd-neo/core/gain_setting.h>`, issue #518 voice level): a digital gain (`-g`,
   `audio_gain`/`audio_gainR`) is 0 (auto) or 0.001..50; `dsd_digital_gain_setting()` keeps those (a typed -0 as +0) and
   refuses NaN, infinities, negative values, values above 50 and positive values under 0.001 (1e-50 would round to 0,
@@ -6916,7 +6936,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   without a second correlation: FM hiss after 750 us de-emphasis passes the pitch cue on a few percent of frames, which
   would keep the attenuator from easing it. Only the analog chain turns it on. Digital voice carries no receiver hiss,
   the frame target is calibrated on digital speech, and the digital output stays the same bits. The acquisition stage
-  (`dsd_speech_agc_set_acquisition()`, off after init, kept by a reset) is for the digital voice chain's per-slot
+  (`dsd_speech_agc_set_acquisition()`, off after init, kept by a reset) is on for the digital voice chain's per-slot
   instances, which restart every transmission, many of them shorter than the 2 dB startup steps; the analog chain
   leaves it off and keeps today's law bit for bit. Until the estimate is established (20 committed frames) it changes
   three things: a step aims at P + (W - P) n^2 / (n^2 + 24) (P the gain the reception's first step found, W the
