@@ -227,27 +227,28 @@ voice_level_follow(voice_level_ext* ext, voice_level_slot* s, const dsd_voice_re
     }
 }
 
-/* The reception's source: the first frame that names one opens the reception, if nothing has committed yet, at the
-   gain that radio's speech settled at, as the memory holds it. On the reception's first frame that is at once; later
-   (a P25 Phase 1 source arrives with the first link control, about 180 ms in) it eases in over one frame. A reception
-   from the same radio in the same protocol family on the other slot is over (a radio is not on both slots at once),
-   though that slot has not been reset: two-slot TDMA on one carrier moves a radio between slots with no carrier
-   boundary. It is stored first, once, if it has settled, so this reception opens from it and that slot's reset stores
-   it no more. Should it go on learning after this (the radio came back to that slot within the same transmission),
-   what it learns then is not stored. The slot's own reception was stored at its reset. */
+/* The reception's source. Whenever the slot newly names one (its first, or another than it had), a reception from the
+   same radio in the same protocol family on the other slot is over (a radio is not on both slots at once), though that
+   slot has not been reset: two-slot TDMA on one carrier moves a radio between slots with no carrier boundary. It is
+   stored then, once, if it has settled, so the memory takes its receptions in the order they ended and that slot's
+   reset stores it no more. Should it go on learning after this (the radio came back to that slot within the same
+   transmission), what it learns then is not stored. The slot's own reception was stored at its reset.
+   Only the first naming, if nothing has committed yet, opens the reception at the gain that radio's speech settled at,
+   as the memory holds it. On the reception's first frame that is at once; later (a P25 Phase 1 source arrives with the
+   first link control, about 180 ms in) it eases in over one frame. */
 static void
 voice_level_recall(voice_level_ext* ext, voice_level_slot* s, uint64_t source, int first_frame) {
-    if (source == 0U) {
+    if (source == 0U || source == s->source) {
         return;
     }
     const int first_naming = s->source == 0U;
     s->source = source;
-    if (!first_naming || s->agc.learned.commits != 0) {
-        return;
-    }
     voice_level_slot* o = s == &ext->slot[0] ? &ext->slot[1] : &ext->slot[0];
     if (o->source == source && o->family == s->family) {
-        voice_level_remember(ext, o);
+        voice_level_remember(ext, o); /* that reception is over: store it now, once */
+    }
+    if (!first_naming || s->agc.learned.commits != 0) {
+        return;
     }
     voice_level_talker* t = voice_level_talker_find(ext, s->family, source);
     if (t) {

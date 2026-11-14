@@ -1534,6 +1534,101 @@ test_memory_other_slot_half_step_once(const talkers* t) {
     return rc;
 }
 
+/* The probe frame of reception @p r on slot @p slot leaves the slot's AGC where it was: nothing learned, nothing
+   reopened. */
+static int
+probe_keeps_the_gain(const char* tag, const dsd_opts* opts, dsd_state* state, int slot, const dsd_voice_reception* r) {
+    const dsd_speech_agc* agc = agc_of(state, slot);
+    const float before = agc != NULL ? agc->learned.gain_db : -1000.0f;
+    const int commits = agc != NULL ? agc->learned.commits : -1;
+    float frame[FRAME];
+    level_probe(opts, state, slot, r, frame);
+    agc = agc_of(state, slot);
+    return expect_true(tag, agc != NULL && commits > 0 && agc->learned.commits == commits
+                                && float_same(agc->learned.gain_db, before));
+}
+
+/* X remembered at G settles at W0 on slot 1, and nothing resets that slot. On slot 2 a reception runs unnamed until it
+   has committed, then names X (which reopens nothing) and settles at W1. Slot 1's reception ended first, so the memory
+   takes its half step first: once both slots are reset, X opens half way from G + 0.5 (W0 - G) to W1, not at the
+   value storing W1 first and W0 after it would give. */
+static int
+test_memory_other_slot_late_source_in_order(const talkers* t) {
+    int rc = 0;
+    dsd_opts* opts = new_opts();
+    dsd_state* state = new_state();
+    if (!opts || !state) {
+        free(opts);
+        free_state(state);
+        return 1;
+    }
+    const int fam = family_dmr();
+    float g = 0.0f;
+    float w0 = 0.0f;
+    float w1 = 0.0f;
+    dsd_voice_reception r = reception(1U, fam, SRC_X);
+    rc |= settle("in order: X settles at G", opts, state, 0, t->low, &r, &g);
+    dsd_voice_level_reset(state, 0);
+    r = reception(2U, fam, SRC_X);
+    rc |= settle("in order: X settles at W0 on slot 1", opts, state, 0, t->high, &r, &w0);
+    rc |= expect_true("in order: W0 is at least 10 dB from G", fabsf(w0 - g) >= 10.0f);
+
+    dsd_voice_reception r2 = reception(3U, fam, 0U);
+    level_speech(opts, state, 1, t->brief, BRIEF_N, &r2);
+    r2 = reception(3U, fam, SRC_X);
+    rc |= probe_keeps_the_gain("in order: X named on slot 2 after a commit reopens nothing", opts, state, 1, &r2);
+    rc |= settle("in order: X settles at W1 on slot 2", opts, state, 1, t->low, &r2, &w1);
+    rc |= expect_true("in order: W1 is at least 10 dB from W0", fabsf(w1 - w0) >= 10.0f);
+
+    dsd_voice_level_reset(state, 1);
+    dsd_voice_level_reset(state, 0);
+    const float after_w0 = g + 0.5f * (w0 - g);
+    const float want = after_w0 + 0.5f * (w1 - after_w0);
+    const float after_w1 = g + 0.5f * (w1 - g);
+    const float out_of_order = after_w1 + 0.5f * (w0 - after_w1);
+    rc |= expect_true("in order: the two orders give gains more than 1 dB apart", fabsf(want - out_of_order) > 1.0f);
+    r = reception(4U, fam, SRC_X);
+    rc |= opens_within("in order: X opens from W0's half step, then W1's", opts, state, 1, &r, want, HALF_WAY_TOL_DB);
+    free_state(state);
+    free(opts);
+    return rc;
+}
+
+/* Slot 2's reception names Y, later X, while slot 1 holds X's settled reception at W0: the frame that names X stores
+   that reception (and reopens nothing on slot 2). Slot 1 then goes on learning to another gain and is never reset; X's
+   next reception on slot 2 opens at W0, what was stored at the change, not at where slot 1 went on to. */
+static int
+test_memory_other_slot_source_change_stores(const talkers* t) {
+    int rc = 0;
+    dsd_opts* opts = new_opts();
+    dsd_state* state = new_state();
+    if (!opts || !state) {
+        free(opts);
+        free_state(state);
+        return 1;
+    }
+    const int fam = family_dmr();
+    float w0 = 0.0f;
+    float w0_later = 0.0f;
+    float unused = 0.0f;
+    dsd_voice_reception r = reception(1U, fam, SRC_X);
+    rc |= settle("source change: X settles at W0 on slot 1", opts, state, 0, t->low, &r, &w0);
+
+    dsd_voice_reception r2 = reception(2U, fam, SRC_Y);
+    level_speech(opts, state, 1, t->brief, BRIEF_N, &r2);
+    r2 = reception(2U, fam, SRC_X);
+    rc |= probe_keeps_the_gain("source change: Y to X on slot 2 reopens nothing", opts, state, 1, &r2);
+    rc |= expect_true("source change: slot 2's reception has not settled", !settled_at(state, 1, &unused));
+
+    rc |= settle("source change: X on slot 1 goes on", opts, state, 0, t->high, &r, &w0_later);
+    rc |= expect_true("source change: slot 1's settled gain moved", fabsf(w0_later - w0) > 1.0f);
+    r2 = reception(3U, fam, SRC_X);
+    rc |= opens_at("source change: X opens at what slot 1 held at the change", opts, state, 1, &r2, w0);
+    free_state(state);
+    free(opts);
+    return rc;
+}
+
 /* Brief 9: a fixed -g learns nothing, so it stores nothing; back to auto, receptions open as before it. */
 static int
 test_memory_fixed_gain_stores_nothing(const talkers* t) {
@@ -1627,6 +1722,8 @@ test_talker_memory(void) {
         rc |= test_memory_other_slot_stored_once(&t);
         rc |= test_memory_other_slot_stores_only_what_counts(&t);
         rc |= test_memory_other_slot_half_step_once(&t);
+        rc |= test_memory_other_slot_late_source_in_order(&t);
+        rc |= test_memory_other_slot_source_change_stores(&t);
         rc |= test_memory_fixed_gain_stores_nothing(&t);
         rc |= test_memory_source_of_the_active_call(&t);
     }

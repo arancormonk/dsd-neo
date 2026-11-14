@@ -3061,15 +3061,16 @@ suite runs under this compiler.
   `dsd_speech_agc_settled_gain_db()` reports W (20 committed frames), a new talker takes W and a known one moves half
   way to it (`gain += 0.5 (W - gain)`); a new talker takes a free entry, else the least recently stored or applied one.
   A reception is stored at most once (`voice_level_slot::stored`, cleared by the slot's reset).
-  Apply: in `dsd_voice_level_run()`, after the tracker and the opening, when a frame first names the reception's
-  source and nothing has committed yet, a remembered (family, source) opens the reception at its gain
-  (`dsd_speech_agc_open_at()`): at once on the reception's first frame, else over one frame (a P25 Phase 1 source
-  arrives with the first link control, about 180 ms in). Before that lookup, a reception from the same source in the
-  same family on the other slot is over (a radio is not on both slots at once; on one carrier a radio moves between
-  slots with no reset between), so it is stored then, once, if it has settled, and marked stored: this reception opens
-  from it, every later one from what the newer receptions left, and that slot's own reset stores it no more. What it
-  learns after that point (the radio came back to that slot within the same transmission) is not stored. The slot's
-  own reception was stored at its reset. Source 0 never stores or applies, and a fixed `-g` commits nothing, so it
+  Apply: in `dsd_voice_level_run()`, after the tracker and the opening, whenever a frame newly names the reception's
+  source (its first, or another than the slot had, whatever the reception has committed), a reception from that
+  source in the same family on the other slot is over (a radio is not on both slots at once; on one carrier a radio
+  moves between slots with no reset between), so it is stored then, once, if it has settled, and marked stored: the
+  memory takes the receptions in the order they ended, this reception opens from it, every later one from what the
+  newer receptions left, and that slot's own reset stores it no more. What it learns after that point (the radio came
+  back to that slot within the same transmission) is not stored. The slot's own reception was stored at its reset.
+  Only the first naming, and only while nothing has committed, opens the reception at a remembered (family, source)
+  gain (`dsd_speech_agc_open_at()`): at once on the reception's first frame, else over one frame (a P25 Phase 1
+  source arrives with the first link control, about 180 ms in); a frame naming the source the slot has does nothing. Source 0 never stores or applies, and a fixed `-g` commits nothing, so it
   stores nothing. The table is
   not kept across runs; it lives in the extension, so nothing is allocated per frame. Nothing else seeds the auto
   level on any entry path (B4): every slot opens at the opening gain or a remembered talker's.
@@ -3079,7 +3080,9 @@ suite runs under this compiler.
   writes them; the engine clamps `-g` for both formats. Tests: `CORE_VOICE_LEVEL` (learning, opening gain, tracker,
   resets kept and taken, fixed and auto, tones, decodability per slot, talker memory: store, apply, late source,
   families, least recently used, explicit resets, shared slots, the other slot's reception stored once at the recall
-  and only for the same radio, family and a settled estimate, the active
+  and only for the same radio, family and a settled estimate, also when the source is named after a commit or
+  replaces another (`test_memory_other_slot_late_source_in_order`, `test_memory_other_slot_source_change_stores`), the
+  active
   call's source), `ENGINE_NO_CARRIER_RESET` (carrier boundaries, stream gap, no-carrier, a TETRA stream gap against a
   new talker), `ENGINE_TRUNK_SCAN`,
   `APP_P25_CC_SELECTION`, `CORE_MBE_FILE_IO` (file start), `APP_CONTROL_SNAPSHOT_EVENT_HISTORY` (the render range, field

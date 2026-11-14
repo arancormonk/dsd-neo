@@ -90,7 +90,8 @@ int dsd_voice_frame_may_learn(const dsd_voice_frame_info* info);
  * dsd_voice_frame_may_learn() takes. Each reception opens at DSD_VOICE_LEVEL_OPEN_GAIN_DB over the `-g 1` level (the
  * decoder's own) from its first sample, or, from a radio both slots remember (the source of the slot's active call, in
  * its protocol family), at the gain that radio's speech last settled at; a reception from it still held by the other
- * slot is over, and is stored once, if its speech has settled, before the lookup; a tone frame plays at no more than
+ * slot is over once the slot names that radio (first, or in place of another), and is stored then, once, if its
+ * speech has settled; a tone frame plays at no more than
  * the start gain (DSD_VOICE_LEVEL_START_GAIN_DB); an undecodable frame never teaches, and when the slot's frames turn
  * decodable again its limiter starts over. A `-g` above 0 is a fixed multiplier through the AGC's limiter
  * (DSD_SPEECH_AGC_CEILING_DBFS); switching back to auto keeps what the AGC learned and starts from the fixed gain,
