@@ -15536,6 +15536,15 @@ Qt Quick frontend (`src/ui/qt`):
     `toUInt()` keep the low 32 bits of either and report success. A value past the field's type reads as the field's
     default where nothing checks the field, as an absent key does. Where a check exists, it fails that check: the
     force key, a scan list's port, key IDs, talkgroup overrides and a profile's force.
+  - Tuner gain normalization: the app's gain model is -1 inherit, 0 automatic, 1..49 dB manual. `AppPrefs::gainDb()`
+    (`tuner/gainDb`, no inherit) reads a stored value below 0 as 0 (what the engine runs for it) and above 49 as 49
+    (every librtlsdr tuner tops out at or below 49.6 dB, so the step is the same); unparsable or past-int text reads
+    as 30. `setGainDb()` holds its value to 0..49 and compares with the raw stored value, so writing over damage
+    lands. The stored value stays as it is until that write, and backups export and restore it raw. A saved system's
+    `gainDb` is held to -1..49 where a map becomes a row (`rowFromMap()`: load, add, addAll, update; an update that
+    omits the gain keeps it), and `load()` saves a repaired row, RadioReference sites included, outside
+    `normalizeLoaded()`'s early return. A raw map with 60 handed straight to `scan_list_targets()` is still refused.
+    Tests: `UI_QT_PERSISTENCE`, `UI_QT_SESSION_ARGS`, `UI_QT_SCAN_LIST_TARGETS`, `UI_QT_BACKUP_MODEL`.
   - Tests: `UI_QT_BACKUP_ARCHIVE`, `UI_QT_BACKUP_APPLY` (every step crashed in a clean apply and in a rollback; two
     restores in a row), `UI_QT_BACKUP_MODEL` (with `test_recorder_parity()` against the QML fixture's
     `tests/ui/qml_backup_recorder.h`; #831 B4: a held read cancelled, the job file kept past the read's commit with

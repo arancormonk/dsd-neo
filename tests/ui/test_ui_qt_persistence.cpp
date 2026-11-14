@@ -696,6 +696,61 @@ test_saved_systems_past_int_range(void) {
     }
 }
 
+/* A stored tuner gain past what the editor offers (a hand edit, a restore, an older build's 50..99) reads as the
+ * nearest value the app can edit: below -1 follows the app, above 49 is 49. Main loaded 60 and -7 as themselves, so a
+ * scan list refused the system ("Gain must be 0..49 dB"). The repair is saved at load, RadioReference rows too; an
+ * update that does not name the gain keeps it. */
+void
+test_saved_systems_gain_range(void) {
+    const QString store = QStringLiteral("saved_systems.json");
+    QJsonArray rows;
+    for (const int gain : {60, -7, 36, 49, -1, 0}) {
+        rows.append(
+            QJsonObject{{"name", QStringLiteral("Gain %1").arg(gain)}, {"sourceType", "usb"}, {"gainDb", gain}});
+    }
+    rows.append(
+        QJsonObject{{"name", "Site"}, {"sourceType", "usb"}, {"gainDb", 2147483647}, {"rrSid", 77}, {"rrSiteId", 5}});
+    expect("an out-of-range gain store saves", json_store_save_array(store, rows));
+    {
+        SavedSystemsModel model;
+        QList<int> gains;
+        for (int i = 0; i < model.count(); i++) {
+            gains.append(model.get(i).value(QStringLiteral("gainDb")).toInt());
+        }
+        expect("stored gains load inside -1..49", gains == QList<int>({49, -1, 36, 49, -1, 0, 49}));
+        expect("the role reads the loaded gain",
+               model.data(model.index(0), SavedSystemsModel::GainDbRole).toInt() == 49);
+        QList<int> stored;
+        for (const auto& value : json_store_load_array(store)) {
+            stored.append(value.toObject().value(QStringLiteral("gainDb")).toInt());
+        }
+        expect("the repaired gains are saved, a RadioReference site's too",
+               stored == QList<int>({49, -1, 36, 49, -1, 0, 49}));
+
+        expect("update to a gain past the range", model.update(2, {{"gainDb", 99}}));
+        expect("an updated gain past the range is 49", model.get(2).value(QStringLiteral("gainDb")).toInt() == 49);
+        expect("update to a gain below inherit", model.update(2, {{"gainDb", -40}}));
+        expect("an updated gain below inherit is -1", model.get(2).value(QStringLiteral("gainDb")).toInt() == -1);
+        expect("update back to 36", model.update(2, {{"gainDb", 36}}));
+        expect("rename without a gain", model.update(2, {{"name", "Renamed"}}));
+        expect("an update without a gain keeps it", model.get(2).value(QStringLiteral("gainDb")).toInt() == 36);
+
+        expect("add a gain past the range", model.add({{"name", "Added"}, {"gainDb", 60}}));
+        expect("an added gain past the range is 49",
+               model.get(model.count() - 1).value(QStringLiteral("gainDb")).toInt() == 49);
+        expect("add two", model.addAll({QVariantMap{{"name", "Low"}, {"gainDb", -9}},
+                                        QVariantMap{{"name", "High"}, {"gainDb", 1000}}},
+                                       QString())
+                              >= 0);
+        expect("each of several added gains is held to the range",
+               model.get(model.count() - 2).value(QStringLiteral("gainDb")).toInt() == -1
+                   && model.get(model.count() - 1).value(QStringLiteral("gainDb")).toInt() == 49);
+        while (model.count() > 0) {
+            model.remove(0);
+        }
+    }
+}
+
 void
 test_saved_systems_csv_fields(void) {
     const QString groupPath = QStringLiteral("/data/imports/county.csv");
@@ -1114,6 +1169,38 @@ test_analog_preroll_pref() {
         stored.setValue(key, 750);
         expect("a stored custom pre-roll reads as itself", reloaded.analogPrerollMs() == 750);
     }
+    stored.remove(key);
+}
+
+/* Settings' tuner gain: AppPrefs has no inherit, so a stored value below 0 reads as 0 (automatic, what the engine ran
+ * for it) and one above 49 as 49. The stored value stays as it is until a write: the setter holds its value to the
+ * range and compares with what is stored, so writing 60 over a stored 60 stores 49. Main read -5, 60 and 2147483647
+ * as themselves (2147483647 * 10 overflowed in the engine) and left a stored 60 when 60 was written over it. */
+void
+test_gain_pref_range(void) {
+    QSettings stored = prefs_file();
+    const QString key = QStringLiteral("tuner/gainDb");
+    AppPrefs prefs;
+    int changes = 0;
+    QObject::connect(&prefs, &AppPrefs::gainDbChanged, &prefs, [&changes] { ++changes; });
+    stored.setValue(key, -5);
+    expect("a stored negative gain reads as automatic", prefs.gainDb() == 0);
+    stored.setValue(key, 60);
+    expect("a stored gain past 49 reads as 49", prefs.gainDb() == 49);
+    stored.setValue(key, 2147483647);
+    expect("the largest stored int reads as 49", prefs.gainDb() == 49);
+    stored.setValue(key, QStringLiteral("abc"));
+    expect("an unparsable stored gain reads as the default", prefs.gainDb() == 30);
+    stored.setValue(key, 60);
+    prefs.setGainDb(60);
+    expect("writing 60 over a stored 60 stores 49",
+           stored.value(key).toInt() == 49 && prefs.gainDb() == 49 && changes == 1);
+    prefs.setGainDb(49);
+    expect("writing the stored 49 again does not notify", changes == 1);
+    prefs.setGainDb(-5);
+    expect("a negative gain is written as automatic", stored.value(key).toInt() == 0 && changes == 2);
+    prefs.setGainDb(2147483647);
+    expect("the largest int is written as 49", stored.value(key).toInt() == 49 && changes == 3);
     stored.remove(key);
 }
 
@@ -3764,8 +3851,10 @@ main(int argc, char** argv) {
     test_private_key_store();
     test_saved_systems();
     test_saved_systems_past_int_range();
+    test_saved_systems_gain_range();
     test_saved_systems_csv_fields();
     test_app_prefs();
+    test_gain_pref_range();
     test_receiver_prefs();
     test_screen_policy_prefs();
     test_listen_section_pref();

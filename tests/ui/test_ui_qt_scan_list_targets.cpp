@@ -1,18 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QList>
 #include <QMap>
 #include <QPair>
 #include <QString>
 #include <QStringList>
+#include <QTemporaryDir>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
 #include <cstdio>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <qtenvironmentvariables.h>
 #include <utility>
+#include "json_store.h"
+#include "saved_systems_model.h"
 #include "scan_list_targets.h"
 #include "session_args.h"
 using namespace dsd_qt;
@@ -333,5 +339,24 @@ main(int argc, char** argv) {
     args = session_args_scan_build(list, "851.5", "/targets.csv", prefs, &error);
     check(session_args_scan_extra_safe(prefs.extraArgs) && error.isEmpty() && args.contains("-F") && args.contains("-e")
           && args.last() == "-v2");
+    // A saved system stored at 60 dB (the system editor took 50..99 before) loads as 49 dB, so its scan target runs at
+    // 49 dB; main loaded 60 and refused the list ("Gain must be 0..49 dB"). A map handed straight in with 60 is still
+    // refused: the range is held where the store is read, not here.
+    QTemporaryDir data;
+    qputenv("XDG_DATA_HOME", data.path().toUtf8());
+    check(json_store_save_array(
+        QStringLiteral("saved_systems.json"),
+        QJsonArray{QJsonObject{{"name", "High"}, {"decodeFlag", "-ft"}, {"freqMhz", "851.5"}, {"gainDb", 60}}}));
+    const QVariantMap saved = SavedSystemsModel().get(0);
+    check(saved.value("gainDb").toInt() == 49);
+    const QVariantMap savedEntry{
+        {"uid", "saved-entry"}, {"kind", "system"}, {"systemUid", saved.value("uid")}, {"enabled", true}};
+    const QVariantMap savedList{{"uid", "saved-list"}, {"sourceType", "usb"}, {"entries", QVariantList{savedEntry}}};
+    const auto savedTargets = scan_list_targets(savedList, QVariantList{saved});
+    check(savedTargets.ok && savedTargets.csv.contains(",49,\"High\""));
+    QVariantMap raw = saved;
+    raw["gainDb"] = 60;
+    const auto rawTargets = scan_list_targets(savedList, QVariantList{raw});
+    check(!rawTargets.ok && rawTargets.error.contains("Gain must be 0..49 dB"));
     return failures ? 1 : 0;
 }

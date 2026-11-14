@@ -837,8 +837,9 @@ build_configuration(FakeHost& host) {
         expect("avoid 156800000", dsd_app_signal_search_permanent_avoid(156800000U) >= DSD_APP_SEARCH_AVOID_ADDED);
         expect("avoid 162550000", dsd_app_signal_search_permanent_avoid(162550000U) >= DSD_APP_SEARCH_AVOID_ADDED);
     }
+    // A gain past the range Settings edits (an older build stored any number): a backup carries it as stored.
     expect("write settings", dsd_qt::AppPrefs::replacePortable(
-                                 {{"decode/extraArgs", "-Z"}, {"rr/username", "scanner"}, {"tuner/gainDb", "30"}}));
+                                 {{"decode/extraArgs", "-Z"}, {"rr/username", "scanner"}, {"tuner/gainDb", "60"}}));
 }
 
 /** What fresh models load from the data root, plus the files, the settings and the avoid list. */
@@ -1022,6 +1023,8 @@ test_round_trip(FakeHost& host, const QString& document, const Captured& before)
     expect("the avoid list is identical", after.avoids == before.avoids);
     expect("files are byte-identical", after.files == before.files && after.files.size() >= 4);
     expect("settings are identical", after.prefs == before.prefs);
+    expect("a restored out-of-range gain keeps its stored value and reads as 49 dB",
+           after.prefs.value("tuner/gainDb").toString() == "60" && dsd_qt::AppPrefs().gainDb() == 49);
     dsd_app_signal_search_store_close();
 
     // The outcome card, from the apply in this process and from the result file at a later start.
