@@ -361,8 +361,6 @@ void rtl_device_test_set_fd_reset_hook(int (*hook)(int fd));
 struct rtl_usb_identity;
 void rtl_device_test_set_fd_identity_hook(int (*hook)(int fd, struct rtl_usb_identity* out));
 
-struct rtl_device;
-
 /* A USB device started into @p ring by rtl_device_start_async(), its reader standing in for rtlsdr_read_async(): it
  * streams, delivering nothing by itself, until a cancel reaches it, as librtlsdr's does. The receiver's callbacks come
  * from rtl_device_test_usb_stream_deliver(); rtl_device_test_usb_stream_stop() ends it. One at a time; NULL when it

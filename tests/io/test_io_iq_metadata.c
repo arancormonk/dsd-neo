@@ -2254,20 +2254,20 @@ static int
 test_metadata_auto_roundtrip(void) {
     static const struct {
         const char* name;
+        const char* want_line;
         int auto_gain;
         int unknown;
         int tenths;
-        const char* want_line;
         int want_auto;
         int want_unknown;
         int want_tenths;
     } k_cases[] = {
-        {"automatic", 1, 1, 0, "  \"tuner_gain_auto\": true,\n", 1, 1, 0},
+        {"automatic", "  \"tuner_gain_auto\": true,\n", 1, 1, 0, 1, 1, 0},
         /* The writer holds the file's invariant: automatic is no gain reading, whatever the other fields say. */
-        {"automatic over a stale gain", 1, 0, 297, "  \"tuner_gain_auto\": true,\n", 1, 1, 0},
-        {"manual", 0, 0, 297, "  \"tuner_gain_auto\": false,\n", 0, 0, 297},
-        {"manual below 0 dB", 0, 0, -10, "  \"tuner_gain_auto\": false,\n", 0, 0, -10},
-        {"unknown", 0, 1, 0, "  \"tuner_gain_auto\": false,\n", 0, 1, 0},
+        {"automatic over a stale gain", "  \"tuner_gain_auto\": true,\n", 1, 0, 297, 1, 1, 0},
+        {"manual", "  \"tuner_gain_auto\": false,\n", 0, 0, 297, 0, 0, 297},
+        {"manual below 0 dB", "  \"tuner_gain_auto\": false,\n", 0, 0, -10, 0, 0, -10},
+        {"unknown", "  \"tuner_gain_auto\": false,\n", 0, 1, 0, 0, 1, 0},
     };
 
     int rc = 0;

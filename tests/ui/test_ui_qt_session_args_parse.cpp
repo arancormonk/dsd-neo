@@ -13,11 +13,13 @@
  */
 
 #include <QByteArray>
+#include <QByteArrayView>
 #include <QChar>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QIODevice>
+#include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QObject>

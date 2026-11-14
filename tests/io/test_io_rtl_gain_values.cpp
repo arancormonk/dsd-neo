@@ -13,7 +13,6 @@
 
 #include <climits>
 #include <cstdio>
-#include <cstring>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/runtime/input_ring.h>
@@ -22,6 +21,8 @@
 #include <string>
 #include "rtl_stream_test_support.h"
 #include "rtl_usb_identity.h"
+
+struct rtl_device;
 
 extern "C" void rtl_device_test_set_open_fd_failure_hook(int (*hook)(int));
 

@@ -29,7 +29,6 @@
 #include <QMap>
 #include <QMetaProperty>
 #include <QMetaType>
-#include <QModelIndex>
 #include <QObject>
 #include <QPair>
 #include <QSettings>

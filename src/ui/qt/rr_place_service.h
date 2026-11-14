@@ -29,7 +29,6 @@
 #include <QSet>
 #include <QString>
 #include <QStringList>
-#include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
