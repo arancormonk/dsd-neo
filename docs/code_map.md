@@ -596,7 +596,11 @@ Generated (do not edit/commit):
     - Trunk-scan skip (`trunk_scan.c`): engine service is the outer loop's pass, whose tick
       (`dsd_engine_trunk_scan_quiet_service_pass()` before `dsd_trunk_scan_hook_tick()`, one load with the setting off)
       publishes the target on air at the tick's tail, after any landing or advance the tick made
-      (`trunk_scan_quiet_tick_end()`, which tests the setting first; the per-frame ticks of a carrier publish nothing):
+      (`trunk_scan_quiet_tick_end()`, which tests the setting first; a per-frame tick of a carrier publishes only when
+      it tuned another target, `trunk_scan_quiet_tune_mark()`, the owner's `tune_seq` read at the tick's start: under
+      syncs that keep the synced-frames loop running no outer pass would publish the target that tick advanced to,
+      defect B7, the trunk twin of -Y's B6; a visit with no sync has no per-frame ticks, so its publications are the
+      outer passes' as before):
       its landing in this session, or its park still in flight (epoch 0, its request), with `trunk_scan_quiet_facts()`
       (the target type's mode classes, an analog target's kind and width through `scan_quiet_analog_facts()`, the DSP
       rate, its frequency) and the coordinator's conditions (`trunk_scan_quiet_visit_eligible()`: conventional, no
@@ -718,7 +722,7 @@ Generated (do not edit/commit):
       `test_scan_quiet_y_noise_frames_still_step`, `test_scan_quiet_pending_verdict_holds_every_skip_point`,
       `test_scan_quiet_evidence_*`, and the frame-boundary service on the check's clock seam:
       `test_scan_quiet_frame_boundary_*`, `test_scan_quiet_frame_boundaries_run_every_step`,
-      `test_scan_quiet_sync_free_visit_timing`), `ENGINE_NO_CARRIER_RESET` (`test_live_loop_counts_only_checked_frames`,
+      `test_scan_quiet_sync_free_visit_timing`, `test_scan_quiet_trunk_sync_free_publication`), `ENGINE_NO_CARRIER_RESET` (`test_live_loop_counts_only_checked_frames`,
       `test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict`,
       `test_y_quiet_noise_syncs_still_step`, `test_trunk_quiet_noise_syncs_still_skip`), `CORE_RECEIVE`, `ENGINE_CHANNEL_SCAN`, `ENGINE_SIGNAL_SEARCH`,
       `APP_COMMAND_QUEUE`, `FRAME_SYNC_SPS_HUNT_FALSE_SYNC`, `FRAME_SYNC_HISTORY_CARRY`; the content-evidence sites in

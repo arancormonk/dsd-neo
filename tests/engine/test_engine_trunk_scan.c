@@ -23792,6 +23792,47 @@ test_scan_quiet_sync_free_visit_timing(void) {
     return rc;
 }
 
+/* issue #834 B7: only a tick that tuned another target, or the outer pass, publishes. On a visit with no sync there are no
+   per-frame ticks, so its publications are the outer passes' as before: a tick with no pass owed that tunes nothing
+   publishes nothing; the pass publishes the landed target and the tap is asked; the pass whose idle decision skips it
+   publishes the target it tuned, in the same tick. The same expectations hold on the code before B7. */
+static int
+test_scan_quiet_trunk_sync_free_publication(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (qt_portable_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    qt_notices_watch(1);
+    qt_decode_at(10U);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    int rc = qt_expect("a tick with no pass owed that tunes nothing publishes nothing",
+                       scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED && g_tap.requests == 0
+                           && g_tap.capture_reads == 0);
+    qt_pass(&opts, &state);
+    rc |= qt_expect("the outer pass publishes the landed target", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED
+                                                                      && g_tap.requests == 1
+                                                                      && scan_quiet_key_get(&state).index == 0);
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    rc |= qt_expect("READY", quiet_service_after(&opts, &state, 10U) == DSD_SCAN_QUIET_HAND_BACK);
+    qt_decode_at(60U);
+    qt_pass(&opts, &state);
+    rc |= expect_active_target(&state, "the pass that skips", 1U);
+    rc |= qt_expect("the same tick publishes the target it tuned",
+                    g_qt_notices == 1 && scan_quiet_key_get(&state).index == 1
+                        && scan_quiet_phase_get(&state) == SCAN_QUIET_WAIT_CAPTURE && g_tap.requests == 1);
+    const int reads = g_tap.capture_reads;
+    g_quiet_rt_ms += 60U;
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    rc |= qt_expect("a later tick with no pass owed that tunes nothing: no publication, no read",
+                    g_tap.capture_reads == reads && scan_quiet_phase_get(&state) == SCAN_QUIET_WAIT_CAPTURE);
+    qt_notices_watch(0);
+    quiet_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
 /* With the setting off a frame boundary's service does nothing: no read, no request, the check left as it is. */
 static int
 test_scan_quiet_frame_boundary_setting_off(void) {
@@ -24577,13 +24618,20 @@ test_scan_quiet_adopts_a_park_measured_in_flight(void) {
                         quiet_apply(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 0
                             && scan_quiet_phase_get(&state) == SCAN_QUIET_READY);
         if (adopt) {
-            /* The tick notes the park's landing first, which adopts the result, then its idle decision applies it:
-               the target skips, and the visit's check is consumed. */
+            /* The tick notes the park's landing first, which adopts the result, then its idle decision applies it
+               (an unadopted, epoch-0 result is never applied): the target skips with its NOTICE, and the visit's
+               check is consumed. The tick tuned the next target, so it publishes that visit at its tail (issue #834
+               B7): a park still in flight, waiting, with nothing asked of the tap yet. */
+            qt_notices_watch(1);
             dsd_engine_trunk_scan_tick(&opts, &state);
-            rc |= qt_expect("adopted on a matching tune_request and applied by the tick",
-                            scan_quiet_key_get(&state).epoch != 0U && scan_quiet_key_get(&state).tune_request == park
-                                && scan_quiet_phase_get(&state) == SCAN_QUIET_DONE
-                                && dsd_engine_trunk_scan_active_index(&state) == 0U && g_tap.requests == 1);
+            const scan_quiet_visit_key next = scan_quiet_key_get(&state);
+            rc |=
+                qt_expect("adopted on a matching tune_request and applied by the tick",
+                          g_qt_notices == 1 && dsd_engine_trunk_scan_active_index(&state) == 0U && g_tap.requests == 1);
+            rc |= qt_expect("the next visit published by the tick that tuned it",
+                            next.index == 0 && next.epoch == 0U && next.tune_request != park
+                                && scan_quiet_phase_get(&state) == SCAN_QUIET_WAIT_CAPTURE);
+            qt_notices_watch(0);
         } else {
             dsd_engine_scan_landing_note_target(&state, 1, e.key.session, k_qt_hz_b, park + 1000U);
             rc |= qt_expect("discarded on another tune_request",
@@ -26163,6 +26211,7 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_frame_boundaries_run_every_step);
     rc |= run_with_default_tune_hook(test_scan_quiet_sync_free_visit_timing);
     rc |= run_with_default_tune_hook(test_scan_quiet_frame_boundary_setting_off);
+    rc |= run_with_default_tune_hook(test_scan_quiet_trunk_sync_free_publication);
 #else
     rc |= test_scan_quiet_radio_off_is_a_no_op();
 #endif

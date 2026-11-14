@@ -13248,15 +13248,14 @@ test_live_trunk_scan_skips_a_quiet_target(int on) {
 /* Issue #834 D8, trunk scan: a target whose noise keeps passing a sync word its protocol's gate rejects (NXDN48 or dPMR
    noise) keeps the synced-frames loop running, so the hunt's 300-symbol service never comes and the outer pass that
    publishes the target never runs. The loop's frame-boundary service collects the quiet result after the first
-   rejected frame, and the per-frame tick skips the target with its NOTICE, long before its 3 s dwell. With the setting
-   off nothing is asked and the target stays. */
+   rejected frame, and the per-frame tick skips the target with its NOTICE, long before its 3 s dwell. That tick tuned
+   the next target, so it publishes it too (issue #834 B7): the next target is measured at once, and the frame
+   boundary after it skips it in turn, still with no outer pass. With the setting off nothing is asked and the target
+   stays. */
+/* A trunk scan of two DMR conventional targets on RTL input over the fake tap, skip-silent @p on, whose one outer pass
+   notes target 0's landing and publishes it (the tap asked, with the setting on). Returns 0 when it did. */
 static int
-test_trunk_quiet_noise_syncs_still_skip(int on) {
-    dsd_opts* opts = NULL;
-    dsd_state* state = NULL;
-    if (init_test_runtime(&opts, &state) != 0) {
-        return 1;
-    }
+trunk_quiet_one_pass(dsd_opts* opts, dsd_state* state, char* path, size_t path_size, long int base_hz, int on) {
     yq_start(1);
     reset_rtl_profile_fakes();
     dsd_trunk_tuning_requests_reset();
@@ -13264,11 +13263,8 @@ test_trunk_quiet_noise_syncs_still_skip(int on) {
     state->rtl_ctx = (RtlSdrContext*)state;
     yq_dmr_only(opts);
     opts->scan_skip_silent = on;
-    char path[DSD_TEST_PATH_MAX];
-    /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
-    const long int base_hz = on ? 1301012500L : 1311012500L;
     g_live_trunk_dwell_ms = 3000;
-    int rc = expect_true("trunk scan set up", live_trunk_scan(opts, state, path, sizeof path, base_hz) == 0);
+    int rc = expect_true("trunk scan set up", live_trunk_scan(opts, state, path, path_size, base_hz) == 0);
     g_live_trunk_dwell_ms = 250;
     g_yq.gen_base = 100U; /* the landing's capture is newer than the generation read at its tune */
     /* One outer pass: its tick notes target 0's landing and publishes it, and the tap is asked. No pass after it
@@ -13280,13 +13276,34 @@ test_trunk_quiet_noise_syncs_still_skip(int on) {
     rc |= expect_true("target 0 landed and, on, measured",
                       g_rtl_tune_freq == (uint32_t)base_hz && g_yq.requests == (on ? 1 : 0)
                           && scan_quiet_phase_get(state) == (on ? SCAN_QUIET_REQUESTED : SCAN_QUIET_SUSPENDED));
+    return rc;
+}
+
+static int
+test_trunk_quiet_noise_syncs_still_skip(int on) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
+    const long int base_hz = on ? 1301012500L : 1311012500L;
+    int rc = trunk_quiet_one_pass(opts, state, path, sizeof path, base_hz, on);
     const int tunes = g_rtl_tune_calls;
-    run_synced_frames(opts, state, 5, -1);
+    run_synced_frames(opts, state, 0, -1);
     if (on) {
         rc |= expect_true("the per-frame tick skips the target at the first rejected frame's boundary",
                           g_rtl_tune_calls == tunes + 1 && g_rtl_tune_freq == (uint32_t)(base_hz + 1000000L)
                               && g_yq.notices == 1);
+        rc |= expect_true("the tick that advanced publishes the next target: measured at once",
+                          g_yq.requests == 2 && g_yq.last.frequency_hz == (uint32_t)(base_hz + 1000000L)
+                              && scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED);
+        run_synced_frames(opts, state, 0, -1);
+        rc |= expect_true("the next rejected frame's boundary skips it in turn, with no outer pass",
+                          g_rtl_tune_calls == tunes + 2 && g_rtl_tune_freq == (uint32_t)base_hz && g_yq.notices == 2);
     } else {
+        run_synced_frames(opts, state, 5, -1);
         rc |= expect_true("off: nothing asked, the target stays",
                           g_rtl_tune_calls == tunes && g_yq.requests == 0 && g_yq.notices == 0);
     }

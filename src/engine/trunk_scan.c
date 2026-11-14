@@ -5204,15 +5204,28 @@ trunk_scan_quiet_skip(const dsd_opts* opts, dsd_state* state, const dsd_trunk_sc
     return 1;
 }
 
+/* The scan's tune count (dsd_engine_scan_owner::tune_seq, moved by every scan tune), so a tick can tell whether it tuned
+   another target; 0 with no scan owner. */
+static uint64_t
+trunk_scan_quiet_tune_mark(const dsd_state* state) {
+    const dsd_engine_scan_owner* owner =
+        (const dsd_engine_scan_owner*)dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
+    return owner ? owner->tune_seq : 0U;
+}
+
 /* The tail of a tick under the coordinator's guard, for the scan quiet check (issue #834): a READY result the tick saw
-   and did not apply is declined (a stay, a hold, a release or any other step that spent the tick came first), then, on
-   the outer loop's pass, the visit on air is published, after any landing or advance this tick made. */
+   and did not apply is declined (a stay, a hold, a release or any other step that spent the tick came first), then the
+   visit on air is published, after any landing or advance this tick made: on the outer loop's pass, and on a per-frame
+   tick that tuned another target (@p tunes_before, trunk_scan_quiet_tune_mark() at the tick's start), whose new visit
+   no outer pass may publish while the frames keep coming (issue #834 B7, the trunk scan's twin of the -Y landing
+   publication). */
 static void
-trunk_scan_quiet_tick_end(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, double now_m) {
+trunk_scan_quiet_tick_end(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, double now_m,
+                          uint64_t tunes_before) {
     if (!opts->scan_skip_silent) {
         return; /* one load: no pass is ever owed with the setting off */
     }
-    const int pass = coord->quiet_pass_owed;
+    const int pass = coord->quiet_pass_owed || trunk_scan_quiet_tune_mark(state) != tunes_before;
     coord->quiet_pass_owed = 0;
     scan_quiet_reconcile_declined(opts, state, SCAN_QUIET_OWNER_TRUNK, 0);
     if (!pass || !scan_quiet_wants_eligibility(opts, state, SCAN_QUIET_OWNER_TRUNK)) {
@@ -5364,12 +5377,13 @@ trunk_scan_note_dwell_serviced(const dsd_opts* opts, const dsd_state* state, dsd
 static void
 trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
     const double now_m = trunk_scan_now_m();
+    const uint64_t tunes_before = opts->scan_skip_silent ? trunk_scan_quiet_tune_mark(state) : 0U;
     /* A departure the target on air owes comes first, ahead of everything that could keep it (issue #697). */
     if (!trunk_scan_service_departure(opts, state, coord, now_m)) {
         trunk_scan_tick_targets_locked(opts, state, coord, now_m);
     }
     trunk_scan_note_dwell_serviced(opts, state, coord, now_m);
-    trunk_scan_quiet_tick_end(opts, state, coord, now_m);
+    trunk_scan_quiet_tick_end(opts, state, coord, now_m, tunes_before);
     trunk_scan_publish_timing(opts, state, coord, now_m);
 }
 
