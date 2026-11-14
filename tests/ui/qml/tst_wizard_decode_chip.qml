@@ -143,7 +143,9 @@ Item {
 
             tc.wizard.advancedOpen = true
             verify(bw.visible, "the bandwidth field is hidden on an Airspy")
-            compare(bw.placeholderText, "72", "an empty bandwidth on an Airspy does not run TETRA at 72 kHz")
+            compare(bw.displayText, "App default")
+            compare(findChild(tc.wizard, "systemBandwidthNote").text, "App default · 72 kHz",
+                    "App default on an Airspy does not run TETRA at 72 kHz")
             tc.wizard.bwText = "48"
             verify(!tc.wizard.stepValid(), "TETRA on an Airspy at 48 kHz passes step 1")
             verify(rate.visible, "the hold on an Airspy is not explained")
@@ -173,7 +175,9 @@ Item {
             verify(bw !== null, "the bandwidth field has no name to find it by")
             tc.wizard.step = 1
             tc.wizard.pickDecodeFlag("-fT")
-            compare(bw.placeholderText, "72", "an empty bandwidth runs TETRA at 72 kHz")
+            compare(bw.displayText, "App default")
+            compare(findChild(tc.wizard, "systemBandwidthNote").text, "App default · 72 kHz",
+                    "App default runs TETRA at 72 kHz")
             for (var source of ["usb", "rtltcp"]) {
                 tc.wizard.sourceType = source
                 tc.wizard.bwText = "48"
@@ -187,8 +191,9 @@ Item {
             }
             tc.wizard.sourceType = "usb"
             tc.wizard.pickDecodeFlag("-fs")
-            compare(bw.placeholderText, String(sessionArgs.effectiveBandwidthKhz("-fs", "usb", -1)),
-                    "another mode's placeholder is not what an empty field runs at")
+            compare(findChild(tc.wizard, "systemBandwidthNote").text,
+                    "App default · " + sessionArgs.effectiveBandwidthKhz("-fs", "usb", -1) + " kHz",
+                    "another mode's App default note is not what App default runs at")
             // A fresh wizard for the next case: this one left a source and a flag.
             tc.wizard.openForAdd(false)
         }

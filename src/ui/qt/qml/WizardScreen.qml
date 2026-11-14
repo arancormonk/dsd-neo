@@ -105,7 +105,8 @@ Item {
     property string gainText: ""
     property alias ppmText: ppmField.text
     property alias hangtimeText: hangtimeField.text
-    property alias bwText: bwField.text
+    // The bandwidth asked for in kHz, empty for App default (see bwChoice).
+    property string bwText: ""
     // Tri-state: -1 follows the app-wide Settings pref, 0 forces off, 1 forces
     // on. An explicit Off must survive a global On — it means this dongle or
     // antenna must not be fed the tee's 4.5 V.
@@ -371,7 +372,7 @@ Item {
         loadGain(-1);
         ppmField.text = "";
         hangtimeField.text = "";
-        bwField.text = "";
+        bwText = "";
         airspySettings = ({});
         biasTee = -1;
         extraField.text = "";
@@ -386,6 +387,7 @@ Item {
         csvNotice = "";
         csvNoticeIsProblem = false;
         wizardAirspy.resetText();
+        bwChoice.reload();
         initialDraft = draftFingerprint();
     }
 
@@ -422,7 +424,7 @@ Item {
         loadGain(-1);
         ppmField.text = "";
         hangtimeField.text = "";
-        bwField.text = "";
+        bwText = "";
         airspySettings = ({});
         biasTee = -1;
         extraField.text = "";
@@ -443,7 +445,7 @@ Item {
             // A whole-dB override (0 is the tuner's AGC); -1 for an Airspy,
             // whose gains are in its own settings, is App default.
             loadGain(detection.gainDb);
-            bwField.text = String(detection.bandwidthKhz > 0 ? detection.bandwidthKhz : 48);
+            bwText = String(detection.bandwidthKhz > 0 ? detection.bandwidthKhz : 48);
             // The receiver the detection was made with, not the app defaults
             // reset above: an Airspy's own settings, or an RTL's PPM and its
             // explicit bias tee. A field the source does not use stays unset.
@@ -455,6 +457,7 @@ Item {
         }
         wizardAirspy.resetText();
         revealRefusedTuning();
+        bwChoice.reload();
         initialDraft = draftFingerprint();
     }
 
@@ -480,7 +483,7 @@ Item {
         loadGain(sys.gainDb);
         ppmField.text = sys.ppm;
         hangtimeField.text = sys.hangtime || "";
-        bwField.text = sys.bandwidthKhz > 0 ? String(sys.bandwidthKhz) : "";
+        bwText = sys.bandwidthKhz > 0 ? String(sys.bandwidthKhz) : "";
         biasTee = sys.biasTee;
         extraField.text = sys.extraArgs;
         nameField.text = sys.name;
@@ -502,6 +505,7 @@ Item {
         csvNoticeIsProblem = false;
         wizardAirspy.resetText();
         revealRefusedTuning();
+        bwChoice.reload();
         initialDraft = draftFingerprint();
     }
 
@@ -551,7 +555,7 @@ Item {
             pickDecodeFlag("");
     }
 
-    // The bandwidth the user asked for, or -1 for an empty field.
+    // The bandwidth the user picked, or -1 for App default.
     function bandwidthRequestKhz() {
         return bwText.length > 0 ? intOr(bwText, -1) : -1;
     }
@@ -559,8 +563,8 @@ Item {
     /**
      * Why AM cannot run at the bandwidth this radio would start with (issue
      * #524), or empty: the engine refuses an AM channel the DSP bandwidth
-     * cannot filter, so the wizard says so before saving the system. An empty
-     * bandwidth field follows the app-wide default.
+     * cannot filter, so the wizard says so before saving the system. App
+     * default runs at the app-wide default.
      */
     function amBandwidthError() {
         if (!radioSource || !Util.decodeFlagNeedsRadio(decodeFlag))
@@ -570,9 +574,9 @@ Item {
 
     /**
      * Why TETRA cannot run on this radio (issue #803), or empty: a radio
-     * decodes it only at 72 kHz, which an empty bandwidth field gives it. The
-     * same check refuses the session at start, so the wizard says so before
-     * saving the system.
+     * decodes it only at 72 kHz, which App default gives it. The same check
+     * refuses the session at start, so the wizard says so before saving the
+     * system.
      */
     function tetraRateError() {
         if (!radioSource)
@@ -867,7 +871,7 @@ Item {
             freqField.text = result.freqMhz;
         wizard.decodeFlag = result.decodeFlag;
         // A bandwidth kept from an edited system that cannot decode TETRA:
-        // an empty field runs it at the 72 kHz it needs.
+        // App default runs it at the 72 kHz it needs.
         if (bwText.length > 0 && tetraRateError().length > 0)
             bwText = "";
         // The database's answer, and an answer: a chip tap after the import
@@ -1797,64 +1801,46 @@ Item {
                             }
                         }
 
-                        Row {
+                        PlexTextField {
+                            id: ppmField
+                            objectName: "systemPpmField"
+                            label: qsTr("PPM correction")
+                            width: parent.width
+                            visible: wizard.rtlTuner
+                            mono: true
+                            placeholderText: String(prefs.ppm)
+                            // Signed whole numbers only: this string is
+                            // spliced verbatim into the rtl input spec, and a
+                            // hint alone does not constrain hardware
+                            // keyboards. ASCII digits, as a locale-aware
+                            // validator lets through text Number cannot read.
+                            inputMethodHints: Qt.ImhFormattedNumbersOnly
+                            input.validator: RegularExpressionValidator {
+                                regularExpression: /^-?[0-9]*$/
+                            }
+                            // What the engine runs: it clamps to +-200.
+                            error: wizard.ppmInRange() ? "" : qsTr("Enter a correction from -200 to 200 ppm.")
+                        }
+
+                        // The widths every radio runs. App default is 72 kHz
+                        // for TETRA (issue #803), else the app default as
+                        // this radio takes it, and stays App default (-1)
+                        // when saved.
+                        BandwidthChoice {
+                            id: bwChoice
                             width: parent.width
                             visible: wizard.radioSource
-                            spacing: 10
-
-                            Column {
-                                width: (parent.width - 10) / 2
-                                visible: wizard.rtlTuner
-                                spacing: 6
-
-                                PlexTextField {
-                                    id: ppmField
-                                    objectName: "systemPpmField"
-                                    label: qsTr("PPM correction")
-                                    width: parent.width
-                                    mono: true
-                                    placeholderText: String(prefs.ppm)
-                                    // Signed whole numbers only: this string is
-                                    // spliced verbatim into the rtl input spec,
-                                    // and a hint alone does not constrain
-                                    // hardware keyboards. ASCII digits, as a
-                                    // locale-aware validator lets through text
-                                    // Number cannot read.
-                                    inputMethodHints: Qt.ImhFormattedNumbersOnly
-                                    input.validator: RegularExpressionValidator {
-                                        regularExpression: /^-?[0-9]*$/
-                                    }
-                                    // What the engine runs: it clamps to +-200.
-                                    error: wizard.ppmInRange() ? "" : qsTr("Enter a correction from -200 to 200 ppm.")
-                                }
+                            inheritable: true
+                            comboObjectName: "systemBandwidthField"
+                            noteObjectName: "systemBandwidthNote"
+                            value: wizard.bandwidthRequestKhz()
+                            inheritNote: {
+                                var appDefault = prefs.bandwidthKhz; // dependency: follow a change to the default
+                                var khz = sessionArgs.effectiveBandwidthKhz(wizard.decodeFlag, wizard.sourceType, -1);
+                                return qsTr("App default · %1 kHz").arg(khz > 0 ? khz : appDefault);
                             }
-
-                            // Alone on an Airspy, the field takes the row. Each
-                            // field names itself in its own label.
-                            Column {
-                                width: wizard.sourceType === "airspy" ? parent.width : (parent.width - 10) / 2
-                                spacing: 6
-
-                                PlexTextField {
-                                    id: bwField
-                                    objectName: "systemBandwidthField"
-                                    label: qsTr("Bandwidth (kHz)")
-                                    width: parent.width
-                                    mono: true
-                                    // What an empty field runs at: 72 kHz for
-                                    // TETRA (issue #803), else the app default
-                                    // as this radio takes it.
-                                    placeholderText: {
-                                        var appDefault = prefs.bandwidthKhz; // dependency: follow a change to the default
-                                        var khz = sessionArgs.effectiveBandwidthKhz(wizard.decodeFlag, wizard.sourceType, -1);
-                                        return khz > 0 ? String(khz) : String(appDefault);
-                                    }
-                                    inputMethodHints: Qt.ImhDigitsOnly
-                                    input.validator: IntValidator {
-                                        bottom: 1
-                                        top: 9999
-                                    }
-                                }
+                            onChosen: function (khz) {
+                                wizard.bwText = khz > 0 ? String(khz) : "";
                             }
                         }
 

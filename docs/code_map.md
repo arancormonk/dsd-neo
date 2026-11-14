@@ -12660,19 +12660,43 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `scanGainMode`/`scanTuner_gainDb` and its draft (`gainMode`, `gainText`, `draft.gainDb`). Both inheriting editors
     word App default with `Util.gainDefaultNote(prefs.gainDb)` ("App default · Automatic" / "App default · 30 dB"). The
     system editor (`WizardScreen`) gives it its own full-width row with App default (`systemGainMode`,
-    `systemGainField`; draft `gainMode`/`gainText`, the text counted in the draft fingerprint only under Set), above PPM
-    and bandwidth, which share a row and name themselves in their own labels (no captions over them). `openForAdd()`
-    (App default), `openForEdit()` and `openForFound()` (a detection's 0 Automatic, n Set, -1 App default; the Explore
-    handoff App default) set the mode before the clean fingerprint is taken, and `applyRadioReference()` leaves the gain
-    draft and that baseline alone. `gainValid()` and `ppmValid()` (empty or a whole number from -200 to 200, "Enter a
-    correction from -200 to 200 ppm.") count only on `usb` and `rtltcp`, where the two show, and hold the tune and name
-    steps and `commit()`. On any other source they hold nothing, and a refused hidden value is saved as App default (-1,
-    empty PPM). A refused value opens Advanced on its error when an edit or detection loads it and when the tune step is
-    reached (a source changed to an RTL brings a hidden one into view). Save writes -1 / 0 / n. The Radio sheet's RTL
-    gain steppers are live only and are never saved to a system. The line under them (`radioGainSessionNote`, "Gain
-    changes here last until you stop listening.") says so. It is hidden for an Airspy and under "This channel", which
-    has its own scope note. Tests: `tst_gain_editor.qml`, `tst_settings_tuner_gain.qml`, `tst_wizard_gain.qml`,
-    `tst_radio_gain_override.qml`, `tst_scan_row_edits.qml`, `tst_segmented_whole_words.qml`, `tst_a11y_text_reach.qml`.
+    `systemGainField`; draft `gainMode`/`gainText`, the text counted in the draft fingerprint only under Set), above the
+    PPM field and the bandwidth choice, each full width and named by its own label (no captions over them).
+    `openForAdd()` (App default), `openForEdit()` and `openForFound()` (a detection's 0 Automatic, n Set, -1 App
+    default; the Explore handoff App default) set the mode before the clean fingerprint is taken, and
+    `applyRadioReference()` leaves the gain draft and that baseline alone. `gainValid()` and `ppmValid()` (empty or a
+    whole number from -200 to 200, "Enter a correction from -200 to 200 ppm.") count only on `usb` and `rtltcp`, where
+    the two show, and hold the tune and name steps and `commit()`. On any other source they hold nothing, and a refused
+    hidden value is saved as App default (-1, empty PPM). A refused value opens Advanced on its error when an edit or
+    detection loads it and when the tune step is reached (a source changed to an RTL brings a hidden one into view).
+    Save writes -1 / 0 / n. The Radio sheet's RTL gain steppers are live only and are never saved to a system. The line
+    under them (`radioGainSessionNote`, "Gain changes here last until you stop listening.") says so. It is hidden for an
+    Airspy and under "This channel", which has its own scope note. Tests: `tst_gain_editor.qml`,
+    `tst_settings_tuner_gain.qml`, `tst_wizard_gain.qml`, `tst_radio_gain_override.qml`, `tst_scan_row_edits.qml`,
+    `tst_segmented_whole_words.qml`, `tst_a11y_text_reach.qml`.
+  - Qt/Android receiver defaults (PPM and bandwidth): every place that edits them (Settings' Radio defaults, the system
+    editor, the scan list editor) runs what it shows. PPM takes a whole number from -200 to 200, the engine's own clamp,
+    with "Enter a correction from -200 to 200 ppm." outside it: Settings (`settingsPpm`, a `ValueRow` with `minimum`,
+    `maximum` and `rangeError`) writes only a value in range; the system editor's empty field and the scan list's App
+    default stay valid, and out-of-range text holds the step and the save. The bandwidth is `qml/BandwidthChoice.qml`, a
+    `PlexComboBox` of the eight widths both an RTL and an Airspy run (4, 6, 8, 12, 16, 24, 48, 72 kHz), with App default
+    first when `inheritable` (the caller's `value` 0 or less, reported as -1). The caller owns `value` and takes
+    `chosen(khz)`. Under App default it shows the caller's `inheritNote`: the system editor's says what App default runs
+    for its decode mode and source (`sessionArgs.effectiveBandwidthKhz(decodeFlag, sourceType, -1)`: 72 for TETRA,
+    issue #803), the scan list's what the app default runs on its source (`effectiveBandwidthKhz("", sourceType,
+    prefs.bandwidthKhz)`). A stored value that is not one of the eight (an older build took any number) is shown as its
+    own entry ("25 kHz"), after the widths, with "Runs at X kHz on an RTL-SDR, Y kHz on an Airspy."
+    (`effectiveBandwidthKhz("", "usb"|"airspy", value)`); nothing rewrites it until the user picks another width. That
+    entry stays offered after such a pick, so the combo's model does not change under the reader (a new model resets the
+    index and rebuilds every row, see "No changing text in a `ComboBox` model"); `reload()` takes the stored value
+    afresh, and each caller calls it where it loads another value (`openForAdd`/`openForFound`/`openForEdit`, the scan
+    list's `openFor`). A value changed from elsewhere (a Settings restore, a RadioReference import clearing a width
+    TETRA cannot use) reloads by itself. App default stays -1: opening or saving never turns it into a number. Names:
+    Settings `settingsBandwidth` (note `settingsBandwidthNote`), the system editor `systemBandwidthField` (draft
+    `bwText`, empty for App default; note `systemBandwidthNote`), the scan list `scanTuner_bandwidthKhz` (draft
+    `bandwidthSet`/`bandwidthText`/`draft.bandwidthKhz`; note `scanBandwidthNote`). Tests:
+    `tst_settings_receiver_defaults.qml`, `tst_wizard_bandwidth.qml`, `tst_wizard_gain.qml` (PPM),
+    `tst_scan_list_screen.qml`, `tst_wizard_decode_chip.qml`, `tst_airspy_source_ui.qml`, `tst_a11y_text_reach.qml`.
   - Analog channel width (issue #525): the Input menu's `input.nfm_bw` row, right after `input.sql` (`NFM bandwidth...
     [12.5 kHz]`, or `[default]`, on a radio input while the configured -fA preset runs FM or an explicit width is set
     under another preset, `is_nfm_width_editable()`), prompts for Hz and submits `DSD_APP_CMD_NFM_BANDWIDTH_SET` as

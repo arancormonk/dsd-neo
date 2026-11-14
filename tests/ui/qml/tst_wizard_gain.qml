@@ -181,10 +181,10 @@ Item {
         function test_full_width_editor() {
             openAdvanced();
             var strip = control("systemGainMode");
-            var row = control("systemBandwidthField").parent.parent;
-            compare(strip.width, row.width, "the gain choice takes the whole row");
+            var pane = control("systemPpmField").parent;
+            compare(strip.width, pane.width, "the gain choice takes the whole row");
             choose("Set");
-            compare(control("systemGainField").width, row.width);
+            compare(control("systemGainField").width, pane.width);
             compare(control("systemGainField").label, "Gain");
             compare(control("systemGainField").unit, "dB");
             compare(strip.Accessible.name, "Gain");

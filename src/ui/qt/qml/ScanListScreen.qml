@@ -244,6 +244,7 @@ Rectangle {
         gainText = gainMode === 2 ? String(gain) : "";
         ppmText = ppmSet ? String(draft.ppm) : "";
         bandwidthText = bandwidthSet ? String(bandwidth) : "";
+        bandwidthChoice.reload();
         portText = draft.port === undefined ? "" : String(draft.port);
         timingText = {
             defaultDwellMs: Number(draft.defaultDwellMs) > 0 ? String(Number(draft.defaultDwellMs)) : "",
@@ -381,8 +382,6 @@ Rectangle {
             else if (ppmSet && ppmField.error.length)
                 field = ppmField;
         }
-        if (!field && bandwidthSet && bandwidthField.error.length)
-            field = bandwidthField;
         for (var i = 0; !field && i < timingFields.count; ++i) {
             if (timingFields.itemAt(i).field.error.length)
                 field = timingFields.itemAt(i).field;
@@ -1014,8 +1013,9 @@ Rectangle {
                         }
                         PlexTextField {
                             id: ppmField
+                            // What the engine runs: it holds the correction to +-200.
                             function parsedValue() {
-                                return screen.parseIntStrict(text, -2147483648, 2147483647);
+                                return screen.parseIntStrict(text, -200, 200);
                             }
                             objectName: "scanTuner_ppm"
                             width: parent.width
@@ -1028,7 +1028,7 @@ Rectangle {
                             input.validator: RegularExpressionValidator {
                                 regularExpression: /^-?[0-9]*$/
                             }
-                            error: isNaN(parsedValue()) ? qsTr("Enter a PPM correction, including 0.") : ""
+                            error: isNaN(parsedValue()) ? qsTr("Enter a correction from -200 to 200 ppm.") : ""
                             input.onTextEdited: {
                                 screen.ppmText = text;
                                 screen.draft.ppm = isNaN(parsedValue()) ? "" : text;
@@ -1036,53 +1036,20 @@ Rectangle {
                         }
                     }
 
-                    Column {
+                    // The widths every radio runs; App default (-1) runs
+                    // the app default as this list's radio takes it.
+                    BandwidthChoice {
+                        id: bandwidthChoice
                         width: parent.width
-                        spacing: 6
-                        MicroLabel {
-                            text: qsTr("Bandwidth")
-                        }
-                        SegmentedControl {
-                            objectName: "scanBandwidthMode"
-                            accessibleName: qsTr("Bandwidth")
-                            width: parent.width
-                            model: [qsTr("App default"), qsTr("Set")]
-                            currentIndex: screen.bandwidthSet ? 1 : 0
-                            onSelected: function (index) {
-                                screen.bandwidthSet = index === 1;
-                                screen.setDraft("bandwidthKhz", index && !isNaN(bandwidthField.parsedValue()) ? bandwidthField.parsedValue() : -1);
-                            }
-                        }
-                        ReadableText {
-                            width: parent.width
-                            visible: !screen.bandwidthSet
-                            text: qsTr("App default · %1 kHz").arg(prefs.bandwidthKhz)
-                            wrapMode: Text.Wrap
-                            font.family: Theme.sans
-                            font.pixelSize: Theme.fontSize(12)
-                            color: Theme.textSecondary
-                        }
-                        PlexTextField {
-                            id: bandwidthField
-                            function parsedValue() {
-                                return screen.parseIntStrict(text, 1, 2147483647);
-                            }
-                            objectName: "scanTuner_bandwidthKhz"
-                            width: parent.width
-                            visible: screen.bandwidthSet
-                            label: qsTr("Bandwidth")
-                            unit: qsTr("kHz")
-                            mono: true
-                            text: screen.bandwidthText
-                            inputMethodHints: Qt.ImhDigitsOnly
-                            input.validator: RegularExpressionValidator {
-                                regularExpression: /^-?[0-9]*$/
-                            }
-                            error: isNaN(parsedValue()) ? qsTr("Enter a positive bandwidth.") : ""
-                            input.onTextEdited: {
-                                screen.bandwidthText = text;
-                                screen.draft.bandwidthKhz = isNaN(parsedValue()) ? -1 : parsedValue();
-                            }
+                        inheritable: true
+                        comboObjectName: "scanTuner_bandwidthKhz"
+                        noteObjectName: "scanBandwidthNote"
+                        value: screen.bandwidthSet ? Number(screen.bandwidthText) : -1
+                        inheritNote: qsTr("App default · %1 kHz").arg(sessionArgs.effectiveBandwidthKhz("", screen.draft.sourceType || "usb", prefs.bandwidthKhz))
+                        onChosen: function (khz) {
+                            screen.bandwidthSet = khz > 0;
+                            screen.bandwidthText = khz > 0 ? String(khz) : "";
+                            screen.setDraft("bandwidthKhz", khz > 0 ? khz : -1);
                         }
                     }
 

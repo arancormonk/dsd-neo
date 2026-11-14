@@ -135,6 +135,8 @@ Item {
             }},
             {file: "AirspyControls"},
             {file: "BackupFlow"},
+            // A stored width no radio runs, with its note of what it runs at.
+            {file: "BandwidthChoice", properties: {inheritable: true, inheritNote: "App default · 48 kHz", value: 25}},
             {file: "BackupResultCard", open: function (card) {
                 card.outcome = {kind: "restored", detail: "Settings and saved systems were restored."};
                 card.actionError = "The backup file couldn't be removed.";

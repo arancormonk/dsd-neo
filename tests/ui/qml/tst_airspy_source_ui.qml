@@ -42,10 +42,11 @@ Item {
         }
 
         // Issue #806: on an Airspy the Advanced pane names only what it shows
-        // (its own gain controls and bias tee, no PPM), and the bandwidth field,
-        // alone in its row, takes the row. On an RTL it shares the row with the
-        // PPM field, level with it; each field names itself in its own label,
-        // with no caption over it. An RTL's gain has its own row above them.
+        // (its own gain controls and bias tee, no PPM). The PPM field and the
+        // bandwidth choice each take the whole width, the bandwidth under the
+        // PPM on an RTL, so neither's words or notes are squeezed into half a
+        // phone (B9); each names itself, with no caption over the PPM field.
+        // An RTL's gain has its own row above them.
         function test_wizard_airspy_advanced_pane() {
             screenLoader.source = uiDir + "/WizardScreen.qml";
             var wizard = screenLoader.item;
@@ -59,16 +60,16 @@ Item {
             verify(subtitle !== null && bw !== null && ppm !== null);
             compare(findChild(wizard, "wizardBandwidthCaption"), null, "no caption repeats the field's label");
             compare(findChild(wizard, "wizardPpmCaption"), null, "no caption repeats the field's label");
-            var row = bw.parent.parent;
+            var pane = ppm.parent;
             for (var source of ["airspy", "usb", "rtltcp", "airspy"]) {
                 wizard.sourceType = source;
                 var airspy = source === "airspy";
                 compare(subtitle.text, airspy ? "Gain, bandwidth, bias tee — defaults work" : "Gain, PPM, bandwidth, bias tee — defaults work", source);
-                if (airspy) {
-                    compare(bw.width, row.width, source + ": full row");
-                } else {
-                    compare(bw.width, (row.width - row.spacing) / 2, source + ": half the row, beside the PPM");
-                    compare(bw.mapToItem(row, 0, 0).y, ppm.mapToItem(row, 0, 0).y, source + ": level with the PPM");
+                compare(bw.width, pane.width, source + ": the bandwidth takes the row");
+                compare(bw.Accessible.name, "Bandwidth", source);
+                if (!airspy) {
+                    compare(ppm.width, pane.width, source + ": the PPM takes the row");
+                    verify(bw.mapToItem(pane, 0, 0).y >= ppm.mapToItem(pane, 0, 0).y + ppm.height, source + ": the bandwidth under the PPM");
                 }
             }
         }

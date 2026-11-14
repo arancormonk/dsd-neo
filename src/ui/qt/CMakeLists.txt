@@ -206,6 +206,7 @@ qt_add_resources(
         qml/SiteSheet.qml
         qml/SegmentedControl.qml
         qml/GainEditor.qml
+        qml/BandwidthChoice.qml
         qml/SettingsScreen.qml
         qml/SpectrumScreen.qml
         qml/SignalSearchScreen.qml

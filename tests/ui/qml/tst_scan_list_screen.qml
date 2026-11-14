@@ -588,6 +588,12 @@ Item {
                 picker.decrementCurrentIndex();
             picker.activated(index);
         }
+        // A bandwidth picked by its label, as a tap on its row picks it.
+        function chooseWidth(label) {
+            var index = control("scanTuner_bandwidthKhz").model.indexOf(label);
+            verify(index >= 0, label);
+            choose("scanTuner_bandwidthKhz", index);
+        }
 
         function test_header_back_and_discard() {
             var back = control("scanListBack");
@@ -688,7 +694,7 @@ Item {
             var names = {
                 scanGainMode: "Gain",
                 scanPpmMode: "Frequency correction",
-                scanBandwidthMode: "Bandwidth",
+                scanTuner_bandwidthKhz: "Bandwidth",
                 scanBiasTee: "Bias tee"
             };
             for (var name in names)
@@ -696,11 +702,65 @@ Item {
         }
 
         function test_tuner_object_names_identify_text_fields() {
-            for (var key of ["gainDb", "ppm", "bandwidthKhz", "defaultDwellMs", "defaultHoldMs"]) {
+            for (var key of ["gainDb", "ppm", "defaultDwellMs", "defaultHoldMs"]) {
                 var field = control("scanTuner_" + key);
                 verify(field.input !== undefined, key);
                 verify(field.label.length > 0, key);
             }
+            // B9: the bandwidth is a choice of the widths the radio runs, not a text field.
+            var bandwidth = control("scanTuner_bandwidthKhz");
+            compare(bandwidth.input, undefined, "bandwidthKhz");
+            compare(bandwidth.Accessible.name, "Bandwidth");
+        }
+
+        // B9 / D6: App default and the eight widths every radio runs; App
+        // default says what it runs on this list's radio.
+        function test_bandwidth_offers_the_widths_a_radio_runs() {
+            control("scanAdvancedToggle").Accessible.pressAction();
+            var bandwidth = control("scanTuner_bandwidthKhz");
+            compare(JSON.stringify(bandwidth.model), JSON.stringify(["App default", "4 kHz", "6 kHz", "8 kHz", "12 kHz", "16 kHz", "24 kHz", "48 kHz", "72 kHz"]));
+            compare(bandwidth.displayText, "App default");
+            compare(control("scanBandwidthNote").text, "App default · 48 kHz");
+            // An odd app default says what this radio runs it at.
+            testContext.setPrefs("bandwidthKhz", 25);
+            try {
+                compare(control("scanBandwidthNote").text, "App default · 48 kHz");
+                screen.draft = Object.assign({}, screen.draft, {sourceType: "airspy"});
+                compare(control("scanBandwidthNote").text, "App default · 24 kHz");
+            } finally {
+                testContext.setPrefs("bandwidthKhz", 48);
+            }
+            chooseWidth("72 kHz");
+            compare(screen.draft.bandwidthKhz, 72);
+            verify(!control("scanBandwidthNote").visible, "a width the radio runs needs no note");
+        }
+
+        // B9: a list saved with a width no radio runs (an older build took any
+        // number) shows it as it is, with what it runs at, and saves it
+        // unchanged until another width is picked. Opening another list drops it.
+        function test_odd_stored_bandwidth_shown_and_kept() {
+            verify(scanLists.add({name: "Odd width", isDraft: true, bandwidthKhz: 25, entries: []}));
+            verify(scanLists.add({name: "Plain width", isDraft: true, bandwidthKhz: 48, entries: []}));
+            screen.openFor(0);
+            control("scanAdvancedToggle").Accessible.pressAction();
+            var bandwidth = control("scanTuner_bandwidthKhz");
+            compare(bandwidth.displayText, "25 kHz");
+            compare(bandwidth.model.length, 10);
+            compare(control("scanBandwidthNote").text, "Runs at 48 kHz on an RTL-SDR, 24 kHz on an Airspy.");
+            compare(screen.fingerprint(), screen.initialDraft, "opening rewrote the width");
+            chooseWidth("48 kHz");
+            compare(screen.draft.bandwidthKhz, 48);
+            compare(bandwidth.model.length, 10, "the list does not change under the reader");
+            chooseWidth("25 kHz");
+            compare(screen.draft.bandwidthKhz, 25);
+            control("scanSaveDraft").Accessible.pressAction();
+            compare(closedSpy.count, 1);
+            compare(Number(scanLists.get(0).bandwidthKhz), 25);
+            screen.openFor(0);
+            chooseWidth("48 kHz");
+            screen.openFor(1);
+            compare(bandwidth.displayText, "48 kHz");
+            compare(bandwidth.model.indexOf("25 kHz"), -1, "another list's width is offered here");
         }
 
         function test_legacy_numeric_fields_round_trip_data() {
@@ -737,10 +797,8 @@ Item {
             compare(gain.currentIndex, data.gainMode);
             compare(gain.model[gain.currentIndex], data.gainLabel);
             compare(control("scanTuner_gainDb").text, data.gain > 0 ? String(data.gain) : "");
-            var bandwidth = control("scanBandwidthMode");
-            compare(bandwidth.currentIndex, data.bwMode);
-            compare(bandwidth.model[bandwidth.currentIndex], data.bwMode ? "Set" : "App default");
-            compare(control("scanTuner_bandwidthKhz").text, data.bw > 0 ? String(data.bw) : "");
+            var bandwidth = control("scanTuner_bandwidthKhz");
+            compare(bandwidth.model[bandwidth.currentIndex], data.bwMode ? data.bw + " kHz" : "App default");
             var bias = control("scanBiasTee");
             compare(bias.currentIndex, data.biasMode);
             compare(bias.model[bias.currentIndex], data.biasLabel);
@@ -774,7 +832,7 @@ Item {
             compare(Number(saved.entries[0].holdMs), data.hold);
             screen.openFor(0);
             compare(control("scanGainMode").currentIndex, data.gainMode);
-            compare(control("scanBandwidthMode").currentIndex, data.bwMode);
+            compare(control("scanTuner_bandwidthKhz").displayText, data.bwMode ? data.bw + " kHz" : "App default");
             compare(control("scanBiasTee").currentIndex, data.biasMode);
         }
 
@@ -785,8 +843,9 @@ Item {
                 {tag: "gain-range", mode: "scanGainMode", index: 2, field: "scanTuner_gainDb", value: "50", valid: "25"},
                 {tag: "ppm-empty", mode: "scanPpmMode", index: 1, field: "scanTuner_ppm", value: "", valid: "0"},
                 {tag: "ppm-sign", mode: "scanPpmMode", index: 1, field: "scanTuner_ppm", value: "-", valid: "-1"},
-                {tag: "bandwidth-empty", mode: "scanBandwidthMode", index: 1, field: "scanTuner_bandwidthKhz", value: "", valid: "24"},
-                {tag: "bandwidth-zero", mode: "scanBandwidthMode", index: 1, field: "scanTuner_bandwidthKhz", value: "0", valid: "24"}
+                // B9: the engine holds a correction to +-200.
+                {tag: "ppm-above-range", mode: "scanPpmMode", index: 1, field: "scanTuner_ppm", value: "201", valid: "200"},
+                {tag: "ppm-below-range", mode: "scanPpmMode", index: 1, field: "scanTuner_ppm", value: "-201", valid: "-200"}
             ];
         }
 
@@ -821,7 +880,6 @@ Item {
         function test_numeric_input_rejects_localized_and_grouped_values_data() {
             var fields = [
                 {field: "scanTuner_gainDb", key: "gainDb", fallback: -1, valid: "25", mode: "scanGainMode", index: 2},
-                {field: "scanTuner_bandwidthKhz", key: "bandwidthKhz", fallback: -1, valid: "24", mode: "scanBandwidthMode", index: 1},
                 {field: "scanTuner_ppm", key: "ppm", fallback: "", valid: "-1", mode: "scanPpmMode", index: 1},
                 {field: "scanTuner_defaultDwellMs", key: "defaultDwellMs", fallback: 0, valid: "1000"},
                 {field: "scanTuner_defaultHoldMs", key: "defaultHoldMs", fallback: 0, valid: "2000"},
@@ -839,9 +897,10 @@ Item {
             for (var fixture of [
                 {field: 0, value: "1e1"}, {field: 0, value: "25.0"}, {field: 0, value: " 25"},
                 {field: 1, value: "9999999999999999999999999999999999999999"},
-                {field: 2, value: "2147483648"}, {field: 3, value: "600001"}, {field: 4, value: "-1"},
-                {field: 6, value: "600001"}, {field: 7, value: "-1"}, {field: 8, value: "50"},
-                {field: 9, value: "NaN"}, {field: 9, value: "Infinity"}
+                {field: 1, value: "2147483648"}, {field: 1, value: "201"}, {field: 1, value: "-201"},
+                {field: 2, value: "600001"}, {field: 3, value: "-1"},
+                {field: 5, value: "600001"}, {field: 6, value: "-1"}, {field: 7, value: "50"},
+                {field: 8, value: "NaN"}, {field: 8, value: "Infinity"}
             ]) {
                 var rangedField = fields[fixture.field];
                 rows.push(Object.assign({}, rangedField, {tag: rangedField.field + "-" + fixture.value, value: fixture.value}));
@@ -965,14 +1024,12 @@ Item {
             edit("scanTuner_gainDb", "19");
             control("scanPpmMode").selected(1);
             edit("scanTuner_ppm", "12");
-            control("scanBandwidthMode").selected(1);
-            edit("scanTuner_bandwidthKhz", "16");
+            chooseWidth("16 kHz");
             control("scanGainMode").selected(data.gainMode);
             if (data.gainMode === 2) edit("scanTuner_gainDb", data.gain);
             control("scanPpmMode").selected(data.ppmMode);
             if (data.ppmMode === 1) edit("scanTuner_ppm", data.ppm);
-            control("scanBandwidthMode").selected(data.bwMode);
-            if (data.bwMode === 1) edit("scanTuner_bandwidthKhz", data.bw);
+            chooseWidth(data.bwMode === 1 ? data.bw + " kHz" : "App default");
             control("scanBiasTee").selected(data.bias);
             edit("scanTuner_defaultDwellMs", "100");
             edit("scanTuner_defaultHoldMs", "200");
@@ -991,7 +1048,7 @@ Item {
             screen.openFor(0);
             compare(control("scanGainMode").currentIndex, data.gainMode);
             compare(control("scanPpmMode").currentIndex, data.ppmMode);
-            compare(control("scanBandwidthMode").currentIndex, data.bwMode);
+            compare(control("scanTuner_bandwidthKhz").displayText, data.bwMode === 1 ? data.bw + " kHz" : "App default");
             compare(control("scanBiasTee").currentIndex, data.bias);
             compare(control("scanTuner_defaultDwellMs").text, data.dwell);
             compare(control("scanTuner_defaultHoldMs").text, data.hold);
@@ -1434,8 +1491,7 @@ Item {
             control("scanAdvancedToggle").Accessible.pressAction();
             var fields = [
                 {mode: "scanGainMode", set: 2, field: "scanTuner_gainDb", value: "23", key: "gainDb", inherited: -1},
-                {mode: "scanPpmMode", set: 1, field: "scanTuner_ppm", value: "-1", key: "ppm", inherited: ""},
-                {mode: "scanBandwidthMode", set: 1, field: "scanTuner_bandwidthKhz", value: "24", key: "bandwidthKhz", inherited: -1}
+                {mode: "scanPpmMode", set: 1, field: "scanTuner_ppm", value: "-1", key: "ppm", inherited: ""}
             ];
             for (var field of fields) {
                 control(field.mode).selected(field.set);
@@ -1447,13 +1503,20 @@ Item {
                 compare(control(field.field).text, field.value);
                 compare(String(screen.draft[field.key]), field.value);
             }
+            // The bandwidth is a choice: App default and back is a pick each way.
+            chooseWidth("24 kHz");
+            chooseWidth("App default");
+            compare(screen.draft.bandwidthKhz, -1);
+            chooseWidth("24 kHz");
+            compare(screen.draft.bandwidthKhz, 24);
             screen.saveDraft();
             screen.openFor(-1);
             compare(control("scanListName").text, "");
             compare(control("scanTuner_gainDb").text, "");
             compare(control("scanTuner_ppm").text, "");
-            compare(control("scanTuner_bandwidthKhz").text, "");
+            compare(control("scanTuner_bandwidthKhz").displayText, "App default");
             screen.openFor(0);
+            compare(control("scanTuner_bandwidthKhz").displayText, "24 kHz");
             compare(control("scanListName").text, "Remember overrides");
             for (var savedField of fields) {
                 compare(control(savedField.mode).currentIndex, savedField.set);

@@ -301,12 +301,17 @@ Item {
         color: Theme.bg
     }
 
-    // Numeric advanced row: label left, small mono field + unit right.
+    // Numeric advanced row: a mono field for a whole number from `minimum` to
+    // `maximum`; anything else shows `rangeError` and is never reported.
     component ValueRow: Item {
         id: valueRow
         property string title: ""
         property string unit: ""
         property alias text: valueInput.text
+        property alias fieldObjectName: valueInput.objectName
+        property int minimum: -2147483648
+        property int maximum: 2147483647
+        property string rangeError: qsTr("Enter a whole number.")
         property bool showDivider: true
         signal edited(string text)
         width: parent ? parent.width : 0
@@ -320,7 +325,7 @@ Item {
             unit: valueRow.unit
             mono: true
             inputMethodHints: Qt.ImhFormattedNumbersOnly
-            error: /^-?[0-9]+$/.test(text) && Number(text) >= -2147483648 && Number(text) <= 2147483647 ? "" : qsTr("Enter a whole number.")
+            error: /^-?[0-9]+$/.test(text) && Number(text) >= valueRow.minimum && Number(text) <= valueRow.maximum ? "" : valueRow.rangeError
             onEditingFinished: {
                 if (!error.length)
                     valueRow.edited(text);
@@ -943,24 +948,34 @@ Item {
                         }
                     }
 
+                    // What the engine runs: it holds the correction to +-200.
                     ValueRow {
                         title: qsTr("PPM correction")
+                        fieldObjectName: "settingsPpm"
+                        minimum: -200
+                        maximum: 200
+                        rangeError: qsTr("Enter a correction from -200 to 200 ppm.")
                         text: String(prefs.ppm)
                         onEdited: function (value) {
-                            var parsed = parseInt(value);
-                            if (!isNaN(parsed))
-                                prefs.ppm = parsed;
+                            prefs.ppm = Number(value);
                         }
                     }
 
-                    ValueRow {
-                        title: qsTr("Bandwidth")
-                        unit: "kHz"
-                        text: String(prefs.bandwidthKhz)
-                        onEdited: function (value) {
-                            var parsed = parseInt(value);
-                            if (!isNaN(parsed) && parsed > 0)
-                                prefs.bandwidthKhz = parsed;
+                    Item {
+                        width: parent.width
+                        height: settingsBandwidth.height + 16
+
+                        BandwidthChoice {
+                            id: settingsBandwidth
+                            x: Theme.cardPadding
+                            y: 8
+                            width: parent.width - 2 * Theme.cardPadding
+                            comboObjectName: "settingsBandwidth"
+                            noteObjectName: "settingsBandwidthNote"
+                            value: prefs.bandwidthKhz
+                            onChosen: function (khz) {
+                                prefs.bandwidthKhz = khz;
+                            }
                         }
                     }
 
