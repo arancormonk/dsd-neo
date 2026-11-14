@@ -24,7 +24,8 @@
  * - DONE: terminal for the visit (busy, failed, timed out, unsupported, activity, declined, applied): no new request
  *   until the visit changes.
  *
- * A visit is (owner, landing epoch, tune request). A sync or a carrier (dsd_engine_scan_quiet_note_sync()) anywhere in
+ * A visit is (owner, landing epoch, tune request). A sync or a carrier (dsd_engine_scan_quiet_note_sync(),
+ * dsd_engine_scan_quiet_note_frame_sync(): a provisional P25 sync once its NID or window verdict passed) anywhere in
  * the visit ends its check, suspended or not, so no check is made for it again: a visit counts from its tune's issue
  * (dsd_engine_scan_landing_note_tune()), which its landing's note carries and a park still in flight reads at its first
  * publication (and keeps when its landing adopts it), so a sync heard before the landing is noted counts. A changed

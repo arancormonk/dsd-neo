@@ -6,6 +6,7 @@
 /** Private ownership below the stable ENGINE_TRUNK_SCAN extension ID. */
 #ifndef DSD_NEO_ENGINE_SCAN_OWNER_H
 #define DSD_NEO_ENGINE_SCAN_OWNER_H
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
@@ -76,7 +77,10 @@ typedef struct {
     /* Issue #834. landing_epoch: moved by every landing note and forget (scan_landing.h). tune_generation_before: the
        RTL output generation at the last scan tune request, carried to the landing it notes. sync_seq: moved, only while
        skip-silent is on, whenever the frame sync returns a sync and whenever a monitor block finds the analog carrier
-       (whatever its tone verdict), so a quiet check sees activity since its visit's tune. tune_sync_seq, tune_decode_m: sync_seq and the decode-mono time at the last
+       (whatever its tone verdict), so a quiet check sees activity since its visit's tune; a provisional P25 sync (a
+       tolerant word whose frame decodes only behind its NID or window verdict) moves it only once that verdict passed
+       (sync_deferred, sync_deferred_verdicts: dsd_engine_scan_quiet_note_frame_sync(),
+       dsd_engine_scan_quiet_settle_sync()). tune_sync_seq, tune_decode_m: sync_seq and the decode-mono time at the last
        scan tune request, carried to the landing it notes (the visit's activity baseline). quiet_inv_seq: moved where a
        quiet check's facts change and no counter of their own says so (a hold, a pause, a resume, a tune in flight, a
        stop, the setting, a config apply, a Signal search start). tune_seq: moved by every scan tune request, carried
@@ -86,6 +90,8 @@ typedef struct {
     uint64_t landing_epoch;
     uint32_t tune_generation_before;
     uint64_t sync_seq;
+    uint8_t sync_deferred;
+    uint64_t sync_deferred_verdicts;
     uint64_t tune_sync_seq;
     double tune_decode_m;
     uint64_t quiet_inv_seq;
@@ -151,6 +157,59 @@ dsd_engine_scan_quiet_note_sync(dsd_state* state) {
     dsd_engine_scan_owner* p = dsd_engine_scan_owner_get(state);
     if (p) {
         p->sync_seq++;
+    }
+}
+
+/** The P25 tolerant-sync verdicts passed so far: Phase 1 frames whose NID passed behind a tolerant word (anchored or
+ * acquisition) and Phase 2 windows whose verdict passed behind one. Diagnostics the frame sync never resets. */
+static inline uint64_t
+dsd_engine_scan_quiet_sync_verdicts(const dsd_state* state) {
+    return (uint64_t)state->p25_p1_sync_anchor.tolerant_frames + (uint64_t)state->p25_p1_sync_anchor.acquisition_frames
+           + (uint64_t)state->p25_p2_sync_anchor.tolerant_windows;
+}
+
+/** The frame sync just returned a sync, noted only while skip-silent is on (issue #834). A provisional one, a P25 word
+ * accepted within a tolerance whose frame or window the strict NID or window verdict has yet to pass
+ * (dsd_p25p1_sync_candidate, dsd_p25p2_sync_candidate, held until then), is no activity yet: a noise near-miss whose
+ * verdict fails is put back everywhere else, and must not end a silent channel's quiet check. It is deferred, with the
+ * verdict counters as they stand, for dsd_engine_scan_quiet_settle_sync() once its frame was processed. Any other sync
+ * is noted at once. A state with no scan owner has no check. */
+static inline void
+dsd_engine_scan_quiet_note_frame_sync(dsd_state* state) {
+    dsd_engine_scan_owner* p = dsd_engine_scan_owner_get(state);
+    if (!p) {
+        return;
+    }
+    if (state->p25_p1_sync_candidate.valid || state->p25_p2_sync_candidate.valid) {
+        p->sync_deferred = 1U;
+        p->sync_deferred_verdicts = dsd_engine_scan_quiet_sync_verdicts(state);
+        return;
+    }
+    p->sync_deferred = 0U;
+    p->sync_seq++;
+}
+
+/** The frame behind the last sync noted was processed: a deferred provisional sync is noted when its verdict passed (a
+ * verdict counter moved), and the deferral goes either way. */
+static inline void
+dsd_engine_scan_quiet_settle_sync(dsd_state* state) {
+    dsd_engine_scan_owner* p = dsd_engine_scan_owner_get(state);
+    if (!p || !p->sync_deferred) {
+        return;
+    }
+    p->sync_deferred = 0U;
+    if (dsd_engine_scan_quiet_sync_verdicts(state) != p->sync_deferred_verdicts) {
+        p->sync_seq++;
+    }
+}
+
+/** The frame behind the last sync noted was withheld or never dispatched: no verdict was given, so a deferred sync is
+ * dropped unnoted. */
+static inline void
+dsd_engine_scan_quiet_drop_sync(dsd_state* state) {
+    dsd_engine_scan_owner* p = dsd_engine_scan_owner_get(state);
+    if (p) {
+        p->sync_deferred = 0U;
     }
 }
 

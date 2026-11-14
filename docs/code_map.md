@@ -613,7 +613,13 @@ Generated (do not edit/commit):
       analog carrier, and the end-to-end skip through `dsd_engine_test_live_scanner_run()` for -Y and trunk scan, each
       against the setting off).
     - `sync_seq` moves whenever the live loop's frame sync returns a sync (`live_scanner_frame_sync()`, YSF and D-STAR
-      included, which stamp no `last_cc_sync_time_m`) and whenever a monitor block found the carrier itself, whatever
+      included, which stamp no `last_cc_sync_time_m`; a provisional P25 sync, a word accepted within a tolerance whose
+      frame waits on its strict NID or window verdict, `p25_p1_sync_candidate`/`p25_p2_sync_candidate` still held when
+      the sync returns, is deferred on the owner with the verdict counters, `tolerant_frames` + `acquisition_frames` +
+      `tolerant_windows`, by `dsd_engine_scan_quiet_note_frame_sync()`, and moves it only when a counter moved by the
+      time its frame was processed, `dsd_engine_scan_quiet_settle_sync()` right after `processFrame()`; a withheld or
+      undispatched frame drops the deferral, `dsd_engine_scan_quiet_drop_sync()`, so a noise near-miss whose NID fails
+      never ends a silent channel's check) and whenever a monitor block found the carrier itself, whatever
       its tone verdict (`dsd_engine_analog_call_block()`, `found_carrier`: a carrier that ends while its tone check is
       pending counts); `quiet_inv_seq` moves where a check's facts change with
       no counter of their own (`dsd_engine_scan_quiet_note_change()`): the trunk scan's hold set or released, pause,
@@ -635,7 +641,8 @@ Generated (do not edit/commit):
       service. Tests: `ENGINE_TRUNK_SCAN` (`test_scan_quiet_*`: a fake tap, link fakes of `rtl_signal_quiet_*`,
       `rtl_signal_capture_get()` and `rtl_stream_receive_request_seq()`, on a fake realtime clock, a link wrap of
       `dsd_realtime_mono_ms()`, separate from the TEST decode clock), `ENGINE_NO_CARRIER_RESET`
-      (`test_live_loop_syncs_move_the_quiet_sync_sequence`), `CORE_RECEIVE`, `ENGINE_CHANNEL_SCAN`,
+      (`test_live_loop_syncs_move_the_quiet_sync_sequence`,
+      `test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict`), `CORE_RECEIVE`, `ENGINE_CHANNEL_SCAN`,
       `ENGINE_SIGNAL_SEARCH`, `APP_COMMAND_QUEUE`, `FRAME_SYNC_SPS_HUNT_FALSE_SYNC`, `FRAME_SYNC_HISTORY_CARRY`.
 - Build files: `src/engine/CMakeLists.txt`
 
@@ -10429,11 +10436,13 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     whether the frames after it hold them). `processFrame()`'s `maxref`/`minref` and the NID read's `p25_frame_nac_valid` clear come after the hold.
     When the strict check drops the frame, `dsd_frame_sync_p25p1_candidate_rejected()` (before the report) puts every
     one of them back, level windows included, while the frame's sync-time context still holds; a validated frame keeps
-    them. Two engine effects wait for the NID instead: `processFrame()` notes the received identity's protocol
+    them. Three engine effects wait for the NID instead: `processFrame()` notes the received identity's protocol
     (`dsd_rxid_note_sync()`, which under `-fa` would clear a DMR, NXDN or YSF carrier's identity) only behind an exact
-    word, and the P25p1 dispatcher notes it once a tolerant word's NID passed; and a dropped frame
+    word, and the P25p1 dispatcher notes it once a tolerant word's NID passed; a dropped frame
     (`dsd_p25p1_sync_anchor::frame_dropped`, `dsd_state_p25p1_frame_dropped()`, until the next accepted sync) starts no
-    `-Y` voice gate qualify window (`scan_voice_gate_sync_m`). So a dropped candidate leaves nothing behind but the
+    `-Y` voice gate qualify window (`scan_voice_gate_sync_m`); and a tolerant word is activity to a scan quiet check
+    (the owner's `sync_seq`) only once its NID passed (`dsd_engine_scan_quiet_settle_sync()`; a tolerant P25p2 window
+    the same, once its verdict passed). So a dropped candidate leaves nothing behind but the
     symbols it read and its console lines. The hold is where any further slicer state the C4FM accept writes belongs.
     The word changes nothing about the symbol grid at the accept (the sync anchor entry in DSP): it is only marked in
     the matched-filter seam's raw history, and measured there once its NID passed, when it was read with no recording
