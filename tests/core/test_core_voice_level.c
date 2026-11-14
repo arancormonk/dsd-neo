@@ -1380,6 +1380,160 @@ test_memory_other_slot_not_used(const talkers* t) {
     return rc;
 }
 
+/* A radio that moved slots and stays: X settles at W0 on slot 1 and nothing resets that slot; then three receptions of
+   X on slot 2 each settle at W1, far from W0. The first opens at W0 (slot 1's reception, stored at that recall), the
+   second half way from W0 to the first W1, the third half way on from there: each nearer W1 than the one before, as
+   if slot 1's reception had been stored when it ended. It is stored once: slot 1's own reset stores nothing more, and
+   the memory holds what the slot 2 receptions left. */
+static int
+test_memory_other_slot_stored_once(const talkers* t) {
+    enum { RECEPTIONS = 3 };
+
+    int rc = 0;
+    dsd_opts* opts = new_opts();
+    dsd_state* state = new_state();
+    if (!opts || !state) {
+        free(opts);
+        free_state(state);
+        return 1;
+    }
+    const int fam = family_dmr();
+    float w0 = 0.0f;
+    dsd_voice_reception r = reception(1U, fam, SRC_X);
+    rc |= settle("stored once: X settles at W0 on slot 1", opts, state, 0, t->low, &r, &w0);
+    float want = w0;
+    float opened[RECEPTIONS] = {0.0f};
+    float w1[RECEPTIONS] = {0.0f};
+    char tag[96];
+    for (int k = 0; k < RECEPTIONS; k++) {
+        r = reception(2U + (uint64_t)k, fam, SRC_X);
+        DSD_SNPRINTF(tag, sizeof tag, "stored once: X's reception %d on slot 2 opens", k + 1);
+        rc |= opens_within(tag, opts, state, 1, &r, want, k == 0 ? 0.0 : HALF_WAY_TOL_DB);
+        const dsd_speech_agc* agc = agc_of(state, 1);
+        opened[k] = agc != NULL ? agc->learned.gain_db : -1000.0f;
+        DSD_SNPRINTF(tag, sizeof tag, "stored once: X's reception %d on slot 2 settles", k + 1);
+        rc |= settle(tag, opts, state, 1, t->high, &r, &w1[k]);
+        want = want + 0.5f * (w1[k] - want);
+    }
+    rc |= expect_true("stored once: W1 is at least 10 dB from W0", fabsf(w1[0] - w0) >= 10.0f);
+    for (int k = 1; k < RECEPTIONS; k++) {
+        DSD_SNPRINTF(tag, sizeof tag, "stored once: opening %d is nearer W1 than opening %d", k + 1, k);
+        rc |=
+            expect_true(tag, fabsf(opened[k] - w1[RECEPTIONS - 1]) < fabsf(opened[k - 1] - w1[RECEPTIONS - 1]) - 1.0f);
+    }
+    /* Slot 2 stores its third reception; slot 1's own reset then stores nothing: X opens where slot 2 left it. */
+    dsd_voice_level_reset(state, 1);
+    dsd_voice_level_reset(state, 0);
+    r = reception(5U, fam, SRC_X);
+    rc |= opens_within("stored once: slot 1's reset stored nothing more", opts, state, 1, &r, want, HALF_WAY_TOL_DB);
+    free_state(state);
+    free(opts);
+    return rc;
+}
+
+/* The recall stores the other slot's reception only when it is the same radio in the same protocol family and has
+   settled: otherwise that reception goes on and its own reset stores what it settled at by then. Another radio Y,
+   X under another family, and X still unsettled at the recall (it settles later) each keep learning on slot 1 after
+   X's recall on slot 2, and slot 1's reset stores the gain they ended at. */
+static int
+test_memory_other_slot_stores_only_what_counts(const talkers* t) {
+    int rc = 0;
+    dsd_opts* opts = new_opts();
+    dsd_state* other = new_state();
+    dsd_state* family = new_state();
+    dsd_state* brief = new_state();
+    if (!opts || !other || !family || !brief) {
+        free(opts);
+        free_state(other);
+        free_state(family);
+        free_state(brief);
+        return 1;
+    }
+    const int fam = family_dmr();
+    float wy = 0.0f;
+    float wy2 = 0.0f;
+    dsd_voice_reception r = reception(1U, fam, SRC_Y);
+    rc |= settle("store only, another radio: Y settles on slot 1", opts, other, 0, t->high, &r, &wy);
+    dsd_voice_reception rx = reception(2U, fam, SRC_X);
+    rc |= opens_at("store only, another radio: X on slot 2 opens at the opening gain", opts, other, 1, &rx,
+                   (float)OPEN_DB);
+    rc |= settle("store only, another radio: Y goes on", opts, other, 0, t->low, &r, &wy2);
+    rc |= expect_true("store only, another radio: Y's settled gain moved", fabsf(wy2 - wy) > 1.0f);
+    dsd_voice_level_reset(other, 0);
+    r = reception(3U, fam, SRC_Y);
+    rc |= opens_at("store only, another radio: Y was stored at its own reset", opts, other, 1, &r, wy2);
+
+    float wx = 0.0f;
+    float wx2 = 0.0f;
+    r = reception(1U, fam, SRC_X);
+    rc |= settle("store only, family: X settles on DMR on slot 1", opts, family, 0, t->low, &r, &wx);
+    rx = reception(2U, family_nxdn(), SRC_X);
+    rc |= opens_at("store only, family: the same ID on NXDN opens at the opening gain", opts, family, 1, &rx,
+                   (float)OPEN_DB);
+    rc |= settle("store only, family: X on DMR goes on", opts, family, 0, t->high, &r, &wx2);
+    rc |= expect_true("store only, family: X's settled gain moved", fabsf(wx2 - wx) > 1.0f);
+    dsd_voice_level_reset(family, 0);
+    r = reception(3U, fam, SRC_X);
+    rc |= opens_at("store only, family: X on DMR was stored at its own reset", opts, family, 1, &r, wx2);
+
+    float g = 0.0f;
+    float w = 0.0f;
+    float unused = 0.0f;
+    r = reception(1U, fam, SRC_X);
+    rc |= settle("store only, unsettled: X settles at G", opts, brief, 0, t->low, &r, &g);
+    r = reception(2U, fam, SRC_X);
+    level_speech(opts, brief, 0, t->high, BRIEF_N, &r);
+    rc |= expect_true("store only, unsettled: X's burst on slot 1 has not settled", !settled_at(brief, 0, &unused));
+    rx = reception(3U, fam, SRC_X);
+    rc |= opens_at("store only, unsettled: X on slot 2 opens at G", opts, brief, 1, &rx, g);
+    rc |= settle("store only, unsettled: X on slot 1 goes on and settles", opts, brief, 0, t->high, &r, &w);
+    dsd_voice_level_reset(brief, 0);
+    rx = reception(4U, fam, SRC_X);
+    rc |= opens_within("store only, unsettled: slot 1's reset stored it", opts, brief, 1, &rx, g + 0.5f * (w - g),
+                       HALF_WAY_TOL_DB);
+    free_state(brief);
+    free_state(family);
+    free_state(other);
+    free(opts);
+    return rc;
+}
+
+/* A radio remembered at G settles at W0 on slot 1 and moves to slot 2, where it is heard again and again without
+   settling there: the memory took W0's half step once, at the first recall, and every later reception on slot 2 opens
+   at that same G + 0.5 (W0 - G), also after slot 1's reset. */
+static int
+test_memory_other_slot_half_step_once(const talkers* t) {
+    int rc = 0;
+    dsd_opts* opts = new_opts();
+    dsd_state* state = new_state();
+    if (!opts || !state) {
+        free(opts);
+        free_state(state);
+        return 1;
+    }
+    const int fam = family_dmr();
+    float g = 0.0f;
+    float w0 = 0.0f;
+    dsd_voice_reception r = reception(1U, fam, SRC_X);
+    rc |= settle("half step once: X settles at G", opts, state, 0, t->low, &r, &g);
+    r = reception(2U, fam, SRC_X);
+    rc |= settle("half step once: X settles at W0 on slot 1", opts, state, 0, t->high, &r, &w0);
+    rc |= expect_true("half step once: W0 is another gain", fabsf(w0 - g) > 5.0f);
+    const float half = g + 0.5f * (w0 - g);
+    char tag[96];
+    for (int k = 0; k < 3; k++) {
+        r = reception(3U + (uint64_t)k, fam, SRC_X);
+        DSD_SNPRINTF(tag, sizeof tag, "half step once: X's reception %d on slot 2", k + 1);
+        rc |= opens_within(tag, opts, state, 1, &r, half, HALF_WAY_TOL_DB);
+    }
+    dsd_voice_level_reset(state, 0);
+    r = reception(6U, fam, SRC_X);
+    rc |= opens_within("half step once: and after slot 1's reset", opts, state, 1, &r, half, HALF_WAY_TOL_DB);
+    free_state(state);
+    free(opts);
+    return rc;
+}
+
 /* Brief 9: a fixed -g learns nothing, so it stores nothing; back to auto, receptions open as before it. */
 static int
 test_memory_fixed_gain_stores_nothing(const talkers* t) {
@@ -1470,6 +1624,9 @@ test_talker_memory(void) {
         rc |= test_memory_other_slot_settled(&t);
         rc |= test_memory_other_slot_moves_half_way(&t);
         rc |= test_memory_other_slot_not_used(&t);
+        rc |= test_memory_other_slot_stored_once(&t);
+        rc |= test_memory_other_slot_stores_only_what_counts(&t);
+        rc |= test_memory_other_slot_half_step_once(&t);
         rc |= test_memory_fixed_gain_stores_nothing(&t);
         rc |= test_memory_source_of_the_active_call(&t);
     }

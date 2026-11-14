@@ -45,6 +45,8 @@ typedef struct {
     int family;
     /* The AGC was initialised or reset: the slot's next frame opens a reception. */
     int opening;
+    /* This reception's settled gain is in the memory already (the other slot's recall stored it). */
+    int stored;
 } voice_level_slot;
 
 typedef struct {
@@ -129,13 +131,15 @@ voice_level_half_way(float gain_db, float settled_db) {
 }
 
 /* The slot's reception is over: remember the gain its talker's speech settled at, when it named its source and its
-   estimate was established. A talker heard before moves half way to it. */
+   estimate was established. A talker heard before moves half way to it. A reception is stored at most once: the
+   slot is marked stored, and a slot marked stored stores nothing more until its reset. */
 static void
-voice_level_remember(voice_level_ext* ext, const voice_level_slot* s) {
+voice_level_remember(voice_level_ext* ext, voice_level_slot* s) {
     float settled = 0.0f;
-    if (s->source == 0U || !dsd_speech_agc_settled_gain_db(&s->agc, &settled)) {
+    if (s->stored || s->source == 0U || !dsd_speech_agc_settled_gain_db(&s->agc, &settled)) {
         return;
     }
+    s->stored = 1;
     voice_level_talker* t = voice_level_talker_find(ext, s->family, s->source);
     if (t) {
         t->gain_db = voice_level_half_way(t->gain_db, settled);
@@ -158,6 +162,7 @@ voice_level_slot_reset(voice_level_ext* ext, voice_level_slot* s) {
     s->talkspurt = 0U;
     s->family = 0;
     s->opening = 1;
+    s->stored = 0;
 }
 
 void
@@ -222,28 +227,14 @@ voice_level_follow(voice_level_ext* ext, voice_level_slot* s, const dsd_voice_re
     }
 }
 
-/* The gain the memory will hold for slot @p s's talker (@p t, NULL when not remembered) once the other slot's
-   reception in progress is stored, when that reception names the same source in the same protocol family and its
-   estimate is established: a radio whose transmission on one slot ended and whose next one starts on the other, with
-   no carrier boundary between (two-slot TDMA on one carrier), still has its settled gain unstored there. Nothing is
-   stored here: the other slot stores it once, at its own reset. Returns 0 when that reception does not count. */
-static int
-voice_level_other_slot_gain(const voice_level_ext* ext, const voice_level_slot* s, const voice_level_talker* t,
-                            float* gain_db) {
-    const voice_level_slot* o = s == &ext->slot[0] ? &ext->slot[1] : &ext->slot[0];
-    float settled = 0.0f;
-    if (o->source != s->source || o->family != s->family || !dsd_speech_agc_settled_gain_db(&o->agc, &settled)) {
-        return 0;
-    }
-    *gain_db = t ? voice_level_half_way(t->gain_db, settled) : settled;
-    return 1;
-}
-
 /* The reception's source: the first frame that names one opens the reception, if nothing has committed yet, at the
-   gain that radio's speech settled at: as the memory holds it, or as it will hold it once the other slot's reception
-   from the same radio is stored. On the reception's first frame that is at once; later (a P25 Phase 1 source arrives
-   with the first link control, about 180 ms in) it eases in over one frame. The slot's own reception was stored at its
-   reset, so only the other slot's is read. */
+   gain that radio's speech settled at, as the memory holds it. On the reception's first frame that is at once; later
+   (a P25 Phase 1 source arrives with the first link control, about 180 ms in) it eases in over one frame. A reception
+   from the same radio in the same protocol family on the other slot is over (a radio is not on both slots at once),
+   though that slot has not been reset: two-slot TDMA on one carrier moves a radio between slots with no carrier
+   boundary. It is stored first, once, if it has settled, so this reception opens from it and that slot's reset stores
+   it no more. Should it go on learning after this (the radio came back to that slot within the same transmission),
+   what it learns then is not stored. The slot's own reception was stored at its reset. */
 static void
 voice_level_recall(voice_level_ext* ext, voice_level_slot* s, uint64_t source, int first_frame) {
     if (source == 0U) {
@@ -254,13 +245,13 @@ voice_level_recall(voice_level_ext* ext, voice_level_slot* s, uint64_t source, i
     if (!first_naming || s->agc.learned.commits != 0) {
         return;
     }
-    voice_level_talker* t = voice_level_talker_find(ext, s->family, source);
-    float gain_db = t ? t->gain_db : 0.0f;
-    if (!voice_level_other_slot_gain(ext, s, t, &gain_db) && !t) {
-        return;
+    voice_level_slot* o = s == &ext->slot[0] ? &ext->slot[1] : &ext->slot[0];
+    if (o->source == source && o->family == s->family) {
+        voice_level_remember(ext, o);
     }
-    dsd_speech_agc_open_at(&s->agc, gain_db, first_frame ? 0 : 1);
+    voice_level_talker* t = voice_level_talker_find(ext, s->family, source);
     if (t) {
+        dsd_speech_agc_open_at(&s->agc, t->gain_db, first_frame ? 0 : 1);
         t->used = ++ext->talker_clock;
     }
 }
