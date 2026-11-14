@@ -18,6 +18,7 @@
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive_types.h>
@@ -1487,6 +1488,40 @@ reset_scan_opts_state(dsd_opts* opts, dsd_state* state) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
+/* The patch table's freshness travels with the target (its listening clock, stamps, recency and owner), as do
+   entries and members past the old 8x8 table. */
+static void
+seed_p25_patch_freshness(dsd_state* state, double clock_s, uint32_t base) {
+    state->p25_patch_listen_s = clock_s;
+    state->p25_patch_listen_last_m = 42.0;
+    state->p25_patch_seen_listen_s[0] = clock_s - 1.0;
+    state->p25_patch_members_listen_s[0] = clock_s - 2.0;
+    state->p25_patch_seq[0] = base;
+    state->p25_patch_seq_counter = base + 1U;
+    state->p25_patch_owner_known = 1;
+    state->p25_patch_owner_wacn = base + 2U;
+    state->p25_patch_owner_sysid = (uint16_t)(base + 3U);
+    state->p25_patch_sgid[DSD_P25_PATCH_MAX - 1] = (uint16_t)(base + 4U);
+    state->p25_patch_wgid[DSD_P25_PATCH_MAX - 1][DSD_P25_PATCH_GROUP_MAX - 1] = (uint16_t)(base + 5U);
+    state->p25_patch_wuid[DSD_P25_PATCH_MAX - 1][DSD_P25_PATCH_RADIO_MAX - 1] = base + 6U;
+}
+
+static int
+expect_p25_patch_freshness(const dsd_state* state, double clock_s, uint32_t base) {
+    if (fabs(state->p25_patch_listen_s - clock_s) > 1e-9 || fabs(state->p25_patch_listen_last_m) > 1e-9
+        || fabs(state->p25_patch_seen_listen_s[0] - (clock_s - 1.0)) > 1e-9
+        || fabs(state->p25_patch_members_listen_s[0] - (clock_s - 2.0)) > 1e-9 || state->p25_patch_seq[0] != base
+        || state->p25_patch_seq_counter != base + 1U || state->p25_patch_owner_known != 1
+        || state->p25_patch_owner_wacn != base + 2U || state->p25_patch_owner_sysid != (uint16_t)(base + 3U)
+        || state->p25_patch_sgid[DSD_P25_PATCH_MAX - 1] != (uint16_t)(base + 4U)
+        || state->p25_patch_wgid[DSD_P25_PATCH_MAX - 1][DSD_P25_PATCH_GROUP_MAX - 1] != (uint16_t)(base + 5U)
+        || state->p25_patch_wuid[DSD_P25_PATCH_MAX - 1][DSD_P25_PATCH_RADIO_MAX - 1] != base + 6U) {
+        DSD_FPRINTF(stderr, "P25 patch freshness/owner state leaked across scan targets\n");
+        return 1;
+    }
+    return 0;
+}
+
 static void
 seed_target0_p25_state(dsd_state* state) {
     state->p25_prot_valid = 1;
@@ -1560,6 +1595,7 @@ seed_target0_p25_state(dsd_state* state) {
     state->p25_pending_announcements[0].wacn = 0xABCDE;
     state->p25_pending_announcements[0].last_seen = 445;
     state->p25_src_nid = 0xABCDE;
+    seed_p25_patch_freshness(state, 100.0, 10U);
 }
 
 static void
@@ -1627,6 +1663,7 @@ seed_target1_p25_state(dsd_state* state) {
     state->p25_pending_announcements[0].channel = 0x400B;
     state->p25_pending_announcements[0].last_seen = 909;
     state->p25_src_nid = 0x77777;
+    seed_p25_patch_freshness(state, 500.0, 70U);
 }
 
 static int
@@ -1635,7 +1672,8 @@ expect_empty_target_p25_state(const dsd_state* state) {
         || state->p25_sys_services_valid != 0 || state->p25_site_lra_valid != 0
         || state->p25_site_network_active_valid != 0 || state->p25_patch_count != 0 || state->p25_aff_count != 0
         || state->p25_ga_count != 0 || state->p25_nb_count != 0 || state->p25_secondary_cc_count != 0
-        || state->p25_pending_announcement_count != 0 || state->p25_src_nid != 0) {
+        || state->p25_pending_announcement_count != 0 || state->p25_src_nid != 0 || state->p25_patch_owner_known != 0
+        || state->p25_patch_seq_counter != 0U || fabs(state->p25_patch_listen_s) > 1e-9) {
         DSD_FPRINTF(stderr, "target 0 P25 state leaked into empty target 1 snapshot\n");
         return 1;
     }
@@ -1671,6 +1709,7 @@ expect_target0_p25_state(const dsd_state* state) {
         DSD_FPRINTF(stderr, "P25 patch state leaked across scan targets\n");
         test_rc = 1;
     }
+    test_rc |= expect_p25_patch_freshness(state, 100.0, 10U);
     if (state->p25_aff_count != 1 || state->p25_aff_rid[0] != 400 || state->p25_aff_last_seen[0] != 222
         || state->p25_ga_count != 1 || state->p25_ga_rid[0] != 500 || state->p25_ga_tg[0] != 600
         || state->p25_ga_last_seen[0] != 333) {

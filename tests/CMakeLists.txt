@@ -1487,6 +1487,12 @@ dsd_neo_add_public_header_smoke_test(
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_p25_patch
+  HEADERS_PUBLIC_CORE_P25_PATCH
+  dsd-neo/core/p25_patch.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_utf16
   HEADERS_PUBLIC_CORE_UTF16
   dsd-neo/core/utf16.h
@@ -7217,6 +7223,18 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_core_dsd_time PRIVATE dsd-neo_core)
 add_test(NAME CORE_DSD_TIME COMMAND dsd-neo_test_core_dsd_time)
 
+# P25 patch table state: listening clock, seen/members stamps, expiry, recency, clear.
+add_executable(
+    dsd-neo_test_core_p25_patch_state
+    core/test_core_p25_patch_state.c
+)
+target_include_directories(
+    dsd-neo_test_core_p25_patch_state
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_core_p25_patch_state PRIVATE dsd-neo_core)
+add_test(NAME CORE_P25_PATCH_STATE COMMAND dsd-neo_test_core_p25_patch_state)
+
 # UTF-16 decoding / UTF-8 encoding for radio-sourced text (header-only)
 add_executable(dsd-neo_test_core_utf16 core/test_core_utf16.c)
 target_include_directories(
@@ -9218,6 +9236,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
     ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
     # The typed-frequency match, which reads a target's width at the DSP rate (issue #644).
     ${PROJECT_SOURCE_DIR}/src/engine/scan_entry.c
