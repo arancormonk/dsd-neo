@@ -65,6 +65,9 @@ typedef struct {
     int follows_superframe;
     /* A superframe before it in this transmission proved itself (dsd_state::x2tdma_corroborated). */
     int transmission_corroborated;
+    /* The timeslots whose encryption this superframe learned with no call open
+       (dsd_state::x2tdma_superframe_pre_call_crypto, once the superframe is whole). */
+    uint8_t pre_call_crypto;
 } x2tdma_voice_ctx;
 
 /* The symbols between the end of a whole voice superframe and the end of the next one's sync word when that sync
@@ -487,9 +490,12 @@ x2tdma_decode_signaling(int j, x2tdma_voice_ctx* ctx, dsd_state* state) {
    indicators arrive in the second burst (x2tdma_decode_signal_j1()), so the first burst's frames keep what the previous
    superframe of the same transmission said, and are unknown in its first superframe: a clear <-> encrypted change
    inside a call applies from the second burst. The transmission, not the call epoch: a fade the call state heals is
-   the same transmission. */
+   the same transmission. So is the superframe a call opens on when it follows, with no hunt gap, one read on the same
+   timeslot before any call was open (direct mode, whose first superframe nothing corroborates): its first burst keeps
+   the verdict that superframe learned there under no call. A verdict another timeslot learned, or one left from before
+   the last superframe, is not this one's. */
 static void
-x2tdma_note_slot_crypto(const x2tdma_voice_ctx* ctx, dsd_state* state, int j) {
+x2tdma_note_slot_crypto(x2tdma_voice_ctx* ctx, dsd_state* state, int j) {
     const int slot = state->currentslot == 1 ? 1 : 0;
     dsd_call_snapshot call;
     uint64_t transmission = 0U;
@@ -497,10 +503,17 @@ x2tdma_note_slot_crypto(const x2tdma_voice_ctx* ctx, dsd_state* state, int j) {
         && DSD_SYNC_IS_X2TDMA(call.protocol)) {
         transmission = dsd_call_snapshot_transmission(&call);
     }
+    const unsigned int slot_bit = 1U << (unsigned int)slot;
     if (j > 0) {
         state->x2tdma_slot_crypto[slot] =
             (ctx->eeei != 0 || ctx->aiei != 0) ? DSD_X2TDMA_CRYPTO_ENCRYPTED : DSD_X2TDMA_CRYPTO_CLEAR;
-    } else if (transmission == 0U || state->x2tdma_slot_crypto_transmission[slot] != transmission) {
+        if (transmission == 0U) {
+            ctx->pre_call_crypto |= (uint8_t)slot_bit;
+        }
+    } else if (transmission == 0U
+               || (state->x2tdma_slot_crypto_transmission[slot] != transmission
+                   && !(state->x2tdma_slot_crypto_transmission[slot] == 0U && ctx->follows_superframe
+                        && (state->x2tdma_superframe_pre_call_crypto & slot_bit) != 0U))) {
         state->x2tdma_slot_crypto[slot] = DSD_X2TDMA_CRYPTO_UNKNOWN;
     }
     state->x2tdma_slot_crypto_transmission[slot] = transmission;
@@ -728,6 +741,7 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
         state->x2tdma_superframe_valid = 1U;
         state->x2tdma_superframe_carrier_seq = ctx.carrier_seq;
         state->x2tdma_superframe_end_symbol = state->symbolcnt;
+        state->x2tdma_superframe_pre_call_crypto = ctx.pre_call_crypto;
     } else {
         state->x2tdma_superframe_valid = 0U;
     }

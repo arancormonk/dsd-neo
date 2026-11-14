@@ -159,8 +159,14 @@ push_signalling(int j, sf_signal sig) {
 
 /* The other timeslot's sync word: a data burst's, as an idle timeslot on a site carries. It is what corroborates the
    superframe as X2-TDMA, so its voice plays (processX2TDMAvoice()). */
+static int g_direct_mode; /* no sync word on the other timeslot (direct mode): zeros there */
+
 static void
 push_other_slot_sync(void) {
+    if (g_direct_mode) {
+        push_zeros(24);
+        return;
+    }
     for (int i = 0; i < 24; i++) {
         push(X2TDMA_BS_DATA_SYNC[i] == '3' ? 2 : 0);
     }
@@ -685,6 +691,102 @@ test_fade_heal_keeps_the_verdict(void) {
     return rc;
 }
 
+/* Direct mode: nothing on the other timeslot corroborates a superframe, so a transmission's first superframe plays
+   nothing, and the next one, read with no hunt gap after it, opens the call. Its first burst keeps the verdict the first
+   superframe learned before any call was open: a clear call's opening frames play and stay decodable with the
+   encrypted-audio mute on, not muted as unknown. */
+static int
+test_direct_mode_call_keeps_the_first_superframe_verdict(void) {
+    int rc = 0;
+    g_direct_mode = 1;
+    for (size_t c = 0; c < sizeof(k_configs) / sizeof(k_configs[0]); c++) {
+        const rig_config* cfg = &k_configs[c];
+        if (open_rig(cfg, 0, 1) != 0) {
+            DSD_FPRINTF(stderr, "direct mode: cannot open the outputs\n");
+            rc = 1;
+            break;
+        }
+        dsd_state* state = g_rig.state;
+        for (int sf = 0; sf < 2; sf++) {
+            if (sf > 0) {
+                state->symbolcnt += 24; /* the next superframe's sync, read with no hunt gap */
+            }
+            build_superframe(0, SF_CLEAR);
+            g_seen_count = 0;
+            g_stream_overrun = 0;
+            state->dibit_buf_p = g_readback + 144;
+            processX2TDMAvoice(g_rig.opts, state);
+            if (g_seen_count <= SF_FRAMES) {
+                g_seen[g_seen_count].before = sample_outputs();
+            }
+            const int want = sf == 0 ? 0 : SF_FRAMES;
+            if (g_seen_count != want || g_stream_overrun || g_stream_pos != g_stream_len) {
+                DSD_FPRINTF(stderr, "direct mode, superframe %d (%s): %d chain runs, want %d\n", sf + 1, cfg->name,
+                            g_seen_count, want);
+                rc = 1;
+                continue;
+            }
+            for (int f = 0; f < want; f++) {
+                rc |= expect_frame("direct mode, superframe 2", cfg, 0, f, f, 1, 1);
+            }
+        }
+        close_rig();
+    }
+    g_direct_mode = 0;
+    return rc;
+}
+
+/* The verdict a call keeps is the one its own timeslot learned in the superframe just before it: direct-mode
+   superframes on the second timeslot (clear, with no call open), then the first (encrypted, which opens the call
+   there), then the second again (encrypted). The third superframe's opening frames must not take the clear verdict the
+   second timeslot learned two superframes back: unknown, they stay muted with the encrypted-audio mute on, as every
+   frame of the two encrypted superframes does. */
+static int
+test_direct_mode_verdict_stays_with_its_timeslot(void) {
+    static const struct {
+        int slot;
+        sf_signal sig;
+    } k_steps[] = {{1, SF_CLEAR}, {0, SF_EEEI}, {1, SF_EEEI}};
+
+    int rc = 0;
+    g_direct_mode = 1;
+    for (size_t c = 0; c < sizeof(k_configs) / sizeof(k_configs[0]); c++) {
+        const rig_config* cfg = &k_configs[c];
+        if (open_rig(cfg, 0, 1) != 0) {
+            DSD_FPRINTF(stderr, "direct mode timeslots: cannot open the outputs\n");
+            rc = 1;
+            break;
+        }
+        dsd_state* state = g_rig.state;
+        for (int sf = 0; sf < (int)(sizeof(k_steps) / sizeof(k_steps[0])); sf++) {
+            if (sf > 0) {
+                state->symbolcnt += 24; /* the next superframe's sync, read with no hunt gap */
+            }
+            build_superframe(k_steps[sf].slot, k_steps[sf].sig);
+            g_seen_count = 0;
+            g_stream_overrun = 0;
+            state->dibit_buf_p = g_readback + 144;
+            processX2TDMAvoice(g_rig.opts, state);
+            if (g_seen_count <= SF_FRAMES) {
+                g_seen[g_seen_count].before = sample_outputs();
+            }
+            const int want = sf == 0 ? 0 : SF_FRAMES;
+            if (g_seen_count != want || g_stream_overrun || g_stream_pos != g_stream_len) {
+                DSD_FPRINTF(stderr, "direct mode timeslots, superframe %d (%s): %d chain runs, want %d\n", sf + 1,
+                            cfg->name, g_seen_count, want);
+                rc = 1;
+                continue;
+            }
+            for (int f = 0; f < want; f++) {
+                rc |= expect_frame("direct mode timeslots", cfg, k_steps[sf].slot, f, f, 0, 0);
+            }
+        }
+        close_rig();
+    }
+    g_direct_mode = 0;
+    return rc;
+}
+
 int
 main(void) {
     make_voice_frame();
@@ -695,6 +797,8 @@ main(void) {
     rc |= test_reverse_mute();
     rc |= test_encrypted_audio_override();
     rc |= test_fade_heal_keeps_the_verdict();
+    rc |= test_direct_mode_call_keeps_the_first_superframe_verdict();
+    rc |= test_direct_mode_verdict_stays_with_its_timeslot();
     if (rc == 0) {
         printf("X2TDMA_VOICE_CRYPTO: OK\n");
     }

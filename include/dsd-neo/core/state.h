@@ -2569,6 +2569,10 @@ struct dsd_state {
     uint8_t x2tdma_superframe_valid;
     uint32_t x2tdma_superframe_carrier_seq;
     uint32_t x2tdma_superframe_end_symbol;
+    /* The timeslots (bit 0 the first, bit 1 the second) whose encryption verdict that superframe learned with no call
+       open (direct mode's uncorroborated first superframe): the superframe chained to it keeps that verdict for its
+       first burst on the same timeslot when it opens the call there (x2tdma_note_slot_crypto()). */
+    uint8_t x2tdma_superframe_pre_call_crypto;
     /* Per timeslot: the encryption the timeslot's X2-TDMA voice frames are judged by (DSD_X2TDMA_CRYPTO_*), set by
        processX2TDMAvoice() before each burst's frames, and the call's transmission (dsd_call_snapshot_transmission())
        it was read in. A superframe signals its encryption in its second burst, after the first burst's three frames:

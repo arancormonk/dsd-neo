@@ -2790,7 +2790,9 @@ suite runs under this compiler.
   superframe's EEEI/AIEI (encrypted is undecryptable: X2 has no decryption), with the call's transmission
   (`dsd_call_snapshot_transmission()`) it was read in. The indicators arrive in the second burst, after the first
   burst's three frames: those take the previous superframe's value of the same transmission (a fade the call state
-  heals keeps it), and are unknown in a transmission's first superframe. An unknown frame is never decodable, and it
+  heals keeps it), and are unknown in a transmission's first superframe. The superframe a call opens on keeps the
+  value of one read before any call was open with no hunt gap between them (direct mode, whose first superframe
+  nothing corroborates, so the call opens on its second). An unknown frame is never decodable, and it
   plays, records and is captured only where clear and encrypted frames both would (`mbe_x2_frame_audible()`: the
   encrypted-audio mute off and reverse mute off). A clear <-> encrypted change inside a call applies from the second
   burst (at most three frames, 60 ms, once per change). The mixers read X2's verdict from `mbe_slot_muted`, as DMR's
