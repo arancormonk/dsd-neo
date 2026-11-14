@@ -2159,7 +2159,12 @@ way to each new settled gain (within 1e-4 dB: a release build may round the test
 differently); a reception that never settled (fewer than 20 committed frames), source 0 and a fixed gain store
 nothing; a source that first arrives a few frames in eases its gain in over one frame, and one named after the first
 commit changes nothing; a remembered radio is kept per protocol family, shared by the two slots and stored at every
-kind of reset, the 64 entries give way least recently used first, and only the active call's source counts.
+kind of reset, the 64 entries give way least recently used first, and only the active call's source counts. A radio
+that moves to the other slot while its last reception there has settled and not yet been stored opens at that settled
+gain, at once or eased in later (`test_memory_other_slot_settled`); when the radio is remembered already it opens half
+way from its memory, and that reception is still stored only once, at its own slot's reset
+(`test_memory_other_slot_moves_half_way`); another radio, the same ID in another family, or an unsettled reception
+there is not used (`test_memory_other_slot_not_used`).
 `ENGINE_NO_CARRIER_RESET` checks the engine's side: every carrier boundary but a stream gap starts both slots over,
 the stream gap and the no-carrier pass keep them, and a TETRA stream gap inside one transmission keeps the level while
 the next talker starts it over at the opening gain (a TETRA codec seam plays the speech).
@@ -2277,12 +2282,11 @@ The digital cases, `DECODE_IQ_SPEECH_LEVEL_*` (`tests/speech_level_check.cmake`)
 default auto gain and at `-g 1`. `speech_parity_tool level --toward` requires the auto level to be nearer -20 dBFS
 than the `-g 1` level is, or to lie no more than 3 dB under and 6 dB over -20 dBFS, and in either case within 10 dB
 of it (the startup bound at 1 s); it prints which clause a case passed by. Over, because a reception from a talker
-not heard before opens at +8 dB, and until its estimate is established (20 voiced frames) a frame that would play
-over -12 dBFS cuts the gain to where it plays there, so a short excerpt of a loud talker reads up to about 6 dB over
-the target. The analog ones pin both
-levels in the analog replay host: the `-n 50` level in the smoke cases and `DECODE_IQ_ANALOG_AM_REAL`, the auto level
-in `DECODE_IQ_ANALOG_PARITY_*`. Speech intervals are seconds into the decoded output; a digital output holds only the
-voice that played.
+not heard before opens at +8 dB, and until its estimate is established (20 voiced frames) a frame that plays over
+-12 dBFS only brings the gain down for the frames after it, so a short excerpt of a loud talker reads up to about
+6 dB over the target. The analog ones pin both levels in the analog replay host: the `-n 50` level in the smoke
+cases and `DECODE_IQ_ANALOG_AM_REAL`, the auto level in `DECODE_IQ_ANALOG_PARITY_*`. Speech intervals are seconds
+into the decoded output; a digital output holds only the voice that played.
 
 | Fixture | Mode | Speech (s) | Speech intervals (s) | Reference gain (dBFS P.56) | Auto (dBFS P.56) | Case |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -2307,7 +2311,7 @@ two more SACCH fragments): 0.03 dB quieter at `-g 1`, 0.04 dB at auto.
 What the auto gain does on each digital excerpt, frame by frame against `-g 1`:
 
 - `p25p1_c4fm_vc`'s talker is 12 dB under the target. The reception opens at +8 dB, the burst fallback takes it to
-  +9 and +10.75 dB, and the first commit to +12.81 dB, where the talker's first loud syllable plays at -12 dBFS. Once
+  +9 and +10.75 dB, and the first commit to +12.81 dB, the gain that puts the first loud syllable at -12 dBFS. Once
   that syllable's hold has eased, the startup steps reach +14.8, 15.8, 16.1 and 16.3 dB. The excerpt reads 1.04 dB
   over the target, still nearer it than at `-g 1`.
 - `tetra_call_real_air_72k` opens at +8 dB. Its first talker's speech is low and bursty: the burst fallback takes the
@@ -2316,7 +2320,8 @@ What the auto gain does on each digital excerpt, frame by frame against `-g 1`:
   and lifts to about +5.7 dB for 0.1 s once the hold eases, before its 20th commit.
 - `p25p1_cqpsk_vc`'s 1.08 s of output hold one syllable of about nine frames, 2.4 dB under the target at `-g 1`. The
   gain sits at +8 dB over the low-level lead, the syllable's first loud frame plays at -10 dBFS, and the guard takes
-  the gain to +6 dB (the loudest frame at -12 dBFS). Nothing commits in nine frames, and the whole output reads
+  the gain to +6 dB for the frames after it (where that frame would play at -12 dBFS). Nothing commits in nine
+  frames, and the whole output reads
   4.5 dB over the target. This is the limit "a loud talker heard for the first time plays loud until the guard
   acts", seen through a one-syllable excerpt.
 - `nxdn96` and `provoice` (talkers 19-21 dB under) end within 1.7 dB of the target: the startup law weighs each
@@ -2460,34 +2465,43 @@ until the reception's estimate is established, 20 committed frames):
   at 10, 94% at 20. Then the gain moves +0.12 / -0.20 dB per committing frame, as before. A first voiced run
   measures a talker's level with a standard deviation of 5 dB, 3.3 dB after 10 frames and 2 dB after 20; the weight
   sets that against the 7 dB spread of talkers around a fixed start.
-- Loud-frame guard. A frame that would play over -12 dBFS (RMS over the frame) takes the gain at once to where it
-  plays at -12 dBFS. The loudest frame is then held: a frame within 6 dB of it renews the hold, and after 200 ms of
-  sound with nothing near it (10 frames at or over the absolute floor; silence does not count) the held level eases
-  1 dB a frame and comes to rest within 6 dB over the sound that follows. A louder frame takes the hold at once. No
-  startup step puts the held level over -12 dBFS, and the burst fallback stops there too. Until the first voiced run
-  commits, the gain returns 1 dB a frame to the gain the reception opened at (+8 dB, the remembered gain, or the
-  fixed gain when `-g N` was just left), as far as the held level allows. A pop, a bump or one shouted syllable early
-  in a transmission is not the talker's level: on the recording a two-frame pop 0.2 s into a transmission cut a
-  remembered talker (opened at +11.8 dB) to -3.6 dB, and with the loudest frame kept for the whole reception the gain
-  stayed there for 3.2 s, until its 20th voiced frame, 13-15 dB too quiet and 7.6 dB quieter than the 2 dB steps
-  from +4 dB had played it. That cap held 1.14% of the recording's speech frames more than 6 dB under their
-  transmission's needed gain (five transmissions); with the hold, 0.26%. The cost: a loud sound that never forms a
-  voiced run and pauses for more than 200 ms of quieter sound comes back up to the opening gain, so its next onset
-  plays loud for a frame again. Two other ways were measured and dropped. No cap on startup steps at all gave the
+- Loud-frame guard. A frame that plays over -12 dBFS (RMS over the frame) takes the gain at once to where that frame
+  would play at -12 dBFS. The cut ramps in over the next frame, so the frames after it play at or under -12 dBFS; the
+  loud frame itself has already played, its peaks held at -1 dBFS. The loudest frame is then held: a frame within 6 dB
+  of it renews the hold, and after 200 ms of sound with nothing near it (10 frames at or over the absolute floor;
+  silence does not count) the held level eases 1 dB a frame and comes to rest within 6 dB over the sound that follows. A
+  louder frame takes the hold at once. No startup step puts the held level over -12 dBFS, and the burst fallback stops
+  there too. Until the first voiced run commits, the gain returns 1 dB a frame to the gain the reception opened at
+  (+8 dB, the remembered gain, or the fixed gain when `-g N` was just left), as far as the held level allows. A pop, a
+  bump or one shouted syllable early in a transmission is not the talker's level: on the recording a two-frame pop 0.2 s
+  into a transmission cut a remembered talker (opened at +11.8 dB) to -3.6 dB, and with the loudest frame kept for the
+  whole reception the gain stayed there for 3.2 s, until its 20th voiced frame, 13-15 dB too quiet and 7.6 dB quieter
+  than the 2 dB steps from +4 dB had played it. That cap held 1.14% of the recording's speech frames more than 6 dB
+  under their transmission's needed gain (five transmissions); with the hold, 0.26%. The cost: a loud sound that never
+  forms a voiced run and pauses for more than 200 ms of quieter sound comes back up to the opening gain, so its next
+  onset plays loud for a frame again. Two other ways were measured and dropped. No cap on startup steps at all gave the
   same gain on the recording but worse corpus numbers at +1 s (85.4% of files within 6 dB, 90th percentile 7.6 dB).
-  Easing the burst fallback's three loudest levels as well lifted the two quietest calls by 1-4 dB, but would let a
-  pop followed by steady noise raise the fallback's floor with no new burst.
-- Burst fallback. The reception keeps its three loudest frames at or over -70 dBFS; they never ease. Three frames in
-  a row within 6 dB of the third loudest arm a burst, and a frame 12 dB or more under it completes one. Once a burst
-  has completed, the gain rises 1 dB a frame until the third loudest frame plays at -17 dBFS, never past the guard's
-  held limit, and startup steps stay over that floor. Steady noise, a tone and a step out of silence never complete a
-  burst.
+  Easing the burst fallback's three loudest levels as well lifted the two quietest calls by 1-4 dB, but would let a pop
+  followed by steady noise raise the fallback's floor with no new burst.
+- Burst fallback. The reception keeps its three loudest frames at or over -70 dBFS; they never ease. A quieter frame
+  that is not silence does not enter them but is judged against the third loudest like any other. Three frames in a
+  row within 6 dB of the third loudest arm a burst, and a frame 12 dB or more under it completes one. A frame of
+  digital silence (under the AGC's absolute floor, -84 dBFS on digital voice) is a low frame too: it completes an
+  armed burst and ends a run of high frames, and does nothing else (it does not age the held loud frame and never
+  raises the gain). Frames the AGC does not learn from count as neither. Once a burst has completed, the gain rises
+  1 dB on each frame of sound until the third loudest frame plays at -17 dBFS, never past the guard's held limit, and
+  startup steps stay over that floor. Steady noise, a tone, a step out of silence and short blips between silences
+  never complete a burst. Counting silence changes no output sample on the recording or the corpus.
 - Talker memory (`voice_level.c`, not the AGC). 64 radios, by protocol family and radio ID, the least recently stored
   or applied one replaced first, for the run only. A reception whose estimate was established stores its settled
   gain; a radio heard before moves half way to it. The first frame that names a remembered radio before anything has
   committed opens the reception at its gain: at once on the reception's first frame, over one frame later (a P25
-  Phase 1 source arrives about 180 ms in). The same radio's last gain predicted its next transmission to 4.3 dB rms,
-  a fixed start to 9.4 dB.
+  Phase 1 source arrives about 180 ms in). When the other slot still holds the same radio's last reception, settled
+  and not yet stored (two-slot TDMA, nothing reset between), the lookup reads that slot's settled gain as the store
+  will, so the radio is recalled when it moves slots; the store still happens once, when that slot starts over. On
+  the recording 20 of the 150 transmissions started that way: two had no entry and would have opened at +8 dB where
+  the radio needed +1.4 and +26.8 dB, and 18 would have opened from an entry one transmission out of date (0.1-2.0 dB
+  off). The same radio's last gain predicted its next transmission to 4.3 dB rms, a fixed start to 9.4 dB.
 
 The decoder's frames were recorded before the AGC and replayed through the old and the new code (150 transmissions of
 0.6 s or more, the recording's radio IDs included, so with the talker memory; each transmission's level is the P.56
@@ -2500,7 +2514,7 @@ code's output on every frame, and with the acquisition stage off the old decoder
 | more than 10 dB under | 12 | 1 |
 | more than 4 dB over | 3 | 5 |
 | more than 6 dB over | 0 | 3 |
-| speech time played more than 6 dB too quiet | 8.1% | 2.7% |
+| speech time played more than 6 dB too quiet | 8.1% | 2.6% |
 | speech time played more than 6 dB too loud | 0.7% | 1.5% |
 | spread of the transmissions' levels (standard deviation) | 6.0 dB | 2.7 dB |
 
@@ -2519,11 +2533,16 @@ no talker memory), each call's whole-output P.56 level:
 
 The price is a few more transmissions over the target: a loud talker heard for the first time, and sounds before the
 speech that the burst fallback lifts (`docs/cli.md`, "What the automatic gains cannot do"). `DSP_SPEECH_AGC` holds the
-stage bit for bit on every frame (startup law, guard with its held level and return, burst fallback,
-`dsd_speech_agc_open_at()` and the settled gain) and the stage off against the unchanged law. Its cases include a pop
-then quieter sound (with and without digital silence between), a loud unvoiced talker whose cut stays, the return
-stopping at the first commit, a pop eased before a talker's first voiced run, the held level coming to rest within
-6 dB, the burst fallback after a pop, leaving fixed mode, and a pop with the stage off. `CORE_VOICE_LEVEL` holds the
+stage bit for bit on every frame (startup law, guard with its held level and return, burst fallback with digital
+silence and frames that do not learn, `dsd_speech_agc_open_at()` and the settled gain) and the stage off against the
+unchanged law. Its cases include a pop then quieter sound (with and without digital silence between), a loud unvoiced
+talker whose cut stays, the return stopping at the first commit, a pop eased before a talker's first voiced run, the
+held level coming to rest within 6 dB, the burst fallback after a pop, leaving fixed mode, a pop with the stage off,
+bursts that end in digital silence (`test_acq_silence_completes_bursts`), two-frame blips between silences that never
+add up to a burst, with the pauses as silence and as frames that do not learn (`test_acq_silence_ends_high_run`), and
+an `open_at()` ramp started partway through a frame, which runs one frame's length from the call instead of starting
+over at the next frame boundary (`test_open_at_mid_frame`; the digital chain opens between frames, so nothing it
+plays changed). `CORE_VOICE_LEVEL` holds the
 opening gain and the talker memory, `DECODE_MBE_SPEECH_LEVEL_QUIET` a quiet, rough-voiced talker end to end, and the
 `DECODE_IQ_SPEECH_LEVEL_*` cases the off-air excerpts ("Speech level parity" above).
 

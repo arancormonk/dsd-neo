@@ -600,9 +600,10 @@ Notes
   level (`-g 1`, where speech at the vocoders' reference level plays at about -24 dBFS), or, when its radio ID has
   talked long enough before in this run for its level to settle, at the gain that radio's speech settled at (a P25
   Phase 1 radio ID arrives about 0.2 s into a transmission, and its remembered gain eases in there over 20 ms).
-  Within the talker's first voiced frames the gain goes most of the way to the talker's level, and until 20 voiced
-  frames are in no frame plays louder than -12 dBFS: a louder one brings the gain down at once. That cut is let go
-  again 200 ms after the last loud frame, so a pop or a bump does not hold the gain down. The gain moves only on
+  Within the talker's first voiced frames the gain goes most of the way to the talker's level. Until 20 voiced frames
+  are in, a frame that plays louder than -12 dBFS brings the gain down at once, so the frames after it play at or
+  under that level (the loud frame itself has already played, its peaks held at -1 dBFS). That cut is let go again
+  200 ms after the last loud frame, so a pop or a bump does not hold the gain down. The gain moves only on
   decoded speech, never on encrypted audio it cannot decrypt, silence, noise or tones, holds through pauses, stays
   within 12 dB below and 30 dB above its start level (4 dB over `-g 1`, the middle of its range), and never lets a
   peak past -1 dBFS. Tone frames (DTMF and other call tones) play no louder than that start level. A new transmission,
@@ -654,9 +655,10 @@ Notes
     settles.
   - Short transmissions. A transmission with less than 120 ms of speech in a row plays at the start level on analog.
     On digital voice a talker whose speech never forms six voiced frames in a row (far from the microphone, a noisy
-    room) is lifted another way: bursts of sound that rise and fall raise the gain by 1 dB a frame until they play at
-    about -17 dBFS. Steady noise, a tone or a step out of silence does not count as a burst. A digital transmission
-    with less than 120 ms of voiced speech in a row and no such bursts plays at its opening gain.
+    room) is lifted another way: bursts of sound that rise and then fall, or stop into silence, raise the gain by 1 dB
+    on each frame of sound until they play at about -17 dBFS. Steady noise, a tone, a step out of silence or short
+    blips between silences do not count as a burst. A digital transmission with less than 120 ms of voiced speech in a
+    row and no such bursts plays at its opening gain.
   - The digital opening. A talker heard for the first time opens at +8 dB. A loud one plays up to about 7 dB loud
     until the talker's first loud frame brings the gain down, 20-40 ms, with peaks held at -1 dBFS. A transmission
     that starts with a second or so of near-silence holds its opening gain through it, so the same happens when the
@@ -667,7 +669,9 @@ Notes
     voiced run and pauses that long plays loud again for a frame at its next onset.
   - The digital memory. A remembered gain belongs to a radio ID within a protocol family, not to a person. A console
     several people share, or a radio in another hand, opens at the last talker's level, and two systems that use the
-    same ID number in one run share it; the first voiced frames correct it. It is not saved between runs.
+    same ID number in one run share it; the first voiced frames correct it. It is not saved between runs. On a
+    two-slot carrier a radio that moves to the other slot opens at the gain its last transmission settled at on the
+    first slot, even before that slot has started over and stored it.
   - Range. A talker more than 30 dB under the target at the start level (on digital voice 4 dB over `-g 1`, not the
     +8 dB opening) stays quiet; one more than 12 dB over it is held down by the -1 dBFS limiter.
   - Tones. A sound that holds one pitch and level for 240 ms or more is taken for a tone and teaches nothing, a long,
