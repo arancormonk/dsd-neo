@@ -122,6 +122,12 @@ voice_level_talker_new_entry(voice_level_ext* ext) {
     return oldest;
 }
 
+/* A remembered gain @p gain_db moved half way to a newly settled one. */
+static float
+voice_level_half_way(float gain_db, float settled_db) {
+    return gain_db + 0.5f * (settled_db - gain_db);
+}
+
 /* The slot's reception is over: remember the gain its talker's speech settled at, when it named its source and its
    estimate was established. A talker heard before moves half way to it. */
 static void
@@ -132,7 +138,7 @@ voice_level_remember(voice_level_ext* ext, const voice_level_slot* s) {
     }
     voice_level_talker* t = voice_level_talker_find(ext, s->family, s->source);
     if (t) {
-        t->gain_db += 0.5f * (settled - t->gain_db);
+        t->gain_db = voice_level_half_way(t->gain_db, settled);
     } else {
         t = voice_level_talker_new_entry(ext);
         t->source = s->source;
@@ -216,9 +222,28 @@ voice_level_follow(voice_level_ext* ext, voice_level_slot* s, const dsd_voice_re
     }
 }
 
-/* The reception's source: the first frame that names one opens the reception at the gain that radio's speech settled
-   at, if it is remembered and nothing has committed yet. On the reception's first frame that is at once; later (a P25
-   Phase 1 source arrives with the first link control, about 180 ms in) it eases in over one frame. */
+/* The gain the memory will hold for slot @p s's talker (@p t, NULL when not remembered) once the other slot's
+   reception in progress is stored, when that reception names the same source in the same protocol family and its
+   estimate is established: a radio whose transmission on one slot ended and whose next one starts on the other, with
+   no carrier boundary between (two-slot TDMA on one carrier), still has its settled gain unstored there. Nothing is
+   stored here: the other slot stores it once, at its own reset. Returns 0 when that reception does not count. */
+static int
+voice_level_other_slot_gain(const voice_level_ext* ext, const voice_level_slot* s, const voice_level_talker* t,
+                            float* gain_db) {
+    const voice_level_slot* o = s == &ext->slot[0] ? &ext->slot[1] : &ext->slot[0];
+    float settled = 0.0f;
+    if (o->source != s->source || o->family != s->family || !dsd_speech_agc_settled_gain_db(&o->agc, &settled)) {
+        return 0;
+    }
+    *gain_db = t ? voice_level_half_way(t->gain_db, settled) : settled;
+    return 1;
+}
+
+/* The reception's source: the first frame that names one opens the reception, if nothing has committed yet, at the
+   gain that radio's speech settled at: as the memory holds it, or as it will hold it once the other slot's reception
+   from the same radio is stored. On the reception's first frame that is at once; later (a P25 Phase 1 source arrives
+   with the first link control, about 180 ms in) it eases in over one frame. The slot's own reception was stored at its
+   reset, so only the other slot's is read. */
 static void
 voice_level_recall(voice_level_ext* ext, voice_level_slot* s, uint64_t source, int first_frame) {
     if (source == 0U) {
@@ -230,8 +255,12 @@ voice_level_recall(voice_level_ext* ext, voice_level_slot* s, uint64_t source, i
         return;
     }
     voice_level_talker* t = voice_level_talker_find(ext, s->family, source);
+    float gain_db = t ? t->gain_db : 0.0f;
+    if (!voice_level_other_slot_gain(ext, s, t, &gain_db) && !t) {
+        return;
+    }
+    dsd_speech_agc_open_at(&s->agc, gain_db, first_frame ? 0 : 1);
     if (t) {
-        dsd_speech_agc_open_at(&s->agc, t->gain_db, first_frame ? 0 : 1);
         t->used = ++ext->talker_clock;
     }
 }

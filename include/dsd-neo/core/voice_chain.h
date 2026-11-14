@@ -89,12 +89,13 @@ int dsd_voice_frame_may_learn(const dsd_voice_frame_info* info);
  * (dsd_speech_agc_set_acquisition()), aims the slot's speech at DSD_SPEECH_AGC_TARGET_DBFS, learning only from frames
  * dsd_voice_frame_may_learn() takes. Each reception opens at DSD_VOICE_LEVEL_OPEN_GAIN_DB over the `-g 1` level (the
  * decoder's own) from its first sample, or, from a radio both slots remember (the source of the slot's active call, in
- * its protocol family), at the gain that radio's speech last settled at; a tone frame plays at no more than the start
- * gain (DSD_VOICE_LEVEL_START_GAIN_DB); an undecodable frame never teaches, and when the slot's frames turn decodable
- * again its limiter starts over. A `-g` above 0 is a fixed multiplier through the AGC's limiter (DSD_SPEECH_AGC_CEILING_DBFS);
- * switching back to auto keeps what the AGC learned and starts from the fixed gain, within the AGC's range. A setting
- * below 0 (no user surface sets one) passes the frame at unity. Each frame leaves the gain it got, in dB, in `aout_gain`
- * (slot 2 `aout_gainR`) for the readouts.
+ * its protocol family), at the gain that radio's speech last settled at, counting a reception from it in progress on
+ * the other slot whose speech has settled (that slot stores it at its next reset); a tone frame plays at no more than
+ * the start gain (DSD_VOICE_LEVEL_START_GAIN_DB); an undecodable frame never teaches, and when the slot's frames turn
+ * decodable again its limiter starts over. A `-g` above 0 is a fixed multiplier through the AGC's limiter
+ * (DSD_SPEECH_AGC_CEILING_DBFS); switching back to auto keeps what the AGC learned and starts from the fixed gain,
+ * within the AGC's range. A setting below 0 (no user surface sets one) passes the frame at unity. Each frame leaves
+ * the gain it got, in dB, in `aout_gain` (slot 2 `aout_gainR`) for the readouts.
  *
  * A DSD_VOICE_MEDIA_TX_MONITOR frame (the M17 encoder's monitor) takes neither the slot's AGC nor `-g`: it plays at
  * unity through a fixed-gain speech AGC of its own, which only limits it at DSD_SPEECH_AGC_CEILING_DBFS, so the monitor

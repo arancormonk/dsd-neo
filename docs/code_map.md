@@ -3063,16 +3063,22 @@ suite runs under this compiler.
   Apply: in `dsd_voice_level_run()`, after the tracker and the opening, when a frame first names the reception's
   source and nothing has committed yet, a remembered (family, source) opens the reception at its gain
   (`dsd_speech_agc_open_at()`): at once on the reception's first frame, else over one frame (a P25 Phase 1 source
-  arrives with the first link control, about 180 ms in). Source 0 never stores or applies, and a fixed `-g` commits
-  nothing, so it stores nothing. The table is not kept across runs; it lives in the extension, so nothing is allocated
-  per frame. Nothing else seeds the auto level on any entry path (B4): every slot opens at the opening gain or a
-  remembered talker's. `aout_gain`/`aout_gainR` are display readouts only, the
+  arrives with the first link control, about 180 ms in). The lookup also reads the other slot's reception in progress
+  (`voice_level_other_slot_gain()`): when it names the same source in the same family and has settled, the reception
+  opens at the gain the memory will hold once that reception is stored (W for a new talker, else the store's half-way
+  step), so a radio that moves to the other slot on one carrier, with no reset between, is recalled. Nothing is stored
+  then: the other slot stores once, at its own reset. The slot's own reception is never read (its reset has just
+  stored it). Source 0 never stores or applies, and a fixed `-g` commits nothing, so it stores nothing. The table is
+  not kept across runs; it lives in the extension, so nothing is allocated per frame. Nothing else seeds the auto
+  level on any entry path (B4): every slot opens at the opening gain or a remembered talker's.
+  `aout_gain`/`aout_gainR` are display readouts only, the
   gain each slot's last frame got in dB (the terminal's "G: Auto (+x.x dB)"), and ride the snapshot's
   `config_autosave_enabled..last_dibit` range with `aout_gainA`; the AGC state stays decoder-owned. No protocol code
   writes them; the engine clamps `-g` for both formats. Tests: `CORE_VOICE_LEVEL` (learning, opening gain, tracker,
   resets kept and taken, fixed and auto, tones, decodability per slot, talker memory: store, apply, late source,
-  families, least recently used, explicit resets, shared slots, the active call's source), `ENGINE_NO_CARRIER_RESET`
-  (carrier boundaries, stream gap, no-carrier, a TETRA stream gap against a new talker), `ENGINE_TRUNK_SCAN`,
+  families, least recently used, explicit resets, shared slots, the other slot's reception in progress, the active
+  call's source), `ENGINE_NO_CARRIER_RESET` (carrier boundaries, stream gap, no-carrier, a TETRA stream gap against a
+  new talker), `ENGINE_TRUNK_SCAN`,
   `APP_P25_CC_SELECTION`, `CORE_MBE_FILE_IO` (file start), `APP_CONTROL_SNAPSHOT_EVENT_HISTORY` (the render range, field
   by field); end to end, `DECODE_MBE_SPEECH_LEVEL_QUIET` (a quiet talker's short transmission played with `-r`) and the
   `DECODE_IQ_SPEECH_LEVEL_*` off-air excerpts.
