@@ -133,23 +133,6 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import build_iq_fixtures as bif
-from build_iq_fixtures import (
-    P25_LDU_BITS,
-    P25_SEED,
-    bits_to_levels,
-    c4fm_response,
-    fm_from_levels,
-    p25_ldu_bits,
-    p25_ldu_hexbits,
-    msb_bits,
-    nxdn_levels,
-    nxdn_response,
-    raised_cosine,
-    rrc_response,
-    sinc_response,
-    spectrum_taps,
-    ysf_levels,
-)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURE_DIR = os.path.join(ROOT, "tests", "fixtures", "iq")
@@ -373,7 +356,7 @@ def hdqpsk_from_levels(levels, response):
     sps = RATE_HZ // 6000
     impulses = np.zeros(len(levels) * sps, dtype=np.complex128)
     impulses[::sps] = np.exp(1j * np.cumsum(levels) * math.pi / 4.0)
-    return np.convolve(impulses, spectrum_taps(response, 6000), mode="same")
+    return np.convolve(impulses, bif.spectrum_taps(response, 6000), mode="same")
 
 
 def regenerated_source(name, args, symbol_rate, synth, note, work_dir, sync_levels=None):
@@ -415,7 +398,7 @@ def dmr_levels(audio):
 def dmr_baseband(levels):
     """ETSI TS 102 361-1 section 10.2.2.2: impulses through the square root raised cosine (alpha 0.2), the outer
     level at +/-1944 Hz (section 10.2.2.1)."""
-    return fm_from_levels(levels, 4800, rrc_response(0.2, 4800), DMR_OUTER_HZ)[: sample_count()]
+    return bif.fm_from_levels(levels, 4800, bif.rrc_response(0.2, 4800), DMR_OUTER_HZ)[: sample_count()]
 
 
 def dmr_bs_source(work_dir):
@@ -583,8 +566,8 @@ YSF_FRAMES_PER_SECOND = 10
 def ysf_source(outer_hz, outer_sync=False):
     """outer_sync=True (a diagnostic, not a YSF signal) sends the frame sync's symbols at outer levels, as dsd-neo's
     sign-only sync pattern draws them; the standard frame sync has inner symbols too."""
-    levels = ysf_levels(round(DURATION_S * YSF_FRAMES_PER_SECOND), outer_sync)
-    samples = fm_from_levels(levels, 4800, rrc_response(0.2, 4800), outer_hz)[: sample_count()]
+    levels = bif.ysf_levels(round(DURATION_S * YSF_FRAMES_PER_SECOND), outer_sync)
+    samples = bif.fm_from_levels(levels, 4800, bif.rrc_response(0.2, 4800), outer_hz)[: sample_count()]
     note = f"YSF V/D mode 2 generator, RRC 0.2, outer {outer_hz:.0f} Hz" + (
         ", sync at outer levels" if outer_sync else ""
     )
@@ -595,7 +578,8 @@ def nxdn_source(symbol_rate, outer_hz, outer_sync=False):
     """outer_sync=True (a diagnostic, not an NXDN signal) sends the FSW's two inner symbols at outer levels, as
     dsd-neo's sign-only sync pattern draws them."""
     frames = round(DURATION_S * symbol_rate / 192)
-    synth = fm_from_levels(nxdn_levels(frames, outer_sync), symbol_rate, nxdn_response(symbol_rate), outer_hz)
+    levels = bif.nxdn_levels(frames, outer_sync)
+    synth = bif.fm_from_levels(levels, symbol_rate, bif.nxdn_response(symbol_rate), outer_hz)
     note = f"NXDN RDCH voice generator, RRC 0.2 x sinc, outer {outer_hz:.0f} Hz"
     note += ", FSW at outer levels" if outer_sync else ""
     return Source(repeat_to_length(synth), note=note, sent=frames)
@@ -608,14 +592,14 @@ def nxdn_source(symbol_rate, outer_hz, outer_sync=False):
 
 def p25p1_source():
     """LDU1 (group voice, group 1, source 1) and LDU2 (clear: ALGID 0x80, key 0, MI 0) in turn, C4FM."""
-    ldu1, ldu2 = p25_ldu_hexbits()
-    rng = np.random.default_rng(P25_SEED)
-    count = math.ceil(sample_count() / (P25_LDU_BITS // 2 * (RATE_HZ // 4800)))
+    ldu1, ldu2 = bif.p25_ldu_hexbits()
+    rng = np.random.default_rng(bif.P25_SEED)
+    count = math.ceil(sample_count() / (bif.P25_LDU_BITS // 2 * (RATE_HZ // 4800)))
     bits = []
     for k in range(count):
-        bits += p25_ldu_bits(0x5, ldu1, rng) if k % 2 == 0 else p25_ldu_bits(0xA, ldu2, rng)
-    samples = fm_from_levels(bits_to_levels(bits), 4800, c4fm_response, 1800.0)[: sample_count()]
-    sent = sample_count() // (P25_LDU_BITS // 2 * (RATE_HZ // 4800))
+        bits += bif.p25_ldu_bits(0x5, ldu1, rng) if k % 2 == 0 else bif.p25_ldu_bits(0xA, ldu2, rng)
+    samples = bif.fm_from_levels(bif.bits_to_levels(bits), 4800, bif.c4fm_response, 1800.0)[: sample_count()]
+    sent = sample_count() // (bif.P25_LDU_BITS // 2 * (RATE_HZ // 4800))
     return Source(samples, note="P25 Phase 1 LDU1/LDU2 generator, C4FM, outer 1800 Hz", sent=sent)
 
 
@@ -654,7 +638,7 @@ def m17_source(work_dir):
     levels = levels[:symbols]
     starts = range(0, symbols - 191, 192)
     sent = sum(1 for k in starts if tuple(levels[k : k + 8]) == M17_STREAM_SYNC)
-    samples = fm_from_levels(levels, 4800, rrc_response(0.5, 4800), 2400.0)[: sample_count()]
+    samples = bif.fm_from_levels(levels, 4800, bif.rrc_response(0.5, 4800), 2400.0)[: sample_count()]
     return Source(samples, note="dsd-neo's M17 stream encoder symbols, RRC 0.5, outer 2400 Hz", sent=sent)
 
 
@@ -671,7 +655,8 @@ def dpmr_source():
     frame_symbols = len(stream) // bif.DPMR_SYNTH_FRAME_REPEATS
     symbols = round(DURATION_S * bif.DPMR_SYNTH_SYMBOL_RATE)
     levels = np.array([bif.DPMR_DIBIT_TO_LEVEL[d] for d in stream * math.ceil(symbols / len(stream))])[:symbols]
-    samples = fm_from_levels(levels, 2400, nxdn_response(2400), bif.DPMR_SYNTH_OUTER_DEVIATION_HZ)[: sample_count()]
+    outer_hz = bif.DPMR_SYNTH_OUTER_DEVIATION_HZ
+    samples = bif.fm_from_levels(levels, 2400, bif.nxdn_response(2400), outer_hz)[: sample_count()]
     note = "dPMR CCH reference frames, SRRC 0.2 x sinc, outer 1050 Hz"
     return Source(samples, note=note, sent=2 * (symbols // frame_symbols))
 
@@ -753,7 +738,7 @@ def digital_rows():
             ["-f1"],
             "p25p1_c4fm_vc",
             4800,
-            lambda lv: fm_from_levels(lv, 4800, c4fm_response, 1800.0),
+            lambda lv: bif.fm_from_levels(lv, 4800, bif.c4fm_response, 1800.0),
             "C4FM, outer 1800 Hz",
             P25P1_PASS,
             r"Sync: [+-]P25p1 .*LDU[12]",
@@ -772,7 +757,7 @@ def digital_rows():
     ]
     for tag, response, text in (
         ("harmonized", harmonized_response, "H-DQPSK, harmonized raised cosine (alpha 1, 3600 Hz)"),
-        ("rrc", rrc_response(0.2, 6000), "H-DQPSK, root raised cosine (alpha 0.2)"),
+        ("rrc", bif.rrc_response(0.2, 6000), "H-DQPSK, root raised cosine (alpha 0.2)"),
     ):
         rows.append(
             regen_row(
@@ -842,7 +827,7 @@ def digital_rows():
                 args,
                 key,
                 rate,
-                lambda lv, r=rate, o=outer: fm_from_levels(lv, r, nxdn_response(r), o),
+                lambda lv, r=rate, o=outer: bif.fm_from_levels(lv, r, bif.nxdn_response(r), o),
                 f"RRC 0.2 x sinc, outer {outer:.0f} Hz",
                 pass_re,
                 unit_re,
@@ -905,7 +890,7 @@ def digital_rows():
             ["-fy"],
             "ysf",
             4800,
-            lambda lv: fm_from_levels(lv, 4800, rrc_response(0.2, 4800), 2290.0),
+            lambda lv: bif.fm_from_levels(lv, 4800, bif.rrc_response(0.2, 4800), 2290.0),
             "RRC 0.2, outer 2290 Hz",
             YSF_PASS,
             r"Sync: [+-]YSF ",
@@ -925,7 +910,7 @@ def digital_rows():
             ["-fz"],
             "m17",
             4800,
-            lambda lv: fm_from_levels(lv, 4800, rrc_response(0.5, 4800), 2400.0),
+            lambda lv: bif.fm_from_levels(lv, 4800, bif.rrc_response(0.5, 4800), 2400.0),
             "RRC 0.5, outer 2400 Hz",
             m17_pass,
             m17_unit,
