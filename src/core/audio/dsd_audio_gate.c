@@ -17,6 +17,7 @@
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/source_alias.h>
@@ -33,8 +34,6 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd_audio_gate_internal.h"
 
-#define DSD_AUDIO_P25_PATCH_TTL_SECONDS 20
-
 static int
 dsd_audio_state_is_p25(const dsd_state* state) {
     return (state && (DSD_SYNC_IS_P25(state->synctype) || DSD_SYNC_IS_P25(state->lastsynctype))) ? 1 : 0;
@@ -49,39 +48,16 @@ dsd_audio_p25_policy_pair_valid(uint32_t ota_target, uint32_t policy_tg) {
 }
 
 static int
-dsd_audio_p25_patch_entry_current(const dsd_state* state, int idx, uint32_t ota_target, time_t now) {
-    if (!state || idx < 0 || idx >= 8 || !state->p25_patch_active[idx]
-        || state->p25_patch_sgid[idx] != (uint16_t)ota_target) {
-        return 0;
-    }
-    if (state->p25_patch_last_update[idx] > 0
-        && (now - state->p25_patch_last_update[idx]) > DSD_AUDIO_P25_PATCH_TTL_SECONDS) {
-        return 0;
-    }
-    return 1;
-}
-
-static int
-dsd_audio_p25_patch_entry_has_wgid(const dsd_state* state, int idx, uint32_t policy_tg) {
-    uint8_t count = state->p25_patch_wgid_count[idx];
-    for (int k = 0; k < count && k < 8; k++) {
-        if (state->p25_patch_wgid[idx][k] == (uint16_t)policy_tg) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int
 dsd_audio_p25_patch_member_active(const dsd_state* state, uint32_t ota_target, uint32_t policy_tg) {
     if (!state || !dsd_audio_p25_policy_pair_valid(ota_target, policy_tg)) {
         return 0;
     }
 
-    time_t now = dsd_decode_time();
-    for (int i = 0; i < state->p25_patch_count && i < 8; i++) {
-        if (dsd_audio_p25_patch_entry_current(state, i, ota_target, now)
-            && dsd_audio_p25_patch_entry_has_wgid(state, i, policy_tg)) {
+    const int count = state->p25_patch_count < DSD_P25_PATCH_MAX ? state->p25_patch_count : DSD_P25_PATCH_MAX;
+    for (int i = 0; i < count; i++) {
+        if (state->p25_patch_active[i] && state->p25_patch_sgid[i] == (uint16_t)ota_target
+            && dsd_p25_patch_entry_seen_current(state, i)
+            && dsd_p25_patch_has_current_wgid(state, i, (uint16_t)policy_tg)) {
             return 1;
         }
     }

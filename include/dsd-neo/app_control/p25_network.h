@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_P25_NETWORK_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_P25_NETWORK_H_
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
 #include <time.h>
@@ -23,8 +24,8 @@ typedef struct {
     uint16_t sgid;
     uint8_t is_patch;
     uint8_t group_count, radio_count;
-    uint16_t groups[8];
-    uint32_t radios[8];
+    uint16_t groups[DSD_P25_PATCH_GROUP_MAX];
+    uint32_t radios[DSD_P25_PATCH_RADIO_MAX];
     time_t last_seen;
 } dsd_app_p25_patch;
 
@@ -37,7 +38,9 @@ typedef struct {
 /** Copy from a held snapshot; never mutate or retain it. Return rows written,
  * at most capacity. NULL inputs or nonpositive capacity return zero. Lists are
  * recent-first (stable on ties), filtered before truncation. Patches are active
- * announcements within the protocol's 20-second lifetime (zero timestamp is unknown); no encryption fields are exposed. */
+ * supergroups named within DSD_P25_PATCH_TTL_SECONDS of listening to the control channel, most recently refreshed
+ * first; their group and radio lists are filled only while a membership message keeps them current (otherwise
+ * empty). At most DSD_P25_PATCH_MAX rows. No encryption fields are exposed. */
 int dsd_app_p25_neighbors(const dsd_state* state, dsd_app_p25_neighbor* out, int capacity);
 int dsd_app_p25_patches(const dsd_state* state, dsd_app_p25_patch* out, int capacity);
 int dsd_app_p25_group_affiliations(const dsd_state* state, dsd_app_p25_affiliation* out, int capacity);

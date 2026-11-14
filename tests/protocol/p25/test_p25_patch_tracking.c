@@ -12,8 +12,10 @@
  * TTL sweep of stale entries, and clear/remove deactivation.
  */
 
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -47,12 +49,27 @@ expect_eq_int(const char* tag, int got, int want) {
 
 static int
 find_idx(const dsd_state* st, uint16_t sgid) {
-    for (int i = 0; i < st->p25_patch_count && i < 8; i++) {
+    for (int i = 0; i < st->p25_patch_count && i < DSD_P25_PATCH_MAX; i++) {
         if (st->p25_patch_sgid[i] == sgid) {
             return i;
         }
     }
     return -1;
+}
+
+/* Hear the control channel for @p seconds: CRC-good PDUs every 100 ms advance the listening clock. */
+static void
+listen_for(dsd_state* st, double seconds) {
+    double now = st->p25_patch_listen_last_m;
+    if (now <= 0.0) {
+        now = 1000.0;
+        dsd_p25_patch_listen_note(st, now);
+    }
+    const int steps = (int)(seconds * 10.0 + 0.5);
+    for (int i = 0; i < steps; i++) {
+        now += 0.1;
+        dsd_p25_patch_listen_note(st, now);
+    }
 }
 
 static int
@@ -79,27 +96,31 @@ test_guard_replacement_and_policy_edges(void) {
     rc |= expect_eq_int("negative count recovers", st.p25_patch_count, 1);
     rc |= expect_eq_int("negative count stores sgid", st.p25_patch_sgid[0], 300);
 
+    // A full table of live entries replaces the least recently refreshed one (lowest sequence), whatever the
+    // decode-time stamps say: entry 0 has the newest last_update but the lowest sequence.
     DSD_MEMSET(&st, 0, sizeof st);
-    st.p25_patch_count = 8;
+    st.p25_patch_count = DSD_P25_PATCH_MAX;
     time_t base = time(NULL);
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < DSD_P25_PATCH_MAX; i++) {
         st.p25_patch_sgid[i] = (uint16_t)(100 + i);
-        st.p25_patch_last_update[i] = base - (8 - i);
+        st.p25_patch_last_update[i] = base - i;
+        st.p25_patch_seq[i] = (uint32_t)(i + 1);
         st.p25_patch_active[i] = 1;
         st.p25_patch_wgid_count[i] = 1;
         st.p25_patch_key_valid[i] = 1;
     }
+    st.p25_patch_seq_counter = DSD_P25_PATCH_MAX;
     p25_patch_update(&st, 999, 0, 1);
-    rc |= expect_eq_int("full table count", st.p25_patch_count, 8);
+    rc |= expect_eq_int("full table count", st.p25_patch_count, DSD_P25_PATCH_MAX);
     rc |= expect_eq_int("full table replaces stalest", st.p25_patch_sgid[0], 999);
     rc |= expect_eq_int("replacement clears wgid count", st.p25_patch_wgid_count[0], 0);
     rc |= expect_eq_int("replacement clears key valid", st.p25_patch_key_valid[0], 0);
     rc |= expect_eq_int("replacement stores simulselect", st.p25_patch_is_patch[0], 0);
 
     DSD_MEMSET(&st, 0, sizeof st);
-    st.p25_patch_count = 8;
+    st.p25_patch_count = DSD_P25_PATCH_MAX;
     base = time(NULL);
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < DSD_P25_PATCH_MAX; i++) {
         st.p25_patch_sgid[i] = (uint16_t)(200 + i);
         st.p25_patch_active[i] = 1;
         st.p25_patch_last_update[i] = base - (8 - i);
@@ -108,7 +129,7 @@ test_guard_replacement_and_policy_edges(void) {
     }
     p25_patch_clear_sg(&st, 205);
     p25_patch_update(&st, 299, 1, 1);
-    rc |= expect_eq_int("inactive slot reused count", st.p25_patch_count, 8);
+    rc |= expect_eq_int("inactive slot reused count", st.p25_patch_count, DSD_P25_PATCH_MAX);
     rc |= expect_true("inactive slot reused new sg", find_idx(&st, 299) >= 0);
     rc |= expect_true("inactive slot reuse preserves active oldest", find_idx(&st, 200) >= 0);
     int reused = find_idx(&st, 299);
@@ -118,15 +139,15 @@ test_guard_replacement_and_policy_edges(void) {
     }
 
     DSD_MEMSET(&st, 0, sizeof st);
-    st.p25_patch_count = 8;
+    st.p25_patch_count = DSD_P25_PATCH_MAX;
     base = time(NULL);
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < DSD_P25_PATCH_MAX; i++) {
         st.p25_patch_sgid[i] = (uint16_t)(400 + i);
         st.p25_patch_active[i] = 1;
         st.p25_patch_last_update[i] = base;
     }
     p25_patch_update(&st, 499, 1, 0);
-    rc |= expect_eq_int("inactive full table does not evict count", st.p25_patch_count, 8);
+    rc |= expect_eq_int("inactive full table does not evict count", st.p25_patch_count, DSD_P25_PATCH_MAX);
     rc |= expect_true("inactive full table preserves active oldest", find_idx(&st, 400) >= 0);
     rc |= expect_true("inactive full table skips new inactive", find_idx(&st, 499) < 0);
 
@@ -136,28 +157,24 @@ test_guard_replacement_and_policy_edges(void) {
     p25_patch_set_kas(&st, 10, 0x2222, 0x84, 3);
     p25_patch_update(&st, 20, 1, 1);
     p25_patch_add_wgid(&st, 20, 222);
-    int stale = find_idx(&st, 10);
-    if (stale >= 0) {
-        st.p25_patch_last_update[stale] = time(NULL) - 21;
-    }
-    int active = find_idx(&st, 20);
-    if (active >= 0) {
-        st.p25_patch_last_update[active] = time(NULL);
-    }
+    // 21 s of listening later only SG 20 is refreshed: SG 10 drops out of the details, which never mutate the table.
+    listen_for(&st, 21.0);
+    p25_patch_add_wgid(&st, 20, 222);
     (void)p25_patch_compose_details(&st, out, sizeof out);
-    rc |= expect_eq_int("sweep compacts count", st.p25_patch_count, 1);
-    rc |= expect_eq_int("sweep preserves active sgid", st.p25_patch_sgid[0], 20);
-    rc |= expect_eq_int("sweep preserves active member", st.p25_patch_wgid[0][0], 222);
+    rc |= expect_true("stale entry left out of details", strstr(out, "SG010[") == NULL);
+    rc |= expect_true("current entry kept in details", strstr(out, "SG020[P] WG:0222") != NULL);
+    rc |= expect_eq_int("details leave the table in place", st.p25_patch_count, 2);
+    rc |= expect_true("details leave the stale entry", find_idx(&st, 10) >= 0);
 
     DSD_MEMSET(&st, 0, sizeof st);
     p25_patch_add_wgid(&st, 69, 0x2345);
     p25_patch_set_kas(&st, 69, 0, 0x84, 17);
     rc |= expect_eq_int("clear tg policy active", p25_patch_tg_key_is_clear(&st, 0x2345), 1);
     rc |= expect_eq_int("clear sg policy active", p25_patch_sg_key_is_clear(&st, 69), 1);
-    st.p25_patch_last_update[0] = time(NULL) - 21;
+    listen_for(&st, 21.0);
     rc |= expect_eq_int("clear tg policy stale", p25_patch_tg_key_is_clear(&st, 0x2345), 0);
     rc |= expect_eq_int("clear sg policy stale", p25_patch_sg_key_is_clear(&st, 69), 0);
-    st.p25_patch_last_update[0] = time(NULL);
+    p25_patch_add_wgid(&st, 69, 0x2345);
     p25_patch_set_kas(&st, 69, 0x1234, -1, -1);
     rc |= expect_eq_int("nonclear tg policy", p25_patch_tg_key_is_clear(&st, 0x2345), 0);
     rc |= expect_eq_int("nonclear sg policy", p25_patch_sg_key_is_clear(&st, 69), 0);
@@ -179,10 +196,11 @@ test_guard_replacement_and_policy_edges(void) {
     idx500 = find_idx(&st, 500);
     rc |= expect_true("prepare changed ssn keeps sg", idx500 >= 0);
     if (idx500 >= 0) {
-        uint16_t members[8] = {0};
+        uint16_t members[DSD_P25_PATCH_GROUP_MAX] = {0};
         rc |= expect_eq_int("prepare changed ssn clears old", st.p25_patch_wgid_count[idx500], 1);
         rc |= expect_eq_int("prepare changed ssn new member", st.p25_patch_wgid[idx500][0], 102);
-        rc |= expect_eq_int("collect active count", p25_patch_collect_active_wgids(&st, 500, members, 8), 1);
+        rc |= expect_eq_int("collect active count",
+                            p25_patch_collect_active_wgids(&st, 500, members, DSD_P25_PATCH_GROUP_MAX), 1);
         rc |= expect_eq_int("collect active member", members[0], 102);
     }
     rc |= expect_eq_int("prepare inactive suppresses members", p25_patch_prepare_grg_update(&st, 500, 1, 0, 4), 0);
@@ -194,6 +212,169 @@ test_guard_replacement_and_policy_edges(void) {
         rc |= expect_eq_int("prepare inactive clears key valid", st.p25_patch_key_valid[idx500], 0);
     }
 
+    return rc;
+}
+
+/* B4: 16 live patches fit without eviction; 32 groups and 16 radios per patch are stored, one more is dropped. */
+static int
+test_caps(void) {
+    int rc = 0;
+    static dsd_state st;
+    DSD_MEMSET(&st, 0, sizeof st);
+    for (int i = 0; i < DSD_P25_PATCH_MAX; i++) {
+        p25_patch_add_wgid(&st, 1400 + i * 2, 1401 + i * 2);
+    }
+    rc |= expect_eq_int("caps 16 patches count", st.p25_patch_count, DSD_P25_PATCH_MAX);
+    for (int i = 0; i < DSD_P25_PATCH_MAX; i++) {
+        int idx = find_idx(&st, (uint16_t)(1400 + i * 2));
+        rc |= expect_true("caps patch kept", idx >= 0);
+        if (idx >= 0) {
+            rc |= expect_eq_int("caps patch member kept", st.p25_patch_wgid[idx][0], 1401 + i * 2);
+            rc |= expect_eq_int("caps patch active", st.p25_patch_active[idx], 1);
+        }
+    }
+
+    DSD_MEMSET(&st, 0, sizeof st);
+    for (int k = 0; k < DSD_P25_PATCH_GROUP_MAX + 1; k++) {
+        p25_patch_add_wgid(&st, 1400, 2001 + k);
+    }
+    rc |= expect_eq_int("caps 32 groups stored", st.p25_patch_wgid_count[0], DSD_P25_PATCH_GROUP_MAX);
+    for (int k = 0; k < DSD_P25_PATCH_GROUP_MAX; k++) {
+        rc |= expect_eq_int("caps group order", st.p25_patch_wgid[0][k], 2001 + k);
+    }
+    for (int k = 0; k < DSD_P25_PATCH_RADIO_MAX + 1; k++) {
+        p25_patch_add_wuid(&st, 1400, (uint32_t)(70001 + k));
+    }
+    rc |= expect_eq_int("caps 16 radios stored", st.p25_patch_wuid_count[0], DSD_P25_PATCH_RADIO_MAX);
+    rc |= expect_eq_int("caps last radio", (int)st.p25_patch_wuid[0][DSD_P25_PATCH_RADIO_MAX - 1],
+                        70000 + DSD_P25_PATCH_RADIO_MAX);
+
+    uint16_t members[DSD_P25_PATCH_GROUP_MAX + 1];
+    for (int k = 0; k < DSD_P25_PATCH_GROUP_MAX + 1; k++) {
+        members[k] = 0xFFFF;
+    }
+    rc |= expect_eq_int("collect bounded by cap", p25_patch_collect_active_wgids(&st, 1400, members, 8), 8);
+    rc |= expect_eq_int("collect leaves the rest", members[8], 0xFFFF);
+    rc |=
+        expect_eq_int("collect all 32", p25_patch_collect_active_wgids(&st, 1400, members, DSD_P25_PATCH_GROUP_MAX + 1),
+                      DSD_P25_PATCH_GROUP_MAX);
+    rc |= expect_eq_int("collect 32nd member", members[DSD_P25_PATCH_GROUP_MAX - 1], 2000 + DSD_P25_PATCH_GROUP_MAX);
+    rc |= expect_eq_int("collect null out", p25_patch_collect_active_wgids(&st, 1400, NULL, 8), 0);
+    return rc;
+}
+
+/* B4: eviction follows the refresh sequence, not second-resolution decode time: equal stamps and a wall clock that
+   steps back never evict the newest entry. */
+static int
+test_seq_eviction(void) {
+    int rc = 0;
+    static dsd_state st;
+    DSD_MEMSET(&st, 0, sizeof st);
+    const uint64_t t0 = 1700000000ULL * 1000000000ULL;
+    dsd_decode_clock_use_test(t0);
+    for (int i = 0; i < DSD_P25_PATCH_MAX; i++) {
+        p25_patch_update(&st, 1400 + i, 1, 1);
+    }
+    p25_patch_update(&st, 1400, 1, 1); // 1400 refreshed: 1401 is now the oldest
+    dsd_decode_clock_test_set_ns(t0 - 100ULL * 1000000000ULL);
+    p25_patch_update(&st, 1500, 1, 1);
+    rc |= expect_true("seq evicts the least recently refreshed", find_idx(&st, 1401) < 0);
+    rc |= expect_true("seq keeps the refreshed entry", find_idx(&st, 1400) >= 0);
+    rc |= expect_true("seq stores the newcomer", find_idx(&st, 1500) >= 0);
+    p25_patch_update(&st, 1501, 1, 1);
+    rc |= expect_true("seq keeps the newest entry after a backward step", find_idx(&st, 1500) >= 0);
+    rc |= expect_true("seq evicts the next oldest", find_idx(&st, 1402) < 0);
+    rc |= expect_eq_int("seq table stays full", st.p25_patch_count, DSD_P25_PATCH_MAX);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
+/* A message that only names the SG keeps the row; members and KEY context need a membership message. Readers ignore
+   stale members without mutating; the next change to the entry expires them at once. */
+static int
+test_two_stamps_and_expiry(void) {
+    int rc = 0;
+    static dsd_state st;
+    char out[256];
+    uint16_t members[DSD_P25_PATCH_GROUP_MAX];
+    DSD_MEMSET(&st, 0, sizeof st);
+    p25_patch_add_wgid(&st, 1400, 1401);
+    p25_patch_set_kas(&st, 1400, 0, 0x84, 3);
+    rc |= expect_eq_int("expiry clear before", p25_patch_tg_key_is_clear(&st, 1401), 1);
+
+    listen_for(&st, 15.0);
+    p25_patch_update(&st, 1400, 1, 1); // a grant naming the SG
+    listen_for(&st, 10.0);
+    rc |= expect_eq_int("sg-only keeps no members", p25_patch_collect_active_wgids(&st, 1400, members, 32), 0);
+    rc |= expect_eq_int("stale KEY not clear (tg)", p25_patch_tg_key_is_clear(&st, 1401), 0);
+    rc |= expect_eq_int("stale KEY not clear (sg)", p25_patch_sg_key_is_clear(&st, 1400), 0);
+    (void)p25_patch_compose_details(&st, out, sizeof out);
+    rc |= expect_true("row kept by the sg-only refresh", strstr(out, "SG1400[P]") != NULL);
+    rc |= expect_true("stale members not shown", strstr(out, "WG:") == NULL && strstr(out, "A:84") == NULL);
+    rc |= expect_eq_int("reader leaves stale members", st.p25_patch_wgid_count[0], 1);
+    rc |= expect_eq_int("reader leaves stale KEY", st.p25_patch_key_valid[0], 1);
+
+    p25_patch_update(&st, 1400, 1, 1); // SG-only refresh after members expired: no formatter run needed
+    rc |= expect_eq_int("mutation expires members", st.p25_patch_wgid_count[0], 0);
+    rc |= expect_eq_int("mutation expires KEY", st.p25_patch_key_valid[0], 0);
+    rc |= expect_eq_int("mutation expires ALG", st.p25_patch_alg[0], 0);
+    rc |= expect_eq_int("mutation keeps the row", st.p25_patch_active[0], 1);
+    return rc;
+}
+
+/* B2: every accepted Add refreshes both stamps and the sequence and reactivates; the last-member delete takes the KEY
+   context with it. */
+static int
+test_add_refresh_and_last_delete(void) {
+    int rc = 0;
+    static dsd_state st;
+    uint16_t members[DSD_P25_PATCH_GROUP_MAX];
+    DSD_MEMSET(&st, 0, sizeof st);
+    p25_patch_add_wgid(&st, 1400, 1401);
+    const uint32_t seq_before = st.p25_patch_seq[0];
+    listen_for(&st, 15.0);
+    p25_patch_add_wgid(&st, 1400, 1401); // duplicate Add
+    rc |= expect_true("duplicate add takes a new sequence", st.p25_patch_seq[0] != seq_before);
+    listen_for(&st, 10.0);
+    rc |=
+        expect_eq_int("duplicate add keeps members current", p25_patch_collect_active_wgids(&st, 1400, members, 32), 1);
+
+    p25_patch_clear_sg(&st, 1400);
+    rc |= expect_eq_int("cancel deactivates", st.p25_patch_active[0], 0);
+    p25_patch_add_wgid(&st, 1400, 1402);
+    rc |= expect_eq_int("add reactivates an inactive entry", st.p25_patch_active[0], 1);
+    rc |= expect_eq_int("reactivated member", p25_patch_collect_active_wgids(&st, 1400, members, 32), 1);
+    rc |= expect_eq_int("reactivated member id", members[0], 1402);
+
+    p25_patch_set_kas(&st, 1400, 0, 0x84, 3);
+    rc |= expect_eq_int("KEY clear before the last delete", p25_patch_sg_key_is_clear(&st, 1400), 1);
+    p25_patch_remove_wgid(&st, 1400, 1402);
+    rc |= expect_eq_int("last delete deactivates", st.p25_patch_active[0], 0);
+    rc |= expect_eq_int("last delete expires KEY", st.p25_patch_key_valid[0], 0);
+    rc |= expect_eq_int("last delete expires ALG/SSN", st.p25_patch_alg[0] | st.p25_patch_ssn[0], 0);
+    rc |= expect_eq_int("last delete expires members", dsd_p25_patch_members_current(&st, 0), 0);
+    p25_patch_update(&st, 1400, 1, 1); // a later grant brings the row back without the old KEY=0
+    rc |= expect_eq_int("no KEY=0 after the last delete", p25_patch_sg_key_is_clear(&st, 1400), 0);
+    return rc;
+}
+
+/* B3: the SG is never its own member; a Delete listing the SG ends the whole patch. */
+static int
+test_sg_as_member(void) {
+    int rc = 0;
+    static dsd_state st;
+    DSD_MEMSET(&st, 0, sizeof st);
+    p25_patch_add_wgid(&st, 1400, 1400);
+    rc |= expect_eq_int("sg-as-member add creates nothing", st.p25_patch_count, 0);
+    p25_patch_add_wgid(&st, 1400, 1401);
+    p25_patch_add_wgid(&st, 1400, 1400);
+    p25_patch_add_wgid(&st, 1400, 1402);
+    rc |= expect_eq_int("sg-as-member add stores real members only", st.p25_patch_wgid_count[0], 2);
+    p25_patch_set_kas(&st, 1400, 0, -1, -1);
+    p25_patch_remove_wgid(&st, 1400, 1400);
+    rc |= expect_eq_int("sg-as-member delete ends the patch", st.p25_patch_active[0], 0);
+    rc |= expect_eq_int("sg-as-member delete clears members", st.p25_patch_wgid_count[0], 0);
+    rc |= expect_eq_int("sg-as-member delete clears KEY", st.p25_patch_key_valid[0], 0);
     return rc;
 }
 
@@ -240,14 +421,16 @@ main(void) {
     (void)p25_patch_compose_details(&st, det, sizeof det);
     rc |= expect_true("details compact WG", strstr(det, "WG:4(0837,1929+") != NULL);
 
-    // TTL sweep: mark SG142 stale, ensure it disappears from details
-    // (op25 uses 20s PATCH_EXPIRY_TIME)
-    int idx142 = find_idx(&st, 142);
-    if (idx142 >= 0) {
-        st.p25_patch_last_update[idx142] = time(NULL) - 21; // >20s ago (op25 aligned)
-    }
+    // TTL: after 21 s of listening in which SG142 is not named, it disappears from details
+    // (op25 uses a 20 s PATCH_EXPIRY_TIME; here on the listening clock)
+    listen_for(&st, 21.0);
+    p25_patch_update(&st, 69, /*is_patch*/ 1, /*active*/ 1);
+    p25_patch_add_wuid(&st, 77, 1001);
+    p25_patch_add_wuid(&st, 77, 1002);
+    p25_patch_add_wuid(&st, 77, 1003);
     (void)p25_patch_compose_details(&st, det, sizeof det);
     rc |= expect_true("details dropped SG142", strstr(det, "SG142[") == NULL);
+    rc |= expect_true("details keep refreshed SG069", strstr(det, "SG069[P]") != NULL);
 
     // Clear SG069; expect SG069 inactive
     p25_patch_clear_sg(&st, 69);
@@ -266,6 +449,11 @@ main(void) {
     // SG077[S] still present (simulselect) with U:3
     rc |= expect_true("SG077 remains", strstr(det, "SG077[S]") != NULL);
     rc |= test_guard_replacement_and_policy_edges();
+    rc |= test_caps();
+    rc |= test_seq_eviction();
+    rc |= test_two_stamps_and_expiry();
+    rc |= test_add_refresh_and_last_delete();
+    rc |= test_sg_as_member();
 
     (void)errno;
     return rc;

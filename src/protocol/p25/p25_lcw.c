@@ -915,11 +915,12 @@ p25_lcw_handle_mfid90_opcode_04(p25_lcw_ctx* ctx) {
     uint32_t ga2 = (uint32_t)convert_bits_into_output(&ctx->bits[48], 16);
     DSD_FPRINTF(stderr, " MFID90 (Moto) Group Regroup Delete");
     DSD_FPRINTF(stderr, " SG: %u;", (unsigned)sg);
-    if (ga1 != 0 && ga1 != sg) {
+    // A Delete that lists the SG itself ends the whole patch (p25_patch_remove_wgid()).
+    if (ga1 != 0) {
         DSD_FPRINTF(stderr, " GA1: %u;", (unsigned)ga1);
         p25_patch_remove_wgid(ctx->state, (int)sg, (int)ga1);
     }
-    if (ga2 != 0 && ga2 != sg) {
+    if (ga2 != 0) {
         DSD_FPRINTF(stderr, " GA2: %u;", (unsigned)ga2);
         p25_patch_remove_wgid(ctx->state, (int)sg, (int)ga2);
     }

@@ -1859,7 +1859,8 @@ main(void) {
         }
     }
     assert(clear_patch_idx >= 0);
-    s19k.p25_patch_last_update[clear_patch_idx] = time(NULL) - 60;
+    // 60 s of control-channel listening with no refresh: the KEY=0 context is no longer current.
+    s19k.p25_patch_listen_s += 60.0;
     p25_sm_event(&ctx19k, &o19k, &s19k, &duplicate_regroup_encrypted);
     assert(ctx19k.slots[0].enc_override_clear == 0);
     assert(s19k.p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);

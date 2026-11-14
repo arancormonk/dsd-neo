@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <dsd-neo/app_control/p25_network.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -35,21 +36,45 @@ main(void) {
     assert(strcmp(n[1].cfva_text, "?") == 0);
     s.p25_nb_count = 1000000;
     assert(dsd_app_p25_neighbors(&s, n, 2) == 2);
-    dsd_app_p25_patch p[8];
+    dsd_app_p25_patch p[DSD_P25_PATCH_MAX];
     s.p25_patch_count = 8;
     s.p25_patch_sgid[7] = 123;
     s.p25_patch_active[7] = 1;
     s.p25_patch_wgid_count[7] = 255;
     s.p25_patch_wgid[7][0] = 42;
-    assert(dsd_app_p25_patches(&s, p, 8) == 1);
-    assert(p[0].sgid == 123 && p[0].group_count == 8 && p[0].groups[0] == 42);
-    s.p25_patch_last_update[7] = time(NULL) - 60;
-    assert(dsd_app_p25_patches(&s, p, 8) == 0);
+    assert(dsd_app_p25_patches(&s, p, DSD_P25_PATCH_MAX) == 1);
+    assert(p[0].sgid == 123 && p[0].group_count == DSD_P25_PATCH_GROUP_MAX && p[0].groups[0] == 42);
+    s.p25_patch_listen_s = 60.0; // 60 s of control-channel listening without a refresh
+    assert(dsd_app_p25_patches(&s, p, DSD_P25_PATCH_MAX) == 0);
     assert(s.p25_patch_active[7] == 1); // Snapshot must not be swept in place.
-    s.p25_patch_last_update[7] = time(NULL);
-    assert(dsd_app_p25_patches(&s, p, 8) == 1);
+    s.p25_patch_seen_listen_s[7] = 60.0;
+    assert(dsd_app_p25_patches(&s, p, DSD_P25_PATCH_MAX) == 1);
+    assert(p[0].group_count == 0 && p[0].radio_count == 0); // members not current: the row shows no lists
+    assert(s.p25_patch_wgid_count[7] == 255);               // ... and the snapshot keeps them
     s.p25_patch_active[7] = 0;
-    assert(dsd_app_p25_patches(&s, p, 8) == 0);
+    assert(dsd_app_p25_patches(&s, p, DSD_P25_PATCH_MAX) == 0);
+    // A full table: 16 rows with 32 groups and 16 radios each, most recently refreshed first.
+    DSD_MEMSET(&s, 0, sizeof(s));
+    for (int i = 0; i < DSD_P25_PATCH_MAX; i++) {
+        for (int k = 0; k < DSD_P25_PATCH_GROUP_MAX; k++) {
+            p25_patch_add_wgid(&s, 1400 + (i * 100), 1401 + (i * 100) + k);
+        }
+        for (int k = 0; k < DSD_P25_PATCH_RADIO_MAX; k++) {
+            p25_patch_add_wuid(&s, 1400 + (i * 100), (uint32_t)(70001 + (i * 100) + k));
+        }
+    }
+    p25_patch_update(&s, 1400, 1, 1); // the first patch named again: it moves to the top
+    assert(dsd_app_p25_patches(&s, p, DSD_P25_PATCH_MAX) == DSD_P25_PATCH_MAX);
+    assert(p[0].sgid == 1400 && p[1].sgid == 1400 + ((DSD_P25_PATCH_MAX - 1) * 100));
+    assert(p[DSD_P25_PATCH_MAX - 1].sgid == 1500);
+    for (int i = 0; i < DSD_P25_PATCH_MAX; i++) {
+        assert(p[i].group_count == DSD_P25_PATCH_GROUP_MAX && p[i].radio_count == DSD_P25_PATCH_RADIO_MAX);
+        assert(p[i].groups[DSD_P25_PATCH_GROUP_MAX - 1] == p[i].sgid + DSD_P25_PATCH_GROUP_MAX);
+        assert(p[i].radios[DSD_P25_PATCH_RADIO_MAX - 1]
+               == (uint32_t)(70000 + (p[i].sgid - 1400) + DSD_P25_PATCH_RADIO_MAX));
+    }
+    assert(dsd_app_p25_patches(&s, p, 3) == 3 && p[0].sgid == 1400);
+    DSD_MEMSET(&s, 0, sizeof(s));
     dsd_app_p25_affiliation a[2];
     s.p25_ga_rid[0] = 1; // Incomplete record excluded.
     s.p25_ga_rid[511] = 99;
@@ -80,8 +105,8 @@ main(void) {
     assert(dsd_app_p25_neighbors(held, n, 2) == 1 && n[0].is_candidate && n[0].is_current_cc);
     assert(dsd_app_p25_affiliated_rids(held, a, 2) == 1 && a[0].rid == 12345);
     assert(dsd_app_p25_group_affiliations(held, a, 2) == 1 && a[0].tg == 77);
-    assert(dsd_app_p25_patches(held, p, 8) == 1 && p[0].groups[0] == 77 && p[0].radios[0] == 12345);
-    assert(dsd_app_p25_patches(&s, p, 8) == 0);
+    assert(dsd_app_p25_patches(held, p, DSD_P25_PATCH_MAX) == 1 && p[0].groups[0] == 77 && p[0].radios[0] == 12345);
+    assert(dsd_app_p25_patches(&s, p, DSD_P25_PATCH_MAX) == 0);
     dsd_state_ext_free_all(&s);
     return 0;
 }

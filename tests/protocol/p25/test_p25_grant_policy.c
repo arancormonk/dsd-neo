@@ -10,6 +10,7 @@
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -272,6 +273,33 @@ main(void) {
                                    .svc_bits = 0x00,
                                    .is_group = 1});
     rc |= expect_true("patch no policy match blocked by allowlist", st.p25_sm_tune_count == before);
+
+    // The grant path reads every current member: a 9th and a 32nd member (past the old 8-entry list) satisfy the
+    // allow-list for their supergroup.
+    for (int sized = 0; sized < 2; sized++) {
+        const int member_count = sized == 0 ? 9 : DSD_P25_PATCH_GROUP_MAX;
+        const int sg = 4600 + (sized * 100);
+        for (int k = 1; k <= member_count; k++) {
+            p25_patch_add_wgid(&st, sg, sg + k);
+        }
+        rc |= expect_true("seed last patch member allow",
+                          seed_exact(&st, (uint32_t)(sg + member_count), "A", "PATCH-LAST", 0, 0) == 0);
+        before = st.p25_sm_tune_count;
+        opts.trunk_is_tuned = 0;
+        p25_sm_event(p25_sm_get_ctx(), &opts, &st,
+                     &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
+                                       .slot = -1,
+                                       .channel = ch,
+                                       .tg = sg,
+                                       .src = 2600,
+                                       .svc_bits = 0x00,
+                                       .is_group = 1});
+        rc |= expect_true(sized == 0 ? "patch 9th member allowlist tunes supergroup"
+                                     : "patch 32nd member allowlist tunes supergroup",
+                          st.p25_sm_tune_count == before + 1);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
+        mark_cc_reacquired(&st);
+    }
 
     // A user lockout of a patched supergroup is final. In blacklist mode every
     // unlisted member is allowed, so a member reprieve would let almost any

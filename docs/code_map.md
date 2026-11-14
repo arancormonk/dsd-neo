@@ -3164,6 +3164,18 @@ suite runs under this compiler.
   in its open, so only startup opens one. `dsd_audio_path_input_kind()` is `-i`'s extension rule. The switch lives in
   its own object file so a link-time wrap of `openAudioInput()` reaches it. Tests: `CORE_AUDIO_INPUT_SWITCH`,
   `CORE_AUDIO_OPEN_INPUT`.
+- P25 patch table state (`dsd_state::p25_patch_*`, `<dsd-neo/core/p25_patch.h>`, `src/core/util/p25_patch_state.c`):
+  the caps (`DSD_P25_PATCH_MAX` 16 supergroups, `DSD_P25_PATCH_GROUP_MAX` 32 groups and `DSD_P25_PATCH_RADIO_MAX` 16
+  radios each) and freshness on a per-system listening clock: `dsd_p25_patch_listen_note()` adds the gap between two
+  CRC-good control-channel PDUs only when it is at most 0.25 s, and `dsd_p25_patch_listen_break()` makes the next note
+  start afresh. A row is current while its supergroup was named (seen stamp) within `DSD_P25_PATCH_TTL_SECONDS` of
+  listening; its member lists and KEY/ALG/SSN context only while a membership message (members stamp) was. Readers
+  take a const state and never mutate it; the writers (`src/protocol/p25/p25_patch.c`) expire members that are not
+  current before they change an entry. A per-entry sequence (`p25_patch_seq`) orders display and eviction (an inactive
+  slot, then one not seen-current, then the lowest sequence); `p25_patch_last_update` is only the decode-time display
+  stamp. The table records its owner (`p25_patch_owner_*`), and the trunk-scan snapshot carries the table with its
+  clock, sequence counter and owner (a restore breaks the clock's continuity). Tests: `CORE_P25_PATCH_STATE`,
+  `P25_PATCH_TRACKING`, `P25_MFID90_GRG`, `APP_CONTROL_P25_NETWORK`.
 - Received identity record (`dsd_state::rx_id`, `<dsd-neo/core/received_identity.h>`,
   `src/core/util/received_identity.c`): the system identity the carrier being decoded sent, kept apart from the decoder
   state that decoding needs (the Phase 2 seed, control channel anchors and return hints, a `--tetra-net` preset, values

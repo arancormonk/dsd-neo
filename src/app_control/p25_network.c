@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <dsd-neo/app_control/p25_network.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
-#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 
 /* Stable insertion into a small index list keeps equal timestamps deterministic. */
@@ -75,40 +75,55 @@ dsd_app_p25_neighbors(const dsd_state* state, dsd_app_p25_neighbor* out, int cap
     return n;
 }
 
+/* Stable insertion by recency (smaller sequence age first) keeps equal ages deterministic. */
+static void
+insert_by_age(int* indices, uint32_t* ages, int n, int index, uint32_t age) {
+    int pos = n;
+    while (pos > 0 && ages[pos - 1] > age) {
+        indices[pos] = indices[pos - 1];
+        ages[pos] = ages[pos - 1];
+        --pos;
+    }
+    indices[pos] = index;
+    ages[pos] = age;
+}
+
+static void
+copy_patch_row(const dsd_state* state, int k, dsd_app_p25_patch* r) {
+    DSD_MEMSET(r, 0, sizeof(*r));
+    r->sgid = state->p25_patch_sgid[k];
+    r->is_patch = state->p25_patch_is_patch[k];
+    r->last_seen = state->p25_patch_last_update[k];
+    // A row lasts while its SG is named; its member lists only while a membership message keeps them current.
+    if (!dsd_p25_patch_members_current(state, k)) {
+        return;
+    }
+    const uint8_t groups = state->p25_patch_wgid_count[k];
+    const uint8_t radios = state->p25_patch_wuid_count[k];
+    r->group_count = groups > DSD_P25_PATCH_GROUP_MAX ? DSD_P25_PATCH_GROUP_MAX : groups;
+    r->radio_count = radios > DSD_P25_PATCH_RADIO_MAX ? DSD_P25_PATCH_RADIO_MAX : radios;
+    DSD_MEMCPY(r->groups, state->p25_patch_wgid[k], r->group_count * sizeof(r->groups[0]));
+    DSD_MEMCPY(r->radios, state->p25_patch_wuid[k], r->radio_count * sizeof(r->radios[0]));
+}
+
 int
 dsd_app_p25_patches(const dsd_state* state, dsd_app_p25_patch* out, int capacity) {
     if (!state || !out || capacity <= 0) {
         return 0;
     }
-    const time_t now = dsd_decode_time();
-    int indices[8];
-    time_t times[8];
+    int indices[DSD_P25_PATCH_MAX];
+    uint32_t ages[DSD_P25_PATCH_MAX];
     int n = 0;
-    for (int i = 0; i < state->p25_patch_count && i < 8; ++i) {
-        // Match p25_patch.c'state 20-second announcement lifetime without its
-        // terminal formatter'state in-place stale sweep: this state is a snapshot.
-        const time_t seen = state->p25_patch_last_update[i];
-        if (seen > 0 && difftime(now, seen) > 20.0) {
-            continue;
-        }
-        if (state->p25_patch_active[i] && state->p25_patch_sgid[i]) {
-            insert(indices, times, n++, i, state->p25_patch_last_update[i]);
+    for (int i = 0; i < state->p25_patch_count && i < DSD_P25_PATCH_MAX; ++i) {
+        if (state->p25_patch_active[i] && state->p25_patch_sgid[i] && dsd_p25_patch_entry_seen_current(state, i)) {
+            insert_by_age(indices, ages, n++, i, dsd_p25_patch_seq_age(state, i));
         }
     }
     if (n > capacity) {
         n = capacity;
     }
     for (int i = 0; i < n; ++i) {
-        int k = indices[i];
-        dsd_app_p25_patch* r = &out[i];
-        DSD_MEMSET(r, 0, sizeof(*r));
-        r->sgid = state->p25_patch_sgid[k];
-        r->is_patch = state->p25_patch_is_patch[k];
-        r->last_seen = state->p25_patch_last_update[k];
-        r->group_count = state->p25_patch_wgid_count[k] > 8 ? 8 : state->p25_patch_wgid_count[k];
-        r->radio_count = state->p25_patch_wuid_count[k] > 8 ? 8 : state->p25_patch_wuid_count[k];
-        DSD_MEMCPY(r->groups, state->p25_patch_wgid[k], r->group_count * sizeof(r->groups[0]));
-        DSD_MEMCPY(r->radios, state->p25_patch_wuid[k], r->radio_count * sizeof(r->radios[0]));
+        copy_patch_row(state, indices[i], &out[i]);
     }
     return n;
 }

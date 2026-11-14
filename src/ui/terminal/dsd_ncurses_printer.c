@@ -41,6 +41,7 @@
 #include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/source_alias.h>
@@ -3234,7 +3235,8 @@ ui_render_call_info_patches(const dsd_state* state) {
     // If any P25 patches are active, show them in wrapped columns (3 per line)
     // to avoid overflowing the Call Info width (similar to Channels layout).
     {
-        char patch_line[192] = {0};
+        // Room for every table entry, each token at most one 64-character column.
+        char patch_line[DSD_P25_PATCH_MAX * 64] = {0};
         int n = p25_patch_compose_details(state, patch_line, sizeof patch_line);
         if (n > 0) {
             char tokens[48][64];

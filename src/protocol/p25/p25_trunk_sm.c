@@ -11,6 +11,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
@@ -1311,7 +1312,8 @@ p25_grant_apply_planned_release(const p25_grant_eval_ctx_t* eval_ctx, uint32_t t
 static int
 p25_grant_eval_group_policy(const dsd_opts* opts, const dsd_state* state, const p25_sm_event_t* ev,
                             const p25_grant_eval_ctx_t* eval_ctx, dsd_tg_policy_decision* out_decision) {
-    uint16_t members[8] = {0};
+    uint16_t members[DSD_P25_PATCH_GROUP_MAX] = {0};
+    // The collector returns how many members it wrote, never more than the buffer holds.
     int member_count =
         p25_patch_collect_active_wgids(state, eval_ctx->tg, members, sizeof(members) / sizeof(members[0]));
     dsd_tg_policy_decision best;

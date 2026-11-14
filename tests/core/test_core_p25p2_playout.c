@@ -935,7 +935,7 @@ test_patch_change_retakes_the_verdict(void) {
         g_state.p25_p2_audio_allowed[1] = 0;
         burst(0, 0, DSD_P25P2_BURST_4V, 1000);
         if (stale) {
-            g_state.p25_patch_last_update[0] = dsd_decode_time() - 60;
+            g_state.p25_patch_listen_s += 60.0; // 60 s of control-channel listening with no refresh
         } else {
             g_state.p25_patch_wgid_count[0] = 0;
         }
@@ -978,7 +978,7 @@ test_gate_decision_keeps_its_key(void) {
     rc |= expect_int("the gate allows the patched call",
                      dsd_p25p2_decode_audio_allowed_verdict(&g_opts, &g_state, 0, 0x80, &decision, &decision_valid), 1);
     rc |= expect_int("and hands back its decision", decision_valid, 1);
-    g_state.p25_patch_last_update[0] = dsd_decode_time() - 60;
+    g_state.p25_patch_listen_s += 60.0; // 60 s of control-channel listening with no refresh
     g_serial++;
     for (int f = 0; f < 4; f++) {
         for (int i = 0; i < 160; i++) {
@@ -1528,7 +1528,7 @@ __wrap_dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* 
     const int rc = __real_dsd_tg_policy_evaluate_group_call(opts, state, tg, src, encrypted, data_call, out);
     if (g_stale_patch_after_evaluation) {
         g_stale_patch_after_evaluation = 0;
-        g_state.p25_patch_last_update[0] = dsd_decode_time() - 60;
+        g_state.p25_patch_listen_s += 60.0; // 60 s of control-channel listening with no refresh
     }
     return rc;
 }

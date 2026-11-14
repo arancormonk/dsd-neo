@@ -646,8 +646,9 @@ main(void) {
     }
 
     /*
-     * Motorola LCW regroup add/delete carries two patched talkgroups.  Treat
-     * zero and supergroup-as-member as absent, matching sdrtrunk's LCW model.
+     * Motorola LCW regroup add/delete carries two patched talkgroups. Zero is
+     * absent; the supergroup listed as a member is never added, and a Delete
+     * that lists it ends the whole patch.
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
@@ -674,12 +675,24 @@ main(void) {
         set_bits_msb(lcw, 8, 8, 0x90);
         set_bits_msb(lcw, 16, 16, 0x0700);
         set_bits_msb(lcw, 32, 16, 0x0101);
-        set_bits_msb(lcw, 48, 16, 0x0700);
 
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
 
         rc |= expect_true("MFID90_lcw_regroup_delete_one", st.p25_patch_wgid_count[0] == 1);
         rc |= expect_true("MFID90_lcw_regroup_delete_keeps_other", st.p25_patch_wgid[0][0] == 0x0202);
+        rc |= expect_true("MFID90_lcw_regroup_delete_keeps_patch", st.p25_patch_active[0] == 1);
+
+        // A Delete that lists the SG itself ends the whole patch (OP25's rule), whatever else it lists.
+        DSD_MEMSET(lcw, 0, sizeof lcw);
+        set_bits_msb(lcw, 0, 8, 0x04);
+        set_bits_msb(lcw, 8, 8, 0x90);
+        set_bits_msb(lcw, 16, 16, 0x0700);
+        set_bits_msb(lcw, 48, 16, 0x0700);
+
+        p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
+
+        rc |= expect_true("MFID90_lcw_regroup_delete_sg_ends_patch", st.p25_patch_active[0] == 0);
+        rc |= expect_true("MFID90_lcw_regroup_delete_sg_clears_members", st.p25_patch_wgid_count[0] == 0);
     }
 
     /*
