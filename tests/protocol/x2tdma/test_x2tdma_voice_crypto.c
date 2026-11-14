@@ -9,7 +9,9 @@
  * neither the speaker, the static WAV, the per-call WAV nor MBE capture, and must not count as decodable for the
  * voice chain. A superframe signals its encryption only in its second burst, after the first burst's three frames:
  * those frames take the previous superframe's verdict of the same transmission. In its first superframe they are
- * unknown: never decodable, and heard only where clear and encrypted audio both would be.
+ * unknown: never decodable, and heard only where clear and encrypted audio both would be. The first superframe on a
+ * carrier reads its first burst past without decoding it, until a later sync word corroborates the superframe as
+ * X2-TDMA (one sync word on noise is no call), so its opening frames reach no output at all.
  *
  * The decoder reads its dibits through GNU ld --wrap seams (get_dibit_and_analog_signal, skipDibit), like the YSF
  * vocoder tests, so the real core library links unchanged.
@@ -155,6 +157,15 @@ push_signalling(int j, sf_signal sig) {
     }
 }
 
+/* The other timeslot's sync word: a data burst's, as an idle timeslot on a site carries. It is what corroborates the
+   superframe as X2-TDMA, so its voice plays (processX2TDMAvoice()). */
+static void
+push_other_slot_sync(void) {
+    for (int i = 0; i < 24; i++) {
+        push(X2TDMA_BS_DATA_SYNC[i] == '3' ? 2 : 0);
+    }
+}
+
 /* One voice superframe on timeslot @p slot: the first burst read back from the frame sync's buffer (the other slot's
    half, the CACH, a frame and a half, the voice sync), the rest from the stream, with the other timeslot's halves and
    sync words in between. */
@@ -179,7 +190,8 @@ build_superframe(int slot, sf_signal sig) {
         }
         push_ambe(18, 18);
         push_ambe(0, 36);
-        push_zeros(12 + 54 + 24); /* the other timeslot's CACH, half burst and sync */
+        push_zeros(12 + 54); /* the other timeslot's CACH and half burst */
+        push_other_slot_sync();
         if (j == 5) {
             push_zeros(54 + 12 + 54);
         }
@@ -379,12 +391,13 @@ open_rig(const rig_config* cfg, int reverse_mute, int mute_encrypted) {
     return 0;
 }
 
-/* What a frame must have reached: every output when @p audible, none otherwise. */
+/* What frame @p f, the voice chain's run @p run of the superframe, must have reached: every output when @p audible,
+   none otherwise. */
 static int
-expect_frame(const char* tag, const rig_config* cfg, int slot, int f, int audible, int decodable) {
-    const frame_seen* seen = &g_seen[f];
+expect_frame(const char* tag, const rig_config* cfg, int slot, int f, int run, int audible, int decodable) {
+    const frame_seen* seen = &g_seen[run];
     const outputs* a = &seen->before;
-    const outputs* b = &g_seen[f + 1].before;
+    const outputs* b = &g_seen[run + 1].before;
     const int spoke = b->speaker > a->speaker;
     const int recorded = cfg->static_wav ? b->static_wav > a->static_wav : b->wav[slot] > a->wav[slot];
     const int captured = b->capture > a->capture;
@@ -504,17 +517,23 @@ run_superframe(const char* tag, const rig_config* cfg, const superframe_step* st
     g_seen_count = 0;
     g_stream_overrun = 0;
     state->dibit_buf_p = g_readback + 144;
+    /* Until a superframe on the carrier is corroborated, its first burst is read past: the chain runs the rest. */
+    const int corroborated =
+        state->x2tdma_corroborated != 0U && state->x2tdma_corroborated_carrier_seq == state->carrier_seq;
+    const int read_past = corroborated ? 0 : OPENING;
     processX2TDMAvoice(g_rig.opts, state);
-    g_seen[SF_FRAMES].before = sample_outputs();
+    if (g_seen_count <= SF_FRAMES) {
+        g_seen[g_seen_count].before = sample_outputs();
+    }
 
     int rc = expect_step_event(tag, step, transmission_before, epoch_before);
-    if (g_seen_count != SF_FRAMES || g_stream_overrun || g_stream_pos != g_stream_len) {
+    if (g_seen_count != SF_FRAMES - read_past || g_stream_overrun || g_stream_pos != g_stream_len) {
         DSD_FPRINTF(stderr, "%s (%s): %d chain runs, stream %d of %d read%s\n", tag, cfg->name, g_seen_count,
                     g_stream_pos, g_stream_len, g_stream_overrun ? ", overrun" : "");
         return 1;
     }
     const int encrypted = step->sig != SF_CLEAR;
-    for (int f = 0; f < SF_FRAMES; f++) {
+    for (int f = read_past; f < SF_FRAMES; f++) {
         int audible;
         int decodable;
         if (f >= OPENING) {
@@ -527,7 +546,7 @@ run_superframe(const char* tag, const rig_config* cfg, const superframe_step* st
             audible = plays(0, user) && plays(1, user);
             decodable = 0;
         }
-        rc |= expect_frame(tag, cfg, step->slot, f, audible, decodable);
+        rc |= expect_frame(tag, cfg, step->slot, f, f - read_past, audible, decodable);
     }
     return rc;
 }
