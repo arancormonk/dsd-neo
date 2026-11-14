@@ -8,6 +8,7 @@
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
@@ -1084,13 +1085,15 @@ dsd_engine_receiver_hz(const dsd_opts* opts, const dsd_state* state) {
 
 /* After an accepted tune from @p from_hz (dsd_engine_receiver_hz() before it) to @p freq: when the tune moved the
    receiver off its carrier, the per-call audio no call owns closes, so the next carrier's never joins it (issue #809
-   B4). Only that: a call the move carries over as one (a TETRA reallocation) is active, and its recording closes at its
-   own commit. A tune to the carrier the receiver is on (a grant on a DMR composite control channel) moves nothing and
-   closes nothing. */
+   B4), and the P25 patch table's listening clock breaks continuity, so the time away from the control channel, however
+   short, never counts as listening to it. Only that: a call the move carries over as one (a TETRA reallocation) is
+   active, and its recording closes at its own commit; the patch table is the system's, which a trunk move keeps. A tune
+   to the carrier the receiver is on (a grant on a DMR composite control channel) moves nothing and closes nothing. */
 static void
 dsd_engine_tune_leaves_carrier(dsd_opts* opts, dsd_state* state, uint32_t from_hz, long int freq) {
     if ((long int)from_hz != freq) {
         dsd_event_flush_orphan_recordings(opts, state);
+        dsd_p25_patch_listen_break(state);
     }
 }
 

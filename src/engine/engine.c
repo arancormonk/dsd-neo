@@ -20,6 +20,7 @@
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive.h>
@@ -3665,6 +3666,8 @@ carrier_boundary_stream_gap(dsd_opts* opts, dsd_state* state) {
     dmr_confidence_reset(state);
     dsd_engine_forget_carrier_decoding(opts, state);
     dsd_analog_rx_reset(state);
+    /* The same carrier, so the same system's patches: only the listening clock's continuity breaks. */
+    dsd_p25_patch_listen_break(state);
     state->carrier_seq++;
     dsd_state_note_carrier_change(state);
 }
@@ -3722,6 +3725,9 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
        DMR RAS evidence. */
     dsd_rxid_reset(state);
     dmr_ras_reset(state);
+    /* Nor are its P25 patches the next carrier's: a manual tune, a new source or input, a scan step or a replay retune
+       names no system, so the table, its owner and its listening clock start over. */
+    dsd_p25_patch_clear_all(state);
     /* Nor does what it said of its NXDN system type: a Type-D repeater tuned next must not read as RTCH_C. */
     dsd_nxdn_forget_carrier_system(state);
     state->carrier_seq++;
@@ -3947,6 +3953,8 @@ dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
     no_carrier_clear_stale_follow_state_if_needed(opts, state, now);
     no_carrier_reset_ysf_and_dstar_strings(state);
     no_carrier_reset_m17_and_sample_buffers(state);
+    // Reception stopped: the next control-channel PDU starts the patch listening clock afresh.
+    dsd_p25_patch_listen_break(state);
 }
 
 void

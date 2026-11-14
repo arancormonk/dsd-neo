@@ -122,11 +122,8 @@ typedef struct {
     long int p25_conventional_grant_freq[2];
     uint32_t p25_conventional_grant_target[2];
     long int trunk_vc_freq[2];
-    time_t p25_patch_last_update[DSD_P25_PATCH_MAX];
-    /* The target's patch table freshness: its listening clock, stamps and recency travel with the table. */
-    double p25_patch_listen_s;
-    double p25_patch_seen_listen_s[DSD_P25_PATCH_MAX];
-    double p25_patch_members_listen_s[DSD_P25_PATCH_MAX];
+    /* The target's patch table, with its listening clock, stamps, recency and owner. */
+    dsd_p25_patch_snapshot p25_patches;
     long int trunk_lcn_freq[DSD_TRUNK_LCN_EMBEDDED];
     long int* trunk_lcn_freq_ext;
     size_t trunk_lcn_freq_ext_count;
@@ -149,7 +146,6 @@ typedef struct {
     int samplesPerSymbol;
     int symbolCenter;
     int rf_mod;
-    int p25_patch_count;
     int p25_aff_count;
     int p25_ga_count;
     int p25_nb_count;
@@ -173,18 +169,10 @@ typedef struct {
     char dmr_site_parms[200];
     char dmr_branding[20];
     char dmr_branding_sub[80];
-    uint32_t p25_patch_wuid[DSD_P25_PATCH_MAX][DSD_P25_PATCH_RADIO_MAX];
-    uint32_t p25_patch_seq[DSD_P25_PATCH_MAX];
-    uint32_t p25_patch_seq_counter;
-    uint32_t p25_patch_owner_wacn;
     uint32_t p25_aff_rid[256];
     uint32_t p25_ga_rid[512];
     uint16_t p25_prot_kid;
     int16_t p25_sys_time_offset;
-    uint16_t p25_patch_sgid[DSD_P25_PATCH_MAX];
-    uint16_t p25_patch_key[DSD_P25_PATCH_MAX];
-    uint16_t p25_patch_wgid[DSD_P25_PATCH_MAX][DSD_P25_PATCH_GROUP_MAX];
-    uint16_t p25_patch_owner_sysid;
     uint16_t p25_ga_tg[512];
     uint8_t p2_cc_verified; /* p2_cc proven on the target's carrier (issue #575) */
     int p2_proven_nac;      /* the NAC the latest Phase 2 proof there named (issue #802) */
@@ -193,14 +181,6 @@ typedef struct {
     uint8_t p25_sys_time_valid;
     uint8_t p25_sys_time_offset_valid;
     uint8_t p25_cc_cache_loaded;
-    uint8_t p25_patch_is_patch[DSD_P25_PATCH_MAX];
-    uint8_t p25_patch_active[DSD_P25_PATCH_MAX];
-    uint8_t p25_patch_wgid_count[DSD_P25_PATCH_MAX];
-    uint8_t p25_patch_wuid_count[DSD_P25_PATCH_MAX];
-    uint8_t p25_patch_alg[DSD_P25_PATCH_MAX];
-    uint8_t p25_patch_ssn[DSD_P25_PATCH_MAX];
-    uint8_t p25_patch_key_valid[DSD_P25_PATCH_MAX];
-    uint8_t p25_patch_owner_known;
     uint8_t dmr_confidence_locked;
     dsd_call_context_snapshot call_context;
     Event_History event_current[DSD_CALL_STATE_SLOT_COUNT];
@@ -2230,63 +2210,6 @@ trunk_scan_restore_p25_metadata_snapshot(dsd_state* state, const dsd_trunk_scan_
 }
 
 static void
-trunk_scan_save_p25_patch_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
-    snapshot->p25_patch_count = state->p25_patch_count;
-    DSD_MEMCPY(snapshot->p25_patch_sgid, state->p25_patch_sgid, sizeof(snapshot->p25_patch_sgid));
-    DSD_MEMCPY(snapshot->p25_patch_is_patch, state->p25_patch_is_patch, sizeof(snapshot->p25_patch_is_patch));
-    DSD_MEMCPY(snapshot->p25_patch_active, state->p25_patch_active, sizeof(snapshot->p25_patch_active));
-    DSD_MEMCPY(snapshot->p25_patch_last_update, state->p25_patch_last_update, sizeof(snapshot->p25_patch_last_update));
-    DSD_MEMCPY(snapshot->p25_patch_wgid_count, state->p25_patch_wgid_count, sizeof(snapshot->p25_patch_wgid_count));
-    DSD_MEMCPY(snapshot->p25_patch_wgid, state->p25_patch_wgid, sizeof(snapshot->p25_patch_wgid));
-    DSD_MEMCPY(snapshot->p25_patch_wuid_count, state->p25_patch_wuid_count, sizeof(snapshot->p25_patch_wuid_count));
-    DSD_MEMCPY(snapshot->p25_patch_wuid, state->p25_patch_wuid, sizeof(snapshot->p25_patch_wuid));
-    DSD_MEMCPY(snapshot->p25_patch_key, state->p25_patch_key, sizeof(snapshot->p25_patch_key));
-    DSD_MEMCPY(snapshot->p25_patch_alg, state->p25_patch_alg, sizeof(snapshot->p25_patch_alg));
-    DSD_MEMCPY(snapshot->p25_patch_ssn, state->p25_patch_ssn, sizeof(snapshot->p25_patch_ssn));
-    DSD_MEMCPY(snapshot->p25_patch_key_valid, state->p25_patch_key_valid, sizeof(snapshot->p25_patch_key_valid));
-    snapshot->p25_patch_listen_s = state->p25_patch_listen_s;
-    DSD_MEMCPY(snapshot->p25_patch_seen_listen_s, state->p25_patch_seen_listen_s,
-               sizeof(snapshot->p25_patch_seen_listen_s));
-    DSD_MEMCPY(snapshot->p25_patch_members_listen_s, state->p25_patch_members_listen_s,
-               sizeof(snapshot->p25_patch_members_listen_s));
-    DSD_MEMCPY(snapshot->p25_patch_seq, state->p25_patch_seq, sizeof(snapshot->p25_patch_seq));
-    snapshot->p25_patch_seq_counter = state->p25_patch_seq_counter;
-    snapshot->p25_patch_owner_wacn = state->p25_patch_owner_wacn;
-    snapshot->p25_patch_owner_sysid = state->p25_patch_owner_sysid;
-    snapshot->p25_patch_owner_known = state->p25_patch_owner_known;
-}
-
-static void
-trunk_scan_restore_p25_patch_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
-    state->p25_patch_count = snapshot->p25_patch_count;
-    DSD_MEMCPY(state->p25_patch_sgid, snapshot->p25_patch_sgid, sizeof(state->p25_patch_sgid));
-    DSD_MEMCPY(state->p25_patch_is_patch, snapshot->p25_patch_is_patch, sizeof(state->p25_patch_is_patch));
-    DSD_MEMCPY(state->p25_patch_active, snapshot->p25_patch_active, sizeof(state->p25_patch_active));
-    DSD_MEMCPY(state->p25_patch_last_update, snapshot->p25_patch_last_update, sizeof(state->p25_patch_last_update));
-    DSD_MEMCPY(state->p25_patch_wgid_count, snapshot->p25_patch_wgid_count, sizeof(state->p25_patch_wgid_count));
-    DSD_MEMCPY(state->p25_patch_wgid, snapshot->p25_patch_wgid, sizeof(state->p25_patch_wgid));
-    DSD_MEMCPY(state->p25_patch_wuid_count, snapshot->p25_patch_wuid_count, sizeof(state->p25_patch_wuid_count));
-    DSD_MEMCPY(state->p25_patch_wuid, snapshot->p25_patch_wuid, sizeof(state->p25_patch_wuid));
-    DSD_MEMCPY(state->p25_patch_key, snapshot->p25_patch_key, sizeof(state->p25_patch_key));
-    DSD_MEMCPY(state->p25_patch_alg, snapshot->p25_patch_alg, sizeof(state->p25_patch_alg));
-    DSD_MEMCPY(state->p25_patch_ssn, snapshot->p25_patch_ssn, sizeof(state->p25_patch_ssn));
-    DSD_MEMCPY(state->p25_patch_key_valid, snapshot->p25_patch_key_valid, sizeof(state->p25_patch_key_valid));
-    state->p25_patch_listen_s = snapshot->p25_patch_listen_s;
-    DSD_MEMCPY(state->p25_patch_seen_listen_s, snapshot->p25_patch_seen_listen_s,
-               sizeof(state->p25_patch_seen_listen_s));
-    DSD_MEMCPY(state->p25_patch_members_listen_s, snapshot->p25_patch_members_listen_s,
-               sizeof(state->p25_patch_members_listen_s));
-    DSD_MEMCPY(state->p25_patch_seq, snapshot->p25_patch_seq, sizeof(state->p25_patch_seq));
-    state->p25_patch_seq_counter = snapshot->p25_patch_seq_counter;
-    state->p25_patch_owner_wacn = snapshot->p25_patch_owner_wacn;
-    state->p25_patch_owner_sysid = snapshot->p25_patch_owner_sysid;
-    state->p25_patch_owner_known = snapshot->p25_patch_owner_known;
-    /* The clock's previous reading belongs to the carrier the scan just left: the restored clock runs again only
-       from the next control-channel PDU heard here. */
-    dsd_p25_patch_listen_break(state);
-}
-
-static void
 trunk_scan_save_p25_catalog_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
     snapshot->p25_aff_count = state->p25_aff_count;
     DSD_MEMCPY(snapshot->p25_aff_rid, state->p25_aff_rid, sizeof(snapshot->p25_aff_rid));
@@ -2523,7 +2446,7 @@ trunk_scan_save_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapsh
     }
     trunk_scan_save_p25_identity_snapshot(state, snapshot);
     trunk_scan_save_p25_metadata_snapshot(state, snapshot);
-    trunk_scan_save_p25_patch_snapshot(state, snapshot);
+    dsd_p25_patch_snapshot_save(state, &snapshot->p25_patches);
     trunk_scan_save_p25_catalog_snapshot(state, snapshot);
     trunk_scan_save_p25_eval_snapshot(state, snapshot);
     trunk_scan_save_dmr_snapshot(state, snapshot);
@@ -2542,7 +2465,9 @@ trunk_scan_restore_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* sna
     dsd_state_trunk_lcn_replace_begin(state);
     trunk_scan_restore_p25_identity_snapshot(state, snapshot);
     trunk_scan_restore_p25_metadata_snapshot(state, snapshot);
-    trunk_scan_restore_p25_patch_snapshot(state, snapshot);
+    /* Breaks listening continuity: the clock's previous reading belongs to the carrier the scan just left, so the
+       restored clock runs again only from the next control-channel PDU heard here. */
+    dsd_p25_patch_snapshot_restore(state, &snapshot->p25_patches);
     trunk_scan_restore_p25_catalog_snapshot(state, snapshot);
     trunk_scan_restore_p25_eval_snapshot(state, snapshot);
     trunk_scan_restore_dmr_snapshot(state, snapshot);

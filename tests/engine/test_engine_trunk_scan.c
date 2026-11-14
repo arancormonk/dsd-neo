@@ -54,6 +54,7 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
+#include <dsd-neo/protocol/p25/p25_cc_activity.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -1898,6 +1899,86 @@ test_coordinator_idle_rotation_and_state_restore(void) {
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* @p count control-channel blocks 100 ms apart on the decode clock from @p start_ns (p25_sm_note_cc_activity(), the
+   CRC-good control block's mark). */
+static void
+hear_cc_blocks(dsd_state* state, uint64_t start_ns, int count) {
+    for (int i = 0; i < count; i++) {
+        dsd_decode_clock_test_set_ns(start_ns + ((uint64_t)i * 100000000ULL));
+        p25_sm_note_cc_activity(state);
+    }
+}
+
+/* Preservation (the snapshot carries the clock since the patch table moved onto it): a target's patch table and
+   listening clock sit unchanged while another target is received, and the restore breaks continuity, so the first
+   control-channel block back only stores its reading, however close it is to the last one heard before the switch. */
+static int
+test_target_patch_clock_survives_other_reception(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    static const uint64_t k_t0_ns = 3000000000000ULL;
+    dsd_decode_clock_use_test(k_t0_ns);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "patch clock: scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    (void)dsd_p25_patch_note_system(&state, 0xA1001U, 0x101U);
+    state.p25_patch_count = 1;
+    state.p25_patch_sgid[0] = 1400;
+    state.p25_patch_active[0] = 1;
+    state.p25_patch_wgid_count[0] = 1;
+    state.p25_patch_wgid[0][0] = 1401;
+    hear_cc_blocks(&state, k_t0_ns, 11); // 1.0 s of target 0's control channel
+    const double target0_clock = state.p25_patch_listen_s;
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_patch_count != 0) {
+        DSD_FPRINTF(stderr, "patch clock: target 1 did not start with an empty table\n");
+        test_rc = 1;
+    }
+    hear_cc_blocks(&state, k_t0_ns + 1100000000ULL, 6); // target 1 listens 0.5 s
+    if (fabs(state.p25_patch_listen_s - 0.5) > 1e-6) {
+        DSD_FPRINTF(stderr, "patch clock: target 1 listened %.6f s, want 0.5\n", state.p25_patch_listen_s);
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || fabs(state.p25_patch_listen_s - target0_clock) > 1e-9
+        || fabs(state.p25_patch_listen_last_m) > 1e-9 || state.p25_patch_count != 1
+        || state.p25_patch_wgid[0][0] != 1401 || state.p25_patch_owner_wacn != 0xA1001U) {
+        DSD_FPRINTF(stderr, "patch clock: target 0's table or clock changed while target 1 was received\n");
+        test_rc = 1;
+    }
+    /* 50 ms after target 1's last block: within the 0.25 s gap, but the restore broke continuity. */
+    hear_cc_blocks(&state, k_t0_ns + 1650000000ULL, 2);
+    if (fabs(state.p25_patch_listen_s - (target0_clock + 0.1)) > 1e-6) {
+        DSD_FPRINTF(stderr, "patch clock: target 0 resumed at %.6f s, want %.6f\n", state.p25_patch_listen_s,
+                    target0_clock + 0.1);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    dsd_decode_clock_use_system();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -24781,6 +24862,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_accepts_100_targets);
     rc |= run_with_default_tune_hook(test_parser_refuses_a_non_utf8_id);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
+    rc |= run_with_default_tune_hook(test_target_patch_clock_survives_other_reception);
     rc |= run_with_default_tune_hook(test_init_reads_the_list_spec);
     rc |= run_with_default_tune_hook(test_lists_load_in_order_and_rotate_over_the_lists_on);
     rc |= run_with_default_tune_hook(test_lists_load_errors_name_the_file);

@@ -174,12 +174,17 @@ Generated (do not edit/commit):
     not the code changed (an IDEN update a visit took before its network status is stamped with the code in force), so
     a hand-set `-X` code or an imported channel map comes back and nothing a visit learned reaches the next. The proof
     (`p2_cc_verified`) is never restored: the boundary cleared it, and a code proven on another carrier proves nothing
-    here. A channel map that moved gets a new `trunk_chan_map_seq`. `dsd_engine_signal_search_shutdown()` restores it
-    once a boundary has closed the reception; a decoder session that ends during a visit keeps the visit's code and
-    proof for the final call snapshots that follow, and `dsd_engine_cleanup()` then puts the session's back, unproven,
-    through `dsd_engine_signal_search_release_site()`, before the `--p25-bandplan-export` write, so no visited system's IDEN
-    tables reach the exported band plan. A session site that cannot be saved whole (its channel map's storage) refuses
-    the start. The coordinator also keeps the session's P25 Phase 2 code list (`p2_codes`, 16, most
+    here. A channel map that moved gets a new `trunk_chan_map_seq`. The P25 patch table is not part of the site: Start
+    saves the session's whole (`dsd_p25_patch_snapshot`, owner, listening clock and sequence counter with it), every
+    departure's boundary empties it, so each visit starts with an empty, unowned table and a voice-only visit to
+    another system naming the same supergroup number inherits neither the session's members nor its KEY=0, and only
+    the return to the session puts it back with the site (`search_return_site()`).
+    `dsd_engine_signal_search_shutdown()` restores both once a boundary has closed the reception; a decoder session
+    that ends during a visit keeps the visit's code and proof for the final call snapshots that follow, and
+    `dsd_engine_cleanup()` then puts the session's back, unproven, through `dsd_engine_signal_search_release_site()`,
+    before the `--p25-bandplan-export` write, so no visited system's IDEN tables reach the exported band plan. A
+    session site that cannot be saved whole (its channel map's storage) refuses the start. The coordinator also keeps
+    the session's P25 Phase 2 code list (`p2_codes`, 16, most
     recently confirmed first, a repeat moving to the front; Pause and Resume keep it, a new start begins empty):
     `dsd_engine_signal_search_p25p2_code()` (the runtime code hook) adds a code without a reserved field from any
     `dsd_p25p2_code_source` while a visit is receiving, and `dsd_engine_signal_search_p25p2_codes()` (the runtime codes
@@ -1008,7 +1013,8 @@ announcements, which resolve against whatever IDEN tables the state holds, the s
 site's protection, services, LRA and network-active broadcasts) is `dsd_p25_site_snapshot` in
 `src/engine/p25_site_snapshot.{c,h}`, which Signal search also saves once per session (see Signal search). Trunk scan
 keeps the session's hand-set flag across a restore, and keeps the code's proof, the NAC, the modulation and the call
-state in its own snapshot fields.
+state in its own snapshot fields, and the target's P25 patch table (entries, owner, listening clock, sequence counter)
+as a `dsd_p25_patch_snapshot`: another target's reception never moves it, and a restore breaks the clock's continuity.
 The one deliberate crossing is by provenance: when the parked target's WACN/SYS is known and another target's
 snapshot holds a P25 IDEN entry learned on that same WACN/SYS, the coordinator fills empty slots or replaces an
 untyped FDMA entry with a typed peer entry at trust 1 (`trunk_scan_share_peer_idens()`, TDMA first), and `dsd_engine_p25_bandplan_export()` in
@@ -3173,9 +3179,19 @@ suite runs under this compiler.
   take a const state and never mutate it; the writers (`src/protocol/p25/p25_patch.c`) expire members that are not
   current before they change an entry. A per-entry sequence (`p25_patch_seq`) orders display and eviction (an inactive
   slot, then one not seen-current, then the lowest sequence); `p25_patch_last_update` is only the decode-time display
-  stamp. The table records its owner (`p25_patch_owner_*`), and the trunk-scan snapshot carries the table with its
-  clock, sequence counter and owner (a restore breaks the clock's continuity). Tests: `CORE_P25_PATCH_STATE`,
-  `P25_PATCH_TRACKING`, `P25_MFID90_GRG`, `APP_CONTROL_P25_NETWORK`.
+  stamp. The clock advances only in `p25_sm_note_cc_activity()`, which `p25_sm_note_validated_cc()` runs for a TSBK, an
+  outbound MBT or an LCCH MAC whose CRC passed, never for a voice channel's signalling; it breaks at every departure:
+  each trunk tune that moves the receiver (`dsd_engine_tune_leaves_carrier()`), every carrier boundary, the no-carrier
+  reset and a trunk-scan or Signal search restore. So a receiver that only hears voice channels never ages its
+  patches by time (a Delete, a cancel or eviction ends them). The table belongs to one system:
+  `dsd_p25_patch_note_system()` runs wherever WACN/SYSID are decoded from a checked network status (TSBK, MBT, LC,
+  Phase 2 MAC) whatever the seed (`p2_hardset` included) or the voice-tuned gate, and in `p25_update_system_identity()`;
+  an unknown owner adopts the first identity, another system's empties the table (`dsd_p25_patch_clear_all()`). An
+  RFSS status names no WACN and changes no owner. `dsd_p25_patch_snapshot` keeps a system's whole table aside (owner,
+  clock and sequence counter with it; a restore breaks continuity): each trunk-scan target carries one, and Signal
+  search keeps the session's. Tests: `CORE_P25_PATCH_STATE`, `P25_PATCH_TRACKING`, `P25_MFID90_GRG`,
+  `P25_P1_TSBK_SEQUENCE`, `P25_P2_XCCH_HELPERS`, `P25_GRANT_POLICY`, `ENGINE_P25_PATCH_OWNER`,
+  `APP_CONTROL_P25_NETWORK`.
 - Received identity record (`dsd_state::rx_id`, `<dsd-neo/core/received_identity.h>`,
   `src/core/util/received_identity.c`): the system identity the carrier being decoded sent, kept apart from the decoder
   state that decoding needs (the Phase 2 seed, control channel anchors and return hints, a `--tetra-net` preset, values
@@ -10387,13 +10403,20 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
      tuner's, the DMR
      rest channel and branding, the NXDN site and channel plan) and the DMR grants' `trunk_vc_freq[]`.
   5. `state->carrier_seq` moves, so a decoder that buffered the left carrier's bursts drops them (see below).
+  With the received identity the P25 patch table goes too (`dsd_p25_patch_clear_all()`: entries, owner, listening
+  clock): a manual tune, a new source or input, a scan step or a replay retune names no system, so the next carrier
+  never inherits another system's members or KEY=0 (with trunking off a replay loses patch membership at each recorded
+  retune; the next Add restores it). A manual move that runs no boundary (a return to the control channel, a channel or
+  candidate cycle or a control channel selection under trunking: `ui_user_move_forgets_identity()`) empties it too;
+  trunk moves within a system keep it and only break its clock's continuity (`dsd_engine_tune_leaves_carrier()`).
 
   A stream gap (`DSD_CARRIER_BOUNDARY_STREAM_GAP`, issue #518 D5: a USB recovery, an rtl_tcp reconnect, or one a
   capture recorded) leaves no carrier and runs only what the gap cut (`carrier_boundary_stream_gap()`): the Phase 2
   playout takes the calls' verdicts, the calls end as on a sync loss, the DMR confirmation restarts
   (`dmr_confidence_reset()`: candidate, lock, voice gate, without the colour code
   `dsd_engine_forget_carrier_codes()` would take with it), `dsd_engine_forget_carrier_decoding()` runs, and the
-  carrier count moves with the carrier change noted. An analog call ends at its last accepted block, a candidate
+  carrier count moves with the carrier change noted; the P25 patch table stays, its listening clock's continuity broken.
+  An analog call ends at its last accepted block, a candidate
   unpublished (`dsd_engine_analog_call_end()`), and analog reception starts over as at a retune
   (`dsd_analog_rx_reset()`: the received tone, the tone policy's verdict, the monitor's audio chain and converter;
   issue #667 A3), whether or not the stream's generation moved with the gap. The codes, the received identity, the

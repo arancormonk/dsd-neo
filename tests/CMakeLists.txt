@@ -8908,6 +8908,37 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         NAME ENGINE_ANALOG_SCAN_CALLS
         COMMAND dsd-neo_test_engine_analog_scan_calls
     )
+    # The P25 patch table's listening clock and owner against the real engine: control-channel blocks advance the
+    # clock, trunk excursions, stream gaps and the no-carrier reset break its continuity, and every other carrier
+    # boundary, a manual return to the control channel among them, empties the table. A rigctl peer, which radio-off
+    # builds have too, stood in for by --wrap.
+    add_executable(
+        dsd-neo_test_engine_p25_patch_owner
+        engine/test_engine_p25_patch_owner.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_p25_patch_owner
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/app_control
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_p25_patch_owner
+        PRIVATE
+            "-Wl,--wrap=SetFreq"
+            "-Wl,--wrap=SetModulation"
+            "-Wl,--wrap=io_control_set_freq_tagged"
+            "-Wl,--start-group"
+            dsd-neo_app_control
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_P25_PATCH_OWNER
+        COMMAND dsd-neo_test_engine_p25_patch_owner
+    )
     # The engine loop's side of a gap in the radio stream (issue #518 D5): a frame it cuts
     # unwinds, and the stream-gap carrier boundary resets the decoding and keeps the carrier.
     # The gap reaches the decoder through the RTL symbol reader, which only a radio build has.
@@ -9141,6 +9172,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_scan_hooks.c
+    # A tune that leaves the carrier breaks the P25 patch table's listening clock.
+    ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_retune_regression
@@ -25756,6 +25789,8 @@ if(DSD_HAS_RADIO)
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search_protocol.c
         ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
+        # The session's P25 patch table, kept aside while the search visits other carriers.
+        ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
         ${PROJECT_SOURCE_DIR}/src/core/util/receive.c
         ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     )
@@ -25778,6 +25813,8 @@ if(DSD_HAS_RADIO)
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search_protocol.c
         ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
+        # The session's P25 patch table, kept aside while the search visits other carriers.
+        ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
         ${PROJECT_SOURCE_DIR}/src/core/util/receive.c
         ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     )

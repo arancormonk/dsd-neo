@@ -36,6 +36,7 @@
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive_types.h>
@@ -1466,12 +1467,14 @@ ui_rxid_guard_leave(int taken) {
 /* A tune the user asked for while trunking keeps the decoder's trunking state (it is not a carrier boundary), but the
    identity received before it is no longer this carrier's (D4: any user move clears it): the record starts over, after
    the calls the move ended took theirs, and what the frame sync holds buffered from the channel left heads no frame.
-   Under the tick guard, which the caller holds when @p guard_held. */
+   The P25 patch table goes as a user tune's carrier boundary empties it (dsd_engine_carrier_boundary()): the move names
+   no system. Under the tick guard, which the caller holds when @p guard_held. */
 static void
 ui_user_move_forgets_identity(dsd_state* state, int guard_held) {
     const int taken = ui_rxid_guard_enter(guard_held);
     dsd_rxid_reset(state);
     dmr_ras_reset(state);
+    dsd_p25_patch_clear_all(state);
     dsd_state_note_carrier_change(state);
     ui_rxid_guard_leave(taken);
 }
