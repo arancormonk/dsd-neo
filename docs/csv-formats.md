@@ -793,7 +793,8 @@ Important behavior:
 - `stream` decides whether a call's per-call WAV is exported to rdio-scanner (`--rdio-mode`: the DirWatch JSON sidecar
   and the API upload). With `stream=off` the call still plays and is still recorded; its recording stays local. Local
   audio and network audio output (`-o udp`, `-o -`) follow `audio`: there is no separate streaming output. A call is
-  judged as its audio and recording are (a patched P25 call on its member talkgroup, with the supergroup's blocks) and
+  judged as its audio and recording are (a patched P25 call on its member talkgroup, with the supergroup's blocks:
+  [Patched P25 talkgroups](#patched-p25-talkgroups-supergroups)) and
   on its radios (radio ID list below). A Hold exports a held talkgroup's calls as it records them, including a `B`/`DE`
   or `audio=off` row (whose `stream` is off only because its audio is), but never one whose row sets `stream=off` with
   its audio on, nor one whose radio row has `stream=off`. A recording already exported is not recalled when the flag
@@ -989,6 +990,38 @@ progress) cannot be preempted from: the priority call is followed when the curre
 on the control channel. A call whose talkgroup is not yet known (a Cap+ private channel, an XPT private entry, a late
 entry before its link control) can be taken over only by a Hold. Preemption also fires on a repeat of the
 announcement: one heard during the dwell is retried on the next.
+
+### Patched P25 talkgroups (supergroups)
+
+A Motorola P25 system can patch talkgroups together. The call then goes out on one supergroup number, and the control
+channel lists the talkgroups in the patch (its members). dsd-neo judges a patched call on the supergroup and on every
+member it knows is in the patch now, so you hear the patch when you listen to the supergroup or to any member. The
+monitor still shows the supergroup.
+
+- One listened member is enough: a member with **Listening** on (`A`), a member listed in allow-list mode (`-W`), or a
+  Hold on a member. The patch is then followed, played and recorded even when the supergroup has no row, is not
+  listed under `-W`, or is covered only by a `*` row with listening off (`*,B`). A `*` row stands for "every other
+  talkgroup", so it never blocks a patch whose member you listen to.
+- When more than one talkgroup in the patch could carry the call, dsd-neo picks the held one first, then one whose
+  audio is on, then the highest `priority`, then one with `preempt` set, and the supergroup itself on a full tie. The
+  call takes that talkgroup's priority, audio, recording and rdio-scanner export settings. When the patch changes
+  during a call, or you change a row or the Hold, the call moves to another member you listen to without a break, and
+  it goes quiet only when nothing left in the patch may play.
+- A row for the supergroup's own number (an exact ID, a range, or a pattern other than `*`) with mode `B` or `DE`
+  blocks the whole patch: it is not followed, even when you listen to a member. If dsd-neo hears such a call anyway
+  (for example with trunking off), only a Hold on a member that is in the patch plays it, the same way a Hold plays
+  any blocked talkgroup.
+- **Skip** and a temporary avoid (**Avoid TG**) of the supergroup block the whole patch, and a Hold on a member does
+  not undo them. An encryption lockout of the supergroup also stops the patch being followed (see
+  [cli.md](cli.md)).
+- A member stays in the patch for 20 seconds of listening to the system's control channel after the last message that
+  added a member. Time on a voice channel, between calls, hunting or on another scan target does not count, so a long
+  call keeps its patch. A member the system removes leaves at once, and the patch ends when its last member goes or
+  the system cancels it. If dsd-neo hears only voice channels and never the control channel, patches do not time
+  out; they end only when the system removes or cancels them.
+- Patches belong to one system. A manual tune (other than back to the same system's control channel), a new source
+  or input, a scan step, or a recorded retune in an I/Q replay with trunking off starts with no patches, and the next
+  patch message from the system fills them in again. Trunk scan keeps each target's patches apart.
 
 ## Source ID List CSV (`--src-csv <file>` / `[trunking] src_csv`)
 

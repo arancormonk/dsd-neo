@@ -7,7 +7,8 @@ targets, but you do not have a separate receiver for each system.
 
 The scan coordinator parks on one target, watches for activity, and moves to the next idle target after the configured
 dwell time. Trunking state and per-target channel maps are kept separate, so a channel number or learned control-channel
-state from one system is not reused on another.
+state from one system is not reused on another. So are P25 patches (supergroups): each target's patch list is saved
+when the scan leaves it and restored when it comes back, and another target never changes it.
 
 ## Requirements
 

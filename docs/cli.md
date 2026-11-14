@@ -2248,11 +2248,14 @@ a list reload or replacement that works, or decoder stop, also clears them.
 
 On P25, a lockout (`B`/`DE` row), avoid or skip of a patched supergroup blocks the whole patch: a member talkgroup
 that is allowed, listed or held does not readmit the supergroup's grants. A member still selects the patch when
-the supergroup is merely unlisted in allow-list mode (`-W`) or does not match the Hold. On a patched call, the
-quick lockout (`!`/`@`, **Lock out**/**Avoid TG**) applies to the supergroup shown for the call, as **Skip** does, not
-to the member talkgroup the grant matched. Blocking the supergroup in the list releases its active call, and a
-blocked supergroup's call is muted by the same rules as any blocked talkgroup if the return to the control channel
-is delayed.
+the supergroup is merely unlisted in allow-list mode (`-W`), does not match the Hold, or is covered only by a `*`
+catch-all row with listening off: that row stands for every other talkgroup and is not a lockout of the supergroup.
+Turning off listening for the member talkgroup the grant matched keeps the call while another member you listen to
+is in the patch (details: [Patched P25 talkgroups](csv-formats.md#patched-p25-talkgroups-supergroups)). On a patched
+call, the quick lockout (`!`/`@`, **Lock out**/**Avoid TG**) applies to the supergroup shown for the call, as **Skip**
+does, not to the member talkgroup the grant matched. Blocking the supergroup in the list releases its active call,
+and a blocked supergroup's call is muted by the same rules as any blocked talkgroup if the return to the control
+channel is delayed.
 
 - Enable trunking (NXDN/P25/EDACS/DMR): `-T`. The later of `-T`/`-Y` wins.
 - Conventional scan mode: `-Y` (not trunking; scans for sync on the row's decoder class or the global decoders). The
