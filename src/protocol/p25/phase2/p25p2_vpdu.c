@@ -2068,84 +2068,53 @@ BLOCK_END:
     ctx->iter_idx = i;
 }
 
-static void
-p25p2_vpdu_iter_block_15(p25p2_vpdu_ctx* ctx) {
-    dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
-    int type = ctx->type;
-    const unsigned long long int* MAC = ctx->mac;
-    struct p25p2_mac_result mac_res VPDU_MAYBE_UNUSED = *ctx->mac_res;
-    int len_a VPDU_MAYBE_UNUSED = ctx->len_a;
-    int len_b = ctx->len_b;
-    int len_c VPDU_MAYBE_UNUSED = ctx->len_c;
-    int slot VPDU_MAYBE_UNUSED = ctx->slot;
-    int i = ctx->iter_idx;
-    UNUSED4(type, mac_res, len_c, slot);
-
-    if (MAC[1 + len_a] == 0x81 && MAC[2 + len_a] == 0x90) {
-        int wg_len = MAC[3 + len_a] & 0x3F; // length in bytes of workgroup list
-        int sg = (MAC[4 + len_a] << 8) | MAC[5 + len_a];
-        DSD_FPRINTF(stderr, "\n MFID90 (Moto) Group Regroup Add Command\n");
-        DSD_FPRINTF(stderr, "  SG: %d", sg);
-        // Workgroup IDs start at byte 6, each is 16 bits
-        int num_wg = (wg_len >= 2) ? ((wg_len - 2) / 2) : 0; // subtract sg bytes, divide by 2
-        for (int wi = 0; wi < num_wg && (6 + len_a + wi * 2 + 1) < 24; wi++) {
-            int wg = (MAC[6 + len_a + wi * 2] << 8) | MAC[6 + len_a + wi * 2 + 1];
-            if (wg != 0) {
-                DSD_FPRINTF(stderr, " WG%d: %d", wi + 1, wg);
-                p25_patch_add_wgid(state, sg, wg);
-            }
-        }
-        DSD_FPRINTF(stderr, "\n");
-        p25_patch_update(state, sg, /*is_patch*/ 1, /*active*/ 1);
+/* Motorola Group Regroup Add (0x81) and Delete (0x89): opcode, MFID, a length octet that counts the whole message,
+ * the SG, then the work groups, two octets each: (len - 5) / 2 complete pairs. A length shorter than that header or
+ * running past the transport's MAC span (an oversized first segment) carries nothing; the SG is not even read. */
+static int
+p25p2_vpdu_moto_regroup_len(const p25p2_vpdu_ctx* ctx) {
+    const int len = (int)(ctx->mac[3 + ctx->len_a] & 0x3F);
+    const int room = ctx->mac_res->span - ctx->len_a;
+    if (len < 5 || len > room) {
+        DSD_FPRINTF(stderr, "  invalid: length %d (room %d)\n", len, room);
+        return -1;
     }
-
-    if (len_b < 0) {
-        goto BLOCK_END;
-    }
-BLOCK_END:
-    VPDU_LABEL_UNUSED;
-
-    ctx->len_b = len_b;
-    ctx->iter_idx = i;
+    return len;
 }
 
 static void
-p25p2_vpdu_iter_block_16(p25p2_vpdu_ctx* ctx) {
-    dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
-    int type = ctx->type;
-    const unsigned long long int* MAC = ctx->mac;
-    struct p25p2_mac_result mac_res VPDU_MAYBE_UNUSED = *ctx->mac_res;
-    int len_a VPDU_MAYBE_UNUSED = ctx->len_a;
-    int len_b = ctx->len_b;
-    int len_c VPDU_MAYBE_UNUSED = ctx->len_c;
-    int slot VPDU_MAYBE_UNUSED = ctx->slot;
-    int i = ctx->iter_idx;
-    UNUSED4(type, mac_res, len_c, slot);
+p25p2_vpdu_handle_moto_regroup_add_delete(const p25p2_vpdu_ctx* ctx, int is_add) {
+    dsd_state* state = ctx->state;
+    const int len_a = ctx->len_a;
 
-    if (MAC[1 + len_a] == 0x89 && MAC[2 + len_a] == 0x90) {
-        int wg_len = MAC[3 + len_a] & 0x3F;
-        int sg = (MAC[4 + len_a] << 8) | MAC[5 + len_a];
-        DSD_FPRINTF(stderr, "\n MFID90 (Moto) Group Regroup Delete Command\n");
-        DSD_FPRINTF(stderr, "  SG: %d", sg);
-        int num_wg = (wg_len >= 2) ? ((wg_len - 2) / 2) : 0;
-        for (int wi = 0; wi < num_wg && (6 + len_a + wi * 2 + 1) < 24; wi++) {
-            int wg = (MAC[6 + len_a + wi * 2] << 8) | MAC[6 + len_a + wi * 2 + 1];
-            if (wg != 0) {
-                DSD_FPRINTF(stderr, " WG%d: %d", wi + 1, wg);
-                p25_patch_remove_wgid(state, sg, wg);
-            }
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) Group Regroup %s Command\n", is_add ? "Add" : "Delete");
+    const int len = p25p2_vpdu_moto_regroup_len(ctx);
+    if (len < 0) {
+        return;
+    }
+    const int sg = p25p2_vpdu_u16(ctx->mac, 4 + len_a);
+    DSD_FPRINTF(stderr, "  SG: %d", sg);
+
+    const int pairs = (len - 5) / 2;
+    int members = 0;
+    for (int wi = 0; wi < pairs; wi++) {
+        const int wg = p25p2_vpdu_u16(ctx->mac, 6 + len_a + (wi * 2));
+        if (wg == 0) {
+            continue;
         }
-        DSD_FPRINTF(stderr, "\n");
+        DSD_FPRINTF(stderr, " WG%d: %d", wi + 1, wg);
+        if (is_add) {
+            p25_patch_add_wgid(state, sg, wg);
+        } else {
+            p25_patch_remove_wgid(state, sg, wg);
+        }
+        members++;
     }
-
-    if (len_b < 0) {
-        goto BLOCK_END;
+    DSD_FPRINTF(stderr, "\n");
+    // An Add that names no member creates and refreshes nothing.
+    if (is_add && members > 0) {
+        p25_patch_update(state, sg, /*is_patch*/ 1, /*active*/ 1);
     }
-BLOCK_END:
-    VPDU_LABEL_UNUSED;
-
-    ctx->len_b = len_b;
-    ctx->iter_idx = i;
 }
 
 static void
@@ -5311,7 +5280,9 @@ p25p2_vpdu_dispatch_motorola_vendor(p25p2_vpdu_ctx* ctx, int opcode) {
         case 0xA6: p25p2_vpdu_handle_motorola_queued_deny(ctx, /*is_deny*/ 0); break;
         case 0xA7: p25p2_vpdu_handle_motorola_queued_deny(ctx, /*is_deny*/ 1); break;
         case 0xA8: p25p2_vpdu_handle_motorola_ack_response(ctx); break;
+        case 0x81: p25p2_vpdu_handle_moto_regroup_add_delete(ctx, /*is_add*/ 1); break;
         case 0x84: p25p2_vpdu_handle_motorola_regroup_extended_function(ctx); break;
+        case 0x89: p25p2_vpdu_handle_moto_regroup_add_delete(ctx, /*is_add*/ 0); break;
         case 0x8B: p25p2_vpdu_handle_motorola_tdma_data_channel(ctx); break;
         default: break;
     }
@@ -5808,18 +5779,17 @@ p25p2_vpdu_dispatch_blocks(p25p2_vpdu_ctx* ctx) {
         p25p2_vpdu_iter_block_01, p25p2_vpdu_iter_block_02, p25p2_vpdu_iter_block_03, p25p2_vpdu_iter_block_04,
         p25p2_vpdu_iter_block_05, p25p2_vpdu_iter_block_06, p25p2_vpdu_iter_block_07, p25p2_vpdu_iter_block_08,
         p25p2_vpdu_iter_block_09, p25p2_vpdu_iter_block_10, p25p2_vpdu_iter_block_11, p25p2_vpdu_iter_block_12,
-        p25p2_vpdu_iter_block_13, p25p2_vpdu_iter_block_14, p25p2_vpdu_iter_block_15, p25p2_vpdu_iter_block_16,
-        p25p2_vpdu_iter_block_17, p25p2_vpdu_iter_block_19, p25p2_vpdu_iter_block_20, p25p2_vpdu_iter_block_21,
-        p25p2_vpdu_iter_block_22, p25p2_vpdu_iter_block_23, p25p2_vpdu_iter_block_24, p25p2_vpdu_iter_block_25,
-        p25p2_vpdu_iter_block_26, p25p2_vpdu_iter_block_27, p25p2_vpdu_iter_block_28, p25p2_vpdu_iter_block_29,
-        p25p2_vpdu_iter_block_30, p25p2_vpdu_iter_block_31, p25p2_vpdu_iter_block_32, p25p2_vpdu_iter_block_33,
-        p25p2_vpdu_iter_block_34, p25p2_vpdu_iter_block_35, p25p2_vpdu_iter_block_36, p25p2_vpdu_iter_block_37,
-        p25p2_vpdu_iter_block_38, p25p2_vpdu_iter_block_39, p25p2_vpdu_iter_block_40, p25p2_vpdu_iter_block_41,
-        p25p2_vpdu_iter_block_43, p25p2_vpdu_iter_block_44, p25p2_vpdu_iter_block_45, p25p2_vpdu_iter_block_46,
-        p25p2_vpdu_iter_block_47, p25p2_vpdu_iter_block_48, p25p2_vpdu_iter_block_49, p25p2_vpdu_iter_block_50,
-        p25p2_vpdu_iter_block_51, p25p2_vpdu_iter_block_52, p25p2_vpdu_iter_block_53, p25p2_vpdu_iter_block_54,
-        p25p2_vpdu_iter_block_55, p25p2_vpdu_iter_block_56, p25p2_vpdu_iter_block_57, p25p2_vpdu_iter_block_58,
-        p25p2_vpdu_iter_block_59,
+        p25p2_vpdu_iter_block_13, p25p2_vpdu_iter_block_14, p25p2_vpdu_iter_block_17, p25p2_vpdu_iter_block_19,
+        p25p2_vpdu_iter_block_20, p25p2_vpdu_iter_block_21, p25p2_vpdu_iter_block_22, p25p2_vpdu_iter_block_23,
+        p25p2_vpdu_iter_block_24, p25p2_vpdu_iter_block_25, p25p2_vpdu_iter_block_26, p25p2_vpdu_iter_block_27,
+        p25p2_vpdu_iter_block_28, p25p2_vpdu_iter_block_29, p25p2_vpdu_iter_block_30, p25p2_vpdu_iter_block_31,
+        p25p2_vpdu_iter_block_32, p25p2_vpdu_iter_block_33, p25p2_vpdu_iter_block_34, p25p2_vpdu_iter_block_35,
+        p25p2_vpdu_iter_block_36, p25p2_vpdu_iter_block_37, p25p2_vpdu_iter_block_38, p25p2_vpdu_iter_block_39,
+        p25p2_vpdu_iter_block_40, p25p2_vpdu_iter_block_41, p25p2_vpdu_iter_block_43, p25p2_vpdu_iter_block_44,
+        p25p2_vpdu_iter_block_45, p25p2_vpdu_iter_block_46, p25p2_vpdu_iter_block_47, p25p2_vpdu_iter_block_48,
+        p25p2_vpdu_iter_block_49, p25p2_vpdu_iter_block_50, p25p2_vpdu_iter_block_51, p25p2_vpdu_iter_block_52,
+        p25p2_vpdu_iter_block_53, p25p2_vpdu_iter_block_54, p25p2_vpdu_iter_block_55, p25p2_vpdu_iter_block_56,
+        p25p2_vpdu_iter_block_57, p25p2_vpdu_iter_block_58, p25p2_vpdu_iter_block_59,
     };
     const size_t handler_count = sizeof(handlers) / sizeof(handlers[0]);
     for (size_t h = 0; h < handler_count; h++) {
@@ -5883,14 +5853,13 @@ process_MAC_VPDU_crc(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_typ
     // 2 = Manufacturer Message, 3 Phase 1 OSP/ISP extended/explicit
 
     struct p25p2_mac_result mac_res;
-    if (p25p2_mac_parse(type, MAC, &mac_res) != 0) {
+    if (p25p2_mac_parse_span(type, p25p2_mac_span(type, state->p2_is_lcch == 1), MAC, &mac_res) != 0) {
         return;
     }
     const int initial_len_a = (mac_res.segment_count > 0) ? mac_res.segments[0].offset : 0;
     const int initial_len_b = (mac_res.segment_count > 0) ? mac_res.segments[0].length : 0;
-    const int initial_len_c = (mac_res.segment_count > 1)
-                                  ? mac_res.segments[1].length
-                                  : ((mac_res.segment_count == 0) ? ((type == 1) ? 19 : 16) : 0);
+    const int initial_len_c =
+        (mac_res.segment_count > 1) ? mac_res.segments[1].length : ((mac_res.segment_count == 0) ? mac_res.span : 0);
 
     p25p2_vpdu_ctx ctx = {
         .opts = opts,

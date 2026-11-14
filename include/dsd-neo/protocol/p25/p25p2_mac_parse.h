@@ -26,6 +26,15 @@ extern "C" {
 
 #define P25P2_MAC_MAX_SEGMENTS 3
 
+/*
+ * MAC message octets a transport carries: MAC[1]..MAC[span], after the one-octet MAC header (opcode, offset) and before
+ * the CRC. FACCH: 156 bits, CRC-12 over the first 144 (8 header + 136 message bits). SACCH: 180 bits, CRC-12 over the
+ * first 168 (8 + 160). LCCH: 180 bits, CRC-16 over the first 164, the last 12 of which are the NAC (8 + 144).
+ */
+#define P25P2_MAC_SPAN_FACCH   17
+#define P25P2_MAC_SPAN_SACCH   20
+#define P25P2_MAC_SPAN_LCCH    18
+
 struct p25p2_mac_segment {
     /* Offset, in octets, from MAC[1] to the segment opcode. */
     int offset;
@@ -36,6 +45,9 @@ struct p25p2_mac_segment {
 struct p25p2_mac_result {
     /* Channel type: 0 = FACCH, 1 = SACCH. */
     int type;
+    /* MAC message octets the transport carries (P25P2_MAC_SPAN_*): every segment ends at or before MAC[span], except
+       a first segment whose own length claims more. */
+    int span;
     /* MFID and opcode from the MAC header. */
     uint8_t mfid;
     uint8_t opcode;
@@ -75,6 +87,16 @@ struct p25p2_iden_update {
  * @return 0 on success, negative on error.
  */
 int p25p2_mac_parse(int type, const unsigned long long mac[24], struct p25p2_mac_result* out);
+/**
+ * MAC message span of a transport: P25P2_MAC_SPAN_LCCH for an LCCH (SACCH-type burst with a CRC-16 and NAC), else
+ * P25P2_MAC_SPAN_SACCH for type 1 and P25P2_MAC_SPAN_FACCH for type 0.
+ */
+int p25p2_mac_span(int type, int is_lcch);
+/**
+ * As p25p2_mac_parse(), segmenting the MAC messages within @p span octets (p25p2_mac_span()). p25p2_mac_parse() uses
+ * the SACCH or FACCH span of @p type.
+ */
+int p25p2_mac_parse_span(int type, int span, const unsigned long long mac[24], struct p25p2_mac_result* out);
 /**
  * Decode the last standard Group Voice, Unit-to-Unit Voice, Telephone Interconnect Voice, or Group Regroup Voice
  * structure in a MAC PDU.

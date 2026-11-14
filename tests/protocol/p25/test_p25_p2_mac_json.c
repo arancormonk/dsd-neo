@@ -304,7 +304,7 @@ main(void) {
         p25_test_process_mac_vpdu_typed(1 /*SACCH*/, TEST_MAC_PDU_HANGTIME, mac, 24, /*is_lcch*/ 0, /*slot*/ 0);
     }
 
-    // Case D: FACCH MCO clamp beyond capacity (opcode with MCO=63 → clamp to lenB=16)
+    // Case D: FACCH MCO clamp beyond its 17 MAC octets (opcode with MCO=63 → clamp to lenB=17)
     {
         unsigned char mac[24];
         DSD_MEMSET(mac, 0, sizeof mac);
@@ -346,7 +346,7 @@ main(void) {
         fclose(rf);
         return 103;
     }
-    rc |= expect_eq_int("FACCH clamp lenB", lenB, 16);
+    rc |= expect_eq_int("FACCH clamp lenB", lenB, 17);
     rc |= expect_eq_int("FACCH clamp lenC", lenC, 0);
     rc |= expect_eq_int("FACCH clamp slot", slot, 1);
     rc |= expect_json_record_summary(buf, "LCCH", 0x03, "IDLE");

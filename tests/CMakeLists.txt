@@ -11710,6 +11710,21 @@ target_link_libraries(
 )
 add_test(NAME P25_P2_VPDU_CORE COMMAND dsd-neo_test_p25_p2_vpdu_core)
 
+# P25 P2 MAC regroup add/delete spans and failed-CRC patch gating
+add_executable(
+    dsd-neo_test_p25_p2_mac_regroup
+    protocol/p25/test_p25_p2_mac_regroup.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_mac_regroup
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_p25_p2_mac_regroup
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(NAME P25_P2_MAC_REGROUP COMMAND dsd-neo_test_p25_p2_mac_regroup)
+
 add_executable(
     dsd-neo_test_p25_p2_vpdu_grants
     protocol/p25/test_p25_p2_vpdu_grants.c

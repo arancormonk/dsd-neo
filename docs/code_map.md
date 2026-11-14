@@ -9743,6 +9743,14 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   opposite one, `p25_sacch_to_voice_slot()`), which the engine's receive policy judges, and moves no control channel
   stamp. A verdict whose checksum failed reports nothing, under `-F` too, whatever its fallback dispatches. An LCCH
   reports itself as control channel activity at its CRC-16 (`p25_sm_note_validated_cc()`), once.
+- MAC message span (`<dsd-neo/protocol/p25/p25p2_mac_parse.h>`). A MAC PDU's messages fill `MAC[1]..MAC[span]`, after
+  the one-octet MAC header and before the CRC: FACCH 17 octets, SACCH 20, LCCH 18 (its last 12 bits before the CRC-16
+  are the NAC), the bit counts the checksums above cover. `process_MAC_VPDU_crc()` segments with
+  `p25p2_mac_parse_span(type, p25p2_mac_span(type, p2_is_lcch))`; later segments must end within the span, while a
+  first segment whose own length claims more is kept for its handler to bound (`p25p2_mac_result::span`). Motorola
+  Group Regroup Add/Delete (0x81/0x89) count their length octet as the whole message: SG at octets 4-5, then
+  `(len - 5) / 2` work groups; a length under 5 or past the span changes nothing, and an Add with no member creates no
+  patch.
 - Scrambling code recovery (`p25p2_seed_recover.c`, issue #804). On a carrier whose code is not proven
   (`p2_cc_verified == 0`), not hand-set (`p2_hardset == 0`) and not trunked (`trunk_enable == 0`), `processP2()` hands
   each window to `p25p2_seed_recover_window()` after `p25p2_window_position()` and before the descrambler, with
