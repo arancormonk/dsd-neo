@@ -7146,7 +7146,7 @@ static int
 voice_level_started_over(const dsd_state* state) {
     for (int slot = 0; slot < 2; slot++) {
         const dsd_speech_agc* agc = dsd_voice_level_agc(state, slot);
-        if (!agc || agc->learned.commits != 0 || fabsf(agc->learned.gain_db) > 1e-6f) {
+        if (!agc || agc->learned.commits != 0 || fabsf(agc->learned.gain_db - DSD_VOICE_LEVEL_START_GAIN_DB) > 1e-6f) {
             return 0;
         }
     }
@@ -7377,7 +7377,8 @@ test_tetra_stream_gap_keeps_the_voice_level_a_new_party_starts_it_over(void) {
     agc = dsd_voice_level_agc(state, 0);
     rc |= expect_true("tetra level: another talker is the next transmission", tetra_st(state)->voice.agc_tx_seq != seq);
     rc |= expect_true("tetra level: another talker starts the level over",
-                      agc != NULL && agc->learned.commits == 0 && fabsf(agc->learned.gain_db) < 1e-6f);
+                      agc != NULL && agc->learned.commits == 0
+                          && fabsf(agc->learned.gain_db - DSD_VOICE_LEVEL_START_GAIN_DB) < 1e-6f);
 
     dsd_decode_clock_use_system();
     tetra_voice_set_codec_for_test(NULL);

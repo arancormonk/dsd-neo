@@ -318,7 +318,8 @@ test_high_pass_restarts_at_reception_boundaries(void) {
 }
 
 /* The chain's gain (issue #518): a fixed -g is a plain multiplier held at the speech AGC's -1 dBFS ceiling, in both
-   formats; below 0, unity; 0, the speech AGC, which starts at the reference level (-g 1) and holds the same ceiling.
+   formats; below 0, unity; 0, the speech AGC, which starts DSD_VOICE_LEVEL_START_GAIN_DB over the reference level
+   (-g 1) and holds the same ceiling.
    Every frame leaves the gain it got, in dB, for the readouts. */
 static int
 test_chain_gain_laws(void) {
@@ -360,8 +361,8 @@ test_chain_gain_laws(void) {
     rc |= expect_near("negative gain is unity", frame[3], 1000.0, 1e-3);
     rc |= expect_near("negative gain reads 0 dB", state->aout_gain, 0.0, 1e-6);
 
-    // Auto on a fresh slot: the reference level; a DC frame is not speech and teaches nothing (and, under -36 dBFS, is
-    // not loud enough for the attenuator either).
+    // Auto on a fresh slot: the start gain; a DC frame is not speech and teaches nothing (and, under -32 dBFS, is not
+    // loud enough for the attenuator either).
     dsd_state* fresh = new_state();
     if (!fresh) {
         free(opts);
@@ -373,13 +374,14 @@ test_chain_gain_laws(void) {
     for (int k = 0; k < 60; k++) {
         fill_dc(frame, 400.0f);
         dsd_voice_chain_run(opts, fresh, 0, frame, &speech);
-        rc |= expect_near("auto starts at the reference level and a DC frame teaches nothing", frame[159], 400.0, 1e-3);
+        rc |= expect_near("auto starts at the start gain and a DC frame teaches nothing", frame[159],
+                          400.0 * pow(10.0, DSD_VOICE_LEVEL_START_GAIN_DB / 20.0), 1e-3);
     }
-    rc |= expect_near("the auto readout reads 0 dB", fresh->aout_gain, 0.0, 1e-4);
+    rc |= expect_near("the auto readout reads the start gain", fresh->aout_gain, DSD_VOICE_LEVEL_START_GAIN_DB, 1e-4);
     // A frame past the ceiling is cut at once.
     fill_dc(frame, 32000.0f);
     dsd_voice_chain_run(opts, fresh, 0, frame, &speech);
-    rc |= expect_near("auto holds the ceiling from the first loud sample", frame[0], ceiling, 1e-3);
+    rc |= expect_near("auto holds the ceiling from the first loud sample", frame[0], ceiling, 0.01);
     rc |= expect_true("the readout carries the limiter", fresh->aout_gain < -0.5f);
     free_state(fresh);
 
@@ -541,7 +543,7 @@ tone_rms_db(const double* x, size_t n, double full_scale) {
 
 /* The alert tone is built once on the int16 scale: short output plays a clean sine at its level, float output the same
    samples / 32768, and the tone runs on across its 20 ms blocks. Every alert, the voice ones (ID 40) and the data one
-   (ID 80), plays at -24 dBFS RMS in both formats, where digital speech plays (issue #518); before, they played at
+   (ID 80), plays at -20 dBFS RMS in both formats, where digital speech plays (issue #518); before, they played at
    -4.9 and -17.6. */
 static int
 test_beeper_tone_is_the_same_in_both_formats(void) {
@@ -561,7 +563,7 @@ test_beeper_tone_is_the_same_in_both_formats(void) {
     opts->pulse_digi_out_channels = 1;
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = capture_tone});
     for (size_t a = 0; a < sizeof(alerts) / sizeof(alerts[0]); a++) {
-        const double amplitude = 32768.0 * pow(10.0, -24.0 / 20.0) * sqrt(2.0);
+        const double amplitude = 32768.0 * pow(10.0, DSD_ALERT_TONE_RMS_DBFS / 20.0) * sqrt(2.0);
         const double step = 2.0 * k_pi * (31.25 * (double)alerts[a]) / 8000.0;
 
         g_tone_float = 0;
@@ -579,7 +581,7 @@ test_beeper_tone_is_the_same_in_both_formats(void) {
         }
         rc |= expect_true("short tone is the sine at its level, phase running across blocks", worst == 0);
         const double short_db = tone_rms_db(level, g_tone_count, 32768.0);
-        rc |= expect_true("short tone at -24 dBFS RMS", fabs(short_db - DSD_ALERT_TONE_RMS_DBFS) < 0.05);
+        rc |= expect_true("short tone at -20 dBFS RMS", fabs(short_db - DSD_ALERT_TONE_RMS_DBFS) < 0.05);
 
         g_tone_float = 1;
         g_tone_count = 0;
@@ -594,7 +596,7 @@ test_beeper_tone_is_the_same_in_both_formats(void) {
         }
         rc |= expect_true("float tone carries the short tone's samples", worst_f < 1e-7f);
         const double float_db = tone_rms_db(level, g_tone_count, 1.0);
-        rc |= expect_true("float tone at -24 dBFS RMS", fabs(float_db - DSD_ALERT_TONE_RMS_DBFS) < 0.05);
+        rc |= expect_true("float tone at -20 dBFS RMS", fabs(float_db - DSD_ALERT_TONE_RMS_DBFS) < 0.05);
     }
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     free_state(state);

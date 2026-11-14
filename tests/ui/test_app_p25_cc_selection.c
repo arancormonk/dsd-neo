@@ -316,7 +316,7 @@ test_selection(dsd_opts* opts, dsd_state* state, int voice, int cc_type) {
     /* The user left the channel: both slots' digital voice starts at the start gain on the next one (issue #518). */
     for (int slot = 0; slot < 2; slot++) {
         const dsd_speech_agc* agc = dsd_voice_level_agc(state, slot);
-        assert(agc && agc->learned.commits == 0 && fabsf(agc->learned.gain_db) < 1e-6f);
+        assert(agc && agc->learned.commits == 0 && fabsf(agc->learned.gain_db - DSD_VOICE_LEVEL_START_GAIN_DB) < 1e-6f);
     }
     expect_carrier_codes_kept(state);
 #ifdef USE_RADIO

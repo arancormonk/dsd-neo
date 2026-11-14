@@ -21,9 +21,6 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "voice_chain_internal.h"
 
-/* Digital voice starts at the decoder's own level: the `-g 1` reference, which DVSI's decoder plays. */
-#define VOICE_LEVEL_START_GAIN_DB 0.0f
-
 typedef struct {
     dsd_speech_agc agc;
     /* The reception the AGC runs for: the transmission, the protocol family and the producer's talkspurt, each 0 until
@@ -53,8 +50,8 @@ voice_level_ext_get(dsd_state* state) {
     }
     for (int s = 0; s < 3; s++) {
         dsd_speech_agc* agc = s < 2 ? &ext->slot[s].agc : &ext->tx_monitor;
-        if (dsd_speech_agc_init(agc, (int)DSD_VOICE_HPF_RATE_HZ, VOICE_LEVEL_START_GAIN_DB, DSD_SPEECH_AGC_TARGET_DBFS,
-                                DSD_SPEECH_AGC_CEILING_DBFS)
+        if (dsd_speech_agc_init(agc, (int)DSD_VOICE_HPF_RATE_HZ, DSD_VOICE_LEVEL_START_GAIN_DB,
+                                DSD_SPEECH_AGC_TARGET_DBFS, DSD_SPEECH_AGC_CEILING_DBFS)
             != 0) {
             free(ext);
             return NULL;
@@ -94,7 +91,7 @@ dsd_voice_level_reset(dsd_state* state, int slot) {
         if (slot < 0 || slot == s) {
             voice_level_slot_reset(&ext->slot[s]);
             /* The readout shows the start gain until the slot's next frame. */
-            *(s == 1 ? &state->aout_gainR : &state->aout_gain) = VOICE_LEVEL_START_GAIN_DB;
+            *(s == 1 ? &state->aout_gainR : &state->aout_gain) = DSD_VOICE_LEVEL_START_GAIN_DB;
         }
     }
     /* The DMR mixer's limiter goes with both slots: the next talkers are another reception's. */

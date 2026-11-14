@@ -596,12 +596,12 @@ Notes
 ## Levels & Audio
 
 - `-g <num>` Digital output gain, the same in integer and `-y` float output and in the WAVs. `0` = auto (the default):
-  each slot's speech is brought to one level, -24 dBFS active speech, from the decoder's own level (`-g 1`) at the start
-  of each transmission; the gain moves only on decoded speech, never on encrypted audio it cannot decrypt, silence,
-  noise or tones, holds through pauses, stays within 12 dB below and 15 dB above the decoder's level, and never lets a
-  peak past -1 dBFS. Tone frames (DTMF and other call tones) play no louder than the decoder's level. A new
-  transmission, a new channel or a new file starts at the decoder's level again; a short fade inside one transmission
-  does not. `0.001`–`50` is a fixed multiplier on the vocoder's reference level (`1`; `0.5` is 6 dB quieter), with peaks
+  each slot's speech is brought to one level, -20 dBFS active speech, starting each transmission 4 dB over the
+  decoder's own level (`-g 1`, where speech at the vocoders' reference level plays at about -24 dBFS); the gain moves
+  only on decoded speech, never on encrypted audio it cannot decrypt, silence, noise or tones, holds through pauses,
+  stays within 12 dB below and 30 dB above that start level, and never lets a peak past -1 dBFS. Tone frames (DTMF and
+  other call tones) play no louder than the start level. A new transmission, a new channel or a new file starts at the
+  start level again; a short fade inside one transmission does not. `0.001`–`50` is a fixed multiplier on the vocoder's reference level (`1`; `0.5` is 6 dB quieter), with peaks
   held at -1 dBFS. The terminal shows the auto gain in dB (`G: Auto (+3.5 dB)`, one value per channel on stereo output)
   and a fixed one as its multiplier (`G: x2 (+|-) Manual`). Any other value (negative, above `50`, between `0` and
   `0.001`, NaN or infinity) is refused with an error; it is never clamped or played as auto. The menu's Digital gain...
@@ -609,12 +609,12 @@ Notes
   stepping below `0.001` goes back to auto, and they stop at `50`. Since issue #653 `-g N` under `-y` is this fixed
   multiplier too, where it used to scale a float auto gain that kept adapting.
 - `-n <num>` Analog output gain. `0` (the default; anything under `1` too) is auto: each transmission's speech is
-  brought to -24 dBFS active speech, the level `-g 0` aims digital voice at, FM and AM alike. It starts from a level
+  brought to -20 dBFS active speech, the level `-g 0` aims digital voice at, FM and AM alike. It starts from a level
   set for the band, where a typical talker at full deviation or modulation already plays near that level: narrowband
-  FM (`--nfm-bandwidth-hz` up to 16000, the default) 4.5 dB over `-n 50`, wideband FM 1.5 dB under it, AM 2.6 dB under
+  FM (`--nfm-bandwidth-hz` up to 16000, the default) 8.5 dB over `-n 50`, wideband FM 2.5 dB over it, AM 1.4 dB over
   it; the RTL `vol` trim does not move that start. The gain moves only on speech, never on hiss, open-squelch noise or
-  steady tones, holds through pauses, stays within 12 dB below and 15 dB above the start, and never lets a peak past
-  -1 dBFS. Hiss or noise with no speech in it fades toward -36 dBFS at 6 dB a second: from the start of a transmission
+  steady tones, holds through pauses, stays within 12 dB below and 30 dB above the start, and never lets a peak past
+  -1 dBFS. Hiss or noise with no speech in it fades toward -32 dBFS at 6 dB a second: from the start of a transmission
   until its first speech, and otherwise once a second has passed since the last speech. It comes back at once with the
   next speech. What it learns does not depend on whether the audio plays, is muted or is recorded. A channel change, a
   retune or a gap of a second or more between transmissions (squelch closed, or the input sending nothing) starts it
@@ -633,19 +633,20 @@ Notes
   default filter (see `-v`) cut it.
 - What the automatic gains (`-g 0`, `-n 0`) cannot do. These limits were measured on real and synthetic speech
   (`docs/testing.md` "The speech AGC's calibration and acceptance"):
-  - Accuracy. Once a transmission has had about 2 s of speech, every talker measured plays within 3 dB of -24 dBFS,
+  - Accuracy. Once a transmission has had about 2 s of speech, every talker measured plays within 3 dB of -20 dBFS,
     95% within 2 dB and 90% within 1.5 dB. Two calls can still differ by about 4 dB, and over one call the gain can
     move by up to 8-9 dB for some talkers.
-  - Speed. The gain first moves 120 ms into speech (six 20 ms frames of it in a row), then by at most 1 dB per 20 ms,
-    and usually settles within 2 s of speech. Pauses do not count, nor, on analog, speech too noisy to be recognised,
+  - Speed. The gain first moves 120 ms into speech (six 20 ms frames of it in a row), then by at most 2 dB per 20 ms,
+    and usually settles within 2 s of speech. A transmission whose first syllables are much quieter than the rest can
+    play up to about 12 dB loud for its first second while the gain catches up. Pauses do not count, nor, on analog, speech too noisy to be recognised,
     so a weak FM signal takes longer, and an open squelch with several talkers can take tens of seconds. A
     transmission with less than 120 ms of speech plays at the start level, and one that is a single held sound of
     300-500 ms ends before the gain settles.
-  - Range. A talker more than 15 dB under the target at the start level stays quiet; one more than 12 dB over it is
+  - Range. A talker more than 30 dB under the target at the start level stays quiet; one more than 12 dB over it is
     held down by the -1 dBFS limiter.
   - Tones. A sound that holds one pitch and level for 240 ms or more is taken for a tone and teaches nothing, a long,
     perfectly steady vowel included. At the start of a transmission a tone the decoder does not mark as one (any
-    analog tone, a P25 tone) can lift the gain by up to about 7 dB over its first 0.24 s before it is turned away.
+    analog tone, a P25 tone) can lift the gain by up to about 14 dB over its first 0.24 s before it is turned away.
     Tones shorter than 240 ms (analog DTMF digits) and P25 Phase 1 DTMF, which the P25 vocoder does not mark as a
     tone, are taken for speech (twelve DTMF digits moved the gain 0.6 dB), and a long sliding tone (a siren) plays
     about 4 dB loud. A voice whose pitch sits right at 67 Hz is partly missed.
@@ -681,8 +682,8 @@ Notes
   and played 6 dB low). Two talkers at once are summed under a limiter that keeps peaks at -1 dBFS: two talkers of
   equal level play about 3 dB louder than one, and while both talk neither keeps its exact level.
 - `-a` Enable call alert beep (UI). The alert is the same clean tone in integer and `-y` float output, at the level
-  digital speech plays (-24 dBFS RMS) for the call and data alerts alike. Before, the call alert played about 19 dB
-  louder and the data alert about 6 dB louder. Conventional analog calls sound no alert: the beep would land in the
+  digital speech plays (-20 dBFS RMS) for the call and data alerts alike. Before, the call alert played about 15 dB
+  louder and the data alert about 2.5 dB louder. Conventional analog calls sound no alert: the beep would land in the
   analog audio on `-o -` (on UDP output an alert goes to the digital port, never the analog one).
 
 ## Modes & Decoders (`-f`)
@@ -1261,9 +1262,10 @@ visit.
   bring it down; with the squelch open and several talkers, which nothing starts over, it can take tens of seconds to
   settle within 1.5 dB. Set `--nfm-bandwidth-hz 25000` for such a channel.
 - With the squelch off (the startup -110 dB included) the monitor plays the receiver's hiss between transmissions.
-  The automatic gain learns nothing from it and eases it toward -36 dBFS at 6 dB a second (strong hiss stops near
-  -31 dBFS), and lets go within one 20 ms frame when speech, or a carrier's quieting, comes. Nothing starts the gain
-  over on a continuous stream with the squelch open, so it carries from one transmission to the next. The first
+  The automatic gain learns nothing from it and eases it toward -32 dBFS at 6 dB a second (strong hiss stops near
+  -33 dBFS, also after a quiet talker has taken the gain up), and lets go within one 20 ms frame when speech, or a
+  carrier's quieting, comes. Nothing starts the gain over on a continuous stream with the squelch open, so it carries
+  from one transmission to the next. The first
   100 ms of speech after the hiss play up to about 1.7 dB low, and a weak transmission whose first syllables do not
   stand out of the hiss plays lower until they do (20 dB down at worst on one low-VHF recording). A squelch
   (`--squelch auto`, `noise` or a level) avoids all of this: each transmission then starts at the band's level.

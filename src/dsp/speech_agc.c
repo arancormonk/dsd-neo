@@ -69,18 +69,20 @@
 #define AGC_EST_FAST_DIV         5.0f
 #define AGC_EST_SLOW_DIV         100.0f
 
-/* The gain law: steps of up to 1 dB for the first 20 steps after a reset, then +0.12 / -0.20 dB. */
+/* The gain law: steps of up to 2 dB for the first 20 steps after a reset, then +0.12 / -0.20 dB. */
 #define AGC_START_STEPS          20
-#define AGC_START_STEP_DB        1.0f
+#define AGC_START_STEP_DB        2.0f
 #define AGC_STEP_UP_DB           0.12f
 #define AGC_STEP_DOWN_DB         0.20f
 
-/* The attenuator: down 6 dB/s to -24 dB while nothing committed for 1 s and the frame would play over -36 dBFS; back
-   to 0 on a frame passing both cues, or one this far under the level that drove it down (the carrier quieting). */
+/* The attenuator: down 6 dB/s while nothing committed for 1 s and the frame would play over -32 dBFS; back to 0 on a
+   frame passing both cues, or one this far under the level that drove it down (the carrier quieting). The floor is deep
+   enough that hot hiss after a quiet talker, with the gain near the top of its range, still eases to -32 dBFS; on
+   ordinary hiss the -32 dBFS level stops the easing long before it. */
 #define AGC_ATT_HOLD_FRAMES      50
-#define AGC_ATT_ACTIVE_DBFS      (-36.0f)
+#define AGC_ATT_ACTIVE_DBFS      (-32.0f)
 #define AGC_ATT_STEP_DB          (6.0f * 0.02f)
-#define AGC_ATT_FLOOR_DB         (-24.0f)
+#define AGC_ATT_FLOOR_DB         (-60.0f)
 #define AGC_ATT_QUIETING_DB      6.0f
 #define AGC_ATT_NOISE_ALPHA      0.1f
 

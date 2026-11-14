@@ -101,6 +101,8 @@ static int g_tcp_fail_at = -1;
 static int g_udp_read_count = 0;
 static int g_udp_fail_every = 0;
 static int g_udp_blast_count = 0;
+/* The highest analog gain readout (aout_gainA) any played block left. */
+static float g_udp_blast_max_gain_db = -1000.0f;
 static size_t g_udp_blast_bytes[3];
 static short g_udp_blast_first[3];
 
@@ -476,7 +478,9 @@ edacs_install_net_audio_hooks(void) {
 static void
 edacs_fake_blast_analog(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
     (void)opts;
-    (void)state;
+    if (state != NULL && state->aout_gainA > g_udp_blast_max_gain_db) {
+        g_udp_blast_max_gain_db = state->aout_gainA;
+    }
     if (g_udp_blast_count < 3) {
         g_udp_blast_bytes[g_udp_blast_count] = nsam;
         g_udp_blast_first[g_udp_blast_count] = data != NULL ? ((const short*)data)[0] : 0;
@@ -595,6 +599,7 @@ edacs_reset_audio_hook_state(void) {
     g_udp_read_count = 0;
     g_udp_fail_every = 0;
     g_udp_blast_count = 0;
+    g_udp_blast_max_gain_db = -1000.0f;
     DSD_MEMSET(g_udp_blast_bytes, 0, sizeof(g_udp_blast_bytes));
     DSD_MEMSET(g_udp_blast_first, 0, sizeof(g_udp_blast_first));
     dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
@@ -2277,11 +2282,11 @@ edacs_run_analog_sql_helper_cases(void) {
 
 /* The hashes of a 48 kHz call's outputs (edacs_golden_call()). First taken from the code before issue #633; since the
    analog chain moved to the speech AGC (issue #518) they are a snapshot of the same 48 kHz path at the AGC's level,
-   taken from that code itself: they hold the path to what it did then, not to independent code. Linux (glibc) only,
-   like the test. */
-#define EDACS_GOLDEN_UDP_WAV    0x2E84BDF647C507FFULL
-#define EDACS_GOLDEN_STATIC_WAV 0x73378B303D178529ULL
-#define EDACS_GOLDEN_FD         0x77A90F2F1AD7DEACULL
+   taken from that code itself, and retaken when the AGC's target, range and startup step changed: they hold the path to
+   what it did then, not to independent code. Linux (glibc) only, like the test. */
+#define EDACS_GOLDEN_UDP_WAV    0x8B6FFE7B691327C7ULL
+#define EDACS_GOLDEN_STATIC_WAV 0x2F7BC001CF8FC273ULL
+#define EDACS_GOLDEN_FD         0x17CE57C091A48E32ULL
 
 /* --- Issue #633: EDACS analog voice runs at 48 kHz, whatever rate it is read at --- */
 
@@ -3971,17 +3976,20 @@ edacs_run_golden_48k_cases(void) {
 
 /* Issue #518 B10: one call of a quiet talker (P.56 near -45 dBFS) on 48 kHz TCP input, recorded to the per-call WAV
    and played on UDP, ended by dotting once the speech is over; @p tg_muted has the talkgroup gate mute it, which leaves
-   the record gate alone. What it recorded, how many blocks it played and the gain the AGC left. */
+   the record gate alone. What it recorded, how many blocks it played, the gain the AGC left and the highest gain a
+   played block showed (the readout at the call's end includes the limiter, which holds the loud dotting after the
+   speech down). */
 typedef struct {
     uint64_t wav_hash;
     int blasts;
     float gain_db;
     int ok;
+    float max_played_gain_db;
 } edacs_speech_call_result;
 
 static edacs_speech_call_result
 edacs_speech_call(int tg_muted) {
-    edacs_speech_call_result r = {0ULL, 0, 0.0f, 0};
+    edacs_speech_call_result r = {0ULL, 0, 0.0f, 0, -1000.0f};
     edacs_reset_audio_hook_state();
     dsd_test_speech_params speech;
     dsd_test_speech_defaults(&speech, 0x518B10ULL);
@@ -4018,6 +4026,7 @@ edacs_speech_call(int tg_muted) {
     (void)remove(path);
     r.blasts = g_udp_blast_count;
     r.gain_db = g_state.aout_gainA;
+    r.max_played_gain_db = g_udp_blast_max_gain_db;
     dsd_state_ext_free_all(&g_state);
     edacs_reset_audio_hook_state();
     return r;
@@ -4035,8 +4044,8 @@ edacs_run_muted_recorded_case(void) {
     rc |= edacs_expect(heard.ok && muted.ok, "analog-b10", "muted-recorded", "both calls recorded a WAV");
     rc |= edacs_expect(heard.blasts > 0 && muted.blasts == 0, "analog-b10", "muted-recorded",
                        "the heard call plays and the muted one does not");
-    rc |= edacs_expect(heard.gain_db > DSD_ANALOG_AUDIO_START_GAIN_FM_NARROW_DB + 3.0f, "analog-b10", "muted-recorded",
-                       "the quiet talker moved the gain up from its start");
+    rc |= edacs_expect(heard.max_played_gain_db > DSD_ANALOG_AUDIO_START_GAIN_FM_NARROW_DB + 3.0f, "analog-b10",
+                       "muted-recorded", "the quiet talker moved the gain up from its start");
     rc |= edacs_expect(fabsf(muted.gain_db - heard.gain_db) < 1e-6f && muted.wav_hash == heard.wav_hash, "analog-b10",
                        "muted-recorded", "the muted call records at the level the AGC takes the heard one to");
     if (rc != 0) {

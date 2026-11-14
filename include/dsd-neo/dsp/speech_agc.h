@@ -7,7 +7,7 @@
  * @file
  * @brief Receive-side speech level AGC and a standalone peak limiter.
  *
- * One AGC for digital and analog voice. It aims every talker at one active speech level (ITU-T P.56, -24 dBFS by
+ * One AGC for digital and analog voice. It aims every talker at one active speech level (ITU-T P.56, -20 dBFS by
  * default) with three separate parts:
  * - a slow level controller that learns only from frames it takes for speech (a level cue over a tracked noise floor
  *   and a pitch cue from the autocorrelation, with a run rule and a test that turns steady tones away),
@@ -41,15 +41,15 @@ extern "C" {
 /** Highest supported rate: the highest PCM input rate (`-s`, 192 kHz); the RTL monitor runs at 48 kHz by default. */
 #define DSD_SPEECH_AGC_MAX_RATE_HZ       192000
 /** The active speech level the AGC aims at, dBFS (P.56). */
-#define DSD_SPEECH_AGC_TARGET_DBFS       (-24.0f)
+#define DSD_SPEECH_AGC_TARGET_DBFS       (-20.0f)
 /** The limiter ceiling, dBFS per sample: 29204 in int16 units. */
 #define DSD_SPEECH_AGC_CEILING_DBFS      (-1.0f)
 /** The same target in the controller's own frame-level domain (the power mean of committed 20 ms frames), calibrated
     on established speech (vocoded and analog talkers) so that it plays at DSD_SPEECH_AGC_TARGET_DBFS. */
-#define DSD_SPEECH_AGC_FRAME_TARGET_DBFS (-20.278f)
+#define DSD_SPEECH_AGC_FRAME_TARGET_DBFS (-16.278f)
 /** The controller never moves the gain more than this far below or above the start gain, dB. */
 #define DSD_SPEECH_AGC_MAX_CUT_DB        12.0f
-#define DSD_SPEECH_AGC_MAX_BOOST_DB      15.0f
+#define DSD_SPEECH_AGC_MAX_BOOST_DB      30.0f
 /** The start gain init and dsd_speech_agc_set_start_gain_db() take, +- dB: beyond it the gain times a large input
     would no longer stay finite. */
 #define DSD_SPEECH_AGC_START_GAIN_MAX_DB 60.0f
@@ -150,9 +150,9 @@ typedef struct {
 /**
  * @brief Configure for @p rate_hz and reset.
  *
- * @param start_gain_db The gain a new reception starts at, dB (G0: 0 for digital voice; analog per band), within
- *                      +-DSD_SPEECH_AGC_START_GAIN_MAX_DB. The controller stays within -12/+15 dB of it, and tone
- *                      frames never get more.
+ * @param start_gain_db The gain a new reception starts at, dB (G0: +4 for digital voice, DSD_VOICE_LEVEL_START_GAIN_DB;
+ *                      analog per band), within +-DSD_SPEECH_AGC_START_GAIN_MAX_DB. The controller stays within
+ *                      -12/+30 dB of it, and tone frames never get more.
  * @param target_dbfs   The active speech level to aim at (DSD_SPEECH_AGC_TARGET_DBFS).
  * @param ceiling_dbfs  The per-sample limiter ceiling (DSD_SPEECH_AGC_CEILING_DBFS), at most 0.
  *

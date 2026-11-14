@@ -472,10 +472,16 @@ test_process_audio_native_right_clamps_and_tracks_output(void) {
     return rc;
 }
 
-/* Auto gain (issue #518) starts at the reference level (-g 1) on a fresh state, on either slot: the first frame stages at
-   unity and reads 0 dB. */
+/* The int16 sample the auto gain's start (DSD_VOICE_LEVEL_START_GAIN_DB over the -g 1 level) stages @p x at. */
+static short
+at_start_gain(double x) {
+    return (short)lrint(x * pow(10.0, (double)DSD_VOICE_LEVEL_START_GAIN_DB / 20.0));
+}
+
+/* Auto gain (issue #518) starts at its start gain on a fresh state, on either slot: the first frame stages at that gain
+   and reads it in dB. */
 static int
-test_process_audio_auto_gain_starts_at_unity(void) {
+test_process_audio_auto_gain_starts_at_start_gain(void) {
     static dsd_opts opts = {0};
     static dsd_state state = {0};
     DSD_MEMSET(&opts, 0, sizeof opts);
@@ -498,16 +504,16 @@ test_process_audio_auto_gain_starts_at_unity(void) {
     chain_and_stage_left(&opts, &state);
 
     int rc = 0;
-    rc |= expect_int_eq("auto gain first sample at unity", out[0], 1000);
-    rc |= expect_int_eq("auto gain last sample at unity", out[159], 1000);
-    rc |= expect_float_close("auto gain reads 0 dB", state.aout_gain, 0.0f, 1e-6f);
+    rc |= expect_int_eq("auto gain first sample at the start gain", out[0], at_start_gain(1000.0));
+    rc |= expect_int_eq("auto gain last sample at the start gain", out[159], at_start_gain(1000.0));
+    rc |= expect_float_close("auto gain reads the start gain", state.aout_gain, DSD_VOICE_LEVEL_START_GAIN_DB, 1e-6f);
     rc |= expect_int_eq("auto gain output index", state.audio_out_idx, 160);
     dsd_state_ext_free_all(&state);
     return rc;
 }
 
 static int
-test_process_audio_right_auto_gain_starts_at_unity(void) {
+test_process_audio_right_auto_gain_starts_at_start_gain(void) {
     static dsd_opts opts = {0};
     static dsd_state state = {0};
     DSD_MEMSET(&opts, 0, sizeof opts);
@@ -531,12 +537,13 @@ test_process_audio_right_auto_gain_starts_at_unity(void) {
     chain_and_stage_right(&opts, &state);
 
     int rc = 0;
-    rc |= expect_int_eq("right auto gain first sample", out[0], 1000);
-    rc |= expect_int_eq("right auto gain negative sample", out[1], -2000);
-    rc |= expect_int_eq("right auto gain small sample", out[2], 250);
-    rc |= expect_int_eq("right auto gain peak sample", out[3], -4000);
-    rc |= expect_int_eq("right auto gain mirror sample", state.s_r[0], 1000);
-    rc |= expect_float_close("right auto gain reads 0 dB", state.aout_gainR, 0.0f, 1e-6f);
+    rc |= expect_int_eq("right auto gain first sample", out[0], at_start_gain(1000.0));
+    rc |= expect_int_eq("right auto gain negative sample", out[1], at_start_gain(-2000.0));
+    rc |= expect_int_eq("right auto gain small sample", out[2], at_start_gain(250.0));
+    rc |= expect_int_eq("right auto gain peak sample", out[3], at_start_gain(-4000.0));
+    rc |= expect_int_eq("right auto gain mirror sample", state.s_r[0], at_start_gain(1000.0));
+    rc |= expect_float_close("right auto gain reads the start gain", state.aout_gainR, DSD_VOICE_LEVEL_START_GAIN_DB,
+                             1e-6f);
     rc |= expect_int_eq("right auto gain output index", state.audio_out_idxR, 160);
     rc |= expect_int_eq("right auto gain long output index", state.audio_out_idx2R, 160);
     rc |= expect_true("right auto gain output pointer advanced", state.audio_out_buf_pR == out + 160);
@@ -1453,8 +1460,8 @@ main(void) {
     rc |= test_manual_analog_gain_helper();
     rc |= test_process_audio_native_left_clamps_and_tracks_output();
     rc |= test_process_audio_native_right_clamps_and_tracks_output();
-    rc |= test_process_audio_auto_gain_starts_at_unity();
-    rc |= test_process_audio_right_auto_gain_starts_at_unity();
+    rc |= test_process_audio_auto_gain_starts_at_start_gain();
+    rc |= test_process_audio_right_auto_gain_starts_at_start_gain();
     rc |= test_stage_short_left_upsampled_clamps_and_tracks_output();
     rc |= test_process_audio_upsampled_right_clamps_and_tracks_output();
     rc |= test_voice_outputs_round_to_nearest();

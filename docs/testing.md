@@ -2069,9 +2069,10 @@ synthesis against mbelib's own output.
 
 `CORE_VOICE_LEVEL` drives each slot's speech AGC (issue #518) with deterministic quiet speech
 (`test_support/speech_synth.h`) and reads the gain it holds from a DC probe frame nothing learns from. The same speech
-lifts the gain at least 6 dB as decoded speech and leaves it at exactly 0 dB as ciphertext, refused speech, repeats,
-tone frames or frames with no media; zeros, AMBE silence, comfort noise, near-silent decoded speech and loud ciphertext
-leave it there too. Auto starts at the decoder's level on a zeroed or an `initState()` state. Tone frames play at no
+lifts the gain at least 6 dB over the start gain (`DSD_VOICE_LEVEL_START_GAIN_DB`, +4 dB over `-g 1`) as decoded
+speech and leaves it at exactly the start gain as ciphertext, refused speech, repeats, tone frames or frames with no
+media; zeros, AMBE silence, comfort noise, near-silent decoded speech and loud ciphertext leave it there too. Auto
+starts at the start gain on a zeroed or an `initState()` state. Tone frames play at no
 more than the start gain from their first sample and leave the learned gain as it was. The high-pass and the AGC keep
 their state across a fade the call state heals; a new transmission, another protocol family and a new TETRA
 talkspurt start the AGC over, and a frame naming none keeps it; `dsd_voice_level_reset()` resets one slot or both; a
@@ -2127,7 +2128,7 @@ integer stdout equal to the WAV's samples. The runner removes its work folder, f
 ### Speech level parity (issue #518)
 
 Digital and analog calls play at one loudness by default: the speech AGC (`<dsd-neo/dsp/speech_agc.h>`) brings
-established speech to -24 dBFS active level (ITU-T P.56, `tests/test_support/p56.h`) on both. One talker checks it from
+established speech to -20 dBFS active level (ITU-T P.56, `tests/test_support/p56.h`) on both. One talker checks it from
 both sides. `dsd-neo_test_speech_parity_tool` (`tests/core/speech_parity_tool.c`) makes it from the synthetic speech of
 `tests/test_support/speech_synth.h`: 9 s of running speech at a 115 Hz pitch with an integrated pitch phase, syllables
 and real pauses (0.4-1.0 s of exact zeros between phrases), at a nominal -26 dBFS (the DVSI reference level digital
@@ -2148,12 +2149,12 @@ output, offset by the 0.25 s of carrier before the talker on the I/Q fixtures.
 
 | Case | Renditions | Measured established speech (dBFS P.56) | Bounds |
 | --- | --- | --- | --- |
-| `DECODE_MBE_SPEECH_LEVEL` (all builds) | IMBE, AMBE+2, AMBE 2400 | -22.76, -22.88, -22.28 (spread 0.60 dB) | each within 3 dB of -24, all within 1.5 dB |
-| `DECODE_IQ_SPEECH_PARITY` (radio builds) | the three above, FM narrowband, FM wideband, AM | the above, -22.07, -21.99, -22.31 (spread 0.88 dB) | each within 3 dB of -24, all six within 1.5 dB |
+| `DECODE_MBE_SPEECH_LEVEL` (all builds) | IMBE, AMBE+2, AMBE 2400 | -18.77, -18.88, -18.26 (spread 0.62 dB) | each within 3 dB of -20, all within 1.5 dB |
+| `DECODE_IQ_SPEECH_PARITY` (radio builds) | the three above, FM narrowband, FM wideband, AM | the above, -18.12, -18.06, -18.43 (spread 0.82 dB) | each within 3 dB of -20, all six within 1.5 dB |
 
 At the fixed reference gains the same span reads -28.26, -28.02 and -28.09 dBFS (`-g 1`), and -27.15, -21.13 and
 -21.14 dBFS (`-n 50`). On 539188613, before the speech AGC, the digital renditions read -13.33, -13.84 and -13.13 and
-the analog ones -23.61, -23.99 and -24.22: 11.09 dB apart (B1). The synthetic talker plays about 2 dB over -24: the
+the analog ones -23.61, -23.99 and -24.22: 11.09 dB apart (B1). The synthetic talker plays about 1.5 dB over -20: the
 AGC's target is calibrated on real speech, and `DSP_SPEECH_AGC`'s synthetic talker set reads +1.7 dB (median) the same
 way. The cases hold parity and the established bound, not that offset.
 
@@ -2175,11 +2176,10 @@ Changing the talker (its seed, steps or length in the tool) changes the digital 
 regenerate the fixtures in the same change; `--verify --speech-synth-gen` fails until they match.
 
 Off-air speech is too short for established speech. Each excerpt's case holds the whole output's P.56 level to +/-1 dB
-of what the speech AGC measures there, and the excerpt at its fixed reference gain to a level farther from -24 dBFS
-(`nfm_squelch_real_b`'s two windows are cut short on the sides that face each other, since its levels are only
-0.86 dB apart in distance from -24).
+of what the speech AGC measures there, and on FM the excerpt at its fixed reference gain to a level farther from
+-20 dBFS (`am_airband_real` already plays within 2 dB of it at `-n 50`, and the AGC keeps it there).
 The digital cases, `DECODE_IQ_SPEECH_LEVEL_*` (`tests/speech_level_check.cmake`), replay the fixture twice, at the
-default auto gain and at `-g 1`, and require the auto level to have moved toward -24 dBFS from the `-g 1` one, or to
+default auto gain and at `-g 1`, and require the auto level to have moved toward -20 dBFS from the `-g 1` one, or to
 lie within 3 dB of it (a few frames of speech can step the gain past the target), and to lie within 10 dB of it (the
 startup bound at 1 s). The analog ones pin both levels in the analog replay host: the `-n 50` level in the smoke cases
 and `DECODE_IQ_ANALOG_AM_REAL`, the auto level in `DECODE_IQ_ANALOG_PARITY_*`. Speech intervals are seconds into the
@@ -2187,22 +2187,23 @@ decoded output; a digital output holds only the voice that played.
 
 | Fixture | Mode | Speech (s) | Speech intervals (s) | Reference gain (dBFS P.56) | Auto (dBFS P.56) | Case |
 | --- | --- | --- | --- | --- | --- | --- |
-| `dstar` | `-fd` | 2.3 | 0.20-2.50 | -18.14 (`-g 1`) | -20.67 | `DECODE_IQ_SPEECH_LEVEL_DSTAR` |
-| `ysf` | `-fy` | 2.55 | 0.0-0.25, 1.05-3.35 | -38.79 | -25.37 | `DECODE_IQ_SPEECH_LEVEL_YSF` |
-| `m17` | `-fz` | 1.9 | 0.0-1.45, 2.0-2.47 | -21.63 | -21.81 | `DECODE_IQ_SPEECH_LEVEL_M17` (Codec2 builds) |
-| `tetra_call_real_air_72k` | `-fT` | 2.06 | 0.0-1.10 (first talker), 2.0-2.96 (the next, 10.8 dB louder) | -28.53 | -27.41 | `DECODE_IQ_SPEECH_LEVEL_TETRA` |
-| `nxdn96` | `-fn` | 1.25 | 0.20-1.45 | -40.89 | -32.32 | `DECODE_IQ_SPEECH_LEVEL_NXDN96` |
-| `provoice` | `-fp` | 1.35 | 0.0-0.25, 1.40-1.90, 2.10-2.70 | -39.30 | -25.42 | `DECODE_IQ_SPEECH_LEVEL_PROVOICE` |
-| `p25p1_c4fm_vc` | `-f1` | 0.8 | 0.60-1.42 | -32.04 | -29.79 | `DECODE_IQ_SPEECH_LEVEL_P25P1_C4FM` |
-| `p25p1_cqpsk_vc` | `-f1 -mq` | 0.3 | 0.70-1.00 | -22.44 | -21.53 | `DECODE_IQ_SPEECH_LEVEL_P25P1_CQPSK` |
-| `am_airband_real` | `-fM` | 6.55 | 0.05-0.25, 0.55-2.3, 2.6-5.0, 5.5-6.5, 6.78-7.98 | -18.12 (`-n 50`) | -22.39 | `DECODE_IQ_ANALOG_AM_REAL`, `DECODE_IQ_ANALOG_PARITY_AM_REAL` |
-| `nfm_ctcss_real` | `-fA` | 5.2 | 0.0-3.6, 4.4-5.98 | -31.90 | -22.98 | `DECODE_IQ_ANALOG_NFM_REAL_CTCSS_SMOKE`, `DECODE_IQ_ANALOG_PARITY_NFM_REAL` |
-| `nfm_squelch_real_a` | `-fA` | 2.7 | 0.40-3.10 | -29.31 | -26.04 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_A_SMOKE`, `DECODE_IQ_ANALOG_PARITY_NFM_SQUELCH_A` |
-| `nfm_squelch_real_b` | `-fA` | 3.3 | 0.0-3.30 | -26.71 | -22.15 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE`, `DECODE_IQ_ANALOG_PARITY_NFM_SQUELCH_B` |
+| `dstar` | `-fd` | 2.3 | 0.20-2.50 | -18.14 (`-g 1`) | -17.63 | `DECODE_IQ_SPEECH_LEVEL_DSTAR` |
+| `ysf` | `-fy` | 2.55 | 0.0-0.25, 1.05-3.35 | -38.82 | -18.05 | `DECODE_IQ_SPEECH_LEVEL_YSF` |
+| `m17` | `-fz` | 1.9 | 0.0-1.45, 2.0-2.47 | -21.63 | -17.82 | `DECODE_IQ_SPEECH_LEVEL_M17` (Codec2 builds) |
+| `tetra_call_real_air_72k` | `-fT` | 2.06 | 0.0-1.10 (first talker), 2.0-2.96 (the next, 10.8 dB louder) | -28.53 | -23.39 | `DECODE_IQ_SPEECH_LEVEL_TETRA` |
+| `nxdn96` | `-fn` | 1.25 | 0.20-1.45 | -40.88 | -18.64 | `DECODE_IQ_SPEECH_LEVEL_NXDN96` |
+| `provoice` | `-fp` | 1.35 | 0.0-0.25, 1.40-1.90, 2.10-2.70 | -39.30 | -17.55 | `DECODE_IQ_SPEECH_LEVEL_PROVOICE` |
+| `p25p1_c4fm_vc` | `-f1` | 0.8 | 0.60-1.42 | -32.03 | -22.73 | `DECODE_IQ_SPEECH_LEVEL_P25P1_C4FM` |
+| `p25p1_cqpsk_vc` | `-f1 -mq` | 0.3 | 0.70-1.00 | -22.44 | -17.31 | `DECODE_IQ_SPEECH_LEVEL_P25P1_CQPSK` |
+| `am_airband_real` | `-fM` | 6.55 | 0.05-0.25, 0.55-2.3, 2.6-5.0, 5.5-6.5, 6.78-7.98 | -18.12 (`-n 50`) | -18.42 | `DECODE_IQ_ANALOG_AM_REAL`, `DECODE_IQ_ANALOG_PARITY_AM_REAL` |
+| `nfm_ctcss_real` | `-fA` | 5.2 | 0.0-3.6, 4.4-5.98 | -31.90 | -19.01 | `DECODE_IQ_ANALOG_NFM_REAL_CTCSS_SMOKE`, `DECODE_IQ_ANALOG_PARITY_NFM_REAL` |
+| `nfm_squelch_real_a` | `-fA` | 2.7 | 0.40-3.10 | -29.31 | -21.96 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_A_SMOKE`, `DECODE_IQ_ANALOG_PARITY_NFM_SQUELCH_A` |
+| `nfm_squelch_real_b` | `-fA` | 3.3 | 0.0-3.30 | -26.71 | -18.22 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE`, `DECODE_IQ_ANALOG_PARITY_NFM_SQUELCH_B` |
 
-A few notes. `nxdn96`'s 1.25 s of speech sits 17 dB under the target, and the gain climbs toward it at its startup
-rate. `p25p1_cqpsk_vc`'s 0.3 s of speech commits once, and that first step toward a level read from the rising edge
-of the speech overshoots, so its level moves 0.9 dB away from -24 dBFS while staying within 3 dB of it. The analog
+A few notes. `nxdn96`'s 1.25 s of speech sits 21 dB under the target at `-g 1`; the start gain and the 2 dB startup
+steps bring it within 1.5 dB of the target over the excerpt (it played 12 dB under at 1 dB steps from 0 dB).
+`p25p1_cqpsk_vc`'s 0.3 s of speech commits a few times, and those first steps toward a level read from the rising edge
+of the speech overshoot, so its level moves 0.25 dB away from -20 dBFS while staying within 3 dB of it. The analog
 gap noise between words is 11-17 dB under the speech, so P.56 counts it as active.
 
 The fixtures with no speech keep their own assertions: the tone calibration (`-n 50` 1 kHz windows), `noise_floor`
@@ -2212,10 +2213,11 @@ The fixtures with no speech keep their own assertions: the tone calibration (`-n
 AGC learns nothing from them. Each replays the fixture at the default auto gain and at `-n 50`, and the tool's
 `gated-nfm` check runs the `-n 50` audio (what the AGC took in) through a speech AGC set up as the monitor's own: its
 output must be the decoder's to within 4 LSB (measured 1.3), so the state it reads is the decoder's. On all nine no
-frame commits and the learned gain stays at the +4.54 dB start gain. The output still runs 0-5 dB under the start gain:
+frame commits and the learned gain stays at the +8.54 dB start gain. The output still runs 0-5 dB under the start gain:
 that is the attenuator, which eases the noise from the first frame at 6 dB/s (no speech has been learned) and lets go in
 each syllable gap, where the level falls 14 dB. The cases hold it to that rate and to 0 dB or less (it reaches -2.6 to
--5.3 dB), and require the limiter never to act. A speech fixture fails the same check (`speech_nfm_synth`: 214
+-5.3 dB). At the start gain the noise's loudest bursts reach the -1 dBFS ceiling, so the limiter may act in at most 20
+frames (it acts in 7-15). A speech fixture fails the same check (`speech_nfm_synth`: 214
 commits), and so does a mismatched output.
 
 #### The speech AGC's calibration and acceptance
@@ -2227,36 +2229,50 @@ numbers are recorded here. Established speech is a file's output P.56 level afte
 on files with at least 4 s of speech and 1 s left after that; the startup error is the applied gain less the gain the
 file settles at, and convergence the time until it first comes within 1.5 dB of that gain.
 
-- Calibration. `DSD_SPEECH_AGC_FRAME_TARGET_DBFS`, -20.278 dB in the controller's own frame-level domain, puts the
+- Calibration. `DSD_SPEECH_AGC_FRAME_TARGET_DBFS`, -20.278 dB in the controller's own frame-level domain, put the
   median established speech of 19 calibration files (12 DVSI vectors, 7 ARCTIC talkers) at -24.00 dBFS P.56
-  (+0.0004 dB).
+  (+0.0004 dB) at the first target. The target moved to -20 dBFS when off-air speech proved to play far too quiet
+  (below), and the frame target moved by the same 4 dB to -16.278 dB: the same files now read -0.09 dB under it, all
+  but 0.03 dB of that the -1 dBFS limiter, which sits 4 dB nearer the speech.
 - Validation. 135 other files with established speech: DVSI vectors, 45 of them talkers that share no content with
   the calibration set, bit-error and discontinuous-transmission vectors, held-out ARCTIC talkers, the real NFM and AM
   excerpts and the low-VHF capture. The analog chain runs the coloured-noise veto (below) at 48 kHz; with it the same
   135 files were measured again, and an extended set of 140 adds 750 us and 50 us de-emphasis decodes.
 
-| Measure | Bound | Without the veto (digital chain) | With the veto (n 135) | With the veto, extended (n 140) |
+The table holds the current constants: target -20 dBFS, start gains 4 dB over the first ones (digital +4 dB over
+`-g 1`, `DSD_VOICE_LEVEL_START_GAIN_DB`), a range of -12/+30 dB around the start gain, 2 dB startup steps, and the
+attenuator acting over -32 dBFS down to -60 dB. In parentheses, where it moved, the value at the first constants
+(target -24 dBFS, start gains 4 dB lower, -12/+15 dB, 1 dB startup steps, -36 dBFS and -24 dB).
+
+| Measure | Bound | Without the veto (digital chain) | With the veto (n 135) | With the veto, extended (n 143) |
 | --- | --- | --- | --- | --- |
-| Established speech error, max | ≤ 3.0 dB | 2.14 dB | 1.99 dB | 2.01 dB |
-| Files within 2.0 dB | ≥ 95% | 99.3% | 100% | 99.3% |
-| Files within 1.5 dB | ≥ 90% | 94.1% | 90.4% (13 outside) | 90.0% (14 outside) |
+| Established speech error, max | ≤ 3.0 dB | 2.15 dB (2.14) | 2.07 dB (1.99) | 2.07 dB (2.01) |
+| Files within 2.0 dB | ≥ 95% | 98.6% (99.3%) | 99.3% (100%) | 99.3% |
+| Files within 1.5 dB | ≥ 90% | 95.7% (94.1%) | 91.1%, 12 outside (90.4%) | 90.9%, 13 outside (90.0%) |
 | Gain swing after 2 s, max | ≤ 9 dB | 8.13 dB (166 files) | | 6.6 dB |
 | Files with a swing within 6.5 dB | ≥ 95% | 97.6% | | 99.4% |
-| Startup error at +1 s, max | ≤ 10 dB | 8.35 dB (154 files) | | 9.12 dB |
-| Files within 6 dB at +1 s | ≥ 85% | 90.3% | | 91.8% |
-| Startup error at +2 s, max | ≤ 8 dB | 7.01 dB | | 7.20 dB |
-| Files within 4 dB at +2 s | ≥ 90% | 92.9% | | 91.8% |
-| Convergence of files starting over 1.5 dB off, 90th percentile | 90% by 2.5 s | 1.79 s (67 files; 94.0% by 2.5 s) | | 2.01 s |
-| Convergence, slowest | ≤ 7 s | 6.28 s | | 6.62 s |
-| First gain change after the reception starts | ≥ 0.120 s | 0.120 s at the earliest; median 0.38 s, 95th percentile 1.70 s, latest 2.56 s | | 0.120 s at the earliest |
+| Startup error at +1 s, max | ≤ 10 dB, **not met** | 12.20 dB (8.35) | | 10.33 dB (9.12) |
+| Files within 6 dB at +1 s | ≥ 85% | 87.3% (90.3%) | | 89.5% (91.8%) |
+| Startup error at +2 s, max | ≤ 8 dB, **not met** with the veto | 7.01 dB | | 8.17 dB (7.20) |
+| Files within 4 dB at +2 s | ≥ 90% | 92.4% (92.9%) | | 93.2% (91.8%) |
+| Convergence of files starting over 1.5 dB off, 90th percentile | 90% by 2.5 s | 1.59 s (70 files; 94.3% by 2.5 s) | | 1.83 s (92.0% by 2.5 s) |
+| Convergence, slowest | ≤ 7 s | 5.92 s (6.28) | | 6.62 s |
+| First gain change after the reception starts | ≥ 0.120 s | 0.120 s at the earliest | | 0.120 s at the earliest |
 
-Each measure counts the files it applies to: established speech the 135 validation files, swing 166 natural and FM
-files, startup the 154 validation and calibration files, and convergence the 67 of those that start more than 1.5 dB
-off. With the veto, the measures past the first three rows were run on the extended set only, so its n 135 column is
-empty there.
+Each measure counts the files it applies to: established speech the validation files whose speech the range can
+reach (138 without the veto), swing 166 natural and FM files, startup the validation and calibration files (157), and
+convergence the 70 of those that start more than 1.5 dB off. With the veto, the measures past the first three rows were
+run on the extended set only, so its n 135 column is empty there.
 
-With every bound met, the production code gives the prototype it was ported from the same per-frame decisions and
-gains on every file, and the same output bits except on samples the limiter holds, where the prototype ran one float
+The two startup bounds the current constants miss are the price of the 2 dB startup steps. A transmission whose first
+syllables read much quieter than its settled speech takes a low first estimate, and the faster steps follow it further
+before the estimate catches up: two synthetic FM talkers (`cref_fm_nb_awb`, `cref_fm_wb_awb`, +12.2 and +11.9 dB at
++1 s, against +6.5 at 1 dB steps) and one real low-VHF capture (+10.3 dB at +1 s, +8.2 at +2 s). Every other file
+stays within the bounds, and off-air digital speech, which plays 10-20 dB under the target at `-g 1`, now reaches it
+within the first second or two of a call instead of staying quiet for most of a short one.
+
+At the first constants, with every bound met, the production code gave the prototype it was ported from the same
+per-frame decisions and gains on every file, and the same output bits except on samples the limiter holds, where the prototype ran one float
 step over the ceiling. The transition checks held too (shown without the veto; with it the rollback, decodability,
 tone and hiss checks give the same verdicts):
 
@@ -2368,7 +2384,7 @@ between runs. Measured on the commit that added them:
 
 | Case | Fixture | Measured (default monitor filters) | Bounds |
 | --- | --- | --- | --- |
-| `DECODE_IQ_ANALOG_NFM_TONE` | `nfm_tone_synth` | tone SNR 30.4 dB (the speech AGC moves the gain while it turns the tone away, see below), in-band 52.3 dB, RMS -15.36 dBFS, peak -7.01 dBFS, audible 1480 of 1480 ms from 0 ms, no clipping; a 1 kHz probe reads 0.01 dBc | SNR ≥ 30, captured and audible ≥ 1400 ms, first audible ≤ 100 ms, in-band ≥ 45, RMS -16.4 to -14.4 dBFS and peak ≤ -6.5 dBFS, clip 0, 1 kHz probe within ±1 dBc |
+| `DECODE_IQ_ANALOG_NFM_TONE` | `nfm_tone_synth` | tone SNR 27.3 dB (the speech AGC moves the gain while it turns the tone away, see below), in-band 52.3 dB, RMS -13.63 dBFS, peak -3.01 dBFS, audible 1480 of 1480 ms from 0 ms, no clipping; a 1 kHz probe reads 0.01 dBc | SNR ≥ 25, captured and audible ≥ 1400 ms, first audible ≤ 100 ms, in-band ≥ 45, RMS -14.63 to -12.63 dBFS and peak ≤ -2.5 dBFS, clip 0, 1 kHz probe within ±1 dBc |
 | `DECODE_IQ_ANALOG_NFM_TONE_FIXED50` | `nfm_tone_synth`, `-n 50` | RMS -15.1 dBFS, peak -11.6 dBFS: the fixed gain's calibration (the reference signal at -12 dBFS peak, -15 dBFS RMS), with the 0.87 dB the default 75 us de-emphasis takes off 1 kHz made up at the gain stage (issue #518 B8; -15.9 before) | RMS -15.2 to -14.8 dBFS, captured ≥ 1400 ms, clip 0 |
 | `DECODE_IQ_ANALOG_NFM_TONE_FIXED50_DEEMPH_OFF`, `_50`, `_NFM` | `NFM_TONE_FIXED50` under `DSD_NEO_DEEMPH=off`, `50` and `nfm` (750 us) | RMS -15.1 dBFS under each: the calibration holds whatever the de-emphasis (B9: 750 us read -28.7, 50 us -15.5) | `NFM_TONE_FIXED50`'s bounds |
 | `DECODE_IQ_ANALOG_NFM_ADJACENT` | `nfm_adjacent_synth`, `-v 0 -n 50` | tone SNR 36.6 dB; 12.5 kHz probe -76.6 dBc | SNR ≥ 30, captured ≥ 1400 ms, 12.5 kHz ≤ -40 dBc |
@@ -2378,20 +2394,20 @@ between runs. Measured on the commit that added them:
 | `DECODE_IQ_ANALOG_NFM_BW_8K` | `nfm_adjacent_synth`, `-v 0 -n 50 --nfm-bandwidth-hz 8000` | tone SNR 28.0 dB; 12.5 kHz probe -92.6 dBc | SNR ≥ 22, captured ≥ 1400 ms, 12.5 kHz ≤ -86 dBc (the default width reads -76.6) |
 | `DECODE_IQ_ANALOG_NFM_BW_25K` | `nfm_adjacent_synth`, `-v 0 -n 50 --nfm-bandwidth-hz 25000` | the neighbour is in the passband: 12.5 kHz probe -19.9 dBc, tone SNR 8.2 dB (the beat counts as noise), tone level -15.0 dBFS | captured ≥ 1400 ms, 12.5 kHz ≥ -30 dBc, 1 kHz level -17 to -13 dBFS |
 | `DECODE_IQ_SCAN_NFM_TONE` | `nfm_adjacent_synth` through an `nfm` map row with `--nfm-bandwidth-hz 12500` on a `-fa -v 0 -n 50` session (`--analog-scan-row 0`) | tone SNR 37.4 dB; 12.5 kHz probe -97.3 dBc (the same row without a width: 36.6 dB, -76.6 dBc) | row banner with `width 12.5 kHz (row)`, SNR ≥ 30, captured ≥ 1400 ms, 12.5 kHz ≤ -86 dBc |
-| `DECODE_IQ_SCAN_AM_TONE` | `am_tone_synth` through an `am` map row with `--am-bandwidth-hz 8333` on a `-fa` session (`--analog-scan-row 0`) | tone SNR 30.3 dB, in-band 43.1 dB, RMS -20.04 dBFS, audible 1480 of 1480 ms from 0 ms, no clipping (the wider channel lets in more noise than `-fM`'s 6 kHz default, in-band 50.4 dB); the FM monitor finds no tone there, so the tone is the AM detector's | row banner with `width 8.333 kHz (row)`, SNR ≥ 25, captured and audible ≥ 1400 ms, in-band ≥ 36, `AM_TONE`'s level window, clip 0 |
+| `DECODE_IQ_SCAN_AM_TONE` | `am_tone_synth` through an `am` map row with `--am-bandwidth-hz 8333` on a `-fa` session (`--analog-scan-row 0`) | tone SNR 30.1 dB, in-band 43.1 dB, RMS -16.07 dBFS, audible 1480 of 1480 ms from 0 ms, no clipping (the wider channel lets in more noise than `-fM`'s 6 kHz default, in-band 50.4 dB); the FM monitor finds no tone there, so the tone is the AM detector's | row banner with `width 8.333 kHz (row)`, SNR ≥ 25, captured and audible ≥ 1400 ms, in-band ≥ 36, `AM_TONE`'s level window, clip 0 |
 | `DECODE_IQ_SCAN_AM_WIDTH` | `am_adjacent_synth` through an `am` map row with `--am-bandwidth-hz 20000` (`--analog-scan-row 1`), `-v 0 -n 50` | 8333 Hz probe +0.3 dBc (row 0's 8.333 kHz: -93.2 dBc; `-fM`'s 6 kHz default: -103.5 dBc) | row banner with `width 20 kHz (row)`, captured ≥ 1400 ms, 8333 Hz ≥ -10 dBc, which fails if the row's width does not apply |
 | `DECODE_IQ_SCAN_AM_SQUELCH_STEADY_CARRIER` | `am_airband_real` through an `am` map row with `--squelch-db -20` (the carrier reads about -13 dB) | captured 7980 of 8000 ms: the carrier, measured whole, holds the gate open throughout (the pooled-mean measurement, which reads an 0 Hz carrier as A²(1 - sin 2φ)/4, let 5940 ms through, chopped; at -18 dB 4580 ms, at -16 dB 2720 ms) | captured ≥ 7800 ms |
 | `DECODE_IQ_ANALOG_SILENT_STREAM_TIME` | `nfm_tone_synth` under `-fi` (monitor off) | total 1500 ms, no audio at all | audible 0 ms, total 1400 to 1600 ms |
 | `DECODE_IQ_ANALOG_NFM_REAL_CTCSS_SMOKE` | `nfm_ctcss_real`, `-n 50`, audible from -40 dBFS | captured 6000 ms, audible 4360 ms, in-band 18.4 dB, RMS -31.9 dBFS, P.56 -31.90 dBFS | captured ≥ 5800, audible ≥ 3500, in-band ≥ 14, RMS ≤ -25 dBFS, P.56 -32.90 to -30.90 dBFS |
 | `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_A_SMOKE` | `nfm_squelch_real_a`, `-n 50`, audible from -40 dBFS | captured 4000 ms, audible 1820 ms from 460 ms, in-band 23.7 dB, P.56 -29.31 dBFS | captured ≥ 3900, audible ≥ 1200, first audible 250 to 1000 ms, in-band ≥ 18, P.56 -30.31 to -28.31 dBFS |
-| `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE` | `nfm_squelch_real_b`, `-n 50`, audible from -40 dBFS | captured 4000 ms, audible 3180 ms, in-band 25.5 dB, P.56 -26.71 dBFS | captured ≥ 3900, audible ≥ 2500, in-band ≥ 20, P.56 -27.71 to -26.31 dBFS (cut short toward -24 so it cannot meet `PARITY_NFM_SQUELCH_B`'s window) |
-| `DECODE_IQ_ANALOG_PARITY_NFM_REAL` | `nfm_ctcss_real` under `-fA` (default chain) | P.56 active level -22.98 dBFS (RMS -23.12), no clipping: toward the speech AGC's -24 dBFS target from -31.90 at `-n 50` | captured ≥ 5800, P.56 -23.98 to -21.98 dBFS, clip 0 |
-| `DECODE_IQ_ANALOG_PARITY_NFM_SQUELCH_A` | `nfm_squelch_real_a` under `-fA` (default chain) | P.56 -26.04 dBFS, no clipping; -29.31 at `-n 50` | captured ≥ 3900, P.56 -27.04 to -25.04 dBFS, clip 0 |
-| `DECODE_IQ_ANALOG_PARITY_NFM_SQUELCH_B` | `nfm_squelch_real_b` under `-fA` (default chain) | P.56 -22.15 dBFS, no clipping; -26.71 at `-n 50` | captured ≥ 3900, P.56 -23.15 to -21.70 dBFS (cut short away from -24: at most 2.30 dB from it, the `-n 50` window at least 2.31), clip 0 |
-| `DECODE_IQ_ANALOG_PARITY_NFM_REAL_DEEMPH_NFM` | `nfm_ctcss_real` under `-fA` and `DSD_NEO_DEEMPH=nfm` | P.56 -23.70 dBFS (RMS -23.89), no clipping: the coloured-noise veto leaves real speech levelled (-23.25 dBFS without it) | captured ≥ 5800, P.56 -24.70 to -22.70 dBFS, clip 0 |
-| `DECODE_IQ_ANALOG_PARITY_AM_REAL` | `am_airband_real` under `-fM` (default chain) | P.56 -22.39 dBFS, no clipping; -18.12 at `-n 50` | captured ≥ 7800, P.56 -23.39 to -21.39 dBFS, clip 0 |
-| `DECODE_IQ_ANALOG_NOISE_FLOOR_EASED` | `noise_floor` under `-fA` (default chain, open squelch), audible from -28 dBFS | open-squelch noise, no speech: the attenuator eases it from -7.4 dBFS RMS (the start gain) toward -36 dBFS once a second passes with nothing learned; audible 3460 ms, the last audible block ends at 3480 ms, -31.4 dBFS RMS from 4.5 s on (B2: the old AGC held it at -21.1 dBFS RMS throughout) | captured ≥ 9800, last audible 2000 to 4500 ms, clip 0 |
-| `DECODE_IQ_ANALOG_NOISE_FLOOR_EASED_DEEMPH_NFM` | `noise_floor` under `-fA` and `DSD_NEO_DEEMPH=nfm` (750 us), audible from -26 dBFS | the same easing under the heaviest de-emphasis, about 2 dB louder (the gain stage makes up the de-emphasis): audible 3360 ms, the last audible block ends at 3480 ms. Without the analog AGC's coloured-noise veto a few percent of the noise's frames pass the pitch cue, and it plays at -10.0 dBFS RMS throughout | captured ≥ 9800, last audible 2000 to 4500 ms, clip 0 |
+| `DECODE_IQ_ANALOG_NFM_REAL_SQUELCH_B_SMOKE` | `nfm_squelch_real_b`, `-n 50`, audible from -40 dBFS | captured 4000 ms, audible 3180 ms, in-band 25.5 dB, P.56 -26.71 dBFS | captured ≥ 3900, audible ≥ 2500, in-band ≥ 20, P.56 -27.71 to -25.71 dBFS |
+| `DECODE_IQ_ANALOG_PARITY_NFM_REAL` | `nfm_ctcss_real` under `-fA` (default chain) | P.56 active level -19.01 dBFS (RMS -19.11), no clipping: toward the speech AGC's -20 dBFS target from -31.90 at `-n 50` | captured ≥ 5800, P.56 -20.01 to -18.01 dBFS, clip 0 |
+| `DECODE_IQ_ANALOG_PARITY_NFM_SQUELCH_A` | `nfm_squelch_real_a` under `-fA` (default chain) | P.56 -21.96 dBFS, no clipping; -29.31 at `-n 50` | captured ≥ 3900, P.56 -22.96 to -20.96 dBFS, clip 0 |
+| `DECODE_IQ_ANALOG_PARITY_NFM_SQUELCH_B` | `nfm_squelch_real_b` under `-fA` (default chain) | P.56 -18.22 dBFS, no clipping; -26.71 at `-n 50` | captured ≥ 3900, P.56 -19.22 to -17.22 dBFS, clip 0 |
+| `DECODE_IQ_ANALOG_PARITY_NFM_REAL_DEEMPH_NFM` | `nfm_ctcss_real` under `-fA` and `DSD_NEO_DEEMPH=nfm` | P.56 -19.60 dBFS, no clipping: the coloured-noise veto leaves real speech levelled (-23.25 dBFS without it at the first constants) | captured ≥ 5800, P.56 -20.60 to -18.60 dBFS, clip 0 |
+| `DECODE_IQ_ANALOG_PARITY_AM_REAL` | `am_airband_real` under `-fM` (default chain) | P.56 -18.42 dBFS, no clipping; -18.12 at `-n 50` (already within 2 dB of the target) | captured ≥ 7800, P.56 -19.42 to -17.42 dBFS, clip 0 |
+| `DECODE_IQ_ANALOG_NOISE_FLOOR_EASED` | `noise_floor` under `-fA` (default chain, open squelch), audible from -28 dBFS | open-squelch noise, no speech: the attenuator eases it from about -8.4 dBFS RMS (the start gain, its peaks held at -1 dBFS by the limiter) toward -32 dBFS from the first frame, since nothing has been learned; audible 4140 ms, the last audible block ends at 4220 ms, -32.9 dBFS RMS from 4.5 s on (B2: the old AGC held it at -21.1 dBFS RMS throughout) | captured ≥ 9800, last audible 2000 to 4500 ms, clip 0 |
+| `DECODE_IQ_ANALOG_NOISE_FLOOR_EASED_DEEMPH_NFM` | `noise_floor` under `-fA` and `DSD_NEO_DEEMPH=nfm` (750 us), audible from -26 dBFS | the same easing under the heaviest de-emphasis, about 2 dB louder (the gain stage makes up the de-emphasis): audible 3920 ms, the last audible block ends at 4060 ms. Without the analog AGC's coloured-noise veto a few percent of the noise's frames pass the pitch cue, and it plays at -10.0 dBFS RMS throughout | captured ≥ 9800, last audible 2000 to 4500 ms, clip 0 |
 | `DECODE_IQ_ANALOG_NOISE_FIXED50_DEEMPH_NFM` | `noise_floor` under `-fA -n 50` and `DSD_NEO_DEEMPH=nfm` | RMS -10.92 dBFS, peak -1.00 dBFS, no clipping: a fixed gain keeps the speech AGC's limiter | captured ≥ 9800, peak ≤ -0.9 dBFS, clip 0 |
 | `DECODE_IQ_ANALOG_RAW_WAV_NFM_REAL` | `nfm_ctcss_real` under `-fA`, the `-6` raw WAV (issue #643) | raw WAV RMS -28.9 dBFS, peak -13.9 dBFS, no clipping: the monitor's 1/pi-scale samples at the level a PCM input at the reference has (before the fix: every sample 0) | raw WAV RMS ≥ -32 dBFS |
 | `DECODE_IQ_ANALOG_RAW_WAV_AM_REAL` | `am_airband_real` under `-fM`, the `-6` raw WAV | raw WAV RMS -18.3 dBFS, peak -4.5 dBFS, no clipping (before the fix: -117.8 dBFS, samples of -1, 0 and 1) | raw WAV RMS ≥ -21.5 dBFS |
@@ -2399,7 +2415,7 @@ between runs. Measured on the commit that added them:
 | `DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH` | `am_airband_real` under `-fA` (monitor path only, not AM reception) | total and captured 8000 ms, no CQPSK symbols (before the fix: total 751 ms, captured 0 to 20 ms, CQPSK warning) | captured ≥ 7800 ms, total 7800 to 8200 ms |
 | `DECODE_IQ_ANALOG_REAL_CTCSS_1514` | `nfm_ctcss_real` | tone 151.4, first lock at 300 ms, locked 88.67% | tone lock ≤ 400 ms; tone 151.4 and no other tone logged |
 | `DECODE_IQ_ANALOG_REAL_CTCSS_NOFALSE_SQUELCH_A`, `_B`, `_AM` | `nfm_squelch_real_a`, `nfm_squelch_real_b`, `am_airband_real` | `none` verdict, no tone, locked 0.00% | `none` logged, `tone=NA`, 0.00% locked, no tone logged |
-| `DECODE_IQ_ANALOG_AM_TONE` | `am_tone_synth` under `-fM` | tone SNR 30.3 dB, in-band 50.4 dB, RMS -20.04 dBFS, peak -14.11 dBFS, audible 1480 of 1480 ms from 0 ms, no clipping; a 1 kHz probe reads 0.00 dBc | SNR ≥ 25, captured and audible ≥ 1400 ms, first audible ≤ 100 ms, in-band ≥ 40, RMS -21 to -19 dBFS and peak ≤ -13.5 dBFS, clip 0, 1 kHz probe within ±1 dBc |
+| `DECODE_IQ_ANALOG_AM_TONE` | `am_tone_synth` under `-fM` | tone SNR 30.1 dB, in-band 50.4 dB, RMS -16.07 dBFS, peak -10.11 dBFS, audible 1480 of 1480 ms from 0 ms, no clipping; a 1 kHz probe reads 0.00 dBc | SNR ≥ 25, captured and audible ≥ 1400 ms, first audible ≤ 100 ms, in-band ≥ 40, RMS -17.07 to -15.07 dBFS and peak ≤ -9.6 dBFS, clip 0, 1 kHz probe within ±1 dBc |
 | `DECODE_IQ_ANALOG_AM_TONE_FIXED50` | `am_tone_synth` under `-fM -n 50` | RMS -15.0 dBFS, peak -11.5 dBFS | RMS -16 to -14 dBFS, captured ≥ 1400 ms, clip 0 |
 | `DECODE_IQ_ANALOG_AM_ADJ_6K` | `am_adjacent_synth` under `-fM -v 0 -n 50` (6 kHz default) | tone SNR 31.9 dB; 8333 Hz probe -103.5 dBc | SNR ≥ 25, captured ≥ 1400 ms, 8333 Hz ≤ -40 dBc |
 | `DECODE_IQ_ANALOG_AM_ADJ_20K` | `am_adjacent_synth` under `-fM -v 0 -n 50 --am-bandwidth-hz 20000` | 8333 Hz probe +0.3 dBc (tone SNR -0.4 dB: the beat dominates) | captured ≥ 1400 ms, 8333 Hz ≥ -10 dBc |
@@ -2451,7 +2467,7 @@ a missed bound), the named `ANALOG AUDIO FAIL:` line, an `ANALOG METRIC:` line (
 | `DECODE_IQ_ANALOG_NEG_TONE_LOCK_MS` | a 50 ms tone-lock bound on `nfm_ctcss_synth_1000` (300 ms) | tone lock ms, on the measured value |
 | `DECODE_IQ_ANALOG_NEG_TONE_LOCK_NOT_MEASURED` | a 400 ms tone-lock bound on `nfm_notone_synth`, where no tone locks | tone lock ms "not measured" |
 | `DECODE_IQ_ANALOG_NEG_AM_TONE_THROUGH_FM` | `DECODE_IQ_ANALOG_AM_TONE`'s 25 dB tone SNR floor on `am_tone_synth` under `-fA` (the FM monitor) | tone SNR, measured at -21.4 dB: the AM case's tone is the AM detector's |
-| `DECODE_IQ_ANALOG_NEG_PARITY_FIXED` | `DECODE_IQ_ANALOG_PARITY_NFM_REAL`'s window on `nfm_ctcss_real` at `-n 50` | P.56, measured at -31.90 dBFS against the -23.98 floor: the window holds only with the AGC |
+| `DECODE_IQ_ANALOG_NEG_PARITY_FIXED` | `DECODE_IQ_ANALOG_PARITY_NFM_REAL`'s window on `nfm_ctcss_real` at `-n 50` | P.56, measured at -31.90 dBFS against the -20.01 floor: the window holds only with the AGC |
 | `DECODE_IQ_ANALOG_NEG_RAW_WAV_RMS` | a -20 dBFS raw WAV floor on `nfm_ctcss_real` under `-fA` (-28.9 dBFS) | raw WAV RMS dBFS, read back from a WAV that holds frames |
 | `DECODE_IQ_ANALOG_NEG_LAST_AUDIBLE` | the level burst (`nfm_burst_synth`, `--squelch -28`) with a 520 ms last-audible bound | last audible ms, measured at 540, while the first-audible bound holds |
 
@@ -2459,15 +2475,15 @@ When a later change adds a bound or a new kind of check to the host, add a negat
 
 A few things about these numbers. Since issue #518 the default monitor chain is the voice band-pass (300-3400 Hz,
 `-v 0x1`; its FM high-pass takes every CTCSS tone 40 dB down and a DCS signal about 32 dB) and the speech AGC (`-n 0`,
-`<dsd-neo/dsp/speech_agc.h>`), which aims speech at -24 dBFS active level (ITU-T P.56, `tests/test_support/p56.h`). Each
+`<dsd-neo/dsp/speech_agc.h>`), which aims speech at -20 dBFS active level (ITU-T P.56, `tests/test_support/p56.h`). Each
 reception starts at its band's start gain over `-n 50`: FM narrowband (`--nfm-bandwidth-hz` up to 16000, the default)
-+4.54 dB, FM wideband -1.48 dB, AM -2.55 dB. The AGC learns only from what it takes for speech, so a steady tone or
-receiver noise does not set its gain: a tone moves it for at most 240 ms before it is turned away (6 commits toward the
-target, at most 7 dB), and once a second has passed with nothing learned (from the reception's first frame when nothing
-has been learned yet) the attenuator eases any non-speech toward -36 dBFS at 6 dB/s, letting go on a speech-like frame
-or when the level falls 6 dB under what it was easing (quieting). The 1.5 s tone fixtures therefore measure the start
-gain, the turn-away and the start of the easing (-15.36 dBFS RMS on FM, -20.04 on AM), and their tone SNR drops by the
-gain's movement (37.5 to 30.4 dB on FM). The old AGC took a steady tone's peaks to -10 dBFS and matched a -24.9 dBFS RMS
++8.54 dB, FM wideband +2.52 dB, AM +1.45 dB. The AGC learns only from what it takes for speech, so a steady tone or
+receiver noise does not set its gain for long: a tone moves it for at most 240 ms before it is turned away (up to 7
+commits toward the target, 2 dB each, at most 14 dB), and once a second has passed with nothing learned (from the
+reception's first frame when nothing has been learned yet) the attenuator eases any non-speech toward -32 dBFS at
+6 dB/s, letting go on a speech-like frame or when the level falls 6 dB under what it was easing (quieting). The 1.5 s
+tone fixtures therefore measure the start gain, the turn-away and the start of the easing (-13.63 dBFS RMS on FM,
+-16.07 on AM), and their tone SNR drops by the gain's movement (37.5 to 27.3 dB on FM). The old AGC took a steady tone's peaks to -10 dBFS and matched a -24.9 dBFS RMS
 "digital level" that came from a control channel decoded as voice (issue #729); real speech plays 9-12 dB under digital
 voice at the old defaults (issue #518 B1). The real excerpts are too short for established speech; their windows hold
 each to its measured P.56 level ±1 dB, and "Speech level parity" above lists their speech and holds a synthetic talker's
@@ -2477,8 +2493,8 @@ peak (-15 dBFS RMS) live and in replay alike, whatever the FM de-emphasis (the g
 kHz, issue #518 B8/B9), and keeps the AGC's -1 dBFS limiter; the smoke cases count audible blocks from -40 dBFS there,
 where the speech stands clear of the quiet carrier between words. At the fixed gain FM quieting shows as level: receiver
 noise (`noise_floor` under `-fA`) measures -12.0 dBFS RMS against -31.9 dBFS for `nfm_ctcss_real`, whose speech
-deviation is small (0.2-0.6 kHz RMS) against a channel CNR of roughly 20 dB; under the AGC the speech plays at -23.0
-dBFS P.56 and the noise is eased to -31.4 dBFS RMS. The band-pass's 3.4 kHz low-pass takes 12.5 kHz 54 dB down, so the
+deviation is small (0.2-0.6 kHz RMS) against a channel CNR of roughly 20 dB; under the AGC the speech plays at -19.0
+dBFS P.56 and the noise is eased to -32.9 dBFS RMS. The band-pass's 3.4 kHz low-pass takes 12.5 kHz 54 dB down, so the
 cases that measure the channel filter (its width, a neighbour) run with the voice filters off and the fixed gain
 (`-v 0 -n 50`). Use `-v 0` when the question is what the demodulator did: it measures a tone SNR of 36.8 dB and an
 in-band ratio of 42.7 dB on `nfm_tone_synth` at the default width.
@@ -2502,22 +2518,22 @@ its pitch peaks through the pre-emphasis; coloured hiss loses them. The digital 
 output stays the same bits. The checks:
 
 - `DSP_SPEECH_AGC` runs 10 s of hiss (white noise, a one-pole de-emphasis at 48 kHz, then the monitor's own FM
-  band-pass) at -13 and -30 dBFS. After 750 us it plays at -10.82 dBFS RMS over the last 5 s without the veto (18
-  frames taken for speech) and -32.45 with it (none). After 75 us, 50 us or no de-emphasis the veto finds nothing to
+  band-pass) at -13 and -30 dBFS. After 750 us it plays at -10.05 dBFS RMS over the last 5 s without the veto (18
+  frames taken for speech) and -33.61 with it (none). After 75 us, 50 us or no de-emphasis the veto finds nothing to
   turn away: the output is the same bits with and without it. Natural vowels, voiced sound at 70, 120 and 380-420 Hz,
   the steady-tone and rumble cases, and the partition test all run with the veto as well.
-- `DSP_SPEECH_AGC_LONG`: after 60 s of 750 us hiss (none of it committed, -32.4 dBFS at its end) quieter speech commits
+- `DSP_SPEECH_AGC_LONG`: after 60 s of 750 us hiss (none of it committed, -34.2 dBFS at its end) quieter speech commits
   within 0.38 s, and the same after speech, hiss, speech.
 - `DSP_ANALOG_AUDIO`: 750 us hiss at -13 dBFS through the monitor chain and the EDACS voice lane eases to -30 dBFS or
-  less on both (-14.73 dBFS without the veto).
+  less on both (-14.73 dBFS without the veto at the first constants).
 - `DECODE_IQ_ANALOG_NOISE_FLOOR_EASED_DEEMPH_NFM` and `DECODE_IQ_ANALOG_PARITY_NFM_REAL_DEEMPH_NFM` hold the replay.
 
 The veto was measured on the corpus the AGC was tuned on (kept outside the repository), with the veto at the analog rate
 (48 kHz) only, as the product runs it; the numbers are in "The speech AGC's calibration and acceptance" above. The
-calibration (digital) is untouched, so the frame target stays -20.278 dB. The extended corpus holds the 1.5 dB bound at
-exactly 90.0%, a thin margin: one more 750 us file outside 1.5 dB would break it. Every 8 kHz (digital) output is the
-same bits as before the veto, and with the veto off every output is. The 750 us hiss cases play at -32.5 and -38.8 dBFS
-(synthetic, -13 and -30 dBFS in) and -30.4 dBFS (off-air `noise_floor` under `DSD_NEO_DEEMPH=nfm`). On voiced sound at
+calibration (digital) is untouched by the veto (the frame target is -16.278 dB since the -20 dBFS target). The extended
+corpus holds the 1.5 dB bound at 90.9%, a thin margin: one more 750 us file outside 1.5 dB would bring it to 90.2%. Every 8 kHz (digital) output is the
+same bits as before the veto, and with the veto off every output is. The 750 us hiss cases play at -33.6 and -33.9 dBFS
+(synthetic, -13 and -30 dBFS in) and -33.4 dBFS (off-air `noise_floor` under `DSD_NEO_DEEMPH=nfm`). On voiced sound at
 120 Hz with 1% jitter the veto turns away a few frames (94% of frames commit at 8 and 48 kHz, 100% without it); 22.05
 kHz audio follows 48 kHz within 0.216 dB at the 95th percentile (0.113 dB without it). The veto adds about 0.25 ns per
 sample at 48 kHz on speech (6.02 to 6.26 ns) and nothing measurable on hiss; the digital chain pays nothing.

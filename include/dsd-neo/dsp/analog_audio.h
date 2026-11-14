@@ -61,9 +61,9 @@ typedef enum {
 /** The speech AGC's start gains over `-n 50`, dB, per band (issue #518): a nominal talker at rated deviation (FM) or
     modulation (AM) plays at the AGC's speech target from the first word. FM is narrowband up to this channel width
     (`--nfm-bandwidth-hz`, default 16000), wideband above it. */
-#define DSD_ANALOG_AUDIO_START_GAIN_FM_NARROW_DB 4.537f
-#define DSD_ANALOG_AUDIO_START_GAIN_FM_WIDE_DB   (-1.482f)
-#define DSD_ANALOG_AUDIO_START_GAIN_AM_DB        (-2.553f)
+#define DSD_ANALOG_AUDIO_START_GAIN_FM_NARROW_DB 8.537f
+#define DSD_ANALOG_AUDIO_START_GAIN_FM_WIDE_DB   2.518f
+#define DSD_ANALOG_AUDIO_START_GAIN_AM_DB        1.447f
 #define DSD_ANALOG_AUDIO_FM_NARROW_MAX_WIDTH_HZ  16000
 
 /** A gap at least this long between two samples the AGC learns from starts a new reception: the AGC starts over at

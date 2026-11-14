@@ -3658,7 +3658,8 @@ monitor_run(float gain) {
     err |= expect_int("m17 encoder monitor: plays the decoded level whatever -g says", unity, 1);
     dsd_speech_agc fresh;
     DSD_MEMSET(&fresh, 0, sizeof fresh);
-    (void)dsd_speech_agc_init(&fresh, 8000, 0.0f, DSD_SPEECH_AGC_TARGET_DBFS, DSD_SPEECH_AGC_CEILING_DBFS);
+    (void)dsd_speech_agc_init(&fresh, 8000, DSD_VOICE_LEVEL_START_GAIN_DB, DSD_SPEECH_AGC_TARGET_DBFS,
+                              DSD_SPEECH_AGC_CEILING_DBFS);
     const dsd_speech_agc* slot0 = dsd_voice_level_agc(&state, 0);
     /* Untouched: no sample run, and the learned state, the gain and the limiter bit for bit what init set. */
     const int untouched = slot0 == NULL
