@@ -1179,7 +1179,7 @@ Item {
                                 objectName: "wizardReplayProgressAmount"
                                 step: String(wizard.replayRequest)
                                 width: parent.width
-                                text: replayFiles.copyTotal > 0 ? qsTr("%1 of %2").arg(Util.sizeText(replayFiles.copyBytes)).arg(Util.sizeText(replayFiles.copyTotal)) : qsTr("%1 copied").arg(Util.sizeText(replayFiles.copyBytes))
+                                text: replayFiles.copyTotal > 0 ? Util.fill(qsTr("%1 of %2"), [Util.sizeText(replayFiles.copyBytes), Util.sizeText(replayFiles.copyTotal)]) : qsTr("%1 copied").arg(Util.sizeText(replayFiles.copyBytes))
                                 wrapMode: Text.Wrap
                                 font.family: Theme.sans
                                 font.pixelSize: Theme.fontSize(13)
@@ -1251,7 +1251,7 @@ Item {
                         subtitle: qsTr("Inspect the saved replay copy")
                         onTapped: {
                             var info = decoderHost.documentInfo(wizard.fileText);
-                            replayDetails.details = info.exists ? qsTr("%1\n%2 bytes\nModified: %3").arg(info.name).arg(info.sizeBytes).arg(info.modified) : qsTr("This file is missing. Use Browse to select it again.");
+                            replayDetails.details = info.exists ? Util.fill(qsTr("%1\n%2 bytes\nModified: %3"), [info.name, info.sizeBytes, info.modified]) : qsTr("This file is missing. Use Browse to select it again.");
                             replayDetails.visible = true;
                         }
                     }

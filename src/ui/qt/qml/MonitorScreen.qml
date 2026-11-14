@@ -64,7 +64,7 @@ Item {
     function withOtherLists(name) {
         if (screen.otherListCount <= 0)
             return name;
-        return screen.otherListCount === 1 ? qsTr("%1 + 1 list").arg(name) : qsTr("%1 + %2 lists").arg(name).arg(screen.otherListCount);
+        return screen.otherListCount === 1 ? qsTr("%1 + 1 list").arg(name) : Util.fill(qsTr("%1 + %2 lists"), [name, screen.otherListCount]);
     }
     property string systemName: withOtherLists(sessionName)
 
@@ -224,7 +224,7 @@ Item {
         if (count <= 0)
             return "";
         var place = !lists ? metrics.scanTargetOrdinal : metrics.scanRotationOrdinal > 0 ? metrics.scanRotationOrdinal : "-";
-        var out = qsTr("SCANNING · %1/%2").arg(place).arg(count) + (screen.scanHeld ? qsTr(" · HOLD") : "");
+        var out = Util.fill(qsTr("SCANNING · %1/%2"), [place, count]) + (screen.scanHeld ? qsTr(" · HOLD") : "");
         if (screen.scanTargetName.length > 0)
             out += " · " + screen.scanTargetName;
         if (lists && screen.scanListName.length > 0)
@@ -593,7 +593,7 @@ Item {
                             return "";
                         var out = metrics.scanStayPhrase;
                         if (metrics.scanTimerLive) {
-                            out += " " + qsTr("%1s/%2s").arg((metrics.scanTimerRemainingDs / 10).toFixed(1)).arg((metrics.scanTimerSpanMs / 1000).toFixed(1));
+                            out += " " + Util.fill(qsTr("%1s/%2s"), [(metrics.scanTimerRemainingDs / 10).toFixed(1), (metrics.scanTimerSpanMs / 1000).toFixed(1)]);
                         }
                         if (metrics.scanDwellMs > 0) {
                             out += "  " + qsTr("dwell %1s").arg((metrics.scanDwellMs / 1000).toFixed(1));
@@ -617,7 +617,7 @@ Item {
                         // visit that just ran out.
                         if (metrics.scanVisitMs > 0) {
                             out += "  " + (metrics.scanVisitLive
-                                ? qsTr("Visit: %1s/%2s").arg((metrics.scanVisitRemainingDs / 10).toFixed(1)).arg((metrics.scanVisitMs / 1000).toFixed(1))
+                                ? Util.fill(qsTr("Visit: %1s/%2s"), [(metrics.scanVisitRemainingDs / 10).toFixed(1), (metrics.scanVisitMs / 1000).toFixed(1)])
                                 : qsTr("Visit: paused"));
                         }
                         return out;

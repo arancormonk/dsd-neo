@@ -716,6 +716,43 @@ checkSessionSwitchesRoundTrip() {
     check(loaded.remove(row));
 }
 
+/* A target-CSV list with no file says to choose one: never picked, or an import that was refused. It is not told a file
+ * went missing, which hid the import's own reason. A named file that is not a known imported target CSV (gone, never
+ * imported, another type, or no library to ask) is unavailable, without a cause the check cannot know. */
+static void
+checkCsvListWithoutUsableTargets(const QTemporaryDir& dir) {
+    const QString known = dir.filePath("known-targets.csv");
+    QFile file(known);
+    const QByteArray body = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+                            "one,p25-conventional,851500000,,,,\n";
+    check(file.open(QIODevice::WriteOnly) && file.write(body) == body.size());
+    file.close();
+    const QVariantMap base{{"uid", "csv-list"}, {"name", "CSV list"}, {"sourceType", "usb"}, {"targetSource", "csv"}};
+    const auto error = [&base](const ScanListStarter& starter, const QString& path) {
+        QVariantMap list = base;
+        list.insert("targetsCsvPath", path);
+        const auto result = starter.validate(list);
+        check(!result.value("ok").toBool());
+        return result.value("error").toString();
+    };
+    const QString choose = "Choose a target CSV for this list: import one, or select one you imported before.";
+    const QString unavailable =
+        "The selected target CSV is unavailable. Import it again or select another imported target CSV.";
+    ScanListStarter library(nullptr, nullptr);
+    library.setTargetFileLookup([&known](const QString& candidate) { return candidate == known; });
+    check(error(library, QString()) == choose);
+    check(error(library, dir.filePath("gone-targets.csv")) == unavailable);
+    const QString unknown = dir.filePath("unknown-targets.csv");
+    check(QFile::copy(known, unknown));
+    check(error(library, unknown) == unavailable);
+    ScanListStarter noLibrary(nullptr, nullptr);
+    check(error(noLibrary, QString()) == choose);
+    check(error(noLibrary, known) == unavailable);
+    QVariantMap list = base;
+    list.insert("targetsCsvPath", known);
+    check(library.validate(list).value("ok").toBool());
+}
+
 int
 main(int argc, char** argv) {
     QTemporaryDir dir;
@@ -737,6 +774,7 @@ main(int argc, char** argv) {
     checkCsvPathReadsAsSaved();
     checkCsvFolder();
     checkImportedListsNamedApart(dir);
+    checkCsvListWithoutUsableTargets(dir);
     model.update(0, {{"name", "Updated"}, {"uid", "replacement"}});
     model.touch(0);
     ScanListsModel loaded;

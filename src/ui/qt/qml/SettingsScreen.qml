@@ -42,7 +42,7 @@ Item {
             : mode === 2 ? qsTr("While listening, dims after %1 without audio. Audio or a tap brightens it.").arg(delay)
             : mode === 3 ? qsTr("While listening, dims after %1 without audio, then turns off. Audio turns it back on if DSD-neo was on screen when it went off.").arg(delay)
             : qsTr("Follows your phone's screen timeout");
-        return qsTr("%1 · %2").arg(screenModeNames[mode] || screenModeNames[0]).arg(detail);
+        return Util.fill(qsTr("%1 · %2"), [screenModeNames[mode] || screenModeNames[0], detail]);
     }
 
     function screenDelayText(seconds) {

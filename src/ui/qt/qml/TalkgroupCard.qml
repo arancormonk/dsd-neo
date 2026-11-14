@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 import QtQuick
+import "Util.js" as Util
 
 Rectangle {
     id: card
@@ -96,7 +97,7 @@ Rectangle {
                 anchors.right: edit.left
                 anchors.rightMargin: 12
                 checked: card.listening
-                accessibleName: qsTr("Listen to %1, talkgroup %2").arg(card.name).arg(card.idText)
+                accessibleName: Util.fill(qsTr("Listen to %1, talkgroup %2"), [card.name, card.idText])
                 Accessible.description: [card.rank.join(" · "), tagsLine.visible ? tagsLine.text : "", avoidBadge.visible ? avoidBadge.text : ""].filter(function (part) {
                     return part.length > 0;
                 }).join(", ")
