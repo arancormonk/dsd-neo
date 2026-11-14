@@ -58,6 +58,7 @@
 #include <utility>
 #include <vector>
 #include "rtl_fft_cache.h"
+#include "rtl_finite.h"
 
 namespace {
 
@@ -147,7 +148,8 @@ bool
 parse_double(const std::string& text, double* out) {
     char* end = nullptr;
     const double v = std::strtod(text.c_str(), &end);
-    if (end == text.c_str() || *end != '\0' || !std::isfinite(v)) {
+    /* std::isfinite() folds away under fast-math; rtl_is_finite() is built with IEEE semantics. */
+    if (end == text.c_str() || *end != '\0' || !dsd::io::radio::rtl_is_finite(v)) {
         return false;
     }
     *out = v;
