@@ -97,12 +97,15 @@ test_guard_replacement_and_policy_edges(void) {
         st.p25_patch_key_valid[i] = 1;
     }
     st.p25_patch_seq_counter = DSD_P25_PATCH_MAX;
-    p25_patch_update(&st, 999, 0, 1);
+    p25_patch_update(&st, 999, 0, 1); // names the SG only: never replaces a live patch
+    rc |= expect_eq_int("full live table: SG-only update writes no row", find_idx(&st, 999), -1);
+    rc |= expect_eq_int("full live table: SG-only update keeps the stalest", st.p25_patch_sgid[0], 100);
+    p25_patch_add_wgid(&st, 999, 998); // a member Add may
     rc |= expect_eq_int("full table count", st.p25_patch_count, DSD_P25_PATCH_MAX);
     rc |= expect_eq_int("full table replaces stalest", st.p25_patch_sgid[0], 999);
-    rc |= expect_eq_int("replacement clears wgid count", st.p25_patch_wgid_count[0], 0);
+    rc |= expect_eq_int("replacement holds only the new member",
+                        st.p25_patch_wgid_count[0] == 1 && st.p25_patch_wgid[0][0] == 998, 1);
     rc |= expect_eq_int("replacement clears key valid", st.p25_patch_key_valid[0], 0);
-    rc |= expect_eq_int("replacement stores simulselect", st.p25_patch_is_patch[0], 0);
 
     DSD_MEMSET(&st, 0, sizeof st);
     st.p25_patch_count = DSD_P25_PATCH_MAX;

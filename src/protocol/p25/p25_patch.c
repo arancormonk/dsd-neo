@@ -67,10 +67,19 @@ p25_patch_eviction_class(const dsd_state* state, int idx) {
     return 3;
 }
 
-/* Replacement slot for a full table: the lowest eviction class, the least recently refreshed within it. An inactive
-   newcomer (such as a cancel naming an unknown SG) takes only an inactive or unnamed slot, never a current row. */
+/* Eviction classes a newcomer may take: a member-bearing message may take a live patch's slot; one that only names
+   the SG (a grant, an update, a voice message) at most a memberless row; an inactive one (a cancel naming an unknown SG)
+   only an inactive or unnamed slot. */
+enum {
+    P25_PATCH_TAKE_UNNAMED = 1,
+    P25_PATCH_TAKE_MEMBERLESS = 2,
+    P25_PATCH_TAKE_LIVE = 3,
+};
+
+/* Replacement slot for a full table: the lowest eviction class, the least recently refreshed within it, or -1 when
+   that class is above @p max_class. */
 static int
-p25_patch_replacement_idx(const dsd_state* state, int active) {
+p25_patch_replacement_idx(const dsd_state* state, int max_class) {
     if (!state) {
         return -1;
     }
@@ -87,22 +96,23 @@ p25_patch_replacement_idx(const dsd_state* state, int active) {
             oldest = age;
         }
     }
-    if (!active && repl_class > 1) {
+    if (repl_class > max_class) {
         return -1;
     }
     return repl;
 }
 
-/* A new entry in a free or replaced slot: no members, no KEY context, named now. */
+/* A new entry in a free or replaced slot (one of eviction class @p max_class or lower): no members, no KEY context,
+   named now. -1 when the table is full and no such slot exists. */
 static int
-p25_patch_new_entry(dsd_state* state, uint16_t sgid, int is_patch, int active) {
+p25_patch_new_entry(dsd_state* state, uint16_t sgid, int is_patch, int active, int max_class) {
     int idx = state->p25_patch_count;
     if (idx < 0) {
         idx = 0;
     }
     if (idx >= DSD_P25_PATCH_MAX) {
         state->p25_patch_count = DSD_P25_PATCH_MAX;
-        idx = p25_patch_replacement_idx(state, active ? 1 : 0);
+        idx = p25_patch_replacement_idx(state, active ? max_class : P25_PATCH_TAKE_UNNAMED);
         if (idx < 0) {
             return -1;
         }
@@ -124,7 +134,7 @@ static int
 p25_patch_entry_for_change(dsd_state* state, int sgid) {
     int idx = find_patch_idx(state, (uint16_t)sgid);
     if (idx < 0) {
-        return p25_patch_new_entry(state, (uint16_t)sgid, 1, 1);
+        return p25_patch_new_entry(state, (uint16_t)sgid, 1, 1, P25_PATCH_TAKE_LIVE);
     }
     (void)dsd_p25_patch_expire_stale_members(state, idx);
     return idx;
@@ -138,14 +148,16 @@ p25_patch_note_membership(dsd_state* state, int idx) {
     dsd_p25_patch_touch_members(state, idx);
 }
 
-void
-p25_patch_update(dsd_state* state, int sgid, int is_patch, int active) {
+/* Name the SG's row (creating it in a slot of class @p max_class or lower when absent): its members never become
+   current again from this. */
+static void
+p25_patch_name_sg(dsd_state* state, int sgid, int is_patch, int active, int max_class) {
     if (!state || sgid <= 0 || sgid > 0xFFFF) {
         return;
     }
     int idx = find_patch_idx(state, (uint16_t)sgid);
     if (idx < 0) {
-        (void)p25_patch_new_entry(state, (uint16_t)sgid, is_patch, active);
+        (void)p25_patch_new_entry(state, (uint16_t)sgid, is_patch, active, max_class);
         return;
     }
     // A message that only names the SG keeps the row; it never makes the member list current again.
@@ -154,6 +166,12 @@ p25_patch_update(dsd_state* state, int sgid, int is_patch, int active) {
     state->p25_patch_active[idx] = active ? 1 : 0;
     state->p25_patch_last_update[idx] = dsd_decode_time();
     dsd_p25_patch_touch_seen(state, idx);
+}
+
+void
+p25_patch_update(dsd_state* state, int sgid, int is_patch, int active) {
+    // A message that only names the SG never pushes a live patch out of a full table.
+    p25_patch_name_sg(state, sgid, is_patch, active, P25_PATCH_TAKE_MEMBERLESS);
 }
 
 void
@@ -376,8 +394,9 @@ p25_patch_prepare_grg_update(dsd_state* state, int sgid, int is_patch, int activ
         }
     }
 
-    // The command names the SG; its members and KEY context refresh through add/KAS.
-    p25_patch_update(state, sgid, is_patch, 1);
+    // The command names the SG and carries its members (they and KEY context refresh through add/KAS), so its row may
+    // take a live patch's slot as an Add does.
+    p25_patch_name_sg(state, sgid, is_patch, 1, P25_PATCH_TAKE_LIVE);
     return 1;
 }
 

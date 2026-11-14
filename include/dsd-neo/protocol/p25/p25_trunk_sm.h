@@ -1163,7 +1163,8 @@ p25_sm_ev_crypto_pending_epoch(int slot) {
  *
  * A message that only names the SG (grants, grant updates, voice users): it refreshes the
  * row's seen stamp and recency, never the members stamp, and first expires members that
- * are no longer current. See <dsd-neo/core/p25_patch.h>.
+ * are no longer current. A new SG takes at most a memberless row of a full table, never a
+ * live patch's slot: it writes nothing when every entry is live. See <dsd-neo/core/p25_patch.h>.
  *
  * @param state Decoder state holding patch context.
  * @param sgid Super Group ID.

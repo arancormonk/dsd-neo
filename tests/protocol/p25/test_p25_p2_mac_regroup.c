@@ -484,6 +484,24 @@ build_failed_vch_update(unsigned char mac[24]) {
     put_moto_vch_update(mac, SG_A);
 }
 
+static void
+build_full_grant_implicit(unsigned char mac[24]) {
+    put_moto_grant_implicit(mac, 1500);
+}
+
+static void
+build_full_grant_update(unsigned char mac[24]) {
+    put_moto_grant_update(mac, 0x2001, 1500, 0x2002, 1502);
+}
+
+static void
+build_full_moto_voice(unsigned char mac[24]) {
+    mac[1] = 0x80;
+    mac[2] = 0x90;
+    put16(mac, 4, 1500);
+    mac[8] = 0x22;
+}
+
 /* SG_A patched to WG 1401 and 1402, inactive and five seconds old, so a refresh, an add, a delete, KEY context or a
    cancel each shows. */
 static dsd_state*
@@ -615,6 +633,83 @@ check_grant_refreshes_seen(const char* name, mac_builder build) {
     rc |= expect_stamp(tag, state->p25_patch_members_listen_s[idx], members_at_add);
     DSD_SNPRINTF(tag, sizeof tag, "%s: members still current", name);
     rc |= expect_int(tag, dsd_p25_patch_has_current_wgid(state, idx, WG(1)), 1);
+    free_state(state);
+    return rc;
+}
+
+/* Every one of the 16 slots holds a live patch: SG 1400 + 2i with member WG 1401 + 2i, the first the oldest. */
+static dsd_state*
+full_live_table(void) {
+    dsd_state* state = new_state();
+    if (!state) {
+        return NULL;
+    }
+    p25_patch_test_listen_for(state, 1.0);
+    for (int i = 0; i < DSD_P25_PATCH_MAX; i++) {
+        unsigned char add[24] = {0};
+        put_moto_regroup(add, 1, 0x81, 7, 1400 + (2 * i));
+        put16(add, 6, 1401 + (2 * i));
+        run_pdu(state, XCH_LCCH, P25_MAC_PDU_SIGNAL, add, 1);
+    }
+    return state;
+}
+
+static int
+live_patches_intact(const dsd_state* state, int skip_first) {
+    for (int i = skip_first ? 1 : 0; i < DSD_P25_PATCH_MAX; i++) {
+        const int idx = find_sg(state, 1400 + (2 * i));
+        if (idx < 0 || !dsd_p25_patch_has_current_wgid(state, idx, (uint16_t)(1401 + (2 * i)))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* A message that only names a new supergroup (a grant, an update, a supergroup voice message) never pushes a live
+   patch out of a full table: it writes nothing when no slot is inactive, unnamed or memberless. A member Add for a new
+   supergroup still takes the oldest live patch's slot. */
+static int
+test_full_live_table_keeps_patches(void) {
+    int rc = 0;
+    char tag[128];
+
+    static const struct {
+        const char* name;
+        mac_builder build;
+    } sg_only[] = {
+        {"grant implicit", build_full_grant_implicit},
+        {"grant update", build_full_grant_update},
+        {"sg voice", build_full_moto_voice},
+    };
+
+    for (size_t k = 0; k < sizeof sg_only / sizeof sg_only[0]; k++) {
+        dsd_state* state = full_live_table();
+        if (!state || state->p25_patch_count != DSD_P25_PATCH_MAX || !live_patches_intact(state, 0)) {
+            DSD_FPRINTF(stderr, "full table seed failed\n");
+            free_state(state);
+            return 1;
+        }
+        unsigned char mac[24] = {0};
+        sg_only[k].build(mac);
+        run_pdu(state, XCH_LCCH, P25_MAC_PDU_SIGNAL, mac, 1);
+        DSD_SNPRINTF(tag, sizeof tag, "full live table, %s: every live patch stays", sg_only[k].name);
+        rc |= expect_int(tag, live_patches_intact(state, 0), 1);
+        DSD_SNPRINTF(tag, sizeof tag, "full live table, %s: no row for the new SG", sg_only[k].name);
+        rc |= expect_int(tag, find_sg(state, 1500), -1);
+        free_state(state);
+    }
+
+    dsd_state* state = full_live_table();
+    if (!state) {
+        return 1;
+    }
+    unsigned char add[24] = {0};
+    put_moto_regroup(add, 1, 0x81, 7, 1500);
+    put16(add, 6, 1501);
+    run_pdu(state, XCH_LCCH, P25_MAC_PDU_SIGNAL, add, 1);
+    rc |= expect_int("full live table, member add: new patch stored", find_sg(state, 1500) >= 0, 1);
+    rc |= expect_int("full live table, member add: the oldest live patch goes", find_sg(state, 1400), -1);
+    rc |= expect_int("full live table, member add: the others stay", live_patches_intact(state, 1), 1);
     free_state(state);
     return rc;
 }
@@ -823,6 +918,7 @@ run_cases(void) {
     rc |= test_delete_short();
     rc |= test_failed_crc_changes_no_patch();
     rc |= test_grants_refresh_seen_only();
+    rc |= test_full_live_table_keeps_patches();
     rc |= test_failed_crc_changes_no_unit_table();
     return rc;
 }

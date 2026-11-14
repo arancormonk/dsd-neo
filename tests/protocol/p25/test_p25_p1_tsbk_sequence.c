@@ -861,6 +861,28 @@ test_mfid90_regroup_grants_refresh_seen(void) {
     return rc;
 }
 
+/* A Phase 1 regroup grant for a new supergroup never pushes a live patch out of a full table of them: it writes no row. */
+static int
+test_mfid90_regroup_grant_full_live_table(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    for (int i = 0; i < DSD_P25_PATCH_MAX; i++) {
+        (void)run_mfid90_tsbk(&opts, &state, 0x00, 1400 + (2 * i), 1401 + (2 * i), 0, 0);
+    }
+    rc |= expect_eq_int("full live table seeded", state.p25_patch_count, DSD_P25_PATCH_MAX);
+    rc |= expect_eq_int("full live table grant crc", run_mfid90_regroup_grant(&opts, &state, 1500, 0), 1);
+    rc |= expect_eq_int("full live table grant writes no row", tsbk_patch_idx(&state, 1500), -1);
+    for (int i = 0; i < DSD_P25_PATCH_MAX; i++) {
+        const int idx = tsbk_patch_idx(&state, 1400 + (2 * i));
+        rc |= expect_eq_int("full live table grant keeps every live patch",
+                            idx >= 0 && dsd_p25_patch_has_current_wgid(&state, idx, (uint16_t)(1401 + (2 * i))), 1);
+    }
+    return rc;
+}
+
 /* Preservation: under -F a regroup grant whose CRC failed is never dispatched (tsbk_dispatch_message() needs the CRC
    whatever the option), so it names no supergroup. */
 static int
@@ -1178,6 +1200,7 @@ main(void) {
     g_interrupt_at = -1;
     rc |= test_mfid90_regroup_tsbk();
     rc |= test_mfid90_regroup_grants_refresh_seen();
+    rc |= test_mfid90_regroup_grant_full_live_table();
     rc |= test_mfid90_failed_regroup_grant_writes_nothing();
     rc |= test_failed_block_trailing_nulls();
     rc |= test_network_status_code();

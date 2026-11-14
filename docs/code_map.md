@@ -3234,12 +3234,16 @@ suite runs under this compiler.
   per-state counter (`p25_patch_seq_counter`) stamps each refresh into `p25_patch_seq`, compared wrap-safe
   (`dsd_p25_patch_seq_age()`): it orders display and eviction. A full table evicts by class, the least recently
   refreshed first within each: an inactive slot, then one not seen-current, then a seen-current row that is not live (no
-  current group or radio: a grant or voice row, or members aged out), and a live patch last, so a memberless row named
-  by a grant never pushes out a patch with current members; an inactive newcomer, such as a cancel naming an unknown
-  supergroup, takes only an inactive or not seen-current slot. Overflow Adds within one second never evict the newest
-  entry, as ordering by the second-resolution `p25_patch_last_update` (now only the decode-time display stamp) could.
-  Freshness is per entry, not per member (decided limit): an Add for one member refreshes the whole list, so a member
-  the system drops without a Delete stays current until the entry's members stamp ages out. The clock advances only in
+  current group or radio: a grant or voice row, or members aged out), and a live patch last. Only a member-bearing
+  message (an Add, a Harris regroup or Extended Function create through `p25_patch_prepare_grg_update()`, a KEY/ALG/SSN
+  command) may take a live patch's slot; a message that only names a new supergroup (`p25_patch_update()`: a grant, an
+  update, a supergroup voice message) takes at most a memberless row and writes nothing when the table holds only live
+  patches, so an unrelated grant never ends a patch with current members; an inactive newcomer, such as a cancel naming
+  an unknown supergroup, takes only an inactive or not seen-current slot. Overflow Adds within one second never evict
+  the newest entry, as ordering by the second-resolution `p25_patch_last_update` (now only the decode-time display
+  stamp) could. Freshness is per entry, not per member (decided limit): an Add for one member refreshes the whole list,
+  so a member the system drops without a Delete stays current until the entry's members stamp ages out. The clock
+  advances only in
   `p25_sm_note_cc_activity()`, which `p25_sm_note_validated_cc()` runs for a TSBK, an outbound MBT or an LCCH MAC whose
   CRC passed, never for a voice channel's signalling; it breaks at every departure: each trunk tune that moves the
   receiver (`dsd_engine_tune_leaves_carrier()`), every carrier boundary, the no-carrier reset and a trunk-scan or

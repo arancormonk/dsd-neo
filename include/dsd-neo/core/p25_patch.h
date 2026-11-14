@@ -19,7 +19,8 @@
  * An entry or its members are current while the clock has moved at most DSD_P25_PATCH_TTL_SECONDS past the
  * stamp. Readers take a const state and never mutate it; writers expire non-current members first.
  * `p25_patch_seq[i]` (from `p25_patch_seq_counter`) orders entries by recency for display and, within each eviction
- * class (inactive, not seen-current, seen-current without current members, live with them), for eviction;
+ * class (inactive, not seen-current, seen-current without current members, live with them), for eviction; only a
+ * member-bearing message may evict a live entry, never one that only names the SG;
  * `p25_patch_last_update[i]` stays the decode-time display stamp.
  *
  * The table belongs to one system (`p25_patch_owner_*`, dsd_p25_patch_note_system()); carrier boundaries that leave the
