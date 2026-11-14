@@ -61,6 +61,8 @@ void rtl_signal_measure_test_fail_allocation(int fail);
 /* Set the tap's ticket counter, so the next request (search or quiet), cancel or reset takes the ticket after
    @p ticket (wrapping past the last 30-bit value to 1). */
 void rtl_signal_measure_test_set_ticket(uint32_t ticket);
+/* The realtime clock the tap's feed reads, in ns, in place of dsd_realtime_mono_ns() (NULL: the real one). */
+void rtl_signal_measure_test_set_clock(uint64_t (*now_ns)(void));
 int rtl_stream_test_prepare_reconfigure_input(size_t queued_samples, size_t* out_used_after,
                                               uint32_t* out_generation_before, uint32_t* out_generation_after);
 int rtl_stream_test_retune_output_pending(size_t queued_samples, int cached_symbols, size_t* out_ring_pending,

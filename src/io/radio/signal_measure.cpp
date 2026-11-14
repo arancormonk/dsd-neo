@@ -1716,6 +1716,7 @@ std::atomic<int> bypass{0};
 std::atomic<uint64_t> search_owner{0};
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
 int test_fail_allocation = 0; /* under feed_mutex */
+std::atomic<uint64_t (*)(void)> test_clock_ns{nullptr};
 #endif
 
 /* std::atomic<uint32_t>::is_always_lock_free is C++17; on every target uint32_t is an unsigned int. */
@@ -1743,6 +1744,18 @@ tap_quiet_create() {
     }
 #endif
     return dsd_signal_quiet_detector_create();
+}
+
+/* The tap's realtime clock, in ns. */
+uint64_t
+tap_now_ns() {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    uint64_t (*const clock)(void) = test_clock_ns.load(std::memory_order_acquire);
+    if (clock) {
+        return clock();
+    }
+#endif
+    return dsd_realtime_mono_ns();
 }
 
 /* Under feed_mutex: drop any quiet measurement in progress. */
@@ -1774,16 +1787,17 @@ search_holds_tap() {
     return tap_ready != 0;
 }
 
-/* Under feed_mutex, after tap_quiet finished: publish its result, then the done bit. */
+/* Under feed_mutex, after tap_quiet finished: publish its result, stamped now that its analysis is complete (not when
+   the block that completed it arrived: the feed may wait for feed_mutex and analyse long after), then the done bit. */
 void
-publish_quiet(uint64_t received) {
+publish_quiet() {
     std::lock_guard<std::mutex> lock(tap_mutex);
     const uint32_t word = tap_status.load(std::memory_order_relaxed);
     if ((word & (kStatusQuiet | kStatusDone)) != kStatusQuiet) {
         return;
     }
     (void)dsd_signal_quiet_detector_result(tap_quiet, &tap_quiet_result);
-    tap_quiet_result.completed_realtime_ns = received;
+    tap_quiet_result.completed_realtime_ns = tap_now_ns();
     tap_status.store(word | kStatusDone, std::memory_order_release);
 }
 } // namespace
@@ -1801,6 +1815,11 @@ rtl_signal_measure_test_fail_allocation(int fail) {
         std::lock_guard<std::mutex> lock(tap_mutex);
         advance_ticket(false);
     }
+}
+
+extern "C" void
+rtl_signal_measure_test_set_clock(uint64_t (*now_ns)(void)) {
+    test_clock_ns.store(now_ns, std::memory_order_release);
 }
 
 extern "C" void
@@ -1835,7 +1854,7 @@ rtl_signal_measure_request(const dsd_signal_measure_request* request, dsd_signal
 
 extern "C" void
 rtl_signal_measure_feed(const float* iq, size_t pairs, const dsd_signal_capture* capture) {
-    const uint64_t received = dsd_realtime_mono_ns();
+    const uint64_t received = tap_now_ns();
     std::lock_guard<std::mutex> feed(feed_mutex);
     {
         std::lock_guard<std::mutex> lock(tap_mutex);
@@ -1861,7 +1880,7 @@ rtl_signal_measure_feed(const float* iq, size_t pairs, const dsd_signal_capture*
         }
     }
     if (dsd_signal_quiet_detector_feed(tap_quiet, iq, pairs, capture)) {
-        publish_quiet(received);
+        publish_quiet();
     }
 }
 

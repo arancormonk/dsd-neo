@@ -187,7 +187,8 @@ typedef struct {
      * fits, in dB: above the guard (dsd_signal_quiet_params.guard_db) the result is not valid. 0 when no class fits or
      * no bin of the capture qualified for the reference; the result is then not valid either. */
     float floor_rise_db;
-    /** Monotonic arrival of the capture block that completed (or failed) the request; shared tap only, else 0. */
+    /** dsd_realtime_mono_ns() when the analysis that completed (or failed) the request finished, after the feed held
+     * the tap; shared tap only, else 0. */
     uint64_t completed_realtime_ns;
 } dsd_signal_quiet_result;
 

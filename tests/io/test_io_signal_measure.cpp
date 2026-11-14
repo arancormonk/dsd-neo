@@ -1584,6 +1584,42 @@ quiet_tap_feed(const std::vector<float>& iq, size_t at, size_t pairs, const dsd_
     }
 }
 
+/* A fake realtime clock for the tap: each read is 50 ms after the one before, from kQuietClockT0. */
+constexpr uint64_t kQuietClockT0 = 5000000000000ULL;
+constexpr uint64_t kQuietClockStep = 50000000ULL;
+static uint64_t g_quiet_clock_ns = 0;
+
+static uint64_t
+quiet_clock_now_ns(void) {
+    const uint64_t now = g_quiet_clock_ns;
+    g_quiet_clock_ns += kQuietClockStep;
+    return now;
+}
+
+/* A quiet result is stamped when its analysis completes, not when the block that completed it arrived: the final
+   block's feed reads the clock on entry, the analysis takes time (here 50 ms), and the stamp is the later reading, so
+   an answer that finished past the scan's 400 ms bound is not taken for one that came in time. */
+static void
+test_quiet_tap_completion_stamp() {
+    const auto q = quiet_request(1536000, DSD_SIGNAL_QUIET_CLASS_12K5);
+    const size_t pairs = quiet_request_pairs(q);
+    const auto noise = quiet_noise(pairs + 4096, 103);
+    uint32_t ticket = 0;
+    assert(rtl_signal_quiet_request(&q, &ticket, nullptr) == 0);
+    const size_t last = (pairs - 1) / 4096 * 4096;
+    quiet_tap_feed(noise, 0, last, q.capture);
+    assert(rtl_signal_quiet_status(ticket) == 0);
+    g_quiet_clock_ns = kQuietClockT0;
+    rtl_signal_measure_test_set_clock(quiet_clock_now_ns);
+    rtl_signal_measure_feed(noise.data() + 2 * last, pairs - last, &q.capture);
+    rtl_signal_measure_test_set_clock(nullptr);
+    assert(rtl_signal_quiet_status(ticket) == 1);
+    dsd_signal_quiet_result result{};
+    assert(rtl_signal_quiet_take(ticket, &result) == 1 && result.failure == DSD_SIGNAL_MEASURE_OK && result.valid);
+    assert(result.completed_realtime_ns > kQuietClockT0
+           && result.completed_realtime_ns == g_quiet_clock_ns - kQuietClockStep);
+}
+
 /* The shared tap's owners: a quiet request is refused while Signal search owns the tuner or holds a request or an
    unread report; a search request supersedes a quiet one at once; search cancels leave a quiet request alone. */
 static void
@@ -1801,6 +1837,7 @@ test_quiet(const dsd_signal_measure_request& r) {
     test_quiet_estimators(d);
     dsd_signal_quiet_detector_destroy(d);
     test_quiet_tap_owners(r);
+    test_quiet_tap_completion_stamp();
     test_quiet_tap_tickets();
     test_quiet_tap_threads(r);
 }
