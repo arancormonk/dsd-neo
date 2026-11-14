@@ -1593,6 +1593,10 @@ test_quiet_centred_depressed_floor(dsd_signal_quiet_detector* d) {
             /* (S + N_local) / N_local = 6 dB: S = (10^0.6 - 1) N_local, with N_local 2 dB under kQuietSigma's. */
             const double snr_local_db = 10 * std::log10(std::pow(10.0, 0.6) - 1);
             quiet_add_fm(iq, rate, 0, quiet_amplitude(snr_local_db - depth_db, rate, width), {});
+            /* The two readings differ in span and DC exclusion as well as in the noise the ratio is judged against,
+               but the depression (+-3.5 widths) lies far inside both spans and away from either DC guard, so both
+               references read the undepressed floor: only the denominator rule can turn the verdict, as the floor and
+               rise asserts below confirm. */
             const auto reference_rule = quiet_run(d, shifted, iq, 4096, &shipped);
             assert(reference_rule.failure == DSD_SIGNAL_MEASURE_OK && reference_rule.valid && reference_rule.quiet);
             assert(std::abs(reference_rule.max_ratio_db - 4.0f) < 1.0f);

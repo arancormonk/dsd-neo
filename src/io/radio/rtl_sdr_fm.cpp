@@ -15316,9 +15316,11 @@ rtl_stream_backend_name(void) {
         if (dsd_opts_audio_in_dev_is_soapy_spec(g_stream->opts->audio_in_dev)) {
             return "soapy";
         }
-        if (dsd_opts_audio_in_dev_is_airspy_spec(g_stream->opts->audio_in_dev)) {
-            return "airspy";
-        }
+    }
+    /* The device's own backend (RTL_BACKEND_AIRSPY), the one its measurement geometry reads
+       (rtl_device_signal_geometry()). */
+    if (rtl_device_rate_plan_backend(rtl_device_handle) == DSD_RATE_PLAN_BACKEND_AIRSPY) {
+        return "airspy";
     }
     return "rtl";
 }

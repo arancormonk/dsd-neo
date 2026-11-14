@@ -1488,6 +1488,8 @@ struct dsd_signal_quiet_detector {
     /* The judged classes' widths. */
     double widths[3]{};
     int width_count = 0;
+    /* The capture-wide noise reference's span for the request's policy and rate (quiet_reference_span()). */
+    double reference_span = 0;
     double energy = 0;
     size_t filled = 0, window_samples = 0, total_samples = 0, clipped = 0;
     /* The request's lead still to drop, and its sub-window count (DSD_SIGNAL_QUIET_WINDOWS for a request's 0). */
@@ -1608,6 +1610,7 @@ quiet_arm(dsd_signal_quiet_detector* detector, const dsd_signal_quiet_request* r
     detector->params = params;
     DSD_MEMCPY(detector->widths, widths, sizeof(widths));
     detector->width_count = count;
+    detector->reference_span = span;
     detector->energy = 0;
     for (int i = 0; i < n; ++i) {
         detector->energy += (double)window[i] * window[i];
@@ -1667,8 +1670,7 @@ wide_reference(const dsd_signal_quiet_detector* detector, double* scratch) {
     /* A centred capture has no DC artifact to keep out: every offset clears a negative guard. */
     const double dc_guard =
         capture.geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED ? -1.0 : std::max(bin_hz * 3, rate / 100.0);
-    double span = kQuietReferenceSpan;
-    (void)quiet_reference_span(capture, &span); /* quiet_arm() admitted the capture's policy and rate */
+    const double span = detector->reference_span;
     const double channel = (double)detector->request.frequency_hz - capture.capture_hz;
     const double half_width = *std::max_element(detector->widths, detector->widths + detector->width_count) / 2;
     int count = 0;
