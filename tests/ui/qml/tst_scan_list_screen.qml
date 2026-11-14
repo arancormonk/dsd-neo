@@ -178,11 +178,16 @@ Item {
 
         // ---- issue #829: the target CSV pick belongs to the list it was asked for ----
 
+        // A local file's URL on every platform: a Windows path ("C:/...") needs
+        // the third slash, or Qt reads its drive as the URL's host.
+        function fileUrl(path) {
+            return "file://" + (path.charAt(0) === "/" ? "" : "/") + path;
+        }
         function targetsFile(name) {
             var path = testContext.writeFixtureCsv(name,
                 "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\none,p25-conventional,851500000,,,,\n");
             verify(path.length > 0);
-            return "file://" + path;
+            return fileUrl(path);
         }
         function clearLibrary() {
             while (importedFiles.count)
@@ -292,7 +297,7 @@ Item {
         function pickTargets(name, content) {
             screen.importTargets();
             var path = testContext.writeFixtureCsv(name, content);
-            testContext.answerDocumentPicked(testContext.lastDocumentRequest().id, "file://" + path, name, false);
+            testContext.answerDocumentPicked(testContext.lastDocumentRequest().id, fileUrl(path), name, false);
             tryCompare(findChild(screen, "targetCsvImport"), "active", false, 5000);
         }
         function refuseTargets() {
