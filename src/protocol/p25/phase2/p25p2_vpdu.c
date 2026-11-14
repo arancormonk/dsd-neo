@@ -621,6 +621,17 @@ p25p2_vpdu_system_tables_writable(const p25p2_vpdu_ctx* ctx) {
     return 0;
 }
 
+/* Nor do its regroup commands and supergroup voice change any patch: no member added or deleted, no KEY context, no
+ * create, cancel or supergroup refresh. They still print. */
+static int
+p25p2_vpdu_patch_writable(const p25p2_vpdu_ctx* ctx) {
+    if (ctx->crc_ok) {
+        return 1;
+    }
+    DSD_FPRINTF(stderr, " (CRC failed; patch not applied)");
+    return 0;
+}
+
 static void
 p25p2_vpdu_emit_json(const p25p2_vpdu_ctx* ctx) {
     uint8_t mfid = (uint8_t)ctx->mac[2];
@@ -2094,6 +2105,7 @@ p25p2_vpdu_handle_moto_regroup_add_delete(const p25p2_vpdu_ctx* ctx, int is_add)
     }
     const int sg = p25p2_vpdu_u16(ctx->mac, 4 + len_a);
     DSD_FPRINTF(stderr, "  SG: %d", sg);
+    const int apply = p25p2_vpdu_patch_writable(ctx);
 
     const int pairs = (len - 5) / 2;
     int members = 0;
@@ -2103,6 +2115,9 @@ p25p2_vpdu_handle_moto_regroup_add_delete(const p25p2_vpdu_ctx* ctx, int is_add)
             continue;
         }
         DSD_FPRINTF(stderr, " WG%d: %d", wi + 1, wg);
+        if (!apply) {
+            continue;
+        }
         if (is_add) {
             p25_patch_add_wgid(state, sg, wg);
         } else {
@@ -3105,7 +3120,9 @@ p25p2_vpdu_iter_block_35(p25p2_vpdu_ctx* ctx) {
             p25p2_vpdu_store_slot_svc(state, slot, svc);
         }
         // Treat observed Super Group activity as an active patch (vendor-specific signaling may differ)
-        p25_patch_update(state, gr, /*is_patch*/ 1, /*active*/ 1);
+        if (p25p2_vpdu_patch_writable(ctx)) {
+            p25_patch_update(state, gr, /*is_patch*/ 1, /*active*/ 1);
+        }
 
         if (tracked_voice && p25p2_vpdu_pdu_type_is_live_voice(ctx->pdu_type) && (svc & 0x40) && opts->trunk_enable == 1
             && opts->trunk_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
@@ -3151,7 +3168,9 @@ p25p2_vpdu_iter_block_36(p25p2_vpdu_ctx* ctx) {
         if (tracked_voice) {
             p25p2_vpdu_store_slot_svc(state, slot, svc);
         }
-        p25_patch_update(state, gr, /*is_patch*/ 1, /*active*/ 1);
+        if (p25p2_vpdu_patch_writable(ctx)) {
+            p25_patch_update(state, gr, /*is_patch*/ 1, /*active*/ 1);
+        }
 
         uint32_t mfid90_wacn = (MAC[10 + len_a] << 16) | (MAC[11 + len_a] << 8) | (MAC[12 + len_a] & 0xF0);
         mfid90_wacn >>= 4;
@@ -3202,14 +3221,22 @@ p25p2_vpdu_harris_a4_wuid_count(int msg_len) {
     return (count > 3) ? 3 : count;
 }
 
+/* Harris regroup members and KEY context: @p apply is 0 for a failed-CRC MAC_SIGNAL (-F), which prints them only. */
+typedef struct {
+    int is_patch;
+    int active;
+    int ssn;
+    int apply;
+} p25p2_vpdu_harris_grg_opts;
+
 static void
 p25p2_vpdu_handle_harris_a4_wgid(dsd_state* state, const unsigned long long int* mac, int len_a, int msg_len,
-                                 int is_patch, int active, int ssn) {
+                                 const p25p2_vpdu_harris_grg_opts* grg) {
     int sg = (mac[5 + len_a] << 8) | mac[6 + len_a];
     int key = (mac[7 + len_a] << 8) | mac[8 + len_a];
     int alg = mac[9 + len_a];
     DSD_FPRINTF(stderr, " SG: %d; KEY ID: %04X; ALG: %02X;\n  ", sg, key, alg);
-    if (!p25_patch_prepare_grg_update(state, sg, is_patch, active, ssn)) {
+    if (grg->apply && !p25_patch_prepare_grg_update(state, sg, grg->is_patch, grg->active, grg->ssn)) {
         return;
     }
 
@@ -3217,20 +3244,22 @@ p25p2_vpdu_handle_harris_a4_wgid(dsd_state* state, const unsigned long long int*
     for (int wi = 0; wi < count && (10 + len_a + (wi * 2) + 1) < 24; wi++) {
         int wgid = (mac[10 + len_a + (wi * 2)] << 8) | mac[11 + len_a + (wi * 2)];
         DSD_FPRINTF(stderr, "WGID: %d; ", wgid);
-        if (wgid != 0) {
+        if (grg->apply && wgid != 0) {
             p25_patch_add_wgid(state, sg, wgid);
         }
     }
-    p25_patch_set_kas(state, sg, key, alg, ssn);
+    if (grg->apply) {
+        p25_patch_set_kas(state, sg, key, alg, grg->ssn);
+    }
 }
 
 static void
 p25p2_vpdu_handle_harris_a4_wuid(dsd_state* state, const unsigned long long int* mac, int len_a, int msg_len,
-                                 int is_patch, int active, int ssn) {
+                                 const p25p2_vpdu_harris_grg_opts* grg) {
     int sg = (mac[5 + len_a] << 8) | mac[6 + len_a];
     int key = (mac[7 + len_a] << 8) | mac[8 + len_a];
     DSD_FPRINTF(stderr, "  SG: %d KEY ID: %04X", sg, key);
-    if (!p25_patch_prepare_grg_update(state, sg, is_patch, active, ssn)) {
+    if (grg->apply && !p25_patch_prepare_grg_update(state, sg, grg->is_patch, grg->active, grg->ssn)) {
         return;
     }
 
@@ -3238,33 +3267,43 @@ p25p2_vpdu_handle_harris_a4_wuid(dsd_state* state, const unsigned long long int*
     for (int wi = 0; wi < count && (9 + len_a + (wi * 3) + 2) < 24; wi++) {
         int wuid = (mac[9 + len_a + (wi * 3)] << 16) | (mac[10 + len_a + (wi * 3)] << 8) | mac[11 + len_a + (wi * 3)];
         DSD_FPRINTF(stderr, " WUID: %d;", wuid);
-        if (wuid != 0) {
+        if (grg->apply && wuid != 0) {
             p25_patch_add_wuid(state, sg, (uint32_t)wuid);
         }
     }
-    p25_patch_set_kas(state, sg, key, -1, ssn);
+    if (grg->apply) {
+        p25_patch_set_kas(state, sg, key, -1, grg->ssn);
+    }
 }
 
 static void
-p25p2_vpdu_handle_harris_a4_grg(dsd_state* state, const unsigned long long int* mac, int len_a, int len_b) {
+p25p2_vpdu_handle_harris_a4_grg(const p25p2_vpdu_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    const unsigned long long int* mac = ctx->mac;
+    const int len_a = ctx->len_a;
+    const int len_b = ctx->len_b;
     int len_grg = mac[3 + len_a] & 0x3F;
     int msg_len = p25p2_vpdu_harris_a4_msg_len(len_b, len_grg);
     int tga = mac[4 + len_a] >> 5;
     int ssn = mac[4 + len_a] & 0x1F;
-    int is_patch = ((tga & 0x4) == 0) ? 1 : 0;
-    int active = (tga & 0x1) ? 1 : 0;
+    p25p2_vpdu_harris_grg_opts grg = {
+        .is_patch = ((tga & 0x4) == 0) ? 1 : 0,
+        .active = (tga & 0x1) ? 1 : 0,
+        .ssn = ssn,
+        .apply = 0,
+    };
 
     p25p2_vpdu_print_harris_a4_options(tga, ssn);
+    grg.apply = p25p2_vpdu_patch_writable(ctx);
     if ((tga & 0x2) == 2) {
-        p25p2_vpdu_handle_harris_a4_wgid(state, mac, len_a, msg_len, is_patch, active, ssn);
+        p25p2_vpdu_handle_harris_a4_wgid(state, mac, len_a, msg_len, &grg);
     } else {
-        p25p2_vpdu_handle_harris_a4_wuid(state, mac, len_a, msg_len, is_patch, active, ssn);
+        p25p2_vpdu_handle_harris_a4_wuid(state, mac, len_a, msg_len, &grg);
     }
 }
 
 static void
 p25p2_vpdu_iter_block_37(p25p2_vpdu_ctx* ctx) {
-    dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
     int type = ctx->type;
     const unsigned long long int* MAC = ctx->mac;
     struct p25p2_mac_result mac_res VPDU_MAYBE_UNUSED = *ctx->mac_res;
@@ -3277,7 +3316,7 @@ p25p2_vpdu_iter_block_37(p25p2_vpdu_ctx* ctx) {
 
     if (MAC[1 + len_a] == 0xB0 && MAC[2 + len_a] == 0xA4) //&& MAC[2+len_a] == 0xA4
     {
-        p25p2_vpdu_handle_harris_a4_grg(state, MAC, len_a, len_b);
+        p25p2_vpdu_handle_harris_a4_grg(ctx);
     }
 
     if (len_b < 0) {
@@ -4993,7 +5032,7 @@ p25p2_vpdu_handle_motorola_regroup_extended_function(const p25p2_vpdu_ctx* ctx) 
     } else if (class_id == 0x02 && operand == 0x00) {
         int sg = argument & 0xFFFF;
         DSD_FPRINTF(stderr, " Create Supergroup");
-        if (sg != 0) {
+        if (sg != 0 && p25p2_vpdu_patch_writable(ctx)) {
             p25_patch_prepare_grg_update(ctx->state, sg, /*is_patch*/ 1, /*active*/ 1, /*ssn*/ -1);
             if (target != 0) {
                 p25_patch_add_wuid(ctx->state, sg, (uint32_t)target);
@@ -5002,7 +5041,7 @@ p25p2_vpdu_handle_motorola_regroup_extended_function(const p25p2_vpdu_ctx* ctx) 
     } else if (class_id == 0x02 && operand == 0x01) {
         int sg = argument & 0xFFFF;
         DSD_FPRINTF(stderr, " Cancel Supergroup");
-        if (sg != 0) {
+        if (sg != 0 && p25p2_vpdu_patch_writable(ctx)) {
             p25_patch_clear_sg(ctx->state, sg);
         }
     }
@@ -5209,7 +5248,9 @@ p25p2_vpdu_handle_standard_group_regroup_voice_user_abbreviated(p25p2_vpdu_ctx* 
     DSD_FPRINTF(stderr, "\n VCH %d - Super Group %d SRC %d Standard Group Regroup Voice", slot + 1, supergroup, source);
 
     if (supergroup != 0) {
-        p25_patch_update(state, supergroup, /*is_patch*/ 1, /*active*/ 1);
+        if (p25p2_vpdu_patch_writable(ctx)) {
+            p25_patch_update(state, supergroup, /*is_patch*/ 1, /*active*/ 1);
+        }
         if (p25p2_vpdu_observe_voice(ctx->opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)supergroup,
                                      (uint64_t)(uint32_t)source, -1, ctx->pdu_type)) {
             state->p25_p2_last_mac_active[slot] = dsd_decode_time();

@@ -10,6 +10,9 @@
  * message, the supergroup (SG) and then two-octet work groups (WG): (len - 5) / 2 complete pairs. A message may not
  * run past the MAC octets its transport carries: FACCH 17, SACCH 20, LCCH 18 (after the MAC header, before the CRC and
  * the LCCH's NAC). Bytes past the span here are nonzero so a parser that reads them stores a member.
+ *
+ * Under -F a MAC_SIGNAL that failed its CRC still reaches the VPDU decoder (process_MAC_VPDU_crc() with crc_ok 0).
+ * It prints, but changes no patch: no member, KEY context, cancel or supergroup refresh.
  */
 
 #include <dsd-neo/core/opts.h>
@@ -17,11 +20,13 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -317,6 +322,162 @@ test_delete_short(void) {
     return rc;
 }
 
+/* The patch fields a failed-CRC PDU must leave alone. */
+static int
+patch_unchanged(const dsd_state* a, const dsd_state* b) {
+    return a->p25_patch_count == b->p25_patch_count
+           && memcmp(a->p25_patch_sgid, b->p25_patch_sgid, sizeof a->p25_patch_sgid) == 0
+           && memcmp(a->p25_patch_is_patch, b->p25_patch_is_patch, sizeof a->p25_patch_is_patch) == 0
+           && memcmp(a->p25_patch_active, b->p25_patch_active, sizeof a->p25_patch_active) == 0
+           && memcmp(a->p25_patch_last_update, b->p25_patch_last_update, sizeof a->p25_patch_last_update) == 0
+           && memcmp(a->p25_patch_wgid_count, b->p25_patch_wgid_count, sizeof a->p25_patch_wgid_count) == 0
+           && memcmp(a->p25_patch_wgid, b->p25_patch_wgid, sizeof a->p25_patch_wgid) == 0
+           && memcmp(a->p25_patch_wuid_count, b->p25_patch_wuid_count, sizeof a->p25_patch_wuid_count) == 0
+           && memcmp(a->p25_patch_wuid, b->p25_patch_wuid, sizeof a->p25_patch_wuid) == 0
+           && memcmp(a->p25_patch_key, b->p25_patch_key, sizeof a->p25_patch_key) == 0
+           && memcmp(a->p25_patch_alg, b->p25_patch_alg, sizeof a->p25_patch_alg) == 0
+           && memcmp(a->p25_patch_ssn, b->p25_patch_ssn, sizeof a->p25_patch_ssn) == 0
+           && memcmp(a->p25_patch_key_valid, b->p25_patch_key_valid, sizeof a->p25_patch_key_valid) == 0;
+}
+
+typedef void (*mac_builder)(unsigned char mac[24]);
+
+static void
+build_failed_add(unsigned char mac[24]) {
+    put_moto_regroup(mac, 1, 0x81, 9, SG_A);
+    put16(mac, 6, WG(3));
+    put16(mac, 8, SG_C); // a second, new patch would need SG_C's own Add
+}
+
+static void
+build_failed_delete(unsigned char mac[24]) {
+    put_moto_regroup(mac, 1, 0x89, 7, SG_A);
+    put16(mac, 6, WG(1));
+}
+
+/* Harris Group Regroup Explicit Encryption Command: WGID form, active patch, SSN 5, KEY 0000, ALG 80. */
+static void
+build_failed_kas(unsigned char mac[24]) {
+    mac[1] = 0xB0;
+    mac[2] = 0xA4;
+    mac[3] = 11;
+    mac[4] = (unsigned char)((0x3 << 5) | 5);
+    put16(mac, 5, SG_A);
+    put16(mac, 7, 0x0000);
+    mac[9] = 0x80;
+    put16(mac, 10, WG(4));
+}
+
+/* Motorola Group Regroup Extended Function: class 02 operand 01 cancels the supergroup. */
+static void
+build_failed_cancel(unsigned char mac[24]) {
+    mac[1] = 0x84;
+    mac[2] = 0x90;
+    mac[3] = 11;
+    mac[4] = 0x02;
+    mac[5] = 0x01;
+    put16(mac, 7, SG_A);
+    mac[11] = 0x01;
+}
+
+/* Motorola Group Regroup Extended Function: class 02 operand 00 creates a supergroup for a radio. */
+static void
+build_failed_create(unsigned char mac[24]) {
+    mac[1] = 0x84;
+    mac[2] = 0x90;
+    mac[3] = 11;
+    mac[4] = 0x02;
+    mac[5] = 0x00;
+    put16(mac, 7, SG_C);
+    mac[11] = 0x07;
+}
+
+/* Supergroup-only voice: Motorola abbreviated (0x80), Motorola extended (0xA0), standard abbreviated (0x90). */
+static void
+build_failed_moto_voice(unsigned char mac[24]) {
+    mac[1] = 0x80;
+    mac[2] = 0x90;
+    put16(mac, 4, SG_A);
+    mac[8] = 0x22;
+}
+
+static void
+build_failed_moto_voice_ext(unsigned char mac[24]) {
+    mac[1] = 0xA0;
+    mac[2] = 0x90;
+    put16(mac, 5, SG_A);
+    mac[9] = 0x22;
+}
+
+static void
+build_failed_std_voice(unsigned char mac[24]) {
+    mac[1] = 0x90;
+    mac[2] = 0x00;
+    put16(mac, 3, SG_A);
+    mac[7] = 0x22;
+}
+
+/* SG_A patched to WG 1401 and 1402, inactive and five seconds old, so a refresh, an add, a delete, KEY context or a
+   cancel each shows. */
+static dsd_state*
+failed_crc_seed(void) {
+    dsd_state* state = new_state();
+    if (!state) {
+        return NULL;
+    }
+    seed_patch(state, SG_A, WG(1), WG(2));
+    const int idx = find_sg(state, SG_A);
+    if (idx >= 0) {
+        state->p25_patch_active[idx] = 0;
+        state->p25_patch_last_update[idx] = dsd_decode_time() - 5;
+    }
+    return state;
+}
+
+static int
+check_failed_crc_case(const char* name, mac_builder build) {
+    int rc = 0;
+    char tag[96];
+    unsigned char mac[24] = {0};
+    build(mac);
+
+    for (int crc_ok = 0; crc_ok <= 1; crc_ok++) {
+        dsd_state* state = failed_crc_seed();
+        dsd_state* before = new_state();
+        if (!state || !before) {
+            free_state(state);
+            free(before);
+            return 1;
+        }
+        DSD_MEMCPY(before, state, sizeof(*state));
+        run_pdu(state, XCH_LCCH, P25_MAC_PDU_SIGNAL, mac, crc_ok);
+        if (crc_ok == 0) {
+            DSD_SNPRINTF(tag, sizeof tag, "%s: failed CRC changes no patch", name);
+            rc |= expect_int(tag, patch_unchanged(before, state), 1);
+        } else {
+            DSD_SNPRINTF(tag, sizeof tag, "%s: CRC-good PDU applies (control)", name);
+            rc |= expect_int(tag, patch_unchanged(before, state), 0);
+        }
+        free(before);
+        free_state(state);
+    }
+    return rc;
+}
+
+static int
+test_failed_crc_changes_no_patch(void) {
+    int rc = 0;
+    rc |= check_failed_crc_case("moto add", build_failed_add);
+    rc |= check_failed_crc_case("moto delete", build_failed_delete);
+    rc |= check_failed_crc_case("harris kas", build_failed_kas);
+    rc |= check_failed_crc_case("moto cancel supergroup", build_failed_cancel);
+    rc |= check_failed_crc_case("moto create supergroup", build_failed_create);
+    rc |= check_failed_crc_case("moto sg voice", build_failed_moto_voice);
+    rc |= check_failed_crc_case("moto sg voice extended", build_failed_moto_voice_ext);
+    rc |= check_failed_crc_case("standard sg voice", build_failed_std_voice);
+    return rc;
+}
+
 static int
 run_cases(void) {
     int rc = 0;
@@ -328,6 +489,7 @@ run_cases(void) {
     rc |= test_add_odd_trailing_octet();
     rc |= test_adjacent_add_delete();
     rc |= test_delete_short();
+    rc |= test_failed_crc_changes_no_patch();
     return rc;
 }
 
@@ -370,7 +532,8 @@ main(void) {
             fclose(diagnostics);
         }
     }
-    rc |= expect_file_contains("regroup add prints", cap.path, "Group Regroup Add Command");
+    rc |= expect_file_contains("failed CRC add still prints", cap.path, "Group Regroup Add Command");
+    rc |= expect_file_contains("failed CRC note", cap.path, "(CRC failed; patch not applied)");
     (void)remove(cap.path);
     return rc;
 }
