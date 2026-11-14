@@ -1230,7 +1230,8 @@ test_capture_records_automatic_gain(void) {
     rtl_stream_test_capture_result out{};
     assert(rtl_stream_test_capture_session_begin(r.dev, opts, 851012500U, &out) == 0);
     assert(out.rc == 0);
-    rig_start(r);
+    /* No reader: a capture writer is installed before the device streams, as a stream open does, and the gain
+     * commands below go out on the connection the device published when it was created. */
 
     char dir[DSD_TEST_PATH_MAX];
     assert(dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_tcp_capture_gain") != nullptr);
@@ -1262,7 +1263,6 @@ test_capture_records_automatic_gain(void) {
         dsd_iq_replay_config_clear(&meta);
     }
     assert(dsd_test_remove_temp_dir(dir, kGainFiles) == 0);
-    (void)rtl_device_stop_async(r.dev);
     rtl_stream_test_capture_session_end();
     free(opts);
     rig_close(r);
@@ -2433,7 +2433,11 @@ test_tcp_gain_stream_copy_follows_reconnect(void) {
     assert(r.dev != nullptr);
     assert(recorded_manual_gain(r.dev) == 297);
     server_queue(tuner_script(1U, 14U));
+    /* Down while the loss is seen, as the other losses here are: a server that answers at once lets the reader
+     * reconnect before the poll sees it without a stream. */
+    g_srv.up.store(0);
     stream_lose_connection(r);
+    g_srv.up.store(1);
     wait_generation_of(r.dev, 2U);
     assert(recorded_manual_gain(r.dev) == 290);
     int published = 0;

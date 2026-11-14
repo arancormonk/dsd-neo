@@ -5189,11 +5189,12 @@ out:
 }
 
 #ifdef USE_RADIO
-/* The test IQ fixture's sidecar with its gain line replaced by @p gain_lines (whole lines, each ending ",\n"). */
+/* The test IQ fixture's sidecar with its gain line replaced by @p gain_lines (whole lines, each ending ",\n"). Text
+ * mode both ways, as test_create_temp_iq_fixture() writes it: on Windows its lines end in CRLF on disk. */
 static int
 test_rewrite_iq_fixture_gain(const char* metadata_path, const char* gain_lines) {
     char text[4096];
-    FILE* fp = dsd_fopen_private(metadata_path, "rb");
+    FILE* fp = dsd_fopen_private(metadata_path, "r");
     if (!fp) {
         return -1;
     }
@@ -5208,7 +5209,7 @@ test_rewrite_iq_fixture_gain(const char* metadata_path, const char* gain_lines) 
     char out[4096];
     const size_t head = (size_t)(at - text);
     DSD_SNPRINTF(out, sizeof out, "%.*s%s%s", (int)head, text, gain_lines, at + strlen(kLine));
-    fp = dsd_fopen_private(metadata_path, "wb");
+    fp = dsd_fopen_private(metadata_path, "w");
     if (!fp) {
         return -1;
     }
