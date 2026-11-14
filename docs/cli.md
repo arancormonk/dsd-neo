@@ -601,8 +601,8 @@ Notes
   talked long enough before in this run for its level to settle, at the gain that radio's speech settled at (a P25
   Phase 1 radio ID arrives about 0.2 s into a transmission, and its remembered gain eases in there over 20 ms).
   Within the talker's first voiced frames the gain goes most of the way to the talker's level. Until 20 voiced frames
-  are in, a frame that plays louder than -12 dBFS brings the gain down at once, so the frames after it play at or
-  under that level (the loud frame itself has already played, its peaks held at -1 dBFS). That cut is let go again
+  are in, a frame that plays louder than -12 dBFS takes the gain, at once, to where that frame would have played at
+  -12 dBFS. The change eases in over the next frame (20 ms), and peaks stay held at -1 dBFS. That cut is let go again
   200 ms after the last loud frame, so a pop or a bump does not hold the gain down. The gain moves only on
   decoded speech, never on encrypted audio it cannot decrypt, silence, noise or tones, holds through pauses, stays
   within 12 dB below and 30 dB above its start level (4 dB over `-g 1`, the middle of its range), and never lets a
@@ -671,8 +671,9 @@ Notes
   - The digital memory. A remembered gain belongs to a radio ID within a protocol family, not to a person. A console
     several people share, or a radio in another hand, opens at the last talker's level, and two systems that use the
     same ID number in one run share it; the first voiced frames correct it. It is not saved between runs. On a
-    two-slot carrier a radio that moves to the other slot opens at the gain its last transmission settled at on the
-    first slot: that transmission is remembered then, once, though the first slot has not started over.
+    two-slot carrier the first slot's last transmission from a radio is remembered, once, as soon as the other slot
+    names that radio, though the first slot has not started over; if the radio is named before anything voiced has
+    been heard, the new transmission opens from what was just remembered.
   - Range. A talker more than 30 dB under the target at the start level (on digital voice 4 dB over `-g 1`, not the
     +8 dB opening) stays quiet; one more than 12 dB over it is held down by the -1 dBFS limiter.
   - Tones. A sound that holds one pitch and level for 240 ms or more is taken for a tone and teaches nothing, a long,

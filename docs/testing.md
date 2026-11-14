@@ -2161,12 +2161,16 @@ nothing; a source that first arrives a few frames in eases its gain in over one 
 commit changes nothing; a remembered radio is kept per protocol family, shared by the two slots and stored at every
 kind of reset, the 64 entries give way least recently used first, and only the active call's source counts. A radio
 that moves to the other slot while its last reception there has settled and not yet been stored has that reception
-stored at the recall, once, and opens from it, at once or eased in later (`test_memory_other_slot_settled`); when the
-radio is remembered already it opens half way from its memory, and the first slot's reset stores nothing more
-(`test_memory_other_slot_moves_half_way`). Later receptions on the new slot open from the newer ones and converge on
-its level (`test_memory_other_slot_stored_once`), and the half step is taken once however often the radio opens there
-(`test_memory_other_slot_half_step_once`). Another radio, the same ID in another family, or an unsettled reception
-there is not used or stored at the recall, and its own reset stores what it ended at
+stored, once, when the new slot names the radio, and opens from it, at once or eased in later
+(`test_memory_other_slot_settled`); when the radio is remembered already it opens half way from its memory, and the
+first slot's reset stores nothing more (`test_memory_other_slot_moves_half_way`). Later receptions on the new slot open
+from the newer ones and converge on its level (`test_memory_other_slot_stored_once`), and the half step is taken once
+however often the radio opens there (`test_memory_other_slot_half_step_once`). A radio named only after the new slot
+has committed reopens nothing, but the store still happens then, so the memory takes the half steps in the order the
+receptions ended (`test_memory_other_slot_late_source_in_order`). A change from one radio to another stores too: X's
+next reception opens at what the first slot held at the frame that named X, although that slot is never reset
+(`test_memory_other_slot_source_change_stores`). Another radio, the same ID in another family, or an unsettled
+reception there is not used or stored when the new slot names its radio, and its own reset stores what it ended at
 (`test_memory_other_slot_not_used`, `test_memory_other_slot_stores_only_what_counts`).
 `ENGINE_NO_CARRIER_RESET` checks the engine's side: every carrier boundary but a stream gap starts both slots over,
 the stream gap and the no-carrier pass keep them, and a TETRA stream gap inside one transmission keeps the level while
@@ -2469,21 +2473,22 @@ until the reception's estimate is established, 20 committed frames):
   measures a talker's level with a standard deviation of 5 dB, 3.3 dB after 10 frames and 2 dB after 20; the weight
   sets that against the 7 dB spread of talkers around a fixed start.
 - Loud-frame guard. A frame that plays over -12 dBFS (RMS over the frame) takes the gain at once to where that frame
-  would play at -12 dBFS. The cut ramps in over the next frame, so the frames after it play at or under -12 dBFS; the
-  loud frame itself has already played, its peaks held at -1 dBFS. The loudest frame is then held: a frame within 6 dB
-  of it renews the hold, and after 200 ms of sound with nothing near it (10 frames at or over the absolute floor;
-  silence does not count) the held level eases 1 dB a frame and comes to rest within 6 dB over the sound that follows. A
-  louder frame takes the hold at once. No startup step puts the held level over -12 dBFS, and the burst fallback stops
-  there too. Until the first voiced run commits, the gain returns 1 dB a frame to the gain the reception opened at
-  (+8 dB, the remembered gain, or the fixed gain when `-g N` was just left), as far as the held level allows. A pop, a
-  bump or one shouted syllable early in a transmission is not the talker's level: on the recording a two-frame pop 0.2 s
-  into a transmission cut a remembered talker (opened at +11.8 dB) to -3.6 dB, and with the loudest frame kept for the
-  whole reception the gain stayed there for 3.2 s, until its 20th voiced frame, 13-15 dB too quiet and 7.6 dB quieter
-  than the 2 dB steps from +4 dB had played it. That cap held 1.14% of the recording's speech frames more than 6 dB
-  under their transmission's needed gain (five transmissions); with the hold, 0.26%. The cost: a loud sound that never
-  forms a voiced run and pauses for more than 200 ms of quieter sound comes back up to the opening gain, so its next
-  onset plays loud for a frame again. Two other ways were measured and dropped. No cap on startup steps at all gave the
-  same gain on the recording but worse corpus numbers at +1 s (85.4% of files within 6 dB, 90th percentile 7.6 dB).
+  would play at -12 dBFS. The change eases in over the next frame (20 ms), so that frame still plays a little over: a
+  steady -18 dBFS sine opened at +8 dB reads -10.00, -10.94 and -12.00 dBFS over its first three frames, and a later,
+  louder frame plays over again before its own cut. Peaks stay held at -1 dBFS. The loudest frame is then held: a frame
+  within 6 dB of it renews the hold, and after 200 ms of sound with nothing near it (10 frames at or over the absolute
+  floor; silence does not count) the held level eases 1 dB a frame and comes to rest within 6 dB over the sound that
+  follows. A louder frame takes the hold at once. No startup step puts the held level over -12 dBFS, and the burst
+  fallback stops there too. Until the first voiced run commits, the gain returns 1 dB a frame to the gain the reception
+  opened at (+8 dB, the remembered gain, or the fixed gain when `-g N` was just left), as far as the held level allows.
+  A pop, a bump or one shouted syllable early in a transmission is not the talker's level: on the recording a two-frame
+  pop 0.2 s into a transmission cut a remembered talker (opened at +11.8 dB) to -3.6 dB, and with the loudest frame kept
+  for the whole reception the gain stayed there for 3.2 s, until its 20th voiced frame, 13-15 dB too quiet and 7.6 dB
+  quieter than the 2 dB steps from +4 dB had played it. That cap held 1.14% of the recording's speech frames more than
+  6 dB under their transmission's needed gain (five transmissions); with the hold, 0.26%. The cost: a loud sound that
+  never forms a voiced run and pauses for more than 200 ms of quieter sound comes back up to the opening gain, so its
+  next onset plays loud for a frame again. Two other ways were measured and dropped. No cap on startup steps at all gave
+  the same gain on the recording but worse corpus numbers at +1 s (85.4% of files within 6 dB, 90th percentile 7.6 dB).
   Easing the burst fallback's three loudest levels as well lifted the two quietest calls by 1-4 dB, but would let a pop
   followed by steady noise raise the fallback's floor with no new burst.
 - Burst fallback. The reception keeps its three loudest frames at or over -70 dBFS; they never ease. A quieter frame
@@ -2495,17 +2500,19 @@ until the reception's estimate is established, 20 committed frames):
   1 dB on each frame of sound until the third loudest frame plays at -17 dBFS, never past the guard's held limit, and
   startup steps stay over that floor. Steady noise, a tone, a step out of silence and short blips between silences
   never complete a burst. Counting silence changes no output sample on the recording or the corpus.
-- Talker memory (`voice_level.c`, not the AGC). 64 radios, by protocol family and radio ID, the least recently stored
-  or applied one replaced first, for the run only. A reception whose estimate was established stores its settled
-  gain; a radio heard before moves half way to it. The first frame that names a remembered radio before anything has
-  committed opens the reception at its gain: at once on the reception's first frame, over one frame later (a P25
-  Phase 1 source arrives about 180 ms in). A radio is not on both slots at once, so when the recall finds the other
-  slot holding the same radio's last reception, settled and not yet stored (two-slot TDMA, nothing reset between),
-  that reception is over: it is stored then, once, before the lookup, and its slot stores nothing more when it starts
-  over. On the recording nine receptions were stored this way (nine times a radio's transmission ended on one slot
-  and its next began on the other with nothing reset between); two of those radios had no entry yet and would have
-  opened at +8 dB where they needed +1.4 and +26.8 dB. The same radio's last gain predicted its next transmission to
-  4.3 dB rms, a fixed start to 9.4 dB.
+- Talker memory (`voice_level.c`, not the AGC). 64 radios, by protocol family and radio ID, the least recently stored or
+  applied one replaced first, for the run only. A reception whose estimate was established stores its settled gain; a
+  radio heard before moves half way to it. The first frame that names a remembered radio before anything has committed
+  opens the reception at its gain: at once on the reception's first frame, over one frame later (a P25 Phase 1 source
+  arrives about 180 ms in). A radio is not on both slots at once, so whenever a slot newly names a radio (its first
+  source, or a change of source) and the other slot holds the same radio's last reception, settled and not yet stored
+  (two-slot TDMA, nothing reset between), that reception is over: it is stored then, once, and its slot stores nothing
+  more when it starts over. This happens also when the ID arrives after speech has committed; only reopening the
+  reception at the remembered gain needs the first naming before any commit. Stored later, at the first slot's own
+  reset, the old reception's half step would come after the newer one's. On the recording nine receptions were stored
+  this way (nine times a radio's transmission ended on one slot and its next began on the other with nothing reset
+  between); two of those radios had no entry yet and would have opened at +8 dB where they needed +1.4 and +26.8 dB. The
+  same radio's last gain predicted its next transmission to 4.3 dB rms, a fixed start to 9.4 dB.
 
 The decoder's frames were recorded before the AGC and replayed through the old and the new code (150 transmissions of
 0.6 s or more, the recording's radio IDs included, so with the talker memory; each transmission's level is the P.56
