@@ -2540,7 +2540,8 @@ instead of after its idle dwell; weak or very short transmissions can be missed,
 systems, an open squelch, holds and receivers that cannot measure the channel (a native Airspy
 among them) keep normal timing. Both checkboxes are saved with the list but apply to the whole
 session at its next start: lists that differ cannot scan together ("Different skip-silent
-setting"). See [Skipping silent channels](../docs/trunk-scan.md#skipping-silent-channels).
+setting"). Unchecked, Skip silent channels stays off even when Extra decoder arguments load a
+config file (`--config`) that turns it on. See [Skipping silent channels](../docs/trunk-scan.md#skipping-silent-channels).
 Per-target squelch is CSV-only: import a target CSV whose `options` carry
 `--squelch-db <dB>` (whole dB from -100 to 0, 0 = off, omitted = inherit). It is not a
 decoder argument, so Extra decoder arguments cannot set it. The target preview lists each

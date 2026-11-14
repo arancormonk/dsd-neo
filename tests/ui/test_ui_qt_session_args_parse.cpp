@@ -16,6 +16,8 @@
 #include <QChar>
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
+#include <QIODevice>
 #include <QList>
 #include <QMap>
 #include <QObject>
@@ -39,8 +41,10 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/wav_recording.h>
+#include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/cli.h>
 #include <memory>
+#include <qtenvironmentvariables.h>
 #include <stdint.h>
 #include <utility>
 #include "../../src/app_control/commands_internal.h"
@@ -271,6 +275,83 @@ test_scan_list(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
     expect("as a trunk scan", decoder.opts->trunk_scan_enabled != 0);
     expectRecording("a scan list records each call into its folder", decoder, sessions.folder, true, false);
     prefs.setRecordCalls(false);
+}
+
+/* Start @p args as the decoder host does (dsd_runtime_bootstrap(): a config file named with --config loads first, then
+   the command line goes over it), into @p decoder. */
+bool
+bootstrap(const QStringList& args, Decoder& decoder) {
+    QList<QByteArray> storage{QByteArray("dsd-neo")};
+    for (const QString& arg : args) {
+        storage.append(arg.toUtf8());
+    }
+    QList<char*> argv;
+    for (QByteArray& arg : storage) {
+        argv.append(arg.data());
+    }
+    argv.append(nullptr);
+    int effective = 0;
+    int exitCode = 0;
+    return dsd_runtime_bootstrap(static_cast<int>(storage.size()), argv.data(), decoder.opts.get(), decoder.state.get(),
+                                 &effective, &exitCode)
+               == DSD_BOOTSTRAP_CONTINUE
+           && exitCode == 0;
+}
+
+/* Issue #834: the scan list's Skip silent channels box owns the setting, over a config file the extra options load
+   with --config: an INI that turns skip-silent on runs the scan with it off when the box is unchecked, or when the list
+   was saved before the setting existed, and on when it is checked. */
+void
+test_scan_list_skip_silent_over_a_config(dsd_qt::AppPrefs& prefs, Sessions& sessions, const QString& scratch) {
+    expect("the config's folder", QDir().mkpath(scratch));
+    const QString ini = scratch + QStringLiteral("/skip-silent-on.ini");
+    QFile file(ini);
+    expect("the config is written", file.open(QIODevice::WriteOnly | QIODevice::Truncate)
+                                        && file.write("[trunking]\nscan_skip_silent = true\n") > 0);
+    file.close();
+    qputenv("DSD_NEO_NO_BOOTSTRAP", "1");
+    qunsetenv("DSD_NEO_CONFIG");
+    prefs.setExtraArgs(QStringLiteral("--config ") + ini);
+
+    const struct {
+        const char* what;
+        QVariant skipSilent;
+        int want;
+    } cases[] = {
+        {"an unchecked box runs the scan with skip-silent off over the config's on", QVariant(false), 0},
+        {"a list saved before the setting runs it off over the config's on", QVariant(), 0},
+        {"a checked box runs it on", QVariant(true), 1},
+    };
+
+    for (const auto& c : cases) {
+        QVariantMap list{{"name", "Local"},
+                         {"sourceType", "usb"},
+                         {"entries", QVariantList{QVariantMap{{"kind", "freq"},
+                                                              {"name", "Simplex"},
+                                                              {"protocol", "p25"},
+                                                              {"freqMhz", "851.5"},
+                                                              {"enabled", true}}}}};
+        if (c.skipSilent.isValid()) {
+            list.insert(QStringLiteral("skipSilent"), c.skipSilent);
+        }
+        dsd_qt::ScanListsModel lists;
+        expect("the scan list is added", lists.add(list));
+        const int row = lists.count() - 1;
+        dsd_qt::ScanListStarter starter(&prefs, nullptr);
+        starter.setRecordingSessions(&sessions);
+        Host host;
+        expect("the scan list starts", starter.start(lists.get(row), &host).value("started").toBool());
+        expect("the scan list is removed", lists.remove(row));
+        Decoder decoder;
+        const bool started = bootstrap(host.argv, decoder);
+        if (!started || decoder.opts->scan_skip_silent != c.want) {
+            DSD_FPRINTF(stderr, "  started=%d scan_skip_silent=%d argv=%s\n", started, decoder.opts->scan_skip_silent,
+                        qPrintable(host.argv.join(QLatin1Char(' '))));
+        }
+        expect(c.what, started && decoder.opts->scan_skip_silent == c.want);
+    }
+    prefs.setExtraArgs(QString());
+    qunsetenv("DSD_NEO_NO_BOOTSTRAP");
 }
 
 /* A session the app starts, parsed, with the frontend runtime up on it as a decoder run has it. */
@@ -1082,6 +1163,7 @@ main(int argc, char** argv) {
         test_saved_system(prefs, sessions);
         test_explore(prefs, sessions);
         test_scan_list(prefs, sessions);
+        test_scan_list_skip_silent_over_a_config(prefs, sessions, dir.filePath(QStringLiteral("config")));
         test_status_readings();
         test_live_commands(prefs, sessions);
         test_live_unknown_only_first(prefs, sessions);

@@ -543,9 +543,10 @@ appendScanOptions(QStringList& args, const QVariantMap& list, const QStringList&
     if (list.value("voiceOnly").toBool()) {
         args << QStringLiteral("--scan-voice-only");
     }
-    if (list.value("skipSilent").toBool()) {
-        args << QStringLiteral("--scan-skip-silent");
-    }
+    /* The list's box owns skip-silent (issue #834): off, or a list saved before it existed, says so over a config file
+       the extra options may load with --config, which the decoder reads before the command line. */
+    args << (list.value("skipSilent").toBool() ? QStringLiteral("--scan-skip-silent")
+                                               : QStringLiteral("--no-scan-skip-silent"));
     if (prefs.skipEncrypted) {
         args << QStringLiteral("--enc-lockout");
     }

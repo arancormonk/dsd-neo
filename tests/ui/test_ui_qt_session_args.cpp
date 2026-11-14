@@ -1880,14 +1880,18 @@ test_scan_lists_argv(void) {
                                                        && three.count(QStringLiteral("--scan-voice-only")) == 1
                                                        && three.count(QStringLiteral("--scan-skip-silent")) == 1);
     expect("the extra options come last", three.constLast() == QStringLiteral("-N"));
-    /* Issue #834: skip-silent is off unless the list turns it on, and a list saved before it existed reads as off. */
+    expect("a list with skip-silent on sends no off flag", three.count(QStringLiteral("--no-scan-skip-silent")) == 0);
+    /* Issue #834: skip-silent is off unless the list turns it on, and a list saved before it existed reads as off. The
+       box owns the setting, so off is said over a config file the extra options load (UI_QT_SESSION_ARGS_PARSE). */
     QVariantMap quiet = list;
     quiet["skipSilent"] = false;
-    expect("a list with skip-silent off sends no flag",
-           !dsd_qt::session_args_scan_build(quiet, "851.375", "/a.csv", prefs, &error).contains("--scan-skip-silent"));
+    QStringList off = dsd_qt::session_args_scan_build(quiet, "851.375", "/a.csv", prefs, &error);
+    expect("a list with skip-silent off sends the off flag, once",
+           !off.contains("--scan-skip-silent") && off.count(QStringLiteral("--no-scan-skip-silent")) == 1);
     quiet.remove("skipSilent");
-    expect("a list without the setting sends no flag",
-           !dsd_qt::session_args_scan_build(quiet, "851.375", "/a.csv", prefs, &error).contains("--scan-skip-silent"));
+    off = dsd_qt::session_args_scan_build(quiet, "851.375", "/a.csv", prefs, &error);
+    expect("a list without the setting sends the off flag, once",
+           !off.contains("--scan-skip-silent") && off.count(QStringLiteral("--no-scan-skip-silent")) == 1);
     QStringList nine;
     for (int i = 0; i < 9; ++i) {
         nine << QStringLiteral("/%1.csv").arg(i);
