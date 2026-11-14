@@ -2644,13 +2644,13 @@ same bits as before the veto, and with the veto off every output is. The 750 us 
 kHz audio follows 48 kHz within 0.216 dB at the 95th percentile (0.113 dB without it). The veto adds about 0.25 ns per
 sample at 48 kHz on speech (6.02 to 6.26 ns) and nothing measurable on hiss; the digital chain pays nothing.
 
-EDACS analog voice on an RTL input plays the FSK voice lane (issue #518 B10), not the peak-normalised discriminator
-output the release register reads, which hides the voice's level. `IO_RTL_VOICE_LANE` replays synthetic 9600 bit/s
+EDACS analog voice on an RTL input plays the FSK voice lane (issue #518 B10), not the discriminator output the release
+register reads, at the FSK scale with no de-emphasis. `IO_RTL_VOICE_LANE` replays synthetic 9600 bit/s
 captures (48 kHz, 60 kHz resampled to 48 kHz, 24 kHz) through the real stream, read API, resampler and ring with the
-auto squelch on, the lane switched on and off part-way, across a driver overflow and a retune. The normalised samples
+auto squelch on, the lane switched on and off part-way, across a driver overflow and a retune. The FSK samples
 and flags stay bit for bit the same with the lane on, off or switched; a batch made with the lane off reads silence on
 it; the lane reads the 1 kHz reference at 0.125 peak once the published gain makes up its de-emphasis, and a tone 20 dB
-down reads 20 dB down; with no de-emphasis it sits at the normalised samples' positions, not one sample either side.
+down reads 20 dB down; with no de-emphasis it sits at the FSK samples' positions, not one sample either side.
 Each replay uses its own centre frequency: the auto squelch keeps a channel's floor for the process, so a second
 replay on the same centre would start from it and set other flags. `DSP_FSK_VOICE_LANE` covers the lane in the demod
 (level at 24, 48 and 72 kHz under none, 50, 75 and 750 us; the compensation the monitor's; a squelched block; the

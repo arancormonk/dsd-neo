@@ -700,7 +700,7 @@ test_deemph_gain(void) {
               gains[g], (double)f.state->aout_gainA);
         /* Never the FSK discriminator nor PCM. */
         f.opts->audio_gainA = 50.0f;
-        out = deemph_square_out(&f, DSD_ANALOG_AUDIO_SOURCE_RTL_FSK, 30000.0, DSD_ANALOG_AUDIO_LEARN);
+        out = deemph_square_out(&f, DSD_ANALOG_AUDIO_SOURCE_RTL_FSK, 15000.0, DSD_ANALOG_AUDIO_LEARN);
         CHECK(fabs(out - 8231.0) < 0.05, "gain %.4f on the FSK discriminator: %.3f, want 8231", gains[g], out);
         out = deemph_square_out(&f, DSD_ANALOG_AUDIO_SOURCE_PCM16, 8231.0, DSD_ANALOG_AUDIO_LEARN);
         CHECK(fabs(out - 8231.0) < 0.05, "gain %.4f on PCM: %.3f, want 8231", gains[g], out);
@@ -805,7 +805,7 @@ test_discard_starts_over_after(void) {
 }
 
 /* The legacy 960 Hz filters are the chain's own and start over with it: a source change from the FSK output
-   (+/-30000) to monitor audio leaves no charge in the low-pass for the new source to play. */
+   (a held 30000) to monitor audio leaves no charge in the low-pass for the new source to play. */
 static void
 test_legacy_filters_start_over_with_the_chain(void) {
     fixture f = fixture_new();

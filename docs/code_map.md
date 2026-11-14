@@ -9171,13 +9171,13 @@ Notes:
     `dsd_rtl_stream_io_hook_read_ex()` hand them to the decoder; a host that installs only `read` gets them all open.
     Tests: `IO_RTL_SQUELCH_PLUMBING`, `ENGINE_IO_HOOKS_INSTALL`.
   - The FSK voice lane (issue #518 B10). EDACS plays analog calls on the 9600 bit/s FSK discriminator, whose output the
-    modem normalises to a +/-30000 peak (the release register needs it), which throws the voice's level away. While
+    modem gives on its fixed scale with no de-emphasis (the release register reads it), not at the monitor's level. While
     the decoder asks for it (`rtl_stream_set_voice_lane()`, through the runtime hook `set_voice_lane`: EDACS before an
     analog call's tune, off when the call ends or its tune is refused; process-wide, `g_voice_lane_requested`, taken
     by the demod thread before each block in `demod_take_voice_lane_setting()`, which starts the lane's de-emphasis
     and resampler history from silence when it turns on), an FSK block also makes a calibrated lane
     (`full_demod_handle_fsk_output()`): the centred discriminator output as the modem computes it ahead of its
-    normaliser, run beside the modem from the modem's own state before the block (`voice_lane_run()`: its previous
+    fixed scale, run beside the modem from the modem's own state before the block (`voice_lane_run()`: its previous
     sample and carrier centring, so a reset, a new configuration or a mid-stream lane-on leave the lane equal to the
     modem; the modem's loop, which every FSK digital decode runs, is untouched), at the FM monitor's output scale for
     the complex rate (`DSD_DEMOD_MONITOR_OUTPUT_SCALE`, `DSD_DEMOD_MONITOR_SCALE_REFERENCE_HZ`), through its own
