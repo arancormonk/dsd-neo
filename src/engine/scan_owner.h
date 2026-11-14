@@ -35,6 +35,9 @@ typedef struct {
         heard on the landed channel before the landing is noted, or before the check is first published, counts. */
     uint64_t sync_seq;
     double tune_decode_m;
+    /** The owner's tune sequence of that tune (dsd_engine_scan_owner::tune_seq): a visit tuned before skip-silent was
+        turned on is never checked. */
+    uint64_t tune_seq;
 } dsd_engine_scan_landing;
 
 /** The -Y row or trunk-scan target a frequency typed by hand went to, whose confirmed landing holds the scan there
@@ -76,13 +79,18 @@ typedef struct {
        (whatever its tone verdict), so a quiet check sees activity since its visit's tune. tune_sync_seq, tune_decode_m: sync_seq and the decode-mono time at the last
        scan tune request, carried to the landing it notes (the visit's activity baseline). quiet_inv_seq: moved where a
        quiet check's facts change and no counter of their own says so (a hold, a pause, a resume, a tune in flight, a
-       stop, the setting, a config apply, a Signal search start). */
+       stop, the setting, a config apply, a Signal search start). tune_seq: moved by every scan tune request, carried
+       to the landing it notes. quiet_first_tune_seq: the first tune_seq skip-silent applies to, set when the setting
+       turns on (0: every tune), so a visit tuned before then, landed, in flight or landed with its landing not yet
+       noted, is never checked. */
     uint64_t landing_epoch;
     uint32_t tune_generation_before;
     uint64_t sync_seq;
     uint64_t tune_sync_seq;
     double tune_decode_m;
     uint64_t quiet_inv_seq;
+    uint64_t tune_seq;
+    uint64_t quiet_first_tune_seq;
 } dsd_engine_scan_owner;
 
 static inline void

@@ -145,7 +145,7 @@ void dsd_frame_sync_hook_tick_guard_leave(int taken);
 /**
  * The session-wide scan skip-silent setting (dsd_opts::scan_skip_silent, #834) was written. The app-control handler
  * calls it on the decoder thread after storing the value; the engine drops the quiet checks it already made. With
- * @p turned_on (off before, on now) the visit on air gets no check: the setting applies from the next visit. This
+ * @p turned_on (off before, on now) no visit tuned before gets a check: the setting applies from the next tune. This
  * table lives for the whole engine run, not a trunk-scan coordinator's, so it serves -Y too. A no-op when nothing is
  * installed (headless runs, tests).
  */

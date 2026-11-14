@@ -984,10 +984,10 @@ changes.
 
 Turn it on with `--scan-skip-silent` (`--no-scan-skip-silent` turns it off, also over a config file value), with
 `[trunking] scan_skip_silent = true`, with the terminal's Trunking > Follow > `Silent channel skip`, which applies from
-the next visit (the channel on air when you turn it on is not checked), or with a Qt/Android scan list's **Skip silent
-channels** checkbox, which applies at the next start. It is one setting for the whole session: it covers every
-conventional target and every `-Y` row, and it is never a row or target option (an `options` cell refuses it). Without
-`-Y` or `--trunk-scan` it does nothing, and the start warns
+the next visit (the channel on air or being tuned when you turn it on is not checked), or with a Qt/Android scan list's
+**Skip silent channels** checkbox, which applies at the next start. It is one setting for the whole session: it covers
+every conventional target and every `-Y` row, and it is never a row or target option (an `options` cell refuses it).
+Without `-Y` or `--trunk-scan` it does nothing, and the start warns
 `--scan-skip-silent has no effect without -Y or --trunk-scan` (naming `[trunking] scan_skip_silent` when the config
 turned it on).
 
@@ -1056,8 +1056,8 @@ turned it on).
 - A hold, an edit to the list or channel map, a width change, an input switch, a pause or a loaded config throws the
   reading away. Once nothing keeps the channel any more, the check can run again on the same visit.
 - A Signal search start, or turning the setting off, ends the check. Turning the setting on (from the terminal, the API
-  or a loaded config) leaves the channel on air unchecked: calls it carried while the setting was off were not
-  counted, so the setting applies from the next visit.
+  or a loaded config) leaves the channel on air, or the one being tuned, unchecked: calls it carried while the setting
+  was off were not counted, so the setting applies from the next tune.
 - A channel whose neighbours on both sides raise the noise beside it by more than 8.7 dB over the receiver's own
   noise: the check gives up on it. A steeply sloping noise floor or a broad interferer usually makes it give up too.
   That costs speed, never a missed signal.

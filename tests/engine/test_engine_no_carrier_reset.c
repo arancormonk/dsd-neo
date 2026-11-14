@@ -12491,6 +12491,57 @@ test_y_quiet_turned_on_mid_visit_keeps_the_row(void) {
     return rc;
 }
 
+/* -Y: the setting applies from the next tune. A Next issued while it was off (its RTL tune timed out) lands on its row
+   before the setting turns on, and the outer poll notes the landing only after: that row is not measured and keeps its
+   hangtime, since a call it carried while the setting was off moved nothing. The next Next, tuned with the setting on,
+   is measured and steps on its quiet result. */
+static int
+test_y_quiet_turned_on_after_the_walk_tune(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    /* A frequency unique to this case: engine.c caches its last tune in file statics. */
+    const long int base_hz = 537012500L;
+    int rc =
+        expect_true("the first step lands row 0 with the setting off", yq_list(opts, state, 3, 0, 0, base_hz) == 0);
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    rc |= expect_true("the Next walks into a timeout",
+                      dsd_engine_channel_scan_walk_row(opts, state, 1, 1) == DSD_SCAN_WALK_PENDING);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+    opts->scan_skip_silent = 1;
+    dsd_engine_scan_quiet_setting_changed(state, 1);
+    rc |= expect_true("the walk lands after the setting turned on",
+                      dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED
+                          && dsd_engine_scan_landing_is_row(state, 1));
+    g_yq.gen_base += (uint32_t)g_rtl_tune_calls;
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    noCarrier(opts, state);
+    rc |= expect_true("a row tuned before the setting turned on: not measured, keeps its hangtime",
+                      g_yq.requests == 0 && g_rtl_tune_calls == 0 && g_yq.notices == 0
+                          && scan_quiet_phase_get(state) == SCAN_QUIET_DONE);
+    rc |= expect_true("the next Next is tuned with the setting on",
+                      dsd_engine_channel_scan_walk_row(opts, state, 2, 1) == DSD_SCAN_WALK_LANDED
+                          && dsd_engine_scan_landing_is_row(state, 2));
+    g_yq.gen_base += (uint32_t)g_rtl_tune_calls;
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    noCarrier(opts, state);
+    rc |= expect_true("the next tune's row is measured and steps",
+                      g_yq.requests == 1 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y setting turned on after the walk's tune\n");
+    }
+    return rc;
+}
+
 /* -Y keep timing: a busy row, an operator hold, a single-row list, and heard voice under the voice gate never
    skip; a row the voice gate is still qualifying skips on a quiet result, and with the check busy its qualification
    expiry still steps. The rules a step would stay for are part of the row's conditions, so none is measured and no
@@ -12785,6 +12836,7 @@ test_scan_quiet_decisions(void) {
     rc |= test_y_quiet_sync_while_suspended_ends_the_check(0);
     rc |= test_y_quiet_restart_late_in_the_visit_measures();
     rc |= test_y_quiet_turned_on_mid_visit_keeps_the_row();
+    rc |= test_y_quiet_turned_on_after_the_walk_tune();
     rc |= test_y_quiet_counts_from_the_landing(1);
     rc |= test_y_quiet_counts_from_the_landing(0);
     rc |= test_y_quiet_counts_from_the_walk_tune(1);

@@ -193,7 +193,8 @@ int dsd_engine_scan_quiet_service(const dsd_opts* opts, dsd_state* state);
  * (its request ticket-matched) and SUSPENDED until republished. A DONE check stays DONE for its visit. */
 void dsd_engine_scan_quiet_invalidate(dsd_state* state);
 /** The setting changed (dsd_scan_quiet_setting_changed()): as dsd_engine_scan_quiet_invalidate(). With @p turned_on
- * (off before, on now) the visit landed now is DONE: the setting applies from the next visit. */
+ * (off before, on now) the setting applies from the next visit, that is from the next scan tune: the visit landed now
+ * is DONE, and so is any visit tuned before, in flight or landed but not yet noted, at its publication. */
 void dsd_engine_scan_quiet_setting_changed(dsd_state* state, int turned_on);
 
 /* Facts the scans own, read by the check. */

@@ -23507,8 +23507,9 @@ test_scan_quiet_restart_late_in_the_visit_measures(void) {
 
 /* Turning the setting on mid-visit does not check that visit, whether it landed while the setting was off or its
    check was under way when the setting went off and on again: syncs heard while it was off moved nothing, so the
-   setting applies from the next visit. The next visit is checked, and so is a park still in flight when the setting
-   turns on, which has heard nothing of its channel yet. */
+   setting applies from the next tune. Nor is a visit whose tune was issued before the setting turned on: a park still
+   in flight, or one that already landed (and may have heard a sync) whose landing the tick has not noted yet, stays
+   DONE when published in flight and after its landing is noted. The next tune's visit is checked. */
 static int
 test_scan_quiet_turned_on_mid_visit_applies_from_the_next_visit(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -23551,22 +23552,52 @@ test_scan_quiet_turned_on_mid_visit_applies_from_the_next_visit(void) {
     rc |= qt_expect("the next visit is checked",
                     scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == requests + 1);
 
-    /* A park in flight when the setting turns on. */
-    opts.scan_skip_silent = 0;
-    dsd_engine_scan_quiet_setting_changed(&state, 0);
-    const uint32_t session = dsd_engine_scan_landing_get(&state)->session;
-    g_scan_tune_to_freq_pending = 1;
-    (void)dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
-    opts.scan_skip_silent = 1;
-    dsd_engine_scan_quiet_setting_changed(&state, 1);
-    scan_quiet_eligibility e = quiet_elig(&opts, &state);
-    e.key.index = 1;
-    e.key.session = session;
-    e.key.tune_request = g_scan_tune_pending_request;
-    e.frequency_hz = k_qt_hz_b;
-    scan_quiet_publish_eligibility(&opts, &state, SCAN_QUIET_OWNER_TRUNK, &e);
-    rc |= qt_expect("a park in flight when the setting turns on is checked",
-                    scan_quiet_phase_get(&state) == SCAN_QUIET_WAIT_CAPTURE);
+    /* A park tuned while the setting was off: in flight when it turns on, or already landed on its channel (the tune
+       completed, a sync heard while off) with its landing not yet noted. */
+    for (int landed = 0; landed <= 1; landed++) {
+        opts.scan_skip_silent = 0;
+        dsd_engine_scan_quiet_setting_changed(&state, 0);
+        const uint32_t session = dsd_engine_scan_landing_get(&state)->session;
+        const int from = (int)dsd_engine_trunk_scan_active_index(&state);
+        g_scan_tune_to_freq_pending = 1;
+        (void)dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+        const uint64_t park = g_scan_tune_pending_request;
+        const int to = from == 0 ? 1 : 0;
+        const uint32_t to_hz = to == 1 ? k_qt_hz_b : k_qt_hz_a;
+        g_quiet_stream_gen++;
+        if (landed) {
+            quiet_tap_capture(to_hz, g_quiet_stream_gen);
+            dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_OK);
+        }
+        opts.scan_skip_silent = 1;
+        dsd_engine_scan_quiet_setting_changed(&state, 1);
+        scan_quiet_eligibility e = quiet_elig(&opts, &state);
+        e.key.index = to;
+        e.key.session = session;
+        e.key.tune_request = park;
+        e.frequency_hz = to_hz;
+        requests = g_tap.requests;
+        scan_quiet_publish_eligibility(&opts, &state, SCAN_QUIET_OWNER_TRUNK, &e);
+        rc |= qt_expect(landed ? "a park landed but not noted when the setting turns on: DONE, nothing requested"
+                               : "a park in flight when the setting turns on: DONE, nothing requested",
+                        scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.requests == requests);
+        if (!landed) {
+            quiet_tap_capture(to_hz, g_quiet_stream_gen);
+            dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_OK);
+        }
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        rc |= qt_expect("the tick noted the park's landing", dsd_engine_scan_landing_get(&state)->tune_request == park
+                                                                 && dsd_engine_scan_landing_get(&state)->index == to);
+        quiet_publish(&opts, &state);
+        rc |= qt_expect("its landing noted after the setting turned on: still DONE, nothing requested",
+                        scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.requests == requests
+                            && quiet_service_after(&opts, &state, 5U) == 0
+                            && scan_quiet_wants_eligibility(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 0);
+        quiet_land_again(&state, to_hz);
+        quiet_publish(&opts, &state);
+        rc |= qt_expect("the next tune's visit is checked",
+                        scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == requests + 1);
+    }
     quiet_rig_finish(&opts, &state, dir, path);
     return rc;
 }

@@ -77,19 +77,21 @@ dsd_engine_scan_landing_forget(dsd_state* state) {
  * retune is issued, goes with the landing it notes (dsd_engine_scan_landing::generation_before_tune), and so do the
  * sync sequence and the decode time, the visit's activity baseline: a sync the new channel returns before its landing
  * is noted (an asynchronous tune lands between two passes) still counts. A sync from the old channel's tail counts
- * too, which only keeps the channel. */
+ * too, which only keeps the channel. The tune sequence moves, and goes with the landing too: skip-silent applies only
+ * to a visit tuned after it was turned on. */
 static inline void
 dsd_engine_scan_landing_note_tune(dsd_state* state) {
     dsd_engine_scan_owner* owner = state ? dsd_engine_scan_owner_ensure(state) : NULL;
     if (owner) {
+        owner->tune_seq++;
         owner->tune_generation_before = dsd_rtl_stream_metrics_hook_stream_generation();
         owner->tune_sync_seq = owner->sync_seq;
         owner->tune_decode_m = dsd_decode_now_mono_s();
     }
 }
 
-/* @p landing, with the visit facts of issue #834 (a new epoch, the generation and the activity baseline carried from
-   its tune request, the time it was noted), is the landing in force. */
+/* @p landing, with the visit facts of issue #834 (a new epoch, the generation, the activity baseline and the tune
+   sequence carried from its tune request, the time it was noted), is the landing in force. */
 static inline void
 dsd_engine_scan_landing_install(dsd_engine_scan_owner* owner, dsd_engine_scan_landing landing) {
     landing.epoch = ++owner->landing_epoch;
@@ -97,6 +99,7 @@ dsd_engine_scan_landing_install(dsd_engine_scan_owner* owner, dsd_engine_scan_la
     landing.landed_realtime_ms = dsd_realtime_mono_ms();
     landing.sync_seq = owner->tune_sync_seq;
     landing.tune_decode_m = owner->tune_decode_m;
+    landing.tune_seq = owner->tune_seq;
     owner->landing = landing;
 }
 

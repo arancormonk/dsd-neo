@@ -622,9 +622,11 @@ Generated (do not edit/commit):
       search start (the tap lets the search's first request supersede the quiet one meanwhile); the setting and every
       config apply (`dsd_scan_quiet_setting_changed()`, installed engine-wide as
       `dsd_engine_scan_quiet_setting_changed()`, which also cancels and suspends at once; when the change turned the
-      setting on, from off, it marks the landed visit DONE: syncs heard while off moved no `sync_seq`, so the setting
-      applies from the next visit, and a park still in flight, which has heard nothing yet, is checked). Both bumps are
-      one load while skip-silent is off. A mutation site only moves the counter; the request is cancelled,
+      setting on, from off, it applies from the next visit, that is from the next scan tune: syncs heard while off moved
+      no `sync_seq`, so it marks the landed visit DONE and records the next value of the owner's `tune_seq` (moved by
+      every `dsd_engine_scan_landing_note_tune()`, carried by the landing it notes) as `quiet_first_tune_seq`, and any
+      visit tuned before that, a park in flight or one landed but not yet noted alike, is DONE at its publication). Both
+      bumps are one load while skip-silent is off. A mutation site only moves the counter; the request is cancelled,
       ticket-matched, at the next reconcile, which runs before every outward answer (hook, apply, decline, publication),
       so no stale result is ever handed back or applied, and a Signal search request supersedes a quiet one at the tap
       meanwhile.

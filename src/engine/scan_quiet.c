@@ -618,9 +618,20 @@ quiet_visit_baseline(const dsd_engine_scan_owner* owner, scan_quiet_check* c, co
     c->visit_decode_m = owner->tune_decode_m;
 }
 
-/* A publication's reconcile, and whether @p e's visit has its check ended already: DONE for the visit, or a sync or a
-   carrier heard in it since its activity baseline, its check suspended or not (then DONE now: none is made for it
-   again). */
+/* The scan tune that put @p key's visit on air (dsd_engine_scan_owner::tune_seq): its landing's, or for a park still
+   in flight, or one whose landing is not noted yet, the scan's last. */
+static uint64_t
+quiet_visit_tune_seq(const dsd_engine_scan_owner* owner, const scan_quiet_visit_key* key) {
+    const dsd_engine_scan_landing* landing = &owner->landing;
+    if (key->epoch != 0U && landing->by == quiet_landing_by(key->owner) && landing->epoch == key->epoch) {
+        return landing->tune_seq;
+    }
+    return owner->tune_seq;
+}
+
+/* A publication's reconcile, and whether @p e's visit has its check ended already: DONE for the visit, a visit tuned
+   before the setting was turned on (then DONE now: the setting applies from the next tune), or a sync or a carrier
+   heard in it since its activity baseline, its check suspended or not (then DONE now: none is made for it again). */
 static int
 quiet_publication_ends_visit(const dsd_opts* opts, const dsd_state* state, const dsd_engine_scan_owner* owner,
                              scan_quiet_check* c, const scan_quiet_eligibility* e, uint64_t now_ms) {
@@ -631,6 +642,15 @@ quiet_publication_ends_visit(const dsd_opts* opts, const dsd_state* state, const
     }
     if (c->phase == SCAN_QUIET_DONE && quiet_key_equal(&c->key, &e->key)) {
         return 1; /* terminal for the visit */
+    }
+    if (quiet_visit_tune_seq(owner, &e->key) < owner->quiet_first_tune_seq) {
+        /* Tuned before the setting turned on: what it heard while off moved nothing. A park in flight keeps what its
+           landing adopts it by, as an ineligible one does. */
+        quiet_end(c, SCAN_QUIET_DONE);
+        c->key = e->key;
+        c->epoch_counter = owner->landing_epoch;
+        c->frequency_hz = e->frequency_hz;
+        return 1;
     }
     quiet_visit_baseline(owner, c, &e->key);
     if (owner->sync_seq == c->sync_seq) {
@@ -848,8 +868,9 @@ scan_quiet_key_get(const dsd_state* state) {
 
 #ifdef USE_RADIO
 /* The setting turned on mid-visit: the visit landed now gets no check, since the syncs it heard while the setting was
-   off moved no sync sequence. The setting applies from the next visit. A park still in flight has heard nothing of its
-   channel yet, and is checked. */
+   off moved no sync sequence, and it asks for no eligibility from now. A visit tuned before the setting turned on whose
+   landing is not noted yet (in flight, or landed before the coordinator noted it) gets none either, at its publication
+   (quiet_publication_ends_visit()): the setting applies from the next tune. */
 static void
 quiet_skip_landed_visit(dsd_engine_scan_owner* owner) {
     const dsd_engine_scan_landing* landing = &owner->landing;
@@ -877,13 +898,14 @@ dsd_engine_scan_quiet_setting_changed(dsd_state* state, int turned_on) {
 #ifdef USE_RADIO
     dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
     /* The setting turned: the visit's activity baseline is set again at its next publication (a landed visit's from
-       its landing note, a park in flight's from then). Turned on, a landed visit is not checked: the setting applies
-       from the next visit. */
+       its landing note, a park in flight's from then). Turned on, it applies from the next scan tune: no visit tuned
+       before it is checked, landed or not. */
     scan_quiet_check* c = quiet_check_get(owner);
     if (c) {
         c->visit_set = 0;
     }
     if (turned_on && owner) {
+        owner->quiet_first_tune_seq = owner->tune_seq + 1U;
         quiet_skip_landed_visit(owner);
     }
 #else
