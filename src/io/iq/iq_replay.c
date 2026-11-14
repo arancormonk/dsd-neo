@@ -1543,6 +1543,12 @@ metadata_parse_field_group_b1(metadata_parse_state* st, const char* key, const j
         st->cfg.tuner_gain_unknown = known ? 0 : 1;
         st->seen.tuner_gain_known = 1;
         *handled = 1;
+    } else if (strcmp(key, "tuner_gain_auto") == 0) {
+        /* Optional: metadata written before this field existed reads 0, by its other gain fields as it always did. */
+        int automatic = 0;
+        rc = token_to_bool(val_tok, &automatic, err_buf, err_buf_size, "tuner_gain_auto");
+        st->cfg.tuner_gain_auto = automatic ? 1 : 0;
+        *handled = 1;
     } else if (strcmp(key, "rtl_dsp_bw_khz") == 0) {
         rc = metadata_expect_integer(val_tok, "rtl_dsp_bw_khz", err_buf, err_buf_size);
         if (rc == DSD_IQ_OK) {
@@ -2152,6 +2158,11 @@ parse_metadata_json(const char* metadata_path, const char* json, size_t json_len
         st.cfg.tuner_gain_unknown = 1;
         st.cfg.tuner_gain_tenth_db = 0;
     }
+    /* Automatic gain is no gain reading, as the writer records it. */
+    if (st.cfg.tuner_gain_auto) {
+        st.cfg.tuner_gain_unknown = 1;
+        st.cfg.tuner_gain_tenth_db = 0;
+    }
 
     st.cfg.recorded_dsp_bw_khz = st.cfg.rtl_dsp_bw_khz;
     *out_cfg = st.cfg;
@@ -2281,6 +2292,30 @@ dsd_iq_replay_dsp_input_rate_hz(const dsd_iq_replay_config* cfg) {
         return 0U;
     }
     return cfg->dsp_input_rate_hz != 0U ? cfg->dsp_input_rate_hz : cfg->sample_rate_hz;
+}
+
+int
+dsd_iq_replay_configured_gain_db(const dsd_iq_replay_config* cfg, int current_gain_db) {
+    if (!cfg) {
+        return current_gain_db;
+    }
+    if (cfg->tuner_gain_auto) {
+        return 0;
+    }
+    if (cfg->tuner_gain_unknown) {
+        return current_gain_db;
+    }
+    /* The nearest whole dB (a half rounds up), held to the manual range 1..49 before it is computed, so no gain the
+       capture recorded overflows here. 0 is automatic: a manual gain never configures it. */
+    const int tenths = cfg->tuner_gain_tenth_db;
+    if (tenths <= 0) {
+        return 1;
+    }
+    if (tenths >= 485) {
+        return 49;
+    }
+    const int db = (tenths + 5) / 10;
+    return db < 1 ? 1 : db;
 }
 
 static int
@@ -3464,7 +3499,9 @@ dsd_iq_info_print_summary(const dsd_iq_replay_config* cfg, const char* display_p
     DSD_FPRINTF(out, "  FS/4 shift:          %s\n", cfg->fs4_shift_enabled ? "enabled" : "disabled");
     DSD_FPRINTF(out, "  CU8 transform:       %s\n", cfg->historical_cu8_two_pass ? "historical two-pass" : "combined");
     DSD_FPRINTF(out, "  Offset tuning:       %s\n", cfg->offset_tuning_enabled ? "enabled" : "disabled");
-    if (cfg->tuner_gain_unknown) {
+    if (cfg->tuner_gain_auto) {
+        DSD_FPRINTF(out, "  Tuner gain:          automatic\n");
+    } else if (cfg->tuner_gain_unknown) {
         DSD_FPRINTF(out, "  Tuner gain:          unknown\n");
     } else {
         DSD_FPRINTF(out, "  Tuner gain:          %.1f dB\n", (double)cfg->tuner_gain_tenth_db / 10.0);

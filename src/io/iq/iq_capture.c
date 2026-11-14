@@ -508,6 +508,20 @@ metadata_write_rate_chain_fields(FILE* fp, const dsd_iq_rate_chain* chain) {
     return 0;
 }
 
+/* The tuner gain and its mode. Automatic gain is no gain reading: an older reader, which skips tuner_gain_auto, reads
+   it as unknown gain. */
+static int
+metadata_write_tuner_gain_fields(FILE* fp, const dsd_iq_capture_config* cfg) {
+    const int gain_auto = cfg->tuner_gain_auto ? 1 : 0;
+    if (write_json_i64_field(fp, "tuner_gain_tenth_db", gain_auto ? 0 : cfg->tuner_gain_tenth_db, 0) != 0) {
+        return -1;
+    }
+    if (write_json_bool_field(fp, "tuner_gain_known", (gain_auto || cfg->tuner_gain_unknown) ? 0 : 1, 0) != 0) {
+        return -1;
+    }
+    return write_json_bool_field(fp, "tuner_gain_auto", gain_auto, 0);
+}
+
 static int
 metadata_write_chain_fields(FILE* fp, const dsd_iq_capture_config* cfg) {
     if (write_json_u64_field(fp, "sample_rate_hz", cfg->sample_rate_hz, 0) != 0) {
@@ -522,10 +536,7 @@ metadata_write_chain_fields(FILE* fp, const dsd_iq_capture_config* cfg) {
     if (write_json_i64_field(fp, "ppm", cfg->ppm, 0) != 0) {
         return -1;
     }
-    if (write_json_i64_field(fp, "tuner_gain_tenth_db", cfg->tuner_gain_tenth_db, 0) != 0) {
-        return -1;
-    }
-    if (write_json_bool_field(fp, "tuner_gain_known", cfg->tuner_gain_unknown ? 0 : 1, 0) != 0) {
+    if (metadata_write_tuner_gain_fields(fp, cfg) != 0) {
         return -1;
     }
     if (write_json_i64_field(fp, "rtl_dsp_bw_khz", cfg->rtl_dsp_bw_khz, 0) != 0) {

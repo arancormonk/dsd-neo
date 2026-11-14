@@ -97,7 +97,7 @@ typedef struct {
 
 /* Every temp directory made so far, recorded as soon as it exists so that main() removes it whichever way the test
  * that made it returned. */
-static temp_dir_entry g_temp_dirs[24];
+static temp_dir_entry g_temp_dirs[32];
 static size_t g_temp_dir_count = 0;
 
 static int
@@ -2165,6 +2165,326 @@ test_iq_info_rate_chain(void) {
     return rc;
 }
 
+/* Capture @p metadata_path (and its data file) with the tuner gain fields @p auto_gain, @p unknown and @p tenths, as
+   the stream's capture fills them. */
+static int
+write_gain_capture(const char* data_path, const char* metadata_path, int auto_gain, int unknown, int tenths) {
+    dsd_iq_capture_config cfg;
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
+    DSD_SNPRINTF(cfg.data_path, sizeof(cfg.data_path), "%s", data_path);
+    DSD_SNPRINTF(cfg.metadata_path, sizeof(cfg.metadata_path), "%s", metadata_path);
+    cfg.format = DSD_IQ_FORMAT_CU8;
+    DSD_SNPRINTF(cfg.capture_stage, sizeof(cfg.capture_stage), "%s", "post_mute_pre_widen");
+    cfg.sample_rate_hz = 1536000;
+    cfg.center_frequency_hz = 851375000ULL;
+    cfg.capture_center_frequency_hz = 851759000ULL;
+    cfg.tuner_gain_tenth_db = tenths;
+    cfg.tuner_gain_unknown = unknown;
+    cfg.tuner_gain_auto = auto_gain;
+    cfg.rtl_dsp_bw_khz = 48;
+    cfg.base_decimation = 32;
+    cfg.post_downsample = 1;
+    cfg.demod_rate_hz = 48000;
+    cfg.fs4_shift_enabled = 1;
+    cfg.combine_rotate_enabled = 1;
+    cfg.muted_bytes_excluded = 1;
+    DSD_SNPRINTF(cfg.source_backend, sizeof(cfg.source_backend), "%s", "rtl_tcp");
+    DSD_SNPRINTF(cfg.source_args, sizeof(cfg.source_args), "%s", "127.0.0.1:1234");
+    dsd_iq_capture_writer* writer = NULL;
+    char err[256] = {0};
+    if (dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)) != DSD_IQ_OK || !writer) {
+        DSD_FPRINTF(stderr, "FAIL: gain capture open: %s\n", err);
+        return 1;
+    }
+    const uint8_t bytes[4] = {127, 128, 129, 126};
+    int rc = expect_int("gain capture submit", dsd_iq_capture_submit(writer, bytes, sizeof(bytes)), DSD_IQ_OK);
+    dsd_iq_capture_final_stats stats;
+    DSD_MEMSET(&stats, 0, sizeof(stats));
+    dsd_iq_capture_close(writer, &stats);
+    return rc;
+}
+
+/* The sidecar @p path as text, NUL-terminated in @p out. */
+static int
+read_text(const char* path, char* out, size_t out_size) {
+    FILE* fp = dsd_fopen_private(path, "rb");
+    if (!fp) {
+        return -1;
+    }
+    const size_t n = fread(out, 1, out_size - 1U, fp);
+    fclose(fp);
+    out[n] = '\0';
+    return 0;
+}
+
+/* @p text with the first @p line in it taken out, written to @p path. */
+static int
+write_text_without(const char* path, const char* text, const char* line) {
+    char edited[8192];
+    const char* at = strstr(text, line);
+    if (!at) {
+        return -1;
+    }
+    const size_t head = (size_t)(at - text);
+    if (head >= sizeof(edited)) {
+        return -1;
+    }
+    DSD_MEMCPY(edited, text, head);
+    DSD_SNPRINTF(edited + head, sizeof(edited) - head, "%s", at + strlen(line));
+    return write_text_file(path, edited);
+}
+
+static int
+expect_gain_fields(const char* label, const dsd_iq_replay_config* cfg, int want_auto, int want_unknown,
+                   int want_tenths) {
+    char what[160];
+    int rc = 0;
+    DSD_SNPRINTF(what, sizeof(what), "%s: tuner_gain_auto", label);
+    rc |= expect_int(what, cfg->tuner_gain_auto, want_auto);
+    DSD_SNPRINTF(what, sizeof(what), "%s: tuner_gain_unknown", label);
+    rc |= expect_int(what, cfg->tuner_gain_unknown, want_unknown);
+    DSD_SNPRINTF(what, sizeof(what), "%s: tuner_gain_tenth_db", label);
+    rc |= expect_int(what, cfg->tuner_gain_tenth_db, want_tenths);
+    return rc;
+}
+
+/* B8: a capture under the tuner's automatic gain records it ("tuner_gain_auto": true, no gain reading) and reads back
+   automatic; a manual capture keeps its exact gain, an unknown one none. */
+static int
+test_metadata_auto_roundtrip(void) {
+    static const struct {
+        const char* name;
+        int auto_gain;
+        int unknown;
+        int tenths;
+        const char* want_line;
+        int want_auto;
+        int want_unknown;
+        int want_tenths;
+    } k_cases[] = {
+        {"automatic", 1, 1, 0, "  \"tuner_gain_auto\": true,\n", 1, 1, 0},
+        /* The writer holds the file's invariant: automatic is no gain reading, whatever the other fields say. */
+        {"automatic over a stale gain", 1, 0, 297, "  \"tuner_gain_auto\": true,\n", 1, 1, 0},
+        {"manual", 0, 0, 297, "  \"tuner_gain_auto\": false,\n", 0, 0, 297},
+        {"manual below 0 dB", 0, 0, -10, "  \"tuner_gain_auto\": false,\n", 0, 0, -10},
+        {"unknown", 0, 1, 0, "  \"tuner_gain_auto\": false,\n", 0, 1, 0},
+    };
+
+    int rc = 0;
+    char dir[256];
+    static const char* const files[] = {"gain.iq", "gain.iq.json", NULL};
+    if (mk_temp_dir(dir, sizeof(dir), files) != 0) {
+        return 1;
+    }
+    char data_path[512];
+    char metadata_path[512];
+    path_join(data_path, sizeof(data_path), dir, "gain.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "gain.iq.json");
+    for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        char label[128];
+        DSD_SNPRINTF(label, sizeof(label), "gain round trip (%s)", k_cases[i].name);
+        rc |= write_gain_capture(data_path, metadata_path, k_cases[i].auto_gain, k_cases[i].unknown, k_cases[i].tenths);
+        char text[8192];
+        rc |= expect_int(label, read_text(metadata_path, text, sizeof(text)), 0);
+        rc |= expect_true(label, strstr(text, k_cases[i].want_line) != NULL);
+        dsd_iq_replay_config cfg;
+        DSD_MEMSET(&cfg, 0, sizeof(cfg));
+        char err[256] = {0};
+        rc |= expect_int(label, dsd_iq_replay_read_metadata(metadata_path, &cfg, err, sizeof(err)), DSD_IQ_OK);
+        rc |= expect_gain_fields(label, &cfg, k_cases[i].want_auto, k_cases[i].want_unknown, k_cases[i].want_tenths);
+        dsd_iq_replay_config_clear(&cfg);
+    }
+    return rc;
+}
+
+/* An older reader skips "tuner_gain_auto" as it skips any scalar it does not know (metadata_parse_field_value() in
+   src/io/iq/iq_replay.c), so it reads a new automatic capture by the remaining fields: unknown gain, never a manual 0
+   dB. The same file without the key is what it reads. */
+static int
+test_metadata_old_reader_view_of_auto(void) {
+    int rc = 0;
+    char dir[256];
+    static const char* const files[] = {"auto.iq", "auto.iq.json", NULL};
+    if (mk_temp_dir(dir, sizeof(dir), files) != 0) {
+        return 1;
+    }
+    char data_path[512];
+    char metadata_path[512];
+    path_join(data_path, sizeof(data_path), dir, "auto.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "auto.iq.json");
+    rc |= write_gain_capture(data_path, metadata_path, 1, 1, 0);
+    char text[8192];
+    rc |= expect_int("old reader view: sidecar", read_text(metadata_path, text, sizeof(text)), 0);
+    rc |= expect_true("old reader view: gain not known", strstr(text, "  \"tuner_gain_known\": false,\n") != NULL);
+    rc |= expect_true("old reader view: no gain value", strstr(text, "  \"tuner_gain_tenth_db\": 0,\n") != NULL);
+    rc |= expect_int("old reader view: key removed",
+                     write_text_without(metadata_path, text, "  \"tuner_gain_auto\": true,\n"), 0);
+    dsd_iq_replay_config cfg;
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
+    char err[256] = {0};
+    rc |= expect_int("old reader view: parses", dsd_iq_replay_read_metadata(metadata_path, &cfg, err, sizeof(err)),
+                     DSD_IQ_OK);
+    rc |= expect_gain_fields("old reader view", &cfg, 0, 1, 0);
+    dsd_iq_replay_config_clear(&cfg);
+    return rc;
+}
+
+/* Metadata without "tuner_gain_auto" reads as it always did: manual by its recorded gain (a legacy automatic capture
+   cannot be recognised), unknown where it says so. A key that is not a bool is refused, as "tuner_gain_known" is. */
+static int
+test_metadata_legacy_without_auto_key(void) {
+    int rc = 0;
+    char dir[256];
+    static const char* const files[] = {"legacy.iq", "legacy.iq.json", NULL};
+    if (mk_temp_dir(dir, sizeof(dir), files) != 0) {
+        return 1;
+    }
+    char data_path[512];
+    char metadata_path[512];
+    path_join(data_path, sizeof(data_path), dir, "legacy.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "legacy.iq.json");
+    const uint8_t bytes[4] = {0};
+    rc |= write_bytes_file(data_path, bytes, sizeof(bytes));
+    rc |= write_valid_metadata(metadata_path, "legacy.iq", "cu8", "none", "post_mute_pre_widen", 1536000U, 32U, 1U,
+                               48000U, 0, 4U);
+    char text[8192];
+    rc |= expect_int("legacy: sidecar", read_text(metadata_path, text, sizeof(text)), 0);
+    rc |= expect_true("legacy: no auto key", strstr(text, "tuner_gain_auto") == NULL);
+    dsd_iq_replay_config cfg;
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
+    char err[256] = {0};
+    rc |= expect_int("legacy: parses", dsd_iq_replay_read_metadata(metadata_path, &cfg, err, sizeof(err)), DSD_IQ_OK);
+    rc |= expect_gain_fields("legacy", &cfg, 0, 0, 270);
+    dsd_iq_replay_config_clear(&cfg);
+
+    /* A legacy rtl_tcp capture under automatic gain recorded its getter's 0 as a known gain: still that. */
+    rc |= write_gain_capture(data_path, metadata_path, 0, 0, 0);
+    rc |= expect_int("legacy tcp: sidecar", read_text(metadata_path, text, sizeof(text)), 0);
+    rc |= expect_int("legacy tcp: key removed",
+                     write_text_without(metadata_path, text, "  \"tuner_gain_auto\": false,\n"), 0);
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
+    rc |=
+        expect_int("legacy tcp: parses", dsd_iq_replay_read_metadata(metadata_path, &cfg, err, sizeof(err)), DSD_IQ_OK);
+    rc |= expect_gain_fields("legacy tcp", &cfg, 0, 0, 0);
+    dsd_iq_replay_config_clear(&cfg);
+
+    /* Not a bool: refused, naming the key. */
+    rc |= write_gain_capture(data_path, metadata_path, 1, 1, 0);
+    rc |= expect_int("auto as a number: sidecar", read_text(metadata_path, text, sizeof(text)), 0);
+    char* key = strstr(text, "\"tuner_gain_auto\": true");
+    rc |= expect_true("auto as a number: key found", key != NULL);
+    if (key) {
+        DSD_MEMCPY(key + strlen("\"tuner_gain_auto\": "), "1   ", 4U);
+        rc |= expect_int("auto as a number: written", write_text_file(metadata_path, text), 0);
+        DSD_MEMSET(&cfg, 0, sizeof(cfg));
+        err[0] = '\0';
+        rc |= expect_int("auto as a number: refused",
+                         dsd_iq_replay_read_metadata(metadata_path, &cfg, err, sizeof(err)), DSD_IQ_ERR_INVALID_META);
+        rc |= expect_true("auto as a number: names the key", strstr(err, "tuner_gain_auto") != NULL);
+    }
+    return rc;
+}
+
+/* B7: the whole-dB gain a replay configures. Automatic is 0; a manual gain is its nearest whole dB held to 1..49, so
+   0.9 dB is 1 dB (truncated, it was 0: automatic) and a gain at or below 0 dB is 1; no reading keeps the gain
+   configured. */
+static int
+test_configured_gain_helper(void) {
+    static const struct {
+        int auto_gain;
+        int unknown;
+        int tenths;
+        int current;
+        int want;
+    } k_cases[] = {
+        {1, 1, 0, 30, 0},
+        {1, 1, 297, 30, 0},
+        {0, 0, 9, 30, 1},
+        {0, 0, 297, 0, 30},
+        {0, 0, 496, 0, 49},
+        {0, 0, -10, 0, 1},
+        {0, 0, 0, 12, 1},
+        {0, 0, -99, 0, 1},
+        {0, 0, 4, 0, 1},
+        {0, 0, 5, 0, 1},
+        {0, 0, 15, 0, 2},
+        {0, 0, 14, 0, 1},
+        {0, 0, 484, 0, 48},
+        {0, 0, 485, 0, 49},
+        {0, 0, 495, 0, 49},
+        {0, 0, 2147483647, 0, 49},
+        {0, 0, -2147483647 - 1, 0, 1},
+        {0, 1, 0, 17, 17},
+        {0, 1, 297, 17, 17},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        dsd_iq_replay_config cfg;
+        DSD_MEMSET(&cfg, 0, sizeof(cfg));
+        cfg.tuner_gain_auto = k_cases[i].auto_gain;
+        cfg.tuner_gain_unknown = k_cases[i].unknown;
+        cfg.tuner_gain_tenth_db = k_cases[i].tenths;
+        char label[128];
+        DSD_SNPRINTF(label, sizeof(label), "configured gain (auto %d, unknown %d, %d tenths, current %d)",
+                     k_cases[i].auto_gain, k_cases[i].unknown, k_cases[i].tenths, k_cases[i].current);
+        rc |= expect_int(label, dsd_iq_replay_configured_gain_db(&cfg, k_cases[i].current), k_cases[i].want);
+    }
+    rc |= expect_int("configured gain: no config keeps the current", dsd_iq_replay_configured_gain_db(NULL, 23), 23);
+    return rc;
+}
+
+/* --iq-info names the gain mode a capture recorded: automatic, a manual gain, or unknown. */
+static int
+test_iq_info_prints_gain_mode(void) {
+    static const struct {
+        int auto_gain;
+        int unknown;
+        int tenths;
+        const char* want;
+    } k_cases[] = {
+        {1, 1, 0, "  Tuner gain:          automatic\n"},
+        {0, 0, 297, "  Tuner gain:          29.7 dB\n"},
+        {0, 1, 0, "  Tuner gain:          unknown\n"},
+    };
+
+    int rc = 0;
+    char dir[256];
+    static const char* const files[] = {"info.iq", "info.iq.json", NULL};
+    if (mk_temp_dir(dir, sizeof(dir), files) != 0) {
+        return 1;
+    }
+    char data_path[512];
+    char metadata_path[512];
+    path_join(data_path, sizeof(data_path), dir, "info.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "info.iq.json");
+    for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
+        rc |= write_gain_capture(data_path, metadata_path, k_cases[i].auto_gain, k_cases[i].unknown, k_cases[i].tenths);
+        dsd_iq_replay_config cfg;
+        DSD_MEMSET(&cfg, 0, sizeof(cfg));
+        char err[256] = {0};
+        rc |= expect_int("info gain: parses", dsd_iq_replay_read_metadata(metadata_path, &cfg, err, sizeof(err)),
+                         DSD_IQ_OK);
+        FILE* out = tmpfile();
+        if (!out) {
+            dsd_iq_replay_config_clear(&cfg);
+            return 1;
+        }
+        rc |= expect_int("info gain: prints", dsd_iq_info_print(&cfg, metadata_path, 4, out, NULL), DSD_IQ_OK);
+        fflush(out);
+        fseek(out, 0, SEEK_SET);
+        char buf[4096];
+        const size_t n = fread(buf, 1, sizeof(buf) - 1U, out);
+        buf[n] = '\0';
+        fclose(out);
+        char label[128];
+        DSD_SNPRINTF(label, sizeof(label), "info gain prints '%s'", k_cases[i].want);
+        rc |= expect_true(label, strstr(buf, k_cases[i].want) != NULL);
+        dsd_iq_replay_config_clear(&cfg);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2188,6 +2508,11 @@ main(void) {
     rc |= test_replay_small_reads_of_a_data_file_cut_short();
     rc |= test_replay_open_refuses_formats_it_cannot_convert();
     rc |= test_replay_chunk_is_one_live_transfer();
+    rc |= test_metadata_auto_roundtrip();
+    rc |= test_metadata_old_reader_view_of_auto();
+    rc |= test_metadata_legacy_without_auto_key();
+    rc |= test_configured_gain_helper();
+    rc |= test_iq_info_prints_gain_mode();
     rc |= remove_temp_dirs();
     return rc ? 1 : 0;
 }

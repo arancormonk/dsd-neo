@@ -5188,6 +5188,102 @@ out:
     return test_rc;
 }
 
+/* The test IQ fixture's sidecar with its gain line replaced by @p gain_lines (whole lines, each ending ",\n"). */
+static int
+test_rewrite_iq_fixture_gain(const char* metadata_path, const char* gain_lines) {
+    char text[4096];
+    FILE* fp = dsd_fopen_private(metadata_path, "rb");
+    if (!fp) {
+        return -1;
+    }
+    const size_t n = fread(text, 1, sizeof text - 1U, fp);
+    fclose(fp);
+    text[n] = '\0';
+    static const char kLine[] = "  \"tuner_gain_tenth_db\": 220,\n";
+    char* at = strstr(text, kLine);
+    if (!at) {
+        return -1;
+    }
+    char out[4096];
+    const size_t head = (size_t)(at - text);
+    DSD_SNPRINTF(out, sizeof out, "%.*s%s%s", (int)head, text, gain_lines, at + strlen(kLine));
+    fp = dsd_fopen_private(metadata_path, "wb");
+    if (!fp) {
+        return -1;
+    }
+    const size_t len = strlen(out);
+    const size_t wrote = fwrite(out, 1, len, fp);
+    fclose(fp);
+    return wrote == len ? 0 : -1;
+}
+
+/* B7, B8: --iq-replay configures the whole-dB gain from the capture's: automatic for an automatic capture, whatever was
+ * configured; a manual 0.9 dB as 1 dB (truncated, it was 0: automatic) and 49.6 dB as 49 dB; a capture with no gain
+ * reading keeps the gain configured. */
+static int
+test_iq_replay_configures_recorded_gain(void) {
+#ifdef USE_RADIO
+    static const struct {
+        const char* name;
+        const char* gain_lines;
+        int configured;
+        int want;
+    } k_cases[] = {
+        {"automatic", "  \"tuner_gain_tenth_db\": 0,\n  \"tuner_gain_known\": false,\n  \"tuner_gain_auto\": true,\n",
+         30, 0},
+        {"0.9 dB", "  \"tuner_gain_tenth_db\": 9,\n  \"tuner_gain_known\": true,\n  \"tuner_gain_auto\": false,\n", 30,
+         1},
+        {"49.6 dB", "  \"tuner_gain_tenth_db\": 496,\n", 0, 49},
+        {"-1.0 dB", "  \"tuner_gain_tenth_db\": -10,\n", 0, 1},
+        {"unknown", "  \"tuner_gain_tenth_db\": 0,\n  \"tuner_gain_known\": false,\n", 30, 30},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            DSD_FPRINTF(stderr, "out of memory\n");
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        char metadata_path[1024] = {0};
+        char data_path[1024] = {0};
+        if (test_create_temp_iq_fixture(metadata_path, sizeof metadata_path, data_path, sizeof data_path) != 0
+            || test_rewrite_iq_fixture_gain(metadata_path, k_cases[i].gain_lines) != 0) {
+            DSD_FPRINTF(stderr, "failed to create temporary IQ fixture (%s)\n", k_cases[i].name);
+            test_rc = 1;
+        } else {
+            opts->rtl_gain_value = k_cases[i].configured;
+            char arg0[] = "dsd-neo";
+            char arg1[] = "--iq-replay";
+            char arg2[1024];
+            DSD_SNPRINTF(arg2, sizeof arg2, "%s", metadata_path);
+            char* argv[] = {arg0, arg1, arg2, NULL};
+            int argc_effective = 0;
+            int exit_rc = -1;
+            const int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+            if (rc != DSD_PARSE_CONTINUE || opts->rtl_gain_value != k_cases[i].want) {
+                DSD_FPRINTF(stderr, "iq replay gain (%s): rc=%d, configured %d dB, want %d dB\n", k_cases[i].name, rc,
+                            opts->rtl_gain_value, k_cases[i].want);
+                test_rc = 1;
+            }
+        }
+        (void)remove(metadata_path);
+        (void)remove(data_path);
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+#else
+    return 0;
+#endif
+}
+
 static int
 test_iq_replay_audio_classifier_respects_radio_guard(void) {
 #ifdef USE_RADIO
@@ -12806,6 +12902,7 @@ main(void) {
     rc |= test_symbol_capture_format_aliases_use_canonical_writer();
     rc |= test_symbol_capture_format_rejects_unknown_value();
     rc |= test_iq_replay_long_options_parse();
+    rc |= test_iq_replay_configures_recorded_gain();
     rc |= test_iq_replay_audio_classifier_respects_radio_guard();
     rc |= test_iq_replay_rate_missing_value_returns_error();
     rc |= test_iq_info_returns_one_shot(0); /* Explicit metadata path. */

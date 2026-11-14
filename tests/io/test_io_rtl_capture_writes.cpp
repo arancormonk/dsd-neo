@@ -44,6 +44,9 @@
  *   after programming refuses the retune with the device put back; a rollback whose own read-back plans the step's
  *   earlier design again swaps it back, a third rate is designed, and a third rate that cannot be designed stops the
  *   stream.
+ *
+ * Automatic tuner gain (B8): a capture under automatic gain records the mode and no gain, not the stale manual gain
+ * librtlsdr still reports, and a replay of it reports automatic whatever its gain setters are asked.
  */
 
 #include <assert.h>
@@ -68,6 +71,7 @@
 #include <dsd-neo/runtime/stream_notice_hooks.h>
 #include <memory>
 #include "dsd-neo/core/opts_fwd.h"
+#include "rtl_replay_device.h"
 #include "rtl_stream_test_support.h"
 #include "rtl_usb_identity.h"
 #include "test_env.h"
@@ -1224,6 +1228,100 @@ test_rate_change_seals_capture(void) {
     assert(dsd_test_remove_temp_dir(dir, kFiles) == 0);
 }
 
+/* The tuner gain fields of the capture the stream opens on @p r now, written to @p data_path, read back from
+ * @p meta_path; @p out_text the sidecar's text. */
+dsd_iq_replay_config
+capture_gain_now(rig& r, const char* data_path, const char* meta_path, char* out_text, size_t out_text_size) {
+    DSD_SNPRINTF(r.opts->iq_capture_path, sizeof r.opts->iq_capture_path, "%s", data_path);
+    dsd_iq_capture_writer* writer = rtl_stream_test_capture_session_open_capture(r.opts);
+    assert(writer != nullptr);
+    static const uint8_t samples[4] = {127U, 128U, 129U, 126U};
+    assert(dsd_iq_capture_submit(writer, samples, sizeof samples) == DSD_IQ_OK);
+    rtl_stream_test_capture_session_close_capture(0U);
+    FILE* fp = dsd_fopen_private(meta_path, "rb");
+    assert(fp != nullptr);
+    const size_t n = fread(out_text, 1, out_text_size - 1U, fp);
+    (void)fclose(fp);
+    out_text[n] = '\0';
+    dsd_iq_replay_config meta{};
+    char err[256] = {0};
+    assert(dsd_iq_replay_read_metadata(meta_path, &meta, err, sizeof err) == DSD_IQ_OK);
+    return meta;
+}
+
+/* A replay device opened on @p meta: the mode it reports is its capture's, whatever its gain setters are asked. */
+void
+expect_replay_keeps_gain_mode(const dsd_iq_replay_config& meta, int want_auto, int want_tenths) {
+    input_ring_state ring{};
+    assert(input_ring_init(&ring, 1U << 16) == 0);
+    rtl_device* dev = rtl_device_create_iq_replay(&meta, &ring, nullptr);
+    assert(dev != nullptr);
+    int gain = 12345;
+    for (int pass = 0; pass < 3; pass++) {
+        assert(rtl_device_is_auto_gain(dev) == want_auto);
+        if (want_auto) {
+            assert(rtl_device_get_tuner_gain(dev, &gain) != 0);
+        } else {
+            assert(rtl_device_get_tuner_gain(dev, &gain) == 0 && gain == want_tenths);
+        }
+        /* The stream's start asks for its configured gain, a scan target's profile for another; none changes it. */
+        if (pass == 0) {
+            assert(rtl_device_set_gain(dev, want_auto ? 300 : -100) == 0);
+        } else if (pass == 1) {
+            int selected = 0;
+            assert(rtl_device_set_gain_nearest(dev, 150, &selected) == 0);
+        }
+    }
+    rtl_device_destroy(dev);
+    input_ring_destroy(&ring);
+}
+
+/* B8: a capture records the gain mode the tuner runs. Under automatic gain librtlsdr's getter still reports the last
+ * manual gain (29.7 dB here), which used to be recorded as a known manual gain; now the sidecar says automatic and
+ * records no gain. A manual capture records the gain that took. A replay of each reports its capture's mode, and its
+ * gain setters change nothing. */
+void
+test_capture_records_gain_mode(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char manual_data[DSD_TEST_PATH_MAX];
+    char manual_meta[DSD_TEST_PATH_MAX];
+    char auto_data[DSD_TEST_PATH_MAX];
+    char auto_meta[DSD_TEST_PATH_MAX];
+    assert(dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_capture_gain") != nullptr);
+    assert(dsd_test_path_join(manual_data, sizeof manual_data, dir, "manual.iq") == 0);
+    assert(dsd_test_path_join(manual_meta, sizeof manual_meta, dir, "manual.iq.json") == 0);
+    assert(dsd_test_path_join(auto_data, sizeof auto_data, dir, "auto.iq") == 0);
+    assert(dsd_test_path_join(auto_meta, sizeof auto_meta, dir, "auto.iq.json") == 0);
+
+    rig r;
+    rig_open(r, kTunerR820T);
+    r.opts->rtlsdr_center_freq = kCenterHz;
+    r.opts->iq_capture_requested = 1;
+    r.opts->iq_capture_format = DSD_IQ_FORMAT_CU8;
+    char text[4096];
+
+    assert(step(RTL_STREAM_TEST_CAPTURE_GAIN_MANUAL, 300) == 0);
+    dsd_iq_replay_config manual = capture_gain_now(r, manual_data, manual_meta, text, sizeof text);
+    assert(strstr(text, "\"tuner_gain_auto\": false") != nullptr);
+    assert(manual.tuner_gain_auto == 0 && manual.tuner_gain_unknown == 0 && manual.tuner_gain_tenth_db == 297);
+
+    assert(step(RTL_STREAM_TEST_CAPTURE_GAIN_AUTO, 0) == 0);
+    int stale = 0;
+    assert(rtl_device_get_tuner_gain(r.dev, &stale) == 0 && stale == 297);
+    dsd_iq_replay_config automatic = capture_gain_now(r, auto_data, auto_meta, text, sizeof text);
+    assert(strstr(text, "\"tuner_gain_auto\": true") != nullptr);
+    assert(strstr(text, "\"tuner_gain_known\": false") != nullptr);
+    assert(automatic.tuner_gain_auto == 1 && automatic.tuner_gain_unknown == 1 && automatic.tuner_gain_tenth_db == 0);
+    rig_close(r);
+
+    expect_replay_keeps_gain_mode(manual, 0, 297);
+    expect_replay_keeps_gain_mode(automatic, 1, 0);
+    dsd_iq_replay_config_clear(&manual);
+    dsd_iq_replay_config_clear(&automatic);
+    static const char* const kFiles[] = {"manual.iq", "manual.iq.json", "auto.iq", "auto.iq.json", nullptr};
+    assert(dsd_test_remove_temp_dir(dir, kFiles) == 0);
+}
+
 } // namespace
 
 int
@@ -1273,6 +1371,7 @@ main(int argc, char** argv) {
         {"rollback_third_rate", test_rollback_designs_third_rate},
         {"rollback_third_rate_fails", test_rollback_third_rate_design_failure_stops},
         {"rate_change_seals_capture", test_rate_change_seals_capture},
+        {"capture_records_gain_mode", test_capture_records_gain_mode},
     };
 
     /* An argument runs that case alone. */

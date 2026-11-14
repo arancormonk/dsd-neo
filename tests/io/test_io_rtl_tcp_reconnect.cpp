@@ -1212,6 +1212,62 @@ test_hops_write_every_setting(void) {
     }
 }
 
+/* capture_records_automatic_gain (B8): over rtl_tcp the gain getter answers 0 under automatic gain, which a capture used
+ * to record as a known manual 0 dB. Now the sidecar says automatic and records no gain; a manual capture records the
+ * gain the device reports, as before. */
+void
+test_capture_records_automatic_gain(void) {
+    server_reset(default_script());
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
+    rig_open(r, 0, 0);
+    dsd_opts* opts = static_cast<dsd_opts*>(calloc(1, sizeof(dsd_opts)));
+    assert(opts != nullptr);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtltcp:127.0.0.1:%d", g_srv.port);
+    opts->rtlsdr_center_freq = 851012500U;
+    opts->iq_capture_requested = 1;
+    opts->iq_capture_format = DSD_IQ_FORMAT_CU8;
+    rtl_stream_test_capture_result out{};
+    assert(rtl_stream_test_capture_session_begin(r.dev, opts, 851012500U, &out) == 0);
+    assert(out.rc == 0);
+    rig_start(r);
+
+    char dir[DSD_TEST_PATH_MAX];
+    assert(dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_tcp_capture_gain") != nullptr);
+    static const char* const kGainFiles[] = {"gain.iq", "gain.iq.json", nullptr};
+    char data_path[DSD_TEST_PATH_MAX];
+    char meta_path[DSD_TEST_PATH_MAX];
+    assert(dsd_test_path_join(data_path, sizeof data_path, dir, "gain.iq") == 0);
+    assert(dsd_test_path_join(meta_path, sizeof meta_path, dir, "gain.iq.json") == 0);
+    DSD_SNPRINTF(opts->iq_capture_path, sizeof opts->iq_capture_path, "%s", data_path);
+    for (int automatic = 0; automatic <= 1; automatic++) {
+        const int kind = automatic ? RTL_STREAM_TEST_CAPTURE_GAIN_AUTO : RTL_STREAM_TEST_CAPTURE_GAIN_MANUAL;
+        assert(rtl_stream_test_capture_session_step(kind, 0U, 300, &out) == 0);
+        assert(out.rc == 0);
+        assert(rtl_device_is_auto_gain(r.dev) == automatic);
+        int reported = 12345;
+        assert(rtl_device_get_tuner_gain(r.dev, &reported) == 0);
+        dsd_iq_capture_writer* writer = rtl_stream_test_capture_session_open_capture(opts);
+        assert(writer != nullptr);
+        rtl_stream_test_capture_session_close_capture(0U);
+        dsd_iq_replay_config meta{};
+        char err[256] = {0};
+        assert(dsd_iq_replay_read_metadata(meta_path, &meta, err, sizeof err) == DSD_IQ_OK);
+        if (automatic) {
+            assert(reported == 0);
+            assert(meta.tuner_gain_auto == 1 && meta.tuner_gain_unknown == 1 && meta.tuner_gain_tenth_db == 0);
+        } else {
+            assert(meta.tuner_gain_auto == 0 && meta.tuner_gain_unknown == 0 && meta.tuner_gain_tenth_db == reported);
+        }
+        dsd_iq_replay_config_clear(&meta);
+    }
+    assert(dsd_test_remove_temp_dir(dir, kGainFiles) == 0);
+    (void)rtl_device_stop_async(r.dev);
+    rtl_stream_test_capture_session_end();
+    free(opts);
+    rig_close(r);
+}
+
 /* replay_failure_not_published: a replay that fails part way publishes nothing (no stream, setters still refused),
  * and the reader reconnects again, whose replay is published. */
 void
@@ -2844,6 +2900,7 @@ const named_test kTests[] = {
     {"setting_change_while_disconnected_fails", test_setting_change_while_disconnected_fails},
     {"latest_effective_settings_replayed", test_latest_effective_settings_replayed},
     {"hops_write_every_setting", test_hops_write_every_setting},
+    {"capture_records_automatic_gain", test_capture_records_automatic_gain},
     {"replay_failure_not_published", test_replay_failure_not_published},
     {"concurrent_partial_writes_never_interleave", test_concurrent_partial_writes_never_interleave},
     {"old_sender_does_not_touch_replacement", test_old_sender_does_not_touch_replacement},

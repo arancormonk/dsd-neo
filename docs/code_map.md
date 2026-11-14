@@ -8609,6 +8609,20 @@ Key public headers:
     gain writes `"tuner_gain_known": false` with a gain of 0 (`dsd_iq_capture_config::tuner_gain_unknown`); replay
     reads it, and a legacy Airspy sidecar without it, as `dsd_iq_replay_config::tuner_gain_unknown`, and then reports
     no gain. Test: `IO_RTL_REPLAY_EOF_AND_CF32`.
+  - Automatic tuner gain in captures (B7, B8): `capture_fill_tuner_gain()` asks `rtl_device_is_auto_gain()` first,
+    since under automatic gain the getter reports librtlsdr's last manual gain (USB) or 0 (rtl_tcp). Automatic writes
+    `"tuner_gain_auto": true` with `"tuner_gain_known": false` and a gain of 0 (`dsd_iq_capture_config::tuner_gain_auto`;
+    the writer, `metadata_write_tuner_gain_fields()`, holds that whatever the other fields say), manual its exact
+    signed tenths with `tuner_gain_auto` `false`, and a failed getter or an unknown mode (< 0) neither. The key is
+    optional on read (`dsd_iq_replay_config::tuner_gain_auto`; missing: 0, the legacy meaning), an automatic sidecar
+    reads as unknown gain too, and an older reader, skipping the key, reads it as unknown gain alone. The replay
+    device takes its mode from its immutable `replay_cfg` (`rtl_device_is_auto_gain()`; `rtl_device_get_tuner_gain()`
+    gives no value), so its no-op gain setters cannot clear it, and `rtl_stream_publish_tuner_gain()` carries it to the
+    frontends' `tuner_gain_is_auto`. `dsd_iq_replay_configured_gain_db()` is the one rule for the whole-dB configured
+    gain (`args.c` for `--iq-replay`, the stream open for its copy): automatic 0, known manual the nearest dB held to
+    1..49, unknown the current value. `--iq-info` prints `automatic`. Tests: `IO_IQ_METADATA`, `IO_IQ_CAPTURE_WRITER`,
+    `IO_RTL_CAPTURE_WRITES` (`capture_records_gain_mode`, USB plus the replay device's setters),
+    `IO_RTL_TCP_RECONNECT` (`capture_records_automatic_gain`), `IO_RTL_FRONTEND_TELEMETRY`, `RUNTIME_CLI_PARSE`.
   - WAV I/Q recordings (issue #701, `src/io/iq/iq_wav.c`): 2-channel RIFF/RF64/BW64 WAVs of u8, s16, s24, s32, f32
     or f64 (plain or EXTENSIBLE fmt). `dsd_iq_replay_read_metadata()` sniffs a non-`.json` path before it looks for a
     sidecar, and pre-reads only `data_file` from a sidecar, so a WAV is recognised before any sidecar field is

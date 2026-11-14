@@ -8523,17 +8523,22 @@ stream_open_validate_capture_writer_request(const dsd_opts* opts, RadioSourceKin
     return 0;
 }
 
-/* The tuner gain a capture records. A tuner that reports none (Airspy, a Soapy device without a gain range) records
-   none, never the read's error code as a gain. */
+/* The tuner gain a capture records (B8). Under automatic gain it records the mode and no gain: the getter answers with
+   librtlsdr's last manual gain over USB and 0 over rtl_tcp, neither of them the gain the tuner runs. A tuner that
+   reports none (Airspy, a Soapy device without a gain range), or whose mode is unknown, records none, never the read's
+   error code as a gain. */
 static void
 capture_fill_tuner_gain(dsd_iq_capture_config* cfg) {
+    cfg->tuner_gain_tenth_db = 0;
+    cfg->tuner_gain_unknown = 1;
+    cfg->tuner_gain_auto = 0;
+    const int is_auto = rtl_device_is_auto_gain(rtl_device_handle);
     int tuner_gain = 0;
-    if (rtl_device_get_tuner_gain(rtl_device_handle, &tuner_gain) == 0) {
+    if (is_auto > 0) {
+        cfg->tuner_gain_auto = 1;
+    } else if (is_auto == 0 && rtl_device_get_tuner_gain(rtl_device_handle, &tuner_gain) == 0) {
         cfg->tuner_gain_tenth_db = tuner_gain;
         cfg->tuner_gain_unknown = 0;
-    } else {
-        cfg->tuner_gain_tenth_db = 0;
-        cfg->tuner_gain_unknown = 1;
     }
 }
 
@@ -9006,9 +9011,7 @@ stream_open_prepare_replay_config(dsd_opts* opts, RadioSourceKind source_kind, d
         opts->rtlsdr_ppm_error = replay_cfg->ppm;
         requested_ppm_publish_locked();
     }
-    if (replay_cfg->tuner_gain_tenth_db > 0) {
-        opts->rtl_gain_value = replay_cfg->tuner_gain_tenth_db / 10;
-    }
+    opts->rtl_gain_value = dsd_iq_replay_configured_gain_db(replay_cfg, opts->rtl_gain_value);
     /* The recorded bandwidth stays in replay_cfg: it seeds the plan's target, and opts keeps the request. */
     return stream_open_plan_replay_rate(opts, replay_cfg, out_dsp_bw_hz);
 }

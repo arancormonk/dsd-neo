@@ -10792,7 +10792,7 @@ rtl_device_set_gain(struct rtl_device* dev, int gain) {
     int rc = -1;
     int applied_gain = gain;
     if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        dev->agc_mode = 0;
+        /* A replay has no tuner: the mode it reports is its capture's (replay_cfg), which no request changes. */
         rc = 0;
     } else {
 #ifdef USE_SOAPYSDR
@@ -10917,7 +10917,8 @@ rtl_device_get_tuner_gain(struct rtl_device* dev, int* out_tenth_db) {
         return 0;
     }
     if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        if (dev->replay_cfg.tuner_gain_unknown) {
+        /* An automatic capture recorded no gain value, only its mode (rtl_device_is_auto_gain()). */
+        if (dev->replay_cfg.tuner_gain_unknown || dev->replay_cfg.tuner_gain_auto) {
             return DSD_ERR_NOT_SUPPORTED;
         }
         *out_tenth_db = dev->replay_cfg.tuner_gain_tenth_db;
@@ -10944,7 +10945,8 @@ rtl_device_is_auto_gain(const struct rtl_device* dev) {
         rtl_usb_ctrl_unlock(dev);
         return is_auto;
     } else if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        return 0;
+        /* The capture's recorded mode, never a gain setter's request (B8). */
+        return dev->replay_cfg.tuner_gain_auto ? 1 : 0;
     } else if (dev->backend == RTL_BACKEND_TCP) {
         rtl_tcp_lock(dev);
         const int is_auto = dev->agc_mode ? 1 : 0;

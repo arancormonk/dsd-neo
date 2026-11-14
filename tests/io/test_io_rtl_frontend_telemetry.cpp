@@ -17,6 +17,7 @@
  *   the scheduling.
  * - tuner_gain_readback_without_device: the gain getter reports the running input's gain, nothing once the stream has
  *   stopped (never the stopped device's), and the next input's gain after a replacement.
+ * - replay_gain_mode_reaches_frontends: a replay of an automatic capture reports automatic gain to the frontends.
  */
 
 #include <atomic>
@@ -80,9 +81,10 @@ remove_fixture_dirs(void) {
     return rc;
 }
 
-/* A cu8 replay of a few demod blocks whose sidecar records @p tuner_gain_tenth_db as its tuner gain. */
+/* A cu8 replay of a few demod blocks whose sidecar records @p tuner_gain_tenth_db as its tuner gain, or, with
+ * @p automatic, the tuner's automatic gain. */
 static int
-make_replay_fixture(int tuner_gain_tenth_db, char* out_metadata_path, size_t out_size) {
+make_replay_fixture(int tuner_gain_tenth_db, char* out_metadata_path, size_t out_size, int automatic = 0) {
     char temp_dir[DSD_TEST_PATH_MAX];
     if (!dsd_test_mkdtemp(temp_dir, sizeof(temp_dir), "dsdneo_frontend_telemetry")) {
         DSD_FPRINTF(stderr, "FAIL: could not create temporary fixture directory\n");
@@ -106,6 +108,8 @@ make_replay_fixture(int tuner_gain_tenth_db, char* out_metadata_path, size_t out
     cfg.center_frequency_hz = 851375000ULL;
     cfg.capture_center_frequency_hz = 851759000ULL;
     cfg.tuner_gain_tenth_db = tuner_gain_tenth_db;
+    cfg.tuner_gain_auto = automatic;
+    cfg.tuner_gain_unknown = automatic;
     cfg.rtl_dsp_bw_khz = 48;
     cfg.base_decimation = 32U;
     cfg.post_downsample = 1U;
@@ -322,19 +326,48 @@ test_tuner_gain_readback_without_device(const char* input_a, const char* input_b
     return rc;
 }
 
+/* B8: a replay of an automatic capture reports automatic gain to the frontends, however the gain configured before it
+ * stood; its start asking the device for a gain does not clear the recorded mode. */
+static int
+test_replay_gain_mode_reaches_frontends(const char* input_auto) {
+    int rc = 0;
+    std::unique_ptr<dsd_opts> opts = std::make_unique<dsd_opts>();
+    prepare_replay_opts(opts.get(), input_auto);
+    opts->rtl_gain_value = 30;
+    RtlSdrContext* ctx = start_stream(opts.get());
+    if (!ctx) {
+        return 1;
+    }
+    int gain = 12345;
+    int is_auto = -1;
+    rc |= expect_int("automatic: gain read", rtl_stream_get_gain(&gain, &is_auto), 0);
+    rc |= expect_int("automatic: reported automatic", is_auto, 1);
+    rc |= expect_int("automatic: no gain value", gain, 0);
+    dsd_frontend_metrics m;
+    poll_frontend(opts.get(), NULL, &m);
+    rc |= expect_int("automatic: metrics gain valid", m.tuner_gain_valid, 1);
+    rc |= expect_int("automatic: metrics automatic", m.tuner_gain_is_auto, 1);
+    rc |= expect_int("automatic: stream active", m.stream_active, 1);
+    stop_stream(ctx);
+    return rc;
+}
+
 int
 main(void) {
     dsd_engine_rtl_stream_metrics_hooks_install();
     char input_a[DSD_TEST_PATH_MAX];
     char input_b[DSD_TEST_PATH_MAX];
+    char input_auto[DSD_TEST_PATH_MAX];
     int rc = 0;
     if (make_replay_fixture(270, input_a, sizeof(input_a)) != 0
-        || make_replay_fixture(-10, input_b, sizeof(input_b)) != 0) {
+        || make_replay_fixture(-10, input_b, sizeof(input_b)) != 0
+        || make_replay_fixture(0, input_auto, sizeof(input_auto), 1) != 0) {
         rc = 1;
     }
     if (rc == 0) {
         rc |= test_frontend_metrics_survive_soft_stop(input_a, input_b);
         rc |= test_tuner_gain_readback_without_device(input_a, input_b);
+        rc |= test_replay_gain_mode_reaches_frontends(input_auto);
     }
     rc |= remove_fixture_dirs();
     if (rc == 0) {
