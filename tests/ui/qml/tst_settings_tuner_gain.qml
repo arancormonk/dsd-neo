@@ -282,6 +282,32 @@ Item {
             compare(shownMode(), "Set");
         }
 
+        // A field only focused, with nothing typed since it showed the preference, commits nothing when it
+        // lets go: the change made elsewhere meanwhile stands.
+        function test_settingsUntouchedFieldYieldsToExternalChange() {
+            field().input.forceActiveFocus();
+            prefs.gainDb = 0;
+            compare(shownMode(), "Set", "the change waits for the focus");
+            leaveField();
+            compare(prefs.gainDb, 0, "the loaded 30 was not written back");
+            compare(shownMode(), "Automatic");
+
+            prefs.gainDb = 22;
+            field().input.forceActiveFocus();
+            prefs.gainDb = 41;
+            leaveField();
+            compare(prefs.gainDb, 41);
+            compare(field().text, "41");
+
+            // Return with nothing typed is no edit either.
+            field().input.forceActiveFocus();
+            prefs.gainDb = 9;
+            keyClick(Qt.Key_Return);
+            wait(0);
+            compare(prefs.gainDb, 9);
+            compare(field().text, "9");
+        }
+
         function test_settingsReopen() {
             choose("Automatic");
             load();

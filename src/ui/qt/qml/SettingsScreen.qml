@@ -230,9 +230,13 @@ Item {
     // chosen again first commits what was typed, so a valid gain is kept and a
     // refused one gives way). A change from elsewhere (a restore) shows once
     // the field being typed in under Set lets go of the focus: what is typed is
-    // never replaced, and a valid edit then wins, as the user's latest.
+    // never replaced. A valid edit made since the last sync then wins, as the
+    // user's latest; a field only focused, never edited, commits nothing, so
+    // the change from elsewhere stands.
     property int lastValidManual: 30
     property bool gainResyncPending: false
+    // Typed into since the field last showed the preference (or a commit).
+    property bool gainEdited: false
     readonly property int storedGain: prefs.gainDb
     onStoredGainChanged: {
         if (settingsGain.mode === 2 && settingsGain.field.input.activeFocus)
@@ -243,6 +247,7 @@ Item {
     Component.onCompleted: syncGain()
     function syncGain() {
         gainResyncPending = false;
+        gainEdited = false;
         var gain = prefs.gainDb;
         if (gain >= 1 && gain <= 49)
             lastValidManual = gain;
@@ -255,13 +260,15 @@ Item {
         if (mode === 2 && settingsGain.mode === 2)
             commitGain();
         settingsGain.mode = mode;
+        gainEdited = false;
         if (mode === 2)
             settingsGain.manualText = String(lastValidManual);
         prefs.gainDb = mode === 2 ? lastValidManual : 0;
     }
     function commitGain() {
-        if (settingsGain.mode !== 2 || !settingsGain.valid)
+        if (!gainEdited || settingsGain.mode !== 2 || !settingsGain.valid)
             return;
+        gainEdited = false;
         lastValidManual = settingsGain.storedValue;
         prefs.gainDb = lastValidManual;
     }
@@ -943,6 +950,7 @@ Item {
                             }
                             onDraftEdited: function (text) {
                                 settingsGain.manualText = text;
+                                screen.gainEdited = true;
                             }
                             onCommitted: screen.commitGain()
                         }

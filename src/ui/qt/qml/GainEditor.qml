@@ -118,9 +118,12 @@ Column {
         }
         // A hidden field keeps no focus: keys typed after Automatic, or after
         // the caller hid the editor, would go to it unseen, and the keyboard
-        // would stay up over nothing. `visible` follows every ancestor.
+        // would stay up over nothing. `visible` follows every ancestor. A word
+        // still composing is committed first (a collapsed pane, a source
+        // switch), so the field never ends holding less than was typed.
         onVisibleChanged: {
             if (!visible && input.activeFocus) {
+                Navigation.commitComposing(false);
                 input.focus = false;
                 Qt.inputMethod.hide();
             }

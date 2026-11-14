@@ -40,6 +40,7 @@ Item {
         }
 
         function cleanup() {
+            testContext.composeText("");
             if (tc.savedRow >= 0) {
                 savedSystems.remove(tc.savedRow);
                 tc.savedRow = -1;
@@ -339,6 +340,35 @@ Item {
             choose("Automatic");
             verify(tc.wizard.stepValid(), "an invalid gain under a mode not shown holds nothing");
             compare(save().gainDb, 0);
+        }
+
+        // A word still composing when Advanced folds is committed before the hidden field lets go of
+        // the focus: the gain saved is all of it, and an empty committed value does not hold Continue
+        // behind a closed pane.
+        function test_folding_advanced_commits_the_composing_word() {
+            openAdvanced();
+            choose("Set");
+            type("3");
+            verify(testContext.composeText("3"), "the field holds the word as composing text");
+            tc.wizard.advancedOpen = false;
+            var field = control("systemGainField");
+            verify(!field.input.activeFocus, "the hidden field gave up the focus");
+            compare(field.input.preeditText, "");
+            compare(field.text, "33");
+            compare(tc.wizard.gainText, "33");
+            tc.wizard.step = 2;
+            compare(save().gainDb, 33);
+        }
+        function test_folding_advanced_commits_into_an_empty_field() {
+            openAdvanced();
+            choose("Set");
+            type("");
+            verify(testContext.composeText("33"));
+            tc.wizard.advancedOpen = false;
+            compare(control("systemGainField").text, "33");
+            verify(tc.wizard.gainValid(), "the composed gain counts");
+            verify(tc.wizard.stepValid(), "Continue is not held behind the closed pane");
+            verify(control("wizardContinue").inputValid);
         }
 
         // B3: App default names what it runs, not a bare number.

@@ -12694,43 +12694,45 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     (Return and the focus loss after it are one end; an end with the text unchanged since the last report is none), none
     of them while the caller sets `syncing`. The caller keeps `manualText` in step with the typing, so that putting a
     value back is a change. Whenever the field hides (Set left, after the choice has committed a composing word, or the
-    caller hiding the editor, as the scan list does for an Airspy), it gives up the focus and the keyboard, so no key
-    goes to it. The segmented control is named (`accessibleName`, the title by default), and the field reads its label,
-    unit and error. A caller names the parts with `modeObjectName`, `fieldObjectName` and `hintObjectName`. Settings
-    (`settingsGainMode`, `settingsGainDb`, `settingsGainHint`: "For RTL-SDR and RTL-TCP. Automatic adjusts the receiver
-    gain for you.") writes `prefs.gainDb` only with a valid 1..49 committed while Set is chosen. Automatic writes 0, and
-    Set writes the screen's last valid gain (`lastValidManual`: the preference's own while it is set, then each valid
-    commit, else 30), so a refused edit is never written. Set chosen again commits the typed text first: a valid gain is
-    kept, a refused one gives way. A choice commits a composing word before it selects (`SegmentedControl`), and a later
-    commit writes nothing outside Set. A change of the preference from elsewhere (a restore) resyncs the mode and the
-    text at once, except while Set's field has the focus: then it waits until the field lets go, after the field's own
-    commit, so a valid edit made meanwhile wins as the user's latest. The scan list editor keeps
-    `scanGainMode`/`scanTuner_gainDb` and its draft (`gainMode`, `gainText`, `draft.gainDb`). Both inheriting editors
-    word App default with `Util.gainDefaultNote(prefs.gainDb)` ("App default · Automatic" / "App default · 30 dB"). The
-    system editor (`WizardScreen`) gives it its own full-width row with App default (`systemGainMode`,
-    `systemGainField`; draft `gainMode`/`gainText`, the text counted in the draft fingerprint only under Set), above the
-    PPM field (named by its own label, no caption) and the bandwidth choice (captioned like every combo), each full
-    width. `openForAdd()` (App default), `openForEdit()` and `openForFound()` (a detection's 0 Automatic, n Set, -1 App
-    default; the Explore handoff App default) set the mode before the clean fingerprint is taken, and
-    `applyRadioReference()` leaves the gain draft and that baseline alone. `gainValid()` and `ppmValid()` (empty or a
-    whole number from -200 to 200, "Enter a correction from -200 to 200 ppm.") count only on `usb` and `rtltcp`, where
-    the two show, and hold the tune and name steps and `commit()`. On any other source they hold nothing, and a refused
-    hidden value is saved as App default (-1, empty PPM). A refused value opens Advanced on its error when an edit or
-    detection loads it and when the tune step is reached (a source changed to an RTL brings a hidden one into view).
-    Save writes -1 / 0 / n. A scan list entry (`ScanEntryRow.qml`) picks its gain from a `PlexComboBox` like its
-    Modulation (`scanEntryGainMode`, "Entry gain": Inherit, Automatic, Set, stored -1 / 0 / n), with the 1-49 dB field
-    (`scanEntryGain`) shown and checked only under Set. The editor's per-entry draft (`entryInputText[uid]`: `gainMode`
-    and the Set text, `setEntryGain()`) keeps the choice apart from the stored value, so an emptied or refused Set stays
-    Set with its error and holds Save, while the entry keeps the last valid gain typed: nothing refused reaches disk.
-    The draft follows its entry through a reorder or another entry's removal. A refused Set left for Inherit or
-    Automatic hides and holds nothing. Under Inherit a line (`scanEntryGainHint`) says where the gain comes from: "Uses
-    the saved system's gain, else the list's" for a saved system, "Uses the list's gain" for a frequency. On an Airspy
-    list the entry's gain hides with the list's (`gainOffered`; the engine applies RTL gain only to RTL-family input),
-    holds nothing and keeps its stored value. The Radio sheet's RTL gain steppers are live only and are never saved to a
-    system. The line under them (`radioGainSessionNote`, "Gain changes here last until you stop listening.") says so. It
-    is hidden for an Airspy and under "This channel", which has its own scope note. Tests: `tst_gain_editor.qml`,
-    `tst_settings_tuner_gain.qml`, `tst_wizard_gain.qml`, `tst_radio_gain_override.qml`, `tst_scan_row_edits.qml`,
-    `tst_scan_list_screen.qml`,
+    caller hiding the editor, as the scan list does for an Airspy), it commits a word still composing
+    (`Navigation.commitComposing()`) and then gives up the focus and the keyboard, so no key goes to it and the field
+    never keeps less than was typed. The segmented control is named (`accessibleName`, the title by default), and the
+    field reads its label, unit and error. A caller names the parts with `modeObjectName`, `fieldObjectName` and
+    `hintObjectName`. Settings (`settingsGainMode`, `settingsGainDb`, `settingsGainHint`: "For RTL-SDR and RTL-TCP.
+    Automatic adjusts the receiver gain for you.") writes `prefs.gainDb` only with a valid 1..49 committed while Set is
+    chosen. Automatic writes 0, and Set writes the screen's last valid gain (`lastValidManual`: the preference's own
+    while it is set, then each valid commit, else 30), so a refused edit is never written. Set chosen again commits the
+    typed text first: a valid gain is kept, a refused one gives way. A choice commits a composing word before it selects
+    (`SegmentedControl`), and a later commit writes nothing outside Set. A change of the preference from elsewhere (a
+    restore) resyncs the mode and the text at once, except while Set's field has the focus: then it waits until the
+    field lets go, after the field's own commit. Settings commits only a gain typed since the field last showed the
+    preference (`gainEdited`), so a valid edit made meanwhile wins as the user's latest, and a field only focused, never
+    edited, lets the change from elsewhere stand. The scan list editor keeps `scanGainMode`/`scanTuner_gainDb` and its
+    draft (`gainMode`, `gainText`, `draft.gainDb`). Both inheriting editors word App default with
+    `Util.gainDefaultNote(prefs.gainDb)` ("App default · Automatic" / "App default · 30 dB"). The system editor
+    (`WizardScreen`) gives it its own full-width row with App default (`systemGainMode`, `systemGainField`; draft
+    `gainMode`/`gainText`, the text counted in the draft fingerprint only under Set), above the PPM field (named by its
+    own label, no caption) and the bandwidth choice (captioned like every combo), each full width. `openForAdd()` (App
+    default), `openForEdit()` and `openForFound()` (a detection's 0 Automatic, n Set, -1 App default; the Explore
+    handoff App default) set the mode before the clean fingerprint is taken, and `applyRadioReference()` leaves the gain
+    draft and that baseline alone. `gainValid()` and `ppmValid()` (empty or a whole number from -200 to 200, "Enter a
+    correction from -200 to 200 ppm.") count only on `usb` and `rtltcp`, where the two show, and hold the tune and name
+    steps and `commit()`. On any other source they hold nothing, and a refused hidden value is saved as App default (-1,
+    empty PPM). A refused value opens Advanced on its error when an edit or detection loads it and when the tune step is
+    reached (a source changed to an RTL brings a hidden one into view). Save writes -1 / 0 / n. A scan list entry
+    (`ScanEntryRow.qml`) picks its gain from a `PlexComboBox` like its Modulation (`scanEntryGainMode`, "Entry gain":
+    Inherit, Automatic, Set, stored -1 / 0 / n), with the 1-49 dB field (`scanEntryGain`) shown and checked only under
+    Set. The editor's per-entry draft (`entryInputText[uid]`: `gainMode` and the Set text, `setEntryGain()`) keeps the
+    choice apart from the stored value, so an emptied or refused Set stays Set with its error and holds Save, while the
+    entry keeps the last valid gain typed: nothing refused reaches disk. The draft follows its entry through a reorder
+    or another entry's removal. A refused Set left for Inherit or Automatic hides and holds nothing. Under Inherit a
+    line (`scanEntryGainHint`) says where the gain comes from: "Uses the saved system's gain, else the list's" for a
+    saved system, "Uses the list's gain" for a frequency. On an Airspy list the entry's gain hides with the list's
+    (`gainOffered`; the engine applies RTL gain only to RTL-family input), holds nothing and keeps its stored value. The
+    Radio sheet's RTL gain steppers are live only and are never saved to a system. The line under them
+    (`radioGainSessionNote`, "Gain changes here last until you stop listening.") says so. It is hidden for an Airspy and
+    under "This channel", which has its own scope note. Tests: `tst_gain_editor.qml`, `tst_settings_tuner_gain.qml`,
+    `tst_wizard_gain.qml`, `tst_radio_gain_override.qml`, `tst_scan_row_edits.qml`, `tst_scan_list_screen.qml`,
     `tst_segmented_whole_words.qml`, `tst_a11y_text_reach.qml`.
   - Qt/Android receiver defaults (PPM and bandwidth): every place that edits them (Settings' Radio defaults, the system
     editor, the scan list editor) runs what it shows. PPM takes a whole number from -200 to 200, the engine's own clamp,
