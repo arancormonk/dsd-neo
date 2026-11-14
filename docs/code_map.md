@@ -9578,8 +9578,10 @@ Notes:
   drops purge the identifier once through `dsd_state_p25_invalidate_iden_chan_map()`, also the implementation of
   the protocol wrapper. `dsd_state_p25_bandplan_seed_mask()` reports changes without purging so first identity learn
   can coalesce foreign-entry drops and seed/reconcile changes. Known-system changes retain the full reset.
-  `svc_set_p2_params()` uses that lifecycle for a nonzero identity; clearing 0/0 leaves tables. CLI `-X` seeds only
-  after successful short-option parsing, using the final identity. Export collection replaces untyped same-key rows
+  `svc_set_p2_params()` uses that lifecycle for a nonzero identity; clearing 0/0 leaves tables. Its command
+  (`DSD_APP_CMD_P25_P2_PARAMS_SET`) applies under the P25 SM tick guard (`command_changes_p25_system()`): another
+  system's WACN/SYSID resets the IDEN tables and empties the patch table the watchdog's TUNED tick reads. CLI `-X` seeds
+  only after successful short-option parsing, using the final identity. Export collection replaces untyped same-key rows
   with typed rows and suppresses untyped FDMA only in the exact same scope as TDMA; global and scoped rows coexist.
   It examines all candidates at capacity and accumulates omitted entries for the export warning. CSV exports offsets
   from OFF_SPACING and empty types for untyped entries; import can encode FDMA offsets in spacing units when needed.

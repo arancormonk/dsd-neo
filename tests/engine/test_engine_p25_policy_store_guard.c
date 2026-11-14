@@ -12,6 +12,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
@@ -565,6 +566,31 @@ test_wav_commands_take_the_guard(void) {
     return rc;
 }
 
+/* A hand-set WACN/SYSID for another system empties the P25 patch table (its owner rule), which the watchdog's TUNED-tick
+   re-resolution reads: the P25 Phase 2 parameters command waits for the tick guard. */
+static int
+test_p25_p2_params_set_takes_the_guard(void) {
+    dsd_scan_row_profile row = {0};
+    g_phase = 23;
+    int rc = setup();
+    g_state.p2_wacn = 0xA1001ULL;
+    g_state.p2_sysid = 0x101ULL;
+    (void)dsd_p25_patch_note_system(&g_state, 0xA1001U, 0x101U);
+    p25_patch_add_wgid(&g_state, 1400, 1401);
+    rc |= expect(g_state.p25_patch_count == 1, "a patch of system A");
+    dsd_app_p25_p2_params_payload params;
+    DSD_MEMSET(&params, 0, sizeof params);
+    params.wacn = 0xA1001ULL;
+    params.sysid = 0x102ULL;
+    params.cc = 0x293ULL;
+    rc |= drain_command_under_held_guard(DSD_APP_CMD_P25_P2_PARAMS_SET, NULL, &params, sizeof params,
+                                         "a P25 Phase 2 parameters edit waits for the guard");
+    rc |= expect(g_state.p2_sysid == 0x102ULL && g_state.p2_hardset == 1, "the parameters applied");
+    rc |= expect(g_state.p25_patch_count == 0, "another system's parameters empty the patch table");
+    cleanup(&row);
+    return rc;
+}
+
 /* Issue #637: a change of the configured receive policy runs the receive boundary, which ends calls, drains the P25
    Phase 2 playout and rotates the per-call WAVs as the watchdog's release does, so the command waits for the guard. */
 static int
@@ -802,6 +828,7 @@ main(void) {
             rc |= run_phase();
         }
         rc |= test_receive_set_takes_the_guard();
+        rc |= test_p25_p2_params_set_takes_the_guard();
         rc |= test_trunk_receive_release_due();
         rc |= test_trunk_receive_release_due_nxdn_foreign_control();
         g_phase = 19;
