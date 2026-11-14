@@ -70,7 +70,8 @@
  * table's digital modes (and their condition names and seeds). An analog mode's noise-only conditions are built once
  * per tag; the shipped widths' tags are the table's names, so those keep their names and seeds too.
  * --pilot MODE renders one rate (the last of the rate list), every scene kind there, and only MODE's conditions (and
- * its class's or width's noise-only ones): the cheap run that times a full one.
+ * its class's or width's noise-only ones, a digital mode's class's shaped-floor ones included): the cheap run that
+ * times a full one.
  * --memory-mb bounds the waveforms placed at a capture rate at once (default 8192): a rate's conditions run in batches
  * whose waveforms fit, each batch's freed before the next. Results do not depend on it.
  *
@@ -118,7 +119,9 @@ constexpr uint32_t kRates[] = {960000,  1024000, 1152000, 1200000, 1280000, 1440
                                1800000, 1920000, 2048000, 2400000, 2500000, 3000000, 6000000, 10000000};
 
 /* A native Airspy's centred capture rates and the capture-wide reference's span at each: a copy of
- * kQuietAirspyCentredSpans in src/io/radio/signal_measure.cpp for the cost phase's reference model; keep them equal. */
+ * kQuietAirspyCentredSpans in src/io/radio/signal_measure.cpp for the cost phase's reference model and the centred
+ * rate list; keep them equal. centred_rates_match() checks the rates against the shipped policy at startup; the span
+ * values are private to signal_measure.cpp, so a span change must be copied here by hand. */
 struct CentredSpan {
     uint32_t rate;
     double span;
@@ -127,6 +130,25 @@ struct CentredSpan {
 constexpr CentredSpan kCentredSpans[] = {{2500000, 0.25}, {3000000, 0.25}, {6000000, 0.375}, {10000000, 0.375}};
 
 constexpr double kDefaultSpan = 0.45;
+
+/* Whether kCentredSpans lists exactly the rates the shipped centred policy admits, checked over every admitted
+ * default rate and an Airspy's other firmware rates (4.096 and 12 MS/s); says which rate differs when not. */
+bool
+centred_rates_match() {
+    std::vector<uint32_t> candidates(std::begin(kRates), std::end(kRates));
+    candidates.insert(candidates.end(), {4096000, 12000000});
+    for (uint32_t rate : candidates) {
+        const bool listed = std::any_of(std::begin(kCentredSpans), std::end(kCentredSpans),
+                                        [&](const CentredSpan& e) { return e.rate == rate; });
+        if (listed != (dsd_signal_quiet_airspy_centred_rate_supported(rate) != 0)) {
+            DSD_FPRINTF(stderr, "kCentredSpans is out of date: rate %u is %s here but %s by the shipped policy\n", rate,
+                        listed ? "listed" : "not listed", listed ? "refused" : "admitted");
+            return false;
+        }
+    }
+    return true;
+}
+
 constexpr uint32_t kSceneRate = 1536000;    /* neighbour, slope and broad-interferer scenes, default geometry */
 constexpr double kNoiseSigma = 1e-3;        /* per component; keeps a +50 dB neighbour far below the clip level */
 constexpr double kMarginDb = 1.0;           /* active trials sit this far below each mode's reception threshold */
@@ -992,7 +1014,11 @@ run_columns(const Options& o) {
 /* Whether @p c belongs to the pilot mode @p m: its own conditions, and its class's or width's noise-only ones. */
 bool
 pilot_match(const Condition& c, const Mode& m) {
-    return c.mode == m.name || (c.kind != ACTIVE && (c.mode == m.tag || (!m.analog && c.mode == class_text(m.cls))));
+    /* A digital mode's class: its noise-only conditions are tagged by the class, its shaped-floor (INFO) ones by the
+       mode that built them for the class (P25 Phase 1, NXDN48). */
+    const bool same_class = !m.analog && c.classes == m.cls && c.analog_width == 0;
+    return c.mode == m.name || (c.kind != ACTIVE && (c.mode == m.tag || (!m.analog && c.mode == class_text(m.cls))))
+           || (c.kind == INFO && same_class);
 }
 
 void
@@ -1673,8 +1699,11 @@ measured_snr_db(Condition c, const Options& o, const Scene& s, Worker& w) {
         if (c.record) {
             /* the response's noise alone, through the same bins */
             w.record.resize((size_t)c.record);
-            qs::shape_record(condition_bins(c, s.response, w), c.record, w.record.data(), false, kNoiseSigma, rng,
-                             w.fft);
+            if (!qs::shape_record(condition_bins(c, s.response, w), c.record, w.record.data(), false, kNoiseSigma, rng,
+                                  w.fft)) {
+                DSD_FPRINTF(stderr, "condition %s: no transform of %d points\n", c.name.c_str(), c.record);
+                std::abort();
+            }
             w.trial.assign(record_trial(c, w), record_trial(c, w) + c.span);
         } else {
             render_noise(c, rng, w);
@@ -2081,6 +2110,9 @@ constexpr const char* kUsage =
 
 int
 main(int argc, char** argv) {
+    if (!centred_rates_match()) {
+        return 1;
+    }
     Options o;
     if (!parse_options(argc, argv, &o)) {
         DSD_FPRINTF(stderr, "usage: %s %s", argv[0], kUsage);

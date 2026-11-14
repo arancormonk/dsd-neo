@@ -15,8 +15,10 @@
  * tuner's IF filter, as a power response.
  *   half-band  modelled from figures computed from libairspy's taps, not taken from its code: 0 dB to +-0.42 Fs, then
  *              an amplitude [(1 + cos(pi u)) / 2]^p, u = (|f| - 0.42 Fs) / (kHalfbandWidth Fs), whose two parameters
- *              put it at -0.35 dB at +-0.45 Fs and -6.02 dB (half amplitude) at +-0.5 Fs
- *   tuner      flat between its -3 dB points, a raised-cosine power edge kTunerTransition wide centred on each, over
+ *              put it at -0.35 dB at +-0.45 Fs and -6.02 dB (half amplitude) at +-0.5 Fs. It is fitted at those two
+ *              points only and claims nothing between them: the computed response is -0.79 dB at 0.46 Fs and -3 dB at
+ *              0.483 Fs, the model -0.65 and -2.05 dB. Every reference span and channel stays inside 0.45 Fs.
+ *   tuner      flat between its -3 dB points, a raised-cosine power edge (TunerEdges.transition) centred on each, over
  *              a -40 dB stop band:
  *     NOMINAL   2.5 and 3 MS/s: -0.335 / +0.302 Fs, the one published measurement (an R2 at 2.5 MS/s; 3 MS/s, a
  *               Mini's narrow IF mode, assumed alike), edges 0.10 Fs wide. 6 and 10 MS/s: the vendor's usable spans
@@ -28,7 +30,9 @@
  *   depression  the power drops by depression_db over 3 channel widths centred on the channel's hardware frequency
  *               (full depth to 1.375 widths each side, a raised-cosine taper to none at 1.625, half at 1.5)
  *   adc         flat ADC noise, adc_db over the tuner noise's peak density, added after the response: the tuner
- *               noise follows the response, the ADC noise does not
+ *               noise follows the response, the ADC noise does not. That skips the half-band too, which in libairspy
+ *               follows the ADC: a deliberate simplification (the plan's "flat after") that matters only beyond
+ *               0.42 Fs, outside every span
  * Wanted signals, neighbours and interferers pass through the response like the tuner noise. */
 #ifndef DSD_NEO_TESTS_IO_SIGNAL_QUIET_SCENE_H_
 #define DSD_NEO_TESTS_IO_SIGNAL_QUIET_SCENE_H_
