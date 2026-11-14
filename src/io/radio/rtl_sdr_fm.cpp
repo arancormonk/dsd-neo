@@ -15315,6 +15315,9 @@ rtl_stream_backend_name(void) {
         if (dsd_opts_audio_in_dev_is_soapy_spec(g_stream->opts->audio_in_dev)) {
             return "soapy";
         }
+        if (dsd_opts_audio_in_dev_is_airspy_spec(g_stream->opts->audio_in_dev)) {
+            return "airspy";
+        }
     }
     return "rtl";
 }
