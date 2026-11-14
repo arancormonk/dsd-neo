@@ -12650,9 +12650,11 @@ test_y_quiet_noise_syncs_still_step(int typed) {
     yq_start(1);
     rc |= expect_true("the first step lands row 0", yq_list(opts, state, 3, typed, 1, base_hz + 20000000L) == 0);
     noCarrier(opts, state);
-    /* The longest hold, on the system decode clock: the steps below run well inside it. */
-    run_synced_frames_noting(opts, state, 0, -1, DSD_CONTENT_EVIDENCE_PARTIAL, SCAN_QUIET_PENDING_MAX_MS);
-    rc |= expect_true("a PARTIAL frame: no yield, the check held", scan_quiet_phase_get(state) == SCAN_QUIET_READY);
+    /* The longest hold, on the system decode clock: the steps below run well inside it. Three frames, each one's
+       verdict PARTIAL: with no yield the loop decodes all three (a yield would leave after the first). */
+    run_synced_frames_noting(opts, state, 2, -1, DSD_CONTENT_EVIDENCE_PARTIAL, SCAN_QUIET_PENDING_MAX_MS);
+    rc |= expect_true("PARTIAL frames: no yield, every frame decoded, the check held",
+                      g_frame_count == 3 && scan_quiet_phase_get(state) == SCAN_QUIET_READY);
     noCarrier(opts, state);
     rc |= expect_true("noCarrier() while the verdict is pending: no step, READY kept",
                       g_rtl_tune_calls == 0 && g_yq.notices == 0 && scan_quiet_phase_get(state) == SCAN_QUIET_READY);

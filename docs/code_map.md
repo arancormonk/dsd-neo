@@ -645,7 +645,11 @@ Generated (do not edit/commit):
       verdict fails ends no check. PARTIAL (a frame whose verdict a later frame completes, with the
       protocol's hold): NXDN's lone weak frame (two frames: 160 ms NXDN48/IDAS/DCR, 80 ms when NXDN96 runs alone),
       dPMR's one CCH half (320 ms), M17's lone clean LICH (80 ms), D-STAR's superframe ending on its sync alone
-      (`dstar_confirm_end_frame()`, 840 ms) and DMR's gate left PENDING on an unlocked candidate (120 ms). The runtime
+      (`dstar_confirm_end_frame()`, 840 ms) and DMR's gate left PENDING on an unlocked candidate (120 ms); and frames
+      whose sync the decoder accepts but that carry no check of their own, so a key-up just after a quiet reading
+      waits for its first verdict: dPMR FS1, FS3 and FS4 (`dpmr_confirm_note_unchecked_frame()` from
+      `dsd_dispatch_handle_dpmr()`, 320 ms) and an M17 packet frame before the end-of-transmission frame whose CRC
+      covers the packet (`m17_confirm_note_unchecked_frame()`, 80 ms). The runtime
       wrapper returns on one load with the setting off, before any owner lookup, and the engine's note makes no scan
       owner. The notes feed the quiet check alone: CRC provenance flags, history, events, Signal search evidence and
       the trunk scan's allowed activity are unchanged.

@@ -113,6 +113,26 @@ test_quiet_check_hears_the_frame_verdict(dsd_state* state) {
     expect("the second LICH is PROVEN", quiet_frame(&opts, state, k_weak, 1), DSD_CONTENT_EVIDENCE_PROVEN);
     m17_confirm_reset(state);
     expect("a LICH after a CRC adds nothing", quiet_frame(&opts, state, k_strong_weak, 2), DSD_CONTENT_EVIDENCE_PROVEN);
+    /* A frame with no check of its own (a packet frame before its CRC): PARTIAL, unless the frame proved something. */
+    quiet_notes_clear();
+    m17_confirm_begin_frame(state);
+    m17_confirm_note_unchecked_frame(&opts, state);
+    m17_confirm_end_frame(state);
+    expect("an unchecked frame is PARTIAL", g_quiet_notes == 1 && g_quiet_level == DSD_CONTENT_EVIDENCE_PARTIAL, 1);
+    expect("held for two frames", (int)g_quiet_hold_ms, (int)M17_CONFIRM_PARTIAL_HOLD_MS);
+    quiet_notes_clear();
+    m17_confirm_begin_frame(state);
+    m17_confirm_note_evidence(&opts, state, M17_EVIDENCE_STRONG);
+    m17_confirm_note_unchecked_frame(&opts, state);
+    m17_confirm_end_frame(state);
+    expect("after a CRC in the frame: nothing more", g_quiet_notes == 1 && g_quiet_level == DSD_CONTENT_EVIDENCE_PROVEN,
+           1);
+    opts.scan_skip_silent = 0;
+    quiet_notes_clear();
+    m17_confirm_note_unchecked_frame(&opts, state);
+    m17_confirm_note_unchecked_frame(&opts, NULL);
+    expect("setting off: nothing", g_quiet_notes, 0);
+    opts.scan_skip_silent = 1;
     quiet_notes_install(0);
     m17_confirm_reset(state);
 }

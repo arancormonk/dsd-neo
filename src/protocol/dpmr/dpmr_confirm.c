@@ -106,6 +106,11 @@ dpmr_confirm_end_frame(const dsd_opts* opts, dsd_state* state) {
     dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PARTIAL, DPMR_CONFIRM_PARTIAL_HOLD_MS);
 }
 
+void
+dpmr_confirm_note_unchecked_frame(const dsd_opts* opts, dsd_state* state) {
+    dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PARTIAL, DPMR_CONFIRM_PARTIAL_HOLD_MS);
+}
+
 int
 dpmr_confirm_is_confirmed(const dsd_state* state) {
     return state && state->dpmr_confirmed != 0;

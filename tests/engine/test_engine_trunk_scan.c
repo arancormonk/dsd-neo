@@ -22974,7 +22974,8 @@ quiet_tap_finish(int quiet, dsd_signal_measure_failure failure) {
     g_tap.result.max_ratio_db = 1.5f;
     g_tap.result.power_dbfs = -97.25f;
     g_tap.result.floor_dbfs = -98.75f;
-    g_tap.result.completed_realtime_ns = (g_quiet_fake_rt ? g_quiet_rt_ms : dsd_realtime_mono_ms()) * 1000000ULL;
+    g_tap.result.completed_realtime_ns =
+        ((g_quiet_fake_rt || scan_quiet_test_realtime_ms) ? g_quiet_rt_ms : dsd_realtime_mono_ms()) * 1000000ULL;
 }
 
 /* Two DMR conventional targets, the first landed by a synchronous retune at QT_T0 on stream generation QT_GEN; the
@@ -23021,6 +23022,7 @@ quiet_rig_init(dsd_opts* opts, dsd_state* state, const char* path) {
 
 static void
 quiet_rig_finish(dsd_opts* opts, dsd_state* state, const char* dir, const char* path) {
+    scan_quiet_test_realtime_ms = NULL;
     dsd_engine_trunk_scan_shutdown(opts, state);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_decode_clock_use_system();
@@ -23147,8 +23149,9 @@ qt_pass_to_ready(dsd_opts* opts, dsd_state* state) {
 }
 
 /* --- Issue #834 D8: only content its protocol's CRC/FEC gate passed is activity to the check; a sync the frame sync
- * returns waits for its frame's verdict. These cases run on the real realtime clock (g_quiet_fake_rt 0), with no link
- * wrap, so they build and run everywhere: each READY result is used within microseconds of its 250 ms age. --- */
+ * returns waits for its frame's verdict. These cases need no link wrap, so they build and run everywhere: the check
+ * reads the rig's frozen clock through scan_quiet_test_realtime_ms (g_quiet_rt_ms, started at the real time after the
+ * rig's landing), so no READY result ages out on a slow host. --- */
 
 /* A PROVEN content note, as a protocol's gate makes it (dsd_frame_sync_hook_content_evidence()). */
 static void
@@ -23167,12 +23170,20 @@ qt_frame(dsd_state* state, int level, uint32_t hold_ms) {
     dsd_engine_scan_quiet_frame_end(state);
 }
 
-/* The rig on the real realtime clock. */
+/* The check's clock in the portable cases: the rig's, which moves only when a case moves it. */
+static uint64_t
+qt_seam_clock(void) {
+    return g_quiet_rt_ms;
+}
+
+/* The rig with no link wrap: landed on the real realtime clock, then the check's clock frozen there. */
 static int
 qt_portable_start(dsd_opts* opts, dsd_state* state, char* dir, size_t dir_sz, char* path, size_t path_sz) {
     g_qt_real_clock = 1;
     const int rc = quiet_rig_start_body(opts, state, dir, dir_sz, path, path_sz, k_qt_dwell_targets);
     g_qt_real_clock = 0;
+    g_quiet_rt_ms = dsd_realtime_mono_ms();
+    scan_quiet_test_realtime_ms = qt_seam_clock;
     return rc;
 }
 
@@ -24264,64 +24275,83 @@ test_scan_quiet_adopts_a_park_measured_in_flight(void) {
 }
 
 /* Issue #834 D8: a PARTIAL frame on a park still in flight keeps its hold when the coordinator records that park's
-   landing (the same tune, the epoch step the check adopts as the same visit). With the result READY, neither the hunt
-   nor the tick skips before the verdict: the frame after completes it (PROVEN, the target stays), or, when the hold
-   outlives the result's 250 ms age, the result ages out DONE and the dwell decides. */
+   landing (the same tune, the epoch step the check adopts as the same visit), whether the landing is recorded while
+   the check is still REQUESTED (A10's order: REQUESTED, PARTIAL frame, adoption, READY) or once it is READY. With the
+   result READY, neither the hunt nor the tick skips before the verdict: the frame after completes it (PROVEN, the
+   target stays), or, when the hold outlives the result's 250 ms age, the result ages out DONE and the dwell decides. */
 static int
-test_scan_quiet_landing_adoption_keeps_a_pending_verdict(void) {
+qt_adoption_case(int adopt_before_ready, int corroborated) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
     static dsd_state state;
-    int rc = 0;
-    for (int corroborated = 1; corroborated >= 0; corroborated--) {
-        if (quiet_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
-            return 1;
-        }
-        const uint32_t session = dsd_engine_scan_landing_get(&state)->session;
-        g_scan_tune_to_freq_pending = 1;
-        (void)dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
-        const uint64_t park = g_scan_tune_pending_request;
-        scan_quiet_eligibility e = quiet_elig(&opts, &state);
-        e.key.index = 1;
-        e.key.session = session;
-        e.key.tune_request = park;
-        e.frequency_hz = k_qt_hz_b;
-        scan_quiet_publish_eligibility(&opts, &state, SCAN_QUIET_OWNER_TRUNK, &e);
-        g_quiet_stream_gen = QT_GEN + 3;
-        quiet_tap_capture(k_qt_hz_b, QT_GEN + 3);
-        dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_OK);
-        (void)quiet_service_after(&opts, &state, 5U);
-        rc |= qt_expect("REQUESTED in flight", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
-        /* The parked channel's first frame leaves a weak verdict (an NXDN SACCH CRC-6): PARTIAL, 160 ms. */
-        qt_frame(&state, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
-        quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
-        rc |= qt_expect("READY while the verdict is pending: LIVE, no hand-back",
-                        quiet_service_after(&opts, &state, 5U) == DSD_SCAN_QUIET_LIVE
-                            && scan_quiet_phase_get(&state) == SCAN_QUIET_READY);
-        /* The per-frame tick records the park's landing, the epoch step the check adopts, then decides: held. */
+    if (quiet_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    const uint32_t session = dsd_engine_scan_landing_get(&state)->session;
+    g_scan_tune_to_freq_pending = 1;
+    (void)dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+    const uint64_t park = g_scan_tune_pending_request;
+    scan_quiet_eligibility e = quiet_elig(&opts, &state);
+    e.key.index = 1;
+    e.key.session = session;
+    e.key.tune_request = park;
+    e.frequency_hz = k_qt_hz_b;
+    scan_quiet_publish_eligibility(&opts, &state, SCAN_QUIET_OWNER_TRUNK, &e);
+    g_quiet_stream_gen = QT_GEN + 3;
+    quiet_tap_capture(k_qt_hz_b, QT_GEN + 3);
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_OK);
+    (void)quiet_service_after(&opts, &state, 5U);
+    int rc = qt_expect("REQUESTED in flight", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+    /* The parked channel's first frame leaves a weak verdict (an NXDN SACCH CRC-6): PARTIAL, 160 ms. */
+    qt_frame(&state, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
+    if (adopt_before_ready) {
+        /* The per-frame tick records the park's landing while the check is still REQUESTED: adopted, not skipped. */
         dsd_engine_trunk_scan_tick(&opts, &state);
-        rc |= qt_expect("adopted, not skipped", scan_quiet_key_get(&state).epoch != 0U
-                                                    && scan_quiet_phase_get(&state) == SCAN_QUIET_READY
-                                                    && dsd_engine_trunk_scan_active_index(&state) == 1U);
-        rc |= qt_expect("still pending after the adoption: no hand-back",
-                        quiet_service_after(&opts, &state, 5U) == DSD_SCAN_QUIET_LIVE);
-        if (corroborated) {
-            qt_frame(&state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
-            dsd_engine_trunk_scan_tick(&opts, &state);
-            rc |= qt_expect("corroborated: DONE, the target stays",
-                            scan_quiet_phase_get(&state) == SCAN_QUIET_DONE
-                                && dsd_engine_trunk_scan_active_index(&state) == 1U);
-        } else {
-            /* The hold (decode clock) outlives the result's 250 ms age (realtime): DONE, no skip. */
-            g_quiet_rt_ms += SCAN_QUIET_READY_MAX_AGE_MS;
-            rc |= qt_expect("aged out: no hand-back", quiet_service_after(&opts, &state, 1U) == DSD_SCAN_QUIET_NONE);
-            dsd_engine_trunk_scan_tick(&opts, &state);
-            rc |=
-                qt_expect("aged out: DONE, the target stays", scan_quiet_phase_get(&state) == SCAN_QUIET_DONE
+        rc |= qt_expect("adopted while REQUESTED", scan_quiet_key_get(&state).epoch != 0U
+                                                       && scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED
+                                                       && dsd_engine_trunk_scan_active_index(&state) == 1U);
+    }
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    rc |= qt_expect("READY while the verdict is pending: LIVE, no hand-back",
+                    quiet_service_after(&opts, &state, 5U) == DSD_SCAN_QUIET_LIVE
+                        && scan_quiet_phase_get(&state) == SCAN_QUIET_READY);
+    /* The per-frame tick (recording the park's landing here when it was not recorded yet) decides: held. */
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    rc |= qt_expect("adopted, not skipped", scan_quiet_key_get(&state).epoch != 0U
+                                                && scan_quiet_phase_get(&state) == SCAN_QUIET_READY
+                                                && dsd_engine_trunk_scan_active_index(&state) == 1U);
+    rc |= qt_expect("still pending after the adoption: no hand-back",
+                    quiet_service_after(&opts, &state, 5U) == DSD_SCAN_QUIET_LIVE);
+    if (corroborated) {
+        qt_frame(&state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        rc |=
+            qt_expect("corroborated: DONE, the target stays", scan_quiet_phase_get(&state) == SCAN_QUIET_DONE
                                                                   && dsd_engine_trunk_scan_active_index(&state) == 1U);
+    } else {
+        /* The hold (decode clock) outlives the result's 250 ms age (realtime): DONE, no skip. */
+        g_quiet_rt_ms += SCAN_QUIET_READY_MAX_AGE_MS;
+        rc |= qt_expect("aged out: no hand-back", quiet_service_after(&opts, &state, 1U) == DSD_SCAN_QUIET_NONE);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        rc |= qt_expect("aged out: DONE, the target stays", scan_quiet_phase_get(&state) == SCAN_QUIET_DONE
+                                                                && dsd_engine_trunk_scan_active_index(&state) == 1U);
+    }
+    quiet_rig_finish(&opts, &state, dir, path);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834 scan quiet: adoption %s READY, %s\n", adopt_before_ready ? "before" : "after",
+                    corroborated ? "corroborated" : "aged out");
+    }
+    return rc;
+}
+
+static int
+test_scan_quiet_landing_adoption_keeps_a_pending_verdict(void) {
+    int rc = 0;
+    for (int adopt_before_ready = 1; adopt_before_ready >= 0; adopt_before_ready--) {
+        for (int corroborated = 1; corroborated >= 0; corroborated--) {
+            rc |= qt_adoption_case(adopt_before_ready, corroborated);
         }
-        quiet_rig_finish(&opts, &state, dir, path);
     }
     return rc;
 }
@@ -24440,7 +24470,7 @@ qt_counting_service(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     g_qt_service_calls++;
-    return 1;
+    return DSD_SCAN_QUIET_HAND_BACK;
 }
 
 /* The hunt's hook with the setting off is one load of the setting and 0: the engine's service is never called (the
@@ -24457,10 +24487,11 @@ test_scan_quiet_hook_off_is_one_load(void) {
     hooks.scan_quiet_service = qt_counting_service;
     dsd_frame_sync_hooks_set(&hooks);
     g_qt_service_calls = 0;
-    int rc = qt_expect("off: 0", dsd_frame_sync_hook_scan_quiet_service(&opts, NULL) == 0);
+    int rc = qt_expect("off: NONE", dsd_frame_sync_hook_scan_quiet_service(&opts, NULL) == DSD_SCAN_QUIET_NONE);
     rc |= qt_expect("off: the engine is not asked", g_qt_service_calls == 0);
     opts.scan_skip_silent = 1;
-    rc |= qt_expect("on: the engine's answer", dsd_frame_sync_hook_scan_quiet_service(&opts, &state) == 1);
+    rc |= qt_expect("on: the engine's answer",
+                    dsd_frame_sync_hook_scan_quiet_service(&opts, &state) == DSD_SCAN_QUIET_HAND_BACK);
     rc |= qt_expect("on: asked once", g_qt_service_calls == 1);
     dsd_frame_sync_hooks_set(&saved);
     rc |= qt_expect("no check made: 0", dsd_engine_scan_quiet_service(&opts, &state) == DSD_SCAN_QUIET_NONE);

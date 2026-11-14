@@ -35,6 +35,10 @@
 /* Width classes (the values of DSD_SIGNAL_QUIET_CLASS_*, which signal_measure.h, a radio header, names). */
 enum { QUIET_CLASS_12K5 = 1, QUIET_CLASS_6K25 = 2, QUIET_CLASS_ANALOG = 4 };
 
+#ifdef DSD_NEO_TEST_HOOKS
+uint64_t (*scan_quiet_test_realtime_ms)(void) = NULL;
+#endif
+
 static const dsd_engine_scan_owner*
 quiet_owner_const(const dsd_state* state) {
     return state ? (const dsd_engine_scan_owner*)dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN) : NULL;
@@ -191,6 +195,17 @@ scan_quiet_format_skip(char* out, size_t out_size, const char* name, int row, ui
 }
 
 #ifdef USE_RADIO
+
+/* The check's realtime clock: a test's, when it set one (DSD_NEO_TEST_HOOKS builds only). */
+static uint64_t
+quiet_realtime_ms(void) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (scan_quiet_test_realtime_ms) {
+        return scan_quiet_test_realtime_ms();
+    }
+#endif
+    return dsd_realtime_mono_ms();
+}
 
 static int
 quiet_revisions_equal(const scan_quiet_revisions* a, const scan_quiet_revisions* b) {
@@ -684,7 +699,7 @@ scan_quiet_publish_eligibility(const dsd_opts* opts, dsd_state* state, int owner
     if (!c) {
         return;
     }
-    const uint64_t now_ms = dsd_realtime_mono_ms();
+    const uint64_t now_ms = quiet_realtime_ms();
     if (quiet_publication_ends_visit(opts, state, owner, c, e, now_ms)) {
         return;
     }
@@ -710,7 +725,7 @@ dsd_engine_scan_quiet_service(const dsd_opts* opts, dsd_state* state) {
     if (!c || c->phase == SCAN_QUIET_SUSPENDED || c->phase == SCAN_QUIET_DONE) {
         return DSD_SCAN_QUIET_NONE;
     }
-    const uint64_t now_ms = dsd_realtime_mono_ms();
+    const uint64_t now_ms = quiet_realtime_ms();
     quiet_reconcile(opts, state, owner, c, now_ms);
     quiet_step(c, now_ms);
     if (!quiet_check_active(c)) {
@@ -725,7 +740,7 @@ dsd_engine_scan_quiet_service(const dsd_opts* opts, dsd_state* state) {
 
 int
 dsd_engine_scan_quiet_frame_yield(const dsd_opts* opts, dsd_state* state) {
-    /* The setting first: one load while it is off. */
+    /* The setting before anything else: with it off, the null check and one load. */
     return opts && opts->scan_skip_silent && opts->scanner_mode == 1
            && dsd_engine_scan_quiet_service(opts, state) == DSD_SCAN_QUIET_HAND_BACK;
 }
@@ -737,7 +752,7 @@ scan_quiet_apply(const dsd_opts* opts, dsd_state* state, int owner_kind, const s
     if (!opts || !opts->scan_skip_silent || !c || c->phase != SCAN_QUIET_READY || c->key.owner != owner_kind) {
         return 0;
     }
-    quiet_reconcile(opts, state, owner, c, dsd_realtime_mono_ms());
+    quiet_reconcile(opts, state, owner, c, quiet_realtime_ms());
     if (c->phase != SCAN_QUIET_READY || c->key.epoch == 0U || quiet_pending(owner)) {
         /* Declined by the reconcile, a park whose landing the coordinator has not noted yet, or held while a frame's
            verdict is pending (kept READY: neither applied nor declined). */
@@ -754,7 +769,7 @@ scan_quiet_reconcile_declined(const dsd_opts* opts, dsd_state* state, int owner_
     if (!opts || !c) {
         return;
     }
-    quiet_reconcile(opts, state, owner, c, dsd_realtime_mono_ms());
+    quiet_reconcile(opts, state, owner, c, quiet_realtime_ms());
     if (c->phase == SCAN_QUIET_READY && c->key.owner == owner_kind && !guard_lost && !quiet_pending(owner)) {
         c->phase = SCAN_QUIET_DONE;
     }

@@ -70,6 +70,13 @@ void m17_confirm_note_evidence(const dsd_opts* opts, dsd_state* state, m17_evide
 /** @brief Close a frame's accounting; a frame that proved nothing breaks the weak streak. */
 void m17_confirm_end_frame(dsd_state* state);
 
+/**
+ * @brief A frame the decoder accepted that carries no check of its own (a packet frame before the end-of-transmission
+ * frame whose CRC covers the packet) to a scan quiet check, through @p opts (issue #834): PARTIAL, held for
+ * M17_CONFIRM_PARTIAL_HOLD_MS, unless the frame proved something already. @p opts may be NULL (no quiet check).
+ */
+void m17_confirm_note_unchecked_frame(const dsd_opts* opts, dsd_state* state);
+
 /** @brief Whether the current transmission has proved itself. */
 int m17_confirm_is_confirmed(const dsd_state* state);
 

@@ -163,6 +163,12 @@ int scan_quiet_wants_eligibility(const dsd_opts* opts, const dsd_state* state, i
 void scan_quiet_publish_eligibility(const dsd_opts* opts, dsd_state* state, int owner_kind,
                                     const scan_quiet_eligibility* e);
 
+#ifdef DSD_NEO_TEST_HOOKS
+/** Tests only: the realtime clock the check reads (ms), NULL for dsd_realtime_mono_ms(). A test that runs everywhere
+ * sets it instead of wrapping the platform clock at link time. */
+extern uint64_t (*scan_quiet_test_realtime_ms)(void);
+#endif
+
 /** The skip decision's quiet half: 1 when @p owner_kind's READY result is still the visit's, its revisions unchanged
  * and @p current (the classes, analog kind and width, and DSP rate in force now, as engine service works them out for
  * its eligibility) equal to what was measured, its capture and output generation unchanged with no tune pending, at

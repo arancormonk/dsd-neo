@@ -74,6 +74,14 @@ m17_confirm_end_frame(dsd_state* state) {
     }
 }
 
+void
+m17_confirm_note_unchecked_frame(const dsd_opts* opts, dsd_state* state) {
+    if (!state || state->m17_confirm_frame_evidence != 0) {
+        return;
+    }
+    dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PARTIAL, M17_CONFIRM_PARTIAL_HOLD_MS);
+}
+
 int
 m17_confirm_is_confirmed(const dsd_state* state) {
     return state && state->m17_confirmed != 0;

@@ -3501,6 +3501,8 @@ m17_process_packet_frame(const dsd_opts* opts, dsd_state* state, const float* so
             return 0;
         }
         state->m17_pbc_ct++;
+        /* A chunk the packet's CRC checks only at its end-of-transmission frame: the quiet check waits for it. */
+        m17_confirm_note_unchecked_frame(opts, state);
     }
 
     //ending linebreak
