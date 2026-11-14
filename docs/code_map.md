@@ -17326,7 +17326,9 @@ A binding that mixes an item's own state (`visible`, `enabled`) with `Navigation
 binding loop. A size bound to a `Text` reads its `height`, not `implicitHeight`, whose getter lays out pending text and
 changes itself under the binding reading it. Deferred work in a component that can be torn down with a call in flight
 runs from a `Timer` it owns, not `Qt.callLater`, whose queued call outlives the object (`FollowLatest.qml`). The QML
-tests pin these with `failOnWarning`.
+tests pin these with `failOnWarning`. A message with more than one placeholder is filled in one pass,
+`Util.fill(qsTr("%1 … %2"), [a, b])` in QML and `QString::arg(a, b)` in C++: chained `.arg()` calls scan the text again
+after each fill, so a name holding "%1" (a file, system or device name) was filled in again and came out garbled.
 
 A screen header's title wraps at large text rather than running past the edge or under what shares its line (issue
 #830): it takes the room between the back chevron and the header's right edge, or the wizard's step progress with a

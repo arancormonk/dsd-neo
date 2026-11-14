@@ -109,7 +109,7 @@ ModalSheet {
         width: parent.width
         recordingList: sheet.rowRecordings
         dialogParent: sheet
-        title: sheet.record.when > 0 ? qsTr("%1 · %2").arg(sheet.record.name || "").arg(Qt.formatDateTime(new Date(sheet.record.when * 1000), "yyyy-MM-dd hh:mm")) : (sheet.record.name || "")
+        title: sheet.record.when > 0 ? Util.fill(qsTr("%1 · %2"), [sheet.record.name || "", Qt.formatDateTime(new Date(sheet.record.when * 1000), "yyyy-MM-dd hh:mm")]) : (sheet.record.name || "")
     }
     OutlineButton {
         id: holdButton

@@ -133,19 +133,19 @@ Window {
         var receiver = receiverHealth.source === "airspy" ? qsTr("Airspy") : resets ? qsTr("RTL-SDR") : qsTr("The receiver");
         if (search) {
             if (lost)
-                return qsTr("%1 was unplugged, so %2 stopped. Plug it back in, then start the search again.").arg(receiver).arg(qsTr("Signal search"));
-            return (resets ? qsTr("%1 stopped sending samples, so %2 stopped. Start the search again to reset it.") : qsTr("%1 stopped sending samples, so %2 stopped. Start the search again.")).arg(receiver).arg(qsTr("Signal search"));
+                return Util.fill(qsTr("%1 was unplugged, so %2 stopped. Plug it back in, then start the search again."), [receiver, qsTr("Signal search")]);
+            return Util.fill(resets ? qsTr("%1 stopped sending samples, so %2 stopped. Start the search again to reset it.") : qsTr("%1 stopped sending samples, so %2 stopped. Start the search again."), [receiver, qsTr("Signal search")]);
         }
         var attempt = attemptedSource;
         if (!attempt) {
             if (lost)
-                return qsTr("%1 was unplugged, so %2 stopped. Plug it back in, tap Reconnect, then start it again.").arg(receiver).arg(qsTr("the session"));
-            return (resets ? qsTr("%1 stopped sending samples, so %2 stopped. Tap Reconnect to reset it, then start it again.") : qsTr("%1 stopped sending samples, so %2 stopped. Tap Reconnect, then start it again.")).arg(receiver).arg(qsTr("the session"));
+                return Util.fill(qsTr("%1 was unplugged, so %2 stopped. Plug it back in, tap Reconnect, then start it again."), [receiver, qsTr("the session")]);
+            return Util.fill(resets ? qsTr("%1 stopped sending samples, so %2 stopped. Tap Reconnect to reset it, then start it again.") : qsTr("%1 stopped sending samples, so %2 stopped. Tap Reconnect, then start it again."), [receiver, qsTr("the session")]);
         }
         var session = attempt.kind !== "explore" ? attempt.system.name || qsTr("the session") : attempt.system.signalSearch ? qsTr("Signal search") : qsTr("Explore");
         if (lost)
-            return qsTr("%1 was unplugged, so %2 stopped. Plug it back in, then tap Reconnect.").arg(receiver).arg(session);
-        return (resets ? qsTr("%1 stopped sending samples, so %2 stopped. Tap Reconnect to reset it and start again.") : qsTr("%1 stopped sending samples, so %2 stopped. Tap Reconnect to start again.")).arg(receiver).arg(session);
+            return Util.fill(qsTr("%1 was unplugged, so %2 stopped. Plug it back in, then tap Reconnect."), [receiver, session]);
+        return Util.fill(resets ? qsTr("%1 stopped sending samples, so %2 stopped. Tap Reconnect to reset it and start again.") : qsTr("%1 stopped sending samples, so %2 stopped. Tap Reconnect to start again."), [receiver, session]);
     }
     readonly property string receiverNoticeText: receiverEnded ? receiverNotice(false) : ""
     // Whether the failure on screen is that notice: Reconnect on Listen, the search's own wording there.
@@ -369,7 +369,7 @@ Window {
             counts[action.key + "/" + action.name] = (counts[action.key + "/" + action.name] || 0) + 1;
         return actions.map(function (action) {
             var shown = counts[action.key + "/" + action.name] > 1 && action.protocolLabel
-                ? qsTr("%1 (%2)").arg(action.name).arg(action.protocolLabel) : action.name;
+                ? Util.fill(qsTr("%1 (%2)"), [action.name, action.protocolLabel]) : action.name;
             var start = qsTr("Start “%1”").arg(shown);
             return Object.assign(action, {
                 text: action.key === "saved" ? start : shown,
@@ -1612,7 +1612,7 @@ Window {
                 // Every radio decodes TETRA only at 72 kHz, which an empty field runs at.
                 mainRoot.startError = qsTr("“%1” decodes TETRA, which needs a bandwidth of 72 kHz. Set the source's bandwidth to 72 kHz, or leave it empty.").arg(sys.name);
             } else if (built.error === "am-bandwidth") {
-                mainRoot.startError = qsTr("“%1” decodes AM, whose 6 kHz channel needs a DSP bandwidth of 8 kHz or more. Set the source's bandwidth, or the default bandwidth in Settings, to %2 kHz.").arg(sys.name).arg(built.bandwidthChoices);
+                mainRoot.startError = Util.fill(qsTr("“%1” decodes AM, whose 6 kHz channel needs a DSP bandwidth of 8 kHz or more. Set the source's bandwidth, or the default bandwidth in Settings, to %2 kHz."), [sys.name, built.bandwidthChoices]);
             } else {
                 mainRoot.startError = qsTr("The session options are invalid. Review them before starting.");
             }

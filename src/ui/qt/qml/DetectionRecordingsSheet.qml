@@ -63,7 +63,7 @@ ModalSheet {
     function timeLine(recording) {
         var start = Number(recording.start) || 0;
         var length = Util.playbackLengthText(recording.durationMs);
-        return start > 0 ? qsTr("%1 · %2").arg(Qt.formatDateTime(new Date(start * 1000), "hh:mm:ss")).arg(length) : length;
+        return start > 0 ? Util.fill(qsTr("%1 · %2"), [Qt.formatDateTime(new Date(start * 1000), "hh:mm:ss"), length]) : length;
     }
     /** Who the call was, as the recording names it: a number reads as the
      * screen's "Target"/"Source" do, then the system (an analog recording's
@@ -224,7 +224,7 @@ ModalSheet {
         width: parent.width
         recordingList: sheet.selected ? [sheet.selected] : []
         dialogParent: sheet
-        title: sheet.selected && Number(sheet.selected.start) > 0 ? qsTr("%1 MHz · %2").arg(sheet.frequencyText).arg(Qt.formatDateTime(new Date(Number(sheet.selected.start) * 1000), "yyyy-MM-dd hh:mm")) : qsTr("%1 MHz").arg(sheet.frequencyText)
+        title: sheet.selected && Number(sheet.selected.start) > 0 ? Util.fill(qsTr("%1 MHz · %2"), [sheet.frequencyText, Qt.formatDateTime(new Date(Number(sheet.selected.start) * 1000), "yyyy-MM-dd hh:mm")]) : qsTr("%1 MHz").arg(sheet.frequencyText)
     }
     OutlineButton {
         id: callDetailsButton

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
+import "Util.js" as Util
 
 // Listen's saved systems, above their cards: Search and Sort, then the lines
 // a search or an order puts there (how many a search shows, Nearest's
@@ -206,7 +207,7 @@ Column {
             systemsSearch.input.forceActiveFocus();
     }
     readonly property string countText: savedSystemCards.totalCount === 1 ? qsTr("%1 of 1 system").arg(savedSystemCards.shownCount)
-        : qsTr("%1 of %2 systems").arg(savedSystemCards.shownCount).arg(savedSystemCards.totalCount)
+        : Util.fill(qsTr("%1 of %2 systems"), [savedSystemCards.shownCount, savedSystemCards.totalCount])
     readonly property string noMatchText: qsTr("No saved systems match “%1”").arg(savedSystemCards.query)
     function announceCount() {
         if (!announceOwed)

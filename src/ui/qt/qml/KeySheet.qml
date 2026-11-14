@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
+import "Util.js" as Util
 
 ModalSheet {
     id: sheet
@@ -182,7 +183,7 @@ ModalSheet {
         if (currentLabel.length) {
             var chosen = decryptionProfiles.get(selectedProfileUid).label || qsTr("this profile");
             replaceProfile.title = qsTr("Replace the profile for “%1”?").arg(system.name);
-            replaceProfile.message = qsTr("Future starts will use “%1” instead of “%2”. This session keeps its keys.").arg(chosen).arg(currentLabel);
+            replaceProfile.message = Util.fill(qsTr("Future starts will use “%1” instead of “%2”. This session keeps its keys."), [chosen, currentLabel]);
             replaceProfile.confirmText = qsTr("Use “%1”").arg(chosen);
             replaceProfile.profileUid = selectedProfileUid;
             replaceProfile.open();
@@ -199,7 +200,7 @@ ModalSheet {
             })) {
             var label = decryptionProfiles.get(profileUid).label || qsTr("this profile");
             var name = savedSystems.get(row).name;
-            notice = (materialProfile.uid || "") === profileUid ? qsTr("“%1” will start with “%2”.").arg(name).arg(label) : qsTr("“%1” will start with “%2”. Apply it to use it in this session too.").arg(name).arg(label);
+            notice = (materialProfile.uid || "") === profileUid ? Util.fill(qsTr("“%1” will start with “%2”."), [name, label]) : Util.fill(qsTr("“%1” will start with “%2”. Apply it to use it in this session too."), [name, label]);
             systemProfileSaved(systemUid);
         } else {
             notice = qsTr("“%1” could not be saved. Its profile is unchanged.").arg(savedSystemName);
@@ -258,7 +259,7 @@ ModalSheet {
             ReadableText {
                 width: parent.width
                 // Guarded: a new row's bindings can run before its slot is read.
-                text: !slotData ? "" : qsTr("Slot %1 · %2%3").arg(slotData.slot).arg(slotData.status).arg(slotData.lastObserved ? qsTr(" · last observed") : "") + (slotData.algorithm.length ? qsTr("\nAlgorithm in use: %1").arg(slotData.algorithm) : "") + (slotData.keyId.length ? qsTr("\nCall key ID: %1").arg(slotData.keyId) : "") + "\n" + slotData.source + (slotData.effectiveId.length ? " · " + slotData.effectiveId : "") + "\n" + slotData.availability + (slotData.fallback.length ? "\n" + slotData.fallback : "") + (slotData.privateCall && slotData.dmr ? qsTr("\nPrivate call: talkgroup overrides do not apply.") : "") + (slotData.blockReason.length ? qsTr("\nListening policy: %1").arg(slotData.blockReason) : "")
+                text: !slotData ? "" : Util.fill(qsTr("Slot %1 · %2%3"), [slotData.slot, slotData.status, slotData.lastObserved ? qsTr(" · last observed") : ""]) + (slotData.algorithm.length ? qsTr("\nAlgorithm in use: %1").arg(slotData.algorithm) : "") + (slotData.keyId.length ? qsTr("\nCall key ID: %1").arg(slotData.keyId) : "") + "\n" + slotData.source + (slotData.effectiveId.length ? " · " + slotData.effectiveId : "") + "\n" + slotData.availability + (slotData.fallback.length ? "\n" + slotData.fallback : "") + (slotData.privateCall && slotData.dmr ? qsTr("\nPrivate call: talkgroup overrides do not apply.") : "") + (slotData.blockReason.length ? qsTr("\nListening policy: %1").arg(slotData.blockReason) : "")
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 color: Theme.textPrimary

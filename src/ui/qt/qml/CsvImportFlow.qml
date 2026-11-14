@@ -394,7 +394,7 @@ Item {
                 ReadableText {
                     objectName: "csvCompanionLabel_" + slot.index
                     width: parent.width
-                    text: qsTr("%1 · %2").arg(slot.kind.charAt(0).toUpperCase() + slot.kind.slice(1)).arg(flow.requiredLabels[slot.modelData] || slot.modelData)
+                    text: Util.fill(qsTr("%1 · %2"), [slot.kind.charAt(0).toUpperCase() + slot.kind.slice(1), flow.requiredLabels[slot.modelData] || slot.modelData])
                     wrapMode: Text.Wrap
                     color: Theme.textPrimary
                     font.pixelSize: Theme.fontSize(15)
@@ -416,7 +416,7 @@ Item {
                         readonly property bool checked: flow.companions[slot.modelData] === modelData.path
                         objectName: "csvLibraryChoice_" + slot.index + "_" + index
                         width: parent.width
-                        accessibleName: (modelData.accepted === 1 ? qsTr("Use imported %1 (%2, %3 row)") : qsTr("Use imported %1 (%2, %3 rows)")).arg(modelData.name).arg(modelData.kind).arg(modelData.accepted)
+                        accessibleName: Util.fill(modelData.accepted === 1 ? qsTr("Use imported %1 (%2, %3 row)") : qsTr("Use imported %1 (%2, %3 rows)"), [modelData.name, modelData.kind, modelData.accepted])
                         text: (checked ? "● " : "○ ") + accessibleName
                         Accessible.role: Accessible.RadioButton
                         Accessible.checkable: true

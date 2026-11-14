@@ -113,6 +113,13 @@ test_unique() {
     CHECK(unique_import_destination(dir, reservedName, reserved)
           == dir.filePath(QStringLiteral("talkgroups-1234 (2).csv")));
 
+    // A name holding "%1" keeps it: the number is filled in once, not into the name.
+    touch(dir, QStringLiteral("rate%1.csv"));
+    CHECK(unique_import_destination(dir, QStringLiteral("rate%1.csv"), none)
+          == dir.filePath(QStringLiteral("rate%1 (2).csv")));
+    touch(dir, QStringLiteral("rate%1"));
+    CHECK(unique_import_destination(dir, QStringLiteral("rate%1"), none) == dir.filePath(QStringLiteral("rate%1 (2)")));
+
     CHECK(dir.mkdir(QStringLiteral("bundles")));
     CHECK(unique_import_destination(dir, QStringLiteral("bundles"), none)
           == dir.filePath(QStringLiteral("bundles (2)")));

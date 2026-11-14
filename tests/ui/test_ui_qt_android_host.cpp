@@ -2572,6 +2572,33 @@ check_claim_error_scope() {
     retained_record() = QJsonObject();
 }
 
+/* A device whose name holds "%1" is named as written in an open/claim error: the code is filled in once. */
+static void
+check_claim_error_names_device_as_written() {
+    using dsd_android::DecoderHostAndroid;
+    using namespace dsd_android;
+    const QJsonObject airspy{
+        {"ready", true}, {"source", "airspy"}, {"serial", "A9"}, {"name", "Airspy%1"}, {"text", "Ready: Airspy%1"}};
+    DecoderHostAndroid host;
+    usb_record() = airspy;
+    retained_record() = {{"sessionId", 92}, {"state", "IDLE"}};
+    running = false;
+    host.refresh();
+    retained_record() = lifecycle_record(93, "RUNNING", kRunPending, kEndNone, kReceiverAirspy);
+    running = true;
+    host.refresh();
+    QJsonObject failed = lifecycle_record(93, "IDLE", kRunFailed, kEndNone, kReceiverAirspy);
+    failed.insert("deviceError", -3);
+    failed.insert("lastError", "Decoder run failed (1); USB open/claim error -3");
+    retained_record() = std::move(failed);
+    running = false;
+    host.refresh();
+    check(host.localDeviceStatus() == QStringLiteral("Android could not open or claim Airspy%1 (code -3)."),
+          "the device is named as written");
+    usb_record() = QJsonObject();
+    retained_record() = QJsonObject();
+}
+
 /* A broker record of a ready RTL-SDR connection: its attachment (device name, attach epoch) and connection number. */
 static QJsonObject
 rtl_connection(const char* device, qint64 epoch, qint64 connection, const char* serial) {
@@ -4126,6 +4153,7 @@ main(int argc, char** argv) {
     check_session_state_known_after_first_poll();
     check_receiver_health();
     check_claim_error_scope();
+    check_claim_error_names_device_as_written();
     check_claim_error_connection();
     check_receiver_take_failures();
     check_request_record();

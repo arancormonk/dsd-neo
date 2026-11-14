@@ -416,6 +416,34 @@ Item {
             compare(screen.validationText, "");
         }
 
+        // The user's own scroll ends a reveal still waiting: opening Advanced
+        // afterwards does not jump back to the import's reason.
+        function test_scroll_cancels_the_import_reveal() {
+            chooseTargetCsvMode();
+            screen.advancedOpen = true;
+            var scroll = findChild(screen, "scanListScroll");
+            tryVerify(function () { return scroll.contentHeight > scroll.height + 400; }, 5000, "a page long enough to scroll");
+            // Once Advanced has finished opening: a height still changing reveals the focused control.
+            var settled = -1;
+            tryVerify(function () {
+                var same = scroll.contentHeight === settled;
+                settled = scroll.contentHeight;
+                return same;
+            }, 5000, "the layout settles");
+            wait(50);
+            screen.showImportProblem("Could not import scroll.csv: bad header");
+            verify(screen.importRevealPending);
+            scroll.movementStarted();
+            verify(!screen.importRevealPending);
+            // Down past the import line, as the user's own scroll leaves it.
+            scroll.contentY = scroll.contentHeight - scroll.height;
+            var at = scroll.contentY;
+            verify(at > 400);
+            screen.revealValidation();
+            wait(100);
+            fuzzyCompare(scroll.contentY, at, 1, "the scroll stays where the user put it");
+        }
+
         // The reveal of a refused import waits for layout on a timer the screen
         // owns; closing and opening another draft before it runs drops it.
         function test_close_before_the_import_reveal_runs() {

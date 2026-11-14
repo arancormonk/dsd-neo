@@ -329,7 +329,7 @@ ModalSheet {
         objectName: "nearestSiteSummary"
         width: parent.width
         visible: prefs.lastFixAt > 0 && !sheet.locationId
-        text: sheet.nearest >= 0 ? qsTr("Nearest site: %1 · %2").arg(sheet.nearestSite.siteName || sheet.nearestSite.name).arg(Util.fmtDistanceKm(sheet.nearestDistance, prefs.metricUnits).replace(" ", "\u00a0")) : qsTr("No site can be ranked. Check the sites’ coordinates and Avoid settings below.")
+        text: sheet.nearest >= 0 ? Util.fill(qsTr("Nearest site: %1 · %2"), [sheet.nearestSite.siteName || sheet.nearestSite.name, Util.fmtDistanceKm(sheet.nearestDistance, prefs.metricUnits).replace(" ", "\u00a0")]) : qsTr("No site can be ranked. Check the sites’ coordinates and Avoid settings below.")
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         font.family: Theme.sans

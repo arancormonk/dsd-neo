@@ -954,6 +954,10 @@ Item {
                 {tag: "local", result: {ok: false, error: "local", name: "Map.csv", noSpace: false}, text: "Could not save a copy of Map.csv on this device."},
                 {tag: "local no space", result: {ok: false, error: "local", name: "Map.csv", noSpace: true}, text: "Could not save a copy of Map.csv on this device. Free up some storage, then try again."},
                 {tag: "format detail", result: {ok: false, error: "format", name: "Map.csv", type: "chan", detail: "Line 2: no frequency."}, text: "Could not import Map.csv: Line 2: no frequency."},
+                // A name holding a placeholder is said as written: filled in once.
+                {tag: "format detail placeholder name", result: {ok: false, error: "format", name: "Map%1.csv", type: "chan", detail: "Bad header"}, text: "Could not import Map%1.csv: Bad header"},
+                {tag: "format placeholder name", result: {ok: false, error: "format", name: "Map%1.csv", type: "chan", detail: ""}, text: "Map%1.csv is not a valid channel map."},
+                {tag: "too large placeholder name", result: {ok: false, error: "too_large", name: "Map%1.csv", limitBytes: 32 * 1024 * 1024}, text: "Map%1.csv is too large to import. A CSV file can be up to 32\u00a0MiB."},
                 {tag: "format detail unnamed", result: {ok: false, error: "format", type: "chan", detail: "Line 2: no frequency."}, text: "Could not import this file: Line 2: no frequency."},
                 {tag: "format", result: {ok: false, error: "format", name: "Map.csv", type: "chan", detail: ""}, text: "Map.csv is not a valid channel map."},
                 {tag: "format keys", result: {ok: false, error: "format", name: "Keys.csv", type: "keysHex"}, text: "Keys.csv is not a valid hex key file."},

@@ -323,6 +323,17 @@ function mhzText(hz) {
 // the sign of a value that rounds to zero ("-0.0", ECMA-262 Number.prototype.
 // toFixed), as C's printf does, so an SNR of -0.04 dB would read "-0.0 dB".
 // Only a text whose digits are all zero loses its sign; NaN reads "NaN".
+// A translated template with its %1, %2, ... filled in one pass. Chained
+// .arg() calls scan the text again after each fill, so a value that itself
+// holds "%1" (a file, system or talkgroup name) was filled in turn and the
+// message came out garbled. A placeholder with no value stays as written.
+function fill(template, values) {
+    return String(template).replace(/%(\d+)/g, function (match, number) {
+        var index = Number(number) - 1
+        return index >= 0 && index < values.length ? String(values[index]) : match
+    })
+}
+
 function fixed(value, digits) {
     var s = Number(value).toFixed(digits)
     return /^-[0.]+$/.test(s) ? s.substring(1) : s
@@ -722,7 +733,7 @@ function andList(names) {
     var list = names || []
     if (list.length < 2)
         return list.length ? String(list[0]) : ""
-    return qsTr("%1 and %2").arg(list.slice(0, -1).join(", ")).arg(list[list.length - 1])
+    return fill(qsTr("%1 and %2"), [list.slice(0, -1).join(", "), list[list.length - 1]])
 }
 
 // Issue #580: a waiting restore whose apply has started (backup.restoreCancellable
@@ -867,7 +878,7 @@ function csvSizeMessage(result, name) {
     var limit = Number(result.limitBytes) || 0
     if (limit > 32 * 1024 * 1024)
         return qsTr("These files are too large to import together. A CSV and its companion files can be up to %1 in all.").arg(mibText(limit))
-    return name ? qsTr("%1 is too large to import. A CSV file can be up to %2.").arg(name).arg(mibText(limit || 32 * 1024 * 1024))
+    return name ? fill(qsTr("%1 is too large to import. A CSV file can be up to %2."), [name, mibText(limit || 32 * 1024 * 1024)])
                 : qsTr("This file is too large to import. A CSV file can be up to %1.").arg(mibText(limit || 32 * 1024 * 1024))
 }
 
@@ -884,11 +895,11 @@ function replaySpaceMessage(result, name) {
     var size = Number(result.neededBytes) - reserve
     if (Number(result.neededBytes) > 0 && size >= 0) {
         var sized = keptWhole(sizeText(size))
-        return reserve > 0 ? qsTr("There is not enough free space to copy %1 (%2). This device has %3 free, and DSD-neo keeps about %4 spare.").arg(file).arg(sized).arg(free).arg(spare)
-                           : qsTr("There is not enough free space to copy %1 (%2). This device has %3 free.").arg(file).arg(sized).arg(free)
+        return reserve > 0 ? fill(qsTr("There is not enough free space to copy %1 (%2). This device has %3 free, and DSD-neo keeps about %4 spare."), [file, sized, free, spare])
+                           : fill(qsTr("There is not enough free space to copy %1 (%2). This device has %3 free."), [file, sized, free])
     }
-    return reserve > 0 ? qsTr("There is not enough free space to copy %1. This device has %2 free, and DSD-neo keeps about %3 spare.").arg(file).arg(free).arg(spare)
-                       : qsTr("There is not enough free space to copy %1. This device has %2 free.").arg(file).arg(free)
+    return reserve > 0 ? fill(qsTr("There is not enough free space to copy %1. This device has %2 free, and DSD-neo keeps about %3 spare."), [file, free, spare])
+                       : fill(qsTr("There is not enough free space to copy %1. This device has %2 free."), [file, free])
 }
 
 function localCopyMessage(noSpace, name) {
@@ -901,7 +912,7 @@ function localCopyMessage(noSpace, name) {
 // A refused file's reason, said with what failed: the reason alone (a
 // parser's "header must start with …") does not say the file was not taken.
 function formatDetailMessage(detail, name) {
-    return name ? qsTr("Could not import %1: %2").arg(name).arg(detail) : qsTr("Could not import this file: %1").arg(detail)
+    return name ? fill(qsTr("Could not import %1: %2"), [name, detail]) : qsTr("Could not import this file: %1").arg(detail)
 }
 
 function formatMessage(type, name) {
@@ -917,7 +928,7 @@ function formatMessage(type, name) {
         trunkTargets: qsTr("target CSV")
     }
     var kind = kinds[type] || qsTr("CSV file")
-    return name ? qsTr("%1 is not a valid %2.").arg(name).arg(kind) : qsTr("This file is not a valid %1.").arg(kind)
+    return name ? fill(qsTr("%1 is not a valid %2."), [name, kind]) : qsTr("This file is not a valid %1.").arg(kind)
 }
 
 // The storage limit in its choices' words: 0 is no limit.
@@ -932,7 +943,7 @@ function countText(n) {
 
 // "312 MB of 1 GB · 1,204 recordings", or without "of …" under no limit.
 function recordingUsageText(usedBytes, limitMb, count) {
-    var used = limitMb > 0 ? qsTr("%1 of %2").arg(sizeText(usedBytes)).arg(limitText(limitMb)) : sizeText(usedBytes)
+    var used = limitMb > 0 ? fill(qsTr("%1 of %2"), [sizeText(usedBytes), limitText(limitMb)]) : sizeText(usedBytes)
     var counted = count === 1 ? qsTr("1 recording") : qsTr("%1 recordings").arg(countText(count))
     return used + " · " + counted
 }
