@@ -613,8 +613,9 @@ Generated (do not edit/commit):
       analog carrier, and the end-to-end skip through `dsd_engine_test_live_scanner_run()` for -Y and trunk scan, each
       against the setting off).
     - `sync_seq` moves whenever the live loop's frame sync returns a sync (`live_scanner_frame_sync()`, YSF and D-STAR
-      included, which stamp no `last_cc_sync_time_m`) and whenever a monitor block found the carrier itself
-      (`dsd_engine_analog_call_block()`, `qualified_carrier`); `quiet_inv_seq` moves where a check's facts change with
+      included, which stamp no `last_cc_sync_time_m`) and whenever a monitor block found the carrier itself, whatever
+      its tone verdict (`dsd_engine_analog_call_block()`, `found_carrier`: a carrier that ends while its tone check is
+      pending counts); `quiet_inv_seq` moves where a check's facts change with
       no counter of their own (`dsd_engine_scan_quiet_note_change()`): the trunk scan's hold set or released, pause,
       resume, a park put in flight (`tune_pending`), its stop; the -Y release (leave and pause), resume, entry hold set,
       replaced or released, `Y` (through `dsd_engine_channel_scan_entry_cancel()`) and a start's hold let go; a Signal
@@ -6198,7 +6199,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
 - Received-tone detection (issues #522 CTCSS, #523 DCS), public entry points in `include/dsd-neo/dsp/analog_rx.h`:
   `dsd_analog_rx_tap()`, `dsd_analog_rx_tap_partial()`, `dsd_analog_rx_block_restart()`, the per-block tone eligibility
   `dsd_analog_rx_block_begin()` / `dsd_analog_rx_block_eligible_from()` / `dsd_analog_rx_block_qualified_carrier()`
-  (issue #668, below), `dsd_analog_rx_reset()`, `dsd_analog_rx_carrier_open_now()` (the published carrier held to
+  (issue #668, below) / `dsd_analog_rx_block_found_carrier()` (issue #834: a read of the block found the carrier
+  itself, whatever the tone gate made of it), `dsd_analog_rx_reset()`, `dsd_analog_rx_carrier_open_now()` (the published carrier held to
   `dsd_analog_rx_boundaries_current()`: no retune unresolved and the boundaries the tap noted at its last read still
   current, the hard-boundary test the NFM call's block input uses, issue #756), `dsd_analog_rx_carrier_observed_now()`
   (the tap has judged the channel on air, so a closed carrier is a verdict rather than no read yet),
@@ -6247,11 +6249,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   which runs no sink gate, the block itself, or a copy from before its ramp-in when one runs, below; NULL otherwise),
   `count`, `sample_rate`, `eligible_from`, `ramp_end` (how far a ramp-in the block before began ran on into this block:
   the open samples from the first on while the gain carried in stayed under 1, until it reached 1 or the gate closed; 0
-  when the block began at full gain or from silence), `qualified_carrier` and `wall_end_s`
+  when the block began at full gain or from silence), `qualified_carrier`, `found_carrier` (issue #834: any read of the
+  block found the carrier itself, under any tone verdict; activity to a scan quiet check only) and `wall_end_s`
   (`dsd_decode_now_realtime_s()` read before the block's `-6` raw WAV write and sync, only while `-P` records; 0
   otherwise). The engine reads the samples, count, rate and input, `heard`, `ramp_end` (after a block written as heard,
-  below), `qualified_carrier` (a reception begins only on a RECEPTION block that has it, B1) and `wall_end_s` (the
-  recording's start stamp). Tone eligibility inside a block (issue #668, B6): the tap tracks it per block.
+  below), `qualified_carrier` (a reception begins only on a RECEPTION block that has it, B1), `found_carrier` (the scan
+  quiet check's activity, issue #834) and `wall_end_s` (the recording's start stamp). Tone eligibility inside a block (issue #668, B6): the tap tracks it per block.
   `dsd_analog_rx_block_begin()` (from `symbol_analog_block_begin()`) starts the block under the gate in force; every
   read of it then moves the eligible point by the verdict it published, positioned at the read's start (the verdict
   describes that read's samples), so `dsd_analog_rx_block_eligible_from()` is the first sample from which the gate

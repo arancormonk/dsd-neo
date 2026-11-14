@@ -72,8 +72,8 @@ typedef struct {
     dsd_engine_scan_entry_failure entry_failed;
     /* Issue #834. landing_epoch: moved by every landing note and forget (scan_landing.h). tune_generation_before: the
        RTL output generation at the last scan tune request, carried to the landing it notes. sync_seq: moved, only while
-       skip-silent is on, whenever the frame sync returns a sync and whenever the analog carrier opens, so a quiet check
-       sees activity since its visit's tune. tune_sync_seq, tune_decode_m: sync_seq and the decode-mono time at the last
+       skip-silent is on, whenever the frame sync returns a sync and whenever a monitor block finds the analog carrier
+       (whatever its tone verdict), so a quiet check sees activity since its visit's tune. tune_sync_seq, tune_decode_m: sync_seq and the decode-mono time at the last
        scan tune request, carried to the landing it notes (the visit's activity baseline). quiet_inv_seq: moved where a
        quiet check's facts change and no counter of their own says so (a hold, a pause, a resume, a tune in flight, a
        stop, the setting, a config apply, a Signal search start). */

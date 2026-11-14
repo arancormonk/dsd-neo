@@ -2452,6 +2452,7 @@ typedef struct {
     int gate;
     int sample_rate;
     int qualified_carrier;
+    int found_carrier;
     int has_heard;
     float samples[960];
     float heard[960];
@@ -2477,6 +2478,7 @@ capture_call_block(dsd_opts* opts, dsd_state* state, const dsd_analog_call_block
         seen->eligible_from = block->eligible_from;
         seen->ramp_end = block->ramp_end;
         seen->qualified_carrier = block->qualified_carrier;
+        seen->found_carrier = block->found_carrier;
         seen->wall_end_s = block->wall_end_s;
         seen->has_heard = block->heard != NULL;
         const size_t keep = block->count < 960U ? block->count : 960U;
@@ -6485,6 +6487,46 @@ test_qualified_carrier_needs_an_eligible_read_of_the_carrier(void) {
     }
 }
 
+/* found_carrier (issue #834): a read that found the carrier itself marks the block whatever the tone gate made of it,
+   so a carrier heard while the tone check is pending, or one the policy rejects, is activity to a scan quiet check
+   though it never qualifies the block. A block whose reads found no carrier, the hangover after it included, is not
+   marked. */
+static void
+test_found_carrier_under_any_tone_verdict(void) {
+    enum { P = DSD_ANALOG_TONE_GATE_PENDING, A = DSD_ANALOG_TONE_GATE_ALLOWED, R = DSD_ANALOG_TONE_GATE_REJECTED };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    static const double loud[B6_READS] = {3000.0, 3000.0, 3000.0, 3000.0, 3000.0, 3000.0};
+    static const double silent[B6_READS] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+
+    static const struct {
+        const char* what;
+        int gates[B6_READS];
+        const double* amps;
+        int qualified;
+        int found;
+    } cases[] = {
+        {"pending throughout, carrier", {P, P, P, P, P, P}, loud, 0, 1},
+        {"rejected throughout, carrier", {R, R, R, R, R, R}, loud, 0, 1},
+        {"allowed throughout, carrier", {A, A, A, A, A, A}, loud, 1, 1},
+        {"pending throughout, no carrier", {P, P, P, P, P, P}, silent, 0, 0},
+    };
+
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        start_b6_case(&opts, &state);
+        (void)push_gated_block(&opts, &state, cases[c].gates[0], 0.0, 0);
+        (void)push_gated_block(&opts, &state, cases[c].gates[0], 0.0, 0);
+        const call_block_seen* seen = push_scripted_block(&opts, &state, cases[c].gates, cases[c].amps, 0);
+        if (seen->qualified_carrier != cases[c].qualified || seen->found_carrier != cases[c].found) {
+            DSD_FPRINTF(stderr, "FAIL #834: found carrier, %s: qualified %d found %d\n", cases[c].what,
+                        seen->qualified_carrier, seen->found_carrier);
+        }
+        assert(seen->qualified_carrier == cases[c].qualified && seen->found_carrier == cases[c].found);
+        finish_b6_case(&opts, &state);
+    }
+}
+
 /* Flags for one 960-sample block: the gate closed over [@p closed_from, @p closed_to) and over [@p closed2_from, 960),
    open elsewhere. */
 static void
@@ -7081,6 +7123,7 @@ main(void) {
     test_level_path_ramp_runs_on_into_the_next_block();
     test_call_heard_only_where_a_call_can_be();
     test_qualified_carrier_needs_an_eligible_read_of_the_carrier();
+    test_found_carrier_under_any_tone_verdict();
     test_qualified_carrier_ends_open_or_opens_in_its_read();
     test_qualified_carrier_across_the_reads_of_a_block();
     test_qualified_carrier_across_a_dropped_read();

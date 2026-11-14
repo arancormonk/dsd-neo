@@ -70,6 +70,10 @@ typedef struct {
         the receiver's own per-read decision (under a per-sample squelch, open at the read's end or opening inside it),
         never the level of the whole block or the playback gate. */
     int qualified_carrier;
+    /** 1 when some tap read of the block found the carrier itself, whatever the tone gate made of it
+        (dsd_analog_rx_block_found_carrier(), issue #834): activity to a scan quiet check, never audio or recording
+        eligibility, which @c qualified_carrier alone gives. */
+    int found_carrier;
     /** The decode-domain wall time at the block's end (dsd_decode_now_realtime_s()), read before the block's raw WAV
         write; 0 while per-call recording (-P) is off. */
     double wall_end_s;

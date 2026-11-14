@@ -2084,6 +2084,7 @@ symbol_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, unsigned
         .eligible_from = eligible_from,
         .ramp_end = 0U,
         .qualified_carrier = dsd_analog_rx_block_qualified_carrier(opts, state),
+        .found_carrier = dsd_analog_rx_block_found_carrier(state),
         .wall_end_s = wall_end_s,
     };
     if (dsd_squelch_flags_in_force(opts, state)) {
