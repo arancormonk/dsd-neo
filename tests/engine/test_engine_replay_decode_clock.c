@@ -26,7 +26,6 @@
 
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/engine/engine.h>
@@ -163,11 +162,12 @@ check_floor_decisions(dsd_opts* opts, dsd_state* state) {
     }
     check_time("1970 anchor: the SLCO throttle stamp", state->slco_sfrag_last[0], kFloorS + 1);
 
-    // The patch ages on the listening clock: 21 s of control-channel PDUs every 100 ms, read on the decode clock.
-    dsd_p25_patch_listen_note(state, dsd_decode_now_mono_s());
+    // The patch ages on the listening clock: 21 s of CRC-good control-channel blocks every 100 ms, read on the decode
+    // clock.
+    p25_sm_note_validated_cc(opts, state);
     for (uint64_t tenth = 11U; tenth <= 220U; tenth++) {
         dsd_decode_clock_set_media_ns(tenth * (NS_PER_S / 10U));
-        dsd_p25_patch_listen_note(state, dsd_decode_now_mono_s());
+        p25_sm_note_validated_cc(opts, state);
     }
     check("1970 anchor: the first-second patch has expired 21 s on", !p25_patch_tg_key_is_clear(state, wgid));
 }

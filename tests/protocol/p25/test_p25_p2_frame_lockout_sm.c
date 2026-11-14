@@ -11,7 +11,6 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -303,10 +302,10 @@ run_regroup_clear_key_burst_at(uint64_t age_s, dsd_p25_crypto_state* crypto, int
     p25_patch_update(&state, 1234, /*is_patch*/ 1, /*active*/ 1);
     p25_patch_set_kas(&state, 1234, /*key*/ 0, /*alg*/ 0x84, /*ssn*/ 1);
 
-    dsd_p25_patch_listen_note(&state, dsd_decode_now_mono_s());
+    p25_sm_note_validated_cc(&opts, &state);
     for (uint64_t tenth = 1U; tenth <= age_s * 10U; tenth++) {
         dsd_decode_clock_test_set_ns(k_t0_ns + (tenth * 100000000ULL));
-        dsd_p25_patch_listen_note(&state, dsd_decode_now_mono_s());
+        p25_sm_note_validated_cc(&opts, &state); // a CRC-good control-channel block
     }
     if (!seed_call(&state, 0U, DSD_CALL_KIND_GROUP_VOICE, 1234)) {
         dsd_decode_clock_use_system();

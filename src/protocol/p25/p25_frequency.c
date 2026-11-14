@@ -15,6 +15,7 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
@@ -484,6 +485,8 @@ p25_update_system_identity(dsd_state* state, unsigned long long wacn, unsigned l
     if (state->p2_wacn == wacn && state->p2_sysid == sysid) {
         return 1;
     }
+    /* Patches are another system's too: a table owned by another system goes (dsd_p25_patch_note_system()). */
+    (void)dsd_p25_patch_note_system(state, (uint32_t)wacn, (uint16_t)sysid);
     const int was_known = state->p2_wacn != 0 || state->p2_sysid != 0;
     if (was_known) {
         p25_reset_iden_tables(state);

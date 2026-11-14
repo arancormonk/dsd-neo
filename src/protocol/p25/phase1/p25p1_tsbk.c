@@ -14,6 +14,7 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25.h>
@@ -1024,6 +1025,8 @@ tsbk_handle_network_status(const dsd_opts* opts, dsd_state* state, const uint8_t
         p25_wacn_sysid_to_callsign((uint32_t)wacn, (uint16_t)sysid, callsign);
         DSD_FPRINTF(stderr, " [%s]", callsign);
     }
+    /* The checked broadcast names the system the patch table belongs to, whatever the seed or the tuning gate below. */
+    (void)dsd_p25_patch_note_system(state, (uint32_t)wacn, (uint16_t)sysid);
     long int cc_freq = process_channel_to_freq(opts, state, channel);
     int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, cc_freq);
     const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);

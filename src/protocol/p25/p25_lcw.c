@@ -19,6 +19,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
@@ -364,6 +365,8 @@ p25_lcw_update_primary_control_channel(p25_lcw_ctx* ctx, uint32_t wacn, uint16_t
         return;
     }
 
+    /* The network status names the system the patch table belongs to, whatever the seed or the tuning gate below. */
+    (void)dsd_p25_patch_note_system(ctx->state, wacn, sysid);
     long int cc_freq = process_channel_to_freq(ctx->opts, ctx->state, channel);
     int accepted_cc = p25_cc_update_primary_from_network_status(ctx->opts, ctx->state, cc_freq);
     const int metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(ctx->opts);

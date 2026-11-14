@@ -156,6 +156,58 @@ classify_current_call_without_key(dsd_opts* opts, dsd_state* state, int target) 
     return p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE1, 0, 0x84, 0x2714, 0x0123456789ABCDEFULL, target);
 }
 
+/* @p count CRC-good control-channel blocks 100 ms apart on the TEST decode clock, from *now_ns on. */
+static void
+hear_cc_for(dsd_opts* opts, dsd_state* st, uint64_t* now_ns, int count) {
+    for (int i = 0; i < count; i++) {
+        *now_ns += 100000000ULL;
+        dsd_decode_clock_test_set_ns(*now_ns);
+        p25_sm_note_validated_cc(opts, st);
+    }
+}
+
+/* A member Hold (WG 1401) on a patch (SG 1400) whose Add was heard 2 s before the receiver left the control channel:
+   after @p away_s away (a voice-channel dwell: no control-channel PDU) and @p cc_after_s of control channel without
+   another Add, the SG's grant tunes while the members are current on the listening clock (20 s of hearing the control
+   channel since the Add), and is judged on the SG alone once they are not. */
+static int
+patch_member_hold_after(uint64_t away_s, int cc_after_tenths, int want_tuned, const char* tag) {
+    static dsd_opts opts;
+    static dsd_state st;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
+    opts.trunk_enable = 1;
+    opts.trunk_tune_group_calls = 1;
+    opts.trunk_tune_enc_calls = 1;
+    st.p25_cc_freq = 851000000;
+    seed_fdma_iden(&st, 1);
+    uint64_t now_ns = 4000000000000ULL;
+    dsd_decode_clock_use_test(now_ns);
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &st);
+    hear_cc_for(&opts, &st, &now_ns, 10);
+    p25_patch_add_wgid(&st, 1400, 1401);
+    hear_cc_for(&opts, &st, &now_ns, 20);
+    now_ns += away_s * 1000000000ULL;
+    hear_cc_for(&opts, &st, &now_ns, cc_after_tenths);
+    mark_cc_reacquired(&st);
+    st.tg_hold = 1401;
+    const unsigned before = st.p25_sm_tune_count;
+    opts.trunk_is_tuned = 0;
+    p25_sm_event(p25_sm_get_ctx(), &opts, &st,
+                 &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
+                                   .slot = -1,
+                                   .channel = (1 << 12) | 0x000A,
+                                   .tg = 1400,
+                                   .src = 2400,
+                                   .svc_bits = 0x00,
+                                   .is_group = 1});
+    const int tuned = st.p25_sm_tune_count == before + 1;
+    p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
+    dsd_state_ext_free_all(&st);
+    dsd_decode_clock_use_system();
+    return expect_true(tag, tuned == want_tuned);
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1220,6 +1272,11 @@ main(void) {
     (void)dsd_test_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
     (void)dsd_test_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
 
+    // The core regression for the grant path: a 60 s voice-channel dwell does not age the members.
+    rc |= patch_member_hold_after(60U, 10, 1, "patch member hold survives a 60 s voice-channel dwell");
+    // Preservation of the TTL: 21 s of control channel without an Add lets the members expire.
+    rc |= patch_member_hold_after(0U, 190, 0, "patch member hold expires after 21 s of control channel without an Add");
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &st);
     dsd_state_ext_free_all(&st);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;

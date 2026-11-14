@@ -1114,6 +1114,43 @@ test_sacch_dispatch_and_lcch_crc_abort(void) {
     return rc;
 }
 
+/* The patch table's listening clock counts the control channel only: an LCCH whose CRC-16 passed advances it (its
+   reading is stored), a voice channel's SACCH never does, CRC-good or not, and neither does an LCCH whose CRC failed
+   that -F let through. */
+static int
+test_only_validated_lcch_listens(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int mac[24];
+    int payload[180];
+    int rc = 0;
+
+    reset_stubs();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.aggressive_framesync = 1;
+    fill_mac(mac, 0x80, 0x2222, 0x030405, 0x3456);
+    pack_payload_from_mac(payload, 180, mac, 0x1, 0x1, 0x3);
+    process_SACCH_MAC_PDU(&opts, &state, payload);
+    rc |= expect_int("crc-good sacch is no control-channel listening", state.p25_patch_listen_last_m > 0.0 ? 1 : 0, 0);
+
+    reset_stubs();
+    state.p2_is_lcch = 1;
+    opts.aggressive_framesync = 0;
+    g_crc16_result = 1;
+    mac[1] = 0x55;
+    pack_payload_from_mac(payload, 180, mac, 0x0, 0, 0);
+    process_SACCH_MAC_PDU(&opts, &state, payload);
+    rc |= expect_int("-F lcch with a failed crc is no listening", state.p25_patch_listen_last_m > 0.0 ? 1 : 0, 0);
+
+    reset_stubs();
+    state.p2_is_lcch = 1;
+    process_SACCH_MAC_PDU(&opts, &state, payload);
+    rc |= expect_int("validated lcch is control-channel listening", state.p25_patch_listen_last_m > 0.0 ? 1 : 0, 1);
+    opts.aggressive_framesync = 1;
+    return rc;
+}
+
 static int
 test_rejected_voice_events_keep_media_closed(void) {
     static dsd_opts opts;
@@ -1799,6 +1836,7 @@ main(void) {
     rc |= test_ptt_signature_transport_equivalence_and_repeat_processing();
     rc |= test_sacch_dispatch_and_lcch_crc_abort();
     rc |= test_rejected_voice_events_keep_media_closed();
+    rc |= test_only_validated_lcch_listens();
     rc |= test_sacch_end_idle_active_hangtime_dispatch();
     rc |= test_facch_active_end_hangtime_and_invalid_slot_guards();
     rc |= test_encrypted_voice_user_stays_locked_through_mac_active();

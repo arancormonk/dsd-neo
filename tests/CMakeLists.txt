@@ -3011,6 +3011,8 @@ add_executable(
     test_support/scan_group_stubs.c
     ui/test_ui_menu_services.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_frequency.c
+    # p25_update_system_identity() hands a system change to the patch table's owner rule.
+    ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_p25_bandplan.c
     ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
     ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
@@ -7445,6 +7447,8 @@ add_executable(
     dsd-neo_test_core_p25_bandplan_seed
     core/test_core_p25_bandplan_seed.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_frequency.c
+    # p25_update_system_identity() hands a system change to the patch table's owner rule.
+    ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_p25_bandplan.c
 )
 target_include_directories(
@@ -10783,6 +10787,8 @@ add_test(NAME P25_MBT_DECODE COMMAND dsd-neo_test_p25_mbt_decode)
 add_executable(
     dsd-neo_test_p25_p1_tsbk_handlers
     protocol/p25/test_p25_p1_tsbk_handlers.c
+    # The network status names the patch table's owner; a validated control block advances its listening clock.
+    ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_response_reason.c
 )
@@ -11353,6 +11359,8 @@ add_test(
 add_executable(
     dsd-neo_test_p25_p2_xcch_helpers
     protocol/p25/test_p25_p2_xcch_helpers.c
+    # An LCCH whose CRC passed advances the patch table's listening clock.
+    ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
     test_support/call_state_stubs.c
 )
 target_include_directories(
@@ -15331,6 +15339,8 @@ add_test(NAME P25_INDIV_GATING COMMAND dsd-neo_test_p25_indiv_gating)
 add_executable(
     dsd-neo_test_p25_p1_pdu_private_allowlist
     protocol/p25/test_p25_p1_pdu_private_allowlist.c
+    # The network status names the patch table's owner; a validated control block advances its listening clock.
+    ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_pdu_trunking.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c

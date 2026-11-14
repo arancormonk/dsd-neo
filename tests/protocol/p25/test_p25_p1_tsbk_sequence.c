@@ -23,6 +23,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -756,6 +757,116 @@ test_mfid90_regroup_tsbk(void) {
     return rc;
 }
 
+/* One standard Network Status Broadcast TSBK naming @p wacn / @p sysid (last block, CRC sealed), read through
+   processTSBK() on @p state as it stands. */
+static int
+run_network_status_tsbk(dsd_opts* opts, dsd_state* state, uint32_t wacn, uint16_t sysid) {
+    uint8_t bytes[12] = {0};
+    bytes[0] = 0xBB; // last block, opcode 0x3B
+    bytes[2] = 0x00; // LRA
+    bytes[3] = (uint8_t)((wacn >> 12) & 0xFFU);
+    bytes[4] = (uint8_t)((wacn >> 4) & 0xFFU);
+    bytes[5] = (uint8_t)(((wacn & 0xFU) << 4) | ((sysid >> 8) & 0xFU));
+    bytes[6] = (uint8_t)(sysid & 0xFFU);
+    bytes[7] = 0x00; // channel 0x0001
+    bytes[8] = 0x01;
+    if (!seal_tsbk_crc(bytes)) {
+        return 0;
+    }
+    uint8_t dibits[98];
+    encode_tsbk_dibits(bytes, dibits);
+    build_stream_of(dibits);
+    reset_decode_counters();
+    g_channel_freq = 0;
+    return processTSBK(opts, state);
+}
+
+static int
+expect_near(const char* tag, double got, double want) {
+    if (fabs(got - want) > 1e-6) {
+        DSD_FPRINTF(stderr, "%s: got %.9f want %.9f\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+/* A CRC-good TSBK is control-channel listening: each one advances the patch listening clock by its gap on the decode
+   clock; a block whose CRC failed notes nothing. */
+static int
+test_cc_tsbk_advances_listening(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint64_t k_t0_ns = 5000000000ULL;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    int rc = 0;
+    for (int i = 0; i < 3; i++) {
+        dsd_decode_clock_test_set_ns(k_t0_ns + ((uint64_t)i * 100000000ULL));
+        rc |=
+            expect_eq_int("listening tsbk passes its crc", run_network_status_tsbk(&opts, &state, 0xA1001U, 0x101U), 1);
+    }
+    rc |= expect_near("three tsbks 100 ms apart listen 0.2 s", state.p25_patch_listen_s, 0.2);
+    rc |= expect_near("the last tsbk is the previous reading", state.p25_patch_listen_last_m, 5.2);
+
+    // The same block with its CRC broken is no control-channel PDU.
+    dsd_decode_clock_test_set_ns(k_t0_ns + 300000000ULL);
+    build_network_status_stream();
+    for (int i = 20; i < 80; i++) {
+        g_stream[i] = (uint8_t)(3 - g_stream[i]);
+    }
+    reset_decode_counters();
+    rc |= expect_eq_int("broken tsbk fails its crc", processTSBK(&opts, &state), 0);
+    rc |= expect_near("a failed tsbk adds nothing", state.p25_patch_listen_s, 0.2);
+    rc |= expect_near("a failed tsbk is no reading", state.p25_patch_listen_last_m, 5.2);
+    dsd_decode_clock_test_set_ns(1000000000ULL);
+    return rc;
+}
+
+/* The patch table belongs to the system whose network status names it: an unknown owner adopts the first one and
+   keeps the table, the same system keeps it, another system empties it. Whatever the descrambler seed: a hand-set one
+   (p2_hardset), which keeps the network status from changing the decoder's WACN/SYSID, does not keep another system's
+   patches. */
+static int
+test_network_status_owns_patches(int hardset) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    if (hardset) {
+        state.p2_hardset = 1;
+        state.p2_wacn = 0xC3003ULL;
+        state.p2_sysid = 0x103ULL;
+        state.p2_cc = 0x293ULL;
+    }
+    p25_patch_add_wgid(&state, 1400, 1401);
+    int rc = 0;
+    const char* tag = hardset ? "hand-set seed" : "learned seed";
+    if (run_network_status_tsbk(&opts, &state, 0xA1001U, 0x101U) != 1) {
+        DSD_FPRINTF(stderr, "%s: system A tsbk failed its crc\n", tag);
+        return 1;
+    }
+    rc |= expect_eq_int("first system becomes the owner",
+                        state.p25_patch_owner_known == 1 && state.p25_patch_owner_wacn == 0xA1001U
+                            && state.p25_patch_owner_sysid == 0x101U,
+                        1);
+    rc |= expect_eq_int("first system keeps the table", tsbk_patch_idx(&state, 1400) >= 0, 1);
+    (void)run_network_status_tsbk(&opts, &state, 0xA1001U, 0x101U);
+    rc |= expect_eq_int("same system keeps the table", tsbk_patch_idx(&state, 1400) >= 0, 1);
+    rc |= expect_eq_int("same system keeps the members", state.p25_patch_wgid_count[0], 1);
+    (void)run_network_status_tsbk(&opts, &state, 0xA1001U, 0x102U);
+    rc |= expect_eq_int("another system empties the table", state.p25_patch_count, 0);
+    rc |= expect_eq_int("another system leaves no patch", tsbk_patch_idx(&state, 1400), -1);
+    rc |= expect_eq_int("another system becomes the owner",
+                        state.p25_patch_owner_known == 1 && state.p25_patch_owner_sysid == 0x102U, 1);
+    if (hardset) {
+        rc |= expect_eq_int("the hand-set seed stays", (int)state.p2_sysid, 0x103);
+    }
+    if (rc) {
+        DSD_FPRINTF(stderr, "  (%s)\n", tag);
+    }
+    return rc;
+}
+
 int
 main(void) {
     dsd_decode_clock_use_test(1000000000ULL);
@@ -957,6 +1068,9 @@ main(void) {
     rc |= test_mfid90_regroup_tsbk();
     rc |= test_failed_block_trailing_nulls();
     rc |= test_network_status_code();
+    rc |= test_cc_tsbk_advances_listening();
+    rc |= test_network_status_owns_patches(0);
+    rc |= test_network_status_owns_patches(1);
     dsd_signal_search_site_set(NULL);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_decode_clock_use_system();

@@ -20,6 +20,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -3843,6 +3844,9 @@ p25p2_vpdu_iter_block_47(p25p2_vpdu_ctx* ctx) {
                     lcolorcode, channel);
         long int cc_freq = process_channel_to_freq(opts, state, channel);
         if (p25p2_vpdu_system_tables_writable(ctx)) {
+            /* The checked broadcast names the system the patch table belongs to, whatever the seed or the tuning gate
+               below. */
+            (void)dsd_p25_patch_note_system(state, (uint32_t)lwacn, (uint16_t)lsysid);
             p25p2_vpdu_note_nsb_system_tdma(state);
             int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, cc_freq);
             const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);
@@ -3905,6 +3909,9 @@ p25p2_vpdu_iter_block_48(p25p2_vpdu_ctx* ctx) {
         long int nf1 = process_channel_to_freq(opts, state, channelt);
         (void)process_channel_to_freq(opts, state, channelr);
         if (p25p2_vpdu_system_tables_writable(ctx)) {
+            /* The checked broadcast names the system the patch table belongs to, whatever the seed or the tuning gate
+               below. */
+            (void)dsd_p25_patch_note_system(state, (uint32_t)lwacn, (uint16_t)lsysid);
             p25p2_vpdu_note_nsb_system_tdma(state);
             int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, nf1);
             const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);

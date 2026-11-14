@@ -379,11 +379,11 @@ void p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_stat
 /**
  * @brief Note a validated P25 control block at its decode boundary (issue #703).
  *
- * Records control-channel activity (p25_sm_note_cc_activity(): the P25 owner and the decode stamps) and, with
- * trunking on, establishes the control channel from the tuner that carried the block when none is known yet
- * (p25_sm_seed_cc_from_current_tuner_if_unknown()). Running here rather than in a later tick keeps a retune queued
- * behind the block from lending its frequency to this evidence. Call it only for a TSBK, MBT or LCCH MAC whose CRC
- * passed.
+ * Records control-channel activity (p25_sm_note_cc_activity(): the P25 owner, the decode stamps and the patch table's
+ * listening clock) and, with trunking on, establishes the control channel from the tuner that carried the block when
+ * none is known yet (p25_sm_seed_cc_from_current_tuner_if_unknown()). Running here rather than in a later tick keeps a
+ * retune queued behind the block from lending its frequency to this evidence. Call it only for a TSBK, MBT or LCCH MAC
+ * whose CRC passed: never for a voice channel's signalling, which would advance the listening clock.
  *
  * @param opts Decoder options.
  * @param state Decoder state.
