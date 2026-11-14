@@ -601,7 +601,8 @@ Notes
   talked long enough before in this run for its level to settle, at the gain that radio's speech settled at (a P25
   Phase 1 radio ID arrives about 0.2 s into a transmission, and its remembered gain eases in there over 20 ms).
   Within the talker's first voiced frames the gain goes most of the way to the talker's level, and until 20 voiced
-  frames are in no frame plays louder than -12 dBFS: a louder one brings the gain down at once. The gain moves only on
+  frames are in no frame plays louder than -12 dBFS: a louder one brings the gain down at once. That cut is let go
+  again 200 ms after the last loud frame, so a pop or a bump does not hold the gain down. The gain moves only on
   decoded speech, never on encrypted audio it cannot decrypt, silence, noise or tones, holds through pauses, stays
   within 12 dB below and 30 dB above its start level (4 dB over `-g 1`, the middle of its range), and never lets a
   peak past -1 dBFS. Tone frames (DTMF and other call tones) play no louder than that start level. A new transmission,
@@ -657,11 +658,13 @@ Notes
     about -17 dBFS. Steady noise, a tone or a step out of silence does not count as a burst. A digital transmission
     with less than 120 ms of voiced speech in a row and no such bursts plays at its opening gain.
   - The digital opening. A talker heard for the first time opens at +8 dB. A loud one plays up to about 7 dB loud
-    until his first loud frame brings the gain down, 20-40 ms, with peaks held at -1 dBFS. A transmission that starts
-    with a second or so of near-silence holds its opening gain through it, so the same happens when the talker starts.
-    The burst rule cannot tell a far-field talker from sounds before the speech (a breath, a bump, a keyboard): it
-    lifts those toward -17 dBFS too, and the first one or two frames of the speech then play loud before the gain
-    comes down.
+    until the talker's first loud frame brings the gain down, 20-40 ms, with peaks held at -1 dBFS. A transmission
+    that starts with a second or so of near-silence holds its opening gain through it, so the same happens when the
+    talker starts. The burst rule cannot tell a far-field talker from sounds before the speech (a breath, a bump, a
+    keyboard): it lifts those toward -17 dBFS too, and the first one or two frames of the speech then play loud before
+    the gain comes down. Until the first voiced frames, a cut goes back up to the opening gain, 1 dB a frame, once
+    200 ms of quieter sound has followed the loud frame (silence does not count): a loud sound that never forms a
+    voiced run and pauses that long plays loud again for a frame at its next onset.
   - The digital memory. A remembered gain belongs to a radio ID within a protocol family, not to a person. A console
     several people share, or a radio in another hand, opens at the last talker's level, and two systems that use the
     same ID number in one run share it; the first voiced frames correct it. It is not saved between runs.
@@ -670,10 +673,11 @@ Notes
   - Tones. A sound that holds one pitch and level for 240 ms or more is taken for a tone and teaches nothing, a long,
     perfectly steady vowel included. At the start of a transmission a tone the decoder does not mark as one can move
     the gain before it is turned away: on analog (any analog tone) by up to about 14 dB over its first 0.24 s; on
-    digital voice (a P25 tone), whose first steps go most of the way at once, until it plays near the speech level,
-    though never over -12 dBFS. Tones shorter than 240 ms (analog DTMF digits) and P25 Phase 1 DTMF, which the P25
-    vocoder does not mark as a tone, are taken for speech (twelve DTMF digits moved the gain 0.6 dB), and a long
-    sliding tone (a siren) plays about 4 dB loud. A voice whose pitch sits right at 67 Hz is partly missed.
+    digital voice (a P25 tone), whose first steps go most of the way at once, it comes to about -16 to -20 dBFS within
+    its first quarter second (a -45 dBFS tone is lifted from +8 to +25 dB), where the 2 dB steps lifted it by 12 dB at
+    most. Tones shorter than 240 ms (analog DTMF digits) and P25 Phase 1 DTMF, which the P25 vocoder does not mark as a
+    tone, are taken for speech (twelve DTMF digits moved the gain 0.6 dB), and a long sliding tone (a siren) plays
+    about 4 dB loud. A voice whose pitch sits right at 67 Hz is partly missed.
   - The -1 dBFS ceiling holds per sample before the output's rate conversion: 8 kHz voice converted for a 48 kHz
     output can peak up to about 0.3 dB over it.
   - Muting, the output switches and recording never change what the gain learns, but frames that a talkgroup or

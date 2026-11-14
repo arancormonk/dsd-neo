@@ -6943,7 +6943,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   leaves it off and keeps its 2 dB steps bit for bit. Until the estimate is established (20 committed frames) it changes
   three things: a step aims at P + (W - P) n^2 / (n^2 + 24) (P the gain the reception's first step found, W the
   settled aim clamp(T - S), n the committed frames), straight there for the first 20 steps; a frame that would play
-  over -12 dBFS takes the gain at once to where it plays at -12 dBFS, and no startup aim plays the loudest frame louder
+  over -12 dBFS takes the gain at once to where it plays at -12 dBFS, and no startup aim plays the held peak louder
   (the loud-frame guard); and once a burst has completed (three frames within 6 dB of the reception's third loudest
   frame at or over -70 dBFS, then one 12 dB under it) the gain rises 1 dB a frame until that frame plays at -17 dBFS,
   never past the guard's limit, and startup aims stay over that floor (the burst fallback, for far-field talkers whose
@@ -6970,7 +6970,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   pitch edges, noise, attenuator, tone cap, decodability, rollback against a control, partitions, cross-rate, ceiling,
   reset, non-finite, fixed mode, the limiter, the veto on de-emphasised hiss; `open_at` and the settled gain; the
   acquisition stage's law bit for bit on every frame, its startup, guard, held peak, return to the opening gain and
-  burst fallback, and the stage off against today's law), `DSP_SPEECH_AGC_LONG` (the floor after 60-120 s of hiss, with and without the veto); the
+  burst fallback, and the stage off against the unchanged law), `DSP_SPEECH_AGC_LONG` (the floor after 60-120 s of
+  hiss, with and without the veto); the
   `dsd-neo_bench_speech_agc` micro-benchmark (with an acquisition case at 8 kHz). End to end,
   `DECODE_MBE_SPEECH_LEVEL` and `DECODE_IQ_SPEECH_PARITY` hold one synthetic talker's established speech within 3 dB of
   -20 dBFS from IMBE, AMBE+2 and AMBE 2400 files (`-r`) and from narrowband FM, wideband FM and AM fixtures, all within
