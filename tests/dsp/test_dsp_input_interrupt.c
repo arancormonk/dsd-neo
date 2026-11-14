@@ -442,7 +442,7 @@ test_idle_nfm_radio_yields_without_shutdown(void) {
     state->samplesPerSymbol = 1;
     state->rtl_ctx = (void*)&g_rtl_read_result; /* Opaque to the fake. */
     const dsd_rtl_stream_io_hooks hooks = {.read_ex = fake_idle_rtl_read};
-    dsd_rtl_stream_io_hooks_set(hooks);
+    dsd_rtl_stream_io_hooks_set(&hooks);
     exitflag = 0;
     g_cleanup_calls = 0;
     g_rtl_read_result = 0;
@@ -453,7 +453,7 @@ test_idle_nfm_radio_yields_without_shutdown(void) {
     g_rtl_read_result = -1;
     (void)getSymbol(opts, state, 0);
     assert(g_cleanup_calls == 1); /* A stopped stream still stops the decoder. */
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_io_hooks_set(NULL);
     free(state);
     free(opts);
 }

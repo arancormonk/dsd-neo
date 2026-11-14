@@ -14,8 +14,8 @@
 static dsd_rtl_stream_io_hooks g_rtl_stream_io_hooks = {0};
 
 void
-dsd_rtl_stream_io_hooks_set(dsd_rtl_stream_io_hooks hooks) {
-    g_rtl_stream_io_hooks = hooks;
+dsd_rtl_stream_io_hooks_set(const dsd_rtl_stream_io_hooks* hooks) {
+    g_rtl_stream_io_hooks = hooks ? *hooks : (dsd_rtl_stream_io_hooks){0};
 }
 
 int

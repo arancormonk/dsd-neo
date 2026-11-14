@@ -268,7 +268,7 @@ test_rtl_stream_io_installer(void) {
     int got = 0;
 
     state.rtl_ctx = fake_ctx;
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_io_hooks_set(NULL);
     dsd_engine_rtl_stream_io_hooks_install();
 
     reset_rtl_stub();
@@ -328,7 +328,7 @@ test_rtl_stream_io_installer(void) {
            && state.squelch_noise_quieting_cdb == 2346);
 
     /* A host that installs read alone: read_ex reads through it, every flag open. */
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){.read = rtl_stream_io_test_read});
+    dsd_rtl_stream_io_hooks_set(&(dsd_rtl_stream_io_hooks){.read = rtl_stream_io_test_read});
     assert(dsd_rtl_stream_io_hook_squelch_status(&state, &status) == -1 && status.active == 0);
     dsd_squelch_publish_status(NULL, &state);
     assert(state.squelch_auto_active == 0U && state.squelch_auto_floor_cdb == 0);
@@ -355,10 +355,10 @@ test_rtl_stream_io_installer(void) {
     assert(g_voice_lane_set == -1);
     /* Without read_lanes the stream carries no lane; with it and no say from the stream, it does. */
     assert(dsd_rtl_stream_io_hook_voice_lane_available() == 0);
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){.read_lanes = rtl_stream_io_test_read_lanes});
+    dsd_rtl_stream_io_hooks_set(&(dsd_rtl_stream_io_hooks){.read_lanes = rtl_stream_io_test_read_lanes});
     assert(dsd_rtl_stream_io_hook_voice_lane_available() == 1);
 
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_io_hooks_set(NULL);
 }
 
 int

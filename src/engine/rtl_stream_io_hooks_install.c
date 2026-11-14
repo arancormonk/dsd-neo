@@ -73,5 +73,5 @@ dsd_engine_rtl_stream_io_hooks_install(void) {
     hooks.set_voice_lane = rtl_stream_set_voice_lane;
     hooks.voice_lane_available = rtl_stream_voice_lane_available;
 #endif
-    dsd_rtl_stream_io_hooks_set(hooks);
+    dsd_rtl_stream_io_hooks_set(&hooks);
 }

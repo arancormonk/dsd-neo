@@ -351,7 +351,7 @@ test_paths_off_the_analog_family(void) {
     opts.audio_in_type = AUDIO_IN_RTL;
     opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
     state.rtl_ctx = (struct RtlSdrContext*)&token;
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){.squelch_status = fake_stream_status});
+    dsd_rtl_stream_io_hooks_set(&(dsd_rtl_stream_io_hooks){.squelch_status = fake_stream_status});
     assert(dsd_squelch_stream_gate_running(&opts, &state));
     g_stream_status_plan = 0;
     assert(!dsd_squelch_stream_gate_running(&opts, &state));
@@ -368,7 +368,7 @@ test_paths_off_the_analog_family(void) {
     opts.audio_in_type = AUDIO_IN_UDP;
     assert(!dsd_squelch_stream_gate_running(&opts, &state));
     assert(!dsd_squelch_stream_gate_running(NULL, &state) && !dsd_squelch_stream_gate_running(&opts, NULL));
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_io_hooks_set(NULL);
 }
 
 /* NOISE on audio input (issue #628): it gates per sample on the FM monitor while the PCM noise squelch is available

@@ -182,7 +182,7 @@ run_p25_sync_case(const char* pattern, int frame_p25p1, int frame_p25p2, int exp
     state.min = -3.0f;
     state.max = 3.0f;
 
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+    dsd_rtl_stream_io_hooks_set(&(dsd_rtl_stream_io_hooks){
         .read = fake_rtl_read,
         .return_pwr = fake_rtl_pwr,
     });
@@ -216,7 +216,7 @@ run_p25_sync_case(const char* pattern, int frame_p25p1, int frame_p25p2, int exp
         DSD_FPRINTF(stderr, "%s scanner center %.3f, expected %.3f\n", label, scanner_center, expected_center);
         rc = 1;
     }
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_io_hooks_set(NULL);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     free_state_buffers(&state);

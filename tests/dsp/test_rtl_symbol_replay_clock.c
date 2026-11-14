@@ -188,7 +188,7 @@ static int g_fake_rtl_context = 0;
 
 static void
 install_fake_replay(void) {
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){.read = fake_rtl_read, .return_pwr = fake_rtl_pwr});
+    dsd_rtl_stream_io_hooks_set(&(dsd_rtl_stream_io_hooks){.read = fake_rtl_read, .return_pwr = fake_rtl_pwr});
     static const dsd_rtl_stream_metrics_hooks hooks = {
         .output_rate_hz = fake_output_rate_hz,
         .output_kind = fake_output_kind,
@@ -432,7 +432,7 @@ main(void) {
     test_live_fill_after_a_replay_fill_drops_its_centre(&opts, &state);
 
     dsd_decode_clock_use_system();
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_io_hooks_set(NULL);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     dsd_state_ext_free_all(&state);

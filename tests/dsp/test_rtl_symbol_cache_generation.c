@@ -1383,7 +1383,7 @@ main(void) {
     state.rf_mod = 1;
     state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
 
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+    dsd_rtl_stream_io_hooks_set(&(dsd_rtl_stream_io_hooks){
         .read = fake_rtl_read,
         .return_pwr = fake_rtl_pwr,
     });
@@ -1760,7 +1760,7 @@ main(void) {
     test_rtl_raw_wav_level(&opts, &state, &fake_rtl_context);
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
 
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_io_hooks_set(NULL);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     dsd_state_ext_free_all(&state);

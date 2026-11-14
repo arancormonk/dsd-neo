@@ -650,7 +650,7 @@ def serve(args):
                 json.dump(record, handle)
             os.replace(os.path.join(out_dir, "run.json.tmp"), os.path.join(out_dir, "run.json"))
     except KeyboardInterrupt:
-        pass
+        pass  # Ctrl-C ends the run early; run.json already holds the last second, and the scene still closes
     finally:
         scene.close()
 

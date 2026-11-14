@@ -268,7 +268,7 @@ start(dsd_opts* opts, dsd_state* state) {
     dsd_rtl_stream_io_hooks io = {};
     io.read = fake_rtl_read;
     io.return_pwr = fake_rtl_pwr;
-    dsd_rtl_stream_io_hooks_set(io);
+    dsd_rtl_stream_io_hooks_set(&io);
     dsd_rtl_stream_metrics_hooks metrics = {};
     metrics.output_kind = fake_output_kind;
     metrics.symbol_profile = fake_symbol_profile;
@@ -293,7 +293,7 @@ run(dsd_opts* opts, dsd_state* state, size_t tail) {
 
 static void
 stop(dsd_state* state) {
-    dsd_rtl_stream_io_hooks_set(dsd_rtl_stream_io_hooks{});
+    dsd_rtl_stream_io_hooks_set(nullptr);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     free_state_buffers(state);

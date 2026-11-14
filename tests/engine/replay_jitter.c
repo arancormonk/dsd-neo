@@ -389,7 +389,7 @@ replay_start(dsd_opts* opts, dsd_state* state, void* context) {
     io.read = replay_perturbed_read;
     io.read_ex = replay_perturbed_read_ex;
     io.return_pwr = replay_return_pwr;
-    dsd_rtl_stream_io_hooks_set(io);
+    dsd_rtl_stream_io_hooks_set(&io);
     return 0;
 }
 

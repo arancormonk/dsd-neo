@@ -17,6 +17,7 @@
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/runtime/config.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
@@ -737,13 +738,16 @@ test_warm_start_from_dibits_refuses(void) {
               dsd_sync_warm_start_thresholds_from_dibits(&opts, &state, NXDN_FSW_DIBITS, 10));
 
     /* A NaN or an infinity among the symbols (a float symbol replay passes what the file holds) fits nothing, and the
-       thresholds stay as they were. */
-    const float bad_values[2] = {NAN, INFINITY};
+       thresholds stay as they were. The values come from their bit patterns: a NAN or INFINITY literal is a build
+       error under Clang's fast-math (-Wnan-infinity-disabled), and the bits reach the fast-math guard unchanged. */
+    static const uint32_t bad_bits[2] = {0x7FC00000u /* NaN */, 0x7F800000u /* +Inf */};
     for (int b = 0; b < 2; b++) {
         DSD_MEMSET(&state, 0, sizeof(state));
         attach_history_fixture(&state, history, 64);
         push_word_levels(&state, NXDN_FSW_DIBITS, 1000.0f, 0.0f);
-        history[(state.symbol_history_head + 63) % 64] = bad_values[b]; /* the word's last symbol */
+        float bad_value = 0.0f;
+        DSD_MEMCPY(&bad_value, &bad_bits[b], sizeof(bad_value));
+        history[(state.symbol_history_head + 63) % 64] = bad_value; /* the word's last symbol */
         state.max = 7.0f;
         state.min = -7.0f;
         check_int(b == 0 ? "NaN symbol" : "infinite symbol", DSD_WARM_START_DEGENERATE,

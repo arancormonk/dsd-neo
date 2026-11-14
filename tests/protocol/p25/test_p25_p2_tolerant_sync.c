@@ -256,7 +256,7 @@ start(dsd_opts* opts, dsd_state* state) {
     state->p2_wacn = TEST_CODE >> 24;
     state->p2_sysid = (TEST_CODE >> 12) & 0xFFFU;
     state->p2_cc = TEST_CODE & 0xFFFU;
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+    dsd_rtl_stream_io_hooks_set(&(dsd_rtl_stream_io_hooks){
         .read = fake_rtl_read,
         .return_pwr = fake_rtl_pwr,
     });
@@ -285,7 +285,7 @@ run(dsd_opts* opts, dsd_state* state, size_t tail) {
 
 static void
 stop(dsd_state* state) {
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_io_hooks_set(NULL);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     /* The scrambling code recovery's context, which the first window allocated. */

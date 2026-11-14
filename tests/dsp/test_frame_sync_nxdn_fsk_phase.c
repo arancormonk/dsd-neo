@@ -244,7 +244,7 @@ run_phase_case(int sample_offset, size_t read_chunk, size_t* out_frame_index) {
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
     state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
 
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+    dsd_rtl_stream_io_hooks_set(&(dsd_rtl_stream_io_hooks){
         .read = fake_rtl_read,
         .return_pwr = fake_rtl_pwr,
     });
@@ -308,7 +308,7 @@ run_phase_case(int sample_offset, size_t read_chunk, size_t* out_frame_index) {
         }
     }
 
-    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+    dsd_rtl_stream_io_hooks_set(NULL);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     free_state_buffers(&state);
