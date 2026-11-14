@@ -1894,10 +1894,14 @@ Item {
             var field = control(fieldName);
             var combo = control(comboName);
             var scroll = control("scanListScroll");
-            var top = Math.min(field.mapToItem(scroll.contentItem, 0, 0).y, combo.mapToItem(scroll.contentItem, 0, 0).y);
-            scroll.contentY = Math.max(0, top - 40);
+            // Scrolled again at every look: while a panel above still animates
+            // open, the screen keeps the focused field in view as its content
+            // grows, which can move the combo back out of the viewport.
             lastPointerPlace = null;
             tryVerify(function () {
+                var top = Math.min(field.mapToItem(scroll.contentItem, 0, 0).y,
+                                   combo.mapToItem(scroll.contentItem, 0, 0).y);
+                scroll.contentY = Math.max(0, top - 40);
                 return settledForPointer(combo);
             }, 2000, "the combo is in view and still");
             verify(field.input.activeFocus);
