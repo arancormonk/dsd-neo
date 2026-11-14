@@ -236,6 +236,9 @@ typedef struct {
     float applied_db; /* gain_db() after the frame's last sample */
     float ctrl_db;    /* the controller gain (G + E, ramped) the frame's last sample got */
     uint32_t restarts;
+    float level;                   /* the frame's level as the AGC measures it when every sample learns */
+    dsd_speech_agc_learned before; /* the learned state before and after the frame */
+    dsd_speech_agc_learned after;
 } frame_rec;
 
 typedef struct {
@@ -266,6 +269,16 @@ typedef struct {
 
 static const flags_t k_learn = {1, 1, 0};
 
+/* A frame's level as the AGC measures it when every sample learns: the float sum of squares in sample order. */
+static float
+frame_level_db(const float* x, size_t n) {
+    float s = 0.0f;
+    for (size_t i = 0; i < n; i++) {
+        s += x[i] * x[i];
+    }
+    return 10.0f * log10f(s / (float)n / (32768.0f * 32768.0f) + 1e-30f);
+}
+
 /* Process @p n samples, which start on a frame boundary, one frame per call, tracing each frame. A learn array (one
    flag per sample) goes through process_runs; otherwise @p fl applies. */
 static void
@@ -274,6 +287,7 @@ run_traced(dsd_speech_agc* agc, float* buf, size_t n, const uint8_t* learn, flag
     for (size_t p = 0; p < n; p += F) {
         const size_t m = p + F <= n ? F : n - p;
         const dsd_speech_agc_learned before = agc->learned;
+        const float level = frame_level_db(buf + p, m);
         if (learn) {
             dsd_speech_agc_process_runs(agc, buf + p, m, learn + p);
         } else {
@@ -296,6 +310,9 @@ run_traced(dsd_speech_agc* agc, float* buf, size_t n, const uint8_t* learn, flag
         r->applied_db = dsd_speech_agc_gain_db(agc);
         r->ctrl_db = 20.0f * log10f(agc->g_last);
         r->restarts = d->restarts;
+        r->level = level;
+        r->before = before;
+        r->after = *d;
     }
 }
 
@@ -317,6 +334,14 @@ static dsd_speech_agc*
 new_analog_agc(int rate, float g0) {
     dsd_speech_agc* agc = new_agc(rate, g0);
     dsd_speech_agc_set_noise_veto(agc, 1);
+    return agc;
+}
+
+/* An instance as the digital voice chain runs it: the acquisition stage on. */
+static dsd_speech_agc*
+new_acq_agc(int rate, float g0) {
+    dsd_speech_agc* agc = new_agc(rate, g0);
+    dsd_speech_agc_set_acquisition(agc, 1);
     return agc;
 }
 
@@ -642,13 +667,20 @@ test_first_commit_ramp(void) {
     free(in);
 }
 
-/* Run @p in (learning throughout) from reset, with the coloured-noise veto when @p veto; returns the frame trace. */
+/* Run @p in (learning throughout) from reset, with the coloured-noise veto when @p veto and the acquisition stage when
+   @p acq; returns the frame trace. */
 static void
-run_fresh_veto(int rate, float g0, int veto, float* buf, size_t n, trace_t* t) {
+run_fresh_mode(int rate, float g0, int veto, int acq, float* buf, size_t n, trace_t* t) {
     dsd_speech_agc* agc = veto ? new_analog_agc(rate, g0) : new_agc(rate, g0);
+    dsd_speech_agc_set_acquisition(agc, acq);
     trace_init(t, n / (size_t)agc->frame_len);
     run_traced(agc, buf, n, NULL, k_learn, t);
     free(agc);
+}
+
+static void
+run_fresh_veto(int rate, float g0, int veto, float* buf, size_t n, trace_t* t) {
+    run_fresh_mode(rate, g0, veto, 0, buf, n, t);
 }
 
 static void
@@ -1520,9 +1552,10 @@ run_traced_switch(dsd_speech_agc* agc, float* buf, size_t n, size_t at, flags_t 
    the gap were, through process() alone: 12 whole closed frames clear its run, pitch history, partial frame and ramp
    by themselves, so it runs none of the gate code under test. Just after the close the learned state is also exactly
    the oldest checkpoint's, with the since-commit clock advanced by the frames since and the run dropped, even when
-   every live field was overwritten first. The next reception commits on a fresh run of six. */
+   every live field was overwritten first. The next reception commits on a fresh run of six. With the acquisition stage
+   on (@p acq) the same holds for its state, which the checkpoints carry with the rest. */
 static void
-test_rollback_matches_control(void) {
+test_rollback_matches_control(int acq) {
     const int rate = 48000;
     const float g0 = 8.537f;
     const size_t F = (size_t)frame_len(rate);
@@ -1555,7 +1588,7 @@ test_rollback_matches_control(void) {
             DSD_MEMSET(learn + s2, 1, n_s2);
 
             /* A: the whole stream, the close and the open found by process_runs, random partitions. */
-            dsd_speech_agc* a = new_agc(rate, g0);
+            dsd_speech_agc* a = acq ? new_acq_agc(rate, g0) : new_agc(rate, g0);
             float* ya = alloc_f(n);
             DSD_MEMCPY(ya, x, n * sizeof(float));
             runs_random(a, ya, learn, c0, 144 + (uint64_t)k);
@@ -1564,6 +1597,7 @@ test_rollback_matches_control(void) {
             assert(snap.learned.run_len == k);
             assert(snap.frames == (uint64_t)((n_pre + n_v) / F));
             assert(snap.learned.commits > 0 && snap.learned.since_commit < 100);
+            assert(!acq || (snap.learned.loudest_known && snap.learned.peaks == DSD_SPEECH_AGC_PEAKS));
             dsd_speech_agc_learned expected = snap.learned;
             expected.since_commit += (int)(a->frames - snap.frames);
             expected.since_commit = expected.since_commit > (1 << 20) ? (1 << 20) : expected.since_commit;
@@ -1576,7 +1610,7 @@ test_rollback_matches_control(void) {
             assert(same_bits(&a->learned, &expected, sizeof expected));
 
             /* C: the uncontaminated timeline, through process() alone. */
-            dsd_speech_agc* c = new_agc(rate, g0);
+            dsd_speech_agc* c = acq ? new_acq_agc(rate, g0) : new_agc(rate, g0);
             float* yc = alloc_f(n);
             DSD_MEMCPY(yc, x, (n_pre + n_v) * sizeof(float));
             DSD_MEMCPY(yc + s2, x + s2, n_s2 * sizeof(float));
@@ -1594,8 +1628,8 @@ test_rollback_matches_control(void) {
             const long first = first_commit(&t, 0);
             assert(first >= 0 && t.f[first].committed == DSD_SPEECH_AGC_RUN_FRAMES);
             const size_t end = (size_t)(first + 1) * F;
-            SAY("rollback, pending run %d, gap %5zu: first commit %.2f frames into the next reception, = control\n", k,
-                gap, (double)(end - gap) / (double)F);
+            SAY("rollback%s, pending run %d, gap %5zu: first commit %.2f frames into the next reception, = control\n",
+                acq ? " (acquisition)" : "", k, gap, (double)(end - gap) / (double)F);
             assert(end >= gap + 6 * F - F / 10);
             trace_free(&t);
             free(yc);
@@ -1850,11 +1884,12 @@ drive_runs(dsd_speech_agc* agc, const stream_t* s, float* y, size_t chunk) {
     }
 }
 
-/* Drive a fresh instance (start gain @p g0, the veto on when @p veto) over @p s, with per-call flags or, when @p runs,
-   per-sample learn runs; @p y gets the output. */
+/* Drive a fresh instance (start gain @p g0, the veto on when @p veto, the acquisition stage when @p acq) over @p s,
+   with per-call flags or, when @p runs, per-sample learn runs; @p y gets the output. */
 static dsd_speech_agc*
-drive_fresh(const stream_t* s, int rate, float g0, int veto, int runs, float* y, size_t chunk) {
+drive_fresh(const stream_t* s, int rate, float g0, int veto, int acq, int runs, float* y, size_t chunk) {
     dsd_speech_agc* agc = veto ? new_analog_agc(rate, g0) : new_agc(rate, g0);
+    dsd_speech_agc_set_acquisition(agc, acq);
     DSD_MEMCPY(y, s->x, s->n * sizeof(float));
     if (runs) {
         drive_runs(agc, s, y, chunk);
@@ -1866,9 +1901,10 @@ drive_fresh(const stream_t* s, int rate, float g0, int veto, int runs, float* y,
 
 /* The output is bit-identical for any partition (one sample, random, a frame, a frame +-1), at 8, 22.05 and 48 kHz,
    for per-call flags (learn, decodable, tone) and for per-sample learn runs with their closes and opens, and so with
-   the coloured-noise veto on the same stream under 750 us de-emphasised hiss, where it turns frames away. */
+   the coloured-noise veto on the same stream under 750 us de-emphasised hiss, where it turns frames away. The same with
+   the acquisition stage on (@p acq). */
 static void
-test_partition_identity(void) {
+test_partition_identity(int acq) {
     static const int rates[] = {8000, 22050, 48000};
     for (size_t ri = 0; ri < 3; ri++) {
         const int rate = rates[ri];
@@ -1887,25 +1923,25 @@ test_partition_identity(void) {
             const float g0 = runs ? 8.537f : 0.0f;
             s.x = veto ? hissy : plain;
             float* yref = alloc_f(s.n);
-            dsd_speech_agc* ref = drive_fresh(&s, rate, g0, veto, runs, yref, s.n);
+            dsd_speech_agc* ref = drive_fresh(&s, rate, g0, veto, acq, runs, yref, s.n);
             assert(ref->learned.commits > 100 && ref->learned.rejections >= 1);
             if (veto) {
                 float* yoff = alloc_f(s.n);
-                free(drive_fresh(&s, rate, g0, 0, runs, yoff, s.n));
+                free(drive_fresh(&s, rate, g0, 0, acq, runs, yoff, s.n));
                 assert(!same_bits(yoff, yref, s.n * sizeof(float)));
                 free(yoff);
             }
             for (size_t ci = 0; ci < sizeof chunks / sizeof chunks[0]; ci++) {
                 float* y = alloc_f(s.n);
-                dsd_speech_agc* agc = drive_fresh(&s, rate, g0, veto, runs, y, chunks[ci]);
+                dsd_speech_agc* agc = drive_fresh(&s, rate, g0, veto, acq, runs, y, chunks[ci]);
                 assert(same_bits(y, yref, s.n * sizeof(float)));
                 assert(same_bits(&agc->learned, &ref->learned, sizeof agc->learned));
                 free(y);
                 free(agc);
             }
-            SAY("%5d Hz %s: identical for every partition (%d commits, %u rejections, %u restarts)\n", rate,
-                veto ? "veto, runs " : (runs ? "learn runs " : "frame flags"), ref->learned.commits,
-                ref->learned.rejections, ref->learned.restarts);
+            SAY("%5d Hz %s%s: identical for every partition (%d commits, %u rejections, %u restarts, %d bursts)\n",
+                rate, veto ? "veto, runs " : (runs ? "learn runs " : "frame flags"), acq ? " (acquisition)" : "",
+                ref->learned.commits, ref->learned.rejections, ref->learned.restarts, ref->learned.bursts);
             free(yref);
             free(ref);
         }
@@ -1954,9 +1990,9 @@ xrate_make(float* x, size_t n, int rate) {
 
 /* One waveform at 8, 22.05 and 48 kHz: speech levels within 0.3 dB, the applied gain within 0.25 dB on 95% of frames
    and 2 dB on all (over 1 dB on at most 2%), the first commit and every steady-tone rejection in the same frame, and
-   the same commit decision on 99% of frames. */
+   the same commit decision on 99% of frames. The same with the acquisition stage on (@p acq). */
 static void
-test_cross_rate(void) {
+test_cross_rate(int acq) {
     static const int rates[] = {48000, 22050, 8000};
     trace_t t[3];
     double level[3][8];
@@ -1965,7 +2001,7 @@ test_cross_rate(void) {
         const size_t n = secs(rate, XRATE_TOTAL_S);
         float* x = alloc_f(n);
         xrate_make(x, n, rate);
-        run_fresh(rate, 0.0f, x, n, &t[ri]);
+        run_fresh_mode(rate, 0.0f, 0, acq, x, n, &t[ri]);
         for (size_t i = 0; i < sizeof k_xrate / sizeof k_xrate[0]; i++) {
             level[ri][i] =
                 k_xrate[i].kind == 0 ? p56(x + at_secs(rate, k_xrate[i].start), secs(rate, k_xrate[i].dur), rate) : 0.0;
@@ -1997,10 +2033,10 @@ test_cross_rate(void) {
             const double dl = fabs(level[ri][i] - level[0][i]);
             worst_level = dl > worst_level ? dl : worst_level;
         }
-        SAY("%5d Hz vs 48 kHz: gain p95 %.3f max %.3f dB, %d of %zu frames over 1 dB; commits agree on %.2f%%; first "
+        SAY("%5d Hz vs 48 kHz%s: gain p95 %.3f max %.3f dB, %d of %zu frames over 1 dB; commits agree on %.2f%%; first "
             "commit frame %ld vs %ld; speech levels within %.3f dB; %d rejections in the same frames\n",
-            rates[ri], (double)p95, (double)dmax, over1, nf, 100.0 * agree / (double)nf, first_commit(&t[ri], 0),
-            first_commit(&t[0], 0), worst_level, rejections);
+            rates[ri], acq ? " (acquisition)" : "", (double)p95, (double)dmax, over1, nf, 100.0 * agree / (double)nf,
+            first_commit(&t[ri], 0), first_commit(&t[0], 0), worst_level, rejections);
         assert(p95 <= 0.25f && dmax <= 2.0f && over1 * 50 <= (int)nf);
         assert(agree * 100 >= 99 * (int)nf);
         assert(first_commit(&t[ri], 0) == first_commit(&t[0], 0));
@@ -2052,9 +2088,10 @@ test_ceiling(void) {
     }
 }
 
-/* A reset is a fresh start: after other audio, a reset instance plays a signal exactly as a new one does. */
+/* A reset is a fresh start: after other audio, a reset instance plays a signal exactly as a new one does, with the
+   acquisition stage on too (@p acq). */
 static void
-test_reset_is_fresh(void) {
+test_reset_is_fresh(int acq) {
     const int rate = 22050;
     const size_t n = secs(rate, 5.0);
     float* x = alloc_f(n);
@@ -2063,8 +2100,8 @@ test_reset_is_fresh(void) {
     speech_into(x, n, rate, 180, -34.0, 150.0, 0.0);
     DSD_MEMCPY(y1, x, n * sizeof(float));
     DSD_MEMCPY(y2, x, n * sizeof(float));
-    dsd_speech_agc* fresh = new_agc(rate, 2.0f);
-    dsd_speech_agc* used = new_agc(rate, 2.0f);
+    dsd_speech_agc* fresh = acq ? new_acq_agc(rate, 2.0f) : new_agc(rate, 2.0f);
+    dsd_speech_agc* used = acq ? new_acq_agc(rate, 2.0f) : new_agc(rate, 2.0f);
     float* junk = alloc_f(n);
     speech_into(junk, n, rate, 181, -20.0, 220.0, 0.0);
     add_noise(junk, n, rate, 182, DSD_TEST_NOISE_VOICE_BAND, -25.0);
@@ -2219,6 +2256,628 @@ test_settled_gain_db(void) {
         free(agc);
         free(x);
     }
+}
+
+/* ------------------------------------------------------------------------------------------- acquisition stage */
+
+#define ACQ_WEIGHT_C         24.0f
+#define ACQ_CAP_DBFS         (-12.0f)
+#define ACQ_BURST_FLOOR_DBFS (-17.0f)
+#define ACQ_PEAK_ABS_DBFS    (-70.0f)
+
+/* The startup aim's bounds from the acquisition state @p d: the burst floor (when a burst has completed over three held
+   levels) and the loudest frame's cap (when one is known); -1e30 / +1e30 when absent. */
+static float
+acq_burst_floor(const dsd_speech_agc_learned* d, float lo, float hi) {
+    if (d->bursts < 1 || d->peaks < DSD_SPEECH_AGC_PEAKS) {
+        return -1e30f;
+    }
+    return clampf(ACQ_BURST_FLOOR_DBFS - d->peak_db[DSD_SPEECH_AGC_PEAKS - 1], lo, hi);
+}
+
+static float
+acq_loud_cap(const dsd_speech_agc_learned* d, float lo, float hi) {
+    return d->loudest_known ? clampf(ACQ_CAP_DBFS - d->loudest_db, lo, hi) : 1e30f;
+}
+
+/* The startup law's blend for a step that finds @p b before it and leaves @p a: P + (W - P) n^2 / (n^2 + 24). */
+static float
+acq_blend(const dsd_speech_agc* agc, const dsd_speech_agc_learned* b, const dsd_speech_agc_learned* a) {
+    const float lo = agc->start_gain_db - DSD_SPEECH_AGC_MAX_CUT_DB;
+    const float hi = agc->start_gain_db + DSD_SPEECH_AGC_MAX_BOOST_DB;
+    const float w = clampf(agc->target_db - a->level_db, lo, hi);
+    const float p = b->steps == 0 ? b->gain_db : b->prior_db;
+    const float n2 = (float)a->commits * (float)a->commits;
+    return p + (w - p) * (n2 / (n2 + ACQ_WEIGHT_C));
+}
+
+/* The gain a frame's step leaves (its acquisition update not yet applied): the blend, within the burst floor and the
+   loudest frame's cap of the state before it while fewer than 20 frames have committed, straight for the first 20
+   steps and at +0.12 / -0.20 dB after them; the gain before it on a frame that does not step. */
+static float
+acq_after_step(const dsd_speech_agc* agc, const dsd_speech_agc_learned* b, const dsd_speech_agc_learned* a) {
+    if (a->steps == b->steps) {
+        return b->gain_db;
+    }
+    const float lo = agc->start_gain_db - DSD_SPEECH_AGC_MAX_CUT_DB;
+    const float hi = agc->start_gain_db + DSD_SPEECH_AGC_MAX_BOOST_DB;
+    float aim = acq_blend(agc, b, a);
+    if (a->commits < 20) {
+        const float floor_db = acq_burst_floor(b, lo, hi);
+        const float cap = acq_loud_cap(b, lo, hi);
+        aim = aim > floor_db ? aim : floor_db;
+        aim = aim < cap ? aim : cap;
+    }
+    if (b->steps < 20) {
+        return aim;
+    }
+    return b->gain_db + clampf(aim - b->gain_db, -0.20f, 0.12f);
+}
+
+/* The acquisition state a frame of level @p level at or over the absolute floor leaves: the loudest frame, the three
+   loudest levels at or over -70 dBFS (descending), and the bursts over the last of them. */
+static void
+acq_expected_state(const dsd_speech_agc_learned* b, float level, dsd_speech_agc_learned* e) {
+    *e = *b;
+    if (!b->loudest_known || level > b->loudest_db) {
+        e->loudest_db = level;
+    }
+    e->loudest_known = 1;
+    if (level >= ACQ_PEAK_ABS_DBFS) {
+        int at = 0;
+        while (at < e->peaks && !(level > e->peak_db[at])) {
+            at++;
+        }
+        for (int i = DSD_SPEECH_AGC_PEAKS - 1; i > at; i--) {
+            e->peak_db[i] = e->peak_db[i - 1];
+        }
+        if (at < DSD_SPEECH_AGC_PEAKS) {
+            e->peak_db[at] = level;
+            e->peaks += e->peaks < DSD_SPEECH_AGC_PEAKS;
+        }
+    }
+    if (e->peaks < DSD_SPEECH_AGC_PEAKS) {
+        return;
+    }
+    const float third = e->peak_db[DSD_SPEECH_AGC_PEAKS - 1];
+    if (level >= third - 6.0f) {
+        e->high_run++;
+        e->burst_armed |= e->high_run >= 3;
+        return;
+    }
+    const int low = level <= third - 12.0f;
+    if (e->burst_armed && low) {
+        e->burst_armed = 0;
+        e->bursts++;
+    }
+    if (low || !e->burst_armed) {
+        e->high_run = 0;
+    }
+}
+
+static int
+acq_state_equal(const dsd_speech_agc_learned* a, const dsd_speech_agc_learned* e) {
+    int ok = same_bits(&a->prior_db, &e->prior_db, sizeof(float)) && a->loudest_known == e->loudest_known
+             && a->peaks == e->peaks && a->high_run == e->high_run && a->burst_armed == e->burst_armed
+             && a->bursts == e->bursts;
+    ok = ok && (!e->loudest_known || same_bits(&a->loudest_db, &e->loudest_db, sizeof(float)));
+    for (int i = 0; i < e->peaks; i++) {
+        ok = ok && same_bits(&a->peak_db[i], &e->peak_db[i], sizeof(float));
+    }
+    return ok;
+}
+
+/* The acquisition stage on every frame of @p t (every sample learning): the step (acq_after_step()), then for a frame
+   at or over the absolute floor its own level: while fewer than 20 frames have committed, the guard (a frame that would
+   play over -12 dBFS takes the gain to clamp(-12 - L) when that is lower) and, once a burst has completed, the rise of
+   at most 1 dB toward min(clamp(-17 - third loudest), clamp(-12 - loudest)). Recomputed in the AGC's own float order
+   from each frame's state before and after it, so it holds bit for bit, with the state itself. Returns the frames where
+   it does not. */
+static int
+check_acq_law(const dsd_speech_agc* agc, const trace_t* t) {
+    const float lo = agc->start_gain_db - DSD_SPEECH_AGC_MAX_CUT_DB;
+    const float hi = agc->start_gain_db + DSD_SPEECH_AGC_MAX_BOOST_DB;
+    int bad = 0;
+    for (size_t i = 0; i < t->count; i++) {
+        const frame_rec* f = &t->f[i];
+        const dsd_speech_agc_learned* a = &f->after;
+        float g = acq_after_step(agc, &f->before, a);
+        dsd_speech_agc_learned e = f->before;
+        if (f->level >= agc->abs_floor_db) {
+            acq_expected_state(&f->before, f->level, &e);
+            const int early = a->commits < 20;
+            if (early && f->level + g > ACQ_CAP_DBFS) {
+                const float capped = clampf(ACQ_CAP_DBFS - f->level, lo, hi);
+                g = capped < g ? capped : g;
+            }
+            const float cap = clampf(ACQ_CAP_DBFS - e.loudest_db, lo, hi);
+            float floor_db = acq_burst_floor(&e, lo, hi);
+            floor_db = floor_db < cap ? floor_db : cap;
+            if (early && g < floor_db) {
+                g += floor_db - g < 1.0f ? floor_db - g : 1.0f;
+            }
+        }
+        e.prior_db = (a->steps != f->before.steps && f->before.steps == 0) ? f->before.gain_db : f->before.prior_db;
+        bad += !same_bits(&g, &a->gain_db, sizeof g) || !acq_state_equal(a, &e);
+    }
+    return bad;
+}
+
+/* Today's law with the acquisition stage off, on every frame of @p t, bit for bit: a step moves G by
+   clamp(clamp(T - S, lo, hi) - G, -dn, +up) (2 dB for the first 20 steps, then +0.12 / -0.20), every other frame
+   leaves G alone, and the acquisition state stays 0. Returns the frames where it does not. */
+static int
+check_off_law(const dsd_speech_agc* agc, const trace_t* t) {
+    const float lo = agc->start_gain_db - DSD_SPEECH_AGC_MAX_CUT_DB;
+    const float hi = agc->start_gain_db + DSD_SPEECH_AGC_MAX_BOOST_DB;
+    dsd_speech_agc_learned zero;
+    DSD_MEMSET(&zero, 0, sizeof zero);
+    int bad = 0;
+    for (size_t i = 0; i < t->count; i++) {
+        const dsd_speech_agc_learned* b = &t->f[i].before;
+        const dsd_speech_agc_learned* a = &t->f[i].after;
+        float g = b->gain_db;
+        if (a->steps != b->steps) {
+            const float want = clampf(agc->target_db - a->level_db, lo, hi);
+            const float up = b->steps < 20 ? 2.0f : 0.12f;
+            const float dn = b->steps < 20 ? 2.0f : 0.20f;
+            g += clampf(want - g, -dn, up);
+        }
+        bad += !same_bits(&g, &a->gain_db, sizeof g) || !acq_state_equal(a, &zero);
+    }
+    return bad;
+}
+
+/* Blocks of unvoiced sound at @p rate: @p hi_frames frames of voice-band noise at @p hi_db, then @p lo_frames at
+   @p lo_db, the same samples in every block, @p reps times. Returns the samples written. */
+static size_t
+synth_blocks(float* x, int rate, int reps, int hi_frames, double hi_db, int lo_frames, double lo_db, uint64_t seed) {
+    const size_t F = (size_t)frame_len(rate);
+    const size_t nh = (size_t)hi_frames * F;
+    const size_t nl = (size_t)lo_frames * F;
+    assert(dsd_test_synth_noise(x, nh, rate, seed, DSD_TEST_NOISE_VOICE_BAND, hi_db) == 0);
+    assert(dsd_test_synth_noise(x + nh, nl, rate, seed + 1U, DSD_TEST_NOISE_VOICE_BAND, lo_db) == 0);
+    for (int r = 1; r < reps; r++) {
+        DSD_MEMCPY(x + (size_t)r * (nh + nl), x, (nh + nl) * sizeof(float));
+    }
+    return (size_t)reps * (nh + nl);
+}
+
+/* The first frame of @p t from @p from on whose step or update left the gain below the gain before it, or -1. */
+static long
+first_cut(const trace_t* t, long from) {
+    for (long i = from; i < (long)t->count; i++) {
+        if (t->f[i].after.gain_db < t->f[i].before.gain_db) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* The steps of a reception with the acquisition stage on, from its first commit @p k1: each of the first 20 goes to
+   the aim for its n (acq_after_step()), then the frame's own level may cut it (the guard) or a burst completing on it
+   raise it by at most 1 dB; later frames move by at most +0.12 / -0.20 dB. Returns the startup steps; @p aimed gets
+   those that stayed at the aim and @p later the frames after them. */
+static int
+check_startup_steps(const dsd_speech_agc* agc, const trace_t* t, long k1, int* aimed, int* later) {
+    int startup = 0;
+    *aimed = 0;
+    *later = 0;
+    for (size_t i = (size_t)k1; i < t->count; i++) {
+        const frame_rec* f = &t->f[i];
+        if (f->before.steps >= 20) {
+            const float dg = f->after.gain_db - f->before.gain_db;
+            assert(dg <= 0.12f + 1e-5f && dg >= -0.20f - 1e-5f);
+            (*later)++;
+            continue;
+        }
+        if (f->after.steps == f->before.steps) {
+            continue;
+        }
+        const float aim = acq_after_step(agc, &f->before, &f->after);
+        const int cut = f->after.commits < 20 && f->level + aim > -12.0f;
+        const int rose = !cut && f->after.bursts >= 1 && f->after.gain_db > aim;
+        if (cut) {
+            assert(f->after.gain_db < aim);
+        } else if (rose) {
+            assert(f->after.gain_db - aim <= 1.0f + 1e-6f);
+        } else {
+            assert(fabsf(f->after.gain_db - aim) < 1e-6f);
+        }
+        startup++;
+        *aimed += !cut && !rose;
+    }
+    return startup;
+}
+
+/* The startup law on a talker 20 dB under the level the start gain suits (its settled aim W 20-21 dB over the start
+   gain once 12 frames have committed), with the acquisition stage on: the first commit (the run of six) takes the
+   gain exactly to P + 0.6 (W - P), P the start gain and W the settled aim of that moment; every further step of the
+   first 20 goes to the aim for its n and later ones move by at most +0.12 / -0.20 dB (check_startup_steps()), and
+   every frame follows the stage's law bit for bit. Once 12 frames have committed the gain is within 3 dB of the
+   settled aim (the law leaves 1 - 144/168 of the way). With the stage off the same talker still
+   steps 2 dB at a time and is more than 6 dB short then. */
+static void
+test_acq_startup_law(void) {
+    const int rate = 8000;
+    const float g0 = 4.0f;
+    const float lo = g0 - DSD_SPEECH_AGC_MAX_CUT_DB;
+    const float hi = g0 + DSD_SPEECH_AGC_MAX_BOOST_DB;
+    const size_t n = secs(rate, 10.0);
+    float* x = alloc_f(n);
+    speech_into(x, n, rate, 250, -42.2, 130.0, 0.0);
+    float short_db[2] = {0.0f, 0.0f};
+    for (int acq = 1; acq >= 0; acq--) {
+        trace_t t;
+        float* y = alloc_f(n);
+        DSD_MEMCPY(y, x, n * sizeof(float));
+        dsd_speech_agc* agc = acq ? new_acq_agc(rate, g0) : new_agc(rate, g0);
+        trace_init(&t, n / (size_t)agc->frame_len);
+        run_traced(agc, y, n, NULL, k_learn, &t);
+        const long k1 = first_commit(&t, 0);
+        const long k12 = frame_of_committed(&t, 0, 12);
+        assert(k1 >= 5 && k12 > k1 && t.f[k1].committed == DSD_SPEECH_AGC_RUN_FRAMES);
+        const frame_rec* f1 = &t.f[k1];
+        const float w1 = clampf(agc->target_db - f1->after.level_db, lo, hi);
+        const float w12 = clampf(agc->target_db - t.f[k12].after.level_db, lo, hi);
+        short_db[acq] = w12 - t.f[k12].after.gain_db;
+        int startup = 0;
+        int aimed = 0;
+        int later = 0;
+        if (acq) {
+            assert(check_acq_law(agc, &t) == 0);
+            assert(w12 - g0 >= 20.0f && w12 - g0 <= 21.0f);
+            assert(fabsf(f1->before.gain_db - g0) < 1e-6f && f1->before.bursts == 0);
+            assert(fabsf(f1->after.gain_db - (g0 + 0.6f * (w1 - g0))) < 1e-4f);
+            assert(same_bits(&f1->after.prior_db, &f1->before.gain_db, sizeof(float)));
+            startup = check_startup_steps(agc, &t, k1, &aimed, &later);
+            assert(startup == 20 && aimed >= 10 && later > 100);
+        } else {
+            talker_result r;
+            DSD_MEMSET(&r, 0, sizeof r);
+            check_gain_law(agc, &t, &r);
+            assert(r.law_bad == 0 && r.held_bad == 0 && check_off_law(agc, &t) == 0);
+            assert(fabsf(f1->after.gain_db - f1->before.gain_db - 2.0f) < 1e-5f);
+        }
+        SAY("startup law, acquisition %s: first commit at frame %ld: G %+.2f -> %+.2f (W %+.2f); after 12 committed "
+            "frames (frame %ld) G %+.2f, W %+.2f, short by %.2f dB; %d startup steps (%d at the aim), %d frames "
+            "later\n",
+            acq ? "on " : "off", k1, (double)f1->before.gain_db, (double)f1->after.gain_db, (double)w1, k12,
+            (double)t.f[k12].after.gain_db, (double)w12, (double)short_db[acq], startup, aimed, later);
+        trace_free(&t);
+        free(agc);
+        free(y);
+    }
+    assert(short_db[1] >= 0.0f && short_db[1] <= 3.0f && short_db[0] > 6.0f);
+    free(x);
+}
+
+/* With the acquisition stage on, the first commit after dsd_speech_agc_open_at() takes the opened gain as P: a quiet
+   voiced sound opened 10 dB over the start gain steps to P + 0.6 (W - P) from there. */
+static void
+test_acq_open_at_prior(void) {
+    const int rate = 8000;
+    const float g0 = 4.0f;
+    const size_t n = secs(rate, 1.0);
+    float* x = alloc_f(n);
+    voiced_params vp;
+    voiced_defaults(&vp, 120.0, 0.015, 255);
+    synth_voiced(x, n, rate, &vp, -44.0);
+    dsd_speech_agc* agc = new_acq_agc(rate, g0);
+    dsd_speech_agc_open_at(agc, g0 + 10.0f, 0);
+    trace_t t;
+    trace_init(&t, n / (size_t)agc->frame_len);
+    run_traced(agc, x, n, NULL, k_learn, &t);
+    assert(check_acq_law(agc, &t) == 0);
+    const long k1 = first_commit(&t, 0);
+    assert(k1 >= 0);
+    const frame_rec* f1 = &t.f[k1];
+    const float w1 = clampf(agc->target_db - f1->after.level_db, g0 - 12.0f, g0 + 30.0f);
+    const float p = g0 + 10.0f;
+    SAY("open_at then commit: P %+.2f, W %+.2f, first step to %+.2f\n", (double)f1->after.prior_db, (double)w1,
+        (double)f1->after.gain_db);
+    assert(fabsf(f1->after.prior_db - p) < 1e-6f && fabsf(f1->after.gain_db - (p + 0.6f * (w1 - p))) < 1e-4f);
+    trace_free(&t);
+    free(agc);
+    free(x);
+}
+
+/* The output of each whole frame of @p y in dBFS RMS, into @p out (one per frame of @p t). */
+static void
+frame_rms(const float* y, size_t F, const trace_t* t, double* out) {
+    for (size_t i = 0; i < t->count; i++) {
+        out[i] = rms_dbfs(y + i * F, F);
+    }
+}
+
+/* The loud-frame guard: a talker the start gain suits, opened 8 dB over it. The first frame that would play over -12
+   dBFS takes the gain to exactly -12 - L for its level L. After the next frame (the ramp) no frame plays more than -12
+   dBFS RMS while fewer than 20 frames have committed, unless it is louder than every frame up to two frames before it,
+   and then by no more than that: the guard acts on a frame after it has played. Once 20 frames have committed a loud
+   frame no longer lowers the gain at once; before, it does. */
+static void
+test_acq_loud_guard(void) {
+    const int rate = 8000;
+    const float g0 = 4.0f;
+    const size_t F = (size_t)frame_len(rate);
+    const size_t n = secs(rate, 6.0);
+    float* x = alloc_f(n);
+    speech_into(x, n, rate, 260, -24.0, 150.0, 0.0);
+    dsd_speech_agc* agc = new_acq_agc(rate, g0);
+    dsd_speech_agc_open_at(agc, g0 + 8.0f, 0);
+    trace_t t;
+    trace_init(&t, n / F);
+    run_traced(agc, x, n, NULL, k_learn, &t);
+    assert(check_acq_law(agc, &t) == 0);
+    const long j = first_cut(&t, 0);
+    assert(j >= 0 && t.f[j].after.steps == 0 && t.f[j].level + t.f[j].before.gain_db > -12.0f);
+    assert(fabsf(t.f[j].after.gain_db - (-12.0f - t.f[j].level)) < 1e-6f);
+    double* out = (double*)calloc(t.count, sizeof(double));
+    assert(out != NULL);
+    frame_rms(x, F, &t, out);
+    int checked = 0;
+    int newer = 0;
+    double worst = -1e9;
+    for (long k = j + 2; k < (long)t.count && t.f[k - 1].after.commits < 20; k++) {
+        const double over = (double)t.f[k].level - (double)t.f[k - 2].after.loudest_db;
+        const double bound = -12.0 + (over > 0.0 ? over : 0.0);
+        newer += over > 0.0;
+        worst = out[k] - bound > worst ? out[k] - bound : worst;
+        assert(out[k] <= bound + 0.01);
+        checked++;
+    }
+    SAY("loud guard: opened %+.0f dB, first cut at frame %ld (level %.2f dBFS) to %+.2f dB; %d frames after the ramp "
+        "checked (%d louder than all before), worst %+.3f dB against the bound\n",
+        (double)(g0 + 8.0f), j, (double)t.f[j].level, (double)t.f[j].after.gain_db, checked, newer, worst);
+    assert(checked >= 10);
+    /* A loud frame after 20 commits leaves G alone; the same frame early cuts it. */
+    assert(agc->learned.commits >= 20);
+    float* loud = alloc_f(F);
+    float* loud2 = alloc_f(F);
+    assert(dsd_test_synth_noise(loud, F, rate, 261, DSD_TEST_NOISE_VOICE_BAND, -6.0) == 0);
+    DSD_MEMCPY(loud2, loud, F * sizeof(float));
+    const float g_late = agc->learned.gain_db;
+    dsd_speech_agc_process(agc, loud, F, 1, 1, 0);
+    assert(same_bits(&agc->learned.gain_db, &g_late, sizeof g_late));
+    dsd_speech_agc* early = new_acq_agc(rate, g0);
+    dsd_speech_agc_process(early, loud2, F, 1, 1, 0);
+    assert(early->learned.gain_db < g0 - 1.0f);
+    free(early);
+    free(loud2);
+    free(loud);
+    free(out);
+    trace_free(&t);
+    free(agc);
+    free(x);
+}
+
+/* The burst trace @p t of a fresh instance at start gain @p g0 on repeated bursts whose first completes on frame 5:
+   from there the gain rises exactly 1 dB a frame up to -17 - H, H the frame's third loudest level (the loudest frame's
+   cap above it), then holds. Returns the frame it got there; @p rises gets the frames of 1 dB. */
+static long
+check_burst_rise(const trace_t* t, float g0, int* rises) {
+    for (long i = 0; i < 5; i++) {
+        assert(fabsf(t->f[i].after.gain_db - g0) < 1e-6f && t->f[i].after.bursts == 0);
+    }
+    assert(t->f[5].after.bursts == 1);
+    long reached = -1;
+    *rises = 0;
+    for (long i = 5; i < (long)t->count; i++) {
+        const frame_rec* f = &t->f[i];
+        const float floor_db = -17.0f - f->after.peak_db[2];
+        assert(-12.0f - f->after.loudest_db > floor_db);
+        const float g = f->before.gain_db;
+        if (reached >= 0) {
+            assert(same_bits(&f->after.gain_db, &g, sizeof g)); /* holds */
+        } else if (g + 1.0f < floor_db) {
+            assert(fabsf(f->after.gain_db - (g + 1.0f)) < 1e-6f);
+            (*rises)++;
+        } else {
+            assert(fabsf(f->after.gain_db - floor_db) < 1e-6f);
+            reached = i;
+        }
+    }
+    return reached;
+}
+
+/* The burst fallback on unvoiced bursts (voice-band noise, 5 frames at -45 dBFS, then 10 at -68, repeated: nothing
+   commits): no change through the first burst; from the frame that completes it the gain rises exactly 1 dB a frame
+   up to -17 - H, H the third loudest frame (two frames of one level are two of the three), and holds there
+   (check_burst_rise()). Bursts then loud speech: the guard cuts the gain on the speech's first loud frame, and the
+   first voiced commits take over from there. */
+static void
+test_acq_burst_fallback(void) {
+    const int rate = 8000;
+    const float g0 = 4.0f;
+    const size_t F = (size_t)frame_len(rate);
+    const size_t ns = secs(rate, 6.0);
+    float* x = alloc_f(120 * F + ns);
+    const size_t nb = synth_blocks(x, rate, 8, 5, -45.0, 10, -68.0, 270);
+    dsd_speech_agc* agc = new_acq_agc(rate, g0);
+    trace_t t;
+    trace_init(&t, nb / F);
+    run_traced(agc, x, nb, NULL, k_learn, &t);
+    assert(check_acq_law(agc, &t) == 0 && agc->learned.commits == 0);
+    int rises = 0;
+    const long reached = check_burst_rise(&t, g0, &rises);
+    SAY("bursts: complete at frame 5, the gain rises 1 dB a frame for %d frames and reaches %+.2f dB (-17 - %.2f) at "
+        "frame %ld, then holds; %d bursts\n",
+        rises, (double)t.f[reached].after.gain_db, (double)t.f[reached].after.peak_db[2], reached, agc->learned.bursts);
+    assert(rises >= 20 && reached > 5 && reached < (long)t.count - 30 && agc->learned.bursts == 8);
+    trace_free(&t);
+    /* Bursts then loud speech. */
+    speech_into(x + nb, ns, rate, 271, -24.0, 140.0, 0.0);
+    trace_init(&t, ns / F);
+    run_traced(agc, x + nb, ns, NULL, k_learn, &t);
+    assert(check_acq_law(agc, &t) == 0);
+    long first_loud = -1;
+    for (long i = 0; i < (long)t.count && first_loud < 0; i++) {
+        first_loud = t.f[i].level + t.f[i].before.gain_db > -12.0f ? i : -1;
+    }
+    const long cut = first_cut(&t, 0);
+    const long k1 = first_commit(&t, 0);
+    float settled = 0.0f;
+    assert(dsd_speech_agc_settled_gain_db(agc, &settled) == 1);
+    SAY("bursts then speech: first loud frame %ld, cut at frame %ld to %+.2f dB; first commit at frame %ld from %+.2f; "
+        "G at the end %+.2f, settled %+.2f\n",
+        first_loud, cut, (double)t.f[cut].after.gain_db, k1, (double)t.f[k1].before.gain_db,
+        (double)agc->learned.gain_db, (double)settled);
+    assert(first_loud >= 0 && cut == first_loud && k1 > cut);
+    assert(fabsf(t.f[cut].after.gain_db - (-12.0f - t.f[cut].level)) < 1e-6f);
+    assert(same_bits(&t.f[k1].after.prior_db, &t.f[k1].before.gain_db, sizeof(float)));
+    assert(fabsf(agc->learned.gain_db - settled) <= 2.0f);
+    trace_free(&t);
+    free(agc);
+    free(x);
+}
+
+/* No burst completes, so the gain never rises, on sound that does not rise and fall: steady noise at -45 dBFS, silence
+   (-80 dBFS) then steady noise (a step up with no fall), two-frame blips at -45 dBFS over -75, and bursts all under
+   -70 dBFS, which never enter the three loudest. */
+static void
+test_acq_no_bursts(void) {
+    const int rate = 8000;
+    const float g0 = 4.0f;
+    const size_t F = (size_t)frame_len(rate);
+    const size_t n = secs(rate, 4.0);
+    float* x = alloc_f(n);
+    static const char* names[] = {"steady noise", "silence then noise", "two-frame blips", "bursts under -70 dBFS"};
+    for (int c = 0; c < 4; c++) {
+        size_t m = n;
+        if (c == 0) {
+            assert(dsd_test_synth_noise(x, m, rate, 272, DSD_TEST_NOISE_VOICE_BAND, -45.0) == 0);
+        } else if (c == 1) {
+            const size_t q = secs(rate, 1.0);
+            assert(dsd_test_synth_noise(x, q, rate, 273, DSD_TEST_NOISE_VOICE_BAND, -80.0) == 0);
+            assert(dsd_test_synth_noise(x + q, m - q, rate, 274, DSD_TEST_NOISE_VOICE_BAND, -45.0) == 0);
+        } else if (c == 2) {
+            m = synth_blocks(x, rate, 13, 2, -45.0, 13, -75.0, 275);
+        } else {
+            m = synth_blocks(x, rate, 13, 5, -72.0, 10, -83.0, 277);
+        }
+        dsd_speech_agc* agc = new_acq_agc(rate, g0);
+        trace_t t;
+        trace_init(&t, m / F);
+        run_traced(agc, x, m, NULL, k_learn, &t);
+        SAY("no bursts, %s: %d bursts, %d levels held, G %+.2f dB\n", names[c], agc->learned.bursts, agc->learned.peaks,
+            (double)agc->learned.gain_db);
+        assert(check_acq_law(agc, &t) == 0);
+        assert(agc->learned.bursts == 0 && agc->learned.commits == 0 && fabsf(agc->learned.gain_db - g0) < 1e-6f);
+        assert(c != 3 || agc->learned.peaks == 0);
+        trace_free(&t);
+        free(agc);
+    }
+    free(x);
+}
+
+/* The burst fallback and voiced commits together: one burst starts the gain rising, then voiced sound at the bursts'
+   level commits. The first commit takes the gain the bursts left as P, and while fewer than 20 frames have committed
+   no step leaves the gain under the burst floor (within the loudest frame's cap), though the blend alone would. */
+static void
+test_acq_burst_then_voiced(void) {
+    const int rate = 8000;
+    const float g0 = 4.0f;
+    const size_t F = (size_t)frame_len(rate);
+    const size_t nv = secs(rate, 3.0);
+    float* x = alloc_f(15 * F + nv);
+    const size_t nb = synth_blocks(x, rate, 1, 5, -45.0, 10, -68.0, 280);
+    voiced_params vp;
+    voiced_defaults(&vp, 120.0, 0.015, 281);
+    synth_voiced(x + nb, nv, rate, &vp, -45.0);
+    dsd_speech_agc* agc = new_acq_agc(rate, g0);
+    trace_t t;
+    trace_init(&t, (nb + nv) / F);
+    run_traced(agc, x, nb + nv, NULL, k_learn, &t);
+    assert(check_acq_law(agc, &t) == 0);
+    const long k1 = first_commit(&t, 0);
+    assert(k1 > 15 && t.f[k1].before.bursts == 1 && t.f[k1].before.gain_db > g0 + 5.0f);
+    assert(same_bits(&t.f[k1].after.prior_db, &t.f[k1].before.gain_db, sizeof(float)));
+    const float lo = g0 - DSD_SPEECH_AGC_MAX_CUT_DB;
+    const float hi = g0 + DSD_SPEECH_AGC_MAX_BOOST_DB;
+    int steps = 0;
+    int bound = 0;
+    for (size_t i = (size_t)k1; i < t.count && t.f[i].after.commits < 20; i++) {
+        const frame_rec* f = &t.f[i];
+        if (f->after.steps == f->before.steps) {
+            continue;
+        }
+        const float floor_db = acq_burst_floor(&f->before, lo, hi);
+        const float cap = acq_loud_cap(&f->before, lo, hi);
+        const float least = floor_db < cap ? floor_db : cap;
+        const float step = acq_after_step(agc, &f->before, &f->after);
+        assert(step >= least);
+        steps++;
+        bound += acq_blend(agc, &f->before, &f->after) < least;
+    }
+    SAY("burst then voiced: first commit at frame %ld from P %+.2f; %d early steps, the floor held %d of them\n", k1,
+        (double)t.f[k1].after.prior_db, steps, bound);
+    assert(steps >= 10 && bound >= 1);
+    trace_free(&t);
+    free(agc);
+    free(x);
+}
+
+/* A reset forgets the acquisition state (the loudest frames, the bursts and P) and keeps the stage on. */
+static void
+test_acq_reset_forgets(void) {
+    const int rate = 8000;
+    const size_t F = (size_t)frame_len(rate);
+    const size_t nv = secs(rate, 2.0);
+    float* x = alloc_f(30 * F + nv);
+    const size_t nb = synth_blocks(x, rate, 2, 5, -45.0, 10, -68.0, 285);
+    speech_into(x + nb, nv, rate, 286, -30.0, 140.0, 0.0);
+    dsd_speech_agc* agc = new_acq_agc(rate, 4.0f);
+    dsd_speech_agc_process(agc, x, nb + nv, 1, 1, 0);
+    const dsd_speech_agc_learned* d = &agc->learned;
+    assert(d->bursts >= 1 && d->loudest_known && d->peaks == DSD_SPEECH_AGC_PEAKS && d->steps > 0);
+    assert(fabsf(d->prior_db) > 1.0f);
+    dsd_speech_agc_reset(agc);
+    dsd_speech_agc_learned zero;
+    DSD_MEMSET(&zero, 0, sizeof zero);
+    assert(acq_state_equal(d, &zero) && agc->acquisition == 1);
+    dsd_speech_agc_set_acquisition(agc, 0);
+    assert(agc->acquisition == 0);
+    dsd_speech_agc_set_acquisition(agc, 5);
+    assert(agc->acquisition == 1);
+    dsd_speech_agc_set_acquisition(NULL, 1);
+    free(agc);
+    free(x);
+}
+
+/* With the acquisition stage off the gain follows today's law bit for bit and its state stays 0 (check_off_law()) on
+   long mixed signals: the cross-rate material (speech, vowels and tones, 33.9 s) at 8 and 48 kHz and the partition
+   stream (speech, DTMF, a tone, undecodable audio, closes, non-finite samples) through per-call flags at 8 kHz, each
+   with several hundred commits. */
+static void
+test_acq_off_is_off(void) {
+    static const int rates[] = {8000, 48000};
+    for (size_t ri = 0; ri < 2; ri++) {
+        const int rate = rates[ri];
+        const size_t n = secs(rate, XRATE_TOTAL_S);
+        float* x = alloc_f(n);
+        xrate_make(x, n, rate);
+        dsd_speech_agc* agc = new_agc(rate, 4.0f);
+        trace_t t;
+        trace_init(&t, n / (size_t)agc->frame_len);
+        run_traced(agc, x, n, NULL, k_learn, &t);
+        const int bad = check_off_law(agc, &t);
+        SAY("acquisition off, %d Hz mixed material: %d commits, %d steps, %d frames off today's law\n", rate,
+            agc->learned.commits, agc->learned.steps, bad);
+        assert(agc->learned.commits > 300 && bad == 0);
+        trace_free(&t);
+        free(agc);
+        free(x);
+    }
+    stream_t s;
+    stream_make(&s, 8000);
+    float* y = alloc_f(s.n);
+    dsd_speech_agc* agc = drive_fresh(&s, 8000, 4.0f, 0, 0, 0, y, 160);
+    dsd_speech_agc_learned zero;
+    DSD_MEMSET(&zero, 0, sizeof zero);
+    assert(agc->learned.commits > 100 && acq_state_equal(&agc->learned, &zero));
+    free(agc);
+    free(y);
+    stream_free(&s);
 }
 
 /* A non-finite (or absurdly large) sample comes out as 0 and leaves the state alone: the output around it is what the
@@ -2395,14 +3054,26 @@ main(int argc, char** argv) {
     test_noise_veto_hiss();
     test_tone_cap();
     test_decodability_return();
-    test_rollback_matches_control();
+    test_rollback_matches_control(0);
+    test_rollback_matches_control(1);
     test_rollback_keeps_the_commit_clock();
-    test_partition_identity();
-    test_cross_rate();
+    test_partition_identity(0);
+    test_partition_identity(1);
+    test_cross_rate(0);
+    test_cross_rate(1);
     test_ceiling();
-    test_reset_is_fresh();
+    test_reset_is_fresh(0);
+    test_reset_is_fresh(1);
     test_open_at();
     test_settled_gain_db();
+    test_acq_startup_law();
+    test_acq_open_at_prior();
+    test_acq_loud_guard();
+    test_acq_burst_fallback();
+    test_acq_no_bursts();
+    test_acq_burst_then_voiced();
+    test_acq_reset_forgets();
+    test_acq_off_is_off();
     test_non_finite();
     test_fixed_mode_and_start_gain();
     test_fixed_to_auto_then_close();
