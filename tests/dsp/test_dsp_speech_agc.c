@@ -2085,6 +2085,142 @@ test_reset_is_fresh(void) {
     free(x);
 }
 
+/* Closed audio (nothing learns) of one level for @p n samples, one sample per call; @p gains gets each sample's
+   controller gain, linear. */
+static void
+run_closed_gains(dsd_speech_agc* agc, size_t n, float* gains) {
+    for (size_t i = 0; i < n; i++) {
+        float v = 100.0f;
+        dsd_speech_agc_process(agc, &v, 1, 0, 1, 0);
+        gains[i] = agc->g_last;
+    }
+}
+
+/* dsd_speech_agc_open_at() before a commit: the gain follows it at once (ramp 0) or over one frame, linearly (ramp 1),
+   clamped into the controller's range; a tone frame still plays at no more than the start gain; non-finite values are
+   ignored. It is a new opening checkpoint. Once a frame has committed it is ignored; a reset returns to the start
+   gain. */
+static void
+test_open_at(void) {
+    const int rate = 8000;
+    const float g0 = 4.0f;
+    const size_t F = (size_t)frame_len(rate);
+    float* g = alloc_f(F);
+    dsd_speech_agc* agc = new_agc(rate, g0);
+    dsd_speech_agc_open_at(NULL, 10.0f, 0);
+    /* At once. */
+    dsd_speech_agc_open_at(agc, 12.0f, 0);
+    assert(fabsf(agc->learned.gain_db - 12.0f) < 1e-6f);
+    assert(fabsf(dsd_speech_agc_gain_db(agc) - 12.0f) < 1e-4f);
+    run_closed_gains(agc, F, g);
+    assert(fabsf(20.0f * log10f(g[0]) - 12.0f) < 1e-4f && fabsf(20.0f * log10f(g[F - 1]) - 12.0f) < 1e-4f);
+    /* Over one frame, linearly, from a frame boundary. */
+    const float from = agc->g_last;
+    dsd_speech_agc_open_at(agc, 20.0f, 1);
+    assert(fabsf(agc->learned.gain_db - 20.0f) < 1e-6f);
+    run_closed_gains(agc, F, g);
+    const float step = (g[F - 1] - from) / (float)F;
+    for (size_t i = 0; i < F; i++) {
+        assert(fabsf(g[i] - (from + step * (float)(i + 1U))) <= 1e-4f * g[F - 1]);
+    }
+    assert(fabsf(20.0f * log10f(g[F - 1]) - 20.0f) < 1e-4f && fabsf(dsd_speech_agc_gain_db(agc) - 20.0f) < 1e-4f);
+    /* Out of range, then not finite. */
+    dsd_speech_agc_open_at(agc, 100.0f, 0);
+    assert(fabsf(agc->learned.gain_db - (g0 + DSD_SPEECH_AGC_MAX_BOOST_DB)) < 1e-6f);
+    dsd_speech_agc_open_at(agc, -100.0f, 0);
+    assert(fabsf(agc->learned.gain_db - (g0 - DSD_SPEECH_AGC_MAX_CUT_DB)) < 1e-6f);
+    static const float bad[] = {NAN, INFINITY, -INFINITY};
+    for (size_t i = 0; i < 3; i++) {
+        dsd_speech_agc_open_at(agc, bad[i], 0);
+        assert(fabsf(agc->learned.gain_db - (g0 - DSD_SPEECH_AGC_MAX_CUT_DB)) < 1e-6f);
+    }
+    /* The tone cap stays at the start gain. */
+    dsd_speech_agc_open_at(agc, g0 + 20.0f, 0);
+    float* tone = alloc_f(2 * F);
+    float* tone_out = alloc_f(2 * F);
+    assert(dsd_test_synth_tone(tone, 2 * F, rate, 1000.0, -30.0) == 0);
+    DSD_MEMCPY(tone_out, tone, 2 * F * sizeof(float));
+    dsd_speech_agc_process(agc, tone_out, 2 * F, 1, 1, 1);
+    for (size_t i = 0; i < 2 * F; i++) {
+        assert(fabsf(tone_out[i]) <= fabsf(tone[i]) * powf(10.0f, g0 / 20.0f) * (1.0f + 1e-6f));
+    }
+    assert(fabsf(agc->abs_floor_db - (-20.0f - g0 - 60.0f)) < 1e-4f && fabsf(agc->start_gain_db - g0) < 1e-6f);
+    /* A new opening checkpoint: a close 3 frames after it restores the opened gain, not the start gain. */
+    dsd_speech_agc_reset(agc);
+    float* x = alloc_f(6 * F);
+    assert(dsd_test_synth_noise(x, 6 * F, rate, 240, DSD_TEST_NOISE_VOICE_BAND, -50.0) == 0);
+    dsd_speech_agc_process(agc, x, 3 * F, 1, 1, 0);
+    dsd_speech_agc_open_at(agc, 16.0f, 0);
+    dsd_speech_agc_process(agc, x + 3 * F, 3 * F, 1, 1, 0);
+    dsd_speech_agc_gate_closed(agc);
+    assert(fabsf(agc->learned.gain_db - 16.0f) < 1e-6f && fabsf(dsd_speech_agc_gain_db(agc) - 16.0f) < 1e-4f);
+    /* After a commit it is ignored; a reset returns to the start gain. */
+    learn_talker(agc, rate, 2.0, 241, -34.0, 140.0);
+    assert(agc->learned.commits > 0);
+    const dsd_speech_agc_learned learned = agc->learned;
+    const float g_cur = agc->g_cur;
+    dsd_speech_agc_open_at(agc, g0 + 25.0f, 0);
+    assert(same_bits(&agc->learned, &learned, sizeof learned) && same_bits(&agc->g_cur, &g_cur, sizeof g_cur));
+    dsd_speech_agc_reset(agc);
+    assert(fabsf(agc->learned.gain_db - g0) < 1e-6f && fabsf(dsd_speech_agc_gain_db(agc) - g0) < 1e-4f);
+    SAY("open_at: at once, over one frame, clamped, tone cap, checkpoint, ignored after a commit\n");
+    free(x);
+    free(tone_out);
+    free(tone);
+    free(agc);
+    free(g);
+}
+
+/* dsd_speech_agc_settled_gain_db(): 0 (the output untouched) until 20 frames have committed, then 1 with the settled
+   aim clamp(T - S) of that moment, within the controller's range; 0 again after a reset. */
+static void
+test_settled_gain_db(void) {
+    const int rate = 8000;
+    static const float g0s[] = {4.0f, -20.0f}; /* the second clamps the aim at its top, -20 + 30 dB */
+    for (size_t gi = 0; gi < 2; gi++) {
+        const float g0 = g0s[gi];
+        const float lo = g0 - DSD_SPEECH_AGC_MAX_CUT_DB;
+        const float hi = g0 + DSD_SPEECH_AGC_MAX_BOOST_DB;
+        const size_t F = (size_t)frame_len(rate);
+        const size_t n = secs(rate, 4.0);
+        float* x = alloc_f(n);
+        speech_into(x, n, rate, 245, -36.0, 130.0, 0.0);
+        dsd_speech_agc* agc = new_agc(rate, g0);
+        const float sentinel = -999.0f;
+        float got = sentinel;
+        assert(dsd_speech_agc_settled_gain_db(NULL, &got) == 0 && dsd_speech_agc_settled_gain_db(agc, NULL) == 0);
+        int before = 0;
+        int after = 0;
+        float last = 0.0f;
+        for (size_t p = 0; p + F <= n; p += F) {
+            dsd_speech_agc_process(agc, x + p, F, 1, 1, 0);
+            got = sentinel;
+            const int r = dsd_speech_agc_settled_gain_db(agc, &got);
+            if (agc->learned.commits < 20) {
+                assert(r == 0 && same_bits(&got, &sentinel, sizeof got));
+                before++;
+                continue;
+            }
+            const float want = clampf(agc->target_db - agc->learned.level_db, lo, hi);
+            assert(r == 1 && same_bits(&got, &want, sizeof got));
+            assert(dsd_speech_agc_settled_gain_db(agc, NULL) == 0);
+            after++;
+            last = got;
+        }
+        SAY("settled gain (start %+.0f dB): 0 for %d frames, then 1 for %d, last %+.2f dB\n", (double)g0, before, after,
+            (double)last);
+        assert(before > 0 && after > 50);
+        if (gi == 1) {
+            assert(fabsf(last - hi) < 1e-6f);
+        }
+        dsd_speech_agc_reset(agc);
+        got = sentinel;
+        assert(dsd_speech_agc_settled_gain_db(agc, &got) == 0 && same_bits(&got, &sentinel, sizeof got));
+        free(agc);
+        free(x);
+    }
+}
+
 /* A non-finite (or absurdly large) sample comes out as 0 and leaves the state alone: the output around it is what the
    same signal without it gives. */
 static void
@@ -2265,6 +2401,8 @@ main(int argc, char** argv) {
     test_cross_rate();
     test_ceiling();
     test_reset_is_fresh();
+    test_open_at();
+    test_settled_gain_db();
     test_non_finite();
     test_fixed_mode_and_start_gain();
     test_fixed_to_auto_then_close();

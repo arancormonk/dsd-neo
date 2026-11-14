@@ -228,6 +228,28 @@ void dsd_speech_agc_gate_closed(dsd_speech_agc* agc);
 /** A reception opened: push a checkpoint, so a close never undoes more than this reception taught. */
 void dsd_speech_agc_gate_opened(dsd_speech_agc* agc);
 
+/**
+ * @brief Open the reception in progress at @p gain_db in place of the start gain.
+ *
+ * For a caller that knows better than the start gain where a reception should open, such as the gain the same talker
+ * settled at before. The controller gain takes @p gain_db, clamped into the controller's range (-12/+30 dB around the
+ * start gain): at once when @p ramp is 0 (as a reset leaves it, for a reception's first sample), or over the next
+ * frame's worth of samples, linearly, when it is nonzero. It is a new opening checkpoint, so a gate close never
+ * restores the gain from before it. The start gain, the range, the tone cap and the absolute floor stay where the
+ * start gain put them. No effect once the reception has committed a frame, when @p gain_db is not finite, or before
+ * init. A reset returns to the start gain.
+ */
+void dsd_speech_agc_open_at(dsd_speech_agc* agc, float gain_db, int ramp);
+
+/**
+ * @brief The gain the reception's estimate has settled at, for a caller that remembers talkers.
+ *
+ * Once the estimate is established (20 committed frames, 400 ms of speech), @p gain_db gets the gain that plays the
+ * estimated level at the target, within the controller's range, and the call returns 1. Before that, after a reset,
+ * before init or for a NULL @p gain_db it returns 0 and leaves @p gain_db alone.
+ */
+int dsd_speech_agc_settled_gain_db(const dsd_speech_agc* agc, float* gain_db);
+
 /** The gain the last sample got, controller, attenuator and limiter together, in dB (for readouts). */
 float dsd_speech_agc_gain_db(const dsd_speech_agc* agc);
 

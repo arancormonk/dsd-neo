@@ -839,6 +839,40 @@ dsd_speech_agc_gate_opened(dsd_speech_agc* agc) {
     }
 }
 
+void
+dsd_speech_agc_open_at(dsd_speech_agc* agc, float gain_db, int ramp) {
+    if (!agc_ready(agc) || !isfinite(gain_db) || agc->learned.commits != 0) {
+        return;
+    }
+    const float lo = agc->start_gain_db - DSD_SPEECH_AGC_MAX_CUT_DB;
+    const float hi = agc->start_gain_db + DSD_SPEECH_AGC_MAX_BOOST_DB;
+    agc->learned.gain_db = agc_clamp(gain_db, lo, hi);
+    agc->g_target = agc_db2lin(agc->learned.gain_db + agc->learned.atten_db);
+    if (ramp) {
+        agc->g_step = (agc->g_target - agc->g_cur) / (float)agc->frame_len;
+        agc->ramp_left = agc->frame_len;
+    } else {
+        agc->g_cur = agc->g_target;
+        agc->g_step = 0.0f;
+        agc->ramp_left = 0;
+        agc->g_last = agc->g_cur;
+    }
+    agc->gain_dirty = 0;
+    /* As leaving fixed mode: a close never restores the gain from before it. */
+    agc_cp_restart(agc);
+}
+
+int
+dsd_speech_agc_settled_gain_db(const dsd_speech_agc* agc, float* gain_db) {
+    if (!agc_ready(agc) || gain_db == NULL || agc->learned.commits < AGC_EST_CUMULATIVE) {
+        return 0;
+    }
+    const float lo = agc->start_gain_db - DSD_SPEECH_AGC_MAX_CUT_DB;
+    const float hi = agc->start_gain_db + DSD_SPEECH_AGC_MAX_BOOST_DB;
+    *gain_db = agc_clamp(agc->target_db - agc->learned.level_db, lo, hi);
+    return 1;
+}
+
 float
 dsd_speech_agc_gain_db(const dsd_speech_agc* agc) {
     if (!agc_ready(agc)) {
