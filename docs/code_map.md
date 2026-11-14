@@ -8477,26 +8477,39 @@ Key public headers:
     every tuner type a header can name, each same-rate hop's frequency is followed by a rate and each repeated gain
     request is sent, before and after a reconnect, and each hop restarts the watchdog grace; an rtl_tcp device
     answers 0 from both `rtl_device_capture_settings_generation()` and `rtl_device_capture_retune_resets()`).
-  - rtl_tcp connections and reconnects (issue #518 B3, B4, B13, B16, B17; `rtl_device.cpp`). The server sends exactly a
-    12-byte header ("RTL0", tuner type, gain count, big-endian) and then u8 I/Q: `rtl_tcp_read_header()` reads those
-    twelve bytes and nothing more (no gain table), across receive timeouts, with explicit results (SUCCESS, EOF,
-    INVALID, CANCELLED, TIMEOUT after 10 s); an open whose header fails fails. Each connection is a counted
-    `rtl_tcp_conn` (socket, `generation`, its own `tx_lock`, `lost`); the last reference closes the socket. The
-    cancellation token is the stop latch (`stop_requested`, set first by stop and destroy) or the exit flag, never
-    `run`, so the session's first connect and header read (before any reader) are cancellable too. A command (or a gain
-    change's commands, as one unit) takes a reference to the published connection under `tcp_lock`, sends under its
-    `tx_lock` with `rtl_tcp_send_all()` (waits for room a 50 ms slice at a time, checking cancellation between slices,
-    then sends what fits without blocking (`MSG_DONTWAIT`), partial writes continued, 2 s in all; where a send cannot be
-    asked not to block (Winsock) the socket's 2 s send timeout only bounds one that blocks anyway, and any send that
-    fails or times out ends the connection, since Winsock leaves a timed-out socket indeterminate) and, still under
-    `tx_lock`, records what took in the effective record (D6: the device's values plus `tcp_took`) under `tcp_lock` only
-    while that connection is still the published one; `tcp_lock` is never held while sending. With no published
-    connection, or when the connection was lost or replaced meanwhile, a setter returns `RTL_DEVICE_ENOTCONN` and
-    records nothing; a failed send takes down only the connection it used (unpublished, `lost` set, socket shut down, so
-    its reader stops reading it even while the server still sends). Gain follows the USB register-0x19 policy in
-    commands: manual = 0x08 off (left out under test mode) + 0x03 manual + 0x04 gain; automatic = 0x03 auto + 0x08 as
+  - rtl_tcp connections and reconnects (issue #518 B3, B4, B13, B16, B17; gain steps B6; `rtl_device.cpp`). The server
+    sends exactly a 12-byte header ("RTL0", tuner type, gain count, big-endian) and then u8 I/Q: `rtl_tcp_read_header()`
+    reads those twelve bytes and nothing more (no gain table), across receive timeouts, with explicit results (SUCCESS,
+    EOF, INVALID, CANCELLED, TIMEOUT after 10 s); an open whose header fails fails. Each connection is a counted
+    `rtl_tcp_conn` (socket, `generation`, its own `tx_lock`, `lost`, and its header's `tuner_type` and `gain_count`, set
+    when it is made, the first connect's and every reconnect candidate's, and never changed); the last reference closes
+    the socket. The cancellation token is the stop latch (`stop_requested`, set first by stop and destroy) or the exit
+    flag, never `run`, so the session's first connect and header read (before any reader) are cancellable too. A command
+    (or a gain change's commands, as one unit) takes a reference to the published connection under `tcp_lock`, sends
+    under its `tx_lock` with `rtl_tcp_send_all()` (waits for room a 50 ms slice at a time, checking cancellation between
+    slices, then sends what fits without blocking (`MSG_DONTWAIT`), partial writes continued, 2 s in all; where a send
+    cannot be asked not to block (Winsock) the socket's 2 s send timeout only bounds one that blocks anyway, and any
+    send that fails or times out ends the connection, since Winsock leaves a timed-out socket indeterminate) and, still
+    under `tx_lock`, records what took in the effective record (D6: the device's values plus `tcp_took`) under
+    `tcp_lock` only while that connection is still the published one; `tcp_lock` is never held while sending. With no
+    published connection, or when the connection was lost or replaced meanwhile, a setter returns `RTL_DEVICE_ENOTCONN`
+    and records nothing; a failed send takes down only the connection it used (unpublished, `lost` set, socket shut
+    down, so its reader stops reading it even while the server still sends). Gain follows the USB register-0x19 policy
+    in commands: manual = 0x08 off (left out under test mode) + 0x03 manual + 0x04 gain; automatic = 0x03 auto + 0x08 as
     configured; test mode (0x07) is asserted after either and wins; turning test mode off sends 0x08 as the gain state
-    wants. The nearest-gain setter is a manual gain change (B16). Before any gain takes the record holds the session's
+    wants. The nearest-gain setter is a manual gain change (B16). A manual gain goes out as the nearest step of the
+    connection's tuner (B6, `rtl_tcp_conn_gain_step()`): the server hands 0x04 to `rtlsdr_set_tuner_gain()` as it is
+    (an R82xx rounds 30 dB up to 32.8, an E4000 refuses it) and acknowledges nothing, so the step comes from librtlsdr's
+    own tables (`rtlsdr_get_tuner_gains()`, copied in `src/io/radio/rtl_tuner_gains.c` with the osmocom commit they
+    came from; `dsd_rtl_tuner_gain_nearest()`, a tie keeping the lower step as the USB path does), keyed by the
+    header's tuner (E4000 14 steps, FC0012 5, FC0013 23, FC2580 1, R820T and R828D the shared 29). A tuner the tables
+    do not know, or a gain count other than that tuner's table size, sends the request raw, as before. The step is
+    picked from the connection the unit goes out on (`rtl_tcp_apply_on_conn()` hands it to the build) and recorded
+    (`gain`, beside `gain_request`, the tenths asked for) and reported to the caller (both setters) only once the unit
+    went out on the still-published connection; a failed or superseded send changes neither. A step of 0 dB or less
+    stays a manual gain. A reconnect's replay sends `gain_request` as the new connection's own step (a server back with
+    another tuner gets its nearest step to what was asked, not to the old step) and records that step only once the
+    hand-off is published. Before any gain takes the record holds the session's
     default (automatic, digital AGC as configured); a gain or test-mode change that failed part way, or whose
     connection was replaced before commitment, marks it (`gain_unknown`, `testmode_unknown`), and the replay then
     asserts the record's state even if none ever took (as a
@@ -8532,7 +8545,10 @@ Key public headers:
     ("the RTL-SDR is being reset; try again in a moment", "the rtl_tcp server is not connected"); a PPM change, which
     applies later on the controller, is refused up front, including PPM-delta actions. A refused gain or bias-tee
     edit leaves the configuration unchanged. Tests: `IO_RTL_TCP_RECONNECT` (a scripted fake rtl_tcp server
-    on loopback; device level with the test as the controller and stream level through the real controller; ASan/TSan),
+    on loopback; device level with the test as the controller and stream level through the real controller; ASan/TSan;
+    the `tcp_gain_*` cases: steps per header, raw fallback, auto/manual policy and 0 dB manual, failed and superseded
+    sends, a reconnect to another tuner re-snapping the request, a failed replay recording nothing),
+    `IO_RTL_TUNER_GAINS` (the tables and tie rule, portable, every platform),
     `DSP_SYMBOL_RTL_YIELD` (`sticky_yield_across_reconnect`), `APP_COMMAND_QUEUE` (the toasts).
 - Rig/control: `include/dsd-neo/io/control.h`, `include/dsd-neo/io/rigctl_client.h`,
   `include/dsd-neo/io/m17_udp.h`

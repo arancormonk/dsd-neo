@@ -1764,8 +1764,9 @@ test_retune_keeps_pair_alignment(void) {
 /* ---- Gain over rtl_tcp (B9, B16) ---- */
 
 /* nearest_manual_gain_sends_agc_off_and_survives_reconnect: from automatic gain with the digital AGC on, the autogain
- * supervisor's nearest manual gain turns the digital AGC off with manual mode and the gain; the device and the
- * published telemetry say manual, and a reconnect restores manual with the digital AGC off. */
+ * supervisor's nearest manual gain turns the digital AGC off with manual mode and the gain, the R820T's step nearest
+ * the 20 dB asked (19.7 dB); the device and the published telemetry say manual at that step, and a reconnect restores
+ * it with the digital AGC off. */
 void
 test_nearest_manual_gain_sends_agc_off_and_survives_reconnect(void) {
     server_reset(default_script());
@@ -1781,16 +1782,16 @@ test_nearest_manual_gain_sends_agc_off_and_survives_reconnect(void) {
     assert(rtl_stream_test_apply_gain(r.dev, RTL_STREAM_TEST_GAIN_AUTOGAIN, 200, &published_rc, &published_gain,
                                       &published_auto)
            == 0);
-    assert(published_rc == 0 && published_gain == 200 && published_auto == 0);
+    assert(published_rc == 0 && published_gain == 197 && published_auto == 0);
     assert(rtl_device_is_auto_gain(r.dev) == 0);
     int gain = 0;
-    assert(rtl_device_get_tuner_gain(r.dev, &gain) == 0 && gain == 200);
+    assert(rtl_device_get_tuner_gain(r.dev, &gain) == 0 && gain == 197);
     server_model m = sync_server(r.dev, 0);
-    assert(m.gain_manual == 1 && m.gain == 200 && m.reg19 == 0x05);
+    assert(m.gain_manual == 1 && m.gain == 197 && m.reg19 == 0x05);
     lose_connection(r);
     wait_generation(r, 2U);
     m = sync_server(r.dev, 1);
-    assert(m.gain_manual == 1 && m.gain == 200 && m.reg19 == 0x05);
+    assert(m.gain_manual == 1 && m.gain == 197 && m.reg19 == 0x05);
     rig_close(r);
 }
 
@@ -1913,6 +1914,244 @@ test_each_gain_command_failure_propagates(void) {
     gen += 1U;
     wait_generation(r, gen);
     assert(rtl_device_is_auto_gain(r.dev) == 0);
+    rig_close(r);
+}
+
+/* ---- Manual gain on the server tuner's steps (B6) ---- */
+
+/* A server whose header names tuner @p type with @p count gains. */
+conn_script
+tuner_script(uint32_t type, uint32_t count) {
+    conn_script sc = default_script();
+    sc.tuner_type = type;
+    sc.gain_count = count;
+    return sc;
+}
+
+/* The device's recorded manual gain (tenths of a dB); it must be manual. */
+int
+recorded_manual_gain(rtl_device* dev) {
+    assert(rtl_device_is_auto_gain(dev) == 0);
+    int gain = -12345;
+    assert(rtl_device_get_tuner_gain(dev, &gain) == 0);
+    return gain;
+}
+
+/* Both setters' manual 30 dB on a server with header @p type / @p count: sent, recorded and reported as @p want. */
+void
+gain_step_case(uint32_t type, uint32_t count, int want) {
+    server_reset(tuner_script(type, count));
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
+    rig_open(r, 0, 0);
+    configure(r.dev);
+    rig_start(r);
+    assert(rtl_device_set_gain(r.dev, 300) == 0);
+    assert(recorded_manual_gain(r.dev) == want);
+    server_model m = sync_server(r.dev, 0);
+    assert(m.gain_manual == 1 && m.gain == want && m.reg19 == 0x05);
+    assert(rtl_device_set_gain(r.dev, kAutoGain) == 0);
+    int selected = -12345;
+    assert(rtl_device_set_gain_nearest(r.dev, 300, &selected) == 0 && selected == want);
+    assert(recorded_manual_gain(r.dev) == want);
+    m = sync_server(r.dev, 0);
+    assert(m.gain_manual == 1 && m.gain == want && m.reg19 == 0x05);
+    const std::vector<uint32_t> sent{(uint32_t)want, (uint32_t)want};
+    assert(server_params(0, 0x04) == sent);
+    rig_close(r);
+}
+
+/* tcp_gain_snapped_r820t: a manual gain goes out as the nearest step of the tuner the server's header names (its
+ * librtlsdr table), from either setter, and that step is what the device records and reports: 30 dB is 29.7 dB on an
+ * R820T or R828D (29 gains), 29.0 dB on an E4000 (14 gains). */
+void
+test_tcp_gain_snapped_r820t(void) {
+    gain_step_case(5U, 29U, 297);
+    gain_step_case(6U, 29U, 297);
+    gain_step_case(1U, 14U, 290);
+}
+
+/* tcp_gain_raw_fallback: a tuner librtlsdr does not know, or a header whose gain count is not that tuner's table
+ * size, leaves the request as it is, as before. */
+void
+test_tcp_gain_raw_fallback(void) {
+    gain_step_case(0U, 29U, 300);
+    gain_step_case(7U, 29U, 300);
+    gain_step_case(5U, 28U, 300);
+    gain_step_case(1U, 29U, 300);
+}
+
+/* A manual request whose step on the R820T is 0 dB (-5.0 dB asked), from either setter: a manual gain of 0 dB, not
+ * automatic, which a reconnect keeps. */
+void
+zero_step_stays_manual(const dev_rig& r) {
+    assert(rtl_device_set_gain(r.dev, -50) == 0);
+    assert(recorded_manual_gain(r.dev) == 0);
+    server_model m = sync_server(r.dev, 0);
+    assert(m.gain_manual == 1 && m.gain == 0 && m.reg19 == 0x05);
+    assert(rtl_device_set_gain(r.dev, kAutoGain) == 0);
+    int selected = -12345;
+    assert(rtl_device_set_gain_nearest(r.dev, -50, &selected) == 0 && selected == 0);
+    assert(recorded_manual_gain(r.dev) == 0);
+    m = sync_server(r.dev, 0);
+    assert(m.gain_manual == 1 && m.gain == 0 && m.reg19 == 0x05);
+    lose_connection(r);
+    wait_generation(r, 2U);
+    m = sync_server(r.dev, 1);
+    assert(m.gain_manual == 1 && m.gain == 0 && m.reg19 == 0x05);
+    assert(recorded_manual_gain(r.dev) == 0);
+}
+
+/* tcp_gain_auto_manual_transitions: manual and automatic gain keep the rtl_tcp gain policy (0x08 off, 0x03 1, the step;
+ * 0x03 0 and the digital AGC back), and a manual request whose step is 0 dB stays a manual gain of 0 dB. */
+void
+test_tcp_gain_auto_manual_transitions(void) {
+    server_reset(default_script());
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
+    rig_open(r, 0, 0);
+    configure(r.dev);
+    rig_start(r);
+    rtl_device_test_tcp_state st{};
+    rtl_device_test_tcp_state_get(r.dev, &st);
+    const int auto_reg19 = st.digital_agc != 0 ? 0x25 : 0x05;
+    (void)sync_server(r.dev, 0);
+    size_t mark_n = server_conn_get(0).cmds.size();
+    assert(rtl_device_set_gain(r.dev, 300) == 0);
+    server_model m = sync_server(r.dev, 0);
+    assert(m.gain_manual == 1 && m.gain == 297 && m.reg19 == 0x05);
+    server_conn c = server_conn_get(0);
+    assert(c.cmds[mark_n].id == 0x08 && c.cmds[mark_n].param == 0U);
+    assert(c.cmds[mark_n + 1U].id == 0x03 && c.cmds[mark_n + 1U].param == 1U);
+    assert(c.cmds[mark_n + 2U].id == 0x04 && c.cmds[mark_n + 2U].param == 297U);
+    mark_n = c.cmds.size();
+    assert(rtl_device_set_gain(r.dev, kAutoGain) == 0);
+    assert(rtl_device_is_auto_gain(r.dev) == 1);
+    m = sync_server(r.dev, 0);
+    assert(m.gain_manual == 0 && m.reg19 == auto_reg19);
+    c = server_conn_get(0);
+    assert(c.cmds[mark_n].id == 0x03 && c.cmds[mark_n].param == 0U);
+    assert(c.cmds[mark_n + 1U].id == 0x08);
+    zero_step_stays_manual(r);
+    rig_close(r);
+}
+
+/* tcp_gain_failed_send_keeps_record: a manual gain change whose 0x04 fails records nothing and leaves the caller's
+ * selection alone; the reconnect replays the gain that took. */
+void
+test_tcp_gain_failed_send_keeps_record(void) {
+    server_reset(default_script());
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
+    rig_open(r, 0, 0);
+    configure(r.dev);
+    rig_start(r);
+    assert(rtl_device_set_gain(r.dev, 280) == 0);
+    rtl_device_test_tcp_fail_command(0x04);
+    int selected = -12345;
+    assert(rtl_device_set_gain_nearest(r.dev, 380, &selected) == RTL_DEVICE_ENOTCONN);
+    rtl_device_test_tcp_fail_command(-1);
+    assert(selected == -12345);
+    assert(recorded_manual_gain(r.dev) == 280);
+    wait_generation(r, 2U);
+    server_model m = sync_server(r.dev, 1);
+    assert(m.gain_manual == 1 && m.gain == 280 && m.reg19 == 0x05);
+    rtl_device_test_tcp_fail_command(0x04);
+    assert(rtl_device_set_gain(r.dev, 380) == RTL_DEVICE_ENOTCONN);
+    rtl_device_test_tcp_fail_command(-1);
+    assert(recorded_manual_gain(r.dev) == 280);
+    wait_generation(r, 3U);
+    m = sync_server(r.dev, 2);
+    assert(m.gain_manual == 1 && m.gain == 280 && m.reg19 == 0x05);
+    const std::vector<uint32_t> replayed{280U};
+    assert(server_params(2, 0x04) == replayed);
+    rig_close(r);
+}
+
+/* tcp_gain_stale_connection_records_nothing: a manual gain sent whole on a connection (an R820T) that was replaced (by
+ * an E4000) before it could record records nothing and reports nothing. The replacement's replay publishes the gain
+ * that took before it as the E4000's step, and the next reconnect (an R820T again) the same request as its own step. */
+void
+test_tcp_gain_stale_connection_records_nothing(void) {
+    server_reset(default_script());
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
+    rig_open(r, 0, 0);
+    configure(r.dev);
+    rig_start(r);
+    assert(rtl_device_set_gain(r.dev, 280) == 0);
+    (void)sync_server(r.dev, 0);
+    server_queue(tuner_script(1U, 14U));
+    g_old.rig = &r;
+    g_old.held.store(0);
+    g_old.armed.store(1);
+    rtl_device_test_tcp_set_commit_hook(hold_first_generation, nullptr);
+    int selected = -12345;
+    const int rc = rtl_device_set_gain_nearest(r.dev, 380, &selected);
+    rtl_device_test_tcp_set_commit_hook(nullptr, nullptr);
+    assert(rc == RTL_DEVICE_ENOTCONN && g_old.held.load() == 1);
+    assert(selected == -12345);
+    assert(recorded_manual_gain(r.dev) == 290);
+    /* The replacement got only its replay, the old request as the E4000's step. */
+    const server_model replaced = sync_server(r.dev, 1);
+    assert(replaced.gain_manual == 1 && replaced.gain == 290 && replaced.reg19 == 0x05);
+    const std::vector<uint32_t> replayed{290U};
+    assert(server_params(1, 0x04) == replayed);
+    lose_connection(r);
+    wait_generation(r, 3U);
+    const server_model m = sync_server(r.dev, 2);
+    assert(m.gain_manual == 1 && m.gain == 280 && m.reg19 == 0x05);
+    assert(recorded_manual_gain(r.dev) == 280);
+    rig_close(r);
+}
+
+/* tcp_gain_reconnect_changed_tuner: a reconnect to a server with another tuner replays the original request as that
+ * tuner's nearest step, never the old tuner's step re-snapped: 30 dB is 29.7 dB on the R820T and 29.0 dB on the
+ * E4000; 38 dB is 34.0 dB on the E4000 (a tie with 42.0, the lower kept) and 38.6 dB back on an R820T, where 34.0 dB
+ * would be 33.8. A replay that fails commits no step: the record keeps the last one published. */
+void
+test_tcp_gain_reconnect_changed_tuner(void) {
+    server_reset(default_script());
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
+    rig_open(r, 0, 0);
+    configure(r.dev);
+    rig_start(r);
+    assert(rtl_device_set_gain(r.dev, 300) == 0);
+    assert(recorded_manual_gain(r.dev) == 297);
+    (void)sync_server(r.dev, 0);
+
+    server_queue(tuner_script(1U, 14U));
+    lose_connection(r);
+    wait_generation(r, 2U);
+    server_model m = sync_server(r.dev, 1);
+    assert(m.gain_manual == 1 && m.gain == 290 && m.reg19 == 0x05);
+    assert(recorded_manual_gain(r.dev) == 290);
+
+    int selected = -12345;
+    assert(rtl_device_set_gain_nearest(r.dev, 380, &selected) == 0 && selected == 340);
+    assert(recorded_manual_gain(r.dev) == 340);
+    lose_connection(r);
+    wait_generation(r, 3U);
+    m = sync_server(r.dev, 2);
+    assert(m.gain_manual == 1 && m.gain == 386 && m.reg19 == 0x05);
+    assert(recorded_manual_gain(r.dev) == 386);
+
+    /* The E4000 again, its replay failing at the gain: nothing published, the record keeps 38.6 dB. */
+    server_queue(tuner_script(1U, 14U));
+    r.hold.store(1);
+    lose_connection(r);
+    assert(wait_until([&] { return rtl_device_tcp_handoff_take(r.dev) != 0; }, kWaitMs));
+    rtl_device_test_tcp_fail_command(0x04);
+    assert(rtl_device_tcp_publish_handoff(r.dev, nullptr, 0U) != 0);
+    rtl_device_test_tcp_fail_command(-1);
+    assert(recorded_manual_gain(r.dev) == 386);
+    assert(server_params(3, 0x04).empty());
+    r.hold.store(0);
+    wait_generation(r, 5U);
+    m = sync_server(r.dev, 4);
+    assert(m.gain_manual == 1 && m.gain == 386 && m.reg19 == 0x05);
+    assert(recorded_manual_gain(r.dev) == 386);
     rig_close(r);
 }
 
@@ -2587,6 +2826,12 @@ const named_test kTests[] = {
     {"testmode_wins_over_gain_over_tcp", test_testmode_wins_over_gain_over_tcp},
     {"each_gain_command_failure_propagates", test_each_gain_command_failure_propagates},
     {"partial_gain_unit_reasserted_on_reconnect", test_partial_gain_unit_reasserted_on_reconnect},
+    {"tcp_gain_snapped_r820t", test_tcp_gain_snapped_r820t},
+    {"tcp_gain_raw_fallback", test_tcp_gain_raw_fallback},
+    {"tcp_gain_auto_manual_transitions", test_tcp_gain_auto_manual_transitions},
+    {"tcp_gain_failed_send_keeps_record", test_tcp_gain_failed_send_keeps_record},
+    {"tcp_gain_stale_connection_records_nothing", test_tcp_gain_stale_connection_records_nothing},
+    {"tcp_gain_reconnect_changed_tuner", test_tcp_gain_reconnect_changed_tuner},
     {"unavailable_server_command_applies", test_unavailable_server_command_applies},
     {"preconfig_backlog_discarded", test_preconfig_backlog_discarded},
     {"stop_with_handoff_queued_and_claimed", test_stop_with_handoff_queued_and_claimed},

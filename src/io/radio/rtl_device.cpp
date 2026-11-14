@@ -72,6 +72,7 @@ struct airspy_source;
 #include "rtl_perf.h"
 #include "rtl_replay_device.h"
 #include "rtl_stream_shared.hpp"
+#include "rtl_tuner_gains.h"
 #include "rtl_usb_identity.h"
 #include "soapy_profile.h"
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
@@ -403,6 +404,10 @@ struct rtl_usb_effective {
 struct rtl_tcp_conn {
     dsd_socket_t sock = DSD_INVALID_SOCKET;
     uint64_t generation = 0U;
+    /* The server's header: its tuner (librtlsdr's enum) and gain count, set when the connection is made and never
+     * changed, so a manual gain sent on it goes out as that tuner's nearest step (rtl_tcp_conn_gain_step()). */
+    uint32_t tuner_type = 0U;
+    uint32_t gain_count = 0U;
     dsd_mutex_t tx_lock;
     std::atomic<int> refs;
     /* Taken down (a failed command, a stop): its reader stops reading it at once. A shutdown alone does not: what
@@ -645,6 +650,9 @@ struct rtl_device {
      * which it owns, before its next chunk. */
     std::atomic<int> tcp_restart_pending{0};
     struct rtl_tcp_took tcp_took{};
+    /* The manual gain last asked for (tenths of a dB, as asked; RTL_AUTO_GAIN with automatic gain), beside gain, the
+     * step it went out as on the connection it took on: a reconnect replays it as the new server's own step. */
+    int gain_request = 0;
     struct rtl_capture_u8_byte_carry iq_byte_carry{}; /* one buffered raw byte when a chunk ends mid-I/Q sample */
 
     struct rtl_if_gain if_gains[16] = {};
@@ -6028,7 +6036,7 @@ rtl_tcp_header_failure_name(rtl_tcp_header_result r) {
 }
 
 static struct rtl_tcp_conn*
-rtl_tcp_conn_new(dsd_socket_t sock) {
+rtl_tcp_conn_new(dsd_socket_t sock, uint32_t tuner_type, uint32_t gain_count) {
     auto* conn = new (std::nothrow) rtl_tcp_conn();
     if (!conn) {
         return nullptr;
@@ -6038,6 +6046,8 @@ rtl_tcp_conn_new(dsd_socket_t sock) {
         return nullptr;
     }
     conn->sock = sock;
+    conn->tuner_type = tuner_type;
+    conn->gain_count = gain_count;
     conn->refs.store(1, std::memory_order_relaxed);
     conn->lost.store(0, std::memory_order_relaxed);
     return conn;
@@ -6199,15 +6209,16 @@ rtl_tcp_send_unit(struct rtl_device* dev, const struct rtl_tcp_conn* conn, const
     return rc;
 }
 
-/* Send one setter's commands (@p build fills them, under tcp_lock, from the record) as one unit on the published
- * connection, under its tx_lock and never under tcp_lock, then, still holding tx_lock so the record follows the order
- * the server saw, let @p commit record what took under tcp_lock, only while that connection is still the published
- * one; when the send failed, @p failed notes (under tcp_lock) what part of it may have reached the server. Returns 0;
- * RTL_DEVICE_ENOTCONN with no published connection (nothing sent or recorded), when the connection was lost or replaced
- * meanwhile (nothing recorded), or when the send failed, which loses that connection and only that one. */
+/* Send one setter's commands (@p build fills them, under tcp_lock, from the record and the connection they go out on)
+ * as one unit on the published connection, under its tx_lock and never under tcp_lock, then, still holding tx_lock so
+ * the record follows the order the server saw, let @p commit record what took under tcp_lock, only while that
+ * connection is still the published one; when the send failed, @p failed notes (under tcp_lock) what part of it may
+ * have reached the server. Returns 0; RTL_DEVICE_ENOTCONN with no published connection (nothing sent or recorded),
+ * when the connection was lost or replaced meanwhile (nothing recorded), or when the send failed, which loses that
+ * connection and only that one. */
 template <typename Build, typename Commit, typename Failed>
 static int
-rtl_tcp_apply(struct rtl_device* dev, Build&& build, Commit&& commit, Failed&& failed) {
+rtl_tcp_apply_on_conn(struct rtl_device* dev, Build&& build, Commit&& commit, Failed&& failed) {
     rtl_tcp_lock(dev);
     struct rtl_tcp_conn* conn = dev->tcp_conn;
     if (conn) {
@@ -6220,7 +6231,7 @@ rtl_tcp_apply(struct rtl_device* dev, Build&& build, Commit&& commit, Failed&& f
     (void)dsd_mutex_lock(&conn->tx_lock);
     struct rtl_tcp_cmd cmds[kRtlTcpMaxUnit];
     rtl_tcp_lock(dev);
-    const size_t n = build(cmds);
+    const size_t n = build(static_cast<const struct rtl_tcp_conn*>(conn), cmds);
     rtl_tcp_unlock(dev);
     int rc = rtl_tcp_send_unit(dev, conn, cmds, n);
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
@@ -6248,6 +6259,14 @@ rtl_tcp_apply(struct rtl_device* dev, Build&& build, Commit&& commit, Failed&& f
     }
     rtl_tcp_conn_unref(conn);
     return rc;
+}
+
+/* rtl_tcp_apply_on_conn() for commands that do not depend on the connection. */
+template <typename Build, typename Commit, typename Failed>
+static int
+rtl_tcp_apply(struct rtl_device* dev, Build&& build, Commit&& commit, Failed&& failed) {
+    return rtl_tcp_apply_on_conn(
+        dev, [&](const struct rtl_tcp_conn*, struct rtl_tcp_cmd* cmds) { return build(cmds); }, commit, failed);
 }
 
 template <typename Build, typename Commit>
@@ -6300,23 +6319,41 @@ rtl_tcp_gain_commands(int auto_gain, int gain, int digital_agc, int testmode, st
     return n;
 }
 
-/* Change the gain as one unit (rtl_tcp_gain_commands()), recording mode, gain and the digital AGC only once all of it
- * went out (B16). */
+/* The step a manual gain request (tenths of a dB) goes out as on @p conn: the nearest of its tuner's gains per
+ * librtlsdr's tables (B6), since the server sets the value it is sent as it is and acknowledges nothing; the request
+ * itself for a tuner, or a gain count, those tables do not know. */
 static int
-rtl_tcp_set_gain(struct rtl_device* dev, int auto_gain, int gain) {
+rtl_tcp_conn_gain_step(const struct rtl_tcp_conn* conn, int request) {
+    int step = request;
+    (void)dsd_rtl_tuner_gain_nearest(conn->tuner_type, conn->gain_count, request, &step);
+    return step;
+}
+
+/* Change the gain as one unit (rtl_tcp_gain_commands()), a manual @p gain as the step of the connection it goes out
+ * on, recording mode, request, step and the digital AGC only once all of it went out (B16), and only then reporting
+ * the step in @p out_selected (when set). A step of 0 dB or less stays a manual gain. */
+static int
+rtl_tcp_set_gain(struct rtl_device* dev, int auto_gain, int gain, int* out_selected) {
     const int digital_agc = auto_gain ? env_agc_want() : 0;
-    return rtl_tcp_apply(
+    int step = gain;
+    const int rc = rtl_tcp_apply_on_conn(
         dev,
-        [&](struct rtl_tcp_cmd* cmds) {
-            return rtl_tcp_gain_commands(auto_gain, gain, digital_agc, dev->testmode_on, cmds, 0U);
+        [&](const struct rtl_tcp_conn* conn, struct rtl_tcp_cmd* cmds) {
+            step = auto_gain ? RTL_AUTO_GAIN : rtl_tcp_conn_gain_step(conn, gain);
+            return rtl_tcp_gain_commands(auto_gain, step, digital_agc, dev->testmode_on, cmds, 0U);
         },
         [&]() {
             dev->agc_mode = auto_gain ? 1 : 0;
-            dev->gain = auto_gain ? RTL_AUTO_GAIN : gain;
+            dev->gain = step;
+            dev->gain_request = auto_gain ? RTL_AUTO_GAIN : gain;
             dev->digital_agc_wanted = digital_agc;
             dev->tcp_took.gain = 1;
         },
         [&]() { dev->tcp_took.gain_unknown = 1; });
+    if (rc == 0 && out_selected) {
+        *out_selected = step;
+    }
+    return rc;
 }
 
 namespace {
@@ -6503,13 +6540,13 @@ rtl_tcp_replay_tuning_commands(const struct rtl_device* dev, struct rtl_tcp_cmd*
     return n;
 }
 
-/* The replay unit's gain and front-end commands (tcp_lock held): gain (with the digital AGC and test mode), IF gains,
- * bias tee, appended at @p n. Returns the new count. */
+/* The replay unit's gain and front-end commands (tcp_lock held): gain (with the digital AGC and test mode; a manual
+ * gain as @p gain_step), IF gains, bias tee, appended at @p n. Returns the new count. */
 static size_t
-rtl_tcp_replay_gain_commands(const struct rtl_device* dev, struct rtl_tcp_cmd* cmds, size_t n) {
+rtl_tcp_replay_gain_commands(const struct rtl_device* dev, int gain_step, struct rtl_tcp_cmd* cmds, size_t n) {
     const struct rtl_tcp_took& took = dev->tcp_took;
     if (took.gain || took.gain_unknown) {
-        n = rtl_tcp_gain_commands(dev->agc_mode, dev->gain, dev->digital_agc_wanted, dev->testmode_on, cmds, n);
+        n = rtl_tcp_gain_commands(dev->agc_mode, gain_step, dev->digital_agc_wanted, dev->testmode_on, cmds, n);
     } else if (took.testmode || took.testmode_unknown) {
         cmds[n++] = {0x07, (uint32_t)(dev->testmode_on ? 1 : 0)};
         if (!dev->testmode_on) {
@@ -6527,12 +6564,12 @@ rtl_tcp_replay_gain_commands(const struct rtl_device* dev, struct rtl_tcp_cmd* c
 }
 
 /* The effective record as one replay unit (tcp_lock held), in the order a USB recovery replays: crystals, direct
- * sampling, frequency, rate, offset tuning, PPM, gain (with the digital AGC and test mode), IF gains, bias tee. Every
- * control that took is replayed as last taken, a value its server's defaults may share or not: a server restarted
- * with other defaults ends with the session's settings. Returns the count. */
+ * sampling, frequency, rate, offset tuning, PPM, gain (with the digital AGC and test mode; a manual gain as
+ * @p gain_step), IF gains, bias tee. Every control that took is replayed as last taken, a value its server's defaults
+ * may share or not: a server restarted with other defaults ends with the session's settings. Returns the count. */
 static size_t
-rtl_tcp_replay_commands(const struct rtl_device* dev, struct rtl_tcp_cmd* cmds) {
-    return rtl_tcp_replay_gain_commands(dev, cmds, rtl_tcp_replay_tuning_commands(dev, cmds, 0U));
+rtl_tcp_replay_commands(const struct rtl_device* dev, int gain_step, struct rtl_tcp_cmd* cmds) {
+    return rtl_tcp_replay_gain_commands(dev, gain_step, cmds, rtl_tcp_replay_tuning_commands(dev, cmds, 0U));
 }
 
 int
@@ -6549,18 +6586,21 @@ rtl_device_tcp_handoff_take(struct rtl_device* dev) {
     return took;
 }
 
-/* Send the effective record to the handed-over @p conn as one unit. Nobody else can send on it yet: it is published
- * only after. The record holds still meanwhile, since every setter fails while no connection is published and a
- * command still in flight on the lost one records nothing. */
+/* Send the effective record to the handed-over @p conn as one unit, a manual gain as the request's step on @p conn
+ * (stored in @p out_gain_step, for the publication to record; the record's gain with automatic gain). Nobody else can
+ * send on it yet: it is published only after. The record holds still meanwhile, since every setter fails while no
+ * connection is published and a command still in flight on the lost one records nothing. */
 static int
-rtl_tcp_send_replay(struct rtl_device* dev, struct rtl_tcp_conn* conn) {
+rtl_tcp_send_replay(struct rtl_device* dev, struct rtl_tcp_conn* conn, int* out_gain_step) {
     (void)dsd_mutex_lock(&conn->tx_lock);
     struct rtl_tcp_cmd cmds[kRtlTcpMaxUnit];
     rtl_tcp_lock(dev);
-    const size_t n = rtl_tcp_replay_commands(dev, cmds);
+    const int gain_step = dev->agc_mode ? dev->gain : rtl_tcp_conn_gain_step(conn, dev->gain_request);
+    const size_t n = rtl_tcp_replay_commands(dev, gain_step, cmds);
     rtl_tcp_unlock(dev);
     const int rc = rtl_tcp_send_unit(dev, conn, cmds, n);
     (void)dsd_mutex_unlock(&conn->tx_lock);
+    *out_gain_step = gain_step;
     return rc;
 }
 
@@ -6619,9 +6659,14 @@ rtl_device_tcp_publish_handoff(struct rtl_device* dev, char* why, size_t why_siz
         }
         return -EINVAL;
     }
-    int rc = rtl_tcp_send_replay(dev, conn);
+    int gain_step = 0;
+    int rc = rtl_tcp_send_replay(dev, conn, &gain_step);
     rtl_tcp_lock(dev);
     rc = rtl_tcp_settle_handoff_locked(dev, conn, rc);
+    if (rc == 0 && !dev->agc_mode) {
+        /* Published: the new server holds the request as its own step. */
+        dev->gain = gain_step;
+    }
     const uint32_t rate = dev->rate;
     rtl_tcp_unlock(dev);
     if (rc != 0) {
@@ -6836,8 +6881,12 @@ rtl_tcp_reconnect_attempt(struct rtl_device* s, struct rtl_tcp_loop_state* st, i
         return 0;
     }
     rtl_tcp_prepare_socket(sock);
-    const rtl_tcp_header_result hr = rtl_tcp_read_header(sock, kRtlTcpHeaderMs, rtl_tcp_cancelled, s, nullptr, nullptr);
-    struct rtl_tcp_conn* conn = (hr == RTL_TCP_HEADER_SUCCESS) ? rtl_tcp_conn_new(sock) : nullptr;
+    uint32_t tuner_type = 0U;
+    uint32_t gain_count = 0U;
+    const rtl_tcp_header_result hr =
+        rtl_tcp_read_header(sock, kRtlTcpHeaderMs, rtl_tcp_cancelled, s, &tuner_type, &gain_count);
+    struct rtl_tcp_conn* conn =
+        (hr == RTL_TCP_HEADER_SUCCESS) ? rtl_tcp_conn_new(sock, tuner_type, gain_count) : nullptr;
     if (!conn) {
         dsd_socket_close(sock);
         if (hr == RTL_TCP_HEADER_CANCELLED) {
@@ -9271,7 +9320,8 @@ rtl_tcp_open_first_connection(struct rtl_device* dev, const char* host, int port
     rtl_tcp_prepare_socket(sfd);
     const rtl_tcp_header_result hr =
         rtl_tcp_read_header(sfd, kRtlTcpHeaderMs, rtl_tcp_cancelled, dev, tuner_type, gain_count);
-    struct rtl_tcp_conn* conn = (hr == RTL_TCP_HEADER_SUCCESS) ? rtl_tcp_conn_new(sfd) : nullptr;
+    struct rtl_tcp_conn* conn =
+        (hr == RTL_TCP_HEADER_SUCCESS) ? rtl_tcp_conn_new(sfd, *tuner_type, *gain_count) : nullptr;
     if (!conn) {
         if (hr != RTL_TCP_HEADER_SUCCESS && hr != RTL_TCP_HEADER_CANCELLED) {
             DSD_FPRINTF(stderr, "rtl_tcp: %s:%d sent no rtl_tcp header (%s).\n", host, port,
@@ -9321,6 +9371,7 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
        configured, which a reconnect asserts if a failed change may have moved the server off it. */
     dev->agc_mode = 1;
     dev->gain = RTL_AUTO_GAIN;
+    dev->gain_request = RTL_AUTO_GAIN;
     dev->digital_agc_wanted = env_agc_want();
     dev->tcp_autotune = autotune_enabled ? 1 : 0;
     dev->offset_took = 0;
@@ -10736,7 +10787,7 @@ rtl_device_set_gain(struct rtl_device* dev, int gain) {
         return rtl_usb_set_gain(dev, gain);
     }
     if (dev->backend == RTL_BACKEND_TCP) {
-        return rtl_tcp_set_gain(dev, gain == RTL_AUTO_GAIN, gain);
+        return rtl_tcp_set_gain(dev, gain == RTL_AUTO_GAIN, gain, nullptr);
     }
     int rc = -1;
     int applied_gain = gain;
@@ -10776,15 +10827,11 @@ rtl_device_set_gain_nearest_usb(struct rtl_device* dev, int target_tenth_db, int
     return 0;
 }
 
-/* The server picks the nearest gain itself, so the target goes out as a manual gain change, with the same policy
- * (digital AGC off) and the same record-on-success (B16). */
+/* The target goes out as a manual gain change, as the nearest step of the server's tuner (rtl_tcp_set_gain()), with
+ * the same policy (digital AGC off) and the same record-on-success (B16). */
 static int
 rtl_device_set_gain_nearest_tcp(struct rtl_device* dev, int target_tenth_db, int* out_selected_tenth_db) {
-    const int rc = rtl_tcp_set_gain(dev, 0, target_tenth_db);
-    if (rc == 0) {
-        *out_selected_tenth_db = target_tenth_db;
-    }
-    return rc;
+    return rtl_tcp_set_gain(dev, 0, target_tenth_db, out_selected_tenth_db);
 }
 
 #ifdef USE_SOAPYSDR

@@ -392,9 +392,10 @@ unsigned rtl_device_capture_retune_resets(const struct rtl_device* dev);
  *
  * On rtl_tcp the same policy goes out as one unit of commands: manual gain is digital AGC off (0x08, skipped while test
  * mode is on), manual mode (0x03) and the gain (0x04); automatic gain is automatic mode and the digital AGC as
- * configured; test mode (0x07) is asserted again after either. The change is recorded only once every command went
+ * configured; test mode (0x07) is asserted again after either. A manual gain goes out as the nearest step of the
+ * server's tuner, as rtl_device_set_gain_nearest() picks it. The change is recorded only once every command went
  * out on the still-published connection; a failed send loses the connection, and its reconnect restores the gain the
- * server last took.
+ * server last took (a manual one as the new server's nearest step to the gain asked).
  *
  * @param dev RTL-SDR device handle.
  * @param gain Gain in tenths of dB, or AUTO_GAIN for automatic.
@@ -408,8 +409,9 @@ int rtl_device_set_gain(struct rtl_device* dev, int gain);
  * For USB (librtlsdr) backend, queries the list of supported gains and
  * applies the nearest value to the requested target; a gain table that
  * cannot be read is an error and changes nothing. For rtl_tcp, sends
- * the target value directly as a manual gain change (rtl_device_set_gain()'s policy, digital AGC off) and lets the
- * server handle quantization.
+ * the nearest step of the server's tuner (librtlsdr's table for the tuner its header names; the target itself for a
+ * tuner or gain count that table does not know) as a manual gain change (rtl_device_set_gain()'s policy, digital AGC
+ * off).
  *
  * @param dev RTL-SDR device handle.
  * @param target_tenth_db Target gain in tenths of dB (e.g., 180 for 18.0 dB).

@@ -17406,6 +17406,19 @@ target_include_directories(
 )
 add_test(NAME IO_RTL_CAPTURE_PHASE COMMAND dsd-neo_test_io_rtl_capture_phase)
 
+# rtl_tcp manual gain steps from the server header's tuner (B6); portable, so it
+# runs on every platform with or without radio support.
+add_executable(dsd-neo_test_io_rtl_tuner_gains io/test_io_rtl_tuner_gains.c)
+target_include_directories(
+    dsd-neo_test_io_rtl_tuner_gains
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+)
+target_link_libraries(
+    dsd-neo_test_io_rtl_tuner_gains
+    PRIVATE dsd-neo_io_rtl_tuner_gains
+)
+add_test(NAME IO_RTL_TUNER_GAINS COMMAND dsd-neo_test_io_rtl_tuner_gains)
+
 if(DSD_HAS_RADIO)
     add_executable(dsd-neo_test_io_rtl_auto_ppm io/test_io_rtl_auto_ppm.cpp)
     target_include_directories(
