@@ -1273,9 +1273,9 @@ Extra decoder arguments containing `-t` still take precedence. Voice/sync-loss h
 is separate from idle dwell on every target and the activity hold on conventional targets.
 The editor's Advanced section has **Voice only** and **Skip silent channels** checkboxes. Each list
 stores its own, but they are session settings (`--scan-voice-only`, `--scan-skip-silent`): lists that differ cannot
-scan together, Extra decoder arguments may not carry those switches, and a change applies at the next start. Skip
-silent channels unchecked starts the scan with `--no-scan-skip-silent`, so a config file loaded with `--config` in
-Extra decoder arguments cannot turn it on. See
+scan together, Extra decoder arguments may not carry those switches, and a change applies at the next start. An
+unchecked box starts the scan with `--no-scan-voice-only` or `--no-scan-skip-silent`, so a config file loaded with
+`--config` in Extra decoder arguments cannot turn that setting on. See
 [Skipping silent channels](#skipping-silent-channels).
 The editor does not model the per-visit cap: put `--scan-max-visit-ms <ms>` in Extra decoder
 arguments to cap every target in the session, or import a target CSV whose `options`

@@ -17689,12 +17689,13 @@ A list's session switches sit in the editor's Advanced section (`ScanListScreen.
 `PlexCheckBox` whose help hangs under its label and is read as its `Accessible.description` (the help `Text` is
 `Accessible.ignored`). `normalize()` (`scan_lists_model.cpp`) copies both and defaults a missing one to off, so a list
 saved before a switch existed starts with it off and writes it at its next save; a backup carries `scan_lists.json`
-whole. `appendScanOptions()` sends each flag once per session, from the first list; skip-silent is sent off too
-(`--no-scan-skip-silent` for an unchecked or missing box), so the box wins over an INI that a `--config` in the Extra
-decoder arguments loads, which the decoder reads before the command line (`UI_QT_SESSION_ARGS_PARSE`). The scan-list
-Extra decoder arguments gate (`session_args_scan_extra_safe()`) refuses both forms of both flags, since the checkboxes
-own them; a saved system's own or the app's extra options still pass them (`session_args_extra_safe()`), so a
-RadioReference conventional system that runs `-Y` can turn skip-silent on. `metrics_model` copies target
+whole. `appendScanOptions()` sends each flag once per session, from the first list, and sends it off too
+(`--no-scan-voice-only`, `--no-scan-skip-silent` for an unchecked or missing box), so each box wins over an INI that a
+`--config` in the Extra decoder arguments loads, which the decoder reads before the command line
+(`UI_QT_SESSION_ARGS_PARSE`). The scan-list Extra decoder arguments gate (`session_args_scan_extra_safe()`) refuses
+both forms of both flags, since the checkboxes own them; a saved system's own or the app's extra options still pass
+them (`session_args_extra_safe()`), so a RadioReference conventional system that runs `-Y` can turn skip-silent on.
+`metrics_model` copies target
 identity from the tick's held snapshot; no extra snapshot reader is introduced.
 
 Several lists in one session (issue #697):

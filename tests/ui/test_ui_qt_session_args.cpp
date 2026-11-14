@@ -1880,7 +1880,19 @@ test_scan_lists_argv(void) {
                                                        && three.count(QStringLiteral("--scan-voice-only")) == 1
                                                        && three.count(QStringLiteral("--scan-skip-silent")) == 1);
     expect("the extra options come last", three.constLast() == QStringLiteral("-N"));
-    expect("a list with skip-silent on sends no off flag", three.count(QStringLiteral("--no-scan-skip-silent")) == 0);
+    expect("a list with both switches on sends no off flag",
+           three.count(QStringLiteral("--no-scan-skip-silent")) == 0
+               && three.count(QStringLiteral("--no-scan-voice-only")) == 0);
+    /* Voice only off, or a list saved without it, says so too, over a config file the extra options load. */
+    QVariantMap anyCall = list;
+    anyCall["voiceOnly"] = false;
+    QStringList voiceOff = dsd_qt::session_args_scan_build(anyCall, "851.375", "/a.csv", prefs, &error);
+    expect("a list with voice-only off sends the off flag, once",
+           !voiceOff.contains("--scan-voice-only") && voiceOff.count(QStringLiteral("--no-scan-voice-only")) == 1);
+    anyCall.remove("voiceOnly");
+    voiceOff = dsd_qt::session_args_scan_build(anyCall, "851.375", "/a.csv", prefs, &error);
+    expect("a list without voice-only sends the off flag, once",
+           !voiceOff.contains("--scan-voice-only") && voiceOff.count(QStringLiteral("--no-scan-voice-only")) == 1);
     /* Issue #834: skip-silent is off unless the list turns it on, and a list saved before it existed reads as off. The
        box owns the setting, so off is said over a config file the extra options load (UI_QT_SESSION_ARGS_PARSE). */
     QVariantMap quiet = list;
