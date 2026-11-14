@@ -1001,7 +1001,7 @@ test_facch1_copy_that_confirms_publishes(void) {
                          nxdn_confirm_is_confirmed(&state), 1);
         rc |= expect_int(isolated ? "isolated-second-copy-publishes" : "running-repeat-not-decoded-again",
                          g_vcall_publications, 1);
-        nxdn_confirm_end_frame(&state);
+        nxdn_confirm_end_frame(NULL, &state);
         dsd_state_ext_free_all(&state);
     }
     dsd_trunk_scan_hooks_set(NULL);
@@ -1098,11 +1098,11 @@ test_confirming_frame_reports_its_ran_to_search(void) {
     make_facch2_trellis(facch2, 1U, 0x2AU, 0x10U);
     nxdn_confirm_begin_frame(&state);
     nxdn_handle_facch2_udch(&opts, &state, facch2, facch2_m_data, 0x456U, 0x457U, 1U);
-    nxdn_confirm_end_frame(&state);
+    nxdn_confirm_end_frame(NULL, &state);
     rc |= expect_int("search-facch2-bad-crc-reports-nothing", g_search_evidence.calls, 0);
     nxdn_confirm_begin_frame(&state);
     nxdn_handle_facch2_udch(&opts, &state, facch2, facch2_m_data, 0x456U, 0x456U, 1U);
-    nxdn_confirm_end_frame(&state);
+    nxdn_confirm_end_frame(NULL, &state);
     rc |= expect_int("search-facch2-one-confirmation", g_search_evidence.calls, 1);
     rc |= expect_int("search-facch2-sees-the-ran", g_search_evidence.access_valid, 1);
     rc |= expect_int("search-facch2-ran", g_search_evidence.ran, 0x2A);
@@ -1115,7 +1115,7 @@ test_confirming_frame_reports_its_ran_to_search(void) {
     write_bits_msb(cac, 10U, 6U, 0x10U);
     nxdn_confirm_begin_frame(&state);
     nxdn_handle_cac(&opts, &state, cac, cac_m_data, 0U);
-    nxdn_confirm_end_frame(&state);
+    nxdn_confirm_end_frame(NULL, &state);
     rc |= expect_int("search-cac-one-confirmation", g_search_evidence.calls, 1);
     rc |= expect_int("search-cac-sees-the-ran", g_search_evidence.access_valid, 1);
     rc |= expect_int("search-cac-ran", g_search_evidence.ran, 0x2D);
@@ -1128,11 +1128,11 @@ test_confirming_frame_reports_its_ran_to_search(void) {
     write_bits_msb(sacch, 10U, 6U, 0x10U);
     nxdn_confirm_begin_frame(&state);
     nxdn_handle_sacch(&opts, &state, sacch, sacch_m_data, 0x2AU, 0x2AU);
-    nxdn_confirm_end_frame(&state);
+    nxdn_confirm_end_frame(NULL, &state);
     rc |= expect_int("search-sacch-first-frame-reports-nothing", g_search_evidence.calls, 0);
     nxdn_confirm_begin_frame(&state);
     nxdn_handle_sacch(&opts, &state, sacch, sacch_m_data, 0x2AU, 0x2AU);
-    nxdn_confirm_end_frame(&state);
+    nxdn_confirm_end_frame(NULL, &state);
     rc |= expect_int("search-sacch-one-confirmation", g_search_evidence.calls, 1);
     rc |= expect_int("search-sacch-sees-the-ran", g_search_evidence.access_valid, 1);
     rc |= expect_int("search-sacch-ran", g_search_evidence.ran, 0x15);

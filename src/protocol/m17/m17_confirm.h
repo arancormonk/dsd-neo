@@ -29,6 +29,7 @@
 #ifndef DSD_NEO_PROTOCOL_M17_M17_CONFIRM_H
 #define DSD_NEO_PROTOCOL_M17_M17_CONFIRM_H
 
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
 #ifdef __cplusplus
@@ -42,7 +43,11 @@ typedef enum {
 } m17_evidence;
 
 /** @brief Frames of weak evidence in a row that together confirm a transmission. */
-#define M17_CONFIRM_WEAK_OBSERVES 2U
+#define M17_CONFIRM_WEAK_OBSERVES   2U
+
+/** @brief How long a scan quiet check waits for the frame that completes a weak streak (issue #834): two 40 ms
+ * stream frames. */
+#define M17_CONFIRM_PARTIAL_HOLD_MS 80U
 
 /** @brief Forget everything learned about the current transmission. */
 void m17_confirm_reset(dsd_state* state);
@@ -54,9 +59,13 @@ void m17_confirm_begin_frame(dsd_state* state);
  * @brief Report a check this frame passed.
  *
  * Strong evidence confirms immediately. Weak evidence counts once per frame however many times
- * it is reported, and confirms on the M17_CONFIRM_WEAK_OBSERVES'th frame in a row.
+ * it is reported, and confirms on the M17_CONFIRM_WEAK_OBSERVES'th frame in a row. Where a signal
+ * search hears the confirmation, a scan quiet check hears it too, through @p opts
+ * (dsd_frame_sync_hook_content_evidence(), issue #834): PROVEN for strong evidence and a completed
+ * weak streak, PARTIAL (M17_CONFIRM_PARTIAL_HOLD_MS) for a weak frame a later one must complete.
+ * @p opts may be NULL (no quiet check).
  */
-void m17_confirm_note_evidence(dsd_state* state, m17_evidence evidence);
+void m17_confirm_note_evidence(const dsd_opts* opts, dsd_state* state, m17_evidence evidence);
 
 /** @brief Close a frame's accounting; a frame that proved nothing breaks the weak streak. */
 void m17_confirm_end_frame(dsd_state* state);

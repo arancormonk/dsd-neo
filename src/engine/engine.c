@@ -3714,6 +3714,8 @@ carrier_boundary_stream_gap(dsd_opts* opts, dsd_state* state) {
     dsd_analog_rx_reset(state);
     /* The same carrier, so the same system's patches: only the listening clock's continuity breaks. */
     dsd_p25_patch_listen_break(state);
+    /* A scan quiet check waits for no verdict of what the gap cut (issue #834). */
+    dsd_engine_scan_quiet_pending_reset(state);
     state->carrier_seq++;
     dsd_state_note_carrier_change(state);
 }
@@ -4232,20 +4234,17 @@ live_scanner_dispatch_synced_frame_locked(dsd_opts* opts, dsd_state* state, cons
     const int frame_dispatchable = dsd_trunk_tuning_frame_is_current(dispatch_generation);
     if (!frame_tune_generation || frame_dispatchable) {
         processFrame(opts, state);
-        /* A provisional P25 sync is activity to a scan quiet check only once its frame's verdict passed (issue #834). */
-        if (opts->scan_skip_silent) {
-            dsd_engine_scan_quiet_settle_sync(state);
-        }
     } else {
-        if (opts->scan_skip_silent) {
-            dsd_engine_scan_quiet_drop_sync(state);
-        }
         /* A real sync the retune generation says is stale. Nothing consumes it, so
          * without saying so the SPS hunt is charged for the search that found it and
          * credited nothing -- and rotates the profile off the channel the retune was
          * tuning to, mid-retune (#392). processFrame() is what normally stamps this
          * field, so the skip has to stamp it itself. */
         state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_WITHHELD;
+    }
+    /* The frame's verdict is in, for a scan quiet check (issue #834): one load while skip-silent is off. */
+    if (opts->scan_skip_silent) {
+        dsd_engine_scan_quiet_frame_end(state);
     }
     if (state->input_interrupt_reason == DSD_INTERRUPT_STREAM_GAP) {
         return frame_dispatchable;
@@ -4294,17 +4293,25 @@ live_scanner_receive_should_yield(const dsd_opts* opts, dsd_state* state) {
            && dsd_engine_channel_scan_has_other_row(opts, state);
 }
 
-/* The frame sync's answer. Any sync it returns, YSF and D-STAR's among them, is activity to a scan quiet check
-   (issue #834), a provisional P25 one only once its frame's verdict passed (dsd_engine_scan_quiet_note_frame_sync(),
-   settled after processFrame()): one load while skip-silent is off. */
+/* The frame sync's answer. A sync it returns is no activity to a scan quiet check (issue #834 D8): its frame's verdict
+   is pending until the frame ends, and only content its protocol's gate passes counts. One load while skip-silent is
+   off. */
 static int
 live_scanner_frame_sync(dsd_opts* opts, dsd_state* state) {
-    const uint64_t accepts_before = dsd_engine_scan_quiet_sync_accepts(state);
     const int synctype = getFrameSync(opts, state);
     if (synctype > DSD_SYNC_NONE && opts->scan_skip_silent) {
-        dsd_engine_scan_quiet_note_frame_sync(state, accepts_before);
+        dsd_engine_scan_quiet_note_frame_sync(state);
     }
     return synctype;
+}
+
+/* The synced-frames loop leaves before its frame's end, or at a boundary: a scan quiet check waits for no verdict of
+   it (issue #834). One load while skip-silent is off. */
+static void
+live_scanner_quiet_pending_reset(const dsd_opts* opts, dsd_state* state) {
+    if (opts->scan_skip_silent) {
+        dsd_engine_scan_quiet_pending_reset(state);
+    }
 }
 
 static void
@@ -4318,10 +4325,12 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
            (a control channel) would otherwise go on decoding under the frequency that failed. Two loads while no tune is
            noted. */
         if (dsd_engine_manual_tune_settled_ready()) {
+            live_scanner_quiet_pending_reset(opts, state);
             state->synctype = DSD_SYNC_NONE;
             break;
         }
         if (!dsd_engine_channel_scan_service_sync(opts, state)) {
+            live_scanner_quiet_pending_reset(opts, state);
             break;
         }
         /* processFrame() runs under the tick guard: nothing below it may pump
@@ -4364,14 +4373,23 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
             state->synctype = DSD_SYNC_NONE;
             break;
         }
+        /* A -Y row's quiet result (issue #834): a rejected sync no longer ends the check, so under syncs that keep
+           coming (NXDN48 or dPMR noise) the row steps here, at a frame boundary, as after the hunt's hand-back:
+           noCarrier() decides. */
+        if (dsd_engine_scan_quiet_frame_yield(opts, state)) {
+            state->synctype = DSD_SYNC_NONE;
+            break;
+        }
         dsd_runtime_pump_controls(opts, state);
         /* A command replaced the input (issue #634): what follows is another stream, which the outer loop starts with
            the end of this reception. */
         if (state->input_boundary) {
+            live_scanner_quiet_pending_reset(opts, state);
             state->synctype = DSD_SYNC_NONE;
             break;
         }
         if (!dsd_engine_channel_scan_service_sync(opts, state)) {
+            live_scanner_quiet_pending_reset(opts, state);
             break;
         }
         /* Refresh after controls, even with the voice gate off: continuous sync
@@ -4382,11 +4400,6 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
         }
         state->synctype = live_scanner_frame_sync(opts, state);
         (void)dsd_engine_slicer_thresholds_refresh(state, threshold_cache);
-    }
-    /* Every dispatched frame settled its sync: one still deferred here was never dispatched (a manual tune settled, a
-       scan row commit), and gave no verdict. */
-    if (opts->scan_skip_silent) {
-        dsd_engine_scan_quiet_drop_sync(state);
     }
 }
 

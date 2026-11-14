@@ -954,26 +954,31 @@ test_budget_exit_runs_the_no_sync_hooks(void) {
     assert(g_no_carrier_order > g_release_order);
 }
 
-/* Issue #834: a scan quiet check's in-hunt service, faked as the engine's. It answers 1 (hand back) from the first
-   300-symbol point at or after g_quiet_ready_at symbols, but only while the scan-owner sync sequence the engine bumps
-   at every returned sync (g_quiet_sync_seq) has not moved since its request (g_quiet_sync_at_request): the engine's
-   rule (scan_quiet.c, ENGINE_TRUNK_SCAN). */
+/* Issue #834: a scan quiet check's in-hunt service, faked as the engine's. It answers HAND_BACK from the first
+   300-symbol point at or after g_quiet_ready_at symbols, LIVE before it, but only while the scan-owner activity
+   sequence (g_quiet_sync_seq), which moves only for a frame its protocol's gate passed (D8), has not moved since its
+   request (g_quiet_sync_at_request); NONE (the check DONE) once it has: the engine's rule (scan_quiet.c,
+   ENGINE_TRUNK_SCAN). A rejected sync moves nothing. With g_quiet_always_live it answers LIVE throughout. */
 static long g_quiet_ready_at = 0;
 static long g_quiet_asks = 0;
 static long g_quiet_handbacks = 0;
 static long g_quiet_sync_seq = 0;
 static long g_quiet_sync_at_request = 0;
+static int g_quiet_always_live = 0;
 
 static int
 fake_scan_quiet_service(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     g_quiet_asks++;
-    if (g_symbols_emitted < g_quiet_ready_at || g_quiet_sync_seq != g_quiet_sync_at_request) {
-        return 0;
+    if (g_quiet_sync_seq != g_quiet_sync_at_request) {
+        return DSD_SCAN_QUIET_NONE;
+    }
+    if (g_quiet_always_live || g_symbols_emitted < g_quiet_ready_at) {
+        return DSD_SCAN_QUIET_LIVE;
     }
     g_quiet_handbacks++;
-    return 1;
+    return DSD_SCAN_QUIET_HAND_BACK;
 }
 
 static void
@@ -1027,9 +1032,10 @@ test_a_quiet_result_hands_back_within_one_point(void) {
     }
 }
 
-/* Issue #834: no hand-back once a sync moved the sequence. Syncs arrive inside the hunt while a quiet result would
-   otherwise be ready; each returned sync is bumped as engine.c's live_scanner_frame_sync() does, so every later
-   300-symbol point is a no, and the hunt keeps returning its syncs. */
+/* Issue #834: no hand-back once a frame's checked content moved the sequence. Syncs arrive inside the hunt while a
+   quiet result would otherwise be ready; each returned sync's frame is scripted as one its protocol's gate passed
+   (PROVEN, which moves the sequence), so every later 300-symbol point is a no, and the hunt keeps returning its syncs.
+ */
 static void
 test_the_hunt_returns_its_syncs_once_the_quiet_service_answers_no(void) {
     static dsd_opts opts;
@@ -1044,7 +1050,7 @@ test_the_hunt_returns_its_syncs_once_the_quiet_service_answers_no(void) {
         const int sync = getFrameSync(&opts, &state);
         if (sync > DSD_SYNC_NONE) {
             syncs++;
-            g_quiet_sync_seq++; /* the engine's bump */
+            g_quiet_sync_seq++; /* the frame's PROVEN note */
         }
     }
     dsd_frame_sync_hooks_set(NULL);
@@ -1053,6 +1059,49 @@ test_the_hunt_returns_its_syncs_once_the_quiet_service_answers_no(void) {
     assert(syncs > 1);
     assert(g_quiet_handbacks == 1);
     assert(g_quiet_asks > g_quiet_handbacks);
+}
+
+/* Issue #834 D8: syncs whose frames their protocol's gate rejects (noise passing a sync word) move nothing, so the hunt
+   keeps handing back at the 300-symbol points it reaches between them, and returns its syncs in between. A check that
+   is only LIVE (measuring, or a result held while a verdict is pending) never hands back: the hunt runs its pass to its
+   end. */
+static void
+test_rejected_syncs_keep_the_hand_backs_and_live_never_yields(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_hunt_opts_state(&opts, &state, 0);
+    assert(init_state_buffers(&state));
+    stream_reset(FALSE_SYNC_MARKER, 400);
+    dsd_frame_sync_reset_mod_state();
+    quiet_service_install(0, 1, &opts);
+    int syncs = 0;
+    while (g_symbols_emitted < 6000) {
+        if (getFrameSync(&opts, &state) > DSD_SYNC_NONE) {
+            syncs++; /* a rejected frame: nothing moves */
+        }
+    }
+    dsd_frame_sync_hooks_set(NULL);
+    free_state_buffers(&state);
+    if (syncs <= 1 || g_quiet_handbacks <= 1) {
+        DSD_FPRINTF(stderr, "FAIL #834: rejected syncs: %d syncs, %ld hand-backs\n", syncs, g_quiet_handbacks);
+    }
+    assert(syncs > 1);
+    assert(g_quiet_handbacks > 1);
+
+    init_hunt_opts_state(&opts, &state, 0);
+    assert(init_state_buffers(&state));
+    stream_reset("", 0);
+    dsd_frame_sync_reset_mod_state();
+    quiet_service_install(0, 1, &opts);
+    g_quiet_always_live = 1;
+    const int sync = getFrameSync(&opts, &state);
+    const long read = g_symbols_emitted;
+    g_quiet_always_live = 0;
+    dsd_frame_sync_hooks_set(NULL);
+    free_state_buffers(&state);
+    assert(sync == -1);
+    assert(read >= DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS);
+    assert(g_quiet_asks > 0 && g_quiet_handbacks == 0);
 }
 
 /* Issue #634: a hunt read that left a silent input's wait for a queued command is no symbol and no pass. getFrameSync()
@@ -1427,6 +1476,7 @@ main(void) {
     test_a_trunk_scan_dwell_returns_inside_the_pass();
     test_a_quiet_result_hands_back_within_one_point();
     test_the_hunt_returns_its_syncs_once_the_quiet_service_answers_no();
+    test_rejected_syncs_keep_the_hand_backs_and_live_never_yields();
     test_locked_modulation_rotates_within_equal_timing();
     test_withheld_syncs_do_not_rotate_a_profile();
     test_withheld_syncs_do_not_hold_a_wrong_profile();

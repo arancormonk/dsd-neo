@@ -22,6 +22,7 @@
 #include <dsd-neo/protocol/p25/p25p1_nid_verdict.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <mbelib-neo/mbelib.h>
@@ -659,6 +660,11 @@ dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
      * here -- a locked modulation and a demodulator the pair above will not speak for still
      * leave that true. */
     if (duid != P25P1_DUID_INVALID) {
+        /* A NID the BCH(63) validated, under its own NAC: activity to a scan quiet check (issue #834). A tolerant
+           sync's dropped NID and a failed one are none. */
+        if (p25p1_nid_verdict_validates(&verdict)) {
+            dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+        }
         state->p25_p1_nid_evidence = 1;
         state->p25_p1_nid_evidence_symbolcnt = state->symbolcnt;
         /* An FDMA carrier: a trunked system's return from a Phase 2 voice channel to its Phase 1 control channel (or a

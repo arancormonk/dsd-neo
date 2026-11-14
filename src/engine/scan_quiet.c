@@ -12,6 +12,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -225,14 +226,14 @@ typedef struct {
     uint64_t request_seq;
     uint32_t ticket;
     uint64_t deadline_ms;
-    /* The visit's activity baseline: the sync sequence and the decode time when its tune was issued (a landed visit
-       carries them on its landing's note; a park still in flight takes them at its first publication, and keeps them
-       when its landing adopts it), kept for that visit across its suspensions, restarts and retries. A sync, a carrier
-       or allowed activity since then ends the visit's check, whatever phase the check was in. visit_set 0 before the
-       visit's first publication. */
+    /* The visit's activity baseline: the activity sequence and the decode time when its tune was issued (a landed
+       visit carries them on its landing's note; a park still in flight takes them at its first publication, and keeps
+       them when its landing adopts it), kept for that visit across its suspensions, restarts and retries. Checked
+       content, a carrier or allowed activity since then ends the visit's check, whatever phase the check was in.
+       visit_set 0 before the visit's first publication. */
     int visit_set;
     scan_quiet_visit_key visit_key;
-    uint64_t sync_seq;
+    uint64_t activity_seq;
     double visit_decode_m;
     uint64_t ready_ms;
     dsd_signal_quiet_result result;
@@ -330,14 +331,25 @@ quiet_age_ms(uint64_t now_ms, uint64_t since_ms) {
     return now_ms >= since_ms ? now_ms - since_ms : 0U;
 }
 
-/* Whether a sync or a carrier was heard since the visit's activity baseline. */
+/* Whether a frame's verdict is still awaited (issue #834 D8): a sync whose frame has not ended, or a PARTIAL frame's
+   hold not over yet (both sides on the decode clock). A quiet result is neither handed back, applied nor declined while
+   one is; the check's reconcile, collection and deadlines go on. */
 static int
-quiet_visit_heard_sync(const dsd_engine_scan_owner* owner, const scan_quiet_check* c) {
-    return c->visit_set && quiet_key_equal(&c->visit_key, &c->key) && owner->sync_seq != c->sync_seq;
+quiet_pending(const dsd_engine_scan_owner* owner) {
+    if (owner->frame_pending) {
+        return 1;
+    }
+    return owner->pending_until_m > 0.0 && dsd_decode_now_mono_s() < owner->pending_until_m;
 }
 
-/* Reconcile: a changed visit or revision suspends the check; a sync since the visit's activity baseline, or a READY
-   result past its age, ends it. */
+/* Whether checked content or a carrier was heard since the visit's activity baseline. */
+static int
+quiet_visit_heard_activity(const dsd_engine_scan_owner* owner, const scan_quiet_check* c) {
+    return c->visit_set && quiet_key_equal(&c->visit_key, &c->key) && owner->activity_seq != c->activity_seq;
+}
+
+/* Reconcile: a changed visit or revision suspends the check; activity since the visit's activity baseline, or a READY
+   result past its age, ends it. A pending frame verdict ends nothing: a READY result it holds back still ages out. */
 static void
 quiet_reconcile(const dsd_opts* opts, const dsd_state* state, const dsd_engine_scan_owner* owner, scan_quiet_check* c,
                 uint64_t now_ms) {
@@ -350,7 +362,7 @@ quiet_reconcile(const dsd_opts* opts, const dsd_state* state, const dsd_engine_s
         quiet_end(c, SCAN_QUIET_SUSPENDED);
         return;
     }
-    if (quiet_visit_heard_sync(owner, c)) {
+    if (quiet_visit_heard_activity(owner, c)) {
         quiet_end(c, SCAN_QUIET_DONE);
         return;
     }
@@ -608,12 +620,12 @@ quiet_visit_baseline(const dsd_engine_scan_owner* owner, scan_quiet_check* c, co
     const dsd_engine_scan_landing* landing = &owner->landing;
     if (key->epoch != 0U && landing->by == quiet_landing_by(key->owner) && landing->epoch == key->epoch) {
         /* A landed visit counts from its tune's issue, which its landing's note carries. */
-        c->sync_seq = landing->sync_seq;
+        c->activity_seq = landing->activity_seq;
         c->visit_decode_m = landing->tune_decode_m;
         return;
     }
     /* A park still in flight counts from its tune's issue, the scan's last tune request. */
-    c->sync_seq = owner->tune_sync_seq;
+    c->activity_seq = owner->tune_activity_seq;
     c->visit_decode_m = owner->tune_decode_m;
 }
 
@@ -629,8 +641,9 @@ quiet_visit_tune_seq(const dsd_engine_scan_owner* owner, const scan_quiet_visit_
 }
 
 /* A publication's reconcile, and whether @p e's visit has its check ended already: DONE for the visit, a visit tuned
-   before the setting was turned on (then DONE now: the setting applies from the next tune), or a sync or a carrier
-   heard in it since its activity baseline, its check suspended or not (then DONE now: none is made for it again). */
+   before the setting was turned on (then DONE now: the setting applies from the next tune), or checked content or a
+   carrier heard in it since its activity baseline, its check suspended or not (then DONE now: none is made for it
+   again). */
 static int
 quiet_publication_ends_visit(const dsd_opts* opts, const dsd_state* state, const dsd_engine_scan_owner* owner,
                              scan_quiet_check* c, const scan_quiet_eligibility* e, uint64_t now_ms) {
@@ -652,7 +665,7 @@ quiet_publication_ends_visit(const dsd_opts* opts, const dsd_state* state, const
         return 1;
     }
     quiet_visit_baseline(owner, c, &e->key);
-    if (owner->sync_seq == c->sync_seq) {
+    if (owner->activity_seq == c->activity_seq) {
         return 0;
     }
     quiet_end(c, SCAN_QUIET_DONE);
@@ -695,12 +708,26 @@ dsd_engine_scan_quiet_service(const dsd_opts* opts, dsd_state* state) {
     dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
     scan_quiet_check* c = quiet_check_get(owner);
     if (!c || c->phase == SCAN_QUIET_SUSPENDED || c->phase == SCAN_QUIET_DONE) {
-        return 0;
+        return DSD_SCAN_QUIET_NONE;
     }
     const uint64_t now_ms = dsd_realtime_mono_ms();
     quiet_reconcile(opts, state, owner, c, now_ms);
     quiet_step(c, now_ms);
-    return c->phase == SCAN_QUIET_READY && quiet_ready_passes(opts, state, c);
+    if (!quiet_check_active(c)) {
+        return DSD_SCAN_QUIET_NONE;
+    }
+    /* A READY result a frame's pending verdict holds back is LIVE: it stays READY, and still ages out. */
+    if (c->phase == SCAN_QUIET_READY && !quiet_pending(owner) && quiet_ready_passes(opts, state, c)) {
+        return DSD_SCAN_QUIET_HAND_BACK;
+    }
+    return DSD_SCAN_QUIET_LIVE;
+}
+
+int
+dsd_engine_scan_quiet_frame_yield(const dsd_opts* opts, dsd_state* state) {
+    /* The setting first: one load while it is off. */
+    return opts && opts->scan_skip_silent && opts->scanner_mode == 1
+           && dsd_engine_scan_quiet_service(opts, state) == DSD_SCAN_QUIET_HAND_BACK;
 }
 
 int
@@ -711,8 +738,9 @@ scan_quiet_apply(const dsd_opts* opts, dsd_state* state, int owner_kind, const s
         return 0;
     }
     quiet_reconcile(opts, state, owner, c, dsd_realtime_mono_ms());
-    if (c->phase != SCAN_QUIET_READY || c->key.epoch == 0U) {
-        /* Declined by the reconcile, or a park whose landing the coordinator has not noted yet. */
+    if (c->phase != SCAN_QUIET_READY || c->key.epoch == 0U || quiet_pending(owner)) {
+        /* Declined by the reconcile, a park whose landing the coordinator has not noted yet, or held while a frame's
+           verdict is pending (kept READY: neither applied nor declined). */
         return 0;
     }
     c->phase = SCAN_QUIET_DONE; /* consumed, or declined: one skip per visit */
@@ -727,7 +755,7 @@ scan_quiet_reconcile_declined(const dsd_opts* opts, dsd_state* state, int owner_
         return;
     }
     quiet_reconcile(opts, state, owner, c, dsd_realtime_mono_ms());
-    if (c->phase == SCAN_QUIET_READY && c->key.owner == owner_kind && !guard_lost) {
+    if (c->phase == SCAN_QUIET_READY && c->key.owner == owner_kind && !guard_lost && !quiet_pending(owner)) {
         c->phase = SCAN_QUIET_DONE;
     }
 }
@@ -812,6 +840,13 @@ int
 dsd_engine_scan_quiet_service(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+    return DSD_SCAN_QUIET_NONE;
+}
+
+int
+dsd_engine_scan_quiet_frame_yield(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
     return 0;
 }
 
@@ -894,6 +929,8 @@ quiet_skip_landed_visit(dsd_engine_scan_owner* owner) {
 void
 dsd_engine_scan_quiet_setting_changed(dsd_state* state, int turned_on) {
     dsd_engine_scan_quiet_invalidate(state);
+    /* Nothing noted while the setting was on is waited for once it changes. */
+    dsd_engine_scan_quiet_pending_reset(state);
 #ifdef USE_RADIO
     dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
     /* The setting turned: the visit's activity baseline is set again at its next publication (a landed visit's from
@@ -910,4 +947,83 @@ dsd_engine_scan_quiet_setting_changed(dsd_state* state, int turned_on) {
 #else
     (void)turned_on;
 #endif
+}
+
+/* Wait for a PARTIAL verdict for @p hold_ms more (capped), from now on the decode clock; a longer wait already running
+   stays. */
+static void
+quiet_pending_extend(dsd_engine_scan_owner* owner, uint32_t hold_ms) {
+    const uint32_t capped = hold_ms < SCAN_QUIET_PENDING_MAX_MS ? hold_ms : SCAN_QUIET_PENDING_MAX_MS;
+    const double until_m = dsd_decode_now_mono_s() + (double)capped / 1000.0;
+    if (until_m > owner->pending_until_m) {
+        owner->pending_until_m = until_m;
+    }
+}
+
+void
+dsd_engine_scan_quiet_note_evidence(dsd_state* state, int level, uint32_t hold_ms) {
+    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
+    if (!owner) {
+        return;
+    }
+    if (level == DSD_CONTENT_EVIDENCE_PROVEN) {
+        /* Activity, once a frame however many of its checks pass; it dominates: nothing is waited for any more. */
+        if (!owner->frame_pending || owner->frame_evidence != (uint8_t)DSD_CONTENT_EVIDENCE_PROVEN) {
+            owner->activity_seq++;
+        }
+        if (owner->frame_pending) {
+            owner->frame_evidence = (uint8_t)DSD_CONTENT_EVIDENCE_PROVEN;
+        }
+        owner->frame_hold_ms = 0U;
+        owner->pending_until_m = 0.0;
+        return;
+    }
+    if (level != DSD_CONTENT_EVIDENCE_PARTIAL) {
+        return;
+    }
+    if (!owner->frame_pending) {
+        quiet_pending_extend(owner, hold_ms);
+        return;
+    }
+    if (owner->frame_evidence == (uint8_t)DSD_CONTENT_EVIDENCE_PROVEN) {
+        return; /* the frame proved its content already */
+    }
+    owner->frame_evidence = (uint8_t)DSD_CONTENT_EVIDENCE_PARTIAL;
+    if (hold_ms > owner->frame_hold_ms) {
+        owner->frame_hold_ms = hold_ms;
+    }
+}
+
+void
+dsd_engine_scan_quiet_note_frame_sync(dsd_state* state) {
+    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
+    if (owner) {
+        owner->frame_pending = 1U;
+        owner->frame_evidence = 0U;
+        owner->frame_hold_ms = 0U;
+    }
+}
+
+void
+dsd_engine_scan_quiet_frame_end(dsd_state* state) {
+    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
+    if (!owner || !owner->frame_pending) {
+        return;
+    }
+    /* PROVEN cleared the wait at its note. A frame that checked nothing leaves a wait another frame started running:
+       a rejected sync never cancels a verdict the protocol still holds (an NXDN LICH reject keeps the weak streak). */
+    if (owner->frame_evidence == (uint8_t)DSD_CONTENT_EVIDENCE_PARTIAL) {
+        quiet_pending_extend(owner, owner->frame_hold_ms);
+    }
+    owner->frame_pending = 0U;
+    owner->frame_evidence = 0U;
+    owner->frame_hold_ms = 0U;
+}
+
+void
+dsd_engine_scan_quiet_pending_reset(dsd_state* state) {
+    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
+    if (owner) {
+        dsd_engine_scan_owner_pending_clear(owner);
+    }
 }

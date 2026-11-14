@@ -467,7 +467,7 @@ skip_dmr_bs_closed_gate_burst(dsd_state* state, dmr_bs_ctx* ctx) {
 }
 
 static dmr_bs_action
-check_dmr_bs_emb_and_confidence(dsd_state* state, dmr_bs_ctx* ctx) {
+check_dmr_bs_emb_and_confidence(const dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
     ctx->emb_ok = QR_16_7_6_decode(ctx->emb_pdu) ? 1 : 0;
 
     if (ctx->emb_ok == 1) {
@@ -484,7 +484,7 @@ check_dmr_bs_emb_and_confidence(dsd_state* state, dmr_bs_ctx* ctx) {
 
     int voice_gate_open = dmr_confidence_voice_slot_open(state, ctx->internalslot);
     if (ctx->emb_ok == 1) {
-        dmr_confidence_result confidence = dmr_confidence_note_voice_burst(state, ctx->internalslot, ctx->cc);
+        dmr_confidence_result confidence = dmr_confidence_note_voice_burst(opts, state, ctx->internalslot, ctx->cc);
         if (confidence == DMR_CONFIDENCE_REJECT) {
             ctx->emb_ok = 0;
             /* On a slot whose gate is open, one EMB naming another colour code is far likelier a QR(16,7,6)
@@ -665,7 +665,7 @@ collect_dmr_bs_late_entry(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
 
 static dmr_bs_action
 process_dmr_bs_voice_burst(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
-    dmr_bs_action action = check_dmr_bs_emb_and_confidence(state, ctx);
+    dmr_bs_action action = check_dmr_bs_emb_and_confidence(opts, state, ctx);
     if (action != DMR_BS_ACTION_CONTINUE) {
         return action;
     }

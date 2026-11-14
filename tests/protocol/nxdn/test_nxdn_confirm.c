@@ -12,9 +12,11 @@
  * frame in 64 clears a CRC-6.
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -41,7 +43,7 @@ run_frame(dsd_state* state, int evidence) {
     if (evidence != 0) {
         nxdn_confirm_note_evidence(state, (nxdn_evidence)evidence);
     }
-    nxdn_confirm_end_frame(state);
+    nxdn_confirm_end_frame(NULL, state);
 }
 
 static int g_search_reports;
@@ -123,7 +125,7 @@ test_frames_run_only_at_frame_spacing(dsd_state* state) {
         nxdn_confirm_note_evidence(state, k_pairs[p][1]);
         expect(p < 2 ? "two checks of one frame, one strong, confirm" : "two short checks of one frame do not",
                nxdn_confirm_is_confirmed(state), p < 2 ? 1 : 0);
-        nxdn_confirm_end_frame(state);
+        nxdn_confirm_end_frame(NULL, state);
     }
 
     /* A waiting strong check is the frame before's: only a frame read a frame after it confirms it, never one the frame
@@ -143,12 +145,12 @@ test_frames_run_only_at_frame_spacing(dsd_state* state) {
     nxdn_confirm_note_frame_start(state, 7000U, 0, 0);
     nxdn_confirm_begin_frame(state);
     nxdn_confirm_note_scch(state);
-    nxdn_confirm_end_frame(state);
+    nxdn_confirm_end_frame(NULL, state);
     nxdn_confirm_note_frame_start(state, 7500U, 0, 0);
     nxdn_confirm_begin_frame(state);
     nxdn_confirm_note_scch(state);
     expect("SCCHs frames apart are no run", nxdn_confirm_scch_confirmed(state), 0);
-    nxdn_confirm_end_frame(state);
+    nxdn_confirm_end_frame(NULL, state);
 
     /* An isolated frame whose sync word followed another one frame before it (NXDN48's corroborated accept, a call's
      * first frame read): its strong check holds at once, though its weak one starts the streak over. */
@@ -170,6 +172,88 @@ test_frames_run_only_at_frame_spacing(dsd_state* state) {
     nxdn_confirm_reset(state);
     run_frame_at(state, 100U + NXDN_CONFIRM_FRAME_SYMBOLS, 0, NXDN_EVIDENCE_STRONG);
     expect("after a reset the first frame is isolated", nxdn_confirm_is_confirmed(state), 0);
+    nxdn_confirm_reset(state);
+}
+
+/* Issue #834: what a scan quiet check hears through the content-evidence hook, the last note and how many. */
+static int g_quiet_notes;
+static int g_quiet_level;
+static uint32_t g_quiet_hold_ms;
+
+static void
+record_quiet_note(dsd_state* state, int level, uint32_t hold_ms) {
+    (void)state;
+    g_quiet_notes++;
+    g_quiet_level = level;
+    g_quiet_hold_ms = hold_ms;
+}
+
+/* One frame as run_frame(), closed with @p opts, and the notes it made: none (0), else the last note's level. */
+static int
+quiet_frame(const dsd_opts* opts, dsd_state* state, int evidence) {
+    g_quiet_notes = 0;
+    g_quiet_level = 0;
+    g_quiet_hold_ms = 0U;
+    nxdn_confirm_begin_frame(state);
+    if (evidence != 0) {
+        nxdn_confirm_note_evidence(state, (nxdn_evidence)evidence);
+    }
+    nxdn_confirm_end_frame(opts, state);
+    expect("a frame makes one note at most", g_quiet_notes <= 1, 1);
+    return g_quiet_notes ? g_quiet_level : 0;
+}
+
+/* A frame's verdict for a scan quiet check, where a signal search hears it: PROVEN for a frame its own CRCs confirmed,
+   PARTIAL for a weak frame a later one must complete (two frames: 160 ms on NXDN48, 80 ms on NXDN96 alone), nothing
+   for a frame that checked nothing or carried another channel's control traffic, and nothing at all with the setting
+   off. A frame rejected at its LICH keeps the weak streak, so the weak frame after it completes it. */
+static void
+test_quiet_check_hears_the_frame_verdict(dsd_state* state) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.frame_nxdn48 = 1;
+    dsd_frame_sync_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.content_evidence = record_quiet_note;
+    dsd_frame_sync_hooks_set(&hooks);
+
+    nxdn_confirm_reset(state);
+    expect("setting off: a strong frame notes nothing", quiet_frame(&opts, state, NXDN_EVIDENCE_STRONG), 0);
+    opts.scan_skip_silent = 1;
+    nxdn_confirm_reset(state);
+    expect("a strong frame is PROVEN", quiet_frame(&opts, state, NXDN_EVIDENCE_STRONG), DSD_CONTENT_EVIDENCE_PROVEN);
+    expect("an empty frame notes nothing", quiet_frame(&opts, state, 0), 0);
+    expect("a lone weak frame is PARTIAL", quiet_frame(&opts, state, NXDN_EVIDENCE_WEAK), DSD_CONTENT_EVIDENCE_PARTIAL);
+    expect("held for two NXDN48 frames", (int)g_quiet_hold_ms, (int)NXDN_CONFIRM_PARTIAL_HOLD_MS_48);
+    expect("the weak frame completing it is PROVEN", quiet_frame(&opts, state, NXDN_EVIDENCE_WEAK),
+           DSD_CONTENT_EVIDENCE_PROVEN);
+
+    nxdn_confirm_reset(state);
+    expect("weak, then a LICH reject: PARTIAL", quiet_frame(&opts, state, NXDN_EVIDENCE_WEAK),
+           DSD_CONTENT_EVIDENCE_PARTIAL);
+    g_quiet_notes = 0;
+    nxdn_confirm_frame_rejected(state); /* rejected before its body: no frame end */
+    expect("the LICH reject notes nothing", g_quiet_notes, 0);
+    expect("the weak frame after the reject completes the streak: PROVEN",
+           quiet_frame(&opts, state, NXDN_EVIDENCE_WEAK), DSD_CONTENT_EVIDENCE_PROVEN);
+
+    nxdn_confirm_reset(state);
+    opts.frame_nxdn48 = 0;
+    opts.frame_nxdn96 = 1;
+    expect("NXDN96 alone: PARTIAL", quiet_frame(&opts, state, NXDN_EVIDENCE_WEAK), DSD_CONTENT_EVIDENCE_PARTIAL);
+    expect("held for two NXDN96 frames", (int)g_quiet_hold_ms, (int)NXDN_CONFIRM_PARTIAL_HOLD_MS_96);
+    nxdn_confirm_reset(state);
+    opts.frame_nxdn48 = 1;
+    (void)quiet_frame(&opts, state, NXDN_EVIDENCE_WEAK);
+    expect("both NXDN rates: the longer hold", (int)g_quiet_hold_ms, (int)NXDN_CONFIRM_PARTIAL_HOLD_MS_48);
+
+    nxdn_confirm_reset(state);
+    state->nxdn_frame_foreign = 1;
+    expect("another channel's control traffic notes nothing", quiet_frame(&opts, state, NXDN_EVIDENCE_STRONG), 0);
+    state->nxdn_frame_foreign = 0;
+    nxdn_confirm_reset(state);
+    expect("no opts: nothing", quiet_frame(NULL, state, NXDN_EVIDENCE_STRONG), 0);
+    dsd_frame_sync_hooks_set(NULL);
     nxdn_confirm_reset(state);
 }
 
@@ -219,7 +303,7 @@ main(void) {
     nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
     nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
     nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
-    nxdn_confirm_end_frame(state);
+    nxdn_confirm_end_frame(NULL, state);
     expect("weak evidence counts once per frame", nxdn_confirm_is_confirmed(state), 0);
 
     /* A strong CRC arriving after a weak one still confirms immediately. */
@@ -228,7 +312,7 @@ main(void) {
     nxdn_confirm_begin_frame(state);
     nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
     nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
-    nxdn_confirm_end_frame(state);
+    nxdn_confirm_end_frame(NULL, state);
     expect("strong evidence overrides a pending streak", nxdn_confirm_is_confirmed(state), 1);
 
     /* What the SPS hunt reads back: which frames carried a passing CRC of their own, as
@@ -256,7 +340,7 @@ main(void) {
     nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
     expect("a strong CRC is not reported to search mid-frame", g_search_reports, 0);
     expect("a strong CRC still confirms at once", nxdn_confirm_is_confirmed(state), 1);
-    nxdn_confirm_end_frame(state);
+    nxdn_confirm_end_frame(NULL, state);
     expect("the confirming frame reports once, at its end", g_search_reports, 1);
     run_frame(state, 0);
     expect("a frame that proved nothing reports nothing", g_search_reports, 1);
@@ -265,7 +349,7 @@ main(void) {
     nxdn_confirm_begin_frame(state);
     nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
     expect("the frame completing a weak streak is not reported mid-frame", g_search_reports, 1);
-    nxdn_confirm_end_frame(state);
+    nxdn_confirm_end_frame(NULL, state);
     expect("the frame completing a weak streak reports at its end", g_search_reports, 2);
     run_frame(state, NXDN_EVIDENCE_WEAK);
     expect("a frame continuing the streak reports", g_search_reports, 3);
@@ -299,33 +383,35 @@ main(void) {
     nxdn_confirm_begin_frame(state);
     nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
     nxdn_confirm_note_scch(state);
-    nxdn_confirm_end_frame(state);
+    nxdn_confirm_end_frame(NULL, state);
     nxdn_confirm_frame_rejected(state);
     nxdn_confirm_begin_frame(state);
     nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
     nxdn_confirm_note_scch(state);
     expect("a rejected frame ends the SCCH run", nxdn_confirm_scch_confirmed(state), 0);
-    nxdn_confirm_end_frame(state);
+    nxdn_confirm_end_frame(NULL, state);
     nxdn_confirm_begin_frame(state);
     nxdn_confirm_note_scch(state);
     nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
     expect("two SCCH frames running confirm, a strong CRC beside", nxdn_confirm_scch_confirmed(state), 1);
-    nxdn_confirm_end_frame(state);
+    nxdn_confirm_end_frame(NULL, state);
     nxdn_confirm_begin_frame(state);
     nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK); // a SACCH
-    nxdn_confirm_end_frame(state);
+    nxdn_confirm_end_frame(NULL, state);
     nxdn_confirm_begin_frame(state);
     nxdn_confirm_note_scch(state);
     expect("a SACCH frame ends the SCCH run", nxdn_confirm_scch_confirmed(state), 0);
-    nxdn_confirm_end_frame(state);
+    nxdn_confirm_end_frame(NULL, state);
     nxdn_confirm_begin_frame(state);
     nxdn_confirm_note_scch(state); // the second of a run ...
-    nxdn_confirm_end_frame(state);
+    nxdn_confirm_end_frame(NULL, state);
     dsd_trunk_tuning_generation_advance(); // ... cut by a grant's completed tune to another carrier
     nxdn_confirm_begin_frame(state);
     nxdn_confirm_note_scch(state);
     expect("a completed tune ends the SCCH run", nxdn_confirm_scch_confirmed(state), 0);
-    nxdn_confirm_end_frame(state);
+    nxdn_confirm_end_frame(NULL, state);
+
+    test_quiet_check_hears_the_frame_verdict(state);
 
     test_frames_run_only_at_frame_spacing(state);
 
@@ -334,7 +420,7 @@ main(void) {
     nxdn_confirm_note_frame_start(NULL, 0U, 0, 0);
     nxdn_confirm_begin_frame(NULL);
     nxdn_confirm_note_evidence(NULL, NXDN_EVIDENCE_STRONG);
-    nxdn_confirm_end_frame(NULL);
+    nxdn_confirm_end_frame(NULL, NULL);
     expect("null state is not confirmed", nxdn_confirm_is_confirmed(NULL), 0);
     expect("null state has proved nothing", nxdn_confirm_frame_proved(NULL), 0);
 

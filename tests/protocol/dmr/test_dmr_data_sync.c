@@ -228,7 +228,8 @@ dmr_debug_format_burst(char* out, size_t out_size, const dsd_state* state, uint8
 
 dmr_confidence_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_confidence_note_data_burst(dsd_state* state, unsigned int color_code) {
+dmr_confidence_note_data_burst(const dsd_opts* opts, dsd_state* state, unsigned int color_code) {
+    (void)opts;
     (void)state;
     (void)color_code;
     g_confidence_calls++;

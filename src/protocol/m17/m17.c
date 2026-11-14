@@ -1142,7 +1142,7 @@ processM17STR(dsd_opts* opts, dsd_state* state) {
         /* Six Golay(24,12) blocks clearing at once is real evidence, but not proof: extended
          * Golay accepts enough random words that a clean LICH still turns up on noise, so it
          * has to repeat before the decoder acts on the stream (#399). */
-        m17_confirm_note_evidence(state, M17_EVIDENCE_WEAK);
+        m17_confirm_note_evidence(opts, state, M17_EVIDENCE_WEAK);
         M17prepareStream(opts, state, m17_bits);
     }
     m17_confirm_end_frame(state);
@@ -1328,7 +1328,7 @@ processM17BRT(dsd_opts* opts, dsd_state* state) {
      * test transmission from the alternating run that reaches this matcher on noise (#399). */
     const int locked = state->m17_bert_locked != 0U;
     if (locked) {
-        m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+        m17_confirm_note_evidence(opts, state, M17_EVIDENCE_STRONG);
     }
     m17_confirm_end_frame(state);
 
@@ -1352,7 +1352,7 @@ m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_
         /* A CRC-16 over the link setup is proof the preamble that led here was real (#399). Noted once the LSF's
          * call is published: a signal search reads the callsigns and CAN from that call when it hears the
          * confirmation, and this LSF may be the only one the transmission delivers. */
-        m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+        m17_confirm_note_evidence(opts, state, M17_EVIDENCE_STRONG);
     }
 
     if (opts->payload == 1) {
@@ -3412,7 +3412,7 @@ m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, i
 
     if (crc_cmp == crc_ext) {
         /* A CRC-16 over the reassembled packet is proof the chain that carried it was real. */
-        m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+        m17_confirm_note_evidence(opts, state, M17_EVIDENCE_STRONG);
     }
 
     if ((crc_cmp == crc_ext || opts->aggressive_framesync == 0) && app_len > 0U) {

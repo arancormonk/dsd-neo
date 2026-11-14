@@ -180,7 +180,7 @@ dstar_sd_print_header_flags(uint8_t flags) {
 }
 
 static void
-dstar_sd_handle_header_format(dsd_state* state, const dstar_sd_ctx* ctx) {
+dstar_sd_handle_header_format(const dsd_opts* opts, dsd_state* state, const dstar_sd_ctx* ctx) {
     if (ctx->crc_cmp == ctx->crc_ext) {
         DSD_FPRINTF(stderr, " RPT 2: %s", ctx->str1);
         DSD_FPRINTF(stderr, " RPT 1: %s", ctx->str2);
@@ -203,7 +203,7 @@ dstar_sd_handle_header_format(dsd_state* state, const dstar_sd_ctx* ctx) {
         /* A CRC-16/X.25 over 39 octets of rebroadcast header: proof the transmission is
          * real, on its own (#421). Noted once the header's callsigns are on the call: a signal
          * search reads them from it when it hears the confirmation. */
-        dstar_confirm_note_evidence(state, DSTAR_EVIDENCE_STRONG);
+        dstar_confirm_note_evidence(opts, state, DSTAR_EVIDENCE_STRONG);
         return;
     }
     DSD_FPRINTF(stderr, " SLOW DATA - HEADER FORMAT (CRC ERR)");
@@ -354,11 +354,11 @@ dstar_sd_handle_text_message(dsd_state* state, dstar_sd_ctx* ctx) {
 }
 
 static void
-dstar_sd_handle_fixed_form(dsd_state* state, dstar_sd_ctx* ctx) {
+dstar_sd_handle_fixed_form(const dsd_opts* opts, dsd_state* state, dstar_sd_ctx* ctx) {
     if (strcmp(ctx->type, "$$CRC") == 0) {
         /* Forty exact bits behind the 0x35 type byte that selected this branch: not a
          * checksum, but a literal noise does not produce (#421). */
-        dstar_confirm_note_evidence(state, DSTAR_EVIDENCE_STRONG);
+        dstar_confirm_note_evidence(opts, state, DSTAR_EVIDENCE_STRONG);
         DSD_MEMSET(ctx->strt, 0x20, sizeof(ctx->strt));
         DSD_FPRINTF(stderr, " DATA: ");
         dstar_sd_emit_truncated_ascii(ctx->sd_bytes, ctx->strt, 0);
@@ -372,9 +372,9 @@ dstar_sd_handle_fixed_form(dsd_state* state, dstar_sd_ctx* ctx) {
 }
 
 static void
-dstar_sd_handle_non_header(dsd_state* state, dstar_sd_ctx* ctx) {
+dstar_sd_handle_non_header(const dsd_opts* opts, dsd_state* state, dstar_sd_ctx* ctx) {
     if (ctx->sd_bytes[0] == 0x35) {
-        dstar_sd_handle_fixed_form(state, ctx);
+        dstar_sd_handle_fixed_form(opts, state, ctx);
     } else if (ctx->sd_bytes[0] == 0x40) {
         dstar_sd_handle_text_message(state, ctx);
     } else {
@@ -426,9 +426,9 @@ processDSTAR_SD(const dsd_opts* opts, dsd_state* state, uint8_t* sd) {
     dstar_sd_capture_display_strings(&ctx);
 
     if (ctx.sd_bytes[0] == 0x55) {
-        dstar_sd_handle_header_format(state, &ctx);
+        dstar_sd_handle_header_format(opts, state, &ctx);
     } else {
-        dstar_sd_handle_non_header(state, &ctx);
+        dstar_sd_handle_non_header(opts, state, &ctx);
     }
 
     dstar_sd_print_payload(opts, &ctx);

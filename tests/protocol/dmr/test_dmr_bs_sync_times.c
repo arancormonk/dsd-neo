@@ -594,7 +594,8 @@ dmr_confidence_note_voice_sync(dsd_state* state, unsigned int slot) {
 }
 
 dmr_confidence_result
-dmr_confidence_note_voice_burst(dsd_state* state, unsigned int slot, unsigned int color_code) {
+dmr_confidence_note_voice_burst(const dsd_opts* opts, dsd_state* state, unsigned int slot, unsigned int color_code) {
+    (void)opts;
     (void)slot;
     (void)color_code;
     if (g_confidence_voice_burst_calls < sizeof(g_burst_colour_codes)

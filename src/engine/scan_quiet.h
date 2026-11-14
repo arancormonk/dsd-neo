@@ -24,11 +24,15 @@
  * - DONE: terminal for the visit (busy, failed, timed out, unsupported, activity, declined, applied): no new request
  *   until the visit changes.
  *
- * A visit is (owner, landing epoch, tune request). A sync or a carrier (dsd_engine_scan_quiet_note_sync(),
- * dsd_engine_scan_quiet_note_frame_sync(): a provisional P25 sync once its NID or window verdict passed) anywhere in
- * the visit ends its check, suspended or not, so no check is made for it again: a visit counts from its tune's issue
+ * A visit is (owner, landing epoch, tune request). Activity anywhere in the visit ends its check, suspended or not, so
+ * no check is made for it again: content that passed its protocol's CRC/FEC gate (a PROVEN content note,
+ * dsd_engine_scan_quiet_note_evidence()) or the analog carrier (dsd_engine_scan_quiet_note_activity()). A raw sync is
+ * no activity (issue #834 D8): a sync the frame sync returns waits for its frame's verdict
+ * (dsd_engine_scan_quiet_note_frame_sync(), dsd_engine_scan_quiet_frame_end()), and a frame that left a PARTIAL note
+ * waits up to its protocol's hold for the frame that completes it; while either is pending a READY result is neither
+ * handed back, applied nor declined, and still ages out. A visit counts from its tune's issue
  * (dsd_engine_scan_landing_note_tune()), which its landing's note carries and a park still in flight reads at its first
- * publication (and keeps when its landing adopts it), so a sync heard before the landing is noted counts. A changed
+ * publication (and keeps when its landing adopts it), so content heard before the landing is noted counts. A changed
  * visit, or any counter its revision snapshot holds, suspends it. The frame-sync hunt runs the check through
  * dsd_frame_sync_hook_scan_quiet_service() (dsd_engine_scan_quiet_service()), and engine service through
  * scan_quiet_publish_eligibility(). RF power is never activity: nothing here touches holds, activity stamps, history or
@@ -54,6 +58,9 @@ enum {
     SCAN_QUIET_READY_MAX_AGE_MS = 250,
     SCAN_QUIET_MAX_RETRIES = 3,
 };
+
+/** The longest a PARTIAL content note holds a quiet result back, in ms (decode clock): above every protocol's hold. */
+enum { SCAN_QUIET_PENDING_MAX_MS = 1000 };
 
 typedef enum {
     SCAN_QUIET_SUSPENDED = 0,
@@ -159,15 +166,15 @@ void scan_quiet_publish_eligibility(const dsd_opts* opts, dsd_state* state, int 
 /** The skip decision's quiet half: 1 when @p owner_kind's READY result is still the visit's, its revisions unchanged
  * and @p current (the classes, analog kind and width, and DSP rate in force now, as engine service works them out for
  * its eligibility) equal to what was measured, its capture and output generation unchanged with no tune pending, at
- * most 250 ms old, with no sync in the visit, no analog carrier heard and (trunk scan) no allowed activity in the
- * visit; the result is consumed (DONE: one skip per visit). Any other READY result is declined (DONE), a NULL
- * @p current among them, and 0 returned; 0 too with no READY result, or one whose trunk-scan park has not been noted
- * as landed yet. */
+ * most 250 ms old, with no checked content in the visit, no analog carrier heard and (trunk scan) no allowed activity
+ * in the visit; the result is consumed (DONE: one skip per visit). Any other READY result is declined (DONE), a NULL
+ * @p current among them, and 0 returned; 0 too with no READY result, one whose trunk-scan park has not been noted as
+ * landed yet, or one held while a frame's verdict is pending, which stays READY. */
 int scan_quiet_apply(const dsd_opts* opts, dsd_state* state, int owner_kind, const scan_quiet_eligibility* current);
 
 /** The engine saw @p owner_kind's READY result and will not apply it: declined (DONE), unless @p guard_lost (the tick
- * lost the coordinator's guard), which leaves it READY so the next hunt point hands back again. Reconciles either
- * way. */
+ * lost the coordinator's guard) or a frame's verdict is pending, either of which leaves it READY so a later point hands
+ * back again. Reconciles either way. */
 void scan_quiet_reconcile_declined(const dsd_opts* opts, dsd_state* state, int owner_kind, int guard_lost);
 
 /** Format the skip's NOTICE line into @p out: "NOTICE: scan: skipped quiet <name | row N> <freq> MHz:
@@ -187,9 +194,32 @@ scan_quiet_phase scan_quiet_phase_get(const dsd_state* state);
 scan_quiet_visit_key scan_quiet_key_get(const dsd_state* state);
 
 /** The frame-sync hunt's service (dsd_frame_sync_hook_scan_quiet_service()): reconcile, then start, collect or expire
- * the check; 1 only for a READY result that passes scan_quiet_apply()'s checks, without consuming it. 0 at once for a
- * SUSPENDED or DONE check, or none. Decoder thread. */
+ * the check. DSD_SCAN_QUIET_HAND_BACK only for a READY result that passes scan_quiet_apply()'s checks with no frame's
+ * verdict pending, without consuming it; DSD_SCAN_QUIET_LIVE for a check still under way (waiting for its capture,
+ * requested, or a READY result held back or failing those checks); DSD_SCAN_QUIET_NONE at once for a SUSPENDED or DONE
+ * check, or none, and for one the step ended. Decoder thread. */
 int dsd_engine_scan_quiet_service(const dsd_opts* opts, dsd_state* state);
+
+/* Content evidence (issue #834 D8; the content_evidence hook of dsd_frame_sync_hooks). Only while skip-silent is on
+   (the runtime wrapper and the frame loop's guards), on the decoder thread; a state with no scan owner has no check and
+   gets no owner made for it. */
+/** A protocol's gate verdict on the frame being decoded (dsd_frame_sync_hook_content_evidence()): PROVEN moves the
+ * activity sequence once a frame and drops any wait (it dominates PARTIAL, in the frame or before it); PARTIAL makes
+ * the frame wait up to @p hold_ms (at most SCAN_QUIET_PENDING_MAX_MS) for its verdict, from the frame's end, or from
+ * now when no frame is pending. */
+void dsd_engine_scan_quiet_note_evidence(dsd_state* state, int level, uint32_t hold_ms);
+/** The frame sync returned a sync: its frame's verdict is pending until dsd_engine_scan_quiet_frame_end(). Moves no
+ * activity. */
+void dsd_engine_scan_quiet_note_frame_sync(dsd_state* state);
+/** The frame the last returned sync opened has been decoded (or withheld): a PARTIAL frame waits for its hold; a frame
+ * that checked nothing leaves any wait already running, since a rejected sync never cancels a verdict the protocol
+ * still holds. */
+void dsd_engine_scan_quiet_frame_end(dsd_state* state);
+/** Nothing is waited for any more: the frame loop left before a frame's end, or a boundary ended what it waited on. */
+void dsd_engine_scan_quiet_pending_reset(dsd_state* state);
+/** The -Y frame-boundary yield of the synced-frames loop: 1 when the scan is -Y with skip-silent on and the hunt's
+ * service answers DSD_SCAN_QUIET_HAND_BACK, so the loop ends and noCarrier() decides as after the hunt's hand-back. */
+int dsd_engine_scan_quiet_frame_yield(const dsd_opts* opts, dsd_state* state);
 /** Something a check depends on changed (dsd_engine_scan_quiet_note_change(), now): a check under way is cancelled
  * (its request ticket-matched) and SUSPENDED until republished. A DONE check stays DONE for its visit. */
 void dsd_engine_scan_quiet_invalidate(dsd_state* state);

@@ -3,7 +3,9 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stddef.h>
@@ -148,8 +150,15 @@ nxdn_confirm_note_evidence(dsd_state* state, nxdn_evidence evidence) {
     }
 }
 
+/* Two frames of the variant on air: NXDN96's only when the decoder set runs NXDN96 alone, else NXDN48's, the longer. */
+static uint32_t
+nxdn_confirm_partial_hold_ms(const dsd_opts* opts) {
+    return (opts && opts->frame_nxdn96 == 1 && opts->frame_nxdn48 != 1) ? NXDN_CONFIRM_PARTIAL_HOLD_MS_96
+                                                                        : NXDN_CONFIRM_PARTIAL_HOLD_MS_48;
+}
+
 void
-nxdn_confirm_end_frame(dsd_state* state) {
+nxdn_confirm_end_frame(const dsd_opts* opts, dsd_state* state) {
     if (!state) {
         return;
     }
@@ -171,7 +180,11 @@ nxdn_confirm_end_frame(dsd_state* state) {
         state->nxdn_confirm_lock_m = dsd_decode_now_mono_s();
         dsd_signal_search_note_evidence(state, "NXDN", 0, 0, NULL);
         dsd_signal_search_note_call(state, 0U);
+        dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+        return;
     }
+    /* A weak frame whose streak the next frame must complete: the quiet check waits for that frame. */
+    dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PARTIAL, nxdn_confirm_partial_hold_ms(opts));
 }
 
 int

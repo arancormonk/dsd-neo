@@ -43,6 +43,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <limits.h>
@@ -647,13 +648,15 @@ p25p2_acch_note_verdict(dsd_opts* opts, dsd_state* state, const p25p2_acch_verdi
    word -F let through. Before the MAC PDU, which may move the receiver elsewhere. An LCCH is control channel signalling
    and reports itself as that (p25_sm_note_validated_cc() at its CRC-16). */
 static void
-p25p2_acch_note_evidence(const dsd_state* state, const p25p2_acch_verdict* verdict, int mac_slot) {
+p25p2_acch_note_evidence(const dsd_opts* opts, dsd_state* state, const p25p2_acch_verdict* verdict, int mac_slot) {
     if (verdict->checksum_ok && verdict->kind != P25P2_ACCH_LCCH) {
         p25_sm_note_traffic_activity(state, mac_slot);
     }
-    /* Any of them, an LCCH too, is P25 on the carrier: proof for the CQPSK timing loop. */
+    /* Any of them, an LCCH too, is P25 on the carrier: proof for the CQPSK timing loop, and activity to a scan quiet
+       check (issue #834). */
     if (verdict->checksum_ok) {
         s_window_proves_p25 = 1;
+        dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
     }
 }
 
@@ -720,7 +723,7 @@ p25p2_process_facch(dsd_opts* opts, dsd_state* state, int scrambled) {
         state->p25_p2_rs_facch_ok++;
         state->p25_p2_rs_facch_corr += (unsigned int)ec;
         p25p2_acch_note_verdict(opts, state, &verdict, scrambled);
-        p25p2_acch_note_evidence(state, &verdict, slot);
+        p25p2_acch_note_evidence(opts, state, &verdict, slot);
         /* Feedback: RS OK */
 #ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(slot, 1, 0, 0, 0, 0);
@@ -767,7 +770,7 @@ p25p2_process_sacch(dsd_opts* opts, dsd_state* state, int scrambled, p25p2_acch_
         state->p25_p2_rs_sacch_ok++;
         state->p25_p2_rs_sacch_corr += (unsigned int)ec;
         p25p2_acch_note_verdict(opts, state, &verdict, scrambled);
-        p25p2_acch_note_evidence(state, &verdict, p25_sacch_to_voice_slot(slot));
+        p25p2_acch_note_evidence(opts, state, &verdict, p25_sacch_to_voice_slot(slot));
         /* Feedback: RS OK */
 #ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(slot, 0, 0, 1, 0, 0);
@@ -800,15 +803,16 @@ p25p2_process_sacchc(dsd_opts* opts, dsd_state* state, int timeslot_index) {
 
 /* Collected ISCH @p framing_index (0-2) of the window in p2bit: a decoded I-ISCH sets the channel number, and a
    channel-1 one the descrambler offset. A window collects only the ISCHs after its timeslots 0-2 (the fourth is the
-   next sync, which processP2() does not read), so any other index changes nothing. */
+   next sync, which processP2() does not read), so any other index changes nothing. A decoded I-ISCH, a codeword of
+   the distance-14 code, is activity to a scan quiet check (issue #834); the S-ISCH, the sync word itself, is not. */
 void
-p25p2_process_isch(dsd_opts* opts, dsd_state* state, int framing_index) {
+p25p2_process_isch(const dsd_opts* opts, dsd_state* state, int framing_index) {
     framing_counter = framing_index;
-    UNUSED(opts);
 
     // -2 for the S-ISCH word or nothing decoded
     isch_decoded = p25p2_window_isch_soft_decode(p2bit, p2llr, framing_counter);
     if (isch_decoded > -1) {
+        dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
         state->p2_vch_chan_num = (isch_decoded >> 5) & 0x3;
         //relative position to the only chan 1 we should see
         const int offset = p25p2_window_isch_offset(isch_decoded, framing_counter);

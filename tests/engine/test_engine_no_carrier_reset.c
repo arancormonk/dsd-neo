@@ -908,10 +908,15 @@ static void (*g_frame_land_action)(dsd_opts* opts, dsd_state* state) = NULL;
 static int g_frame_count = 0;
 /* A provisional P25 sync the scripted hunt finds after the first frame (0 none, 1 a P25p1 anchored candidate, 2 a P25p1
    acquisition one, 3 a P25p2 tolerant window), held as the frame sync holds it; whether the frame decoded behind each
-   passes its NID or window verdict (by frame, counted as the frame sync counts it); and frames decoded behind one. */
+   passes its NID or window verdict (by frame, counted as the frame sync counts it, and PROVEN content to a scan quiet
+   check as the P25 dispatchers note it once the verdict passed); and frames decoded behind one. */
 static int g_frame_candidate = 0;
 static int g_frame_candidate_passes[FAKE_FRAMES_MAX];
 static int g_frame_candidate_frames = 0;
+/* What each scripted frame's decode reports to a scan quiet check (issue #834): DSD_CONTENT_EVIDENCE_* (0: nothing, a
+   sync its protocol's gate rejected), with g_frame_evidence_hold_ms for PARTIAL. */
+static int g_frame_evidence = 0;
+static uint32_t g_frame_evidence_hold_ms = 0U;
 static int g_frame_roll[FAKE_FRAMES_MAX];
 static unsigned long long g_frame_rkey[FAKE_FRAMES_MAX];
 static char g_frame_label[FAKE_FRAMES_MAX][DSD_CHANNEL_LABEL_SIZE];
@@ -958,10 +963,14 @@ __wrap_processFrame(dsd_opts* opts, dsd_state* state) {
             } else {
                 state->p25_p2_sync_anchor.tolerant_windows++;
             }
+            dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
         }
         /* The verdict is given: what the accept held is spent or put back. */
         state->p25_p1_sync_candidate.valid = 0U;
         state->p25_p2_sync_candidate.valid = 0U;
+    }
+    if (g_frame_evidence != 0) {
+        dsd_frame_sync_hook_content_evidence(opts, state, g_frame_evidence, g_frame_evidence_hold_ms);
     }
     if (g_frame_count < FAKE_FRAMES_MAX) {
         g_frame_roll[g_frame_count] = state->lcn_freq_roll;
@@ -987,6 +996,13 @@ __wrap_processFrame(dsd_opts* opts, dsd_state* state) {
    the outstanding tune landing while frame @p land_at decodes (-1: never). */
 static void
 run_synced_frames(dsd_opts* opts, dsd_state* state, int more_syncs, int land_at) {
+    /* The engine's content-evidence note, as the engine installs it, so the frames' notes reach the quiet check through
+       the runtime wrapper. */
+    dsd_frame_sync_hooks saved;
+    dsd_frame_sync_hooks_get(&saved);
+    dsd_frame_sync_hooks hooks = saved;
+    hooks.content_evidence = dsd_engine_scan_quiet_note_evidence;
+    dsd_frame_sync_hooks_set(&hooks);
     g_frame_script = 1;
     g_frame_syncs_left = more_syncs;
     g_frame_land_at = land_at;
@@ -995,6 +1011,18 @@ run_synced_frames(dsd_opts* opts, dsd_state* state, int more_syncs, int land_at)
     dsd_engine_test_process_synced_frames(opts, state);
     g_frame_script = 0;
     g_frame_land_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_frame_sync_hooks_set(&saved);
+}
+
+/* run_synced_frames() with every frame's decode reporting @p evidence (DSD_CONTENT_EVIDENCE_*; 0: nothing). */
+static void
+run_synced_frames_noting(dsd_opts* opts, dsd_state* state, int more_syncs, int land_at, int evidence,
+                         uint32_t hold_ms) {
+    g_frame_evidence = evidence;
+    g_frame_evidence_hold_ms = hold_ms;
+    run_synced_frames(opts, state, more_syncs, land_at);
+    g_frame_evidence = 0;
+    g_frame_evidence_hold_ms = 0U;
 }
 #endif
 
@@ -2966,11 +2994,12 @@ frame_was(const char* tag, int frame, const char* label, unsigned long long rkey
     return 0;
 }
 
-/* Issue #834: every sync the live loop's hunt returns moves the scan owner's sync sequence while skip-silent is on, so
-   a scan quiet check sees activity since its visit's landing: YSF and D-STAR syncs too, which stamp no
-   last_cc_sync_time_m. With the setting off the sequence stays (one load). */
+/* Issue #834 D8: a sync the live loop's hunt returns is no activity to a scan quiet check: frames whose protocol's gate
+   checked nothing (YSF, D-STAR and DMR syncs alike) move no activity sequence and leave nothing pending once each ends.
+   A frame its gate passed (PROVEN) moves it once a frame, and one that left a PARTIAL verdict holds the check back for
+   its hold. With the setting off nothing moves (one load). */
 static int
-test_live_loop_syncs_move_the_quiet_sync_sequence(void) {
+test_live_loop_counts_only_checked_frames(void) {
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (init_test_runtime(&opts, &state) != 0) {
@@ -2983,15 +3012,32 @@ test_live_loop_syncs_move_the_quiet_sync_sequence(void) {
         for (int on = 0; on <= 1; on++) {
             opts->scan_skip_silent = on;
             g_frame_sync_type = k_types[i];
-            const uint64_t before = owner->sync_seq;
+            const uint64_t before = owner->activity_seq;
             run_synced_frames(opts, state, 2, -1);
-            if (owner->sync_seq != before + (on ? 2U : 0U)) {
-                DSD_FPRINTF(stderr, "FAIL #834: sync type %d with skip-silent %d moved the sequence by %llu\n",
-                            k_types[i], on, (unsigned long long)(owner->sync_seq - before));
+            const uint64_t rejected = owner->activity_seq - before;
+            const int left_pending = owner->frame_pending != 0U || owner->pending_until_m > 0.0;
+            run_synced_frames_noting(opts, state, 2, -1, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+            const uint64_t proven = owner->activity_seq - before - rejected;
+            run_synced_frames_noting(opts, state, 2, -1, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
+            const int partial_holds = owner->pending_until_m > dsd_decode_now_mono_s();
+            if (rejected != 0U || left_pending || proven != (on ? 3U : 0U) || partial_holds != on
+                || owner->frame_pending != 0U || owner->activity_seq - before != proven) {
+                DSD_FPRINTF(stderr,
+                            "FAIL #834: sync type %d with skip-silent %d: rejected frames moved %llu (pending %d), "
+                            "proven ones %llu, partial ones hold %d\n",
+                            k_types[i], on, (unsigned long long)rejected, left_pending, (unsigned long long)proven,
+                            partial_holds);
                 rc = 1;
             }
+            dsd_engine_scan_quiet_pending_reset(state);
         }
     }
+    /* A stream gap cuts what was waited for: its carrier boundary drops the wait. */
+    opts->scan_skip_silent = 1;
+    run_synced_frames_noting(opts, state, 0, -1, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
+    const int held = owner && owner->pending_until_m > 0.0;
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
+    rc |= expect_true("a stream gap drops a pending verdict", held && owner->pending_until_m < 1e-9);
     g_frame_sync_type = DSD_SYNC_NXDN_POS;
     opts->scan_skip_silent = 0;
     free_test_runtime(opts, state);
@@ -2999,9 +3045,10 @@ test_live_loop_syncs_move_the_quiet_sync_sequence(void) {
 }
 
 /* Issue #834: a provisional P25 sync (a tolerant word, held until its NID or window verdict) is activity to a scan quiet
-   check only once that verdict passed. A noise near-miss whose verdict fails is put back everywhere else, and must not
-   end a silent channel's quiet check: frames 1 and 3 fail, frame 2 passes, so the sequence moves once with skip-silent
-   on, for every kind of candidate. With the setting off it stays. */
+   check only once that verdict passed, as any sync is (D8): its frame's PROVEN note comes from behind the verdict. A
+   noise near-miss whose verdict fails is put back everywhere else, and must not end a silent channel's quiet check:
+   frames 1 and 3 fail, frame 2 passes, so the sequence moves once with skip-silent on, for every kind of candidate, and
+   no frame is left pending. With the setting off it stays. */
 static int
 test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict(void) {
     dsd_opts* opts = NULL;
@@ -3025,15 +3072,16 @@ test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict(void) 
             DSD_MEMSET(g_frame_candidate_passes, 0, sizeof g_frame_candidate_passes);
             g_frame_candidate_passes[2] = 1;
             g_frame_candidate_frames = 0;
-            const uint64_t before = owner->sync_seq;
+            const uint64_t before = owner->activity_seq;
             run_synced_frames(opts, state, 3, -1);
-            if (g_frame_candidate_frames != 3 || owner->sync_seq != before + (on ? 1U : 0U) || owner->sync_deferred) {
+            if (g_frame_candidate_frames != 3 || owner->activity_seq != before + (on ? 1U : 0U)
+                || owner->frame_pending != 0U) {
                 DSD_FPRINTF(
                     stderr,
                     "FAIL #834: candidate kind %d with skip-silent %d: %d provisional frames moved the sequence "
-                    "by %llu (deferral left %u)\n",
-                    k_kinds[i].candidate, on, g_frame_candidate_frames, (unsigned long long)(owner->sync_seq - before),
-                    (unsigned)owner->sync_deferred);
+                    "by %llu (frame left pending %u)\n",
+                    k_kinds[i].candidate, on, g_frame_candidate_frames,
+                    (unsigned long long)(owner->activity_seq - before), (unsigned)owner->frame_pending);
                 rc = 1;
             }
         }
@@ -3042,55 +3090,6 @@ test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict(void) 
     DSD_MEMSET(g_frame_candidate_passes, 0, sizeof g_frame_candidate_passes);
     g_frame_sync_type = DSD_SYNC_NXDN_POS;
     opts->scan_skip_silent = 0;
-
-    /* The helpers alone: an exact sync is noted at once; a provisional one (this call accepted a candidate) waits for its
-       verdict, which a frame withheld or never dispatched does not give (dropped unnoted), and a passed verdict counter
-       notes it at the settle. A candidate an earlier call accepted, whose frame was withheld so that it still reads as
-       held, defers nothing after it: the next exact sync is noted at once. */
-    if (owner) {
-        const uint64_t before = owner->sync_seq;
-        dsd_engine_scan_quiet_note_frame_sync(state, dsd_engine_scan_quiet_sync_accepts(state));
-        rc |= expect_true("an exact sync noted at once", owner->sync_seq == before + 1U && !owner->sync_deferred);
-        uint64_t accepts = dsd_engine_scan_quiet_sync_accepts(state);
-        state->p25_p1_sync_candidate.valid = 1U;
-        state->p25_p1_sync_anchor.tolerant_syncs++;
-        dsd_engine_scan_quiet_note_frame_sync(state, accepts);
-        rc |= expect_true("a provisional sync deferred", owner->sync_seq == before + 1U && owner->sync_deferred);
-        dsd_engine_scan_quiet_drop_sync(state);
-        state->p25_p1_sync_candidate.valid = 0U;
-        state->p25_p1_sync_anchor.tolerant_frames++;
-        dsd_engine_scan_quiet_settle_sync(state);
-        rc |= expect_true("a dropped deferral never noted", owner->sync_seq == before + 1U && !owner->sync_deferred);
-        accepts = dsd_engine_scan_quiet_sync_accepts(state);
-        state->p25_p2_sync_candidate.valid = 1U;
-        state->p25_p2_sync_anchor.tolerant_syncs++;
-        dsd_engine_scan_quiet_note_frame_sync(state, accepts);
-        state->p25_p2_sync_candidate.valid = 0U;
-        dsd_engine_scan_quiet_settle_sync(state);
-        rc |= expect_true("a failed verdict not noted", owner->sync_seq == before + 1U && !owner->sync_deferred);
-        accepts = dsd_engine_scan_quiet_sync_accepts(state);
-        state->p25_p2_sync_candidate.valid = 1U;
-        state->p25_p2_sync_anchor.tolerant_syncs++;
-        dsd_engine_scan_quiet_note_frame_sync(state, accepts);
-        state->p25_p2_sync_candidate.valid = 0U;
-        state->p25_p2_sync_anchor.tolerant_windows++;
-        dsd_engine_scan_quiet_settle_sync(state);
-        rc |= expect_true("a passed verdict noted", owner->sync_seq == before + 2U && !owner->sync_deferred);
-        /* A Phase 2 candidate whose window was withheld still reads as held; the exact syncs after it are noted. */
-        accepts = dsd_engine_scan_quiet_sync_accepts(state);
-        state->p25_p2_sync_candidate.valid = 1U;
-        state->p25_p2_sync_anchor.tolerant_syncs++;
-        dsd_engine_scan_quiet_note_frame_sync(state, accepts);
-        dsd_engine_scan_quiet_drop_sync(state);
-        for (int k = 0; k < 2; k++) {
-            accepts = dsd_engine_scan_quiet_sync_accepts(state);
-            dsd_engine_scan_quiet_note_frame_sync(state, accepts);
-            dsd_engine_scan_quiet_settle_sync(state);
-        }
-        rc |= expect_true("exact syncs after an abandoned candidate noted",
-                          owner->sync_seq == before + 4U && !owner->sync_deferred);
-        state->p25_p2_sync_candidate.valid = 0U;
-    }
     free_test_runtime(opts, state);
     return rc;
 }
@@ -12602,7 +12601,7 @@ test_y_quiet_counts_from_the_landing(int heard) {
     int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, 0, 1, base_hz) == 0);
     if (heard) {
         g_frame_sync_type = DSD_SYNC_DMR_BS_VOICE_POS;
-        run_synced_frames(opts, state, 2, -1);
+        run_synced_frames_noting(opts, state, 2, -1, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
         g_frame_sync_type = DSD_SYNC_NXDN_POS;
     }
     noCarrier(opts, state);
@@ -12616,6 +12615,53 @@ test_y_quiet_counts_from_the_landing(int heard) {
     yq_finish(opts, state);
     if (rc) {
         DSD_FPRINTF(stderr, "FAIL #834: -Y counts from the landing, heard %d\n", heard);
+    }
+    return rc;
+}
+
+/* -Y, issue #834 D8: syncs that keep coming and that their protocol's gate rejects (NXDN48 or dPMR noise) keep the
+   synced-frames loop running, so the row never reaches noCarrier() through a no-sync hunt. The loop's frame-boundary
+   yield collects the quiet result after the first rejected frame and leaves, and the next noCarrier() steps the row
+   with its NOTICE, long before the hangtime; typed and untyped. A frame that left a PARTIAL verdict holds the yield
+   until the frame after it, which completes it (PROVEN): the row keeps its hangtime. */
+static int
+test_y_quiet_noise_syncs_still_step(int typed) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
+    const long int base_hz = 1820012500L + (typed ? 40000000L : 0L);
+    int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, typed, 1, base_hz) == 0);
+    noCarrier(opts, state);
+    rc |= expect_true("the landed row is measured", g_yq.requests == 1 && g_rtl_tune_calls == 0);
+    run_synced_frames(opts, state, 5, -1);
+    rc |= expect_true("the loop yields at the first rejected frame's boundary", g_frame_count == 1);
+    noCarrier(opts, state);
+    rc |= expect_true("the row steps on its quiet result", g_rtl_tune_calls == 1 && g_yq.notices == 1);
+    yq_finish(opts, state);
+
+    /* A PARTIAL frame, then the frame that completes it: no yield, no step. */
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    rc |= expect_true("the first step lands row 0", yq_list(opts, state, 3, typed, 1, base_hz + 20000000L) == 0);
+    noCarrier(opts, state);
+    /* The longest hold, on the system decode clock: the steps below run well inside it. */
+    run_synced_frames_noting(opts, state, 0, -1, DSD_CONTENT_EVIDENCE_PARTIAL, SCAN_QUIET_PENDING_MAX_MS);
+    rc |= expect_true("a PARTIAL frame: no yield, the check held", scan_quiet_phase_get(state) == SCAN_QUIET_READY);
+    noCarrier(opts, state);
+    rc |= expect_true("noCarrier() while the verdict is pending: no step, READY kept",
+                      g_rtl_tune_calls == 0 && g_yq.notices == 0 && scan_quiet_phase_get(state) == SCAN_QUIET_READY);
+    run_synced_frames_noting(opts, state, 0, -1, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    noCarrier(opts, state);
+    rc |= expect_true("completed: the row keeps its hangtime", g_rtl_tune_calls == 0 && g_yq.notices == 0);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y noise syncs, typed %d\n", typed);
     }
     return rc;
 }
@@ -12642,7 +12688,8 @@ test_y_quiet_counts_from_the_walk_tune(int heard) {
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     if (heard) {
         g_frame_sync_type = DSD_SYNC_DMR_BS_VOICE_POS;
-        run_synced_frames(opts, state, 1, 0); /* the tune lands while frame 0 decodes; the next sync is row 1's */
+        /* The tune lands while frame 0 decodes; the next frame is row 1's, and its gate passes it. */
+        run_synced_frames_noting(opts, state, 1, 0, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
         g_frame_sync_type = DSD_SYNC_NXDN_POS;
     } else {
         land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
@@ -12686,7 +12733,7 @@ test_y_quiet_sync_while_suspended_ends_the_check(int heard) {
     dsd_engine_scan_quiet_note_change(state);
     if (heard) {
         g_frame_sync_type = DSD_SYNC_YSF_POS;
-        run_synced_frames(opts, state, 1, -1);
+        run_synced_frames_noting(opts, state, 1, -1, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
         g_frame_sync_type = DSD_SYNC_NXDN_POS;
     }
     noCarrier(opts, state);
@@ -13110,6 +13157,8 @@ test_scan_quiet_decisions(void) {
     rc |= test_y_quiet_restart_late_in_the_visit_measures();
     rc |= test_y_quiet_turned_on_mid_visit_keeps_the_row();
     rc |= test_y_quiet_turned_on_after_the_walk_tune();
+    rc |= test_y_quiet_noise_syncs_still_step(0);
+    rc |= test_y_quiet_noise_syncs_still_step(1);
     rc |= test_y_quiet_counts_from_the_landing(1);
     rc |= test_y_quiet_counts_from_the_landing(0);
     rc |= test_y_quiet_counts_from_the_walk_tune(1);
@@ -14904,8 +14953,8 @@ main(void) {
     rc |= test_iq_stream_start_sets_freq_and_source();
     rc |= test_fixed_tuning_legacy_legs_send_the_peer_nothing();
     rc |= test_legacy_step_landing_ends_the_reception_on_it();
-    rc |= test_live_loop_syncs_move_the_quiet_sync_sequence();
     rc |= test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict();
+    rc |= test_live_loop_counts_only_checked_frames();
     rc |= test_legacy_step_landing_after_a_rigctl_move_and_under_a_hold();
     rc |= test_legacy_step_with_no_row_reopens_its_windows();
     rc |= test_untyped_resume_waits_for_its_row();

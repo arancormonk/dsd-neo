@@ -536,7 +536,7 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     }
     DSD_FPRINTF(stderr, "\n");
 
-    dpmr_confirm_end_frame(state);
+    dpmr_confirm_end_frame(opts, state);
 
     /* How many of the two CCH halves passed their CRC-7, for the caller's verdict. */
     return (int)((ctx.CrcOk[0] != 0U ? 1U : 0U) + (ctx.CrcOk[1] != 0U ? 1U : 0U));

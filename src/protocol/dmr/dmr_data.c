@@ -274,7 +274,8 @@ dmr_data_collect_slot_type_suffix(dmr_data_sync_ctx* ctx) {
         (uint8_t)((ctx->SlotType[4] << 3) + (ctx->SlotType[5] << 2) + (ctx->SlotType[6] << 1) + ctx->SlotType[7]);
 
     if (ctx->state->dmr_ms_mode == 0) {
-        dmr_confidence_result confidence = dmr_confidence_note_data_burst(ctx->state, ctx->state->color_code);
+        dmr_confidence_result confidence =
+            dmr_confidence_note_data_burst(ctx->opts, ctx->state, ctx->state->color_code);
         if (confidence == DMR_CONFIDENCE_REJECT) {
             ctx->confidence_reject = 1;
         } else if (confidence != DMR_CONFIDENCE_LOCKED && ctx->burst != 9U) {
@@ -288,7 +289,8 @@ dmr_data_collect_slot_type_suffix(dmr_data_sync_ctx* ctx) {
            opens the voice gate on the call's first EMB that agrees with it (dmr_ms.c). One whose code conflicts with
            the locked one is dropped, as on BS: dispatched, a header of another system's call that follows on the
            carrier would publish its identity under the old code. Sustained, that code relocks the gate. */
-        const dmr_confidence_result confidence = dmr_confidence_note_data_burst(ctx->state, ctx->state->color_code);
+        const dmr_confidence_result confidence =
+            dmr_confidence_note_data_burst(ctx->opts, ctx->state, ctx->state->color_code);
         if (confidence == DMR_CONFIDENCE_LOCKED) {
             dmr_ras_note_color_code(ctx->state, ctx->state->color_code);
             ctx->state->dmr_color_code = ctx->state->color_code;

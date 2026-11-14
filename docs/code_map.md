@@ -550,30 +550,33 @@ Generated (do not edit/commit):
     - Reconcile, at every hook call and engine service: a changed visit or revision snapshot (`scan_quiet_revisions`:
       `trunk_chan_map_seq`, `lcn_list_rev`, `lcn_scan_session`, `trunk_scan_lists_seq`, the coordinator's `edit_seq`, -Y
       `edits_epoch`, `lcn_avoid_rev`, `trunk_scan_avoid_rev`, `pcm_input_generation`,
-      `rtl_stream_receive_request_seq()`, the configured NFM and AM widths, `quiet_inv_seq`) cancels and suspends; a
-      sync or carrier anywhere in the visit cancels and ends it, whatever phase the check is in: the visit's activity
-      baseline (`sync_seq` and the decode time) is taken when its tune is issued (`dsd_engine_scan_landing_note_tune()`,
-      kept on the owner as `tune_sync_seq`, `tune_decode_m`) and carried by the landing it notes
-      (`dsd_engine_scan_landing::sync_seq`, `tune_decode_m`), so a sync the new channel returns before the landing is
-      noted (an asynchronous tune, such as a Next handled between synced frames, lands before the next tick or pass
-      notes it), or on a channel landed mid-call before the check is first published, counts; a park still in flight
+      `rtl_stream_receive_request_seq()`, the configured NFM and AM widths, `quiet_inv_seq`) cancels and suspends;
+      activity anywhere in the visit (checked content or a carrier, below) cancels and ends it, whatever phase the
+      check is in: the visit's activity baseline (`activity_seq` and the decode time) is taken when its tune is issued
+      (`dsd_engine_scan_landing_note_tune()`, kept on the owner as `tune_activity_seq`, `tune_decode_m`) and carried by
+      the landing it notes (`dsd_engine_scan_landing::activity_seq`, `tune_decode_m`), so checked content the new
+      channel carries before the landing is noted (an asynchronous tune, such as a Next handled between synced
+      frames, lands before the next tick or pass notes it), or on a channel landed mid-call before the check is first
+      published, counts; a park still in flight
       reads the same tune baseline at its first publication and keeps it when its landing adopts it (an in-flight
       publication that was ineligible records what the landing adopts it by, so a check that never started is adopted
-      too); the baseline is kept for that visit key across suspensions, restarts and retries, so a sync heard while the
-      check was suspended ends it at the next publication with nothing requested; a syncing old channel just after the
-      tune may end a check, which only keeps the channel (a lost skip); a new visit key takes a new baseline, and a
-      setting change drops it; a READY result older than 250 ms ends it.
+      too); the baseline is kept for that visit key across suspensions, restarts and retries, so activity heard while
+      the check was suspended ends it at the next publication with nothing requested; an old channel's checked content
+      just after the tune may end a check, which only keeps the channel (a lost skip); a new visit key takes a new
+      baseline, and a setting change drops it; a READY result older than 250 ms ends it, a pending verdict (below) or
+      not.
     - Decision (`scan_quiet_apply()`): the visit and revisions unchanged; the classes, analog kind and width and DSP
       rate in force, which the caller passes as this pass's `scan_quiet_eligibility`, equal to those measured (a NULL
       one declines); the tap's capture still the result's and the live output generation still its generation (a
       reacquire bump before the next block reaches the tap), no tune in flight or failed-gated in the ledger
-      (`dsd_trunk_tuning_frame_is_current()`, lock-free), at most 250 ms old, no sync in the visit, no analog carrier
-      heard (any tone verdict), and under trunk scan no allowed activity at or after the visit's activity baseline
-      (`dsd_engine_trunk_scan_quiet_activity_since()`). Applying consumes the result (DONE: one skip per visit); any
-      decline is DONE, except a lost tick guard (`scan_quiet_reconcile_declined()` with `guard_lost`), which leaves
-      READY so the next hunt point hands back again. A park measured in flight is applied only after its landing is
-      noted. `scan_quiet_log_skip()` writes the NOTICE line (`scan_quiet_format_skip()`). The skip decisions themselves
-      are the trunk scan's and -Y's (below).
+      (`dsd_trunk_tuning_frame_is_current()`, lock-free), at most 250 ms old, no checked content in the visit, no analog
+      carrier heard (any tone verdict), and under trunk scan no allowed activity at or after the visit's activity
+      baseline (`dsd_engine_trunk_scan_quiet_activity_since()`). Applying consumes the result (DONE: one skip per
+      visit); any decline is DONE, except a lost tick guard (`scan_quiet_reconcile_declined()` with `guard_lost`), which
+      leaves READY so the next hunt point hands back again. While a frame's verdict is pending the result is neither
+      applied nor declined: `scan_quiet_apply()` returns 0 without consuming it and the decline leaves it READY. A
+      park measured in flight is applied only after its landing is noted. `scan_quiet_log_skip()` writes the NOTICE
+      line (`scan_quiet_format_skip()`). The skip decisions themselves are the trunk scan's and -Y's (below).
     - Trunk-scan skip (`trunk_scan.c`): engine service is the outer loop's pass, whose tick
       (`dsd_engine_trunk_scan_quiet_service_pass()` before `dsd_trunk_scan_hook_tick()`, one load with the setting off)
       publishes the target on air at the tick's tail, after any landing or advance the tick made
@@ -604,8 +607,11 @@ Generated (do not edit/commit):
       the tone stays (PENDING, ALLOWED), then the voice gate: a visit still qualifying
       (`dsd_scan_voice_gate_qualifying()`, no voice heard, asked only with the setting on) steps at its qualification
       expiry or on its quiet result (`no_carrier_quiet_skip()`), heard voice (VOICE, TAIL) is the gate's alone;
-      otherwise the hangtime rule, or the quiet result. A result is applied only where no stay can follow (the hold, an
-      awaited tune and an avoided row are in the row's conditions), so a result consumed always steps, through
+      otherwise the hangtime rule, or the quiet result. Syncs that keep coming and check nothing never let the
+      synced-frames loop reach `noCarrier()` through a no-sync hunt, so the loop yields at a frame boundary when the
+      hunt's service answers HAND_BACK under -Y (`dsd_engine_scan_quiet_frame_yield()`, after the visit cap), and
+      `noCarrier()` decides as after the hunt's hand-back. A result is applied only where no stay can follow (the hold,
+      an awaited tune and an avoided row are in the row's conditions), so a result consumed always steps, through
       `no_carrier_step_scanner_mode_if_needed()` (typed and untyped). A typed step still in flight
       (`dsd_engine_channel_scan_waiting()`) is excluded as well, though every typed start forgets the landing first, so
       it never reaches that term with a landing. An open analog carrier never skips: it makes the row ineligible, and
@@ -620,40 +626,72 @@ Generated (do not edit/commit):
       qualifying and qualifying-busy rows, an avoided row, a walk waiting on its tune, a typed step in flight, an open
       analog carrier, and the end-to-end skip through `dsd_engine_test_live_scanner_run()` for -Y and trunk scan, each
       against the setting off).
-    - `sync_seq` moves whenever the live loop's frame sync returns a sync (`live_scanner_frame_sync()`, YSF and D-STAR
-      included, which stamp no `last_cc_sync_time_m`; a provisional P25 sync, a word accepted within a tolerance whose
-      frame waits on its strict NID or window verdict, `p25_p1_sync_candidate`/`p25_p2_sync_candidate` held when the
-      sync returns and accepted by that call, its accept counters `tolerant_syncs` + `acquisition_syncs` (both phases)
-      moved, `dsd_engine_scan_quiet_sync_accepts()`, so a candidate an earlier call left held behind a withheld frame
-      defers no exact sync after it, is deferred on the owner with the verdict counters, `tolerant_frames` + `acquisition_frames` +
-      `tolerant_windows`, by `dsd_engine_scan_quiet_note_frame_sync()`, and moves it only when a counter moved by the
-      time its frame was processed, `dsd_engine_scan_quiet_settle_sync()` right after `processFrame()`; a withheld or
-      undispatched frame drops the deferral, `dsd_engine_scan_quiet_drop_sync()`, so a noise near-miss whose NID fails
-      never ends a silent channel's check) and whenever a monitor block found the carrier itself, whatever
-      its tone verdict (`dsd_engine_analog_call_block()`, `found_carrier`: a carrier that ends while its tone check is
-      pending counts); `quiet_inv_seq` moves where a check's facts change with
+    - Checked content (issue #834 D8): `activity_seq` moves, only while skip-silent is on, when a frame's content
+      passes its protocol's CRC/FEC gate (a PROVEN content note, `dsd_frame_sync_hook_content_evidence()`, the engine's
+      `dsd_engine_scan_quiet_note_evidence()`: once a frame however many of its checks pass, once a note outside a
+      frame) and whenever a monitor block found the carrier itself, whatever its tone verdict
+      (`dsd_engine_analog_call_block()`, `found_carrier`, `dsd_engine_scan_quiet_note_activity()`: a carrier that ends
+      while its tone check is pending counts). A raw sync is no activity: NXDN48 and dPMR pass their sync words on
+      noise several times a second. The PROVEN sites: a validated P25p1 NID (`dsd_dispatch_handle_p25p1()`, the BCH
+      verdict under the NID's own NAC); a P25p2 FACCH, SACCH or LCCH whose real checksum passed
+      (`p25p2_acch_note_evidence()`) and a decoded I-ISCH (`p25p2_process_isch()`); the DMR colour-code gate's
+      evidence (`dmr_confidence_note_evidence()`: a lock, a burst matching it, a voice slot opening) and every data
+      burst whose own 16- or 24-bit check proves it or whose RAS signature `-F` accepts (`dmr_dburst_proves_content()`
+      in `dmr_data_burst_handler()`, beside the TDMA-carrier proof); NXDN and dPMR at their confirm-end points where a
+      Signal search hears the frame (`nxdn_confirm_end_frame()`, `dpmr_confirm_end_frame()`); M17 and D-STAR inside
+      `m17_confirm_note_evidence()` and `dstar_confirm_note_evidence()` (strong evidence and completed weak streaks);
+      a YSF FICH and each DCH whose CRC passed. A P25 word accepted within a tolerance is pending like any sync; its
+      frame's PROVEN note comes only from behind the strict NID or the window verdict, so a noise near-miss whose
+      verdict fails ends no check. PARTIAL (a frame whose verdict a later frame completes, with the
+      protocol's hold): NXDN's lone weak frame (two frames: 160 ms NXDN48/IDAS/DCR, 80 ms when NXDN96 runs alone),
+      dPMR's one CCH half (320 ms), M17's lone clean LICH (80 ms), D-STAR's superframe ending on its sync alone
+      (`dstar_confirm_end_frame()`, 840 ms) and DMR's gate left PENDING on an unlocked candidate (120 ms). The runtime
+      wrapper returns on one load with the setting off, before any owner lookup, and the engine's note makes no scan
+      owner. The notes feed the quiet check alone: CRC provenance flags, history, events, Signal search evidence and
+      the trunk scan's allowed activity are unchanged.
+    - A sync awaiting its verdict (`dsd_engine_scan_owner::frame_pending`, `frame_evidence`, `frame_hold_ms`,
+      `pending_until_m`): `live_scanner_frame_sync()` sets `frame_pending` for a returned sync
+      (`dsd_engine_scan_quiet_note_frame_sync()`), and the frame's end (`dsd_engine_scan_quiet_frame_end()`, after
+      `processFrame()` or a withheld frame in `live_scanner_dispatch_synced_frame_locked()`) resolves it: PROVEN
+      anywhere in the frame dominates (activity moved, nothing pending); else PARTIAL makes `pending_until_m` the later
+      of its value and now + the hold (capped at `SCAN_QUIET_PENDING_MAX_MS`, decode clock on both sides); else the
+      frame checked nothing and only `frame_pending` clears: a rejected sync never cancels a wait another frame started
+      (an NXDN LICH reject keeps the weak streak). While either is pending the hunt's service is LIVE, never HAND_BACK,
+      and the decision holds as above; reconcile, collection and deadlines go on, and READY still ages out at 250 ms
+      (realtime), so a wait never applies late and a changing DMR candidate cannot hold a visit past its normal
+      timing. A new scan tune (`dsd_engine_scan_landing_note_tune()`), a forgotten landing
+      (`dsd_engine_scan_landing_forget()`, which every non-gap carrier boundary runs), a stream-gap boundary, the
+      setting's change and the synced-frames loop's early leaves (a settled manual tune, a row commit, an input
+      boundary: `dsd_engine_scan_quiet_pending_reset()`) clear both; the same tune's landing (the epoch step a park in
+      flight is adopted by) keeps them.
+    - `quiet_inv_seq` moves where a check's facts change with
       no counter of their own (`dsd_engine_scan_quiet_note_change()`): the trunk scan's hold set or released, pause,
       resume, a park put in flight (`tune_pending`), its stop; the -Y release (leave and pause), resume, entry hold set,
       replaced or released, `Y` (through `dsd_engine_channel_scan_entry_cancel()`) and a start's hold let go; a Signal
       search start (the tap lets the search's first request supersede the quiet one meanwhile); the setting and every
       config apply (`dsd_scan_quiet_setting_changed()`, installed engine-wide as
       `dsd_engine_scan_quiet_setting_changed()`, which also cancels and suspends at once; when the change turned the
-      setting on, from off, it applies from the next visit, that is from the next scan tune: syncs heard while off moved
-      no `sync_seq`, so it marks the landed visit DONE and records the next value of the owner's `tune_seq` (moved by
-      every `dsd_engine_scan_landing_note_tune()`, carried by the landing it notes) as `quiet_first_tune_seq`, and any
-      visit tuned before that, a park in flight or one landed but not yet noted alike, is DONE at its publication). Both
-      bumps are one load while skip-silent is off. A mutation site only moves the counter; the request is cancelled,
-      ticket-matched, at the next reconcile, which runs before every outward answer (hook, apply, decline, publication),
-      so no stale result is ever handed back or applied, and a Signal search request supersedes a quiet one at the tap
-      meanwhile.
+      setting on, from off, it applies from the next visit, that is from the next scan tune: content heard while off
+      moved no `activity_seq`, so it marks the landed visit DONE and records the next value of the owner's `tune_seq`
+      (moved by every `dsd_engine_scan_landing_note_tune()`, carried by the landing it notes) as
+      `quiet_first_tune_seq`, and any visit tuned before that, a park in flight or one landed but not yet noted alike,
+      is DONE at its publication). Both bumps are one load while skip-silent is off. A mutation site only moves the
+      counter; the request is cancelled, ticket-matched, at the next reconcile, which runs before every outward answer
+      (hook, apply, decline, publication), so no stale result is ever handed back or applied, and a Signal search
+      request supersedes a quiet one at the tap meanwhile.
     - RF power is never activity: the check writes no hold, activity stamp, `idle_since_m`, `last_cc_sync_time`,
       history, event or location output, and reports nothing to the trunk scan. Radio-off builds compile it as a no-op
       service. Tests: `ENGINE_TRUNK_SCAN` (`test_scan_quiet_*`: a fake tap, link fakes of `rtl_signal_quiet_*`,
       `rtl_signal_capture_get()` and `rtl_stream_receive_request_seq()`, on a fake realtime clock, a link wrap of
-      `dsd_realtime_mono_ms()`, separate from the TEST decode clock), `ENGINE_NO_CARRIER_RESET`
-      (`test_live_loop_syncs_move_the_quiet_sync_sequence`,
-      `test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict`), `CORE_RECEIVE`, `ENGINE_CHANNEL_SCAN`,
-      `ENGINE_SIGNAL_SEARCH`, `APP_COMMAND_QUEUE`, `FRAME_SYNC_SPS_HUNT_FALSE_SYNC`, `FRAME_SYNC_HISTORY_CARRY`.
+      `dsd_realtime_mono_ms()`, separate from the TEST decode clock; the D8 regressions run on the real realtime clock
+      with no link wrap, so they build everywhere: `test_scan_quiet_rejected_sync_keeps_the_check`,
+      `test_scan_quiet_y_noise_frames_still_step`, `test_scan_quiet_pending_verdict_holds_every_skip_point`,
+      `test_scan_quiet_evidence_*`), `ENGINE_NO_CARRIER_RESET` (`test_live_loop_counts_only_checked_frames`,
+      `test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict`,
+      `test_y_quiet_noise_syncs_still_step`), `CORE_RECEIVE`, `ENGINE_CHANNEL_SCAN`, `ENGINE_SIGNAL_SEARCH`,
+      `APP_COMMAND_QUEUE`, `FRAME_SYNC_SPS_HUNT_FALSE_SYNC`, `FRAME_SYNC_HISTORY_CARRY`; the content-evidence sites in
+      `P25_P1_SYNC_DISPATCH`, `P25_P2_RELIABILITY`, `DMR_CONFIDENCE_GATE`, `DMR_RAS_DETECT`, `NXDN_CONFIRM`,
+      `DPMR_CONFIRM`, `M17_CONFIRM`, `DSTAR_CONFIRM` and `YSF_DCH_DECODE`.
 - Build files: `src/engine/CMakeLists.txt`
 
 Key public headers:
@@ -4543,18 +4581,31 @@ trunk-scan one, because this table outlives any trunk-scan coordinator and the s
 nothing installed.
 `scan_quiet_service` (`dsd_frame_sync_hook_scan_quiet_service()`, #834) is the scan quiet check's in-hunt service
 (`dsd_engine_scan_quiet_service()`, engine-wide like the setting slot): `getFrameSync()` asks it at the same 300-symbol
-point as the trunk-scan dwell (`dwell_due || scan_quiet_service`, so a dwell hand-back is asked first and the service
-runs only when the dwell is not due), and on a 1 hands back exactly as the dwell does: history kept as at a pass end
-(`frame_sync_history_keep()`), the hunt return marked, a plain no-sync with no no-sync hooks. The engine does the
-measurement work (start, collect, expire) inside the call and answers 1 only for a quiet result its tick may skip on,
-so the hunt never hands back for a sync in progress (any sync in the visit ended the check). With
-`opts->scan_skip_silent` off the runtime wrapper returns 0 after that one load, never calling the engine. With it on, a
-SUSPENDED or DONE check (or none) costs the scan-owner extension lookup and a phase load. A check under way
+point as the trunk-scan dwell (`dwell_due || scan_quiet_service == DSD_SCAN_QUIET_HAND_BACK`, so a dwell hand-back is
+asked first and the service runs only when the dwell is not due), and on `DSD_SCAN_QUIET_HAND_BACK` hands back exactly
+as the dwell does: history kept as at a pass end (`frame_sync_history_keep()`), the hunt return marked, a plain no-sync
+with no no-sync hooks. The answer is tri-state: `DSD_SCAN_QUIET_NONE` (no check under way), `DSD_SCAN_QUIET_LIVE` (a
+check under way: waiting for its capture, requested, or a READY result held back while a frame's verdict is pending or
+failing the decision's checks) and `DSD_SCAN_QUIET_HAND_BACK`; every caller (this hunt point and the -Y frame-boundary
+yield) compares equal to HAND_BACK, so a LIVE check never yields. The engine does the measurement work (start, collect,
+expire) inside the call and answers HAND_BACK only for a quiet result its tick may skip on with no verdict pending, so
+the hunt never hands back for a frame whose checks are still out. With `opts->scan_skip_silent` off the runtime wrapper
+returns NONE after that one load, never calling the engine. With it on, a SUSPENDED or DONE check (or none) costs the
+scan-owner extension lookup and a phase load. A check under way
 (WAIT_CAPTURE, REQUESTED, READY) is reconciled at every call: the revision snapshot is read again
 (about 13 loads: the state counters, two extension lookups for the trunk-scan and -Y edit counters, and the
 receive-request atomic), then one realtime read, then the phase's own step (WAIT_CAPTURE: a tap capture read at most
 every 50 ms; REQUESTED: the status word's atomic load; READY: a capture read and the ledger's frame gate). It is paid
-only with the setting on, once per 300 symbols. 0 with nothing installed.
+only with the setting on, once per 300 symbols. NONE with nothing installed.
+`content_evidence` (`dsd_frame_sync_hook_content_evidence()`, #834 D8) is how protocol code tells the scan quiet check
+what its CRC/FEC gate made of the frame being decoded (`DSD_CONTENT_EVIDENCE_PROVEN`, or `DSD_CONTENT_EVIDENCE_PARTIAL`
+with the protocol's hold for the frame that completes it; the sites are in the Engine section's scan quiet check). The
+wrapper takes `opts` and returns on one load with `opts->scan_skip_silent` off (or `opts` NULL), before any owner
+lookup, so the protocol confirm modules that report it take `opts` too (`nxdn_confirm_end_frame()`,
+`dpmr_confirm_end_frame()`, `m17_confirm_note_evidence()`, `dstar_confirm_note_evidence()`,
+`dstar_confirm_end_frame()`, `dmr_confidence_note_voice_burst()`, `dmr_confidence_note_data_burst()`; NULL is no
+check). The engine installs `dsd_engine_scan_quiet_note_evidence()`, which makes no scan owner. A no-op with nothing
+installed.
 `analog_call_block` hands the engine's NFM call every processed conventional monitor block as a `dsd_analog_call_block`
 descriptor (issues #756, #668; see `dsd_symbol.c` in the DSP section), borrowed for the synchronous call.
 
@@ -11390,8 +11441,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     word, and the P25p1 dispatcher notes it once a tolerant word's NID passed; a dropped frame
     (`dsd_p25p1_sync_anchor::frame_dropped`, `dsd_state_p25p1_frame_dropped()`, until the next accepted sync) starts no
     `-Y` voice gate qualify window (`scan_voice_gate_sync_m`); and a tolerant word is activity to a scan quiet check
-    (the owner's `sync_seq`) only once its NID passed (`dsd_engine_scan_quiet_settle_sync()`; a tolerant P25p2 window
-    the same, once its verdict passed). So a dropped candidate leaves nothing behind but the
+    only through its frame's PROVEN content note, which the P25p1 dispatcher makes past the strict check (a tolerant
+    P25p2 window's only past its verdict, `p25p2_admit_window()`). So a dropped candidate leaves nothing behind but the
     symbols it read and its console lines. The hold is where any further slicer state the C4FM accept writes belongs.
     The word changes nothing about the symbol grid at the accept (the sync anchor entry in DSP): it is only marked in
     the matched-filter seam's raw history, and measured there once its NID passed, when it was read with no recording
@@ -19839,8 +19890,9 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     output generation `dsd_engine_scan_landing_note_tune()` read at the tune request, before the retune was issued
     (`channel_scan_tune_staged()`, `untyped_tune_row()`, `trunk_scan_switch_to()` before `trunk_scan_retune_active()`),
     carried on the owner (`tune_generation_before`) until the landing; `landed_realtime_ms`, when it was noted; and the
-    owner's `sync_seq` with the decode time read by that same tune request (`tune_sync_seq`, `tune_decode_m` on the
-    owner, `sync_seq`, `tune_decode_m` on the landing), the visit's activity baseline. As with
+    owner's `activity_seq` with the decode time read by that same tune request (`tune_activity_seq`, `tune_decode_m` on
+    the owner, `activity_seq`, `tune_decode_m` on the landing), the visit's activity baseline; the tune request also
+    drops a verdict the last channel's frame left pending, and a forget drops one too. As with
     `dsd_opts_tuned_freq_hz()`, a frequency changed on the peer itself is not seen. Analog rows only take the frequency:
     digital rows on a rigctl -Y channel keep the `dsd_opts_tuned_freq_hz()` rule. The row or target is the "confirmed on
     air" proof a typed frequency reads (`dsd_engine_channel_scan_row_confirmed()`,

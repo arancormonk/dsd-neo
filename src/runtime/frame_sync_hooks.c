@@ -101,7 +101,19 @@ dsd_frame_sync_hook_scan_quiet_service(const dsd_opts* opts, dsd_state* state) {
     if (!opts->scan_skip_silent) {
         return 0;
     }
-    return g_frame_sync_hooks.scan_quiet_service ? g_frame_sync_hooks.scan_quiet_service(opts, state) : 0;
+    return g_frame_sync_hooks.scan_quiet_service ? g_frame_sync_hooks.scan_quiet_service(opts, state)
+                                                 : DSD_SCAN_QUIET_NONE;
+}
+
+void
+dsd_frame_sync_hook_content_evidence(const dsd_opts* opts, dsd_state* state, int level, uint32_t hold_ms) {
+    /* The setting off: this one load is the frame's whole cost, before any owner is looked up. */
+    if (!opts || !opts->scan_skip_silent) {
+        return;
+    }
+    if (g_frame_sync_hooks.content_evidence) {
+        g_frame_sync_hooks.content_evidence(state, level, hold_ms);
+    }
 }
 
 int

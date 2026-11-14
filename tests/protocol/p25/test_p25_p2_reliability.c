@@ -16,11 +16,14 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/fec/p25p2_isch.h>
 #include <dsd-neo/protocol/p25/p25.h>
+#include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <stdint.h>
@@ -389,6 +392,22 @@ stub_seal_crc12(int* payload, int len) {
     }
 }
 
+/* With g_xcch_stub_seal_lcch, a SACCH-shaped decode is an LCCH whose CRC-16 over its 164 bits checks (issue #834): the
+   16 check bits are searched for, through the decoder's own check (crc16_lb_bridge()). */
+static int g_xcch_stub_seal_lcch = 0;
+
+static void
+stub_seal_lcch_crc16(int* payload) {
+    for (unsigned int crc = 0U; crc <= 0xFFFFU; crc++) {
+        for (int i = 0; i < 16; i++) {
+            payload[164 + i] = (int)((crc >> (15 - i)) & 1U);
+        }
+        if (crc16_lb_bridge(payload, 164) == 0) {
+            return;
+        }
+    }
+}
+
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 ez_rs28_facch(int* payload, int* parity, const int* erasures, int n_erasures) {
@@ -417,6 +436,9 @@ ez_rs28_sacch(int* payload, int* parity, const int* erasures, int n_erasures) {
     }
     if (g_xcch_stub_seal_crc) {
         stub_seal_crc12(payload, 180 - 12);
+    }
+    if (g_xcch_stub_seal_lcch) {
+        stub_seal_lcch_crc16(payload);
     }
     return g_sacch_success_rc;
 }
@@ -1753,10 +1775,14 @@ read_fed_window(dsd_opts* opts, dsd_state* state, uint32_t gap, int isch_located
     g_dibit_feed_active = 0;
 }
 
+/* The skip-silent setting run_fed_superframe() gives its fresh opts (issue #834). */
+static int g_fed_skip_silent = 0;
+
 /* A superframe of four bursts with the given DUID codewords, fed to processP2() on a site whose seed is set. */
 static void
 run_fed_superframe(dsd_opts* opts, dsd_state* state, const uint8_t duids[4], int boundary_at) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
+    opts->scan_skip_silent = g_fed_skip_silent;
     DSD_MEMSET(state, 0, sizeof(*state));
     p25_p2_frame_reset();
     reset_ess_stubs();
@@ -2573,6 +2599,126 @@ test_broken_continuity_promotes_a_deferred_rekey(void) {
     return rc;
 }
 
+/* Issue #834: the PROVEN content notes a scan quiet check hears through the content-evidence hook. */
+static int g_quiet_proven = 0;
+static int g_quiet_other = 0;
+
+static void
+record_quiet_note(dsd_state* state, int level, uint32_t hold_ms) {
+    (void)state;
+    (void)hold_ms;
+    if (level == DSD_CONTENT_EVIDENCE_PROVEN) {
+        g_quiet_proven++;
+    } else {
+        g_quiet_other++;
+    }
+}
+
+/* Fresh opts and state, the ACCH stubs reset, skip-silent @p on, no note heard yet. */
+static void
+quiet_acch_rig(dsd_opts* opts, dsd_state* state, int on) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    p25_p2_frame_reset();
+    reset_xcch_stubs();
+    opts->scan_skip_silent = on;
+    g_quiet_proven = 0;
+    g_quiet_other = 0;
+}
+
+/* Issue #834: P25 Phase 2 content a scan quiet check counts as activity: a FACCH, SACCH or LCCH whose real checksum
+   passed, and a decoded I-ISCH. A burst whose RS decode failed, one whose checksum failed, the S-ISCH (the sync word)
+   and an ISCH nothing decodes are none; nor is any of a window an input interruption cut, whatever its bursts say. No
+   note is PARTIAL, and none is made with the setting off. */
+static int
+test_quiet_check_hears_checked_content(void) {
+    printf("Test 33d: a scan quiet check hears checked Phase 2 content... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_frame_sync_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.content_evidence = record_quiet_note;
+    dsd_frame_sync_hooks_set(&hooks);
+    int rc = 0;
+
+    quiet_acch_rig(&opts, &state, 1);
+    g_facch_success_rc = 0;
+    seed_xcch_opcode(0, 1);
+    p25p2_process_facchc(&opts, &state, 0);
+    rc |= expect_int("a FACCH whose checksum passed is PROVEN", g_quiet_proven, 1);
+    quiet_acch_rig(&opts, &state, 0);
+    g_facch_success_rc = 0;
+    seed_xcch_opcode(0, 1);
+    p25p2_process_facchc(&opts, &state, 0);
+    rc |= expect_int("setting off: nothing", g_quiet_proven, 0);
+    quiet_acch_rig(&opts, &state, 1);
+    g_xcch_stub_seal_crc = 0;
+    g_facch_success_rc = 0;
+    seed_xcch_opcode(0, 1);
+    p25p2_process_facchc(&opts, &state, 0);
+    rc |= expect_int("a FACCH whose checksum failed: nothing", g_quiet_proven, 0);
+    quiet_acch_rig(&opts, &state, 1);
+    DSD_MEMSET(p2llr, 0, sizeof(p2llr));
+    g_facch_min_success = 99;
+    p25p2_process_facchc(&opts, &state, 0);
+    rc |= expect_int("a FACCH whose RS failed: nothing", g_quiet_proven, 0);
+    quiet_acch_rig(&opts, &state, 1);
+    g_sacch_success_rc = 0;
+    seed_xcch_opcode(1, 6);
+    p25p2_process_sacchc(&opts, &state, 1);
+    rc |= expect_int("a SACCH whose checksum passed is PROVEN", g_quiet_proven, 1);
+    quiet_acch_rig(&opts, &state, 1);
+    prepare_lcch_release_duids();
+    p25p2_process_duid(&opts, &state);
+    rc |= expect_int("an LCCH whose CRC-16 failed: nothing", g_sacch_mac_lcch_calls > 0 && g_quiet_proven == 0, 1);
+    quiet_acch_rig(&opts, &state, 1);
+    g_xcch_stub_seal_lcch = 1;
+    prepare_lcch_release_duids();
+    p25p2_process_duid(&opts, &state);
+    g_xcch_stub_seal_lcch = 0;
+    rc |= expect_int("each LCCH whose CRC-16 passed is PROVEN",
+                     g_sacch_mac_lcch_calls > 0 && g_quiet_proven == g_sacch_mac_lcch_calls, 1);
+
+    quiet_acch_rig(&opts, &state, 1);
+    g_isch_lookup_result = (1 << 5) | (0 << 3);
+    p25p2_process_isch(&opts, &state, 2);
+    rc |= expect_int("a decoded I-ISCH is PROVEN", g_quiet_proven, 1);
+    g_isch_lookup_result = -1;
+    p25p2_process_isch(&opts, &state, 1);
+    rc |= expect_int("an ISCH nothing decodes: nothing more", g_quiet_proven, 1);
+    g_isch_lookup_result = (1 << 5) | (0 << 3);
+    for (int i = 0; i < 40; i++) {
+        p2bit[320 + i] = (int)((DSD_P25P2_S_ISCH >> (39 - i)) & 1U);
+    }
+    p25p2_process_isch(&opts, &state, 0);
+    rc |= expect_int("the S-ISCH: nothing more", g_quiet_proven, 1);
+    g_isch_lookup_result = -1;
+
+    /* A whole window of scrambled FACCHs, then the same window cut by an input interruption. */
+    static const uint8_t scrambled_facch[4] = {0x9AU, 0x9AU, 0x9AU, 0x9AU};
+    g_fed_skip_silent = 1;
+    g_quiet_proven = 0;
+    run_fed_superframe(&opts, &state, scrambled_facch, -1);
+    rc |= expect_int("a whole window's checked bursts are PROVEN", g_quiet_proven >= 4, 1);
+    g_quiet_proven = 0;
+    g_dibit_feed_interrupt_at = 400;
+    run_fed_superframe(&opts, &state, scrambled_facch, -1);
+    g_dibit_feed_interrupt_at = -1;
+    g_fed_skip_silent = 0;
+    rc |= expect_int("a cut window: nothing", g_quiet_proven, 0);
+    rc |= expect_int("no PARTIAL note", g_quiet_other, 0);
+
+    dsd_frame_sync_hooks_set(NULL);
+    reset_xcch_stubs();
+    reset_ess_stubs();
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
 int
 main(void) {
     int failures = 0;
@@ -2717,6 +2863,7 @@ main(void) {
     failures += test_seed_proof_needs_a_descrambled_burst();
     failures += test_superframe_split_by_a_carrier_boundary_is_dropped();
     failures += test_window_cut_by_an_input_interruption_is_dropped();
+    failures += test_quiet_check_hears_checked_content();
     failures += test_checked_block_marks_two_slot_carrier();
     failures += test_seed_proof_reaches_the_call_its_burst_ends();
     failures += test_window_position_follows_the_symbol_count();

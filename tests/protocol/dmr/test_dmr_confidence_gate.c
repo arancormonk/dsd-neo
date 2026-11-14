@@ -5,9 +5,11 @@
 
 #include <assert.h>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -28,7 +30,7 @@ test_single_data_burst_does_not_lock(void) {
     static dsd_state state;
     init_state(&state);
 
-    assert(dmr_confidence_note_data_burst(&state, 11) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 11) == DMR_CONFIDENCE_PENDING);
 
     assert(state.dmr_confidence_locked == 0);
     assert(state.dmr_color_code == 16);
@@ -44,9 +46,9 @@ test_repeated_data_bursts_lock_color_code(void) {
     static dsd_state state;
     init_state(&state);
 
-    assert(dmr_confidence_note_data_burst(&state, 0) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 0) == DMR_CONFIDENCE_PENDING);
     assert(state.rx_id.valid == 0U); // a candidate is no received colour code yet
-    assert(dmr_confidence_note_data_burst(&state, 0) == DMR_CONFIDENCE_LOCKED);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 0) == DMR_CONFIDENCE_LOCKED);
     assert(state.dmr_confidence_locked == 1);
     assert(state.dmr_confidence_color_code == 0);
     assert(state.dmr_confidence_mismatch_count == 0);
@@ -55,10 +57,10 @@ test_repeated_data_bursts_lock_color_code(void) {
     assert(state.rx_id.family == (uint8_t)DSD_RXID_FAMILY_DMR && state.rx_id.valid == DSD_RXID_ACCESS);
     assert(state.rx_id.access_kind == (uint8_t)DSD_ACCESS_CODE_COLOR_CODE && state.rx_id.access == 0U);
     dsd_rxid_mark_stale(&state);
-    assert(dmr_confidence_note_data_burst(&state, 0) == DMR_CONFIDENCE_LOCKED);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 0) == DMR_CONFIDENCE_LOCKED);
     assert(state.rx_id.fresh == DSD_RXID_ACCESS);
     // A mismatch the gate rejects names nothing.
-    assert(dmr_confidence_note_data_burst(&state, 9) == DMR_CONFIDENCE_REJECT);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 9) == DMR_CONFIDENCE_REJECT);
     assert(state.rx_id.access == 0U);
 }
 
@@ -67,9 +69,9 @@ test_inconsistent_cc_restarts_candidate_count(void) {
     static dsd_state state;
     init_state(&state);
 
-    assert(dmr_confidence_note_data_burst(&state, 5) == DMR_CONFIDENCE_PENDING);
-    assert(dmr_confidence_note_data_burst(&state, 7) == DMR_CONFIDENCE_PENDING);
-    assert(dmr_confidence_note_data_burst(&state, 7) == DMR_CONFIDENCE_LOCKED);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 5) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 7) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 7) == DMR_CONFIDENCE_LOCKED);
     assert(state.dmr_confidence_color_code == 7);
     assert(state.dmr_color_code == 7);
 }
@@ -79,9 +81,9 @@ test_locked_color_code_rejects_mismatch(void) {
     static dsd_state state;
     init_state(&state);
 
-    assert(dmr_confidence_note_data_burst(&state, 3) == DMR_CONFIDENCE_PENDING);
-    assert(dmr_confidence_note_data_burst(&state, 3) == DMR_CONFIDENCE_LOCKED);
-    assert(dmr_confidence_note_data_burst(&state, 11) == DMR_CONFIDENCE_REJECT);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 3) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 3) == DMR_CONFIDENCE_LOCKED);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 11) == DMR_CONFIDENCE_REJECT);
     assert(state.dmr_confidence_mismatch_count == 1);
     assert(state.dmr_confidence_color_code == 3);
 }
@@ -95,14 +97,14 @@ test_sustained_mismatch_relocks_to_new_color_code(void) {
     static dsd_state state;
     init_state(&state);
 
-    assert(dmr_confidence_note_data_burst(&state, 3) == DMR_CONFIDENCE_PENDING);
-    assert(dmr_confidence_note_data_burst(&state, 3) == DMR_CONFIDENCE_LOCKED);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 3) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 3) == DMR_CONFIDENCE_LOCKED);
 
-    assert(dmr_confidence_note_data_burst(&state, 7) == DMR_CONFIDENCE_REJECT);
-    assert(dmr_confidence_note_data_burst(&state, 7) == DMR_CONFIDENCE_REJECT);
-    assert(dmr_confidence_note_data_burst(&state, 7) == DMR_CONFIDENCE_REJECT);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 7) == DMR_CONFIDENCE_REJECT);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 7) == DMR_CONFIDENCE_REJECT);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 7) == DMR_CONFIDENCE_REJECT);
     assert(state.rx_id.access == 3U);
-    assert(dmr_confidence_note_data_burst(&state, 7) == DMR_CONFIDENCE_LOCKED);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 7) == DMR_CONFIDENCE_LOCKED);
     assert(state.dmr_confidence_locked == 1);
     assert(state.dmr_confidence_color_code == 7);
     assert(state.dmr_color_code == 7);
@@ -116,17 +118,17 @@ test_matching_burst_restarts_relock_streak(void) {
     static dsd_state state;
     init_state(&state);
 
-    assert(dmr_confidence_note_data_burst(&state, 3) == DMR_CONFIDENCE_PENDING);
-    assert(dmr_confidence_note_data_burst(&state, 3) == DMR_CONFIDENCE_LOCKED);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 3) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 3) == DMR_CONFIDENCE_LOCKED);
 
-    assert(dmr_confidence_note_data_burst(&state, 7) == DMR_CONFIDENCE_REJECT);
-    assert(dmr_confidence_note_data_burst(&state, 7) == DMR_CONFIDENCE_REJECT);
-    assert(dmr_confidence_note_data_burst(&state, 7) == DMR_CONFIDENCE_REJECT);
-    assert(dmr_confidence_note_data_burst(&state, 3) == DMR_CONFIDENCE_LOCKED);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 7) == DMR_CONFIDENCE_REJECT);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 7) == DMR_CONFIDENCE_REJECT);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 7) == DMR_CONFIDENCE_REJECT);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 3) == DMR_CONFIDENCE_LOCKED);
 
-    assert(dmr_confidence_note_data_burst(&state, 7) == DMR_CONFIDENCE_REJECT);
-    assert(dmr_confidence_note_data_burst(&state, 7) == DMR_CONFIDENCE_REJECT);
-    assert(dmr_confidence_note_data_burst(&state, 7) == DMR_CONFIDENCE_REJECT);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 7) == DMR_CONFIDENCE_REJECT);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 7) == DMR_CONFIDENCE_REJECT);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 7) == DMR_CONFIDENCE_REJECT);
     assert(state.dmr_confidence_locked == 1);
     assert(state.dmr_confidence_color_code == 3);
     assert(state.dmr_color_code == 3);
@@ -140,14 +142,14 @@ test_relock_closes_voice_gates(void) {
     init_state(&state);
 
     dmr_confidence_note_voice_sync(&state, 0);
-    assert(dmr_confidence_note_voice_burst(&state, 0, 3) == DMR_CONFIDENCE_PENDING);
-    assert(dmr_confidence_note_voice_burst(&state, 0, 3) == DMR_CONFIDENCE_LOCKED);
+    assert(dmr_confidence_note_voice_burst(NULL, &state, 0, 3) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_voice_burst(NULL, &state, 0, 3) == DMR_CONFIDENCE_LOCKED);
     assert(dmr_confidence_voice_slot_open(&state, 0) == 1);
 
-    assert(dmr_confidence_note_data_burst(&state, 7) == DMR_CONFIDENCE_REJECT);
-    assert(dmr_confidence_note_data_burst(&state, 7) == DMR_CONFIDENCE_REJECT);
-    assert(dmr_confidence_note_data_burst(&state, 7) == DMR_CONFIDENCE_REJECT);
-    assert(dmr_confidence_note_data_burst(&state, 7) == DMR_CONFIDENCE_LOCKED);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 7) == DMR_CONFIDENCE_REJECT);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 7) == DMR_CONFIDENCE_REJECT);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 7) == DMR_CONFIDENCE_REJECT);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 7) == DMR_CONFIDENCE_LOCKED);
     assert(state.dmr_confidence_color_code == 7);
     assert(dmr_confidence_voice_slot_open(&state, 0) == 0);
     assert(dmr_confidence_any_voice_open(&state) == 0);
@@ -158,7 +160,7 @@ test_invalid_color_code_rejected(void) {
     static dsd_state state;
     init_state(&state);
 
-    assert(dmr_confidence_note_data_burst(&state, 16) == DMR_CONFIDENCE_REJECT);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 16) == DMR_CONFIDENCE_REJECT);
     assert(state.dmr_confidence_locked == 0);
     assert(state.dmr_color_code == 16);
 }
@@ -168,19 +170,19 @@ test_voice_requires_voice_sync_before_open(void) {
     static dsd_state state;
     init_state(&state);
 
-    assert(dmr_confidence_note_voice_burst(&state, 1, 3) == DMR_CONFIDENCE_PENDING);
-    assert(dmr_confidence_note_voice_burst(&state, 1, 3) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_voice_burst(NULL, &state, 1, 3) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_voice_burst(NULL, &state, 1, 3) == DMR_CONFIDENCE_PENDING);
     assert(dmr_confidence_voice_slot_open(&state, 1) == 0);
 
     dmr_confidence_note_voice_sync(&state, 1);
-    assert(dmr_confidence_note_voice_burst(&state, 1, 3) == DMR_CONFIDENCE_PENDING);
-    assert(dmr_confidence_note_voice_burst(&state, 1, 3) == DMR_CONFIDENCE_LOCKED);
+    assert(dmr_confidence_note_voice_burst(NULL, &state, 1, 3) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_voice_burst(NULL, &state, 1, 3) == DMR_CONFIDENCE_LOCKED);
     assert(dmr_confidence_voice_slot_open(&state, 1) == 1);
     assert(dmr_confidence_any_voice_open(&state) == 1);
 
     dmr_confidence_note_voice_sync(&state, 0);
-    assert(dmr_confidence_note_voice_burst(&state, 0, 3) == DMR_CONFIDENCE_PENDING);
-    assert(dmr_confidence_note_voice_burst(&state, 0, 3) == DMR_CONFIDENCE_LOCKED);
+    assert(dmr_confidence_note_voice_burst(NULL, &state, 0, 3) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_voice_burst(NULL, &state, 0, 3) == DMR_CONFIDENCE_LOCKED);
     assert(dmr_confidence_voice_slot_open(&state, 0) == 1);
 
     dmr_confidence_reset_slot(&state, 1);
@@ -198,8 +200,8 @@ test_reset_clears_gate_state(void) {
     init_state(&state);
 
     dmr_confidence_note_voice_sync(&state, 0);
-    assert(dmr_confidence_note_voice_burst(&state, 0, 3) == DMR_CONFIDENCE_PENDING);
-    assert(dmr_confidence_note_voice_burst(&state, 0, 3) == DMR_CONFIDENCE_LOCKED);
+    assert(dmr_confidence_note_voice_burst(NULL, &state, 0, 3) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_voice_burst(NULL, &state, 0, 3) == DMR_CONFIDENCE_LOCKED);
     dmr_confidence_reset(&state);
 
     assert(state.dmr_confidence_locked == 0);
@@ -230,15 +232,15 @@ test_validated_content_stamps_decode_time(void) {
     dsd_decode_clock_use_test(GATE_TEST_T0_NS);
 
     at_ms(1000);
-    assert(dmr_confidence_note_data_burst(&state, 5) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 5) == DMR_CONFIDENCE_PENDING);
     assert(state.dmr_confidence_lock_m < 1e-9); // one burst proves nothing
-    assert(dmr_confidence_note_data_burst(&state, 5) == DMR_CONFIDENCE_LOCKED);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 5) == DMR_CONFIDENCE_LOCKED);
     assert(stamped_at_ms(&state, 1000));
     at_ms(2000);
-    assert(dmr_confidence_note_data_burst(&state, 5) == DMR_CONFIDENCE_LOCKED);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 5) == DMR_CONFIDENCE_LOCKED);
     assert(stamped_at_ms(&state, 2000));
     at_ms(2500);
-    assert(dmr_confidence_note_data_burst(&state, 9) == DMR_CONFIDENCE_REJECT);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 9) == DMR_CONFIDENCE_REJECT);
     assert(stamped_at_ms(&state, 2000));
     dmr_confidence_reset(&state); // a carrier boundary does not undo content that was decoded
     assert(stamped_at_ms(&state, 2000));
@@ -246,10 +248,10 @@ test_validated_content_stamps_decode_time(void) {
     init_state(&state);
     at_ms(3000);
     dmr_confidence_note_voice_sync(&state, 1);
-    assert(dmr_confidence_note_voice_burst(&state, 1, 3) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_voice_burst(NULL, &state, 1, 3) == DMR_CONFIDENCE_PENDING);
     assert(state.dmr_confidence_lock_m < 1e-9);
     at_ms(3060);
-    assert(dmr_confidence_note_voice_burst(&state, 1, 3) == DMR_CONFIDENCE_LOCKED);
+    assert(dmr_confidence_note_voice_burst(NULL, &state, 1, 3) == DMR_CONFIDENCE_LOCKED);
     assert(stamped_at_ms(&state, 3060));
     dsd_decode_clock_use_system();
 }
@@ -262,26 +264,101 @@ test_lock_marks_two_slot_carrier(void) {
     static dsd_state state;
     init_state(&state);
 
-    assert(dmr_confidence_note_data_burst(&state, 3) == DMR_CONFIDENCE_PENDING);
-    assert(dmr_confidence_note_data_burst(&state, 17) == DMR_CONFIDENCE_REJECT);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 3) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 17) == DMR_CONFIDENCE_REJECT);
     dmr_confidence_note_voice_sync(&state, 1);
     assert(state.tdma_carrier == 0U);
-    assert(dmr_confidence_note_data_burst(&state, 3) == DMR_CONFIDENCE_LOCKED);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 3) == DMR_CONFIDENCE_LOCKED);
     assert(state.tdma_carrier == 1U);
 
     state.tdma_carrier = 0U;
-    assert(dmr_confidence_note_data_burst(&state, 9) == DMR_CONFIDENCE_REJECT);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 9) == DMR_CONFIDENCE_REJECT);
     assert(state.tdma_carrier == 0U);
-    assert(dmr_confidence_note_data_burst(&state, 3) == DMR_CONFIDENCE_LOCKED);
+    assert(dmr_confidence_note_data_burst(NULL, &state, 3) == DMR_CONFIDENCE_LOCKED);
     assert(state.tdma_carrier == 1U);
 
     /* A voice burst that opens its slot is the same evidence. */
     init_state(&state);
     dmr_confidence_note_voice_sync(&state, 0);
-    assert(dmr_confidence_note_voice_burst(&state, 0, 4) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_voice_burst(NULL, &state, 0, 4) == DMR_CONFIDENCE_PENDING);
     assert(state.tdma_carrier == 0U);
-    assert(dmr_confidence_note_voice_burst(&state, 0, 4) == DMR_CONFIDENCE_LOCKED);
+    assert(dmr_confidence_note_voice_burst(NULL, &state, 0, 4) == DMR_CONFIDENCE_LOCKED);
     assert(state.tdma_carrier == 1U);
+}
+
+/* Issue #834: what a scan quiet check hears through the content-evidence hook. */
+static int g_quiet_proven;
+static int g_quiet_partial;
+static uint32_t g_quiet_hold_ms;
+
+static void
+record_quiet_note(dsd_state* state, int level, uint32_t hold_ms) {
+    (void)state;
+    if (level == DSD_CONTENT_EVIDENCE_PROVEN) {
+        g_quiet_proven++;
+    } else if (level == DSD_CONTENT_EVIDENCE_PARTIAL) {
+        g_quiet_partial++;
+        g_quiet_hold_ms = hold_ms;
+    }
+}
+
+static void
+quiet_notes_clear(void) {
+    g_quiet_proven = 0;
+    g_quiet_partial = 0;
+    g_quiet_hold_ms = 0U;
+}
+
+/* The gate's evidence for a scan quiet check: a candidate colour code seen once (the gate PENDING) is PARTIAL, held 120
+   ms for the burst that may lock it; the lock, a burst matching it and a voice slot opening are PROVEN, where a signal
+   search hears them. A candidate that keeps changing stays PARTIAL, burst after burst (its bound is the quiet result's
+   own age, ENGINE_TRUNK_SCAN). A rejected colour code notes nothing, and nothing is noted with the setting off. */
+static void
+test_quiet_check_hears_the_gate(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    static dsd_state state;
+    init_state(&state);
+    dsd_frame_sync_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.content_evidence = record_quiet_note;
+    dsd_frame_sync_hooks_set(&hooks);
+
+    quiet_notes_clear();
+    assert(dmr_confidence_note_data_burst(&opts, &state, 5) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_data_burst(&opts, &state, 5) == DMR_CONFIDENCE_LOCKED);
+    assert(g_quiet_proven == 0 && g_quiet_partial == 0); /* the setting off */
+
+    opts.scan_skip_silent = 1;
+    init_state(&state);
+    quiet_notes_clear();
+    assert(dmr_confidence_note_data_burst(&opts, &state, 5) == DMR_CONFIDENCE_PENDING);
+    assert(g_quiet_partial == 1 && g_quiet_proven == 0 && g_quiet_hold_ms == DMR_CONFIDENCE_PARTIAL_HOLD_MS);
+    assert(dmr_confidence_note_data_burst(&opts, &state, 5) == DMR_CONFIDENCE_LOCKED);
+    assert(g_quiet_proven == 1 && g_quiet_partial == 1);
+    assert(dmr_confidence_note_data_burst(&opts, &state, 5) == DMR_CONFIDENCE_LOCKED);
+    assert(g_quiet_proven == 2);
+    assert(dmr_confidence_note_data_burst(&opts, &state, 9) == DMR_CONFIDENCE_REJECT);
+    assert(dmr_confidence_note_data_burst(&opts, &state, 17) == DMR_CONFIDENCE_REJECT);
+    assert(g_quiet_proven == 2 && g_quiet_partial == 1);
+
+    /* Candidates that keep changing: each is PARTIAL, none locks. */
+    init_state(&state);
+    quiet_notes_clear();
+    for (unsigned int cc = 0U; cc < 6U; cc++) {
+        assert(dmr_confidence_note_data_burst(&opts, &state, cc) == DMR_CONFIDENCE_PENDING);
+    }
+    assert(g_quiet_partial == 6 && g_quiet_proven == 0);
+
+    /* A voice slot opening is PROVEN; the burst before it, a first candidate, is PARTIAL. */
+    init_state(&state);
+    quiet_notes_clear();
+    dmr_confidence_note_voice_sync(&state, 0);
+    assert(dmr_confidence_note_voice_burst(&opts, &state, 0, 4) == DMR_CONFIDENCE_PENDING);
+    assert(g_quiet_partial == 1 && g_quiet_proven == 0);
+    assert(dmr_confidence_note_voice_burst(&opts, &state, 0, 4) == DMR_CONFIDENCE_LOCKED);
+    assert(g_quiet_proven >= 1 && g_quiet_partial == 1);
+    dsd_frame_sync_hooks_set(NULL);
 }
 
 int
@@ -298,6 +375,7 @@ main(void) {
     test_reset_clears_gate_state();
     test_validated_content_stamps_decode_time();
     test_lock_marks_two_slot_carrier();
+    test_quiet_check_hears_the_gate();
     printf("DMR confidence gate: OK\n");
     return 0;
 }

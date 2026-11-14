@@ -857,7 +857,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     const int left_carrier = nxdn_decode_frame_channels(opts, state, &ctx);
     state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_NONE;
     state->nxdn_frame_foreign = 0U;
-    nxdn_confirm_end_frame(state);
+    nxdn_confirm_end_frame(opts, state);
     frame_read = 1;
     frame_proved = nxdn_confirm_frame_proved(state);
     if (left_carrier) {

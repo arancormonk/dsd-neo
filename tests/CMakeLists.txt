@@ -2022,6 +2022,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dstar/dstar.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dstar/dstar_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
     dsd-neo_test_dstar_process
@@ -2037,6 +2038,7 @@ add_executable(
     protocol/dstar/test_dstar_confirm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dstar/dstar_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
     dsd-neo_test_dstar_confirm
@@ -2148,6 +2150,7 @@ add_executable(
     protocol/dpmr/test_dpmr_confirm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
     dsd-neo_test_dpmr_confirm
@@ -2166,6 +2169,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_policy.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
     dsd-neo_test_dpmr_sync_dispatch
@@ -2188,6 +2192,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
     dsd-neo_test_dpmr_voice_bridge
@@ -2211,6 +2216,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_voice.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
     dsd-neo_test_dpmr_reference_vectors
@@ -2755,6 +2761,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_tuning_hooks.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
     dsd-neo_test_nxdn_confirm
@@ -12239,6 +12246,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
     ${PROJECT_SOURCE_DIR}/src/runtime/exitflag.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_tuning_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_link_libraries(
     dsd-neo_test_p25_p1_sync_dispatch
@@ -13320,6 +13328,7 @@ add_executable(
     protocol/m17/test_m17_confirm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/m17/m17_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
     dsd-neo_test_m17_confirm
@@ -14705,6 +14714,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
     dsd-neo_test_dmr_dburst_profile
@@ -14950,6 +14960,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_confidence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_cach.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
     dsd-neo_test_dmr_ms_data

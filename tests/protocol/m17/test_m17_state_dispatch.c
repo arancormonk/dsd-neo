@@ -1070,7 +1070,7 @@ test_stream_voice_replaces_foreign_active_call(void) {
     state->m17_can_en = -1;
     /* Over the air an LSF CRC clears before the first stream frame; without that the media gate
      * holds the call and the audio back (#399). */
-    m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+    m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_STRONG);
     err |= expect_int("late-entry M17 voice dispatches",
                       m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
                       M17_STREAM_CLEAR_DISPATCHED);
@@ -1108,7 +1108,7 @@ test_stream_voice_3200_dispatch_routes_pair_audio_to_udp(void) {
     state->m17_can_en = -1;
     /* Over the air an LSF CRC clears before the first stream frame; without that the media gate
      * holds the call and the audio back (#399). */
-    m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+    m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_STRONG);
     bytes_to_bits(payload_bytes, payload_bits, sizeof(payload_bytes));
 
     int err = 0;
@@ -1150,7 +1150,7 @@ test_stream_voice_1600_dispatch_routes_single_audio_to_udp(void) {
     state->m17_can_en = -1;
     /* Over the air an LSF CRC clears before the first stream frame; without that the media gate
      * holds the call and the audio back (#399). */
-    m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+    m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_STRONG);
     bytes_to_bits(payload_bytes, payload_bits, sizeof(payload_bytes));
 
     int err = 0;
@@ -1190,7 +1190,7 @@ test_stream_voice_audio_gate_suppresses_udp_when_slot_disabled(void) {
     state->m17_can_en = -1;
     /* Over the air an LSF CRC clears before the first stream frame; without that the media gate
      * holds the call and the audio back (#399). */
-    m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+    m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_STRONG);
     bytes_to_bits(payload_bytes, payload_bits, sizeof(payload_bytes));
 
     int err = 0;
@@ -2619,7 +2619,7 @@ test_unconfirmed_stream_publishes_no_call(void) {
 
     /* One clean LICH is not proof; two frames running are. */
     m17_confirm_begin_frame(state);
-    m17_confirm_note_evidence(state, M17_EVIDENCE_WEAK);
+    m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_WEAK);
     m17_confirm_end_frame(state);
     err |= expect_int("one clean LICH does not open a call",
                       m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
@@ -2627,7 +2627,7 @@ test_unconfirmed_stream_publishes_no_call(void) {
     err |= expect_int("one clean LICH publishes no call", get_m17_call(state, &call), 0);
 
     m17_confirm_begin_frame(state);
-    m17_confirm_note_evidence(state, M17_EVIDENCE_WEAK);
+    m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_WEAK);
     m17_confirm_end_frame(state);
     err |= expect_int("a confirmed stream dispatches",
                       m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
@@ -3304,7 +3304,7 @@ test_stream_voice_audio_honors_mute_on_every_output(void) {
                 opts->audio_out_type = out_type;
                 state->m17_str_dt = formats[f].dt;
                 state->m17_can_en = -1;
-                m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+                m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_STRONG);
 
                 char path[DSD_TEST_PATH_MAX];
                 int fd = -1;
@@ -3422,7 +3422,7 @@ test_stream_voice_audio_stamps_what_it_plays(void) {
                 state->m17_can_en = cases[c].can_filtered ? 5 : -1;
                 state->m17_can = 3U;
                 state->m17_enc = cases[c].keyless ? 2U : 0U;
-                m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+                m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_STRONG);
 
                 char path[DSD_TEST_PATH_MAX];
                 int fd = -1;
@@ -3513,7 +3513,7 @@ run_voice_format_case(uint8_t dt, int floating, int channels, int out_type, floa
     opts->audio_gain = gain;
     state->m17_str_dt = dt;
     state->m17_can_en = -1;
-    m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+    m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_STRONG);
 #ifdef DSD_NEO_TEST_AUDIO_WRAP
     g_audio_event_count = 0;
     g_audio_events[0] = '\0';
@@ -4078,7 +4078,7 @@ test_stream_voice_audio_stamps_nothing_no_output_takes(void) {
             opts->audio_out_fd = -1;
             state->m17_str_dt = formats[f].dt;
             state->m17_can_en = -1;
-            m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+            m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_STRONG);
             dsd_audio_activity_reset();
 
             /* With no stream, the platform's own write refuses the block, as it does in a session. */

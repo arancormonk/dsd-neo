@@ -79,6 +79,26 @@ typedef struct {
     double wall_end_s;
 } dsd_analog_call_block;
 
+/** What a protocol's CRC/FEC gate made of content on the carrier, as a scan quiet check hears it (issue #834,
+ * dsd_frame_sync_hook_content_evidence()). PROVEN: the content passed the gate (a CRC, a checksum or an FEC codeword
+ * that noise does not pass), so the channel is active. PARTIAL: the frame left evidence only a later frame can
+ * complete (a short CRC whose weak streak needs a second frame, a colour code seen once), so the check waits for the
+ * verdict for up to the protocol's hold. */
+enum {
+    DSD_CONTENT_EVIDENCE_PARTIAL = 1,
+    DSD_CONTENT_EVIDENCE_PROVEN = 2,
+};
+
+/** The scan quiet service's answer (dsd_frame_sync_hook_scan_quiet_service(), issue #834). NONE: no check under way
+ * (none made, SUSPENDED or DONE). LIVE: a check is under way (waiting for its capture, measuring, or a quiet result
+ * held while a frame's verdict is pending, or that the decision's own checks would decline): nothing to hand back.
+ * HAND_BACK: a quiet result the scan may skip on is ready. A caller yields only on HAND_BACK. */
+enum {
+    DSD_SCAN_QUIET_NONE = 0,
+    DSD_SCAN_QUIET_LIVE = 1,
+    DSD_SCAN_QUIET_HAND_BACK = 2,
+};
+
 typedef struct {
     void (*p25_sm_try_tick)(dsd_opts* opts, dsd_state* state);
     void (*p25_sm_release)(dsd_opts* opts, dsd_state* state);
@@ -99,6 +119,7 @@ typedef struct {
     void (*tick_guard_leave)(void);
     void (*scan_quiet_setting_changed)(dsd_state* state, int turned_on);
     int (*scan_quiet_service)(const dsd_opts* opts, dsd_state* state);
+    void (*content_evidence)(dsd_state* state, int level, uint32_t hold_ms);
 } dsd_frame_sync_hooks;
 
 /** The engine's conventional NFM lifecycle sees every processed monitor block, even with muted speakers, with what the
@@ -154,11 +175,23 @@ void dsd_scan_quiet_setting_changed(dsd_state* state, int turned_on);
 /**
  * The scan quiet check's in-hunt service (issue #834), asked at the frame-sync hunt's 300-symbol point beside the
  * trunk-scan dwell: the engine starts, collects and expires the landed channel's measurement here, on the decoder
- * thread, and answers 1 only when a quiet result it may skip on is ready. The hunt then hands back as at a pass end,
- * keeping its history, and the engine loop's tick decides. With the skip-silent setting off it is one load and 0;
- * 0 when nothing is installed.
+ * thread, and answers DSD_SCAN_QUIET_HAND_BACK only when a quiet result it may skip on is ready and no frame's verdict
+ * is pending; DSD_SCAN_QUIET_LIVE while a check is otherwise under way. The hunt hands back on HAND_BACK alone, as at
+ * a pass end, keeping its history, and the engine loop's tick decides. With the skip-silent setting off it is one load
+ * and DSD_SCAN_QUIET_NONE; NONE too when nothing is installed.
  */
 int dsd_frame_sync_hook_scan_quiet_service(const dsd_opts* opts, dsd_state* state);
+
+/**
+ * Protocol code reports what its CRC/FEC gate made of the frame being decoded (issue #834): @p level
+ * DSD_CONTENT_EVIDENCE_PROVEN for content that passed the gate, or DSD_CONTENT_EVIDENCE_PARTIAL with @p hold_ms, the
+ * protocol's bound for the later frame that completes it. Only a scan quiet check hears it: PROVEN is activity that
+ * ends the visit's check, and PARTIAL holds a quiet result back until the verdict or the hold's end. It moves no
+ * hold, activity stamp, CRC flag, history or event, and reaches no Signal search (which hears
+ * dsd_signal_search_note_evidence()). With the skip-silent setting off (or @p opts NULL) it is one load and nothing
+ * else; a no-op when nothing is installed. Decoder thread, inside the frame's decode.
+ */
+void dsd_frame_sync_hook_content_evidence(const dsd_opts* opts, dsd_state* state, int level, uint32_t hold_ms);
 
 /** Install a copy of @p hooks; NULL clears every slot. */
 void dsd_frame_sync_hooks_set(const dsd_frame_sync_hooks* hooks);

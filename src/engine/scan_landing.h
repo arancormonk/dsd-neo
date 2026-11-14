@@ -60,7 +60,8 @@
 enum { DSD_ENGINE_SCAN_LANDING_NONE = 0, DSD_ENGINE_SCAN_LANDING_ROW = 1, DSD_ENGINE_SCAN_LANDING_TARGET = 2 };
 
 /** No landing is in force. A state with no scan owner has none to forget, and gets no owner made for it. The landing
- * epoch moves (issue #834): a quiet check of the landing forgotten is no longer the visit's. */
+ * epoch moves (issue #834): a quiet check of the landing forgotten is no longer the visit's, and no verdict a frame of
+ * it left pending is waited for. */
 static inline void
 dsd_engine_scan_landing_forget(dsd_state* state) {
     if (!state || !dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN)) {
@@ -70,23 +71,27 @@ dsd_engine_scan_landing_forget(dsd_state* state) {
     if (owner) {
         owner->landing = (dsd_engine_scan_landing){0};
         owner->landing_epoch++;
+        dsd_engine_scan_owner_pending_clear(owner);
     }
 }
 
 /** A scan row or target tune is about to be requested (issue #834): the RTL stream output generation now, before the
  * retune is issued, goes with the landing it notes (dsd_engine_scan_landing::generation_before_tune), and so do the
- * sync sequence and the decode time, the visit's activity baseline: a sync the new channel returns before its landing
- * is noted (an asynchronous tune lands between two passes) still counts. A sync from the old channel's tail counts
- * too, which only keeps the channel. The tune sequence moves, and goes with the landing too: skip-silent applies only
- * to a visit tuned after it was turned on. */
+ * activity sequence and the decode time, the visit's activity baseline: checked content the new channel carries before
+ * its landing is noted (an asynchronous tune lands between two passes) still counts. Content from the old channel's
+ * tail counts too, which only keeps the channel. A verdict the old channel's frame left pending is dropped: this is
+ * another visit. The tune sequence moves, and goes with the landing too: skip-silent applies only to a visit tuned
+ * after it was turned on. */
 static inline void
 dsd_engine_scan_landing_note_tune(dsd_state* state) {
     dsd_engine_scan_owner* owner = state ? dsd_engine_scan_owner_ensure(state) : NULL;
     if (owner) {
         owner->tune_seq++;
         owner->tune_generation_before = dsd_rtl_stream_metrics_hook_stream_generation();
-        owner->tune_sync_seq = owner->sync_seq;
+        owner->tune_activity_seq = owner->activity_seq;
         owner->tune_decode_m = dsd_decode_now_mono_s();
+        /* Another visit: a verdict the last channel's frame left pending is not this one's. */
+        dsd_engine_scan_owner_pending_clear(owner);
     }
 }
 
@@ -97,7 +102,7 @@ dsd_engine_scan_landing_install(dsd_engine_scan_owner* owner, dsd_engine_scan_la
     landing.epoch = ++owner->landing_epoch;
     landing.generation_before_tune = owner->tune_generation_before;
     landing.landed_realtime_ms = dsd_realtime_mono_ms();
-    landing.sync_seq = owner->tune_sync_seq;
+    landing.activity_seq = owner->tune_activity_seq;
     landing.tune_decode_m = owner->tune_decode_m;
     landing.tune_seq = owner->tune_seq;
     owner->landing = landing;

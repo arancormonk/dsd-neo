@@ -258,10 +258,10 @@ quiet_ready_once_the_burst_began(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     if (g_quiet_answers > 0 || g_pos <= BURST_AT) {
-        return 0;
+        return DSD_SCAN_QUIET_LIVE; /* a check under way hands nothing back */
     }
     g_quiet_answers++;
-    return 1;
+    return DSD_SCAN_QUIET_HAND_BACK;
 }
 
 /* Issue #834: a quiet check's hand-back keeps its history as the dwell's and a pass end's do: the tick may decline the
