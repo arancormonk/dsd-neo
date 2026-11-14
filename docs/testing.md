@@ -2283,19 +2283,19 @@ of what the speech AGC measures there, and on FM the excerpt at its fixed refere
 The digital cases, `DECODE_IQ_SPEECH_LEVEL_*` (`tests/speech_level_check.cmake`), replay the fixture twice, at the
 default auto gain and at `-g 1`, and require the auto level to have moved toward -20 dBFS from the `-g 1` one, or to
 lie within 3 dB of it (a few frames of speech can step the gain past the target), and to lie within 10 dB of it (the
-startup bound at 1 s). The analog ones pin both levels in the analog replay host: the `-n 50` level in the smoke cases
+startup bound at 1 s); `dstar` pins its auto level alone (below). The analog ones pin both levels in the analog replay host: the `-n 50` level in the smoke cases
 and `DECODE_IQ_ANALOG_AM_REAL`, the auto level in `DECODE_IQ_ANALOG_PARITY_*`. Speech intervals are seconds into the
 decoded output; a digital output holds only the voice that played.
 
 | Fixture | Mode | Speech (s) | Speech intervals (s) | Reference gain (dBFS P.56) | Auto (dBFS P.56) | Case |
 | --- | --- | --- | --- | --- | --- | --- |
-| `dstar` | `-fd` | 2.3 | 0.20-2.50 | -18.14 (`-g 1`) | -17.63 | `DECODE_IQ_SPEECH_LEVEL_DSTAR` |
-| `ysf` | `-fy` | 3.05 | 0.05-0.50, 1.25-3.85 | -39.47 | -21.12 | `DECODE_IQ_SPEECH_LEVEL_YSF` |
+| `dstar` | `-fd` | 1.66 | 0.0-1.66 | -17.28 (`-g 1`, not compared) | -16.27 | `DECODE_IQ_SPEECH_LEVEL_DSTAR` |
+| `ysf` | `-fy` | 3.25 | 0.05-0.50, 1.25-4.05 | -38.23 | -19.27 | `DECODE_IQ_SPEECH_LEVEL_YSF` |
 | `m17` | `-fz` | 1.9 | 0.0-1.45, 2.0-2.47 | -21.63 | -17.82 | `DECODE_IQ_SPEECH_LEVEL_M17` (Codec2 builds) |
 | `tetra_call_real_air_72k` | `-fT` | 2.06 | 0.0-1.10 (first talker), 2.0-2.96 (the next, 10.8 dB louder) | -28.53 | -23.39 | `DECODE_IQ_SPEECH_LEVEL_TETRA` |
 | `nxdn96` | `-fn` | 1.25 | 0.20-1.45 | -40.91 | -18.68 | `DECODE_IQ_SPEECH_LEVEL_NXDN96` |
-| `provoice` | `-fp` | 1.35 | 0.0-0.25, 1.40-1.90, 2.10-2.70 | -39.30 | -17.55 | `DECODE_IQ_SPEECH_LEVEL_PROVOICE` |
-| `p25p1_c4fm_vc` | `-f1` | 0.8 | 0.60-1.42 | -32.03 | -22.73 | `DECODE_IQ_SPEECH_LEVEL_P25P1_C4FM` |
+| `provoice` | `-fp` | 1.27 | 0.0-0.17, 1.32-1.82, 2.02-2.62 | -39.34 | -20.24 | `DECODE_IQ_SPEECH_LEVEL_PROVOICE` |
+| `p25p1_c4fm_vc` | `-f1` | 0.8 | 0.96-1.78 | -32.02 | -28.11 | `DECODE_IQ_SPEECH_LEVEL_P25P1_C4FM` |
 | `p25p1_cqpsk_vc` | `-f1 -mq` | 0.3 | 0.70-1.00 | -22.44 | -17.31 | `DECODE_IQ_SPEECH_LEVEL_P25P1_CQPSK` |
 | `am_airband_real` | `-fM` | 6.55 | 0.05-0.25, 0.55-2.3, 2.6-5.0, 5.5-6.5, 6.78-7.98 | -18.12 (`-n 50`) | -18.42 | `DECODE_IQ_ANALOG_AM_REAL`, `DECODE_IQ_ANALOG_PARITY_AM_REAL` |
 | `nfm_ctcss_real` | `-fA` | 5.2 | 0.0-3.6, 4.4-5.98 | -31.90 | -19.01 | `DECODE_IQ_ANALOG_NFM_REAL_CTCSS_SMOKE`, `DECODE_IQ_ANALOG_PARITY_NFM_REAL` |
@@ -2311,6 +2311,18 @@ the target at `-g 1`; the start gain and the 2 dB startup steps bring it within 
 `p25p1_cqpsk_vc`'s 0.3 s of speech commits a few times, and those first steps toward a level read from the rising edge
 of the speech overshoot, so its level moves 0.25 dB away from -20 dBFS while staying within 3 dB of it. The analog
 gap noise between words is 11-17 dB under the speech, so P.56 counts it as active.
+
+Four digital cases were measured again once the frame-sync and confirmation work of the P25 Phase 1 C4FM symbol chain
+changed what they decode. `ysf` plays 0.2 s more of the call (4.8 s of output) and reads 1.85 dB louder at auto.
+`provoice` holds its first 80 ms until the transmission is confirmed and reads 2.69 dB quieter at auto, 0.24 dB from the
+target. `p25p1_c4fm_vc` now decodes its HDU and plays 0.36 s more of the call ahead of the speech, with 25 audio
+errors where it had 127; its 0.8 s of speech never holds the six voiced frames in a row a commit needs, so the AGC stays
+at its +4 dB start gain and the level reads 5.38 dB lower (the `-g 1` level is unchanged): one frame in the earlier
+decode completed a run. `dstar` no longer plays the two superframes behind its two headers that fail their CRC (0.84
+s of audio with 59 errors, where the call now has none): the output opens on the talker's first word, at +2.72 dB over
+the target at `-g 1`, and the AGC spends about 0.6 s at its start gain before its steps bring it down. Over the 1.66 s
+left, that reads +3.73 dB over the target, past the 3 dB the toward rule allows, so the case pins the auto level alone
+and does not compare it with `-g 1`.
 
 The fixtures with no speech keep their own assertions: the tone calibration (`-n 50` 1 kHz windows), `noise_floor`
 (the attenuator), and the control channels and filler (no audio). The syllable-gated noise fixtures

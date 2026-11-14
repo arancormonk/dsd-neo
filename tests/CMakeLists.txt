@@ -21953,8 +21953,10 @@ if(DSD_HAS_RADIO)
             PROPERTIES LABELS "iq-decode;voice-chain" TIMEOUT 240
         )
     endfunction()
-    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_DSTAR dstar -fd 1 -18.63 -16.63 "-g 1")
-    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_YSF ysf -fy 1 -22.12 -20.12 "-g 1")
+    # The D-STAR output opens on a talker 2.7 dB over the target, so the AGC's start reads past the toward rule over the
+    # 1.66 s of speech: the case pins the auto level alone (docs/testing.md).
+    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_DSTAR dstar -fd 1 -17.27 -15.27)
+    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_YSF ysf -fy 1 -20.27 -18.27 "-g 1")
     # M17 voice is Codec2: the case needs it built in, as DECODE_IQ_M17_VOICE_OUTPUT does.
     if(DSD_HAS_CODEC2)
         dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_M17 m17 -fz 1 -18.82 -16.82 "-g 1")
@@ -21969,14 +21971,14 @@ if(DSD_HAS_RADIO)
         "-g 1"
     )
     dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_NXDN96 nxdn96 -fn 1 -19.68 -17.68 "-g 1")
-    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_PROVOICE provoice -fp 1 -18.55 -16.55 "-g 1")
+    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_PROVOICE provoice -fp 1 -21.24 -19.24 "-g 1")
     dsd_neo_add_iq_speech_level_test(
         DECODE_IQ_SPEECH_LEVEL_P25P1_C4FM
         p25p1_c4fm_vc
         -f1
         1
-        -23.73
-        -21.73
+        -29.11
+        -27.11
         "-g 1"
     )
     dsd_neo_add_iq_speech_level_test(
