@@ -21,9 +21,11 @@
  *       spread (default 1.5 dB) of every other.
  *   dsd-neo_test_speech_parity_tool level [--min-dbfs DB] [--max-dbfs DB] [--toward FILE] FILE RATE CH
  *       The whole output's P.56 level, inside [min, max]. With --toward, FILE is the same capture decoded at the fixed
- *       reference gain (-g 1): the AGC must have moved the level toward -20 dBFS from there, or kept it within 3 dB of
- *       it (a few frames of speech can step the gain past the target, which the established bound allows), and left it
- *       within 10 dB of -20 dBFS, the startup bound at 1 s.
+ *       reference gain (-g 1): the level must be nearer -20 dBFS than that one, or lie no more than 3 dB under and no
+ *       more than 6 dB over -20 dBFS, and in either case within 10 dB of it, the startup bound at 1 s. Over: digital
+ *       voice opens a reception from a talker it has not heard at +8 dB, and until the reception has established its
+ *       estimate its loudest frames are held at -12 dBFS, so a short excerpt of a loud talker can read up to about
+ *       6 dB over the target.
  *   dsd-neo_test_speech_parity_tool gated-nfm FIXED AUTO
  *       A capture with no speech in it (syllable-gated band-limited noise) replayed on narrowband FM: FIXED at -n 50,
  *       AUTO at the default auto gain, both 48 kHz mono. The tool runs FIXED, which is what the monitor's speech AGC
@@ -70,6 +72,9 @@
 /* The established bound, and the startup bound one second in (spec T2: every file within 10 dB). */
 #define ESTABLISHED_BOUND_DB  3.0
 #define STARTUP_BOUND_DB      10.0
+/* How far over the target a short excerpt may read: until a reception has established its estimate, its loudest
+   frames are held at -12 dBFS, 8 dB over the target, and a short loud excerpt's P.56 level sits a few dB under them. */
+#define STARTUP_OVER_DB       6.0
 #define FULL_SCALE            32768.0
 #define MBE_RATE_HZ           8000
 #define MBE_FRAME             160
@@ -609,6 +614,22 @@ whole_level(const char* file, int rate, int channels, double* level) {
     return isfinite(*level) ? 0 : -1;
 }
 
+/* Which clause of the --toward rule @p level passes by against the reference gain's @p ref, or NULL when it fails. */
+static const char*
+toward_verdict(double level, double ref) {
+    const double err = level - TARGET_DBFS;
+    if (fabs(err) > STARTUP_BOUND_DB) {
+        return NULL;
+    }
+    if (fabs(err) < fabs(ref - TARGET_DBFS)) {
+        return "nearer the target than at the reference gain";
+    }
+    if (err >= -ESTABLISHED_BOUND_DB && err <= STARTUP_OVER_DB) {
+        return "not nearer, but within -3..+6 dB of the target";
+    }
+    return NULL;
+}
+
 static int
 cmd_level(int argc, char** argv) {
     double lo = -200.0;
@@ -648,13 +669,11 @@ cmd_level(int argc, char** argv) {
             DSD_FPRINTF(stderr, "speech parity: %s has no measurable speech level\n", toward);
             return 1;
         }
-        const double err = fabs(level - TARGET_DBFS);
-        const int toward_ok =
-            (err <= fabs(ref - TARGET_DBFS) || err <= ESTABLISHED_BOUND_DB) && err <= STARTUP_BOUND_DB;
-        DSD_FPRINTF(stderr, "speech parity: %s at the reference gain: P.56 %.2f dBFS (%+.2f dB), now %+.2f dB%s\n",
+        const char* verdict = toward_verdict(level, ref);
+        DSD_FPRINTF(stderr, "speech parity: %s at the reference gain: P.56 %.2f dBFS (%+.2f dB), now %+.2f dB: %s\n",
                     toward, ref, ref - TARGET_DBFS, level - TARGET_DBFS,
-                    toward_ok ? "" : "  FAIL: not moved toward the target");
-        fail |= !toward_ok;
+                    verdict != NULL ? verdict : "FAIL: not moved toward the target");
+        fail |= verdict == NULL;
     }
     if (fail) {
         return 1;

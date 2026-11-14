@@ -21677,12 +21677,14 @@ if(DSD_HAS_RADIO)
 
     # Off-air digital speech at the default auto gain (issue #518). The excerpts are too short for established speech
     # (0.3-3.05 s of it), so each case holds the whole output's P.56 level to a window of +/-1 dB around what the speech
-    # AGC measures there, and requires it to have moved from the -g 1 (DVSI reference) level toward -20 dBFS, or to have
-    # stayed within 3 dB of it, and to be within 10 dB of it (speech_level_check.cmake). docs/testing.md lists each
-    # excerpt's speech. Measured (auto, at -g 1): dstar -17.63 (-18.14), ysf -21.12 (-39.47), m17 -17.82 (-21.63),
-    # tetra_call_real_air_72k -23.39 (-28.53), nxdn96 -18.68 (-40.91), provoice -17.55 (-39.30), p25p1_c4fm_vc -22.73
-    # (-32.03; 0.8 s of speech, which the gain climbs through at its startup rate) and p25p1_cqpsk_vc -17.31 (-22.44;
-    # 0.3 s of speech, whose first gain steps overshoot).
+    # AGC measures there, and requires it to be nearer -20 dBFS than the -g 1 (DVSI reference) level, or to lie no more
+    # than 3 dB under and 6 dB over -20 dBFS, and in either case within 10 dB of it (speech_level_check.cmake). Over: a
+    # reception from a talker not heard before opens at +8 dB, and until its estimate is established its loudest frames
+    # are held at -12 dBFS, so a short excerpt of a loud talker reads over the target. docs/testing.md lists each
+    # excerpt's speech. Measured (auto, at -g 1): dstar -17.69 (-18.14), ysf -20.54 (-39.47), m17 -17.28 (-21.63),
+    # tetra_call_real_air_72k -21.04 (-28.53), nxdn96 -18.57 (-40.91), provoice -18.36 (-39.30), p25p1_c4fm_vc -20.92
+    # (-32.03; 0.8 s of speech, whose gain reaches the talker within its first voiced frames) and p25p1_cqpsk_vc -15.47
+    # (-22.44; 0.3 s of speech, one syllable too short to commit, whose loudest frames play at the -12 dBFS hold).
     function(
         dsd_neo_add_iq_speech_level_test
         test_name
@@ -21713,30 +21715,30 @@ if(DSD_HAS_RADIO)
             PROPERTIES LABELS "iq-decode;voice-chain" TIMEOUT 240
         )
     endfunction()
-    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_DSTAR dstar -fd 1 -18.63 -16.63 "-g 1")
-    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_YSF ysf -fy 1 -22.12 -20.12 "-g 1")
+    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_DSTAR dstar -fd 1 -18.69 -16.69 "-g 1")
+    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_YSF ysf -fy 1 -21.54 -19.54 "-g 1")
     # M17 voice is Codec2: the case needs it built in, as DECODE_IQ_M17_VOICE_OUTPUT does.
     if(DSD_HAS_CODEC2)
-        dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_M17 m17 -fz 1 -18.82 -16.82 "-g 1")
+        dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_M17 m17 -fz 1 -18.28 -16.28 "-g 1")
     endif()
     dsd_neo_add_iq_speech_level_test(
         DECODE_IQ_SPEECH_LEVEL_TETRA
         tetra_call_real_air_72k
         -fT
         1
-        -24.39
-        -22.39
+        -22.04
+        -20.04
         "-g 1"
     )
-    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_NXDN96 nxdn96 -fn 1 -19.68 -17.68 "-g 1")
-    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_PROVOICE provoice -fp 1 -18.55 -16.55 "-g 1")
+    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_NXDN96 nxdn96 -fn 1 -19.57 -17.57 "-g 1")
+    dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_PROVOICE provoice -fp 1 -19.36 -17.36 "-g 1")
     dsd_neo_add_iq_speech_level_test(
         DECODE_IQ_SPEECH_LEVEL_P25P1_C4FM
         p25p1_c4fm_vc
         -f1
         1
-        -23.73
-        -21.73
+        -21.92
+        -19.92
         "-g 1"
     )
     dsd_neo_add_iq_speech_level_test(
@@ -21744,8 +21746,8 @@ if(DSD_HAS_RADIO)
         p25p1_cqpsk_vc
         "-f1 -mq"
         1
-        -18.31
-        -16.31
+        -16.47
+        -14.47
         "-g 1"
     )
     # dmr_voice_synth's test voice at -g 1 (issue #518): -27.08 dBFS P.56 with peaks at -7.5 dBFS since its generator
