@@ -30,8 +30,9 @@ int dsd_audio_policy_tg_allows_audio(const dsd_tg_policy_decision* decision);
  * (dsd_tg_policy_apply_ota_final_blocks()), then the radio part. A Hold lifts what it lifts for recording -- an
  * allow-list miss, and a stream flag only derived off (a B/DE or audio=off row) -- but never an explicit stream=off on
  * an audible talkgroup row, nor a radio row's stream=off. @p policy_target, when non-zero, is the talkgroup a group
- * call is judged on; 0 resolves it as the gates do: a P25 call's patch member while that membership is current (it
- * needs an active call), else the call's policy target, else its over-the-air target. @p judged_target receives the
+ * call is judged on; 0 resolves it as the gates do: an active P25 call's keep-or-resolve target
+ * (dsd_p25_patch_media_target(): its stored member while current and media-eligible, else the patch resolver's answer
+ * for media), else the call's policy target, else its over-the-air target. @p judged_target receives the
  * talkgroup the call was judged on (a private call's over-the-air target), 0 when it was not judged.
  *
  * Recordings the talkgroup policy never gates are not judged and export: conventional analog calls, M17, and calls

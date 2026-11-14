@@ -17,7 +17,7 @@
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/p25_patch.h>
+#include <dsd-neo/core/p25_patch_policy.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/source_alias.h>
@@ -39,41 +39,19 @@ dsd_audio_state_is_p25(const dsd_state* state) {
     return (state && (DSD_SYNC_IS_P25(state->synctype) || DSD_SYNC_IS_P25(state->lastsynctype))) ? 1 : 0;
 }
 
-static int
-dsd_audio_p25_policy_pair_valid(uint32_t ota_target, uint32_t policy_tg) {
-    return (ota_target != 0U && ota_target <= UINT16_MAX && policy_tg != 0U && policy_tg <= UINT16_MAX
-            && policy_tg != ota_target)
-               ? 1
-               : 0;
-}
-
-static int
-dsd_audio_p25_patch_member_active(const dsd_state* state, uint32_t ota_target, uint32_t policy_tg) {
-    if (!state || !dsd_audio_p25_policy_pair_valid(ota_target, policy_tg)) {
-        return 0;
-    }
-
-    const int count = state->p25_patch_count < DSD_P25_PATCH_MAX ? state->p25_patch_count : DSD_P25_PATCH_MAX;
-    for (int i = 0; i < count; i++) {
-        if (state->p25_patch_active[i] && state->p25_patch_sgid[i] == (uint16_t)ota_target
-            && dsd_p25_patch_entry_seen_current(state, i)
-            && dsd_p25_patch_has_current_wgid(state, i, (uint16_t)policy_tg)) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-// The talkgroup an active P25 call on @p ota_target is judged on, from one snapshot of the call: its policy target while
-// that is a current patch member, else @p ota_target.
+// The talkgroup an active P25 group call on @p ota_target is judged on, from one snapshot of the call: its stored policy
+// target while that is a current patch member that may play, else the patch resolver's answer for media
+// (dsd_p25_patch_media_target()), which is @p ota_target when it is no current patch's supergroup.
 static uint32_t
-dsd_audio_p25_policy_target_of_call(const dsd_state* state, const dsd_call_snapshot* call, uint32_t ota_target) {
-    if (call->phase != DSD_CALL_PHASE_ACTIVE || !DSD_SYNC_IS_P25(call->protocol) || call->ota_target_id != ota_target
-        || call->policy_target_id > UINT32_MAX
-        || !dsd_audio_p25_patch_member_active(state, ota_target, (uint32_t)call->policy_target_id)) {
+dsd_audio_p25_policy_target_of_call(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
+                                    uint32_t ota_target) {
+    if (call->phase != DSD_CALL_PHASE_ACTIVE || !DSD_SYNC_IS_P25(call->protocol)
+        || call->kind == DSD_CALL_KIND_PRIVATE_VOICE || call->ota_target_id != ota_target) {
         return ota_target;
     }
-    return (uint32_t)call->policy_target_id;
+    const uint32_t stored = call->policy_target_id <= UINT32_MAX ? (uint32_t)call->policy_target_id : 0U;
+    const uint32_t source = call->ota_source_id <= UINT32_MAX ? (uint32_t)call->ota_source_id : 0U;
+    return dsd_p25_patch_media_target(opts, state, ota_target, stored, source);
 }
 
 static int
@@ -93,21 +71,21 @@ dsd_audio_call_for_target(const dsd_state* state, int slot, uint32_t ota_target,
 }
 
 static uint32_t
-dsd_audio_p25_policy_target_for_slot(const dsd_state* state, int slot, uint32_t ota_target) {
+dsd_audio_p25_policy_target_for_slot(const dsd_opts* opts, const dsd_state* state, int slot, uint32_t ota_target) {
     dsd_call_snapshot call;
     if (!state || slot < 0 || slot > 1 || dsd_call_state_get(state, (uint8_t)slot, &call) <= 0) {
         return ota_target;
     }
-    return dsd_audio_p25_policy_target_of_call(state, &call, ota_target);
+    return dsd_audio_p25_policy_target_of_call(opts, state, &call, ota_target);
 }
 
 static uint32_t
-dsd_audio_p25_policy_target_for_group(const dsd_state* state, uint32_t ota_target) {
+dsd_audio_p25_policy_target_for_group(const dsd_opts* opts, const dsd_state* state, uint32_t ota_target) {
     if (!dsd_audio_state_is_p25(state)) {
         return ota_target;
     }
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        uint32_t policy_target = dsd_audio_p25_policy_target_for_slot(state, slot, ota_target);
+        uint32_t policy_target = dsd_audio_p25_policy_target_for_slot(opts, state, slot, ota_target);
         if (policy_target != ota_target) {
             return policy_target;
         }
@@ -375,7 +353,7 @@ dsd_p25p2_call_policy_key(const dsd_opts* opts, const dsd_state* state, const ds
     key->kind = (uint8_t)call->kind;
     key->policy_target = (call->kind == DSD_CALL_KIND_PRIVATE_VOICE || call->ota_target_id > UINT32_MAX)
                              ? key->ota_target
-                             : dsd_audio_p25_policy_target_of_call(state, call, key->ota_target);
+                             : dsd_audio_p25_policy_target_of_call(opts, state, call, key->ota_target);
 }
 
 // The decision on an active call, private or group, as the decode gate evaluates it, all from this one snapshot of the
@@ -547,9 +525,9 @@ dsd_audio_group_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot
     // The slot keeps the mute @p enc_in brought in; the policy only adds one.
     int enc = (enc_in != 0 || !dsd_receive_current_allows(opts, state, slot < 0 ? state->currentslot : slot)) ? 1 : 0;
     if (slot >= 0 && slot <= 1) {
-        policy_tg = dsd_audio_p25_policy_target_for_slot(state, slot, ota_tg);
+        policy_tg = dsd_audio_p25_policy_target_for_slot(opts, state, slot, ota_tg);
     } else {
-        policy_tg = dsd_audio_p25_policy_target_for_group(state, ota_tg);
+        policy_tg = dsd_audio_p25_policy_target_for_group(opts, state, ota_tg);
     }
 
     dsd_call_snapshot call;
@@ -621,11 +599,12 @@ dsd_audio_record_policy_evaluate(const dsd_opts* opts, const dsd_state* state, c
 }
 
 // The talkgroup the record gate and the export verdict judge a group call on, from this snapshot of it: a P25 call's
-// patch member while that membership is current, else its policy target, else @p ota_target.
+// keep-or-resolve target (dsd_audio_p25_policy_target_of_call()), else its policy target, else @p ota_target.
 static uint32_t
-dsd_audio_record_policy_target(const dsd_state* state, const dsd_call_snapshot* call, uint32_t ota_target) {
+dsd_audio_record_policy_target(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
+                               uint32_t ota_target) {
     if (DSD_SYNC_IS_P25(call->protocol)) {
-        return dsd_audio_p25_policy_target_of_call(state, call, ota_target);
+        return dsd_audio_p25_policy_target_of_call(opts, state, call, ota_target);
     }
     if (call->policy_target_id != 0U && call->policy_target_id <= UINT32_MAX) {
         return (uint32_t)call->policy_target_id;
@@ -647,7 +626,7 @@ dsd_audio_record_policy_blocks(const dsd_opts* opts, const dsd_state* state, int
         return 0;
     }
     const uint32_t ota_target = (uint32_t)call.ota_target_id;
-    const uint32_t policy_target = dsd_audio_record_policy_target(state, &call, ota_target);
+    const uint32_t policy_target = dsd_audio_record_policy_target(opts, state, &call, ota_target);
     const uint32_t source_id = (uint32_t)call.ota_source_id;
     int rc = dsd_audio_record_policy_evaluate(opts, state, &call, ota_target, policy_target, source_id, &decision);
     if (rc != 0) {
@@ -671,7 +650,7 @@ dsd_audio_stream_export_allowed(const dsd_opts* opts, const dsd_state* state, co
     const uint32_t source_id = (uint32_t)call->ota_source_id;
     uint32_t target = ota_target;
     if (call->kind != DSD_CALL_KIND_PRIVATE_VOICE) {
-        target = policy_target != 0U ? policy_target : dsd_audio_record_policy_target(state, call, ota_target);
+        target = policy_target != 0U ? policy_target : dsd_audio_record_policy_target(opts, state, call, ota_target);
     }
     dsd_tg_policy_decision decision;
     if (dsd_audio_record_policy_evaluate(opts, state, call, ota_target, target, source_id, &decision) != 0) {

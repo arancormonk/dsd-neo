@@ -2220,9 +2220,10 @@ suite runs under this compiler.
   `audio`. The verdict is recording-owned: `watchdog_event_current_load_labels()` (`dsd_events.c`) judges the call on
   every render through `dsd_audio_stream_export_allowed()` (module-private, `src/core/audio/dsd_audio_gate_internal.h`),
   which evaluates it as the record gate does (a private call on both parties; a group call on its policy target -- a
-  patched P25 call's member while the membership is current -- then `dsd_tg_policy_apply_ota_final_blocks()` on the
-  over-the-air target, then the radio part), and stores `Event_History::stream_blocked` and `policy_target_id` on the
-  staged row. A Hold lifts what it lifts for recording (the allow-list miss, and a stream flag derived off by a
+  patched P25 call's keep-or-resolve target (`dsd_p25_patch_media_target()`) -- then
+  `dsd_tg_policy_apply_ota_final_blocks()` on the over-the-air target, then the radio part), and stores
+  `Event_History::stream_blocked` and `policy_target_id` on the staged row. A Hold lifts what it lifts for recording
+  (the allow-list miss, and a stream flag derived off by a
   `B`/`DE` or `audio=off` row) but never an explicit `stream=off` on an audible row (`DSD_TG_POLICY_BLOCK_STREAM`) or a
   radio row's.
   Once the call has ended the staged row's own `policy_target_id` is reused, since patch membership needs an active
@@ -2673,13 +2674,23 @@ suite runs under this compiler.
   call is acquired, because the release cleared the displaced records. `note_active_call()` stamps a cooldown
   only when it replaces a valid, different record. A list reload or clear carries the records and the last
   cooldown into the new context; `install` (a scan target transition) restarts them.
-- Invariant (patched P25 calls): a call snapshot's `policy_target_id` is the member WG the grant matched, while
-  `ota_target_id` is the supergroup every frontend shows. `DSD_TG_POLICY_BLOCK_OTA_FINAL` in
-  `<dsd-neo/core/talkgroup_policy.h>` names the supergroup blocks no member overrides (call skip, encryption
-  lockout, session avoid, mode B/DE). The P25 grant path stops at them before considering members, and every
-  consumer that judges a live call on its policy target also calls `dsd_tg_policy_apply_ota_final_blocks()` with
-  the over-the-air target: the audio/record/P25p2 media gates, the row-edit release in app-control and the Qt block
-  label. User blocks (Lock out, Avoid TG, Skip) are written against the over-the-air target. A private call has no
+- Invariant (patched P25 calls): a call snapshot's `policy_target_id` is the talkgroup the grant's resolution chose
+  (a member WG or the supergroup), while `ota_target_id` is the supergroup every frontend shows. One resolver,
+  `dsd_p25_patch_resolve()` (`<dsd-neo/core/p25_patch_policy.h>`, `src/core/util/p25_patch_policy.c`), judges the
+  supergroup and then each member whose membership is current, pure over current state (no cache). ADMIT (the grant
+  path and its voice-start recheck, with the planned encryption-lockout release as the adjust hook) needs
+  `tg_tune_allowed` and ranks Hold, media, priority, then preempt; MEDIA needs the gates' talkgroup audio predicate
+  (`dsd_audio_policy_tg_allows_audio()`) and ranks Hold, then priority; the supergroup wins a full tie. The
+  supergroup's final reasons (`dsd_tg_policy_ota_final_reasons()`: call skip, encryption lockout, session avoid, and
+  mode B/DE only from a row that knows the supergroup -- a `*` catch-all's B/DE is not final, so a listened member
+  admits the patch) end resolution with the supergroup's decision, except that for media the encryption lockout only
+  denies tuning. The media consumers (audio and record gates, the export verdict, the P25 Phase 2 verdict key)
+  keep-or-resolve through `dsd_p25_patch_media_target()`: the stored target is kept while it is a current member that
+  may play, else the resolver answers, judged at every read. `dsd_tg_policy_apply_ota_final_blocks()` merges the same
+  final reasons; the media gates, the row-edit release in app-control and the Qt block label call it with the
+  over-the-air target. Tests: `CORE_P25_PATCH_POLICY`, `CORE_TALKGROUP_POLICY`, `P25_GRANT_POLICY`,
+  `CORE_AUDIO_GROUP_GATE`, `CORE_P25P2_PLAYOUT`, `CORE_CALL_ALERT_HISTORY`. User blocks (Lock out, Avoid TG, Skip) are
+  written against the over-the-air target. A private call has no
   talkgroup: `apply_cmd_lockout_resolve_target()` refuses its lockout with a toast (issue #773), since the talkgroup
   row it would write blocks the talkgroup with the radio's number; a radio is blocked from the radio ID list.
   `dsd_call_kind` does not tell individual from group data, so a data call is locked out as a talkgroup (decided
