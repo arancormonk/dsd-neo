@@ -21699,9 +21699,10 @@ if(DSD_HAS_RADIO)
     # reception from a talker not heard before opens at +8 dB, and until its estimate is established its loudest frames
     # are held at -12 dBFS, so a short excerpt of a loud talker reads over the target. docs/testing.md lists each
     # excerpt's speech. Measured (auto, at -g 1): dstar -17.69 (-18.14), ysf -20.54 (-39.47), m17 -17.28 (-21.63),
-    # tetra_call_real_air_72k -21.04 (-28.53), nxdn96 -18.57 (-40.91), provoice -18.36 (-39.30), p25p1_c4fm_vc -20.92
-    # (-32.03; 0.8 s of speech, whose gain reaches the talker within its first voiced frames) and p25p1_cqpsk_vc -15.47
-    # (-22.44; 0.3 s of speech, one syllable too short to commit, whose loudest frames play at the -12 dBFS hold).
+    # tetra_call_real_air_72k -20.93 (-28.53), nxdn96 -18.57 (-40.91), provoice -18.36 (-39.30), p25p1_c4fm_vc -18.96
+    # (-32.03; 0.8 s of speech, whose gain reaches the talker within its first voiced frames: once the hold on its first
+    # loud syllable has eased, the startup steps go to the estimate's aim) and p25p1_cqpsk_vc -15.47 (-22.44; 0.3 s of
+    # speech, one syllable too short to commit, whose loudest frames play at the -12 dBFS hold).
     function(
         dsd_neo_add_iq_speech_level_test
         test_name
@@ -21743,8 +21744,8 @@ if(DSD_HAS_RADIO)
         tetra_call_real_air_72k
         -fT
         1
-        -22.04
-        -20.04
+        -21.93
+        -19.93
         "-g 1"
     )
     dsd_neo_add_iq_speech_level_test(DECODE_IQ_SPEECH_LEVEL_NXDN96 nxdn96 -fn 1 -19.57 -17.57 "-g 1")
@@ -21754,8 +21755,8 @@ if(DSD_HAS_RADIO)
         p25p1_c4fm_vc
         -f1
         1
-        -21.92
-        -19.92
+        -19.96
+        -17.96
         "-g 1"
     )
     dsd_neo_add_iq_speech_level_test(
