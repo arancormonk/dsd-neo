@@ -96,6 +96,9 @@
  * OK" only after its recordings were checked. --analog-keep-output keeps the session's own output settings instead of
  * capturing the monitor (-o null stays muted, as engine setup leaves it), prints one "ANALOG OUTPUT:" line and fails
  * unless the output is off and nothing reached it.
+ * --analog-audio-out FILE writes every block the monitor delivered to FILE as native float32 samples (full scale 1.0)
+ * at the analog sink rate, and prints one "ANALOG AUDIO OUT:" line with that rate and the sample count, so a caller can
+ * score audio this host does not (tools/scan_quiet_reception.py's multitone S/N).
  */
 
 #include <dsd-neo/core/channel_mode.h>
@@ -278,6 +281,9 @@ static analog_limit g_record_min_level;
 static int g_keep_output;
 /* The stop hook reported the run's live checks (analog_report()). */
 static int g_reported;
+/* Where the delivered audio is written (--analog-audio-out); empty writes none. */
+static char g_audio_out[DSD_TEST_PATH_MAX];
+static const char k_audio_out_arg[] = "--analog-audio-out";
 /* The option that names a scene (--analog-scene, issue #668) and the one that takes no value. */
 static const char k_scene_arg[] = "--analog-scene";
 static const char k_keep_output_arg[] = "--analog-keep-output";
@@ -389,6 +395,7 @@ analog_usage(void) {
                 "  --analog-record-{min,max}-start-ms MS  where each recording starts against its burst\n"
                 "  --analog-record-{min,max}-audio-ms MS  where its first sample that is not 0 is\n"
                 "  --analog-keep-output              keep the session's own output (-o null stays muted)\n"
+                "  --analog-audio-out FILE           write the delivered audio to FILE as float32 samples\n"
                 "Other --analog-* arguments go to dsd-neo unchanged.\n");
 }
 
@@ -470,7 +477,7 @@ static int
 analog_is_host_option(const char* name) {
     return analog_find_scalar(name) != NULL || analog_find_probe_limit(name) >= 0 || strcmp(name, k_probe_hz_arg) == 0
            || strcmp(name, k_gap_join_arg) == 0 || strcmp(name, k_scene_arg) == 0
-           || strcmp(name, k_keep_output_arg) == 0;
+           || strcmp(name, k_keep_output_arg) == 0 || strcmp(name, k_audio_out_arg) == 0;
 }
 
 /* One ':'-ended field of @p *text, a whole number of ms from 1 to 60000; advances past it. */
@@ -528,6 +535,14 @@ analog_apply_option(const char* name, const char* value) {
     }
     if (strcmp(name, k_scene_arg) == 0) {
         return analog_apply_scene(value);
+    }
+    if (strcmp(name, k_audio_out_arg) == 0) {
+        if (value[0] == '\0' || strlen(value) >= sizeof g_audio_out) {
+            DSD_FPRINTF(stderr, "analog replay: %s needs a path shorter than %zu bytes\n", name, sizeof g_audio_out);
+            return -1;
+        }
+        DSD_SNPRINTF(g_audio_out, sizeof g_audio_out, "%s", value);
+        return 0;
     }
     if (strcmp(name, k_keep_output_arg) == 0) {
         DSD_FPRINTF(stderr, "analog replay: %s takes no value\n", name);
@@ -2150,10 +2165,10 @@ analog_p56_wanted(void) {
     return g_limits.min_p56_dbfs.set || g_limits.max_p56_dbfs.set;
 }
 
-/* Keeps a delivered block for the P.56 level. */
+/* Keeps a delivered block for the P.56 level or the audio file (--analog-audio-out). */
 static void
 analog_p56_keep(const double* x, size_t n) {
-    if (!analog_p56_wanted() || g_p56_failed) {
+    if ((!analog_p56_wanted() && g_audio_out[0] == '\0') || g_p56_failed) {
         return;
     }
     if (g_p56_len + n > g_p56_cap) {
@@ -3096,6 +3111,26 @@ analog_print_raw_wav_line(void) {
     DSD_FPRINTF(stderr, "%s\n", line);
 }
 
+/* Writes the kept audio to the --analog-audio-out file, full scale 1.0, and says so; a failure fails the run. */
+static void
+analog_write_audio_out(void) {
+    if (g_audio_out[0] == '\0') {
+        return;
+    }
+    FILE* fp = g_p56_failed ? NULL : dsd_fopen_private(g_audio_out, "wb");
+    size_t written = 0;
+    for (size_t i = 0; fp != NULL && i < g_p56_len; i++) {
+        const float sample = (float)(g_p56_audio[i] / ANALOG_FULL_SCALE);
+        written += fwrite(&sample, sizeof sample, 1U, fp);
+    }
+    if (fp == NULL || fclose(fp) != 0 || written != g_p56_len) {
+        DSD_FPRINTF(stderr, "FAIL: could not write the delivered audio to %s\n", g_audio_out);
+        g_failed = 1;
+        return;
+    }
+    DSD_FPRINTF(stderr, "ANALOG AUDIO OUT: rate_hz=%u samples=%zu\n", g_totals.deliver_hz, g_p56_len);
+}
+
 static void
 analog_report(void) {
     analog_report_ctx ctx;
@@ -3103,6 +3138,7 @@ analog_report(void) {
     analog_report_measure(&ctx);
     analog_print_metric_line(&ctx);
     analog_print_raw_wav_line();
+    analog_write_audio_out();
     analog_report_probes(&ctx, 0);
     analog_note_resolution();
     analog_check_limits(&ctx);

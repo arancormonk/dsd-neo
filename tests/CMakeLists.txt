@@ -24313,6 +24313,16 @@ if(DSD_HAS_RADIO)
             PROPERTIES ENVIRONMENT "DSD_NEO_DEEMPH=${_deemph}"
         )
     endforeach()
+    # --analog-audio-out writes every delivered sample (tools/scan_quiet_reception.py
+    # scores its voice rows from it): the 1480 ms the host captured are 71040 samples at
+    # the 48 kHz sink, and the run still passes its bounds.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_AUDIO_OUT
+        nfm_tone_synth
+        "${_analog_nfm_tone_fixed50} --analog-audio-out ${CMAKE_CURRENT_BINARY_DIR}/analog_audio_out.f32"
+        "captured_ms=1480[.]00 .*ANALOG AUDIO OUT: rate_hz=48000 samples=71040.*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
     # A fixed -n keeps the speech AGC's limiter (issue #518): open-squelch receiver noise
     # (noise_floor) at -n 50 with the 750 us de-emphasis made up (+13.65 dB at 1 kHz)
     # measures -10.92 dBFS RMS with its peaks held at -1.00 dBFS, none clipped; the fixed
@@ -25248,6 +25258,13 @@ if(DSD_HAS_RADIO)
         "-fA --analog-min-snr-db 20"
         "ANALOG AUDIO FAIL: tone SNR dB not measured"
     )
+    # An --analog-audio-out file that cannot be written (here a directory) fails the run.
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_AUDIO_OUT_UNWRITABLE
+        nfm_tone_synth
+        "-fA --analog-audio-out ${CMAKE_CURRENT_BINARY_DIR}"
+        "FAIL: could not write the delivered audio to "
+    )
     # The received-tone lock bound (issue #522): a limit below the lock time
     # nfm_ctcss_synth_1000 measures fails on the measured value, and on a replay with no
     # tone at all the bound fails as not measured instead of passing unchecked.
@@ -26147,6 +26164,19 @@ if(Python3_Interpreter_FOUND)
     )
     set_tests_properties(
         TOOLS_BUILD_IQ_FIXTURES_TETRA
+        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+    )
+    # tools/scan_quiet_reception.py's exact-width rows, multitone score and the modes
+    # file it hands the quiet check's calibration driver (issue #834). numpy, as above.
+    add_test(
+        NAME TOOLS_SCAN_QUIET_RECEPTION
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tests/tools/test_scan_quiet_reception.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    )
+    set_tests_properties(
+        TOOLS_SCAN_QUIET_RECEPTION
         PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
     )
     # The report's per-repeat pairing of the analog columns (issue #518), on canned

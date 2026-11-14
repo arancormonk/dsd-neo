@@ -9,13 +9,14 @@
  *
  *   dsd-neo_test_signal_quiet_calibrate --phase select|validate|snr|cost --out FILE [--sources DIR] [--trials N]
  *       [--jobs N] [--threshold DB --estimator trimmed|lowest] [--guard DB] [--filter TEXT] [--dump FILE]
- *       [--neighbour-levels DB,DB,...]
+ *       [--neighbour-levels DB,DB,...] [--modes-file FILE]
  *
  * DIR holds the clean 48 kHz sources tools/scan_quiet_reception.py --export-sources writes, from the same generators
  * that measured each mode's reception threshold. Each is interpolated to the capture rate in the frequency domain, so
  * its spectrum (and the power band_power() gave inside its class width) is unchanged, then placed at the channel in the
  * RTL tap's geometry (tuned Fs/4 above it, the ingest rotation bringing it to the samples' 0 Hz). Every phase but cost
- * needs DIR. The
+ * needs DIR. Rows whose samples are the same (one transmitter exported for several widths) share one waveform, placed
+ * once per rate, each keeping its own in-width power. The
  * S/N is the tool's: the signal's power inside the mode's class width (for a burst train, during its bursts) over the
  * noise power inside the same width around the signal.
  *
@@ -33,6 +34,13 @@
  * --neighbour-levels sets the adjacent-channel transmitters' levels over the wanted signal (default 30,50, the levels
  * the first calibration used; the shipped calibration ran 5 to 30 dB in 2.5 dB steps, then 35 to 50 dB in 5 dB
  * steps). A level's condition names, and so its seeds, do not depend on the other levels in the list.
+ *
+ * --modes-file FILE takes the modes, their source rows, reception thresholds, widths and classes from the reception
+ * tool's driver_modes.tsv (header, then name, tag, row, reception_db, width_hz, class 12k5|6k25|analog, analog 0|1;
+ * tag names the width's noise-only conditions) instead of the table below: the file's digital modes replace the
+ * table's when it has any, and its analog modes the table's when it has any, so an analog-only reception run keeps the
+ * table's digital modes (and their condition names and seeds). An analog mode's noise-only conditions are built once
+ * per tag; the shipped widths' tags are the table's names, so those keep their names and seeds too.
  *
  * Every trial's samples come from its own seed (the condition's name, the phase and the trial number), so results do
  * not depend on --jobs. */
@@ -81,9 +89,19 @@ constexpr double kBurstGapSeconds = 0.0325; /* DMR MS: 60 ms frame less the 27.5
 /* ------------------------------------------------------------------------------------------------ modes */
 
 struct Mode {
+    std::string name;
+    std::string row;         /* the source row that set the reception threshold */
+    std::string tag;         /* the width's noise-only conditions (an analog mode's reception mode) */
+    double reception_db = 0; /* S/N in the class width; DMR MS: burst-on */
+    uint32_t width_hz = 0;
+    uint8_t cls = 0;
+    bool analog = false;
+};
+
+struct BuiltinMode {
     const char* name;
-    const char* row;     /* the source row that set the reception threshold */
-    double reception_db; /* S/N in the class width; DMR MS: burst-on */
+    const char* row;
+    double reception_db;
     uint32_t width_hz;
     uint8_t cls;
     bool analog;
@@ -91,8 +109,9 @@ struct Mode {
 
 /* Reception thresholds: the "kept" thresholds tools/scan_quiet_reception.py writes to its thresholds.json, one run per
  * mode and per NFM and AM width the Radio sheet offers, as the reception table in docs/signal-search.md ("Reception
- * thresholds") lists them. X2-TDMA and ProVoice are unsourced: no check, so not calibrated. */
-const Mode kModes[] = {
+ * thresholds") lists them. X2-TDMA and ProVoice are unsourced: no check, so not calibrated. --modes-file replaces
+ * them with a reception run's own (its driver_modes.tsv). */
+const BuiltinMode kModes[] = {
     {"p25p1", "p25p1", 8.0, 12500, DSD_SIGNAL_QUIET_CLASS_12K5, false},
     {"p25p2", "p25p2_harmonized", 9.5, 12500, DSD_SIGNAL_QUIET_CLASS_12K5, false},
     {"dmr_bs", "dmr_bs", 7.5, 12500, DSD_SIGNAL_QUIET_CLASS_12K5, false},
@@ -119,16 +138,37 @@ const Mode kModes[] = {
 constexpr const char* kNeighbourRow = "p25p1"; /* a C4FM transmitter on the adjacent channel */
 constexpr const char* kOffsetCarrierRow = "am_20k";
 
+std::vector<Mode>
+builtin_modes() {
+    std::vector<Mode> modes(std::end(kModes) - std::begin(kModes));
+    std::transform(std::begin(kModes), std::end(kModes), modes.begin(), [](const BuiltinMode& m) {
+        Mode out;
+        out.name = out.tag = m.name;
+        out.row = m.row;
+        out.reception_db = m.reception_db;
+        out.width_hz = m.width_hz;
+        out.cls = m.cls;
+        out.analog = m.analog;
+        return out;
+    });
+    return modes;
+}
+
 /* ------------------------------------------------------------------------------------------------ sources */
+
+/* One transmitter's clean samples at 48 kHz, shared by every sources.tsv row that holds the same samples. */
+struct Waveform {
+    std::vector<cf> base;
+    std::vector<uint8_t> on;
+};
 
 struct Source {
     std::string row;
     double band_power = 0; /* tools/scan_quiet_reception.py band_power() in the row's class width */
-    std::vector<cf> base;  /* 48 kHz */
-    std::vector<uint8_t> on;
+    int wave = -1;
 };
 
-/* A source at one capture rate, with its bursts' symbol transmission periods in capture samples. */
+/* A waveform at one capture rate, with its bursts' symbol transmission periods in capture samples. */
 struct Placed {
     std::vector<cf> x;
     std::vector<std::pair<int64_t, int64_t>> bursts;
@@ -176,9 +216,44 @@ source_path(const std::string& dir, const std::string& row, const char* suffix) 
     return path;
 }
 
-/* Load the sources.tsv rows this driver uses. */
+/* The index of the waveform holding exactly @p w's samples and burst mask, appended when none does. */
+int
+share_waveform(Waveform&& w, std::vector<Waveform>* waves) {
+    for (size_t i = 0; i < waves->size(); ++i) {
+        const Waveform& o = (*waves)[i];
+        if (o.base.size() == w.base.size() && o.on == w.on
+            && std::memcmp(o.base.data(), w.base.data(), w.base.size() * sizeof(cf)) == 0) {
+            return (int)i;
+        }
+    }
+    waves->push_back(std::move(w));
+    return (int)waves->size() - 1;
+}
+
+/* One sources.tsv row's samples (and burst mask) into a waveform; false when they cannot be read. */
 bool
-load_sources(const std::string& dir, std::vector<Source>* sources) {
+read_waveform(const std::string& dir, const std::string& row, const std::string& burst, Waveform* w) {
+    std::vector<char> raw;
+    if (!read_file(source_path(dir, row, ".cf32"), &raw) || raw.size() % sizeof(cf)) {
+        DSD_FPRINTF(stderr, "cannot read %s.cf32\n", row.c_str());
+        return false;
+    }
+    w->base.resize(raw.size() / sizeof(cf));
+    DSD_MEMCPY(w->base.data(), raw.data(), raw.size());
+    if (burst == "1") {
+        std::vector<char> on;
+        if (!read_file(source_path(dir, row, ".on"), &on) || on.size() != w->base.size()) {
+            DSD_FPRINTF(stderr, "cannot read %s.on\n", row.c_str());
+            return false;
+        }
+        w->on.assign(on.begin(), on.end());
+    }
+    return true;
+}
+
+/* Load the sources.tsv rows, sharing the waveforms of rows with the same samples. */
+bool
+load_sources(const std::string& dir, std::vector<Source>* sources, std::vector<Waveform>* waves) {
     std::ifstream tsv(dir + "/sources.tsv");
     std::string line;
     if (!tsv || !std::getline(tsv, line)) {
@@ -203,34 +278,98 @@ load_sources(const std::string& dir, std::vector<Source>* sources) {
             DSD_FPRINTF(stderr, "sources.tsv: bad row %s\n", row.c_str());
             return false;
         }
-        std::vector<char> raw;
-        if (!read_file(source_path(dir, row, ".cf32"), &raw) || raw.size() % sizeof(cf)) {
-            DSD_FPRINTF(stderr, "cannot read %s.cf32\n", row.c_str());
+        Waveform w;
+        if (!read_waveform(dir, row, burst, &w)) {
             return false;
         }
-        s.base.resize(raw.size() / sizeof(cf));
-        DSD_MEMCPY(s.base.data(), raw.data(), raw.size());
-        if (burst == "1") {
-            std::vector<char> on;
-            if (!read_file(source_path(dir, row, ".on"), &on) || on.size() != s.base.size()) {
-                DSD_FPRINTF(stderr, "cannot read %s.on\n", row.c_str());
-                return false;
-            }
-            s.on.assign(on.begin(), on.end());
-        }
+        s.wave = share_waveform(std::move(w), waves);
         sources->push_back(std::move(s));
     }
     return true;
 }
 
 int
-find_source(const std::vector<Source>& sources, const char* row) {
+find_source(const std::vector<Source>& sources, const std::string& row) {
     for (size_t i = 0; i < sources.size(); ++i) {
         if (sources[i].row == row) {
             return (int)i;
         }
     }
     return -1;
+}
+
+/* The class a modes file names: 12k5, 6k25 or analog; 0 for anything else. */
+uint8_t
+class_from_text(const std::string& text) {
+    return text == "12k5"     ? (uint8_t)DSD_SIGNAL_QUIET_CLASS_12K5
+           : text == "6k25"   ? (uint8_t)DSD_SIGNAL_QUIET_CLASS_6K25
+           : text == "analog" ? (uint8_t)DSD_SIGNAL_QUIET_CLASS_ANALOG
+                              : (uint8_t)0;
+}
+
+/* One driver_modes.tsv line into @p m; false when a field does not parse. */
+bool
+parse_mode_line(const std::string& line, Mode* m) {
+    std::istringstream fields(line);
+    std::string reception, width, cls, analog;
+    std::getline(fields, m->name, '\t');
+    std::getline(fields, m->tag, '\t');
+    std::getline(fields, m->row, '\t');
+    std::getline(fields, reception, '\t');
+    std::getline(fields, width, '\t');
+    std::getline(fields, cls, '\t');
+    std::getline(fields, analog, '\t');
+    double width_hz = 0;
+    m->cls = class_from_text(cls);
+    m->analog = analog == "1";
+    if (m->name.empty() || m->tag.empty() || m->row.empty() || !parse_double(reception, &m->reception_db)
+        || !parse_double(width, &width_hz) || width_hz < 1000 || width_hz > 100000
+        || std::fabs(width_hz - std::round(width_hz)) > 1e-9 || m->cls == 0
+        || m->analog != (m->cls == DSD_SIGNAL_QUIET_CLASS_ANALOG) || (analog != "0" && analog != "1")) {
+        return false;
+    }
+    m->width_hz = (uint32_t)std::lround(width_hz);
+    return true;
+}
+
+/* The modes of a reception run's driver_modes.tsv (--modes-file): they replace the built-in digital modes when the file
+ * has any digital one, and the built-in analog modes when it has any analog one. */
+bool
+load_modes(const std::string& path, std::vector<Mode>* modes) {
+    std::ifstream tsv(path);
+    std::string line;
+    if (!tsv || !std::getline(tsv, line)) {
+        DSD_FPRINTF(stderr, "cannot read %s\n", path.c_str());
+        return false;
+    }
+    std::vector<Mode> loaded;
+    while (std::getline(tsv, line)) {
+        Mode m;
+        if (!parse_mode_line(line, &m)) {
+            DSD_FPRINTF(stderr, "%s: bad line: %s\n", path.c_str(), line.c_str());
+            return false;
+        }
+        loaded.push_back(std::move(m));
+    }
+    if (loaded.empty()) {
+        DSD_FPRINTF(stderr, "no modes in %s\n", path.c_str());
+        return false;
+    }
+    for (const bool analog : {false, true}) {
+        if (std::any_of(loaded.begin(), loaded.end(), [&](const Mode& m) { return m.analog == analog; })) {
+            modes->erase(
+                std::remove_if(modes->begin(), modes->end(), [&](const Mode& m) { return m.analog == analog; }),
+                modes->end());
+        }
+    }
+    modes->insert(modes->end(), loaded.begin(), loaded.end());
+    for (auto it = modes->begin(); it != modes->end(); ++it) {
+        if (std::any_of(std::next(it), modes->end(), [&](const Mode& m) { return m.name == it->name; })) {
+            DSD_FPRINTF(stderr, "%s: mode %s is named twice\n", path.c_str(), it->name.c_str());
+            return false;
+        }
+    }
+    return true;
 }
 
 /* Inverse transform through the forward one: ifft(X) = conj(fft(conj(X))), unscaled. */
@@ -251,11 +390,11 @@ struct AlignedBuffer {
     explicit AlignedBuffer(size_t n) : data(new cf[n]) {}
 };
 
-/* Band-limited interpolation of a 48 kHz source to @p rate: 200 ms blocks every 100 ms, each zero-padded in the
- * frequency domain, keeping each block's middle 100 ms (the source is read circularly; trials stay clear of the wrap).
- * The 48 kHz spectrum and so each band's power are kept; nothing appears above 24 kHz. */
+/* Band-limited interpolation of a 48 kHz waveform to @p rate: 200 ms blocks every 100 ms, each zero-padded in the
+ * frequency domain, keeping each block's middle 100 ms (the waveform is read circularly; trials stay clear of the
+ * wrap). The 48 kHz spectrum and so each band's power are kept; nothing appears above 24 kHz. */
 Placed
-place_source(const Source& s, uint32_t rate) {
+place_waveform(const Waveform& s, uint32_t rate) {
     const int n_in = kBlockIn, n_out = (int)((int64_t)kBlockIn * rate / kSourceRate), hop_in = n_in / 2;
     const int hop_out = n_out / 2;
     const long long total_in = (long long)s.base.size();
@@ -430,6 +569,7 @@ signed_text(double value, int decimals) {
 struct Builder {
     const std::vector<Source>& sources;
     const std::vector<double>& neighbour_levels;
+    const std::vector<Mode>& modes;
     std::vector<Condition> out;
 
     Condition
@@ -463,7 +603,7 @@ struct Builder {
                 Condition c = base("digital", m, rate);
                 c.carriers[0].offset_hz = c.snr_offset_hz = offsets[i];
                 add(c, "off" + signed_text(offsets[i], 0));
-                if (std::strcmp(m.name, "dmr_ms") == 0) {
+                if (m.name == "dmr_ms") {
                     c.group = "dmr_ms_droop";
                     c.name = "dmr_ms_droop/" + c.name.substr(c.name.find('/') + 1);
                     c.carriers[0].droop = true;
@@ -495,10 +635,13 @@ struct Builder {
     void
     offset_carriers() {
         const Mode* am = nullptr;
-        for (const Mode& m : kModes) {
-            if (std::strcmp(m.row, kOffsetCarrierRow) == 0) {
+        for (const Mode& m : modes) {
+            if (m.row == kOffsetCarrierRow) {
                 am = &m;
             }
+        }
+        if (!am) {
+            return;
         }
         /* ICAO Annex 10 Vol III 2.2.1.1.1 / Attachment A: carriers up to +/-8 kHz in a 25 kHz channel; the 2-, 3-, 4-
          * and 5-carrier examples, and single offset carriers. The S/N is the scene's total. */
@@ -565,7 +708,7 @@ struct Builder {
             Condition c = base(s.floor == SLOPE ? "slope" : "broad", m, kSceneRate);
             if (kind == INFO) {
                 c.group = s.floor == SLOPE ? "noise_slope" : "noise_broad";
-                c.name = c.group + c.name.substr(c.name.find('/'));
+                c.name = c.group + "/" + m.tag + "/" + std::to_string(kSceneRate / 1000) + "k";
                 c.carriers.clear();
             }
             c.kind = kind;
@@ -576,21 +719,30 @@ struct Builder {
         }
     }
 
-    void
-    noise_only() {
-        struct Request {
-            uint8_t classes;
-            uint32_t width;
-            const char* tag;
-        };
+    struct Request {
+        uint8_t classes = 0;
+        uint32_t width = 0;
+        std::string tag;
+    };
 
+    /* The noise-only requests: both digital classes and each analog mode's width (once per tag). */
+    std::vector<Request>
+    noise_requests() const {
         std::vector<Request> requests = {{DSD_SIGNAL_QUIET_CLASS_12K5, 0, "12k5"},
                                          {DSD_SIGNAL_QUIET_CLASS_6K25, 0, "6k25"}};
-        for (const Mode& m : kModes) {
-            if (m.analog) {
-                requests.push_back(Request{DSD_SIGNAL_QUIET_CLASS_ANALOG, m.width_hz, m.name});
+        for (const Mode& m : modes) {
+            const bool known =
+                std::any_of(requests.begin(), requests.end(), [&](const Request& r) { return r.tag == m.tag; });
+            if (m.analog && !known) {
+                requests.push_back(Request{DSD_SIGNAL_QUIET_CLASS_ANALOG, m.width_hz, m.tag});
             }
         }
+        return requests;
+    }
+
+    void
+    noise_only() {
+        const std::vector<Request> requests = noise_requests();
         for (uint32_t rate : kRates) {
             for (const Request& r : requests) {
                 Condition c;
@@ -603,8 +755,7 @@ struct Builder {
                 const int bin = bin_hz(c);
                 for (int shift : {0, bin / 4, bin / 2}) {
                     c.grid_shift_hz = shift;
-                    c.name = "noise/" + std::string(r.tag) + "/" + std::to_string(rate / 1000) + "k/grid"
-                             + std::to_string(shift);
+                    c.name = "noise/" + r.tag + "/" + std::to_string(rate / 1000) + "k/grid" + std::to_string(shift);
                     out.push_back(c);
                 }
                 c.grid_shift_hz = 0;
@@ -621,9 +772,10 @@ struct Builder {
 };
 
 std::vector<Condition>
-build_conditions(const std::vector<Source>& sources, const std::vector<double>& neighbour_levels) {
-    Builder b{sources, neighbour_levels, {}};
-    for (const Mode& m : kModes) {
+build_conditions(const std::vector<Source>& sources, const std::vector<Mode>& modes,
+                 const std::vector<double>& neighbour_levels) {
+    Builder b{sources, neighbour_levels, modes, {}};
+    for (const Mode& m : modes) {
         if (m.analog) {
             b.analog(m);
         } else {
@@ -634,8 +786,13 @@ build_conditions(const std::vector<Source>& sources, const std::vector<double>& 
     }
     b.offset_carriers();
     b.noise_only();
-    for (const Mode& m : kModes) {
-        if (std::strcmp(m.name, "p25p1") == 0 || std::strcmp(m.name, "nxdn48") == 0 || m.analog) {
+    /* Noise alone on the shaped floors: once per width (the first mode of each analog tag), and P25 Phase 1's and
+       NXDN48's digital classes. */
+    std::vector<std::string> floored;
+    for (const Mode& m : modes) {
+        const bool first = std::find(floored.begin(), floored.end(), m.tag) == floored.end();
+        if (first && (m.name == "p25p1" || m.name == "nxdn48" || m.analog)) {
+            floored.push_back(m.tag);
             b.floors(m, INFO);
         }
     }
@@ -771,11 +928,12 @@ droop_gain(const Placed& p, int64_t index, bool late) {
     return std::sqrt(low ? lo : hi);
 }
 
-/* Add one carrier at a random start, phase and (DMR MS droop) side; returns the start in the placed source. */
+/* Add one carrier at a random start, phase and (DMR MS droop) side; returns the start in the placed waveform.
+ * @p placed is indexed by waveform. */
 int64_t
 add_carrier(const Condition& c, const Carrier& k, const std::vector<Placed>& placed, const std::vector<Source>& sources,
             Rng& rng, Worker& w) {
-    const Placed& p = placed[(size_t)k.source];
+    const Placed& p = placed[(size_t)sources[(size_t)k.source].wave];
     const double wanted = std::pow(10.0, c.snr_db / 10.0) * c.noise_in_width;
     const double power = k.neighbour ? wanted * std::pow(10.0, k.rel_db / 10.0) : wanted * k.share;
     const double amplitude = std::sqrt(power / sources[(size_t)k.source].band_power);
@@ -877,7 +1035,7 @@ constexpr double kGuardOff = 1000;       /* a guard no floor reaches: the raw ra
 constexpr float kInvalidBusyDb = 999.0f; /* a noise-only trial the guard voided, in the select quantiles */
 
 struct Options {
-    std::string sources, phase, out, filter, dump;
+    std::string sources, phase, out, filter, dump, modes_file;
     long trials = 0, jobs = 0;
     double threshold = 0, guard = kGuardOff;
     int estimator = -1;
@@ -907,34 +1065,35 @@ parallel(long count, long jobs, F&& body) {
     }
 }
 
+/* The waveforms marked in @p needed, placed at @p rate (the others left empty), indexed by waveform. */
 std::vector<Placed>
-place_sources(uint32_t rate, const Options& o, const std::vector<Source>& sources, const std::vector<bool>& needed) {
-    std::vector<Placed> placed(sources.size());
-    parallel((long)sources.size(), o.jobs, [&](long i, Worker&) {
+place_waveforms(uint32_t rate, const Options& o, const std::vector<Waveform>& waves, const std::vector<bool>& needed) {
+    std::vector<Placed> placed(waves.size());
+    parallel((long)waves.size(), o.jobs, [&](long i, Worker&) {
         if (needed[(size_t)i]) {
-            placed[(size_t)i] = place_source(sources[(size_t)i], rate);
+            placed[(size_t)i] = place_waveform(waves[(size_t)i], rate);
         }
     });
     return placed;
 }
 
 void
-run_rate(uint32_t rate, const Options& o, const std::vector<Source>& sources, const std::vector<Condition>& all,
-         const std::vector<size_t>& chosen, std::vector<Outcome>* outcomes) {
+run_rate(uint32_t rate, const Options& o, const std::vector<Source>& sources, const std::vector<Waveform>& waves,
+         const std::vector<Condition>& all, const std::vector<size_t>& chosen, std::vector<Outcome>* outcomes) {
     std::vector<size_t> here;
-    std::vector<bool> needed(sources.size(), false);
+    std::vector<bool> needed(waves.size(), false);
     for (size_t i : chosen) {
         if (all[i].rate == rate) {
             here.push_back(i);
             for (const Carrier& k : all[i].carriers) {
-                needed[(size_t)k.source] = true;
+                needed[(size_t)sources[(size_t)k.source].wave] = true;
             }
         }
     }
     if (here.empty()) {
         return;
     }
-    const std::vector<Placed> placed = place_sources(rate, o, sources, needed);
+    const std::vector<Placed> placed = place_waveforms(rate, o, waves, needed);
     const bool select = o.phase == "select";
     const uint64_t phase = select ? 1 : 2;
     const size_t trials = (size_t)o.trials;
@@ -1047,8 +1206,8 @@ write_dump(FILE* dump, const Outcome& out, int e) {
 }
 
 int
-run_trials(const Options& o, const std::vector<Source>& sources, const std::vector<Condition>& all,
-           const std::vector<size_t>& chosen) {
+run_trials(const Options& o, const std::vector<Source>& sources, const std::vector<Waveform>& waves,
+           const std::vector<Condition>& all, const std::vector<size_t>& chosen) {
     std::vector<Outcome> outcomes(all.size());
     for (size_t i : chosen) {
         for (int e = 0; e < 2; ++e) {
@@ -1056,7 +1215,7 @@ run_trials(const Options& o, const std::vector<Source>& sources, const std::vect
         }
     }
     for (uint32_t rate : kRates) {
-        run_rate(rate, o, sources, all, chosen, &outcomes);
+        run_rate(rate, o, sources, waves, all, chosen, &outcomes);
     }
     FILE* f = dsd_fopen_private(o.out.c_str(), "w");
     if (!f) {
@@ -1112,7 +1271,7 @@ double
 measured_snr_db(Condition c, const Options& o, const std::vector<Placed>& placed, const std::vector<Source>& sources,
                 dsd_io::FftSetupCache& fft) {
     c.span = transform_points(c.rate);
-    const Placed& p = placed[(size_t)c.carriers[0].source];
+    const Placed& p = placed[(size_t)sources[(size_t)c.carriers[0].source].wave];
     double signal = 0, noise = 0, total = 0;
     Worker w;
     for (long t = 0; t < o.trials; ++t) {
@@ -1137,7 +1296,8 @@ measured_snr_db(Condition c, const Options& o, const std::vector<Placed>& placed
 
 /* The S/N cross-check: each wanted signal on frequency over a white floor, rendered as the trials are. */
 int
-run_snr(const Options& o, const std::vector<Source>& sources, const std::vector<Condition>& all) {
+run_snr(const Options& o, const std::vector<Source>& sources, const std::vector<Waveform>& waves,
+        const std::vector<Condition>& all) {
     FILE* f = dsd_fopen_private(o.out.c_str(), "w");
     if (!f) {
         return 1;
@@ -1145,17 +1305,17 @@ run_snr(const Options& o, const std::vector<Source>& sources, const std::vector<
     DSD_FPRINTF(f, "condition,target_snr_db,measured_snr_db,trials\n");
     for (uint32_t rate : kRates) {
         std::vector<size_t> chosen;
-        std::vector<bool> needed(sources.size(), false);
+        std::vector<bool> needed(waves.size(), false);
         for (size_t i = 0; i < all.size(); ++i) {
             const Condition& c = all[i];
             const bool plain = (c.group == "digital" && std::fabs(c.carriers[0].offset_hz) < 0.5)
                                || (c.group == "analog" && !c.grid_shift_hz);
             if (plain && c.rate == rate) {
                 chosen.push_back(i);
-                needed[(size_t)c.carriers[0].source] = true;
+                needed[(size_t)sources[(size_t)c.carriers[0].source].wave] = true;
             }
         }
-        const std::vector<Placed> placed = place_sources(rate, o, sources, needed);
+        const std::vector<Placed> placed = place_waveforms(rate, o, waves, needed);
         dsd_io::FftSetupCache fft;
         for (size_t i : chosen) {
             DSD_FPRINTF(f, "%s,%.2f,%.3f,%ld\n", all[i].name.c_str(), all[i].snr_db,
@@ -1322,12 +1482,13 @@ bool
 parse_options(int argc, char** argv, Options* o) {
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string key = argv[i];
-        std::string* text = key == "--sources"  ? &o->sources
-                            : key == "--phase"  ? &o->phase
-                            : key == "--out"    ? &o->out
-                            : key == "--filter" ? &o->filter
-                            : key == "--dump"   ? &o->dump
-                                                : nullptr;
+        std::string* text = key == "--sources"      ? &o->sources
+                            : key == "--phase"      ? &o->phase
+                            : key == "--out"        ? &o->out
+                            : key == "--filter"     ? &o->filter
+                            : key == "--dump"       ? &o->dump
+                            : key == "--modes-file" ? &o->modes_file
+                                                    : nullptr;
         if (text) {
             *text = argv[i + 1];
         } else if (!parse_number(key, argv[i + 1], o)) {
@@ -1335,6 +1496,24 @@ parse_options(int argc, char** argv, Options* o) {
         }
     }
     return argc % 2 != 0 && finish_options(o);
+}
+
+/* The conditions --filter selects into @p chosen; false when a condition cannot be rendered. */
+bool
+choose(const std::vector<Condition>& all, const Options& o, std::vector<size_t>* chosen) {
+    for (size_t i = 0; i < all.size(); ++i) {
+        const Condition& c = all[i];
+        const bool sources_ok =
+            std::all_of(c.carriers.begin(), c.carriers.end(), [](const Carrier& k) { return k.source >= 0; });
+        if (!sources_ok || c.span <= 0 || c.span > transform_points(c.rate)) {
+            DSD_FPRINTF(stderr, "condition %s: missing source or bad span %d\n", c.name.c_str(), c.span);
+            return false;
+        }
+        if (o.filter.empty() || c.name.find(o.filter) != std::string::npos) {
+            chosen->push_back(i);
+        }
+    }
+    return true;
 }
 
 } // namespace
@@ -1346,36 +1525,31 @@ main(int argc, char** argv) {
         DSD_FPRINTF(stderr,
                     "usage: %s --phase select|validate|snr|cost --out FILE [--sources DIR] [--trials N] [--jobs N] "
                     "[--threshold DB --estimator trimmed|lowest] [--guard DB] [--filter TEXT] [--dump FILE] "
-                    "[--neighbour-levels DB,DB,...]\n",
+                    "[--neighbour-levels DB,DB,...] [--modes-file FILE]\n",
                     argv[0]);
         return 2;
     }
     if (o.phase == "cost") {
         return run_cost(o);
     }
-    std::vector<Source> sources;
-    if (!load_sources(o.sources, &sources)) {
+    std::vector<Mode> modes = builtin_modes();
+    if (!o.modes_file.empty() && !load_modes(o.modes_file, &modes)) {
         return 1;
     }
-    std::vector<Condition> all = build_conditions(sources, o.neighbour_levels);
+    std::vector<Source> sources;
+    std::vector<Waveform> waves;
+    if (!load_sources(o.sources, &sources, &waves)) {
+        return 1;
+    }
+    const std::vector<Condition> all = build_conditions(sources, modes, o.neighbour_levels);
     std::vector<size_t> chosen;
-    for (size_t i = 0; i < all.size(); ++i) {
-        const Condition& c = all[i];
-        bool sources_ok = true;
-        for (const Carrier& k : c.carriers) {
-            sources_ok = sources_ok && k.source >= 0;
-        }
-        if (!sources_ok || c.span <= 0 || c.span > transform_points(c.rate)) {
-            DSD_FPRINTF(stderr, "condition %s: missing source or bad span %d\n", c.name.c_str(), c.span);
-            return 1;
-        }
-        if (o.filter.empty() || c.name.find(o.filter) != std::string::npos) {
-            chosen.push_back(i);
-        }
+    if (!choose(all, o, &chosen)) {
+        return 1;
     }
-    DSD_FPRINTF(stderr, "%zu of %zu conditions, %ld trials each\n", chosen.size(), all.size(), o.trials);
+    DSD_FPRINTF(stderr, "%zu of %zu conditions, %ld trials each, %zu waveform(s) from %zu source row(s)\n",
+                chosen.size(), all.size(), o.trials, waves.size(), sources.size());
     if (o.phase == "snr") {
-        return run_snr(o, sources, all);
+        return run_snr(o, sources, waves, all);
     }
-    return run_trials(o, sources, all, chosen);
+    return run_trials(o, sources, waves, all, chosen);
 }
