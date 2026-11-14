@@ -1461,6 +1461,23 @@ Item {
             }
         }
 
+        // Switching to an Airspy hides the RTL gain: a field being typed in gives up the focus, and later keys
+        // change nothing.
+        function test_airspy_source_takes_the_focus_from_the_gain_field() {
+            control("scanAdvancedToggle").Accessible.pressAction();
+            control("scanGainMode").selected(2);
+            edit("scanTuner_gainDb", "23");
+            var field = control("scanTuner_gainDb");
+            verify(field.input.activeFocus);
+            screen.draft = Object.assign({}, screen.draft, {sourceType: "airspy", airspy: {gain_mode: "sensitivity", sensitivity_gain: 9}});
+            verify(!field.visible);
+            verify(!field.input.activeFocus, "the hidden gain field gave up the focus");
+            keyClick("4");
+            compare(field.text, "23");
+            compare(screen.gainText, "23");
+            compare(screen.draft.gainDb, 23);
+        }
+
         function test_inherited_automatic_gain_hint() {
             testContext.setPrefs("gainDb", 0);
             try {

@@ -12636,32 +12636,32 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     decoder/modulation override. Manual scan lists inherit saved squelch and modulation (an entry's explicit
     modulation wins). `UI_QT_PERSISTENCE`, `UI_QT_SESSION_ARGS`, `UI_QT_SCAN_LIST_TARGETS` and the Radio persistence
     QML test cover disk reload, restart, validation and temporary scopes.
-  - Qt/Android tuner gain: `qml/GainEditor.qml` is the one gain editor (Settings' Radio defaults, the scan list
-    editor). It shows `[Automatic | Set]`, or `[App default | Automatic | Set]` when `inheritable`, with one
-    canonical `mode` in both layouts (0 App default, 1 Automatic, 2 Set). An optional `hint` sits right under the
-    strip whatever is chosen, the `inheritNote` under App default and the 1-49 dB field under Set ("Enter a gain
-    from 1 to 49 dB."). `valid` and `storedValue` (-1 / 0 / n, NaN for an invalid Set) read the field as shown, so
-    they always match its error. The caller owns the state: the editor never writes `mode` or `manualText` (the
-    value the caller puts in the field). It reports `modeSelected(mode)`, `draftEdited(text)` on every keystroke
-    and `committed()` once per edit (Return and the focus loss after it are one end; an end with the text unchanged
-    since the last report is none), none of them while the caller sets `syncing`. The caller keeps `manualText` in
-    step with the typing, so that putting a value back is a change. Leaving Set takes the focus and the keyboard
-    from the hidden field (after the choice has committed a composing word), so no key goes to it. The segmented
-    control is named (`accessibleName`, the title by default), and the field reads its label, unit and error.
-    Settings (`settingsGainMode`, `settingsGainDb`, hint "For RTL-SDR and RTL-TCP. Automatic adjusts the receiver
-    gain for you.") writes `prefs.gainDb` only with a valid 1..49 committed while Set is chosen. Automatic writes 0,
-    and Set writes the screen's last valid gain (`lastValidManual`: the preference's own while it is set, then each
-    valid commit, else 30), so a refused edit is never written. Set chosen again commits the typed text first: a
-    valid gain is kept, a refused one gives way. A choice commits a composing word before it selects
-    (`SegmentedControl`), and a later commit writes nothing outside Set. A change of the preference from elsewhere
-    (a restore) resyncs the mode and the text at once, except while Set's field has the focus: then it waits until
-    the field lets go, after the field's own commit, so a valid edit made meanwhile wins as the user's latest. The
-    scan list editor keeps `scanGainMode`/`scanTuner_gainDb` and its draft (`gainMode`, `gainText`, `draft.gainDb`).
-    The Radio sheet's RTL gain steppers are live only and are never saved to a system. The line under them
-    (`radioGainSessionNote`, "Gain changes here last until you stop listening.") says so. It is hidden for an Airspy
-    and under "This channel", which has its own scope note. Tests: `tst_gain_editor.qml`,
-    `tst_settings_tuner_gain.qml`, `tst_radio_gain_override.qml`, `tst_scan_row_edits.qml`,
-    `tst_segmented_whole_words.qml`, `tst_a11y_text_reach.qml`.
+  - Qt/Android tuner gain: `qml/GainEditor.qml` is the one gain editor (Settings' Radio defaults, the scan list editor).
+    It shows `[Automatic | Set]`, or `[App default | Automatic | Set]` when `inheritable`, with one canonical `mode` in
+    both layouts (0 App default, 1 Automatic, 2 Set). An optional `hint` sits right under the strip whatever is chosen,
+    the `inheritNote` under App default and the 1-49 dB field under Set ("Enter a gain from 1 to 49 dB."). `valid` and
+    `storedValue` (-1 / 0 / n, NaN for an invalid Set) read the field as shown, so they always match its error. The
+    caller owns the state: the editor never writes `mode` or `manualText` (the value the caller puts in the field). It
+    reports `modeSelected(mode)`, `draftEdited(text)` on every keystroke and `committed()` once per edit (Return and the
+    focus loss after it are one end; an end with the text unchanged since the last report is none), none of them while
+    the caller sets `syncing`. The caller keeps `manualText` in step with the typing, so that putting a value back is a
+    change. Whenever the field hides (Set left, after the choice has committed a composing word, or the caller hiding
+    the editor, as the scan list does for an Airspy), it gives up the focus and the keyboard, so no key goes to it. The
+    segmented control is named (`accessibleName`, the title by default), and the field reads its label, unit and error.
+    A caller names the parts with `modeObjectName`, `fieldObjectName` and `hintObjectName`. Settings
+    (`settingsGainMode`, `settingsGainDb`, `settingsGainHint`: "For RTL-SDR and RTL-TCP. Automatic adjusts the receiver
+    gain for you.") writes `prefs.gainDb` only with a valid 1..49 committed while Set is chosen. Automatic writes 0, and
+    Set writes the screen's last valid gain (`lastValidManual`: the preference's own while it is set, then each valid
+    commit, else 30), so a refused edit is never written. Set chosen again commits the typed text first: a valid gain is
+    kept, a refused one gives way. A choice commits a composing word before it selects (`SegmentedControl`), and a later
+    commit writes nothing outside Set. A change of the preference from elsewhere (a restore) resyncs the mode and the
+    text at once, except while Set's field has the focus: then it waits until the field lets go, after the field's own
+    commit, so a valid edit made meanwhile wins as the user's latest. The scan list editor keeps
+    `scanGainMode`/`scanTuner_gainDb` and its draft (`gainMode`, `gainText`, `draft.gainDb`). The Radio sheet's RTL gain
+    steppers are live only and are never saved to a system. The line under them (`radioGainSessionNote`, "Gain changes
+    here last until you stop listening.") says so. It is hidden for an Airspy and under "This channel", which has its
+    own scope note. Tests: `tst_gain_editor.qml`, `tst_settings_tuner_gain.qml`, `tst_radio_gain_override.qml`,
+    `tst_scan_row_edits.qml`, `tst_segmented_whole_words.qml`, `tst_a11y_text_reach.qml`.
   - Analog channel width (issue #525): the Input menu's `input.nfm_bw` row, right after `input.sql` (`NFM bandwidth...
     [12.5 kHz]`, or `[default]`, on a radio input while the configured -fA preset runs FM or an explicit width is set
     under another preset, `is_nfm_width_editable()`), prompts for Hz and submits `DSD_APP_CMD_NFM_BANDWIDTH_SET` as

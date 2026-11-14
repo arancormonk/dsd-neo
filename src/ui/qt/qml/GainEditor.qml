@@ -14,8 +14,9 @@ import QtQuick
 // keeps `manualText` in step with the typing, so that putting a value back
 // in the field is a change. `valid` and `storedValue` read the field as
 // shown. None of the signals fire while the caller loads or resyncs
-// (`syncing`). Leaving Set takes the focus and the keyboard from the hidden
-// field, after the choice has committed a composing word.
+// (`syncing`). Whenever the field hides (Set left, after the choice has
+// committed a composing word, or the whole editor hidden), it gives up the
+// focus and the keyboard.
 Column {
     id: editor
 
@@ -30,6 +31,7 @@ Column {
     property bool syncing: false
     property string modeObjectName: ""
     property string fieldObjectName: ""
+    property string hintObjectName: ""
     property string accessibleName: title
     // The 1-49 dB field, for a caller that reveals or focuses it on an error.
     readonly property PlexTextField field: gainField
@@ -38,8 +40,6 @@ Column {
     // What the caller stores: -1 App default, 0 Automatic, the set dB, NaN
     // while Set holds no valid gain.
     readonly property var storedValue: mode === 0 ? -1 : mode === 1 ? 0 : parseGain(gainField.text)
-    // The end of an edit already reported, until the text changes.
-    property bool commitReported: false
 
     signal draftEdited(string text)
     signal modeSelected(int mode)
@@ -52,15 +52,6 @@ Column {
             return NaN;
         var value = Number(text);
         return value >= 1 && value <= 49 ? value : NaN;
-    }
-
-    // A hidden field keeps no focus: keys typed after Automatic or App default
-    // would go to it unseen, and the keyboard would stay up over nothing.
-    onModeChanged: {
-        if (mode !== 2 && gainField.input.activeFocus) {
-            gainField.input.focus = false;
-            Qt.inputMethod.hide();
-        }
     }
 
     spacing: 6
@@ -80,7 +71,7 @@ Column {
         }
     }
     ReadableText {
-        objectName: "gainEditorHint"
+        objectName: editor.hintObjectName
         width: parent.width
         visible: editor.hint.length > 0
         text: editor.hint
@@ -116,12 +107,23 @@ Column {
             if (!editor.syncing)
                 editor.draftEdited(text);
         }
-        onTextChanged: editor.commitReported = false
+        // The end of an edit already reported, until the text changes.
+        property bool commitReported: false
+        onTextChanged: commitReported = false
         onEditingFinished: {
-            if (editor.syncing || editor.commitReported)
+            if (editor.syncing || commitReported)
                 return;
-            editor.commitReported = true;
+            commitReported = true;
             editor.committed();
+        }
+        // A hidden field keeps no focus: keys typed after Automatic, or after
+        // the caller hid the editor, would go to it unseen, and the keyboard
+        // would stay up over nothing. `visible` follows every ancestor.
+        onVisibleChanged: {
+            if (!visible && input.activeFocus) {
+                input.focus = false;
+                Qt.inputMethod.hide();
+            }
         }
     }
 }

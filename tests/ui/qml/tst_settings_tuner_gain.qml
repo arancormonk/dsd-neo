@@ -18,6 +18,16 @@ Item {
         anchors.fill: parent
     }
 
+    // What the editor reported while the case typed and chose, in order.
+    SignalSpy {
+        id: draftSpy
+        signalName: "draftEdited"
+    }
+    SignalSpy {
+        id: modeSpy
+        signalName: "modeSelected"
+    }
+
     TestCase {
         name: "SettingsTunerGain"
         when: windowShown
@@ -29,6 +39,8 @@ Item {
         }
 
         function cleanup() {
+            draftSpy.target = null;
+            modeSpy.target = null;
             verify(testContext.composeText(""));
             screenLoader.source = "";
             prefs.gainDb = 30;
@@ -96,7 +108,7 @@ Item {
             compare(modeControl().Accessible.name, "Tuner gain");
             compare(field().label, "Tuner gain");
             compare(field().unit, "dB");
-            var hint = findChild(screenLoader.item, "gainEditorHint");
+            var hint = findChild(screenLoader.item, "settingsGainHint");
             verify(hint !== null && hint.visible);
             compare(hint.text, "For RTL-SDR and RTL-TCP. Automatic adjusts the receiver gain for you.");
             compare(hint.Accessible.name, hint.text, "the hint reads by itself");
@@ -191,8 +203,20 @@ Item {
             compare(prefs.gainDb, 25);
             type("");
             verify(testContext.composeText("33"), "the field holds the word as composing text");
+            var editor = field().parent;
+            verify(editor.draftEdited !== undefined, "the field's parent is the GainEditor");
+            draftSpy.target = editor;
+            modeSpy.target = editor;
+            draftSpy.clear();
+            modeSpy.clear();
+            var order = [];
+            editor.draftEdited.connect(function (text) { order.push("draft " + text); });
+            editor.modeSelected.connect(function (mode) { order.push("mode " + mode); });
             choose("Automatic");
-            compare(field().input.preeditText, "", "the composing word was committed, not dropped");
+            compare(draftSpy.count, 1);
+            compare(draftSpy.signalArguments[0][0], "33", "the composing word was committed as an edit");
+            compare(modeSpy.count, 1);
+            compare(JSON.stringify(order), JSON.stringify(["draft 33", "mode 1"]), "the word was committed before the choice");
             verify(!field().input.activeFocus, "the hidden field gave up the focus");
             compare(prefs.gainDb, 0, "a commit after Automatic writes nothing");
             compare(shownMode(), "Automatic");

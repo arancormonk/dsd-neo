@@ -27,6 +27,7 @@ Item {
             title: "Tuner gain"
             modeObjectName: "plainGainMode"
             fieldObjectName: "plainGainField"
+            hintObjectName: "plainGainHint"
         }
 
         Ui.GainEditor {
@@ -38,6 +39,7 @@ Item {
             inheritNote: "App default · Automatic"
             modeObjectName: "inheritGainMode"
             fieldObjectName: "inheritGainField"
+            hintObjectName: "inheritGainHint"
         }
     }
 
@@ -249,11 +251,25 @@ Item {
             verify(!field.input.activeFocus, "App default");
         }
 
+        // The same when the caller hides the whole editor with Set still chosen (a source with no RTL gain).
+        function test_hiding_the_editor_takes_the_focus_from_the_field() {
+            inherit.mode = 2;
+            inherit.manualText = "20";
+            var field = inherit.field;
+            field.input.forceActiveFocus();
+            verify(field.input.activeFocus);
+            inherit.visible = false;
+            verify(!field.input.activeFocus, "a hidden editor's field has no focus");
+            keyClick("7");
+            compare(field.text, "20", "a key after hiding reached nothing");
+            inherit.visible = true;
+        }
+
         // The hint explains the choice: under the strip whatever is chosen, above the field.
         function test_hint_sits_under_the_choice() {
-            var hint = findChild(plain, "gainEditorHint");
+            var hint = findChild(plain, "plainGainHint");
             verify(hint !== null);
-            verify(!findChild(inherit, "gainEditorHint").visible, "no hint, no line");
+            verify(!findChild(inherit, "inheritGainHint").visible, "no hint, no line");
             plain.hint = "What Automatic does.";
             plain.mode = 2;
             verify(hint.visible);

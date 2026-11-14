@@ -932,6 +932,7 @@ Item {
                             hint: qsTr("For RTL-SDR and RTL-TCP. Automatic adjusts the receiver gain for you.")
                             modeObjectName: "settingsGainMode"
                             fieldObjectName: "settingsGainDb"
+                            hintObjectName: "settingsGainHint"
                             onModeSelected: function (mode) {
                                 screen.chooseGainMode(mode);
                             }
