@@ -8,15 +8,14 @@
 #include <QPair>
 #include <QString>
 #include <QStringList>
-#include <QTemporaryDir>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
 #include <cstdio>
 #include <dsd-neo/runtime/analog_channel.h>
-#include <qtenvironmentvariables.h>
 #include <utility>
+#include "../test_support/qt_test_paths.h"
 #include "json_store.h"
 #include "saved_systems_model.h"
 #include "scan_list_targets.h"
@@ -35,6 +34,7 @@ check(bool ok) {
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
+    dsd_test_qt_isolate_paths();
     QVariantMap entry{{"uid", "entry"}, {"kind", "system"}, {"systemUid", "sys"}, {"enabled", true}};
     QVariantMap list{{"uid", "list"}, {"sourceType", "usb"}, {"entries", QVariantList{entry}}};
     QVariantMap sys{{"uid", "sys"}, {"name", "Example"}, {"decodeFlag", "-ft"}, {"freqMhz", "851.5"}};
@@ -342,8 +342,6 @@ main(int argc, char** argv) {
     // A saved system stored at 60 dB (the system editor took 50..99 before) loads as 49 dB, so its scan target runs at
     // 49 dB; main loaded 60 and refused the list ("Gain must be 0..49 dB"). A map handed straight in with 60 is still
     // refused: the range is held where the store is read, not here.
-    QTemporaryDir data;
-    qputenv("XDG_DATA_HOME", data.path().toUtf8());
     check(json_store_save_array(
         QStringLiteral("saved_systems.json"),
         QJsonArray{QJsonObject{{"name", "High"}, {"decodeFlag", "-ft"}, {"freqMhz", "851.5"}, {"gainDb", 60}}}));
