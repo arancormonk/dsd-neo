@@ -31,6 +31,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "p25_mfid90_utils.h"
+#include "p25_patch_test_clock.h"
 
 /* Built the way a SoapySDR-only or Airspy-only build compiles the decoder: the radio stream's BER counters must not
    depend on librtlsdr being present. */
@@ -431,59 +432,6 @@ p25_mfid90_base_station_id_decode(const uint8_t tsbk_byte[12], char* cwid, size_
 }
 
 void
-p25_patch_add_wgid(dsd_state* state, int sg, int wgid) {
-    (void)state;
-    (void)sg;
-    (void)wgid;
-}
-
-void
-p25_patch_add_wuid(dsd_state* state, int sg, uint32_t wuid) {
-    (void)state;
-    (void)sg;
-    (void)wuid;
-}
-
-void
-p25_patch_remove_wgid(dsd_state* state, int sg, int wgid) {
-    (void)state;
-    (void)sg;
-    (void)wgid;
-}
-
-void
-p25_patch_clear_sg(dsd_state* state, int sg) {
-    (void)state;
-    (void)sg;
-}
-
-int
-p25_patch_prepare_grg_update(dsd_state* state, int sg, int is_patch, int active, int ssn) {
-    (void)state;
-    (void)sg;
-    (void)is_patch;
-    (void)ssn;
-    return active ? 1 : 0;
-}
-
-void
-p25_patch_set_kas(dsd_state* state, int sg, int kas, int algid, int ssn) {
-    (void)state;
-    (void)sg;
-    (void)kas;
-    (void)algid;
-    (void)ssn;
-}
-
-void
-p25_patch_update(dsd_state* state, int sg, int is_patch, int active) {
-    (void)state;
-    (void)sg;
-    (void)is_patch;
-    (void)active;
-}
-
-void
 rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
@@ -743,6 +691,71 @@ test_failed_block_trailing_nulls(void) {
     return rc;
 }
 
+/* One MFID90 TSBK (last block, CRC sealed), read through processTSBK() on @p state as it stands. */
+static int
+run_mfid90_tsbk(dsd_opts* opts, dsd_state* state, uint8_t opcode, int sg, int ga1, int ga2, int ga3) {
+    uint8_t bytes[12] = {0};
+    bytes[0] = (uint8_t)(0x80U | (opcode & 0x3FU));
+    bytes[1] = 0x90;
+    const int ids[4] = {sg, ga1, ga2, ga3};
+    for (int i = 0; i < 4; i++) {
+        bytes[2 + (2 * i)] = (uint8_t)((ids[i] >> 8) & 0xFF);
+        bytes[3 + (2 * i)] = (uint8_t)(ids[i] & 0xFF);
+    }
+    if (!seal_tsbk_crc(bytes)) {
+        return 0;
+    }
+    uint8_t dibits[98];
+    encode_tsbk_dibits(bytes, dibits);
+    build_stream_of(dibits);
+    reset_decode_counters();
+    return processTSBK(opts, state);
+}
+
+static int
+tsbk_patch_idx(const dsd_state* state, int sg) {
+    for (int i = 0; i < state->p25_patch_count && i < DSD_P25_PATCH_MAX; i++) {
+        if (state->p25_patch_sgid[i] == (uint16_t)sg) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* MFID90 Group Regroup Add (0x00) / Delete (0x01) TSBKs through the production TSBK path into the real patch table:
+   the SG listed as a member is ignored, the trailing SG-only refresh does not keep members current while a repeated
+   Add does, and a Delete listing the SG ends the patch. */
+static int
+test_mfid90_regroup_tsbk(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    rc |= expect_eq_int("regroup add crc", run_mfid90_tsbk(&opts, &state, 0x00, 1400, 1401, 1400, 1402), 1);
+    int idx = tsbk_patch_idx(&state, 1400);
+    rc |= expect_eq_int("regroup add creates the patch", idx >= 0, 1);
+    rc |= expect_eq_int("regroup add stores the real members", idx >= 0 ? state.p25_patch_wgid_count[idx] : -1, 2);
+    rc |= expect_eq_int("regroup add first member", idx >= 0 ? state.p25_patch_wgid[idx][0] : -1, 1401);
+    rc |= expect_eq_int("regroup add second member", idx >= 0 ? state.p25_patch_wgid[idx][1] : -1, 1402);
+
+    p25_patch_test_listen_for(&state, 10.0);
+    p25_patch_update(&state, 1400, 1, 1); // a grant naming the SG
+    p25_patch_test_listen_for(&state, 11.0);
+    rc |= expect_eq_int("sg-only refresh lets members age", dsd_p25_patch_members_current(&state, idx), 0);
+
+    rc |= expect_eq_int("repeated add crc", run_mfid90_tsbk(&opts, &state, 0x00, 1400, 1401, 0, 0), 1);
+    p25_patch_test_listen_for(&state, 15.0);
+    rc |= expect_eq_int("repeated add keeps members current", dsd_p25_patch_members_current(&state, idx), 1);
+    rc |= expect_eq_int("repeated add replaces the expired list", state.p25_patch_wgid_count[idx], 1);
+
+    rc |= expect_eq_int("regroup delete crc", run_mfid90_tsbk(&opts, &state, 0x01, 1400, 1400, 0, 0), 1);
+    rc |= expect_eq_int("delete listing the SG ends the patch", state.p25_patch_active[idx], 0);
+    rc |= expect_eq_int("delete listing the SG clears members", state.p25_patch_wgid_count[idx], 0);
+    return rc;
+}
+
 int
 main(void) {
     dsd_decode_clock_use_test(1000000000ULL);
@@ -941,6 +954,7 @@ main(void) {
         rc |= expect_eq_int("cut tsdu has no length", (int)state.p25_p1_unit_dibits, 0);
     }
     g_interrupt_at = -1;
+    rc |= test_mfid90_regroup_tsbk();
     rc |= test_failed_block_trailing_nulls();
     rc |= test_network_status_code();
     dsd_signal_search_site_set(NULL);

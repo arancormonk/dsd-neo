@@ -23,6 +23,7 @@
 #include <time.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25_patch_test_clock.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -55,21 +56,6 @@ find_idx(const dsd_state* st, uint16_t sgid) {
         }
     }
     return -1;
-}
-
-/* Hear the control channel for @p seconds: CRC-good PDUs every 100 ms advance the listening clock. */
-static void
-listen_for(dsd_state* st, double seconds) {
-    double now = st->p25_patch_listen_last_m;
-    if (now <= 0.0) {
-        now = 1000.0;
-        dsd_p25_patch_listen_note(st, now);
-    }
-    const int steps = (int)(seconds * 10.0 + 0.5);
-    for (int i = 0; i < steps; i++) {
-        now += 0.1;
-        dsd_p25_patch_listen_note(st, now);
-    }
 }
 
 static int
@@ -158,7 +144,7 @@ test_guard_replacement_and_policy_edges(void) {
     p25_patch_update(&st, 20, 1, 1);
     p25_patch_add_wgid(&st, 20, 222);
     // 21 s of listening later only SG 20 is refreshed: SG 10 drops out of the details, which never mutate the table.
-    listen_for(&st, 21.0);
+    p25_patch_test_listen_for(&st, 21.0);
     p25_patch_add_wgid(&st, 20, 222);
     (void)p25_patch_compose_details(&st, out, sizeof out);
     rc |= expect_true("stale entry left out of details", strstr(out, "SG010[") == NULL);
@@ -171,7 +157,7 @@ test_guard_replacement_and_policy_edges(void) {
     p25_patch_set_kas(&st, 69, 0, 0x84, 17);
     rc |= expect_eq_int("clear tg policy active", p25_patch_tg_key_is_clear(&st, 0x2345), 1);
     rc |= expect_eq_int("clear sg policy active", p25_patch_sg_key_is_clear(&st, 69), 1);
-    listen_for(&st, 21.0);
+    p25_patch_test_listen_for(&st, 21.0);
     rc |= expect_eq_int("clear tg policy stale", p25_patch_tg_key_is_clear(&st, 0x2345), 0);
     rc |= expect_eq_int("clear sg policy stale", p25_patch_sg_key_is_clear(&st, 69), 0);
     p25_patch_add_wgid(&st, 69, 0x2345);
@@ -302,9 +288,9 @@ test_two_stamps_and_expiry(void) {
     p25_patch_set_kas(&st, 1400, 0, 0x84, 3);
     rc |= expect_eq_int("expiry clear before", p25_patch_tg_key_is_clear(&st, 1401), 1);
 
-    listen_for(&st, 15.0);
+    p25_patch_test_listen_for(&st, 15.0);
     p25_patch_update(&st, 1400, 1, 1); // a grant naming the SG
-    listen_for(&st, 10.0);
+    p25_patch_test_listen_for(&st, 10.0);
     rc |= expect_eq_int("sg-only keeps no members", p25_patch_collect_active_wgids(&st, 1400, members, 32), 0);
     rc |= expect_eq_int("stale KEY not clear (tg)", p25_patch_tg_key_is_clear(&st, 1401), 0);
     rc |= expect_eq_int("stale KEY not clear (sg)", p25_patch_sg_key_is_clear(&st, 1400), 0);
@@ -332,10 +318,10 @@ test_add_refresh_and_last_delete(void) {
     DSD_MEMSET(&st, 0, sizeof st);
     p25_patch_add_wgid(&st, 1400, 1401);
     const uint32_t seq_before = st.p25_patch_seq[0];
-    listen_for(&st, 15.0);
+    p25_patch_test_listen_for(&st, 15.0);
     p25_patch_add_wgid(&st, 1400, 1401); // duplicate Add
     rc |= expect_true("duplicate add takes a new sequence", st.p25_patch_seq[0] != seq_before);
-    listen_for(&st, 10.0);
+    p25_patch_test_listen_for(&st, 10.0);
     rc |=
         expect_eq_int("duplicate add keeps members current", p25_patch_collect_active_wgids(&st, 1400, members, 32), 1);
 
@@ -375,6 +361,23 @@ test_sg_as_member(void) {
     rc |= expect_eq_int("sg-as-member delete ends the patch", st.p25_patch_active[0], 0);
     rc |= expect_eq_int("sg-as-member delete clears members", st.p25_patch_wgid_count[0], 0);
     rc |= expect_eq_int("sg-as-member delete clears KEY", st.p25_patch_key_valid[0], 0);
+    return rc;
+}
+
+/* Out-of-range IDs never reach another SG through the 16-bit table key: a Delete or Cancel naming SG 0x10000+N
+   (and a Delete listing that ID as its own member) leaves SG N alone. */
+static int
+test_out_of_range_ids(void) {
+    int rc = 0;
+    static dsd_state st;
+    DSD_MEMSET(&st, 0, sizeof st);
+    p25_patch_add_wgid(&st, 1400, 1401);
+    p25_patch_remove_wgid(&st, 0x10000 + 1400, 0x10000 + 1400);
+    p25_patch_remove_wgid(&st, 0x10000 + 1400, 1401);
+    p25_patch_remove_wgid(&st, 1400, 0x10000 + 1401);
+    p25_patch_clear_sg(&st, 0x10000 + 1400);
+    rc |= expect_eq_int("out-of-range ids keep the patch", st.p25_patch_active[0], 1);
+    rc |= expect_eq_int("out-of-range ids keep the member", st.p25_patch_wgid_count[0], 1);
     return rc;
 }
 
@@ -423,7 +426,7 @@ main(void) {
 
     // TTL: after 21 s of listening in which SG142 is not named, it disappears from details
     // (op25 uses a 20 s PATCH_EXPIRY_TIME; here on the listening clock)
-    listen_for(&st, 21.0);
+    p25_patch_test_listen_for(&st, 21.0);
     p25_patch_update(&st, 69, /*is_patch*/ 1, /*active*/ 1);
     p25_patch_add_wuid(&st, 77, 1001);
     p25_patch_add_wuid(&st, 77, 1002);
@@ -454,6 +457,7 @@ main(void) {
     rc |= test_two_stamps_and_expiry();
     rc |= test_add_refresh_and_last_delete();
     rc |= test_sg_as_member();
+    rc |= test_out_of_range_ids();
 
     (void)errno;
     return rc;

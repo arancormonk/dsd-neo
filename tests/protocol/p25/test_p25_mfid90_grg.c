@@ -24,6 +24,7 @@
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25_patch_test_clock.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -108,21 +109,6 @@ sg_has_wgid(const dsd_state* st, int idx, uint16_t wgid) {
     return 0;
 }
 
-/* Hear the control channel for @p seconds: CRC-good PDUs every 100 ms advance the listening clock. */
-static void
-listen_for(dsd_state* st, double seconds) {
-    double now = st->p25_patch_listen_last_m;
-    if (now <= 0.0) {
-        now = 1000.0;
-        dsd_p25_patch_listen_note(st, now);
-    }
-    const int steps = (int)(seconds * 10.0 + 0.5);
-    for (int i = 0; i < steps; i++) {
-        now += 0.1;
-        dsd_p25_patch_listen_note(st, now);
-    }
-}
-
 static int
 members_current(const dsd_state* st, uint16_t sgid) {
     int idx = find_sg_idx(st, sgid);
@@ -189,9 +175,9 @@ test_mac_regroup_path(void) {
     rc |= expect_true("MAC add: SG not its own member", idx >= 0 && !sg_has_wgid(&st, idx, 1400));
     rc |= expect_true("MAC add: real member stored", idx >= 0 && sg_has_wgid(&st, idx, 1401));
 
-    listen_for(&st, 15.0);
+    p25_patch_test_listen_for(&st, 15.0);
     send_mac_regroup(&opts, &st, 1, 1400, 1401, 0); // duplicate
-    listen_for(&st, 10.0);
+    p25_patch_test_listen_for(&st, 10.0);
     rc |= expect_true("MAC duplicate add keeps members current", members_current(&st, 1400));
 
     send_mac_regroup(&opts, &st, 0, 1400, 1401, 0); // last member deleted
@@ -219,9 +205,9 @@ test_lc_regroup_path(void) {
     reset_path_state(&opts, &st);
 
     send_lc_regroup(&opts, &st, 1, 1400, 1401, 1402);
-    listen_for(&st, 15.0);
+    p25_patch_test_listen_for(&st, 15.0);
     send_lc_regroup(&opts, &st, 1, 1400, 1401, 0); // duplicate
-    listen_for(&st, 10.0);
+    p25_patch_test_listen_for(&st, 10.0);
     rc |= expect_true("LC duplicate add keeps members current", members_current(&st, 1400));
 
     send_lc_regroup(&opts, &st, 0, 1400, 1400, 0);
@@ -234,38 +220,6 @@ test_lc_regroup_path(void) {
     rc |= expect_true("LC add after delete holds only the new member",
                       idx >= 0 && st.p25_patch_wgid_count[idx] == 1 && sg_has_wgid(&st, idx, 1403));
     dsd_state_ext_free_all(&st);
-    return rc;
-}
-
-/* B2/B3 on the P1 TSBK path: the calls tsbk_handle_mfid90_regroup_add_del() makes for an Add (each non-zero GA, then
-   an SG-only refresh) and a Delete (each non-zero GA). */
-static int
-test_tsbk_regroup_sequence(void) {
-    int rc = 0;
-    static dsd_state st;
-    DSD_MEMSET(&st, 0, sizeof st);
-    // Add SG 1400 GA1 1401 GA2 1400 GA3 1402
-    p25_patch_add_wgid(&st, 1400, 1401);
-    p25_patch_add_wgid(&st, 1400, 1400);
-    p25_patch_add_wgid(&st, 1400, 1402);
-    p25_patch_update(&st, 1400, 1, 1);
-    int idx = find_sg_idx(&st, 1400);
-    rc |= expect_true("TSBK add: SG not its own member", idx >= 0 && !sg_has_wgid(&st, idx, 1400));
-    rc |= expect_eq("TSBK add: two members", idx >= 0 ? st.p25_patch_wgid_count[idx] : -1, 2);
-    // Ten seconds on, only the trailing SG-only refresh repeats: it must not keep the members current.
-    listen_for(&st, 10.0);
-    p25_patch_update(&st, 1400, 1, 1);
-    listen_for(&st, 11.0);
-    rc |= expect_true("TSBK sg-only refresh does not keep members", !members_current(&st, 1400));
-    // A repeated Add does.
-    p25_patch_add_wgid(&st, 1400, 1401);
-    p25_patch_update(&st, 1400, 1, 1);
-    listen_for(&st, 15.0);
-    rc |= expect_true("TSBK repeated add keeps members", members_current(&st, 1400));
-    // Delete SG 1400 GA1 1400: ends the patch.
-    p25_patch_remove_wgid(&st, 1400, 1400);
-    idx = find_sg_idx(&st, 1400);
-    rc |= expect_true("TSBK delete listing SG ends patch", idx >= 0 && st.p25_patch_active[idx] == 0);
     return rc;
 }
 
@@ -435,7 +389,6 @@ main(void) {
 
     rc |= test_mac_regroup_path();
     rc |= test_lc_regroup_path();
-    rc |= test_tsbk_regroup_sequence();
 
     (void)errno;
     return rc;

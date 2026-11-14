@@ -1177,7 +1177,7 @@ void p25_patch_update(dsd_state* state, int sgid, int is_patch, int active);
  *
  * A membership message: every accepted Add (a duplicate included) reactivates the entry and
  * refreshes its seen and members stamps. The SG listed as its own member is ignored; a member
- * past DSD_P25_PATCH_GROUP_MAX is dropped with one stderr line.
+ * past DSD_P25_PATCH_GROUP_MAX is dropped, noted on the handler's stderr line (no newline).
  *
  * @param state Decoder state holding patch context.
  * @param sgid Super Group ID.
@@ -1188,8 +1188,8 @@ void p25_patch_add_wgid(dsd_state* state, int sgid, int wgid);
 /**
  * @brief Add a Working Unit ID to an SGID entry (creates/activates if needed).
  *
- * Refreshes like p25_patch_add_wgid(); a radio past DSD_P25_PATCH_RADIO_MAX is dropped with
- * one stderr line.
+ * Refreshes like p25_patch_add_wgid(); a radio past DSD_P25_PATCH_RADIO_MAX is dropped, noted
+ * on the handler's stderr line (no newline).
  *
  * @param state Decoder state holding patch context.
  * @param sgid Super Group ID.
@@ -1201,6 +1201,8 @@ void p25_patch_add_wuid(dsd_state* state, int sgid, uint32_t wuid);
  * @brief Compose a detailed status string including WGID/WUID context.
  *
  * Example: "SG069[P] WG:2(0345,0789); SG142[S] U:3".
+ * Lists active entries whose SG was named within the TTL on the listening clock; member and
+ * KEY/ALG/SSN fields only while the members are current. Never mutates the state.
  *
  * @param state Decoder state (read-only).
  * @param out Destination buffer.
@@ -1212,8 +1214,9 @@ int p25_patch_compose_details(const dsd_state* state, char* out, size_t cap);
 /**
  * @brief Remove a WGID membership or clear the entire SG record.
  *
- * A Delete that lists the SG itself ends the whole patch (p25_patch_clear_sg()). Removing the
- * last member deactivates the entry and expires its KEY/ALG/SSN context.
+ * A Delete that lists the SG itself ends the whole patch (p25_patch_clear_sg()). Members that
+ * are no longer current expire first; removing the last member deactivates the entry and
+ * expires its KEY/ALG/SSN context. Not a refresh: neither stamp moves.
  *
  * @param state Decoder state holding patch context.
  * @param sgid Super Group ID.
@@ -1222,6 +1225,8 @@ int p25_patch_compose_details(const dsd_state* state, char* out, size_t cap);
 void p25_patch_remove_wgid(dsd_state* state, int sgid, int wgid);
 /**
  * @brief Clear all membership and status for an SG record.
+ *
+ * A Cancel: the entry turns inactive and its members and KEY/ALG/SSN context expire.
  *
  * @param state Decoder state holding patch context.
  * @param sgid Super Group ID to clear.
@@ -1233,6 +1238,9 @@ void p25_patch_clear_sg(dsd_state* state, int sgid);
  *
  * Inactive GRG commands remove the supergroup record. Active commands with a
  * changed SSN clear stale membership before the caller adds the new members.
+ * SG-only: an active command refreshes the row (seen stamp and recency) like
+ * p25_patch_update(); the members stamp refreshes only through the following
+ * p25_patch_add_wgid()/p25_patch_add_wuid() or p25_patch_set_kas().
  *
  * @param state Decoder state holding patch context.
  * @param sgid Super Group ID.

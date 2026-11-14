@@ -11518,6 +11518,9 @@ add_executable(
     dsd-neo_test_p25_p1_tsbk_sequence
     protocol/p25/test_p25_p1_tsbk_sequence.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    # The real patch table, so MFID90 regroup TSBKs reach it through processTSBK().
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_patch.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
     ${PROJECT_SOURCE_DIR}/src/fec/trellis34.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_response_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_tsbk.c

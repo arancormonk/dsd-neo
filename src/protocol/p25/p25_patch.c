@@ -162,7 +162,8 @@ p25_patch_add_wgid(dsd_state* state, int sgid, int wgid) {
         }
     }
     if (cnt >= DSD_P25_PATCH_GROUP_MAX) {
-        DSD_FPRINTF(stderr, "\n P25 patch SG %d holds %d groups; WG %d dropped\n", sgid, DSD_P25_PATCH_GROUP_MAX, wgid);
+        // Annotates the handler's own line, which named the member just before: "GA1: 1433 (WG 1433 dropped: ...)".
+        DSD_FPRINTF(stderr, " (WG %d dropped: SG %d holds %d groups)", wgid, sgid, DSD_P25_PATCH_GROUP_MAX);
         return;
     }
     state->p25_patch_wgid[idx][cnt] = (uint16_t)wgid;
@@ -186,8 +187,7 @@ p25_patch_add_wuid(dsd_state* state, int sgid, uint32_t wuid) {
         }
     }
     if (cnt >= DSD_P25_PATCH_RADIO_MAX) {
-        DSD_FPRINTF(stderr, "\n P25 patch SG %d holds %d radios; RID %u dropped\n", sgid, DSD_P25_PATCH_RADIO_MAX,
-                    (unsigned)wuid);
+        DSD_FPRINTF(stderr, " (RID %u dropped: SG %d holds %d radios)", (unsigned)wuid, sgid, DSD_P25_PATCH_RADIO_MAX);
         return;
     }
     state->p25_patch_wuid[idx][cnt] = wuid;
@@ -288,7 +288,7 @@ p25_patch_compose_details(const dsd_state* state, char* out, size_t cap) {
 
 void
 p25_patch_remove_wgid(dsd_state* state, int sgid, int wgid) {
-    if (!state || sgid <= 0 || wgid <= 0) {
+    if (!state || sgid <= 0 || sgid > 0xFFFF || wgid <= 0 || wgid > 0xFFFF) {
         return;
     }
     if (wgid == sgid) {
@@ -322,7 +322,7 @@ p25_patch_remove_wgid(dsd_state* state, int sgid, int wgid) {
 
 void
 p25_patch_clear_sg(dsd_state* state, int sgid) {
-    if (!state || sgid <= 0) {
+    if (!state || sgid <= 0 || sgid > 0xFFFF) {
         return;
     }
     int idx = find_patch_idx(state, (uint16_t)sgid);
