@@ -15440,6 +15440,18 @@ target_link_libraries(
 )
 add_test(NAME P25_PREEMPT COMMAND dsd-neo_test_p25_preempt)
 
+# A followed patched P25 call is one call while its resolution re-selects members: OTA keys, re-resolution, held call
+add_executable(dsd-neo_test_p25_patch_follow protocol/p25/test_p25_patch_follow.c)
+target_include_directories(
+    dsd-neo_test_p25_patch_follow
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/p25
+)
+target_link_libraries(
+    dsd-neo_test_p25_patch_follow
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(NAME P25_PATCH_FOLLOW COMMAND dsd-neo_test_p25_patch_follow)
+
 # DMR grant policy behavior (allow-list, explicit block modes, private source allow-list)
 add_executable(
     dsd-neo_test_dmr_grant_policy
