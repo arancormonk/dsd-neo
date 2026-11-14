@@ -272,16 +272,33 @@ Rectangle {
         entryRows.setProperty(row, "entryData", updated);
     }
 
+    // Entry IDs preserve an edit and its error across add/remove/reorder.
+    function recordEntryInput(row, fields) {
+        var uid = entries[row].uid;
+        var copy = Object.assign({}, entryInputText);
+        copy[uid] = Object.assign({}, entryInputText[uid] || ({}), fields);
+        entryInputText = copy;
+    }
+
     function setEntryInput(row, field, text, value) {
         // Keep rejected text visible while the draft carries a safe sentinel.
-        // Entry IDs preserve the edit and its error across add/remove/reorder.
-        var uid = entries[row].uid;
-        var fields = Object.assign({}, entryInputText[uid] || ({}));
+        var fields = {};
         fields[field] = text;
-        var copy = Object.assign({}, entryInputText);
-        copy[uid] = fields;
-        entryInputText = copy;
+        recordEntryInput(row, fields);
         setEntry(row, field, value);
+    }
+
+    // The gain choice (0 Inherit, 1 Automatic, 2 Set) and the Set text stay in
+    // the entry's draft. The entry stores -1, 0 or a valid 1-49 dB; a refused
+    // Set stores nothing new and its error holds Save.
+    function setEntryGain(row, mode, text) {
+        recordEntryInput(row, {
+            gainMode: mode,
+            gainDb: text
+        });
+        var typed = parseIntStrict(text, 1, 49);
+        if (mode !== 2 || !isNaN(typed))
+            setEntry(row, "gainDb", mode === 0 ? -1 : mode === 1 ? 0 : typed);
     }
 
     function addFrequency(name, protocol, freq) {
@@ -591,6 +608,9 @@ Rectangle {
                         }
                         onInputEdited: function (field, text, value) {
                             screen.setEntryInput(index, field, text, value);
+                        }
+                        onGainEdited: function (mode, text) {
+                            screen.setEntryGain(index, mode, text);
                         }
                         onMove: function (delta) {
                             screen.moveEntry(index, delta);

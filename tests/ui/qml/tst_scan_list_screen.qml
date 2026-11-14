@@ -564,14 +564,31 @@ Item {
             verify(!scanListStarter.start(scanLists.get(0), null).ok);
         }
 
-        function control(name) {
-            var item = visualChild(screen, name);
+        function control(name, root) {
+            var item = visualChild(root || screen, name);
             verify(item !== null, name);
             return item;
         }
 
-        function edit(name, value) {
-            var field = control(name);
+        // The entry rows, in list order.
+        function entryRow(index) {
+            var rows = [];
+            (function collect(item) {
+                if (item.objectName === "scanEntryRow")
+                    rows.push(item);
+                var kids = item.contentItem ? [item.contentItem] : item.children || [];
+                for (var i = 0; i < kids.length; ++i)
+                    collect(kids[i]);
+            })(screen);
+            rows.sort(function (a, b) {
+                return a.index - b.index;
+            });
+            verify(index < rows.length, "entry row " + index);
+            return rows[index];
+        }
+
+        function edit(name, value, root) {
+            var field = control(name, root);
             field.input.forceActiveFocus();
             field.input.selectAll();
             keyClick(Qt.Key_Backspace);
@@ -580,8 +597,8 @@ Item {
             compare(field.text, value, name);
         }
 
-        function choose(name, index) {
-            var picker = control(name);
+        function choose(name, index, root) {
+            var picker = control(name, root);
             while (picker.currentIndex < index)
                 picker.incrementCurrentIndex();
             while (picker.currentIndex > index)
@@ -812,10 +829,16 @@ Item {
             compare(control("scanTuner_defaultDwellMs").text, data.dwell > 0 ? String(data.dwell) : "");
             compare(control("scanTuner_defaultHoldMs").text, data.hold > 0 ? String(data.hold) : "");
             compare(control("scanTuner_defaultDwellMs").hint, "Scan default when empty");
-            compare(control("scanEntryGain").text, data.gain >= 0 ? String(data.gain) : "");
+            // Stored -1 / 0 / n, as numbers or as an earlier release's strings.
+            var entryGain = control("scanEntryGainMode");
+            compare(entryGain.currentIndex, data.gainMode);
+            compare(entryGain.textAt(entryGain.currentIndex), data.gainMode === 0 ? "Inherit" : data.gainLabel);
+            compare(control("scanEntryGain").visible, data.gain > 0);
+            compare(control("scanEntryGain").text, data.gain > 0 ? String(data.gain) : "");
             compare(control("scanEntryDwell").text, data.dwell > 0 ? String(data.dwell) : "");
             compare(control("scanEntryHold").text, data.hold > 0 ? String(data.hold) : "");
-            compare(control("scanEntryGain").hint, "From saved system when empty");
+            compare(control("scanEntryGainHint").text, "Uses the list's gain");
+            compare(control("scanEntryGainHint").visible, data.gain < 0);
             compare(control("scanEntryDwell").hint, "List default when empty");
 
             control("scanSaveDraft").Accessible.pressAction();
@@ -834,6 +857,7 @@ Item {
             compare(control("scanGainMode").currentIndex, data.gainMode);
             compare(control("scanTuner_bandwidthKhz").displayText, data.bwMode ? data.bw + " kHz" : "App default");
             compare(control("scanBiasTee").currentIndex, data.biasMode);
+            compare(control("scanEntryGainMode").currentIndex, data.gainMode);
         }
 
         function test_save_draft_rejects_invalid_set_fields_data() {
@@ -886,7 +910,8 @@ Item {
                 {field: "scanPort", key: "port", fallback: 1234, valid: "1234"},
                 {field: "scanEntryDwell", key: "dwellMs", fallback: 0, valid: "1000", entry: true},
                 {field: "scanEntryHold", key: "holdMs", fallback: 0, valid: "2000", entry: true},
-                {field: "scanEntryGain", key: "gainDb", fallback: -1, valid: "25", entry: true},
+                // A refused set gain stores nothing new: the entry keeps its 25.
+                {field: "scanEntryGain", key: "gainDb", fallback: 25, valid: "26", entry: true},
                 {field: "scanEntryFrequency", key: "freqMhz", fallback: "", valid: "851.5", entry: true}
             ];
             var rows = [];
@@ -965,23 +990,155 @@ Item {
             compare(scanLists.get(0).gainDb, 25);
         }
 
-        function test_invalid_entry_input_survives_rebuild() {
-            edit("scanListName", "Retain entry error");
-            screen.addFrequency("First", "p25", "851.5");
-            screen.addFrequency("Second", "dmr", "461");
+        // Design 4 (B4): an entry's gain is Inherit, Automatic or a set 1-49 dB,
+        // stored as -1, 0 or the dB, from a choice like its Modulation.
+        function test_entry_gain_modes_write_sentinels() {
+            edit("scanListName", "Entry gain modes");
+            screen.addFrequency("Simplex", "p25", "851.5");
+            var mode = control("scanEntryGainMode");
+            compare(mode.Accessible.name, "Entry gain");
+            compare([mode.textAt(0), mode.textAt(1), mode.textAt(2)], ["Inherit", "Automatic", "Set"]);
+            compare(mode.currentIndex, 0);
+            verify(!control("scanEntryGain").visible);
+            choose("scanEntryGainMode", 1);
+            compare(screen.entries[0].gainDb, 0);
+            verify(!control("scanEntryGain").visible);
+            choose("scanEntryGainMode", 2);
+            verify(control("scanEntryGain").visible);
+            compare(control("scanEntryGain").error, "Enter a gain from 1 to 49 dB.");
+            compare(screen.entries[0].gainDb, 0, "an empty Set stores nothing new");
+            edit("scanEntryGain", "12");
+            compare(control("scanEntryGain").error, "");
+            compare(screen.entries[0].gainDb, 12);
+            choose("scanEntryGainMode", 0);
+            compare(screen.entries[0].gainDb, -1);
+            choose("scanEntryGainMode", 2);
+            compare(control("scanEntryGain").text, "12");
+            compare(screen.entries[0].gainDb, 12);
+            control("scanSaveDraft").Accessible.pressAction();
+            compare(closedSpy.count, 1);
+            compare(scanLists.get(0).entries[0].gainDb, 12);
+        }
+
+        function test_entry_gain_refused_set_stays_set_data() {
+            // Typed a key at a time, "50" passes through a valid 5.
+            return [{tag: "empty", value: "", stored: 25}, {tag: "zero", value: "0", stored: 25},
+                    {tag: "range", value: "50", stored: 5}];
+        }
+
+        // An emptied or refused Set stays Set with its error and stores nothing
+        // new (the last valid gain stays); before, an emptied field turned the
+        // entry to inherit.
+        function test_entry_gain_refused_set_stays_set(data) {
+            verify(scanLists.add({
+                name: "Entry gain kept", isDraft: true,
+                entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5", gainDb: 25}]
+            }));
+            var before = JSON.stringify(scanLists.get(0));
+            screen.openFor(0);
+            edit("scanEntryGain", data.value);
+            compare(screen.entries[0].gainDb, data.stored, "a refused gain stores nothing new");
+            compare(control("scanEntryGainMode").currentIndex, 2);
+            verify(control("scanEntryGain").visible);
+            compare(control("scanEntryGain").error, "Enter a gain from 1 to 49 dB.");
+            control("scanSaveDraft").Accessible.pressAction();
+            compare(closedSpy.count, 0);
+            compare(JSON.stringify(scanLists.get(0)), before);
+            screen.rebuildEntryRows();
+            compare(control("scanEntryGainMode").currentIndex, 2);
+            compare(control("scanEntryGain").text, data.value);
+            verify(control("scanEntryGain").visible);
+            verify(control("scanEntryGain").error.length > 0);
+        }
+
+        function test_entry_hidden_gain_error_never_blocks_save_data() {
+            return [{tag: "inherit", index: 0, stored: -1}, {tag: "automatic", index: 1, stored: 0}];
+        }
+
+        // A refused Set left for Inherit or Automatic is hidden and holds nothing.
+        function test_entry_hidden_gain_error_never_blocks_save(data) {
+            edit("scanListName", "Hidden entry gain");
+            screen.addFrequency("Simplex", "p25", "851.5");
+            choose("scanEntryGainMode", 2);
             edit("scanEntryGain", "50");
             verify(control("scanEntryGain").error.length > 0);
+            choose("scanEntryGainMode", data.index);
+            verify(!control("scanEntryGain").visible);
+            compare(control("scanEntryGain").error, "");
+            compare(screen.entries[0].gainDb, data.stored);
+            control("scanSaveDraft").Accessible.pressAction();
+            compare(closedSpy.count, 1, screen.validationText);
+            compare(scanLists.get(0).entries[0].gainDb, data.stored);
+            screen.openFor(0);
+            compare(control("scanEntryGainMode").currentIndex, data.index);
+            verify(!control("scanEntryGain").visible);
+        }
+
+        // Each entry's gain draft (choice, text, stored value) follows its entry
+        // through a reorder, a refused Set included.
+        function test_entry_gain_draft_survives_reorder() {
+            edit("scanListName", "Retain entry gain");
+            screen.addFrequency("First", "p25", "851.5");
+            screen.addFrequency("Second", "dmr", "461");
+            screen.addFrequency("Third", "nfm", "154.43");
+            choose("scanEntryGainMode", 2, entryRow(0));
+            edit("scanEntryGain", "50", entryRow(0));
+            // One tap on Set, straight from Inherit (choose() steps through Automatic).
+            control("scanEntryGainMode", entryRow(1)).activated(2);
+            choose("scanEntryGainMode", 1, entryRow(2));
             screen.moveEntry(0, 1);
-            screen.moveEntry(1, -1);
-            compare(control("scanEntryGain").text, "50");
-            verify(control("scanEntryGain").error.length > 0);
+            screen.moveEntry(2, -1);
+            compare(screen.entries.map(function (entry) {
+                return entry.name;
+            }), ["Second", "Third", "First"]);
+            compare(screen.entries.map(function (entry) {
+                return entry.gainDb;
+            }), [-1, 0, 5]);
+            compare(control("scanEntryGainMode", entryRow(0)).currentIndex, 2);
+            compare(control("scanEntryGain", entryRow(0)).text, "");
+            verify(control("scanEntryGain", entryRow(0)).error.length > 0);
+            compare(control("scanEntryGainMode", entryRow(1)).currentIndex, 1);
+            verify(!control("scanEntryGain", entryRow(1)).visible);
+            compare(control("scanEntryGainMode", entryRow(2)).currentIndex, 2);
+            compare(control("scanEntryGain", entryRow(2)).text, "50");
+            verify(control("scanEntryGain", entryRow(2)).error.length > 0);
             screen.saveDraft();
             compare(closedSpy.count, 0);
             compare(scanLists.count, 0);
-            edit("scanEntryGain", "25");
+            choose("scanEntryGainMode", 0, entryRow(0));
+            edit("scanEntryGain", "25", entryRow(2));
             screen.saveDraft();
-            compare(closedSpy.count, 1);
-            compare(scanLists.get(0).entries[0].gainDb, 25);
+            compare(closedSpy.count, 1, screen.validationText);
+            compare(scanLists.get(0).entries.map(function (entry) {
+                return entry.gainDb;
+            }), [-1, 0, 25]);
+        }
+
+        // B4: Inherit says where the gain comes from, by the entry's kind.
+        function test_entry_gain_hint_by_kind() {
+            var savedRow = savedSystems.count;
+            verify(savedSystems.add({name: "Hint system", sourceType: "usb", freqMhz: "851.5", decodeFlag: "-fp"}));
+            try {
+                edit("scanListName", "Entry gain hints");
+                choose("scanSystemPicker", savedRow);
+                control("scanAddSystem").Accessible.pressAction();
+                screen.addFrequency("Simplex", "p25", "851.5");
+                var systemHint = control("scanEntryGainHint", entryRow(0));
+                var freqHint = control("scanEntryGainHint", entryRow(1));
+                compare(systemHint.text, "Uses the saved system's gain, else the list's");
+                compare(freqHint.text, "Uses the list's gain");
+                verify(systemHint.visible && freqHint.visible);
+                compare(systemHint.Accessible.name, systemHint.text);
+                compare(freqHint.Accessible.name, freqHint.text);
+                for (var index of [1, 2]) {
+                    choose("scanEntryGainMode", index, entryRow(1));
+                    verify(!freqHint.visible, "hidden outside Inherit");
+                    compare(freqHint.Accessible.name, "");
+                }
+                verify(systemHint.visible);
+            } finally {
+                savedSystems.remove(savedRow);
+            }
         }
 
         function test_add_frequency_rejects_localized_input() {
@@ -1056,20 +1213,23 @@ Item {
 
         function test_entry_inheritance_round_trip_data() {
             return [
-                {tag: "inherit", gain: "", dwell: "", hold: "", modulation: 0, expectedGain: -1, expectedModulation: ""},
-                {tag: "automatic", gain: "0", dwell: "100", hold: "200", modulation: 1, expectedGain: 0, expectedModulation: "c4fm"},
-                {tag: "simulcast", gain: "30", dwell: "300", hold: "400", modulation: 2, expectedGain: 30, expectedModulation: "cqpsk"},
-                {tag: "gfsk", gain: "12", dwell: "500", hold: "600", modulation: 3, expectedGain: 12, expectedModulation: "gfsk"}
+                {tag: "inherit", gainMode: 0, gain: "", dwell: "", hold: "", modulation: 0, expectedGain: -1, expectedModulation: ""},
+                {tag: "automatic", gainMode: 1, gain: "", dwell: "100", hold: "200", modulation: 1, expectedGain: 0, expectedModulation: "c4fm"},
+                {tag: "simulcast", gainMode: 2, gain: "30", dwell: "300", hold: "400", modulation: 2, expectedGain: 30, expectedModulation: "cqpsk"},
+                {tag: "gfsk", gainMode: 2, gain: "12", dwell: "500", hold: "600", modulation: 3, expectedGain: 12, expectedModulation: "gfsk"}
             ];
         }
 
         function test_entry_inheritance_round_trip(data) {
             edit("scanListName", "Entry defaults");
             screen.addFrequency("Simplex", "p25", "851.5");
+            choose("scanEntryGainMode", 2);
             edit("scanEntryGain", "20");
             edit("scanEntryDwell", "1000");
             edit("scanEntryHold", "2000");
-            edit("scanEntryGain", data.gain);
+            choose("scanEntryGainMode", data.gainMode);
+            if (data.gainMode === 2)
+                edit("scanEntryGain", data.gain);
             edit("scanEntryDwell", data.dwell);
             edit("scanEntryHold", data.hold);
             choose("scanEntryModulation", data.modulation);
@@ -1080,6 +1240,8 @@ Item {
             compare(entry.holdMs, Number(data.hold));
             compare(entry.modulation, data.expectedModulation);
             screen.openFor(0);
+            compare(control("scanEntryGainMode").currentIndex, data.gainMode);
+            compare(control("scanEntryGain").visible, data.gainMode === 2);
             compare(control("scanEntryGain").text, data.gain);
             compare(control("scanEntryDwell").text, data.dwell);
             compare(control("scanEntryHold").text, data.hold);
