@@ -1351,7 +1351,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   window with fewer than ten levels as not clear (only a test's sign-only window keeps the sign match). DMR and X2-TDMA
   decode their burst back from the rolling dibit buffers (`dmr_payload_p`, `dibit_buf_p`), which the no-carrier reset
   clears, so they match only on a 24-symbol window the call read itself (`frame_sync_match_window_own()`), as before the
-  carry. Every clear of the rolling buffers (initState, noCarrier, an NXDN reset) and every wrap puts a buffer's pointer
+  carry, or one a dropped P25p1 candidate's carry brought (`dsd_frame_sync_history_carry::own_symbols`: the hunt wrote
+  its word's dibits there and the NID read its NID's; a no-sync exit's carry brings none, since the no-carrier reset
+  after the exit clears them), counted no further back than the buffers hold dibits written since their last clear or
+  wrap (`dsd_state_rolling_dibits()` at the next call's start); a broken first read drops it with the history. Every clear of the rolling buffers (initState, noCarrier, an NXDN reset) and every wrap puts a buffer's pointer
   at `DSD_ROLLING_DIBIT_FLOOR` (200), and what lies before it is the clear's zeros or a wrap's stale dibits, which pass
   Golay and Hamming as codewords; `dsd_state_rolling_dibits()` counts what was written since. A DMR or X2-TDMA sync is
   still accepted, and each accept notes how many of the oldest read-back dibits are not the stream's
@@ -10454,11 +10457,14 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     dropped candidate also hands the next `getFrameSync()` the word's and the NID's 57 symbols as a carried history
     (`frame_sync_history_carry_symbols()`, the C4FM hunt's sign slicing of the soft history, the levels with them),
     so a real sync word that starts inside them and ends after the
-    NID (a P25p1 word a slip put there, an NXDN96 FSW, a YSF or M17 word) is matched where it ends; before, the hunt
-    started blind and needed 24 symbols of its own. DMR and X2-TDMA match only windows a call read itself
-    (`frame_sync_match_window_own()`: their bursts are decoded back from the rolling payload buffers, which the carried
-    symbols never reach), so their words are not taken from the carry and are lost as before, never decoded from a
-    half-empty buffer. Decided limits: a dropped candidate's symbols are not read again, so these real words are lost,
+    NID (a P25p1 word a slip put there, an NXDN96 FSW, a YSF, M17, DMR or X2-TDMA word) is matched where it ends;
+    before, the hunt started blind and needed 24 symbols of its own. DMR and X2-TDMA decode their bursts back from the
+    rolling dibit buffers, so they match only windows whose dibits those buffers hold as the stream's
+    (`frame_sync_match_window_own()`): the hunt wrote the word's dibits there and the NID read (`getDibitSoft()`) the
+    NID's, one a symbol, so the carry counts all 57 as the buffers' (`dsd_frame_sync_history_carry::own_symbols`), and
+    the next call no more than the buffers hold written since their last clear: a `noCarrier()` between the drop and the
+    next call (a scan visit ending the reception) leaves none, and such a word is lost as one across a no-sync exit is,
+    never decoded from a cleared buffer. Decided limits: a dropped candidate's symbols are not read again, so these real words are lost,
     as behind any accepted false sync: (1) one whose head is the candidate's own tail, the other polarity's P25p1 word
     included (its first five symbols are the word's last five, so the first 19 symbols of a word one sign off followed
     by the inverted word is a candidate no guard can tell from a real word one sign off; with that symbol right the
@@ -10474,7 +10480,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     the symbol they would have without the candidate: a candidate on noise moves nothing that a later acquisition
     depends on (under unlocked `-f1` on RTL input the C4FM/CQPSK probe alternates per dwell). Tests:
     `FRAME_SYNC_P25P1_C4FM_TOLERANCE` (accept at 6 signs and refuse at 7 both polarities; put back and kept; NXDN96 and
-    M17 matched after a dropped candidate; tolerant words after one- and two-block TSDUs through `getFrameSync()`; later
+    M17 matched after a dropped candidate; a DMR BS and an X2-TDMA data sync starting 12 symbols after a dropped
+    candidate's word, ending 3 past its NID, matched from the carry with their read-back the stream's, and lost after a
+    buffer clear; tolerant words after one- and two-block TSDUs through `getFrameSync()`; later
     P25p1 and YSF words not swallowed; the limits (1) and (2) as expected losses, both kinds, both polarities; no-sync
     exits and the hunt budget unmoved by a dropped candidate),
     `P25_P1_TOLERANT_NID` (the dispatcher's drop puts back, charges and carries, and leaves a DMR identity),

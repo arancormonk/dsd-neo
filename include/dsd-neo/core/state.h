@@ -236,7 +236,8 @@ typedef struct {
  * fewer than its window's symbols into the call was never matched. The levels go with the dibits under the same
  * rules, so a window read on its levels (the NXDN96 FSW) is read whole. DMR and X2-TDMA decode their burst back from
  * the rolling dibit buffers, which the no-carrier reset clears, so they match only on a window the call read itself,
- * as before. Every other exit, a sync above all, drops it. Written and read by the frame sync alone
+ * as before, or one a dropped P25p1 candidate's carry brought while the buffers still hold it (own_symbols). Every
+ * other exit, a sync above all, drops it. Written and read by the frame sync alone
  * (src/dsp/dsd_frame_sync.c), and dropped by dsd_state_forget_sync_join_histories(); decoder-thread private. */
 typedef struct {
     char dibits[DSD_FRAME_SYNC_HISTORY_CARRY_DIBITS]; /* the history ring, '0'..'3' */
@@ -257,6 +258,11 @@ typedef struct {
        no-sync timing runs as if the candidate had never been taken. A break the next call's first read finds drops it
        with the history: that call starts a pass of its own. */
     int pass_symbols;
+    /* How many of the last carried dibits the rolling dibit buffers hold as the stream's (dibit_buf, dmr_payload_buf,
+       which DMR and X2-TDMA decode a burst back from): 0 after a no-sync exit, whose no-carrier reset clears them;
+       after a dropped P25p1 candidate all of them, the word's written by the hunt and the NID's by its read. The next
+       call counts no more than the buffers hold written since their last clear. */
+    int own_symbols;
     /* Bumped by every drop (dsd_state_forget_sync_join_histories()); a call that saw it move keeps nothing. The P25
        Phase 1 carrier NAC (dsd_p25p1_carrier_nac) reads it too, as the same stream boundary. */
     uint32_t drops;

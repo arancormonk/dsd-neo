@@ -341,7 +341,7 @@ typedef struct {
     float lmax;
     float lmin;
     unsigned int ready_windows;
-    /* Dibits of the history the call read itself (frame_sync_runtime_ctx::own_count). */
+    /* Dibits of the history the rolling dibit buffers hold as the stream's (frame_sync_runtime_ctx::own_count). */
     int own_symbols;
     char* modulation;
     char* synctest;
@@ -380,10 +380,11 @@ frame_sync_match_window_ready(const frame_sync_match_ctx* ctx, int length) {
     return ctx && flag != 0 && (ctx->ready_windows & flag) != 0;
 }
 
-/* Whether the window of @p length was read whole by this call, none of it carried from the last
- * (dsd_frame_sync_history_carry). A matcher whose decoder reads its burst back from the rolling dibit buffers, which
- * the no-carrier reset after a no-sync exit clears, needs that: it would decode the carried part as the cleared
- * buffer's zeros. */
+/* Whether the window of @p length lies whole in dibits the rolling dibit buffers hold as the stream's: read by this
+ * call, or carried from the last with the buffers still holding them (dsd_frame_sync_history_carry::own_symbols: a
+ * dropped P25p1 candidate's word and NID, which the hunt and the NID read wrote there, never a no-sync exit's history,
+ * which the no-carrier reset after the exit clears). A matcher whose decoder reads its burst back from those buffers
+ * needs that: it would decode the rest as the cleared buffer's zeros. */
 static int
 frame_sync_match_window_own(const frame_sync_match_ctx* ctx, int length) {
     return frame_sync_match_window_ready(ctx, length) && ctx->own_symbols >= length;
@@ -3656,7 +3657,9 @@ typedef struct frame_sync_runtime_ctx {
     int t_max;
     int history_head;
     int history_count;
-    /* Dibits of the history this call read itself, up to the capacity: the rest were carried from the last call. */
+    /* Dibits of the history the rolling dibit buffers hold as the stream's, up to the capacity: those this call read
+       itself, after any a dropped P25p1 candidate's carry brought that the buffers still hold
+       (frame_sync_history_resume()); the rest were carried from the last call. */
     int own_count;
     /* 1 for a test's sign-only window, which has no levels to read (dsd_frame_sync_test_try_protocol_matches()). */
     int sign_only;
@@ -3855,6 +3858,8 @@ frame_sync_history_keep(const frame_sync_runtime_ctx* rt, dsd_state* state) {
     carry->tune_generation = rt->history_tune_gen;
     /* The exit ended the pass: the next call starts a new one. */
     carry->pass_symbols = 0;
+    /* The no-carrier reset after the exit clears the rolling dibit buffers: none of the history is in them. */
+    carry->own_symbols = 0;
     carry->valid = 1;
 }
 
@@ -3888,6 +3893,11 @@ frame_sync_history_carry_symbols(dsd_state* state, int symbols, int pass_symbols
     carry->rf_mod = state->rf_mod;
     carry->tune_generation = dsd_trunk_tuning_generation();
     carry->pass_symbols = pass_symbols;
+    /* Every symbol carried wrote its dibit to the rolling dibit buffers as it was read, the hunt's and the NID read's
+       alike: the next call may decode a burst back from them (frame_sync_match_window_own()), as far as the buffers
+       still hold the stream when it starts (frame_sync_history_resume(): a clear since, or one before the word's first
+       symbols were read, leaves fewer). */
+    carry->own_symbols = count;
     carry->valid = 1;
 }
 
@@ -3926,6 +3936,14 @@ frame_sync_history_resume(frame_sync_runtime_ctx* rt, dsd_state* state) {
     rt->history_count = carry->count;
     frame_sync_levels_rewrap(rt, carry->levels, carry->level_count);
     rt->synctest_pos = carry->pass_symbols;
+    /* The carried dibits the rolling dibit buffers still hold as the stream's: no more than were written since their
+       last clear (a noCarrier() between the calls) or wrap. */
+    long own = carry->own_symbols < carry->count ? carry->own_symbols : carry->count;
+    const long dibits = dsd_state_rolling_dibits(state->dibit_buf, state->dibit_buf_p);
+    const long payload = dsd_state_rolling_dibits(state->dmr_payload_buf, state->dmr_payload_p);
+    own = own < dibits ? own : dibits;
+    own = own < payload ? own : payload;
+    rt->own_count = own > 0 ? (int)own : 0;
     rt->resumed = 1;
     rt->resume_clock = state->symbol_clock;
     rt->resume_epoch = state->symbol_clock_epoch;
@@ -3953,6 +3971,7 @@ frame_sync_history_confirm(frame_sync_runtime_ctx* rt, const dsd_state* state) {
         rt->lidx = 0;
         rt->level_count = 0;
         rt->synctest_pos = 0;
+        rt->own_count = 0;
     }
 }
 

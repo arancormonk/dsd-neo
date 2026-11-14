@@ -492,6 +492,19 @@ test_rejected_candidate_lets_nxdn96_and_m17_in(void) {
     teardown(&state);
 }
 
+/* What the real NID read (getDibitSoft(), digitize()) leaves in the rolling dibit buffers for each symbol: one
+   four-level dibit, at the polarity received, in dibit_buf and dmr_payload_buf, with its soft metric. */
+static void
+nid_read_symbol(dsd_state* state, float symbol) {
+    const int dibit = symbol > state->center ? (symbol > state->umid ? 1 : 0) : (symbol < state->lmid ? 3 : 2);
+    *state->dibit_buf_p++ = dibit;
+    *state->dmr_payload_p++ = dibit;
+    if (state->dmr_soft_p) {
+        state->dmr_soft_p->reliability = 200U;
+        state->dmr_soft_p++;
+    }
+}
+
 /* The engine's turn at a sync, as dsd_dispatch_handle_p25p1() takes it: the NID's symbols read; when @p nid_ok, the
    frame validated (behind a tolerant word, the frame sync told so first), its decoder having read @p consumed of its
    @p unit dibits; else (behind a tolerant word) dropped.
@@ -501,7 +514,7 @@ dispatch(dsd_state* state, int nid_ok, uint32_t unit, uint32_t consumed) {
     static dsd_opts reader;
     const dsd_p25p1_sync_kind kind = dsd_frame_sync_p25p1_sync_kind(state, NULL, NULL);
     for (int i = 0; i < NID; i++) {
-        (void)getSymbol(&reader, state, 1);
+        nid_read_symbol(state, getSymbol(&reader, state, 1));
     }
     if (!nid_ok) {
         assert(kind != DSD_P25P1_SYNC_EXACT);
@@ -787,6 +800,72 @@ test_dropped_candidate_loses_a_word_ending_inside_its_nid(void) {
     }
 }
 
+/* A dropped acquisition candidate (@p inverted polarity), then a DMR BS data sync, or an X2-TDMA one (@p x2), starting
+   12 symbols after the candidate's word, with the rolling buffers @p cleared after the drop or not. */
+static void
+dropped_candidate_then(int x2, int cleared, int inverted, int want, const int* flips) {
+    static dsd_opts opts;
+    static dsd_state state;
+    setup(&opts, &state);
+    opts.frame_dmr = x2 ? 0 : 1;
+    opts.frame_x2tdma = x2;
+    stream_reset(0xD312U + (uint32_t)inverted);
+    append_data(200);
+    append_signs(inverted ? INV_P25P1_SYNC : P25P1_SYNC, flips);
+    append_data(12);
+    append_signs(x2 ? X2TDMA_BS_DATA_SYNC : DMR_BS_DATA_SYNC, NULL);
+    const int sync_end = g_len;
+    append_data(600);
+    assert(sync_end == 200 + HEAD + 3);
+    assert(next_sync(&opts, &state, 0) == (inverted ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS));
+    assert(dsd_frame_sync_p25p1_sync_kind(&state, NULL, NULL) == DSD_P25P1_SYNC_ACQUISITION);
+    dispatch(&state, 0, 0U, 0U);
+    assert(state.frame_sync_carry.valid == 1 && g_pos == 200 + HEAD);
+    if (cleared) {
+        state.dibit_buf_p = state.dibit_buf + DSD_ROLLING_DIBIT_FLOOR;
+        state.dmr_payload_p = state.dmr_payload_buf + DSD_ROLLING_DIBIT_FLOOR;
+        state.dmr_soft_p = state.dmr_soft_buf + DSD_ROLLING_DIBIT_FLOOR;
+        assert(next_sync(&opts, &state, 0) != want || g_pos != sync_end);
+        teardown(&state);
+        return;
+    }
+    const int sync = next_sync(&opts, &state, 0);
+    if (sync != want || g_pos != sync_end) {
+        DSD_FPRINTF(stderr, "FAIL: %s sync after a dropped candidate (inverted %d): sync %d at %d, want %d at %d\n",
+                    x2 ? "X2-TDMA" : "DMR", inverted, sync, g_pos, want, sync_end);
+    }
+    assert(sync == want && g_pos == sync_end);
+    assert(dsd_state_sync_readback_invalid(&state) == 0U);
+    /* Read back by sign: DMR's 66 before the sync re-read from the soft history on the sync's levels, X2-TDMA's as the
+       hunt and the NID read wrote them. */
+    const int* dibits = (x2 ? state.dibit_buf_p : state.dmr_payload_p) - 90;
+    for (int i = 0; i < 90; i++) {
+        const float level = g_levels[sync_end - 90 + i];
+        assert(((dibits[i] >> 1) & 1) == (level < 0.0f ? 1 : 0));
+    }
+    teardown(&state);
+}
+
+/* DMR (and X2-TDMA) decode their burst back from the rolling dibit buffers, so they match only on a window whose
+   dibits those buffers hold as the stream's (frame_sync_match_window_own()). A dropped candidate's word and the NID's
+   symbols were all written there, the NID's by its read, so a DMR BS sync starting 12 symbols after the candidate's
+   word (ending 3 past the NID) is matched from the carry where it ends, and its 90 dibits read back are the stream's.
+   When the buffers were cleared after the drop (noCarrier(), the scan's pass ending the reception), they hold none of
+   the carried symbols, and the word is lost, as one across a no-sync exit is. Both polarities of candidate. An X2-TDMA
+   data sync in the same place is matched the same way, its 90 dibits read back from dibit_buf the stream's. */
+static void
+test_dropped_candidate_lets_a_dmr_or_x2tdma_sync_in(void) {
+    static const int flip9[] = {9, -1};
+    for (int x2 = 0; x2 <= 1; x2++) {
+        const int want = x2 ? DSD_SYNC_X2TDMA_DATA_POS : DSD_SYNC_DMR_BS_DATA_POS;
+        for (int cleared = 0; cleared <= 1; cleared++) {
+            for (int inverted = 0; inverted <= 1; inverted++) {
+                dropped_candidate_then(x2, cleared, inverted, want, flip9);
+            }
+        }
+    }
+}
+
 /* A carrier's first word comes through one sign off (cold: no anchor, no levels calibrated yet). It is an acquisition
    candidate: its NID is read on the warm start from its own symbols. A strict NID keeps that and counts the frame; a
    failed one puts the hunt's levels and lock back and the hunt goes on from the candidate's symbols, finding the next
@@ -904,6 +983,7 @@ main(void) {
     test_acquisition_accepts_one_sign_refuses_two();
     test_acquisition_does_not_steal_an_overlapping_word();
     test_dropped_candidate_loses_a_word_ending_inside_its_nid();
+    test_dropped_candidate_lets_a_dmr_or_x2tdma_sync_in();
     test_cold_acquisition();
     DSD_FPRINTF(stderr, "P25 P1 C4FM tolerance: OK\n");
     return 0;
