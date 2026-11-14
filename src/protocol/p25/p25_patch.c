@@ -43,38 +43,51 @@ p25_patch_entry_live(const dsd_state* state, int idx) {
     return (state->p25_patch_active[idx] && dsd_p25_patch_entry_seen_current(state, idx)) ? 1 : 0;
 }
 
-/* Replacement order for a full table: an inactive slot, then one whose SG was not named within the TTL, then (only
-   for an active newcomer) the least recently refreshed one. */
+/* An active entry whose SG and members are both current: its member list and KEY context may be trusted. */
+static int
+p25_patch_entry_members_live(const dsd_state* state, int idx) {
+    return (p25_patch_entry_live(state, idx) && dsd_p25_patch_members_current(state, idx)) ? 1 : 0;
+}
+
+/* Eviction class of a full table's slot, lowest goes first: 0 inactive, 1 not named within the TTL, 2 named but with
+   no current member (a grant or voice row, or members aged out), 3 a live patch with current groups or radios. */
+static int
+p25_patch_eviction_class(const dsd_state* state, int idx) {
+    if (!state->p25_patch_active[idx]) {
+        return 0;
+    }
+    if (!dsd_p25_patch_entry_seen_current(state, idx)) {
+        return 1;
+    }
+    if (!p25_patch_entry_members_live(state, idx)
+        || (state->p25_patch_wgid_count[idx] == 0U && state->p25_patch_wuid_count[idx] == 0U)) {
+        return 2;
+    }
+    return 3;
+}
+
+/* Replacement slot for a full table: the lowest eviction class, the least recently refreshed within it. An inactive
+   newcomer (such as a cancel naming an unknown SG) takes only an inactive or unnamed slot, never a current row. */
 static int
 p25_patch_replacement_idx(const dsd_state* state, int active) {
     if (!state) {
         return -1;
     }
 
-    for (int i = 0; i < DSD_P25_PATCH_MAX; i++) {
-        if (!state->p25_patch_active[i]) {
-            return i;
-        }
-    }
-
-    for (int i = 0; i < DSD_P25_PATCH_MAX; i++) {
-        if (!dsd_p25_patch_entry_seen_current(state, i)) {
-            return i;
-        }
-    }
-
-    if (!active) {
-        return -1;
-    }
-
     int repl = 0;
+    int repl_class = p25_patch_eviction_class(state, 0);
     uint32_t oldest = dsd_p25_patch_seq_age(state, 0);
     for (int i = 1; i < DSD_P25_PATCH_MAX; i++) {
+        const int cls = p25_patch_eviction_class(state, i);
         const uint32_t age = dsd_p25_patch_seq_age(state, i);
-        if (age > oldest) {
-            oldest = age;
+        if (cls < repl_class || (cls == repl_class && age > oldest)) {
             repl = i;
+            repl_class = cls;
+            oldest = age;
         }
+    }
+    if (!active && repl_class > 1) {
+        return -1;
     }
     return repl;
 }
@@ -388,12 +401,6 @@ p25_patch_set_kas(dsd_state* state, int sgid, int key, int alg, int ssn) {
     }
     state->p25_patch_last_update[idx] = dsd_decode_time();
     dsd_p25_patch_touch_members(state, idx);
-}
-
-/* An active entry whose SG and members are both current: its member list and KEY context may be trusted. */
-static int
-p25_patch_entry_members_live(const dsd_state* state, int idx) {
-    return (p25_patch_entry_live(state, idx) && dsd_p25_patch_members_current(state, idx)) ? 1 : 0;
 }
 
 // Return 1 if the given talkgroup (assumed WGID) is a member of an active

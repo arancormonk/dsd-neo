@@ -1009,8 +1009,8 @@ monitor still shows the supergroup.
   it goes quiet only when nothing left in the patch may play.
 - A row for the supergroup's own number (an exact ID, a range, or a pattern other than `*`) with mode `B` or `DE`
   blocks the whole patch: it is not followed, even when you listen to a member. If dsd-neo hears such a call anyway
-  (for example with trunking off), only a Hold on a member that is in the patch plays it, the same way a Hold plays
-  any blocked talkgroup.
+  (for example with trunking off), only a Hold on the supergroup or on a member that is in the patch plays it, the
+  same way a Hold plays any blocked talkgroup.
 - **Skip** and a temporary avoid (**Avoid TG**) of the supergroup block the whole patch, and a Hold on a member does
   not undo them. An encryption lockout of the supergroup also stops the patch being followed (see
   [cli.md](cli.md)).

@@ -3218,22 +3218,25 @@ suite runs under this compiler.
   one every few tens of ms, and any departure takes longer), and `dsd_p25_patch_listen_break()` makes the next note
   start afresh. Each entry carries two stamps on that clock, each current for `DSD_P25_PATCH_TTL_SECONDS` (20 s) of
   listening. The seen stamp (`p25_patch_seen_listen_s`: any message that names the supergroup, such as an Add, LCGRGR,
-  the Phase 1 MFID90 regroup grants TSBK 0x02 and MBT 0x02 and grant update TSBK 0x03, the Phase 2 MFID90 regroup grants
-  0xA3/0xA4, grant update 0xA5 and voice channel update 0x83 (an update's second supergroup only with a second channel
-  of its own), the Phase 2 supergroup voice messages MFID90 0x80/0xA0 and standard 0x90, or a regroup command) keeps the
-  row; the members stamp (`p25_patch_members_listen_s`: only a membership message, a regroup Add on TSBK 0x00, MAC 0x81
-  or LC 0x03, an Extended Function create with its radio, a Harris regroup member or KEY/ALG/SSN command) keeps its
-  member lists and KEY/ALG/SSN context usable. A message that only names the supergroup says nothing about who is in the
-  patch, so `p25_patch_update()` refreshes the seen stamp alone and an expired member list or KEY=0 never becomes
-  current again from it. Readers take a const state and never mutate it; the writers
-  (`src/protocol/p25/p25_patch.c`) expire members that are not current (groups, radios and KEY context) before they
-  change an entry. Every accepted Add, a duplicate included, refreshes both stamps and reactivates the entry; an Add
-  of the supergroup as its own member is ignored, and a Delete that lists it ends the patch; the last member's Delete
-  ends the patch and its KEY context; a Harris regroup command with a new SSN on an active entry expires its members;
-  a member past a cap is dropped with one stderr note. A per-state counter (`p25_patch_seq_counter`) stamps each
-  refresh into `p25_patch_seq`, compared wrap-safe (`dsd_p25_patch_seq_age()`): it orders display and eviction (an
-  inactive slot, then one not seen-current, then the least recently refreshed; an inactive newcomer, such as a cancel
-  naming an unknown supergroup, never evicts a live entry), so overflow Adds within one second never evict the newest
+  the Phase 1 MFID90 regroup grants TSBK 0x02 and MBT 0x02 and grant update TSBK 0x03 (its second supergroup whenever
+  CH2 is nonzero, the rule its CH2 dispatch uses), the Phase 2 MFID90 regroup grants 0xA3/0xA4, grant update 0xA5 (its
+  second supergroup only with a valid CH2 other than CH1, the rule its display uses) and voice channel update 0x83, the
+  Phase 2 supergroup voice messages MFID90 0x80/0xA0 and standard 0x90, or a regroup command) keeps the row; the members
+  stamp (`p25_patch_members_listen_s`: only a membership message, a regroup Add on TSBK 0x00, MAC 0x81 or LC 0x03, an
+  Extended Function create with its radio, a Harris regroup member or KEY/ALG/SSN command) keeps its member lists and
+  KEY/ALG/SSN context usable. A message that only names the supergroup says nothing about who is in the patch, so
+  `p25_patch_update()` refreshes the seen stamp alone and an expired member list or KEY=0 never becomes current again
+  from it. Readers take a const state and never mutate it; the writers (`src/protocol/p25/p25_patch.c`) expire members
+  that are not current (groups, radios and KEY context) before they change an entry. Every accepted Add, a duplicate
+  included, refreshes both stamps and reactivates the entry; an Add of the supergroup as its own member is ignored, and
+  a Delete that lists it ends the patch; the last member's Delete ends the patch and its KEY context; a Harris regroup
+  command with a new SSN on an active entry expires its members; a member past a cap is dropped with one stderr note. A
+  per-state counter (`p25_patch_seq_counter`) stamps each refresh into `p25_patch_seq`, compared wrap-safe
+  (`dsd_p25_patch_seq_age()`): it orders display and eviction. A full table evicts by class, the least recently
+  refreshed first within each: an inactive slot, then one not seen-current, then a seen-current row that is not live (no
+  current group or radio: a grant or voice row, or members aged out), and a live patch last, so a memberless row named
+  by a grant never pushes out a patch with current members; an inactive newcomer, such as a cancel naming an unknown
+  supergroup, takes only an inactive or not seen-current slot. Overflow Adds within one second never evict the newest
   entry, as ordering by the second-resolution `p25_patch_last_update` (now only the decode-time display stamp) could.
   Freshness is per entry, not per member (decided limit): an Add for one member refreshes the whole list, so a member
   the system drops without a Delete stays current until the entry's members stamp ages out. The clock advances only in

@@ -263,6 +263,53 @@ test_seq_eviction(void) {
     return rc;
 }
 
+/* A full table evicts by class, lowest sequence first within each: inactive, then not seen-current, then seen-current
+   without current members (a grant or voice row), and a live patch with current members last. A grant for a new
+   supergroup never pushes out a live patch, even its oldest entry; a radio-only patch is live too. */
+static int
+test_eviction_keeps_live_patch(void) {
+    int rc = 0;
+    static dsd_state st;
+    for (int radios = 0; radios <= 1; radios++) {
+        DSD_MEMSET(&st, 0, sizeof st);
+        p25_patch_test_listen_for(&st, 1.0);
+        if (radios) {
+            p25_patch_add_wuid(&st, 1400, 70001U);
+        } else {
+            p25_patch_add_wgid(&st, 1400, 1401);
+        }
+        for (int i = 1; i < DSD_P25_PATCH_MAX; i++) {
+            p25_patch_update(&st, 1410 + i, 1, 1); // grant rows: named, no members
+        }
+        p25_patch_test_listen_for(&st, 5.0);
+        p25_patch_update(&st, 1500, 1, 1);
+        const char* tag = radios ? "radio patch" : "group patch";
+        if (expect_true("eviction stores the newcomer", find_idx(&st, 1500) >= 0)
+            | expect_true("eviction keeps the live patch", find_idx(&st, 1400) >= 0)
+            | expect_true("eviction takes the oldest memberless row", find_idx(&st, 1411) < 0)
+            | expect_true("eviction keeps the next memberless row", find_idx(&st, 1412) >= 0)) {
+            DSD_FPRINTF(stderr, "  (%s)\n", tag);
+            rc = 1;
+        }
+    }
+
+    // A row whose members aged out ranks with the memberless ones, behind an older live patch.
+    DSD_MEMSET(&st, 0, sizeof st);
+    p25_patch_test_listen_for(&st, 1.0);
+    p25_patch_add_wgid(&st, 1400, 1401);
+    p25_patch_test_listen_for(&st, (double)DSD_P25_PATCH_TTL_SECONDS + 1.0);
+    p25_patch_add_wgid(&st, 1402, 1403); // live, and older than the row below
+    p25_patch_update(&st, 1400, 1, 1);   // named again, members stale
+    for (int i = 2; i < DSD_P25_PATCH_MAX; i++) {
+        p25_patch_update(&st, 1410 + i, 1, 1);
+    }
+    p25_patch_update(&st, 1500, 1, 1);
+    rc |= expect_true("stale-member row: newcomer stored", find_idx(&st, 1500) >= 0);
+    rc |= expect_true("stale-member row: live patch kept", find_idx(&st, 1402) >= 0);
+    rc |= expect_true("stale-member row: the oldest non-live row goes", find_idx(&st, 1400) < 0);
+    return rc;
+}
+
 /* A message that only names the SG keeps the row; members and KEY context need a membership message. Readers ignore
    stale members without mutating; the next change to the entry expires them at once. */
 static int
@@ -438,6 +485,7 @@ main(void) {
     rc |= test_guard_replacement_and_policy_edges();
     rc |= test_caps();
     rc |= test_seq_eviction();
+    rc |= test_eviction_keeps_live_patch();
     rc |= test_two_stamps_and_expiry();
     rc |= test_add_refresh_and_last_delete();
     rc |= test_sg_as_member();
