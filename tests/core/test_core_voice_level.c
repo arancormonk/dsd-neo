@@ -907,20 +907,32 @@ settled_at(const dsd_state* state, int slot, float* gain_db) {
     return agc != NULL && dsd_speech_agc_settled_gain_db(agc, gain_db) == 1;
 }
 
-/* Reception @p r's first frame, a probe, opens at exactly @p want_db (the controller gain, bit for bit) and plays at it
+/* A remembered gain that moved half way, w + 0.5 (w2 - w), is computed here and in voice_level.c, two translation units
+   that release builds compile with fast-math, so its last bit may differ between them: the controller gain is compared
+   with it within this tolerance. A remembered gain that was only copied is compared exactly. */
+#define HALF_WAY_TOL_DB 1e-4
+
+/* Reception @p r's first frame, a probe, opens within @p tol_db of @p want_db (the controller gain) and plays at it
    from its first sample. */
 static int
-opens_at(const char* tag, const dsd_opts* opts, dsd_state* state, int slot, const dsd_voice_reception* r,
-         float want_db) {
+opens_within(const char* tag, const dsd_opts* opts, dsd_state* state, int slot, const dsd_voice_reception* r,
+             float want_db, double tol_db) {
     float frame[FRAME];
     level_probe(opts, state, slot, r, frame);
     const dsd_speech_agc* agc = agc_of(state, slot);
     const float got = agc != NULL ? agc->learned.gain_db : -1000.0f;
-    int rc = expect_near(tag, got, want_db, 0.0);
+    int rc = expect_near(tag, got, want_db, tol_db);
     rc |= expect_true(tag, agc != NULL && agc->learned.commits == 0);
     rc |= expect_near(tag, db_of(frame[0] / PROBE_LEVEL), want_db, 1e-4);
     rc |= expect_near(tag, db_of(frame[FRAME - 1] / PROBE_LEVEL), want_db, 1e-4);
     return rc;
+}
+
+/* Reception @p r's first frame opens at exactly @p want_db (the controller gain, bit for bit). */
+static int
+opens_at(const char* tag, const dsd_opts* opts, dsd_state* state, int slot, const dsd_voice_reception* r,
+         float want_db) {
+    return opens_within(tag, opts, state, slot, r, want_db, 0.0);
 }
 
 /* A reception of @p material from @p r that establishes its estimate; its settled gain in @p gain_db. */
@@ -958,7 +970,8 @@ test_memory_round_trip(const talkers* t) {
     rc |= settle("memory: X settles again", opts, state, 0, t->high, &r, &w2);
     rc |= expect_true("memory: at another gain", fabsf(w2 - w) > 5.0f);
     r = reception(5U, fam, SRC_X);
-    rc |= opens_at("memory: X's memory moved half way to W2", opts, state, 0, &r, w + 0.5f * (w2 - w));
+    rc |= opens_within("memory: X's memory moved half way to W2", opts, state, 0, &r, w + 0.5f * (w2 - w),
+                       HALF_WAY_TOL_DB);
     free_state(state);
     free(opts);
     return rc;
@@ -1187,7 +1200,7 @@ test_memory_explicit_reset_stores(const talkers* t) {
     rc |= settle("reset: X settles on slot 2", opts, state, 1, t->high, &rx, &wx2);
     dsd_voice_level_reset(state, -1);
     rc |= opens_at("reset: both slots' reset remembered Z", opts, state, 0, &rz, wz);
-    rc |= opens_at("reset: and X", opts, state, 1, &rx, wx + 0.5f * (wx2 - wx));
+    rc |= opens_within("reset: and X", opts, state, 1, &rx, wx + 0.5f * (wx2 - wx), HALF_WAY_TOL_DB);
     rc |= opens_at("reset: Y, remembered at slot 2's first reset", opts, state, 0, &ry, wy);
     free_state(state);
     free(opts);
